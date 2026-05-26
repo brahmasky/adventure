@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { compileTaskContract } from "../../src/contracts/task-contract.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -87,6 +88,53 @@ describe("Gateway", () => {
         expect(first.error.message).toBe("Unknown program: unknown-program");
         expect(second.error).toEqual(first.error);
       }
+    } finally {
+      store.close();
+    }
+  });
+
+  it("resumes duplicate intake interrupted after created state", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      const taskEvent = event("resume created intake", "cli:resume-created");
+      const seeded = store.createOrGet(taskEvent);
+      if (seeded.status !== "created") throw new Error("Expected created run");
+
+      const result = gateway.intake(taskEvent);
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.status).toBe("created");
+        expect(result.run_id).toBe(seeded.run_id);
+      }
+      expect(store.getRunState(seeded.run_id)).toBe("queued");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("resumes duplicate intake interrupted after contracted state", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      const taskEvent = event("resume contracted intake", "cli:resume-contracted");
+      const seeded = store.createOrGet(taskEvent);
+      const contract = compileTaskContract(taskEvent);
+      if (seeded.status !== "created" || !contract.ok) {
+        throw new Error("Expected created run and valid contract");
+      }
+      store.attachContract(seeded.run_id, contract.contract);
+      store.transition(seeded.run_id, "created", "contracted", "contract attached");
+
+      const result = gateway.intake(taskEvent);
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.status).toBe("created");
+        expect(result.run_id).toBe(seeded.run_id);
+      }
+      expect(store.getRunState(seeded.run_id)).toBe("queued");
     } finally {
       store.close();
     }
