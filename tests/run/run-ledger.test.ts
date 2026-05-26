@@ -37,4 +37,21 @@ describe("Run Ledger events", () => {
       error: "policy_decision missing required payload field: tool_call_id"
     });
   });
+
+  if (false) {
+    // @ts-expect-error ledger event envelopes require correlation ids.
+    createLedgerEvent({
+      run_id: "run_1",
+      event_type: "run_created",
+      actor: "gateway",
+      sequence: 1,
+      payload: {
+        source: "cli",
+        idempotency_key: "cli:1",
+        program: "research-brief",
+        goal_hash: "abc",
+        requester: { kind: "user", id: "paco" }
+      }
+    });
+  }
 });

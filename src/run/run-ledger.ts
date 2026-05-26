@@ -41,7 +41,7 @@ export type LedgerEventType =
 export interface LedgerEvent {
   event_id: string;
   run_id?: string;
-  correlation_id?: string;
+  correlation_id: string;
   event_type: LedgerEventType;
   occurred_at: string;
   actor: LedgerActor;
