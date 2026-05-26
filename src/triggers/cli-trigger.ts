@@ -14,7 +14,7 @@ export function parseCliTrigger(args: string[]): CliTriggerResult {
   const goal = goalParts.join(" ").trim();
 
   if (command !== "run") {
-    return invalid(`Unsupported command: ${command ?? "(missing)"}`);
+    return invalid(`Unsupported CLI command: ${command ?? "(missing)"}`);
   }
 
   if (!program?.trim()) {

@@ -33,4 +33,15 @@ describe("CoreWorker", () => {
     expect(result.report_path).toContain("report.md");
     store.close();
   });
+
+  it("returns idle when no queued run exists", async () => {
+    const root = mkdtempSync(join(tmpdir(), "houge-core-"));
+    const store = RunStore.openInMemory();
+    const worker = new CoreWorker(store, root);
+
+    const result = await worker.executeOnce("worker-1");
+
+    expect(result).toEqual({ status: "idle" });
+    store.close();
+  });
 });
