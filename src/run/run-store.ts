@@ -143,6 +143,28 @@ export class RunStore {
       return null;
     }
 
+    return this.claimQueuedRow(row, worker_id, lease_ttl_seconds);
+  }
+
+  claimRun(run_id: string, worker_id: string, lease_ttl_seconds: number): ClaimedRun | null {
+    const row = this.db.prepare(`
+      SELECT run_id, state, contract_json, attempt_count, created_at
+      FROM runs
+      WHERE run_id = ? AND state = 'queued'
+    `).get<RunRow>(run_id);
+
+    if (!row) {
+      return null;
+    }
+
+    return this.claimQueuedRow(row, worker_id, lease_ttl_seconds);
+  }
+
+  private claimQueuedRow(
+    row: RunRow,
+    worker_id: string,
+    lease_ttl_seconds: number
+  ): ClaimedRun | null {
     if (!row.contract_json) {
       throw new Error(`Queued run missing contract: ${row.run_id}`);
     }

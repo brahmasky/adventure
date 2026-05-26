@@ -10,6 +10,11 @@ export class Gateway {
   constructor(private readonly runStore: RunStore) {}
 
   intake(event: TypedTaskEvent): GatewayIntakeResult {
+    const contract = compileTaskContract(event);
+    if (!contract.ok) {
+      return { ok: false, error: contract.error };
+    }
+
     const created = this.runStore.createOrGet(event);
     if (created.status === "conflict") {
       return {
@@ -24,11 +29,6 @@ export class Gateway {
 
     if (created.status === "duplicate") {
       return { ok: true, status: "duplicate", run_id: created.run_id };
-    }
-
-    const contract = compileTaskContract(event);
-    if (!contract.ok) {
-      return { ok: false, error: contract.error };
     }
 
     if (!this.runStore.attachContract(created.run_id, contract.contract)) {

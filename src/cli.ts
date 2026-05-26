@@ -24,15 +24,23 @@ if (command === "run") {
   try {
     const gateway = new Gateway(store);
     const intake = gateway.intake(trigger.event);
-    const worker = new CoreWorker(store, process.cwd());
-    const result = await worker.executeOnce("local-worker");
+    if (!intake.ok) {
+      console.log(JSON.stringify({ intake, result: { status: "idle" } }, null, 2));
+      process.exitCode = 1;
+    } else if (intake.status === "duplicate") {
+      console.log(JSON.stringify({ intake, result: { status: "duplicate" } }, null, 2));
+      process.exitCode = 0;
+    } else {
+      const worker = new CoreWorker(store, process.cwd());
+      const result = await worker.executeRun(intake.run_id, "local-worker");
 
-    console.log(JSON.stringify({ intake, result }, null, 2));
-    process.exit(intake.ok && result.status === "completed" ? 0 : 1);
+      console.log(JSON.stringify({ intake, result }, null, 2));
+      process.exitCode = result.status === "completed" ? 0 : 1;
+    }
   } finally {
     store.close();
   }
+} else {
+  console.error(`Unknown command: ${command}`);
+  process.exit(1);
 }
-
-console.error(`Unknown command: ${command}`);
-process.exit(1);
