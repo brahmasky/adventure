@@ -31,6 +31,15 @@ function event(goal: string) {
   });
 }
 
+function createRun(goal = "compare Pi and Hermes"): string {
+  const created = store.createOrGet(event(goal));
+  if (created.status !== "created") {
+    throw new Error(`Expected created run, got ${created.status}`);
+  }
+
+  return created.run_id;
+}
+
 describe("RunStore", () => {
   beforeEach(() => {
     store = RunStore.openInMemory();
@@ -48,6 +57,10 @@ describe("RunStore", () => {
 
     expect(created.status).toBe("created");
     expect(duplicate.status).toBe("duplicate");
+    if (created.status !== "created" || duplicate.status !== "duplicate") {
+      throw new Error("Expected created run followed by duplicate run");
+    }
+
     expect(duplicate.run_id).toBe(created.run_id);
   });
 
@@ -56,45 +69,65 @@ describe("RunStore", () => {
     const conflict = store.createOrGet(event("compare Pi and Apollo"));
 
     expect(created.status).toBe("created");
+    if (created.status !== "created") {
+      throw new Error(`Expected created run, got ${created.status}`);
+    }
+
     expect(conflict).toEqual({
       status: "conflict",
       error: "IDEMPOTENCY_CONFLICT",
-      run_id: created.run_id
+      existing_run_id: created.run_id
     });
   });
 
+  it("getRunState throws when the run is missing", () => {
+    expect(() => store.getRunState("run_missing")).toThrow("Run not found: run_missing");
+  });
+
   it("worker claims queued run and prevents another worker from claiming it; returned contract_hash is contract_hash", () => {
-    const created = store.createOrGet(event("compare Pi and Hermes"));
-    store.attachContract(created.run_id, contract);
-    store.transition(created.run_id, "contracted", "queued", "ready");
+    const run_id = createRun();
+    store.attachContract(run_id, contract);
+    store.transition(run_id, "contracted", "queued", "ready");
 
     const claim = store.claimNext("worker-1", 30);
     const blocked = store.claimNext("worker-2", 30);
 
-    expect(claim?.run_id).toBe(created.run_id);
+    expect(claim?.run_id).toBe(run_id);
     expect(claim?.contract.contract_hash).toBe("contract_hash");
     expect(blocked).toBeNull();
   });
 
   it("heartbeat extends only owning worker", () => {
-    const created = store.createOrGet(event("compare Pi and Hermes"));
-    store.attachContract(created.run_id, contract);
-    store.transition(created.run_id, "contracted", "queued", "ready");
+    const run_id = createRun();
+    store.attachContract(run_id, contract);
+    store.transition(run_id, "contracted", "queued", "ready");
     store.claimNext("worker-1", 30);
 
-    expect(store.heartbeat(created.run_id, "worker-2", 30)).toBe(false);
-    expect(store.heartbeat(created.run_id, "worker-1", 30)).toBe(true);
+    expect(store.heartbeat(run_id, "worker-2", 30)).toBe(false);
+    expect(store.heartbeat(run_id, "worker-1", 30)).toBe(true);
+  });
+
+  it("recoverExpiredLeases does not recover an active wall-clock lease", () => {
+    const run_id = createRun();
+    store.attachContract(run_id, contract);
+    store.transition(run_id, "contracted", "queued", "ready");
+    store.claimNext("worker-1", 60);
+
+    const recovered = store.recoverExpiredLeases(new Date().toISOString(), 3);
+
+    expect(recovered).toEqual([]);
+    expect(store.getRunState(run_id)).toBe("running");
   });
 
   it("recoverExpiredLeases(now, 3) requeues expired running lease when attempts remain and state is queued", () => {
-    const created = store.createOrGet(event("compare Pi and Hermes"));
-    store.attachContract(created.run_id, contract);
-    store.transition(created.run_id, "contracted", "queued", "ready");
-    store.claimNext("worker-1", -30);
+    const run_id = createRun();
+    store.attachContract(run_id, contract);
+    store.transition(run_id, "contracted", "queued", "ready");
+    store.claimNext("worker-1", -1);
 
-    const recovered = store.recoverExpiredLeases("2026-05-25T00:01:00.000Z", 3);
+    const recovered = store.recoverExpiredLeases(new Date().toISOString(), 3);
 
-    expect(recovered).toEqual([{ run_id: created.run_id, action: "requeued" }]);
-    expect(store.getRunState(created.run_id)).toBe("queued");
+    expect(recovered).toEqual([{ run_id, action: "requeued" }]);
+    expect(store.getRunState(run_id)).toBe("queued");
   });
 });

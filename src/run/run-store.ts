@@ -33,7 +33,7 @@ const { DatabaseSync } = require("node:sqlite") as {
 export type CreateOrGetResult =
   | { status: "created"; run_id: string }
   | { status: "duplicate"; run_id: string }
-  | { status: "conflict"; error: "IDEMPOTENCY_CONFLICT"; run_id: string };
+  | { status: "conflict"; error: "IDEMPOTENCY_CONFLICT"; existing_run_id: string };
 
 export interface ClaimedRun {
   run_id: string;
@@ -79,7 +79,11 @@ export default class RunStore {
 
     if (existing) {
       if (existing.payload_hash !== event.payload_hash) {
-        return { status: "conflict", error: "IDEMPOTENCY_CONFLICT", run_id: existing.run_id };
+        return {
+          status: "conflict",
+          error: "IDEMPOTENCY_CONFLICT",
+          existing_run_id: existing.run_id
+        };
       }
 
       return { status: "duplicate", run_id: existing.run_id };
@@ -121,8 +125,13 @@ export default class RunStore {
     return updated.changes === 1;
   }
 
-  getRunState(run_id: string): RunState | null {
-    return this.getRun(run_id)?.state ?? null;
+  getRunState(run_id: string): RunState {
+    const row = this.getRun(run_id);
+    if (!row) {
+      throw new Error(`Run not found: ${run_id}`);
+    }
+
+    return row.state;
   }
 
   claimNext(worker_id: string, lease_ttl_seconds: number): ClaimedRun | null {
@@ -138,7 +147,7 @@ export default class RunStore {
       return null;
     }
 
-    const lease_expires_at = this.addSeconds(row.created_at, lease_ttl_seconds);
+    const lease_expires_at = new Date(Date.now() + lease_ttl_seconds * 1000).toISOString();
     const updated = this.db.prepare(`
       UPDATE runs
       SET state = 'running',
