@@ -1,7 +1,55 @@
 import { describe, expect, it } from "vitest";
 import { stableHash } from "../../src/domain/canonical.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
-import type { TypedTaskEventInput } from "../../src/domain/types.js";
+import type {
+  ApprovalState,
+  RunState,
+  ScheduleState,
+  ToolCallState,
+  TypedTaskEventInput
+} from "../../src/domain/types.js";
+
+type Equal<Actual, Expected> =
+  (<Value>() => Value extends Actual ? 1 : 2) extends
+  (<Value>() => Value extends Expected ? 1 : 2) ? true : false;
+type Expect<Condition extends true> = Condition;
+
+type RunStateMatchesPlan = Expect<Equal<
+  RunState,
+  | "created"
+  | "contracted"
+  | "queued"
+  | "running"
+  | "waiting_for_approval"
+  | "reconciliation_required"
+  | "reporting"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "expired"
+>>;
+type ApprovalStateMatchesPlan = Expect<Equal<
+  ApprovalState,
+  "pending" | "approved" | "consumed" | "denied" | "expired"
+>>;
+type ToolCallStateMatchesPlan = Expect<Equal<
+  ToolCallState,
+  | "requested"
+  | "policy_checked"
+  | "waiting_for_approval"
+  | "running"
+  | "succeeded"
+  | "denied"
+  | "denied_on_revalidation"
+  | "failed"
+  | "timed_out"
+  | "cancelled"
+  | "uncertain_outcome"
+>>;
+type ScheduleStateMatchesPlan = Expect<Equal<
+  ScheduleState,
+  "disabled" | "enabled" | "fired" | "enqueued" | "skipped_duplicate" | "failed"
+>>;
 
 const minimalTypedTaskEventInput: TypedTaskEventInput = {
   source: "cli",

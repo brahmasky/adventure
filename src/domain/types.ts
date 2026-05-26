@@ -32,10 +32,38 @@ export interface TypedTaskEvent extends TypedTaskEventInput {
   payload_hash: string;
 }
 
-export type RunState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
-export type ApprovalState = "not_required" | "required" | "approved" | "denied";
-export type ToolCallState = "pending" | "running" | "succeeded" | "failed";
-export type ScheduleState = "scheduled" | "paused" | "completed" | "cancelled";
+export type RunState =
+  | "created"
+  | "contracted"
+  | "queued"
+  | "running"
+  | "waiting_for_approval"
+  | "reconciliation_required"
+  | "reporting"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "expired";
+export type ApprovalState = "pending" | "approved" | "consumed" | "denied" | "expired";
+export type ToolCallState =
+  | "requested"
+  | "policy_checked"
+  | "waiting_for_approval"
+  | "running"
+  | "succeeded"
+  | "denied"
+  | "denied_on_revalidation"
+  | "failed"
+  | "timed_out"
+  | "cancelled"
+  | "uncertain_outcome";
+export type ScheduleState =
+  | "disabled"
+  | "enabled"
+  | "fired"
+  | "enqueued"
+  | "skipped_duplicate"
+  | "failed";
 export type SideEffectLevel = "none" | "local" | "external";
 export type RiskLevel = "low" | "medium" | "high";
 export type PolicyDecision = "allow" | "deny" | "require_approval";

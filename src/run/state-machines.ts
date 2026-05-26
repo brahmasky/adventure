@@ -5,10 +5,7 @@ import type {
   ToolCallState
 } from "../domain/types.js";
 
-type State = string;
-type TransitionTable = Record<State, readonly State[]>;
-
-const runTransitions: TransitionTable = {
+const runTransitions: Record<RunState, readonly RunState[]> = {
   created: ["contracted", "failed", "cancelled", "expired"],
   contracted: ["queued", "failed", "cancelled", "expired"],
   queued: ["running", "failed", "cancelled", "expired"],
@@ -29,7 +26,7 @@ const runTransitions: TransitionTable = {
   expired: []
 };
 
-const approvalTransitions: TransitionTable = {
+const approvalTransitions: Record<ApprovalState, readonly ApprovalState[]> = {
   pending: ["approved", "denied", "expired"],
   approved: ["consumed"],
   consumed: [],
@@ -37,7 +34,7 @@ const approvalTransitions: TransitionTable = {
   expired: []
 };
 
-const toolCallTransitions: TransitionTable = {
+const toolCallTransitions: Record<ToolCallState, readonly ToolCallState[]> = {
   requested: ["policy_checked"],
   policy_checked: ["running", "denied", "waiting_for_approval"],
   waiting_for_approval: ["running", "denied_on_revalidation"],
@@ -51,7 +48,7 @@ const toolCallTransitions: TransitionTable = {
   denied_on_revalidation: []
 };
 
-const scheduleTransitions: TransitionTable = {
+const scheduleTransitions: Record<ScheduleState, readonly ScheduleState[]> = {
   disabled: ["enabled"],
   enabled: ["disabled", "fired"],
   fired: ["enqueued", "skipped_duplicate", "failed"],
@@ -60,27 +57,18 @@ const scheduleTransitions: TransitionTable = {
   failed: []
 };
 
-export function canTransitionRun(from: RunState | State, to: RunState | State): boolean {
-  return (runTransitions[from] ?? []).includes(to);
+export function canTransitionRun(from: RunState, to: RunState): boolean {
+  return runTransitions[from].includes(to);
 }
 
-export function canTransitionApproval(
-  from: ApprovalState | State,
-  to: ApprovalState | State
-): boolean {
-  return (approvalTransitions[from] ?? []).includes(to);
+export function canTransitionApproval(from: ApprovalState, to: ApprovalState): boolean {
+  return approvalTransitions[from].includes(to);
 }
 
-export function canTransitionToolCall(
-  from: ToolCallState | State,
-  to: ToolCallState | State
-): boolean {
-  return (toolCallTransitions[from] ?? []).includes(to);
+export function canTransitionToolCall(from: ToolCallState, to: ToolCallState): boolean {
+  return toolCallTransitions[from].includes(to);
 }
 
-export function canTransitionSchedule(
-  from: ScheduleState | State,
-  to: ScheduleState | State
-): boolean {
-  return (scheduleTransitions[from] ?? []).includes(to);
+export function canTransitionSchedule(from: ScheduleState, to: ScheduleState): boolean {
+  return scheduleTransitions[from].includes(to);
 }

@@ -20,7 +20,14 @@ describe("run state machine", () => {
   it("prevents terminal runs from resuming", () => {
     expect(canTransitionRun("completed", "queued")).toBe(false);
     expect(canTransitionRun("failed", "running")).toBe(false);
+    expect(canTransitionRun("cancelled", "queued")).toBe(false);
+    expect(canTransitionRun("expired", "running")).toBe(false);
   });
+
+  if (false) {
+    // @ts-expect-error run transitions only accept planned RunState values.
+    canTransitionRun("succeeded", "queued");
+  }
 });
 
 describe("approval state machine", () => {
