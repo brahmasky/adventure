@@ -16,6 +16,8 @@ export interface WriteRunReportResult {
 }
 
 export function writeRunReport(projectRoot: string, input: ReportInput): WriteRunReportResult {
+  validateRunId(input.run_id);
+
   const dir = join(projectRoot, "runs", input.run_id);
   mkdirSync(dir, { recursive: true });
 
@@ -37,4 +39,10 @@ export function writeRunReport(projectRoot: string, input: ReportInput): WriteRu
   writeFileSync(path, content);
 
   return { path, hash: stableHash(content) };
+}
+
+function validateRunId(run_id: string): void {
+  if (run_id === "" || run_id.includes("/") || run_id.includes("\\") || run_id.includes("..")) {
+    throw new Error(`Invalid run_id: ${run_id}`);
+  }
 }

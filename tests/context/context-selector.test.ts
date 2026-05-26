@@ -10,11 +10,15 @@ describe("selectContext", () => {
       contract_hash: "contract_hash"
     });
 
-    expect(pack.included).toEqual([
-      "memory/core/houge.md",
-      "task-contract:contract_hash",
-      "programs/research-brief.md"
-    ]);
-    expect(pack.excluded).toContain("memory/user/paco.md");
+    expect(pack).toEqual({
+      context_pack_id: "ctx_run_1",
+      included: [
+        "memory/core/houge.md",
+        "task-contract:contract_hash",
+        "programs/research-brief.md"
+      ],
+      excluded: ["memory/user/paco.md", "memory-catalog:*"],
+      token_estimate: 1200
+    });
   });
 });
