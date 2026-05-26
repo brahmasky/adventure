@@ -11,7 +11,7 @@ export interface ToolMetadata {
   risk_level: RiskLevel;
   timeout_ms: number;
   output_limit_bytes: number;
-  execute?: (input: unknown) => Promise<ToolAdapterResult> | ToolAdapterResult;
+  execute?: (input: Record<string, unknown>) => Promise<ToolAdapterResult> | ToolAdapterResult;
 }
 
 export class ToolRegistry {
