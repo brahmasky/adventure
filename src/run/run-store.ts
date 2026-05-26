@@ -139,8 +139,12 @@ export class RunStore {
       LIMIT 1
     `).get<RunRow>();
 
-    if (!row?.contract_json) {
+    if (!row) {
       return null;
+    }
+
+    if (!row.contract_json) {
+      throw new Error(`Queued run missing contract: ${row.run_id}`);
     }
 
     const lease_expires_at = new Date(Date.now() + lease_ttl_seconds * 1000).toISOString();

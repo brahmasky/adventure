@@ -139,6 +139,16 @@ describe("RunStore", () => {
     expect(blocked).toBeNull();
   });
 
+  it("claimNext fails loudly when the next queued run has no contract", () => {
+    const run_id = createRun();
+    store.transition(run_id, "created", "contracted", "contract missing");
+    store.transition(run_id, "contracted", "queued", "ready");
+
+    expect(() => store.claimNext("worker-1", 30)).toThrow(
+      `Queued run missing contract: ${run_id}`
+    );
+  });
+
   it("heartbeat extends only owning worker", () => {
     const run_id = createRun();
     store.attachContract(run_id, contract);
@@ -174,5 +184,18 @@ describe("RunStore", () => {
 
     expect(recovered).toEqual([{ run_id, action: "requeued" }]);
     expect(store.getRunState(run_id)).toBe("queued");
+  });
+
+  it("recoverExpiredLeases fails expired running lease when max attempts are exhausted", () => {
+    const run_id = createRun();
+    store.attachContract(run_id, contract);
+    store.transition(run_id, "created", "contracted", "contract attached");
+    store.transition(run_id, "contracted", "queued", "ready");
+    store.claimNext("worker-1", -1);
+
+    const recovered = store.recoverExpiredLeases(new Date().toISOString(), 1);
+
+    expect(recovered).toEqual([{ run_id, action: "failed" }]);
+    expect(store.getRunState(run_id)).toBe("failed");
   });
 });
