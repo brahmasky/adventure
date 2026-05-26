@@ -18,6 +18,8 @@ export interface TypedTaskEventInput {
   type: TaskEventType;
   program: string;
   goal: string;
+  approval_id: string;
+  lesson: string;
   requested_by: Identity;
   notify: NotifyTarget;
   idempotency_key: string;
@@ -55,11 +57,31 @@ export interface CompiledTaskContract {
 }
 
 export function buildTypedTaskEvent(input: TypedTaskEventInput): TypedTaskEvent {
-  const { created_at, source_reference, ...hashable } = input;
+  const {
+    source,
+    type,
+    program,
+    goal,
+    approval_id,
+    lesson,
+    requested_by,
+    notify,
+    idempotency_key
+  } = input;
 
   return {
     ...input,
-    created_at: created_at ?? new Date().toISOString(),
-    payload_hash: stableHash(hashable)
+    created_at: input.created_at ?? new Date().toISOString(),
+    payload_hash: stableHash({
+      source,
+      type,
+      program,
+      goal,
+      approval_id,
+      lesson,
+      requested_by,
+      notify,
+      idempotency_key
+    })
   };
 }

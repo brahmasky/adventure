@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { stableHash } from "../../src/domain/canonical.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 
 describe("buildTypedTaskEvent", () => {
@@ -8,6 +9,8 @@ describe("buildTypedTaskEvent", () => {
       type: "run",
       program: "research-brief",
       goal: "compare gateway patterns",
+      approval_id: "approval-1",
+      lesson: "prefer gateway isolation",
       requested_by: { kind: "user", id: "paco" },
       notify: { kind: "local" },
       idempotency_key: "cli:research-brief:1",
@@ -23,6 +26,8 @@ describe("buildTypedTaskEvent", () => {
       type: "run",
       program: "research-brief",
       goal: "compare gateway patterns",
+      approval_id: "approval-1",
+      lesson: "prefer gateway isolation",
       requested_by: { kind: "user", id: "paco" },
       notify: { kind: "local" },
       idempotency_key: "cli:research-brief:1",
@@ -34,6 +39,8 @@ describe("buildTypedTaskEvent", () => {
       type: "run",
       program: "research-brief",
       goal: "compare gateway patterns",
+      approval_id: "approval-1",
+      lesson: "prefer gateway isolation",
       requested_by: { kind: "user", id: "paco" },
       notify: { kind: "local" },
       idempotency_key: "cli:research-brief:1",
@@ -42,5 +49,90 @@ describe("buildTypedTaskEvent", () => {
     });
 
     expect(retry.payload_hash).toBe(first.payload_hash);
+  });
+
+  it("hashes the explicit task payload fields including approval and lesson", () => {
+    const event = buildTypedTaskEvent({
+      source: "cli",
+      type: "run",
+      program: "research-brief",
+      goal: "compare gateway patterns",
+      approval_id: "approval-1",
+      lesson: "prefer gateway isolation",
+      requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "local" },
+      idempotency_key: "cli:research-brief:1",
+      source_reference: "argv",
+      created_at: "2026-05-25T00:00:00.000Z"
+    });
+
+    expect(event.payload_hash).toBe(stableHash({
+      source: "cli",
+      type: "run",
+      program: "research-brief",
+      goal: "compare gateway patterns",
+      approval_id: "approval-1",
+      lesson: "prefer gateway isolation",
+      requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "local" },
+      idempotency_key: "cli:research-brief:1"
+    }));
+  });
+
+  it("excludes source_reference from the payload hash", () => {
+    const first = buildTypedTaskEvent({
+      source: "cli",
+      type: "run",
+      program: "research-brief",
+      goal: "compare gateway patterns",
+      approval_id: "approval-1",
+      lesson: "prefer gateway isolation",
+      requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "local" },
+      idempotency_key: "cli:research-brief:1",
+      source_reference: "argv"
+    });
+    const retry = buildTypedTaskEvent({
+      source: "cli",
+      type: "run",
+      program: "research-brief",
+      goal: "compare gateway patterns",
+      approval_id: "approval-1",
+      lesson: "prefer gateway isolation",
+      requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "local" },
+      idempotency_key: "cli:research-brief:1",
+      source_reference: "stdin"
+    });
+
+    expect(retry.payload_hash).toBe(first.payload_hash);
+  });
+
+  it("does not hash fields outside the explicit task payload contract", () => {
+    const baseline = buildTypedTaskEvent({
+      source: "cli",
+      type: "run",
+      program: "research-brief",
+      goal: "compare gateway patterns",
+      approval_id: "approval-1",
+      lesson: "prefer gateway isolation",
+      requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "local" },
+      idempotency_key: "cli:research-brief:1"
+    });
+    const withExtraField = buildTypedTaskEvent({
+      source: "cli",
+      type: "run",
+      program: "research-brief",
+      goal: "compare gateway patterns",
+      approval_id: "approval-1",
+      lesson: "prefer gateway isolation",
+      requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "local" },
+      idempotency_key: "cli:research-brief:1",
+      debug_note: "not part of the task payload contract"
+    } as Parameters<typeof buildTypedTaskEvent>[0] & { debug_note: string });
+
+    expect(withExtraField.payload_hash).toBe(baseline.payload_hash);
   });
 });
