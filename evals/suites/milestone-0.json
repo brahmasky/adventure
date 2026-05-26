@@ -1,0 +1,12 @@
+{
+  "name": "milestone-0",
+  "required_fixtures": [
+    "typed-task-event-schema",
+    "run-state-transition-table",
+    "approval-state-transition-table",
+    "tool-call-state-transition-table",
+    "schedule-state-transition-table",
+    "capability-policy-matrix",
+    "run-ledger-envelope"
+  ]
+}

@@ -2,6 +2,7 @@
 
 import { CoreWorker } from "./core/core-worker.js";
 import { Gateway } from "./gateway/gateway.js";
+import { runEvalSuite } from "./eval/eval-runner.js";
 import { getHougeVersion } from "./index.js";
 import { RunStore } from "./run/run-store.js";
 import { parseCliTrigger } from "./triggers/cli-trigger.js";
@@ -40,6 +41,11 @@ if (command === "run") {
   } finally {
     store.close();
   }
+} else if (command === "eval") {
+  const suite = rest[0] ?? "milestone-0";
+  const result = runEvalSuite(process.cwd(), suite);
+  console.log(JSON.stringify(result, null, 2));
+  process.exit(result.passed ? 0 : 1);
 } else {
   console.error(`Unknown command: ${command}`);
   process.exit(1);
