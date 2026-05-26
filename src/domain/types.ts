@@ -16,14 +16,14 @@ export type NotifyTarget =
 export interface TypedTaskEventInput {
   source: TriggerSource;
   type: TaskEventType;
-  program: string;
-  goal: string;
-  approval_id: string;
-  lesson: string;
+  program?: string;
+  goal?: string;
+  approval_id?: string;
+  lesson?: string;
   requested_by: Identity;
   notify: NotifyTarget;
   idempotency_key: string;
-  source_reference?: string;
+  source_reference: string;
   created_at?: string;
 }
 

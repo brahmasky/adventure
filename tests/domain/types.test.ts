@@ -1,6 +1,31 @@
 import { describe, expect, it } from "vitest";
 import { stableHash } from "../../src/domain/canonical.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
+import type { TypedTaskEventInput } from "../../src/domain/types.js";
+
+const minimalTypedTaskEventInput: TypedTaskEventInput = {
+  source: "cli",
+  type: "run",
+  requested_by: { kind: "user", id: "paco" },
+  notify: { kind: "local" },
+  idempotency_key: "cli:research-brief:1",
+  source_reference: "argv"
+};
+void minimalTypedTaskEventInput;
+
+// @ts-expect-error source_reference is required for trigger traceability.
+const missingSourceReferenceInput: TypedTaskEventInput = {
+  source: "cli",
+  type: "run",
+  program: "research-brief",
+  goal: "compare gateway patterns",
+  approval_id: "approval-1",
+  lesson: "prefer gateway isolation",
+  requested_by: { kind: "user", id: "paco" },
+  notify: { kind: "local" },
+  idempotency_key: "cli:research-brief:1"
+};
+void missingSourceReferenceInput;
 
 describe("buildTypedTaskEvent", () => {
   it("includes a payload hash derived from normalized task fields", () => {
@@ -118,7 +143,8 @@ describe("buildTypedTaskEvent", () => {
       lesson: "prefer gateway isolation",
       requested_by: { kind: "user", id: "paco" },
       notify: { kind: "local" },
-      idempotency_key: "cli:research-brief:1"
+      idempotency_key: "cli:research-brief:1",
+      source_reference: "argv"
     });
     const withExtraField = buildTypedTaskEvent({
       source: "cli",
@@ -130,6 +156,7 @@ describe("buildTypedTaskEvent", () => {
       requested_by: { kind: "user", id: "paco" },
       notify: { kind: "local" },
       idempotency_key: "cli:research-brief:1",
+      source_reference: "argv",
       debug_note: "not part of the task payload contract"
     } as Parameters<typeof buildTypedTaskEvent>[0] & { debug_note: string });
 
