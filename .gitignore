@@ -4,3 +4,4 @@
 runs/
 artifacts/
 node_modules/
+.worktrees/
