@@ -1,8 +1,19 @@
 import { stableHash } from "../domain/canonical.js";
 import type { CompiledTaskContract } from "../domain/types.js";
 import { decideCapability } from "../policy/capability-policy.js";
-import type { ToolRegistry } from "../tools/tool-registry.js";
+import type { ToolMetadata, ToolRegistry } from "../tools/tool-registry.js";
 import type { BudgetLedger } from "../budget/budget-ledger.js";
+
+function errorRef(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+
+  try {
+    return JSON.stringify(error) ?? "Unknown capability execution failure";
+  } catch {
+    return "Unknown capability execution failure";
+  }
+}
 
 export type CapabilityResult =
   | { status: "succeeded"; output_ref: string; output_hash: string; output: Record<string, unknown> }
@@ -68,20 +79,30 @@ export class CapabilityRunner {
       };
     }
 
+    return this.executeAdapter(metadata, input);
+  }
+
+  private async executeAdapter(
+    metadata: ToolMetadata,
+    input: CapabilityExecutionInput
+  ): Promise<CapabilityResult> {
     if (!metadata.execute) {
       return { status: "failed", error_ref: `adapter_not_connected:${input.capability}` };
     }
+    try {
+      const adapterResult = await metadata.execute(input.input);
+      if (!adapterResult.ok) {
+        return { status: "failed", error_ref: adapterResult.error };
+      }
 
-    const adapterResult = await metadata.execute(input.input);
-    if (!adapterResult.ok) {
-      return { status: "failed", error_ref: adapterResult.error };
+      return {
+        status: "succeeded",
+        output_ref: `inline:${input.capability}`,
+        output_hash: stableHash(adapterResult.output),
+        output: adapterResult.output
+      };
+    } catch (error) {
+      return { status: "failed", error_ref: errorRef(error) };
     }
-
-    return {
-      status: "succeeded",
-      output_ref: `inline:${input.capability}`,
-      output_hash: stableHash(adapterResult.output),
-      output: adapterResult.output
-    };
   }
 }

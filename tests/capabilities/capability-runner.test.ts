@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { BudgetLedger } from "../../src/budget/budget-ledger.js";
 import { CapabilityRunner } from "../../src/capabilities/capability-runner.js";
+import { stableHash } from "../../src/domain/canonical.js";
 import type { CompiledTaskContract } from "../../src/domain/types.js";
 import { ToolRegistry } from "../../src/tools/tool-registry.js";
 
@@ -17,15 +18,17 @@ const contract: CompiledTaskContract = {
 };
 
 describe("CapabilityRunner", () => {
-  it("returns a structured denial for forbidden capabilities", async () => {
+  it("returns a structured denial for forbidden capabilities without calling the adapter", async () => {
     const registry = new ToolRegistry();
+    const adapter = vi.fn(() => ({ ok: true as const, output: { ignored: true } }));
     registry.register({
       name: "codex_cli",
       category: "coding_agent_cli",
       side_effect_level: "local_write",
       risk_level: "high",
       timeout_ms: 1000,
-      output_limit_bytes: 1000
+      output_limit_bytes: 1000,
+      execute: adapter
     });
 
     const runner = new CapabilityRunner(registry);
@@ -41,5 +44,139 @@ describe("CapabilityRunner", () => {
       reason: "Coding-agent CLI delegation is reserved for V2 containment",
       recovery_hint: "Report the blocked action to the user"
     });
+    expect(adapter).not.toHaveBeenCalled();
+  });
+
+  it("denies budget exhaustion without calling the adapter", async () => {
+    const registry = new ToolRegistry();
+    const adapter = vi.fn(() => ({ ok: true as const, output: { ignored: true } }));
+    registry.register({
+      name: "local_file_read",
+      category: "tool",
+      side_effect_level: "none",
+      risk_level: "low",
+      timeout_ms: 1000,
+      output_limit_bytes: 1000,
+      execute: adapter
+    });
+
+    const runner = new CapabilityRunner(registry);
+    const result = await runner.execute({
+      contract,
+      capability: "local_file_read",
+      input: {},
+      budget: new BudgetLedger({ ...contract.budget, max_tool_calls: 0 })
+    });
+
+    expect(result).toEqual({
+      status: "denied",
+      reason: "Tool-call budget exhausted",
+      recovery_hint: "Write a partial report"
+    });
+    expect(adapter).not.toHaveBeenCalled();
+  });
+
+  it("returns a deterministic Milestone 1 denial for approval-required capabilities", async () => {
+    const registry = new ToolRegistry();
+    registry.register({
+      name: "external_publish",
+      category: "tool",
+      side_effect_level: "external_write",
+      risk_level: "high",
+      timeout_ms: 1000,
+      output_limit_bytes: 1000,
+      execute: () => ({ ok: true, output: { ignored: true } })
+    });
+
+    const runner = new CapabilityRunner(registry);
+    const result = await runner.execute({
+      contract: { ...contract, allowed_actions: ["external_publish"] },
+      capability: "external_publish",
+      input: {},
+      budget: new BudgetLedger(contract.budget)
+    });
+
+    expect(result).toEqual({
+      status: "denied",
+      reason: "Live approval channel is not available in Milestone 1",
+      recovery_hint: "Report the blocked action to the user"
+    });
+  });
+
+  it("returns succeeded output and stable output hash after adapter execution", async () => {
+    const output = { path: "notes/report.md", bytes: 42 };
+    const registry = new ToolRegistry();
+    registry.register({
+      name: "local_file_read",
+      category: "tool",
+      side_effect_level: "none",
+      risk_level: "low",
+      timeout_ms: 1000,
+      output_limit_bytes: 1000,
+      execute: () => ({ ok: true, output })
+    });
+
+    const runner = new CapabilityRunner(registry);
+    const result = await runner.execute({
+      contract,
+      capability: "local_file_read",
+      input: { path: "notes/report.md" },
+      budget: new BudgetLedger(contract.budget)
+    });
+
+    expect(result).toEqual({
+      status: "succeeded",
+      output_ref: "inline:local_file_read",
+      output_hash: stableHash(output),
+      output
+    });
+  });
+
+  it("returns a failed envelope when the adapter throws", async () => {
+    const registry = new ToolRegistry();
+    registry.register({
+      name: "local_file_read",
+      category: "tool",
+      side_effect_level: "none",
+      risk_level: "low",
+      timeout_ms: 1000,
+      output_limit_bytes: 1000,
+      execute: () => {
+        throw new Error("adapter exploded");
+      }
+    });
+
+    const runner = new CapabilityRunner(registry);
+    const result = await runner.execute({
+      contract,
+      capability: "local_file_read",
+      input: {},
+      budget: new BudgetLedger(contract.budget)
+    });
+
+    expect(result).toEqual({ status: "failed", error_ref: "adapter exploded" });
+  });
+
+  it("returns a failed envelope when adapter output cannot be hashed", async () => {
+    const registry = new ToolRegistry();
+    registry.register({
+      name: "local_file_read",
+      category: "tool",
+      side_effect_level: "none",
+      risk_level: "low",
+      timeout_ms: 1000,
+      output_limit_bytes: 1000,
+      execute: () => ({ ok: true, output: { unsupported: new Date("2026-05-26T00:00:00.000Z") } })
+    });
+
+    const runner = new CapabilityRunner(registry);
+    const result = await runner.execute({
+      contract,
+      capability: "local_file_read",
+      input: {},
+      budget: new BudgetLedger(contract.budget)
+    });
+
+    expect(result).toEqual({ status: "failed", error_ref: "unsupported object instance in canonical JSON" });
   });
 });
