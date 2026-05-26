@@ -22,9 +22,8 @@ export class BudgetLedger {
       return { ok: false, reason: "Tool-call budget exhausted", zone: "fuse" };
     }
 
-    const zone = this.zone();
     this.toolCalls += 1;
-    return { ok: true, zone };
+    return { ok: true, zone: this.zone() };
   }
 
   usage(): BudgetUsage {
