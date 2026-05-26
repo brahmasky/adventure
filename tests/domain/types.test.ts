@@ -3,9 +3,18 @@ import { stableHash } from "../../src/domain/canonical.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import type {
   ApprovalState,
+  BudgetSpec,
+  CompiledTaskContract,
+  Identity,
+  NotifyTarget,
+  PolicyDecision,
+  RiskLevel,
   RunState,
   ScheduleState,
+  SideEffectLevel,
+  TaskEventType,
   ToolCallState,
+  TriggerSource,
   TypedTaskEventInput
 } from "../../src/domain/types.js";
 
@@ -14,6 +23,24 @@ type Equal<Actual, Expected> =
   (<Value>() => Value extends Expected ? 1 : 2) ? true : false;
 type Expect<Condition extends true> = Condition;
 
+type TriggerSourceMatchesPlan = Expect<Equal<
+  TriggerSource,
+  "telegram" | "schedule" | "cli" | "event"
+>>;
+type TaskEventTypeMatchesPlan = Expect<Equal<
+  TaskEventType,
+  "ask" | "run" | "approve" | "deny" | "teach" | "status"
+>>;
+type IdentityMatchesPlan = Expect<Equal<
+  Identity,
+  | { kind: "user"; id: string }
+  | { kind: "schedule"; id: string }
+  | { kind: "system"; id: string }
+>>;
+type NotifyTargetMatchesPlan = Expect<Equal<
+  NotifyTarget,
+  { kind: "local" } | { kind: "telegram"; chat_id: string }
+>>;
 type RunStateMatchesPlan = Expect<Equal<
   RunState,
   | "created"
@@ -49,6 +76,37 @@ type ToolCallStateMatchesPlan = Expect<Equal<
 type ScheduleStateMatchesPlan = Expect<Equal<
   ScheduleState,
   "disabled" | "enabled" | "fired" | "enqueued" | "skipped_duplicate" | "failed"
+>>;
+type SideEffectLevelMatchesPlan = Expect<Equal<
+  SideEffectLevel,
+  "none" | "local_write" | "external_read" | "external_write" | "destructive" | "paid"
+>>;
+type RiskLevelMatchesPlan = Expect<Equal<RiskLevel, "low" | "medium" | "high">>;
+type PolicyDecisionMatchesPlan = Expect<Equal<
+  PolicyDecision,
+  "allow" | "deny" | "requires_approval"
+>>;
+type BudgetSpecMatchesPlan = Expect<Equal<
+  BudgetSpec,
+  {
+    time_minutes: number;
+    max_tool_calls: number;
+    max_agent_delegations: number;
+  }
+>>;
+type CompiledTaskContractMatchesPlan = Expect<Equal<
+  CompiledTaskContract,
+  {
+    objective: string;
+    budget: BudgetSpec;
+    allowed_actions: string[];
+    forbidden_actions: string[];
+    output: { path: string; format: "sourced_markdown_report" };
+    approval_gates: string[];
+    stop_condition: string;
+    contract_hash: string;
+    eval_hooks: string[];
+  }
 >>;
 
 const minimalTypedTaskEventInput: TypedTaskEventInput = {

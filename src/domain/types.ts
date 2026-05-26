@@ -1,17 +1,16 @@
 import { stableHash } from "./canonical.js";
 
-export type TriggerSource = "cli" | "api" | "schedule" | "webhook";
-export type TaskEventType = "run" | "cancel" | "resume";
+export type TriggerSource = "telegram" | "schedule" | "cli" | "event";
+export type TaskEventType = "ask" | "run" | "approve" | "deny" | "teach" | "status";
 
 export type Identity =
   | { kind: "user"; id: string }
-  | { kind: "service"; id: string }
-  | { kind: "system" };
+  | { kind: "schedule"; id: string }
+  | { kind: "system"; id: string };
 
 export type NotifyTarget =
   | { kind: "local" }
-  | { kind: "email"; address: string }
-  | { kind: "webhook"; url: string };
+  | { kind: "telegram"; chat_id: string };
 
 export interface TypedTaskEventInput {
   source: TriggerSource;
@@ -64,17 +63,20 @@ export type ScheduleState =
   | "enqueued"
   | "skipped_duplicate"
   | "failed";
-export type SideEffectLevel = "none" | "local" | "external";
+export type SideEffectLevel =
+  | "none"
+  | "local_write"
+  | "external_read"
+  | "external_write"
+  | "destructive"
+  | "paid";
 export type RiskLevel = "low" | "medium" | "high";
-export type PolicyDecision = "allow" | "deny" | "require_approval";
+export type PolicyDecision = "allow" | "deny" | "requires_approval";
 
 export interface BudgetSpec {
-  time_minutes?: number;
-  max_steps?: number;
-  max_tool_calls?: number;
-  max_agent_delegations?: number;
-  max_tokens?: number;
-  timeout_ms?: number;
+  time_minutes: number;
+  max_tool_calls: number;
+  max_agent_delegations: number;
 }
 
 export interface CompiledTaskContract {
@@ -82,16 +84,11 @@ export interface CompiledTaskContract {
   budget: BudgetSpec;
   allowed_actions: string[];
   forbidden_actions: string[];
-  output: { path: string; format: string };
+  output: { path: string; format: "sourced_markdown_report" };
   approval_gates: string[];
   stop_condition: string;
   contract_hash: string;
   eval_hooks: string[];
-  program?: string;
-  goal?: string;
-  side_effect_level?: SideEffectLevel;
-  risk_level?: RiskLevel;
-  policy_decision?: PolicyDecision;
 }
 
 export function buildTypedTaskEvent(input: TypedTaskEventInput): TypedTaskEvent {

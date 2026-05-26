@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import type { CompiledTaskContract } from "../../src/domain/types.js";
-import RunStore from "../../src/run/run-store.js";
+import { RunStore } from "../../src/run/run-store.js";
 
 let store: RunStore;
 
@@ -39,6 +39,16 @@ function createRun(goal = "compare Pi and Hermes"): string {
 
   return created.run_id;
 }
+
+type TestSqliteStatement = {
+  get: <Row>(...values: unknown[]) => Row | undefined;
+  all: <Row>(...values: unknown[]) => Row[];
+  run: (...values: unknown[]) => { changes: number };
+};
+
+type TestSqliteDatabase = {
+  prepare: (sql: string) => TestSqliteStatement;
+};
 
 describe("RunStore", () => {
   beforeEach(() => {
@@ -80,6 +90,36 @@ describe("RunStore", () => {
     });
   });
 
+  it("createOrGet re-reads after a SQLite unique race and returns duplicate", () => {
+    const taskEvent = event("compare Pi and Hermes");
+    const db = (store as unknown as { db: TestSqliteDatabase }).db;
+    const originalPrepare = db.prepare.bind(db);
+
+    db.prepare = (sql: string): TestSqliteStatement => {
+      const statement = originalPrepare(sql);
+      if (!sql.includes("INSERT INTO runs")) {
+        return statement;
+      }
+
+      return {
+        get: statement.get.bind(statement),
+        all: statement.all.bind(statement),
+        run: (...values: unknown[]) => {
+          originalPrepare(sql).run("run_competing", ...values.slice(1));
+          return statement.run(...values);
+        }
+      };
+    };
+
+    try {
+      const duplicate = store.createOrGet(taskEvent);
+
+      expect(duplicate).toEqual({ status: "duplicate", run_id: "run_competing" });
+    } finally {
+      db.prepare = originalPrepare;
+    }
+  });
+
   it("getRunState throws when the run is missing", () => {
     expect(() => store.getRunState("run_missing")).toThrow("Run not found: run_missing");
   });
@@ -87,6 +127,8 @@ describe("RunStore", () => {
   it("worker claims queued run and prevents another worker from claiming it; returned contract_hash is contract_hash", () => {
     const run_id = createRun();
     store.attachContract(run_id, contract);
+    expect(store.getRunState(run_id)).toBe("created");
+    store.transition(run_id, "created", "contracted", "contract attached");
     store.transition(run_id, "contracted", "queued", "ready");
 
     const claim = store.claimNext("worker-1", 30);
@@ -100,6 +142,7 @@ describe("RunStore", () => {
   it("heartbeat extends only owning worker", () => {
     const run_id = createRun();
     store.attachContract(run_id, contract);
+    store.transition(run_id, "created", "contracted", "contract attached");
     store.transition(run_id, "contracted", "queued", "ready");
     store.claimNext("worker-1", 30);
 
@@ -110,6 +153,7 @@ describe("RunStore", () => {
   it("recoverExpiredLeases does not recover an active wall-clock lease", () => {
     const run_id = createRun();
     store.attachContract(run_id, contract);
+    store.transition(run_id, "created", "contracted", "contract attached");
     store.transition(run_id, "contracted", "queued", "ready");
     store.claimNext("worker-1", 60);
 
@@ -122,6 +166,7 @@ describe("RunStore", () => {
   it("recoverExpiredLeases(now, 3) requeues expired running lease when attempts remain and state is queued", () => {
     const run_id = createRun();
     store.attachContract(run_id, contract);
+    store.transition(run_id, "created", "contracted", "contract attached");
     store.transition(run_id, "contracted", "queued", "ready");
     store.claimNext("worker-1", -1);
 

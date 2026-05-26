@@ -53,7 +53,7 @@ interface RunRow {
   created_at: string;
 }
 
-export default class RunStore {
+export class RunStore {
   private constructor(private readonly db: SqliteDatabase) {
     this.migrate();
   }
@@ -71,31 +71,27 @@ export default class RunStore {
   }
 
   createOrGet(event: TypedTaskEvent): CreateOrGetResult {
-    const existing = this.db.prepare(`
-      SELECT run_id, payload_hash
-      FROM runs
-      WHERE source = ? AND idempotency_key = ?
-    `).get<{ run_id: string; payload_hash: string }>(event.source, event.idempotency_key);
-
+    const existing = this.getCreateOrGetExisting(event);
     if (existing) {
-      if (existing.payload_hash !== event.payload_hash) {
-        return {
-          status: "conflict",
-          error: "IDEMPOTENCY_CONFLICT",
-          existing_run_id: existing.run_id
-        };
-      }
-
-      return { status: "duplicate", run_id: existing.run_id };
+      return existing;
     }
 
-    return { status: "created", run_id: this.insertRun(event) };
+    try {
+      return { status: "created", run_id: this.insertRun(event) };
+    } catch (error) {
+      const race = this.getCreateOrGetExisting(event);
+      if (race) {
+        return race;
+      }
+
+      throw error;
+    }
   }
 
   attachContract(run_id: string, contract: CompiledTaskContract): boolean {
     const updated = this.db.prepare(`
       UPDATE runs
-      SET contract_json = ?, state = 'contracted', updated_at = ?
+      SET contract_json = ?, updated_at = ?
       WHERE run_id = ? AND state = 'created'
     `).run(JSON.stringify(contract), new Date().toISOString(), run_id);
 
@@ -195,6 +191,28 @@ export default class RunStore {
 
       return updated.changes === 1 ? [{ run_id: row.run_id, action }] : [];
     });
+  }
+
+  private getCreateOrGetExisting(event: TypedTaskEvent): CreateOrGetResult | null {
+    const existing = this.db.prepare(`
+      SELECT run_id, payload_hash
+      FROM runs
+      WHERE source = ? AND idempotency_key = ?
+    `).get<{ run_id: string; payload_hash: string }>(event.source, event.idempotency_key);
+
+    if (existing) {
+      if (existing.payload_hash !== event.payload_hash) {
+        return {
+          status: "conflict",
+          error: "IDEMPOTENCY_CONFLICT",
+          existing_run_id: existing.run_id
+        };
+      }
+
+      return { status: "duplicate", run_id: existing.run_id };
+    }
+
+    return null;
   }
 
   private insertRun(event: TypedTaskEvent): string {
