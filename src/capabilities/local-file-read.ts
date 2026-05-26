@@ -10,7 +10,13 @@ function escapesRoot(root: string, target: string): boolean {
 }
 
 export function readProjectFile(projectRoot: string, relativePath: string): ProjectFileReadResult {
-  const root = realpathSync(projectRoot);
+  let root: string;
+  try {
+    root = realpathSync(projectRoot);
+  } catch {
+    return { ok: false, error: `Project root not found: ${projectRoot}` };
+  }
+
   const target = resolve(root, relativePath);
 
   if (escapesRoot(root, target)) {
@@ -21,12 +27,22 @@ export function readProjectFile(projectRoot: string, relativePath: string): Proj
     return { ok: false, error: `File not found: ${relativePath}` };
   }
 
-  const canonicalTarget = realpathSync(target);
+  let canonicalTarget: string;
+  try {
+    canonicalTarget = realpathSync(target);
+  } catch {
+    return { ok: false, error: `Failed to read file: ${relativePath}` };
+  }
+
   if (escapesRoot(root, canonicalTarget)) {
     return { ok: false, error: "Path escapes project root" };
   }
 
-  return { ok: true, content: readFileSync(canonicalTarget, "utf8") };
+  try {
+    return { ok: true, content: readFileSync(canonicalTarget, "utf8") };
+  } catch {
+    return { ok: false, error: `Failed to read file: ${relativePath}` };
+  }
 }
 
 export function createLocalFileReadAdapter(
