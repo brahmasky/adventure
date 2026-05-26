@@ -69,19 +69,29 @@ export type RiskLevel = "low" | "medium" | "high";
 export type PolicyDecision = "allow" | "deny" | "require_approval";
 
 export interface BudgetSpec {
+  time_minutes?: number;
   max_steps?: number;
   max_tool_calls?: number;
+  max_agent_delegations?: number;
   max_tokens?: number;
   timeout_ms?: number;
 }
 
 export interface CompiledTaskContract {
-  program: string;
-  goal: string;
-  side_effect_level: SideEffectLevel;
-  risk_level: RiskLevel;
+  objective: string;
   budget: BudgetSpec;
-  policy_decision: PolicyDecision;
+  allowed_actions: string[];
+  forbidden_actions: string[];
+  output: { path: string; format: string };
+  approval_gates: string[];
+  stop_condition: string;
+  contract_hash: string;
+  eval_hooks: string[];
+  program?: string;
+  goal?: string;
+  side_effect_level?: SideEffectLevel;
+  risk_level?: RiskLevel;
+  policy_decision?: PolicyDecision;
 }
 
 export function buildTypedTaskEvent(input: TypedTaskEventInput): TypedTaskEvent {
