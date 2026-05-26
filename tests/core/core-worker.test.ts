@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -92,6 +92,32 @@ describe("CoreWorker", () => {
       expect(result.status).toBe("failed");
       expect(result.error).toContain("EEXIST");
       expect(store.getRunState(intake.run_id)).toBe("failed");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("writes a partial report and marks the run failed when reading project rules fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "houge-core-"));
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      const intake = gateway.intake(event("summarize local project rules", "cli:partial-report"));
+      if (!intake.ok) throw new Error("Expected queued run");
+
+      const worker = new CoreWorker(store, root);
+      const result = await worker.executeRun(intake.run_id, "worker-1");
+
+      expect(result).toEqual({
+        status: "failed",
+        run_id: intake.run_id,
+        error: "failed"
+      });
+      expect(store.getRunState(intake.run_id)).toBe("failed");
+
+      const report = readFileSync(join(root, "runs", intake.run_id, "report.md"), "utf8");
+      expect(report).toContain("Partial report");
+      expect(report).toContain("Capability status: failed");
     } finally {
       store.close();
     }

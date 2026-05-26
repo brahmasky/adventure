@@ -1,8 +1,10 @@
-import { stableHash } from "../domain/canonical.js";
+import { canonicalJson, stableHash } from "../domain/canonical.js";
 import type { CompiledTaskContract } from "../domain/types.js";
 import { decideCapability } from "../policy/capability-policy.js";
-import type { ToolMetadata, ToolRegistry } from "../tools/tool-registry.js";
+import type { ToolAdapterResult, ToolMetadata, ToolRegistry } from "../tools/tool-registry.js";
 import type { BudgetLedger } from "../budget/budget-ledger.js";
+
+type ToolExecute = NonNullable<ToolMetadata["execute"]>;
 
 function errorRef(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -90,9 +92,16 @@ export class CapabilityRunner {
       return { status: "failed", error_ref: `adapter_not_connected:${input.capability}` };
     }
     try {
-      const adapterResult = await metadata.execute(input.input);
+      const adapterResult = await executeWithTimeout(
+        () => (metadata.execute as ToolExecute)(input.input),
+        metadata.timeout_ms
+      );
       if (!adapterResult.ok) {
         return { status: "failed", error_ref: adapterResult.error };
+      }
+
+      if (Buffer.byteLength(canonicalJson(adapterResult.output), "utf8") > metadata.output_limit_bytes) {
+        return { status: "failed", error_ref: "Tool output exceeded limit" };
       }
 
       return {
@@ -102,7 +111,36 @@ export class CapabilityRunner {
         output: adapterResult.output
       };
     } catch (error) {
+      if (error instanceof ToolTimeoutError) {
+        return { status: "timed_out", error_ref: "Tool execution timed out" };
+      }
       return { status: "failed", error_ref: errorRef(error) };
     }
+  }
+}
+
+class ToolTimeoutError extends Error {
+  constructor() {
+    super("Tool execution timed out");
+  }
+}
+
+async function executeWithTimeout(
+  execute: () => ReturnType<ToolExecute>,
+  timeout_ms: number
+): Promise<ToolAdapterResult> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(execute),
+      new Promise<ToolAdapterResult>((_resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new ToolTimeoutError()),
+          timeout_ms
+        );
+      })
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }

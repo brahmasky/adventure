@@ -132,6 +132,61 @@ describe("CapabilityRunner", () => {
     });
   });
 
+  it("returns timed_out when adapter execution exceeds metadata timeout", async () => {
+    const registry = new ToolRegistry();
+    registry.register({
+      name: "local_file_read",
+      category: "tool",
+      side_effect_level: "none",
+      risk_level: "low",
+      timeout_ms: 1,
+      output_limit_bytes: 1000,
+      execute: () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve({ ok: true, output: { late: true } }), 20);
+        })
+    });
+
+    const runner = new CapabilityRunner(registry);
+    const result = await runner.execute({
+      contract,
+      capability: "local_file_read",
+      input: {},
+      budget: new BudgetLedger(contract.budget)
+    });
+
+    expect(result).toEqual({
+      status: "timed_out",
+      error_ref: "Tool execution timed out"
+    });
+  });
+
+  it("returns failed when successful adapter output exceeds metadata limit", async () => {
+    const registry = new ToolRegistry();
+    registry.register({
+      name: "local_file_read",
+      category: "tool",
+      side_effect_level: "none",
+      risk_level: "low",
+      timeout_ms: 1000,
+      output_limit_bytes: 10,
+      execute: () => ({ ok: true, output: { content: "this output is too large" } })
+    });
+
+    const runner = new CapabilityRunner(registry);
+    const result = await runner.execute({
+      contract,
+      capability: "local_file_read",
+      input: {},
+      budget: new BudgetLedger(contract.budget)
+    });
+
+    expect(result).toEqual({
+      status: "failed",
+      error_ref: "Tool output exceeded limit"
+    });
+  });
+
   it("returns a failed envelope when the adapter throws", async () => {
     const registry = new ToolRegistry();
     registry.register({

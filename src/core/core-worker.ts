@@ -55,8 +55,7 @@ export class CoreWorker {
     });
 
     if (result.status !== "succeeded") {
-      this.markFailed(claim.run_id, "running", result.status);
-      return { status: "failed", run_id: claim.run_id, error: result.status };
+      return this.failWithPartialReport(claim, result.status);
     }
 
     const content = typeof result.output.content === "string" ? result.output.content : "";
@@ -110,5 +109,27 @@ export class CoreWorker {
 
   private markFailed(run_id: string, expected: "running" | "reporting", reason: string): void {
     this.runStore.transition(run_id, expected, "failed", reason);
+  }
+
+  private failWithPartialReport(claim: ClaimedRun, reason: string): CoreWorkerResult {
+    try {
+      writeRunReport(this.projectRoot, {
+        run_id: claim.run_id,
+        title: "Partial report",
+        body: [
+          `Objective: ${claim.contract.objective}`,
+          "",
+          `Capability status: ${reason}`
+        ].join("\n"),
+        sources: [],
+        partial: true
+      });
+    } catch {
+      this.markFailed(claim.run_id, "running", reason);
+      return { status: "failed", run_id: claim.run_id, error: reason };
+    }
+
+    this.markFailed(claim.run_id, "running", reason);
+    return { status: "failed", run_id: claim.run_id, error: reason };
   }
 }
