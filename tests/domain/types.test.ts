@@ -194,7 +194,9 @@ describe("buildTypedTaskEvent", () => {
       notify: { kind: "local" },
       idempotency_key: "cli:research-brief:1",
       source_reference: "argv",
-      created_at: "2026-05-25T00:00:00.000Z"
+      created_at: "2026-05-25T00:00:00.000Z",
+      metadata: { source: "local" },
+      payload: { topic: "local run smoke" }
     });
 
     expect(event.payload_hash).toBe(stableHash({
@@ -206,8 +208,37 @@ describe("buildTypedTaskEvent", () => {
       lesson: "prefer gateway isolation",
       requested_by: { kind: "user", id: "paco" },
       notify: { kind: "local" },
-      idempotency_key: "cli:research-brief:1"
+      idempotency_key: "cli:research-brief:1",
+      metadata: { source: "local" },
+      payload: { topic: "local run smoke" }
     }));
+  });
+
+  it("includes structured payload in the hash for idempotency conflict detection", () => {
+    const first = buildTypedTaskEvent({
+      source: "cli",
+      type: "run",
+      program: "research-brief",
+      goal: "compare gateway patterns",
+      requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "local" },
+      idempotency_key: "cli:research-brief:1",
+      source_reference: "argv",
+      payload: { topic: "alpha" }
+    });
+    const second = buildTypedTaskEvent({
+      source: "cli",
+      type: "run",
+      program: "research-brief",
+      goal: "compare gateway patterns",
+      requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "local" },
+      idempotency_key: "cli:research-brief:1",
+      source_reference: "argv",
+      payload: { topic: "beta" }
+    });
+
+    expect(second.payload_hash).not.toBe(first.payload_hash);
   });
 
   it("excludes source_reference from the payload hash", () => {

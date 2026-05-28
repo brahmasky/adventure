@@ -1,5 +1,5 @@
 import { buildTypedTaskEvent } from "../domain/types.js";
-import type { TypedTaskEvent } from "../domain/types.js";
+import type { TypedTaskEvent, TypedTaskEventInput } from "../domain/types.js";
 
 export type CliTriggerResult =
   | { ok: true; event: TypedTaskEvent }
@@ -29,23 +29,34 @@ export function parseCliTrigger(args: string[]): CliTriggerResult {
     return invalid("Goal is required");
   }
 
+  const input: TypedTaskEventInput = {
+    source: "cli",
+    type: "run",
+    program,
+    goal: parsed.goal,
+    requested_by: { kind: "user", id: "paco" },
+    notify: { kind: "local" },
+    idempotency_key: parsed.idempotency_key ?? `cli:${program}:${parsed.goal}`,
+    source_reference: parsed.source_reference ?? `argv:${args.join(" ")}`
+  };
+  if (parsed.metadata) input.metadata = parsed.metadata;
+  if (parsed.payload !== undefined) input.payload = parsed.payload;
+
   return {
     ok: true,
-    event: buildTypedTaskEvent({
-      source: "cli",
-      type: "run",
-      program,
-      goal: parsed.goal,
-      requested_by: { kind: "user", id: "paco" },
-      notify: { kind: "local" },
-      idempotency_key: parsed.idempotency_key ?? `cli:${program}:${parsed.goal}`,
-      source_reference: parsed.source_reference ?? `argv:${args.join(" ")}`
-    })
+    event: buildTypedTaskEvent(input)
   };
 }
 
 type ParsedRunGoal =
-  | { ok: true; goal: string; idempotency_key?: string; source_reference?: string }
+  | {
+      ok: true;
+      goal: string;
+      idempotency_key?: string;
+      source_reference?: string;
+      metadata?: Record<string, unknown>;
+      payload?: unknown;
+    }
   | { ok: false; error: { code: "CLI_TRIGGER_INVALID"; message: string } };
 
 function invalidRunGoal(message: string): ParsedRunGoal {
@@ -90,8 +101,10 @@ function parseRunGoal(program: string, parts: string[]): ParsedRunGoal {
   const parsed: ParsedRunGoal = {
     ok: true,
     goal: objective ?? "",
-    source_reference: `argv:run ${program};source:${source}${payloadReference}`
+    source_reference: `argv:run ${program};source:${source}${payloadReference}`,
+    metadata: { source }
   };
   if (idempotencyKey) parsed.idempotency_key = idempotencyKey;
+  if (payload !== undefined) parsed.payload = payload;
   return parsed;
 }

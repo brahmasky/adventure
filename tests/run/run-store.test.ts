@@ -120,6 +120,35 @@ describe("RunStore", () => {
     }
   });
 
+  it("rolls back run creation when the required creation ledger append fails", () => {
+    const taskEvent = event("compare Pi and Hermes");
+    const db = (store as unknown as { db: TestSqliteDatabase }).db;
+    const originalPrepare = db.prepare.bind(db);
+
+    db.prepare = (sql: string): TestSqliteStatement => {
+      const statement = originalPrepare(sql);
+      if (!sql.includes("INSERT INTO ledger_events")) {
+        return statement;
+      }
+
+      return {
+        get: statement.get.bind(statement),
+        all: statement.all.bind(statement),
+        run: () => {
+          throw new Error("ledger write failed");
+        }
+      };
+    };
+
+    try {
+      expect(() => store.createOrGet(taskEvent)).toThrow("ledger write failed");
+    } finally {
+      db.prepare = originalPrepare;
+    }
+
+    expect(store.createOrGet(taskEvent).status).toBe("created");
+  });
+
   it("getRunState throws when the run is missing", () => {
     expect(() => store.getRunState("run_missing")).toThrow("Run not found: run_missing");
   });

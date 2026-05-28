@@ -19,6 +19,8 @@ export interface TypedTaskEventInput {
   goal?: string;
   approval_id?: string;
   lesson?: string;
+  metadata?: Record<string, unknown>;
+  payload?: unknown;
   requested_by: Identity;
   notify: NotifyTarget;
   idempotency_key: string;
@@ -99,6 +101,8 @@ export function buildTypedTaskEvent(input: TypedTaskEventInput): TypedTaskEvent 
     goal,
     approval_id,
     lesson,
+    metadata,
+    payload,
     requested_by,
     notify,
     idempotency_key
@@ -114,6 +118,8 @@ export function buildTypedTaskEvent(input: TypedTaskEventInput): TypedTaskEvent 
       goal,
       approval_id,
       lesson,
+      metadata,
+      payload,
       requested_by,
       notify,
       idempotency_key

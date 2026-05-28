@@ -87,16 +87,7 @@ export class RunStore {
       return existing;
     }
 
-    try {
-      return { status: "created", run_id: this.insertRun(event) };
-    } catch (error) {
-      const race = this.getCreateOrGetExisting(event);
-      if (race) {
-        return race;
-      }
-
-      throw error;
-    }
+    return this.insertRun(event);
   }
 
   attachContract(run_id: string, contract: CompiledTaskContract): boolean {
@@ -366,8 +357,46 @@ export class RunStore {
     return null;
   }
 
-  private insertRun(event: TypedTaskEvent): string {
+  private insertRun(event: TypedTaskEvent): CreateOrGetResult {
     const run_id = `run_${randomUUID()}`;
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      try {
+        this.insertRunRow(run_id, event);
+      } catch (error) {
+        const race = isUniqueConstraintError(error) ? this.getCreateOrGetExisting(event) : null;
+        if (race) {
+          this.db.exec("COMMIT");
+          activeTransaction = false;
+          return race;
+        }
+
+        throw error;
+      }
+
+      this.appendRunLedgerEvent(run_id, "run_created", "gateway", {
+        source: event.source,
+        idempotency_key: event.idempotency_key,
+        program: event.program ?? "",
+        goal_hash: event.payload_hash,
+        requester: event.requested_by
+      });
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+      return { status: "created", run_id };
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
+  }
+
+  private insertRunRow(run_id: string, event: TypedTaskEvent): void {
     this.db.prepare(`
       INSERT INTO runs (
         run_id,
@@ -402,16 +431,6 @@ export class RunStore {
       event.created_at,
       event.created_at
     );
-
-    this.appendRunLedgerEvent(run_id, "run_created", "gateway", {
-      source: event.source,
-      idempotency_key: event.idempotency_key,
-      program: event.program ?? "",
-      goal_hash: event.payload_hash,
-      requester: event.requested_by
-    });
-
-    return run_id;
   }
 
   private getRun(run_id: string): RunRow | undefined {
@@ -519,4 +538,10 @@ function shouldClearLeaseOnTransition(expected: RunState, next: RunState): boole
     (expected === "running" &&
       (next === "waiting_for_approval" || next === "reconciliation_required"))
   );
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+
+  return error.message.includes("UNIQUE constraint failed");
 }

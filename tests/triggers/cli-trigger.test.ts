@@ -32,6 +32,8 @@ describe("parseCliTrigger", () => {
       expect(result.event.goal).toBe("Review local run engine smoke path");
       expect(result.event.idempotency_key).toBe("review-smoke");
       expect(result.event.source).toBe("cli");
+      expect(result.event.metadata).toEqual({ source: "local" });
+      expect(result.event.payload).toEqual({ topic: "local run smoke" });
       expect(result.event.source_reference).toContain("source:local");
     }
   });

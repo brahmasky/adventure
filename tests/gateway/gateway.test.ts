@@ -72,6 +72,45 @@ describe("Gateway", () => {
     }
   });
 
+  it("rejects the same idempotency key when only structured payload differs", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      const first = buildTypedTaskEvent({
+        source: "cli",
+        type: "run",
+        program: "research-brief",
+        goal: "compare gateway designs",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "local" },
+        idempotency_key: "cli:payload-conflict",
+        source_reference: "argv",
+        payload: { topic: "alpha" }
+      });
+      const second = buildTypedTaskEvent({
+        source: "cli",
+        type: "run",
+        program: "research-brief",
+        goal: "compare gateway designs",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "local" },
+        idempotency_key: "cli:payload-conflict",
+        source_reference: "argv",
+        payload: { topic: "beta" }
+      });
+
+      gateway.intake(first);
+      const conflict = gateway.intake(second);
+
+      expect(conflict.ok).toBe(false);
+      if (!conflict.ok) {
+        expect(conflict.error.code).toBe("IDEMPOTENCY_CONFLICT");
+      }
+    } finally {
+      store.close();
+    }
+  });
+
   it("does not persist invalid task contracts as duplicate successes", () => {
     const store = RunStore.openInMemory();
     try {
