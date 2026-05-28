@@ -1,5 +1,6 @@
 import { BudgetLedger } from "../budget/budget-ledger.js";
 import { CapabilityRunner } from "../capabilities/capability-runner.js";
+import type { CapabilityResult } from "../capabilities/capability-runner.js";
 import { createLocalFileReadAdapter } from "../capabilities/local-file-read.js";
 import { writeRunReport } from "../report/report-writer.js";
 import { RunStore } from "../run/run-store.js";
@@ -55,7 +56,7 @@ export class CoreWorker {
     });
 
     if (result.status !== "succeeded") {
-      return this.failWithPartialReport(claim, result.status);
+      return this.failWithPartialReport(claim, result);
     }
 
     const content = typeof result.output.content === "string" ? result.output.content : "";
@@ -111,7 +112,8 @@ export class CoreWorker {
     this.runStore.transition(run_id, expected, "failed", reason);
   }
 
-  private failWithPartialReport(claim: ClaimedRun, reason: string): CoreWorkerResult {
+  private failWithPartialReport(claim: ClaimedRun, result: Exclude<CapabilityResult, { status: "succeeded" }>): CoreWorkerResult {
+    const detail = capabilityFailureDetail(result);
     try {
       writeRunReport(this.projectRoot, {
         run_id: claim.run_id,
@@ -119,17 +121,34 @@ export class CoreWorker {
         body: [
           `Objective: ${claim.contract.objective}`,
           "",
-          `Capability status: ${reason}`
+          `Capability status: ${result.status}`,
+          `Error: ${detail}`
         ].join("\n"),
         sources: [],
         partial: true
       });
     } catch {
-      this.markFailed(claim.run_id, "running", reason);
-      return { status: "failed", run_id: claim.run_id, error: reason };
+      this.markFailed(claim.run_id, "running", detail);
+      return { status: "failed", run_id: claim.run_id, error: detail };
     }
 
-    this.markFailed(claim.run_id, "running", reason);
-    return { status: "failed", run_id: claim.run_id, error: reason };
+    this.markFailed(claim.run_id, "running", detail);
+    return { status: "failed", run_id: claim.run_id, error: detail };
+  }
+}
+
+function capabilityFailureDetail(result: Exclude<CapabilityResult, { status: "succeeded" }>): string {
+  switch (result.status) {
+    case "denied":
+    case "denied_on_revalidation":
+      return result.recovery_hint ? `${result.reason}; ${result.recovery_hint}` : result.reason;
+    case "failed":
+    case "timed_out":
+    case "cancelled":
+      return result.error_ref;
+    case "requires_approval":
+      return `Approval required: ${result.approval_id}`;
+    case "uncertain_outcome":
+      return `Reconciliation required: ${result.reconciliation_ref}`;
   }
 }

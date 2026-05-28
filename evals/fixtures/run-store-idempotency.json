@@ -1,1 +1,4 @@
-{}
+{
+  "name": "run-store-idempotency",
+  "checks": ["same idempotency key and payload dedupe while different payloads conflict"]
+}

@@ -1,1 +1,4 @@
-{}
+{
+  "name": "budget-fuse",
+  "checks": ["tool-call reservations fail when the configured cap is exhausted"]
+}

@@ -1,1 +1,4 @@
-{}
+{
+  "name": "schedule-state-transition-table",
+  "checks": ["fired schedules can enqueue or skip duplicates"]
+}

@@ -6,6 +6,11 @@ export interface EvalSuiteFile {
   required_fixtures: string[];
 }
 
+export interface EvalFixtureFile {
+  name: string;
+  checks: string[];
+}
+
 export interface EvalResult {
   suite: string;
   passed: boolean;
@@ -18,7 +23,12 @@ export function runEvalSuite(projectRoot: string, suite: string): EvalResult {
   const fixturesDir = join(projectRoot, "evals", "fixtures");
   const failed = data.required_fixtures.filter((name) => {
     const fixtureName = name.trim();
-    return fixtureName.length === 0 || !existsSync(join(fixturesDir, `${fixtureName}.json`));
+    if (fixtureName.length === 0) return true;
+    const fixturePath = join(fixturesDir, `${fixtureName}.json`);
+    if (!existsSync(fixturePath)) return true;
+
+    const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as Partial<EvalFixtureFile>;
+    return fixture.name !== fixtureName || !Array.isArray(fixture.checks) || fixture.checks.length === 0;
   });
   return { suite: data.name, passed: failed.length === 0, failed };
 }

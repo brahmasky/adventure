@@ -20,7 +20,7 @@ describe("runEvalSuite", () => {
     });
   });
 
-  it("passes when all required fixture files are present", () => {
+  it("passes when all required fixture files include checks", () => {
     const root = mkdtempSync(join(tmpdir(), "houge-eval-"));
     mkdirSync(join(root, "evals", "suites"), { recursive: true });
     mkdirSync(join(root, "evals", "fixtures"), { recursive: true });
@@ -28,12 +28,38 @@ describe("runEvalSuite", () => {
       join(root, "evals", "suites", "milestone-0.json"),
       JSON.stringify({ name: "milestone-0", required_fixtures: ["run-state-transition-table"] })
     );
-    writeFileSync(join(root, "evals", "fixtures", "run-state-transition-table.json"), "{}");
+    writeFileSync(
+      join(root, "evals", "fixtures", "run-state-transition-table.json"),
+      JSON.stringify({
+        name: "run-state-transition-table",
+        checks: ["waiting_for_approval requeues through queued"]
+      })
+    );
 
     expect(runEvalSuite(root, "milestone-0")).toEqual({
       suite: "milestone-0",
       passed: true,
       failed: []
+    });
+  });
+
+  it("fails when a required fixture has no checks", () => {
+    const root = mkdtempSync(join(tmpdir(), "houge-eval-"));
+    mkdirSync(join(root, "evals", "suites"), { recursive: true });
+    mkdirSync(join(root, "evals", "fixtures"), { recursive: true });
+    writeFileSync(
+      join(root, "evals", "suites", "milestone-1.json"),
+      JSON.stringify({ name: "milestone-1", required_fixtures: ["local-cli-run"] })
+    );
+    writeFileSync(
+      join(root, "evals", "fixtures", "local-cli-run.json"),
+      JSON.stringify({ name: "local-cli-run", checks: [] })
+    );
+
+    expect(runEvalSuite(root, "milestone-1")).toEqual({
+      suite: "milestone-1",
+      passed: false,
+      failed: ["local-cli-run"]
     });
   });
 });

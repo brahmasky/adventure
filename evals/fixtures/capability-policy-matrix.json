@@ -1,1 +1,4 @@
-{}
+{
+  "name": "capability-policy-matrix",
+  "checks": ["read-only allowed actions pass and gated side effects require approval"]
+}

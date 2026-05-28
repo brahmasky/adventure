@@ -1,1 +1,4 @@
-{}
+{
+  "name": "tool-call-state-transition-table",
+  "checks": ["tool calls model approval waits and revalidation denial"]
+}

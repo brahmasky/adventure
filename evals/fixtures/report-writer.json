@@ -1,1 +1,4 @@
-{}
+{
+  "name": "report-writer",
+  "checks": ["reports are written under runs/<run-id>/report.md with sources"]
+}

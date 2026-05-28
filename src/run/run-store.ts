@@ -5,6 +5,11 @@ import type {
   RunState,
   TypedTaskEvent
 } from "../domain/types.js";
+import {
+  appendLedgerEvent,
+  readLedgerEvents,
+  type LedgerEvent
+} from "./run-ledger.js";
 import { canTransitionRun } from "./state-machines.js";
 
 type SqliteValue = string | number | bigint | null;
@@ -112,11 +117,21 @@ export class RunStore {
       throw new Error(`Invalid run transition: ${expected} -> ${next}`);
     }
 
-    const updated = this.db.prepare(`
-      UPDATE runs
-      SET state = ?, state_reason = ?, updated_at = ?
-      WHERE run_id = ? AND state = ?
-    `).run(next, reason, new Date().toISOString(), run_id, expected);
+    const updated = isTerminalRunState(next)
+      ? this.db.prepare(`
+        UPDATE runs
+        SET state = ?,
+            state_reason = ?,
+            updated_at = ?,
+            worker_id = NULL,
+            lease_expires_at = NULL
+        WHERE run_id = ? AND state = ?
+      `).run(next, reason, new Date().toISOString(), run_id, expected)
+      : this.db.prepare(`
+        UPDATE runs
+        SET state = ?, state_reason = ?, updated_at = ?
+        WHERE run_id = ? AND state = ?
+      `).run(next, reason, new Date().toISOString(), run_id, expected);
 
     return updated.changes === 1;
   }
@@ -128,6 +143,27 @@ export class RunStore {
     }
 
     return row.state;
+  }
+
+  getRunLease(run_id: string): { worker_id: string | null; lease_expires_at: string | null } {
+    const row = this.db.prepare(`
+      SELECT worker_id, lease_expires_at
+      FROM runs
+      WHERE run_id = ?
+    `).get<{ worker_id: string | null; lease_expires_at: string | null }>(run_id);
+    if (!row) {
+      throw new Error(`Run not found: ${run_id}`);
+    }
+
+    return row;
+  }
+
+  appendLedgerEvent(event: LedgerEvent): void {
+    appendLedgerEvent(this.db, event);
+  }
+
+  getLedgerEvents(run_id?: string): LedgerEvent[] {
+    return readLedgerEvents(this.db, run_id);
   }
 
   claimNext(worker_id: string, lease_ttl_seconds: number): ClaimedRun | null {
@@ -318,5 +354,21 @@ export class RunStore {
         UNIQUE(source, idempotency_key)
       )
     `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS ledger_events (
+        event_id TEXT PRIMARY KEY,
+        run_id TEXT,
+        correlation_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        sequence INTEGER NOT NULL,
+        payload_json TEXT NOT NULL
+      )
+    `);
   }
+}
+
+function isTerminalRunState(state: RunState): boolean {
+  return state === "completed" || state === "failed" || state === "cancelled" || state === "expired";
 }

@@ -198,4 +198,21 @@ describe("RunStore", () => {
     expect(recovered).toEqual([{ run_id, action: "failed" }]);
     expect(store.getRunState(run_id)).toBe("failed");
   });
+
+  it("clears worker lease fields when a run reaches a terminal state", () => {
+    const run_id = createRun();
+    store.attachContract(run_id, contract);
+    store.transition(run_id, "created", "contracted", "contract attached");
+    store.transition(run_id, "contracted", "queued", "ready");
+    const claim = store.claimNext("worker-1", 60);
+    if (!claim) throw new Error("expected claim");
+
+    store.transition(run_id, "running", "reporting", "report ready");
+    store.transition(run_id, "reporting", "completed", "report written");
+
+    expect(store.getRunLease(run_id)).toEqual({
+      worker_id: null,
+      lease_expires_at: null
+    });
+  });
 });

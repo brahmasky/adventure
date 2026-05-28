@@ -111,13 +111,14 @@ describe("CoreWorker", () => {
       expect(result).toEqual({
         status: "failed",
         run_id: intake.run_id,
-        error: "failed"
+        error: "File not found: AGENTS.md"
       });
       expect(store.getRunState(intake.run_id)).toBe("failed");
 
       const report = readFileSync(join(root, "runs", intake.run_id, "report.md"), "utf8");
       expect(report).toContain("Partial report");
       expect(report).toContain("Capability status: failed");
+      expect(report).toContain("Error: File not found: AGENTS.md");
     } finally {
       store.close();
     }

@@ -49,6 +49,15 @@ export interface LedgerEvent {
   payload: Record<string, unknown>;
 }
 
+interface LedgerStatement {
+  all<T = Record<string, unknown>>(...values: Array<string | number | null>): T[];
+  run(...values: Array<string | number | null>): { changes: number };
+}
+
+export interface LedgerDatabase {
+  prepare(sql: string): LedgerStatement;
+}
+
 const requiredPayloadFields = {
   trigger_received: ["source", "source_reference", "requester", "idempotency_key", "payload_hash"],
   idempotency_conflict: [
@@ -137,4 +146,78 @@ export function validateLedgerEvent(
   }
 
   return { ok: true };
+}
+
+export function appendLedgerEvent(db: LedgerDatabase, event: LedgerEvent): void {
+  const validation = validateLedgerEvent(event);
+  if (!validation.ok) {
+    throw new Error(validation.error);
+  }
+
+  db.prepare(`
+    INSERT INTO ledger_events (
+      event_id,
+      run_id,
+      correlation_id,
+      event_type,
+      occurred_at,
+      actor,
+      sequence,
+      payload_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    event.event_id,
+    event.run_id ?? null,
+    event.correlation_id,
+    event.event_type,
+    event.occurred_at,
+    event.actor,
+    event.sequence,
+    JSON.stringify(event.payload)
+  );
+}
+
+export function readLedgerEvents(db: LedgerDatabase, run_id?: string): LedgerEvent[] {
+  const sql = run_id
+    ? `
+      SELECT event_id, run_id, correlation_id, event_type, occurred_at, actor, sequence, payload_json
+      FROM ledger_events
+      WHERE run_id = ?
+      ORDER BY sequence ASC, occurred_at ASC, event_id ASC
+    `
+    : `
+      SELECT event_id, run_id, correlation_id, event_type, occurred_at, actor, sequence, payload_json
+      FROM ledger_events
+      ORDER BY sequence ASC, occurred_at ASC, event_id ASC
+    `;
+  const rows = run_id
+    ? db.prepare(sql).all<LedgerEventRow>(run_id)
+    : db.prepare(sql).all<LedgerEventRow>();
+
+  return rows.map((row) => {
+    const event: LedgerEvent = {
+      event_id: row.event_id,
+      correlation_id: row.correlation_id,
+      event_type: row.event_type as LedgerEventType,
+      occurred_at: row.occurred_at,
+      actor: row.actor as LedgerActor,
+      sequence: row.sequence,
+      payload: JSON.parse(row.payload_json) as Record<string, unknown>
+    };
+    if (row.run_id !== null) {
+      event.run_id = row.run_id;
+    }
+    return event;
+  });
+}
+
+interface LedgerEventRow {
+  event_id: string;
+  run_id: string | null;
+  correlation_id: string;
+  event_type: string;
+  occurred_at: string;
+  actor: string;
+  sequence: number;
+  payload_json: string;
 }
