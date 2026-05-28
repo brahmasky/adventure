@@ -37,6 +37,7 @@ export class CoreWorker {
   }
 
   private async executeClaim(claim: ClaimedRun): Promise<CoreWorkerResult> {
+    const startedAt = Date.now();
     const registry = new ToolRegistry();
     registry.register({
       name: "local_file_read",
@@ -82,6 +83,8 @@ export class CoreWorker {
       return { status: "failed", run_id: claim.run_id, error: message };
     }
 
+    this.runStore.recordReportWritten(claim.run_id, report.path, report.hash, false);
+
     if (!this.runStore.transition(claim.run_id, "running", "reporting", "report written")) {
       this.markFailed(claim.run_id, "running", "failed to enter reporting");
       return {
@@ -100,6 +103,8 @@ export class CoreWorker {
       };
     }
 
+    this.runStore.recordRunCompleted(claim.run_id, report.path, Date.now() - startedAt);
+
     return {
       status: "completed",
       run_id: claim.run_id,
@@ -109,13 +114,15 @@ export class CoreWorker {
   }
 
   private markFailed(run_id: string, expected: "running" | "reporting", reason: string): void {
-    this.runStore.transition(run_id, expected, "failed", reason);
+    if (this.runStore.transition(run_id, expected, "failed", reason)) {
+      this.runStore.recordRunFailed(run_id, reason, false);
+    }
   }
 
   private failWithPartialReport(claim: ClaimedRun, result: Exclude<CapabilityResult, { status: "succeeded" }>): CoreWorkerResult {
     const detail = capabilityFailureDetail(result);
     try {
-      writeRunReport(this.projectRoot, {
+      const report = writeRunReport(this.projectRoot, {
         run_id: claim.run_id,
         title: "Partial report",
         body: [
@@ -127,6 +134,7 @@ export class CoreWorker {
         sources: [],
         partial: true
       });
+      this.runStore.recordReportWritten(claim.run_id, report.path, report.hash, true);
     } catch {
       this.markFailed(claim.run_id, "running", detail);
       return { status: "failed", run_id: claim.run_id, error: detail };

@@ -34,6 +34,16 @@ describe("CoreWorker", () => {
 
       expect(result.status).toBe("completed");
       expect(result.report_path).toContain("report.md");
+      if (result.status === "completed") {
+        expect(store.getLedgerEvents(result.run_id).map((event) => event.event_type)).toEqual([
+          "run_created",
+          "contract_attached",
+          "worker_lease_acquired",
+          "report_written",
+          "worker_lease_released",
+          "run_completed"
+        ]);
+      }
     } finally {
       store.close();
     }

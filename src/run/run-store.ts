@@ -7,8 +7,11 @@ import type {
 } from "../domain/types.js";
 import {
   appendLedgerEvent,
+  createLedgerEvent,
   readLedgerEvents,
-  type LedgerEvent
+  type LedgerActor,
+  type LedgerEvent,
+  type LedgerEventType
 } from "./run-ledger.js";
 import { canTransitionRun } from "./state-machines.js";
 
@@ -56,10 +59,13 @@ interface RunRow {
   contract_json: string | null;
   attempt_count: number;
   created_at: string;
+  worker_id: string | null;
+  lease_expires_at: string | null;
 }
 
 export class RunStore {
   private constructor(private readonly db: SqliteDatabase) {
+    this.db.exec("PRAGMA busy_timeout = 5000");
     this.migrate();
   }
 
@@ -100,6 +106,16 @@ export class RunStore {
       WHERE run_id = ? AND state = 'created'
     `).run(JSON.stringify(contract), new Date().toISOString(), run_id);
 
+    if (updated.changes === 1) {
+      this.appendRunLedgerEvent(run_id, "contract_attached", "gateway", {
+        contract_hash: contract.contract_hash,
+        program: this.getRunProgram(run_id) ?? "",
+        budget: contract.budget,
+        allowed_actions: contract.allowed_actions,
+        approval_gates: contract.approval_gates
+      });
+    }
+
     return updated.changes === 1;
   }
 
@@ -117,7 +133,8 @@ export class RunStore {
       throw new Error(`Invalid run transition: ${expected} -> ${next}`);
     }
 
-    const updated = isTerminalRunState(next)
+    const shouldClearLease = shouldClearLeaseOnTransition(expected, next);
+    const updated = shouldClearLease
       ? this.db.prepare(`
         UPDATE runs
         SET state = ?,
@@ -129,9 +146,16 @@ export class RunStore {
       `).run(next, reason, new Date().toISOString(), run_id, expected)
       : this.db.prepare(`
         UPDATE runs
-        SET state = ?, state_reason = ?, updated_at = ?
-        WHERE run_id = ? AND state = ?
-      `).run(next, reason, new Date().toISOString(), run_id, expected);
+      SET state = ?, state_reason = ?, updated_at = ?
+      WHERE run_id = ? AND state = ?
+    `).run(next, reason, new Date().toISOString(), run_id, expected);
+
+    if (updated.changes === 1 && shouldClearLease && row.worker_id) {
+      this.appendRunLedgerEvent(run_id, "worker_lease_released", "core", {
+        worker_id: row.worker_id,
+        reason
+      });
+    }
 
     return updated.changes === 1;
   }
@@ -166,9 +190,50 @@ export class RunStore {
     return readLedgerEvents(this.db, run_id);
   }
 
+  recordReportWritten(run_id: string, report_ref: string, report_hash: string, partial: boolean): void {
+    this.appendRunLedgerEvent(run_id, "report_written", "core", {
+      report_ref,
+      report_hash,
+      partial
+    });
+  }
+
+  recordRunCompleted(run_id: string, report_ref: string, duration_ms: number): void {
+    this.appendRunLedgerEvent(run_id, "run_completed", "core", {
+      report_ref,
+      budget_used: { tool_calls: 1 },
+      duration_ms
+    });
+  }
+
+  recordRunFailed(run_id: string, error_ref: string, recoverable: boolean): void {
+    this.appendRunLedgerEvent(run_id, "run_failed", "core", {
+      error_type: "worker_error",
+      error_ref,
+      recoverable
+    });
+  }
+
+  recordEvalCompleted(eval_suite: string, passed: boolean, failed_case_ids: string[]): void {
+    this.appendLedgerEvent(
+      createLedgerEvent({
+        correlation_id: `eval:${eval_suite}`,
+        event_type: "eval_completed",
+        actor: "system",
+        sequence: this.nextLedgerSequence(),
+        payload: {
+          eval_suite,
+          passed,
+          failed_case_ids,
+          report_ref: `evals/suites/${eval_suite}.json`
+        }
+      })
+    );
+  }
+
   claimNext(worker_id: string, lease_ttl_seconds: number): ClaimedRun | null {
     const row = this.db.prepare(`
-      SELECT run_id, state, contract_json, attempt_count, created_at
+      SELECT run_id, state, contract_json, attempt_count, created_at, worker_id, lease_expires_at
       FROM runs
       WHERE state = 'queued'
       ORDER BY created_at ASC
@@ -184,7 +249,7 @@ export class RunStore {
 
   claimRun(run_id: string, worker_id: string, lease_ttl_seconds: number): ClaimedRun | null {
     const row = this.db.prepare(`
-      SELECT run_id, state, contract_json, attempt_count, created_at
+      SELECT run_id, state, contract_json, attempt_count, created_at, worker_id, lease_expires_at
       FROM runs
       WHERE run_id = ? AND state = 'queued'
     `).get<RunRow>(run_id);
@@ -220,6 +285,12 @@ export class RunStore {
       return null;
     }
 
+    this.appendRunLedgerEvent(row.run_id, "worker_lease_acquired", "core", {
+      worker_id,
+      lease_expires_at,
+      attempt_count: row.attempt_count + 1
+    });
+
     return { run_id: row.run_id, contract: JSON.parse(row.contract_json) as CompiledTaskContract };
   }
 
@@ -236,7 +307,7 @@ export class RunStore {
 
   recoverExpiredLeases(now: string, max_attempts: number): LeaseRecovery[] {
     const rows = this.db.prepare(`
-      SELECT run_id, state, contract_json, attempt_count, created_at
+      SELECT run_id, state, contract_json, attempt_count, created_at, worker_id, lease_expires_at
       FROM runs
       WHERE state = 'running' AND lease_expires_at <= ?
       ORDER BY lease_expires_at ASC
@@ -251,6 +322,15 @@ export class RunStore {
         WHERE run_id = ? AND state = 'running'
       `).run(nextState, new Date().toISOString(), row.run_id);
 
+      if (updated.changes === 1) {
+        this.appendRunLedgerEvent(row.run_id, "worker_lease_expired", "system", {
+          worker_id: row.worker_id ?? "",
+          lease_expires_at: row.lease_expires_at ?? now,
+          active_tool_call_id: null,
+          recovery_action: action
+        });
+      }
+
       return updated.changes === 1 ? [{ run_id: row.run_id, action }] : [];
     });
   }
@@ -264,6 +344,15 @@ export class RunStore {
 
     if (existing) {
       if (existing.payload_hash !== event.payload_hash) {
+        this.appendRunLedgerEvent(existing.run_id, "idempotency_conflict", "gateway", {
+          source: event.source,
+          idempotency_key: event.idempotency_key,
+          existing_run_id: existing.run_id,
+          stored_payload_hash: existing.payload_hash,
+          incoming_payload_hash: event.payload_hash,
+          resolution: "rejected"
+        });
+
         return {
           status: "conflict",
           error: "IDEMPOTENCY_CONFLICT",
@@ -314,15 +403,66 @@ export class RunStore {
       event.created_at
     );
 
+    this.appendRunLedgerEvent(run_id, "run_created", "gateway", {
+      source: event.source,
+      idempotency_key: event.idempotency_key,
+      program: event.program ?? "",
+      goal_hash: event.payload_hash,
+      requester: event.requested_by
+    });
+
     return run_id;
   }
 
   private getRun(run_id: string): RunRow | undefined {
     return this.db.prepare(`
-      SELECT run_id, payload_hash, state, contract_json, attempt_count, created_at
+      SELECT run_id, payload_hash, state, contract_json, attempt_count, created_at, worker_id, lease_expires_at
       FROM runs
       WHERE run_id = ?
     `).get<RunRow>(run_id);
+  }
+
+  private getRunProgram(run_id: string): string | null {
+    const row = this.db.prepare(`
+      SELECT program
+      FROM runs
+      WHERE run_id = ?
+    `).get<{ program: string | null }>(run_id);
+
+    return row?.program ?? null;
+  }
+
+  private appendRunLedgerEvent(
+    run_id: string,
+    event_type: LedgerEventType,
+    actor: LedgerActor,
+    payload: Record<string, unknown>
+  ): void {
+    this.appendLedgerEvent(
+      createLedgerEvent({
+        run_id,
+        correlation_id: run_id,
+        event_type,
+        actor,
+        sequence: this.nextLedgerSequence(run_id),
+        payload
+      })
+    );
+  }
+
+  private nextLedgerSequence(run_id?: string): number {
+    const row = run_id
+      ? this.db.prepare(`
+        SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence
+        FROM ledger_events
+        WHERE run_id = ?
+      `).get<{ sequence: number }>(run_id)
+      : this.db.prepare(`
+        SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence
+        FROM ledger_events
+      `).get<{ sequence: number }>();
+
+    return row?.sequence ?? 1;
   }
 
   private addSeconds(base: string, seconds: number): string {
@@ -371,4 +511,12 @@ export class RunStore {
 
 function isTerminalRunState(state: RunState): boolean {
   return state === "completed" || state === "failed" || state === "cancelled" || state === "expired";
+}
+
+function shouldClearLeaseOnTransition(expected: RunState, next: RunState): boolean {
+  return (
+    isTerminalRunState(next) ||
+    (expected === "running" &&
+      (next === "waiting_for_approval" || next === "reconciliation_required"))
+  );
 }

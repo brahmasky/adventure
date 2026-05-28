@@ -215,4 +215,36 @@ describe("RunStore", () => {
       lease_expires_at: null
     });
   });
+
+  it("clears worker lease fields when a run parks for approval", () => {
+    const run_id = createRun();
+    store.attachContract(run_id, contract);
+    store.transition(run_id, "created", "contracted", "contract attached");
+    store.transition(run_id, "contracted", "queued", "ready");
+    const claim = store.claimNext("worker-1", 60);
+    if (!claim) throw new Error("expected claim");
+
+    store.transition(run_id, "running", "waiting_for_approval", "approval required");
+
+    expect(store.getRunLease(run_id)).toEqual({
+      worker_id: null,
+      lease_expires_at: null
+    });
+  });
+
+  it("clears worker lease fields when a run parks for reconciliation", () => {
+    const run_id = createRun();
+    store.attachContract(run_id, contract);
+    store.transition(run_id, "created", "contracted", "contract attached");
+    store.transition(run_id, "contracted", "queued", "ready");
+    const claim = store.claimNext("worker-1", 60);
+    if (!claim) throw new Error("expected claim");
+
+    store.transition(run_id, "running", "reconciliation_required", "uncertain outcome");
+
+    expect(store.getRunLease(run_id)).toEqual({
+      worker_id: null,
+      lease_expires_at: null
+    });
+  });
 });

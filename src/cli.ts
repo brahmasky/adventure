@@ -44,6 +44,12 @@ if (command === "run") {
 } else if (command === "eval") {
   const suite = rest[0] ?? "milestone-0";
   const result = runEvalSuite(process.cwd(), suite);
+  const store = RunStore.open("houge.sqlite");
+  try {
+    store.recordEvalCompleted(result.suite, result.passed, result.failed);
+  } finally {
+    store.close();
+  }
   console.log(JSON.stringify(result, null, 2));
   process.exit(result.passed ? 0 : 1);
 } else {
