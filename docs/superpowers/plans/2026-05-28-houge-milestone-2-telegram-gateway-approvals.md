@@ -19,14 +19,19 @@ This plan implements:
 - Telegram user/chat allowlist auth that rejects forwarded messages, channel posts, and anonymous admins.
 - Built-in `ask` contract proving `/ask` uses normal Run, TaskContract, CapabilityRunner, report, ledger, and outbox paths.
 - Approval lifecycle: `pending -> approved -> consumed`, `pending -> denied`, `pending -> expired`.
-- `RunStore.consumeApprovedApproval({ run_id, approval_id, requester, action_fingerprint, tool_call_id, operation_id })` with atomic binding to run, capability, adapter input hash, action fingerprint, tool call, and operation.
-- Approval security checks for requester match, non-expired approval, pending state, run `waiting_for_approval`, terminal-run exclusion, and expected action fingerprint.
+- `RunStore.consumeApprovedApproval({ run_id, approval_id, requester, capability, adapter_input_hash, action_fingerprint, tool_call_id, operation_id })` with atomic binding to run, capability, adapter input hash, action fingerprint, tool call, and operation.
+- Approval records persist canonical `adapter_input_json`; resume executes the stored approved adapter input instead of reconstructing input from live caller state.
+- Approval security checks for requester match, non-expired approval, pending state, run `waiting_for_approval`, terminal-run exclusion, stored non-empty action fingerprint, capability match, adapter input hash match, and action fingerprint match.
+- Atomic `/approve` and `/deny` processing through `RunStore.processApprovalTrigger(...)` so processed-trigger replay, approval transition, ledger event, outbox notification, and result storage are one transaction.
+- Approval expiry through `RunStore.expirePendingApprovals(now)` for undelivered prompts, late approvals, and worker resume.
 - CoreWorker `waiting_for_approval` result and resume behavior after approval.
 - Notification Outbox with local and Telegram adapters, dispatcher, retry recovery, stale lease recovery, delivery/failure ledger events, and approval-prompt expiry handling.
 - `houge send-outbox` and `houge telegram-poll --once`.
 - Executable/golden milestone-2 evals for parser/auth, outbox delivery, approval resume, and `/ask`.
-- SQLite indexes for hot queries and outbox claims.
-- Processed-trigger idempotency for `/status`, `/approve`, and `/deny`.
+- SQLite schema migrations, compatibility validation, and indexes for hot queries and outbox claims.
+- Processed-trigger idempotency for `/status`, `/approve`, and `/deny`, including deterministic replay for duplicates and conflict detection for mismatched payloads.
+- Abuse controls for per-actor/chat command rate, queued runs, active runs, and pending approvals.
+- Telegram long-poll offset handling that advances after deterministic parse/auth rejects and durable Gateway intake success. Worker execution and outbox dispatch happen after the offset boundary because both are durable/retryable from SQLite state.
 
 ## NOT in Scope
 
@@ -46,7 +51,8 @@ Telegram update
 -> authorizeTelegramUpdate(update, allowlist)
 -> buildTypedTaskEvent({ source: "telegram", ... })
 -> Gateway.intake(event)
-   -> processed_triggers replay/conflict check
+   -> processed_triggers replay/conflict check for read-only/status commands
+   -> processApprovalTrigger(...) transaction for /approve and /deny
    -> RunStore create/dedupe/status/approval resolution
    -> TaskContract compile for /ask or /run
    -> NotificationOutbox enqueue progress or approval prompt
@@ -60,32 +66,58 @@ Telegram update
 ```text
 Gated capability
 -> CapabilityRunner computes adapter_input_hash and action_fingerprint
--> RunStore.createApprovalRequest(...)
+-> RunStore.createApprovalRequest(..., adapter_input_json)
 -> run state: running -> waiting_for_approval, lease cleared
 -> approval_prompt notification queued
 -> /approve <approval-id> or /deny <approval-id>
--> Gateway validates processed trigger and calls resolveApproval(...)
+-> Gateway calls processApprovalTrigger(...) with approval_id, requester, decision
+   -> replay/conflict check
+   -> approval row validates requester, expiry, stored fingerprint, and run state
    approve: pending -> approved, run waiting_for_approval -> queued
    deny: pending -> denied, run waiting_for_approval -> cancelled
+   -> approval_resolved notification queued
+   -> processed trigger result stored
 -> CoreWorker claims queued run
--> CapabilityRunner recomputes action_fingerprint
+-> CoreWorker loads stored approved capability and adapter_input_json
+-> CapabilityRunner recomputes adapter_input_hash and action_fingerprint from stored input
 -> policy revalidation
--> consumeApprovedApproval(...)
+-> consumeApprovedApproval(..., capability, adapter_input_hash, action_fingerprint)
    approved -> consumed, tool_call_id and operation_id bound
 -> adapter executes once
+```
+
+```text
+Telegram long polling offset
+-> getUpdates(offset)
+-> for each update in update_id order:
+   deterministic parse/auth/unsupported-command reject
+     -> skipped_update audit row
+     -> setOffset(update_id + 1)
+   normalized event built
+     -> Gateway durable intake succeeds
+        -> setOffset(update_id + 1)
+     -> Gateway durable intake throws before commit
+        -> leave offset unchanged so Telegram can retry
 ```
 
 ## Engineering Review Coverage
 
 ```text
 approval lifecycle/security -> Tasks 5, 6, 8
+durable approved adapter input -> Tasks 5 and 6
+atomic approval trigger replay -> Tasks 5 and 8
+approval expiry -> Tasks 5, 7, 8
 CoreWorker parking/resume -> Task 6
 notification delivery/failure -> Task 7
 long polling runnable gateway -> Task 9
+poison-update offset handling -> Task 9
 executable evals -> Task 10
-indexes/perf -> Tasks 5 and 7
+schema migrations/compatibility -> Task 5
+rate limits/abuse controls -> Task 8
+indexes/perf -> Tasks 5, 7, and 8
 circular dependency -> Task 7 notification-types split
 approval prompt content -> Task 8
+outbox correlation fields -> Task 7
 status/approval idempotency -> Tasks 5 and 8
 scope boundary -> Scope and Task 6 policy rule
 ```
@@ -109,7 +141,7 @@ scope boundary -> Scope and Task 6 policy rule
 - Create `src/triggers/telegram-auth.ts`: allowlist checks for user id, chat id, forwarded messages, channel posts, and anonymous admins.
 - Create `src/triggers/telegram-trigger-adapter.ts`: update normalization and long polling over parser/auth.
 - Create `src/status/status-query.ts`: read-only run/status projection shared by CLI and Telegram.
-- Create `src/notifications/notification-types.ts`: shared notification types and helper functions used by RunStore and outbox modules. This avoids a RunStore to NotificationOutbox circular import.
+- Create `src/notifications/notification-types.ts`: shared notification types, correlation fields, and helper functions used by RunStore and outbox modules. This avoids a RunStore to NotificationOutbox circular import.
 - Create `src/notifications/notification-outbox.ts`: thin wrapper over RunStore notification methods.
 - Create `src/notifications/notification-dispatcher.ts`: claims queued notifications, chooses adapter, sends, marks delivered or failed.
 - Create `src/notifications/local-notification-adapter.ts`: local sink adapter.
@@ -118,9 +150,10 @@ scope boundary -> Scope and Task 6 policy rule
 - Create `src/telegram/telegram-poll-runner.ts`: one-shot Telegram runner wiring polling, Gateway, CoreWorker, and outbox dispatch.
 - Modify `src/domain/types.ts`: Telegram allowlist, notification intent type, and approval-related metadata types.
 - Modify `src/contracts/task-contract.ts`: compile `/ask` as built-in `ask` program and keep `/run research-brief` unchanged.
-- Modify `src/run/run-store.ts`: processed triggers, approvals, notification outbox, offsets, indexes, status projections, and approval consumption.
+- Modify `src/run/run-store.ts`: schema migrations, processed triggers, approvals, stored adapter input, notification outbox, offsets, skipped-update audit, rate-limit counters, indexes, status projections, approval expiry, and approval consumption.
 - Modify `src/gateway/gateway.ts`: idempotent handling for `status`, `approve`, `deny`, `ask`, and `run`.
-- Modify `src/capabilities/capability-runner.ts`: request approvals, revalidate approved actions, consume approvals before execution.
+- Create `src/capabilities/local-project-write-adapter.ts`: scoped testable local write adapter used by the approval fixture.
+- Modify `src/capabilities/capability-runner.ts`: request approvals, store exact adapter input, revalidate approved actions, consume approvals before execution.
 - Modify `src/core/core-worker.ts`: support `ask`, `waiting_for_approval`, resume after approval, and final-report notifications.
 - Modify `src/cli.ts`: add `houge status [run-id]`, `houge send-outbox`, `houge telegram-poll --once`, `houge telegram-parser-smoke`, and `houge outbox-smoke`.
 - Modify `src/eval/eval-runner.ts`: add executable milestone-2 eval cases and golden comparison.
@@ -283,7 +316,7 @@ import { authorizeTelegramUpdate } from "../../src/triggers/telegram-auth.js";
 
 const allowlist = {
   users: [{ telegram_user_id: 111, identity_id: "paco" }],
-  chats: [{ telegram_chat_id: 222, label: "paco-private" }]
+  chats: [{ telegram_chat_id: 222, label: "paco-private", allowed_identity_ids: ["paco"] }]
 };
 
 describe("authorizeTelegramUpdate", () => {
@@ -301,6 +334,18 @@ describe("authorizeTelegramUpdate", () => {
     expect(authorizeTelegramUpdate({ from_id: 111, chat_id: 222, is_channel_post: true }, allowlist).ok).toBe(false);
     expect(authorizeTelegramUpdate({ from_id: undefined, chat_id: 222 }, allowlist).ok).toBe(false);
   });
+
+  it("rejects a known user in a known chat when the pair is not allowlisted", () => {
+    const splitAllowlist = {
+      users: [{ telegram_user_id: 111, identity_id: "paco" }],
+      chats: [{ telegram_chat_id: 333, label: "other-team", allowed_identity_ids: ["ada"] }]
+    };
+
+    expect(authorizeTelegramUpdate({ from_id: 111, chat_id: 333 }, splitAllowlist)).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_AUTH_DENIED", message: "Telegram identity is not allowlisted for this chat" }
+    });
+  });
 });
 ```
 
@@ -312,7 +357,7 @@ import { normalizeTelegramUpdate } from "../../src/triggers/telegram-trigger-ada
 
 const allowlist = {
   users: [{ telegram_user_id: 111, identity_id: "paco" }],
-  chats: [{ telegram_chat_id: 222, label: "paco-private" }]
+  chats: [{ telegram_chat_id: 222, label: "paco-private", allowed_identity_ids: ["paco"] }]
 };
 
 describe("normalizeTelegramUpdate", () => {
@@ -375,6 +420,7 @@ export interface TelegramAllowlistedUser {
 export interface TelegramAllowlistedChat {
   telegram_chat_id: number;
   label: string;
+  allowed_identity_ids: string[];
 }
 
 export interface TelegramAllowlist {
@@ -408,6 +454,9 @@ export function authorizeTelegramUpdate(evidence: TelegramAuthEvidence, allowlis
   if (!user) return denied("Telegram user is not allowlisted");
   const chat = allowlist.chats.find((entry) => entry.telegram_chat_id === evidence.chat_id);
   if (!chat) return denied("Telegram chat is not allowlisted");
+  if (!chat.allowed_identity_ids.includes(user.identity_id)) {
+    return denied("Telegram identity is not allowlisted for this chat");
+  }
   return { ok: true, identity: { kind: "user", id: user.identity_id } };
 }
 
@@ -730,9 +779,9 @@ function compileAskContract(event: TypedTaskEvent): TaskContractResult {
     objective: event.goal,
     budget: { time_minutes: 5, max_tool_calls: 2, max_agent_delegations: 0 },
     allowed_actions: ["local_file_read", "write_report"],
-    forbidden_actions: ["coding_agent_cli", "generic_shell", "external_write", "paid_action"],
+    forbidden_actions: ["coding_agent_cli", "generic_shell", "external_write", "paid"],
     output: { path: "runs/<run-id>/report.md", format: "sourced_markdown_report" as const },
-    approval_gates: ["external_write", "destructive_file_action", "paid_action"],
+    approval_gates: ["external_write", "destructive", "paid"],
     stop_condition: "concise answer report produced or budget exhausted",
     eval_hooks: ["milestone-2-ask-path"]
   };
@@ -762,6 +811,7 @@ git commit -m "feat: route ask through normal run path"
 **Files:**
 - Modify: `src/domain/types.ts`
 - Modify: `src/run/run-store.ts`
+- Create: `src/notifications/notification-types.ts`
 - Test: `tests/run/run-store-approvals.test.ts`
 
 - [ ] **Step 1: Write failing approval security, lifecycle, and consumption tests**
@@ -800,12 +850,13 @@ function requestApproval(store: RunStore, run_id: string, overrides = {}) {
     capability: "local_project_write",
     action_fingerprint: "fp_write_report_artifact",
     adapter_input_hash: "input_hash_write_report_artifact",
+    adapter_input_json: JSON.stringify({ path: "runs/run_1/artifact.txt", content: "hello" }),
     action_summary: "Write runs/run_1/artifact.txt",
     side_effect_level: "local_write",
     risk_level: "medium",
     affected_resources: ["path:runs/run_1/artifact.txt"],
     requester: paco,
-    expires_at: "2026-05-28T01:00:00.000Z",
+    expires_at: "2026-12-31T01:00:00.000Z",
     ...overrides
   });
 }
@@ -827,7 +878,7 @@ describe("RunStore approvals", () => {
     }
   });
 
-  it("rejects wrong requester, expired approval, wrong action fingerprint, and wrong run state", () => {
+  it("rejects wrong requester, expired approval, missing stored fingerprint, and wrong run state", () => {
     const store = RunStore.openInMemory();
     try {
       const requesterRun = createRunningRun(store, "cli:approval-wrong-requester");
@@ -836,7 +887,6 @@ describe("RunStore approvals", () => {
         approval_id: requesterApproval.approval_id,
         decision: "approved",
         requester: mallory,
-        expected_action_fingerprint: "fp_write_report_artifact",
         resolved_at: "2026-05-28T00:10:00.000Z"
       })).toEqual({ ok: false, error: { code: "APPROVAL_REQUESTER_MISMATCH", message: "Approval requester does not match" } });
 
@@ -846,19 +896,27 @@ describe("RunStore approvals", () => {
         approval_id: expiredApproval.approval_id,
         decision: "approved",
         requester: paco,
-        expected_action_fingerprint: "fp_write_report_artifact",
         resolved_at: "2026-05-28T00:10:00.000Z"
       })).toEqual({ ok: false, error: { code: "APPROVAL_EXPIRED", message: "Approval has expired" } });
 
-      const hashRun = createRunningRun(store, "cli:approval-wrong-hash");
-      const hashApproval = requestApproval(store, hashRun);
+      const missingFingerprintRun = createRunningRun(store, "cli:approval-missing-fingerprint");
+      const missingFingerprintApproval = requestApproval(store, missingFingerprintRun, { action_fingerprint: "" });
       expect(store.resolveApproval({
-        approval_id: hashApproval.approval_id,
+        approval_id: missingFingerprintApproval.approval_id,
         decision: "approved",
         requester: paco,
-        expected_action_fingerprint: "fp_other",
         resolved_at: "2026-05-28T00:10:00.000Z"
-      })).toEqual({ ok: false, error: { code: "APPROVAL_ACTION_MISMATCH", message: "Approval action fingerprint does not match" } });
+      })).toEqual({ ok: false, error: { code: "APPROVAL_ACTION_MISSING", message: "Approval action fingerprint is missing" } });
+
+      const wrongStateRun = createRunningRun(store, "cli:approval-wrong-state");
+      const wrongStateApproval = requestApproval(store, wrongStateRun);
+      store.transition(wrongStateRun, "waiting_for_approval", "cancelled", "test_terminal_state");
+      expect(store.resolveApproval({
+        approval_id: wrongStateApproval.approval_id,
+        decision: "approved",
+        requester: paco,
+        resolved_at: "2026-05-28T00:10:00.000Z"
+      })).toEqual({ ok: false, error: { code: "RUN_NOT_WAITING_FOR_APPROVAL", message: "Run is not waiting for approval" } });
     } finally {
       store.close();
     }
@@ -873,7 +931,6 @@ describe("RunStore approvals", () => {
         approval_id: approval.approval_id,
         decision: "approved",
         requester: paco,
-        expected_action_fingerprint: "fp_write_report_artifact",
         resolved_at: "2026-05-28T00:10:00.000Z"
       });
       expect(approved).toEqual({ ok: true, run_id: approveRun, status: "approval_resolved" });
@@ -882,7 +939,6 @@ describe("RunStore approvals", () => {
         approval_id: approval.approval_id,
         decision: "approved",
         requester: paco,
-        expected_action_fingerprint: "fp_write_report_artifact",
         resolved_at: "2026-05-28T00:11:00.000Z"
       })).toEqual({ ok: false, error: { code: "APPROVAL_NOT_PENDING", message: "Approval is not pending" } });
 
@@ -892,7 +948,6 @@ describe("RunStore approvals", () => {
         approval_id: denied.approval_id,
         decision: "denied",
         requester: paco,
-        expected_action_fingerprint: "fp_write_report_artifact",
         resolved_at: "2026-05-28T00:12:00.000Z"
       })).toEqual({ ok: true, run_id: denyRun, status: "approval_resolved" });
       expect(store.getRunState(denyRun)).toBe("cancelled");
@@ -910,14 +965,16 @@ describe("RunStore approvals", () => {
         approval_id: approval.approval_id,
         decision: "approved",
         requester: paco,
-        expected_action_fingerprint: "fp_write_report_artifact",
         resolved_at: "2026-05-28T00:10:00.000Z"
       });
+      store.claimRun(run_id, "worker-consume", 30);
 
       expect(store.consumeApprovedApproval({
         run_id,
         approval_id: approval.approval_id,
         requester: paco,
+        capability: "local_project_write",
+        adapter_input_hash: "input_hash_write_report_artifact",
         action_fingerprint: "fp_write_report_artifact",
         tool_call_id: "tool_1",
         operation_id: "op_1"
@@ -926,10 +983,86 @@ describe("RunStore approvals", () => {
         run_id,
         approval_id: approval.approval_id,
         requester: paco,
+        capability: "local_project_write",
+        adapter_input_hash: "input_hash_write_report_artifact",
         action_fingerprint: "fp_write_report_artifact",
         tool_call_id: "tool_2",
         operation_id: "op_2"
       })).toEqual({ ok: false, error: { code: "APPROVAL_NOT_APPROVED", message: "Approval is not approved" } });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("rejects approved approval consumption when run, requester, capability, hash, fingerprint, or run state drift", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const run_id = createRunningRun(store, "cli:approval-consume-drift");
+      const approval = requestApproval(store, run_id);
+      store.resolveApproval({
+        approval_id: approval.approval_id,
+        decision: "approved",
+        requester: paco,
+        resolved_at: "2026-05-28T00:10:00.000Z"
+      });
+      store.claimRun(run_id, "worker-consume-drift", 30);
+
+      const base = {
+        run_id,
+        approval_id: approval.approval_id,
+        requester: paco,
+        capability: "local_project_write",
+        adapter_input_hash: "input_hash_write_report_artifact",
+        action_fingerprint: "fp_write_report_artifact",
+        tool_call_id: "tool_1",
+        operation_id: "op_1",
+        consumed_at: "2026-05-28T00:20:00.000Z"
+      };
+
+      expect(store.consumeApprovedApproval({ ...base, capability: "other_capability" })).toEqual({
+        ok: false,
+        error: { code: "APPROVAL_CAPABILITY_MISMATCH", message: "Approval capability does not match" }
+      });
+      expect(store.consumeApprovedApproval({ ...base, run_id: "run_other" })).toEqual({
+        ok: false,
+        error: { code: "APPROVAL_RUN_MISMATCH", message: "Approval run does not match" }
+      });
+      expect(store.consumeApprovedApproval({ ...base, requester: mallory })).toEqual({
+        ok: false,
+        error: { code: "APPROVAL_REQUESTER_MISMATCH", message: "Approval requester does not match" }
+      });
+      expect(store.consumeApprovedApproval({ ...base, adapter_input_hash: "other_hash" })).toEqual({
+        ok: false,
+        error: { code: "APPROVAL_INPUT_MISMATCH", message: "Approval adapter input hash does not match" }
+      });
+      expect(store.consumeApprovedApproval({ ...base, action_fingerprint: "fp_other" })).toEqual({
+        ok: false,
+        error: { code: "APPROVAL_ACTION_MISMATCH", message: "Approval action fingerprint does not match" }
+      });
+      store.transition(run_id, "running", "cancelled", "test_terminal_state");
+      expect(store.consumeApprovedApproval(base)).toEqual({
+        ok: false,
+        error: { code: "RUN_NOT_RUNNING", message: "Run is not running" }
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("expires pending approvals, transitions waiting runs, and rejects late approval", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const run_id = createRunningRun(store, "cli:approval-expire-pending");
+      const approval = requestApproval(store, run_id, { expires_at: "2026-05-28T00:00:00.000Z" });
+
+      expect(store.expirePendingApprovals("2026-05-28T00:10:00.000Z")).toEqual([approval.approval_id]);
+      expect(store.getRunState(run_id)).toBe("cancelled");
+      expect(store.resolveApproval({
+        approval_id: approval.approval_id,
+        decision: "approved",
+        requester: paco,
+        resolved_at: "2026-05-28T00:11:00.000Z"
+      })).toEqual({ ok: false, error: { code: "APPROVAL_NOT_PENDING", message: "Approval is not pending" } });
     } finally {
       store.close();
     }
@@ -958,6 +1091,7 @@ export interface ApprovalRequestInput {
   capability: string;
   action_fingerprint: string;
   adapter_input_hash: string;
+  adapter_input_json: string;
   action_summary: string;
   side_effect_level: SideEffectLevel;
   risk_level: RiskLevel;
@@ -975,13 +1109,40 @@ export type TriggerDedupeResult =
   | { status: "new" }
   | { status: "duplicate"; result_json: string }
   | { status: "conflict"; error: "TRIGGER_IDEMPOTENCY_CONFLICT" };
+
+export interface ApprovalTriggerInput {
+  event: TypedTaskEvent;
+  decision: "approved" | "denied";
+  resolved_at: string;
+}
+```
+
+Create `src/notifications/notification-types.ts` in this task because approval resolution and expiry enqueue notifications atomically before the dispatcher exists:
+
+```ts
+export type NotificationIntentType = "progress" | "final_report" | "approval_prompt" | "approval_resolved";
+
+export interface NotificationIntent {
+  target: NotificationTarget;
+  intent_type: NotificationIntentType;
+  idempotency_key: string;
+  run_id?: string;
+  approval_id?: string;
+  correlation_id: string;
+  payload: { text: string; [key: string]: unknown };
+}
 ```
 
 - [ ] **Step 4: Add migration tables and indexes**
 
-Add to `RunStore.migrate()`:
+Add a versioned Milestone-2 migration to `RunStore.migrate()`. Apply the full DDL inside one transaction, insert `schema_migrations.version = '2026-05-28-milestone-2-telegram-approvals'` only after all DDL succeeds, and skip the migration if that version already exists. Validation after migration must assert required tables and indexes exist.
 
 ```sql
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version TEXT PRIMARY KEY,
+  applied_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS processed_triggers (
   source TEXT NOT NULL,
   idempotency_key TEXT NOT NULL,
@@ -999,6 +1160,7 @@ CREATE TABLE IF NOT EXISTS approvals (
   capability TEXT NOT NULL,
   action_fingerprint TEXT NOT NULL,
   adapter_input_hash TEXT NOT NULL,
+  adapter_input_json TEXT NOT NULL,
   action_summary TEXT NOT NULL,
   side_effect_level TEXT NOT NULL,
   risk_level TEXT NOT NULL,
@@ -1021,11 +1183,71 @@ ON ledger_events(run_id, sequence);
 CREATE INDEX IF NOT EXISTS runs_created_at_idx
 ON runs(created_at);
 
+CREATE INDEX IF NOT EXISTS runs_updated_at_idx
+ON runs(updated_at);
+
 CREATE INDEX IF NOT EXISTS approvals_run_state_idx
 ON approvals(run_id, state);
+
+CREATE TABLE IF NOT EXISTS notification_outbox (
+  notification_id TEXT PRIMARY KEY,
+  target_json TEXT NOT NULL,
+  target_key TEXT NOT NULL,
+  intent_type TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  state TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT NOT NULL,
+  lease_owner TEXT,
+  lease_expires_at TEXT,
+  provider_message_id TEXT,
+  run_id TEXT,
+  approval_id TEXT,
+  correlation_id TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(target_key, idempotency_key)
+);
+
+CREATE INDEX IF NOT EXISTS notification_outbox_claim_idx
+ON notification_outbox(state, next_attempt_at, created_at);
+
+CREATE TABLE IF NOT EXISTS trigger_offsets (
+  source TEXT PRIMARY KEY,
+  offset INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS skipped_telegram_updates (
+  update_id INTEGER PRIMARY KEY,
+  reason_code TEXT NOT NULL,
+  reason_message TEXT NOT NULL,
+  skipped_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS telegram_command_audit (
+  audit_id TEXT PRIMARY KEY,
+  actor_id TEXT NOT NULL,
+  chat_id TEXT NOT NULL,
+  command TEXT NOT NULL,
+  source_reference TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  reason_code TEXT,
+  occurred_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS telegram_command_audit_actor_chat_time_idx
+ON telegram_command_audit(actor_id, chat_id, occurred_at);
+
+CREATE INDEX IF NOT EXISTS telegram_command_audit_decision_time_idx
+ON telegram_command_audit(decision, occurred_at);
 ```
 
-- [ ] **Step 5: Add processed-trigger methods**
+Add a compatibility test that creates a pre-Milestone-2 database with the actual Milestone-1 `runs` and `ledger_events` tables, opens it through `RunStore.open(path)`, runs migration, verifies existing `runs` and `ledger_events` rows are still readable, verifies the new tables/indexes exist, and verifies a second open does not reapply the migration. Before applying the migration to a real file path, document that the operator should snapshot `houge.sqlite`; in automated tests, use a temp DB copy.
+
+- [ ] **Step 5: Add processed-trigger and skipped-update methods**
 
 Add to `RunStore`:
 
@@ -1050,11 +1272,44 @@ recordTriggerProcessed(event: TypedTaskEvent, result: unknown): void {
     WHERE processed_triggers.payload_hash = excluded.payload_hash
   `).run(event.source, event.idempotency_key, event.payload_hash, JSON.stringify(result), new Date().toISOString());
 }
+
+recordSkippedTelegramUpdate(input: {
+  update_id: number;
+  reason_code: string;
+  reason_message: string;
+  skipped_at: string;
+}): void {
+  this.db.prepare(`
+    INSERT OR IGNORE INTO skipped_telegram_updates
+      (update_id, reason_code, reason_message, skipped_at)
+    VALUES (?, ?, ?, ?)
+  `).run(input.update_id, input.reason_code, input.reason_message, input.skipped_at);
+}
 ```
 
 - [ ] **Step 6: Add approval methods**
 
-Add `createApprovalRequest`, `resolveApproval`, and `consumeApprovedApproval` to `RunStore`. `resolveApproval` must start with `BEGIN IMMEDIATE`, select the approval row, validate requester, expiry, pending state, `expected_action_fingerprint`, and run state before update, then commit. `consumeApprovedApproval` must start with `BEGIN IMMEDIATE`, validate `approved` state, requester, and `action_fingerprint`, then set `state='consumed'`, `consumed_tool_call_id`, and `consumed_operation_id`.
+Add `createApprovalRequest`, `resolveApproval`, `processApprovalTrigger`, `expirePendingApprovals`, `enqueueNotification`, and `consumeApprovedApproval` to `RunStore`.
+
+Split approval resolution into a public `resolveApproval(...)` wrapper and an internal `resolveApprovalWithinTransaction(...)` helper:
+
+- `resolveApproval(...)` is for direct store tests and starts `BEGIN IMMEDIATE`, calls `resolveApprovalWithinTransaction(...)`, then commits.
+- `resolveApprovalWithinTransaction(...)` assumes the caller already holds the transaction. It selects the approval row, validates requester, expiry while `state = 'pending'`, stored non-empty `action_fingerprint`, and run state before update. It never starts or commits a transaction.
+
+`processApprovalTrigger({ event, decision, resolved_at })` must be the Gateway-facing method for `/approve` and `/deny`. In one `BEGIN IMMEDIATE` transaction it must:
+
+- Check `processed_triggers` replay/conflict for `event.source`, `event.idempotency_key`, and `event.payload_hash`.
+- Call `resolveApprovalWithinTransaction(...)` for `event.approval_id` and `event.requested_by`.
+- Transition approval/run state.
+- Append an `approval_resolved` ledger event.
+- Queue an `approval_resolved` notification with `run_id`, `approval_id`, and `correlation_id`.
+- Insert the processed trigger result JSON before commit.
+
+`enqueueNotification` in Task 5 is intentionally minimal: insert/dedupe notification rows and return the record. Dispatcher claim/retry/delivery behavior remains Task 7. On enqueue conflict, compare `payload_hash`, `run_id`, `approval_id`, and `correlation_id`; return the existing row only on exact match, otherwise return `NOTIFICATION_IDEMPOTENCY_CONFLICT`.
+
+`consumeApprovedApproval` must start with `BEGIN IMMEDIATE`, validate `approved` state, requester, `run_id`, current run state `running`, `capability`, `adapter_input_hash`, and `action_fingerprint`, then set `state='consumed'`, `consumed_tool_call_id`, and `consumed_operation_id`. Approval `expires_at` is a deadline for the requester to approve/deny while pending; once an approval is `approved`, consumption is governed by exact-action revalidation and run state, not wall-clock expiry.
+
+`expirePendingApprovals(now)` must mark expired pending approvals as `expired`, transition their `waiting_for_approval` runs to `cancelled`, append ledger events, and queue user-visible notifications.
 
 Use these return values exactly:
 
@@ -1064,8 +1319,13 @@ Use these return values exactly:
 { ok: false, error: { code: "APPROVAL_NOT_APPROVED", message: "Approval is not approved" } }
 { ok: false, error: { code: "APPROVAL_REQUESTER_MISMATCH", message: "Approval requester does not match" } }
 { ok: false, error: { code: "APPROVAL_EXPIRED", message: "Approval has expired" } }
+{ ok: false, error: { code: "APPROVAL_ACTION_MISSING", message: "Approval action fingerprint is missing" } }
 { ok: false, error: { code: "APPROVAL_ACTION_MISMATCH", message: "Approval action fingerprint does not match" } }
+{ ok: false, error: { code: "APPROVAL_CAPABILITY_MISMATCH", message: "Approval capability does not match" } }
+{ ok: false, error: { code: "APPROVAL_INPUT_MISMATCH", message: "Approval adapter input hash does not match" } }
+{ ok: false, error: { code: "APPROVAL_RUN_MISMATCH", message: "Approval run does not match" } }
 { ok: false, error: { code: "RUN_NOT_WAITING_FOR_APPROVAL", message: "Run is not waiting for approval" } }
+{ ok: false, error: { code: "RUN_NOT_RUNNING", message: "Run is not running" } }
 ```
 
 - [ ] **Step 7: Verify approval storage**
@@ -1089,6 +1349,7 @@ git commit -m "feat: harden approval state"
 
 **Files:**
 - Modify: `src/capabilities/capability-runner.ts`
+- Create: `src/capabilities/local-project-write-adapter.ts`
 - Modify: `src/core/core-worker.ts`
 - Modify: `src/run/run-store.ts`
 - Test: `tests/capabilities/capability-runner-approvals.test.ts`
@@ -1152,7 +1413,12 @@ describe("CapabilityRunner approval lifecycle", () => {
       input: { path: "runs/run_approval/artifact.txt", content: "hello" },
       budget: new BudgetLedger(contract.budget)
     })).resolves.toEqual({ status: "requires_approval", approval_id: "appr_capability" });
-    expect(requested).toHaveLength(1);
+    expect(requested).toEqual([expect.objectContaining({
+      capability: "local_project_write",
+      adapter_input_hash: expect.any(String),
+      adapter_input_json: JSON.stringify({ path: "runs/run_approval/artifact.txt", content: "hello" }),
+      action_fingerprint: expect.any(String)
+    })]);
   });
 
   it("re-runs policy, consumes approval, and executes the exact approved action", async () => {
@@ -1176,7 +1442,11 @@ describe("CapabilityRunner approval lifecycle", () => {
     });
 
     expect(result.status).toBe("succeeded");
-    expect(consumed).toHaveLength(1);
+    expect(consumed).toEqual([expect.objectContaining({
+      capability: "local_project_write",
+      adapter_input_hash: expect.any(String),
+      action_fingerprint: expect.any(String)
+    })]);
   });
 
   it("returns denied_on_revalidation when policy changes after approval", async () => {
@@ -1270,16 +1540,19 @@ describe("CoreWorker approvals", () => {
       const pending = store.getApprovalForRun(intake.run_id, "pending");
       if (!pending) throw new Error("expected pending approval");
 
-      gateway.intake(buildTypedTaskEvent({
+      store.processApprovalTrigger({
+        event: buildTypedTaskEvent({
         source: "telegram",
         type: "approve",
         approval_id: pending.approval_id,
         requested_by: { kind: "user", id: "paco" },
         notify: { kind: "telegram", chat_id: "222" },
         idempotency_key: "telegram:worker-resume-approve",
-        source_reference: "telegram:update:20:message:1",
-        metadata: { action_fingerprint: pending.action_fingerprint }
-      }));
+        source_reference: "telegram:update:20:message:1"
+        }),
+        decision: "approved",
+        resolved_at: "2026-05-28T00:10:00.000Z"
+      });
 
       const completed = await new CoreWorker(store, root).executeRun(intake.run_id, "worker-approval");
 
@@ -1313,9 +1586,12 @@ export interface ApprovalRequestSink {
     run_id: string;
     approval_id: string;
     requester: Identity;
+    capability: string;
+    adapter_input_hash: string;
     action_fingerprint: string;
     tool_call_id: string;
     operation_id: string;
+    consumed_at: string;
   }): { ok: true; approval_id: string; state: "consumed" } | { ok: false; error: { code: string; message: string } };
 }
 
@@ -1332,9 +1608,12 @@ export interface CapabilityExecutionInput {
 
 Compute `adapter_input_hash = stableHash(input.input)` and:
 
-- If policy returns `requires_approval` and `approved_approval_id` is absent, call `requestApproval()` and return `{ status: "requires_approval", approval_id }`.
+- Update `CompiledTaskContract.approval_gates` to `SideEffectLevel[]` and update `CapabilityDecisionInput` to include `approval_gates`. `decideCapability()` must treat `approval_gates` as side-effect-level gates. A capability whose `side_effect_level` is included in `approval_gates` returns `requires_approval`, including `local_write`; the older hard-coded `external_write`/`destructive`/`paid` list is not sufficient.
+- Compute `adapter_input_json = canonicalJson(input.input)` using the same deterministic serializer as `stableHash`, and use that JSON as the durable resume source. Add a test asserting `adapter_input_hash === stableHash(JSON.parse(adapter_input_json))`.
+- Compute `action_fingerprint = stableHash({ capability, side_effect_level, risk_level, affected_resources: [...affected_resources].sort(), adapter_input_hash })`. Add tests proving changing any one of `capability`, `side_effect_level`, `risk_level`, `affected_resources`, or `adapter_input_hash` changes the fingerprint.
+- If policy returns `requires_approval` and `approved_approval_id` is absent, call `requestApproval()` with `capability`, `adapter_input_hash`, `adapter_input_json`, and `action_fingerprint`, then return `{ status: "requires_approval", approval_id }`.
 - If `approved_approval_id` is present, call `decideCapability()` again. If decision is `deny`, return `denied_on_revalidation`. If decision is `allow` or `requires_approval`, call `consumeApprovedApproval()` before adapter execution.
-- Use `tool_${randomUUID()}` and `op_${randomUUID()}` as the binding ids passed into `consumeApprovedApproval()`.
+- Use `tool_${randomUUID()}` and `op_${randomUUID()}` as the binding ids passed into `consumeApprovedApproval()` together with `capability`, `adapter_input_hash`, `action_fingerprint`, and `consumed_at`.
 
 - [ ] **Step 5: Update CoreWorker result and resume logic**
 
@@ -1350,7 +1629,11 @@ When CapabilityRunner returns `requires_approval`, return:
 return { status: "waiting_for_approval", run_id: claim.run_id, approval_id: result.approval_id };
 ```
 
-Add read-only `RunStore.getApprovalForRun(run_id, state)` and `RunStore.getRunRequester(run_id)` projections. On resume, pass the approved approval id and approved capability/input into CapabilityRunner. Do not expose Telegram sending as a selectable capability; the approval fixture should use `local_project_write` or another project-local gated capability.
+Add read-only `RunStore.getApprovalForRun(run_id, state)`, `RunStore.getRunRequester(run_id)`, and `RunStore.getApprovedActionForRun(run_id)` projections. `getApprovedActionForRun(run_id)` returns `{ approval_id, capability, adapter_input_json, adapter_input_hash, action_fingerprint, requester }`. On resume, CoreWorker must parse only stored `adapter_input_json`, recompute hash/fingerprint, and fail the run with a reconciliation ledger event without consuming if JSON parsing or hash/fingerprint validation fails.
+
+Create `src/capabilities/local-project-write-adapter.ts` and register it in CoreWorker for the forced approval fixture. It accepts `{ path, content }`, rejects paths outside the project root, writes only beneath `runs/<run-id>/`, and returns `{ wrote: true, path }`. Do not expose Telegram sending as a selectable capability.
+
+Add a CoreWorker test where a live/generated input source changes after approval; resume still executes the stored approved `adapter_input_json`.
 
 - [ ] **Step 6: Verify approval parking and resume**
 
@@ -1372,7 +1655,7 @@ git commit -m "feat: resume approved capability runs"
 ## Task 7: Notification Outbox, Dispatcher, Retry, and Failure Recovery
 
 **Files:**
-- Create: `src/notifications/notification-types.ts`
+- Modify: `src/notifications/notification-types.ts`
 - Create: `src/notifications/notification-outbox.ts`
 - Create: `src/notifications/notification-dispatcher.ts`
 - Create: `src/notifications/local-notification-adapter.ts`
@@ -1403,12 +1686,16 @@ describe("NotificationOutbox", () => {
         target: { kind: "telegram", chat_id: "222" },
         intent_type: "progress",
         idempotency_key: "run_1:progress:queued",
+        run_id: "run_1",
+        correlation_id: "telegram:update:1",
         payload: { text: "Queued run_1" }
       });
       const second = outbox.enqueue({
         target: { kind: "telegram", chat_id: "222" },
         intent_type: "progress",
         idempotency_key: "run_1:progress:queued",
+        run_id: "run_1",
+        correlation_id: "telegram:update:1",
         payload: { text: "Queued run_1" }
       });
       expect(second.notification_id).toBe(first.notification_id);
@@ -1428,7 +1715,10 @@ describe("NotificationOutbox", () => {
         target: { kind: "telegram", chat_id: "222" },
         intent_type: "approval_prompt",
         idempotency_key: "appr_1:prompt",
-        payload: { text: "Approval required", expires_at: "2026-05-28T01:00:00.000Z" }
+        run_id: "run_1",
+        approval_id: "appr_1",
+        correlation_id: "appr_1",
+        payload: { text: "Approval required", expires_at: "2026-12-31T01:00:00.000Z" }
       });
       outbox.claimNext("sender-1", 30);
       outbox.markFailed(retry.notification_id, "network down", true, "2026-05-28T00:00:10.000Z", 3);
@@ -1443,11 +1733,33 @@ describe("NotificationOutbox", () => {
         target: { kind: "local" },
         intent_type: "progress",
         idempotency_key: "run_1:stale",
+        run_id: "run_1",
+        correlation_id: "run_1:stale",
         payload: { text: "stale lease" }
       });
       outbox.claimNext("sender-stale", -1);
       expect(store.recoverStaleSendingNotifications("2026-05-28T00:00:20.000Z")).toEqual([stale.notification_id]);
       expect(outbox.get(stale.notification_id)?.state).toBe("queued");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("only one sender can claim a queued notification", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const outbox = new NotificationOutbox(store);
+      const queued = outbox.enqueue({
+        target: { kind: "telegram", chat_id: "222" },
+        intent_type: "progress",
+        idempotency_key: "run_1:double-claim",
+        run_id: "run_1",
+        correlation_id: "run_1:double-claim",
+        payload: { text: "Queued" }
+      });
+
+      expect(outbox.claimNext("sender-a", 30)?.notification_id).toBe(queued.notification_id);
+      expect(outbox.claimNext("sender-b", 30)).toBeNull();
     } finally {
       store.close();
     }
@@ -1504,6 +1816,8 @@ describe("NotificationDispatcher", () => {
         target: { kind: "telegram", chat_id: "222" },
         intent_type: "final_report",
         idempotency_key: "run_1:final",
+        run_id: "run_1",
+        correlation_id: "run_1:final",
         payload: { text: "Report ready", run_id: "run_1" }
       });
       const dispatcher = new NotificationDispatcher(outbox, {
@@ -1530,6 +1844,8 @@ describe("NotificationDispatcher", () => {
         target: { kind: "telegram", chat_id: "222" },
         intent_type: "progress",
         idempotency_key: "run_1:progress",
+        run_id: "run_1",
+        correlation_id: "run_1:progress",
         payload: { text: "Queued" }
       });
       const dispatcher = new NotificationDispatcher(outbox, {
@@ -1556,52 +1872,24 @@ npm test -- tests/notifications/notification-outbox.test.ts tests/notifications/
 
 Expected: FAIL because notification modules do not exist.
 
-- [ ] **Step 3: Add notification types and outbox schema**
+- [ ] **Step 3: Extend notification wrapper around Task 5 outbox schema**
 
-Create `src/notifications/notification-types.ts` with `NotificationIntent`, `NotificationRecord`, `notificationTargetKey(target)`, and `makeNotificationRecord(intent)`. Keep these helpers out of `notification-outbox.ts` so `RunStore` imports only `notification-types.ts`.
-
-Modify `src/domain/types.ts`:
-
-```ts
-export type NotificationIntentType = "progress" | "final_report" | "approval_prompt" | "approval_resolved";
-```
-
-Add to `RunStore.migrate()`:
-
-```sql
-CREATE TABLE IF NOT EXISTS notification_outbox (
-  notification_id TEXT PRIMARY KEY,
-  target_json TEXT NOT NULL,
-  target_key TEXT NOT NULL,
-  intent_type TEXT NOT NULL,
-  idempotency_key TEXT NOT NULL,
-  state TEXT NOT NULL,
-  attempt_count INTEGER NOT NULL DEFAULT 0,
-  next_attempt_at TEXT NOT NULL,
-  lease_owner TEXT,
-  lease_expires_at TEXT,
-  provider_message_id TEXT,
-  payload_json TEXT NOT NULL,
-  payload_hash TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  UNIQUE(target_key, idempotency_key)
-);
-
-CREATE INDEX IF NOT EXISTS notification_outbox_claim_idx
-ON notification_outbox(state, next_attempt_at, created_at);
-```
+Task 5 already created `notification-types.ts`, `NotificationIntentType`, `notification_outbox`, and minimal `RunStore.enqueueNotification()` so approval transitions can enqueue atomically. In Task 7, add `NotificationRecord`, `notificationTargetKey(target)`, `makeNotificationRecord(intent)`, the outbox wrapper, dispatcher, adapters, and retry/claim methods.
 
 - [ ] **Step 4: Add RunStore outbox methods**
 
-Add `enqueueNotification`, `claimNextNotification`, `markNotificationDelivered`, `markNotificationFailed`, `requeueRetryWaitNotifications`, `recoverStaleSendingNotifications`, `getNotification`, and `countNotificationsByIdempotencyKey`.
+Extend the Task 5 store methods with `claimNextNotification`, `markNotificationDelivered`, `markNotificationFailed`, `requeueRetryWaitNotifications`, `recoverStaleSendingNotifications`, `getNotification`, and `countNotificationsByIdempotencyKey`.
 
 Implementation requirements:
 
 - `claimNextNotification` must use one `UPDATE ... WHERE notification_id = (SELECT ... LIMIT 1)` statement or `BEGIN IMMEDIATE` plus update, so two dispatchers cannot claim the same row.
+- `enqueueNotification` conflicts must compare `payload_hash`, `run_id`, `approval_id`, and `correlation_id`; exact matches dedupe, mismatches return `NOTIFICATION_IDEMPOTENCY_CONFLICT`.
 - `markNotificationDelivered` appends `notification_delivered` ledger event.
+- `markNotificationDelivered` and `markNotificationFailed` ledger events must include nullable `run_id`, `approval_id`, and `correlation_id`.
 - `markNotificationFailed` appends `notification_failed` ledger event and sets `retry_wait` only when `retryable` is true and `attempt_count < max_attempts`; otherwise set `failed_terminal`.
-- Approval prompt notifications with expired `payload.expires_at` must be marked `failed_terminal` by `expireUndeliveredApprovalPrompts(now)`.
+- `expireUndeliveredApprovalPrompts(now)` must mark expired queued/retry_wait/sending approval prompts as `failed_terminal`, then call `expirePendingApprovals(now)` so the approval and waiting run also expire.
+- Gateway-created `ask` and `run` events must enqueue a `progress` notification after the run is durably created, using idempotency key `${run_id}:progress:queued` and the original notify target.
+- CoreWorker must enqueue `final_report` after `run_completed`, using idempotency key `${run_id}:final_report` and the original notify target. Add local and Telegram tests proving both notifications are queued.
 
 - [ ] **Step 5: Add adapters, outbox wrapper, dispatcher, and CLI**
 
@@ -1661,6 +1949,38 @@ import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
+import { normalizeTelegramUpdate } from "../../src/triggers/telegram-trigger-adapter.js";
+
+function seedWaitingApprovalRun(store: RunStore): string {
+  const gateway = new Gateway(store);
+  const intake = gateway.intake(buildTypedTaskEvent({
+    source: "cli",
+    type: "run",
+    program: "research-brief",
+    goal: "needs approval",
+    requested_by: { kind: "user", id: "paco" },
+    notify: { kind: "telegram", chat_id: "222" },
+    idempotency_key: "cli:seed-waiting-approval",
+    source_reference: "argv"
+  }));
+  if (!intake.ok) throw new Error("expected run");
+  store.claimRun(intake.run_id, "worker-seed", 30);
+  store.createApprovalRequest({
+    run_id: intake.run_id,
+    approval_type: "capability",
+    capability: "local_project_write",
+    action_fingerprint: "fp_write_report_artifact",
+    adapter_input_hash: "input_hash_write_report_artifact",
+    adapter_input_json: JSON.stringify({ path: "runs/run_1/artifact.txt", content: "hello" }),
+    action_summary: "Write runs/run_1/artifact.txt",
+    side_effect_level: "local_write",
+    risk_level: "medium",
+    affected_resources: ["path:runs/run_1/artifact.txt"],
+    requester: { kind: "user", id: "paco" },
+    expires_at: "2026-12-31T01:00:00.000Z"
+  });
+  return intake.run_id;
+}
 
 describe("Gateway telegram events", () => {
   it("deduplicates duplicate /status events without duplicate notifications", () => {
@@ -1693,16 +2013,20 @@ describe("Gateway telegram events", () => {
       const run_id = seedWaitingApprovalRun(store);
       const pending = store.getApprovalForRun(run_id, "pending");
       if (!pending) throw new Error("expected pending approval");
-      const event = buildTypedTaskEvent({
-        source: "telegram",
-        type: "approve",
-        approval_id: pending.approval_id,
-        requested_by: { kind: "user", id: "paco" },
-        notify: { kind: "telegram", chat_id: "222" },
-        idempotency_key: "telegram:approve-duplicate",
-        source_reference: "telegram:update:9:message:1",
-        metadata: { action_fingerprint: pending.action_fingerprint }
+      const normalized = normalizeTelegramUpdate({
+        update_id: 9,
+        message: {
+          message_id: 1,
+          text: `/approve ${pending.approval_id}`,
+          from: { id: 111 },
+          chat: { id: 222 }
+        }
+      }, {
+        users: [{ telegram_user_id: 111, identity_id: "paco" }],
+        chats: [{ telegram_chat_id: 222, label: "private", allowed_identity_ids: ["paco"] }]
       });
+      if (!normalized.ok) throw new Error("expected normalized approve");
+      const event = normalized.event;
 
       const first = gateway.intake(event);
       const second = gateway.intake(event);
@@ -1736,6 +2060,39 @@ describe("Gateway telegram events", () => {
       store.close();
     }
   });
+
+  it("throttles abusive telegram command volume per actor and chat", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      for (let i = 0; i < 5; i += 1) {
+        const result = gateway.intake(buildTypedTaskEvent({
+          source: "telegram",
+          type: "ask",
+          goal: `question ${i}`,
+          requested_by: { kind: "user", id: "paco" },
+          notify: { kind: "telegram", chat_id: "222" },
+          idempotency_key: `telegram:rate:${i}`,
+          source_reference: `telegram:update:${i}:message:1`
+        }));
+        expect(result.ok).toBe(true);
+      }
+      expect(gateway.intake(buildTypedTaskEvent({
+        source: "telegram",
+        type: "ask",
+        goal: "one too many",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:rate:blocked",
+        source_reference: "telegram:update:99:message:1"
+      }))).toEqual({
+        ok: false,
+        error: { code: "TELEGRAM_RATE_LIMITED", message: "Telegram command rate limit exceeded" }
+      });
+    } finally {
+      store.close();
+    }
+  });
 });
 ```
 
@@ -1751,7 +2108,21 @@ Expected: FAIL because processed-trigger replay and full approval prompt content
 
 - [ ] **Step 3: Add Gateway processed-trigger handling**
 
-At the top of `Gateway.intake(event)`:
+Extend `GatewayIntakeResult` with these result variants before editing behavior:
+
+```ts
+| { ok: true; status: "status_returned"; run_id?: string }
+| { ok: true; status: "approval_resolved"; run_id: string }
+```
+
+Restructure `Gateway.intake(event)` in this order:
+
+1. Validate/rate-limit Telegram commands with a deterministic injected `now`.
+2. Handle `status`, `approve`, and `deny` before `compileTaskContract`; these commands do not produce task contracts.
+3. Compile contracts only for `ask` and `run`.
+4. For created `ask`/`run`, enqueue the `progress` notification described in Task 7 after the run insert commits.
+
+At the top of `Gateway.intake(event)`, only for non-approval commands after rate-limit acceptance:
 
 ```ts
 const replay = this.runStore.beginTriggerProcessing(event);
@@ -1763,19 +2134,27 @@ if (replay.status === "conflict") {
 
 For `/status`, queue one notification with idempotency key `${event.idempotency_key}:status`, record the trigger result, and return `status_returned`.
 
-For `/approve` and `/deny`, call:
+For `/approve` and `/deny`, do not read `event.metadata.action_fingerprint` and do not trust Telegram-provided action metadata. Call the atomic store method:
 
 ```ts
-this.runStore.resolveApproval({
-  approval_id: event.approval_id,
+this.runStore.processApprovalTrigger({
+  event,
   decision,
-  requester: event.requested_by,
-  expected_action_fingerprint: String(event.metadata?.action_fingerprint ?? ""),
   resolved_at: event.created_at
 });
 ```
 
-Record successful approve/deny results with `recordTriggerProcessed(event, result)`.
+`processApprovalTrigger(...)` records successful approve/deny results with the processed trigger in the same transaction. Duplicate `/approve <id>` updates replay the stored result. A conflicting payload under the same idempotency key returns `TRIGGER_IDEMPOTENCY_CONFLICT`.
+
+Before accepting `ask`, `run`, `status`, `approve`, or `deny`, call `RunStore.checkTelegramRateLimit({ actor_id, chat_id, command, now })`.
+
+```ts
+export type TelegramRateLimitResult =
+  | { ok: true }
+  | { ok: false; error: { code: "TELEGRAM_RATE_LIMITED"; message: string; reason: "command_window" | "active_runs" | "pending_approvals" } };
+```
+
+The first Milestone-2 limit is conservative and durable: max 5 accepted commands per actor+chat per 60 seconds, max 3 active `queued`/`running`/`waiting_for_approval` runs per actor, and max 5 pending approvals per actor. `checkTelegramRateLimit` uses `telegram_command_audit` for command windows and `runs`/`approvals` for active counts. It receives `now` from Gateway for deterministic tests. Accepted and denied decisions insert `telegram_command_audit` rows in the same transaction as the Gateway command handling. Do not add `telegram_command_denied` to ledger types for pre-run denials; use the audit table.
 
 - [ ] **Step 4: Add full approval prompt content**
 
@@ -1866,7 +2245,7 @@ import type { TelegramAllowlist } from "../../src/domain/types.js";
 
 const allowlist: TelegramAllowlist = {
   users: [{ telegram_user_id: 111, identity_id: "paco" }],
-  chats: [{ telegram_chat_id: 222, label: "private" }]
+  chats: [{ telegram_chat_id: 222, label: "private", allowed_identity_ids: ["paco"] }]
 };
 
 function update(update_id: number) {
@@ -1893,7 +2272,7 @@ describe("createTelegramLongPollingAdapter", () => {
       }
     });
 
-    await expect(adapter.pollOnce(async () => undefined)).resolves.toEqual({ processed_updates: 1 });
+    await expect(adapter.pollOnce(async () => undefined)).resolves.toEqual({ processed_updates: 1, skipped_updates: 0 });
 
     expect(offsets).toEqual([42]);
   });
@@ -1914,6 +2293,50 @@ describe("createTelegramLongPollingAdapter", () => {
     })).rejects.toThrow("gateway intake failed");
 
     expect(offsets).toEqual([]);
+  });
+
+  it("advances offset for deterministic auth denial and unsupported commands", async () => {
+    const offsets: number[] = [];
+    const skipped: unknown[] = [];
+    const adapter = createTelegramLongPollingAdapter({
+      allowlist,
+      client: { getUpdates: async () => [
+        { update_id: 50, message: { message_id: 1, text: "/ask blocked", from: { id: 999 }, chat: { id: 222 } } },
+        { update_id: 51, message: { message_id: 2, text: "/teach remember", from: { id: 111 }, chat: { id: 222 } } }
+      ] },
+      offsetStore: {
+        getOffset: () => 0,
+        setOffset: (_source, offset) => offsets.push(offset)
+      },
+      skippedUpdateStore: {
+        recordSkippedTelegramUpdate: (input) => skipped.push(input)
+      }
+    });
+
+    await expect(adapter.pollOnce(async () => {
+      throw new Error("emit must not run for skipped updates");
+    })).resolves.toEqual({ processed_updates: 0, skipped_updates: 2 });
+
+    expect(offsets).toEqual([51, 52]);
+    expect(skipped).toHaveLength(2);
+  });
+
+  it("stops a multi-update batch without advancing past a transient intake failure", async () => {
+    const offsets: number[] = [];
+    const adapter = createTelegramLongPollingAdapter({
+      allowlist,
+      client: { getUpdates: async () => [update(60), update(61)] },
+      offsetStore: {
+        getOffset: () => 0,
+        setOffset: (_source, offset) => offsets.push(offset)
+      }
+    });
+
+    await expect(adapter.pollOnce(async (event) => {
+      if (event.source_reference.includes("update:61")) throw new Error("gateway intake failed");
+    })).rejects.toThrow("gateway intake failed");
+
+    expect(offsets).toEqual([61]);
   });
 });
 ```
@@ -1940,7 +2363,7 @@ describe("runTelegramPollOnce", () => {
         projectRoot: root,
         allowlist: {
           users: [{ telegram_user_id: 111, identity_id: "paco" }],
-          chats: [{ telegram_chat_id: 222, label: "private" }]
+          chats: [{ telegram_chat_id: 222, label: "private", allowed_identity_ids: ["paco"] }]
         },
         telegramClient: {
           getUpdates: async () => [{
@@ -1978,15 +2401,22 @@ Expected: FAIL because `getUpdates`, offset storage, and poll runner are missing
 
 Add `getUpdates()` to `TelegramClient`. Add `trigger_offsets` table and `RunStore.getOffset(source)` / `RunStore.setOffset(source, offset)`.
 
-In `createTelegramLongPollingAdapter`, call `offsetStore.setOffset("telegram", update.update_id + 1)` only after `await emit(normalized.event)` returns. If `emit` throws, let the error propagate and leave the offset unchanged.
+In `createTelegramLongPollingAdapter`, handle updates in ascending `update_id` order:
+
+- If parser/auth normalization fails deterministically, call `skippedUpdateStore.recordSkippedTelegramUpdate(...)`, then call `offsetStore.setOffset("telegram", update.update_id + 1)`.
+- If normalization succeeds, call `await emit(normalized.event)`, then call `offsetStore.setOffset("telegram", update.update_id + 1)`.
+- If `emit` throws, let the error propagate and leave the offset at the last successfully handled update. Do not process later updates in that batch.
+
+`pollOnce` must return `{ processed_updates, skipped_updates }` for adapter-level tests. `runTelegramPollOnce` may add worker and dispatch fields around that result.
 
 - [ ] **Step 4: Add telegram poll runner and CLI**
 
 Create `src/telegram/telegram-poll-runner.ts` with `runTelegramPollOnce({ store, projectRoot, allowlist, telegramClient })`. It must:
 
 - Create Gateway and long polling adapter.
-- For each emitted event, call `Gateway.intake(event)`.
+- For each emitted event, call `Gateway.intake(event)`. The emit contract is: deterministic Gateway denials return a handled result and are audited; transient storage/process failures throw. Treat `TELEGRAM_RATE_LIMITED`, `APPROVAL_NOT_FOUND`, and `TRIGGER_IDEMPOTENCY_CONFLICT` as handled `ok:false` results for offset advancement; thrown store errors leave the offset unchanged.
 - If intake returns a created run, call `CoreWorker.executeRun(run_id, "telegram-poll-worker")`.
+- Before dispatching, call `store.expirePendingApprovals(new Date().toISOString())` and `store.expireUndeliveredApprovalPrompts(new Date().toISOString())`.
 - Dispatch outbox notifications until dispatcher returns idle.
 - Return `{ processed_updates, worker_status, dispatch_results }`.
 
@@ -1998,10 +2428,9 @@ Run:
 
 ```bash
 npm test -- tests/telegram/telegram-client.test.ts tests/triggers/telegram-long-polling.test.ts tests/telegram/telegram-poll-runner.test.ts
-npm run houge -- telegram-parser-smoke "/run research-brief smoke"
 ```
 
-Expected: tests PASS. Smoke prints parsed command JSON with `"ok": true`.
+Expected: tests PASS.
 
 - [ ] **Step 6: Commit**
 
@@ -2049,6 +2478,24 @@ it("fails milestone-2 when executable output differs from golden output", () => 
   expect(result.passed).toBe(false);
   expect(result.failed).toContain("milestone-2-parser-auth");
 });
+```
+
+Add the options shape to `src/eval/eval-runner.ts` before implementing the cases:
+
+```ts
+export type EvalFixtureExecutableFile =
+  | { name: string; type: "parser-auth"; input: { text: string; from_id: number; chat_id: number } }
+  | { name: string; type: "outbox-delivery"; input: { target: { kind: "telegram"; chat_id: string }; text: string } }
+  | { name: string; type: "approval-resume"; input: { goal: string; requester: string } }
+  | { name: string; type: "ask-path"; input: { text: string } };
+
+export interface EvalRunOptions {
+  fixtureOverride?: EvalFixtureExecutableFile;
+}
+
+export function runEvalSuite(projectRoot: string, suiteName: string, options: EvalRunOptions = {}) {
+  // Existing non-executable suite behavior stays unchanged; executable cases use options.fixtureOverride when names match.
+}
 ```
 
 - [ ] **Step 2: Add suite, fixtures, and golden outputs**
@@ -2126,6 +2573,7 @@ Add `houge outbox-smoke` and keep `houge telegram-parser-smoke`:
       target: { kind: "local" },
       intent_type: "progress",
       idempotency_key: "smoke:progress",
+      correlation_id: "smoke:progress",
       payload: { text: "outbox smoke" }
     });
     console.log(JSON.stringify({ ok: true, notification_id: record.notification_id }, null, 2));
@@ -2193,7 +2641,7 @@ Expected:
 - CapabilityRunner policy revalidation and CoreWorker parking/resume: Task 6.
 - Notification outbox dispatch, retry, failure, stale lease recovery, delivery ledger events, prompt expiry: Task 7.
 - Gateway idempotency, duplicate status, duplicate approval, full prompt content: Task 8.
-- Long polling runner with offset persisted only after emit succeeds: Task 9.
+- Long polling runner with offset persisted after deterministic reject audit or durable Gateway intake: Task 9.
 - Executable/golden milestone-2 evals: Task 10.
 - Scope boundary preserved: Telegram sending only through NotificationOutbox delivery.
 
