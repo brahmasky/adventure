@@ -90,6 +90,7 @@ export type SideEffectLevel =
   | "paid";
 export type RiskLevel = "low" | "medium" | "high";
 export type PolicyDecision = "allow" | "deny" | "requires_approval";
+export type ApprovalDecision = "approved" | "denied";
 
 export interface BudgetSpec {
   time_minutes: number;
