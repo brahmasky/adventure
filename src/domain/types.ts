@@ -12,6 +12,22 @@ export type NotifyTarget =
   | { kind: "local" }
   | { kind: "telegram"; chat_id: string };
 
+export interface TelegramAllowlistedUser {
+  telegram_user_id: number;
+  identity_id: string;
+}
+
+export interface TelegramAllowlistedChat {
+  telegram_chat_id: number;
+  label: string;
+  allowed_identity_ids: string[];
+}
+
+export interface TelegramAllowlist {
+  users: TelegramAllowlistedUser[];
+  chats: TelegramAllowlistedChat[];
+}
+
 export interface TypedTaskEventInput {
   source: TriggerSource;
   type: TaskEventType;
