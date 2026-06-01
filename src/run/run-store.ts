@@ -63,6 +63,18 @@ interface RunRow {
   lease_expires_at: string | null;
 }
 
+export interface RunStatusRow {
+  run_id: string;
+  source: string;
+  type: string;
+  program: string | null;
+  goal: string | null;
+  state: RunState;
+  created_at: string;
+  updated_at: string;
+  event_count: number;
+}
+
 export class RunStore {
   private constructor(private readonly db: SqliteDatabase) {
     this.db.exec("PRAGMA busy_timeout = 5000");
@@ -179,6 +191,45 @@ export class RunStore {
 
   getLedgerEvents(run_id?: string): LedgerEvent[] {
     return readLedgerEvents(this.db, run_id);
+  }
+
+  getRunStatus(run_id: string): RunStatusRow | undefined {
+    return this.db.prepare(`
+      SELECT
+        runs.run_id,
+        runs.source,
+        runs.type,
+        runs.program,
+        runs.goal,
+        runs.state,
+        runs.created_at,
+        runs.updated_at,
+        COUNT(ledger_events.event_id) AS event_count
+      FROM runs
+      LEFT JOIN ledger_events ON ledger_events.run_id = runs.run_id
+      WHERE runs.run_id = ?
+      GROUP BY runs.run_id
+    `).get<RunStatusRow>(run_id);
+  }
+
+  listRecentRunStatuses(limit: number): RunStatusRow[] {
+    return this.db.prepare(`
+      SELECT
+        runs.run_id,
+        runs.source,
+        runs.type,
+        runs.program,
+        runs.goal,
+        runs.state,
+        runs.created_at,
+        runs.updated_at,
+        COUNT(ledger_events.event_id) AS event_count
+      FROM runs
+      LEFT JOIN ledger_events ON ledger_events.run_id = runs.run_id
+      GROUP BY runs.run_id
+      ORDER BY runs.updated_at DESC
+      LIMIT ?
+    `).all<RunStatusRow>(limit);
   }
 
   recordReportWritten(run_id: string, report_ref: string, report_hash: string, partial: boolean): void {

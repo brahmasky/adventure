@@ -41,6 +41,16 @@ if (command === "run") {
   } finally {
     store.close();
   }
+} else if (command === "status") {
+  const { queryStatus } = await import("./status/status-query.js");
+  const store = RunStore.open("houge.sqlite");
+  try {
+    const result = queryStatus(store, rest[0]);
+    console.log(JSON.stringify(result, null, 2));
+    process.exitCode = result.ok ? 0 : 1;
+  } finally {
+    store.close();
+  }
 } else if (command === "eval") {
   const suite = rest[0] ?? "milestone-0";
   const result = runEvalSuite(process.cwd(), suite);
