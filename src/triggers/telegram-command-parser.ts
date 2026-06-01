@@ -14,15 +14,18 @@ export type TelegramCommandParseResult =
 export function parseTelegramCommand(text: string): TelegramCommandParseResult {
   const trimmed = text.trim();
   if (!trimmed.startsWith("/")) return invalid("Telegram command must start with /");
-  const [rawCommand, ...rest] = splitShellWords(trimmed);
+  const words = splitShellWords(trimmed);
+  if (!words.ok) return words;
+
+  const [rawCommand, ...rest] = words.words;
   const command = rawCommand?.split("@")[0] ?? "";
   const args = rest.join(" ").trim();
 
   if (command === "/ask") return args ? { ok: true, command: { type: "ask", goal: args } } : invalid("/ask requires a question");
   if (command === "/run") return parseRun(rest);
-  if (command === "/status") return args ? { ok: true, command: { type: "status", run_id: args } } : { ok: true, command: { type: "status" } };
-  if (command === "/approve") return requiredApproval("approve", args);
-  if (command === "/deny") return requiredApproval("deny", args);
+  if (command === "/status") return parseStatus(rest);
+  if (command === "/approve") return requiredApproval("approve", rest);
+  if (command === "/deny") return requiredApproval("deny", rest);
   return { ok: false, error: { code: "TELEGRAM_COMMAND_UNSUPPORTED", message: `Unsupported command: ${command}` } };
 }
 
@@ -34,7 +37,16 @@ function parseRun(words: string[]): TelegramCommandParseResult {
   return { ok: true, command: { type: "run", program, goal } };
 }
 
-function requiredApproval(type: Extract<TaskEventType, "approve" | "deny">, approval_id: string): TelegramCommandParseResult {
+function parseStatus(words: string[]): TelegramCommandParseResult {
+  if (words.length === 0) return { ok: true, command: { type: "status" } };
+  if (words.length > 1) return invalid("/status requires at most one run id");
+  const run_id = words[0];
+  return run_id ? { ok: true, command: { type: "status", run_id } } : { ok: true, command: { type: "status" } };
+}
+
+function requiredApproval(type: Extract<TaskEventType, "approve" | "deny">, words: string[]): TelegramCommandParseResult {
+  const [approval_id] = words;
+  if (words.length > 1) return invalid(`/${type} requires exactly one approval id`);
   return approval_id ? { ok: true, command: { type, approval_id } } : invalid(`/${type} requires an approval id`);
 }
 
@@ -42,7 +54,32 @@ function invalid(message: string): TelegramCommandParseResult {
   return { ok: false, error: { code: "TELEGRAM_COMMAND_INVALID", message } };
 }
 
-function splitShellWords(input: string): string[] {
-  const matches = input.match(/"([^"]*)"|'([^']*)'|\S+/g) ?? [];
-  return matches.map((part) => part.replace(/^["']|["']$/g, ""));
+type SplitShellWordsResult = { ok: true; words: string[] } | { ok: false; error: { code: "TELEGRAM_COMMAND_INVALID"; message: string } };
+
+function splitShellWords(input: string): SplitShellWordsResult {
+  const words: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | undefined;
+
+  for (const character of input) {
+    if (quote) {
+      if (character === quote) quote = undefined;
+      else current += character;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (/\s/.test(character)) {
+      if (current) words.push(current);
+      current = "";
+    } else {
+      current += character;
+    }
+  }
+
+  if (quote) return invalidSplit("Unterminated quote");
+  if (current) words.push(current);
+  return { ok: true, words };
+}
+
+function invalidSplit(message: string): SplitShellWordsResult {
+  return { ok: false, error: { code: "TELEGRAM_COMMAND_INVALID", message } };
 }

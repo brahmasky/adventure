@@ -39,4 +39,45 @@ describe("parseTelegramCommand", () => {
       error: { code: "TELEGRAM_COMMAND_INVALID", message: "/run requires a goal" }
     });
   });
+
+  it("rejects malformed quoted input", () => {
+    expect(parseTelegramCommand('/run research-brief "compare gateway designs')).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "Unterminated quote" }
+    });
+  });
+
+  it("rejects extra tokens for single-id commands", () => {
+    expect(parseTelegramCommand("/approve appr_abc please")).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/approve requires exactly one approval id" }
+    });
+    expect(parseTelegramCommand("/deny appr_abc please")).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/deny requires exactly one approval id" }
+    });
+    expect(parseTelegramCommand("/status run_123 extra")).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/status requires at most one run id" }
+    });
+  });
+
+  it("covers no-argument command branches", () => {
+    expect(parseTelegramCommand("/ask")).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/ask requires a question" }
+    });
+    expect(parseTelegramCommand("/approve")).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/approve requires an approval id" }
+    });
+    expect(parseTelegramCommand("/deny")).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/deny requires an approval id" }
+    });
+    expect(parseTelegramCommand("/status")).toEqual({
+      ok: true,
+      command: { type: "status" }
+    });
+  });
 });
