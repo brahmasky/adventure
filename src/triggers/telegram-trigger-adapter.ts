@@ -10,6 +10,7 @@ export interface TelegramUpdate {
     message_id: number;
     text?: string;
     forward_date?: number;
+    forward_origin?: unknown;
     from?: { id: number };
     chat: { id: number };
   };
@@ -34,7 +35,7 @@ export function normalizeTelegramUpdate(update: TelegramUpdate, allowlist: Teleg
     {
       from_id: message.from?.id,
       chat_id: message.chat.id,
-      is_forwarded: typeof message.forward_date === "number",
+      is_forwarded: typeof message.forward_date === "number" || message.forward_origin !== undefined,
       is_channel_post: false
     },
     allowlist
