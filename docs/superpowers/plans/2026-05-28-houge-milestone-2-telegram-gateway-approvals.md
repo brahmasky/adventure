@@ -1338,11 +1338,43 @@ npm test -- tests/run/run-store-approvals.test.ts
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 8: Run live local validation, not smoke**
+
+Run a real Houge local run after the Task 5 schema and approval-store changes are in place. This is intentionally not a parser/outbox smoke command; it verifies the existing local run path still works against the migrated store.
 
 ```bash
-git add src/domain/types.ts src/run/run-store.ts tests/run/run-store-approvals.test.ts
+npm run houge -- run research-brief "task 5 live validation approval store"
+npm run houge -- status
+```
+
+Expected: the `run research-brief` command creates and completes a real run, writes a report under `runs/`, and exits 0. `houge status` exits 0 and shows the latest run in the local store. If either command fails, fix the regression before review.
+
+- [ ] **Step 9: Request code review before commit and push**
+
+Use `superpowers:requesting-code-review` before committing Task 5. Because the review is intentionally before commit, give the reviewer the uncommitted diff instead of a `HEAD_SHA`.
+
+Reviewer context:
+
+```text
+DESCRIPTION: Task 5 durable approval state, processed triggers, minimal notification schema, migration compatibility, skipped Telegram updates, and rate-limit/audit storage.
+PLAN_OR_REQUIREMENTS: Task 5 from docs/superpowers/plans/2026-05-28-houge-milestone-2-telegram-gateway-approvals.md
+BASE_SHA: $(git rev-parse HEAD)
+HEAD_SHA: uncommitted working tree
+DIFF: git diff -- src/domain/types.ts src/run/run-store.ts src/notifications/notification-types.ts tests/run/run-store-approvals.test.ts
+VERIFICATION:
+- npm test -- tests/run/run-store-approvals.test.ts
+- npm run houge -- run research-brief "task 5 live validation approval store"
+- npm run houge -- status
+```
+
+Fix all Critical and Important review findings before proceeding. Rerun the Task 5 tests and live validation after fixes.
+
+- [ ] **Step 10: Commit and push after review passes**
+
+```bash
+git add src/domain/types.ts src/run/run-store.ts src/notifications/notification-types.ts tests/run/run-store-approvals.test.ts
 git commit -m "feat: harden approval state"
+git push -u origin HEAD
 ```
 
 ## Task 6: CapabilityRunner Revalidation and CoreWorker Approval Resume
