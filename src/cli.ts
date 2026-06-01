@@ -42,6 +42,14 @@ if (command === "run") {
     store.close();
   }
 } else if (command === "status") {
+  if (rest.length > 1) {
+    console.log(JSON.stringify({
+      ok: false,
+      error: { code: "CLI_USAGE", message: "Usage: houge status [run_id]" }
+    }, null, 2));
+    process.exit(1);
+  }
+
   const { queryStatus } = await import("./status/status-query.js");
   const store = RunStore.open("houge.sqlite");
   try {

@@ -227,7 +227,7 @@ export class RunStore {
       FROM runs
       LEFT JOIN ledger_events ON ledger_events.run_id = runs.run_id
       GROUP BY runs.run_id
-      ORDER BY runs.updated_at DESC
+      ORDER BY runs.updated_at DESC, runs.run_id DESC
       LIMIT ?
     `).all<RunStatusRow>(limit);
   }

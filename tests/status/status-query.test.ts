@@ -37,4 +37,37 @@ describe("queryStatus", () => {
       store.close();
     }
   });
+
+  it("returns non-empty recent runs when runs exist", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const intake = new Gateway(store).intake(buildTypedTaskEvent({
+        source: "cli",
+        type: "run",
+        program: "research-brief",
+        goal: "summarize status projection",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "local" },
+        idempotency_key: "cli:status-recent",
+        source_reference: "argv"
+      }));
+      if (!intake.ok) throw new Error("expected intake");
+
+      expect(queryStatus(store)).toMatchObject({
+        ok: true,
+        status: {
+          runs: [
+            {
+              run_id: intake.run_id,
+              state: "queued",
+              program: "research-brief",
+              event_count: 2
+            }
+          ]
+        }
+      });
+    } finally {
+      store.close();
+    }
+  });
 });
