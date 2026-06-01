@@ -16,6 +16,10 @@ function invalid(message: string): TaskContractResult {
 }
 
 export function compileTaskContract(event: TypedTaskEvent): TaskContractResult {
+  if (event.type === "ask") {
+    return compileAskContract(event);
+  }
+
   if (event.type !== "run") {
     return invalid(`Unsupported event type: ${event.type}`);
   }
@@ -46,4 +50,20 @@ export function compileTaskContract(event: TypedTaskEvent): TaskContractResult {
       contract_hash: stableHash(base)
     }
   };
+}
+
+function compileAskContract(event: TypedTaskEvent): TaskContractResult {
+  if (event.program !== "ask") return invalid(`Unknown program: ${event.program ?? "(missing)"}`);
+  if (!event.goal?.trim()) return invalid("Question is required");
+  const base = {
+    objective: event.goal,
+    budget: { time_minutes: 5, max_tool_calls: 2, max_agent_delegations: 0 },
+    allowed_actions: ["local_file_read", "write_report"],
+    forbidden_actions: ["coding_agent_cli", "generic_shell", "external_write", "paid"],
+    output: { path: "runs/<run-id>/report.md", format: "sourced_markdown_report" as const },
+    approval_gates: ["external_write", "destructive", "paid"],
+    stop_condition: "concise answer report produced or budget exhausted",
+    eval_hooks: ["milestone-2-ask-path"]
+  };
+  return { ok: true, contract: { ...base, contract_hash: stableHash(base) } };
 }

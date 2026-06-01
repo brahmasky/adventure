@@ -133,4 +133,31 @@ describe("CoreWorker", () => {
       store.close();
     }
   });
+
+  it("executes /ask through run, capability, report, and ledger path", async () => {
+    const root = mkdtempSync(join(tmpdir(), "houge-ask-"));
+    writeFileSync(join(root, "AGENTS.md"), "Houge project rules");
+    const store = RunStore.openInMemory();
+    try {
+      const intake = new Gateway(store).intake(buildTypedTaskEvent({
+        source: "telegram",
+        type: "ask",
+        program: "ask",
+        goal: "summarize local project rules",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:ask-path",
+        source_reference: "telegram:update:2:message:2"
+      }));
+      if (!intake.ok) throw new Error("Expected ask intake");
+
+      const result = await new CoreWorker(store, root).executeRun(intake.run_id, "worker-ask");
+
+      expect(result.status).toBe("completed");
+      expect(store.getRunState(intake.run_id)).toBe("completed");
+      expect(store.getLedgerEvents(intake.run_id).map((event) => event.event_type)).toContain("report_written");
+    } finally {
+      store.close();
+    }
+  });
 });
