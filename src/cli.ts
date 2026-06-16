@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 
+import { loadHougeEnv } from "./config/load-env.js";
 import { CoreWorker } from "./core/core-worker.js";
 import { Gateway } from "./gateway/gateway.js";
 import { runEvalSuite } from "./eval/eval-runner.js";
 import { getHougeVersion } from "./index.js";
 import { RunStore } from "./run/run-store.js";
 import { parseCliTrigger } from "./triggers/cli-trigger.js";
+
+// Load `.env` (cwd or $HOUGE_ENV_FILE) before any command reads configuration.
+// Real environment variables take precedence over the file.
+loadHougeEnv();
 
 const [, , command, ...rest] = process.argv;
 
