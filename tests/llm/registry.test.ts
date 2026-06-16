@@ -22,6 +22,11 @@ describe("buildLlmChain", () => {
     expect(chain.map((p) => p.name)).toEqual(["pi"]);
   });
 
+  it("resolves the kimi-api provider when named", () => {
+    const chain = buildLlmChain({ HOUGE_LLM_PROVIDERS: "kimi-api" } as NodeJS.ProcessEnv);
+    expect(chain.map((p) => p.name)).toEqual(["kimi-api"]);
+  });
+
   it("resolves a mixed anthropic,pi chain in order", () => {
     const chain = buildLlmChain({
       HOUGE_LLM_PROVIDERS: "anthropic,pi"
