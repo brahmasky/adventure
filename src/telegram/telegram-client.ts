@@ -7,6 +7,16 @@ export interface TelegramSendMessageResult {
   message_id: number;
 }
 
+export interface TelegramGetUpdatesInput {
+  offset: number;
+  timeout_seconds: number;
+}
+
+export interface TelegramRawUpdate {
+  update_id: number;
+  [key: string]: unknown;
+}
+
 /**
  * Minimal client boundary for sending Telegram messages. Production uses the
  * real Bot API over fetch; tests inject a fake `sendMessage` so no live network
@@ -16,20 +26,40 @@ export interface TelegramSendClient {
   sendMessage(input: TelegramSendMessageInput): Promise<TelegramSendMessageResult>;
 }
 
+/**
+ * Read side of the bot boundary used by the long-polling adapter. Tests inject
+ * a fake `getUpdates`; production uses the real bot API.
+ */
+export interface TelegramPollClient {
+  getUpdates(input: TelegramGetUpdatesInput): Promise<TelegramRawUpdate[]>;
+}
+
 export interface TelegramClientOptions {
   token: string;
+  /**
+   * Host base for the Telegram API (e.g. `https://api.telegram.org`). The
+   * client appends `/bot<token>` before the method name.
+   */
   apiBaseUrl?: string;
+  /**
+   * Fully-qualified bot base URL (e.g. `https://host/bot<token>`). When
+   * provided, the method name is appended directly with no `/bot<token>`
+   * prefix. Takes precedence over `apiBaseUrl`.
+   */
+  apiBase?: string;
   fetchImpl?: typeof fetch;
 }
 
-export class TelegramClient implements TelegramSendClient {
+export class TelegramClient implements TelegramSendClient, TelegramPollClient {
   private readonly token: string;
-  private readonly apiBaseUrl: string;
+  private readonly botBaseUrl: string;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: TelegramClientOptions) {
     this.token = options.token;
-    this.apiBaseUrl = options.apiBaseUrl ?? "https://api.telegram.org";
+    this.botBaseUrl = options.apiBase
+      ? options.apiBase
+      : `${options.apiBaseUrl ?? "https://api.telegram.org"}/bot${options.token}`;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -38,7 +68,7 @@ export class TelegramClient implements TelegramSendClient {
       throw new Error("Telegram bot token is not configured");
     }
 
-    const response = await this.fetchImpl(`${this.apiBaseUrl}/bot${this.token}/sendMessage`, {
+    const response = await this.fetchImpl(`${this.botBaseUrl}/sendMessage`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ chat_id: input.chat_id, text: input.text })
@@ -58,5 +88,29 @@ export class TelegramClient implements TelegramSendClient {
     }
 
     return { message_id: body.result.message_id };
+  }
+
+  async getUpdates(input: TelegramGetUpdatesInput): Promise<TelegramRawUpdate[]> {
+    if (!this.token) {
+      throw new Error("Telegram bot token is not configured");
+    }
+
+    const url = `${this.botBaseUrl}/getUpdates?offset=${input.offset}&timeout=${input.timeout_seconds}`;
+    const response = await this.fetchImpl(url, { method: "GET" });
+
+    if (!response.ok) {
+      throw new Error(`Telegram getUpdates failed: HTTP ${response.status}`);
+    }
+
+    const body = (await response.json()) as {
+      ok: boolean;
+      result?: TelegramRawUpdate[];
+      description?: string;
+    };
+    if (!body.ok || !body.result) {
+      throw new Error(`Telegram getUpdates failed: ${body.description ?? "unknown error"}`);
+    }
+
+    return body.result;
   }
 }

@@ -390,6 +390,10 @@ export class CoreWorker {
 
     this.runStore.recordRunCompleted(claim.run_id, report.path, Date.now() - startedAt);
 
+    // The poll/dispatch loop delivers this terminal notification to the run's
+    // original notify target (Telegram chat or local sink).
+    this.runStore.enqueueFinalReportNotification(claim.run_id, { report_path: report.path });
+
     return {
       status: "completed",
       run_id: claim.run_id,

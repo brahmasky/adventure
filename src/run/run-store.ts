@@ -863,6 +863,72 @@ export class RunStore {
     }
   }
 
+  getOffset(source: string): number {
+    const row = this.db.prepare(`
+      SELECT offset
+      FROM trigger_offsets
+      WHERE source = ?
+    `).get<{ offset: number }>(source);
+    return row?.offset ?? 0;
+  }
+
+  setOffset(source: string, offset: number): void {
+    this.db.prepare(`
+      INSERT INTO trigger_offsets (source, offset, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(source) DO UPDATE SET offset = excluded.offset, updated_at = excluded.updated_at
+    `).run(source, offset, new Date().toISOString());
+  }
+
+  /**
+   * Enqueue the terminal `final_report` notification for a completed run,
+   * delivered to the run's original notify target. Idempotent on
+   * `${run_id}:final_report`.
+   */
+  enqueueFinalReportNotification(run_id: string, input: { report_path: string }): NotificationQueueResult {
+    return this.enqueueNotification({
+      target: this.getRunNotifyTarget(run_id),
+      intent_type: "final_report",
+      idempotency_key: `${run_id}:final_report`,
+      run_id,
+      correlation_id: run_id,
+      payload: {
+        text: `Run ${run_id} completed. Report: ${input.report_path}`,
+        report_path: input.report_path
+      }
+    });
+  }
+
+  /**
+   * Mark expired approval-prompt notifications (queued/retry_wait/sending) as
+   * `failed_terminal`, then expire the linked pending approvals so the waiting
+   * runs also resolve. Used by the poll runner before dispatch.
+   */
+  expireUndeliveredApprovalPrompts(now: string): void {
+    const rows = this.db.prepare(`
+      SELECT notification_id
+      FROM notification_outbox
+      WHERE intent_type = 'approval_prompt'
+        AND state IN ('queued', 'retry_wait', 'sending')
+        AND approval_id IN (
+          SELECT approval_id FROM approvals WHERE state = 'pending' AND expires_at <= ?
+        )
+    `).all<{ notification_id: string }>(now);
+
+    for (const row of rows) {
+      this.db.prepare(`
+        UPDATE notification_outbox
+        SET state = 'failed_terminal',
+            lease_owner = NULL,
+            lease_expires_at = NULL,
+            updated_at = ?
+        WHERE notification_id = ?
+      `).run(now, row.notification_id);
+    }
+
+    this.expirePendingApprovals(now);
+  }
+
   enqueueNotification(intent: NotificationIntent): NotificationQueueResult {
     const target_key = this.notificationTargetKey(intent.target);
     const payload_hash = stableHash(intent.payload);

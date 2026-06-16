@@ -83,3 +83,91 @@ function buildTelegramEvent(command: TelegramCommand, base: TelegramEventBase): 
       return buildTypedTaskEvent({ ...base, type: command.type, approval_id: command.approval_id });
   }
 }
+
+export interface TelegramOffsetStore {
+  getOffset(source: string): number;
+  setOffset(source: string, offset: number): void;
+}
+
+export interface TelegramSkippedUpdateStore {
+  recordSkippedTelegramUpdate(input: {
+    update_id: number;
+    reason_code: string;
+    reason_message: string;
+    skipped_at: string;
+  }): void;
+}
+
+export interface TelegramGetUpdatesClient {
+  getUpdates(input: { offset: number; timeout_seconds: number }): Promise<TelegramUpdate[]>;
+}
+
+export type TelegramEmit = (event: TypedTaskEvent) => Promise<void>;
+
+export interface TelegramLongPollingAdapterOptions {
+  allowlist: TelegramAllowlist;
+  client: TelegramGetUpdatesClient;
+  offsetStore: TelegramOffsetStore;
+  skippedUpdateStore?: TelegramSkippedUpdateStore;
+  timeout_seconds?: number;
+}
+
+export interface TelegramPollResult {
+  processed_updates: number;
+  skipped_updates: number;
+}
+
+export interface TelegramLongPollingAdapter {
+  pollOnce(emit: TelegramEmit): Promise<TelegramPollResult>;
+}
+
+const TELEGRAM_OFFSET_SOURCE = "telegram";
+
+/**
+ * Long-polling adapter. Each `pollOnce` fetches a batch of updates and processes
+ * them in ascending `update_id` order. Offset rules:
+ *   - deterministic parse/auth rejection: record the skipped update and advance
+ *     offset to `update_id + 1`.
+ *   - successful emit: advance offset to `update_id + 1`.
+ *   - emit throws: stop the batch, leave the offset at the last success so
+ *     Telegram redelivers the failing update on the next poll.
+ */
+export function createTelegramLongPollingAdapter(
+  options: TelegramLongPollingAdapterOptions
+): TelegramLongPollingAdapter {
+  const timeout_seconds = options.timeout_seconds ?? 0;
+
+  return {
+    async pollOnce(emit: TelegramEmit): Promise<TelegramPollResult> {
+      const offset = options.offsetStore.getOffset(TELEGRAM_OFFSET_SOURCE);
+      const updates = [...await options.client.getUpdates({ offset, timeout_seconds })]
+        .sort((left, right) => left.update_id - right.update_id);
+
+      let processed = 0;
+      let skipped = 0;
+
+      for (const update of updates) {
+        const normalized = normalizeTelegramUpdate(update, options.allowlist);
+        if (!normalized.ok) {
+          options.skippedUpdateStore?.recordSkippedTelegramUpdate({
+            update_id: update.update_id,
+            reason_code: normalized.error.code,
+            reason_message: normalized.error.message,
+            skipped_at: new Date().toISOString()
+          });
+          options.offsetStore.setOffset(TELEGRAM_OFFSET_SOURCE, update.update_id + 1);
+          skipped += 1;
+          continue;
+        }
+
+        // If emit throws, propagate without advancing the offset for this
+        // update so Telegram redelivers it. Earlier successes already advanced.
+        await emit(normalized.event);
+        options.offsetStore.setOffset(TELEGRAM_OFFSET_SOURCE, update.update_id + 1);
+        processed += 1;
+      }
+
+      return { processed_updates: processed, skipped_updates: skipped };
+    }
+  };
+}

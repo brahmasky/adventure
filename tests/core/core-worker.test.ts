@@ -41,7 +41,8 @@ describe("CoreWorker", () => {
           "worker_lease_acquired",
           "report_written",
           "worker_lease_released",
-          "run_completed"
+          "run_completed",
+          "notification_queued"
         ]);
       }
     } finally {

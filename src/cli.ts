@@ -86,6 +86,48 @@ if (command === "run") {
   } finally {
     store.close();
   }
+} else if (command === "telegram-poll") {
+  if (!rest.includes("--once")) {
+    console.error("Only --once is supported in Milestone 2");
+    process.exit(1);
+  }
+
+  const { TelegramClient } = await import("./telegram/telegram-client.js");
+  const { runTelegramPollOnce } = await import("./telegram/telegram-poll-runner.js");
+
+  const token = process.env.HOUGE_TELEGRAM_BOT_TOKEN;
+  const userId = process.env.HOUGE_TELEGRAM_USER_ID;
+  const chatId = process.env.HOUGE_TELEGRAM_CHAT_ID;
+
+  const missing = [
+    ["HOUGE_TELEGRAM_BOT_TOKEN", token],
+    ["HOUGE_TELEGRAM_USER_ID", userId],
+    ["HOUGE_TELEGRAM_CHAT_ID", chatId]
+  ].filter(([, value]) => !value).map(([name]) => name);
+
+  if (missing.length > 0) {
+    console.error(`Missing required Telegram environment variables: ${missing.join(", ")}`);
+    process.exit(1);
+  }
+
+  const allowlist = {
+    users: [{ telegram_user_id: Number(userId), identity_id: "paco" }],
+    chats: [{ telegram_chat_id: Number(chatId), label: "paco-private", allowed_identity_ids: ["paco"] }]
+  };
+
+  const store = RunStore.open("houge.sqlite");
+  try {
+    const result = await runTelegramPollOnce({
+      store,
+      projectRoot: process.cwd(),
+      allowlist,
+      telegramClient: new TelegramClient({ token: token! })
+    });
+    console.log(JSON.stringify(result, null, 2));
+    process.exitCode = 0;
+  } finally {
+    store.close();
+  }
 } else {
   console.error(`Unknown command: ${command}`);
   process.exit(1);
