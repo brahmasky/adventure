@@ -153,7 +153,7 @@ describe("CoreWorker", () => {
 
       const fakeLlm = async (input: Record<string, unknown>) => ({
         ok: true as const,
-        output: { question: input.question, answer: "Ship the local run engine.", model: "claude-haiku-4-5", provider: "anthropic" }
+        output: { question: input.question, answer: "Ship the local run engine.", model: "test-model", provider: "test-llm" }
       });
 
       const result = await new CoreWorker(store, root, fakeLlm).executeRun(intake.run_id, "worker-ask");
@@ -164,7 +164,7 @@ describe("CoreWorker", () => {
 
       const report = readFileSync(join(root, "runs", intake.run_id, "report.md"), "utf8");
       expect(report).toContain("Ship the local run engine.");
-      expect(report).toContain("llm:anthropic:claude-haiku-4-5");
+      expect(report).toContain("llm:test-llm:test-model");
     } finally {
       store.close();
     }

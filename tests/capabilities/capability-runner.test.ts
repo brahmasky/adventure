@@ -133,7 +133,7 @@ describe("CapabilityRunner", () => {
   });
 
   it("allows llm_answer (external_read) without approval and returns succeeded", async () => {
-    const output = { question: "hi", answer: "hello", model: "claude-haiku-4-5" };
+    const output = { question: "hi", answer: "hello", model: "test-model" };
     const registry = new ToolRegistry();
     const adapter = vi.fn(() => ({ ok: true as const, output }));
     registry.register({

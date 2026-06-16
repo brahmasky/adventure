@@ -23,13 +23,13 @@ describe("loadHougeEnv", () => {
     const path = writeEnv([
       "# Houge config",
       "HOUGE_TEST_TOKEN=from-file",
-      'HOUGE_TEST_MODEL="claude-sonnet-4-6"'
+      'HOUGE_TEST_MODEL="test-model-1"'
     ]);
 
     const applied = loadHougeEnv({ path });
 
     expect(process.env.HOUGE_TEST_TOKEN).toBe("from-file");
-    expect(process.env.HOUGE_TEST_MODEL).toBe("claude-sonnet-4-6");
+    expect(process.env.HOUGE_TEST_MODEL).toBe("test-model-1");
     expect(applied).toEqual(expect.arrayContaining(["HOUGE_TEST_TOKEN", "HOUGE_TEST_MODEL"]));
   });
 

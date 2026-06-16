@@ -7,7 +7,6 @@ import {
 } from "../../src/llm/registry.js";
 import { PI_DEFAULT_TIMEOUT_MS } from "../../src/llm/providers/pi.js";
 import { KIMI_DEFAULT_TIMEOUT_MS } from "../../src/llm/providers/kimi.js";
-import { ANTHROPIC_DEFAULT_TIMEOUT_MS } from "../../src/llm/providers/anthropic.js";
 import type { LlmProvider, LlmResult } from "../../src/llm/types.js";
 
 function provider(name: string, result: LlmResult): LlmProvider {
@@ -20,11 +19,6 @@ describe("buildLlmChain", () => {
     expect(chain.map((p) => p.name)).toEqual(["pi", "kimi-api"]);
   });
 
-  it("honors HOUGE_LLM_PROVIDERS for the anthropic provider", () => {
-    const chain = buildLlmChain({ HOUGE_LLM_PROVIDERS: " anthropic " } as NodeJS.ProcessEnv);
-    expect(chain.map((p) => p.name)).toEqual(["anthropic"]);
-  });
-
   it("resolves the pi provider when named (but does not default to it)", () => {
     const chain = buildLlmChain({ HOUGE_LLM_PROVIDERS: "pi" } as NodeJS.ProcessEnv);
     expect(chain.map((p) => p.name)).toEqual(["pi"]);
@@ -35,17 +29,23 @@ describe("buildLlmChain", () => {
     expect(chain.map((p) => p.name)).toEqual(["kimi-api"]);
   });
 
-  it("resolves a mixed anthropic,pi chain in order", () => {
+  it("resolves a mixed pi,kimi-api chain in order", () => {
     const chain = buildLlmChain({
-      HOUGE_LLM_PROVIDERS: "anthropic,pi"
+      HOUGE_LLM_PROVIDERS: "pi,kimi-api"
     } as NodeJS.ProcessEnv);
-    expect(chain.map((p) => p.name)).toEqual(["anthropic", "pi"]);
+    expect(chain.map((p) => p.name)).toEqual(["pi", "kimi-api"]);
   });
 
   it("throws a clear error on an unknown provider name", () => {
     expect(() =>
-      buildLlmChain({ HOUGE_LLM_PROVIDERS: "anthropic,kimi" } as NodeJS.ProcessEnv)
+      buildLlmChain({ HOUGE_LLM_PROVIDERS: "pi,kimi" } as NodeJS.ProcessEnv)
     ).toThrow("Unknown LLM provider: kimi");
+  });
+
+  it("treats anthropic as an unknown provider", () => {
+    expect(() =>
+      buildLlmChain({ HOUGE_LLM_PROVIDERS: "anthropic" } as NodeJS.ProcessEnv, {})
+    ).toThrow(/Unknown LLM provider: anthropic/);
   });
 });
 
@@ -71,13 +71,6 @@ describe("resolveChainBudgetMs", () => {
       HOUGE_LLM_TIMEOUT_MS: "20000"
     } as NodeJS.ProcessEnv);
     expect(budget).toBe(40_000);
-  });
-
-  it("sums anthropic's default budget when it is in the chain", () => {
-    const budget = resolveChainBudgetMs({
-      HOUGE_LLM_PROVIDERS: "anthropic"
-    } as NodeJS.ProcessEnv);
-    expect(budget).toBe(ANTHROPIC_DEFAULT_TIMEOUT_MS);
   });
 
   it("derives a runner timeout STRICTLY GREATER than the chain budget", () => {

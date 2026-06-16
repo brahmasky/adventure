@@ -8,7 +8,7 @@ export const KIMI_DEFAULT_BASE_URL = "https://api.moonshot.ai";
 export const KIMI_DEFAULT_TIMEOUT_MS = 30_000;
 
 /**
- * Kimi's fetch shape mirrors anthropic's {@link FetchImpl} but additionally
+ * Kimi's fetch shape is a minimal subset of `globalThis.fetch` that additionally
  * carries an optional `signal`, so the provider can enforce a per-call timeout
  * via an `AbortController`. Default impl is `globalThis.fetch`.
  */

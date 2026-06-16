@@ -1,9 +1,4 @@
 import {
-  ANTHROPIC_DEFAULT_TIMEOUT_MS,
-  createAnthropicProvider,
-  type LlmAnswerConfig
-} from "./providers/anthropic.js";
-import {
   createKimiProvider,
   KIMI_DEFAULT_TIMEOUT_MS,
   type KimiProviderConfig
@@ -16,7 +11,6 @@ import {
 import type { LlmProvider, LlmRequest, LlmResult } from "./types.js";
 
 export interface BuildLlmChainDeps {
-  anthropicConfig?: LlmAnswerConfig;
   piConfig?: PiProviderConfig;
   kimiConfig?: KimiProviderConfig;
 }
@@ -36,15 +30,13 @@ export const RUNNER_TIMEOUT_BUFFER_MS = 15_000;
  * provider module; this map only wires the chain-name to that constant. */
 const PROVIDER_DEFAULT_TIMEOUT_MS: Record<string, number> = {
   pi: PI_DEFAULT_TIMEOUT_MS,
-  "kimi-api": KIMI_DEFAULT_TIMEOUT_MS,
-  anthropic: ANTHROPIC_DEFAULT_TIMEOUT_MS
+  "kimi-api": KIMI_DEFAULT_TIMEOUT_MS
 };
 
 /** Per-provider override env var suffixes (`HOUGE_LLM_TIMEOUT_MS_<SUFFIX>`). */
 const PROVIDER_TIMEOUT_ENV_SUFFIX: Record<string, string> = {
   pi: "PI",
-  "kimi-api": "KIMI",
-  anthropic: "ANTHROPIC"
+  "kimi-api": "KIMI"
 };
 
 function parseProviderNames(env: NodeJS.ProcessEnv): string[] {
@@ -69,10 +61,9 @@ function numericEnv(raw: string | undefined): number | undefined {
 /**
  * Resolve the ordered provider chain from the environment.
  *
- * Known providers: `anthropic` (HTTP), `pi` (hardened CLI), and `kimi-api`
- * (OpenAI-compatible HTTP).
+ * Known providers: `pi` (hardened CLI) and `kimi-api` (OpenAI-compatible HTTP).
  * `HOUGE_LLM_PROVIDERS` (a comma-separated, ordered list) defaults to
- * `"pi,kimi-api"` — `anthropic` stays available but is no longer the default.
+ * `"pi,kimi-api"`.
  * Unknown provider names throw a clear error so misconfiguration fails loud.
  */
 export function buildLlmChain(
@@ -83,8 +74,6 @@ export function buildLlmChain(
 
   return names.map((name) => {
     switch (name) {
-      case "anthropic":
-        return createAnthropicProvider(deps.anthropicConfig);
       case "pi":
         return createPiProvider(deps.piConfig);
       case "kimi-api":

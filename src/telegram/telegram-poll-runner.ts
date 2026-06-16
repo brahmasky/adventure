@@ -27,7 +27,7 @@ export interface RunTelegramPollOnceOptions {
   projectRoot: string;
   allowlist: TelegramAllowlist;
   telegramClient: TelegramPollClient;
-  /** Amendment 1: injectable for tests; defaults to the real Claude adapter. */
+  /** Amendment 1: injectable for tests; defaults to the real LLM adapter. */
   llmAdapter?: (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
 }
 

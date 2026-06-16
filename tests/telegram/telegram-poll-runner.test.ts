@@ -16,7 +16,7 @@ describe("runTelegramPollOnce", () => {
         store,
         projectRoot: root,
         // Amendment 1: inject a fake llm adapter so the `/ask` run completes
-        // deterministically without ANTHROPIC_API_KEY / live network.
+        // deterministically without any provider credentials / live network.
         llmAdapter: async (input) => ({
           ok: true,
           output: {

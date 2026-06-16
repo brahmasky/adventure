@@ -35,13 +35,12 @@ Project-local Pi state such as `.pi/` should be treated as generated dependency/
 
 `/ask` resolves an ordered provider chain with automatic fallback (first `ok`
 wins; `unavailable`/error/timeout fall through). Known providers: `pi` (hardened
-single-shot CLI), `kimi-api` (OpenAI-compatible HTTP), `anthropic` (HTTP).
+single-shot CLI), `kimi-api` (OpenAI-compatible HTTP).
 
-- **Default chain:** `pi,kimi-api` (`HOUGE_LLM_PROVIDERS` unset). `anthropic`
-  stays available but is no longer default.
+- **Default chain:** `pi,kimi-api` (`HOUGE_LLM_PROVIDERS` unset).
 - **Config:** see `.env.example` for `HOUGE_LLM_PROVIDERS`, `HOUGE_LLM_MODEL[_PI/_KIMI]`,
   `HOUGE_LLM_TIMEOUT_MS[_PI/_KIMI]`, `KIMI_API_KEY`, `HOUGE_KIMI_BASE_URL`,
-  `HOUGE_PI_ENV_PASSTHROUGH`, `ANTHROPIC_API_KEY`. `HOUGE_LLM_PROVIDER` (singular)
+  `HOUGE_PI_ENV_PASSTHROUGH`. `HOUGE_LLM_PROVIDER` (singular)
   is ignored when the plural `HOUGE_LLM_PROVIDERS` is set.
 - **Runner timeout coupling:** the CapabilityRunner's `Promise.race` `timeout_ms`
   is the only enforced wall-clock bound (the contract's `time_minutes` is not
