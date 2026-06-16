@@ -168,7 +168,7 @@ describe("createPiProvider", () => {
   });
 
   describe("argv hardening", () => {
-    it("places the question LAST, after a literal '--', with the no-shell flags", async () => {
+    it("passes the question on STDIN (never argv) with the no-shell flags", async () => {
       const spawnImpl = vi.fn<SpawnImpl>(async () =>
         spawnResult({ stdout: jsonlSuccess("hi there") })
       );
@@ -176,8 +176,9 @@ describe("createPiProvider", () => {
 
       await provider.answer({ question: "What is up?" });
 
-      const [file, args] = spawnImpl.mock.calls[0]!;
+      const [file, args, opts] = spawnImpl.mock.calls[0]!;
       expect(file).toBe("pi");
+      // Flags only — the question is NOT an argv token.
       expect(args).toEqual([
         "-p",
         "--no-tools",
@@ -188,13 +189,12 @@ describe("createPiProvider", () => {
         "--mode",
         "json",
         "--model",
-        "pi-model-x",
-        "--",
-        "What is up?"
+        "pi-model-x"
       ]);
-      // The '--' immediately precedes the question and the question is final.
-      expect(args[args.length - 2]).toBe("--");
-      expect(args[args.length - 1]).toBe("What is up?");
+      expect(args).not.toContain("What is up?");
+      expect(args).not.toContain("--");
+      // The question is delivered on stdin.
+      expect(opts.input).toBe("What is up?");
     });
 
     it("omits --model when no model is configured", async () => {
@@ -207,13 +207,12 @@ describe("createPiProvider", () => {
 
       await provider.answer({ question: "hello" });
 
-      const [, args] = spawnImpl.mock.calls[0]!;
+      const [, args, opts] = spawnImpl.mock.calls[0]!;
       expect(args).not.toContain("--model");
-      expect(args[args.length - 2]).toBe("--");
-      expect(args[args.length - 1]).toBe("hello");
+      expect(opts.input).toBe("hello");
     });
 
-    it("delivers a question that looks like a flag as the PROMPT, not a flag", async () => {
+    it("delivers a flag-looking question as stdin, making argv injection impossible", async () => {
       const spawnImpl = vi.fn<SpawnImpl>(async () =>
         spawnResult({ stdout: jsonlSuccess("answer") })
       );
@@ -222,12 +221,14 @@ describe("createPiProvider", () => {
       const attack = "--model evil --dangerously-skip-permissions";
       await provider.answer({ question: attack });
 
-      const [, args] = spawnImpl.mock.calls[0]!;
-      // The attack lands as the single final arg, after '--'.
-      expect(args[args.length - 1]).toBe(attack);
-      expect(args[args.length - 2]).toBe("--");
-      // It must NOT have been split or treated as flags: only ONE occurrence of the model we set.
+      const [, args, opts] = spawnImpl.mock.calls[0]!;
+      // The attack is on stdin and appears NOWHERE in argv.
+      expect(opts.input).toBe(attack);
+      expect(args).not.toContain(attack);
       expect(args.filter((a) => a === "evil")).toHaveLength(0);
+      expect(args.filter((a) => a === "--dangerously-skip-permissions")).toHaveLength(0);
+      // Only the model we explicitly set is present.
+      expect(args.filter((a) => a === "--model")).toHaveLength(1);
     });
   });
 

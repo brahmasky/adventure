@@ -2,7 +2,7 @@
 // is classified `external_read` (ungated). Full agentic `coding_agent_cli`
 // delegation (tools enabled) stays denied until V2 containment. See the
 // "LLM providers > Policy amendment" section in README.md.
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import os from "node:os";
 import type { LlmProvider, LlmRequest, LlmResult } from "../types.js";
 
@@ -28,6 +28,13 @@ export interface SpawnOpts {
   cwd: string;
   env: Record<string, string>;
   maxBytes: number;
+  /**
+   * Text written to the child's stdin. The attacker-controlled question is
+   * delivered THIS way (not as an argv token), so a prompt that looks like a
+   * flag (`--model evil`) can never be parsed as one. pi reads its prompt from
+   * stdin in `-p` mode and does NOT support a `--` end-of-options separator.
+   */
+  input: string;
 }
 
 export type SpawnImpl = (
@@ -143,40 +150,69 @@ function extractAnswer(parsed: ParsedAnswer): string | undefined {
   return undefined;
 }
 
-/** Default spawn impl: wraps execFile, resolving (never rejecting) a SpawnResult. */
+/**
+ * Default spawn impl: uses `spawn` so the prompt is written to the child's
+ * stdin (never argv), resolving (never rejecting) a SpawnResult. Enforces our
+ * own timeout (SIGKILL) and a hard stdout byte cap (kills on overflow).
+ */
 const defaultSpawnImpl: SpawnImpl = (file, args, opts) =>
   new Promise<SpawnResult>((resolve) => {
-    execFile(
-      file,
-      args,
-      {
-        timeout: opts.timeoutMs,
-        killSignal: "SIGKILL",
-        cwd: opts.cwd,
-        env: opts.env,
-        maxBuffer: opts.maxBytes,
-        encoding: "utf8"
-      },
-      (error, stdout, stderr) => {
-        const out = String(stdout ?? "");
-        const err = String(stderr ?? "");
-        if (error) {
-          const e = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string };
-          const timedOut = e.killed === true && e.signal === "SIGKILL";
-          const base: SpawnResult = {
-            code: typeof e.code === "number" ? e.code : null,
-            stdout: out,
-            stderr: err,
-            timedOut
-          };
-          // A string `code` (e.g. "ENOENT") signals a spawn-level failure.
-          if (typeof e.code === "string") base.spawnError = { code: e.code };
-          resolve(base);
-          return;
+    let stdout = "";
+    let stderr = "";
+    let stdoutBytes = 0;
+    let overflow = false;
+    let timedOut = false;
+    let settled = false;
+
+    const child = spawn(file, args, { cwd: opts.cwd, env: opts.env });
+
+    const finish = (result: SpawnResult): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, opts.timeoutMs);
+
+    child.on("error", (error: NodeJS.ErrnoException) => {
+      // Spawn-level failure (e.g. ENOENT: binary missing).
+      const spawnError: { code?: string } = {};
+      if (error.code !== undefined) spawnError.code = error.code;
+      finish({ code: null, stdout, stderr, timedOut, spawnError });
+    });
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > opts.maxBytes) {
+        // Keep just enough to exceed the cap so the provider detects overflow,
+        // then kill to bound memory.
+        if (!overflow) {
+          overflow = true;
+          stdout += chunk.toString("utf8");
+          child.kill("SIGKILL");
         }
-        resolve({ code: 0, stdout: out, stderr: err, timedOut: false });
+        return;
       }
-    );
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+
+    child.on("close", (code) => {
+      finish({ code, stdout, stderr, timedOut });
+    });
+
+    // Deliver the prompt on stdin, then close it. Guard against EPIPE if the
+    // child exited before consuming stdin.
+    child.stdin?.on("error", () => {
+      /* ignore broken-pipe; the close/error handler resolves the outcome */
+    });
+    child.stdin?.end(opts.input);
   });
 
 export function createPiProvider(config: PiProviderConfig = {}): LlmProvider {
@@ -199,6 +235,9 @@ export function createPiProvider(config: PiProviderConfig = {}): LlmProvider {
 
       const maxBytes = config.maxBytes ?? PI_DEFAULT_MAX_BYTES;
 
+      // The question is delivered on stdin (see SpawnOpts.input), NEVER as an
+      // argv token — pi reads its prompt from stdin in -p mode and has no `--`
+      // separator, so this is the only injection-safe form.
       const args = [
         "-p",
         "--no-tools",
@@ -208,9 +247,7 @@ export function createPiProvider(config: PiProviderConfig = {}): LlmProvider {
         "--no-context-files",
         "--mode",
         "json",
-        ...(model ? ["--model", model] : []),
-        "--",
-        req.question
+        ...(model ? ["--model", model] : [])
       ];
 
       const env = buildChildEnv(process.env.HOUGE_PI_ENV_PASSTHROUGH);
@@ -221,7 +258,8 @@ export function createPiProvider(config: PiProviderConfig = {}): LlmProvider {
           timeoutMs,
           cwd: os.tmpdir(),
           env,
-          maxBytes
+          maxBytes,
+          input: req.question
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
