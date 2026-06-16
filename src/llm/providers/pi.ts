@@ -96,12 +96,15 @@ interface ParsedAnswer {
   messageEndText: string | undefined;
   /** Accumulated `text_delta` deltas (fallback). */
   deltaText: string;
+  /** Actual model id pi reported on the assistant message, for an accurate audit trail. */
+  model: string | undefined;
 }
 
 /** Parse pi's JSONL (`--mode json`) stdout line-by-line, defensively. */
 function parsePiJsonl(stdout: string): ParsedAnswer {
   let messageEndText: string | undefined;
   let deltaText = "";
+  let model: string | undefined;
 
   for (const rawLine of stdout.split("\n")) {
     const line = rawLine.trim();
@@ -126,6 +129,7 @@ function parsePiJsonl(stdout: string): ParsedAnswer {
             .map((block) => block.text as string)
             .join("");
           if (text.length > 0) messageEndText = text; // keep the LAST one
+          if (typeof msg.model === "string") model = msg.model; // actual model pi used
         }
       }
     } else if (obj.type === "message_update") {
@@ -139,7 +143,7 @@ function parsePiJsonl(stdout: string): ParsedAnswer {
     }
   }
 
-  return { messageEndText, deltaText };
+  return { messageEndText, deltaText, model };
 }
 
 function extractAnswer(parsed: ParsedAnswer): string | undefined {
@@ -238,11 +242,16 @@ export function createPiProvider(config: PiProviderConfig = {}): LlmProvider {
       // The question is delivered on stdin (see SpawnOpts.input), NEVER as an
       // argv token — pi reads its prompt from stdin in -p mode and has no `--`
       // separator, so this is the only injection-safe form.
+      //
+      // `--no-tools` is the real safety lever (disables read/bash/edit/write,
+      // built-in AND extension tools). We do NOT pass `--no-extensions` because
+      // some providers (e.g. kimi-coder) are registered via a pi extension; with
+      // tools already disabled, loading the extension only makes the model
+      // reachable, not capable of side effects.
       const args = [
         "-p",
         "--no-tools",
         "--no-session",
-        "--no-extensions",
         "--no-skills",
         "--no-context-files",
         "--mode",
@@ -324,7 +333,8 @@ export function createPiProvider(config: PiProviderConfig = {}): LlmProvider {
       return {
         ok: true,
         provider: "pi",
-        model: model ?? "pi-default",
+        // Prefer the model pi actually reported, then the configured one.
+        model: parsed.model ?? model ?? "pi-default",
         answer
       };
     }

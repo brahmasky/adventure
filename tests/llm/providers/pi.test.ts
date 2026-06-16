@@ -85,6 +85,22 @@ describe("createPiProvider", () => {
     });
   });
 
+  it("reports the model pi actually used (from message_end) over the configured one", async () => {
+    const stdout = [
+      JSON.stringify({ type: "session", sessionId: "abc" }),
+      JSON.stringify({
+        type: "message_end",
+        message: { role: "assistant", model: "kimi-k2.6", content: [{ type: "text", text: "OK" }] }
+      })
+    ].join("\n");
+    const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout }));
+    const provider = createPiProvider({ spawnImpl, model: "configured-x" });
+
+    const result = await provider.answer({ question: "hi" });
+
+    expect(result).toEqual({ ok: true, provider: "pi", model: "kimi-k2.6", answer: "OK" });
+  });
+
   it("concatenates multiple text blocks within message_end content", async () => {
     const stdout = [
       JSON.stringify({ type: "session" }),
@@ -183,7 +199,6 @@ describe("createPiProvider", () => {
         "-p",
         "--no-tools",
         "--no-session",
-        "--no-extensions",
         "--no-skills",
         "--no-context-files",
         "--mode",
@@ -191,6 +206,10 @@ describe("createPiProvider", () => {
         "--model",
         "pi-model-x"
       ]);
+      // --no-tools is kept (the real safety lever); --no-extensions is NOT
+      // passed, so extension-registered providers (e.g. kimi-coder) still load.
+      expect(args).toContain("--no-tools");
+      expect(args).not.toContain("--no-extensions");
       expect(args).not.toContain("What is up?");
       expect(args).not.toContain("--");
       // The question is delivered on stdin.

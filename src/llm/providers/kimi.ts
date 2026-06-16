@@ -1,6 +1,6 @@
 import type { LlmProvider, LlmRequest, LlmResult } from "../types.js";
 
-export const KIMI_DEFAULT_MODEL = "kimi-k2-0711-preview";
+export const KIMI_DEFAULT_MODEL = "kimi-k2.6";
 export const KIMI_DEFAULT_BASE_URL = "https://api.moonshot.ai";
 export const KIMI_DEFAULT_TIMEOUT_MS = 30_000;
 
