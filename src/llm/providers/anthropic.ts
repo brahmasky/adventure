@@ -2,6 +2,13 @@ import type { LlmProvider, LlmRequest, LlmResult } from "../types.js";
 
 export const DEFAULT_LLM_MODEL = "claude-haiku-4-5";
 
+/**
+ * Per-provider wall-clock budget used by {@link resolveChainBudgetMs}. Anthropic
+ * is HTTP-only (no spawned child); 30s is a sane cap for a single Messages call.
+ * Single source of truth — `resolveChainBudgetMs` sums these across the chain.
+ */
+export const ANTHROPIC_DEFAULT_TIMEOUT_MS = 30_000;
+
 export type FetchImpl = (
   url: string,
   init: { method: string; headers: Record<string, string>; body: string }

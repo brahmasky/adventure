@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { answerWithChain, buildLlmChain } from "../../src/llm/registry.js";
+import {
+  answerWithChain,
+  buildLlmChain,
+  resolveChainBudgetMs,
+  RUNNER_TIMEOUT_BUFFER_MS
+} from "../../src/llm/registry.js";
+import { PI_DEFAULT_TIMEOUT_MS } from "../../src/llm/providers/pi.js";
+import { KIMI_DEFAULT_TIMEOUT_MS } from "../../src/llm/providers/kimi.js";
+import { ANTHROPIC_DEFAULT_TIMEOUT_MS } from "../../src/llm/providers/anthropic.js";
 import type { LlmProvider, LlmResult } from "../../src/llm/types.js";
 
 function provider(name: string, result: LlmResult): LlmProvider {
@@ -7,9 +15,9 @@ function provider(name: string, result: LlmResult): LlmProvider {
 }
 
 describe("buildLlmChain", () => {
-  it("defaults to a single anthropic provider", () => {
+  it("defaults to the pi,kimi-api chain", () => {
     const chain = buildLlmChain({});
-    expect(chain.map((p) => p.name)).toEqual(["anthropic"]);
+    expect(chain.map((p) => p.name)).toEqual(["pi", "kimi-api"]);
   });
 
   it("honors HOUGE_LLM_PROVIDERS for the anthropic provider", () => {
@@ -38,6 +46,47 @@ describe("buildLlmChain", () => {
     expect(() =>
       buildLlmChain({ HOUGE_LLM_PROVIDERS: "anthropic,kimi" } as NodeJS.ProcessEnv)
     ).toThrow("Unknown LLM provider: kimi");
+  });
+});
+
+describe("resolveChainBudgetMs", () => {
+  it("sums the per-provider timeouts of the default pi,kimi-api chain", () => {
+    const budget = resolveChainBudgetMs({});
+    expect(budget).toBe(PI_DEFAULT_TIMEOUT_MS + KIMI_DEFAULT_TIMEOUT_MS);
+    expect(budget).toBe(90_000);
+  });
+
+  it("honors HOUGE_LLM_TIMEOUT_MS_<NAME> per-provider overrides", () => {
+    const budget = resolveChainBudgetMs({
+      HOUGE_LLM_PROVIDERS: "pi,kimi-api",
+      HOUGE_LLM_TIMEOUT_MS_PI: "10000",
+      HOUGE_LLM_TIMEOUT_MS_KIMI: "5000"
+    } as NodeJS.ProcessEnv);
+    expect(budget).toBe(15_000);
+  });
+
+  it("falls back to HOUGE_LLM_TIMEOUT_MS for providers without a specific override", () => {
+    const budget = resolveChainBudgetMs({
+      HOUGE_LLM_PROVIDERS: "pi,kimi-api",
+      HOUGE_LLM_TIMEOUT_MS: "20000"
+    } as NodeJS.ProcessEnv);
+    expect(budget).toBe(40_000);
+  });
+
+  it("sums anthropic's default budget when it is in the chain", () => {
+    const budget = resolveChainBudgetMs({
+      HOUGE_LLM_PROVIDERS: "anthropic"
+    } as NodeJS.ProcessEnv);
+    expect(budget).toBe(ANTHROPIC_DEFAULT_TIMEOUT_MS);
+  });
+
+  it("derives a runner timeout STRICTLY GREATER than the chain budget", () => {
+    // The runner's Promise.race timeout_ms must never kill a healthy chain that
+    // is legitimately falling through every provider.
+    const chainBudget = resolveChainBudgetMs({});
+    const runnerTimeout = chainBudget + RUNNER_TIMEOUT_BUFFER_MS;
+    expect(runnerTimeout).toBeGreaterThan(chainBudget);
+    expect(runnerTimeout).toBe(105_000);
   });
 });
 

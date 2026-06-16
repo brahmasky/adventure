@@ -4,6 +4,7 @@ import { CapabilityRunner } from "../capabilities/capability-runner.js";
 import type { ApprovalRequestSink, CapabilityResult } from "../capabilities/capability-runner.js";
 import { createLocalFileReadAdapter } from "../capabilities/local-file-read.js";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
+import { resolveChainBudgetMs, RUNNER_TIMEOUT_BUFFER_MS } from "../llm/registry.js";
 import { createLocalProjectWriteAdapter } from "../capabilities/local-project-write-adapter.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { canonicalJson, stableHash } from "../domain/canonical.js";
@@ -280,12 +281,18 @@ export class CoreWorker {
 
   private async executeAsk(claim: ClaimedRun): Promise<CoreWorkerResult> {
     const registry = new ToolRegistry();
+    // The runner's Promise.race is the ONLY enforced wall-clock bound (the
+    // contract's time_minutes is not enforced). Derive it from the chain so a
+    // healthy chain that legitimately falls through every provider is never
+    // killed mid-flight: sum(per-provider timeouts) + buffer. Default chain
+    // (pi 60s + kimi 30s) + 15s buffer = 105s.
+    const llmTimeoutMs = resolveChainBudgetMs(process.env) + RUNNER_TIMEOUT_BUFFER_MS;
     registry.register({
       name: "llm_answer",
       category: "tool",
       side_effect_level: "external_read",
       risk_level: "low",
-      timeout_ms: 30_000,
+      timeout_ms: llmTimeoutMs,
       output_limit_bytes: 100_000,
       execute: this.llmAdapter
     });

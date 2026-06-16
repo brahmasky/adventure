@@ -1,3 +1,7 @@
+// Policy: single-shot, tools-disabled, env-allowlisted, killable `pi` inference
+// is classified `external_read` (ungated). Full agentic `coding_agent_cli`
+// delegation (tools enabled) stays denied until V2 containment. See the
+// "LLM providers > Policy amendment" section in README.md.
 import { execFile } from "node:child_process";
 import os from "node:os";
 import type { LlmProvider, LlmRequest, LlmResult } from "../types.js";

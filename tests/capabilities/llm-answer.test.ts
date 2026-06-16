@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_LLM_MODEL,
   createLlmAnswerAdapter,
@@ -15,6 +15,22 @@ const textResponse = {
 };
 
 describe("createLlmAnswerAdapter", () => {
+  // These tests exercise the anthropic provider through env-based chain
+  // resolution. The real default chain is now `pi,kimi-api`, so pin the
+  // anthropic provider explicitly (otherwise pi would be tried first and the
+  // injected anthropic fetchImpl would never be called).
+  const prevProviders = process.env.HOUGE_LLM_PROVIDERS;
+  beforeEach(() => {
+    process.env.HOUGE_LLM_PROVIDERS = "anthropic";
+  });
+  afterEach(() => {
+    if (prevProviders === undefined) {
+      delete process.env.HOUGE_LLM_PROVIDERS;
+    } else {
+      process.env.HOUGE_LLM_PROVIDERS = prevProviders;
+    }
+  });
+
   it("returns the answer (with provider) and sends a correct Anthropic Messages request", async () => {
     const fetchImpl = vi.fn<FetchImpl>(async () => okResponse(textResponse));
     const adapter = createLlmAnswerAdapter({

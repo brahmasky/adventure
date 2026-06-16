@@ -31,6 +31,32 @@ pi install -l https://github.com/earendil-works/pi-chat
 
 Project-local Pi state such as `.pi/` should be treated as generated dependency/cache data, not source.
 
+## LLM providers
+
+`/ask` resolves an ordered provider chain with automatic fallback (first `ok`
+wins; `unavailable`/error/timeout fall through). Known providers: `pi` (hardened
+single-shot CLI), `kimi-api` (OpenAI-compatible HTTP), `anthropic` (HTTP).
+
+- **Default chain:** `pi,kimi-api` (`HOUGE_LLM_PROVIDERS` unset). `anthropic`
+  stays available but is no longer default.
+- **Config:** see `.env.example` for `HOUGE_LLM_PROVIDERS`, `HOUGE_LLM_MODEL[_PI/_KIMI]`,
+  `HOUGE_LLM_TIMEOUT_MS[_PI/_KIMI]`, `KIMI_API_KEY`, `HOUGE_KIMI_BASE_URL`,
+  `HOUGE_PI_ENV_PASSTHROUGH`, `ANTHROPIC_API_KEY`. `HOUGE_LLM_PROVIDER` (singular)
+  is ignored when the plural `HOUGE_LLM_PROVIDERS` is set.
+- **Runner timeout coupling:** the CapabilityRunner's `Promise.race` `timeout_ms`
+  is the only enforced wall-clock bound (the contract's `time_minutes` is not
+  enforced). It is *derived* from the chain — `sum(per-provider timeouts) +
+  buffer` (`resolveChainBudgetMs` + `RUNNER_TIMEOUT_BUFFER_MS`; default
+  60s + 30s + 15s = 105s) — so a healthy chain that legitimately falls through
+  every provider is never killed mid-flight.
+
+### Policy amendment (ratified)
+
+Single-shot, tools-disabled, env-allowlisted, killable CLI inference (`pi`) is
+classified `external_read` and is allowed ungated. Full agentic
+`coding_agent_cli` delegation (tools enabled) remains denied until V2
+containment.
+
 ## Key Documents
 
 - [AGENTS.md](AGENTS.md): project workflow, safety, and coding guidelines.
