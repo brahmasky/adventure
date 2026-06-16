@@ -130,6 +130,13 @@ if (command === "run") {
     });
     console.log(JSON.stringify(result, null, 2));
     process.exitCode = 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Telegram poll failed: ${message}`);
+    if (/HTTP 40[0134]/.test(message)) {
+      console.error("Check that HOUGE_TELEGRAM_BOT_TOKEN is a valid @BotFather token.");
+    }
+    process.exitCode = 1;
   } finally {
     store.close();
   }
