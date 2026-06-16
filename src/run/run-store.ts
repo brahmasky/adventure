@@ -936,6 +936,71 @@ export class RunStore {
     }
   }
 
+  getApprovalForRun(run_id: string, state: ApprovalState): ApprovalRequestRecord | undefined {
+    const row = this.db.prepare(`
+      SELECT *
+      FROM approvals
+      WHERE run_id = ? AND state = ?
+      ORDER BY created_at DESC, approval_id DESC
+    `).get<ApprovalRow>(run_id, state);
+    return row ? this.approvalRecordFromRow(row) : undefined;
+  }
+
+  getRunRequester(run_id: string): Identity {
+    const row = this.db.prepare(`
+      SELECT requested_by_json
+      FROM runs
+      WHERE run_id = ?
+    `).get<{ requested_by_json: string }>(run_id);
+    if (!row) {
+      throw new Error(`Run not found: ${run_id}`);
+    }
+
+    return JSON.parse(row.requested_by_json) as Identity;
+  }
+
+  getRunMetadata(run_id: string): Record<string, unknown> {
+    const row = this.db.prepare(`
+      SELECT event_json
+      FROM runs
+      WHERE run_id = ?
+    `).get<{ event_json: string }>(run_id);
+    if (!row) {
+      throw new Error(`Run not found: ${run_id}`);
+    }
+
+    const event = JSON.parse(row.event_json) as TypedTaskEvent;
+    return event.metadata ?? {};
+  }
+
+  getApprovedActionForRun(run_id: string): {
+    approval_id: string;
+    capability: string;
+    adapter_input_json: string;
+    adapter_input_hash: string;
+    action_fingerprint: string;
+    requester: Identity;
+  } | undefined {
+    const row = this.db.prepare(`
+      SELECT *
+      FROM approvals
+      WHERE run_id = ? AND state = 'approved'
+      ORDER BY created_at DESC, approval_id DESC
+    `).get<ApprovalRow>(run_id);
+    if (!row) {
+      return undefined;
+    }
+
+    return {
+      approval_id: row.approval_id,
+      capability: row.capability,
+      adapter_input_json: row.adapter_input_json,
+      adapter_input_hash: row.adapter_input_hash,
+      action_fingerprint: row.action_fingerprint,
+      requester: JSON.parse(row.requester_json) as Identity
+    };
+  }
+
   private getCreateOrGetExisting(event: TypedTaskEvent): CreateOrGetResult | null {
     const existing = this.db.prepare(`
       SELECT run_id, payload_hash

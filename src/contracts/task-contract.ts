@@ -1,5 +1,5 @@
 import { stableHash } from "../domain/canonical.js";
-import type { CompiledTaskContract, TypedTaskEvent } from "../domain/types.js";
+import type { CompiledTaskContract, SideEffectLevel, TypedTaskEvent } from "../domain/types.js";
 
 export type TaskContractResult =
   | { ok: true; contract: CompiledTaskContract }
@@ -38,7 +38,7 @@ export function compileTaskContract(event: TypedTaskEvent): TaskContractResult {
     allowed_actions: ["local_file_read", "write_report"],
     forbidden_actions: ["coding_agent_cli", "generic_shell", "external_write", "paid_action"],
     output: { path: "runs/<run-id>/report.md", format: "sourced_markdown_report" as const },
-    approval_gates: ["external_write", "destructive_file_action", "paid_action"],
+    approval_gates: ["local_write", "external_write", "destructive", "paid"] as SideEffectLevel[],
     stop_condition: "sourced local research brief produced or budget exhausted",
     eval_hooks: ["milestone-1-local-run"]
   };
@@ -61,7 +61,7 @@ function compileAskContract(event: TypedTaskEvent): TaskContractResult {
     allowed_actions: ["local_file_read", "write_report"],
     forbidden_actions: ["coding_agent_cli", "generic_shell", "external_write", "paid"],
     output: { path: "runs/<run-id>/report.md", format: "sourced_markdown_report" as const },
-    approval_gates: ["external_write", "destructive", "paid"],
+    approval_gates: ["local_write", "external_write", "destructive", "paid"] as SideEffectLevel[],
     stop_condition: "concise answer report produced or budget exhausted",
     eval_hooks: ["milestone-2-ask-path"]
   };

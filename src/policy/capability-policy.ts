@@ -7,14 +7,13 @@ export interface CapabilityDecisionInput {
   risk_level: RiskLevel;
   allowed_actions: string[];
   forbidden_actions: string[];
+  approval_gates: SideEffectLevel[];
 }
 
 export interface CapabilityDecision {
   decision: PolicyDecision;
   reason: string;
 }
-
-const gatedSideEffectLevels: SideEffectLevel[] = ["external_write", "destructive", "paid"];
 
 export function decideCapability(input: CapabilityDecisionInput): CapabilityDecision {
   if (input.category === "coding_agent_cli") {
@@ -32,7 +31,7 @@ export function decideCapability(input: CapabilityDecisionInput): CapabilityDeci
     return { decision: "deny", reason: "Capability not allowed by task contract" };
   }
 
-  if (gatedSideEffectLevels.includes(input.side_effect_level)) {
+  if (input.approval_gates.includes(input.side_effect_level)) {
     return { decision: "requires_approval", reason: "Capability has gated side effects" };
   }
 

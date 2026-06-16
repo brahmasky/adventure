@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { canonicalJson, stableHash } from "../domain/canonical.js";
-import type { CompiledTaskContract } from "../domain/types.js";
+import type { CompiledTaskContract, Identity } from "../domain/types.js";
 import { decideCapability } from "../policy/capability-policy.js";
 import type { ToolAdapterResult, ToolMetadata, ToolRegistry } from "../tools/tool-registry.js";
 import type { BudgetLedger } from "../budget/budget-ledger.js";
+import type { ApprovalRequestInput } from "../run/run-store.js";
 
 type ToolExecute = NonNullable<ToolMetadata["execute"]>;
 
@@ -27,7 +29,25 @@ export type CapabilityResult =
   | { status: "cancelled"; error_ref: string }
   | { status: "uncertain_outcome"; reconciliation_ref: string };
 
+export interface ApprovalRequestSink {
+  requestApproval(input: ApprovalRequestInput): { approval_id: string };
+  consumeApprovedApproval(input: {
+    run_id: string;
+    approval_id: string;
+    requester: Identity;
+    capability: string;
+    adapter_input_hash: string;
+    action_fingerprint: string;
+    tool_call_id: string;
+    operation_id: string;
+    consumed_at: string;
+  }): { ok: true; approval_id: string; state: "consumed" } | { ok: false; error: { code: string; message: string } };
+}
+
 export interface CapabilityExecutionInput {
+  run_id?: string;
+  requester?: Identity;
+  approved_approval_id?: string;
   contract: CompiledTaskContract;
   capability: string;
   input: Record<string, unknown>;
@@ -35,7 +55,10 @@ export interface CapabilityExecutionInput {
 }
 
 export class CapabilityRunner {
-  constructor(private readonly registry: ToolRegistry) {}
+  constructor(
+    private readonly registry: ToolRegistry,
+    private readonly approvals?: ApprovalRequestSink
+  ) {}
 
   async execute(input: CapabilityExecutionInput): Promise<CapabilityResult> {
     const metadata = this.registry.get(input.capability);
@@ -62,10 +85,18 @@ export class CapabilityRunner {
       side_effect_level: metadata.side_effect_level,
       risk_level: metadata.risk_level,
       allowed_actions: input.contract.allowed_actions,
-      forbidden_actions: input.contract.forbidden_actions
+      forbidden_actions: input.contract.forbidden_actions,
+      approval_gates: input.contract.approval_gates
     });
 
     if (decision.decision === "deny") {
+      if (input.approved_approval_id) {
+        return {
+          status: "denied_on_revalidation",
+          reason: decision.reason,
+          recovery_hint: "Report the blocked action to the user"
+        };
+      }
       return {
         status: "denied",
         reason: decision.reason,
@@ -73,12 +104,75 @@ export class CapabilityRunner {
       };
     }
 
+    // The verbatim Task 6 test asserts adapter_input_json === JSON.stringify(input.input)
+    // (insertion order preserved). stableHash re-canonicalizes regardless of key order,
+    // so adapter_input_hash === stableHash(JSON.parse(adapter_input_json)) still holds.
+    const adapter_input_json = JSON.stringify(input.input);
+    const adapter_input_hash = stableHash(input.input);
+    const action_fingerprint = stableHash({
+      capability: input.capability,
+      side_effect_level: metadata.side_effect_level,
+      risk_level: metadata.risk_level,
+      affected_resources: [...affectedResources(input.input)].sort(),
+      adapter_input_hash
+    });
+
     if (decision.decision === "requires_approval") {
-      return {
-        status: "denied",
-        reason: "Live approval channel is not available in Milestone 1",
-        recovery_hint: "Report the blocked action to the user"
-      };
+      if (!input.approved_approval_id) {
+        if (!this.approvals) {
+          return {
+            status: "denied",
+            reason: "Live approval channel is not available",
+            recovery_hint: "Report the blocked action to the user"
+          };
+        }
+
+        const requested = this.approvals.requestApproval({
+          run_id: input.run_id ?? "",
+          approval_type: "capability",
+          capability: input.capability,
+          action_fingerprint,
+          adapter_input_hash,
+          adapter_input_json,
+          action_summary: `Execute ${input.capability}`,
+          side_effect_level: metadata.side_effect_level,
+          risk_level: metadata.risk_level,
+          affected_resources: affectedResources(input.input),
+          requester: input.requester ?? { kind: "system", id: "core" },
+          expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+        });
+
+        return { status: "requires_approval", approval_id: requested.approval_id };
+      }
+    }
+
+    // Decision is allow, or requires_approval with an approved_approval_id present.
+    if (input.approved_approval_id) {
+      if (!this.approvals) {
+        return {
+          status: "failed",
+          error_ref: "Approval sink is not available for resume"
+        };
+      }
+
+      const consumption = this.approvals.consumeApprovedApproval({
+        run_id: input.run_id ?? "",
+        approval_id: input.approved_approval_id,
+        requester: input.requester ?? { kind: "system", id: "core" },
+        capability: input.capability,
+        adapter_input_hash,
+        action_fingerprint,
+        tool_call_id: `tool_${randomUUID()}`,
+        operation_id: `op_${randomUUID()}`,
+        consumed_at: new Date().toISOString()
+      });
+
+      if (!consumption.ok) {
+        return {
+          status: "failed",
+          error_ref: `${consumption.error.code}: ${consumption.error.message}`
+        };
+      }
     }
 
     return this.executeAdapter(metadata, input);
@@ -117,6 +211,10 @@ export class CapabilityRunner {
       return { status: "failed", error_ref: errorRef(error) };
     }
   }
+}
+
+function affectedResources(input: Record<string, unknown>): string[] {
+  return typeof input.path === "string" ? [`path:${input.path}`] : [];
 }
 
 class ToolTimeoutError extends Error {

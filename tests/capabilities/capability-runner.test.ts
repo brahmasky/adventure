@@ -76,7 +76,7 @@ describe("CapabilityRunner", () => {
     expect(adapter).not.toHaveBeenCalled();
   });
 
-  it("returns a deterministic Milestone 1 denial for approval-required capabilities", async () => {
+  it("denies approval-required capabilities when no approval sink is wired", async () => {
     const registry = new ToolRegistry();
     registry.register({
       name: "external_publish",
@@ -98,7 +98,7 @@ describe("CapabilityRunner", () => {
 
     expect(result).toEqual({
       status: "denied",
-      reason: "Live approval channel is not available in Milestone 1",
+      reason: "Live approval channel is not available",
       recovery_hint: "Report the blocked action to the user"
     });
   });

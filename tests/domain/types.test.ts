@@ -102,7 +102,7 @@ type CompiledTaskContractMatchesPlan = Expect<Equal<
     allowed_actions: string[];
     forbidden_actions: string[];
     output: { path: string; format: "sourced_markdown_report" };
-    approval_gates: string[];
+    approval_gates: SideEffectLevel[];
     stop_condition: string;
     contract_hash: string;
     eval_hooks: string[];
