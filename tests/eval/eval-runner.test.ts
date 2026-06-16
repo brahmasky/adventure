@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { runEvalSuite } from "../../src/eval/eval-runner.js";
 
 describe("runEvalSuite", () => {
-  it("fails when a required fixture file is missing", () => {
+  it("fails when a required fixture file is missing", async () => {
     const root = mkdtempSync(join(tmpdir(), "houge-eval-"));
     mkdirSync(join(root, "evals", "suites"), { recursive: true });
     writeFileSync(
@@ -13,14 +13,14 @@ describe("runEvalSuite", () => {
       JSON.stringify({ name: "milestone-0", required_fixtures: ["run-state-transition-table"] })
     );
 
-    expect(runEvalSuite(root, "milestone-0")).toEqual({
+    expect(await runEvalSuite(root, "milestone-0")).toEqual({
       suite: "milestone-0",
       passed: false,
       failed: ["run-state-transition-table"]
     });
   });
 
-  it("passes when all required fixture files include checks", () => {
+  it("passes when all required fixture files include checks", async () => {
     const root = mkdtempSync(join(tmpdir(), "houge-eval-"));
     mkdirSync(join(root, "evals", "suites"), { recursive: true });
     mkdirSync(join(root, "evals", "fixtures"), { recursive: true });
@@ -36,14 +36,14 @@ describe("runEvalSuite", () => {
       })
     );
 
-    expect(runEvalSuite(root, "milestone-0")).toEqual({
+    expect(await runEvalSuite(root, "milestone-0")).toEqual({
       suite: "milestone-0",
       passed: true,
       failed: []
     });
   });
 
-  it("fails when a required fixture has no checks", () => {
+  it("fails when a required fixture has no checks", async () => {
     const root = mkdtempSync(join(tmpdir(), "houge-eval-"));
     mkdirSync(join(root, "evals", "suites"), { recursive: true });
     mkdirSync(join(root, "evals", "fixtures"), { recursive: true });
@@ -56,10 +56,29 @@ describe("runEvalSuite", () => {
       JSON.stringify({ name: "local-cli-run", checks: [] })
     );
 
-    expect(runEvalSuite(root, "milestone-1")).toEqual({
+    expect(await runEvalSuite(root, "milestone-1")).toEqual({
       suite: "milestone-1",
       passed: false,
       failed: ["local-cli-run"]
     });
+  });
+
+  it("passes milestone-2 executable golden cases", async () => {
+    const result = await runEvalSuite(process.cwd(), "milestone-2");
+
+    expect(result).toEqual({ suite: "milestone-2", passed: true, failed: [] });
+  });
+
+  it("fails milestone-2 when executable output differs from golden output", async () => {
+    const result = await runEvalSuite(process.cwd(), "milestone-2", {
+      fixtureOverride: {
+        name: "milestone-2-parser-auth",
+        type: "parser-auth",
+        input: { text: "/unsupported", from_id: 111, chat_id: 222 }
+      }
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.failed).toContain("milestone-2-parser-auth");
   });
 });

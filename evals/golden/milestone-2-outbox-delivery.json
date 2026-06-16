@@ -1,0 +1,10 @@
+{
+  "notification_states": [
+    "sending",
+    "delivered"
+  ],
+  "provider_message_id": "telegram:1",
+  "ledger_events": [
+    "notification_delivered"
+  ]
+}

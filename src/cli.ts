@@ -61,7 +61,7 @@ if (command === "run") {
   }
 } else if (command === "eval") {
   const suite = rest[0] ?? "milestone-0";
-  const result = runEvalSuite(process.cwd(), suite);
+  const result = await runEvalSuite(process.cwd(), suite);
   const store = RunStore.open("houge.sqlite");
   try {
     store.recordEvalCompleted(result.suite, result.passed, result.failed);
@@ -125,6 +125,28 @@ if (command === "run") {
     });
     console.log(JSON.stringify(result, null, 2));
     process.exitCode = 0;
+  } finally {
+    store.close();
+  }
+} else if (command === "telegram-parser-smoke") {
+  const { parseTelegramCommand } = await import("./triggers/telegram-command-parser.js");
+  const text = rest.join(" ");
+  const parsed = parseTelegramCommand(text);
+  console.log(JSON.stringify(parsed.ok ? parsed.command : parsed, null, 2));
+  process.exit(parsed.ok ? 0 : 1);
+} else if (command === "outbox-smoke") {
+  const { NotificationOutbox } = await import("./notifications/notification-outbox.js");
+  const store = RunStore.openInMemory();
+  try {
+    const outbox = new NotificationOutbox(store);
+    const record = outbox.enqueue({
+      target: { kind: "local" },
+      intent_type: "progress",
+      idempotency_key: "smoke:progress",
+      correlation_id: "smoke:progress",
+      payload: { text: "outbox smoke" }
+    });
+    console.log(JSON.stringify({ ok: true, notification_id: record.notification_id }, null, 2));
   } finally {
     store.close();
   }

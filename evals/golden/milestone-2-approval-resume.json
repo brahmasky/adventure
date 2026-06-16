@@ -1,0 +1,19 @@
+{
+  "run_states": [
+    "queued",
+    "waiting_for_approval",
+    "queued",
+    "completed"
+  ],
+  "approval_states": [
+    "pending",
+    "approved",
+    "consumed"
+  ],
+  "ledger_events": [
+    "approval_requested",
+    "approval_resolved",
+    "tool_finished",
+    "run_completed"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "milestone-2",
+  "executable_cases": [
+    "milestone-2-parser-auth",
+    "milestone-2-outbox-delivery",
+    "milestone-2-approval-resume",
+    "milestone-2-ask-path"
+  ]
+}

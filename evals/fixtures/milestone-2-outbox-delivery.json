@@ -1,0 +1,1 @@
+{ "name": "milestone-2-outbox-delivery", "type": "outbox-delivery", "input": { "target": { "kind": "telegram", "chat_id": "222" }, "text": "Report ready" } }
