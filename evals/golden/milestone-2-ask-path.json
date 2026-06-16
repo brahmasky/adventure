@@ -9,7 +9,6 @@
     "run_completed"
   ],
   "outbox_intents": [
-    "progress",
     "final_report"
   ]
 }

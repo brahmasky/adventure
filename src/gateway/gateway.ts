@@ -125,7 +125,6 @@ export class Gateway {
       }
 
       if (resumed.resumed) {
-        this.enqueueProgress(event, created.run_id);
         this.recordTelegramAccepted(event, now);
         return { ok: true, status: "created", run_id: created.run_id };
       }
@@ -136,22 +135,12 @@ export class Gateway {
 
     const queued = this.attachAndQueue(created.run_id, contract.contract);
     if (queued.ok) {
-      this.enqueueProgress(event, created.run_id);
+      // No "queued" ack: a single-shot poll answers within seconds, so a
+      // progress message is just noise. The final answer is the only user-facing
+      // message. (A smarter "still working…" could return for long/async runs.)
       this.recordTelegramAccepted(event, now);
     }
     return queued;
-  }
-
-  private enqueueProgress(event: TypedTaskEvent, run_id: string): void {
-    if (event.source !== "telegram") return;
-    this.runStore.enqueueNotification({
-      target: event.notify,
-      intent_type: "progress",
-      idempotency_key: `${run_id}:progress:queued`,
-      run_id,
-      correlation_id: event.source_reference,
-      payload: { text: `Queued ${run_id}` }
-    });
   }
 
   private recordTelegramAccepted(event: TypedTaskEvent, now: string): void {

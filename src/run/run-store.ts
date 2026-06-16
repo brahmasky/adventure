@@ -885,7 +885,10 @@ export class RunStore {
    * delivered to the run's original notify target. Idempotent on
    * `${run_id}:final_report`.
    */
-  enqueueFinalReportNotification(run_id: string, input: { report_path: string }): NotificationQueueResult {
+  enqueueFinalReportNotification(
+    run_id: string,
+    input: { text: string; report_path: string }
+  ): NotificationQueueResult {
     return this.enqueueNotification({
       target: this.getRunNotifyTarget(run_id),
       intent_type: "final_report",
@@ -893,7 +896,9 @@ export class RunStore {
       run_id,
       correlation_id: run_id,
       payload: {
-        text: `Run ${run_id} completed. Report: ${input.report_path}`,
+        // The user-facing message IS the answer/report body (no server path).
+        // Bounded to a Telegram-safe length; report_path stays for audit only.
+        text: truncateForChat(input.text),
         report_path: input.report_path
       }
     });
@@ -2175,6 +2180,15 @@ const TELEGRAM_COMMAND_WINDOW_SECONDS = 60;
 const TELEGRAM_MAX_COMMANDS_PER_WINDOW = 5;
 const TELEGRAM_MAX_ACTIVE_RUNS = 3;
 const TELEGRAM_MAX_PENDING_APPROVALS = 5;
+
+// Telegram caps a message at 4096 chars; leave headroom for the truncation note.
+const CHAT_TEXT_MAX = 3900;
+
+function truncateForChat(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= CHAT_TEXT_MAX) return trimmed;
+  return `${trimmed.slice(0, CHAT_TEXT_MAX)}\n\n… (truncated)`;
+}
 
 function buildApprovalPromptText(approval_id: string, input: ApprovalRequestInput): string {
   return [

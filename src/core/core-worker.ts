@@ -275,7 +275,8 @@ export class CoreWorker {
         "",
         `Executed ${GATED_CAPABILITY}: ${JSON.stringify(result.output)}`
       ].join("\n"),
-      sources: typeof input.path === "string" ? [input.path] : []
+      sources: typeof input.path === "string" ? [input.path] : [],
+      notifyText: `Done: ${claim.contract.objective}`
     });
   }
 
@@ -314,7 +315,9 @@ export class CoreWorker {
     return this.writeCompletionReport(claim, {
       title: "Answer",
       body: [`Question: ${claim.contract.objective}`, "", answer].join("\n"),
-      sources: [`llm:${provider}:${model}`]
+      sources: [`llm:${provider}:${model}`],
+      // The chat reply is just the answer — the user already sees their question.
+      notifyText: answer
     });
   }
 
@@ -352,13 +355,14 @@ export class CoreWorker {
         "",
         content
       ].join("\n"),
-      sources: [source]
+      sources: [source],
+      notifyText: [`Research brief: ${claim.contract.objective}`, "", content].join("\n")
     });
   }
 
   private writeCompletionReport(
     claim: ClaimedRun,
-    input: { title: string; body: string; sources: string[] }
+    input: { title: string; body: string; sources: string[]; notifyText: string }
   ): CoreWorkerResult {
     const startedAt = Date.now();
     let report: { path: string; hash: string };
@@ -400,7 +404,10 @@ export class CoreWorker {
 
     // The poll/dispatch loop delivers this terminal notification to the run's
     // original notify target (Telegram chat or local sink).
-    this.runStore.enqueueFinalReportNotification(claim.run_id, { report_path: report.path });
+    this.runStore.enqueueFinalReportNotification(claim.run_id, {
+      text: input.notifyText,
+      report_path: report.path
+    });
 
     return {
       status: "completed",

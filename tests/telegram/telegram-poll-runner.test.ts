@@ -42,8 +42,10 @@ describe("runTelegramPollOnce", () => {
       });
 
       expect(result).toMatchObject({ processed_updates: 1, worker_status: "completed" });
-      expect(sent.some((text) => text.includes("Queued"))).toBe(true);
-      expect(sent.some((text) => text.includes("completed"))).toBe(true);
+      // No "Queued" progress noise — the only user-facing message is the answer.
+      expect(sent.some((text) => text.includes("Queued"))).toBe(false);
+      expect(sent.some((text) => text.includes("Houge is a deterministic agent harness."))).toBe(true);
+      expect(sent.every((text) => !text.includes("report.md"))).toBe(true);
     } finally {
       store.close();
     }
