@@ -5,3 +5,5 @@ runs/
 artifacts/
 node_modules/
 .worktrees/
+.env
+.env.*
