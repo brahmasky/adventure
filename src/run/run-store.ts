@@ -848,6 +848,222 @@ export class RunStore {
     return { status: "queued", record: this.getNotificationRecord(notification_id) };
   }
 
+  getNotification(notification_id: string): NotificationRecord | undefined {
+    const row = this.db.prepare(`
+      SELECT notification_id
+      FROM notification_outbox
+      WHERE notification_id = ?
+    `).get<{ notification_id: string }>(notification_id);
+    return row ? this.getNotificationRecord(row.notification_id) : undefined;
+  }
+
+  countNotificationsByIdempotencyKey(idempotency_key: string): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM notification_outbox
+      WHERE idempotency_key = ?
+    `).get<{ count: number }>(idempotency_key);
+    return row?.count ?? 0;
+  }
+
+  claimNextNotification(lease_owner: string, lease_ttl_seconds: number): NotificationRecord | null {
+    const now = new Date().toISOString();
+    const lease_expires_at = this.addSeconds(now, lease_ttl_seconds);
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const updated = this.db.prepare(`
+        UPDATE notification_outbox
+        SET state = 'sending',
+            lease_owner = ?,
+            lease_expires_at = ?,
+            attempt_count = attempt_count + 1,
+            updated_at = ?
+        WHERE notification_id = (
+          SELECT notification_id
+          FROM notification_outbox
+          WHERE state = 'queued' AND next_attempt_at <= ?
+          ORDER BY next_attempt_at ASC, created_at ASC
+          LIMIT 1
+        )
+      `).run(lease_owner, lease_expires_at, now, now);
+
+      if (updated.changes !== 1) {
+        this.db.exec("COMMIT");
+        activeTransaction = false;
+        return null;
+      }
+
+      const claimed = this.db.prepare(`
+        SELECT notification_id
+        FROM notification_outbox
+        WHERE lease_owner = ? AND state = 'sending'
+        ORDER BY updated_at DESC, notification_id DESC
+        LIMIT 1
+      `).get<{ notification_id: string }>(lease_owner);
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+      return claimed ? this.getNotificationRecord(claimed.notification_id) : null;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
+  }
+
+  markNotificationDelivered(notification_id: string, provider_message_id: string): void {
+    const now = new Date().toISOString();
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const record = this.getNotificationRecord(notification_id);
+      const updated = this.db.prepare(`
+        UPDATE notification_outbox
+        SET state = 'delivered',
+            provider_message_id = ?,
+            lease_owner = NULL,
+            lease_expires_at = NULL,
+            updated_at = ?
+        WHERE notification_id = ? AND state = 'sending'
+      `).run(provider_message_id, now, notification_id);
+      if (updated.changes !== 1) {
+        throw new Error(`Notification not in sending state: ${notification_id}`);
+      }
+
+      this.appendNotificationLedgerEvent(record, "notification_delivered", {
+        notification_id,
+        target: record.target,
+        adapter: record.target.kind,
+        delivered_at: now,
+        provider_message_id,
+        run_id: record.run_id,
+        approval_id: record.approval_id,
+        correlation_id: record.correlation_id
+      });
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
+  }
+
+  markNotificationFailed(
+    notification_id: string,
+    error_ref: string,
+    retryable: boolean,
+    now: string,
+    max_attempts: number
+  ): void {
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const record = this.getNotificationRecord(notification_id);
+      const willRetry = retryable && record.attempt_count < max_attempts;
+      const nextState = willRetry ? "retry_wait" : "failed_terminal";
+      const next_attempt_at = willRetry ? now : record.next_attempt_at;
+
+      const updated = this.db.prepare(`
+        UPDATE notification_outbox
+        SET state = ?,
+            next_attempt_at = ?,
+            lease_owner = NULL,
+            lease_expires_at = NULL,
+            updated_at = ?
+        WHERE notification_id = ? AND state = 'sending'
+      `).run(nextState, next_attempt_at, now, notification_id);
+      if (updated.changes !== 1) {
+        throw new Error(`Notification not in sending state: ${notification_id}`);
+      }
+
+      this.appendNotificationLedgerEvent(record, "notification_failed", {
+        notification_id,
+        target: record.target,
+        adapter: record.target.kind,
+        error_ref,
+        retryable: willRetry,
+        run_id: record.run_id,
+        approval_id: record.approval_id,
+        correlation_id: record.correlation_id
+      });
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
+  }
+
+  requeueRetryWaitNotifications(now: string): string[] {
+    const rows = this.db.prepare(`
+      SELECT notification_id
+      FROM notification_outbox
+      WHERE state = 'retry_wait' AND next_attempt_at <= ?
+      ORDER BY next_attempt_at ASC, created_at ASC
+    `).all<{ notification_id: string }>(now);
+
+    const requeued: string[] = [];
+    for (const row of rows) {
+      const updated = this.db.prepare(`
+        UPDATE notification_outbox
+        SET state = 'queued',
+            next_attempt_at = ?,
+            lease_owner = NULL,
+            lease_expires_at = NULL,
+            updated_at = ?
+        WHERE notification_id = ? AND state = 'retry_wait'
+      `).run(now, now, row.notification_id);
+      if (updated.changes === 1) {
+        requeued.push(row.notification_id);
+      }
+    }
+
+    return requeued;
+  }
+
+  recoverStaleSendingNotifications(now: string): string[] {
+    const rows = this.db.prepare(`
+      SELECT notification_id
+      FROM notification_outbox
+      WHERE state = 'sending'
+        AND lease_expires_at IS NOT NULL
+        AND (lease_expires_at <= ? OR lease_expires_at <= updated_at)
+      ORDER BY lease_expires_at ASC, created_at ASC
+    `).all<{ notification_id: string }>(now);
+
+    const recovered: string[] = [];
+    for (const row of rows) {
+      const updated = this.db.prepare(`
+        UPDATE notification_outbox
+        SET state = 'queued',
+            next_attempt_at = ?,
+            lease_owner = NULL,
+            lease_expires_at = NULL,
+            updated_at = ?
+        WHERE notification_id = ? AND state = 'sending'
+      `).run(now, now, row.notification_id);
+      if (updated.changes === 1) {
+        recovered.push(row.notification_id);
+      }
+    }
+
+    return recovered;
+  }
+
   consumeApprovedApproval(input: {
     approval_id: string;
     run_id: string;
@@ -1312,6 +1528,24 @@ export class RunStore {
 
   private notificationTargetKey(target: NotificationIntent["target"]): string {
     return target.kind === "local" ? "local" : `telegram:${target.chat_id}`;
+  }
+
+  private appendNotificationLedgerEvent(
+    record: NotificationRecord,
+    event_type: LedgerEventType,
+    payload: Record<string, unknown>
+  ): void {
+    const event: Parameters<typeof createLedgerEvent>[0] = {
+      correlation_id: record.correlation_id,
+      event_type,
+      actor: "notification_outbox",
+      sequence: this.nextLedgerSequence(record.run_id ?? undefined),
+      payload
+    };
+    if (record.run_id) {
+      event.run_id = record.run_id;
+    }
+    this.appendLedgerEvent(createLedgerEvent(event));
   }
 
   private appendRunLedgerEvent(

@@ -70,6 +70,22 @@ if (command === "run") {
   }
   console.log(JSON.stringify(result, null, 2));
   process.exit(result.passed ? 0 : 1);
+} else if (command === "send-outbox") {
+  const { NotificationOutbox } = await import("./notifications/notification-outbox.js");
+  const { NotificationDispatcher } = await import("./notifications/notification-dispatcher.js");
+  const { LocalNotificationAdapter } = await import("./notifications/local-notification-adapter.js");
+  const { TelegramNotificationAdapter } = await import("./notifications/telegram-notification-adapter.js");
+  const { TelegramClient } = await import("./telegram/telegram-client.js");
+  const store = RunStore.open("houge.sqlite");
+  try {
+    const dispatcher = new NotificationDispatcher(new NotificationOutbox(store), {
+      local: new LocalNotificationAdapter(),
+      telegram: new TelegramNotificationAdapter(new TelegramClient({ token: process.env.HOUGE_TELEGRAM_BOT_TOKEN ?? "" }))
+    });
+    console.log(JSON.stringify(await dispatcher.dispatchOnce("cli-send-outbox"), null, 2));
+  } finally {
+    store.close();
+  }
 } else {
   console.error(`Unknown command: ${command}`);
   process.exit(1);
