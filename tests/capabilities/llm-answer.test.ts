@@ -4,6 +4,7 @@ import {
   createLlmAnswerAdapter,
   type FetchImpl
 } from "../../src/capabilities/llm-answer.js";
+import type { LlmProvider } from "../../src/llm/types.js";
 
 function okResponse(json: unknown, status = 200): Awaited<ReturnType<FetchImpl>> {
   return { ok: status >= 200 && status < 300, status, json: async () => json };
@@ -14,7 +15,7 @@ const textResponse = {
 };
 
 describe("createLlmAnswerAdapter", () => {
-  it("returns the answer and sends a correct Anthropic Messages request", async () => {
+  it("returns the answer (with provider) and sends a correct Anthropic Messages request", async () => {
     const fetchImpl = vi.fn<FetchImpl>(async () => okResponse(textResponse));
     const adapter = createLlmAnswerAdapter({
       apiKey: "test-key",
@@ -29,7 +30,8 @@ describe("createLlmAnswerAdapter", () => {
       output: {
         question: "What is the capital of France?",
         answer: "The capital of France is Paris.",
-        model: "claude-sonnet-4-6"
+        model: "claude-sonnet-4-6",
+        provider: "anthropic"
       }
     });
 
@@ -54,24 +56,14 @@ describe("createLlmAnswerAdapter", () => {
 
     expect(result).toEqual({
       ok: true,
-      output: { question: "ping", answer: "The capital of France is Paris.", model: DEFAULT_LLM_MODEL }
+      output: {
+        question: "ping",
+        answer: "The capital of France is Paris.",
+        model: DEFAULT_LLM_MODEL,
+        provider: "anthropic"
+      }
     });
     expect(JSON.parse(fetchImpl.mock.calls[0]![1].body).model).toBe("claude-haiku-4-5");
-  });
-
-  it("fails without calling fetch when the API key is missing", async () => {
-    const fetchImpl = vi.fn(async () => okResponse(textResponse));
-    const original = process.env.ANTHROPIC_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
-    try {
-      const adapter = createLlmAnswerAdapter({ model: "claude-sonnet-4-6", fetchImpl });
-      const result = await adapter({ question: "hi" });
-
-      expect(result).toEqual({ ok: false, error: "ANTHROPIC_API_KEY is not set" });
-      expect(fetchImpl).not.toHaveBeenCalled();
-    } finally {
-      if (original !== undefined) process.env.ANTHROPIC_API_KEY = original;
-    }
   });
 
   it("rejects a missing or empty question without calling fetch", async () => {
@@ -89,32 +81,33 @@ describe("createLlmAnswerAdapter", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("maps a non-2xx HTTP response to a structured error", async () => {
+  it("maps a chain failure to a flat capability error", async () => {
     const fetchImpl = vi.fn(async () => okResponse({ error: "rate limited" }, 429));
     const adapter = createLlmAnswerAdapter({ apiKey: "test-key", model: "claude-sonnet-4-6", fetchImpl });
 
     const result = await adapter({ question: "hi" });
 
-    expect(result).toEqual({ ok: false, error: "LLM request returned HTTP 429" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("anthropic");
+      expect(result.error).toContain("HTTP 429");
+    }
   });
 
-  it("fails when the response has no text content block", async () => {
-    const fetchImpl = vi.fn(async () => okResponse({ content: [] }));
-    const adapter = createLlmAnswerAdapter({ apiKey: "test-key", model: "claude-sonnet-4-6", fetchImpl });
+  it("supports an injected provider chain (no env / network)", async () => {
+    const fakeProvider: LlmProvider = {
+      name: "fake",
+      async answer(req) {
+        return { ok: true, provider: "fake", model: "fake-model", answer: `echo:${req.question}` };
+      }
+    };
+    const adapter = createLlmAnswerAdapter({ chain: [fakeProvider] });
 
     const result = await adapter({ question: "hi" });
 
-    expect(result).toEqual({ ok: false, error: "LLM response missing text content" });
-  });
-
-  it("maps a thrown fetch error to a structured failure", async () => {
-    const fetchImpl = vi.fn(async () => {
-      throw new Error("socket hang up");
+    expect(result).toEqual({
+      ok: true,
+      output: { question: "hi", answer: "echo:hi", model: "fake-model", provider: "fake" }
     });
-    const adapter = createLlmAnswerAdapter({ apiKey: "test-key", model: "claude-sonnet-4-6", fetchImpl });
-
-    const result = await adapter({ question: "hi" });
-
-    expect(result).toEqual({ ok: false, error: "LLM request failed: socket hang up" });
   });
 });

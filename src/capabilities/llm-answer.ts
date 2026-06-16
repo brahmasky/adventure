@@ -1,87 +1,46 @@
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
+import { answerWithChain, buildLlmChain } from "../llm/registry.js";
+import type { LlmProvider } from "../llm/types.js";
+import {
+  DEFAULT_LLM_MODEL,
+  type FetchImpl,
+  type LlmAnswerConfig
+} from "../llm/providers/anthropic.js";
 
-export const DEFAULT_LLM_MODEL = "claude-haiku-4-5";
+export { DEFAULT_LLM_MODEL };
+export type { FetchImpl, LlmAnswerConfig };
 
-export type FetchImpl = (
-  url: string,
-  init: { method: string; headers: Record<string, string>; body: string }
-) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
-
-export interface LlmAnswerConfig {
-  apiKey?: string;
-  model?: string;
-  maxTokens?: number;
-  fetchImpl?: FetchImpl;
-  baseUrl?: string;
-}
-
-interface AnthropicTextBlock {
-  type: string;
-  text?: unknown;
-}
-
-function findTextBlock(data: unknown): string | undefined {
-  if (typeof data !== "object" || data === null) return undefined;
-  const content = (data as { content?: unknown }).content;
-  if (!Array.isArray(content)) return undefined;
-  for (const block of content as AnthropicTextBlock[]) {
-    if (block && block.type === "text" && typeof block.text === "string") {
-      return block.text;
-    }
-  }
-  return undefined;
+export interface LlmAnswerAdapterConfig extends LlmAnswerConfig {
+  /** Inject a pre-built provider chain (tests). Bypasses env-based resolution. */
+  chain?: LlmProvider[];
 }
 
 export function createLlmAnswerAdapter(
-  config: LlmAnswerConfig = {}
+  config: LlmAnswerAdapterConfig = {}
 ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
+  const { chain: injectedChain, ...anthropicConfig } = config;
+
   return async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
     const question = input.question;
     if (typeof question !== "string" || question.length === 0) {
       return { ok: false, error: "question must be a non-empty string" };
     }
 
-    const apiKey = config.apiKey ?? process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      return { ok: false, error: "ANTHROPIC_API_KEY is not set" };
+    const chain = injectedChain ?? buildLlmChain(process.env, { anthropicConfig });
+    const result = await answerWithChain(chain, { question });
+
+    if (!result.ok) {
+      return { ok: false, error: result.error };
     }
 
-    const model = config.model ?? process.env.HOUGE_LLM_MODEL ?? DEFAULT_LLM_MODEL;
-    const baseUrl = config.baseUrl ?? "https://api.anthropic.com/v1/messages";
-    const body = {
-      model,
-      max_tokens: config.maxTokens ?? 1024,
-      messages: [{ role: "user", content: question }]
+    return {
+      ok: true,
+      output: {
+        question,
+        answer: result.answer,
+        model: result.model,
+        provider: result.provider
+      }
     };
-
-    const fetchImpl = config.fetchImpl ?? (globalThis.fetch as unknown as FetchImpl);
-
-    let response: Awaited<ReturnType<FetchImpl>>;
-    try {
-      response = await fetchImpl(baseUrl, {
-        method: "POST",
-        headers: {
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json"
-        },
-        body: JSON.stringify(body)
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return { ok: false, error: `LLM request failed: ${message}` };
-    }
-
-    if (!response.ok) {
-      return { ok: false, error: `LLM request returned HTTP ${response.status}` };
-    }
-
-    const data = await response.json();
-    const answer = findTextBlock(data);
-    if (answer === undefined) {
-      return { ok: false, error: "LLM response missing text content" };
-    }
-
-    return { ok: true, output: { question, answer, model } };
   };
 }

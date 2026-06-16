@@ -136,7 +136,7 @@ const fakeLlmAdapter = async (
   const question = typeof input.question === "string" ? input.question : "";
   return {
     ok: true,
-    output: { question, answer: "Deterministic eval answer.", model: "eval-fake" }
+    output: { question, answer: "Deterministic eval answer.", model: "eval-fake", provider: "eval-fake" }
   };
 };
 

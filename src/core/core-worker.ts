@@ -303,10 +303,11 @@ export class CoreWorker {
 
     const answer = typeof result.output.answer === "string" ? result.output.answer : "";
     const model = typeof result.output.model === "string" ? result.output.model : "unknown";
+    const provider = typeof result.output.provider === "string" ? result.output.provider : "unknown";
     return this.writeCompletionReport(claim, {
       title: "Answer",
       body: [`Question: ${claim.contract.objective}`, "", answer].join("\n"),
-      sources: [`llm:${model}`]
+      sources: [`llm:${provider}:${model}`]
     });
   }
 
