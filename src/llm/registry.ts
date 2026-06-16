@@ -1,15 +1,18 @@
 import { createAnthropicProvider, type LlmAnswerConfig } from "./providers/anthropic.js";
+import { createPiProvider, type PiProviderConfig } from "./providers/pi.js";
 import type { LlmProvider, LlmRequest, LlmResult } from "./types.js";
 
 export interface BuildLlmChainDeps {
   anthropicConfig?: LlmAnswerConfig;
+  piConfig?: PiProviderConfig;
 }
 
 /**
  * Resolve the ordered provider chain from the environment.
  *
- * Phase 1: only the `anthropic` provider is known. `HOUGE_LLM_PROVIDERS` (a
- * comma-separated, ordered list) defaults to `"anthropic"`. Unknown provider
+ * Known providers: `anthropic` (HTTP) and `pi` (hardened CLI).
+ * `HOUGE_LLM_PROVIDERS` (a comma-separated, ordered list) defaults to
+ * `"anthropic"` — `pi` is selectable but not yet the default. Unknown provider
  * names throw a clear error so misconfiguration fails loud.
  */
 export function buildLlmChain(
@@ -30,6 +33,8 @@ export function buildLlmChain(
     switch (name) {
       case "anthropic":
         return createAnthropicProvider(deps.anthropicConfig);
+      case "pi":
+        return createPiProvider(deps.piConfig);
       default:
         throw new Error(`Unknown LLM provider: ${name}`);
     }

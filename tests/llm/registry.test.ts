@@ -17,6 +17,18 @@ describe("buildLlmChain", () => {
     expect(chain.map((p) => p.name)).toEqual(["anthropic"]);
   });
 
+  it("resolves the pi provider when named (but does not default to it)", () => {
+    const chain = buildLlmChain({ HOUGE_LLM_PROVIDERS: "pi" } as NodeJS.ProcessEnv);
+    expect(chain.map((p) => p.name)).toEqual(["pi"]);
+  });
+
+  it("resolves a mixed anthropic,pi chain in order", () => {
+    const chain = buildLlmChain({
+      HOUGE_LLM_PROVIDERS: "anthropic,pi"
+    } as NodeJS.ProcessEnv);
+    expect(chain.map((p) => p.name)).toEqual(["anthropic", "pi"]);
+  });
+
   it("throws a clear error on an unknown provider name", () => {
     expect(() =>
       buildLlmChain({ HOUGE_LLM_PROVIDERS: "anthropic,kimi" } as NodeJS.ProcessEnv)
