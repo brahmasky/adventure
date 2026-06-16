@@ -90,6 +90,32 @@ export interface ApprovalTriggerInput {
   resolved_at: string;
 }
 
+export type TelegramRateLimitReason = "command_window" | "active_runs" | "pending_approvals";
+
+export type TelegramRateLimitResult =
+  | { ok: true }
+  | {
+      ok: false;
+      error: { code: "TELEGRAM_RATE_LIMITED"; message: string; reason: TelegramRateLimitReason };
+    };
+
+export interface TelegramRateLimitInput {
+  actor_id: string;
+  chat_id: string;
+  command: string;
+  now: string;
+}
+
+export interface TelegramCommandAuditInput {
+  actor_id: string;
+  chat_id: string;
+  command: string;
+  source_reference: string;
+  decision: "accepted" | "denied";
+  reason_code?: string;
+  occurred_at: string;
+}
+
 type ApprovalErrorCode =
   | "APPROVAL_NOT_FOUND"
   | "APPROVAL_NOT_PENDING"
@@ -529,6 +555,68 @@ export class RunStore {
     `).run(input.update_id, input.reason_code, input.reason_message, input.skipped_at);
   }
 
+  checkTelegramRateLimit(input: TelegramRateLimitInput): TelegramRateLimitResult {
+    const windowStart = this.addSeconds(input.now, -TELEGRAM_COMMAND_WINDOW_SECONDS);
+    const windowRow = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM telegram_command_audit
+      WHERE actor_id = ?
+        AND chat_id = ?
+        AND decision = 'accepted'
+        AND occurred_at > ?
+    `).get<{ count: number }>(input.actor_id, input.chat_id, windowStart);
+    if ((windowRow?.count ?? 0) >= TELEGRAM_MAX_COMMANDS_PER_WINDOW) {
+      return telegramRateLimited("command_window");
+    }
+
+    const activeRow = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM runs
+      WHERE state IN ('queued', 'running', 'waiting_for_approval')
+        AND type = 'run'
+        AND json_extract(requested_by_json, '$.id') = ?
+    `).get<{ count: number }>(input.actor_id);
+    if ((activeRow?.count ?? 0) >= TELEGRAM_MAX_ACTIVE_RUNS) {
+      return telegramRateLimited("active_runs");
+    }
+
+    const pendingRow = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM approvals
+      WHERE state = 'pending'
+        AND json_extract(requester_json, '$.id') = ?
+    `).get<{ count: number }>(input.actor_id);
+    if ((pendingRow?.count ?? 0) >= TELEGRAM_MAX_PENDING_APPROVALS) {
+      return telegramRateLimited("pending_approvals");
+    }
+
+    return { ok: true };
+  }
+
+  recordTelegramCommandAudit(input: TelegramCommandAuditInput): void {
+    this.db.prepare(`
+      INSERT INTO telegram_command_audit (
+        audit_id,
+        actor_id,
+        chat_id,
+        command,
+        source_reference,
+        decision,
+        reason_code,
+        occurred_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      `tca_${randomUUID()}`,
+      input.actor_id,
+      input.chat_id,
+      input.command,
+      input.source_reference,
+      input.decision,
+      input.reason_code ?? null,
+      input.occurred_at
+    );
+  }
+
   createApprovalRequest(input: ApprovalRequestInput): ApprovalRequestRecord {
     const approval_id = `appr_${randomUUID()}`;
     const created_at = new Date().toISOString();
@@ -598,7 +686,10 @@ export class RunStore {
         run_id: input.run_id,
         approval_id,
         correlation_id: input.run_id,
-        payload: { text: input.action_summary, action_summary: input.action_summary }
+        payload: {
+          text: buildApprovalPromptText(approval_id, input),
+          action_summary: input.action_summary
+        }
       }));
 
       if (!this.transition(input.run_id, "running", "waiting_for_approval", "approval required")) {
@@ -2012,6 +2103,40 @@ export class RunStore {
       .all<{ name: string }>()
       .map((row) => row.name);
   }
+}
+
+const TELEGRAM_COMMAND_WINDOW_SECONDS = 60;
+const TELEGRAM_MAX_COMMANDS_PER_WINDOW = 5;
+const TELEGRAM_MAX_ACTIVE_RUNS = 3;
+const TELEGRAM_MAX_PENDING_APPROVALS = 5;
+
+function buildApprovalPromptText(approval_id: string, input: ApprovalRequestInput): string {
+  return [
+    `Approval required: ${approval_id}`,
+    `Action: ${input.action_summary}`,
+    `Side effect: ${input.side_effect_level}`,
+    `Risk: ${input.risk_level}`,
+    `Affected resources: ${input.affected_resources.join(", ")}`,
+    `Action fingerprint: ${input.action_fingerprint}`,
+    `Adapter input hash: ${input.adapter_input_hash}`,
+    `Requester: ${input.requester.kind}:${input.requester.id}`,
+    `Expires: ${input.expires_at}`,
+    "Expected run state: waiting_for_approval",
+    "Consequence if approved: the exact fingerprinted action may execute once after policy revalidation.",
+    "Consequence if denied or expired: the run is cancelled and reports the blocked action.",
+    `Reply /approve ${approval_id} to continue or /deny ${approval_id} to stop.`
+  ].join("\n");
+}
+
+function telegramRateLimited(reason: TelegramRateLimitReason): TelegramRateLimitResult {
+  return {
+    ok: false,
+    error: {
+      code: "TELEGRAM_RATE_LIMITED",
+      message: "Telegram command rate limit exceeded",
+      reason
+    }
+  };
 }
 
 function isTerminalRunState(state: RunState): boolean {

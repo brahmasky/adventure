@@ -53,7 +53,9 @@ export function compileTaskContract(event: TypedTaskEvent): TaskContractResult {
 }
 
 function compileAskContract(event: TypedTaskEvent): TaskContractResult {
-  if (event.program !== "ask") return invalid(`Unknown program: ${event.program ?? "(missing)"}`);
+  if (event.program !== undefined && event.program !== "ask") {
+    return invalid(`Unknown program: ${event.program}`);
+  }
   if (!event.goal?.trim()) return invalid("Question is required");
   const base = {
     objective: event.goal,
