@@ -1,6 +1,9 @@
 import type { LlmProvider, LlmRequest, LlmResult } from "../types.js";
 
-export const KIMI_DEFAULT_MODEL = "kimi-k2.6";
+// Conservative, stable LAST-RESORT default — `moonshot-v1-auto` is an alias that
+// won't 404 as specific k2.x versions retire. Set HOUGE_LLM_MODEL_KIMI to pin a
+// specific model (e.g. kimi-k2.7-code-highspeed). Never hardcode a churning id here.
+export const KIMI_DEFAULT_MODEL = "moonshot-v1-auto";
 export const KIMI_DEFAULT_BASE_URL = "https://api.moonshot.ai";
 export const KIMI_DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -64,7 +67,6 @@ export function createKimiProvider(config: KimiProviderConfig = {}): LlmProvider
         req.model ??
         config.model ??
         process.env.HOUGE_LLM_MODEL_KIMI ??
-        process.env.HOUGE_LLM_MODEL ??
         KIMI_DEFAULT_MODEL;
 
       const base = config.baseUrl ?? process.env.HOUGE_KIMI_BASE_URL ?? KIMI_DEFAULT_BASE_URL;

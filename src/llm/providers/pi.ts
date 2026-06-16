@@ -225,11 +225,10 @@ export function createPiProvider(config: PiProviderConfig = {}): LlmProvider {
   return {
     name: "pi",
     async answer(req: LlmRequest): Promise<LlmResult> {
-      const model =
-        req.model ??
-        config.model ??
-        process.env.HOUGE_LLM_MODEL_PI ??
-        process.env.HOUGE_LLM_MODEL;
+      // pi has NO Houge-side default model: when unset, --model is omitted and
+      // pi uses its OWN configured provider/model. We deliberately do NOT read
+      // the cross-provider global — pi's model namespace differs from the APIs'.
+      const model = req.model ?? config.model ?? process.env.HOUGE_LLM_MODEL_PI;
 
       const timeoutMs =
         config.timeoutMs ??

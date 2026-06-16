@@ -54,7 +54,7 @@ export function createAnthropicProvider(config: LlmAnswerConfig = {}): LlmProvid
       }
 
       const model =
-        req.model ?? config.model ?? process.env.HOUGE_LLM_MODEL ?? DEFAULT_LLM_MODEL;
+        req.model ?? config.model ?? process.env.HOUGE_LLM_MODEL_ANTHROPIC ?? DEFAULT_LLM_MODEL;
       const baseUrl = config.baseUrl ?? "https://api.anthropic.com/v1/messages";
       const body = {
         model,

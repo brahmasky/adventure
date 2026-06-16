@@ -448,9 +448,12 @@ describe("createPiProvider", () => {
       expect(spawnImpl.mock.calls[0]![1]).toContain("req-model");
     });
 
-    it("falls back to HOUGE_LLM_MODEL_PI then HOUGE_LLM_MODEL", async () => {
+    it("uses HOUGE_LLM_MODEL_PI and IGNORES the cross-provider global", async () => {
+      // Global is set but pi-specific is not: pi must NOT pick up the global
+      // (its model namespace differs from the API providers'). It omits --model
+      // and defers to pi's own configured default.
       delete process.env.HOUGE_LLM_MODEL_PI;
-      process.env.HOUGE_LLM_MODEL = "generic-model";
+      process.env.HOUGE_LLM_MODEL = "kimi-k2.7-code-highspeed";
       const spawnImpl = vi.fn<SpawnImpl>(async () =>
         spawnResult({ stdout: jsonlSuccess("ok") })
       );
@@ -458,11 +461,14 @@ describe("createPiProvider", () => {
 
       const result = await provider.answer({ question: "hi" });
       expect(result.ok).toBe(true);
-      if (result.ok) expect(result.model).toBe("generic-model");
+      if (result.ok) expect(result.model).toBe("pi-default"); // not the global
+      expect(spawnImpl.mock.calls[0]![1]).not.toContain("--model");
 
+      // The pi-specific override IS honored.
       process.env.HOUGE_LLM_MODEL_PI = "pi-specific";
       const result2 = await provider.answer({ question: "hi" });
       if (result2.ok) expect(result2.model).toBe("pi-specific");
+      expect(spawnImpl.mock.calls[1]![1]).toContain("pi-specific");
     });
 
     it("resolves timeoutMs from HOUGE_LLM_TIMEOUT_MS_PI", async () => {
