@@ -14,14 +14,23 @@ export type TelegramCommandParseResult =
 export function parseTelegramCommand(text: string): TelegramCommandParseResult {
   const trimmed = text.trim();
   if (!trimmed.startsWith("/")) return invalid("Telegram command must start with /");
+
+  const firstSpace = trimmed.search(/\s/);
+  const rawCommand = firstSpace === -1 ? trimmed : trimmed.slice(0, firstSpace);
+  const command = rawCommand.split("@")[0] ?? "";
+
+  // /ask carries a free-text question — take the remainder literally so normal
+  // punctuation (apostrophes in "what's", quotes) is not shell-tokenized.
+  if (command === "/ask") {
+    const goal = firstSpace === -1 ? "" : trimmed.slice(firstSpace + 1).trim();
+    return goal ? { ok: true, command: { type: "ask", goal } } : invalid("/ask requires a question");
+  }
+
+  // Structured commands tokenize with shell-style quoting.
   const words = splitShellWords(trimmed);
   if (!words.ok) return words;
+  const rest = words.words.slice(1);
 
-  const [rawCommand, ...rest] = words.words;
-  const command = rawCommand?.split("@")[0] ?? "";
-  const args = rest.join(" ").trim();
-
-  if (command === "/ask") return args ? { ok: true, command: { type: "ask", goal: args } } : invalid("/ask requires a question");
   if (command === "/run") return parseRun(rest);
   if (command === "/status") return parseStatus(rest);
   if (command === "/approve") return requiredApproval("approve", rest);

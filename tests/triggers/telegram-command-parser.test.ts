@@ -40,6 +40,21 @@ describe("parseTelegramCommand", () => {
     });
   });
 
+  it("takes the /ask question literally, including apostrophes and quotes", () => {
+    expect(parseTelegramCommand("/ask what's new with Houge's design?")).toEqual({
+      ok: true,
+      command: { type: "ask", goal: "what's new with Houge's design?" }
+    });
+    expect(parseTelegramCommand('/ask say "hello" then stop')).toEqual({
+      ok: true,
+      command: { type: "ask", goal: 'say "hello" then stop' }
+    });
+    expect(parseTelegramCommand("/ask@hougebot don't break on a mention")).toEqual({
+      ok: true,
+      command: { type: "ask", goal: "don't break on a mention" }
+    });
+  });
+
   it("rejects malformed quoted input", () => {
     expect(parseTelegramCommand('/run research-brief "compare gateway designs')).toEqual({
       ok: false,
