@@ -3,7 +3,9 @@ import { BudgetLedger } from "../budget/budget-ledger.js";
 import { CapabilityRunner } from "../capabilities/capability-runner.js";
 import type { ApprovalRequestSink, CapabilityResult } from "../capabilities/capability-runner.js";
 import { createLocalFileReadAdapter } from "../capabilities/local-file-read.js";
+import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
 import { createLocalProjectWriteAdapter } from "../capabilities/local-project-write-adapter.js";
+import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { canonicalJson, stableHash } from "../domain/canonical.js";
 import type { Identity } from "../domain/types.js";
 import { createLedgerEvent } from "../run/run-ledger.js";
@@ -25,7 +27,8 @@ const GATED_RISK = "medium" as const;
 export class CoreWorker {
   constructor(
     private readonly runStore: RunStore,
-    private readonly projectRoot: string
+    private readonly projectRoot: string,
+    private readonly llmAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult> = createLlmAnswerAdapter()
   ) {}
 
   async executeOnce(worker_id: string): Promise<CoreWorkerResult> {
@@ -49,6 +52,10 @@ export class CoreWorker {
   private async executeClaim(claim: ClaimedRun): Promise<CoreWorkerResult> {
     if (this.isGatedFixture(claim.run_id)) {
       return this.executeGatedFixture(claim);
+    }
+
+    if (claim.contract.allowed_actions.includes("llm_answer")) {
+      return this.executeAsk(claim);
     }
 
     return this.executeResearchBrief(claim);
@@ -268,6 +275,38 @@ export class CoreWorker {
         `Executed ${GATED_CAPABILITY}: ${JSON.stringify(result.output)}`
       ].join("\n"),
       sources: typeof input.path === "string" ? [input.path] : []
+    });
+  }
+
+  private async executeAsk(claim: ClaimedRun): Promise<CoreWorkerResult> {
+    const registry = new ToolRegistry();
+    registry.register({
+      name: "llm_answer",
+      category: "tool",
+      side_effect_level: "external_read",
+      risk_level: "low",
+      timeout_ms: 30_000,
+      output_limit_bytes: 100_000,
+      execute: this.llmAdapter
+    });
+
+    const result = await new CapabilityRunner(registry).execute({
+      contract: claim.contract,
+      capability: "llm_answer",
+      input: { question: claim.contract.objective },
+      budget: new BudgetLedger(claim.contract.budget)
+    });
+
+    if (result.status !== "succeeded") {
+      return this.failWithPartialReport(claim, result);
+    }
+
+    const answer = typeof result.output.answer === "string" ? result.output.answer : "";
+    const model = typeof result.output.model === "string" ? result.output.model : "unknown";
+    return this.writeCompletionReport(claim, {
+      title: "Answer",
+      body: [`Question: ${claim.contract.objective}`, "", answer].join("\n"),
+      sources: [`llm:${model}`]
     });
   }
 

@@ -60,7 +60,7 @@ function compileAskContract(event: TypedTaskEvent): TaskContractResult {
   const base = {
     objective: event.goal,
     budget: { time_minutes: 5, max_tool_calls: 2, max_agent_delegations: 0 },
-    allowed_actions: ["local_file_read", "write_report"],
+    allowed_actions: ["llm_answer", "write_report"],
     forbidden_actions: ["coding_agent_cli", "generic_shell", "external_write", "paid"],
     output: { path: "runs/<run-id>/report.md", format: "sourced_markdown_report" as const },
     approval_gates: ["local_write", "external_write", "destructive", "paid"] as SideEffectLevel[],

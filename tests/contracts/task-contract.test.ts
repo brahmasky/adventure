@@ -55,7 +55,7 @@ describe("compileTaskContract", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.contract.objective).toBe("what should Houge do next?");
-      expect(result.contract.allowed_actions).toEqual(["local_file_read", "write_report"]);
+      expect(result.contract.allowed_actions).toEqual(["llm_answer", "write_report"]);
       expect(result.contract.eval_hooks).toContain("milestone-2-ask-path");
     }
   });

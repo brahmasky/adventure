@@ -134,16 +134,15 @@ describe("CoreWorker", () => {
     }
   });
 
-  it("executes /ask through run, capability, report, and ledger path", async () => {
+  it("executes /ask through run, llm capability, report, and ledger path", async () => {
     const root = mkdtempSync(join(tmpdir(), "houge-ask-"));
-    writeFileSync(join(root, "AGENTS.md"), "Houge project rules");
     const store = RunStore.openInMemory();
     try {
       const intake = new Gateway(store).intake(buildTypedTaskEvent({
         source: "telegram",
         type: "ask",
         program: "ask",
-        goal: "summarize local project rules",
+        goal: "what should Houge do next?",
         requested_by: { kind: "user", id: "paco" },
         notify: { kind: "telegram", chat_id: "222" },
         idempotency_key: "telegram:ask-path",
@@ -151,11 +150,20 @@ describe("CoreWorker", () => {
       }));
       if (!intake.ok) throw new Error("Expected ask intake");
 
-      const result = await new CoreWorker(store, root).executeRun(intake.run_id, "worker-ask");
+      const fakeLlm = async (input: Record<string, unknown>) => ({
+        ok: true as const,
+        output: { question: input.question, answer: "Ship the local run engine.", model: "claude-haiku-4-5" }
+      });
+
+      const result = await new CoreWorker(store, root, fakeLlm).executeRun(intake.run_id, "worker-ask");
 
       expect(result.status).toBe("completed");
       expect(store.getRunState(intake.run_id)).toBe("completed");
       expect(store.getLedgerEvents(intake.run_id).map((event) => event.event_type)).toContain("report_written");
+
+      const report = readFileSync(join(root, "runs", intake.run_id, "report.md"), "utf8");
+      expect(report).toContain("Ship the local run engine.");
+      expect(report).toContain("llm:claude-haiku-4-5");
     } finally {
       store.close();
     }

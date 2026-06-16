@@ -132,6 +132,37 @@ describe("CapabilityRunner", () => {
     });
   });
 
+  it("allows llm_answer (external_read) without approval and returns succeeded", async () => {
+    const output = { question: "hi", answer: "hello", model: "claude-haiku-4-5" };
+    const registry = new ToolRegistry();
+    const adapter = vi.fn(() => ({ ok: true as const, output }));
+    registry.register({
+      name: "llm_answer",
+      category: "tool",
+      side_effect_level: "external_read",
+      risk_level: "low",
+      timeout_ms: 1000,
+      output_limit_bytes: 100_000,
+      execute: adapter
+    });
+
+    const runner = new CapabilityRunner(registry);
+    const result = await runner.execute({
+      contract: { ...contract, allowed_actions: ["llm_answer"] },
+      capability: "llm_answer",
+      input: { question: "hi" },
+      budget: new BudgetLedger(contract.budget)
+    });
+
+    expect(result).toEqual({
+      status: "succeeded",
+      output_ref: "inline:llm_answer",
+      output_hash: stableHash(output),
+      output
+    });
+    expect(adapter).toHaveBeenCalledTimes(1);
+  });
+
   it("returns timed_out when adapter execution exceeds metadata timeout", async () => {
     const registry = new ToolRegistry();
     registry.register({
