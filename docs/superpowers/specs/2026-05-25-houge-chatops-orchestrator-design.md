@@ -1587,11 +1587,26 @@ V1.0 is the Telegram-first local ChatOps loop and covers Milestones 0 through 2.
 - Telegram progress and final report notifications.
 - Notification Outbox with local and Telegram adapters.
 - Approval requests bound to run state and action fingerprint.
+- Delivered as a one-shot poll (`telegram-poll --once`): it completes the full round-trip when invoked. The continuous, unattended always-on daemon is deferred to Milestone 3.
 
-### Milestone 3: Minimal Schedule Trigger
+### Milestone 3: Always-On Service and Schedule Trigger
+
+Turns Houge from a manually-invoked one-shot poll into an unattended, supervised service. The always-on daemon and the scheduler share the same operational model (process supervision, restart, graceful shutdown), so they are grouped here.
+
+Always-on Telegram daemon (the continuous driver Milestone 2's one-shot `telegram-poll --once` deferred):
+
+- Continuous long-poll loop (`houge telegram-poll`, no `--once`): block on the Telegram `getUpdates` long-poll timeout, process each batch through the existing offset-durable, idempotent Gateway intake, then repeat — so `/ask` is answered automatically within seconds of arrival with no manual poll.
+- Process supervision: a `launchd` user-agent plist (macOS) for auto-start at login and auto-restart on crash, with documented install/uninstall.
+- Graceful shutdown: finish the in-flight run and flush the notification outbox on `SIGTERM`/`SIGINT` before exit.
+- Single-instance guard (lockfile or advisory lock) so two pollers never double-consume updates and trigger a Telegram `getUpdates` 409 conflict.
+- Resilience: exponential backoff on Telegram API errors and rate limits; structured logging; a heartbeat/health signal (last successful poll timestamp, last error).
+- Reuses the durable `trigger_offsets` table and idempotent intake already built in Milestone 2, so no message is lost or double-processed across restarts.
+- Stays within V1 scope: a single long-poll loop — NOT public webhook hosting and NOT a complex multi-worker queue (both remain out of scope).
+
+Schedule trigger:
 
 - Project-local schedule config.
-- Existing scheduler mechanism: `launchd`, system `cron`, or a small Node scheduler library.
+- Existing scheduler mechanism: `launchd`, system `cron`, or a small Node scheduler library (reuses the daemon's supervision model).
 - Schedule trigger emits `TypedTaskEvent` with schedule idempotency key.
 - Duplicate schedule firing tests.
 - Telegram notification for scheduled run results.
