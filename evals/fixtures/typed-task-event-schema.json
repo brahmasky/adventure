@@ -1,0 +1,4 @@
+{
+  "name": "typed-task-event-schema",
+  "checks": ["typed task events include deterministic payload hashes excluding timestamps"]
+}

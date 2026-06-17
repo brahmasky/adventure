@@ -1,0 +1,4 @@
+{
+  "name": "local-file-read",
+  "checks": ["project-scoped reads succeed and path traversal is denied"]
+}

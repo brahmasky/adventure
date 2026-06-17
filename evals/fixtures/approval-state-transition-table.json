@@ -1,0 +1,4 @@
+{
+  "name": "approval-state-transition-table",
+  "checks": ["pending approval can be approved and approved approval can be consumed"]
+}

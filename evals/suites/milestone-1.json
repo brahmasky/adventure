@@ -1,0 +1,10 @@
+{
+  "name": "milestone-1",
+  "required_fixtures": [
+    "local-cli-run",
+    "run-store-idempotency",
+    "budget-fuse",
+    "local-file-read",
+    "report-writer"
+  ]
+}

@@ -1,0 +1,4 @@
+{
+  "name": "run-state-transition-table",
+  "checks": ["approval waits requeue through queued and terminal runs do not resume"]
+}

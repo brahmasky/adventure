@@ -1,0 +1,4 @@
+{
+  "name": "run-ledger-envelope",
+  "checks": ["ledger events require correlation ids and event-specific payload fields"]
+}

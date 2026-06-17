@@ -1,35 +1,59 @@
 # Houge
 
-Houge is a Telegram-first ChatOps harness and autonomous worker orchestrator. The current project state is design and discovery only: there is no runtime scaffold, package manifest, test framework, or Git repository metadata yet.
+Houge is a Telegram-first ChatOps harness and autonomous worker orchestrator: it turns chat and CLI commands into bounded, auditable, policy-governed task runs.
 
-## Current Phase
+## Status
 
-Milestone -1 is in progress. This phase validates implementation assumptions before Milestone 0 creates schemas, state machines, migrations, and tests.
+Milestones 0–2 are implemented and tested (209 tests, zero runtime dependencies — Node 25, TypeScript, Vitest, the built-in `node:sqlite`):
 
-Validated so far:
+- **Milestone 0** — shared schemas, deterministic state machines (Run / Approval / ToolCall / Schedule), Run Ledger, idempotency.
+- **Milestone 1** — local run engine: SQLite-backed runs, worker leases, Task Contracts, Capability Policy + budget ledger, a read-only file capability, sourced reports, fixture evals.
+- **Milestone 2** — Telegram gateway (long-poll command intake, allowlist auth), `/ask` `/run` `/status` `/approve` `/deny`, durable approvals, Notification Outbox.
+- **`/ask` LLM** — a pluggable provider registry with an ordered fallback chain (`pi` CLI → `kimi-api`); see [LLM providers](#llm-providers).
 
-- Global `pi` CLI is available at `/opt/homebrew/bin/pi`.
-- `pi --version` returned `0.75.5`.
-- `pi-chat` source is `https://github.com/earendil-works/pi-chat`.
-- A project-local `pi-chat` install was tested and removed because it added about 218 MB under `.pi/`.
+Telegram currently runs as a **one-shot poll** (`telegram-poll --once`); the continuous always-on daemon is Milestone 3.
 
-## Dependency Guidance
-
-Use the global `pi` executable for discovery and smoke tests. Do not rely on global Pi settings or sessions for Houge runs.
-
-For project-scoped Pi commands, prefer:
+## Quick start
 
 ```bash
-PI_CODING_AGENT_DIR=/Users/pluo/Projects/adventure/.pi/agent pi --no-session ...
+npm install
+npm run build                          # tsc → dist/
+npm test                               # vitest
+npm run typecheck
+npm run eval -- milestone-2
+
+# CLI
+npm run houge -- status
+npm run houge -- run research-brief "compare gateway designs"
+npm run houge -- telegram-poll --once  # process pending Telegram commands
 ```
 
-`pi-chat` is optional and should not be installed by default. Do not install it globally for Houge unless a later milestone explicitly accepts that dependency. If a future spike needs it, install it project-locally, evaluate it, and remove it afterward unless the project decides to keep it:
+Configuration (Telegram token, LLM keys, model/timeout overrides) is read from a gitignored `.env` — copy `.env.example` and fill it in. Set `HOUGE_ENV_FILE` to point every git worktree at one shared `.env`.
 
-```bash
-pi install -l https://github.com/earendil-works/pi-chat
-```
+## LLM providers
 
-Project-local Pi state such as `.pi/` should be treated as generated dependency/cache data, not source.
+`/ask` resolves an ordered provider chain with automatic fallback (first `ok`
+wins; `unavailable`/error/timeout fall through). Known providers: `pi` (hardened
+single-shot CLI), `kimi-api` (OpenAI-compatible HTTP).
+
+- **Default chain:** `pi,kimi-api` (`HOUGE_LLM_PROVIDERS` unset).
+- **Config:** see `.env.example` for `HOUGE_LLM_PROVIDERS`, `HOUGE_LLM_MODEL[_PI/_KIMI]`,
+  `HOUGE_LLM_TIMEOUT_MS[_PI/_KIMI]`, `KIMI_API_KEY`, `HOUGE_KIMI_BASE_URL`,
+  `HOUGE_PI_ENV_PASSTHROUGH`. `HOUGE_LLM_PROVIDER` (singular)
+  is ignored when the plural `HOUGE_LLM_PROVIDERS` is set.
+- **Runner timeout coupling:** the CapabilityRunner's `Promise.race` `timeout_ms`
+  is the only enforced wall-clock bound (the contract's `time_minutes` is not
+  enforced). It is *derived* from the chain — `sum(per-provider timeouts) +
+  buffer` (`resolveChainBudgetMs` + `RUNNER_TIMEOUT_BUFFER_MS`; default
+  60s + 30s + 15s = 105s) — so a healthy chain that legitimately falls through
+  every provider is never killed mid-flight.
+
+### Policy amendment (ratified)
+
+Single-shot, tools-disabled, env-allowlisted, killable CLI inference (`pi`) is
+classified `external_read` and is allowed ungated. Full agentic
+`coding_agent_cli` delegation (tools enabled) remains denied until V2
+containment.
 
 ## Key Documents
 

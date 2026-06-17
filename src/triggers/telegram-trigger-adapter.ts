@@ -1,0 +1,173 @@
+import type { Identity, TelegramAllowlist, TypedTaskEvent } from "../domain/types.js";
+import { buildTypedTaskEvent } from "../domain/types.js";
+import { authorizeTelegramUpdate } from "./telegram-auth.js";
+import type { TelegramCommand } from "./telegram-command-parser.js";
+import { parseTelegramCommand } from "./telegram-command-parser.js";
+
+export interface TelegramUpdate {
+  update_id: number;
+  message?: {
+    message_id: number;
+    text?: string;
+    forward_date?: number;
+    forward_origin?: unknown;
+    from?: { id: number };
+    chat: { id: number };
+  };
+  channel_post?: unknown;
+}
+
+export type TelegramNormalizeResult =
+  | { ok: true; event: TypedTaskEvent }
+  | { ok: false; error: { code: string; message: string } };
+
+export function normalizeTelegramUpdate(update: TelegramUpdate, allowlist: TelegramAllowlist): TelegramNormalizeResult {
+  if (update.channel_post) {
+    return { ok: false, error: { code: "TELEGRAM_AUTH_DENIED", message: "Channel posts are not accepted" } };
+  }
+
+  const message = update.message;
+  if (!message?.text) {
+    return { ok: false, error: { code: "TELEGRAM_COMMAND_INVALID", message: "Telegram text message is required" } };
+  }
+
+  const auth = authorizeTelegramUpdate(
+    {
+      from_id: message.from?.id,
+      chat_id: message.chat.id,
+      is_forwarded: typeof message.forward_date === "number" || message.forward_origin !== undefined,
+      is_channel_post: false
+    },
+    allowlist
+  );
+  if (!auth.ok) return auth;
+
+  const parsed = parseTelegramCommand(message.text);
+  if (!parsed.ok) return parsed;
+
+  return { ok: true, event: buildTelegramEvent(parsed.command, buildEventBase(update, message, auth.identity)) };
+}
+
+type TelegramMessage = NonNullable<TelegramUpdate["message"]>;
+
+interface TelegramEventBase {
+  source: "telegram";
+  requested_by: Identity;
+  notify: { kind: "telegram"; chat_id: string };
+  idempotency_key: string;
+  source_reference: string;
+  metadata: { telegram_update_id: number; telegram_message_id: number };
+}
+
+function buildEventBase(update: TelegramUpdate, message: TelegramMessage, identity: Identity): TelegramEventBase {
+  return {
+    source: "telegram",
+    requested_by: identity,
+    notify: { kind: "telegram", chat_id: String(message.chat.id) },
+    idempotency_key: `telegram:${update.update_id}:${message.message_id}`,
+    source_reference: `telegram:update:${update.update_id}:message:${message.message_id}`,
+    metadata: { telegram_update_id: update.update_id, telegram_message_id: message.message_id }
+  };
+}
+
+function buildTelegramEvent(command: TelegramCommand, base: TelegramEventBase): TypedTaskEvent {
+  switch (command.type) {
+    case "ask":
+      return buildTypedTaskEvent({ ...base, type: "ask", program: "ask", goal: command.goal });
+    case "run":
+      return buildTypedTaskEvent({ ...base, type: "run", program: command.program, goal: command.goal });
+    case "status":
+      return buildTypedTaskEvent({ ...base, type: "status", metadata: { ...base.metadata, run_id: command.run_id } });
+    case "approve":
+    case "deny":
+      return buildTypedTaskEvent({ ...base, type: command.type, approval_id: command.approval_id });
+  }
+}
+
+export interface TelegramOffsetStore {
+  getOffset(source: string): number;
+  setOffset(source: string, offset: number): void;
+}
+
+export interface TelegramSkippedUpdateStore {
+  recordSkippedTelegramUpdate(input: {
+    update_id: number;
+    reason_code: string;
+    reason_message: string;
+    skipped_at: string;
+  }): void;
+}
+
+export interface TelegramGetUpdatesClient {
+  getUpdates(input: { offset: number; timeout_seconds: number }): Promise<TelegramUpdate[]>;
+}
+
+export type TelegramEmit = (event: TypedTaskEvent) => Promise<void>;
+
+export interface TelegramLongPollingAdapterOptions {
+  allowlist: TelegramAllowlist;
+  client: TelegramGetUpdatesClient;
+  offsetStore: TelegramOffsetStore;
+  skippedUpdateStore?: TelegramSkippedUpdateStore;
+  timeout_seconds?: number;
+}
+
+export interface TelegramPollResult {
+  processed_updates: number;
+  skipped_updates: number;
+}
+
+export interface TelegramLongPollingAdapter {
+  pollOnce(emit: TelegramEmit): Promise<TelegramPollResult>;
+}
+
+const TELEGRAM_OFFSET_SOURCE = "telegram";
+
+/**
+ * Long-polling adapter. Each `pollOnce` fetches a batch of updates and processes
+ * them in ascending `update_id` order. Offset rules:
+ *   - deterministic parse/auth rejection: record the skipped update and advance
+ *     offset to `update_id + 1`.
+ *   - successful emit: advance offset to `update_id + 1`.
+ *   - emit throws: stop the batch, leave the offset at the last success so
+ *     Telegram redelivers the failing update on the next poll.
+ */
+export function createTelegramLongPollingAdapter(
+  options: TelegramLongPollingAdapterOptions
+): TelegramLongPollingAdapter {
+  const timeout_seconds = options.timeout_seconds ?? 0;
+
+  return {
+    async pollOnce(emit: TelegramEmit): Promise<TelegramPollResult> {
+      const offset = options.offsetStore.getOffset(TELEGRAM_OFFSET_SOURCE);
+      const updates = [...await options.client.getUpdates({ offset, timeout_seconds })]
+        .sort((left, right) => left.update_id - right.update_id);
+
+      let processed = 0;
+      let skipped = 0;
+
+      for (const update of updates) {
+        const normalized = normalizeTelegramUpdate(update, options.allowlist);
+        if (!normalized.ok) {
+          options.skippedUpdateStore?.recordSkippedTelegramUpdate({
+            update_id: update.update_id,
+            reason_code: normalized.error.code,
+            reason_message: normalized.error.message,
+            skipped_at: new Date().toISOString()
+          });
+          options.offsetStore.setOffset(TELEGRAM_OFFSET_SOURCE, update.update_id + 1);
+          skipped += 1;
+          continue;
+        }
+
+        // If emit throws, propagate without advancing the offset for this
+        // update so Telegram redelivers it. Earlier successes already advanced.
+        await emit(normalized.event);
+        options.offsetStore.setOffset(TELEGRAM_OFFSET_SOURCE, update.update_id + 1);
+        processed += 1;
+      }
+
+      return { processed_updates: processed, skipped_updates: skipped };
+    }
+  };
+}

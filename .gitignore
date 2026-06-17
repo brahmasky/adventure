@@ -4,6 +4,9 @@
 runs/
 artifacts/
 node_modules/
+dist/
+houge.sqlite
 .worktrees/
 .env
 .env.*
+!.env.example

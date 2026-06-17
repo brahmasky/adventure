@@ -1,0 +1,4 @@
+{
+  "name": "local-cli-run",
+  "checks": ["houge run research-brief creates and completes a local run"]
+}
