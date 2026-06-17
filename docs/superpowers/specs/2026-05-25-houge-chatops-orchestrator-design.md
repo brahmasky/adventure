@@ -1667,6 +1667,33 @@ Out of scope for V1.0 and V1.x unless explicitly re-scoped:
 - Autonomous self-repair that patches Houge runtime code.
 - Autonomous coding-agent repair loops.
 
+### Pi as Agent Runtime: Inference vs Agentic Modes
+
+Pi serves Houge in two distinct modes, and the boundary between them is a safety boundary, not an implementation detail.
+
+- **Inference mode (V1, shipped):** Pi is invoked single-shot with tools disabled (`--no-tools`), no session, no context files, the prompt delivered on stdin under an environment allowlist with an authoritative timeout. This is a pure prompt-to-text call, classified `external_read` and run ungated. The `/ask` capability uses this mode through the LLM provider chain.
+- **Agentic mode (V2):** Pi is invoked with a Houge-approved subset of its tools enabled. This is the `coding_agent_cli` category and stays denied until V2 deterministic containment exists (cwd jail, environment allowlist, filesystem allowlist, command prefix audit, timeout, output cap, secret deny-by-default).
+
+Governing principle: **Houge governs Pi's extension surface; it does not replace it.** Pi is an open, extensible agent (built-in tools, skills, extensions, plugins, `pi install`). Houge harnesses that ecosystem rather than rebuilding it: the Tool Registry and Capability Policy decide which of Pi's tools/skills are reachable per run, Pi runs contained, and every tool call and side effect flows through Capability Runner and the Run Ledger. Pi's own flags are the control surface Houge drives — `--no-tools`, `--tools <allowlist>`, `--extension`/`--no-extensions`. The underlying model/agent is a swappable implementation behind the capability seam; the harness's control, audit, budget, and approval guarantees are identical regardless of which agent is underneath.
+
+### Beyond V2: Governed Self-Extension
+
+A later track, building on V2 containment, lets Houge acquire and use new capabilities at runtime — under harness control. It is sequenced as a ladder so each rung has its own gate; Houge never jumps straight to a self-installing agent.
+
+1. **Agentic Pi with a curated, contained toolset.** V2 containment plus a Houge-vetted `--tools` allowlist — the bridge from inference to governed action.
+2. **Tool Registry as the Pi tool/skill catalog.** Houge exposes a fixed, vetted set of fundamental tools/skills to Pi by policy; Pi may use only what the Registry and Capability Policy allow.
+3. **`agent-browser` capability.** A governed browser tool for discovery and research, on the same seam (a browser is itself a powerful, gated capability).
+4. **Governed self-extension (the new frontier).** A `find-skills` discovery-and-install loop that lets Houge add new Pi skills/extensions. This is the highest-risk capability Houge can have: installing a third-party skill is *running third-party code* — strictly more dangerous than modifying Houge's own code. It requires, at minimum:
+   - **Trust and provenance:** an allowlist of sources, pinning/signatures, no arbitrary install.
+   - **Sandboxed evaluation before activation:** run the candidate contained, on a fixture, and measure.
+   - **Approval before activation** plus an **eval gate** — a skill becomes active only after it demonstrably helps. This mirrors the lesson lifecycle (proposed → accepted → eval-gated → activated → measured → keep or rollback), applied to capabilities rather than knowledge.
+   - **Containment at use time** (the V2 list) and full Run Ledger receipts for discovery, install, activation, and rollback.
+5. **Self-evolution.** Houge improves its own programs, skills, wiki, and code, measured against a baseline (the V2 self-evolution goals).
+
+This track requires a dedicated security review (`/cso`) before implementation: dynamic third-party-code installation is the largest attack surface Houge would ever expose, and the supply-chain, trust, and sandboxing requirements above are the gate, not a nice-to-have.
+
+Out of scope until this track is explicitly designed and reviewed: arbitrary or unpinned skill/plugin installation, running unreviewed third-party skills, and any self-extension that bypasses the Capability Runner, approval, and eval gates.
+
 ## Success Criteria
 
 V1.0 is successful when:
