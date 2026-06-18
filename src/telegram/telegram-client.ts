@@ -76,7 +76,14 @@ export class TelegramClient implements TelegramSendClient, TelegramPollClient {
     const response = await this.fetchImpl(`${this.botBaseUrl}/sendMessage`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: input.chat_id, text: input.text })
+      // disable_web_page_preview cuts the outbound exfil leg (ADR 0006): a URL in
+      // an answer (e.g. from untrusted web content) must not trigger an auto-fetch
+      // link preview.
+      body: JSON.stringify({
+        chat_id: input.chat_id,
+        text: input.text,
+        disable_web_page_preview: true
+      })
     });
 
     if (!response.ok) {

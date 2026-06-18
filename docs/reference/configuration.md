@@ -73,6 +73,26 @@ policy behind the `pi` provider.
 | `KIMI_API_KEY` | — | Secret. Enables the `kimi-api` provider; if unset the provider reports `unavailable` and the chain falls through. |
 | `HOUGE_KIMI_BASE_URL` | `https://api.moonshot.ai` | Base URL for the OpenAI-compatible endpoint. |
 
+## Web read (powers `/research`)
+
+Tier-1 web access — a pluggable, keyed provider chain (like the LLM chain). Design and
+guardrails: [ADR 0006](../decisions/0006-web-read-capability.md).
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_WEB_PROVIDERS` | `tavily,firecrawl` | Ordered chain with fallback (first `ok` wins; unavailable/error falls through). Known: `tavily`, `firecrawl`. |
+| `TAVILY_API_KEY` | — | Tavily key ([tavily.com](https://www.tavily.com) — 1,000 credits/mo, no card). Unset → provider unavailable, chain falls through. |
+| `FIRECRAWL_API_KEY` | — | Firecrawl key ([firecrawl.dev](https://www.firecrawl.dev) — 1,000 credits/mo, no card). |
+| `HOUGE_WEB_MAX_RESULTS` | `5` | Results per search — bounds synthesis tokens and the global breaker's exposure. |
+| `HOUGE_WEB_TIMEOUT_MS` | tavily 20000 / firecrawl 30000 | Per-provider request timeout (ms). |
+| `HOUGE_TAVILY_BASE_URL` | `https://api.tavily.com` | Tavily API base. |
+| `HOUGE_FIRECRAWL_BASE_URL` | `https://api.firecrawl.dev` | Firecrawl API base. |
+
+`/research <topic>` runs the `web-research` program: search the live web (`web_search`,
+`external_read`) → 猴哥 synthesizes an answer treating results as **untrusted data** and
+**citing source URLs**. Telegram link previews are disabled to cut the outbound exfil leg;
+the URLs read are recorded in the ledger (`web_search_performed`).
+
 ## Global autonomy circuit-breaker
 
 A durable cross-run **breaker** (not a throttle) over a rolling 24h window — the

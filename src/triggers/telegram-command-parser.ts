@@ -26,6 +26,15 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
     return goal ? { ok: true, command: { type: "ask", goal } } : invalid("/ask requires a question");
   }
 
+  // /research <topic> — free-text topic taken literally (like /ask); it's sugar
+  // for the `web-research` run program (Tier-1 web read, ADR 0006).
+  if (command === "/research") {
+    const goal = firstSpace === -1 ? "" : trimmed.slice(firstSpace + 1).trim();
+    return goal
+      ? { ok: true, command: { type: "run", program: "web-research", goal } }
+      : invalid("/research requires a topic");
+  }
+
   // Structured commands tokenize with shell-style quoting.
   const words = splitShellWords(trimmed);
   if (!words.ok) return words;
