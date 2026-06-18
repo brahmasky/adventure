@@ -11,6 +11,15 @@ import type {
   TypedTaskEvent
 } from "../domain/types.js";
 import { stableHash } from "../domain/canonical.js";
+import {
+  computeBreaches,
+  computeHeadroom,
+  GLOBAL_BUDGET_WINDOW_HOURS,
+  type GlobalBudgetBreach,
+  type GlobalBudgetCaps,
+  type GlobalBudgetHeadroom,
+  type GlobalBudgetKind
+} from "../budget/global-budget-ledger.js";
 import type { NotificationIntent } from "../notifications/notification-types.js";
 import {
   appendLedgerEvent,
@@ -615,6 +624,139 @@ export class RunStore {
       input.reason_code ?? null,
       input.occurred_at
     );
+  }
+
+  // --- Global (cross-run) autonomy budget ---------------------------------
+
+  private globalBudgetUsageCounts(now: string): Record<GlobalBudgetKind, number> {
+    const windowStart = this.addSeconds(now, -GLOBAL_BUDGET_WINDOW_HOURS * 3600);
+
+    const runs = this.db.prepare(`
+      SELECT COALESCE(SUM(quantity), 0) AS count
+      FROM global_budget_events
+      WHERE kind = 'run' AND occurred_at > ?
+    `).get<{ count: number }>(windowStart);
+
+    // tool_calls and gated_attempts are DERIVED from the authoritative ledger,
+    // so they need no separate recording path.
+    const toolCalls = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM ledger_events
+      WHERE event_type = 'tool_finished' AND occurred_at > ?
+    `).get<{ count: number }>(windowStart);
+
+    const gated = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM ledger_events
+      WHERE event_type = 'approval_requested' AND occurred_at > ?
+    `).get<{ count: number }>(windowStart);
+
+    return {
+      runs: runs?.count ?? 0,
+      tool_calls: toolCalls?.count ?? 0,
+      gated_attempts: gated?.count ?? 0
+    };
+  }
+
+  /** Is admitting a new run within every global cap right now? */
+  checkGlobalBudget(
+    caps: GlobalBudgetCaps,
+    now: string
+  ): { ok: true } | { ok: false; breaches: GlobalBudgetBreach[] } {
+    const breaches = computeBreaches(this.globalBudgetUsageCounts(now), caps);
+    return breaches.length === 0 ? { ok: true } : { ok: false, breaches };
+  }
+
+  /** Per-cap headroom for the `/status` overview. */
+  globalBudgetUsage(caps: GlobalBudgetCaps, now: string): GlobalBudgetHeadroom[] {
+    return computeHeadroom(this.globalBudgetUsageCounts(now), caps);
+  }
+
+  /** Record one admitted run against the rolling-window run counter. */
+  recordGlobalBudgetRun(input: { now: string; run_id?: string; correlation_id?: string }): void {
+    this.db.prepare(`
+      INSERT INTO global_budget_events (event_id, kind, quantity, occurred_at, run_id, correlation_id)
+      VALUES (?, 'run', 1, ?, ?, ?)
+    `).run(
+      `gbe_${randomUUID()}`,
+      input.now,
+      input.run_id ?? null,
+      input.correlation_id ?? null
+    );
+  }
+
+  /** Append an unscoped `global_budget_fuse` ledger event (audit for every refusal). */
+  recordGlobalBudgetFuse(input: {
+    breaches: GlobalBudgetBreach[];
+    correlation_id: string;
+    now: string;
+  }): void {
+    this.appendLedgerEvent(
+      createLedgerEvent({
+        correlation_id: input.correlation_id,
+        event_type: "global_budget_fuse",
+        actor: "gateway",
+        sequence: this.nextLedgerSequence(),
+        payload: {
+          reason: "global_budget_fuse",
+          breaches: input.breaches,
+          window_hours: GLOBAL_BUDGET_WINDOW_HOURS
+        }
+      })
+    );
+  }
+
+  /**
+   * Single-row latch so exactly ONE alert fires per fuse episode. Returns
+   * `armed: true` only on the 0→1 transition (the first breach of the episode);
+   * subsequent breaches return `armed: false`.
+   */
+  armGlobalFuseIfNeeded(now: string): { armed: boolean; since: string } {
+    const row = this.db.prepare(`
+      SELECT fused, since FROM global_budget_fuse_state WHERE id = 1
+    `).get<{ fused: number; since: string | null }>();
+
+    if (row && row.fused === 1 && row.since) {
+      return { armed: false, since: row.since };
+    }
+
+    this.db.prepare(`
+      UPDATE global_budget_fuse_state SET fused = 1, since = ? WHERE id = 1
+    `).run(now);
+    return { armed: true, since: now };
+  }
+
+  /** Re-arm the breaker once admissions are back under cap. */
+  disarmGlobalFuse(): void {
+    this.db.prepare(`
+      UPDATE global_budget_fuse_state SET fused = 0, since = NULL WHERE id = 1 AND fused = 1
+    `).run();
+  }
+
+  /** Run counts grouped by state within the rolling window (for `/status`). */
+  runCountsByStateSince(now: string): Record<string, number> {
+    const windowStart = this.addSeconds(now, -GLOBAL_BUDGET_WINDOW_HOURS * 3600);
+    const rows = this.db.prepare(`
+      SELECT state, COUNT(*) AS count
+      FROM runs
+      WHERE created_at > ?
+      GROUP BY state
+    `).all<{ state: string; count: number }>(windowStart);
+    const counts: Record<string, number> = {};
+    for (const row of rows) counts[row.state] = row.count;
+    return counts;
+  }
+
+  /** Most recent failed run's reason, or null (for `/status`). */
+  lastRunError(): string | null {
+    const row = this.db.prepare(`
+      SELECT state_reason
+      FROM runs
+      WHERE state = 'failed'
+      ORDER BY updated_at DESC, run_id DESC
+      LIMIT 1
+    `).get<{ state_reason: string | null }>();
+    return row?.state_reason ?? null;
   }
 
   createApprovalRequest(input: ApprovalRequestInput): ApprovalRequestRecord {
@@ -1786,6 +1928,57 @@ export class RunStore {
     `);
     this.applyMilestone2Migration();
     this.validateMilestone2Schema();
+    this.applyGuardrailsMigration();
+  }
+
+  private applyGuardrailsMigration(): void {
+    const version = "2026-06-18-autonomy-guardrails";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS global_budget_events (
+          event_id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          quantity INTEGER NOT NULL,
+          occurred_at TEXT NOT NULL,
+          run_id TEXT,
+          correlation_id TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS global_budget_events_kind_time_idx
+          ON global_budget_events(kind, occurred_at);
+
+        CREATE TABLE IF NOT EXISTS global_budget_fuse_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          fused INTEGER NOT NULL DEFAULT 0,
+          since TEXT
+        );
+
+        INSERT OR IGNORE INTO global_budget_fuse_state (id, fused, since)
+          VALUES (1, 0, NULL);
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
   }
 
   private applyMilestone2Migration(): void {

@@ -1,4 +1,18 @@
+import {
+  GLOBAL_BUDGET_WINDOW_HOURS,
+  resolveGlobalBudgetCaps,
+  type GlobalBudgetCaps,
+  type GlobalBudgetHeadroom
+} from "../budget/global-budget-ledger.js";
 import type { RunStatusRow, RunStore } from "../run/run-store.js";
+
+/** Rolling-window operational summary shown when no specific run is requested. */
+export interface StatusOverview {
+  window_hours: number;
+  runs_by_state: Record<string, number>;
+  last_error: string | null;
+  budget: GlobalBudgetHeadroom[];
+}
 
 export type StatusQueryResult =
   | {
@@ -11,11 +25,35 @@ export type StatusQueryResult =
         event_count: number;
       };
     }
-  | { ok: true; status: { runs: RunStatusRow[] } }
+  | { ok: true; status: { runs: RunStatusRow[]; overview: StatusOverview } }
   | { ok: false; error: { code: "RUN_NOT_FOUND"; message: string } };
 
-export function queryStatus(store: RunStore, run_id?: string): StatusQueryResult {
-  if (!run_id) return { ok: true, status: { runs: store.listRecentRunStatuses(10) } };
+export interface StatusQueryOptions {
+  now?: string;
+  caps?: GlobalBudgetCaps;
+}
+
+export function queryStatus(
+  store: RunStore,
+  run_id?: string,
+  options: StatusQueryOptions = {}
+): StatusQueryResult {
+  if (!run_id) {
+    const now = options.now ?? new Date().toISOString();
+    const caps = options.caps ?? resolveGlobalBudgetCaps(process.env);
+    return {
+      ok: true,
+      status: {
+        runs: store.listRecentRunStatuses(10),
+        overview: {
+          window_hours: GLOBAL_BUDGET_WINDOW_HOURS,
+          runs_by_state: store.runCountsByStateSince(now),
+          last_error: store.lastRunError(),
+          budget: store.globalBudgetUsage(caps, now)
+        }
+      }
+    };
+  }
 
   const row = store.getRunStatus(run_id);
   if (!row) {

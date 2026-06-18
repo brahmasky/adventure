@@ -59,6 +59,24 @@ classified `external_read` and is allowed ungated. Full agentic
 `coding_agent_cli` delegation (tools enabled) remains denied until V2
 containment.
 
+## Global autonomy circuit-breaker
+
+A durable, cross-run **breaker** (not a throttle) bounds Houge as a whole over a
+rolling 24h window — the safety floor for the always-on daemon. Once any cap is
+reached, new run admissions are **refused** at the gateway with a
+`global_budget_fuse` ledger event and **exactly one** Telegram alert per fuse
+episode; admissions resume automatically as the window clears. Status, approve,
+and deny commands are never blocked.
+
+- **Caps (env, with defaults):** `HOUGE_GLOBAL_MAX_RUNS_24H` (200),
+  `HOUGE_GLOBAL_MAX_TOOL_CALLS_24H` (1000), `HOUGE_GLOBAL_MAX_GATED_ATTEMPTS_24H` (100).
+- **Counting:** run admissions are counted in a dedicated `global_budget_events`
+  table; tool-calls and gated attempts are *derived* from the authoritative ledger
+  (`tool_finished` / `approval_requested`) — no duplicate bookkeeping.
+- **Visibility:** `houge status` (and the Telegram `/status` reply) now include a
+  rolling-window overview — run counts by state, the last error, and per-cap
+  headroom.
+
 ## Key Documents
 
 - [AGENTS.md](AGENTS.md): project workflow, safety, and coding guidelines.

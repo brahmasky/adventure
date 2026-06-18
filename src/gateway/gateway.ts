@@ -1,6 +1,11 @@
 import { compileTaskContract } from "../contracts/task-contract.js";
 import type { ApprovalDecision, TypedTaskEvent } from "../domain/types.js";
 import type { CompiledTaskContract } from "../domain/types.js";
+import {
+  formatFuseAlert,
+  resolveGlobalBudgetCaps,
+  type GlobalBudgetCaps
+} from "../budget/global-budget-ledger.js";
 import type { RunStore } from "../run/run-store.js";
 import { queryStatus } from "../status/status-query.js";
 
@@ -11,7 +16,11 @@ export type GatewayIntakeResult =
   | { ok: false; error: { code: string; message: string; run_id?: string } };
 
 export class Gateway {
-  constructor(private readonly runStore: RunStore) {}
+  private readonly caps: GlobalBudgetCaps;
+
+  constructor(private readonly runStore: RunStore, caps?: GlobalBudgetCaps) {
+    this.caps = caps ?? resolveGlobalBudgetCaps(process.env);
+  }
 
   intake(event: TypedTaskEvent, now: string = new Date().toISOString()): GatewayIntakeResult {
     if (event.source === "telegram") {
@@ -106,6 +115,47 @@ export class Gateway {
       return { ok: false, error: contract.error };
     }
 
+    // Global autonomy circuit-breaker: refuse new run admissions once any
+    // rolling-24h cap is reached. Status/approve/deny never reach here, so
+    // control commands are never blocked by the breaker.
+    const budget = this.runStore.checkGlobalBudget(this.caps, now);
+    if (!budget.ok) {
+      this.runStore.recordGlobalBudgetFuse({
+        breaches: budget.breaches,
+        correlation_id: event.source_reference,
+        now
+      });
+      // Exactly one alert per fuse episode: only the 0→1 latch transition emits.
+      const fuse = this.runStore.armGlobalFuseIfNeeded(now);
+      if (fuse.armed) {
+        this.runStore.enqueueNotification({
+          target: event.notify,
+          intent_type: "progress",
+          idempotency_key: `global-budget-fuse:${fuse.since}`,
+          correlation_id: event.source_reference,
+          payload: { text: formatFuseAlert(budget.breaches), breaches: budget.breaches }
+        });
+      }
+      if (event.source === "telegram") {
+        this.runStore.recordTelegramCommandAudit({
+          actor_id: event.requested_by.id,
+          chat_id: this.telegramChatId(event),
+          command: event.type,
+          source_reference: event.source_reference,
+          decision: "denied",
+          reason_code: "global_budget_fuse",
+          occurred_at: now
+        });
+      }
+      return {
+        ok: false,
+        error: {
+          code: "GLOBAL_BUDGET_FUSE",
+          message: "Global 24h budget reached; new runs are paused until the window clears"
+        }
+      };
+    }
+
     const created = this.runStore.createOrGet(event);
     if (created.status === "conflict") {
       return {
@@ -135,6 +185,15 @@ export class Gateway {
 
     const queued = this.attachAndQueue(created.run_id, contract.contract);
     if (queued.ok) {
+      // Count the admitted run against the global breaker, and re-arm the fuse
+      // (admissions are back under cap). Only genuinely-new runs reach here;
+      // duplicates resume above without double-counting.
+      this.runStore.recordGlobalBudgetRun({
+        now,
+        run_id: created.run_id,
+        correlation_id: event.source_reference
+      });
+      this.runStore.disarmGlobalFuse();
       // No "queued" ack: a single-shot poll answers within seconds, so a
       // progress message is just noise. The final answer is the only user-facing
       // message. (A smarter "still working…" could return for long/async runs.)
@@ -164,12 +223,26 @@ export class Gateway {
       return status.error.message;
     }
     if ("runs" in status.status) {
-      if (status.status.runs.length === 0) {
-        return "No runs yet";
-      }
-      return status.status.runs
-        .map((run) => `${run.run_id} ${run.state}`)
-        .join("\n");
+      const runsText =
+        status.status.runs.length === 0
+          ? "No runs yet"
+          : status.status.runs.map((run) => `${run.run_id} ${run.state}`).join("\n");
+
+      const { runs_by_state, last_error, budget, window_hours } = status.status.overview;
+      const byState = Object.entries(runs_by_state)
+        .map(([state, count]) => `${state} ${count}`)
+        .join(", ");
+      const budgetText = budget
+        .map((b) => `${b.kind} ${b.used}/${b.limit}`)
+        .join(", ");
+
+      return [
+        runsText,
+        "",
+        `Last ${window_hours}h: ${byState || "no runs"}`,
+        `Last error: ${last_error ?? "none"}`,
+        `Budget: ${budgetText}`
+      ].join("\n");
     }
     return `${status.status.run_id} ${status.status.state}`;
   }

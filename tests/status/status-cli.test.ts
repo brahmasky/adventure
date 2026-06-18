@@ -11,7 +11,14 @@ let tempDirs: string[] = [];
 function runStatus(args: string[], cwd: string) {
   return spawnSync(tsxPath, [cliPath, "status", ...args], {
     cwd,
-    encoding: "utf8"
+    encoding: "utf8",
+    // Pin global caps so the overview is deterministic (also exercises env→caps).
+    env: {
+      ...process.env,
+      HOUGE_GLOBAL_MAX_RUNS_24H: "50",
+      HOUGE_GLOBAL_MAX_TOOL_CALLS_24H: "200",
+      HOUGE_GLOBAL_MAX_GATED_ATTEMPTS_24H: "25"
+    }
   });
 }
 
@@ -33,12 +40,27 @@ describe("houge status CLI", () => {
     tempDirs = [];
   });
 
-  it("opens an empty local DB, prints ok JSON, and exits 0", () => {
+  it("opens an empty local DB, prints ok JSON with overview, and exits 0", () => {
     const result = runStatus([], makeTempDir());
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(parseStdout(result.stdout)).toEqual({ ok: true, status: { runs: [] } });
+    expect(parseStdout(result.stdout)).toEqual({
+      ok: true,
+      status: {
+        runs: [],
+        overview: {
+          window_hours: 24,
+          runs_by_state: {},
+          last_error: null,
+          budget: [
+            { kind: "runs", used: 0, limit: 50, remaining: 50 },
+            { kind: "tool_calls", used: 0, limit: 200, remaining: 200 },
+            { kind: "gated_attempts", used: 0, limit: 25, remaining: 25 }
+          ]
+        }
+      }
+    });
   });
 
   it("prints RUN_NOT_FOUND JSON and exits 1 for a missing run id", () => {
