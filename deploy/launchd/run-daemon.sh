@@ -10,4 +10,9 @@ cd "$PROJECT_DIR"
 # Share one .env unless the caller already pointed HOUGE_ENV_FILE elsewhere.
 export HOUGE_ENV_FILE="${HOUGE_ENV_FILE:-$PROJECT_DIR/.env}"
 
-exec npm run --silent houge -- telegram-poll
+# Run the BUILT daemon directly with `exec` so THIS process is the daemon and
+# launchd's SIGTERM reaches it for graceful shutdown. Do NOT use `npm run` / `tsx`
+# here: those add wrapper processes between launchd and the daemon, so the signal
+# is swallowed and the daemon is hard-killed instead of finishing its in-flight
+# run. Build first: `npm run build`.
+exec node dist/cli.js telegram-poll

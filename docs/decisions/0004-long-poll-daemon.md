@@ -38,6 +38,11 @@ the OS.**
 - **Single instance:** a PID lockfile (O_EXCL, stale-lock reclaim) so a stray second
   daemon exits instead of fighting over the long-poll — two pollers on one token make
   Telegram return HTTP 409.
+- **Signal delivery:** the daemon runs as built JS via `node dist/cli.js` (the launchd
+  wrapper `exec`s it directly), NOT through `npm run`/`tsx`. Wrapper processes between
+  the supervisor and the daemon swallow SIGTERM, so the daemon is hard-killed (exit
+  143) instead of shutting down gracefully — a live-only failure that unit tests and
+  `npm run build` cannot surface.
 - **Resilience:** exponential backoff on Telegram errors; a persisted heartbeat
   (last-successful-poll, last error) surfaced in `/status` so an unattended operator
   can confirm liveness.
