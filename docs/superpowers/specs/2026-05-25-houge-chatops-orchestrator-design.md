@@ -939,6 +939,18 @@ Budget check points:
 - If the zone is `Fuse`, Core stops new work, writes a partial report, and records the skipped remaining work.
 - In-flight non-idempotent tool calls are not interrupted mid-side-effect solely because the budget zone changes; the fuse applies before the next action.
 
+### Global Budget Breaker (cross-run autonomy floor)
+
+The per-run budget above bounds a single run. A separate **global circuit-breaker** bounds Houge as a whole over a rolling 24h window — the safety floor that makes the always-on/scheduled daemon (Milestone 3) responsible rather than reckless. It is a breaker, not a throttle: once any cap is reached, new run admissions are **refused at the Gateway** with a `global_budget_fuse` ledger event and exactly one deduped Telegram alert per fuse episode; admissions re-arm automatically as the window clears. Status, approve, and deny commands are never blocked.
+
+Three independent caps (resolution: env var → code default; defaults in `src/budget/global-budget-ledger.ts`):
+
+- `HOUGE_GLOBAL_MAX_RUNS_24H` (default 200) — **volume**: looping schedules, re-enqueue bugs, command floods.
+- `HOUGE_GLOBAL_MAX_TOOL_CALLS_24H` (default 1000) — **cost**: aggregate LLM/tool spend across all runs (e.g. a single run that burns thousands of calls).
+- `HOUGE_GLOBAL_MAX_GATED_ATTEMPTS_24H` (default 100) — **risk**: repeated attempts at approval-requiring actions (bad lesson, injection, loop) and the approval-prompt spam they cause.
+
+Run admissions are counted in a dedicated `global_budget_events` table; tool-calls and gated attempts are derived from the ledger (`tool_finished` / `approval_requested`). `/status` surfaces per-cap headroom, run counts by state, and the last error. See README "Global autonomy circuit-breaker" for the operator reference.
+
 ## Delegation Model
 
 Houge can delegate subtasks to coding agents and tools.

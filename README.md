@@ -68,14 +68,31 @@ reached, new run admissions are **refused** at the gateway with a
 episode; admissions resume automatically as the window clears. Status, approve,
 and deny commands are never blocked.
 
-- **Caps (env, with defaults):** `HOUGE_GLOBAL_MAX_RUNS_24H` (200),
-  `HOUGE_GLOBAL_MAX_TOOL_CALLS_24H` (1000), `HOUGE_GLOBAL_MAX_GATED_ATTEMPTS_24H` (100).
+Each cap bounds a different axis of "runaway", so one tripping pauses new
+admissions even if the others look fine:
+
+| Env var | Default | Axis | What it protects against |
+|---------|---------|------|--------------------------|
+| `HOUGE_GLOBAL_MAX_RUNS_24H` | 200 | **Volume** (how many jobs) | A schedule misfiring in a loop, a bug re-enqueuing work, a flood of commands. |
+| `HOUGE_GLOBAL_MAX_TOOL_CALLS_24H` | 1000 | **Cost** (how much compute/$) | Aggregate LLM/tool spend across *all* runs — catches a single run that quietly burns thousands of calls (matters most for future agentic runs). |
+| `HOUGE_GLOBAL_MAX_GATED_ATTEMPTS_24H` | 100 | **Risk** (how much dangerous intent) | The agent repeatedly *attempting* approval-requiring actions (external-write/destructive/paid) — a bad lesson, prompt injection, or a loop — and the approval-prompt spam that causes. |
+
+Defaults are sized for a single-operator deployment (high enough never to bother
+you, low enough to contain a runaway loop). They live as a code constant
+(`DEFAULT_GLOBAL_BUDGET_CAPS` in `src/budget/global-budget-ledger.ts`); resolution
+is **env var → code default**, so any cap is overridable from `.env` with no code
+change (see `.env.example`).
+
 - **Counting:** run admissions are counted in a dedicated `global_budget_events`
   table; tool-calls and gated attempts are *derived* from the authoritative ledger
   (`tool_finished` / `approval_requested`) — no duplicate bookkeeping.
-- **Visibility:** `houge status` (and the Telegram `/status` reply) now include a
+- **Visibility:** `houge status` (and the Telegram `/status` reply) include a
   rolling-window overview — run counts by state, the last error, and per-cap
-  headroom.
+  headroom (used/limit/remaining).
+- **Where it sits in the safety stack:** per-run `BudgetLedger` bounds one task;
+  Telegram rate limits bound intake spikes; this breaker bounds Houge as a whole
+  per day; approval gates require your consent for each risky action. The first
+  three contain blast radius; the last is consent.
 
 ## Key Documents
 
