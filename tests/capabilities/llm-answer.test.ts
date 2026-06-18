@@ -49,7 +49,7 @@ describe("createLlmAnswerAdapter", () => {
     });
   });
 
-  it("threads the neutral default system prompt to the chain", async () => {
+  it("threads the default identity system prompt to the chain", async () => {
     delete process.env.HOUGE_ASK_SYSTEM_PROMPT;
     const { provider, last } = capturingProvider();
     const adapter = createLlmAnswerAdapter({ chain: [provider] });

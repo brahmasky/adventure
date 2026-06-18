@@ -41,12 +41,15 @@ Configuration (Telegram token, LLM keys, model/timeout overrides) is read from a
 `/ask` resolves an ordered provider chain with automatic fallback (first `ok`
 wins; `unavailable`/error/timeout fall through). Default chain `pi,kimi-api`:
 `pi` (hardened single-shot CLI, tools disabled) and `kimi-api` (OpenAI-compatible
-HTTP). `/ask` uses a neutral system prompt so answers aren't skewed toward a coding
-framing.
+HTTP). `/ask` answers in Houge's voice — a projection of its Core Identity
+([memory/core/houge.md](memory/core/houge.md)): the cheerful, capable 猴哥, but
+*inference only* (it answers; it doesn't act). Override the persona with
+`HOUGE_ASK_SYSTEM_PROMPT`.
 
 → Every provider/model/timeout/key variable: [configuration reference](docs/reference/configuration.md#llm-provider-chain-powers-ask).
 The inference-vs-agentic safety boundary (why a tools-disabled `pi` is `external_read`):
-[ADR 0002](docs/decisions/0002-pi-as-agent-runtime.md).
+[ADR 0002](docs/decisions/0002-pi-as-agent-runtime.md). Identity & memory direction:
+[ADR 0005](docs/decisions/0005-agent-memory-architecture.md).
 
 ## Safety model
 
