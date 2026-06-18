@@ -228,20 +228,25 @@ export class Gateway {
           ? "No runs yet"
           : status.status.runs.map((run) => `${run.run_id} ${run.state}`).join("\n");
 
-      const { runs_by_state, last_error, budget, window_hours } = status.status.overview;
+      const { runs_by_state, last_error, budget, window_hours, poller } =
+        status.status.overview;
       const byState = Object.entries(runs_by_state)
         .map(([state, count]) => `${state} ${count}`)
         .join(", ");
       const budgetText = budget
         .map((b) => `${b.kind} ${b.used}/${b.limit}`)
         .join(", ");
+      const pollerText = poller
+        ? `last poll ${poller.last_success_at ?? "never"}${poller.last_error ? `, last error ${poller.last_error}` : ""}`
+        : "not running";
 
       return [
         runsText,
         "",
         `Last ${window_hours}h: ${byState || "no runs"}`,
         `Last error: ${last_error ?? "none"}`,
-        `Budget: ${budgetText}`
+        `Budget: ${budgetText}`,
+        `Daemon: ${pollerText}`
       ].join("\n");
     }
     return `${status.status.run_id} ${status.status.state}`;

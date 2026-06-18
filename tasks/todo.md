@@ -1,66 +1,72 @@
-# Goal 1 — Autonomy Guardrails
+# Goal 2 — Always-On Telegram Daemon (M3)
 
-**Active /goal (Stop-hook gate):** durable SQLite GlobalBudgetLedger enforcing rolling-24h
-caps; refuses over-cap runs with a `global_budget_fuse` event + exactly one deduped Telegram
-alert; `/status` shows today's run counts by state, last error, per-cap headroom; tests for
-(N+1)th-run refusal, 24h aging-out, /status view; `npm test` green + typecheck clean + zero new deps.
+**Active /goal (Stop-hook gate):** `houge telegram-poll` (no --once) runs a continuous
+long-poll loop answering /ask in near-real-time; graceful SIGTERM/SIGINT shutdown
+(finish in-flight run, flush outbox, exit 0); single-instance guard (no 409);
+exponential backoff on Telegram errors; heartbeat (last poll, last error) in /status;
+macOS launchd plist + install/uninstall docs; new env vars in
+docs/reference/configuration.md + .env.example; ADR for the design. `npm test` green +
+typecheck clean + zero new deps + a LIVE run (answers /ask unattended, single-instance
+guard, graceful shutdown).
 
-## Design (minimal-impact)
+## Design (extend, don't rebuild)
 
-- **Run admissions** need a dedicated durable counter (no existing source) → new table
-  `global_budget_events(kind='run')`.
-- **tool_calls** and **gated_attempts** are *derived* from existing ledger events
-  (`tool_finished`, `approval_requested`) in the 24h window → NO core-worker edits.
-- Gate lives in `Gateway.handleTaskIntake` (the run-admission choke point; status/approve/deny
-  already bypass it). Caps resolved from env, injectable for tests.
-- Exactly-one alert via a single-row latch `global_budget_fuse_state(fused, since)`: first breach
-  arms + alerts; later breaches don't; a successful admission disarms (re-arms next episode).
+- Transport ALREADY supports long-poll: `getUpdates({offset, timeout_seconds})` → real
+  client appends `&timeout=N`. `createTelegramLongPollingAdapter` + durable offset =
+  resume (no drop_pending, unlike WuKong).
+- Host: the always-on Mac mini via macOS launchd; identical plist verifiable on this
+  Mac (same OS).
 
-## Checklist
+## Build steps (each independently green)
 
-- [ ] `src/budget/global-budget-ledger.ts` — caps type, defaults, `resolveGlobalBudgetCaps(env)`,
-      `GLOBAL_BUDGET_WINDOW_HOURS`, breach/usage types, `formatFuseAlert`.
-- [ ] `src/run/run-ledger.ts` — add `global_budget_fuse` event type + required payload fields.
-- [ ] `src/run/run-store.ts` — migration (events table + index + fuse latch); methods:
-      `checkGlobalBudget`, `globalBudgetUsage`, `recordGlobalBudgetRun`, `recordGlobalBudgetFuse`,
-      `armGlobalFuseIfNeeded`, `disarmGlobalFuse`, `runCountsByStateSince`, `lastRunError`.
-- [ ] `src/status/status-query.ts` — enrich no-run_id result with `overview`
-      (runs_by_state, last_error, budget headroom); resolve caps from env by default.
-- [ ] `src/gateway/gateway.ts` — caps in ctor; global-budget gate in `handleTaskIntake`.
-- [ ] `.env.example` + `README.md` — document caps, defaults, fuse + alert-dedup behavior.
-- [ ] Tests: gateway (N+1 refusal + exactly-one alert + status/approve bypass), store (24h aging-out),
-      status overview; update the 2 strict `toEqual` status tests.
-- [ ] `npm run typecheck` clean, `npm test` green, `npm run build` ok, zero new deps.
+- [ ] 1. Abortable long-poll: add optional `signal?` to getUpdates (client + adapter +
+      pollOnce) so shutdown can cancel an idle long-poll instantly.
+- [ ] 2. Single-instance lock helper (`src/telegram/single-instance-lock.ts`): PID
+      lockfile via O_EXCL, stale-lock reclaim, `release()`. Tests.
+- [ ] 3. Heartbeat: run-store migration (`daemon_heartbeat` single row) +
+      `recordPollHeartbeat` / `getPollHeartbeat`; surface as `poller` in /status
+      overview (+ update the 2 strict status tests). Tests.
+- [ ] 4. Daemon (`src/telegram/telegram-daemon.ts`): `runTelegramDaemon({..., stopSignal})`
+      — construct gateway/worker/adapter/dispatcher once, loop pollOnce(long-poll)+dispatch,
+      heartbeat each cycle, exponential backoff on error (interruptible sleep), break on
+      stopSignal. Tests: multi-batch, graceful stop mid-run, backoff escalation, heartbeat.
+- [ ] 5. CLI: `telegram-poll` (no --once) → acquire lock, wire SIGTERM/SIGINT → abort
+      stopSignal, run daemon, release lock in finally. (--once unchanged.)
+- [ ] 6. launchd plist (`deploy/launchd/`) + install/uninstall runbook (KeepAlive +
+      RunAtLoad = auto-start + auto-restart).
+- [ ] 7. Docs: env vars (HOUGE_TELEGRAM_LONGPOLL_TIMEOUT_S, HOUGE_DAEMON_BACKOFF_*,
+      HOUGE_DAEMON_LOCK_PATH) → configuration.md + .env.example; ADR 0004 (long-poll
+      daemon + single-instance + heartbeat).
+- [ ] 8. `npm run typecheck` clean, `npm test` green, `npm run build` ok, zero new deps.
+- [ ] 9. LIVE: start daemon in background; user sends /ask → answered unattended; second
+      instance exits via guard; SIGTERM → graceful shutdown (logs show finish + flush);
+      /status shows heartbeat.
 
 ## Review
 
-Done. All checklist items complete.
+DONE — all gate criteria met and live-verified.
 
-- **GlobalBudgetLedger** (`src/budget/global-budget-ledger.ts`): caps, env resolver,
-  breach/headroom math, fuse-alert formatter. Pure + unit-tested.
-- **Durable store** (`src/run/run-store.ts`): `global_budget_events` table + index +
-  single-row `global_budget_fuse_state` latch via a new idempotent migration
-  (`2026-06-18-autonomy-guardrails`). Methods for check / usage / record-run /
-  record-fuse / arm / disarm / run-counts-by-state / last-error. tool_calls and
-  gated_attempts are derived from existing ledger events (no core-worker edits).
-- **Gateway** (`src/gateway/gateway.ts`): breaker gate in `handleTaskIntake`; refuses
-  over-cap admissions with a `global_budget_fuse` event + one deduped alert; records
-  admissions and re-arms on success. Control commands bypass.
-- **/status** (`src/status/status-query.ts` + Telegram text): rolling-window overview —
-  run counts by state, last error, per-cap headroom.
-- **Tests:** +9 (gateway N+1 refusal, exactly-one-alert dedup, re-arm, 24h aging-out,
-  control-command bypass, /status overview, caps resolver). Updated 3 existing tests
-  (2 strict status `toEqual`, 1 migration-count). **225 pass** (was 216), typecheck +
-  build clean, zero new runtime deps.
+- **Daemon** (`src/telegram/telegram-daemon.ts`): continuous long-poll loop, heartbeat
+  per cycle, exponential backoff, abortable long-poll for instant shutdown; in-flight
+  run finishes + outbox flushes before exit.
+- **Single-instance lock** (`single-instance-lock.ts`): PID lockfile + stale reclaim.
+- **Heartbeat**: `daemon_heartbeat` table + `/status` `poller` field (CLI + Telegram).
+- **Shared `isHandledIntakeDenial`** so daemon/one-shot can't drift.
+- **CLI**: `telegram-poll` (no --once) → lock + signal wiring + daemon.
+- **launchd**: plist template + wrapper + install/uninstall runbook; ADR 0004.
+- **Tests**: +11 (lock, heartbeat, daemon loop/backoff/graceful-stop). 237 pass,
+  typecheck + build clean, zero new deps.
+- **Live run caught a real bug** (Goal 1 pattern again): `npm run`/`tsx` wrappers
+  swallowed SIGTERM → exit 143 + leaked lock. Fixed: run `node dist/cli.js` directly.
+  Re-verified: answers /ask unattended (32 cycles), single-instance guard exits 2nd,
+  graceful shutdown "stopped cleanly" exit 0, lock released.
 
-**Scope note:** the distilled `/goal` gate did not require recording per-run budget
-usage into the global ledger as a separate path; deriving tool_calls/gated_attempts
-from the ledger is simpler, authoritative, and keeps the change off the core-worker.
+Next: merge `feat/always-on-daemon`; Goal 3 = schedule trigger (in-process tick).
 
-**Live-test bug (caught by end-to-end verification, missed by 225 unit tests):** the
-Telegram poll runner only treated a fixed set of intake-error codes as handled; a
-`GLOBAL_BUDGET_FUSE` refusal would `throw` and stall the whole poll batch (offset never
-advances → reprocess loop; fuse alert never dispatched). Fixed in
-`telegram-poll-runner.ts` (treat the breaker refusal as a deterministic denial) +
-regression test. This seam between Gateway and poll runner is only exercised live —
-hence live verification is now part of the stop gate (see memory `live-test-stop-gate`).
+---
+
+# Goal 1 — Autonomy Guardrails (DONE, merged a539ffb)
+
+Global budget circuit-breaker (runs/tool_calls/gated_attempts per 24h), refuse over-cap
+admissions with `global_budget_fuse` + one deduped alert, /status headroom. Live-verified;
+caught a poll-runner seam bug 225 unit tests missed. See ADR 0003.

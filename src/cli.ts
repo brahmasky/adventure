@@ -92,13 +92,9 @@ if (command === "run") {
     store.close();
   }
 } else if (command === "telegram-poll") {
-  if (!rest.includes("--once")) {
-    console.error("Only --once is supported in Milestone 2");
-    process.exit(1);
-  }
+  const once = rest.includes("--once");
 
   const { TelegramClient } = await import("./telegram/telegram-client.js");
-  const { runTelegramPollOnce } = await import("./telegram/telegram-poll-runner.js");
 
   const token = process.env.HOUGE_TELEGRAM_BOT_TOKEN;
   const userId = process.env.HOUGE_TELEGRAM_USER_ID;
@@ -120,25 +116,87 @@ if (command === "run") {
     chats: [{ telegram_chat_id: Number(chatId), label: "paco-private", allowed_identity_ids: ["paco"] }]
   };
 
-  const store = RunStore.open("houge.sqlite");
-  try {
-    const result = await runTelegramPollOnce({
-      store,
-      projectRoot: process.cwd(),
-      allowlist,
-      telegramClient: new TelegramClient({ token: token! })
-    });
-    console.log(JSON.stringify(result, null, 2));
-    process.exitCode = 0;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`Telegram poll failed: ${message}`);
-    if (/HTTP 40[0134]/.test(message)) {
-      console.error("Check that HOUGE_TELEGRAM_BOT_TOKEN is a valid @BotFather token.");
+  const client = new TelegramClient({ token: token! });
+
+  if (once) {
+    const { runTelegramPollOnce } = await import("./telegram/telegram-poll-runner.js");
+    const store = RunStore.open("houge.sqlite");
+    try {
+      const result = await runTelegramPollOnce({
+        store,
+        projectRoot: process.cwd(),
+        allowlist,
+        telegramClient: client
+      });
+      console.log(JSON.stringify(result, null, 2));
+      process.exitCode = 0;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Telegram poll failed: ${message}`);
+      if (/HTTP 40[0134]/.test(message)) {
+        console.error("Check that HOUGE_TELEGRAM_BOT_TOKEN is a valid @BotFather token.");
+      }
+      process.exitCode = 1;
+    } finally {
+      store.close();
     }
-    process.exitCode = 1;
-  } finally {
-    store.close();
+  } else {
+    // Always-on daemon mode (continuous long-poll loop).
+    const { runTelegramDaemon } = await import("./telegram/telegram-daemon.js");
+    const { acquireSingleInstanceLock } = await import("./telegram/single-instance-lock.js");
+
+    const numEnv = (name: string, fallback: number): number => {
+      const n = Number(process.env[name]);
+      return Number.isFinite(n) && n > 0 ? n : fallback;
+    };
+    const longPollTimeoutSeconds = numEnv("HOUGE_TELEGRAM_LONGPOLL_TIMEOUT_S", 30);
+    const backoff = {
+      baseMs: numEnv("HOUGE_DAEMON_BACKOFF_BASE_MS", 1_000),
+      maxMs: numEnv("HOUGE_DAEMON_BACKOFF_MAX_MS", 60_000)
+    };
+    const lockPath = process.env.HOUGE_DAEMON_LOCK_PATH ?? "houge.daemon.lock";
+
+    const lock = acquireSingleInstanceLock(lockPath);
+    if (!lock.ok) {
+      console.error(
+        `Another houge daemon is already running (pid ${lock.held_by_pid}); refusing to start a second.`
+      );
+      process.exit(1);
+    }
+
+    const log = (msg: string): void =>
+      console.error(`[${new Date().toISOString()}] [daemon] ${msg}`);
+
+    const controller = new AbortController();
+    const onStop = (signal: string): void => {
+      log(`${signal} received — finishing in-flight work and shutting down…`);
+      controller.abort();
+    };
+    process.once("SIGTERM", () => onStop("SIGTERM"));
+    process.once("SIGINT", () => onStop("SIGINT"));
+
+    const store = RunStore.open("houge.sqlite");
+    try {
+      log(`starting long-poll loop (timeout ${longPollTimeoutSeconds}s)`);
+      const result = await runTelegramDaemon({
+        store,
+        projectRoot: process.cwd(),
+        allowlist,
+        telegramClient: client,
+        stopSignal: controller.signal,
+        longPollTimeoutSeconds,
+        backoff
+      });
+      log(`stopped cleanly after ${result.cycles} cycles`);
+      process.exitCode = 0;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log(`fatal: ${message}`);
+      process.exitCode = 1;
+    } finally {
+      lock.lock.release();
+      store.close();
+    }
   }
 } else if (command === "telegram-parser-smoke") {
   const { parseTelegramCommand } = await import("./triggers/telegram-command-parser.js");

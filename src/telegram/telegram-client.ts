@@ -10,6 +10,11 @@ export interface TelegramSendMessageResult {
 export interface TelegramGetUpdatesInput {
   offset: number;
   timeout_seconds: number;
+  /**
+   * Optional abort signal. The daemon passes one so a graceful shutdown can
+   * cancel an idle long-poll immediately instead of waiting out the timeout.
+   */
+  signal?: AbortSignal;
 }
 
 export interface TelegramRawUpdate {
@@ -96,7 +101,10 @@ export class TelegramClient implements TelegramSendClient, TelegramPollClient {
     }
 
     const url = `${this.botBaseUrl}/getUpdates?offset=${input.offset}&timeout=${input.timeout_seconds}`;
-    const response = await this.fetchImpl(url, { method: "GET" });
+    const response = await this.fetchImpl(url, {
+      method: "GET",
+      ...(input.signal ? { signal: input.signal } : {})
+    });
 
     if (!response.ok) {
       throw new Error(`Telegram getUpdates failed: HTTP ${response.status}`);

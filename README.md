@@ -4,14 +4,16 @@ Houge is a Telegram-first ChatOps harness and autonomous worker orchestrator: it
 
 ## Status
 
-Milestones 0–2 are implemented and tested (209 tests, zero runtime dependencies — Node 25, TypeScript, Vitest, the built-in `node:sqlite`):
+Milestones 0–2 are complete, plus the Milestone 3 always-on daemon and a global
+autonomy budget breaker — 237 tests, zero runtime dependencies (Node 25, TypeScript,
+Vitest, the built-in `node:sqlite`):
 
 - **Milestone 0** — shared schemas, deterministic state machines (Run / Approval / ToolCall / Schedule), Run Ledger, idempotency.
 - **Milestone 1** — local run engine: SQLite-backed runs, worker leases, Task Contracts, Capability Policy + budget ledger, a read-only file capability, sourced reports, fixture evals.
 - **Milestone 2** — Telegram gateway (long-poll command intake, allowlist auth), `/ask` `/run` `/status` `/approve` `/deny`, durable approvals, Notification Outbox.
+- **Milestone 3 (in progress)** — always-on daemon: `houge telegram-poll` (no `--once`) runs a continuous long-poll loop answering commands in near-real-time, supervised by launchd (graceful shutdown, single-instance guard, heartbeat). The schedule trigger is the remaining M3 piece.
 - **`/ask` LLM** — a pluggable provider registry with an ordered fallback chain (`pi` CLI → `kimi-api`); see [LLM providers](#llm-providers).
-
-Telegram currently runs as a **one-shot poll** (`telegram-poll --once`); the continuous always-on daemon is Milestone 3.
+- **Autonomy guardrails** — a global 24h budget circuit-breaker bounds runs / tool-calls / gated-attempts; see [Global autonomy circuit-breaker](#global-autonomy-circuit-breaker).
 
 ## Quick start
 
@@ -25,10 +27,14 @@ npm run eval -- milestone-2
 # CLI
 npm run houge -- status
 npm run houge -- run research-brief "compare gateway designs"
-npm run houge -- telegram-poll --once  # process pending Telegram commands
+npm run houge -- telegram-poll --once  # process pending Telegram commands once
+
+# Always-on daemon (continuous long-poll). Build first, then run the built JS so
+# signals reach the daemon; deploy under launchd — see deploy/launchd/README.md.
+node dist/cli.js telegram-poll
 ```
 
-Configuration (Telegram token, LLM keys, model/timeout overrides) is read from a gitignored `.env` — copy `.env.example` and fill it in. Set `HOUGE_ENV_FILE` to point every git worktree at one shared `.env`.
+Configuration (Telegram token, LLM keys, model/timeout overrides) is read from a gitignored `.env` — copy `.env.example` and fill it in. Set `HOUGE_ENV_FILE` to point every git worktree at one shared `.env`. Full parameter list: [docs/reference/configuration.md](docs/reference/configuration.md).
 
 ## LLM providers
 
@@ -58,6 +64,7 @@ and [ADR 0003](docs/decisions/0003-global-budget-breaker.md).
 ## Documentation
 
 - [Configuration reference](docs/reference/configuration.md) — every environment variable, default, and purpose.
+- [Deploy the daemon (launchd)](deploy/launchd/README.md) — run the always-on daemon on macOS.
 - [Architecture decisions](docs/decisions/README.md) — the *why* behind significant choices (ADRs).
 - [Design spec](docs/superpowers/specs/2026-05-25-houge-chatops-orchestrator-design.md) — architecture and milestone plan.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — documentation convention and definition of done (tests **and** a live run).

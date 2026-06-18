@@ -10,3 +10,7 @@ houge.sqlite
 .env
 .env.*
 !.env.example
+
+# Daemon runtime artifacts
+logs/
+houge.daemon.lock

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Houge always-on daemon LaunchAgent (per-user).
+  Replace __PROJECT_DIR__ and __NODE_BIN_DIR__ before installing — see README.md.
+  RunAtLoad starts it at login; KeepAlive restarts it on crash.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.houge.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PROJECT_DIR__/deploy/launchd/run-daemon.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_DIR__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- launchd has a minimal PATH; include the dir that holds node/npm. -->
+        <key>PATH</key>
+        <string>__NODE_BIN_DIR__:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOUGE_ENV_FILE</key>
+        <string>__PROJECT_DIR__/.env</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart on crash (the always-on guarantee). -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Don't relaunch faster than every 10s (avoids tight crash loops). -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <!-- Give graceful shutdown time before SIGKILL (longer than the long-poll). -->
+    <key>ExitTimeOut</key>
+    <integer>40</integer>
+
+    <key>StandardOutPath</key>
+    <string>__PROJECT_DIR__/logs/houge-daemon.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__PROJECT_DIR__/logs/houge-daemon.err.log</string>
+</dict>
+</plist>
