@@ -17,6 +17,7 @@ Read these first when onboarding — they explain choices the code alone can't.
 | [0003](0003-global-budget-breaker.md) | Global budget circuit-breaker (autonomy floor) | accepted |
 | [0004](0004-long-poll-daemon.md) | Always-on long-poll daemon | accepted |
 | [0005](0005-agent-memory-architecture.md) | Agent memory architecture direction | accepted |
+| [0006](0006-web-read-capability.md) | Web-read capability — free-read, gated-act | accepted |
 
 ## Writing a new ADR
 
