@@ -582,12 +582,12 @@ describe("RunStore approval storage", () => {
       expect(store.getLedgerEvents("run_m1")).toHaveLength(1);
       expectTablesAndIndexes(store);
       expect(db(store).prepare("SELECT COUNT(*) AS count FROM schema_migrations")
-        .get<{ count: number }>()?.count).toBe(1);
+        .get<{ count: number }>()?.count).toBe(2);
       store.close();
 
       store = RunStore.open(path);
       expect(db(store).prepare("SELECT COUNT(*) AS count FROM schema_migrations")
-        .get<{ count: number }>()?.count).toBe(1);
+        .get<{ count: number }>()?.count).toBe(2);
       expect(store.getRunStatus("run_m1")?.state).toBe("completed");
     } finally {
       store?.close();

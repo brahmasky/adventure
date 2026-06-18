@@ -72,12 +72,16 @@ export async function runTelegramPollOnce(
     const intake = gateway.intake(event);
 
     if (!intake.ok) {
-      // Deterministic Gateway denials are handled (offset advances). Thrown
-      // store/process errors propagate and stop the batch.
+      // Deterministic Gateway denials are handled (offset advances, the loop
+      // continues, and any alert the Gateway enqueued is dispatched below).
+      // Thrown store/process errors propagate and stop the batch.
       if (
         intake.error.code === "TELEGRAM_RATE_LIMITED" ||
         intake.error.code === "APPROVAL_NOT_FOUND" ||
-        intake.error.code === "TRIGGER_IDEMPOTENCY_CONFLICT"
+        intake.error.code === "TRIGGER_IDEMPOTENCY_CONFLICT" ||
+        // The global budget breaker is a deterministic refusal: drop the update
+        // (do NOT reprocess it when budget frees up) and let its fuse alert ship.
+        intake.error.code === "GLOBAL_BUDGET_FUSE"
       ) {
         return;
       }

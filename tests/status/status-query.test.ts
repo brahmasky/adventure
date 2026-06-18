@@ -29,10 +29,28 @@ describe("queryStatus", () => {
     }
   });
 
-  it("returns recent runs when no run id is supplied", () => {
+  it("returns recent runs plus a budget/error overview when no run id is supplied", () => {
     const store = RunStore.openInMemory();
     try {
-      expect(queryStatus(store)).toEqual({ ok: true, status: { runs: [] } });
+      const caps = { runs: 5, tool_calls: 10, gated_attempts: 3 };
+      expect(
+        queryStatus(store, undefined, { now: "2026-06-18T00:00:00.000Z", caps })
+      ).toEqual({
+        ok: true,
+        status: {
+          runs: [],
+          overview: {
+            window_hours: 24,
+            runs_by_state: {},
+            last_error: null,
+            budget: [
+              { kind: "runs", used: 0, limit: 5, remaining: 5 },
+              { kind: "tool_calls", used: 0, limit: 10, remaining: 10 },
+              { kind: "gated_attempts", used: 0, limit: 3, remaining: 3 }
+            ]
+          }
+        }
+      });
     } finally {
       store.close();
     }
