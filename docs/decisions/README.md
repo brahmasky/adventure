@@ -15,6 +15,7 @@ Read these first when onboarding — they explain choices the code alone can't.
 | [0001](0001-deterministic-harness-governs-everything.md) | Deterministic harness governs everything | accepted |
 | [0002](0002-pi-as-agent-runtime.md) | Pi as agent runtime: inference vs agentic modes | accepted |
 | [0003](0003-global-budget-breaker.md) | Global budget circuit-breaker (autonomy floor) | accepted |
+| [0004](0004-long-poll-daemon.md) | Always-on long-poll daemon | accepted |
 
 ## Writing a new ADR
 

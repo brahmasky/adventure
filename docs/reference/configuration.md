@@ -27,6 +27,19 @@ Required for `houge telegram-poll --once` (and the Milestone 3 daemon).
 | `HOUGE_TELEGRAM_USER_ID` | — | yes | Your numeric Telegram user id (e.g. from @userinfobot). The intake allowlist binds to it. |
 | `HOUGE_TELEGRAM_CHAT_ID` | — | yes | Numeric chat id. For a 1:1 chat with your bot this equals your user id. |
 
+## Always-on daemon
+
+`houge telegram-poll` (no `--once`) runs the continuous long-poll daemon. Design
+and rationale: [ADR 0004](../decisions/0004-long-poll-daemon.md). Deployment under
+launchd: [deploy/launchd/README.md](../../deploy/launchd/README.md).
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_TELEGRAM_LONGPOLL_TIMEOUT_S` | `30` | Telegram `getUpdates` long-poll timeout (seconds). The daemon blocks on a held connection for up to this long; a message arriving sooner is delivered immediately. Not your message latency — just how long an *idle* connection is held. |
+| `HOUGE_DAEMON_BACKOFF_BASE_MS` | `1000` | Base delay for exponential backoff after a Telegram error (`base · 2^(failures-1)`). |
+| `HOUGE_DAEMON_BACKOFF_MAX_MS` | `60000` | Cap on the backoff delay. |
+| `HOUGE_DAEMON_LOCK_PATH` | `houge.daemon.lock` (cwd) | PID lockfile for the single-instance guard; a second daemon with the same lock exits instead of fighting over the Telegram long-poll (which would cause HTTP 409). |
+
 ## LLM provider chain (powers `/ask`)
 
 See [ADR 0002](../decisions/0002-pi-as-agent-runtime.md) for the inference-vs-agentic

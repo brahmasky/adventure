@@ -47,7 +47,8 @@ describe("queryStatus", () => {
               { kind: "runs", used: 0, limit: 5, remaining: 5 },
               { kind: "tool_calls", used: 0, limit: 10, remaining: 10 },
               { kind: "gated_attempts", used: 0, limit: 3, remaining: 3 }
-            ]
+            ],
+            poller: null
           }
         }
       });

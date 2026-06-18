@@ -99,7 +99,11 @@ export interface TelegramSkippedUpdateStore {
 }
 
 export interface TelegramGetUpdatesClient {
-  getUpdates(input: { offset: number; timeout_seconds: number }): Promise<TelegramUpdate[]>;
+  getUpdates(input: {
+    offset: number;
+    timeout_seconds: number;
+    signal?: AbortSignal;
+  }): Promise<TelegramUpdate[]>;
 }
 
 export type TelegramEmit = (event: TypedTaskEvent) => Promise<void>;
@@ -118,7 +122,7 @@ export interface TelegramPollResult {
 }
 
 export interface TelegramLongPollingAdapter {
-  pollOnce(emit: TelegramEmit): Promise<TelegramPollResult>;
+  pollOnce(emit: TelegramEmit, options?: { signal?: AbortSignal }): Promise<TelegramPollResult>;
 }
 
 const TELEGRAM_OFFSET_SOURCE = "telegram";
@@ -138,10 +142,16 @@ export function createTelegramLongPollingAdapter(
   const timeout_seconds = options.timeout_seconds ?? 0;
 
   return {
-    async pollOnce(emit: TelegramEmit): Promise<TelegramPollResult> {
+    async pollOnce(
+      emit: TelegramEmit,
+      pollOptions?: { signal?: AbortSignal }
+    ): Promise<TelegramPollResult> {
       const offset = options.offsetStore.getOffset(TELEGRAM_OFFSET_SOURCE);
-      const updates = [...await options.client.getUpdates({ offset, timeout_seconds })]
-        .sort((left, right) => left.update_id - right.update_id);
+      const updates = [...await options.client.getUpdates({
+        offset,
+        timeout_seconds,
+        ...(pollOptions?.signal ? { signal: pollOptions.signal } : {})
+      })].sort((left, right) => left.update_id - right.update_id);
 
       let processed = 0;
       let skipped = 0;

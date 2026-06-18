@@ -22,6 +22,24 @@ export interface TelegramPollClient extends TelegramGetUpdatesClient {
   sendMessage(input: TelegramSendMessageInput): Promise<TelegramSendMessageResult>;
 }
 
+/**
+ * Gateway intake error codes that are DETERMINISTIC denials: the update was
+ * understood and refused, so advance the offset, keep polling, and let any alert
+ * the Gateway enqueued ship. Any OTHER code is an unexpected store/process error
+ * that should stop the batch. Single source of truth for both the one-shot poll
+ * and the always-on daemon (a missing code here is what stalled the daemon once).
+ */
+export const HANDLED_INTAKE_DENIAL_CODES: ReadonlySet<string> = new Set([
+  "TELEGRAM_RATE_LIMITED",
+  "APPROVAL_NOT_FOUND",
+  "TRIGGER_IDEMPOTENCY_CONFLICT",
+  "GLOBAL_BUDGET_FUSE"
+]);
+
+export function isHandledIntakeDenial(code: string): boolean {
+  return HANDLED_INTAKE_DENIAL_CODES.has(code);
+}
+
 export interface RunTelegramPollOnceOptions {
   store: RunStore;
   projectRoot: string;
@@ -75,14 +93,7 @@ export async function runTelegramPollOnce(
       // Deterministic Gateway denials are handled (offset advances, the loop
       // continues, and any alert the Gateway enqueued is dispatched below).
       // Thrown store/process errors propagate and stop the batch.
-      if (
-        intake.error.code === "TELEGRAM_RATE_LIMITED" ||
-        intake.error.code === "APPROVAL_NOT_FOUND" ||
-        intake.error.code === "TRIGGER_IDEMPOTENCY_CONFLICT" ||
-        // The global budget breaker is a deterministic refusal: drop the update
-        // (do NOT reprocess it when budget frees up) and let its fuse alert ship.
-        intake.error.code === "GLOBAL_BUDGET_FUSE"
-      ) {
+      if (isHandledIntakeDenial(intake.error.code)) {
         return;
       }
       throw new Error(`Gateway intake failed: ${intake.error.code} ${intake.error.message}`);

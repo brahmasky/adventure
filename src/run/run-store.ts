@@ -220,6 +220,13 @@ export interface RunStatusRow {
   event_count: number;
 }
 
+export interface PollHeartbeat {
+  last_success_at: string | null;
+  last_error: string | null;
+  last_error_at: string | null;
+  updated_at: string | null;
+}
+
 export class RunStore {
   private constructor(private readonly db: SqliteDatabase) {
     this.db.exec("PRAGMA busy_timeout = 5000");
@@ -757,6 +764,37 @@ export class RunStore {
       LIMIT 1
     `).get<{ state_reason: string | null }>();
     return row?.state_reason ?? null;
+  }
+
+  // --- Daemon poll heartbeat ----------------------------------------------
+
+  /**
+   * Record one daemon poll cycle. On success advances `last_success_at`; on
+   * failure records `last_error` + `last_error_at`. The single row lets an
+   * unattended operator confirm via /status that the daemon is alive.
+   */
+  recordPollHeartbeat(input: { now: string; ok: boolean; error?: string }): void {
+    if (input.ok) {
+      this.db.prepare(`
+        UPDATE daemon_heartbeat SET last_success_at = ?, updated_at = ? WHERE id = 1
+      `).run(input.now, input.now);
+    } else {
+      this.db.prepare(`
+        UPDATE daemon_heartbeat
+        SET last_error = ?, last_error_at = ?, updated_at = ?
+        WHERE id = 1
+      `).run(input.error ?? "unknown error", input.now, input.now);
+    }
+  }
+
+  /** The daemon heartbeat, or null if the daemon has never recorded a cycle. */
+  getPollHeartbeat(): PollHeartbeat | null {
+    const row = this.db.prepare(`
+      SELECT last_success_at, last_error, last_error_at, updated_at
+      FROM daemon_heartbeat WHERE id = 1
+    `).get<PollHeartbeat>();
+    if (!row || row.updated_at === null) return null;
+    return row;
   }
 
   createApprovalRequest(input: ApprovalRequestInput): ApprovalRequestRecord {
@@ -1929,6 +1967,46 @@ export class RunStore {
     this.applyMilestone2Migration();
     this.validateMilestone2Schema();
     this.applyGuardrailsMigration();
+    this.applyDaemonMigration();
+  }
+
+  private applyDaemonMigration(): void {
+    const version = "2026-06-18-daemon-heartbeat";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS daemon_heartbeat (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          last_success_at TEXT,
+          last_error TEXT,
+          last_error_at TEXT,
+          updated_at TEXT
+        );
+
+        INSERT OR IGNORE INTO daemon_heartbeat (id) VALUES (1);
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
   }
 
   private applyGuardrailsMigration(): void {

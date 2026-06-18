@@ -4,7 +4,7 @@ import {
   type GlobalBudgetCaps,
   type GlobalBudgetHeadroom
 } from "../budget/global-budget-ledger.js";
-import type { RunStatusRow, RunStore } from "../run/run-store.js";
+import type { PollHeartbeat, RunStatusRow, RunStore } from "../run/run-store.js";
 
 /** Rolling-window operational summary shown when no specific run is requested. */
 export interface StatusOverview {
@@ -12,6 +12,8 @@ export interface StatusOverview {
   runs_by_state: Record<string, number>;
   last_error: string | null;
   budget: GlobalBudgetHeadroom[];
+  /** Daemon poll heartbeat, or null if the always-on daemon has never run. */
+  poller: PollHeartbeat | null;
 }
 
 export type StatusQueryResult =
@@ -49,7 +51,8 @@ export function queryStatus(
           window_hours: GLOBAL_BUDGET_WINDOW_HOURS,
           runs_by_state: store.runCountsByStateSince(now),
           last_error: store.lastRunError(),
-          budget: store.globalBudgetUsage(caps, now)
+          budget: store.globalBudgetUsage(caps, now),
+          poller: store.getPollHeartbeat()
         }
       }
     };
