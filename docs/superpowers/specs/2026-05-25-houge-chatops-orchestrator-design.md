@@ -1715,6 +1715,8 @@ A later track, building on V2 containment, lets Houge acquire and use new capabi
    - **Containment at use time** (the V2 list) and full Run Ledger receipts for discovery, install, activation, and rollback.
 5. **Self-evolution.** Houge improves its own programs, skills, wiki, and code, measured against a baseline (the V2 self-evolution goals).
 
+**The first, safest self-evolution target is persona-voice** (tone/character/mood), gated by the learning lifecycle — lowest-risk and highest-feedback, it proves the self-evolution loop before it touches code or capabilities. But identity obeys the **紧箍咒 rule** ([ADR 0005](../../decisions/0005-agent-memory-architecture.md)): the voice may evolve; the **constitution** (accuracy/honesty, safety boundaries, operating rules in `memory/core/houge.md`) is immutable and never self-edited — no rung of this ladder may weaken it.
+
 This track requires a dedicated security review (`/cso`) before implementation: dynamic third-party-code installation is the largest attack surface Houge would ever expose, and the supply-chain, trust, and sandboxing requirements above are the gate, not a nice-to-have.
 
 Out of scope until this track is explicitly designed and reviewed: arbitrary or unpinned skill/plugin installation, running unreviewed third-party skills, and any self-extension that bypasses the Capability Runner, approval, and eval gates.

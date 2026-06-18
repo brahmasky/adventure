@@ -44,6 +44,14 @@ commitments:
    view / correct / forget, mirroring every consumer system's editable-summary pattern.
 7. **Evaluate with a small domain set** (multi-session recall, contradiction, forgetting) —
    vendor benchmark numbers are publicly disputed and not a basis for choices.
+8. **Identity evolution — the 紧箍咒 rule.** Core Identity splits into a **voice** layer
+   (tone, character, mood — learned via the User Profile + Lessons, free to evolve) and an
+   immutable **constitution** (accuracy/honesty, the operating rules, safety boundaries —
+   changed only by Paco, never self-edited). Persona-voice is the designated **first
+   self-evolution target**: lowest-risk (a worse joke is reversible; a deleted file is not),
+   highest-feedback, and it exercises the full proposed→approved→eval-gated→activated loop
+   before self-evolution is ever allowed near code or capabilities. **No self-evolution may
+   touch the constitution** — the one wearing the band cannot remove it.
 
 Core Identity (`memory/core/houge.md`) is the small, always-loaded identity block — the
 first concrete memory artifact, written now alongside naming Houge (猴哥).
