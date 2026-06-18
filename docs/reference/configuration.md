@@ -50,7 +50,7 @@ policy behind the `pi` provider.
 | `HOUGE_LLM_PROVIDERS` | `pi,kimi-api` | Ordered, comma-separated chain with automatic fallback (first success wins; unavailable/error/timeout falls through). Known providers: `pi` (hardened single-shot CLI), `kimi-api` (OpenAI-compatible HTTP). The singular `HOUGE_LLM_PROVIDER` is ignored when this plural is set. |
 | `HOUGE_LLM_MODEL_PI` | unset → pi's own configured model | Model is configured **per provider** (namespaces differ). Set this only to make Houge override pi's own choice. |
 | `HOUGE_LLM_MODEL_KIMI` | `moonshot-v1-auto` (stable alias) | A model your `KIMI_API_KEY` can access (`GET /v1/models`). |
-| `HOUGE_ASK_SYSTEM_PROMPT` | built-in neutral prompt | `/ask` is plain question answering, so Houge replaces pi's default *coding-assistant* persona (and seeds the API system message) with a neutral one. Override the whole prompt here. |
+| `HOUGE_ASK_SYSTEM_PROMPT` | built-in 猴哥 identity projection | The `/ask` system prompt — a projection of Houge's Core Identity (`memory/core/houge.md`): the cheerful, capable 猴哥, inference-only (answers, doesn't act). Replaces pi's default *coding-assistant* persona. Override the whole prompt here. See [ADR 0005](../decisions/0005-agent-memory-architecture.md). |
 | `HOUGE_LLM_TIMEOUT_MS` | — | Fallback per-provider wall-clock timeout (ms) for any provider without a specific one. |
 | `HOUGE_LLM_TIMEOUT_MS_PI` | `60000` | pi timeout (ms). |
 | `HOUGE_LLM_TIMEOUT_MS_KIMI` | `30000` | kimi timeout (ms). |

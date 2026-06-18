@@ -1131,6 +1131,19 @@ The `explore-environment` program should be allowed to inspect an environment sa
 
 Houge uses layered memory. Memory is not a single growing prompt.
 
+> **Architecture direction (informed by a mid-2026 survey):** see
+> [ADR 0005](../../decisions/0005-agent-memory-architecture.md) and
+> [docs/research/agent-memory-2026.md](../../research/agent-memory-2026.md). The survey
+> validated this layered, human-gated, markdown design and added these commitments to
+> the design below: **(a)** the durable store is **SQLite + FTS5** (zero-dependency, no
+> vector DB) with **hybrid retrieval scored recency × importance × relevance** into the
+> Context Pack budget; **(b)** raw episodic is auto-captured, durable distillation is
+> human-gated (keep raw + provenance); **(c)** semantic facts are **temporally correct** —
+> `valid_from`/`valid_until`, **invalidate-don't-delete**; **(d)** consolidation/reflection
+> runs **off the hot path in the always-on daemon's idle loop**; **(e)** memory is
+> **user-editable over Telegram** (extend `/teach` with view/correct/forget); **(f)**
+> measured by a small domain eval, not vendor benchmarks.
+
 ### Layers
 
 1. Core Identity
@@ -1701,6 +1714,8 @@ A later track, building on V2 containment, lets Houge acquire and use new capabi
    - **Approval before activation** plus an **eval gate** — a skill becomes active only after it demonstrably helps. This mirrors the lesson lifecycle (proposed → accepted → eval-gated → activated → measured → keep or rollback), applied to capabilities rather than knowledge.
    - **Containment at use time** (the V2 list) and full Run Ledger receipts for discovery, install, activation, and rollback.
 5. **Self-evolution.** Houge improves its own programs, skills, wiki, and code, measured against a baseline (the V2 self-evolution goals).
+
+**The first, safest self-evolution target is persona-voice** (tone/character/mood), gated by the learning lifecycle — lowest-risk and highest-feedback, it proves the self-evolution loop before it touches code or capabilities. But identity obeys the **紧箍咒 rule** ([ADR 0005](../../decisions/0005-agent-memory-architecture.md)): the voice may evolve; the **constitution** (accuracy/honesty, safety boundaries, operating rules in `memory/core/houge.md`) is immutable and never self-edited — no rung of this ladder may weaken it.
 
 This track requires a dedicated security review (`/cso`) before implementation: dynamic third-party-code installation is the largest attack surface Houge would ever expose, and the supply-chain, trust, and sandboxing requirements above are the gate, not a nice-to-have.
 
