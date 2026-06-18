@@ -1131,6 +1131,19 @@ The `explore-environment` program should be allowed to inspect an environment sa
 
 Houge uses layered memory. Memory is not a single growing prompt.
 
+> **Architecture direction (informed by a mid-2026 survey):** see
+> [ADR 0005](../../decisions/0005-agent-memory-architecture.md) and
+> [docs/research/agent-memory-2026.md](../../research/agent-memory-2026.md). The survey
+> validated this layered, human-gated, markdown design and added these commitments to
+> the design below: **(a)** the durable store is **SQLite + FTS5** (zero-dependency, no
+> vector DB) with **hybrid retrieval scored recency × importance × relevance** into the
+> Context Pack budget; **(b)** raw episodic is auto-captured, durable distillation is
+> human-gated (keep raw + provenance); **(c)** semantic facts are **temporally correct** —
+> `valid_from`/`valid_until`, **invalidate-don't-delete**; **(d)** consolidation/reflection
+> runs **off the hot path in the always-on daemon's idle loop**; **(e)** memory is
+> **user-editable over Telegram** (extend `/teach` with view/correct/forget); **(f)**
+> measured by a small domain eval, not vendor benchmarks.
+
 ### Layers
 
 1. Core Identity

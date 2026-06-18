@@ -66,6 +66,7 @@ and [ADR 0003](docs/decisions/0003-global-budget-breaker.md).
 - [Configuration reference](docs/reference/configuration.md) — every environment variable, default, and purpose.
 - [Deploy the daemon (launchd)](deploy/launchd/README.md) — run the always-on daemon on macOS.
 - [Architecture decisions](docs/decisions/README.md) — the *why* behind significant choices (ADRs).
+- [Research notes](docs/research/) — landscape reviews that inform design (e.g. agent memory, mid-2026).
 - [Design spec](docs/superpowers/specs/2026-05-25-houge-chatops-orchestrator-design.md) — architecture and milestone plan.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — documentation convention and definition of done (tests **and** a live run).
 - [AGENTS.md](AGENTS.md) — coding, safety, and workflow rules. [CONTEXT.md](CONTEXT.md) — domain language.
