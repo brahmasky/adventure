@@ -78,9 +78,15 @@ export function createKimiProvider(config: KimiProviderConfig = {}): LlmProvider
         numericEnv(process.env.HOUGE_LLM_TIMEOUT_MS) ??
         KIMI_DEFAULT_TIMEOUT_MS;
 
+      // Houge-controlled system prompt (the `/ask` neutral persona) goes first
+      // as a standard OpenAI-style system message when present.
+      const messages = [
+        ...(req.system ? [{ role: "system", content: req.system }] : []),
+        { role: "user", content: req.question }
+      ];
       const body = {
         model,
-        messages: [{ role: "user", content: req.question }],
+        messages,
         max_tokens: 1024
       };
 

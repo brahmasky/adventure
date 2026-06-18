@@ -434,6 +434,36 @@ describe("createPiProvider", () => {
     });
   });
 
+  describe("system prompt", () => {
+    it("passes a Houge-controlled system prompt as --system-prompt (argv, not stdin)", async () => {
+      const spawnImpl = vi.fn<SpawnImpl>(async () =>
+        spawnResult({ stdout: jsonlSuccess("ok") })
+      );
+      const provider = createPiProvider({ spawnImpl, model: "m" });
+
+      await provider.answer({ question: "hi", system: "Be neutral and concise." });
+
+      const [, args, opts] = spawnImpl.mock.calls[0]!;
+      const idx = args.indexOf("--system-prompt");
+      expect(idx).toBeGreaterThanOrEqual(0);
+      expect(args[idx + 1]).toBe("Be neutral and concise.");
+      // The system prompt is a flag value; the question still rides stdin.
+      expect(opts.input).toBe("hi");
+      expect(opts.input).not.toContain("Be neutral");
+    });
+
+    it("omits --system-prompt entirely when no system prompt is set", async () => {
+      const spawnImpl = vi.fn<SpawnImpl>(async () =>
+        spawnResult({ stdout: jsonlSuccess("ok") })
+      );
+      const provider = createPiProvider({ spawnImpl, model: "m" });
+
+      await provider.answer({ question: "hi" });
+
+      expect(spawnImpl.mock.calls[0]![1]).not.toContain("--system-prompt");
+    });
+  });
+
   describe("model + env resolution", () => {
     it("prefers req.model over config.model", async () => {
       const spawnImpl = vi.fn<SpawnImpl>(async () =>

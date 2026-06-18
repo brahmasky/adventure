@@ -1,6 +1,30 @@
-import { describe, expect, it } from "vitest";
-import { createLlmAnswerAdapter } from "../../src/capabilities/llm-answer.js";
-import type { LlmProvider } from "../../src/llm/types.js";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  DEFAULT_ASK_SYSTEM_PROMPT,
+  createLlmAnswerAdapter
+} from "../../src/capabilities/llm-answer.js";
+import type { LlmProvider, LlmRequest } from "../../src/llm/types.js";
+
+/** A provider that records the request it received, so we can assert on `system`. */
+function capturingProvider(): { provider: LlmProvider; last(): LlmRequest | undefined } {
+  let captured: LlmRequest | undefined;
+  return {
+    provider: {
+      name: "capture",
+      async answer(req) {
+        captured = req;
+        return { ok: true, provider: "capture", model: "m", answer: "ok" };
+      }
+    },
+    last: () => captured
+  };
+}
+
+const SAVED_ASK_PROMPT = process.env.HOUGE_ASK_SYSTEM_PROMPT;
+afterEach(() => {
+  if (SAVED_ASK_PROMPT === undefined) delete process.env.HOUGE_ASK_SYSTEM_PROMPT;
+  else process.env.HOUGE_ASK_SYSTEM_PROMPT = SAVED_ASK_PROMPT;
+});
 
 describe("createLlmAnswerAdapter", () => {
   it("maps a successful provider result to the capability output", async () => {
@@ -23,6 +47,36 @@ describe("createLlmAnswerAdapter", () => {
         provider: "fake"
       }
     });
+  });
+
+  it("threads the neutral default system prompt to the chain", async () => {
+    delete process.env.HOUGE_ASK_SYSTEM_PROMPT;
+    const { provider, last } = capturingProvider();
+    const adapter = createLlmAnswerAdapter({ chain: [provider] });
+
+    await adapter({ question: "hi" });
+
+    expect(last()?.system).toBe(DEFAULT_ASK_SYSTEM_PROMPT);
+  });
+
+  it("lets HOUGE_ASK_SYSTEM_PROMPT override the default", async () => {
+    process.env.HOUGE_ASK_SYSTEM_PROMPT = "Answer like a pirate.";
+    const { provider, last } = capturingProvider();
+    const adapter = createLlmAnswerAdapter({ chain: [provider] });
+
+    await adapter({ question: "hi" });
+
+    expect(last()?.system).toBe("Answer like a pirate.");
+  });
+
+  it("lets a per-call input.system take precedence over the env and default", async () => {
+    process.env.HOUGE_ASK_SYSTEM_PROMPT = "env one";
+    const { provider, last } = capturingProvider();
+    const adapter = createLlmAnswerAdapter({ chain: [provider] });
+
+    await adapter({ question: "hi", system: "call one" });
+
+    expect(last()?.system).toBe("call one");
   });
 
   it("rejects a missing or empty question without calling the chain", async () => {

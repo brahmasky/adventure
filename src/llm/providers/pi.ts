@@ -247,6 +247,9 @@ export function createPiProvider(config: PiProviderConfig = {}): LlmProvider {
       // some providers (e.g. kimi-coder) are registered via a pi extension; with
       // tools already disabled, loading the extension only makes the model
       // reachable, not capable of side effects.
+      // `--system-prompt` REPLACES pi's default coding-assistant persona. The
+      // value is Houge-controlled (never the attacker's question), so passing
+      // it as an argv flag is safe — unlike the question, which stays on stdin.
       const args = [
         "-p",
         "--no-tools",
@@ -255,6 +258,7 @@ export function createPiProvider(config: PiProviderConfig = {}): LlmProvider {
         "--no-context-files",
         "--mode",
         "json",
+        ...(req.system ? ["--system-prompt", req.system] : []),
         ...(model ? ["--model", model] : [])
       ];
 

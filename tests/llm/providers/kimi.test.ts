@@ -64,6 +64,32 @@ describe("createKimiProvider", () => {
     expect(body.model).toBe("kimi-test");
   });
 
+  it("prepends a system message when a system prompt is provided", async () => {
+    const fetchImpl = vi.fn<KimiFetchImpl>(async () => okResponse(contentResponse));
+    const provider = createKimiProvider({ apiKey: "test-key", model: "kimi-test", fetchImpl });
+
+    await provider.answer({ question: "What is the capital of France?", system: "Be neutral." });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0]![1].body);
+    expect(body.messages).toHaveLength(2);
+    expect(body.messages[0]).toEqual({ role: "system", content: "Be neutral." });
+    expect(body.messages[1]).toEqual({
+      role: "user",
+      content: "What is the capital of France?"
+    });
+  });
+
+  it("sends only the user message when no system prompt is provided", async () => {
+    const fetchImpl = vi.fn<KimiFetchImpl>(async () => okResponse(contentResponse));
+    const provider = createKimiProvider({ apiKey: "test-key", model: "kimi-test", fetchImpl });
+
+    await provider.answer({ question: "hi" });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0]![1].body);
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0].role).toBe("user");
+  });
+
   it("defaults the model when none is configured", async () => {
     delete process.env.HOUGE_LLM_MODEL_KIMI;
     delete process.env.HOUGE_LLM_MODEL;
