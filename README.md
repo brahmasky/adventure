@@ -33,69 +33,32 @@ Configuration (Telegram token, LLM keys, model/timeout overrides) is read from a
 ## LLM providers
 
 `/ask` resolves an ordered provider chain with automatic fallback (first `ok`
-wins; `unavailable`/error/timeout fall through). Known providers: `pi` (hardened
-single-shot CLI), `kimi-api` (OpenAI-compatible HTTP).
+wins; `unavailable`/error/timeout fall through). Default chain `pi,kimi-api`:
+`pi` (hardened single-shot CLI, tools disabled) and `kimi-api` (OpenAI-compatible
+HTTP). `/ask` uses a neutral system prompt so answers aren't skewed toward a coding
+framing.
 
-- **Default chain:** `pi,kimi-api` (`HOUGE_LLM_PROVIDERS` unset).
-- **Config:** see `.env.example` for `HOUGE_LLM_PROVIDERS`, `HOUGE_LLM_MODEL[_PI/_KIMI]`,
-  `HOUGE_LLM_TIMEOUT_MS[_PI/_KIMI]`, `KIMI_API_KEY`, `HOUGE_KIMI_BASE_URL`,
-  `HOUGE_PI_ENV_PASSTHROUGH`, `HOUGE_ASK_SYSTEM_PROMPT`. `HOUGE_LLM_PROVIDER` (singular)
-  is ignored when the plural `HOUGE_LLM_PROVIDERS` is set.
-- **Neutral `/ask` persona:** `/ask` is plain question answering, so Houge sends a
-  neutral system prompt that *replaces* pi's default coding-assistant persona (and
-  seeds the API providers' system message) — answers stay direct and aren't skewed
-  toward a coding framing. Override the whole prompt with `HOUGE_ASK_SYSTEM_PROMPT`.
-- **Runner timeout coupling:** the CapabilityRunner's `Promise.race` `timeout_ms`
-  is the only enforced wall-clock bound (the contract's `time_minutes` is not
-  enforced). It is *derived* from the chain — `sum(per-provider timeouts) +
-  buffer` (`resolveChainBudgetMs` + `RUNNER_TIMEOUT_BUFFER_MS`; default
-  60s + 30s + 15s = 105s) — so a healthy chain that legitimately falls through
-  every provider is never killed mid-flight.
+→ Every provider/model/timeout/key variable: [configuration reference](docs/reference/configuration.md#llm-provider-chain-powers-ask).
+The inference-vs-agentic safety boundary (why a tools-disabled `pi` is `external_read`):
+[ADR 0002](docs/decisions/0002-pi-as-agent-runtime.md).
 
-### Policy amendment (ratified)
+## Safety model
 
-Single-shot, tools-disabled, env-allowlisted, killable CLI inference (`pi`) is
-classified `external_read` and is allowed ungated. Full agentic
-`coding_agent_cli` delegation (tools enabled) remains denied until V2
-containment.
+Deterministic code owns control; the LLM is used only for judgment
+([ADR 0001](docs/decisions/0001-deterministic-harness-governs-everything.md)).
+Defense-in-depth: per-run budget bounds one task; Telegram rate limits bound intake
+spikes; a **global circuit-breaker** bounds Houge as a whole over a rolling 24h window
+(the autonomy floor for the always-on daemon); approval gates require your consent for
+each risky action.
 
-## Global autonomy circuit-breaker
+→ Breaker caps, defaults, and rationale:
+[configuration reference](docs/reference/configuration.md#global-autonomy-circuit-breaker)
+and [ADR 0003](docs/decisions/0003-global-budget-breaker.md).
 
-A durable, cross-run **breaker** (not a throttle) bounds Houge as a whole over a
-rolling 24h window — the safety floor for the always-on daemon. Once any cap is
-reached, new run admissions are **refused** at the gateway with a
-`global_budget_fuse` ledger event and **exactly one** Telegram alert per fuse
-episode; admissions resume automatically as the window clears. Status, approve,
-and deny commands are never blocked.
+## Documentation
 
-Each cap bounds a different axis of "runaway", so one tripping pauses new
-admissions even if the others look fine:
-
-| Env var | Default | Axis | What it protects against |
-|---------|---------|------|--------------------------|
-| `HOUGE_GLOBAL_MAX_RUNS_24H` | 200 | **Volume** (how many jobs) | A schedule misfiring in a loop, a bug re-enqueuing work, a flood of commands. |
-| `HOUGE_GLOBAL_MAX_TOOL_CALLS_24H` | 1000 | **Cost** (how much compute/$) | Aggregate LLM/tool spend across *all* runs — catches a single run that quietly burns thousands of calls (matters most for future agentic runs). |
-| `HOUGE_GLOBAL_MAX_GATED_ATTEMPTS_24H` | 100 | **Risk** (how much dangerous intent) | The agent repeatedly *attempting* approval-requiring actions (external-write/destructive/paid) — a bad lesson, prompt injection, or a loop — and the approval-prompt spam that causes. |
-
-Defaults are sized for a single-operator deployment (high enough never to bother
-you, low enough to contain a runaway loop). They live as a code constant
-(`DEFAULT_GLOBAL_BUDGET_CAPS` in `src/budget/global-budget-ledger.ts`); resolution
-is **env var → code default**, so any cap is overridable from `.env` with no code
-change (see `.env.example`).
-
-- **Counting:** run admissions are counted in a dedicated `global_budget_events`
-  table; tool-calls and gated attempts are *derived* from the authoritative ledger
-  (`tool_finished` / `approval_requested`) — no duplicate bookkeeping.
-- **Visibility:** `houge status` (and the Telegram `/status` reply) include a
-  rolling-window overview — run counts by state, the last error, and per-cap
-  headroom (used/limit/remaining).
-- **Where it sits in the safety stack:** per-run `BudgetLedger` bounds one task;
-  Telegram rate limits bound intake spikes; this breaker bounds Houge as a whole
-  per day; approval gates require your consent for each risky action. The first
-  three contain blast radius; the last is consent.
-
-## Key Documents
-
-- [AGENTS.md](AGENTS.md): project workflow, safety, and coding guidelines.
-- [CONTEXT.md](CONTEXT.md): Houge domain language.
-- [Houge design spec](docs/superpowers/specs/2026-05-25-houge-chatops-orchestrator-design.md): current architecture and milestone plan.
+- [Configuration reference](docs/reference/configuration.md) — every environment variable, default, and purpose.
+- [Architecture decisions](docs/decisions/README.md) — the *why* behind significant choices (ADRs).
+- [Design spec](docs/superpowers/specs/2026-05-25-houge-chatops-orchestrator-design.md) — architecture and milestone plan.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — documentation convention and definition of done (tests **and** a live run).
+- [AGENTS.md](AGENTS.md) — coding, safety, and workflow rules. [CONTEXT.md](CONTEXT.md) — domain language.
