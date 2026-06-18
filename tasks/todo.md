@@ -44,7 +44,24 @@ guard, graceful shutdown).
 
 ## Review
 
-(filled at completion)
+DONE — all gate criteria met and live-verified.
+
+- **Daemon** (`src/telegram/telegram-daemon.ts`): continuous long-poll loop, heartbeat
+  per cycle, exponential backoff, abortable long-poll for instant shutdown; in-flight
+  run finishes + outbox flushes before exit.
+- **Single-instance lock** (`single-instance-lock.ts`): PID lockfile + stale reclaim.
+- **Heartbeat**: `daemon_heartbeat` table + `/status` `poller` field (CLI + Telegram).
+- **Shared `isHandledIntakeDenial`** so daemon/one-shot can't drift.
+- **CLI**: `telegram-poll` (no --once) → lock + signal wiring + daemon.
+- **launchd**: plist template + wrapper + install/uninstall runbook; ADR 0004.
+- **Tests**: +11 (lock, heartbeat, daemon loop/backoff/graceful-stop). 237 pass,
+  typecheck + build clean, zero new deps.
+- **Live run caught a real bug** (Goal 1 pattern again): `npm run`/`tsx` wrappers
+  swallowed SIGTERM → exit 143 + leaked lock. Fixed: run `node dist/cli.js` directly.
+  Re-verified: answers /ask unattended (32 cycles), single-instance guard exits 2nd,
+  graceful shutdown "stopped cleanly" exit 0, lock released.
+
+Next: merge `feat/always-on-daemon`; Goal 3 = schedule trigger (in-process tick).
 
 ---
 
