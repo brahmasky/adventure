@@ -1,6 +1,6 @@
 # ADR 0006: Web-read capability — free-read, gated-act
 
-- **Status:** accepted (direction; Tier 1 built first)
+- **Status:** accepted (direction; Tier 1 built first) · **amended 2026-06-19** (research quality — see end)
 - **Date:** 2026-06-18
 - **Deciders:** Paco
 
@@ -94,3 +94,50 @@ gated like any other.
   dangerous-by-default (carries sessions/authority); it's the gated heavy tier, not the everyday one.
 - **An LLM monitoring/telemetry subagent** — rejected for the recording path: telemetry must be
   deterministic (the ledger already is it). An advisory read-only reviewer is a later option.
+
+---
+
+## Amendment (2026-06-19): research quality — a STORM-style pipeline
+
+*This extends (does not reverse) the capability above: the `web-research` program's
+internal **method**. Motivated by a real eval — the SPCX `/research` answer was well-formed
+but had a fact-misassociation (a 10× unit error) and source bias (it took the most bullish
+source at face value).*
+
+### Context
+
+Today `web-research` is **search → one synthesis** — the single-pass research that
+systematically misses blind spots. **STORM** (Stanford OVAL Lab, *Synthesis of Topic
+Outlines through Retrieval and Multi-perspective Question Asking*, NAACL 2024;
+`github.com/stanford-oval/storm`, MIT) reframes research as a **staged pipeline** and is
+~25% more organized / 10% broader in peer-reviewed testing. Its two named failure modes —
+**source bias** and **fact misassociation** — are *exactly* the SPCX flaws, and its
+**self-critique** step is the documented fix. Houge has an edge over the prompt-only version
+the method is usually demoed with: it has **live retrieval**, so it can run the
+*retrieval-grounded* STORM (each perspective backed by real sources), not just model priors.
+
+### Decision
+
+Adopt a STORM-informed method for `web-research`, sequenced cheapest → richest:
+
+- **A — self-critique pass (do first).** After synthesis, a second LLM pass grades its own
+  answer (confidence per claim, weakest link / what-to-verify, bias check, missing angle) and
+  revises. One extra call; directly targets the SPCX-class errors. **This *is* the advisory
+  reviewer** discussed elsewhere, built in.
+- **B — contradiction + reliability structure.** Rank findings by confidence and flag where
+  sources disagree (no more cherry-picking the rosiest source).
+- **C — multi-perspective deep mode.** A gated `--deep` variant: generate questions from
+  several expert lenses (practitioner / academic / skeptic / economist / historian),
+  **retrieve per perspective**, map contradictions, synthesize, then self-critique. Many
+  searches + calls → it is a **mode**, not the default, bounded by the global breaker.
+
+### Consequences & ties
+
+- **Quality bump where it's cheapest** (A) addresses the exact eval failures; **C** is the
+  "research like a PhD" capability, deliberately gated by cost.
+- **Fits the learning loop ([ADR 0007](0007-learning-loop.md)):** this staged method *is* the
+  "fixed research discipline" layer of the composed synthesis prompt; the self-critique checklist
+  can ship **built-in** or as Houge's **inaugural learned lesson**. The peer-review checklist
+  (confidence / weakest-link / bias / missing-angle) comes straight from STORM.
+- **Honest cost:** multi-call latency/budget — why C is a mode. (The source article frames this
+  with some hype; the *method* is the sound, peer-reviewed part.)
