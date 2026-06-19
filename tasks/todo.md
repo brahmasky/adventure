@@ -37,7 +37,23 @@ sources in Telegram.
 
 ## Review
 
-(filled at completion)
+DONE — all gate criteria met and live-verified.
+
+- `src/web/` (types + registry + tavily/firecrawl providers) mirrors the LLM chain;
+  providers locked against the live APIs. `web_search` capability (external_read) +
+  `web-research` program (search → 猴哥 synthesis with sources) + `/research <topic>`.
+- Tier-1 guardrails (ADR 0006): web results ride the data channel, synthesis system
+  prompt is fixed (a test proves an injected "ignore your instructions" can't change it);
+  provenance + `web_search_performed` ledger audit; Telegram link previews disabled;
+  per-run result cap + global breaker.
+- Tests +25 (262 total), typecheck + build clean, zero new deps.
+- **Live-verified twice:** a CLI smoke (real Tavily + LLM → sourced Anthropic-news answer),
+  then the full daemon+Telegram path — the daemon ran ~11h overnight, recovered from a
+  transient fetch error, and answered a live `/research` (SPCX stock) with a detailed,
+  cited, in-character 猴哥 answer delivered to Telegram.
+
+Next candidates: Goal 3 scheduler (now has a useful job — a daily /research brief);
+Tier-3 gated browser (dev-browser/agent-browser, needs /cso); `/guard` control surface.
 
 ---
 
