@@ -29,7 +29,9 @@ scratch later.
 ---
 
 <!--
-ADRs are append-only. Don't rewrite an accepted ADR to change the decision — write a
-new one that supersedes it, and update this one's Status to point at the successor.
-The reasoning trail is the value.
+ADRs are append-only; the reasoning trail is the value.
+- To CHANGE/REVERSE an accepted decision: write a NEW ADR that supersedes it, and update
+  this one's Status to point at the successor. Don't rewrite the decision in place.
+- To EXTEND a decision additively (no reversal): append a dated "## Amendment (YYYY-MM-DD)"
+  section and note it in the Status line. The original decision stays intact above it.
 -->
