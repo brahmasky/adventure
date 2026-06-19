@@ -991,6 +991,9 @@ Houge owns the final decision, memory merge, and user-facing report.
 > [ADR 0007](../../decisions/0007-learning-loop.md). The eval gate is the crux: a lesson
 > activates only if it demonstrably helps and regresses nothing. First slice: feedback-driven
 > procedural lessons for `/research`, human-gated, with the SPCX case as eval fixture #1.
+> The concrete, buildable v1 (channels, files, the composer, store-grows-prompt-bounded, and
+> the simple-now-scalable-later staging) is specified in
+> [Learning Mechanism v1](2026-06-19-learning-mechanism-v1.md).
 
 Learning has three lanes:
 
