@@ -1,6 +1,7 @@
 # ADR 0001: Deterministic harness governs everything
 
-- **Status:** accepted
+- **Status:** accepted · **scope narrowed 2026-06-19** (see Amendment) — *governs the
+  irreversible, not the cognitive*
 - **Date:** 2026-05-25
 - **Deciders:** Paco
 
@@ -46,3 +47,31 @@ what any model does.
 - **Framework dependency for the agent loop:** rejected for V1 — zero runtime
   dependencies (Node + built-in `node:sqlite`) keeps the trust surface and behavior
   fully under our control.
+
+---
+
+## Amendment (2026-06-19): control is the floor, not the point
+
+*"Governs everything" was over-stated. This narrows the scope without reversing the
+principle — informed by the "intent-driven / let-go" critique (over-orchestration is a
+**trust tax** on a capable model) and a deliberate project choice: Houge is an experiment
+we're willing to see fail, so energy belongs on **intelligence**, not on the cage.*
+
+The harness governs the **irreversible and the catastrophic** — not the cognitive:
+
+- **Floor (deterministic, gated):** anything that could irreversibly harm *others* or the
+  operator — destructive/filesystem-escaping actions, external writes, paid actions, secret/
+  token exposure, acting-under-identity. These keep the gate. Kept **minimal** and framed as
+  Houge's own character, not an imposed band (see `memory/core/houge.md`).
+- **Free (the model's to run):** everything cognitive — reading, researching, thinking,
+  synthesizing, competing drafts, exploring, proposing. Here we **give the wheel to the
+  model**: direction over scripts, emergence over SOP. Over-constraining this space makes
+  Houge *dumber*, not safer.
+- **Mistakes are cheap and reversible, not impossible.** Exploration is made safe by
+  reversibility (isolated identity, eval-rollback, reversible memory, objective audit) — the
+  way you childproof a cliff, not cage a child — rather than by forbidding the attempt.
+
+So the invariant stands — *deterministic code owns the few things that must not go wrong, the
+LLM owns judgment* — but the boundary sits at **irreversible action**, and the cognitive
+interior is free. The project's centre of gravity is **intelligence**; the floor stays small,
+quiet, and objective (constitution + budget breaker + OTel/ledger audit).
