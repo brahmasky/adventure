@@ -19,6 +19,7 @@ Read these first when onboarding — they explain choices the code alone can't.
 | [0005](0005-agent-memory-architecture.md) | Agent memory architecture direction | accepted |
 | [0006](0006-web-read-capability.md) | Web-read capability — free-read, gated-act | accepted |
 | [0007](0007-learning-loop.md) | The learning loop — how Houge improves himself, safely | accepted |
+| [0008](0008-houge-identity-authenticated-read.md) | Houge's identity & authenticated read | accepted |
 
 ## Writing a new ADR
 
