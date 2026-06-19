@@ -18,6 +18,7 @@ Read these first when onboarding — they explain choices the code alone can't.
 | [0004](0004-long-poll-daemon.md) | Always-on long-poll daemon | accepted |
 | [0005](0005-agent-memory-architecture.md) | Agent memory architecture direction | accepted |
 | [0006](0006-web-read-capability.md) | Web-read capability — free-read, gated-act | accepted |
+| [0007](0007-learning-loop.md) | The learning loop — how Houge improves himself, safely | accepted |
 
 ## Writing a new ADR
 

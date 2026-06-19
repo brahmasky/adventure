@@ -985,6 +985,13 @@ Houge owns the final decision, memory merge, and user-facing report.
 
 ## Learning Loop
 
+> **Design:** the end-to-end mechanism (capture → proposed lesson → **eval gate** →
+> activate → measure → rollback), the evolvable-vs-constitution boundary (紧箍咒), and the
+> injection-from-web safety case are specified in
+> [ADR 0007](../../decisions/0007-learning-loop.md). The eval gate is the crux: a lesson
+> activates only if it demonstrably helps and regresses nothing. First slice: feedback-driven
+> procedural lessons for `/research`, human-gated, with the SPCX case as eval fixture #1.
+
 Learning has three lanes:
 
 ### Explicit Teaching
