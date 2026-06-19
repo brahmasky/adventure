@@ -4,6 +4,9 @@ import { CapabilityRunner } from "../capabilities/capability-runner.js";
 import type { ApprovalRequestSink, CapabilityResult } from "../capabilities/capability-runner.js";
 import { createLocalFileReadAdapter } from "../capabilities/local-file-read.js";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
+import { buildResearchSynthesis, createWebSearchAdapter } from "../capabilities/web-search.js";
+import { resolveWebMaxResults } from "../web/registry.js";
+import type { WebResult } from "../web/types.js";
 import { resolveChainBudgetMs, RUNNER_TIMEOUT_BUFFER_MS } from "../llm/registry.js";
 import { createLocalProjectWriteAdapter } from "../capabilities/local-project-write-adapter.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
@@ -24,12 +27,16 @@ export type CoreWorkerResult =
 const GATED_CAPABILITY = "local_project_write";
 const GATED_SIDE_EFFECT = "local_write" as const;
 const GATED_RISK = "medium" as const;
+// Wall-clock cap for the web_search tool call: the chain may try tavily (~20s)
+// then firecrawl (~30s), so allow headroom over the sum.
+const WEB_RUNNER_TIMEOUT_MS = 60_000;
 
 export class CoreWorker {
   constructor(
     private readonly runStore: RunStore,
     private readonly projectRoot: string,
-    private readonly llmAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult> = createLlmAnswerAdapter()
+    private readonly llmAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult> = createLlmAnswerAdapter(),
+    private readonly webSearchAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult> = createWebSearchAdapter()
   ) {}
 
   async executeOnce(worker_id: string): Promise<CoreWorkerResult> {
@@ -53,6 +60,10 @@ export class CoreWorker {
   private async executeClaim(claim: ClaimedRun): Promise<CoreWorkerResult> {
     if (this.isGatedFixture(claim.run_id)) {
       return this.executeGatedFixture(claim);
+    }
+
+    if (claim.contract.allowed_actions.includes("web_search")) {
+      return this.executeWebResearch(claim);
     }
 
     if (claim.contract.allowed_actions.includes("llm_answer")) {
@@ -318,6 +329,91 @@ export class CoreWorker {
       sources: [`llm:${provider}:${model}`],
       // The chat reply is just the answer — the user already sees their question.
       notifyText: answer
+    });
+  }
+
+  private async executeWebResearch(claim: ClaimedRun): Promise<CoreWorkerResult> {
+    const registry = new ToolRegistry();
+    registry.register({
+      name: "web_search",
+      category: "tool",
+      side_effect_level: "external_read",
+      risk_level: "low",
+      timeout_ms: WEB_RUNNER_TIMEOUT_MS,
+      output_limit_bytes: 200_000,
+      execute: this.webSearchAdapter
+    });
+    const llmTimeoutMs = resolveChainBudgetMs(process.env) + RUNNER_TIMEOUT_BUFFER_MS;
+    registry.register({
+      name: "llm_answer",
+      category: "tool",
+      side_effect_level: "external_read",
+      risk_level: "low",
+      timeout_ms: llmTimeoutMs,
+      output_limit_bytes: 100_000,
+      execute: this.llmAdapter
+    });
+
+    const budget = new BudgetLedger(claim.contract.budget);
+    const runner = new CapabilityRunner(registry);
+
+    // 1) Read the live web (untrusted data; the adapter has no action authority).
+    const searchResult = await runner.execute({
+      contract: claim.contract,
+      capability: "web_search",
+      input: { query: claim.contract.objective, max_results: resolveWebMaxResults(process.env) },
+      budget
+    });
+    if (searchResult.status !== "succeeded") {
+      return this.failWithPartialReport(claim, searchResult);
+    }
+
+    const rawResults = Array.isArray(searchResult.output.results) ? searchResult.output.results : [];
+    const results: WebResult[] = rawResults.filter(
+      (r): r is WebResult =>
+        typeof r === "object" && r !== null &&
+        typeof (r as WebResult).url === "string" && typeof (r as WebResult).title === "string"
+    );
+    const provider = typeof searchResult.output.provider === "string" ? searchResult.output.provider : "unknown";
+    const sources = results.map((r) => r.url);
+
+    // Audit: the URLs Houge read are recorded in the ledger (provenance).
+    this.runStore.appendLedgerEvent(
+      createLedgerEvent({
+        run_id: claim.run_id,
+        correlation_id: claim.run_id,
+        event_type: "web_search_performed",
+        actor: "core",
+        sequence: this.nextSequence(claim.run_id),
+        payload: {
+          query: claim.contract.objective,
+          provider,
+          source_urls: sources,
+          result_count: results.length
+        }
+      })
+    );
+
+    // 2) Synthesize 猴哥's answer FROM the results (results ride the data channel;
+    // the system prompt is fixed, so embedded instructions can't change behaviour).
+    const { system, question } = buildResearchSynthesis(claim.contract.objective, results);
+    const synth = await runner.execute({
+      contract: claim.contract,
+      capability: "llm_answer",
+      input: { question, system },
+      budget
+    });
+    if (synth.status !== "succeeded") {
+      return this.failWithPartialReport(claim, synth);
+    }
+    const answer = typeof synth.output.answer === "string" ? synth.output.answer : "";
+    const sourceLines = results.map((r, i) => `[${i + 1}] ${r.title} — ${r.url}`);
+
+    return this.writeCompletionReport(claim, {
+      title: "Research",
+      body: [`Topic: ${claim.contract.objective}`, "", answer, "", "Sources:", ...sourceLines].join("\n"),
+      sources: sources.length > 0 ? sources : ["(no web results)"],
+      notifyText: [answer, "", "Sources:", ...sourceLines].join("\n")
     });
   }
 

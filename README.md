@@ -14,6 +14,7 @@ Vitest, the built-in `node:sqlite`):
 - **Milestone 3 (in progress)** — always-on daemon: `houge telegram-poll` (no `--once`) runs a continuous long-poll loop answering commands in near-real-time, supervised by launchd (graceful shutdown, single-instance guard, heartbeat). The schedule trigger is the remaining M3 piece.
 - **`/ask` LLM** — a pluggable provider registry with an ordered fallback chain (`pi` CLI → `kimi-api`); see [LLM providers](#llm-providers).
 - **Autonomy guardrails** — a global 24h budget circuit-breaker bounds runs / tool-calls / gated-attempts; see [Global autonomy circuit-breaker](#global-autonomy-circuit-breaker).
+- **Web read** — `/research <topic>` searches the live web (pluggable Tavily/Firecrawl chain) and 猴哥 answers with cited sources; free-read, gated-act ([ADR 0006](docs/decisions/0006-web-read-capability.md)).
 
 ## Quick start
 

@@ -1,72 +1,61 @@
-# Goal 2 — Always-On Telegram Daemon (M3)
+# Goal 4 — Tier-1 Web Read (per ADR 0006)
 
-**Active /goal (Stop-hook gate):** `houge telegram-poll` (no --once) runs a continuous
-long-poll loop answering /ask in near-real-time; graceful SIGTERM/SIGINT shutdown
-(finish in-flight run, flush outbox, exit 0); single-instance guard (no 409);
-exponential backoff on Telegram errors; heartbeat (last poll, last error) in /status;
-macOS launchd plist + install/uninstall docs; new env vars in
-docs/reference/configuration.md + .env.example; ADR for the design. `npm test` green +
-typecheck clean + zero new deps + a LIVE run (answers /ask unattended, single-instance
-guard, graceful shutdown).
+**Active /goal (Stop-hook gate):** pluggable web-provider registry (Tavily provider, graceful
+when key unset) → `web_search` external_read capability → `web-research` program reachable as
+`/research <topic>`; 猴哥 answers WITH source URLs. Tier-1 guardrails: web content = untrusted
+data (embedded instructions don't alter the prompt), provenance on every claim, Telegram link
+previews disabled, per-run result cap + global breaker, ledger audit. Docs updated. `npm test`
+green + typecheck clean + zero new deps + a LIVE `/research` run answered unattended with real
+sources in Telegram.
 
-## Design (extend, don't rebuild)
+## Design (mirror the LLM provider chain)
 
-- Transport ALREADY supports long-poll: `getUpdates({offset, timeout_seconds})` → real
-  client appends `&timeout=N`. `createTelegramLongPollingAdapter` + durable offset =
-  resume (no drop_pending, unlike WuKong).
-- Host: the always-on Mac mini via macOS launchd; identical plist verifiable on this
-  Mac (same OS).
+- `src/web/` mirrors `src/llm/`: types + registry + providers/{tavily,firecrawl}.
+- `web_search` capability adapter (external_read) like `llm-answer.ts`.
+- `web-research` program in core-worker: search → 猴哥 synthesis (web text as UNTRUSTED data,
+  cite sources) → sourced report + Telegram answer.
+- `/research <topic>` parsed as run/web-research/<topic> (sugar; no new run machinery).
+- Build providers against REAL API shapes (lock via one live call each, like pi/kimi).
 
 ## Build steps (each independently green)
 
-- [ ] 1. Abortable long-poll: add optional `signal?` to getUpdates (client + adapter +
-      pollOnce) so shutdown can cancel an idle long-poll instantly.
-- [ ] 2. Single-instance lock helper (`src/telegram/single-instance-lock.ts`): PID
-      lockfile via O_EXCL, stale-lock reclaim, `release()`. Tests.
-- [ ] 3. Heartbeat: run-store migration (`daemon_heartbeat` single row) +
-      `recordPollHeartbeat` / `getPollHeartbeat`; surface as `poller` in /status
-      overview (+ update the 2 strict status tests). Tests.
-- [ ] 4. Daemon (`src/telegram/telegram-daemon.ts`): `runTelegramDaemon({..., stopSignal})`
-      — construct gateway/worker/adapter/dispatcher once, loop pollOnce(long-poll)+dispatch,
-      heartbeat each cycle, exponential backoff on error (interruptible sleep), break on
-      stopSignal. Tests: multi-batch, graceful stop mid-run, backoff escalation, heartbeat.
-- [ ] 5. CLI: `telegram-poll` (no --once) → acquire lock, wire SIGTERM/SIGINT → abort
-      stopSignal, run daemon, release lock in finally. (--once unchanged.)
-- [ ] 6. launchd plist (`deploy/launchd/`) + install/uninstall runbook (KeepAlive +
-      RunAtLoad = auto-start + auto-restart).
-- [ ] 7. Docs: env vars (HOUGE_TELEGRAM_LONGPOLL_TIMEOUT_S, HOUGE_DAEMON_BACKOFF_*,
-      HOUGE_DAEMON_LOCK_PATH) → configuration.md + .env.example; ADR 0004 (long-poll
-      daemon + single-instance + heartbeat).
-- [ ] 8. `npm run typecheck` clean, `npm test` green, `npm run build` ok, zero new deps.
-- [ ] 9. LIVE: start daemon in background; user sends /ask → answered unattended; second
-      instance exits via guard; SIGTERM → graceful shutdown (logs show finish + flush);
-      /status shows heartbeat.
+- [ ] 0. Lock real API shapes: one live Tavily + one live Firecrawl search (keys from .env,
+      never printed) → capture response structure.
+- [ ] 1. `src/web/types.ts` + `registry.ts` (buildWebChain `tavily,firecrawl`, searchWithChain
+      first-ok-wins fallthrough) + tests.
+- [ ] 2. `providers/tavily.ts` + `providers/firecrawl.ts` (injectable fetch; missing key →
+      unavailable) + tests against real-shape fixtures.
+- [ ] 3. `web_search` capability adapter (external_read) + tests.
+- [ ] 4. `web-research` program (core-worker): search → synthesis with provenance + untrusted-
+      data framing; per-run result cap; ledger audit of urls/sources + tests.
+- [ ] 5. `/research <topic>` in telegram-command-parser → run/web-research + tests.
+- [ ] 6. Disable Telegram link previews on bot messages (telegram-client/sendMessage) + test.
+- [ ] 7. Docs: TAVILY/FIRECRAWL + web settings in configuration.md + .env.example; README/spec
+      note web-research available.
+- [ ] 8. typecheck clean, npm test green, build ok, zero new deps.
+- [ ] 9. LIVE: `/research <topic>` → daemon answers unattended with real sources in Telegram.
 
 ## Review
 
 DONE — all gate criteria met and live-verified.
 
-- **Daemon** (`src/telegram/telegram-daemon.ts`): continuous long-poll loop, heartbeat
-  per cycle, exponential backoff, abortable long-poll for instant shutdown; in-flight
-  run finishes + outbox flushes before exit.
-- **Single-instance lock** (`single-instance-lock.ts`): PID lockfile + stale reclaim.
-- **Heartbeat**: `daemon_heartbeat` table + `/status` `poller` field (CLI + Telegram).
-- **Shared `isHandledIntakeDenial`** so daemon/one-shot can't drift.
-- **CLI**: `telegram-poll` (no --once) → lock + signal wiring + daemon.
-- **launchd**: plist template + wrapper + install/uninstall runbook; ADR 0004.
-- **Tests**: +11 (lock, heartbeat, daemon loop/backoff/graceful-stop). 237 pass,
-  typecheck + build clean, zero new deps.
-- **Live run caught a real bug** (Goal 1 pattern again): `npm run`/`tsx` wrappers
-  swallowed SIGTERM → exit 143 + leaked lock. Fixed: run `node dist/cli.js` directly.
-  Re-verified: answers /ask unattended (32 cycles), single-instance guard exits 2nd,
-  graceful shutdown "stopped cleanly" exit 0, lock released.
+- `src/web/` (types + registry + tavily/firecrawl providers) mirrors the LLM chain;
+  providers locked against the live APIs. `web_search` capability (external_read) +
+  `web-research` program (search → 猴哥 synthesis with sources) + `/research <topic>`.
+- Tier-1 guardrails (ADR 0006): web results ride the data channel, synthesis system
+  prompt is fixed (a test proves an injected "ignore your instructions" can't change it);
+  provenance + `web_search_performed` ledger audit; Telegram link previews disabled;
+  per-run result cap + global breaker.
+- Tests +25 (262 total), typecheck + build clean, zero new deps.
+- **Live-verified twice:** a CLI smoke (real Tavily + LLM → sourced Anthropic-news answer),
+  then the full daemon+Telegram path — the daemon ran ~11h overnight, recovered from a
+  transient fetch error, and answered a live `/research` (SPCX stock) with a detailed,
+  cited, in-character 猴哥 answer delivered to Telegram.
 
-Next: merge `feat/always-on-daemon`; Goal 3 = schedule trigger (in-process tick).
+Next candidates: Goal 3 scheduler (now has a useful job — a daily /research brief);
+Tier-3 gated browser (dev-browser/agent-browser, needs /cso); `/guard` control surface.
 
 ---
 
-# Goal 1 — Autonomy Guardrails (DONE, merged a539ffb)
-
-Global budget circuit-breaker (runs/tool_calls/gated_attempts per 24h), refuse over-cap
-admissions with `global_budget_fuse` + one deduped alert, /status headroom. Live-verified;
-caught a poll-runner seam bug 225 unit tests missed. See ADR 0003.
+# Goal 3 — Scheduler (DEFERRED behind the web capability)
+# Goals 1–2 done (breaker, daemon); 猴哥 identity + ADRs 0001–0006 merged.

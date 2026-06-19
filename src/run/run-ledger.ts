@@ -37,7 +37,8 @@ export type LedgerEventType =
   | "run_failed"
   | "run_cancelled"
   | "run_expired"
-  | "global_budget_fuse";
+  | "global_budget_fuse"
+  | "web_search_performed";
 
 export interface LedgerEvent {
   event_id: string;
@@ -122,7 +123,8 @@ const requiredPayloadFields = {
   run_failed: ["error_type", "error_ref", "recoverable"],
   run_cancelled: ["reason", "requester", "report_ref"],
   run_expired: ["reason", "expired_at", "report_ref"],
-  global_budget_fuse: ["breaches", "window_hours"]
+  global_budget_fuse: ["breaches", "window_hours"],
+  web_search_performed: ["query", "provider", "source_urls"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(

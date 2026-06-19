@@ -25,6 +25,17 @@ describe("parseTelegramCommand", () => {
     });
   });
 
+  it("parses /research as a web-research run, taking the topic literally", () => {
+    expect(parseTelegramCommand("/research what's new with Claude this week?")).toEqual({
+      ok: true,
+      command: { type: "run", program: "web-research", goal: "what's new with Claude this week?" }
+    });
+    expect(parseTelegramCommand("/research")).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/research requires a topic" }
+    });
+  });
+
   it("rejects non-command text, unsupported commands, and missing arguments", () => {
     expect(parseTelegramCommand("hello")).toEqual({
       ok: false,
