@@ -18,9 +18,11 @@ Read these first when onboarding — they explain choices the code alone can't.
 | [0004](0004-long-poll-daemon.md) | Always-on long-poll daemon | accepted |
 | [0005](0005-agent-memory-architecture.md) | Agent memory architecture direction | accepted |
 | [0006](0006-web-read-capability.md) | Web-read capability — free-read, gated-act | accepted |
-| [0007](0007-learning-loop.md) | The learning loop — how Houge improves himself, safely | accepted |
+| [0007](0007-learning-loop.md) | The learning loop — how Houge improves himself, safely | accepted; user-feedback capture superseded by [0010](0010-natural-language-intent-layer.md) |
 | [0008](0008-houge-identity-authenticated-read.md) | Houge's identity & authenticated read | accepted |
 | [0009](0009-architecture-coherence.md) | Architecture coherence — prompt composition, registries, whole-agent review | accepted |
+| [0010](0010-natural-language-intent-layer.md) | Interaction model — natural-language intent layer (Houge as Claude Code over Telegram) | accepted |
+| [0011](0011-self-evolution-architecture.md) | Self-evolution architecture — code, skills, lessons (three layers, dual eval gates, Codex muscle) | accepted |
 
 ## Writing a new ADR
 
