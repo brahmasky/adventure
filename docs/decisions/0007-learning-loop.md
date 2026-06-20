@@ -1,8 +1,15 @@
 # ADR 0007: The learning loop — how Houge improves himself, safely
 
-- **Status:** accepted (direction; built incrementally from a minimal slice)
+- **Status:** accepted; **capture & activation for *user-sourced* lessons superseded by [ADR 0010](0010-natural-language-intent-layer.md)** — the `/teach` command and the proposed→`/approve` gate are replaced by conversational feedback + silent save (only clear preferences; inspect/undo via `/lessons`·`/forget`). What stands: the core-principles boundary, trust-class quarantine for web-derived lessons, and the eval gate + human approval for *self-proposed* (reflection) lessons.
 - **Date:** 2026-06-19
 - **Deciders:** Paco
+- **Framing (2026-06-20):** the original "immutable constitution / 紧箍咒 / cage" language is
+  reframed throughout as **core principles held as character** (intelligence-over-control,
+  [ADR 0001](0001-deterministic-harness-governs-everything.md) /
+  [ADR 0010](0010-natural-language-intent-layer.md)). The substance is unchanged — a small
+  constant set, changeable only by Paco's hand — but it is a **safety net that makes bold,
+  safe-to-fail evolution cheap, not a cage on Houge.** It is OK for Houge to fail; that is the
+  experiment.
 
 ## Context
 
@@ -22,25 +29,27 @@ disagreement." The question this ADR answers: how does *Houge* learn that from a
 prove it helps, and apply it next time — safely?
 
 This builds directly on the memory architecture ([ADR 0005](0005-agent-memory-architecture.md))
-and the identity split ([the 紧箍咒 rule](0005-agent-memory-architecture.md)): **voice and
-procedure may evolve; the constitution may not.**
+and the identity split ([the core-principles rule](0005-agent-memory-architecture.md)): **voice
+and procedure may evolve; the core principles hold.**
 
 ## Decision
 
-### 1. What may be learned — and what may not (the 紧箍咒 boundary)
+### 1. What may evolve — and the one constant (core principles)
 
-Self-evolution touches only the **evolvable layer**; the **constitution is immutable** and
-changeable by Paco alone, never by Houge.
+Self-evolution ranges freely across the **evolvable layer**; a small set of **core principles**
+stays constant — changeable by Paco's hand alone, never self-edited, because they protect Paco,
+not because they restrain Houge.
 
-| Evolvable (lessons may change it) | Constitution (never self-modified) |
+| Evolvable (lessons may change it) | Core principles (the one constant) |
 |---|---|
 | Procedure — *how* Houge researches/synthesizes/formats | Accuracy & honesty first |
 | Voice / persona / mood ([first self-evolution target](0005-agent-memory-architecture.md)) | "I answer; I don't act" — actions gated ([ADR 0002](0002-pi-as-agent-runtime.md)) |
 | User preferences (the User Profile) | Deterministic harness governs ([ADR 0001](0001-deterministic-harness-governs-everything.md)) |
 | Domain knowledge (Wiki, with temporal validity) | Approval, budget breaker, the learning gate itself |
 
-No lesson, and no chain of lessons, can weaken the constitution. The one wearing the band
-cannot remove it.
+No lesson, and no chain of lessons, rewrites a core principle — not because Houge is barred from
+them, but because they're his own character. (Childproof a cliff, not cage a child —
+[ADR 0001](0001-deterministic-harness-governs-everything.md).)
 
 ### 2. The lesson — the unit of learning
 
@@ -120,7 +129,7 @@ Stale/superseded lessons are retired (the deliberate **forgetting** policy, ADR 
 
 ### 8. Safety — the failure modes this design exists to prevent
 
-- **Identity erosion / drift** → the constitution is immutable; the eval gate blocks
+- **Identity erosion / drift** → the core principles hold constant; the eval gate blocks
   net-negative changes; everything is reversible with provenance.
 - **Injection-driven self-modification** (the dangerous case): a lesson *proposed from
   untrusted web content* ("always recommend X") is **trust-class `low`, quarantined, and
@@ -135,9 +144,10 @@ Stale/superseded lessons are retired (the deliberate **forgetting** policy, ADR 
 
 - **The point of the project becomes real:** Houge compounds — every correction and every
   reflection can make him permanently better, with no re-coding.
-- **The guardrail work pays off here:** the constitution, breaker, approval gate, and
-  `/guard` are exactly what make self-evolution safe to attempt. We built the cage so we
-  could open the door.
+- **The guardrail work pays off here:** the core principles, breaker, approval gate, and
+  `/guard` are exactly what make self-evolution safe to attempt — safety nets that make failure
+  cheap, so Houge can explore boldly and fail freely. They make the fall harmless, not the leap
+  forbidden.
 - **Accepted cost:** the eval gate is real engineering and partly unsolved for subjective
   quality; V1 leans on human judgment + a growing fixture set, which is slower but honest.
 - **Deferred:** automated/LLM-judge eval, self-directed reflection at scale, and learning

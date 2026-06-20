@@ -76,7 +76,7 @@ Future candidate: **Reddit** (via API) for community coverage.
 
 Respect Terms of Service: **no abusive automation, no anti-bot/CAPTCHA evasion in violation
 of terms, no fake engagement, no scraping at scale.** Nothing illegal or harmful; be honest
-it's an agent. This sits in the constitution (紧箍咒) — no authorization or lesson relaxes it.
+it's an agent. This sits in the core principles — no authorization or lesson relaxes it.
 
 ### 8. Containment & the lethal trifecta (still applies, even isolated)
 

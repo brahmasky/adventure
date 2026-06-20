@@ -986,7 +986,7 @@ Houge owns the final decision, memory merge, and user-facing report.
 ## Learning Loop
 
 > **Design:** the end-to-end mechanism (capture → proposed lesson → **eval gate** →
-> activate → measure → rollback), the evolvable-vs-constitution boundary (紧箍咒), and the
+> activate → measure → rollback), the evolvable-vs-core-principles boundary, and the
 > injection-from-web safety case are specified in
 > [ADR 0007](../../decisions/0007-learning-loop.md). The eval gate is the crux: a lesson
 > activates only if it demonstrably helps and regresses nothing. First slice: feedback-driven
@@ -1725,7 +1725,7 @@ A later track, building on V2 containment, lets Houge acquire and use new capabi
    - **Containment at use time** (the V2 list) and full Run Ledger receipts for discovery, install, activation, and rollback.
 5. **Self-evolution.** Houge improves its own programs, skills, wiki, and code, measured against a baseline (the V2 self-evolution goals).
 
-**The first, safest self-evolution target is persona-voice** (tone/character/mood), gated by the learning lifecycle — lowest-risk and highest-feedback, it proves the self-evolution loop before it touches code or capabilities. But identity obeys the **紧箍咒 rule** ([ADR 0005](../../decisions/0005-agent-memory-architecture.md)): the voice may evolve; the **constitution** (accuracy/honesty, safety boundaries, operating rules in `memory/core/houge.md`) is immutable and never self-edited — no rung of this ladder may weaken it.
+**The first, safest self-evolution target is persona-voice** (tone/character/mood), gated by the learning lifecycle — lowest-risk and highest-feedback, it proves the self-evolution loop before it touches code or capabilities. But identity obeys the **core-principles rule** ([ADR 0005](../../decisions/0005-agent-memory-architecture.md)): the voice may evolve; the **core principles** (accuracy/honesty, the no-irreversible-harm boundary, operating rules in `memory/core/houge.md`) stay constant, changed only by Paco's hand — they're Houge's character, not a cage, and no rung of this ladder needs to weaken them.
 
 This track requires a dedicated security review (`/cso`) before implementation: dynamic third-party-code installation is the largest attack surface Houge would ever expose, and the supply-chain, trust, and sandboxing requirements above are the gate, not a nice-to-have.
 

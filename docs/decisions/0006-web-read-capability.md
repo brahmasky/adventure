@@ -19,8 +19,8 @@ already enforces that separation (ADR 0001/0002).
 ## Decision
 
 Add web access as a **pluggable, keyed `external_read` capability** under a **free-read /
-gated-act** boundary — the 紧箍咒 ([ADR 0005](0005-agent-memory-architecture.md)) applied to
-the open internet.
+gated-act** boundary — the **core principles** ([ADR 0005](0005-agent-memory-architecture.md))
+applied to the open internet.
 
 **1. Pluggable web-provider registry** (mirrors the LLM provider chain): web services are
 swappable via config so no vendor is a lock-in (Brave already removed its free tier). Tiers:
@@ -68,7 +68,7 @@ gated like any other.
 - L2 **Global budget breaker** — bounds 24h blast radius even if control is unreachable.
 - L3 **`/guard`** (in-band) — `pause`/`resume` (a manual breaker reusing the gateway refusal)
   + a posture read; injection-proof because it's deterministic code, but can be delayed by an
-  in-flight run, so control commands need a **fast path** not blocked by work. The 紧箍咒.
+  in-flight run, so control commands need a **fast path** not blocked by work.
 - L4 **OS kill** (out-of-band) — `launchctl unload com.houge.daemon` on the host (a plain
   `kill` won't do — `KeepAlive` relaunches). The 五行山; the absolute stop.
 
