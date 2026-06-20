@@ -1,3 +1,15 @@
+# Current System State (read first — 2026-06-20)
+
+- **Branch:** `feat/learning-v1` @ `9081b02`, pushed to origin (brahmasky/adventure). **~7 commits ahead of `main`; NOT merged.** Houge runs from THIS branch's `dist/`, not main.
+- **Daemon:** launchd `com.houge.daemon`, **PID 71969** (restart via `launchctl kickstart -k gui/$(id -u)/com.houge.daemon`). Code change ⇒ `npm run build` + reload. Conversation/lessons/identity survive reloads (all in `houge.sqlite` / `houge.md`); only in-flight runs are lost.
+- **Runtime:** model-agnostic chain `pi→kimi` (NEVER Claude). **Codex = build-time muscle** for code self-diagnose only.
+- **`.env` (gitignored):** `HOUGE_CODEX_ENABLED=true`, `HOUGE_CODEX_TIMEOUT_MS=300000`.
+- **猴哥 classifier bug: UNFIXED ON PURPOSE** — it's the live fixture (intent router prompt lacks identity; bypasses the composer). Phase 3 (gated self-write) is where Houge would fix it himself. Don't fix it ad-hoc.
+- **Done so far:** ADR 0010 (conversational front door) LIVE-verified + committed; ADR 0011 (self-evolution architecture); **Phase 1 code self-diagnose DONE + LIVE** (Houge autonomously diagnosed the 猴哥 bug via real Codex, symptom-only).
+- **Next:** **Phase 2 (skills)** — design discussion (skill file format; consolidation-pass timing; the OPENSKILL anchor-verifier). Then Phase 3 (gated code self-write).
+- **Critical rules:** `/goal` is a REAL user-invoked stop-gate command (don't claim it doesn't exist); every `/goal` ends with a LIVE run (not just `npm test`); **freedom-over-control** — no 紧箍咒/cage framing, OK for Houge to fail, only core principles stay constant (ADR 0001/0011).
+
+---
 # Goal — Phase 1: code self-diagnose (read-only, Codex-backed) — ADR 0011
 
 **Active goal (spec: docs/superpowers/specs/2026-06-20-phase1-code-self-diagnose.md; ADR docs/decisions/0011).**
