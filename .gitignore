@@ -14,3 +14,10 @@ houge.sqlite
 # Daemon runtime artifacts
 logs/
 houge.daemon.lock
+
+# Learned memory is runtime state (what /teach writes, what Houge learns);
+# memory/core is committed (his spine), everything else stays local.
+memory/skills/
+memory/user/
+memory/wiki/
+memory/journal/

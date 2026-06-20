@@ -60,7 +60,7 @@ describe("createKimiProvider", () => {
     const body = JSON.parse(init.body);
     expect(body.messages[0].content).toBe("What is the capital of France?");
     expect(body.messages[0].role).toBe("user");
-    expect(body.max_tokens).toBe(1024);
+    expect(body.max_tokens).toBe(4096); // KIMI_DEFAULT_MAX_TOKENS (override: HOUGE_KIMI_MAX_TOKENS)
     expect(body.model).toBe("kimi-test");
   });
 

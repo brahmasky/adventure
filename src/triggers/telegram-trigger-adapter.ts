@@ -11,6 +11,7 @@ export interface TelegramUpdate {
     text?: string;
     forward_date?: number;
     forward_origin?: unknown;
+    reply_to_message?: { message_id: number };
     from?: { id: number };
     chat: { id: number };
   };
@@ -56,28 +57,45 @@ interface TelegramEventBase {
   notify: { kind: "telegram"; chat_id: string };
   idempotency_key: string;
   source_reference: string;
-  metadata: { telegram_update_id: number; telegram_message_id: number };
+  metadata: {
+    telegram_update_id: number;
+    telegram_message_id: number;
+    reply_to_message_id?: number;
+  };
 }
 
 function buildEventBase(update: TelegramUpdate, message: TelegramMessage, identity: Identity): TelegramEventBase {
+  // Carry the reply pointer when the user replied to a prior message — Stage B uses
+  // it as the feedback target hint; Stage A just preserves it.
+  const reply_to_message_id = message.reply_to_message?.message_id;
   return {
     source: "telegram",
     requested_by: identity,
     notify: { kind: "telegram", chat_id: String(message.chat.id) },
     idempotency_key: `telegram:${update.update_id}:${message.message_id}`,
     source_reference: `telegram:update:${update.update_id}:message:${message.message_id}`,
-    metadata: { telegram_update_id: update.update_id, telegram_message_id: message.message_id }
+    metadata: {
+      telegram_update_id: update.update_id,
+      telegram_message_id: message.message_id,
+      ...(typeof reply_to_message_id === "number" ? { reply_to_message_id } : {})
+    }
   };
 }
 
 function buildTelegramEvent(command: TelegramCommand, base: TelegramEventBase): TypedTaskEvent {
   switch (command.type) {
-    case "ask":
-      return buildTypedTaskEvent({ ...base, type: "ask", program: "ask", goal: command.goal });
+    case "turn":
+      return buildTypedTaskEvent({ ...base, type: "turn", program: "turn", goal: command.goal });
     case "run":
       return buildTypedTaskEvent({ ...base, type: "run", program: command.program, goal: command.goal });
     case "status":
       return buildTypedTaskEvent({ ...base, type: "status", metadata: { ...base.metadata, run_id: command.run_id } });
+    case "lessons":
+      // scope (optional) rides `program`; absent → list all scopes.
+      return buildTypedTaskEvent({ ...base, type: "lessons", ...(command.scope ? { program: command.scope } : {}) });
+    case "forget":
+      // scope rides `program`.
+      return buildTypedTaskEvent({ ...base, type: "forget", program: command.scope });
     case "approve":
     case "deny":
       return buildTypedTaskEvent({ ...base, type: command.type, approval_id: command.approval_id });

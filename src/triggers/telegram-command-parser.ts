@@ -1,9 +1,11 @@
 import type { TaskEventType } from "../domain/types.js";
 
 export type TelegramCommand =
-  | { type: "ask"; goal: string }
+  | { type: "turn"; goal: string }
   | { type: "run"; program: string; goal: string }
   | { type: "status"; run_id?: string }
+  | { type: "lessons"; scope?: string }
+  | { type: "forget"; scope: string }
   | { type: "approve"; approval_id: string }
   | { type: "deny"; approval_id: string };
 
@@ -13,27 +15,16 @@ export type TelegramCommandParseResult =
 
 export function parseTelegramCommand(text: string): TelegramCommandParseResult {
   const trimmed = text.trim();
-  if (!trimmed.startsWith("/")) return invalid("Telegram command must start with /");
+  if (!trimmed) return invalid("Telegram message is empty");
+
+  // Natural-language front door (ADR 0010): any message that is NOT a known control
+  // command becomes a `turn` run, carrying the text verbatim. The worker classifies
+  // intent (answer/research/clarify) on the LLM chain — no command prefix required.
+  if (!trimmed.startsWith("/")) return { ok: true, command: { type: "turn", goal: trimmed } };
 
   const firstSpace = trimmed.search(/\s/);
   const rawCommand = firstSpace === -1 ? trimmed : trimmed.slice(0, firstSpace);
   const command = rawCommand.split("@")[0] ?? "";
-
-  // /ask carries a free-text question — take the remainder literally so normal
-  // punctuation (apostrophes in "what's", quotes) is not shell-tokenized.
-  if (command === "/ask") {
-    const goal = firstSpace === -1 ? "" : trimmed.slice(firstSpace + 1).trim();
-    return goal ? { ok: true, command: { type: "ask", goal } } : invalid("/ask requires a question");
-  }
-
-  // /research <topic> — free-text topic taken literally (like /ask); it's sugar
-  // for the `web-research` run program (Tier-1 web read, ADR 0006).
-  if (command === "/research") {
-    const goal = firstSpace === -1 ? "" : trimmed.slice(firstSpace + 1).trim();
-    return goal
-      ? { ok: true, command: { type: "run", program: "web-research", goal } }
-      : invalid("/research requires a topic");
-  }
 
   // Structured commands tokenize with shell-style quoting.
   const words = splitShellWords(trimmed);
@@ -42,9 +33,13 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
 
   if (command === "/run") return parseRun(rest);
   if (command === "/status") return parseStatus(rest);
+  if (command === "/lessons") return parseLessons(rest);
+  if (command === "/forget") return parseForget(rest);
   if (command === "/approve") return requiredApproval("approve", rest);
   if (command === "/deny") return requiredApproval("deny", rest);
-  return { ok: false, error: { code: "TELEGRAM_COMMAND_UNSUPPORTED", message: `Unsupported command: ${command}` } };
+  // Unknown slash-prefixed text is NOT a control command — treat it as natural
+  // language (a `turn`), carrying the text verbatim, rather than rejecting it.
+  return { ok: true, command: { type: "turn", goal: trimmed } };
 }
 
 function parseRun(words: string[]): TelegramCommandParseResult {
@@ -60,6 +55,21 @@ function parseStatus(words: string[]): TelegramCommandParseResult {
   if (words.length > 1) return invalid("/status requires at most one run id");
   const run_id = words[0];
   return run_id ? { ok: true, command: { type: "status", run_id } } : { ok: true, command: { type: "status" } };
+}
+
+function parseLessons(words: string[]): TelegramCommandParseResult {
+  if (words.length === 0) return { ok: true, command: { type: "lessons" } };
+  if (words.length > 1) return invalid("/lessons requires at most one scope");
+  const scope = words[0];
+  return scope
+    ? { ok: true, command: { type: "lessons", scope } }
+    : { ok: true, command: { type: "lessons" } };
+}
+
+function parseForget(words: string[]): TelegramCommandParseResult {
+  if (words.length === 0) return invalid("/forget requires a scope");
+  if (words.length > 1) return invalid("/forget requires exactly one scope");
+  return { ok: true, command: { type: "forget", scope: words[0]! } };
 }
 
 function requiredApproval(type: Extract<TaskEventType, "approve" | "deny">, words: string[]): TelegramCommandParseResult {

@@ -38,6 +38,53 @@ describe("compileTaskContract", () => {
     });
   });
 
+  it("compiles a turn into the intent-router front-door contract (ADR 0010)", () => {
+    const turnEvent = buildTypedTaskEvent({
+      source: "telegram",
+      type: "turn",
+      program: "turn",
+      goal: "what's new with SpaceX?",
+      requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "telegram", chat_id: "222" },
+      idempotency_key: "telegram:turn-contract",
+      source_reference: "telegram:update:1:message:1"
+    });
+
+    const result = compileTaskContract(turnEvent);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.contract.objective).toBe("what's new with SpaceX?");
+      expect(result.contract.allowed_actions).toEqual([
+        "intent_router",
+        "web_search",
+        "llm_answer",
+        "write_report"
+      ]);
+      expect(result.contract.budget.max_tool_calls).toBe(6);
+      expect(result.contract.forbidden_actions).toContain("external_write");
+      expect(result.contract.approval_gates).toContain("external_write");
+      expect(result.contract.contract_hash).toMatch(/^[a-f0-9]{64}$/);
+    }
+  });
+
+  it("rejects a turn with an empty message", () => {
+    const empty = buildTypedTaskEvent({
+      source: "telegram",
+      type: "turn",
+      program: "turn",
+      goal: "   ",
+      requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "telegram", chat_id: "222" },
+      idempotency_key: "telegram:turn-empty",
+      source_reference: "telegram:update:2:message:2"
+    });
+    expect(compileTaskContract(empty)).toEqual({
+      ok: false,
+      error: { code: "TASK_CONTRACT_INVALID", message: "Message is required" }
+    });
+  });
+
   it("compiles /ask into the built-in ask program contract", () => {
     const askEvent = buildTypedTaskEvent({
       source: "telegram",

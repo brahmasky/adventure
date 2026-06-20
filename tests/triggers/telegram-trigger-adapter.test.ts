@@ -7,11 +7,11 @@ const allowlist = {
 };
 
 describe("normalizeTelegramUpdate", () => {
-  it("normalizes /ask into a telegram TypedTaskEvent", () => {
+  it("normalizes plain-language text into a turn TypedTaskEvent (ADR 0010)", () => {
     const result = normalizeTelegramUpdate(
       {
         update_id: 1000,
-        message: { message_id: 55, text: "/ask what is Houge?", from: { id: 111 }, chat: { id: 222 } }
+        message: { message_id: 55, text: "what is Houge?", from: { id: 111 }, chat: { id: 222 } }
       },
       allowlist
     );
@@ -20,13 +20,63 @@ describe("normalizeTelegramUpdate", () => {
     if (result.ok) {
       expect(result.event).toMatchObject({
         source: "telegram",
-        type: "ask",
-        program: "ask",
+        type: "turn",
+        program: "turn",
         goal: "what is Houge?",
         requested_by: { kind: "user", id: "paco" },
         notify: { kind: "telegram", chat_id: "222" },
         idempotency_key: "telegram:1000:55"
       });
+      // No reply hint when the message was not a reply.
+      expect((result.event.metadata as Record<string, unknown>).reply_to_message_id).toBeUndefined();
+    }
+  });
+
+  it("carries the reply_to_message_id hint when the message is a reply", () => {
+    const result = normalizeTelegramUpdate(
+      {
+        update_id: 1010,
+        message: {
+          message_id: 70,
+          text: "too long",
+          reply_to_message: { message_id: 42 },
+          from: { id: 111 },
+          chat: { id: 222 }
+        }
+      },
+      allowlist
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.event.type).toBe("turn");
+      expect(result.event.metadata).toMatchObject({
+        telegram_update_id: 1010,
+        telegram_message_id: 70,
+        reply_to_message_id: 42
+      });
+    }
+  });
+
+  it("still no longer produces ask/research events from /ask or /research", () => {
+    const ask = normalizeTelegramUpdate(
+      { update_id: 1011, message: { message_id: 71, text: "/ask hi", from: { id: 111 }, chat: { id: 222 } } },
+      allowlist
+    );
+    expect(ask.ok).toBe(true);
+    if (ask.ok) {
+      expect(ask.event.type).toBe("turn");
+      expect(ask.event.goal).toBe("/ask hi");
+    }
+
+    const research = normalizeTelegramUpdate(
+      { update_id: 1012, message: { message_id: 72, text: "/research x", from: { id: 111 }, chat: { id: 222 } } },
+      allowlist
+    );
+    expect(research.ok).toBe(true);
+    if (research.ok) {
+      expect(research.event.type).toBe("turn");
+      expect(research.event.program).toBe("turn");
     }
   });
 

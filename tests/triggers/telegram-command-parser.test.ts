@@ -2,11 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseTelegramCommand } from "../../src/triggers/telegram-command-parser.js";
 
 describe("parseTelegramCommand", () => {
-  it("parses ask, run, status, approve, and deny", () => {
-    expect(parseTelegramCommand("/ask compare Pi and Hermes")).toEqual({
-      ok: true,
-      command: { type: "ask", goal: "compare Pi and Hermes" }
-    });
+  it("parses run, status, approve, and deny control commands", () => {
     expect(parseTelegramCommand('/run research-brief "compare gateway designs"')).toEqual({
       ok: true,
       command: { type: "run", program: "research-brief", goal: "compare gateway designs" }
@@ -25,44 +21,84 @@ describe("parseTelegramCommand", () => {
     });
   });
 
-  it("parses /research as a web-research run, taking the topic literally", () => {
-    expect(parseTelegramCommand("/research what's new with Claude this week?")).toEqual({
+  it("routes plain-language text to a turn, taking the message verbatim (ADR 0010)", () => {
+    expect(parseTelegramCommand("what's new with Claude this week?")).toEqual({
       ok: true,
-      command: { type: "run", program: "web-research", goal: "what's new with Claude this week?" }
+      command: { type: "turn", goal: "what's new with Claude this week?" }
     });
-    expect(parseTelegramCommand("/research")).toEqual({
-      ok: false,
-      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/research requires a topic" }
+    expect(parseTelegramCommand("  hello there  ")).toEqual({
+      ok: true,
+      command: { type: "turn", goal: "hello there" }
     });
   });
 
-  it("rejects non-command text, unsupported commands, and missing arguments", () => {
-    expect(parseTelegramCommand("hello")).toEqual({
-      ok: false,
-      error: { code: "TELEGRAM_COMMAND_INVALID", message: "Telegram command must start with /" }
+  it("no longer parses /ask or /research — they become turns", () => {
+    expect(parseTelegramCommand("/ask compare Pi and Hermes")).toEqual({
+      ok: true,
+      command: { type: "turn", goal: "/ask compare Pi and Hermes" }
     });
-    expect(parseTelegramCommand("/teach remember this")).toEqual({
-      ok: false,
-      error: { code: "TELEGRAM_COMMAND_UNSUPPORTED", message: "Unsupported command: /teach" }
+    expect(parseTelegramCommand("/research latest SpaceX news")).toEqual({
+      ok: true,
+      command: { type: "turn", goal: "/research latest SpaceX news" }
     });
+  });
+
+  it("routes unknown slash commands to a turn instead of rejecting", () => {
+    expect(parseTelegramCommand("/foo bar")).toEqual({
+      ok: true,
+      command: { type: "turn", goal: "/foo bar" }
+    });
+  });
+
+  it("rejects malformed control commands with missing arguments", () => {
     expect(parseTelegramCommand("/run research-brief")).toEqual({
       ok: false,
       error: { code: "TELEGRAM_COMMAND_INVALID", message: "/run requires a goal" }
     });
+    expect(parseTelegramCommand("/forget")).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/forget requires a scope" }
+    });
   });
 
-  it("takes the /ask question literally, including apostrophes and quotes", () => {
-    expect(parseTelegramCommand("/ask what's new with Houge's design?")).toEqual({
+  it("parses /lessons (optional scope) and /forget <scope> control commands", () => {
+    expect(parseTelegramCommand("/lessons")).toEqual({
       ok: true,
-      command: { type: "ask", goal: "what's new with Houge's design?" }
+      command: { type: "lessons" }
     });
-    expect(parseTelegramCommand('/ask say "hello" then stop')).toEqual({
+    expect(parseTelegramCommand("/lessons research")).toEqual({
       ok: true,
-      command: { type: "ask", goal: 'say "hello" then stop' }
+      command: { type: "lessons", scope: "research" }
     });
-    expect(parseTelegramCommand("/ask@hougebot don't break on a mention")).toEqual({
+    expect(parseTelegramCommand("/lessons research extra")).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/lessons requires at most one scope" }
+    });
+    expect(parseTelegramCommand("/forget research")).toEqual({
       ok: true,
-      command: { type: "ask", goal: "don't break on a mention" }
+      command: { type: "forget", scope: "research" }
+    });
+    expect(parseTelegramCommand("/forget research extra")).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/forget requires exactly one scope" }
+    });
+  });
+
+  it("no longer parses /teach — it becomes a turn", () => {
+    expect(parseTelegramCommand("/teach research: prefer filings")).toEqual({
+      ok: true,
+      command: { type: "turn", goal: "/teach research: prefer filings" }
+    });
+  });
+
+  it("takes a turn message literally, including apostrophes and quotes", () => {
+    expect(parseTelegramCommand("what's new with Houge's design?")).toEqual({
+      ok: true,
+      command: { type: "turn", goal: "what's new with Houge's design?" }
+    });
+    expect(parseTelegramCommand('say "hello" then stop')).toEqual({
+      ok: true,
+      command: { type: "turn", goal: 'say "hello" then stop' }
     });
   });
 
@@ -89,10 +125,6 @@ describe("parseTelegramCommand", () => {
   });
 
   it("covers no-argument command branches", () => {
-    expect(parseTelegramCommand("/ask")).toEqual({
-      ok: false,
-      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/ask requires a question" }
-    });
     expect(parseTelegramCommand("/approve")).toEqual({
       ok: false,
       error: { code: "TELEGRAM_COMMAND_INVALID", message: "/approve requires an approval id" }

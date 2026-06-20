@@ -40,17 +40,21 @@ launchd: [deploy/launchd/README.md](../../deploy/launchd/README.md).
 | `HOUGE_DAEMON_BACKOFF_MAX_MS` | `60000` | Cap on the backoff delay. |
 | `HOUGE_DAEMON_LOCK_PATH` | `houge.daemon.lock` (cwd) | PID lockfile for the single-instance guard; a second daemon with the same lock exits instead of fighting over the Telegram long-poll (which would cause HTTP 409). |
 
-## LLM provider chain (powers `/ask`)
+## LLM provider chain (powers cognition)
 
-See [ADR 0002](../decisions/0002-pi-as-agent-runtime.md) for the inference-vs-agentic
-policy behind the `pi` provider.
+Every cognitive call — intent classification, the **answer** path, research synthesis
+and critique, and the feedback distiller — runs on this model-agnostic chain (`pi` → kimi,
+never Claude). See [ADR 0002](../decisions/0002-pi-as-agent-runtime.md) for the
+inference-vs-agentic policy behind the `pi` provider and
+[ADR 0010](../decisions/0010-natural-language-intent-layer.md) for the natural-language
+front door.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `HOUGE_LLM_PROVIDERS` | `pi,kimi-api` | Ordered, comma-separated chain with automatic fallback (first success wins; unavailable/error/timeout falls through). Known providers: `pi` (hardened single-shot CLI), `kimi-api` (OpenAI-compatible HTTP). The singular `HOUGE_LLM_PROVIDER` is ignored when this plural is set. |
 | `HOUGE_LLM_MODEL_PI` | unset → pi's own configured model | Model is configured **per provider** (namespaces differ). Set this only to make Houge override pi's own choice. |
 | `HOUGE_LLM_MODEL_KIMI` | `moonshot-v1-auto` (stable alias) | A model your `KIMI_API_KEY` can access (`GET /v1/models`). |
-| `HOUGE_ASK_SYSTEM_PROMPT` | built-in 猴哥 identity projection | The `/ask` system prompt — a projection of Houge's Core Identity (`memory/core/houge.md`): the cheerful, capable 猴哥, inference-only (answers, doesn't act). Replaces pi's default *coding-assistant* persona. Override the whole prompt here. See [ADR 0005](../decisions/0005-agent-memory-architecture.md). |
+| `HOUGE_ASK_SYSTEM_PROMPT` | composed from `memory/` + `lesson_blocks` | The **answer**-path system prompt. When unset it is **composed** (identity + answer discipline + the `ask` scope's lesson block + guardrails — see [Learning](#learning--conversational-distillation-and-lesson_blocks) below), replacing pi's default *coding-assistant* persona. Set this to override the whole prompt. |
 | `HOUGE_LLM_TIMEOUT_MS` | — | Fallback per-provider wall-clock timeout (ms) for any provider without a specific one. |
 | `HOUGE_LLM_TIMEOUT_MS_PI` | `60000` | pi timeout (ms). |
 | `HOUGE_LLM_TIMEOUT_MS_KIMI` | `30000` | kimi timeout (ms). |
@@ -73,7 +77,7 @@ policy behind the `pi` provider.
 | `KIMI_API_KEY` | — | Secret. Enables the `kimi-api` provider; if unset the provider reports `unavailable` and the chain falls through. |
 | `HOUGE_KIMI_BASE_URL` | `https://api.moonshot.ai` | Base URL for the OpenAI-compatible endpoint. |
 
-## Web read (powers `/research`)
+## Web read (powers the **research** intent)
 
 Tier-1 web access — a pluggable, keyed provider chain (like the LLM chain). Design and
 guardrails: [ADR 0006](../decisions/0006-web-read-capability.md).
@@ -88,10 +92,81 @@ guardrails: [ADR 0006](../decisions/0006-web-read-capability.md).
 | `HOUGE_TAVILY_BASE_URL` | `https://api.tavily.com` | Tavily API base. |
 | `HOUGE_FIRECRAWL_BASE_URL` | `https://api.firecrawl.dev` | Firecrawl API base. |
 
-`/research <topic>` runs the `web-research` program: search the live web (`web_search`,
+A **research** intent runs the `web-research` program: search the live web (`web_search`,
 `external_read`) → 猴哥 synthesizes an answer treating results as **untrusted data** and
-**citing source URLs**. Telegram link previews are disabled to cut the outbound exfil leg;
-the URLs read are recorded in the ledger (`web_search_performed`).
+**citing source URLs** → a **STORM-style self-critique pass** re-reads the draft (figures
+internally consistent? weakest claims? any single source over-weighted?) and returns a
+corrected final answer ([ADR 0006](../decisions/0006-web-read-capability.md) amendment).
+Both the synthesis and critique prompts come from the composer (below), so the `research`
+scope's lesson block steers both. Telegram link previews are disabled to cut the outbound
+exfil leg; the URLs read are recorded in the ledger (`web_search_performed`).
+
+## Short-term conversation memory (`chat_turns`)
+
+A per-chat rolling thread of recent turns gives follow-ups context, so a reaction like
+"too long" needs no reply-pointer and the chat feels like a conversation, not a vending
+machine ([ADR 0010](../decisions/0010-natural-language-intent-layer.md) §4). Turns are
+stored in the `chat_turns` table; three env vars bound how much of that thread is shared
+and fed into a prompt. **Full turn text is always stored** — the char cap below applies
+only when feeding a prompt.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_CHAT_CONTEXT_WINDOW_MINUTES` | `60` | How far back a follow-up still shares a thread. A message arriving after this gap starts a fresh thread (no prior context). |
+| `HOUGE_CHAT_CONTEXT_TURNS` | `8` | Max recent turns fed into a prompt. Bounds the short-thread context tokens added per message. |
+| `HOUGE_CHAT_CONTEXT_TURN_CHARS` | `500` | Per-turn char cap applied **only when feeding a prompt** (the stored turn keeps its full text). Truncates a long prior turn so the thread stays cheap. |
+
+## Learning — conversational distillation and `lesson_blocks`
+
+Every LLM-touching surface (the **answer** path, the research synthesis + critique, the
+feedback distiller) builds its system prompt from one place — the **composer**
+(`src/prompt/composer.ts`): Core Identity (`memory/core/houge.md`, loaded not duplicated) +
+a per-surface discipline + the relevant **scope's lesson block** + guardrails.
+Design: [ADR 0009](../decisions/0009-architecture-coherence.md); interaction model:
+[ADR 0010](../decisions/0010-natural-language-intent-layer.md); learning loop:
+[ADR 0007](../decisions/0007-learning-loop.md).
+
+**Learning is conversational, not a command.** When the user reacts to a prior answer,
+Houge **always re-answers** honoring the feedback, and **only when the feedback generalizes
+into a clear, reusable preference** it **silently distills** it into a lesson — no toast, no
+approval prompt. The distiller treats the *user's* feedback as the instruction and the prior
+answer as reference only, so the untrusted-data wall holds: Houge never adopts an instruction
+embedded in answer content as a lesson. This supersedes ADR 0007's `/teach` + per-lesson
+approval gate **for user-sourced lessons** — trading the upfront gate for a high-precision
+threshold plus inspect-and-undo.
+
+Long-term lessons live in the SQLite table
+`lesson_blocks(scope, block, char_cap, updated_at)` — **one char-capped, edit-in-place
+block per scope** (not the old file-based `memory/skills/*.md` store, which is removed).
+Scope is inferred from the reacted-to turn's intent: answer → `ask`, research → `research`.
+
+| Column | Default | Purpose |
+|--------|---------|---------|
+| `scope` | — | The lesson namespace (`ask`, `research`, …). The composer folds this scope's block into future runs on that surface. |
+| `block` | (empty) | The current consolidated lesson text for the scope, edited in place as new preferences arrive. |
+| `char_cap` | `1200` | Soft ceiling on `block`. When the block exceeds its cap, an **LLM rewrite pass consolidates** it — deduping into the strongest rules — instead of growing unbounded. |
+| `updated_at` | — | Last write timestamp. |
+
+Inspect and undo with the slash-only control commands `/lessons` and `/forget` (see the
+[command reference](#telegram-command-reference)). `memory/core/houge.md` is committed (his
+spine); the `lesson_blocks` table is local runtime state. The only prompt knob is
+`HOUGE_ASK_SYSTEM_PROMPT` (in the [LLM provider chain](#llm-provider-chain-powers-cognition)
+table) — an escape hatch to override the composed **answer**-path prompt wholesale.
+
+## Telegram command reference
+
+Natural language first: just type, and Houge classifies intent (**answer** / **research** /
+**feedback** / **clarify**) — there are no `/ask`, `/research`, or `/teach` commands. Slash
+commands survive only for the control/safety plane (idempotent, no run, no budget unless
+noted), and `/approve` · `/deny` are **unforgeable** — never inferred from prose.
+
+| Command | Plane | Purpose |
+|---------|-------|---------|
+| `/status` | control | Per-cap breaker headroom, run counts by state, last error. |
+| `/run <program> [args]` | control | Escape hatch to launch a named program directly (consumes budget). |
+| `/approve <id>` · `/deny <id>` | safety | Resolve a pending approval gate. Unforgeable — slash-only, never inferred. |
+| `/lessons [scope]` | control | View the lesson block(s): the raw `block` plus its char-count/cap so consolidation pressure is visible. No scope → lists all scopes. |
+| `/forget <scope>` | control | Clear that scope's lesson block and ack. |
 
 ## Global autonomy circuit-breaker
 

@@ -34,7 +34,7 @@ const okAnswer = (input: Record<string, unknown>) => ({
 });
 
 describe("runTelegramDaemon", () => {
-  it("loops over multiple poll batches, answering each /ask, and records the heartbeat", async () => {
+  it("loops over multiple poll batches, answering each turn, and records the heartbeat", async () => {
     const store = RunStore.openInMemory();
     const controller = new AbortController();
     const sent: string[] = [];
@@ -50,8 +50,8 @@ describe("runTelegramDaemon", () => {
         telegramClient: {
           getUpdates: async () => {
             calls += 1;
-            if (calls === 1) return [askUpdate(50, "/ask one")];
-            if (calls === 2) return [askUpdate(51, "/ask two")];
+            if (calls === 1) return [askUpdate(50, "question one")];
+            if (calls === 2) return [askUpdate(51, "question two")];
             controller.abort(); // stop after two real batches
             return [];
           },
@@ -63,8 +63,10 @@ describe("runTelegramDaemon", () => {
       });
 
       expect(result.cycles).toBeGreaterThanOrEqual(2);
-      expect(sent.some((t) => t.includes("A:one"))).toBe(true);
-      expect(sent.some((t) => t.includes("A:two"))).toBe(true);
+      // The reply is the LLM answer (here echoing the composed question); each turn's
+      // message text shows up in its reply.
+      expect(sent.some((t) => t.includes("question one"))).toBe(true);
+      expect(sent.some((t) => t.includes("question two"))).toBe(true);
       expect(store.getPollHeartbeat()?.last_success_at).not.toBeNull();
     } finally {
       store.close();
@@ -91,7 +93,7 @@ describe("runTelegramDaemon", () => {
         telegramClient: {
           getUpdates: async () => {
             calls += 1;
-            return calls === 1 ? [askUpdate(60, "/ask q")] : [];
+            return calls === 1 ? [askUpdate(60, "a question")] : [];
           },
           sendMessage: async ({ text }) => {
             sent.push(text);

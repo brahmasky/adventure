@@ -1,6 +1,8 @@
 export interface TelegramSendMessageInput {
   chat_id: string;
   text: string;
+  /** Telegram parse mode (e.g. "HTML"). Omitted → plain text. */
+  parse_mode?: string;
 }
 
 export interface TelegramSendMessageResult {
@@ -82,7 +84,8 @@ export class TelegramClient implements TelegramSendClient, TelegramPollClient {
       body: JSON.stringify({
         chat_id: input.chat_id,
         text: input.text,
-        disable_web_page_preview: true
+        disable_web_page_preview: true,
+        ...(input.parse_mode ? { parse_mode: input.parse_mode } : {})
       })
     });
 

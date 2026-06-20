@@ -1,6 +1,6 @@
 {
-  "event_type": "ask",
-  "program": "ask",
+  "event_type": "turn",
+  "program": "turn",
   "authorized_identity": "paco",
   "notify": "telegram:222"
 }

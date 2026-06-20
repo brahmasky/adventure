@@ -29,7 +29,7 @@ type TriggerSourceMatchesPlan = Expect<Equal<
 >>;
 type TaskEventTypeMatchesPlan = Expect<Equal<
   TaskEventType,
-  "ask" | "run" | "approve" | "deny" | "teach" | "status"
+  "ask" | "run" | "turn" | "approve" | "deny" | "status" | "lessons" | "forget"
 >>;
 type IdentityMatchesPlan = Expect<Equal<
   Identity,
@@ -126,7 +126,6 @@ const missingSourceReferenceInput: TypedTaskEventInput = {
   program: "research-brief",
   goal: "compare gateway patterns",
   approval_id: "approval-1",
-  lesson: "prefer gateway isolation",
   requested_by: { kind: "user", id: "paco" },
   notify: { kind: "local" },
   idempotency_key: "cli:research-brief:1"
@@ -141,7 +140,6 @@ describe("buildTypedTaskEvent", () => {
       program: "research-brief",
       goal: "compare gateway patterns",
       approval_id: "approval-1",
-      lesson: "prefer gateway isolation",
       requested_by: { kind: "user", id: "paco" },
       notify: { kind: "local" },
       idempotency_key: "cli:research-brief:1",
@@ -158,7 +156,6 @@ describe("buildTypedTaskEvent", () => {
       program: "research-brief",
       goal: "compare gateway patterns",
       approval_id: "approval-1",
-      lesson: "prefer gateway isolation",
       requested_by: { kind: "user", id: "paco" },
       notify: { kind: "local" },
       idempotency_key: "cli:research-brief:1",
@@ -171,7 +168,6 @@ describe("buildTypedTaskEvent", () => {
       program: "research-brief",
       goal: "compare gateway patterns",
       approval_id: "approval-1",
-      lesson: "prefer gateway isolation",
       requested_by: { kind: "user", id: "paco" },
       notify: { kind: "local" },
       idempotency_key: "cli:research-brief:1",
@@ -182,14 +178,13 @@ describe("buildTypedTaskEvent", () => {
     expect(retry.payload_hash).toBe(first.payload_hash);
   });
 
-  it("hashes the explicit task payload fields including approval and lesson", () => {
+  it("hashes the explicit task payload fields including approval", () => {
     const event = buildTypedTaskEvent({
       source: "cli",
       type: "run",
       program: "research-brief",
       goal: "compare gateway patterns",
       approval_id: "approval-1",
-      lesson: "prefer gateway isolation",
       requested_by: { kind: "user", id: "paco" },
       notify: { kind: "local" },
       idempotency_key: "cli:research-brief:1",
@@ -205,7 +200,6 @@ describe("buildTypedTaskEvent", () => {
       program: "research-brief",
       goal: "compare gateway patterns",
       approval_id: "approval-1",
-      lesson: "prefer gateway isolation",
       requested_by: { kind: "user", id: "paco" },
       notify: { kind: "local" },
       idempotency_key: "cli:research-brief:1",
@@ -248,7 +242,6 @@ describe("buildTypedTaskEvent", () => {
       program: "research-brief",
       goal: "compare gateway patterns",
       approval_id: "approval-1",
-      lesson: "prefer gateway isolation",
       requested_by: { kind: "user", id: "paco" },
       notify: { kind: "local" },
       idempotency_key: "cli:research-brief:1",
@@ -260,7 +253,6 @@ describe("buildTypedTaskEvent", () => {
       program: "research-brief",
       goal: "compare gateway patterns",
       approval_id: "approval-1",
-      lesson: "prefer gateway isolation",
       requested_by: { kind: "user", id: "paco" },
       notify: { kind: "local" },
       idempotency_key: "cli:research-brief:1",
@@ -277,7 +269,6 @@ describe("buildTypedTaskEvent", () => {
       program: "research-brief",
       goal: "compare gateway patterns",
       approval_id: "approval-1",
-      lesson: "prefer gateway isolation",
       requested_by: { kind: "user", id: "paco" },
       notify: { kind: "local" },
       idempotency_key: "cli:research-brief:1",
@@ -289,7 +280,6 @@ describe("buildTypedTaskEvent", () => {
       program: "research-brief",
       goal: "compare gateway patterns",
       approval_id: "approval-1",
-      lesson: "prefer gateway isolation",
       requested_by: { kind: "user", id: "paco" },
       notify: { kind: "local" },
       idempotency_key: "cli:research-brief:1",

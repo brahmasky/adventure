@@ -114,6 +114,91 @@ describe("Gateway telegram events", () => {
     }
   });
 
+  it("/lessons renders the scope's block with char-count/cap, idempotent on redelivery", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      await store.appendLessonToBlock("research", "prefer primary sources", "2026-06-19T00:00:00.000Z");
+
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "lessons",
+        program: "research", // scope (optional) rides program
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:lessons-1",
+        source_reference: "telegram:update:5:message:1"
+      });
+
+      const first = gateway.intake(event);
+      const second = gateway.intake(event); // redelivered update
+
+      expect(first).toEqual({ ok: true, status: "lessons_returned", run_id: "" });
+      expect(second).toEqual(first); // replayed, not re-applied
+
+      // Exactly one notification despite two intakes (idempotent).
+      expect(store.countNotificationsByIdempotencyKey("telegram:lessons-1:lessons")).toBe(1);
+      const note = store.claimNextNotification("test", 30);
+      expect(note?.payload.text).toContain("prefer primary sources");
+      expect(note?.payload.text).toContain("## research");
+      expect(note?.payload.text).toMatch(/\/1200 chars/); // char-count/cap shown
+    } finally {
+      store.close();
+    }
+  });
+
+  it("/lessons with no scope reports emptiness when nothing has been learned", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "lessons",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:lessons-empty",
+        source_reference: "telegram:update:6:message:1"
+      });
+      expect(gateway.intake(event)).toEqual({ ok: true, status: "lessons_returned", run_id: "" });
+      const note = store.claimNextNotification("test", 30);
+      expect(note?.payload.text).toContain("No lessons yet");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("/forget clears the scope's block, acks, and is idempotent on redelivery", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      await store.appendLessonToBlock("research", "prefer primary sources", "2026-06-19T00:00:00.000Z");
+      expect(store.readLessonBlock("research")).toBeDefined();
+
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "forget",
+        program: "research", // scope rides program
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:forget-1",
+        source_reference: "telegram:update:7:message:1"
+      });
+
+      const first = gateway.intake(event);
+      const second = gateway.intake(event); // redelivered update
+
+      expect(first).toEqual({ ok: true, status: "forgotten", run_id: "" });
+      expect(second).toEqual(first); // replayed, not re-applied
+      expect(store.readLessonBlock("research")).toBeUndefined(); // cleared
+
+      expect(store.countNotificationsByIdempotencyKey("telegram:forget-1:forget")).toBe(1);
+      const note = store.claimNextNotification("test", 30);
+      expect(note?.payload.text).toContain("Forgotten ✓");
+    } finally {
+      store.close();
+    }
+  });
+
   it("throttles abusive telegram command volume per actor and chat", () => {
     const store = RunStore.openInMemory();
     try {

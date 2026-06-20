@@ -74,7 +74,7 @@ describe("runEvalSuite", () => {
       fixtureOverride: {
         name: "milestone-2-parser-auth",
         type: "parser-auth",
-        input: { text: "/unsupported", from_id: 111, chat_id: 222 }
+        input: { text: "summarize rules", from_id: 999, chat_id: 222 }
       }
     });
 

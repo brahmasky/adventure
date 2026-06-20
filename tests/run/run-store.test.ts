@@ -59,6 +59,40 @@ describe("RunStore", () => {
     store.close();
   });
 
+  it("records and reads chat turns in chronological order, last-N (ADR 0010)", () => {
+    store.recordChatTurn({ chat_id: "555", run_id: "r1", role: "user", text: "u1" });
+    store.recordChatTurn({ chat_id: "555", run_id: "r1", role: "assistant", text: "a1", intent: "answer" });
+    store.recordChatTurn({ chat_id: "555", run_id: "r2", role: "user", text: "u2" });
+    store.recordChatTurn({ chat_id: "555", run_id: "r2", role: "assistant", text: "a2", intent: "research" });
+    // A different chat is isolated.
+    store.recordChatTurn({ chat_id: "999", run_id: "r3", role: "user", text: "other" });
+
+    const recent = store.getRecentChatTurns("555", 3);
+    // Last 3, oldest → newest.
+    expect(recent.map((t) => t.text)).toEqual(["a1", "u2", "a2"]);
+    expect(recent[0]!.role).toBe("assistant");
+    expect(recent[0]!.intent).toBe("answer");
+
+    const otherChat = store.getRecentChatTurns("999", 6);
+    expect(otherChat).toHaveLength(1);
+    expect(otherChat[0]!.text).toBe("other");
+
+    // User turns carry a null intent.
+    const all = store.getRecentChatTurns("555", 6);
+    expect(all[0]!.intent).toBeNull();
+  });
+
+  it("bounds chat turns to the session window via sinceIso", () => {
+    store.recordChatTurn({ chat_id: "555", run_id: "r1", role: "user", text: "old", created_at: "2026-06-19T10:00:00.000Z" });
+    store.recordChatTurn({ chat_id: "555", run_id: "r2", role: "user", text: "recent", created_at: "2026-06-19T12:30:00.000Z" });
+
+    const windowed = store.getRecentChatTurns("555", 6, "2026-06-19T12:00:00.000Z");
+    expect(windowed.map((t) => t.text)).toEqual(["recent"]);
+
+    // Without a window, both come back.
+    expect(store.getRecentChatTurns("555", 6).map((t) => t.text)).toEqual(["old", "recent"]);
+  });
+
   it("createOrGet returns created then duplicate with same run_id for same idempotency key/payload hash", () => {
     const taskEvent = event("compare Pi and Hermes");
 

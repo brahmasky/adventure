@@ -1,7 +1,7 @@
 import { stableHash } from "./canonical.js";
 
 export type TriggerSource = "telegram" | "schedule" | "cli" | "event";
-export type TaskEventType = "ask" | "run" | "approve" | "deny" | "teach" | "status";
+export type TaskEventType = "ask" | "run" | "turn" | "approve" | "deny" | "status" | "lessons" | "forget";
 
 export type Identity =
   | { kind: "user"; id: string }
@@ -34,7 +34,6 @@ export interface TypedTaskEventInput {
   program?: string;
   goal?: string;
   approval_id?: string;
-  lesson?: string;
   metadata?: Record<string, unknown>;
   payload?: unknown;
   requested_by: Identity;
@@ -117,7 +116,6 @@ export function buildTypedTaskEvent(input: TypedTaskEventInput): TypedTaskEvent 
     program,
     goal,
     approval_id,
-    lesson,
     metadata,
     payload,
     requested_by,
@@ -134,7 +132,6 @@ export function buildTypedTaskEvent(input: TypedTaskEventInput): TypedTaskEvent 
       program,
       goal,
       approval_id,
-      lesson,
       metadata,
       payload,
       requested_by,

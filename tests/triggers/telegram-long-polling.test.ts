@@ -54,14 +54,14 @@ describe("createTelegramLongPollingAdapter", () => {
     expect(offsets).toEqual([]);
   });
 
-  it("advances offset for deterministic auth denial and unsupported commands", async () => {
+  it("advances offset for deterministic auth denial", async () => {
     const offsets: number[] = [];
     const skipped: unknown[] = [];
     const adapter = createTelegramLongPollingAdapter({
       allowlist,
       client: { getUpdates: async () => [
         { update_id: 50, message: { message_id: 1, text: "/ask blocked", from: { id: 999 }, chat: { id: 222 } } },
-        { update_id: 51, message: { message_id: 2, text: "/teach remember", from: { id: 111 }, chat: { id: 222 } } }
+        { update_id: 51, message: { message_id: 2, text: "just chatting", from: { id: 888 }, chat: { id: 222 } } }
       ] },
       offsetStore: {
         getOffset: () => 0,

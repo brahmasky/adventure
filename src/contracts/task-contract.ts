@@ -20,6 +20,10 @@ export function compileTaskContract(event: TypedTaskEvent): TaskContractResult {
     return compileAskContract(event);
   }
 
+  if (event.type === "turn") {
+    return compileTurnContract(event);
+  }
+
   if (event.type !== "run") {
     return invalid(`Unsupported event type: ${event.type}`);
   }
@@ -68,6 +72,29 @@ function compileWebResearchContract(event: TypedTaskEvent): TaskContractResult {
     approval_gates: ["local_write", "external_write", "destructive", "paid"] as SideEffectLevel[],
     stop_condition: "sourced web research answer produced or budget exhausted",
     eval_hooks: ["web-research"]
+  };
+
+  return { ok: true, contract: { ...base, contract_hash: stableHash(base) } };
+}
+
+function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
+  if (!event.goal?.trim()) {
+    return invalid("Message is required");
+  }
+
+  // The natural-language front door (ADR 0010). The worker first classifies intent
+  // on the LLM chain (the `intent_router` sentinel — never executed as a capability),
+  // then dispatches to answer (llm_answer) or research (web_search + llm_answer).
+  // Same safety floor as web-research; budget headroom for the extra classifier call.
+  const base = {
+    objective: event.goal,
+    budget: { time_minutes: 10, max_tool_calls: 6, max_agent_delegations: 0 },
+    allowed_actions: ["intent_router", "web_search", "llm_answer", "write_report"],
+    forbidden_actions: ["coding_agent_cli", "generic_shell", "external_write", "paid_action"],
+    output: { path: "runs/<run-id>/report.md", format: "sourced_markdown_report" as const },
+    approval_gates: ["local_write", "external_write", "destructive", "paid"] as SideEffectLevel[],
+    stop_condition: "intent classified and answered, or budget exhausted",
+    eval_hooks: []
   };
 
   return { ok: true, contract: { ...base, contract_hash: stableHash(base) } };

@@ -79,7 +79,7 @@ export async function runTelegramDaemon(
   const baseMs = options.backoff?.baseMs ?? DEFAULT_BACKOFF_BASE_MS;
   const maxMs = options.backoff?.maxMs ?? DEFAULT_BACKOFF_MAX_MS;
 
-  const gateway = new Gateway(options.store);
+  const gateway = new Gateway(options.store, undefined, options.projectRoot);
   const worker = new CoreWorker(
     options.store,
     options.projectRoot,

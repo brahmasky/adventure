@@ -6,20 +6,24 @@ import {
   resolveGlobalBudgetCaps,
   type GlobalBudgetCaps
 } from "../budget/global-budget-ledger.js";
-import type { RunStore } from "../run/run-store.js";
+import type { LessonBlockRow, RunStore } from "../run/run-store.js";
 import { queryStatus } from "../status/status-query.js";
 
 export type GatewayIntakeResult =
   | { ok: true; status: "created" | "duplicate"; run_id: string }
   | { ok: true; status: "status_returned"; run_id: string }
   | { ok: true; status: "approval_resolved"; run_id: string }
+  | { ok: true; status: "lessons_returned"; run_id: string }
+  | { ok: true; status: "forgotten"; run_id: string }
   | { ok: false; error: { code: string; message: string; run_id?: string } };
 
 export class Gateway {
   private readonly caps: GlobalBudgetCaps;
+  private readonly projectRoot: string;
 
-  constructor(private readonly runStore: RunStore, caps?: GlobalBudgetCaps) {
+  constructor(private readonly runStore: RunStore, caps?: GlobalBudgetCaps, projectRoot?: string) {
     this.caps = caps ?? resolveGlobalBudgetCaps(process.env);
+    this.projectRoot = projectRoot ?? process.cwd();
   }
 
   intake(event: TypedTaskEvent, now: string = new Date().toISOString()): GatewayIntakeResult {
@@ -55,7 +59,96 @@ export class Gateway {
       return this.handleApproval(event, now);
     }
 
+    if (event.type === "lessons") {
+      return this.handleLessons(event, now);
+    }
+
+    if (event.type === "forget") {
+      return this.handleForget(event, now);
+    }
+
     return this.handleTaskIntake(event, now);
+  }
+
+  /**
+   * `/lessons [scope]` — a control command (no run, no budget). Renders the durable
+   * lesson block(s) from lesson_blocks so the owner can inspect what Houge has silently
+   * learned (ADR 0010). Shows each block's char-count/cap so consolidation pressure is
+   * visible. Idempotent on the trigger key (a redelivered update enqueues once).
+   */
+  private handleLessons(event: TypedTaskEvent, now: string): GatewayIntakeResult {
+    const replay = this.runStore.beginTriggerProcessing(event);
+    if (replay.status === "duplicate") {
+      return JSON.parse(replay.result_json) as GatewayIntakeResult;
+    }
+    if (replay.status === "conflict") {
+      return {
+        ok: false,
+        error: { code: replay.error, message: "Trigger idempotency key conflicts with a different payload" }
+      };
+    }
+
+    const scope = typeof event.program === "string" ? event.program.trim() : "";
+    const blocks = scope
+      ? this.lessonBlocksForScope(scope)
+      : this.runStore.listLessonBlocks();
+
+    const result: GatewayIntakeResult = { ok: true, status: "lessons_returned", run_id: "" };
+    this.runStore.enqueueNotification({
+      target: event.notify,
+      intent_type: "progress",
+      idempotency_key: `${event.idempotency_key}:lessons`,
+      correlation_id: event.source_reference,
+      payload: { text: formatLessonsText(scope || undefined, blocks) }
+    });
+    this.runStore.recordTriggerProcessed(event, result);
+    this.recordTelegramAccepted(event, now);
+    return result;
+  }
+
+  /**
+   * `/forget <scope>` — a control command (no run, no budget). Clears that scope's
+   * lesson block and acks. Idempotent on the trigger key.
+   */
+  private handleForget(event: TypedTaskEvent, now: string): GatewayIntakeResult {
+    const replay = this.runStore.beginTriggerProcessing(event);
+    if (replay.status === "duplicate") {
+      return JSON.parse(replay.result_json) as GatewayIntakeResult;
+    }
+    if (replay.status === "conflict") {
+      return {
+        ok: false,
+        error: { code: replay.error, message: "Trigger idempotency key conflicts with a different payload" }
+      };
+    }
+
+    const scope = typeof event.program === "string" ? event.program.trim() : "";
+    if (!scope) {
+      const result: GatewayIntakeResult = {
+        ok: false,
+        error: { code: "FORGET_INVALID", message: "/forget requires a scope" }
+      };
+      this.runStore.recordTriggerProcessed(event, result);
+      return result;
+    }
+
+    this.runStore.forgetScope(scope);
+
+    const result: GatewayIntakeResult = { ok: true, status: "forgotten", run_id: "" };
+    this.runStore.enqueueNotification({
+      target: event.notify,
+      intent_type: "progress",
+      idempotency_key: `${event.idempotency_key}:forget`,
+      correlation_id: event.source_reference,
+      payload: { text: `Forgotten ✓ — cleared lessons for "${scope}"` }
+    });
+    this.runStore.recordTriggerProcessed(event, result);
+    this.recordTelegramAccepted(event, now);
+    return result;
+  }
+
+  private lessonBlocksForScope(scope: string): LessonBlockRow[] {
+    return this.runStore.listLessonBlocks().filter((b) => b.scope === scope);
   }
 
   private handleStatus(event: TypedTaskEvent, now: string): GatewayIntakeResult {
@@ -320,4 +413,20 @@ export class Gateway {
 
     return { ok: true, status: "created", run_id };
   }
+}
+
+/**
+ * Render the `/lessons` reply: the raw block(s) with each scope's char-count/cap so the
+ * owner sees consolidation pressure. `scope` set → one scope (or "none yet"); unset →
+ * every scope.
+ */
+function formatLessonsText(scope: string | undefined, blocks: LessonBlockRow[]): string {
+  if (blocks.length === 0) {
+    return scope
+      ? `No lessons for "${scope}" yet.`
+      : "No lessons yet. Houge learns durable preferences silently from your feedback.";
+  }
+  return blocks
+    .map((b) => `## ${b.scope} (${b.block.length}/${b.char_cap} chars)\n${b.block}`)
+    .join("\n\n");
 }

@@ -65,7 +65,7 @@ export interface RunTelegramPollOnceResult {
 export async function runTelegramPollOnce(
   options: RunTelegramPollOnceOptions
 ): Promise<RunTelegramPollOnceResult> {
-  const gateway = new Gateway(options.store);
+  const gateway = new Gateway(options.store, undefined, options.projectRoot);
   const worker = new CoreWorker(
     options.store,
     options.projectRoot,

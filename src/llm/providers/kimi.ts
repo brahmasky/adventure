@@ -6,6 +6,10 @@ import type { LlmProvider, LlmRequest, LlmResult } from "../types.js";
 export const KIMI_DEFAULT_MODEL = "moonshot-v1-auto";
 export const KIMI_DEFAULT_BASE_URL = "https://api.moonshot.ai";
 export const KIMI_DEFAULT_TIMEOUT_MS = 30_000;
+// Output token budget. 1024 was too small for research synthesis — a long answer
+// (or a reasoning model spending tokens internally) returned empty content, failing
+// the chain. 4096 fits synthesis with headroom; override with HOUGE_KIMI_MAX_TOKENS.
+export const KIMI_DEFAULT_MAX_TOKENS = 4096;
 
 /**
  * Kimi's fetch shape is a minimal subset of `globalThis.fetch` that additionally
@@ -87,7 +91,7 @@ export function createKimiProvider(config: KimiProviderConfig = {}): LlmProvider
       const body = {
         model,
         messages,
-        max_tokens: 1024
+        max_tokens: numericEnv(process.env.HOUGE_KIMI_MAX_TOKENS) ?? KIMI_DEFAULT_MAX_TOKENS
       };
 
       const fetchImpl = config.fetchImpl ?? (globalThis.fetch as unknown as KimiFetchImpl);

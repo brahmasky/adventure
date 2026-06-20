@@ -220,6 +220,25 @@ export interface RunStatusRow {
   event_count: number;
 }
 
+export type ChatTurnRole = "user" | "assistant";
+
+export interface ChatTurnRow {
+  turn_id: string;
+  chat_id: string;
+  run_id: string;
+  role: ChatTurnRole;
+  text: string;
+  intent: string | null;
+  created_at: string;
+}
+
+export interface LessonBlockRow {
+  scope: string;
+  block: string;
+  char_cap: number;
+  updated_at: string;
+}
+
 export interface PollHeartbeat {
   last_success_at: string | null;
   last_error: string | null;
@@ -362,6 +381,155 @@ export class RunStore {
       WHERE runs.run_id = ?
       GROUP BY runs.run_id
     `).get<RunStatusRow>(run_id);
+  }
+
+  /**
+   * Append one turn to a chat's short-term thread (ADR 0010). Store-all; reads take
+   * the last N (see getRecentChatTurns). `intent` is the classifier's verdict for an
+   * assistant reply (null for user turns).
+   */
+  recordChatTurn(input: {
+    chat_id: string;
+    run_id: string;
+    role: ChatTurnRole;
+    text: string;
+    intent?: string;
+    created_at?: string;
+  }): void {
+    this.db.prepare(`
+      INSERT INTO chat_turns (turn_id, chat_id, run_id, role, text, intent, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      `turn_${randomUUID()}`,
+      input.chat_id,
+      input.run_id,
+      input.role,
+      input.text,
+      input.intent ?? null,
+      input.created_at ?? new Date().toISOString()
+    );
+  }
+
+  /**
+   * The last `limit` turns for a chat, returned in chronological order (oldest →
+   * newest) so they read as a transcript when folded into a prompt. An optional
+   * `sinceIso` bounds the window to a recent session (turns at/after that time),
+   * so a follow-up after a long gap starts a fresh thread.
+   */
+  getRecentChatTurns(chat_id: string, limit: number, sinceIso?: string): ChatTurnRow[] {
+    const rows = sinceIso
+      ? this.db.prepare(`
+          SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+          FROM chat_turns
+          WHERE chat_id = ? AND created_at >= ?
+          ORDER BY created_at DESC, rowid DESC
+          LIMIT ?
+        `).all<ChatTurnRow>(chat_id, sinceIso, limit)
+      : this.db.prepare(`
+          SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+          FROM chat_turns
+          WHERE chat_id = ?
+          ORDER BY created_at DESC, rowid DESC
+          LIMIT ?
+        `).all<ChatTurnRow>(chat_id, limit);
+    return rows.reverse();
+  }
+
+  /**
+   * The raw lesson block for a scope, or undefined if absent/empty (ADR 0010). The
+   * composer reads this to fold a scope's durable preferences into a system prompt.
+   */
+  readLessonBlock(scope: string): string | undefined {
+    const row = this.db.prepare(`
+      SELECT block FROM lesson_blocks WHERE scope = ?
+    `).get<{ block: string }>(scope);
+    const text = row?.block?.trim();
+    return text && text.length > 0 ? text : undefined;
+  }
+
+  /** All lesson blocks (for `/lessons` with no scope), newest-updated first. */
+  listLessonBlocks(): LessonBlockRow[] {
+    return this.db.prepare(`
+      SELECT scope, block, char_cap, updated_at
+      FROM lesson_blocks
+      ORDER BY updated_at DESC, scope ASC
+    `).all<LessonBlockRow>();
+  }
+
+  /**
+   * Append `- <lesson>` to the scope's block (upsert). If the resulting block
+   * exceeds char_cap, the injected async `rewrite` consolidates it (dedupe into the
+   * strongest rules); a hard truncate to char_cap is the backstop if rewrite still
+   * overruns or throws. Silent — the distill caller decides whether to notify.
+   */
+  async appendLessonToBlock(
+    scope: string,
+    lesson: string,
+    now: string,
+    rewrite?: (text: string) => Promise<string>
+  ): Promise<void> {
+    const trimmed = lesson.trim();
+    if (trimmed.length === 0) return;
+
+    const existing = this.db.prepare(`
+      SELECT block, char_cap FROM lesson_blocks WHERE scope = ?
+    `).get<{ block: string; char_cap: number }>(scope);
+    const charCap = existing?.char_cap ?? DEFAULT_LESSON_CHAR_CAP;
+    const prior = existing?.block?.trim() ?? "";
+    let block = prior.length > 0 ? `${prior}\n- ${trimmed}` : `- ${trimmed}`;
+
+    if (block.length > charCap && rewrite) {
+      try {
+        const rewritten = (await rewrite(block)).trim();
+        if (rewritten.length > 0) block = rewritten;
+      } catch {
+        // Keep the appended block; the truncate backstop below bounds it.
+      }
+    }
+    if (block.length > charCap) {
+      block = block.slice(0, charCap);
+    }
+
+    this.db.prepare(`
+      INSERT INTO lesson_blocks (scope, block, char_cap, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(scope) DO UPDATE SET block = excluded.block, updated_at = excluded.updated_at
+    `).run(scope, block, charCap, now);
+  }
+
+  /** Clear a scope's lesson block (the `/forget` control command). */
+  forgetScope(scope: string): void {
+    this.db.prepare(`DELETE FROM lesson_blocks WHERE scope = ?`).run(scope);
+  }
+
+  /**
+   * Correlate a delivered notification's provider_message_id (e.g. `telegram:<id>`)
+   * back to its originating run_id — the feedback path uses the reply-hint to find
+   * the prior answer's run and thus its chat turn + scope.
+   */
+  getRunIdByProviderMessageId(provider_message_id: string): string | undefined {
+    const row = this.db.prepare(`
+      SELECT run_id
+      FROM notification_outbox
+      WHERE provider_message_id = ? AND run_id IS NOT NULL
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `).get<{ run_id: string | null }>(provider_message_id);
+    return row?.run_id ?? undefined;
+  }
+
+  /**
+   * The assistant chat turn produced by a given run (the feedback reply-hint path
+   * correlates a replied-to message → its run → that run's answer + intent → scope).
+   */
+  getAssistantChatTurnForRun(run_id: string): ChatTurnRow | undefined {
+    return this.db.prepare(`
+      SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+      FROM chat_turns
+      WHERE run_id = ? AND role = 'assistant'
+      ORDER BY created_at DESC, rowid DESC
+      LIMIT 1
+    `).get<ChatTurnRow>(run_id);
   }
 
   listRecentRunStatuses(limit: number): RunStatusRow[] {
@@ -1684,7 +1852,7 @@ export class RunStore {
     return row?.program ?? null;
   }
 
-  private getRunNotifyTarget(run_id: string): NotificationIntent["target"] {
+  getRunNotifyTarget(run_id: string): NotificationIntent["target"] {
     const row = this.db.prepare(`
       SELECT notify_json
       FROM runs
@@ -1968,6 +2136,96 @@ export class RunStore {
     this.validateMilestone2Schema();
     this.applyGuardrailsMigration();
     this.applyDaemonMigration();
+    this.applyChatTurnsMigration();
+    this.applyLessonBlocksMigration();
+  }
+
+  /**
+   * Long-term procedural lessons (ADR 0010): one char-capped, edit-in-place block
+   * per scope. Distinct from chat_turns (short-term) — these are durable preferences
+   * the composer folds into future runs. Consolidated by an LLM rewrite at the cap.
+   */
+  private applyLessonBlocksMigration(): void {
+    const version = "2026-06-19-lesson-blocks";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS lesson_blocks (
+          scope TEXT PRIMARY KEY,
+          block TEXT NOT NULL DEFAULT '',
+          char_cap INTEGER NOT NULL DEFAULT 1200,
+          updated_at TEXT NOT NULL
+        );
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Short-term per-chat conversation memory (ADR 0010): a rolling thread of user
+   * and assistant turns so a `turn` run can interpret a follow-up in context. This
+   * is distinct from long-term lessons — bounded, store-all/read-last-N.
+   */
+  private applyChatTurnsMigration(): void {
+    const version = "2026-06-19-chat-turns";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS chat_turns (
+          turn_id TEXT PRIMARY KEY,
+          chat_id TEXT NOT NULL,
+          run_id TEXT NOT NULL,
+          role TEXT NOT NULL,
+          text TEXT NOT NULL,
+          intent TEXT,
+          created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS chat_turns_chat_time_idx
+          ON chat_turns(chat_id, created_at);
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
   }
 
   private applyDaemonMigration(): void {
@@ -2447,6 +2705,7 @@ export class RunStore {
   }
 }
 
+const DEFAULT_LESSON_CHAR_CAP = 1200;
 const TELEGRAM_COMMAND_WINDOW_SECONDS = 60;
 const TELEGRAM_MAX_COMMANDS_PER_WINDOW = 5;
 const TELEGRAM_MAX_ACTIVE_RUNS = 3;

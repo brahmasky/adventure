@@ -177,7 +177,7 @@ function runParserAuthCase(input: { text: string; from_id: number; chat_id: numb
   const event = normalized.event;
   return {
     event_type: event.type,
-    program: event.type === "ask" || event.type === "run" ? event.program : null,
+    program: event.type === "ask" || event.type === "run" || event.type === "turn" ? event.program : null,
     authorized_identity: event.requested_by.id,
     notify: event.notify.kind === "telegram" ? `telegram:${event.notify.chat_id}` : event.notify.kind
   };
@@ -340,7 +340,7 @@ async function runAskPathCase(projectRoot: string, input: { text: string }): Pro
         return typeof payload.intent_type === "string" ? payload.intent_type : "unknown";
       });
 
-    const program = normalized.event.type === "ask" || normalized.event.type === "run"
+    const program = normalized.event.type === "ask" || normalized.event.type === "run" || normalized.event.type === "turn"
       ? normalized.event.program
       : null;
 

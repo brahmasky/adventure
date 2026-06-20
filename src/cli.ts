@@ -28,7 +28,7 @@ if (command === "run") {
 
   const store = RunStore.open("houge.sqlite");
   try {
-    const gateway = new Gateway(store);
+    const gateway = new Gateway(store, undefined, process.cwd());
     const intake = gateway.intake(trigger.event);
     if (!intake.ok) {
       console.log(JSON.stringify({ intake, result: { status: "idle" } }, null, 2));
