@@ -10,20 +10,20 @@ framing/judgment/relay (thin delegation). Executed via **subagent orchestration*
 verification, on Claude); live test interactive. **The 猴哥 classifier bug stays unfixed as the live fixture.**
 Gate: typecheck + npm test + build + zero deps + LIVE run (Houge diagnoses the 猴哥 bug via REAL Codex).
 
-## Build — staged (each green), via subagents
-- [ ] S1. Worktree harness (`src/run/worktree.ts`: create(HEAD)→path / remove) + `coding_agent_cli` adapter
-      (`src/capabilities/coding-agent.ts`: shells `codex exec --sandbox read-only -C <wt> -o <file> -`;
-      parses `-o` final message; maps exit/auth/timeout → CapabilityResult; `external_read`/medium). + unit tests (mock `codex`).
-- [ ] S2. `selfcode` intent: `Intent` union + `INTENT_DISCIPLINE` (def + examples) in `src/capabilities/intent.ts`; parser tests.
-- [ ] S3. `executeSelfDiagnose` route + `self-diagnose` contract (`task-contract.ts`: allows `coding_agent_cli`;
-      keep it forbidden in the `turn` contract) + `executeTurn` dispatch in `core-worker.ts` + tests.
-- [ ] S4. Config (`HOUGE_CODEX_ENABLED/MODEL/TIMEOUT_MS/BIN`) + `docs/reference/configuration.md` + README note.
-- [ ] S5. Gates: typecheck clean · npm test green · build OK · `dependencies: {}`. + independent verification pass.
-- [ ] S6. **LIVE gate**: real Telegram → "go read your intent classifier and tell me why you asked which 猴哥"
-      → Houge returns the real root cause via REAL Codex (rebuild + reload daemon first).
+## Build — staged (each green), via subagents — ALL DONE (committed 7bcaa65)
+- [x] S1. Worktree harness (`src/run/worktree.ts`) + `coding_agent_cli` adapter (`src/capabilities/coding-agent.ts`) + unit tests (fake `codex` script).
+- [x] S2. `selfcode` intent (union + `INTENT_DISCIPLINE` + parser) in `src/capabilities/intent.ts`.
+- [x] S3. `executeSelfDiagnose`/`runSelfDiagnose` + `compileSelfDiagnoseContract` (allows `coding_agent_cli`; `turn` forbids it) + dispatch + tests. Policy: blanket-deny on `coding_agent_cli` replaced by allowed/forbidden gating (tests strengthened to 3 cases).
+- [x] S4. Config (`HOUGE_CODEX_ENABLED` off by default / `MODEL`/`TIMEOUT_MS` 240s default/`BIN`) + docs.
+- [x] S5. **typecheck clean · npm test 358/358 · build OK · deps {}** · independent adversarial verification PASS (9/9 invariants; containment airtight, tests strengthened not gutted).
+- [x] S6. **LIVE gate CLOSED:** real Telegram `12:23 "猴哥, go read your own intent classifier… why you keep [asking which 猴哥]"` → classified **selfcode** → worktree of HEAD 7bcaa65 → **real Codex** (`report Sources: coding_agent_cli:codex`) → correct root cause ("intent router never gets identity; classifier bypasses the composer that loads houge.md", cited files, even caught the clarify-cap-only-blocks-repeats detail; referenced `selfcode` ⇒ read the real worktree). Clean worktree teardown (no leaks). Daemon PID 71157 on new code. 猴哥 bug left unfixed (fixture).
 
-**Risks:** (i) `selfcode` classify reliability on cheap chain → crisp examples, fallback `answer`; (ii) Codex
-auth from launchd daemon (`~/.codex/auth.json`; PATH has `/opt/homebrew/bin`) — verify at S6; user-present mitigates.
+**Review — Phase 1 DONE (2026-06-20).** Houge reviewed his own source, located a real bug, and explained the
+root cause via real Codex on his subscription — the self-evolution vision's first light (ADR 0011 §7 Phase 1).
+Note: test message named "intent classifier" (pointed at the area); fully-autonomous **symptom-only** diagnosis
+is an available stronger demo now that `HOUGE_CODEX_TIMEOUT_MS=300000` (5 min) is in `.env` (needs a daemon reload).
+**Next:** Phase 2 (skills) — design discussion pending (skill file format + consolidation-pass timing). Phase 3
+(code self-write, gated) would let Houge actually FIX this bug himself.
 
 ---
 # DONE — ADR 0010 conversational interaction model (committed 25b3568, LIVE-VERIFIED 2026-06-20)
