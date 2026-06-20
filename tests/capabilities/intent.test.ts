@@ -46,6 +46,14 @@ describe("parseIntent", () => {
     ).toEqual({ intent: "research", query: "q" });
   });
 
+  it("classifies selfcode (ADR 0011) and keeps its query", () => {
+    expect(parseIntent('{"intent":"selfcode"}')).toEqual({ intent: "selfcode" });
+    expect(parseIntent('{"intent":"selfcode","query":"intent classifier"}')).toEqual({
+      intent: "selfcode",
+      query: "intent classifier"
+    });
+  });
+
   it("defaults to answer on junk, missing JSON, or unknown intent (tolerant)", () => {
     expect(parseIntent("no json here at all")).toEqual({ intent: "answer" });
     expect(parseIntent("{not valid json}")).toEqual({ intent: "answer" });
@@ -56,6 +64,14 @@ describe("parseIntent", () => {
 
   it("ignores blank query / clarifying_question fields", () => {
     expect(parseIntent('{"intent":"research","query":"   "}')).toEqual({ intent: "research" });
+  });
+});
+
+describe("INTENT_DISCIPLINE (selfcode routing, ADR 0011)", () => {
+  it("lists selfcode in the JSON schema and gives self-code examples", () => {
+    expect(INTENT_DISCIPLINE).toContain('"selfcode"');
+    expect(INTENT_DISCIPLINE.toLowerCase()).toContain("own source code");
+    expect(INTENT_DISCIPLINE).toContain("intent classifier");
   });
 });
 

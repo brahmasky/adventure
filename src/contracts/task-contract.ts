@@ -77,6 +77,28 @@ function compileWebResearchContract(event: TypedTaskEvent): TaskContractResult {
   return { ok: true, contract: { ...base, contract_hash: stableHash(base) } };
 }
 
+/**
+ * The `self-diagnose` contract (ADR 0011, Phase 1). Derived in-route from a `turn` whose
+ * intent classified as `selfcode`: it OPENS `coding_agent_cli` (read-only Codex consult in
+ * a worktree) alongside `llm_answer`/`write_report`, while keeping writes/destructive/paid
+ * forbidden. `coding_agent_cli` stays in every normal contract's forbidden_actions, so the
+ * category is reachable ONLY here. Small tool budget (1–2 consults) but a long time ceiling
+ * (Codex is slow). No new approval gate — the consult is `external_read`, not a write.
+ */
+export function compileSelfDiagnoseContract(objective: string): CompiledTaskContract {
+  const base = {
+    objective,
+    budget: { time_minutes: 30, max_tool_calls: 3, max_agent_delegations: 0 },
+    allowed_actions: ["coding_agent_cli", "llm_answer", "write_report"],
+    forbidden_actions: ["generic_shell", "external_write", "destructive", "paid_action"],
+    output: { path: "runs/<run-id>/report.md", format: "sourced_markdown_report" as const },
+    approval_gates: ["local_write", "external_write", "destructive", "paid"] as SideEffectLevel[],
+    stop_condition: "self-diagnosis produced or budget exhausted",
+    eval_hooks: []
+  };
+  return { ...base, contract_hash: stableHash(base) };
+}
+
 function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
   if (!event.goal?.trim()) {
     return invalid("Message is required");

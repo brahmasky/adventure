@@ -18,30 +18,32 @@ const contract: CompiledTaskContract = {
 };
 
 describe("CapabilityRunner", () => {
-  it("returns a structured denial for forbidden capabilities without calling the adapter", async () => {
+  it("denies a coding-agent CLI capability the contract does not allow, without calling the adapter", async () => {
     const registry = new ToolRegistry();
     const adapter = vi.fn(() => ({ ok: true as const, output: { ignored: true } }));
     registry.register({
-      name: "codex_cli",
+      name: "coding_agent_cli",
       category: "coding_agent_cli",
-      side_effect_level: "local_write",
-      risk_level: "high",
+      side_effect_level: "external_read",
+      risk_level: "medium",
       timeout_ms: 1000,
       output_limit_bytes: 1000,
       execute: adapter
     });
 
+    // The default `turn`/research contract forbids coding_agent_cli (ADR 0011): the
+    // category is reachable only from the self-diagnose contract that allows it.
     const runner = new CapabilityRunner(registry);
     const result = await runner.execute({
       contract,
-      capability: "codex_cli",
+      capability: "coding_agent_cli",
       input: {},
       budget: new BudgetLedger(contract.budget)
     });
 
     expect(result).toEqual({
       status: "denied",
-      reason: "Coding-agent CLI delegation is reserved for V2 containment",
+      reason: "Capability forbidden by task contract",
       recovery_hint: "Report the blocked action to the user"
     });
     expect(adapter).not.toHaveBeenCalled();

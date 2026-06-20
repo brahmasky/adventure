@@ -106,6 +106,26 @@ Interaction model: [ADR 0010](docs/decisions/0010-natural-language-intent-layer.
 learning-loop design: [ADR 0007](docs/decisions/0007-learning-loop.md);
 prompt-composition seam: [ADR 0009](docs/decisions/0009-architecture-coherence.md).
 
+## Self-evolution (Phase 1)
+
+Houge can read his **own source** to diagnose a bug. A natural-language message like *"go
+read your intent classifier and tell me why you asked which 猴哥"* classifies as the
+`selfcode` intent and runs a **read-only Codex consult in a fresh git worktree** of his
+committed `HEAD`, then relays the root cause in his voice. The worktree contains only
+*tracked* files, so gitignored secrets (`.env`, `auth.json`, the live DB) are absent **by
+construction**, and the running daemon's tree is untouched. The consult is `external_read`
+(Houge's own source goes to OpenAI on Paco's subscription) — a read, not a write, so no
+`/approve` gate; `codex exec --sandbox read-only` is the inner wall, and no
+`--dangerously-bypass-*` flag is ever passed. `coding_agent_cli` is reachable **only** from
+the `self-diagnose` contract — every normal turn forbids it.
+
+This is **read-only diagnosis** (Phase 1) — Houge never edits a file. It is **off by
+default**: set `HOUGE_CODEX_ENABLED=1` to turn it on (otherwise the `selfcode` branch
+degrades to a normal answer noting the capability is off). Config:
+`HOUGE_CODEX_ENABLED` / `HOUGE_CODEX_MODEL` / `HOUGE_CODEX_TIMEOUT_MS` / `HOUGE_CODEX_BIN`
+— see [configuration](docs/reference/configuration.md#self-evolution-phase-1--code-self-diagnose).
+Rationale: [ADR 0011](docs/decisions/0011-self-evolution-architecture.md).
+
 ## Safety model
 
 Deterministic code owns control; the LLM is used only for judgment

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
-import { compileTaskContract } from "../../src/contracts/task-contract.js";
+import { compileSelfDiagnoseContract, compileTaskContract } from "../../src/contracts/task-contract.js";
 
 const runEvent = buildTypedTaskEvent({
   source: "cli",
@@ -83,6 +83,36 @@ describe("compileTaskContract", () => {
       ok: false,
       error: { code: "TASK_CONTRACT_INVALID", message: "Message is required" }
     });
+  });
+
+  it("the self-diagnose contract allows coding_agent_cli; the turn contract forbids it (ADR 0011)", () => {
+    const self = compileSelfDiagnoseContract("why did you ask which 猴哥?");
+    expect(self.allowed_actions).toContain("coding_agent_cli");
+    expect(self.allowed_actions).toEqual(["coding_agent_cli", "llm_answer", "write_report"]);
+    // Writes/destructive/paid stay forbidden; no new approval gate (external_read consult).
+    expect(self.forbidden_actions).toContain("external_write");
+    expect(self.forbidden_actions).toContain("destructive");
+    expect(self.forbidden_actions).not.toContain("coding_agent_cli");
+    expect(self.budget.max_tool_calls).toBe(3);
+    expect(self.contract_hash).toMatch(/^[a-f0-9]{64}$/);
+
+    // The normal turn contract keeps coding_agent_cli forbidden — unreachable from a turn.
+    const turnEvent = buildTypedTaskEvent({
+      source: "telegram",
+      type: "turn",
+      program: "turn",
+      goal: "anything",
+      requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "telegram", chat_id: "222" },
+      idempotency_key: "telegram:turn-forbids-codex",
+      source_reference: "telegram:update:9:message:9"
+    });
+    const turn = compileTaskContract(turnEvent);
+    expect(turn.ok).toBe(true);
+    if (turn.ok) {
+      expect(turn.contract.allowed_actions).not.toContain("coding_agent_cli");
+      expect(turn.contract.forbidden_actions).toContain("coding_agent_cli");
+    }
   });
 
   it("compiles /ask into the built-in ask program contract", () => {

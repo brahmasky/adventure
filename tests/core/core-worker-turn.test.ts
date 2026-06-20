@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CoreWorker } from "../../src/core/core-worker.js";
 import { INTENT_DISCIPLINE } from "../../src/capabilities/intent.js";
 import { DISTILL_DISCIPLINE } from "../../src/capabilities/distill.js";
-import { ASK_DISCIPLINE, RESEARCH_DISCIPLINE } from "../../src/prompt/composer.js";
+import { ASK_DISCIPLINE, RESEARCH_DISCIPLINE, SELFCODE_DISCIPLINE } from "../../src/prompt/composer.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -400,6 +400,83 @@ describe("executeTurn (natural-language front door)", () => {
     } finally {
       if (prev === undefined) delete process.env.HOUGE_MAX_CONSECUTIVE_CLARIFY;
       else process.env.HOUGE_MAX_CONSECUTIVE_CLARIFY = prev;
+      store.close();
+    }
+  });
+
+  it("selfcode (codex enabled): routes through the coding-agent adapter and relays the diagnosis", async () => {
+    const store = RunStore.openInMemory();
+    const prev = process.env.HOUGE_CODEX_ENABLED;
+    process.env.HOUGE_CODEX_ENABLED = "1";
+    const llmCalls: Record<string, unknown>[] = [];
+    const codexCalls: Record<string, unknown>[] = [];
+    try {
+      const run_id = turnRun(store, "go read your intent classifier and tell me why you asked which 猴哥");
+      const codex = (input: Record<string, unknown>): ToolAdapterResult => {
+        codexCalls.push(input);
+        return { ok: true, output: { diagnosis: "ROOT CAUSE: the router prompt never gets Houge's identity", model: "fake", bin: "codex" } };
+      };
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        llmWithVerdict('{"intent":"selfcode","query":"intent classifier"}', llmCalls),
+        undefined,
+        codex
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+
+      // The coding agent was consulted with the symptom on the DATA channel.
+      expect(codexCalls.length).toBe(1);
+      expect(String(codexCalls[0]!.question)).toContain("which 猴哥");
+      expect(String(codexCalls[0]!.question)).toContain("own");
+
+      // A relay llm_answer ran under the selfcode discipline with the diagnosis as data.
+      const relay = llmCalls.find((c) => String(c.system).includes(SELFCODE_DISCIPLINE));
+      expect(relay).toBeDefined();
+      expect(String(relay!.question)).toContain("ROOT CAUSE");
+
+      const turns = store.getRecentChatTurns("555", 6);
+      expect(turns[turns.length - 1]!.intent).toBe("selfcode");
+      expect(turns[turns.length - 1]!.text).toContain("ROOT CAUSE");
+    } finally {
+      if (prev === undefined) delete process.env.HOUGE_CODEX_ENABLED;
+      else process.env.HOUGE_CODEX_ENABLED = prev;
+      store.close();
+    }
+  });
+
+  it("selfcode (codex disabled): degrades gracefully to a normal answer, no codex call", async () => {
+    const store = RunStore.openInMemory();
+    const prev = process.env.HOUGE_CODEX_ENABLED;
+    delete process.env.HOUGE_CODEX_ENABLED;
+    const llmCalls: Record<string, unknown>[] = [];
+    let codexCalled = false;
+    try {
+      const run_id = turnRun(store, "read your classifier");
+      const codex = (): ToolAdapterResult => {
+        codexCalled = true;
+        return { ok: true, output: { diagnosis: "x" } };
+      };
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        llmWithVerdict('{"intent":"selfcode"}', llmCalls),
+        undefined,
+        codex
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      // Codex was never consulted; it fell back to a normal answer.
+      expect(codexCalled).toBe(false);
+      const answerCall = llmCalls.find((c) => String(c.system).includes(ASK_DISCIPLINE));
+      expect(answerCall).toBeDefined();
+      expect(String(answerCall!.question)).toContain("HOUGE_CODEX_ENABLED");
+      const turns = store.getRecentChatTurns("555", 6);
+      expect(turns[turns.length - 1]!.intent).toBe("selfcode");
+    } finally {
+      if (prev === undefined) delete process.env.HOUGE_CODEX_ENABLED;
+      else process.env.HOUGE_CODEX_ENABLED = prev;
       store.close();
     }
   });

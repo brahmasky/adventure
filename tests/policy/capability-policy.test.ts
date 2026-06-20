@@ -16,18 +16,51 @@ describe("decideCapability", () => {
     ).toEqual({ decision: "allow", reason: "Capability allowed by task contract" });
   });
 
-  it("denies coding-agent CLI delegation in V1", () => {
+  it("denies coding-agent CLI delegation when the contract does not allow it (ADR 0011)", () => {
+    // A normal contract keeps coding_agent_cli out of allowed_actions → denied.
     expect(
       decideCapability({
-        capability: "codex_cli",
+        capability: "coding_agent_cli",
         category: "coding_agent_cli",
-        side_effect_level: "local_write",
-        risk_level: "high",
-        allowed_actions: ["codex_cli"],
+        side_effect_level: "external_read",
+        risk_level: "medium",
+        allowed_actions: ["llm_answer"],
         forbidden_actions: [],
         approval_gates: ["external_write", "destructive", "paid"]
       })
-    ).toEqual({ decision: "deny", reason: "Coding-agent CLI delegation is reserved for V2 containment" });
+    ).toEqual({
+      decision: "deny",
+      reason: "Coding-agent CLI delegation is not allowed by this task contract"
+    });
+  });
+
+  it("denies coding-agent CLI delegation when the contract forbids it (normal turn)", () => {
+    expect(
+      decideCapability({
+        capability: "coding_agent_cli",
+        category: "coding_agent_cli",
+        side_effect_level: "external_read",
+        risk_level: "medium",
+        allowed_actions: ["llm_answer"],
+        forbidden_actions: ["coding_agent_cli"],
+        approval_gates: ["external_write", "destructive", "paid"]
+      })
+    ).toEqual({ decision: "deny", reason: "Capability forbidden by task contract" });
+  });
+
+  it("allows coding-agent CLI delegation in the self-diagnose contract (ADR 0011, Phase 1)", () => {
+    // The self-diagnose route lists coding_agent_cli; external_read is not gated → allow.
+    expect(
+      decideCapability({
+        capability: "coding_agent_cli",
+        category: "coding_agent_cli",
+        side_effect_level: "external_read",
+        risk_level: "medium",
+        allowed_actions: ["coding_agent_cli", "llm_answer", "write_report"],
+        forbidden_actions: ["generic_shell", "external_write", "paid_action"],
+        approval_gates: ["local_write", "external_write", "destructive", "paid"]
+      })
+    ).toEqual({ decision: "allow", reason: "Capability allowed by task contract" });
   });
 
   it("requires approval for external writes", () => {

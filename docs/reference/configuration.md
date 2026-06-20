@@ -153,6 +153,25 @@ spine); the `lesson_blocks` table is local runtime state. The only prompt knob i
 `HOUGE_ASK_SYSTEM_PROMPT` (in the [LLM provider chain](#llm-provider-chain-powers-cognition)
 table) — an escape hatch to override the composed **answer**-path prompt wholesale.
 
+## Self-evolution (Phase 1) — code self-diagnose
+
+Houge can read his **own source** to diagnose a bug. A `selfcode`-classified message runs a
+**read-only Codex consult in a fresh git worktree** of committed `HEAD`, then relays the root
+cause in his voice. The worktree holds only *tracked* files, so gitignored secrets are absent
+by construction and the daemon's tree is untouched; the consult is `external_read` (no
+`/approve` gate), `codex exec --sandbox read-only` is the inner wall, and no
+`--dangerously-bypass-*` flag is ever passed. `coding_agent_cli` is reachable only from the
+`self-diagnose` contract — every normal turn keeps it forbidden. Read-only diagnosis only —
+Houge never edits a file in this phase. Design: [ADR 0011](../decisions/0011-self-evolution-architecture.md);
+spec: [Phase 1 spec](../superpowers/specs/2026-06-20-phase1-code-self-diagnose.md).
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_CODEX_ENABLED` | `off` | Master switch for the read-only Codex consult. When not truthy (`1`/`true`/`yes`/`on`), the `selfcode` branch **degrades gracefully** to a normal answer that notes the capability is off — so the feature ships dark and is opt-in. |
+| `HOUGE_CODEX_MODEL` | unset → codex's own configured model | Model override passed to `codex exec -m <model>`. Unset → Codex uses its own default. |
+| `HOUGE_CODEX_TIMEOUT_MS` | `240000` | Wall-clock timeout (ms) for one Codex consult — Codex is slow (minutes). The CapabilityRunner's enforced cap is **derived** as this value + 15000 buffer, so a legitimately-long consult is not killed early. |
+| `HOUGE_CODEX_BIN` | `codex` | The Codex CLI binary name/path. A missing binary maps to a clean error (the consult fails, the run reports it) rather than crashing. |
+
 ## Telegram command reference
 
 Natural language first: just type, and Houge classifies intent (**answer** / **research** /

@@ -1,3 +1,37 @@
+# Goal — Phase 1: code self-diagnose (read-only, Codex-backed) — ADR 0011
+
+**Active goal (spec: docs/superpowers/specs/2026-06-20-phase1-code-self-diagnose.md; ADR docs/decisions/0011).**
+First self-evolution surface: Houge reads his OWN source and explains a bug — read-only, no writes, no gate.
+A `selfcode`-intent message → `executeSelfDiagnose`: frame the question (user's report + his memory) → run
+**`codex exec --sandbox read-only`** in a fresh **git worktree of HEAD** (tracked files only ⇒ no `.env`/
+`auth.json`/DB ⇒ secret-exclusion by construction; isolated from the running daemon) → relay the root cause
+in his voice (async ack-then-deliver). Codex = rented, swappable **`coding_agent_cli`** muscle; Houge owns
+framing/judgment/relay (thin delegation). Executed via **subagent orchestration** (build + independent
+verification, on Claude); live test interactive. **The 猴哥 classifier bug stays unfixed as the live fixture.**
+Gate: typecheck + npm test + build + zero deps + LIVE run (Houge diagnoses the 猴哥 bug via REAL Codex).
+
+## Build — staged (each green), via subagents
+- [ ] S1. Worktree harness (`src/run/worktree.ts`: create(HEAD)→path / remove) + `coding_agent_cli` adapter
+      (`src/capabilities/coding-agent.ts`: shells `codex exec --sandbox read-only -C <wt> -o <file> -`;
+      parses `-o` final message; maps exit/auth/timeout → CapabilityResult; `external_read`/medium). + unit tests (mock `codex`).
+- [ ] S2. `selfcode` intent: `Intent` union + `INTENT_DISCIPLINE` (def + examples) in `src/capabilities/intent.ts`; parser tests.
+- [ ] S3. `executeSelfDiagnose` route + `self-diagnose` contract (`task-contract.ts`: allows `coding_agent_cli`;
+      keep it forbidden in the `turn` contract) + `executeTurn` dispatch in `core-worker.ts` + tests.
+- [ ] S4. Config (`HOUGE_CODEX_ENABLED/MODEL/TIMEOUT_MS/BIN`) + `docs/reference/configuration.md` + README note.
+- [ ] S5. Gates: typecheck clean · npm test green · build OK · `dependencies: {}`. + independent verification pass.
+- [ ] S6. **LIVE gate**: real Telegram → "go read your intent classifier and tell me why you asked which 猴哥"
+      → Houge returns the real root cause via REAL Codex (rebuild + reload daemon first).
+
+**Risks:** (i) `selfcode` classify reliability on cheap chain → crisp examples, fallback `answer`; (ii) Codex
+auth from launchd daemon (`~/.codex/auth.json`; PATH has `/opt/homebrew/bin`) — verify at S6; user-present mitigates.
+
+---
+# DONE — ADR 0010 conversational interaction model (committed 25b3568, LIVE-VERIFIED 2026-06-20)
+Committed + pushed on feat/learning-v1. **Live gate CLOSED:** #5 `answer → 太长了 → tighter 3-point re-answer →
+silent distill → new lesson "Be concise: summarize…3 key points" (`[ask]` updated_at 06-19T14:04→06-20T11:48) →
+/lessons` confirmed over real Telegram on pi→kimi (never Claude). Checks 1–4,6 + research previously confirmed.
+
+---
 # Goal — Conversational interaction model (ADR 0010), one milestone
 
 **Active goal (plan: ~/.claude/plans/cosmic-weaving-snail.md; ADR docs/decisions/0010).** Drop `/ask`

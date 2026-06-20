@@ -16,15 +16,19 @@ export interface CapabilityDecision {
 }
 
 export function decideCapability(input: CapabilityDecisionInput): CapabilityDecision {
-  if (input.category === "coding_agent_cli") {
-    return {
-      decision: "deny",
-      reason: "Coding-agent CLI delegation is reserved for V2 containment"
-    };
-  }
-
   if (input.forbidden_actions.includes(input.capability)) {
     return { decision: "deny", reason: "Capability forbidden by task contract" };
+  }
+
+  // Coding-agent CLI delegation (ADR 0011, Phase 1) is gated to contracts that
+  // explicitly allow it — the `self-diagnose` route. Every other contract keeps
+  // `coding_agent_cli` in its forbidden_actions, so this category is unreachable
+  // from a normal turn/ask/research run; only the self-diagnose contract opens it.
+  if (input.category === "coding_agent_cli" && !input.allowed_actions.includes(input.capability)) {
+    return {
+      decision: "deny",
+      reason: "Coding-agent CLI delegation is not allowed by this task contract"
+    };
   }
 
   if (!input.allowed_actions.includes(input.capability)) {
