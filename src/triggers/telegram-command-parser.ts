@@ -5,6 +5,7 @@ export type TelegramCommand =
   | { type: "run"; program: string; goal: string }
   | { type: "status"; run_id?: string }
   | { type: "lessons"; scope?: string }
+  | { type: "skills"; scope?: string }
   | { type: "forget"; scope: string }
   | { type: "approve"; approval_id: string }
   | { type: "deny"; approval_id: string };
@@ -34,6 +35,7 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
   if (command === "/run") return parseRun(rest);
   if (command === "/status") return parseStatus(rest);
   if (command === "/lessons") return parseLessons(rest);
+  if (command === "/skills") return parseSkills(rest);
   if (command === "/forget") return parseForget(rest);
   if (command === "/approve") return requiredApproval("approve", rest);
   if (command === "/deny") return requiredApproval("deny", rest);
@@ -64,6 +66,15 @@ function parseLessons(words: string[]): TelegramCommandParseResult {
   return scope
     ? { ok: true, command: { type: "lessons", scope } }
     : { ok: true, command: { type: "lessons" } };
+}
+
+function parseSkills(words: string[]): TelegramCommandParseResult {
+  if (words.length === 0) return { ok: true, command: { type: "skills" } };
+  if (words.length > 1) return invalid("/skills requires at most one scope");
+  const scope = words[0];
+  return scope
+    ? { ok: true, command: { type: "skills", scope } }
+    : { ok: true, command: { type: "skills" } };
 }
 
 function parseForget(words: string[]): TelegramCommandParseResult {

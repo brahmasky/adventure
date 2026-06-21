@@ -84,6 +84,21 @@ describe("parseTelegramCommand", () => {
     });
   });
 
+  it("parses /skills (optional scope) and rejects more than one scope", () => {
+    expect(parseTelegramCommand("/skills")).toEqual({
+      ok: true,
+      command: { type: "skills" }
+    });
+    expect(parseTelegramCommand("/skills research")).toEqual({
+      ok: true,
+      command: { type: "skills", scope: "research" }
+    });
+    expect(parseTelegramCommand("/skills a b")).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/skills requires at most one scope" }
+    });
+  });
+
   it("no longer parses /teach — it becomes a turn", () => {
     expect(parseTelegramCommand("/teach research: prefer filings")).toEqual({
       ok: true,

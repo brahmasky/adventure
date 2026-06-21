@@ -29,7 +29,7 @@ type TriggerSourceMatchesPlan = Expect<Equal<
 >>;
 type TaskEventTypeMatchesPlan = Expect<Equal<
   TaskEventType,
-  "ask" | "run" | "turn" | "approve" | "deny" | "status" | "lessons" | "forget"
+  "ask" | "run" | "turn" | "approve" | "deny" | "status" | "lessons" | "forget" | "skills"
 >>;
 type IdentityMatchesPlan = Expect<Equal<
   Identity,

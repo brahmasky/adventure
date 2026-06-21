@@ -6,7 +6,7 @@
 - **`.env` (gitignored):** `HOUGE_CODEX_ENABLED=true`, `HOUGE_CODEX_TIMEOUT_MS=300000`.
 - **猴哥 classifier bug: UNFIXED ON PURPOSE** — it's the live fixture (intent router prompt lacks identity; bypasses the composer). Phase 3 (gated self-write) is where Houge would fix it himself. Don't fix it ad-hoc.
 - **Done so far:** ADR 0010 (conversational front door) LIVE-verified + committed; ADR 0011 (self-evolution architecture); **Phase 1 code self-diagnose DONE + LIVE** (Houge autonomously diagnosed the 猴哥 bug via real Codex, symptom-only).
-- **Next:** **Phase 2 (skills)** — design discussion (skill file format; consolidation-pass timing; the OPENSKILL anchor-verifier). Then Phase 3 (gated code self-write).
+- **Next:** **Phase 2 (skills)** — design **LOCKED 2026-06-21** (see block below + spec `docs/superpowers/specs/2026-06-21-phase2-skills.md`). Awaiting `/goal` to build **2a**. Then Phase 3 (gated code self-write).
 - **Critical rules:** `/goal` is a REAL user-invoked stop-gate command (don't claim it doesn't exist); every `/goal` ends with a LIVE run (not just `npm test`); **freedom-over-control** — no 紧箍咒/cage framing, OK for Houge to fail, only core principles stay constant (ADR 0001/0011).
 
 ---
@@ -36,6 +36,71 @@ Note: test message named "intent classifier" (pointed at the area); fully-autono
 is an available stronger demo now that `HOUGE_CODEX_TIMEOUT_MS=300000` (5 min) is in `.env` (needs a daemon reload).
 **Next:** Phase 2 (skills) — design discussion pending (skill file format + consolidation-pass timing). Phase 3
 (code self-write, gated) would let Houge actually FIX this bug himself.
+
+---
+# Goal — Phase 2a: skills as loadable artifacts (IN PROGRESS 2026-06-21) — ADR 0011 §1/§2
+
+Spec: `docs/superpowers/specs/2026-06-21-phase2-skills.md`. `/goal` active. Build via subagents.
+2a = LOAD/APPLY/VIEW hand-authored skills only (NO authoring/Codex/gates — those are 2b/2c).
+Skills are AMBIENT (implicit by scope + `when:`, never invoked by name); `/skills` is a read-only viewer.
+**Constraint: zero deps (`dependencies: {}`) — hand-roll frontmatter parse (flat keys + `- ` list), NO yaml lib.**
+
+## Build — staged (each green), via subagents — S1–S6 DONE
+- [x] S1. `src/skills/skill-store.ts` — hand-rolled frontmatter parse (defensive→null, CRLF-normalized),
+      read-by-scope (cap ≤4 `HOUGE_SKILL_MAX_PER_SCOPE`), list, regenerate `skills/REGISTRY.md` + unit tests.
+- [x] S2. Composer skills layer (`src/prompt/composer.ts`) — `skillsReader`/`skillsScope` like `lessonsReader`;
+      "## Skills — apply when relevant" block (each prefixed by `when:`); OMITTED when empty ⇒ byte-identical
+      (test asserts strict `.toBe` equality).
+- [x] S3. Wired `skillsReader` into all 4 core-worker composer call sites (kill-switch in `skillsReader()`;
+      research-critique→`research`, selfcode→`ask`).
+- [x] S4. `/skills [scope]` control command (parser + adapter + gateway `handleSkills`) — idempotent like
+      `/lessons`, no run/budget, regenerates REGISTRY then lists; "No skills yet" empty state + tests.
+- [x] S5. Config (`HOUGE_SKILLS_ENABLED` default ON, `HOUGE_SKILL_MAX_PER_SCOPE` 4) + configuration.md
+      + README + `.gitignore` `/skills/` (anchored top-level — does NOT swallow src/skills, tests/skills).
+- [x] S6. Gates: **typecheck clean · npm test 375/375 · build OK · deps {}** · independent verification:
+      one HIGH blocker found (unanchored `.gitignore skills/` swallowed src+tests) → FIXED + re-verified;
+      CRLF nit → fixed + regression test. All 7 safety invariants PASS.
+- [x] S7. **LIVE gate CLOSED over REAL Telegram** (daemon PID 83592, real pi→kimi + real Tavily). Paco sent real
+      research msgs: `06-21 10:59` SpaceX + `11:05` agent-memory → marker **ABSENT** (no live skill). Then authored
+      `skills/research/research-marker-probe.md` on the live daemon (read fresh, NO reload) → `11:12` real research
+      msg → marker **PRESENT** verbatim `🔬 SKILL-2A-LIVE ✓ 🔬`, self-applied (ambient, never named). Also: harness
+      PASS (`scripts/live-skills-2a.mjs`) earlier confirmed absent/present/`/skills`. Probe skill = live-gate-only.
+
+---
+# Phase 2 design — SKILLS (LOCKED 2026-06-21) — ADR 0011 §1/§2/§7
+
+Full spec: `docs/superpowers/specs/2026-06-21-phase2-skills.md`. Design discussion done this session.
+
+**Key framing (corrected by Paco):** a skill is a reusable PROCEDURE for a class of task (a competence),
+NOT memory. → its OWN top-level **`skills/`** dir (sibling to `src/capabilities/`), gitignored runtime
+state. The three layers map to three homes: lessons→`memory/` (SQLite), skills→`skills/`, code→`src/`.
+Persona/core-principles never enter skills, so that question doesn't arise here.
+
+**Locked decisions:**
+- **File format:** `skills/<scope>/<name>.md` + frontmatter (name, scope, `when:` trigger hint, `anchors:`
+  for Gate B, `version`, `last_verified`, `origin`).
+- **Selection:** scope pre-filters cheaply (a research run considers only `skills/research/*`), the `when:`
+  lines ride into the main run prompt, Houge self-selects (NO extra LLM call). Cap ≤4 skills/scope (§6).
+  Built-in disciplines stay the committed FLOOR (in code); skills are an additive evolvable overlay.
+- **Three origins:** (1) on-command NL `skill` intent ("write a skill for X"); (2) auto-promoted from
+  distill; (3) refined from a failure (a correction on a surface where a skill applied updates THAT skill).
+- **Mutable:** update/refine = re-author from the existing file → report a DIFF + new anchor score; `version`++.
+- **Registry:** auto-generated `skills/REGISTRY.md` (generated view; frontmatter is source of truth) +
+  `/skills [scope]` control command (idempotent like `/lessons`).
+- **Gate stack:** A=qualify (the 4 routing criteria, §2) → B=OPENSKILL anchor verifier (≤3 passes) →
+  C=taste (Paco, the ~11%). **Every attempt REPORTS** (Paco wants auto-author + a report): pass/fail per
+  gate, what it down-routed to. Fail A → down-route (tweak→lesson, needs-code→code flag). Fail B after 3 →
+  down-route to a LESSON (nothing wasted).
+- **Auto-author is SAFE here (unlike code):** ADR marks skills "low risk — no compile/merge"; a skill is
+  prose, executes no logic, instantly revertible. So skills auto-WRITE (report, not `/approve`); CODE keeps
+  the `/approve` merge gate. Authoring muscle = Codex (build-time, like Phase 1), auto-triggered.
+
+**Sub-phasing (each shippable + live-gated):**
+- **2a** — format + `skills/` + skill-store + composer-loads-by-scope + `/skills`/REGISTRY. (foundation)
+- **2b** — on-command `skill` intent + Codex author + Gate A routing/down-route + distill flag + reporting.
+- **2c** — Gate B anchor verifier + auto-author/refine loop. **SPIKE-THEN-DECIDE:** the verifier is the one
+  genuinely unproven piece (cheap walled-off model emitting honest {0,1} anchors). Build it, throw known-good
+  + known-bad skills at it, measure discrimination BEFORE wiring auto-author to it. 2a/2b stand without it.
 
 ---
 # DONE — ADR 0010 conversational interaction model (committed 25b3568, LIVE-VERIFIED 2026-06-20)

@@ -126,6 +126,21 @@ degrades to a normal answer noting the capability is off). Config:
 — see [configuration](docs/reference/configuration.md#self-evolution-phase-1--code-self-diagnose).
 Rationale: [ADR 0011](docs/decisions/0011-self-evolution-architecture.md).
 
+## Self-evolution (Phase 2a) — ambient skills
+
+Beyond one-line *lessons*, Houge can apply reusable **procedures** — a *skill* is "how Houge
+does a class of task well" (e.g. how he cross-checks figures in research). Skills are
+hand-authored markdown under `skills/<scope>/<name>.md` that the composer folds into a run
+between the surface discipline and the lessons. They are **ambient — never invoked by name**:
+the ≤4 in-scope skills ride in-prompt, each tagged with a `when:` hint, and Houge self-applies
+the relevant ones during an ordinary message. A run with no skills composes byte-identically to
+before, and a malformed skill file is skipped rather than crashing a turn. `skills/` is
+gitignored runtime state; graduating a skill into the repo is a manual `git add`. View what's
+loaded with **`/skills [scope]`** (a read-only viewer). On by default
+(`HOUGE_SKILLS_ENABLED=off` is the kill switch); cap via `HOUGE_SKILL_MAX_PER_SCOPE` —
+see [configuration](docs/reference/configuration.md#self-evolution-phase-2a--ambient-skills).
+(Authoring/verification are Phase 2b/2c — not yet built.)
+
 ## Safety model
 
 Deterministic code owns control; the LLM is used only for judgment

@@ -172,6 +172,45 @@ spec: [Phase 1 spec](../superpowers/specs/2026-06-20-phase1-code-self-diagnose.m
 | `HOUGE_CODEX_TIMEOUT_MS` | `240000` | Wall-clock timeout (ms) for one Codex consult — Codex is slow (minutes). The CapabilityRunner's enforced cap is **derived** as this value + 15000 buffer, so a legitimately-long consult is not killed early. |
 | `HOUGE_CODEX_BIN` | `codex` | The Codex CLI binary name/path. A missing binary maps to a clean error (the consult fails, the run reports it) rather than crashing. |
 
+## Self-evolution (Phase 2a) — ambient skills
+
+A **skill** is a reusable *procedure* for a class of task ("how Houge does X well") — distinct
+from a *lesson* (a one-line preference) and from *code*. Skills are hand-authored markdown under
+`skills/<scope>/<name>.md` (`scope` ∈ the composer surfaces: `ask` | `research` | `selfcode` | …),
+loaded by the composer into a run **between discipline and lessons**. They are **ambient — never
+invoked by name**: the ≤cap in-scope skills ride in-prompt, each prefixed by its `when:` hint, and
+Houge self-applies the relevant ones during an ordinary natural-language turn. Skills are prose
+that executes no logic (low-risk, instantly revertible), so they live outside SQLite and outside
+git (`skills/` is gitignored runtime state). A run with **no skills composes byte-identically** to
+the pre-skills prompt. Design: [ADR 0011](../decisions/0011-self-evolution-architecture.md); spec:
+[Phase 2 spec](../superpowers/specs/2026-06-21-phase2-skills.md).
+
+Skill file format (frontmatter is the source of truth; `skills/REGISTRY.md` is a generated view):
+
+```markdown
+---
+name: cross-check-figures
+scope: research
+when: comparing numbers across multiple sources   # trigger hint; Houge self-applies
+anchors:                                           # world-fact assertions (Gate B, 2c)
+  - a part never exceeds its whole
+  - units are converted before comparison
+version: 2
+last_verified: 2026-06-21
+origin: refined                                    # commanded | learned | refined
+---
+
+<the numbered procedure Houge follows for this class of task>
+```
+
+A malformed or missing skill file is **skipped, never throws** — a bad skill weakens an answer at
+most, it can never break a turn. Use `/skills [scope]` to view the loaded skills (read-only).
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_SKILLS_ENABLED` | `on` | Kill switch for the ambient skills layer. Skills are read-only/low-risk, so this defaults **on** — only an explicit `0`/`false`/`no`/`off` disables it, in which case the composer omits the skills section (composing byte-identically to a no-skills run). |
+| `HOUGE_SKILL_MAX_PER_SCOPE` | `4` | Max skills folded into a prompt per scope (alphabetical by filename; the rest are dropped). Bounds the prompt and keeps self-selection precise. |
+
 ## Telegram command reference
 
 Natural language first: just type, and Houge classifies intent (**answer** / **research** /
@@ -186,6 +225,7 @@ noted), and `/approve` · `/deny` are **unforgeable** — never inferred from pr
 | `/approve <id>` · `/deny <id>` | safety | Resolve a pending approval gate. Unforgeable — slash-only, never inferred. |
 | `/lessons [scope]` | control | View the lesson block(s): the raw `block` plus its char-count/cap so consolidation pressure is visible. No scope → lists all scopes. |
 | `/forget <scope>` | control | Clear that scope's lesson block and ack. |
+| `/skills [scope]` | control | Read-only **viewer** of the ambient skills (name · scope · `when:` · version); regenerates `skills/REGISTRY.md`. Never invokes a skill. No scope → lists all scopes. |
 
 ## Global autonomy circuit-breaker
 

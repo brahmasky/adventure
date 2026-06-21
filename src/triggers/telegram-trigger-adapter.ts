@@ -93,6 +93,9 @@ function buildTelegramEvent(command: TelegramCommand, base: TelegramEventBase): 
     case "lessons":
       // scope (optional) rides `program`; absent → list all scopes.
       return buildTypedTaskEvent({ ...base, type: "lessons", ...(command.scope ? { program: command.scope } : {}) });
+    case "skills":
+      // scope (optional) rides `program`; absent → list all scopes.
+      return buildTypedTaskEvent({ ...base, type: "skills", ...(command.scope ? { program: command.scope } : {}) });
     case "forget":
       // scope rides `program`.
       return buildTypedTaskEvent({ ...base, type: "forget", program: command.scope });

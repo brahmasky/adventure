@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { BudgetLedger } from "../budget/budget-ledger.js";
 import { CapabilityRunner } from "../capabilities/capability-runner.js";
 import type { ApprovalRequestSink, CapabilityResult } from "../capabilities/capability-runner.js";
@@ -21,6 +22,7 @@ import {
 import type { IntentClassification, Intent } from "../capabilities/intent.js";
 import { buildDistillQuestion, DISTILL_DISCIPLINE, parseDistillResult, shouldRejectLesson } from "../capabilities/distill.js";
 import { composeSystemPrompt, intentToScope, memoryRootFor } from "../prompt/composer.js";
+import { resolveSkillMaxPerScope, resolveSkillsEnabled, SkillStore } from "../skills/skill-store.js";
 import { resolveWebMaxResults } from "../web/registry.js";
 import type { WebResult } from "../web/types.js";
 import { resolveChainBudgetMs, RUNNER_TIMEOUT_BUFFER_MS } from "../llm/registry.js";
@@ -72,7 +74,15 @@ export class CoreWorker {
     // Read-only Codex consult for the `selfcode` route (ADR 0011). Injectable so tests
     // mock it; the default reads Houge's own committed source from a fresh worktree.
     private readonly codingAgentAdapter: (input: Record<string, unknown>) => ToolAdapterResult | Promise<ToolAdapterResult> = createCodingAgentAdapter({ projectRoot })
-  ) {}
+  ) {
+    this.skillStore = new SkillStore({
+      root: join(projectRoot, "skills"),
+      maxPerScope: resolveSkillMaxPerScope(process.env)
+    });
+  }
+
+  /** Ambient skills live as markdown under `<projectRoot>/skills/<scope>/` (Phase 2a). */
+  private readonly skillStore: SkillStore;
 
   async executeOnce(worker_id: string): Promise<CoreWorkerResult> {
     const claim = this.runStore.claimNext(worker_id, 30);
@@ -380,7 +390,9 @@ export class CoreWorker {
       process.env.HOUGE_ASK_SYSTEM_PROMPT ??
       composeSystemPrompt(memoryRootFor(this.projectRoot), "ask", {
         lessonsReader: this.lessonsReader(),
-        lessonsScope: scope
+        lessonsScope: scope,
+        skillsReader: this.skillsReader(),
+        skillsScope: scope
       });
     const result = await new CapabilityRunner(registry).execute({
       contract: claim.contract,
@@ -496,7 +508,10 @@ export class CoreWorker {
       capability: "llm_answer",
       input: {
         question: buildResearchQuestion(topic, results),
-        system: composeSystemPrompt(memoryRoot, "research", { lessonsReader: this.lessonsReader() })
+        system: composeSystemPrompt(memoryRoot, "research", {
+          lessonsReader: this.lessonsReader(),
+          skillsReader: this.skillsReader()
+        })
       },
       budget
     });
@@ -516,7 +531,9 @@ export class CoreWorker {
         question: buildCritiqueQuestion(topic, draft, results),
         system: composeSystemPrompt(memoryRoot, "research-critique", {
           lessonsReader: this.lessonsReader(),
-          lessonsScope: "research"
+          lessonsScope: "research",
+          skillsReader: this.skillsReader(),
+          skillsScope: "research"
         })
       },
       budget
@@ -541,6 +558,16 @@ export class CoreWorker {
   /** The composer's lesson-block reader: read the scope's durable preferences block. */
   private lessonsReader(): (scope: string) => string | undefined {
     return (scope) => this.runStore.readLessonBlock(scope);
+  }
+
+  /**
+   * The composer's skills-block reader: read the scope's ambient procedures (≤cap). The
+   * kill switch lives here — `HOUGE_SKILLS_ENABLED` off → the reader returns undefined for
+   * every scope → the composer omits the skills section (byte-identical to a no-skills run).
+   */
+  private skillsReader(): (scope: string) => string | undefined {
+    if (!resolveSkillsEnabled(process.env)) return () => undefined;
+    return (scope) => this.skillStore.readScopeBlock(scope);
   }
 
   /**
@@ -624,7 +651,9 @@ export class CoreWorker {
         question: buildSelfDiagnoseRelayQuestion(message, diagnosis),
         system: composeSystemPrompt(memoryRootFor(this.projectRoot), "selfcode", {
           lessonsReader: this.lessonsReader(),
-          lessonsScope: "ask"
+          lessonsScope: "ask",
+          skillsReader: this.skillsReader(),
+          skillsScope: "ask"
         })
       },
       budget

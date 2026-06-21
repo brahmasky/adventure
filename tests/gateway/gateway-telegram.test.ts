@@ -1,7 +1,11 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
+import { SkillStore } from "../../src/skills/skill-store.js";
 import { normalizeTelegramUpdate } from "../../src/triggers/telegram-trigger-adapter.js";
 
 function seedWaitingApprovalRun(store: RunStore): string {
@@ -196,6 +200,67 @@ describe("Gateway telegram events", () => {
       expect(note?.payload.text).toContain("Forgotten ✓");
     } finally {
       store.close();
+    }
+  });
+
+  it("/skills lists a seeded skill and is idempotent on redelivery", () => {
+    const store = RunStore.openInMemory();
+    const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-"));
+    try {
+      mkdirSync(join(root, "research"), { recursive: true });
+      writeFileSync(
+        join(root, "research", "cross-check.md"),
+        "---\nname: cross-check-figures\nscope: research\nwhen: comparing numbers\nversion: 2\n---\nmethod body",
+        "utf8"
+      );
+      const gateway = new Gateway(store, undefined, undefined, new SkillStore({ root }));
+
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "skills",
+        program: "research", // scope (optional) rides program
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:skills-1",
+        source_reference: "telegram:update:20:message:1"
+      });
+
+      const first = gateway.intake(event);
+      const second = gateway.intake(event); // redelivered update
+
+      expect(first).toEqual({ ok: true, status: "skills_returned", run_id: "" });
+      expect(second).toEqual(first); // replayed, not re-applied
+      expect(store.countNotificationsByIdempotencyKey("telegram:skills-1:skills")).toBe(1);
+      const note = store.claimNextNotification("test", 30);
+      expect(note?.payload.text).toContain("cross-check-figures");
+      expect(note?.payload.text).toContain("when: comparing numbers");
+      expect(note?.payload.text).toContain("v2");
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("/skills reports emptiness when no skills exist for the scope", () => {
+    const store = RunStore.openInMemory();
+    const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-empty-"));
+    try {
+      const gateway = new Gateway(store, undefined, undefined, new SkillStore({ root }));
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "skills",
+        program: "research",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:skills-empty",
+        source_reference: "telegram:update:21:message:1"
+      });
+      expect(gateway.intake(event)).toEqual({ ok: true, status: "skills_returned", run_id: "" });
+      const note = store.claimNextNotification("test", 30);
+      expect(note?.payload.text).toContain('No skills for "research" yet.');
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

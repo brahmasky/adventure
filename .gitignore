@@ -21,3 +21,8 @@ memory/skills/
 memory/user/
 memory/wiki/
 memory/journal/
+
+# Ambient skills (Phase 2a) are runtime state — hand-authored/learned procedures plus the
+# generated REGISTRY.md. Graduating a skill into the repo is a manual `git add`.
+# Anchored to top-level only: must NOT swallow src/skills/ or tests/skills/.
+/skills/

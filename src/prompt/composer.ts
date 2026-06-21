@@ -95,6 +95,14 @@ export interface ComposeOptions {
   lessonsReader?: (scope: string) => string | undefined;
   /** Read lessons from a different scope (e.g. the critique pass reuses `research` lessons). */
   lessonsScope?: string;
+  /**
+   * Injected skills-block reader (Phase 2a): `(scope) => block | undefined`. Like
+   * `lessonsReader`, when absent (or it returns nothing) the skills section is omitted —
+   * so a run with no skills composes byte-identically to today (eval goldens unaffected).
+   */
+  skillsReader?: (scope: string) => string | undefined;
+  /** Read skills from a different scope (e.g. the critique pass reuses `research` skills). */
+  skillsScope?: string;
   /** Injectable clock for the trusted temporal-context line (default `new Date()`). */
   now?: Date;
 }
@@ -113,11 +121,14 @@ export function composeSystemPrompt(
   const discipline = DISCIPLINES[surface] ?? "";
   const lessonsScope = options.lessonsScope ?? surface;
   const lessons = options.lessonsReader?.(lessonsScope);
+  const skillsScope = options.skillsScope ?? surface;
+  const skills = options.skillsReader?.(skillsScope);
 
   return [
     temporalContext(options.now),
     identity,
     discipline,
+    skills ? `## Skills — apply when relevant\n${skills}` : "",
     lessons ? `## What you've learned — apply these\n${lessons}` : "",
     GUARDRAILS
   ]

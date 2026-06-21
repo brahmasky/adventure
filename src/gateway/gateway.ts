@@ -7,6 +7,8 @@ import {
   type GlobalBudgetCaps
 } from "../budget/global-budget-ledger.js";
 import type { LessonBlockRow, RunStore } from "../run/run-store.js";
+import { SkillStore, type SkillMeta } from "../skills/skill-store.js";
+import { join } from "node:path";
 import { queryStatus } from "../status/status-query.js";
 
 export type GatewayIntakeResult =
@@ -14,16 +16,26 @@ export type GatewayIntakeResult =
   | { ok: true; status: "status_returned"; run_id: string }
   | { ok: true; status: "approval_resolved"; run_id: string }
   | { ok: true; status: "lessons_returned"; run_id: string }
+  | { ok: true; status: "skills_returned"; run_id: string }
   | { ok: true; status: "forgotten"; run_id: string }
   | { ok: false; error: { code: string; message: string; run_id?: string } };
 
 export class Gateway {
   private readonly caps: GlobalBudgetCaps;
   private readonly projectRoot: string;
+  private readonly skillStore: SkillStore;
 
-  constructor(private readonly runStore: RunStore, caps?: GlobalBudgetCaps, projectRoot?: string) {
+  constructor(
+    private readonly runStore: RunStore,
+    caps?: GlobalBudgetCaps,
+    projectRoot?: string,
+    skillStore?: SkillStore
+  ) {
     this.caps = caps ?? resolveGlobalBudgetCaps(process.env);
     this.projectRoot = projectRoot ?? process.cwd();
+    // Skills live as markdown under `<projectRoot>/skills/` (same root the worker reads);
+    // injectable so tests point at a temp dir.
+    this.skillStore = skillStore ?? new SkillStore({ root: join(this.projectRoot, "skills") });
   }
 
   intake(event: TypedTaskEvent, now: string = new Date().toISOString()): GatewayIntakeResult {
@@ -63,6 +75,10 @@ export class Gateway {
       return this.handleLessons(event, now);
     }
 
+    if (event.type === "skills") {
+      return this.handleSkills(event, now);
+    }
+
     if (event.type === "forget") {
       return this.handleForget(event, now);
     }
@@ -100,6 +116,41 @@ export class Gateway {
       idempotency_key: `${event.idempotency_key}:lessons`,
       correlation_id: event.source_reference,
       payload: { text: formatLessonsText(scope || undefined, blocks) }
+    });
+    this.runStore.recordTriggerProcessed(event, result);
+    this.recordTelegramAccepted(event, now);
+    return result;
+  }
+
+  /**
+   * `/skills [scope]` — a read-only VIEWER (no run, no budget; Phase 2a). Regenerates the
+   * registry then lists the ambient skills (all scopes, or one) so the owner can see what
+   * procedures Houge applies. Skills are never invoked by name — this is awareness only.
+   * Idempotent on the trigger key, exactly like `/lessons`.
+   */
+  private handleSkills(event: TypedTaskEvent, now: string): GatewayIntakeResult {
+    const replay = this.runStore.beginTriggerProcessing(event);
+    if (replay.status === "duplicate") {
+      return JSON.parse(replay.result_json) as GatewayIntakeResult;
+    }
+    if (replay.status === "conflict") {
+      return {
+        ok: false,
+        error: { code: replay.error, message: "Trigger idempotency key conflicts with a different payload" }
+      };
+    }
+
+    const scope = typeof event.program === "string" ? event.program.trim() : "";
+    this.skillStore.regenerateRegistry();
+    const metas = this.skillStore.list(scope || undefined);
+
+    const result: GatewayIntakeResult = { ok: true, status: "skills_returned", run_id: "" };
+    this.runStore.enqueueNotification({
+      target: event.notify,
+      intent_type: "progress",
+      idempotency_key: `${event.idempotency_key}:skills`,
+      correlation_id: event.source_reference,
+      payload: { text: formatSkillsText(scope || undefined, metas) }
     });
     this.runStore.recordTriggerProcessed(event, result);
     this.recordTelegramAccepted(event, now);
@@ -428,5 +479,21 @@ function formatLessonsText(scope: string | undefined, blocks: LessonBlockRow[]):
   }
   return blocks
     .map((b) => `## ${b.scope} (${b.block.length}/${b.char_cap} chars)\n${b.block}`)
+    .join("\n\n");
+}
+
+/**
+ * Render the `/skills` reply: a readable list of the ambient procedures (name, scope, the
+ * `when:` hint, and version) so the owner sees what Houge can apply. `scope` set → one
+ * scope (or "none yet"); unset → every scope.
+ */
+function formatSkillsText(scope: string | undefined, metas: SkillMeta[]): string {
+  if (metas.length === 0) {
+    return scope
+      ? `No skills for "${scope}" yet.`
+      : "No skills yet. Skills are reusable procedures Houge applies automatically when relevant.";
+  }
+  return metas
+    .map((m) => `## ${m.name} (${m.scope}) v${m.version ?? 1}\nwhen: ${m.when}`)
     .join("\n\n");
 }

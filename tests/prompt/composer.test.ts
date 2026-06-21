@@ -78,6 +78,35 @@ describe("composeSystemPrompt", () => {
     });
     expect(prompt).toContain("check the math");
   });
+
+  it("folds the scope's skills block in with a when: line when the reader supplies one", () => {
+    const root = memoryRoot("I am 猴哥.");
+    const prompt = composeSystemPrompt(root, "research", {
+      skillsReader: reader({
+        research: "### cross-check — when: comparing figures\nVerify each number against its source."
+      })
+    });
+    expect(prompt).toContain("## Skills — apply when relevant");
+    expect(prompt).toContain("when: comparing figures");
+    expect(prompt).toContain("Verify each number against its source.");
+  });
+
+  it("is byte-identical when no skills reader vs a reader that returns nothing (goldens safe)", () => {
+    const root = memoryRoot("I am 猴哥.");
+    const now = new Date("2026-06-19T00:00:00.000Z");
+    const baseline = composeSystemPrompt(root, "research", { now });
+    const withEmptyReader = composeSystemPrompt(root, "research", { now, skillsReader: () => undefined });
+    expect(withEmptyReader).toBe(baseline);
+  });
+
+  it("skillsScope override lets the critique reuse research skills", () => {
+    const root = memoryRoot("I am 猴哥.");
+    const prompt = composeSystemPrompt(root, "research-critique", {
+      skillsReader: reader({ research: "### cross-check — when: comparing figures\nmethod body" }),
+      skillsScope: "research"
+    });
+    expect(prompt).toContain("method body");
+  });
 });
 
 describe("intentToScope", () => {
