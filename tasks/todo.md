@@ -177,6 +177,12 @@ scoped** (`ask`: don't say 师父; `research`: verify date) → checks 1–4,6 +
 - [ ] **Telegram-formatting discipline** — Telegram can't render tables; add a discipline so Houge defaults
       to aligned plain-text / lists for tabular data (proactive vs. learned). (Houge already learned "avoid
       tables" as a lesson — this makes it a default.)
+- [ ] **`houge.sqlite` backup / durability** (surfaced 2026-06-21) — the live DB is Houge's SINGLE source of
+      truth (conversations, lessons, ledger, approvals) and is gitignored/local-only with NO backup; delete it
+      and all of Houge's memory is gone. Add cheap insurance: a periodic timestamped copy (cron/launchd) or a
+      `litestream`-style continuous replica to local/remote storage. Must NOT leak secrets and must stay
+      consistent (SQLite `.backup`/WAL-safe snapshot, not a raw `cp` mid-write). Consider retention + a tested
+      restore path. (Low effort, high value — protects everything Houge has learned.)
 
 ## Review
 
