@@ -8,7 +8,8 @@ import {
   FALLBACK_IDENTITY,
   GUARDRAILS,
   intentToScope,
-  RESEARCH_DISCIPLINE
+  RESEARCH_DISCIPLINE,
+  SKILL_AUTHOR_DISCIPLINE
 } from "../../src/prompt/composer.js";
 
 let dirs: string[] = [];
@@ -97,6 +98,22 @@ describe("composeSystemPrompt", () => {
     const baseline = composeSystemPrompt(root, "research", { now });
     const withEmptyReader = composeSystemPrompt(root, "research", { now, skillsReader: () => undefined });
     expect(withEmptyReader).toBe(baseline);
+  });
+
+  it("composing surface 'skill-author' includes the writer discipline", () => {
+    const root = memoryRoot("I am 猴哥.");
+    const prompt = composeSystemPrompt(root, "skill-author");
+    expect(prompt).toContain(SKILL_AUTHOR_DISCIPLINE);
+  });
+
+  it("the new skill-author surface does not alter other surfaces (byte-identical)", () => {
+    const root = memoryRoot("I am 猴哥.");
+    const now = new Date("2026-06-19T00:00:00.000Z");
+    // research/ask compose exactly as before the skill-author discipline was registered.
+    const research = composeSystemPrompt(root, "research", { now });
+    expect(research).not.toContain(SKILL_AUTHOR_DISCIPLINE);
+    const ask = composeSystemPrompt(root, "ask", { now });
+    expect(ask).not.toContain(SKILL_AUTHOR_DISCIPLINE);
   });
 
   it("skillsScope override lets the critique reuse research skills", () => {

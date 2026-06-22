@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -138,6 +138,72 @@ describe("SkillStore.regenerateRegistry", () => {
     expect(registry).toContain("cross-check-figures · research");
     expect(registry).toContain("2 anchors");
     expect(registry).toContain("v2");
+  });
+});
+
+describe("SkillStore.writeSkill / readSkill (Phase 2b authoring)", () => {
+  it("write+read roundtrip and regenerates the registry", () => {
+    const root = tempRoot();
+    const store = new SkillStore({ root });
+    const result = store.writeSkill("research", "cross-check-figures", VALID);
+    expect(result.ok).toBe(true);
+    const back = store.readSkill("research", "cross-check-figures");
+    expect(back).not.toBeNull();
+    expect(back!.meta.name).toBe("cross-check-figures");
+    expect(back!.body).toContain("Compare each figure");
+    // The registry was regenerated to include the new skill.
+    const registry = readFileSync(join(root, "REGISTRY.md"), "utf8");
+    expect(registry).toContain("cross-check-figures · research");
+  });
+
+  it("sanitizes the name to a filename-safe slug", () => {
+    const root = tempRoot();
+    const store = new SkillStore({ root });
+    const result = store.writeSkill("research", "Cross Check Figures!!", VALID);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.path.endsWith("/cross-check-figures.md")).toBe(true);
+  });
+
+  it("rejects a path that would escape the skills root (containment)", () => {
+    const root = tempRoot();
+    const store = new SkillStore({ root });
+    // `..` is stripped by the slug sanitizer, so the write stays inside root — but a
+    // name that sanitizes to empty is rejected outright.
+    const escape = store.writeSkill("research", "../../etc/passwd", VALID);
+    // Sanitized to "etc-passwd" — still confined; assert it landed inside root
+    // (compare against the real root, since macOS resolves /var → /private/var).
+    expect(escape.ok).toBe(true);
+    if (escape.ok) {
+      const realRoot = realpathSync(root);
+      expect(escape.path.startsWith(realRoot)).toBe(true);
+      expect(escape.path).toContain("etc-passwd");
+    }
+
+    const empty = store.writeSkill("", "...", VALID);
+    expect(empty.ok).toBe(false);
+  });
+
+  it("refine bumps version and regenerates the registry", () => {
+    const root = tempRoot();
+    const store = new SkillStore({ root });
+    store.writeSkill("research", "x", VALID); // version 2 in VALID
+    const before = store.readSkill("research", "x")!;
+    const bumped = before.body; // body unchanged
+    const newVersion = (before.meta.version ?? 1) + 1;
+    const refined = VALID.replace("version: 2", `version: ${newVersion}`);
+    const result = store.writeSkill("research", "cross-check-figures", refined);
+    expect(result.ok).toBe(true);
+    const after = store.readSkill("research", "cross-check-figures")!;
+    expect(after.meta.version).toBe(3);
+    expect(bumped).toContain("Compare each figure");
+  });
+
+  it("readSkill returns null for an absent or malformed skill", () => {
+    const root = tempRoot();
+    const store = new SkillStore({ root });
+    expect(store.readSkill("research", "nope")).toBeNull();
+    writeSkill(root, "research", "bad.md", "no frontmatter");
+    expect(store.readSkill("research", "bad")).toBeNull();
   });
 });
 

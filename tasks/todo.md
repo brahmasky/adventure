@@ -38,7 +38,51 @@ is an available stronger demo now that `HOUGE_CODEX_TIMEOUT_MS=300000` (5 min) i
 (code self-write, gated) would let Houge actually FIX this bug himself.
 
 ---
-# Goal — Phase 2a: skills as loadable artifacts (IN PROGRESS 2026-06-21) — ADR 0011 §1/§2
+# Goal — Phase 2b: skill authoring (on-command) + Gate A + reporting (IN PROGRESS 2026-06-22) — ADR 0011 §2/§4
+
+Spec: `docs/superpowers/specs/2026-06-21-phase2-skills.md`. `/goal` active. Build via subagents.
+2b = Houge AUTHORS skills on-command on the **cheap pi→kimi chain** (NO Codex/worktree — prose). Gate A
+routes skill/lesson/code; every attempt reports. NO Gate B / NO auto-author (those are 2c); anchors authored now.
+**Constraints: zero deps; skills are prose-only; skill-author contract writes ONLY to `skills/`.**
+
+## Build — staged (each green), via subagents — S1–S8 DONE
+- [x] S1. `SkillStore.writeSkill(scope,name,body)` (slug-sanitized, HARD containment: real-path-after-mkdir
+      re-check rejects escapes/symlinks) + `readSkill` (refine, version++) + tests.
+- [x] S2. `SKILL_AUTHOR_DISCIPLINE` + `DISCIPLINES["skill-author"]` (composer.ts) — purely additive; other
+      surfaces byte-identical (goldens unchanged).
+- [x] S3. `skill` intent: `Intent` union + `INTENT_DISCIPLINE` examples + tolerant parse (doesn't cannibalize
+      selfcode/feedback) + tests.
+- [x] S4. `src/capabilities/skill-author.ts` — `buildSkillAuthorQuestion`(+refine) + `parseAuthoredSkill`
+      (validates via `parseSkillFile`, structured failure, never throws).
+- [x] S5. `src/capabilities/skill-router.ts` — Gate A `GATE_A_DISCIPLINE` (4 criteria) + tolerant
+      `parseGateAVerdict` (default safe `unsure`).
+- [x] S6. `distill` `looksLikeSkillProcedure` — FLAG-only promotion hint in the feedback report (conservative;
+      bare tweaks don't trip it).
+- [x] S7. `runSkill` route (Gate A → skill authors+writes w/ 1 retry / refine version++ · tweak→lesson ·
+      code→flag · unsure→lesson+ask) + gate-stack report + `compileSkillAuthorContract` (allowed `llm_answer`
+      +`write_report`; `coding_agent_cli`/shell/writes forbidden) + dispatch + tests. + safeLessonScope slug fix.
+- [x] S8. Gates: **typecheck clean · npm test 403/403 · build OK · deps {}** · independent verification PASS
+      (8/8 invariants, no real bugs; containment defeated all escape attempts; one nit fixed: down-route scope slug).
+- [~] S9. LIVE gate. Harness PASS (`scripts/live-skills-2b.mjs`). **REAL Telegram Leg 1 PASSED** (06-22 01:51:46:
+      "写一个…稀缺AI产业链…三只美股的技能" → intent=skill, Gate A 4/4, authored valid skill w/ 4 anchors, 🐒 report).
+      **Live test surfaced 2 real issues → FIXED (404 tests, daemon reloaded PID 4137):**
+      (1) classifier conflated "研究X"(do research) with "make a skill for X" when topic matched a just-authored
+          skill → Leg 2 misclassified skill→refine. Fix: `INTENT_DISCIPLINE` — performing a task (research/
+          analyze/find) is research/answer, NOT skill, even if a skill on the topic exists; only explicit
+          create/write/improve a PROCEDURE is skill.
+      (2) refine didn't bump version (LLM re-emitted v1). Fix: mechanical bump (`withFrontmatterVersion`, old+1)
+          + regression test (v1→v2). 404 tests, daemon reloaded PID 4137.
+- [x] S9. **LIVE gate CLOSED over REAL Telegram** (fixed daemon, real pi→kimi). 3 behaviors all verified:
+      (1) `02:11:56` "write a skill for cross-checking figures" → intent=skill, Gate A 4/4, authored VALID
+          `cross-check-figures-across-sources.md` (4 anchors, v1), 🐒 report;
+      (2) `02:16:45` "research EV battery energy densities, compare across sources" → intent=**research**
+          (classifier fix confirmed — pre-fix this misclassified as skill), cross-check skill folded in
+          AMBIENTLY (answer carries per-source caveats + cross-validation);
+      (3) `02:18:53` "write a skill that just means keep answers more concise" → Gate A=**LESSON** ("style
+          preference, not a procedure") → saved to `ask`, NO skill file. `/skills` viewer proven in harness+tests.
+
+---
+# Goal — Phase 2a: skills as loadable artifacts (DONE 2026-06-21) — ADR 0011 §1/§2
 
 Spec: `docs/superpowers/specs/2026-06-21-phase2-skills.md`. `/goal` active. Build via subagents.
 2a = LOAD/APPLY/VIEW hand-authored skills only (NO authoring/Codex/gates — those are 2b/2c).
@@ -189,6 +233,13 @@ scoped** (`ask`: don't say 师父; `research`: verify date) → checks 1–4,6 +
       `litestream`-style continuous replica to local/remote storage. Must NOT leak secrets and must stay
       consistent (SQLite `.backup`/WAL-safe snapshot, not a raw `cp` mid-write). Consider retention + a tested
       restore path. (Low effort, high value — protects everything Houge has learned.)
+- [ ] **Skill dedup / name normalization** (surfaced 2026-06-22 in 2b live test) — authoring the SAME
+      conceptual skill twice with slightly different wording yields TWO files because the cheap writer derives
+      a different kebab `name` each time (`fact-check-viral-claim` vs `viral-claim-fact-check`); the refine path
+      only triggers on exact name match. Result: semantically-duplicate skills accumulate in a scope (noisy,
+      eats the ≤4 cap). Fix options: a pre-write semantic-dedup check (does an existing skill cover this
+      `when:`? → refine instead of create), or canonical-name normalization. Natural fit alongside 2c's
+      Gate B / consolidation pass. Not a safety issue (containment holds); a quality/precision nit.
 - [ ] **Scheduler / proactive triggers** (surfaced 2026-06-22; ADR 0011's "deferred idle loop") — Houge is
       purely REACTIVE today (every run starts from an inbound Telegram trigger). A scheduler is an orthogonal
       AUTONOMY axis (the *when Houge acts on his own*, distinct from the lessons/skills/code *what he knows*).

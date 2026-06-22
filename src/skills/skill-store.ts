@@ -1,5 +1,5 @@
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 /**
  * The skill store (Phase 2a — ADR 0011 §1/§2): reusable *procedures* for a class of task
@@ -157,6 +157,64 @@ export class SkillStore {
     this.writeSafe(join(this.root, "REGISTRY.md"), `${header}\n${body}\n`);
   }
 
+  /**
+   * Write a skill file under `<root>/<scope>/<name>.md` (Phase 2b authoring). The `name`
+   * is sanitized to a filename-safe slug ([a-z0-9_-]); `scope` likewise. HARD containment:
+   * the resolved real path MUST stay inside `<root>` — a name/scope that escapes (`..`,
+   * absolute, symlink) is REJECTED, never written. Regenerates REGISTRY.md on success.
+   * Skills are low-risk prose, so this is a direct write (report-not-approve), bounded to
+   * `skills/`. Defensive: any fs error → a structured failure, never a throw.
+   */
+  writeSkill(scope: string, name: string, body: string): { ok: true; path: string } | { ok: false; error: string } {
+    const safeScope = sanitizeSlug(scope);
+    const safeName = sanitizeSlug(name);
+    if (!safeScope || !safeName) {
+      return { ok: false, error: "scope and name must contain at least one [a-z0-9_-] character" };
+    }
+    const rootReal = this.realRoot();
+    const dir = join(rootReal, safeScope);
+    const path = join(dir, `${safeName}.md`);
+    // Containment: the resolved target must live under the real skills root.
+    if (!isInside(rootReal, resolve(path))) {
+      return { ok: false, error: "refusing to write a skill outside the skills root" };
+    }
+    try {
+      mkdirSync(dir, { recursive: true });
+      // Re-check after mkdir in case a symlink in the scope dir redirects elsewhere. Compare
+      // real path to real path (both now exist) so a symlinked tmp root is not a false escape.
+      const realRootNow = realRootOf(rootReal, rootReal);
+      if (!isInside(realRootNow, realRootOf(dir, dir))) {
+        return { ok: false, error: "refusing to write a skill outside the skills root" };
+      }
+      writeFileSync(path, body, "utf8");
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+    this.regenerateRegistry();
+    return { ok: true, path };
+  }
+
+  /** Read a named skill (for the refine path): parse → {meta, body}, or null if absent/malformed. */
+  readSkill(scope: string, name: string): { meta: SkillMeta; body: string } | null {
+    const safeScope = sanitizeSlug(scope);
+    const safeName = sanitizeSlug(name);
+    if (!safeScope || !safeName) return null;
+    const text = this.readSafe(join(this.root, safeScope, `${safeName}.md`));
+    if (text === undefined) return null;
+    const parsed = parseSkillFile(text);
+    if (!parsed) return null;
+    return { meta: { ...parsed.meta, scope: safeScope, chars: parsed.body.length }, body: parsed.body };
+  }
+
+  /** Resolve the real skills root (following symlinks); fall back to the configured root if it does not exist yet. */
+  private realRoot(): string {
+    try {
+      return realpathSync(this.root);
+    } catch {
+      return resolve(this.root);
+    }
+  }
+
   /** Parse every file in a scope dir, sorted alphabetically, skipping malformed/null. */
   private readScopeFiles(scope: string): ParsedSkill[] {
     const dir = join(this.root, scope);
@@ -206,5 +264,25 @@ export class SkillStore {
     } catch {
       // A failed registry write must never break a turn or a /skills view.
     }
+  }
+}
+
+/** Sanitize a scope/name to a filename-safe slug: lowercase, [a-z0-9_-] only, no path parts. */
+function sanitizeSlug(raw: string): string {
+  return raw.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+/** Whether `target` (an absolute path) is the root itself or nested inside it. */
+function isInside(root: string, target: string): boolean {
+  const r = resolve(root);
+  return target === r || target.startsWith(`${r}/`);
+}
+
+/** Resolve a dir's real path (symlinks followed); fall back to `fallback` if it cannot resolve. */
+function realRootOf(dir: string, fallback: string): string {
+  try {
+    return realpathSync(dir);
+  } catch {
+    return fallback;
   }
 }

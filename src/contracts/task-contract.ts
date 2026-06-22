@@ -99,6 +99,28 @@ export function compileSelfDiagnoseContract(objective: string): CompiledTaskCont
   return { ...base, contract_hash: stableHash(base) };
 }
 
+/**
+ * The `skill-author` contract (ADR 0011, Phase 2b). Derived in-route from a `turn` whose
+ * intent classified as `skill`: it allows `llm_answer` (Gate A classify + the writer pass)
+ * + `write_report`. The skill file write itself is a DIRECT `SkillStore.writeSkill` bounded
+ * to the `skills/` root (low-risk prose, report-not-approve) — NOT a gated capability — so
+ * no write capability is opened here. `coding_agent_cli` stays FORBIDDEN: skills are prose,
+ * never code. Small budget (a few cheap-chain calls); short time ceiling.
+ */
+export function compileSkillAuthorContract(objective: string): CompiledTaskContract {
+  const base = {
+    objective,
+    budget: { time_minutes: 10, max_tool_calls: 3, max_agent_delegations: 0 },
+    allowed_actions: ["llm_answer", "write_report"],
+    forbidden_actions: ["coding_agent_cli", "generic_shell", "external_write", "destructive", "paid_action"],
+    output: { path: "runs/<run-id>/report.md", format: "sourced_markdown_report" as const },
+    approval_gates: ["local_write", "external_write", "destructive", "paid"] as SideEffectLevel[],
+    stop_condition: "skill authored + written (or down-routed), or budget exhausted",
+    eval_hooks: []
+  };
+  return { ...base, contract_hash: stableHash(base) };
+}
+
 function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
   if (!event.goal?.trim()) {
     return invalid("Message is required");

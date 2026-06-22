@@ -1,11 +1,12 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CoreWorker } from "../../src/core/core-worker.js";
 import { INTENT_DISCIPLINE } from "../../src/capabilities/intent.js";
 import { DISTILL_DISCIPLINE } from "../../src/capabilities/distill.js";
-import { ASK_DISCIPLINE, RESEARCH_DISCIPLINE, SELFCODE_DISCIPLINE } from "../../src/prompt/composer.js";
+import { GATE_A_DISCIPLINE } from "../../src/capabilities/skill-router.js";
+import { ASK_DISCIPLINE, RESEARCH_DISCIPLINE, SELFCODE_DISCIPLINE, SKILL_AUTHOR_DISCIPLINE } from "../../src/prompt/composer.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -477,6 +478,165 @@ describe("executeTurn (natural-language front door)", () => {
     } finally {
       if (prev === undefined) delete process.env.HOUGE_CODEX_ENABLED;
       else process.env.HOUGE_CODEX_ENABLED = prev;
+      store.close();
+    }
+  });
+
+  it("skill (Gate A=skill): authors a valid skill, writes it under skills/, reports the gate stack", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const calls: Record<string, unknown>[] = [];
+    const AUTHORED = [
+      "---",
+      "name: cross-check-figures",
+      "scope: research",
+      "when: comparing numbers across multiple sources",
+      "anchors:",
+      "  - a part never exceeds its whole",
+      "version: 1",
+      "origin: commanded",
+      "---",
+      "",
+      "1. List each figure and its source.",
+      "2. Verify each against its source."
+    ].join("\n");
+    try {
+      const run_id = turnRun(store, "write a skill for cross-checking figures in research");
+      const llm = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
+        calls.push(input);
+        const system = typeof input.system === "string" ? input.system : "";
+        let answer = `ANSWER: ${input.question}`;
+        if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"skill","query":"cross-check figures"}';
+        else if (system.includes(GATE_A_DISCIPLINE)) answer = '{"verdict":"skill","reason":"recurring method"}';
+        else if (system.includes(SKILL_AUTHOR_DISCIPLINE)) answer = AUTHORED;
+        return { ok: true, output: { question: input.question, answer, model: "f", provider: "f" } };
+      };
+      const result = await new CoreWorker(store, root, llm).executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+
+      // The skill file was written under skills/research/ and the registry regenerated.
+      const written = readFileSync(join(root, "skills", "research", "cross-check-figures.md"), "utf8");
+      expect(written).toContain("name: cross-check-figures");
+      expect(readFileSync(join(root, "skills", "REGISTRY.md"), "utf8")).toContain("cross-check-figures");
+
+      // The report is the gate-stack report.
+      const turns = store.getRecentChatTurns("555", 6);
+      expect(turns[turns.length - 1]!.intent).toBe("skill");
+      expect(turns[turns.length - 1]!.text).toContain("Gate A qualify: ✓");
+      expect(turns[turns.length - 1]!.text).toContain("Wrote skills/research/cross-check-figures.md");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("skill refine: bumps the version MECHANICALLY (v1→v2) even when the writer re-emits version:1", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    // The fake writer always emits `version: 1` — the mechanical bump must still advance it.
+    const AUTHORED = [
+      "---", "name: cross-check-figures", "scope: research",
+      "when: comparing numbers across multiple sources",
+      "anchors:", "  - a part never exceeds its whole",
+      "version: 1", "origin: commanded", "---", "", "1. Verify each figure against its source."
+    ].join("\n");
+    const llm = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
+      const system = typeof input.system === "string" ? input.system : "";
+      let answer = `ANSWER: ${input.question}`;
+      if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"skill","query":"cross-check"}';
+      else if (system.includes(GATE_A_DISCIPLINE)) answer = '{"verdict":"skill","reason":"recurring method"}';
+      else if (system.includes(SKILL_AUTHOR_DISCIPLINE)) answer = AUTHORED;
+      return { ok: true, output: { question: input.question, answer, model: "f", provider: "f" } };
+    };
+    try {
+      // First authoring → new skill at v1.
+      await new CoreWorker(store, root, llm).executeRun(turnRun(store, "write a cross-check skill"), "w");
+      const path = join(root, "skills", "research", "cross-check-figures.md");
+      expect(readFileSync(path, "utf8")).toContain("version: 1");
+
+      // Second authoring of the same skill → refine → v2 (mechanical, not the writer's v1).
+      await new CoreWorker(store, root, llm).executeRun(turnRun(store, "improve the cross-check skill"), "w");
+      expect(readFileSync(path, "utf8")).toContain("version: 2");
+      const turns = store.getRecentChatTurns("555", 6);
+      expect(turns[turns.length - 1]!.text).toContain("Refined");
+      expect(turns[turns.length - 1]!.text).toContain("v1→v2");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("skill (Gate A=lesson): saves a lesson, reports the down-route, writes NO skill file", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    try {
+      const run_id = turnRun(store, "make a skill to always be concise");
+      const llm = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
+        const system = typeof input.system === "string" ? input.system : "";
+        let answer = `ANSWER: ${input.question}`;
+        if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"skill"}';
+        else if (system.includes(GATE_A_DISCIPLINE)) answer = '{"verdict":"lesson","scope":"ask","lesson":"be more concise","reason":"a tweak"}';
+        return { ok: true, output: { question: input.question, answer, model: "f", provider: "f" } };
+      };
+      const result = await new CoreWorker(store, root, llm).executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+
+      // The lesson was saved; no skill file exists.
+      expect(store.readLessonBlock("ask")).toContain("be more concise");
+      expect(existsSync(join(root, "skills", "ask"))).toBe(false);
+
+      const turns = store.getRecentChatTurns("555", 6);
+      expect(turns[turns.length - 1]!.text).toContain("→ LESSON");
+      expect(turns[turns.length - 1]!.text).toContain('Saved a LESSON (ask): "be more concise"');
+    } finally {
+      store.close();
+    }
+  });
+
+  it("skill (Gate A=code): reports a code-capability flag, no skill, no lesson", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    try {
+      const run_id = turnRun(store, "write a skill that calls the GitHub API");
+      const llm = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
+        const system = typeof input.system === "string" ? input.system : "";
+        let answer = `ANSWER: ${input.question}`;
+        if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"skill"}';
+        else if (system.includes(GATE_A_DISCIPLINE)) answer = '{"verdict":"code","reason":"needs an API"}';
+        return { ok: true, output: { question: input.question, answer, model: "f", provider: "f" } };
+      };
+      const result = await new CoreWorker(store, root, llm).executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      const turns = store.getRecentChatTurns("555", 6);
+      expect(turns[turns.length - 1]!.text).toContain("CODE");
+      expect(store.readLessonBlock("ask")).toBeUndefined();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("skill: a malformed author output retries once then fails cleanly (no garbage written)", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    let authorCalls = 0;
+    try {
+      const run_id = turnRun(store, "write a skill for verifying dates");
+      const llm = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
+        const system = typeof input.system === "string" ? input.system : "";
+        let answer = `ANSWER: ${input.question}`;
+        if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"skill"}';
+        else if (system.includes(GATE_A_DISCIPLINE)) answer = '{"verdict":"skill","reason":"ok"}';
+        else if (system.includes(SKILL_AUTHOR_DISCIPLINE)) {
+          authorCalls += 1;
+          answer = "sorry, I can't write that"; // never a valid skill file
+        }
+        return { ok: true, output: { question: input.question, answer, model: "f", provider: "f" } };
+      };
+      const result = await new CoreWorker(store, root, llm).executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      expect(authorCalls).toBe(2); // one attempt + one retry
+      expect(existsSync(join(root, "skills", "research"))).toBe(false); // nothing written
+      const turns = store.getRecentChatTurns("555", 6);
+      expect(turns[turns.length - 1]!.text).toContain("did not produce a valid skill file");
+    } finally {
       store.close();
     }
   });

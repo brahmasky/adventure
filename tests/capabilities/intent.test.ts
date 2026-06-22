@@ -54,6 +54,14 @@ describe("parseIntent", () => {
     });
   });
 
+  it("classifies skill (ADR 0011 Phase 2b) and keeps its query", () => {
+    expect(parseIntent('{"intent":"skill"}')).toEqual({ intent: "skill" });
+    expect(parseIntent('{"intent":"skill","query":"cross-check figures"}')).toEqual({
+      intent: "skill",
+      query: "cross-check figures"
+    });
+  });
+
   it("defaults to answer on junk, missing JSON, or unknown intent (tolerant)", () => {
     expect(parseIntent("no json here at all")).toEqual({ intent: "answer" });
     expect(parseIntent("{not valid json}")).toEqual({ intent: "answer" });
@@ -72,6 +80,12 @@ describe("INTENT_DISCIPLINE (selfcode routing, ADR 0011)", () => {
     expect(INTENT_DISCIPLINE).toContain('"selfcode"');
     expect(INTENT_DISCIPLINE.toLowerCase()).toContain("own source code");
     expect(INTENT_DISCIPLINE).toContain("intent classifier");
+  });
+
+  it("lists skill in the JSON schema and gives skill-authoring examples (Phase 2b)", () => {
+    expect(INTENT_DISCIPLINE).toContain('"skill"');
+    expect(INTENT_DISCIPLINE.toLowerCase()).toContain("write a skill");
+    expect(INTENT_DISCIPLINE.toLowerCase()).toContain("refine a reusable");
   });
 });
 

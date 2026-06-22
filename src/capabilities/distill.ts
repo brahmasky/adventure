@@ -82,6 +82,30 @@ export function parseDistillResult(text: string): DistillResult {
 }
 
 /**
+ * Phase 2b — the distill→skill promotion FLAG (flag only; no authoring, no Gate A run, no
+ * auto-promote). When a distilled, durable lesson reads like a RECURRING PROCEDURE (a method
+ * for a class of task) rather than a plain preference tweak, surface a "this looks like a
+ * skill — want me to write it?" hint in the report. Heuristic + cheap by design: a procedure
+ * names a multi-step method or a class of task ("when comparing…, first…, then…"), whereas a
+ * preference is a short style/format tweak ("be concise", "prefer primary sources").
+ *
+ * Conservative: only flags lessons that BOTH look procedural AND are not a bare style tweak,
+ * so an ordinary preference never trips it.
+ */
+const STYLE_TWEAK_RE =
+  /\b(concise|shorter|longer|brief|terse|verbose|tone|format|formatting|bullet|prefer|style|polite|friendly)\b/i;
+const PROCEDURE_RE =
+  /\b(first|then|next|step|steps|when (comparing|checking|verifying|analy|researching)|cross[- ]?check|verify|process|procedure|method|always (check|verify|cross))\b/i;
+
+export function looksLikeSkillProcedure(lesson: string): boolean {
+  const text = lesson.trim();
+  if (text.length === 0) return false;
+  // A bare style/format tweak is a preference, not a procedure.
+  if (STYLE_TWEAK_RE.test(text) && !PROCEDURE_RE.test(text)) return false;
+  return PROCEDURE_RE.test(text);
+}
+
+/**
  * Per-lesson length cap. A genuine preference rule ("be more concise", "prefer
  * primary sources") is short; a long "lesson" smells like content lifted from the
  * (untrusted) prior answer rather than a rule the user actually stated.

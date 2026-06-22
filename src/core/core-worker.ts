@@ -5,7 +5,10 @@ import { CapabilityRunner } from "../capabilities/capability-runner.js";
 import type { ApprovalRequestSink, CapabilityResult } from "../capabilities/capability-runner.js";
 import { createLocalFileReadAdapter } from "../capabilities/local-file-read.js";
 import { createCodingAgentAdapter, resolveCodexEnabled, resolveCodexTimeoutMs } from "../capabilities/coding-agent.js";
-import { compileSelfDiagnoseContract } from "../contracts/task-contract.js";
+import { compileSelfDiagnoseContract, compileSkillAuthorContract } from "../contracts/task-contract.js";
+import { buildGateAQuestion, GATE_A_DISCIPLINE, parseGateAVerdict } from "../capabilities/skill-router.js";
+import type { GateAResult } from "../capabilities/skill-router.js";
+import { buildSkillAuthorQuestion, parseAuthoredSkill } from "../capabilities/skill-author.js";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
 import { buildCritiqueQuestion, buildResearchQuestion, createWebSearchAdapter } from "../capabilities/web-search.js";
 import {
@@ -20,8 +23,8 @@ import {
   resolveMaxConsecutiveClarify
 } from "../capabilities/intent.js";
 import type { IntentClassification, Intent } from "../capabilities/intent.js";
-import { buildDistillQuestion, DISTILL_DISCIPLINE, parseDistillResult, shouldRejectLesson } from "../capabilities/distill.js";
-import { composeSystemPrompt, intentToScope, memoryRootFor } from "../prompt/composer.js";
+import { buildDistillQuestion, DISTILL_DISCIPLINE, looksLikeSkillProcedure, parseDistillResult, shouldRejectLesson } from "../capabilities/distill.js";
+import { composeSystemPrompt, intentToScope, memoryRootFor, SKILL_AUTHOR_DISCIPLINE } from "../prompt/composer.js";
 import { resolveSkillMaxPerScope, resolveSkillsEnabled, SkillStore } from "../skills/skill-store.js";
 import { resolveWebMaxResults } from "../web/registry.js";
 import type { WebResult } from "../web/types.js";
@@ -700,6 +703,8 @@ export class CoreWorker {
     const scope = intentToScope(target.intent);
     const priorAnswer = target.text;
     const now = new Date().toISOString();
+    // Phase 2b promotion FLAG: set when the saved lesson reads like a recurring procedure.
+    let skillFlag: string | undefined;
 
     // 1) Distill — does the feedback generalize into a durable preference? The user's
     //    feedback is the instruction; the prior answer is reference ONLY (ADR 0006/0010).
@@ -721,6 +726,11 @@ export class CoreWorker {
           const rewrite = await this.runLlm(claim, buildRewriteQuestion(text), REWRITE_DISCIPLINE, budget);
           return rewrite.ok ? rewrite.answer : text;
         });
+        // FLAG ONLY (Phase 2b): a procedure-shaped lesson hints at a skill — surface it in
+        // the report so Paco can ask Houge to author one. No authoring, no Gate A, no promote.
+        if (looksLikeSkillProcedure(verdict.lesson)) {
+          skillFlag = `💡 This looks like a recurring procedure — reply "write a skill for this" to promote it (saved as a lesson for now).`;
+        }
       }
     }
 
@@ -728,7 +738,165 @@ export class CoreWorker {
     //    lesson block applied (system composed AFTER the save). Prior answer + feedback
     //    ride the DATA channel.
     const context = buildFeedbackContext(priorAnswer, turnChars);
-    return this.runAnswer(claim, feedbackText, context, budget, scope);
+    const answered = await this.runAnswer(claim, feedbackText, context, budget, scope);
+    if (answered.ok && skillFlag) {
+      answered.report = {
+        ...answered.report,
+        body: `${answered.report.body}\n\n${skillFlag}`,
+        notifyText: `${answered.report.notifyText}\n\n${skillFlag}`
+      };
+    }
+    return answered;
+  }
+
+  /**
+   * The `skill` branch (ADR 0011, Phase 2b — on-command authoring). Skills are PROSE, so this
+   * runs on the cheap pi→kimi chain (NO Codex, NO worktree): Gate A routes the request
+   * (skill/lesson/code/unsure); a "skill" verdict authors the markdown under
+   * SKILL_AUTHOR_DISCIPLINE, validates it via parseSkillFile, and writes it directly to the
+   * `skills/` root (low-risk, report-not-approve). Down-routes (lesson/code/unsure) save a
+   * lesson and/or report a flag — nothing learned is wasted. DEFENSIVE: a malformed author
+   * output retries once then fails cleanly; never throws, never writes garbage. Returns the
+   * gate-stack report (Origin · Gate A · write outcome · Gate B deferred · down-route · /skills).
+   */
+  private async runSkill(
+    claim: ClaimedRun,
+    message: string,
+    recentTurns: ChatTurnRow[],
+    budget: BudgetLedger,
+    turnChars: number
+  ): Promise<HelperResult> {
+    const contract = compileSkillAuthorContract(claim.contract.objective);
+    const skillClaim: ClaimedRun = { run_id: claim.run_id, contract };
+    const now = new Date().toISOString();
+
+    // 1) Gate A — is this even a skill? (the §2 routing rubric).
+    const gateRaw = await this.runLlm(skillClaim, buildGateAQuestion(message, recentTurns, turnChars), GATE_A_DISCIPLINE, budget);
+    const verdict: GateAResult = gateRaw.ok
+      ? parseGateAVerdict(gateRaw.answer)
+      : { verdict: "unsure", reason: "Gate A classification call failed" };
+
+    // 2) Branch on the verdict.
+    if (verdict.verdict === "skill") {
+      return this.authorAndWriteSkill(skillClaim, message, budget, verdict);
+    }
+    if (verdict.verdict === "lesson") {
+      return this.downRouteLesson(skillClaim, verdict, now, budget);
+    }
+    if (verdict.verdict === "code") {
+      return this.skillReport("flagged a CODE capability (not built — backlog)", [
+        "Origin: you asked",
+        `Gate A qualify: → CODE (${verdict.reason})`,
+        "Gate B anchors: (deferred to 2c)",
+        "→ Not authored: this needs a new capability/tool, which is the code layer (Phase 3), not a skill."
+      ]);
+    }
+    // unsure / fuzzy → save a lesson if one was offered, and ASK whether to promote.
+    return this.downRouteUnsure(skillClaim, verdict, now, budget);
+  }
+
+  /** Gate A = skill: author on the cheap chain (1 retry), write to skills/, report. */
+  private async authorAndWriteSkill(
+    claim: ClaimedRun,
+    message: string,
+    budget: BudgetLedger,
+    verdict: GateAResult
+  ): Promise<HelperResult> {
+    // 1) Author — one attempt + one retry on malformed output (defensive; never throws).
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const authored = await this.runLlm(claim, buildSkillAuthorQuestion(message), SKILL_AUTHOR_DISCIPLINE, budget);
+      if (!authored.ok) break; // capability failure (e.g. budget) → fall through to clean failure
+      const parsed = parseAuthoredSkill(authored.answer);
+      if (!parsed.ok) continue; // retry once
+
+      // 2) Refine if a skill with this name already exists in the scope. Bump the version
+      // MECHANICALLY (old+1) rather than trusting the cheap writer to increment it.
+      const existing = this.skillStore.readSkill(parsed.skill.scope, parsed.skill.name);
+      const action = existing ? "Refined" : "Wrote";
+      const newVersion = existing
+        ? (existing.meta.version ?? 1) + 1
+        : (parsed.skill.meta.version ?? 1);
+      const fileToWrite = withFrontmatterVersion(parsed.skill.file, newVersion);
+      const write = this.skillStore.writeSkill(parsed.skill.scope, parsed.skill.name, fileToWrite);
+      if (!write.ok) {
+        return this.skillReport("could not write the authored skill", [
+          "Origin: you asked",
+          `Gate A qualify: ✓ skill (${verdict.reason})`,
+          `→ Write failed: ${write.error}`
+        ]);
+      }
+      const versionLine = existing ? ` (v${existing.meta.version ?? 1}→v${newVersion})` : ` (v${newVersion})`;
+      return this.skillReport(`${action.toLowerCase()} skill "${parsed.skill.name}" (${parsed.skill.scope})`, [
+        "Origin: you asked",
+        `Gate A qualify: ✓ all 4 held (${verdict.reason})`,
+        "Gate B anchors: (deferred to 2c)",
+        `→ ${action} skills/${parsed.skill.scope}/${parsed.skill.name}.md${versionLine} ` +
+          `(${parsed.skill.meta.anchors.length} anchors authored). /skills to view, reply to refine.`
+      ]);
+    }
+    // Both attempts failed to produce a valid skill — clean failure, no garbage written.
+    return this.skillReport("couldn't author a valid skill", [
+      "Origin: you asked",
+      `Gate A qualify: ✓ skill (${verdict.reason})`,
+      "→ The writer did not produce a valid skill file after a retry. Nothing was written."
+    ]);
+  }
+
+  /** Gate A = lesson: save the down-route lesson, report it (no skill file). */
+  private async downRouteLesson(claim: ClaimedRun, verdict: GateAResult, now: string, budget: BudgetLedger): Promise<HelperResult> {
+    const scope = this.safeLessonScope(verdict.scope);
+    const lesson = verdict.lesson?.trim();
+    if (lesson) {
+      await this.runStore.appendLessonToBlock(scope, lesson, now, async (text) => {
+        const rewrite = await this.runLlm(claim, buildRewriteQuestion(text), REWRITE_DISCIPLINE, budget);
+        return rewrite.ok ? rewrite.answer : text;
+      });
+    }
+    return this.skillReport("down-routed to a LESSON (a tweak, not a procedure)", [
+      "Origin: you asked",
+      `Gate A qualify: → LESSON (${verdict.reason})`,
+      "Gate B anchors: (deferred to 2c)",
+      lesson ? `→ Saved a LESSON (${scope}): "${lesson}". /lessons to view.` : "→ No durable lesson to save."
+    ]);
+  }
+
+  /** Gate A = unsure: save the offered lesson now and ASK whether to promote. */
+  private async downRouteUnsure(claim: ClaimedRun, verdict: GateAResult, now: string, budget: BudgetLedger): Promise<HelperResult> {
+    const scope = this.safeLessonScope(verdict.scope);
+    const lesson = verdict.lesson?.trim();
+    if (lesson) {
+      await this.runStore.appendLessonToBlock(scope, lesson, now, async (text) => {
+        const rewrite = await this.runLlm(claim, buildRewriteQuestion(text), REWRITE_DISCIPLINE, budget);
+        return rewrite.ok ? rewrite.answer : text;
+      });
+    }
+    return this.skillReport("unsure — saved a lesson and asking whether to promote", [
+      "Origin: you asked",
+      `Gate A qualify: ? unsure between a lesson and a skill (${verdict.reason})`,
+      "Gate B anchors: (deferred to 2c)",
+      lesson ? `→ Saved a LESSON (${scope}) for now: "${lesson}".` : "→ Nothing durable to save yet.",
+      '→ Want me to promote this to a skill? Reply "yes, write a skill for it" and I will.'
+    ]);
+  }
+
+  /**
+   * Normalize a down-routed lesson scope to a filename-safe slug (symmetry with skill scopes),
+   * defaulting to "ask" if the Gate A verdict's scope is absent or sanitizes empty. The scope is
+   * the LLM's own output, not raw user data, but slugging keeps the lesson-block key well-formed.
+   */
+  private safeLessonScope(raw: string | undefined): string {
+    const slug = (raw ?? "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+    return slug.length > 0 ? slug : "ask";
+  }
+
+  /** Assemble the gate-stack report for a skill attempt (the 🐒 banner + outcome lines). */
+  private skillReport(notify: string, lines: string[]): HelperResult {
+    const body = ["🐒 Skill attempt", "", ...lines].join("\n");
+    return {
+      ok: true,
+      answer: body,
+      report: { title: "Skill attempt", body, sources: ["intent:skill"], notifyText: `🐒 Skill attempt: ${notify}\n\n${lines.join("\n")}` }
+    };
   }
 
   /**
@@ -863,6 +1031,8 @@ export class CoreWorker {
     } else if (intent === "selfcode") {
       const focus = classification.classification.query?.trim() || message;
       dispatched = await this.runSelfDiagnose(claim, message, focus, recentTurns, budget, turnChars);
+    } else if (intent === "skill") {
+      dispatched = await this.runSkill(claim, message, recentTurns, budget, turnChars);
     } else if (intent === "feedback") {
       const fed = await this.runFeedback(claim, message, chat_id, recentTurns, budget, turnChars);
       if (fed) {
@@ -1159,9 +1329,24 @@ function buildRewriteQuestion(block: string): string {
   return ["Consolidate these learned preferences into a shorter, deduplicated bullet list:", "", block].join("\n");
 }
 
+/**
+ * Set the `version:` field in a skill file's frontmatter to `version` (mechanical refine
+ * bump — we don't trust the cheap writer to increment). Operates only on the leading
+ * frontmatter block; replaces an existing version line or injects one before the closing
+ * fence. Returns the file unchanged if no frontmatter fence is found.
+ */
+function withFrontmatterVersion(file: string, version: number): string {
+  const m = /^(---\n[\s\S]*?\n)(---\n[\s\S]*)$/.exec(file.replace(/\r\n/g, "\n"));
+  if (!m) return file;
+  const frontmatter = /^version:.*$/m.test(m[1]!)
+    ? m[1]!.replace(/^version:.*$/m, `version: ${version}`)
+    : m[1]!.replace(/\n$/, `\nversion: ${version}\n`);
+  return frontmatter + m[2]!;
+}
+
 /** Coerce a stored chat-turn intent into a known Intent (default answer). */
 function normalizeIntent(intent: string | null): Intent {
-  return intent === "research" || intent === "feedback" || intent === "clarify" || intent === "selfcode"
+  return intent === "research" || intent === "feedback" || intent === "clarify" || intent === "selfcode" || intent === "skill"
     ? intent
     : "answer";
 }

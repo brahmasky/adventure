@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
-import { compileSelfDiagnoseContract, compileTaskContract } from "../../src/contracts/task-contract.js";
+import { compileSelfDiagnoseContract, compileSkillAuthorContract, compileTaskContract } from "../../src/contracts/task-contract.js";
 
 const runEvent = buildTypedTaskEvent({
   source: "cli",
@@ -113,6 +113,17 @@ describe("compileTaskContract", () => {
       expect(turn.contract.allowed_actions).not.toContain("coding_agent_cli");
       expect(turn.contract.forbidden_actions).toContain("coding_agent_cli");
     }
+  });
+
+  it("the skill-author contract forbids coding_agent_cli — skills are prose (ADR 0011 Phase 2b)", () => {
+    const skill = compileSkillAuthorContract("write a skill for cross-checking figures");
+    expect(skill.allowed_actions).toEqual(["llm_answer", "write_report"]);
+    expect(skill.allowed_actions).not.toContain("coding_agent_cli");
+    expect(skill.forbidden_actions).toContain("coding_agent_cli");
+    expect(skill.forbidden_actions).toContain("external_write");
+    expect(skill.forbidden_actions).toContain("destructive");
+    expect(skill.budget.max_tool_calls).toBe(3);
+    expect(skill.contract_hash).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("compiles /ask into the built-in ask program contract", () => {
