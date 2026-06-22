@@ -286,6 +286,33 @@ make-or-break question before any production build.
   D4 autonomy decided, contracts/tests/live gate (like 2a/2b).
 - **NO-GO** → Gate B ships **advisory-only** (shows a score, never blocks), no auto-author; rethink.
 
+### Spike RESULT (run 2026-06-22 — `scripts/spike-gateb-2c.mjs`, real pi→kimi)
+
+**Verdict: GO — conditional on a 3-pass ensemble.** On a 10-skill set (5 sound + 5 deliberately
+broken: trust-first-result · vacuous · facts-as-procedure · unfalsifiable · popularity-wins):
+
+- **Single-pass** static-grade was **too noisy** — margin swung +0.17 / 0.00 / −0.17 across runs
+  (flipped GO↔NO-GO); good skills occasionally scored 0, a bad one occasionally leaked to 0.17. BUT the
+  *means* always separated (good ~0.40 vs bad ~0.02) → signal present, single-shot unreliable.
+- **3-pass averaged** static-grade **cleanly + stably separated** (two runs): good **0.28–0.89**, bad
+  **≤0.06** (≈0 on nearly every pass), **margin +0.22 / +0.28**. Threshold ~0.15 passes all good, rejects all bad.
+
+**Decisions this settles:**
+- **D1 → static-grade, procedure-level, INDEPENDENT criteria** (Gate B derives its own quality criteria
+  from world-knowledge, judges whether *following* the procedure ensures each). **No run-and-check
+  needed** (no web, no skill execution) — cheaper, and it discriminates once ensembled.
+- **Gate B = a 3-pass ensemble** (mean of 3 independent passes), pass-threshold ≈0.15 (calibrate in the
+  build). 3× cheap-chain calls — still cheap.
+- **D4 → auto-author may be GATED (blocking) on the 3-pass Gate B** + report (Paco's stated preference,
+  now data-backed): broken skills are rejected ≈100% of passes, so the gate reliably stops garbage.
+  Keep a conservative threshold; on fail → refine ≤3 → down-route to lesson.
+
+**Honesty caveats:** toy 10-skill set, web-less, single model (kimi), one author of the "bad" skills
+(me) — a real eval would broaden the set + run more trials. Good-skill *absolute* scores are modest
+(Gate B's criteria run strict/aspirational); the gate works on *separation*, not high absolute scores —
+so the build must set the threshold by the good/bad gap, not a fixed bar. Caught a measurement bug
+mid-spike (graded output-level assertions against procedure text → fixed to procedure-level criteria).
+
 ## Out of scope
 
 - Cross-surface skills (a skill bound to >1 intent) and a real LLM **selector** step — deferred until

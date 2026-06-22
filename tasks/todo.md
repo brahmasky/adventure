@@ -7,7 +7,12 @@
 - **Live skills present** (gitignored runtime): `skills/research/fact-check-viral-claim.md` + `cross-check-figures-across-sources.md` (both real, authored by Houge over Telegram in the 2b live test).
 - **猴哥 classifier bug: UNFIXED ON PURPOSE** — it's the live fixture (intent router prompt lacks identity; bypasses the composer). Phase 3 (gated self-write) is where Houge would fix it himself. Don't fix it ad-hoc.
 - **Done so far:** ADR 0010 (conversational front door) LIVE; ADR 0011 (self-evolution); **Phase 1 code self-diagnose DONE+LIVE**; **Phase 2a (load/apply skills) DONE+LIVE** (247b490); **Phase 2b (author skills) DONE+LIVE** (443bb19 — Houge authors his own skills on command, Gate A routes skill/lesson/code, over real Telegram).
-- **Next:** **Phase 2c** — Gate B anchor verifier + auto-author/refine. **Design LOCKED 2026-06-22** (spec "Phase 2c — design & spike"). **SPIKE FIRST** (throwaway measurement, NO /goal): does cheap walled-off Gate B separate ~5 good from ~5 broken skills? GO → /goal the real build; NO-GO → Gate B advisory-only. Then Phase 3 (gated code self-write).
+- **Next:** **Phase 2c** — Gate B + auto-author/refine. **SPIKE DONE 2026-06-22 → GO (conditional on a 3-pass
+  ensemble)** (`scripts/spike-gateb-2c.mjs`; result in spec "Spike RESULT"). Single-pass cheap Gate B too noisy
+  (margin swung +0.17/0.00/−0.17); **3-pass averaged static-grade cleanly+stably separates** good 0.28–0.89 vs
+  bad ≤0.06 (margin +0.22/+0.28), threshold ~0.15. Settles: D1=static-grade procedure-level independent criteria
+  (NO run-and-check/web needed); Gate B = 3-pass ensemble; D4 = auto-author may be BLOCKING-gated on it + report.
+  **Next: `/goal` the real 2c build.** Then Phase 3 (gated code self-write).
 - **Critical rules:** `/goal` is a REAL user-invoked stop-gate command (don't claim it doesn't exist); every `/goal` ends with a LIVE run (not just `npm test`); **freedom-over-control** — no 紧箍咒/cage framing, OK for Houge to fail, only core principles stay constant (ADR 0001/0011).
 
 ---
