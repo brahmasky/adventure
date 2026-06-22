@@ -97,6 +97,11 @@ describe("parseTelegramCommand", () => {
       ok: false,
       error: { code: "TELEGRAM_COMMAND_INVALID", message: "/skills requires at most one scope" }
     });
+    // `/skills pending` rides the scope slot (handled specially by the gateway).
+    expect(parseTelegramCommand("/skills pending")).toEqual({
+      ok: true,
+      command: { type: "skills", scope: "pending" }
+    });
   });
 
   it("no longer parses /teach — it becomes a turn", () => {

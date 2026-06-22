@@ -8,7 +8,15 @@ import { createCodingAgentAdapter, resolveCodexEnabled, resolveCodexTimeoutMs } 
 import { compileSelfDiagnoseContract, compileSkillAuthorContract } from "../contracts/task-contract.js";
 import { buildGateAQuestion, GATE_A_DISCIPLINE, parseGateAVerdict } from "../capabilities/skill-router.js";
 import type { GateAResult } from "../capabilities/skill-router.js";
-import { buildSkillAuthorQuestion, parseAuthoredSkill } from "../capabilities/skill-author.js";
+import { buildGuidedRefineQuestion, buildSkillAuthorQuestion, parseAuthoredSkill } from "../capabilities/skill-author.js";
+import type { AuthoredSkill } from "../capabilities/skill-author.js";
+import {
+  resolveGateBEnabled,
+  resolveGateBPasses,
+  resolveGateBThreshold,
+  verifySkill
+} from "../capabilities/anchor-verify.js";
+import type { VerifyResult } from "../capabilities/anchor-verify.js";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
 import { buildCritiqueQuestion, buildResearchQuestion, createWebSearchAdapter } from "../capabilities/web-search.js";
 import {
@@ -25,7 +33,7 @@ import {
 import type { IntentClassification, Intent } from "../capabilities/intent.js";
 import { buildDistillQuestion, DISTILL_DISCIPLINE, looksLikeSkillProcedure, parseDistillResult, shouldRejectLesson } from "../capabilities/distill.js";
 import { composeSystemPrompt, intentToScope, memoryRootFor, SKILL_AUTHOR_DISCIPLINE } from "../prompt/composer.js";
-import { resolveSkillMaxPerScope, resolveSkillsEnabled, SkillStore } from "../skills/skill-store.js";
+import { resolveSkillMaxPerScope, resolveSkillRefinePasses, resolveSkillsEnabled, setFrontmatterFields, SkillStore } from "../skills/skill-store.js";
 import { resolveWebMaxResults } from "../web/registry.js";
 import type { WebResult } from "../web/types.js";
 import { resolveChainBudgetMs, RUNNER_TIMEOUT_BUFFER_MS } from "../llm/registry.js";
@@ -703,8 +711,9 @@ export class CoreWorker {
     const scope = intentToScope(target.intent);
     const priorAnswer = target.text;
     const now = new Date().toISOString();
-    // Phase 2b promotion FLAG: set when the saved lesson reads like a recurring procedure.
-    let skillFlag: string | undefined;
+    // Phase 2c auto-author: a procedure-shaped lesson triggers an auto-author attempt (origin=auto,
+    // blocking+guided-refine). The resulting report (pass OR blocked) is appended to the answer-back.
+    let skillReportText: string | undefined;
 
     // 1) Distill — does the feedback generalize into a durable preference? The user's
     //    feedback is the instruction; the prior answer is reference ONLY (ADR 0006/0010).
@@ -726,10 +735,13 @@ export class CoreWorker {
           const rewrite = await this.runLlm(claim, buildRewriteQuestion(text), REWRITE_DISCIPLINE, budget);
           return rewrite.ok ? rewrite.answer : text;
         });
-        // FLAG ONLY (Phase 2b): a procedure-shaped lesson hints at a skill — surface it in
-        // the report so Paco can ask Houge to author one. No authoring, no Gate A, no promote.
+        // Phase 2c AUTO-AUTHOR: a clearly procedure-shaped lesson triggers an auto-author
+        // attempt (origin=auto → BLOCKING + guided-refine). Conservative: only on a clear
+        // procedure signal (looksLikeSkillProcedure), and only when Gate A confirms it is a
+        // skill — an ordinary tweak still stays a lesson. The attempt is surfaced (pass OR
+        // blocked), never silent. Best-effort: a failure here never breaks the answer-back.
         if (looksLikeSkillProcedure(verdict.lesson)) {
-          skillFlag = `💡 This looks like a recurring procedure — reply "write a skill for this" to promote it (saved as a lesson for now).`;
+          skillReportText = await this.tryAutoAuthorSkill(claim, verdict.lesson);
         }
       }
     }
@@ -739,11 +751,14 @@ export class CoreWorker {
     //    ride the DATA channel.
     const context = buildFeedbackContext(priorAnswer, turnChars);
     const answered = await this.runAnswer(claim, feedbackText, context, budget, scope);
-    if (answered.ok && skillFlag) {
+    if (answered.ok && skillReportText) {
+      // Surface the auto-author outcome (pass OR blocked) on the answer-back AND the recorded
+      // turn — never silent (Phase 2c surfacing). The answer is what gets stored in chat history.
+      answered.answer = `${answered.answer}\n\n${skillReportText}`;
       answered.report = {
         ...answered.report,
-        body: `${answered.report.body}\n\n${skillFlag}`,
-        notifyText: `${answered.report.notifyText}\n\n${skillFlag}`
+        body: `${answered.report.body}\n\n${skillReportText}`,
+        notifyText: `${answered.report.notifyText}\n\n${skillReportText}`
       };
     }
     return answered;
@@ -757,7 +772,7 @@ export class CoreWorker {
    * `skills/` root (low-risk, report-not-approve). Down-routes (lesson/code/unsure) save a
    * lesson and/or report a flag — nothing learned is wasted. DEFENSIVE: a malformed author
    * output retries once then fails cleanly; never throws, never writes garbage. Returns the
-   * gate-stack report (Origin · Gate A · write outcome · Gate B deferred · down-route · /skills).
+   * gate-stack report (Origin · Gate A · write outcome · Gate B score · down-route · /skills).
    */
   private async runSkill(
     claim: ClaimedRun,
@@ -778,7 +793,7 @@ export class CoreWorker {
 
     // 2) Branch on the verdict.
     if (verdict.verdict === "skill") {
-      return this.authorAndWriteSkill(skillClaim, message, budget, verdict);
+      return this.authorAndWriteSkill(skillClaim, message, budget, verdict, "commanded");
     }
     if (verdict.verdict === "lesson") {
       return this.downRouteLesson(skillClaim, verdict, now, budget);
@@ -787,7 +802,7 @@ export class CoreWorker {
       return this.skillReport("flagged a CODE capability (not built — backlog)", [
         "Origin: you asked",
         `Gate A qualify: → CODE (${verdict.reason})`,
-        "Gate B anchors: (deferred to 2c)",
+        "Gate B anchors: n/a (not authored)",
         "→ Not authored: this needs a new capability/tool, which is the code layer (Phase 3), not a skill."
       ]);
     }
@@ -795,51 +810,195 @@ export class CoreWorker {
     return this.downRouteUnsure(skillClaim, verdict, now, budget);
   }
 
-  /** Gate A = skill: author on the cheap chain (1 retry), write to skills/, report. */
+  /**
+   * Phase 2c auto-author from the distill flag. A procedure-shaped lesson runs Gate A; a "skill"
+   * verdict triggers the BLOCKING + guided-refine author path (origin=auto). Returns the surfaced
+   * report (pass OR blocked) to append to the feedback answer-back, or undefined when Gate A does
+   * NOT confirm a skill (it stays a plain lesson — already saved). Best-effort: any failure → undefined.
+   */
+  private async tryAutoAuthorSkill(claim: ClaimedRun, lesson: string): Promise<string | undefined> {
+    const contract = compileSkillAuthorContract(claim.contract.objective);
+    const skillClaim: ClaimedRun = { run_id: claim.run_id, contract };
+    // Auto-author is a distinct sub-task spawned from feedback — it runs on its OWN budget
+    // (the skill-author contract), not the turn's, so Gate A + the author + the ≤N guided-refine
+    // passes don't starve the feedback turn's answer-back. (Gate B already has its own budget.)
+    const budget = new BudgetLedger({ ...contract.budget, max_tool_calls: 8 });
+    const request = `Write a skill for this recurring procedure: ${lesson}`;
+    const gateRaw = await this.runLlm(skillClaim, buildGateAQuestion(request), GATE_A_DISCIPLINE, budget);
+    const verdict: GateAResult = gateRaw.ok ? parseGateAVerdict(gateRaw.answer) : { verdict: "unsure", reason: "Gate A failed" };
+    // Conservative: only auto-author on a clear "skill" verdict. Anything else stays a lesson.
+    if (verdict.verdict !== "skill") return undefined;
+    const result = await this.authorAndWriteSkill(skillClaim, request, budget, verdict, "auto");
+    return result.ok ? result.answer : undefined;
+  }
+
+  /**
+   * Gate A = skill: author on the cheap chain (1 retry on malformed), run Gate B (3-pass), then
+   * apply the by-origin policy (D5):
+   *   - commanded → ADVISORY: write active regardless; stamp score+last_verified; report the real
+   *     score with a ⚠ note if below threshold.
+   *   - auto → BLOCKING + guided-refine: if Gate B fails, re-author ≤N times feeding the failing
+   *     criteria back; pass at any point ⇒ write active (stamped) + report; still failing ⇒ park in
+   *     `_pending/` + save a lightest-form lesson + report (score, failing, park, lesson, handles).
+   * DEFENSIVE: a Gate B error (unscored) NEVER blocks — it falls back to advisory-write with a note.
+   */
   private async authorAndWriteSkill(
     claim: ClaimedRun,
     message: string,
     budget: BudgetLedger,
-    verdict: GateAResult
+    verdict: GateAResult,
+    origin: "commanded" | "auto"
   ): Promise<HelperResult> {
-    // 1) Author — one attempt + one retry on malformed output (defensive; never throws).
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const authored = await this.runLlm(claim, buildSkillAuthorQuestion(message), SKILL_AUTHOR_DISCIPLINE, budget);
-      if (!authored.ok) break; // capability failure (e.g. budget) → fall through to clean failure
-      const parsed = parseAuthoredSkill(authored.answer);
-      if (!parsed.ok) continue; // retry once
+    const originLine = origin === "commanded" ? "Origin: you asked" : "Origin: auto-promoted from learning";
 
-      // 2) Refine if a skill with this name already exists in the scope. Bump the version
-      // MECHANICALLY (old+1) rather than trusting the cheap writer to increment it.
-      const existing = this.skillStore.readSkill(parsed.skill.scope, parsed.skill.name);
-      const action = existing ? "Refined" : "Wrote";
-      const newVersion = existing
-        ? (existing.meta.version ?? 1) + 1
-        : (parsed.skill.meta.version ?? 1);
-      const fileToWrite = withFrontmatterVersion(parsed.skill.file, newVersion);
-      const write = this.skillStore.writeSkill(parsed.skill.scope, parsed.skill.name, fileToWrite);
-      if (!write.ok) {
-        return this.skillReport("could not write the authored skill", [
-          "Origin: you asked",
-          `Gate A qualify: ✓ skill (${verdict.reason})`,
-          `→ Write failed: ${write.error}`
-        ]);
-      }
-      const versionLine = existing ? ` (v${existing.meta.version ?? 1}→v${newVersion})` : ` (v${newVersion})`;
-      return this.skillReport(`${action.toLowerCase()} skill "${parsed.skill.name}" (${parsed.skill.scope})`, [
-        "Origin: you asked",
-        `Gate A qualify: ✓ all 4 held (${verdict.reason})`,
-        "Gate B anchors: (deferred to 2c)",
-        `→ ${action} skills/${parsed.skill.scope}/${parsed.skill.name}.md${versionLine} ` +
-          `(${parsed.skill.meta.anchors.length} anchors authored). /skills to view, reply to refine.`
+    // 1) Author the initial draft — one attempt + one retry on malformed output.
+    let parsed: AuthoredSkill | undefined;
+    for (let attempt = 0; attempt < 2 && !parsed; attempt += 1) {
+      const authored = await this.runLlm(claim, buildSkillAuthorQuestion(message), SKILL_AUTHOR_DISCIPLINE, budget);
+      if (!authored.ok) break; // capability failure (e.g. budget) → clean failure below
+      const p = parseAuthoredSkill(authored.answer);
+      if (p.ok) parsed = p.skill;
+    }
+    if (!parsed) {
+      return this.skillReport("couldn't author a valid skill", [
+        originLine,
+        `Gate A qualify: ✓ skill (${verdict.reason})`,
+        "→ The writer did not produce a valid skill file after a retry. Nothing was written."
       ]);
     }
-    // Both attempts failed to produce a valid skill — clean failure, no garbage written.
-    return this.skillReport("couldn't author a valid skill", [
-      "Origin: you asked",
-      `Gate A qualify: ✓ skill (${verdict.reason})`,
-      "→ The writer did not produce a valid skill file after a retry. Nothing was written."
+
+    // 2) Gate B — verify the authored draft (INDEPENDENT: when + body only, never the anchors).
+    let gate = await this.verifyAuthored(parsed);
+
+    // 3a) COMMANDED → advisory: write active regardless, score is informational.
+    if (origin === "commanded") {
+      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate);
+    }
+
+    // 3b) A Gate B ERROR (unscored — verifier disabled or unavailable) must NEVER block: infra
+    // flakiness must not destroy a good auto-authored skill. Fall back to advisory-write (the report's
+    // gateBLine notes "unscored — advisory only"). ONLY a real low SCORE blocks an auto skill.
+    if (gate.unscored) {
+      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate);
+    }
+
+    // 3c) AUTO → blocking + guided-refine. Pass now ⇒ write active.
+    if (gate.passed) {
+      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate);
+    }
+    const refinePasses = resolveSkillRefinePasses(process.env);
+    for (let i = 0; i < refinePasses && !gate.passed; i += 1) {
+      const refined = await this.runLlm(
+        claim,
+        buildGuidedRefineQuestion(message, parsed.file, gate.failing),
+        SKILL_AUTHOR_DISCIPLINE,
+        budget
+      );
+      if (!refined.ok) break;
+      const p = parseAuthoredSkill(refined.answer);
+      if (!p.ok) continue;
+      parsed = p.skill;
+      gate = await this.verifyAuthored(parsed);
+    }
+    if (gate.passed) {
+      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate);
+    }
+    // Still failing after the passes → park + lesson + report (nothing silent, nothing lost).
+    return this.parkBlockedSkill(claim, message, parsed, verdict, originLine, gate, budget);
+  }
+
+  /** Run Gate B (3-pass ensemble) on a draft, or a no-op "unscored" result when disabled. */
+  private async verifyAuthored(skill: AuthoredSkill): Promise<VerifyResult> {
+    if (!resolveGateBEnabled(process.env)) {
+      return { score: 0, passed: true, criteria: [], failing: [], scoredPasses: 0, unscored: true, threshold: 0 };
+    }
+    return verifySkill(
+      { when: skill.meta.when, body: skill.body },
+      { passes: resolveGateBPasses(process.env), threshold: resolveGateBThreshold(process.env) },
+      this.anchorLlm()
+    );
+  }
+
+  /** Write the active skill (mechanical version bump + Gate B stamp), report the gate stack. */
+  private writeActiveSkill(
+    claim: ClaimedRun,
+    parsed: AuthoredSkill,
+    verdict: GateAResult,
+    originLine: string,
+    gate: VerifyResult
+  ): HelperResult {
+    // Refine if a skill with this name already exists; bump version MECHANICALLY (old+1).
+    const existing = this.skillStore.readSkill(parsed.scope, parsed.name);
+    const action = existing ? "Refined" : "Wrote";
+    const newVersion = existing ? (existing.meta.version ?? 1) + 1 : (parsed.meta.version ?? 1);
+    let fileToWrite = withFrontmatterVersion(parsed.file, newVersion);
+    // Stamp the Gate B score + last_verified (only when actually scored; clock passed in).
+    if (!gate.unscored) {
+      fileToWrite = setFrontmatterFields(fileToWrite, { score: gate.score, last_verified: new Date().toISOString().slice(0, 10) });
+    }
+    const write = this.skillStore.writeSkill(parsed.scope, parsed.name, fileToWrite);
+    if (!write.ok) {
+      return this.skillReport("could not write the authored skill", [
+        originLine,
+        `Gate A qualify: ✓ skill (${verdict.reason})`,
+        `→ Write failed: ${write.error}`
+      ]);
+    }
+    const versionLine = existing ? ` (v${existing.meta.version ?? 1}→v${newVersion})` : ` (v${newVersion})`;
+    return this.skillReport(`${action.toLowerCase()} skill "${parsed.name}" (${parsed.scope})`, [
+      originLine,
+      `Gate A qualify: ✓ all 4 held (${verdict.reason})`,
+      gateBLine(gate),
+      `→ ${action} skills/${parsed.scope}/${parsed.name}.md${versionLine} ` +
+        `(${parsed.meta.anchors.length} anchors authored). /skills to view, reply to refine.`
     ]);
+  }
+
+  /** Auto-author blocked after guided-refine → park in `_pending/` + lesson + surfaced report. */
+  private async parkBlockedSkill(
+    claim: ClaimedRun,
+    message: string,
+    parsed: AuthoredSkill,
+    verdict: GateAResult,
+    originLine: string,
+    gate: VerifyResult,
+    budget: BudgetLedger
+  ): Promise<HelperResult> {
+    const parked = this.skillStore.writePending(parsed.scope, parsed.name, parsed.file);
+    // Lightest-form lesson capture — nothing learned is wasted even when the skill is blocked.
+    const scope = this.safeLessonScope(parsed.scope);
+    const lesson = (verdict.lesson?.trim() || `when ${parsed.meta.when}, follow a verified procedure`).slice(0, 200);
+    await this.runStore.appendLessonToBlock(scope, lesson, new Date().toISOString(), async (text) => {
+      const rewrite = await this.runLlm(claim, buildRewriteQuestion(text), REWRITE_DISCIPLINE, budget);
+      return rewrite.ok ? rewrite.answer : text;
+    });
+    const failing = gate.failing.length > 0 ? gate.failing.slice(0, 3).map((f) => `   • ${f}`).join("\n") : "   • (no specific criteria captured)";
+    const parkLine = parked.ok
+      ? `→ Parked at skills/_pending/${parsed.scope}/${parsed.name}.md (inert — not applied).`
+      : `→ Could not park the draft: ${parked.error}`;
+    return this.skillReport(`auto-author BLOCKED "${parsed.name}" (${parsed.scope})`, [
+      originLine,
+      `Gate A qualify: ✓ all 4 held (${verdict.reason})`,
+      gateBLine(gate),
+      "Failed criteria:",
+      failing,
+      parkLine,
+      `→ Saved a LESSON (${scope}): "${lesson}".`,
+      '→ Handles: /skills pending to inspect · reply "show me the draft" · reply "write a skill for X" to retry.'
+    ]);
+  }
+
+  /**
+   * Adapt the cheap-chain LLM into Gate B's `AnchorLlm` shape (a raw `(system, question) =>
+   * answer`). Gate B runs walled-off (its own session, no answer key) under the skill-author
+   * contract's `llm_answer`. A capability failure → undefined (the verifier tolerates it).
+   */
+  private anchorLlm(): (system: string, question: string) => Promise<string | undefined> {
+    const contract = compileSkillAuthorContract("gate-b-verify");
+    return async (system, question) => {
+      const r = await this.runLlm({ run_id: "gate-b", contract }, question, system, new BudgetLedger(contract.budget));
+      return r.ok ? r.answer : undefined;
+    };
   }
 
   /** Gate A = lesson: save the down-route lesson, report it (no skill file). */
@@ -855,7 +1014,7 @@ export class CoreWorker {
     return this.skillReport("down-routed to a LESSON (a tweak, not a procedure)", [
       "Origin: you asked",
       `Gate A qualify: → LESSON (${verdict.reason})`,
-      "Gate B anchors: (deferred to 2c)",
+      "Gate B anchors: n/a (not authored)",
       lesson ? `→ Saved a LESSON (${scope}): "${lesson}". /lessons to view.` : "→ No durable lesson to save."
     ]);
   }
@@ -873,7 +1032,7 @@ export class CoreWorker {
     return this.skillReport("unsure — saved a lesson and asking whether to promote", [
       "Origin: you asked",
       `Gate A qualify: ? unsure between a lesson and a skill (${verdict.reason})`,
-      "Gate B anchors: (deferred to 2c)",
+      "Gate B anchors: n/a (not authored)",
       lesson ? `→ Saved a LESSON (${scope}) for now: "${lesson}".` : "→ Nothing durable to save yet.",
       '→ Want me to promote this to a skill? Reply "yes, write a skill for it" and I will.'
     ]);
@@ -1342,6 +1501,17 @@ function withFrontmatterVersion(file: string, version: number): string {
     ? m[1]!.replace(/^version:.*$/m, `version: ${version}`)
     : m[1]!.replace(/\n$/, `\nversion: ${version}\n`);
   return frontmatter + m[2]!;
+}
+
+/**
+ * Render the Gate B line for the gate-stack report. `unscored` (Gate B off or every pass
+ * errored) → an advisory note (never a block on an error). Otherwise show the 3-pass score
+ * vs threshold, with a ⚠ for a below-threshold (low) score.
+ */
+function gateBLine(gate: VerifyResult): string {
+  if (gate.unscored) return "Gate B anchors: (unscored — verifier unavailable; advisory only)";
+  const verdict = gate.passed ? "✓ passed" : "⚠ low score";
+  return `Gate B anchors: ${verdict} — ${gate.score.toFixed(2)} vs threshold ${gate.threshold.toFixed(2)} (${gate.scoredPasses}-pass avg)`;
 }
 
 /** Coerce a stored chat-turn intent into a known Intent (default answer). */

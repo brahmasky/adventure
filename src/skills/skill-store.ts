@@ -16,6 +16,14 @@ import { join, resolve } from "node:path";
 
 const DEFAULT_MAX_PER_SCOPE = 4;
 
+/**
+ * The parking lot for blocked auto-authored skills (Phase 2c). A still-failing draft is
+ * written here — INERT: it lives under the skills root (so containment holds) but is excluded
+ * from every active read (`readScopeFiles`/`readScopeBlock`/`list`/`listScopes`), so it is
+ * never folded into a prompt and never counts against the ≤cap. `/skills pending` lists it.
+ */
+export const PENDING_DIR = "_pending";
+
 export type SkillOrigin = "commanded" | "learned" | "refined";
 
 /** Parsed frontmatter of a skill file (the source of truth). */
@@ -47,6 +55,12 @@ export function resolveSkillsEnabled(env: NodeJS.ProcessEnv): boolean {
 export function resolveSkillMaxPerScope(env: NodeJS.ProcessEnv): number {
   const n = Number(env.HOUGE_SKILL_MAX_PER_SCOPE);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_MAX_PER_SCOPE;
+}
+
+/** Max guided-refine passes for a blocked auto-author (`HOUGE_SKILL_REFINE_PASSES`, default 3). */
+export function resolveSkillRefinePasses(env: NodeJS.ProcessEnv): number {
+  const n = Number(env.HOUGE_SKILL_REFINE_PASSES);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 3;
 }
 
 interface ParsedSkill {
@@ -166,13 +180,53 @@ export class SkillStore {
    * `skills/`. Defensive: any fs error → a structured failure, never a throw.
    */
   writeSkill(scope: string, name: string, body: string): { ok: true; path: string } | { ok: false; error: string } {
-    const safeScope = sanitizeSlug(scope);
-    const safeName = sanitizeSlug(name);
-    if (!safeScope || !safeName) {
+    const written = this.writeContained([sanitizeSlug(scope)], sanitizeSlug(name), body);
+    if (written.ok) this.regenerateRegistry();
+    return written;
+  }
+
+  /**
+   * Write a BLOCKED auto-authored draft to `<root>/_pending/<scope>/<name>.md` (Phase 2c).
+   * Same slug + real-path containment as `writeSkill` (`_pending` is under the root, so it
+   * passes), but the parking lot is inert: NOT folded into a prompt, excluded from active
+   * reads, and it does NOT regenerate the registry (the registry is the active view).
+   */
+  writePending(scope: string, name: string, body: string): { ok: true; path: string } | { ok: false; error: string } {
+    return this.writeContained([PENDING_DIR, sanitizeSlug(scope)], sanitizeSlug(name), body);
+  }
+
+  /** List the parked (blocked) skills under `<root>/_pending/<scope>/` — for `/skills pending`. */
+  listPending(): SkillMeta[] {
+    const pendingRoot = join(this.root, PENDING_DIR);
+    const out: SkillMeta[] = [];
+    let scopes: string[];
+    try {
+      scopes = readdirSync(pendingRoot, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name)
+        .sort();
+    } catch {
+      return [];
+    }
+    for (const s of scopes) {
+      const dir = join(pendingRoot, s);
+      for (const file of this.listMarkdown(dir)) {
+        const text = this.readSafe(join(dir, file));
+        if (text === undefined) continue;
+        const parsed = parseSkillFile(text);
+        if (parsed) out.push({ ...parsed.meta, scope: s, chars: parsed.body.length });
+      }
+    }
+    return out;
+  }
+
+  /** Shared write core: join the slugged path parts under the real root, containment-check, write. */
+  private writeContained(parts: string[], safeName: string, body: string): { ok: true; path: string } | { ok: false; error: string } {
+    if (parts.some((p) => !p) || !safeName) {
       return { ok: false, error: "scope and name must contain at least one [a-z0-9_-] character" };
     }
     const rootReal = this.realRoot();
-    const dir = join(rootReal, safeScope);
+    const dir = join(rootReal, ...parts);
     const path = join(dir, `${safeName}.md`);
     // Containment: the resolved target must live under the real skills root.
     if (!isInside(rootReal, resolve(path))) {
@@ -180,7 +234,7 @@ export class SkillStore {
     }
     try {
       mkdirSync(dir, { recursive: true });
-      // Re-check after mkdir in case a symlink in the scope dir redirects elsewhere. Compare
+      // Re-check after mkdir in case a symlink in a path part redirects elsewhere. Compare
       // real path to real path (both now exist) so a symlinked tmp root is not a false escape.
       const realRootNow = realRootOf(rootReal, rootReal);
       if (!isInside(realRootNow, realRootOf(dir, dir))) {
@@ -190,7 +244,6 @@ export class SkillStore {
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
-    this.regenerateRegistry();
     return { ok: true, path };
   }
 
@@ -234,6 +287,8 @@ export class SkillStore {
       return readdirSync(this.root, { withFileTypes: true })
         .filter((e) => e.isDirectory())
         .map((e) => e.name)
+        // EXCLUDE the parking lot: a pending skill is inert — never an active scope.
+        .filter((name) => name !== PENDING_DIR)
         .sort();
     } catch {
       return [];
@@ -265,6 +320,32 @@ export class SkillStore {
       // A failed registry write must never break a turn or a /skills view.
     }
   }
+}
+
+/**
+ * Stamp/update frontmatter fields on a skill file (Phase 2c). Operates ONLY on the leading
+ * `---\n…\n---` block: for each given field, replace an existing `key: …` line or inject a new
+ * one before the closing fence. Generic (used for `score` + `last_verified`); `Date.now`-free
+ * — the caller passes the ISO `last_verified` (no clock in the store). Unknown/undefined fields
+ * are skipped. Returns the file unchanged if no frontmatter fence is found.
+ */
+export function setFrontmatterFields(
+  file: string,
+  fields: { score?: number; last_verified?: string }
+): string {
+  const m = /^(---\n[\s\S]*?\n)(---\n[\s\S]*)$/.exec(file.replace(/\r\n/g, "\n"));
+  if (!m) return file;
+  let frontmatter = m[1]!;
+  const set = (key: string, value: string): void => {
+    const line = `${key}: ${value}`;
+    const re = new RegExp(`^${key}:.*$`, "m");
+    frontmatter = re.test(frontmatter)
+      ? frontmatter.replace(re, line)
+      : frontmatter.replace(/\n$/, `\n${line}\n`);
+  };
+  if (typeof fields.score === "number") set("score", fields.score.toFixed(2));
+  if (fields.last_verified) set("last_verified", fields.last_verified);
+  return frontmatter + m[2]!;
 }
 
 /** Sanitize a scope/name to a filename-safe slug: lowercase, [a-z0-9_-] only, no path parts. */

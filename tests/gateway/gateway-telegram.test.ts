@@ -264,6 +264,35 @@ describe("Gateway telegram events", () => {
     }
   });
 
+  it("/skills pending lists parked drafts and never the active library", () => {
+    const store = RunStore.openInMemory();
+    const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-pending-"));
+    try {
+      const skillStore = new SkillStore({ root });
+      // One active skill + one parked draft.
+      skillStore.writeSkill("research", "good-skill", "---\nname: good-skill\nscope: research\nwhen: w\n---\nbody");
+      skillStore.writePending("ask", "blocked-skill", "---\nname: blocked-skill\nscope: ask\nwhen: trigger\n---\nbody");
+      const gateway = new Gateway(store, undefined, undefined, skillStore);
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "skills",
+        program: "pending",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:skills-pending",
+        source_reference: "telegram:update:22:message:1"
+      });
+      expect(gateway.intake(event)).toEqual({ ok: true, status: "skills_returned", run_id: "" });
+      const note = store.claimNextNotification("test", 30);
+      expect(note?.payload.text).toContain("blocked-skill");
+      expect(note?.payload.text).toContain("Pending (blocked) skills");
+      expect(note?.payload.text).not.toContain("good-skill"); // active skill not listed under pending
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("throttles abusive telegram command volume per actor and chat", () => {
     const store = RunStore.openInMemory();
     try {

@@ -6,6 +6,7 @@ import { CoreWorker } from "../../src/core/core-worker.js";
 import { INTENT_DISCIPLINE } from "../../src/capabilities/intent.js";
 import { DISTILL_DISCIPLINE } from "../../src/capabilities/distill.js";
 import { GATE_A_DISCIPLINE } from "../../src/capabilities/skill-router.js";
+import { GATE_B_DISCIPLINE } from "../../src/capabilities/anchor-verify.js";
 import { ASK_DISCIPLINE, RESEARCH_DISCIPLINE, SELFCODE_DISCIPLINE, SKILL_AUTHOR_DISCIPLINE } from "../../src/prompt/composer.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
@@ -636,6 +637,199 @@ describe("executeTurn (natural-language front door)", () => {
       expect(existsSync(join(root, "skills", "research"))).toBe(false); // nothing written
       const turns = store.getRecentChatTurns("555", 6);
       expect(turns[turns.length - 1]!.text).toContain("did not produce a valid skill file");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("commanded skill (Gate B passes): writes active, stamps the score, shows it in the report", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const AUTHORED = [
+      "---", "name: cross-check-figures", "scope: research",
+      "when: comparing numbers across multiple sources",
+      "anchors:", "  - a part never exceeds its whole",
+      "version: 1", "origin: commanded", "---", "", "1. Verify each figure against its source."
+    ].join("\n");
+    const llm = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
+      const system = typeof input.system === "string" ? input.system : "";
+      let answer = `ANSWER: ${input.question}`;
+      if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"skill"}';
+      else if (system.includes(GATE_A_DISCIPLINE)) answer = '{"verdict":"skill","reason":"recurring method"}';
+      else if (system.includes(GATE_B_DISCIPLINE)) answer = '{"criteria":[{"text":"checks a source","ok":1},{"text":"sanity-checks","ok":1}]}';
+      else if (system.includes(SKILL_AUTHOR_DISCIPLINE)) answer = AUTHORED;
+      return { ok: true, output: { question: input.question, answer, model: "f", provider: "f" } };
+    };
+    try {
+      const result = await new CoreWorker(store, root, llm).executeRun(turnRun(store, "write a cross-check skill"), "w");
+      expect(result.status).toBe("completed");
+      const file = readFileSync(join(root, "skills", "research", "cross-check-figures.md"), "utf8");
+      expect(file).toContain("score: 1.00");
+      expect(file).toMatch(/last_verified: \d{4}-\d{2}-\d{2}/);
+      const turns = store.getRecentChatTurns("555", 6);
+      expect(turns[turns.length - 1]!.text).toContain("Gate B anchors: ✓ passed");
+      expect(turns[turns.length - 1]!.text).toContain("1.00");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("commanded skill (Gate B low score): still writes active (advisory) with a ⚠ low-score note", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const AUTHORED = [
+      "---", "name: weak-skill", "scope: ask", "when: something",
+      "anchors:", "  - x", "version: 1", "origin: commanded", "---", "", "1. Do a vague thing."
+    ].join("\n");
+    const llm = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
+      const system = typeof input.system === "string" ? input.system : "";
+      let answer = `ANSWER: ${input.question}`;
+      if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"skill"}';
+      else if (system.includes(GATE_A_DISCIPLINE)) answer = '{"verdict":"skill","reason":"ok"}';
+      else if (system.includes(GATE_B_DISCIPLINE)) answer = '{"criteria":[{"text":"a","ok":0},{"text":"b","ok":0}]}';
+      else if (system.includes(SKILL_AUTHOR_DISCIPLINE)) answer = AUTHORED;
+      return { ok: true, output: { question: input.question, answer, model: "f", provider: "f" } };
+    };
+    try {
+      const result = await new CoreWorker(store, root, llm).executeRun(turnRun(store, "write a weak skill"), "w");
+      expect(result.status).toBe("completed");
+      // Advisory: the file IS written despite the low score.
+      expect(existsSync(join(root, "skills", "ask", "weak-skill.md"))).toBe(true);
+      const turns = store.getRecentChatTurns("555", 6);
+      expect(turns[turns.length - 1]!.text).toContain("⚠ low score");
+      expect(turns[turns.length - 1]!.text).toContain("Wrote skills/ask/weak-skill.md");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("auto-author (good draft): a procedure-shaped correction passes Gate B → active skill + surfaced report", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const AUTHORED = [
+      "---", "name: cross-check-figures", "scope: research",
+      "when: comparing numbers across multiple sources",
+      "anchors:", "  - a part never exceeds its whole",
+      "version: 1", "origin: learned", "---", "", "1. Verify each figure against its source."
+    ].join("\n");
+    // Seed a prior assistant turn so feedback resolves a target.
+    store.recordChatTurn({ chat_id: "555", run_id: "seed", role: "assistant", text: "here are some numbers", intent: "research" });
+    const llm = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
+      const system = typeof input.system === "string" ? input.system : "";
+      let answer = `ANSWER: ${input.question}`;
+      if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"feedback"}';
+      else if (system.includes(DISTILL_DISCIPLINE)) answer = '{"durable":true,"lesson":"when comparing numbers, first verify each figure against its source then cross-check"}';
+      else if (system.includes(GATE_A_DISCIPLINE)) answer = '{"verdict":"skill","reason":"recurring method"}';
+      else if (system.includes(GATE_B_DISCIPLINE)) answer = '{"criteria":[{"text":"checks source","ok":1}]}';
+      else if (system.includes(SKILL_AUTHOR_DISCIPLINE)) answer = AUTHORED;
+      return { ok: true, output: { question: input.question, answer, model: "f", provider: "f" } };
+    };
+    try {
+      const result = await new CoreWorker(store, root, llm).executeRun(turnRun(store, "always cross-check figures like this"), "w");
+      expect(result.status).toBe("completed");
+      expect(existsSync(join(root, "skills", "research", "cross-check-figures.md"))).toBe(true);
+      const turns = store.getRecentChatTurns("555", 8);
+      expect(turns[turns.length - 1]!.text).toContain("auto-promoted from learning");
+      expect(turns[turns.length - 1]!.text).toContain("Gate B anchors: ✓ passed");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("auto-author (bad draft): blocked after guided-refine → parked in _pending + lesson + report (no active skill)", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const AUTHORED = [
+      "---", "name: trust-first", "scope: ask", "when: answering a factual question",
+      "anchors:", "  - the first result is correct", "version: 1", "origin: learned", "---", "",
+      "1. Take the first search result as truth."
+    ].join("\n");
+    store.recordChatTurn({ chat_id: "555", run_id: "seed", role: "assistant", text: "some answer", intent: "answer" });
+    let refineCalls = 0;
+    const llm = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
+      const system = typeof input.system === "string" ? input.system : "";
+      const q = typeof input.question === "string" ? input.question : "";
+      let answer = `ANSWER: ${input.question}`;
+      if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"feedback"}';
+      else if (system.includes(DISTILL_DISCIPLINE)) answer = '{"durable":true,"lesson":"when answering, first verify then cross-check the claim against a source"}';
+      else if (system.includes(GATE_A_DISCIPLINE)) answer = '{"verdict":"skill","reason":"recurring"}';
+      else if (system.includes(GATE_B_DISCIPLINE)) answer = '{"criteria":[{"text":"checks a primary source","ok":0},{"text":"avoids single unverified source","ok":0}]}';
+      else if (system.includes(SKILL_AUTHOR_DISCIPLINE)) {
+        if (q.includes("FAILED these quality criteria")) refineCalls += 1;
+        answer = AUTHORED; // always a bad draft → never passes Gate B
+      }
+      return { ok: true, output: { question: input.question, answer, model: "f", provider: "f" } };
+    };
+    try {
+      const result = await new CoreWorker(store, root, llm).executeRun(turnRun(store, "just always trust the first result"), "w");
+      expect(result.status).toBe("completed");
+      // No active skill; parked in _pending.
+      expect(existsSync(join(root, "skills", "ask", "trust-first.md"))).toBe(false);
+      expect(existsSync(join(root, "skills", "_pending", "ask", "trust-first.md"))).toBe(true);
+      expect(refineCalls).toBe(3); // the ≤3 guided-refine passes ran
+      const turns = store.getRecentChatTurns("555", 8);
+      const last = turns[turns.length - 1]!.text;
+      expect(last).toContain("Parked at skills/_pending/ask/trust-first.md");
+      expect(last).toContain("Saved a LESSON");
+      expect(last).toContain("/skills pending");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("auto-author + Gate B ERROR (unscored): NEVER blocks — writes active (advisory), does NOT park", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const AUTHORED = [
+      "---", "name: verify-claims", "scope: ask", "when: answering a factual question",
+      "anchors:", "  - checks a primary source", "version: 1", "origin: learned", "---", "",
+      "1. Verify the claim against a primary source before answering."
+    ].join("\n");
+    store.recordChatTurn({ chat_id: "555", run_id: "seed", role: "assistant", text: "some answer", intent: "answer" });
+    const llm = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
+      const system = typeof input.system === "string" ? input.system : "";
+      let answer = `ANSWER: ${input.question}`;
+      if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"feedback"}';
+      else if (system.includes(DISTILL_DISCIPLINE)) answer = '{"durable":true,"lesson":"when answering, first verify then cross-check the claim against a source"}';
+      else if (system.includes(GATE_A_DISCIPLINE)) answer = '{"verdict":"skill","reason":"recurring"}';
+      else if (system.includes(GATE_B_DISCIPLINE)) answer = "the verifier is having a bad day — not json at all"; // every pass unparseable → unscored
+      else if (system.includes(SKILL_AUTHOR_DISCIPLINE)) answer = AUTHORED;
+      return { ok: true, output: { question: input.question, answer, model: "f", provider: "f" } };
+    };
+    try {
+      const result = await new CoreWorker(store, root, llm).executeRun(turnRun(store, "always verify claims against a primary source first"), "w");
+      expect(result.status).toBe("completed");
+      // Infra flakiness must NOT destroy the skill: written ACTIVE, not parked.
+      expect(existsSync(join(root, "skills", "ask", "verify-claims.md"))).toBe(true);
+      expect(existsSync(join(root, "skills", "_pending", "ask", "verify-claims.md"))).toBe(false);
+      const turns = store.getRecentChatTurns("555", 8);
+      const last = turns[turns.length - 1]!.text;
+      expect(last).toContain("unscored");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("auto-author: a plain style tweak is NOT auto-authored (stays just a lesson)", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    store.recordChatTurn({ chat_id: "555", run_id: "seed", role: "assistant", text: "a long answer", intent: "ask" });
+    let gateACalls = 0;
+    const llm = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
+      const system = typeof input.system === "string" ? input.system : "";
+      let answer = `ANSWER: ${input.question}`;
+      if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"feedback"}';
+      else if (system.includes(DISTILL_DISCIPLINE)) answer = '{"durable":true,"lesson":"be more concise"}';
+      else if (system.includes(GATE_A_DISCIPLINE)) { gateACalls += 1; answer = '{"verdict":"lesson"}'; }
+      return { ok: true, output: { question: input.question, answer, model: "f", provider: "f" } };
+    };
+    try {
+      const result = await new CoreWorker(store, root, llm).executeRun(turnRun(store, "too long, be concise"), "w");
+      expect(result.status).toBe("completed");
+      // A bare style tweak never trips looksLikeSkillProcedure → no Gate A, no skill.
+      expect(gateACalls).toBe(0);
+      expect(existsSync(join(root, "skills"))).toBe(false);
+      expect(store.readLessonBlock("ask")).toContain("be more concise");
     } finally {
       store.close();
     }

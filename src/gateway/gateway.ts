@@ -141,8 +141,10 @@ export class Gateway {
     }
 
     const scope = typeof event.program === "string" ? event.program.trim() : "";
+    // `/skills pending` → list the parked (blocked) drafts instead of the active library.
+    const isPending = scope.toLowerCase() === "pending";
     this.skillStore.regenerateRegistry();
-    const metas = this.skillStore.list(scope || undefined);
+    const metas = isPending ? this.skillStore.listPending() : this.skillStore.list(scope || undefined);
 
     const result: GatewayIntakeResult = { ok: true, status: "skills_returned", run_id: "" };
     this.runStore.enqueueNotification({
@@ -150,7 +152,7 @@ export class Gateway {
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:skills`,
       correlation_id: event.source_reference,
-      payload: { text: formatSkillsText(scope || undefined, metas) }
+      payload: { text: isPending ? formatPendingText(metas) : formatSkillsText(scope || undefined, metas) }
     });
     this.runStore.recordTriggerProcessed(event, result);
     this.recordTelegramAccepted(event, now);
@@ -496,4 +498,19 @@ function formatSkillsText(scope: string | undefined, metas: SkillMeta[]): string
   return metas
     .map((m) => `## ${m.name} (${m.scope}) v${m.version ?? 1}\nwhen: ${m.when}`)
     .join("\n\n");
+}
+
+/**
+ * Render the `/skills pending` reply: the parked (blocked) auto-author drafts under
+ * `_pending/` — INERT (never applied), inspectable so Paco can hand-fix + promote or discard.
+ */
+function formatPendingText(metas: SkillMeta[]): string {
+  if (metas.length === 0) {
+    return "No pending skills. Blocked auto-authored drafts park here (inert) for you to inspect.";
+  }
+  return [
+    "Pending (blocked) skills — parked, NOT applied. Hand-fix + move to active, or discard:",
+    "",
+    ...metas.map((m) => `## ${m.name} (${m.scope})\nwhen: ${m.when}`)
+  ].join("\n");
 }

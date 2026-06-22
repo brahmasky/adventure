@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   parseSkillFile,
   resolveSkillMaxPerScope,
+  resolveSkillRefinePasses,
   resolveSkillsEnabled,
+  setFrontmatterFields,
   SkillStore
 } from "../../src/skills/skill-store.js";
 
@@ -219,5 +221,93 @@ describe("resolvers", () => {
     expect(resolveSkillMaxPerScope({})).toBe(4);
     expect(resolveSkillMaxPerScope({ HOUGE_SKILL_MAX_PER_SCOPE: "2" })).toBe(2);
     expect(resolveSkillMaxPerScope({ HOUGE_SKILL_MAX_PER_SCOPE: "x" })).toBe(4);
+  });
+
+  it("refine-passes defaults to 3 and clamps invalid values", () => {
+    expect(resolveSkillRefinePasses({})).toBe(3);
+    expect(resolveSkillRefinePasses({ HOUGE_SKILL_REFINE_PASSES: "2" })).toBe(2);
+    expect(resolveSkillRefinePasses({ HOUGE_SKILL_REFINE_PASSES: "x" })).toBe(3);
+  });
+});
+
+const PENDING = `---
+name: trust-first-result
+scope: ask
+when: answering a factual question
+anchors:
+  - the first result is always correct
+version: 1
+origin: learned
+---
+
+1. Run one web search. 2. Take the first result as truth.`;
+
+describe("pending parking lot (Phase 2c)", () => {
+  it("writes + lists a pending skill under _pending/<scope>/", () => {
+    const root = tempRoot();
+    const store = new SkillStore({ root });
+    const w = store.writePending("ask", "trust-first-result", PENDING);
+    expect(w.ok).toBe(true);
+    expect(readFileSync(join(root, "_pending", "ask", "trust-first-result.md"), "utf8")).toContain("trust-first-result");
+    const pending = store.listPending();
+    expect(pending.map((p) => p.name)).toEqual(["trust-first-result"]);
+    expect(pending[0]!.scope).toBe("ask");
+  });
+
+  it("EXCLUDES _pending from active reads, list, and the ≤cap (4 active + 1 pending → 4 loaded)", () => {
+    const root = tempRoot();
+    const store = new SkillStore({ root, maxPerScope: 4 });
+    for (let i = 0; i < 5; i += 1) {
+      writeSkill(
+        root,
+        "research",
+        `s${i}.md`,
+        `---\nname: s${i}\nscope: research\nwhen: w${i}\nanchors:\n  - a\n---\n\nbody ${i}`
+      );
+    }
+    store.writePending("research", "parked", PENDING.replace("scope: ask", "scope: research"));
+
+    // The pending skill is never folded into a prompt block.
+    const block = store.readScopeBlock("research");
+    expect(block).not.toContain("trust-first-result");
+    // Cap holds: exactly 4 loaded, pending excluded.
+    expect(block!.match(/### /g)!.length).toBe(4);
+    // list() (all scopes) excludes _pending entirely.
+    expect(store.list().some((m) => m.name === "trust-first-result")).toBe(false);
+    expect(store.list().every((m) => m.scope !== "_pending")).toBe(true);
+    // listPending() sees it.
+    expect(store.listPending().some((m) => m.name === "trust-first-result")).toBe(true);
+  });
+
+  it("pending write is contained — cannot escape the skills root", () => {
+    const root = tempRoot();
+    const store = new SkillStore({ root });
+    const escape = store.writePending("../../etc", "passwd", PENDING);
+    // sanitizeSlug strips the path parts, so it stays inside; the file never lands outside root.
+    if (escape.ok) {
+      expect(realpathSync(escape.path).startsWith(realpathSync(root))).toBe(true);
+    }
+  });
+});
+
+describe("setFrontmatterFields (Phase 2c stamping)", () => {
+  const FILE = `---\nname: x\nscope: ask\nwhen: w\nanchors:\n  - a\nversion: 1\n---\n\nbody`;
+
+  it("injects score + last_verified into frontmatter", () => {
+    const out = setFrontmatterFields(FILE, { score: 0.42, last_verified: "2026-06-22" });
+    expect(out).toContain("score: 0.42");
+    expect(out).toContain("last_verified: 2026-06-22");
+    expect(out).toContain("body"); // body untouched
+  });
+
+  it("replaces an existing score line rather than duplicating", () => {
+    const withScore = setFrontmatterFields(FILE, { score: 0.1 });
+    const updated = setFrontmatterFields(withScore, { score: 0.9 });
+    expect(updated.match(/score:/g)!.length).toBe(1);
+    expect(updated).toContain("score: 0.90");
+  });
+
+  it("returns the file unchanged when there is no frontmatter fence", () => {
+    expect(setFrontmatterFields("just body", { score: 0.5 })).toBe("just body");
   });
 });

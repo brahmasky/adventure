@@ -210,6 +210,36 @@ most, it can never break a turn. Use `/skills [scope]` to view the loaded skills
 |----------|---------|---------|
 | `HOUGE_SKILLS_ENABLED` | `on` | Kill switch for the ambient skills layer. Skills are read-only/low-risk, so this defaults **on** — only an explicit `0`/`false`/`no`/`off` disables it, in which case the composer omits the skills section (composing byte-identically to a no-skills run). |
 | `HOUGE_SKILL_MAX_PER_SCOPE` | `4` | Max skills folded into a prompt per scope (alphabetical by filename; the rest are dropped). Bounds the prompt and keeps self-selection precise. |
+| `HOUGE_SKILL_REFINE_PASSES` | `3` | Max **guided-refine** passes for a blocked auto-authored skill (the paper peaks at 3). Each pass re-authors the draft against Gate B's specific failing criteria, then re-verifies. |
+
+### Gate B — the anchor verifier (Phase 2c)
+
+Gate B is a **separate, walled-off** verifier that scores an authored skill's *procedure* for
+correctness. It runs a **3-pass ensemble**: each pass independently derives 4–6 procedure-level
+quality criteria from world-knowledge (it is fed **only** the skill's `when:` + procedure body —
+**never** the author's own `anchors:`, so an author can't grade its own homework) and judges
+whether following the procedure satisfies each; the final score is the mean of the passes. A skill
+**passes** when `score ≥ threshold`. The threshold is a *separation* bar, not a high-quality bar —
+good skills score modestly; the gate works on the good/bad gap (the validating spike cleanly split
+good skills 0.28–0.89 from broken ones ≤0.06).
+
+**Advisory vs blocking by origin (D5):**
+- **Commanded** skills (you asked Houge to write one) → **advisory**: written regardless; the score
+  is stamped into the frontmatter (`score`, `last_verified`) and shown in the report, with a `⚠ low
+  score` note when below threshold.
+- **Auto-authored** skills (promoted from a recurring-procedure correction) → **blocking**: kept
+  only if Gate B passes; otherwise **guided-refine ≤ `HOUGE_SKILL_REFINE_PASSES`**, then if still
+  failing the draft is **parked** in `skills/_pending/` (inert — never applied) and a lightest-form
+  lesson is saved. Every auto-author is surfaced in a report (pass **or** blocked) — nothing silent.
+
+A Gate B parse failure / LLM error **never** blocks a turn: it is treated as *unscored* and falls
+back to an advisory write with a noted error (only a real **low score** blocks, never an error).
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_GATE_B_ENABLED` | `on` | Kill switch for Gate B. Off → every skill is treated as unscored/advisory (commanded and auto both write). Only `0`/`false`/`no`/`off` disables it. |
+| `HOUGE_GATE_B_PASSES` | `3` | Number of independent Gate B passes averaged into the score (the ensemble that tamed single-pass noise in the spike). |
+| `HOUGE_GATE_B_THRESHOLD` | `0.15` | Pass threshold on the mean score — the good/bad **separation** gap from the spike, not an absolute quality bar. |
 
 ## Telegram command reference
 
@@ -226,6 +256,7 @@ noted), and `/approve` · `/deny` are **unforgeable** — never inferred from pr
 | `/lessons [scope]` | control | View the lesson block(s): the raw `block` plus its char-count/cap so consolidation pressure is visible. No scope → lists all scopes. |
 | `/forget <scope>` | control | Clear that scope's lesson block and ack. |
 | `/skills [scope]` | control | Read-only **viewer** of the ambient skills (name · scope · `when:` · version); regenerates `skills/REGISTRY.md`. Never invokes a skill. No scope → lists all scopes. |
+| `/skills pending` | control | Read-only **viewer** of the parked (blocked auto-author) drafts under `skills/_pending/` — inert, never applied. Inspect to hand-fix + promote, or discard. |
 
 ## Global autonomy circuit-breaker
 

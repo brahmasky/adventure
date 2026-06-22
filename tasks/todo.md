@@ -44,7 +44,41 @@ is an available stronger demo now that `HOUGE_CODEX_TIMEOUT_MS=300000` (5 min) i
 (code self-write, gated) would let Houge actually FIX this bug himself.
 
 ---
-# Goal — Phase 2b: skill authoring (on-command) + Gate A + reporting (IN PROGRESS 2026-06-22) — ADR 0011 §2/§4
+# Goal — Phase 2c: Gate B anchor verifier + gated auto-author (IN PROGRESS 2026-06-22) — ADR 0011 §3/§6
+
+Spec: `docs/superpowers/specs/2026-06-21-phase2-skills.md` (Phase 2c / Spike RESULT / Blocked auto-author path).
+`/goal` active. Build via subagents. Spike PROVED: 3-pass static-grade Gate B separates good (0.28–0.89) from
+bad (≤0.06); reuse `scripts/spike-gateb-2c.mjs`'s validated GATE_B prompt. **Constraints: zero deps; Gate B
+IGNORES the skill's own frontmatter anchors (independence); writes confined to `skills/` incl. `_pending/`.**
+
+## Build — staged (each green), via subagents
+- [x] S1. `src/capabilities/anchor-verify.ts` — `verifySkill` (3-pass, INDEPENDENT procedure-level criteria
+      from the spike's prompt; tolerant parse, never throws). `GATE_B_DISCIPLINE` + HOUGE_GATE_B_* resolvers. + tests.
+- [x] S2. `SkillStore`: `writePending`/`listPending` (`skills/_pending/`, same boundary check); `_pending`
+      excluded from `listScopes`/`readScopeBlock`/`list`/cap; `setFrontmatterFields` (score+last_verified). + tests.
+- [x] S3. `runSkill` wiring: author → Gate B (3-pass). commanded→ADVISORY (write+stamp+report, ⚠ if low);
+      auto→BLOCKING+GUIDED-REFINE ≤3 → pass keep / still-fail park+lesson+report. Real Gate B line. + tests.
+- [x] S4. Auto-author from distill flag: clear procedure flag → auto-author (origin=auto) blocking+guided-refine
+      → surface report every attempt; a plain tweak stays a lesson. + tests.
+- [x] S5. `/skills pending` viewer (gateway lists `listPending`; parser already accepts the scope slot). + tests.
+- [x] S6. Config + docs (configuration.md Gate B section + README). `.gitignore /skills/` covers `_pending`.
+- [x] S7. Gates: typecheck clean · **npm test 428 green** · build OK · deps {} · evals/ unchanged · spike GO (+0.28).
+      Independent verification: **1 HIGH bug FOUND + FIXED** — auto-authored skill was PARKED on a Gate B *error*
+      (unscored), not just on a real low score (infra flakiness would destroy good skills). Fix: `unscored` →
+      advisory-write (never block on error), matching the method's contract + new regression test. 2 nits fixed
+      (stale doc comment, redundant "low score" text). All 9 other invariants PASS.
+- [x] S8. LIVE gate — Gate B PROVEN live over REAL Telegram. Leg 1 (sound skill "evaluate research-source
+      credibility") → **Gate B ✓ passed 0.78** vs 0.15 (3-pass), real report line (replaced "deferred to 2c"),
+      frontmatter stamped `score: 0.78`/`last_verified`. Leg 2 (Gate-B-LOW-on-commanded): **empirically
+      UNREACHABLE live** — Gate A caught all 5 deliberately-weak skills (trust-first ×2, popularity ×1,
+      peer-review-only ×1, + the first 2b-style) and down-routed each to a sensible auto-lesson; none reached
+      Gate B. The engineered "grounded-but-shallow" (peer-review-only) was caught too. So Gate B's low-score path
+      is proven by **unit test (commanded-low → ⚠) + spike (bad ≤0.06)**, not live — Gate A is too good. The
+      blocking+guided-refine+park + auto-unscored-fallback paths are harness/test-verified. **2c effectively
+      DONE** (live gate's intent met: Gate B distinguishes good/bad over real Telegram; pass live, reject live via A).
+
+---
+# Goal — Phase 2b: skill authoring (on-command) + Gate A + reporting (DONE 2026-06-22) — ADR 0011 §2/§4
 
 Spec: `docs/superpowers/specs/2026-06-21-phase2-skills.md`. `/goal` active. Build via subagents.
 2b = Houge AUTHORS skills on-command on the **cheap pi→kimi chain** (NO Codex/worktree — prose). Gate A
