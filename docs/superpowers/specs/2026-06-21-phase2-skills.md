@@ -313,6 +313,26 @@ broken: trust-first-result · vacuous · facts-as-procedure · unfalsifiable · 
 so the build must set the threshold by the good/bad gap, not a fixed bar. Caught a measurement bug
 mid-spike (graded output-level assertions against procedure text → fixed to procedure-level criteria).
 
+### Blocked auto-author path — surfacing + fine-tune (decided 2026-06-22)
+
+A hard, silent block (discard → lesson) is invisible and lossy. So a blocked **auto-authored** skill
+(commanded stays advisory — never blocked) flows through three mechanisms:
+
+1. **Guided refine (Houge's fine-tune chance).** The ≤3 refine passes are *targeted*, not blind
+   re-rolls: Gate B's **specific failing criteria** are fed back into the author ("your skill failed
+   these checks: …; revise to satisfy them") → re-score → repeat ≤3. Turns the loop into convergence.
+2. **Surface every attempt (visibility).** A report on *every* auto-author — pass OR blocked — never
+   silent. A blocked report carries: what triggered it · the Gate B score · the failing criteria ·
+   where it parked · the lesson saved · handles ("show me the draft" / "write a skill for X").
+3. **Park, don't discard (Paco's fine-tune chance).** A still-failing draft is written to
+   **`skills/_pending/<scope>/<name>.md`** — **inert** (never loaded into a prompt, excluded from
+   `readScopeBlock`, doesn't count against the ≤4 cap) but inspectable. `/skills pending` lists them;
+   Paco can hand-fix + move to active, reply to have Houge refine with his steer, or discard.
+
+Corrected blocked path: **auto-draft → Gate B → guided-refine ≤3 → pass ⇒ keep active; still fail ⇒
+park in `_pending/` + save a lesson (lightest-form capture) + report with critique & handles.** Nothing
+silent, nothing lost. (`skills/_pending/` is gitignored runtime state like the rest of `skills/`.)
+
 ## Out of scope
 
 - Cross-surface skills (a skill bound to >1 intent) and a real LLM **selector** step — deferred until
