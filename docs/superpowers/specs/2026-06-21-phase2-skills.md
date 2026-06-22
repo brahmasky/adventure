@@ -129,9 +129,38 @@ paper). Delivered via the per-attempt report + `/skills` standing view; Paco rev
    **that skill** (author starts from the existing file; report a **diff** + new anchor score;
    `version`++) rather than adding a parallel lesson.
 
-The authoring muscle is **Codex** (build-time, `coding_agent_cli`, reusing Phase 1's
-`coding-agent.ts` + `worktree.ts`), **auto-triggered** — "auto" means no manual trigger, not that the
-cheap chain does the authoring. The cheap chain only **classifies/flags**; it never authors.
+**Authoring engine (revised 2026-06-22): the cheap pi→kimi chain writes the skill** — no Codex, no
+worktree. A skill is *prose* (a promptable procedure), so authoring it is the same muscle that already
+writes lessons via the distiller, just longer output. Codex/build-muscle is reserved for the **code
+layer** (Phase 3), where execution actually needs it. (If kimi ever writes weak procedures, the chain
+is pluggable — point authoring at a stronger model without re-architecting.)
+
+### Skills are prose, not plugins
+
+A skill is markdown only — it executes no code, does no I/O, introduces no new tool. It may *orchestrate
+capabilities Houge already has* ("to verify a date, use `web_search` then cross-check the two newest
+sources") but it can never *be* a capability. Anything needing a script, a live API, or an **MCP
+server** is the **code/capability layer** (a pluggable adapter, `/approve`-gated — like the Tavily web
+chain), NOT a skill. Boundary test: *can a colleague follow this with a pen and the tools already on the
+desk?* Yes → skill; needs a new tool wired in → code.
+
+### The writer's rubric — `SKILL_AUTHOR_DISCIPLINE`
+
+Quality starts at the **input**: the cheap chain authors under a dedicated discipline (a new constant in
+`composer.ts`, alongside `ASK_DISCIPLINE` etc. — the analogue of the skill-authoring guide a strong
+agent follows). It encodes: the frontmatter contract; a **sharp `when:`** (a specific trigger, not a
+whole surface — this is what makes 2a self-selection work); **promptable-only** (Gate A crit. 3 — steps
+using tools Houge already has, never "write code"); **world-fact-grounded** (crit. 4); **emit `anchors:`**
+(the testable assertions — even though Gate B doesn't *run* until 2c, writing them now forces a
+verifiable skill and gives 2c something to check); **bounded + procedure-not-persona** (no voice — that
+lives in `houge.md`). It is a built-in **discipline (the floor)** for 2b; later it can graduate into an
+evolvable **meta-skill** (`skills/meta/skill-authoring.md`) so Houge improves *how he writes skills* —
+self-evolution applied to self-evolution (future, not 2b).
+
+**Three roles, three prompts** (don't conflate): the **writer** (`SKILL_AUTHOR_DISCIPLINE`) writes a
+good skill up front; the **router** (Gate A) decides skill/lesson/code; the **verifier** (Gate B, 2c)
+checks correctness. The writer discipline doesn't replace Gate B — it makes Gate B pass more often, and
+carries 2b's quality while Gate B doesn't yet exist.
 
 ## Registry + visibility
 
@@ -142,13 +171,18 @@ cheap chain does the authoring. The cheap chain only **classifies/flags**; it ne
 
 ## Reporting (every attempt, whatever the outcome)
 
+In **2b** the report shows Gate A + the write outcome (Gate B is deferred to 2c — shown as such):
 ```
 🐒 Skill attempt: "cross-check-figures" (research)
   Origin: you asked
   Gate A qualify: ✓ all 4 held
+  Gate B anchors: (deferred to 2c)
+  → Wrote skills/research/cross-check-figures.md (3 anchors authored). /skills to view, reply to refine.
+```
+Once **2c** lands, the same report carries the anchor verdict and may down-route on failure:
+```
   Gate B anchors: ✗ 2/3 passed after 3 tries (failed: "units converted before compare")
   → Down-routed to a LESSON: "always convert units before comparing figures"
-  Reverted nothing. /skills to view, reply to refine.
 ```
 
 ## New code (file pointers)
@@ -160,9 +194,10 @@ cheap chain does the authoring. The cheap chain only **classifies/flags**; it ne
 | `skill` intent | `src/capabilities/intent.ts` | add to `Intent` union + `INTENT_DISCIPLINE` examples ("write/teach a skill for X"); tolerant parse → `answer` fallback. |
 | Gate A router | `src/capabilities/skill-router.ts` (new) | the 4-criteria qualify + down-route decision (→lesson / →code-flag); the fuzzy→ask path. |
 | Gate B verifier | `src/capabilities/anchor-verify.ts` (new) | walled-off session: retrieve verification knowledge → emit {0,1} anchors → score; ≤3 passes. **Spiked before wired (2c).** |
-| skill author | `src/capabilities/skill-author.ts` (new) | frames the authoring prompt; drives `coding_agent_cli` in a worktree (reuse Phase 1) to draft/refine; diff on refine. |
+| skill author | `src/capabilities/skill-author.ts` (new) | frames the authoring prompt under `SKILL_AUTHOR_DISCIPLINE`; **authors on the cheap pi→kimi chain** (NO Codex/worktree in 2b); parses the markdown; diff on refine. |
+| writer discipline | `src/prompt/composer.ts` | `SKILL_AUTHOR_DISCIPLINE` constant (frontmatter contract, sharp `when:`, promptable-only, world-fact-grounded, emit anchors, bounded, procedure-not-persona). |
 | routes | `src/core/core-worker.ts` | `executeSkill` (author/refine) dispatched from `executeTurn` on `intent==="skill"`; distill flag → promotion; reporting. |
-| contract | `src/contracts/task-contract.ts` | `skill-author` contract: `allowed_actions` incl. `coding_agent_cli` + a write **scoped to `skills/` only**; everything else forbidden; `coding_agent_cli` stays forbidden in the normal `turn` contract. |
+| contract | `src/contracts/task-contract.ts` | `skill-author` contract: `allowed_actions` = `llm_answer` + a write **scoped to `skills/` only**; everything else forbidden (NO `coding_agent_cli` — skills are prose). |
 | `/skills` cmd | parser + trigger-adapter + `gateway.ts` | idempotent control command, like `/lessons`. |
 | config | `docs/reference/configuration.md` | `HOUGE_SKILLS_ENABLED` (default **on** — kill switch; skills are read-only/low-risk), `HOUGE_SKILL_MAX_PER_SCOPE` (4), `HOUGE_SKILL_REFINE_PASSES` (3), `HOUGE_ANCHOR_MODEL` (the walled-off verifier model). |
 | gitignore | `.gitignore` | add `skills/` (runtime state, like `memory/skills/` was). "Graduating" a skill to committed is a manual `git add`. |
@@ -171,12 +206,14 @@ cheap chain does the authoring. The cheap chain only **classifies/flags**; it ne
 
 - The `skill-author` contract's only write target is **`skills/`** — protected paths (secrets,
   `memory/core`, `src/`) are off-limits even here (a skill author cannot touch code or identity).
-- Authoring runs in a **fresh worktree of HEAD** (Phase 1 mechanism) → no secrets, isolated.
-- Gate B runs in a **walled-off session** with verification knowledge it retrieves itself — it never
-  sees an answer key and never adopts the skill text as instructions (untrusted-data wall, ADR 0006).
+- Skill authoring writes **prose only** (markdown under `skills/`); it runs no shell, touches no code,
+  introduces no new tool. No worktree needed in 2b (that was a code-reading construct — Phase 1/3).
+- Gate B (2c) runs in a **walled-off session** with verification knowledge it retrieves itself — it
+  never sees an answer key and never adopts the skill text as instructions (untrusted-data wall, ADR 0006).
 - Auto-write is bounded: ≤4 skills/scope, ≤3 refine passes, every write reported + revertible.
-- **The cheap runtime stays cheap:** it classifies/flags/applies only; all authoring + verification
-  is build-time muscle (ADR 0010 build/runtime split holds).
+- **Engine split (revised):** skill authoring runs on the **cheap pi→kimi chain** (prose is in its
+  reach). Build-muscle (Codex) is reserved for the **code layer** (Phase 3). Gate B's verifier (2c) is
+  a *separate walled-off* model session, not the runtime engine — the ADR 0010 build/runtime split holds.
 
 ## Sub-phasing (each independently shippable + live-gated)
 
@@ -184,10 +221,13 @@ cheap chain does the authoring. The cheap chain only **classifies/flags**; it ne
   + `/skills` + `REGISTRY.md`. No authoring yet. **Live gate:** hand-author `skills/research/<x>.md`
   with a marker, send a research message, confirm the marker shows in behavior (absent before,
   present after) on the real pi→kimi chain — mirrors the v1 `/teach` live test.
-- **2b — authoring + Gate A + reporting.** `skill` intent (on-command) → Codex author → write +
-  report; Gate A qualify + down-route; distill promotion flag. **Live gate:** "猴哥, write a skill
-  for X" → authored, written to `skills/`, reported via real Codex; and a tweak request down-routes
-  to a lesson (verified in the report).
+- **2b — authoring + Gate A + reporting.** `skill` intent (on-command) → **pi→kimi authors** under
+  `SKILL_AUTHOR_DISCIPLINE` (no Codex/worktree) → write + report; Gate A qualify + down-route; distill
+  promotion **flag** (flags only — auto-author is 2c). Anchors are authored now (Gate B runs in 2c).
+  Quality rests on the writer discipline + Gate A + Paco's report/taste. **Live gate:** "猴哥, write a
+  skill for cross-checking figures in research" → authored, written to `skills/research/`, reported on
+  the real pi→kimi chain, and a *fresh* research turn picks it up (the 2a path); plus a tweak request
+  ("be more concise") **down-routes to a lesson**, shown in the report.
 - **2c — Gate B anchor verifier + auto-author/refine loop. SPIKE-THEN-DECIDE.** The anchor verifier
   is the one genuinely unproven piece — a cheap walled-off model emitting honest world-fact `{0,1}`
   anchors. **First build it as a throwaway spike** and throw known-good + known-bad skills at it;

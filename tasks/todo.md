@@ -97,7 +97,13 @@ Persona/core-principles never enter skills, so that question doesn't arise here.
 
 **Sub-phasing (each shippable + live-gated):**
 - **2a** — format + `skills/` + skill-store + composer-loads-by-scope + `/skills`/REGISTRY. (foundation)
-- **2b** — on-command `skill` intent + Codex author + Gate A routing/down-route + distill flag + reporting.
+- **2b** — on-command `skill` intent + **pi→kimi authors** (NO Codex/worktree — skills are prose;
+  Codex reserved for code layer) under a new `SKILL_AUTHOR_DISCIPLINE` (frontmatter contract, sharp
+  `when:`, promptable-only, world-fact-grounded, EMIT anchors now even though Gate B runs in 2c,
+  bounded, procedure-not-persona) + Gate A qualify/down-route (tweak→lesson, needs-code→code flag) +
+  distill promotion **flag** (flags only; auto-author is 2c) + gate-stack reporting. Quality in 2b =
+  writer discipline + Gate A + Paco's taste. "Skills are prose, not plugins" — MCP/scripts/live-API =
+  code/capability layer, not skills. (Meta-skill `skills/meta/skill-authoring.md` = future self-evolution.)
 - **2c** — Gate B anchor verifier + auto-author/refine loop. **SPIKE-THEN-DECIDE:** the verifier is the one
   genuinely unproven piece (cheap walled-off model emitting honest {0,1} anchors). Build it, throw known-good
   + known-bad skills at it, measure discrimination BEFORE wiring auto-author to it. 2a/2b stand without it.
@@ -183,6 +189,16 @@ scoped** (`ask`: don't say 师父; `research`: verify date) → checks 1–4,6 +
       `litestream`-style continuous replica to local/remote storage. Must NOT leak secrets and must stay
       consistent (SQLite `.backup`/WAL-safe snapshot, not a raw `cp` mid-write). Consider retention + a tested
       restore path. (Low effort, high value — protects everything Houge has learned.)
+- [ ] **Scheduler / proactive triggers** (surfaced 2026-06-22; ADR 0011's "deferred idle loop") — Houge is
+      purely REACTIVE today (every run starts from an inbound Telegram trigger). A scheduler is an orthogonal
+      AUTONOMY axis (the *when Houge acts on his own*, distinct from the lessons/skills/code *what he knows*).
+      Architecture fits an existing seam: a **new trigger SOURCE** (cron/time adapter) that synthesizes a
+      `turn`-like `TypedTaskEvent` on a schedule → same gateway→worker path (`trigger_offsets`/intake already
+      generic). NOTE distinction: capabilities (`web_search`) are tools called DURING a run; a scheduler STARTS
+      runs. Unlocks e.g. "weekly report" (= a report-writing **skill** + a history-read **capability** + this
+      **scheduler**). Carries its own design weight → **own ADR**: proactive messaging (initiative, not just
+      reply — outbound `notification_outbox` already exists), safety floor for unprompted/no-human-in-loop runs,
+      cost of timer-driven LLM runs (budget breaker bounds it). Deferred; revisit after the skills/code phases.
 
 ## Review
 
