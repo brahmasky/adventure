@@ -278,6 +278,20 @@ scoped** (`ask`: don't say 师父; `research`: verify date) → checks 1–4,6 +
       `litestream`-style continuous replica to local/remote storage. Must NOT leak secrets and must stay
       consistent (SQLite `.backup`/WAL-safe snapshot, not a raw `cp` mid-write). Consider retention + a tested
       restore path. (Low effort, high value — protects everything Houge has learned.)
+- [ ] **Skill-content viewer `/skills <name>`** (surfaced 2026-06-22, live) — there is NO way to read back an
+      authored skill's BODY: `/skills` shows metadata only (`formatSkillsText`), and `selfcode` can't see skills
+      (they're gitignored runtime, excluded from the Codex worktree-of-HEAD by construction — Phase 1's
+      secret-exclusion property). When Paco asked "show me the skill you wrote", it (a) misclassified as
+      `selfcode` and (b) Codex couldn't find it in the committed tree. Fix: `/skills <name>` (or `/skill <name>`)
+      → display `when` + anchors + procedure body from the live file. **Lookup = slug-normalized + forgiving:**
+      canonical id is the kebab `name` (= filename stem, what `/skills` lists), but run the user's input through
+      `sanitizeSlug` so BOTH `ai-weekly-industry-news-report` AND "AI weekly industry news report" resolve;
+      cross-scope collision → accept `<scope>/<name>` or list matches; not-found → closest/fall back to list.
+      (Optional later: a `title:` frontmatter field for a stable human display name distinct from the id.)
+      Also: classifier should route "show me my
+      X skill / the skill you wrote" to the skill VIEW path, not `selfcode`. Insight: "read your own CODE"
+      (selfcode/Codex on HEAD) and "read your own LEARNED SKILLS" (runtime `skills/`) are distinct paths —
+      selfcode structurally can't introspect runtime state, by the same isolation that keeps secrets out.
 - [ ] **Skill dedup / name normalization** (surfaced 2026-06-22 in 2b live test) — authoring the SAME
       conceptual skill twice with slightly different wording yields TWO files because the cheap writer derives
       a different kebab `name` each time (`fact-check-viral-claim` vs `viral-claim-fact-check`); the refine path
