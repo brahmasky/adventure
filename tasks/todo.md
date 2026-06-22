@@ -1,12 +1,13 @@
-# Current System State (read first — 2026-06-20)
+# Current System State (read first — 2026-06-22)
 
-- **Branch:** `feat/learning-v1` @ `9081b02`, pushed to origin (brahmasky/adventure). **~7 commits ahead of `main`; NOT merged.** Houge runs from THIS branch's `dist/`, not main.
-- **Daemon:** launchd `com.houge.daemon`, **PID 71969** (restart via `launchctl kickstart -k gui/$(id -u)/com.houge.daemon`). Code change ⇒ `npm run build` + reload. Conversation/lessons/identity survive reloads (all in `houge.sqlite` / `houge.md`); only in-flight runs are lost.
-- **Runtime:** model-agnostic chain `pi→kimi` (NEVER Claude). **Codex = build-time muscle** for code self-diagnose only.
-- **`.env` (gitignored):** `HOUGE_CODEX_ENABLED=true`, `HOUGE_CODEX_TIMEOUT_MS=300000`.
+- **Branch:** `feat/learning-v1` @ `443bb19`, pushed to origin (brahmasky/adventure). **NOT merged to main.** Houge runs from THIS branch's `dist/`, not main.
+- **Daemon:** launchd `com.houge.daemon`, **PID 4137** (restart via `launchctl kickstart -k gui/$(id -u)/com.houge.daemon`). Code change ⇒ `npm run build` + reload. Conversation/lessons/identity/skills survive reloads (`houge.sqlite` + `skills/` + `houge.md`); only in-flight runs lost.
+- **Runtime:** model-agnostic chain `pi→kimi` (NEVER Claude). **Codex = build-time muscle** for code self-diagnose only (NOT skill authoring — skills are authored on pi→kimi).
+- **`.env` (gitignored):** `HOUGE_CODEX_ENABLED=true`, `HOUGE_CODEX_TIMEOUT_MS=300000`. Skills default ON (`HOUGE_SKILLS_ENABLED`).
+- **Live skills present** (gitignored runtime): `skills/research/fact-check-viral-claim.md` + `cross-check-figures-across-sources.md` (both real, authored by Houge over Telegram in the 2b live test).
 - **猴哥 classifier bug: UNFIXED ON PURPOSE** — it's the live fixture (intent router prompt lacks identity; bypasses the composer). Phase 3 (gated self-write) is where Houge would fix it himself. Don't fix it ad-hoc.
-- **Done so far:** ADR 0010 (conversational front door) LIVE-verified + committed; ADR 0011 (self-evolution architecture); **Phase 1 code self-diagnose DONE + LIVE** (Houge autonomously diagnosed the 猴哥 bug via real Codex, symptom-only).
-- **Next:** **Phase 2 (skills)** — design **LOCKED 2026-06-21** (see block below + spec `docs/superpowers/specs/2026-06-21-phase2-skills.md`). Awaiting `/goal` to build **2a**. Then Phase 3 (gated code self-write).
+- **Done so far:** ADR 0010 (conversational front door) LIVE; ADR 0011 (self-evolution); **Phase 1 code self-diagnose DONE+LIVE**; **Phase 2a (load/apply skills) DONE+LIVE** (247b490); **Phase 2b (author skills) DONE+LIVE** (443bb19 — Houge authors his own skills on command, Gate A routes skill/lesson/code, over real Telegram).
+- **Next:** **Phase 2c** — Gate B anchor verifier + auto-author/refine. **Design LOCKED 2026-06-22** (spec "Phase 2c — design & spike"). **SPIKE FIRST** (throwaway measurement, NO /goal): does cheap walled-off Gate B separate ~5 good from ~5 broken skills? GO → /goal the real build; NO-GO → Gate B advisory-only. Then Phase 3 (gated code self-write).
 - **Critical rules:** `/goal` is a REAL user-invoked stop-gate command (don't claim it doesn't exist); every `/goal` ends with a LIVE run (not just `npm test`); **freedom-over-control** — no 紧箍咒/cage framing, OK for Houge to fail, only core principles stay constant (ADR 0001/0011).
 
 ---
@@ -148,9 +149,14 @@ Persona/core-principles never enter skills, so that question doesn't arise here.
   distill promotion **flag** (flags only; auto-author is 2c) + gate-stack reporting. Quality in 2b =
   writer discipline + Gate A + Paco's taste. "Skills are prose, not plugins" — MCP/scripts/live-API =
   code/capability layer, not skills. (Meta-skill `skills/meta/skill-authoring.md` = future self-evolution.)
-- **2c** — Gate B anchor verifier + auto-author/refine loop. **SPIKE-THEN-DECIDE:** the verifier is the one
-  genuinely unproven piece (cheap walled-off model emitting honest {0,1} anchors). Build it, throw known-good
-  + known-bad skills at it, measure discrimination BEFORE wiring auto-author to it. 2a/2b stand without it.
+- **2c** — Gate B anchor verifier + auto-author/refine loop. **SPIKE-THEN-DECIDE** (design locked 2026-06-22;
+  full detail in spec "Phase 2c — design & spike"). Decisions: D1 verify-mode (run-and-check vs static) —
+  spike measures both; D2 anchors INDEPENDENT (Gate B generates its own; frontmatter anchors = seed, not the
+  test); D3 cheap walled-off pi→kimi session; D4 autonomy ramp DEFERRED to post-spike data; D5/Q5 Gate B scores
+  ALL skills — advisory-by-origin (commanded advisory / auto blocking). Trigger: every create/refine; timing
+  (inline vs async) falls out of D1 cost; re-verify-on-drift OUT (needs scheduler). **Spike = throwaway
+  MEASUREMENT (no /goal, deleted after):** ~5 good + ~5 deliberately-broken skills → does cheap Gate B
+  separate them cleanly? GO → /goal the real build; NO-GO → Gate B advisory-only, rethink.
 
 ---
 # DONE — ADR 0010 conversational interaction model (committed 25b3568, LIVE-VERIFIED 2026-06-20)

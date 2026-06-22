@@ -228,13 +228,63 @@ Once **2c** lands, the same report carries the anchor verdict and may down-route
   skill for cross-checking figures in research" → authored, written to `skills/research/`, reported on
   the real pi→kimi chain, and a *fresh* research turn picks it up (the 2a path); plus a tweak request
   ("be more concise") **down-routes to a lesson**, shown in the report.
-- **2c — Gate B anchor verifier + auto-author/refine loop. SPIKE-THEN-DECIDE.** The anchor verifier
-  is the one genuinely unproven piece — a cheap walled-off model emitting honest world-fact `{0,1}`
-  anchors. **First build it as a throwaway spike** and throw known-good + known-bad skills at it;
-  **only if it measurably discriminates** do we wire auto-author + auto-refine to it. If it's weak,
-  2c degrades to "Paco-confirmed author" (Gate B advisory, not blocking) and we revisit. **Live
-  gate:** a real correction auto-refines a skill (diff + new score reported) and a deliberately-bad
-  skill is caught by Gate B.
+- **2c — Gate B anchor verifier + auto-author/refine loop. SPIKE-THEN-DECIDE.** See the **Phase 2c
+  design** section below for the locked decisions + the spike. In short: a *throwaway measurement
+  spike* first proves the cheap walled-off verifier can separate good skills from bad ones; **only on a
+  GO** do we `/goal` the real build (auto-author/refine wired, autonomy level decided with data); on
+  NO-GO, Gate B ships **advisory-only** and we revisit. **Live gate (the build, not the spike):** a
+  real correction auto-refines a skill (diff + new score) and a deliberately-bad skill is caught.
+
+## Phase 2c — design & spike (decisions locked 2026-06-22)
+
+The unproven phase, so structured **spike-then-decide**: a throwaway *measurement* answers the
+make-or-break question before any production build.
+
+**The make-or-break question:** can a cheap, walled-off model emit honest `{0,1}` anchor verdicts that
+*separate good skills from bad ones*? If no, the whole "auto-author gated by Gate B" design collapses
+(a verifier that can't discriminate is worse than none — false confidence).
+
+**Decisions (locked):**
+- **D1 — verify mode (run-and-check vs static-grade): the spike measures both.** Run-and-check
+  (actually execute the skill on a test input, score the *output* against anchors) is the faithful
+  OPENSKILL form (lean); static text-grade is cheaper but drifts toward the self-feedback trap. Pick
+  whichever the spike shows discriminates.
+- **D2 — anchors are independent.** Gate B *generates its own* assertions from independently-retrieved
+  verification knowledge; the author's frontmatter `anchors:` are a **seed/comparison signal, NOT the
+  test** (an author must not grade its own homework).
+- **D3 — cheap walled-off model.** A fresh pi→kimi session, independent of the author's context (no
+  answer key). If the spike shows the cheap model can't discriminate → Gate B ships **advisory**, revisit.
+- **D4 — autonomy ramp: DEFERRED to post-spike.** Full auto-author+report (Paco's stated preference)
+  vs Paco-confirm-first until Gate B earns trust — decided *with spike data*, because the 2b live test
+  showed the cheap classifier misfires and autonomy *amplifies* misclassification.
+- **D5 / Q5 — Gate B scores ALL authored skills**, advisory-vs-blocking **by origin**: *commanded →
+  advisory* (written regardless; score in the report + `last_verified`); *auto → blocking* (kept only
+  if it passes; else refine ≤3 passes → down-route to a lesson).
+
+**Trigger model (when Gate B fires):**
+- On **every** event that creates/changes a skill: commanded create · commanded refine · auto-promote
+  (distill flag acted on) · auto-refine (correction on an applied skill).
+- **Advisory vs blocking is by origin** (commanded advisory / auto blocking), per D5.
+- **Timing (inline vs async) falls out of D1's cost:** static-grade cheap → run **inline** everywhere;
+  run-and-check expensive → **auto** inline+blocking (no human waiting), **commanded** writes
+  immediately then Gate B runs **async** → a follow-up report with the score (keeps the command snappy).
+- **Out of 2c:** re-verifying *existing* skills as world-facts drift (needs the scheduler — backlog).
+  Lower risk anyway: a good skill encodes *timeless* facts ("cite a primary source"), and Gate B should
+  *reject* a skill that bakes in a perishable fact (facts-as-procedure is a bad skill).
+
+**The spike (throwaway measurement — NO `/goal`, not shipped, deleted after):**
+- **Test set:** ~5 known-good skills (incl. the live-authored `fact-check-viral-claim`) + ~5
+  **deliberately-broken** ones (e.g. "trust the first search result", vacuous/unfalsifiable steps,
+  wrong anchors, facts-as-procedure).
+- **Run** the candidate Gate B (both D1 variants) on each → independent anchor score.
+- **Go-bar:** good ≫ bad with a clean separating margin (all good ≥ threshold T, all bad < T, no
+  overlap). Output = go/no-go · which verify mode · whether the cheap model suffices.
+- Keep the *learning* (and the validated Gate B core if it works); discard the harness.
+
+**Post-spike:**
+- **GO** → `/goal` the real 2c: Gate B capability wired per the trigger model, auto-author/refine loop,
+  D4 autonomy decided, contracts/tests/live gate (like 2a/2b).
+- **NO-GO** → Gate B ships **advisory-only** (shows a score, never blocks), no auto-author; rethink.
 
 ## Out of scope
 
