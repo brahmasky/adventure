@@ -74,6 +74,24 @@ export function buildCodexArgs(worktree: string, outfile: string, model?: string
   return args;
 }
 
+/**
+ * Build the argv for a **write-mode** codex run (Phase 3 — code self-write, ADR 0011 §5/§6).
+ * IDENTICAL to {@link buildCodexArgs} except the sandbox is `workspace-write` (Codex may edit
+ * files) instead of `read-only`, confined to `-C <worktree>`. The diff lands only in the
+ * throwaway worktree; the daemon's live tree is untouched (it becomes a branch for Paco to
+ * merge, §5). NEVER includes a `--dangerously-bypass-*` / `--yolo` / `--skip-git-repo-check`
+ * flag — those are deliberately absent (asserted in tests, as the read-only path).
+ */
+export function buildCodexWriteArgs(worktree: string, model?: string): string[] {
+  const args = ["exec", "--sandbox", "workspace-write", "-C", worktree];
+  if (model) {
+    args.push("-m", model);
+  }
+  // Trailing `-`: the framed write task is read from stdin (the DATA channel).
+  args.push("-");
+  return args;
+}
+
 interface NodeError extends Error {
   code?: string;
   status?: number | null;
@@ -162,6 +180,65 @@ export function createCodingAgentAdapter(
         }
       }
     }
+  };
+}
+
+export interface SelfWriteCodexConfig {
+  /** The worktree the diff is written into. Created/torn-down by the orchestrator (the diff
+   *  must outlive this call so the checker stack can inspect it), NOT here. */
+  worktree: string;
+  /** Injectable env for config resolution (tests). Defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Factory: returns an adapter that has Codex **write a diff** in `config.worktree`
+ * (`--sandbox workspace-write`). Input `{ task: string }` is the framed write task on the
+ * DATA channel (symptom + context + "you are EDITING Houge's OWN source"). Unlike the
+ * read-only diagnose adapter, this does NOT create or tear down the worktree (the caller
+ * owns it so the resulting diff survives for the checker stack) and there is no `-o` outfile
+ * — the artifact is the modified files. Returns `{ ok:true, output:{ worktree, model, bin } }`
+ * on success; a clean flat error on non-zero exit / timeout / codex-not-found. Reuses the
+ * shared `resolveCodex*` resolvers.
+ */
+export function createSelfWriteCodexAdapter(
+  config: SelfWriteCodexConfig
+): (input: Record<string, unknown>) => ToolAdapterResult {
+  const env = config.env ?? process.env;
+
+  return (input: Record<string, unknown>): ToolAdapterResult => {
+    const task = input.task;
+    if (typeof task !== "string" || task.trim().length === 0) {
+      return { ok: false, error: "task must be a non-empty string" };
+    }
+
+    const bin = resolveCodexBin(env);
+    const model = resolveCodexModel(env);
+    const timeout = resolveCodexTimeoutMs(env);
+
+    try {
+      execFileSync(bin, buildCodexWriteArgs(config.worktree, model), {
+        input: task,
+        timeout,
+        cwd: config.worktree,
+        stdio: ["pipe", "pipe", "pipe"]
+      });
+    } catch (error) {
+      const err = error as NodeError;
+      if (err.code === "ENOENT") {
+        return {
+          ok: false,
+          error: `Coding agent binary not found: ${bin} (set HOUGE_CODEX_BIN or install codex)`
+        };
+      }
+      if (err.signal === "SIGTERM" || err.code === "ETIMEDOUT") {
+        return { ok: false, error: `Coding agent timed out after ${timeout}ms` };
+      }
+      const status = typeof err.status === "number" ? err.status : "unknown";
+      return { ok: false, error: `Coding agent exited non-zero (status ${status}): ${errorMessage(error)}` };
+    }
+
+    return { ok: true, output: { worktree: config.worktree, model: model ?? "default", bin } };
   };
 }
 

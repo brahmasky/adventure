@@ -149,6 +149,45 @@ else **guided-refine ≤3** against the failing criteria, then if still failing 
 On by default (`HOUGE_SKILLS_ENABLED` / `HOUGE_GATE_B_ENABLED` are the kill switches) — see
 [configuration](docs/reference/configuration.md#self-evolution-phase-2a--ambient-skills).
 
+## Self-evolution (Phase 3) — code self-write (gated)
+
+The highest-risk surface: Houge can **write a diff to his own source**. A `selfcode` message with
+**write intent** (*"猴哥, fix the intent router so it sees your identity"*) routes to a write path —
+read intent still goes to Phase 1 diagnose, and an **ambiguous case defaults to diagnose** (read before
+write).
+
+**The autonomous check stack.** Houge frames the task, then **Codex writes the diff in a fresh git
+worktree**. The diff runs through three checkers — writer ≠ checker by construction — with **no human in
+the synchronous loop**:
+
+1. **Protected-path check** (deterministic, ungameable) → **HARD DENY** if the diff touches the locked
+   surface (gates, identity/ADRs, deps/build, or an *existing* test).
+2. **Test gate** → `typecheck` + `npm test` + `build` in the worktree; red fails.
+3. **Claude reviewer** (model diversity: Codex writes, Claude judges) → an adversarial
+   *fixes-it / bugs / scope-creep* verdict — the staff-engineer check tests can't give.
+
+A failed checker 2 or 3 feeds back to Codex for a **refine loop capped at ≤3** passes. Only if all three
+pass does Houge **auto-publish the diff as a branch** (`houge/selfwrite/<run-id>`) and **notify Paco**.
+
+**Safety properties.** The protected surface is a **HARD DENY that nothing — not even `/approve` —
+can override** (per [ADR 0011](docs/decisions/0011-self-evolution-architecture.md) §5, the constants are
+Paco's hand only). Net-new test files are **allowed** (good coverage), but editing or deleting an
+*existing* test is denied (else Houge could delete the failing test to fake-pass the gate). The
+protected list itself lives in the gate-machinery class, so Houge can't edit the list of what he can't
+edit. **The daemon never hot-swaps** — Houge publishes a branch but **cannot make it run**; only Paco's
+`git merge` can. **Off by default.** Every outcome (published / hard-deny / failed) is **signal, never a
+silent drop**: a structured run-store event plus an async Telegram notification in Houge's voice.
+
+**How Paco operates it.** Flip `HOUGE_SELFWRITE_ENABLED=true` (and point `HOUGE_CLAUDE_BIN` at the
+absolute `claude` path). Then, when notified of a published branch, **review the `houge/selfwrite/<run-id>`
+branch in git, `git merge` it, and reload the daemon** — at his leisure (pull-based, not a blocking
+gate). Config: `HOUGE_SELFWRITE_ENABLED` / `HOUGE_SELFWRITE_REVIEWER` / `HOUGE_CLAUDE_BIN` /
+`HOUGE_CLAUDE_TIMEOUT_MS` / `HOUGE_TESTGATE_TIMEOUT_MS` (the write adapter reuses `HOUGE_CODEX_*`) — see
+[configuration](docs/reference/configuration.md#self-evolution-phase-3--code-self-write). Rationale:
+[ADR 0011](docs/decisions/0011-self-evolution-architecture.md) §7 + its
+[2026-06-25 amendment](docs/decisions/0011-self-evolution-architecture.md#amendment-2026-06-25-self-write-is-autonomous-to-branch-checkpoint--merge-not-approve);
+spec: [Phase 3 spec](docs/superpowers/specs/2026-06-25-phase3-code-self-write.md).
+
 ## Safety model
 
 Deterministic code owns control; the LLM is used only for judgment

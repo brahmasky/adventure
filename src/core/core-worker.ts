@@ -1,11 +1,21 @@
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { BudgetLedger } from "../budget/budget-ledger.js";
 import { CapabilityRunner } from "../capabilities/capability-runner.js";
 import type { ApprovalRequestSink, CapabilityResult } from "../capabilities/capability-runner.js";
 import { createLocalFileReadAdapter } from "../capabilities/local-file-read.js";
-import { createCodingAgentAdapter, resolveCodexEnabled, resolveCodexTimeoutMs } from "../capabilities/coding-agent.js";
-import { compileSelfDiagnoseContract, compileSkillAuthorContract } from "../contracts/task-contract.js";
+import { createCodingAgentAdapter, createSelfWriteCodexAdapter, resolveCodexEnabled, resolveCodexTimeoutMs } from "../capabilities/coding-agent.js";
+import { compileCodeSelfWriteContract, compileSelfDiagnoseContract, compileSkillAuthorContract } from "../contracts/task-contract.js";
+import { checkSelfWriteDiff, parseDiffRaw } from "../capabilities/self-write-guard.js";
+import type { GuardResult } from "../capabilities/self-write-guard.js";
+import { resolveTestGateTimeoutMs, runTestGate } from "../run/test-gate.js";
+import type { TestGateResult } from "../run/test-gate.js";
+import { reviewDiff } from "../capabilities/diff-reviewer.js";
+import type { ReviewResult } from "../capabilities/diff-reviewer.js";
+import { publishBranch, selfWriteBranchName } from "../run/branch-publish.js";
+import { createWorktree, removeWorktree } from "../run/worktree.js";
 import { buildGateAQuestion, GATE_A_DISCIPLINE, parseGateAVerdict } from "../capabilities/skill-router.js";
 import type { GateAResult } from "../capabilities/skill-router.js";
 import { buildGuidedRefineQuestion, buildSkillAuthorQuestion, parseAuthoredSkill } from "../capabilities/skill-author.js";
@@ -23,12 +33,14 @@ import {
   buildIntentQuestion,
   buildIntentSystemPrompt,
   chatContextSince,
+  classifySelfcodeMode,
   countTrailingClarifyTurns,
   feedTurnText,
   parseIntent,
   resolveChatContextTurnChars,
   resolveChatContextTurns,
-  resolveMaxConsecutiveClarify
+  resolveMaxConsecutiveClarify,
+  resolveSelfWriteEnabled
 } from "../capabilities/intent.js";
 import type { IntentClassification, Intent } from "../capabilities/intent.js";
 import { buildDistillQuestion, DISTILL_DISCIPLINE, looksLikeSkillProcedure, parseDistillResult, shouldRejectLesson } from "../capabilities/distill.js";
@@ -69,6 +81,51 @@ type HelperResult =
   | { ok: true; answer: string; report: CompletionReportInput }
   | { ok: false; failure: Exclude<CapabilityResult, { status: "succeeded" }> };
 
+/**
+ * Injectable seams for the Phase-3 self-write stack (ADR 0011). These wrap the real S1–S4 +
+ * worktree/branch modules so a test can mock the whole stack (worktree create/teardown, the
+ * write-Codex adapter, the three checkers, branch publish) without shelling out to git/codex/claude.
+ * Defaults wire the real implementations. `mkNodeModulesLink` is the node_modules-into-worktree
+ * step (overridable in tests, where the worktree is fake).
+ */
+export interface SelfWriteDeps {
+  createWorktree: (projectRoot: string) => { path: string };
+  removeWorktree: (path: string) => void;
+  /** Make node_modules available in the worktree so the test gate (typecheck/test/build) can run. */
+  mkNodeModulesLink: (projectRoot: string, worktree: string) => void;
+  /** Factory for the write-mode Codex adapter bound to a worktree. */
+  makeWriteAdapter: (worktree: string) => (input: { task: string }) => ToolAdapterResult | Promise<ToolAdapterResult>;
+  /** Read the worktree's raw diff against HEAD (`git diff --raw -M -C HEAD`). */
+  rawDiff: (worktree: string) => string;
+  /** Read the worktree's full unified diff against HEAD (`git diff HEAD`) — fed to the reviewer. */
+  unifiedDiff: (worktree: string) => string;
+  runTestGate: (worktree: string) => TestGateResult;
+  reviewDiff: (input: { task: string; diff: string }) => ReviewResult | Promise<ReviewResult>;
+  publishBranch: (worktree: string, branch: string, summary?: string) => string;
+}
+
+/** Default wiring of the self-write stack to the real S1–S4 + worktree/branch modules. */
+function defaultSelfWriteDeps(): SelfWriteDeps {
+  return {
+    createWorktree,
+    removeWorktree,
+    mkNodeModulesLink: (projectRoot, worktree) => {
+      // The worktree of HEAD has only TRACKED files → NO node_modules → the test gate
+      // (typecheck/test/build) cannot run. node_modules is gitignored, so it never appears in a
+      // worktree. We symlink the live project's node_modules into the worktree so the gate's npm
+      // scripts resolve their toolchain. The link is throwaway (the worktree is torn down after).
+      symlinkSync(join(projectRoot, "node_modules"), join(worktree, "node_modules"), "dir");
+    },
+    makeWriteAdapter: (worktree) =>
+      createSelfWriteCodexAdapter({ worktree }) as (input: { task: string }) => ToolAdapterResult | Promise<ToolAdapterResult>,
+    rawDiff: (worktree) => execFileSync("git", ["-C", worktree, "diff", "--raw", "-M", "-C", "HEAD"], { encoding: "utf8" }),
+    unifiedDiff: (worktree) => execFileSync("git", ["-C", worktree, "diff", "HEAD"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }),
+    runTestGate: (worktree) => runTestGate(worktree),
+    reviewDiff: (input) => reviewDiff(input),
+    publishBranch
+  };
+}
+
 const GATED_CAPABILITY = "local_project_write";
 const GATED_SIDE_EFFECT = "local_write" as const;
 const GATED_RISK = "medium" as const;
@@ -84,7 +141,10 @@ export class CoreWorker {
     private readonly webSearchAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult> = createWebSearchAdapter(),
     // Read-only Codex consult for the `selfcode` route (ADR 0011). Injectable so tests
     // mock it; the default reads Houge's own committed source from a fresh worktree.
-    private readonly codingAgentAdapter: (input: Record<string, unknown>) => ToolAdapterResult | Promise<ToolAdapterResult> = createCodingAgentAdapter({ projectRoot })
+    private readonly codingAgentAdapter: (input: Record<string, unknown>) => ToolAdapterResult | Promise<ToolAdapterResult> = createCodingAgentAdapter({ projectRoot }),
+    // The Phase-3 self-write stack (ADR 0011). Injectable so tests mock the worktree/Codex/
+    // checkers/publish; default wires the real S1–S4 + worktree/branch modules.
+    private readonly selfWriteDeps: SelfWriteDeps = defaultSelfWriteDeps()
   ) {
     this.skillStore = new SkillStore({
       root: join(projectRoot, "skills"),
@@ -689,6 +749,179 @@ export class CoreWorker {
   }
 
   /**
+   * The `selfcode` WRITE branch (ADR 0011, Phase 3 — code self-write). Houge EDITS his OWN source:
+   * frame the write task as DATA (symptom + lessons + "you are EDITING Houge's own source"), have
+   * write-Codex produce a diff in a FRESH worktree, then run it through the three autonomous
+   * checkers (writer ≠ checker by construction):
+   *   1. protected-path guard (deterministic HARD DENY — never overridable)
+   *   2. test gate (typecheck + test + build — ungameable truth)
+   *   3. independent reviewer (semantic / adversarial — Claude or Codex)
+   * Checkers 2 + 3 may REFINE (feed the failure back to the writer) up to ≤3 TOTAL write attempts
+   * (ADR §6 anti-overfit). All green → publish a branch + record `self_write_published` + a success
+   * notification. Any terminal failure records its event (`self_write_blocked`/`self_write_failed`)
+   * + a notification; NOTHING is published. The worktree is ALWAYS torn down (finally). The daemon
+   * NEVER hot-swaps — Paco merges + reloads the branch at his leisure (§5).
+   */
+  private async runSelfWrite(
+    claim: ClaimedRun,
+    message: string,
+    focus: string,
+    recentTurns: ChatTurnRow[],
+    budget: BudgetLedger,
+    turnChars: number
+  ): Promise<HelperResult> {
+    const deps = this.selfWriteDeps;
+    const selfContract = compileCodeSelfWriteContract(claim.contract.objective);
+    const lessons = this.runStore.readLessonBlock("ask");
+    const baseTask = buildSelfWriteTask(message, focus, recentTurns, turnChars, lessons);
+
+    let worktree: string | undefined;
+    try {
+      try {
+        worktree = deps.createWorktree(this.projectRoot).path;
+        // CRITICAL: a worktree of HEAD has only TRACKED files, so node_modules (gitignored) is
+        // absent and the test gate's npm scripts would fail to resolve their toolchain. Make
+        // node_modules available BEFORE the test gate (symlink the live project's). See deps.
+        deps.mkNodeModulesLink(this.projectRoot, worktree);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.runStore.recordSelfWriteFailed(claim.run_id, { reason: `worktree setup failed: ${detail}`, last_output: "" });
+        return this.selfWriteReport(`I couldn't set up an isolated workspace to fix \`${focus}\` (${detail}). Not publishing.`);
+      }
+
+      const writeAdapter = deps.makeWriteAdapter(worktree);
+      const maxAttempts = 3; // ADR §6 anti-overfit: ≤3 TOTAL write passes.
+      let task = baseTask;
+      let lastFailure = ""; // for the failure event/report after the refine cap is hit.
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        // (c) write-Codex produces / refines the diff in the worktree.
+        const written = await this.runSelfWriteCapability(selfContract, writeAdapter, task, budget);
+        if (!written.ok) {
+          // A capability failure (budget, codex missing/timeout) is terminal — no diff to check.
+          this.runStore.recordSelfWriteFailed(claim.run_id, { reason: `write-codex failed: ${written.error}`, last_output: written.error });
+          return this.selfWriteReport(`Tried to fix \`${focus}\`, but the coding agent failed (${written.error}). Not publishing.`);
+        }
+
+        // (d) CHECKER 1 — protected-path guard. HARD DENY: not refinable, not overridable.
+        const guard = this.guardWorktree(deps, worktree);
+        if (!guard.allowed) {
+          const attemptedPaths = guard.denied.map((d) => ({ path: d.path, status: d.status, reason: d.reason }));
+          this.runStore.recordSelfWriteBlocked(claim.run_id, { attempted_paths: attemptedPaths, context: focus });
+          return this.selfWriteReport(buildHardDenyNotification(focus, guard.denied));
+        }
+
+        // (e) CHECKER 2 — test gate. Red → refine (feed the failing stage+output back) ≤3 total.
+        const gate = deps.runTestGate(worktree);
+        if (!gate.green) {
+          lastFailure = `tests red (${gate.stage})`;
+          if (attempt < maxAttempts) {
+            task = buildSelfWriteRefineTask(baseTask, `The test gate failed at the "${gate.stage}" stage:\n${gate.output}`);
+            continue;
+          }
+          this.runStore.recordSelfWriteFailed(claim.run_id, { reason: lastFailure, last_output: gate.output });
+          return this.selfWriteReport(`Tried to fix \`${focus}\`, couldn't land a clean one (tests red at ${gate.stage}). Not publishing.`);
+        }
+
+        // (f) CHECKER 3 — independent reviewer (only on a green diff). Reject → refine ≤3 total.
+        const diff = deps.unifiedDiff(worktree);
+        const review = await deps.reviewDiff({ task: claim.contract.objective, diff });
+        if (!review.ok) {
+          lastFailure = `reviewer unavailable: ${review.error}`;
+          this.runStore.recordSelfWriteFailed(claim.run_id, { reason: lastFailure, last_output: review.error });
+          return this.selfWriteReport(`Tried to fix \`${focus}\`, but the independent reviewer was unavailable (${review.error}). Not publishing.`);
+        }
+        if (review.verdict.verdict === "reject") {
+          const reasons = (review.verdict.reasons ?? []).join("; ") || "no specific reason given";
+          lastFailure = `reviewer rejected: ${reasons}`;
+          if (attempt < maxAttempts) {
+            task = buildSelfWriteRefineTask(baseTask, `The independent reviewer REJECTED the diff: ${reasons}`);
+            continue;
+          }
+          this.runStore.recordSelfWriteFailed(claim.run_id, { reason: lastFailure, last_output: reasons });
+          return this.selfWriteReport(`Tried to fix \`${focus}\`, couldn't land a clean one (reviewer flagged: ${reasons}). Not publishing.`);
+        }
+
+        // (g) ALL GREEN → publish the branch + record + success notification.
+        const branch = selfWriteBranchName(claim.run_id);
+        let published: string;
+        try {
+          published = deps.publishBranch(worktree, branch, focus);
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          this.runStore.recordSelfWriteFailed(claim.run_id, { reason: `publish failed: ${detail}`, last_output: detail });
+          return this.selfWriteReport(`I had a verified fix for \`${focus}\` but couldn't publish the branch (${detail}). Not publishing.`);
+        }
+        this.runStore.recordSelfWritePublished(claim.run_id, {
+          branch: published,
+          summary: focus,
+          verdict: { ...review.verdict },
+          gate_results: { protected: "pass", tests: "pass", reviewer: review.verdict.verdict }
+        });
+        return this.selfWriteReport(buildPublishNotification(focus, published, review));
+      }
+
+      // Unreachable in practice (the loop always returns), but fail loud if it ever isn't.
+      this.runStore.recordSelfWriteFailed(claim.run_id, { reason: lastFailure || "exhausted refine attempts", last_output: "" });
+      return this.selfWriteReport(`Tried to fix \`${focus}\`, couldn't land a clean one. Not publishing.`);
+    } finally {
+      if (worktree) deps.removeWorktree(worktree);
+    }
+  }
+
+  /** Run ONE write-mode Codex pass through the runner (so the call counts against the budget). */
+  private async runSelfWriteCapability(
+    contract: ClaimedRun["contract"],
+    adapter: (input: { task: string }) => ToolAdapterResult | Promise<ToolAdapterResult>,
+    task: string,
+    budget: BudgetLedger
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const registry = new ToolRegistry();
+    const codexTimeoutMs = resolveCodexTimeoutMs(process.env) + RUNNER_TIMEOUT_BUFFER_MS;
+    registry.register({
+      name: "coding_agent_cli",
+      category: "coding_agent_cli",
+      side_effect_level: "external_read",
+      risk_level: "medium",
+      timeout_ms: codexTimeoutMs,
+      output_limit_bytes: 200_000,
+      execute: (input) => adapter({ task: typeof input.task === "string" ? input.task : "" })
+    });
+    const result = await new CapabilityRunner(registry).execute({
+      contract,
+      capability: "coding_agent_cli",
+      input: { task },
+      budget
+    });
+    if (result.status !== "succeeded") {
+      return { ok: false, error: capabilityFailureDetail(result) };
+    }
+    return { ok: true };
+  }
+
+  /** CHECKER 1: read the worktree's raw diff and run it through the protected-path guard. */
+  private guardWorktree(deps: SelfWriteDeps, worktree: string): GuardResult {
+    let raw: string;
+    try {
+      raw = deps.rawDiff(worktree);
+    } catch (error) {
+      // Fail closed: if we cannot read the diff we cannot prove it is safe → deny.
+      const detail = error instanceof Error ? error.message : String(error);
+      return { allowed: false, denied: [{ path: "", status: "?", reason: `could not read worktree diff (fail-closed): ${detail}` }] };
+    }
+    return checkSelfWriteDiff(parseDiffRaw(raw));
+  }
+
+  /** Assemble a self-write HelperResult (the 🐒 banner answer + completion-report shape). */
+  private selfWriteReport(notify: string): HelperResult {
+    return {
+      ok: true,
+      answer: notify,
+      report: { title: "Self-write", body: [`Self-write outcome:`, "", notify].join("\n"), sources: ["intent:selfcode:write"], notifyText: notify }
+    };
+  }
+
+  /**
    * The `feedback` branch (ADR 0010, Stage B). Resolve the target prior answer + its
    * scope (reply hint → run → chat turn intent; else the most recent assistant turn).
    * Distill the user's feedback (instruction) against the prior answer (reference only)
@@ -1189,7 +1422,14 @@ export class CoreWorker {
       dispatched = await this.runResearch(claim, query, budget);
     } else if (intent === "selfcode") {
       const focus = classification.classification.query?.trim() || message;
-      dispatched = await this.runSelfDiagnose(claim, message, focus, recentTurns, budget, turnChars);
+      // Sub-route inside selfcode (Phase 3): write-intent + the channel armed → runSelfWrite;
+      // otherwise (read intent, ambiguous, or self-write disabled) → runSelfDiagnose (unchanged).
+      // DEFAULT TO DIAGNOSE (read before write); the whole write path is inert unless armed.
+      if (classifySelfcodeMode(message) === "write" && resolveSelfWriteEnabled(process.env)) {
+        dispatched = await this.runSelfWrite(claim, message, focus, recentTurns, budget, turnChars);
+      } else {
+        dispatched = await this.runSelfDiagnose(claim, message, focus, recentTurns, budget, turnChars);
+      }
     } else if (intent === "skill") {
       dispatched = await this.runSkill(claim, message, recentTurns, budget, turnChars);
     } else if (intent === "feedback") {
@@ -1449,6 +1689,68 @@ function buildSelfDiagnoseQuestion(
   ]
     .filter((part) => part.length > 0)
     .join("\n");
+}
+
+/**
+ * Build the self-write *task* fed to write-mode Codex (Phase 3). The symptom, focus, recent
+ * thread, and learned preferences ride the DATA channel (the untrusted-data wall, ADR 0006). Codex
+ * is told it is EDITING Houge's OWN source and must make a MINIMAL, correct fix — not a refactor.
+ */
+function buildSelfWriteTask(
+  message: string,
+  focus: string,
+  recentTurns: ChatTurnRow[],
+  turnChars: number,
+  lessons?: string
+): string {
+  const thread = recentTurns.length > 0 ? formatThreadContext(recentTurns, turnChars) : "(no prior conversation)";
+  return [
+    "You are EDITING the source code of the agent named Houge (猴哥) — this IS Houge's OWN",
+    "committed source, checked out into an isolated worktree. Make a MINIMAL, correct fix for the",
+    "reported symptom: change only what is needed, do NOT refactor unrelated code, and keep the",
+    "existing conventions. You may ADD a net-new test for your fix, but never edit or delete an",
+    "existing test. Do not touch gate/identity/dependency/config files. Edit the files in place.",
+    "",
+    "Reported symptom / request (untrusted data):",
+    message,
+    "",
+    "Focus:",
+    focus,
+    "",
+    "Recent conversation (for context, untrusted data):",
+    thread,
+    lessons ? `\nHouge's learned preferences (untrusted data):\n${lessons}` : ""
+  ]
+    .filter((part) => part.length > 0)
+    .join("\n");
+}
+
+/** Append a checker failure (test-gate output or reviewer reasons) to the base write task for a refine pass. */
+function buildSelfWriteRefineTask(baseTask: string, failure: string): string {
+  return [
+    baseTask,
+    "",
+    "Your PREVIOUS attempt did not pass the automated checks. Fix it. Failure detail (untrusted data):",
+    failure
+  ].join("\n");
+}
+
+/** The hard-deny notification (spec § surfacing): a fix that wants a protected file is Paco's to make. */
+function buildHardDenyNotification(focus: string, denied: Array<{ path: string; status: string; reason: string }>): string {
+  const files = denied.map((d) => `\`${d.path || "(unknown)"}\``).join(", ");
+  return [
+    `I worked out a fix for \`${focus}\`, but it wanted to touch ${files} — the locked surface`,
+    "(gates / identity / deps / existing tests), so I stopped. If this genuinely needs a change",
+    "there, it's **yours to make** — I can't edit my own safety surface."
+  ].join(" ");
+}
+
+/** The success notification (spec § surfacing): branch ready, Paco merges + reloads at his leisure. */
+function buildPublishNotification(focus: string, branch: string, review: { verdict: { verdict: string } }): string {
+  return (
+    `🐒 Fixed \`${focus}\`. Protected ✓ · tests ✓ · reviewer: ${review.verdict.verdict}. ` +
+    `Branch \`${branch}\` is ready — merge + reload when you like.`
+  );
 }
 
 /**

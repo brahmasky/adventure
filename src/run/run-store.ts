@@ -576,6 +576,29 @@ export class RunStore {
     });
   }
 
+  /**
+   * Phase 3 self-write audit (spec § Notification, surfacing + tracking). Three outcomes, each a
+   * structured run-store event (audit trail + future dashboard source); the Telegram notification
+   * rides the turn's async reply, not these events.
+   */
+  recordSelfWritePublished(
+    run_id: string,
+    payload: { branch: string; summary: string; verdict: Record<string, unknown>; gate_results: Record<string, unknown> }
+  ): void {
+    this.appendRunLedgerEvent(run_id, "self_write_published", "core", payload);
+  }
+
+  recordSelfWriteBlocked(
+    run_id: string,
+    payload: { attempted_paths: Array<Record<string, unknown>>; context: string }
+  ): void {
+    this.appendRunLedgerEvent(run_id, "self_write_blocked", "core", payload);
+  }
+
+  recordSelfWriteFailed(run_id: string, payload: { reason: string; last_output: string }): void {
+    this.appendRunLedgerEvent(run_id, "self_write_failed", "core", payload);
+  }
+
   recordEvalCompleted(eval_suite: string, passed: boolean, failed_case_ids: string[]): void {
     this.appendLedgerEvent(
       createLedgerEvent({

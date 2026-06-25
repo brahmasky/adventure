@@ -44,8 +44,30 @@ bin** (build needs `HOUGE_CLAUDE_BIN`, like `HOUGE_CODEX_BIN`). Discriminates cl
 BAD→reject (7s) — caught the no-op fix AND the deleted test. Subscription (cheap). API path = documented
 fallback (key is empty placeholder); Codex-session = no-Claude fallback.
 
-**NEXT: `/goal` the build** (subagent orchestration; independent verifier's primary mandate = the
-security invariant: prove no diff can reach a protected path). S1–S8 per the spec's Build stages.
+**BUILD IN PROGRESS (2026-06-25, `/goal` active).** Subagent orchestration; independent verifier's
+primary mandate = the security invariant (prove no diff can reach a protected path).
+- [x] S1. `src/capabilities/self-write-guard.ts` — hard-deny guard, **60 tests**, 7 bypass classes defended
+      (path-norm, segment-boundary, rename/symlink/type-change, case-insensitive, fail-closed, self-protect).
+- [x] S2. `src/run/test-gate.ts` — `runTestGate(worktree)` typecheck→test→build, capped 8KB, timeout. 8 tests.
+- [x] S3. write-mode Codex adapter in coding-agent.ts — `buildCodexWriteArgs`/`createSelfWriteCodexAdapter`
+      (`workspace-write`, no-bypass; caller owns worktree). 11 tests; read-only path intact (13).
+- [x] S4. `src/capabilities/diff-reviewer.ts` — `reviewDiff` Claude CLI (spike pattern) + Codex fallback;
+      `resolveClaudeBin` no bare default. 16 tests.
+- [x] S5. route+contract+notify+tracking — `runSelfWrite` (frame→worktree+symlink node_modules→write-Codex→
+      guard→test-gate→Claude review→refine≤3→publishBranch+notify), `compileCodeSelfWriteContract`,
+      deterministic write-intent sub-route (default diagnose), `self_write_published/blocked/failed` events,
+      `branch-publish.ts`. **npm test 530 green · typecheck clean · build OK · deps {}**. (S5 also fixed
+      pre-existing strict-tsc errors in self-write-guard.ts — verifier to scrutinize.)
+- [x] S6. config + docs + ADR amendment — configuration.md (5 new env vars), README Phase 3 section,
+      ADR 0011 "Amendment (2026-06-25)" (autonomous-to-branch; checkpoint = merge, not /approve).
+- [x] S7. gates + independent adversarial verification — **VERDICT: PASS.** 72 adversarial diffs all
+      deny-correctly + segment-precision allows safe siblings; non-null assertions clean (length-guarded);
+      8/8 orchestration invariants PASS (hard-deny never publishes, worktree always torn down on throw,
+      mode-aware diff fails closed, refine ≤3, flag off-default, publishBranch never touches live tree,
+      contract forbids shell/destructive/paid). No HIGH/MED. **npm test 606 · typecheck · build · deps {}.**
+      Post-verify defense-in-depth: added `run-ledger.ts` (audit) + `local-project-write-adapter.ts` to the
+      protected list; guard 132 green, full suite 606 green.
+- [~] S8. LIVE gate — Houge fixes 猴哥 himself → branch + notify (harness on real chain primary) — NEXT
 
 ---
 # Goal — Phase 1: code self-diagnose (read-only, Codex-backed) — ADR 0011
@@ -430,3 +452,18 @@ event-equivalent (harness can't type into Telegram); every other leg was live.
 
 ---
 # Prior goals done: breaker (G1), daemon (G2), web read (G4), 猴哥 identity. ADRs 0001–0009 + v1 spec on main.
+
+---
+## Phase 3 / S5 — code-self-write INTEGRATION (build-time, this session)
+
+Wired the autonomous check stack into Houge's selfcode route. New/changed:
+- `src/contracts/task-contract.ts`: `compileCodeSelfWriteContract` (allows coding_agent_cli + llm_answer + write_report; forbids shell/destructive/paid/external_write; no new approval gate; 60min / 4 tool calls).
+- `src/capabilities/intent.ts`: `resolveSelfWriteEnabled` (HOUGE_SELFWRITE_ENABLED, DEFAULT FALSE) + `classifySelfcodeMode` (deterministic write/diagnose, default diagnose; EN+中文 verbs).
+- `src/run/branch-publish.ts` (NEW, protected): `publishBranch` / `selfWriteBranchName` → `houge/selfwrite/<run-id>` (checkout -b + add -A + commit in the worktree's shared .git).
+- `src/run/run-ledger.ts` + `src/run/run-store.ts`: `self_write_published` / `self_write_blocked` / `self_write_failed` events + recorder methods.
+- `src/core/core-worker.ts`: `runSelfWrite` orchestration (worktree → node_modules symlink → write-Codex → guard(HARD DENY) → test gate → reviewer → publish; refine ≤3 total; always teardown) + `SelfWriteDeps` injectable seam + the selfcode write/diagnose dispatch branch.
+- Fixed pre-existing S1 strictness errors blocking the typecheck gate (self-write-guard.ts non-null asserts + its test).
+
+Tests added (+13): contract shape, write-intent classification, runSelfWrite happy/hard-deny/test-red/reviewer-reject/flag-off, branch-publish fixture.
+Gates: typecheck clean · npm test 530 pass · build OK · dependencies:{} unchanged.
+Remaining: S6 (config docs + .env) · S7 independent adversarial verify · S8 LIVE gate.

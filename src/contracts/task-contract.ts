@@ -121,6 +121,30 @@ export function compileSkillAuthorContract(objective: string): CompiledTaskContr
   return { ...base, contract_hash: stableHash(base) };
 }
 
+/**
+ * The `code-self-write` contract (ADR 0011, Phase 3 — code self-write). Derived in-route from
+ * a `turn` whose intent classified as `selfcode` in WRITE mode (and only when
+ * `HOUGE_SELFWRITE_ENABLED=true`). It OPENS `coding_agent_cli` (write-mode Codex in a fresh
+ * worktree) alongside `llm_answer`/`write_report`, while keeping `generic_shell`/`destructive`/
+ * `paid_action` forbidden — the diff lands on a branch, never in the live tree. NO new approval
+ * gate: the branch is fully reversible (nothing runs until Paco merges, §5), so it is not in the
+ * irreversible class the approval gate guards. Long time ceiling (write-Codex + the full test
+ * gate are slow); small tool budget — the refine loop is capped at ≤3 write attempts in-route.
+ */
+export function compileCodeSelfWriteContract(objective: string): CompiledTaskContract {
+  const base = {
+    objective,
+    budget: { time_minutes: 60, max_tool_calls: 4, max_agent_delegations: 0 },
+    allowed_actions: ["coding_agent_cli", "llm_answer", "write_report"],
+    forbidden_actions: ["generic_shell", "external_write", "destructive", "paid_action"],
+    output: { path: "runs/<run-id>/report.md", format: "sourced_markdown_report" as const },
+    approval_gates: ["local_write", "external_write", "destructive", "paid"] as SideEffectLevel[],
+    stop_condition: "self-write branch published, hard-denied, or failed after refine; or budget exhausted",
+    eval_hooks: []
+  };
+  return { ...base, contract_hash: stableHash(base) };
+}
+
 function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
   if (!event.goal?.trim()) {
     return invalid("Message is required");

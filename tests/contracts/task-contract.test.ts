@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
-import { compileSelfDiagnoseContract, compileSkillAuthorContract, compileTaskContract } from "../../src/contracts/task-contract.js";
+import { compileCodeSelfWriteContract, compileSelfDiagnoseContract, compileSkillAuthorContract, compileTaskContract } from "../../src/contracts/task-contract.js";
 
 const runEvent = buildTypedTaskEvent({
   source: "cli",
@@ -113,6 +113,24 @@ describe("compileTaskContract", () => {
       expect(turn.contract.allowed_actions).not.toContain("coding_agent_cli");
       expect(turn.contract.forbidden_actions).toContain("coding_agent_cli");
     }
+  });
+
+  it("the code-self-write contract allows coding_agent_cli; forbids shell/destructive/paid; no approval gate (ADR 0011 Phase 3)", () => {
+    const self = compileCodeSelfWriteContract("fix the intent router so it sees your identity");
+    // It OPENS write-mode coding_agent_cli (the only contracts that do are the self-* ones).
+    expect(self.allowed_actions).toEqual(["coding_agent_cli", "llm_answer", "write_report"]);
+    // Shell / destructive / paid / external_write stay forbidden — the diff is a branch, never a live write.
+    expect(self.forbidden_actions).toContain("generic_shell");
+    expect(self.forbidden_actions).toContain("destructive");
+    expect(self.forbidden_actions).toContain("paid_action");
+    expect(self.forbidden_actions).toContain("external_write");
+    expect(self.forbidden_actions).not.toContain("coding_agent_cli");
+    // NO new approval gate — the branch is reversible; merge is Paco's (the gate list is the safety floor only).
+    expect(self.approval_gates).toEqual(["local_write", "external_write", "destructive", "paid"]);
+    // Long time ceiling (write-Codex + the full test gate are slow); small tool budget (refine capped in-route).
+    expect(self.budget.time_minutes).toBe(60);
+    expect(self.budget.max_tool_calls).toBe(4);
+    expect(self.contract_hash).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("the skill-author contract forbids coding_agent_cli — skills are prose (ADR 0011 Phase 2b)", () => {

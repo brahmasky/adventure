@@ -168,3 +168,41 @@ entry, not a catastrophe.
 - **External evidence / prior art:** OPENSKILL (arXiv 2606.06741) for the anchor-grounded verifier
   and model-agnostic skill transfer; yoyo-evolve for the harness-owns-the-self, frontier-model-as-
   muscle loop (and as the cautionary example of un-gated auto-merge).
+
+## Amendment (2026-06-25): self-write is autonomous-to-branch; checkpoint = merge, not /approve
+
+**What changed.** §7 above describes Phase 3 as *"Codex generates a diff → preview in the `/approve`
+prompt (hash-bound to what executes)."* As built (the [Phase 3 spec](../superpowers/specs/2026-06-25-phase3-code-self-write.md)),
+the synchronous `/approve`-before-branch gate is **removed**. Phase 3 is **autonomous-to-branch +
+notify**: a write-intent `selfcode` message runs Codex → the protected-path check → the test gate → the
+Claude reviewer (refine ≤3) **with no human in the synchronous loop**, then **auto-publishes the verified
+diff as a branch** (`houge/selfwrite/<run-id>`) and **notifies Paco**. The human checkpoint becomes the
+**§5 merge**, not `/approve`.
+
+**Why this is correct, not a weakening.**
+- **A branch is reversible.** The `/approve` + hash-binding machinery exists for the **irreversible**
+  core-principle actions (real accounts, paid, destructive — §5). A self-write-to-branch is fully
+  reversible (not merged, not running), so it was never in that class and never needed the irreversible-
+  action approval gate. That `/approve` machinery is **untouched** and still governs those genuinely
+  irreversible actions.
+- **§5's one constant is preserved.** The daemon still **never hot-swaps**; Paco still merges + reloads.
+  The human judgment for *what runs* simply moves from a blocking Telegram `/approve` to a **pull-based
+  `git merge`** of the branch when Paco chooses — same human-in-the-loop for the running system, zero
+  blocking on Houge's ability to *produce* candidates. The branch **is** the reviewable artifact, so no
+  `/approve` hash-binding is needed (nothing executes until merge).
+- **This is freedom-over-control** (ADR 0001/0011, as amended): the deterministic safety nets stay (the
+  ungameable HARD-DENY protected-path check + net-new-tests-only + the test gate + the independent
+  reviewer); only the human bottleneck on *producing* candidates is removed.
+
+**Autonomy refinement (observability over blocking).** Paco is **always notified** of every outcome
+(`self_write_published` / `self_write_blocked` / `self_write_failed` — a run-store event plus an async
+Telegram message), but the notification is **signal, not a blocking gate**. A fix that *requires* a
+protected change is a hard-deny escalation surfaced as a "needs Paco's hand" message — Paco edits the
+locked surface directly, never through Houge's self-write.
+
+**Backlog follow-up.** A **read-only observability dashboard** over the `self_write_*` events is
+deferred (the Telegram notification covers the observe-need for now; the dashboard needs no new write
+surface).
+
+This amendment supersedes the `/approve`-gate sentence in §7 for the Phase-3 code-self-write surface
+only; the rest of §7 and the original §5 constant stand as written.

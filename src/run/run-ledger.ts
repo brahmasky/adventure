@@ -38,7 +38,10 @@ export type LedgerEventType =
   | "run_cancelled"
   | "run_expired"
   | "global_budget_fuse"
-  | "web_search_performed";
+  | "web_search_performed"
+  | "self_write_published"
+  | "self_write_blocked"
+  | "self_write_failed";
 
 export interface LedgerEvent {
   event_id: string;
@@ -124,7 +127,12 @@ const requiredPayloadFields = {
   run_cancelled: ["reason", "requester", "report_ref"],
   run_expired: ["reason", "expired_at", "report_ref"],
   global_budget_fuse: ["breaches", "window_hours"],
-  web_search_performed: ["query", "provider", "source_urls"]
+  web_search_performed: ["query", "provider", "source_urls"],
+  // Phase 3 self-write audit trail (spec § Notification, surfacing + tracking). Each is the
+  // structured signal for an outcome — the future read-only dashboard's data source.
+  self_write_published: ["branch", "summary", "verdict", "gate_results"],
+  self_write_blocked: ["attempted_paths", "context"],
+  self_write_failed: ["reason", "last_output"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(

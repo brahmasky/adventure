@@ -241,6 +241,31 @@ back to an advisory write with a noted error (only a real **low score** blocks, 
 | `HOUGE_GATE_B_PASSES` | `3` | Number of independent Gate B passes averaged into the score (the ensemble that tamed single-pass noise in the spike). |
 | `HOUGE_GATE_B_THRESHOLD` | `0.15` | Pass threshold on the mean score — the good/bad **separation** gap from the spike, not an absolute quality bar. |
 
+## Self-evolution (Phase 3) — code self-write
+
+Houge can write a **diff to his own source** to fix a bug. A `selfcode` message with **write
+intent** (*"fix it so you stop asking which 猴哥"*) routes to `runSelfWrite`: Houge frames the task,
+has **Codex write a diff in a fresh git worktree** (`codex exec --sandbox workspace-write`), then runs
+it **autonomously** through three checkers — (1) a deterministic **protected-path check** (HARD DENY on
+any gate/identity/dep/existing-test path; **not** overridable by `/approve`), (2) the **test gate**
+(typecheck + test + build in the worktree), (3) an **independent Claude reviewer** (model diversity:
+the writer is Codex, the checker is Claude) — with a **refine loop ≤3**. Only if all pass does Houge
+**publish the diff as a branch** (`houge/selfwrite/<run-id>`) and **notify Paco**. The daemon **never
+hot-swaps**: Paco merges + reloads at his leisure (the [ADR 0011](../decisions/0011-self-evolution-architecture.md)
+§5 one constant). **Off by default.** Design: [ADR 0011](../decisions/0011-self-evolution-architecture.md)
+§7 + [its 2026-06-25 amendment](../decisions/0011-self-evolution-architecture.md#amendment-2026-06-25-self-write-is-autonomous-to-branch-checkpoint--merge-not-approve);
+spec: [Phase 3 spec](../superpowers/specs/2026-06-25-phase3-code-self-write.md). The write adapter
+**reuses the `HOUGE_CODEX_*` variables** (above, in [Phase 1](#self-evolution-phase-1--code-self-diagnose)):
+`HOUGE_CODEX_MODEL`, `HOUGE_CODEX_TIMEOUT_MS`, `HOUGE_CODEX_BIN`.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_SELFWRITE_ENABLED` | `false` | Master switch for the **entire** code-self-write surface. Off until Paco flips it. When not truthy, a write-intent `selfcode` message **falls back to read-only diagnose** (Phase 1) — the safe direction (read before write) — so the feature ships dark and is opt-in. |
+| `HOUGE_SELFWRITE_REVIEWER` | `claude` | Which agent runs **checker 3** (the independent reviewer). `claude` — the Claude CLI reviewer (spike-validated GO). `codex` — an independent Codex session (fresh session + adversarial prompt) as the no-Claude fallback; writer≠checker is preserved either way. |
+| `HOUGE_CLAUDE_BIN` | — (no default) | **Absolute** path to the `claude` CLI for the reviewer. **No default by design:** the launchd daemon's PATH does not include `~/.local/bin`, so `claude` is not resolvable by name — an absolute path is required (e.g. `/Users/pluo/.local/bin/claude`). If unset, the Claude reviewer is **disabled** (set `HOUGE_SELFWRITE_REVIEWER=codex` to use the fallback). Spike-validated invocation: `claude -p` (print mode), with the review prompt fed on **stdin**. |
+| `HOUGE_CLAUDE_TIMEOUT_MS` | `120000` | Wall-clock timeout (ms) for one Claude reviewer pass. The spike measured 7–29s for a real verdict; the cap leaves headroom for the async ack-then-deliver UX. |
+| `HOUGE_TESTGATE_TIMEOUT_MS` | `300000` | Wall-clock timeout (ms) for the whole **test gate** (typecheck + test + build) run in the worktree. A gate that exceeds it is treated as red (no publish), not a crash. |
+
 ## Telegram command reference
 
 Natural language first: just type, and Houge classifies intent (**answer** / **research** /
