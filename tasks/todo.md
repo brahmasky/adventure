@@ -85,6 +85,17 @@ primary mandate = the security invariant (prove no diff can reach a protected pa
 
 **PHASE 3 COMPLETE.** All gates met. Deliverable branch `houge/selfwrite/run_48db7150…` awaits Paco's review+merge.
 
+## Phase 3.1 — per-role writer/checker flags + real LLM telemetry — DESIGN + SPIKES DONE (2026-06-25)
+Spec: Phase-3 spec "Phase 3.1" section. **Decisions:** full `llm_call` ledger (all calls: codex/claude/
+kimi) + per-role `.env` flags. **Both spikes GO:** reviewer (`spike-claude-reviewer-p3.mjs`) + writer
+(`spike-claude-writer-p3.mjs` — claude `-p --permission-mode bypassPermissions --output-format json`
+edited a file headlessly in 15s, clean diff, usage captured).
+- `HOUGE_SELFWRITE_WRITER` (codex|claude, default codex) + `HOUGE_SELFWRITE_REVIEWER` (claude|codex,
+  default claude). Paco's case: WRITER=claude / REVIEWER=codex (heavy writer load on Claude Max 5x).
+- Telemetry retires the hand-grep + lands backlog #3 (LLM telemetry) + feeds dashboard (#10).
+- Security unchanged: guard is writer-agnostic (checks the diff), both writers confined to the worktree.
+**NEXT: `/goal` the 3.1 build** (W1–W6 per spec). No build until the `/goal`.
+
 ---
 # Goal — Phase 1: code self-diagnose (read-only, Codex-backed) — ADR 0011
 

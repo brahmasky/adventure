@@ -289,6 +289,52 @@ back-to-back calls the subscription rate-limits, in which case `HOUGE_SELFWRITE_
 sanctioned fallback) is reliable — used for the final clean run. In production self-write is rare and
 Paco-present, so the Claude path's ~20s normal latency is fine.
 
+## Phase 3.1 — per-role writer/checker flags + real LLM telemetry (2026-06-25)
+
+**Motivation (Paco).** The *writer* consumes far more tokens than the *checker* (measured: Codex writer
+~200K–1.2M total/run, mostly cached input from agentic file-reading; Claude reviewer ~25K + ~1.2K out,
+~$0.08). So which engine plays which role should be a **per-role `.env` flag**, to put the heavy writer
+load on whichever subscription is largest (e.g. Claude Max 5x writer + Codex Plus reviewer). And token
+usage must be observed **properly**, not by hand-grepping Codex rollout logs.
+
+**Design.**
+- **Two independent flags** (writer was hardcoded to Codex; reviewer already swappable):
+  | Flag | Values | Default |
+  |---|---|---|
+  | `HOUGE_SELFWRITE_WRITER` | `codex` \| `claude` | `codex` |
+  | `HOUGE_SELFWRITE_REVIEWER` | `codex` \| `claude` | `claude` |
+  Paco's case → `WRITER=claude`, `REVIEWER=codex`. **Model diversity preserved** (writer ≠ reviewer
+  provider) — keep a soft warning if both are set to the same provider, don't block.
+- **Writer abstraction** `SelfWriter` with two impls: Codex (`--sandbox workspace-write`, existing) and
+  **Claude** (`claude -p --permission-mode bypassPermissions --output-format json`, agentic edit in the
+  worktree — the spike's validated pattern; absolute `HOUGE_CLAUDE_BIN`, daemon PATH). Per-role model
+  overrides `HOUGE_CLAUDE_WRITER_MODEL` / `HOUGE_CLAUDE_REVIEWER_MODEL` (fall back to `HOUGE_CLAUDE_MODEL`,
+  default `sonnet`).
+- **Real telemetry (retires the temp method; lands backlog #3).** Capture structured usage at the source
+  — Codex `--json` (`token_count` events), Claude `--output-format json` (`usage` + `total_cost_usd`),
+  and the kimi cheap-chain client — and emit an **`llm_call` ledger event** `{provider, model, role
+  (writer|reviewer|classify|frame|answer), input_tokens, output_tokens, cached, latency_ms, cost_usd}`.
+  Also stamp writer+reviewer usage onto the `self_write_*` events (feeds the dashboard, #10).
+- **Security: unchanged + writer-agnostic.** The deterministic guard checks the *diff*, not who wrote it,
+  so swapping the writer cannot widen what may land. Both writers are confined to the throwaway worktree;
+  Claude's permission-bypass is scoped by `cwd`; test-gate + branch-isolation + no-hot-swap all hold.
+
+**Spikes — both GO (2026-06-25).**
+- Reviewer (`spike-claude-reviewer-p3.mjs`): GO — see "Spike RESULT" above.
+- Writer (`spike-claude-writer-p3.mjs`): **GO** — `claude -p --permission-mode bypassPermissions
+  --output-format json` edited a file headlessly in **15s**, clean correct diff, no permission hang,
+  usage captured (input 5 / output 317 / cache_read 63046 / cache_creation 7972, $0.072, 3 turns,
+  is_error false). Claude writer used ~71K vs Codex's 200K–1.2M on comparable work — telemetry will give
+  real per-role figures.
+
+**Build stages (W1–W6):** W1 `SelfWriter` abstraction + Claude writer adapter + `HOUGE_SELFWRITE_WRITER`
+flag + tests · W2 `llm_call` ledger event + usage capture in codex/claude/kimi adapters + tests · W3
+wire writer flag into `runSelfWrite`, stamp writer/reviewer usage on `self_write_*`, soft-warn
+same-provider · W4 config + docs (`.env` flags, configuration.md, README) + mark backlog #3 done · W5
+gates + independent verification (guard still writer-agnostic; bypass confined; telemetry leaks no
+secrets) · W6 LIVE: harness with `WRITER=claude/REVIEWER=codex` publishes a branch with per-role tokens
+recorded (+ the reverse, the proven default).
+
 ## Risks / unknowns
 
 1. **Headless Claude from the daemon** — the S0 spike; Codex fallback if NO-GO.
