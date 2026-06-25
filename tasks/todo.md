@@ -1,17 +1,28 @@
-# Current System State (read first — 2026-06-22)
+# Current System State (read first — 2026-06-26)
 
-- **Branch:** **`main` @ `6e54cf0`, pushed to origin** (brahmasky/adventure). **PROMOTED 2026-06-25** —
-  the whole feat/learning-v1 line (ADR 0010/0011 + Phases 1–3.1, 21 commits) fast-forwarded onto main.
-  Branch model going forward = **daemon runs from main**; develop on feature branches off main, merge back.
-  (`feat/learning-v1` still exists, == main.)
-- **Daemon:** launchd `com.houge.daemon`. **As of promotion it was STALE** (running ~Phase 2c dist from
-  PID 4137 — the session's live harnesses ran in-process, never through the daemon). Reload onto current
-  main: `npm run build && launchctl kickstart -k gui/$(id -u)/com.houge.daemon`. Conversation/lessons/
-  identity/skills survive reloads (`houge.sqlite` + `skills/` + `memory/core/houge.md`); only in-flight runs lost.
+- **Branch:** **`main` @ `cd9c1f7`, pushed to origin** (brahmasky/adventure). Phases **1, 2a/b/c, 3, 3.1, 3.3
+  all SHIPPED to main** (3.3 = interactive Telegram merge controls; merged from feat/merge-controls 2026-06-26).
+  Branch model = **daemon runs from main**; develop on feature branches off main, merge back (now via the
+  3.3 [Merge & reload] button or manual git).
+- **Daemon:** launchd `com.houge.daemon` — **LIVE on main `cd9c1f7`, PID 37553** (reloaded 2026-06-26T21:28,
+  clean restart, healthy). Reload after a code change: `npm run build && launchctl kickstart -k gui/$(id -u)/com.houge.daemon`.
+  Conversation/lessons/identity/skills survive reloads (`houge.sqlite` + `skills/` + `memory/core/houge.md`);
+  only in-flight runs lost.
+- **Self-write surface is OFF by default** — `HOUGE_SELFWRITE_ENABLED` defaults false. Phase 3/3.1/3.3 CODE is
+  live, but Houge won't self-write until `.env` sets `HOUGE_SELFWRITE_ENABLED=true` + `HOUGE_CLAUDE_BIN=/Users/pluo/.local/bin/claude`
+  (optional: `HOUGE_SELFWRITE_WRITER=claude HOUGE_SELFWRITE_REVIEWER=codex HOUGE_SELFWRITE_PUSH=true`) + reload.
+
+⚠ **NEXT UP (pending, not lost):**
+  1. **Live runtime bug (2026-06-26):** research/synthesis queries FAIL silently — pi blows the 256KB output
+     cap + kimi-api empty + NO failure reply. See the two backlog items "LLM-for-research model fit" (RECURRED)
+     and "Silent turn failures (NEW)". This is the most user-visible issue right now.
+  2. **Phase 3.2** — provider rate-limit/quota surfacing + per-run cost (DESIGN DONE, /goal drafted; see the
+     "Phase 3.2" section below + spec). Would also make #1 visible instead of cryptic.
+
 - **猴哥 fix branches** `houge/selfwrite/run_48db7150` (codex) + `run_4c0f99f0` (claude) are UNMERGED +
-  now STALE (cut before 3.1 changed intent.ts/composer.ts/core-worker.ts → would conflict). Don't merge
-  them; re-fix 猴哥 via a fresh self-write off current main (ideally via the 3.3 [Merge & reload] button).
-  `git branch -D` them once 3.3 ships.
+  STALE (cut before 3.1 changed intent.ts/composer.ts/core-worker.ts → would conflict). Don't merge them;
+  re-fix 猴哥 via a fresh self-write off current main (now possible via the 3.3 [Merge & reload] button).
+  `git branch -D` them (+ `feat/merge-controls`, == main) when convenient.
 - **Runtime:** model-agnostic chain `pi→kimi` (NEVER Claude). **Codex = build-time muscle** for code self-diagnose only (NOT skill authoring — skills are authored on pi→kimi).
 - **`.env` (gitignored):** `HOUGE_CODEX_ENABLED=true`, `HOUGE_CODEX_TIMEOUT_MS=300000`. Skills default ON (`HOUGE_SKILLS_ENABLED`).
 - **Live skills present** (gitignored runtime): `skills/research/fact-check-viral-claim.md` + `cross-check-figures-across-sources.md` (both real, authored by Houge over Telegram in the 2b live test).
@@ -437,6 +448,17 @@ scoped** (`ask`: don't say 师父; `research`: verify date) → checks 1–4,6 +
 - [ ] **LLM-for-research model fit** — runtime chain is coding-tuned (`pi=kimi-for-coding`,
       `kimi-k2.7-code-highspeed`); pi over-produces on research synthesis. Add a general model for the
       research/answer surface (the chain is already pluggable). Also: still confirm #5's full Telegram sequence.
+      ⚠ **RECURRED LIVE 2026-06-26** (daemon on main cd9c1f7, PID 37553): real Telegram research query
+      "猴哥，今天和周末的天气如何，适合骑车吗" → `run_8672b6fb` → web_search ✓ then run_FAILED:
+      `pi: output exceeded 262144 byte cap` + `kimi-api: Kimi response missing message content`. So LIVE-FIX-1's
+      kimi max_tokens bump did NOT cure it — pi STILL blows the 256KB cap on research synthesis (root cause
+      open) and the kimi-api fallback returned empty again. Simple chat is fine; only research/synthesis breaks.
+      Likely real fix: route research synthesis to a general (non-coding) model. (Tie-in: Phase 3.2's provider
+      error surfacing would at least make this VISIBLE instead of cryptic.)
+- [ ] **Silent turn failures (NEW, surfaced live 2026-06-26)** — a FAILED run sends NO Telegram reply
+      (notification_outbox empty for `run_8672b6fb`), so the user sees nothing — looks like Houge is dead when
+      he actually errored. Add a failure-notification path: on `run_failed`, always send a short "I hit an error
+      on that one: <reason>" so failures are never silent. High-value, small. (Pairs with Phase 3.2.)
 - [ ] **Market-data capability** (surfaced live 2026-06-19) — real-time quotes, technical indicators
       (MACD, K-line), fundamentals for tickers (e.g. LLY). `web_search` finds articles but can't fetch a
       live price or compute an indicator; Houge correctly declines today. New `market_data` `external_read`
