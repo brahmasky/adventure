@@ -128,6 +128,30 @@ edited a file headlessly in 15s, clean diff, usage captured).
 **PHASE 3.1 COMPLETE.** Build gates green (659 tests · typecheck · build · deps {}); verification PASS; primary
 live config published with per-role telemetry. Swappable writer/reviewer flags + real llm_call telemetry shipped.
 
+## Phase 3.3 — interactive Telegram merge controls + §5 amendment — DESIGN + SPIKE GO (2026-06-25)
+Spec: Phase-3 spec "Phase 3.3" section. **Sequenced FIRST** (before 3.2) per Paco — it's the payoff
+(Houge self-updates, Paco approves from phone). **§5 amended:** human gate PRESERVED but MOVED to
+Telegram — daemon merges+reloads ONLY on Paco's authenticated tap, never on its own; guard is the real
+floor (unreachable dangerous surface); a merge is reversible. **Branch model = main** (rollout prereq:
+merge feat/learning-v1→main + repoint daemon, by hand, once).
+- Telegram callback infra (NEW — none today): inline [View diff]·[Merge & reload]·[Discard] +
+  callback_query in (auth'd to Paco only) + answerCallbackQuery/editMessageReplyMarkup.
+- [Merge & reload]: git merge→main · npm run build · **re-run test-gate (red→auto-revert, no restart)** ·
+  durable "reloading" notif · **detached `launchctl kickstart` self-restart** · optional push (HOUGE_SELFWRITE_PUSH).
+- **M1 SPIKE GO** (`scripts/spike-self-restart-p3.mjs`): throwaway launchd service self-kickstarted →
+  relaunched, 2 distinct PIDs; live daemon untouched. Detached-kickstart pattern works.
+**NEXT: `/goal` the 3.3 build** (M2 callback infra · M3 actions+merge/build/verify/restart · M4 wire
+buttons+idempotency · M5 §5 amendment+config+docs · M6 gates+verification+LIVE tap). Then 3.2 after.
+
+## Phase 3.2 — provider error surfacing (rate-limit/quota) + per-run cost — DESIGN DONE (2026-06-25)
+Spec: Phase-3 spec "Phase 3.2" section. **Motivation:** a Codex 5h-window quota exhaustion surfaced as a
+cryptic "exited non-zero (status 1)" — the adapter discarded the CLI's stderr (the real reason).
+**Decisions:** (A) capture stderr + classify rate_limit/auth/timeout/generic → actionable notification
+("switch HOUGE_SELFWRITE_<ROLE>=<other> or wait"); (B) per-run token+cost line on the notification;
+**notify-only, NO auto-fallback** (Paco flips the flag); (C) token budget cap deferred. No spike.
+**NEXT: `/goal` the 3.2 build** (E1 classifier · E2 capture stderr in adapters · E3 runSelfWrite notifications
++ cost line · E4 docs+gates+verification). Constraint: `detail` carries NO secrets (redact token-like).
+
 ---
 # Goal — Phase 1: code self-diagnose (read-only, Codex-backed) — ADR 0011
 

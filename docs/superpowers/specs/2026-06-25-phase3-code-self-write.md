@@ -335,6 +335,134 @@ gates + independent verification (guard still writer-agnostic; bypass confined; 
 secrets) · W6 LIVE: harness with `WRITER=claude/REVIEWER=codex` publishes a branch with per-role tokens
 recorded (+ the reverse, the proven default).
 
+## Phase 3.2 — provider error surfacing (rate-limit/quota) + per-run cost (2026-06-25)
+
+**Motivation (Paco).** A Codex 5-hour-window quota exhaustion surfaced as a cryptic
+`Coding agent exited non-zero (status 1): Command failed: codex exec …` — the adapter mapped the
+failure to `error.message` and **threw away the CLI's stderr** (which says *why*). Paco needs to be
+told clearly when a subscription is rate-limited/quota-exhausted (so he can switch the role to the
+other engine or wait), and to see what each self-write costs.
+
+**Decisions.** (A) Capture the CLI's real **stderr** + **classify** the failure; surface an actionable
+notification. (B) Always append a **per-run token+cost line** to the self-write notification. **Notify
+only — NO auto-fallback** (Paco flips the flag; preserves model-diversity intent, no surprise spend).
+(C) A configurable token *budget cap* is **deferred** (telemetry + the cost line cover visibility for now).
+
+**Design.**
+- **`src/capabilities/provider-error.ts` (new):** `classifyProviderError(text) → { kind:
+  "rate_limit" | "auth" | "timeout" | "generic", detail }`. Scans the captured stderr/stdout for
+  patterns — rate_limit: `rate limit|429|usage limit|quota|resets|overloaded|capacity`; auth:
+  `unauthorized|401|expired|log ?in|auth`. `detail` = a bounded stderr tail (counts/words only — NO
+  secrets; redact anything token-like). Pure + tolerant + unit-tested.
+- **Capture stderr** at every CLI call site (today it's discarded): the codex adapters
+  (`coding-agent.ts`), the Claude writer (`self-write-writer.ts`), and both reviewers
+  (`diff-reviewer.ts`) include the stderr tail (+ Claude `--output-format json` `is_error`/error
+  field) in their returned error.
+- **Actionable notifications** in `runSelfWrite` (role + provider + the OTHER engine are all known):
+  - rate_limit → *"🐒 Couldn't run the {writer|reviewer} — {Codex|Claude} looks rate-limited /
+    quota-exhausted. Switch `HOUGE_SELFWRITE_{WRITER|REVIEWER}={other}` or wait for the window to
+    reset. (detail: …)"*
+  - auth → *"{provider} auth failed — re-authenticate ({codex login | claude login}). (detail: …)"*
+  - timeout → *"{role} timed out after {N}ms (possibly rate-limited under load). Retry or switch
+    engine."* (the live-gate failure mode)
+  - generic → current message + the stderr tail (no longer silent).
+- **Per-run cost line:** append to the published notification (and where useful, the failure one) a
+  compact line from the W3 `usage_summary` / recorded `llm_call` totals — e.g. *"· writer claude
+  ~737K tok $0.66 · reviewer codex ~218K tok"*.
+
+**Build stages (E1–E4):** E1 `provider-error.ts` classifier + stderr-tail/redaction helper + tests ·
+E2 capture stderr into the codex/claude writer + reviewer error paths (return classified detail) +
+tests · E3 `runSelfWrite` classified failure notifications + per-run cost line on success + tests ·
+E4 docs (configuration.md/README note) + gates + independent verification (no secrets in `detail`;
+classification correct; cost line counts-only). No spike (deterministic; no external unknowns).
+
+## Phase 3.3 — interactive Telegram merge controls + §5 amendment (2026-06-25)
+
+**Motivation (Paco).** If every self-authored fix needs a manual terminal `git merge`, the
+self-evolution loop never closes — the payoff of Phase 3 is Houge *actually improving himself*. The
+guard (not §5) is the real safety floor: the protected-path hard-deny makes the dangerous surface
+(secrets, gates, identity, deps, existing tests) structurally unreachable by any self-write, verified
+by 72 adversarial diffs. So we lift §5's manual-merge rule — **but the human gate stays**, it just
+moves to Telegram.
+
+### ADR 0011 §5 amendment (to write in the build)
+
+Original §5: *"the daemon never hot-swaps; Paco merges and reloads."* Amended: **the human
+checkpoint is preserved — the daemon merges + reloads self-authored code ONLY on Paco's
+authenticated action (a Telegram button tap or a manual git merge); it never merges on its own.**
+The *input method* moves from a terminal command to a Telegram tap and the daemon becomes the
+*executor* of what Paco authorized. Justified because: (a) the protected-path guard makes the
+dangerous surface unreachable regardless of merge mechanism; (b) a merge is reversible (git); (c) the
+change is already verified (guard + test-gate + reviewer) and Paco can **[View diff]** before tapping;
+(d) a post-merge test-gate re-run gates the restart. This is *freedom-over-control*: keep the
+deterministic floor + the human's yes/no, drop the terminal friction.
+
+### Branch model — daemon runs from `main`
+
+Target steady state: the daemon runs `main`'s `dist/`. (Today it runs `feat/learning-v1` —
+development state.) **Rollout prerequisite:** merge `feat/learning-v1` → `main` + repoint the daemon
+to `main`, ONCE, by hand, before this feature operates on the real target. Self-write branches are cut
+from `main@HEAD`, so [Merge & reload] merges cleanly back into `main`.
+
+### Telegram callback infrastructure (NEW — none exists today)
+
+The Telegram layer is text-only (`/approve` is typed; no `callback_query`/`inline_keyboard`/
+`reply_markup`). New work:
+- Publish notifications carry an **inline keyboard**: **[View diff] · [Merge & reload] · [Discard]**,
+  `callback_data` = `selfwrite:<action>:<run-id>`.
+- The poller requests `allowed_updates` incl. `callback_query` and normalizes that update type.
+- **Auth: the callback's `from` user is checked against the allowlist** (only Paco can tap) — same
+  floor as messages; a non-allowed tap is rejected.
+- `answerCallbackQuery` (stop the spinner) + `editMessageReplyMarkup` (disable the buttons after an
+  action, so a branch can't be double-merged). Idempotent: an already-merged/already-discarded branch
+  → a no-op "already done" reply.
+
+### The actions
+
+- **[View diff]** → reply with `git diff main...<branch>` (bounded; read-only).
+- **[Discard]** → `git branch -D <branch>` (the worktree is already gone). Safe/reversible-in-spirit.
+- **[Merge & reload]** → the sequence:
+  1. `git merge <branch>` → `main` (clean; cut from `main@HEAD`).
+  2. `npm run build` (main source → new `dist/`).
+  3. **Re-run the test-gate on merged `main`** — the safeguard. RED → **`git revert`/reset the merge
+     + notify + DO NOT restart** (daemon keeps running old code). GREEN → continue.
+  4. Write the *"merged, reloading…"* message to the **durable outbox** (survives the restart).
+  5. **Self-restart:** issue `launchctl kickstart -k gui/$uid/com.houge.daemon` from a **detached**
+     child (so the instruction reaches launchd even as the daemon is SIGTERM'd), then exit; launchd
+     relaunches onto the new `dist/`; the new instance drains the outbox and continues.
+  6. (Optional) `git push origin main` — config/flag `HOUGE_SELFWRITE_PUSH`.
+
+### Safeguards
+
+- The protected-path guard still gates what can ever be on a branch (unchanged).
+- Post-merge test-gate re-run before any restart; red → auto-revert, no restart.
+- The "reloading" notification is durable (outbox) → no lost signal across the bounce.
+- v1 recovery if a *runtime* crash slips past the test-gate: documented manual `git revert` + reload;
+  a last-known-good auto-heal on launchd crash-loop is **deferred** (noted).
+
+### Spike first (de-risk the novel bit)
+
+Unknown: can a launchd-managed node process **restart itself** via `launchctl kickstart` and come
+back on new code? `scripts/spike-self-restart-p3.mjs` proves it on a **throwaway** launchd service
+(does NOT touch the live `com.houge.daemon`): the test service self-kickstarts and is observed to
+relaunch (new PID, incremented run counter). GO → build. NO-GO → fall back (merge on tap; reload stays
+a one-liner Paco runs).
+
+**Spike RESULT — GO (2026-06-25):** the throwaway service `com.houge.spike-restart-*` restarted itself
+cleanly via a detached `launchctl kickstart -k gui/$uid/<label>` — two starts, distinct PIDs
+(46854 → 68019), ~10s apart; live `com.houge.daemon` untouched. The detached-kickstart pattern works;
+[Merge & reload]'s self-restart is viable.
+
+### Build stages (M1–M6)
+
+M1 self-restart spike (GO/NO-GO) · M2 Telegram callback infra (inline keyboards out; `callback_query`
+in + auth + `answerCallbackQuery`/`editMessageReplyMarkup`) + tests · M3 the three actions
+(view-diff/discard/merge) + the merge→build→verify→restart sequence (detached kickstart) + push flag +
+tests · M4 wire buttons onto the publish notification + idempotency + tests · M5 §5 ADR amendment +
+config + docs · M6 gates + independent verification (callback auth: only Paco; post-merge red →
+auto-revert no-restart; idempotent double-tap) + LIVE (real Telegram tap → merge+reload, harness/real
+acceptable). **Out of scope:** proactive/idle self-write (scheduler); merge WITHOUT a human tap.
+
 ## Risks / unknowns
 
 1. **Headless Claude from the daemon** — the S0 spike; Codex fallback if NO-GO.
