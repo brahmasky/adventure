@@ -32,6 +32,51 @@ afterEach(() => {
   temps = [];
 });
 
+/** A Claude `--output-format json` envelope carrying the model's text in `result` + usage. */
+function claudeEnvelope(
+  resultText: string,
+  usage: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  } = {},
+  total_cost_usd = 0.07
+): string {
+  return JSON.stringify({
+    is_error: false,
+    num_turns: 1,
+    result: resultText,
+    total_cost_usd,
+    usage: {
+      input_tokens: usage.input_tokens ?? 5,
+      output_tokens: usage.output_tokens ?? 120,
+      cache_read_input_tokens: usage.cache_read_input_tokens ?? 6000,
+      cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 800
+    }
+  });
+}
+
+/** A codex `--json` JSONL stream: an agent-message line carrying `text`, then a token_count event. */
+function codexJsonl(agentText: string): string {
+  return [
+    JSON.stringify({ type: "session", id: "abc" }),
+    JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: agentText } }),
+    JSON.stringify({
+      type: "token_count",
+      info: {
+        total_token_usage: {
+          input_tokens: 1200,
+          cached_input_tokens: 900,
+          output_tokens: 300,
+          reasoning_output_tokens: 50,
+          total_tokens: 1800
+        }
+      }
+    })
+  ].join("\n");
+}
+
 describe("parseVerdict", () => {
   it("parses a clean JSON verdict object", () => {
     const v = parseVerdict('{"verdict":"pass","fixes_task":true,"introduces_bugs":false,"scope_creep":false,"reasons":["ok"]}');
@@ -139,29 +184,61 @@ describe("reviewDiff", () => {
     if (!result.ok) expect(result.error).toMatch(/disabled|HOUGE_CLAUDE_BIN/);
   });
 
-  it("spawns the Claude bin in print mode and returns the parsed verdict", () => {
-    const bin = fakeBin("claude", '{"verdict":"reject","reasons":["no-op fix"]}');
+  it("spawns the Claude bin and parses the verdict from the JSON envelope's result field", () => {
+    const bin = fakeBin("claude", claudeEnvelope('{"verdict":"reject","reasons":["no-op fix"]}'));
     const result = reviewDiff({ task: "fix it", diff: "the diff", env: { HOUGE_CLAUDE_BIN: bin } });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.verdict.verdict).toBe("reject");
   });
 
-  it("maps an unparseable Claude response to a clean error", () => {
-    const bin = fakeBin("claude", "I think it looks fine to me, no JSON here.");
+  it("returns normalized Claude usage from the envelope on a successful review", () => {
+    const bin = fakeBin(
+      "claude",
+      claudeEnvelope('{"verdict":"pass","fixes_task":true}', {
+        input_tokens: 10,
+        output_tokens: 200,
+        cache_read_input_tokens: 5000,
+        cache_creation_input_tokens: 1000
+      }, 0.08)
+    );
+    const result = reviewDiff({ task: "fix it", diff: "the diff", env: { HOUGE_CLAUDE_BIN: bin } });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // input_tokens is the cache-INCLUSIVE total (fresh 10 + cache 6000), comparable across providers;
+      // cached = cache_read + cache_creation; cost from total_cost_usd.
+      expect(result.usage).toEqual({
+        input_tokens: 10 + 6000,
+        output_tokens: 200,
+        cached_input_tokens: 6000,
+        cost_usd: 0.08
+      });
+    }
+  });
+
+  it("maps an unparseable Claude response (no verdict in result) to a clean error", () => {
+    const bin = fakeBin("claude", claudeEnvelope("I think it looks fine to me, no JSON here."));
     const result = reviewDiff({ task: "fix it", diff: "the diff", env: { HOUGE_CLAUDE_BIN: bin } });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/unparseable/);
   });
 
-  it("dispatches to the Codex fallback when reviewer=codex", () => {
-    const bin = fakeBin("codex", '{"verdict":"pass","fixes_task":true}');
+  it("dispatches to the Codex fallback (--json JSONL) when reviewer=codex and returns usage", () => {
+    const bin = fakeBin("codex", codexJsonl('{"verdict":"pass","fixes_task":true}'));
     const result = reviewDiff({
       task: "fix it",
       diff: "the diff",
       env: { HOUGE_SELFWRITE_REVIEWER: "codex", HOUGE_CODEX_BIN: bin }
     });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.verdict.verdict).toBe("pass");
+    if (result.ok) {
+      expect(result.verdict.verdict).toBe("pass");
+      // output includes reasoning_output_tokens (300 + 50); cached from cached_input_tokens.
+      expect(result.usage).toEqual({
+        input_tokens: 1200,
+        output_tokens: 350,
+        cached_input_tokens: 900
+      });
+    }
   });
 
   it("maps a missing reviewer binary (ENOENT) to a clean error", () => {

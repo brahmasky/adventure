@@ -59,6 +59,19 @@ async function send(text) {
   return { run_id: intake.run_id, status: result.status, intent: assistant?.intent ?? "(none)", answer };
 }
 
+// Dump the llm_call telemetry recorded for a run (proves per-role token capture).
+function dumpTelemetry(runId) {
+  let events = [];
+  try { events = store.getLedgerEvents(runId).filter((e) => e.event_type === "llm_call"); } catch {}
+  if (events.length === 0) { console.log("    llm_call telemetry: (none recorded)"); return; }
+  for (const e of events) {
+    const p = e.payload || {};
+    const cost = p.cost_usd != null ? ` $${p.cost_usd}` : "";
+    console.log(`    llm_call: role=${p.role} ${p.provider}/${p.model} ` +
+      `in=${p.input_tokens} out=${p.output_tokens} cached=${p.cached_input_tokens ?? 0}${cost}`);
+  }
+}
+
 function selfWriteBranches() {
   try {
     return execFileSync("git", ["branch", "--list", "houge/selfwrite/*"], { cwd: projectRoot, encoding: "utf8" })
@@ -80,7 +93,9 @@ try {
     "right now it bypasses the composer and keeps asking which 猴哥. Make the minimal correct fix."
   );
   console.log(`    status=${r1.status} intent=${r1.intent}`);
-  console.log(`    notification: ${r1.answer.replace(/\s+/g, " ").trim()}\n`);
+  console.log(`    notification: ${r1.answer.replace(/\s+/g, " ").trim()}`);
+  dumpTelemetry(r1.run_id);
+  console.log("");
   const afterPos = selfWriteBranches();
   const newBranches = afterPos.filter((b) => !before.has(b));
   console.log(`    new self-write branch(es): ${newBranches.join(", ") || "(none)"}`);

@@ -41,7 +41,8 @@ export type LedgerEventType =
   | "web_search_performed"
   | "self_write_published"
   | "self_write_blocked"
-  | "self_write_failed";
+  | "self_write_failed"
+  | "llm_call";
 
 export interface LedgerEvent {
   event_id: string;
@@ -132,7 +133,11 @@ const requiredPayloadFields = {
   // structured signal for an outcome — the future read-only dashboard's data source.
   self_write_published: ["branch", "summary", "verdict", "gate_results"],
   self_write_blocked: ["attempted_paths", "context"],
-  self_write_failed: ["reason", "last_output"]
+  self_write_failed: ["reason", "last_output"],
+  // Phase 3.1 real LLM telemetry (spec §"Real telemetry", backlog #3). Token usage captured at
+  // the source for every LLM call. role ∈ writer|reviewer|classify|frame|answer. cached_input_tokens,
+  // cost_usd, latency_ms are optional. NON-NEGOTIABLE: counts/metadata ONLY — never prompt/diff/response.
+  llm_call: ["provider", "model", "role", "input_tokens", "output_tokens"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(

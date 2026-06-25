@@ -1,4 +1,5 @@
 import type { LlmProvider, LlmRequest, LlmResult } from "../types.js";
+import type { LlmUsage } from "../../run/llm-usage.js";
 
 // Conservative, stable LAST-RESORT default — `moonshot-v1-auto` is an alias that
 // won't 404 as specific k2.x versions retire. Set HOUGE_LLM_MODEL_KIMI to pin a
@@ -32,6 +33,41 @@ export interface KimiProviderConfig {
   baseUrl?: string;
   timeoutMs?: number;
   fetchImpl?: KimiFetchImpl;
+  /**
+   * Phase 3.1 telemetry seam (spec §"Real telemetry"). Fired once per SUCCESSFUL completion with
+   * the call's normalized token usage and the actual model id — the W3 caller wires this to
+   * `recordLlmCall` for the cheap-chain roles. Optional: existing callers are unaffected, and the
+   * provider's `LlmResult` shape is unchanged (usage rides this side channel, not the result).
+   * NON-NEGOTIABLE: carries ONLY counts/metadata — never prompt or response bodies.
+   */
+  onUsage?: (usage: LlmUsage, model: string) => void;
+}
+
+/**
+ * Normalize the OpenAI-compatible `usage` block on a kimi chat-completion response into
+ * {@link LlmUsage}. `prompt_tokens`/`completion_tokens` are the OpenAI field names; cached prompt
+ * tokens (when the API reports them) live under `prompt_tokens_details.cached_tokens`. Returns
+ * `null` when no usable `usage` block is present (tolerant).
+ */
+function extractKimiUsage(data: unknown): LlmUsage | null {
+  if (typeof data !== "object" || data === null) return null;
+  const usage = (data as { usage?: unknown }).usage;
+  if (typeof usage !== "object" || usage === null) return null;
+  const u = usage as Record<string, unknown>;
+  const toNum = (v: unknown): number => {
+    const n = typeof v === "number" ? v : Number(v);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+  };
+  const details = u.prompt_tokens_details;
+  const cached =
+    typeof details === "object" && details !== null
+      ? toNum((details as Record<string, unknown>).cached_tokens)
+      : 0;
+  return {
+    input_tokens: toNum(u.prompt_tokens),
+    output_tokens: toNum(u.completion_tokens),
+    cached_input_tokens: cached
+  };
 }
 
 function extractContent(data: unknown): string | undefined {
@@ -158,6 +194,19 @@ export function createKimiProvider(config: KimiProviderConfig = {}): LlmProvider
           provider: "kimi-api",
           error: "Kimi response missing message content"
         };
+      }
+
+      // Telemetry side channel (Phase 3.1): surface normalized usage without altering the result
+      // shape. Best-effort — a missing usage block or a throwing hook never fails the answer.
+      if (config.onUsage) {
+        const usage = extractKimiUsage(data);
+        if (usage) {
+          try {
+            config.onUsage(usage, model);
+          } catch {
+            // a failing telemetry hook must never break a good answer
+          }
+        }
       }
 
       return { ok: true, provider: "kimi-api", model, answer };

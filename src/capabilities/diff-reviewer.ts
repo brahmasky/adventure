@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { resolveCodexBin, resolveCodexTimeoutMs } from "./coding-agent.js";
+import { normalizeClaudeUsage, normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
 
 /**
  * Independent diff reviewer (Phase 3, checker 3 — ADR 0011 §7 / spec
@@ -35,7 +36,9 @@ export interface ReviewVerdict {
   reasons?: string[];
 }
 
-export type ReviewResult = { ok: true; verdict: ReviewVerdict } | { ok: false; error: string };
+export type ReviewResult =
+  | { ok: true; verdict: ReviewVerdict; usage?: LlmUsage }
+  | { ok: false; error: string };
 
 /** Resolve which reviewer backs checker 3 (`HOUGE_SELFWRITE_REVIEWER`, default `claude`). */
 export function resolveSelfWriteReviewer(env: NodeJS.ProcessEnv): ReviewerKind {
@@ -53,7 +56,7 @@ export function resolveClaudeBin(env: NodeJS.ProcessEnv): string {
   return bin && bin.length > 0 ? bin : CLAUDE_BIN_UNSET;
 }
 
-/** Resolve the Claude reviewer wall-clock timeout in ms (`HOUGE_CLAUDE_TIMEOUT_MS`, default 300000). */
+/** Resolve the Claude reviewer wall-clock timeout in ms (`HOUGE_CLAUDE_TIMEOUT_MS`, default 180000 per attempt). */
 export function resolveClaudeTimeoutMs(env: NodeJS.ProcessEnv): number {
   const n = Number(env.HOUGE_CLAUDE_TIMEOUT_MS);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_CLAUDE_TIMEOUT_MS;
@@ -180,7 +183,9 @@ function reviewViaClaude(task: string, diff: string, env: NodeJS.ProcessEnv): Re
       // Fast, deterministic single-shot review: pin a fast model and DENY all tools — the diff is in
       // the prompt, so the reviewer needs no filesystem/Bash access (also prevents it exploring the
       // live tree and keeps it from over-running the timeout, the live-gate failure mode).
-      raw = execFileSync(bin, ["-p", "--model", model, "--disallowed-tools", "Bash,Read,Edit,Write,Glob,Grep,WebFetch,WebSearch"], {
+      // `--output-format json` wraps the model's text in an envelope that also carries token usage,
+      // so a single call yields BOTH the verdict (envelope.result) and telemetry (envelope.usage).
+      raw = execFileSync(bin, ["-p", "--model", model, "--output-format", "json", "--disallowed-tools", "Bash,Read,Edit,Write,Glob,Grep,WebFetch,WebSearch"], {
         input: prompt,
         encoding: "utf8",
         timeout,
@@ -200,8 +205,12 @@ function reviewViaClaude(task: string, diff: string, env: NodeJS.ProcessEnv): Re
       continue; // transient — retry
     }
 
-    const verdict = parseVerdict(raw);
-    if (verdict) return { ok: true, verdict };
+    // The model's text is the envelope's `result` field; usage rides the same envelope. We parse the
+    // verdict from `result` (falling back to the raw stdout if the envelope is unexpected), and surface
+    // normalized token usage when present.
+    const usage = normalizeClaudeUsage(raw) ?? undefined;
+    const verdict = parseVerdict(extractClaudeResultText(raw));
+    if (verdict) return usage ? { ok: true, verdict, usage } : { ok: true, verdict };
     lastError = "Claude reviewer returned an unparseable verdict";
     // unparseable → retry (the model may have rambled); fall through to next attempt
   }
@@ -221,7 +230,9 @@ function reviewViaCodex(task: string, diff: string, env: NodeJS.ProcessEnv): Rev
 
   let raw: string;
   try {
-    raw = execFileSync(bin, ["exec", "--sandbox", "read-only", "-"], {
+    // `--json` streams a JSONL event log to stdout that carries `token_count` usage events
+    // alongside the agent's message text — one call yields both the verdict and telemetry.
+    raw = execFileSync(bin, ["exec", "--json", "--sandbox", "read-only", "-"], {
       input: prompt,
       encoding: "utf8",
       timeout,
@@ -239,11 +250,62 @@ function reviewViaCodex(task: string, diff: string, env: NodeJS.ProcessEnv): Rev
     return { ok: false, error: `Codex reviewer failed: ${errorMessage(error)}` };
   }
 
-  const verdict = parseVerdict(raw);
+  // The verdict text is the agent's message inside the JSONL stream (escaped). Reconstruct that
+  // text, then parse the verdict from it; also normalize the `token_count` usage for telemetry.
+  const usage = normalizeCodexUsage(raw) ?? undefined;
+  const verdict = parseVerdict(extractCodexAgentText(raw));
   if (!verdict) {
     return { ok: false, error: "Codex reviewer returned an unparseable verdict" };
   }
-  return { ok: true, verdict };
+  return usage ? { ok: true, verdict, usage } : { ok: true, verdict };
+}
+
+/**
+ * Reconstruct the agent's reply text from a codex `--json` JSONL stream. Codex emits agent message
+ * events whose payload carries the model's text (the field name varies across codex versions —
+ * `agent_message` / `item.completed` with a `text`/`message` string). We collect every plausible
+ * text-bearing field and join them, so the verdict object inside survives the JSONL escaping. If the
+ * stream is not the expected JSONL (older codex, plain text), fall back to the raw stdout — parseVerdict
+ * is itself tolerant of prose/garbage.
+ */
+function extractCodexAgentText(raw: string): string {
+  const messages: string[] = [];
+  let sawJsonl = false;
+  for (const rawLine of raw.split("\n")) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    sawJsonl = true;
+    // Codex `--json` stdout: the model's reply is the `agent_message` item's `text` — pull ONLY that
+    // (collecting every string in the stream drags in the "skill descriptions shortened" notice and
+    // reasoning, which muddy the verdict parse). Shape: {type:"item.completed",item:{type:"agent_message",text}}.
+    const e = event as { item?: { type?: unknown; text?: unknown }; type?: unknown; text?: unknown };
+    const item = e.item;
+    if (item && item.type === "agent_message" && typeof item.text === "string") messages.push(item.text);
+    else if (e.type === "agent_message" && typeof e.text === "string") messages.push(e.text); // older shape
+  }
+  // No JSONL / no agent_message found → fall back to the raw text (parseVerdict is tolerant).
+  return sawJsonl && messages.length > 0 ? messages.join("\n") : raw;
+}
+
+/**
+ * Pull the model's text out of a Claude `--output-format json` envelope's `result` field. Tolerant:
+ * if stdout is not the expected envelope (older CLI, plain text), fall back to the raw stdout so the
+ * verdict parser still gets a chance. (parseVerdict is itself tolerant of prose/garbage.)
+ */
+function extractClaudeResultText(raw: string): string {
+  try {
+    const envelope = JSON.parse(raw) as { result?: unknown };
+    if (typeof envelope.result === "string") return envelope.result;
+  } catch {
+    // not an envelope — fall through to the raw text
+  }
+  return raw;
 }
 
 function errorMessage(error: unknown): string {

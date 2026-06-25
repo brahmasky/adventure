@@ -94,7 +94,39 @@ edited a file headlessly in 15s, clean diff, usage captured).
   default claude). Paco's case: WRITER=claude / REVIEWER=codex (heavy writer load on Claude Max 5x).
 - Telemetry retires the hand-grep + lands backlog #3 (LLM telemetry) + feeds dashboard (#10).
 - Security unchanged: guard is writer-agnostic (checks the diff), both writers confined to the worktree.
-**NEXT: `/goal` the 3.1 build** (W1–W6 per spec). No build until the `/goal`.
+**3.1 BUILD IN PROGRESS (2026-06-25, `/goal` active).** Subagent orchestration.
+- [x] W1. `SelfWriter` abstraction (`runSelfWriter` → {provider,model,usageRaw}) + `HOUGE_SELFWRITE_WRITER`
+      flag + `resolveClaudeWriterModel`; codex writer emits `--json` for usage. 37 scoped tests.
+- [x] W2. `llm_call` ledger event + `recordLlmCall` + `llm-usage.ts` (normalizeClaude/CodexUsage) + reviewer
+      returns usage + kimi/pi `onUsage` seam. No bodies recorded (verified). npm test 647.
+- [x] W3. wire writer flag into `runSelfWrite` (registered `coding_agent_cli` adapter dispatches via
+      `runSelfWriter({writer: resolveSelfWriteWriter(env), ...})`, surfaces provider/model/usageRaw out of
+      runSelfWriteCapability) + record writer/reviewer llm_call (latency measured; normalize-null skips, never
+      crashes) + cheap-chain classify+answer telemetry via construction-time `onUsage` on createLlmAnswerAdapter
+      (NOT through capability input — runner canonicalizes it; instrumented only when default adapter in use) +
+      usage_summary {writer,reviewer:{provider,model,total_tokens,cost_usd?}} on self_write_published (no bodies) +
+      soft-warn same-provider (non-fatal). frame role DEFERRED (self-write framing is deterministic, no LLM call).
+      typecheck+build clean; npm test 652 (647 + 5 new).
+- [x] W4. config + docs (configuration.md flags + llm_call event, README 3.1) + **backlog #3 (LLM telemetry) DONE**.
+- [x] W5. independent verification **VERDICT PASS** — guard writer-agnostic (claude diff→protected hard-denied),
+      claude bypass confined to worktree (cwd, no --add-dir), telemetry leaks no bodies (fake sk-SECRET test). +3 tests.
+- [x] W6. **LIVE gate — primary config PASS.** `WRITER=claude/REVIEWER=codex` → **PUBLISHED** branch
+      `run_4c0f99f0` + per-role telemetry (writer claude ~737K incl cache $0.66 / reviewer codex ~218K). Negative
+      hard-deny proven. Reverse config (`WRITER=codex/REVIEWER=claude`): both halves confirmed in 3.1 (codex
+      writer ~1.2M telemetry; claude reviewer parses+usage standalone 12s) + published in Phase 3 (byxr2s1zs);
+      a fresh end-to-end reverse publish was blocked by BOTH subscriptions rate-limiting after this session's
+      heavy usage (environmental, not code) — re-run `HOUGE_SELFWRITE_WRITER=codex HOUGE_SELFWRITE_REVIEWER=claude
+      node scripts/live-selfwrite-p3.mjs` when un-throttled to see it publish.
+      **Live-surfaced fixes:** (1) Claude WRITER own timeout `HOUGE_CLAUDE_WRITER_TIMEOUT_MS` default 600000;
+      (2) codex reviewer parse — pull `agent_message` text + verdict from real `--json` stream; (3)
+      `normalizeCodexUsage` handles real `turn.completed.usage` stdout schema; (4) codex writer `usageRaw`
+      filtered to usage lines (full --json stream blew the 200KB capability limit); (5) `normalizeClaudeUsage`
+      input_tokens now cache-INCLUSIVE (comparable to codex; was undercounting ~700K); (6) writer framing =
+      backward-compat guidance + existing-test-edit deny is REFINABLE (writer mistake) while gate/identity/deps
+      deny stays terminal escalation.
+
+**PHASE 3.1 COMPLETE.** Build gates green (659 tests · typecheck · build · deps {}); verification PASS; primary
+live config published with per-role telemetry. Swappable writer/reviewer flags + real llm_call telemetry shipped.
 
 ---
 # Goal — Phase 1: code self-diagnose (read-only, Codex-backed) — ADR 0011
@@ -340,8 +372,9 @@ scoped** (`ask`: don't say 师父; `research`: verify date) → checks 1–4,6 +
       phase3-code-self-write.md`). Design evolved: NOT `/approve`-gated (autonomous-to-branch + notify;
       human checkpoint = §5 merge). Deny-list write scope; hard-deny protected surface; net-new tests only;
       Codex-writes/Claude-reviews check stack. See the Phase 3 section at the top of this file.
-- [ ] **LLM telemetry** — add an `llm_answered` ledger event (provider, model, tokens, latency, cost); the
-      ledger has the shape. Optional OTel export. Today provider/model is only a text line in `report.md`.
+- [x] ~~**LLM telemetry**~~ → **DONE (Phase 3.1)**: realized as the `llm_call` ledger event
+      (`RunStore.recordLlmCall`, `src/run/run-store.ts`) — provider/model/role/in+out+cached tokens
+      (+ optional cost_usd, latency_ms), counts/metadata only. Optional OTel export not done.
 - [ ] **LLM-for-research model fit** — runtime chain is coding-tuned (`pi=kimi-for-coding`,
       `kimi-k2.7-code-highspeed`); pi over-produces on research synthesis. Add a general model for the
       research/answer surface (the chain is already pluggable). Also: still confirm #5's full Telegram sequence.

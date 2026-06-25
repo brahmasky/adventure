@@ -30,6 +30,10 @@ import {
   type LedgerEventType
 } from "./run-ledger.js";
 import { canTransitionRun } from "./state-machines.js";
+import type { LlmUsage } from "./llm-usage.js";
+
+/** The LLM-call roles recorded by {@link RunStore.recordLlmCall} (spec §"Real telemetry"). */
+export type LlmCallRole = "writer" | "reviewer" | "classify" | "frame" | "answer";
 
 type SqliteValue = string | number | bigint | null;
 
@@ -583,7 +587,14 @@ export class RunStore {
    */
   recordSelfWritePublished(
     run_id: string,
-    payload: { branch: string; summary: string; verdict: Record<string, unknown>; gate_results: Record<string, unknown> }
+    payload: {
+      branch: string;
+      summary: string;
+      verdict: Record<string, unknown>;
+      gate_results: Record<string, unknown>;
+      /** Phase 3.1 (W3): compact per-role token usage stamp (counts/metadata ONLY — no bodies). Optional. */
+      usage_summary?: Record<string, unknown>;
+    }
   ): void {
     this.appendRunLedgerEvent(run_id, "self_write_published", "core", payload);
   }
@@ -597,6 +608,32 @@ export class RunStore {
 
   recordSelfWriteFailed(run_id: string, payload: { reason: string; last_output: string }): void {
     this.appendRunLedgerEvent(run_id, "self_write_failed", "core", payload);
+  }
+
+  /**
+   * Phase 3.1 real LLM telemetry (spec §"Real telemetry", backlog #3). Emits one `llm_call`
+   * ledger event with token usage captured at the source — the structured replacement for
+   * hand-grepping logs (and the future per-role dashboard's data source).
+   *
+   * NON-NEGOTIABLE: records ONLY counts/metadata. The prompt, diff, and response bodies are
+   * NEVER passed here and NEVER stored — only `provider`, `model`, `role`, token counts, an
+   * optional cost, and an optional latency.
+   */
+  recordLlmCall(
+    run_id: string,
+    info: { provider: string; model: string; role: LlmCallRole; usage: LlmUsage; latency_ms?: number }
+  ): void {
+    const payload: Record<string, unknown> = {
+      provider: info.provider,
+      model: info.model,
+      role: info.role,
+      input_tokens: info.usage.input_tokens,
+      output_tokens: info.usage.output_tokens,
+      cached_input_tokens: info.usage.cached_input_tokens
+    };
+    if (info.usage.cost_usd !== undefined) payload.cost_usd = info.usage.cost_usd;
+    if (info.latency_ms !== undefined) payload.latency_ms = info.latency_ms;
+    this.appendRunLedgerEvent(run_id, "llm_call", "capability_runner", payload);
   }
 
   recordEvalCompleted(eval_suite: string, passed: boolean, failed_case_ids: string[]): void {

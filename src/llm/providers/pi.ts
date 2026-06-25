@@ -5,6 +5,7 @@
 import { spawn } from "node:child_process";
 import os from "node:os";
 import type { LlmProvider, LlmRequest, LlmResult } from "../types.js";
+import type { LlmUsage } from "../../run/llm-usage.js";
 
 /**
  * Result shape returned by a {@link SpawnImpl}. The impl must RESOLVE this shape
@@ -48,6 +49,14 @@ export interface PiProviderConfig {
   timeoutMs?: number;
   maxBytes?: number;
   spawnImpl?: SpawnImpl;
+  /**
+   * Phase 3.1 telemetry seam (spec §"Real telemetry"). Fired once per SUCCESSFUL answer IF pi
+   * reported token usage on the assistant `message_end`, with the call's normalized usage and the
+   * actual model id — the W3 caller wires this to `recordLlmCall`. Optional: existing callers are
+   * unaffected, and the provider's `LlmResult` shape is unchanged (usage rides this side channel).
+   * NON-NEGOTIABLE: carries ONLY counts/metadata — never prompt or response bodies.
+   */
+  onUsage?: (usage: LlmUsage, model: string) => void;
 }
 
 export const PI_DEFAULT_TIMEOUT_MS = 60_000;
@@ -98,6 +107,35 @@ interface ParsedAnswer {
   deltaText: string;
   /** Actual model id pi reported on the assistant message, for an accurate audit trail. */
   model: string | undefined;
+  /** Normalized token usage from the LAST assistant `message_end`, if pi reported one (Phase 3.1). */
+  usage: LlmUsage | undefined;
+}
+
+/**
+ * Normalize a pi `message_end` message's `usage` object into {@link LlmUsage}, tolerant of pi's
+ * OpenAI-ish field names (`input_tokens`/`prompt_tokens`, `output_tokens`/`completion_tokens`,
+ * `cached_input_tokens`/`cache_read_input_tokens`). Returns `undefined` when no usable usage block
+ * is present — pi versions that don't report usage simply emit no telemetry.
+ */
+function extractPiUsage(usage: unknown): LlmUsage | undefined {
+  if (typeof usage !== "object" || usage === null) return undefined;
+  const u = usage as Record<string, unknown>;
+  const toNum = (...keys: string[]): number => {
+    for (const k of keys) {
+      const n = typeof u[k] === "number" ? (u[k] as number) : Number(u[k]);
+      if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+    }
+    return 0;
+  };
+  const hasAny = ["input_tokens", "prompt_tokens", "output_tokens", "completion_tokens"].some(
+    (k) => u[k] !== undefined
+  );
+  if (!hasAny) return undefined;
+  return {
+    input_tokens: toNum("input_tokens", "prompt_tokens"),
+    output_tokens: toNum("output_tokens", "completion_tokens"),
+    cached_input_tokens: toNum("cached_input_tokens", "cache_read_input_tokens")
+  };
 }
 
 /** Parse pi's JSONL (`--mode json`) stdout line-by-line, defensively. */
@@ -105,6 +143,7 @@ function parsePiJsonl(stdout: string): ParsedAnswer {
   let messageEndText: string | undefined;
   let deltaText = "";
   let model: string | undefined;
+  let usage: LlmUsage | undefined;
 
   for (const rawLine of stdout.split("\n")) {
     const line = rawLine.trim();
@@ -130,6 +169,8 @@ function parsePiJsonl(stdout: string): ParsedAnswer {
             .join("");
           if (text.length > 0) messageEndText = text; // keep the LAST one
           if (typeof msg.model === "string") model = msg.model; // actual model pi used
+          const u = extractPiUsage(msg.usage); // token usage, if pi reported one (keep the LAST)
+          if (u) usage = u;
         }
       }
     } else if (obj.type === "message_update") {
@@ -143,7 +184,7 @@ function parsePiJsonl(stdout: string): ParsedAnswer {
     }
   }
 
-  return { messageEndText, deltaText, model };
+  return { messageEndText, deltaText, model, usage };
 }
 
 function extractAnswer(parsed: ParsedAnswer): string | undefined {
@@ -333,11 +374,23 @@ export function createPiProvider(config: PiProviderConfig = {}): LlmProvider {
       // Real answer text — only now is success allowed. Even so, an auth marker
       // present alongside a non-zero exit is suspect, but a clean extraction with
       // exit 0 is a legitimate answer.
+      const reportedModel = parsed.model ?? model ?? "pi-default";
+
+      // Telemetry side channel (Phase 3.1): surface normalized usage without altering the result
+      // shape. Best-effort — absent usage or a throwing hook never fails the answer.
+      if (config.onUsage && parsed.usage) {
+        try {
+          config.onUsage(parsed.usage, reportedModel);
+        } catch {
+          // a failing telemetry hook must never break a good answer
+        }
+      }
+
       return {
         ok: true,
         provider: "pi",
         // Prefer the model pi actually reported, then the configured one.
-        model: parsed.model ?? model ?? "pi-default",
+        model: reportedModel,
         answer
       };
     }

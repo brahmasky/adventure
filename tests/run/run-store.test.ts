@@ -93,6 +93,54 @@ describe("RunStore", () => {
     expect(store.getRecentChatTurns("555", 6).map((t) => t.text)).toEqual(["old", "recent"]);
   });
 
+  it("recordLlmCall emits an llm_call ledger event with token counts only (no bodies)", () => {
+    const run_id = createRun();
+    store.recordLlmCall(run_id, {
+      provider: "kimi-api",
+      model: "kimi-k2.7",
+      role: "answer",
+      usage: { input_tokens: 1200, output_tokens: 300, cached_input_tokens: 900, cost_usd: 0.01 },
+      latency_ms: 842
+    });
+
+    const events = store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_call");
+    expect(events).toHaveLength(1);
+    const payload = events[0]!.payload;
+    expect(payload).toEqual({
+      provider: "kimi-api",
+      model: "kimi-k2.7",
+      role: "answer",
+      input_tokens: 1200,
+      output_tokens: 300,
+      cached_input_tokens: 900,
+      cost_usd: 0.01,
+      latency_ms: 842
+    });
+    // NON-NEGOTIABLE: the payload carries ONLY counts/metadata — never prompt/diff/response bodies.
+    const serialized = JSON.stringify(payload);
+    expect(serialized).not.toMatch(/prompt|diff|response|answer_text|content|question/i);
+  });
+
+  it("recordLlmCall omits optional cost_usd and latency_ms when absent", () => {
+    const run_id = createRun();
+    store.recordLlmCall(run_id, {
+      provider: "claude",
+      model: "sonnet",
+      role: "reviewer",
+      usage: { input_tokens: 5, output_tokens: 120, cached_input_tokens: 6000 }
+    });
+
+    const event = store.getLedgerEvents(run_id).find((e) => e.event_type === "llm_call");
+    expect(event?.payload).toEqual({
+      provider: "claude",
+      model: "sonnet",
+      role: "reviewer",
+      input_tokens: 5,
+      output_tokens: 120,
+      cached_input_tokens: 6000
+    });
+  });
+
   it("createOrGet returns created then duplicate with same run_id for same idempotency key/payload hash", () => {
     const taskEvent = event("compare Pi and Hermes");
 

@@ -43,15 +43,21 @@ afterEach(() => {
 });
 
 describe("buildCodexWriteArgs", () => {
-  it("uses workspace-write sandbox, -C worktree, trailing stdin marker; no model when unset", () => {
+  it("uses --json + workspace-write sandbox, -C worktree, trailing stdin marker; no model when unset", () => {
     expect(buildCodexWriteArgs("/wt")).toEqual([
       "exec",
+      "--json",
       "--sandbox",
       "workspace-write",
       "-C",
       "/wt",
       "-"
     ]);
+  });
+
+  it("includes --json so the token-count JSONL stream is captured on stdout", () => {
+    expect(buildCodexWriteArgs("/wt")).toContain("--json");
+    expect(buildCodexWriteArgs("/wt", "gpt-5")).toContain("--json");
   });
 
   it("is identical to read-only EXCEPT workspace-write (no -o outfile in write mode)", () => {
@@ -63,6 +69,7 @@ describe("buildCodexWriteArgs", () => {
   it("adds -m <model> when a model is set", () => {
     expect(buildCodexWriteArgs("/wt", "gpt-5")).toEqual([
       "exec",
+      "--json",
       "--sandbox",
       "workspace-write",
       "-C",
@@ -116,6 +123,33 @@ describe("createSelfWriteCodexAdapter", () => {
     expect(argv[cIdx + 1]).toBe(wt);
 
     expect(readFileSync(stdinFile, "utf8")).toContain("fix the intent router");
+  });
+
+  it("keeps ONLY usage-bearing lines in usageRaw (not the multi-MB event stream)", () => {
+    // Regression (live gate, 2026-06-25): the full --json event stream blew the CapabilityRunner's
+    // 200KB output_limit_bytes. usageRaw must carry only the token-count lines (the diff is the artifact).
+    const wt = gitRepo();
+    const dir = mkdtempSync(join(tmpdir(), "houge-caw-big-"));
+    temps.push(dir);
+    const bin = join(dir, "codex");
+    writeFileSync(
+      bin,
+      `#!/usr/bin/env bash\ncat > /dev/null\n` +
+        `for i in $(seq 1 5000); do printf '%s\\n' '{"type":"item.completed","item":{"type":"reasoning","text":"noisy reasoning line that is not usage"}}'; done\n` +
+        `printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":123,"cached_input_tokens":40,"output_tokens":9}}'\n` +
+        `exit 0\n`
+    );
+    chmodSync(bin, 0o755);
+
+    const adapter = createSelfWriteCodexAdapter({ worktree: wt, env: { HOUGE_CODEX_BIN: bin } });
+    const result = adapter({ task: "do the fix" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const usageRaw = (result.output as { usageRaw?: string }).usageRaw ?? "";
+      expect(usageRaw).toContain('"turn.completed"'); // the usage line survives
+      expect(usageRaw).not.toContain('"reasoning"'); // the 5000 noise lines are dropped
+      expect(usageRaw.length).toBeLessThan(50_000); // well under the 200KB capability output limit
+    }
   });
 
   it("maps a non-zero codex exit to a clean error", () => {

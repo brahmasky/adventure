@@ -23,6 +23,8 @@ import { createWorktree, removeWorktree } from "../run/worktree.js";
 
 const DEFAULT_CODEX_BIN = "codex";
 const DEFAULT_CODEX_TIMEOUT_MS = 240_000;
+/** Cap for codex `--json` JSONL stdout (agentic file-reading can emit a large event stream). */
+const CODEX_WRITE_MAX_BUFFER = 32 * 1024 * 1024;
 
 export interface CodingAgentAdapterConfig {
   /** Absolute project root (a git repo) the worktree is cut from. */
@@ -81,9 +83,13 @@ export function buildCodexArgs(worktree: string, outfile: string, model?: string
  * throwaway worktree; the daemon's live tree is untouched (it becomes a branch for Paco to
  * merge, §5). NEVER includes a `--dangerously-bypass-*` / `--yolo` / `--skip-git-repo-check`
  * flag — those are deliberately absent (asserted in tests, as the read-only path).
+ *
+ * Phase 3.1: `--json` is included so codex streams its JSONL event log (incl. `token_count`
+ * events) to stdout — the writer captures that as RAW provider usage for telemetry (W2/W3).
+ * The artifact is still the edited files in the worktree; the JSONL is observability only.
  */
 export function buildCodexWriteArgs(worktree: string, model?: string): string[] {
-  const args = ["exec", "--sandbox", "workspace-write", "-C", worktree];
+  const args = ["exec", "--json", "--sandbox", "workspace-write", "-C", worktree];
   if (model) {
     args.push("-m", model);
   }
@@ -216,13 +222,23 @@ export function createSelfWriteCodexAdapter(
     const model = resolveCodexModel(env);
     const timeout = resolveCodexTimeoutMs(env);
 
+    let usageRaw = "";
     try {
-      execFileSync(bin, buildCodexWriteArgs(config.worktree, model), {
+      // Capture stdout: codex's `--json` JSONL event stream carries the `token_count` events.
+      const stdout = execFileSync(bin, buildCodexWriteArgs(config.worktree, model), {
         input: task,
         timeout,
         cwd: config.worktree,
+        encoding: "utf8",
+        maxBuffer: CODEX_WRITE_MAX_BUFFER,
         stdio: ["pipe", "pipe", "pipe"]
       });
+      // KEEP ONLY the usage-bearing JSONL lines — the full agentic event stream can be many MB and
+      // would blow the CapabilityRunner's output_limit_bytes (the diff is the artifact, not stdout;
+      // we only need the token counts). `turn.completed` carries `usage`; older logs use `token_count`.
+      usageRaw = typeof stdout === "string"
+        ? stdout.split("\n").filter((l) => l.includes('"usage"') || l.includes('"token_count"')).join("\n")
+        : "";
     } catch (error) {
       const err = error as NodeError;
       if (err.code === "ENOENT") {
@@ -238,7 +254,7 @@ export function createSelfWriteCodexAdapter(
       return { ok: false, error: `Coding agent exited non-zero (status ${status}): ${errorMessage(error)}` };
     }
 
-    return { ok: true, output: { worktree: config.worktree, model: model ?? "default", bin } };
+    return { ok: true, output: { worktree: config.worktree, model: model ?? "default", bin, usageRaw } };
   };
 }
 

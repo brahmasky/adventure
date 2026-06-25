@@ -1,6 +1,7 @@
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { answerWithChain, buildLlmChain } from "../llm/registry.js";
 import type { LlmProvider } from "../llm/types.js";
+import type { LlmUsage } from "../run/llm-usage.js";
 import { ASK_DISCIPLINE, FALLBACK_IDENTITY, GUARDRAILS } from "../prompt/composer.js";
 
 /**
@@ -23,12 +24,20 @@ function resolveSystemPrompt(input: Record<string, unknown>): string {
 export interface LlmAnswerAdapterConfig {
   /** Inject a pre-built provider chain (tests). Bypasses env-based resolution. */
   chain?: LlmProvider[];
+  /**
+   * Phase 3.1 (W3) cheap-chain telemetry seam. Fired once per SUCCESSFUL kimi/pi completion with the
+   * provider name + normalized token usage + the actual model id. The CoreWorker wires this to
+   * `recordLlmCall` for the cheap-chain roles (classify/answer). Bound at adapter-construction time
+   * (NOT passed through the capability `input`, which the runner canonicalizes/hashes). Counts/
+   * metadata ONLY — never prompt or response bodies. Ignored when a `chain` is injected (tests).
+   */
+  onUsage?: (provider: string, usage: LlmUsage, model: string) => void;
 }
 
 export function createLlmAnswerAdapter(
   config: LlmAnswerAdapterConfig = {}
 ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
-  const { chain: injectedChain } = config;
+  const { chain: injectedChain, onUsage } = config;
 
   return async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
     const question = input.question;
@@ -36,7 +45,18 @@ export function createLlmAnswerAdapter(
       return { ok: false, error: "question must be a non-empty string" };
     }
 
-    const chain = injectedChain ?? buildLlmChain(process.env);
+    // Thread the construction-time `onUsage` hook into the chain's provider configs, tagging each
+    // completion with its provider name (the provider's own hook only carries usage+model). An
+    // injected chain (tests) is used as-is.
+    const chain = injectedChain ?? buildLlmChain(
+      process.env,
+      onUsage
+        ? {
+            piConfig: { onUsage: (usage, model) => onUsage("pi", usage, model) },
+            kimiConfig: { onUsage: (usage, model) => onUsage("kimi-api", usage, model) }
+          }
+        : {}
+    );
     const system = resolveSystemPrompt(input);
     const result = await answerWithChain(chain, { question, system });
 

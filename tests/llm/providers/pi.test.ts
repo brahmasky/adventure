@@ -85,6 +85,46 @@ describe("createPiProvider", () => {
     });
   });
 
+  it("fires onUsage with normalized usage when message_end carries a usage block", async () => {
+    const stdout = [
+      JSON.stringify({ type: "session", sessionId: "abc" }),
+      JSON.stringify({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          model: "kimi-k2.7",
+          content: [{ type: "text", text: "OK" }],
+          usage: { input_tokens: 100, output_tokens: 25, cached_input_tokens: 60 }
+        }
+      })
+    ].join("\n");
+    const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout }));
+    const calls: Array<{ usage: unknown; model: string }> = [];
+    const provider = createPiProvider({
+      spawnImpl,
+      model: "configured-x",
+      onUsage: (usage, model) => calls.push({ usage, model })
+    });
+
+    const result = await provider.answer({ question: "hi" });
+
+    // Result shape UNCHANGED; usage rides the side channel with pi's reported model.
+    expect(result).toEqual({ ok: true, provider: "pi", model: "kimi-k2.7", answer: "OK" });
+    expect(calls).toEqual([
+      { usage: { input_tokens: 100, output_tokens: 25, cached_input_tokens: 60 }, model: "kimi-k2.7" }
+    ]);
+  });
+
+  it("does not fire onUsage when pi reports no usage block", async () => {
+    const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout: jsonlSuccess("Paris.") }));
+    const onUsage = vi.fn();
+    const provider = createPiProvider({ spawnImpl, model: "pi-model-x", onUsage });
+
+    await provider.answer({ question: "hi" });
+
+    expect(onUsage).not.toHaveBeenCalled();
+  });
+
   it("reports the model pi actually used (from message_end) over the configured one", async () => {
     const stdout = [
       JSON.stringify({ type: "session", sessionId: "abc" }),

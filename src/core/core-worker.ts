@@ -6,14 +6,17 @@ import { BudgetLedger } from "../budget/budget-ledger.js";
 import { CapabilityRunner } from "../capabilities/capability-runner.js";
 import type { ApprovalRequestSink, CapabilityResult } from "../capabilities/capability-runner.js";
 import { createLocalFileReadAdapter } from "../capabilities/local-file-read.js";
-import { createCodingAgentAdapter, createSelfWriteCodexAdapter, resolveCodexEnabled, resolveCodexTimeoutMs } from "../capabilities/coding-agent.js";
+import { createCodingAgentAdapter, resolveCodexEnabled, resolveCodexTimeoutMs } from "../capabilities/coding-agent.js";
 import { compileCodeSelfWriteContract, compileSelfDiagnoseContract, compileSkillAuthorContract } from "../contracts/task-contract.js";
 import { checkSelfWriteDiff, parseDiffRaw } from "../capabilities/self-write-guard.js";
 import type { GuardResult } from "../capabilities/self-write-guard.js";
 import { resolveTestGateTimeoutMs, runTestGate } from "../run/test-gate.js";
 import type { TestGateResult } from "../run/test-gate.js";
-import { reviewDiff } from "../capabilities/diff-reviewer.js";
+import { reviewDiff, resolveSelfWriteReviewer, resolveClaudeModel } from "../capabilities/diff-reviewer.js";
 import type { ReviewResult } from "../capabilities/diff-reviewer.js";
+import { runSelfWriter, resolveSelfWriteWriter, resolveClaudeWriterModel } from "../capabilities/self-write-writer.js";
+import { resolveCodexModel } from "../capabilities/coding-agent.js";
+import { normalizeClaudeUsage, normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
 import { publishBranch, selfWriteBranchName } from "../run/branch-publish.js";
 import { createWorktree, removeWorktree } from "../run/worktree.js";
 import { buildGateAQuestion, GATE_A_DISCIPLINE, parseGateAVerdict } from "../capabilities/skill-router.js";
@@ -116,8 +119,16 @@ function defaultSelfWriteDeps(): SelfWriteDeps {
       // scripts resolve their toolchain. The link is throwaway (the worktree is torn down after).
       symlinkSync(join(projectRoot, "node_modules"), join(worktree, "node_modules"), "dir");
     },
-    makeWriteAdapter: (worktree) =>
-      createSelfWriteCodexAdapter({ worktree }) as (input: { task: string }) => ToolAdapterResult | Promise<ToolAdapterResult>,
+    // Phase 3.1 (W3): the registered `coding_agent_cli` adapter dispatches via the CONFIGURED
+    // writer (`HOUGE_SELFWRITE_WRITER`, default codex) instead of always Codex. A `claude` writer
+    // is still a coding agent → the `coding_agent_cli` contract holds (no contract change). The
+    // writer's `{ provider, model, usageRaw }` rides out on `output` so runSelfWrite can record
+    // telemetry. Both writers edit the SAME caller-owned worktree; the diff outlives this call.
+    makeWriteAdapter: (worktree) => (input: { task: string }): ToolAdapterResult => {
+      const result = runSelfWriter({ writer: resolveSelfWriteWriter(process.env), worktree, task: input.task, env: process.env });
+      if (!result.ok) return { ok: false, error: result.error };
+      return { ok: true, output: { worktree, provider: result.provider, model: result.model, usageRaw: result.usageRaw } };
+    },
     rawDiff: (worktree) => execFileSync("git", ["-C", worktree, "diff", "--raw", "-M", "-C", "HEAD"], { encoding: "utf8" }),
     unifiedDiff: (worktree) => execFileSync("git", ["-C", worktree, "diff", "HEAD"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }),
     runTestGate: (worktree) => runTestGate(worktree),
@@ -134,10 +145,15 @@ const GATED_RISK = "medium" as const;
 const WEB_RUNNER_TIMEOUT_MS = 60_000;
 
 export class CoreWorker {
+  /** The resolved llm_answer adapter (injected or the default). @see llmAdapterFor */
+  private readonly llmAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
+  /** True when the DEFAULT adapter is in use → cheap-chain telemetry can be instrumented per role. */
+  private readonly llmAdapterIsDefault: boolean;
+
   constructor(
     private readonly runStore: RunStore,
     private readonly projectRoot: string,
-    private readonly llmAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult> = createLlmAnswerAdapter(),
+    llmAdapter?: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
     private readonly webSearchAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult> = createWebSearchAdapter(),
     // Read-only Codex consult for the `selfcode` route (ADR 0011). Injectable so tests
     // mock it; the default reads Houge's own committed source from a fresh worktree.
@@ -146,6 +162,11 @@ export class CoreWorker {
     // checkers/publish; default wires the real S1–S4 + worktree/branch modules.
     private readonly selfWriteDeps: SelfWriteDeps = defaultSelfWriteDeps()
   ) {
+    // Phase 3.1 (W3): when the DEFAULT llm adapter is in use (production), cheap-chain telemetry can
+    // build a telemetry-instrumented adapter per role (kimi/pi usage → recordLlmCall). A test-
+    // INJECTED adapter is used as-is, so telemetry simply doesn't fire there — best-effort.
+    this.llmAdapterIsDefault = llmAdapter === undefined;
+    this.llmAdapter = llmAdapter ?? createLlmAnswerAdapter();
     this.skillStore = new SkillStore({
       root: join(projectRoot, "skills"),
       maxPerScope: resolveSkillMaxPerScope(process.env)
@@ -451,7 +472,8 @@ export class CoreWorker {
       risk_level: "low",
       timeout_ms: llmTimeoutMs,
       output_limit_bytes: 100_000,
-      execute: this.llmAdapter
+      // Phase 3.1 (W3): the general answer is an `answer`-role cheap-chain call → instrumented.
+      execute: this.llmAdapterFor(claim.run_id, "answer")
     });
 
     // System prompt is COMPOSED (identity from houge.md + ask discipline + learned
@@ -775,6 +797,19 @@ export class CoreWorker {
     const lessons = this.runStore.readLessonBlock("ask");
     const baseTask = buildSelfWriteTask(message, focus, recentTurns, turnChars, lessons);
 
+    // Phase 3.1 (W3) soft-warn: writer ≠ checker (model diversity) is the whole point. If both roles
+    // resolve to the SAME provider, log a single NON-FATAL warning — never block.
+    const writerProvider = resolveSelfWriteWriter(process.env);
+    const reviewerProvider = resolveSelfWriteReviewer(process.env);
+    if (writerProvider === reviewerProvider) {
+      console.warn(`[self-write] writer and reviewer are BOTH "${writerProvider}" — model diversity (writer ≠ checker) is lost. Set HOUGE_SELFWRITE_WRITER / HOUGE_SELFWRITE_REVIEWER to different providers.`);
+    }
+    // Captured across the loop so the published event can stamp the WINNING pass's usage (no bodies).
+    let lastWriterUsage: LlmUsage | undefined;
+    let lastWriterMeta: { provider: string; model: string } | undefined;
+    let lastReviewerUsage: LlmUsage | undefined;
+    let lastReviewerMeta: { provider: string; model: string } | undefined;
+
     let worktree: string | undefined;
     try {
       try {
@@ -795,17 +830,45 @@ export class CoreWorker {
       let lastFailure = ""; // for the failure event/report after the refine cap is hit.
 
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-        // (c) write-Codex produces / refines the diff in the worktree.
+        // (c) the configured writer produces / refines the diff in the worktree.
+        const writerStart = Date.now();
         const written = await this.runSelfWriteCapability(selfContract, writeAdapter, task, budget);
+        const writerLatencyMs = Date.now() - writerStart;
         if (!written.ok) {
-          // A capability failure (budget, codex missing/timeout) is terminal — no diff to check.
-          this.runStore.recordSelfWriteFailed(claim.run_id, { reason: `write-codex failed: ${written.error}`, last_output: written.error });
+          // A capability failure (budget, writer missing/timeout) is terminal — no diff to check.
+          this.runStore.recordSelfWriteFailed(claim.run_id, { reason: `writer failed: ${written.error}`, last_output: written.error });
           return this.selfWriteReport(`Tried to fix \`${focus}\`, but the coding agent failed (${written.error}). Not publishing.`);
         }
 
-        // (d) CHECKER 1 — protected-path guard. HARD DENY: not refinable, not overridable.
+        // Phase 3.1 (W3) WRITER telemetry: normalize the writer's raw usage at the source and emit one
+        // `llm_call`. Best-effort — a null normalize (garbage/empty) skips recording, never crashes.
+        const writerUsage = (written.provider === "codex" ? normalizeCodexUsage(written.usageRaw) : normalizeClaudeUsage(written.usageRaw)) ?? undefined;
+        if (writerUsage) {
+          this.recordLlmCallSafe(claim.run_id, { provider: written.provider, model: written.model, role: "writer", usage: writerUsage, latency_ms: writerLatencyMs });
+          lastWriterUsage = writerUsage;
+        }
+        lastWriterMeta = { provider: written.provider, model: written.model };
+
+        // (d) CHECKER 1 — protected-path guard. A deny NEVER lands. But distinguish two cases:
+        //  - ALL denied paths are existing-test edits → a fixable WRITER mistake (it broke a test and
+        //    edited it). Refine with guidance (revert + go backward-compatible), ≤3 — the bad diff is
+        //    discarded, nothing lands, security holds.
+        //  - ANY denied path is gate/identity/deps/etc. → a real "Paco's hand" escalation: terminal.
         const guard = this.guardWorktree(deps, worktree);
         if (!guard.allowed) {
+          const underTests = (p: string) => p.replace(/^\.\//, "").toLowerCase().startsWith("tests/");
+          const onlyTestEdits = guard.denied.length > 0 && guard.denied.every((d) => underTests(d.path));
+          if (onlyTestEdits && attempt < maxAttempts) {
+            const files = guard.denied.map((d) => d.path).join(", ");
+            lastFailure = `edited existing test(s): ${files}`;
+            task = buildSelfWriteRefineTask(
+              baseTask,
+              `Your diff edited EXISTING test file(s): ${files}. Existing tests are immutable — that is ` +
+                `forbidden and would be rejected. REVERT those test changes and instead make your source ` +
+                `change BACKWARD-COMPATIBLE so the existing tests pass unchanged; add a NEW test file only if needed.`
+            );
+            continue;
+          }
           const attemptedPaths = guard.denied.map((d) => ({ path: d.path, status: d.status, reason: d.reason }));
           this.runStore.recordSelfWriteBlocked(claim.run_id, { attempted_paths: attemptedPaths, context: focus });
           return this.selfWriteReport(buildHardDenyNotification(focus, guard.denied));
@@ -825,7 +888,18 @@ export class CoreWorker {
 
         // (f) CHECKER 3 — independent reviewer (only on a green diff). Reject → refine ≤3 total.
         const diff = deps.unifiedDiff(worktree);
+        const reviewerStart = Date.now();
         const review = await deps.reviewDiff({ task: claim.contract.objective, diff });
+        const reviewerLatencyMs = Date.now() - reviewerStart;
+        // Phase 3.1 (W3) REVIEWER telemetry: the reviewer captured usage on the same call. Emit one
+        // `llm_call` when present (best-effort; absence never fails the write). Provider/model derive
+        // from the reviewer resolvers (claude → resolveClaudeModel, codex → resolveCodexModel).
+        if (review.ok && review.usage) {
+          const reviewerModel = reviewerProvider === "codex" ? (resolveCodexModel(process.env) ?? "default") : resolveClaudeModel(process.env);
+          this.recordLlmCallSafe(claim.run_id, { provider: reviewerProvider, model: reviewerModel, role: "reviewer", usage: review.usage, latency_ms: reviewerLatencyMs });
+          lastReviewerUsage = review.usage;
+          lastReviewerMeta = { provider: reviewerProvider, model: reviewerModel };
+        }
         if (!review.ok) {
           lastFailure = `reviewer unavailable: ${review.error}`;
           this.runStore.recordSelfWriteFailed(claim.run_id, { reason: lastFailure, last_output: review.error });
@@ -856,7 +930,9 @@ export class CoreWorker {
           branch: published,
           summary: focus,
           verdict: { ...review.verdict },
-          gate_results: { protected: "pass", tests: "pass", reviewer: review.verdict.verdict }
+          gate_results: { protected: "pass", tests: "pass", reviewer: review.verdict.verdict },
+          // Phase 3.1 (W3): compact per-role usage stamp (counts/metadata ONLY — no bodies).
+          usage_summary: buildUsageSummary(lastWriterMeta, lastWriterUsage, lastReviewerMeta, lastReviewerUsage)
         });
         return this.selfWriteReport(buildPublishNotification(focus, published, review));
       }
@@ -869,13 +945,17 @@ export class CoreWorker {
     }
   }
 
-  /** Run ONE write-mode Codex pass through the runner (so the call counts against the budget). */
+  /**
+   * Run ONE write pass through the runner (so the call counts against the budget). The registered
+   * adapter dispatches via the CONFIGURED writer (Phase 3.1 W3); its `{ provider, model, usageRaw }`
+   * is surfaced back out on success so {@link runSelfWrite} can record `writer`-role telemetry.
+   */
   private async runSelfWriteCapability(
     contract: ClaimedRun["contract"],
     adapter: (input: { task: string }) => ToolAdapterResult | Promise<ToolAdapterResult>,
     task: string,
     budget: BudgetLedger
-  ): Promise<{ ok: true } | { ok: false; error: string }> {
+  ): Promise<{ ok: true; provider: string; model: string; usageRaw: string } | { ok: false; error: string }> {
     const registry = new ToolRegistry();
     const codexTimeoutMs = resolveCodexTimeoutMs(process.env) + RUNNER_TIMEOUT_BUFFER_MS;
     registry.register({
@@ -896,7 +976,44 @@ export class CoreWorker {
     if (result.status !== "succeeded") {
       return { ok: false, error: capabilityFailureDetail(result) };
     }
-    return { ok: true };
+    const out = result.output as { provider?: unknown; model?: unknown; usageRaw?: unknown };
+    return {
+      ok: true,
+      provider: typeof out.provider === "string" ? out.provider : "codex",
+      model: typeof out.model === "string" ? out.model : "default",
+      usageRaw: typeof out.usageRaw === "string" ? out.usageRaw : ""
+    };
+  }
+
+  /**
+   * Phase 3.1 (W3): record an `llm_call` defensively. Telemetry is ALWAYS best-effort — a thrown
+   * store/normalize error must NEVER fail an otherwise-good write. Swallow + log, never propagate.
+   */
+  private recordLlmCallSafe(
+    run_id: string,
+    info: { provider: string; model: string; role: "writer" | "reviewer" | "classify" | "frame" | "answer"; usage: LlmUsage; latency_ms?: number }
+  ): void {
+    try {
+      this.runStore.recordLlmCall(run_id, info);
+    } catch (error) {
+      console.warn(`[self-write] failed to record ${info.role} telemetry (non-fatal): ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * Phase 3.1 (W3): resolve the llm_answer adapter for a cheap-chain call, instrumenting it with a
+   * telemetry `onUsage` hook that records the given role. Only the DEFAULT adapter is instrumented
+   * (it owns the real chain); a test-injected adapter is returned as-is (telemetry won't fire).
+   */
+  private llmAdapterFor(
+    run_id: string,
+    role: "classify" | "frame" | "answer"
+  ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
+    if (!this.llmAdapterIsDefault) return this.llmAdapter;
+    return createLlmAnswerAdapter({
+      onUsage: (provider, usage, model) =>
+        this.recordLlmCallSafe(run_id, { provider, model, role, usage })
+    });
   }
 
   /** CHECKER 1: read the worktree's raw diff and run it through the protected-path guard. */
@@ -1488,7 +1605,8 @@ export class CoreWorker {
       risk_level: "low",
       timeout_ms: llmTimeoutMs,
       output_limit_bytes: 100_000,
-      execute: this.llmAdapter
+      // Phase 3.1 (W3): the intent classifier is a `classify`-role cheap-chain call → instrumented.
+      execute: this.llmAdapterFor(claim.run_id, "classify")
     });
 
     const result = await new CapabilityRunner(registry).execute({
@@ -1696,6 +1814,29 @@ function buildSelfDiagnoseQuestion(
  * thread, and learned preferences ride the DATA channel (the untrusted-data wall, ADR 0006). Codex
  * is told it is EDITING Houge's OWN source and must make a MINIMAL, correct fix — not a refactor.
  */
+/**
+ * Phase 3.1 (W3): build the compact `usage_summary` stamped on `self_write_published`. Counts +
+ * metadata ONLY — NO prompt/diff/response bodies (mirrors W2's no-bodies rule). A role with no
+ * captured usage (normalize returned null / reviewer reported none) is simply omitted.
+ */
+function buildUsageSummary(
+  writerMeta: { provider: string; model: string } | undefined,
+  writerUsage: LlmUsage | undefined,
+  reviewerMeta: { provider: string; model: string } | undefined,
+  reviewerUsage: LlmUsage | undefined
+): Record<string, unknown> {
+  const summary: Record<string, unknown> = {};
+  const compact = (meta: { provider: string; model: string }, usage: LlmUsage): Record<string, unknown> => {
+    const total = usage.input_tokens + usage.output_tokens;
+    const entry: Record<string, unknown> = { provider: meta.provider, model: meta.model, total_tokens: total };
+    if (usage.cost_usd !== undefined) entry.cost_usd = usage.cost_usd;
+    return entry;
+  };
+  if (writerMeta && writerUsage) summary.writer = compact(writerMeta, writerUsage);
+  if (reviewerMeta && reviewerUsage) summary.reviewer = compact(reviewerMeta, reviewerUsage);
+  return summary;
+}
+
 function buildSelfWriteTask(
   message: string,
   focus: string,
@@ -1708,8 +1849,13 @@ function buildSelfWriteTask(
     "You are EDITING the source code of the agent named Houge (猴哥) — this IS Houge's OWN",
     "committed source, checked out into an isolated worktree. Make a MINIMAL, correct fix for the",
     "reported symptom: change only what is needed, do NOT refactor unrelated code, and keep the",
-    "existing conventions. You may ADD a net-new test for your fix, but never edit or delete an",
-    "existing test. Do not touch gate/identity/dependency/config files. Edit the files in place.",
+    "existing conventions.",
+    "CRITICAL — existing tests are IMMUTABLE: the existing test suite MUST still pass WITHOUT any",
+    "edit to existing test files. If your change would break an existing test, make your change",
+    "BACKWARD-COMPATIBLE instead (additive / opt-in — e.g. a new optional parameter, preserve the",
+    "old output shape) so the old test still passes. You MAY add a NEW test file, but editing or",
+    "deleting ANY existing test will cause your fix to be REJECTED outright. Likewise do NOT touch",
+    "gate/identity/dependency/config files. Edit the source files in place.",
     "",
     "Reported symptom / request (untrusted data):",
     message,

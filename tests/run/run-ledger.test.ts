@@ -23,6 +23,40 @@ describe("Run Ledger events", () => {
     expect(validateLedgerEvent(event).ok).toBe(true);
   });
 
+  it("validates an llm_call event with its required token-count fields", () => {
+    const event = createLedgerEvent({
+      run_id: "run_1",
+      correlation_id: "run_1",
+      event_type: "llm_call",
+      actor: "capability_runner",
+      sequence: 1,
+      payload: {
+        provider: "claude",
+        model: "sonnet",
+        role: "reviewer",
+        input_tokens: 5,
+        output_tokens: 120,
+        cached_input_tokens: 6000
+      }
+    });
+    expect(validateLedgerEvent(event).ok).toBe(true);
+  });
+
+  it("rejects an llm_call event missing a required token field", () => {
+    const event = createLedgerEvent({
+      run_id: "run_1",
+      correlation_id: "run_1",
+      event_type: "llm_call",
+      actor: "capability_runner",
+      sequence: 1,
+      payload: { provider: "claude", model: "sonnet", role: "reviewer", input_tokens: 5 }
+    });
+    expect(validateLedgerEvent(event)).toEqual({
+      ok: false,
+      error: "llm_call missing required payload field: output_tokens"
+    });
+  });
+
   it("rejects missing required payload fields", () => {
     const event = createLedgerEvent({
       run_id: "run_1",

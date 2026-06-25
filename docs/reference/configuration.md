@@ -262,9 +262,62 @@ spec: [Phase 3 spec](../superpowers/specs/2026-06-25-phase3-code-self-write.md).
 |----------|---------|---------|
 | `HOUGE_SELFWRITE_ENABLED` | `false` | Master switch for the **entire** code-self-write surface. Off until Paco flips it. When not truthy, a write-intent `selfcode` message **falls back to read-only diagnose** (Phase 1) — the safe direction (read before write) — so the feature ships dark and is opt-in. |
 | `HOUGE_SELFWRITE_REVIEWER` | `claude` | Which agent runs **checker 3** (the independent reviewer). `claude` — the Claude CLI reviewer (spike-validated GO). `codex` — an independent Codex session (fresh session + adversarial prompt) as the no-Claude fallback; writer≠checker is preserved either way. |
-| `HOUGE_CLAUDE_BIN` | — (no default) | **Absolute** path to the `claude` CLI for the reviewer. **No default by design:** the launchd daemon's PATH does not include `~/.local/bin`, so `claude` is not resolvable by name — an absolute path is required (e.g. `/Users/pluo/.local/bin/claude`). If unset, the Claude reviewer is **disabled** (set `HOUGE_SELFWRITE_REVIEWER=codex` to use the fallback). Spike-validated invocation: `claude -p` (print mode), with the review prompt fed on **stdin**. |
-| `HOUGE_CLAUDE_TIMEOUT_MS` | `120000` | Wall-clock timeout (ms) for one Claude reviewer pass. The spike measured 7–29s for a real verdict; the cap leaves headroom for the async ack-then-deliver UX. |
+| `HOUGE_CLAUDE_BIN` | — (no default) | **Absolute** path to the `claude` CLI, used by **both** the Claude reviewer and the Claude writer. **No default by design:** the launchd daemon's PATH does not include `~/.local/bin`, so `claude` is not resolvable by name — an absolute path is required (e.g. `/Users/pluo/.local/bin/claude`). If unset, whichever Claude role is selected is **disabled** (for the reviewer, set `HOUGE_SELFWRITE_REVIEWER=codex` to use the fallback). Spike-validated invocation: `claude -p` (print mode), with the prompt/task fed on **stdin**, under the daemon's restricted PATH. |
+| `HOUGE_CLAUDE_TIMEOUT_MS` | `180000` | Wall-clock timeout (ms) for one Claude pass — **shared** by the reviewer and the writer. The spike measured ~7–29s for a real reviewer verdict and ~15s for a headless writer edit; the cap leaves headroom for the async ack-then-deliver UX. |
 | `HOUGE_TESTGATE_TIMEOUT_MS` | `300000` | Wall-clock timeout (ms) for the whole **test gate** (typecheck + test + build) run in the worktree. A gate that exceeds it is treated as red (no publish), not a crash. |
+
+### Phase 3.1 — swappable writer + per-role models
+
+Phase 3.1 makes the **writer** swappable too (it was hardcoded to Codex), so the heavy-token role
+can sit on whichever subscription is largest. The writer is the token-heavy role (measured: Codex
+writer ~200K–1.2M tokens/run, mostly cached input from agentic file-reading; Claude reviewer ~25K
+in + ~1.2K out). Paco's case → `WRITER=claude` + `REVIEWER=codex` (Claude Max 5x writer + Codex Plus
+reviewer); the proven default is the reverse. The deterministic protected-path guard checks the
+**diff**, not who wrote it, so swapping the writer cannot widen what may land.
+
+**Model diversity** (writer ≠ reviewer provider) is recommended and is the default. Setting both
+roles to the **same provider** logs a soft warning — it is **not blocked**.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_SELFWRITE_WRITER` | `codex` | Which agent **writes the diff** (the heavy-token role). `codex` — the existing `codex exec --sandbox workspace-write` adapter (now run with `--json` so token usage is captured). `claude` — a headless agentic Claude edit: `claude -p --model <m> --permission-mode bypassPermissions --output-format json`, with the framed task on stdin and `cwd` set to the throwaway worktree (so the permission bypass is scoped to that disposable tree). The Claude writer requires `HOUGE_CLAUDE_BIN` (absolute) just like the reviewer; if unset, the Claude writer is **disabled** (clean error, no publish). |
+| `HOUGE_CLAUDE_WRITER_MODEL` | `sonnet` | Claude **writer** model. Resolution: `HOUGE_CLAUDE_WRITER_MODEL` → `HOUGE_CLAUDE_MODEL` → `sonnet`. (Per-role override so the writer model can differ from the reviewer model while sharing one fallback.) |
+| `HOUGE_CLAUDE_MODEL` | `sonnet` | The Claude **reviewer** model, **and** the shared fallback for the writer model above. There is **no separate `HOUGE_CLAUDE_REVIEWER_MODEL`** — the reviewer reads `HOUGE_CLAUDE_MODEL` directly (default `sonnet`; the default Opus over-thinks a large diff and times out). |
+
+> The Claude writer and reviewer **share** `HOUGE_CLAUDE_BIN` and `HOUGE_CLAUDE_TIMEOUT_MS`. They
+> differ only in model: the writer resolves `HOUGE_CLAUDE_WRITER_MODEL` (→ `HOUGE_CLAUDE_MODEL` →
+> `sonnet`), the reviewer resolves `HOUGE_CLAUDE_MODEL` (→ `sonnet`).
+
+### Phase 3.1 — LLM telemetry (the `llm_call` ledger event)
+
+Phase 3.1 captures **real token usage at the source** for every LLM call — replacing the prior
+hand-grepping of Codex rollout logs — and records it as a structured ledger event. This realizes the
+backlog "LLM telemetry" item.
+
+Each LLM call emits one **`llm_call`** ledger event (`RunStore.recordLlmCall`,
+`src/run/run-store.ts`; actor `capability_runner`). Usage is normalized to one canonical shape
+(`src/run/llm-usage.ts`) regardless of engine — Codex `--json` `token_count` events, Claude
+`--output-format json` `usage` + `total_cost_usd`, and the kimi cheap-chain client all feed the same
+`recordLlmCall`. Payload fields:
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `provider` | yes | The engine (e.g. `codex`, `claude`, `kimi`, `pi`). |
+| `model` | yes | The resolved model name. |
+| `role` | yes | One of `writer` \| `reviewer` \| `classify` \| `frame` \| `answer`. |
+| `input_tokens` | yes | Prompt/input token count. |
+| `output_tokens` | yes | Output tokens (Codex includes reasoning output here). |
+| `cached_input_tokens` | yes | Cached input (Claude: cache_read + cache_creation). |
+| `cost_usd` | optional | Present when the provider reports it (Claude `total_cost_usd`); Codex reports no per-call cost. |
+| `latency_ms` | optional | Per-call wall-clock when measured by the caller. |
+
+**Counts/metadata ONLY — by construction.** The prompt, diff, and response bodies are **never**
+passed to `recordLlmCall` and are **never** stored. The usage normalizers are tolerant: malformed or
+absent usage returns `null` (no event), never throws — telemetry can never break a run.
+
+In addition, the **`self_write_published`** event carries an optional compact **`usage_summary`**
+(writer + reviewer token totals for the published run — counts/metadata only, same no-bodies rule),
+so a published branch's per-role cost is visible without scanning the individual `llm_call` events.
 
 ## Telegram command reference
 

@@ -188,6 +188,17 @@ gate). Config: `HOUGE_SELFWRITE_ENABLED` / `HOUGE_SELFWRITE_REVIEWER` / `HOUGE_C
 [2026-06-25 amendment](docs/decisions/0011-self-evolution-architecture.md#amendment-2026-06-25-self-write-is-autonomous-to-branch-checkpoint--merge-not-approve);
 spec: [Phase 3 spec](docs/superpowers/specs/2026-06-25-phase3-code-self-write.md).
 
+**3.1: swappable writer/reviewer + token telemetry.** The **writer** is now swappable too (it was
+hardcoded to Codex), so the heavy-token role can sit on whichever subscription is largest:
+`HOUGE_SELFWRITE_WRITER` (`codex` | `claude`, default `codex`) pairs with `HOUGE_SELFWRITE_REVIEWER` —
+e.g. `WRITER=claude` + `REVIEWER=codex` for Claude Max 5x writer + Codex Plus reviewer. The guard
+checks the diff, not the author, so the swap can't widen what may land; same-provider writer+reviewer
+logs a soft warning (model diversity), never blocks. **Token usage is now recorded per call**: each
+LLM call emits an `llm_call` ledger event (provider, model, role, in/out/cached tokens, optional
+cost + latency — **counts/metadata only, never prompt/diff/response bodies**), and a published branch
+also stamps a compact writer+reviewer `usage_summary` on its `self_write_published` event. See
+[configuration](docs/reference/configuration.md#phase-31--swappable-writer--per-role-models).
+
 ## Safety model
 
 Deterministic code owns control; the LLM is used only for judgment
