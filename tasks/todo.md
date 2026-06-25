@@ -159,8 +159,23 @@ merge feat/learning-v1→main + repoint daemon, by hand, once).
 - [x] M4. shared `handleSelfWriteAction` (both poll consumers) + notifyDurable→outbox (before restart) +
       3 buttons on publish notification + idempotency (clear-buttons-first). Caught+fixed M3's real tsc bug
       (execFile→`spawn` detached). **npm test 697 · typecheck · build · deps {}**.
-- [~] M5. ADR 0011 §5 amendment #2 (merge checkpoint → Telegram, still human-gated) + config (HOUGE_SELFWRITE_PUSH, HOUGE_DAEMON_LABEL) + docs — IN PROGRESS
-- [~] M6. independent verification (callback auth; post-merge-red→auto-revert no-restart; idempotent; guard untouched) — IN PROGRESS
+- [x] M5. ADR 0011 Amendment 2 (merge checkpoint → Telegram, still human-gated) + config (HOUGE_SELFWRITE_PUSH,
+      HOUGE_DAEMON_LABEL) + configuration.md/README docs.
+- [x] M6. independent verification **VERDICT PASS** — 7 mandates (callback auth floor; post-merge-red→auto-revert
+      no-restart; notifyDurable-before-restart; idempotent double-tap ×3 layers; restart detached+inert in tests;
+      guard untouched; discard-only-deletes). +2 tests. npm test 699.
+- [x] **LIVE gate — PASS** (`scripts/live-merge-controls-p3.mjs`, REAL git/npm/launchctl on THROWAWAY targets;
+      live daemon untouched). A: green merge → reloaded, main updated, notifyDurable fired, throwaway service
+      SELF-RESTARTED (detached kickstart). B: post-merge test RED → reverted, main unchanged, NO restart. C:
+      discard deletes the branch. **Live gate CAUGHT A REAL BUG the units missed**: `mergeAndReload` passed the
+      branch name `into` to `testGate` → ran npm with cwd=<branch> → ENOENT → EVERY merge would falsely revert.
+      Fixed: `testGate()` is bound to the deps' project dir (no-arg, like `build()`). + regression covered.
+
+**PHASE 3.3 COMPLETE.** Build gates green (699 tests · typecheck · build · deps {}); verification PASS; live gate
+PASS on real infra. Telegram [View diff]/[Merge & reload]/[Discard] buttons ship the self-evolution loop:
+Houge self-writes → Paco taps Merge → daemon merges main + verifies + self-restarts onto new code. §5 human gate
+moved to Telegram (not removed). Branch `feat/merge-controls`; merge to main + reload to go live (bootstrapping
+merge is manual — the button then handles future merges).
 Then Phase 3.2 (rate-limit/cost) after.
 
 ## Phase 3.2 — provider error surfacing (rate-limit/quota) + per-run cost — DESIGN DONE (2026-06-25)

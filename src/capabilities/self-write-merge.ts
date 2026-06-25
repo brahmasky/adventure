@@ -46,8 +46,8 @@ export interface MergeActionDeps {
   preMergeRef(into: string): string;
   /** `npm run build` (main source → new dist/). */
   build(): { ok: boolean; output?: string };
-  /** Re-run the test-gate on merged `into` (pass the project root as the dir). */
-  testGate(dir: string): TestGateResult;
+  /** Re-run the test-gate on the merged repo (the project root, bound by the deps). */
+  testGate(): TestGateResult;
   /** `git branch -D branch`. */
   deleteBranch(branch: string): void;
   /** Write to the durable outbox BEFORE the restart (so the message survives the kill). */
@@ -162,8 +162,10 @@ export function mergeAndReload(params: {
       return { kind: "reverted", stage: "build", detail: built.output ?? "build failed" };
     }
 
-    // CHECKER (post-merge): re-run the test-gate on merged `into`. RED → revert, no restart.
-    const gate = deps.testGate(into);
+    // CHECKER (post-merge): re-run the test-gate on the merged repo. RED → revert, no restart.
+    // (testGate is bound to the project dir by the deps — NOT the branch name; passing `into` here was
+    //  a real bug: it ran npm with cwd=<branch> → ENOENT → every merge falsely reverted. Caught live.)
+    const gate = deps.testGate();
     if (!gate.green) {
       deps.resetMerge(into, toRef);
       return { kind: "reverted", stage: "test", detail: gate.output };
@@ -278,8 +280,8 @@ export function defaultMergeActionDeps(opts: {
         return { ok: false, output: detail.slice(-DIFF_CAP_BYTES) };
       }
     },
-    testGate(d: string): TestGateResult {
-      return runTestGate(d, { env });
+    testGate(): TestGateResult {
+      return runTestGate(dir, { env });
     },
     deleteBranch(branch: string): void {
       git("branch", "-D", branch);

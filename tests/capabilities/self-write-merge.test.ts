@@ -61,8 +61,8 @@ function makeDeps(over: Partial<MergeActionDeps> & {
       calls.push("build");
       return buildOk ? { ok: true } : { ok: false, output: "build broke" };
     },
-    testGate: (dir) => {
-      calls.push(`testGate(${dir})`);
+    testGate: () => {
+      calls.push("testGate");
       return gate;
     },
     deleteBranch: (b) => {
@@ -162,7 +162,7 @@ describe("mergeAndReload — happy path", () => {
       "preMergeRef(main)",
       "merge(b,main)",
       "build",
-      "testGate(main)",
+      "testGate",
       "notifyDurable(merged, reloading…)",
       "restart"
     ]);
@@ -201,7 +201,7 @@ describe("mergeAndReload — revert paths (never restart)", () => {
     expect(r).toEqual({ kind: "reverted", stage: "build", detail: "build broke" });
     expect(calls).toContain("resetMerge(main,PREREF)");
     expect(calls).not.toContain("restart");
-    expect(calls).not.toContain("testGate(main)");
+    expect(calls).not.toContain("testGate");
     expect(calls).not.toContain("notifyDurable(merged, reloading…)");
   });
 });
@@ -213,7 +213,7 @@ describe("mergeAndReload — merge conflict", () => {
     expect(r.kind).toBe("merge_conflict");
     if (r.kind === "merge_conflict") expect(r.detail).toContain("CONFLICT");
     expect(calls).not.toContain("build");
-    expect(calls).not.toContain("testGate(main)");
+    expect(calls).not.toContain("testGate");
     expect(calls).not.toContain("restart");
     expect(calls).not.toContain("resetMerge(main,PREREF)");
   });
@@ -243,6 +243,6 @@ describe("mergeAndReload — idempotency + not_found", () => {
     const r = mergeAndReload({ branch: "b", into: "release", deps });
     expect(r).toEqual({ kind: "reloaded", pushed: false });
     expect(calls).toContain("merge(b,release)");
-    expect(calls).toContain("testGate(release)");
+    expect(calls).toContain("testGate");
   });
 });
