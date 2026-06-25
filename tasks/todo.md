@@ -16,6 +16,38 @@
 - **Critical rules:** `/goal` is a REAL user-invoked stop-gate command (don't claim it doesn't exist); every `/goal` ends with a LIVE run (not just `npm test`); **freedom-over-control** — no 紧箍咒/cage framing, OK for Houge to fail, only core principles stay constant (ADR 0001/0011).
 
 ---
+# Phase 3 — code self-write (gated) — DESIGN LOCKED, SPIKE PENDING (2026-06-25) — ADR 0011 §7
+
+Spec: `docs/superpowers/specs/2026-06-25-phase3-code-self-write.md` (source of truth + the §7 security
+review). **No `/goal` yet** — design discussed + locked; spike-then-decide, then `/goal` the build.
+
+**Decisions locked with Paco (2026-06-25):**
+- Write scope = **deny-list** (freedom-over-control; everything improvable except the protected surface).
+- Protected surface = **HARD DENY**, not `/approve`-overridable + **tracked & surfaced** (never silent).
+- Test integrity = **net-new tests only** (existing `tests/` immutable; status `A` allowed, `M/D/R` denied).
+- Reviewer (checker 3) = **Claude** (model diversity) — **spike-gated**; Codex-independent-session fallback.
+- **NO synchronous `/approve` gate** (2026-06-25) — Houge runs/evolves autonomously to a branch; Paco is
+  **notified, not a blocking gate**. Justified: a branch is reversible; `/approve` is for irreversible
+  actions only. **§5 untouched** — daemon never hot-swaps; the human checkpoint = pull-based `git merge`.
+  Deviates from ADR §7's `/approve` → recommend an ADR amendment. Dashboard = backlog (Telegram notify now).
+- Daemon **never hot-swaps**; diff → branch → **Paco merges + reloads at leisure** (§5).
+
+**Check stack (writer ≠ checker):** Codex(write) → ①protected-path(hard-deny) → ②test-gate(typecheck+
+test+build) → ③Claude review(adversarial) → **auto-publish branch + notify Paco** → Paco merges+reloads.
+Refine ≤3 (§6). 3 automated checkers run autonomously; no human in the synchronous loop.
+
+**Live fixture:** Houge fixes the 猴哥 classifier bug himself (kept unfixed on purpose for this).
+
+**S0 SPIKE DONE 2026-06-25 → GO** (`scripts/spike-claude-reviewer-p3.mjs`; result in spec "Spike RESULT").
+Claude CLI print mode (`claude -p`) works headlessly under the daemon's restricted PATH via **absolute
+bin** (build needs `HOUGE_CLAUDE_BIN`, like `HOUGE_CODEX_BIN`). Discriminates cleanly: GOOD→pass (29s),
+BAD→reject (7s) — caught the no-op fix AND the deleted test. Subscription (cheap). API path = documented
+fallback (key is empty placeholder); Codex-session = no-Claude fallback.
+
+**NEXT: `/goal` the build** (subagent orchestration; independent verifier's primary mandate = the
+security invariant: prove no diff can reach a protected path). S1–S8 per the spec's Build stages.
+
+---
 # Goal — Phase 1: code self-diagnose (read-only, Codex-backed) — ADR 0011
 
 **Active goal (spec: docs/superpowers/specs/2026-06-20-phase1-code-self-diagnose.md; ADR docs/decisions/0011).**
@@ -255,10 +287,10 @@ scoped** (`ask`: don't say 师父; `research`: verify date) → checks 1–4,6 +
 ## Next session — backlog (user-requested 2026-06-19)
 - [ ] **Code-read capability** — scoped `read my repo` (source only; exclude `.env`/secrets to prevent exfil).
       Free read tier; prerequisite for write. (see [[houge-model-agnostic-cheap]] philosophy; ADR 0001 floor)
-- [ ] **Code-write capability (gated)** — reuse the existing approval gate (`local_project_write` + policy
-      `requires_approval` + `/approve`·`/deny` + `reconcileApprovedAction` hash-recheck). New work: edit/diff
-      generation, **diff preview** in the approval prompt, writable-path scoping, and **protected paths**
-      off-limits even with approval (safety floor, policy, `memory/core` constitution, secrets — ADR 0007 §8).
+- [x] ~~**Code-write capability (gated)**~~ → **SUPERSEDED by Phase 3** (`docs/superpowers/specs/2026-06-25-
+      phase3-code-self-write.md`). Design evolved: NOT `/approve`-gated (autonomous-to-branch + notify;
+      human checkpoint = §5 merge). Deny-list write scope; hard-deny protected surface; net-new tests only;
+      Codex-writes/Claude-reviews check stack. See the Phase 3 section at the top of this file.
 - [ ] **LLM telemetry** — add an `llm_answered` ledger event (provider, model, tokens, latency, cost); the
       ledger has the shape. Optional OTel export. Today provider/model is only a text line in `report.md`.
 - [ ] **LLM-for-research model fit** — runtime chain is coding-tuned (`pi=kimi-for-coding`,
@@ -299,6 +331,11 @@ scoped** (`ask`: don't say 师父; `research`: verify date) → checks 1–4,6 +
       eats the ≤4 cap). Fix options: a pre-write semantic-dedup check (does an existing skill cover this
       `when:`? → refine instead of create), or canonical-name normalization. Natural fit alongside 2c's
       Gate B / consolidation pass. Not a safety issue (containment holds); a quality/precision nit.
+- [ ] **Self-write observability dashboard** (surfaced 2026-06-25, Phase 3 design) — a read-only view over
+      the `self_write_published / blocked / failed` run-store events: what Houge tried to change, which gates
+      passed, what branches are awaiting merge, every time he reached for the protected surface. Telegram
+      notification covers the immediate observe-need; the dashboard is the richer "watch him evolve" layer.
+      No new write surface (reads existing events). Pairs naturally with the scheduler/autonomy axis below.
 - [ ] **Scheduler / proactive triggers** (surfaced 2026-06-22; ADR 0011's "deferred idle loop") — Houge is
       purely REACTIVE today (every run starts from an inbound Telegram trigger). A scheduler is an orthogonal
       AUTONOMY axis (the *when Houge acts on his own*, distinct from the lessons/skills/code *what he knows*).
