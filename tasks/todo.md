@@ -1,7 +1,17 @@
 # Current System State (read first — 2026-06-22)
 
-- **Branch:** `feat/learning-v1` @ `443bb19`, pushed to origin (brahmasky/adventure). **NOT merged to main.** Houge runs from THIS branch's `dist/`, not main.
-- **Daemon:** launchd `com.houge.daemon`, **PID 4137** (restart via `launchctl kickstart -k gui/$(id -u)/com.houge.daemon`). Code change ⇒ `npm run build` + reload. Conversation/lessons/identity/skills survive reloads (`houge.sqlite` + `skills/` + `houge.md`); only in-flight runs lost.
+- **Branch:** **`main` @ `6e54cf0`, pushed to origin** (brahmasky/adventure). **PROMOTED 2026-06-25** —
+  the whole feat/learning-v1 line (ADR 0010/0011 + Phases 1–3.1, 21 commits) fast-forwarded onto main.
+  Branch model going forward = **daemon runs from main**; develop on feature branches off main, merge back.
+  (`feat/learning-v1` still exists, == main.)
+- **Daemon:** launchd `com.houge.daemon`. **As of promotion it was STALE** (running ~Phase 2c dist from
+  PID 4137 — the session's live harnesses ran in-process, never through the daemon). Reload onto current
+  main: `npm run build && launchctl kickstart -k gui/$(id -u)/com.houge.daemon`. Conversation/lessons/
+  identity/skills survive reloads (`houge.sqlite` + `skills/` + `memory/core/houge.md`); only in-flight runs lost.
+- **猴哥 fix branches** `houge/selfwrite/run_48db7150` (codex) + `run_4c0f99f0` (claude) are UNMERGED +
+  now STALE (cut before 3.1 changed intent.ts/composer.ts/core-worker.ts → would conflict). Don't merge
+  them; re-fix 猴哥 via a fresh self-write off current main (ideally via the 3.3 [Merge & reload] button).
+  `git branch -D` them once 3.3 ships.
 - **Runtime:** model-agnostic chain `pi→kimi` (NEVER Claude). **Codex = build-time muscle** for code self-diagnose only (NOT skill authoring — skills are authored on pi→kimi).
 - **`.env` (gitignored):** `HOUGE_CODEX_ENABLED=true`, `HOUGE_CODEX_TIMEOUT_MS=300000`. Skills default ON (`HOUGE_SKILLS_ENABLED`).
 - **Live skills present** (gitignored runtime): `skills/research/fact-check-viral-claim.md` + `cross-check-figures-across-sources.md` (both real, authored by Houge over Telegram in the 2b live test).
