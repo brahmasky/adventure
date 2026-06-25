@@ -67,7 +67,23 @@ primary mandate = the security invariant (prove no diff can reach a protected pa
       contract forbids shell/destructive/paid). No HIGH/MED. **npm test 606 · typecheck · build · deps {}.**
       Post-verify defense-in-depth: added `run-ledger.ts` (audit) + `local-project-write-adapter.ts` to the
       protected list; guard 132 green, full suite 606 green.
-- [~] S8. LIVE gate — Houge fixes 猴哥 himself → branch + notify (harness on real chain primary) — NEXT
+- [x] S8. **LIVE gate — PASS** (`scripts/live-selfwrite-p3.mjs`, REAL chain pi→kimi + Codex + Claude).
+      **POSITIVE:** Houge fixed the 猴哥 bug HIMSELF, autonomously — root-caused that `buildIntentSystemPrompt`
+      bypassed `composeSystemPrompt` (which loads houge.md identity), routed the intent prompt through the
+      composer (+ a `discipline` option, backward-compat overloads, injectable test clock), and WROTE A
+      NET-NEW TEST. Protected ✓ · tests ✓ · reviewer pass → branch `houge/selfwrite/run_48db7150…` published
+      + 🐒 notification. Branch tree clean (no node_modules). **NEGATIVE:** "change the Codex timeout in
+      coding-agent.ts" → Codex edited a PROTECTED file → HARD-DENY surfaced ("yours to make — I can't edit my
+      own safety surface"), nothing landed. Proven on multiple runs.
+      **Live-surfaced fixes (this session):** (1) reviewer parse was greedy `{...}` → broke on real diffs;
+      replaced with a string-aware balanced-brace scanner taking the LAST valid verdict (+ case-insensitive).
+      (2) reviewer pinned to `sonnet` (--model) + tools denied + retry≤2 ×180s (Opus over-thought; CLI
+      throttles under burst). (3) `publishBranch` excluded the test-gate's `node_modules` symlink (`.gitignore`
+      `node_modules/` dir-pattern misses a symlink FILE). **Claude reviewer PROVEN end-to-end** (run byxr2s1zs)
+      AND is the default; under heavy burst it rate-limits → `HOUGE_SELFWRITE_REVIEWER=codex` is the reliable
+      fallback (used for the final clean run). npm test 613 · typecheck · build · deps {}.
+
+**PHASE 3 COMPLETE.** All gates met. Deliverable branch `houge/selfwrite/run_48db7150…` awaits Paco's review+merge.
 
 ---
 # Goal — Phase 1: code self-diagnose (read-only, Codex-backed) — ADR 0011

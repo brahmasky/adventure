@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -58,6 +58,29 @@ describe("publishBranch (Phase 3 step 7)", () => {
     // The commit message names the task.
     const msg = execFileSync("git", ["-C", repo, "log", "-1", "--format=%s", branch], { encoding: "utf8" });
     expect(msg).toContain("fix the thing");
+  });
+
+  it("never commits a node_modules symlink that the test-gate symlinked in", () => {
+    const repo = tmpRepo();
+    const realNodeModules = mkdtempSync(join(tmpdir(), "houge-nm-"));
+    dirs.push(realNodeModules);
+    const wt = createWorktree(repo).path;
+    worktrees.push(wt);
+
+    // Codex's source change …
+    writeFileSync(join(wt, "file.txt"), "fixed\n");
+    // … plus the node_modules symlink the orchestrator adds for the test-gate (a FILE symlink, so
+    // .gitignore's `node_modules/` dir-pattern does NOT catch it — the regression from the live gate).
+    symlinkSync(realNodeModules, join(wt, "node_modules"), "dir");
+
+    const branch = selfWriteBranchName("run_nm");
+    publishBranch(wt, branch, "fix with node_modules present");
+
+    // The source change is committed …
+    expect(execFileSync("git", ["-C", repo, "show", `${branch}:file.txt`], { encoding: "utf8" })).toBe("fixed\n");
+    // … but node_modules is NOT in the published tree.
+    const tree = execFileSync("git", ["-C", repo, "ls-tree", "--name-only", branch], { encoding: "utf8" });
+    expect(tree).not.toContain("node_modules");
   });
 
   it("throws (no silent half-publish) when git cannot operate", () => {

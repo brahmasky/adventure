@@ -39,8 +39,10 @@ export function publishBranch(worktree: string, branchName: string, taskSummary?
   try {
     // Create + switch the worktree onto the new branch (from its detached HEAD).
     execFileSync("git", ["-C", worktree, "checkout", "-b", branchName], { stdio: "pipe" });
-    // Stage every change Codex made in the worktree.
-    execFileSync("git", ["-C", worktree, "add", "-A"], { stdio: "pipe" });
+    // Stage every change Codex made in the worktree — but NEVER the `node_modules` the orchestrator
+    // symlinks in for the test-gate. It's a symlink FILE, so `.gitignore`'s `node_modules/` dir
+    // pattern doesn't catch it; an explicit pathspec exclude keeps it out of the published branch.
+    execFileSync("git", ["-C", worktree, "add", "-A", "--", ".", ":(exclude)node_modules"], { stdio: "pipe" });
     // Commit so the branch ref carries the diff and persists after the worktree is removed.
     execFileSync("git", ["-C", worktree, "commit", "-m", message], { stdio: "pipe" });
   } catch (error) {

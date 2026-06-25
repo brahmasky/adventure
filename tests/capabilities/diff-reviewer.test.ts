@@ -7,6 +7,7 @@ import {
   CLAUDE_BIN_UNSET,
   parseVerdict,
   resolveClaudeBin,
+  resolveClaudeModel,
   resolveClaudeTimeoutMs,
   resolveSelfWriteReviewer,
   reviewDiff
@@ -56,6 +57,39 @@ describe("parseVerdict", () => {
     expect(parseVerdict('{"verdict":"maybe"}')).toBeNull();
     expect(parseVerdict("{ this is { broken json")).toBeNull();
   });
+
+  // Regression (live gate, 2026-06-25): the greedy first-{-to-last-} match broke on a real diff
+  // where the reviewer's reasoning contained stray braces before the verdict object.
+  it("ignores stray braces in prose and takes the real verdict object", () => {
+    const v = parseVerdict(
+      'Looking at the code `if (x) { return y; }` and the object `{foo}` mentioned above...\n' +
+      '{"verdict":"pass","fixes_task":true,"introduces_bugs":false,"scope_creep":false,"reasons":["ok"]}'
+    );
+    expect(v?.verdict).toBe("pass");
+  });
+
+  it("handles markdown-fenced JSON", () => {
+    const v = parseVerdict('Here is my verdict:\n```json\n{"verdict":"reject","reasons":["deletes a test"]}\n```');
+    expect(v?.verdict).toBe("reject");
+  });
+
+  it("takes the LAST valid verdict object when several appear", () => {
+    const v = parseVerdict(
+      'Draft: {"verdict":"reject","reasons":["first pass thought"]}\n' +
+      'Final: {"verdict":"pass","fixes_task":true,"reasons":["on reflection it is correct"]}'
+    );
+    expect(v?.verdict).toBe("pass");
+  });
+
+  it("matches the verdict case-insensitively", () => {
+    expect(parseVerdict('{"verdict":"PASS"}')?.verdict).toBe("pass");
+    expect(parseVerdict('{"verdict":" Reject "}')?.verdict).toBe("reject");
+  });
+
+  it("does not get fooled by a brace inside a JSON string value", () => {
+    const v = parseVerdict('{"verdict":"reject","reasons":["it left a dangling { brace in code"]}');
+    expect(v?.verdict).toBe("reject");
+  });
 });
 
 describe("config resolvers", () => {
@@ -74,10 +108,16 @@ describe("config resolvers", () => {
     );
   });
 
-  it("resolveClaudeTimeoutMs defaults to 120000, honors a valid override, rejects garbage", () => {
-    expect(resolveClaudeTimeoutMs({})).toBe(120_000);
+  it("resolveClaudeTimeoutMs defaults to 180000 (per-attempt), honors a valid override, rejects garbage", () => {
+    expect(resolveClaudeTimeoutMs({})).toBe(180_000);
     expect(resolveClaudeTimeoutMs({ HOUGE_CLAUDE_TIMEOUT_MS: "5000" })).toBe(5000);
-    expect(resolveClaudeTimeoutMs({ HOUGE_CLAUDE_TIMEOUT_MS: "nope" })).toBe(120_000);
+    expect(resolveClaudeTimeoutMs({ HOUGE_CLAUDE_TIMEOUT_MS: "nope" })).toBe(180_000);
+  });
+
+  it("resolveClaudeModel defaults to sonnet, honors an override", () => {
+    expect(resolveClaudeModel({})).toBe("sonnet");
+    expect(resolveClaudeModel({ HOUGE_CLAUDE_MODEL: "opus" })).toBe("opus");
+    expect(resolveClaudeModel({ HOUGE_CLAUDE_MODEL: "  " })).toBe("sonnet");
   });
 });
 
