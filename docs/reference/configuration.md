@@ -319,6 +319,34 @@ In addition, the **`self_write_published`** event carries an optional compact **
 (writer + reviewer token totals for the published run — counts/metadata only, same no-bodies rule),
 so a published branch's per-role cost is visible without scanning the individual `llm_call` events.
 
+### Phase 3.3 — interactive Telegram merge controls
+
+The published-fix notification carries an inline keyboard — **[View diff] · [Merge & reload] ·
+[Discard]** (`callback_data` = `selfwrite:<action>:<run-id>`) — so the §5 merge checkpoint moves from a
+terminal `git merge` to an **authenticated Telegram tap**. The human gate is **preserved**: the daemon
+merges + reloads self-authored code **only on Paco's tap**, never on its own. **Callbacks are
+allowlist-authed** — the callback's `from` user is checked against the same allowlist as messages, so
+**only Paco's taps act** (a non-allowed tap is rejected); the buttons are cleared after a tap and the
+actions are idempotent, so a branch can't be double-merged. Design: [ADR 0011](../decisions/0011-self-evolution-architecture.md)
+§5 + [its Amendment 2](../decisions/0011-self-evolution-architecture.md#amendment-2-2026-06-25-the-mergereload-checkpoint-moves-to-telegram-still-human-gated);
+spec: [Phase 3 spec](../superpowers/specs/2026-06-25-phase3-code-self-write.md#phase-33--interactive-telegram-merge-controls--5-amendment).
+
+The buttons (handled by `src/telegram/self-write-action-handler.ts` over the merge actions in
+`src/capabilities/self-write-merge.ts`):
+
+- **[View diff]** — read-only `git diff main...<branch>` (bounded; buttons left in place, repeatable).
+- **[Merge & reload]** — capture the pre-merge ref → `git merge` → `npm run build` → **re-run the
+  test-gate on merged `main`** → green: durable "merged, reloading…" notice, optional push, then a
+  detached `launchctl kickstart` self-restart onto the new `dist/`. **POST-MERGE-VERIFY safeguard:** a
+  red build or test-gate triggers an auto-revert (`git reset --hard` to the pre-merge ref) with **no
+  restart and no push** — the daemon keeps running the old code, nothing landed.
+- **[Discard]** — `git branch -D <branch>` (idempotent: an already-gone branch is a no-op).
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_SELFWRITE_PUSH` | `false` | When truthy (`1`/`true`/`yes`/`on`), a **green** [Merge & reload] also runs `git push origin <branch>` (the merged `main`) after the merge+build+test-gate pass, before the self-restart. Default off — the merge lands locally only; a red post-merge gate never pushes. |
+| `HOUGE_DAEMON_LABEL` | `com.houge.daemon` | The launchd label the self-restart kickstarts (`launchctl kickstart -k gui/$uid/<label>`). Set this only if the daemon is installed under a non-default label. |
+
 ## Telegram command reference
 
 Natural language first: just type, and Houge classifies intent (**answer** / **research** /

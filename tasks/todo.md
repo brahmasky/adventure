@@ -150,8 +150,18 @@ merge feat/learning-v1→main + repoint daemon, by hand, once).
   durable "reloading" notif · **detached `launchctl kickstart` self-restart** · optional push (HOUGE_SELFWRITE_PUSH).
 - **M1 SPIKE GO** (`scripts/spike-self-restart-p3.mjs`): throwaway launchd service self-kickstarted →
   relaunched, 2 distinct PIDs; live daemon untouched. Detached-kickstart pattern works.
-**NEXT: `/goal` the 3.3 build** (M2 callback infra · M3 actions+merge/build/verify/restart · M4 wire
-buttons+idempotency · M5 §5 amendment+config+docs · M6 gates+verification+LIVE tap). Then 3.2 after.
+**3.3 BUILD IN PROGRESS** (2026-06-25, `/goal` active, branch `feat/merge-controls` off main).
+- [x] M1. self-restart spike GO (`scripts/spike-self-restart-p3.mjs`).
+- [x] M2. Telegram callback infra — `callback_query` in (auth'd to allowlist only), `parseSelfWriteCallback`,
+      notification `buttons`, `answerCallbackQuery`/`editMessageReplyMarkup`, allowed_updates. 48 tests. M4 seam ready.
+- [x] M3. `self-write-merge.ts` — viewDiff/discardBranch/mergeAndReload (DI deps); order guaranteed
+      (notifyDurable before restart; build/test red → resetMerge, never restart). 16 tests.
+- [x] M4. shared `handleSelfWriteAction` (both poll consumers) + notifyDurable→outbox (before restart) +
+      3 buttons on publish notification + idempotency (clear-buttons-first). Caught+fixed M3's real tsc bug
+      (execFile→`spawn` detached). **npm test 697 · typecheck · build · deps {}**.
+- [~] M5. ADR 0011 §5 amendment #2 (merge checkpoint → Telegram, still human-gated) + config (HOUGE_SELFWRITE_PUSH, HOUGE_DAEMON_LABEL) + docs — IN PROGRESS
+- [~] M6. independent verification (callback auth; post-merge-red→auto-revert no-restart; idempotent; guard untouched) — IN PROGRESS
+Then Phase 3.2 (rate-limit/cost) after.
 
 ## Phase 3.2 — provider error surfacing (rate-limit/quota) + per-run cost — DESIGN DONE (2026-06-25)
 Spec: Phase-3 spec "Phase 3.2" section. **Motivation:** a Codex 5h-window quota exhaustion surfaced as a

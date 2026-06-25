@@ -127,6 +127,18 @@ describe("runSelfWrite (Phase 3 orchestration)", () => {
       expect(last.intent).toBe("selfcode");
       expect(last.text).toContain("🐒 Fixed");
       expect(last.text).toContain(`houge/selfwrite/${run_id}`);
+
+      // Phase 3.3: the PUBLISHED final-report notification carries the three merge-control buttons,
+      // each targeting THIS run id, so a Telegram tap routes back to the right branch.
+      const notif = store.claimNextNotification("test-claim", 60);
+      expect(notif).not.toBeNull();
+      expect(notif!.intent_type).toBe("final_report");
+      const buttons = notif!.payload.buttons;
+      expect(buttons).toEqual([
+        { text: "🔀 Merge & reload", data: `selfwrite:merge:${run_id}` },
+        { text: "👀 View diff", data: `selfwrite:view:${run_id}` },
+        { text: "🗑 Discard", data: `selfwrite:discard:${run_id}` }
+      ]);
     } finally {
       store.close();
     }
@@ -161,6 +173,11 @@ describe("runSelfWrite (Phase 3 orchestration)", () => {
       const last = turns[turns.length - 1]!;
       expect(last.text).toContain("package.json");
       expect(last.text.toLowerCase()).toContain("locked surface");
+
+      // Phase 3.3: a BLOCKED notification carries NO merge-control buttons (only a publish does).
+      const notif = store.claimNextNotification("test-claim", 60);
+      expect(notif).not.toBeNull();
+      expect(notif!.payload.buttons).toBeUndefined();
     } finally {
       store.close();
     }

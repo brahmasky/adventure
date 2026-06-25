@@ -20,6 +20,97 @@ function update(update_id: number) {
 }
 
 describe("createTelegramLongPollingAdapter", () => {
+  it("requests allowed_updates including callback_query (Phase 3.3)", async () => {
+    const requests: { allowed_updates?: string[] }[] = [];
+    const adapter = createTelegramLongPollingAdapter({
+      allowlist,
+      client: {
+        getUpdates: async (input) => {
+          requests.push(input);
+          return [];
+        }
+      },
+      offsetStore: { getOffset: () => 0, setOffset: () => undefined }
+    });
+
+    await adapter.pollOnce(async () => undefined);
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.allowed_updates).toContain("message");
+    expect(requests[0]?.allowed_updates).toContain("callback_query");
+  });
+
+  it("routes an allowlisted callback_query as a selfwrite_action event", async () => {
+    const events: { type?: string }[] = [];
+    const adapter = createTelegramLongPollingAdapter({
+      allowlist,
+      client: {
+        getUpdates: async () => [
+          {
+            update_id: 70,
+            callback_query: {
+              id: "cbq_9",
+              from: { id: 111 },
+              message: { message_id: 5, chat: { id: 222 } },
+              data: "selfwrite:discard:run_z"
+            }
+          }
+        ]
+      },
+      offsetStore: { getOffset: () => 0, setOffset: () => undefined }
+    });
+
+    await adapter.pollOnce(async (event) => {
+      events.push(event as { type?: string });
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "selfwrite_action", action: "discard", runId: "run_z" });
+  });
+
+  it("AUTH FLOOR: a non-allowlisted `from` tapping [Merge] never emits an action (no merge, no handler)", async () => {
+    // Mandate 1 — the callback auth floor at the POLL-LOOP level: a non-allowlisted user's
+    // [Merge] tap must be skipped (recorded as an auth denial), the offset must still advance,
+    // and `emit` (the seam that calls handleSelfWriteAction) must NEVER run for it.
+    const offsets: number[] = [];
+    const skipped: { update_id: number; reason_code: string }[] = [];
+    const emitted: unknown[] = [];
+    const adapter = createTelegramLongPollingAdapter({
+      allowlist,
+      client: {
+        getUpdates: async () => [
+          {
+            update_id: 80,
+            callback_query: {
+              id: "cbq_evil",
+              from: { id: 999 }, // NOT on the allowlist
+              message: { message_id: 7, chat: { id: 222 } },
+              data: "selfwrite:merge:run_pwn"
+            }
+          }
+        ]
+      },
+      offsetStore: {
+        getOffset: () => 0,
+        setOffset: (_source, offset) => offsets.push(offset)
+      },
+      skippedUpdateStore: {
+        recordSkippedTelegramUpdate: (input) => skipped.push(input)
+      }
+    });
+
+    const result = await adapter.pollOnce(async (event) => {
+      emitted.push(event); // must NOT run for the denied tap
+    });
+
+    expect(emitted).toEqual([]); // handler seam never reached → no merge
+    expect(result).toEqual({ processed_updates: 0, skipped_updates: 1 });
+    expect(skipped).toEqual([
+      expect.objectContaining({ update_id: 80, reason_code: "TELEGRAM_AUTH_DENIED" })
+    ]);
+    expect(offsets).toEqual([81]); // offset still advances past the rejected tap
+  });
+
   it("persists offset only after emit succeeds", async () => {
     const offsets: number[] = [];
     const adapter = createTelegramLongPollingAdapter({

@@ -1,17 +1,49 @@
+/** A single inline button: visible `text` + the `callback_data` sent back on tap. */
+export interface TelegramInlineButton {
+  text: string;
+  callback_data: string;
+}
+
+/** Telegram `reply_markup` inline keyboard: rows of buttons. */
+export interface TelegramInlineKeyboardMarkup {
+  inline_keyboard: TelegramInlineButton[][];
+}
+
 export interface TelegramSendMessageInput {
   chat_id: string;
   text: string;
   /** Telegram parse mode (e.g. "HTML"). Omitted → plain text. */
   parse_mode?: string;
+  /** Optional inline keyboard (Phase 3.3). Omitted → no buttons (byte-identical to before). */
+  reply_markup?: TelegramInlineKeyboardMarkup;
 }
 
 export interface TelegramSendMessageResult {
   message_id: number;
 }
 
+export interface TelegramAnswerCallbackQueryInput {
+  callback_query_id: string;
+  /** Optional toast shown to the user; omitted → just stops the spinner. */
+  text?: string;
+}
+
+export interface TelegramEditMessageReplyMarkupInput {
+  chat_id: string;
+  message_id: number;
+  /** New inline keyboard; omitted → removes the buttons entirely. */
+  reply_markup?: TelegramInlineKeyboardMarkup;
+}
+
 export interface TelegramGetUpdatesInput {
   offset: number;
   timeout_seconds: number;
+  /**
+   * Update types to receive (Phase 3.3). Telegram omits `callback_query` from the
+   * default subscription, so it must be listed explicitly for inline-button taps to
+   * be delivered. Serialized as a JSON array in the query string.
+   */
+  allowed_updates?: string[];
   /**
    * Optional abort signal. The daemon passes one so a graceful shutdown can
    * cancel an idle long-poll immediately instead of waiting out the timeout.
@@ -31,6 +63,14 @@ export interface TelegramRawUpdate {
  */
 export interface TelegramSendClient {
   sendMessage(input: TelegramSendMessageInput): Promise<TelegramSendMessageResult>;
+  /**
+   * Stop the inline-button spinner (Phase 3.3). Optional on the boundary so existing
+   * test fakes that only send messages still satisfy the interface; the real client
+   * and the self-write action module (M3/M4) use it.
+   */
+  answerCallbackQuery?(input: TelegramAnswerCallbackQueryInput): Promise<void>;
+  /** Replace/remove a message's inline keyboard (Phase 3.3) — e.g. to disable buttons after an action. */
+  editMessageReplyMarkup?(input: TelegramEditMessageReplyMarkupInput): Promise<void>;
 }
 
 /**
@@ -85,7 +125,8 @@ export class TelegramClient implements TelegramSendClient, TelegramPollClient {
         chat_id: input.chat_id,
         text: input.text,
         disable_web_page_preview: true,
-        ...(input.parse_mode ? { parse_mode: input.parse_mode } : {})
+        ...(input.parse_mode ? { parse_mode: input.parse_mode } : {}),
+        ...(input.reply_markup ? { reply_markup: input.reply_markup } : {})
       })
     });
 
@@ -110,7 +151,10 @@ export class TelegramClient implements TelegramSendClient, TelegramPollClient {
       throw new Error("Telegram bot token is not configured");
     }
 
-    const url = `${this.botBaseUrl}/getUpdates?offset=${input.offset}&timeout=${input.timeout_seconds}`;
+    const allowedUpdatesParam = input.allowed_updates
+      ? `&allowed_updates=${encodeURIComponent(JSON.stringify(input.allowed_updates))}`
+      : "";
+    const url = `${this.botBaseUrl}/getUpdates?offset=${input.offset}&timeout=${input.timeout_seconds}${allowedUpdatesParam}`;
     const response = await this.fetchImpl(url, {
       method: "GET",
       ...(input.signal ? { signal: input.signal } : {})
@@ -130,5 +174,55 @@ export class TelegramClient implements TelegramSendClient, TelegramPollClient {
     }
 
     return body.result;
+  }
+
+  async answerCallbackQuery(input: TelegramAnswerCallbackQueryInput): Promise<void> {
+    if (!this.token) {
+      throw new Error("Telegram bot token is not configured");
+    }
+
+    const response = await this.fetchImpl(`${this.botBaseUrl}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        callback_query_id: input.callback_query_id,
+        ...(input.text ? { text: input.text } : {})
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Telegram answerCallbackQuery failed: HTTP ${response.status}`);
+    }
+
+    const body = (await response.json()) as { ok: boolean; description?: string };
+    if (!body.ok) {
+      throw new Error(`Telegram answerCallbackQuery failed: ${body.description ?? "unknown error"}`);
+    }
+  }
+
+  async editMessageReplyMarkup(input: TelegramEditMessageReplyMarkupInput): Promise<void> {
+    if (!this.token) {
+      throw new Error("Telegram bot token is not configured");
+    }
+
+    const response = await this.fetchImpl(`${this.botBaseUrl}/editMessageReplyMarkup`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        chat_id: input.chat_id,
+        message_id: input.message_id,
+        // Telegram clears the keyboard when reply_markup is an empty inline_keyboard.
+        reply_markup: input.reply_markup ?? { inline_keyboard: [] }
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Telegram editMessageReplyMarkup failed: HTTP ${response.status}`);
+    }
+
+    const body = (await response.json()) as { ok: boolean; description?: string };
+    if (!body.ok) {
+      throw new Error(`Telegram editMessageReplyMarkup failed: ${body.description ?? "unknown error"}`);
+    }
   }
 }

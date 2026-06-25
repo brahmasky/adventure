@@ -1,8 +1,8 @@
 import type { Identity, TelegramAllowlist, TypedTaskEvent } from "../domain/types.js";
 import { buildTypedTaskEvent } from "../domain/types.js";
 import { authorizeTelegramUpdate } from "./telegram-auth.js";
-import type { TelegramCommand } from "./telegram-command-parser.js";
-import { parseTelegramCommand } from "./telegram-command-parser.js";
+import type { SelfWriteCallbackAction, TelegramCommand } from "./telegram-command-parser.js";
+import { parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
 
 export interface TelegramUpdate {
   update_id: number;
@@ -15,16 +15,59 @@ export interface TelegramUpdate {
     from?: { id: number };
     chat: { id: number };
   };
+  /**
+   * An inline-button tap (Phase 3.3). `data` is the button's `callback_data`,
+   * `message` points at the message the buttons are attached to.
+   */
+  callback_query?: {
+    id: string;
+    from?: { id: number };
+    message?: {
+      message_id: number;
+      chat: { id: number };
+    };
+    data?: string;
+  };
   channel_post?: unknown;
 }
 
+/**
+ * A normalized self-write inline-button action (Phase 3.3). NOT a `TypedTaskEvent`:
+ * the Gateway does not dispatch it — M4 wires the handler at the poll-loop seam. It
+ * carries enough Telegram context for the action module (M3) to answer the callback,
+ * disable the buttons, and run the merge action. `source_reference`/`idempotency_key`
+ * mirror the message event so the long-polling adapter's offset bookkeeping is uniform.
+ */
+export interface SelfWriteActionEvent {
+  type: "selfwrite_action";
+  action: SelfWriteCallbackAction;
+  runId: string;
+  callback_id: string;
+  chat_id: string;
+  message_id: number;
+  from: Identity;
+  source_reference: string;
+  idempotency_key: string;
+}
+
+/** The poll loop processes either a task event (message) or a self-write action (callback). */
+export type TelegramNormalizedEvent = TypedTaskEvent | SelfWriteActionEvent;
+
+export function isSelfWriteActionEvent(event: TelegramNormalizedEvent): event is SelfWriteActionEvent {
+  return (event as { type?: string }).type === "selfwrite_action";
+}
+
 export type TelegramNormalizeResult =
-  | { ok: true; event: TypedTaskEvent }
+  | { ok: true; event: TelegramNormalizedEvent }
   | { ok: false; error: { code: string; message: string } };
 
 export function normalizeTelegramUpdate(update: TelegramUpdate, allowlist: TelegramAllowlist): TelegramNormalizeResult {
   if (update.channel_post) {
     return { ok: false, error: { code: "TELEGRAM_AUTH_DENIED", message: "Channel posts are not accepted" } };
+  }
+
+  if (update.callback_query) {
+    return normalizeCallbackQuery(update, update.callback_query, allowlist);
   }
 
   const message = update.message;
@@ -47,6 +90,53 @@ export function normalizeTelegramUpdate(update: TelegramUpdate, allowlist: Teleg
   if (!parsed.ok) return parsed;
 
   return { ok: true, event: buildTelegramEvent(parsed.command, buildEventBase(update, message, auth.identity)) };
+}
+
+type TelegramCallbackQuery = NonNullable<TelegramUpdate["callback_query"]>;
+
+function normalizeCallbackQuery(
+  update: TelegramUpdate,
+  callback: TelegramCallbackQuery,
+  allowlist: TelegramAllowlist
+): TelegramNormalizeResult {
+  const message = callback.message;
+  if (!message) {
+    return { ok: false, error: { code: "TELEGRAM_COMMAND_INVALID", message: "Callback query is missing its message" } };
+  }
+
+  // SECURITY FLOOR: the tapping user is checked against the allowlist exactly like a
+  // message sender. A non-allowlisted `from` is rejected and never produces an action.
+  // (A button tap is never forwarded/channel-posted, so those guards are inert here.)
+  const auth = authorizeTelegramUpdate(
+    {
+      from_id: callback.from?.id,
+      chat_id: message.chat.id,
+      is_forwarded: false,
+      is_channel_post: false
+    },
+    allowlist
+  );
+  if (!auth.ok) return auth;
+
+  const parsed = parseSelfWriteCallback(callback.data);
+  if (!parsed) {
+    return { ok: false, error: { code: "TELEGRAM_COMMAND_INVALID", message: "Unrecognized callback data" } };
+  }
+
+  return {
+    ok: true,
+    event: {
+      type: "selfwrite_action",
+      action: parsed.action,
+      runId: parsed.runId,
+      callback_id: callback.id,
+      chat_id: String(message.chat.id),
+      message_id: message.message_id,
+      from: auth.identity,
+      source_reference: `telegram:update:${update.update_id}:callback:${callback.id}`,
+      idempotency_key: `telegram:${update.update_id}:callback:${callback.id}`
+    }
+  };
 }
 
 type TelegramMessage = NonNullable<TelegramUpdate["message"]>;
@@ -123,11 +213,21 @@ export interface TelegramGetUpdatesClient {
   getUpdates(input: {
     offset: number;
     timeout_seconds: number;
+    /** Update types to receive. The adapter requests message + callback_query (Phase 3.3). */
+    allowed_updates?: string[];
     signal?: AbortSignal;
   }): Promise<TelegramUpdate[]>;
 }
 
-export type TelegramEmit = (event: TypedTaskEvent) => Promise<void>;
+/**
+ * Update types the poller subscribes to. `callback_query` (Phase 3.3) is required for
+ * inline-button taps; `message` is the existing text path. Telegram defaults to all
+ * types EXCEPT `callback_query` unless `allowed_updates` is supplied, so it must be
+ * listed explicitly or button taps would never be delivered.
+ */
+export const TELEGRAM_ALLOWED_UPDATES: readonly string[] = ["message", "callback_query"];
+
+export type TelegramEmit = (event: TelegramNormalizedEvent) => Promise<void>;
 
 export interface TelegramLongPollingAdapterOptions {
   allowlist: TelegramAllowlist;
@@ -171,6 +271,7 @@ export function createTelegramLongPollingAdapter(
       const updates = [...await options.client.getUpdates({
         offset,
         timeout_seconds,
+        allowed_updates: [...TELEGRAM_ALLOWED_UPDATES],
         ...(pollOptions?.signal ? { signal: pollOptions.signal } : {})
       })].sort((left, right) => left.update_id - right.update_id);
 

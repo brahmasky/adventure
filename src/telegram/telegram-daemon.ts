@@ -8,7 +8,11 @@ import { NotificationOutbox } from "../notifications/notification-outbox.js";
 import { TelegramNotificationAdapter } from "../notifications/telegram-notification-adapter.js";
 import type { RunStore } from "../run/run-store.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
-import { createTelegramLongPollingAdapter } from "../triggers/telegram-trigger-adapter.js";
+import {
+  createTelegramLongPollingAdapter,
+  isSelfWriteActionEvent
+} from "../triggers/telegram-trigger-adapter.js";
+import { handleSelfWriteAction } from "./self-write-action-handler.js";
 import { isHandledIntakeDenial, type TelegramPollClient } from "./telegram-poll-runner.js";
 
 export const DEFAULT_LONGPOLL_TIMEOUT_SECONDS = 30;
@@ -108,6 +112,17 @@ export async function runTelegramDaemon(
   while (!options.stopSignal.aborted) {
     try {
       await adapter.pollOnce(async (event) => {
+        if (isSelfWriteActionEvent(event)) {
+          // M4: execute the authorized self-write action via the SHARED handler (identical to
+          // the poll runner). Auth was enforced upstream (M2); this never re-derives it.
+          await handleSelfWriteAction({
+            event,
+            telegramClient: options.telegramClient,
+            projectRoot: options.projectRoot,
+            store: options.store
+          });
+          return;
+        }
         const intake = gateway.intake(event);
         if (!intake.ok) {
           if (isHandledIntakeDenial(intake.error.code)) return;

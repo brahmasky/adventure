@@ -206,3 +206,47 @@ surface).
 
 This amendment supersedes the `/approve`-gate sentence in §7 for the Phase-3 code-self-write surface
 only; the rest of §7 and the original §5 constant stand as written.
+
+## Amendment 2 (2026-06-25): the merge/reload checkpoint moves to Telegram (still human-gated)
+
+**What changed.** §5 above says *"the daemon never hot-swaps; **Paco** merges and reloads."* As built
+(Phase 3.3, [the spec](../superpowers/specs/2026-06-25-phase3-code-self-write.md#phase-33--interactive-telegram-merge-controls--5-amendment)),
+the *input method* for that merge moves from a terminal `git merge` to an **authenticated Telegram inline
+button**. The **human gate is PRESERVED, not removed:** the daemon merges + reloads self-authored code
+**ONLY on Paco's authenticated Telegram tap** (`[Merge & reload]`) — it **never merges on its own**. The
+daemon becomes the *executor* of what Paco authorized; Paco's yes/no is unchanged, only the friction of
+dropping to a terminal is gone. (A manual `git merge` remains available; the button is an added path, not
+a replacement of human judgment.)
+
+The published-fix notification now carries an inline keyboard — **[View diff] · [Merge & reload] ·
+[Discard]** — with `callback_data` = `selfwrite:<action>:<run-id>`. The merge action runs the sequence in
+`src/capabilities/self-write-merge.ts` (`mergeAndReload`): capture the pre-merge ref → `git merge` →
+`npm run build` → **re-run the test-gate on merged `main`** → (red: `git reset --hard` to the pre-merge
+ref, NO restart, NO push, daemon keeps the old code) / (green: enqueue a durable "merged, reloading…"
+notice, optional push, then a **detached** `launchctl kickstart -k gui/$uid/<label>` self-restart onto the
+new `dist/`).
+
+**Why this is safe, not a weakening.**
+- **The real safety floor is the protected-path GUARD, not §5.** Checker 1's HARD-DENY (gates / identity /
+  ADRs / deps / build / *existing* tests) makes the dangerous surface **structurally unreachable** by any
+  self-write, *regardless of how a branch is merged*. That guard is **unchanged** — a more convenient merge
+  trigger cannot widen what was ever allowed onto a branch.
+- **A merge is reversible** (it's git). The merge action even captures the pre-merge HEAD first, so a bad
+  outcome is a clean `reset --hard` back.
+- **The change is already verified** before the button exists — it passed the guard, the test-gate, and the
+  independent reviewer to be published at all — and Paco can **[View diff]** (read-only `git diff
+  main...<branch>`) before tapping.
+- **A POST-MERGE test-gate re-run gates the restart.** After the merge+build, the gate runs again on merged
+  `main`; **red → auto-revert, no restart** (the daemon never bounces onto code that doesn't pass), green →
+  restart. The restart is the only point new code reaches the running process, and it is behind a green gate.
+- **Callback auth (allowlist).** Only Paco's authenticated taps act — the callback's `from` user is checked
+  against the same allowlist as messages, so a non-Paco tap is rejected. The buttons are also cleared after
+  a tap (`editMessageReplyMarkup`) and the actions are idempotent, so a branch can't be double-merged.
+
+**This is freedom-over-control** (ADR 0001/0011, as amended): keep the deterministic floor (the guard +
+the post-merge test-gate) and keep the human's yes/no, drop only the terminal friction. Recursive nicety:
+**Phase 3.3 itself will be merged via this very button** — the feature's first job is to land itself.
+
+This amendment refines the *input method* of the §5 merge checkpoint for the Phase-3.3 surface; the §5
+"daemon never hot-swaps without Paco's authorization" constant, the original §5, and the first amendment
+all stand as written.

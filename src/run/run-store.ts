@@ -20,7 +20,7 @@ import {
   type GlobalBudgetHeadroom,
   type GlobalBudgetKind
 } from "../budget/global-budget-ledger.js";
-import type { NotificationIntent } from "../notifications/notification-types.js";
+import type { NotificationButton, NotificationIntent } from "../notifications/notification-types.js";
 import {
   appendLedgerEvent,
   createLedgerEvent,
@@ -1295,7 +1295,7 @@ export class RunStore {
    */
   enqueueFinalReportNotification(
     run_id: string,
-    input: { text: string; report_path: string }
+    input: { text: string; report_path: string; buttons?: NotificationButton[] }
   ): NotificationQueueResult {
     return this.enqueueNotification({
       target: this.getRunNotifyTarget(run_id),
@@ -1307,7 +1307,10 @@ export class RunStore {
         // The user-facing message IS the answer/report body (no server path).
         // Bounded to a Telegram-safe length; report_path stays for audit only.
         text: truncateForChat(input.text),
-        report_path: input.report_path
+        report_path: input.report_path,
+        // Phase 3.3: inline buttons (the self-write merge controls) ride only when supplied;
+        // every other final report omits them and stays byte-identical to before.
+        ...(input.buttons ? { buttons: input.buttons } : {})
       }
     });
   }

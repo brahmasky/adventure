@@ -6,7 +6,7 @@ import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { SkillStore } from "../../src/skills/skill-store.js";
-import { normalizeTelegramUpdate } from "../../src/triggers/telegram-trigger-adapter.js";
+import { isSelfWriteActionEvent, normalizeTelegramUpdate } from "../../src/triggers/telegram-trigger-adapter.js";
 
 function seedWaitingApprovalRun(store: RunStore): string {
   const gateway = new Gateway(store);
@@ -83,6 +83,7 @@ describe("Gateway telegram events", () => {
         chats: [{ telegram_chat_id: 222, label: "private", allowed_identity_ids: ["paco"] }]
       });
       if (!normalized.ok) throw new Error("expected normalized approve");
+      if (isSelfWriteActionEvent(normalized.event)) throw new Error("expected a task event, not a callback");
       const event = normalized.event;
 
       const first = gateway.intake(event);

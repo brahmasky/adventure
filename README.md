@@ -199,6 +199,16 @@ cost + latency — **counts/metadata only, never prompt/diff/response bodies**),
 also stamps a compact writer+reviewer `usage_summary` on its `self_write_published` event. See
 [configuration](docs/reference/configuration.md#phase-31--swappable-writer--per-role-models).
 
+**3.3: merge from Telegram.** A published self-write fix now carries inline buttons — **[View diff] ·
+[Merge & reload] · [Discard]** — so the §5 merge checkpoint moves from a terminal `git merge` to an
+**authenticated tap**. **[Merge & reload]** merges → builds → **re-runs the test-gate** on merged `main`
+→ (**red: auto-revert, no restart**, daemon keeps the old code; **green:** a durable "reloading" notice
+that survives the bounce, then a detached `launchctl kickstart` self-restart onto the new `dist/`) →
+optional `git push` (`HOUGE_SELFWRITE_PUSH`, default off). **[Discard]** deletes the branch; **[View
+diff]** shows it. It stays **human-gated** — only your authenticated tap acts (callbacks are
+allowlist-checked, same floor as messages), and the daemon **never merges on its own**. See
+[configuration](docs/reference/configuration.md#phase-33--interactive-telegram-merge-controls).
+
 ## Safety model
 
 Deterministic code owns control; the LLM is used only for judgment

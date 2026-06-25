@@ -10,7 +10,7 @@ import { NotificationOutbox } from "../notifications/notification-outbox.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import { LocalNotificationAdapter } from "../notifications/local-notification-adapter.js";
 import { TelegramNotificationAdapter } from "../notifications/telegram-notification-adapter.js";
-import { normalizeTelegramUpdate } from "../triggers/telegram-trigger-adapter.js";
+import { isSelfWriteActionEvent, normalizeTelegramUpdate } from "../triggers/telegram-trigger-adapter.js";
 
 export interface EvalSuiteFile {
   name: string;
@@ -175,6 +175,10 @@ function runParserAuthCase(input: { text: string; from_id: number; chat_id: numb
   }
 
   const event = normalized.event;
+  // This eval case only ever feeds text-command updates; a self-write callback never reaches here.
+  if (isSelfWriteActionEvent(event)) {
+    return { event_type: event.type, program: null, authorized_identity: event.from.id, notify: `telegram:${event.chat_id}` };
+  }
   return {
     event_type: event.type,
     program: event.type === "ask" || event.type === "run" || event.type === "turn" ? event.program : null,
@@ -319,6 +323,7 @@ async function runAskPathCase(projectRoot: string, input: { text: string }): Pro
       EVAL_ALLOWLIST
     );
     if (!normalized.ok) throw new Error("normalize failed");
+    if (isSelfWriteActionEvent(normalized.event)) throw new Error("unexpected self-write callback in eval");
 
     const intake = new Gateway(store).intake(normalized.event);
     if (!intake.ok) throw new Error("intake failed");

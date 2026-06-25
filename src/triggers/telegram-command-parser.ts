@@ -93,6 +93,38 @@ function invalid(message: string): TelegramCommandParseResult {
   return { ok: false, error: { code: "TELEGRAM_COMMAND_INVALID", message } };
 }
 
+/**
+ * Self-write inline-button actions (Phase 3.3). A callback button's `callback_data`
+ * follows the convention `selfwrite:<action>:<run-id>` where action ∈ view|merge|discard.
+ */
+export type SelfWriteCallbackAction = "view" | "merge" | "discard";
+
+export interface SelfWriteCallback {
+  action: SelfWriteCallbackAction;
+  runId: string;
+}
+
+const SELF_WRITE_CALLBACK_ACTIONS: ReadonlySet<string> = new Set(["view", "merge", "discard"]);
+
+/**
+ * Parse a Telegram `callback_data` string of the form `selfwrite:<action>:<run-id>`.
+ * Tolerant: returns `null` for anything that is not a well-formed self-write callback
+ * (wrong prefix, unknown action, missing/empty run id) so an unrelated callback is
+ * simply ignored rather than misrouted.
+ */
+export function parseSelfWriteCallback(data: unknown): SelfWriteCallback | null {
+  if (typeof data !== "string") return null;
+  // Split into exactly three parts; the run id may itself contain no `:` (run ids
+  // are token-shaped, e.g. `run_x`). Anything with extra colons is rejected.
+  const parts = data.split(":");
+  if (parts.length !== 3) return null;
+  const [prefix, action, runId] = parts;
+  if (prefix !== "selfwrite") return null;
+  if (!action || !SELF_WRITE_CALLBACK_ACTIONS.has(action)) return null;
+  if (!runId) return null;
+  return { action: action as SelfWriteCallbackAction, runId };
+}
+
 type SplitShellWordsResult = { ok: true; words: string[] } | { ok: false; error: { code: "TELEGRAM_COMMAND_INVALID"; message: string } };
 
 function splitShellWords(input: string): SplitShellWordsResult {

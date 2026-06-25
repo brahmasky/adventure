@@ -56,6 +56,7 @@ import { createLocalProjectWriteAdapter } from "../capabilities/local-project-wr
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { canonicalJson, stableHash } from "../domain/canonical.js";
 import type { Identity } from "../domain/types.js";
+import type { NotificationButton } from "../notifications/notification-types.js";
 import { createLedgerEvent } from "../run/run-ledger.js";
 import { writeRunReport } from "../report/report-writer.js";
 import { RunStore } from "../run/run-store.js";
@@ -74,6 +75,12 @@ interface CompletionReportInput {
   body: string;
   sources: string[];
   notifyText: string;
+  /**
+   * Inline buttons for the final-report notification (Phase 3.3). ONLY the self-write *published*
+   * path sets this — every other report stays button-less. Threaded into the outbox payload so the
+   * delivered Telegram message carries the [Merge & reload] · [View diff] · [Discard] keyboard.
+   */
+  notifyButtons?: NotificationButton[];
 }
 
 /**
@@ -934,7 +941,12 @@ export class CoreWorker {
           // Phase 3.1 (W3): compact per-role usage stamp (counts/metadata ONLY — no bodies).
           usage_summary: buildUsageSummary(lastWriterMeta, lastWriterUsage, lastReviewerMeta, lastReviewerUsage)
         });
-        return this.selfWriteReport(buildPublishNotification(focus, published, review));
+        // Phase 3.3: attach the interactive merge controls to ONLY this published notification.
+        return this.selfWriteReport(buildPublishNotification(focus, published, review), [
+          { text: "🔀 Merge & reload", data: `selfwrite:merge:${claim.run_id}` },
+          { text: "👀 View diff", data: `selfwrite:view:${claim.run_id}` },
+          { text: "🗑 Discard", data: `selfwrite:discard:${claim.run_id}` }
+        ]);
       }
 
       // Unreachable in practice (the loop always returns), but fail loud if it ever isn't.
@@ -1029,12 +1041,22 @@ export class CoreWorker {
     return checkSelfWriteDiff(parseDiffRaw(raw));
   }
 
-  /** Assemble a self-write HelperResult (the 🐒 banner answer + completion-report shape). */
-  private selfWriteReport(notify: string): HelperResult {
+  /**
+   * Assemble a self-write HelperResult (the 🐒 banner answer + completion-report shape).
+   * `buttons` are set ONLY on the PUBLISHED path (Phase 3.3 merge controls); blocked/failed
+   * reports pass nothing, so their notifications stay button-less.
+   */
+  private selfWriteReport(notify: string, buttons?: NotificationButton[]): HelperResult {
     return {
       ok: true,
       answer: notify,
-      report: { title: "Self-write", body: [`Self-write outcome:`, "", notify].join("\n"), sources: ["intent:selfcode:write"], notifyText: notify }
+      report: {
+        title: "Self-write",
+        body: [`Self-write outcome:`, "", notify].join("\n"),
+        sources: ["intent:selfcode:write"],
+        notifyText: notify,
+        ...(buttons ? { notifyButtons: buttons } : {})
+      }
     };
   }
 
@@ -1711,7 +1733,8 @@ export class CoreWorker {
     // original notify target (Telegram chat or local sink).
     this.runStore.enqueueFinalReportNotification(claim.run_id, {
       text: input.notifyText,
-      report_path: report.path
+      report_path: report.path,
+      ...(input.notifyButtons ? { buttons: input.notifyButtons } : {})
     });
 
     return {

@@ -11,14 +11,16 @@ import type { RunStore } from "../run/run-store.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import {
   createTelegramLongPollingAdapter,
+  isSelfWriteActionEvent,
   type TelegramGetUpdatesClient
 } from "../triggers/telegram-trigger-adapter.js";
+import { handleSelfWriteAction, type SelfWriteActionTelegramClient } from "./self-write-action-handler.js";
 import type {
   TelegramSendMessageInput,
   TelegramSendMessageResult
 } from "./telegram-client.js";
 
-export interface TelegramPollClient extends TelegramGetUpdatesClient {
+export interface TelegramPollClient extends TelegramGetUpdatesClient, SelfWriteActionTelegramClient {
   sendMessage(input: TelegramSendMessageInput): Promise<TelegramSendMessageResult>;
 }
 
@@ -87,6 +89,17 @@ export async function runTelegramPollOnce(
   let worker_status = "idle";
 
   const pollResult = await adapter.pollOnce(async (event) => {
+    if (isSelfWriteActionEvent(event)) {
+      // M4: execute the authorized self-write action (view/discard/merge+reload) via the shared
+      // handler — the SAME implementation the daemon uses. Auth was enforced upstream (M2).
+      await handleSelfWriteAction({
+        event,
+        telegramClient: options.telegramClient,
+        projectRoot: options.projectRoot,
+        store: options.store
+      });
+      return;
+    }
     const intake = gateway.intake(event);
 
     if (!intake.ok) {

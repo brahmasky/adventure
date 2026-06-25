@@ -33,4 +33,80 @@ describe("TelegramClient", () => {
     await client.sendMessage({ chat_id: "222", text: "see https://untrusted.example" });
     expect(JSON.parse(body).disable_web_page_preview).toBe(true);
   });
+
+  it("includes allowed_updates in the getUpdates query when supplied (Phase 3.3)", async () => {
+    let requestedUrl = "";
+    const client = new TelegramClient({
+      token: "token",
+      apiBase: "https://example.test/bottoken",
+      fetchImpl: async (url) => {
+        requestedUrl = String(url);
+        return new Response(JSON.stringify({ ok: true, result: [] }), { status: 200 });
+      }
+    });
+
+    await client.getUpdates({ offset: 1, timeout_seconds: 1, allowed_updates: ["message", "callback_query"] });
+    const parsed = new URL(requestedUrl);
+    expect(JSON.parse(parsed.searchParams.get("allowed_updates") ?? "[]")).toEqual([
+      "message",
+      "callback_query"
+    ]);
+  });
+
+  it("sends reply_markup inline_keyboard on sendMessage when provided (Phase 3.3)", async () => {
+    let body = "";
+    const client = new TelegramClient({
+      token: "token",
+      apiBase: "https://example.test/bottoken",
+      fetchImpl: async (url, init) => {
+        if (String(url).includes("/sendMessage")) body = String(init?.body ?? "");
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 });
+      }
+    });
+
+    await client.sendMessage({
+      chat_id: "222",
+      text: "buttons",
+      reply_markup: { inline_keyboard: [[{ text: "Merge", callback_data: "selfwrite:merge:run_x" }]] }
+    });
+    expect(JSON.parse(body).reply_markup).toEqual({
+      inline_keyboard: [[{ text: "Merge", callback_data: "selfwrite:merge:run_x" }]]
+    });
+  });
+
+  it("answerCallbackQuery POSTs the callback_query_id (Phase 3.3)", async () => {
+    let calledUrl = "";
+    let body = "";
+    const client = new TelegramClient({
+      token: "token",
+      apiBase: "https://example.test/bottoken",
+      fetchImpl: async (url, init) => {
+        calledUrl = String(url);
+        body = String(init?.body ?? "");
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+    });
+
+    await client.answerCallbackQuery({ callback_query_id: "cbq_1", text: "Merging…" });
+    expect(calledUrl).toContain("/answerCallbackQuery");
+    expect(JSON.parse(body)).toEqual({ callback_query_id: "cbq_1", text: "Merging…" });
+  });
+
+  it("editMessageReplyMarkup clears the keyboard with an empty inline_keyboard when none given (Phase 3.3)", async () => {
+    let calledUrl = "";
+    let body = "";
+    const client = new TelegramClient({
+      token: "token",
+      apiBase: "https://example.test/bottoken",
+      fetchImpl: async (url, init) => {
+        calledUrl = String(url);
+        body = String(init?.body ?? "");
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+    });
+
+    await client.editMessageReplyMarkup({ chat_id: "222", message_id: 90 });
+    expect(calledUrl).toContain("/editMessageReplyMarkup");
+    expect(JSON.parse(body)).toEqual({ chat_id: "222", message_id: 90, reply_markup: { inline_keyboard: [] } });
+  });
 });
