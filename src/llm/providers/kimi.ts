@@ -1,5 +1,10 @@
-import type { LlmProvider, LlmRequest, LlmResult } from "../types.js";
-import type { LlmUsage } from "../../run/llm-usage.js";
+import type { LlmProvider } from "../types.js";
+import {
+  createOpenAiCompatProvider,
+  type OpenAiCompatConfig,
+  type OpenAiCompatFetchImpl,
+  type OpenAiCompatSpec
+} from "./openai-compat.js";
 
 // Conservative, stable LAST-RESORT default — `moonshot-v1-auto` is an alias that
 // won't 404 as specific k2.x versions retire. Set HOUGE_LLM_MODEL_KIMI to pin a
@@ -12,204 +17,26 @@ export const KIMI_DEFAULT_TIMEOUT_MS = 30_000;
 // the chain. 4096 fits synthesis with headroom; override with HOUGE_KIMI_MAX_TOKENS.
 export const KIMI_DEFAULT_MAX_TOKENS = 4096;
 
-/**
- * Kimi's fetch shape is a minimal subset of `globalThis.fetch` that additionally
- * carries an optional `signal`, so the provider can enforce a per-call timeout
- * via an `AbortController`. Default impl is `globalThis.fetch`.
- */
-export type KimiFetchImpl = (
-  url: string,
-  init: {
-    method: string;
-    headers: Record<string, string>;
-    body: string;
-    signal?: AbortSignal;
-  }
-) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
+/** Back-compat alias — kimi's fetch impl is the shared OpenAI-compatible shape. */
+export type KimiFetchImpl = OpenAiCompatFetchImpl;
+/** Back-compat alias — kimi's config is the shared OpenAI-compatible config. */
+export type KimiProviderConfig = OpenAiCompatConfig;
 
-export interface KimiProviderConfig {
-  apiKey?: string;
-  model?: string;
-  baseUrl?: string;
-  timeoutMs?: number;
-  fetchImpl?: KimiFetchImpl;
-  /**
-   * Phase 3.1 telemetry seam (spec §"Real telemetry"). Fired once per SUCCESSFUL completion with
-   * the call's normalized token usage and the actual model id — the W3 caller wires this to
-   * `recordLlmCall` for the cheap-chain roles. Optional: existing callers are unaffected, and the
-   * provider's `LlmResult` shape is unchanged (usage rides this side channel, not the result).
-   * NON-NEGOTIABLE: carries ONLY counts/metadata — never prompt or response bodies.
-   */
-  onUsage?: (usage: LlmUsage, model: string) => void;
-}
-
-/**
- * Normalize the OpenAI-compatible `usage` block on a kimi chat-completion response into
- * {@link LlmUsage}. `prompt_tokens`/`completion_tokens` are the OpenAI field names; cached prompt
- * tokens (when the API reports them) live under `prompt_tokens_details.cached_tokens`. Returns
- * `null` when no usable `usage` block is present (tolerant).
- */
-function extractKimiUsage(data: unknown): LlmUsage | null {
-  if (typeof data !== "object" || data === null) return null;
-  const usage = (data as { usage?: unknown }).usage;
-  if (typeof usage !== "object" || usage === null) return null;
-  const u = usage as Record<string, unknown>;
-  const toNum = (v: unknown): number => {
-    const n = typeof v === "number" ? v : Number(v);
-    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
-  };
-  const details = u.prompt_tokens_details;
-  const cached =
-    typeof details === "object" && details !== null
-      ? toNum((details as Record<string, unknown>).cached_tokens)
-      : 0;
-  return {
-    input_tokens: toNum(u.prompt_tokens),
-    output_tokens: toNum(u.completion_tokens),
-    cached_input_tokens: cached
-  };
-}
-
-function extractContent(data: unknown): string | undefined {
-  if (typeof data !== "object" || data === null) return undefined;
-  const choices = (data as { choices?: unknown }).choices;
-  if (!Array.isArray(choices) || choices.length === 0) return undefined;
-  const first = choices[0];
-  if (typeof first !== "object" || first === null) return undefined;
-  const message = (first as { message?: unknown }).message;
-  if (typeof message !== "object" || message === null) return undefined;
-  const content = (message as { content?: unknown }).content;
-  if (typeof content !== "string" || content.length === 0) return undefined;
-  return content;
-}
-
-function numericEnv(raw: string | undefined): number | undefined {
-  if (raw === undefined) return undefined;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : undefined;
-}
+const KIMI_SPEC: OpenAiCompatSpec = {
+  name: "kimi-api",
+  apiKeyEnv: "KIMI_API_KEY",
+  modelEnv: "HOUGE_LLM_MODEL_KIMI",
+  baseUrlEnv: "HOUGE_KIMI_BASE_URL",
+  timeoutEnvSuffix: "KIMI",
+  maxTokensEnv: "HOUGE_KIMI_MAX_TOKENS",
+  defaultModel: KIMI_DEFAULT_MODEL,
+  defaultBaseUrl: KIMI_DEFAULT_BASE_URL,
+  defaultTimeoutMs: KIMI_DEFAULT_TIMEOUT_MS,
+  defaultMaxTokens: KIMI_DEFAULT_MAX_TOKENS,
+  chatCompletionsPath: "/v1/chat/completions",
+  errorLabel: "Kimi"
+};
 
 export function createKimiProvider(config: KimiProviderConfig = {}): LlmProvider {
-  return {
-    name: "kimi-api",
-    async answer(req: LlmRequest): Promise<LlmResult> {
-      const apiKey = config.apiKey ?? process.env.KIMI_API_KEY;
-      if (!apiKey) {
-        return {
-          ok: false,
-          provider: "kimi-api",
-          error: "KIMI_API_KEY is not set",
-          unavailable: true
-        };
-      }
-
-      const model =
-        req.model ??
-        config.model ??
-        process.env.HOUGE_LLM_MODEL_KIMI ??
-        KIMI_DEFAULT_MODEL;
-
-      const base = config.baseUrl ?? process.env.HOUGE_KIMI_BASE_URL ?? KIMI_DEFAULT_BASE_URL;
-      const url = `${base}/v1/chat/completions`;
-
-      const timeoutMs =
-        config.timeoutMs ??
-        numericEnv(process.env.HOUGE_LLM_TIMEOUT_MS_KIMI) ??
-        numericEnv(process.env.HOUGE_LLM_TIMEOUT_MS) ??
-        KIMI_DEFAULT_TIMEOUT_MS;
-
-      // Houge-controlled system prompt (the `/ask` neutral persona) goes first
-      // as a standard OpenAI-style system message when present.
-      const messages = [
-        ...(req.system ? [{ role: "system", content: req.system }] : []),
-        { role: "user", content: req.question }
-      ];
-      const body = {
-        model,
-        messages,
-        max_tokens: numericEnv(process.env.HOUGE_KIMI_MAX_TOKENS) ?? KIMI_DEFAULT_MAX_TOKENS
-      };
-
-      const fetchImpl = config.fetchImpl ?? (globalThis.fetch as unknown as KimiFetchImpl);
-
-      const controller = new AbortController();
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        controller.abort();
-      }, timeoutMs);
-
-      let response: Awaited<ReturnType<KimiFetchImpl>>;
-      try {
-        response = await fetchImpl(url, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify(body),
-          signal: controller.signal
-        });
-      } catch (error) {
-        const isAbort =
-          timedOut ||
-          controller.signal.aborted ||
-          (error instanceof Error && error.name === "AbortError");
-        if (isAbort) {
-          return {
-            ok: false,
-            provider: "kimi-api",
-            error: `Kimi request timed out after ${timeoutMs}ms`
-          };
-        }
-        const message = error instanceof Error ? error.message : String(error);
-        return { ok: false, provider: "kimi-api", error: `Kimi request failed: ${message}` };
-      } finally {
-        clearTimeout(timer);
-      }
-
-      if (!response.ok) {
-        return {
-          ok: false,
-          provider: "kimi-api",
-          error: `Kimi request returned HTTP ${response.status}`
-        };
-      }
-
-      let data: unknown;
-      try {
-        data = await response.json();
-      } catch {
-        return {
-          ok: false,
-          provider: "kimi-api",
-          error: "Kimi response missing message content"
-        };
-      }
-
-      const answer = extractContent(data);
-      if (answer === undefined) {
-        return {
-          ok: false,
-          provider: "kimi-api",
-          error: "Kimi response missing message content"
-        };
-      }
-
-      // Telemetry side channel (Phase 3.1): surface normalized usage without altering the result
-      // shape. Best-effort — a missing usage block or a throwing hook never fails the answer.
-      if (config.onUsage) {
-        const usage = extractKimiUsage(data);
-        if (usage) {
-          try {
-            config.onUsage(usage, model);
-          } catch {
-            // a failing telemetry hook must never break a good answer
-          }
-        }
-      }
-
-      return { ok: true, provider: "kimi-api", model, answer };
-    }
-  };
+  return createOpenAiCompatProvider(KIMI_SPEC, config);
 }

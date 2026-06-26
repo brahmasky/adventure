@@ -47,3 +47,20 @@ Gate: typecheck clean · test 272/272 · build OK · zero runtime deps. LIVE
 `/teach`-taught `🐒 Houge-confidence:` trailer was absent pre-teach and present post-teach
 in real `/research` output. Telegram transport leg was event-equivalent (harness can't type
 into Telegram); every other leg live.
+
+## 2026-06-26 — Phase 3.4: Gemini chain legs (research-model-fit + silent-failure)
+Fixed the recurring research-synthesis silent failure (run_8672b6fb: pi over-cap + kimi empty →
+no reply). Root cause = cheap chain was 100% coding-tuned. Added two GENERAL-model legs in Paco's
+order: chain `pi → agy-cli → kimi-api → gemini-api`.
+- NEW providers: `agy-cli` (Antigravity CLI `--print`, Gemini 3.5 Flash; injection-safe argv prompt,
+  restricted env, no --dangerously-skip-permissions) + `gemini-api` (Google OpenAI-compat, gemini-3.5-flash).
+- Refactors (DRY, surfaced + approved): shared `openai-compat.ts` factory (kimi+gemini) and
+  `cli-spawn.ts` (pi+agy). Both preserve public surfaces → all prior tests green.
+- G5 silent-failure: `enqueueFailureNotification` + `failWithPartialReport` always replies
+  "I hit an error on that one: <reason>". One terminal notification per run (success XOR failure).
+- Gate: typecheck · npm test 725 · build · deps {}. Independent adversarial review PASS (no HIGH/MED;
+  LOW-1 auth-marker false-positive on general prose FIXED). LIVE evidence (scripts/probe-chain-p34.mjs,
+  live-gemini-chain-p34.mjs): full e2e turn completed on the exact query; fall-through PROVEN (pi
+  forced-fail → agy-cli serves synthesis 6.8s); gemini-api 5.0s & agy-cli 8.1s each synthesize; agy
+  auth survives the daemon's restricted env. Daemon reloaded PID 46231 on the 4-leg chain.
+- NOT committed (working tree on main, uncommitted). Literal Telegram round-trip = Paco's 1-line send.

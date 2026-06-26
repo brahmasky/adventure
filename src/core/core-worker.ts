@@ -1758,6 +1758,11 @@ export class CoreWorker {
 
   private failWithPartialReport(claim: ClaimedRun, result: Exclude<CapabilityResult, { status: "succeeded" }>): CoreWorkerResult {
     const detail = capabilityFailureDetail(result);
+    // Phase 3.4: a failed run must NEVER be silent. Always surface a short error reply to the run's
+    // notify target so the user sees "I hit an error" instead of nothing. The partial report path is
+    // attached when one was written (audit only); delivery does not depend on it.
+    const notifyText = `I hit an error on that one: ${detail}`;
+    let report_path: string | undefined;
     try {
       const report = writeRunReport(this.projectRoot, {
         run_id: claim.run_id,
@@ -1772,12 +1777,15 @@ export class CoreWorker {
         partial: true
       });
       this.runStore.recordReportWritten(claim.run_id, report.path, report.hash, true);
+      report_path = report.path;
     } catch {
       this.markFailed(claim.run_id, "running", detail);
+      this.runStore.enqueueFailureNotification(claim.run_id, notifyText);
       return { status: "failed", run_id: claim.run_id, error: detail };
     }
 
     this.markFailed(claim.run_id, "running", detail);
+    this.runStore.enqueueFailureNotification(claim.run_id, notifyText, report_path);
     return { status: "failed", run_id: claim.run_id, error: detail };
   }
 }

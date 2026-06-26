@@ -53,7 +53,9 @@ export function createLlmAnswerAdapter(
       onUsage
         ? {
             piConfig: { onUsage: (usage, model) => onUsage("pi", usage, model) },
-            kimiConfig: { onUsage: (usage, model) => onUsage("kimi-api", usage, model) }
+            kimiConfig: { onUsage: (usage, model) => onUsage("kimi-api", usage, model) },
+            // gemini-api reports OpenAI-style usage; agy-cli (print mode) emits none, so it has no hook.
+            geminiConfig: { onUsage: (usage, model) => onUsage("gemini-api", usage, model) }
           }
         : {}
     );

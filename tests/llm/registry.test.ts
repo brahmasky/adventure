@@ -36,6 +36,18 @@ describe("buildLlmChain", () => {
     expect(chain.map((p) => p.name)).toEqual(["pi", "kimi-api"]);
   });
 
+  it("resolves the agy-cli and gemini-api providers when named", () => {
+    const chain = buildLlmChain({ HOUGE_LLM_PROVIDERS: "agy-cli,gemini-api" } as NodeJS.ProcessEnv);
+    expect(chain.map((p) => p.name)).toEqual(["agy-cli", "gemini-api"]);
+  });
+
+  it("resolves the full 4-leg Phase 3.4 chain in order", () => {
+    const chain = buildLlmChain({
+      HOUGE_LLM_PROVIDERS: "pi,agy-cli,kimi-api,gemini-api"
+    } as NodeJS.ProcessEnv);
+    expect(chain.map((p) => p.name)).toEqual(["pi", "agy-cli", "kimi-api", "gemini-api"]);
+  });
+
   it("throws a clear error on an unknown provider name", () => {
     expect(() =>
       buildLlmChain({ HOUGE_LLM_PROVIDERS: "pi,kimi" } as NodeJS.ProcessEnv)

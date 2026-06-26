@@ -2,47 +2,19 @@
 // is classified `external_read` (ungated). Full agentic `coding_agent_cli`
 // delegation (tools enabled) stays denied until V2 containment. See the
 // "LLM providers > Policy amendment" section in README.md.
-import { spawn } from "node:child_process";
 import os from "node:os";
 import type { LlmProvider, LlmRequest, LlmResult } from "../types.js";
 import type { LlmUsage } from "../../run/llm-usage.js";
+import {
+  buildChildEnv,
+  defaultSpawnImpl,
+  type SpawnImpl,
+  type SpawnOpts,
+  type SpawnResult
+} from "./cli-spawn.js";
 
-/**
- * Result shape returned by a {@link SpawnImpl}. The impl must RESOLVE this shape
- * for every outcome (success, non-zero exit, timeout, spawn failure) and must
- * NEVER reject — the provider relies on a total function for deterministic
- * error handling.
- */
-export interface SpawnResult {
-  /** Process exit code; `null` when killed (e.g. timeout) or spawn failed. */
-  code: number | null;
-  stdout: string;
-  stderr: string;
-  /** True when OUR timeout fired and the child was killed. */
-  timedOut: boolean;
-  /** Set when the process could not be spawned (e.g. ENOENT: binary missing). */
-  spawnError?: { code?: string };
-}
-
-export interface SpawnOpts {
-  timeoutMs: number;
-  cwd: string;
-  env: Record<string, string>;
-  maxBytes: number;
-  /**
-   * Text written to the child's stdin. The attacker-controlled question is
-   * delivered THIS way (not as an argv token), so a prompt that looks like a
-   * flag (`--model evil`) can never be parsed as one. pi reads its prompt from
-   * stdin in `-p` mode and does NOT support a `--` end-of-options separator.
-   */
-  input: string;
-}
-
-export type SpawnImpl = (
-  file: string,
-  args: string[],
-  opts: SpawnOpts
-) => Promise<SpawnResult>;
+// Re-exported for back-compat — pi's spawn seam types now live in the shared cli-spawn module.
+export type { SpawnImpl, SpawnOpts, SpawnResult };
 
 export interface PiProviderConfig {
   model?: string;
@@ -63,14 +35,6 @@ export const PI_DEFAULT_TIMEOUT_MS = 60_000;
 export const PI_DEFAULT_MAX_BYTES = 262_144; // 256 KB
 export const PI_BINARY = "pi";
 
-/**
- * Env var names the pi child is always allowed to inherit. Deliberately minimal:
- * the question is attacker-controlled, so the child must NOT see the Telegram
- * bot token or unrelated API keys. Extra var names may be opted in via
- * HOUGE_PI_ENV_PASSTHROUGH (comma-separated).
- */
-const ENV_ALLOWLIST = ["PATH", "HOME", "TERM", "LANG", "USER"] as const;
-
 /** Auth markers pi prints as PLAIN TEXT while exiting 0 — treat as unavailable. */
 const AUTH_MARKERS = ["no api key", "/login", "not logged in", "please log in"];
 
@@ -83,21 +47,6 @@ function stripAnsi(input: string): string {
 
 function byteLength(input: string): number {
   return Buffer.byteLength(input, "utf8");
-}
-
-function buildChildEnv(passthroughRaw: string | undefined): Record<string, string> {
-  const allowed = new Set<string>(ENV_ALLOWLIST);
-  if (passthroughRaw) {
-    for (const name of passthroughRaw.split(",").map((n) => n.trim())) {
-      if (name.length > 0) allowed.add(name);
-    }
-  }
-  const env: Record<string, string> = {};
-  for (const name of allowed) {
-    const value = process.env[name];
-    if (value !== undefined) env[name] = value;
-  }
-  return env;
 }
 
 interface ParsedAnswer {
@@ -194,71 +143,6 @@ function extractAnswer(parsed: ParsedAnswer): string | undefined {
   if (parsed.deltaText.length > 0) return parsed.deltaText;
   return undefined;
 }
-
-/**
- * Default spawn impl: uses `spawn` so the prompt is written to the child's
- * stdin (never argv), resolving (never rejecting) a SpawnResult. Enforces our
- * own timeout (SIGKILL) and a hard stdout byte cap (kills on overflow).
- */
-const defaultSpawnImpl: SpawnImpl = (file, args, opts) =>
-  new Promise<SpawnResult>((resolve) => {
-    let stdout = "";
-    let stderr = "";
-    let stdoutBytes = 0;
-    let overflow = false;
-    let timedOut = false;
-    let settled = false;
-
-    const child = spawn(file, args, { cwd: opts.cwd, env: opts.env });
-
-    const finish = (result: SpawnResult): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(result);
-    };
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGKILL");
-    }, opts.timeoutMs);
-
-    child.on("error", (error: NodeJS.ErrnoException) => {
-      // Spawn-level failure (e.g. ENOENT: binary missing).
-      const spawnError: { code?: string } = {};
-      if (error.code !== undefined) spawnError.code = error.code;
-      finish({ code: null, stdout, stderr, timedOut, spawnError });
-    });
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      stdoutBytes += chunk.length;
-      if (stdoutBytes > opts.maxBytes) {
-        // Keep just enough to exceed the cap so the provider detects overflow,
-        // then kill to bound memory.
-        if (!overflow) {
-          overflow = true;
-          stdout += chunk.toString("utf8");
-          child.kill("SIGKILL");
-        }
-        return;
-      }
-      stdout += chunk.toString("utf8");
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
-    });
-
-    child.on("close", (code) => {
-      finish({ code, stdout, stderr, timedOut });
-    });
-
-    // Deliver the prompt on stdin, then close it. Guard against EPIPE if the
-    // child exited before consuming stdin.
-    child.stdin?.on("error", () => {
-      /* ignore broken-pipe; the close/error handler resolves the outcome */
-    });
-    child.stdin?.end(opts.input);
-  });
 
 export function createPiProvider(config: PiProviderConfig = {}): LlmProvider {
   const spawnImpl = config.spawnImpl ?? defaultSpawnImpl;

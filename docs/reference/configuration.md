@@ -51,18 +51,22 @@ front door.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `HOUGE_LLM_PROVIDERS` | `pi,kimi-api` | Ordered, comma-separated chain with automatic fallback (first success wins; unavailable/error/timeout falls through). Known providers: `pi` (hardened single-shot CLI), `kimi-api` (OpenAI-compatible HTTP). The singular `HOUGE_LLM_PROVIDER` is ignored when this plural is set. |
+| `HOUGE_LLM_PROVIDERS` | `pi,kimi-api` | Ordered, comma-separated chain with automatic fallback (first success wins; unavailable/error/timeout falls through). Known providers: `pi` + `agy-cli` (hardened single-shot CLIs), `kimi-api` + `gemini-api` (OpenAI-compatible HTTP). `agy-cli`/`gemini-api` are **general-model** legs (Gemini Flash) so research synthesis doesn't over-produce like the coding-tuned `pi`/`kimi` legs (Phase 3.4). Recommended live chain: `pi,agy-cli,kimi-api,gemini-api`. The singular `HOUGE_LLM_PROVIDER` is ignored when this plural is set. |
 | `HOUGE_LLM_MODEL_PI` | unset → pi's own configured model | Model is configured **per provider** (namespaces differ). Set this only to make Houge override pi's own choice. |
 | `HOUGE_LLM_MODEL_KIMI` | `moonshot-v1-auto` (stable alias) | A model your `KIMI_API_KEY` can access (`GET /v1/models`). |
+| `HOUGE_LLM_MODEL_GEMINI` | `gemini-3.5-flash` | Model for the `gemini-api` leg (a general model; the latest Flash on the public API). |
+| `HOUGE_AGY_MODEL` | `Gemini 3.5 Flash (Low)` | Model for the `agy-cli` leg (`agy models` lists choices). |
 | `HOUGE_ASK_SYSTEM_PROMPT` | composed from `memory/` + `lesson_blocks` | The **answer**-path system prompt. When unset it is **composed** (identity + answer discipline + the `ask` scope's lesson block + guardrails — see [Learning](#learning--conversational-distillation-and-lesson_blocks) below), replacing pi's default *coding-assistant* persona. Set this to override the whole prompt. |
 | `HOUGE_LLM_TIMEOUT_MS` | — | Fallback per-provider wall-clock timeout (ms) for any provider without a specific one. |
 | `HOUGE_LLM_TIMEOUT_MS_PI` | `60000` | pi timeout (ms). |
 | `HOUGE_LLM_TIMEOUT_MS_KIMI` | `30000` | kimi timeout (ms). |
+| `HOUGE_LLM_TIMEOUT_MS_AGY` | `60000` | agy-cli timeout (ms). |
+| `HOUGE_LLM_TIMEOUT_MS_GEMINI` | `30000` | gemini-api timeout (ms). |
 
 > The CapabilityRunner's enforced wall-clock cap is **derived** from these:
-> `sum(per-provider timeouts) + 15000` buffer. With defaults (pi 60s + kimi 30s)
-> the runner cap is 105s — so a healthy chain that legitimately falls through every
-> provider is never killed mid-flight.
+> `sum(per-provider timeouts) + 15000` buffer. With the 4-leg chain (pi 60s + agy 60s +
+> kimi 30s + gemini 30s) the runner cap is 195s — so a healthy chain that legitimately
+> falls through every provider is never killed mid-flight.
 
 ### pi CLI provider
 
@@ -70,12 +74,27 @@ front door.
 |----------|---------|---------|
 | `HOUGE_PI_ENV_PASSTHROUGH` | — | Extra env var **names** (comma-separated) to pass through to the pi child. The child runs with a minimal allowlist (`PATH, HOME, TERM, LANG, USER`) so the attacker-controlled question never sees the Telegram token or unrelated keys; add the var pi needs for auth here. |
 
+### agy CLI provider (Antigravity / Gemini)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_AGY_BIN` | `agy` (on PATH) | Absolute path to the `agy` binary. Set this for the daemon, which runs under a restricted PATH (like `HOUGE_CLAUDE_BIN`/`HOUGE_CODEX_BIN`). |
+| `HOUGE_AGY_ENV_PASSTHROUGH` | — | Extra env var **names** (comma-separated) for the agy child. Same minimal allowlist as pi (`PATH, HOME, TERM, LANG, USER`); agy normally reads its auth from `$HOME`, so this is rarely needed. The prompt rides argv (`--print <prompt>`) as a single discrete element — injection-safe — and `--dangerously-skip-permissions` is never passed. |
+
 ### Kimi API provider
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `KIMI_API_KEY` | — | Secret. Enables the `kimi-api` provider; if unset the provider reports `unavailable` and the chain falls through. |
 | `HOUGE_KIMI_BASE_URL` | `https://api.moonshot.ai` | Base URL for the OpenAI-compatible endpoint. |
+
+### Gemini API provider
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `GEMINI_API_KEY` | — | Secret. Enables the `gemini-api` provider; if unset the provider reports `unavailable` and the chain falls through. |
+| `HOUGE_GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` | Base URL for Google's OpenAI-compatibility endpoint (the factory appends `/chat/completions`). |
+| `HOUGE_GEMINI_MAX_TOKENS` | `8192` | Output token budget. Generous because 3.5-flash spends "thinking" tokens against the same budget — a tight cap can starve the visible answer. |
 
 ## Web read (powers the **research** intent)
 

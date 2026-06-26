@@ -1316,6 +1316,32 @@ export class RunStore {
   }
 
   /**
+   * Enqueue a terminal FAILURE notification so a failed run is NEVER silent (Phase 3.4): the user
+   * sees "I hit an error on that one: <reason>" instead of nothing — which previously looked like
+   * Houge was dead when he had actually errored. Rides the same delivery path and idempotency key as
+   * the success final-report, so a run emits exactly ONE terminal notification — success OR failure,
+   * never both (a failed run never reaches `enqueueFinalReportNotification`). `report_path` is the
+   * partial report when one was written; omitted when even that failed.
+   */
+  enqueueFailureNotification(
+    run_id: string,
+    text: string,
+    report_path?: string
+  ): NotificationQueueResult {
+    return this.enqueueNotification({
+      target: this.getRunNotifyTarget(run_id),
+      intent_type: "final_report",
+      idempotency_key: `${run_id}:final_report`,
+      run_id,
+      correlation_id: run_id,
+      payload: {
+        text: truncateForChat(text),
+        ...(report_path ? { report_path } : {})
+      }
+    });
+  }
+
+  /**
    * Mark expired approval-prompt notifications (queued/retry_wait/sending) as
    * `failed_terminal`, then expire the linked pending approvals so the waiting
    * runs also resolve. Used by the poll runner before dispatch.

@@ -56,12 +56,18 @@ intelligence, not a command parser ([ADR 0010](docs/decisions/0010-natural-langu
 ## LLM providers
 
 Cognition resolves an ordered provider chain with automatic fallback (first `ok`
-wins; `unavailable`/error/timeout fall through). Default chain `pi,kimi-api`:
-`pi` (hardened single-shot CLI, tools disabled) and `kimi-api` (OpenAI-compatible
-HTTP) — model-agnostic, never Claude. Houge answers in its own voice — a projection
-of its Core Identity ([memory/core/houge.md](memory/core/houge.md)): the cheerful,
-capable 猴哥, but *inference only* (it answers; it doesn't act) on the **answer** path.
-Override the persona with `HOUGE_ASK_SYSTEM_PROMPT`.
+wins; `unavailable`/error/timeout fall through). Default chain `pi,kimi-api`; the
+recommended live chain is `pi,agy-cli,kimi-api,gemini-api`. Two kinds of leg:
+**coding-tuned** — `pi` (hardened single-shot CLI, tools disabled) and `kimi-api`
+(OpenAI-compatible HTTP) — and **general** — `agy-cli` (the Antigravity CLI in
+`--print` mode, Gemini Flash) and `gemini-api` (Google's OpenAI-compat endpoint).
+The general legs exist because a coding model over-produces on research/answer prose
+and blew `pi`'s 256KB output cap (the 2026-06-26 silent-failure incident); a general
+leg synthesizes cleanly and catches the fall-through. All model-agnostic, never Claude.
+Houge answers in its own voice — a projection of its Core Identity
+([memory/core/houge.md](memory/core/houge.md)): the cheerful, capable 猴哥, but
+*inference only* (it answers; it doesn't act) on the **answer** path. Override the
+persona with `HOUGE_ASK_SYSTEM_PROMPT`.
 
 → Every provider/model/timeout/key variable: [configuration reference](docs/reference/configuration.md#llm-provider-chain-powers-cognition).
 The inference-vs-agentic safety boundary (why a tools-disabled `pi` is `external_read`):

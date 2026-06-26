@@ -4,8 +4,9 @@
   all SHIPPED to main** (3.3 = interactive Telegram merge controls; merged from feat/merge-controls 2026-06-26).
   Branch model = **daemon runs from main**; develop on feature branches off main, merge back (now via the
   3.3 [Merge & reload] button or manual git).
-- **Daemon:** launchd `com.houge.daemon` — **LIVE on main `cd9c1f7`, PID 37553** (reloaded 2026-06-26T21:28,
-  clean restart, healthy). Reload after a code change: `npm run build && launchctl kickstart -k gui/$(id -u)/com.houge.daemon`.
+- **Daemon:** launchd `com.houge.daemon` — **LIVE, PID 46231** (reloaded 2026-06-26 on the Phase 3.4
+  WORKING TREE — uncommitted — with the 4-leg chain `pi,agy-cli,kimi-api,gemini-api`; clean restart, healthy).
+  Reload after a code change: `npm run build && launchctl kickstart -k gui/$(id -u)/com.houge.daemon`.
   Conversation/lessons/identity/skills survive reloads (`houge.sqlite` + `skills/` + `memory/core/houge.md`);
   only in-flight runs lost.
 - **Self-write surface is OFF by default** — `HOUGE_SELFWRITE_ENABLED` defaults false. Phase 3/3.1/3.3 CODE is
@@ -13,11 +14,13 @@
   (optional: `HOUGE_SELFWRITE_WRITER=claude HOUGE_SELFWRITE_REVIEWER=codex HOUGE_SELFWRITE_PUSH=true`) + reload.
 
 ⚠ **NEXT UP (pending, not lost):**
-  1. **Live runtime bug (2026-06-26):** research/synthesis queries FAIL silently — pi blows the 256KB output
-     cap + kimi-api empty + NO failure reply. See the two backlog items "LLM-for-research model fit" (RECURRED)
-     and "Silent turn failures (NEW)". This is the most user-visible issue right now.
+  1. ✅ **Live runtime bug (2026-06-26) — FIXED by Phase 3.4** (section below; code+docs+live evidence done,
+     `/goal` met bar one literal Telegram round-trip). Chain is now `pi,agy-cli,kimi-api,gemini-api` — when the
+     coding leg over-produces, a general Gemini-Flash leg (agy CLI / Gemini API) catches the synthesis; and a
+     full-chain failure now ALWAYS replies (no more silent fail). Both old backlog items (LLM-for-research
+     model fit · Silent turn failures) RESOLVED. NOT committed yet — branch/commit at Paco's call.
   2. **Phase 3.2** — provider rate-limit/quota surfacing + per-run cost (DESIGN DONE, /goal drafted; see the
-     "Phase 3.2" section below + spec). Would also make #1 visible instead of cryptic.
+     "Phase 3.2" section below + spec).
 
 - **猴哥 fix branches** `houge/selfwrite/run_48db7150` (codex) + `run_4c0f99f0` (claude) are UNMERGED +
   STALE (cut before 3.1 changed intent.ts/composer.ts/core-worker.ts → would conflict). Don't merge them;
@@ -35,6 +38,90 @@
   (NO run-and-check/web needed); Gate B = 3-pass ensemble; D4 = auto-author may be BLOCKING-gated on it + report.
   **Next: `/goal` the real 2c build.** Then Phase 3 (gated code self-write).
 - **Critical rules:** `/goal` is a REAL user-invoked stop-gate command (don't claim it doesn't exist); every `/goal` ends with a LIVE run (not just `npm test`); **freedom-over-control** — no 紧箍咒/cage framing, OK for Houge to fail, only core principles stay constant (ADR 0001/0011).
+
+---
+# Phase 3.4 — research-model-fit via Gemini chain legs — PLAN DRAFTED 2026-06-26 (awaiting /goal)
+
+**Why:** `run_8672b6fb` (today) recurred the research-synthesis silent failure. The cheap chain is 100%
+coding-tuned (`pi`=kimi-k2.7-code-highspeed) → over-produces on prose → blows pi's 256KB cap; kimi-api
+fallback returned empty → run FAILED with no reply. Fix = add **general-model** legs. Paco's preferred
+chain order: **`pi → agy CLI → kimi-api → gemini-api`** (CLI legs free/authed; API legs keyed).
+
+**Discovery done (2026-06-26):**
+- `agy` = Antigravity CLI `1.0.8` @ `/Users/pluo/.local/bin/agy` (supersedes the `gemini` CLI, which is NOT on
+  PATH). **Already authenticated** — `agy --model "Gemini 3.5 Flash (Low)" --print "<prompt>"` → clean
+  plain-text stdout, exit 0, ~8.5s cold. Multi-model (Gemini 3.5 Flash/3.1 Pro, Claude 4.6, GPT-OSS).
+- **agy quirks vs pi:** prompt is an ARGV value (`--print <prompt>`), NOT stdin — still injection-safe via
+  spawn arg-array (Go flag consumes the next token as the literal value). NO `--no-tools` flag (agentic CLI);
+  NO `--system-prompt` flag; NO JSON/usage output. → fold system into the prompt string; bound blast radius
+  with empty temp cwd + restricted env allowlist + NO `--dangerously-skip-permissions` (+ maybe `--sandbox`);
+  onUsage telemetry absent for this leg.
+- Live `.env`: `HOUGE_LLM_PROVIDERS` UNSET → running default `pi,kimi-api` (the failing chain). No
+  `GEMINI_API_KEY` yet → **agy-cli leg alone fixes the bug today**; gemini-api leg lands when Paco adds a key.
+
+**BUILD STATUS (2026-06-26, /goal active):** G1–G6 DONE + independently verified (PASS, no HIGH/MED;
+LOW-1 auth-marker false-positive FIXED). Typecheck clean · **npm test 725** · build OK · deps {}. Daemon
+reloaded PID 46231 on the 4-leg chain (`.env` HOUGE_LLM_PROVIDERS=pi,agy-cli,kimi-api,gemini-api +
+HOUGE_AGY_BIN). agy auth confirmed under the daemon's restricted env. **G7 LIVE test = LAST STEP (awaiting
+Paco's Telegram send of the failing weather query).** New/changed: openai-compat.ts (shared factory) +
+gemini.ts + cli-spawn.ts (shared spawn) + agy-cli.ts + registry/llm-answer wiring + run-store
+enqueueFailureNotification + core-worker failWithPartialReport (G5).
+
+**Build plan:**
+- [x] G1. `src/llm/providers/agy-cli.ts` — `createAgyCliProvider` on the pi.ts safety skeleton (injected
+      spawn impl, SIGKILL timeout, byte cap, env allowlist, temp cwd, ENOENT/auth→`unavailable`). Args
+      `["--model", model, "--print", system+"\n\n"+question]`. `HOUGE_AGY_BIN` (absolute, like CLAUDE/CODEX),
+      `HOUGE_AGY_MODEL` (default `Gemini 3.5 Flash (Low)`). Plain-text stdout → strip-ANSI/trim. Tests mirror
+      pi.test.ts.
+- [x] G2. `src/llm/providers/gemini.ts` + shared `src/llm/providers/openai-compat.ts` factory (kimi+gemini
+      both built from it; kimi public surface preserved → 64 prior tests green). Default `gemini-3.5-flash`,
+      base `…/v1beta/openai` + `/chat/completions`, `GEMINI_API_KEY`, max_tokens 8192 (thinking-token headroom).
+      ⚠ usage caveat stands (3.5-flash total_tokens incl. thinking; counts-only, non-blocking).
+- [x] G3. `src/llm/registry.ts` — `agy-cli` + `gemini-api` cases + timeout/suffix maps. Default chain
+      unchanged (`pi,kimi-api`); 4-leg opt-in via `.env`. Also NEW `src/llm/providers/cli-spawn.ts` (shared
+      spawn machinery extracted from pi.ts; pi re-exports the types → pi tests green).
+- [x] G4. `src/capabilities/llm-answer.ts` — onUsage threaded for `gemini-api` (agy-cli emits none).
+- [x] G5. silent-failure notification — `RunStore.enqueueFailureNotification` + `failWithPartialReport`
+      now always enqueues "I hit an error on that one: <reason>" on BOTH failure exits. Unit-locked
+      (core-worker-turn test). One terminal notification per run (success XOR failure; shared idempotency key).
+- [x] G6. `.env` (4-leg chain + HOUGE_AGY_BIN), `.env.example`, `docs/reference/configuration.md`, README.
+- [x] G7. **Verify DONE** — typecheck clean · **npm test 725** · build OK · deps {}. **Independent adversarial
+      review: PASS** (no HIGH/MED; LOW-1 auth-marker false-positive on general prose FIXED + test-locked).
+      **LIVE EVIDENCE (real chain, scripts/probe-chain-p34.mjs + live-gemini-chain-p34.mjs):**
+      • Full e2e turn (real Tavily + real chain) on the EXACT failing query → **completed** with a proper
+        Chinese weather/cycling answer (that run pi happened to succeed: `llm:pi:kimi-for-coding`).
+      • **Fall-through PROVEN**: full chain with pi forced to fail → served by **agy-cli·Gemini 3.5 Flash**
+        (6.8s) — exactly the morning failure mode now recovering instead of going silent.
+      • `gemini-api` alone (5.0s) and `agy-cli` alone (8.1s) each synthesize cleanly.
+      • agy auth confirmed under the daemon's restricted env (PATH/HOME/TERM/LANG/USER).
+      Daemon LIVE on the 4-leg chain (PID 46231). **Literal Telegram round-trip = Paco's 1-line send (or
+      accept the above harness evidence).**
+
+**Out of scope this round:** multimodal (image/voice/video) via agy/gemini — Paco flagged it as a later round.
+**Follow-up filed:** "LLM-for-research model fit" + "Silent turn failures" backlog items → RESOLVED by Phase 3.4.
+
+### Phase 3.4 LIVE thread (2026-06-26 23:17–23:23Z) — NEW issues surfaced (do NOT fix in this /goal)
+The weather query `run_dd305dc2` COMPLETED + replied (silent-failure FIXED ✓; intent classified `research`
+correctly). No `llm_call` telemetry on the research-synthesis turns → since only agy emits no usage, the
+general **agy-cli/Gemini Flash leg likely served them**. Quality issues, all NEW backlog:
+- [ ] **Research self-critique leaks meta-commentary** — the reply opened "我仔细瞅了瞅你发来的这篇…草稿,
+      发现几个妖怪" then "修正后的最终回复": the STORM grade+revise step emitted its INTERNAL critique as the
+      user-facing answer AND misattributed its own first draft to the user ("你发来的草稿"). Likely Gemini
+      follows the critique prompt more literally than kimi did → meta leaks. Fix: ensure the research path
+      returns only the REVISED answer, never the critique scaffold; tighten the revise prompt / strip meta.
+- [ ] **Location hallucination (no geo capability)** — Houge assumed **Beijing** with no basis; the whole
+      23:19–23:23 sub-thread was Paco catching it ("你从哪里确定我在北京?"). No geolocation; should ASK or say
+      it can't determine location, not guess. New `location`/geo capability (or a "don't assume location"
+      discipline). Pairs with the market-data/structured-connector family.
+- [ ] **Date off by one (timezone)** — reply said "今天 2026年6月25日 周四" but Paco's local date is 06-26
+      (AEST). `temporal.ts` likely injects UTC; the daemon logs/timestamps are Z. Inject LOCAL date (or the
+      user's TZ) into cognitive prompts.
+- [ ] **Persona/language drift on the general legs** — `run_93ba1594` replied in ENGLISH ("Greeting Paco!
+      Master Brother (大师兄)…") mid-Chinese conversation — a general-leg (agy/gemini) following houge.md less
+      faithfully than pi/kimi. Consider strengthening the language/persona instruction for the general legs.
+- [ ] **Telemetry blind spot** — research-synthesis turns emit NO `llm_call` event (onUsage not wired on that
+      path; agy emits none by design) → can't see which leg served a turn. Wire synthesis-path onUsage; for
+      agy, record a usage-less `llm_call` (provider/model/role only) so the leg is visible in the ledger.
 
 ---
 # Phase 3 — code self-write (gated) — DESIGN LOCKED, SPIKE PENDING (2026-06-25) — ADR 0011 §7

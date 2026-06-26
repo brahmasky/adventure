@@ -56,6 +56,33 @@ function llmWithVerdict(verdict: string, calls: Record<string, unknown>[]): (inp
 }
 
 describe("executeTurn (natural-language front door)", () => {
+  it("never fails silently: a failed turn enqueues an error reply to the chat (Phase 3.4)", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const run_id = turnRun(store, "weather this weekend, good for cycling?");
+      // The whole LLM chain fails (the morning incident: pi over-cap + kimi empty). The classifier
+      // call returns ok:false → executeTurn drops into failWithPartialReport.
+      const failingLlm = async (): Promise<ToolAdapterResult> => ({
+        ok: false,
+        error: "pi: output exceeded 262144 byte cap; kimi-api: Kimi response missing message content"
+      });
+      const worker = new CoreWorker(store, projectRoot(), failingLlm);
+
+      const result = await worker.executeRun(run_id, "w");
+
+      // The run still fails — but the user is NOT left in silence.
+      expect(result.status).toBe("failed");
+      const note = store.claimNextNotification("test", 30);
+      expect(note).not.toBeNull();
+      expect(note!.payload.text).toContain("I hit an error on that one:");
+      expect(note!.payload.text).toContain("byte cap");
+      // The notification goes to the run's original Telegram chat.
+      expect(note!.target).toEqual({ kind: "telegram", chat_id: "555" });
+    } finally {
+      store.close();
+    }
+  });
+
   it("dispatches an 'answer' verdict to the answer helper and records both chat turns", async () => {
     const store = RunStore.openInMemory();
     const calls: Record<string, unknown>[] = [];
