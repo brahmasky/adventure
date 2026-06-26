@@ -1,20 +1,21 @@
 # Current System State (read first — 2026-06-26)
 
-- **Branch:** **`main` @ `cd9c1f7`, pushed to origin** (brahmasky/adventure). Phases **1, 2a/b/c, 3, 3.1, 3.3
-  all SHIPPED to main** (3.3 = interactive Telegram merge controls; merged from feat/merge-controls 2026-06-26).
-  Branch model = **daemon runs from main**; develop on feature branches off main, merge back (now via the
-  3.3 [Merge & reload] button or manual git).
-- **Daemon:** launchd `com.houge.daemon` — **LIVE on main `8f62095`, PID 77039** (reloaded 2026-06-26;
-  Phase 3.4 4-leg chain + Phase 3.5 kimi reviewer; **SELF-WRITE ARMED: Writer=Codex(gpt-5.5 high) /
-  Reviewer=kimi(no-tools agent, confined)**, push off; writer is EXECUTION-FREE (`bf45e37`)).
+- **Branch:** **`main` @ `3c85328`** (brahmasky/adventure). Phases **1, 2a/b/c, 3, 3.1, 3.3, 3.4, 3.5 all
+  SHIPPED to main.** `3c85328` = **Houge's own self-write** (the 猴哥 fix, merged via the 3.3 [Merge & reload]
+  button 2026-06-26 — the FIRST fully-autonomous self-write landed via the complete loop). Branch model =
+  **daemon runs from main**; develop on feature branches, merge back via [Merge & reload] or manual git.
+- **Daemon:** launchd `com.houge.daemon` — **LIVE on main `3c85328`, PID 33935** (SELF-RESTARTED 2026-06-26
+  after Houge's [Merge & reload]; Phase 3.4 4-leg chain + Phase 3.5 kimi reviewer; **SELF-WRITE ARMED:
+  Writer=Codex(gpt-5.5 high) / Reviewer=kimi(no-tools agent, confined)**, push off; writer EXECUTION-FREE).
   Reload: `npm run build && launchctl kickstart -k gui/$(id -u)/com.houge.daemon`.
   Conversation/lessons/identity/skills survive reloads (`houge.sqlite` + `skills/` + `memory/core/houge.md`);
   only in-flight runs lost.
-- **Self-write is ARMED (2026-06-26)** — `.env`: `HOUGE_SELFWRITE_ENABLED=true`, `HOUGE_CLAUDE_BIN`,
-  `HOUGE_CODEX_BIN=/opt/homebrew/bin/codex`, `HOUGE_SELFWRITE_WRITER=claude`, `HOUGE_SELFWRITE_REVIEWER=codex`,
-  `HOUGE_SELFWRITE_PUSH=false`. Houge writes autonomously to a BRANCH (never hot-swaps); Paco merges via the
-  3.3 Telegram [Merge & reload] button. **NEXT: trigger the 猴哥 fix over Telegram** (S8 phrasing: "fix your
-  intent classifier so it gets your identity") → fresh self-write off main `90d2655` → branch → merge+restart.
+- **Self-write is ARMED + PROVEN LIVE (2026-06-26)** — `.env`: `HOUGE_SELFWRITE_ENABLED=true`, `HOUGE_CLAUDE_BIN`,
+  `HOUGE_CODEX_BIN`, `HOUGE_KIMI_CLI_BIN`, `HOUGE_SELFWRITE_WRITER=codex`, `HOUGE_SELFWRITE_REVIEWER=kimi`,
+  `HOUGE_SELFWRITE_PUSH=false`. ✅ **The full loop ran end-to-end over Telegram** (`run_f93782e2`): Codex wrote
+  the 猴哥 fix in ONE clean pass → test-gate PASS → kimi PASS (`{verdict:pass,fixes_task:true}`) → branch →
+  Paco [Merge & reload] → merged `3c85328` → daemon self-restarted. Codex chose a minimal INTENT_DISCIPLINE
+  prompt-patch (clarify 猴哥/you/this-agent = same agent), not the identity-injection — kimi judged it sound.
 
 ⚠ **NEXT UP (pending, not lost):**
   1. ✅ **Live runtime bug (2026-06-26) — FIXED by Phase 3.4** (section below; code+docs+live evidence done,
@@ -32,7 +33,11 @@
 - **Runtime:** model-agnostic chain `pi→kimi` (NEVER Claude). **Codex = build-time muscle** for code self-diagnose only (NOT skill authoring — skills are authored on pi→kimi).
 - **`.env` (gitignored):** `HOUGE_CODEX_ENABLED=true`, `HOUGE_CODEX_TIMEOUT_MS=300000`. Skills default ON (`HOUGE_SKILLS_ENABLED`).
 - **Live skills present** (gitignored runtime): `skills/research/fact-check-viral-claim.md` + `cross-check-figures-across-sources.md` (both real, authored by Houge over Telegram in the 2b live test).
-- **猴哥 classifier bug: UNFIXED ON PURPOSE** — it's the live fixture (intent router prompt lacks identity; bypasses the composer). Phase 3 (gated self-write) is where Houge would fix it himself. Don't fix it ad-hoc.
+- **猴哥 classifier bug: ✅ FIXED BY HOUGE HIMSELF (2026-06-26, `3c85328`)** — the long-standing live fixture is
+  RETIRED. Houge self-wrote the fix over Telegram (Codex writer + kimi reviewer, merged via [Merge & reload]):
+  patched `INTENT_DISCIPLINE` so the classifier knows 猴哥/you/this-agent are the same agent. ⚠ Behavioral
+  follow-up: verify live that he no longer asks "which 猴哥"; if the deeper root cause (intent prompt bypasses
+  the composer) still bites, a follow-up self-write can route identity through the composer.
 - **Done so far:** ADR 0010 (conversational front door) LIVE; ADR 0011 (self-evolution); **Phase 1 code self-diagnose DONE+LIVE**; **Phase 2a (load/apply skills) DONE+LIVE** (247b490); **Phase 2b (author skills) DONE+LIVE** (443bb19 — Houge authors his own skills on command, Gate A routes skill/lesson/code, over real Telegram).
 - **Next:** **Phase 2c** — Gate B + auto-author/refine. **SPIKE DONE 2026-06-22 → GO (conditional on a 3-pass
   ensemble)** (`scripts/spike-gateb-2c.mjs`; result in spec "Spike RESULT"). Single-pass cheap Gate B too noisy
@@ -178,10 +183,16 @@ results + runs the final gate (typecheck/test/build) and the **interactive** K5 
 - **LESSON (→ lessons.md):** any test asserting a DEFAULT for an env-var-backed config MUST `delete` that var
   first — the self-write test-gate inherits the daemon's runtime env, so a non-hermetic test passes in CI/local
   yet red-fails the gate and silently blocks ALL self-writes. Consider also: run the test-gate under a CLEAN env.
-- **NEXT:** with the gate unpoisoned, **re-run the 猴哥 self-write (Codex+kimi) — it should now land** (test-gate
-  passes → kimi reviews → branch). The verified-landable backward-compat fix shape still stands as the target.
-- **Open (separate):** Claude `-p` writer non-termination (no `--max-turns`); spec-driven / self-fix-as-a-skill
-  (the architectural direction — see the skills-vs-frozen-prompt discussion). Daemon LIVE 8f62095.
+- ✅ **DONE — live gate MET the proper way (2026-06-26, `run_f93782e2` → `3c85328`).** Re-ran over Telegram with
+  the gate unpoisoned: Codex wrote in ONE pass → test-gate PASS → kimi PASS → branch → [Merge & reload] →
+  merged + daemon self-restarted. **Phase 3.5 COMPLETE.** First fully-autonomous self-write through the whole loop.
+- **Open (separate, backlog):** (1) Claude `-p` writer non-termination (no `--max-turns`); (2) **spec-driven /
+  self-fix-as-a-skill** — the architectural DECISION (2026-06-26): keep the frozen TS writer prompt for now
+  (the writer was never the bottleneck — a poisoned gate was); next guidance step = spec-driven-lite (auto
+  acceptance-criteria), already backlogged; promote to a refinable `selfcode` skill ONLY when real self-write
+  runs show a recurring procedural failure (skills earn their place from evidence, like Houge's research skills).
+  Rails stay deterministic TS forever (skills guide, agent generates, code enforces). (3) the Phase 3.4 LIVE
+  thread issues (self-critique leak · location hallucination · date TZ · persona drift) still open.
 
 **BUILD PLAN — `kimi-cli` reviewer backend (Option A, Paco wants the CLI adapter as a reusable asset):**
 - [ ] K1. `diff-reviewer.ts`: add `"kimi"` to `ReviewerKind`; `resolveSelfWriteReviewer` recognizes `kimi`
