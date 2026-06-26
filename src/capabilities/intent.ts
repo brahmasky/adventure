@@ -159,9 +159,12 @@ export const INTENT_DISCIPLINE =
   "to Houge's PRIOR answer in the conversation (e.g. 'too long', 'prefer primary sources', " +
   "'that's wrong, be more careful') rather than a new question — use the recent thread as the " +
   "signal. Choose \"selfcode\" when the message asks Houge to read, inspect, or diagnose his " +
-  "OWN source code or internal behaviour — e.g. 'go read your intent classifier and tell me " +
-  "why', 'why did you do X internally / why did you ask which 猴哥', 'look at / diagnose your " +
-  "<file>'; set \"query\" to a focused restatement of what to look at. Choose \"skill\" when the " +
+  "OWN source code or internal behaviour, OR to fix/change/update that code/behaviour. Houge " +
+  "is this agent; 'Houge', '猴哥', 'you', 'your', and 'this agent' refer to the same agent here. " +
+  "Examples: 'go read your intent classifier and tell me why', 'fix your intent classifier', " +
+  "'try again to fix this intent classifier issue', 'why did you do X internally / why did you " +
+  "ask which 猴哥', 'look at / diagnose your <file>'; set \"query\" to a focused restatement of " +
+  "what to look at or change. Choose \"skill\" when the " +
   "message asks Houge to CREATE, WRITE, IMPROVE, or REFINE a reusable skill/procedure — e.g. " +
   "'write a skill for cross-checking figures', 'make a skill that verifies dates', 'teach " +
   "yourself a skill to compare sources'; set \"query\" to a restatement of the procedure to " +
