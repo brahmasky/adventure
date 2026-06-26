@@ -50,7 +50,12 @@ describe("createAgyCliProvider", () => {
   });
 
   it("passes the prompt as the --print argv value and defaults the model", async () => {
+    // Hermetic: clear BOTH env vars this asserts a default for. HOUGE_AGY_BIN especially — the
+    // self-write test-gate runs `npm test` inheriting the daemon's .env (where HOUGE_AGY_BIN is set),
+    // so without this delete the binary resolves to the real path and `toBe("agy")` red-fails the gate,
+    // silently blocking ALL self-writes (this exact bug blocked the 猴哥 fix, 2026-06-26).
     delete process.env.HOUGE_AGY_MODEL;
+    delete process.env.HOUGE_AGY_BIN;
     const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout: "ok" }));
     const provider = createAgyCliProvider({ spawnImpl });
 

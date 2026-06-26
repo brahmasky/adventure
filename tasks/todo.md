@@ -4,10 +4,10 @@
   all SHIPPED to main** (3.3 = interactive Telegram merge controls; merged from feat/merge-controls 2026-06-26).
   Branch model = **daemon runs from main**; develop on feature branches off main, merge back (now via the
   3.3 [Merge & reload] button or manual git).
-- **Daemon:** launchd `com.houge.daemon` — **LIVE on main `bf45e37`, PID 61223** (reloaded 2026-06-26;
-  Phase 3.4 + 4-leg chain `pi,agy-cli,kimi-api,gemini-api`; **SELF-WRITE ARMED** (Writer=Claude/Reviewer=Codex);
-  **writer is now EXECUTION-FREE** (`bf45e37` — `--disallowedTools Bash`, so it can't loop on `npm test`; that
-  was the 600s timeout root cause). Reload: `npm run build && launchctl kickstart -k gui/$(id -u)/com.houge.daemon`.
+- **Daemon:** launchd `com.houge.daemon` — **LIVE on main `8f62095`, PID 77039** (reloaded 2026-06-26;
+  Phase 3.4 4-leg chain + Phase 3.5 kimi reviewer; **SELF-WRITE ARMED: Writer=Codex(gpt-5.5 high) /
+  Reviewer=kimi(no-tools agent, confined)**, push off; writer is EXECUTION-FREE (`bf45e37`)).
+  Reload: `npm run build && launchctl kickstart -k gui/$(id -u)/com.houge.daemon`.
   Conversation/lessons/identity/skills survive reloads (`houge.sqlite` + `skills/` + `memory/core/houge.md`);
   only in-flight runs lost.
 - **Self-write is ARMED (2026-06-26)** — `.env`: `HOUGE_SELFWRITE_ENABLED=true`, `HOUGE_CLAUDE_BIN`,
@@ -150,13 +150,38 @@ weakened a test"). Today it checks against only the one-line objective — **no 
 **independent verifier subagent** (adversarial diff review) — keep main context clean. Main loop integrates
 results + runs the final gate (typecheck/test/build) and the **interactive** K5 live Telegram test with Paco.
 
-**STATUS (2026-06-26):** K1–K4 built (builder subagent) → verifier found a **HIGH security defect** (kimi-cli's
-default agent has Shell/file tools + `--print` auto-approve + `--work-dir` does NOT sandbox → the reviewer
-read a seeded secret AND wrote into the LIVE repo on attacker-influenced diffs). **FIXED:** pin a generated
-**no-tools agent** (`tools: []`, verified → NO-ACCESS) via `--agent-file` + neutral temp cwd + finally-cleanup
-— kimi's analogue of claude tools-denied / codex `--sandbox read-only`. Also **default reviewer flipped
-claude→kimi** (Paco). typecheck · **npm test 738** · build · deps {}. Re-verifier running the LIVE confinement
-test. THEN K5 live.
+**STATUS (2026-06-26) — Phase 3.5 COMPLETE + COMMITTED `8f62095`. K5 live-gate BLOCKED on writer skill (not 3.5).**
+- K1–K4 built (builder subagent). Verifier found a **HIGH security defect** (kimi-cli's default agent has
+  Shell/file tools + `--print` auto-approve + `--work-dir` does NOT sandbox → reviewer read a seeded secret AND
+  wrote into the LIVE repo). **FIXED:** generated **no-tools agent** (`tools: []`) via `--agent-file` + neutral
+  temp cwd + finally-cleanup. Re-verifier confirmed CLOSED with a live PoC (agent refuses file read/write).
+- **kimi reviewer PROVEN end-to-end** (`scripts/.../kimi-review.mjs` on a real diff): confined + a sharp
+  adversarial verdict — correctly judged a fix correct+backward-compat+no-bugs, AND caught scope-creep + a doc
+  inconsistency + a perf note. NOT a rubber-stamp.
+- **Codex writer TERMINATES** (no Claude-style 10-min hang; 3 clean refine passes per run).
+- ⚠ **K5 live-gate NOT met:** the 猴哥 fix did NOT auto-land. Two live runs (bare + spec-enriched) → Codex's
+  fix went **test-gate red** all 3 refines → no branch (kimi never reached; test-gate correctly blocked).
+  **The fix IS landable** — I reproduced the backward-compat fix by hand (`buildIntentSystemPrompt(now,
+  identity?)` date-first + `readIdentity` + call-site) → **typecheck + 738 green** — so the blocker is Codex's
+  writing skill (can't produce the exact backward-compat change in 3 refines, even WITH acceptance criteria),
+  NOT the fixture or 3.5. This is the **spec-driven-self-write** case in the flesh: a sharper-than-spec, near
+  diff-level hint or a stronger writer is needed to auto-land it.
+- **ACTUAL ROOT CAUSE (2026-06-26, via diagnostic instrumentation) — it was NOT the writer.** The self-write
+  test-gate runs `npm test` as a child of the daemon, **inheriting the daemon's `.env`** (which sets
+  `HOUGE_AGY_BIN`). A **non-hermetic test** I wrote in Phase 3.4 — `agy-cli.test.ts` "defaults the model" —
+  asserted `binary === "agy"` WITHOUT clearing `HOUGE_AGY_BIN`, so under the gate's inherited env it resolved
+  the real path and **red-failed `test`**. That poisoned the gate on EVERY self-write attempt (Codex's 猴哥
+  diff was likely fine; the gate never let anything through). Passed locally (my shell lacks HOUGE_AGY_BIN) →
+  silent. **FIXED:** `delete process.env.HOUGE_AGY_BIN` in that test → **738 green even with the full daemon env
+  set** (audited: only that ONE test was non-hermetic). The Codex "can't write it" + "both writers exhausted"
+  conclusions were WRONG — an artifact of the poisoned gate. (Claude's 600s timeout is a separate, real issue.)
+- **LESSON (→ lessons.md):** any test asserting a DEFAULT for an env-var-backed config MUST `delete` that var
+  first — the self-write test-gate inherits the daemon's runtime env, so a non-hermetic test passes in CI/local
+  yet red-fails the gate and silently blocks ALL self-writes. Consider also: run the test-gate under a CLEAN env.
+- **NEXT:** with the gate unpoisoned, **re-run the 猴哥 self-write (Codex+kimi) — it should now land** (test-gate
+  passes → kimi reviews → branch). The verified-landable backward-compat fix shape still stands as the target.
+- **Open (separate):** Claude `-p` writer non-termination (no `--max-turns`); spec-driven / self-fix-as-a-skill
+  (the architectural direction — see the skills-vs-frozen-prompt discussion). Daemon LIVE 8f62095.
 
 **BUILD PLAN — `kimi-cli` reviewer backend (Option A, Paco wants the CLI adapter as a reusable asset):**
 - [ ] K1. `diff-reviewer.ts`: add `"kimi"` to `ReviewerKind`; `resolveSelfWriteReviewer` recognizes `kimi`
