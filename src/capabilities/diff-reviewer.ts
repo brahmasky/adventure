@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { resolveCodexBin, resolveCodexTimeoutMs } from "./coding-agent.js";
 import { normalizeClaudeUsage, normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
 
@@ -26,7 +29,13 @@ const REVIEW_MAX_BUFFER = 8 * 1024 * 1024;
  *  We do NOT guess a bare `claude`; the daemon PATH lacks it (spike S0). */
 export const CLAUDE_BIN_UNSET = "";
 
-export type ReviewerKind = "claude" | "codex";
+const DEFAULT_KIMI_CLI_TIMEOUT_MS = 180_000; // per-attempt ceiling; a normal kimi review returns in ~7s
+const KIMI_REVIEW_ATTEMPTS = 2; // retry once on a transient timeout/unparseable (same fail-safe as Claude)
+/** Sentinel for an unset `HOUGE_KIMI_CLI_BIN` — the caller treats this as "reviewer disabled".
+ *  We do NOT guess a bare `kimi-cli`; the daemon PATH lacks it. */
+export const KIMI_CLI_BIN_UNSET = "";
+
+export type ReviewerKind = "claude" | "codex" | "kimi";
 
 export interface ReviewVerdict {
   verdict: "pass" | "reject";
@@ -40,10 +49,13 @@ export type ReviewResult =
   | { ok: true; verdict: ReviewVerdict; usage?: LlmUsage }
   | { ok: false; error: string };
 
-/** Resolve which reviewer backs checker 3 (`HOUGE_SELFWRITE_REVIEWER`, default `claude`). */
+/** Resolve which reviewer backs checker 3 (`HOUGE_SELFWRITE_REVIEWER`, default `kimi` — cheap +
+ *  model-diverse from the Codex writer; the free test-gate + Paco's merge are the real safety net). */
 export function resolveSelfWriteReviewer(env: NodeJS.ProcessEnv): ReviewerKind {
   const raw = env.HOUGE_SELFWRITE_REVIEWER?.trim().toLowerCase();
-  return raw === "codex" ? "codex" : "claude";
+  if (raw === "claude") return "claude";
+  if (raw === "codex") return "codex";
+  return "kimi";
 }
 
 /**
@@ -66,6 +78,32 @@ export function resolveClaudeTimeoutMs(env: NodeJS.ProcessEnv): number {
 export function resolveClaudeModel(env: NodeJS.ProcessEnv): string {
   const m = env.HOUGE_CLAUDE_MODEL?.trim();
   return m && m.length > 0 ? m : DEFAULT_CLAUDE_MODEL;
+}
+
+/**
+ * Resolve the kimi-cli binary (`HOUGE_KIMI_CLI_BIN`). NO default guess of a bare `kimi-cli` — the
+ * daemon's PATH lacks it (it lives in `~/.local/bin`), so an absolute path is required. Unset →
+ * {@link KIMI_CLI_BIN_UNSET} sentinel, which the caller treats as "kimi reviewer disabled."
+ */
+export function resolveKimiCliBin(env: NodeJS.ProcessEnv): string {
+  const bin = env.HOUGE_KIMI_CLI_BIN?.trim();
+  return bin && bin.length > 0 ? bin : KIMI_CLI_BIN_UNSET;
+}
+
+/**
+ * Resolve the optional kimi-cli reviewer model (`HOUGE_KIMI_CLI_MODEL`). When set, it is passed as
+ * `--model <m>`; when unset, returns "" and we OMIT `--model`, deferring to kimi-cli's own configured
+ * default (`kimi-for-coding`).
+ */
+export function resolveKimiCliModel(env: NodeJS.ProcessEnv): string {
+  const m = env.HOUGE_KIMI_CLI_MODEL?.trim();
+  return m && m.length > 0 ? m : "";
+}
+
+/** Resolve the kimi-cli reviewer wall-clock timeout in ms (`HOUGE_KIMI_CLI_TIMEOUT_MS`, default 180000 per attempt). */
+export function resolveKimiCliTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const n = Number(env.HOUGE_KIMI_CLI_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_KIMI_CLI_TIMEOUT_MS;
 }
 
 /**
@@ -156,9 +194,14 @@ interface NodeError extends Error {
 export function reviewDiff(input: ReviewDiffInput): ReviewResult {
   const env = input.env ?? process.env;
   const reviewer = resolveSelfWriteReviewer(env);
-  return reviewer === "codex"
-    ? reviewViaCodex(input.task, input.diff, env)
-    : reviewViaClaude(input.task, input.diff, env);
+  switch (reviewer) {
+    case "codex":
+      return reviewViaCodex(input.task, input.diff, env);
+    case "kimi":
+      return reviewViaKimiCli(input.task, input.diff, env);
+    default:
+      return reviewViaClaude(input.task, input.diff, env);
+  }
 }
 
 /** Path A (spike GO): Claude CLI in print mode, absolute bin, under the daemon's PATH. */
@@ -258,6 +301,125 @@ function reviewViaCodex(task: string, diff: string, env: NodeJS.ProcessEnv): Rev
     return { ok: false, error: "Codex reviewer returned an unparseable verdict" };
   }
   return usage ? { ok: true, verdict, usage } : { ok: true, verdict };
+}
+
+/**
+ * Path C: a THIRD reviewer backend — the local `kimi-cli` agent in headless print mode (model
+ * diversity beyond Claude/Codex). Mirrors {@link reviewViaClaude}: absolute bin under the daemon's
+ * restricted PATH, prompt on STDIN, retry on transient failures. kimi-cli's wrapper carries an
+ * absolute-path Python shebang, so it self-contains its interpreter and runs fine under DAEMON_PATH
+ * (validated: `--help` and a real review both start with NO `~/.local/bin` on PATH) — no dirname
+ * injection needed. `--final-message-only` prints ONLY the clean final assistant message (the verdict
+ * JSON) to stdout; the "To resume this session: kimi -r <id>" notice goes to stderr (piped away), so
+ * stdout is plain text — we parse it directly with parseVerdict (NO JSON envelope, unlike Claude). No
+ * usage telemetry is emitted in this mode → no `usage` on the result.
+ */
+function reviewViaKimiCli(task: string, diff: string, env: NodeJS.ProcessEnv): ReviewResult {
+  const bin = resolveKimiCliBin(env);
+  if (bin === KIMI_CLI_BIN_UNSET) {
+    return { ok: false, error: "kimi reviewer disabled: set HOUGE_KIMI_CLI_BIN to the absolute kimi-cli path" };
+  }
+  const timeout = resolveKimiCliTimeoutMs(env);
+  const model = resolveKimiCliModel(env);
+  const prompt = buildReviewPrompt(task, diff);
+
+  // SECURITY (writer≠checker isolation): kimi-cli's DEFAULT agent ships Shell/ReadFile/Grep/etc. and
+  // `--print` auto-approves tool calls, so an unconfined reviewer can read/write ANY absolute path on
+  // the host (proven: it read a seeded secret AND wrote into the live repo). The diff is INLINE in the
+  // prompt — the reviewer needs no filesystem/shell at all. Confine it to a NO-TOOLS custom agent
+  // (`tools: []`, verified to reply NO-ACCESS to a file read) AND run it in a neutral temp cwd, never
+  // the repo. This is kimi's analogue of Claude's tools-denied and Codex's `--sandbox read-only`.
+  const agent = writeKimiReviewerAgent();
+  try {
+    // Same fail-safe as Claude: retry a couple of times on a transient timeout/unparseable (a clean
+    // `reject` verdict is a real answer and is NOT retried). Exhausting retries → not-published.
+    let lastError = "kimi reviewer unavailable";
+    for (let attempt = 1; attempt <= KIMI_REVIEW_ATTEMPTS; attempt++) {
+      let raw: string;
+      try {
+        // Headless review call, prompt on STDIN. `--agent-file` pins the no-tools reviewer agent;
+        // `--final-message-only` emits ONLY the clean final assistant message (the verdict JSON) to
+        // stdout. `--model` is omitted when unset, deferring to kimi-cli's own default (kimi-for-coding).
+        // stderr is piped (not inherited) so the "To resume this session" notice doesn't leak to the log.
+        raw = execFileSync(
+          bin,
+          [
+            "--print",
+            "--quiet",
+            "--final-message-only",
+            "--input-format",
+            "text",
+            "--agent-file",
+            agent.agentFile,
+            ...(model ? ["--model", model] : [])
+          ],
+          {
+            input: prompt,
+            encoding: "utf8",
+            timeout,
+            maxBuffer: REVIEW_MAX_BUFFER,
+            stdio: ["pipe", "pipe", "pipe"],
+            // Neutral cwd (NOT the repo) — defense in depth alongside the no-tools agent.
+            cwd: agent.dir,
+            // kimi-cli's wrapper has an absolute-path interpreter shebang, so the restricted daemon PATH
+            // is sufficient — it starts without needing its own dir on PATH (validated).
+            env: { ...env, PATH: DAEMON_PATH }
+          }
+        );
+      } catch (error) {
+        const err = error as NodeError;
+        if (err.code === "ENOENT") {
+          // A missing binary won't fix itself on retry — fail immediately.
+          return { ok: false, error: `kimi reviewer binary not found: ${bin} (set HOUGE_KIMI_CLI_BIN)` };
+        }
+        lastError = (err.signal === "SIGTERM" || err.code === "ETIMEDOUT")
+          ? `kimi reviewer timed out after ${timeout}ms`
+          : `kimi reviewer failed: ${errorMessage(error)}`;
+        continue; // transient — retry
+      }
+
+      // kimi prints plain text (NOT a JSON envelope), so parse the verdict straight from stdout.
+      const verdict = parseVerdict(raw);
+      if (verdict) return { ok: true, verdict };
+      lastError = "kimi reviewer returned an unparseable verdict";
+      // unparseable → retry (the model may have rambled); fall through to next attempt
+    }
+    return { ok: false, error: `${lastError} (after ${KIMI_REVIEW_ATTEMPTS} attempts)` };
+  } finally {
+    // Best-effort cleanup of the throwaway agent dir.
+    try {
+      rmSync(agent.dir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/**
+ * The NO-TOOLS kimi reviewer agent (`tools: []`). kimi-cli's default agent has full Shell/file tools
+ * and auto-approves them in `--print` mode; stripping ALL tools makes the reviewer a pure text judge of
+ * the inline diff (verified: it cannot read an absolute-path file — replies NO-ACCESS). Materialized to
+ * a fresh temp dir per call (the agent file + its `system_prompt_path` sibling must co-locate).
+ */
+const KIMI_REVIEWER_AGENT_YAML = [
+  "version: 1",
+  "agent:",
+  '  name: "houge-reviewer"',
+  "  system_prompt_path: ./reviewer-system.md",
+  "  tools: []",
+  ""
+].join("\n");
+
+const KIMI_REVIEWER_SYSTEM_MD =
+  "You are a careful, independent, adversarial code reviewer. Follow the user's instructions exactly " +
+  "and reply with only what is asked. You have no tools.\n";
+
+export function writeKimiReviewerAgent(): { dir: string; agentFile: string } {
+  const dir = mkdtempSync(join(tmpdir(), "houge-kimi-reviewer-"));
+  writeFileSync(join(dir, "reviewer-system.md"), KIMI_REVIEWER_SYSTEM_MD, "utf8");
+  const agentFile = join(dir, "reviewer.yaml");
+  writeFileSync(agentFile, KIMI_REVIEWER_AGENT_YAML, "utf8");
+  return { dir, agentFile };
 }
 
 /**

@@ -1,16 +1,21 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildReviewPrompt,
   CLAUDE_BIN_UNSET,
+  KIMI_CLI_BIN_UNSET,
   parseVerdict,
   resolveClaudeBin,
   resolveClaudeModel,
   resolveClaudeTimeoutMs,
+  resolveKimiCliBin,
+  resolveKimiCliModel,
+  resolveKimiCliTimeoutMs,
   resolveSelfWriteReviewer,
-  reviewDiff
+  reviewDiff,
+  writeKimiReviewerAgent
 } from "../../src/capabilities/diff-reviewer.js";
 
 let temps: string[] = [];
@@ -23,6 +28,26 @@ function fakeBin(name: string, output: string, exit = 0): string {
   // Single-quote the payload safely (escape embedded single quotes).
   const safe = output.replace(/'/g, `'\\''`);
   writeFileSync(bin, `#!/usr/bin/env bash\ncat > /dev/null\nprintf '%s' '${safe}'\nexit ${exit}\n`);
+  chmodSync(bin, 0o755);
+  return bin;
+}
+
+/** A fake bin that records argv + stdin to files, then prints `output` on stdout and exits 0/`exit`. */
+function capturingBin(name: string, output: string, opts: { argvFile?: string; stdinFile?: string } = {}, exit = 0): string {
+  const dir = mkdtempSync(join(tmpdir(), "houge-rev-bin-"));
+  temps.push(dir);
+  const bin = join(dir, name);
+  const safe = output.replace(/'/g, `'\\''`);
+  const lines = ["#!/usr/bin/env bash"];
+  if (opts.argvFile) {
+    lines.push(`: > "${opts.argvFile}"`);
+    lines.push(`for a in "$@"; do printf '%s\\n' "$a" >> "${opts.argvFile}"; done`);
+  }
+  if (opts.stdinFile) lines.push(`cat > "${opts.stdinFile}"`);
+  else lines.push("cat > /dev/null");
+  lines.push(`printf '%s' '${safe}'`);
+  lines.push(`exit ${exit}`);
+  writeFileSync(bin, lines.join("\n") + "\n");
   chmodSync(bin, 0o755);
   return bin;
 }
@@ -75,6 +100,11 @@ function codexJsonl(agentText: string): string {
       }
     })
   ].join("\n");
+}
+
+/** kimi-cli `--final-message-only` stdout: the plain-text verdict JSON, then the trailing resume line. */
+function kimiOutput(verdictJson: string): string {
+  return `${verdictJson}\nTo resume this session: kimi -r 2e9db88f-3ec0-4268-a589-89bbc315c74f`;
 }
 
 describe("parseVerdict", () => {
@@ -138,11 +168,13 @@ describe("parseVerdict", () => {
 });
 
 describe("config resolvers", () => {
-  it("resolveSelfWriteReviewer defaults to claude, honors codex", () => {
-    expect(resolveSelfWriteReviewer({})).toBe("claude");
+  it("resolveSelfWriteReviewer defaults to kimi, honors claude and codex", () => {
+    expect(resolveSelfWriteReviewer({})).toBe("kimi"); // default flipped to kimi (cheap + diverse)
     expect(resolveSelfWriteReviewer({ HOUGE_SELFWRITE_REVIEWER: "claude" })).toBe("claude");
     expect(resolveSelfWriteReviewer({ HOUGE_SELFWRITE_REVIEWER: "CODEX" })).toBe("codex");
-    expect(resolveSelfWriteReviewer({ HOUGE_SELFWRITE_REVIEWER: "garbage" })).toBe("claude");
+    expect(resolveSelfWriteReviewer({ HOUGE_SELFWRITE_REVIEWER: "kimi" })).toBe("kimi");
+    expect(resolveSelfWriteReviewer({ HOUGE_SELFWRITE_REVIEWER: "  CLAUDE " })).toBe("claude");
+    expect(resolveSelfWriteReviewer({ HOUGE_SELFWRITE_REVIEWER: "garbage" })).toBe("kimi");
   });
 
   it("resolveClaudeBin returns the disabled sentinel when unset (no bare-claude guess)", () => {
@@ -164,6 +196,26 @@ describe("config resolvers", () => {
     expect(resolveClaudeModel({ HOUGE_CLAUDE_MODEL: "opus" })).toBe("opus");
     expect(resolveClaudeModel({ HOUGE_CLAUDE_MODEL: "  " })).toBe("sonnet");
   });
+
+  it("resolveKimiCliBin returns the disabled sentinel when unset (no bare-kimi-cli guess)", () => {
+    expect(resolveKimiCliBin({})).toBe(KIMI_CLI_BIN_UNSET);
+    expect(resolveKimiCliBin({ HOUGE_KIMI_CLI_BIN: "  " })).toBe(KIMI_CLI_BIN_UNSET);
+    expect(resolveKimiCliBin({ HOUGE_KIMI_CLI_BIN: "/Users/pluo/.local/bin/kimi-cli" })).toBe(
+      "/Users/pluo/.local/bin/kimi-cli"
+    );
+  });
+
+  it("resolveKimiCliModel is empty (omit --model) when unset, honors an override", () => {
+    expect(resolveKimiCliModel({})).toBe("");
+    expect(resolveKimiCliModel({ HOUGE_KIMI_CLI_MODEL: "  " })).toBe("");
+    expect(resolveKimiCliModel({ HOUGE_KIMI_CLI_MODEL: "kimi-for-coding" })).toBe("kimi-for-coding");
+  });
+
+  it("resolveKimiCliTimeoutMs defaults to 180000 (per-attempt), honors a valid override, rejects garbage", () => {
+    expect(resolveKimiCliTimeoutMs({})).toBe(180_000);
+    expect(resolveKimiCliTimeoutMs({ HOUGE_KIMI_CLI_TIMEOUT_MS: "5000" })).toBe(5000);
+    expect(resolveKimiCliTimeoutMs({ HOUGE_KIMI_CLI_TIMEOUT_MS: "nope" })).toBe(180_000);
+  });
 });
 
 describe("buildReviewPrompt", () => {
@@ -178,15 +230,21 @@ describe("buildReviewPrompt", () => {
 });
 
 describe("reviewDiff", () => {
+  it("defaults to the kimi reviewer; returns disabled error when HOUGE_KIMI_CLI_BIN is unset", () => {
+    const result = reviewDiff({ task: "t", diff: "d", env: {} }); // no reviewer set → default kimi
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/kimi reviewer disabled/);
+  });
+
   it("returns disabled error when reviewer=claude but HOUGE_CLAUDE_BIN is unset", () => {
-    const result = reviewDiff({ task: "t", diff: "d", env: {} });
+    const result = reviewDiff({ task: "t", diff: "d", env: { HOUGE_SELFWRITE_REVIEWER: "claude" } });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/disabled|HOUGE_CLAUDE_BIN/);
   });
 
   it("spawns the Claude bin and parses the verdict from the JSON envelope's result field", () => {
     const bin = fakeBin("claude", claudeEnvelope('{"verdict":"reject","reasons":["no-op fix"]}'));
-    const result = reviewDiff({ task: "fix it", diff: "the diff", env: { HOUGE_CLAUDE_BIN: bin } });
+    const result = reviewDiff({ task: "fix it", diff: "the diff", env: { HOUGE_SELFWRITE_REVIEWER: "claude", HOUGE_CLAUDE_BIN: bin } });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.verdict.verdict).toBe("reject");
   });
@@ -201,7 +259,7 @@ describe("reviewDiff", () => {
         cache_creation_input_tokens: 1000
       }, 0.08)
     );
-    const result = reviewDiff({ task: "fix it", diff: "the diff", env: { HOUGE_CLAUDE_BIN: bin } });
+    const result = reviewDiff({ task: "fix it", diff: "the diff", env: { HOUGE_SELFWRITE_REVIEWER: "claude", HOUGE_CLAUDE_BIN: bin } });
     expect(result.ok).toBe(true);
     if (result.ok) {
       // input_tokens is the cache-INCLUSIVE total (fresh 10 + cache 6000), comparable across providers;
@@ -217,7 +275,7 @@ describe("reviewDiff", () => {
 
   it("maps an unparseable Claude response (no verdict in result) to a clean error", () => {
     const bin = fakeBin("claude", claudeEnvelope("I think it looks fine to me, no JSON here."));
-    const result = reviewDiff({ task: "fix it", diff: "the diff", env: { HOUGE_CLAUDE_BIN: bin } });
+    const result = reviewDiff({ task: "fix it", diff: "the diff", env: { HOUGE_SELFWRITE_REVIEWER: "claude", HOUGE_CLAUDE_BIN: bin } });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/unparseable/);
   });
@@ -245,7 +303,116 @@ describe("reviewDiff", () => {
     const result = reviewDiff({
       task: "t",
       diff: "d",
-      env: { HOUGE_CLAUDE_BIN: "/nonexistent/claude-binary-xyz" }
+      env: { HOUGE_SELFWRITE_REVIEWER: "claude", HOUGE_CLAUDE_BIN: "/nonexistent/claude-binary-xyz" }
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/not found/);
+  });
+
+  it("returns disabled error when reviewer=kimi but HOUGE_KIMI_CLI_BIN is unset", () => {
+    const result = reviewDiff({ task: "t", diff: "d", env: { HOUGE_SELFWRITE_REVIEWER: "kimi" } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/disabled|HOUGE_KIMI_CLI_BIN/);
+  });
+
+  it("dispatches to the kimi reviewer (plain-text stdout + trailing resume line) and parses a pass", () => {
+    const bin = fakeBin("kimi-cli", kimiOutput('{"verdict":"pass","fixes_task":true,"introduces_bugs":false,"scope_creep":false}'));
+    const result = reviewDiff({
+      task: "fix it",
+      diff: "the diff",
+      env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin }
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.verdict.verdict).toBe("pass");
+      // final-message-only emits no usage telemetry → no usage on the result.
+      expect(result.usage).toBeUndefined();
+    }
+  });
+
+  it("dispatches to the kimi reviewer and parses a reject (a real answer, not retried)", () => {
+    const bin = fakeBin("kimi-cli", kimiOutput('{"verdict":"reject","reasons":["deletes a test to pass the gate"]}'));
+    const result = reviewDiff({
+      task: "fix it",
+      diff: "the diff",
+      env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin }
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.verdict.verdict).toBe("reject");
+  });
+
+  it("maps an unparseable kimi response to a clean error", () => {
+    const bin = fakeBin("kimi-cli", "I think it looks fine to me, no JSON here.");
+    const result = reviewDiff({
+      task: "fix it",
+      diff: "the diff",
+      env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin }
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/unparseable/);
+  });
+
+  it("passes the prompt on stdin and the expected argv to kimi-cli (no --model when unset)", () => {
+    const argvFile = join(mkdtempSync(join(tmpdir(), "houge-rev-cap-")), "argv");
+    const stdinFile = join(mkdtempSync(join(tmpdir(), "houge-rev-cap-")), "stdin");
+    temps.push(argvFile, stdinFile);
+    const bin = capturingBin("kimi-cli", kimiOutput('{"verdict":"pass"}'), { argvFile, stdinFile });
+
+    const result = reviewDiff({
+      task: "fix the 猴哥 bug",
+      diff: "diff --git a/x b/x",
+      env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin }
+    });
+    expect(result.ok).toBe(true);
+
+    const argv = readFileSync(argvFile, "utf8").trim().split("\n");
+    // Fixed leading flags; then --agent-file pins the no-tools reviewer agent (dynamic temp path).
+    expect(argv.slice(0, 5)).toEqual(["--print", "--quiet", "--final-message-only", "--input-format", "text"]);
+    const ai = argv.indexOf("--agent-file");
+    expect(ai).toBeGreaterThan(-1);
+    expect(argv[ai + 1]).toMatch(/reviewer\.yaml$/);
+    expect(argv).not.toContain("--model");
+    // The adversarial review prompt (task + diff) arrives on stdin.
+    const stdin = readFileSync(stdinFile, "utf8");
+    expect(stdin).toContain("fix the 猴哥 bug");
+    expect(stdin).toContain("diff --git a/x b/x");
+    expect(stdin).toContain("INDEPENDENT, adversarial code reviewer");
+  });
+
+  it("confines the kimi reviewer to a NO-TOOLS agent (tools: []) — the writer≠checker isolation fix", () => {
+    const { dir, agentFile } = writeKimiReviewerAgent();
+    temps.push(dir);
+    const yaml = readFileSync(agentFile, "utf8");
+    // tools: [] strips Shell/ReadFile/etc., so a prompt-injected diff can't make the reviewer
+    // read/write the host (proven live: an unconfined kimi-cli read a secret + wrote into the repo).
+    expect(yaml).toContain("tools: []");
+    expect(yaml).toContain("system_prompt_path: ./reviewer-system.md");
+    expect(existsSync(join(dir, "reviewer-system.md"))).toBe(true);
+  });
+
+  it("passes --model to kimi-cli when HOUGE_KIMI_CLI_MODEL is set", () => {
+    const argvFile = join(mkdtempSync(join(tmpdir(), "houge-rev-cap-")), "argv");
+    temps.push(argvFile);
+    const bin = capturingBin("kimi-cli", kimiOutput('{"verdict":"pass"}'), { argvFile });
+
+    const result = reviewDiff({
+      task: "fix it",
+      diff: "the diff",
+      env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin, HOUGE_KIMI_CLI_MODEL: "kimi-for-coding" }
+    });
+    expect(result.ok).toBe(true);
+
+    const argv = readFileSync(argvFile, "utf8").trim().split("\n");
+    expect(argv.slice(0, 5)).toEqual(["--print", "--quiet", "--final-message-only", "--input-format", "text"]);
+    expect(argv).toContain("--agent-file");
+    expect(argv.slice(-2)).toEqual(["--model", "kimi-for-coding"]);
+  });
+
+  it("maps a missing kimi-cli binary (ENOENT) to a clean error", () => {
+    const result = reviewDiff({
+      task: "t",
+      diff: "d",
+      env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: "/nonexistent/kimi-cli-xyz" }
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/not found/);

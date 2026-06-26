@@ -280,10 +280,22 @@ spec: [Phase 3 spec](../superpowers/specs/2026-06-25-phase3-code-self-write.md).
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `HOUGE_SELFWRITE_ENABLED` | `false` | Master switch for the **entire** code-self-write surface. Off until Paco flips it. When not truthy, a write-intent `selfcode` message **falls back to read-only diagnose** (Phase 1) — the safe direction (read before write) — so the feature ships dark and is opt-in. |
-| `HOUGE_SELFWRITE_REVIEWER` | `claude` | Which agent runs **checker 3** (the independent reviewer). `claude` — the Claude CLI reviewer (spike-validated GO). `codex` — an independent Codex session (fresh session + adversarial prompt) as the no-Claude fallback; writer≠checker is preserved either way. |
+| `HOUGE_SELFWRITE_REVIEWER` | `kimi` | Which agent runs **checker 3** (the independent reviewer). `kimi` — the local `kimi-cli` agent (**default**: cheap + model-diverse from the Codex writer; the free test-gate + the human merge are the real safety net). `claude` — the Claude CLI reviewer (spike-validated GO). `codex` — an independent Codex session (fresh session + adversarial prompt). writer≠checker is preserved either way. |
 | `HOUGE_CLAUDE_BIN` | — (no default) | **Absolute** path to the `claude` CLI, used by **both** the Claude reviewer and the Claude writer. **No default by design:** the launchd daemon's PATH does not include `~/.local/bin`, so `claude` is not resolvable by name — an absolute path is required (e.g. `/Users/pluo/.local/bin/claude`). If unset, whichever Claude role is selected is **disabled** (for the reviewer, set `HOUGE_SELFWRITE_REVIEWER=codex` to use the fallback). Spike-validated invocation: `claude -p` (print mode), with the prompt/task fed on **stdin**, under the daemon's restricted PATH. |
 | `HOUGE_CLAUDE_TIMEOUT_MS` | `180000` | Wall-clock timeout (ms) for one Claude pass — **shared** by the reviewer and the writer. The spike measured ~7–29s for a real reviewer verdict and ~15s for a headless writer edit; the cap leaves headroom for the async ack-then-deliver UX. |
 | `HOUGE_TESTGATE_TIMEOUT_MS` | `300000` | Wall-clock timeout (ms) for the whole **test gate** (typecheck + test + build) run in the worktree. A gate that exceeds it is treated as red (no publish), not a crash. |
+
+#### Phase 3.5 — kimi reviewer backend (`HOUGE_SELFWRITE_REVIEWER=kimi`)
+
+The **default** checker-3 backend (cheap + model-diverse from the Codex writer). The local `kimi-cli` agent, invoked headless with the adversarial prompt on **stdin** — `kimi-cli --print --quiet --final-message-only --input-format text --agent-file <no-tools agent>` — which prints the clean final assistant message (the verdict JSON) to stdout (the "To resume this session" notice goes to stderr). `--final-message-only` emits no token telemetry, so a kimi review carries **no `usage`**. The `kimi-cli` wrapper has an absolute-path interpreter shebang, so it runs under the daemon's restricted PATH with no extra PATH setup.
+
+**Isolation (writer≠checker):** kimi-cli's *default* agent ships Shell/file tools and auto-approves them in `--print` mode, so an unconfined reviewer could read/write **any absolute path** on the host (a prompt-injection exfil/tamper surface). The reviewer is therefore pinned to a generated **no-tools agent** (`tools: []`, verified to refuse a file read) and run in a neutral temp cwd — the analogue of the Claude reviewer's tools-denied and the Codex reviewer's `--sandbox read-only`. The diff is judged purely as inline text.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_KIMI_CLI_BIN` | — (no default) | **Absolute** path to the `kimi-cli` binary (e.g. `/Users/pluo/.local/bin/kimi-cli`). **No default by design:** the daemon's PATH does not include `~/.local/bin`, so `kimi-cli` is not resolvable by name. If unset while `HOUGE_SELFWRITE_REVIEWER=kimi`, the kimi reviewer is **disabled** (clean error, no publish). |
+| `HOUGE_KIMI_CLI_MODEL` | — (omitted) | Optional model override passed as `--model <m>`. When unset, `--model` is omitted and kimi-cli uses its own configured default (`kimi-for-coding`). |
+| `HOUGE_KIMI_CLI_TIMEOUT_MS` | `180000` | Wall-clock timeout (ms) for one kimi pass (per attempt; retried once on a transient timeout/unparseable). A normal kimi review returns in ~7s. |
 
 ### Phase 3.1 — swappable writer + per-role models
 

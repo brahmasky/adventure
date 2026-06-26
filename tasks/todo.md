@@ -4,14 +4,17 @@
   all SHIPPED to main** (3.3 = interactive Telegram merge controls; merged from feat/merge-controls 2026-06-26).
   Branch model = **daemon runs from main**; develop on feature branches off main, merge back (now via the
   3.3 [Merge & reload] button or manual git).
-- **Daemon:** launchd `com.houge.daemon` — **LIVE, PID 46231** (reloaded 2026-06-26 on the Phase 3.4
-  WORKING TREE — uncommitted — with the 4-leg chain `pi,agy-cli,kimi-api,gemini-api`; clean restart, healthy).
-  Reload after a code change: `npm run build && launchctl kickstart -k gui/$(id -u)/com.houge.daemon`.
+- **Daemon:** launchd `com.houge.daemon` — **LIVE on main `bf45e37`, PID 61223** (reloaded 2026-06-26;
+  Phase 3.4 + 4-leg chain `pi,agy-cli,kimi-api,gemini-api`; **SELF-WRITE ARMED** (Writer=Claude/Reviewer=Codex);
+  **writer is now EXECUTION-FREE** (`bf45e37` — `--disallowedTools Bash`, so it can't loop on `npm test`; that
+  was the 600s timeout root cause). Reload: `npm run build && launchctl kickstart -k gui/$(id -u)/com.houge.daemon`.
   Conversation/lessons/identity/skills survive reloads (`houge.sqlite` + `skills/` + `memory/core/houge.md`);
   only in-flight runs lost.
-- **Self-write surface is OFF by default** — `HOUGE_SELFWRITE_ENABLED` defaults false. Phase 3/3.1/3.3 CODE is
-  live, but Houge won't self-write until `.env` sets `HOUGE_SELFWRITE_ENABLED=true` + `HOUGE_CLAUDE_BIN=/Users/pluo/.local/bin/claude`
-  (optional: `HOUGE_SELFWRITE_WRITER=claude HOUGE_SELFWRITE_REVIEWER=codex HOUGE_SELFWRITE_PUSH=true`) + reload.
+- **Self-write is ARMED (2026-06-26)** — `.env`: `HOUGE_SELFWRITE_ENABLED=true`, `HOUGE_CLAUDE_BIN`,
+  `HOUGE_CODEX_BIN=/opt/homebrew/bin/codex`, `HOUGE_SELFWRITE_WRITER=claude`, `HOUGE_SELFWRITE_REVIEWER=codex`,
+  `HOUGE_SELFWRITE_PUSH=false`. Houge writes autonomously to a BRANCH (never hot-swaps); Paco merges via the
+  3.3 Telegram [Merge & reload] button. **NEXT: trigger the 猴哥 fix over Telegram** (S8 phrasing: "fix your
+  intent classifier so it gets your identity") → fresh self-write off main `90d2655` → branch → merge+restart.
 
 ⚠ **NEXT UP (pending, not lost):**
   1. ✅ **Live runtime bug (2026-06-26) — FIXED by Phase 3.4** (section below; code+docs+live evidence done,
@@ -122,6 +125,70 @@ general **agy-cli/Gemini Flash leg likely served them**. Quality issues, all NEW
 - [ ] **Telemetry blind spot** — research-synthesis turns emit NO `llm_call` event (onUsage not wired on that
       path; agy emits none by design) → can't see which leg served a turn. Wire synthesis-path onUsage; for
       agy, record a usage-less `llm_call` (provider/model/role only) so the leg is visible in the ledger.
+
+---
+# Phase 3.5 — kimi-cli reviewer adapter + self-write writer/checker economics — PLAN (2026-06-26)
+
+**Context — self-write writer/checker economics (decided 2026-06-26 with Paco):**
+- **Writer = the strongest *reliable* model** (generation is the hard, ceiling-setting job); **Checker = cheap +
+  diverse** (bounded judgment, double-backstopped by the free test-gate + Paco's merge). Expensive→writer.
+- Claude-as-writer **does not terminate** (live: two 600s timeouts; first turn produced the correct fix in
+  ~123s then churned). Root cause = agentic `claude -p` ran `npm test` in a verify-loop (the test-gate's job).
+  **FIXED `bf45e37`**: writer is now EXECUTION-FREE (`--disallowedTools Bash WebFetch WebSearch` + prompt
+  "don't run tests; a gate verifies; STOP"). That helped (123s, tokens 698K→239K) but **refine passes still
+  churn** and this claude CLI has **no `--max-turns`** to bound it → Claude-writer parked.
+- **Decision:** Writer = **Codex `gpt-5.5` high** (strong + terminates; proven in S8). Checker = **kimi-2.7**
+  (`kimi-for-coding`), a different family → diversity. The cheap checker is the right cost fit because the
+  test-gate (free) + Paco-merge are the real safety net.
+
+**What the reviewer (checker 3) actually does** (`diff-reviewer.ts`): single-shot adversarial judgment on
+`(objective, diff)` → verdict JSON `{verdict, fixes_task, introduces_bugs, scope_creep, reasons}`. The
+SEMANTIC check tests can't give ("compiles + passes the gate but wrong / hacky / scope-creep / sneakily
+weakened a test"). Today it checks against only the one-line objective — **no spec** (see backlog below).
+
+**Execution (per [[subagents-for-goal-execution]]):** run K1–K4 via a **builder subagent** (Claude) + an
+**independent verifier subagent** (adversarial diff review) — keep main context clean. Main loop integrates
+results + runs the final gate (typecheck/test/build) and the **interactive** K5 live Telegram test with Paco.
+
+**STATUS (2026-06-26):** K1–K4 built (builder subagent) → verifier found a **HIGH security defect** (kimi-cli's
+default agent has Shell/file tools + `--print` auto-approve + `--work-dir` does NOT sandbox → the reviewer
+read a seeded secret AND wrote into the LIVE repo on attacker-influenced diffs). **FIXED:** pin a generated
+**no-tools agent** (`tools: []`, verified → NO-ACCESS) via `--agent-file` + neutral temp cwd + finally-cleanup
+— kimi's analogue of claude tools-denied / codex `--sandbox read-only`. Also **default reviewer flipped
+claude→kimi** (Paco). typecheck · **npm test 738** · build · deps {}. Re-verifier running the LIVE confinement
+test. THEN K5 live.
+
+**BUILD PLAN — `kimi-cli` reviewer backend (Option A, Paco wants the CLI adapter as a reusable asset):**
+- [ ] K1. `diff-reviewer.ts`: add `"kimi"` to `ReviewerKind`; `resolveSelfWriteReviewer` recognizes `kimi`
+      (default stays `claude`). New `reviewViaKimiCli(task,diff,env)`:
+      `kimi-cli --print --quiet --final-message-only --prompt <buildReviewPrompt>` (validated: clean verdict
+      JSON, ~7s). Reuse `buildReviewPrompt` + `parseVerdict` (last-balanced-brace scanner handles the trailing
+      "To resume…" line). Pass the diff via **stdin** (`--input-format text`) if supported → avoid argv E2BIG
+      on large diffs; neutral cwd (no worktree) for independence; restricted DAEMON_PATH.
+- [ ] K2. Resolvers: `HOUGE_KIMI_CLI_BIN` (absolute, like CLAUDE/CODEX; unset→"kimi reviewer disabled"
+      sentinel), `HOUGE_KIMI_CLI_MODEL` (optional; unset → defer to kimi-cli's own `kimi-for-coding`),
+      `HOUGE_KIMI_CLI_TIMEOUT_MS` (default 180000; retry≤2 on timeout/unparseable, mirror the claude reviewer).
+      No usage telemetry (final-message-only emits none) — acceptable.
+- [ ] K3. Tests: fake kimi-cli bin — assert argv (`--print --quiet --final-message-only`), verdict parse
+      (pass/reject), timeout→error, bin-unset→disabled. Mirror the claude/codex reviewer tests.
+- [ ] K4. Docs: `configuration.md` (HOUGE_SELFWRITE_REVIEWER=kimi + the 3 kimi-cli vars), `.env.example`.
+- [ ] K5. **LIVE gate = finally land the 猴哥 fix** with **Writer=Codex(gpt-5.5 high) + Reviewer=kimi**
+      over Telegram → branch + [Merge & reload]. (`.env`: WRITER=codex, REVIEWER=kimi, HOUGE_KIMI_CLI_BIN.)
+      Verify: typecheck · npm test · build · deps {}.
+
+## Backlog — spec-driven self-write (ADR-level; tracked 2026-06-26)
+- [ ] **Spec-driven self-write** — today the writer+reviewer work from a one-line objective, no spec. As tasks
+      grow (new features; self-initiated upgrades) this won't scale: the **spec is the human-control surface** —
+      review intent (small) not diffs (large). Direction (extends ADR 0011 §7, "autonomous-to-branch"):
+      (1) a **spec stage** before the writer — derive problem · acceptance criteria · interface · **non-goals** ·
+      test plan; (2) **gate the spec by complexity/risk** (reuse the intent classifier) — trivial fix skips it,
+      feature/self-upgrade surfaces the spec to Paco BEFORE code; (3) writer implements **against the spec**,
+      reviewer checks **diff-vs-spec** (sharper, not costlier), a **required** net-new test ENCODES the spec
+      (AGENTS.md rule 9). Caveats: keep it **proportional** (no bureaucracy on one-liners); **spec quality
+      becomes the new bottleneck** → the spec itself needs adversarial review / Paco approval on high-stakes
+      (bad-spec-in = confidently-wrong-out with a green check). **Phase-1 entry point** = lightweight
+      auto-derived acceptance criteria (sentence → 3–4 checkable bullets fed to writer+reviewer), then formalize
+      the full model as its own ADR/phase.
 
 ---
 # Phase 3 — code self-write (gated) — DESIGN LOCKED, SPIKE PENDING (2026-06-25) — ADR 0011 §7
