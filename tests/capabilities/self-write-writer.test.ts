@@ -96,7 +96,7 @@ describe("resolveClaudeWriterModel", () => {
 });
 
 describe("buildClaudeWriteArgs (spike argv)", () => {
-  it("builds -p --model --permission-mode bypassPermissions --output-format json", () => {
+  it("builds -p --model --permission-mode bypassPermissions --output-format json, execution-free", () => {
     expect(buildClaudeWriteArgs("sonnet")).toEqual([
       "-p",
       "--model",
@@ -104,8 +104,22 @@ describe("buildClaudeWriteArgs (spike argv)", () => {
       "--permission-mode",
       "bypassPermissions",
       "--output-format",
-      "json"
+      "json",
+      "--disallowedTools",
+      "Bash",
+      "WebFetch",
+      "WebSearch"
     ]);
+  });
+
+  it("EXECUTION-FREE: the writer cannot run shell (Bash) — that is the test-gate checker's job", () => {
+    const argv = buildClaudeWriteArgs("sonnet");
+    // --disallowedTools must be the LAST flag (variadic) and include Bash so the agentic writer
+    // can't self-run npm test/build in a verify loop and burn its timeout (live 2026-06-26 600s).
+    expect(argv).toContain("--disallowedTools");
+    expect(argv).toContain("Bash");
+    const idx = argv.indexOf("--disallowedTools");
+    expect(argv.slice(idx + 1)).toEqual(["Bash", "WebFetch", "WebSearch"]);
   });
 });
 
@@ -204,7 +218,11 @@ describe("runSelfWriter — claude", () => {
       "--permission-mode",
       "bypassPermissions",
       "--output-format",
-      "json"
+      "json",
+      "--disallowedTools",
+      "Bash",
+      "WebFetch",
+      "WebSearch"
     ]);
     expect(readFileSync(stdinFile, "utf8")).toContain("fix the greet function");
   });

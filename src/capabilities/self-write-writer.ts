@@ -72,13 +72,32 @@ export function resolveClaudeWriterTimeoutMs(env: NodeJS.ProcessEnv): number {
 }
 
 /**
- * Build the Claude writer argv (the validated spike pattern, mirrored EXACTLY):
+ * Build the Claude writer argv. Base pattern (validated spike):
  * `-p --model <m> --permission-mode bypassPermissions --output-format json`. The task is fed on
  * stdin and `cwd` is the worktree, so `bypassPermissions` is scoped to that throwaway tree.
- * Exported so a test can assert the exact argv.
+ *
+ * EXECUTION-FREE BOUNDARY: the writer's job is to produce a DIFF, never to verify it — the separate
+ * test-gate checker runs typecheck/test/build, and the refine loop feeds any failure back. Left with
+ * Bash, the agentic Claude writer runs `npm test` in a verify→edit loop and burns its whole timeout
+ * doing the test-gate's job (the live 2026-06-26 600s timeout). `--disallowedTools` removes the
+ * execution + external-reach tools entirely, so the writer can only read/search/edit and then must
+ * finish. (Edit/Write still auto-approve under bypassPermissions.) Exported so a test asserts the argv.
  */
 export function buildClaudeWriteArgs(model: string): string[] {
-  return ["-p", "--model", model, "--permission-mode", "bypassPermissions", "--output-format", "json"];
+  return [
+    "-p",
+    "--model",
+    model,
+    "--permission-mode",
+    "bypassPermissions",
+    "--output-format",
+    "json",
+    // Execution-free: no shell (can't run tests/builds), no web. Variadic flag stays LAST in argv.
+    "--disallowedTools",
+    "Bash",
+    "WebFetch",
+    "WebSearch"
+  ];
 }
 
 export interface RunSelfWriterInput {
