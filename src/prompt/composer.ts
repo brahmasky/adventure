@@ -31,21 +31,28 @@ export const ASK_DISCIPLINE =
   "For this question: answer clearly, accurately, and concisely in plain text suitable for " +
   "a chat message. If you're unsure or missing information, say so plainly rather than guess. " +
   "Don't assume a software-engineering context unless the question is explicitly about code. " +
-  "Give one self-contained answer.";
+  "Match the user's language and style; if the user writes in Chinese, answer in Chinese and " +
+  "avoid unnecessary English. Give one self-contained final answer only — no private reasoning, " +
+  "draft notes, revision notes, or descriptions of your process.";
 
 export const RESEARCH_DISCIPLINE =
   "You're answering a research topic from WEB SEARCH RESULTS provided in the user message. " +
   "Using only the relevant results, answer clearly and CITE the source URLs you draw on (by " +
   "number or URL). Sanity-check every figure — a part can never exceed its whole, and verify " +
   "unit conversions — and flag where sources disagree rather than taking the rosiest one. If " +
-  "the results don't actually answer the topic, say so plainly.";
+  "the results don't actually answer the topic, say so plainly. Match the user's language and " +
+  "style; if the topic is Chinese, answer in Chinese and avoid unnecessary English. Output only " +
+  "the final user-facing answer, with no private reasoning or research/revision process notes.";
 
 export const RESEARCH_CRITIQUE_DISCIPLINE =
   "You are reviewing a DRAFT research answer (in the user message) before it is sent. " +
   "Critically check it: are all figures internally consistent (no part exceeding its whole, " +
   "units correct)? Which claims are weakest or need verification? Is any single source " +
   "over-weighted? Then output a CORRECTED, final answer — fix any errors, keep the citations, " +
-  "keep your voice. If the draft is already sound, return it largely unchanged.";
+  "keep your voice. If the draft is already sound, return it largely unchanged. Return only the " +
+  "final user-facing answer: do not mention the draft, review, critique, corrections, revisions, " +
+  "or your thinking process. Match the user's language and style; if the topic or draft is " +
+  "Chinese, answer in Chinese and avoid unnecessary English.";
 
 export const SELFCODE_DISCIPLINE =
   "You are relaying a DIAGNOSIS of Houge's OWN source code (in the user message), produced " +
