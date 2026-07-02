@@ -12,7 +12,7 @@ Read these first when onboarding — they explain choices the code alone can't.
 
 | # | Title | Status |
 |---|-------|--------|
-| [0001](0001-deterministic-harness-governs-everything.md) | Deterministic harness governs everything | accepted |
+| [0001](0001-deterministic-harness-governs-everything.md) | Deterministic harness governs everything | accepted; scope narrowed by amendment; mechanism supplied by [0013](0013-llm-inner-composition.md) |
 | [0002](0002-pi-as-agent-runtime.md) | Pi as agent runtime: inference vs agentic modes | accepted |
 | [0003](0003-global-budget-breaker.md) | Global budget circuit-breaker (autonomy floor) | accepted |
 | [0004](0004-long-poll-daemon.md) | Always-on long-poll daemon | accepted |
@@ -21,8 +21,10 @@ Read these first when onboarding — they explain choices the code alone can't.
 | [0007](0007-learning-loop.md) | The learning loop — how Houge improves himself, safely | accepted; user-feedback capture superseded by [0010](0010-natural-language-intent-layer.md) |
 | [0008](0008-houge-identity-authenticated-read.md) | Houge's identity & authenticated read | accepted |
 | [0009](0009-architecture-coherence.md) | Architecture coherence — prompt composition, registries, whole-agent review | accepted |
-| [0010](0010-natural-language-intent-layer.md) | Interaction model — natural-language intent layer (Houge as Claude Code over Telegram) | accepted |
-| [0011](0011-self-evolution-architecture.md) | Self-evolution architecture — code, skills, lessons (three layers, dual eval gates, Codex muscle) | accepted |
+| [0010](0010-natural-language-intent-layer.md) | Interaction model — natural-language intent layer (Houge as Claude Code over Telegram) | accepted; enum-as-dispatch refined by [0013](0013-llm-inner-composition.md) |
+| [0011](0011-self-evolution-architecture.md) | Self-evolution architecture — code, skills, lessons (three layers, dual eval gates, Codex muscle) | accepted; refined by [0012](0012-self-evolution-spine-closed-loop.md) |
+| [0012](0012-self-evolution-spine-closed-loop.md) | The self-evolution spine — a closed eval loop, not memory-as-king (feedback signal, four memory types, auto-rollback) | accepted; roadmap re-sequenced by [0013](0013-llm-inner-composition.md) |
+| [0013](0013-llm-inner-composition.md) | LLM inner composition — code owns the gates, the model composes between them (contracts become envelopes; the inner loop; evolution layers as tools) | accepted |
 
 ## Writing a new ADR
 

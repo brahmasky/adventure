@@ -1,6 +1,6 @@
 # ADR 0011: Self-evolution architecture — how Houge improves his code, skills, and lessons
 
-- **Status:** accepted (direction; built in phases)
+- **Status:** accepted (direction; built in phases) — **refined by [ADR 0012](0012-self-evolution-spine-closed-loop.md)** (the closed-loop spine: feedback signal, four memory types, auto-rollback). This ADR's machinery stands; 0012 reframes the three-layers model as one closed loop.
 - **Date:** 2026-06-20
 - **Deciders:** Paco
 

@@ -1,6 +1,7 @@
 # ADR 0010: Interaction model — natural-language intent layer (Houge as Claude Code over Telegram)
 
-- **Status:** accepted (direction; built in phases)
+- **Status:** accepted (direction; built in phases) · intent *enum-as-dispatch* refined by
+  [ADR 0013](0013-llm-inner-composition.md) (loop composition; the enum survives as an advisory hint)
 - **Date:** 2026-06-19
 - **Deciders:** Paco
 

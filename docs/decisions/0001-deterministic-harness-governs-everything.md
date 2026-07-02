@@ -1,7 +1,8 @@
 # ADR 0001: Deterministic harness governs everything
 
 - **Status:** accepted · **scope narrowed 2026-06-19** (see Amendment) — *governs the
-  irreversible, not the cognitive*
+  irreversible, not the cognitive* · **mechanism supplied by [ADR 0013](0013-llm-inner-composition.md)**
+  — the cognitive interior becomes an LLM-composed loop over typed gate-points
 - **Date:** 2026-05-25
 - **Deciders:** Paco
 

@@ -48,6 +48,266 @@
 - **Critical rules:** `/goal` is a REAL user-invoked stop-gate command (don't claim it doesn't exist); every `/goal` ends with a LIVE run (not just `npm test`); **freedom-over-control** — no 紧箍咒/cage framing, OK for Houge to fail, only core principles stay constant (ADR 0001/0011).
 
 ---
+# Houge STRATEGIC DIRECTION — LOCKED 2026-06-26 (spine spec PENDING Paco's papers, 2026-06-27)
+
+Defined with Paco this session (4 strategic forks + model economics). Top-level charter; the Phases
+below are implementations of it. **UPDATE 2026-06-27: the papers discussion HAPPENED — 5 papers read,
+spine Decisions 1–4 LOCKED + a sequenced roadmap drafted (see "Houge SPINE — design decisions" section
+below). UPDATE 2026-07-02: ADR 0013 (LLM inner composition) LOCKED — the spine roadmap gains a step ⓪
+(the inner loop); see "Houge INNER-LOOP REFACTOR" section below. NEXT: /goal inner-loop step ⓪·1 when
+Paco's ready.**
+
+**Thesis:** Houge = autonomous self-evolving agent (NOT a chatbot). Improves himself without asking
+permission; safety NETS (not human approval) protect the two hard lines.
+
+**Forks decided (Paco):**
+1. **Autonomy = FULL autonomy + safety nets** (notify-after, NOT approve-before). REVERSES the
+   approve-before [Merge & reload] model.
+2. **First build = the SELF-EVOLUTION SPINE** (before any task capability).
+3. **Real money / trading / fund custody = DEFERRED** until the spine proves stable autonomy.
+   Free/non-financial tasks (weather/cycling, producing work) stay IN as TESTS of the spine.
+4. **Models = BEST MODEL PER CAPABILITY** (outcome-first). REVERSES "never Claude at runtime."
+
+**Two hard safety lines (Paco's ONLY constraints):** (a) no adverse impact to Houge's OWN operation;
+(b) no leaking secrets. Under full autonomy these FORCE a mechanical safety-net floor — all REQUIRED
+scope, gate everything above:
+  - **Auto-rollback** — every self-write health-checked post-reload; revert to last-known-good on
+    failure/regression (the ONLY way (a) survives unsupervised self-modification).
+  - **Kill-switch.**
+  - **Secrets firewall** — Houge's main process CANNOT read `.env`/keys; creds brokered only into the
+    narrow capabilities that need them (the web_search-API-key pattern, generalized) → honors (b)
+    structurally, not by trust.
+  - **Self-regression eval** — prove each self-change net-positive or roll back ("improve without
+    supervision" requires "measure without supervision").
+  - **Metered-API $ ceiling + auto-throttle** (see model economics).
+
+**Model routing — flat-rate CLIs FIRST, metered APIs = capped fallback** (Paco's subs: Claude Max
+$100/mo · Codex Plus $20 · Gemini Pro+API · Kimi allegretto+API):
+  - Volume (chat/classify/route): **Kimi via `pi` CLI** (flat).
+  - Research/synthesis/prose: **Gemini via `agy` CLI** (flat; already wired Phase 3.4).
+  - HARD reasoning/strategy/self-fix relay: **Claude via `claude` CLI (Max — FLAT, zero marginal
+    cost)** — this is what unlocks "best model" WITHOUT cost. ⚠ CAVEAT: shares the Max rate-limit
+    quota with Paco's own interactive Claude Code → Houge must back off + YIELD to interactive use,
+    fall DOWN-tier (→Gemini/Kimi) when Max saturated, never stall.
+  - Code self-write muscle: **Codex via `codex` CLI** (Plus, flat).
+  - Fallback ONLY: `kimi-api` / `gemini-api` (metered) = the ONLY runaway-cost surface → hard ceiling.
+  - Memory spine needs an **EMBEDDINGS model** (new dep) → default **LOCAL embeddings** (zero cost,
+    no network); revisit only if quality demands. [PARKED sub-fork for spine spec.]
+
+**Spine = a CLOSED EVOLUTION LOOP, not memory-as-king (refined this session):**
+  `sense signal → remember → change → EVALUATE → keep/rollback → consolidate`.
+  Memory is the keystone (most things depend on it) but the **EVAL loop is the engine** (gives
+  direction; without it, autonomy drifts/degrades — a confident random walk). Evidence: Houge already
+  self-writes + authors skills (Ph 2–3) yet doesn't COMPOUND (re-fixed 猴哥, stale branches, re-explains
+  himself) = a **loop-not-closing** problem, not a DB-size one.
+  → BUILD a **THIN VERTICAL SLICE of the whole loop first** (minimal memory + real eval + ONE learning
+  path, end-to-end); let the loop reveal the memory shape. Do NOT over-spec a maximal memory arch up front.
+
+**Open question for tomorrow:** Paco's feedback-signal quality — an unsupervised agent improves only as
+fast as its signal about how it's doing; today that signal is mostly "Paco reacting on Telegram."
+
+---
+# Houge SPINE — design decisions (LOCKED 2026-06-27; ADR + spec written, awaiting /goal per step)
+
+**Written up:** [ADR 0012](../docs/decisions/0012-self-evolution-spine-closed-loop.md) (the closed-loop
+reframe + D1–D4) + [spine spec](../docs/superpowers/specs/2026-06-27-spine-self-evolution-loop.md)
+(buildable roadmap ①–⑤, build stages + live gate per step). The summary below mirrors them.
+
+Papers read in full (briefs in session): MOSS (2605.22794, source-level self-rewrite, OpenClaw twin),
+Strategy Genes (2604.15097, compact control objects + AVOID), AtomMem (2606.19847, atomic-fact memory),
+DCPM (2606.09483, Tencent, dual-process memory + supersedes chains), AI-Meets-Brain survey (2512.23343).
+**Convergent finding:** 3/5 are SOTA memory systems with NO eval loop → they confirm "memory=keystone,
+eval=engine" by omission; the 2 that DO close the loop (MOSS, Genes) both rely on an EXECUTABLE VERIFIER.
+Houge's gated self-write is already further along the eval axis than any memory paper.
+
+**Key reframe (Paco, 2026-06-27):** learning-knowledge ≠ getting-feedback. Internet = LIBRARY (knowledge in),
+eval loop = REPORT CARD (self-knowledge). The internet can teach Houge facts/skills but NEVER which of his
+own changes are net-positive — that's the spine's un-outsourceable job. So eval loop stays first cut.
+
+## DECISION 1 — eval signal — LOCKED
+- **Primary = explicit, Houge-initiated rating** (Anthropic "how's this session, 0–3?" model) + optional
+  one-line comment. Asked at session boundary (lull + substance) AND after high-stakes events (self-write
+  merged / new skill first applied / research delivered). **Rate-limited** so it never fatigues.
+- Sparse-but-explicit beats dense-but-ambiguous (silence = weak/neutral, NOT positive).
+- **Attribution:** each rating attaches to the artifacts LIVE that session → requires per-turn
+  "what-was-applied" logging (the key cheap enabler). Low rating → a BOUNDED LLM attribution pass over the
+  transcript guesses what went wrong (approved). Low + comment → reconcile-on-write a superseding lesson.
+- **Single rating = weak evidence; a PATTERN across sessions promotes/demotes** (MOSS batch discipline).
+- Secondary = **reuse-as-value** (free counter: applied-and-not-corrected → weight++). NO standalone
+  self-judgment (reject LLM-as-judge as the signal). Autonomous signals (cross-source verify, prediction-
+  error) come later via the knowledge/wiki domain (see D3).
+
+## DECISION 2 — unit(s) of memory — LOCKED (4 types for v1)
+1. **Lessons** (`lesson_blocks`, exists) — preferences/behavior. 2. **Skills** (`skills/`, exists) —
+   procedures. Both get **+eval metadata** (applied_count, rating_history, reuse_value, supersedes ptr)
+   and **+an explicit AVOID field** (Genes' highest-ROI element; the natural output of the eval loop).
+3. **LLM Wiki** (NEW, `knowledge/<topic>.md`) — durable, SYNTHESIZED, per-topic knowledge (Karpathy's
+   "LLM Wiki"); the "consolidate EXTERNAL knowledge" type. Built from the internet → needs Phase 3.6.
+   Maps to survey episodic→semantic promotion + DCPM supersede-on-update (stays current w/o losing history).
+4. **Conversational-episodic memory** (NEW, IN v1 per Paco) — long-term memory of what Paco & Houge
+   discussed, so he stops re-explaining/re-asking. Mechanism = AtomMem + DCPM dual-process:
+   - FAST (per session): extract atomic facts/identity (pronoun-resolved, time-grounded), reconcile
+     ADD/SUPERSEDE/UPDATE, store only the novel residual — NOT raw transcripts.
+   - SLOW (daily/idle): consolidate the day's facts, promote recurring → durable patterns, merge dups.
+   - KEEP-SCORE = salience + recurrence + reuse + explicit signal; **FORGETTING** = raw dropped after
+     distillation, distilled facts DECAY if unused + prune below threshold (papers weak here; survey
+     Ebbinghaus covers it — Houge must add it; DCPM/AtomMem are append-only & grow unbounded).
+   - **Prompt-only extraction** (no fine-tuning; AtomMem-Flat captured most of the gain).
+   - Houge's edge: WRAP distillation in the eval loop (papers do it on blind faith; DCPM admits it
+     "over-fires") — a distilled memory that proves wrong/unused decays or is superseded.
+- DEFER (not v1): DCPM nightly pattern-induction GRAPH + cross-domain collision (single-digit ablation
+  gains); AtomMem PageRank graph. Add only when the loop shows recall is the bottleneck.
+
+## DECISION 3 — the thin vertical slice — LOCKED (sequenced A→B, not either/or)
+Reconciles "4 memory types in v1" w/ "thin slice = ONE path": the slice builds the **shared loop machinery
+ONCE** (rating + attribution logging + reconcile-on-write/supersede + reuse-value + decay), proves it on ONE
+memory type, then the other types PLUG IN cheaply. Paco chose to build BOTH slices, sequenced — A de-risks
+the engine (no confounds), then the SAME engine is carried to B (the vision). See roadmap below.
+
+## DECISION 4 — keep/rollback — LOCKED
+- TWO flavors: (1) **memory rollback** = the supersede chain (revert to prior version) — cheap, already in
+  D2, basically free. (2) **code/behavior rollback** = the real piece (MOSS), protects hard safety line (a)
+  "no adverse impact to Houge's own operation."
+- Today: test-gate (pre-restart) + Phase-3.3 post-merge-red→auto-revert-no-restart. **GAP:** test-gate proves
+  compiles+passes, NOT that the daemon comes up healthy LIVE on the new code.
+- **ADD: post-restart LIVE health-probe + auto-rollback to last-known-good** (MOSS recipe: short window,
+  sample heartbeat/process-alive/responds-to-probe, N consecutive passes to commit else revert; rollback
+  target read from an INDEPENDENT last-known-good = the pre-merge git commit; rebuild+restart; notify Paco).
+- **Scope v1 (LOCKED):** HARD failures only (liveness/crash/won't-boot/crash-loop). SOFT regressions
+  ("boots but answers worse") ride the SLOW eval loop (ratings over sessions → supersede/revert). Don't
+  expect the fast net to catch quality regressions.
+- **When (LOCKED):** auto-rollback is the NET THAT UNLOCKS full autonomy (fork #1 notify-after). Keep merge
+  HUMAN-TAPPED ([Merge & reload]) until auto-rollback ships; slot it right BEFORE flipping merge→autonomous,
+  which lines up w/ the internet steps (③/④) where stakes rise.
+- Caveat: code rollback is clean only w/o irreversible state change (DB migrations don't revert with code) —
+  keep migrations OUT of autonomous scope for now (guard already protects some).
+
+## SPINE ROADMAP — sequenced (each step shippable + LIVE-gated on its own; awaiting /goal per step)
+**RE-SEQUENCED 2026-07-02 (ADR 0013): step ⓪ = the INNER LOOP precedes everything below** — A1
+   attribution rides the loop's observation hook; ④ wiki lands loop-native. See the INNER-LOOP
+   REFACTOR section below + [inner-loop spec](../docs/superpowers/specs/2026-07-02-inner-loop-refactor.md).
+**① Slice A — loop machinery, proven on lessons** (NO new capability). Build the shared engine: per-turn
+   attribution logging (which lessons/skills applied) · 0–3 rating prompt (session-boundary + high-stakes,
+   rate-limited) · reconcile-on-write ADD/SUPERSEDE/UPDATE (stop appending) · reuse-value + decay ·
+   low-rating bounded attribution pass · AVOID field on lessons. PROOF = a process-leak/猴哥-type correction
+   sticks, gets reused, and a REPEAT correction supersedes instead of re-learning (= visible compounding).
+**② Conversational-episodic memory** (NO new capability; reuses ①). Fast path = distill each session into
+   atomic facts (reconcile/supersede); slow path = daily consolidation + decay. WIN = stops re-explaining.
+**③ Phase 3.6 — http_fetch** (the internet capability; already spec'd H1–H7). Hard prereq for ④.
+**④ Slice B — LLM Wiki** (reuses ① + adds autonomous signal). knowledge/<topic>.md synthesized pages via
+   http_fetch · cross-source verification = the autonomous signal that needs no Paco · reuse/rating/
+   supersede-on-update free from ①. Proactive refresh DEFERRED (scheduler ADR).
+**⑤ Skills** get the eval metadata too — tiny, once ① exists.
+**INTERLEAVE:** D4 auto-rollback + the **secrets firewall** (Houge's main process can't read .env) become
+   load-bearing at ③/④ (autonomous internet ingestion) and gate the human-tapped→autonomous merge flip.
+**STILL PENDING before /goal:** the 5-mechanism safety floor (auto-rollback ✓D4 / kill-switch / secrets
+   firewall / self-regression eval / metered-$ ceiling) — eval loop ① IS the self-regression-eval seed.
+
+---
+# Houge INNER-LOOP REFACTOR — ADR 0013 LOCKED 2026-07-02 (LLM inner composition; awaiting /goal per step)
+
+**Written up:** [ADR 0013](../docs/decisions/0013-llm-inner-composition.md) (code owns the gates, the
+model composes between them) + [inner-loop spec](../docs/superpowers/specs/2026-07-02-inner-loop-refactor.md)
+(buildable steps ⓪·1–⓪·4). Completes ADR 0001's amendment (gives the "cognition is free" principle its
+mechanism); refines ADR 0010 (enum→advisory hint); re-sequences ADR 0012 (loop = spine step ⓪).
+
+**Why (runtime survey 2026-07-02):** every runtime model call is single-shot text-in/text-out — NO
+tools, NO loop, no model-chosen next action anywhere. Routing = 6-way intent enum (either/or; real
+messages are mixtures) + a regex verb table for selfcode write/diagnose. Each evolution layer =
+its own hardwired pipeline → O(n) plumbing per layer, ZERO cross-layer composition (a correction can
+never become a lesson AND a self-write proposal in one turn). Peer evidence: Hermes = LLM-driven pole
+(injection-weak); OpenClaw = code-driven pole, source of the decision/observation hook taxonomy we
+adopt + the relaxed-floor cautionary tale (kept our floor hard).
+
+**The design (one sentence):** contracts become ENVELOPES (allowed_actions = tool manifest handed to
+the model; budget = step cap); a new inner loop (`src/core/inner-loop.ts`) lets the model pick one
+action per step (JSON-in-text protocol — model-agnostic, tolerant parse, final-answer default); every
+step executes through CapabilityRunner's unchanged gates; halts on final/budget/gate-denial. Evolution
+layers become TOOLS in the loop (lesson_write, skill_author, self_diagnose, self_write_propose, later
+wiki_*) — each pipeline's hard gates intact INSIDE the tool boundary. FLOOR UNCHANGED: guard, test-gate,
+reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny, breaker, DATA channel.
+
+**Roadmap (each a /goal, each ends LIVE over Telegram; flag `HOUGE_INNER_LOOP_ENABLED` default OFF):**
+- **⓪·1 — loop engine + `turn` surface** (manifest: llm_answer, web_search, lesson_write, clarify;
+  enum path stays as fallback). LIVE gate: mixed-intent Chinese message → lesson AND answer in ONE turn.
+- **⓪·2 — evolution layers as tools** (skill_author, self_diagnose, self_write_propose; DELETE the
+  WRITE_SIGNALS regex). LIVE gate: terse Chinese bug report → self-write proposal, no verb table.
+- **⓪·3 — spine Slice A on the loop** (rating, reconcile/supersede, reuse-value+decay, AVOID; A1
+  attribution already emitted by loop observation hooks). LIVE gate = spine A9 (visible compounding).
+- **⓪·4 — retire legacy paths** (flag default ON, executeTurn if-chain + per-intent handlers removed,
+  research fixed sequence dissolves into composition). LIVE gate: a normal day's traffic on loop only.
+
+**Key risks:** weak models compose poorly (caps + final-default + per-surface fallback + best-model-per-
+capability); injection steers composition (bounded: only contract-allowed tools, budget capped, approvals
+human); blast radius of ⓪·1 (parallel-path flag; ~300 floor tests + composer goldens untouched by design).
+
+---
+# Phase 3.6 — `http_fetch` capability (real internet, narrow tool) — SPEC DRAFTED 2026-06-26 (awaiting /goal)
+
+**Why:** Live Telegram (2026-06-26, runs `0917fa11`/`325db3f6`/`581823f4`/`fd0ae1e6`): Paco asked Houge to locate
+them via IP. Houge could only *describe* `curl ipinfo.io` and *offer* to query — it has NO tool to make an
+arbitrary HTTP request (`pi --no-tools` strips bash; every contract forbids `generic_shell`; only `web_search`
+exists, and that returns search snippets, not a direct GET to a chosen URL). Result: broken-promise loop
+("需要我直接查吗?" → can't). Self-diagnosis `581823f4` correctly identified the gap.
+
+**Decision (Paco, 2026-06-26):** add a **narrow `http_fetch` capability** = a bounded server-side GET, the
+exact analogue of Claude Code's `WebFetch` (covers GitHub/arxiv/docs/JSON/`ipinfo.io` — the static tier).
+JS/iframe/SPA pages are explicitly OUT OF SCOPE (that's the browser tier — isolation-based, a separate later
+decision). **Safety posture = "A + IP-block floor":** allow ANY public URL (like Claude's WebFetch), but a
+hard SSRF IP-block floor is non-negotiable. Optional env denylist; NO default domain allowlist.
+
+**Why this is the right/safe first internet capability (research-backed, 2026-06-26):** a bounded single GET
+has ONE chokepoint, so an SSRF guard is enforceable + default-on — unlike a browser (arbitrary JS/redirects/
+sub-resources = no chokepoint; playwright-mcp & browser-use both self-declare their allowlists "not a security
+boundary"). Industry net default is egress-OFF (Codex/Devin/Cursor); Houge is autonomous + ingests untrusted
+input (no human-in-loop per fetch, unlike interactive Claude Code), so the IP-block floor IS the human's
+replacement. Aligns ADR 0006 (web bytes = untrusted DATA channel) + model-agnostic runtime (orchestrator-level).
+
+**SSRF guard — the load-bearing floor (must ALL hold; cutting any = playwright-mcp's advisory non-boundary):**
+- [ ] Scheme allowlist: `http`/`https` only (reject `file:`/`gopher:`/`data:`/`ftp:`).
+- [ ] Method: GET/HEAD only.
+- [ ] **Resolve-and-PIN:** resolve host A+AAAA; reject if ANY resolved IP ∈ {`127/8`,`0/8`,`10/8`,`172.16/12`,
+      `192.168/16`,`169.254/16` (incl. metadata `169.254.169.254`),`::1`,`fc00::/7`,`fe80::/10`, IPv4-mapped
+      `::ffff:0:0/96` → decode+recheck}; then **connect to the validated IP**, do NOT re-resolve (kills DNS
+      rebinding/TOCTOU). The #1 bypass — non-negotiable.
+- [ ] No redirect-following (or cap hops + re-run scheme+IP checks every hop).
+- [ ] Bounds: hard timeout + max response byte cap (reuse the provider byte-cap pattern).
+- [ ] Optional `HOUGE_HTTPFETCH_DENY` host denylist (env). NO default domain allowlist (Posture A).
+
+**Caveats (documented, not solved here):** (1) GET can still exfil via query-string to a public host — accepted
+under Posture A; revisit only if Houge handles adversarial input near real secrets. (2) Egress guard does NOT
+solve prompt injection — fetched bytes stay on the ADR 0006 DATA channel (reader/actor wall), never the system
+prompt. (3) No JS — static tier only.
+
+**Build plan (gates; mirror Phase 3.4 G-structure; build on Claude via subagents, verify independently):**
+- [ ] H1. `src/web/http-fetch.ts` — `fetchUrl()` + the SSRF validator (pure, no I/O in the validator so it's
+      exhaustively unit-testable). Injected `lookup`/`fetch`/`spawn` seams for tests.
+- [ ] H2. `src/capabilities/http-fetch.ts` — `createHttpFetchAdapter` mirroring `web-search.ts`
+      (`createWebSearchAdapter`): validate `input.url`, call H1, return `{ok,output:{url,status,content}}` as
+      external_read DATA; never acts.
+- [ ] H3. Register in `core-worker.ts` ToolRegistry — category `http_fetch`, `side_effect_level:"external_read"`,
+      `risk_level:"low"`, byte cap, timeout. Wire `this.httpFetchAdapter`.
+- [ ] H4. `task-contract.ts` — add `"http_fetch"` to `allowed_actions` of `compileTurnContract` (live Telegram
+      path) + `compileWebResearchContract`. Stays FORBIDDEN elsewhere. Confirm the contract-vs-registry category
+      gate accepts it (same mechanism as `web_search`).
+- [ ] H5. Routing — `intent.ts`: add intent `"fetch"` (classifier extracts a concrete URL from the message);
+      `core-worker` `runFetch()` = http_fetch(url) → llm_answer to summarize in Houge's voice (mirror
+      `runResearch`: register tool → run → relay; web bytes ride the DATA channel). Default-safe fallback to
+      `answer` on any parse miss (existing pattern). [Open Q for /goal: new `fetch` intent vs. fold a URL-present
+      branch into `research` — recommend new intent for a clean orchestration path.]
+- [ ] H6. Tests: SSRF validator table-tests (every blocked range + IPv4-mapped + rebinding/TOCTOU + redirect
+      bypass + scheme reject); adapter happy-path w/ injected fetch; contract test (`http_fetch` allowed in
+      turn/web-research, forbidden in ask/skill/selfcode/research-brief); intent-classify `fetch`. Typecheck
+      clean · full `npm test` green · build OK.
+- [ ] H7. **LIVE GATE (last step, interactive — Paco sends over Telegram):** "查一下我们当前的公网IP归属地"
+      → Houge fetches `ipinfo.io/json`, replies with the actual city/ISP (not a how-to). Plus a negative test:
+      a URL resolving to `127.0.0.1`/`169.254.169.254` is refused cleanly (no crash, no fetch).
+
+**`.env` (gitignored) to add at reload:** `HOUGE_HTTPFETCH_ENABLED=true`, `HOUGE_HTTPFETCH_TIMEOUT_MS`,
+`HOUGE_HTTPFETCH_MAX_BYTES`, optional `HOUGE_HTTPFETCH_DENY`. Reload: `npm run build && launchctl kickstart -k
+gui/$(id -u)/com.houge.daemon`.
+
+---
 # Phase 3.4 — research-model-fit via Gemini chain legs — PLAN DRAFTED 2026-06-26 (awaiting /goal)
 
 **Why:** `run_8672b6fb` (today) recurred the research-synthesis silent failure. The cheap chain is 100%
@@ -112,21 +372,33 @@ enqueueFailureNotification + core-worker failWithPartialReport (G5).
 The weather query `run_dd305dc2` COMPLETED + replied (silent-failure FIXED ✓; intent classified `research`
 correctly). No `llm_call` telemetry on the research-synthesis turns → since only agy emits no usage, the
 general **agy-cli/Gemini Flash leg likely served them**. Quality issues, all NEW backlog:
-- [ ] **Research self-critique leaks meta-commentary** — the reply opened "我仔细瞅了瞅你发来的这篇…草稿,
-      发现几个妖怪" then "修正后的最终回复": the STORM grade+revise step emitted its INTERNAL critique as the
-      user-facing answer AND misattributed its own first draft to the user ("你发来的草稿"). Likely Gemini
-      follows the critique prompt more literally than kimi did → meta leaks. Fix: ensure the research path
-      returns only the REVISED answer, never the critique scaffold; tighten the revise prompt / strip meta.
+- [x] **Research self-critique leaks meta-commentary** — ✅ FIXED BY HOUGE (self-write `3516dee`, 2026-06-27).
+      The reply opened "我仔细瞅了瞅你发来的这篇…草稿,发现几个妖怪" then "修正后的最终回复": the STORM grade+revise
+      step emitted its INTERNAL critique as the user-facing answer AND misattributed its own first draft to the
+      user ("你发来的草稿"). Houge patched `RESEARCH_CRITIQUE_DISCIPLINE` (composer.ts): "Return only the final
+      user-facing answer: do not mention the draft, review, critique, corrections, revisions, or your thinking
+      process." ⚠ residual edge NOT covered: the explicit "don't add a second greeting/sign-off" guard — fold
+      into a future correction if double-greeting recurs.
 - [ ] **Location hallucination (no geo capability)** — Houge assumed **Beijing** with no basis; the whole
       23:19–23:23 sub-thread was Paco catching it ("你从哪里确定我在北京?"). No geolocation; should ASK or say
       it can't determine location, not guess. New `location`/geo capability (or a "don't assume location"
       discipline). Pairs with the market-data/structured-connector family.
 - [ ] **Date off by one (timezone)** — reply said "今天 2026年6月25日 周四" but Paco's local date is 06-26
       (AEST). `temporal.ts` likely injects UTC; the daemon logs/timestamps are Z. Inject LOCAL date (or the
-      user's TZ) into cognitive prompts.
-- [ ] **Persona/language drift on the general legs** — `run_93ba1594` replied in ENGLISH ("Greeting Paco!
-      Master Brother (大师兄)…") mid-Chinese conversation — a general-leg (agy/gemini) following houge.md less
-      faithfully than pi/kimi. Consider strengthening the language/persona instruction for the general legs.
+      user's TZ) into cognitive prompts. ⚠ STILL LIVE 2026-06-27: Houge replied "2026年6月26日, UTC时间" at
+      07:05 local on the 27th — confirms he reports UTC, not Paco's local date. Reproduces reliably.
+- [x] **Persona/language drift on the general legs** — ✅ FIXED BY HOUGE (self-write `3516dee`, 2026-06-27).
+      `run_93ba1594` replied in ENGLISH ("Greeting Paco! Master Brother (大师兄)…") mid-Chinese conversation — a
+      general-leg (agy/gemini) following houge.md less faithfully than pi/kimi. Houge added "Match the user's
+      language and style; if the topic is Chinese, answer in Chinese and avoid unnecessary English" to ALL THREE
+      of ASK/RESEARCH/RESEARCH_CRITIQUE disciplines (composer.ts) — broader than the 2 surfaces the hand-written
+      reference touched; the English-drift actually appeared on the ASK leg, which Houge caught and I had missed.
+  > **SELF-WRITE EXPERIMENT (2026-06-27):** Paco sent a ONE-PARAGRAPH terse Telegram message (not a 5-point
+  > spec) describing the meta-leak + English-drift symptoms; Houge (Codex writer → test-gate → kimi → [Merge &
+  > reload]) produced `3516dee`, a fix BROADER than the hand-written reference (3 disciplines vs 2, caught the
+  > ASK-leg drift the reference missed, kept citations). Evidence AGAINST needing a spec-derivation stage for
+  > changes this size — the writer was not the bottleneck. (Hand-written reference was stashed then superseded;
+  > `git stash drop stash@{0}` when convenient.)
 - [ ] **Telemetry blind spot** — research-synthesis turns emit NO `llm_call` event (onUsage not wired on that
       path; agy emits none by design) → can't see which leg served a turn. Wire synthesis-path onUsage; for
       agy, record a usage-less `llm_call` (provider/model/role only) so the leg is visible in the ledger.
