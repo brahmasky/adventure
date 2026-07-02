@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
 import { runTelegramDaemon } from "../../src/telegram/telegram-daemon.js";
 
@@ -11,7 +11,16 @@ function projectRoot(): string {
   dirs.push(dir);
   return dir;
 }
+// This suite drives turns down the LEGACY enum path — hermetic against a daemon env
+// that arms the inner loop (ADR 0013): pin the flag to its default (off).
+let prevLoopFlag: string | undefined;
+beforeEach(() => {
+  prevLoopFlag = process.env.HOUGE_INNER_LOOP_ENABLED;
+  delete process.env.HOUGE_INNER_LOOP_ENABLED;
+});
 afterEach(() => {
+  if (prevLoopFlag === undefined) delete process.env.HOUGE_INNER_LOOP_ENABLED;
+  else process.env.HOUGE_INNER_LOOP_ENABLED = prevLoopFlag;
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
   dirs = [];
 });

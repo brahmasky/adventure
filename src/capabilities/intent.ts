@@ -115,6 +115,14 @@ export function resolveSelfWriteEnabled(env: NodeJS.ProcessEnv): boolean {
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
+/** Whether the inner loop (ADR 0013) drives the `turn` surface (`HOUGE_INNER_LOOP_ENABLED`).
+ *  DEFAULT OFF — the legacy enum path runs, byte-identical, unless this is truthy.
+ *  Accepts 1/true/yes/on. */
+export function resolveInnerLoopEnabled(env: NodeJS.ProcessEnv): boolean {
+  const raw = env.HOUGE_INNER_LOOP_ENABLED?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
 /** Explicit WRITE verbs/phrases — English + the common Chinese forms (Houge talks to Paco in both). */
 const WRITE_SIGNALS: readonly RegExp[] = [
   /\bfix\b/i,

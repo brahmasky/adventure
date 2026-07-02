@@ -230,6 +230,27 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
 **Roadmap (each a /goal, each ends LIVE over Telegram; flag `HOUGE_INNER_LOOP_ENABLED` default OFF):**
 - **⓪·1 — loop engine + `turn` surface** (manifest: llm_answer, web_search, lesson_write, clarify;
   enum path stays as fallback). LIVE gate: mixed-intent Chinese message → lesson AND answer in ONE turn.
+  **✅ DONE + LIVE 2026-07-02 (run_b4a77b83).** One mixed-intent Chinese msg (no-lists correction +
+  Sydney-weekend-weather question) → loop_started(hint=feedback) → step1 lesson_write SAVED ("Avoid
+  lists; answer in one or two concise paragraphs instead.", scope ask) → step2 web_search →
+  loop_halted(final, 2 steps) → answer DELIVERED over Telegram — and the answer already OBEYED the
+  just-written lesson (paragraphs, no lists). Sources: loop:lesson_write + loop:web_search.
+  - [x] L1 `src/core/inner-loop.ts` (step loop, protocol+tolerant parser, halt conditions, InnerLoopDeps)
+  - [x] L2 `src/core/tool-manifest.ts` (descriptors from contract allowed_actions)
+  - [x] L3 flag fork in executeTurn (`HOUGE_INNER_LOOP_ENABLED`, default OFF; enum path = fallback);
+        manifest: llm_answer · web_search · lesson_write (distill+backstop+append) · clarify(protocol)
+  - [x] L4 ledger events loop_started/loop_step/loop_halted + attribution recording
+  - [x] L5 gates GREEN: typecheck · 789 tests · build · deps {} · independent adversarial verification
+        (verdict GO; 2 findings FIXED pre-live: legacy clarify-cap test env-pinned [pre-existing latent
+        self-write blocker]; lesson_write feedback anchored to REAL user msg + scope whitelist/clamp —
+        model-supplied poison text can no longer reach the distiller). Hermetic under daemon env ✓.
+        DEFERRED to ⓪·2: wall-clock loop halt (per-call timeouts bound it meanwhile); parse_cap raw-text
+        reply cosmetics; HOUGE_ASK_SYSTEM_PROMPT honored on loop path; injected-JSON-echo eval fixture;
+        run_completed budget_used showed tool_calls:1 on a 2-capability live run (telemetry undercount?
+        — verify budget accounting on the loop path).
+  - [ ] L6 LIVE gate: flag ON in .env + daemon reloaded PID 10332 ✓ — NOW NEEDS Paco: one mixed-intent
+        Chinese message (correction + question) → lesson AND answer in ONE turn; verify
+        loop_started/loop_step/loop_halted ledger events + /lessons shows the lesson.
 - **⓪·2 — evolution layers as tools** (skill_author, self_diagnose, self_write_propose; DELETE the
   WRITE_SIGNALS regex). LIVE gate: terse Chinese bug report → self-write proposal, no verb table.
 - **⓪·3 — spine Slice A on the loop** (rating, reconcile/supersede, reuse-value+decay, AVOID; A1

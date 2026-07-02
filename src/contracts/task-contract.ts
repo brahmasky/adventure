@@ -154,10 +154,13 @@ function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
   // on the LLM chain (the `intent_router` sentinel — never executed as a capability),
   // then dispatches to answer (llm_answer) or research (web_search + llm_answer).
   // Same safety floor as web-research; budget headroom for the extra classifier call.
+  // `lesson_write` (ADR 0013, step ⓪·1) is the distill→backstop→append flow as a
+  // capability: only the flag-gated inner loop invokes it (the legacy path never does;
+  // the policy only ALLOWS, never forces), but it lives in the one turn envelope.
   const base = {
     objective: event.goal,
     budget: { time_minutes: 10, max_tool_calls: 6, max_agent_delegations: 0 },
-    allowed_actions: ["intent_router", "web_search", "llm_answer", "write_report"],
+    allowed_actions: ["intent_router", "web_search", "llm_answer", "lesson_write", "write_report"],
     forbidden_actions: ["coding_agent_cli", "generic_shell", "external_write", "paid_action"],
     output: { path: "runs/<run-id>/report.md", format: "sourced_markdown_report" as const },
     approval_gates: ["local_write", "external_write", "destructive", "paid"] as SideEffectLevel[],

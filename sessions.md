@@ -124,3 +124,23 @@ Design session, docs only (Step 0 of the refactor; NO code — build awaits /goa
   advisory hint), 0012 (roadmap re-sequenced: loop = step ⓪, wiki loop-native); decisions README index;
   spine spec re-sequence note; todo.md INNER-LOOP REFACTOR section.
 - NEXT: /goal inner-loop step ⓪·1 (loop engine + turn surface). Everything uncommitted on main.
+
+## 2026-07-02 (later) — /goal inner-loop step ⓪·1 BUILT + LIVE-GATED (ADR 0013 first slice shipped)
+Build via build-subagent + independent adversarial verification subagent (main context kept clean).
+- Shipped: src/core/inner-loop.ts (step loop, JSON-in-text protocol, tolerant parser, halt conditions,
+  InnerLoopDeps), src/core/tool-manifest.ts, src/capabilities/lesson-write.ts; executeTurn flag fork
+  (HOUGE_INNER_LOOP_ENABLED, default OFF, legacy enum path = fallback); additive `loop` discipline +
+  LOOP_GUARDRAILS in composer (existing surfaces byte-identical); turn contract += lesson_write; ledger
+  events loop_started/loop_step/loop_halted + attribution seed; ~50 new tests.
+- Verifier: GO; 2 findings FIXED pre-live: (1) pre-existing latent hermeticity bug — legacy clarify-cap
+  test env-pinned (would have silently blocked ALL self-writes if HOUGE_MAX_CONSECUTIVE_CLARIFY ever hit
+  daemon env); (2) lesson_write trust anchor — feedback/prior_answer now bound to the REAL user message/
+  thread (model-supplied poison ignored), scope whitelisted ask|research w/ clamp. Deferred to ⓪·2:
+  wall-clock loop halt, parse_cap raw-text cosmetics, HOUGE_ASK_SYSTEM_PROMPT on loop path, injected-
+  JSON-echo eval fixture. Gates: typecheck · 789 tests · build · deps {} green (+ hermetic under daemon
+  env with flag+clarify+skills exported).
+- LIVE GATE MET (run_b4a77b83): flag armed in .env, daemon reloaded PID 10332; Paco's one mixed Chinese
+  message (no-lists correction + Sydney weekend weather) → lesson SAVED (ask scope) AND answer DELIVERED
+  over Telegram in ONE turn (2 loop steps); the answer already obeyed the just-written lesson.
+- NOT committed yet (working tree on main). NEXT: /goal ⓪·2 (evolution layers as tools, delete
+  WRITE_SIGNALS) when Paco's ready.

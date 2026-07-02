@@ -55,10 +55,13 @@ describe("compileTaskContract", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.contract.objective).toBe("what's new with SpaceX?");
+      // lesson_write (ADR 0013, step ⓪·1): the distill flow as a capability in the one
+      // turn envelope — only the flag-gated inner loop invokes it; policy only ALLOWS.
       expect(result.contract.allowed_actions).toEqual([
         "intent_router",
         "web_search",
         "llm_answer",
+        "lesson_write",
         "write_report"
       ]);
       expect(result.contract.budget.max_tool_calls).toBe(6);

@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CoreWorker } from "../../src/core/core-worker.js";
 import { INTENT_DISCIPLINE } from "../../src/capabilities/intent.js";
 import { DISTILL_DISCIPLINE } from "../../src/capabilities/distill.js";
@@ -19,7 +19,24 @@ function projectRoot(): string {
   dirs.push(dir);
   return dir;
 }
+// This suite asserts the LEGACY enum turn path (the flag-OFF behavior) and the code
+// DEFAULTS of the knobs it exercises (e.g. the clarify cap) — hermetic against a daemon
+// env that arms the inner loop (ADR 0013) or overrides those knobs: pin them (delete =
+// code default); a test that needs an override still sets it itself.
+const PINNED_ENV = ["HOUGE_INNER_LOOP_ENABLED", "HOUGE_MAX_CONSECUTIVE_CLARIFY"] as const;
+let savedEnv: Record<string, string | undefined> = {};
+beforeEach(() => {
+  savedEnv = {};
+  for (const key of PINNED_ENV) {
+    savedEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+});
 afterEach(() => {
+  for (const key of PINNED_ENV) {
+    if (savedEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = savedEnv[key];
+  }
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
   dirs = [];
 });

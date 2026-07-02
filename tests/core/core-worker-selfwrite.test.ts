@@ -22,12 +22,19 @@ function projectRoot(): string {
 }
 
 let prevFlag: string | undefined;
+let prevLoopFlag: string | undefined;
 beforeEach(() => {
   prevFlag = process.env.HOUGE_SELFWRITE_ENABLED;
+  // This suite asserts the LEGACY enum turn path — hermetic against a daemon env that
+  // arms the inner loop (ADR 0013): pin the flag to its default (off).
+  prevLoopFlag = process.env.HOUGE_INNER_LOOP_ENABLED;
+  delete process.env.HOUGE_INNER_LOOP_ENABLED;
 });
 afterEach(() => {
   if (prevFlag === undefined) delete process.env.HOUGE_SELFWRITE_ENABLED;
   else process.env.HOUGE_SELFWRITE_ENABLED = prevFlag;
+  if (prevLoopFlag === undefined) delete process.env.HOUGE_INNER_LOOP_ENABLED;
+  else process.env.HOUGE_INNER_LOOP_ENABLED = prevLoopFlag;
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
   dirs = [];
 });

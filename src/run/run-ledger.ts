@@ -42,7 +42,10 @@ export type LedgerEventType =
   | "self_write_published"
   | "self_write_blocked"
   | "self_write_failed"
-  | "llm_call";
+  | "llm_call"
+  | "loop_started"
+  | "loop_step"
+  | "loop_halted";
 
 export interface LedgerEvent {
   event_id: string;
@@ -137,7 +140,15 @@ const requiredPayloadFields = {
   // Phase 3.1 real LLM telemetry (spec §"Real telemetry", backlog #3). Token usage captured at
   // the source for every LLM call. role ∈ writer|reviewer|classify|frame|answer. cached_input_tokens,
   // cost_usd, latency_ms are optional. NON-NEGOTIABLE: counts/metadata ONLY — never prompt/diff/response.
-  llm_call: ["provider", "model", "role", "input_tokens", "output_tokens"]
+  llm_call: ["provider", "model", "role", "input_tokens", "output_tokens"],
+  // Inner-loop observation hooks (ADR 0013, step ⓪·1). `loop_started.applied_artifacts`
+  // is the attribution seed (which lesson/skill scope blocks were injected); `loop_step`
+  // records each composed step (result_digest is the truncated transcript entry — never
+  // full payloads); `loop_halted.reason` ∈ final|clarify|step_cap|denial|parse_cap|
+  // clarify_cap|failed.
+  loop_started: ["manifest", "hint", "applied_artifacts"],
+  loop_step: ["step", "action", "capability", "ok", "result_digest"],
+  loop_halted: ["reason", "steps"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(

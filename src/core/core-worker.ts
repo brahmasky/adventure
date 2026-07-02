@@ -42,11 +42,16 @@ import {
   parseIntent,
   resolveChatContextTurnChars,
   resolveChatContextTurns,
+  resolveInnerLoopEnabled,
   resolveMaxConsecutiveClarify,
   resolveSelfWriteEnabled
 } from "../capabilities/intent.js";
 import type { IntentClassification, Intent } from "../capabilities/intent.js";
 import { buildDistillQuestion, DISTILL_DISCIPLINE, looksLikeSkillProcedure, parseDistillResult, shouldRejectLesson } from "../capabilities/distill.js";
+import { createLessonWriteAdapter } from "../capabilities/lesson-write.js";
+import { runInnerLoop } from "./inner-loop.js";
+import type { LoopStepRecord } from "./inner-loop.js";
+import { manifestFor } from "./tool-manifest.js";
 import { composeSystemPrompt, intentToScope, memoryRootFor, SKILL_AUTHOR_DISCIPLINE } from "../prompt/composer.js";
 import { resolveSkillMaxPerScope, resolveSkillRefinePasses, resolveSkillsEnabled, setFrontmatterFields, SkillStore } from "../skills/skill-store.js";
 import { resolveWebMaxResults } from "../web/registry.js";
@@ -1003,7 +1008,7 @@ export class CoreWorker {
    */
   private recordLlmCallSafe(
     run_id: string,
-    info: { provider: string; model: string; role: "writer" | "reviewer" | "classify" | "frame" | "answer"; usage: LlmUsage; latency_ms?: number }
+    info: { provider: string; model: string; role: "writer" | "reviewer" | "classify" | "frame" | "answer" | "compose"; usage: LlmUsage; latency_ms?: number }
   ): void {
     try {
       this.runStore.recordLlmCall(run_id, info);
@@ -1019,7 +1024,7 @@ export class CoreWorker {
    */
   private llmAdapterFor(
     run_id: string,
-    role: "classify" | "frame" | "answer"
+    role: "classify" | "frame" | "answer" | "compose"
   ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
     if (!this.llmAdapterIsDefault) return this.llmAdapter;
     return createLlmAnswerAdapter({
@@ -1531,6 +1536,22 @@ export class CoreWorker {
     if (!classification.ok) {
       return this.failWithPartialReport(claim, classification.failure);
     }
+
+    // Inner-loop fork (ADR 0013, step ⓪·1): flag ON → the model composes the turn step
+    // by step inside the contract envelope, with the classification as an ADVISORY hint.
+    // Flag OFF (default) → the legacy enum path below, byte-identical, untouched.
+    if (resolveInnerLoopEnabled(process.env)) {
+      return this.executeTurnLoop(
+        claim,
+        message,
+        chat_id,
+        recentTurns,
+        budget,
+        turnChars,
+        recentClarifyCount,
+        classification.classification
+      );
+    }
     let intent = classification.classification.intent;
 
     // Clarify-loop cap (ADR 0010 fix): if Houge has already asked the cap's worth of
@@ -1605,6 +1626,221 @@ export class CoreWorker {
     });
 
     return completion;
+  }
+
+  /**
+   * The inner-loop `turn` path (ADR 0013, step ⓪·1). The compiled contract is the
+   * ENVELOPE: its allowed_actions derive the tool manifest, its max_tool_calls is the
+   * step cap, and every model-chosen action executes through `CapabilityRunner.execute`
+   * (policy → budget → adapter — no side-channel). The per-step compose call rides the
+   * existing chain (role "compose"); the classification is only an advisory hint in the
+   * loop prompt. Chat turns + the completion report are recorded exactly like the legacy
+   * path, so /status and history behave identically.
+   */
+  private async executeTurnLoop(
+    claim: ClaimedRun,
+    message: string,
+    chat_id: string,
+    recentTurns: ChatTurnRow[],
+    budget: BudgetLedger,
+    turnChars: number,
+    recentClarifyCount: number,
+    hint: IntentClassification
+  ): Promise<CoreWorkerResult> {
+    const manifest = manifestFor(claim.contract.allowed_actions);
+    const manifestNames = new Set(manifest.map((m) => m.name));
+    const memoryRoot = memoryRootFor(this.projectRoot);
+    const scope = intentToScope(hint.intent);
+    const lessonsReader = this.lessonsReader();
+    const skillsReader = this.skillsReader();
+    const system = composeSystemPrompt(memoryRoot, "loop", {
+      lessonsReader,
+      lessonsScope: scope,
+      skillsReader,
+      skillsScope: scope
+    });
+    // llm_answer steps answer in Houge's voice under the ask discipline; the model's
+    // parsed input can never override the composed system prompt (forced below).
+    const askSystem = composeSystemPrompt(memoryRoot, "ask", {
+      lessonsReader,
+      lessonsScope: scope,
+      skillsReader,
+      skillsScope: scope
+    });
+
+    // lesson_write trust anchors: the REAL prior assistant turn (and the real user
+    // message via claim.contract.objective) — never the model's step input.
+    const priorAssistantAnswer =
+      [...recentTurns].reverse().find((turn) => turn.role === "assistant")?.text ?? "";
+
+    const llmTimeoutMs = resolveChainBudgetMs(process.env) + RUNNER_TIMEOUT_BUFFER_MS;
+    const registry = new ToolRegistry();
+    for (const entry of manifest) {
+      registry.register({
+        name: entry.name,
+        category: entry.category,
+        side_effect_level: entry.side_effect_level,
+        risk_level: entry.risk_level,
+        // lesson_write may run distill + a consolidation rewrite (two chain calls).
+        timeout_ms:
+          entry.name === "web_search" ? WEB_RUNNER_TIMEOUT_MS : entry.name === "lesson_write" ? llmTimeoutMs * 2 : llmTimeoutMs,
+        output_limit_bytes: entry.output_limit_bytes,
+        execute: this.loopToolExecute(entry.name, claim, budget, askSystem, {
+          priorAnswer: priorAssistantAnswer,
+          defaultScope: scope
+        })
+      });
+    }
+
+    // Attribution seed (ADR 0013 observation hooks): which scope blocks were injected.
+    this.runStore.recordLoopStarted(claim.run_id, {
+      manifest: manifest.map((m) => m.name),
+      hint: hint.intent,
+      applied_artifacts: {
+        lesson_scopes: lessonsReader(scope) ? [scope] : [],
+        skill_scopes: skillsReader(scope) ? [scope] : []
+      }
+    });
+
+    // No approval sink on purpose (like runAnswer/runResearch): a gated capability
+    // auto-denies rather than parking the loop — nothing in the turn manifest is gated.
+    const runner = new CapabilityRunner(registry);
+    const composeAdapter = this.llmAdapterFor(claim.run_id, "compose");
+    const result = await runInnerLoop(
+      {
+        objective: message,
+        system,
+        manifest,
+        hint: hint.query ? `${hint.intent} (${hint.query})` : hint.intent,
+        ...(recentTurns.length > 0 ? { context: formatThreadContext(recentTurns, turnChars) } : {}),
+        maxSteps: claim.contract.budget.max_tool_calls,
+        clarifyAllowed: recentClarifyCount < resolveMaxConsecutiveClarify(process.env),
+        onStep: (step) =>
+          this.runStore.recordLoopStep(claim.run_id, {
+            step: step.index,
+            action: step.action,
+            capability: manifestNames.has(step.action) ? step.action : "",
+            ok: step.ok,
+            result_digest: step.resultDigest
+          })
+      },
+      {
+        compose: async (input) => {
+          const r = await composeAdapter(input);
+          if (!r.ok) return { ok: false, error: r.error };
+          return { ok: true, text: typeof r.output.answer === "string" ? r.output.answer : "" };
+        },
+        executeAction: (capability, input) =>
+          runner.execute({ contract: claim.contract, capability, input, budget })
+      }
+    );
+
+    this.runStore.recordLoopHalted(claim.run_id, { reason: result.reason, steps: result.steps.length });
+
+    if (result.outcome === "failed") {
+      return this.failWithPartialReport(claim, result.failure);
+    }
+
+    const answer = result.outcome === "clarify" ? result.question : result.answer;
+    const completion = this.writeCompletionReport(
+      claim,
+      result.outcome === "clarify"
+        ? {
+            title: "Clarification",
+            body: [`Message: ${message}`, "", answer].join("\n"),
+            sources: ["loop:clarify"],
+            notifyText: answer
+          }
+        : {
+            title: "Answer",
+            body: [`Message: ${message}`, "", answer].join("\n"),
+            sources: loopSources(result.steps),
+            notifyText: answer
+          }
+    );
+    if (completion.status !== "completed") {
+      return completion;
+    }
+
+    // Record both sides of the exchange (same as the legacy path). The assistant turn's
+    // intent is the advisory hint (best available label) — except a clarify outcome is
+    // recorded as "clarify" so the consecutive-clarify cap keeps counting, and a hint of
+    // "clarify" the model overrode is recorded as "answer" so it does NOT count.
+    const recordedIntent: Intent =
+      result.outcome === "clarify" ? "clarify" : hint.intent === "clarify" ? "answer" : hint.intent;
+    this.runStore.recordChatTurn({ chat_id, run_id: claim.run_id, role: "user", text: message });
+    this.runStore.recordChatTurn({
+      chat_id,
+      run_id: claim.run_id,
+      role: "assistant",
+      text: answer,
+      intent: recordedIntent
+    });
+
+    return completion;
+  }
+
+  /** Bind a loop tool's adapter (ADR 0013): each rides an existing, unchanged pipeline. */
+  private loopToolExecute(
+    name: string,
+    claim: ClaimedRun,
+    budget: BudgetLedger,
+    askSystem: string,
+    lessonAnchor: { priorAnswer: string; defaultScope: string }
+  ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
+    if (name === "web_search") {
+      return async (input) => {
+        const query = typeof input.query === "string" ? input.query : "";
+        const result = await this.webSearchAdapter({ query, max_results: resolveWebMaxResults(process.env) });
+        // Provenance audit (parity with runResearch): the URLs Houge read hit the ledger.
+        if (result.ok) {
+          const rawResults = Array.isArray(result.output.results) ? result.output.results : [];
+          this.runStore.appendLedgerEvent(
+            createLedgerEvent({
+              run_id: claim.run_id,
+              correlation_id: claim.run_id,
+              event_type: "web_search_performed",
+              actor: "core",
+              sequence: this.nextSequence(claim.run_id),
+              payload: {
+                query,
+                provider: typeof result.output.provider === "string" ? result.output.provider : "unknown",
+                source_urls: rawResults
+                  .map((r) => (typeof (r as WebResult).url === "string" ? (r as WebResult).url : ""))
+                  .filter((u) => u.length > 0),
+                result_count: rawResults.length
+              }
+            })
+          );
+        }
+        return result;
+      };
+    }
+    if (name === "lesson_write") {
+      // TRUST ANCHORS: feedback = the turn's real user message (the contract objective);
+      // prior_answer = the real prior assistant turn. The model's step input can carry
+      // ONLY a scope, whitelisted to the turn surface's scopes and clamped otherwise —
+      // so the provenance backstop always judges against what the user actually said.
+      return createLessonWriteAdapter({
+        feedback: claim.contract.objective,
+        priorAnswer: lessonAnchor.priorAnswer,
+        allowedScopes: ["ask", "research"],
+        defaultScope: lessonAnchor.defaultScope,
+        llm: (input) => this.llmAdapter(input),
+        appendLesson: (scope, lesson, now) =>
+          this.runStore.appendLessonToBlock(scope, lesson, now, async (text) => {
+            const rewrite = await this.runLlm(claim, buildRewriteQuestion(text), REWRITE_DISCIPLINE, budget);
+            return rewrite.ok ? rewrite.answer : text;
+          })
+      });
+    }
+    // llm_answer (default): Houge's composed ask prompt is FORCED — the model's parsed
+    // step input rides the question channel only, never the system prompt.
+    return (input) =>
+      this.llmAdapterFor(claim.run_id, "answer")({
+        question: typeof input.question === "string" ? input.question : "",
+        system: askSystem
+      });
   }
 
   private async classifyIntent(
@@ -1994,6 +2230,12 @@ function gateBLine(gate: VerifyResult): string {
   if (gate.unscored) return "Gate B anchors: (unscored — verifier unavailable; advisory only)";
   const verdict = gate.passed ? "✓ passed" : "⚠ low score";
   return `Gate B anchors: ${verdict} — ${gate.score.toFixed(2)} vs threshold ${gate.threshold.toFixed(2)} (${gate.scoredPasses}-pass avg)`;
+}
+
+/** Report sources for a loop run: the capabilities that actually succeeded, prefixed. */
+function loopSources(steps: LoopStepRecord[]): string[] {
+  const invoked = [...new Set(steps.filter((s) => s.ok).map((s) => s.action))];
+  return invoked.length > 0 ? invoked.map((name) => `loop:${name}`) : ["loop:compose"];
 }
 
 /** Coerce a stored chat-turn intent into a known Intent (default answer). */

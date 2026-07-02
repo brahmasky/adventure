@@ -33,7 +33,7 @@ import { canTransitionRun } from "./state-machines.js";
 import type { LlmUsage } from "./llm-usage.js";
 
 /** The LLM-call roles recorded by {@link RunStore.recordLlmCall} (spec §"Real telemetry"). */
-export type LlmCallRole = "writer" | "reviewer" | "classify" | "frame" | "answer";
+export type LlmCallRole = "writer" | "reviewer" | "classify" | "frame" | "answer" | "compose";
 
 type SqliteValue = string | number | bigint | null;
 
@@ -608,6 +608,30 @@ export class RunStore {
 
   recordSelfWriteFailed(run_id: string, payload: { reason: string; last_output: string }): void {
     this.appendRunLedgerEvent(run_id, "self_write_failed", "core", payload);
+  }
+
+  /**
+   * Inner-loop observation hooks (ADR 0013, step ⓪·1) — read-only audit trail.
+   * `loop_started.applied_artifacts` is the attribution seed (which lesson/skill scope
+   * blocks were injected); `loop_step` records each step's action/capability + the
+   * truncated result digest (never full payloads); `loop_halted` records why.
+   */
+  recordLoopStarted(
+    run_id: string,
+    payload: { manifest: string[]; hint: string; applied_artifacts: Record<string, unknown> }
+  ): void {
+    this.appendRunLedgerEvent(run_id, "loop_started", "core", payload);
+  }
+
+  recordLoopStep(
+    run_id: string,
+    payload: { step: number; action: string; capability: string; ok: boolean; result_digest: string }
+  ): void {
+    this.appendRunLedgerEvent(run_id, "loop_step", "core", payload);
+  }
+
+  recordLoopHalted(run_id: string, payload: { reason: string; steps: number }): void {
+    this.appendRunLedgerEvent(run_id, "loop_halted", "core", payload);
   }
 
   /**
