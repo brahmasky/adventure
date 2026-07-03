@@ -195,3 +195,24 @@ Build + independent adversarial verification subagents; each live round found a 
   2026-07-03 17:30 (Australia/Sydney)". June-27 date/TZ bug CLOSED end-to-end by Houge himself.
 - Pushed main (5ae8d5e), merged branch deleted. NEXT: /goal ⓪·3 — spine Slice A on the loop
   (rating, reconcile/supersede — the duplicate timezone lessons in the ask block are the test case).
+
+## 2026-07-03 (night) — /goal ⓪·2c SELF-WRITE UX DONE + the immutable-literal lesson
+- Built U1+U2 (d14ad02): readable [View diff] (stat summary → cleaned per-file head-capped hunks;
+  full .patch attached via zero-dep sendDocument when inline loses content; no parse_mode on the
+  path so diff content can't fail the send; ≤4096 fuzz-proven) · reload marker + boot confirmation
+  (green merge writes sha+subject marker → daemon boot consumes exactly-once → "✅ 重启成功 — 现在
+  运行 <sha>「…」" via outbox; stage 1 of ADR 0012 D4). 870 tests; verifier GO.
+- LIVE ROUND 1 (run_3dbd8174) = the best failure yet: Houge's header rename was STRUCTURALLY
+  IMPOSSIBLE (5 tests pinned the literal; existing tests immutable to self-writes) → writer produced
+  the only legal move (parenthetical keeping the substring) → kimi reviewer rightly REJECTED as not
+  honoring intent → honest Chinese failure reply. Root cause = OUR test design. Fix 43562ec: export
+  EVOLUTION_NOTICE_HEADER, tests assert via constant. LESSON: code-owned user-facing strings must be
+  asserted via exported constants or they become un-self-writable.
+- Also caught live (run_72230506): ambiguous "改标题" feedback → model saved a LESSON that cannot
+  affect a code-owned string and overpromised ("以后我会…"). Paco's point: user shouldn't need to
+  know code-vs-memory. → LAYER-ROUTING self-knowledge folded into ⓪·3 (discipline list + lesson_write
+  verbatim-in-src refusal + eval-loop escalation). User never needs tool names — natural language only.
+- LIVE ROUND 2 (run_083877fe → 5d8b97f): clean 1-line constant change → gates green (kimi pass) →
+  readable diff → merge tap → daemon self-restart → ✅ 重启成功 arrived unprompted (both notifications
+  delivered 10:34). U4 MET. Houge's sign-off is now "🐒 自我修改进展" — self-written.
+- NEXT: /goal ⓪·3 — spine Slice A on the loop + layer-routing (two ready-made live cases queued).

@@ -327,23 +327,38 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
         This IS the live gate for H1–H3 (reviewer fallback exercised, no timeout truncation, any
         fallback reply in Chinese).
   - Parked for ⓪·3 (not here): duplicate timezone lessons in the ask block = reconcile/supersede.
-- **⓪·2c — SELF-WRITE UX** ⏳ **/goal IN PROGRESS 2026-07-03** (Paco: diff unreadable on Telegram;
-  no confirmation after merge/reload)
-  - [ ] U1 **Readable [View diff] message**: lead with `git diff --stat` summary · cleaned compact
+- **⓪·2c — SELF-WRITE UX** ✅ **DONE + LIVE 2026-07-03** (build d14ad02; live gate = Houge's header
+  rename 5d8b97f: readable [View diff] → merge tap → "✅ 重启成功 — 现在运行 5d8b97f「…」" arrived
+  unprompted, both delivered 10:34). 870 tests; verifier GO (2 cosmetic MINORs parked: git-quoted
+  non-ASCII paths render octal; ---/+++-shaped content lines dropped as meta).
+  KEY LESSON (43562ec): Houge's first attempt run_3dbd8174 was STRUCTURALLY IMPOSSIBLE — 5 tests
+  pinned the literal 自我修改状态 and existing tests are immutable to self-writes → writer could only
+  produce the parenthetical hack kimi rightly rejected. Fix = assert code-owned user-facing strings
+  via EXPORTED CONSTANTS so they stay self-write-evolvable. Also observed: model routed "改标题"
+  feedback to a lesson that cannot affect a code-owned string (Houge overpromised "以后我会…") →
+  layer-routing self-knowledge folded into ⓪·3 scope (see below).
+  - [x] U1 **Readable [View diff] message**: lead with `git diff --stat` summary · cleaned compact
         hunks (strip index/---/+++ noise, per-file headers, head-capped per file — today's tail-cut
         loses the filenames) · full `.patch` attached via sendDocument when over the inline cap
         (zero-dep multipart; optional client method). NO GitHub compare link (branch never pushed
         pre-merge — would 404).
-  - [ ] U2 **Reload marker + boot confirmation** (= stage 1 of ADR 0012 D4 health probe): green
+  - [x] U2 **Reload marker + boot confirmation** (= stage 1 of ADR 0012 D4 health probe): green
         merge writes a durable marker (sha+subject) before restart; daemon startup consumes it
         exactly once and notifies "✅ 重启成功 — running <sha> <subject>". No marker → no message;
         crash-loop detection + auto-rollback stays in the spine interleave (D4 proper).
-  - [ ] U3 gates: typecheck · test · build · deps {} · hermetic sweep · independent verification;
+  - [x] U3 gates GREEN (870): typecheck · test · build · deps {} · hermetic sweep · independent verification;
         merge-order invariants stay asserted (merge→build→test→notify→push→restart).
-  - [ ] U4 LIVE gate: one small real Houge self-write end-to-end — [View diff] actually readable
+  - [x] U4 LIVE gate MET (5d8b97f): one small real Houge self-write end-to-end — [View diff] actually readable
         on mobile → [Merge & reload] → ✅ boot confirmation arrives on Telegram.
 - **⓪·3 — spine Slice A on the loop** (rating, reconcile/supersede, reuse-value+decay, AVOID; A1
   attribution already emitted by loop observation hooks). LIVE gate = spine A9 (visible compounding).
+  **+ folded in (2026-07-03): LAYER-ROUTING self-knowledge** — (i) loop discipline names the
+  code-owned surfaces (notice header, report scaffolding, buttons, wrappers): "a lesson can't change
+  these → self_write_propose"; (ii) lesson_write mechanically refuses feedback quoting a phrase that
+  exists verbatim in src/ (digest steers the model to the code layer in-turn); (iii) the eval loop
+  itself: an applied-but-ineffective lesson loses reuse-value on repeat correction → escalates.
+  READY-MADE LIVE CASES: the duplicate timezone lessons in ask block (reconcile) + the useless
+  "playful sign-offs" lesson from run_72230506 (ineffective-layer escalation).
 - **⓪·4 — retire legacy paths** (flag default ON, executeTurn if-chain + per-intent handlers removed,
   research fixed sequence dissolves into composition). LIVE gate: a normal day's traffic on loop only.
 
