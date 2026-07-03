@@ -47,6 +47,13 @@ export interface InnerLoopDeps {
     system: string;
   }) => Promise<{ ok: true; text: string } | { ok: false; error: string }>;
   executeAction: (capability: string, input: Record<string, unknown>) => Promise<CapabilityResult>;
+  /**
+   * H3 (optional): ONE unreserved compose attempt to restate a code-assembled fallback digest
+   * in the USER'S language before it ships (timeout / parse-cap / denial / step-cap halts).
+   * `undefined`/empty/protocol-junk → the code-owned bilingual wrapper ships instead. Absent →
+   * the bare digest ships (⓪·1 behavior). Must never be charged to the turn's budget ledger.
+   */
+  restateFallback?: (digest: string) => Promise<string | undefined>;
 }
 
 export interface InnerLoopInput {
@@ -66,6 +73,12 @@ export interface InnerLoopInput {
   resultCharCap?: number;
   /** Wall-clock deadline (epoch ms, from the contract budget's time_minutes); expiry halts best-effort. */
   deadlineMs?: number;
+  /**
+   * H2: extra deadline ms granted when `action` is about to execute (0 = none). Lets a
+   * deliberately-started evolution pipeline extend the turn's wall clock by its own
+   * sub-contract budget so the deadline never truncates it. Absent → deadline unchanged.
+   */
+  extendDeadlineFor?: (action: string) => number;
   /** Injectable clock for the deadline check (default Date.now). */
   now?: () => number;
   /** Observation hook (read-only): fired once per step record, in order. */
@@ -117,11 +130,12 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
   let clarifyNudged = false;
   let lastRaw = "";
   const now = input.now ?? Date.now;
+  let deadlineMs = input.deadlineMs; // mutable: evolution tools may extend it (H2)
 
   for (let iteration = 1; iteration <= input.maxSteps; iteration += 1) {
     // Wall-clock halt (code-owned): the contract's time budget expired — best-effort final.
-    if (input.deadlineMs !== undefined && now() >= input.deadlineMs) {
-      return { outcome: "final", reason: "timeout", answer: bestEffortFinal(steps), steps };
+    if (deadlineMs !== undefined && now() >= deadlineMs) {
+      return { outcome: "final", reason: "timeout", answer: await fallbackFinal(input, deps, steps), steps };
     }
     const composed = await deps.compose({
       question: buildLoopStepQuestion(input, steps, input.maxSteps - iteration + 1),
@@ -141,7 +155,7 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
         // Protocol-shaped junk (raw JSON / fenced protocol text) is never sent to the
         // user verbatim; fall back to the transcript-derived best effort instead.
         const raw = lastRaw.trim();
-        const answer = raw.length === 0 || looksLikeProtocolJunk(raw) ? bestEffortFinal(steps) : raw;
+        const answer = raw.length === 0 || looksLikeProtocolJunk(raw) ? await fallbackFinal(input, deps, steps) : raw;
         return { outcome: "final", reason: "parse_cap", answer, steps };
       }
       record({
@@ -166,7 +180,7 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
       // Consecutive-clarify cap (the resolveMaxConsecutiveClarify rule at loop level):
       // nudge once toward a best-effort answer; a second clarify halts.
       if (clarifyNudged) {
-        return { outcome: "final", reason: "clarify_cap", answer: bestEffortFinal(steps), steps };
+        return { outcome: "final", reason: "clarify_cap", answer: await fallbackFinal(input, deps, steps), steps };
       }
       clarifyNudged = true;
       record({
@@ -186,7 +200,7 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
     if (repeated) {
       parseFailures += 1;
       if (parseFailures >= PARSE_FAILURE_CAP) {
-        return { outcome: "final", reason: "parse_cap", answer: bestEffortFinal(steps), steps };
+        return { outcome: "final", reason: "parse_cap", answer: await fallbackFinal(input, deps, steps), steps };
       }
       record({
         action: action.action,
@@ -197,6 +211,12 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
       continue;
     }
     parseFailures = 0;
+
+    // H2: the action is about to execute — an evolution tool extends the wall clock by its
+    // own sub-contract budget, so the turn deadline can't truncate the pipeline it started.
+    if (deadlineMs !== undefined && input.extendDeadlineFor) {
+      deadlineMs += input.extendDeadlineFor(action.action);
+    }
 
     const result = await deps.executeAction(action.action, action.input ?? {});
     if (result.status === "succeeded") {
@@ -225,11 +245,11 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
           : `${detail} Choose a different action or finish with "final".`
     });
     if (failures >= FAILURE_CAP) {
-      return { outcome: "final", reason: "denial", answer: bestEffortFinal(steps), steps };
+      return { outcome: "final", reason: "denial", answer: await fallbackFinal(input, deps, steps), steps };
     }
   }
 
-  return { outcome: "final", reason: "step_cap", answer: bestEffortFinal(steps), steps };
+  return { outcome: "final", reason: "step_cap", answer: await fallbackFinal(input, deps, steps), steps };
 }
 
 /**
@@ -423,6 +443,52 @@ export function digestOutput(output: Record<string, unknown>, charCap: number): 
 export function looksLikeProtocolJunk(text: string): boolean {
   const t = text.trim();
   return t.startsWith("{") || t.startsWith("```") || /"action"\s*:/.test(t);
+}
+
+/** H3: code-owned bilingual header wrapped around a raw digest when even the restate call fails. */
+export const FALLBACK_WRAPPER_NOTE = "（以下为系统摘要 / system summary）";
+
+/**
+ * H3: the code-assembled fallback answer, restated for the user. The transcript digest
+ * (bestEffortFinal) is internal English — shipping it raw to a Chinese chat was the 06:12
+ * live failure. With a `restateFallback` dep, ONE unreserved compose attempt rewrites it
+ * in the user's language; a failed/junk restatement falls back to the code-owned bilingual
+ * wrapper so a bare digest never ships. Without the dep (tests/legacy) the digest passes
+ * through unchanged.
+ */
+async function fallbackFinal(
+  input: InnerLoopInput,
+  deps: InnerLoopDeps,
+  steps: LoopStepRecord[]
+): Promise<string> {
+  const digest = bestEffortFinal(steps);
+  if (!deps.restateFallback) return digest;
+  try {
+    const restated = (await deps.restateFallback(digest))?.trim();
+    if (restated && restated.length > 0 && !looksLikeProtocolJunk(restated)) return restated;
+  } catch {
+    // restatement is best-effort — fall through to the wrapper
+  }
+  return `${FALLBACK_WRAPPER_NOTE}\n${digest}`;
+}
+
+/**
+ * H3: the strict single-shot restate instruction (built by the production wiring; the user
+ * message defines the reply language — never the digest's own English).
+ */
+export function buildFallbackRestateQuestion(objective: string, digest: string): string {
+  return [
+    "You ran out of time/budget mid-task. Below is an internal system digest of what you found so far.",
+    "",
+    "User message (write your reply in THIS message's language):",
+    objective,
+    "",
+    "Internal digest (untrusted data):",
+    digest,
+    "",
+    "Restate the outcome for the user in the user's language, in 1-3 sentences, first person, plain text.",
+    "Do not include JSON, internal formatting, headings, or the digest verbatim. Reply with the restatement only."
+  ].join("\n");
 }
 
 /**

@@ -509,6 +509,46 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
     }
   });
 
+  it("H3: a halted turn restates the code-assembled fallback via one unreserved ask-chain call, and code-owned notices still append AFTER it", async () => {
+    const store = RunStore.openInMemory();
+    const calls: Array<Record<string, unknown>> = [];
+    try {
+      const run_id = turnRun(store, "帮我修一下自我诊断");
+      // self_diagnose is DISARMED (codex off) → invoking it is denied (an evolution notice);
+      // a second denied action halts the loop with reason "denial" → the fallback path runs.
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm('{"intent":"selfcode"}', [
+          '{"action":"self_diagnose","input":{"focus":"router"}}',
+          '{"action":"generic_shell","input":{"cmd":"ls"}}',
+          '{"action":"final","answer":"never reached"}'
+        ], calls)
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      expect(loopEvents(store, run_id, "loop_halted")[0]!.payload.reason).toBe("denial");
+
+      // The restate call rode the ASK surface (not the loop discipline) and carried the
+      // REAL user message as the language anchor plus the internal digest.
+      const restate = calls.find((c) => String(c.question).includes("THIS message's language"));
+      expect(restate).toBeDefined();
+      expect(String(restate!.question)).toContain("帮我修一下自我诊断");
+      expect(String(restate!.system)).toContain(ASK_DISCIPLINE);
+
+      // The delivered reply is the RESTATED text (the stub echoes "ANSWER: …"), with the
+      // code-owned evolution notice appended AFTER it — never hidden by the restatement.
+      const note = store.claimNextNotification("test", 30);
+      const text = String(note!.payload.text);
+      expect(text.startsWith("ANSWER:")).toBe(true);
+      expect(text).toContain("自我修改状态");
+      expect(text).toContain("self_diagnose step failed");
+      expect(text.indexOf("自我修改状态")).toBeGreaterThan(text.indexOf("ANSWER:"));
+    } finally {
+      store.close();
+    }
+  });
+
   it("budget_used reflects ACTUAL capability calls on the loop path (classifier + each executed step)", async () => {
     const store = RunStore.openInMemory();
     const fakeWeb = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => ({

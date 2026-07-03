@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveCodexBin, resolveCodexTimeoutMs } from "./coding-agent.js";
+import { resolveCodexBin, resolveCodexEnabled, resolveCodexTimeoutMs } from "./coding-agent.js";
 import { normalizeClaudeUsage, normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
 
 /**
@@ -46,7 +46,7 @@ export interface ReviewVerdict {
 }
 
 export type ReviewResult =
-  | { ok: true; verdict: ReviewVerdict; usage?: LlmUsage }
+  | { ok: true; verdict: ReviewVerdict; usage?: LlmUsage; reviewer?: ReviewerKind }
   | { ok: false; error: string };
 
 /** Resolve which reviewer backs checker 3 (`HOUGE_SELFWRITE_REVIEWER`, default `kimi` — cheap +
@@ -187,20 +187,58 @@ interface NodeError extends Error {
   stdout?: Buffer | string | null;
 }
 
+/** Fixed fallback order (H1): the configured reviewer first, then the rest of this list. */
+const REVIEWER_FALLBACK_ORDER: ReviewerKind[] = ["kimi", "claude", "codex"];
+
 /**
- * Run checker 3: dispatch to the configured reviewer (`HOUGE_SELFWRITE_REVIEWER`) and return
- * a parsed verdict. Never throws — a spawn error / unparseable output maps to `{ ok:false }`.
+ * Run checker 3 (H1: fallback chain). The configured reviewer (`HOUGE_SELFWRITE_REVIEWER`) runs
+ * first; if it is UNAVAILABLE (timeout / spawn failure / unparseable transport — never a delivered
+ * verdict), the remaining backends are tried in [kimi, claude, codex] order. A DELIVERED verdict
+ * (pass OR reject) from any backend ends the chain — reject is a real answer, never fallen past.
+ * Unconfigured fallback backends are skipped (never errored on); the whole chain unavailable maps
+ * to `{ ok:false }` with every backend's detail, exactly the pre-chain failure semantics. The
+ * winning backend rides out as `reviewer` so the ledger can attribute the verdict.
+ * Never throws.
  */
 export function reviewDiff(input: ReviewDiffInput): ReviewResult {
   const env = input.env ?? process.env;
-  const reviewer = resolveSelfWriteReviewer(env);
-  switch (reviewer) {
-    case "codex":
-      return reviewViaCodex(input.task, input.diff, env);
+  const configured = resolveSelfWriteReviewer(env);
+  const chain = [configured, ...REVIEWER_FALLBACK_ORDER.filter((k) => k !== configured)];
+  const details: string[] = [];
+  for (const [i, backend] of chain.entries()) {
+    // Fallbacks must be configured/enabled to be tried; the CONFIGURED reviewer always runs
+    // (preserving its own "disabled: set HOUGE_..." error when it is misconfigured).
+    if (i > 0 && !reviewerConfigured(backend, env)) {
+      details.push(`${backend} reviewer skipped (not configured)`);
+      continue;
+    }
+    const result = runReviewer(backend, input.task, input.diff, env);
+    if (result.ok) return { ...result, reviewer: backend };
+    details.push(result.error);
+  }
+  return { ok: false, error: details.join("; ") };
+}
+
+/** Whether a FALLBACK backend is armed at all (bin set / codex enabled). */
+function reviewerConfigured(kind: ReviewerKind, env: NodeJS.ProcessEnv): boolean {
+  switch (kind) {
     case "kimi":
-      return reviewViaKimiCli(input.task, input.diff, env);
+      return resolveKimiCliBin(env) !== KIMI_CLI_BIN_UNSET;
+    case "claude":
+      return resolveClaudeBin(env) !== CLAUDE_BIN_UNSET;
+    case "codex":
+      return resolveCodexEnabled(env);
+  }
+}
+
+function runReviewer(kind: ReviewerKind, task: string, diff: string, env: NodeJS.ProcessEnv): ReviewResult {
+  switch (kind) {
+    case "codex":
+      return reviewViaCodex(task, diff, env);
+    case "kimi":
+      return reviewViaKimiCli(task, diff, env);
     default:
-      return reviewViaClaude(input.task, input.diff, env);
+      return reviewViaClaude(task, diff, env);
   }
 }
 

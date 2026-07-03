@@ -13,6 +13,8 @@ const BRANCH = selfWriteBranchName(RUN_ID);
 interface ClientLog {
   answered: string[];
   cleared: Array<{ chat_id: string; message_id: number }>;
+  /** H4: editMessageReplyMarkup calls that RE-ATTACH a keyboard (reply_markup present). */
+  restored: Array<{ chat_id: string; message_id: number; reply_markup: unknown }>;
   sent: string[];
 }
 
@@ -26,8 +28,12 @@ function makeClient(log: ClientLog) {
     async answerCallbackQuery(input: { callback_query_id: string }) {
       log.answered.push(input.callback_query_id);
     },
-    async editMessageReplyMarkup(input: { chat_id: string; message_id: number }) {
-      log.cleared.push({ chat_id: input.chat_id, message_id: input.message_id });
+    async editMessageReplyMarkup(input: { chat_id: string; message_id: number; reply_markup?: unknown }) {
+      if (input.reply_markup) {
+        log.restored.push({ chat_id: input.chat_id, message_id: input.message_id, reply_markup: input.reply_markup });
+      } else {
+        log.cleared.push({ chat_id: input.chat_id, message_id: input.message_id });
+      }
     }
   };
 }
@@ -103,10 +109,21 @@ function run(
 
 function freshLogs(): { client: ClientLog; deps: DepsLog } {
   return {
-    client: { answered: [], cleared: [], sent: [] },
+    client: { answered: [], cleared: [], restored: [], sent: [] },
     deps: { viewed: [], discarded: [], merged: [], durable: [] }
   };
 }
+
+/** The exact keyboard a published notification carries (what H4 must restore). */
+const RESTORED_KEYBOARD = {
+  inline_keyboard: [
+    [
+      { text: "🔀 Merge & reload", callback_data: `selfwrite:merge:${RUN_ID}` },
+      { text: "👀 View diff", callback_data: `selfwrite:view:${RUN_ID}` },
+      { text: "🗑 Discard", callback_data: `selfwrite:discard:${RUN_ID}` }
+    ]
+  ]
+};
 
 describe("handleSelfWriteAction", () => {
   it("view → answers the callback, runs viewDiff, sends the diff, and LEAVES the buttons in place", async () => {
@@ -265,6 +282,110 @@ describe("handleSelfWriteAction", () => {
       expect(cl.sent.some((t) => t.includes("already merged"))).toBe(true);
       // Buttons were cleared on BOTH taps (best-effort), but only one merge ran.
       expect(cl.cleared.length).toBe(2);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("H4 merge_conflict → clears the keyboard FIRST, reports, then RESTORES the exact original keyboard", async () => {
+    const store = RunStore.openInMemory();
+    const { client: cl, deps: dl } = freshLogs();
+    const client = makeClient(cl);
+    try {
+      await run("merge", store, client, makeDeps(dl, { mergeOutcome: { kind: "merge_conflict", detail: "CONFLICT in foo.ts" } }));
+      // Anti-double-tap clear still happened, on the same message.
+      expect(cl.cleared).toEqual([{ chat_id: CHAT_ID, message_id: 55 }]);
+      // The refusal was reported, THEN the keyboard came back (branch still exists — retry is one tap away).
+      expect(cl.restored).toEqual([{ chat_id: CHAT_ID, message_id: 55, reply_markup: RESTORED_KEYBOARD }]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("H4 reverted (test-gate red) → keyboard restored after the report", async () => {
+    const store = RunStore.openInMemory();
+    const { client: cl, deps: dl } = freshLogs();
+    const client = makeClient(cl);
+    try {
+      await run("merge", store, client, makeDeps(dl, { mergeOutcome: { kind: "reverted", stage: "test", detail: "red" } }));
+      expect(cl.restored).toEqual([{ chat_id: CHAT_ID, message_id: 55, reply_markup: RESTORED_KEYBOARD }]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("H4 reverted (build red / dirty-tree deps failure) → keyboard restored", async () => {
+    const store = RunStore.openInMemory();
+    const { client: cl, deps: dl } = freshLogs();
+    const client = makeClient(cl);
+    try {
+      await run("merge", store, client, makeDeps(dl, { mergeOutcome: { kind: "reverted", stage: "build", detail: "dirty tree" } }));
+      expect(cl.restored.length).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("H4 success (reloaded) keeps the keyboard CLEARED — no restore", async () => {
+    const store = RunStore.openInMemory();
+    const { client: cl, deps: dl } = freshLogs();
+    const client = makeClient(cl);
+    try {
+      await run("merge", store, client, makeDeps(dl, { mergeOutcome: { kind: "reloaded", pushed: false } }));
+      expect(cl.cleared.length).toBe(1);
+      expect(cl.restored).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("H4 not_found / already_merged (branch gone or landed) stay cleared — nothing to re-offer", async () => {
+    const store = RunStore.openInMemory();
+    const { client: cl, deps: dl } = freshLogs();
+    const client = makeClient(cl);
+    try {
+      await run("merge", store, client, makeDeps(dl, { mergeOutcome: { kind: "not_found" } }));
+      await run("merge", store, client, makeDeps(dl, { mergeOutcome: { kind: "already_merged" } }));
+      expect(cl.restored).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("H4 discard still clears without restoring", async () => {
+    const store = RunStore.openInMemory();
+    const { client: cl, deps: dl } = freshLogs();
+    const client = makeClient(cl);
+    try {
+      await run("discard", store, client, makeDeps(dl));
+      expect(cl.cleared.length).toBe(1);
+      expect(cl.restored).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("H4 a send-only client (no editMessageReplyMarkup) never crashes the restore path", async () => {
+    const store = RunStore.openInMemory();
+    const sent: string[] = [];
+    const sendOnlyClient = {
+      async sendMessage(input: { chat_id: string; text: string }) {
+        sent.push(input.text);
+        return { message_id: sent.length };
+      }
+    };
+    const { deps: dl } = freshLogs();
+    try {
+      await handleSelfWriteAction({
+        event: event("merge"),
+        telegramClient: sendOnlyClient,
+        projectRoot: "/fake/root",
+        store,
+        makeDeps: makeDeps(dl, { mergeOutcome: { kind: "merge_conflict", detail: "CONFLICT" } }),
+        resolvePush: () => false
+      });
+      // The refusal was still reported; the missing optional method was tolerated.
+      expect(sent.some((t) => t.includes("conflict"))).toBe(true);
     } finally {
       store.close();
     }

@@ -14,6 +14,7 @@ import type { SelfWriteActionEvent } from "../triggers/telegram-trigger-adapter.
 import type {
   TelegramAnswerCallbackQueryInput,
   TelegramEditMessageReplyMarkupInput,
+  TelegramInlineKeyboardMarkup,
   TelegramSendMessageInput,
   TelegramSendMessageResult
 } from "./telegram-client.js";
@@ -118,6 +119,12 @@ export async function handleSelfWriteAction(options: HandleSelfWriteActionOption
         const push = options.resolvePush ? options.resolvePush() : resolveSelfWritePush(process.env);
         const outcome = mergeAndReload({ branch, push, deps });
         await reportMergeOutcome(telegramClient, event.chat_id, branch, outcome);
+        // A REFUSED merge that leaves the branch in place (conflict-aborted / red-gate or
+        // dirty-tree revert) gets the SAME keyboard back so a retry stays one tap away.
+        // Success (reloaded) and gone-branch outcomes (not_found/already_merged) stay cleared.
+        if (outcome.kind === "merge_conflict" || outcome.kind === "reverted") {
+          await restoreButtons(telegramClient, event);
+        }
         return;
       }
     }
@@ -191,6 +198,40 @@ async function clearButtons(
   } catch {
     // Leaving stale buttons is recoverable (the underlying actions are idempotent).
   }
+}
+
+/**
+ * Re-attach the original three-button keyboard after a refused merge (the branch still
+ * exists and a retry is meaningful). Reconstructed from the callback event's run id —
+ * byte-identical to the keyboard the publish notification carried. Best-effort: a client
+ * without editMessageReplyMarkup (or a failed edit) just leaves the message button-less.
+ */
+async function restoreButtons(
+  client: SelfWriteActionTelegramClient,
+  event: SelfWriteActionEvent
+): Promise<void> {
+  try {
+    await client.editMessageReplyMarkup?.({
+      chat_id: event.chat_id,
+      message_id: event.message_id,
+      reply_markup: selfWriteKeyboard(event.runId)
+    });
+  } catch {
+    // Recoverable: the branch survives; Paco can still merge/discard manually.
+  }
+}
+
+/** The published-notification keyboard (must mirror runSelfWrite's notifyButtons exactly). */
+function selfWriteKeyboard(runId: string): TelegramInlineKeyboardMarkup {
+  return {
+    inline_keyboard: [
+      [
+        { text: "🔀 Merge & reload", callback_data: `selfwrite:merge:${runId}` },
+        { text: "👀 View diff", callback_data: `selfwrite:view:${runId}` },
+        { text: "🗑 Discard", callback_data: `selfwrite:discard:${runId}` }
+      ]
+    ]
+  };
 }
 
 /** Send a chat message; swallow a send failure so the handler can never throw. */

@@ -295,7 +295,7 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
         FOLLOW-UPS parked: 10-min turn time_minutes is tight for self-write turns (2/3 runs halted
         "timeout" after the pipeline finished — cosmetic, final composed as best-effort); echo-defense
         depth beyond prior digest; classifier hint noise (feedback/clarify on identical msgs).
-- **⓪·2b — LOOP HARDENING (next /goal candidate; scoped from the 2026-07-03 live interactions)**
+- **⓪·2b — LOOP HARDENING** ⏳ **/goal IN PROGRESS 2026-07-03**
   Every item below bit us live this week. One small /goal, then Houge self-writes the clock fix.
   - [ ] H1 **Reviewer fallback chain**: reviewer *unavailable/timeout* (NOT reject — reject stays
         terminal) falls down kimi → claude → codex before failing the attempt. Evidence: run at

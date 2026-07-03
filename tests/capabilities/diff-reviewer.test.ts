@@ -418,3 +418,117 @@ describe("reviewDiff", () => {
     if (!result.ok) expect(result.error).toMatch(/not found/);
   });
 });
+
+describe("reviewDiff — H1 fallback chain (unavailable → next backend; a delivered verdict is terminal)", () => {
+  it("records the winning backend on a primary success (attribution)", () => {
+    const bin = fakeBin("kimi-cli", kimiOutput('{"verdict":"pass","fixes_task":true}'));
+    const result = reviewDiff({ task: "t", diff: "d", env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin } });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.reviewer).toBe("kimi");
+  });
+
+  it("configured kimi unavailable → falls to claude, whose PASS verdict wins with attribution", () => {
+    const claude = fakeBin("claude", claudeEnvelope('{"verdict":"pass","fixes_task":true}'));
+    const result = reviewDiff({
+      task: "fix it",
+      diff: "the diff",
+      env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: "/nonexistent/kimi-cli-xyz", HOUGE_CLAUDE_BIN: claude }
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.verdict.verdict).toBe("pass");
+      expect(result.reviewer).toBe("claude");
+    }
+  });
+
+  it("a fallback REJECT is a delivered verdict: terminal for the chain, codex never probed", () => {
+    const claude = fakeBin("claude", claudeEnvelope('{"verdict":"reject","reasons":["scope creep"]}'));
+    const codexArgv = join(mkdtempSync(join(tmpdir(), "houge-rev-cap-")), "argv");
+    temps.push(codexArgv);
+    const codex = capturingBin("codex", codexJsonl('{"verdict":"pass"}'), { argvFile: codexArgv });
+    const result = reviewDiff({
+      task: "fix it",
+      diff: "the diff",
+      env: {
+        HOUGE_SELFWRITE_REVIEWER: "kimi",
+        HOUGE_KIMI_CLI_BIN: "/nonexistent/kimi-cli-xyz",
+        HOUGE_CLAUDE_BIN: claude,
+        HOUGE_CODEX_ENABLED: "1",
+        HOUGE_CODEX_BIN: codex
+      }
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.verdict.verdict).toBe("reject"); // never fallen past to codex's pass
+      expect(result.reviewer).toBe("claude");
+    }
+    expect(existsSync(codexArgv)).toBe(false); // codex never spawned
+  });
+
+  it("skips a DISABLED codex fallback (HOUGE_CODEX_ENABLED off) instead of spawning it", () => {
+    const codexArgv = join(mkdtempSync(join(tmpdir(), "houge-rev-cap-")), "argv");
+    temps.push(codexArgv);
+    const codex = capturingBin("codex", codexJsonl('{"verdict":"pass"}'), { argvFile: codexArgv });
+    const result = reviewDiff({
+      task: "t",
+      diff: "d",
+      env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: "/nonexistent/kimi-cli-xyz", HOUGE_CODEX_BIN: codex }
+    });
+    expect(result.ok).toBe(false); // kimi ENOENT, claude unset, codex disabled → chain exhausted
+    if (!result.ok) {
+      expect(result.error).toMatch(/kimi reviewer binary not found/);
+      expect(result.error).toMatch(/claude reviewer skipped \(not configured\)/);
+      expect(result.error).toMatch(/codex reviewer skipped \(not configured\)/);
+    }
+    expect(existsSync(codexArgv)).toBe(false); // disabled → never spawned
+  });
+
+  it("falls through to an ENABLED codex when kimi and claude are both unavailable", () => {
+    const codex = fakeBin("codex", codexJsonl('{"verdict":"pass","fixes_task":true}'));
+    const result = reviewDiff({
+      task: "fix it",
+      diff: "the diff",
+      env: {
+        HOUGE_SELFWRITE_REVIEWER: "kimi",
+        HOUGE_KIMI_CLI_BIN: "/nonexistent/kimi-cli-xyz",
+        HOUGE_CODEX_ENABLED: "1",
+        HOUGE_CODEX_BIN: codex
+      }
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.reviewer).toBe("codex");
+  });
+
+  it("whole chain unavailable → the attempt fails exactly as before, with every backend's detail", () => {
+    const result = reviewDiff({
+      task: "t",
+      diff: "d",
+      env: {
+        HOUGE_SELFWRITE_REVIEWER: "claude",
+        HOUGE_CLAUDE_BIN: "/nonexistent/claude-xyz",
+        HOUGE_KIMI_CLI_BIN: "/nonexistent/kimi-cli-xyz"
+      }
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatch(/Claude reviewer binary not found/);
+      expect(result.error).toMatch(/kimi reviewer binary not found/);
+      expect(result.error).toMatch(/codex reviewer skipped/);
+    }
+  });
+
+  it("the chain honors the configured reviewer FIRST (claude configured → kimi is the fallback)", () => {
+    const claude = fakeBin("claude", claudeEnvelope('{"verdict":"pass"}'));
+    const kimi = fakeBin("kimi-cli", kimiOutput('{"verdict":"reject","reasons":["should not be reached"]}'));
+    const result = reviewDiff({
+      task: "t",
+      diff: "d",
+      env: { HOUGE_SELFWRITE_REVIEWER: "claude", HOUGE_CLAUDE_BIN: claude, HOUGE_KIMI_CLI_BIN: kimi }
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.reviewer).toBe("claude");
+      expect(result.verdict.verdict).toBe("pass");
+    }
+  });
+});

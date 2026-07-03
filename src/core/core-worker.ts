@@ -47,7 +47,7 @@ import {
 import type { IntentClassification, Intent } from "../capabilities/intent.js";
 import { buildDistillQuestion, DISTILL_DISCIPLINE, looksLikeSkillProcedure, parseDistillResult, shouldRejectLesson } from "../capabilities/distill.js";
 import { createLessonWriteAdapter } from "../capabilities/lesson-write.js";
-import { runInnerLoop } from "./inner-loop.js";
+import { buildFallbackRestateQuestion, runInnerLoop } from "./inner-loop.js";
 import type { LoopStepRecord } from "./inner-loop.js";
 import { manifestFor } from "./tool-manifest.js";
 import { composeSystemPrompt, intentToScope, memoryRootFor, SKILL_AUTHOR_DISCIPLINE } from "../prompt/composer.js";
@@ -944,14 +944,17 @@ export class CoreWorker {
         const reviewerStart = Date.now();
         const review = await deps.reviewDiff({ task: claim.contract.objective, diff });
         const reviewerLatencyMs = Date.now() - reviewerStart;
+        // H1 attribution: the backend that actually verdicted (the fallback chain may have moved
+        // past the configured reviewer). Absent on injected test deps → the configured reviewer.
+        const reviewerBackend = review.ok ? (review.reviewer ?? reviewerProvider) : reviewerProvider;
         // Phase 3.1 (W3) REVIEWER telemetry: the reviewer captured usage on the same call. Emit one
         // `llm_call` when present (best-effort; absence never fails the write). Provider/model derive
         // from the reviewer resolvers (claude → resolveClaudeModel, codex → resolveCodexModel).
         if (review.ok && review.usage) {
-          const reviewerModel = reviewerProvider === "codex" ? (resolveCodexModel(process.env) ?? "default") : resolveClaudeModel(process.env);
-          this.recordLlmCallSafe(claim.run_id, { provider: reviewerProvider, model: reviewerModel, role: "reviewer", usage: review.usage, latency_ms: reviewerLatencyMs });
+          const reviewerModel = reviewerBackend === "codex" ? (resolveCodexModel(process.env) ?? "default") : resolveClaudeModel(process.env);
+          this.recordLlmCallSafe(claim.run_id, { provider: reviewerBackend, model: reviewerModel, role: "reviewer", usage: review.usage, latency_ms: reviewerLatencyMs });
           lastReviewerUsage = review.usage;
-          lastReviewerMeta = { provider: reviewerProvider, model: reviewerModel };
+          lastReviewerMeta = { provider: reviewerBackend, model: reviewerModel };
         }
         if (!review.ok) {
           lastFailure = `reviewer unavailable: ${review.error}`;
@@ -960,7 +963,7 @@ export class CoreWorker {
         }
         if (review.verdict.verdict === "reject") {
           const reasons = (review.verdict.reasons ?? []).join("; ") || "no specific reason given";
-          lastFailure = `reviewer rejected: ${reasons}`;
+          lastFailure = `reviewer rejected (${reviewerBackend}): ${reasons}`;
           if (attempt < maxAttempts) {
             task = buildSelfWriteRefineTask(baseTask, `The independent reviewer REJECTED the diff: ${reasons}`);
             continue;
@@ -983,7 +986,7 @@ export class CoreWorker {
           branch: published,
           summary: focus,
           verdict: { ...review.verdict },
-          gate_results: { protected: "pass", tests: "pass", reviewer: review.verdict.verdict },
+          gate_results: { protected: "pass", tests: "pass", reviewer: review.verdict.verdict, reviewer_backend: reviewerBackend },
           // Phase 3.1 (W3): compact per-role usage stamp (counts/metadata ONLY — no bodies).
           usage_summary: buildUsageSummary(lastWriterMeta, lastWriterUsage, lastReviewerMeta, lastReviewerUsage)
         });
@@ -1768,6 +1771,13 @@ export class CoreWorker {
         clarifyAllowed: recentClarifyCount < resolveMaxConsecutiveClarify(process.env),
         // Wall-clock halt (⓪·1 deferred): the contract's time budget bounds the loop.
         deadlineMs: Date.now() + claim.contract.budget.time_minutes * 60_000,
+        // H2: a registered evolution tool the model deliberately starts extends the turn's
+        // deadline by that tool's own sub-contract time budget — once per turn (ranOnce is
+        // set by the adapter AFTER this fires, so only the first invocation is granted).
+        extendDeadlineFor: (action) =>
+          EVOLUTION_TOOLS.has(action) && manifestNames.has(action) && !turnCtx.ranOnce.has(action)
+            ? evolutionDeadlineExtensionMs(action)
+            : 0,
         onStep: (step) =>
           this.runStore.recordLoopStep(claim.run_id, {
             step: step.index,
@@ -1782,6 +1792,15 @@ export class CoreWorker {
           const r = await composeAdapter(input);
           if (!r.ok) return { ok: false, error: r.error };
           return { ok: true, text: typeof r.output.answer === "string" ? r.output.answer : "" };
+        },
+        // H3: one UNRESERVED compose attempt (mirrors lesson_write's internal distill —
+        // never charged to the turn ledger, which is typically drained at exactly this
+        // point) to restate a code-assembled fallback digest in the user's language.
+        restateFallback: async (digest) => {
+          const r = await composeAdapter({ question: buildFallbackRestateQuestion(message, digest), system: askSystem });
+          if (!r.ok) return undefined;
+          const text = typeof r.output.answer === "string" ? r.output.answer.trim() : "";
+          return text.length > 0 ? text : undefined;
         },
         executeAction: async (capability, input) => {
           const result = await runner.execute({ contract: claim.contract, capability, input, budget });
@@ -2376,6 +2395,24 @@ function loopToolTimeoutMs(name: string, llmTimeoutMs: number): number {
       return compileSkillAuthorContract("").budget.time_minutes * 60_000;
     default:
       return llmTimeoutMs;
+  }
+}
+
+/**
+ * H2: the wall-clock extension an evolution tool grants the turn when it starts — the
+ * tool's own compiled sub-contract time budget (self-diagnose 30 min · code-self-write
+ * 60 min · skill-author 10 min). Non-evolution actions grant nothing.
+ */
+function evolutionDeadlineExtensionMs(name: string): number {
+  switch (name) {
+    case "self_diagnose":
+      return compileSelfDiagnoseContract("").budget.time_minutes * 60_000;
+    case "self_write_propose":
+      return compileCodeSelfWriteContract("").budget.time_minutes * 60_000;
+    case "skill_author":
+      return compileSkillAuthorContract("").budget.time_minutes * 60_000;
+    default:
+      return 0;
   }
 }
 

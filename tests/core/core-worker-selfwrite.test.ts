@@ -32,7 +32,8 @@ const PINNED_ENV = [
   "HOUGE_SELFWRITE_ENABLED",
   "HOUGE_CODEX_ENABLED",
   "HOUGE_MAX_CONSECUTIVE_CLARIFY",
-  "HOUGE_ASK_SYSTEM_PROMPT"
+  "HOUGE_ASK_SYSTEM_PROMPT",
+  "HOUGE_SELFWRITE_REVIEWER"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
@@ -302,6 +303,62 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
       expect(String(failed[0]!.payload.reason)).toContain("reviewer rejected");
       const steps = stepDigests(store, run_id);
       expect(steps[0]!.digest).toContain("does not actually fix it");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("H1 attribution: gate_results carries the backend that actually verdicted (fallback chain)", async () => {
+    process.env.HOUGE_SELFWRITE_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
+    try {
+      const run_id = turnRun(store, "fix the router");
+      // The (kimi-configured) reviewer timed out and the chain fell to claude — the result says so.
+      const d = deps({
+        reviewDiff: (): ReviewResult => ({ ok: true, verdict: { verdict: "pass", fixes_task: true }, reviewer: "claude" })
+      }, log);
+      const result = await makeWorker(store, d).executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      const pub = store.getLedgerEvents(run_id).filter((e) => e.event_type === "self_write_published");
+      expect(pub.length).toBe(1);
+      const gates = pub[0]!.payload.gate_results as Record<string, unknown>;
+      expect(gates.reviewer).toBe("pass");
+      expect(gates.reviewer_backend).toBe("claude");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("H1 attribution: no backend on the result → the configured reviewer is stamped (default kimi)", async () => {
+    process.env.HOUGE_SELFWRITE_ENABLED = "1"; // HOUGE_SELFWRITE_REVIEWER pinned-deleted → default kimi
+    const store = RunStore.openInMemory();
+    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
+    try {
+      const run_id = turnRun(store, "fix the router");
+      const result = await makeWorker(store, deps({}, log)).executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      const pub = store.getLedgerEvents(run_id).filter((e) => e.event_type === "self_write_published");
+      expect((pub[0]!.payload.gate_results as Record<string, unknown>).reviewer_backend).toBe("kimi");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("H1 attribution: a terminal reviewer REJECT names the verdicting backend in self_write_failed", async () => {
+    process.env.HOUGE_SELFWRITE_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
+    try {
+      const run_id = turnRun(store, "fix the router");
+      const d = deps({
+        reviewDiff: (): ReviewResult => ({ ok: true, verdict: { verdict: "reject", reasons: ["no-op"] }, reviewer: "codex" })
+      }, log);
+      const result = await makeWorker(store, d).executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      expect(log.published).toEqual([]); // reject stays terminal — fallback never applies to a delivered verdict
+      const failed = store.getLedgerEvents(run_id).filter((e) => e.event_type === "self_write_failed");
+      expect(String(failed[0]!.payload.reason)).toContain("reviewer rejected (codex)");
     } finally {
       store.close();
     }

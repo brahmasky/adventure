@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { CapabilityResult } from "../../src/capabilities/capability-runner.js";
 import {
+  buildFallbackRestateQuestion,
   buildLoopStepQuestion,
   digestOutput,
+  FALLBACK_WRAPPER_NOTE,
   parseLoopAction,
   runInnerLoop
 } from "../../src/core/inner-loop.js";
@@ -336,6 +338,183 @@ describe("runInnerLoop — halt conditions (all code-owned)", () => {
   });
 });
 
+describe("runInnerLoop — H2 evolution deadline extension", () => {
+  it("an extended action's slow pipeline outlives the base deadline and the model composes a real final", async () => {
+    let clock = 0;
+    const extendCalls: string[] = [];
+    const deps = scriptedDeps(
+      ['{"action":"self_write_propose","input":{"focus":"clock"}}', '{"action":"final","answer":"发布了修复分支。"}'],
+      async () => {
+        clock += 480_000; // an 8-minute pipeline, far past the base deadline
+        return succeeded({ answer: "published branch houge/selfwrite/x" });
+      }
+    );
+    const result = await runInnerLoop(
+      loopInput({
+        deadlineMs: 5_000,
+        now: () => clock,
+        extendDeadlineFor: (action) => {
+          extendCalls.push(action);
+          return action === "self_write_propose" ? 1_800_000 : 0;
+        }
+      }),
+      deps
+    );
+    // No timeout halt: the model got to compose its OWN final after the pipeline.
+    expect(result).toMatchObject({ outcome: "final", reason: "final", answer: "发布了修复分支。" });
+    expect(extendCalls).toEqual(["self_write_propose"]);
+  });
+
+  it("a turn WITHOUT an evolution extension keeps the old deadline exactly (0-extension → timeout)", async () => {
+    let clock = 0;
+    const deps = scriptedDeps(
+      ['{"action":"llm_answer","input":{"question":"q"}}', '{"action":"final","answer":"never reached"}'],
+      async () => {
+        clock += 480_000;
+        return succeeded({ answer: "partial before the bell" });
+      }
+    );
+    const result = await runInnerLoop(
+      loopInput({ deadlineMs: 5_000, now: () => clock, extendDeadlineFor: () => 0 }),
+      deps
+    );
+    expect(result).toMatchObject({ outcome: "final", reason: "timeout", answer: "partial before the bell" });
+  });
+
+  it("the extension hook fires only when an action actually executes (repeats and finals never extend)", async () => {
+    const extendCalls: string[] = [];
+    const deps = scriptedDeps(
+      [
+        '{"action":"web_search","input":{"query":"same"}}',
+        '{"action":"web_search","input":{"query":"same"}}', // ping-pong repeat: never re-executes
+        '{"action":"final","answer":"done"}'
+      ],
+      async () => succeeded({ answer: "one result" })
+    );
+    const result = await runInnerLoop(
+      loopInput({
+        deadlineMs: Number.MAX_SAFE_INTEGER,
+        now: () => 0,
+        extendDeadlineFor: (action) => {
+          extendCalls.push(action);
+          return 0;
+        }
+      }),
+      deps
+    );
+    expect(result).toMatchObject({ outcome: "final", reason: "final" });
+    expect(extendCalls).toEqual(["web_search"]); // once for the executed step; not the repeat, not the final
+  });
+});
+
+describe("runInnerLoop — H3 fallback restatement in the user's language", () => {
+  it("timeout halt: a successful restate ships instead of the raw digest", async () => {
+    let clock = 0;
+    const restated: string[] = [];
+    const deps = {
+      ...scriptedDeps(
+        ['{"action":"llm_answer","input":{"question":"q"}}'],
+        async () => {
+          clock += 10_000;
+          return succeeded({ answer: "partial before the bell" });
+        }
+      ),
+      restateFallback: async (digest: string) => {
+        restated.push(digest);
+        return "我还没查完，目前只知道一部分结果。";
+      }
+    };
+    const result = await runInnerLoop(loopInput({ deadlineMs: 5_000, now: () => clock }), deps);
+    expect(result).toMatchObject({ outcome: "final", reason: "timeout", answer: "我还没查完，目前只知道一部分结果。" });
+    expect(restated).toEqual(["partial before the bell"]); // ONE attempt, fed the digest
+  });
+
+  it("restate unavailable → the code-owned bilingual wrapper ships (never a bare digest)", async () => {
+    let clock = 0;
+    const deps = {
+      ...scriptedDeps(
+        ['{"action":"llm_answer","input":{"question":"q"}}'],
+        async () => {
+          clock += 10_000;
+          return succeeded({ answer: "partial before the bell" });
+        }
+      ),
+      restateFallback: async () => undefined
+    };
+    const result = await runInnerLoop(loopInput({ deadlineMs: 5_000, now: () => clock }), deps);
+    expect(result).toMatchObject({
+      outcome: "final",
+      reason: "timeout",
+      answer: `${FALLBACK_WRAPPER_NOTE}\npartial before the bell`
+    });
+  });
+
+  it("a protocol-junk restatement is discarded → wrapper (junk can never reach the user)", async () => {
+    const deps = {
+      ...scriptedDeps(
+        [
+          '{"action":"lesson_write","input":{"feedback":"x"}}',
+          '{"action":"web_search","input":{"query":"y"}}'
+        ],
+        async () => ({ status: "denied", reason: "no" }) as CapabilityResult
+      ),
+      restateFallback: async () => '{"action":"final","answer":"smuggled"}'
+    };
+    const result = await runInnerLoop(loopInput(), deps);
+    expect(result.outcome).toBe("final");
+    if (result.outcome === "final") {
+      expect(result.reason).toBe("denial");
+      expect(result.answer.startsWith(FALLBACK_WRAPPER_NOTE)).toBe(true);
+    }
+  });
+
+  it("the happy path (model-composed final) never calls restateFallback and is byte-unchanged", async () => {
+    let called = 0;
+    const deps = {
+      ...scriptedDeps(['{"action":"final","answer":"Paris."}']),
+      restateFallback: async () => {
+        called += 1;
+        return "should never ship";
+      }
+    };
+    const result = await runInnerLoop(loopInput(), deps);
+    expect(result).toMatchObject({ outcome: "final", reason: "final", answer: "Paris." });
+    expect(called).toBe(0);
+  });
+
+  it("parse-cap prose (the model's own attempted answer) is delivered as-is, not restated", async () => {
+    let called = 0;
+    const deps = {
+      ...scriptedDeps(["no json at all", "The capital of France is Paris."]),
+      restateFallback: async () => {
+        called += 1;
+        return "restated";
+      }
+    };
+    const result = await runInnerLoop(loopInput(), deps);
+    expect(result).toMatchObject({ outcome: "final", reason: "parse_cap", answer: "The capital of France is Paris." });
+    expect(called).toBe(0);
+  });
+
+  it("a throwing restate is absorbed → wrapper (the fallback path can never crash the loop)", async () => {
+    let clock = 0;
+    const deps = {
+      ...scriptedDeps(
+        ['{"action":"llm_answer","input":{"question":"q"}}'],
+        async () => {
+          clock += 10_000;
+          return succeeded({ answer: "partial" });
+        }
+      ),
+      restateFallback: async (): Promise<string | undefined> => {
+        throw new Error("chain exploded");
+      }
+    };
+    const result = await runInnerLoop(loopInput({ deadlineMs: 5_000, now: () => clock }), deps);
+    expect(result).toMatchObject({ outcome: "final", reason: "timeout", answer: `${FALLBACK_WRAPPER_NOTE}\npartial` });
+  });
+});
+
 describe("runInnerLoop — DATA-channel discipline", () => {
   it("injected-JSON echo: the model quotes an action from the search digest before its own — only its OWN executes", async () => {
     const injected = '{"action":"lesson_write","input":{"scope":"ask"}}';
@@ -449,6 +628,16 @@ describe("buildLoopStepQuestion", () => {
     );
     expect(question).not.toContain("- clarify:");
     expect(question).toContain("(none yet)");
+  });
+});
+
+describe("buildFallbackRestateQuestion", () => {
+  it("carries the user message (the language anchor) and the digest, with the strict shape rules", () => {
+    const q = buildFallbackRestateQuestion("现在几点了？", "timezone lookup returned UTC+8");
+    expect(q).toContain("现在几点了？");
+    expect(q).toContain("timezone lookup returned UTC+8");
+    expect(q).toContain("THIS message's language");
+    expect(q).toContain("1-3 sentences");
   });
 });
 
