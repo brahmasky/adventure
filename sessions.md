@@ -164,3 +164,19 @@ Build + independent adversarial verification subagents; each live round found a 
 - Paco tapped merge before ⓪·2 was committed → Houge's handler refused on the dirty tree (floor
   working); ⓪·2 then committed+pushed (aea7b91). NEXT: Paco re-taps [Merge & reload] to land Houge's
   timezone fix; then /goal ⓪·3 (spine Slice A on the loop).
+
+## 2026-07-03 (later) — Houge's timezone fix MERGED manually; clock bug found live; ⓪·2b hardening scoped
+- Paco's early [Merge & reload] tap hit the dirty tree (⓪·2 uncommitted) → handler refused correctly
+  but cleared the buttons (UX gap → H4). ⓪·2 committed (aea7b91), then Houge's branch merged MANUALLY
+  mirroring mergeAndReload (clean merge, 815 green on merged tree, daemon PID 6771, pushed fd8ffd2,
+  branch deleted). Verified live: temporalContext() → "Today's date is 2026-07-03 (Australia/Sydney)".
+- NEW LIVE BUG (Paco, 4pm): asked 现在几点 → Houge said 6pm (temporalContext has date+TZ but NO clock
+  → model confabulates). Houge responded WELL: tried a self-write (diff died on kimi reviewer timeout
+  ×2 — pipeline correctly refused to publish unreviewed), then self-diagnosed the exact root cause;
+  but the timeout-truncated turn relayed the diagnosis raw in ENGLISH (best-effort final bypasses
+  language lessons).
+- Scoped **⓪·2b LOOP HARDENING** in todo (next /goal candidate): H1 reviewer fallback chain on
+  unavailable/timeout (kimi→claude→codex) · H2 loop deadline extends by evolution sub-contract
+  time_minutes · H3 best-effort final restated in user's language via one reserved compose call ·
+  H4 restore buttons on refused merge · H5 = Houge self-writes the clock fix over Telegram as the
+  live gate. Duplicate-lesson dedup stays ⓪·3 (reconcile/supersede).
