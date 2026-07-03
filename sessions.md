@@ -180,3 +180,18 @@ Build + independent adversarial verification subagents; each live round found a 
   time_minutes · H3 best-effort final restated in user's language via one reserved compose call ·
   H4 restore buttons on refused merge · H5 = Houge self-writes the clock fix over Telegram as the
   live gate. Duplicate-lesson dedup stays ⓪·3 (reconcile/supersede).
+
+## 2026-07-03 (evening) — /goal ⓪·2b LOOP HARDENING DONE + H5 live gate: Houge closed his own clock bug
+- Built H1–H4 (2a64dfb): reviewer fallback chain on unavailable-only (reject terminal — argv-trap
+  proven; reviewer_backend attributed in ledger) · evolution deadline extension (per sub-contract:
+  30/60/10 min) · fallback finals restated in user's language via unreserved compose (bilingual
+  wrapper as last resort; all six halt sites covered) · buttons restored on refused merge
+  (merge_conflict/reverted only). 843 tests (+32); verifier GO (4 MINORs parked in todo).
+- Paco caught the dirty tree BEFORE the live gate this time → committed pre-tap (lesson sticking).
+- H5 LIVE GATE (run_e0b1b673): "把当前时间也加进temporal context" → straight to self_write_propose →
+  ONE writer pass (77s) → guard✓ tests✓ reviewer kimi PASS → published in 2m19s → loop halted
+  "final" (H2 working — no timeout truncation) → Paco tapped [Merge & reload] → handler merged
+  5ae8d5e, gates green, daemon self-restarted PID 35919 → live: "Today's date and time is
+  2026-07-03 17:30 (Australia/Sydney)". June-27 date/TZ bug CLOSED end-to-end by Houge himself.
+- Pushed main (5ae8d5e), merged branch deleted. NEXT: /goal ⓪·3 — spine Slice A on the loop
+  (rating, reconcile/supersede — the duplicate timezone lessons in the ask block are the test case).

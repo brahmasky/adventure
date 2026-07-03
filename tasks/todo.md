@@ -295,26 +295,32 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
         FOLLOW-UPS parked: 10-min turn time_minutes is tight for self-write turns (2/3 runs halted
         "timeout" after the pipeline finished — cosmetic, final composed as best-effort); echo-defense
         depth beyond prior digest; classifier hint noise (feedback/clarify on identical msgs).
-- **⓪·2b — LOOP HARDENING** ⏳ **/goal IN PROGRESS 2026-07-03**
-  Every item below bit us live this week. One small /goal, then Houge self-writes the clock fix.
-  - [ ] H1 **Reviewer fallback chain**: reviewer *unavailable/timeout* (NOT reject — reject stays
+- **⓪·2b — LOOP HARDENING** ✅ **DONE + LIVE 2026-07-03** (build 2a64dfb; H5 live gate = Houge's
+  clock fix 5ae8d5e, self-written + kimi-reviewed + button-merged + self-restarted in ~7 min total;
+  live output now "Today's date and time is 2026-07-03 17:30 (Australia/Sydney)" — the June-27
+  date/TZ bug is CLOSED, final fix authored by Houge). 843 tests; verifier GO. Parked MINORs:
+  extension stacking worst-case ~100-min turn blocks the synchronous daemon (freedom-over-control
+  accepted; note lease-recovery has NO production caller); silent writer≠checker diversity loss if
+  chain lands on codex (auditable via reviewer_backend); configured-codex reviewer bypasses enabled
+  check (pre-existing); worker-level extendDeadlineFor closure untested directly.
+  - [x] H1 **Reviewer fallback chain**: reviewer *unavailable/timeout* (NOT reject — reject stays
         terminal) falls down kimi → claude → codex before failing the attempt. Evidence: run at
         06:01 — a good timezone-clock diff died on "kimi reviewer timed out after 180000ms
         (after 2 attempts)". Best-model-per-capability alignment; record which reviewer verdicted.
-  - [ ] H2 **Evolution deadline extension**: the loop's wall-clock deadline extends by the invoked
+  - [x] H2 **Evolution deadline extension**: the loop's wall-clock deadline extends by the invoked
         evolution tool's sub-contract time_minutes (self-write=30) when that tool starts. Evidence:
         3 of 4 live self-write turns halted "timeout" (10-min turn budget vs 8–11-min pipeline);
         truncation also triggers H3's raw fallback.
-  - [ ] H3 **Best-effort final must respect language/persona**: on timeout/parse-cap halts the
+  - [x] H3 **Best-effort final must respect language/persona**: on timeout/parse-cap halts the
         code-assembled fallback ships raw English digests to a Chinese chat (06:12 live reply =
         Houge's diagnosis relayed verbatim in English — exactly what lesson 3516dee prevents).
         Fix: one RESERVED compose call to restate the digest in the user's language (fall back to
         a code-owned bilingual wrapper if even that call is unavailable).
-  - [ ] H4 **Restore buttons on refused merge**: merge clears the keyboard first (correct anti-
+  - [x] H4 **Restore buttons on refused merge**: merge clears the keyboard first (correct anti-
         double-tap) but a REFUSED merge (dirty tree / conflict) never restores it — Paco's early
         tap consumed the buttons and the branch became untappable (2026-07-03; manual merge needed).
         Re-attach the same keyboard on refusal outcomes; keep cleared on success/discard.
-  - [ ] H5 AFTER H1 lands — **Houge self-writes the clock fix over Telegram** ("把当前时间也加进
+  - [x] H5 DONE 2026-07-03 (run_e0b1b673 → 5ae8d5e): AFTER H1 landed — **Houge self-writes the clock fix over Telegram** ("把当前时间也加进
         temporal context"): temporalContext (merged run_6e322401) has date+TZ but NO clock time →
         asked 现在几点 at 4pm he confabulated 6pm. His own diagnosis (06:12) nailed it; his own
         byte-stable-injected-now trick means the live branch can change without touching tests.
