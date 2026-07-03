@@ -2504,7 +2504,7 @@ function evolutionDeadlineExtensionMs(name: string): number {
  * constant, not the literal — the wording stays self-write-evolvable (existing tests
  * are immutable to self-writes, so a pinned literal would lock the string forever).
  */
-export const EVOLUTION_NOTICE_HEADER = "🐒 自我修改进展";
+export const EVOLUTION_NOTICE_HEADER = "✨ 又偷学了新本事";
 
 /**
  * Append the code-owned evolution-step notices to the loop's outgoing reply (⓪·2).
