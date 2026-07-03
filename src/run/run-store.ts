@@ -548,9 +548,10 @@ export class RunStore {
 
   /**
    * The scope's lessons COMPOSED at read time (⓪·3 S1): active rows only, most valuable
-   * first (reuse_value desc, then recency), row-capped per scope and char-capped like the
-   * old block, each rendered `- <text>` with an `AVOID: …` suffix line when set. Returns
-   * undefined when the scope has no active lessons (the composer omits the section).
+   * first (reuse_value desc; ties in reading order — oldest first, matching the legacy
+   * block), row-capped per scope and char-capped like the old block, each rendered
+   * `- <text>` with an `AVOID: …` suffix line when set. Returns undefined when the
+   * scope has no active lessons (the composer omits the section).
    */
   readLessonBlock(scope: string): string | undefined {
     const rows = this.getActiveLessons(scope, resolveLessonCapPerScope(process.env));
@@ -566,13 +567,17 @@ export class RunStore {
     return bullets.join("\n");
   }
 
-  /** The scope's ACTIVE lessons, most valuable first (reuse_value desc, then recency). */
+  /**
+   * The scope's ACTIVE lessons, most valuable first (reuse_value desc). Equal values
+   * tie in READING order (created asc, id asc, ⓪·3f P3) — migrated equal-value lessons
+   * render in the same order the legacy block listed them, not reversed.
+   */
   getActiveLessons(scope: string, cap?: number): LessonRow[] {
     const limit = cap ?? -1; // SQLite: LIMIT -1 = unbounded
     return this.db.prepare(`
       SELECT ${LESSON_COLUMNS} FROM lessons
       WHERE scope = ? AND status = 'active'
-      ORDER BY reuse_value DESC, created_at DESC, id DESC
+      ORDER BY reuse_value DESC, created_at ASC, id ASC
       LIMIT ?
     `).all<LessonRow>(scope, limit);
   }
@@ -584,7 +589,7 @@ export class RunStore {
       : this.db.prepare(`
           SELECT ${LESSON_COLUMNS} FROM lessons
           WHERE status = 'active'
-          ORDER BY scope ASC, reuse_value DESC, created_at DESC, id DESC
+          ORDER BY scope ASC, reuse_value DESC, created_at ASC, id ASC
         `).all<LessonRow>();
   }
 
@@ -684,8 +689,10 @@ export class RunStore {
    * Apply a reconcile verdict (⓪·3 S1b, ADR 0012 §2): ADD inserts; SUPERSEDE/UPDATE
    * insert a NEW row linked to the prior via bidirectional pointers (auditable — never
    * an in-place rewrite, never a delete); DROP writes nothing. A SUPERSEDE/UPDATE whose
-   * target is missing or no longer active degrades to ADD. Overflow beyond the per-scope
-   * cap prunes the lowest reuse_value rows (never the row just written).
+   * target is missing, no longer active, or in a DIFFERENT scope (⓪·3f P1 defense-in-
+   * depth — reconcile only ever compares within one scope, but a verdict must never
+   * retire another scope's lesson) degrades to ADD. Overflow beyond the per-scope cap
+   * prunes the lowest reuse_value rows (never the row just written).
    */
   saveReconciledLesson(
     candidate: { scope: string; text: string; avoid?: string },
@@ -701,7 +708,7 @@ export class RunStore {
     }
 
     const prior = verdict.verdict === "ADD" ? undefined : this.getLesson(verdict.id);
-    const target = prior?.status === "active" ? prior : undefined;
+    const target = prior?.status === "active" && prior.scope === candidate.scope ? prior : undefined;
     const merged =
       verdict.verdict === "UPDATE" && target && verdict.text?.trim() ? verdict.text.trim() : text;
     // UPDATE supplements: the revised row inherits the prior AVOID unless the candidate brings one.

@@ -51,6 +51,16 @@ export interface LessonWriteAdapterConfig {
    * binds {@link createSrcPhraseChecker}.
    */
   srcContains?: (phrase: string) => boolean;
+  /**
+   * Thread-scoped code-owned check (⓪·3f F1): the recent USER turn texts, most recent
+   * first — a code-owned phrase quoted a couple of turns back ("把「…」换一下" → "换掉它")
+   * must still trip the refusal. Assistant turns are EXCLUDED by the caller on purpose:
+   * a prior Houge reply legitimately contains code-owned strings (the evolution-notice
+   * header rides replies; option lists quote candidate titles), and including them would
+   * poison every subsequent lesson_write with false refusals. The adapter bounds the
+   * scan (last {@link THREAD_USER_TURN_CAP} texts, ≤{@link THREAD_TEXT_CHAR_CAP} chars).
+   */
+  threadUserTexts?: readonly string[];
   /** Injectable clock for deterministic tests. */
   now?: () => Date;
 }
@@ -75,11 +85,14 @@ export function createLessonWriteAdapter(
     // LAYER ROUTING (⓪·3 S1c): a quoted/verbatim phrase from the feedback that exists in
     // src/ means the target text is code-owned — refuse (a digest, not an error) so the
     // model pivots to self_write_propose in the same turn. Checked BEFORE distilling.
+    // ⓪·3f F1: the current message PLUS the recent user turns are scanned (the phrase is
+    // often quoted a turn or two back — "换掉它" alone carries nothing); current-message
+    // phrases keep precedence so single-turn behavior is unchanged.
     // Phrases echoing Houge's CONVERSATIONAL strings are skipped first (S2 fix): a user
     // naturally repeats what Houge just said ("这个问题反复出现…"), and that echo is
     // feedback about behavior, not about a rendered code-owned surface.
     if (config.srcContains) {
-      const codeOwned = extractLiteralPhrases(feedback)
+      const codeOwned = extractThreadPhrases(feedback, config.threadUserTexts ?? [])
         .filter((p) => !CONVERSATIONAL_SRC_STRINGS.some((s) => s.includes(p)))
         .find((p) => config.srcContains!(p));
       if (codeOwned) {
@@ -191,6 +204,12 @@ const QUOTED_RES = [
 const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
 const CJK_RUN_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]{6,}/g;
 
+/** The phrase cap — shared by the single-message extractor and the F1 thread union. */
+const PHRASE_CAP = 8;
+/** F1 bounds: how many recent user-turn texts and how many total chars are scanned. */
+export const THREAD_USER_TURN_CAP = 6;
+export const THREAD_TEXT_CHAR_CAP = 1500;
+
 export function extractLiteralPhrases(feedback: string): string[] {
   const phrases = new Set<string>();
   for (const re of QUOTED_RES) {
@@ -203,7 +222,29 @@ export function extractLiteralPhrases(feedback: string): string[] {
   for (const match of feedback.matchAll(CJK_RUN_RE)) {
     phrases.add(match[0]!);
   }
-  return [...phrases].filter((p) => p.length <= 80).slice(0, 8);
+  return [...phrases].filter((p) => p.length <= 80).slice(0, PHRASE_CAP);
+}
+
+/**
+ * ⓪·3f F1 — the thread-scoped phrase union: the current message's phrases FIRST (so
+ * single-turn behavior — including which phrase lands in the refusal digest — is
+ * unchanged), then phrases from the recent user turns (most recent first), bounded to
+ * {@link THREAD_USER_TURN_CAP} texts / {@link THREAD_TEXT_CHAR_CAP} total chars, the
+ * whole union still capped at {@link PHRASE_CAP} phrases.
+ */
+export function extractThreadPhrases(feedback: string, threadUserTexts: readonly string[]): string[] {
+  const phrases = extractLiteralPhrases(feedback);
+  let charBudget = THREAD_TEXT_CHAR_CAP;
+  for (const text of threadUserTexts.slice(0, THREAD_USER_TURN_CAP)) {
+    if (phrases.length >= PHRASE_CAP || charBudget <= 0) break;
+    const slice = text.slice(0, charBudget);
+    charBudget -= slice.length;
+    for (const phrase of extractLiteralPhrases(slice)) {
+      if (phrases.length >= PHRASE_CAP) break;
+      if (!phrases.includes(phrase)) phrases.push(phrase);
+    }
+  }
+  return phrases;
 }
 
 /**

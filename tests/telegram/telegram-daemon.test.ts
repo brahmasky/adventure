@@ -442,6 +442,56 @@ describe("runTelegramDaemon — the signal path (⓪·3 S2)", () => {
     }
   });
 
+  it("a processRatingSignal THROW never crashes the poll loop (⓪·3f P2): rating already durable, ack sent, heartbeat lands", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const lesson = store.addLesson({ scope: "ask", text: "结尾加俏皮话", source: "user_feedback" });
+      seedPendingSession(store, lesson);
+      const controller = new AbortController();
+      const sent: string[] = [];
+      let calls = 0;
+      const result = await runTelegramDaemon({
+        store,
+        projectRoot: projectRoot(),
+        allowlist: ALLOWLIST,
+        stopSignal: controller.signal,
+        longPollTimeoutSeconds: 0,
+        // The attribution follow-up throws OUTRIGHT (not ok:false) — the worst case.
+        llmAdapter: async (input) => {
+          if (input.system === RATING_ATTRIBUTION_DISCIPLINE) throw new Error("attribution chain exploded");
+          return okAnswer(input);
+        },
+        telegramClient: {
+          getUpdates: async () => {
+            calls += 1;
+            if (calls === 1) return [askUpdate(80, "1")];
+            controller.abort();
+            return [];
+          },
+          sendMessage: async ({ text }) => {
+            sent.push(text);
+            return { message_id: sent.length };
+          }
+        }
+      });
+
+      // The rating was captured + acked BEFORE the follow-up threw — nothing lost.
+      expect(sent).toContain(RATING_ACK_TEXT);
+      expect(store.getLastSessionRating("222")).toMatchObject({ rating: 1, comment: null });
+      // The attribution pass never landed: no culprit flag, no correction.
+      const row = store.getLesson(lesson)!;
+      expect(row.corrected_count).toBe(0);
+      expect(parseRatingHistory(row.rating_history).some((e) => e.flag === "culprit")).toBe(false);
+      // The loop survived: the cycle finished cleanly and the OK heartbeat landed.
+      expect(result.cycles).toBeGreaterThanOrEqual(1);
+      expect(result.consecutive_failures).toBe(0);
+      expect(store.getPollHeartbeat()?.last_success_at).not.toBeNull();
+      expect(store.getPollHeartbeat()?.last_error).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
   it("digit + comment end-to-end: the comment runs as the turn (real answer, no ack) AND the culprit is flagged", async () => {
     const store = RunStore.openInMemory();
     try {

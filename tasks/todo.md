@@ -406,6 +406,22 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
   itself: an applied-but-ineffective lesson loses reuse-value on repeat correction → escalates.
   READY-MADE LIVE CASES: the duplicate timezone lessons in ask block (reconcile) + the useless
   "playful sign-offs" lesson from run_72230506 (ineffective-layer escalation).
+- **⓪·3f — F1 + POLISH** ⏳ IN PROGRESS 2026-07-04 (Paco: "F1 + small polish pls") — build DONE, LIVE gate open
+  - [x] F1 thread-scoped code-owned check: extract phrases from the current message + recent USER
+        turns (assistant turns EXCLUDED — a prior reply containing the notice header must not
+        poison every later lesson_write). Live case: 22:14 two-turn miss.
+        (`extractThreadPhrases` union: current-message phrases first, ≤6 user turns / ≤1500 chars /
+        ≤8 phrases; worker passes `threadUserTexts` filtered to role="user"; anti-poison test pins
+        the assistant-turn exclusion.)
+  - [x] P1 saveReconciledLesson scope guard (cross-scope supersede degrades to ADD)
+  - [x] P2 processRatingSignal throw-injection test (daemon survives — the try/catch already
+        existed in telegram-daemon.ts; test-only, per spec)
+  - [x] P3 lesson render tie-order = legacy reading order (created ASC on equal reuse_value)
+  - [x] P4 worker-level evolution-deadline-extension coverage (⓪·2b parked MINOR —
+        `evolutionDeadlineExtender` factory exported; 30/60/10-min grants + ranOnce/disarmed/0 pinned)
+  - [ ] LIVE gate: replicate the 22:14 shape — msg 1 quotes the code-owned title, msg 2 says
+        "换掉它" without quoting → refusal fires from thread → pivot to self_write_propose
+        (branch may be discarded — the routing is the test).
 - **⓪·4 — retire legacy paths** (flag default ON, executeTurn if-chain + per-intent handlers removed,
   research fixed sequence dissolves into composition). LIVE gate: a normal day's traffic on loop only.
 

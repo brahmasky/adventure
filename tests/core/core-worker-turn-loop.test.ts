@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CoreWorker, EVOLUTION_NOTICE_HEADER } from "../../src/core/core-worker.js";
+import { CoreWorker, EVOLUTION_NOTICE_HEADER, evolutionDeadlineExtender } from "../../src/core/core-worker.js";
 import { INTENT_DISCIPLINE, resolveInnerLoopEnabled } from "../../src/capabilities/intent.js";
 import { DISTILL_DISCIPLINE } from "../../src/capabilities/distill.js";
 import { RECONCILE_DISCIPLINE } from "../../src/capabilities/reconcile.js";
@@ -357,6 +357,90 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
     }
   });
 
+  it("lesson_write thread-scoped refusal (⓪·3f F1): the code-owned phrase quoted TWO TURNS BACK still refuses", async () => {
+    // The 2026-07-03 22:14 live miss: msg 1 quoted the code-owned title, Houge replied,
+    // msg 2 said only "换掉它" — the current-message-only extractor saw nothing.
+    const store = RunStore.openInMemory();
+    const calls: Array<Record<string, unknown>> = [];
+    const root = projectRoot();
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src", "notice.ts"), 'export const HEADER = "✨ 又偷学了新本事";\n', "utf8");
+    try {
+      store.recordChatTurn({ chat_id: "555", run_id: "seed", role: "user", text: "把「✨ 又偷学了新本事」这个标题换一下" });
+      store.recordChatTurn({ chat_id: "555", run_id: "seed", role: "assistant", text: "想换成什么风格的？", intent: "answer" });
+      const run_id = turnRun(store, "对，换掉它");
+      const worker = new CoreWorker(
+        store,
+        root,
+        loopLlm('{"intent":"feedback"}', [
+          '{"action":"lesson_write","input":{"scope":"ask"},"why":"user wants the title changed"}',
+          '{"action":"final","answer":"这个标题写死在代码里，我得改代码。"}'
+        ], calls)
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+
+      // The refusal fired from the THREAD phrase — digest carries it + the pivot hint.
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(steps[0]!.payload).toMatchObject({ action: "lesson_write", ok: true });
+      const digest = String(steps[0]!.payload.result_digest);
+      expect(digest).toContain('"reason":"code-owned"');
+      expect(digest).toContain("又偷学了新本事");
+      expect(digest).toContain("self_write_propose");
+      // Refused BEFORE distilling; nothing was saved.
+      expect(calls.some((c) => c.system === DISTILL_DISCIPLINE)).toBe(false);
+      expect(store.getActiveLessons("ask")).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("lesson_write anti-poison (⓪·3f F1): a code-owned phrase ONLY in a prior ASSISTANT turn does NOT refuse", async () => {
+    // Houge's own replies legitimately carry code-owned strings (the evolution-notice
+    // header rides replies) — including assistant turns in the scan would false-refuse
+    // EVERY lesson_write that follows one. This is the assertion that keeps them out.
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src", "notice.ts"), 'export const HEADER = "✨ 又偷学了新本事";\n', "utf8");
+    try {
+      store.recordChatTurn({ chat_id: "555", run_id: "seed", role: "user", text: "刚才那个改动怎么样了？" });
+      store.recordChatTurn({
+        chat_id: "555",
+        run_id: "seed",
+        role: "assistant",
+        text: "都搞定了。\n\n✨ 又偷学了新本事\nself_write_propose step ok",
+        intent: "answer"
+      });
+      const run_id = turnRun(store, "以后回答简洁一点");
+      const worker = new CoreWorker(
+        store,
+        root,
+        loopLlm(
+          '{"intent":"feedback"}',
+          [
+            '{"action":"lesson_write","input":{"scope":"ask"},"why":"durable preference"}',
+            '{"action":"final","answer":"记住了，以后更简洁。"}'
+          ],
+          [],
+          '{"durable":true,"lesson":"回答更简洁"}'
+        )
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+
+      // NOT refused: the lesson saved normally despite the header sitting in the thread.
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(String(steps[0]!.payload.result_digest)).toContain('"saved":true');
+      expect(String(steps[0]!.payload.result_digest)).not.toContain("code-owned");
+      expect(store.readLessonBlock("ask")).toContain("回答更简洁");
+    } finally {
+      store.close();
+    }
+  });
+
   it("attribution (⓪·3 S1→S2): loop_started carries the applied lesson_ids and touchApplied credits them", async () => {
     const store = RunStore.openInMemory();
     try {
@@ -374,7 +458,7 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       const started = loopEvents(store, run_id, "loop_started");
       expect(started[0]!.payload.applied_artifacts).toEqual({
         lesson_scopes: ["ask"],
-        lesson_ids: [b, a], // most valuable first (recency tiebreak)
+        lesson_ids: [a, b], // most valuable first; equal values tie in reading order (⓪·3f P3)
         skill_scopes: []
       });
       // Both applied lessons earned their reuse credit for the turn.
@@ -778,6 +862,40 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       expect(completed[0]!.payload.budget_used).toEqual({ tool_calls: 6 });
     } finally {
       store.close();
+    }
+  });
+});
+
+describe("evolutionDeadlineExtender (H2 worker-level closure semantics, ⓪·3f P4)", () => {
+  const ALL_ARMED = new Set(["web_search", "llm_answer", "lesson_write", "self_diagnose", "self_write_propose", "skill_author"]);
+
+  it("an armed evolution tool's FIRST invocation grants its sub-contract time budget in ms", () => {
+    const extend = evolutionDeadlineExtender(ALL_ARMED, new Set());
+    expect(extend("self_diagnose")).toBe(30 * 60_000);
+    expect(extend("self_write_propose")).toBe(60 * 60_000);
+    expect(extend("skill_author")).toBe(10 * 60_000);
+  });
+
+  it("ranOnce is read LIVE: a repeat invocation grants 0 after the adapter marks the tool ran", () => {
+    const ranOnce = new Set<string>();
+    const extend = evolutionDeadlineExtender(ALL_ARMED, ranOnce);
+    expect(extend("self_diagnose")).toBe(30 * 60_000);
+    ranOnce.add("self_diagnose"); // what the tool adapter does when the step actually runs
+    expect(extend("self_diagnose")).toBe(0);
+    expect(extend("skill_author")).toBe(10 * 60_000); // other tools unaffected
+  });
+
+  it("a disarmed evolution tool (off the manifest) grants 0", () => {
+    const extend = evolutionDeadlineExtender(new Set(["web_search", "llm_answer", "lesson_write"]), new Set());
+    expect(extend("self_diagnose")).toBe(0);
+    expect(extend("self_write_propose")).toBe(0);
+    expect(extend("skill_author")).toBe(0);
+  });
+
+  it("non-evolution actions grant 0 even when manifested and never run", () => {
+    const extend = evolutionDeadlineExtender(ALL_ARMED, new Set());
+    for (const action of ["web_search", "llm_answer", "lesson_write", "final", "clarify"]) {
+      expect(extend(action)).toBe(0);
     }
   });
 });

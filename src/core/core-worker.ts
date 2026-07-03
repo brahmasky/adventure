@@ -1858,10 +1858,7 @@ export class CoreWorker {
         // H2: a registered evolution tool the model deliberately starts extends the turn's
         // deadline by that tool's own sub-contract time budget — once per turn (ranOnce is
         // set by the adapter AFTER this fires, so only the first invocation is granted).
-        extendDeadlineFor: (action) =>
-          EVOLUTION_TOOLS.has(action) && manifestNames.has(action) && !turnCtx.ranOnce.has(action)
-            ? evolutionDeadlineExtensionMs(action)
-            : 0,
+        extendDeadlineFor: evolutionDeadlineExtender(manifestNames, turnCtx.ranOnce),
         onStep: (step) =>
           this.runStore.recordLoopStep(claim.run_id, {
             step: step.index,
@@ -2049,6 +2046,15 @@ export class CoreWorker {
         // Layer routing (⓪·3 S1c): feedback quoting a code-owned literal (verbatim in
         // src/*.ts) is refused with a digest steering the model to self_write_propose.
         srcContains: createSrcPhraseChecker(this.projectRoot),
+        // ⓪·3f F1: the check also scans the recent USER turns (most recent first) — the
+        // code-owned phrase is often quoted a turn or two back ("换掉它" carries nothing).
+        // Assistant turns are EXCLUDED: Houge's own replies legitimately contain
+        // code-owned strings (the evolution-notice header, option lists), and including
+        // them would false-refuse every lesson_write that follows one.
+        threadUserTexts: [...turnCtx.recentTurns]
+          .reverse()
+          .filter((turn) => turn.role === "user")
+          .map((turn) => turn.text),
         // Reconcile-and-save (⓪·3 S1b). The compare rides the same UNRESERVED adapter as
         // the tool's internal distill (never the turn ledger, which may be drained here).
         saveLesson: (candidate, now) =>
@@ -2479,6 +2485,24 @@ function loopToolTimeoutMs(name: string, llmTimeoutMs: number): number {
     default:
       return llmTimeoutMs;
   }
+}
+
+/**
+ * H2 closure factory (exported for worker-level tests, ⓪·3f P4): an armed evolution
+ * tool's FIRST real invocation extends the turn's deadline by its sub-contract budget;
+ * a repeat (already in `ranOnce`), a disarmed tool (off the manifest), or any
+ * non-evolution action grants 0. Both sets are read LIVE — `ranOnce` is populated by
+ * the tool adapter AFTER the loop grants the extension, so exactly the first
+ * invocation is granted.
+ */
+export function evolutionDeadlineExtender(
+  manifestNames: ReadonlySet<string>,
+  ranOnce: ReadonlySet<string>
+): (action: string) => number {
+  return (action) =>
+    EVOLUTION_TOOLS.has(action) && manifestNames.has(action) && !ranOnce.has(action)
+      ? evolutionDeadlineExtensionMs(action)
+      : 0;
 }
 
 /**

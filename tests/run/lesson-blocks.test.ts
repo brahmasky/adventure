@@ -87,16 +87,18 @@ describe("lessons store (⓪·3 S1 — per-lesson rows)", () => {
     }
   });
 
-  it("orders active lessons by reuse_value desc, then recency (all values equal until S2 → newest first)", () => {
+  it("orders active lessons by reuse_value desc; equal values tie in READING order (created asc, ⓪·3f P3)", () => {
     const store = RunStore.openInMemory();
     try {
       const older = store.addLesson({ scope: "ask", text: "older", source: "loop", created_at: "2026-07-01T00:00:00.000Z" });
       const newer = store.addLesson({ scope: "ask", text: "newer", source: "loop", created_at: "2026-07-02T00:00:00.000Z" });
-      // reuse_value is only moved by the S2 signal path; with equal values the recency
-      // tiebreak governs, so the newest lesson renders first.
-      expect(store.getActiveLessons("ask").map((l) => l.id)).toEqual([newer, older]);
-      const capped = store.getActiveLessons("ask", 1);
-      expect(capped.map((l) => l.id)).toEqual([newer]);
+      const valuable = store.addLesson({ scope: "ask", text: "valuable", source: "loop", created_at: "2026-07-03T00:00:00.000Z" });
+      store.applyRatingToLessons([valuable], 2, NOW); // +0.25 reuse credit lifts it above the tied pair
+      // reuse_value stays primary; equal-value rows render oldest-first — migrated
+      // legacy-block lessons keep their original reading order instead of reversing.
+      expect(store.getActiveLessons("ask").map((l) => l.id)).toEqual([valuable, older, newer]);
+      const capped = store.getActiveLessons("ask", 2);
+      expect(capped.map((l) => l.id)).toEqual([valuable, older]);
     } finally {
       store.close();
     }
@@ -263,6 +265,38 @@ describe("lessons store (⓪·3 S1 — per-lesson rows)", () => {
         );
         expect(result).toEqual({ verb: "drop", lesson: "shorter answers please", prunedIds: [] });
         expect(store.getActiveLessons("ask")).toHaveLength(1);
+      } finally {
+        store.close();
+      }
+    });
+
+    it("a SUPERSEDE/UPDATE whose target sits in a DIFFERENT scope degrades to ADD (⓪·3f P1 scope guard)", () => {
+      const store = RunStore.openInMemory();
+      try {
+        // Unreachable via the shipped wiring (reconcile filters by scope) — the guard is
+        // defense-in-depth against a direct or future caller crossing scopes.
+        const other = store.addLesson({ scope: "research", text: "prefer primary sources", source: "loop", created_at: NOW });
+        const result = store.saveReconciledLesson(
+          { scope: "ask", text: "be concise" },
+          { verdict: "SUPERSEDE", id: other },
+          "loop",
+          NOW
+        );
+        expect(result.verb).toBe("add");
+        expect(result.supersededId).toBeUndefined();
+        // The cross-scope target is untouched — still active, no pointers written.
+        expect(store.getLesson(other)!).toMatchObject({ status: "active", superseded_by: null });
+        expect(store.getActiveLessons("research").map((l) => l.id)).toEqual([other]);
+
+        const update = store.saveReconciledLesson(
+          { scope: "ask", text: "keep it short" },
+          { verdict: "UPDATE", id: other, text: "merged across scopes" },
+          "loop",
+          NOW
+        );
+        expect(update.verb).toBe("add");
+        expect(update.lesson).toBe("keep it short"); // the merge text is ignored without a same-scope target
+        expect(store.getLesson(other)!.status).toBe("active");
       } finally {
         store.close();
       }

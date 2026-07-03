@@ -4,7 +4,10 @@ import {
   CONVERSATIONAL_SRC_STRINGS,
   createLessonWriteAdapter,
   extractLiteralPhrases,
-  LESSON_ESCALATE_HINT
+  extractThreadPhrases,
+  LESSON_ESCALATE_HINT,
+  THREAD_TEXT_CHAR_CAP,
+  THREAD_USER_TURN_CAP
 } from "../../src/capabilities/lesson-write.js";
 import type { LessonWriteAdapterConfig } from "../../src/capabilities/lesson-write.js";
 import type { LessonSaveResult } from "../../src/run/run-store.js";
@@ -361,6 +364,63 @@ describe("createLessonWriteAdapter (the distill flow as a trust-anchored loop to
       expect(CONVERSATIONAL_SRC_STRINGS).toContain(LESSON_ESCALATE_HINT);
     });
 
+    it("F1: a phrase quoted in a RECENT USER TURN refuses even when the current message carries nothing", async () => {
+      // The 2026-07-03 22:14 live miss: the code-owned title was quoted two turns
+      // earlier; the follow-up said only "换掉它" — the current-message-only extractor
+      // saw nothing and the model overpromised a lesson.
+      let distilled = 0;
+      const adapter = createLessonWriteAdapter(
+        config({
+          feedback: "对，换掉它",
+          threadUserTexts: ["好，先看看别的", "把「✨ 又偷学了新本事」这个标题换一下"],
+          llm: async (input) => {
+            distilled += 1;
+            return llmReturning('{"durable":true,"lesson":"x"}')(input);
+          },
+          srcContains: (phrase) => phrase === "✨ 又偷学了新本事"
+        })
+      );
+      const result = await adapter({ scope: "ask" });
+      expect(result).toEqual({
+        ok: true,
+        output: {
+          saved: false,
+          reason: "code-owned",
+          phrase: "✨ 又偷学了新本事", // the matched phrase rides the digest, same as single-turn
+          hint: "这段文字写死在代码里 — 需要 self_write_propose"
+        }
+      });
+      expect(distilled).toBe(0);
+    });
+
+    it("F1: current-message phrases keep precedence — the digest names the current phrase, not the thread's", async () => {
+      const adapter = createLessonWriteAdapter(
+        config({
+          feedback: '先改"当前标题短语"',
+          threadUserTexts: ['之前说过「线程里的短语」也要改'],
+          llm: llmReturning('{"durable":true,"lesson":"x"}'),
+          srcContains: () => true // both phrases would match src — order decides
+        })
+      );
+      const result = await adapter({ scope: "ask" });
+      expect(result).toMatchObject({ ok: true, output: { saved: false, reason: "code-owned", phrase: "当前标题短语" } });
+    });
+
+    it("F1: no threadUserTexts configured ⇒ current-message behavior is unchanged (no refusal without a current-message match)", async () => {
+      const saved: Array<{ scope: string; text: string; now: string }> = [];
+      const adapter = createLessonWriteAdapter(
+        config({
+          feedback: "对，换掉它",
+          llm: llmReturning('{"durable":true,"lesson":"换个说法"}'),
+          saveLesson: savingTo(saved),
+          srcContains: (phrase) => phrase === "✨ 又偷学了新本事"
+        })
+      );
+      const result = await adapter({ scope: "ask" });
+      expect(result).toEqual({ ok: true, output: { saved: true, verb: "add", scope: "ask", lesson: "换个说法" } });
+      expect(saved).toHaveLength(1);
+    });
+
     it("quoting a RENDERED output constant (the evolution-notice header) IS still refused", async () => {
       const adapter = createLessonWriteAdapter(
         config({
@@ -402,5 +462,40 @@ describe("extractLiteralPhrases (the code-owned phrase extractor)", () => {
     expect(extractLiteralPhrases(long)).toEqual([]);
     const many = Array.from({ length: 12 }, (_, i) => `"phrase-number-${i}"`).join(" ");
     expect(extractLiteralPhrases(many).length).toBeLessThanOrEqual(8);
+  });
+});
+
+describe("extractThreadPhrases (the F1 thread-scoped union)", () => {
+  it("puts current-message phrases first, then thread phrases most recent first, deduped", () => {
+    expect(
+      extractThreadPhrases('改掉"current-phrase"这段', ['我说过「最近的短语」', '还有「更早的短语」'])
+    ).toEqual(["current-phrase", "最近的短语", "更早的短语"]);
+    // Dedup: a thread phrase already extracted from the current message appears once.
+    expect(extractThreadPhrases('把「重复的短语」换掉', ['把「重复的短语」换掉'])).toEqual(["重复的短语"]);
+  });
+
+  it("no thread texts ⇒ byte-identical to the single-message extractor", () => {
+    const feedback = '把"自我修改状态"这个标题改得更清楚一点';
+    expect(extractThreadPhrases(feedback, [])).toEqual(extractLiteralPhrases(feedback));
+  });
+
+  it("caps the union at 8 phrases, preferring the current message's", () => {
+    const current = Array.from({ length: 6 }, (_, i) => `"current-phrase-${i}"`).join(" ");
+    const thread = [Array.from({ length: 6 }, (_, i) => `"thread-phrase-${i}"`).join(" ")];
+    const phrases = extractThreadPhrases(current, thread);
+    expect(phrases).toHaveLength(8);
+    expect(phrases.slice(0, 6)).toEqual(Array.from({ length: 6 }, (_, i) => `current-phrase-${i}`));
+    expect(phrases.slice(6)).toEqual(["thread-phrase-0", "thread-phrase-1"]);
+  });
+
+  it("scans at most 6 turns and 1500 total chars of thread text", () => {
+    // The 7th turn is never scanned…
+    const sevenBack = [...Array.from({ length: 6 }, () => "填充文本"), '把「第七条的短语」换掉'];
+    expect(extractThreadPhrases("换掉它", sevenBack)).toEqual([]);
+    // …and a turn past the char budget is never scanned either.
+    const pastBudget = ["x".repeat(THREAD_TEXT_CHAR_CAP), '把「预算外的短语」换掉'];
+    expect(extractThreadPhrases("换掉它", pastBudget)).toEqual([]);
+    expect(THREAD_USER_TURN_CAP).toBe(6);
+    expect(THREAD_TEXT_CHAR_CAP).toBe(1500);
   });
 });
