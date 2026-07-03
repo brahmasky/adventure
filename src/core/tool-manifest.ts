@@ -1,3 +1,6 @@
+import { resolveCodexEnabled } from "../capabilities/coding-agent.js";
+import { resolveSelfWriteEnabled } from "../capabilities/intent.js";
+import { resolveSkillsEnabled } from "../skills/skill-store.js";
 import type { RiskLevel, SideEffectLevel } from "../domain/types.js";
 
 /**
@@ -10,6 +13,10 @@ import type { RiskLevel, SideEffectLevel } from "../domain/types.js";
  * with the descriptors that exist), so the contract stays the envelope: a capability the
  * contract does not allow never reaches the model's menu, and a descriptor with no
  * contract entry is inert.
+ *
+ * ARMING (step ⓪·2): an evolution tool additionally carries its env arming check —
+ * disarmed ⇒ unlisted ⇒ undescribed ⇒ unreachable (the loop registry only registers
+ * manifest entries, so an unlisted name is denied as an unknown capability).
  */
 export interface ToolManifestEntry {
   name: string;
@@ -23,7 +30,10 @@ export interface ToolManifestEntry {
   output_limit_bytes: number;
 }
 
-const DESCRIPTORS: Record<string, ToolManifestEntry> = {
+/** A descriptor plus its optional env arming check (never rendered to the model). */
+type ToolDescriptor = ToolManifestEntry & { armed?: (env: NodeJS.ProcessEnv) => boolean };
+
+const DESCRIPTORS: Record<string, ToolDescriptor> = {
   llm_answer: {
     name: "llm_answer",
     description: "Answer from your own knowledge (one LLM call; no live data).",
@@ -56,14 +66,54 @@ const DESCRIPTORS: Record<string, ToolManifestEntry> = {
     side_effect_level: "none",
     risk_level: "low",
     output_limit_bytes: 100_000
+  },
+  // The evolution layers as loop tools (ADR 0013, step ⓪·2). Each is a THIN boundary
+  // around the unchanged legacy pipeline: inside, the machinery runs under its own
+  // stricter sub-contract and gates exactly as before. The model's input is advisory —
+  // the REAL user message stays the primary instruction (the lesson_write philosophy).
+  self_diagnose: {
+    name: "self_diagnose",
+    description:
+      "Diagnose Houge's OWN source code READ-ONLY: a coding agent reads the committed code and reports the root cause of the user's symptom.",
+    inputSketch: '{"focus": "one line: what to investigate"}',
+    category: "tool",
+    side_effect_level: "external_read",
+    risk_level: "medium",
+    output_limit_bytes: 200_000,
+    armed: resolveCodexEnabled
+  },
+  self_write_propose: {
+    name: "self_write_propose",
+    description:
+      "Propose a FIX to Houge's OWN source code: an isolated writer produces a diff, gates check it (protected paths, tests, independent review), and a branch is published for the user to merge. Terminal — after this, wrap up with \"final\".",
+    inputSketch: '{"focus": "one line: what to fix"}',
+    category: "tool",
+    side_effect_level: "external_read",
+    risk_level: "medium",
+    output_limit_bytes: 200_000,
+    armed: resolveSelfWriteEnabled
+  },
+  skill_author: {
+    name: "skill_author",
+    description:
+      "Author or refine a reusable SKILL (a verified procedure) from the user's request; may down-route to a lesson. Terminal — after this, wrap up with \"final\".",
+    inputSketch: "{}",
+    category: "tool",
+    side_effect_level: "none",
+    risk_level: "low",
+    output_limit_bytes: 100_000,
+    armed: resolveSkillsEnabled
   }
 };
 
-/** Derive the loop manifest: allowed_actions ∩ descriptors, in allowed_actions order. */
-export function manifestFor(allowed_actions: string[]): ToolManifestEntry[] {
+/** Derive the loop manifest: allowed_actions ∩ armed descriptors, in allowed_actions order. */
+export function manifestFor(allowed_actions: string[], env: NodeJS.ProcessEnv = process.env): ToolManifestEntry[] {
   return allowed_actions.flatMap((name) => {
     const entry = DESCRIPTORS[name];
-    return entry ? [entry] : [];
+    if (!entry || (entry.armed && !entry.armed(env))) return [];
+    const { armed, ...manifest } = entry;
+    void armed;
+    return [manifest];
   });
 }
 

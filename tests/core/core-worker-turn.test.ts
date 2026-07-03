@@ -20,10 +20,10 @@ function projectRoot(): string {
   return dir;
 }
 // This suite asserts the LEGACY enum turn path (the flag-OFF behavior) and the code
-// DEFAULTS of the knobs it exercises (e.g. the clarify cap) — hermetic against a daemon
-// env that arms the inner loop (ADR 0013) or overrides those knobs: pin them (delete =
-// code default); a test that needs an override still sets it itself.
-const PINNED_ENV = ["HOUGE_INNER_LOOP_ENABLED", "HOUGE_MAX_CONSECUTIVE_CLARIFY"] as const;
+// DEFAULTS of the knobs it exercises (e.g. the clarify cap, the composed ask prompt) —
+// hermetic against a daemon env that arms the inner loop (ADR 0013) or overrides those
+// knobs: pin them (delete = code default); a test that needs an override still sets it itself.
+const PINNED_ENV = ["HOUGE_INNER_LOOP_ENABLED", "HOUGE_MAX_CONSECUTIVE_CLARIFY", "HOUGE_ASK_SYSTEM_PROMPT"] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
   savedEnv = {};

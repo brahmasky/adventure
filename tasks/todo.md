@@ -253,6 +253,38 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
         loop_started/loop_step/loop_halted ledger events + /lessons shows the lesson.
 - **⓪·2 — evolution layers as tools** (skill_author, self_diagnose, self_write_propose; DELETE the
   WRITE_SIGNALS regex). LIVE gate: terse Chinese bug report → self-write proposal, no verb table.
+  **⏳ /goal IN PROGRESS 2026-07-02.** Checklist:
+  - [x] M1 tool-wrap skill_author (GateA→author→GateB), self_diagnose (read-only Codex), self_write_propose
+        (writer→guard→test-gate→reviewer→branch→buttons, unchanged inside; armed by HOUGE_SELFWRITE_ENABLED);
+        internal in-route sub-contracts stay as today; tool names added to turn allowed_actions
+        (+ once-per-turn guard; publish buttons ride the loop's final report)
+  - [x] M2 DELETE WRITE_SIGNALS regex (classifier enum stays as advisory hint only; legacy
+        selfcode now ALWAYS diagnoses — the write path is loop-only)
+  - [x] M3 manifest policy: evolution tools listed only when their arming flags are ON
+        (codex→self_diagnose, selfwrite→self_write_propose, skills→skill_author; unlisted=denied)
+  - [x] M4 ⓪·1 deferred items: wall-clock loop halt (reason "timeout") · parse_cap raw-text reply
+        cosmetics · HOUGE_ASK_SYSTEM_PROMPT honored on loop path · injected-JSON-echo defense +
+        fixtures · budget_used undercount fixed (recordRunCompleted hardcoded {tool_calls:1};
+        turn paths now pass the shared ledger's actual usage)
+  - [x] M5 build gates GREEN 2026-07-02: typecheck · 807 tests · build · deps {} · hermetic under
+        daemon env (.env + INNER_LOOP=1, CLARIFY=5, SKILLS=1); floor tests untouched;
+        independent adversarial verification still pending (orchestrator)
+  - [x] M5b verifier fixes 2026-07-03: code-owned evolution-outcome notices appended to the
+        outgoing reply (never model-mediated) + HOUGE_ASK_SYSTEM_PROMPT pinned in turn suite
+  - [x] M5c LIVE-gate regression fix 2026-07-03 (run_8c1091be): evolution-tool internals ran on
+        the loop's SHARED turn ledger → "writer failed: Tool-call budget exhausted". Each tool
+        now runs its pipeline on a FRESH sub-ledger from its own sub-contract budget; turn
+        ledger charged exactly 1 per evolution step; 3 regression tests (mutation-verified);
+        810 tests green, hermetic sweep (6-var export) green
+  - [x] M5d LIVE-run finding #2 fixed 2026-07-03 (run_1280539d, PRE-EXISTING guard bypass): both
+        checker diffs (`git diff --raw`/`git diff HEAD`) omitted UNTRACKED files while publish
+        `add -A`'d them — net-new files were un-reviewable ("file not shown" reject) AND invisible
+        to the protected-path guard. Fix: `git add -N -- . ":(exclude)node_modules"` before every
+        diff read (same exclusion as publish; the node_modules SYMLINK dodges the `node_modules/`
+        gitignore dir pattern and would otherwise hard-deny as a new symlink). 5 real-git deps
+        tests incl. the security assertion (new file under src/policy/ now DENIED); 815 green
+  - [ ] M6 LIVE gate: terse Chinese bug report → self-write proposal end-to-end (no verb table);
+        diagnosis-only ask stays read-only; a msg meriting lesson AND code proposal produces both
 - **⓪·3 — spine Slice A on the loop** (rating, reconcile/supersede, reuse-value+decay, AVOID; A1
   attribution already emitted by loop observation hooks). LIVE gate = spine A9 (visible compounding).
 - **⓪·4 — retire legacy paths** (flag default ON, executeTurn if-chain + per-intent handlers removed,

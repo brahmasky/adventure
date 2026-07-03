@@ -157,10 +157,22 @@ function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
   // `lesson_write` (ADR 0013, step ⓪·1) is the distill→backstop→append flow as a
   // capability: only the flag-gated inner loop invokes it (the legacy path never does;
   // the policy only ALLOWS, never forces), but it lives in the one turn envelope.
+  // `self_diagnose`/`self_write_propose`/`skill_author` (step ⓪·2) are the evolution
+  // layers as loop tools — same deal: allowed in the envelope, listed only when armed,
+  // and each runs its unchanged legacy pipeline under its own sub-contract inside.
   const base = {
     objective: event.goal,
     budget: { time_minutes: 10, max_tool_calls: 6, max_agent_delegations: 0 },
-    allowed_actions: ["intent_router", "web_search", "llm_answer", "lesson_write", "write_report"],
+    allowed_actions: [
+      "intent_router",
+      "web_search",
+      "llm_answer",
+      "lesson_write",
+      "self_diagnose",
+      "self_write_propose",
+      "skill_author",
+      "write_report"
+    ],
     forbidden_actions: ["coding_agent_cli", "generic_shell", "external_write", "paid_action"],
     output: { path: "runs/<run-id>/report.md", format: "sourced_markdown_report" as const },
     approval_gates: ["local_write", "external_write", "destructive", "paid"] as SideEffectLevel[],

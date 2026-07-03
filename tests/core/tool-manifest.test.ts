@@ -32,3 +32,59 @@ describe("manifestFor (contract-derived tool manifest, ADR 0013)", () => {
     expect(lines[1]).not.toContain('"feedback"');
   });
 });
+
+describe("arming policy (step ⓪·2): evolution tools appear only when their flags arm them", () => {
+  const EVOLUTION = ["self_diagnose", "self_write_propose", "skill_author"];
+
+  it("code defaults: skills ON, codex + selfwrite OFF", () => {
+    const names = manifestFor(EVOLUTION, {}).map((m) => m.name);
+    expect(names).toEqual(["skill_author"]);
+  });
+
+  it("all armed: each is listed, in contract order", () => {
+    const names = manifestFor(EVOLUTION, {
+      HOUGE_CODEX_ENABLED: "1",
+      HOUGE_SELFWRITE_ENABLED: "1",
+      HOUGE_SKILLS_ENABLED: "1"
+    }).map((m) => m.name);
+    expect(names).toEqual(EVOLUTION);
+  });
+
+  it("each flag disarms exactly its tool", () => {
+    const armed = { HOUGE_CODEX_ENABLED: "1", HOUGE_SELFWRITE_ENABLED: "1", HOUGE_SKILLS_ENABLED: "1" };
+    expect(manifestFor(EVOLUTION, { ...armed, HOUGE_CODEX_ENABLED: "0" }).map((m) => m.name)).toEqual([
+      "self_write_propose",
+      "skill_author"
+    ]);
+    expect(manifestFor(EVOLUTION, { ...armed, HOUGE_SELFWRITE_ENABLED: "0" }).map((m) => m.name)).toEqual([
+      "self_diagnose",
+      "skill_author"
+    ]);
+    expect(manifestFor(EVOLUTION, { ...armed, HOUGE_SKILLS_ENABLED: "0" }).map((m) => m.name)).toEqual([
+      "self_diagnose",
+      "self_write_propose"
+    ]);
+  });
+
+  it("the heavy tools' prompt lines hint terminality (wrap up with final)", () => {
+    const lines = renderManifestLines(
+      manifestFor(["self_write_propose", "skill_author"], { HOUGE_SELFWRITE_ENABLED: "1" })
+    );
+    expect(lines.length).toBe(2);
+    for (const line of lines) expect(line).toContain('wrap up with "final"');
+  });
+
+  it("the manifest entries never leak the arming predicate (registration metadata only)", () => {
+    const [entry] = manifestFor(["self_write_propose"], { HOUGE_SELFWRITE_ENABLED: "1" });
+    expect(entry).toBeDefined();
+    expect(Object.keys(entry!).sort()).toEqual([
+      "category",
+      "description",
+      "inputSketch",
+      "name",
+      "output_limit_bytes",
+      "risk_level",
+      "side_effect_level"
+    ]);
+  });
+});

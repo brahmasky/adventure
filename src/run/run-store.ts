@@ -564,10 +564,16 @@ export class RunStore {
     });
   }
 
-  recordRunCompleted(run_id: string, report_ref: string, duration_ms: number): void {
+  recordRunCompleted(
+    run_id: string,
+    report_ref: string,
+    duration_ms: number,
+    /** ACTUAL capability calls when the caller tracked a shared ledger (default: the single-call legacy stamp). */
+    budget_used: { tool_calls: number } = { tool_calls: 1 }
+  ): void {
     this.appendRunLedgerEvent(run_id, "run_completed", "core", {
       report_ref,
-      budget_used: { tool_calls: 1 },
+      budget_used,
       duration_ms
     });
   }

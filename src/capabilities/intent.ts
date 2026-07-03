@@ -97,19 +97,9 @@ export interface IntentClassification {
   clarifying_question?: string;
 }
 
-/**
- * The selfcode sub-route (ADR 0011, Phase 3). Within the `selfcode` intent, decide whether the
- * user wants Houge to READ/diagnose his source (`diagnose`) or to EDIT/fix it (`write`). The
- * write path is the high-risk one, so the rule DEFAULTS TO DIAGNOSE when ambiguous (read before
- * write) — only an explicit change verb ("fix", "change", "implement", "make it…") routes to
- * `write`. Deterministic on purpose (a verb table, not an LLM call): cheap, ungameable by a
- * confused chain, and crisply testable. The whole write path is inert unless
- * `HOUGE_SELFWRITE_ENABLED=true` (the caller checks that first).
- */
-export type SelfcodeMode = "diagnose" | "write";
-
-/** Whether the self-write channel is armed (`HOUGE_SELFWRITE_ENABLED`). DEFAULT OFF — the entire
- *  write path is inert (falls back to diagnose) unless this is truthy. Accepts 1/true/yes/on. */
+/** Whether the self-write channel is armed (`HOUGE_SELFWRITE_ENABLED`). DEFAULT OFF — the
+ *  `self_write_propose` tool is unlisted (unreachable) unless this is truthy (ADR 0013, step ⓪·2).
+ *  Accepts 1/true/yes/on. */
 export function resolveSelfWriteEnabled(env: NodeJS.ProcessEnv): boolean {
   const raw = env.HOUGE_SELFWRITE_ENABLED?.trim().toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
@@ -121,38 +111,6 @@ export function resolveSelfWriteEnabled(env: NodeJS.ProcessEnv): boolean {
 export function resolveInnerLoopEnabled(env: NodeJS.ProcessEnv): boolean {
   const raw = env.HOUGE_INNER_LOOP_ENABLED?.trim().toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
-}
-
-/** Explicit WRITE verbs/phrases — English + the common Chinese forms (Houge talks to Paco in both). */
-const WRITE_SIGNALS: readonly RegExp[] = [
-  /\bfix\b/i,
-  /\bchange\b/i,
-  /\bimplement\b/i,
-  /\bedit\b/i,
-  /\brewrite\b/i,
-  /\brefactor\b/i,
-  /\bpatch\b/i,
-  /\bmake it\b/i,
-  /\bmake yourself\b/i,
-  /\bso (?:you|it) (?:stop|no longer|don't)\b/i,
-  /\bgo (?:fix|change|update)\b/i,
-  /\bupdate (?:your|the) (?:code|source|classifier|router)/i,
-  /修(?:复|改)/, // 修复 / 修改 = fix / modify
-  /改(?:一下|掉|成|为)?/, // 改… = change
-  /实现/, // 实现 = implement
-  /让你(?:不再|别|停止)/ // 让你不再… = make you stop …
-];
-
-/**
- * Classify a selfcode message into diagnose↔write. An explicit write signal → `write`. Otherwise
- * (read-leaning OR genuinely ambiguous) → `diagnose` — the safe default (read before write). A
- * write verb wins even when a read verb is ALSO present ("read your classifier and FIX it"): the
- * explicit change verb is the stronger signal. `message` is the user's raw text (DATA); this is a
- * deterministic transform, not an LLM judgment.
- */
-export function classifySelfcodeMode(message: string): SelfcodeMode {
-  if (typeof message !== "string" || message.trim().length === 0) return "diagnose";
-  return WRITE_SIGNALS.some((re) => re.test(message)) ? "write" : "diagnose";
 }
 
 /** Short classification instruction used as the system prompt for the router call. */

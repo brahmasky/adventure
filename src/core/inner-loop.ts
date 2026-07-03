@@ -64,6 +64,10 @@ export interface InnerLoopInput {
   /** False once the consecutive-clarify cap is reached (resolveMaxConsecutiveClarify rule). */
   clarifyAllowed: boolean;
   resultCharCap?: number;
+  /** Wall-clock deadline (epoch ms, from the contract budget's time_minutes); expiry halts best-effort. */
+  deadlineMs?: number;
+  /** Injectable clock for the deadline check (default Date.now). */
+  now?: () => number;
   /** Observation hook (read-only): fired once per step record, in order. */
   onStep?: (step: LoopStepRecord) => void;
 }
@@ -86,6 +90,7 @@ export type LoopHaltReason =
   | "denial"
   | "parse_cap"
   | "clarify_cap"
+  | "timeout"
   | "failed";
 
 export type InnerLoopResult =
@@ -111,8 +116,13 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
   let failures = 0; // denied/failed action results reported back to the model
   let clarifyNudged = false;
   let lastRaw = "";
+  const now = input.now ?? Date.now;
 
   for (let iteration = 1; iteration <= input.maxSteps; iteration += 1) {
+    // Wall-clock halt (code-owned): the contract's time budget expired — best-effort final.
+    if (input.deadlineMs !== undefined && now() >= input.deadlineMs) {
+      return { outcome: "final", reason: "timeout", answer: bestEffortFinal(steps), steps };
+    }
     const composed = await deps.compose({
       question: buildLoopStepQuestion(input, steps, input.maxSteps - iteration + 1),
       system: input.system
@@ -122,13 +132,17 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
     }
     lastRaw = composed.text;
 
-    const parsed = parseLoopAction(composed.text);
+    const parsed = parseLoopAction(composed.text, steps.at(-1)?.resultDigest);
     if (!parsed.ok) {
       parseFailures += 1;
       if (parseFailures >= PARSE_FAILURE_CAP) {
         // Conservative default (the parseIntent philosophy): the model's prose is
         // likely an attempted direct answer — deliver it rather than fail the turn.
-        return { outcome: "final", reason: "parse_cap", answer: lastRaw.trim() || bestEffortFinal(steps), steps };
+        // Protocol-shaped junk (raw JSON / fenced protocol text) is never sent to the
+        // user verbatim; fall back to the transcript-derived best effort instead.
+        const raw = lastRaw.trim();
+        const answer = raw.length === 0 || looksLikeProtocolJunk(raw) ? bestEffortFinal(steps) : raw;
+        return { outcome: "final", reason: "parse_cap", answer, steps };
       }
       record({
         action: "(unparsed)",
@@ -268,8 +282,27 @@ export function buildLoopStepQuestion(
  * or embedded in prose) and return the FIRST one that is valid JSON *and* a well-formed
  * action object. Anything else — garbage, JSON without an `action`, a final with no
  * answer — is a parse failure (the caller's conservative defaults take over).
+ *
+ * ECHO DEFENSE (step ⓪·2): with `priorDigest` given, an action object identical to one
+ * embedded in that prior step result is REJECTED — a reply quoting an injected action
+ * before its own action executes the model's OWN action; a reply that is only the echo
+ * is a parse failure. Untrusted data can never smuggle an action through a quote.
  */
-export function parseLoopAction(text: string): { ok: true; action: LoopAction } | { ok: false } {
+export function parseLoopAction(
+  text: string,
+  priorDigest?: string
+): { ok: true; action: LoopAction } | { ok: false } {
+  const echoes = priorDigest ? embeddedActionFingerprints(priorDigest) : undefined;
+  for (const action of scanActions(text)) {
+    if (echoes?.has(actionFingerprint(action))) continue;
+    return { ok: true, action };
+  }
+  return { ok: false };
+}
+
+/** All well-formed action objects in `text`, in order (balanced {...} candidates only). */
+function scanActions(text: string): LoopAction[] {
+  const actions: LoopAction[] = [];
   for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
     const end = scanBalancedObject(text, start);
     if (end === -1) continue;
@@ -280,11 +313,26 @@ export function parseLoopAction(text: string): { ok: true; action: LoopAction } 
       continue;
     }
     const action = validateAction(parsed);
-    if (action) return { ok: true, action };
-    // A well-formed-but-invalid object: keep scanning past it for a later valid one.
+    if (action) actions.push(action);
+    // Well-formed object (valid or not): keep scanning past it.
     start = end;
   }
-  return { ok: false };
+  return actions;
+}
+
+/** Canonical identity of a parsed action (used for the echo defense). */
+function actionFingerprint(action: LoopAction): string {
+  return stableHash({
+    action: action.action,
+    input: action.input ?? null,
+    answer: action.answer ?? null,
+    question: action.question ?? null
+  });
+}
+
+/** Fingerprints of every action object embedded in a prior step's result digest. */
+function embeddedActionFingerprints(digest: string): Set<string> {
+  return new Set(scanActions(digest).map(actionFingerprint));
 }
 
 function validateAction(parsed: unknown): LoopAction | undefined {
@@ -369,9 +417,18 @@ export function digestOutput(output: Record<string, unknown>, charCap: number): 
 }
 
 /**
+ * Protocol-shaped text that must never reach the user verbatim on a parse_cap halt:
+ * raw/fenced JSON, or prose that leads with a protocol-looking `"action"` field.
+ */
+export function looksLikeProtocolJunk(text: string): boolean {
+  const t = text.trim();
+  return t.startsWith("{") || t.startsWith("```") || /"action"\s*:/.test(t);
+}
+
+/**
  * Best-effort final answer when the loop halts without one (step cap / denial /
- * clarify cap): the most recent successful llm_answer digest, else the most recent
- * successful result, else an honest miss.
+ * clarify cap / timeout): the most recent successful llm_answer digest, else the most
+ * recent successful result, else an honest miss.
  */
 function bestEffortFinal(steps: LoopStepRecord[]): string {
   for (let i = steps.length - 1; i >= 0; i -= 1) {

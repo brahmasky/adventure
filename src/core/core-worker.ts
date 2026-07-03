@@ -36,15 +36,13 @@ import {
   buildIntentQuestion,
   buildIntentSystemPrompt,
   chatContextSince,
-  classifySelfcodeMode,
   countTrailingClarifyTurns,
   feedTurnText,
   parseIntent,
   resolveChatContextTurnChars,
   resolveChatContextTurns,
   resolveInnerLoopEnabled,
-  resolveMaxConsecutiveClarify,
-  resolveSelfWriteEnabled
+  resolveMaxConsecutiveClarify
 } from "../capabilities/intent.js";
 import type { IntentClassification, Intent } from "../capabilities/intent.js";
 import { buildDistillQuestion, DISTILL_DISCIPLINE, looksLikeSkillProcedure, parseDistillResult, shouldRejectLesson } from "../capabilities/distill.js";
@@ -97,6 +95,24 @@ type HelperResult =
   | { ok: false; failure: Exclude<CapabilityResult, { status: "succeeded" }> };
 
 /**
+ * Per-turn state shared by the loop's tool adapters (step ⓪·2): the thread context the
+ * heavy pipelines need, the once-per-turn guard for the evolution tools, the stash for
+ * a published self-write's merge-control buttons (attached to the final report), and
+ * the CODE-OWNED evolution-outcome notices appended verbatim to the outgoing reply —
+ * a pipeline failure can never be blandified into silence by the model's final answer.
+ */
+interface LoopTurnContext {
+  recentTurns: ChatTurnRow[];
+  turnChars: number;
+  ranOnce: Set<string>;
+  notifyButtons: NotificationButton[] | undefined;
+  evolutionNotices: string[];
+}
+
+/** The ⓪·2 evolution tools — their non-success outcomes are surfaced code-owned (see LoopTurnContext). */
+const EVOLUTION_TOOLS = new Set(["self_diagnose", "self_write_propose", "skill_author"]);
+
+/**
  * Injectable seams for the Phase-3 self-write stack (ADR 0011). These wrap the real S1–S4 +
  * worktree/branch modules so a test can mock the whole stack (worktree create/teardown, the
  * write-Codex adapter, the three checkers, branch publish) without shelling out to git/codex/claude.
@@ -119,8 +135,24 @@ export interface SelfWriteDeps {
   publishBranch: (worktree: string, branch: string, summary?: string) => string;
 }
 
-/** Default wiring of the self-write stack to the real S1–S4 + worktree/branch modules. */
-function defaultSelfWriteDeps(): SelfWriteDeps {
+/**
+ * Register the worktree's NET-NEW files with git as intent-to-add (`git add -N .`) so
+ * BOTH checker diffs see them: `git diff --raw -M -C HEAD` then reports a new file as a
+ * status-A entry (the guard's protected-path/deny logic applies to file CREATION — not
+ * just edits), and `git diff HEAD` carries its full content (the reviewer actually sees
+ * it instead of rejecting "file not shown"). Without this, an untracked file was
+ * invisible to guard + reviewer yet landed on the published branch (`git add -A`) — a
+ * fail-closed bypass. The symlinked-in node_modules is a symlink FILE, so .gitignore's
+ * `node_modules/` dir pattern does NOT catch it — excluded with the SAME pathspec the
+ * publish step uses (`git add -A` in branch-publish), or the guard would hard-deny the
+ * new symlink on every write. Idempotent — safe on every refine-loop re-check.
+ */
+function registerUntrackedFiles(worktree: string): void {
+  execFileSync("git", ["-C", worktree, "add", "-N", "--", ".", ":(exclude)node_modules"], { encoding: "utf8" });
+}
+
+/** Default wiring of the self-write stack to the real S1–S4 + worktree/branch modules. Exported for the deps tests. */
+export function defaultSelfWriteDeps(): SelfWriteDeps {
   return {
     createWorktree,
     removeWorktree,
@@ -141,8 +173,17 @@ function defaultSelfWriteDeps(): SelfWriteDeps {
       if (!result.ok) return { ok: false, error: result.error };
       return { ok: true, output: { worktree, provider: result.provider, model: result.model, usageRaw: result.usageRaw } };
     },
-    rawDiff: (worktree) => execFileSync("git", ["-C", worktree, "diff", "--raw", "-M", "-C", "HEAD"], { encoding: "utf8" }),
-    unifiedDiff: (worktree) => execFileSync("git", ["-C", worktree, "diff", "HEAD"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }),
+    // Both diff readers register untracked files first (intent-to-add) — every path that
+    // reads either diff, including the refine-loop re-checks on attempts 2/3, must see
+    // net-new files or the guard/reviewer are blind to file creation (see helper above).
+    rawDiff: (worktree) => {
+      registerUntrackedFiles(worktree);
+      return execFileSync("git", ["-C", worktree, "diff", "--raw", "-M", "-C", "HEAD"], { encoding: "utf8" });
+    },
+    unifiedDiff: (worktree) => {
+      registerUntrackedFiles(worktree);
+      return execFileSync("git", ["-C", worktree, "diff", "HEAD"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+    },
     runTestGate: (worktree) => runTestGate(worktree),
     reviewDiff: (input) => reviewDiff(input),
     publishBranch
@@ -1582,14 +1623,10 @@ export class CoreWorker {
       dispatched = await this.runResearch(claim, query, budget);
     } else if (intent === "selfcode") {
       const focus = classification.classification.query?.trim() || message;
-      // Sub-route inside selfcode (Phase 3): write-intent + the channel armed → runSelfWrite;
-      // otherwise (read intent, ambiguous, or self-write disabled) → runSelfDiagnose (unchanged).
-      // DEFAULT TO DIAGNOSE (read before write); the whole write path is inert unless armed.
-      if (classifySelfcodeMode(message) === "write" && resolveSelfWriteEnabled(process.env)) {
-        dispatched = await this.runSelfWrite(claim, message, focus, recentTurns, budget, turnChars);
-      } else {
-        dispatched = await this.runSelfDiagnose(claim, message, focus, recentTurns, budget, turnChars);
-      }
+      // Step ⓪·2: the legacy path ALWAYS diagnoses (read-only, conservative). The write
+      // path is loop-only now — the model proposes `self_write_propose` on the inner
+      // loop; the WRITE_SIGNALS verb table is gone (ADR 0013 §4).
+      dispatched = await this.runSelfDiagnose(claim, message, focus, recentTurns, budget, turnChars);
     } else if (intent === "skill") {
       dispatched = await this.runSkill(claim, message, recentTurns, budget, turnChars);
     } else if (intent === "feedback") {
@@ -1610,7 +1647,7 @@ export class CoreWorker {
       return this.failWithPartialReport(claim, dispatched.failure);
     }
 
-    const completion = this.writeCompletionReport(claim, dispatched.report);
+    const completion = this.writeCompletionReport(claim, dispatched.report, budget);
     if (completion.status !== "completed") {
       return completion;
     }
@@ -1647,7 +1684,9 @@ export class CoreWorker {
     recentClarifyCount: number,
     hint: IntentClassification
   ): Promise<CoreWorkerResult> {
-    const manifest = manifestFor(claim.contract.allowed_actions);
+    // Manifest = allowed_actions ∩ armed descriptors (step ⓪·2): a disarmed evolution
+    // tool is unlisted, unregistered, and therefore denied as an unknown capability.
+    const manifest = manifestFor(claim.contract.allowed_actions, process.env);
     const manifestNames = new Set(manifest.map((m) => m.name));
     const memoryRoot = memoryRootFor(this.projectRoot);
     const scope = intentToScope(hint.intent);
@@ -1660,18 +1699,32 @@ export class CoreWorker {
       skillsScope: scope
     });
     // llm_answer steps answer in Houge's voice under the ask discipline; the model's
-    // parsed input can never override the composed system prompt (forced below).
-    const askSystem = composeSystemPrompt(memoryRoot, "ask", {
-      lessonsReader,
-      lessonsScope: scope,
-      skillsReader,
-      skillsScope: scope
-    });
+    // parsed input can never override the composed system prompt (forced below). The
+    // same env override wins here as on legacy runAnswer.
+    const askSystem =
+      process.env.HOUGE_ASK_SYSTEM_PROMPT ??
+      composeSystemPrompt(memoryRoot, "ask", {
+        lessonsReader,
+        lessonsScope: scope,
+        skillsReader,
+        skillsScope: scope
+      });
 
     // lesson_write trust anchors: the REAL prior assistant turn (and the real user
     // message via claim.contract.objective) — never the model's step input.
     const priorAssistantAnswer =
       [...recentTurns].reverse().find((turn) => turn.role === "assistant")?.text ?? "";
+
+    // Per-turn state for the evolution tools (step ⓪·2): each heavy tool runs at most
+    // once per turn, a published self-write's merge buttons ride the final report, and
+    // non-success evolution outcomes collect as code-owned notices (surfaced below).
+    const turnCtx: LoopTurnContext = {
+      recentTurns,
+      turnChars,
+      ranOnce: new Set<string>(),
+      notifyButtons: undefined,
+      evolutionNotices: []
+    };
 
     const llmTimeoutMs = resolveChainBudgetMs(process.env) + RUNNER_TIMEOUT_BUFFER_MS;
     const registry = new ToolRegistry();
@@ -1681,14 +1734,12 @@ export class CoreWorker {
         category: entry.category,
         side_effect_level: entry.side_effect_level,
         risk_level: entry.risk_level,
-        // lesson_write may run distill + a consolidation rewrite (two chain calls).
-        timeout_ms:
-          entry.name === "web_search" ? WEB_RUNNER_TIMEOUT_MS : entry.name === "lesson_write" ? llmTimeoutMs * 2 : llmTimeoutMs,
+        timeout_ms: loopToolTimeoutMs(entry.name, llmTimeoutMs),
         output_limit_bytes: entry.output_limit_bytes,
         execute: this.loopToolExecute(entry.name, claim, budget, askSystem, {
           priorAnswer: priorAssistantAnswer,
           defaultScope: scope
-        })
+        }, turnCtx)
       });
     }
 
@@ -1715,6 +1766,8 @@ export class CoreWorker {
         ...(recentTurns.length > 0 ? { context: formatThreadContext(recentTurns, turnChars) } : {}),
         maxSteps: claim.contract.budget.max_tool_calls,
         clarifyAllowed: recentClarifyCount < resolveMaxConsecutiveClarify(process.env),
+        // Wall-clock halt (⓪·1 deferred): the contract's time budget bounds the loop.
+        deadlineMs: Date.now() + claim.contract.budget.time_minutes * 60_000,
         onStep: (step) =>
           this.runStore.recordLoopStep(claim.run_id, {
             step: step.index,
@@ -1730,8 +1783,16 @@ export class CoreWorker {
           if (!r.ok) return { ok: false, error: r.error };
           return { ok: true, text: typeof r.output.answer === "string" ? r.output.answer : "" };
         },
-        executeAction: (capability, input) =>
-          runner.execute({ contract: claim.contract, capability, input, budget })
+        executeAction: async (capability, input) => {
+          const result = await runner.execute({ contract: claim.contract, capability, input, budget });
+          // Code-owned failure surfacing (⓪·2): an evolution step that did not succeed
+          // (gate denial, adapter throw, capability failure) is stashed for the outgoing
+          // reply — the model's final answer alone can never hide it.
+          if (EVOLUTION_TOOLS.has(capability) && result.status !== "succeeded") {
+            turnCtx.evolutionNotices.push(`${capability} step failed: ${capabilityFailureDetail(result)}`);
+          }
+          return result;
+        }
       }
     );
 
@@ -1741,7 +1802,12 @@ export class CoreWorker {
       return this.failWithPartialReport(claim, result.failure);
     }
 
-    const answer = result.outcome === "clarify" ? result.question : result.answer;
+    // Code-owned surfacing (⓪·2): evolution-step outcomes are APPENDED verbatim to the
+    // outgoing reply — never model-mediated (a "hide process" lesson must not hide them).
+    const answer = withEvolutionNotices(
+      result.outcome === "clarify" ? result.question : result.answer,
+      turnCtx.evolutionNotices
+    );
     const completion = this.writeCompletionReport(
       claim,
       result.outcome === "clarify"
@@ -1755,8 +1821,12 @@ export class CoreWorker {
             title: "Answer",
             body: [`Message: ${message}`, "", answer].join("\n"),
             sources: loopSources(result.steps),
-            notifyText: answer
-          }
+            notifyText: answer,
+            // A published self-write's [Merge & reload]/[View diff]/[Discard] keyboard
+            // rides the turn's final report — exactly like the legacy publish path.
+            ...(turnCtx.notifyButtons ? { notifyButtons: turnCtx.notifyButtons } : {})
+          },
+      budget
     );
     if (completion.status !== "completed") {
       return completion;
@@ -1786,8 +1856,54 @@ export class CoreWorker {
     claim: ClaimedRun,
     budget: BudgetLedger,
     askSystem: string,
-    lessonAnchor: { priorAnswer: string; defaultScope: string }
+    lessonAnchor: { priorAnswer: string; defaultScope: string },
+    turnCtx: LoopTurnContext
   ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
+    // The evolution layers as loop tools (step ⓪·2): THIN boundaries around the
+    // unchanged legacy pipelines. The REAL user message (the contract objective) stays
+    // the primary instruction; the model's `focus` is advisory only (DATA-channel
+    // discipline, the lesson_write trust-anchoring philosophy). Each runs at most once
+    // per turn — a second invocation is refused without executing.
+    if (name === "self_diagnose" || name === "self_write_propose" || name === "skill_author") {
+      return async (input) => {
+        if (turnCtx.ranOnce.has(name)) {
+          return { ok: false, error: `${name} already ran this turn — do not invoke it again` };
+        }
+        turnCtx.ranOnce.add(name);
+        const message = claim.contract.objective;
+        const focus = typeof input.focus === "string" && input.focus.trim().length > 0 ? input.focus.trim() : message;
+        // BUDGET ISOLATION (live-gate fix): the pipeline's INTERNAL calls (writer /
+        // reviewer / consult / gates) run on their OWN fresh ledger compiled from the
+        // tool's in-route sub-contract — never the loop's shared turn ledger, which
+        // earlier steps may already have drained. The turn ledger is charged exactly
+        // ONE reservation for this step (the runner.execute that invoked this adapter).
+        const subBudget = new BudgetLedger(
+          (name === "self_diagnose"
+            ? compileSelfDiagnoseContract(message)
+            : name === "self_write_propose"
+              ? compileCodeSelfWriteContract(message)
+              : compileSkillAuthorContract(message)
+          ).budget
+        );
+        const helper =
+          name === "self_diagnose"
+            ? await this.runSelfDiagnose(claim, message, focus, turnCtx.recentTurns, subBudget, turnCtx.turnChars)
+            : name === "self_write_propose"
+              ? await this.runSelfWrite(claim, message, focus, turnCtx.recentTurns, subBudget, turnCtx.turnChars)
+              : await this.runSkill(claim, message, turnCtx.recentTurns, subBudget, turnCtx.turnChars);
+        if (!helper.ok) {
+          return { ok: false, error: capabilityFailureDetail(helper.failure) };
+        }
+        // A published self-write carries the merge-control keyboard: stash it for the
+        // turn's final report (the ONLY path that ever sets buttons, same as legacy).
+        if (helper.report.notifyButtons) turnCtx.notifyButtons = helper.report.notifyButtons;
+        // A self-write that did NOT publish (hard-deny / tests red / reviewer reject /
+        // publish error) reports ok with the pipeline's own notify text — stash that
+        // text as a code-owned notice so the user always sees the outcome verbatim.
+        else if (name === "self_write_propose") turnCtx.evolutionNotices.push(helper.answer);
+        return { ok: true, output: { answer: helper.answer } };
+      };
+    }
     if (name === "web_search") {
       return async (input) => {
         const query = typeof input.query === "string" ? input.query : "";
@@ -1925,7 +2041,9 @@ export class CoreWorker {
 
   private writeCompletionReport(
     claim: ClaimedRun,
-    input: CompletionReportInput
+    input: CompletionReportInput,
+    /** The turn's shared ledger, when one exists — `run_completed.budget_used` then reports ACTUAL capability calls. */
+    budget?: BudgetLedger
   ): CoreWorkerResult {
     const startedAt = Date.now();
     let report: { path: string; hash: string };
@@ -1963,7 +2081,12 @@ export class CoreWorker {
       };
     }
 
-    this.runStore.recordRunCompleted(claim.run_id, report.path, Date.now() - startedAt);
+    this.runStore.recordRunCompleted(
+      claim.run_id,
+      report.path,
+      Date.now() - startedAt,
+      budget ? { tool_calls: budget.usage().tool_calls } : undefined
+    );
 
     // The poll/dispatch loop delivers this terminal notification to the run's
     // original notify target (Telegram chat or local sink).
@@ -2230,6 +2353,40 @@ function gateBLine(gate: VerifyResult): string {
   if (gate.unscored) return "Gate B anchors: (unscored — verifier unavailable; advisory only)";
   const verdict = gate.passed ? "✓ passed" : "⚠ low score";
   return `Gate B anchors: ${verdict} — ${gate.score.toFixed(2)} vs threshold ${gate.threshold.toFixed(2)} (${gate.scoredPasses}-pass avg)`;
+}
+
+/**
+ * The runner's wall-clock cap for a loop tool. The evolution tools wrap whole legacy
+ * pipelines (multiple inner runner calls), so their outer race bound is the wrapped
+ * sub-contract's time ceiling (self-diagnose 30 min · code-self-write 60 min ·
+ * skill-author 10 min); the light tools keep their ⓪·1 bounds.
+ */
+function loopToolTimeoutMs(name: string, llmTimeoutMs: number): number {
+  switch (name) {
+    case "web_search":
+      return WEB_RUNNER_TIMEOUT_MS;
+    case "lesson_write":
+      // lesson_write may run distill + a consolidation rewrite (two chain calls).
+      return llmTimeoutMs * 2;
+    case "self_diagnose":
+      return compileSelfDiagnoseContract("").budget.time_minutes * 60_000;
+    case "self_write_propose":
+      return compileCodeSelfWriteContract("").budget.time_minutes * 60_000;
+    case "skill_author":
+      return compileSkillAuthorContract("").budget.time_minutes * 60_000;
+    default:
+      return llmTimeoutMs;
+  }
+}
+
+/**
+ * Append the code-owned evolution-step notices to the loop's outgoing reply (⓪·2).
+ * Empty notices ⇒ the answer passes through byte-identical (a successful publish needs
+ * no extra notice — its pipeline text + buttons already flow).
+ */
+function withEvolutionNotices(answer: string, notices: string[]): string {
+  if (notices.length === 0) return answer;
+  return [answer, "", "—— 自我修改状态 ——", ...notices].join("\n");
 }
 
 /** Report sources for a loop run: the capabilities that actually succeeded, prefixed. */

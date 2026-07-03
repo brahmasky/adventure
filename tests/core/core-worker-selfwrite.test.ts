@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CoreWorker } from "../../src/core/core-worker.js";
 import type { SelfWriteDeps } from "../../src/core/core-worker.js";
 import { INTENT_DISCIPLINE } from "../../src/capabilities/intent.js";
+import { LOOP_DISCIPLINE } from "../../src/prompt/composer.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -21,25 +22,37 @@ function projectRoot(): string {
   return dir;
 }
 
-let prevFlag: string | undefined;
-let prevLoopFlag: string | undefined;
+// Step ⓪·2 (ADR 0013): the self-write pipeline is invoked ONLY as the `self_write_propose`
+// loop tool — this suite drives the loop path (flag ON) with a scripted compose. The
+// pipeline INSIDE the tool boundary (writer → guard → test gate → reviewer → publish) is
+// unchanged; every orchestration assertion from the legacy suite still holds.
+// HERMETICITY: pin the env this suite asserts on (delete = code default), restore after.
+const PINNED_ENV = [
+  "HOUGE_INNER_LOOP_ENABLED",
+  "HOUGE_SELFWRITE_ENABLED",
+  "HOUGE_CODEX_ENABLED",
+  "HOUGE_MAX_CONSECUTIVE_CLARIFY",
+  "HOUGE_ASK_SYSTEM_PROMPT"
+] as const;
+let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
-  prevFlag = process.env.HOUGE_SELFWRITE_ENABLED;
-  // This suite asserts the LEGACY enum turn path — hermetic against a daemon env that
-  // arms the inner loop (ADR 0013): pin the flag to its default (off).
-  prevLoopFlag = process.env.HOUGE_INNER_LOOP_ENABLED;
-  delete process.env.HOUGE_INNER_LOOP_ENABLED;
+  savedEnv = {};
+  for (const key of PINNED_ENV) {
+    savedEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+  process.env.HOUGE_INNER_LOOP_ENABLED = "1";
 });
 afterEach(() => {
-  if (prevFlag === undefined) delete process.env.HOUGE_SELFWRITE_ENABLED;
-  else process.env.HOUGE_SELFWRITE_ENABLED = prevFlag;
-  if (prevLoopFlag === undefined) delete process.env.HOUGE_INNER_LOOP_ENABLED;
-  else process.env.HOUGE_INNER_LOOP_ENABLED = prevLoopFlag;
+  for (const key of PINNED_ENV) {
+    if (savedEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = savedEnv[key];
+  }
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
   dirs = [];
 });
 
-/** Enqueue a write-intent selfcode `turn`. */
+/** Enqueue a selfcode-shaped `turn`. */
 function turnRun(store: RunStore, message: string, key = `sw:${message}`): string {
   const intake = new Gateway(store).intake(
     buildTypedTaskEvent({
@@ -57,11 +70,30 @@ function turnRun(store: RunStore, message: string, key = `sw:${message}`): strin
   return intake.run_id;
 }
 
-/** Classifier returns selfcode; everything else echoes the question. */
-function llm(verdict = '{"intent":"selfcode","query":"intent router"}'): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
+/** The model proposes the self-write tool, then wraps up (the hinted terminal shape). */
+const PROPOSE = '{"action":"self_write_propose","input":{"focus":"intent router"},"why":"user asked for a code fix"}';
+const FINAL = '{"action":"final","answer":"已提交修复分支。"}';
+
+/**
+ * An LLM stub for the loop path: the classifier (INTENT_DISCIPLINE) returns `verdict`;
+ * each compose call (LOOP_DISCIPLINE) shifts the next scripted action; anything else
+ * echoes the question.
+ */
+function loopLlm(
+  verdict = '{"intent":"selfcode","query":"intent router"}',
+  composeScript: string[] = [PROPOSE, FINAL],
+  calls: Array<Record<string, unknown>> = []
+): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
+  let i = 0;
   return async (input) => {
+    calls.push(input);
     const system = typeof input.system === "string" ? input.system : "";
-    const answer = system.includes(INTENT_DISCIPLINE) ? verdict : `ANSWER: ${input.question}`;
+    let answer = `ANSWER: ${input.question}`;
+    if (system.includes(INTENT_DISCIPLINE)) answer = verdict;
+    else if (system.includes(LOOP_DISCIPLINE)) {
+      answer = composeScript[Math.min(i, composeScript.length - 1)] ?? "";
+      i += 1;
+    }
     return { ok: true, output: { question: input.question, answer, model: "fake", provider: "fake" } };
   };
 }
@@ -100,11 +132,28 @@ function deps(overrides: Partial<SelfWriteDeps>, log: { teardowns: string[]; wri
   return { ...base, ...overrides };
 }
 
-function makeWorker(store: RunStore, d: SelfWriteDeps, verdict?: string): CoreWorker {
-  return new CoreWorker(store, projectRoot(), llm(verdict), undefined, undefined, d);
+function makeWorker(
+  store: RunStore,
+  d: SelfWriteDeps,
+  llm = loopLlm(),
+  codex?: (input: Record<string, unknown>) => ToolAdapterResult
+): CoreWorker {
+  return new CoreWorker(store, projectRoot(), llm, undefined, codex, d);
 }
 
-describe("runSelfWrite (Phase 3 orchestration)", () => {
+/** The recorded `loop_step` digests (what the model — and the ledger — saw per step). */
+function stepDigests(store: RunStore, run_id: string): Array<{ action: string; ok: boolean; digest: string }> {
+  return store
+    .getLedgerEvents(run_id)
+    .filter((e) => e.event_type === "loop_step")
+    .map((e) => ({
+      action: String(e.payload.action),
+      ok: e.payload.ok === true,
+      digest: String(e.payload.result_digest)
+    }));
+}
+
+describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool boundary)", () => {
   it("happy path: all three checkers green → publishes the branch, records self_write_published, tears down the worktree", async () => {
     process.env.HOUGE_SELFWRITE_ENABLED = "1";
     const store = RunStore.openInMemory();
@@ -116,7 +165,8 @@ describe("runSelfWrite (Phase 3 orchestration)", () => {
 
       // The branch was published exactly once with the run-id name.
       expect(log.published).toEqual([`houge/selfwrite/${run_id}`]);
-      // The write task framed it as EDITING Houge's own source (DATA channel).
+      // The write task framed it as EDITING Houge's own source (DATA channel), anchored
+      // to the REAL user message — the model's focus was advisory only.
       expect(log.writeTasks[0]).toContain("EDITING");
       expect(log.writeTasks[0]).toContain("fix the intent router");
       // The worktree was torn down in the finally.
@@ -128,18 +178,32 @@ describe("runSelfWrite (Phase 3 orchestration)", () => {
       expect(events[0]!.payload.branch).toBe(`houge/selfwrite/${run_id}`);
       expect((events[0]!.payload.gate_results as Record<string, unknown>).reviewer).toBe("pass");
 
-      // The success notification is in Houge's voice and names the branch.
+      // The tool's step digest is the publish notification (Houge's voice, branch named).
+      const steps = stepDigests(store, run_id);
+      expect(steps[0]!).toMatchObject({ action: "self_write_propose", ok: true });
+      expect(steps[0]!.digest).toContain("🐒 Fixed");
+      expect(steps[0]!.digest).toContain(`houge/selfwrite/${run_id}`);
+
+      // BUDGET ISOLATION: the TURN ledger was charged exactly ONE reservation for the
+      // evolution step (classifier 1 + propose 1 = 2) — the pipeline's internal writer/
+      // reviewer calls ran on their own sub-contract ledger, never the turn's.
+      const completed = store.getLedgerEvents(run_id).filter((e) => e.event_type === "run_completed");
+      expect(completed[0]!.payload.budget_used).toEqual({ tool_calls: 2 });
+
+      // The turn recorded the loop's final reply under the selfcode hint intent.
       const turns = store.getRecentChatTurns("777", 6);
       const last = turns[turns.length - 1]!;
       expect(last.intent).toBe("selfcode");
-      expect(last.text).toContain("🐒 Fixed");
-      expect(last.text).toContain(`houge/selfwrite/${run_id}`);
+      expect(last.text).toBe("已提交修复分支。");
 
       // Phase 3.3: the PUBLISHED final-report notification carries the three merge-control buttons,
       // each targeting THIS run id, so a Telegram tap routes back to the right branch.
       const notif = store.claimNextNotification("test-claim", 60);
       expect(notif).not.toBeNull();
       expect(notif!.intent_type).toBe("final_report");
+      // A successful publish gets NO duplicate code-owned notice — the delivered text is
+      // exactly the model's final (the buttons + pipeline digest already carry the outcome).
+      expect(notif!.payload.text).toBe("已提交修复分支。");
       const buttons = notif!.payload.buttons;
       expect(buttons).toEqual([
         { text: "🔀 Merge & reload", data: `selfwrite:merge:${run_id}` },
@@ -175,16 +239,21 @@ describe("runSelfWrite (Phase 3 orchestration)", () => {
       expect(store.getLedgerEvents(run_id).some((e) => e.event_type === "self_write_published")).toBe(false);
       // Worktree torn down.
       expect(log.teardowns).toEqual(["/fake/wt"]);
-      // Hard-deny notification names the locked surface and that it's Paco's to make.
-      const turns = store.getRecentChatTurns("777", 6);
-      const last = turns[turns.length - 1]!;
-      expect(last.text).toContain("package.json");
-      expect(last.text.toLowerCase()).toContain("locked surface");
+      // The hard-deny digest names the locked surface and that it's Paco's to make.
+      const steps = stepDigests(store, run_id);
+      expect(steps[0]!.digest).toContain("package.json");
+      expect(steps[0]!.digest.toLowerCase()).toContain("locked surface");
 
       // Phase 3.3: a BLOCKED notification carries NO merge-control buttons (only a publish does).
       const notif = store.claimNextNotification("test-claim", 60);
       expect(notif).not.toBeNull();
       expect(notif!.payload.buttons).toBeUndefined();
+      // CODE-OWNED surfacing: the mocked model's final answer ("已提交修复分支。") says
+      // nothing about the deny — the hard-deny text is APPENDED by code regardless.
+      const text = String(notif!.payload.text);
+      expect(text).toContain("自我修改状态");
+      expect(text).toContain("package.json");
+      expect(text.toLowerCase()).toContain("locked surface");
     } finally {
       store.close();
     }
@@ -207,8 +276,8 @@ describe("runSelfWrite (Phase 3 orchestration)", () => {
       expect(failed.length).toBe(1);
       expect(String(failed[0]!.payload.reason)).toContain("tests red");
       expect(log.teardowns).toEqual(["/fake/wt"]);
-      const turns = store.getRecentChatTurns("777", 6);
-      expect(turns[turns.length - 1]!.text.toLowerCase()).toContain("tests red");
+      const steps = stepDigests(store, run_id);
+      expect(steps[0]!.digest.toLowerCase()).toContain("tests red");
     } finally {
       store.close();
     }
@@ -231,14 +300,14 @@ describe("runSelfWrite (Phase 3 orchestration)", () => {
       const failed = store.getLedgerEvents(run_id).filter((e) => e.event_type === "self_write_failed");
       expect(failed.length).toBe(1);
       expect(String(failed[0]!.payload.reason)).toContain("reviewer rejected");
-      const turns = store.getRecentChatTurns("777", 6);
-      expect(turns[turns.length - 1]!.text).toContain("does not actually fix it");
+      const steps = stepDigests(store, run_id);
+      expect(steps[0]!.digest).toContain("does not actually fix it");
     } finally {
       store.close();
     }
   });
 
-  it("worktree teardown ALWAYS runs even when a mid-stage throws (finally invariant)", async () => {
+  it("worktree teardown ALWAYS runs even when a mid-stage throws (finally invariant; the runner absorbs the throw)", async () => {
     process.env.HOUGE_SELFWRITE_ENABLED = "1";
     const store = RunStore.openInMemory();
     const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
@@ -246,10 +315,20 @@ describe("runSelfWrite (Phase 3 orchestration)", () => {
       const run_id = turnRun(store, "fix the router");
       // The test gate throws unexpectedly (not a clean red result) AFTER the worktree exists.
       const d = deps({ runTestGate: () => { throw new Error("gate exploded"); } }, log);
-      // The throw propagates (no swallow), but the worktree must STILL be torn down by the finally.
-      await expect(makeWorker(store, d).executeRun(run_id, "w")).rejects.toThrow(/gate exploded/);
+      // On the loop path the runner catches the adapter throw (a failed step, reported to
+      // the model) — but the worktree must STILL be torn down by runSelfWrite's finally.
+      const result = await makeWorker(store, d).executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
       expect(log.teardowns).toEqual(["/fake/wt"]); // no worktree leak on throw
       expect(log.published).toEqual([]); // nothing published on a throw
+      const steps = stepDigests(store, run_id);
+      expect(steps[0]!).toMatchObject({ action: "self_write_propose", ok: false });
+      // CODE-OWNED surfacing: the absorbed throw still reaches the user verbatim.
+      const notif = store.claimNextNotification("test-claim", 60);
+      expect(notif).not.toBeNull();
+      expect(String(notif!.payload.text)).toContain("自我修改状态");
+      expect(String(notif!.payload.text)).toContain("self_write_propose step failed");
+      expect(String(notif!.payload.text)).toContain("gate exploded");
     } finally {
       store.close();
     }
@@ -620,27 +699,148 @@ describe("runSelfWrite (Phase 3 orchestration)", () => {
     }
   });
 
-  it("HOUGE_SELFWRITE_ENABLED=false: a write-intent selfcode does NOT write — falls back to diagnose", async () => {
-    delete process.env.HOUGE_SELFWRITE_ENABLED;
+  it("once-per-turn: a second self_write_propose in the same turn is refused WITHOUT executing", async () => {
+    process.env.HOUGE_SELFWRITE_ENABLED = "1";
     const store = RunStore.openInMemory();
     const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
-    // Codex (read-only diagnose) is also off → graceful degrade to a normal answer; assert no write path runs.
-    const prevCodex = process.env.HOUGE_CODEX_ENABLED;
-    delete process.env.HOUGE_CODEX_ENABLED;
     try {
-      const run_id = turnRun(store, "fix the intent router so it sees your identity");
-      const d = deps({}, log);
-      const result = await makeWorker(store, d).executeRun(run_id, "w");
+      const run_id = turnRun(store, "fix the router");
+      // Second propose uses a DIFFERENT input, so the loop's identical-action guard does
+      // not catch it — the once-per-turn guard must.
+      const worker = makeWorker(
+        store,
+        deps({}, log),
+        loopLlm(undefined, [
+          PROPOSE,
+          '{"action":"self_write_propose","input":{"focus":"another angle"}}',
+          FINAL
+        ])
+      );
+      const result = await worker.executeRun(run_id, "w");
       expect(result.status).toBe("completed");
 
-      // The write stack was never entered: no worktree, no write task, no publish, no events.
+      // The pipeline ran ONCE; one branch, one worktree, one publish.
+      expect(log.writeTasks.length).toBe(1);
+      expect(log.published).toEqual([`houge/selfwrite/${run_id}`]);
+      const steps = stepDigests(store, run_id);
+      expect(steps[0]!).toMatchObject({ action: "self_write_propose", ok: true });
+      expect(steps[1]!).toMatchObject({ action: "self_write_propose", ok: false });
+      expect(steps[1]!.digest).toContain("already ran this turn");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("BUDGET ISOLATION (live-gate regression): a drained turn ledger cannot starve the writer/reviewer internals", async () => {
+    // run_8c1091be shape: earlier loop steps consume most of the turn budget (6), then
+    // self_write_propose fires. Its internals (2 writer passes here: red → green, plus
+    // the reviewer) MUST run on their own code-self-write sub-ledger — on the shared
+    // turn ledger the first writer call would die with "Tool-call budget exhausted".
+    process.env.HOUGE_SELFWRITE_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
+    try {
+      const run_id = turnRun(store, "fix the router");
+      let gateCalls = 0;
+      const d = deps({
+        runTestGate: (): TestGateResult => {
+          gateCalls += 1;
+          return gateCalls === 1 ? { green: false, stage: "test", output: "1 failing" } : { green: true };
+        }
+      }, log);
+      const worker = makeWorker(
+        store,
+        d,
+        loopLlm(undefined, [
+          // Four filler steps: classifier(1) + these(4) = 5 of 6 turn reservations spent.
+          '{"action":"llm_answer","input":{"question":"q1"}}',
+          '{"action":"llm_answer","input":{"question":"q2"}}',
+          '{"action":"llm_answer","input":{"question":"q3"}}',
+          '{"action":"llm_answer","input":{"question":"q4"}}',
+          PROPOSE, // the 6th and LAST turn reservation
+          FINAL
+        ])
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+
+      // The internals ran to publish on the sub-ledger: two writer passes + reviewer.
+      expect(log.writeTasks.length).toBe(2);
+      expect(log.published).toEqual([`houge/selfwrite/${run_id}`]);
+      expect(store.getLedgerEvents(run_id).some((e) => e.event_type === "self_write_published")).toBe(true);
+      const steps = stepDigests(store, run_id);
+      expect(steps[4]!).toMatchObject({ action: "self_write_propose", ok: true });
+      expect(steps[4]!.digest).toContain("🐒 Fixed");
+      // budget_used reports the TURN ledger's count (6 = 1 classify + 4 fillers + 1
+      // evolution step) — the sub-ledger's internal calls never touched it.
+      const completed = store.getLedgerEvents(run_id).filter((e) => e.event_type === "run_completed");
+      expect(completed[0]!.payload.budget_used).toEqual({ tool_calls: 6 });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("ARMING (M3): HOUGE_SELFWRITE_ENABLED off → unlisted in the manifest prompt AND denied when invoked anyway", async () => {
+    delete process.env.HOUGE_SELFWRITE_ENABLED; // default OFF
+    const store = RunStore.openInMemory();
+    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
+    const calls: Array<Record<string, unknown>> = [];
+    try {
+      const run_id = turnRun(store, "fix the intent router so it sees your identity");
+      const worker = makeWorker(store, deps({}, log), loopLlm(undefined, [PROPOSE, FINAL], calls));
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+
+      // Unlisted: the rendered manifest prompt never described the tool.
+      const compose = calls.find((c) => String(c.system).includes(LOOP_DISCIPLINE));
+      expect(compose).toBeDefined();
+      expect(String(compose!.question)).not.toContain("- self_write_propose:");
+      // Unreachable: the scripted invocation was denied (unknown capability), and the
+      // write stack was never entered.
+      const steps = stepDigests(store, run_id);
+      expect(steps[0]!).toMatchObject({ action: "self_write_propose", ok: false });
       expect(log.writeTasks).toEqual([]);
       expect(log.published).toEqual([]);
       expect(log.teardowns).toEqual([]);
       expect(store.getLedgerEvents(run_id).some((e) => String(e.event_type).startsWith("self_write_"))).toBe(false);
+      // CODE-OWNED surfacing: the denial reaches the user even though the model's final
+      // answer never mentions the tool.
+      const notif = store.claimNextNotification("test-claim", 60);
+      expect(notif).not.toBeNull();
+      expect(String(notif!.payload.text)).toContain("自我修改状态");
+      expect(String(notif!.payload.text)).toContain("self_write_propose step failed");
     } finally {
-      if (prevCodex === undefined) delete process.env.HOUGE_CODEX_ENABLED;
-      else process.env.HOUGE_CODEX_ENABLED = prevCodex;
+      store.close();
+    }
+  });
+
+  it("LEGACY (flag off): selfcode ALWAYS diagnoses — write verbs no longer reach the write stack (⓪·2)", async () => {
+    // The WRITE_SIGNALS verb table is gone: even an explicit write-verb message with the
+    // channel ARMED stays read-only on the legacy enum path (the write path is loop-only).
+    delete process.env.HOUGE_INNER_LOOP_ENABLED;
+    process.env.HOUGE_SELFWRITE_ENABLED = "1";
+    process.env.HOUGE_CODEX_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
+    const codexCalls: Array<Record<string, unknown>> = [];
+    try {
+      const run_id = turnRun(store, "修复一下 intent router — fix it so it sees your identity");
+      const codex = (input: Record<string, unknown>): ToolAdapterResult => {
+        codexCalls.push(input);
+        return { ok: true, output: { diagnosis: "ROOT CAUSE: x", model: "fake", bin: "codex" } };
+      };
+      const result = await makeWorker(store, deps({}, log), loopLlm(), codex).executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+
+      // Read-only Codex consult ran; the write stack was NEVER entered.
+      expect(codexCalls.length).toBe(1);
+      expect(log.writeTasks).toEqual([]);
+      expect(log.published).toEqual([]);
+      expect(log.teardowns).toEqual([]);
+      expect(store.getLedgerEvents(run_id).some((e) => String(e.event_type).startsWith("self_write_"))).toBe(false);
+      const turns = store.getRecentChatTurns("777", 6);
+      expect(turns[turns.length - 1]!.intent).toBe("selfcode");
+    } finally {
       store.close();
     }
   });

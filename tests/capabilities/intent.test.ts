@@ -3,7 +3,6 @@ import {
   buildIntentQuestion,
   buildIntentSystemPrompt,
   chatContextSince,
-  classifySelfcodeMode,
   countTrailingClarifyTurns,
   feedTurnText,
   INTENT_DISCIPLINE,
@@ -185,37 +184,7 @@ describe("chat-context caps (env-configurable, code defaults)", () => {
   });
 });
 
-describe("selfcode write-intent sub-route (Phase 3)", () => {
-  it("classifies explicit change verbs as write", () => {
-    // English change verbs.
-    expect(classifySelfcodeMode("fix the intent router so it stops asking which 猴哥")).toBe("write");
-    expect(classifySelfcodeMode("change your classifier to see your identity")).toBe("write");
-    expect(classifySelfcodeMode("implement a guard for that case")).toBe("write");
-    expect(classifySelfcodeMode("make it stop asking me twice")).toBe("write");
-    expect(classifySelfcodeMode("go fix your selfcode router")).toBe("write");
-    // Chinese change verbs.
-    expect(classifySelfcodeMode("修复一下意图分类器")).toBe("write");
-    expect(classifySelfcodeMode("把这个实现一下")).toBe("write");
-  });
-
-  it("classifies read/explain verbs as diagnose (read before write)", () => {
-    expect(classifySelfcodeMode("why did you ask which 猴哥?")).toBe("diagnose");
-    expect(classifySelfcodeMode("explain how your intent classifier works")).toBe("diagnose");
-    expect(classifySelfcodeMode("read your classifier and tell me what it does")).toBe("diagnose");
-    expect(classifySelfcodeMode("look at your router")).toBe("diagnose");
-    expect(classifySelfcodeMode("为什么你问哪个猴哥")).toBe("diagnose");
-  });
-
-  it("defaults to diagnose when ambiguous or empty (the safe direction)", () => {
-    expect(classifySelfcodeMode("your intent classifier")).toBe("diagnose");
-    expect(classifySelfcodeMode("   ")).toBe("diagnose");
-    expect(classifySelfcodeMode("")).toBe("diagnose");
-  });
-
-  it("an explicit write verb wins even alongside a read verb", () => {
-    expect(classifySelfcodeMode("read your classifier and then fix it")).toBe("write");
-  });
-
+describe("self-write arming flag (step ⓪·2: arms the self_write_propose manifest entry)", () => {
   it("resolveSelfWriteEnabled is OFF by default, on only for truthy flags", () => {
     expect(resolveSelfWriteEnabled({})).toBe(false);
     expect(resolveSelfWriteEnabled({ HOUGE_SELFWRITE_ENABLED: "false" })).toBe(false);
