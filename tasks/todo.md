@@ -327,6 +327,21 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
         This IS the live gate for H1–H3 (reviewer fallback exercised, no timeout truncation, any
         fallback reply in Chinese).
   - Parked for ⓪·3 (not here): duplicate timezone lessons in the ask block = reconcile/supersede.
+- **⓪·2c — SELF-WRITE UX** ⏳ **/goal IN PROGRESS 2026-07-03** (Paco: diff unreadable on Telegram;
+  no confirmation after merge/reload)
+  - [ ] U1 **Readable [View diff] message**: lead with `git diff --stat` summary · cleaned compact
+        hunks (strip index/---/+++ noise, per-file headers, head-capped per file — today's tail-cut
+        loses the filenames) · full `.patch` attached via sendDocument when over the inline cap
+        (zero-dep multipart; optional client method). NO GitHub compare link (branch never pushed
+        pre-merge — would 404).
+  - [ ] U2 **Reload marker + boot confirmation** (= stage 1 of ADR 0012 D4 health probe): green
+        merge writes a durable marker (sha+subject) before restart; daemon startup consumes it
+        exactly once and notifies "✅ 重启成功 — running <sha> <subject>". No marker → no message;
+        crash-loop detection + auto-rollback stays in the spine interleave (D4 proper).
+  - [ ] U3 gates: typecheck · test · build · deps {} · hermetic sweep · independent verification;
+        merge-order invariants stay asserted (merge→build→test→notify→push→restart).
+  - [ ] U4 LIVE gate: one small real Houge self-write end-to-end — [View diff] actually readable
+        on mobile → [Merge & reload] → ✅ boot confirmation arrives on Telegram.
 - **⓪·3 — spine Slice A on the loop** (rating, reconcile/supersede, reuse-value+decay, AVOID; A1
   attribution already emitted by loop observation hooks). LIVE gate = spine A9 (visible compounding).
 - **⓪·4 — retire legacy paths** (flag default ON, executeTurn if-chain + per-intent handlers removed,

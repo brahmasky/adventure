@@ -84,6 +84,7 @@ function makeDeps(log: DepsLog, opts: { mergeOutcome?: MergeOutcome; diff?: stri
     build: () => ({ ok: !(outcome.kind === "reverted" && outcome.stage === "build") }),
     testGate: () => ({ green: !(outcome.kind === "reverted" && outcome.stage === "test"), stage: "test", output: "red" }),
     deleteBranch: (b) => { log.discarded.push(b); },
+    writeReloadMarker: () => {},
     notifyDurable: (t) => { log.durable.push(t); notifyDurable(t); },
     restart: () => {},
     push: () => {}
@@ -266,6 +267,7 @@ describe("handleSelfWriteAction", () => {
         build: () => ({ ok: true }),
         testGate: () => ({ green: true, stage: "test", output: "" }),
         deleteBranch: () => {},
+        writeReloadMarker: () => {},
         notifyDurable: (t) => { durables.push(t); notifyDurable(t); },
         restart: () => { restarts.push(1); },
         push: () => {}
@@ -389,6 +391,143 @@ describe("handleSelfWriteAction", () => {
     } finally {
       store.close();
     }
+  });
+
+  describe("[View diff] rendering (⓪·2c U1)", () => {
+    const SMALL_DIFF = [
+      "diff --git a/src/skills/clock.ts b/src/skills/clock.ts",
+      "index abc123..def456 100644",
+      "--- a/src/skills/clock.ts",
+      "+++ b/src/skills/clock.ts",
+      "@@ -10,4 +10,5 @@ export function now() {",
+      " const d = new Date();",
+      "-return d.toString();",
+      "+return d.toISOString();",
+      " }"
+    ].join("\n");
+
+    /** 200 added lines in one file — far past the per-file head cap and the inline cap. */
+    function bigDiff(): string {
+      const lines = [
+        "diff --git a/src/big.ts b/src/big.ts",
+        "index 1111111..2222222 100644",
+        "--- a/src/big.ts",
+        "+++ b/src/big.ts",
+        "@@ -1,1 +1,200 @@"
+      ];
+      for (let i = 0; i < 200; i++) lines.push(`+const filler_${i} = "${"x".repeat(40)}";`);
+      return lines.join("\n");
+    }
+
+    interface DocInput { chat_id: string; filename: string; content: string; caption?: string }
+
+    function makeDocClient(sent: string[], docs: DocInput[], docThrows = false) {
+      return {
+        async sendMessage(input: { chat_id: string; text: string }) {
+          sent.push(input.text);
+          return { message_id: sent.length };
+        },
+        async sendDocument(input: DocInput) {
+          if (docThrows) throw new Error("sendDocument failed: HTTP 413");
+          docs.push(input);
+        }
+      };
+    }
+
+    function view(store: RunStore, client: { sendMessage: (i: { chat_id: string; text: string }) => Promise<{ message_id: number }> }, diff: string): Promise<void> {
+      const { deps: dl } = freshLogs();
+      return handleSelfWriteAction({
+        event: event("view"),
+        telegramClient: client,
+        projectRoot: "/fake/root",
+        store,
+        makeDeps: makeDeps(dl, { diff }),
+        resolvePush: () => false
+      });
+    }
+
+    it("small diff → ONE fully-inline message: header, stat summary, compact body; no document", async () => {
+      const store = RunStore.openInMemory();
+      const sent: string[] = [];
+      const docs: DocInput[] = [];
+      try {
+        await view(store, makeDocClient(sent, docs), SMALL_DIFF);
+        expect(sent.length).toBe(1);
+        const msg = sent[0];
+        expect(msg).toContain(`Diff for \`${BRANCH}\``);
+        expect(msg).toContain("src/skills/clock.ts | +1 −1");
+        expect(msg).toContain("1 file changed, +1 −1");
+        expect(msg).toContain("📄 src/skills/clock.ts");
+        expect(msg).toContain("@ 10");
+        expect(msg).toContain("+return d.toISOString();");
+        expect(msg).toContain("-return d.toString();");
+        // Noise stripped.
+        expect(msg).not.toContain("index abc123");
+        expect(msg).not.toContain("+++ b/");
+        expect(msg).not.toContain("diff --git");
+        // Fully inline → no attachment, no truncation note.
+        expect(docs).toEqual([]);
+        expect(msg).not.toContain("full patch unavailable");
+      } finally {
+        store.close();
+      }
+    });
+
+    it("oversized diff → compact inline message PLUS the full raw diff as a .patch document", async () => {
+      const store = RunStore.openInMemory();
+      const sent: string[] = [];
+      const docs: DocInput[] = [];
+      const raw = bigDiff();
+      try {
+        await view(store, makeDocClient(sent, docs), raw);
+        expect(sent.length).toBe(1);
+        expect(sent[0]).toContain("src/big.ts | +200 −0");
+        expect(sent[0]).toContain("… (+160 more lines)"); // per-file head cap at 40
+        expect(sent[0]!.length).toBeLessThanOrEqual(4096);
+        expect(docs).toEqual([
+          {
+            chat_id: CHAT_ID,
+            filename: `${RUN_ID}.patch`,
+            content: raw,
+            caption: `Full diff for ${BRANCH}`
+          }
+        ]);
+      } finally {
+        store.close();
+      }
+    });
+
+    it("oversized diff on a client WITHOUT sendDocument → truncation note, no crash", async () => {
+      const store = RunStore.openInMemory();
+      const sent: string[] = [];
+      const sendOnly = {
+        async sendMessage(input: { chat_id: string; text: string }) {
+          sent.push(input.text);
+          return { message_id: sent.length };
+        }
+      };
+      try {
+        await view(store, sendOnly, bigDiff());
+        expect(sent.length).toBe(1);
+        expect(sent[0]).toContain("(diff truncated; full patch unavailable on this client)");
+      } finally {
+        store.close();
+      }
+    });
+
+    it("a failing sendDocument never loses the inline message or crashes the handler", async () => {
+      const store = RunStore.openInMemory();
+      const sent: string[] = [];
+      const docs: DocInput[] = [];
+      try {
+        await view(store, makeDocClient(sent, docs, true), bigDiff());
+        expect(sent.length).toBe(1);
+        expect(sent[0]).toContain("📄 src/big.ts");
+        expect(docs).toEqual([]);
+      } finally {
+        store.close();
+      }
+    });
   });
 
   it("never throws even if the merge deps blow up — maps to a sent message", async () => {

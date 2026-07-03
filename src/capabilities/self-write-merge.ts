@@ -14,8 +14,9 @@ import { runTestGate, type TestGateResult } from "../run/test-gate.js";
  * THE CRITICAL ORDER for [Merge & reload]:
  *   capture preMergeRef → merge → build → testGate
  *     • build/testGate RED → resetMerge to preMergeRef, NO restart, NO push (daemon keeps old code)
- *     • GREEN → notifyDurable("merged, reloading…") BEFORE restart() (so the message survives the
- *       SIGTERM) → push if requested → detached launchctl kickstart (the spike pattern)
+ *     • GREEN → writeReloadMarker (boot confirmation, ⓪·2c U2) → notifyDurable("merged,
+ *       reloading…") BEFORE restart() (so the message survives the SIGTERM) → push if requested
+ *       → detached launchctl kickstart (the spike pattern)
  *
  * Pure-ish + dependency-injected ({@link MergeActionDeps}): the real git/launchctl/build live
  * ONLY in {@link defaultMergeActionDeps}; the exports below are fully unit-testable with mocks,
@@ -50,6 +51,11 @@ export interface MergeActionDeps {
   testGate(): TestGateResult;
   /** `git branch -D branch`. */
   deleteBranch(branch: string): void;
+  /**
+   * Durably record the merged HEAD (sha + subject + branch) — called ONLY on a green gate,
+   * BEFORE notifyDurable/restart, so the rebooted daemon can confirm the reload (⓪·2c U2).
+   */
+  writeReloadMarker(branch: string, into: string): void;
   /** Write to the durable outbox BEFORE the restart (so the message survives the kill). */
   notifyDurable(text: string): void;
   /** DETACHED launchctl kickstart — the validated spike pattern (kills + relaunches us). */
@@ -121,7 +127,8 @@ export type MergeOutcome =
  *  - merge throws (conflict) → `merge_conflict` (leave `into` clean; no build/restart).
  *  - build RED → resetMerge + `reverted` (stage "build"); NO restart, NO push.
  *  - testGate RED → resetMerge + `reverted` (stage "test"); NO restart, NO push.
- *  - GREEN → notifyDurable("merged, reloading…") BEFORE restart() → push if requested → restart().
+ *  - GREEN → writeReloadMarker → notifyDurable("merged, reloading…") BEFORE restart() → push if
+ *    requested → restart().
  *
  * `into` defaults to "main". `push` defaults to false.
  */
@@ -171,7 +178,14 @@ export function mergeAndReload(params: {
       return { kind: "reverted", stage: "test", detail: gate.output };
     }
 
-    // GREEN. The "reloading" message MUST be durable and written BEFORE the restart kills us.
+    // GREEN. Record the reload marker FIRST (the next boot's confirmation reads it), then the
+    // durable "reloading" beacon — both must be on disk BEFORE the restart kills us. A marker
+    // failure must not block the (already green) reload: the confirmation is a nicety.
+    try {
+      deps.writeReloadMarker(branch, into);
+    } catch {
+      // best-effort — the boot confirmation just won't fire
+    }
     deps.notifyDurable("merged, reloading…");
     if (push) {
       deps.push(into);
@@ -214,6 +228,8 @@ export function defaultMergeActionDeps(opts: {
   dir: string;
   env?: NodeJS.ProcessEnv;
   notifyDurable: (text: string) => void;
+  /** Persist the reload marker (⓪·2c U2); production wires RunStore.writeReloadMarker. */
+  writeReloadMarker?: (marker: { sha: string; subject: string; branch: string }) => void;
 }): MergeActionDeps {
   const { dir, notifyDurable } = opts;
   const env = opts.env ?? process.env;
@@ -285,6 +301,14 @@ export function defaultMergeActionDeps(opts: {
     },
     deleteBranch(branch: string): void {
       git("branch", "-D", branch);
+    },
+    writeReloadMarker(branch: string, into: string): void {
+      if (!opts.writeReloadMarker) return;
+      opts.writeReloadMarker({
+        sha: git("rev-parse", into).trim(),
+        subject: git("log", "-1", "--format=%s", into).trim(),
+        branch
+      });
     },
     notifyDurable,
     restart(): void {

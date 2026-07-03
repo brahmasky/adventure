@@ -119,7 +119,8 @@ function expectTablesAndIndexes(store: RunStore): void {
     "skipped_telegram_updates",
     "telegram_command_audit",
     "telegram_command_audit_actor_chat_time_idx",
-    "telegram_command_audit_decision_time_idx"
+    "telegram_command_audit_decision_time_idx",
+    "reload_marker"
   ]));
 
   const processedColumns = db(store).prepare("PRAGMA table_info(processed_triggers)")
@@ -582,12 +583,12 @@ describe("RunStore approval storage", () => {
       expect(store.getLedgerEvents("run_m1")).toHaveLength(1);
       expectTablesAndIndexes(store);
       expect(db(store).prepare("SELECT COUNT(*) AS count FROM schema_migrations")
-        .get<{ count: number }>()?.count).toBe(5);
+        .get<{ count: number }>()?.count).toBe(6);
       store.close();
 
       store = RunStore.open(path);
       expect(db(store).prepare("SELECT COUNT(*) AS count FROM schema_migrations")
-        .get<{ count: number }>()?.count).toBe(5);
+        .get<{ count: number }>()?.count).toBe(6);
       expect(store.getRunStatus("run_m1")?.state).toBe("completed");
     } finally {
       store?.close();

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
 import { CoreWorker } from "../core/core-worker.js";
 import type { TelegramAllowlist } from "../domain/types.js";
@@ -38,6 +39,8 @@ export interface RunTelegramDaemonOptions {
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   /** Injectable clock for deterministic heartbeats in tests. */
   now?: () => string;
+  /** Injectable for tests: current HEAD sha (reload-marker match, ⓪·2c U2). Default shells git. */
+  resolveHead?: () => string;
 }
 
 export interface RunTelegramDaemonResult {
@@ -106,6 +109,19 @@ export async function runTelegramDaemon(
     telegram: new TelegramNotificationAdapter(options.telegramClient)
   });
 
+  // ⓪·2c U2: consume the reload marker (exactly once — consumption deletes it) and enqueue
+  // the boot confirmation, then flush the outbox so it AND the pre-restart "merged, reloading…"
+  // beacon arrive at boot instead of after the first long-poll times out.
+  notifyReloadOnBoot(options);
+  try {
+    for (;;) {
+      const result = await dispatcher.dispatchOnce("telegram-daemon-dispatcher");
+      if (result.status === "idle") break;
+    }
+  } catch {
+    // Best-effort boot flush — the poll loop re-dispatches queued notifications anyway.
+  }
+
   let cycles = 0;
   let failures = 0;
 
@@ -160,4 +176,44 @@ export async function runTelegramDaemon(
   }
 
   return { cycles, consecutive_failures: failures };
+}
+
+/**
+ * Consume the self-write reload marker (⓪·2c U2, stage 1 of ADR 0012 D4) and enqueue the
+ * boot confirmation `✅ 重启成功 — 现在运行 <shortSha>「<subject>」` through the durable outbox.
+ * Exactly-once by construction: consumption deletes the marker, so the next restart stays
+ * silent. A HEAD that no longer matches the marker (e.g. a reset after the merge) still
+ * notifies, with a mismatch note. NEVER throws — a marker error must not stop the daemon.
+ */
+function notifyReloadOnBoot(options: RunTelegramDaemonOptions): void {
+  try {
+    const marker = options.store.consumeReloadMarker();
+    if (!marker) return;
+    const chat = options.allowlist.chats[0];
+    if (!chat) return;
+
+    let head = "";
+    try {
+      head = options.resolveHead
+        ? options.resolveHead()
+        : execFileSync("git", ["-C", options.projectRoot, "rev-parse", "HEAD"], {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"]
+          }).trim();
+    } catch {
+      // Unknown HEAD → skip the mismatch check, still confirm the reload.
+    }
+
+    const mismatch = head && head !== marker.sha ? "（当前 HEAD 与合并记录不一致）" : "";
+    new NotificationOutbox(options.store).enqueue({
+      target: { kind: "telegram", chat_id: String(chat.telegram_chat_id) },
+      intent_type: "final_report",
+      idempotency_key: `selfwrite:reloaded:${marker.sha}:${marker.merged_at}`,
+      correlation_id: `selfwrite:reload:${marker.sha}`,
+      payload: { text: `✅ 重启成功 — 现在运行 ${marker.sha.slice(0, 7)}「${marker.subject}」${mismatch}` }
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[telegram-daemon] reload-marker boot check failed: ${message}`);
+  }
 }

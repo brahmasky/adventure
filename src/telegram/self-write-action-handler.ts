@@ -11,10 +11,12 @@ import { NotificationOutbox } from "../notifications/notification-outbox.js";
 import { selfWriteBranchName } from "../run/branch-publish.js";
 import type { RunStore } from "../run/run-store.js";
 import type { SelfWriteActionEvent } from "../triggers/telegram-trigger-adapter.js";
+import { formatDiffMessage } from "./diff-format.js";
 import type {
   TelegramAnswerCallbackQueryInput,
   TelegramEditMessageReplyMarkupInput,
   TelegramInlineKeyboardMarkup,
+  TelegramSendDocumentInput,
   TelegramSendMessageInput,
   TelegramSendMessageResult
 } from "./telegram-client.js";
@@ -50,6 +52,8 @@ export interface SelfWriteActionTelegramClient {
   sendMessage(input: TelegramSendMessageInput): Promise<TelegramSendMessageResult>;
   answerCallbackQuery?(input: TelegramAnswerCallbackQueryInput): Promise<void>;
   editMessageReplyMarkup?(input: TelegramEditMessageReplyMarkupInput): Promise<void>;
+  /** Attach a file (the full `.patch` when a diff overflows the inline cap). Optional like the rest. */
+  sendDocument?(input: TelegramSendDocumentInput): Promise<void>;
 }
 
 export interface HandleSelfWriteActionOptions {
@@ -66,9 +70,6 @@ export interface HandleSelfWriteActionOptions {
   /** Injectable for tests: resolve whether [Merge & reload] also pushes. Defaults to the env. */
   resolvePush?: () => boolean;
 }
-
-/** Bound the diff a callback reply can carry (Telegram caps a message ~4096 chars). */
-const DIFF_REPLY_CAP = 3_500;
 
 export async function handleSelfWriteAction(options: HandleSelfWriteActionOptions): Promise<void> {
   const { event, telegramClient, projectRoot, store } = options;
@@ -89,14 +90,20 @@ export async function handleSelfWriteAction(options: HandleSelfWriteActionOption
     };
     const deps = options.makeDeps
       ? options.makeDeps(notifyDurable)
-      : defaultMergeActionDeps({ dir: projectRoot, env: process.env, notifyDurable });
+      : defaultMergeActionDeps({
+          dir: projectRoot,
+          env: process.env,
+          notifyDurable,
+          // The reload marker rides the same durable store as the outbox (⓪·2c U2).
+          writeReloadMarker: (marker) => store.writeReloadMarker(marker)
+        });
 
     switch (event.action) {
       case "view": {
         // Read-only + repeatable: leave the buttons in place.
         const result = viewDiff({ branch, deps });
         if (result.ok) {
-          await sendDiff(telegramClient, event.chat_id, branch, result.diff);
+          await sendDiff(telegramClient, event, branch, result.diff);
         } else {
           await send(telegramClient, event.chat_id, `Couldn't show \`${branch}\`: ${result.reason}.`);
         }
@@ -171,20 +178,48 @@ async function reportMergeOutcome(
   }
 }
 
-/** Send a bounded diff (or a "no changes" note for an empty diff). */
+/**
+ * Send the diff as a readable message: stat summary + compact body (⓪·2c U1). A small diff
+ * renders fully inline; when the inline view loses content, the full patch ALSO ships as a
+ * document attachment (when the client can), or the message carries a truncation note.
+ * Empty diff → a "no changes" note.
+ */
 async function sendDiff(
   client: SelfWriteActionTelegramClient,
-  chat_id: string,
+  event: SelfWriteActionEvent,
   branch: string,
   diff: string
 ): Promise<void> {
+  const chat_id = event.chat_id;
   const trimmed = diff.trim();
   if (trimmed.length === 0) {
     await send(client, chat_id, `\`${branch}\` has no changes against main.`);
     return;
   }
-  const body = trimmed.length > DIFF_REPLY_CAP ? `…\n${trimmed.slice(-DIFF_REPLY_CAP)}` : trimmed;
-  await send(client, chat_id, `Diff for \`${branch}\`:\n\n\`\`\`\n${body}\n\`\`\``);
+  const rendered = formatDiffMessage(branch, trimmed);
+  if (!rendered.truncated) {
+    await send(client, chat_id, rendered.text);
+    return;
+  }
+  if (client.sendDocument) {
+    await send(client, chat_id, rendered.text);
+    try {
+      await client.sendDocument({
+        chat_id,
+        filename: `${event.runId}.patch`,
+        content: trimmed,
+        caption: `Full diff for ${branch}`
+      });
+    } catch {
+      // The compact inline view already went out; a failed attach is recoverable.
+    }
+    return;
+  }
+  await send(
+    client,
+    chat_id,
+    `${rendered.text}\n(diff truncated; full patch unavailable on this client)`
+  );
 }
 
 /** Clear a message's inline keyboard (idempotency: a tapped action can't be re-tapped). */

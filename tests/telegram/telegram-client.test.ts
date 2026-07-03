@@ -109,4 +109,53 @@ describe("TelegramClient", () => {
     expect(calledUrl).toContain("/editMessageReplyMarkup");
     expect(JSON.parse(body)).toEqual({ chat_id: "222", message_id: 90, reply_markup: { inline_keyboard: [] } });
   });
+
+  it("sendDocument POSTs multipart/form-data with the named file + caption (⓪·2c U1, zero-dep)", async () => {
+    let calledUrl = "";
+    let body: FormData | undefined;
+    const client = new TelegramClient({
+      token: "token",
+      apiBase: "https://example.test/bottoken",
+      fetchImpl: async (url, init) => {
+        calledUrl = String(url);
+        body = init?.body as FormData;
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+    });
+
+    await client.sendDocument({
+      chat_id: "222",
+      filename: "run_42.patch",
+      content: "diff --git a/x b/x\n+patched\n",
+      caption: "Full diff for houge/selfwrite/run_42"
+    });
+    expect(calledUrl).toContain("/sendDocument");
+    expect(body).toBeInstanceOf(FormData);
+    expect(body!.get("chat_id")).toBe("222");
+    expect(body!.get("caption")).toBe("Full diff for houge/selfwrite/run_42");
+    const doc = body!.get("document") as File;
+    expect(doc.name).toBe("run_42.patch");
+    expect(await doc.text()).toBe("diff --git a/x b/x\n+patched\n");
+  });
+
+  it("sendDocument surfaces HTTP and API errors like the other methods", async () => {
+    const httpFail = new TelegramClient({
+      token: "token",
+      apiBase: "https://example.test/bottoken",
+      fetchImpl: async () => new Response("nope", { status: 413 })
+    });
+    await expect(
+      httpFail.sendDocument({ chat_id: "222", filename: "x.patch", content: "d" })
+    ).rejects.toThrow("Telegram sendDocument failed: HTTP 413");
+
+    const apiFail = new TelegramClient({
+      token: "token",
+      apiBase: "https://example.test/bottoken",
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ ok: false, description: "file too large" }), { status: 200 })
+    });
+    await expect(
+      apiFail.sendDocument({ chat_id: "222", filename: "x.patch", content: "d" })
+    ).rejects.toThrow("Telegram sendDocument failed: file too large");
+  });
 });

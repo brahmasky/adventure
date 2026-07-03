@@ -250,6 +250,14 @@ export interface PollHeartbeat {
   updated_at: string | null;
 }
 
+/** A green self-write merge recorded just before the restart (⓪·2c U2, ADR 0012 D4 stage 1). */
+export interface ReloadMarker {
+  sha: string;
+  subject: string;
+  branch: string;
+  merged_at: string;
+}
+
 export class RunStore {
   private constructor(private readonly db: SqliteDatabase) {
     this.db.exec("PRAGMA busy_timeout = 5000");
@@ -1053,6 +1061,52 @@ export class RunStore {
     `).get<PollHeartbeat>();
     if (!row || row.updated_at === null) return null;
     return row;
+  }
+
+  // --- Self-write reload marker (⓪·2c U2 / ADR 0012 D4 stage 1) -------------
+
+  /**
+   * Durably record a green self-write merge JUST BEFORE the restart, so the rebooted
+   * daemon can confirm the reload. Single-row (like daemon_heartbeat): a newer merge
+   * overwrites an unconsumed marker.
+   */
+  writeReloadMarker(input: { sha: string; subject: string; branch: string; merged_at?: string }): void {
+    this.db.prepare(`
+      INSERT INTO reload_marker (id, sha, subject, branch, merged_at)
+      VALUES (1, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        sha = excluded.sha,
+        subject = excluded.subject,
+        branch = excluded.branch,
+        merged_at = excluded.merged_at
+    `).run(input.sha, input.subject, input.branch, input.merged_at ?? new Date().toISOString());
+  }
+
+  /**
+   * Read AND delete the reload marker atomically (exactly-once: the boot confirmation
+   * fires on the first startup after a merge, then stays silent). Null when none.
+   */
+  consumeReloadMarker(): ReloadMarker | null {
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const row = this.db.prepare(`
+        SELECT sha, subject, branch, merged_at FROM reload_marker WHERE id = 1
+      `).get<ReloadMarker>();
+      if (row) {
+        this.db.prepare(`DELETE FROM reload_marker WHERE id = 1`).run();
+      }
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+      return row ?? null;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
   }
 
   createApprovalRequest(input: ApprovalRequestInput): ApprovalRequestRecord {
@@ -2257,6 +2311,49 @@ export class RunStore {
     this.applyDaemonMigration();
     this.applyChatTurnsMigration();
     this.applyLessonBlocksMigration();
+    this.applyReloadMarkerMigration();
+  }
+
+  /**
+   * Self-write reload marker (⓪·2c U2, stage 1 of ADR 0012 D4): a single-row record of
+   * the last green merge, consumed exactly once by the next daemon boot to confirm the
+   * reload over Telegram. No seed row — absence means "no pending confirmation".
+   */
+  private applyReloadMarkerMigration(): void {
+    const version = "2026-07-03-reload-marker";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS reload_marker (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          sha TEXT NOT NULL,
+          subject TEXT NOT NULL,
+          branch TEXT NOT NULL,
+          merged_at TEXT NOT NULL
+        );
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
   }
 
   /**

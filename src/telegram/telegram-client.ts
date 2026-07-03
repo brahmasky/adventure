@@ -22,6 +22,15 @@ export interface TelegramSendMessageResult {
   message_id: number;
 }
 
+export interface TelegramSendDocumentInput {
+  chat_id: string;
+  /** Filename shown in the chat (e.g. `run_42.patch`). */
+  filename: string;
+  /** File content, uploaded as a text attachment. */
+  content: string;
+  caption?: string;
+}
+
 export interface TelegramAnswerCallbackQueryInput {
   callback_query_id: string;
   /** Optional toast shown to the user; omitted → just stops the spinner. */
@@ -174,6 +183,33 @@ export class TelegramClient implements TelegramSendClient, TelegramPollClient {
     }
 
     return body.result;
+  }
+
+  async sendDocument(input: TelegramSendDocumentInput): Promise<void> {
+    if (!this.token) {
+      throw new Error("Telegram bot token is not configured");
+    }
+
+    // Bot API sendDocument requires multipart/form-data for an uploaded file — Node's
+    // built-in FormData/Blob handle the encoding (fetch sets the boundary header).
+    const form = new FormData();
+    form.append("chat_id", input.chat_id);
+    if (input.caption) form.append("caption", input.caption);
+    form.append("document", new Blob([input.content], { type: "text/plain" }), input.filename);
+
+    const response = await this.fetchImpl(`${this.botBaseUrl}/sendDocument`, {
+      method: "POST",
+      body: form
+    });
+
+    if (!response.ok) {
+      throw new Error(`Telegram sendDocument failed: HTTP ${response.status}`);
+    }
+
+    const body = (await response.json()) as { ok: boolean; description?: string };
+    if (!body.ok) {
+      throw new Error(`Telegram sendDocument failed: ${body.description ?? "unknown error"}`);
+    }
   }
 
   async answerCallbackQuery(input: TelegramAnswerCallbackQueryInput): Promise<void> {

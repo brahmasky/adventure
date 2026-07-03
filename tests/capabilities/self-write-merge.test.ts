@@ -68,6 +68,9 @@ function makeDeps(over: Partial<MergeActionDeps> & {
     deleteBranch: (b) => {
       calls.push(`deleteBranch(${b})`);
     },
+    writeReloadMarker: (b, into) => {
+      calls.push(`writeReloadMarker(${b},${into})`);
+    },
     notifyDurable: (text) => {
       calls.push(`notifyDurable(${text})`);
     },
@@ -149,12 +152,13 @@ describe("discardBranch", () => {
 });
 
 describe("mergeAndReload — happy path", () => {
-  it("merge→build→testGate green → notifyDurable BEFORE restart; outcome reloaded; no push by default", () => {
+  it("merge→build→testGate green → writeReloadMarker BEFORE notifyDurable BEFORE restart; outcome reloaded; no push by default", () => {
     const { deps, calls } = makeDeps();
     const r = mergeAndReload({ branch: "b", deps });
     expect(r).toEqual({ kind: "reloaded", pushed: false });
 
-    // Order is load-bearing: preMergeRef → merge → build → testGate → notifyDurable → restart.
+    // Order is load-bearing: preMergeRef → merge → build → testGate → writeReloadMarker →
+    // notifyDurable → restart (⓪·2c U2 extends the original six-step invariant additively).
     expect(calls).toEqual([
       "branchExists(b)",
       "isMerged(b,main)",
@@ -163,12 +167,29 @@ describe("mergeAndReload — happy path", () => {
       "merge(b,main)",
       "build",
       "testGate",
+      "writeReloadMarker(b,main)",
       "notifyDurable(merged, reloading…)",
       "restart"
     ]);
-    // The invariant: durable notify strictly precedes the restart that kills us.
+    // The invariants: marker before the durable notify, which strictly precedes the restart.
+    expect(calls.indexOf("writeReloadMarker(b,main)")).toBeLessThan(
+      calls.indexOf("notifyDurable(merged, reloading…)")
+    );
     expect(calls.indexOf("notifyDurable(merged, reloading…)")).toBeLessThan(calls.indexOf("restart"));
     expect(calls).not.toContain("push(main)");
+    expect(calls).not.toContain("resetMerge(main,PREREF)");
+  });
+
+  it("a marker-write failure never blocks the green reload (best-effort nicety)", () => {
+    const { deps, calls } = makeDeps({
+      writeReloadMarker: () => {
+        throw new Error("db locked");
+      }
+    });
+    const r = mergeAndReload({ branch: "b", deps });
+    expect(r).toEqual({ kind: "reloaded", pushed: false });
+    expect(calls).toContain("notifyDurable(merged, reloading…)");
+    expect(calls).toContain("restart");
     expect(calls).not.toContain("resetMerge(main,PREREF)");
   });
 
@@ -191,6 +212,7 @@ describe("mergeAndReload — revert paths (never restart)", () => {
     expect(calls).not.toContain("restart");
     expect(calls).not.toContain("notifyDurable(merged, reloading…)");
     expect(calls).not.toContain("push(main)");
+    expect(calls).not.toContain("writeReloadMarker(b,main)");
     // reset happens after the merge it is undoing.
     expect(calls.indexOf("merge(b,main)")).toBeLessThan(calls.indexOf("resetMerge(main,PREREF)"));
   });
@@ -203,6 +225,7 @@ describe("mergeAndReload — revert paths (never restart)", () => {
     expect(calls).not.toContain("restart");
     expect(calls).not.toContain("testGate");
     expect(calls).not.toContain("notifyDurable(merged, reloading…)");
+    expect(calls).not.toContain("writeReloadMarker(b,main)");
   });
 });
 
@@ -216,6 +239,7 @@ describe("mergeAndReload — merge conflict", () => {
     expect(calls).not.toContain("testGate");
     expect(calls).not.toContain("restart");
     expect(calls).not.toContain("resetMerge(main,PREREF)");
+    expect(calls).not.toContain("writeReloadMarker(b,main)");
   });
 });
 
@@ -227,6 +251,7 @@ describe("mergeAndReload — idempotency + not_found", () => {
     expect(calls).not.toContain("merge(b,main)");
     expect(calls).not.toContain("build");
     expect(calls).not.toContain("restart");
+    expect(calls).not.toContain("writeReloadMarker(b,main)");
   });
 
   it("branch absent (branchExists false) → not_found; nothing run", () => {
@@ -236,6 +261,7 @@ describe("mergeAndReload — idempotency + not_found", () => {
     expect(calls).not.toContain("merge(b,main)");
     expect(calls).not.toContain("build");
     expect(calls).not.toContain("restart");
+    expect(calls).not.toContain("writeReloadMarker(b,main)");
   });
 
   it("honors a custom `into`", () => {

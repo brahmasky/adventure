@@ -154,3 +154,98 @@ describe("runTelegramDaemon", () => {
     }
   });
 });
+
+describe("runTelegramDaemon — reload-marker boot confirmation (⓪·2c U2)", () => {
+  const SHA = "abcdef1234567890abcdef1234567890abcdef12";
+
+  /** Run one daemon pass that aborts on the first getUpdates; collect sent messages. */
+  async function bootOnce(store: RunStore, resolveHead: () => string): Promise<string[]> {
+    const controller = new AbortController();
+    const sent: string[] = [];
+    await runTelegramDaemon({
+      store,
+      projectRoot: projectRoot(),
+      allowlist: ALLOWLIST,
+      stopSignal: controller.signal,
+      longPollTimeoutSeconds: 0,
+      resolveHead,
+      llmAdapter: async (input) => okAnswer(input),
+      telegramClient: {
+        getUpdates: async () => {
+          controller.abort();
+          return [];
+        },
+        sendMessage: async ({ text }) => {
+          sent.push(text);
+          return { message_id: sent.length };
+        }
+      }
+    });
+    return sent;
+  }
+
+  it("marker present → boot confirmation delivered at startup: ✅ 重启成功 + short sha + subject", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      store.writeReloadMarker({ sha: SHA, subject: "fix clock skill", branch: "houge/selfwrite/run_9" });
+      const sent = await bootOnce(store, () => SHA);
+      const confirmations = sent.filter((t) => t.includes("重启成功"));
+      expect(confirmations).toHaveLength(1);
+      expect(confirmations[0]).toBe("✅ 重启成功 — 现在运行 abcdef1「fix clock skill」");
+      expect(confirmations[0]).not.toContain("不一致");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("exactly-once: consumption deletes the marker, so a second restart stays silent", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      store.writeReloadMarker({ sha: SHA, subject: "s", branch: "b" });
+      const first = await bootOnce(store, () => SHA);
+      expect(first.some((t) => t.includes("重启成功"))).toBe(true);
+      const second = await bootOnce(store, () => SHA);
+      expect(second.some((t) => t.includes("重启成功"))).toBe(false);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("HEAD no longer matching the marker (reset after merge) still notifies, with the mismatch note", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      store.writeReloadMarker({ sha: SHA, subject: "s", branch: "b" });
+      const sent = await bootOnce(store, () => "0000000000000000000000000000000000000000");
+      const confirmation = sent.find((t) => t.includes("重启成功"));
+      expect(confirmation).toBeDefined();
+      expect(confirmation).toContain("（当前 HEAD 与合并记录不一致）");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("no marker → no message", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const sent = await bootOnce(store, () => SHA);
+      expect(sent.some((t) => t.includes("重启成功"))).toBe(false);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a marker store error NEVER crashes startup — the daemon still polls", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      (store as unknown as { consumeReloadMarker: () => never }).consumeReloadMarker = () => {
+        throw new Error("db locked");
+      };
+      const sent = await bootOnce(store, () => SHA);
+      expect(sent.some((t) => t.includes("重启成功"))).toBe(false);
+      // The loop ran (heartbeat recorded) despite the marker error.
+      expect(store.getPollHeartbeat()?.last_success_at).not.toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+});
