@@ -192,7 +192,7 @@ export const INTENT_DISCIPLINE =
  * research `query` it generates knows the current year — ADR 0010 fix) followed by the
  * routing discipline. `now` is injectable for deterministic tests (default `new Date()`).
  */
-export function buildIntentSystemPrompt(now: Date = new Date()): string {
+export function buildIntentSystemPrompt(now?: Date): string {
   return `${temporalContext(now)}\n\n${INTENT_DISCIPLINE}`;
 }
 
