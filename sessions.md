@@ -144,3 +144,23 @@ Build via build-subagent + independent adversarial verification subagent (main c
   over Telegram in ONE turn (2 loop steps); the answer already obeyed the just-written lesson.
 - NOT committed yet (working tree on main). NEXT: /goal ⓪·2 (evolution layers as tools, delete
   WRITE_SIGNALS) when Paco's ready.
+
+## 2026-07-03 — /goal inner-loop step ⓪·2 BUILT + LIVE-GATED over 3 rounds (evolution layers as loop tools)
+Build + independent adversarial verification subagents; each live round found a REAL bug no test caught.
+- Shipped (aea7b91): self_diagnose / self_write_propose / skill_author as loop tools (pipelines byte-
+  unchanged inside; once-per-turn; manifest lists a tool only when armed); WRITE_SIGNALS regex + 
+  classifySelfcodeMode DELETED (model proposes, gates decide; legacy selfcode = diagnose-only);
+  code-owned "—— 自我修改状态 ——" failure surfacing past the model; all ⓪·1 deferred items (wall-clock
+  halt, parse-cap cosmetics, ASK_SYSTEM_PROMPT parity, echo defense, budget_used real counts).
+- Live-round finds+fixes: R1 budget starvation (evolution pipelines drew from the shared 6-call turn
+  ledger → fresh sub-ledger per sub-contract, mutation-verified). R2 PRE-EXISTING GUARD BYPASS: checker
+  diffs omitted untracked files while publish committed them (net-new files un-reviewable + invisible
+  to the guard) → git add -N (node_modules-excluded) before every diff read; security test: new file
+  under src/policy/ now DENIED. Also caught: unscoped add -N would register the node_modules SYMLINK
+  (dir gitignore pattern misses it) and hard-deny every self-write.
+- LIVE GATE MET: R3 run_6e322401 — "直接改代码，把时区的bug修掉" → diagnose → self-write → reviewer
+  pass → branch + [Merge & reload] on Telegram; model overrode a wrong "clarify" hint. R1 proved
+  lesson+diagnose+proposal composition in one turn. 815 tests green; verifier GO.
+- Paco tapped merge before ⓪·2 was committed → Houge's handler refused on the dirty tree (floor
+  working); ⓪·2 then committed+pushed (aea7b91). NEXT: Paco re-taps [Merge & reload] to land Houge's
+  timezone fix; then /goal ⓪·3 (spine Slice A on the loop).

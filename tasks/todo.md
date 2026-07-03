@@ -253,7 +253,7 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
         loop_started/loop_step/loop_halted ledger events + /lessons shows the lesson.
 - **⓪·2 — evolution layers as tools** (skill_author, self_diagnose, self_write_propose; DELETE the
   WRITE_SIGNALS regex). LIVE gate: terse Chinese bug report → self-write proposal, no verb table.
-  **⏳ /goal IN PROGRESS 2026-07-02.** Checklist:
+  **✅ DONE + LIVE 2026-07-03 (commit aea7b91; live run_6e322401).** Checklist:
   - [x] M1 tool-wrap skill_author (GateA→author→GateB), self_diagnose (read-only Codex), self_write_propose
         (writer→guard→test-gate→reviewer→branch→buttons, unchanged inside; armed by HOUGE_SELFWRITE_ENABLED);
         internal in-route sub-contracts stay as today; tool names added to turn allowed_actions
@@ -283,8 +283,18 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
         diff read (same exclusion as publish; the node_modules SYMLINK dodges the `node_modules/`
         gitignore dir pattern and would otherwise hard-deny as a new symlink). 5 real-git deps
         tests incl. the security assertion (new file under src/policy/ now DENIED); 815 green
-  - [ ] M6 LIVE gate: terse Chinese bug report → self-write proposal end-to-end (no verb table);
-        diagnosis-only ask stays read-only; a msg meriting lesson AND code proposal produces both
+  - [x] M6 LIVE gate MET over 3 Telegram rounds (each round found a real bug — the live gate earned
+        its keep): R1 run_8c1091be = lesson+diagnose+self-write in ONE turn (composition proven; budget
+        bug found). R2 run_1280539d = explicit "改代码" → straight to self_write_propose, 3 writer
+        attempts on isolated budget, wall-clock halt worked, code-owned failure block delivered (guard
+        blind spot found). R3 run_6e322401 = terse "直接改代码，把时区的bug修掉" → self_diagnose →
+        self_write_propose → guard✓ tests✓ reviewer PASS → branch houge/selfwrite/run_6e322401
+        (temporal.ts +17/−3) + [Merge & reload] delivered. NO verb table anywhere; the model even
+        OVERRODE a wrong "clarify" hint. Post-gate: ⓪·2 committed (aea7b91) BEFORE merge tap (Houge's
+        merge handler correctly refused Paco's early tap on the dirty tree — floor working).
+        FOLLOW-UPS parked: 10-min turn time_minutes is tight for self-write turns (2/3 runs halted
+        "timeout" after the pipeline finished — cosmetic, final composed as best-effort); echo-defense
+        depth beyond prior digest; classifier hint noise (feedback/clarify on identical msgs).
 - **⓪·3 — spine Slice A on the loop** (rating, reconcile/supersede, reuse-value+decay, AVOID; A1
   attribution already emitted by loop observation hooks). LIVE gate = spine A9 (visible compounding).
 - **⓪·4 — retire legacy paths** (flag default ON, executeTurn if-chain + per-intent handlers removed,
