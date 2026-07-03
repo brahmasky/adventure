@@ -56,7 +56,7 @@ front door.
 | `HOUGE_LLM_MODEL_KIMI` | `moonshot-v1-auto` (stable alias) | A model your `KIMI_API_KEY` can access (`GET /v1/models`). |
 | `HOUGE_LLM_MODEL_GEMINI` | `gemini-3.5-flash` | Model for the `gemini-api` leg (a general model; the latest Flash on the public API). |
 | `HOUGE_AGY_MODEL` | `Gemini 3.5 Flash (Low)` | Model for the `agy-cli` leg (`agy models` lists choices). |
-| `HOUGE_ASK_SYSTEM_PROMPT` | composed from `memory/` + `lesson_blocks` | The **answer**-path system prompt. When unset it is **composed** (identity + answer discipline + the `ask` scope's lesson block + guardrails — see [Learning](#learning--conversational-distillation-and-lesson_blocks) below), replacing pi's default *coding-assistant* persona. Set this to override the whole prompt. |
+| `HOUGE_ASK_SYSTEM_PROMPT` | composed from `memory/` + `lessons` | The **answer**-path system prompt. When unset it is **composed** (identity + answer discipline + the `ask` scope's lessons + guardrails — see [Learning](#learning--conversational-distillation-and-the-lessons-table) below), replacing pi's default *coding-assistant* persona. Set this to override the whole prompt. |
 | `HOUGE_LLM_TIMEOUT_MS` | — | Fallback per-provider wall-clock timeout (ms) for any provider without a specific one. |
 | `HOUGE_LLM_TIMEOUT_MS_PI` | `60000` | pi timeout (ms). |
 | `HOUGE_LLM_TIMEOUT_MS_KIMI` | `30000` | kimi timeout (ms). |
@@ -117,7 +117,7 @@ A **research** intent runs the `web-research` program: search the live web (`web
 internally consistent? weakest claims? any single source over-weighted?) and returns a
 corrected final answer ([ADR 0006](../decisions/0006-web-read-capability.md) amendment).
 Both the synthesis and critique prompts come from the composer (below), so the `research`
-scope's lesson block steers both. Telegram link previews are disabled to cut the outbound
+scope's lessons steer both. Telegram link previews are disabled to cut the outbound
 exfil leg; the URLs read are recorded in the ledger (`web_search_performed`).
 
 ## Short-term conversation memory (`chat_turns`)
@@ -135,15 +135,17 @@ only when feeding a prompt.
 | `HOUGE_CHAT_CONTEXT_TURNS` | `8` | Max recent turns fed into a prompt. Bounds the short-thread context tokens added per message. |
 | `HOUGE_CHAT_CONTEXT_TURN_CHARS` | `500` | Per-turn char cap applied **only when feeding a prompt** (the stored turn keeps its full text). Truncates a long prior turn so the thread stays cheap. |
 
-## Learning — conversational distillation and `lesson_blocks`
+## Learning — conversational distillation and the `lessons` table
 
 Every LLM-touching surface (the **answer** path, the research synthesis + critique, the
 feedback distiller) builds its system prompt from one place — the **composer**
 (`src/prompt/composer.ts`): Core Identity (`memory/core/houge.md`, loaded not duplicated) +
-a per-surface discipline + the relevant **scope's lesson block** + guardrails.
+a per-surface discipline + the relevant **scope's lessons** (active rows composed at read
+time) + guardrails.
 Design: [ADR 0009](../decisions/0009-architecture-coherence.md); interaction model:
 [ADR 0010](../decisions/0010-natural-language-intent-layer.md); learning loop:
-[ADR 0007](../decisions/0007-learning-loop.md).
+[ADR 0007](../decisions/0007-learning-loop.md); reconcile/supersede + eval metadata:
+[ADR 0012](../decisions/0012-self-evolution-spine-closed-loop.md) (spine Slice A, ⓪·3).
 
 **Learning is conversational, not a command.** When the user reacts to a prior answer,
 Houge **always re-answers** honoring the feedback, and **only when the feedback generalizes
@@ -152,23 +154,29 @@ approval prompt. The distiller treats the *user's* feedback as the instruction a
 answer as reference only, so the untrusted-data wall holds: Houge never adopts an instruction
 embedded in answer content as a lesson. This supersedes ADR 0007's `/teach` + per-lesson
 approval gate **for user-sourced lessons** — trading the upfront gate for a high-precision
-threshold plus inspect-and-undo.
+threshold plus inspect-and-undo. A correction that implies a "don't" also carries an
+**`AVOID` line**, rendered under the lesson in the prompt.
 
-Long-term lessons live in the SQLite table
-`lesson_blocks(scope, block, char_cap, updated_at)` — **one char-capped, edit-in-place
-block per scope** (not the old file-based `memory/skills/*.md` store, which is removed).
-Scope is inferred from the reacted-to turn's intent: answer → `ask`, research → `research`.
+**Reconcile-on-write, never append (⓪·3 S1).** Each durable lesson is **one row** in the
+SQLite `lessons` table (the old one-block-per-scope `lesson_blocks` store was migrated —
+its bullets split into rows — and is kept only as a frozen archive). Before a new lesson is
+written, one cheap-chain compare against the scope's active lessons decides
+**ADD / SUPERSEDE / UPDATE / DROP**: a changed preference *supersedes* its predecessor via
+bidirectional pointers (never deleted — the chain is the memory rollback), a supplement is
+merged, a duplicate is dropped. Rows carry eval metadata (`applied_count`,
+`corrected_count`, `reuse_value`, `rating_history`, `last_used`) that the spine's S2 signal
+path feeds; the composer renders active rows most-valuable-first, char-capped (~1200) like
+the old block. The old over-cap LLM consolidation rewrite is gone — dedupe happens at write
+time, and overflow past the row cap prunes the lowest `reuse_value` rows (reversibly).
 
-| Column | Default | Purpose |
-|--------|---------|---------|
-| `scope` | — | The lesson namespace (`ask`, `research`, …). The composer folds this scope's block into future runs on that surface. |
-| `block` | (empty) | The current consolidated lesson text for the scope, edited in place as new preferences arrive. |
-| `char_cap` | `1200` | Soft ceiling on `block`. When the block exceeds its cap, an **LLM rewrite pass consolidates** it — deduping into the strongest rules — instead of growing unbounded. |
-| `updated_at` | — | Last write timestamp. |
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `HOUGE_LESSON_CAP_PER_SCOPE` | `20` | Max **active** lesson rows per scope. Writing past the cap prunes the lowest-`reuse_value` rows (a reversible status flip, never a delete; the just-written row is always spared). Also caps how many rows the composer even considers when rendering. |
 
-Inspect and undo with the slash-only control commands `/lessons` and `/forget` (see the
+Inspect and undo with the slash-only control commands `/lessons` (shows each row's id,
+reuse/applied counters, AVOID, and `supersedes #n` lineage) and `/forget <scope|id>` (see the
 [command reference](#telegram-command-reference)). `memory/core/houge.md` is committed (his
-spine); the `lesson_blocks` table is local runtime state. The only prompt knob is
+spine); the `lessons` table is local runtime state. The only prompt knob is
 `HOUGE_ASK_SYSTEM_PROMPT` (in the [LLM provider chain](#llm-provider-chain-powers-cognition)
 table) — an escape hatch to override the composed **answer**-path prompt wholesale.
 
@@ -390,8 +398,8 @@ noted), and `/approve` · `/deny` are **unforgeable** — never inferred from pr
 | `/status` | control | Per-cap breaker headroom, run counts by state, last error. |
 | `/run <program> [args]` | control | Escape hatch to launch a named program directly (consumes budget). |
 | `/approve <id>` · `/deny <id>` | safety | Resolve a pending approval gate. Unforgeable — slash-only, never inferred. |
-| `/lessons [scope]` | control | View the lesson block(s): the raw `block` plus its char-count/cap so consolidation pressure is visible. No scope → lists all scopes. |
-| `/forget <scope>` | control | Clear that scope's lesson block and ack. |
+| `/lessons [scope]` | control | View the active lesson rows: each with its id, reuse/applied counters, `AVOID` line, and `supersedes #n` lineage. No scope → lists all scopes. |
+| `/forget <scope\|id>` | control | Prune that scope's lessons, or one lesson by numeric id (a reversible status flip — rows are never deleted) and ack. |
 | `/skills [scope]` | control | Read-only **viewer** of the ambient skills (name · scope · `when:` · version); regenerates `skills/REGISTRY.md`. Never invokes a skill. No scope → lists all scopes. |
 | `/skills pending` | control | Read-only **viewer** of the parked (blocked auto-author) drafts under `skills/_pending/` — inert, never applied. Inspect to hand-fix + promote, or discard. |
 

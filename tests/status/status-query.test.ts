@@ -48,7 +48,8 @@ describe("queryStatus", () => {
               { kind: "tool_calls", used: 0, limit: 10, remaining: 10 },
               { kind: "gated_attempts", used: 0, limit: 3, remaining: 3 }
             ],
-            poller: null
+            poller: null,
+            rating: { pending_since: null, last_rating: null, last_rating_at: null }
           }
         }
       });

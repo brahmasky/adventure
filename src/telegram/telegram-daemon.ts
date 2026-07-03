@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
+import { maybeAskSessionRating } from "../capabilities/session-rating.js";
 import { CoreWorker } from "../core/core-worker.js";
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
@@ -149,11 +150,32 @@ export async function runTelegramDaemon(
         if (intake.status === "created") {
           await worker.executeRun(intake.run_id, "telegram-daemon-worker");
         }
+        // ⓪·3 S2a: the async follow-up on a captured rating (the low-rating attribution
+        // pass). A bare digit arrives as `rating_captured`; a digit+comment ran as the
+        // turn above with the signal riding `rating_signal`. The capture itself (store,
+        // ack) already happened in the gateway; a follow-up error never crashes the loop.
+        const signal =
+          intake.status === "rating_captured"
+            ? { chat_id: intake.chat_id, rating: intake.rating, applied_lesson_ids: intake.applied_lesson_ids }
+            : intake.status === "created" || intake.status === "duplicate"
+              ? intake.rating_signal
+              : undefined;
+        if (signal) {
+          try {
+            await worker.processRatingSignal(signal);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`[telegram-daemon] rating follow-up failed: ${message}`);
+          }
+        }
       }, { signal: options.stopSignal });
 
       const t = now();
       options.store.expirePendingApprovals(t);
       options.store.expireUndeliveredApprovalPrompts(t);
+      // ⓪·3 S2: the signal path rides the poll loop (before the outbox flush, so a
+      // rating ask enqueued this cycle is delivered this cycle).
+      runSignalPathTick(options, t);
       for (;;) {
         const result = await dispatcher.dispatchOnce("telegram-daemon-dispatcher");
         if (result.status === "idle") break;
@@ -176,6 +198,29 @@ export async function runTelegramDaemon(
   }
 
   return { cycles, consecutive_failures: failures };
+}
+
+/**
+ * ⓪·3 S2 — the signal path's per-cycle tick: the daily lesson decay+prune pass (the
+ * store makes it idempotent per 24h) and the session-rating ask trigger (substance +
+ * lull + cooldown — cheap sqlite checks). NEVER throws (like notifyReloadOnBoot): a
+ * signal-path error must not stop the daemon.
+ */
+function runSignalPathTick(options: RunTelegramDaemonOptions, now: string): void {
+  try {
+    options.store.runLessonDecayTick(now);
+    const chat = options.allowlist.chats[0];
+    if (chat) {
+      maybeAskSessionRating({
+        store: options.store,
+        chatId: String(chat.telegram_chat_id),
+        now
+      });
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[telegram-daemon] signal-path tick failed: ${message}`);
+  }
 }
 
 /**

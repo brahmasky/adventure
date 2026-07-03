@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CoreWorker, EVOLUTION_NOTICE_HEADER } from "../../src/core/core-worker.js";
 import { INTENT_DISCIPLINE, resolveInnerLoopEnabled } from "../../src/capabilities/intent.js";
 import { DISTILL_DISCIPLINE } from "../../src/capabilities/distill.js";
+import { RECONCILE_DISCIPLINE } from "../../src/capabilities/reconcile.js";
 import { GATE_A_DISCIPLINE } from "../../src/capabilities/skill-router.js";
 import { ASK_DISCIPLINE, LOOP_DISCIPLINE } from "../../src/prompt/composer.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
@@ -29,7 +30,8 @@ const PINNED_ENV = [
   "HOUGE_SELFWRITE_ENABLED",
   "HOUGE_CODEX_ENABLED",
   "HOUGE_SKILLS_ENABLED",
-  "HOUGE_ASK_SYSTEM_PROMPT"
+  "HOUGE_ASK_SYSTEM_PROMPT",
+  "HOUGE_LESSON_CAP_PER_SCOPE"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
@@ -68,15 +70,17 @@ function turnRun(store: RunStore, message: string, key = `t:${message}`): string
 /**
  * An LLM stub for the loop path: the classifier (INTENT_DISCIPLINE) returns `verdict`;
  * each compose call (LOOP_DISCIPLINE) shifts the next scripted action; the distill
- * discipline returns `distill`; Gate A (skill routing) returns `gateA`; anything else
- * (the ask-discipline llm_answer step) echoes the question.
+ * discipline returns `distill`; the reconcile compare returns `reconcile`; Gate A
+ * (skill routing) returns `gateA`; anything else (the ask-discipline llm_answer step)
+ * echoes the question.
  */
 function loopLlm(
   verdict: string,
   composeScript: string[],
   calls: Array<Record<string, unknown>> = [],
   distill = '{"durable":false}',
-  gateA = '{"verdict":"unsure","reason":"stub"}'
+  gateA = '{"verdict":"unsure","reason":"stub"}',
+  reconcile = '{"verdict":"ADD"}'
 ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
   let composeIndex = 0;
   return async (input) => {
@@ -88,6 +92,7 @@ function loopLlm(
       answer = composeScript[Math.min(composeIndex, composeScript.length - 1)] ?? "";
       composeIndex += 1;
     } else if (system === DISTILL_DISCIPLINE) answer = distill;
+    else if (system === RECONCILE_DISCIPLINE) answer = reconcile;
     else if (system === GATE_A_DISCIPLINE) answer = gateA;
     return { ok: true, output: { question: input.question, answer, model: "fake", provider: "fake" } };
   };
@@ -171,7 +176,7 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       expect(started.length).toBe(1);
       expect(started[0]!.payload.manifest).toEqual(["web_search", "llm_answer", "lesson_write", "skill_author"]);
       expect(started[0]!.payload.hint).toBe("answer");
-      expect(started[0]!.payload.applied_artifacts).toEqual({ lesson_scopes: [], skill_scopes: [] });
+      expect(started[0]!.payload.applied_artifacts).toEqual({ lesson_scopes: [], lesson_ids: [], skill_scopes: [] });
       const halted = loopEvents(store, run_id, "loop_halted");
       expect(halted.length).toBe(1);
       expect(halted[0]!.payload).toEqual({ reason: "final", steps: 0 });
@@ -266,6 +271,116 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       expect(String(steps[0]!.payload.result_digest)).toContain('"saved":true');
       // The clamp is noted in the step's result digest (visible to the model + the ledger).
       expect(String(steps[0]!.payload.result_digest)).toContain('clamped to \\"ask\\"');
+    } finally {
+      store.close();
+    }
+  });
+
+  it("lesson_write RECONCILES (⓪·3 S1b): a changed preference SUPERSEDES the prior lesson, not appends", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      // The ready-made duplicate-timezone shape: a prior timezone lesson already exists.
+      const prior = store.addLesson({
+        scope: "ask",
+        text: "convert times to the Sydney timezone",
+        source: "migration",
+        created_at: "2026-06-20T00:00:00.000Z"
+      });
+      const run_id = turnRun(store, "我搬到墨尔本了，以后用墨尔本时间");
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm(
+          '{"intent":"feedback"}',
+          [
+            '{"action":"lesson_write","input":{"scope":"ask"},"why":"durable preference"}',
+            '{"action":"final","answer":"记住了，以后用墨尔本时间。"}'
+          ],
+          [],
+          '{"durable":true,"lesson":"use the Melbourne timezone for times"}',
+          undefined,
+          `{"verdict":"SUPERSEDE","id":${prior}}`
+        )
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+
+      // One active lesson: the new one, linked bidirectionally to the retired prior.
+      const active = store.getActiveLessons("ask");
+      expect(active).toHaveLength(1);
+      expect(active[0]!.text).toBe("use the Melbourne timezone for times");
+      expect(active[0]!.supersedes).toBe(prior);
+      expect(store.getLesson(prior)!).toMatchObject({ status: "superseded", superseded_by: active[0]!.id });
+
+      // The digest tells the model (and the ledger) what happened.
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(String(steps[0]!.payload.result_digest)).toContain('"verb":"supersede"');
+      expect(String(steps[0]!.payload.result_digest)).toContain(`"supersededId":${prior}`);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("lesson_write REFUSES code-owned feedback (⓪·3 S1c): a phrase verbatim in src/ pivots to self_write_propose", async () => {
+    const store = RunStore.openInMemory();
+    const calls: Array<Record<string, unknown>> = [];
+    const root = projectRoot();
+    // A code-owned literal lives in this Houge's src/ (like the evolution-notice header).
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src", "notice.ts"), 'export const HEADER = "🐒 自我修改状态";\n', "utf8");
+    try {
+      const run_id = turnRun(store, '把"自我修改状态"这个标题改得更清楚一点');
+      const worker = new CoreWorker(
+        store,
+        root,
+        loopLlm('{"intent":"feedback"}', [
+          '{"action":"lesson_write","input":{"scope":"ask"},"why":"user wants a different title"}',
+          '{"action":"final","answer":"这个标题写死在代码里，我需要改代码才能换掉它。"}'
+        ], calls)
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+
+      // Refused as a DIGEST (ok step, saved:false) — not an error — so the model pivots in-turn.
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(steps[0]!.payload).toMatchObject({ action: "lesson_write", ok: true });
+      const digest = String(steps[0]!.payload.result_digest);
+      expect(digest).toContain('"reason":"code-owned"');
+      expect(digest).toContain("self_write_propose");
+
+      // Refused BEFORE distilling; nothing was saved.
+      expect(calls.some((c) => c.system === DISTILL_DISCIPLINE)).toBe(false);
+      expect(store.getActiveLessons("ask")).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("attribution (⓪·3 S1→S2): loop_started carries the applied lesson_ids and touchApplied credits them", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const a = store.addLesson({ scope: "ask", text: "be concise", source: "loop", created_at: "2026-07-01T00:00:00.000Z" });
+      const b = store.addLesson({ scope: "ask", text: "answer in Chinese", source: "loop", created_at: "2026-07-02T00:00:00.000Z" });
+      const run_id = turnRun(store, "法国的首都是哪里？");
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm('{"intent":"answer"}', ['{"action":"final","answer":"巴黎。"}'])
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+
+      const started = loopEvents(store, run_id, "loop_started");
+      expect(started[0]!.payload.applied_artifacts).toEqual({
+        lesson_scopes: ["ask"],
+        lesson_ids: [b, a], // most valuable first (recency tiebreak)
+        skill_scopes: []
+      });
+      // Both applied lessons earned their reuse credit for the turn.
+      expect(store.getLesson(a)!.applied_count).toBe(1);
+      expect(store.getLesson(b)!.applied_count).toBe(1);
+      expect(store.getLesson(a)!.last_used).not.toBeNull();
     } finally {
       store.close();
     }

@@ -119,11 +119,22 @@ describe("Gateway telegram events", () => {
     }
   });
 
-  it("/lessons renders the scope's block with char-count/cap, idempotent on redelivery", async () => {
+  it("/lessons renders the scope's rows with id/reuse/lineage (⓪·3 S1), idempotent on redelivery", async () => {
     const store = RunStore.openInMemory();
     try {
       const gateway = new Gateway(store);
-      await store.appendLessonToBlock("research", "prefer primary sources", "2026-06-19T00:00:00.000Z");
+      const v1 = store.addLesson({
+        scope: "research",
+        text: "prefer forums",
+        source: "migration",
+        created_at: "2026-06-19T00:00:00.000Z"
+      });
+      const saved = store.saveReconciledLesson(
+        { scope: "research", text: "prefer primary sources", avoid: "quoting forums as fact" },
+        { verdict: "SUPERSEDE", id: v1 },
+        "user_feedback",
+        "2026-07-03T00:00:00.000Z"
+      );
 
       const event = buildTypedTaskEvent({
         source: "telegram",
@@ -144,9 +155,12 @@ describe("Gateway telegram events", () => {
       // Exactly one notification despite two intakes (idempotent).
       expect(store.countNotificationsByIdempotencyKey("telegram:lessons-1:lessons")).toBe(1);
       const note = store.claimNextNotification("test", 30);
-      expect(note?.payload.text).toContain("prefer primary sources");
-      expect(note?.payload.text).toContain("## research");
-      expect(note?.payload.text).toMatch(/\/1200 chars/); // char-count/cap shown
+      expect(note?.payload.text).toContain("## research (1 active)");
+      expect(note?.payload.text).toContain(`#${saved.id} prefer primary sources — reuse 1.0, applied 0`);
+      expect(note?.payload.text).toContain("AVOID: quoting forums as fact");
+      expect(note?.payload.text).toContain(`supersedes #${v1}`); // lineage visible
+      // The superseded predecessor is no longer listed as its own row.
+      expect(note?.payload.text).not.toContain(`#${v1} prefer forums`);
     } finally {
       store.close();
     }
@@ -172,11 +186,16 @@ describe("Gateway telegram events", () => {
     }
   });
 
-  it("/forget clears the scope's block, acks, and is idempotent on redelivery", async () => {
+  it("/forget <scope> prunes the scope's rows (reversibly), acks, and is idempotent on redelivery", () => {
     const store = RunStore.openInMemory();
     try {
       const gateway = new Gateway(store);
-      await store.appendLessonToBlock("research", "prefer primary sources", "2026-06-19T00:00:00.000Z");
+      const id = store.addLesson({
+        scope: "research",
+        text: "prefer primary sources",
+        source: "user_feedback",
+        created_at: "2026-06-19T00:00:00.000Z"
+      });
       expect(store.readLessonBlock("research")).toBeDefined();
 
       const event = buildTypedTaskEvent({
@@ -194,11 +213,39 @@ describe("Gateway telegram events", () => {
 
       expect(first).toEqual({ ok: true, status: "forgotten", run_id: "" });
       expect(second).toEqual(first); // replayed, not re-applied
-      expect(store.readLessonBlock("research")).toBeUndefined(); // cleared
+      expect(store.readLessonBlock("research")).toBeUndefined(); // cleared from the prompt
+      expect(store.getLesson(id)!.status).toBe("pruned"); // but the row survives (reversible)
 
       expect(store.countNotificationsByIdempotencyKey("telegram:forget-1:forget")).toBe(1);
       const note = store.claimNextNotification("test", 30);
       expect(note?.payload.text).toContain("Forgotten ✓");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("/forget <id> prunes one lesson by numeric id", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      const keep = store.addLesson({ scope: "ask", text: "keep me", source: "loop", created_at: "2026-07-03T00:00:00.000Z" });
+      const drop = store.addLesson({ scope: "ask", text: "drop me", source: "loop", created_at: "2026-07-03T00:00:00.000Z" });
+
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "forget",
+        program: String(drop), // a numeric arg selects one lesson
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:forget-id-1",
+        source_reference: "telegram:update:8:message:1"
+      });
+
+      expect(gateway.intake(event)).toEqual({ ok: true, status: "forgotten", run_id: "" });
+      expect(store.getLesson(drop)!.status).toBe("pruned");
+      expect(store.getLesson(keep)!.status).toBe("active");
+      const note = store.claimNextNotification("test", 30);
+      expect(note?.payload.text).toContain(`pruned lesson #${drop}`);
     } finally {
       store.close();
     }

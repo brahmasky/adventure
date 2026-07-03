@@ -98,8 +98,8 @@ try {
   console.log(`   status=${r3.status} intent=${r3.intent}`);
   console.log(`   report: ${r3.answer.replace(/\s+/g, " ").slice(0, 240)}`);
   const after = listSkillFiles().length;
-  const lessons = store.listLessonBlocks().map((b) => b.scope).join(", ") || "(none)";
-  console.log(`   skill files: before=${before} after=${after} · lesson blocks: ${lessons}`);
+  const lessons = [...new Set(store.listLessons().map((l) => l.scope))].join(", ") || "(none)";
+  console.log(`   skill files: before=${before} after=${after} · lesson scopes: ${lessons}`);
   if (after > before) console.log("   ! note: a skill file was created (Gate A called it a skill, not a tweak)");
 
   console.log(`\n========== ${pass ? "PASS ✓" : "PARTIAL — see notes"} (authoring + valid markdown + pickup) ==========`);

@@ -10,14 +10,14 @@ import { temporalContext } from "./temporal.js";
  *
  *   Core Identity (memory/core/houge.md — loaded, not duplicated)
  *   + surface discipline (the task instructions)
- *   + learned lessons (the char-capped lesson_blocks block for the scope, via an
+ *   + learned lessons (the scope's active lesson rows composed at read time, via an
  *     injected reader — ADR 0010 supersedes the file-based memory/skills/*.md store)
  *   + guardrails
  *
  * This is what makes self-evolution work: a preference distilled for `research` flows
  * into the next research run automatically, and identity stays consistent everywhere.
- * The lesson block is char-capped (consolidated by an LLM rewrite at the cap), so the
- * prompt stays bounded.
+ * The rendered lessons section is row- and char-capped (⓪·3 S1: reconcile-on-write
+ * dedupes; overflow prunes lowest reuse_value), so the prompt stays bounded.
  */
 
 /** Used only if memory/core/houge.md is missing, so a fresh checkout still has a voice. */
@@ -109,7 +109,12 @@ export const LOOP_DISCIPLINE =
   "on. Prefer finishing over taking extra steps. Use web_search only when the answer needs the " +
   "live web; use lesson_write when the user corrects you or states a durable preference — you may " +
   "save a lesson AND still answer the question in the same turn. Your final answer must be " +
-  "complete and self-contained, in the user's language and style, with no process notes.";
+  "complete and self-contained, in the user's language and style, with no process notes. " +
+  "KNOW YOUR LAYERS: a lesson changes only how you compose your answers. Text rendered by " +
+  "Houge's own CODE around your answer — the self-evolution notice header, report scaffolding, " +
+  "buttons, notification wrappers, anything added after you speak — can NEVER be changed by a " +
+  "lesson: when feedback targets one of those code-owned surfaces, use self_write_propose, " +
+  "not lesson_write, and never promise a lesson will fix it.";
 
 /**
  * The loop surface's ground rule: same untrusted-data wall as {@link GUARDRAILS}, but the
@@ -157,10 +162,11 @@ export function intentToScope(intent: Intent): string {
 
 export interface ComposeOptions {
   /**
-   * Injected lesson-block reader (ADR 0010): `(scope) => block | undefined`. When
-   * absent (or it returns nothing), the lessons section is omitted — so a run with no
-   * lessons composes exactly the identity+discipline+guardrails prompt (eval goldens
-   * with no lessons stay byte-identical).
+   * Injected lessons reader (ADR 0010; rows composed at read time since ⓪·3 S1):
+   * `(scope) => block | undefined`. When absent (or it returns nothing), the lessons
+   * section is omitted — so a run with no lessons composes exactly the
+   * identity+discipline+guardrails prompt (eval goldens with no lessons stay
+   * byte-identical).
    */
   lessonsReader?: (scope: string) => string | undefined;
   /** Read lessons from a different scope (e.g. the critique pass reuses `research` lessons). */

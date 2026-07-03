@@ -2,8 +2,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { RunStore } from "../../src/run/run-store.js";
+import { parseRatingHistory, RunStore } from "../../src/run/run-store.js";
 import { runTelegramDaemon } from "../../src/telegram/telegram-daemon.js";
+import {
+  RATING_ACK_COMMENT_TEXT,
+  RATING_ACK_TEXT,
+  RATING_ASK_TEXT,
+  RATING_ATTRIBUTION_DISCIPLINE
+} from "../../src/capabilities/session-rating.js";
 
 let dirs: string[] = [];
 function projectRoot(): string {
@@ -244,6 +250,218 @@ describe("runTelegramDaemon — reload-marker boot confirmation (⓪·2c U2)", (
       expect(sent.some((t) => t.includes("重启成功"))).toBe(false);
       // The loop ran (heartbeat recorded) despite the marker error.
       expect(store.getPollHeartbeat()?.last_success_at).not.toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("runTelegramDaemon — the signal path (⓪·3 S2)", () => {
+  const RATING_ENV_VARS = [
+    "HOUGE_RATING_ENABLED",
+    "HOUGE_RATING_MIN_TURNS",
+    "HOUGE_SESSION_LULL_MINUTES",
+    "HOUGE_RATING_COOLDOWN_HOURS",
+    "HOUGE_RATING_PENDING_MINUTES",
+    "HOUGE_LESSON_DECAY_DAYS",
+    "HOUGE_LESSON_PRUNE_THRESHOLD",
+    "HOUGE_LESSON_REPEAT_DAYS"
+  ] as const;
+  let savedEnv: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    savedEnv = {};
+    for (const key of RATING_ENV_VARS) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+  afterEach(() => {
+    for (const key of RATING_ENV_VARS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+  });
+
+  function minutesAgo(minutes: number): string {
+    return new Date(Date.now() - minutes * 60_000).toISOString();
+  }
+
+  /** One idle daemon pass (getUpdates aborts immediately); collect sent messages. */
+  async function idleCycle(store: RunStore, llmAdapter = async (input: Record<string, unknown>) => okAnswer(input)): Promise<string[]> {
+    const controller = new AbortController();
+    const sent: string[] = [];
+    await runTelegramDaemon({
+      store,
+      projectRoot: projectRoot(),
+      allowlist: ALLOWLIST,
+      stopSignal: controller.signal,
+      longPollTimeoutSeconds: 0,
+      llmAdapter,
+      telegramClient: {
+        getUpdates: async () => {
+          controller.abort();
+          return [];
+        },
+        sendMessage: async ({ text }) => {
+          sent.push(text);
+          return { message_id: sent.length };
+        }
+      }
+    });
+    return sent;
+  }
+
+  it("session lull + substance → the rating ask rides the poll loop and is delivered", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      for (let i = 0; i < 3; i += 1) {
+        store.recordChatTurn({
+          chat_id: "222",
+          run_id: `run_${i}`,
+          role: "user",
+          text: `q${i}`,
+          created_at: minutesAgo(40 - i)
+        });
+      }
+      const sent = await idleCycle(store);
+      expect(sent).toContain(RATING_ASK_TEXT);
+      expect(store.getPendingRating("222")?.active).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("mid-conversation (no lull) → no ask; the daemon behaves exactly as before", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      for (let i = 0; i < 3; i += 1) {
+        store.recordChatTurn({
+          chat_id: "222",
+          run_id: `run_${i}`,
+          role: "user",
+          text: `q${i}`,
+          created_at: minutesAgo(3 - i)
+        });
+      }
+      const sent = await idleCycle(store);
+      expect(sent).not.toContain(RATING_ASK_TEXT);
+      expect(store.getPendingRating("222")).toBeNull();
+      expect(store.getPollHeartbeat()?.last_success_at).not.toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("the decay tick rides the poll loop (idempotent for the rest of the day)", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      await idleCycle(store);
+      // The daemon's cycle already ran today's tick.
+      expect(store.runLessonDecayTick(new Date().toISOString()).ran).toBe(false);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a signal-path store error NEVER crashes the loop — the heartbeat still lands", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      (store as unknown as { runLessonDecayTick: () => never }).runLessonDecayTick = () => {
+        throw new Error("db locked");
+      };
+      await idleCycle(store);
+      expect(store.getPollHeartbeat()?.last_success_at).not.toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  /** Pending ask + one in-window run that applied the lesson (attribution seed). */
+  function seedPendingSession(store: RunStore, lesson: number): void {
+    store.writePendingRating({ chat_id: "222", asked_at: minutesAgo(10), window_start: minutesAgo(120) });
+    store.recordChatTurn({ chat_id: "222", run_id: "run_w1", role: "user", text: "q", created_at: minutesAgo(60) });
+    store.recordLoopStarted("run_w1", {
+      manifest: ["llm_answer"],
+      hint: "ask",
+      applied_artifacts: { lesson_scopes: ["ask"], lesson_ids: [lesson], skill_scopes: [] }
+    });
+  }
+
+  /** Run the daemon over one update; the attribution pass names `lesson` culprit. */
+  async function captureCycle(store: RunStore, lesson: number, text: string): Promise<string[]> {
+    const controller = new AbortController();
+    const sent: string[] = [];
+    let calls = 0;
+    await runTelegramDaemon({
+      store,
+      projectRoot: projectRoot(),
+      allowlist: ALLOWLIST,
+      stopSignal: controller.signal,
+      longPollTimeoutSeconds: 0,
+      llmAdapter: async (input) => {
+        if (input.system === RATING_ATTRIBUTION_DISCIPLINE) {
+          return {
+            ok: true,
+            output: { question: input.question, answer: `{"culprit_lesson_id":${lesson},"reason":"没用"}`, model: "fake" }
+          };
+        }
+        return okAnswer(input);
+      },
+      telegramClient: {
+        getUpdates: async () => {
+          calls += 1;
+          if (calls === 1) return [askUpdate(70, text)];
+          controller.abort();
+          return [];
+        },
+        sendMessage: async ({ text: out }) => {
+          sent.push(out);
+          return { message_id: sent.length };
+        }
+      }
+    });
+    return sent;
+  }
+
+  it("captures a bare-digit rating end-to-end: code-owned ack delivered, culprit flagged", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const lesson = store.addLesson({ scope: "ask", text: "结尾加俏皮话", source: "user_feedback" });
+      seedPendingSession(store, lesson);
+      const sent = await captureCycle(store, lesson, "1");
+
+      // The code-owned ack was delivered — never a model answer; no run for the digit.
+      expect(sent).toContain(RATING_ACK_TEXT);
+      expect(store.getLastSessionRating("222")).toMatchObject({ rating: 1, comment: null });
+      const row = store.getLesson(lesson)!;
+      expect(row.corrected_count).toBe(1);
+      expect(row.reuse_value).toBeCloseTo(0.5); // low capture adds no credit; the culprit flag pays −0.5
+      expect(parseRatingHistory(row.rating_history).some((e) => e.flag === "culprit")).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("digit + comment end-to-end: the comment runs as the turn (real answer, no ack) AND the culprit is flagged", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const lesson = store.addLesson({ scope: "ask", text: "结尾加俏皮话", source: "user_feedback" });
+      seedPendingSession(store, lesson);
+      const sent = await captureCycle(store, lesson, "1 帮我查一下明天的天气");
+
+      // The piggy-backed request got a REAL answer (the fake chain echoes the question);
+      // no code-owned ack was sent — the swallow case is dead.
+      expect(sent).not.toContain(RATING_ACK_TEXT);
+      expect(sent).not.toContain(RATING_ACK_COMMENT_TEXT);
+      expect(sent.some((t) => t.includes("帮我查一下明天的天气"))).toBe(true);
+      // The chat record shows the comment text (what the model saw).
+      const userTurns = store.getRecentChatTurns("222", 10).filter((t) => t.role === "user");
+      expect(userTurns.at(-1)?.text).toBe("帮我查一下明天的天气");
+      // The rating + comment were banked and the attribution follow-up still ran.
+      expect(store.getLastSessionRating("222")).toMatchObject({ rating: 1, comment: "帮我查一下明天的天气" });
+      const row = store.getLesson(lesson)!;
+      expect(row.corrected_count).toBe(1);
+      expect(parseRatingHistory(row.rating_history).some((e) => e.flag === "culprit")).toBe(true);
     } finally {
       store.close();
     }

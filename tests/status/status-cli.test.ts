@@ -58,7 +58,8 @@ describe("houge status CLI", () => {
             { kind: "tool_calls", used: 0, limit: 200, remaining: 200 },
             { kind: "gated_attempts", used: 0, limit: 25, remaining: 25 }
           ],
-          poller: null
+          poller: null,
+          rating: { pending_since: null, last_rating: null, last_rating_at: null }
         }
       }
     });

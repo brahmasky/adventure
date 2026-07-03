@@ -36,6 +36,27 @@ describe("parseDistillResult", () => {
     expect(parseDistillResult('{"durable":"yes","lesson":"x"}')).toEqual({ durable: false });
     expect(parseDistillResult("")).toEqual({ durable: false });
   });
+
+  it("carries an optional AVOID phrase when the feedback implies a don't (⓪·3 S1)", () => {
+    expect(
+      parseDistillResult('{"durable":true,"lesson":"answer in Chinese","avoid":"mixing English words"}')
+    ).toEqual({ durable: true, lesson: "answer in Chinese", avoid: "mixing English words" });
+  });
+
+  it("omits AVOID when it is empty, whitespace, or not a string", () => {
+    expect(parseDistillResult('{"durable":true,"lesson":"be concise","avoid":"  "}')).toEqual({
+      durable: true,
+      lesson: "be concise"
+    });
+    expect(parseDistillResult('{"durable":true,"lesson":"be concise","avoid":42}')).toEqual({
+      durable: true,
+      lesson: "be concise"
+    });
+    expect(parseDistillResult('{"durable":true,"lesson":"be concise"}')).toEqual({
+      durable: true,
+      lesson: "be concise"
+    });
+  });
 });
 
 describe("shouldRejectLesson (deterministic poisoning backstop)", () => {

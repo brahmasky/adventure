@@ -45,7 +45,8 @@ export type LedgerEventType =
   | "llm_call"
   | "loop_started"
   | "loop_step"
-  | "loop_halted";
+  | "loop_halted"
+  | "lesson_decay_tick";
 
 export interface LedgerEvent {
   event_id: string;
@@ -148,7 +149,9 @@ const requiredPayloadFields = {
   // clarify_cap|failed.
   loop_started: ["manifest", "hint", "applied_artifacts"],
   loop_step: ["step", "action", "capability", "ok", "result_digest"],
-  loop_halted: ["reason", "steps"]
+  loop_halted: ["reason", "steps"],
+  // ⓪·3 S2 (ADR 0012 §1/§3): the daily reuse-value decay+prune pass — one summary per tick.
+  lesson_decay_tick: ["lessons_decayed", "pruned_ids"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(

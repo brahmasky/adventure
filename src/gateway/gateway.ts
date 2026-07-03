@@ -6,19 +6,55 @@ import {
   resolveGlobalBudgetCaps,
   type GlobalBudgetCaps
 } from "../budget/global-budget-ledger.js";
-import type { LessonBlockRow, RunStore } from "../run/run-store.js";
+import { parseRatingHistory, type LessonRow, type RunStore } from "../run/run-store.js";
+import {
+  parseBareRating,
+  RATING_ACK_TEXT,
+  resolveRatingPendingMinutes
+} from "../capabilities/session-rating.js";
 import { SkillStore, type SkillMeta } from "../skills/skill-store.js";
 import { join } from "node:path";
 import { queryStatus } from "../status/status-query.js";
 
+/** A freshly captured rating the daemon follows up on (the low-rating attribution pass). */
+export interface RatingSignal {
+  chat_id: string;
+  rating: number;
+  applied_lesson_ids: number[];
+}
+
 export type GatewayIntakeResult =
-  | { ok: true; status: "created" | "duplicate"; run_id: string }
+  | { ok: true; status: "created" | "duplicate"; run_id: string; rating_signal?: RatingSignal }
   | { ok: true; status: "status_returned"; run_id: string }
   | { ok: true; status: "approval_resolved"; run_id: string }
   | { ok: true; status: "lessons_returned"; run_id: string }
   | { ok: true; status: "skills_returned"; run_id: string }
   | { ok: true; status: "forgotten"; run_id: string }
+  | {
+      ok: true;
+      status: "rating_captured";
+      run_id: string;
+      chat_id: string;
+      rating: number;
+      applied_lesson_ids: number[];
+    }
   | { ok: false; error: { code: string; message: string; run_id?: string } };
+
+/**
+ * The capture verdict (⓪·3 S2a fix 1): a BARE digit is consumed (ack, no run); a digit
+ * WITH a comment captures the rating but FORWARDS the comment as the turn's message —
+ * a piggy-backed request/feedback must get a real answer, never be swallowed.
+ */
+type RatingCaptureOutcome =
+  | { kind: "consumed"; result: GatewayIntakeResult }
+  | { kind: "forward"; goal: string; rating_signal?: RatingSignal };
+
+/** The processed-trigger marker recorded for a captured digit+comment (replay support). */
+interface RatingCommentMarker {
+  ok: true;
+  status: "rating_comment_captured";
+  comment: string;
+}
 
 export class Gateway {
   private readonly caps: GlobalBudgetCaps;
@@ -83,14 +119,120 @@ export class Gateway {
       return this.handleForget(event, now);
     }
 
+    if (event.type === "turn") {
+      // ⓪·3 S2a: an active rating ask intercepts a rating reply BEFORE the turn compiles;
+      // any other message lets the pending expire silently and rides the normal path.
+      const captured = this.captureRatingReply(event, now);
+      if (captured?.kind === "consumed") return captured.result;
+      if (captured?.kind === "forward") {
+        // Digit + comment: the rating is banked; the COMMENT is the real message — run
+        // the turn on it (the chat record shows what the model saw), no code-owned ack.
+        const result = this.handleTaskIntake({ ...event, goal: captured.goal }, now);
+        return result.ok &&
+          (result.status === "created" || result.status === "duplicate") &&
+          captured.rating_signal
+          ? { ...result, rating_signal: captured.rating_signal }
+          : result;
+      }
+    }
+
     return this.handleTaskIntake(event, now);
   }
 
   /**
-   * `/lessons [scope]` — a control command (no run, no budget). Renders the durable
-   * lesson block(s) from lesson_blocks so the owner can inspect what Houge has silently
-   * learned (ADR 0010). Shows each block's char-count/cap so consolidation pressure is
-   * visible. Idempotent on the trigger key (a redelivered update enqueues once).
+   * Rating capture (⓪·3 S2a): when the chat has an active pending ask (asked within
+   * HOUGE_RATING_PENDING_MINUTES) and the message is a rating reply, bank it — store the
+   * rating attached to the window's applied lessons (loop_started attribution union) and
+   * absorb the signal into rating_history/reuse_value. A BARE digit is consumed with a
+   * code-owned ack (no run). A digit WITH a comment is NOT consumed: the comment forwards
+   * as the turn's message so a piggy-backed request/feedback still gets a real answer
+   * (and can ride the normal feedback/lesson paths). ANY other message deactivates the
+   * pending silently (the user just kept chatting — never hijack a real message); a bare
+   * digit with NO active pending routes to the normal turn. Idempotent on the trigger key.
+   */
+  private captureRatingReply(event: TypedTaskEvent, now: string): RatingCaptureOutcome | undefined {
+    if (event.notify.kind !== "telegram") return undefined;
+    const chat_id = event.notify.chat_id;
+
+    // Replay first (a read-only peek): a redelivered capture must repeat its verdict —
+    // consumption already deactivated the pending row, so the checks below can't.
+    const replay = this.runStore.beginTriggerProcessing(event);
+    if (replay.status === "duplicate") {
+      const recorded = JSON.parse(replay.result_json) as GatewayIntakeResult | RatingCommentMarker;
+      if (recorded.ok && recorded.status === "rating_captured") {
+        return { kind: "consumed", result: recorded };
+      }
+      if (recorded.ok && recorded.status === "rating_comment_captured") {
+        // Forward again (the run intake dedupes itself); never re-capture or re-attribute.
+        return { kind: "forward", goal: recorded.comment };
+      }
+      return undefined;
+    }
+    if (replay.status === "conflict") {
+      return {
+        kind: "consumed",
+        result: {
+          ok: false,
+          error: { code: replay.error, message: "Trigger idempotency key conflicts with a different payload" }
+        }
+      };
+    }
+
+    const pending = this.runStore.getPendingRating(chat_id);
+    if (!pending || !pending.active) return undefined;
+    const pendingMs = resolveRatingPendingMinutes(process.env) * 60_000;
+    if (Date.parse(now) - Date.parse(pending.asked_at) > pendingMs) return undefined;
+
+    const parsed = parseBareRating(typeof event.goal === "string" ? event.goal : "");
+    if (!parsed) {
+      this.runStore.cancelPendingRating(chat_id);
+      return undefined;
+    }
+
+    const applied = this.runStore.appliedLessonIdsForChat(chat_id, pending.window_start);
+    this.runStore.recordSessionRating({
+      chat_id,
+      rating: parsed.rating,
+      ...(parsed.comment ? { comment: parsed.comment } : {}),
+      asked_at: pending.asked_at,
+      captured_at: now,
+      applied_lesson_ids: applied
+    });
+    this.runStore.applyRatingToLessons(applied, parsed.rating, now);
+    const rating_signal: RatingSignal = { chat_id, rating: parsed.rating, applied_lesson_ids: applied };
+
+    if (parsed.comment) {
+      // Not consumed: the comment is the message. No ack — the turn's answer replies.
+      const marker: RatingCommentMarker = { ok: true, status: "rating_comment_captured", comment: parsed.comment };
+      this.runStore.recordTriggerProcessed(event, marker);
+      return { kind: "forward", goal: parsed.comment, rating_signal };
+    }
+
+    const result: GatewayIntakeResult = {
+      ok: true,
+      status: "rating_captured",
+      run_id: "",
+      chat_id,
+      rating: parsed.rating,
+      applied_lesson_ids: applied
+    };
+    this.runStore.enqueueNotification({
+      target: event.notify,
+      intent_type: "progress",
+      idempotency_key: `${event.idempotency_key}:rating`,
+      correlation_id: event.source_reference,
+      payload: { text: RATING_ACK_TEXT }
+    });
+    this.runStore.recordTriggerProcessed(event, result);
+    this.recordTelegramAccepted(event, now);
+    return { kind: "consumed", result };
+  }
+
+  /**
+   * `/lessons [scope]` — a control command (no run, no budget). Renders the ACTIVE
+   * lesson rows (⓪·3 S1: per-lesson rows with reuse_value, applied counts, AVOID, and
+   * supersede lineage) so the owner can inspect what Houge has silently learned.
+   * Idempotent on the trigger key (a redelivered update enqueues once).
    */
   private handleLessons(event: TypedTaskEvent, now: string): GatewayIntakeResult {
     const replay = this.runStore.beginTriggerProcessing(event);
@@ -105,9 +247,7 @@ export class Gateway {
     }
 
     const scope = typeof event.program === "string" ? event.program.trim() : "";
-    const blocks = scope
-      ? this.lessonBlocksForScope(scope)
-      : this.runStore.listLessonBlocks();
+    const lessons = this.runStore.listLessons(scope || undefined);
 
     const result: GatewayIntakeResult = { ok: true, status: "lessons_returned", run_id: "" };
     this.runStore.enqueueNotification({
@@ -115,7 +255,7 @@ export class Gateway {
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:lessons`,
       correlation_id: event.source_reference,
-      payload: { text: formatLessonsText(scope || undefined, blocks) }
+      payload: { text: formatLessonsText(scope || undefined, lessons) }
     });
     this.runStore.recordTriggerProcessed(event, result);
     this.recordTelegramAccepted(event, now);
@@ -160,8 +300,9 @@ export class Gateway {
   }
 
   /**
-   * `/forget <scope>` — a control command (no run, no budget). Clears that scope's
-   * lesson block and acks. Idempotent on the trigger key.
+   * `/forget <scope|id>` — a control command (no run, no budget). Prunes that scope's
+   * active lessons, or one lesson by numeric id (⓪·3 S1: a reversible status flip —
+   * rows are never deleted). Idempotent on the trigger key.
    */
   private handleForget(event: TypedTaskEvent, now: string): GatewayIntakeResult {
     const replay = this.runStore.beginTriggerProcessing(event);
@@ -175,17 +316,24 @@ export class Gateway {
       };
     }
 
-    const scope = typeof event.program === "string" ? event.program.trim() : "";
-    if (!scope) {
+    const arg = typeof event.program === "string" ? event.program.trim() : "";
+    if (!arg) {
       const result: GatewayIntakeResult = {
         ok: false,
-        error: { code: "FORGET_INVALID", message: "/forget requires a scope" }
+        error: { code: "FORGET_INVALID", message: "/forget requires a scope or a lesson id" }
       };
       this.runStore.recordTriggerProcessed(event, result);
       return result;
     }
 
-    this.runStore.forgetScope(scope);
+    let text: string;
+    if (/^\d+$/.test(arg)) {
+      const pruned = this.runStore.forgetLesson(Number(arg));
+      text = pruned ? `Forgotten ✓ — pruned lesson #${arg}` : `No active lesson #${arg} to forget.`;
+    } else {
+      this.runStore.forgetScope(arg);
+      text = `Forgotten ✓ — cleared lessons for "${arg}"`;
+    }
 
     const result: GatewayIntakeResult = { ok: true, status: "forgotten", run_id: "" };
     this.runStore.enqueueNotification({
@@ -193,15 +341,11 @@ export class Gateway {
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:forget`,
       correlation_id: event.source_reference,
-      payload: { text: `Forgotten ✓ — cleared lessons for "${scope}"` }
+      payload: { text }
     });
     this.runStore.recordTriggerProcessed(event, result);
     this.recordTelegramAccepted(event, now);
     return result;
-  }
-
-  private lessonBlocksForScope(scope: string): LessonBlockRow[] {
-    return this.runStore.listLessonBlocks().filter((b) => b.scope === scope);
   }
 
   private handleStatus(event: TypedTaskEvent, now: string): GatewayIntakeResult {
@@ -374,7 +518,7 @@ export class Gateway {
           ? "No runs yet"
           : status.status.runs.map((run) => `${run.run_id} ${run.state}`).join("\n");
 
-      const { runs_by_state, last_error, budget, window_hours, poller } =
+      const { runs_by_state, last_error, budget, window_hours, poller, rating } =
         status.status.overview;
       const byState = Object.entries(runs_by_state)
         .map(([state, count]) => `${state} ${count}`)
@@ -385,6 +529,12 @@ export class Gateway {
       const pollerText = poller
         ? `last poll ${poller.last_success_at ?? "never"}${poller.last_error ? `, last error ${poller.last_error}` : ""}`
         : "not running";
+      // ⓪·3 S2c: the rating signal at a glance — an open ask, or the last capture.
+      const ratingText = rating.pending_since
+        ? `pending ask since ${rating.pending_since}`
+        : rating.last_rating !== null
+          ? `last ${rating.last_rating}/3 at ${rating.last_rating_at}`
+          : "none yet";
 
       return [
         runsText,
@@ -392,7 +542,8 @@ export class Gateway {
         `Last ${window_hours}h: ${byState || "no runs"}`,
         `Last error: ${last_error ?? "none"}`,
         `Budget: ${budgetText}`,
-        `Daemon: ${pollerText}`
+        `Daemon: ${pollerText}`,
+        `Rating: ${ratingText}`
       ].join("\n");
     }
     return `${status.status.run_id} ${status.status.state}`;
@@ -469,19 +620,43 @@ export class Gateway {
 }
 
 /**
- * Render the `/lessons` reply: the raw block(s) with each scope's char-count/cap so the
- * owner sees consolidation pressure. `scope` set → one scope (or "none yet"); unset →
- * every scope.
+ * Render the `/lessons` reply (⓪·3 S1): active rows grouped by scope, most valuable
+ * first, each with its id, reuse_value/applied counts, AVOID line, and supersede lineage
+ * (`supersedes #n`). `scope` set → one scope (or "none yet"); unset → every scope.
  */
-function formatLessonsText(scope: string | undefined, blocks: LessonBlockRow[]): string {
-  if (blocks.length === 0) {
+function formatLessonsText(scope: string | undefined, lessons: LessonRow[]): string {
+  if (lessons.length === 0) {
     return scope
       ? `No lessons for "${scope}" yet.`
       : "No lessons yet. Houge learns durable preferences silently from your feedback.";
   }
-  return blocks
-    .map((b) => `## ${b.scope} (${b.block.length}/${b.char_cap} chars)\n${b.block}`)
+  const byScope = new Map<string, LessonRow[]>();
+  for (const lesson of lessons) {
+    const group = byScope.get(lesson.scope) ?? [];
+    group.push(lesson);
+    byScope.set(lesson.scope, group);
+  }
+  return [...byScope.entries()]
+    .map(([s, group]) =>
+      [`## ${s} (${group.length} active)`, ...group.map((l) => formatLessonLines(l))].join("\n")
+    )
     .join("\n\n");
+}
+
+function formatLessonLines(lesson: LessonRow): string {
+  // ⓪·3 S2c: surface the rating signal — how many session ratings touched the lesson,
+  // and a ⚠ when the low-rating attribution pass implicated it.
+  const history = parseRatingHistory(lesson.rating_history);
+  const ratings = history.filter((entry) => typeof entry.rating === "number").length;
+  const flagged = history.some((entry) => entry.flag === "culprit");
+  const lines = [
+    `#${lesson.id} ${lesson.text} — reuse ${lesson.reuse_value.toFixed(1)}, applied ${lesson.applied_count}` +
+      (ratings > 0 ? `, ratings ${ratings}` : "") +
+      (flagged ? " ⚠ flagged" : "")
+  ];
+  if (lesson.avoid) lines.push(`   AVOID: ${lesson.avoid}`);
+  if (lesson.supersedes !== null) lines.push(`   supersedes #${lesson.supersedes}`);
+  return lines.join("\n");
 }
 
 /**

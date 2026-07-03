@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CoreWorker } from "../../src/core/core-worker.js";
 import { INTENT_DISCIPLINE } from "../../src/capabilities/intent.js";
 import { DISTILL_DISCIPLINE } from "../../src/capabilities/distill.js";
+import { RECONCILE_DISCIPLINE } from "../../src/capabilities/reconcile.js";
 import { GATE_A_DISCIPLINE } from "../../src/capabilities/skill-router.js";
 import { GATE_B_DISCIPLINE } from "../../src/capabilities/anchor-verify.js";
 import { ASK_DISCIPLINE, RESEARCH_DISCIPLINE, SELFCODE_DISCIPLINE, SKILL_AUTHOR_DISCIPLINE } from "../../src/prompt/composer.js";
@@ -23,7 +24,7 @@ function projectRoot(): string {
 // DEFAULTS of the knobs it exercises (e.g. the clarify cap, the composed ask prompt) —
 // hermetic against a daemon env that arms the inner loop (ADR 0013) or overrides those
 // knobs: pin them (delete = code default); a test that needs an override still sets it itself.
-const PINNED_ENV = ["HOUGE_INNER_LOOP_ENABLED", "HOUGE_MAX_CONSECUTIVE_CLARIFY", "HOUGE_ASK_SYSTEM_PROMPT"] as const;
+const PINNED_ENV = ["HOUGE_INNER_LOOP_ENABLED", "HOUGE_MAX_CONSECUTIVE_CLARIFY", "HOUGE_ASK_SYSTEM_PROMPT", "HOUGE_LESSON_CAP_PER_SCOPE"] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
   savedEnv = {};
@@ -384,6 +385,59 @@ describe("executeTurn (natural-language front door)", () => {
 
       // The legitimate rule was saved (not a substring of the prior answer).
       expect(store.readLessonBlock("ask")).toContain(lesson);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("feedback RECONCILES (⓪·3 S1b): a changed preference SUPERSEDES the prior lesson, with AVOID", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    try {
+      const first = turnRun(store, "what time is my meeting?", "t:rec1");
+      await new CoreWorker(store, root, llmWithVerdict('{"intent":"answer"}', [])).executeRun(first, "w");
+
+      // The duplicate-timezone shape: a prior timezone lesson already exists for `ask`.
+      const prior = store.addLesson({
+        scope: "ask",
+        text: "convert times to the Sydney timezone",
+        source: "migration",
+        created_at: "2026-06-20T00:00:00.000Z"
+      });
+
+      const second = turnRun(store, "我搬到墨尔本了，别再用悉尼时间", "t:rec2");
+      const calls: Record<string, unknown>[] = [];
+      const llm = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
+        calls.push(input);
+        const system = typeof input.system === "string" ? input.system : "";
+        let answer = `ANSWER: ${input.question}`;
+        if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"feedback"}';
+        else if (system === DISTILL_DISCIPLINE)
+          answer = '{"durable":true,"lesson":"use the Melbourne timezone for times","avoid":"defaulting to Sydney time"}';
+        else if (system === RECONCILE_DISCIPLINE) answer = `{"verdict":"SUPERSEDE","id":${prior}}`;
+        return { ok: true, output: { question: input.question, answer, model: "f", provider: "f" } };
+      };
+      const result = await new CoreWorker(store, root, llm).executeRun(second, "w");
+      expect(result.status).toBe("completed");
+
+      // The reconcile compare saw the prior lesson WITH its id (the DATA channel).
+      const reconcileCall = calls.find((c) => c.system === RECONCILE_DISCIPLINE);
+      expect(reconcileCall).toBeDefined();
+      expect(String(reconcileCall!.question)).toContain(`#${prior}: convert times to the Sydney timezone`);
+
+      // One active lesson (superseded, not appended), AVOID carried and rendered.
+      const active = store.getActiveLessons("ask");
+      expect(active).toHaveLength(1);
+      expect(active[0]!).toMatchObject({
+        text: "use the Melbourne timezone for times",
+        avoid: "defaulting to Sydney time",
+        supersedes: prior,
+        source: "user_feedback"
+      });
+      expect(store.getLesson(prior)!.status).toBe("superseded");
+      expect(store.readLessonBlock("ask")).toBe(
+        "- use the Melbourne timezone for times\n  AVOID: defaulting to Sydney time"
+      );
     } finally {
       store.close();
     }

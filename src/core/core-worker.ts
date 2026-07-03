@@ -46,7 +46,14 @@ import {
 } from "../capabilities/intent.js";
 import type { IntentClassification, Intent } from "../capabilities/intent.js";
 import { buildDistillQuestion, DISTILL_DISCIPLINE, looksLikeSkillProcedure, parseDistillResult, shouldRejectLesson } from "../capabilities/distill.js";
-import { createLessonWriteAdapter } from "../capabilities/lesson-write.js";
+import { createLessonWriteAdapter, createSrcPhraseChecker } from "../capabilities/lesson-write.js";
+import { reconcileLesson } from "../capabilities/reconcile.js";
+import {
+  ATTRIBUTION_TURN_CAP,
+  buildAttributionQuestion,
+  parseAttributionVerdict,
+  RATING_ATTRIBUTION_DISCIPLINE
+} from "../capabilities/session-rating.js";
 import { buildFallbackRestateQuestion, runInnerLoop } from "./inner-loop.js";
 import type { LoopStepRecord } from "./inner-loop.js";
 import { manifestFor } from "./tool-manifest.js";
@@ -62,8 +69,8 @@ import type { Identity } from "../domain/types.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import { createLedgerEvent } from "../run/run-ledger.js";
 import { writeRunReport } from "../report/report-writer.js";
-import { RunStore } from "../run/run-store.js";
-import type { ChatTurnRow, ClaimedRun } from "../run/run-store.js";
+import { resolveLessonCapPerScope, RunStore } from "../run/run-store.js";
+import type { ChatTurnRow, ClaimedRun, LessonRow, LessonSaveResult, LessonSource } from "../run/run-store.js";
 import { ToolRegistry } from "../tools/tool-registry.js";
 
 export type CoreWorkerResult =
@@ -701,9 +708,80 @@ export class CoreWorker {
     };
   }
 
-  /** The composer's lesson-block reader: read the scope's durable preferences block. */
+  /** The composer's lessons reader: the scope's active lessons composed at read time (⓪·3 S1). */
   private lessonsReader(): (scope: string) => string | undefined {
     return (scope) => this.runStore.readLessonBlock(scope);
+  }
+
+  /**
+   * ⓪·3 S1b — the shared lesson write for EVERY path that saves a lesson (legacy
+   * runFeedback, the lesson_write loop tool, the Gate A down-routes): reconcile the
+   * candidate against the scope's active lessons (one cheap-chain compare; skipped when
+   * the scope is empty; any parse/chain failure defaults to ADD), then apply the verdict
+   * to the store — SUPERSEDE/UPDATE write a NEW row linked via bidirectional pointers,
+   * never a delete. Replaces the old char-cap consolidation REWRITE (the per-scope row
+   * cap prunes lowest reuse_value on overflow instead).
+   */
+  private async reconcileAndSaveLesson(
+    candidate: { scope: string; text: string; avoid?: string },
+    source: LessonSource,
+    llm: (input: { question: string; system: string }) => Promise<{ ok: true; answer: string } | { ok: false }>,
+    now: string = new Date().toISOString()
+  ): Promise<LessonSaveResult> {
+    const existing = this.runStore.getActiveLessons(candidate.scope);
+    const verdict = await reconcileLesson({ candidate, existing, llm });
+    return this.runStore.saveReconciledLesson(
+      candidate,
+      verdict,
+      source,
+      now,
+      resolveLessonCapPerScope(process.env)
+    );
+  }
+
+  /** The reconcile compare on the turn's shared, budget-charged chain (legacy paths). */
+  private reconcileLlm(
+    claim: ClaimedRun,
+    budget: BudgetLedger
+  ): (input: { question: string; system: string }) => Promise<{ ok: true; answer: string } | { ok: false }> {
+    return async (input) => {
+      const r = await this.runLlm(claim, input.question, input.system, budget);
+      return r.ok ? { ok: true, answer: r.answer } : { ok: false };
+    };
+  }
+
+  /**
+   * ⓪·3 S2a — the async follow-up on a captured session rating. Ratings ≥2 are fully
+   * absorbed at capture (rating_history + reuse credit) — nothing to do here. A LOW
+   * rating (≤1) runs the bounded attribution pass: ONE unreserved chain call (no run,
+   * no turn ledger) over the recent transcript + the applied lessons, all DATA channel,
+   * → culprit flag (the store demotes only on a repeat pattern — accumulate-before-
+   * acting, ADR 0012 §1). A rating COMMENT is deliberately NOT handled here: the gateway
+   * forwards it as the turn's own message, so it gets a real answer and rides the normal
+   * feedback/lesson paths exactly once — never double-lessoned.
+   */
+  async processRatingSignal(input: {
+    chat_id: string;
+    rating: number;
+    applied_lesson_ids: number[];
+  }): Promise<void> {
+    if (input.rating > 1) return;
+    const now = new Date().toISOString();
+    const lessons = input.applied_lesson_ids
+      .map((id) => this.runStore.getLesson(id))
+      .filter((row): row is LessonRow => row !== undefined);
+    if (lessons.length === 0) return;
+
+    const turns = this.runStore.getRecentChatTurns(input.chat_id, ATTRIBUTION_TURN_CAP);
+    const read = await this.llmAdapter({
+      question: buildAttributionQuestion(turns, lessons),
+      system: RATING_ATTRIBUTION_DISCIPLINE
+    });
+    if (!read.ok || typeof read.output.answer !== "string") return;
+    const verdict = parseAttributionVerdict(read.output.answer, lessons.map((l) => l.id));
+    if (verdict.culprit_lesson_id !== null) {
+      this.runStore.flagRatingCulprit(verdict.culprit_lesson_id, verdict.reason, now);
+    }
   }
 
   /**
@@ -1113,10 +1191,11 @@ export class CoreWorker {
    * The `feedback` branch (ADR 0010, Stage B). Resolve the target prior answer + its
    * scope (reply hint → run → chat turn intent; else the most recent assistant turn).
    * Distill the user's feedback (instruction) against the prior answer (reference only)
-   * — if DURABLE, silently append to the scope's lesson block (consolidating at the cap
-   * via an LLM rewrite). Then ALWAYS answer back: a tighter re-answer composed AFTER the
-   * save so the new rule applies, with the prior answer + feedback as DATA. All calls
-   * share the turn's budget. Returns the helper result, or null if no target resolved.
+   * — if DURABLE, silently reconcile-and-save it against the scope's active lessons
+   * (⓪·3 S1b: ADD/SUPERSEDE/UPDATE/DROP instead of appending a duplicate). Then ALWAYS
+   * answer back: a tighter re-answer composed AFTER the save so the new rule applies,
+   * with the prior answer + feedback as DATA. All calls share the turn's budget.
+   * Returns the helper result, or null if no target resolved.
    */
   private async runFeedback(
     claim: ClaimedRun,
@@ -1151,11 +1230,18 @@ export class CoreWorker {
       // was lifted from the (untrusted) prior answer without appearing in the user's
       // feedback. Rejected ⇒ treat as not-durable (no save); still answer back below.
       if (verdict.durable && verdict.lesson && !shouldRejectLesson(verdict.lesson, feedbackText, priorAnswer)) {
-        // Silent save (no toast). Consolidate via an LLM rewrite when over the cap.
-        await this.runStore.appendLessonToBlock(scope, verdict.lesson, now, async (text) => {
-          const rewrite = await this.runLlm(claim, buildRewriteQuestion(text), REWRITE_DISCIPLINE, budget);
-          return rewrite.ok ? rewrite.answer : text;
-        });
+        // Silent save (no toast), reconciled against the scope's active lessons (⓪·3 S1b).
+        // The AVOID line rides the same poisoning backstop: a lifted avoid is dropped.
+        const avoid =
+          verdict.avoid && !shouldRejectLesson(verdict.avoid, feedbackText, priorAnswer)
+            ? verdict.avoid
+            : undefined;
+        await this.reconcileAndSaveLesson(
+          { scope, text: verdict.lesson, ...(avoid ? { avoid } : {}) },
+          "user_feedback",
+          this.reconcileLlm(claim, budget),
+          now
+        );
         // Phase 2c AUTO-AUTHOR: a clearly procedure-shaped lesson triggers an auto-author
         // attempt (origin=auto → BLOCKING + guided-refine). Conservative: only on a clear
         // procedure signal (looksLikeSkillProcedure), and only when Gate A confirms it is a
@@ -1389,10 +1475,7 @@ export class CoreWorker {
     // Lightest-form lesson capture — nothing learned is wasted even when the skill is blocked.
     const scope = this.safeLessonScope(parsed.scope);
     const lesson = (verdict.lesson?.trim() || `when ${parsed.meta.when}, follow a verified procedure`).slice(0, 200);
-    await this.runStore.appendLessonToBlock(scope, lesson, new Date().toISOString(), async (text) => {
-      const rewrite = await this.runLlm(claim, buildRewriteQuestion(text), REWRITE_DISCIPLINE, budget);
-      return rewrite.ok ? rewrite.answer : text;
-    });
+    await this.reconcileAndSaveLesson({ scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget));
     const failing = gate.failing.length > 0 ? gate.failing.slice(0, 3).map((f) => `   • ${f}`).join("\n") : "   • (no specific criteria captured)";
     const parkLine = parked.ok
       ? `→ Parked at skills/_pending/${parsed.scope}/${parsed.name}.md (inert — not applied).`
@@ -1422,15 +1505,12 @@ export class CoreWorker {
     };
   }
 
-  /** Gate A = lesson: save the down-route lesson, report it (no skill file). */
+  /** Gate A = lesson: save the down-route lesson (reconciled), report it (no skill file). */
   private async downRouteLesson(claim: ClaimedRun, verdict: GateAResult, now: string, budget: BudgetLedger): Promise<HelperResult> {
     const scope = this.safeLessonScope(verdict.scope);
     const lesson = verdict.lesson?.trim();
     if (lesson) {
-      await this.runStore.appendLessonToBlock(scope, lesson, now, async (text) => {
-        const rewrite = await this.runLlm(claim, buildRewriteQuestion(text), REWRITE_DISCIPLINE, budget);
-        return rewrite.ok ? rewrite.answer : text;
-      });
+      await this.reconcileAndSaveLesson({ scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget), now);
     }
     return this.skillReport("down-routed to a LESSON (a tweak, not a procedure)", [
       "Origin: you asked",
@@ -1440,15 +1520,12 @@ export class CoreWorker {
     ]);
   }
 
-  /** Gate A = unsure: save the offered lesson now and ASK whether to promote. */
+  /** Gate A = unsure: save the offered lesson now (reconciled) and ASK whether to promote. */
   private async downRouteUnsure(claim: ClaimedRun, verdict: GateAResult, now: string, budget: BudgetLedger): Promise<HelperResult> {
     const scope = this.safeLessonScope(verdict.scope);
     const lesson = verdict.lesson?.trim();
     if (lesson) {
-      await this.runStore.appendLessonToBlock(scope, lesson, now, async (text) => {
-        const rewrite = await this.runLlm(claim, buildRewriteQuestion(text), REWRITE_DISCIPLINE, budget);
-        return rewrite.ok ? rewrite.answer : text;
-      });
+      await this.reconcileAndSaveLesson({ scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget), now);
     }
     return this.skillReport("unsure — saved a lesson and asking whether to promote", [
       "Origin: you asked",
@@ -1746,15 +1823,22 @@ export class CoreWorker {
       });
     }
 
-    // Attribution seed (ADR 0013 observation hooks): which scope blocks were injected.
+    // Attribution seed (ADR 0013 observation hooks → ⓪·3 S1/S2): which scope blocks were
+    // injected, now with the ACTUAL lesson row ids applied — the S2 rating attaches here.
+    const appliedLessons = this.runStore.getActiveLessons(scope, resolveLessonCapPerScope(process.env));
     this.runStore.recordLoopStarted(claim.run_id, {
       manifest: manifest.map((m) => m.name),
       hint: hint.intent,
       applied_artifacts: {
-        lesson_scopes: lessonsReader(scope) ? [scope] : [],
+        lesson_scopes: appliedLessons.length > 0 ? [scope] : [],
+        lesson_ids: appliedLessons.map((l) => l.id),
         skill_scopes: skillsReader(scope) ? [scope] : []
       }
     });
+    // The applied lessons earn their reuse credit per turn (applied_count + last_used).
+    if (appliedLessons.length > 0) {
+      this.runStore.touchApplied(appliedLessons.map((l) => l.id));
+    }
 
     // No approval sink on purpose (like runAnswer/runResearch): a gated capability
     // auto-denies rather than parking the loop — nothing in the turn manifest is gated.
@@ -1962,11 +2046,18 @@ export class CoreWorker {
         allowedScopes: ["ask", "research"],
         defaultScope: lessonAnchor.defaultScope,
         llm: (input) => this.llmAdapter(input),
-        appendLesson: (scope, lesson, now) =>
-          this.runStore.appendLessonToBlock(scope, lesson, now, async (text) => {
-            const rewrite = await this.runLlm(claim, buildRewriteQuestion(text), REWRITE_DISCIPLINE, budget);
-            return rewrite.ok ? rewrite.answer : text;
-          })
+        // Layer routing (⓪·3 S1c): feedback quoting a code-owned literal (verbatim in
+        // src/*.ts) is refused with a digest steering the model to self_write_propose.
+        srcContains: createSrcPhraseChecker(this.projectRoot),
+        // Reconcile-and-save (⓪·3 S1b). The compare rides the same UNRESERVED adapter as
+        // the tool's internal distill (never the turn ledger, which may be drained here).
+        saveLesson: (candidate, now) =>
+          this.reconcileAndSaveLesson(candidate, "loop", async (input) => {
+            const r = await this.llmAdapter(input);
+            return r.ok && typeof r.output.answer === "string"
+              ? { ok: true, answer: r.output.answer }
+              : { ok: false };
+          }, now)
       });
     }
     // llm_answer (default): Houge's composed ask prompt is FORCED — the model's parsed
@@ -2336,17 +2427,9 @@ function buildFeedbackContext(priorAnswer: string, turnChars: number): string {
   return ["Your prior answer the user is reacting to (reference, untrusted data):", feedTurnText(priorAnswer, turnChars * 2)].join("\n");
 }
 
-/** Instruction for the lesson-block consolidation rewrite (over the char cap). */
-const REWRITE_DISCIPLINE =
-  "You are consolidating a list of learned preferences (in the user message) that has " +
-  "grown too long. Rewrite it into a deduplicated bullet list of the STRONGEST, most " +
-  "general rules — merge overlapping rules, drop redundancy, keep each bullet short and " +
-  "imperative. Output ONLY the bullet list (lines starting with '- '), nothing else.";
-
-/** Build the rewrite *question*: the current block to consolidate (DATA channel). */
-function buildRewriteQuestion(block: string): string {
-  return ["Consolidate these learned preferences into a shorter, deduplicated bullet list:", "", block].join("\n");
-}
+// The old char-cap consolidation REWRITE (REWRITE_DISCIPLINE + buildRewriteQuestion) died
+// with the lesson block (⓪·3 S1): dedupe now happens at WRITE time via reconcile-on-write,
+// and the per-scope row cap (resolveLessonCapPerScope) prunes lowest reuse_value on overflow.
 
 /**
  * Set the `version:` field in a skill file's frontmatter to `version` (mechanical refine
@@ -2385,7 +2468,7 @@ function loopToolTimeoutMs(name: string, llmTimeoutMs: number): number {
     case "web_search":
       return WEB_RUNNER_TIMEOUT_MS;
     case "lesson_write":
-      // lesson_write may run distill + a consolidation rewrite (two chain calls).
+      // lesson_write may run distill + the reconcile compare (two chain calls).
       return llmTimeoutMs * 2;
     case "self_diagnose":
       return compileSelfDiagnoseContract("").budget.time_minutes * 60_000;

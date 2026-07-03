@@ -80,7 +80,8 @@ try {
   show("7. vague           → expect intent=clarify (a question back)", await send("can you help me with that thing?"));
 
   console.log("\n========== SUMMARY ==========");
-  console.log(`lesson_blocks: ${store.listLessonBlocks().map((b) => `${b.scope}(${b.block.length}ch)`).join(", ") || "(none)"}`);
+  const lessonScopes = [...new Set(store.listLessons().map((l) => l.scope))];
+  console.log(`lessons: ${lessonScopes.map((s) => `${s}(${store.readLessonBlock(s)?.length ?? 0}ch)`).join(", ") || "(none)"}`);
   console.log("research lesson block:\n" + (store.readLessonBlock("research") ?? "(none)"));
 } finally {
   store.close();

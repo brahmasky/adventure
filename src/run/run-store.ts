@@ -39,6 +39,7 @@ type SqliteValue = string | number | bigint | null;
 
 interface SqliteRunResult {
   changes: number;
+  lastInsertRowid: number | bigint;
 }
 
 interface SqliteStatement {
@@ -236,11 +237,109 @@ export interface ChatTurnRow {
   created_at: string;
 }
 
-export interface LessonBlockRow {
+export type LessonStatus = "active" | "superseded" | "pruned";
+export type LessonSource = "user_feedback" | "loop" | "migration";
+
+/**
+ * One durable lesson (⓪·3 S1, ADR 0012 §2/§3): a per-lesson row with eval metadata
+ * (applied/corrected counts, reuse_value, rating_history) and a bidirectional supersede
+ * chain. Rows are NEVER deleted — 'superseded' and 'pruned' are reversible states.
+ */
+export interface LessonRow {
+  id: number;
   scope: string;
-  block: string;
-  char_cap: number;
-  updated_at: string;
+  text: string;
+  avoid: string | null;
+  status: LessonStatus;
+  supersedes: number | null;
+  superseded_by: number | null;
+  applied_count: number;
+  corrected_count: number;
+  reuse_value: number;
+  /** JSON array of rating entries (written by the S2 signal path). */
+  rating_history: string;
+  created_at: string;
+  last_used: string | null;
+  source: LessonSource;
+}
+
+/** The reconcile verdict {@link RunStore.saveReconciledLesson} applies (structurally matches capabilities/reconcile.ts). */
+export type LessonReconcileVerdict =
+  | { verdict: "ADD" }
+  | { verdict: "DROP" }
+  | { verdict: "SUPERSEDE"; id: number }
+  | { verdict: "UPDATE"; id: number; text?: string };
+
+export type LessonWriteVerb = "add" | "supersede" | "update" | "drop";
+
+export interface LessonSaveResult {
+  verb: LessonWriteVerb;
+  /** The new active row's id (absent on drop). */
+  id?: number;
+  supersededId?: number;
+  /** The text actually stored (the merged text on update; the candidate's on drop). */
+  lesson: string;
+  /** Rows pruned by the per-scope cap (lowest reuse_value first; never the new row). */
+  prunedIds: number[];
+  /**
+   * ⓪·3 S2b layer-routing (iii): true when this SUPERSEDE hit a lesson that was already
+   * superseded recently or repeatedly corrected — the memory layer looks ineffective, so
+   * the digest should steer the model toward the code layer.
+   */
+  escalate?: boolean;
+}
+
+/**
+ * One entry in a lesson's `rating_history` JSON (⓪·3 S2): a session rating that touched
+ * the lesson ({rating, at}) or a low-rating attribution flag ({at, flag:"culprit", reason}).
+ */
+export interface RatingHistoryEntry {
+  rating?: number;
+  at: string;
+  flag?: string;
+  reason?: string;
+}
+
+/** Tolerant parse of a lesson's rating_history JSON — garbage degrades to []. */
+export function parseRatingHistory(json: string): RatingHistoryEntry[] {
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (entry): entry is RatingHistoryEntry => typeof entry === "object" && entry !== null
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** The single pending rating ask per chat (⓪·3 S2a). `asked_at` survives consume/expiry
+ * (the row is deactivated, never deleted) so the ask cooldown stays durable. */
+export interface PendingRating {
+  chat_id: string;
+  asked_at: string;
+  window_start: string;
+  active: boolean;
+}
+
+/** One captured session rating (⓪·3 S2a): 0–3 + optional comment + the applied set. */
+export interface SessionRating {
+  id: number;
+  chat_id: string;
+  rating: number;
+  comment: string | null;
+  asked_at: string;
+  captured_at: string;
+  /** JSON array of the lesson ids applied during the rated window. */
+  applied_lesson_ids: string;
+}
+
+/** Rating snapshot for `/status` (⓪·3 S2c). */
+export interface RatingStatus {
+  /** asked_at of a still-answerable pending ask, else null. */
+  pending_since: string | null;
+  last_rating: number | null;
+  last_rating_at: string | null;
 }
 
 export interface PollHeartbeat {
@@ -448,70 +547,210 @@ export class RunStore {
   }
 
   /**
-   * The raw lesson block for a scope, or undefined if absent/empty (ADR 0010). The
-   * composer reads this to fold a scope's durable preferences into a system prompt.
+   * The scope's lessons COMPOSED at read time (⓪·3 S1): active rows only, most valuable
+   * first (reuse_value desc, then recency), row-capped per scope and char-capped like the
+   * old block, each rendered `- <text>` with an `AVOID: …` suffix line when set. Returns
+   * undefined when the scope has no active lessons (the composer omits the section).
    */
   readLessonBlock(scope: string): string | undefined {
-    const row = this.db.prepare(`
-      SELECT block FROM lesson_blocks WHERE scope = ?
-    `).get<{ block: string }>(scope);
-    const text = row?.block?.trim();
-    return text && text.length > 0 ? text : undefined;
+    const rows = this.getActiveLessons(scope, resolveLessonCapPerScope(process.env));
+    if (rows.length === 0) return undefined;
+    const bullets: string[] = [];
+    let length = 0;
+    for (const row of rows) {
+      const bullet = row.avoid ? `- ${row.text}\n  AVOID: ${row.avoid}` : `- ${row.text}`;
+      if (bullets.length > 0 && length + 1 + bullet.length > DEFAULT_LESSON_CHAR_CAP) break;
+      bullets.push(bullet);
+      length += (bullets.length > 1 ? 1 : 0) + bullet.length;
+    }
+    return bullets.join("\n");
   }
 
-  /** All lesson blocks (for `/lessons` with no scope), newest-updated first. */
-  listLessonBlocks(): LessonBlockRow[] {
+  /** The scope's ACTIVE lessons, most valuable first (reuse_value desc, then recency). */
+  getActiveLessons(scope: string, cap?: number): LessonRow[] {
+    const limit = cap ?? -1; // SQLite: LIMIT -1 = unbounded
     return this.db.prepare(`
-      SELECT scope, block, char_cap, updated_at
-      FROM lesson_blocks
-      ORDER BY updated_at DESC, scope ASC
-    `).all<LessonBlockRow>();
+      SELECT ${LESSON_COLUMNS} FROM lessons
+      WHERE scope = ? AND status = 'active'
+      ORDER BY reuse_value DESC, created_at DESC, id DESC
+      LIMIT ?
+    `).all<LessonRow>(scope, limit);
+  }
+
+  /** All ACTIVE lessons (for `/lessons`), grouped by scope in render order. */
+  listLessons(scope?: string): LessonRow[] {
+    return scope
+      ? this.getActiveLessons(scope)
+      : this.db.prepare(`
+          SELECT ${LESSON_COLUMNS} FROM lessons
+          WHERE status = 'active'
+          ORDER BY scope ASC, reuse_value DESC, created_at DESC, id DESC
+        `).all<LessonRow>();
+  }
+
+  getLesson(id: number): LessonRow | undefined {
+    return this.db.prepare(`SELECT ${LESSON_COLUMNS} FROM lessons WHERE id = ?`).get<LessonRow>(id);
+  }
+
+  /** Insert one active lesson row; returns its id. */
+  addLesson(input: {
+    scope: string;
+    text: string;
+    avoid?: string;
+    source: LessonSource;
+    created_at?: string;
+  }): number {
+    const result = this.db.prepare(`
+      INSERT INTO lessons (scope, text, avoid, created_at, source)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      input.scope,
+      input.text.trim(),
+      input.avoid?.trim() || null,
+      input.created_at ?? new Date().toISOString(),
+      input.source
+    );
+    return Number(result.lastInsertRowid);
   }
 
   /**
-   * Append `- <lesson>` to the scope's block (upsert). If the resulting block
-   * exceeds char_cap, the injected async `rewrite` consolidates it (dedupe into the
-   * strongest rules); a hard truncate to char_cap is the backstop if rewrite still
-   * overruns or throws. Silent — the distill caller decides whether to notify.
+   * Link a supersede pair BIDIRECTIONALLY (ADR 0012 §2): the old row becomes
+   * 'superseded' pointing forward, the new row points back. NEVER deletes.
    */
-  async appendLessonToBlock(
-    scope: string,
-    lesson: string,
-    now: string,
-    rewrite?: (text: string) => Promise<string>
-  ): Promise<void> {
-    const trimmed = lesson.trim();
-    if (trimmed.length === 0) return;
-
-    const existing = this.db.prepare(`
-      SELECT block, char_cap FROM lesson_blocks WHERE scope = ?
-    `).get<{ block: string; char_cap: number }>(scope);
-    const charCap = existing?.char_cap ?? DEFAULT_LESSON_CHAR_CAP;
-    const prior = existing?.block?.trim() ?? "";
-    let block = prior.length > 0 ? `${prior}\n- ${trimmed}` : `- ${trimmed}`;
-
-    if (block.length > charCap && rewrite) {
-      try {
-        const rewritten = (await rewrite(block)).trim();
-        if (rewritten.length > 0) block = rewritten;
-      } catch {
-        // Keep the appended block; the truncate backstop below bounds it.
-      }
-    }
-    if (block.length > charCap) {
-      block = block.slice(0, charCap);
-    }
-
+  supersedeLesson(oldId: number, newId: number): void {
     this.db.prepare(`
-      INSERT INTO lesson_blocks (scope, block, char_cap, updated_at)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(scope) DO UPDATE SET block = excluded.block, updated_at = excluded.updated_at
-    `).run(scope, block, charCap, now);
+      UPDATE lessons SET status = 'superseded', superseded_by = ? WHERE id = ?
+    `).run(newId, oldId);
+    this.db.prepare(`UPDATE lessons SET supersedes = ? WHERE id = ?`).run(oldId, newId);
   }
 
-  /** Clear a scope's lesson block (the `/forget` control command). */
+  /** Rewrite a lesson's text in place (trivial merges only — supersede is the audited path). */
+  updateLessonText(id: number, text: string): void {
+    this.db.prepare(`UPDATE lessons SET text = ? WHERE id = ?`).run(text.trim(), id);
+  }
+
+  /** Attribution (S1→S2 hookup): these lessons were applied to a turn's prompt. */
+  touchApplied(ids: number[], now: string = new Date().toISOString()): void {
+    const stmt = this.db.prepare(`
+      UPDATE lessons SET applied_count = applied_count + 1, last_used = ? WHERE id = ?
+    `);
+    for (const id of ids) stmt.run(now, id);
+  }
+
+  /** A correction landed against this lesson (the S2 signal path acts on the pattern). */
+  recordCorrection(id: number): void {
+    this.db.prepare(`UPDATE lessons SET corrected_count = corrected_count + 1 WHERE id = ?`).run(id);
+  }
+
+  /** Prune one lesson (the `/forget <id>` control command) — reversible, never deleted. */
+  forgetLesson(id: number): boolean {
+    return this.db.prepare(`
+      UPDATE lessons SET status = 'pruned' WHERE id = ? AND status = 'active'
+    `).run(id).changes === 1;
+  }
+
+  /** Prune a scope's active lessons (the `/forget <scope>` control command) — reversible. */
   forgetScope(scope: string): void {
-    this.db.prepare(`DELETE FROM lesson_blocks WHERE scope = ?`).run(scope);
+    this.db.prepare(`UPDATE lessons SET status = 'pruned' WHERE scope = ? AND status = 'active'`).run(scope);
+  }
+
+  /**
+   * The full supersede chain a lesson belongs to, oldest → newest (walk `supersedes`
+   * back to the root, then `superseded_by` forward). Includes non-active rows.
+   */
+  lessonLineage(id: number): LessonRow[] {
+    let row = this.getLesson(id);
+    if (!row) return [];
+    const seen = new Set<number>([row.id]);
+    while (row.supersedes !== null) {
+      const prior = this.getLesson(row.supersedes);
+      if (!prior || seen.has(prior.id)) break;
+      seen.add(prior.id);
+      row = prior;
+    }
+    const chain: LessonRow[] = [row];
+    const walked = new Set<number>([row.id]);
+    while (row.superseded_by !== null) {
+      const next = this.getLesson(row.superseded_by);
+      if (!next || walked.has(next.id)) break;
+      walked.add(next.id);
+      chain.push(next);
+      row = next;
+    }
+    return chain;
+  }
+
+  /**
+   * Apply a reconcile verdict (⓪·3 S1b, ADR 0012 §2): ADD inserts; SUPERSEDE/UPDATE
+   * insert a NEW row linked to the prior via bidirectional pointers (auditable — never
+   * an in-place rewrite, never a delete); DROP writes nothing. A SUPERSEDE/UPDATE whose
+   * target is missing or no longer active degrades to ADD. Overflow beyond the per-scope
+   * cap prunes the lowest reuse_value rows (never the row just written).
+   */
+  saveReconciledLesson(
+    candidate: { scope: string; text: string; avoid?: string },
+    verdict: LessonReconcileVerdict,
+    source: LessonSource,
+    now: string,
+    cap: number = resolveLessonCapPerScope(process.env),
+    repeatDays: number = resolveLessonRepeatDays(process.env)
+  ): LessonSaveResult {
+    const text = candidate.text.trim();
+    if (verdict.verdict === "DROP") {
+      return { verb: "drop", lesson: text, prunedIds: [] };
+    }
+
+    const prior = verdict.verdict === "ADD" ? undefined : this.getLesson(verdict.id);
+    const target = prior?.status === "active" ? prior : undefined;
+    const merged =
+      verdict.verdict === "UPDATE" && target && verdict.text?.trim() ? verdict.text.trim() : text;
+    // UPDATE supplements: the revised row inherits the prior AVOID unless the candidate brings one.
+    const avoid =
+      candidate.avoid?.trim() ||
+      (verdict.verdict === "UPDATE" && target?.avoid ? target.avoid : undefined);
+
+    const id = this.addLesson({ scope: candidate.scope, text: merged, ...(avoid ? { avoid } : {}), source, created_at: now });
+    if (target) this.supersedeLesson(target.id, id);
+    // ⓪·3 S2b correction wiring: a SUPERSEDE is a correction against the target — it
+    // pays the reuse penalty. And when the target's chain ALREADY holds a recent
+    // supersede (a superseding row created within `repeatDays`) or the target has been
+    // corrected repeatedly, the memory layer looks ineffective → escalate the digest
+    // (layer-routing iii) so the model can pivot to the code layer in-turn.
+    let escalate = false;
+    if (verdict.verdict === "SUPERSEDE" && target) {
+      this.recordCorrection(target.id);
+      this.db.prepare(`UPDATE lessons SET reuse_value = reuse_value - 0.5 WHERE id = ?`).run(target.id);
+      const cutoff = new Date(Date.parse(now) - repeatDays * 86_400_000).toISOString();
+      const repeatInLineage = this.lessonLineage(target.id).some(
+        (row) => row.id !== id && row.supersedes !== null && row.created_at >= cutoff
+      );
+      escalate = repeatInLineage || target.corrected_count + 1 >= 2;
+    }
+    const prunedIds = this.pruneScopeOverflow(candidate.scope, cap, id);
+    const verb: LessonWriteVerb = !target ? "add" : verdict.verdict === "UPDATE" ? "update" : "supersede";
+    return {
+      verb,
+      id,
+      ...(target ? { supersededId: target.id } : {}),
+      lesson: merged,
+      prunedIds,
+      ...(escalate ? { escalate: true } : {})
+    };
+  }
+
+  /** Prune (reversibly) the lowest-value active rows over the scope cap, sparing `keepId`. */
+  private pruneScopeOverflow(scope: string, cap: number, keepId: number): number[] {
+    if (cap <= 0) return [];
+    const others = this.db.prepare(`
+      SELECT id FROM lessons
+      WHERE scope = ? AND status = 'active' AND id != ?
+      ORDER BY reuse_value ASC, COALESCE(last_used, created_at) ASC, id ASC
+    `).all<{ id: number }>(scope, keepId);
+    const toPrune = others.slice(0, Math.max(0, others.length + 1 - cap)).map((r) => r.id);
+    for (const id of toPrune) {
+      this.db.prepare(`UPDATE lessons SET status = 'pruned' WHERE id = ?`).run(id);
+    }
+    return toPrune;
   }
 
   /**
@@ -1107,6 +1346,236 @@ export class RunStore {
       }
       throw error;
     }
+  }
+
+  // --- Session ratings + lesson signal path (⓪·3 S2, ADR 0012 §1/§3) ---------
+
+  /**
+   * Record a rating ask (⓪·3 S2a): upsert the chat's single pending row. `asked_at`
+   * doubles as the durable ask cooldown — consume/expiry deactivates the row but never
+   * deletes it, so the trigger can't re-ask early after a silent expiry.
+   */
+  writePendingRating(input: { chat_id: string; asked_at: string; window_start: string }): void {
+    this.db.prepare(`
+      INSERT INTO pending_rating (chat_id, asked_at, window_start, active)
+      VALUES (?, ?, ?, 1)
+      ON CONFLICT(chat_id) DO UPDATE SET
+        asked_at = excluded.asked_at,
+        window_start = excluded.window_start,
+        active = 1
+    `).run(input.chat_id, input.asked_at, input.window_start);
+  }
+
+  getPendingRating(chat_id: string): PendingRating | null {
+    const row = this.db.prepare(`
+      SELECT chat_id, asked_at, window_start, active FROM pending_rating WHERE chat_id = ?
+    `).get<{ chat_id: string; asked_at: string; window_start: string; active: number }>(chat_id);
+    if (!row) return null;
+    return { chat_id: row.chat_id, asked_at: row.asked_at, window_start: row.window_start, active: row.active === 1 };
+  }
+
+  /** The user kept chatting instead of rating → the pending ask expires silently. */
+  cancelPendingRating(chat_id: string): void {
+    this.db.prepare(`UPDATE pending_rating SET active = 0 WHERE chat_id = ?`).run(chat_id);
+  }
+
+  /** Store one captured rating and deactivate the chat's pending ask. Returns the row id. */
+  recordSessionRating(input: {
+    chat_id: string;
+    rating: number;
+    comment?: string;
+    asked_at: string;
+    captured_at: string;
+    applied_lesson_ids: number[];
+  }): number {
+    const result = this.db.prepare(`
+      INSERT INTO session_ratings (chat_id, rating, comment, asked_at, captured_at, applied_lesson_ids)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      input.chat_id,
+      input.rating,
+      input.comment ?? null,
+      input.asked_at,
+      input.captured_at,
+      JSON.stringify(input.applied_lesson_ids)
+    );
+    this.cancelPendingRating(input.chat_id);
+    return Number(result.lastInsertRowid);
+  }
+
+  /** The most recent captured rating for a chat (or any chat when omitted). */
+  getLastSessionRating(chat_id?: string): SessionRating | null {
+    const row = chat_id
+      ? this.db.prepare(`
+          SELECT id, chat_id, rating, comment, asked_at, captured_at, applied_lesson_ids
+          FROM session_ratings WHERE chat_id = ?
+          ORDER BY captured_at DESC, id DESC LIMIT 1
+        `).get<SessionRating>(chat_id)
+      : this.db.prepare(`
+          SELECT id, chat_id, rating, comment, asked_at, captured_at, applied_lesson_ids
+          FROM session_ratings
+          ORDER BY captured_at DESC, id DESC LIMIT 1
+        `).get<SessionRating>();
+    return row ?? null;
+  }
+
+  /** The `/status` rating snapshot: a still-answerable pending ask + the last capture. */
+  getRatingStatus(now: string, pendingWindowMs: number): RatingStatus {
+    const pending = this.db.prepare(`
+      SELECT asked_at FROM pending_rating WHERE active = 1
+      ORDER BY asked_at DESC LIMIT 1
+    `).get<{ asked_at: string }>();
+    const pending_since =
+      pending && Date.parse(now) - Date.parse(pending.asked_at) <= pendingWindowMs
+        ? pending.asked_at
+        : null;
+    const last = this.getLastSessionRating();
+    return {
+      pending_since,
+      last_rating: last?.rating ?? null,
+      last_rating_at: last?.captured_at ?? null
+    };
+  }
+
+  /** User turns in a chat strictly after `sinceIso` (all of them when omitted) — the ask's SUBSTANCE gate. */
+  countUserTurnsSince(chat_id: string, sinceIso?: string): number {
+    const row = sinceIso
+      ? this.db.prepare(`
+          SELECT COUNT(*) AS n FROM chat_turns WHERE chat_id = ? AND role = 'user' AND created_at > ?
+        `).get<{ n: number }>(chat_id, sinceIso)
+      : this.db.prepare(`
+          SELECT COUNT(*) AS n FROM chat_turns WHERE chat_id = ? AND role = 'user'
+        `).get<{ n: number }>(chat_id);
+    return row?.n ?? 0;
+  }
+
+  /** The chat's last user turn timestamp — the ask's LULL gate. */
+  lastUserTurnAt(chat_id: string): string | null {
+    const row = this.db.prepare(`
+      SELECT MAX(created_at) AS at FROM chat_turns WHERE chat_id = ? AND role = 'user'
+    `).get<{ at: string | null }>(chat_id);
+    return row?.at ?? null;
+  }
+
+  /**
+   * Attribution (⓪·3 S2a): the union of `loop_started.applied_artifacts.lesson_ids`
+   * across the window's runs — the lessons that were live while the rated session ran.
+   * Window's runs = runs with a chat turn in this chat at/after `sinceIso`.
+   */
+  appliedLessonIdsForChat(chat_id: string, sinceIso: string): number[] {
+    const rows = this.db.prepare(`
+      SELECT payload_json FROM ledger_events
+      WHERE event_type = 'loop_started'
+        AND run_id IN (SELECT DISTINCT run_id FROM chat_turns WHERE chat_id = ? AND created_at >= ?)
+    `).all<{ payload_json: string }>(chat_id, sinceIso);
+    const ids = new Set<number>();
+    for (const row of rows) {
+      try {
+        const payload = JSON.parse(row.payload_json) as {
+          applied_artifacts?: { lesson_ids?: unknown };
+        };
+        const list = payload.applied_artifacts?.lesson_ids;
+        if (!Array.isArray(list)) continue;
+        for (const id of list) {
+          if (typeof id === "number" && Number.isInteger(id)) ids.add(id);
+        }
+      } catch {
+        // A malformed payload never blocks attribution over the rest.
+      }
+    }
+    return [...ids].sort((a, b) => a - b);
+  }
+
+  /**
+   * Absorb one captured rating into the applied lessons (⓪·3 S2a): append {rating, at}
+   * to each rating_history; a good session (≥2) is the positive reuse signal (+0.25 per
+   * applied lesson). A low rating appends only — the penalty rides the attribution pass.
+   */
+  applyRatingToLessons(ids: number[], rating: number, at: string): void {
+    for (const id of ids) {
+      const row = this.getLesson(id);
+      if (!row) continue;
+      const history = parseRatingHistory(row.rating_history);
+      history.push({ rating, at });
+      this.db.prepare(`
+        UPDATE lessons SET rating_history = ?, reuse_value = reuse_value + ? WHERE id = ?
+      `).run(JSON.stringify(history), rating >= 2 ? 0.25 : 0, id);
+    }
+  }
+
+  /**
+   * The attribution pass named this lesson the likely culprit of a low-rated session:
+   * record the correction, pay the reuse penalty (−0.5), note the flag in
+   * rating_history. ACCUMULATE-BEFORE-ACTING (ADR 0012 §1): demotion to 'pruned'
+   * (reversible) only on a PATTERN — ≥2 rating_history entries with rating ≤1 — a
+   * single low rating only flags.
+   */
+  flagRatingCulprit(id: number, reason: string, at: string): { demoted: boolean } {
+    const row = this.getLesson(id);
+    if (!row) return { demoted: false };
+    const history = parseRatingHistory(row.rating_history);
+    history.push({ at, flag: "culprit", ...(reason ? { reason } : {}) });
+    const lowRatings = history.filter(
+      (entry) => typeof entry.rating === "number" && entry.rating <= 1
+    ).length;
+    const demoted = lowRatings >= 2;
+    this.db.prepare(`
+      UPDATE lessons
+      SET rating_history = ?,
+          corrected_count = corrected_count + 1,
+          reuse_value = reuse_value - 0.5${demoted ? ", status = 'pruned'" : ""}
+      WHERE id = ?
+    `).run(JSON.stringify(history), id);
+    return { demoted };
+  }
+
+  /**
+   * The daily decay+prune pass (⓪·3 S2b, the forgetting the papers omit): at most once
+   * per 24h (the `lesson_decay_state` row makes it idempotent across poll cycles).
+   * Active lessons unused for `decayDays` (never-applied rows date from created_at, so
+   * migration-sourced lessons decay too) lose 20% reuse_value; below `pruneThreshold`
+   * they demote to 'pruned' (reversible). One summary ledger event per executed tick.
+   */
+  runLessonDecayTick(
+    now: string,
+    options: { decayDays?: number; pruneThreshold?: number } = {}
+  ): { ran: boolean; lessons_decayed: number; pruned_ids: number[] } {
+    const state = this.db.prepare(`
+      SELECT last_decay_at FROM lesson_decay_state WHERE id = 1
+    `).get<{ last_decay_at: string | null }>();
+    if (state?.last_decay_at && Date.parse(now) - Date.parse(state.last_decay_at) < 86_400_000) {
+      return { ran: false, lessons_decayed: 0, pruned_ids: [] };
+    }
+
+    const decayDays = options.decayDays ?? resolveLessonDecayDays(process.env);
+    const threshold = options.pruneThreshold ?? resolveLessonPruneThreshold(process.env);
+    const cutoff = new Date(Date.parse(now) - decayDays * 86_400_000).toISOString();
+    const stale = this.db.prepare(`
+      SELECT id, reuse_value FROM lessons
+      WHERE status = 'active' AND COALESCE(last_used, created_at) < ?
+    `).all<{ id: number; reuse_value: number }>(cutoff);
+
+    const pruned_ids: number[] = [];
+    for (const row of stale) {
+      const decayed = row.reuse_value * 0.8;
+      const prune = decayed < threshold;
+      this.db.prepare(`
+        UPDATE lessons SET reuse_value = ?${prune ? ", status = 'pruned'" : ""} WHERE id = ?
+      `).run(decayed, row.id);
+      if (prune) pruned_ids.push(row.id);
+    }
+
+    this.db.prepare(`UPDATE lesson_decay_state SET last_decay_at = ? WHERE id = 1`).run(now);
+    this.appendLedgerEvent(
+      createLedgerEvent({
+        correlation_id: "lesson-decay",
+        event_type: "lesson_decay_tick",
+        actor: "system",
+        sequence: this.nextLedgerSequence(),
+        payload: { lessons_decayed: stale.length, pruned_ids }
+      })
+    );
+    return { ran: true, lessons_decayed: stale.length, pruned_ids };
   }
 
   createApprovalRequest(input: ApprovalRequestInput): ApprovalRequestRecord {
@@ -2311,7 +2780,140 @@ export class RunStore {
     this.applyDaemonMigration();
     this.applyChatTurnsMigration();
     this.applyLessonBlocksMigration();
+    this.applyLessonsMigration();
     this.applyReloadMarkerMigration();
+    this.applySignalPathMigration();
+  }
+
+  /**
+   * The signal path (⓪·3 S2, ADR 0012 §1): per-chat pending rating asks (single row per
+   * chat, deactivated — never deleted — on consume/expiry so the ask cooldown survives),
+   * captured session ratings with their applied-lesson attribution, and the single-row
+   * decay-tick state (like daemon_heartbeat; seeded so the first tick runs immediately).
+   */
+  private applySignalPathMigration(): void {
+    const version = "2026-07-03-signal-path";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS pending_rating (
+          chat_id TEXT PRIMARY KEY,
+          asked_at TEXT NOT NULL,
+          window_start TEXT NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS session_ratings (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          chat_id TEXT NOT NULL,
+          rating INTEGER NOT NULL,
+          comment TEXT,
+          asked_at TEXT NOT NULL,
+          captured_at TEXT NOT NULL,
+          applied_lesson_ids TEXT NOT NULL DEFAULT '[]'
+        );
+
+        CREATE TABLE IF NOT EXISTS lesson_decay_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          last_decay_at TEXT
+        );
+
+        INSERT OR IGNORE INTO lesson_decay_state (id) VALUES (1);
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Per-lesson rows (⓪·3 S1, ADR 0012 §2/§3): the durable memory reshape from one
+   * char-capped block per scope to ONE ROW PER LESSON with eval metadata and a
+   * bidirectional supersede chain. One-time: each legacy block's `- <lesson>` bullets
+   * split into individual active rows (source 'migration'). The lesson_blocks table is
+   * KEPT as a frozen archive — nothing reads or writes it after this migration (verified
+   * 2026-07-03: composer/gateway/worker all moved to rows) — so rollback stays possible.
+   */
+  private applyLessonsMigration(): void {
+    const version = "2026-07-03-lessons-rows";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS lessons (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          scope TEXT NOT NULL,
+          text TEXT NOT NULL,
+          avoid TEXT,
+          status TEXT NOT NULL DEFAULT 'active',
+          supersedes INTEGER,
+          superseded_by INTEGER,
+          applied_count INTEGER NOT NULL DEFAULT 0,
+          corrected_count INTEGER NOT NULL DEFAULT 0,
+          reuse_value REAL NOT NULL DEFAULT 1.0,
+          rating_history TEXT NOT NULL DEFAULT '[]',
+          created_at TEXT NOT NULL,
+          last_used TEXT,
+          source TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS lessons_scope_status_idx
+          ON lessons(scope, status);
+      `);
+
+      if (!applied) {
+        const blocks = this.db.prepare(`
+          SELECT scope, block, updated_at FROM lesson_blocks
+        `).all<{ scope: string; block: string; updated_at: string }>();
+        const insert = this.db.prepare(`
+          INSERT INTO lessons (scope, text, created_at, source)
+          VALUES (?, ?, ?, 'migration')
+        `);
+        for (const b of blocks) {
+          for (const line of b.block.split("\n")) {
+            // "- <lesson>" bullets become rows; a stray non-bullet line migrates as-is.
+            const text = line.trim().replace(/^-\s*/, "").trim();
+            if (text.length > 0) insert.run(b.scope, text, b.updated_at);
+          }
+        }
+
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
   }
 
   /**
@@ -2357,9 +2959,9 @@ export class RunStore {
   }
 
   /**
-   * Long-term procedural lessons (ADR 0010): one char-capped, edit-in-place block
-   * per scope. Distinct from chat_turns (short-term) — these are durable preferences
-   * the composer folds into future runs. Consolidated by an LLM rewrite at the cap.
+   * LEGACY lesson blocks (ADR 0010): one char-capped block per scope. Superseded by
+   * per-lesson rows (⓪·3 S1 — see applyLessonsMigration, which split the bullets into
+   * the `lessons` table). The table is kept as a frozen archive; nothing reads it.
    */
   private applyLessonBlocksMigration(): void {
     const version = "2026-06-19-lesson-blocks";
@@ -2922,6 +3524,44 @@ export class RunStore {
 }
 
 const DEFAULT_LESSON_CHAR_CAP = 1200;
+
+/** SELECT list for LessonRow reads (one place, so every accessor returns the same shape). */
+const LESSON_COLUMNS =
+  "id, scope, text, avoid, status, supersedes, superseded_by, applied_count, " +
+  "corrected_count, reuse_value, rating_history, created_at, last_used, source";
+
+/** Per-scope active-row cap (⓪·3 S1): overflow prunes the lowest reuse_value rows. */
+export const DEFAULT_LESSON_CAP_PER_SCOPE = 20;
+
+export function resolveLessonCapPerScope(env: NodeJS.ProcessEnv): number {
+  const n = Number(env.HOUGE_LESSON_CAP_PER_SCOPE);
+  return Number.isInteger(n) && n > 0 ? n : DEFAULT_LESSON_CAP_PER_SCOPE;
+}
+
+/** Days without use before an active lesson decays (⓪·3 S2b). */
+export const DEFAULT_LESSON_DECAY_DAYS = 14;
+
+export function resolveLessonDecayDays(env: NodeJS.ProcessEnv): number {
+  const n = Number(env.HOUGE_LESSON_DECAY_DAYS);
+  return Number.isInteger(n) && n > 0 ? n : DEFAULT_LESSON_DECAY_DAYS;
+}
+
+/** reuse_value below which a decayed lesson is pruned (reversibly). */
+export const DEFAULT_LESSON_PRUNE_THRESHOLD = 0.2;
+
+export function resolveLessonPruneThreshold(env: NodeJS.ProcessEnv): number {
+  const n = Number(env.HOUGE_LESSON_PRUNE_THRESHOLD);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_LESSON_PRUNE_THRESHOLD;
+}
+
+/** A repeat supersede inside this window marks the memory layer ineffective (escalate). */
+export const DEFAULT_LESSON_REPEAT_DAYS = 7;
+
+export function resolveLessonRepeatDays(env: NodeJS.ProcessEnv): number {
+  const n = Number(env.HOUGE_LESSON_REPEAT_DAYS);
+  return Number.isInteger(n) && n > 0 ? n : DEFAULT_LESSON_REPEAT_DAYS;
+}
+
 const TELEGRAM_COMMAND_WINDOW_SECONDS = 60;
 const TELEGRAM_MAX_COMMANDS_PER_WINDOW = 5;
 const TELEGRAM_MAX_ACTIVE_RUNS = 3;

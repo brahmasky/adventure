@@ -350,8 +350,44 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
         merge-order invariants stay asserted (merge→build→test→notify→push→restart).
   - [x] U4 LIVE gate MET (5d8b97f): one small real Houge self-write end-to-end — [View diff] actually readable
         on mobile → [Merge & reload] → ✅ boot confirmation arrives on Telegram.
-- **⓪·3 — spine Slice A on the loop** (rating, reconcile/supersede, reuse-value+decay, AVOID; A1
-  attribution already emitted by loop observation hooks). LIVE gate = spine A9 (visible compounding).
+- **⓪·3 — spine Slice A on the loop** ⏳ **/goal IN PROGRESS 2026-07-03** (rating, reconcile/
+  supersede, reuse-value+decay, AVOID; A1 attribution already emitted by loop observation hooks).
+  LIVE gate = spine A9 (visible compounding). DESIGN REFINEMENT vs spine spec A2: lessons move from
+  one-capped-block-per-scope to PER-LESSON ROWS (`lessons` table; block composed at read time) —
+  reconcile/supersede/reuse-value are per-lesson concepts; existing block bullets migrate to rows.
+  Embeddings DEFERRED: per-scope lesson counts are small → reconcile = one LLM compare against the
+  scope's lessons (flat-rate chain), no new dep (zero-runtime-deps rule holds).
+  - [ ] S1 BUILD 1 — memory reshape + write path: `lessons` table + migration from block bullets ·
+        reconcile-on-write ADD/SUPERSEDE/UPDATE (never delete; bidirectional supersede pointers) ·
+        AVOID field threaded into composer render · reuse_value/applied_count/last_used fields ·
+        /lessons shows lineage+reuse, /forget by scope|id · lesson_write + legacy runFeedback both
+        reconcile · LAYER-ROUTING (i) discipline names code-owned surfaces + (ii) lesson_write
+        refuses feedback quoting a phrase found verbatim in src/ (digest steers to code layer).
+  - [x] S2 BUILD 2 DONE 2026-07-03 — signal path: rating capability (session-lull + substance trigger on the poll
+        loop, rate-limited, 0–3 + optional comment, pending-rating state so a bare digit routes to
+        capture not chat) · rating attaches to the session's applied artifacts (from loop_started/
+        loop_step attribution) · low-rating bounded transcript pass → culprit flag (accumulate,
+        pattern-not-single-rating) · applied-and-not-corrected → reuse_value++ · daily decay+prune
+        tick riding the poll loop · LAYER-ROUTING (iii) repeat-supersede of an ineffective lesson →
+        digest suggests self_diagnose/self_write. Built: src/capabilities/session-rating.ts (ask
+        trigger + bare-rating parse + attribution pass), gateway pre-turn capture, run-store
+        pending_rating/session_ratings/lesson_decay_state (+ rating_history/reuse math, SUPERSEDE
+        correction wiring, escalate digest), daemon runSignalPathTick, /lessons ratings+⚠ flagged,
+        /status Rating line. VERIFIER FIXES applied 2026-07-04: (1) digit+comment never swallows —
+        rating banked, COMMENT forwards as the turn's message (no ack; comment→lesson rides the
+        normal turn once, comment→distill branch dropped from processRatingSignal); (2)
+        CONVERSATIONAL_SRC_STRINGS skip-list so Houge's spoken strings (ask/acks/hints) never trip
+        the code-owned refusal (rendered EVOLUTION_NOTICE_HEADER stays greppable); (3) live-skills-2b
+        + live-conversational scripts ported off removed listLessonBlocks. 971 tests green
+        (was 909); hermetic sweep incl. hostile HOUGE_RATING_*/HOUGE_LESSON_* values; typecheck/
+        build/deps {} green.
+  - [ ] S3 gates + independent adversarial verification (both builds) · hermetic sweep · floor
+        untouched · composer goldens for non-loop surfaces byte-stable.
+  - [ ] S4 LIVE gate (spine A9, interactive): correction → lesson lands with AVOID, SUPERSEDES the
+        prior version (duplicate timezone lessons collapse = ready-made case 1) · Houge asks 0–3 at
+        session boundary · repeat correction supersedes rather than re-learns · ineffective
+        "playful sign-offs" lesson (case 2) escalates to the code layer · /lessons shows
+        reuse_value + supersede lineage.
   **+ folded in (2026-07-03): LAYER-ROUTING self-knowledge** — (i) loop discipline names the
   code-owned surfaces (notice header, report scaffolding, buttons, wrappers): "a lesson can't change
   these → self_write_propose"; (ii) lesson_write mechanically refuses feedback quoting a phrase that
