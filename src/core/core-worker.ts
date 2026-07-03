@@ -2417,13 +2417,20 @@ function evolutionDeadlineExtensionMs(name: string): number {
 }
 
 /**
+ * Header of the code-owned evolution-notice block. Exported so tests assert via the
+ * constant, not the literal — the wording stays self-write-evolvable (existing tests
+ * are immutable to self-writes, so a pinned literal would lock the string forever).
+ */
+export const EVOLUTION_NOTICE_HEADER = "—— 自我修改状态 ——";
+
+/**
  * Append the code-owned evolution-step notices to the loop's outgoing reply (⓪·2).
  * Empty notices ⇒ the answer passes through byte-identical (a successful publish needs
  * no extra notice — its pipeline text + buttons already flow).
  */
 function withEvolutionNotices(answer: string, notices: string[]): string {
   if (notices.length === 0) return answer;
-  return [answer, "", "—— 自我修改状态 ——", ...notices].join("\n");
+  return [answer, "", EVOLUTION_NOTICE_HEADER, ...notices].join("\n");
 }
 
 /** Report sources for a loop run: the capabilities that actually succeeded, prefixed. */

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CoreWorker } from "../../src/core/core-worker.js";
+import { CoreWorker, EVOLUTION_NOTICE_HEADER } from "../../src/core/core-worker.js";
 import type { SelfWriteDeps } from "../../src/core/core-worker.js";
 import { INTENT_DISCIPLINE } from "../../src/capabilities/intent.js";
 import { LOOP_DISCIPLINE } from "../../src/prompt/composer.js";
@@ -252,7 +252,7 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
       // CODE-OWNED surfacing: the mocked model's final answer ("已提交修复分支。") says
       // nothing about the deny — the hard-deny text is APPENDED by code regardless.
       const text = String(notif!.payload.text);
-      expect(text).toContain("自我修改状态");
+      expect(text).toContain(EVOLUTION_NOTICE_HEADER);
       expect(text).toContain("package.json");
       expect(text.toLowerCase()).toContain("locked surface");
     } finally {
@@ -383,7 +383,7 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
       // CODE-OWNED surfacing: the absorbed throw still reaches the user verbatim.
       const notif = store.claimNextNotification("test-claim", 60);
       expect(notif).not.toBeNull();
-      expect(String(notif!.payload.text)).toContain("自我修改状态");
+      expect(String(notif!.payload.text)).toContain(EVOLUTION_NOTICE_HEADER);
       expect(String(notif!.payload.text)).toContain("self_write_propose step failed");
       expect(String(notif!.payload.text)).toContain("gate exploded");
     } finally {
@@ -864,7 +864,7 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
       // answer never mentions the tool.
       const notif = store.claimNextNotification("test-claim", 60);
       expect(notif).not.toBeNull();
-      expect(String(notif!.payload.text)).toContain("自我修改状态");
+      expect(String(notif!.payload.text)).toContain(EVOLUTION_NOTICE_HEADER);
       expect(String(notif!.payload.text)).toContain("self_write_propose step failed");
     } finally {
       store.close();

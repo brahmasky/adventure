@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CoreWorker } from "../../src/core/core-worker.js";
+import { CoreWorker, EVOLUTION_NOTICE_HEADER } from "../../src/core/core-worker.js";
 import { INTENT_DISCIPLINE, resolveInnerLoopEnabled } from "../../src/capabilities/intent.js";
 import { DISTILL_DISCIPLINE } from "../../src/capabilities/distill.js";
 import { GATE_A_DISCIPLINE } from "../../src/capabilities/skill-router.js";
@@ -541,9 +541,9 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       const note = store.claimNextNotification("test", 30);
       const text = String(note!.payload.text);
       expect(text.startsWith("ANSWER:")).toBe(true);
-      expect(text).toContain("自我修改状态");
+      expect(text).toContain(EVOLUTION_NOTICE_HEADER);
       expect(text).toContain("self_diagnose step failed");
-      expect(text.indexOf("自我修改状态")).toBeGreaterThan(text.indexOf("ANSWER:"));
+      expect(text.indexOf(EVOLUTION_NOTICE_HEADER)).toBeGreaterThan(text.indexOf("ANSWER:"));
     } finally {
       store.close();
     }
