@@ -350,14 +350,25 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
         merge-order invariants stay asserted (merge→build→test→notify→push→restart).
   - [x] U4 LIVE gate MET (5d8b97f): one small real Houge self-write end-to-end — [View diff] actually readable
         on mobile → [Merge & reload] → ✅ boot confirmation arrives on Telegram.
-- **⓪·3 — spine Slice A on the loop** ⏳ **/goal IN PROGRESS 2026-07-03** (rating, reconcile/
+- **⓪·3 — spine Slice A on the loop** ✅ **DONE + LIVE 2026-07-04** (build 23540b1; A9 live gate
+  MET in one evening session): unprompted 0–3 ask fired 31s after boot → rating 3 captured →
+  repeat timezone correction SUPERSEDED lesson #11 (lesson #15 active, lineage intact — first
+  visible compounding) → layer-routing net caught the code-owned 标题 feedback ({"reason":
+  "code-owned"} refusal → in-turn pivot to self_write_propose → published → Paco merged →
+  465cd2b live, header now "✨ 又偷学了新本事" — named by Houge, shipped by Houge).
+  FOLLOW-UPS: (F1) code-owned phrase checker sees only the CURRENT message — a phrase quoted two
+  turns earlier escapes the net (live miss 22:14: model overpromised "以后就用…" with no code path);
+  fix = extract phrases from the recent thread. (F2) attribution empty on first rating (pre-deploy
+  runs lack lesson_ids — self-heals). (F3) verifier MINORs: saveReconciledLesson lacks scope guard
+  (defense-in-depth); reversed bullet order vs legacy block (cosmetic); no direct throw-injection
+  test for processRatingSignal. Originally: /goal IN PROGRESS 2026-07-03 (rating, reconcile/
   supersede, reuse-value+decay, AVOID; A1 attribution already emitted by loop observation hooks).
   LIVE gate = spine A9 (visible compounding). DESIGN REFINEMENT vs spine spec A2: lessons move from
   one-capped-block-per-scope to PER-LESSON ROWS (`lessons` table; block composed at read time) —
   reconcile/supersede/reuse-value are per-lesson concepts; existing block bullets migrate to rows.
   Embeddings DEFERRED: per-scope lesson counts are small → reconcile = one LLM compare against the
   scope's lessons (flat-rate chain), no new dep (zero-runtime-deps rule holds).
-  - [ ] S1 BUILD 1 — memory reshape + write path: `lessons` table + migration from block bullets ·
+  - [x] S1 BUILD 1 — memory reshape + write path: `lessons` table + migration from block bullets ·
         reconcile-on-write ADD/SUPERSEDE/UPDATE (never delete; bidirectional supersede pointers) ·
         AVOID field threaded into composer render · reuse_value/applied_count/last_used fields ·
         /lessons shows lineage+reuse, /forget by scope|id · lesson_write + legacy runFeedback both
@@ -381,9 +392,9 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
         + live-conversational scripts ported off removed listLessonBlocks. 971 tests green
         (was 909); hermetic sweep incl. hostile HOUGE_RATING_*/HOUGE_LESSON_* values; typecheck/
         build/deps {} green.
-  - [ ] S3 gates + independent adversarial verification (both builds) · hermetic sweep · floor
+  - [x] S3 gates + independent adversarial verification (both builds) · hermetic sweep · floor
         untouched · composer goldens for non-loop surfaces byte-stable.
-  - [ ] S4 LIVE gate (spine A9, interactive): correction → lesson lands with AVOID, SUPERSEDES the
+  - [x] S4 LIVE gate MET (see above) (spine A9, interactive): correction → lesson lands with AVOID, SUPERSEDES the
         prior version (duplicate timezone lessons collapse = ready-made case 1) · Houge asks 0–3 at
         session boundary · repeat correction supersedes rather than re-learns · ineffective
         "playful sign-offs" lesson (case 2) escalates to the code layer · /lessons shows

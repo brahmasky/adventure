@@ -216,3 +216,21 @@ Build + independent adversarial verification subagents; each live round found a 
   readable diff → merge tap → daemon self-restart → ✅ 重启成功 arrived unprompted (both notifications
   delivered 10:34). U4 MET. Houge's sign-off is now "🐒 自我修改进展" — self-written.
 - NEXT: /goal ⓪·3 — spine Slice A on the loop + layer-routing (two ready-made live cases queued).
+
+## 2026-07-04 — /goal ⓪·3 SPINE SLICE A DONE + A9 LIVE: first visible compounding
+- Built in two staged builds (23540b1, 4023 insertions): S1 per-lesson rows (migration from block
+  bullets — rehearsed on a live-DB copy, byte-clean, idempotent, transactional; 14 rows live) ·
+  reconcile-on-write ADD/SUPERSEDE/UPDATE/DROP (LLM compare per scope, no embedding dep) · AVOID ·
+  layer-routing (discipline + verbatim-in-src refusal) · S2 session rating (lull+substance+cooldown
+  ask, bare-digit capture, digit+comment forwards the comment as a real turn — never swallows) ·
+  attribution to applied lesson_ids · low-rating culprit pass (accumulate: flag at 1, demote at 2) ·
+  reuse_value math · daily decay/prune tick · repeat-supersede escalation. 971 tests; verifier GO;
+  3 verifier findings fixed pre-live (rating swallow, conversational-string self-collision, scripts).
+- A9 LIVE GATE MET (one session): ask fired unprompted 31s after boot → rating 3 captured →
+  "以后所有时间一律用悉尼时间" SUPERSEDED #11 → #15 w/ lineage (COMPOUNDING VISIBLE — the re-learning
+  loop closed for the first time) → 标题 feedback: mechanical code-owned refusal → in-turn pivot →
+  self-write published → Paco merged → 465cd2b live ("✨ 又偷学了新本事", named + shipped by Houge).
+- LIVE MISS recorded (F1): phrase checker reads only the current message — the 22:14 turn (phrase
+  two turns back) produced an overpromise with no code path. Fix = thread-scoped phrase extraction.
+- NEXT: F1 fix (small) · then ⓪·4 (retire legacy paths) or spine ② episodic memory. The eval loop
+  is now LIVE end-to-end: sense→remember→change→evaluate→keep/rollback all have running machinery.
