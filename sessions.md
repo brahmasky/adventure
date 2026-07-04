@@ -260,3 +260,14 @@ Build + independent adversarial verification subagents; each live round found a 
   merged+reloaded by Paco solo — full circuit needed zero Claude involvement); all selfwrite branches 0.
 - Houge self-write count this week: 8 merged. The loop is routine now — Paco runs send→diff→merge→boot
   cycles without orchestrator help. NEXT: soak + ratings; then ⓪·3g or ⓪·4 or spine ②/scheduler.
+
+## 2026-07-04 (evening) — soak continues: lessons compounding live; deep-research ceiling mapped
+- No-false-promises feedback landed WELL: lessons #16 (research) + #17 (ask, SUPERSEDES #6 — second
+  live supersede) with AVOID "making promises about capabilities you don't have"; Houge's meta-reply
+  honest ("等 Paco 帮我写进代码"). Noted: same lesson wrote to two scopes — reconcile is within-scope
+  only (small v1 limit). First reply clunky ("你是指哪个问题?") = thread-context shallowness → ② case.
+- Deep investment research ask ("多方查证做综合报告") hit the true CAPABILITY CEILING: snippets-only
+  (no ③ http_fetch), 6-call/10-min turn envelope, no background jobs, no durable synthesis (④ wiki's
+  designed demo). Houge declined HONESTLY (lesson working) instead of promising. Roadmap updated:
+  ⓪·3g lane fix → ③ http_fetch → ④ wiki proposed; naming de-confused (⓪·3g "lane fix" ≠ spine ③).
+- Docs/commits verified current through this entry; tree clean, all pushed.

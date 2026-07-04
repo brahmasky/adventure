@@ -428,7 +428,8 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
   - [x] LIVE gate MET (see above): replicate the 22:14 shape — msg 1 quotes the code-owned title, msg 2 says
         "换掉它" without quoting → refusal fires from thread → pivot to self_write_propose
         (branch may be discarded — the routing is the test).
-- **⓪·3g — SINGLE-LANE FIX (next small /goal candidate; promoted from ⓪·2b parked MINOR after it
+- **⓪·3g "THE LANE FIX" — SINGLE-LANE FIX (next /goal, Paco-confirmed direction 2026-07-04; NOT to
+  be confused with spine step ③ http_fetch; promoted from ⓪·2b parked MINOR after it
   bit live 2026-07-04)**: a long evolution pipeline (writer 5min + gate 7min + reviewer 3min) makes
   Houge DEAF — Paco's [View diff] taps + messages queued ~15 min unanswered (looked broken) — AND LOSSY: Telegram expires unclaimed callback_query updates in ~1 min, so taps during a pipeline are DESTROYED server-side (2026-07-04: 3 View taps vanished — offset advanced, zero trace). Options:
   (a) run evolution pipelines off the poll thread (worker process / async lane; poll loop keeps
@@ -439,6 +440,16 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
   run_6bed4d47 [June-27 era], run_f93782e2 — abandoned, unmerged); decide fix #1 run_ba05dfcf
   (timezone parse+normalize, published+reviewed) merge-or-discard; fix #2 failed honestly
   (typecheck red on new result-time.ts — attempt cap).
+- **ROADMAP NOTE 2026-07-04 (soak day 1 evidence):** Paco's real usage (deep investment research:
+  "多方查证不同信息来源，做综合报告") hit the CAPABILITY CEILING squarely: web_search = snippets only
+  (can't read sources — needs spine ③ http_fetch, already spec'd H1–H7) · one turn = ≤6 calls/10min
+  (no comprehensive report) · no background work · no durable synthesis (needs spine ④ wiki — the
+  investment-research use case is the wiki's designed demo; charter-clean: research OK, only
+  trading/custody deferred). Houge's honest decline ("时间/预算不够") = the no-false-promises lesson
+  WORKING. Proposed sequence: ⓪·3g lane fix → ③ http_fetch → ④ wiki, with ② episodic + scheduler
+  slotting around them; ⓪·4 after a quiet week. ALSO NOTED: reconcile dedupes within-scope only —
+  the same verify-across-sources lesson landed in BOTH ask (#17, superseding #6 ✓) and research
+  (#16); cross-scope dedup = small known v1 limit for the ⓪·3g-era backlog.
 - **⓪·4 — retire legacy paths** (flag default ON, executeTurn if-chain + per-intent handlers removed,
   research fixed sequence dissolves into composition). LIVE gate: a normal day's traffic on loop only.
 
