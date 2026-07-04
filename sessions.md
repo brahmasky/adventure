@@ -271,3 +271,17 @@ Build + independent adversarial verification subagents; each live round found a 
   designed demo). Houge declined HONESTLY (lesson working) instead of promising. Roadmap updated:
   ⓪·3g lane fix → ③ http_fetch → ④ wiki proposed; naming de-confused (⓪·3g "lane fix" ≠ spine ③).
 - Docs/commits verified current through this entry; tree clean, all pushed.
+
+## 2026-07-04 (night) — /goal ⓪·3g THE LANE FIX DONE + LIVE: Houge stays responsive during self-writes
+- Root cause was sync child-process spawns freezing the event loop, not architecture. Built (f79716a):
+  exec-file-async (execFileSync contract mirrored byte-for-byte) · evolution lane (kickoff digest
+  returns immediately; ONE background pipeline; completion = own durable notification w/ buttons or
+  code-owned failure; per-tool keys; wall-clock cap; lane released in finally; late orphans deliver
+  nothing) · SIGTERM awaits lane · /status lane line · view-tap dedupe 60s · merge ack "正在合并…" ·
+  merge REFUSED while lane busy (verifier F1: launchd ExitTimeOut 40 = SIGKILL at 40s). 1013 tests.
+- Verifier GO + 3 findings fixed pre-live (merge×lane, notification key collision, timeout wording).
+- G6 LIVE (digest-noise cleanup as test subject, merged 498acf7): kickoff 18s · concurrent chat 7s
+  pickup mid-pipeline · publish 2m41s · buttons → merge → ✅ 重启成功. Houge self-write #10 merged;
+  web digests now stripped of image-markdown junk (the football-score bug's second half fixed).
+- ⓪ roadmap: ⓪·1/⓪·2/⓪·2b/⓪·2c/⓪·3/⓪·3f/⓪·3g ALL DONE+LIVE. Remaining: ⓪·4 (after quiet week).
+  NEXT per usage evidence: ③ http_fetch → ④ wiki (deep research); ② episodic + scheduler in the mix.

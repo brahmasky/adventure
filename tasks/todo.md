@@ -428,13 +428,21 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
   - [x] LIVE gate MET (see above): replicate the 22:14 shape — msg 1 quotes the code-owned title, msg 2 says
         "换掉它" without quoting → refusal fires from thread → pivot to self_write_propose
         (branch may be discarded — the routing is the test).
-- **⓪·3g "THE LANE FIX"** ⏳ **/goal IN PROGRESS 2026-07-04** (deaf+lossy single lane; design:
+- **⓪·3g "THE LANE FIX"** ✅ **DONE + LIVE 2026-07-04** (f79716a; G6 live gate met with the
+  digest-noise cleanup as the test self-write, 498acf7 merged): kickoff reply in 18s (was 10min
+  silence) · concurrent chat turn picked up 7s into a running pipeline (web searches interleaving
+  with 6 codex processes) · publish in 2m41s → completion notification with buttons → merge ack →
+  ✅ 重启成功. View-dedupe test-proven (not live-exercised; next self-write will). Verifier findings
+  fixed pre-live: merge REFUSED while lane busy (launchd ExitTimeOut 40 would SIGKILL a merge-restart
+  mid-pipeline — silent outcome loss), per-tool completion keys (no silent conflict drops), honest
+  timeout wording (orphan may late-publish). Known accepted: orphan pipelines are un-cancellable
+  (bounded by spawn timeouts; late branch visible via git branch, no phantom notifications). (deaf+lossy single lane; design:
   the lane is blocked by SYNC child-process spawns, not architecture — convert pipeline spawns to
   async, background the evolution pipelines, keep the poll loop breathing)
-  - [ ] G1 async spawns: writer (codex/claude), test-gate, reviewer chain, self-diagnose consult —
+  - [x] G1 async spawns: writer (codex/claude), test-gate, reviewer chain, self-diagnose consult —
         execFileSync/spawnSync → promisified async (no worker threads, no extra processes; sqlite
         stays on the main thread). Gate SEQUENCE and requirements unchanged.
-  - [ ] G2 background evolution lane: self_write_propose / self_diagnose / skill_author return
+  - [x] G2 background evolution lane: self_write_propose / self_diagnose / skill_author return
         IMMEDIATELY with a "started" digest (model tells the user work has begun); the pipeline
         runs as ONE tracked background promise (global busy flag — a second evolution ask while
         busy returns a not-ok "已有一个自我修改在进行中" digest). Completion sends its own durable
@@ -442,19 +450,19 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
         evolution-notice guarantee moves from the turn reply to the completion notification).
         Pipeline wall-clock cap = its sub-contract time_minutes (abort → failure notification).
         H2 turn-deadline extensions become unnecessary for backgrounded tools — remove/neutralize.
-  - [ ] G3 daemon integration: poll loop keeps serving messages/taps during a pipeline; SIGTERM
+  - [x] G3 daemon integration: poll loop keeps serving messages/taps during a pipeline; SIGTERM
         awaits the in-flight background pipeline (or tears down worktree safely); single-instance
         lock unchanged; ledger events (self_write_*) still emitted; budget: turn charged 1 for the
         kickoff as today, pipeline internals on their own sub-ledger (unchanged from ⓪·2).
-  - [ ] G4 tap hygiene: answerCallbackQuery promptly; dedupe IDENTICAL callback actions
+  - [x] G4 tap hygiene: answerCallbackQuery promptly; dedupe IDENTICAL callback actions
         (action+runId) within a 60s window (N impatient taps → one response); merge tap stays
         synchronous (it ends in restart) BUT sends an immediate "正在合并，跑门禁要几分钟 🐒" ack
         before the gate run.
-  - [ ] G5 gates: typecheck · test · build · deps {} · hermetic sweep · FLOOR: guard byte-untouched;
+  - [x] G5 gates GREEN (1013): typecheck · test · build · deps {} · hermetic sweep · FLOOR: guard byte-untouched;
         gate/reviewer/writer modules may change EXECUTION (sync→async) but not REQUIREMENTS,
         ORDER, or argv/tools-denied invariants (existing floor tests stay green, mechanically
         adapted only if the API forces it) · independent adversarial verification.
-  - [ ] G6 LIVE gate (Paco): trigger a real self-write; WHILE the pipeline runs: a chat message
+  - [x] G6 LIVE gate MET (see above) (Paco): trigger a real self-write; WHILE the pipeline runs: a chat message
         gets answered promptly AND the kickoff reply arrives instantly; publish notification lands
         with buttons; an immediate View-diff tap answers in seconds (no loss); double-tap → one
         diff; merge → immediate ack → ✅ 重启成功.
