@@ -1,5 +1,6 @@
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
 import { CoreWorker } from "../core/core-worker.js";
+import { evolutionLaneSettled } from "../core/evolution-lane.js";
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
 import { LocalNotificationAdapter } from "../notifications/local-notification-adapter.js";
@@ -117,6 +118,12 @@ export async function runTelegramPollOnce(
       worker_status = result.status;
     }
   });
+
+  // ⓪·3g: a turn may have kicked off a background evolution pipeline. The ONE-SHOT
+  // runner exits (and its caller closes the store) right after this function returns,
+  // so finish the pipeline here — its completion notification then rides the dispatch
+  // flush below. (The always-on daemon interleaves instead and only waits on shutdown.)
+  await evolutionLaneSettled();
 
   const now = new Date().toISOString();
   options.store.expirePendingApprovals(now);

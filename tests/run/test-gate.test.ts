@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveTestGateTimeoutMs, runTestGate } from "../../src/run/test-gate.js";
+import { resolveTestGateTimeoutMs, runTestGate, runTestGateAsync } from "../../src/run/test-gate.js";
 
 let temps: string[] = [];
 
@@ -110,6 +110,54 @@ describe("runTestGate", () => {
     if (!result.green) {
       expect(result.stage).toBe("typecheck");
       expect(result.output).toMatch(/timed out/);
+    }
+  });
+});
+
+// ⓪·3g: the async twin the SELF-WRITE pipeline uses — identical stages, order, and
+// result mapping to the sync gate (which the merge path deliberately keeps).
+describe("runTestGateAsync", () => {
+  it("is green when typecheck, test, and build all pass", async () => {
+    const wt = fakeProject({ typecheck: "exit 0", test: "exit 0", build: "exit 0" });
+    await expect(runTestGateAsync(wt, { env: {} })).resolves.toEqual({ green: true });
+  });
+
+  it("stops at the FIRST red stage in typecheck → test → build order, with the captured output", async () => {
+    const wt = fakeProject({
+      typecheck: "exit 0",
+      test: "echo TEST_RED; exit 1",
+      build: "echo NEVER_RUNS; exit 1"
+    });
+    const result = await runTestGateAsync(wt, { env: {} });
+    expect(result.green).toBe(false);
+    if (!result.green) {
+      expect(result.stage).toBe("test");
+      expect(result.output).toContain("TEST_RED");
+      expect(result.output).not.toContain("NEVER_RUNS");
+    }
+  });
+
+  it("maps a timeout to a red result with the offending stage", async () => {
+    const wt = fakeProject({ typecheck: "sleep 5", test: "exit 0", build: "exit 0" });
+    const result = await runTestGateAsync(wt, { env: { HOUGE_TESTGATE_TIMEOUT_MS: "300" } });
+    expect(result.green).toBe(false);
+    if (!result.green) {
+      expect(result.stage).toBe("typecheck");
+      expect(result.output).toMatch(/timed out/);
+    }
+  });
+
+  it("caps a huge failure log exactly like the sync gate (<= ~8KB, tail kept)", async () => {
+    const wt = fakeProject({
+      typecheck: 'for i in $(seq 1 5000); do echo "noise-line-$i-padding-padding-padding"; done; exit 1',
+      test: "exit 0",
+      build: "exit 0"
+    });
+    const result = await runTestGateAsync(wt, { env: {} });
+    expect(result.green).toBe(false);
+    if (!result.green) {
+      expect(result.output.length).toBeLessThanOrEqual(8 * 1024 + 256);
+      expect(result.output).toContain("noise-line-5000");
     }
   });
 });

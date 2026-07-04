@@ -9,8 +9,8 @@ import { createWorktree, removeWorktree } from "../../src/run/worktree.js";
 let dirs: string[] = [];
 let worktrees: string[] = [];
 
-afterEach(() => {
-  for (const wt of worktrees) removeWorktree(wt);
+afterEach(async () => {
+  for (const wt of worktrees) await removeWorktree(wt);
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
   dirs = [];
   worktrees = [];
@@ -32,9 +32,9 @@ function tmpRepo(): string {
 }
 
 describe("publishBranch (Phase 3 step 7)", () => {
-  it("creates a named branch with the worktree's changes committed, visible in the common repo", () => {
+  it("creates a named branch with the worktree's changes committed, visible in the common repo", async () => {
     const repo = tmpRepo();
-    const wt = createWorktree(repo).path;
+    const wt = (await createWorktree(repo)).path;
     worktrees.push(wt);
 
     // Simulate Codex's diff inside the worktree.
@@ -42,7 +42,7 @@ describe("publishBranch (Phase 3 step 7)", () => {
     writeFileSync(join(wt, "newfile.txt"), "added\n");
 
     const branch = selfWriteBranchName("run_abc123");
-    const returned = publishBranch(wt, branch, "fix the thing");
+    const returned = await publishBranch(wt, branch, "fix the thing");
     expect(returned).toBe("houge/selfwrite/run_abc123");
 
     // The branch ref exists in the COMMON repo (persists after the worktree is removed).
@@ -60,11 +60,11 @@ describe("publishBranch (Phase 3 step 7)", () => {
     expect(msg).toContain("fix the thing");
   });
 
-  it("never commits a node_modules symlink that the test-gate symlinked in", () => {
+  it("never commits a node_modules symlink that the test-gate symlinked in", async () => {
     const repo = tmpRepo();
     const realNodeModules = mkdtempSync(join(tmpdir(), "houge-nm-"));
     dirs.push(realNodeModules);
-    const wt = createWorktree(repo).path;
+    const wt = (await createWorktree(repo)).path;
     worktrees.push(wt);
 
     // Codex's source change …
@@ -74,7 +74,7 @@ describe("publishBranch (Phase 3 step 7)", () => {
     symlinkSync(realNodeModules, join(wt, "node_modules"), "dir");
 
     const branch = selfWriteBranchName("run_nm");
-    publishBranch(wt, branch, "fix with node_modules present");
+    await publishBranch(wt, branch, "fix with node_modules present");
 
     // The source change is committed …
     expect(execFileSync("git", ["-C", repo, "show", `${branch}:file.txt`], { encoding: "utf8" })).toBe("fixed\n");
@@ -83,7 +83,7 @@ describe("publishBranch (Phase 3 step 7)", () => {
     expect(tree).not.toContain("node_modules");
   });
 
-  it("throws (no silent half-publish) when git cannot operate", () => {
-    expect(() => publishBranch("/no/such/worktree/path", "houge/selfwrite/x")).toThrow(/Failed to publish branch/);
+  it("throws (no silent half-publish) when git cannot operate", async () => {
+    await expect(publishBranch("/no/such/worktree/path", "houge/selfwrite/x")).rejects.toThrow(/Failed to publish branch/);
   });
 });

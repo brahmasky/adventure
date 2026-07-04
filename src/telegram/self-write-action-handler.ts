@@ -7,6 +7,7 @@ import {
   type MergeActionDeps,
   type MergeOutcome
 } from "../capabilities/self-write-merge.js";
+import { evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import { NotificationOutbox } from "../notifications/notification-outbox.js";
 import { selfWriteBranchName } from "../run/branch-publish.js";
 import type { RunStore } from "../run/run-store.js";
@@ -69,6 +70,36 @@ export interface HandleSelfWriteActionOptions {
   makeDeps?: (notifyDurable: (text: string) => void) => MergeActionDeps;
   /** Injectable for tests: resolve whether [Merge & reload] also pushes. Defaults to the env. */
   resolvePush?: () => boolean;
+  /** Injectable clock for the view-tap dedupe window (tests). Defaults to Date.now. */
+  now?: () => number;
+}
+
+/**
+ * ⓪·3g tap hygiene: N impatient [View diff] taps within the window must produce ONE
+ * diff, not N. Telegram redelivers expired callback_queries as fresh callback ids, so
+ * dedupe keys on (action, runId) — in-memory only (a restart forgets it, which is fine:
+ * view is read-only). Merge/discard are already idempotent AND a merge dedupe could
+ * mask a legitimate retry after a refusal — so ONLY view is deduped.
+ */
+const VIEW_TAP_DEDUPE_WINDOW_MS = 60_000;
+const recentViewTaps = new Map<string, number>();
+
+/** Test seam: clear the in-memory view-tap dedupe window. */
+export function resetViewTapDedupeForTests(): void {
+  recentViewTaps.clear();
+}
+
+/** True when an identical view tap already executed within the window; records this one otherwise. */
+function isDuplicateViewTap(runId: string, nowMs: number): boolean {
+  const key = `view:${runId}`;
+  const last = recentViewTaps.get(key);
+  if (last !== undefined && nowMs - last < VIEW_TAP_DEDUPE_WINDOW_MS) return true;
+  // Prune expired entries so the map stays bounded (one entry per recently viewed run).
+  for (const [k, t] of recentViewTaps) {
+    if (nowMs - t >= VIEW_TAP_DEDUPE_WINDOW_MS) recentViewTaps.delete(k);
+  }
+  recentViewTaps.set(key, nowMs);
+  return false;
 }
 
 export async function handleSelfWriteAction(options: HandleSelfWriteActionOptions): Promise<void> {
@@ -100,6 +131,9 @@ export async function handleSelfWriteAction(options: HandleSelfWriteActionOption
 
     switch (event.action) {
       case "view": {
+        // ⓪·3g dedupe: an identical (view, runId) tap within 60s was already served —
+        // the callback is answered (spinner stopped above) but the diff is not re-sent.
+        if (isDuplicateViewTap(event.runId, (options.now ?? Date.now)())) return;
         // Read-only + repeatable: leave the buttons in place.
         const result = viewDiff({ branch, deps });
         if (result.ok) {
@@ -121,8 +155,26 @@ export async function handleSelfWriteAction(options: HandleSelfWriteActionOption
         return;
       }
       case "merge": {
+        // ⓪·3g F1: REFUSE the merge while an evolution pipeline is on the background
+        // lane. A green merge ends in a launchd restart whose ExitTimeOut (40s) SIGKILLs
+        // the daemon — killing the in-flight pipeline mid-spawn with no completion or
+        // failure notification (silent outcome loss + a leaked worktree). The daemon's
+        // shutdown lane-await only covers sub-40s tails, so the merge must simply wait.
+        // Buttons stay in place — a retry after the pipeline finishes is one tap away.
+        const lane = evolutionLaneSnapshot();
+        if (lane.busy) {
+          await send(
+            telegramClient,
+            event.chat_id,
+            `自我修改还在后台跑着（${lane.current?.tool ?? "unknown"}），等它完成再合并 🐒`
+          );
+          return;
+        }
         // Clear the buttons FIRST: a merge is slow, and a double-tap mid-merge must not re-enter.
         await clearButtons(telegramClient, event);
+        // ⓪·3g: immediate ack BEFORE the slow synchronous merge (gate run takes minutes
+        // and blocks this single-threaded process) so the tap never feels swallowed.
+        await send(telegramClient, event.chat_id, "正在合并，跑门禁要几分钟，完事我喊你 🐒");
         const push = options.resolvePush ? options.resolvePush() : resolveSelfWritePush(process.env);
         const outcome = mergeAndReload({ branch, push, deps });
         await reportMergeOutcome(telegramClient, event.chat_id, branch, outcome);

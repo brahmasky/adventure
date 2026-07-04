@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
 import { CoreWorker } from "../core/core-worker.js";
+import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
 import { LocalNotificationAdapter } from "../notifications/local-notification-adapter.js";
@@ -194,6 +195,23 @@ export async function runTelegramDaemon(
       failures += 1;
       const delay = Math.min(maxMs, baseMs * 2 ** (failures - 1));
       await sleep(delay, options.stopSignal);
+    }
+  }
+
+  // ⓪·3g: an evolution pipeline may still be running on the background lane — finish it
+  // before exiting (mirroring the in-flight-run guarantee above; bounded by the lane's
+  // own wall-clock cap), then flush its completion notification through the outbox.
+  const lane = evolutionLaneSnapshot();
+  if (lane.busy) {
+    console.error(`[telegram-daemon] waiting for in-flight self-write (${lane.current?.tool ?? "unknown"})…`);
+    await evolutionLaneSettled();
+    try {
+      for (;;) {
+        const result = await dispatcher.dispatchOnce("telegram-daemon-dispatcher");
+        if (result.status === "idle") break;
+      }
+    } catch {
+      // Best-effort flush — the durable notification delivers on the next boot anyway.
     }
   }
 

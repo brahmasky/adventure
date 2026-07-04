@@ -43,7 +43,7 @@ afterEach(() => {
 });
 
 describe("buildCodexWriteArgs", () => {
-  it("uses --json + workspace-write sandbox, -C worktree, trailing stdin marker; no model when unset", () => {
+  it("uses --json + workspace-write sandbox, -C worktree, trailing stdin marker; no model when unset", async () => {
     expect(buildCodexWriteArgs("/wt")).toEqual([
       "exec",
       "--json",
@@ -55,18 +55,18 @@ describe("buildCodexWriteArgs", () => {
     ]);
   });
 
-  it("includes --json so the token-count JSONL stream is captured on stdout", () => {
+  it("includes --json so the token-count JSONL stream is captured on stdout", async () => {
     expect(buildCodexWriteArgs("/wt")).toContain("--json");
     expect(buildCodexWriteArgs("/wt", "gpt-5")).toContain("--json");
   });
 
-  it("is identical to read-only EXCEPT workspace-write (no -o outfile in write mode)", () => {
+  it("is identical to read-only EXCEPT workspace-write (no -o outfile in write mode)", async () => {
     const args = buildCodexWriteArgs("/wt");
     expect(args).toContain("workspace-write");
     expect(args).not.toContain("read-only");
   });
 
-  it("adds -m <model> when a model is set", () => {
+  it("adds -m <model> when a model is set", async () => {
     expect(buildCodexWriteArgs("/wt", "gpt-5")).toEqual([
       "exec",
       "--json",
@@ -80,7 +80,7 @@ describe("buildCodexWriteArgs", () => {
     ]);
   });
 
-  it("NEVER includes a bypass / yolo / skip-git-repo-check flag", () => {
+  it("NEVER includes a bypass / yolo / skip-git-repo-check flag", async () => {
     const args = buildCodexWriteArgs("/wt", "gpt-5").join(" ");
     expect(args).not.toMatch(/dangerously-bypass/);
     expect(args).not.toMatch(/yolo/);
@@ -89,12 +89,12 @@ describe("buildCodexWriteArgs", () => {
 });
 
 describe("createSelfWriteCodexAdapter", () => {
-  it("rejects an empty task without shelling out", () => {
+  it("rejects an empty task without shelling out", async () => {
     const adapter = createSelfWriteCodexAdapter({ worktree: "/wt" });
-    expect(adapter({ task: "" })).toEqual({ ok: false, error: "task must be a non-empty string" });
+    await expect(adapter({ task: "" })).resolves.toEqual({ ok: false, error: "task must be a non-empty string" });
   });
 
-  it("runs codex workspace-write in the worktree, feeds the task on stdin", () => {
+  it("runs codex workspace-write in the worktree, feeds the task on stdin", async () => {
     const wt = gitRepo();
     const argvFile = join(mkdtempSync(join(tmpdir(), "houge-caw-cap-")), "argv");
     const stdinFile = join(mkdtempSync(join(tmpdir(), "houge-caw-cap-")), "stdin");
@@ -105,7 +105,7 @@ describe("createSelfWriteCodexAdapter", () => {
       worktree: wt,
       env: { HOUGE_CODEX_BIN: bin, HOUGE_CODEX_MODEL: "gpt-5" }
     });
-    const result = adapter({ task: "fix the intent router so it sees your identity" });
+    const result = await adapter({ task: "fix the intent router so it sees your identity" });
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -125,7 +125,7 @@ describe("createSelfWriteCodexAdapter", () => {
     expect(readFileSync(stdinFile, "utf8")).toContain("fix the intent router");
   });
 
-  it("keeps ONLY usage-bearing lines in usageRaw (not the multi-MB event stream)", () => {
+  it("keeps ONLY usage-bearing lines in usageRaw (not the multi-MB event stream)", async () => {
     // Regression (live gate, 2026-06-25): the full --json event stream blew the CapabilityRunner's
     // 200KB output_limit_bytes. usageRaw must carry only the token-count lines (the diff is the artifact).
     const wt = gitRepo();
@@ -142,7 +142,7 @@ describe("createSelfWriteCodexAdapter", () => {
     chmodSync(bin, 0o755);
 
     const adapter = createSelfWriteCodexAdapter({ worktree: wt, env: { HOUGE_CODEX_BIN: bin } });
-    const result = adapter({ task: "do the fix" });
+    const result = await adapter({ task: "do the fix" });
     expect(result.ok).toBe(true);
     if (result.ok) {
       const usageRaw = (result.output as { usageRaw?: string }).usageRaw ?? "";
@@ -152,7 +152,7 @@ describe("createSelfWriteCodexAdapter", () => {
     }
   });
 
-  it("maps a non-zero codex exit to a clean error", () => {
+  it("maps a non-zero codex exit to a clean error", async () => {
     const wt = gitRepo();
     const argvFile = join(mkdtempSync(join(tmpdir(), "houge-caw-cap-")), "argv");
     const stdinFile = join(mkdtempSync(join(tmpdir(), "houge-caw-cap-")), "stdin");
@@ -160,22 +160,22 @@ describe("createSelfWriteCodexAdapter", () => {
     const bin = fakeCodex({ argvFile, stdinFile, behavior: "fail" });
 
     const adapter = createSelfWriteCodexAdapter({ worktree: wt, env: { HOUGE_CODEX_BIN: bin } });
-    const result = adapter({ task: "write a fix" });
+    const result = await adapter({ task: "write a fix" });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/non-zero|status 3/);
   });
 
-  it("maps a missing codex binary (ENOENT) to a clean error", () => {
+  it("maps a missing codex binary (ENOENT) to a clean error", async () => {
     const adapter = createSelfWriteCodexAdapter({
       worktree: gitRepo(),
       env: { HOUGE_CODEX_BIN: "codex-does-not-exist-anywhere" }
     });
-    const result = adapter({ task: "write a fix" });
+    const result = await adapter({ task: "write a fix" });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/not found/);
   });
 
-  it("maps a timeout to a clean error", () => {
+  it("maps a timeout to a clean error", async () => {
     const wt = gitRepo();
     const dir = mkdtempSync(join(tmpdir(), "houge-caw-slow-"));
     temps.push(dir);
@@ -187,7 +187,7 @@ describe("createSelfWriteCodexAdapter", () => {
       worktree: wt,
       env: { HOUGE_CODEX_BIN: bin, HOUGE_CODEX_TIMEOUT_MS: "300" }
     });
-    const result = adapter({ task: "write a fix" });
+    const result = await adapter({ task: "write a fix" });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/timed out/);
   });

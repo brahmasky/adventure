@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CoreWorker, EVOLUTION_NOTICE_HEADER, evolutionDeadlineExtender } from "../../src/core/core-worker.js";
+import { buildEvolutionKickoffDigest, CoreWorker, EVOLUTION_NOTICE_HEADER, evolutionDeadlineExtender } from "../../src/core/core-worker.js";
+import { evolutionLaneSettled, resetEvolutionLaneForTests } from "../../src/core/evolution-lane.js";
 import { INTENT_DISCIPLINE, resolveInnerLoopEnabled } from "../../src/capabilities/intent.js";
 import { DISTILL_DISCIPLINE } from "../../src/capabilities/distill.js";
 import { RECONCILE_DISCIPLINE } from "../../src/capabilities/reconcile.js";
@@ -40,8 +41,11 @@ beforeEach(() => {
     savedEnv[key] = process.env[key];
     delete process.env[key];
   }
+  resetEvolutionLaneForTests();
 });
-afterEach(() => {
+afterEach(async () => {
+  await evolutionLaneSettled();
+  resetEvolutionLaneForTests();
   for (const key of PINNED_ENV) {
     if (savedEnv[key] === undefined) delete process.env[key];
     else process.env[key] = savedEnv[key];
@@ -597,6 +601,7 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       );
       const result = await worker.executeRun(run_id, "w");
       expect(result.status).toBe("completed");
+      await evolutionLaneSettled(); // ⓪·3g: the consult runs on the background lane
 
       // Armed → listed in the manifest.
       const started = loopEvents(store, run_id, "loop_started");
@@ -605,10 +610,19 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       expect(codexCalls.length).toBe(1);
       expect(String(codexCalls[0]!.question)).toContain("which 猴哥");
       expect(String(codexCalls[0]!.question)).toContain("intent classifier identity");
-      // The relayed diagnosis rode the step digest; the turn still finished with a final.
+      // ⓪·3g: the step digest is the KICKOFF (immediate return); the relayed diagnosis
+      // rides the lane's completion notification instead.
       const steps = loopEvents(store, run_id, "loop_step");
       expect(steps[0]!.payload).toMatchObject({ action: "self_diagnose", capability: "self_diagnose", ok: true });
-      expect(String(steps[0]!.payload.result_digest)).toContain("ROOT CAUSE");
+      expect(String(steps[0]!.payload.result_digest)).toBe(buildEvolutionKickoffDigest("self_diagnose"));
+      const notes: string[] = [];
+      for (;;) {
+        // Unique lease owner per claim (same-owner claims can read back the same row).
+        const n = store.claimNextNotification(`test-${notes.length}`, 30);
+        if (!n) break;
+        notes.push(String(n.payload.text));
+      }
+      expect(notes.some((t) => t.includes("ROOT CAUSE"))).toBe(true);
       // Read-only: no self_write_* events, ever.
       expect(store.getLedgerEvents(run_id).some((e) => String(e.event_type).startsWith("self_write_"))).toBe(false);
       const turns = store.getRecentChatTurns("555", 6);
@@ -671,14 +685,25 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       );
       const result = await worker.executeRun(run_id, "w");
       expect(result.status).toBe("completed");
+      await evolutionLaneSettled(); // ⓪·3g: the Gate A stack runs on the background lane
 
-      // The unchanged Gate A stack ran inside the tool: the down-route lesson was saved
-      // and the gate-stack report became the step digest.
+      // The unchanged Gate A stack ran inside the tool: the down-route lesson was saved;
+      // the gate-stack report rides the lane's completion notification (the step digest
+      // is the kickoff).
       expect(store.readLessonBlock("ask")).toContain("answer with the conclusion first");
       const steps = loopEvents(store, run_id, "loop_step");
       expect(steps[0]!.payload).toMatchObject({ action: "skill_author", capability: "skill_author", ok: true });
-      expect(String(steps[0]!.payload.result_digest)).toContain("Skill attempt");
-      expect(String(steps[0]!.payload.result_digest)).toContain("LESSON");
+      expect(String(steps[0]!.payload.result_digest)).toBe(buildEvolutionKickoffDigest("skill_author"));
+      const notes: string[] = [];
+      for (;;) {
+        // Unique lease owner per claim (same-owner claims can read back the same row).
+        const n = store.claimNextNotification(`test-${notes.length}`, 30);
+        if (!n) break;
+        notes.push(String(n.payload.text));
+      }
+      const report = notes.find((t) => t.includes("Skill attempt"));
+      expect(report).toBeDefined();
+      expect(report).toContain("LESSON");
     } finally {
       store.close();
     }
@@ -810,13 +835,14 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       );
       const result = await worker.executeRun(run_id, "w");
       expect(result.status).toBe("completed");
+      await evolutionLaneSettled(); // ⓪·3g: the consult runs on the background lane
 
       // The internal consult + relay ran on the self-diagnose sub-ledger — on the
       // shared turn ledger the consult reservation would already be exhausted.
       expect(codexCalls.length).toBe(1);
       const steps = loopEvents(store, run_id, "loop_step");
       expect(steps[4]!.payload).toMatchObject({ action: "self_diagnose", ok: true });
-      expect(String(steps[4]!.payload.result_digest)).toContain("ROOT CAUSE");
+      expect(String(steps[4]!.payload.result_digest)).toBe(buildEvolutionKickoffDigest("self_diagnose"));
       // budget_used = the TURN ledger only: 1 classify + 4 fillers + 1 evolution step.
       const completed = store.getLedgerEvents(run_id).filter((e) => e.event_type === "run_completed");
       expect(completed[0]!.payload.budget_used).toEqual({ tool_calls: 6 });
@@ -850,13 +876,14 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       );
       const result = await worker.executeRun(run_id, "w");
       expect(result.status).toBe("completed");
+      await evolutionLaneSettled(); // ⓪·3g: the Gate A stack runs on the background lane
 
       // Gate A ran on the skill-author sub-ledger (a shared-ledger draw would have
       // failed the classification) and the down-route lesson landed.
       expect(store.readLessonBlock("ask")).toContain("answer with the conclusion first");
       const steps = loopEvents(store, run_id, "loop_step");
       expect(steps[4]!.payload).toMatchObject({ action: "skill_author", ok: true });
-      expect(String(steps[4]!.payload.result_digest)).toContain("LESSON");
+      expect(String(steps[4]!.payload.result_digest)).toBe(buildEvolutionKickoffDigest("skill_author"));
       // budget_used = the TURN ledger only: 1 classify + 4 fillers + 1 evolution step.
       const completed = store.getLedgerEvents(run_id).filter((e) => e.event_type === "run_completed");
       expect(completed[0]!.payload.budget_used).toEqual({ tool_calls: 6 });
@@ -866,36 +893,19 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
   });
 });
 
-describe("evolutionDeadlineExtender (H2 worker-level closure semantics, ⓪·3f P4)", () => {
+describe("evolutionDeadlineExtender (⓪·3g: NEUTRALIZED — pipelines run on the background lane)", () => {
   const ALL_ARMED = new Set(["web_search", "llm_answer", "lesson_write", "self_diagnose", "self_write_propose", "skill_author"]);
 
-  it("an armed evolution tool's FIRST invocation grants its sub-contract time budget in ms", () => {
+  it("grants 0 for EVERY action — armed evolution tools included (the turn never waits on a pipeline)", () => {
     const extend = evolutionDeadlineExtender(ALL_ARMED, new Set());
-    expect(extend("self_diagnose")).toBe(30 * 60_000);
-    expect(extend("self_write_propose")).toBe(60 * 60_000);
-    expect(extend("skill_author")).toBe(10 * 60_000);
-  });
-
-  it("ranOnce is read LIVE: a repeat invocation grants 0 after the adapter marks the tool ran", () => {
-    const ranOnce = new Set<string>();
-    const extend = evolutionDeadlineExtender(ALL_ARMED, ranOnce);
-    expect(extend("self_diagnose")).toBe(30 * 60_000);
-    ranOnce.add("self_diagnose"); // what the tool adapter does when the step actually runs
-    expect(extend("self_diagnose")).toBe(0);
-    expect(extend("skill_author")).toBe(10 * 60_000); // other tools unaffected
-  });
-
-  it("a disarmed evolution tool (off the manifest) grants 0", () => {
-    const extend = evolutionDeadlineExtender(new Set(["web_search", "llm_answer", "lesson_write"]), new Set());
-    expect(extend("self_diagnose")).toBe(0);
-    expect(extend("self_write_propose")).toBe(0);
-    expect(extend("skill_author")).toBe(0);
-  });
-
-  it("non-evolution actions grant 0 even when manifested and never run", () => {
-    const extend = evolutionDeadlineExtender(ALL_ARMED, new Set());
-    for (const action of ["web_search", "llm_answer", "lesson_write", "final", "clarify"]) {
+    for (const action of ["self_diagnose", "self_write_propose", "skill_author", "web_search", "llm_answer", "lesson_write", "final", "clarify"]) {
       expect(extend(action)).toBe(0);
     }
+  });
+
+  it("grants 0 regardless of ranOnce/manifest state (the old H2 grants are gone)", () => {
+    const ranOnce = new Set<string>(["self_diagnose"]);
+    expect(evolutionDeadlineExtender(ALL_ARMED, ranOnce)("self_diagnose")).toBe(0);
+    expect(evolutionDeadlineExtender(new Set(), new Set())("self_write_propose")).toBe(0);
   });
 });

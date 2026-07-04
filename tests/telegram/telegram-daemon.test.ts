@@ -2,6 +2,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  evolutionLaneSettled,
+  resetEvolutionLaneForTests,
+  tryStartEvolutionPipeline
+} from "../../src/core/evolution-lane.js";
 import { parseRatingHistory, RunStore } from "../../src/run/run-store.js";
 import { runTelegramDaemon } from "../../src/telegram/telegram-daemon.js";
 import {
@@ -155,6 +160,125 @@ describe("runTelegramDaemon", () => {
 
       expect(delays).toEqual([1000, 2000, 4000]);
       expect(store.getPollHeartbeat()?.last_error).toContain("502");
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("runTelegramDaemon — ⓪·3g background evolution lane", () => {
+  beforeEach(() => resetEvolutionLaneForTests());
+  afterEach(async () => {
+    await evolutionLaneSettled();
+    resetEvolutionLaneForTests();
+  });
+
+  /** Occupy the lane with a controllable fake pipeline whose outcome lands in the outbox. */
+  function occupyLane(store: RunStore): { release: () => void; resolved: () => boolean } {
+    let release!: () => void;
+    let resolved = false;
+    const started = tryStartEvolutionPipeline({
+      current: { run_id: "run_bg", tool: "self_write_propose", started_at: new Date().toISOString() },
+      capMs: 60_000,
+      run: () =>
+        new Promise((resolve) => {
+          release = () => {
+            resolved = true;
+            resolve({ text: "🐒 Fixed the background thing" });
+          };
+        }),
+      onTimeout: () => ({ text: "timeout" }),
+      onError: (d) => ({ text: d }),
+      // Mirror production wiring: the outcome is a DURABLE outbox notification.
+      deliver: (outcome) => {
+        store.enqueueNotification({
+          target: { kind: "telegram", chat_id: "222" },
+          intent_type: "final_report",
+          idempotency_key: "lane:test:completion",
+          correlation_id: "lane:test",
+          payload: { text: outcome.text }
+        });
+      }
+    });
+    expect(started).toBe(true);
+    return { release, resolved: () => resolved };
+  }
+
+  it("keeps answering messages while a pipeline is in flight (the deaf-lane fix)", async () => {
+    const store = RunStore.openInMemory();
+    const controller = new AbortController();
+    const sent: string[] = [];
+    let calls = 0;
+    let answeredWhileInFlight = false;
+    try {
+      const lane = occupyLane(store);
+      await runTelegramDaemon({
+        store,
+        projectRoot: projectRoot(),
+        allowlist: ALLOWLIST,
+        stopSignal: controller.signal,
+        longPollTimeoutSeconds: 0,
+        llmAdapter: async (input) => okAnswer(input),
+        telegramClient: {
+          getUpdates: async () => {
+            calls += 1;
+            if (calls === 1) return [askUpdate(90, "hello while busy")];
+            // By the second poll the message got a full answer WHILE the pipeline
+            // was still un-resolved — the poll loop never blocked on the lane.
+            answeredWhileInFlight = sent.some((t) => t.includes("hello while busy")) && !lane.resolved();
+            lane.release();
+            controller.abort();
+            return [];
+          },
+          sendMessage: async ({ text }) => {
+            sent.push(text);
+            return { message_id: sent.length };
+          }
+        }
+      });
+      expect(answeredWhileInFlight).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("shutdown AWAITS the in-flight pipeline and flushes its completion notification before exiting", async () => {
+    const store = RunStore.openInMemory();
+    const controller = new AbortController();
+    const sent: string[] = [];
+    try {
+      const lane = occupyLane(store);
+      let sawShutdownWait = false;
+      await runTelegramDaemon({
+        store,
+        projectRoot: projectRoot(),
+        allowlist: ALLOWLIST,
+        stopSignal: controller.signal,
+        longPollTimeoutSeconds: 0,
+        llmAdapter: async (input) => okAnswer(input),
+        telegramClient: {
+          getUpdates: async () => {
+            // Abort with the pipeline STILL in flight; release it a beat later —
+            // the daemon must wait for it rather than exit.
+            controller.abort();
+            setTimeout(() => {
+              sawShutdownWait = !lane.resolved();
+              lane.release();
+            }, 20);
+            return [];
+          },
+          sendMessage: async ({ text }) => {
+            sent.push(text);
+            return { message_id: sent.length };
+          }
+        }
+      });
+      // The release fired while the pipeline was still pending (the daemon was waiting on it) …
+      expect(sawShutdownWait).toBe(true);
+      // … the daemon only returned after the pipeline resolved …
+      expect(lane.resolved()).toBe(true);
+      // … and its completion notification was dispatched before exit.
+      expect(sent.some((t) => t.includes("🐒 Fixed the background thing"))).toBe(true);
     } finally {
       store.close();
     }

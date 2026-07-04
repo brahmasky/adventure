@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileAsync } from "../run/exec-file-async.js";
 import { createSelfWriteCodexAdapter, resolveCodexModel } from "./coding-agent.js";
 
 /**
@@ -131,7 +131,7 @@ interface NodeError extends Error {
  * error / timeout / writer-side error maps to `{ ok:false, error }`. The artifact is the edited
  * files in `worktree`; the return carries `usageRaw` for telemetry.
  */
-export function runSelfWriter(input: RunSelfWriterInput): RunSelfWriterResult {
+export async function runSelfWriter(input: RunSelfWriterInput): Promise<RunSelfWriterResult> {
   const env = input.env ?? process.env;
   if (typeof input.task !== "string" || input.task.trim().length === 0) {
     return { ok: false, error: "task must be a non-empty string" };
@@ -142,9 +142,9 @@ export function runSelfWriter(input: RunSelfWriterInput): RunSelfWriterResult {
 }
 
 /** Codex writer (existing path): reuse the workspace-write adapter; surface its `usageRaw`. */
-function writeViaCodex(worktree: string, task: string, env: NodeJS.ProcessEnv): RunSelfWriterResult {
+async function writeViaCodex(worktree: string, task: string, env: NodeJS.ProcessEnv): Promise<RunSelfWriterResult> {
   const adapter = createSelfWriteCodexAdapter({ worktree, env });
-  const result = adapter({ task });
+  const result = await adapter({ task });
   if (!result.ok) return { ok: false, error: result.error };
   const out = result.output as { model?: unknown; usageRaw?: unknown };
   const model = resolveCodexModel(env) ?? (typeof out.model === "string" ? out.model : "default");
@@ -153,7 +153,7 @@ function writeViaCodex(worktree: string, task: string, env: NodeJS.ProcessEnv): 
 }
 
 /** Claude writer (validated spike): headless agentic edit, permission bypass scoped to the worktree. */
-function writeViaClaude(worktree: string, task: string, env: NodeJS.ProcessEnv): RunSelfWriterResult {
+async function writeViaClaude(worktree: string, task: string, env: NodeJS.ProcessEnv): Promise<RunSelfWriterResult> {
   const bin = resolveClaudeWriterBin(env);
   if (bin === CLAUDE_BIN_UNSET) {
     return { ok: false, error: "claude writer disabled: set HOUGE_CLAUDE_BIN" };
@@ -163,15 +163,14 @@ function writeViaClaude(worktree: string, task: string, env: NodeJS.ProcessEnv):
 
   let usageRaw: string;
   try {
-    usageRaw = execFileSync(bin, buildClaudeWriteArgs(model), {
+    ({ stdout: usageRaw } = await execFileAsync(bin, buildClaudeWriteArgs(model), {
       input: task,
       cwd: worktree,
-      encoding: "utf8",
       timeout,
       maxBuffer: WRITER_MAX_BUFFER,
       // Replicate the daemon's environment: restricted PATH (claude is NOT on it → absolute bin).
       env: { ...env, PATH: DAEMON_PATH }
-    });
+    }));
   } catch (error) {
     const err = error as NodeError;
     if (err.code === "ENOENT") {

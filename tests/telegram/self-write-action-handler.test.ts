@@ -1,7 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import {
+  evolutionLaneSettled,
+  resetEvolutionLaneForTests,
+  tryStartEvolutionPipeline
+} from "../../src/core/evolution-lane.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { selfWriteBranchName } from "../../src/run/branch-publish.js";
-import { handleSelfWriteAction } from "../../src/telegram/self-write-action-handler.js";
+import { handleSelfWriteAction, resetViewTapDedupeForTests } from "../../src/telegram/self-write-action-handler.js";
 import type { MergeActionDeps, MergeOutcome } from "../../src/capabilities/self-write-merge.js";
 import type { SelfWriteActionEvent } from "../../src/triggers/telegram-trigger-adapter.js";
 import type { SelfWriteCallbackAction } from "../../src/triggers/telegram-command-parser.js";
@@ -9,6 +14,17 @@ import type { SelfWriteCallbackAction } from "../../src/triggers/telegram-comman
 const RUN_ID = "run_42";
 const CHAT_ID = "777";
 const BRANCH = selfWriteBranchName(RUN_ID);
+
+// ⓪·3g: the view-tap dedupe window is module state keyed on (view, runId) — clear it so
+// the many view tests here (all on RUN_ID) exercise the handler, not the dedupe. The
+// evolution lane is module state too (the F1 merge refusal consults it) — keep it idle.
+beforeEach(() => {
+  resetViewTapDedupeForTests();
+  resetEvolutionLaneForTests();
+});
+
+/** ⓪·3g: the immediate merge ack sent right after the buttons are cleared. */
+const MERGE_ACK = "正在合并，跑门禁要几分钟，完事我喊你 🐒";
 
 interface ClientLog {
   answered: string[];
@@ -182,8 +198,9 @@ describe("handleSelfWriteAction", () => {
       expect(queued!.target).toMatchObject({ kind: "telegram", chat_id: CHAT_ID });
       expect(queued!.payload.text).toBe("merged, reloading…");
       expect(queued!.intent_type).toBe("final_report");
-      // No inline "reloaded" message (handled by the durable beacon).
-      expect(cl.sent).toEqual([]);
+      // ⓪·3g: the ONLY inline send is the immediate "merging…" ack — the "reloaded"
+      // outcome itself still rides the durable beacon, never an inline message.
+      expect(cl.sent).toEqual([MERGE_ACK]);
     } finally {
       store.close();
     }
@@ -524,6 +541,208 @@ describe("handleSelfWriteAction", () => {
         expect(sent.length).toBe(1);
         expect(sent[0]).toContain("📄 src/big.ts");
         expect(docs).toEqual([]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  describe("⓪·3g tap hygiene", () => {
+    it("view double-tap within 60s → callback answered BOTH times, but only ONE diff sent", async () => {
+      const store = RunStore.openInMemory();
+      const { client: cl, deps: dl } = freshLogs();
+      const client = makeClient(cl);
+      let clock = 1_000_000;
+      const run = (action: SelfWriteCallbackAction) =>
+        handleSelfWriteAction({
+          event: event(action),
+          telegramClient: client,
+          projectRoot: "/fake/root",
+          store,
+          makeDeps: makeDeps(dl, { diff: "diff --git a b" }),
+          resolvePush: () => false,
+          now: () => clock
+        });
+      try {
+        await run("view");
+        clock += 5_000; // an impatient second tap 5s later
+        await run("view");
+        // Both taps were ACKED (spinner stopped) …
+        expect(cl.answered).toEqual(["cb_1", "cb_1"]);
+        // … but the diff went out exactly once (one viewDiff, one send).
+        expect(dl.viewed).toEqual([BRANCH]);
+        expect(cl.sent.filter((t) => t.includes("diff --git a b")).length).toBe(1);
+      } finally {
+        store.close();
+      }
+    });
+
+    it("view tap AFTER the 60s window runs again (dedupe expires)", async () => {
+      const store = RunStore.openInMemory();
+      const { client: cl, deps: dl } = freshLogs();
+      const client = makeClient(cl);
+      let clock = 1_000_000;
+      const run = () =>
+        handleSelfWriteAction({
+          event: event("view"),
+          telegramClient: client,
+          projectRoot: "/fake/root",
+          store,
+          makeDeps: makeDeps(dl, { diff: "diff --git a b" }),
+          resolvePush: () => false,
+          now: () => clock
+        });
+      try {
+        await run();
+        clock += 61_000; // past the window — a legitimate re-view
+        await run();
+        expect(dl.viewed).toEqual([BRANCH, BRANCH]);
+        expect(cl.sent.filter((t) => t.includes("diff --git a b")).length).toBe(2);
+      } finally {
+        store.close();
+      }
+    });
+
+    it("merge/discard are NOT deduped (idempotent already; a merge retry after a refusal must work)", async () => {
+      const store = RunStore.openInMemory();
+      const { client: cl, deps: dl } = freshLogs();
+      const client = makeClient(cl);
+      try {
+        // Two merges in quick succession: both EXECUTE (the second maps to a real outcome
+        // via mergeAndReload's own idempotency, not a silent dedupe skip).
+        await run("merge", store, client, makeDeps(dl, { mergeOutcome: { kind: "merge_conflict", detail: "CONFLICT" } }));
+        await run("merge", store, client, makeDeps(dl, { mergeOutcome: { kind: "merge_conflict", detail: "CONFLICT" } }));
+        expect(cl.sent.filter((t) => t === MERGE_ACK).length).toBe(2);
+        expect(cl.sent.filter((t) => t.includes("conflict")).length).toBe(2);
+      } finally {
+        store.close();
+      }
+    });
+
+    it("F1: [Merge & reload] is REFUSED while the evolution lane is busy — buttons intact, merge never runs", async () => {
+      const store = RunStore.openInMemory();
+      const { client: cl, deps: dl } = freshLogs();
+      const client = makeClient(cl);
+      // Occupy the lane with a controllable in-flight pipeline.
+      let release!: () => void;
+      const started = tryStartEvolutionPipeline({
+        current: { run_id: "run_bg", tool: "self_write_propose", started_at: new Date().toISOString() },
+        capMs: 60_000,
+        run: () => new Promise((resolve) => { release = () => resolve({ text: "done" }); }),
+        onTimeout: () => ({ text: "timeout" }),
+        onError: (d) => ({ text: d }),
+        deliver: () => {}
+      });
+      expect(started).toBe(true);
+      let merged = false;
+      const deps = (notifyDurable: (text: string) => void): MergeActionDeps => ({
+        branchExists: () => true,
+        isMerged: () => false,
+        diff: () => "",
+        merge: () => { merged = true; },
+        resetMerge: () => {},
+        preMergeRef: () => "PRE",
+        build: () => ({ ok: true }),
+        testGate: () => ({ green: true }),
+        deleteBranch: () => {},
+        writeReloadMarker: () => {},
+        notifyDurable,
+        restart: () => {},
+        push: () => {}
+      });
+      try {
+        await handleSelfWriteAction({
+          event: event("merge"),
+          telegramClient: client,
+          projectRoot: "/fake/root",
+          store,
+          makeDeps: deps,
+          resolvePush: () => false
+        });
+        // The tap was acked and refused with the wait message naming the tool.
+        expect(cl.answered).toEqual(["cb_1"]);
+        expect(cl.sent.length).toBe(1);
+        expect(cl.sent[0]).toContain("自我修改还在后台跑着");
+        expect(cl.sent[0]).toContain("self_write_propose");
+        // Buttons stay in place (retry is one tap away) and NOTHING merged.
+        expect(cl.cleared).toEqual([]);
+        expect(merged).toBe(false);
+        expect(cl.sent).not.toContain(MERGE_ACK);
+      } finally {
+        release();
+        await evolutionLaneSettled();
+        store.close();
+      }
+    });
+
+    it("F1: once the lane settles, the SAME merge tap goes through normally", async () => {
+      const store = RunStore.openInMemory();
+      const { client: cl, deps: dl } = freshLogs();
+      const client = makeClient(cl);
+      let release!: () => void;
+      tryStartEvolutionPipeline({
+        current: { run_id: "run_bg", tool: "self_write_propose", started_at: new Date().toISOString() },
+        capMs: 60_000,
+        run: () => new Promise((resolve) => { release = () => resolve({ text: "done" }); }),
+        onTimeout: () => ({ text: "timeout" }),
+        onError: (d) => ({ text: d }),
+        deliver: () => {}
+      });
+      try {
+        await run("merge", store, client, makeDeps(dl, { mergeOutcome: { kind: "already_merged" } }));
+        expect(cl.sent.some((t) => t.includes("自我修改还在后台跑着"))).toBe(true);
+        release();
+        await evolutionLaneSettled();
+        await run("merge", store, client, makeDeps(dl, { mergeOutcome: { kind: "already_merged" } }));
+        // Normal flow resumed: ack + cleared buttons + real outcome.
+        expect(cl.sent).toContain(MERGE_ACK);
+        expect(cl.sent.some((t) => t.includes("already merged"))).toBe(true);
+        expect(cl.cleared.length).toBe(1);
+      } finally {
+        store.close();
+      }
+    });
+
+    it("merge ORDERING: ack callback → clear buttons → send '正在合并…' → THEN run the merge", async () => {
+      const store = RunStore.openInMemory();
+      const order: string[] = [];
+      const client = {
+        async sendMessage(input: { chat_id: string; text: string }) {
+          order.push(`send:${input.text}`);
+          return { message_id: 1 };
+        },
+        async answerCallbackQuery() {
+          order.push("ack");
+        },
+        async editMessageReplyMarkup() {
+          order.push("clear");
+        }
+      };
+      const deps = (notifyDurable: (text: string) => void): MergeActionDeps => ({
+        branchExists: () => true,
+        isMerged: () => false,
+        diff: () => "",
+        merge: () => { order.push("merge"); },
+        resetMerge: () => {},
+        preMergeRef: () => "PRE",
+        build: () => ({ ok: true }),
+        testGate: () => ({ green: true }),
+        deleteBranch: () => {},
+        writeReloadMarker: () => {},
+        notifyDurable,
+        restart: () => {},
+        push: () => {}
+      });
+      try {
+        await handleSelfWriteAction({
+          event: event("merge"),
+          telegramClient: client,
+          projectRoot: "/fake/root",
+          store,
+          makeDeps: deps,
+          resolvePush: () => false
+        });
+        expect(order).toEqual(["ack", "clear", `send:${MERGE_ACK}`, "merge"]);
       } finally {
         store.close();
       }

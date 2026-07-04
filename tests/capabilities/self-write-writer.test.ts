@@ -62,33 +62,33 @@ afterEach(() => {
 });
 
 describe("resolveSelfWriteWriter", () => {
-  it("defaults to codex when unset", () => {
+  it("defaults to codex when unset", async () => {
     expect(resolveSelfWriteWriter({})).toBe("codex");
   });
-  it("honors claude", () => {
+  it("honors claude", async () => {
     expect(resolveSelfWriteWriter({ HOUGE_SELFWRITE_WRITER: "claude" })).toBe("claude");
     expect(resolveSelfWriteWriter({ HOUGE_SELFWRITE_WRITER: "  CLAUDE " })).toBe("claude");
   });
-  it("honors explicit codex", () => {
+  it("honors explicit codex", async () => {
     expect(resolveSelfWriteWriter({ HOUGE_SELFWRITE_WRITER: "codex" })).toBe("codex");
   });
-  it("is tolerant of garbage (falls back to codex)", () => {
+  it("is tolerant of garbage (falls back to codex)", async () => {
     expect(resolveSelfWriteWriter({ HOUGE_SELFWRITE_WRITER: "banana" })).toBe("codex");
     expect(resolveSelfWriteWriter({ HOUGE_SELFWRITE_WRITER: "" })).toBe("codex");
   });
 });
 
 describe("resolveClaudeWriterModel", () => {
-  it("defaults to sonnet", () => {
+  it("defaults to sonnet", async () => {
     expect(resolveClaudeWriterModel({})).toBe("sonnet");
   });
-  it("honors HOUGE_CLAUDE_WRITER_MODEL", () => {
+  it("honors HOUGE_CLAUDE_WRITER_MODEL", async () => {
     expect(resolveClaudeWriterModel({ HOUGE_CLAUDE_WRITER_MODEL: "opus" })).toBe("opus");
   });
-  it("falls back to HOUGE_CLAUDE_MODEL when the writer override is unset", () => {
+  it("falls back to HOUGE_CLAUDE_MODEL when the writer override is unset", async () => {
     expect(resolveClaudeWriterModel({ HOUGE_CLAUDE_MODEL: "haiku" })).toBe("haiku");
   });
-  it("prefers the writer override over the shared model", () => {
+  it("prefers the writer override over the shared model", async () => {
     expect(
       resolveClaudeWriterModel({ HOUGE_CLAUDE_WRITER_MODEL: "opus", HOUGE_CLAUDE_MODEL: "haiku" })
     ).toBe("opus");
@@ -96,7 +96,7 @@ describe("resolveClaudeWriterModel", () => {
 });
 
 describe("buildClaudeWriteArgs (spike argv)", () => {
-  it("builds -p --model --permission-mode bypassPermissions --output-format json, execution-free", () => {
+  it("builds -p --model --permission-mode bypassPermissions --output-format json, execution-free", async () => {
     expect(buildClaudeWriteArgs("sonnet")).toEqual([
       "-p",
       "--model",
@@ -112,7 +112,7 @@ describe("buildClaudeWriteArgs (spike argv)", () => {
     ]);
   });
 
-  it("EXECUTION-FREE: the writer cannot run shell (Bash) — that is the test-gate checker's job", () => {
+  it("EXECUTION-FREE: the writer cannot run shell (Bash) — that is the test-gate checker's job", async () => {
     const argv = buildClaudeWriteArgs("sonnet");
     // --disallowedTools must be the LAST flag (variadic) and include Bash so the agentic writer
     // can't self-run npm test/build in a verify loop and burn its timeout (live 2026-06-26 600s).
@@ -124,14 +124,14 @@ describe("buildClaudeWriteArgs (spike argv)", () => {
 });
 
 describe("runSelfWriter — codex", () => {
-  it("rejects an empty task without shelling out", () => {
-    expect(runSelfWriter({ writer: "codex", worktree: "/wt", task: "  " })).toEqual({
+  it("rejects an empty task without shelling out", async () => {
+    await expect(runSelfWriter({ writer: "codex", worktree: "/wt", task: "  " })).resolves.toEqual({
       ok: false,
       error: "task must be a non-empty string"
     });
   });
 
-  it("builds codex args with --sandbox workspace-write + --json + NO bypass flag, returns usageRaw", () => {
+  it("builds codex args with --sandbox workspace-write + --json + NO bypass flag, returns usageRaw", async () => {
     const wt = gitRepo();
     const argvFile = join(mkdtempSync(join(tmpdir(), "houge-sww-cap-")), "argv");
     const stdinFile = join(mkdtempSync(join(tmpdir(), "houge-sww-cap-")), "stdin");
@@ -139,7 +139,7 @@ describe("runSelfWriter — codex", () => {
     const jsonl = '{"type":"token_count","input_tokens":5,"output_tokens":7}\n';
     const bin = fakeBin("codex", { argvFile, stdinFile, stdout: jsonl, code: 0 });
 
-    const result = runSelfWriter({
+    const result = await runSelfWriter({
       writer: "codex",
       worktree: wt,
       task: "fix the intent router",
@@ -162,10 +162,10 @@ describe("runSelfWriter — codex", () => {
     expect(readFileSync(stdinFile, "utf8")).toContain("fix the intent router");
   });
 
-  it("maps a non-zero codex exit to a clean error", () => {
+  it("maps a non-zero codex exit to a clean error", async () => {
     const wt = gitRepo();
     const bin = fakeBin("codex", { code: 3 });
-    const result = runSelfWriter({
+    const result = await runSelfWriter({
       writer: "codex",
       worktree: wt,
       task: "write a fix",
@@ -177,13 +177,13 @@ describe("runSelfWriter — codex", () => {
 });
 
 describe("runSelfWriter — claude", () => {
-  it("is disabled when HOUGE_CLAUDE_BIN is unset", () => {
-    const result = runSelfWriter({ writer: "claude", worktree: gitRepo(), task: "write a fix", env: {} });
+  it("is disabled when HOUGE_CLAUDE_BIN is unset", async () => {
+    const result = await runSelfWriter({ writer: "claude", worktree: gitRepo(), task: "write a fix", env: {} });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toBe("claude writer disabled: set HOUGE_CLAUDE_BIN");
   });
 
-  it("builds the spike argv and returns the envelope as usageRaw on success", () => {
+  it("builds the spike argv and returns the envelope as usageRaw on success", async () => {
     const wt = gitRepo();
     const argvFile = join(mkdtempSync(join(tmpdir(), "houge-sww-cap-")), "argv");
     const stdinFile = join(mkdtempSync(join(tmpdir(), "houge-sww-cap-")), "stdin");
@@ -196,7 +196,7 @@ describe("runSelfWriter — claude", () => {
     });
     const bin = fakeBin("claude", { argvFile, stdinFile, stdout: envelope, code: 0 });
 
-    const result = runSelfWriter({
+    const result = await runSelfWriter({
       writer: "claude",
       worktree: wt,
       task: "fix the greet function",
@@ -227,7 +227,7 @@ describe("runSelfWriter — claude", () => {
     expect(readFileSync(stdinFile, "utf8")).toContain("fix the greet function");
   });
 
-  it("MANDATE 2 — bypassPermissions is CONFINED to the worktree: cwd is the worktree, PATH is the daemon PATH, argv has NO --add-dir", () => {
+  it("MANDATE 2 — bypassPermissions is CONFINED to the worktree: cwd is the worktree, PATH is the daemon PATH, argv has NO --add-dir", async () => {
     // The whole safety story of bypassPermissions rests on `cwd: <worktree>` (the throwaway). Prove the
     // claude writer actually spawns IN the worktree (not the live project root), under the restricted
     // daemon PATH, and that the argv never widens scope with --add-dir.
@@ -239,7 +239,7 @@ describe("runSelfWriter — claude", () => {
     const envelope = JSON.stringify({ is_error: false, usage: { input_tokens: 1, output_tokens: 1 } });
     const bin = fakeBin("claude", { argvFile, cwdFile, pathFile, stdout: envelope, code: 0 });
 
-    const result = runSelfWriter({
+    const result = await runSelfWriter({
       writer: "claude",
       worktree: wt,
       task: "fix the greet function",
@@ -256,11 +256,11 @@ describe("runSelfWriter — claude", () => {
     expect(argv).not.toMatch(/--add-dir|--cwd|--dangerously-skip|--project/);
   });
 
-  it("returns a clean error when the envelope reports is_error", () => {
+  it("returns a clean error when the envelope reports is_error", async () => {
     const wt = gitRepo();
     const envelope = JSON.stringify({ is_error: true, result: "boom" });
     const bin = fakeBin("claude", { stdout: envelope, code: 0 });
-    const result = runSelfWriter({
+    const result = await runSelfWriter({
       writer: "claude",
       worktree: wt,
       task: "write a fix",
@@ -270,8 +270,8 @@ describe("runSelfWriter — claude", () => {
     if (!result.ok) expect(result.error).toMatch(/is_error/);
   });
 
-  it("maps a missing claude binary (ENOENT) to a clean error", () => {
-    const result = runSelfWriter({
+  it("maps a missing claude binary (ENOENT) to a clean error", async () => {
+    const result = await runSelfWriter({
       writer: "claude",
       worktree: gitRepo(),
       task: "write a fix",

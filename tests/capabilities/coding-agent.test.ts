@@ -71,7 +71,7 @@ afterEach(() => {
 });
 
 describe("coding-agent config resolvers", () => {
-  it("resolveCodexEnabled is off by default, on for truthy values", () => {
+  it("resolveCodexEnabled is off by default, on for truthy values", async () => {
     expect(resolveCodexEnabled({})).toBe(false);
     expect(resolveCodexEnabled({ HOUGE_CODEX_ENABLED: "0" })).toBe(false);
     expect(resolveCodexEnabled({ HOUGE_CODEX_ENABLED: "false" })).toBe(false);
@@ -80,7 +80,7 @@ describe("coding-agent config resolvers", () => {
     expect(resolveCodexEnabled({ HOUGE_CODEX_ENABLED: "ON" })).toBe(true);
   });
 
-  it("resolveCodexBin / Model / TimeoutMs honor env with sane defaults", () => {
+  it("resolveCodexBin / Model / TimeoutMs honor env with sane defaults", async () => {
     expect(resolveCodexBin({})).toBe("codex");
     expect(resolveCodexBin({ HOUGE_CODEX_BIN: "/usr/bin/codex" })).toBe("/usr/bin/codex");
     expect(resolveCodexModel({})).toBeUndefined();
@@ -92,7 +92,7 @@ describe("coding-agent config resolvers", () => {
 });
 
 describe("buildCodexArgs", () => {
-  it("uses read-only sandbox, -C worktree, -o outfile, trailing stdin marker; no model when unset", () => {
+  it("uses read-only sandbox, -C worktree, -o outfile, trailing stdin marker; no model when unset", async () => {
     expect(buildCodexArgs("/wt", "/out.txt")).toEqual([
       "exec",
       "--sandbox",
@@ -105,7 +105,7 @@ describe("buildCodexArgs", () => {
     ]);
   });
 
-  it("adds -m <model> when a model is set", () => {
+  it("adds -m <model> when a model is set", async () => {
     expect(buildCodexArgs("/wt", "/out.txt", "gpt-5")).toEqual([
       "exec",
       "--sandbox",
@@ -120,19 +120,19 @@ describe("buildCodexArgs", () => {
     ]);
   });
 
-  it("never includes a dangerously-bypass flag", () => {
+  it("never includes a dangerously-bypass flag", async () => {
     const args = buildCodexArgs("/wt", "/out.txt", "gpt-5").join(" ");
     expect(args).not.toMatch(/dangerously-bypass/);
   });
 });
 
 describe("createCodingAgentAdapter", () => {
-  it("rejects an empty question without shelling out", () => {
+  it("rejects an empty question without shelling out", async () => {
     const adapter = createCodingAgentAdapter({ projectRoot: gitRepo() });
-    expect(adapter({ question: "" })).toEqual({ ok: false, error: "question must be a non-empty string" });
+    await expect(adapter({ question: "" })).resolves.toEqual({ ok: false, error: "question must be a non-empty string" });
   });
 
-  it("runs codex read-only, feeds the question on stdin, and reads the diagnosis from -o", () => {
+  it("runs codex read-only, feeds the question on stdin, and reads the diagnosis from -o", async () => {
     const repo = gitRepo();
     const argvFile = join(mkdtempSync(join(tmpdir(), "houge-ca-cap-")), "argv");
     const stdinFile = join(mkdtempSync(join(tmpdir(), "houge-ca-cap-")), "stdin");
@@ -143,7 +143,7 @@ describe("createCodingAgentAdapter", () => {
       projectRoot: repo,
       env: { HOUGE_CODEX_BIN: bin, HOUGE_CODEX_MODEL: "gpt-5" }
     });
-    const result = adapter({ question: "why did you ask which 猴哥?" });
+    const result = await adapter({ question: "why did you ask which 猴哥?" });
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -172,7 +172,7 @@ describe("createCodingAgentAdapter", () => {
     expect(existsSync(String(argv[cIdx + 1]))).toBe(false);
   });
 
-  it("maps a non-zero codex exit to a clean error and still cleans up the worktree", () => {
+  it("maps a non-zero codex exit to a clean error and still cleans up the worktree", async () => {
     const repo = gitRepo();
     const argvFile = join(mkdtempSync(join(tmpdir(), "houge-ca-cap-")), "argv");
     const stdinFile = join(mkdtempSync(join(tmpdir(), "houge-ca-cap-")), "stdin");
@@ -180,7 +180,7 @@ describe("createCodingAgentAdapter", () => {
     const bin = fakeCodex({ argvFile, stdinFile, behavior: "fail" });
 
     const adapter = createCodingAgentAdapter({ projectRoot: repo, env: { HOUGE_CODEX_BIN: bin } });
-    const result = adapter({ question: "diagnose this" });
+    const result = await adapter({ question: "diagnose this" });
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/non-zero|status 3/);
@@ -190,17 +190,17 @@ describe("createCodingAgentAdapter", () => {
     expect(existsSync(String(argv[cIdx + 1]))).toBe(false); // cleaned up even on failure
   });
 
-  it("maps a missing codex binary (ENOENT) to a clean error", () => {
+  it("maps a missing codex binary (ENOENT) to a clean error", async () => {
     const adapter = createCodingAgentAdapter({
       projectRoot: gitRepo(),
       env: { HOUGE_CODEX_BIN: "codex-does-not-exist-anywhere" }
     });
-    const result = adapter({ question: "diagnose this" });
+    const result = await adapter({ question: "diagnose this" });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/not found/);
   });
 
-  it("maps a timeout to a clean error", () => {
+  it("maps a timeout to a clean error", async () => {
     const repo = gitRepo();
     // A fake codex that sleeps longer than the timeout.
     const dir = mkdtempSync(join(tmpdir(), "houge-ca-slow-"));
@@ -213,12 +213,12 @@ describe("createCodingAgentAdapter", () => {
       projectRoot: repo,
       env: { HOUGE_CODEX_BIN: bin, HOUGE_CODEX_TIMEOUT_MS: "300" }
     });
-    const result = adapter({ question: "diagnose this" });
+    const result = await adapter({ question: "diagnose this" });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/timed out/);
   });
 
-  it("maps a missing output file to a clean error", () => {
+  it("maps a missing output file to a clean error", async () => {
     const repo = gitRepo();
     const argvFile = join(mkdtempSync(join(tmpdir(), "houge-ca-cap-")), "argv");
     const stdinFile = join(mkdtempSync(join(tmpdir(), "houge-ca-cap-")), "stdin");
@@ -226,7 +226,7 @@ describe("createCodingAgentAdapter", () => {
     const bin = fakeCodex({ argvFile, stdinFile, behavior: "no-output" });
 
     const adapter = createCodingAgentAdapter({ projectRoot: repo, env: { HOUGE_CODEX_BIN: bin } });
-    const result = adapter({ question: "diagnose this" });
+    const result = await adapter({ question: "diagnose this" });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/no output file/);
   });

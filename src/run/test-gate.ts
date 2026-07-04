@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { execFileAsync } from "./exec-file-async.js";
 
 /**
  * Test gate (Phase 3, checker 2 — ADR 0011 §7 / spec docs/superpowers/specs/2026-06-25-phase3-code-self-write.md).
@@ -8,9 +9,14 @@ import { execFileSync } from "node:child_process";
  * deterministic, ungameable truth check: a self-authored diff that doesn't compile or
  * turns a test red never reaches the (more expensive) reviewer or the published branch.
  *
- * Mirrors `coding-agent.ts`: shells via `execFileSync` with `cwd: <worktree>`, a wall-clock
- * timeout (`resolveTestGateTimeoutMs`), and a CAP on captured output so a huge failure log
+ * Mirrors `coding-agent.ts`: shells with `cwd: <worktree>`, a wall-clock timeout
+ * (`resolveTestGateTimeoutMs`), and a CAP on captured output so a huge failure log
  * can't blow memory. Never throws — a spawn error / non-zero exit maps to a red result.
+ *
+ * ⓪·3g: the SELF-WRITE pipeline uses {@link runTestGateAsync} (promisified spawns so the
+ * daemon's event loop keeps breathing during the multi-minute npm runs); the MERGE path
+ * keeps the synchronous {@link runTestGate} deliberately — mergeAndReload stays sync end
+ * to end because it terminates in a self-restart. Same stages, same order, same caps.
  */
 
 const DEFAULT_TEST_GATE_TIMEOUT_MS = 300_000;
@@ -83,6 +89,32 @@ export function runTestGate(worktree: string, opts?: TestGateOptions): TestGateR
         // Capture both streams so a red stage's log can be surfaced (and capped).
         stdio: ["ignore", "pipe", "pipe"]
       });
+    } catch (error) {
+      const err = error as NodeError;
+      if (err.code === "ENOENT") {
+        return { green: false, stage, output: capOutput(`npm not found: ${err.message}`) };
+      }
+      if (err.signal === "SIGTERM" || err.code === "ETIMEDOUT") {
+        return { green: false, stage, output: `${stage} timed out after ${timeout}ms` };
+      }
+      return { green: false, stage, output: errorOutput(err) };
+    }
+  }
+
+  return { green: true };
+}
+
+/**
+ * Async twin of {@link runTestGate} (⓪·3g): identical stages, order, timeout, and output
+ * caps — the npm children just run via promisified spawns so the poll loop interleaves.
+ */
+export async function runTestGateAsync(worktree: string, opts?: TestGateOptions): Promise<TestGateResult> {
+  const env = opts?.env ?? process.env;
+  const timeout = resolveTestGateTimeoutMs(env);
+
+  for (const { stage, script } of STAGES) {
+    try {
+      await execFileAsync("npm", ["run", script], { cwd: worktree, timeout });
     } catch (error) {
       const err = error as NodeError;
       if (err.code === "ENOENT") {

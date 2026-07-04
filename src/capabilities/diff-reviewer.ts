@@ -1,7 +1,7 @@
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileAsync } from "../run/exec-file-async.js";
 import { resolveCodexBin, resolveCodexEnabled, resolveCodexTimeoutMs } from "./coding-agent.js";
 import { normalizeClaudeUsage, normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
 
@@ -200,7 +200,7 @@ const REVIEWER_FALLBACK_ORDER: ReviewerKind[] = ["kimi", "claude", "codex"];
  * winning backend rides out as `reviewer` so the ledger can attribute the verdict.
  * Never throws.
  */
-export function reviewDiff(input: ReviewDiffInput): ReviewResult {
+export async function reviewDiff(input: ReviewDiffInput): Promise<ReviewResult> {
   const env = input.env ?? process.env;
   const configured = resolveSelfWriteReviewer(env);
   const chain = [configured, ...REVIEWER_FALLBACK_ORDER.filter((k) => k !== configured)];
@@ -212,7 +212,7 @@ export function reviewDiff(input: ReviewDiffInput): ReviewResult {
       details.push(`${backend} reviewer skipped (not configured)`);
       continue;
     }
-    const result = runReviewer(backend, input.task, input.diff, env);
+    const result = await runReviewer(backend, input.task, input.diff, env);
     if (result.ok) return { ...result, reviewer: backend };
     details.push(result.error);
   }
@@ -231,7 +231,7 @@ function reviewerConfigured(kind: ReviewerKind, env: NodeJS.ProcessEnv): boolean
   }
 }
 
-function runReviewer(kind: ReviewerKind, task: string, diff: string, env: NodeJS.ProcessEnv): ReviewResult {
+function runReviewer(kind: ReviewerKind, task: string, diff: string, env: NodeJS.ProcessEnv): Promise<ReviewResult> {
   switch (kind) {
     case "codex":
       return reviewViaCodex(task, diff, env);
@@ -243,7 +243,7 @@ function runReviewer(kind: ReviewerKind, task: string, diff: string, env: NodeJS
 }
 
 /** Path A (spike GO): Claude CLI in print mode, absolute bin, under the daemon's PATH. */
-function reviewViaClaude(task: string, diff: string, env: NodeJS.ProcessEnv): ReviewResult {
+async function reviewViaClaude(task: string, diff: string, env: NodeJS.ProcessEnv): Promise<ReviewResult> {
   const bin = resolveClaudeBin(env);
   if (bin === CLAUDE_BIN_UNSET) {
     return { ok: false, error: "Claude reviewer disabled: set HOUGE_CLAUDE_BIN to the absolute claude path" };
@@ -266,14 +266,13 @@ function reviewViaClaude(task: string, diff: string, env: NodeJS.ProcessEnv): Re
       // live tree and keeps it from over-running the timeout, the live-gate failure mode).
       // `--output-format json` wraps the model's text in an envelope that also carries token usage,
       // so a single call yields BOTH the verdict (envelope.result) and telemetry (envelope.usage).
-      raw = execFileSync(bin, ["-p", "--model", model, "--output-format", "json", "--disallowed-tools", "Bash,Read,Edit,Write,Glob,Grep,WebFetch,WebSearch"], {
+      ({ stdout: raw } = await execFileAsync(bin, ["-p", "--model", model, "--output-format", "json", "--disallowed-tools", "Bash,Read,Edit,Write,Glob,Grep,WebFetch,WebSearch"], {
         input: prompt,
-        encoding: "utf8",
         timeout,
         maxBuffer: REVIEW_MAX_BUFFER,
         // Replicate the daemon's environment: restricted PATH (claude is NOT on it → absolute bin).
         env: { ...env, PATH: DAEMON_PATH }
-      });
+      }));
     } catch (error) {
       const err = error as NodeError;
       if (err.code === "ENOENT") {
@@ -304,7 +303,7 @@ function reviewViaClaude(task: string, diff: string, env: NodeJS.ProcessEnv): Re
  * new infra). Read-only: the reviewer only judges the diff, it never writes. Reuses the shared
  * Codex resolvers; runs in `cwd` (no `-C`/worktree needed — the diff is in the prompt).
  */
-function reviewViaCodex(task: string, diff: string, env: NodeJS.ProcessEnv): ReviewResult {
+async function reviewViaCodex(task: string, diff: string, env: NodeJS.ProcessEnv): Promise<ReviewResult> {
   const bin = resolveCodexBin(env);
   const timeout = resolveCodexTimeoutMs(env);
   const prompt = buildReviewPrompt(task, diff);
@@ -313,13 +312,11 @@ function reviewViaCodex(task: string, diff: string, env: NodeJS.ProcessEnv): Rev
   try {
     // `--json` streams a JSONL event log to stdout that carries `token_count` usage events
     // alongside the agent's message text — one call yields both the verdict and telemetry.
-    raw = execFileSync(bin, ["exec", "--json", "--sandbox", "read-only", "-"], {
+    ({ stdout: raw } = await execFileAsync(bin, ["exec", "--json", "--sandbox", "read-only", "-"], {
       input: prompt,
-      encoding: "utf8",
       timeout,
-      maxBuffer: REVIEW_MAX_BUFFER,
-      stdio: ["pipe", "pipe", "pipe"]
-    });
+      maxBuffer: REVIEW_MAX_BUFFER
+    }));
   } catch (error) {
     const err = error as NodeError;
     if (err.code === "ENOENT") {
@@ -352,7 +349,7 @@ function reviewViaCodex(task: string, diff: string, env: NodeJS.ProcessEnv): Rev
  * stdout is plain text — we parse it directly with parseVerdict (NO JSON envelope, unlike Claude). No
  * usage telemetry is emitted in this mode → no `usage` on the result.
  */
-function reviewViaKimiCli(task: string, diff: string, env: NodeJS.ProcessEnv): ReviewResult {
+async function reviewViaKimiCli(task: string, diff: string, env: NodeJS.ProcessEnv): Promise<ReviewResult> {
   const bin = resolveKimiCliBin(env);
   if (bin === KIMI_CLI_BIN_UNSET) {
     return { ok: false, error: "kimi reviewer disabled: set HOUGE_KIMI_CLI_BIN to the absolute kimi-cli path" };
@@ -379,7 +376,7 @@ function reviewViaKimiCli(task: string, diff: string, env: NodeJS.ProcessEnv): R
         // `--final-message-only` emits ONLY the clean final assistant message (the verdict JSON) to
         // stdout. `--model` is omitted when unset, deferring to kimi-cli's own default (kimi-for-coding).
         // stderr is piped (not inherited) so the "To resume this session" notice doesn't leak to the log.
-        raw = execFileSync(
+        ({ stdout: raw } = await execFileAsync(
           bin,
           [
             "--print",
@@ -393,17 +390,15 @@ function reviewViaKimiCli(task: string, diff: string, env: NodeJS.ProcessEnv): R
           ],
           {
             input: prompt,
-            encoding: "utf8",
             timeout,
             maxBuffer: REVIEW_MAX_BUFFER,
-            stdio: ["pipe", "pipe", "pipe"],
             // Neutral cwd (NOT the repo) — defense in depth alongside the no-tools agent.
             cwd: agent.dir,
             // kimi-cli's wrapper has an absolute-path interpreter shebang, so the restricted daemon PATH
             // is sufficient — it starts without needing its own dir on PATH (validated).
             env: { ...env, PATH: DAEMON_PATH }
           }
-        );
+        ));
       } catch (error) {
         const err = error as NodeError;
         if (err.code === "ENOENT") {

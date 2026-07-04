@@ -1902,6 +1902,33 @@ export class RunStore {
   }
 
   /**
+   * Enqueue the backgrounded evolution pipeline's COMPLETION notification (⓪·3g): the
+   * publish text + merge-control buttons, or the code-owned failure/timeout text. Rides
+   * the run's original notify target on its own idempotency key (the turn's kickoff
+   * reply already consumed `${run_id}:final_report`). The key carries the TOOL (F2): the
+   * lane serializes pipelines but the once-per-turn guard is per-TOOL, so one turn can
+   * run e.g. a fast self_diagnose AND a self_write_propose sequentially — a run-only key
+   * would conflict the second outcome into a silent drop.
+   */
+  enqueueEvolutionReportNotification(
+    run_id: string,
+    tool: string,
+    input: { text: string; buttons?: NotificationButton[] }
+  ): NotificationQueueResult {
+    return this.enqueueNotification({
+      target: this.getRunNotifyTarget(run_id),
+      intent_type: "final_report",
+      idempotency_key: `${run_id}:evolution_report:${tool}`,
+      run_id,
+      correlation_id: run_id,
+      payload: {
+        text: truncateForChat(input.text),
+        ...(input.buttons ? { buttons: input.buttons } : {})
+      }
+    });
+  }
+
+  /**
    * Mark expired approval-prompt notifications (queued/retry_wait/sending) as
    * `failed_terminal`, then expire the linked pending approvals so the waiting
    * runs also resolve. Used by the poll runner before dispatch.

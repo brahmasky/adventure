@@ -1,8 +1,8 @@
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
+import { execFileAsync } from "../run/exec-file-async.js";
 import { createWorktree, removeWorktree } from "../run/worktree.js";
 
 /**
@@ -112,10 +112,10 @@ interface NodeError extends Error {
  */
 export function createCodingAgentAdapter(
   config: CodingAgentAdapterConfig
-): (input: Record<string, unknown>) => ToolAdapterResult {
+): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
   const env = config.env ?? process.env;
 
-  return (input: Record<string, unknown>): ToolAdapterResult => {
+  return async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
     const question = input.question;
     if (typeof question !== "string" || question.trim().length === 0) {
       return { ok: false, error: "question must be a non-empty string" };
@@ -128,7 +128,7 @@ export function createCodingAgentAdapter(
     let worktree: string | undefined;
     let outDir: string | undefined;
     try {
-      worktree = createWorktree(config.projectRoot).path;
+      worktree = (await createWorktree(config.projectRoot)).path;
     } catch (error) {
       // Worktree could not be created (git missing, not a repo) — nothing to clean up.
       return { ok: false, error: `Failed to create worktree: ${errorMessage(error)}` };
@@ -141,10 +141,9 @@ export function createCodingAgentAdapter(
       const outfile = join(outDir, "last-message.txt");
 
       try {
-        execFileSync(bin, buildCodexArgs(worktree, outfile, model), {
+        await execFileAsync(bin, buildCodexArgs(worktree, outfile, model), {
           input: question,
-          timeout,
-          stdio: ["pipe", "pipe", "pipe"]
+          timeout
         });
       } catch (error) {
         const err = error as NodeError;
@@ -177,7 +176,7 @@ export function createCodingAgentAdapter(
       };
     } finally {
       // ALWAYS tear down the worktree and the out dir, success or failure.
-      if (worktree) removeWorktree(worktree);
+      if (worktree) await removeWorktree(worktree);
       if (outDir) {
         try {
           rmSync(outDir, { recursive: true, force: true });
@@ -209,10 +208,10 @@ export interface SelfWriteCodexConfig {
  */
 export function createSelfWriteCodexAdapter(
   config: SelfWriteCodexConfig
-): (input: Record<string, unknown>) => ToolAdapterResult {
+): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
   const env = config.env ?? process.env;
 
-  return (input: Record<string, unknown>): ToolAdapterResult => {
+  return async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
     const task = input.task;
     if (typeof task !== "string" || task.trim().length === 0) {
       return { ok: false, error: "task must be a non-empty string" };
@@ -225,20 +224,16 @@ export function createSelfWriteCodexAdapter(
     let usageRaw = "";
     try {
       // Capture stdout: codex's `--json` JSONL event stream carries the `token_count` events.
-      const stdout = execFileSync(bin, buildCodexWriteArgs(config.worktree, model), {
+      const { stdout } = await execFileAsync(bin, buildCodexWriteArgs(config.worktree, model), {
         input: task,
         timeout,
         cwd: config.worktree,
-        encoding: "utf8",
-        maxBuffer: CODEX_WRITE_MAX_BUFFER,
-        stdio: ["pipe", "pipe", "pipe"]
+        maxBuffer: CODEX_WRITE_MAX_BUFFER
       });
       // KEEP ONLY the usage-bearing JSONL lines — the full agentic event stream can be many MB and
       // would blow the CapabilityRunner's output_limit_bytes (the diff is the artifact, not stdout;
       // we only need the token counts). `turn.completed` carries `usage`; older logs use `token_count`.
-      usageRaw = typeof stdout === "string"
-        ? stdout.split("\n").filter((l) => l.includes('"usage"') || l.includes('"token_count"')).join("\n")
-        : "";
+      usageRaw = stdout.split("\n").filter((l) => l.includes('"usage"') || l.includes('"token_count"')).join("\n");
     } catch (error) {
       const err = error as NodeError;
       if (err.code === "ENOENT") {

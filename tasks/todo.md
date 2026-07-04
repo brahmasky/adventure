@@ -428,18 +428,36 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
   - [x] LIVE gate MET (see above): replicate the 22:14 shape — msg 1 quotes the code-owned title, msg 2 says
         "换掉它" without quoting → refusal fires from thread → pivot to self_write_propose
         (branch may be discarded — the routing is the test).
-- **⓪·3g "THE LANE FIX" — SINGLE-LANE FIX (next /goal, Paco-confirmed direction 2026-07-04; NOT to
-  be confused with spine step ③ http_fetch; promoted from ⓪·2b parked MINOR after it
-  bit live 2026-07-04)**: a long evolution pipeline (writer 5min + gate 7min + reviewer 3min) makes
-  Houge DEAF — Paco's [View diff] taps + messages queued ~15 min unanswered (looked broken) — AND LOSSY: Telegram expires unclaimed callback_query updates in ~1 min, so taps during a pipeline are DESTROYED server-side (2026-07-04: 3 View taps vanished — offset advanced, zero trace). Options:
-  (a) run evolution pipelines off the poll thread (worker process / async lane; poll loop keeps
-  serving reads + taps); (b) minimum viable: mid-pipeline, daemon answers queued taps/messages with
-  code-owned "正在改代码，稍等 🐒" progress note. Also: multiple queued View taps each get answered
-  (N taps = N duplicate diffs) — dedupe repeat view callbacks within a window.
-  ALSO PENDING (Paco to confirm): prune 4 stale selfwrite branches (run_48db7150, run_4c0f99f0,
-  run_6bed4d47 [June-27 era], run_f93782e2 — abandoned, unmerged); decide fix #1 run_ba05dfcf
-  (timezone parse+normalize, published+reviewed) merge-or-discard; fix #2 failed honestly
-  (typecheck red on new result-time.ts — attempt cap).
+- **⓪·3g "THE LANE FIX"** ⏳ **/goal IN PROGRESS 2026-07-04** (deaf+lossy single lane; design:
+  the lane is blocked by SYNC child-process spawns, not architecture — convert pipeline spawns to
+  async, background the evolution pipelines, keep the poll loop breathing)
+  - [ ] G1 async spawns: writer (codex/claude), test-gate, reviewer chain, self-diagnose consult —
+        execFileSync/spawnSync → promisified async (no worker threads, no extra processes; sqlite
+        stays on the main thread). Gate SEQUENCE and requirements unchanged.
+  - [ ] G2 background evolution lane: self_write_propose / self_diagnose / skill_author return
+        IMMEDIATELY with a "started" digest (model tells the user work has begun); the pipeline
+        runs as ONE tracked background promise (global busy flag — a second evolution ask while
+        busy returns a not-ok "已有一个自我修改在进行中" digest). Completion sends its own durable
+        notification: publish text + buttons (as today) or the CODE-OWNED failure text (the
+        evolution-notice guarantee moves from the turn reply to the completion notification).
+        Pipeline wall-clock cap = its sub-contract time_minutes (abort → failure notification).
+        H2 turn-deadline extensions become unnecessary for backgrounded tools — remove/neutralize.
+  - [ ] G3 daemon integration: poll loop keeps serving messages/taps during a pipeline; SIGTERM
+        awaits the in-flight background pipeline (or tears down worktree safely); single-instance
+        lock unchanged; ledger events (self_write_*) still emitted; budget: turn charged 1 for the
+        kickoff as today, pipeline internals on their own sub-ledger (unchanged from ⓪·2).
+  - [ ] G4 tap hygiene: answerCallbackQuery promptly; dedupe IDENTICAL callback actions
+        (action+runId) within a 60s window (N impatient taps → one response); merge tap stays
+        synchronous (it ends in restart) BUT sends an immediate "正在合并，跑门禁要几分钟 🐒" ack
+        before the gate run.
+  - [ ] G5 gates: typecheck · test · build · deps {} · hermetic sweep · FLOOR: guard byte-untouched;
+        gate/reviewer/writer modules may change EXECUTION (sync→async) but not REQUIREMENTS,
+        ORDER, or argv/tools-denied invariants (existing floor tests stay green, mechanically
+        adapted only if the API forces it) · independent adversarial verification.
+  - [ ] G6 LIVE gate (Paco): trigger a real self-write; WHILE the pipeline runs: a chat message
+        gets answered promptly AND the kickoff reply arrives instantly; publish notification lands
+        with buttons; an immediate View-diff tap answers in seconds (no loss); double-tap → one
+        diff; merge → immediate ack → ✅ 重启成功.
 - **ROADMAP NOTE 2026-07-04 (soak day 1 evidence):** Paco's real usage (deep investment research:
   "多方查证不同信息来源，做综合报告") hit the CAPABILITY CEILING squarely: web_search = snippets only
   (can't read sources — needs spine ③ http_fetch, already spec'd H1–H7) · one turn = ≤6 calls/10min

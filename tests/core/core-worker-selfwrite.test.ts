@@ -2,8 +2,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CoreWorker, EVOLUTION_NOTICE_HEADER } from "../../src/core/core-worker.js";
+import { buildEvolutionKickoffDigest, buildEvolutionTimeoutText, CoreWorker, EVOLUTION_NOTICE_HEADER } from "../../src/core/core-worker.js";
 import type { SelfWriteDeps } from "../../src/core/core-worker.js";
+import {
+  EVOLUTION_LANE_BUSY_DIGEST,
+  evolutionLaneSettled,
+  evolutionLaneSnapshot,
+  resetEvolutionLaneForTests,
+  tryStartEvolutionPipeline
+} from "../../src/core/evolution-lane.js";
 import { INTENT_DISCIPLINE } from "../../src/capabilities/intent.js";
 import { LOOP_DISCIPLINE } from "../../src/prompt/composer.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
@@ -23,9 +30,13 @@ function projectRoot(): string {
 }
 
 // Step ⓪·2 (ADR 0013): the self-write pipeline is invoked ONLY as the `self_write_propose`
-// loop tool — this suite drives the loop path (flag ON) with a scripted compose. The
-// pipeline INSIDE the tool boundary (writer → guard → test gate → reviewer → publish) is
-// unchanged; every orchestration assertion from the legacy suite still holds.
+// loop tool — this suite drives the loop path (flag ON) with a scripted compose.
+// ⓪·3g "THE LANE FIX": the tool now KICKS OFF the pipeline on the background evolution
+// lane and returns immediately (the step digest is the kickoff text); the pipeline's
+// outcome — publish text + merge buttons, or the code-owned failure text — arrives as its
+// own completion notification when the lane settles. The pipeline INSIDE the lane
+// (writer → guard → test gate → reviewer → publish) is unchanged; every orchestration
+// assertion from the legacy suite still holds, awaited via `evolutionLaneSettled()`.
 // HERMETICITY: pin the env this suite asserts on (delete = code default), restore after.
 const PINNED_ENV = [
   "HOUGE_INNER_LOOP_ENABLED",
@@ -43,8 +54,11 @@ beforeEach(() => {
     delete process.env[key];
   }
   process.env.HOUGE_INNER_LOOP_ENABLED = "1";
+  resetEvolutionLaneForTests();
 });
-afterEach(() => {
+afterEach(async () => {
+  await evolutionLaneSettled();
+  resetEvolutionLaneForTests();
   for (const key of PINNED_ENV) {
     if (savedEnv[key] === undefined) delete process.env[key];
     else process.env[key] = savedEnv[key];
@@ -74,6 +88,8 @@ function turnRun(store: RunStore, message: string, key = `sw:${message}`): strin
 /** The model proposes the self-write tool, then wraps up (the hinted terminal shape). */
 const PROPOSE = '{"action":"self_write_propose","input":{"focus":"intent router"},"why":"user asked for a code fix"}';
 const FINAL = '{"action":"final","answer":"已提交修复分支。"}';
+/** The kickoff digest the ⓪·3g adapter returns immediately after launching the lane. */
+const KICKOFF = buildEvolutionKickoffDigest("self_write_propose");
 
 /**
  * An LLM stub for the loop path: the classifier (INTENT_DISCIPLINE) returns `verdict`;
@@ -154,15 +170,50 @@ function stepDigests(store: RunStore, run_id: string): Array<{ action: string; o
     }));
 }
 
-describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool boundary)", () => {
+interface ClaimedNotification {
+  intent_type: string;
+  payload: Record<string, unknown>;
+}
+
+/**
+ * Drain every queued notification. ⓪·3g note: the turn's final report and the lane's
+ * completion notification are enqueued concurrently (the pipeline is a background
+ * promise), so tests select by SHAPE — the completion notification is the one whose
+ * text is the pipeline's code-owned outcome — instead of assuming a queue order.
+ */
+function drainNotifications(store: RunStore): ClaimedNotification[] {
+  const out: ClaimedNotification[] = [];
+  for (;;) {
+    // A UNIQUE lease owner per claim: claimNextNotification selects the claimed row
+    // back by (lease_owner, state) — two same-owner claims in the same ms would
+    // otherwise read back the same record twice.
+    const n = store.claimNextNotification(`test-claim-${out.length}`, 60);
+    if (!n) break;
+    out.push({ intent_type: n.intent_type, payload: n.payload as Record<string, unknown> });
+  }
+  return out;
+}
+
+/** Run the turn to completion AND settle the background lane, then drain notifications. */
+async function executeAndSettle(
+  worker: CoreWorker,
+  store: RunStore,
+  run_id: string
+): Promise<{ status: string; notifications: ClaimedNotification[] }> {
+  const result = await worker.executeRun(run_id, "w");
+  await evolutionLaneSettled();
+  return { status: result.status, notifications: drainNotifications(store) };
+}
+
+describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background lane)", () => {
   it("happy path: all three checkers green → publishes the branch, records self_write_published, tears down the worktree", async () => {
     process.env.HOUGE_SELFWRITE_ENABLED = "1";
     const store = RunStore.openInMemory();
     const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
     try {
       const run_id = turnRun(store, "fix the intent router so it sees your identity");
-      const result = await makeWorker(store, deps({}, log)).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status, notifications } = await executeAndSettle(makeWorker(store, deps({}, log)), store, run_id);
+      expect(status).toBe("completed");
 
       // The branch was published exactly once with the run-id name.
       expect(log.published).toEqual([`houge/selfwrite/${run_id}`]);
@@ -179,11 +230,11 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
       expect(events[0]!.payload.branch).toBe(`houge/selfwrite/${run_id}`);
       expect((events[0]!.payload.gate_results as Record<string, unknown>).reviewer).toBe("pass");
 
-      // The tool's step digest is the publish notification (Houge's voice, branch named).
+      // ⓪·3g: the tool's step digest is the KICKOFF text (immediate return) — the model
+      // can tell the user work started; the outcome rides the completion notification.
       const steps = stepDigests(store, run_id);
       expect(steps[0]!).toMatchObject({ action: "self_write_propose", ok: true });
-      expect(steps[0]!.digest).toContain("🐒 Fixed");
-      expect(steps[0]!.digest).toContain(`houge/selfwrite/${run_id}`);
+      expect(steps[0]!.digest).toBe(KICKOFF);
 
       // BUDGET ISOLATION: the TURN ledger was charged exactly ONE reservation for the
       // evolution step (classifier 1 + propose 1 = 2) — the pipeline's internal writer/
@@ -197,21 +248,106 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
       expect(last.intent).toBe("selfcode");
       expect(last.text).toBe("已提交修复分支。");
 
-      // Phase 3.3: the PUBLISHED final-report notification carries the three merge-control buttons,
-      // each targeting THIS run id, so a Telegram tap routes back to the right branch.
-      const notif = store.claimNextNotification("test-claim", 60);
-      expect(notif).not.toBeNull();
-      expect(notif!.intent_type).toBe("final_report");
-      // A successful publish gets NO duplicate code-owned notice — the delivered text is
-      // exactly the model's final (the buttons + pipeline digest already carry the outcome).
-      expect(notif!.payload.text).toBe("已提交修复分支。");
-      const buttons = notif!.payload.buttons;
-      expect(buttons).toEqual([
+      // TWO notifications: the turn's reply (model final, NO buttons) and the lane's
+      // completion (publish text + the three merge-control buttons targeting THIS run).
+      expect(notifications.length).toBe(2);
+      const turnNote = notifications.find((n) => n.payload.text === "已提交修复分支。");
+      expect(turnNote).toBeDefined();
+      expect(turnNote!.payload.buttons).toBeUndefined();
+      const completion = notifications.find((n) => String(n.payload.text).includes("🐒 Fixed"));
+      expect(completion).toBeDefined();
+      expect(completion!.intent_type).toBe("final_report");
+      expect(String(completion!.payload.text)).toContain(`houge/selfwrite/${run_id}`);
+      expect(completion!.payload.buttons).toEqual([
         { text: "🔀 Merge & reload", data: `selfwrite:merge:${run_id}` },
         { text: "👀 View diff", data: `selfwrite:view:${run_id}` },
         { text: "🗑 Discard", data: `selfwrite:discard:${run_id}` }
       ]);
+      // The lane is idle again.
+      expect(evolutionLaneSnapshot().busy).toBe(false);
     } finally {
+      store.close();
+    }
+  });
+
+  it("⓪·3g kickoff immediate-return: executeRun completes WHILE the pipeline is still writing (event-loop interleaving)", async () => {
+    process.env.HOUGE_SELFWRITE_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
+    // A writer that BLOCKS until the test releases it — stands in for the real 10–19 min spawn.
+    let releaseWriter!: () => void;
+    const writerGate = new Promise<void>((resolve) => { releaseWriter = resolve; });
+    try {
+      const run_id = turnRun(store, "fix the router");
+      const d = deps({
+        makeWriteAdapter: () => async (input: { task: string }): Promise<ToolAdapterResult> => {
+          log.writeTasks.push(input.task);
+          await writerGate; // in flight until released
+          return { ok: true, output: { worktree: "/fake/wt", provider: "codex", model: "gpt-fake", usageRaw: "" } };
+        }
+      }, log);
+      const result = await makeWorker(store, d).executeRun(run_id, "w");
+
+      // The TURN completed and its reply was enqueued while the writer is STILL in flight
+      // — the old sync path would have blocked here for the writer's whole duration.
+      expect(result.status).toBe("completed");
+      expect(log.published).toEqual([]);
+      expect(evolutionLaneSnapshot().busy).toBe(true);
+      expect(evolutionLaneSnapshot().current?.tool).toBe("self_write_propose");
+      const turnNote = store.claimNextNotification("test-claim-turn", 60);
+      expect(turnNote).not.toBeNull();
+      expect(turnNote!.payload.text).toBe("已提交修复分支。");
+
+      // Release the writer → the lane settles → the completion notification lands.
+      releaseWriter();
+      await evolutionLaneSettled();
+      expect(evolutionLaneSnapshot().busy).toBe(false);
+      expect(log.published).toEqual([`houge/selfwrite/${run_id}`]);
+      const completion = store.claimNextNotification("test-claim-completion", 60);
+      expect(completion).not.toBeNull();
+      expect(String(completion!.payload.text)).toContain("🐒 Fixed");
+      expect(completion!.payload.buttons).toBeDefined();
+    } finally {
+      releaseWriter();
+      await evolutionLaneSettled();
+      store.close();
+    }
+  });
+
+  it("⓪·3g lane busy: a second evolution ask while a pipeline runs is refused with the busy digest, nothing launched", async () => {
+    process.env.HOUGE_SELFWRITE_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
+    // Occupy the lane with a fake in-flight pipeline (as if another turn kicked one off).
+    let releaseLane!: () => void;
+    const started = tryStartEvolutionPipeline({
+      current: { run_id: "run_other", tool: "self_write_propose", started_at: new Date().toISOString() },
+      capMs: 60_000,
+      run: () => new Promise((resolve) => { releaseLane = () => resolve({ text: "done" }); }),
+      onTimeout: () => ({ text: "timeout" }),
+      onError: (d) => ({ text: d }),
+      deliver: () => {}
+    });
+    expect(started).toBe(true);
+    try {
+      const run_id = turnRun(store, "fix the router");
+      const result = await makeWorker(store, deps({}, log)).executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+
+      // Refused WITHOUT executing: no writer call, no worktree, no self_write_* events.
+      expect(log.writeTasks).toEqual([]);
+      expect(log.teardowns).toEqual([]);
+      expect(store.getLedgerEvents(run_id).some((e) => String(e.event_type).startsWith("self_write_"))).toBe(false);
+      const steps = stepDigests(store, run_id);
+      expect(steps[0]!).toMatchObject({ action: "self_write_propose", ok: false });
+      expect(steps[0]!.digest).toContain(EVOLUTION_LANE_BUSY_DIGEST);
+      // The busy refusal rides the TURN code-owned (a kickoff-refusal notice).
+      const turnNote = store.claimNextNotification("test-claim", 60);
+      expect(String(turnNote!.payload.text)).toContain(EVOLUTION_NOTICE_HEADER);
+      expect(String(turnNote!.payload.text)).toContain(EVOLUTION_LANE_BUSY_DIGEST);
+    } finally {
+      releaseLane();
+      await evolutionLaneSettled();
       store.close();
     }
   });
@@ -225,8 +361,8 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
       const denied: GuardResult = { allowed: false, denied: [{ path: "package.json", status: "M", reason: "protected path: package.json" }] };
       // rawDiff returns a protected modification → the real guard denies it.
       const d = deps({ rawDiff: () => ":100644 100644 a b M\tpackage.json\n" }, log);
-      const result = await makeWorker(store, d).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status, notifications } = await executeAndSettle(makeWorker(store, d), store, run_id);
+      expect(status).toBe("completed");
       void denied;
 
       // Nothing published, ever.
@@ -240,21 +376,18 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
       expect(store.getLedgerEvents(run_id).some((e) => e.event_type === "self_write_published")).toBe(false);
       // Worktree torn down.
       expect(log.teardowns).toEqual(["/fake/wt"]);
-      // The hard-deny digest names the locked surface and that it's Paco's to make.
+      // The step digest is the kickoff; the hard-deny text rides the COMPLETION
+      // notification code-owned (⓪·3g: the guarantee moved off the turn reply).
       const steps = stepDigests(store, run_id);
-      expect(steps[0]!.digest).toContain("package.json");
-      expect(steps[0]!.digest.toLowerCase()).toContain("locked surface");
-
-      // Phase 3.3: a BLOCKED notification carries NO merge-control buttons (only a publish does).
-      const notif = store.claimNextNotification("test-claim", 60);
-      expect(notif).not.toBeNull();
-      expect(notif!.payload.buttons).toBeUndefined();
-      // CODE-OWNED surfacing: the mocked model's final answer ("已提交修复分支。") says
-      // nothing about the deny — the hard-deny text is APPENDED by code regardless.
-      const text = String(notif!.payload.text);
-      expect(text).toContain(EVOLUTION_NOTICE_HEADER);
-      expect(text).toContain("package.json");
-      expect(text.toLowerCase()).toContain("locked surface");
+      expect(steps[0]!.digest).toBe(KICKOFF);
+      const completion = notifications.find((n) => String(n.payload.text).includes("package.json"));
+      expect(completion).toBeDefined();
+      expect(String(completion!.payload.text).toLowerCase()).toContain("locked surface");
+      // A BLOCKED completion carries NO merge-control buttons (only a publish does).
+      expect(completion!.payload.buttons).toBeUndefined();
+      // The mocked model's final answer ("已提交修复分支。") says nothing about the deny —
+      // the code-owned completion notification surfaces it regardless.
+      expect(notifications.some((n) => n.payload.text === "已提交修复分支。")).toBe(true);
     } finally {
       store.close();
     }
@@ -267,8 +400,8 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
     try {
       const run_id = turnRun(store, "fix the router");
       const d = deps({ runTestGate: (): TestGateResult => ({ green: false, stage: "test", output: "1 failing" }) }, log);
-      const result = await makeWorker(store, d).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status, notifications } = await executeAndSettle(makeWorker(store, d), store, run_id);
+      expect(status).toBe("completed");
 
       // Refine capped at 3 TOTAL write attempts.
       expect(log.writeTasks.length).toBe(3);
@@ -277,8 +410,10 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
       expect(failed.length).toBe(1);
       expect(String(failed[0]!.payload.reason)).toContain("tests red");
       expect(log.teardowns).toEqual(["/fake/wt"]);
-      const steps = stepDigests(store, run_id);
-      expect(steps[0]!.digest.toLowerCase()).toContain("tests red");
+      // The CODE-OWNED failure text reaches the user on the completion notification.
+      const completion = notifications.find((n) => String(n.payload.text).toLowerCase().includes("tests red"));
+      expect(completion).toBeDefined();
+      expect(completion!.payload.buttons).toBeUndefined();
     } finally {
       store.close();
     }
@@ -293,16 +428,16 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
       const d = deps({
         reviewDiff: (): ReviewResult => ({ ok: true, verdict: { verdict: "reject", fixes_task: false, introduces_bugs: true, scope_creep: false, reasons: ["does not actually fix it"] } })
       }, log);
-      const result = await makeWorker(store, d).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status, notifications } = await executeAndSettle(makeWorker(store, d), store, run_id);
+      expect(status).toBe("completed");
 
       expect(log.writeTasks.length).toBe(3);
       expect(log.published).toEqual([]);
       const failed = store.getLedgerEvents(run_id).filter((e) => e.event_type === "self_write_failed");
       expect(failed.length).toBe(1);
       expect(String(failed[0]!.payload.reason)).toContain("reviewer rejected");
-      const steps = stepDigests(store, run_id);
-      expect(steps[0]!.digest).toContain("does not actually fix it");
+      const completion = notifications.find((n) => String(n.payload.text).includes("does not actually fix it"));
+      expect(completion).toBeDefined();
     } finally {
       store.close();
     }
@@ -318,8 +453,8 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
       const d = deps({
         reviewDiff: (): ReviewResult => ({ ok: true, verdict: { verdict: "pass", fixes_task: true }, reviewer: "claude" })
       }, log);
-      const result = await makeWorker(store, d).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status } = await executeAndSettle(makeWorker(store, d), store, run_id);
+      expect(status).toBe("completed");
       const pub = store.getLedgerEvents(run_id).filter((e) => e.event_type === "self_write_published");
       expect(pub.length).toBe(1);
       const gates = pub[0]!.payload.gate_results as Record<string, unknown>;
@@ -336,8 +471,8 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
     const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
     try {
       const run_id = turnRun(store, "fix the router");
-      const result = await makeWorker(store, deps({}, log)).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status } = await executeAndSettle(makeWorker(store, deps({}, log)), store, run_id);
+      expect(status).toBe("completed");
       const pub = store.getLedgerEvents(run_id).filter((e) => e.event_type === "self_write_published");
       expect((pub[0]!.payload.gate_results as Record<string, unknown>).reviewer_backend).toBe("kimi");
     } finally {
@@ -354,8 +489,8 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
       const d = deps({
         reviewDiff: (): ReviewResult => ({ ok: true, verdict: { verdict: "reject", reasons: ["no-op"] }, reviewer: "codex" })
       }, log);
-      const result = await makeWorker(store, d).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status } = await executeAndSettle(makeWorker(store, d), store, run_id);
+      expect(status).toBe("completed");
       expect(log.published).toEqual([]); // reject stays terminal — fallback never applies to a delivered verdict
       const failed = store.getLedgerEvents(run_id).filter((e) => e.event_type === "self_write_failed");
       expect(String(failed[0]!.payload.reason)).toContain("reviewer rejected (codex)");
@@ -364,7 +499,7 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
     }
   });
 
-  it("worktree teardown ALWAYS runs even when a mid-stage throws (finally invariant; the runner absorbs the throw)", async () => {
+  it("worktree teardown ALWAYS runs even when a mid-stage throws (finally invariant; the lane wrapper absorbs the throw)", async () => {
     process.env.HOUGE_SELFWRITE_ENABLED = "1";
     const store = RunStore.openInMemory();
     const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
@@ -372,20 +507,21 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
       const run_id = turnRun(store, "fix the router");
       // The test gate throws unexpectedly (not a clean red result) AFTER the worktree exists.
       const d = deps({ runTestGate: () => { throw new Error("gate exploded"); } }, log);
-      // On the loop path the runner catches the adapter throw (a failed step, reported to
-      // the model) — but the worktree must STILL be torn down by runSelfWrite's finally.
-      const result = await makeWorker(store, d).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      // ⓪·3g: the throw happens on the background lane — the lane wrapper maps it to the
+      // code-owned failure completion; the worktree is STILL torn down by runSelfWrite's finally.
+      const { status, notifications } = await executeAndSettle(makeWorker(store, d), store, run_id);
+      expect(status).toBe("completed");
       expect(log.teardowns).toEqual(["/fake/wt"]); // no worktree leak on throw
       expect(log.published).toEqual([]); // nothing published on a throw
+      // The kickoff itself succeeded (the throw came later, in the background).
       const steps = stepDigests(store, run_id);
-      expect(steps[0]!).toMatchObject({ action: "self_write_propose", ok: false });
+      expect(steps[0]!).toMatchObject({ action: "self_write_propose", ok: true });
       // CODE-OWNED surfacing: the absorbed throw still reaches the user verbatim.
-      const notif = store.claimNextNotification("test-claim", 60);
-      expect(notif).not.toBeNull();
-      expect(String(notif!.payload.text)).toContain(EVOLUTION_NOTICE_HEADER);
-      expect(String(notif!.payload.text)).toContain("self_write_propose step failed");
-      expect(String(notif!.payload.text)).toContain("gate exploded");
+      const completion = notifications.find((n) => String(n.payload.text).includes("gate exploded"));
+      expect(completion).toBeDefined();
+      expect(String(completion!.payload.text)).toContain("self_write_propose step failed");
+      // The lane came free despite the throw.
+      expect(evolutionLaneSnapshot().busy).toBe(false);
     } finally {
       store.close();
     }
@@ -400,8 +536,8 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
       // Reading the worktree diff fails: the guard cannot prove safety → must DENY (fail-closed),
       // recording self_write_blocked and publishing nothing.
       const d = deps({ rawDiff: () => { throw new Error("git diff failed"); } }, log);
-      const result = await makeWorker(store, d).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status } = await executeAndSettle(makeWorker(store, d), store, run_id);
+      expect(status).toBe("completed");
       expect(log.published).toEqual([]);
       const blocked = store.getLedgerEvents(run_id).filter((e) => e.event_type === "self_write_blocked");
       expect(blocked.length).toBe(1);
@@ -420,13 +556,16 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
       const run_id = turnRun(store, "fix the router");
       // createWorktree throws (e.g. git unavailable) → no worktree to operate on or leak.
       const d = deps({ createWorktree: () => { throw new Error("git worktree add failed"); } }, log);
-      const result = await makeWorker(store, d).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status, notifications } = await executeAndSettle(makeWorker(store, d), store, run_id);
+      expect(status).toBe("completed");
       expect(log.writeTasks).toEqual([]); // never reached the writer
       expect(log.published).toEqual([]);
       const failed = store.getLedgerEvents(run_id).filter((e) => e.event_type === "self_write_failed");
       expect(failed.length).toBe(1);
       expect(String(failed[0]!.payload.reason)).toContain("worktree setup failed");
+      // ⓪·3g lane-release-on-failure: the lane is free again after the failure.
+      expect(evolutionLaneSnapshot().busy).toBe(false);
+      expect(notifications.some((n) => String(n.payload.text).includes("isolated workspace"))).toBe(true);
     } finally {
       store.close();
     }
@@ -445,8 +584,8 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
           return gateCalls === 1 ? { green: false, stage: "test", output: "1 failing" } : { green: true };
         }
       }, log);
-      const result = await makeWorker(store, d).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status } = await executeAndSettle(makeWorker(store, d), store, run_id);
+      expect(status).toBe("completed");
       // Two write attempts (initial + one refine), then publish — proves refine feeds back, capped behavior.
       expect(log.writeTasks.length).toBe(2);
       expect(log.writeTasks[1]).toContain("test gate failed"); // the refine task carries the failure
@@ -472,8 +611,8 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
             : ":100644 100644 a b M\tsrc/capabilities/intent.ts\n";
         }
       }, log);
-      const result = await makeWorker(store, d).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status } = await executeAndSettle(makeWorker(store, d), store, run_id);
+      expect(status).toBe("completed");
       // It refined (did NOT terminally block) and published; the refine task names the test-edit mistake.
       expect(log.writeTasks.length).toBe(2);
       expect(log.writeTasks[1]).toMatch(/existing test|backward-compatible/i);
@@ -493,8 +632,8 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
       const run_id = turnRun(store, "fix the router");
       // package.json edit on attempt 1 → terminal hard-deny (no refine), even though attempts remain.
       const d = deps({ rawDiff: () => ":100644 100644 a b M\tpackage.json\n" }, log);
-      const result = await makeWorker(store, d).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status } = await executeAndSettle(makeWorker(store, d), store, run_id);
+      expect(status).toBe("completed");
       expect(log.writeTasks.length).toBe(1); // terminal — no refine
       expect(log.published).toEqual([]);
       expect(store.getLedgerEvents(run_id).some((e) => e.event_type === "self_write_blocked")).toBe(true);
@@ -517,15 +656,15 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
       // configured writer flag decides the engine. With WRITER=claude and no bin, the writer is
       // disabled and the write fails — proving dispatch honored the flag (codex would not error here).
       const d = deps({
-        makeWriteAdapter: () => (input: { task: string }): ToolAdapterResult => {
+        makeWriteAdapter: () => async (input: { task: string }): Promise<ToolAdapterResult> => {
           log.writeTasks.push(input.task);
-          const r = runSelfWriter({ writer: resolveSelfWriteWriter(process.env), worktree: "/fake/wt", task: input.task, env: process.env });
+          const r = await runSelfWriter({ writer: resolveSelfWriteWriter(process.env), worktree: "/fake/wt", task: input.task, env: process.env });
           if (!r.ok) return { ok: false, error: r.error };
           return { ok: true, output: { worktree: "/fake/wt", provider: r.provider, model: r.model, usageRaw: r.usageRaw } };
         }
       }, log);
-      const result = await makeWorker(store, d).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status } = await executeAndSettle(makeWorker(store, d), store, run_id);
+      expect(status).toBe("completed");
       const failed = store.getLedgerEvents(run_id).filter((e) => e.event_type === "self_write_failed");
       expect(failed.length).toBe(1);
       // The error proves the CLAUDE writer was dispatched (codex would not mention claude).
@@ -546,8 +685,8 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
     const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
     try {
       const run_id = turnRun(store, "fix the router");
-      const result = await makeWorker(store, deps({}, log)).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status } = await executeAndSettle(makeWorker(store, deps({}, log)), store, run_id);
+      expect(status).toBe("completed");
 
       const llmCalls = store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_call");
       const writer = llmCalls.find((e) => e.payload.role === "writer");
@@ -573,7 +712,7 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
     const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
     try {
       const run_id = turnRun(store, "fix the router");
-      await makeWorker(store, deps({}, log)).executeRun(run_id, "w");
+      await executeAndSettle(makeWorker(store, deps({}, log)), store, run_id);
       const pub = store.getLedgerEvents(run_id).filter((e) => e.event_type === "self_write_published");
       expect(pub.length).toBe(1);
       const summary = pub[0]!.payload.usage_summary as { writer?: Record<string, unknown>; reviewer?: Record<string, unknown> };
@@ -601,8 +740,8 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
     const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
     try {
       const run_id = turnRun(store, "fix the router");
-      const result = await makeWorker(store, deps({}, log)).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status } = await executeAndSettle(makeWorker(store, deps({}, log)), store, run_id);
+      expect(status).toBe("completed");
       // Soft warn fired...
       expect(warnings.some((w) => w.includes("writer and reviewer are BOTH"))).toBe(true);
       // ...but the run was NOT blocked — it still published.
@@ -631,8 +770,8 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
         },
         reviewDiff: (): ReviewResult => ({ ok: true, verdict: { verdict: "pass" } }) // no usage
       }, log);
-      const result = await makeWorker(store, d).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status } = await executeAndSettle(makeWorker(store, d), store, run_id);
+      expect(status).toBe("completed");
       // Still published — telemetry is best-effort.
       expect(log.published).toEqual([`houge/selfwrite/${run_id}`]);
       // No writer/reviewer llm_call recorded (normalize null / no usage → skipped, not crashed).
@@ -676,8 +815,8 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
         // The claude writer "edited" a PROTECTED path → the real guard must deny it.
         rawDiff: () => ":100644 100644 a b M\tsrc/policy/capability-policy.ts\n"
       }, log);
-      const result = await makeWorker(store, d).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status } = await executeAndSettle(makeWorker(store, d), store, run_id);
+      expect(status).toBe("completed");
 
       // Hard-deny held under WRITER=claude: nothing published, self_write_blocked recorded.
       expect(log.published).toEqual([]);
@@ -729,8 +868,8 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
           usage: { input_tokens: 200, output_tokens: 40, cached_input_tokens: 10, cost_usd: 0.08 }
         })
       }, log);
-      const result = await makeWorker(store, d).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status } = await executeAndSettle(makeWorker(store, d), store, run_id);
+      expect(status).toBe("completed");
 
       // Trace every llm_call payload: NO body/secret leaks.
       const llmCalls = store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_call");
@@ -773,8 +912,8 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
           FINAL
         ])
       );
-      const result = await worker.executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status } = await executeAndSettle(worker, store, run_id);
+      expect(status).toBe("completed");
 
       // The pipeline ran ONCE; one branch, one worktree, one publish.
       expect(log.writeTasks.length).toBe(1);
@@ -818,8 +957,8 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
           FINAL
         ])
       );
-      const result = await worker.executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
+      const { status } = await executeAndSettle(worker, store, run_id);
+      expect(status).toBe("completed");
 
       // The internals ran to publish on the sub-ledger: two writer passes + reviewer.
       expect(log.writeTasks.length).toBe(2);
@@ -827,7 +966,7 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
       expect(store.getLedgerEvents(run_id).some((e) => e.event_type === "self_write_published")).toBe(true);
       const steps = stepDigests(store, run_id);
       expect(steps[4]!).toMatchObject({ action: "self_write_propose", ok: true });
-      expect(steps[4]!.digest).toContain("🐒 Fixed");
+      expect(steps[4]!.digest).toBe(KICKOFF);
       // budget_used reports the TURN ledger's count (6 = 1 classify + 4 fillers + 1
       // evolution step) — the sub-ledger's internal calls never touched it.
       const completed = store.getLedgerEvents(run_id).filter((e) => e.event_type === "run_completed");
@@ -835,6 +974,70 @@ describe("self_write_propose (Phase 3 orchestration behind the ⓪·2 tool bound
     } finally {
       store.close();
     }
+  });
+
+  it("F2: two SEQUENTIAL pipelines in one turn (self_diagnose then self_write_propose) deliver TWO completion notifications", async () => {
+    // The lane serializes pipelines but the once-per-turn guard is per-TOOL: a fast
+    // diagnose followed by a propose in the SAME turn must not collide on the
+    // completion idempotency key (a run-only key silently dropped the second outcome).
+    process.env.HOUGE_SELFWRITE_ENABLED = "1";
+    process.env.HOUGE_CODEX_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
+    const script = [
+      '{"action":"self_diagnose","input":{"focus":"router"}}',
+      PROPOSE,
+      FINAL
+    ];
+    let i = 0;
+    // Like loopLlm, but each compose step WAITS for the prior pipeline to settle before
+    // issuing the next action — sequential pipelines (the busy refusal is tested above).
+    const llm = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
+      const system = typeof input.system === "string" ? input.system : "";
+      let answer = `ANSWER: ${input.question}`;
+      if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"selfcode"}';
+      else if (system.includes(LOOP_DISCIPLINE)) {
+        await evolutionLaneSettled();
+        answer = script[Math.min(i, script.length - 1)] ?? "";
+        i += 1;
+      }
+      return { ok: true, output: { question: input.question, answer, model: "fake", provider: "fake" } };
+    };
+    const codex = (input: Record<string, unknown>): ToolAdapterResult => ({
+      ok: true,
+      output: { diagnosis: "ROOT CAUSE: the router", model: "fake", bin: "codex", question: input.question }
+    });
+    try {
+      const run_id = turnRun(store, "看看你的 router 然后修掉它");
+      const { status, notifications } = await executeAndSettle(makeWorker(store, deps({}, log), llm, codex), store, run_id);
+      expect(status).toBe("completed");
+
+      // BOTH pipelines ran and BOTH outcomes were delivered (distinct per-tool keys).
+      expect(log.published).toEqual([`houge/selfwrite/${run_id}`]);
+      const diagnoseNote = notifications.find((n) => String(n.payload.text).includes("ROOT CAUSE"));
+      const publishNote = notifications.find((n) => String(n.payload.text).includes("🐒 Fixed"));
+      const turnNote = notifications.find((n) => n.payload.text === "已提交修复分支。");
+      expect(diagnoseNote).toBeDefined();
+      expect(publishNote).toBeDefined();
+      expect(publishNote!.payload.buttons).toBeDefined();
+      expect(turnNote).toBeDefined();
+      expect(notifications.length).toBe(3);
+      // Both kickoffs rode the step digests.
+      const steps = stepDigests(store, run_id);
+      expect(steps[0]!).toMatchObject({ action: "self_diagnose", ok: true });
+      expect(steps[1]!).toMatchObject({ action: "self_write_propose", ok: true });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("F3: the lane-timeout text is honest — no 'nothing was published' promise; names the possible late branch", () => {
+    const text = buildEvolutionTimeoutText("self_write_propose", 60);
+    expect(text).toContain("self_write_propose");
+    expect(text).toContain("timed out after 60 minutes");
+    expect(text).toContain("目前没有发布任何分支");
+    expect(text).toContain("迟到的分支");
+    expect(text).not.toContain("nothing was published");
   });
 
   it("ARMING (M3): HOUGE_SELFWRITE_ENABLED off → unlisted in the manifest prompt AND denied when invoked anyway", async () => {

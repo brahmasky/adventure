@@ -14,6 +14,7 @@ import {
 } from "../capabilities/session-rating.js";
 import { SkillStore, type SkillMeta } from "../skills/skill-store.js";
 import { join } from "node:path";
+import { evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import { queryStatus } from "../status/status-query.js";
 
 /** A freshly captured rating the daemon follows up on (the low-rating attribution pass). */
@@ -536,6 +537,9 @@ export class Gateway {
           ? `last ${rating.last_rating}/3 at ${rating.last_rating_at}`
           : "none yet";
 
+      // ⓪·3g: surface an in-flight background evolution pipeline (in-process lane state,
+      // so only the daemon's own /status shows it — exactly where it is meaningful).
+      const lane = evolutionLaneSnapshot();
       return [
         runsText,
         "",
@@ -543,6 +547,7 @@ export class Gateway {
         `Last error: ${last_error ?? "none"}`,
         `Budget: ${budgetText}`,
         `Daemon: ${pollerText}`,
+        ...(lane.busy && lane.current ? [`Evolution: ${lane.current.tool} running since ${lane.current.started_at}`] : []),
         `Rating: ${ratingText}`
       ].join("\n");
     }
