@@ -234,3 +234,14 @@ Build + independent adversarial verification subagents; each live round found a 
   two turns back) produced an overpromise with no code path. Fix = thread-scoped phrase extraction.
 - NEXT: F1 fix (small) · then ⓪·4 (retire legacy paths) or spine ② episodic memory. The eval loop
   is now LIVE end-to-end: sense→remember→change→evaluate→keep/rollback all have running machinery.
+
+## 2026-07-04 (cont.) — ⓪·3f F1 + polish DONE + LIVE; Houge renamed his own sign-off twice
+- Built 3cae47c: F1 thread-scoped code-owned check (user turns only — anti-poison test proves an
+  assistant turn carrying the header does NOT refuse) + P1 scope guard, P2 throw-injection test,
+  P3 tie-order, P4 deadline-extender coverage. 986 tests.
+- LIVE: two-turn shape → model asked direction (no overpromise — improvement over 22:14), then
+  "就换成🗡️ 又闯了一关吧" → target recovered FROM THREAD → straight self-write → published →
+  merged 4de7523 → ✅ boot confirmed. F1 net = tested backstop; judgment didn't need it live.
+- COSMETIC catch: writer swallowed the sentence particle 吧 into the title constant; reviewer
+  missed it. One-terse-message fix queued as loop trivia.
+- Spine step ⓪ now COMPLETE except ⓪·4 (retire legacy). NEXT: ⓪·4 or spine ② episodic memory.

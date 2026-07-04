@@ -406,7 +406,13 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
   itself: an applied-but-ineffective lesson loses reuse-value on repeat correction → escalates.
   READY-MADE LIVE CASES: the duplicate timezone lessons in ask block (reconcile) + the useless
   "playful sign-offs" lesson from run_72230506 (ineffective-layer escalation).
-- **⓪·3f — F1 + POLISH** ⏳ IN PROGRESS 2026-07-04 (Paco: "F1 + small polish pls") — build DONE, LIVE gate open
+- **⓪·3f — F1 + POLISH** ✅ **DONE + LIVE 2026-07-04** (3cae47c; live gate = run_df822dbd →
+  4de7523): "就换成🗡️ 又闯了一关吧" WITHOUT quoting the old title → model recovered the target from
+  the THREAD, routed straight to self_write_propose (overriding an "answer" hint), honest reply
+  ("分支就绪，等合并"), merged + ✅ boot confirmed. The 22:14 overpromise mode did NOT recur; the F1
+  refusal net is test-proven (incl. the anti-poison assistant-turn case) and stands as backstop.
+  ⚠ COSMETIC: writer included the trailing 吧 in the constant ("🗡️ 又闯了一关吧") and the reviewer
+  missed it — Paco can fix with one terse message (good trivia exercise for the loop). — build DONE, LIVE gate open
   - [x] F1 thread-scoped code-owned check: extract phrases from the current message + recent USER
         turns (assistant turns EXCLUDED — a prior reply containing the notice header must not
         poison every later lesson_write). Live case: 22:14 two-turn miss.
@@ -419,7 +425,7 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
   - [x] P3 lesson render tie-order = legacy reading order (created ASC on equal reuse_value)
   - [x] P4 worker-level evolution-deadline-extension coverage (⓪·2b parked MINOR —
         `evolutionDeadlineExtender` factory exported; 30/60/10-min grants + ranOnce/disarmed/0 pinned)
-  - [ ] LIVE gate: replicate the 22:14 shape — msg 1 quotes the code-owned title, msg 2 says
+  - [x] LIVE gate MET (see above): replicate the 22:14 shape — msg 1 quotes the code-owned title, msg 2 says
         "换掉它" without quoting → refusal fires from thread → pivot to self_write_propose
         (branch may be discarded — the routing is the test).
 - **⓪·4 — retire legacy paths** (flag default ON, executeTurn if-chain + per-intent handlers removed,
