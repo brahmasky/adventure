@@ -428,6 +428,17 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
   - [x] LIVE gate MET (see above): replicate the 22:14 shape — msg 1 quotes the code-owned title, msg 2 says
         "换掉它" without quoting → refusal fires from thread → pivot to self_write_propose
         (branch may be discarded — the routing is the test).
+- **⓪·3g — SINGLE-LANE FIX (next small /goal candidate; promoted from ⓪·2b parked MINOR after it
+  bit live 2026-07-04)**: a long evolution pipeline (writer 5min + gate 7min + reviewer 3min) makes
+  Houge DEAF — Paco's [View diff] taps + messages queued ~15 min unanswered (looked broken). Options:
+  (a) run evolution pipelines off the poll thread (worker process / async lane; poll loop keeps
+  serving reads + taps); (b) minimum viable: mid-pipeline, daemon answers queued taps/messages with
+  code-owned "正在改代码，稍等 🐒" progress note. Also: multiple queued View taps each get answered
+  (N taps = N duplicate diffs) — dedupe repeat view callbacks within a window.
+  ALSO PENDING (Paco to confirm): prune 4 stale selfwrite branches (run_48db7150, run_4c0f99f0,
+  run_6bed4d47 [June-27 era], run_f93782e2 — abandoned, unmerged); decide fix #1 run_ba05dfcf
+  (timezone parse+normalize, published+reviewed) merge-or-discard; fix #2 failed honestly
+  (typecheck red on new result-time.ts — attempt cap).
 - **⓪·4 — retire legacy paths** (flag default ON, executeTurn if-chain + per-intent handlers removed,
   research fixed sequence dissolves into composition). LIVE gate: a normal day's traffic on loop only.
 
