@@ -16,6 +16,17 @@ export interface ResearchQuestionOptions {
   now?: Date;
 }
 
+const MARKDOWN_IMAGE_LINK = /!\[[^\]]*]\([^)]*\)/g;
+
+function stripMarkdownImageLinks(content: string): string {
+  if (!content.includes("![")) return content;
+  return content
+    .replace(MARKDOWN_IMAGE_LINK, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 /**
  * `web_search` capability (external_read). Returns ranked results as DATA; it
  * never acts. The chain is resolved from env unless injected. See ADR 0006.
@@ -40,7 +51,11 @@ export function createWebSearchAdapter(
     if (!result.ok) {
       return { ok: false, error: result.error };
     }
-    return { ok: true, output: { query, provider: result.provider, results: result.results } };
+    const results = result.results.map((r) => ({
+      ...r,
+      content: stripMarkdownImageLinks(r.content)
+    }));
+    return { ok: true, output: { query, provider: result.provider, results } };
   };
 }
 
@@ -53,9 +68,10 @@ export function createWebSearchAdapter(
  */
 export function buildResearchQuestion(topic: string, results: WebResult[], options?: ResearchQuestionOptions): string {
   const blocks = results.map((r, i) => {
-    const content = r.content.length > WEB_RESULT_CONTENT_CAP
-      ? `${r.content.slice(0, WEB_RESULT_CONTENT_CAP)}…`
-      : r.content;
+    const strippedContent = stripMarkdownImageLinks(r.content);
+    const content = strippedContent.length > WEB_RESULT_CONTENT_CAP
+      ? `${strippedContent.slice(0, WEB_RESULT_CONTENT_CAP)}…`
+      : strippedContent;
     return `[${i + 1}] ${r.title} — ${r.url}\n${content}`;
   });
   const question = [
