@@ -24,3 +24,36 @@ export function temporalContext(now?: Date): string {
   const minutes = String(localNow.getMinutes()).padStart(2, "0");
   return `Today's date and time is ${year}-${month}-${day} ${hours}:${minutes} (${timeZone}).`;
 }
+
+function formatInTimeZone(now: Date, timeZone: string): string {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZoneName: "shortOffset"
+  });
+  const parts = Object.fromEntries(formatter.formatToParts(now).map((part) => [part.type, part.value]));
+  const offset = parts.timeZoneName?.replace(/^GMT/, "UTC") ?? "";
+  const suffix = offset.length > 0 ? `/${offset}` : "";
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute} (${timeZone}${suffix})`;
+}
+
+/**
+ * Extra grounding for time-sensitive web answers. Match/event times must be interpreted
+ * in the timezone stated by the source (e.g. 北京时间/CST = Asia/Shanghai), not by the
+ * bot host's timezone.
+ */
+export function temporalComparisonContext(now: Date = new Date()): string {
+  const runtimeTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const runtimeNow = formatInTimeZone(now, runtimeTimeZone);
+  const beijingNow = formatInTimeZone(now, "Asia/Shanghai");
+  return [
+    `Current instant: ${runtimeNow}; Beijing time: ${beijingNow}.`,
+    "When comparing match/event times from sources, first parse the timezone named by the source, then compare that instant to the current instant.",
+    "Do not reinterpret a source-local time such as 北京时间/CST/UTC+8 as the bot runtime timezone."
+  ].join("\n");
+}

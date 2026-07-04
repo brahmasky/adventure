@@ -656,11 +656,12 @@ export class CoreWorker {
     // (identity + research discipline + learned lessons); results ride the question
     // (data) channel, so embedded instructions can't change behaviour (ADR 0006/0009).
     const memoryRoot = memoryRootFor(this.projectRoot);
+    const researchNow = new Date();
     const synth = await runner.execute({
       contract: claim.contract,
       capability: "llm_answer",
       input: {
-        question: buildResearchQuestion(topic, results),
+        question: buildResearchQuestion(topic, results, { now: researchNow }),
         system: composeSystemPrompt(memoryRoot, "research", {
           lessonsReader: this.lessonsReader(),
           skillsReader: this.skillsReader()
@@ -681,7 +682,7 @@ export class CoreWorker {
       contract: claim.contract,
       capability: "llm_answer",
       input: {
-        question: buildCritiqueQuestion(topic, draft, results),
+        question: buildCritiqueQuestion(topic, draft, results, { now: researchNow }),
         system: composeSystemPrompt(memoryRoot, "research-critique", {
           lessonsReader: this.lessonsReader(),
           lessonsScope: "research",
