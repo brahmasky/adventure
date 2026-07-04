@@ -1,3 +1,46 @@
+# ⏸ PARKED 2026-07-04 — RESUME HERE (written for ANY model/orchestrator starting cold)
+
+**Where things stand:** ADR 0013's inner-loop refactor is DONE + LIVE end-to-end — steps ⓪·1, ⓪·2,
+⓪·2b, ⓪·2c, ⓪·3 (spine Slice A: the eval loop — rating/reconcile/supersede/reuse/decay), ⓪·3f,
+⓪·3g (async lane) all shipped with live Telegram gates. Houge has 10 merged self-writes; the loop
+composes lessons/diagnosis/code-fixes in one turn; the daemon stays responsive during pipelines;
+compounding is observable (/lessons shows supersede lineage). main @ 498acf7+, tree clean, all pushed.
+
+**Onboarding (mandatory, in order):** AGENTS.md · this file (Current System State below + the
+"⓪·x" sections for what each step shipped) · tasks/lessons.md (orchestrator rules — hermeticity
+PINNED_ENV, no test-literal pinning of code-owned strings, monitor windows from `date -u`) ·
+sessions.md (day-by-day narrative) · docs/decisions/0012 + 0013 + docs/superpowers/specs/ (the
+locked designs). ADR 0001-as-amended = the floor; NEVER weaken guard/test-gate/reviewer/human-tap.
+
+**Process rules that are LOAD-BEARING:** every build goes through Paco's /goal gate → build
+subagent + independent ADVERSARIAL verification subagent → orchestrator re-runs gates
+(typecheck · npm test · build · deps {} · hermetic sweep with daemon env + hostile new-var values)
+→ COMMIT+PUSH BEFORE the live gate (dirty tree blocks Houge's [Merge & reload]) → live gate over
+real Telegram (cardinal rule — npm test alone never closes a /goal) → close out todo/sessions,
+commit, push. Daemon reload: npm run build && launchctl kickstart -k gui/$UID/com.houge.daemon.
+
+**Soak watchlist (now, no build):** rate 0–3 when Houge asks; watch /lessons for the first decay
+tick (~2026-07-06), first low-rating culprit flag, first escalate hint; duplicate lesson #10 still
+active (next timezone correction or decay resolves it); cross-scope lesson dedup + echo-defense
+depth are small parked items.
+
+**NEXT BUILDS (recommended order, evidence-based):**
+1. **③ http_fetch** — spine step 3; spec ALREADY WRITTEN (this file, "Phase 3.6" section, gates
+   H1–H7: SSRF resolve-and-PIN floor, GET-only, caps). Paco's deep-research asks hit the
+   snippets-only ceiling squarely. NOTE: the charter's SECRETS FIREWALL becomes load-bearing here.
+2. **④ LLM Wiki** — spine Slice B (spine spec C1–C6), built LOOP-NATIVE (wiki_build/wiki_refine
+   tools); investment research is its designed demo; cross-source verification = first autonomous
+   eval signal.
+3. Competing bids to weigh with Paco first (design discussion, like the spine got): **② episodic
+   memory** (spine spec B1–B6 — stops re-asking known facts; thread-context shallowness shows up
+   daily) and the **SCHEDULER** (makes "等我确认后告诉你" real; vestigial schedule types exist in
+   domain/state-machines; needs its own ADR — self-initiated runs × budget breaker × rate limits).
+4. **⓪·4 retire legacy paths** — after a quiet week on the loop (mostly deletions; see its entry).
+5. Interleave BEFORE ③/④ raise autonomy stakes: the charter safety floor — D4 auto-rollback
+   (reload-marker boot confirmation was stage 1), kill-switch, secrets firewall, metered-$ ceiling.
+
+---
+
 # Current System State (read first — 2026-06-26)
 
 - **Branch:** **`main` @ `3c85328`** (brahmasky/adventure). Phases **1, 2a/b/c, 3, 3.1, 3.3, 3.4, 3.5 all

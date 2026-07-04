@@ -285,3 +285,11 @@ Build + independent adversarial verification subagents; each live round found a 
   web digests now stripped of image-markdown junk (the football-score bug's second half fixed).
 - ⓪ roadmap: ⓪·1/⓪·2/⓪·2b/⓪·2c/⓪·3/⓪·3f/⓪·3g ALL DONE+LIVE. Remaining: ⓪·4 (after quiet week).
   NEXT per usage evidence: ③ http_fetch → ④ wiki (deep research); ② episodic + scheduler in the mix.
+
+## 2026-07-04 (close) — PARKED; handoff written
+- Session closed at Paco's request (Fable 5 limit approaching). Full handoff block written at the
+  TOP of tasks/todo.md ("⏸ PARKED 2026-07-04 — RESUME HERE"): state, onboarding order, load-bearing
+  process rules, soak watchlist, next-build order (③ http_fetch → ④ wiki; ②/scheduler design chat;
+  ⓪·4 after quiet week; charter safety floor interleaved). Any model can resume from repo files
+  alone — no verbal context needed. Week's tally: ADR 0012+0013 designed+shipped ⓪·1→⓪·3g, 1013
+  tests, 10 Houge self-writes merged, eval loop live and compounding.
