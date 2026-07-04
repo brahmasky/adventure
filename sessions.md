@@ -245,3 +245,18 @@ Build + independent adversarial verification subagents; each live round found a 
 - COSMETIC catch: writer swallowed the sentence particle 吧 into the title constant; reviewer
   missed it. One-terse-message fix queued as loop trivia.
 - Spine step ⓪ now COMPLETE except ⓪·4 (retire legacy). NEXT: ⓪·4 or spine ② episodic memory.
+
+## 2026-07-04 (day) — first SOAK day: football saga, 3 more Houge self-writes, housekeeping
+- World Cup Q exposed: (1) temporal reasoning gap → Houge diagnosed + self-wrote temporalComparisonContext
+  (dual-TZ instant + compare rules into research prompts), merged cc5b3c2 after 3 attempts (#2 typecheck
+  red, #3 writer timeout — gates honest throughout); (2) digest noise (markdown image junk drowns scores;
+  queued as Houge-sized fix); (3) false follow-up promises ("等我确认后告诉你" — NO scheduler exists;
+  lesson queued; scheduler capability = future roadmap item w/ own gate design).
+- LIVE INCIDENT → ⓪·3g case hardened: single-lane daemon is DEAF during pipelines AND LOSSY (Telegram
+  expires unfetched callback taps ~1min — 3 View taps destroyed server-side, zero trace). Queued: off-
+  thread pipelines or busy-notice + tap dedupe.
+- Housekeeping: 4 stale June branches pruned (2 already-merged debris, 2 obsolete 猴哥-fix attempts —
+  the literal ADR 0012 anecdote branches); 吧 particle removed from sign-off title BY HOUGE (1bdbb11,
+  merged+reloaded by Paco solo — full circuit needed zero Claude involvement); all selfwrite branches 0.
+- Houge self-write count this week: 8 merged. The loop is routine now — Paco runs send→diff→merge→boot
+  cycles without orchestrator help. NEXT: soak + ratings; then ⓪·3g or ⓪·4 or spine ②/scheduler.
