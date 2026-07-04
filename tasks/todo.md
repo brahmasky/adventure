@@ -430,7 +430,7 @@ reviewer isolation, branch-only + human-tapped merge, unforgeable /approve /deny
         (branch may be discarded — the routing is the test).
 - **⓪·3g — SINGLE-LANE FIX (next small /goal candidate; promoted from ⓪·2b parked MINOR after it
   bit live 2026-07-04)**: a long evolution pipeline (writer 5min + gate 7min + reviewer 3min) makes
-  Houge DEAF — Paco's [View diff] taps + messages queued ~15 min unanswered (looked broken). Options:
+  Houge DEAF — Paco's [View diff] taps + messages queued ~15 min unanswered (looked broken) — AND LOSSY: Telegram expires unclaimed callback_query updates in ~1 min, so taps during a pipeline are DESTROYED server-side (2026-07-04: 3 View taps vanished — offset advanced, zero trace). Options:
   (a) run evolution pipelines off the poll thread (worker process / async lane; poll loop keeps
   serving reads + taps); (b) minimum viable: mid-pipeline, daemon answers queued taps/messages with
   code-owned "正在改代码，稍等 🐒" progress note. Also: multiple queued View taps each get answered
