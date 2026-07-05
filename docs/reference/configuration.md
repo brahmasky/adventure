@@ -155,6 +155,23 @@ explicit allowlisted env regardless of this flag. See
 | `HOUGE_SECRETS_FIREWALL_ENABLED` | off | Arms the firewall (lift-into-broker + strip `process.env` + redact egress). Accepts 1/true/yes/on. OFF ⇒ byte-identical to before the firewall existed. |
 | `HOUGE_CODEX_ENV_PASSTHROUGH` | — | Optional comma-separated extra env var names the Codex child may inherit, on top of the `PATH/HOME/TERM/LANG/USER` allowlist. |
 
+## Dual-LLM privilege separation (ADR 0014, Phase 1)
+
+The **act** half of the lethal trifecta (the secrets firewall above is the **exfil** half). When
+armed, every successful external-read result (`web_search`/`http_fetch`) is summarized by a
+**quarantined reader (Q-LLM)** into a schema-constrained extraction
+(`{summary, facts[], answer_to_objective, contains_instructions}` — no action field), and the
+**planner (P-LLM)** — the only call that emits actions — reads that extraction, never the raw
+fetched bytes. An injection in a page can at worst corrupt a data field a human sees; it cannot
+steer the planner. On a reader parse miss the fallback is a metadata-only
+`[unreadable external source: N bytes]` digest — never the raw bytes. See
+[ADR 0014](../decisions/0014-dual-llm-privilege-separation.md).
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_DUAL_LLM_ENABLED` | off | Arms the quarantined reader for external-read tools. Accepts 1/true/yes/on. OFF ⇒ byte-identical to before Dual-LLM existed (raw output digested inline). |
+| `HOUGE_LLM_READER_PROVIDERS` | `HOUGE_LLM_PROVIDERS` | The reader's own provider chain (same names/format as `HOUGE_LLM_PROVIDERS`). Unset ⇒ the planner chain. Point it at a cheap, **cross-family** leg (e.g. `agy-cli,gemini-api`) for free injection resistance. |
+
 ## Short-term conversation memory (`chat_turns`)
 
 A per-chat rolling thread of recent turns gives follow-ups context, so a reaction like

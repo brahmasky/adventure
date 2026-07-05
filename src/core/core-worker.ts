@@ -58,8 +58,18 @@ import {
   parseAttributionVerdict,
   RATING_ATTRIBUTION_DISCIPLINE
 } from "../capabilities/session-rating.js";
-import { buildFallbackRestateQuestion, runInnerLoop } from "./inner-loop.js";
+import { buildFallbackRestateQuestion, digestOutput, runInnerLoop } from "./inner-loop.js";
 import type { LoopStepRecord } from "./inner-loop.js";
+import {
+  buildReaderQuestion,
+  parseReaderExtraction,
+  READER_INPUT_CHAR_CAP,
+  renderExtractionDigest,
+  resolveDualLlmEnabled,
+  resolveReaderProviders,
+  unreadableDigest,
+  UNTRUSTED_READ_TOOLS
+} from "./quarantine.js";
 import { manifestFor } from "./tool-manifest.js";
 import { composeSystemPrompt, intentToScope, memoryRootFor, SKILL_AUTHOR_DISCIPLINE } from "../prompt/composer.js";
 import { resolveSkillMaxPerScope, resolveSkillRefinePasses, resolveSkillsEnabled, setFrontmatterFields, SkillStore } from "../skills/skill-store.js";
@@ -1166,7 +1176,7 @@ export class CoreWorker {
    */
   private recordLlmCallSafe(
     run_id: string,
-    info: { provider: string; model: string; role: "writer" | "reviewer" | "classify" | "frame" | "answer" | "compose"; usage: LlmUsage; latency_ms?: number }
+    info: { provider: string; model: string; role: "writer" | "reviewer" | "classify" | "frame" | "answer" | "compose" | "reader"; usage: LlmUsage; latency_ms?: number }
   ): void {
     try {
       this.runStore.recordLlmCall(run_id, info);
@@ -1182,14 +1192,44 @@ export class CoreWorker {
    */
   private llmAdapterFor(
     run_id: string,
-    role: "classify" | "frame" | "answer" | "compose"
+    role: "classify" | "frame" | "answer" | "compose" | "reader"
   ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
     if (!this.llmAdapterIsDefault) return this.llmAdapter;
     return createLlmAnswerAdapter({
       ...(this.broker ? { broker: this.broker } : {}),
+      // Dual-LLM (ADR 0014): the quarantined reader runs on its own (default cross-family) chain.
+      ...(role === "reader" ? { providers: resolveReaderProviders(process.env) } : {}),
       onUsage: (provider, usage, model) =>
         this.recordLlmCallSafe(run_id, { provider, model, role, usage })
     });
+  }
+
+  /**
+   * Dual-LLM privilege separation (ADR 0014, Phase 1): the quarantined reader (Q-LLM) call. An
+   * external-read tool's raw untrusted output is summarized into a schema-constrained extraction
+   * that the planner reads instead of the raw bytes. Mirrors the anchor-verify tolerant parse
+   * (one retry). The raw bytes NEVER return: on a parse miss (twice) the fail-safe is a
+   * metadata-only digest, never the content. `readerAdapter` is bound to role "reader" so the
+   * call is telemetered separately and NOT charged to the turn's `max_tool_calls`.
+   */
+  private async quarantineRead(
+    readerAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
+    memoryRoot: string,
+    rawOutput: Record<string, unknown>,
+    objective: string
+  ): Promise<string> {
+    const system = composeSystemPrompt(memoryRoot, "reader");
+    const rawContent = digestOutput(rawOutput, READER_INPUT_CHAR_CAP);
+    const question = buildReaderQuestion(objective, rawContent);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const r = await readerAdapter({ question, system });
+      if (r.ok) {
+        const extraction = parseReaderExtraction(typeof r.output.answer === "string" ? r.output.answer : "");
+        if (extraction) return renderExtractionDigest(extraction);
+      }
+    }
+    // Fail-safe: never inline raw bytes — that would be the exact leak the wall prevents.
+    return unreadableDigest(Buffer.byteLength(rawContent, "utf8"));
   }
 
   /** CHECKER 1: read the worktree's raw diff and run it through the protected-path guard. */
@@ -1888,6 +1928,12 @@ export class CoreWorker {
     // auto-denies rather than parking the loop — nothing in the turn manifest is gated.
     const runner = new CapabilityRunner(registry);
     const composeAdapter = this.llmAdapterFor(claim.run_id, "compose");
+    // Dual-LLM privilege separation (ADR 0014, Phase 1). When ON, external-read tool outputs are
+    // summarized by the quarantined reader (Q-LLM) into a schema-constrained digest; the P-LLM
+    // never sees raw fetched bytes. When OFF, no reader hook is wired → the loop is byte-identical
+    // to today (raw `digestOutput` inline).
+    const dualLlmOn = resolveDualLlmEnabled(process.env);
+    const readerAdapter = dualLlmOn ? this.llmAdapterFor(claim.run_id, "reader") : undefined;
     const result = await runInnerLoop(
       {
         objective: message,
@@ -1908,13 +1954,19 @@ export class CoreWorker {
         // background lane, so the loop finalizes with the kickoff digest as the answer
         // rather than spending another step that would only bounce off the busy guard.
         terminalAfterSuccess: (action) => EVOLUTION_TOOLS.has(action),
+        // Dual-LLM (ADR 0014): route external-read outputs through the Q-LLM ONLY when armed;
+        // absent when OFF ⇒ every action digests inline (byte-identical to today).
+        ...(dualLlmOn ? { quarantineReadActions: (action: string) => UNTRUSTED_READ_TOOLS.has(action) } : {}),
         onStep: (step) =>
           this.runStore.recordLoopStep(claim.run_id, {
             step: step.index,
             action: step.action,
             capability: manifestNames.has(step.action) ? step.action : "",
             ok: step.ok,
-            result_digest: step.resultDigest
+            result_digest: step.resultDigest,
+            // Audit which steps were quarantined: exactly the successful external-read steps
+            // when Dual-LLM is ON (the same condition under which the reader hook fires).
+            ...(dualLlmOn && step.ok && UNTRUSTED_READ_TOOLS.has(step.action) ? { reader_applied: true } : {})
           })
       },
       {
@@ -1932,6 +1984,15 @@ export class CoreWorker {
           const text = typeof r.output.answer === "string" ? r.output.answer.trim() : "";
           return text.length > 0 ? text : undefined;
         },
+        // Dual-LLM reader hook (ADR 0014): present ONLY when armed. Paired with
+        // `quarantineReadActions` above, so the raw external bytes are summarized before they
+        // could reach the P-LLM's transcript. Absent when OFF ⇒ inner loop unchanged.
+        ...(readerAdapter
+          ? {
+              quarantineReader: (_action: string, rawOutput: Record<string, unknown>, objective: string) =>
+                this.quarantineRead(readerAdapter, memoryRoot, rawOutput, objective)
+            }
+          : {}),
         executeAction: async (capability, input) => {
           const result = await runner.execute({ contract: claim.contract, capability, input, budget });
           // Code-owned failure surfacing (⓪·2): an evolution step that did not succeed

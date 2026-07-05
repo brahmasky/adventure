@@ -54,6 +54,18 @@ export interface InnerLoopDeps {
    * the bare digest ships (⓪·1 behavior). Must never be charged to the turn's budget ledger.
    */
   restateFallback?: (digest: string) => Promise<string | undefined>;
+  /**
+   * Dual-LLM privilege separation (ADR 0014, Phase 1): the quarantined reader (Q-LLM). When
+   * present AND `input.quarantineReadActions?.(action)` is true, a SUCCESSFUL external-read
+   * tool's raw output is summarized into a schema-constrained extraction, and THAT string —
+   * never the raw bytes — becomes the transcript digest the P-LLM reads next step. Absent (or
+   * the predicate absent/false) ⇒ the raw `digestOutput` path, byte-identical to today.
+   */
+  quarantineReader?: (
+    action: string,
+    rawOutput: Record<string, unknown>,
+    objective: string
+  ) => Promise<string>;
 }
 
 export interface InnerLoopInput {
@@ -89,6 +101,12 @@ export interface InnerLoopInput {
    *  evolution-lane kickoff): once it succeeds, no further synchronous step is
    *  possible, so the loop finalizes with the kickoff digest as the answer. */
   terminalAfterSuccess?: (action: string) => boolean;
+  /**
+   * Dual-LLM (ADR 0014): which successful actions route their raw output through
+   * `deps.quarantineReader` instead of `digestOutput` (mirrors `terminalAfterSuccess`). Set to
+   * the external-read tools ONLY when Dual-LLM is ON; absent ⇒ no action is quarantined (OFF).
+   */
+  quarantineReadActions?: (action: string) => boolean;
   /** Observation hook (read-only): fired once per step record, in order. */
   onStep?: (step: LoopStepRecord) => void;
 }
@@ -230,12 +248,25 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
     const result = await deps.executeAction(action.action, action.input ?? {});
     if (result.status === "succeeded") {
       const stepCharCap = input.resultCharCapFor?.(action.action) ?? charCap;
+      // Dual-LLM wall (ADR 0014): an external-read tool's raw bytes are summarized by the
+      // quarantined reader into a schema-constrained digest; the raw output NEVER enters the
+      // transcript the P-LLM reads. When the hook/predicate are absent (Dual-LLM OFF) this is
+      // byte-identical to `digestOutput(result.output, stepCharCap)`. The reader's digest is
+      // capped to the same per-step budget as the inline path — a verbose/hostile reader can't
+      // bloat the planner transcript beyond what an uncapped raw digest would have cost.
+      let resultDigest: string;
+      if (deps.quarantineReader && input.quarantineReadActions?.(action.action)) {
+        const summary = await deps.quarantineReader(action.action, result.output, input.objective);
+        resultDigest = summary.length > stepCharCap ? `${summary.slice(0, stepCharCap)}…` : summary;
+      } else {
+        resultDigest = digestOutput(result.output, stepCharCap);
+      }
       record({
         action: action.action,
         input: action.input ?? {},
         ...(action.why ? { why: action.why } : {}),
         ok: true,
-        resultDigest: digestOutput(result.output, stepCharCap)
+        resultDigest
       });
       // Terminal-after-success (⓪·3g): a successful background evolution-lane kickoff ends
       // the turn — the work is now async on the lane, so any further synchronous step just

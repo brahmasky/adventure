@@ -150,7 +150,8 @@ const requiredPayloadFields = {
   // is the attribution seed (which lesson/skill scope blocks were injected); `loop_step`
   // records each composed step (result_digest is the truncated transcript entry — never
   // full payloads); `loop_halted.reason` ∈ final|clarify|step_cap|denial|parse_cap|
-  // clarify_cap|failed.
+  // clarify_cap|failed. `loop_step` also carries an OPTIONAL `reader_applied:true` when the
+  // step's output passed through the Dual-LLM quarantined reader (ADR 0014) — not required.
   loop_started: ["manifest", "hint", "applied_artifacts"],
   loop_step: ["step", "action", "capability", "ok", "result_digest"],
   loop_halted: ["reason", "steps"],

@@ -40,7 +40,10 @@ const PINNED_ENV = [
   "GEMINI_API_KEY",
   "TAVILY_API_KEY",
   "FIRECRAWL_API_KEY",
-  "HOUGE_TELEGRAM_BOT_TOKEN"
+  "HOUGE_TELEGRAM_BOT_TOKEN",
+  // Dual-LLM (ADR 0014): pin the flag + reader-chain env so the OFF default is hermetic.
+  "HOUGE_DUAL_LLM_ENABLED",
+  "HOUGE_LLM_READER_PROVIDERS"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {

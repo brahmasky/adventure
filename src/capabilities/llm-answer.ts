@@ -39,12 +39,19 @@ export interface LlmAnswerAdapterConfig {
    * Ignored when a `chain` is injected (tests bring their own providers).
    */
   broker?: SecretBroker;
+  /**
+   * Dual-LLM reader chain (ADR 0014): resolve the provider chain from THIS comma-separated list
+   * instead of `HOUGE_LLM_PROVIDERS`. Used only for the quarantined reader (role "reader") so it
+   * can run a cheap, cross-family leg. Absent ⇒ the planner chain. Ignored when a `chain` is
+   * injected (tests bring their own providers).
+   */
+  providers?: string;
 }
 
 export function createLlmAnswerAdapter(
   config: LlmAnswerAdapterConfig = {}
 ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
-  const { chain: injectedChain, onUsage, broker } = config;
+  const { chain: injectedChain, onUsage, broker, providers } = config;
 
   return async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
     const question = input.question;
@@ -56,7 +63,7 @@ export function createLlmAnswerAdapter(
     // completion with its provider name (the provider's own hook only carries usage+model). An
     // injected chain (tests) is used as-is.
     const chain = injectedChain ?? buildLlmChain(
-      process.env,
+      providers ? { ...process.env, HOUGE_LLM_PROVIDERS: providers } : process.env,
       onUsage
         ? {
             piConfig: { onUsage: (usage, model) => onUsage("pi", usage, model) },

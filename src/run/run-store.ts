@@ -33,7 +33,7 @@ import { canTransitionRun } from "./state-machines.js";
 import type { LlmUsage } from "./llm-usage.js";
 
 /** The LLM-call roles recorded by {@link RunStore.recordLlmCall} (spec §"Real telemetry"). */
-export type LlmCallRole = "writer" | "reviewer" | "classify" | "frame" | "answer" | "compose";
+export type LlmCallRole = "writer" | "reviewer" | "classify" | "frame" | "answer" | "compose" | "reader";
 
 type SqliteValue = string | number | bigint | null;
 
@@ -917,7 +917,17 @@ export class RunStore {
 
   recordLoopStep(
     run_id: string,
-    payload: { step: number; action: string; capability: string; ok: boolean; result_digest: string }
+    payload: {
+      step: number;
+      action: string;
+      capability: string;
+      ok: boolean;
+      result_digest: string;
+      // Dual-LLM audit (ADR 0014): true when this step's raw output was routed through the
+      // quarantined reader. OPTIONAL — absent on every non-quarantined step and when Dual-LLM
+      // is OFF, so the required loop_step schema is unchanged.
+      reader_applied?: boolean;
+    }
   ): void {
     this.appendRunLedgerEvent(run_id, "loop_step", "core", payload);
   }
