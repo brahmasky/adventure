@@ -66,12 +66,12 @@ describe("arming policy (step ⓪·2): evolution tools appear only when their fl
     ]);
   });
 
-  it("the heavy tools' prompt lines hint terminality (wrap up with final)", () => {
+  it("the heavy tools' prompt lines hint terminality (calling it ENDS this turn)", () => {
     const lines = renderManifestLines(
       manifestFor(["self_write_propose", "skill_author"], { HOUGE_SELFWRITE_ENABLED: "1" })
     );
     expect(lines.length).toBe(2);
-    for (const line of lines) expect(line).toContain('wrap up with "final"');
+    for (const line of lines) expect(line).toContain("ENDS this turn");
   });
 
   it("the manifest entries never leak the arming predicate (registration metadata only)", () => {

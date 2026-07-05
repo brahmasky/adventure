@@ -1,3 +1,51 @@
+# 🔨 IN PROGRESS 2026-07-05 — /goal lane-awareness + context-window fix
+
+**Trigger (live soak, 07-05):** Houge lost thread context across pauses ("比分怎么样" → "which
+match?") and, when asked to self-fix, (a) repeat-ran self_diagnose and bounced self_write_propose
+off the busy single lane every turn, then (b) hit the protected-path guard (run-store.ts) so nothing
+landed. Root-caused three issues; the loop-context one is dominant.
+
+**Root causes (first-principles, verified in code):**
+- **① Context window (DOMINANT).** `getRecentChatTurns` is loaded with a 60-min wall-clock filter
+  (`chatContextSince`, core-worker.ts:1642) → any follow-up >60 min after the prior turn is handed
+  an empty thread. The inner loop DOES thread context (core-worker.ts:1857) but the window starves
+  it. Default `DEFAULT_CONTEXT_WINDOW_MINUTES=60`, `DEFAULT_CONTEXT_TURNS=8` (intent.ts:26-28).
+- **② Lane-unawareness (the "main issue" Paco named).** The generic loop engine doesn't know
+  self_diagnose/self_write_propose/skill_author share ONE background lane (⓪·3g). A successful
+  kickoff is inherently the last synchronous thing that can happen, but the loop keeps stepping →
+  the model bounces the 2nd lane tool off the busy guard / re-diagnoses.
+- **③ Research thread drop (LEGACY-only, defense-in-depth).** `runResearch(claim, topic, budget)`
+  takes only a topic; the disabled legacy research branch (core-worker.ts:1705) never passes the
+  thread. The LIVE loop path composes web_search/llm_answer itself with context, so this does NOT
+  bite today — fix for correctness only, must not change loop behavior.
+
+**Plan (checkable):**
+- [ ] **Fix ② — kickoff = terminal (loop engine).** Add typed seam `terminalAfterSuccess?(action)`
+  to `InnerLoopInput` (inner-loop.ts). On a SUCCEEDED action where the predicate holds: record the
+  step, then return `{outcome:"final", reason:"kickoff", answer: digestOutput(result.output)}`. Add
+  `"kickoff"` to `LoopHaltReason`. Wire in core-worker.ts: `terminalAfterSuccess:(a)=>EVOLUTION_TOOLS.has(a)`.
+- [ ] **Fix ② prompt.** Tool descriptions (tool-manifest.ts): self_write_propose diagnoses as it
+  writes → call it directly to CHANGE code; self_diagnose is explain-without-change only; both run
+  in the background and END the turn (do any answering FIRST).
+- [ ] **Fix ① — window.** intent.ts: `DEFAULT_CONTEXT_WINDOW_MINUTES` 60→1440 (24h),
+  `DEFAULT_CONTEXT_TURNS` 8→20, keep char cap 500. Update pinned assertions intent.test.ts:162-163.
+- [ ] **Fix ③ — legacy runResearch.** Optional `context` param threaded from the legacy branch +
+  the /research command wiring; used to enrich search query + synthesis. Loop path UNTOUCHED.
+- [ ] **Gate:** typecheck · npm test · build · deps {} · HERMETIC sweep (suite with .env exported —
+  the daemon-env test-gate). No new env vars added, but the changed defaults must not red-fail any
+  other suite (esp. core-worker turn tests that assumed the 60-min/8-turn window).
+- [ ] Independent adversarial verification subagent.
+- [ ] COMMIT + PUSH before the live gate (dirty tree blocks [Merge & reload]).
+- [ ] LIVE Telegram gate with Paco: (G1) establish a match, ask "比分怎么样" after a gap → keeps the
+  thread; (G2) ask him to self-fix something → ONE lane tool, loop halts `kickoff`, no bounce/repeat.
+- [ ] Close out todo/sessions, docs (ADR 0013 note), commit, push.
+
+**Files:** src/core/inner-loop.ts · src/core/core-worker.ts · src/capabilities/intent.ts ·
+src/core/tool-manifest.ts · tests/capabilities/intent.test.ts · tests/core/inner-loop.test.ts (+ any
+core-worker turn tests touching the window). NOT run-store.ts (protected; the fix doesn't need it).
+
+---
+
 # ⏸ PARKED 2026-07-04 — RESUME HERE (written for ANY model/orchestrator starting cold)
 
 **Where things stand:** ADR 0013's inner-loop refactor is DONE + LIVE end-to-end — steps ⓪·1, ⓪·2,

@@ -81,6 +81,10 @@ export interface InnerLoopInput {
   extendDeadlineFor?: (action: string) => number;
   /** Injectable clock for the deadline check (default Date.now). */
   now?: () => number;
+  /** A successfully-executed action that is inherently terminal (e.g. a background
+   *  evolution-lane kickoff): once it succeeds, no further synchronous step is
+   *  possible, so the loop finalizes with the kickoff digest as the answer. */
+  terminalAfterSuccess?: (action: string) => boolean;
   /** Observation hook (read-only): fired once per step record, in order. */
   onStep?: (step: LoopStepRecord) => void;
 }
@@ -98,6 +102,7 @@ export interface LoopStepRecord {
 
 export type LoopHaltReason =
   | "final"
+  | "kickoff"
   | "clarify"
   | "step_cap"
   | "denial"
@@ -227,6 +232,12 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
         ok: true,
         resultDigest: digestOutput(result.output, charCap)
       });
+      // Terminal-after-success (⓪·3g): a successful background evolution-lane kickoff ends
+      // the turn — the work is now async on the lane, so any further synchronous step just
+      // bounces off the busy guard or wastes budget. The kickoff digest is the answer.
+      if (input.terminalAfterSuccess?.(action.action)) {
+        return { outcome: "final", reason: "kickoff", answer: digestOutput(result.output, charCap), steps };
+      }
       continue;
     }
 

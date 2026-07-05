@@ -625,8 +625,11 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       expect(notes.some((t) => t.includes("ROOT CAUSE"))).toBe(true);
       // Read-only: no self_write_* events, ever.
       expect(store.getLedgerEvents(run_id).some((e) => String(e.event_type).startsWith("self_write_"))).toBe(false);
+      // ⓪·3g kickoff-terminal: the diagnose kickoff ENDS the turn, so the recorded reply
+      // is the kickoff digest (the model's scripted "final" is never reached); the relayed
+      // diagnosis rides the lane's completion notification instead.
       const turns = store.getRecentChatTurns("555", 6);
-      expect(turns[1]!.text).toContain("路由器");
+      expect(turns[1]!.text).toBe(buildEvolutionKickoffDigest("self_diagnose"));
     } finally {
       store.close();
     }

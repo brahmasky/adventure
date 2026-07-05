@@ -74,7 +74,7 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
   self_diagnose: {
     name: "self_diagnose",
     description:
-      "Diagnose Houge's OWN source code READ-ONLY: a coding agent reads the committed code and reports the root cause of the user's symptom.",
+      "Read and EXPLAIN Houge's own source without changing it. Use ONLY when the user wants an explanation, not a fix. Runs in the background; calling it ENDS this turn.",
     inputSketch: '{"focus": "one line: what to investigate"}',
     category: "tool",
     side_effect_level: "external_read",
@@ -85,7 +85,7 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
   self_write_propose: {
     name: "self_write_propose",
     description:
-      "Propose a FIX to Houge's OWN source code: an isolated writer produces a diff, gates check it (protected paths, tests, independent review), and a branch is published for the user to merge. Terminal — after this, wrap up with \"final\".",
+      "Propose a change to Houge's OWN source code. It reads and diagnoses the code as part of writing — call it DIRECTLY to make a code change; you do NOT need self_diagnose first. Runs in the background; calling it ENDS this turn (do any answering/other steps BEFORE it).",
     inputSketch: '{"focus": "one line: what to fix"}',
     category: "tool",
     side_effect_level: "external_read",
@@ -96,7 +96,7 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
   skill_author: {
     name: "skill_author",
     description:
-      "Author or refine a reusable SKILL (a verified procedure) from the user's request; may down-route to a lesson. Terminal — after this, wrap up with \"final\".",
+      "Author or refine a reusable SKILL (a verified procedure) from the user's request; may down-route to a lesson. Runs in the background; calling it ENDS this turn.",
     inputSketch: "{}",
     category: "tool",
     side_effect_level: "none",

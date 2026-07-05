@@ -162,6 +162,47 @@ describe("runInnerLoop — happy paths", () => {
     const result = await runInnerLoop(loopInput(), deps);
     expect(result).toMatchObject({ outcome: "clarify", reason: "clarify", question: "Which thing?" });
   });
+
+  it("terminalAfterSuccess: a successful kickoff ENDS the turn with the kickoff digest as the answer", async () => {
+    // The scripted "final" is NEVER reached — the kickoff finalizes the loop.
+    const deps = scriptedDeps(
+      [
+        '{"action":"self_write_propose","input":{"focus":"router"},"why":"user asked for a fix"}',
+        '{"action":"final","answer":"unreached"}'
+      ],
+      async () => succeeded({ answer: "background kickoff digest" })
+    );
+    const result = await runInnerLoop(
+      loopInput({ terminalAfterSuccess: (action) => action === "self_write_propose" }),
+      deps
+    );
+    expect(result).toMatchObject({
+      outcome: "final",
+      reason: "kickoff",
+      answer: "background kickoff digest"
+    });
+    expect(result.steps.length).toBe(1);
+    expect(result.steps[0]!).toMatchObject({ action: "self_write_propose", ok: true });
+    // Only ONE compose call: the loop returned before asking for a next step.
+    expect(deps.composeCalls.length).toBe(1);
+  });
+
+  it("terminalAfterSuccess only fires on SUCCESS: a non-terminal action still continues the loop", async () => {
+    const deps = scriptedDeps(
+      [
+        '{"action":"web_search","input":{"query":"x"}}',
+        '{"action":"final","answer":"done"}'
+      ],
+      async () => succeeded({ answer: "search digest" })
+    );
+    // web_search is not terminal, so the loop proceeds to the scripted final.
+    const result = await runInnerLoop(
+      loopInput({ terminalAfterSuccess: (action) => action === "self_write_propose" }),
+      deps
+    );
+    expect(result).toMatchObject({ outcome: "final", reason: "final", answer: "done" });
+    expect(deps.composeCalls.length).toBe(2);
+  });
 });
 
 describe("runInnerLoop — halt conditions (all code-owned)", () => {

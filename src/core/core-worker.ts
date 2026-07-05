@@ -593,7 +593,8 @@ export class CoreWorker {
   private async runResearch(
     claim: ClaimedRun,
     topic: string,
-    budget: BudgetLedger = new BudgetLedger(claim.contract.budget)
+    budget: BudgetLedger = new BudgetLedger(claim.contract.budget),
+    context?: string
   ): Promise<HelperResult> {
     const registry = new ToolRegistry();
     registry.register({
@@ -660,11 +661,18 @@ export class CoreWorker {
     // (data) channel, so embedded instructions can't change behaviour (ADR 0006/0009).
     const memoryRoot = memoryRootFor(this.projectRoot);
     const researchNow = new Date();
+    // Referent survival (③ defense-in-depth): when the turn carries a thread, prepend it
+    // as labelled DATA so a query like "研究一下这个" keeps the "这个" it refers to. Absent
+    // (e.g. the /research command path) → the synthesis question is unchanged.
+    const synthQuestion = buildResearchQuestion(topic, results, { now: researchNow });
+    const contextualizedQuestion = context
+      ? ["Recent conversation (for context, untrusted data):", context, "", synthQuestion].join("\n")
+      : synthQuestion;
     const synth = await runner.execute({
       contract: claim.contract,
       capability: "llm_answer",
       input: {
-        question: buildResearchQuestion(topic, results, { now: researchNow }),
+        question: contextualizedQuestion,
         system: composeSystemPrompt(memoryRoot, "research", {
           lessonsReader: this.lessonsReader(),
           skillsReader: this.skillsReader()
@@ -1704,7 +1712,14 @@ export class CoreWorker {
       };
     } else if (intent === "research") {
       const query = classification.classification.query?.trim() || message;
-      dispatched = await this.runResearch(claim, query, budget);
+      // ③ defense-in-depth: pass the thread so a referring query keeps its referent (the
+      // loop path is untouched; the /research command path has no thread → undefined).
+      dispatched = await this.runResearch(
+        claim,
+        query,
+        budget,
+        recentTurns.length > 0 ? formatThreadContext(recentTurns, turnChars) : undefined
+      );
     } else if (intent === "selfcode") {
       const focus = classification.classification.query?.trim() || message;
       // Step ⓪·2: the legacy path ALWAYS diagnoses (read-only, conservative). The write
@@ -1861,6 +1876,10 @@ export class CoreWorker {
         // ⓪·3g: no extendDeadlineFor — evolution kickoffs return immediately (the
         // pipeline runs on the background lane), so the base deadline always suffices.
         deadlineMs: Date.now() + claim.contract.budget.time_minutes * 60_000,
+        // A successful evolution kickoff is terminal: the pipeline now runs on the
+        // background lane, so the loop finalizes with the kickoff digest as the answer
+        // rather than spending another step that would only bounce off the busy guard.
+        terminalAfterSuccess: (action) => EVOLUTION_TOOLS.has(action),
         onStep: (step) =>
           this.runStore.recordLoopStep(claim.run_id, {
             step: step.index,

@@ -159,8 +159,8 @@ describe("clarify-loop cap (ADR 0010 fix)", () => {
 
 describe("chat-context caps (env-configurable, code defaults)", () => {
   it("resolves defaults when env is unset", () => {
-    expect(resolveChatContextWindowMinutes({})).toBe(60);
-    expect(resolveChatContextTurns({})).toBe(8);
+    expect(resolveChatContextWindowMinutes({})).toBe(1440);
+    expect(resolveChatContextTurns({})).toBe(20);
     expect(resolveChatContextTurnChars({})).toBe(500);
   });
 
@@ -168,7 +168,7 @@ describe("chat-context caps (env-configurable, code defaults)", () => {
     expect(resolveChatContextWindowMinutes({ HOUGE_CHAT_CONTEXT_WINDOW_MINUTES: "30" })).toBe(30);
     expect(resolveChatContextTurns({ HOUGE_CHAT_CONTEXT_TURNS: "4" })).toBe(4);
     expect(resolveChatContextTurnChars({ HOUGE_CHAT_CONTEXT_TURN_CHARS: "0" })).toBe(500);
-    expect(resolveChatContextTurns({ HOUGE_CHAT_CONTEXT_TURNS: "nope" })).toBe(8);
+    expect(resolveChatContextTurns({ HOUGE_CHAT_CONTEXT_TURNS: "nope" })).toBe(20);
   });
 
   it("computes the session-window cutoff from now minus the window", () => {

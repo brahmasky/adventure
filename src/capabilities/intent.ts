@@ -23,8 +23,8 @@ import { temporalContext } from "../prompt/temporal.js";
 export type Intent = "answer" | "research" | "feedback" | "clarify" | "selfcode" | "skill";
 
 /** Conversation-memory feed caps (ADR 0010) — env-configurable, code defaults. */
-const DEFAULT_CONTEXT_WINDOW_MINUTES = 60;
-const DEFAULT_CONTEXT_TURNS = 8;
+const DEFAULT_CONTEXT_WINDOW_MINUTES = 1440;
+const DEFAULT_CONTEXT_TURNS = 20;
 const DEFAULT_CONTEXT_TURN_CHARS = 500;
 
 /** How far back a follow-up still shares a thread; older turns start fresh. */

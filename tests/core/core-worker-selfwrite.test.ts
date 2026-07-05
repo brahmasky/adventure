@@ -242,16 +242,18 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       const completed = store.getLedgerEvents(run_id).filter((e) => e.event_type === "run_completed");
       expect(completed[0]!.payload.budget_used).toEqual({ tool_calls: 2 });
 
-      // The turn recorded the loop's final reply under the selfcode hint intent.
+      // The turn recorded the loop's reply under the selfcode hint intent. ⓪·3g
+      // kickoff-terminal: the kickoff ENDS the turn, so the reply IS the kickoff digest
+      // (the scripted "final" is never reached).
       const turns = store.getRecentChatTurns("777", 6);
       const last = turns[turns.length - 1]!;
       expect(last.intent).toBe("selfcode");
-      expect(last.text).toBe("已提交修复分支。");
+      expect(last.text).toBe(KICKOFF);
 
-      // TWO notifications: the turn's reply (model final, NO buttons) and the lane's
+      // TWO notifications: the turn's reply (the kickoff digest, NO buttons) and the lane's
       // completion (publish text + the three merge-control buttons targeting THIS run).
       expect(notifications.length).toBe(2);
-      const turnNote = notifications.find((n) => n.payload.text === "已提交修复分支。");
+      const turnNote = notifications.find((n) => n.payload.text === KICKOFF);
       expect(turnNote).toBeDefined();
       expect(turnNote!.payload.buttons).toBeUndefined();
       const completion = notifications.find((n) => String(n.payload.text).includes("🐒 Fixed"));
@@ -296,7 +298,7 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       expect(evolutionLaneSnapshot().current?.tool).toBe("self_write_propose");
       const turnNote = store.claimNextNotification("test-claim-turn", 60);
       expect(turnNote).not.toBeNull();
-      expect(turnNote!.payload.text).toBe("已提交修复分支。");
+      expect(turnNote!.payload.text).toBe(KICKOFF);
 
       // Release the writer → the lane settles → the completion notification lands.
       releaseWriter();
@@ -385,9 +387,9 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       expect(String(completion!.payload.text).toLowerCase()).toContain("locked surface");
       // A BLOCKED completion carries NO merge-control buttons (only a publish does).
       expect(completion!.payload.buttons).toBeUndefined();
-      // The mocked model's final answer ("已提交修复分支。") says nothing about the deny —
-      // the code-owned completion notification surfaces it regardless.
-      expect(notifications.some((n) => n.payload.text === "已提交修复分支。")).toBe(true);
+      // The turn reply (the kickoff digest) says nothing about the deny — the code-owned
+      // completion notification surfaces it regardless.
+      expect(notifications.some((n) => n.payload.text === KICKOFF)).toBe(true);
     } finally {
       store.close();
     }
@@ -895,14 +897,15 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
     }
   });
 
-  it("once-per-turn: a second self_write_propose in the same turn is refused WITHOUT executing", async () => {
+  it("② kickoff-terminal subsumes once-per-turn: a second self_write_propose is never reached (turn already ended)", async () => {
     process.env.HOUGE_SELFWRITE_ENABLED = "1";
     const store = RunStore.openInMemory();
     const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
     try {
       const run_id = turnRun(store, "fix the router");
-      // Second propose uses a DIFFERENT input, so the loop's identical-action guard does
-      // not catch it — the once-per-turn guard must.
+      // The model scripts TWO proposes (with different inputs), but the FIRST successful
+      // kickoff finalizes the turn — the second action is never dispatched, so the pipeline
+      // runs exactly once. (The adapter's per-tool once-guard remains as defense in depth.)
       const worker = makeWorker(
         store,
         deps({}, log),
@@ -919,9 +922,8 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       expect(log.writeTasks.length).toBe(1);
       expect(log.published).toEqual([`houge/selfwrite/${run_id}`]);
       const steps = stepDigests(store, run_id);
+      expect(steps.length).toBe(1);
       expect(steps[0]!).toMatchObject({ action: "self_write_propose", ok: true });
-      expect(steps[1]!).toMatchObject({ action: "self_write_propose", ok: false });
-      expect(steps[1]!.digest).toContain("already ran this turn");
     } finally {
       store.close();
     }
@@ -976,10 +978,11 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
     }
   });
 
-  it("F2: two SEQUENTIAL pipelines in one turn (self_diagnose then self_write_propose) deliver TWO completion notifications", async () => {
-    // The lane serializes pipelines but the once-per-turn guard is per-TOOL: a fast
-    // diagnose followed by a propose in the SAME turn must not collide on the
-    // completion idempotency key (a run-only key silently dropped the second outcome).
+  it("② kickoff-terminal: the FIRST evolution kickoff ENDS the turn — a second evolution action never runs", async () => {
+    // ② the lane fix's terminal seam: a successful evolution kickoff finalizes the turn
+    // (the work is now async on the lane; a further synchronous step would only bounce off
+    // the busy guard or waste budget). So even though the model scripts self_diagnose THEN
+    // self_write_propose, only the diagnose kicks off; the propose is never dispatched.
     process.env.HOUGE_SELFWRITE_ENABLED = "1";
     process.env.HOUGE_CODEX_ENABLED = "1";
     const store = RunStore.openInMemory();
@@ -990,14 +993,11 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       FINAL
     ];
     let i = 0;
-    // Like loopLlm, but each compose step WAITS for the prior pipeline to settle before
-    // issuing the next action — sequential pipelines (the busy refusal is tested above).
     const llm = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
       const system = typeof input.system === "string" ? input.system : "";
       let answer = `ANSWER: ${input.question}`;
       if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"selfcode"}';
       else if (system.includes(LOOP_DISCIPLINE)) {
-        await evolutionLaneSettled();
         answer = script[Math.min(i, script.length - 1)] ?? "";
         i += 1;
       }
@@ -1012,20 +1012,22 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       const { status, notifications } = await executeAndSettle(makeWorker(store, deps({}, log), llm, codex), store, run_id);
       expect(status).toBe("completed");
 
-      // BOTH pipelines ran and BOTH outcomes were delivered (distinct per-tool keys).
-      expect(log.published).toEqual([`houge/selfwrite/${run_id}`]);
+      // ONLY the diagnose ran: it delivered its outcome; the propose kickoff never fired,
+      // so nothing was published and no writer was ever called.
+      expect(log.published).toEqual([]);
+      expect(log.writeTasks).toEqual([]);
       const diagnoseNote = notifications.find((n) => String(n.payload.text).includes("ROOT CAUSE"));
       const publishNote = notifications.find((n) => String(n.payload.text).includes("🐒 Fixed"));
-      const turnNote = notifications.find((n) => n.payload.text === "已提交修复分支。");
+      const turnNote = notifications.find((n) => n.payload.text === buildEvolutionKickoffDigest("self_diagnose"));
       expect(diagnoseNote).toBeDefined();
-      expect(publishNote).toBeDefined();
-      expect(publishNote!.payload.buttons).toBeDefined();
+      expect(publishNote).toBeUndefined();
       expect(turnNote).toBeDefined();
-      expect(notifications.length).toBe(3);
-      // Both kickoffs rode the step digests.
+      // Two notifications: the turn's kickoff reply and the diagnose completion.
+      expect(notifications.length).toBe(2);
+      // Exactly ONE loop step — the terminal diagnose kickoff.
       const steps = stepDigests(store, run_id);
+      expect(steps.length).toBe(1);
       expect(steps[0]!).toMatchObject({ action: "self_diagnose", ok: true });
-      expect(steps[1]!).toMatchObject({ action: "self_write_propose", ok: true });
     } finally {
       store.close();
     }
