@@ -74,6 +74,22 @@ describe("arming policy (step ⓪·2): evolution tools appear only when their fl
     for (const line of lines) expect(line).toContain("ENDS this turn");
   });
 
+  it("http_fetch defaults OFF: unlisted (and therefore unreachable) at code defaults", () => {
+    const names = manifestFor(["web_search", "http_fetch", "llm_answer"], {}).map((m) => m.name);
+    expect(names).toEqual(["web_search", "llm_answer"]);
+  });
+
+  it("http_fetch armed: listed in contract order with its url input sketch", () => {
+    const env = { HOUGE_HTTPFETCH_ENABLED: "1" };
+    const names = manifestFor(["web_search", "http_fetch", "llm_answer"], env).map((m) => m.name);
+    expect(names).toEqual(["web_search", "http_fetch", "llm_answer"]);
+    const [entry] = manifestFor(["http_fetch"], env);
+    expect(entry!.side_effect_level).toBe("external_read");
+    expect(entry!.risk_level).toBe("low");
+    const lines = renderManifestLines(manifestFor(["http_fetch"], env));
+    expect(lines[0]).toMatch(/^- http_fetch: .+ Input: \{"url"/);
+  });
+
   it("the manifest entries never leak the arming predicate (registration metadata only)", () => {
     const [entry] = manifestFor(["self_write_propose"], { HOUGE_SELFWRITE_ENABLED: "1" });
     expect(entry).toBeDefined();

@@ -160,12 +160,16 @@ function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
   // `self_diagnose`/`self_write_propose`/`skill_author` (step ⓪·2) are the evolution
   // layers as loop tools — same deal: allowed in the envelope, listed only when armed,
   // and each runs its unchanged legacy pipeline under its own sub-contract inside.
+  // `http_fetch` (Phase 3.6 step ③) is a plain armed loop tool like web_search; the
+  // 10-call budget lets a search → fetch×2-3 → answer chain fit in ONE turn (the old
+  // 6 hit step_cap on real research turns — soak 07-05).
   const base = {
     objective: event.goal,
-    budget: { time_minutes: 10, max_tool_calls: 6, max_agent_delegations: 0 },
+    budget: { time_minutes: 10, max_tool_calls: 10, max_agent_delegations: 0 },
     allowed_actions: [
       "intent_router",
       "web_search",
+      "http_fetch",
       "llm_answer",
       "lesson_write",
       "self_diagnose",

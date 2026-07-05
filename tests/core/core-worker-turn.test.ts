@@ -24,7 +24,16 @@ function projectRoot(): string {
 // DEFAULTS of the knobs it exercises (e.g. the clarify cap, the composed ask prompt) —
 // hermetic against a daemon env that arms the inner loop (ADR 0013) or overrides those
 // knobs: pin them (delete = code default); a test that needs an override still sets it itself.
-const PINNED_ENV = ["HOUGE_INNER_LOOP_ENABLED", "HOUGE_MAX_CONSECUTIVE_CLARIFY", "HOUGE_ASK_SYSTEM_PROMPT", "HOUGE_LESSON_CAP_PER_SCOPE"] as const;
+const PINNED_ENV = [
+  "HOUGE_INNER_LOOP_ENABLED",
+  "HOUGE_MAX_CONSECUTIVE_CLARIFY",
+  "HOUGE_ASK_SYSTEM_PROMPT",
+  "HOUGE_LESSON_CAP_PER_SCOPE",
+  "HOUGE_HTTPFETCH_ENABLED",
+  "HOUGE_HTTPFETCH_TIMEOUT_MS",
+  "HOUGE_HTTPFETCH_MAX_BYTES",
+  "HOUGE_HTTPFETCH_DENY"
+] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
   savedEnv = {};

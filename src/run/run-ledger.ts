@@ -39,6 +39,7 @@ export type LedgerEventType =
   | "run_expired"
   | "global_budget_fuse"
   | "web_search_performed"
+  | "http_fetch_performed"
   | "self_write_published"
   | "self_write_blocked"
   | "self_write_failed"
@@ -133,6 +134,9 @@ const requiredPayloadFields = {
   run_expired: ["reason", "expired_at", "report_ref"],
   global_budget_fuse: ["breaches", "window_hours"],
   web_search_performed: ["query", "provider", "source_urls"],
+  // Provenance audit for the loop's direct URL read (Phase 3.6 step ③) — parity with
+  // web_search_performed; bytes rides as optional metadata.
+  http_fetch_performed: ["url", "status"],
   // Phase 3 self-write audit trail (spec § Notification, surfacing + tracking). Each is the
   // structured signal for an outcome — the future read-only dashboard's data source.
   self_write_published: ["branch", "summary", "verdict", "gate_results"],

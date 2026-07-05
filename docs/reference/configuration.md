@@ -120,6 +120,24 @@ Both the synthesis and critique prompts come from the composer (below), so the `
 scope's lessons steer both. Telegram link previews are disabled to cut the outbound
 exfil leg; the URLs read are recorded in the ledger (`web_search_performed`).
 
+## Direct URL read (`http_fetch`, loop tool — Phase 3.6 step ③)
+
+`http_fetch` fetches ONE public http(s) URL as a plain inner-loop tool (like
+`web_search`, but armed): GET/HEAD only, redirects never followed — a 3xx reports its
+target so the next fetch revalidates from scratch. The SSRF floor is **code-owned and
+not configurable**: private/reserved/special-range IPs are always refused
+(resolve-and-pin, one DNS resolution per fetch), credentials-in-URL refused, and the
+byte cap binds the *decompressed* body. Accepted Posture-A residuals are documented in
+the module docblock (`src/web/http-fetch.ts`); the URLs read are recorded in the ledger
+(`http_fetch_performed`).
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_HTTPFETCH_ENABLED` | off | Arms the tool (armed-listing, like `HOUGE_SELFWRITE_ENABLED`): disarmed ⇒ unlisted ⇒ unreachable. Accepts 1/true/yes/on. |
+| `HOUGE_HTTPFETCH_TIMEOUT_MS` | `15000` | Wall-clock cap per fetch (ms) — bounds the whole body read, not just the connect, so slow-trickle bodies can't stall a turn. |
+| `HOUGE_HTTPFETCH_MAX_BYTES` | `1000000` | Byte cap on the **decompressed** body (zip-bomb guard). Cap hit ⇒ the kept prefix ships with `truncated: true`. |
+| `HOUGE_HTTPFETCH_DENY` | — | Optional comma-separated host denylist, **punycode form** (WHATWG URL parsing punycodes IDN hosts before matching). Each entry matches the exact host and every subdomain (dot-suffix), e.g. `evil.test` also blocks `a.evil.test`. |
+
 ## Short-term conversation memory (`chat_turns`)
 
 A per-chat rolling thread of recent turns gives follow-ups context, so a reaction like

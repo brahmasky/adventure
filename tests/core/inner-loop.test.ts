@@ -636,6 +636,31 @@ describe("runInnerLoop — DATA-channel discipline", () => {
     expect(step.resultDigest.length).toBe(101); // 100 chars + the ellipsis
     expect(step.resultDigest.endsWith("…")).toBe(true);
   });
+
+  it("resultCharCapFor overrides the cap per action; undefined falls back to the loop-wide cap", async () => {
+    const deps = scriptedDeps(
+      [
+        '{"action":"llm_answer","input":{"question":"q"}}',
+        '{"action":"http_fetch","input":{"url":"https://a.test/x"}}',
+        '{"action":"final","answer":"done"}'
+      ],
+      async (capability) =>
+        capability === "http_fetch"
+          ? succeeded({ url: "https://a.test/x", status: 200, content_type: "text/plain", content: "y".repeat(500), truncated: false, bytes: 500 })
+          : succeeded({ answer: "x".repeat(500) })
+    );
+    const result = await runInnerLoop(
+      loopInput({
+        resultCharCap: 100,
+        resultCharCapFor: (action) => (action === "http_fetch" ? 300 : undefined)
+      }),
+      deps
+    );
+    const [answerStep, fetchStep] = result.steps.filter((s) => s.ok);
+    expect(answerStep!.resultDigest.length).toBe(101); // loop-wide cap still binds llm_answer
+    expect(fetchStep!.resultDigest.length).toBe(301); // the per-action override binds http_fetch
+    expect(fetchStep!.resultDigest.endsWith("…")).toBe(true);
+  });
 });
 
 describe("buildLoopStepQuestion", () => {
@@ -688,5 +713,28 @@ describe("digestOutput", () => {
     const web = digestOutput({ results: [{ title: "T", url: "https://t.test", content: "c" }] }, 200);
     expect(web).toContain("[1] T — https://t.test");
     expect(digestOutput({ saved: true, scope: "ask" }, 100)).toBe('{"saved":true,"scope":"ask"}');
+  });
+
+  it("renders http_fetch-shaped output ({url,status,content} jointly) as a readable header + content", () => {
+    const digest = digestOutput(
+      { url: "https://a.test/x", status: 200, content_type: "text/html; charset=utf-8", content: "Body text here", truncated: false, bytes: 512 },
+      500
+    );
+    expect(digest).toContain("https://a.test/x → HTTP 200 (text/html; charset=utf-8)");
+    expect(digest).toContain("Body text here");
+  });
+
+  it("http_fetch redirect output carries the location as a next-step hint (never auto-followed)", () => {
+    const digest = digestOutput(
+      { url: "http://a.test/old", status: 301, content_type: "", content: "", truncated: false, bytes: 0, location: "https://a.test/new", note: "redirect note" },
+      500
+    );
+    expect(digest).toContain("http://a.test/old → HTTP 301");
+    expect(digest).toContain("https://a.test/new");
+    expect(digest).toContain("next step");
+  });
+
+  it("a joint url+status+content match is required — partial shapes still fall back to JSON", () => {
+    expect(digestOutput({ url: "https://a.test", saved: true }, 200)).toBe('{"url":"https://a.test","saved":true}');
   });
 });

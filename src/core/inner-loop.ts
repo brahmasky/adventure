@@ -71,6 +71,10 @@ export interface InnerLoopInput {
   /** False once the consecutive-clarify cap is reached (resolveMaxConsecutiveClarify rule). */
   clarifyAllowed: boolean;
   resultCharCap?: number;
+  /** Per-action override of the result char cap (e.g. http_fetch ships a page, not a
+   *  snippet — the global cap is exactly the ceiling it exists to break). `undefined`
+   *  for an action ⇒ the loop-wide cap applies (default behavior unchanged). */
+  resultCharCapFor?: (action: string) => number | undefined;
   /** Wall-clock deadline (epoch ms, from the contract budget's time_minutes); expiry halts best-effort. */
   deadlineMs?: number;
   /**
@@ -225,18 +229,19 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
 
     const result = await deps.executeAction(action.action, action.input ?? {});
     if (result.status === "succeeded") {
+      const stepCharCap = input.resultCharCapFor?.(action.action) ?? charCap;
       record({
         action: action.action,
         input: action.input ?? {},
         ...(action.why ? { why: action.why } : {}),
         ok: true,
-        resultDigest: digestOutput(result.output, charCap)
+        resultDigest: digestOutput(result.output, stepCharCap)
       });
       // Terminal-after-success (⓪·3g): a successful background evolution-lane kickoff ends
       // the turn — the work is now async on the lane, so any further synchronous step just
       // bounces off the busy guard or wastes budget. The kickoff digest is the answer.
       if (input.terminalAfterSuccess?.(action.action)) {
-        return { outcome: "final", reason: "kickoff", answer: digestOutput(result.output, charCap), steps };
+        return { outcome: "final", reason: "kickoff", answer: digestOutput(result.output, stepCharCap), steps };
       }
       continue;
     }
@@ -424,13 +429,25 @@ function scanBalancedObject(text: string, start: number): number {
 
 /**
  * Digest a successful tool output for the step transcript, truncated under the char
- * cap. `answer` outputs (llm_answer) surface the answer text; web-search-shaped
- * outputs render numbered result lines; anything else is compact JSON.
+ * cap. `answer` outputs (llm_answer) surface the answer text; http_fetch-shaped
+ * outputs (`{url, status, content}` jointly) render a readable header + content
+ * (+ redirect hint); web-search-shaped outputs render numbered result lines;
+ * anything else is compact JSON.
  */
 export function digestOutput(output: Record<string, unknown>, charCap: number): string {
   let text: string;
   if (typeof output.answer === "string" && output.answer.trim().length > 0) {
     text = output.answer.trim();
+  } else if (typeof output.url === "string" && typeof output.status === "number" && typeof output.content === "string") {
+    const type = typeof output.content_type === "string" && output.content_type.length > 0 ? ` (${output.content_type})` : "";
+    const lines = [`${output.url} → HTTP ${output.status}${type}`];
+    if (typeof output.location === "string" && output.location.length > 0) {
+      lines.push(`Redirect target: ${output.location} — fetch it as your next step if you still need the content.`);
+    }
+    if (typeof output.note === "string" && output.note.length > 0) lines.push(output.note);
+    if (output.truncated === true) lines.push("(content truncated)");
+    if (output.content.length > 0) lines.push(output.content);
+    text = lines.join("\n");
   } else if (Array.isArray(output.results)) {
     text = output.results
       .map((r, i) => {

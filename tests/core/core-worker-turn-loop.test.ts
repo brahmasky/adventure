@@ -31,6 +31,10 @@ const PINNED_ENV = [
   "HOUGE_SELFWRITE_ENABLED",
   "HOUGE_CODEX_ENABLED",
   "HOUGE_SKILLS_ENABLED",
+  "HOUGE_HTTPFETCH_ENABLED",
+  "HOUGE_HTTPFETCH_TIMEOUT_MS",
+  "HOUGE_HTTPFETCH_MAX_BYTES",
+  "HOUGE_HTTPFETCH_DENY",
   "HOUGE_ASK_SYSTEM_PROMPT",
   "HOUGE_LESSON_CAP_PER_SCOPE"
 ] as const;
@@ -230,6 +234,98 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       const turns = store.getRecentChatTurns("555", 6);
       expect(turns[1]!.intent).toBe("research");
       expect(turns[1]!.text).toContain("Starship flew");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("web_search → http_fetch → final (fetch armed): the model-chosen fetch executes, is audited, and ships a page-sized digest", async () => {
+    process.env.HOUGE_HTTPFETCH_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const fakeWeb = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => ({
+      ok: true,
+      output: { query: input.query, provider: "tavily", results: [{ title: "S", url: "https://s.test/a", content: "snippet" }] }
+    });
+    // A page-sized body (3000 chars): proves the http_fetch step digest rides the 6k
+    // per-action cap, not the 2k loop-wide snippet cap it exists to break.
+    const page = "y".repeat(3_000);
+    let fetchInput: Record<string, unknown> | undefined;
+    const fakeFetch = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
+      fetchInput = input;
+      return {
+        ok: true,
+        output: { url: input.url, status: 200, content_type: "text/plain", content: page, truncated: false, bytes: 3_000 }
+      };
+    };
+    try {
+      const run_id = turnRun(store, "s.test 上那篇文章说了什么？");
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm('{"intent":"research","query":"s.test article"}', [
+          '{"action":"web_search","input":{"query":"s.test article"},"why":"find the page"}',
+          '{"action":"http_fetch","input":{"url":"https://s.test/a"},"why":"read the source"}',
+          '{"action":"final","answer":"读完了，文章内容是 y…"}'
+        ]),
+        fakeWeb,
+        undefined,
+        undefined,
+        fakeFetch
+      );
+      const result = await worker.executeRun(run_id, "w");
+
+      expect(result.status).toBe("completed");
+      expect(fetchInput!.url).toBe("https://s.test/a");
+      // Armed → listed; the fetch step carries capability attribution.
+      const started = loopEvents(store, run_id, "loop_started");
+      expect(started[0]!.payload.manifest).toContain("http_fetch");
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(steps[1]!.payload).toMatchObject({ step: 2, action: "http_fetch", capability: "http_fetch", ok: true });
+      const digest = String(steps[1]!.payload.result_digest);
+      expect(digest).toContain("https://s.test/a → HTTP 200");
+      expect(digest).toContain(page); // uncut at 2k — the 6k per-action cap applied
+      // Provenance audit (parity with web_search_performed).
+      const audits = loopEvents(store, run_id, "http_fetch_performed");
+      expect(audits.length).toBe(1);
+      expect(audits[0]!.payload).toMatchObject({ url: "https://s.test/a", status: 200, bytes: 3_000 });
+      const turns = store.getRecentChatTurns("555", 6);
+      expect(turns[1]!.text).toContain("读完了");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("http_fetch disarmed (default): unlisted in the manifest and denied when invoked anyway", async () => {
+    const store = RunStore.openInMemory();
+    const calls: Array<Record<string, unknown>> = [];
+    let fetchCalled = false;
+    const fakeFetch = async (): Promise<ToolAdapterResult> => {
+      fetchCalled = true;
+      return { ok: true, output: { url: "x", status: 200, content_type: "", content: "", truncated: false, bytes: 0 } };
+    };
+    try {
+      const run_id = turnRun(store, "读一下这个链接");
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm('{"intent":"research"}', [
+          '{"action":"http_fetch","input":{"url":"https://s.test/a"}}',
+          '{"action":"final","answer":"读不了，直接抓取没有开启。"}'
+        ], calls),
+        undefined,
+        undefined,
+        undefined,
+        fakeFetch
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      const compose = calls.find((c) => String(c.system).includes(LOOP_DISCIPLINE));
+      expect(String(compose!.question)).not.toContain("- http_fetch:");
+      expect(loopEvents(store, run_id, "loop_started")[0]!.payload.manifest).not.toContain("http_fetch");
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(steps[0]!.payload).toMatchObject({ action: "http_fetch", ok: false });
+      expect(fetchCalled).toBe(false); // never registered, never executed
+      expect(loopEvents(store, run_id, "http_fetch_performed")).toEqual([]);
     } finally {
       store.close();
     }
@@ -825,12 +921,16 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
         store,
         projectRoot(),
         loopLlm('{"intent":"selfcode"}', [
-          // Four filler steps: classifier(1) + these(4) = 5 of 6 turn reservations spent.
+          // Eight filler steps: classifier(1) + these(8) = 9 of 10 turn reservations spent.
           '{"action":"llm_answer","input":{"question":"q1"}}',
           '{"action":"llm_answer","input":{"question":"q2"}}',
           '{"action":"llm_answer","input":{"question":"q3"}}',
           '{"action":"llm_answer","input":{"question":"q4"}}',
-          '{"action":"self_diagnose","input":{"focus":"router"}}', // the 6th and LAST
+          '{"action":"llm_answer","input":{"question":"q5"}}',
+          '{"action":"llm_answer","input":{"question":"q6"}}',
+          '{"action":"llm_answer","input":{"question":"q7"}}',
+          '{"action":"llm_answer","input":{"question":"q8"}}',
+          '{"action":"self_diagnose","input":{"focus":"router"}}', // the 10th and LAST
           '{"action":"final","answer":"查清楚了。"}'
         ]),
         undefined,
@@ -844,11 +944,11 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       // shared turn ledger the consult reservation would already be exhausted.
       expect(codexCalls.length).toBe(1);
       const steps = loopEvents(store, run_id, "loop_step");
-      expect(steps[4]!.payload).toMatchObject({ action: "self_diagnose", ok: true });
-      expect(String(steps[4]!.payload.result_digest)).toBe(buildEvolutionKickoffDigest("self_diagnose"));
-      // budget_used = the TURN ledger only: 1 classify + 4 fillers + 1 evolution step.
+      expect(steps[8]!.payload).toMatchObject({ action: "self_diagnose", ok: true });
+      expect(String(steps[8]!.payload.result_digest)).toBe(buildEvolutionKickoffDigest("self_diagnose"));
+      // budget_used = the TURN ledger only: 1 classify + 8 fillers + 1 evolution step.
       const completed = store.getLedgerEvents(run_id).filter((e) => e.event_type === "run_completed");
-      expect(completed[0]!.payload.budget_used).toEqual({ tool_calls: 6 });
+      expect(completed[0]!.payload.budget_used).toEqual({ tool_calls: 10 });
     } finally {
       store.close();
     }
@@ -864,12 +964,16 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
         loopLlm(
           '{"intent":"skill"}',
           [
-            // Four filler steps: classifier(1) + these(4) = 5 of 6 turn reservations spent.
+            // Eight filler steps: classifier(1) + these(8) = 9 of 10 turn reservations spent.
             '{"action":"llm_answer","input":{"question":"q1"}}',
             '{"action":"llm_answer","input":{"question":"q2"}}',
             '{"action":"llm_answer","input":{"question":"q3"}}',
             '{"action":"llm_answer","input":{"question":"q4"}}',
-            '{"action":"skill_author","input":{}}', // the 6th and LAST
+            '{"action":"llm_answer","input":{"question":"q5"}}',
+            '{"action":"llm_answer","input":{"question":"q6"}}',
+            '{"action":"llm_answer","input":{"question":"q7"}}',
+            '{"action":"llm_answer","input":{"question":"q8"}}',
+            '{"action":"skill_author","input":{}}', // the 10th and LAST
             '{"action":"final","answer":"记下了。"}'
           ],
           [],
@@ -885,11 +989,11 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       // failed the classification) and the down-route lesson landed.
       expect(store.readLessonBlock("ask")).toContain("answer with the conclusion first");
       const steps = loopEvents(store, run_id, "loop_step");
-      expect(steps[4]!.payload).toMatchObject({ action: "skill_author", ok: true });
-      expect(String(steps[4]!.payload.result_digest)).toBe(buildEvolutionKickoffDigest("skill_author"));
-      // budget_used = the TURN ledger only: 1 classify + 4 fillers + 1 evolution step.
+      expect(steps[8]!.payload).toMatchObject({ action: "skill_author", ok: true });
+      expect(String(steps[8]!.payload.result_digest)).toBe(buildEvolutionKickoffDigest("skill_author"));
+      // budget_used = the TURN ledger only: 1 classify + 8 fillers + 1 evolution step.
       const completed = store.getLedgerEvents(run_id).filter((e) => e.event_type === "run_completed");
-      expect(completed[0]!.payload.budget_used).toEqual({ tool_calls: 6 });
+      expect(completed[0]!.payload.budget_used).toEqual({ tool_calls: 10 });
     } finally {
       store.close();
     }

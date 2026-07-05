@@ -33,6 +33,8 @@ import {
 import type { VerifyResult } from "../capabilities/anchor-verify.js";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
 import { buildCritiqueQuestion, buildResearchQuestion, createWebSearchAdapter } from "../capabilities/web-search.js";
+import { createHttpFetchAdapter } from "../capabilities/http-fetch.js";
+import { HTTP_FETCH_CONTENT_CHAR_CAP, resolveHttpFetchTimeoutMs } from "../web/http-fetch.js";
 import {
   buildIntentQuestion,
   buildIntentSystemPrompt,
@@ -223,7 +225,10 @@ export class CoreWorker {
     private readonly codingAgentAdapter: (input: Record<string, unknown>) => ToolAdapterResult | Promise<ToolAdapterResult> = createCodingAgentAdapter({ projectRoot }),
     // The Phase-3 self-write stack (ADR 0011). Injectable so tests mock the worktree/Codex/
     // checkers/publish; default wires the real S1–S4 + worktree/branch modules.
-    private readonly selfWriteDeps: SelfWriteDeps = defaultSelfWriteDeps()
+    private readonly selfWriteDeps: SelfWriteDeps = defaultSelfWriteDeps(),
+    // Direct URL read for the loop (Phase 3.6 step ③). Injectable so tests fake the
+    // transport; the default carries the full SSRF floor (src/web/http-fetch.ts).
+    private readonly httpFetchAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult> = createHttpFetchAdapter()
   ) {
     // Phase 3.1 (W3): when the DEFAULT llm adapter is in use (production), cheap-chain telemetry can
     // build a telemetry-instrumented adapter per role (kimi/pi usage → recordLlmCall). A test-
@@ -1879,6 +1884,9 @@ export class CoreWorker {
         ...(recentTurns.length > 0 ? { context: formatThreadContext(recentTurns, turnChars) } : {}),
         maxSteps: claim.contract.budget.max_tool_calls,
         clarifyAllowed: recentClarifyCount < resolveMaxConsecutiveClarify(process.env),
+        // http_fetch carries a PAGE — the global 2k cap is exactly the snippet ceiling
+        // it exists to break; 6k not more because the transcript re-sends every step.
+        resultCharCapFor: (action) => (action === "http_fetch" ? HTTP_FETCH_CONTENT_CHAR_CAP : undefined),
         // Wall-clock halt (⓪·1 deferred): the contract's time budget bounds the loop.
         // ⓪·3g: no extendDeadlineFor — evolution kickoffs return immediately (the
         // pipeline runs on the background lane), so the base deadline always suffices.
@@ -2080,6 +2088,29 @@ export class CoreWorker {
                   .map((r) => (typeof (r as WebResult).url === "string" ? (r as WebResult).url : ""))
                   .filter((u) => u.length > 0),
                 result_count: rawResults.length
+              }
+            })
+          );
+        }
+        return result;
+      };
+    }
+    if (name === "http_fetch") {
+      return async (input) => {
+        const result = await this.httpFetchAdapter(input);
+        // Provenance audit (parity with web_search): the URL Houge read hits the ledger.
+        if (result.ok) {
+          this.runStore.appendLedgerEvent(
+            createLedgerEvent({
+              run_id: claim.run_id,
+              correlation_id: claim.run_id,
+              event_type: "http_fetch_performed",
+              actor: "core",
+              sequence: this.nextSequence(claim.run_id),
+              payload: {
+                url: typeof result.output.url === "string" ? result.output.url : "",
+                status: typeof result.output.status === "number" ? result.output.status : 0,
+                bytes: typeof result.output.bytes === "number" ? result.output.bytes : 0
               }
             })
           );
@@ -2549,6 +2580,9 @@ function loopToolTimeoutMs(name: string, llmTimeoutMs: number): number {
   switch (name) {
     case "web_search":
       return WEB_RUNNER_TIMEOUT_MS;
+    case "http_fetch":
+      // The fetch enforces its own wall clock; the runner's outer race bound adds headroom.
+      return resolveHttpFetchTimeoutMs(process.env) + 5_000;
     case "lesson_write":
       // lesson_write may run distill + the reconcile compare (two chain calls).
       return llmTimeoutMs * 2;

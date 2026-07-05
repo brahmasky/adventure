@@ -1,3 +1,50 @@
+# 🔜 NEXT — ③ http_fetch (spine step ③ / Phase 3.6) — PLAN APPROVED 2026-07-05, awaiting Paco's /goal
+
+**Full plan:** `/Users/pluo/.claude/plans/splendid-wishing-cray.md` (approved via plan mode 2026-07-05).
+**Supersedes the old H5:** loop-native — http_fetch is a plain inner-loop tool like web_search; NO new
+intent, NO runFetch pipeline (ADR 0013; legacy enum path untouched, ⓪·4 deletes it).
+**Paco's decisions (2026-07-05):** (1) http_fetch FIRST; SECRETS FIREWALL = its own /goal immediately
+after, before ④ wiki (merge still human-tapped → Posture-A caveats accepted+documented). (2) turn
+budget max_tool_calls 6→10 (soak: research turns hit step_cap at 6).
+
+**Design core:** SSRF floor = pre-resolve `dns.promises.lookup(all:true)` → pure `classifyFetchIp`
+on EVERY address (ANY private/reserved → reject; mixed = reject) → `node:http(s).request` with
+`{agent:false, lookup:pinned-closure}` (one resolution per fetch by construction — kills rebinding;
+Host/SNI/cert stay hostname-based; zero deps, no undici). Scheme http/https only · GET/HEAD only ·
+credentials-in-URL reject · NO-FOLLOW redirects (3xx returns location; next fetch revalidates) ·
+byte cap binds DECOMPRESSED output (accept-encoding: identity + zlib fallback) · wall-clock timeout ·
+optional HOUGE_HTTPFETCH_DENY. Flag HOUGE_HTTPFETCH_ENABLED default OFF (armed-listing).
+Output `{url,status,content_type,content,truncated,bytes,location?,note?}`, html→text zero-dep,
+content cap 6000 chars; custom digestOutput case + `resultCharCapFor` seam (http_fetch→6000).
+
+**Build checklist (per plan; build subagent + independent adversarial verifier):**
+- [x] B1 `src/web/http-fetch.ts` — env resolvers · classifyFetchIp (supersets + IPv6 embedded-IPv4
+      decode ::ffff both spellings + NAT64, fail-closed) · validateFetchTarget · htmlToText ·
+      fetchUrl(resolveAll/requestImpl seams, resolve-and-pin lookup closure, agent:false, no-follow,
+      decompressed byte cap, wall-clock timer) · HTTP_FETCH_CONTENT_CHAR_CAP=6000
+- [x] B2 `src/capabilities/http-fetch.ts` — createHttpFetchAdapter mirroring web-search.ts
+- [x] B3 `src/core/tool-manifest.ts` — DESCRIPTORS.http_fetch (armed:resolveHttpFetchEnabled)
+- [x] B4 `src/core/inner-loop.ts` — digestOutput http_fetch case + resultCharCapFor seam (additive)
+- [x] B5 `src/core/core-worker.ts` — ctor param · loopToolExecute + http_fetch_performed ledger event ·
+      loopToolTimeoutMs · resultCharCapFor. + `src/run/run-ledger.ts` event type
+- [x] B6 `src/contracts/task-contract.ts` — allowed_actions +http_fetch; max_tool_calls 6→10;
+      compileWebResearchContract UNTOUCHED. + .env.example + docs/reference/configuration.md
+- [x] B7 tests — tests/web/http-fetch.test.ts (35: classifier tables, obfuscated literals,
+      pin/rebinding, mixed-IP reject, byte-cap, timeout, 3xx, gzip-anyway, agent:false, trailing-dot
+      deny) · tests/capabilities/http-fetch.test.ts (DATA-channel injection) · manifest/inner-loop/
+      turn-loop/contract edits · BUDGET ISOLATION re-drained · PINNED_ENV +4 vars ×3 suites
+- [x] B8 gates ALL GREEN: typecheck · npm test 1065/1065 (+50) · build · deps {} · hermetic sweep
+      (.env exported → SELFWRITE=true + hostile HOUGE_HTTPFETCH_ENABLED=true TIMEOUT_MS=1 MAX_BYTES=3
+      DENY=…) · independent adversarial verifier VERDICT **SHIP** (40+ executed SSRF probes held; one
+      MED trailing-dot denylist evasion FIXED + regression-tested; LOW/informational only otherwise)
+- [ ] B9 COMMIT + PUSH before live gate ← IN PROGRESS
+- [ ] B10 LIVE gate H7 (Paco, Telegram; arm .env + reload): ① "查一下我们当前的公网IP归属地" → real
+      city/ISP from ipinfo.io ② negative: 127.0.0.1/169.254.169.254 URL refused cleanly ③ bonus: a
+      301 URL → model fetches reported location next step
+- [ ] B11 close out todo/sessions (+mark old Phase 3.6 H1–H7 superseded-by-this), commit, push
+
+---
+
 # ✅ DONE 2026-07-05 — /goal lane-awareness + context-window fix (shipped 799eea8; goal cleared)
 
 **Outcome:** shipped `799eea8` on main. Gate green both env modes (typecheck · 1015/1015 clean-env
