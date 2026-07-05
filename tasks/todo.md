@@ -9,10 +9,12 @@ BEFORE the async pipeline finished — the deterministic kickoff digest is hones
   ("你确定还是round of 32?", "一支国家队怎么可以在一圈里面打两场", "今晚两场都是悉尼时间吗", incl. the
   exact "比分怎么样" phrase that broke before) all answered in-thread — the reported amnesia does NOT
   reproduce on 799eea8. Runs 31718e1a/66b8e365/584708d2/8361d617, all context-retained.
-- **G2 (lane-awareness) — CODE-VERIFIED, live-untested.** kickoff-terminal proven by inner-loop.test.ts
-  (halts reason:"kickoff", 1 step) + core-worker-turn-loop.test.ts (reply = kickoff digest) + adversarial
-  review. NOT exercised over live Telegram — Paco cleared the goal before sending a self-code-change
-  message (research turns can't reach the lane). Honest gap; watch for it on the next real self-fix ask.
+- **G2 (lane-awareness) — LIVE PASSED.** Run d70bf191 (07:21, real Telegram): "之前你查找出来的原因，
+  去修改一下代码吧" → exactly ONE step (self_write_propose, ok) → `loop_halted reason:"kickoff", steps:1`,
+  honest digest "后台开始改代码了…完成后单独发消息", ZERO busy-guard bounces, writer ran detached in a
+  worktree. Contrast the pre-fix runs (56fe7f71 = 2 diagnose steps; 6e7bb7d0 = self_write then
+  "已有一个自我修改在进行中" bounce). The repeat-diagnose / write-bounce is gone. Also code-verified
+  (inner-loop.test.ts + core-worker-turn-loop.test.ts + adversarial review).
 - **Soak note (unrelated to this fix):** the "比分" research turn ran 6 web_search calls and hit the
   tool-call budget (step_cap) before answering via fallback — research budget/efficiency, worth a look.
 

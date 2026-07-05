@@ -299,8 +299,10 @@ Build + independent adversarial verification subagents; each live round found a 
   modes (1015/1015). Verifier verdict SHIP; caught a latent honesty bug (old post-kickoff final
   claimed "已提交修复分支" before the async pipeline finished).
 - LIVE gate: **G1 PASSED** — 5 consecutive context-dependent World Cup follow-ups (incl. the exact
-  "比分怎么样") all answered in-thread on 799eea8; amnesia gone. **G2 (lane fix) code-verified only**
-  (kickoff-terminal unit + adversarial); not exercised over Telegram before Paco cleared the goal.
+  "比分怎么样") all answered in-thread on 799eea8; amnesia gone. **G2 PASSED** — run d70bf191 (real
+  Telegram): self-fix ask → ONE step (self_write_propose) → loop_halted reason:"kickoff", steps:1,
+  zero busy-guard bounces, writer detached in a worktree. The old repeat-diagnose/write-bounce is
+  gone. BOTH gates live-passed; goal satisfied.
 - LESSON (Paco correction): I misread repeated Stop-hook re-fires as "user idle" and kept nudging
   `/goal clear` while he was actively testing on Telegram. Recorded in lessons.md + memory
   ([[goal-interactive-gate-no-idle-loop]] refined): check the ledger for in-flight activity before
