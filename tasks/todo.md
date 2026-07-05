@@ -37,11 +37,19 @@ content cap 6000 chars; custom digestOutput case + `resultCharCapFor` seam (http
       (.env exported → SELFWRITE=true + hostile HOUGE_HTTPFETCH_ENABLED=true TIMEOUT_MS=1 MAX_BYTES=3
       DENY=…) · independent adversarial verifier VERDICT **SHIP** (40+ executed SSRF probes held; one
       MED trailing-dot denylist evasion FIXED + regression-tested; LOW/informational only otherwise)
-- [ ] B9 COMMIT + PUSH before live gate ← IN PROGRESS
-- [ ] B10 LIVE gate H7 (Paco, Telegram; arm .env + reload): ① "查一下我们当前的公网IP归属地" → real
-      city/ISP from ipinfo.io ② negative: 127.0.0.1/169.254.169.254 URL refused cleanly ③ bonus: a
-      301 URL → model fetches reported location next step
-- [ ] B11 close out todo/sessions (+mark old Phase 3.6 H1–H7 superseded-by-this), commit, push
+- [x] B9 COMMIT + PUSH — main @ 32ce147, pushed. .env armed, daemon reloaded PID 53604 stable.
+- [x] B10 LIVE gate H7 **PASSED** (2026-07-05, real Telegram):
+      ① POSITIVE run_c26947 "查一下我们的ip所在地" → http_fetch fired (ipgeolocation.io/what-is-my-ip,
+         200, 602KB) → real answer "IP 125.209.171.88, 悉尼 NSW, iiNet(TPG)". Not a how-to. ✓
+      ② NEGATIVE run_cdfcd8 "你能访问 http://169.254.169.254/latest/meta-data/" → the FLOOR refused it:
+         loop_step http_fetch ok:false "refused: address 169.254.169.254 is in a blocked range" →
+         halted final 1 step, NO transport, NO crash. Manifest shows http_fetch armed + budget 10. ✓
+      GATE BLEMISHES (cosmetic, non-blocking, parked): (a) Houge RELAYED the refusal as "在 Pi 的封锁
+      列表里" — mis-attributed his OWN SSRF floor to the Pi runtime (self-knowledge gap; the digest
+      string was correct "refused: … blocked range"). (b) picked a 602KB HTML page over ipinfo.io/json
+      — htmlToText+6k cap still extracted the IP, but a JSON endpoint is cheaper. Bonus ③ (301) not
+      exercised live.
+- [ ] B11 close out sessions.md (+mark old Phase 3.6 H1–H7 superseded-by-this in the spec), commit, push
 
 ---
 
