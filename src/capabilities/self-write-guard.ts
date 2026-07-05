@@ -81,6 +81,10 @@ const PROTECTED_FILES: readonly string[] = [
   "src/capabilities/coding-agent.ts",
   "src/capabilities/local-project-write-adapter.ts", // a gated write-capability adapter — defense-in-depth
   "src/capabilities/self-write-guard.ts", // SELF-PROTECTION — the guard cannot edit itself
+  "src/config/secret-broker.ts", // secrets firewall (ADR 0015) — a self-write can't re-route secrets or disable the strip
+  "src/cli.ts", // secrets firewall boot wiring (ADR 0015 §7) — protect the strip call + broker construction
+  "src/llm/registry.ts", // secrets firewall (ADR 0015 §7) — single-source-of-truth key resolution; no re-introducing a process.env fallback
+  "src/web/registry.ts", // secrets firewall (ADR 0015 §7) — single-source-of-truth key resolution
   "src/run/test-gate.ts", // new Phase-3 module (checker 2)
   "src/capabilities/diff-reviewer.ts", // new Phase-3 module (checker 3)
   "src/run/branch-publish.ts", // new Phase-3 module (step 7 — branch publish)

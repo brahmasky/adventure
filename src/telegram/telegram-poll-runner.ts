@@ -9,6 +9,7 @@ import type { DispatchResult } from "../notifications/notification-dispatcher.js
 import { NotificationOutbox } from "../notifications/notification-outbox.js";
 import { TelegramNotificationAdapter } from "../notifications/telegram-notification-adapter.js";
 import type { RunStore } from "../run/run-store.js";
+import type { SecretBroker } from "../config/secret-broker.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import {
   createTelegramLongPollingAdapter,
@@ -50,6 +51,8 @@ export interface RunTelegramPollOnceOptions {
   telegramClient: TelegramPollClient;
   /** Amendment 1: injectable for tests; defaults to the real LLM adapter. */
   llmAdapter?: (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
+  /** Secrets firewall broker (ADR 0015) — passed at boot when armed; else undefined (firewall OFF). */
+  broker?: SecretBroker;
 }
 
 export interface RunTelegramPollOnceResult {
@@ -72,7 +75,12 @@ export async function runTelegramPollOnce(
   const worker = new CoreWorker(
     options.store,
     options.projectRoot,
-    options.llmAdapter ?? createLlmAnswerAdapter()
+    options.llmAdapter ?? createLlmAnswerAdapter(options.broker ? { broker: options.broker } : {}),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    options.broker
   );
 
   const adapter = createTelegramLongPollingAdapter({

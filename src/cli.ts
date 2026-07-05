@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 
 import { loadHougeEnv } from "./config/load-env.js";
+import {
+  createSecretBroker,
+  resolveSecretsFirewallEnabled,
+  stripSecretsFromEnv
+} from "./config/secret-broker.js";
 import { CoreWorker } from "./core/core-worker.js";
 import { Gateway } from "./gateway/gateway.js";
 import { runEvalSuite } from "./eval/eval-runner.js";
@@ -11,6 +16,17 @@ import { parseCliTrigger } from "./triggers/cli-trigger.js";
 // Load `.env` (cwd or $HOUGE_ENV_FILE) before any command reads configuration.
 // Real environment variables take precedence over the file.
 loadHougeEnv();
+
+// Secrets firewall (ADR 0015): when armed, lift the five secrets into the broker, then STRIP them
+// (and any credential-shaped var) from process.env — so downstream code holds no ambient credential.
+// Default OFF → no broker, no strip, behavior byte-identical to before the firewall existed.
+const broker = resolveSecretsFirewallEnabled(process.env)
+  ? createSecretBroker(process.env)
+  : undefined;
+if (broker) stripSecretsFromEnv(process.env);
+// The store redactor masks secret VALUES at every write seam; omitted (no-op) when the firewall is OFF.
+const storeOptions = broker ? { redact: broker.redact } : {};
+const brokerOption = broker ? { broker } : {};
 
 const [, , command, ...rest] = process.argv;
 
@@ -26,7 +42,7 @@ if (command === "run") {
     process.exit(1);
   }
 
-  const store = RunStore.open("houge.sqlite");
+  const store = RunStore.open("houge.sqlite", storeOptions);
   try {
     const gateway = new Gateway(store, undefined, process.cwd());
     const intake = gateway.intake(trigger.event);
@@ -37,7 +53,16 @@ if (command === "run") {
       console.log(JSON.stringify({ intake, result: { status: "duplicate" } }, null, 2));
       process.exitCode = 0;
     } else {
-      const worker = new CoreWorker(store, process.cwd());
+      const worker = new CoreWorker(
+        store,
+        process.cwd(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        broker
+      );
       const result = await worker.executeRun(intake.run_id, "local-worker");
 
       console.log(JSON.stringify({ intake, result }, null, 2));
@@ -56,7 +81,7 @@ if (command === "run") {
   }
 
   const { queryStatus } = await import("./status/status-query.js");
-  const store = RunStore.open("houge.sqlite");
+  const store = RunStore.open("houge.sqlite", storeOptions);
   try {
     const result = queryStatus(store, rest[0]);
     console.log(JSON.stringify(result, null, 2));
@@ -67,7 +92,7 @@ if (command === "run") {
 } else if (command === "eval") {
   const suite = rest[0] ?? "milestone-0";
   const result = await runEvalSuite(process.cwd(), suite);
-  const store = RunStore.open("houge.sqlite");
+  const store = RunStore.open("houge.sqlite", storeOptions);
   try {
     store.recordEvalCompleted(result.suite, result.passed, result.failed);
   } finally {
@@ -81,11 +106,11 @@ if (command === "run") {
   const { LocalNotificationAdapter } = await import("./notifications/local-notification-adapter.js");
   const { TelegramNotificationAdapter } = await import("./notifications/telegram-notification-adapter.js");
   const { TelegramClient } = await import("./telegram/telegram-client.js");
-  const store = RunStore.open("houge.sqlite");
+  const store = RunStore.open("houge.sqlite", storeOptions);
   try {
     const dispatcher = new NotificationDispatcher(new NotificationOutbox(store), {
       local: new LocalNotificationAdapter(),
-      telegram: new TelegramNotificationAdapter(new TelegramClient({ token: process.env.HOUGE_TELEGRAM_BOT_TOKEN ?? "" }))
+      telegram: new TelegramNotificationAdapter(new TelegramClient({ token: (broker ? broker.telegramToken() : process.env.HOUGE_TELEGRAM_BOT_TOKEN) ?? "" }))
     });
     console.log(JSON.stringify(await dispatcher.dispatchOnce("cli-send-outbox"), null, 2));
   } finally {
@@ -96,7 +121,8 @@ if (command === "run") {
 
   const { TelegramClient } = await import("./telegram/telegram-client.js");
 
-  const token = process.env.HOUGE_TELEGRAM_BOT_TOKEN;
+  // Firewall ON: the token lives in the broker (env was stripped). OFF: read env as before.
+  const token = broker ? broker.telegramToken() : process.env.HOUGE_TELEGRAM_BOT_TOKEN;
   const userId = process.env.HOUGE_TELEGRAM_USER_ID;
   const chatId = process.env.HOUGE_TELEGRAM_CHAT_ID;
 
@@ -120,13 +146,14 @@ if (command === "run") {
 
   if (once) {
     const { runTelegramPollOnce } = await import("./telegram/telegram-poll-runner.js");
-    const store = RunStore.open("houge.sqlite");
+    const store = RunStore.open("houge.sqlite", storeOptions);
     try {
       const result = await runTelegramPollOnce({
         store,
         projectRoot: process.cwd(),
         allowlist,
-        telegramClient: client
+        telegramClient: client,
+        ...brokerOption
       });
       console.log(JSON.stringify(result, null, 2));
       process.exitCode = 0;
@@ -175,7 +202,7 @@ if (command === "run") {
     process.once("SIGTERM", () => onStop("SIGTERM"));
     process.once("SIGINT", () => onStop("SIGINT"));
 
-    const store = RunStore.open("houge.sqlite");
+    const store = RunStore.open("houge.sqlite", storeOptions);
     try {
       log(`starting long-poll loop (timeout ${longPollTimeoutSeconds}s)`);
       const result = await runTelegramDaemon({
@@ -184,6 +211,7 @@ if (command === "run") {
         allowlist,
         telegramClient: client,
         stopSignal: controller.signal,
+        ...brokerOption,
         longPollTimeoutSeconds,
         backoff
       });

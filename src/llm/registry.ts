@@ -19,6 +19,7 @@ import {
   type AgyCliProviderConfig
 } from "./providers/agy-cli.js";
 import type { LlmProvider, LlmRequest, LlmResult } from "./types.js";
+import type { SecretBroker } from "../config/secret-broker.js";
 
 export interface BuildLlmChainDeps {
   piConfig?: PiProviderConfig;
@@ -86,20 +87,28 @@ function numericEnv(raw: string | undefined): number | undefined {
  */
 export function buildLlmChain(
   env: NodeJS.ProcessEnv,
-  deps: BuildLlmChainDeps = {}
+  deps: BuildLlmChainDeps = {},
+  broker?: SecretBroker
 ): LlmProvider[] {
   const names = parseProviderNames(env);
+
+  // Single source of truth for the HTTP providers' key (ADR 0015): resolve it HERE — from the
+  // broker when the firewall is armed, else from env — and populate each provider's `config.apiKey`.
+  // The providers no longer read `process.env` themselves. When the firewall is OFF the resolved
+  // value is exactly what the provider used to read from env, so behavior is byte-identical.
+  const kimiKey = broker ? broker.kimiKey() : env.KIMI_API_KEY;
+  const geminiKey = broker ? broker.geminiKey() : env.GEMINI_API_KEY;
 
   return names.map((name) => {
     switch (name) {
       case "pi":
         return createPiProvider(deps.piConfig);
       case "kimi-api":
-        return createKimiProvider(deps.kimiConfig);
+        return createKimiProvider({ ...deps.kimiConfig, ...(kimiKey !== undefined ? { apiKey: kimiKey } : {}) });
       case "agy-cli":
         return createAgyCliProvider(deps.agyConfig);
       case "gemini-api":
-        return createGeminiProvider(deps.geminiConfig);
+        return createGeminiProvider({ ...deps.geminiConfig, ...(geminiKey !== undefined ? { apiKey: geminiKey } : {}) });
       default:
         throw new Error(`Unknown LLM provider: ${name}`);
     }

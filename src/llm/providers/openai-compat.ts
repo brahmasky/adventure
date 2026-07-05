@@ -121,7 +121,10 @@ export function createOpenAiCompatProvider(
   return {
     name: spec.name,
     async answer(req: LlmRequest): Promise<LlmResult> {
-      const apiKey = config.apiKey ?? process.env[spec.apiKeyEnv];
+      // Single source of truth (ADR 0015): the key arrives ONLY via `config.apiKey`, populated by
+      // the chain builder from the SecretBroker (firewall ON) or from env (firewall OFF). There is
+      // deliberately NO `?? process.env[…]` fallback — the daemon holds no ambient credential.
+      const apiKey = config.apiKey;
       if (!apiKey) {
         return {
           ok: false,

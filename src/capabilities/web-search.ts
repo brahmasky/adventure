@@ -2,6 +2,7 @@ import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { temporalComparisonContext } from "../prompt/temporal.js";
 import { buildWebChain, resolveWebMaxResults, searchWithChain } from "../web/registry.js";
 import type { WebProvider, WebResult } from "../web/types.js";
+import type { SecretBroker } from "../config/secret-broker.js";
 
 /** Max chars of each result's content folded into the synthesis prompt (bounds tokens). */
 export const WEB_RESULT_CONTENT_CAP = 600;
@@ -9,6 +10,12 @@ export const WEB_RESULT_CONTENT_CAP = 600;
 export interface WebSearchAdapterConfig {
   /** Inject a pre-built provider chain (tests). Bypasses env-based resolution. */
   chain?: WebProvider[];
+  /**
+   * Secrets firewall (ADR 0015): when armed, the web provider API keys come from the broker instead
+   * of `process.env` (stripped). Absent (firewall OFF) → the chain builder reads env. Ignored when a
+   * `chain` is injected.
+   */
+  broker?: SecretBroker;
 }
 
 export interface ResearchQuestionOptions {
@@ -34,7 +41,7 @@ function stripMarkdownImageLinks(content: string): string {
 export function createWebSearchAdapter(
   config: WebSearchAdapterConfig = {}
 ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
-  const { chain: injectedChain } = config;
+  const { chain: injectedChain, broker } = config;
 
   return async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
     const query = input.query;
@@ -46,7 +53,7 @@ export function createWebSearchAdapter(
         ? Math.floor(input.max_results)
         : resolveWebMaxResults(process.env);
 
-    const chain = injectedChain ?? buildWebChain(process.env);
+    const chain = injectedChain ?? buildWebChain(process.env, {}, broker);
     const result = await searchWithChain(chain, { query, max_results });
     if (!result.ok) {
       return { ok: false, error: result.error };

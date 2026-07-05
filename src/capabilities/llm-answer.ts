@@ -2,6 +2,7 @@ import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { answerWithChain, buildLlmChain } from "../llm/registry.js";
 import type { LlmProvider } from "../llm/types.js";
 import type { LlmUsage } from "../run/llm-usage.js";
+import type { SecretBroker } from "../config/secret-broker.js";
 import { ASK_DISCIPLINE, FALLBACK_IDENTITY, GUARDRAILS } from "../prompt/composer.js";
 
 /**
@@ -32,12 +33,18 @@ export interface LlmAnswerAdapterConfig {
    * metadata ONLY — never prompt or response bodies. Ignored when a `chain` is injected (tests).
    */
   onUsage?: (provider: string, usage: LlmUsage, model: string) => void;
+  /**
+   * Secrets firewall (ADR 0015): when armed, the provider API keys come from the broker instead of
+   * `process.env` (which has been stripped). Absent (firewall OFF) → the chain builder reads env.
+   * Ignored when a `chain` is injected (tests bring their own providers).
+   */
+  broker?: SecretBroker;
 }
 
 export function createLlmAnswerAdapter(
   config: LlmAnswerAdapterConfig = {}
 ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
-  const { chain: injectedChain, onUsage } = config;
+  const { chain: injectedChain, onUsage, broker } = config;
 
   return async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
     const question = input.question;
@@ -57,7 +64,8 @@ export function createLlmAnswerAdapter(
             // gemini-api reports OpenAI-style usage; agy-cli (print mode) emits none, so it has no hook.
             geminiConfig: { onUsage: (usage, model) => onUsage("gemini-api", usage, model) }
           }
-        : {}
+        : {},
+      broker
     );
     const system = resolveSystemPrompt(input);
     const result = await answerWithChain(chain, { question, system });

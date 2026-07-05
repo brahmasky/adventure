@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { execFileAsync } from "../run/exec-file-async.js";
 import { createWorktree, removeWorktree } from "../run/worktree.js";
+import { buildChildEnv } from "../llm/providers/cli-spawn.js";
 
 /**
  * `coding_agent_cli` capability (ADR 0011, Phase 1 — code self-diagnose). Houge reads
@@ -23,6 +24,17 @@ import { createWorktree, removeWorktree } from "../run/worktree.js";
 
 const DEFAULT_CODEX_BIN = "codex";
 const DEFAULT_CODEX_TIMEOUT_MS = 240_000;
+
+/**
+ * Codex child env lockdown (ADR 0015 §5): the Codex spawn gets an EXPLICIT allowlisted env
+ * (PATH/HOME/TERM/LANG/USER, the {@link buildChildEnv} pattern), never the daemon's full
+ * `process.env`. Codex authenticates via its own subscription in `$HOME` and needs none of our
+ * secrets, so this is a straight least-privilege improvement — applied regardless of the firewall
+ * flag. `HOUGE_CODEX_ENV_PASSTHROUGH` is an opt-in escape hatch (mirrors the pi/agy passthrough).
+ */
+function codexChildEnv(): Record<string, string> {
+  return buildChildEnv(process.env.HOUGE_CODEX_ENV_PASSTHROUGH);
+}
 /** Cap for codex `--json` JSONL stdout (agentic file-reading can emit a large event stream). */
 const CODEX_WRITE_MAX_BUFFER = 32 * 1024 * 1024;
 
@@ -143,7 +155,8 @@ export function createCodingAgentAdapter(
       try {
         await execFileAsync(bin, buildCodexArgs(worktree, outfile, model), {
           input: question,
-          timeout
+          timeout,
+          env: codexChildEnv()
         });
       } catch (error) {
         const err = error as NodeError;
@@ -228,7 +241,8 @@ export function createSelfWriteCodexAdapter(
         input: task,
         timeout,
         cwd: config.worktree,
-        maxBuffer: CODEX_WRITE_MAX_BUFFER
+        maxBuffer: CODEX_WRITE_MAX_BUFFER,
+        env: codexChildEnv()
       });
       // KEEP ONLY the usage-bearing JSONL lines — the full agentic event stream can be many MB and
       // would blow the CapabilityRunner's output_limit_bytes (the diff is the artifact, not stdout;

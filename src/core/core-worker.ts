@@ -34,6 +34,7 @@ import type { VerifyResult } from "../capabilities/anchor-verify.js";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
 import { buildCritiqueQuestion, buildResearchQuestion, createWebSearchAdapter } from "../capabilities/web-search.js";
 import { createHttpFetchAdapter } from "../capabilities/http-fetch.js";
+import type { SecretBroker } from "../config/secret-broker.js";
 import { HTTP_FETCH_CONTENT_CHAR_CAP, resolveHttpFetchTimeoutMs } from "../web/http-fetch.js";
 import {
   buildIntentQuestion,
@@ -214,27 +215,38 @@ export class CoreWorker {
   private readonly llmAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
   /** True when the DEFAULT adapter is in use → cheap-chain telemetry can be instrumented per role. */
   private readonly llmAdapterIsDefault: boolean;
+  /** web_search adapter (injected or the broker-wired default). */
+  private readonly webSearchAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
+  /** Read-only Codex consult for the `selfcode` route (injected or default). */
+  private readonly codingAgentAdapter: (input: Record<string, unknown>) => ToolAdapterResult | Promise<ToolAdapterResult>;
+  /** Direct URL read for the loop (injected or default). */
+  private readonly httpFetchAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
 
   constructor(
     private readonly runStore: RunStore,
     private readonly projectRoot: string,
     llmAdapter?: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
-    private readonly webSearchAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult> = createWebSearchAdapter(),
-    // Read-only Codex consult for the `selfcode` route (ADR 0011). Injectable so tests
-    // mock it; the default reads Houge's own committed source from a fresh worktree.
-    private readonly codingAgentAdapter: (input: Record<string, unknown>) => ToolAdapterResult | Promise<ToolAdapterResult> = createCodingAgentAdapter({ projectRoot }),
+    // Injectable so tests mock it; the default reads Houge's own committed source from a fresh worktree.
+    webSearchAdapter?: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
+    codingAgentAdapter?: (input: Record<string, unknown>) => ToolAdapterResult | Promise<ToolAdapterResult>,
     // The Phase-3 self-write stack (ADR 0011). Injectable so tests mock the worktree/Codex/
     // checkers/publish; default wires the real S1–S4 + worktree/branch modules.
     private readonly selfWriteDeps: SelfWriteDeps = defaultSelfWriteDeps(),
-    // Direct URL read for the loop (Phase 3.6 step ③). Injectable so tests fake the
-    // transport; the default carries the full SSRF floor (src/web/http-fetch.ts).
-    private readonly httpFetchAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult> = createHttpFetchAdapter()
+    // Direct URL read for the loop (Phase 3.6 step ③). Injectable so tests fake the transport.
+    httpFetchAdapter?: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
+    // Secrets firewall (ADR 0015): injected at boot ONLY when the firewall is armed. Feeds provider
+    // API keys to the DEFAULT llm/web adapters (env is stripped when armed). Absent (firewall OFF)
+    // → the chain builders read env keys and behavior is byte-identical to before the firewall.
+    private readonly broker?: SecretBroker
   ) {
     // Phase 3.1 (W3): when the DEFAULT llm adapter is in use (production), cheap-chain telemetry can
     // build a telemetry-instrumented adapter per role (kimi/pi usage → recordLlmCall). A test-
     // INJECTED adapter is used as-is, so telemetry simply doesn't fire there — best-effort.
     this.llmAdapterIsDefault = llmAdapter === undefined;
-    this.llmAdapter = llmAdapter ?? createLlmAnswerAdapter();
+    this.llmAdapter = llmAdapter ?? createLlmAnswerAdapter(broker ? { broker } : {});
+    this.webSearchAdapter = webSearchAdapter ?? createWebSearchAdapter(broker ? { broker } : {});
+    this.codingAgentAdapter = codingAgentAdapter ?? createCodingAgentAdapter({ projectRoot });
+    this.httpFetchAdapter = httpFetchAdapter ?? createHttpFetchAdapter();
     this.skillStore = new SkillStore({
       root: join(projectRoot, "skills"),
       maxPerScope: resolveSkillMaxPerScope(process.env)
@@ -1174,6 +1186,7 @@ export class CoreWorker {
   ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
     if (!this.llmAdapterIsDefault) return this.llmAdapter;
     return createLlmAnswerAdapter({
+      ...(this.broker ? { broker: this.broker } : {}),
       onUsage: (provider, usage, model) =>
         this.recordLlmCallSafe(run_id, { provider, model, role, usage })
     });

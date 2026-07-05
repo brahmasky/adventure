@@ -358,17 +358,30 @@ export interface ReloadMarker {
 }
 
 export class RunStore {
-  private constructor(private readonly db: SqliteDatabase) {
+  /**
+   * Secrets-firewall redactor (ADR 0015): masks known secret VALUES at RunStore's own write seams —
+   * the ledger append (covers every ledger writer), the three chat-notification enqueues, and the
+   * approval prompt. Direct sendMessage paths outside RunStore (rating, self-write action handler,
+   * daemon status) are NOT routed through here; they carry only constants/sha/non-secret text.
+   * Identity (no-op) unless the firewall injected a real redactor at boot — so when the firewall is
+   * OFF every store write is byte-identical.
+   */
+  private readonly redact: (s: string) => string;
+  private readonly redactionEnabled: boolean;
+
+  private constructor(private readonly db: SqliteDatabase, redact?: (s: string) => string) {
+    this.redact = redact ?? ((s) => s);
+    this.redactionEnabled = redact !== undefined;
     this.db.exec("PRAGMA busy_timeout = 5000");
     this.migrate();
   }
 
-  static openInMemory(): RunStore {
-    return new RunStore(new DatabaseSync(":memory:"));
+  static openInMemory(options: { redact?: (s: string) => string } = {}): RunStore {
+    return new RunStore(new DatabaseSync(":memory:"), options.redact);
   }
 
-  static open(path: string): RunStore {
-    return new RunStore(new DatabaseSync(path));
+  static open(path: string, options: { redact?: (s: string) => string } = {}): RunStore {
+    return new RunStore(new DatabaseSync(path), options.redact);
   }
 
   close(): void {
@@ -468,7 +481,26 @@ export class RunStore {
   }
 
   appendLedgerEvent(event: LedgerEvent): void {
-    appendLedgerEvent(this.db, event);
+    // The SINGLE ledger redaction seam (ADR 0015): every ledger writer routes through here, so a
+    // secret value in ANY free-text payload field is masked once, at the append boundary. No-op
+    // (fast path) when the firewall is OFF.
+    appendLedgerEvent(this.db, this.redactionEnabled ? this.redactLedgerEvent(event) : event);
+  }
+
+  /** Deep-mask secret values in an event's payload strings (used only when the firewall is armed). */
+  private redactLedgerEvent(event: LedgerEvent): LedgerEvent {
+    return { ...event, payload: this.redactValue(event.payload) as Record<string, unknown> };
+  }
+
+  private redactValue(value: unknown): unknown {
+    if (typeof value === "string") return this.redact(value);
+    if (Array.isArray(value)) return value.map((v) => this.redactValue(v));
+    if (value !== null && typeof value === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value)) out[k] = this.redactValue(v);
+      return out;
+    }
+    return value;
   }
 
   getLedgerEvents(run_id?: string): LedgerEvent[] {
@@ -1655,7 +1687,7 @@ export class RunStore {
         approval_id,
         correlation_id: input.run_id,
         payload: {
-          text: buildApprovalPromptText(approval_id, input),
+          text: buildApprovalPromptText(approval_id, input, this.redact),
           action_summary: input.action_summary
         }
       }));
@@ -1866,7 +1898,7 @@ export class RunStore {
       payload: {
         // The user-facing message IS the answer/report body (no server path).
         // Bounded to a Telegram-safe length; report_path stays for audit only.
-        text: truncateForChat(input.text),
+        text: truncateForChat(input.text, this.redact),
         report_path: input.report_path,
         // Phase 3.3: inline buttons (the self-write merge controls) ride only when supplied;
         // every other final report omits them and stays byte-identical to before.
@@ -1895,7 +1927,7 @@ export class RunStore {
       run_id,
       correlation_id: run_id,
       payload: {
-        text: truncateForChat(text),
+        text: truncateForChat(text, this.redact),
         ...(report_path ? { report_path } : {})
       }
     });
@@ -1922,7 +1954,7 @@ export class RunStore {
       run_id,
       correlation_id: run_id,
       payload: {
-        text: truncateForChat(input.text),
+        text: truncateForChat(input.text, this.redact),
         ...(input.buttons ? { buttons: input.buttons } : {})
       }
     });
@@ -3604,14 +3636,19 @@ const TELEGRAM_MAX_PENDING_APPROVALS = 5;
 // Telegram caps a message at 4096 chars; leave headroom for the truncation note.
 const CHAT_TEXT_MAX = 3900;
 
-function truncateForChat(text: string): string {
-  const trimmed = text.trim();
+function truncateForChat(text: string, redact: (s: string) => string = (s) => s): string {
+  // Redact BEFORE truncating so a masked value is never split into a leaking fragment (ADR 0015).
+  const trimmed = redact(text).trim();
   if (trimmed.length <= CHAT_TEXT_MAX) return trimmed;
   return `${trimmed.slice(0, CHAT_TEXT_MAX)}\n\n… (truncated)`;
 }
 
-function buildApprovalPromptText(approval_id: string, input: ApprovalRequestInput): string {
-  return [
+function buildApprovalPromptText(
+  approval_id: string,
+  input: ApprovalRequestInput,
+  redact: (s: string) => string = (s) => s
+): string {
+  return redact([
     `Approval required: ${approval_id}`,
     `Action: ${input.action_summary}`,
     `Side effect: ${input.side_effect_level}`,
@@ -3625,7 +3662,7 @@ function buildApprovalPromptText(approval_id: string, input: ApprovalRequestInpu
     "Consequence if approved: the exact fingerprinted action may execute once after policy revalidation.",
     "Consequence if denied or expired: the run is cancelled and reports the blocked action.",
     `Reply /approve ${approval_id} to continue or /deny ${approval_id} to stop.`
-  ].join("\n");
+  ].join("\n"));
 }
 
 function telegramRateLimited(reason: TelegramRateLimitReason): TelegramRateLimitResult {

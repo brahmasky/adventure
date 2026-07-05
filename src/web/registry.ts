@@ -4,6 +4,7 @@ import {
 } from "./providers/firecrawl.js";
 import { createTavilyProvider, type TavilyProviderConfig } from "./providers/tavily.js";
 import type { WebProvider, WebSearchRequest, WebSearchResult } from "./types.js";
+import type { SecretBroker } from "../config/secret-broker.js";
 
 export interface BuildWebChainDeps {
   tavilyConfig?: TavilyProviderConfig;
@@ -40,14 +41,20 @@ export function resolveWebMaxResults(env: NodeJS.ProcessEnv): number {
  */
 export function buildWebChain(
   env: NodeJS.ProcessEnv,
-  deps: BuildWebChainDeps = {}
+  deps: BuildWebChainDeps = {},
+  broker?: SecretBroker
 ): WebProvider[] {
+  // Single source of truth for the web providers' key (ADR 0015): from the broker when the firewall
+  // is armed, else from env; populated into `config.apiKey`. OFF path is byte-identical.
+  const tavilyKey = broker ? broker.tavilyKey() : env.TAVILY_API_KEY;
+  const firecrawlKey = broker ? broker.firecrawlKey() : env.FIRECRAWL_API_KEY;
+
   return parseProviderNames(env).map((name) => {
     switch (name) {
       case "tavily":
-        return createTavilyProvider(deps.tavilyConfig);
+        return createTavilyProvider({ ...deps.tavilyConfig, ...(tavilyKey !== undefined ? { apiKey: tavilyKey } : {}) });
       case "firecrawl":
-        return createFirecrawlProvider(deps.firecrawlConfig);
+        return createFirecrawlProvider({ ...deps.firecrawlConfig, ...(firecrawlKey !== undefined ? { apiKey: firecrawlKey } : {}) });
       default:
         throw new Error(`Unknown web provider: ${name}`);
     }

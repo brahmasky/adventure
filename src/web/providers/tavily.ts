@@ -41,7 +41,8 @@ export function createTavilyProvider(config: TavilyProviderConfig = {}): WebProv
   return {
     name: "tavily",
     async search(req: WebSearchRequest): Promise<WebSearchResult> {
-      const apiKey = config.apiKey ?? process.env.TAVILY_API_KEY;
+      // Single source of truth (ADR 0015): key via `config.apiKey` only — no ambient env fallback.
+      const apiKey = config.apiKey;
       if (!apiKey) {
         return { ok: false, provider: "tavily", error: "TAVILY_API_KEY is not set", unavailable: true };
       }

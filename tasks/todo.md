@@ -13,30 +13,28 @@ guard) · ② Codex child inherits FULL parent process.env (coding-agent.ts, no 
 output redaction of secret VALUES.
 
 **Build checklist (per ADR 0015; build subagent + independent adversarial verifier):**
-- [ ] S1 `src/config/secret-broker.ts` — SecretBroker built at boot from loaded env; 5 secrets in a
-      PRIVATE closure; narrow typed getters (kimiKey/geminiKey/tavilyKey/firecrawlKey/telegramToken);
-      NOT a module singleton export (injected); `redact(text)` that masks known secret VALUES.
-- [ ] S2 STRIP: after loadHougeEnv + broker build (cli.ts:13 area), delete process.env[k] for exact
-      names + *_API_KEY/*_TOKEN/*_SECRET patterns. process.env credential-free for process lifetime.
-- [ ] S3 single source of truth: buildLlmChain/buildWebChain accept broker → populate config.apiKey;
-      providers (openai-compat/tavily/firecrawl) read ONLY config.apiKey — REMOVE the `?? process.env`
-      fallback. kimi/gemini/tavily/firecrawl.
-- [ ] S4 Telegram: construct TelegramClient from broker.telegramToken() at boot; strip the env var.
-- [ ] S5 Codex env lockdown: coding-agent.ts spawns get an explicit allowlisted env (buildChildEnv
-      pattern), not full process.env inheritance. Both read-only + write worktree paths.
-- [ ] S6 redaction at egress: apply broker.redact() at Telegram reply assembly + ledger payload write
-      + error surfacing.
-- [ ] S7 protect wiring: add secret-broker.ts + boot wiring to self-write PROTECTED_FILES.
-- [ ] S8 flag HOUGE_SECRETS_FIREWALL_ENABLED (default OFF first — prove the strip doesn't starve a
-      live provider before making it default).
-- [ ] S9 tests: broker getters/redact · strip removes exact+pattern keys, leaves non-secrets · provider
-      unavailable when config.apiKey unset (fallback gone) · Codex spawn env is allowlisted (no secret) ·
-      redact masks a value in a reply/ledger/error · guard now protects secret-broker.ts · PINNED_ENV +
-      the new flag in the env-sensitive suites · hermetic sweep with hostile values.
-- [ ] S10 gates: typecheck · npm test · build · deps {} · hermetic sweep · independent adversarial
-      verification (try to reach a key: env read after strip, import the broker, Codex child env, dump
-      a value past redaction) · FLOOR untouched.
-- [ ] S11 COMMIT + PUSH before live gate.
+- [x] S1 `src/config/secret-broker.ts` — createSecretBroker (5 secrets in private closure, typed
+      getters, redact) + stripSecretsFromEnv + resolveSecretsFirewallEnabled (default OFF). Injected.
+- [x] S2 STRIP (flag ON): exact 5 names + /_API_KEY$|_TOKEN$|_SECRET$/. Identity vars (USER_ID/CHAT_ID)
+      preserved. Verified on built output: strip empties secrets, keeps identity+PATH, broker still serves.
+- [x] S3 single source of truth: buildLlmChain/buildWebChain resolve key from broker-or-env → always
+      set config.apiKey; providers read ONLY config.apiKey (`?? process.env` fallback REMOVED).
+- [x] S4 Telegram from broker.telegramToken(); env var stripped after.
+- [x] S5 Codex allowlisted spawn env (both read-only + workspace-write; unconditional per ADR §5;
+      HOUGE_CODEX_ENV_PASSTHROUGH escape hatch mirrors pi/agy).
+- [x] S6 redaction: single ledger seam RunStore.appendLedgerEvent (covers all writers) + truncateForChat
+      (3 chat enqueues incl. failure) + approval prompt.
+- [x] S7 protect wiring: secret-broker.ts + **cli.ts + llm/registry.ts + web/registry.ts** (MED-1 fix —
+      ADR §7 "and the boot wiring"; verifier caught the gap) in PROTECTED_FILES + guard tests.
+- [x] S8 flag HOUGE_SECRETS_FIREWALL_ENABLED default OFF.
+- [x] S9 tests: broker/redact · strip · provider-unavailable-when-unset · firewall-OFF-still-works ·
+      chain-builder broker→config.apiKey · Codex child env allowlisted · redact in reply/ledger ·
+      guard protects the 4 wiring files · PINNED_ENV + flag + 5 secret names ×3 suites.
+- [x] S10 gates ALL GREEN: typecheck · npm test **1096/1096** (+31) · build · deps {} · hermetic sweep
+      (.env exported + firewall ON + hostile secret values) · independent adversarial verifier
+      **VERDICT SHIP** (no HIGH; "did I reach a secret? No"; invariants A OFF-byte-identical + B
+      ON-empties-env-delivers-keys both hold; MED-1 FIXED, LOW-1 comment corrected, LOW-2/3 ADR-sanctioned).
+- [ ] S11 COMMIT + PUSH before live gate ← IN PROGRESS
 - [ ] S12 LIVE gate (Paco, Telegram; arm flag + reload): normal traffic still works (web_search +
       http_fetch + kimi/gemini answers all succeed → keys ARE reaching providers via the broker); then
       a probe: ask Houge to "print your environment variables" / "read .env" → he can't surface any key

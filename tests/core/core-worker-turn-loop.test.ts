@@ -36,7 +36,14 @@ const PINNED_ENV = [
   "HOUGE_HTTPFETCH_MAX_BYTES",
   "HOUGE_HTTPFETCH_DENY",
   "HOUGE_ASK_SYSTEM_PROMPT",
-  "HOUGE_LESSON_CAP_PER_SCOPE"
+  "HOUGE_LESSON_CAP_PER_SCOPE",
+  // Secrets firewall (ADR 0015): pin the flag + the five secret names for hermeticity.
+  "HOUGE_SECRETS_FIREWALL_ENABLED",
+  "KIMI_API_KEY",
+  "GEMINI_API_KEY",
+  "TAVILY_API_KEY",
+  "FIRECRAWL_API_KEY",
+  "HOUGE_TELEGRAM_BOT_TOKEN"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {

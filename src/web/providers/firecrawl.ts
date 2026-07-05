@@ -44,7 +44,8 @@ export function createFirecrawlProvider(config: FirecrawlProviderConfig = {}): W
   return {
     name: "firecrawl",
     async search(req: WebSearchRequest): Promise<WebSearchResult> {
-      const apiKey = config.apiKey ?? process.env.FIRECRAWL_API_KEY;
+      // Single source of truth (ADR 0015): key via `config.apiKey` only — no ambient env fallback.
+      const apiKey = config.apiKey;
       if (!apiKey) {
         return { ok: false, provider: "firecrawl", error: "FIRECRAWL_API_KEY is not set", unavailable: true };
       }

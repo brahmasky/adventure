@@ -32,7 +32,15 @@ const PINNED_ENV = [
   "HOUGE_HTTPFETCH_ENABLED",
   "HOUGE_HTTPFETCH_TIMEOUT_MS",
   "HOUGE_HTTPFETCH_MAX_BYTES",
-  "HOUGE_HTTPFETCH_DENY"
+  "HOUGE_HTTPFETCH_DENY",
+  // Secrets firewall (ADR 0015): pin the flag + the five secret names so a daemon .env can neither
+  // arm the strip nor leak a real key into these behavior assertions (delete = code default).
+  "HOUGE_SECRETS_FIREWALL_ENABLED",
+  "KIMI_API_KEY",
+  "GEMINI_API_KEY",
+  "TAVILY_API_KEY",
+  "FIRECRAWL_API_KEY",
+  "HOUGE_TELEGRAM_BOT_TOKEN"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {

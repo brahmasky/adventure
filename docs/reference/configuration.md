@@ -138,6 +138,23 @@ the module docblock (`src/web/http-fetch.ts`); the URLs read are recorded in the
 | `HOUGE_HTTPFETCH_MAX_BYTES` | `1000000` | Byte cap on the **decompressed** body (zip-bomb guard). Cap hit ⇒ the kept prefix ships with `truncated: true`. |
 | `HOUGE_HTTPFETCH_DENY` | — | Optional comma-separated host denylist, **punycode form** (WHATWG URL parsing punycodes IDN hosts before matching). Each entry matches the exact host and every subdomain (dot-suffix), e.g. `evil.test` also blocks `a.evil.test`. |
 
+## Secrets firewall (ADR 0015, Phase 1)
+
+When armed, the five real secrets (`KIMI_API_KEY`, `GEMINI_API_KEY`, `TAVILY_API_KEY`,
+`FIRECRAWL_API_KEY`, `HOUGE_TELEGRAM_BOT_TOKEN`) are lifted into an in-process
+`SecretBroker` at boot and then **deleted from `process.env`** — the daemon holds no
+ambient credential, so a self-written `process.env.KIMI_API_KEY` reads `undefined`. The
+broker feeds the provider chain builders (single source of truth: `config.apiKey`, the
+`?? process.env` fallback is gone) and the Telegram client, and masks any secret **value**
+in outbound chat replies, ledger payloads, and error text. Codex children always get an
+explicit allowlisted env regardless of this flag. See
+[ADR 0015](../decisions/0015-secrets-firewall.md).
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_SECRETS_FIREWALL_ENABLED` | off | Arms the firewall (lift-into-broker + strip `process.env` + redact egress). Accepts 1/true/yes/on. OFF ⇒ byte-identical to before the firewall existed. |
+| `HOUGE_CODEX_ENV_PASSTHROUGH` | — | Optional comma-separated extra env var names the Codex child may inherit, on top of the `PATH/HOME/TERM/LANG/USER` allowlist. |
+
 ## Short-term conversation memory (`chat_turns`)
 
 A per-chat rolling thread of recent turns gives follow-ups context, so a reaction like
