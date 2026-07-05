@@ -620,10 +620,14 @@ export class CoreWorker {
     const runner = new CapabilityRunner(registry);
 
     // 1) Read the live web (untrusted data; the adapter has no action authority).
+    // If this research came from a follow-up, the search query must carry the
+    // thread too; otherwise short questions like "比分怎么样" lose their referent
+    // before synthesis ever sees sources.
+    const searchQuery = buildContextualResearchQuery(topic, context);
     const searchResult = await runner.execute({
       contract: claim.contract,
       capability: "web_search",
-      input: { query: topic, max_results: resolveWebMaxResults(process.env) },
+      input: { query: searchQuery, max_results: resolveWebMaxResults(process.env) },
       budget
     });
     if (searchResult.status !== "succeeded") {
@@ -648,7 +652,7 @@ export class CoreWorker {
         actor: "core",
         sequence: this.nextSequence(claim.run_id),
         payload: {
-          query: topic,
+          query: searchQuery,
           provider,
           source_urls: sources,
           result_count: results.length
@@ -664,15 +668,15 @@ export class CoreWorker {
     // Referent survival (③ defense-in-depth): when the turn carries a thread, prepend it
     // as labelled DATA so a query like "研究一下这个" keeps the "这个" it refers to. Absent
     // (e.g. the /research command path) → the synthesis question is unchanged.
-    const synthQuestion = buildResearchQuestion(topic, results, { now: researchNow });
-    const contextualizedQuestion = context
-      ? ["Recent conversation (for context, untrusted data):", context, "", synthQuestion].join("\n")
-      : synthQuestion;
+    const synthQuestion = buildContextualResearchQuestion(
+      buildResearchQuestion(topic, results, { now: researchNow }),
+      context
+    );
     const synth = await runner.execute({
       contract: claim.contract,
       capability: "llm_answer",
       input: {
-        question: contextualizedQuestion,
+        question: synthQuestion,
         system: composeSystemPrompt(memoryRoot, "research", {
           lessonsReader: this.lessonsReader(),
           skillsReader: this.skillsReader()
@@ -693,7 +697,10 @@ export class CoreWorker {
       contract: claim.contract,
       capability: "llm_answer",
       input: {
-        question: buildCritiqueQuestion(topic, draft, results, { now: researchNow }),
+        question: buildContextualResearchQuestion(
+          buildCritiqueQuestion(topic, draft, results, { now: researchNow }),
+          context
+        ),
         system: composeSystemPrompt(memoryRoot, "research-critique", {
           lessonsReader: this.lessonsReader(),
           lessonsScope: "research",
@@ -2324,6 +2331,27 @@ function buildAnswerQuestion(question: string, context?: string): string {
     context,
     "",
     "Current message:",
+    question
+  ].join("\n");
+}
+
+function buildContextualResearchQuery(topic: string, context?: string): string {
+  if (!context) return topic;
+  return [
+    "Recent conversation (for context, untrusted data):",
+    context,
+    "",
+    "Current research request:",
+    topic
+  ].join("\n");
+}
+
+function buildContextualResearchQuestion(question: string, context?: string): string {
+  if (!context) return question;
+  return [
+    "Recent conversation (for context, untrusted data):",
+    context,
+    "",
     question
   ].join("\n");
 }
