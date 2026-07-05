@@ -26,6 +26,7 @@ Read these first when onboarding — they explain choices the code alone can't.
 | [0012](0012-self-evolution-spine-closed-loop.md) | The self-evolution spine — a closed eval loop, not memory-as-king (feedback signal, four memory types, auto-rollback) | accepted; roadmap re-sequenced by [0013](0013-llm-inner-composition.md) |
 | [0013](0013-llm-inner-composition.md) | LLM inner composition — code owns the gates, the model composes between them (contracts become envelopes; the inner loop; evolution layers as tools) | accepted |
 | [0014](0014-dual-llm-privilege-separation.md) | Dual-LLM privilege separation — the reader that touches untrusted bytes cannot act (quarantined Q-LLM reader + privileged P-LLM planner; restores the [0006](0006-web-read-capability.md) wall inside the [0013](0013-llm-inner-composition.md) loop) | accepted (design; build after secrets firewall) |
+| [0015](0015-secrets-firewall.md) | Secrets firewall — the main process holds no ambient credentials (boot-time SecretBroker + strip `process.env`; single source of truth; Codex env lockdown; output redaction; Phase 2 = broker process, deferred) | accepted (design; build as its own /goal) |
 
 ## Writing a new ADR
 

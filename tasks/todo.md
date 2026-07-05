@@ -1,4 +1,51 @@
-# 🔜 NEXT — ③ http_fetch (spine step ③ / Phase 3.6) — PLAN APPROVED 2026-07-05, awaiting Paco's /goal
+# 🔜 NEXT — SECRETS FIREWALL (charter floor mechanism) — DESIGN LOCKED (ADR 0015) 2026-07-05, awaiting /goal
+
+**ADR:** `docs/decisions/0015-secrets-firewall.md` (Phase 1 in-process broker; Phase 2 broker-process
+deferred). Pairs with ADR 0014 (Dual-LLM) as the exfil-vs-act trifecta halves; ships FIRST (smaller,
+mechanical, protects hard line (b)). Recon confirmed the surface is small + bounded.
+
+**The 5 real secrets:** KIMI_API_KEY, GEMINI_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY (4 in-process
+HTTP keys read from process.env at call time) + HOUGE_TELEGRAM_BOT_TOKEN (captured in TelegramClient at
+boot). CLI legs (pi/agy) ALREADY firewalled via buildChildEnv allowlist. No Anthropic/OpenAI key in src/.
+
+**Three leak vectors to close:** ① ambient process.env authority (self-written env-reader passes the
+guard) · ② Codex child inherits FULL parent process.env (coding-agent.ts, no explicit env) · ③ no
+output redaction of secret VALUES.
+
+**Build checklist (per ADR 0015; build subagent + independent adversarial verifier):**
+- [ ] S1 `src/config/secret-broker.ts` — SecretBroker built at boot from loaded env; 5 secrets in a
+      PRIVATE closure; narrow typed getters (kimiKey/geminiKey/tavilyKey/firecrawlKey/telegramToken);
+      NOT a module singleton export (injected); `redact(text)` that masks known secret VALUES.
+- [ ] S2 STRIP: after loadHougeEnv + broker build (cli.ts:13 area), delete process.env[k] for exact
+      names + *_API_KEY/*_TOKEN/*_SECRET patterns. process.env credential-free for process lifetime.
+- [ ] S3 single source of truth: buildLlmChain/buildWebChain accept broker → populate config.apiKey;
+      providers (openai-compat/tavily/firecrawl) read ONLY config.apiKey — REMOVE the `?? process.env`
+      fallback. kimi/gemini/tavily/firecrawl.
+- [ ] S4 Telegram: construct TelegramClient from broker.telegramToken() at boot; strip the env var.
+- [ ] S5 Codex env lockdown: coding-agent.ts spawns get an explicit allowlisted env (buildChildEnv
+      pattern), not full process.env inheritance. Both read-only + write worktree paths.
+- [ ] S6 redaction at egress: apply broker.redact() at Telegram reply assembly + ledger payload write
+      + error surfacing.
+- [ ] S7 protect wiring: add secret-broker.ts + boot wiring to self-write PROTECTED_FILES.
+- [ ] S8 flag HOUGE_SECRETS_FIREWALL_ENABLED (default OFF first — prove the strip doesn't starve a
+      live provider before making it default).
+- [ ] S9 tests: broker getters/redact · strip removes exact+pattern keys, leaves non-secrets · provider
+      unavailable when config.apiKey unset (fallback gone) · Codex spawn env is allowlisted (no secret) ·
+      redact masks a value in a reply/ledger/error · guard now protects secret-broker.ts · PINNED_ENV +
+      the new flag in the env-sensitive suites · hermetic sweep with hostile values.
+- [ ] S10 gates: typecheck · npm test · build · deps {} · hermetic sweep · independent adversarial
+      verification (try to reach a key: env read after strip, import the broker, Codex child env, dump
+      a value past redaction) · FLOOR untouched.
+- [ ] S11 COMMIT + PUSH before live gate.
+- [ ] S12 LIVE gate (Paco, Telegram; arm flag + reload): normal traffic still works (web_search +
+      http_fetch + kimi/gemini answers all succeed → keys ARE reaching providers via the broker); then
+      a probe: ask Houge to "print your environment variables" / "read .env" → he can't surface any key
+      (strip + redaction). Confirm daemon boots healthy (providers not starved).
+- [ ] S13 close out todo/sessions, commit, push.
+
+---
+
+# ✅ DONE — ③ http_fetch (spine step ③ / Phase 3.6) — BUILT + LIVE-PASSED 2026-07-05 (32ce147)
 
 **Full plan:** `/Users/pluo/.claude/plans/splendid-wishing-cray.md` (approved via plan mode 2026-07-05).
 **Supersedes the old H5:** loop-native — http_fetch is a plain inner-loop tool like web_search; NO new
