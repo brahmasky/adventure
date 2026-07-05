@@ -286,6 +286,26 @@ Build + independent adversarial verification subagents; each live round found a 
 - ⓪ roadmap: ⓪·1/⓪·2/⓪·2b/⓪·2c/⓪·3/⓪·3f/⓪·3g ALL DONE+LIVE. Remaining: ⓪·4 (after quiet week).
   NEXT per usage evidence: ③ http_fetch → ④ wiki (deep research); ② episodic + scheduler in the mix.
 
+## 2026-07-05 — soak-debug → /goal lane-awareness + context-window fix (799eea8)
+- Soak triage from Telegram: Houge lost thread context across pauses (the "比分怎么样" → "which
+  match?" amnesia). Root-caused live from the chat_turns/ledger: (①) `getRecentChatTurns` loaded
+  with a 60-min wall-clock filter (`chatContextSince`) starved the inner loop's context; (②) the
+  loop was unaware self_diagnose/self_write share ONE background lane, so every self-fix turn
+  repeat-diagnosed and bounced the write off the busy guard; then hit the protected-path guard
+  (run-store.ts) so nothing landed — the FLOOR working as designed, Houge deferred honestly.
+- /goal executed the fix (build + adversarial-verify subagents): kickoff-terminal loop seam
+  (`terminalAfterSuccess` → halt reason:"kickoff"), tool-desc rewrite (write diagnoses as it
+  writes), window 60→1440min + turns 8→20, legacy runResearch context param. Gate green both env
+  modes (1015/1015). Verifier verdict SHIP; caught a latent honesty bug (old post-kickoff final
+  claimed "已提交修复分支" before the async pipeline finished).
+- LIVE gate: **G1 PASSED** — 5 consecutive context-dependent World Cup follow-ups (incl. the exact
+  "比分怎么样") all answered in-thread on 799eea8; amnesia gone. **G2 (lane fix) code-verified only**
+  (kickoff-terminal unit + adversarial); not exercised over Telegram before Paco cleared the goal.
+- LESSON (Paco correction): I misread repeated Stop-hook re-fires as "user idle" and kept nudging
+  `/goal clear` while he was actively testing on Telegram. Recorded in lessons.md + memory
+  ([[goal-interactive-gate-no-idle-loop]] refined): check the ledger for in-flight activity before
+  assuming the user is away; switch to watch-and-report.
+
 ## 2026-07-04 (close) — PARKED; handoff written
 - Session closed at Paco's request (Fable 5 limit approaching). Full handoff block written at the
   TOP of tasks/todo.md ("⏸ PARKED 2026-07-04 — RESUME HERE"): state, onboarding order, load-bearing

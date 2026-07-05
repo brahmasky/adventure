@@ -1,4 +1,26 @@
-# 🔨 IN PROGRESS 2026-07-05 — /goal lane-awareness + context-window fix
+# ✅ DONE 2026-07-05 — /goal lane-awareness + context-window fix (shipped 799eea8; goal cleared)
+
+**Outcome:** shipped `799eea8` on main. Gate green both env modes (typecheck · 1015/1015 clean-env
+AND .env daemon sweep · build · deps {}); built + independently adversarially verified (verdict SHIP,
++ caught a latent honesty bug: the old model-composed post-kickoff final claimed "已提交修复分支"
+BEFORE the async pipeline finished — the deterministic kickoff digest is honest). Daemon reloaded
+(PID 14071) and live-tested on the new build.
+- **G1 (context window) — LIVE PASSED.** Five consecutive context-dependent World Cup follow-ups
+  ("你确定还是round of 32?", "一支国家队怎么可以在一圈里面打两场", "今晚两场都是悉尼时间吗", incl. the
+  exact "比分怎么样" phrase that broke before) all answered in-thread — the reported amnesia does NOT
+  reproduce on 799eea8. Runs 31718e1a/66b8e365/584708d2/8361d617, all context-retained.
+- **G2 (lane-awareness) — CODE-VERIFIED, live-untested.** kickoff-terminal proven by inner-loop.test.ts
+  (halts reason:"kickoff", 1 step) + core-worker-turn-loop.test.ts (reply = kickoff digest) + adversarial
+  review. NOT exercised over live Telegram — Paco cleared the goal before sending a self-code-change
+  message (research turns can't reach the lane). Honest gap; watch for it on the next real self-fix ask.
+- **Soak note (unrelated to this fix):** the "比分" research turn ran 6 web_search calls and hit the
+  tool-call budget (step_cap) before answering via fallback — research budget/efficiency, worth a look.
+
+---
+
+# ⏸ PARKED — earlier plan (superseded by the DONE block above; kept for the resume-here handoff)
+
+# 🔨 (was IN PROGRESS) /goal lane-awareness + context-window fix
 
 **Trigger (live soak, 07-05):** Houge lost thread context across pauses ("比分怎么样" → "which
 match?") and, when asked to self-fix, (a) repeat-ran self_diagnose and bounced self_write_propose

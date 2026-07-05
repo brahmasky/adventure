@@ -16,6 +16,21 @@ Rules Claude writes for itself after corrections. Review at session start.
   2026-07-04 Paco finished send→merge→reload before the orchestrator noticed. Verify current state
   FIRST (git log, ledger tail) before telling the user what to do next.
 
+## Interactive /goal gates — don't read hook re-fires as "user gone"
+
+- **Repeated Stop-hook fires ≠ user idle/away.** (2026-07-05, Paco: "why do you want me to clear the
+  goal while am still testing even am idle?") A /goal's live Telegram gate blocked the Stop hook; the
+  hook re-fired several times while Paco was actively running G1/G2 on his phone — I misread the
+  silence *in the Claude session* as "user away" and repeatedly nudged `/goal clear`. He was mid-test
+  the whole time. Rule: when a live/interactive gate is pending AND the daemon processes messages,
+  CHECK the ledger / chat_turns for in-flight user activity (new run_created, new chat_turns) BEFORE
+  concluding the user is idle or recommending they abandon the gate. The evidence is one query away —
+  the daemon writes every user turn. Ties to [[goal-interactive-gate-no-idle-loop]] and
+  [[monitor-windows-from-real-clock]] (verify current state before instructing/nudging the user).
+- **Watch the right channel.** The user completing an interactive gate does so on THEIR surface
+  (Telegram), not by typing to me. Poll the ledger and REPORT findings per turn (what passed, honestly
+  labelled) rather than pinging "send it whenever" — that's the support the gate actually needs.
+
 ## Hermeticity (recorded in memory, repeated here)
 
 - Non-hermetic tests (asserting env-var defaults without deleting the var) silently red-fail
