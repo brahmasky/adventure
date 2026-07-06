@@ -136,6 +136,19 @@ describe("toLocalTimes — never throws; bad items carry an error and the rest r
     expect(results[1]!.relative_day).toBe("today");
   });
 
+  it("rejects out-of-range wall-clock components instead of silently rolling them over", () => {
+    // "24:00" must NOT become next-day 00:00; a bad hour/minute/month/day is an error, not a
+    // confidently-wrong instant (the live 24:00 America/Los_Angeles garbage-in case).
+    for (const bad of ["2026-07-06 24:00", "2026-07-06 12:70", "2026-13-06 12:00", "2026-07-32 12:00", "2026-02-30 12:00"]) {
+      const r = toLocalTimes([{ when: bad, tz: ET }], NOW_SYDNEY_AFTERNOON, SYD)[0]!;
+      expect(r.error, bad).toContain("unparseable datetime");
+      expect(r.local, bad).toBeUndefined();
+    }
+    // A legitimate 23:59 and 00:00 still convert.
+    expect(toLocalTimes([{ when: "2026-07-06 23:59", tz: ET }], NOW_SYDNEY_AFTERNOON, SYD)[0]!.error).toBeUndefined();
+    expect(toLocalTimes([{ when: "2026-07-06 00:00", tz: ET }], NOW_SYDNEY_AFTERNOON, SYD)[0]!.error).toBeUndefined();
+  });
+
   it("accepts an ISO 'T' separator and optional seconds", () => {
     const r = toLocalTimes([{ when: "2026-07-06T20:00:30", tz: ET }], NOW_SYDNEY_AFTERNOON, SYD)[0]!;
     expect(r.local).toBe("2026-07-07 10:00");

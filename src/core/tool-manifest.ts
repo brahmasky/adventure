@@ -73,7 +73,7 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
   to_local_time: {
     name: "to_local_time",
     description:
-      "Convert one or more source datetimes (each with its stated timezone) into your local timezone, with a today/tomorrow/day-N label. ALWAYS call this before describing any source date/time as 'today', 'tomorrow', or any relative day — never do timezone math yourself. Put ALL the datetimes in one call.",
+      "Convert one or more source datetimes into your local timezone, with a today/tomorrow/day-N label. ALWAYS call this before describing any source date/time as 'today', 'tomorrow', or any relative day — never do timezone math yourself. Put ALL the datetimes in one call. CRITICAL: pass each time EXACTLY as the source stated it, in the timezone the source named — if a source says '3pm ET' use when '15:00' + tz 'America/New_York'; if it says '20:00 GMT' use tz 'UTC'. Do NOT re-derive a timezone from the venue/city (do not turn 'Seattle' into Pacific or 'Arlington' into Central yourself) and do NOT alter the clock time; copy the source's number and its stated zone verbatim.",
     inputSketch: '{"items":[{"when":"2026-07-06 20:00","tz":"America/New_York"}]}',
     category: "tool",
     side_effect_level: "none",

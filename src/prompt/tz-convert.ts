@@ -75,8 +75,16 @@ function wallClockToInstant(when: string, tz: string): Date | undefined {
   const m = WHEN_PATTERN.exec(when);
   if (!m) return undefined;
   const [, y, mo, d, h, mi, s] = m;
-  const target = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), s ? Number(s) : 0);
+  const [Y, Mo, D, H, Mi, S] = [Number(y), Number(mo), Number(d), Number(h), Number(mi), s ? Number(s) : 0];
+  // Reject out-of-range wall-clock components (e.g. "24:00", "13-40", minute 70) instead of
+  // letting Date.UTC silently roll them into a plausible-but-wrong instant — a garbage source
+  // time must surface as a per-item error, not a confidently-wrong conversion.
+  if (Mo < 1 || Mo > 12 || D < 1 || D > 31 || H > 23 || Mi > 59 || S > 59) return undefined;
+  const target = Date.UTC(Y, Mo - 1, D, H, Mi, S);
   if (!Number.isFinite(target)) return undefined;
+  // Catch non-existent calendar dates that Date.UTC overflows (e.g. Feb 30 → Mar 2).
+  const back = new Date(target);
+  if (back.getUTCMonth() !== Mo - 1 || back.getUTCDate() !== D) return undefined;
   let off = offsetMs(new Date(target), tz);
   off = offsetMs(new Date(target - off), tz);
   return new Date(target - off);
