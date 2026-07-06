@@ -2,6 +2,7 @@ import { resolveCodexEnabled } from "../capabilities/coding-agent.js";
 import { resolveSelfWriteEnabled } from "../capabilities/intent.js";
 import { resolveSkillsEnabled } from "../skills/skill-store.js";
 import { resolveHttpFetchEnabled } from "../web/http-fetch.js";
+import { resolveTimeToolEnabled } from "../prompt/tz-convert.js";
 import type { RiskLevel, SideEffectLevel } from "../domain/types.js";
 
 /**
@@ -65,6 +66,20 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
     risk_level: "low",
     output_limit_bytes: 200_000,
     armed: resolveHttpFetchEnabled
+  },
+  // Deterministic timezone conversion (to_local_time): a plain armed loop tool like http_fetch,
+  // but PURE compute — no I/O, no untrusted data. The dateline arithmetic the model keeps
+  // botching moves into code (src/prompt/tz-convert.ts); the flag only lists/unlists it.
+  to_local_time: {
+    name: "to_local_time",
+    description:
+      "Convert one or more source datetimes (each with its stated timezone) into your local timezone, with a today/tomorrow/day-N label. ALWAYS call this before describing any source date/time as 'today', 'tomorrow', or any relative day — never do timezone math yourself. Put ALL the datetimes in one call.",
+    inputSketch: '{"items":[{"when":"2026-07-06 20:00","tz":"America/New_York"}]}',
+    category: "tool",
+    side_effect_level: "none",
+    risk_level: "low",
+    output_limit_bytes: 100_000,
+    armed: resolveTimeToolEnabled
   },
   // Lesson persistence is the same distill → deterministic-backstop → append flow as the
   // legacy feedback branch (never a raw write): the adapter decides durability itself, so

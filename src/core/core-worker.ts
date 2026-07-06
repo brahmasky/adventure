@@ -34,6 +34,7 @@ import type { VerifyResult } from "../capabilities/anchor-verify.js";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
 import { buildCritiqueQuestion, buildResearchQuestion, createWebSearchAdapter } from "../capabilities/web-search.js";
 import { createHttpFetchAdapter } from "../capabilities/http-fetch.js";
+import { createTimeConvertAdapter } from "../capabilities/time-convert.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import { HTTP_FETCH_CONTENT_CHAR_CAP, resolveHttpFetchTimeoutMs } from "../web/http-fetch.js";
 import {
@@ -231,6 +232,8 @@ export class CoreWorker {
   private readonly codingAgentAdapter: (input: Record<string, unknown>) => ToolAdapterResult | Promise<ToolAdapterResult>;
   /** Direct URL read for the loop (injected or default). */
   private readonly httpFetchAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
+  /** Deterministic timezone conversion for the loop (injected or default). */
+  private readonly timeConvertAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
 
   constructor(
     private readonly runStore: RunStore,
@@ -247,7 +250,10 @@ export class CoreWorker {
     // Secrets firewall (ADR 0015): injected at boot ONLY when the firewall is armed. Feeds provider
     // API keys to the DEFAULT llm/web adapters (env is stripped when armed). Absent (firewall OFF)
     // → the chain builders read env keys and behavior is byte-identical to before the firewall.
-    private readonly broker?: SecretBroker
+    private readonly broker?: SecretBroker,
+    // Deterministic timezone conversion for the loop (to_local_time). Injectable so tests fix
+    // the clock/local tz; default reads process.env local tz + the real now per call.
+    timeConvertAdapter?: (input: Record<string, unknown>) => Promise<ToolAdapterResult>
   ) {
     // Phase 3.1 (W3): when the DEFAULT llm adapter is in use (production), cheap-chain telemetry can
     // build a telemetry-instrumented adapter per role (kimi/pi usage → recordLlmCall). A test-
@@ -257,6 +263,7 @@ export class CoreWorker {
     this.webSearchAdapter = webSearchAdapter ?? createWebSearchAdapter(broker ? { broker } : {});
     this.codingAgentAdapter = codingAgentAdapter ?? createCodingAgentAdapter({ projectRoot });
     this.httpFetchAdapter = httpFetchAdapter ?? createHttpFetchAdapter();
+    this.timeConvertAdapter = timeConvertAdapter ?? createTimeConvertAdapter();
     this.skillStore = new SkillStore({
       root: join(projectRoot, "skills"),
       maxPerScope: resolveSkillMaxPerScope(process.env)
@@ -2192,6 +2199,11 @@ export class CoreWorker {
         return result;
       };
     }
+    if (name === "to_local_time") {
+      // PURE compute (no I/O, no untrusted data): the adapter validates the {items} shape and
+      // does the tz arithmetic in code. No provenance audit — nothing external was read.
+      return (input) => this.timeConvertAdapter(input);
+    }
     if (name === "lesson_write") {
       // TRUST ANCHORS: feedback = the turn's real user message (the contract objective);
       // prior_answer = the real prior assistant turn. The model's step input can carry
@@ -2657,6 +2669,9 @@ function loopToolTimeoutMs(name: string, llmTimeoutMs: number): number {
     case "http_fetch":
       // The fetch enforces its own wall clock; the runner's outer race bound adds headroom.
       return resolveHttpFetchTimeoutMs(process.env) + 5_000;
+    case "to_local_time":
+      // Pure in-process compute — one LLM-call bound is ample headroom.
+      return llmTimeoutMs;
     case "lesson_write":
       // lesson_write may run distill + the reconcile compare (two chain calls).
       return llmTimeoutMs * 2;

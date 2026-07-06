@@ -172,6 +172,21 @@ steer the planner. On a reader parse miss the fallback is a metadata-only
 | `HOUGE_DUAL_LLM_ENABLED` | off | Arms the quarantined reader for external-read tools. Accepts 1/true/yes/on. OFF ⇒ byte-identical to before Dual-LLM existed (raw output digested inline). |
 | `HOUGE_LLM_READER_PROVIDERS` | `HOUGE_LLM_PROVIDERS` | The reader's own provider chain (same names/format as `HOUGE_LLM_PROVIDERS`). Unset ⇒ the planner chain. Point it at a cheap, **cross-family** leg (e.g. `agy-cli,gemini-api`) for free injection resistance. |
 
+## Deterministic timezone tool (`to_local_time`, loop tool)
+
+A trusted, zero-dep loop tool that fixes the recurring cross-dateline date errors (the World Cup
+`明天有哪几场` bug): Houge anchors "today/tomorrow" in his local timezone but reads fixture times in
+the source/venue timezone and never converts. The tool takes a **batch** of `{when, tz}` items and
+returns each stamped with its local datetime **and a `today`/`tomorrow`/`in N days` label computed in
+CODE (`Intl`, no LLM arithmetic)** — one round-trip, not per-item ping-pong. The model's only job is
+to extract `(when, source-tz)` (sources state it, e.g. "noon ET"); the harness does the math. It is a
+pure-compute tool: no I/O, no untrusted bytes (so Dual-LLM never quarantines it), no secrets.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_TIME_TOOL_ENABLED` | off | Arms the tool (armed-listing). Accepts 1/true/yes/on. OFF ⇒ unlisted ⇒ loop behavior unchanged. |
+| `HOUGE_TIMEZONE` | runtime tz | Override Houge's local timezone (IANA name, e.g. `Australia/Sydney`). Unset ⇒ the daemon's runtime timezone. Resolves "today/tomorrow" for the converter. |
+
 ## Short-term conversation memory (`chat_turns`)
 
 A per-chat rolling thread of recent turns gives follow-ups context, so a reaction like

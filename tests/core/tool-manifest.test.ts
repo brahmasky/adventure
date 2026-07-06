@@ -90,6 +90,24 @@ describe("arming policy (step ⓪·2): evolution tools appear only when their fl
     expect(lines[0]).toMatch(/^- http_fetch: .+ Input: \{"url"/);
   });
 
+  it("to_local_time defaults OFF: unlisted (and therefore unreachable) at code defaults", () => {
+    const names = manifestFor(["http_fetch", "to_local_time", "llm_answer"], {}).map((m) => m.name);
+    expect(names).toEqual(["llm_answer"]);
+  });
+
+  it("to_local_time armed: listed in contract order, pure (side effect none), with its items sketch", () => {
+    const env = { HOUGE_TIME_TOOL_ENABLED: "1" };
+    const names = manifestFor(["web_search", "to_local_time", "llm_answer"], env).map((m) => m.name);
+    expect(names).toEqual(["web_search", "to_local_time", "llm_answer"]);
+    const [entry] = manifestFor(["to_local_time"], env);
+    // Pure compute → NOT external_read (so Dual-LLM never quarantines it), never trips a gate.
+    expect(entry!.side_effect_level).toBe("none");
+    expect(entry!.risk_level).toBe("low");
+    const lines = renderManifestLines(manifestFor(["to_local_time"], env));
+    expect(lines[0]).toMatch(/^- to_local_time: .+ Input: \{"items"/);
+    expect(lines[0]).toContain("never do timezone math yourself");
+  });
+
   it("the manifest entries never leak the arming predicate (registration metadata only)", () => {
     const [entry] = manifestFor(["self_write_propose"], { HOUGE_SELFWRITE_ENABLED: "1" });
     expect(entry).toBeDefined();

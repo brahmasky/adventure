@@ -1,4 +1,13 @@
-# 🔜 NEXT — `to_local_time` deterministic timezone tool — PLAN 2026-07-06, awaiting /goal
+# 🔜 NEXT — `to_local_time` deterministic timezone tool — BUILT + VERIFIED 2026-07-06, awaiting LIVE gate (T10)
+
+**Status:** T1–T9 DONE. Build green (1141 tests, typecheck/build clean, deps {}); independent adversarial
+verifier SHIP-WITH-NITS — tz inversion PROVABLY correct across dateline, DST spring/fall edges, local-
+midnight relative_day boundary, reverse dateline, fractional zones (probed against dist/, hand-verified);
+flag OFF = unlisted/unreachable; hostile-env sweep 1141/1141; floor untouched. Both low nits FIXED
+(per-item error isolation instead of whole-batch reject; invalid HOUGE_TIMEZONE falls back to runtime tz
++ toLocalTimes UTC-guards its never-throws contract). Probe confirms the exact live-failing query now
+resolves right: USA-Belgium→tomorrow, Argentina-Egypt→in 2 days. **NEXT: T10 live gate (Paco).**
+
 
 **Trigger (live soak, 07-06):** Houge answers schedule/time questions wrong across the dateline.
 `明天有哪几场？` twice returned the wrong World Cup matches. ROOT CAUSE (traced through the ESPN page

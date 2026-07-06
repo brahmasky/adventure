@@ -62,6 +62,7 @@ describe("compileTaskContract", () => {
         "intent_router",
         "web_search",
         "http_fetch",
+        "to_local_time",
         "llm_answer",
         "lesson_write",
         "self_diagnose",

@@ -465,6 +465,17 @@ function scanBalancedObject(text: string, start: number): number {
  * (+ redirect hint); web-search-shaped outputs render numbered result lines;
  * anything else is compact JSON.
  */
+/** Discriminate to_local_time results (`{when, tz, local|error}`) from web results (`{title, url}`). */
+function isTimeConvertResults(results: unknown[]): boolean {
+  const first = results[0] as Record<string, unknown> | undefined;
+  return (
+    first !== undefined &&
+    typeof first.when === "string" &&
+    typeof first.tz === "string" &&
+    (typeof first.local === "string" || typeof first.error === "string")
+  );
+}
+
 export function digestOutput(output: Record<string, unknown>, charCap: number): string {
   let text: string;
   if (typeof output.answer === "string" && output.answer.trim().length > 0) {
@@ -479,6 +490,20 @@ export function digestOutput(output: Record<string, unknown>, charCap: number): 
     if (output.truncated === true) lines.push("(content truncated)");
     if (output.content.length > 0) lines.push(output.content);
     text = lines.join("\n");
+  } else if (Array.isArray(output.results) && isTimeConvertResults(output.results)) {
+    // to_local_time: readable `when (tz) → local (relative_day)` lines (or a per-item error),
+    // so the planner reads the code-computed label instead of re-doing the tz math itself.
+    text = output.results
+      .map((r) => {
+        const row = r as Record<string, unknown>;
+        const when = typeof row.when === "string" ? row.when : "";
+        const tz = typeof row.tz === "string" ? row.tz : "";
+        if (typeof row.error === "string" && row.error.length > 0) return `${when} (${tz}) → error: ${row.error}`;
+        const local = typeof row.local === "string" ? row.local : "";
+        const relative = typeof row.relative_day === "string" ? row.relative_day : "";
+        return `${when} (${tz}) → ${local} (${relative})`;
+      })
+      .join("\n");
   } else if (Array.isArray(output.results)) {
     text = output.results
       .map((r, i) => {

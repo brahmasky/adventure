@@ -13,6 +13,7 @@ import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
+import { createTimeConvertAdapter } from "../../src/capabilities/time-convert.js";
 
 let dirs: string[] = [];
 function projectRoot(): string {
@@ -32,6 +33,8 @@ const PINNED_ENV = [
   "HOUGE_CODEX_ENABLED",
   "HOUGE_SKILLS_ENABLED",
   "HOUGE_HTTPFETCH_ENABLED",
+  "HOUGE_TIME_TOOL_ENABLED",
+  "HOUGE_TIMEZONE",
   "HOUGE_HTTPFETCH_TIMEOUT_MS",
   "HOUGE_HTTPFETCH_MAX_BYTES",
   "HOUGE_HTTPFETCH_DENY",
@@ -300,6 +303,58 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       expect(audits[0]!.payload).toMatchObject({ url: "https://s.test/a", status: 200, bytes: 3_000 });
       const turns = store.getRecentChatTurns("555", 6);
       expect(turns[1]!.text).toContain("读完了");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("to_local_time → final (tool armed): the model's batched conversion executes and its labels ride the transcript", async () => {
+    // THE BUG this closes (soak 07-06): `明天有哪几场？` across the dateline. The planner extracts
+    // the ET fixtures, calls to_local_time ONCE, and the code-computed today/tomorrow/day-N labels
+    // ride the step digest — so the model answers from the label instead of botching the tz math.
+    process.env.HOUGE_TIME_TOOL_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    // Injected clock + local tz → hermetic against the host tz / HOUGE_TIMEZONE.
+    const timeAdapter = createTimeConvertAdapter({ now: new Date("2026-07-06T05:00:00Z"), localTz: "Australia/Sydney" });
+    const calls: Array<Record<string, unknown>> = [];
+    try {
+      const run_id = turnRun(store, "明天有哪几场？");
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm(
+          '{"intent":"answer"}',
+          [
+            '{"action":"to_local_time","input":{"items":[{"when":"2026-07-06 20:00","tz":"America/New_York"},{"when":"2026-07-07 12:00","tz":"America/New_York"}]},"why":"convert the fixtures to Sydney"}',
+            '{"action":"final","answer":"明天（悉尼时间7月7日）：美国-比利时。阿根廷-埃及在后天。"}'
+          ],
+          calls
+        ),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        timeAdapter
+      );
+      const result = await worker.executeRun(run_id, "w");
+
+      expect(result.status).toBe("completed");
+      // Armed → listed in the manifest.
+      const started = loopEvents(store, run_id, "loop_started");
+      expect(started[0]!.payload.manifest).toContain("to_local_time");
+      // The step executed with capability attribution.
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(steps[0]!.payload).toMatchObject({ step: 1, action: "to_local_time", capability: "to_local_time", ok: true });
+      // THE VALUE: the code-computed labels ride the transcript the planner reads next.
+      const digest = String(steps[0]!.payload.result_digest);
+      expect(digest).toContain("2026-07-06 20:00 (America/New_York) → 2026-07-07 10:00 (tomorrow)");
+      expect(digest).toContain("2026-07-07 12:00 (America/New_York) → 2026-07-08 02:00 (in 2 days)");
+      // Pure compute → NO external provenance audit is emitted (unlike web_search/http_fetch).
+      expect(loopEvents(store, run_id, "http_fetch_performed")).toEqual([]);
+      expect(loopEvents(store, run_id, "web_search_performed")).toEqual([]);
+      const turns = store.getRecentChatTurns("555", 6);
+      expect(turns[1]!.text).toContain("美国-比利时");
     } finally {
       store.close();
     }
