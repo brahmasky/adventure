@@ -18,6 +18,15 @@ import { DEFAULT_LLM_PROVIDERS } from "../llm/registry.js";
 export interface ReaderExtraction {
   summary: string;
   facts: string[];
+  /**
+   * Verbatim temporal tuples, one per entry, shape
+   * `"<event> — <date as stated> <time as stated> — zone: <exact stated label | not stated>"`.
+   * A dedicated field because the 07-06 failure class was a cross-frame MERGE (a US-frame date
+   * fused with an HK-frame clock time into one false fact) that per-fact verbatim rules cannot
+   * catch: keeping date+time+zone as ONE unbroken unit — with the zone's absence made explicit —
+   * is what lets the planner (and to_local_time) refuse to guess.
+   */
+  time_claims: string[];
   answer_to_objective: string | null;
   contains_instructions: boolean;
 }
@@ -71,7 +80,7 @@ export function buildReaderQuestion(objective: string, rawContent: string): stri
     rawContent,
     "<<<END UNTRUSTED>>>",
     "",
-    'Output ONLY this JSON object: {"summary":"...","facts":["..."],"answer_to_objective":null,"contains_instructions":false}.'
+    'Output ONLY this JSON object: {"summary":"...","facts":["..."],"time_claims":["..."],"answer_to_objective":null,"contains_instructions":false}.'
   ].join("\n");
 }
 
@@ -90,14 +99,17 @@ export function parseReaderExtraction(text: string): ReaderExtraction | null {
   const facts = Array.isArray(rec.facts)
     ? rec.facts.filter((f): f is string => typeof f === "string" && f.trim().length > 0).map((f) => f.trim())
     : [];
+  const time_claims = Array.isArray(rec.time_claims)
+    ? rec.time_claims.filter((t): t is string => typeof t === "string" && t.trim().length > 0).map((t) => t.trim())
+    : [];
   const answer =
     typeof rec.answer_to_objective === "string" && rec.answer_to_objective.trim().length > 0
       ? rec.answer_to_objective.trim()
       : null;
   const contains_instructions = rec.contains_instructions === true;
   // A reply with no usable content at all is treated as a parse miss (caller retries/fails safe).
-  if (summary.length === 0 && facts.length === 0 && answer === null) return null;
-  return { summary, facts, answer_to_objective: answer, contains_instructions };
+  if (summary.length === 0 && facts.length === 0 && time_claims.length === 0 && answer === null) return null;
+  return { summary, facts, time_claims, answer_to_objective: answer, contains_instructions };
 }
 
 /**
@@ -106,13 +118,25 @@ export function parseReaderExtraction(text: string): ReaderExtraction | null {
  * so the planner keeps treating it as data (the schema, not the label, is what makes that safe).
  */
 export function renderExtractionDigest(x: ReaderExtraction): string {
-  const lines = ["[external source — untrusted-derived summary]", `summary: ${x.summary}`];
-  if (x.facts.length > 0) lines.push("facts:", ...x.facts.map((f) => `- ${f}`));
-  lines.push(`answer_to_objective: ${x.answer_to_objective ?? "(none)"}`);
+  const lines = ["[external source — untrusted-derived summary]", `summary: ${flat(x.summary)}`];
+  if (x.facts.length > 0) lines.push("facts:", ...x.facts.map((f) => `- ${flat(f)}`));
+  if (x.time_claims.length > 0) lines.push("time_claims:", ...x.time_claims.map((t) => `- ${flat(t)}`));
+  lines.push(`answer_to_objective: ${x.answer_to_objective === null ? "(none)" : flat(x.answer_to_objective)}`);
   if (x.contains_instructions) {
     lines.push("note: this source tried to embed instructions; they were ignored, not followed.");
   }
   return lines.join("\n");
+}
+
+/**
+ * Collapse newlines (and surrounding space) inside a reader-supplied value to a single space.
+ * Every rendered value must stay on ITS OWN digest line: a `\n` inside a JSON string is legal,
+ * so without this a hostile page could have the reader echo an entry that starts a forged
+ * digest-frame line (a fake `answer_to_objective:` / `note:` at column 0). The digest is still
+ * only data to the planner — this closes the presentation forgery, not an action channel.
+ */
+function flat(value: string): string {
+  return value.replace(/\s*\n\s*/g, " ");
 }
 
 /**

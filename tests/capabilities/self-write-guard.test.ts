@@ -116,6 +116,7 @@ describe("checkSelfWriteDiff — every protected class is hard-denied", () => {
     ["worktree", entry({ status: "M", path: "src/run/worktree.ts" })],
     ["coding-agent", entry({ status: "M", path: "src/capabilities/coding-agent.ts" })],
     ["self-write-guard ITSELF (self-protection)", entry({ status: "M", path: "src/capabilities/self-write-guard.ts" })],
+    ["quarantine (dual-LLM wall, ADR 0014)", entry({ status: "M", path: "src/core/quarantine.ts" })],
     ["secret-broker (secrets firewall wiring)", entry({ status: "M", path: "src/config/secret-broker.ts" })],
     ["cli.ts (secrets firewall boot wiring)", entry({ status: "M", path: "src/cli.ts" })],
     ["llm/registry (secrets firewall key resolution)", entry({ status: "M", path: "src/llm/registry.ts" })],

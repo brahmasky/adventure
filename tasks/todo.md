@@ -1,3 +1,58 @@
+# 🔜 NEXT — Reader temporal-tuple preservation + protect quarantine.ts (fix #2 of 07-06 time-failure diagnosis) — BUILT + VERIFIED 2026-07-07, awaiting LIVE gate (R7)
+
+**Status:** R1–R6 DONE, committed. Build subagent green (1148 tests, typecheck/build clean); independent
+adversarial verifier SHIP-WITH-NITS — wall empirically unbroken (protocol-JSON lookalikes, proto
+pollution, 14/14 guard bypass vectors denied, old-shape digests byte-identical); hostile-env sweep
+1148/1148. Both actionable nits FIXED pre-commit: newline smuggling (reader values flattened so a `\n`
+can't forge digest-frame lines — closed for summary/facts/time_claims alike) + guard comment no longer
+overstates scope (pure wall module protected; wiring stays self-writable per ADR 0014 backstops).
+Residual (accepted): dense schedule pages may overflow reader output → unreadableDigest (model-behavior
+risk); LOOP_DISCIPLINE venue-tz line contradiction → tracked under fix #1 follow-up. **NEXT: R7 live
+gate (Paco): arm HOUGE_DUAL_LLM_ENABLED=true (.env:75 currently false), restart daemon, replay a
+cross-midnight unlabeled-zone schedule query; digest must show verbatim tuples + `zone: not stated`.**
+
+**Trigger (07-07 diagnosis):** In `run_de6ffd96` (07-06 02:13) the quarantined reader summarized a
+World Cup listing as "On July 6 … Portugal vs Spain at 3:00 AM (Hong Kong time)" — it merged the
+source's **US-frame date (Jul 6)** with an **HK-frame time (3:00 AM = actually Jul 7 HK)**. The planner
+then told Paco the match was "this morning, already played", spawning the whole results-don't-exist
+spiral. Separately, sources render schedule times in UNLABELED zones (Fox Sports server-render = GMT,
+ESPN = ET) and the reader today gives the planner no signal whether a zone was stated at all.
+`to_local_time` (now live) does correct math — but only on correct (when, tz) inputs; the reader is
+where those inputs are born. NOTE: distinct from the to_local_time work below — that fixed the
+*conversion*; this fixes the *extraction* feeding it.
+
+**Design (schema + discipline, minimal):**
+1. `ReaderExtraction` gains `time_claims: string[]` (default `[]`, fully backward compatible).
+   Each entry is ONE verbatim temporal tuple in a fixed shape:
+   `"<event> — <date as stated> <time as stated> — zone: <exact stated label | not stated>"`.
+2. `READER_DISCIPLINE` (composer.ts) gains hard rules: every date/time in the content goes into
+   `time_claims` as one unbroken unit copied verbatim; NEVER pair a date with a time drawn from a
+   different sentence or timezone frame; `zone:` is the source's exact label or `not stated` —
+   never inferred from the venue/city; cross-midnight listings keep exactly what the source printed.
+3. `buildReaderQuestion` JSON template line adds the `time_claims` field.
+4. `renderExtractionDigest` renders `time_claims:` lines only when non-empty (existing digests
+   byte-identical when absent).
+5. **Protect the wall:** add `src/core/quarantine.ts` to `PROTECTED_FILES` in self-write-guard.ts
+   (the dual-LLM wall is safety machinery — "changeable only by Paco's hand"; this change itself is
+   backend-only by construction). Open question flagged, NOT in scope: composer.ts / core-worker.ts
+   also host wall-adjacent wiring but are legit self-evolution surfaces.
+
+**Checklist (build via subagents per workflow; live test interactive):**
+- [x] R1 quarantine.ts: `time_claims` in interface + tolerant parse (drop non-string/empty; default []) + digest render
+- [x] R2 composer.ts: READER_DISCIPLINE tuple rules (verbatim unit, no cross-frame pairing, zone stated-or-not-stated)
+- [x] R3 quarantine.ts: buildReaderQuestion template includes time_claims
+- [x] R4 self-write-guard.ts: + `src/core/quarantine.ts` in PROTECTED_FILES
+- [x] R5 tests: quarantine.test.ts (parse/coerce/render/wall with time_claims), self-write-guard test (quarantine.ts denied), composer discipline assertions; full suite green incl. hostile-env sweep
+- [x] R6 independent adversarial verification subagent (wall intact: injected bytes still can't reach planner via time_claims)
+- [ ] R7 LIVE gate (Paco): dual-LLM ON, replay a cross-midnight unlabeled-zone schedule query end-to-end; digest must show verbatim tuples + `zone: not stated`; verify HOUGE_DUAL_LLM_ENABLED current state first (run_18b8d419 digest showed RAW page bytes — flag may be OFF right now)
+
+**Related follow-ups (separate tasks, Houge self-writes #1/#3/#4):** planner-side zone-evidence
+requirement for to_local_time; NOTE loop discipline currently says "Times stated in sources are in
+the venue's/source's timezone" (composer.ts LOOP_DISCIPLINE) — that line actively taught the
+venue-local assumption and must be revised as part of fix #1.
+
+---
+
 # 🔜 NEXT — `to_local_time` deterministic timezone tool — BUILT + VERIFIED 2026-07-06, awaiting LIVE gate (T10)
 
 **Status:** T1–T9 DONE. Build green (1141 tests, typecheck/build clean, deps {}); independent adversarial
