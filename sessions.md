@@ -315,3 +315,31 @@ Build + independent adversarial verification subagents; each live round found a 
   ⓪·4 after quiet week; charter safety floor interleaved). Any model can resume from repo files
   alone — no verbal context needed. Week's tally: ADR 0012+0013 designed+shipped ⓪·1→⓪·3g, 1013
   tests, 10 Houge self-writes merged, eval loop live and compounding.
+
+## 2026-07-07 — Fix #2: reader temporal-tuple preservation + protect quarantine.ts (SHIPPED, live-gated)
+- DIAGNOSIS (Paco ask: "why does Houge always get time wrong / hallucinate?"): traced the 07-06
+  World Cup thread through chat_turns + ledger_events. Four distinct failure modes: (1) unlabeled
+  schedule times misread as venue-local (Fox server-render is GMT; "7:00PM" Dallas ≠ Chicago time —
+  to_local_time's math was right, its INPUTS were wrong); (2) the quarantined reader merged a
+  US-frame date with an HK-frame time ("July 6 … 3:00 AM HK" — actually Jul 7 HK) → "match already
+  played" illusion → the whole can't-find-results spiral; (3) `feedback`-routed run answered with
+  ZERO tool calls and invented a capability claim — WITH lesson 19 in its prompt (empirical proof
+  lessons alone don't hold; mechanical guards needed); (4) two runs burned their last steps on
+  malformed action JSON and died on step_cap. Division agreed with Paco: #2 backend (this session),
+  #1/#3/#4 → Houge self-writes later.
+- BUILD (subagent) + adversarial VERIFY (independent subagent, SHIP-WITH-NITS, wall empirically
+  unbroken: proto pollution, protocol-JSON lookalikes, 14/14 guard bypass vectors denied): commit
+  ffce1d7 — ReaderExtraction.time_claims verbatim `(event — date time — zone: label|not stated)`
+  tuples; READER_DISCIPLINE no-cross-frame-pairing + never-infer-zone rules; digest values
+  newline-flattened (closed a pre-existing forged-frame-line hole in summary/facts too);
+  src/core/quarantine.ts added to PROTECTED_FILES (pure wall half now Paco's-hand-only). 1148
+  tests green incl. daemon-env sweep.
+- LIVE GATE R7 PASSED: real turn (run_899cf696) via Gateway→CoreWorker, dual-LLM armed for the
+  process (daemon untouched). Digests carried GMT/BST as separate tuples + "zone: not stated" for
+  bare times; answer correct: ARG-EGY Sydney 02:00 Jul 8, SUI-COL 06:00 Jul 8, cross-corroborated
+  (12:00PM ET = 16:00 GMT). ROLLOUT PENDING PACO: .env:75 HOUGE_DUAL_LLM_ENABLED=false → true +
+  launchd restart to arm in production.
+- Follow-ups queued: fix #1 must ALSO revise LOOP_DISCIPLINE's "times are in the venue's/source's
+  timezone" line (it actively taught the venue-local guess; live-gate answer still showed a
+  cosmetic zone-presentation slip from it); verifier flagged wall WIRING (core-worker/inner-loop
+  call sites, READER_DISCIPLINE) stays self-writable by design — revisit scope if desired.

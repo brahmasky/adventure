@@ -1,4 +1,16 @@
-# 🔜 NEXT — Reader temporal-tuple preservation + protect quarantine.ts (fix #2 of 07-06 time-failure diagnosis) — BUILT + VERIFIED 2026-07-07, awaiting LIVE gate (R7)
+# ✅ DONE — Reader temporal-tuple preservation + protect quarantine.ts (fix #2 of 07-06 time-failure diagnosis) — SHIPPED + LIVE-GATED 2026-07-07
+
+**LIVE GATE PASSED (R7, 2026-07-07):** real `turn` run (`run_899cf696`) through Gateway→CoreWorker with
+dual-LLM armed for the process, query "明天（悉尼时间）有哪几场世界杯比赛？". Digests carried verbatim
+tuples — GMT and BST as SEPARATE claims ("Argentina Egypt — Tuesday, 07 July, 2026 16:00 — zone: GMT"),
+unlabeled times marked "zone: not stated" ("Canada vs Morocco — 07-04 5 p.m. — zone: not stated") — and
+the planner converted from the GMT-labeled tuples: ARG-EGY → Sydney 02:00 Jul 8 ✓, SUI-COL → Sydney
+06:00 Jul 8 ✓ (cross-corroborated: 12:00PM ET = 16:00 GMT). The 07-06 failure class (venue-local guess
+on unlabeled times, cross-frame date/time merge) did not recur. Residual noted: the answer's
+parenthetical called 20:00 GMT "当地/美西 8:00 PM" for Vancouver — planner-side zone PRESENTATION slip
+(Sydney answer itself correct), in scope for fix #1 (LOOP_DISCIPLINE venue-tz line). **ROLLOUT pending
+Paco: the daemon still runs HOUGE_DUAL_LLM_ENABLED=false (.env:75) — flip to true + launchd restart to
+arm the wall in production.**
 
 **Status:** R1–R6 DONE, committed. Build subagent green (1148 tests, typecheck/build clean); independent
 adversarial verifier SHIP-WITH-NITS — wall empirically unbroken (protocol-JSON lookalikes, proto
@@ -44,7 +56,7 @@ where those inputs are born. NOTE: distinct from the to_local_time work below �
 - [x] R4 self-write-guard.ts: + `src/core/quarantine.ts` in PROTECTED_FILES
 - [x] R5 tests: quarantine.test.ts (parse/coerce/render/wall with time_claims), self-write-guard test (quarantine.ts denied), composer discipline assertions; full suite green incl. hostile-env sweep
 - [x] R6 independent adversarial verification subagent (wall intact: injected bytes still can't reach planner via time_claims)
-- [ ] R7 LIVE gate (Paco): dual-LLM ON, replay a cross-midnight unlabeled-zone schedule query end-to-end; digest must show verbatim tuples + `zone: not stated`; verify HOUGE_DUAL_LLM_ENABLED current state first (run_18b8d419 digest showed RAW page bytes — flag may be OFF right now)
+- [x] R7 LIVE gate (ran 2026-07-07, run_899cf696, dual-LLM armed for the run): dual-LLM ON, replay a cross-midnight unlabeled-zone schedule query end-to-end; digest must show verbatim tuples + `zone: not stated`; verify HOUGE_DUAL_LLM_ENABLED current state first (run_18b8d419 digest showed RAW page bytes — flag may be OFF right now)
 
 **Related follow-ups (separate tasks, Houge self-writes #1/#3/#4):** planner-side zone-evidence
 requirement for to_local_time; NOTE loop discipline currently says "Times stated in sources are in
