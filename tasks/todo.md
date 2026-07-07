@@ -1,3 +1,24 @@
+# 🔜 NEXT — Planner-leg + fallback-path follow-ups (post B1-B4 soak, 2026-07-07 evening)
+
+**Soak findings (after B1-B4 shipped):** the guard now forces correct conversions into the transcript,
+but BOTH available planners leak at the last step: pi(kimi) follows the protocol yet misquotes its own
+to_local_time rows in final prose (rows said "tomorrow 02:00", final said "今天中午12点"); agy-cli
+(Paco's manual pick — good at time in plain chat) FAILS in-harness 2/2 as loop planner (malformed action
+JSON → parse_cap; unproductive loop → step_cap; one fallback answer invented QF matches as "today", one
+came back empty). Chain A/B'd agy-first then REVERTED to pi-first same evening. Root: every terminal
+path except a clean mid-loop final (step_cap/parse_cap/clarify_cap/timeout) exits via fallbackFinal,
+which bypasses the B1 guard and ignores conversions — verifier F3, now the dominant hole across models.
+
+**Queued (needs /goal):**
+- F3 fix: fallbackFinal leads with LABELED converted rows + relative_day rule; if relative-day question
+  + time_claims seen + zero conversions, fallback must hedge explicitly (no relative-day assertions).
+- to_local_time items gain optional `label` (event name) rendered into the digest rows — removes the
+  row↔event rebinding step where "中午12点" leaked back in.
+- claude-cli planner leg (charter: best model per capability; Max flat-rate) — src/llm/registry.ts is
+  PROTECTED → backend; likely fixes both row-quoting (pi) and protocol compliance (agy).
+
+---
+
 # ✅ DONE — Backend batch B1-B4 — SHIPPED + LIVE-GATED 2026-07-07 16:36
 
 **Gate results:** natural-phrasing query (世界杯现在到哪个阶段了，明天有哪几场比赛？) run_2ad40160: 8 searches
