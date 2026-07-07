@@ -39,11 +39,20 @@ const RELATIVE_DAY_TOKENS = /今天|明天|后天|昨天|今晚|明早|\b(?:toda
 /** Convert-before-final bounces allowed per run (anti-livelock; the step cap still backstops). */
 const RELATIVE_DAY_FINAL_BOUNCE_CAP = 2;
 
-/** The instructive digest a bounced `final` reads next step (mirrors the repeat-action notice). */
+/**
+ * The instructive digest a bounced `final` reads next step (mirrors the repeat-action notice).
+ * The second sentence targets the observed live failure mode: the model searches its LOCAL-frame
+ * date ("July 8 matches"), which is empty in source calendars, instead of querying the events it
+ * already saw by name with a zone-labeled term — the one query shape that reliably surfaces
+ * convertible times.
+ */
 export const RELATIVE_DAY_FINAL_BOUNCE_DIGEST =
   "the question asks about a relative day; convert candidate source times with to_local_time " +
-  "(with zone evidence) and filter by relative_day before finalizing — search for zone-labeled " +
-  "kickoff times if needed";
+  "(with zone evidence) and filter by relative_day before finalizing. Your local 'today'/'tomorrow' " +
+  "maps to DIFFERENT dates in the sources' calendars — do NOT search your local date; instead " +
+  "search the specific events the sources already listed, by name, adding 'kick-off time GMT' " +
+  "(e.g. 'Argentina Egypt kick-off time GMT'), then convert every candidate and keep the rows " +
+  "whose relative_day matches the question";
 
 /** One parsed protocol action. `input` only for tool actions; answer/question for final/clarify. */
 export interface LoopAction {
