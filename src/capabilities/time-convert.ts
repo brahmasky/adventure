@@ -7,7 +7,9 @@ export interface TimeConvertAdapterConfig {
   now?: Date;
   /** Inject the local timezone (tests). Default: resolveLocalTimeZone(process.env). */
   localTz?: string;
-  /** Gate for source-stated timezone evidence (tests). Default: resolveTzEvidenceEnabled(process.env). */
+  /** Inject the env used by the evidence gate (tests). Default: process.env for the production no-arg adapter. */
+  env?: NodeJS.ProcessEnv;
+  /** Gate for source-stated timezone evidence (tests). Default: resolveTzEvidenceEnabled(env). */
   tzEvidenceEnabled?: boolean;
 }
 
@@ -31,8 +33,10 @@ const ZONE_LABELS: Record<string, string[]> = {
  * math lives in src/prompt/tz-convert.ts; this adapter only validates the model's input shape.
  */
 export function createTimeConvertAdapter(
-  config: TimeConvertAdapterConfig = {}
+  config?: TimeConvertAdapterConfig
 ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
+  const adapterConfig = config ?? {};
+  const evidenceEnv = config === undefined ? process.env : adapterConfig.env ?? {};
   return async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
     const raw = input.items;
     if (!Array.isArray(raw) || raw.length === 0) {
@@ -50,18 +54,21 @@ export function createTimeConvertAdapter(
       };
     });
     const items: LocalTimeItem[] = rawItems.map((item) => ({ when: item.when, tz: item.tz }));
-    const evidenceEnabled = config.tzEvidenceEnabled ?? resolveTzEvidenceEnabled(process.env);
-    const now = config.now ?? new Date();
-    const localTz = config.localTz ?? resolveLocalTimeZone(process.env);
+    const evidenceEnabled = adapterConfig.tzEvidenceEnabled ?? resolveTzEvidenceEnabled(evidenceEnv);
+    const now = adapterConfig.now ?? new Date();
+    const localTz = adapterConfig.localTz ?? resolveLocalTimeZone(process.env);
     const results = toLocalTimes(items, now, localTz);
     if (evidenceEnabled) {
       const priorDigests = readPriorDigests(input[TIME_CONVERT_PRIOR_DIGESTS_FIELD]);
       return {
         ok: true,
         output: {
-          results: results.map((result, i) =>
-            validateZoneEvidence(rawItems[i]!.zone_evidence, rawItems[i]!.tz, priorDigests) ? result : zoneEvidenceError(rawItems[i]!)
-          )
+          results: results.map((result, i) => {
+            if ("error" in result) return result;
+            return validateZoneEvidence(rawItems[i]!.zone_evidence, rawItems[i]!.tz, priorDigests)
+              ? result
+              : zoneEvidenceError(rawItems[i]!);
+          })
         }
       };
     }
