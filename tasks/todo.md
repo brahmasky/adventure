@@ -1,3 +1,40 @@
+# 🔜 PLANNED — Backend batch: negative-claim loop guard + reader relative-day prohibition + merge-reload race (fixes #3-class + reload) — AWAITING /goal
+
+**Trigger (07-07 afternoon):** three "明天休赛日" wrong answers survived FIVE prompt-level measures
+(lessons 13/16/19, LOOP_DISCIPLINE ×2 revisions, manifest text, digest header). run_37aa07c9 (15:24,
+CURRENT code): ONE web_search → final; reader answer_to_objective concluded "明天（7月8日）没有安排比赛"
+verbatim; zero to_local_time. Separately: Merge & reload RACES the rebuild — restart fired 16s after
+merge while tsc finished ~2min later (both 13:51 + 14:54 cycles served STALE dist until manual
+kickstart). Paco decision: too many Houge self-write round-trips — land these backend.
+
+**B1 — Negative-claim mechanical guard (inner-loop.ts + new tests):** when objective matches relative-day
+tokens (今天|明天|后天|昨天|今晚|today|tomorrow|tonight|yesterday), any digest this run contained
+"time_claims:", and successful to_local_time steps == 0 → reject {"action":"final"} with instructive
+error (convert + filter by relative_day; search zone-labeled kickoffs). Max 2 rejections per run then
+allow (anti-livelock; step_cap backstops). Placement: alongside the existing repeat-action/echo checks.
+Backend advantage: may update existing turn-loop tests if the new bounce shifts fixtures.
+
+**B2 — Reader relative-day prohibition (composer.ts READER_DISCIPLINE):** reader must never evaluate
+relative days (cannot convert timezones); answer_to_objective states source-frame dates+zones verbatim;
+never "no matches tomorrow / rest day" conclusions. (Kills the poison B1 catches.)
+
+**B3 — Merge-reload race (self-write-merge.ts + production wiring):** investigate why restart fired
+16s post-merge when code path reads merge→build→testGate→restart (suspect detached/stubbed build in
+prod deps wiring). Fix: restart only after VERIFIED build artifact (assert newest dist mtime ≥ merge
+commit time pre-restart) + post-reload boot assertion (dist mtime vs reload_marker → alert if stale).
+Gate-machinery class → backend-only; consider adding self-write-merge.ts to PROTECTED_FILES (it is
+NOT currently listed — same gap class the verifier flagged for wall wiring).
+
+**B4 (optional rider) — BST/AEST aliases (tz-convert.ts + tests):** bst→Europe/London, aest/aedt→
+Australia/Sydney (ICU resolves bare BST as Asia/Dhaka +6; live sources print BST).
+
+**Checklist:** build subagent (B1-B4) → independent adversarial verifier → commit → LIVE gate:
+daemon restart on verified dist, then the natural-phrasing query (世界杯现在到哪个阶段了，明天有哪几场比赛？)
+through real Telegram (Paco) or local turn driver — expect ARG-EGY Syd 02:00 + SUI-COL 06:00 Jul 8,
+and a Merge&reload cycle (any trivial future self-write) that boots on fresh dist without manual kickstart.
+
+---
+
 # ✅ DONE — Fix #1 COMPLETE: evidence gate ARMED + planner relative_day filter — LIVE-VERIFIED 2026-07-07 15:0x
 
 **Chain live-proven in one real turn (run_3c2d64c9, armed daemon code):** planner attempted the venue
