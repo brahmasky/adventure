@@ -1,3 +1,23 @@
+# ✅ DONE — Fix #1 COMPLETE: evidence gate ARMED + planner relative_day filter — LIVE-VERIFIED 2026-07-07 15:0x
+
+**Chain live-proven in one real turn (run_3c2d64c9, armed daemon code):** planner attempted the venue
+guess (16:00 America/New_York, no evidence) → gate REJECTED it in production with the search-again
+error → planner recovered via GMT-labeled sources → filtered by relative_day → correct answer
+(ARG-EGY Syd 02:00 ✓, SUI-COL Syd 06:00 ✓ — the exact query that failed at 12:25 and 14:29).
+Merged planner fix (1057822, Houge self-write #5): manifest + LOOP_DISCIPLINE relative_day-only
+filtering, digest header rule, adapter env injection refactor (also fixed bb31405 bug: per-item
+errors no longer masked by evidence check), 3 new tests; 1159/1159 green; daemon self-restart landed
+AFTER merge this time (PID 89945, dist verified fresh). Lesson 21 (diagnose-vs-write wording) really
+saved. Flags live: DUAL_LLM + TIME_TOOL + TZ_EVIDENCE all true.
+
+**Residuals (queue as next Houge one-liners):**
+- BST alias still open: bare "BST" → ICU resolves Asia/Dhaka (+6); need bst→Europe/London (+aest/aedt) in TIME_ZONE_ALIASES + tests. Sources DO print BST.
+- createTimeConvertAdapter env edge: config-object-without-env → evidence gate silently OFF for that caller (production no-arg call safe today; trap for future callers — default env to process.env or doc it).
+- READER_DISCIPLINE relative-day prohibition not landed: reader can still frame-poison answer_to_objective ("no Jul 8 matches"); planner-side relative_day rule overrode it this run, but the reader rule would close it at extraction.
+- Evidence is label-level not claim-level (unchanged); 02a533f commit message still misdescribes its diff.
+
+---
+
 # 🗺 ROADMAP LOCKED 2026-07-07 — see `docs/ROADMAP.md` (model-agnostic handoff plan)
 
 **Paco's sequencing decisions (2026-07-07):** Phase R research-convergence fix FIRST → ② episodic
