@@ -370,3 +370,21 @@ Build + independent adversarial verification subagents; each live round found a 
   the daemon doesn't). todo.md top block updated to point at it + record the half-pass replay.
 - Still open for Paco (Phase 0): S12 secrets probe, D12 injection probe (live, Telegram);
   BST→Europe/London alias one-liner queued for Houge.
+
+
+## 2026-07-07 (afternoon) — Backend batch B1-B4 + the day's arc: 6 prompt measures fail, 4 mechanical nets hold
+- Houge self-writes #3-#5 landed (tz aliases, LOOP_DISCIPLINE, evidence gate flag-gated after
+  immutable-tests bounce; planner relative_day filter) — but "明天休赛日" still shipped 3× (readers
+  doing source-frame calendar math; one-step finals; frame-poisoned queries). Paco called backend.
+- B1 convert-before-final guard (bounce final on relative-day Q + time_claims + zero CONVERTED rows;
+  verifier F1: all-error to_local_time must not disarm — fixed), B2 reader relative-day ban,
+  B3 verified-reload invariant + PROTECTED merge machinery, B4 BST/AEST aliases + env symmetry.
+- B3 investigation DISPROVED my merge-reload race diagnosis: smoke test rm-rf's dist每次 npm test —
+  my own verification wrote the "stale" mtimes I then read as evidence. Manual restarts were
+  unnecessary; button was always correct (~17s gate). Lesson: primary evidence (outbox beacons,
+  reflog) before narrative; correlated mtimes lie.
+- Turn budget 10→14 + bounce digest teaching event-name+GMT queries closed the last gap: live gate
+  passed on the natural phrasing (Syd 02:00/06:00), plus a real mergeAndReload cycle (reloaded, fresh).
+- Day's tally: 4 mechanical nets shipped (time_claims schema, zone-evidence anchor, convert-before-
+  final bounce, verified reload) vs 6 ignored prompt measures. Every bad patch today was caught by
+  the check stack; every clean land was a sharply-specified ask.

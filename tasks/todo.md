@@ -1,4 +1,21 @@
-# 🔜 PLANNED — Backend batch: negative-claim loop guard + reader relative-day prohibition + merge-reload race (fixes #3-class + reload) — AWAITING /goal
+# ✅ DONE — Backend batch B1-B4 — SHIPPED + LIVE-GATED 2026-07-07 16:36
+
+**Gate results:** natural-phrasing query (世界杯现在到哪个阶段了，明天有哪几场比赛？) run_2ad40160: 8 searches
+→ final BOUNCED by B1 guard → model re-queried BY EVENT NAME per the bounce guidance → GMT-labeled
+kickoffs found → evidence-gated conversion → **ARG-EGY Syd 02:00 + SUI-COL Syd 06:00 Jul 8 ✓** (the
+question that failed 3× today). Merge&reload cycle via real mergeAndReload+defaultMergeActionDeps:
+outcome "reloaded", dist 16:36:02 → daemon 16:36:03, stale_dist invariant in-path ✓.
+**B3 FINDING: the reload race was a MISDIAGNOSIS** — tests/smoke.test.ts rm-rf's+rebuilds dist on every
+suite run; the verification session's own npm test manufactured the "stale" mtimes. Gate runs ~17s,
+order correct. Invariant kept as defense-in-depth. Verifier: SHIP-WITH-NITS; F1 (all-error to_local_time
+disarmed guard) FIXED pre-commit; F2-F8 accepted/queued. Turn budget 10→14 (evidence-hunting workflow;
+precedent: 6→10 on 07-05). Bounce digest teaches source-frame querying (local-date searches return
+empty cross-dateline). 1180 tests, both sweeps. Commits 42457ea, <budget>, 48edaad, cf7f7ba.
+**Residuals queued:** F3 fallbackFinal bypasses guard (attempt-1 fallback answered in Beijing frame w/
+self math); F2 hostile content can force guard ON (bounded); F4 token gaps (明儿/tmr); F5 concurrent
+npm test vs merge (loud+safe); evidence still label-level; 02a533f commit message misdescribes diff.
+
+(original plan below)
 
 **Trigger (07-07 afternoon):** three "明天休赛日" wrong answers survived FIVE prompt-level measures
 (lessons 13/16/19, LOOP_DISCIPLINE ×2 revisions, manifest text, digest header). run_37aa07c9 (15:24,
