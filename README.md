@@ -1,21 +1,45 @@
 # Houge
 
-Houge is a Telegram-first ChatOps harness and autonomous worker orchestrator: it turns natural-language chat and CLI commands into bounded, auditable, policy-governed task runs. You talk to Houge the way you talk to Claude Code — plain language in, intent inferred — and explicit slash commands survive only for the control/safety plane ([ADR 0010](docs/decisions/0010-natural-language-intent-layer.md)).
+Houge (猴哥) is an **autonomous self-evolving agent** — not a chatbot. He lives as an
+always-on Telegram-first daemon that turns natural language into bounded, auditable,
+policy-governed task runs, and he **improves himself**: he authors his own skills, learns
+lessons from feedback, diagnoses his own source, and writes his own code fixes — with
+mechanical safety nets (not human approval) protecting the two hard lines: *(a) no adverse
+impact to his own operation, (b) no leaking secrets*. You talk to Houge the way you talk to
+Claude Code — plain language in, intent inferred — and explicit slash commands survive only
+for the control/safety plane ([ADR 0010](docs/decisions/0010-natural-language-intent-layer.md)).
 
 ## Status
 
-Milestones 0–2 are complete, plus the Milestone 3 always-on daemon and a global
-autonomy budget breaker — 237 tests, zero runtime dependencies (Node 25, TypeScript,
-Vitest, the built-in `node:sqlite`):
+The foundation (Milestones 0–3: state machines, run ledger, Telegram gateway, always-on
+launchd daemon, global budget breaker) is complete, and the **self-evolution spine** is live
+on top of it — ~1,150 tests, zero runtime dependencies (Node 25, TypeScript, Vitest, the
+built-in `node:sqlite`):
 
-- **Milestone 0** — shared schemas, deterministic state machines (Run / Approval / ToolCall / Schedule), Run Ledger, idempotency.
-- **Milestone 1** — local run engine: SQLite-backed runs, worker leases, Task Contracts, Capability Policy + budget ledger, a read-only file capability, sourced reports, fixture evals.
-- **Milestone 2** — Telegram gateway (long-poll intake, allowlist auth), the natural-language front door + control commands (`/run` `/status` `/approve` `/deny` `/lessons` `/forget`), durable approvals, Notification Outbox.
-- **Milestone 3 (in progress)** — always-on daemon: `houge telegram-poll` (no `--once`) runs a continuous long-poll loop answering commands in near-real-time, supervised by launchd (graceful shutdown, single-instance guard, heartbeat). The schedule trigger is the remaining M3 piece.
-- **Natural-language front door** — every non-command message becomes one `turn` whose worker classifies intent (**answer** / **research** / **feedback** / **clarify**) on the model-agnostic LLM chain (`pi` → `kimi-api`, never Claude) and dispatches accordingly; see [Talking to Houge](#talking-to-houge).
-- **Autonomy guardrails** — a global 24h budget circuit-breaker bounds runs / tool-calls / gated-attempts; see [Global autonomy circuit-breaker](#global-autonomy-circuit-breaker).
-- **Web read** — a **research** intent searches the live web (pluggable Tavily/Firecrawl chain) and 猴哥 answers with cited sources, then a STORM-style self-critique pass sanity-checks the draft; free-read, gated-act ([ADR 0006](docs/decisions/0006-web-read-capability.md)).
-- **Conversational learning** — a reaction to a prior answer ("too long", "prefer primary sources") gets a tighter re-answer, and when the feedback generalizes into a reusable preference it is silently distilled into a char-capped lesson block; see [Learning](#learning).
+- **Agentic inner loop** ([ADR 0013](docs/decisions/0013-llm-inner-composition.md)) — every
+  turn hands the model a tool manifest (web_search, http_fetch, to_local_time, llm_answer,
+  lesson_write, self_diagnose, self_write_propose, skill_author); it composes its own steps;
+  every step still executes through the deterministic gates.
+- **Self-evolution, proven live** — Houge has 13+ merged self-writes: a write-intent runs
+  Codex in a fresh worktree → protected-path guard → test gate → independent reviewer →
+  auto-published branch → Paco's [Merge & reload] tap ([ADR 0011](docs/decisions/0011-self-evolution-architecture.md)).
+- **The eval loop (spine Slice A)** ([ADR 0012](docs/decisions/0012-self-evolution-spine-closed-loop.md)) —
+  0–3 session ratings, per-turn attribution, reconcile-on-write (ADD/SUPERSEDE/UPDATE),
+  reuse-value + decay; compounding is observable in `/lessons`.
+- **Security walls, armed in production** — a secrets firewall (broker + env strip + egress
+  redaction, [ADR 0015](docs/decisions/0015-secrets-firewall.md)) and a dual-LLM wall (a
+  quarantined reader ingests untrusted web bytes; the planner that chooses actions never
+  sees them, [ADR 0014](docs/decisions/0014-dual-llm-privilege-separation.md)).
+- **Web read** — loop-native `web_search` (Tavily/Firecrawl chain) + SSRF-hardened
+  `http_fetch`; free-read, gated-act ([ADR 0006](docs/decisions/0006-web-read-capability.md)).
+- **Conversational learning** — feedback gets a tighter re-answer and, when it generalizes,
+  is silently distilled into a lesson; see [Learning](#learning).
+- **Natural-language front door** — every non-command message becomes one `turn` classified
+  on the model-agnostic LLM chain; see [Talking to Houge](#talking-to-houge).
+
+**What's next** — the sequenced build plan (research-convergence fix → episodic memory →
+kill-switch + $-ceiling → LLM wiki → the autonomy flip's preconditions) lives in
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Quick start
 
@@ -63,7 +87,8 @@ recommended live chain is `pi,agy-cli,kimi-api,gemini-api`. Two kinds of leg:
 `--print` mode, Gemini Flash) and `gemini-api` (Google's OpenAI-compat endpoint).
 The general legs exist because a coding model over-produces on research/answer prose
 and blew `pi`'s 256KB output cap (the 2026-06-26 silent-failure incident); a general
-leg synthesizes cleanly and catches the fall-through. All model-agnostic, never Claude.
+leg synthesizes cleanly and catches the fall-through. All model-agnostic — best model per
+capability, flat-rate legs first, metered APIs as capped fallback.
 Houge answers in its own voice — a projection of its Core Identity
 ([memory/core/houge.md](memory/core/houge.md)): the cheerful, capable 猴哥, but
 *inference only* (it answers; it doesn't act) on the **answer** path. Override the
@@ -217,12 +242,17 @@ allowlist-checked, same floor as messages), and the daemon **never merges on its
 
 ## Safety model
 
-Deterministic code owns control; the LLM is used only for judgment
-([ADR 0001](docs/decisions/0001-deterministic-harness-governs-everything.md)).
+Deterministic code owns the irreversible; the LLM owns judgment
+([ADR 0001](docs/decisions/0001-deterministic-harness-governs-everything.md), as amended:
+the cognitive interior is the model's to run — the gates sit at irreversible action).
 Defense-in-depth: per-run budget bounds one task; Telegram rate limits bound intake
 spikes; a **global circuit-breaker** bounds Houge as a whole over a rolling 24h window
 (the autonomy floor for the always-on daemon); approval gates require your consent for
-each risky action.
+each risky action. On top of that floor: the self-write **protected-path guard** (fail-closed,
+not overridable by `/approve`), the worktree **test gate**, an **independent diff reviewer**,
+branch-only publish with a **human-tapped merge**, the **secrets firewall**
+([ADR 0015](docs/decisions/0015-secrets-firewall.md)), and the **dual-LLM wall**
+([ADR 0014](docs/decisions/0014-dual-llm-privilege-separation.md)).
 
 → Breaker caps, defaults, and rationale:
 [configuration reference](docs/reference/configuration.md#global-autonomy-circuit-breaker)
@@ -230,6 +260,7 @@ and [ADR 0003](docs/decisions/0003-global-budget-breaker.md).
 
 ## Documentation
 
+- [Roadmap](docs/ROADMAP.md) — the model-agnostic handoff plan: verified state, non-negotiables, sequenced next builds.
 - [Configuration reference](docs/reference/configuration.md) — every environment variable, default, and purpose.
 - [Deploy the daemon (launchd)](deploy/launchd/README.md) — run the always-on daemon on macOS.
 - [Architecture decisions](docs/decisions/README.md) — the *why* behind significant choices (ADRs).
