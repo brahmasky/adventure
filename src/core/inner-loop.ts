@@ -504,8 +504,9 @@ export function digestOutput(output: Record<string, unknown>, charCap: number): 
   } else if (Array.isArray(output.results) && isTimeConvertResults(output.results)) {
     // to_local_time: readable `when (tz) → local (relative_day)` lines (or a per-item error),
     // so the planner reads the code-computed label instead of re-doing the tz math itself.
-    text = output.results
-      .map((r) => {
+    text = [
+      "Use only each row's relative_day below to include/exclude events for today/tomorrow requests.",
+      ...output.results.map((r) => {
         const row = r as Record<string, unknown>;
         const when = typeof row.when === "string" ? row.when : "";
         const tz = typeof row.tz === "string" ? row.tz : "";
@@ -514,7 +515,7 @@ export function digestOutput(output: Record<string, unknown>, charCap: number): 
         const relative = typeof row.relative_day === "string" ? row.relative_day : "";
         return `${when} (${tz}) → ${local} (${relative})`;
       })
-      .join("\n");
+    ].join("\n");
   } else if (Array.isArray(output.results)) {
     text = output.results
       .map((r, i) => {

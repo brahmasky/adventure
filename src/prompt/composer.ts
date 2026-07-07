@@ -110,7 +110,9 @@ export const LOOP_DISCIPLINE =
   "live web. For times stated in sources, use only the timezone explicitly declared by that source; " +
   "if no timezone is stated, do not infer or guess one from the venue, city, country, event, or user locale. " +
   "Before you call any date or time 'today', 'tomorrow', or any relative day, convert only explicitly-zoned " +
-  "times with to_local_time — never do the timezone math yourself. Use lesson_write when the user corrects you or states a durable " +
+  "times with to_local_time — never do the timezone math yourself. When the user asks for events on a relative day, " +
+  "filter solely by the relative_day returned by to_local_time; do not filter by the source date, venue date, " +
+  "or your own calendar arithmetic. Use lesson_write when the user corrects you or states a durable " +
   "preference — you may " +
   "save a lesson AND still answer the question in the same turn. Your final answer must be " +
   "complete and self-contained, in the user's language and style, with no process notes. " +
