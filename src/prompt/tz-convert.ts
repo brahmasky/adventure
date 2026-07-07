@@ -25,13 +25,52 @@ export interface LocalTimeResult {
   error?: string;
 }
 
-/** Whether `tz` is an IANA zone `Intl` accepts (an invalid one makes it throw a RangeError). */
-function isValidTimeZone(tz: string): boolean {
+const TIME_ZONE_ALIASES: Record<string, string> = {
+  utc: "UTC",
+  gmt: "UTC",
+  et: "America/New_York",
+  edt: "America/New_York",
+  est: "America/New_York",
+  "eastern time": "America/New_York",
+  "us eastern": "America/New_York",
+  "u s eastern": "America/New_York",
+  ct: "America/Chicago",
+  cdt: "America/Chicago",
+  cst: "America/Chicago",
+  "central time": "America/Chicago",
+  "us central": "America/Chicago",
+  "u s central": "America/Chicago",
+  mt: "America/Denver",
+  mdt: "America/Denver",
+  mst: "America/Denver",
+  "mountain time": "America/Denver",
+  "us mountain": "America/Denver",
+  "u s mountain": "America/Denver",
+  pt: "America/Los_Angeles",
+  pdt: "America/Los_Angeles",
+  pst: "America/Los_Angeles",
+  "pacific time": "America/Los_Angeles",
+  "us pacific": "America/Los_Angeles",
+  "u s pacific": "America/Los_Angeles"
+};
+
+function normalizeTimeZone(tz: string): string {
+  const key = tz
+    .trim()
+    .toLowerCase()
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ");
+  return TIME_ZONE_ALIASES[key] ?? tz;
+}
+
+/** Resolve common source labels, then require a zone `Intl` accepts. */
+function resolveTimeZone(tz: string): string | undefined {
+  const candidate = normalizeTimeZone(tz);
   try {
-    new Intl.DateTimeFormat("en-CA", { timeZone: tz });
-    return true;
+    new Intl.DateTimeFormat("en-CA", { timeZone: candidate });
+    return candidate;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -115,14 +154,18 @@ export function toLocalTimes(items: LocalTimeItem[], now: Date, localTz: string)
   // Honor the never-throws contract even for a garbage `localTz` (a bad HOUGE_TIMEZONE reaching
   // a direct caller): fall back to UTC. The production path (resolveLocalTimeZone) already
   // rejects an invalid override before it gets here, so this is a belt-and-braces guard.
-  const zone = isValidTimeZone(localTz) ? localTz : "UTC";
+  const zone = resolveTimeZone(localTz) ?? "UTC";
   const todayDay = localDayNumber(now, zone);
   return items.map((item) => {
     const when = String(item.when ?? "");
     const tz = String(item.tz ?? "");
+    const sourceZone = resolveTimeZone(tz);
+    if (!sourceZone) {
+      return { when, tz, error: `invalid timezone: ${tz}` };
+    }
     let instant: Date | undefined;
     try {
-      instant = wallClockToInstant(when, tz);
+      instant = wallClockToInstant(when, sourceZone);
     } catch {
       // An invalid `tz` makes Intl.DateTimeFormat throw a RangeError.
       return { when, tz, error: `invalid timezone: ${tz}` };
@@ -152,6 +195,7 @@ export function resolveLocalTimeZone(env: NodeJS.ProcessEnv): string {
   const runtime = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   // A garbage override is ignored (fall back to the runtime tz) rather than propagated into
   // the converter, where it would surface as an error on every item.
-  if (override && override.length > 0 && isValidTimeZone(override)) return override;
+  const resolvedOverride = override && override.length > 0 ? resolveTimeZone(override) : undefined;
+  if (resolvedOverride) return resolvedOverride;
   return runtime;
 }
