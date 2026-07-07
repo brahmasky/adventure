@@ -71,7 +71,7 @@ describe("compileTaskContract", () => {
         "write_report"
       ]);
       // 10 (was 6): a search → fetch×2-3 → answer chain must fit in ONE turn (step ③).
-      expect(result.contract.budget.max_tool_calls).toBe(10);
+      expect(result.contract.budget.max_tool_calls).toBe(14);
       expect(result.contract.forbidden_actions).toContain("external_write");
       expect(result.contract.approval_gates).toContain("external_write");
       expect(result.contract.contract_hash).toMatch(/^[a-f0-9]{64}$/);

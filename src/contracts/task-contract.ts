@@ -162,10 +162,14 @@ function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
   // and each runs its unchanged legacy pipeline under its own sub-contract inside.
   // `http_fetch` (Phase 3.6 step ③) is a plain armed loop tool like web_search; the
   // 10-call budget lets a search → fetch×2-3 → answer chain fit in ONE turn (the old
-  // 6 hit step_cap on real research turns — soak 07-05).
+  // 6 hit step_cap on real research turns — soak 07-05). Bumped 10→14 (07-07): the
+  // zone-evidence gate + convert-before-final guard deliberately make schedule turns
+  // search until a zone-LABELED source appears before converting — live gate runs
+  // showed that honest workflow needs ~9 searches + conversions + a bounced final,
+  // which step_capped at 10 with the correct answer one step out of reach.
   const base = {
     objective: event.goal,
-    budget: { time_minutes: 10, max_tool_calls: 10, max_agent_delegations: 0 },
+    budget: { time_minutes: 10, max_tool_calls: 14, max_agent_delegations: 0 },
     allowed_actions: [
       "intent_router",
       "web_search",
