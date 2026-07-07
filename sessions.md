@@ -337,8 +337,10 @@ Build + independent adversarial verification subagents; each live round found a 
 - LIVE GATE R7 PASSED: real turn (run_899cf696) via Gateway→CoreWorker, dual-LLM armed for the
   process (daemon untouched). Digests carried GMT/BST as separate tuples + "zone: not stated" for
   bare times; answer correct: ARG-EGY Sydney 02:00 Jul 8, SUI-COL 06:00 Jul 8, cross-corroborated
-  (12:00PM ET = 16:00 GMT). ROLLOUT PENDING PACO: .env:75 HOUGE_DUAL_LLM_ENABLED=false → true +
-  launchd restart to arm in production.
+  (12:00PM ET = 16:00 GMT). ROLLOUT DONE same session: Paco flipped
+  .env:75 to true; launchctl kickstart -k com.houge.daemon → graceful SIGTERM ("finishing in-flight
+  work", clean stop after 373 cycles), new PID 22885 on current dist, heartbeat last_success green.
+  Production wall ARMED.
 - Follow-ups queued: fix #1 must ALSO revise LOOP_DISCIPLINE's "times are in the venue's/source's
   timezone" line (it actively taught the venue-local guess; live-gate answer still showed a
   cosmetic zone-presentation slip from it); verifier flagged wall WIRING (core-worker/inner-loop

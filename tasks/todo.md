@@ -8,9 +8,9 @@ the planner converted from the GMT-labeled tuples: ARG-EGY → Sydney 02:00 Jul 
 06:00 Jul 8 ✓ (cross-corroborated: 12:00PM ET = 16:00 GMT). The 07-06 failure class (venue-local guess
 on unlabeled times, cross-frame date/time merge) did not recur. Residual noted: the answer's
 parenthetical called 20:00 GMT "当地/美西 8:00 PM" for Vancouver — planner-side zone PRESENTATION slip
-(Sydney answer itself correct), in scope for fix #1 (LOOP_DISCIPLINE venue-tz line). **ROLLOUT pending
-Paco: the daemon still runs HOUGE_DUAL_LLM_ENABLED=false (.env:75) — flip to true + launchd restart to
-arm the wall in production.**
+(Sydney answer itself correct), in scope for fix #1 (LOOP_DISCIPLINE venue-tz line). **ROLLOUT DONE 2026-07-07 10:00:
+Paco flipped .env:75 to true; daemon kickstarted via launchd (PID 22885), graceful SIGTERM cycle,
+heartbeat green — production now runs the fix with the dual-LLM wall ARMED.**
 
 **Status:** R1–R6 DONE, committed. Build subagent green (1148 tests, typecheck/build clean); independent
 adversarial verifier SHIP-WITH-NITS — wall empirically unbroken (protocol-JSON lookalikes, proto
