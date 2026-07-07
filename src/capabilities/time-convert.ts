@@ -7,7 +7,21 @@ export interface TimeConvertAdapterConfig {
   now?: Date;
   /** Inject the local timezone (tests). Default: resolveLocalTimeZone(process.env). */
   localTz?: string;
+  /** Gate for source-stated timezone evidence (tests). Default: resolveTzEvidenceEnabled(process.env). */
+  tzEvidenceEnabled?: boolean;
 }
+
+export const TIME_CONVERT_PRIOR_DIGESTS_FIELD = "__houge_prior_step_digests";
+export const ZONE_EVIDENCE_ERROR = "zone not stated by source — search for a source that states the timezone";
+
+const ZONE_LABELS: Record<string, string[]> = {
+  UTC: ["UTC", "GMT"],
+  "America/New_York": ["ET", "EDT", "EST", "Eastern Time", "US Eastern"],
+  "America/Chicago": ["CT", "CDT", "CST", "Central Time", "US Central"],
+  "America/Denver": ["MT", "MDT", "MST", "Mountain Time", "US Mountain"],
+  "America/Los_Angeles": ["PT", "PDT", "PST", "Pacific Time", "US Pacific"],
+  "Australia/Sydney": ["AEST", "AEDT", "Sydney time", "Australia/Sydney"]
+};
 
 /**
  * `to_local_time` capability. Converts one or more source datetimes (each with its stated
@@ -27,16 +41,57 @@ export function createTimeConvertAdapter(
     // Per-item isolation: a malformed row (missing/non-string when|tz) is coerced to empty
     // strings so `toLocalTimes` reports it as a per-item `error` — one bad item never drops the
     // good conversions in the same batch. Only a non-array/empty `items` is a batch-level reject.
-    const items: LocalTimeItem[] = raw.map((entry) => {
+    const rawItems = raw.map((entry) => {
       const row = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>;
       return {
         when: typeof row.when === "string" ? row.when.trim() : "",
-        tz: typeof row.tz === "string" ? row.tz.trim() : ""
+        tz: typeof row.tz === "string" ? row.tz.trim() : "",
+        zone_evidence: typeof row.zone_evidence === "string" ? row.zone_evidence.trim() : ""
       };
     });
+    const items: LocalTimeItem[] = rawItems.map((item) => ({ when: item.when, tz: item.tz }));
+    const evidenceEnabled = config.tzEvidenceEnabled ?? resolveTzEvidenceEnabled(process.env);
     const now = config.now ?? new Date();
     const localTz = config.localTz ?? resolveLocalTimeZone(process.env);
     const results = toLocalTimes(items, now, localTz);
+    if (evidenceEnabled) {
+      const priorDigests = readPriorDigests(input[TIME_CONVERT_PRIOR_DIGESTS_FIELD]);
+      return {
+        ok: true,
+        output: {
+          results: results.map((result, i) =>
+            validateZoneEvidence(rawItems[i]!.zone_evidence, rawItems[i]!.tz, priorDigests) ? result : zoneEvidenceError(rawItems[i]!)
+          )
+        }
+      };
+    }
     return { ok: true, output: { results } };
   };
+}
+
+/** Whether timezone-source evidence is enforced (`HOUGE_TZ_EVIDENCE_ENABLED`, default OFF). */
+export function resolveTzEvidenceEnabled(env: NodeJS.ProcessEnv): boolean {
+  const raw = env.HOUGE_TZ_EVIDENCE_ENABLED?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+function readPriorDigests(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((d): d is string => typeof d === "string" && d.length > 0) : [];
+}
+
+function validateZoneEvidence(fragment: string, tz: string, priorDigests: string[]): boolean {
+  return fragment.length > 0 && evidenceMentionsTimeZone(fragment, tz) && priorDigests.some((d) => d.includes(fragment));
+}
+
+function evidenceMentionsTimeZone(fragment: string, tz: string): boolean {
+  const labels = [tz, ...(ZONE_LABELS[tz] ?? [])].filter((label) => label.length > 0);
+  return labels.some((label) => new RegExp(`(^|[^A-Za-z])${escapeRegExp(label)}([^A-Za-z]|$)`, "i").test(fragment));
+}
+
+function zoneEvidenceError(item: { when: string; tz: string }): LocalTimeItem & { error: string } {
+  return { when: item.when, tz: item.tz, error: ZONE_EVIDENCE_ERROR };
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

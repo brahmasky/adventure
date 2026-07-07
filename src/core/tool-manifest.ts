@@ -1,5 +1,6 @@
 import { resolveCodexEnabled } from "../capabilities/coding-agent.js";
 import { resolveSelfWriteEnabled } from "../capabilities/intent.js";
+import { resolveTzEvidenceEnabled } from "../capabilities/time-convert.js";
 import { resolveSkillsEnabled } from "../skills/skill-store.js";
 import { resolveHttpFetchEnabled } from "../web/http-fetch.js";
 import { resolveTimeToolEnabled } from "../prompt/tz-convert.js";
@@ -140,8 +141,16 @@ export function manifestFor(allowed_actions: string[], env: NodeJS.ProcessEnv = 
   return allowed_actions.flatMap((name) => {
     const entry = DESCRIPTORS[name];
     if (!entry || (entry.armed && !entry.armed(env))) return [];
-    const { armed, ...manifest } = entry;
+    const { armed, ...baseManifest } = entry;
     void armed;
+    const manifest =
+      name === "to_local_time" && resolveTzEvidenceEnabled(env)
+        ? {
+            ...baseManifest,
+            inputSketch:
+              '{"items":[{"when":"2026-07-06 20:00","tz":"America/New_York","zone_evidence":"source text fragment that states the timezone, e.g. 8:00 PM ET"}]}'
+          }
+        : baseManifest;
     return [manifest];
   });
 }

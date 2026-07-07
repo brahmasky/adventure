@@ -1,4 +1,5 @@
 import type { CapabilityResult } from "../capabilities/capability-runner.js";
+import { TIME_CONVERT_PRIOR_DIGESTS_FIELD } from "../capabilities/time-convert.js";
 import { stableHash } from "../domain/canonical.js";
 import { renderManifestLines } from "./tool-manifest.js";
 import type { ToolManifestEntry } from "./tool-manifest.js";
@@ -245,7 +246,13 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
       deadlineMs += input.extendDeadlineFor(action.action);
     }
 
-    const result = await deps.executeAction(action.action, action.input ?? {});
+    const actionInput = action.input ?? {};
+    const injectTzEvidence = action.action === "to_local_time" && timeConvertEvidenceRequired(input.manifest);
+    const executeInput =
+      injectTzEvidence
+        ? { ...actionInput, [TIME_CONVERT_PRIOR_DIGESTS_FIELD]: steps.map((s) => s.resultDigest) }
+        : actionInput;
+    const result = await deps.executeAction(action.action, executeInput);
     if (result.status === "succeeded") {
       const stepCharCap = input.resultCharCapFor?.(action.action) ?? charCap;
       // Dual-LLM wall (ADR 0014): an external-read tool's raw bytes are summarized by the
@@ -263,7 +270,7 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
       }
       record({
         action: action.action,
-        input: action.input ?? {},
+        input: actionInput,
         ...(action.why ? { why: action.why } : {}),
         ok: true,
         resultDigest
@@ -283,7 +290,7 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
     const detail = failureDetail(result);
     record({
       action: action.action,
-      input: action.input ?? {},
+      input: actionInput,
       ...(action.why ? { why: action.why } : {}),
       ok: false,
       resultDigest:
@@ -297,6 +304,10 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
   }
 
   return { outcome: "final", reason: "step_cap", answer: await fallbackFinal(input, deps, steps), steps };
+}
+
+function timeConvertEvidenceRequired(manifest: ToolManifestEntry[]): boolean {
+  return manifest.some((entry) => entry.name === "to_local_time" && entry.inputSketch.includes("zone_evidence"));
 }
 
 /**
