@@ -190,3 +190,28 @@ describe("toLocalTimes — invalid localTz never throws (honors the never-throws
     expect(results[0]!.error).toBeUndefined();
   });
 });
+
+describe("toLocalTimes — sloppy source labels the ICU trap would misread (07-07 aliases)", () => {
+  const NOW = new Date("2026-07-07T04:00:00Z"); // 14:00 Sydney, Jul 7
+
+  it("BST means British Summer Time, never Bangladesh (+6): 17:00 BST → 02:00 Jul 8 Sydney", () => {
+    // Bare "BST" is a valid ICU zone id for Asia/Dhaka — without the alias this converted
+    // 5h off in live traffic (07-07). The alias must win BEFORE Intl validation sees it.
+    const r = toLocalTimes([{ when: "2026-07-07 17:00", tz: "BST" }], NOW, "Australia/Sydney")[0]!;
+    expect(r.error).toBeUndefined();
+    expect(r.local).toBe("2026-07-08 02:00");
+    expect(r.relative_day).toBe("tomorrow");
+  });
+
+  it("AEST/AEDT alias to Australia/Sydney (identity for a Sydney target)", () => {
+    const aest = toLocalTimes([{ when: "2026-07-08 02:00", tz: "AEST" }], NOW, "Australia/Sydney")[0]!;
+    expect(aest.error).toBeUndefined();
+    expect(aest.local).toBe("2026-07-08 02:00");
+    expect(aest.relative_day).toBe("tomorrow");
+    const aedt = toLocalTimes([{ when: "2026-07-07 14:00", tz: "AEDT" }], NOW, "Australia/Sydney")[0]!;
+    expect(aedt.error).toBeUndefined();
+    // AEDT is +11 (Sydney's DST label): 14:00 AEDT = 13:00 Sydney winter time (+10) — the alias
+    // maps to the ZONE, whose offset at a July date is +10, so identity holds for July input.
+    expect(aedt.local).toBe("2026-07-07 14:00");
+  });
+});

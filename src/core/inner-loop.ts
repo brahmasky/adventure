@@ -28,6 +28,23 @@ const PARSE_FAILURE_CAP = 2;
 /** Denied/failed action results reported to the model before halting. */
 const FAILURE_CAP = 2;
 
+/**
+ * Relative-day tokens that arm the convert-before-final guard (07-07 live failure class:
+ * three "明天休赛日" answers finalized from source-frame calendar labels with ZERO conversions,
+ * ignoring five prompt-level rules — so the check is mechanical, not worded). Chinese tokens
+ * match bare (no word boundaries in CJK); English ones are word-bounded so "todays" ≠ "today".
+ */
+const RELATIVE_DAY_TOKENS = /今天|明天|后天|昨天|今晚|明早|\b(?:today|tomorrow|tonight|yesterday)\b/i;
+
+/** Convert-before-final bounces allowed per run (anti-livelock; the step cap still backstops). */
+const RELATIVE_DAY_FINAL_BOUNCE_CAP = 2;
+
+/** The instructive digest a bounced `final` reads next step (mirrors the repeat-action notice). */
+export const RELATIVE_DAY_FINAL_BOUNCE_DIGEST =
+  "the question asks about a relative day; convert candidate source times with to_local_time " +
+  "(with zone evidence) and filter by relative_day before finalizing — search for zone-labeled " +
+  "kickoff times if needed";
+
 /** One parsed protocol action. `input` only for tool actions; answer/question for final/clarify. */
 export interface LoopAction {
   action: string;
@@ -156,6 +173,7 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
   let parseFailures = 0; // consecutive; a repeated identical action counts (ping-pong guard)
   let failures = 0; // denied/failed action results reported back to the model
   let clarifyNudged = false;
+  let relativeDayBounces = 0; // convert-before-final guard rejections so far (capped)
   let lastRaw = "";
   const now = input.now ?? Date.now;
   let deadlineMs = input.deadlineMs; // mutable: evolution tools may extend it (H2)
@@ -197,6 +215,20 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
     const action = parsed.action;
 
     if (action.action === "final") {
+      // Convert-before-final guard (mechanical): a relative-day question, with dated/timed
+      // events on the table (a digest carried time_claims), cannot be finalized until at
+      // least one to_local_time step succeeded — "no matches tomorrow" is a relative-day
+      // CLAIM and needs the conversion that would disprove it, exactly like a positive one.
+      // Capped so a genuinely unconvertible run (no zone-stated source exists) still ends.
+      if (
+        relativeDayBounces < RELATIVE_DAY_FINAL_BOUNCE_CAP &&
+        finalNeedsRelativeDayConversion(input, steps)
+      ) {
+        relativeDayBounces += 1;
+        parseFailures = 0; // the reply WAS a valid protocol action — only the guard bounced it
+        record({ action: "final", ok: false, resultDigest: RELATIVE_DAY_FINAL_BOUNCE_DIGEST });
+        continue;
+      }
       return { outcome: "final", reason: "final", answer: action.answer ?? "", steps };
     }
 
@@ -309,6 +341,34 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
 function timeConvertEvidenceRequired(manifest: ToolManifestEntry[]): boolean {
   return manifest.some((entry) => entry.name === "to_local_time" && entry.inputSketch.includes("zone_evidence"));
 }
+
+/**
+ * Whether a `final` must bounce for a conversion first. ALL of: the tool is armed (a disarmed
+ * manifest has nothing to demand), the objective asks about a relative day, some successful
+ * step's digest carried a `time_claims:` block (the reader saw dated/timed events), and no
+ * to_local_time step has CONVERTED A ROW yet. Matches on the rendered digest markers — the same
+ * strings `renderExtractionDigest`/`digestOutput` emit — so the check stays code-to-code,
+ * not model-judged.
+ */
+function finalNeedsRelativeDayConversion(
+  input: Pick<InnerLoopInput, "objective" | "manifest">,
+  steps: LoopStepRecord[]
+): boolean {
+  if (!input.manifest.some((entry) => entry.name === "to_local_time")) return false;
+  if (!RELATIVE_DAY_TOKENS.test(input.objective)) return false;
+  const sawTimeClaims = steps.some((s) => s.ok && s.resultDigest.includes("time_claims:"));
+  if (!sawTimeClaims) return false;
+  return !steps.some((s) => s.ok && s.action === "to_local_time" && CONVERTED_ROW.test(s.resultDigest));
+}
+
+/**
+ * A to_local_time digest row that actually converted: `when (tz) → 2026-07-08 02:00 (tomorrow)`.
+ * The adapter is per-item isolated and returns ok:true even when EVERY row errored (e.g. all
+ * rows rejected by the evidence gate) — a step-level `ok` alone would let an all-error call
+ * disarm the guard for the rest of the run, which is exactly the incident class it exists for.
+ * Error rows render `→ error: …` and can never match.
+ */
+const CONVERTED_ROW = /→ \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(/;
 
 /**
  * Build the per-step *question* (the DATA channel): the user message, thread context,

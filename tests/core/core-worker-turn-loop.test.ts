@@ -314,8 +314,9 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
     // ride the step digest — so the model answers from the label instead of botching the tz math.
     process.env.HOUGE_TIME_TOOL_ENABLED = "1";
     const store = RunStore.openInMemory();
-    // Injected clock + local tz → hermetic against the host tz / HOUGE_TIMEZONE.
-    const timeAdapter = createTimeConvertAdapter({ now: new Date("2026-07-06T05:00:00Z"), localTz: "Australia/Sydney" });
+    // Injected clock + local tz + empty env → hermetic against the host tz / HOUGE_TIMEZONE /
+    // an ambient HOUGE_TZ_EVIDENCE_ENABLED (the daemon-env sweep exports it).
+    const timeAdapter = createTimeConvertAdapter({ now: new Date("2026-07-06T05:00:00Z"), localTz: "Australia/Sydney", env: {} });
     const calls: Array<Record<string, unknown>> = [];
     try {
       const run_id = turnRun(store, "明天有哪几场？");

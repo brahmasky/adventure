@@ -7,7 +7,7 @@ export interface TimeConvertAdapterConfig {
   now?: Date;
   /** Inject the local timezone (tests). Default: resolveLocalTimeZone(process.env). */
   localTz?: string;
-  /** Inject the env used by the evidence gate (tests). Default: process.env for the production no-arg adapter. */
+  /** Inject the env used by the evidence gate (tests). Default: process.env. */
   env?: NodeJS.ProcessEnv;
   /** Gate for source-stated timezone evidence (tests). Default: resolveTzEvidenceEnabled(env). */
   tzEvidenceEnabled?: boolean;
@@ -22,6 +22,7 @@ const ZONE_LABELS: Record<string, string[]> = {
   "America/Chicago": ["CT", "CDT", "CST", "Central Time", "US Central"],
   "America/Denver": ["MT", "MDT", "MST", "Mountain Time", "US Mountain"],
   "America/Los_Angeles": ["PT", "PDT", "PST", "Pacific Time", "US Pacific"],
+  "Europe/London": ["BST", "British Summer Time", "UK time"],
   "Australia/Sydney": ["AEST", "AEDT", "Sydney time", "Australia/Sydney"]
 };
 
@@ -36,7 +37,10 @@ export function createTimeConvertAdapter(
   config?: TimeConvertAdapterConfig
 ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
   const adapterConfig = config ?? {};
-  const evidenceEnv = config === undefined ? process.env : adapterConfig.env ?? {};
+  // The evidence env DEFAULTS to process.env even when a config object is passed — a caller
+  // injecting only {now}/{localTz} must not silently disarm the evidence gate (an empty-env
+  // default here would read the flag as OFF for that caller; caught in review 07-07).
+  const evidenceEnv = adapterConfig.env ?? process.env;
   return async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
     const raw = input.items;
     if (!Array.isArray(raw) || raw.length === 0) {
@@ -56,7 +60,9 @@ export function createTimeConvertAdapter(
     const items: LocalTimeItem[] = rawItems.map((item) => ({ when: item.when, tz: item.tz }));
     const evidenceEnabled = adapterConfig.tzEvidenceEnabled ?? resolveTzEvidenceEnabled(evidenceEnv);
     const now = adapterConfig.now ?? new Date();
-    const localTz = adapterConfig.localTz ?? resolveLocalTimeZone(process.env);
+    // Same env source as the evidence gate — a test injecting `env` must not still read the
+    // ambient HOUGE_TIMEZONE (the hermeticity-trap class the env-sweep lesson warns about).
+    const localTz = adapterConfig.localTz ?? resolveLocalTimeZone(evidenceEnv);
     const results = toLocalTimes(items, now, localTz);
     if (evidenceEnabled) {
       const priorDigests = readPriorDigests(input[TIME_CONVERT_PRIOR_DIGESTS_FIELD]);

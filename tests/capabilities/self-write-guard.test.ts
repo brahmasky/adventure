@@ -123,6 +123,8 @@ describe("checkSelfWriteDiff — every protected class is hard-denied", () => {
     ["web/registry (secrets firewall key resolution)", entry({ status: "M", path: "src/web/registry.ts" })],
     ["test-gate (Phase-3)", entry({ status: "M", path: "src/run/test-gate.ts" })],
     ["diff-reviewer (Phase-3)", entry({ status: "M", path: "src/capabilities/diff-reviewer.ts" })],
+    ["self-write-merge (landing sequence)", entry({ status: "M", path: "src/capabilities/self-write-merge.ts" })],
+    ["self-write-action-handler (merge-button path)", entry({ status: "M", path: "src/telegram/self-write-action-handler.ts" })],
     ["houge.md identity", entry({ status: "M", path: "memory/core/houge.md" })],
     ["docs/decisions ADR dir", entry({ status: "M", path: "docs/decisions/0011-self-evolution-architecture.md" })],
     ["AGENTS.md", entry({ status: "M", path: "AGENTS.md" })],

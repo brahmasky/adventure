@@ -289,7 +289,11 @@ describe("runTelegramDaemon — reload-marker boot confirmation (⓪·2c U2)", (
   const SHA = "abcdef1234567890abcdef1234567890abcdef12";
 
   /** Run one daemon pass that aborts on the first getUpdates; collect sent messages. */
-  async function bootOnce(store: RunStore, resolveHead: () => string): Promise<string[]> {
+  async function bootOnce(
+    store: RunStore,
+    resolveHead: () => string,
+    resolveDistStale?: () => boolean
+  ): Promise<string[]> {
     const controller = new AbortController();
     const sent: string[] = [];
     await runTelegramDaemon({
@@ -299,6 +303,7 @@ describe("runTelegramDaemon — reload-marker boot confirmation (⓪·2c U2)", (
       stopSignal: controller.signal,
       longPollTimeoutSeconds: 0,
       resolveHead,
+      ...(resolveDistStale ? { resolveDistStale } : {}),
       llmAdapter: async (input) => okAnswer(input),
       telegramClient: {
         getUpdates: async () => {
@@ -349,6 +354,33 @@ describe("runTelegramDaemon — reload-marker boot confirmation (⓪·2c U2)", (
       const confirmation = sent.find((t) => t.includes("重启成功"));
       expect(confirmation).toBeDefined();
       expect(confirmation).toContain("（当前 HEAD 与合并记录不一致）");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("stale dist at boot (src newer than dist) → the confirmation carries the rebuild warning", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      store.writeReloadMarker({ sha: SHA, subject: "s", branch: "b" });
+      const sent = await bootOnce(store, () => SHA, () => true);
+      const confirmation = sent.find((t) => t.includes("重启成功"));
+      expect(confirmation).toBeDefined();
+      expect(confirmation).toContain("运行中的代码可能是旧的");
+      expect(confirmation).toContain("重新 build 并重启");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("fresh dist at boot → no stale warning (probe injected false)", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      store.writeReloadMarker({ sha: SHA, subject: "s", branch: "b" });
+      const sent = await bootOnce(store, () => SHA, () => false);
+      const confirmation = sent.find((t) => t.includes("重启成功"));
+      expect(confirmation).toBeDefined();
+      expect(confirmation).not.toContain("可能是旧的");
     } finally {
       store.close();
     }

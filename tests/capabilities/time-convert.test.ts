@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createTimeConvertAdapter } from "../../src/capabilities/time-convert.js";
 
-// Injected clock + local tz so the adapter is hermetic against the host tz / HOUGE_TIMEZONE.
+// Injected clock + local tz + empty env so the adapter is hermetic against the host tz /
+// HOUGE_TIMEZONE / an ambient HOUGE_TZ_EVIDENCE_ENABLED (the daemon-env sweep exports it).
 const NOW = new Date("2026-07-06T05:00:00Z"); // 2026-07-06 15:00 Australia/Sydney
-const CONFIG = { now: NOW, localTz: "Australia/Sydney" };
+const CONFIG = { now: NOW, localTz: "Australia/Sydney", env: {} };
 const ET = "America/New_York";
 
 describe("createTimeConvertAdapter", () => {

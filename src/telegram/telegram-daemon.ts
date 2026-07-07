@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { join } from "node:path";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
+import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
 import { CoreWorker } from "../core/core-worker.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
@@ -46,6 +48,12 @@ export interface RunTelegramDaemonOptions {
   now?: () => string;
   /** Injectable for tests: current HEAD sha (reload-marker match, ⓪·2c U2). Default shells git. */
   resolveHead?: () => string;
+  /**
+   * Injectable for tests: whether the running dist/ looks STALE relative to src/ (newest
+   * src .ts mtime > newest dist .js mtime). Real default probes the filesystem. Used by the
+   * boot reload confirmation to warn instead of silently confirming a possibly-stale reload.
+   */
+  resolveDistStale?: () => boolean;
 }
 
 export interface RunTelegramDaemonResult {
@@ -276,15 +284,38 @@ function notifyReloadOnBoot(options: RunTelegramDaemonOptions): void {
     }
 
     const mismatch = head && head !== marker.sha ? "（当前 HEAD 与合并记录不一致）" : "";
+    // Verified-artifact check (07-07): a confirmation that the reload happened is only honest
+    // if the code we booted on is at least as new as the source — src newer than dist means
+    // this process is running a stale build (e.g. a backend commit without a rebuild, or a
+    // gate that never wrote the artifact). Warn loudly instead of silently confirming.
+    let staleNote = "";
+    try {
+      const stale = options.resolveDistStale ? options.resolveDistStale() : distLooksStale(options.projectRoot);
+      if (stale) staleNote = "\n⚠️ 运行中的代码可能是旧的（src 比 dist 新）— 请重新 build 并重启 daemon";
+    } catch {
+      // The staleness probe is best-effort; never block the confirmation on it.
+    }
     new NotificationOutbox(options.store).enqueue({
       target: { kind: "telegram", chat_id: String(chat.telegram_chat_id) },
       intent_type: "final_report",
       idempotency_key: `selfwrite:reloaded:${marker.sha}:${marker.merged_at}`,
       correlation_id: `selfwrite:reload:${marker.sha}`,
-      payload: { text: `✅ 重启成功 — 现在运行 ${marker.sha.slice(0, 7)}「${marker.subject}」${mismatch}` }
+      payload: { text: `✅ 重启成功 — 现在运行 ${marker.sha.slice(0, 7)}「${marker.subject}」${mismatch}${staleNote}` }
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[telegram-daemon] reload-marker boot check failed: ${message}`);
   }
+}
+
+/**
+ * Whether the running build looks stale: newest src/**.ts mtime strictly newer than newest
+ * dist/**.js mtime (or dist absent while src exists). Conservative — equal/unknown → not stale.
+ */
+function distLooksStale(projectRoot: string): boolean {
+  const srcNewest = newestMtimeMs(join(projectRoot, "src"), ".ts");
+  if (srcNewest === undefined) return false; // no src to compare against — nothing to claim
+  const distNewest = newestMtimeMs(join(projectRoot, "dist"), ".js");
+  if (distNewest === undefined) return true; // src exists, no artifact at all
+  return srcNewest > distNewest;
 }

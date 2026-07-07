@@ -89,6 +89,8 @@ const PROTECTED_FILES: readonly string[] = [
   "src/run/test-gate.ts", // new Phase-3 module (checker 2)
   "src/capabilities/diff-reviewer.ts", // new Phase-3 module (checker 3)
   "src/run/branch-publish.ts", // new Phase-3 module (step 7 — branch publish)
+  "src/capabilities/self-write-merge.ts", // merge→build→gate→restart executor — a self-write must not reorder its own landing sequence
+  "src/telegram/self-write-action-handler.ts", // the authenticated merge-button path (M4) — same landing-sequence class
   // ── Identity / rules ──
   "memory/core/houge.md",
   "agents.md", // stored lower-case; matching is case-insensitive

@@ -51,7 +51,14 @@ const TIME_ZONE_ALIASES: Record<string, string> = {
   pst: "America/Los_Angeles",
   "pacific time": "America/Los_Angeles",
   "us pacific": "America/Los_Angeles",
-  "u s pacific": "America/Los_Angeles"
+  "u s pacific": "America/Los_Angeles",
+  // Bare "BST" is a valid ICU zone id — for BANGLADESH Standard Time (+6). Football sources
+  // mean British Summer Time, so it MUST be aliased to Europe/London BEFORE Intl sees it
+  // (caught live 07-07: "20:00 BST" converted via Asia/Dhaka, 5h off).
+  bst: "Europe/London",
+  "british summer time": "Europe/London",
+  aest: "Australia/Sydney",
+  aedt: "Australia/Sydney"
 };
 
 function normalizeTimeZone(tz: string): string {

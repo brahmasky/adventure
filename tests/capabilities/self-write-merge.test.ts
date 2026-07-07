@@ -1,7 +1,11 @@
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   discardBranch,
   mergeAndReload,
+  newestMtimeMs,
   resolveDaemonLabel,
   resolveSelfWritePush,
   viewDiff,
@@ -270,5 +274,65 @@ describe("mergeAndReload — idempotency + not_found", () => {
     expect(r).toEqual({ kind: "reloaded", pushed: false });
     expect(calls).toContain("merge(b,release)");
     expect(calls).toContain("testGate");
+  });
+});
+
+describe("mergeAndReload — verified-artifact invariant (stale_dist, 07-07)", () => {
+  const T0 = 1_000_000; // injected merge-start clock
+
+  it("dist newer than merge start → reloaded (restart runs)", () => {
+    const { deps, calls } = makeDeps({ distNewestMtimeMs: () => T0 + 5_000 });
+    const r = mergeAndReload({ branch: "b", deps, now: () => T0 });
+    expect(r).toEqual({ kind: "reloaded", pushed: false });
+    expect(calls).toContain("restart");
+  });
+
+  it("dist OLDER than merge start → reverted stage stale_dist; NO restart, NO marker, NO beacon", () => {
+    const { deps, calls } = makeDeps({ distNewestMtimeMs: () => T0 - 5_000 });
+    const r = mergeAndReload({ branch: "b", deps, now: () => T0 });
+    expect(r.kind).toBe("reverted");
+    if (r.kind !== "reverted") return;
+    expect(r.stage).toBe("stale_dist");
+    expect(calls).toContain("resetMerge(main,PREREF)");
+    expect(calls).not.toContain("restart");
+    expect(calls).not.toContain("writeReloadMarker(b,main)");
+    expect(calls.some((c) => c.startsWith("notifyDurable"))).toBe(false);
+  });
+
+  it("dist MISSING after a green gate → reverted stage stale_dist; NO restart", () => {
+    const { deps, calls } = makeDeps({ distNewestMtimeMs: () => undefined });
+    const r = mergeAndReload({ branch: "b", deps, now: () => T0 });
+    expect(r.kind).toBe("reverted");
+    if (r.kind !== "reverted") return;
+    expect(r.stage).toBe("stale_dist");
+    expect(calls).not.toContain("restart");
+  });
+
+  it("deps without the optional probe keep the pre-invariant behavior (existing mocks stay valid)", () => {
+    const { deps, calls } = makeDeps();
+    const r = mergeAndReload({ branch: "b", deps, now: () => T0 });
+    expect(r).toEqual({ kind: "reloaded", pushed: false });
+    expect(calls).toContain("restart");
+  });
+});
+
+describe("newestMtimeMs (the real artifact probe)", () => {
+  it("returns the newest matching-ext mtime recursively and undefined for a missing dir", () => {
+    const dir = mkdtempSync(join(tmpdir(), "houge-dist-"));
+    try {
+      mkdirSync(join(dir, "sub"));
+      writeFileSync(join(dir, "a.js"), "x");
+      writeFileSync(join(dir, "sub", "b.js"), "y");
+      writeFileSync(join(dir, "notes.txt"), "z"); // wrong ext — ignored
+      const past = new Date(Date.now() - 60_000);
+      utimesSync(join(dir, "a.js"), past, past);
+      const newest = newestMtimeMs(dir, ".js");
+      expect(newest).toBeDefined();
+      expect(newest!).toBeGreaterThan(past.getTime() + 1_000); // b.js (fresh) wins over backdated a.js
+      expect(newestMtimeMs(join(dir, "does-not-exist"), ".js")).toBeUndefined();
+      expect(newestMtimeMs(dir, ".css")).toBeUndefined(); // no matching ext
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

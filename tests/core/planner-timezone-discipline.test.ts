@@ -1,12 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { digestOutput } from "../../src/core/inner-loop.js";
 import { manifestFor, renderManifestLines } from "../../src/core/tool-manifest.js";
-import { LOOP_DISCIPLINE } from "../../src/prompt/composer.js";
+import { LOOP_DISCIPLINE, READER_DISCIPLINE } from "../../src/prompt/composer.js";
 
 describe("planner timezone discipline", () => {
   it("requires relative-day event filtering to come from to_local_time", () => {
     expect(LOOP_DISCIPLINE).toContain("filter solely by the relative_day returned by to_local_time");
     expect(LOOP_DISCIPLINE).toContain("do not filter by the source date");
+  });
+
+  it("forbids the reader from making relative-day judgments (frame poisoning, 07-07)", () => {
+    expect(READER_DISCIPLINE).toContain("NEVER evaluate whether an event is 'today', 'tomorrow', 明天");
+    expect(READER_DISCIPLINE).toContain("timezone conversion you cannot perform");
+    expect(READER_DISCIPLINE).toContain('never conclude "no matches tomorrow", "rest day"');
   });
 
   it("tells the planner to reject missing source timezone markers instead of guessing", () => {

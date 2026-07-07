@@ -1,4 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
+import { readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { runTestGate, type TestGateResult } from "../run/test-gate.js";
 
 /**
@@ -47,6 +49,12 @@ export interface MergeActionDeps {
   preMergeRef(into: string): string;
   /** `npm run build` (main source → new dist/). */
   build(): { ok: boolean; output?: string };
+  /**
+   * Newest mtime (epoch ms) across dist/'s .js files, or `undefined` when dist/ is absent —
+   * the verified-artifact probe behind the stale_dist revert. OPTIONAL so existing injected
+   * test deps stay valid; the real deps always provide it.
+   */
+  distNewestMtimeMs?(): number | undefined;
   /** Re-run the test-gate on the merged repo (the project root, bound by the deps). */
   testGate(): TestGateResult;
   /** `git branch -D branch`. */
@@ -115,7 +123,7 @@ export type MergeOutcome =
   | { kind: "already_merged" }
   | { kind: "not_found" }
   | { kind: "merge_conflict"; detail: string }
-  | { kind: "reverted"; stage: "build" | "test"; detail: string }
+  | { kind: "reverted"; stage: "build" | "test" | "stale_dist"; detail: string }
   | { kind: "reloaded"; pushed: boolean };
 
 /**
@@ -127,20 +135,34 @@ export type MergeOutcome =
  *  - merge throws (conflict) → `merge_conflict` (leave `into` clean; no build/restart).
  *  - build RED → resetMerge + `reverted` (stage "build"); NO restart, NO push.
  *  - testGate RED → resetMerge + `reverted` (stage "test"); NO restart, NO push.
+ *  - dist STALE (distNewestMtimeMs < merge start) → resetMerge + `reverted` (stage "stale_dist").
  *  - GREEN → writeReloadMarker → notifyDurable("merged, reloading…") BEFORE restart() → push if
  *    requested → restart().
  *
- * `into` defaults to "main". `push` defaults to false.
+ * ── 07-07 "reload race" investigation (evidence, so the invariant below has context) ──
+ * Four merge cycles showed beacon+restart at merge+12–16s while dist/ mtimes read ~2 minutes
+ * later — which looked like restart racing the rebuild. It wasn't: the gate genuinely runs in
+ * ~17s on this machine (typecheck 3.3s + vitest 12.1s wall + tsc 1.2s, measured), so the sync
+ * green path really completes at +16s and the daemon relaunches onto dist written ~1s earlier.
+ * The late mtimes were written by LATER `npm test` runs from the verification session —
+ * tests/smoke.test.ts rm-rf's and rebuilds dist/ on every suite run. The stale-dist check
+ * below is therefore defense-in-depth, not a race fix: it makes "restart only lands on an
+ * artifact this flow built" EXPLICIT, so a future async/skipped gate (or a smoke-test rm
+ * window) turns into a loud revert instead of a silent stale reload.
+ *
+ * `into` defaults to "main". `push` defaults to false. `now` is injectable for tests.
  */
 export function mergeAndReload(params: {
   branch: string;
   into?: string;
   push?: boolean;
   deps: MergeActionDeps;
+  now?: () => number;
 }): MergeOutcome {
   const { branch, deps } = params;
   const into = params.into ?? DEFAULT_INTO;
   const push = params.push ?? false;
+  const mergeStartedAtMs = (params.now ?? Date.now)();
 
   try {
     // Idempotency: already an ancestor of `into` → nothing to do (a double-tap is safe).
@@ -176,6 +198,24 @@ export function mergeAndReload(params: {
     if (!gate.green) {
       deps.resetMerge(into, toRef);
       return { kind: "reverted", stage: "test", detail: gate.output };
+    }
+
+    // VERIFIED-ARTIFACT invariant: the restart may only land on a dist/ this flow built.
+    // Newest dist mtime predating the merge start means the gate's build didn't actually
+    // write the artifact (skipped/async/rm'd) — revert loudly rather than reload stale code.
+    if (deps.distNewestMtimeMs) {
+      const newest = deps.distNewestMtimeMs();
+      if (newest === undefined || newest < mergeStartedAtMs) {
+        deps.resetMerge(into, toRef);
+        return {
+          kind: "reverted",
+          stage: "stale_dist",
+          detail:
+            newest === undefined
+              ? "dist/ missing after a green gate — refusing to restart onto no artifact"
+              : `dist/ artifact predates the merge (dist ${new Date(newest).toISOString()} < merge start ${new Date(mergeStartedAtMs).toISOString()}) — refusing to restart onto stale code`
+        };
+      }
     }
 
     // GREEN. Record the reload marker FIRST (the next boot's confirmation reads it), then the
@@ -299,6 +339,9 @@ export function defaultMergeActionDeps(opts: {
     testGate(): TestGateResult {
       return runTestGate(dir, { env });
     },
+    distNewestMtimeMs(): number | undefined {
+      return newestDistMtimeMs(join(dir, "dist"));
+    },
     deleteBranch(branch: string): void {
       git("branch", "-D", branch);
     },
@@ -331,4 +374,25 @@ function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   return "unknown error";
+}
+
+/** Newest `ext` mtime under `dir` (recursive), or undefined when absent/empty. Never throws. */
+export function newestMtimeMs(dir: string, ext: string): number | undefined {
+  try {
+    let newest: number | undefined;
+    for (const entry of readdirSync(dir, { recursive: true })) {
+      const name = String(entry);
+      if (!name.endsWith(ext)) continue;
+      const ms = statSync(join(dir, name)).mtimeMs;
+      if (newest === undefined || ms > newest) newest = ms;
+    }
+    return newest;
+  } catch {
+    return undefined; // dir missing or unreadable → treated as no artifact
+  }
+}
+
+/** Newest .js mtime under `distDir` — the verified-artifact probe. */
+export function newestDistMtimeMs(distDir: string): number | undefined {
+  return newestMtimeMs(distDir, ".js");
 }
