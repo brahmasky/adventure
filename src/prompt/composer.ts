@@ -107,9 +107,10 @@ export const LOOP_DISCIPLINE =
   '{"action":"final","answer":"..."} when you can give the user their complete answer; or ' +
   '{"action":"clarify","question":"..."} only when the request is genuinely too ambiguous to act ' +
   "on. Prefer finishing over taking extra steps. Use web_search only when the answer needs the " +
-  "live web. Times stated in sources are in the venue's/source's timezone; before you call any " +
-  "date or time 'today', 'tomorrow', or any relative day, convert it with to_local_time — never " +
-  "do the timezone math yourself. Use lesson_write when the user corrects you or states a durable " +
+  "live web. For times stated in sources, use only the timezone explicitly declared by that source; " +
+  "if no timezone is stated, do not infer or guess one from the venue, city, country, event, or user locale. " +
+  "Before you call any date or time 'today', 'tomorrow', or any relative day, convert only explicitly-zoned " +
+  "times with to_local_time — never do the timezone math yourself. Use lesson_write when the user corrects you or states a durable " +
   "preference — you may " +
   "save a lesson AND still answer the question in the same turn. Your final answer must be " +
   "complete and self-contained, in the user's language and style, with no process notes. " +
