@@ -1,3 +1,21 @@
+# 🔜 NEXT — Fix #1 mechanical half LANDED by Houge self-write (bb31405) — awaiting ARMING (Paco)
+
+**Verified 2026-07-07 (Claude):** HOUGE_TZ_EVIDENCE_ENABLED gate, default OFF (suite 1156/1156, OFF path
+byte-identical). ON: to_local_time items need zone_evidence; adapter mechanically checks (1) fragment
+contains a label for the claimed tz (word-boundary regex) and (2) fragment appears verbatim in a prior
+step digest — digests injected by the LOOP (model-supplied field overwritten → unforgeable). Probe: valid
+GMT evidence converts (16:00 UTC → Syd 02:00 ✓ the exact 12:25 failure); venue-guess / forged / missing
+evidence all → per-item "zone not stated by source" error. Chain complete: reader time_claims (zone
+stated-or-not) → planner must cite → tool refuses guesses.
+**ARM: add HOUGE_TZ_EVIDENCE_ENABLED=true to .env + daemon restart (also picks up dist written AFTER the
+13:51 self-restart), then live replay 明天有哪几场比赛 (expect Syd 02:00 + 06:00 Jul 8).**
+Residuals: evidence is label-level not claim-level (fragment from another event could justify a zone —
+model-behavior risk); **BST trap still open** (no bst→Europe/London alias; ICU resolves bare BST as
+Asia/Dhaka +6 — live sources print BST; queue as next Houge one-liner with aest/aedt + alias tests);
+commit 02a533f's message still misdescribes its diff.
+
+---
+
 # ✅ DONE — Reader temporal-tuple preservation + protect quarantine.ts (fix #2 of 07-06 time-failure diagnosis) — SHIPPED + LIVE-GATED 2026-07-07
 
 **LIVE GATE PASSED (R7, 2026-07-07):** real `turn` run (`run_899cf696`) through Gateway→CoreWorker with
