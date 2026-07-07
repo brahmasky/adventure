@@ -268,3 +268,5 @@ and [ADR 0003](docs/decisions/0003-global-budget-breaker.md).
 - [Design spec](docs/superpowers/specs/2026-05-25-houge-chatops-orchestrator-design.md) — architecture and milestone plan.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — documentation convention and definition of done (tests **and** a live run).
 - [AGENTS.md](AGENTS.md) — coding, safety, and workflow rules. [CONTEXT.md](CONTEXT.md) — domain language.
+
+<!-- merge-reload live-gate cycle 2026-07-07 (B3 invariant) -->
