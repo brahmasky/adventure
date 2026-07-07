@@ -345,3 +345,28 @@ Build + independent adversarial verification subagents; each live round found a 
   timezone" line (it actively taught the venue-local guess; live-gate answer still showed a
   cosmetic zone-presentation slip from it); verifier flagged wall WIRING (core-worker/inner-loop
   call sites, READER_DISCIPLINE) stays self-writable by design — revisit scope if desired.
+
+## 2026-07-07 (later) — ROADMAP handoff doc (Fable 5 → any successor model)
+- Context: Paco's access to the current orchestrator model (Claude Fable 5) may end after today;
+  he asked for a detailed, model-agnostic roadmap so Opus 4.8 / any LLM can continue the build.
+- GROUND-TRUTH CHECK first: daemon PID 78016 live (restarted 14:15 on current dist);
+  .env verified — ALL walls armed (inner loop, self-write, http_fetch, firewall, dual-LLM,
+  time tool, TZ-EVIDENCE). todo.md's "awaiting ARMING" was stale — arming already happened.
+- LIVE EVIDENCE: the fix-#1 replay (run_42211bde 04:16Z, 「再来一次，明天有哪几场世界杯比赛？」)
+  = HALF-PASS. Safety ✓ (no guessed zones). Utility ✗: 10× web_search, to_local_time never called,
+  1 step lost to malformed action JSON, step_cap halt, apologetic fallback DESPITE digests holding
+  GMT-labeled fixtures. Research convergence under the evidence regime = top functional gap.
+- 3 parallel digest subagents swept todo.md(1770L)/sessions.md, all 16 ADRs + spine/inner-loop
+  specs, lessons/README/code-map/flag-inventory — full project knowledge distilled.
+- PACO'S 4 SEQUENCING DECISIONS (recorded in docs/ROADMAP.md §4): (1) Phase R research-convergence
+  fix IMMEDIATE next build; (2) next major capability = ② episodic memory (④ wiki after);
+  (3) safety floor INTERLEAVED — kill-switch + metered-$ ceiling as small builds between
+  capabilities, full auto-rollback (D4) only when the autonomy flip becomes a goal;
+  (4) autonomy flip = LATER milestone with documented preconditions (Milestone A).
+- SHIPPED: docs/ROADMAP.md — charter, verified state + safety-floor ledger, non-negotiables
+  (PINNED_ENV, live-gate mandate, exported-constants, /goal gate, monitor discipline), sequenced
+  phases 0/R/M/S/W/K + Milestone A preconditions, ranked backlog, successor-orchestrator handoff
+  notes (nothing in production depends on the departing model — the orchestrator seat changes,
+  the daemon doesn't). todo.md top block updated to point at it + record the half-pass replay.
+- Still open for Paco (Phase 0): S12 secrets probe, D12 injection probe (live, Telegram);
+  BST→Europe/London alias one-liner queued for Houge.

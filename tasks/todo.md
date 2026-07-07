@@ -1,4 +1,21 @@
-# 🔜 NEXT — Fix #1 mechanical half LANDED by Houge self-write (bb31405) — awaiting ARMING (Paco)
+# 🗺 ROADMAP LOCKED 2026-07-07 — see `docs/ROADMAP.md` (model-agnostic handoff plan)
+
+**Paco's sequencing decisions (2026-07-07):** Phase R research-convergence fix FIRST → ② episodic
+memory → interleaved kill-switch + metered-$ ceiling → ④ wiki; autonomy flip = later milestone with
+documented preconditions. Full state, non-negotiables, design briefs, and backlog in the roadmap doc.
+
+**ARMED 2026-07-07 14:15 (Paco):** HOUGE_TZ_EVIDENCE_ENABLED=true is IN .env, daemon restarted
+(PID 78016) on current dist — ALL walls now ON (dual-LLM, firewall, tz-evidence, time tool).
+**Live replay ran (run_42211bde, 04:16Z): HALF-PASS.** Safety half ✓ — no guessed zones went out.
+Utility half ✗ — 10× web_search hunting for zone-labeled sources, never called to_local_time,
+1 step lost to malformed action JSON, halted step_cap, fallback apologized 「没有找到」 despite
+digests holding GMT-labeled fixtures. → This is Phase R's trigger (docs/ROADMAP.md): honest
+step-cap fallback (synthesize from digests) + budget shaping + search-strategy discipline.
+Still open from Phase 0: S12 secrets probe · D12 injection probe · BST alias one-liner.
+
+---
+
+# ✅ (was NEXT) — Fix #1 mechanical half LANDED by Houge self-write (bb31405) — ARMED 2026-07-07
 
 **Verified 2026-07-07 (Claude):** HOUGE_TZ_EVIDENCE_ENABLED gate, default OFF (suite 1156/1156, OFF path
 byte-identical). ON: to_local_time items need zone_evidence; adapter mechanically checks (1) fragment
