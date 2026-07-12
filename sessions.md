@@ -388,3 +388,29 @@ Build + independent adversarial verification subagents; each live round found a 
 - Day's tally: 4 mechanical nets shipped (time_claims schema, zone-evidence anchor, convert-before-
   final bounce, verified reload) vs 6 ignored prompt measures. Every bad patch today was caught by
   the check stack; every clean land was a sharply-specified ask.
+
+## 2026-07-12 — B5+B6: fallbackFinal honors conversions/hedges (F3) + to_local_time label (SHIPPED, live-gated)
+- Resumed after 5-day quiet soak (zero runs since 07-07 evening; daemon healthy, one transient
+  fetch-failed heartbeat self-recovered). Paco /goal: F3 fix + to_local_time label, NO claude-cli
+  wiring (planner leg stays queued).
+- BUILD (subagent) per spec: fallback digest LEADS with converted to_local_time rows +
+  code-owned restater guidance (outside the untrusted-digest block); HEDGE when relative-day
+  question + time_claims + zero conversions — bilingual code-owned hedge line survives
+  absent/failed/junk restatement on every bare-digest path; all 6 fallbackFinal call sites
+  covered. B6: per-item label threads onto success AND error rows, sanitized (non-deleting
+  substitutions, render-seam guard), both manifest sketches updated.
+- Independent adversarial VERIFY: SHIP-WITH-NITS. F1 (major, pre-existing but B5-amplified):
+  `when`/`tz` echoed verbatim into error-row digests let a crafted when forge a CONVERTED_ROW
+  match and DISARM the B1 guard — the exact bypass class the guard exists for. Fixed pre-commit
+  at the same adapter chokepoint (sanitizeDigestText for label/when/tz); verifier's structural
+  suggestion (guard on structured rows, not rendered-text regex) queued. 1200/1200 both sweeps.
+- LIVE GATE (scripts/live-gate-b5b6.mjs — real Gateway→CoreWorker, real planner+Tavily,
+  in-memory DB, forced budgets via post-intake contract surgery): S1 budget-3 step_cap →
+  HEDGED honestly (the 07-07 invented-"today"-matches path, now closed); S2 budget-9 →
+  9× web_search, never reached to_local_time (Phase R convergence class), hedged again;
+  S3 full budget → clean final, LABELED digest rows («France vs Spain Semifinal: … →
+  2026-07-15 05:00 (in 3 days)»), negative claim 明天没有比赛 backed by converted rows.
+  Daemon kickstarted onto fresh dist: graceful stop after 3013 cycles, heartbeat green.
+- Commit fa26a3e. Residuals queued in todo.md: structured-row guard refactor, Phase R
+  convergence (S2 evidence), ET-first prose presentation slip, conversion-led fallback branch
+  live-unexercised (unit-covered).
