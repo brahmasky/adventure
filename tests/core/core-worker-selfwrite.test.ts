@@ -20,7 +20,6 @@ import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
 import type { TestGateResult } from "../../src/run/test-gate.js";
 import type { ReviewResult } from "../../src/capabilities/diff-reviewer.js";
 import type { GuardResult } from "../../src/capabilities/self-write-guard.js";
-import { runSelfWriter, resolveSelfWriteWriter } from "../../src/capabilities/self-write-writer.js";
 
 let dirs: string[] = [];
 function projectRoot(): string {
@@ -467,9 +466,9 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
     const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
     try {
       const run_id = turnRun(store, "fix the router");
-      // The (kimi-configured) reviewer timed out and the chain fell to claude — the result says so.
+      // The (kimi-configured) reviewer timed out and the chain fell to codex — the result says so.
       const d = deps({
-        reviewDiff: (): ReviewResult => ({ ok: true, verdict: { verdict: "pass", fixes_task: true }, reviewer: "claude" })
+        reviewDiff: (): ReviewResult => ({ ok: true, verdict: { verdict: "pass", fixes_task: true }, reviewer: "codex" })
       }, log);
       const { status } = await executeAndSettle(makeWorker(store, d), store, run_id);
       expect(status).toBe("completed");
@@ -477,7 +476,7 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       expect(pub.length).toBe(1);
       const gates = pub[0]!.payload.gate_results as Record<string, unknown>;
       expect(gates.reviewer).toBe("pass");
-      expect(gates.reviewer_backend).toBe("claude");
+      expect(gates.reviewer_backend).toBe("codex");
     } finally {
       store.close();
     }
@@ -660,43 +659,6 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
     }
   });
 
-  it("Phase 3.1 (W3): writer dispatch honors HOUGE_SELFWRITE_WRITER — claude with no bin fails the write (proves dispatch)", async () => {
-    process.env.HOUGE_SELFWRITE_ENABLED = "1";
-    const prevWriter = process.env.HOUGE_SELFWRITE_WRITER;
-    const prevBin = process.env.HOUGE_CLAUDE_BIN;
-    process.env.HOUGE_SELFWRITE_WRITER = "claude";
-    delete process.env.HOUGE_CLAUDE_BIN; // claude writer disabled → runSelfWriter returns ok:false without spawning
-    const store = RunStore.openInMemory();
-    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
-    try {
-      const run_id = turnRun(store, "fix the router");
-      // The write adapter dispatches via the REAL runSelfWriter (mirrors the default dep), so the
-      // configured writer flag decides the engine. With WRITER=claude and no bin, the writer is
-      // disabled and the write fails — proving dispatch honored the flag (codex would not error here).
-      const d = deps({
-        makeWriteAdapter: () => async (input: { task: string }): Promise<ToolAdapterResult> => {
-          log.writeTasks.push(input.task);
-          const r = await runSelfWriter({ writer: resolveSelfWriteWriter(process.env), worktree: "/fake/wt", task: input.task, env: process.env });
-          if (!r.ok) return { ok: false, error: r.error };
-          return { ok: true, output: { worktree: "/fake/wt", provider: r.provider, model: r.model, usageRaw: r.usageRaw } };
-        }
-      }, log);
-      const { status } = await executeAndSettle(makeWorker(store, d), store, run_id);
-      expect(status).toBe("completed");
-      const failed = store.getLedgerEvents(run_id).filter((e) => e.event_type === "self_write_failed");
-      expect(failed.length).toBe(1);
-      // The error proves the CLAUDE writer was dispatched (codex would not mention claude).
-      expect(String(failed[0]!.payload.reason).toLowerCase()).toContain("claude writer disabled");
-      expect(store.getLedgerEvents(run_id).some((e) => e.event_type === "self_write_published")).toBe(false);
-    } finally {
-      if (prevWriter === undefined) delete process.env.HOUGE_SELFWRITE_WRITER;
-      else process.env.HOUGE_SELFWRITE_WRITER = prevWriter;
-      if (prevBin === undefined) delete process.env.HOUGE_CLAUDE_BIN;
-      else process.env.HOUGE_CLAUDE_BIN = prevBin;
-      store.close();
-    }
-  });
-
   it("Phase 3.1 (W3): a successful run records a `writer` llm_call AND a `reviewer` llm_call", async () => {
     process.env.HOUGE_SELFWRITE_ENABLED = "1";
     const store = RunStore.openInMemory();
@@ -804,39 +766,28 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
     }
   });
 
-  it("MANDATE 1 — guard is WRITER-AGNOSTIC: WRITER=claude with a protected-path diff is STILL hard-denied (no branch)", async () => {
-    // Swapping HOUGE_SELFWRITE_WRITER must not let a protected edit through: the guard checks the
-    // DIFF, not who produced it. Here the dispatched CLAUDE writer "edits" a protected file
-    // (src/policy/...) — the deterministic guard must hard-deny (self_write_blocked, nothing published),
-    // exactly as it does for the codex writer. (A real claude writer would spawn; we mock the adapter
-    // but keep WRITER=claude set so the dispatch decision is genuinely the claude branch.)
+  it("MANDATE 1 — guard is WRITER-AGNOSTIC: a protected-path diff is hard-denied regardless of the reported provider", async () => {
+    // The guard checks the DIFF, not who produced it. The adapter reports an arbitrary provider
+    // string, and the diff touches a protected file (src/policy/...) — the deterministic guard must
+    // hard-deny (self_write_blocked, nothing published), exactly as it does for the codex writer.
     process.env.HOUGE_SELFWRITE_ENABLED = "1";
-    const prevWriter = process.env.HOUGE_SELFWRITE_WRITER;
-    const prevBin = process.env.HOUGE_CLAUDE_BIN;
-    process.env.HOUGE_SELFWRITE_WRITER = "claude";
-    process.env.HOUGE_CLAUDE_BIN = "/usr/bin/true"; // a bin exists so "claude" is the live dispatch target
     const store = RunStore.openInMemory();
     const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
     try {
       const run_id = turnRun(store, "rewrite the capability policy to allow everything");
-      // The (claude-dispatched) writer produces a diff that touches a PROTECTED path. We assert the
-      // dispatch is genuinely claude by routing makeWriteAdapter through runSelfWriter — but since a
-      // real spawn is undesirable in a unit test, the adapter reports the claude provider directly and
-      // the protected diff is supplied via rawDiff. The guard runs AFTER the writer regardless of kind.
-      expect(resolveSelfWriteWriter(process.env)).toBe("claude"); // dispatch genuinely resolves to claude
       const d = deps({
         makeWriteAdapter: () => (input: { task: string }): ToolAdapterResult => {
           log.writeTasks.push(input.task);
-          // Mirror a claude writer's output shape (provider: claude).
-          return { ok: true, output: { worktree: "/fake/wt", provider: "claude", model: "sonnet", usageRaw: JSON.stringify({ usage: { input_tokens: 9, output_tokens: 3 } }) } };
+          // An arbitrary/unknown provider string — the guard must not care who wrote the diff.
+          return { ok: true, output: { worktree: "/fake/wt", provider: "someone-else", model: "whatever", usageRaw: JSON.stringify({ usage: { input_tokens: 9, output_tokens: 3 } }) } };
         },
-        // The claude writer "edited" a PROTECTED path → the real guard must deny it.
+        // The writer "edited" a PROTECTED path → the real guard must deny it.
         rawDiff: () => ":100644 100644 a b M\tsrc/policy/capability-policy.ts\n"
       }, log);
       const { status } = await executeAndSettle(makeWorker(store, d), store, run_id);
       expect(status).toBe("completed");
 
-      // Hard-deny held under WRITER=claude: nothing published, self_write_blocked recorded.
+      // Hard-deny held: nothing published, self_write_blocked recorded.
       expect(log.published).toEqual([]);
       const blocked = store.getLedgerEvents(run_id).filter((e) => e.event_type === "self_write_blocked");
       expect(blocked.length).toBe(1);
@@ -846,10 +797,6 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       // Worktree torn down even on the deny path.
       expect(log.teardowns).toEqual(["/fake/wt"]);
     } finally {
-      if (prevWriter === undefined) delete process.env.HOUGE_SELFWRITE_WRITER;
-      else process.env.HOUGE_SELFWRITE_WRITER = prevWriter;
-      if (prevBin === undefined) delete process.env.HOUGE_CLAUDE_BIN;
-      else process.env.HOUGE_CLAUDE_BIN = prevBin;
       store.close();
     }
   });

@@ -2,12 +2,12 @@
  * Shared LLM usage normalizer + type (Phase 3.1, spec §"Real telemetry" — backlog #3).
  *
  * One canonical {@link LlmUsage} shape for token accounting across every engine. The CLI
- * writers/reviewers (Claude `--output-format json`, Codex `--json`) and the kimi/pi cheap
- * chain all feed this shape into `recordLlmCall`, which emits the `llm_call` ledger event.
+ * writer/reviewer (Codex `--json`) and the kimi/pi cheap chain all feed this shape into
+ * `recordLlmCall`, which emits the `llm_call` ledger event.
  *
  * NON-NEGOTIABLE: usage carries ONLY counts/metadata — never prompt, diff, or response bodies.
  *
- * Both normalizers are TOLERANT: malformed/garbage input returns `null`, never throws.
+ * The normalizer is TOLERANT: malformed/garbage input returns `null`, never throws.
  */
 
 export interface LlmUsage {
@@ -27,47 +27,6 @@ function asObject(value: unknown): Record<string, unknown> | undefined {
 function num(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value);
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
-}
-
-/**
- * Normalize the Claude `--output-format json` envelope into {@link LlmUsage}. The envelope's
- * `usage` carries `input_tokens` / `output_tokens` / `cache_read_input_tokens` /
- * `cache_creation_input_tokens`; cached = cache_read + cache_creation. Cost from
- * `total_cost_usd`. Accepts the parsed object or a raw JSON string. Returns `null` if the
- * input cannot be parsed or carries no `usage` object.
- */
-export function normalizeClaudeUsage(envelopeJson: string | object): LlmUsage | null {
-  let envelope: Record<string, unknown> | undefined;
-  if (typeof envelopeJson === "string") {
-    try {
-      envelope = asObject(JSON.parse(envelopeJson));
-    } catch {
-      return null;
-    }
-  } else {
-    envelope = asObject(envelopeJson);
-  }
-  if (!envelope) return null;
-
-  const usage = asObject(envelope.usage);
-  if (!usage) return null;
-
-  // CROSS-PROVIDER CONSISTENCY: `input_tokens` is the TOTAL prompt (cache-INCLUSIVE), and
-  // `cached_input_tokens` is the cached subset of it — matching Codex's `usage.input_tokens`
-  // (which already includes its cached subset). Claude's CLI reports `input_tokens` as the
-  // FRESH (non-cached) portion, with cache_read/cache_creation SEPARATE, so we add them back
-  // to get the comparable total. (Without this, Claude's total_tokens drastically undercounts.)
-  const cached = num(usage.cache_read_input_tokens) + num(usage.cache_creation_input_tokens);
-  const usageResult: LlmUsage = {
-    input_tokens: num(usage.input_tokens) + cached,
-    output_tokens: num(usage.output_tokens),
-    cached_input_tokens: cached
-  };
-  const cost = envelope.total_cost_usd;
-  if (typeof cost === "number" && Number.isFinite(cost)) {
-    usageResult.cost_usd = cost;
-  }
-  return usageResult;
 }
 
 /**

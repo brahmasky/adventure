@@ -16,8 +16,9 @@ still goes through Paco's `/goal` gate; nothing here is pre-authorization to sta
 
 Houge (猴哥) is an **autonomous self-evolving agent** (NOT a chatbot) living as a Telegram-first
 daemon on Paco's Mac mini. Zero runtime dependencies; Node + TypeScript; SQLite; model-agnostic
-LLM provider chains (flat-rate CLIs first: pi/kimi, agy/gemini, codex, claude; metered APIs =
-capped fallback).
+LLM provider chains (flat-rate CLIs first: pi/kimi, agy/gemini, codex; metered APIs =
+capped fallback). Claude is EXCLUDED from Houge's runtime by decision (Paco, 2026-07-12):
+it is the build-orchestrator seat only — the runtime must never depend on it.
 
 **Thesis (LOCKED 2026-06-26):** Houge improves himself without asking permission; mechanical
 safety NETS (not human approval) protect the two hard lines. Freedom over control — no cage
@@ -269,8 +270,10 @@ Flip [Merge & reload] from human-tapped to autonomous (notify-after) ONLY when A
 ## 5. Handoff notes for the successor orchestrator model
 
 - **Nothing in Houge's runtime depends on the departing model.** The daemon runs pi/agy/kimi/
-  gemini chains; self-write writer=codex, reviewer=kimi; Claude appears only as optional
-  build-time muscle via `HOUGE_CLAUDE_BIN` (currently writer=codex, reviewer=kimi). Losing
+  gemini chains; self-write writer=codex, reviewer=kimi. Claude wiring was REMOVED from the
+  runtime entirely 2026-07-12 (Paco: keep Claude focused on building) — the once-optional
+  claude writer/reviewer backends and `HOUGE_CLAUDE_BIN` are gone; a stale
+  HOUGE_SELFWRITE_WRITER/REVIEWER=claude in .env degrades gracefully to codex/kimi. Losing
   Fable 5 changes the ORCHESTRATOR seat (this Claude Code session), nothing in production.
 - **The orchestrator's job:** run the §3 workflow — plan with Paco, wait for `/goal`, drive
   build + adversarial-verify subagents, re-run gates, commit/push, watch the ledger during live

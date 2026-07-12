@@ -13,11 +13,11 @@ import { resolveTestGateTimeoutMs, runTestGateAsync } from "../run/test-gate.js"
 import type { TestGateResult } from "../run/test-gate.js";
 import { execFileAsync } from "../run/exec-file-async.js";
 import { EVOLUTION_LANE_BUSY_DIGEST, tryStartEvolutionPipeline } from "./evolution-lane.js";
-import { reviewDiff, resolveSelfWriteReviewer, resolveClaudeModel } from "../capabilities/diff-reviewer.js";
+import { reviewDiff, resolveSelfWriteReviewer } from "../capabilities/diff-reviewer.js";
 import type { ReviewResult } from "../capabilities/diff-reviewer.js";
-import { runSelfWriter, resolveSelfWriteWriter, resolveClaudeWriterModel } from "../capabilities/self-write-writer.js";
+import { runSelfWriter, resolveSelfWriteWriter } from "../capabilities/self-write-writer.js";
 import { resolveCodexModel } from "../capabilities/coding-agent.js";
-import { normalizeClaudeUsage, normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
+import { normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
 import { publishBranch, selfWriteBranchName } from "../run/branch-publish.js";
 import { createWorktree, removeWorktree } from "../run/worktree.js";
 import { buildGateAQuestion, GATE_A_DISCIPLINE, parseGateAVerdict } from "../capabilities/skill-router.js";
@@ -139,7 +139,7 @@ const EVOLUTION_TOOLS = new Set(["self_diagnose", "self_write_propose", "skill_a
 /**
  * Injectable seams for the Phase-3 self-write stack (ADR 0011). These wrap the real S1–S4 +
  * worktree/branch modules so a test can mock the whole stack (worktree create/teardown, the
- * write-Codex adapter, the three checkers, branch publish) without shelling out to git/codex/claude.
+ * write-Codex adapter, the three checkers, branch publish) without shelling out to git/codex/kimi.
  * Defaults wire the real implementations. `mkNodeModulesLink` is the node_modules-into-worktree
  * step (overridable in tests, where the worktree is fake).
  */
@@ -188,10 +188,9 @@ export function defaultSelfWriteDeps(): SelfWriteDeps {
       symlinkSync(join(projectRoot, "node_modules"), join(worktree, "node_modules"), "dir");
     },
     // Phase 3.1 (W3): the registered `coding_agent_cli` adapter dispatches via the CONFIGURED
-    // writer (`HOUGE_SELFWRITE_WRITER`, default codex) instead of always Codex. A `claude` writer
-    // is still a coding agent → the `coding_agent_cli` contract holds (no contract change). The
-    // writer's `{ provider, model, usageRaw }` rides out on `output` so runSelfWrite can record
-    // telemetry. Both writers edit the SAME caller-owned worktree; the diff outlives this call.
+    // writer (`HOUGE_SELFWRITE_WRITER`; codex is the only backend). The writer's
+    // `{ provider, model, usageRaw }` rides out on `output` so runSelfWrite can record
+    // telemetry. The writer edits the SAME caller-owned worktree; the diff outlives this call.
     makeWriteAdapter: (worktree) => async (input: { task: string }): Promise<ToolAdapterResult> => {
       const result = await runSelfWriter({ writer: resolveSelfWriteWriter(process.env), worktree, task: input.task, env: process.env });
       if (!result.ok) return { ok: false, error: result.error };
@@ -961,7 +960,7 @@ export class CoreWorker {
    * checkers (writer ≠ checker by construction):
    *   1. protected-path guard (deterministic HARD DENY — never overridable)
    *   2. test gate (typecheck + test + build — ungameable truth)
-   *   3. independent reviewer (semantic / adversarial — Claude or Codex)
+   *   3. independent reviewer (semantic / adversarial — kimi or Codex)
    * Checkers 2 + 3 may REFINE (feed the failure back to the writer) up to ≤3 TOTAL write attempts
    * (ADR §6 anti-overfit). All green → publish a branch + record `self_write_published` + a success
    * notification. Any terminal failure records its event (`self_write_blocked`/`self_write_failed`)
@@ -1025,8 +1024,9 @@ export class CoreWorker {
         }
 
         // Phase 3.1 (W3) WRITER telemetry: normalize the writer's raw usage at the source and emit one
-        // `llm_call`. Best-effort — a null normalize (garbage/empty) skips recording, never crashes.
-        const writerUsage = (written.provider === "codex" ? normalizeCodexUsage(written.usageRaw) : normalizeClaudeUsage(written.usageRaw)) ?? undefined;
+        // `llm_call`. Codex is the only writer backend, so its JSONL normalizer applies. Best-effort —
+        // a null normalize (garbage/empty/unknown provider) skips recording, never crashes.
+        const writerUsage = normalizeCodexUsage(written.usageRaw) ?? undefined;
         if (writerUsage) {
           this.recordLlmCallSafe(claim.run_id, { provider: written.provider, model: written.model, role: "writer", usage: writerUsage, latency_ms: writerLatencyMs });
           lastWriterUsage = writerUsage;
@@ -1079,10 +1079,11 @@ export class CoreWorker {
         // past the configured reviewer). Absent on injected test deps → the configured reviewer.
         const reviewerBackend = review.ok ? (review.reviewer ?? reviewerProvider) : reviewerProvider;
         // Phase 3.1 (W3) REVIEWER telemetry: the reviewer captured usage on the same call. Emit one
-        // `llm_call` when present (best-effort; absence never fails the write). Provider/model derive
-        // from the reviewer resolvers (claude → resolveClaudeModel, codex → resolveCodexModel).
+        // `llm_call` when present (best-effort; absence never fails the write). Only the codex
+        // reviewer reports usage today (kimi's --final-message-only emits none), so the model
+        // derives from the codex resolver.
         if (review.ok && review.usage) {
-          const reviewerModel = reviewerBackend === "codex" ? (resolveCodexModel(process.env) ?? "default") : resolveClaudeModel(process.env);
+          const reviewerModel = reviewerBackend === "codex" ? (resolveCodexModel(process.env) ?? "default") : "default";
           this.recordLlmCallSafe(claim.run_id, { provider: reviewerBackend, model: reviewerModel, role: "reviewer", usage: review.usage, latency_ms: reviewerLatencyMs });
           lastReviewerUsage = review.usage;
           lastReviewerMeta = { provider: reviewerBackend, model: reviewerModel };

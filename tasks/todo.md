@@ -132,9 +132,14 @@ rendered into the digest rows — removes the row↔event rebinding step where "
 
 ---
 
-# 🔜 QUEUED — claude-cli planner leg (explicitly deferred by Paco 2026-07-12 /goal)
+# ❌ DROPPED — claude-cli planner leg (Paco, 2026-07-12 evening)
 
-(post B1-B4 soak, 2026-07-07 evening)
+**Paco decision: remove claude wiring from Houge's runtime completely — Claude stays the
+build-orchestrator only.** The planner-leg idea is dead, and the pre-existing optional claude
+writer/reviewer backends (inactive; writer=codex reviewer=kimi) were excised the same evening.
+Planner-quality gaps route through the remaining chains + mechanical guards instead.
+
+(original soak context, post B1-B4, 2026-07-07 evening)
 
 **Soak findings (after B1-B4 shipped):** the guard now forces correct conversions into the transcript,
 but BOTH available planners leak at the last step: pi(kimi) follows the protocol yet misquotes its own

@@ -1,60 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { normalizeClaudeUsage, normalizeCodexUsage } from "../../src/run/llm-usage.js";
+import { normalizeCodexUsage } from "../../src/run/llm-usage.js";
 
-// Real shapes copied from the spikes (scripts/spike-claude-*-p3.mjs):
-//  - Claude `--output-format json` envelope carries `usage` + `total_cost_usd`.
+// Real shape (validated live):
 //  - Codex `--json` streams JSONL; usage is in the LAST `token_count` event's `total_token_usage`.
-
-describe("normalizeClaudeUsage", () => {
-  it("maps the Claude envelope usage: input_tokens is the cache-INCLUSIVE total (fresh + cache), cached is the subset", () => {
-    const envelope = JSON.stringify({
-      is_error: false,
-      num_turns: 3,
-      result: '{"verdict":"pass"}',
-      total_cost_usd: 0.072,
-      usage: {
-        input_tokens: 5, // Claude reports FRESH (non-cached) input here
-        output_tokens: 317,
-        cache_read_input_tokens: 63046,
-        cache_creation_input_tokens: 7972
-      }
-    });
-    expect(normalizeClaudeUsage(envelope)).toEqual({
-      input_tokens: 5 + 63046 + 7972, // total prompt = fresh + cache (comparable to codex)
-      output_tokens: 317,
-      cached_input_tokens: 63046 + 7972,
-      cost_usd: 0.072
-    });
-  });
-
-  it("accepts an already-parsed object", () => {
-    expect(
-      normalizeClaudeUsage({ usage: { input_tokens: 1, output_tokens: 2 }, total_cost_usd: 0.5 })
-    ).toEqual({ input_tokens: 1, output_tokens: 2, cached_input_tokens: 0, cost_usd: 0.5 });
-  });
-
-  it("omits cost_usd when total_cost_usd is absent or not a number", () => {
-    const u = normalizeClaudeUsage({ usage: { input_tokens: 1, output_tokens: 2 } });
-    expect(u).toEqual({ input_tokens: 1, output_tokens: 2, cached_input_tokens: 0 });
-    expect(u && "cost_usd" in u).toBe(false);
-  });
-
-  it("is tolerant: returns null on garbage / missing usage (never throws)", () => {
-    expect(normalizeClaudeUsage("not json {{{")).toBeNull();
-    expect(normalizeClaudeUsage("")).toBeNull();
-    expect(normalizeClaudeUsage("[1,2,3]")).toBeNull();
-    expect(normalizeClaudeUsage({ is_error: true })).toBeNull(); // no usage block
-    expect(normalizeClaudeUsage({ usage: "nope" } as unknown as object)).toBeNull();
-  });
-
-  it("coerces missing/garbage token counts to 0", () => {
-    expect(normalizeClaudeUsage({ usage: { input_tokens: "x" } })).toEqual({
-      input_tokens: 0,
-      output_tokens: 0,
-      cached_input_tokens: 0
-    });
-  });
-});
 
 describe("normalizeCodexUsage", () => {
   const tokenCountEvent = (info: Record<string, unknown>): string =>

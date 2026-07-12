@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileAsync } from "../run/exec-file-async.js";
 import { resolveCodexBin, resolveCodexEnabled, resolveCodexTimeoutMs } from "./coding-agent.js";
-import { normalizeClaudeUsage, normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
+import { normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
 
 /**
  * Independent diff reviewer (Phase 3, checker 3 — ADR 0011 §7 / spec
@@ -11,31 +11,23 @@ import { normalizeClaudeUsage, normalizeCodexUsage, type LlmUsage } from "../run
  *
  * The semantic / adversarial check tests can't give: "passes the test gate but wrong / hacky
  * / scope-creep / doesn't actually fix it." Writer ≠ checker by construction — the reviewer is
- * a DIFFERENT agent (Claude, model diversity) from the writer (Codex). Spike S0 result: GO on
- * the Claude CLI in print mode (`claude -p`), invoked by ABSOLUTE bin under the daemon's
- * restricted PATH (`claude` is NOT on that PATH). The Codex-session path is the no-Claude
- * fallback (independent fresh session + the same adversarial prompt → same verdict shape).
- *
- * Invocation pattern mirrors the validated spike (scripts/spike-claude-reviewer-p3.mjs).
+ * a DIFFERENT agent (kimi by default, model diversity) from the writer (Codex). The kimi CLI
+ * runs in headless print mode by ABSOLUTE bin under the daemon's restricted PATH. The
+ * Codex-session path is the fallback (independent fresh session + the same adversarial prompt
+ * → same verdict shape). Claude is NOT a runtime backend — it is the build-orchestrator seat.
  */
 
-/** The daemon's launchd PATH (com.houge.daemon.plist). `claude` is NOT on it → absolute bin. */
+/** The daemon's launchd PATH (com.houge.daemon.plist). Reviewer CLIs are NOT on it → absolute bin. */
 const DAEMON_PATH = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin";
-const DEFAULT_CLAUDE_TIMEOUT_MS = 180_000; // per-attempt ceiling; a normal sonnet review returns in ~20s
-const DEFAULT_CLAUDE_MODEL = "sonnet"; // fast, strong reviewer; the default (Opus) over-thinks a large diff and times out
-const CLAUDE_REVIEW_ATTEMPTS = 2; // retry once on a transient timeout/unparseable (CLI throttle/cold-start)
 const REVIEW_MAX_BUFFER = 8 * 1024 * 1024;
-/** Sentinel for an unset `HOUGE_CLAUDE_BIN` — the caller treats this as "reviewer disabled".
- *  We do NOT guess a bare `claude`; the daemon PATH lacks it (spike S0). */
-export const CLAUDE_BIN_UNSET = "";
 
 const DEFAULT_KIMI_CLI_TIMEOUT_MS = 180_000; // per-attempt ceiling; a normal kimi review returns in ~7s
-const KIMI_REVIEW_ATTEMPTS = 2; // retry once on a transient timeout/unparseable (same fail-safe as Claude)
+const KIMI_REVIEW_ATTEMPTS = 2; // retry once on a transient timeout/unparseable (CLI throttle/cold-start)
 /** Sentinel for an unset `HOUGE_KIMI_CLI_BIN` — the caller treats this as "reviewer disabled".
  *  We do NOT guess a bare `kimi-cli`; the daemon PATH lacks it. */
 export const KIMI_CLI_BIN_UNSET = "";
 
-export type ReviewerKind = "claude" | "codex" | "kimi";
+export type ReviewerKind = "codex" | "kimi";
 
 export interface ReviewVerdict {
   verdict: "pass" | "reject";
@@ -50,34 +42,12 @@ export type ReviewResult =
   | { ok: false; error: string };
 
 /** Resolve which reviewer backs checker 3 (`HOUGE_SELFWRITE_REVIEWER`, default `kimi` — cheap +
- *  model-diverse from the Codex writer; the free test-gate + Paco's merge are the real safety net). */
+ *  model-diverse from the Codex writer; the free test-gate + Paco's merge are the real safety net).
+ *  Any unknown value — including a stale `claude` left in an old .env — falls back to the default. */
 export function resolveSelfWriteReviewer(env: NodeJS.ProcessEnv): ReviewerKind {
   const raw = env.HOUGE_SELFWRITE_REVIEWER?.trim().toLowerCase();
-  if (raw === "claude") return "claude";
   if (raw === "codex") return "codex";
   return "kimi";
-}
-
-/**
- * Resolve the Claude binary (`HOUGE_CLAUDE_BIN`). NO default guess of a bare `claude` — the
- * daemon's PATH lacks it (spike S0), so an absolute path is required. Unset → {@link
- * CLAUDE_BIN_UNSET} sentinel, which the caller treats as "Claude reviewer disabled."
- */
-export function resolveClaudeBin(env: NodeJS.ProcessEnv): string {
-  const bin = env.HOUGE_CLAUDE_BIN?.trim();
-  return bin && bin.length > 0 ? bin : CLAUDE_BIN_UNSET;
-}
-
-/** Resolve the Claude reviewer wall-clock timeout in ms (`HOUGE_CLAUDE_TIMEOUT_MS`, default 180000 per attempt). */
-export function resolveClaudeTimeoutMs(env: NodeJS.ProcessEnv): number {
-  const n = Number(env.HOUGE_CLAUDE_TIMEOUT_MS);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_CLAUDE_TIMEOUT_MS;
-}
-
-/** Resolve the Claude reviewer model (`HOUGE_CLAUDE_MODEL`, default "sonnet" — fast single-shot review). */
-export function resolveClaudeModel(env: NodeJS.ProcessEnv): string {
-  const m = env.HOUGE_CLAUDE_MODEL?.trim();
-  return m && m.length > 0 ? m : DEFAULT_CLAUDE_MODEL;
 }
 
 /**
@@ -188,12 +158,12 @@ interface NodeError extends Error {
 }
 
 /** Fixed fallback order (H1): the configured reviewer first, then the rest of this list. */
-const REVIEWER_FALLBACK_ORDER: ReviewerKind[] = ["kimi", "claude", "codex"];
+const REVIEWER_FALLBACK_ORDER: ReviewerKind[] = ["kimi", "codex"];
 
 /**
  * Run checker 3 (H1: fallback chain). The configured reviewer (`HOUGE_SELFWRITE_REVIEWER`) runs
  * first; if it is UNAVAILABLE (timeout / spawn failure / unparseable transport — never a delivered
- * verdict), the remaining backends are tried in [kimi, claude, codex] order. A DELIVERED verdict
+ * verdict), the remaining backends are tried in [kimi, codex] order. A DELIVERED verdict
  * (pass OR reject) from any backend ends the chain — reject is a real answer, never fallen past.
  * Unconfigured fallback backends are skipped (never errored on); the whole chain unavailable maps
  * to `{ ok:false }` with every backend's detail, exactly the pre-chain failure semantics. The
@@ -224,8 +194,6 @@ function reviewerConfigured(kind: ReviewerKind, env: NodeJS.ProcessEnv): boolean
   switch (kind) {
     case "kimi":
       return resolveKimiCliBin(env) !== KIMI_CLI_BIN_UNSET;
-    case "claude":
-      return resolveClaudeBin(env) !== CLAUDE_BIN_UNSET;
     case "codex":
       return resolveCodexEnabled(env);
   }
@@ -237,64 +205,7 @@ function runReviewer(kind: ReviewerKind, task: string, diff: string, env: NodeJS
       return reviewViaCodex(task, diff, env);
     case "kimi":
       return reviewViaKimiCli(task, diff, env);
-    default:
-      return reviewViaClaude(task, diff, env);
   }
-}
-
-/** Path A (spike GO): Claude CLI in print mode, absolute bin, under the daemon's PATH. */
-async function reviewViaClaude(task: string, diff: string, env: NodeJS.ProcessEnv): Promise<ReviewResult> {
-  const bin = resolveClaudeBin(env);
-  if (bin === CLAUDE_BIN_UNSET) {
-    return { ok: false, error: "Claude reviewer disabled: set HOUGE_CLAUDE_BIN to the absolute claude path" };
-  }
-  const timeout = resolveClaudeTimeoutMs(env);
-  const model = resolveClaudeModel(env);
-  const prompt = buildReviewPrompt(task, diff);
-
-  // The Claude CLI can transiently hang (subscription throttle / cold start) and run out the clock,
-  // even though the same review normally returns in ~20s. Retry a couple of times — a transient
-  // timeout/unparseable on attempt 1 must not kill an otherwise-good fix. (A clean `reject` verdict
-  // is NOT retried — that's a real answer.) Fail-safe: exhausting retries → not-published, never a
-  // bad branch.
-  let lastError = "Claude reviewer unavailable";
-  for (let attempt = 1; attempt <= CLAUDE_REVIEW_ATTEMPTS; attempt++) {
-    let raw: string;
-    try {
-      // Fast, deterministic single-shot review: pin a fast model and DENY all tools — the diff is in
-      // the prompt, so the reviewer needs no filesystem/Bash access (also prevents it exploring the
-      // live tree and keeps it from over-running the timeout, the live-gate failure mode).
-      // `--output-format json` wraps the model's text in an envelope that also carries token usage,
-      // so a single call yields BOTH the verdict (envelope.result) and telemetry (envelope.usage).
-      ({ stdout: raw } = await execFileAsync(bin, ["-p", "--model", model, "--output-format", "json", "--disallowed-tools", "Bash,Read,Edit,Write,Glob,Grep,WebFetch,WebSearch"], {
-        input: prompt,
-        timeout,
-        maxBuffer: REVIEW_MAX_BUFFER,
-        // Replicate the daemon's environment: restricted PATH (claude is NOT on it → absolute bin).
-        env: { ...env, PATH: DAEMON_PATH }
-      }));
-    } catch (error) {
-      const err = error as NodeError;
-      if (err.code === "ENOENT") {
-        // A missing binary won't fix itself on retry — fail immediately.
-        return { ok: false, error: `Claude reviewer binary not found: ${bin} (set HOUGE_CLAUDE_BIN)` };
-      }
-      lastError = (err.signal === "SIGTERM" || err.code === "ETIMEDOUT")
-        ? `Claude reviewer timed out after ${timeout}ms`
-        : `Claude reviewer failed: ${errorMessage(error)}`;
-      continue; // transient — retry
-    }
-
-    // The model's text is the envelope's `result` field; usage rides the same envelope. We parse the
-    // verdict from `result` (falling back to the raw stdout if the envelope is unexpected), and surface
-    // normalized token usage when present.
-    const usage = normalizeClaudeUsage(raw) ?? undefined;
-    const verdict = parseVerdict(extractClaudeResultText(raw));
-    if (verdict) return usage ? { ok: true, verdict, usage } : { ok: true, verdict };
-    lastError = "Claude reviewer returned an unparseable verdict";
-    // unparseable → retry (the model may have rambled); fall through to next attempt
-  }
-  return { ok: false, error: `${lastError} (after ${CLAUDE_REVIEW_ATTEMPTS} attempts)` };
 }
 
 /**
@@ -339,14 +250,14 @@ async function reviewViaCodex(task: string, diff: string, env: NodeJS.ProcessEnv
 }
 
 /**
- * Path C: a THIRD reviewer backend — the local `kimi-cli` agent in headless print mode (model
- * diversity beyond Claude/Codex). Mirrors {@link reviewViaClaude}: absolute bin under the daemon's
+ * The default reviewer backend — the local `kimi-cli` agent in headless print mode (model
+ * diversity from the Codex writer): absolute bin under the daemon's
  * restricted PATH, prompt on STDIN, retry on transient failures. kimi-cli's wrapper carries an
  * absolute-path Python shebang, so it self-contains its interpreter and runs fine under DAEMON_PATH
  * (validated: `--help` and a real review both start with NO `~/.local/bin` on PATH) — no dirname
  * injection needed. `--final-message-only` prints ONLY the clean final assistant message (the verdict
  * JSON) to stdout; the "To resume this session: kimi -r <id>" notice goes to stderr (piped away), so
- * stdout is plain text — we parse it directly with parseVerdict (NO JSON envelope, unlike Claude). No
+ * stdout is plain text — we parse it directly with parseVerdict (NO JSON envelope). No
  * usage telemetry is emitted in this mode → no `usage` on the result.
  */
 async function reviewViaKimiCli(task: string, diff: string, env: NodeJS.ProcessEnv): Promise<ReviewResult> {
@@ -363,10 +274,10 @@ async function reviewViaKimiCli(task: string, diff: string, env: NodeJS.ProcessE
   // the host (proven: it read a seeded secret AND wrote into the live repo). The diff is INLINE in the
   // prompt — the reviewer needs no filesystem/shell at all. Confine it to a NO-TOOLS custom agent
   // (`tools: []`, verified to reply NO-ACCESS to a file read) AND run it in a neutral temp cwd, never
-  // the repo. This is kimi's analogue of Claude's tools-denied and Codex's `--sandbox read-only`.
+  // the repo. This is kimi's analogue of Codex's `--sandbox read-only`.
   const agent = writeKimiReviewerAgent();
   try {
-    // Same fail-safe as Claude: retry a couple of times on a transient timeout/unparseable (a clean
+    // Fail-safe: retry a couple of times on a transient timeout/unparseable (a clean
     // `reject` verdict is a real answer and is NOT retried). Exhausting retries → not-published.
     let lastError = "kimi reviewer unavailable";
     for (let attempt = 1; attempt <= KIMI_REVIEW_ATTEMPTS; attempt++) {
@@ -486,21 +397,6 @@ function extractCodexAgentText(raw: string): string {
   }
   // No JSONL / no agent_message found → fall back to the raw text (parseVerdict is tolerant).
   return sawJsonl && messages.length > 0 ? messages.join("\n") : raw;
-}
-
-/**
- * Pull the model's text out of a Claude `--output-format json` envelope's `result` field. Tolerant:
- * if stdout is not the expected envelope (older CLI, plain text), fall back to the raw stdout so the
- * verdict parser still gets a chance. (parseVerdict is itself tolerant of prose/garbage.)
- */
-function extractClaudeResultText(raw: string): string {
-  try {
-    const envelope = JSON.parse(raw) as { result?: unknown };
-    if (typeof envelope.result === "string") return envelope.result;
-  } catch {
-    // not an envelope — fall through to the raw text
-  }
-  return raw;
 }
 
 function errorMessage(error: unknown): string {
