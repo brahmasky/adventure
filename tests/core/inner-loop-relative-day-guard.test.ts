@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { CapabilityResult } from "../../src/capabilities/capability-runner.js";
-import { RELATIVE_DAY_FINAL_BOUNCE_DIGEST, runInnerLoop } from "../../src/core/inner-loop.js";
-import type { InnerLoopDeps, InnerLoopInput } from "../../src/core/inner-loop.js";
+import { createTimeConvertAdapter } from "../../src/capabilities/time-convert.js";
+import {
+  buildFallbackDigest,
+  FALLBACK_CONVERTED_ROWS_GUIDANCE,
+  FALLBACK_HEDGE_GUIDANCE,
+  FALLBACK_HEDGE_NOTE,
+  FALLBACK_WRAPPER_NOTE,
+  RELATIVE_DAY_FINAL_BOUNCE_DIGEST,
+  runInnerLoop
+} from "../../src/core/inner-loop.js";
+import type { InnerLoopDeps, InnerLoopInput, LoopStepRecord } from "../../src/core/inner-loop.js";
 import { manifestFor } from "../../src/core/tool-manifest.js";
 
 /**
@@ -221,5 +230,258 @@ describe("convert-before-final guard — inert when a condition is absent", () =
     expect(result.outcome).toBe("final");
     if (result.outcome !== "final") return;
     expect(result.steps.filter((s) => s.action === "final" && !s.ok)).toHaveLength(0);
+  });
+});
+
+/**
+ * B5 (bug F3, 07-07): every non-final halt exits via fallbackFinal, which used to pick the
+ * LAST successful digest — ignoring successful to_local_time conversions in the transcript
+ * and letting a step_cap restatement invent "today" matches with zero conversion backing.
+ * These tests pin the fix: converted rows LEAD the fallback digest; the restate instruction
+ * carries a code-owned relative-day rule; and when the guard's own predicate says relative
+ * days are unverifiable, the shipped answer mechanically hedges — even when the restatement
+ * itself fails.
+ */
+describe("B5: fallback digest honors conversions", () => {
+  // The rendered to_local_time digest executeSchedule produces (digestOutput shape).
+  const CONVERSION_HEADER = "Use only each row's relative_day";
+  const CONVERSION_ROW = "2026-07-07 16:00 (UTC) → 2026-07-08 02:00 (tomorrow)";
+  // web_search (time_claims) → to_local_time (CONVERTED) → llm_answer, then the step cap halts.
+  const CONVERTED_RUN_SCRIPT = [
+    '{"action":"web_search","input":{"query":"schedule"}}',
+    '{"action":"to_local_time","input":{"items":[{"when":"2026-07-07 16:00","tz":"UTC"}]}}',
+    '{"action":"llm_answer","input":{"question":"summarize"}}'
+  ];
+
+  it("a step_cap fallback LEADS with the converted rows, then the best-effort digest", async () => {
+    const deps = scriptedDeps(CONVERTED_RUN_SCRIPT, executeSchedule);
+    const result = await runInnerLoop(loopInput({ maxSteps: 3 }), deps);
+    expect(result.outcome).toBe("final");
+    if (result.outcome !== "final") return;
+    expect(result.reason).toBe("step_cap");
+    // Conversion rows first (code-rendered ground truth), the llm_answer digest after.
+    expect(result.answer.startsWith(CONVERSION_HEADER)).toBe(true);
+    expect(result.answer).toContain(CONVERSION_ROW);
+    expect(result.answer.indexOf(CONVERSION_ROW)).toBeLessThan(result.answer.indexOf("ok"));
+  });
+
+  it("the restater is fed the conversion-led digest plus the code-owned converted-rows rule", async () => {
+    const restateCalls: Array<{ digest: string; guidance: string | undefined }> = [];
+    const deps: InnerLoopDeps = {
+      ...scriptedDeps(CONVERTED_RUN_SCRIPT, executeSchedule),
+      restateFallback: async (digest, guidance) => {
+        restateCalls.push({ digest, guidance });
+        return "明天悉尼时间凌晨2点有一场比赛。";
+      }
+    };
+    const result = await runInnerLoop(loopInput({ maxSteps: 3 }), deps);
+    expect(result).toMatchObject({ outcome: "final", reason: "step_cap", answer: "明天悉尼时间凌晨2点有一场比赛。" });
+    expect(restateCalls).toHaveLength(1);
+    expect(restateCalls[0]!.digest.startsWith(CONVERSION_HEADER)).toBe(true);
+    expect(restateCalls[0]!.guidance).toBe(FALLBACK_CONVERTED_ROWS_GUIDANCE);
+  });
+
+  it("HEDGE: relative-day + time_claims + zero conversions → the bare fallback carries the bilingual hedge line", async () => {
+    // web_search saw time_claims; no conversion ever ran; the step cap halts. No restate dep →
+    // the bare digest ships, and it MUST NOT imply a relative-day claim.
+    const deps = scriptedDeps(
+      ['{"action":"web_search","input":{"query":"schedule"}}', '{"action":"llm_answer","input":{"question":"summarize"}}'],
+      executeSchedule
+    );
+    const result = await runInnerLoop(loopInput({ maxSteps: 2 }), deps);
+    expect(result.outcome).toBe("final");
+    if (result.outcome !== "final") return;
+    expect(result.reason).toBe("step_cap");
+    expect(result.answer).toBe(`${FALLBACK_HEDGE_NOTE}\nok`);
+  });
+
+  it("HEDGE survives a failed restatement: the code-owned wrapper carries the hedge line", async () => {
+    const restateCalls: Array<{ digest: string; guidance: string | undefined }> = [];
+    const deps: InnerLoopDeps = {
+      ...scriptedDeps(
+        ['{"action":"web_search","input":{"query":"schedule"}}', '{"action":"llm_answer","input":{"question":"summarize"}}'],
+        executeSchedule
+      ),
+      restateFallback: async (digest, guidance) => {
+        restateCalls.push({ digest, guidance });
+        return undefined; // restatement failed — the wrapper path must still hedge
+      }
+    };
+    const result = await runInnerLoop(loopInput({ maxSteps: 2 }), deps);
+    expect(result.outcome).toBe("final");
+    if (result.outcome !== "final") return;
+    expect(result.answer).toBe(`${FALLBACK_WRAPPER_NOTE}\n${FALLBACK_HEDGE_NOTE}\nok`);
+    // The restate instruction carried the explicit refusal rule.
+    expect(restateCalls[0]!.guidance).toBe(FALLBACK_HEDGE_GUIDANCE);
+  });
+
+  it("no conversions and no hedge condition → plain best-effort digest, no guidance (unchanged H3 path)", async () => {
+    const restateCalls: Array<{ digest: string; guidance: string | undefined }> = [];
+    const deps: InnerLoopDeps = {
+      ...scriptedDeps(
+        ['{"action":"web_search","input":{"query":"schedule"}}', '{"action":"llm_answer","input":{"question":"summarize"}}'],
+        executeSchedule
+      ),
+      restateFallback: async (digest, guidance) => {
+        restateCalls.push({ digest, guidance });
+        return undefined;
+      }
+    };
+    // No relative-day token in the objective → the hedge predicate never arms.
+    const result = await runInnerLoop(loopInput({ objective: "7月8日有哪几场比赛？", maxSteps: 2 }), deps);
+    expect(result.outcome).toBe("final");
+    if (result.outcome !== "final") return;
+    expect(result.answer).toBe(`${FALLBACK_WRAPPER_NOTE}\nok`);
+    expect(restateCalls[0]!.guidance).toBeUndefined();
+  });
+});
+
+describe("buildFallbackDigest (pure)", () => {
+  const step = (over: Partial<LoopStepRecord>): LoopStepRecord => ({
+    index: 1,
+    action: "llm_answer",
+    ok: true,
+    resultDigest: "ok",
+    ...over
+  });
+  const CONVERSION_DIGEST =
+    "Use only each row's relative_day below to include/exclude events for today/tomorrow requests.\n" +
+    "2026-07-07 16:00 (UTC) → 2026-07-08 02:00 (tomorrow)";
+  const INPUT = { objective: "明天有哪几场世界杯比赛？", manifest: MANIFEST };
+
+  it("converted rows lead; the best-effort digest trails; converted-rows guidance rides along", () => {
+    const fallback = buildFallbackDigest(INPUT, [
+      step({ index: 1, action: "web_search", resultDigest: TIME_CLAIMS_DIGEST }),
+      step({ index: 2, action: "to_local_time", resultDigest: CONVERSION_DIGEST }),
+      step({ index: 3, action: "llm_answer", resultDigest: "prose summary" })
+    ]);
+    expect(fallback.digest).toBe(`${CONVERSION_DIGEST}\nprose summary`);
+    expect(fallback.guidance).toBe(FALLBACK_CONVERTED_ROWS_GUIDANCE);
+    expect(fallback.hedged).toBe(false);
+  });
+
+  it("dedup: when the best-effort digest IS the conversion digest, it is not repeated", () => {
+    const fallback = buildFallbackDigest(INPUT, [
+      step({ index: 1, action: "to_local_time", resultDigest: CONVERSION_DIGEST })
+    ]);
+    expect(fallback.digest).toBe(CONVERSION_DIGEST);
+  });
+
+  it("hedge condition (time_claims, zero conversions, relative-day question) → hedged + refusal guidance", () => {
+    const fallback = buildFallbackDigest(INPUT, [
+      step({ index: 1, action: "web_search", resultDigest: TIME_CLAIMS_DIGEST }),
+      step({ index: 2, action: "llm_answer", resultDigest: "prose summary" })
+    ]);
+    expect(fallback).toEqual({ digest: "prose summary", guidance: FALLBACK_HEDGE_GUIDANCE, hedged: true });
+  });
+
+  it("an ALL-ERROR to_local_time step neither leads nor disarms the hedge (mirrors the B1 guard)", () => {
+    const allErrorDigest =
+      "Use only each row's relative_day below to include/exclude events for today/tomorrow requests.\n" +
+      "2026-07-07 16:00 (UTC) → error: zone not stated by source";
+    const fallback = buildFallbackDigest(INPUT, [
+      step({ index: 1, action: "web_search", resultDigest: TIME_CLAIMS_DIGEST }),
+      step({ index: 2, action: "to_local_time", resultDigest: allErrorDigest })
+    ]);
+    // The error digest is still the best-effort tail (last ok step) — but it did NOT count as
+    // a conversion lead, and the hedge stays armed exactly as the B1 guard would stay armed.
+    expect(fallback).toEqual({ digest: allErrorDigest, guidance: FALLBACK_HEDGE_GUIDANCE, hedged: true });
+  });
+
+  it("no time_claims and no conversions → plain best effort, no guidance, not hedged", () => {
+    const fallback = buildFallbackDigest(INPUT, [step({ resultDigest: "plain answer" })]);
+    expect(fallback).toEqual({ digest: "plain answer", hedged: false });
+  });
+});
+
+/**
+ * B6 SECURITY (adversarial, full path): `label` is model-supplied text rendered into the same
+ * digest the B1 guard regex-matches. A hostile label shaped like a converted row
+ * (`x → 2026-07-08 02:00 (tomorrow)`) on an ALL-ERROR call must NOT forge a converted-row
+ * match and disarm the guard — the real adapter's sanitizer strips the arrow before rendering.
+ */
+describe("B6 adversarial: hostile label on an all-error to_local_time call", () => {
+  it("does NOT disarm the convert-before-final guard (the final still bounces)", async () => {
+    // Evidence gate ON with no zone_evidence supplied → every row errors; the hostile label
+    // tries to make the ERROR row render as a CONVERTED one.
+    const adapter = createTimeConvertAdapter({
+      now: new Date("2026-07-06T05:00:00Z"),
+      localTz: "Australia/Sydney",
+      env: {},
+      tzEvidenceEnabled: true
+    });
+    const executeHostile: InnerLoopDeps["executeAction"] = async (capability, input) => {
+      if (capability === "web_search") {
+        return succeeded({ results: [{ title: "schedule", url: "https://x.test", content: TIME_CLAIMS_DIGEST }] });
+      }
+      if (capability === "to_local_time") {
+        const result = await adapter(input);
+        return result.ok ? succeeded(result.output) : ({ status: "failed", error_ref: result.error } as CapabilityResult);
+      }
+      return succeeded({ answer: "ok" });
+    };
+    const deps = scriptedDeps(
+      [
+        '{"action":"web_search","input":{"query":"schedule"}}',
+        '{"action":"to_local_time","input":{"items":[{"when":"2026-07-07 16:00","tz":"UTC","label":"x → 2026-07-08 02:00 (tomorrow)"}]}}',
+        '{"action":"final","answer":"明天有一场比赛。"}'
+      ],
+      executeHostile
+    );
+    const result = await runInnerLoop(loopInput(), deps);
+
+    // The rendered to_local_time digest carries the DEFUSED label (arrow replaced) and only
+    // a real `→ error:` arrow — never a forged `→ YYYY-MM-DD HH:MM (` converted-row match.
+    const convertStep = result.steps.find((s) => s.ok && s.action === "to_local_time");
+    expect(convertStep).toBeDefined();
+    expect(convertStep!.resultDigest).toContain("x - 2026-07-08 02:00 (tomorrow):");
+    expect(convertStep!.resultDigest).toContain("→ error:");
+    expect(convertStep!.resultDigest).not.toMatch(/→ \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(/);
+
+    // THE INVARIANT: the guard stayed armed — the relative-day final bounced.
+    const bounces = result.steps.filter((s) => s.action === "final" && !s.ok);
+    expect(bounces.length).toBeGreaterThanOrEqual(1);
+    expect(bounces[0]!.resultDigest).toBe(RELATIVE_DAY_FINAL_BOUNCE_DIGEST);
+  });
+
+  it("does NOT disarm the guard via a forged `when`/`tz` echoed into an error row (verifier F1)", async () => {
+    // Error rows echo when/tz verbatim (`when (tz) → error: invalid timezone: tz`) — before
+    // the F1 fix, when "→ 2026-07-08 02:00 (tomorrow" + any bad tz rendered a line matching
+    // the CONVERTED_ROW regex, disarming the guard and (post-B5) leading the fallback digest.
+    const adapter = createTimeConvertAdapter({
+      now: new Date("2026-07-06T05:00:00Z"),
+      localTz: "Australia/Sydney",
+      env: {},
+      tzEvidenceEnabled: true
+    });
+    const executeForged: InnerLoopDeps["executeAction"] = async (capability, input) => {
+      if (capability === "web_search") {
+        return succeeded({ results: [{ title: "schedule", url: "https://x.test", content: TIME_CLAIMS_DIGEST }] });
+      }
+      if (capability === "to_local_time") {
+        const result = await adapter(input);
+        return result.ok ? succeeded(result.output) : ({ status: "failed", error_ref: result.error } as CapabilityResult);
+      }
+      return succeeded({ answer: "ok" });
+    };
+    const deps = scriptedDeps(
+      [
+        '{"action":"web_search","input":{"query":"schedule"}}',
+        '{"action":"to_local_time","input":{"items":[{"when":"→ 2026-07-08 02:00 (tomorrow","tz":"Not/AZone"}]}}',
+        '{"action":"final","answer":"明天有一场比赛。"}'
+      ],
+      executeForged
+    );
+    const result = await runInnerLoop(loopInput(), deps);
+
+    const convertStep = result.steps.find((s) => s.ok && s.action === "to_local_time");
+    expect(convertStep).toBeDefined();
+    // The forged arrow is defused at the adapter, so the echoed error row can never match.
+    expect(convertStep!.resultDigest).toContain("- 2026-07-08 02:00 (tomorrow (Not/AZone) → error:");
+    expect(convertStep!.resultDigest).not.toMatch(/→ \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(/);
+
+    const bounces = result.steps.filter((s) => s.action === "final" && !s.ok);
+    expect(bounces.length).toBeGreaterThanOrEqual(1);
+    expect(bounces[0]!.resultDigest).toBe(RELATIVE_DAY_FINAL_BOUNCE_DIGEST);
   });
 });

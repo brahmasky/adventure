@@ -51,10 +51,16 @@ export function createTimeConvertAdapter(
     // good conversions in the same batch. Only a non-array/empty `items` is a batch-level reject.
     const rawItems = raw.map((entry) => {
       const row = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>;
+      // `when`/`tz` get the SAME digest-text sanitizing as `label`: error rows echo them
+      // verbatim into the step digest (`when (tz) → error: invalid timezone: tz`), so an
+      // unsanitized when like "→ 2026-07-08 02:00 (tomorrow" on an ALL-ERROR call forges a
+      // converted-row match and disarms the B1 guard (verifier F1, 2026-07-12). Legit values
+      // are untouched — no real datetime or IANA zone contains CR/LF, "→", or "time_claims:".
       return {
-        when: typeof row.when === "string" ? row.when.trim() : "",
-        tz: typeof row.tz === "string" ? row.tz.trim() : "",
-        zone_evidence: typeof row.zone_evidence === "string" ? row.zone_evidence.trim() : ""
+        when: typeof row.when === "string" ? sanitizeDigestText(row.when) : "",
+        tz: typeof row.tz === "string" ? sanitizeDigestText(row.tz) : "",
+        zone_evidence: typeof row.zone_evidence === "string" ? row.zone_evidence.trim() : "",
+        label: sanitizeLabel(row.label)
       };
     });
     const items: LocalTimeItem[] = rawItems.map((item) => ({ when: item.when, tz: item.tz }));
@@ -64,22 +70,61 @@ export function createTimeConvertAdapter(
     // ambient HOUGE_TIMEZONE (the hermeticity-trap class the env-sweep lesson warns about).
     const localTz = adapterConfig.localTz ?? resolveLocalTimeZone(evidenceEnv);
     const results = toLocalTimes(items, now, localTz);
-    if (evidenceEnabled) {
-      const priorDigests = readPriorDigests(input[TIME_CONVERT_PRIOR_DIGESTS_FIELD]);
-      return {
-        ok: true,
-        output: {
-          results: results.map((result, i) => {
-            if ("error" in result) return result;
-            return validateZoneEvidence(rawItems[i]!.zone_evidence, rawItems[i]!.tz, priorDigests)
-              ? result
-              : zoneEvidenceError(rawItems[i]!);
-          })
-        }
-      };
-    }
-    return { ok: true, output: { results } };
+    const priorDigests = evidenceEnabled ? readPriorDigests(input[TIME_CONVERT_PRIOR_DIGESTS_FIELD]) : [];
+    const gated = evidenceEnabled
+      ? results.map((result, i) => {
+          if ("error" in result) return result;
+          return validateZoneEvidence(rawItems[i]!.zone_evidence, rawItems[i]!.tz, priorDigests)
+            ? result
+            : zoneEvidenceError(rawItems[i]!);
+        })
+      : results;
+    // B6: re-attach each item's sanitized label index-aligned (`toLocalTimes` and the evidence
+    // gate both preserve order), on success AND error rows so an errored event stays named.
+    return {
+      ok: true,
+      output: {
+        results: gated.map((result, i) => {
+          const label = rawItems[i]!.label;
+          return label ? { ...result, label } : result;
+        })
+      }
+    };
   };
+}
+
+/** Max chars of a model-supplied text field (label/when/tz) carried onto a result row. */
+const DIGEST_TEXT_CHAR_CAP = 80;
+
+/**
+ * B6 SECURITY: `label`, `when`, and `tz` are MODEL-SUPPLIED text rendered verbatim into step
+ * digests (success rows, error rows, and error messages echo them), and two mechanical guards
+ * match ON digest text — the B1 guard's converted-row regex (`→ YYYY-MM-DD HH:MM (`) and the
+ * `time_claims:` substring check. So: flatten CR/LF to spaces (the forged-frame-line hole
+ * class closed 07-07 in quarantine digests), replace `→` (a value like
+ * "x → 2026-07-08 02:00 (tomorrow)" landing on an ERROR row would forge a converted-row match
+ * and disarm the guard), neutralize `time_claims:`, and cap length. All substitutions are
+ * NON-DELETING (deleting "time_claims:" would let "time_time_claims:claims:" reassemble it).
+ */
+function sanitizeDigestText(value: string): string {
+  const flat = value
+    .replace(/[\r\n]+/g, " ")
+    .replace(/→/g, "-")
+    .replace(/time_claims:/gi, "time_claims ")
+    .trim();
+  const capped = flat.length > DIGEST_TEXT_CHAR_CAP ? flat.slice(0, DIGEST_TEXT_CHAR_CAP) : flat;
+  // Digest renders put `: `/` (` right after these values (`label: `, `when (tz)`) — a value
+  // ENDING in "time_claims" would reassemble the `time_claims:` arm marker at the render seam
+  // (an arming forge, fail-safe direction, but still closed). Checked AFTER the cap, which
+  // could itself truncate to that exact ending.
+  return /time_claims$/i.test(capped) ? `${capped}-` : capped;
+}
+
+/** Optional-field wrapper over sanitizeDigestText: non-string / empty-after-sanitizing ⇒ absent. */
+function sanitizeLabel(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const clean = sanitizeDigestText(value);
+  return clean.length === 0 ? undefined : clean;
 }
 
 /** Whether timezone-source evidence is enforced (`HOUGE_TZ_EVIDENCE_ENABLED`, default OFF). */

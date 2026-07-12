@@ -108,6 +108,18 @@ describe("arming policy (step ⓪·2): evolution tools appear only when their fl
     expect(lines[0]).toContain("never do timezone math yourself");
   });
 
+  it("to_local_time carries the event label in BOTH input sketches, and the description says to pass it (B6)", () => {
+    const [plain] = manifestFor(["to_local_time"], { HOUGE_TIME_TOOL_ENABLED: "1" });
+    expect(plain!.inputSketch).toContain('"label":"Argentina vs Egypt"');
+    expect(plain!.description).toContain("Pass each event's name as label");
+    const [evidence] = manifestFor(["to_local_time"], {
+      HOUGE_TIME_TOOL_ENABLED: "1",
+      HOUGE_TZ_EVIDENCE_ENABLED: "1"
+    });
+    expect(evidence!.inputSketch).toContain("zone_evidence");
+    expect(evidence!.inputSketch).toContain('"label":"Argentina vs Egypt"');
+  });
+
   it("the manifest entries never leak the arming predicate (registration metadata only)", () => {
     const [entry] = manifestFor(["self_write_propose"], { HOUGE_SELFWRITE_ENABLED: "1" });
     expect(entry).toBeDefined();

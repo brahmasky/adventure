@@ -4,6 +4,8 @@ import {
   buildFallbackRestateQuestion,
   buildLoopStepQuestion,
   digestOutput,
+  FALLBACK_CONVERTED_ROWS_GUIDANCE,
+  FALLBACK_HEDGE_GUIDANCE,
   FALLBACK_WRAPPER_NOTE,
   parseLoopAction,
   runInnerLoop
@@ -705,6 +707,21 @@ describe("buildFallbackRestateQuestion", () => {
     expect(q).toContain("THIS message's language");
     expect(q).toContain("1-3 sentences");
   });
+
+  it("B5: the code-owned guidance rides the INSTRUCTION section, after the digest block — never inside it", () => {
+    for (const guidance of [FALLBACK_CONVERTED_ROWS_GUIDANCE, FALLBACK_HEDGE_GUIDANCE]) {
+      const q = buildFallbackRestateQuestion("明天有比赛吗？", "digest body", guidance);
+      expect(q).toContain(guidance);
+      // Instruction placement: the guidance follows the last standing instruction line, so it
+      // can never be read as part of the untrusted digest data above.
+      expect(q.indexOf(guidance)).toBeGreaterThan(q.indexOf("Reply with the restatement only."));
+    }
+  });
+
+  it("B5: no guidance → the question is byte-identical to the two-arg form", () => {
+    expect(buildFallbackRestateQuestion("q", "d")).toBe(buildFallbackRestateQuestion("q", "d", undefined));
+    expect(buildFallbackRestateQuestion("q", "d").endsWith("Reply with the restatement only.")).toBe(true);
+  });
 });
 
 describe("digestOutput", () => {
@@ -736,6 +753,22 @@ describe("digestOutput", () => {
 
   it("a joint url+status+content match is required — partial shapes still fall back to JSON", () => {
     expect(digestOutput({ url: "https://a.test", saved: true }, 200)).toBe('{"url":"https://a.test","saved":true}');
+  });
+
+  it("B6: to_local_time rows render the event label on success AND error rows (row stays bound to its event)", () => {
+    const digest = digestOutput(
+      {
+        results: [
+          { when: "2026-07-07 16:00", tz: "UTC", local: "2026-07-08 02:00", relative_day: "tomorrow", label: "Argentina vs Egypt" },
+          { when: "2026-07-07 20:00", tz: "UTC", error: "zone not stated by source", label: "France vs Brazil" },
+          { when: "2026-07-08 12:00", tz: "UTC", local: "2026-07-08 22:00", relative_day: "tomorrow" } // unlabeled: legacy shape
+        ]
+      },
+      1_000
+    );
+    expect(digest).toContain("Argentina vs Egypt: 2026-07-07 16:00 (UTC) → 2026-07-08 02:00 (tomorrow)");
+    expect(digest).toContain("France vs Brazil: 2026-07-07 20:00 (UTC) → error: zone not stated by source");
+    expect(digest).toContain("\n2026-07-08 12:00 (UTC) → 2026-07-08 22:00 (tomorrow)");
   });
 });
 

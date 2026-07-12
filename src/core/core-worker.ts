@@ -1985,8 +1985,8 @@ export class CoreWorker {
         // H3: one UNRESERVED compose attempt (mirrors lesson_write's internal distill —
         // never charged to the turn ledger, which is typically drained at exactly this
         // point) to restate a code-assembled fallback digest in the user's language.
-        restateFallback: async (digest) => {
-          const r = await composeAdapter({ question: buildFallbackRestateQuestion(message, digest), system: askSystem });
+        restateFallback: async (digest, guidance) => {
+          const r = await composeAdapter({ question: buildFallbackRestateQuestion(message, digest, guidance), system: askSystem });
           if (!r.ok) return undefined;
           const text = typeof r.output.answer === "string" ? r.output.answer.trim() : "";
           return text.length > 0 ? text : undefined;

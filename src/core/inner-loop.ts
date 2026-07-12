@@ -79,8 +79,11 @@ export interface InnerLoopDeps {
    * in the USER'S language before it ships (timeout / parse-cap / denial / step-cap halts).
    * `undefined`/empty/protocol-junk → the code-owned bilingual wrapper ships instead. Absent →
    * the bare digest ships (⓪·1 behavior). Must never be charged to the turn's budget ledger.
+   * B5: `guidance` (when set) is a code-owned relative-day rule the restate instruction must
+   * carry (converted-rows-only, or the hedge refusal) — production wiring passes it into
+   * `buildFallbackRestateQuestion`.
    */
-  restateFallback?: (digest: string) => Promise<string | undefined>;
+  restateFallback?: (digest: string, guidance?: string) => Promise<string | undefined>;
   /**
    * Dual-LLM privilege separation (ADR 0014, Phase 1): the quarantined reader (Q-LLM). When
    * present AND `input.quarantineReadActions?.(action)` is true, a SUCCESSFUL external-read
@@ -545,7 +548,8 @@ function scanBalancedObject(text: string, start: number): number {
  * (+ redirect hint); web-search-shaped outputs render numbered result lines;
  * anything else is compact JSON.
  */
-/** Discriminate to_local_time results (`{when, tz, local|error}`) from web results (`{title, url}`). */
+/** Discriminate to_local_time results (`{when, tz, local|error}`) from web results (`{title, url}`).
+ *  An optional `label` (B6) rides along untouched — the guard is structural on when/tz only. */
 function isTimeConvertResults(results: unknown[]): boolean {
   const first = results[0] as Record<string, unknown> | undefined;
   return (
@@ -579,10 +583,13 @@ export function digestOutput(output: Record<string, unknown>, charCap: number): 
         const row = r as Record<string, unknown>;
         const when = typeof row.when === "string" ? row.when : "";
         const tz = typeof row.tz === "string" ? row.tz : "";
-        if (typeof row.error === "string" && row.error.length > 0) return `${when} (${tz}) → error: ${row.error}`;
+        // B6: the event label (adapter-sanitized — never raw model text) prefixes BOTH success
+        // and error rows, so answer prose stays bound to the row that actually converted.
+        const label = typeof row.label === "string" && row.label.length > 0 ? `${row.label}: ` : "";
+        if (typeof row.error === "string" && row.error.length > 0) return `${label}${when} (${tz}) → error: ${row.error}`;
         const local = typeof row.local === "string" ? row.local : "";
         const relative = typeof row.relative_day === "string" ? row.relative_day : "";
-        return `${when} (${tz}) → ${local} (${relative})`;
+        return `${label}${when} (${tz}) → ${local} (${relative})`;
       })
     ].join("\n");
   } else if (Array.isArray(output.results)) {
@@ -614,34 +621,100 @@ export function looksLikeProtocolJunk(text: string): boolean {
 export const FALLBACK_WRAPPER_NOTE = "（以下为系统摘要 / system summary）";
 
 /**
+ * B5: code-owned restate rule when converted rows lead the fallback digest — the restater may
+ * only source relative-day statements from the code-computed relative_day labels (the 07-07
+ * step_cap incident invented "today" matches while conversions sat unused in the transcript).
+ */
+export const FALLBACK_CONVERTED_ROWS_GUIDANCE =
+  "Any statement about today/tomorrow/relative days must come ONLY from the converted rows' " +
+  "relative_day labels in the digest; quote the converted local times verbatim.";
+
+/**
+ * B5: code-owned refusal rule when the hedge condition holds (relative-day question,
+ * time_claims on the table, ZERO conversions): the restater must not assert any relative day.
+ */
+export const FALLBACK_HEDGE_GUIDANCE =
+  "Do NOT state that anything happens today/tomorrow/any relative day — the times could not be " +
+  "verified in the user's timezone; say so and give the source-frame facts you have.";
+
+/** B5: code-owned bilingual hedge line prepended when a hedged digest ships without a restatement. */
+export const FALLBACK_HEDGE_NOTE =
+  "（无法核实这些时间对应你所在时区的日期 / could not verify these times in your local timezone）";
+
+/** The code-assembled fallback digest plus its code-owned restate rule (B5). */
+export interface FallbackDigest {
+  digest: string;
+  /** Conditional code-owned rule for the restate instruction (undefined when neither applies). */
+  guidance?: string;
+  /** The hedge condition held: any bare-digest form MUST carry FALLBACK_HEDGE_NOTE. */
+  hedged: boolean;
+}
+
+/**
+ * B5 (bug F3): assemble the fallback digest for every non-final halt (step_cap / parse_cap /
+ * clarify_cap / timeout / denial). The 07-07 live incidents shipped step_cap fallbacks that
+ * invented relative-day claims while successful to_local_time conversions sat unused in the
+ * transcript — so converted rows LEAD the digest (code-rendered ground truth first, then the
+ * best-effort transcript digest). Only steps with an actually-CONVERTED row lead: an all-error
+ * to_local_time step has no relative_day to anchor prose to (the same reason it never disarms
+ * the B1 guard). With zero conversions, the guard's own predicate decides whether a relative-day
+ * claim would be unverifiable — in that case the result is marked hedged so no shipped form can
+ * imply one.
+ */
+export function buildFallbackDigest(
+  input: Pick<InnerLoopInput, "objective" | "manifest">,
+  steps: LoopStepRecord[]
+): FallbackDigest {
+  const best = bestEffortFinal(steps);
+  const conversions = steps
+    .filter((s) => s.ok && s.action === "to_local_time" && CONVERTED_ROW.test(s.resultDigest))
+    .map((s) => s.resultDigest);
+  if (conversions.length > 0) {
+    // Dedup kept simple: skip the best-effort tail only when it IS one of the leading digests.
+    const tail = conversions.includes(best) ? [] : [best];
+    return { digest: [...conversions, ...tail].join("\n"), guidance: FALLBACK_CONVERTED_ROWS_GUIDANCE, hedged: false };
+  }
+  if (finalNeedsRelativeDayConversion(input, steps)) {
+    return { digest: best, guidance: FALLBACK_HEDGE_GUIDANCE, hedged: true };
+  }
+  return { digest: best, hedged: false };
+}
+
+/**
  * H3: the code-assembled fallback answer, restated for the user. The transcript digest
  * (bestEffortFinal) is internal English — shipping it raw to a Chinese chat was the 06:12
  * live failure. With a `restateFallback` dep, ONE unreserved compose attempt rewrites it
  * in the user's language; a failed/junk restatement falls back to the code-owned bilingual
  * wrapper so a bare digest never ships. Without the dep (tests/legacy) the digest passes
- * through unchanged.
+ * through unchanged. B5: the digest is assembled by `buildFallbackDigest` (converted rows
+ * lead; the hedge condition marks it), and a HEDGED digest shipping in any bare form gets
+ * the code-owned hedge line — the restate instruction can refuse relative days, but a bare
+ * digest cannot, and the 07-07 incidents shipped exactly such implied "today" claims.
  */
 async function fallbackFinal(
   input: InnerLoopInput,
   deps: InnerLoopDeps,
   steps: LoopStepRecord[]
 ): Promise<string> {
-  const digest = bestEffortFinal(steps);
-  if (!deps.restateFallback) return digest;
+  const fallback = buildFallbackDigest(input, steps);
+  const bare = fallback.hedged ? `${FALLBACK_HEDGE_NOTE}\n${fallback.digest}` : fallback.digest;
+  if (!deps.restateFallback) return bare;
   try {
-    const restated = (await deps.restateFallback(digest))?.trim();
+    const restated = (await deps.restateFallback(fallback.digest, fallback.guidance))?.trim();
     if (restated && restated.length > 0 && !looksLikeProtocolJunk(restated)) return restated;
   } catch {
     // restatement is best-effort — fall through to the wrapper
   }
-  return `${FALLBACK_WRAPPER_NOTE}\n${digest}`;
+  return `${FALLBACK_WRAPPER_NOTE}\n${bare}`;
 }
 
 /**
  * H3: the strict single-shot restate instruction (built by the production wiring; the user
- * message defines the reply language — never the digest's own English).
+ * message defines the reply language — never the digest's own English). B5: `guidance`
+ * (when set) appends the code-owned relative-day rule to the INSTRUCTION section — never
+ * inside the untrusted digest block, where it would be data, not an instruction.
  */
-export function buildFallbackRestateQuestion(objective: string, digest: string): string {
+export function buildFallbackRestateQuestion(objective: string, digest: string, guidance?: string): string {
   return [
     "You ran out of time/budget mid-task. Below is an internal system digest of what you found so far.",
     "",
@@ -652,7 +725,8 @@ export function buildFallbackRestateQuestion(objective: string, digest: string):
     digest,
     "",
     "Restate the outcome for the user in the user's language, in 1-3 sentences, first person, plain text.",
-    "Do not include JSON, internal formatting, headings, or the digest verbatim. Reply with the restatement only."
+    "Do not include JSON, internal formatting, headings, or the digest verbatim. Reply with the restatement only.",
+    ...(guidance ? [guidance] : [])
   ].join("\n");
 }
 
