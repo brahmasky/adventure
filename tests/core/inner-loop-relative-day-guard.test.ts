@@ -284,11 +284,17 @@ describe("B5: fallback digest honors conversions", () => {
   it("HEDGE: relative-day + time_claims + zero conversions → the bare fallback carries the bilingual hedge line", async () => {
     // web_search saw time_claims; no conversion ever ran; the step cap halts. No restate dep →
     // the bare digest ships, and it MUST NOT imply a relative-day claim.
+    // maxSteps 3 (B7): the tail begins at remaining ≤ TAIL_RESERVE_STEPS, so web_search must
+    // run at remaining 3 — at 2 it would tail-bounce and never surface the time_claims.
     const deps = scriptedDeps(
-      ['{"action":"web_search","input":{"query":"schedule"}}', '{"action":"llm_answer","input":{"question":"summarize"}}'],
+      [
+        '{"action":"web_search","input":{"query":"schedule"}}',
+        '{"action":"llm_answer","input":{"question":"summarize"}}',
+        '{"action":"llm_answer","input":{"question":"summarize again"}}'
+      ],
       executeSchedule
     );
-    const result = await runInnerLoop(loopInput({ maxSteps: 2 }), deps);
+    const result = await runInnerLoop(loopInput({ maxSteps: 3 }), deps);
     expect(result.outcome).toBe("final");
     if (result.outcome !== "final") return;
     expect(result.reason).toBe("step_cap");
@@ -297,9 +303,14 @@ describe("B5: fallback digest honors conversions", () => {
 
   it("HEDGE survives a failed restatement: the code-owned wrapper carries the hedge line", async () => {
     const restateCalls: Array<{ digest: string; guidance: string | undefined }> = [];
+    // maxSteps 3 (B7): web_search must run above the tail to surface the time_claims.
     const deps: InnerLoopDeps = {
       ...scriptedDeps(
-        ['{"action":"web_search","input":{"query":"schedule"}}', '{"action":"llm_answer","input":{"question":"summarize"}}'],
+        [
+          '{"action":"web_search","input":{"query":"schedule"}}',
+          '{"action":"llm_answer","input":{"question":"summarize"}}',
+          '{"action":"llm_answer","input":{"question":"summarize again"}}'
+        ],
         executeSchedule
       ),
       restateFallback: async (digest, guidance) => {
@@ -307,7 +318,7 @@ describe("B5: fallback digest honors conversions", () => {
         return undefined; // restatement failed — the wrapper path must still hedge
       }
     };
-    const result = await runInnerLoop(loopInput({ maxSteps: 2 }), deps);
+    const result = await runInnerLoop(loopInput({ maxSteps: 3 }), deps);
     expect(result.outcome).toBe("final");
     if (result.outcome !== "final") return;
     expect(result.answer).toBe(`${FALLBACK_WRAPPER_NOTE}\n${FALLBACK_HEDGE_NOTE}\nok`);
@@ -317,9 +328,14 @@ describe("B5: fallback digest honors conversions", () => {
 
   it("no conversions and no hedge condition → plain best-effort digest, no guidance (unchanged H3 path)", async () => {
     const restateCalls: Array<{ digest: string; guidance: string | undefined }> = [];
+    // maxSteps 3 (B7): web_search must run above the tail — at remaining 2 it would tail-bounce.
     const deps: InnerLoopDeps = {
       ...scriptedDeps(
-        ['{"action":"web_search","input":{"query":"schedule"}}', '{"action":"llm_answer","input":{"question":"summarize"}}'],
+        [
+          '{"action":"web_search","input":{"query":"schedule"}}',
+          '{"action":"llm_answer","input":{"question":"summarize"}}',
+          '{"action":"llm_answer","input":{"question":"summarize again"}}'
+        ],
         executeSchedule
       ),
       restateFallback: async (digest, guidance) => {
@@ -328,7 +344,7 @@ describe("B5: fallback digest honors conversions", () => {
       }
     };
     // No relative-day token in the objective → the hedge predicate never arms.
-    const result = await runInnerLoop(loopInput({ objective: "7月8日有哪几场比赛？", maxSteps: 2 }), deps);
+    const result = await runInnerLoop(loopInput({ objective: "7月8日有哪几场比赛？", maxSteps: 3 }), deps);
     expect(result.outcome).toBe("final");
     if (result.outcome !== "final") return;
     expect(result.answer).toBe(`${FALLBACK_WRAPPER_NOTE}\nok`);
