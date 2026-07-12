@@ -1,3 +1,68 @@
+# ✅ DONE — B7+B8: Phase R levers 2+4 (budget-tail shaping + protocol-retry hygiene) — SHIPPED + LIVE-GATED 2026-07-12 17:1x
+
+**Gate results (live-gate-b5b6.mjs, same harness as B5/B6):**
+- S2 (budget 9, the run that died searching this afternoon): 6× web_search → attempted final →
+  B1 BOUNCE → planner called to_local_time IN THE TAIL → evidence gate rejected the unevidenced
+  zone → second B1 bounce → honest hedged fallback («消息来源没有注明时区，我无法确认…»). The
+  9×-search death is gone; every mechanical net fired in sequence ✓.
+- S3 (full budget): clean final in 7 steps, labeled converted rows, «明天（7月13日）没有比赛»
+  backed by rows (Jul 13 IS the rest day before the semis) ✓. NEW residual evidence: prose
+  quoted the converted Sydney clocks correctly but NAMED the frame 北京时间 — the pi row-
+  misquoting class; cheap mechanical candidate: render the local zone name into digest rows.
+- Daemon rolled onto fresh dist (clean stop after 100 cycles), heartbeat green.
+
+**Verifier: SHIP-WITH-NITS — 500-seed livelock fuzz clean; byte-identity differential vs HEAD
+clean; B1-cap-in-tail acceptance test added by verifier. F1 FIXED pre-commit:** tail guidance
+unconditionally instructed to_local_time even when disarmed → two obedient unknown-tool attempts
+exited "denial" instead of the honest step_cap fallback; fix = no-time-tool guidance variants
+picked off the manifest. 1222/1222 both sweeps. Commit e961292.
+
+**Residuals queued:** F2 evolution-lane kickoff tail-bounced when a turn kicks off at charged
+step 13+ (lost kickoff, recoverable by re-asking — operator note); F3 B1-bounce-in-tail digest
+still says "search" (mixed signals, terminates honestly); F4 latent whole-run-tail if the loop
+is ever reused for ≤2-call contracts; local-zone-name in digest rows (S3 frame-misquote fix);
+Phase R lever 3 (search discipline) = Houge self-write next.
+
+(original plan below)
+
+## (was IN PROGRESS) — /goal 2026-07-12
+
+**Goal (Paco, /goal 2026-07-12 evening):** Phase R backend batch — lever 2 (budget shaping) +
+lever 4 (malformed-action retry hygiene). Lever 3 (search discipline) queued as Houge self-write;
+lever 1 landed as B5.
+
+**B7 — Budget-tail shaping (src/core/inner-loop.ts):** S2 gate today: 9× web_search → step_cap,
+to_local_time never called (search-until-death). Fix, all code-owned:
+- TAIL_RESERVE_STEPS=2, TAIL_ALLOWED_ACTIONS={to_local_time, llm_answer}. When remaining
+  CHARGED steps ≤ reserve: buildLoopStepQuestion renders only tail-set manifest entries
+  (∩ input.manifest, order kept; zone_evidence sketch variant preserved) + final/clarify protocol
+  lines + a code-owned notice: budget nearly exhausted — stop searching; convert zone-labeled
+  times you already have, then final with best evidence + explicit uncertainty.
+- Mechanical enforcement: a parsed non-tail tool action in the tail records ok:false with an
+  instructive digest and CHARGES a step (its own bounce class — must NOT increment `failures`,
+  or 2 tail bounces would exit "denial" instead of riding to step_cap→B5 honest fallback; no
+  livelock: ≤2 wasted then step_cap).
+- Predicate reuses the same remaining-steps number the question renderer shows (display and
+  enforcement must agree).
+
+**B8 — Protocol-retry hygiene (src/core/inner-loop.ts):** 07-07: "1 step lost to malformed
+action JSON"; agy 2/2 in-harness failures were parse-driven. Fix:
+- `(unparsed)` retry iterations no longer charge the step budget (loop → while over
+  chargedSteps). PARSE_FAILURE_CAP=2 consecutive still ends the run (parse_cap).
+- Hard backstop vs alternating unparsed/valid inflation: total iterations ≤ maxSteps +
+  PROTOCOL_RETRY_ALLOWANCE (small const, ~4) → step_cap fallback; wall-clock deadline unchanged.
+- Scope: ONLY malformed replies go uncharged. Ping-pong repeats, clarify nudge, B1 bounces,
+  tail bounces all still charge (they are valid protocol actions / deliberate guard costs).
+
+**Checklist:**
+- [x] Recon: loop iteration/charging mechanics, manifest render path, caps, llm_answer descriptor
+- [x] Build subagent (B7+B8 + tests; 1218/1218 both sweeps)
+- [x] Independent adversarial verifier subagent (SHIP-WITH-NITS; fuzz + differential clean)
+- [x] Fix findings (F1 disarmed-tool guidance + 3 tests) → commit e961292 (1222/1222)
+- [x] LIVE gate: S2 tail-forced conversion chain ✓, S3 clean regression ✓; daemon on fresh dist
+
+---
+
 # ✅ DONE — B5+B6: fallback-path fix (F3) + to_local_time label — SHIPPED + LIVE-GATED 2026-07-12 16:2x
 
 **Gate results (scripts/live-gate-b5b6.mjs, real Gateway→CoreWorker + real planner/Tavily, forced

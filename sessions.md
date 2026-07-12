@@ -414,3 +414,30 @@ Build + independent adversarial verification subagents; each live round found a 
 - Commit fa26a3e. Residuals queued in todo.md: structured-row guard refactor, Phase R
   convergence (S2 evidence), ET-first prose presentation slip, conversion-led fallback branch
   live-unexercised (unit-covered).
+
+## 2026-07-12 (evening) — B7+B8: Phase R levers 2+4 — budget-tail shaping + protocol-retry hygiene (SHIPPED, live-gated)
+- Paco /goal: "backend batch" = Phase R levers 2+4 (lever 1 landed as B5 this morning; lever 3
+  queued as a Houge self-write; claude planner leg still deferred).
+- BUILD (subagent): B7 — at ≤2 remaining charged steps the menu shrinks to convert-or-answer
+  (to_local_time + llm_answer + final/clarify) with a code-owned stop-searching notice; parsed
+  out-of-tail actions bounce charged (never failure/parse-failure; checked BEFORE the ping-pong
+  guard so repeats can't be misrouted into parse_cap). B8 — malformed-action retries uncharged
+  (chargedSteps accounting), total iterations backstopped at maxSteps+4, clean runs byte-identical
+  (pinned question fixture). 3 B5 hedge fixtures legitimately shifted (their web_search now sat
+  inside the tail).
+- Independent adversarial VERIFY: SHIP-WITH-NITS. 500-seed livelock fuzz clean; HEAD differential
+  byte-identity clean; guard-interaction matrix clean (B1 wins over tail on a final; B1-cap-
+  exhausted tail final accepted — verifier added the missing test). F1 (minor, fixed pre-commit):
+  tail guidance unconditionally instructed to_local_time even when DISARMED → obedient planners
+  exited "denial" instead of honest step_cap; fix = manifest-conditional guidance variants.
+  F2 (evolution kickoff at charged step 13+ gets tail-bounced) + nits queued. 1222/1222 both sweeps.
+- LIVE GATE: S2 (budget 9 — this afternoon's search-death run) now: 6 searches → B1 bounce →
+  tail to_local_time attempt → evidence-gate rejection → hedged honest fallback. The chain
+  B1→tail→evidence-gate→B5-hedge all fired in one real turn. S3 clean final, rows labeled,
+  rest-day negative claim backed by conversions. NEW residual: prose named Sydney clocks as
+  北京时间 (pi row-misquote class) → queued mechanical candidate: local zone name in digest rows.
+- Daemon on fresh dist (PID cycle clean), heartbeat green 07:13:22Z. Commit e961292.
+- Day's arc: two /goal batches (B5+B6 morning, B7+B8 evening), both through build subagent →
+  independent adversarial verifier → pre-commit fix of a real finding → live gate → rollout.
+  Phase R levers 1/2/4 now mechanical; lever 3 (search discipline prompt) is the next Houge
+  self-write; the S2 trajectory shows the nets composing exactly as designed.
