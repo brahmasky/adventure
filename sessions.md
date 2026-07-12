@@ -441,3 +441,21 @@ Build + independent adversarial verification subagents; each live round found a 
   independent adversarial verifier → pre-commit fix of a real finding → live gate → rollout.
   Phase R levers 1/2/4 now mechanical; lever 3 (search discipline prompt) is the next Houge
   self-write; the S2 trajectory shows the nets composing exactly as designed.
+
+## 2026-07-12 (late) — Claude wiring removed from Houge runtime entirely (Paco decision)
+- Paco: "remove claude wiring completely, want to keep you to focus on building" — Claude is
+  the BUILD-ORCHESTRATOR seat only; the daemon must never depend on it. Re-reverses the
+  06-26 "Claude allowed at runtime via Max" rule (different rationale: seat separation, not cost).
+- Excised (all INACTIVE — writer=codex reviewer=kimi were live config): claude self-write writer
+  backend, claude diff-reviewer backend, normalizeClaudeUsage, core-worker wiring, both
+  spike-claude-*.mjs scripts, HOUGE_CLAUDE_BIN + stale ANTHROPIC_API_KEY/HOUGE_LLM_MODEL block
+  from .env/.env.example. Reviewer chain now [kimi, codex]; WriterKind=codex-only.
+- Graceful-degradation contract PINNED by new tests: stale HOUGE_SELFWRITE_WRITER/REVIEWER=claude
+  in any .env resolve to codex/kimi (no error, no publish block). 23 claude-path tests deleted,
+  generic obligations (unknown-value fallback, reject-delivery, guard writer-agnosticism)
+  re-anchored on codex/kimi. 1199/1199 both sweeps; nothing was load-bearing.
+- claude-cli planner leg DROPPED from the queue; ROADMAP §1 charter + §5 handoff notes updated;
+  memory (houge-model-agnostic-cheap) updated to the new rule. Commit b9d28d2. Daemon reloaded
+  on cleaned env+dist, heartbeat green.
+- Residual noted by build agent: scripts/live-selfwrite-p3.mjs still references the removed
+  claude reviewer path in comments/env — historical driver script, left as-is.
