@@ -120,6 +120,7 @@ export const LOOP_DISCIPLINE =
   "on. Prefer finishing over taking extra steps. Use web_search only when the answer needs the " +
   "live web. For times stated in sources, use only the timezone explicitly declared by that source; " +
   "if no timezone is stated, do not infer or guess one from the venue, city, country, event, or user locale. " +
+  "When searching for scheduled events, query by event name plus a timezone keyword (e.g. 'Argentina Egypt kick-off time GMT'), not your local date. " +
   "Before you call any date or time 'today', 'tomorrow', or any relative day, convert only explicitly-zoned " +
   "times with to_local_time — never do the timezone math yourself. When the user asks for events on a relative day, " +
   "filter solely by the relative_day returned by to_local_time; do not filter by the source date, venue date, " +
