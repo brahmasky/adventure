@@ -459,3 +459,37 @@ Build + independent adversarial verification subagents; each live round found a 
   on cleaned env+dist, heartbeat green.
 - Residual noted by build agent: scripts/live-selfwrite-p3.mjs still references the removed
   claude reviewer path in comments/env — historical driver script, left as-is.
+
+## 2026-07-13 — B9: smaller-residuals batch R1–R6 (SHIPPED, live-gated)
+- Paco /goal: "Smaller residuals pls" — the queued small items from B5–B8; structured-row guard
+  refactor deliberately held back (medium architecture change).
+- BUILD (subagent) per sharpened specs: R1 converted rows carry the target IANA zone INSIDE the
+  relative-day parens (CONVERTED_ROW regex byte-identical — a token between time and paren would
+  have silently disarmed the B1 guard; recon caught it before spec) + local_tz threaded through
+  the adapter envelope, alias-resolved, sanitized; R2 tail-aware B1 bounce digests (exported
+  variants, manifest-conditional per the F1 pattern); R3 tail arms only when maxSteps >
+  TAIL_RESERVE_STEPS (2-call contracts were latently whole-run-tail); R4 terminal-after-success
+  kickoffs (evolution lane) allowed through the tail — menu and enforcement share one predicate;
+  R5 LOOP_TIME_PRESENTATION_RULE (lead with the user's zone) + fallback guidance clause;
+  R6 claude refs stripped from the p3 driver. 14 new tests, 1213/1213 both sweeps.
+- Independent adversarial VERIFY: SHIP-WITH-NITS. Guard-forge probes through the real adapter all
+  defused (hostile local_tz collapses to UTC via resolveTimeZone before rendering); 500-seed
+  livelock fuzz clean; HEAD byte-differential clean outside deliberate changes; B7 guard-matrix
+  tests still meaningful. Fixed pre-commit: (1) R2 gated on the position where the digest is READ
+  (post-bounce, remainingSteps-1) — a bounce one step above the tail no longer instructs a search
+  the next menu bans; (2) raw wording pins ("search the specific events") replaced with an
+  exported RELATIVE_DAY_SEARCH_INSTRUCTION fragment the base digest is composed from — the
+  self-write rule, since lever 3 will likely reword exactly these digests. 1214/1214 both sweeps.
+  Commit 5b73a3f.
+- LIVE GATE (per-scenario re-runs of live-gate-b5b6.mjs): S1 (budget 3) produced the full B9
+  chain live — B1 bounce read in the tail → R2 digest says convert-don't-search → planner obeyed
+  with to_local_time on times it already had → conversion-led hedged fallback quoting the
+  zone-named row (first live exercise of B5's conversion-led branch). S2 clean final with
+  zone-named rows + honest evidence-gate error row. S3 prose now LEADS with the user's frame
+  (ET-first slip gone), negative claim backed. NEW narrowed residual: S3 prose adorned correct
+  Sydney clocks with a spurious «北京时间/» co-label; queued with the ZONE_EVIDENCE_ERROR
+  instruct-then-ban wording as next mechanical candidates.
+- Daemon rolled via launchd SIGTERM (clean stop after 232 cycles), fresh dist, heartbeat green.
+- Arc note: recon subagent → sharpened specs → build subagent → adversarial verifier → two real
+  pre-commit fixes → per-scenario live gate. The tail nets composed live exactly as designed;
+  remaining utility gap is prose-level frame adornment, which is structured-row-guard territory.

@@ -1,3 +1,101 @@
+# ✅ DONE — B9: smaller-residuals batch (R1–R6) — SHIPPED + LIVE-GATED 2026-07-13 04:5x
+
+**Gate results (live-gate-b5b6.mjs per-scenario, real Gateway→CoreWorker + real planner/Tavily):**
+- S1 (budget 3): web_search → B1 bounce READ IN THE TAIL (R2 tail digest: convert, don't
+  search) → planner OBEYED: to_local_time on the two zone-stated times it already had →
+  step_cap → conversion-led fallback, zone-named row quoted correctly («7月20日06:00
+  （澳大利亚/悉尼时间）»), honest hedge on tomorrow, zero invention ✓. FIRST live exercise of
+  B5's conversion-led fallback branch (previously unit-only).
+- S2 (budget 9): clean final in 7 steps; R1 live — header «Local times below are already in
+  the user's zone (Australia/Sydney)», rows `→ 2026-07-15 05:00 (in 2 days, Australia/Sydney)`;
+  evidence gate honestly errored an unevidenced SAST row; prose named Sydney correctly ✓.
+- S3 (full budget): clean final, 3 conversion calls, negative claim «明天没有比赛» backed by
+  rows, prose LEADS with the user's frame (R5, ET-first slip gone) ✓. NEW (narrowed) residual:
+  prose adorned correct Sydney clocks with a spurious extra «北京时间/» label.
+- Daemon rolled via launchd SIGTERM: clean stop after 232 cycles, fresh dist, heartbeat green.
+
+**Verifier: SHIP-WITH-NITS — 500-seed livelock fuzz clean; HEAD byte-differential clean
+(question/digest rendering identical outside the deliberate changes); guard-forge probes
+through the real adapter all defused (hostile local_tz collapses to UTC via resolveTimeZone
+before rendering). Fixed pre-commit:** (1) R2 boundary off-by-one — digest now gated on the
+POST-bounce position (`remainingSteps - 1`): a bounce one step above the tail no longer says
+"search" into a menu that bans it; (2) raw wording pins on code-owned digests replaced with the
+exported RELATIVE_DAY_SEARCH_INSTRUCTION fragment (self-write rule). 1214/1214 both sweeps.
+Commit 5b73a3f.
+
+**Residuals queued:** prose zone-adornment invention (S3: «北京时间/悉尼时间» on Sydney clocks —
+narrowed pi misquote class; mechanical candidate: prose zone-name check against row zones, or
+the structured-row guard refactor); ZONE_EVIDENCE_ERROR row text says "search for a source…"
+— same instruct-then-ban class inside the tail (visible in S3's error row); failing kickoff in
+tail exits "denial" not step_cap (bounded, regression-pinned by verifier test); BUDGET_TAIL_NOTICE
+doesn't mention kickoffs are allowed (wording drift); structured-row guard refactor (medium —
+also removes the isTimeConvertResults structural-trust hazard); Phase R lever 3 (search
+discipline) = Houge self-write next.
+
+(original plan below)
+
+## (was IN PROGRESS) — /goal 2026-07-13
+
+**Goal (Paco, /goal 2026-07-13): "Smaller residuals pls"** — clear the queued small residuals
+from B5–B8. Structured-row guard refactor stays QUEUED (medium architecture change, not small).
+
+**Sharpened specs (post-recon, line numbers as of 103b414):**
+
+- **R1 — local zone name in converted rows** (inner-loop.ts digestOutput ~L698 + fallback lead).
+  Row render becomes `${label}${when} (${tz}) → ${local} (${relative}, ${targetZone})` — zone
+  INSIDE the existing parens. HARD CONSTRAINT: CONVERTED_ROW regex (L482,
+  `/→ \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(/`) requires `(` right after HH:MM; a token between time
+  and paren silently DISARMS the B1 guard AND drops rows from buildFallbackDigest (L776, same
+  regex). Do not touch the regex. targetZone = the IANA zone to_local_time actually converted
+  into (locate in time-convert.ts; expected code-owned from contract/env) — pass it through
+  sanitizeDigestText anyway (defense in depth). Update the two fixture rows pinning
+  `"… → 2026-07-08 02:00 (tomorrow)"` (inner-loop-budget-tail L246, relative-day-guard L248/365)
+  to the new shape so fixtures stay representative. Consider one header-line clause noting the
+  rows are already in the user's zone.
+- **R2 — tail-aware B1 bounce** (RELATIVE_DAY_FINAL_BOUNCE_DIGEST L49–55, recorded L319).
+  Current text instructs "search the specific events … kick-off time GMT" — contradicts the tail
+  ban. Add a tail variant (exported const) selected when `remainingSteps <= TAIL_RESERVE_STEPS`
+  (remainingSteps in scope at L270): no search instruction — convert zone-labeled times already
+  in the transcript, else final with explicit uncertainty. Mirror the B7-F1 pattern: if
+  to_local_time absent from manifest, use a no-time-tool wording (like
+  BUDGET_TAIL_BOUNCE_DIGEST_NO_TIME_TOOL L98–100). Non-tail wording unchanged.
+- **R3 — tail floor for tiny contracts** (predicates L353 + L498). Tail arms ONLY when
+  `input.maxSteps > TAIL_RESERVE_STEPS`; both sites share the identical predicate (display and
+  enforcement must agree). Real exposure exists: compiled contracts have max_tool_calls 2/3/4/5
+  (task-contract.ts L202 etc.) — today a 2-call contract would be whole-run-tail from step 1.
+- **R4 — evolution kickoff exempt from tail** (EVOLUTION_TOOLS are ordinary parsed actions;
+  bounced at L353 before dispatch; terminalAfterSuccess wired at core-worker L1964 → loop L424).
+  Exemption rule: an action for which `input.terminalAfterSuccess?.(action)` is true is allowed
+  in the tail — it charges exactly 1 step and ENDS the run, so it cannot waste budget. Apply the
+  SAME carve-out to the tail menu filter (L499) so offered menu and enforcement agree (no new
+  mixed-signal class). No change to charging.
+- **R5 — present times in the user's zone** (composer.ts LOOP_DISCIPLINE L102–123). Add one
+  code-owned sentence to the timezone block (~L114): lead with times in the user's local zone
+  (as converted by to_local_time); source-zone clocks only as parenthetical extras. Composer
+  goldens move — update them. Optionally extend FALLBACK_CONVERTED_ROWS_GUIDANCE the same way.
+- **R6 — live-selfwrite-p3.mjs claude refs**: delete L27 (HOUGE_CLAUDE_BIN env default —
+  executable), reword comments/log L2/L9/L26/L84 to the current reviewer chain (kimi→codex).
+  Driver script only; no src changes.
+
+**Rules for the build:** new user-facing strings behind EXPORTED constants (self-write rule —
+never pin literals in tests); both sweeps green (default env + HOUGE_TZ_EVIDENCE_ENABLED/arming
+env); adversarial test for R1 (crafted label/tz must not forge or disarm CONVERTED_ROW given the
+new row shape).
+
+**Checklist:**
+- [x] Recon: exact code paths for R1–R5 (inner-loop digest render, tail predicate/bounce,
+      evolution kickoff detection, final guidance lines)
+- [x] Sharpen specs in this file
+- [x] Build subagent (R1–R6 + 14 tests; 1213/1213 both sweeps)
+- [x] Independent adversarial verifier subagent (SHIP-WITH-NITS; fuzz + differential + forge
+      probes clean; +1 verifier regression test)
+- [x] Fix findings (R2 post-bounce gating + literal-pin removal) → commit 5b73a3f (1214/1214)
+- [x] LIVE gate: S1 tail-B1→convert→conversion-led hedge ✓, S2 zone-named rows ✓, S3 local-led
+      prose + backed negative claim ✓; daemon rolled onto fresh dist (232 cycles, clean)
+- [x] Session record
+
+---
+
 # ✅ DONE — B7+B8: Phase R levers 2+4 (budget-tail shaping + protocol-retry hygiene) — SHIPPED + LIVE-GATED 2026-07-12 17:1x
 
 **Gate results (live-gate-b5b6.mjs, same harness as B5/B6):**
