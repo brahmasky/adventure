@@ -493,3 +493,33 @@ Build + independent adversarial verification subagents; each live round found a 
 - Arc note: recon subagent → sharpened specs → build subagent → adversarial verifier → two real
   pre-commit fixes → per-scenario live gate. The tail nets composed live exactly as designed;
   remaining utility gap is prose-level frame adornment, which is structured-row-guard territory.
+
+## 2026-07-13 — Phase R lever 3: search discipline via Houge SELF-WRITE (MERGED, live) — Phase R COMPLETE
+- Paco /goal: "lever 3 self-write" — the last Phase R lever lands through Houge's own evolution
+  lane; Claude orchestrates only (kickoff message, ledger watch, merge-gate shepherding). First
+  full self-write circuit since the claude-runtime excision — codex writer / kimi reviewer chain
+  confirmed live.
+- Recon (subagent): kickoff is Telegram-only (no CLI path reaches EVOLUTION_TOOLS); pipeline =
+  codex writer (≤3 attempts) → protected-path guard → test-gate (typecheck+test+build in a
+  node_modules-linked worktree) → kimi review → publish branch → Telegram view/merge/discard
+  buttons → mergeAndReload (re-verifies, reverts on red, launchctl restart on green). Confirmed
+  composer.ts/inner-loop constants self-writable — B9's exported-fragment prep was the enabler.
+  Ledger watch armed from rowid high-water mark BEFORE surfacing the gate (monitor lesson).
+- The circuit: Paco's kickoff 06:00:28Z → planner chose self_write_propose on step 1 (7s;
+  B9-R4 note: kickoff would have survived even in the tail) → published 06:03:31Z (2m47s) →
+  diff read + SHIP recommendation surfaced → Paco merged → clean SIGTERM + restart 06:04:54Z
+  on merge commit 85e792f (Houge-authored). All three gates pass; kimi's review reasons were
+  substantive ("minimal change to the correct prompt, preserves timezone rules").
+- The change (1 line in LOOP_DISCIPLINE): query scheduled events by event name + timezone
+  keyword, not the local date — promotes the B1 bounce digest's reactive teaching to proactive
+  every-step guidance (the 07-12 S2 9×-search death class).
+- Post-merge live probe (gate S2): mechanical nets composed (tail-forced conversion, zone-named
+  row, honest budget denial, conversion-led fallback). Convergence NOT claimable from n=1
+  (7 searches vs 5 pre-lever same morning; same-scenario variance 5–9 today) — soak metric.
+  Probe CAUGHT a real residual: fallback restatement said «明天» for a row labeled `in 2 days`
+  (right clock/zone, wrong relative word — the LLM ignored B5's code-owned restater rule).
+  Queued mechanical candidate: post-restatement relative-day token validation against row labels.
+- Phase R closed: levers 1 (B5 fallback conversions), 2+4 (B7/B8 tail + retry hygiene),
+  3 (this self-write). Next roadmap item: ② episodic memory. Orchestration note: the
+  interactive gates (kickoff, merge) were surfaced once with full context and completed by
+  Paco in minutes — no idle-loop nudging needed.

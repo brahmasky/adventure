@@ -1,3 +1,61 @@
+# ✅ DONE — Phase R lever 3: search discipline via Houge SELF-WRITE — MERGED + LIVE 2026-07-13 06:0x
+
+**Phase R is COMPLETE: all four levers live (1=B5, 2+4=B7/B8 mechanical, 3=self-write prompt).**
+
+**The circuit (first full self-write since the claude excision — codex/kimi chain confirmed):**
+kickoff (Paco Telegram 06:00:28Z) → planner chose self_write_propose on step 1 (7s) →
+codex writer → protected-guard ✓ → test-gate ✓ → kimi review ✓ ("minimal change to the correct
+prompt, preserves timezone rules") → published 06:03:31Z (**2m47s** kickoff→publish) → Paco
+merged via button → mergeAndReload re-verified + launchctl restart 06:04:54Z (PID 67899).
+Merge commit 85e792f, authored by Houge's own pipeline.
+
+**The change (1 line, LOOP_DISCIPLINE):** "When searching for scheduled events, query by event
+name plus a timezone keyword (e.g. 'Argentina Egypt kick-off time GMT'), not your local date."
+— promotes the B1 bounce digest's reactive teaching to proactive every-step guidance (the S2
+9×-search death class).
+
+**Post-merge live probe (gate S2, budget 9):** nets composed — tail forced to_local_time at
+step 8, zone-named row, budget-denied second call, step_cap → conversion-led fallback quoting
+the row. Convergence NOT confirmed by n=1 (7 searches this run vs 5 pre-lever this morning;
+same-scenario variance today was 5–9) — soak metric, judge over the coming week's runs.
+
+**Residual caught by the probe:** fallback RESTATEMENT mislabeled relative day — prose said
+«明天（7月15日）» for a row labeled `in 2 days` (correct clock/zone/date, wrong relative word;
+B5's code-owned restater rule was ignored by the LLM). Mechanical candidate queued: validate
+relative-day tokens in restated fallback text against row relative_day labels (extend the B5
+hedge logic post-restatement).
+
+(original plan below)
+
+## (was IN PROGRESS) — /goal 2026-07-13
+
+**Goal (Paco, /goal 2026-07-13): "lever 3 self-write"** — the last Phase R lever lands through
+Houge's own evolution lane (writer=codex, reviewer=kimi→codex), NOT a Claude build. Claude
+orchestrates: kickoff, ledger watch, surfacing the interactive merge gate. Doubles as the first
+end-to-end self-write since the claude-runtime excision (b9d28d2).
+
+**Evidence to hand Houge (kickoff prompt, not prescription — freedom-over-control):** 07-12 S2
+death: 9× web_search, never converged; searching the LOCAL-frame date instead of event names +
+zone terms; B9 gate runs converged in 7 steps — the residual gap is search-query discipline in
+the loop prompt (lever 3 = prompt-owned, exactly what self-write exists for).
+
+**Checklist:**
+- [x] Recon: evolution-pipeline operational path today (kickoff trigger, stages, merge gate,
+      reload; what needs Paco's Telegram). Key facts: kickoff = Telegram turn ONLY (no CLI
+      path); self_write_propose armed; pipeline = codex writer (≤3 attempts) → protected-path
+      guard → test gate (typecheck+test+build, 5min) → kimi review (fallback codex) → publish
+      branch houge/selfwrite/<run_id> → Telegram buttons (view/merge/discard); merge =
+      button-only, mergeAndReload reverts on red and restarts via launchctl on green;
+      composer.ts + inner-loop digest constants confirmed self-writable (B9 fragment prep);
+      5 stale selfwrite branches all merged (harmless); ledger watch armed from rowid 2729.
+- [x] Kick off self-write on the REAL daemon (Paco Telegram, 06:00:28Z; kickoff in 7s)
+- [x] Watch ledger through test-gate → review → publish (2m47s); merge gate surfaced with
+      diff read + recommendation
+- [x] Post-merge: daemon reload verified (85e792f, PID 67899), live behavior probe run
+- [x] Session record
+
+---
+
 # ✅ DONE — B9: smaller-residuals batch (R1–R6) — SHIPPED + LIVE-GATED 2026-07-13 04:5x
 
 **Gate results (live-gate-b5b6.mjs per-scenario, real Gateway→CoreWorker + real planner/Tavily):**
