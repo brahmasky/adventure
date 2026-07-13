@@ -19,6 +19,8 @@ describe("createTimeConvertAdapter", () => {
     expect(result).toEqual({
       ok: true,
       output: {
+        // R1: the envelope names the zone the rows were converted INTO (digest rows render it).
+        local_tz: "Australia/Sydney",
         results: [
           { when: "2026-07-06 20:00", tz: ET, local: "2026-07-07 10:00", relative_day: "tomorrow" },
           { when: "2026-07-07 12:00", tz: ET, local: "2026-07-08 02:00", relative_day: "in 2 days" }
@@ -74,6 +76,29 @@ describe("createTimeConvertAdapter", () => {
   });
 });
 
+describe("createTimeConvertAdapter local_tz envelope (R1)", () => {
+  // The digest renderer names this zone next to each row's relative_day, so the reported name
+  // must be the zone toLocalTimes ACTUALLY converted into — alias-resolved, UTC on fallback —
+  // never the raw config string.
+  it("resolves aliases the same way the converter does (AEST → Australia/Sydney)", async () => {
+    const adapter = createTimeConvertAdapter({ ...CONFIG, localTz: "AEST" });
+    const result = await adapter({ items: [{ when: "2026-07-06 20:00", tz: ET }] });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.output.local_tz).toBe("Australia/Sydney");
+  });
+
+  it("reports UTC when the configured zone is garbage (mirrors toLocalTimes' fallback)", async () => {
+    const adapter = createTimeConvertAdapter({ ...CONFIG, localTz: "Not/AZone" });
+    const result = await adapter({ items: [{ when: "2026-07-06 20:00", tz: ET }] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The rows really were computed in UTC — the reported name must say so, not "Not/AZone".
+    expect(result.output.local_tz).toBe("UTC");
+    const [row] = result.output.results as Array<Record<string, unknown>>;
+    expect(row!.local).toBe("2026-07-07 00:00");
+  });
+});
+
 describe("createTimeConvertAdapter per-item label (B6)", () => {
   it("threads the label onto BOTH success and error rows, index-aligned; unlabeled rows stay label-free", async () => {
     const adapter = createTimeConvertAdapter(CONFIG);
@@ -87,6 +112,7 @@ describe("createTimeConvertAdapter per-item label (B6)", () => {
     expect(result).toEqual({
       ok: true,
       output: {
+        local_tz: "Australia/Sydney",
         results: [
           { when: "2026-07-06 20:00", tz: ET, local: "2026-07-07 10:00", relative_day: "tomorrow", label: "Argentina vs Egypt" },
           { when: "2026-07-07 12:00", tz: "Not/AZone", error: "invalid timezone: Not/AZone", label: "France vs Brazil" },

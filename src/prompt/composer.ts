@@ -94,6 +94,17 @@ export const SKILL_AUTHOR_DISCIPLINE =
   "descriptive kebab-case `name`. Emit nothing except the file.";
 
 /**
+ * R5 (B9): the time-presentation rule inside LOOP_DISCIPLINE's timezone block, exported on its
+ * own so tests assert containment via the constant (never a pinned literal — self-write rule).
+ * 07-12 live gate S3: the answer quoted the CONVERTED Sydney clocks correctly but NAMED the
+ * frame 北京时间 — the rows were right, the presentation re-framed them into the wrong zone.
+ */
+export const LOOP_TIME_PRESENTATION_RULE =
+  "In your final answer, lead with times in the user's local zone exactly as returned by " +
+  "to_local_time; mention source-zone clocks only as parenthetical extras, and never present " +
+  "a source-zone clock as if it were the user's local time.";
+
+/**
  * The inner-loop discipline (ADR 0013, step ⓪·1). The loop's per-step DATA channel (the
  * question) carries the manifest, the transcript, and the remaining budget; this
  * discipline carries only the standing protocol. Additive — no existing discipline text
@@ -112,7 +123,9 @@ export const LOOP_DISCIPLINE =
   "Before you call any date or time 'today', 'tomorrow', or any relative day, convert only explicitly-zoned " +
   "times with to_local_time — never do the timezone math yourself. When the user asks for events on a relative day, " +
   "filter solely by the relative_day returned by to_local_time; do not filter by the source date, venue date, " +
-  "or your own calendar arithmetic. Use lesson_write when the user corrects you or states a durable " +
+  "or your own calendar arithmetic. " +
+  LOOP_TIME_PRESENTATION_RULE +
+  " Use lesson_write when the user corrects you or states a durable " +
   "preference — you may " +
   "save a lesson AND still answer the question in the same turn. Your final answer must be " +
   "complete and self-contained, in the user's language and style, with no process notes. " +

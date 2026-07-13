@@ -3,12 +3,14 @@ import type { CapabilityResult } from "../../src/capabilities/capability-runner.
 import {
   buildFallbackRestateQuestion,
   buildLoopStepQuestion,
+  CONVERTED_ROW,
   digestOutput,
   FALLBACK_CONVERTED_ROWS_GUIDANCE,
   FALLBACK_HEDGE_GUIDANCE,
   FALLBACK_WRAPPER_NOTE,
   parseLoopAction,
-  runInnerLoop
+  runInnerLoop,
+  timeConvertDigestHeader
 } from "../../src/core/inner-loop.js";
 import type { InnerLoopDeps, InnerLoopInput, LoopStepRecord } from "../../src/core/inner-loop.js";
 import { manifestFor } from "../../src/core/tool-manifest.js";
@@ -673,7 +675,8 @@ describe("buildLoopStepQuestion", () => {
         manifest: MANIFEST,
         hint: "research (SpaceX latest)",
         context: "User: hi\nHouge: hello",
-        clarifyAllowed: true
+        clarifyAllowed: true,
+        maxSteps: 6
       },
       [{ index: 1, action: "web_search", input: { query: "spacex" }, ok: true, resultDigest: "[1] T — u" }],
       3
@@ -690,7 +693,7 @@ describe("buildLoopStepQuestion", () => {
 
   it("omits the clarify protocol line when clarify is disallowed", () => {
     const question = buildLoopStepQuestion(
-      { objective: "x", manifest: MANIFEST, clarifyAllowed: false },
+      { objective: "x", manifest: MANIFEST, clarifyAllowed: false, maxSteps: 6 },
       [],
       6
     );
@@ -769,6 +772,39 @@ describe("digestOutput", () => {
     expect(digest).toContain("Argentina vs Egypt: 2026-07-07 16:00 (UTC) → 2026-07-08 02:00 (tomorrow)");
     expect(digest).toContain("France vs Brazil: 2026-07-07 20:00 (UTC) → error: zone not stated by source");
     expect(digest).toContain("\n2026-07-08 12:00 (UTC) → 2026-07-08 22:00 (tomorrow)");
+  });
+
+  it("R1: with local_tz on the envelope, success rows name the zone inside the parens; error rows keep their shape", () => {
+    const digest = digestOutput(
+      {
+        local_tz: "Australia/Sydney",
+        results: [
+          { when: "2026-07-07 16:00", tz: "UTC", local: "2026-07-08 02:00", relative_day: "tomorrow", label: "Argentina vs Egypt" },
+          { when: "2026-07-07 20:00", tz: "UTC", error: "zone not stated by source" }
+        ]
+      },
+      1_000
+    );
+    // Header carries the already-in-your-zone clause (exported builder, never a pinned literal).
+    expect(digest.startsWith(timeConvertDigestHeader("Australia/Sydney"))).toBe(true);
+    // The zone rides INSIDE the existing parens — `(` stays immediately after HH:MM, so the
+    // exported CONVERTED_ROW guard regex still matches the real rendered row.
+    const successRow = "Argentina vs Egypt: 2026-07-07 16:00 (UTC) → 2026-07-08 02:00 (tomorrow, Australia/Sydney)";
+    expect(digest).toContain(successRow);
+    expect(successRow).toMatch(CONVERTED_ROW);
+    // Error rows carry no local time and stay zone-free (unchanged shape).
+    expect(digest).toContain("2026-07-07 20:00 (UTC) → error: zone not stated by source");
+    expect(digest).not.toContain("error: zone not stated by source, Australia/Sydney");
+  });
+
+  it("R1: without local_tz the legacy zone-less rendering is byte-stable (back-compat outputs)", () => {
+    const digest = digestOutput(
+      { results: [{ when: "2026-07-07 16:00", tz: "UTC", local: "2026-07-08 02:00", relative_day: "tomorrow" }] },
+      1_000
+    );
+    expect(digest.startsWith(timeConvertDigestHeader(""))).toBe(true);
+    expect(digest).toContain("2026-07-07 16:00 (UTC) → 2026-07-08 02:00 (tomorrow)");
+    expect(digest).not.toContain("Australia/Sydney");
   });
 });
 

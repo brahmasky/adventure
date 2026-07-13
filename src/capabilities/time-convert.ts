@@ -1,5 +1,5 @@
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
-import { resolveLocalTimeZone, toLocalTimes } from "../prompt/tz-convert.js";
+import { resolveLocalTimeZone, resolveTimeZone, toLocalTimes } from "../prompt/tz-convert.js";
 import type { LocalTimeItem } from "../prompt/tz-convert.js";
 
 export interface TimeConvertAdapterConfig {
@@ -79,11 +79,19 @@ export function createTimeConvertAdapter(
             : zoneEvidenceError(rawItems[i]!);
         })
       : results;
+    // R1: name the zone the rows were converted INTO on the output envelope, so the digest can
+    // render it next to each row's relative_day (07-12 live gate S3: prose quoted the converted
+    // Sydney clocks but NAMED the frame 北京时间 — the row never said which zone it was in).
+    // Mirrors toLocalTimes' own resolution (incl. its UTC fallback) so the reported name is the
+    // zone that actually did the math. Code-owned (config/env), but sanitized anyway — defense
+    // in depth for the digest-matched guards, same as label/when/tz.
+    const targetZone = sanitizeDigestText(resolveTimeZone(localTz) ?? "UTC");
     // B6: re-attach each item's sanitized label index-aligned (`toLocalTimes` and the evidence
     // gate both preserve order), on success AND error rows so an errored event stays named.
     return {
       ok: true,
       output: {
+        local_tz: targetZone,
         results: gated.map((result, i) => {
           const label = rawItems[i]!.label;
           return label ? { ...result, label } : result;

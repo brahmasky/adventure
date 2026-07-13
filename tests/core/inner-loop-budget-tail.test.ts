@@ -9,6 +9,9 @@ import {
   buildLoopStepQuestion,
   PROTOCOL_RETRY_ALLOWANCE,
   RELATIVE_DAY_FINAL_BOUNCE_DIGEST,
+  RELATIVE_DAY_FINAL_BOUNCE_DIGEST_TAIL,
+  RELATIVE_DAY_FINAL_BOUNCE_DIGEST_TAIL_NO_TIME_TOOL,
+  RELATIVE_DAY_SEARCH_INSTRUCTION,
   runInnerLoop,
   TAIL_RESERVE_STEPS
 } from "../../src/core/inner-loop.js";
@@ -79,6 +82,8 @@ const executeSchedule: InnerLoopDeps["executeAction"] = async (capability) => {
   }
   if (capability === "to_local_time") {
     return succeeded({
+      // local_tz mirrors the real adapter's envelope (R1) so rendered rows stay representative.
+      local_tz: "Australia/Sydney",
       results: [{ when: "2026-07-07 16:00", tz: "UTC", local: "2026-07-08 02:00", relative_day: "tomorrow" }]
     });
   }
@@ -86,8 +91,9 @@ const executeSchedule: InnerLoopDeps["executeAction"] = async (capability) => {
 };
 
 describe("B7 tail rendering (buildLoopStepQuestion)", () => {
+  // maxSteps 6 > TAIL_RESERVE_STEPS: the tail arms on the remaining-steps number alone (R3).
   const questionAt = (remaining: number, manifest = MANIFEST, clarifyAllowed = true) =>
-    buildLoopStepQuestion({ objective: "x", manifest, clarifyAllowed }, [], remaining);
+    buildLoopStepQuestion({ objective: "x", manifest, clarifyAllowed, maxSteps: 6 }, [], remaining);
 
   it("at remaining ≤ TAIL_RESERVE_STEPS only the tail tools + final + clarify render, with the notice", () => {
     for (const remaining of [TAIL_RESERVE_STEPS, 1]) {
@@ -195,9 +201,12 @@ describe("B7 tail enforcement (mechanical)", () => {
   });
 
   it("to_local_time and llm_answer still execute in the tail", async () => {
+    // maxSteps 3 (R3: the tail needs maxSteps > TAIL_RESERVE_STEPS to arm): web_search executes
+    // above the tail; the convert-or-answer tools execute INSIDE it (remaining 2, then 1).
     const executed: string[] = [];
     const deps = scriptedDeps(
       [
+        '{"action":"web_search","input":{"query":"schedule"}}',
         '{"action":"to_local_time","input":{"items":[{"when":"2026-07-07 16:00","tz":"UTC"}]}}',
         '{"action":"llm_answer","input":{"question":"summarize"}}'
       ],
@@ -206,29 +215,32 @@ describe("B7 tail enforcement (mechanical)", () => {
         return executeSchedule(capability, {});
       }
     );
-    const result = await runInnerLoop(loopInput({ maxSteps: 2 }), deps); // the whole run is tail
+    const result = await runInnerLoop(loopInput({ maxSteps: 3 }), deps);
     expect(result).toMatchObject({ outcome: "final", reason: "step_cap" });
-    expect(executed).toEqual(["to_local_time", "llm_answer"]);
+    expect(executed).toEqual(["web_search", "to_local_time", "llm_answer"]);
     expect(result.steps.every((s) => s.ok)).toBe(true);
   });
 
   it("final and clarify still work in the tail (protocol actions are never blocked)", async () => {
+    // maxSteps 3 with one executed step first, so the final/clarify lands INSIDE an armed tail
+    // (remaining 2) — R3: a maxSteps-2 run would not arm the tail at all.
     const finalRun = await runInnerLoop(
-      loopInput({ maxSteps: 2 }),
-      scriptedDeps(['{"action":"final","answer":"done in the tail"}'])
+      loopInput({ maxSteps: 3 }),
+      scriptedDeps(['{"action":"llm_answer","input":{"question":"q"}}', '{"action":"final","answer":"done in the tail"}'])
     );
     expect(finalRun).toMatchObject({ outcome: "final", reason: "final", answer: "done in the tail" });
 
     const clarifyRun = await runInnerLoop(
-      loopInput({ maxSteps: 2 }),
-      scriptedDeps(['{"action":"clarify","question":"which cup?"}'])
+      loopInput({ maxSteps: 3 }),
+      scriptedDeps(['{"action":"llm_answer","input":{"question":"q"}}', '{"action":"clarify","question":"which cup?"}'])
     );
     expect(clarifyRun).toMatchObject({ outcome: "clarify", reason: "clarify", question: "which cup?" });
   });
 
-  it("B1 still applies in the tail: a relative-day final bounces with the B1 digest (not the tail digest)", async () => {
+  it("B1 still applies in the tail: a relative-day final bounces with the TAIL B1 digest (R2 — never 'search')", async () => {
     // web_search (above the tail) surfaces time_claims; the tail final bounces via B1 — whose
-    // guidance says convert first, and to_local_time is exactly what the tail still offers.
+    // TAIL variant says convert-what-you-have (to_local_time is exactly what the tail still
+    // offers) and, unlike the base digest, never instructs the search the tail would bounce.
     const deps = scriptedDeps(
       [
         '{"action":"web_search","input":{"query":"schedule"}}',
@@ -240,29 +252,33 @@ describe("B7 tail enforcement (mechanical)", () => {
     const result = await runInnerLoop(loopInput({ objective: "明天有哪几场世界杯比赛？", maxSteps: 3 }), deps);
     expect(result).toMatchObject({ outcome: "final", reason: "step_cap" });
     const bounce = result.steps.find((s) => s.action === "final" && !s.ok);
-    expect(bounce?.resultDigest).toBe(RELATIVE_DAY_FINAL_BOUNCE_DIGEST);
-    // The tail-converted row leads the honest B5 fallback the step_cap ships.
+    expect(bounce?.resultDigest).toBe(RELATIVE_DAY_FINAL_BOUNCE_DIGEST_TAIL);
+    // The tail-converted row leads the honest B5 fallback the step_cap ships (R1: zone named).
     if (result.outcome !== "final") return;
-    expect(result.answer).toContain("2026-07-07 16:00 (UTC) → 2026-07-08 02:00 (tomorrow)");
+    expect(result.answer).toContain("2026-07-07 16:00 (UTC) → 2026-07-08 02:00 (tomorrow, Australia/Sydney)");
   });
 
   it("B1 cap exhausted → a relative-day final IN THE TAIL is accepted, not tail-bounced (verifier probe)", async () => {
     // RELATIVE_DAY_FINAL_BOUNCE_CAP is 2: after both bounces, a genuinely unconvertible run must
     // still be able to END on a final inside the tail — the tail must never block that exit.
+    // R2 (verifier fix): the digest is gated on the POST-bounce position — the bounce charges
+    // a step, so the digest is READ one step later. A bounce at remaining 3 lands in a remaining-2
+    // (tail) question: base wording there would instruct a search the menu just banned.
     const deps = scriptedDeps(
       [
-        '{"action":"web_search","input":{"query":"schedule"}}', // remaining 4: executes, time_claims
-        '{"action":"final","answer":"明天A。"}', // B1 bounce 1 (remaining 3)
-        '{"action":"final","answer":"明天B。"}', // B1 bounce 2 (remaining 2 — tail)
+        '{"action":"web_search","input":{"query":"schedule"}}', // remaining 5: executes, time_claims
+        '{"action":"final","answer":"明天A。"}', // B1 bounce 1 (read at remaining 3 — above the tail)
+        '{"action":"final","answer":"明天B。"}', // B1 bounce 2 (read at remaining 2 — tail)
         '{"action":"final","answer":"明天C。"}' // cap reached → accepted, in the tail
       ],
       executeSchedule
     );
-    const result = await runInnerLoop(loopInput({ objective: "明天有哪几场世界杯比赛？", maxSteps: 4 }), deps);
+    const result = await runInnerLoop(loopInput({ objective: "明天有哪几场世界杯比赛？", maxSteps: 5 }), deps);
     expect(result).toMatchObject({ outcome: "final", reason: "final", answer: "明天C。" });
     const finalBounces = result.steps.filter((s) => s.action === "final" && !s.ok);
     expect(finalBounces).toHaveLength(2);
-    for (const b of finalBounces) expect(b.resultDigest).toBe(RELATIVE_DAY_FINAL_BOUNCE_DIGEST);
+    expect(finalBounces[0]!.resultDigest).toBe(RELATIVE_DAY_FINAL_BOUNCE_DIGEST);
+    expect(finalBounces[1]!.resultDigest).toBe(RELATIVE_DAY_FINAL_BOUNCE_DIGEST_TAIL);
     expect(result.steps.some((s) => s.resultDigest === BUDGET_TAIL_BOUNCE_DIGEST)).toBe(false);
   });
 
@@ -362,7 +378,7 @@ describe("B8 determinism: no parse failures, no tail contact → byte-identical 
   it("pins the pre-change question string (full manifest, empty transcript, remaining 6)", () => {
     const manifest = manifestFor(["web_search", "llm_answer"]);
     const question = buildLoopStepQuestion(
-      { objective: "what is the capital of France?", manifest, clarifyAllowed: true },
+      { objective: "what is the capital of France?", manifest, clarifyAllowed: true, maxSteps: 6 },
       [],
       6
     );
@@ -410,6 +426,21 @@ describe("exported tail constants (tests and wiring pin the contract)", () => {
     expect([...BUDGET_TAIL_TOOLS].sort()).toEqual(["llm_answer", "to_local_time"]);
     expect(TAIL_RESERVE_STEPS).toBe(2);
   });
+
+  it("R2: the tail B1 variants never instruct searching; only the time-tool variant names to_local_time", () => {
+    // The base digest's search instruction is exactly what the tail mechanically bans — a tail
+    // bounce must never point the planner at a move that would itself tail-bounce. Asserted via
+    // the exported RELATIVE_DAY_SEARCH_INSTRUCTION fragment, never a wording literal (self-write
+    // rule: a raw substring pin would freeze the digest wording forever). And the no-time-tool
+    // variant (defensive: the B1 guard currently only arms with the tool in the manifest) must
+    // never name the disarmed tool (the F1 failure class).
+    expect(RELATIVE_DAY_FINAL_BOUNCE_DIGEST).toContain(RELATIVE_DAY_SEARCH_INSTRUCTION);
+    for (const digest of [RELATIVE_DAY_FINAL_BOUNCE_DIGEST_TAIL, RELATIVE_DAY_FINAL_BOUNCE_DIGEST_TAIL_NO_TIME_TOOL]) {
+      expect(digest).not.toContain(RELATIVE_DAY_SEARCH_INSTRUCTION);
+    }
+    expect(RELATIVE_DAY_FINAL_BOUNCE_DIGEST_TAIL).toContain("to_local_time");
+    expect(RELATIVE_DAY_FINAL_BOUNCE_DIGEST_TAIL_NO_TIME_TOOL).not.toContain("to_local_time");
+  });
 });
 
 describe("F1 (verifier 07-12): tail guidance never instructs a disarmed to_local_time", () => {
@@ -420,7 +451,7 @@ describe("F1 (verifier 07-12): tail guidance never instructs a disarmed to_local
 
   it("renders the no-time-tool notice in the tail and never mentions to_local_time", () => {
     const question = buildLoopStepQuestion(
-      { objective: "哪个频道转播世界杯？", manifest: NO_TIME_MANIFEST, clarifyAllowed: false },
+      { objective: "哪个频道转播世界杯？", manifest: NO_TIME_MANIFEST, clarifyAllowed: false, maxSteps: 6 },
       [],
       TAIL_RESERVE_STEPS
     );
@@ -430,14 +461,16 @@ describe("F1 (verifier 07-12): tail guidance never instructs a disarmed to_local
   });
 
   it("tail-bounces with the no-time-tool digest, still riding to step_cap (never denial)", async () => {
+    // maxSteps 3 (R3): the first search executes above the tail; the next two bounce inside it.
     const deps = scriptedDeps(
       [
         '{"action":"web_search","input":{"query":"q1"}}',
-        '{"action":"web_search","input":{"query":"q2"}}'
+        '{"action":"web_search","input":{"query":"q2"}}',
+        '{"action":"web_search","input":{"query":"q3"}}'
       ],
       async () => succeeded({ results: [{ title: "T", url: "https://t.test", content: "c" }] })
     );
-    const result = await runInnerLoop(loopInput({ manifest: NO_TIME_MANIFEST, maxSteps: 2 }), deps);
+    const result = await runInnerLoop(loopInput({ manifest: NO_TIME_MANIFEST, maxSteps: 3 }), deps);
     expect(result).toMatchObject({ outcome: "final", reason: "step_cap" });
     const bounces = result.steps.filter((s) => !s.ok);
     expect(bounces).toHaveLength(2);
@@ -449,11 +482,173 @@ describe("F1 (verifier 07-12): tail guidance never instructs a disarmed to_local
 
   it("keeps the convert-instructing variants when to_local_time IS armed (unchanged behavior)", () => {
     const question = buildLoopStepQuestion(
-      { objective: "哪个频道转播世界杯？", manifest: MANIFEST, clarifyAllowed: false },
+      { objective: "哪个频道转播世界杯？", manifest: MANIFEST, clarifyAllowed: false, maxSteps: 6 },
       [],
       TAIL_RESERVE_STEPS
     );
     expect(question).toContain(BUDGET_TAIL_NOTICE);
     expect(question).not.toContain(BUDGET_TAIL_NOTICE_NO_TIME_TOOL);
+  });
+});
+
+/**
+ * R3 (B9): the tail floor. Compiled contracts carry budgets as low as max_tool_calls 2 — before
+ * the floor, such a run was whole-run-tail from step 1: the manifest it was compiled with was
+ * never offered and every non-tail tool bounced without ever being callable. The tail only
+ * arms when maxSteps > TAIL_RESERVE_STEPS, via ONE predicate shared by menu and enforcement.
+ */
+describe("R3: tail floor for tiny contracts (maxSteps ≤ TAIL_RESERVE_STEPS never arms the tail)", () => {
+  it("maxSteps 2: the full manifest renders at every step, without the tail notice", () => {
+    for (const remaining of [2, 1]) {
+      const question = buildLoopStepQuestion(
+        { objective: "x", manifest: MANIFEST, clarifyAllowed: true, maxSteps: TAIL_RESERVE_STEPS },
+        [],
+        remaining
+      );
+      expect(question).toContain("- web_search:");
+      expect(question).toContain("- to_local_time:");
+      expect(question).toContain("- llm_answer:");
+      expect(question).not.toContain(BUDGET_TAIL_NOTICE);
+      expect(question).not.toContain(BUDGET_TAIL_NOTICE_NO_TIME_TOOL);
+    }
+  });
+
+  it("maxSteps 2: web_search executes on BOTH steps — no tail bounce anywhere in the run", async () => {
+    const executed: string[] = [];
+    const deps = scriptedDeps(
+      ['{"action":"web_search","input":{"query":"q1"}}', '{"action":"web_search","input":{"query":"q2"}}'],
+      async (capability) => {
+        executed.push(capability);
+        return succeeded({ results: [{ title: "T", url: "https://t.test", content: "c" }] });
+      }
+    );
+    const result = await runInnerLoop(loopInput({ maxSteps: 2 }), deps);
+    expect(result).toMatchObject({ outcome: "final", reason: "step_cap" });
+    expect(executed).toEqual(["web_search", "web_search"]);
+    expect(result.steps.every((s) => s.ok)).toBe(true);
+    for (const call of deps.composeCalls) {
+      expect(call.question).toContain("- web_search:");
+      expect(call.question).not.toContain(BUDGET_TAIL_NOTICE);
+    }
+  });
+
+  it("maxSteps 3: the tail arms exactly at remaining ≤ TAIL_RESERVE_STEPS (the floor is not a blanket off-switch)", async () => {
+    const deps = scriptedDeps(
+      [
+        '{"action":"web_search","input":{"query":"q1"}}',
+        '{"action":"web_search","input":{"query":"q2"}}',
+        '{"action":"web_search","input":{"query":"q3"}}'
+      ],
+      async () => succeeded({ results: [{ title: "T", url: "https://t.test", content: "c" }] })
+    );
+    const result = await runInnerLoop(loopInput({ maxSteps: 3 }), deps);
+    expect(result).toMatchObject({ outcome: "final", reason: "step_cap" });
+    // Step 1 (remaining 3): full menu, executes. Steps 2-3 (remaining 2, 1): tail — bounced.
+    expect(deps.composeCalls[0]!.question).not.toContain(BUDGET_TAIL_NOTICE);
+    expect(deps.composeCalls[1]!.question).toContain(BUDGET_TAIL_NOTICE);
+    expect(deps.composeCalls[1]!.question).not.toContain("- web_search:");
+    expect(result.steps.filter((s) => s.resultDigest === BUDGET_TAIL_BOUNCE_DIGEST)).toHaveLength(2);
+  });
+});
+
+/**
+ * R4 (B9, residual F2 from 07-12): an evolution-lane kickoff (self_diagnose / self_write_propose /
+ * skill_author — the actions the wiring marks `terminalAfterSuccess`) charges exactly ONE step
+ * and ENDS the run, so it cannot waste tail budget. Before the carve-out, a kickoff parsed at
+ * charged step 13+ of 14 was tail-bounced before dispatch and silently lost.
+ */
+describe("R4: terminal-after-success kickoffs are exempt from the tail", () => {
+  const EVOLUTION_MANIFEST = manifestFor(["web_search", "to_local_time", "llm_answer", "self_write_propose"], {
+    HOUGE_TIME_TOOL_ENABLED: "1",
+    HOUGE_SELFWRITE_ENABLED: "1"
+  });
+  const isKickoff = (action: string) => action === "self_write_propose";
+
+  it("a kickoff at remaining 1 executes (not bounced) and terminates with the kickoff final", async () => {
+    const executed: string[] = [];
+    const deps = scriptedDeps(
+      [
+        '{"action":"web_search","input":{"query":"q1"}}', // remaining 3: executes
+        '{"action":"web_search","input":{"query":"q2"}}', // remaining 2: tail bounce (non-terminal)
+        '{"action":"self_write_propose","input":{"focus":"fix the digest"}}' // remaining 1: kickoff
+      ],
+      async (capability) => {
+        executed.push(capability);
+        if (capability === "self_write_propose") return succeeded({ answer: "self-write pipeline started" });
+        return succeeded({ results: [{ title: "T", url: "https://t.test", content: "c" }] });
+      }
+    );
+    const result = await runInnerLoop(
+      loopInput({ manifest: EVOLUTION_MANIFEST, maxSteps: 3, terminalAfterSuccess: isKickoff }),
+      deps
+    );
+    // The kickoff reached the deps seam INSIDE the tail and ended the run as a kickoff final.
+    expect(executed).toEqual(["web_search", "self_write_propose"]);
+    expect(result).toMatchObject({ outcome: "final", reason: "kickoff", answer: "self-write pipeline started" });
+    // The non-terminal search still bounced — the carve-out admits ONLY terminal actions.
+    expect(result.steps.filter((s) => s.resultDigest === BUDGET_TAIL_BOUNCE_DIGEST)).toHaveLength(1);
+  });
+
+  it("the tail menu offers the kickoff (menu and enforcement share tailAllowsAction)", () => {
+    const question = buildLoopStepQuestion(
+      {
+        objective: "x",
+        manifest: EVOLUTION_MANIFEST,
+        clarifyAllowed: true,
+        maxSteps: 6,
+        terminalAfterSuccess: isKickoff
+      },
+      [],
+      TAIL_RESERVE_STEPS
+    );
+    expect(question).toContain("- self_write_propose:");
+    expect(question).toContain("- to_local_time:");
+    expect(question).toContain("- llm_answer:");
+    expect(question).not.toContain("- web_search:");
+  });
+
+  it("a kickoff that FAILS at dispatch in the tail stays bounded — honest denial exit, never a livelock (verifier B9)", async () => {
+    // R4 admits the kickoff through the tail on the promise it "charges 1 and ends the run" —
+    // but that only holds when dispatch SUCCEEDS. A failing kickoff must ride the ordinary
+    // failure counter (FAILURE_CAP) to the honest denial fallback, with iterations bounded.
+    const deps = scriptedDeps(
+      [
+        '{"action":"web_search","input":{"query":"q1"}}', // remaining 4: executes
+        '{"action":"web_search","input":{"query":"q2"}}', // remaining 3: executes
+        '{"action":"self_write_propose","input":{"focus":"a"}}', // remaining 2 (tail): dispatched, FAILS
+        '{"action":"self_write_propose","input":{"focus":"b"}}' // remaining 1 (tail): dispatched, FAILS → denial
+      ],
+      async (capability) => {
+        if (capability === "self_write_propose") return { status: "denied", reason: "lane busy" } as CapabilityResult;
+        return succeeded({ results: [{ title: "T", url: "https://t.test", content: "c" }] });
+      }
+    );
+    const result = await runInnerLoop(
+      loopInput({ manifest: EVOLUTION_MANIFEST, maxSteps: 4, terminalAfterSuccess: isKickoff }),
+      deps
+    );
+    expect(result).toMatchObject({ outcome: "final", reason: "denial" });
+    // Both kickoff attempts reached dispatch (the tail admitted them) and were recorded as
+    // failures — never as tail bounces: the carve-out and the failure path stay distinct.
+    const kickoffSteps = result.steps.filter((s) => s.action === "self_write_propose");
+    expect(kickoffSteps).toHaveLength(2);
+    expect(kickoffSteps.every((s) => !s.ok && s.resultDigest !== BUDGET_TAIL_BOUNCE_DIGEST)).toBe(true);
+    expect(deps.composeCalls.length).toBeLessThanOrEqual(4 + PROTOCOL_RETRY_ALLOWANCE);
+  });
+
+  it("without the terminalAfterSuccess marker the same action still tail-bounces (no blanket evolution pass)", async () => {
+    const deps = scriptedDeps(
+      [
+        '{"action":"web_search","input":{"query":"q1"}}',
+        '{"action":"self_write_propose","input":{"focus":"fix the digest"}}',
+        '{"action":"final","answer":"done"}'
+      ],
+      async () => succeeded({ results: [{ title: "T", url: "https://t.test", content: "c" }] })
+    );
+    const result = await runInnerLoop(loopInput({ manifest: EVOLUTION_MANIFEST, maxSteps: 3 }), deps);
+    expect(result).toMatchObject({ outcome: "final", reason: "final", answer: "done" });
+    const bounce = result.steps.find((s) => s.action === "self_write_propose");
+    expect(bounce?.ok).toBe(false);
+    expect(bounce?.resultDigest).toBe(BUDGET_TAIL_BOUNCE_DIGEST);
   });
 });

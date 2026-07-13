@@ -1,12 +1,12 @@
 // Live gate for Phase 3 (code self-write) — drives the REAL CoreWorker on the REAL chain
-// (pi→kimi classify + REAL Codex workspace-write + REAL Claude reviewer), exactly as the daemon
-// would, with only the Telegram transport simulated. In-memory DB so the live daemon's data is
+// (pi→kimi classify + REAL Codex workspace-write + REAL kimi→codex reviewer chain), exactly as
+// the daemon would, with only the Telegram transport simulated. In-memory DB so the live daemon's data is
 // untouched. Writes happen ONLY inside throwaway git worktrees of HEAD; the live tree is never
 // modified. The positive case publishes a real branch (the deliverable Paco merges).
 //
 // Per the /goal: a re-runnable harness on the real chain is PRIMARY live evidence.
 //   1. POSITIVE: "fix your intent classifier so it gets your identity" → selfcode+write →
-//      runSelfWrite → guard ✓ → test-gate ✓ → Claude review ✓ → branch houge/selfwrite/<run-id>.
+//      runSelfWrite → guard ✓ → test-gate ✓ → kimi→codex review ✓ → branch houge/selfwrite/<run-id>.
 //      (Houge fixes the 猴哥 bug HIMSELF, autonomously, and notifies.)
 //   2. NEGATIVE: a reasonable request that necessarily edits a PROTECTED file (the Codex timeout
 //      lives in coding-agent.ts) → HARD-DENY surfaced, nothing published. ("needs Paco's hand".)
@@ -23,8 +23,8 @@ loadHougeEnv();
 // Arm the self-write surface for this harness (off by default everywhere else).
 process.env.HOUGE_SELFWRITE_ENABLED = "true";
 process.env.HOUGE_CODEX_ENABLED = process.env.HOUGE_CODEX_ENABLED || "true";
-// claude is NOT on the daemon PATH → absolute bin (the spike-validated path).
-process.env.HOUGE_CLAUDE_BIN = process.env.HOUGE_CLAUDE_BIN || "/Users/pluo/.local/bin/claude";
+// Reviewer chain is kimi→codex (Claude was removed from Houge's runtime at b9d28d2 — Claude is
+// the orchestrator seat only); no extra bin wiring needed beyond the flags above.
 
 const projectRoot = process.cwd();
 const store = RunStore.openInMemory();
@@ -81,7 +81,7 @@ function selfWriteBranches() {
 
 let pass = true;
 const before = new Set(selfWriteBranches());
-console.log("Phase 3 LIVE — runSelfWrite on the REAL chain (Codex write + Claude review). Telegram simulated.\n");
+console.log("Phase 3 LIVE — runSelfWrite on the REAL chain (Codex write + kimi→codex review). Telegram simulated.\n");
 console.log(`pre-existing self-write branches: ${[...before].join(", ") || "(none)"}\n`);
 
 try {

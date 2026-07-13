@@ -49,6 +49,7 @@ describe("createTimeConvertAdapter zone_evidence gate", () => {
     expect(result).toEqual({
       ok: true,
       output: {
+        local_tz: "Australia/Sydney",
         results: [{ when: "2026-07-06 14:00", tz: ET, local: "2026-07-07 04:00", relative_day: "tomorrow" }]
       }
     });
@@ -63,6 +64,7 @@ describe("createTimeConvertAdapter zone_evidence gate", () => {
     expect(result).toEqual({
       ok: true,
       output: {
+        local_tz: "Australia/Sydney",
         results: [{ when: "2026-07-06 14:00", tz: ET, local: "2026-07-07 04:00", relative_day: "tomorrow" }]
       }
     });
@@ -77,6 +79,7 @@ describe("createTimeConvertAdapter zone_evidence gate", () => {
     expect(result).toEqual({
       ok: true,
       output: {
+        local_tz: "Australia/Sydney",
         results: [{ when: "2026-07-06 14:00", tz: ET, error: ZONE_EVIDENCE_ERROR }]
       }
     });
@@ -92,6 +95,7 @@ describe("createTimeConvertAdapter zone_evidence gate", () => {
     expect(result).toEqual({
       ok: true,
       output: {
+        local_tz: "Australia/Sydney",
         results: [{ when: "2026-07-06 14:00", tz: ET, error: ZONE_EVIDENCE_ERROR }]
       }
     });
@@ -156,6 +160,7 @@ describe("runInnerLoop to_local_time evidence wiring", () => {
     expect(result.steps[1]!.input).toEqual({
       items: [{ when: "2026-07-06 14:00", tz: ET, zone_evidence: SOURCE_FRAGMENT }]
     });
-    expect(result.steps[1]!.resultDigest).toContain("2026-07-07 04:00 (tomorrow)");
+    // R1: the rendered row names the zone it converted into, inside the relative_day parens.
+    expect(result.steps[1]!.resultDigest).toContain("2026-07-07 04:00 (tomorrow, Australia/Sydney)");
   });
 });

@@ -1,12 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { digestOutput } from "../../src/core/inner-loop.js";
 import { manifestFor, renderManifestLines } from "../../src/core/tool-manifest.js";
-import { LOOP_DISCIPLINE, READER_DISCIPLINE } from "../../src/prompt/composer.js";
+import { LOOP_DISCIPLINE, LOOP_TIME_PRESENTATION_RULE, READER_DISCIPLINE } from "../../src/prompt/composer.js";
 
 describe("planner timezone discipline", () => {
   it("requires relative-day event filtering to come from to_local_time", () => {
     expect(LOOP_DISCIPLINE).toContain("filter solely by the relative_day returned by to_local_time");
     expect(LOOP_DISCIPLINE).toContain("do not filter by the source date");
+  });
+
+  it("R5: the timezone block carries the lead-with-local-zone presentation rule (via the exported constant)", () => {
+    // Asserted through the constant, never a pinned literal — a future self-write may reword
+    // the rule; this test only pins that LOOP_DISCIPLINE actually carries it.
+    expect(LOOP_DISCIPLINE).toContain(LOOP_TIME_PRESENTATION_RULE);
   });
 
   it("forbids the reader from making relative-day judgments (frame poisoning, 07-07)", () => {

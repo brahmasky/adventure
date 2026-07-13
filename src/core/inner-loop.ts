@@ -46,13 +46,46 @@ const RELATIVE_DAY_FINAL_BOUNCE_CAP = 2;
  * already saw by name with a zone-labeled term — the one query shape that reliably surfaces
  * convertible times.
  */
+/**
+ * R2 (B9): the base digest's search instruction, exported as its own fragment so tests can
+ * assert the tail variants never carry it WITHOUT pinning wording literals (self-write rule:
+ * a raw substring pin would make the digest permanently un-rewordable). Kept a full sentence
+ * so the not-contains assertions stay meaningful.
+ */
+export const RELATIVE_DAY_SEARCH_INSTRUCTION =
+  "search the specific events the sources already listed, by name, adding 'kick-off time GMT'";
+
 export const RELATIVE_DAY_FINAL_BOUNCE_DIGEST =
   "the question asks about a relative day; convert candidate source times with to_local_time " +
   "(with zone evidence) and filter by relative_day before finalizing. Your local 'today'/'tomorrow' " +
   "maps to DIFFERENT dates in the sources' calendars — do NOT search your local date; instead " +
-  "search the specific events the sources already listed, by name, adding 'kick-off time GMT' " +
-  "(e.g. 'Argentina Egypt kick-off time GMT'), then convert every candidate and keep the rows " +
+  RELATIVE_DAY_SEARCH_INSTRUCTION +
+  " (e.g. 'Argentina Egypt kick-off time GMT'), then convert every candidate and keep the rows " +
   "whose relative_day matches the question";
+
+/**
+ * R2 (B9): the bounce digest variant when the final bounces INSIDE the budget tail. The base
+ * digest instructs SEARCHING ("search the specific events … kick-off time GMT"), which the tail
+ * mechanically bans — an obedient planner would burn its last steps on tail-bounced searches.
+ * In the tail the only useful moves are convert-what-you-have or finish honestly.
+ */
+export const RELATIVE_DAY_FINAL_BOUNCE_DIGEST_TAIL =
+  "the question asks about a relative day, and the step budget is nearly exhausted — do NOT " +
+  "search. Convert the zone-labeled times already present in the steps above with to_local_time " +
+  "(with zone evidence) and filter by relative_day before finalizing; if no zone-labeled times " +
+  'exist above, finish with "final" using the best evidence you have, stating explicitly that ' +
+  "the relative day could not be verified.";
+
+/**
+ * R2 + the F1 pattern: the tail bounce variant when `to_local_time` is NOT in the manifest.
+ * Unreachable today — the B1 guard itself only arms when to_local_time IS in the manifest
+ * (finalNeedsRelativeDayConversion) — but the selection stays manifest-conditional so a future
+ * predicate change can never resurrect the instruct-a-disarmed-tool failure class (F1, 07-12).
+ */
+export const RELATIVE_DAY_FINAL_BOUNCE_DIGEST_TAIL_NO_TIME_TOOL =
+  "the question asks about a relative day, and the step budget is nearly exhausted — do NOT " +
+  'search. Finish with "final" using the best evidence you have, stating explicitly that the ' +
+  "relative day could not be verified.";
 
 /**
  * B7 (Phase R lever 2): the budget tail — with the remaining CHARGED budget at/below this,
@@ -102,6 +135,40 @@ export const BUDGET_TAIL_BOUNCE_DIGEST_NO_TIME_TOOL =
 /** B7 + F1: whether the tail may (and should) instruct converting via to_local_time. */
 function tailHasTimeTool(manifest: ToolManifestEntry[]): boolean {
   return manifest.some((entry) => entry.name === "to_local_time");
+}
+
+/**
+ * R3 (B9): the single tail predicate — shared by prompt shaping (buildLoopStepQuestion),
+ * enforcement (the bounce), and the B1 bounce-digest choice, so display and enforcement can
+ * never diverge. The tail arms ONLY when the contract's budget exceeds the reserve: a tiny
+ * contract (max_tool_calls ≤ TAIL_RESERVE_STEPS — compiled contracts go as low as 2) would
+ * otherwise be whole-run-tail from step 1, never offered its own manifest.
+ */
+export function inBudgetTail(maxSteps: number, remainingSteps: number): boolean {
+  return maxSteps > TAIL_RESERVE_STEPS && remainingSteps <= TAIL_RESERVE_STEPS;
+}
+
+/**
+ * R4 (B9): whether the tail admits `action`. Beyond the convert-or-answer set, an action the
+ * wiring marks terminal-after-success (an evolution-lane kickoff: self_diagnose /
+ * self_write_propose / skill_author) is allowed — it charges exactly ONE step and ENDS the
+ * run, so it cannot waste tail budget (F2, 07-12: a kickoff at charged step 13+ of 14 was
+ * tail-bounced before dispatch and the kickoff was silently lost). Shared by the menu filter
+ * and enforcement so the offered menu and the bounce agree exactly.
+ */
+function tailAllowsAction(input: Pick<InnerLoopInput, "terminalAfterSuccess">, action: string): boolean {
+  return BUDGET_TAIL_TOOLS.has(action) || input.terminalAfterSuccess?.(action) === true;
+}
+
+/** R2: pick the B1 bounce digest for the current budget position (tail-aware, manifest-conditional). */
+function relativeDayFinalBounceDigest(
+  input: Pick<InnerLoopInput, "manifest" | "maxSteps">,
+  remainingSteps: number
+): string {
+  if (!inBudgetTail(input.maxSteps, remainingSteps)) return RELATIVE_DAY_FINAL_BOUNCE_DIGEST;
+  return tailHasTimeTool(input.manifest)
+    ? RELATIVE_DAY_FINAL_BOUNCE_DIGEST_TAIL
+    : RELATIVE_DAY_FINAL_BOUNCE_DIGEST_TAIL_NO_TIME_TOOL;
 }
 
 /**
@@ -316,7 +383,12 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
       ) {
         relativeDayBounces += 1;
         parseFailures = 0; // the reply WAS a valid protocol action — only the guard bounced it
-        record({ action: "final", ok: false, resultDigest: RELATIVE_DAY_FINAL_BOUNCE_DIGEST });
+        // R2: inside the budget tail the digest must not instruct searching (the tail bans it) —
+        // convert what is already on the table, or finish with explicit uncertainty. The bounce
+        // itself charged a step, so the digest is READ at remainingSteps - 1: gate on that
+        // post-bounce position, or a bounce one step above the tail would still say "search"
+        // into a menu that bans it.
+        record({ action: "final", ok: false, resultDigest: relativeDayFinalBounceDigest(input, remainingSteps - 1) });
         continue;
       }
       return { outcome: "final", reason: "final", answer: action.answer ?? "", steps };
@@ -350,7 +422,9 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
     // ping-pong guard so a REPEATED out-of-tail action also rides the charged-bounce path
     // instead of the parse-failure counter. `final`/`clarify` are protocol actions handled
     // above — the tail never blocks finishing (and the B1 guard still applies to a tail final).
-    if (remainingSteps <= TAIL_RESERVE_STEPS && !BUDGET_TAIL_TOOLS.has(action.action)) {
+    // R3: the tail only arms when maxSteps exceeds the reserve (shared predicate with the menu).
+    // R4: a terminal-after-success kickoff is admitted — it charges 1 step and ends the run.
+    if (inBudgetTail(input.maxSteps, remainingSteps) && !tailAllowsAction(input, action.action)) {
       parseFailures = 0;
       record({
         action: action.action,
@@ -473,13 +547,17 @@ function finalNeedsRelativeDayConversion(
 }
 
 /**
- * A to_local_time digest row that actually converted: `when (tz) → 2026-07-08 02:00 (tomorrow)`.
+ * A to_local_time digest row that actually converted:
+ * `when (tz) → 2026-07-08 02:00 (tomorrow, Australia/Sydney)`.
  * The adapter is per-item isolated and returns ok:true even when EVERY row errored (e.g. all
  * rows rejected by the evidence gate) — a step-level `ok` alone would let an all-error call
  * disarm the guard for the rest of the run, which is exactly the incident class it exists for.
- * Error rows render `→ error: …` and can never match.
+ * Error rows render `→ error: …` and can never match. HARD CONSTRAINT on the renderer: the `(`
+ * must stay immediately after `HH:MM ` (R1 put the local zone name INSIDE the parens, never
+ * between the time and the paren). Exported so tests pin the renderer↔guard contract via this
+ * exact regex, not a copied literal.
  */
-const CONVERTED_ROW = /→ \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(/;
+export const CONVERTED_ROW = /→ \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(/;
 
 /**
  * Build the per-step *question* (the DATA channel): the user message, thread context,
@@ -487,7 +565,10 @@ const CONVERTED_ROW = /→ \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(/;
  * system prompt never carries any of this.
  */
 export function buildLoopStepQuestion(
-  input: Pick<InnerLoopInput, "objective" | "manifest" | "hint" | "context" | "clarifyAllowed">,
+  input: Pick<
+    InnerLoopInput,
+    "objective" | "manifest" | "hint" | "context" | "clarifyAllowed" | "maxSteps" | "terminalAfterSuccess"
+  >,
   steps: LoopStepRecord[],
   remainingSteps: number
 ): string {
@@ -495,8 +576,10 @@ export function buildLoopStepQuestion(
   // convert-or-answer tools survive (intersection, original manifest order, each entry's
   // rendered line byte-identical, so the zone_evidence sketch variant rides through untouched).
   // `final`/`clarify` are protocol lines, not manifest tools, and always remain.
-  const inTail = remainingSteps <= TAIL_RESERVE_STEPS;
-  const offered = inTail ? input.manifest.filter((e) => BUDGET_TAIL_TOOLS.has(e.name)) : input.manifest;
+  // R3: `inBudgetTail` is the SAME predicate enforcement gates on (never diverge); R4: the
+  // menu admits terminal-after-success kickoffs via the SAME `tailAllowsAction` as the bounce.
+  const inTail = inBudgetTail(input.maxSteps, remainingSteps);
+  const offered = inTail ? input.manifest.filter((e) => tailAllowsAction(input, e.name)) : input.manifest;
   const manifestLines = [
     ...renderManifestLines(offered),
     '- final: finish the turn — send the user your complete answer: {"action":"final","answer":"..."}',
@@ -654,6 +737,22 @@ function scanBalancedObject(text: string, start: number): number {
  * (+ redirect hint); web-search-shaped outputs render numbered result lines;
  * anything else is compact JSON.
  */
+/** The standing header line above rendered to_local_time rows (the B5 relative_day rule). */
+export const TIME_CONVERT_DIGEST_HEADER =
+  "Use only each row's relative_day below to include/exclude events for today/tomorrow requests.";
+
+/**
+ * R1: the header for a digest whose rows carry a named local zone (`output.local_tz`) — one
+ * clause telling the planner the rows are ALREADY in the user's zone, so prose never re-frames
+ * the converted clocks as some other zone (07-12 live gate S3: correct Sydney clocks quoted as
+ * 北京时间). Zone-less outputs keep the legacy header byte-identical.
+ */
+export function timeConvertDigestHeader(targetZone: string): string {
+  return targetZone.length > 0
+    ? `${TIME_CONVERT_DIGEST_HEADER} Local times below are already in the user's zone (${targetZone}).`
+    : TIME_CONVERT_DIGEST_HEADER;
+}
+
 /** Discriminate to_local_time results (`{when, tz, local|error}`) from web results (`{title, url}`).
  *  An optional `label` (B6) rides along untouched — the guard is structural on when/tz only. */
 function isTimeConvertResults(results: unknown[]): boolean {
@@ -681,10 +780,14 @@ export function digestOutput(output: Record<string, unknown>, charCap: number): 
     if (output.content.length > 0) lines.push(output.content);
     text = lines.join("\n");
   } else if (Array.isArray(output.results) && isTimeConvertResults(output.results)) {
-    // to_local_time: readable `when (tz) → local (relative_day)` lines (or a per-item error),
-    // so the planner reads the code-computed label instead of re-doing the tz math itself.
+    // to_local_time: readable `when (tz) → local (relative_day, local_zone)` lines (or a
+    // per-item error), so the planner reads the code-computed label instead of re-doing the
+    // tz math itself. R1: `output.local_tz` (adapter-sanitized) names the zone the rows were
+    // converted INTO, rendered INSIDE the existing parens — the CONVERTED_ROW guard regex
+    // requires `(` immediately after `HH:MM `, so nothing may sit between time and paren.
+    const targetZone = typeof output.local_tz === "string" ? output.local_tz.trim() : "";
     text = [
-      "Use only each row's relative_day below to include/exclude events for today/tomorrow requests.",
+      timeConvertDigestHeader(targetZone),
       ...output.results.map((r) => {
         const row = r as Record<string, unknown>;
         const when = typeof row.when === "string" ? row.when : "";
@@ -695,7 +798,8 @@ export function digestOutput(output: Record<string, unknown>, charCap: number): 
         if (typeof row.error === "string" && row.error.length > 0) return `${label}${when} (${tz}) → error: ${row.error}`;
         const local = typeof row.local === "string" ? row.local : "";
         const relative = typeof row.relative_day === "string" ? row.relative_day : "";
-        return `${label}${when} (${tz}) → ${local} (${relative})`;
+        const frame = [relative, targetZone].filter((part) => part.length > 0).join(", ");
+        return `${label}${when} (${tz}) → ${local} (${frame})`;
       })
     ].join("\n");
   } else if (Array.isArray(output.results)) {
@@ -733,7 +837,8 @@ export const FALLBACK_WRAPPER_NOTE = "（以下为系统摘要 / system summary�
  */
 export const FALLBACK_CONVERTED_ROWS_GUIDANCE =
   "Any statement about today/tomorrow/relative days must come ONLY from the converted rows' " +
-  "relative_day labels in the digest; quote the converted local times verbatim.";
+  "relative_day labels in the digest; quote the converted local times verbatim, and lead with " +
+  "those local times in the user's zone — mention source-zone clocks only as parenthetical extras.";
 
 /**
  * B5: code-owned refusal rule when the hedge condition holds (relative-day question,

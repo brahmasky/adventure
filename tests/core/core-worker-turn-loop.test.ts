@@ -349,8 +349,9 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       expect(steps[0]!.payload).toMatchObject({ step: 1, action: "to_local_time", capability: "to_local_time", ok: true });
       // THE VALUE: the code-computed labels ride the transcript the planner reads next.
       const digest = String(steps[0]!.payload.result_digest);
-      expect(digest).toContain("2026-07-06 20:00 (America/New_York) → 2026-07-07 10:00 (tomorrow)");
-      expect(digest).toContain("2026-07-07 12:00 (America/New_York) → 2026-07-08 02:00 (in 2 days)");
+      // R1: the row names the zone it converted into, inside the relative_day parens.
+      expect(digest).toContain("2026-07-06 20:00 (America/New_York) → 2026-07-07 10:00 (tomorrow, Australia/Sydney)");
+      expect(digest).toContain("2026-07-07 12:00 (America/New_York) → 2026-07-08 02:00 (in 2 days, Australia/Sydney)");
       // Pure compute → NO external provenance audit is emitted (unlike web_search/http_fetch).
       expect(loopEvents(store, run_id, "http_fetch_performed")).toEqual([]);
       expect(loopEvents(store, run_id, "web_search_performed")).toEqual([]);

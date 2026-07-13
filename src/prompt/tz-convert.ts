@@ -70,8 +70,10 @@ function normalizeTimeZone(tz: string): string {
   return TIME_ZONE_ALIASES[key] ?? tz;
 }
 
-/** Resolve common source labels, then require a zone `Intl` accepts. */
-function resolveTimeZone(tz: string): string | undefined {
+/** Resolve common source labels, then require a zone `Intl` accepts. Exported so the
+ *  to_local_time adapter can report the SAME zone `toLocalTimes` actually converts into
+ *  (including its UTC fallback) on the result envelope (R1). */
+export function resolveTimeZone(tz: string): string | undefined {
   const candidate = normalizeTimeZone(tz);
   try {
     new Intl.DateTimeFormat("en-CA", { timeZone: candidate });
