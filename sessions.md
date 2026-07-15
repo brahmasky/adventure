@@ -523,3 +523,37 @@ Build + independent adversarial verification subagents; each live round found a 
   3 (this self-write). Next roadmap item: ② episodic memory. Orchestration note: the
   interactive gates (kickoff, merge) were surfaced once with full context and completed by
   Paco in minutes — no idle-loop nudging needed.
+
+## 2026-07-15 — Phase M: ② conversational-episodic memory B1–B5 + accelerated B6 (SHIPPED, live)
+- Paco /goal: "episodic memory" — roadmap Phase M / spine stages B1–B6. Design sub-decision put
+  to Paco per roadmap: he chose EMBEDDINGS NOW (option b, amends ADR 0005 §1) over FTS5-only v1.
+  Implementation preserves dependencies:{}: local Ollama /api/embed (system-service dep, same
+  class as pi/agy CLIs), embeddinggemma 768-dim multilingual (CJK is why FTS5-only was weak —
+  unicode61 doesn't segment Chinese), graceful degradation to BM25/recency when down. ADR 0016.
+- Two build subagents: M1 (episodic_facts store + FTS5 mirror + embeddings client + fast-path
+  distillation with Slice A reconcile verdicts + per-chat watermark + session-lull trigger),
+  M2 (retrieval relevance[BM25+cosine]×recency×reuse×salience folded into the composer with
+  byte-stable goldens when off + applied_artifacts attribution + daily consolidation tick
+  [decay/prune/merge/promote, never deletes] + live-gate script + ADR). 1311/1311 both sweeps.
+- Independent adversarial VERIFY: SHIP-WITH-NITS. Attack surfaces held: persistent prompt
+  injection through the fact pipeline (two walls: write-time sanitize + render flatten),
+  15 hostile FTS MATCH strings, migration on a VACUUM-copy of the REAL houge.sqlite (idempotent,
+  integrity ok, 8→10 schema rows), BM25-negative-rank normalization direction verified on real
+  data, clock-backwards idempotency, zero hard-DELETEs anywhere. Verifier fixed U+2028/29/85
+  line-separator smuggling in-tree (+regression). I fixed pre-commit: >24-turn burst silently
+  skipping oldest turns forever (new getChatTurnsAfter, oldest-first, catch-up across ticks,
+  regression test) + NaN-cosine comparator poisoning. 1313/1313 both sweeps incl. ARMED-flag env
+  (the selfwrite-testgate hermeticity lesson applied before arming). Commit 0ac9bc2.
+- LIVE GATE (real chain + real Ollama): S1 four atomic pronoun-resolved embedded facts from
+  Chinese turns. S2 the money shot — Chinese query, English stored facts, cross-lingual cosine
+  retrieved all 4, and the real planner answered a weekend-planning question USING 小芸 + 海边
+  骑车 + Sydney unprompted, zero re-asking (B6-class behavior, live). S3 correction superseded
+  the Sydney fact (pointer chain + valid_until + reuse penalty) and Melbourne topped location
+  retrieval. S3's first run false-failed on language-brittle script assertions (facts stored in
+  English from a Chinese transcript) — assertions rewritten pointer-based (3b7c90b).
+- Rollout: HOUGE_EPISODIC_ENABLED=true appended to .env AFTER re-running the armed-env sweep;
+  daemon rolled via launchd (clean stop after 1392 cycles, PID 8191). B6 multi-day soak begins:
+  distill fires ~30min after chat lull; consolidation daily; judge unprompted use over the week.
+- Residuals: English-fact language slip (cosmetic), inline distill latency in the poll loop
+  (watch first ticks), embeddings-only merge clustering (backfill deferred), legacy enum path
+  unwired (dead in production), parse-layer-only sanitization (contract note).

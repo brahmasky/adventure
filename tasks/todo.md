@@ -1,3 +1,75 @@
+# ✅ DONE — Phase M: ② conversational-episodic memory (B1–B5 + accelerated B6) — SHIPPED + LIVE 2026-07-15 03:0x
+
+**Commits 0ac9bc2 (build, +3950 lines) + 3b7c90b (gate-script fix). Daemon live with
+HOUGE_EPISODIC_ENABLED=true (PID 8191). B6 multi-day validation now in soak.**
+
+**Live gate (real chain + real local embeddings, scripts/live-gate-episodic.mjs):**
+- S1 remember: 4 atomic pronoun-resolved facts distilled from Chinese turns, all 768-dim
+  embedded ✓ (note: facts stored in ENGLISH despite conversation-language instruction —
+  cosmetic, cross-lingual recall proven unaffected).
+- S2 recall: Chinese query retrieved all English facts (cross-lingual cosine works); answer
+  used 小芸/海边骑车/Sydney UNPROMPTED — planned a weekend around the stored facts, zero
+  re-asking ✓. This is the B6-class behavior, live.
+- S3 supersede: 搬到墨尔本 correction → reconcile chose SUPERSEDE, Sydney fact retired
+  (valid_until set, reuse −0.5, bidirectional pointers), Melbourne tops location retrieval ✓.
+  (First S3 run false-failed on language-brittle script assertions — fixed to pointer-based.)
+
+**Verifier: SHIP-WITH-NITS.** Held under attack: persistent-prompt-injection (write+render
+walls), hostile FTS MATCH ×15, real-DB migration on VACUUM-copy, BM25 sign, clock-skew
+idempotency, zero hard-DELETEs. Fixed pre-commit: U+2028/29/85 smuggling (verifier, in-tree),
+>24-turn burst skip-forever (oldest-first reads, catch-up across ticks), NaN-cosine guard.
+1313/1313 both sweeps INCLUDING armed-flag env.
+
+**Residuals queued:** facts stored in English from Chinese conversations (prompt-level;
+watch in soak — cross-lingual retrieval unaffected); poll-loop latency when distill+consolidate
+run inline before outbox flush (verifier nit — watch first live ticks); merge clustering is
+embeddings-only (unembedded rows never merge — backfill pass deferred, ADR 0016); episodic
+section is loop-path only (legacy enum path unwired — dead when HOUGE_INNER_LOOP_ENABLED=1);
+sanitization lives in parse layer not store (future direct-store callers must sanitize).
+
+**B6 soak protocol:** Paco states durable facts naturally over Telegram; distill fires ~30min
+after chat lull (watch ledger episodic_distill_pass); days later Houge should use them
+unprompted; corrections should supersede. Judge over the week.
+
+(original plan below)
+
+## (was IN PROGRESS) — /goal 2026-07-13
+
+**Goal (Paco, /goal): "episodic memory"** — roadmap Phase M, spine spec stages B1–B6
+(docs/superpowers/specs/2026-06-27-spine-self-evolution-loop.md:105-119). Reuses Slice A
+machinery (lessons reconcile/supersede/reuse/decay — all live).
+
+**DESIGN DECISION (Paco, 2026-07-15, amends ADR 0005 §1): local embeddings NOW — option (b).**
+Implementation that preserves `dependencies:{}`: embeddings via local Ollama HTTP
+(localhost:11434 /api/embed; system-service dependency, same class as pi/agy CLIs), model
+`embeddinggemma` (multilingual — Paco chats 中文), configurable HOUGE_EMBED_URL/MODEL.
+GRACEFUL DEGRADATION mandatory: Ollama down / model missing → facts stored without embedding
+(backfillable), retrieval falls back to FTS5/BM25 (verified compiled into node:sqlite).
+Record as a new ADR (0005 amendment) in the build.
+
+**Batching:**
+- M1 (build subagent): B1 store + migration + FTS5 mirror + embeddings client + B2 fast-path
+  distillation (episodic-extract.ts) + reconcile (Slice A pattern) + session-lull trigger in
+  runSignalPathTick.
+- M2 (build subagent, after M1): B3 retrieval (relevance[BM25+cosine] × recency × reuse, capped,
+  composer fold-in + applied_artifacts attribution) + B4 daily consolidation tick + env flags
+  (PINNED_ENV) + live-gate script.
+- B5: independent adversarial verifier over the full diff; both sweeps.
+- B6: live gate (accelerated: fact stated → later session uses it unprompted) + daemon roll;
+  multi-day validation continues in soak.
+
+**Checklist:**
+- [x] Recon (spec B1–B6, Slice A machinery map, migrations, composer, idle loop, LLM paths)
+- [x] Retrieval-index sub-decision → Paco: embeddings NOW (Ollama local; FTS5 fallback)
+- [x] Env verified: FTS5 OK in node:sqlite; Ollama up; embeddinggemma pull started
+- [ ] M1 build (store + fast path)
+- [ ] M2 build (retrieval + consolidation + gate script)
+- [ ] Adversarial verifier + fix findings → commit
+- [ ] LIVE gate + daemon roll + B6 seed with Paco
+- [ ] Session record + ADR
+
+---
+
 # ✅ DONE — Phase R lever 3: search discipline via Houge SELF-WRITE — MERGED + LIVE 2026-07-13 06:0x
 
 **Phase R is COMPLETE: all four levers live (1=B5, 2+4=B7/B8 mechanical, 3=self-write prompt).**
