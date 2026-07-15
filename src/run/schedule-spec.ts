@@ -12,7 +12,8 @@ export type ScheduleWeekday = "sun" | "mon" | "tue" | "wed" | "thu" | "fri" | "s
 export type ScheduleSpec =
   | { kind: "weekly"; day: ScheduleWeekday; at: string }
   | { kind: "daily"; at: string }
-  | { kind: "once"; at_iso: string };
+  | { kind: "once"; at_iso: string }
+  | { kind: "once"; in_minutes: number };
 
 /** getUTCDay() order — index into it with a calendar date's day-of-week. */
 const WEEKDAYS: readonly ScheduleWeekday[] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
@@ -45,11 +46,29 @@ export function parseScheduleSpec(value: unknown): ScheduleSpec | null {
     return { kind: "daily", at: spec.at };
   }
   if (spec.kind === "once") {
+    // Relative form FIRST — "N分钟后" asks were reaching us as planner-computed at_iso
+    // with the wrong UTC offset (live gate 07-15: prose said 18:04 Sydney, at_iso said
+    // 19:04). in_minutes keeps the clock math code-side; the tool description steers
+    // planners here for anything relative.
+    if (spec.in_minutes !== undefined) {
+      if (
+        typeof spec.in_minutes !== "number" ||
+        !Number.isInteger(spec.in_minutes) ||
+        spec.in_minutes < 1 ||
+        spec.in_minutes > ONCE_IN_MINUTES_MAX
+      ) {
+        return null;
+      }
+      return { kind: "once", in_minutes: spec.in_minutes };
+    }
     if (typeof spec.at_iso !== "string" || !Number.isFinite(Date.parse(spec.at_iso))) return null;
     return { kind: "once", at_iso: spec.at_iso };
   }
   return null;
 }
+
+/** One week — a relative one-shot beyond that should be an absolute (or recurring) ask. */
+export const ONCE_IN_MINUTES_MAX = 10_080;
 
 /** The calendar date of `instant` rendered in `tz`, as {y, m, d} (en-CA = ISO order). */
 function localDateParts(instant: Date, tz: string): { y: number; m: number; d: number } {
@@ -80,6 +99,11 @@ export function computeNextRunAt(spec: ScheduleSpec, tz: string, afterIso: strin
   const afterMs = Date.parse(afterIso);
   if (!Number.isFinite(afterMs)) return null;
   if (spec.kind === "once") {
+    if ("in_minutes" in spec) {
+      // Code-side clock math: anchored to `afterIso` (creation time). Only ever computed
+      // once — the tick disables a fired `once` row, so a misfire can't re-anchor it.
+      return new Date(afterMs + spec.in_minutes * 60_000).toISOString();
+    }
     const at = Date.parse(spec.at_iso);
     if (!Number.isFinite(at) || at <= afterMs) return null;
     return new Date(at).toISOString();
@@ -117,7 +141,7 @@ export function formatInstantInZone(iso: string, tz: string): string {
 export function describeScheduleSpec(spec: ScheduleSpec): string {
   if (spec.kind === "weekly") return `weekly ${spec.day} ${spec.at}`;
   if (spec.kind === "daily") return `daily ${spec.at}`;
-  return `once ${spec.at_iso}`;
+  return "in_minutes" in spec ? `once +${spec.in_minutes}min` : `once ${spec.at_iso}`;
 }
 
 /** Max chars of the model-supplied goal stored on a schedule (it becomes a future turn text). */

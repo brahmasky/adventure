@@ -105,9 +105,9 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
   schedule_task: {
     name: "schedule_task",
     description:
-      "Schedule a recurring or one-time task: at each scheduled time Houge runs the given goal as a fresh message in this chat and sends the result. Use it when the user asks for something periodic or at a future time ('每周一早上8点给我AI周报', 'remind me tomorrow 9am'). To cancel an existing schedule, pass its id as {\"cancel\":\"sch_...\"}.",
+      "Schedule a recurring or one-time task: at each scheduled time Houge runs the given goal as a fresh message in this chat and sends the result. Use it when the user asks for something periodic or at a future time ('每周一早上8点给我AI周报', 'remind me tomorrow 9am'). For a RELATIVE one-shot ('3分钟后', 'in 2 hours') pass {\"kind\":\"once\",\"in_minutes\":N} — never compute a UTC timestamp yourself. To cancel an existing schedule, pass its id as {\"cancel\":\"sch_...\"}.",
     inputSketch:
-      '{"goal":"AI周报：搜HN/X本周AI新闻并总结","spec":{"kind":"weekly","day":"mon","at":"08:00"} or {"kind":"daily","at":"08:00"} or {"kind":"once","at_iso":"2026-07-20T22:00:00Z"},"tz":"Australia/Sydney (optional; defaults to your local timezone)"}',
+      '{"goal":"AI周报：搜HN/X本周AI新闻并总结","spec":{"kind":"weekly","day":"mon","at":"08:00"} or {"kind":"daily","at":"08:00"} or {"kind":"once","in_minutes":3} or {"kind":"once","at_iso":"2026-07-20T22:00:00Z (only when the user stated an explicit absolute time)"},"tz":"Australia/Sydney (optional; defaults to your local timezone)"}',
     category: "tool",
     side_effect_level: "none",
     risk_level: "low",

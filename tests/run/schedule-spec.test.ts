@@ -4,6 +4,7 @@ import {
   DEFAULT_SCHEDULER_MAX_PER_CHAT,
   describeScheduleSpec,
   formatInstantInZone,
+  ONCE_IN_MINUTES_MAX,
   parseScheduleSpec,
   resolveSchedulerEnabled,
   resolveSchedulerMaxPerChat,
@@ -33,6 +34,20 @@ describe("parseScheduleSpec (tolerant — bad shapes degrade to null, never thro
     expect(parseScheduleSpec({ kind: "daily", at: "08:60" })).toBeNull();
     expect(parseScheduleSpec({ kind: "daily" })).toBeNull();
     expect(parseScheduleSpec({ kind: "once", at_iso: "next tuesday" })).toBeNull();
+  });
+
+  it("once/in_minutes: accepts a positive integer within a week; rejects 0/negative/float/oversized (relative form, code-side math)", () => {
+    expect(parseScheduleSpec({ kind: "once", in_minutes: 3 })).toEqual({ kind: "once", in_minutes: 3 });
+    expect(parseScheduleSpec({ kind: "once", in_minutes: ONCE_IN_MINUTES_MAX }))
+      .toEqual({ kind: "once", in_minutes: ONCE_IN_MINUTES_MAX });
+    expect(parseScheduleSpec({ kind: "once", in_minutes: 0 })).toBeNull();
+    expect(parseScheduleSpec({ kind: "once", in_minutes: -5 })).toBeNull();
+    expect(parseScheduleSpec({ kind: "once", in_minutes: 2.5 })).toBeNull();
+    expect(parseScheduleSpec({ kind: "once", in_minutes: ONCE_IN_MINUTES_MAX + 1 })).toBeNull();
+    expect(parseScheduleSpec({ kind: "once", in_minutes: "3" })).toBeNull();
+    // in_minutes wins when both are present (relative form is the steered default).
+    expect(parseScheduleSpec({ kind: "once", in_minutes: 3, at_iso: "2026-07-20T22:00:00Z" }))
+      .toEqual({ kind: "once", in_minutes: 3 });
   });
 });
 
@@ -73,6 +88,16 @@ describe("computeNextRunAt (DST-correct via the exported wallClockToInstant solv
       .toBe("2026-07-20T22:00:00.000Z");
   });
 
+  it("once/in_minutes: code-side clock math anchored to afterIso — the planner never computes UTC (live-gate 07-15 offset slip)", () => {
+    // A "3分钟后" ask reached us as planner-computed at_iso with an AEDT offset in July
+    // (prose said 18:04 Sydney, at_iso said 19:04). in_minutes keeps the arithmetic here.
+    expect(computeNextRunAt({ kind: "once", in_minutes: 3 }, "Australia/Sydney", "2026-07-15T08:02:00Z"))
+      .toBe("2026-07-15T08:05:00.000Z");
+    // tz-independent (relative to the creation instant) — garbage tz cannot break it.
+    expect(computeNextRunAt({ kind: "once", in_minutes: 60 }, "Not/AZone", "2026-07-15T00:00:00Z"))
+      .toBe("2026-07-15T01:00:00.000Z");
+  });
+
   it("null on an unresolvable tz or garbage afterIso (never throws)", () => {
     expect(computeNextRunAt({ kind: "daily", at: "08:00" }, "Not/AZone", "2026-07-15T00:00:00Z")).toBeNull();
     expect(computeNextRunAt({ kind: "daily", at: "08:00" }, "Australia/Sydney", "garbage")).toBeNull();
@@ -84,6 +109,7 @@ describe("rendering helpers", () => {
     expect(describeScheduleSpec({ kind: "weekly", day: "mon", at: "08:00" })).toBe("weekly mon 08:00");
     expect(describeScheduleSpec({ kind: "daily", at: "07:30" })).toBe("daily 07:30");
     expect(describeScheduleSpec({ kind: "once", at_iso: "2026-07-20T22:00:00Z" })).toBe("once 2026-07-20T22:00:00Z");
+    expect(describeScheduleSpec({ kind: "once", in_minutes: 3 })).toBe("once +3min");
   });
 
   it("formatInstantInZone renders the wall clock in the schedule tz", () => {
