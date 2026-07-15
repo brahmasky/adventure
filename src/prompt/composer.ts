@@ -200,6 +200,15 @@ export const DISCIPLINES: Record<string, string> = {
   reader: READER_DISCIPLINE
 };
 
+/**
+ * Section header for the episodic-facts block (Phase M B3). Exported so tests assert
+ * containment via the constant (never a pinned literal — self-write rule). The header
+ * instructs USE, not recitation: memory should make answers feel continuous, not
+ * turn into "as I recall…" preambles or re-asking what's already known.
+ */
+export const EPISODIC_SECTION_HEADER =
+  "## What you remember about this user — use naturally; never re-ask what's already here";
+
 export function memoryRootFor(projectRoot: string): string {
   return join(projectRoot, "memory");
 }
@@ -237,6 +246,15 @@ export interface ComposeOptions {
   skillsReader?: (scope: string) => string | undefined;
   /** Read skills from a different scope (e.g. the critique pass reuses `research` skills). */
   skillsScope?: string;
+  /**
+   * Injected episodic-facts reader (Phase M B3): `() => block | undefined`. Zero-arg
+   * on purpose — unlike lessons/skills (scope-keyed), episodic facts are CHAT-keyed
+   * and retrieved once per turn against the incoming message, so the caller binds
+   * the chat and the retrieval result and the composer only folds the rendered block
+   * in. Absent (or returning nothing) → the section is omitted and the prompt is
+   * byte-identical to today (composer goldens unaffected).
+   */
+  episodicReader?: () => string | undefined;
   /** Injectable clock for the trusted temporal-context line (default `new Date()`). */
   now?: Date;
 }
@@ -257,12 +275,14 @@ export function composeSystemPrompt(
   const lessons = options.lessonsReader?.(lessonsScope);
   const skillsScope = options.skillsScope ?? surface;
   const skills = options.skillsReader?.(skillsScope);
+  const episodic = options.episodicReader?.();
 
   return [
     temporalContext(options.now),
     identity,
     discipline,
     skills ? `## Skills — apply when relevant\n${skills}` : "",
+    episodic ? `${EPISODIC_SECTION_HEADER}\n${episodic}` : "",
     lessons ? `## What you've learned — apply these\n${lessons}` : "",
     // The loop surface acts (via protocol), so it gets its own ground rule; every
     // existing surface composes GUARDRAILS byte-identically.

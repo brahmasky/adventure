@@ -8,7 +8,7 @@ import { INTENT_DISCIPLINE, resolveInnerLoopEnabled } from "../../src/capabiliti
 import { DISTILL_DISCIPLINE } from "../../src/capabilities/distill.js";
 import { RECONCILE_DISCIPLINE } from "../../src/capabilities/reconcile.js";
 import { GATE_A_DISCIPLINE } from "../../src/capabilities/skill-router.js";
-import { ASK_DISCIPLINE, LOOP_DISCIPLINE, READER_DISCIPLINE } from "../../src/prompt/composer.js";
+import { ASK_DISCIPLINE, EPISODIC_SECTION_HEADER, LOOP_DISCIPLINE, READER_DISCIPLINE } from "../../src/prompt/composer.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -49,7 +49,10 @@ const PINNED_ENV = [
   "HOUGE_TELEGRAM_BOT_TOKEN",
   // Dual-LLM (ADR 0014): pin the flag + reader-chain env so the OFF default is hermetic.
   "HOUGE_DUAL_LLM_ENABLED",
-  "HOUGE_LLM_READER_PROVIDERS"
+  "HOUGE_LLM_READER_PROVIDERS",
+  // Episodic memory (Phase M B3): pin the master flag so a daemon .env that arms it
+  // can never make these turns retrieve (or embed against a real Ollama).
+  "HOUGE_EPISODIC_ENABLED"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
@@ -197,7 +200,12 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       expect(started.length).toBe(1);
       expect(started[0]!.payload.manifest).toEqual(["web_search", "llm_answer", "lesson_write", "skill_author"]);
       expect(started[0]!.payload.hint).toBe("answer");
-      expect(started[0]!.payload.applied_artifacts).toEqual({ lesson_scopes: [], lesson_ids: [], skill_scopes: [] });
+      expect(started[0]!.payload.applied_artifacts).toEqual({
+        lesson_scopes: [],
+        lesson_ids: [],
+        skill_scopes: [],
+        episodic_fact_ids: []
+      });
       const halted = loopEvents(store, run_id, "loop_halted");
       expect(halted.length).toBe(1);
       expect(halted[0]!.payload).toEqual({ reason: "final", steps: 0 });
@@ -685,7 +693,8 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       expect(started[0]!.payload.applied_artifacts).toEqual({
         lesson_scopes: ["ask"],
         lesson_ids: [a, b], // most valuable first; equal values tie in reading order (⓪·3f P3)
-        skill_scopes: []
+        skill_scopes: [],
+        episodic_fact_ids: []
       });
       // Both applied lessons earned their reuse credit for the turn.
       expect(store.getLesson(a)!.applied_count).toBe(1);
@@ -1120,6 +1129,144 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
       // budget_used = the TURN ledger only: 1 classify + 8 fillers + 1 evolution step.
       const completed = store.getLedgerEvents(run_id).filter((e) => e.event_type === "run_completed");
       expect(completed[0]!.payload.budget_used).toEqual({ tool_calls: 10 });
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("episodic memory on the loop (Phase M B3: retrieval + attribution)", () => {
+  beforeEach(() => {
+    process.env.HOUGE_INNER_LOOP_ENABLED = "1";
+  });
+
+  /** CoreWorker with an injected embed (position 10) — episodic tests NEVER touch the network. */
+  function episodicWorker(
+    store: RunStore,
+    llm: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
+    embed: (text: string) => Promise<Float32Array | null>
+  ): CoreWorker {
+    return new CoreWorker(store, projectRoot(), llm, undefined, undefined, undefined, undefined, undefined, undefined, embed);
+  }
+
+  it("flag ON: both composed surfaces carry the section, loop_started carries the ids, and the facts are touched", async () => {
+    process.env.HOUGE_EPISODIC_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const calls: Array<Record<string, unknown>> = [];
+    try {
+      // Chat "555" is the turn's chat (turnRun); the fact must be scoped to it.
+      const id = store.addEpisodicFact({
+        chat_id: "555",
+        fact: "Paco 喜欢周末骑车",
+        embedding: Float32Array.from([1, 0]),
+        created_at: "2026-07-14T00:00:00.000Z"
+      });
+      const embedCalls: string[] = [];
+      const run_id = turnRun(store, "明天我该干嘛？");
+      const worker = episodicWorker(
+        store,
+        loopLlm('{"intent":"answer"}', [
+          '{"action":"llm_answer","input":{"question":"周末计划"},"why":"draft"}',
+          '{"action":"final","answer":"骑车去。"}'
+        ], calls),
+        async (text) => {
+          embedCalls.push(text);
+          return Float32Array.from([1, 0]);
+        }
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+
+      // The query embedding was resolved exactly ONCE, for the incoming message —
+      // NOT once per compose surface or per step.
+      expect(embedCalls).toEqual(["明天我该干嘛？"]);
+
+      // The loop compose call carried the section (system prompt, above the guardrails)…
+      const compose = calls.find((c) => String(c.system).includes(LOOP_DISCIPLINE));
+      expect(String(compose!.system)).toContain(EPISODIC_SECTION_HEADER);
+      expect(String(compose!.system)).toContain("- Paco 喜欢周末骑车");
+      // …and so did the plain-ask surface the llm_answer step composes under (the
+      // section rides exactly the surfaces lessons ride).
+      const askStep = calls.find((c) => String(c.system).includes(ASK_DISCIPLINE));
+      expect(String(askStep!.system)).toContain(EPISODIC_SECTION_HEADER);
+
+      // Attribution: the ids rode loop_started.applied_artifacts, mirroring lesson_ids…
+      const started = loopEvents(store, run_id, "loop_started");
+      expect(started[0]!.payload.applied_artifacts).toMatchObject({ episodic_fact_ids: [id] });
+      // …and the fact earned its reuse credit (applied_count + last_used).
+      const touched = store.getEpisodicFact(id)!;
+      expect(touched.applied_count).toBe(1);
+      expect(touched.last_used).not.toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("flag ON but embed unavailable (null): retrieval degrades to keyword/recency and still injects", async () => {
+    process.env.HOUGE_EPISODIC_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const calls: Array<Record<string, unknown>> = [];
+    try {
+      const id = store.addEpisodicFact({ chat_id: "555", fact: "Paco lives in Sydney", created_at: "2026-07-14T00:00:00.000Z" });
+      const run_id = turnRun(store, "should I visit Sydney harbour?");
+      const worker = episodicWorker(
+        store,
+        loopLlm('{"intent":"answer"}', ['{"action":"final","answer":"Yes."}'], calls),
+        async () => null // Ollama down — the turn must not care
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      const compose = calls.find((c) => String(c.system).includes(LOOP_DISCIPLINE));
+      expect(String(compose!.system)).toContain("- Paco lives in Sydney");
+      const started = loopEvents(store, run_id, "loop_started");
+      expect(started[0]!.payload.applied_artifacts).toMatchObject({ episodic_fact_ids: [id] });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("flag OFF (default): NO section, empty ids, facts untouched, embed never called", async () => {
+    // WHY: the master flag is the byte-stability guarantee — until B6 live-gates the
+    // feature, a turn must compose exactly what it composed before Phase M.
+    const store = RunStore.openInMemory();
+    const calls: Array<Record<string, unknown>> = [];
+    try {
+      const id = store.addEpisodicFact({ chat_id: "555", fact: "Paco lives in Sydney", created_at: "2026-07-14T00:00:00.000Z" });
+      const run_id = turnRun(store, "should I visit Sydney harbour?");
+      const worker = episodicWorker(
+        store,
+        loopLlm('{"intent":"answer"}', ['{"action":"final","answer":"Yes."}'], calls),
+        async () => {
+          throw new Error("embed must not be called when the flag is off");
+        }
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      const compose = calls.find((c) => String(c.system).includes(LOOP_DISCIPLINE));
+      expect(String(compose!.system)).not.toContain(EPISODIC_SECTION_HEADER);
+      const started = loopEvents(store, run_id, "loop_started");
+      expect(started[0]!.payload.applied_artifacts).toMatchObject({ episodic_fact_ids: [] });
+      expect(store.getEpisodicFact(id)!.applied_count).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("flag ON: an embed adapter that THROWS never costs the turn (fire-and-degrade)", async () => {
+    process.env.HOUGE_EPISODIC_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    try {
+      store.addEpisodicFact({ chat_id: "555", fact: "Paco lives in Sydney", created_at: "2026-07-14T00:00:00.000Z" });
+      const run_id = turnRun(store, "hello");
+      const worker = episodicWorker(
+        store,
+        loopLlm('{"intent":"answer"}', ['{"action":"final","answer":"Hi."}']),
+        async () => {
+          throw new Error("embed exploded");
+        }
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
     } finally {
       store.close();
     }

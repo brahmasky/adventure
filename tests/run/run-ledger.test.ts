@@ -57,6 +57,31 @@ describe("Run Ledger events", () => {
     });
   });
 
+  it("validates an episodic_consolidate_tick event with its required count fields (Phase M B4)", () => {
+    const event = createLedgerEvent({
+      correlation_id: "episodic-consolidate",
+      event_type: "episodic_consolidate_tick",
+      actor: "system",
+      sequence: 1,
+      payload: { facts_decayed: 3, pruned_ids: [7], clusters_merged: 1, promoted_ids: [2, 5] }
+    });
+    expect(validateLedgerEvent(event).ok).toBe(true);
+  });
+
+  it("rejects an episodic_consolidate_tick event missing a required count field", () => {
+    const event = createLedgerEvent({
+      correlation_id: "episodic-consolidate",
+      event_type: "episodic_consolidate_tick",
+      actor: "system",
+      sequence: 1,
+      payload: { facts_decayed: 3, pruned_ids: [], clusters_merged: 0 }
+    });
+    expect(validateLedgerEvent(event)).toEqual({
+      ok: false,
+      error: "episodic_consolidate_tick missing required payload field: promoted_ids"
+    });
+  });
+
   it("rejects missing required payload fields", () => {
     const event = createLedgerEvent({
       run_id: "run_1",

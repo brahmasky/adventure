@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { runEpisodicConsolidateTick } from "../capabilities/episodic-consolidate.js";
+import { maybeRunEpisodicDistill } from "../capabilities/episodic-extract.js";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
 import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
@@ -7,6 +9,7 @@ import { CoreWorker } from "../core/core-worker.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
+import { embedText, resolveEmbedConfig } from "../llm/embeddings.js";
 import { LocalNotificationAdapter } from "../notifications/local-notification-adapter.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import { NotificationOutbox } from "../notifications/notification-outbox.js";
@@ -100,10 +103,12 @@ export async function runTelegramDaemon(
   const maxMs = options.backoff?.maxMs ?? DEFAULT_BACKOFF_MAX_MS;
 
   const gateway = new Gateway(options.store, undefined, options.projectRoot);
+  const llmAdapter =
+    options.llmAdapter ?? createLlmAnswerAdapter(options.broker ? { broker: options.broker } : {});
   const worker = new CoreWorker(
     options.store,
     options.projectRoot,
-    options.llmAdapter ?? createLlmAnswerAdapter(options.broker ? { broker: options.broker } : {}),
+    llmAdapter,
     undefined,
     undefined,
     undefined,
@@ -192,7 +197,7 @@ export async function runTelegramDaemon(
       options.store.expireUndeliveredApprovalPrompts(t);
       // ⓪·3 S2: the signal path rides the poll loop (before the outbox flush, so a
       // rating ask enqueued this cycle is delivered this cycle).
-      runSignalPathTick(options, t);
+      await runSignalPathTick(options, llmAdapter, t);
       for (;;) {
         const result = await dispatcher.dispatchOnce("telegram-daemon-dispatcher");
         if (result.status === "idle") break;
@@ -236,11 +241,16 @@ export async function runTelegramDaemon(
 
 /**
  * ⓪·3 S2 — the signal path's per-cycle tick: the daily lesson decay+prune pass (the
- * store makes it idempotent per 24h) and the session-rating ask trigger (substance +
- * lull + cooldown — cheap sqlite checks). NEVER throws (like notifyReloadOnBoot): a
- * signal-path error must not stop the daemon.
+ * store makes it idempotent per 24h), the session-rating ask trigger (substance +
+ * lull + cooldown — cheap sqlite checks), and the episodic fast-path distill (Phase M
+ * B2 — flag-gated OFF by default, per-chat lull, at most one chat per tick). NEVER
+ * throws (like notifyReloadOnBoot): a signal-path error must not stop the daemon.
  */
-function runSignalPathTick(options: RunTelegramDaemonOptions, now: string): void {
+async function runSignalPathTick(
+  options: RunTelegramDaemonOptions,
+  llmAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
+  now: string
+): Promise<void> {
   try {
     options.store.runLessonDecayTick(now);
     const chat = options.allowlist.chats[0];
@@ -251,6 +261,31 @@ function runSignalPathTick(options: RunTelegramDaemonOptions, now: string): void
         now
       });
     }
+    // Phase M B2: the distill's LLM reads ride the same adapter processRatingSignal
+    // uses (the unreserved chain — no run, no turn budget); embeddings are best-effort
+    // local Ollama (null on any failure — the store degrades gracefully).
+    const episodicLlm = async (input: { question: string; system: string }) => {
+      const read = await llmAdapter({ question: input.question, system: input.system });
+      return read.ok && typeof read.output.answer === "string"
+        ? ({ ok: true, answer: read.output.answer } as const)
+        : ({ ok: false } as const);
+    };
+    const episodicEmbed = (text: string) => embedText(text, resolveEmbedConfig(process.env));
+    await maybeRunEpisodicDistill({
+      store: options.store,
+      llm: episodicLlm,
+      embed: episodicEmbed,
+      userName: options.allowlist.users[0]?.identity_id ?? "the user",
+      now
+    });
+    // Phase M B4: the daily consolidate tick (decay → merge → promote) — same master
+    // flag, idempotent per 24h via its single-row state marker, all steps bounded.
+    await runEpisodicConsolidateTick({
+      store: options.store,
+      llm: episodicLlm,
+      embed: episodicEmbed,
+      now
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[telegram-daemon] signal-path tick failed: ${message}`);

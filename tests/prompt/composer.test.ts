@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ASK_DISCIPLINE,
   composeSystemPrompt,
+  EPISODIC_SECTION_HEADER,
   FALLBACK_IDENTITY,
   GUARDRAILS,
   intentToScope,
@@ -123,6 +124,33 @@ describe("composeSystemPrompt", () => {
       skillsScope: "research"
     });
     expect(prompt).toContain("method body");
+  });
+
+  it("folds the episodic block in under its header when the reader supplies one (Phase M B3)", () => {
+    const root = memoryRoot("I am 猴哥.");
+    const prompt = composeSystemPrompt(root, "ask", {
+      episodicReader: () => "- Paco lives in Sydney\n- Paco 喜欢周末骑车",
+      lessonsReader: reader({ ask: "- be concise" }),
+      skillsReader: reader({ ask: "### s — when: x\nbody" })
+    });
+    expect(prompt).toContain(EPISODIC_SECTION_HEADER);
+    expect(prompt).toContain("- Paco lives in Sydney");
+    // Placement: between skills and lessons — memory grounds the answer before
+    // behavioural preferences shape it.
+    expect(prompt.indexOf("## Skills — apply when relevant")).toBeLessThan(prompt.indexOf(EPISODIC_SECTION_HEADER));
+    expect(prompt.indexOf(EPISODIC_SECTION_HEADER)).toBeLessThan(prompt.indexOf("## What you've learned"));
+  });
+
+  it("is byte-identical when no episodic reader vs a reader that returns nothing (goldens safe)", () => {
+    // WHY: the feature is flag-gated OFF by default — every existing surface must
+    // compose the exact bytes it did before Phase M, or the eval goldens (and the
+    // self-write byte-differential) would move without a behaviour change.
+    const root = memoryRoot("I am 猴哥.");
+    const now = new Date("2026-07-15T00:00:00.000Z");
+    const baseline = composeSystemPrompt(root, "ask", { now });
+    const withEmptyReader = composeSystemPrompt(root, "ask", { now, episodicReader: () => undefined });
+    expect(withEmptyReader).toBe(baseline);
+    expect(baseline).not.toContain(EPISODIC_SECTION_HEADER);
   });
 });
 

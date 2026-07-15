@@ -85,7 +85,10 @@ import type { NotificationButton } from "../notifications/notification-types.js"
 import { createLedgerEvent } from "../run/run-ledger.js";
 import { writeRunReport } from "../report/report-writer.js";
 import { resolveLessonCapPerScope, RunStore } from "../run/run-store.js";
-import type { ChatTurnRow, ClaimedRun, LessonRow, LessonSaveResult, LessonSource } from "../run/run-store.js";
+import type { ChatTurnRow, ClaimedRun, EpisodicFactRow, LessonRow, LessonSaveResult, LessonSource } from "../run/run-store.js";
+import { renderEpisodicFactsBlock, retrieveEpisodicFacts } from "../run/episodic-retrieval.js";
+import { resolveEpisodicEnabled } from "../capabilities/episodic-extract.js";
+import { embedText, resolveEmbedConfig } from "../llm/embeddings.js";
 import { ToolRegistry } from "../tools/tool-registry.js";
 
 export type CoreWorkerResult =
@@ -233,6 +236,8 @@ export class CoreWorker {
   private readonly httpFetchAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
   /** Deterministic timezone conversion for the loop (injected or default). */
   private readonly timeConvertAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
+  /** Query embedding for episodic retrieval (injected or the local-Ollama default). */
+  private readonly embedAdapter: (text: string) => Promise<Float32Array | null>;
 
   constructor(
     private readonly runStore: RunStore,
@@ -252,7 +257,10 @@ export class CoreWorker {
     private readonly broker?: SecretBroker,
     // Deterministic timezone conversion for the loop (to_local_time). Injectable so tests fix
     // the clock/local tz; default reads process.env local tz + the real now per call.
-    timeConvertAdapter?: (input: Record<string, unknown>) => Promise<ToolAdapterResult>
+    timeConvertAdapter?: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
+    // Episodic query embedding (Phase M B3). Injectable so tests never touch the network;
+    // the default is the local Ollama sidecar (null on ANY failure — graceful degradation).
+    embedAdapter?: (text: string) => Promise<Float32Array | null>
   ) {
     // Phase 3.1 (W3): when the DEFAULT llm adapter is in use (production), cheap-chain telemetry can
     // build a telemetry-instrumented adapter per role (kimi/pi usage → recordLlmCall). A test-
@@ -263,6 +271,7 @@ export class CoreWorker {
     this.codingAgentAdapter = codingAgentAdapter ?? createCodingAgentAdapter({ projectRoot });
     this.httpFetchAdapter = httpFetchAdapter ?? createHttpFetchAdapter();
     this.timeConvertAdapter = timeConvertAdapter ?? createTimeConvertAdapter();
+    this.embedAdapter = embedAdapter ?? ((text) => embedText(text, resolveEmbedConfig(process.env)));
     this.skillStore = new SkillStore({
       root: join(projectRoot, "skills"),
       maxPerScope: resolveSkillMaxPerScope(process.env)
@@ -763,6 +772,31 @@ export class CoreWorker {
   /** The composer's lessons reader: the scope's active lessons composed at read time (⓪·3 S1). */
   private lessonsReader(): (scope: string) => string | undefined {
     return (scope) => this.runStore.readLessonBlock(scope);
+  }
+
+  /**
+   * Phase M B3 — the per-turn episodic retrieval: gated on the master flag; the query
+   * embedding is resolved ONCE here (null → BM25/recency-only degradation, NO retry —
+   * a memory hiccup never blocks the turn). Latency note: HOUGE_EMBED_TIMEOUT_MS
+   * (default 5s) is the worst-case CAP on this hot-path call, not its typical cost —
+   * local Ollama embeds in ~50ms; acceptable for v1 and the whole leg degrades to
+   * null at the cap. Never throws; empty on any failure.
+   */
+  private async episodicFactsForTurn(chat_id: string, message: string): Promise<EpisodicFactRow[]> {
+    if (!resolveEpisodicEnabled(process.env)) return [];
+    let queryEmbedding: Float32Array | null = null;
+    try {
+      queryEmbedding = await this.embedAdapter(message);
+    } catch {
+      queryEmbedding = null; // fire-and-degrade, same contract as the distill pass
+    }
+    return retrieveEpisodicFacts({
+      store: this.runStore,
+      chat_id,
+      queryText: message,
+      queryEmbedding,
+      now: new Date().toISOString()
+    });
   }
 
   /**
@@ -1864,11 +1898,18 @@ export class CoreWorker {
     const scope = intentToScope(hint.intent);
     const lessonsReader = this.lessonsReader();
     const skillsReader = this.skillsReader();
+    // Phase M B3: this chat's episodic memory, retrieved ONCE per turn against the
+    // incoming message (the query embedding is resolved once too). Flag-gated OFF by
+    // default; empty → both composed prompts are byte-identical to today.
+    const episodicFacts = await this.episodicFactsForTurn(chat_id, message);
+    const episodicBlock = episodicFacts.length > 0 ? renderEpisodicFactsBlock(episodicFacts) : undefined;
+    const episodicReader = () => episodicBlock;
     const system = composeSystemPrompt(memoryRoot, "loop", {
       lessonsReader,
       lessonsScope: scope,
       skillsReader,
-      skillsScope: scope
+      skillsScope: scope,
+      episodicReader
     });
     // llm_answer steps answer in Houge's voice under the ask discipline; the model's
     // parsed input can never override the composed system prompt (forced below). The
@@ -1879,7 +1920,8 @@ export class CoreWorker {
         lessonsReader,
         lessonsScope: scope,
         skillsReader,
-        skillsScope: scope
+        skillsScope: scope,
+        episodicReader
       });
 
     // lesson_write trust anchors: the REAL prior assistant turn (and the real user
@@ -1924,12 +1966,20 @@ export class CoreWorker {
       applied_artifacts: {
         lesson_scopes: appliedLessons.length > 0 ? [scope] : [],
         lesson_ids: appliedLessons.map((l) => l.id),
-        skill_scopes: skillsReader(scope) ? [scope] : []
+        skill_scopes: skillsReader(scope) ? [scope] : [],
+        // Phase M B3: the episodic attribution seed — which fact rows rode this
+        // turn's prompt (empty array when the feature is off, mirroring lesson_ids).
+        episodic_fact_ids: episodicFacts.map((f) => f.id)
       }
     });
     // The applied lessons earn their reuse credit per turn (applied_count + last_used).
     if (appliedLessons.length > 0) {
       this.runStore.touchApplied(appliedLessons.map((l) => l.id));
+    }
+    // The applied facts earn theirs too (applied_count + last_used — retrieval's
+    // reuse leg and consolidation's promote/decay both read these).
+    if (episodicFacts.length > 0) {
+      this.runStore.touchEpisodicApplied(episodicFacts.map((f) => f.id));
     }
 
     // No approval sink on purpose (like runAnswer/runResearch): a gated capability

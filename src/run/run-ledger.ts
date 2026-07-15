@@ -47,7 +47,9 @@ export type LedgerEventType =
   | "loop_started"
   | "loop_step"
   | "loop_halted"
-  | "lesson_decay_tick";
+  | "lesson_decay_tick"
+  | "episodic_distill_pass"
+  | "episodic_consolidate_tick";
 
 export interface LedgerEvent {
   event_id: string;
@@ -156,7 +158,11 @@ const requiredPayloadFields = {
   loop_step: ["step", "action", "capability", "ok", "result_digest"],
   loop_halted: ["reason", "steps"],
   // ⓪·3 S2 (ADR 0012 §1/§3): the daily reuse-value decay+prune pass — one summary per tick.
-  lesson_decay_tick: ["lessons_decayed", "pruned_ids"]
+  lesson_decay_tick: ["lessons_decayed", "pruned_ids"],
+  // Phase M B2: one summary per executed episodic fast-path distill pass (run-less).
+  episodic_distill_pass: ["facts_added", "superseded", "dropped", "turns_read"],
+  // Phase M B4: one summary per daily episodic consolidate tick that did work (run-less).
+  episodic_consolidate_tick: ["facts_decayed", "pruned_ids", "clusters_merged", "promoted_ids"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(

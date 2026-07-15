@@ -31,11 +31,12 @@ import {
 } from "./run-ledger.js";
 import { canTransitionRun } from "./state-machines.js";
 import type { LlmUsage } from "./llm-usage.js";
+import { float32ToBlob } from "../llm/embeddings.js";
 
 /** The LLM-call roles recorded by {@link RunStore.recordLlmCall} (spec §"Real telemetry"). */
 export type LlmCallRole = "writer" | "reviewer" | "classify" | "frame" | "answer" | "compose" | "reader";
 
-type SqliteValue = string | number | bigint | null;
+type SqliteValue = string | number | bigint | Uint8Array | null;
 
 interface SqliteRunResult {
   changes: number;
@@ -322,6 +323,73 @@ export interface PendingRating {
   active: boolean;
 }
 
+export type EpisodicFactStatus = "active" | "superseded" | "pruned";
+
+/**
+ * One episodic fact (Phase M B1, ADR 0005 §3/§4): an atomic, pronoun-resolved,
+ * time-grounded assertion distilled from a chat, with provenance back to the source
+ * turns and the same eval metadata + bidirectional supersede chain as lessons. Rows
+ * are NEVER deleted — a superseding fact sets the old row's `valid_until` (bi-temporal
+ * invalidation), so "true until X" stays answerable.
+ */
+export interface EpisodicFactRow {
+  id: number;
+  fact: string;
+  /** JSON array of participant names. */
+  participants: string;
+  chat_id: string | null;
+  /** JSON array of chat_turns turn_ids (provenance — summaries point back to source). */
+  source_turn_ids: string;
+  /** What time the fact is ABOUT (may differ from when it was learned). */
+  occurred_at: string | null;
+  valid_from: string | null;
+  valid_until: string | null;
+  salience: number;
+  status: EpisodicFactStatus;
+  supersedes: number | null;
+  superseded_by: number | null;
+  applied_count: number;
+  corrected_count: number;
+  reuse_value: number;
+  /** JSON array of rating entries (same shape as lessons; written by later signal wiring). */
+  rating_history: string;
+  /** Float32Array bytes (see llm/embeddings.ts converters); null = not embedded (backfillable). */
+  embedding: Uint8Array | null;
+  embedding_model: string | null;
+  created_at: string;
+  last_used: string | null;
+}
+
+/** The candidate {@link RunStore.saveReconciledFact} stores (all metadata rides ADD/SUPERSEDE/UPDATE). */
+export interface EpisodicFactCandidate {
+  chat_id: string;
+  fact: string;
+  participants?: string[];
+  source_turn_ids?: string[];
+  occurred_at?: string;
+  salience?: number;
+  embedding?: Float32Array | null;
+  embedding_model?: string;
+}
+
+export interface EpisodicFactSaveResult {
+  verb: LessonWriteVerb;
+  /** The new active row's id (absent on drop). */
+  id?: number;
+  supersededId?: number;
+  /** The fact text actually stored (the merged text on update; the candidate's on drop). */
+  fact: string;
+  /** Rows pruned by the per-chat cap (lowest reuse_value first; never the new row). */
+  prunedIds: number[];
+}
+
+/** Per-chat fast-path distill progress (Phase M B2): which turns have been distilled. */
+export interface EpisodicDistillWatermark {
+  chat_id: string;
+  last_turn_created_at: string | null;
+  last_distilled_at: string | null;
+}
+
 /** One captured session rating (⓪·3 S2a): 0–3 + optional comment + the applied set. */
 export interface SessionRating {
   id: number;
@@ -576,6 +644,31 @@ export class RunStore {
           LIMIT ?
         `).all<ChatTurnRow>(chat_id, limit);
     return rows.reverse();
+  }
+
+  /**
+   * The OLDEST `limit` turns strictly after `afterIso` (or from the beginning), in
+   * chronological order. The episodic distill pass reads with this so a burst longer
+   * than one window is caught up oldest-first across successive passes — a newest-first
+   * read would advance the watermark past turns it never distilled, silently losing
+   * durable facts stated early in a long session (verifier finding, Phase M).
+   */
+  getChatTurnsAfter(chat_id: string, afterIso: string | undefined, limit: number): ChatTurnRow[] {
+    return afterIso
+      ? this.db.prepare(`
+          SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+          FROM chat_turns
+          WHERE chat_id = ? AND created_at > ?
+          ORDER BY created_at ASC, rowid ASC
+          LIMIT ?
+        `).all<ChatTurnRow>(chat_id, afterIso, limit)
+      : this.db.prepare(`
+          SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+          FROM chat_turns
+          WHERE chat_id = ?
+          ORDER BY created_at ASC, rowid ASC
+          LIMIT ?
+        `).all<ChatTurnRow>(chat_id, limit);
   }
 
   /**
@@ -1625,6 +1718,371 @@ export class RunStore {
       })
     );
     return { ran: true, lessons_decayed: stale.length, pruned_ids };
+  }
+
+  // --- Episodic facts (Phase M B1/B2, ADR 0005 §3/§4) ------------------------
+
+  /** Insert one active fact row (valid_from = created_at — valid from when learned); returns its id. */
+  addEpisodicFact(input: EpisodicFactCandidate & { created_at?: string }): number {
+    const created = input.created_at ?? new Date().toISOString();
+    const blob = input.embedding ? float32ToBlob(input.embedding) : null;
+    const result = this.db.prepare(`
+      INSERT INTO episodic_facts (
+        fact, participants, chat_id, source_turn_ids, occurred_at, valid_from,
+        salience, embedding, embedding_model, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.fact.trim(),
+      JSON.stringify(input.participants ?? []),
+      input.chat_id,
+      JSON.stringify(input.source_turn_ids ?? []),
+      input.occurred_at ?? null,
+      created,
+      input.salience ?? 1.0,
+      blob,
+      blob ? input.embedding_model ?? null : null,
+      created
+    );
+    return Number(result.lastInsertRowid);
+  }
+
+  getEpisodicFact(id: number): EpisodicFactRow | undefined {
+    return this.db.prepare(`
+      SELECT ${EPISODIC_FACT_COLUMNS} FROM episodic_facts WHERE id = ?
+    `).get<EpisodicFactRow>(id);
+  }
+
+  /** A chat's ACTIVE facts, newest first (M2 retrieval/consolidation + tests read through this). */
+  getActiveEpisodicFacts(chat_id: string, cap?: number): EpisodicFactRow[] {
+    const limit = cap ?? -1; // SQLite: LIMIT -1 = unbounded
+    return this.db.prepare(`
+      SELECT ${EPISODIC_FACT_COLUMNS} FROM episodic_facts
+      WHERE chat_id = ? AND status = 'active'
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+    `).all<EpisodicFactRow>(chat_id, limit);
+  }
+
+  /**
+   * Link a supersede pair BIDIRECTIONALLY and stamp the old row's `valid_until`
+   * (ADR 0005 §4: invalidate-don't-delete — the superseded fact stays queryable as
+   * "true until `now`"). NEVER deletes.
+   */
+  supersedeEpisodicFact(oldId: number, newId: number, now: string): void {
+    this.db.prepare(`
+      UPDATE episodic_facts SET status = 'superseded', superseded_by = ?, valid_until = ? WHERE id = ?
+    `).run(newId, now, oldId);
+    this.db.prepare(`UPDATE episodic_facts SET supersedes = ? WHERE id = ?`).run(oldId, newId);
+  }
+
+  /**
+   * Apply a reconcile verdict to a fact candidate (Phase M B2, mirroring
+   * {@link RunStore.saveReconciledLesson}): ADD inserts; SUPERSEDE/UPDATE insert a NEW
+   * row linked to the prior via bidirectional pointers (never an in-place rewrite, never
+   * a delete); DROP writes nothing. A SUPERSEDE/UPDATE whose target is missing, no longer
+   * active, or in a DIFFERENT chat (defense-in-depth — a verdict must never retire another
+   * chat's fact) degrades to ADD. A SUPERSEDE is a correction against the target (its
+   * corrected_count/reuse_value pay for it). Overflow beyond the per-chat cap prunes the
+   * lowest reuse_value rows (never the row just written).
+   */
+  saveReconciledFact(
+    candidate: EpisodicFactCandidate,
+    verdict: LessonReconcileVerdict,
+    now: string,
+    cap: number = resolveEpisodicFactCapPerChat(process.env)
+  ): EpisodicFactSaveResult {
+    const fact = candidate.fact.trim();
+    if (verdict.verdict === "DROP") {
+      return { verb: "drop", fact, prunedIds: [] };
+    }
+
+    const prior = verdict.verdict === "ADD" ? undefined : this.getEpisodicFact(verdict.id);
+    const target = prior?.status === "active" && prior.chat_id === candidate.chat_id ? prior : undefined;
+    const merged =
+      verdict.verdict === "UPDATE" && target && verdict.text?.trim() ? verdict.text.trim() : fact;
+
+    const id = this.addEpisodicFact({ ...candidate, fact: merged, created_at: now });
+    if (target) this.supersedeEpisodicFact(target.id, id, now);
+    if (verdict.verdict === "SUPERSEDE" && target) {
+      this.db.prepare(`
+        UPDATE episodic_facts SET corrected_count = corrected_count + 1, reuse_value = reuse_value - 0.5 WHERE id = ?
+      `).run(target.id);
+    }
+    const prunedIds = this.pruneEpisodicOverflow(candidate.chat_id, cap, id);
+    const verb: LessonWriteVerb = !target ? "add" : verdict.verdict === "UPDATE" ? "update" : "supersede";
+    return { verb, id, ...(target ? { supersededId: target.id } : {}), fact: merged, prunedIds };
+  }
+
+  /** Prune (reversibly) the lowest-value active rows over the chat cap, sparing `keepId`. */
+  private pruneEpisodicOverflow(chat_id: string, cap: number, keepId: number): number[] {
+    if (cap <= 0) return [];
+    const others = this.db.prepare(`
+      SELECT id FROM episodic_facts
+      WHERE chat_id = ? AND status = 'active' AND id != ?
+      ORDER BY reuse_value ASC, COALESCE(last_used, created_at) ASC, id ASC
+    `).all<{ id: number }>(chat_id, keepId);
+    const toPrune = others.slice(0, Math.max(0, others.length + 1 - cap)).map((r) => r.id);
+    for (const id of toPrune) {
+      this.db.prepare(`UPDATE episodic_facts SET status = 'pruned' WHERE id = ?`).run(id);
+    }
+    return toPrune;
+  }
+
+  /**
+   * Top-k neighbors for the reconcile compare (Phase M B2): FTS5 MATCH over the
+   * candidate's sanitized tokens, best rank first. FTS candidates SUFFICE here —
+   * reconcile is an LLM verdict over the neighbor texts, so recall (not semantic
+   * ranking) is all this must provide, and the pass must work with Ollama down —
+   * embeddings are deliberately not used (M2 retrieval is where they earn their keep).
+   * No FTS hits (e.g. CJK text, which unicode61 doesn't word-segment) falls back to
+   * the chat's most recent active facts; a hostile MATCH string never throws.
+   */
+  getEpisodicFactsForReconcile(chat_id: string, candidateText: string, k: number): EpisodicFactRow[] {
+    const hits = this.searchEpisodicFactsFts(chat_id, candidateText, k);
+    if (hits.length > 0) return hits;
+    return this.getActiveEpisodicFacts(chat_id, k);
+  }
+
+  /**
+   * FTS5/BM25 keyword leg of M2 retrieval (also the reconcile candidate source): the
+   * query's sanitized tokens OR-matched against the chat's ACTIVE facts, best `rank`
+   * (bm25 — more negative = better) first, id ASC on ties (deterministic). Hostile
+   * MATCH syntax or an unsegmentable query (CJK under unicode61) degrades to [] —
+   * NEVER throws; the caller's cosine/recency legs carry relevance from there.
+   */
+  searchEpisodicFactsFts(
+    chat_id: string,
+    queryText: string,
+    k: number
+  ): Array<EpisodicFactRow & { rank: number }> {
+    const tokens = (queryText.match(/[\p{L}\p{N}]+/gu) ?? []).slice(0, 12);
+    if (tokens.length === 0) return [];
+    const match = tokens.map((t) => `"${t}"`).join(" OR ");
+    try {
+      return this.db.prepare(`
+        SELECT ${EPISODIC_FACT_COLUMNS_QUALIFIED}, fts.rank AS rank
+        FROM episodic_facts_fts fts
+        JOIN episodic_facts f ON f.id = fts.rowid
+        WHERE episodic_facts_fts MATCH ? AND f.chat_id = ? AND f.status = 'active'
+        ORDER BY fts.rank, f.id
+        LIMIT ?
+      `).all<EpisodicFactRow & { rank: number }>(match, chat_id, k);
+    } catch {
+      return []; // MATCH parse error → keyword leg contributes nothing
+    }
+  }
+
+  /** Attribution (M2 will call it): these facts were applied to a turn's prompt. */
+  touchEpisodicApplied(ids: number[], now: string = new Date().toISOString()): void {
+    const stmt = this.db.prepare(`
+      UPDATE episodic_facts SET applied_count = applied_count + 1, last_used = ? WHERE id = ?
+    `);
+    for (const id of ids) stmt.run(now, id);
+  }
+
+  getEpisodicDistillWatermark(chat_id: string): EpisodicDistillWatermark | null {
+    const row = this.db.prepare(`
+      SELECT chat_id, last_turn_created_at, last_distilled_at
+      FROM episodic_distill_watermark WHERE chat_id = ?
+    `).get<EpisodicDistillWatermark>(chat_id);
+    return row ?? null;
+  }
+
+  setEpisodicDistillWatermark(input: EpisodicDistillWatermark): void {
+    this.db.prepare(`
+      INSERT INTO episodic_distill_watermark (chat_id, last_turn_created_at, last_distilled_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(chat_id) DO UPDATE SET
+        last_turn_created_at = excluded.last_turn_created_at,
+        last_distilled_at = excluded.last_distilled_at
+    `).run(input.chat_id, input.last_turn_created_at, input.last_distilled_at);
+  }
+
+  /**
+   * Chats holding USER turns newer than their distill watermark, oldest undistilled
+   * turn first — the trigger's pick order (one chat per tick, most-starved first).
+   */
+  listChatsWithUndistilledTurns(): Array<{ chat_id: string; oldest_undistilled_at: string }> {
+    return this.db.prepare(`
+      SELECT c.chat_id AS chat_id, MIN(c.created_at) AS oldest_undistilled_at
+      FROM chat_turns c
+      LEFT JOIN episodic_distill_watermark w ON w.chat_id = c.chat_id
+      WHERE c.role = 'user'
+        AND (w.last_turn_created_at IS NULL OR c.created_at > w.last_turn_created_at)
+      GROUP BY c.chat_id
+      ORDER BY oldest_undistilled_at ASC
+    `).all<{ chat_id: string; oldest_undistilled_at: string }>();
+  }
+
+  /** One summary event per executed distill pass (run-less, like lesson_decay_tick). */
+  recordEpisodicDistillPass(
+    chat_id: string,
+    payload: { facts_added: number; superseded: number; dropped: number; turns_read: number }
+  ): void {
+    this.appendLedgerEvent(
+      createLedgerEvent({
+        correlation_id: `episodic-distill:${chat_id}`,
+        event_type: "episodic_distill_pass",
+        actor: "system",
+        sequence: this.nextLedgerSequence(),
+        payload: { chat_id, ...payload }
+      })
+    );
+  }
+
+  // --- Episodic consolidation primitives (Phase M B4) ------------------------
+
+  /** Last executed consolidate tick (single-row state, like lesson_decay_state). */
+  getEpisodicConsolidateLastRun(): string | null {
+    const row = this.db.prepare(`
+      SELECT last_consolidate_at FROM episodic_consolidate_state WHERE id = 1
+    `).get<{ last_consolidate_at: string | null }>();
+    return row?.last_consolidate_at ?? null;
+  }
+
+  markEpisodicConsolidateRan(now: string): void {
+    this.db.prepare(`UPDATE episodic_consolidate_state SET last_consolidate_at = ? WHERE id = 1`).run(now);
+  }
+
+  /**
+   * B4 step 1 — DECAY (the lessons `runLessonDecayTick` twin, but a primitive: the
+   * async consolidate tick owns the 24h idempotency): active facts untouched for
+   * `decayDays` (from max(created_at, last_used) — a retrieval-applied fact is not
+   * stale) lose 20% reuse_value; below `pruneThreshold` they demote to 'pruned'
+   * (reversible — NEVER a delete).
+   */
+  decayEpisodicFacts(
+    now: string,
+    options: { decayDays: number; pruneThreshold: number }
+  ): { facts_decayed: number; pruned_ids: number[] } {
+    const cutoff = new Date(Date.parse(now) - options.decayDays * 86_400_000).toISOString();
+    // Scalar MAX over ISO strings orders correctly (fixed-width UTC timestamps).
+    const stale = this.db.prepare(`
+      SELECT id, reuse_value FROM episodic_facts
+      WHERE status = 'active' AND MAX(created_at, COALESCE(last_used, created_at)) < ?
+      ORDER BY id ASC
+    `).all<{ id: number; reuse_value: number }>(cutoff);
+
+    const pruned_ids: number[] = [];
+    for (const row of stale) {
+      const decayed = row.reuse_value * 0.8;
+      const prune = decayed < options.pruneThreshold;
+      this.db.prepare(`
+        UPDATE episodic_facts SET reuse_value = ?${prune ? ", status = 'pruned'" : ""} WHERE id = ?
+      `).run(decayed, row.id);
+      if (prune) pruned_ids.push(row.id);
+    }
+    return { facts_decayed: stale.length, pruned_ids };
+  }
+
+  /** Chats that hold at least one ACTIVE fact (the merge pass walks per chat). */
+  listEpisodicChatIds(): string[] {
+    return this.db.prepare(`
+      SELECT DISTINCT chat_id FROM episodic_facts
+      WHERE status = 'active' AND chat_id IS NOT NULL
+      ORDER BY chat_id ASC
+    `).all<{ chat_id: string }>().map((r) => r.chat_id);
+  }
+
+  /**
+   * B4 step 2 — MERGE: store the merged fact as a NEW row and supersede EVERY source
+   * (bidirectional pointers + valid_until — invalidate, never delete; the single
+   * `supersedes` column ends up naming the last source, `superseded_by` is set on all).
+   * The merged row INHERITS its sources' standing: max(salience), reuse_value summed
+   * and capped at {@link DEFAULT_EPISODIC_MERGE_REUSE_CAP} (a merged duplicate must
+   * not out-rank everything forever), earliest valid_from (the fact has been true
+   * since the FIRST source), and the union of participants + source_turn_ids
+   * (provenance survives the merge). Non-destructive refusal (`undefined`) unless
+   * ALL sources are ≥2 ACTIVE rows of the SAME chat — a bad cluster can never retire
+   * another chat's facts or half-merge.
+   */
+  mergeEpisodicFacts(
+    sourceIds: number[],
+    merged: { fact: string; embedding?: Float32Array | null; embedding_model?: string },
+    now: string
+  ): { id: number } | undefined {
+    if (sourceIds.length < 2) return undefined;
+    const sources: EpisodicFactRow[] = [];
+    for (const id of sourceIds) {
+      const row = this.getEpisodicFact(id);
+      if (!row || row.status !== "active" || row.chat_id === null) return undefined;
+      sources.push(row);
+    }
+    const chat_id = sources[0]!.chat_id!;
+    if (!sources.every((s) => s.chat_id === chat_id)) return undefined;
+
+    const participants = new Set<string>();
+    const source_turn_ids = new Set<string>();
+    for (const s of sources) {
+      for (const p of parseStringArray(s.participants)) participants.add(p);
+      for (const t of parseStringArray(s.source_turn_ids)) source_turn_ids.add(t);
+    }
+    const salience = Math.max(...sources.map((s) => s.salience));
+    const reuse = Math.min(
+      DEFAULT_EPISODIC_MERGE_REUSE_CAP,
+      sources.reduce((sum, s) => sum + Math.max(0, s.reuse_value), 0)
+    );
+    const valid_from = sources
+      .map((s) => s.valid_from ?? s.created_at)
+      .sort()[0]!;
+
+    const id = this.addEpisodicFact({
+      chat_id,
+      fact: merged.fact,
+      participants: [...participants],
+      source_turn_ids: [...source_turn_ids],
+      salience,
+      embedding: merged.embedding ?? null,
+      ...(merged.embedding && merged.embedding_model ? { embedding_model: merged.embedding_model } : {}),
+      created_at: now
+    });
+    this.db.prepare(`
+      UPDATE episodic_facts SET reuse_value = ?, valid_from = ? WHERE id = ?
+    `).run(reuse, valid_from, id);
+    for (const s of sources) this.supersedeEpisodicFact(s.id, id, now);
+    return { id };
+  }
+
+  /**
+   * B4 step 3 — PROMOTE: a fact applied ≥ `minApplied` times and at least
+   * `minAgeDays` old has proven durable — bump salience by `bump`, capped at 1.
+   * Convergent by construction: only rows with salience < 1 qualify, so repeated
+   * daily ticks walk a hot fact up to exactly 1 and then stop (no marker column
+   * needed, no unbounded growth).
+   */
+  promoteEpisodicFacts(
+    now: string,
+    options: { minApplied: number; minAgeDays: number; bump: number }
+  ): number[] {
+    const cutoff = new Date(Date.parse(now) - options.minAgeDays * 86_400_000).toISOString();
+    const rows = this.db.prepare(`
+      SELECT id, salience FROM episodic_facts
+      WHERE status = 'active' AND applied_count >= ? AND created_at <= ? AND salience < 1
+      ORDER BY id ASC
+    `).all<{ id: number; salience: number }>(options.minApplied, cutoff);
+    for (const row of rows) {
+      this.db.prepare(`UPDATE episodic_facts SET salience = ? WHERE id = ?`)
+        .run(Math.min(1, row.salience + options.bump), row.id);
+    }
+    return rows.map((r) => r.id);
+  }
+
+  /** One summary event per consolidate tick THAT DID WORK (run-less, like lesson_decay_tick). */
+  recordEpisodicConsolidateTick(payload: {
+    facts_decayed: number;
+    pruned_ids: number[];
+    clusters_merged: number;
+    promoted_ids: number[];
+  }): void {
+    this.appendLedgerEvent(
+      createLedgerEvent({
+        correlation_id: "episodic-consolidate",
+        event_type: "episodic_consolidate_tick",
+        actor: "system",
+        sequence: this.nextLedgerSequence(),
+        payload
+      })
+    );
   }
 
   createApprovalRequest(input: ApprovalRequestInput): ApprovalRequestRecord {
@@ -2859,6 +3317,8 @@ export class RunStore {
     this.applyLessonsMigration();
     this.applyReloadMarkerMigration();
     this.applySignalPathMigration();
+    this.applyEpisodicFactsMigration();
+    this.applyEpisodicConsolidateMigration();
   }
 
   /**
@@ -2902,6 +3362,135 @@ export class RunStore {
         );
 
         INSERT OR IGNORE INTO lesson_decay_state (id) VALUES (1);
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Episodic facts (Phase M B1, ADR 0005 §3/§4): one row per atomic fact with
+   * provenance (source_turn_ids → chat_turns), bi-temporal validity (valid_from /
+   * valid_until — invalidate, don't delete), lesson-style eval metadata, and an
+   * optional local embedding (BLOB; null when Ollama was down — backfillable). The
+   * FTS5 mirror (external-content table + sync triggers) is the keyword-retrieval
+   * floor that works with no embedding at all; the per-chat watermark makes the
+   * fast-path distill pass incremental (never re-reads distilled turns).
+   */
+  private applyEpisodicFactsMigration(): void {
+    const version = "2026-07-15-episodic-facts";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS episodic_facts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          fact TEXT NOT NULL,
+          participants TEXT NOT NULL DEFAULT '[]',
+          chat_id TEXT,
+          source_turn_ids TEXT NOT NULL DEFAULT '[]',
+          occurred_at TEXT,
+          valid_from TEXT,
+          valid_until TEXT,
+          salience REAL NOT NULL DEFAULT 1.0,
+          status TEXT NOT NULL DEFAULT 'active',
+          supersedes INTEGER,
+          superseded_by INTEGER,
+          applied_count INTEGER NOT NULL DEFAULT 0,
+          corrected_count INTEGER NOT NULL DEFAULT 0,
+          reuse_value REAL NOT NULL DEFAULT 1.0,
+          rating_history TEXT NOT NULL DEFAULT '[]',
+          embedding BLOB,
+          embedding_model TEXT,
+          created_at TEXT NOT NULL,
+          last_used TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS episodic_facts_chat_status_idx
+          ON episodic_facts(chat_id, status);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS episodic_facts_fts
+          USING fts5(fact, content='episodic_facts', content_rowid='id');
+
+        CREATE TRIGGER IF NOT EXISTS episodic_facts_fts_ai AFTER INSERT ON episodic_facts BEGIN
+          INSERT INTO episodic_facts_fts(rowid, fact) VALUES (new.id, new.fact);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS episodic_facts_fts_ad AFTER DELETE ON episodic_facts BEGIN
+          INSERT INTO episodic_facts_fts(episodic_facts_fts, rowid, fact) VALUES ('delete', old.id, old.fact);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS episodic_facts_fts_au AFTER UPDATE OF fact ON episodic_facts BEGIN
+          INSERT INTO episodic_facts_fts(episodic_facts_fts, rowid, fact) VALUES ('delete', old.id, old.fact);
+          INSERT INTO episodic_facts_fts(rowid, fact) VALUES (new.id, new.fact);
+        END;
+
+        CREATE TABLE IF NOT EXISTS episodic_distill_watermark (
+          chat_id TEXT PRIMARY KEY,
+          last_turn_created_at TEXT,
+          last_distilled_at TEXT
+        );
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Episodic consolidation state (Phase M B4): the single-row last-run marker that
+   * makes the daily decay/merge/promote tick idempotent per 24h across poll cycles
+   * (the lesson_decay_state pattern; seeded NULL so the first tick runs immediately).
+   * Deliberately its OWN migration — M1's episodic-facts migration is already applied
+   * on live databases and stays untouched.
+   */
+  private applyEpisodicConsolidateMigration(): void {
+    const version = "2026-07-15-episodic-consolidate-state";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS episodic_consolidate_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          last_consolidate_at TEXT
+        );
+
+        INSERT OR IGNORE INTO episodic_consolidate_state (id) VALUES (1);
       `);
 
       if (!applied) {
@@ -3628,6 +4217,42 @@ export const DEFAULT_LESSON_PRUNE_THRESHOLD = 0.2;
 export function resolveLessonPruneThreshold(env: NodeJS.ProcessEnv): number {
   const n = Number(env.HOUGE_LESSON_PRUNE_THRESHOLD);
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_LESSON_PRUNE_THRESHOLD;
+}
+
+/** SELECT list for EpisodicFactRow reads (one place, so every accessor returns the same shape). */
+const EPISODIC_FACT_COLUMNS =
+  "id, fact, participants, chat_id, source_turn_ids, occurred_at, valid_from, valid_until, " +
+  "salience, status, supersedes, superseded_by, applied_count, corrected_count, reuse_value, " +
+  "rating_history, embedding, embedding_model, created_at, last_used";
+
+/** The same list qualified for the FTS join (`f.` = episodic_facts). */
+const EPISODIC_FACT_COLUMNS_QUALIFIED = EPISODIC_FACT_COLUMNS.split(", ")
+  .map((column) => `f.${column}`)
+  .join(", ");
+
+/** Per-chat active-fact cap (Phase M B1): overflow prunes the lowest reuse_value rows. */
+export const DEFAULT_EPISODIC_FACT_CAP_PER_CHAT = 200;
+
+export function resolveEpisodicFactCapPerChat(env: NodeJS.ProcessEnv): number {
+  const n = Number(env.HOUGE_EPISODIC_FACT_CAP_PER_CHAT);
+  return Number.isInteger(n) && n > 0 ? n : DEFAULT_EPISODIC_FACT_CAP_PER_CHAT;
+}
+
+/**
+ * Ceiling on a merged fact's inherited reuse_value (B4 merge): the sum of the sources,
+ * capped so a merged duplicate carries its earned standing without becoming immortal —
+ * decay (×0.8/tick past the decay window) can still walk it down to the prune line.
+ */
+export const DEFAULT_EPISODIC_MERGE_REUSE_CAP = 5;
+
+/** Tolerant JSON-string-array parse (participants / source_turn_ids) — garbage degrades to []. */
+function parseStringArray(json: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 /** A repeat supersede inside this window marks the memory layer ineffective (escalate). */
