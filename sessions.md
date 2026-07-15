@@ -588,3 +588,39 @@ Build + independent adversarial verification subagents; each live round found a 
 - Day's arc: three /goals shipped (Phase M episodic memory; B10). Houge now: remembers
   conversations, sees its own background reports in-thread, and acts proactively on schedule.
   Next roadmap: Phase S (kill-switch + $-ceiling), then ④ wiki.
+
+## 2026-07-15 (later) — B11: Phase S safety floor — durable kill-switch + metered-$ ceiling (SHIPPED, live-gated)
+- Paco /goal: "kill-switch and $-ceiling" — the interleaved safety floor, timely now that the
+  scheduler runs autonomously overnight.
+- Recon nailed two design-deciding facts: /guard NEVER existed (docs-only — S-1 greenfield), and
+  launchd KeepAlive is unconditional <true/> (ThrottleInterval 10s) → a tombstone-EXIT would
+  restart-loop → design is PARK-ALIVE (boot gate constructs nothing, awaits SIGTERM). Arming flags
+  read process.env LIVE → disarm = mutate env now + a posture file loaded BEFORE .env
+  (first-writer-wins) for restart survival. kimi/gemini already report tokens via openai-compat
+  onUsage; cost_usd field exists on llm_call but was never populated (no pricing anywhere).
+- BUILD (subagent): S-1 tombstone module + cli.ts boot gate (park-alive; smoke caught that signal
+  listeners alone don't hold Node's event loop — added a keepalive interval, else the park would
+  10s-restart-loop, the exact failure it prevents) + /kill /disarm /rearm (slash-only, allowlist,
+  rate-limit-exempt) + PROTECTED_FILES for both state files. S-2 pricing table + cost at the
+  recordLlmCall seam + dual-window (24h-rolling + calendar-month-UTC) USD ceilings derived from the
+  ledger + latch-driven buildLlmChain filter that drops metered legs on breach but never empties
+  (falls back to pi) + one deduped alert (twin of the run-count fuse latch). 2 ADRs. 1440/1440.
+  Build incident: an over-broad pkill during smoke bounced the real daemon once (graceful, no loss)
+  → the live daemon ended up pre-rolled on B11 dist.
+- Independent adversarial VERIFY: SHIP-WITH-NITS, one MAJOR caught: deploy/launchd/run-daemon.sh
+  (the wrapper launchd execs) + the plist template were self-write-editable — a self-write could
+  prepend `rm -f houge.kill` and AUTO-REVIVE a killed daemon on the next relaunch (one-hop boot-path
+  bypass, same class as the already-protected load-env.ts). Fixed in-tree + regression. Verifier's
+  fail-open/closed audit endorsed the whole design: kill switch fail-CLOSED (corrupt tombstone still
+  kills), budget net fail-OPEN (DB hiccup pauses tracking, never bricks cognition), posture beats a
+  stale shell export. Hostile pricing JSON → no proto pollution. 1443/1443 both sweeps. Commit 57a03dd.
+- LIVE GATE on the real daemon (Paco Telegram): /disarm flipped all 4 flags live (posture written).
+  /kill wrote the tombstone, acked WITH revival instructions BEFORE shutting down, launchd relaunched
+  (47622→49038) and the new process PARKED IDLE — held stable across the 10s ThrottleInterval at 0.0%
+  CPU with no lock file. Resurrection defeated: a stopped Houge stays stopped. Revival (orchestrator-
+  run, since a parked daemon can't hear Telegram): rm houge.kill + houge.disarm → launchctl kickstart
+  → PID 49207 back to normal long-poll. Cleared disarm too (gate test) so the Mon 08:00 AI周报 stays
+  armed. Metered ceiling: /status line live, but no real breach exercised (test-proven only).
+- Phase S done. Roadmap now: ④ LLM wiki (last major spine capability). Day's arc: FOUR /goals
+  shipped (Phase M episodic memory; B10 chat-turns+scheduler; B11 safety floor) — Houge now
+  remembers, sees its own background work, acts on schedule, and can be durably, unforgeably stopped.

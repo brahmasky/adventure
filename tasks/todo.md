@@ -1,3 +1,82 @@
+# ✅ DONE — B11: Phase S — kill-switch (S-1) + metered-$ ceiling (S-2) — SHIPPED + LIVE-GATED 2026-07-15 12:2x
+
+**Commit 57a03dd. Daemon live on B11 dist (PID 49207 after the gate's kill→revive). ADRs 0018
+(kill-switch) + 0019 (metered-ceiling).**
+
+**LIVE GATE on the real daemon (Paco's Telegram) — the full kill cycle proven:**
+- /disarm → houge.disarm written (by:paco), ack listed all 4 flags OFF (selfwrite/codex/skills/
+  scheduler; episodic stays on), flags flipped LIVE (read from process.env at call sites) ✓.
+- /kill → tombstone houge.kill written (by:paco), ack DELIVERED before shutdown (revival
+  instructions inline), daemon stopped → launchd relaunched (PID 47622→49038) → **PARKED IDLE**:
+  «kill-switch tombstone present — parking idle (no Telegram polling, no runs)». PID 49038 held
+  STABLE across the 10s ThrottleInterval at 0.0% CPU, NO lock file — launchd cannot resurrect a
+  killed agent. This is the charter guarantee, proven live ✓.
+- Revival (documented manual step, orchestrator-run since a parked daemon can't hear Telegram):
+  rm houge.kill + houge.disarm → launchctl kickstart → PID 49207 back to normal long-poll ✓.
+  (Cleared disarm too — both were gate tests; restores pre-gate state so the Mon 08:00 AI周报
+  schedule stays armed.)
+
+**Verifier: SHIP-WITH-NITS — F1 (MAJOR) fixed pre-commit:** deploy/launchd/run-daemon.sh (the
+wrapper launchd EXECS) + the plist template were self-write-editable — a self-write could
+prepend `rm -f houge.kill` to auto-revive a killed daemon on the next relaunch (one-hop boot-path
+bypass, same class as load-env.ts which was already protected). Both added to PROTECTED_FILES +
+regression test. Verifier judgment calls all endorsed: tombstone fail-CLOSED (corrupt→still
+kills), posture fail-SAFE, posture overrides even a real shell export (operator's later STOP
+beats a stale GO), metered latch fail-OPEN (a DB hiccup pauses tracking, never bricks cognition
+— the security stop is fail-closed, the budget net fail-open; the split is correct). Held under
+attack: park-alive real-CLI (0 CPU, no lock, SIGTERM→exit0), migration on real-DB copy,
+hostile HOUGE_METERED_PRICES_JSON (no proto pollution), never-empty chain, monthly UTC boundary.
+1443/1443 both sweeps.
+
+**S-2 note:** metered spend line now in /status; no live breach exercised (needs real spend —
+math/latch/filter proven in tests). Build-incident: an over-broad pkill during the build's smoke
+test bounced the daemon once (graceful, no loss); park-alive smoke ALSO caught a real bug
+pre-commit (signal listeners don't hold Node's event loop → added a keepalive interval, else the
+park would 10s-restart-loop — the exact failure it prevents).
+
+**Residuals queued:** run-less episodic LLM reads produce no llm_call events → their spend is
+invisible to the ceiling (enforcement still applies via the latch; only measurement misses);
+unknown metered model → spend invisible until priced (warn-once); price table is a 2026-07
+list-price approximation (operator-tunable via HOUGE_METERED_PRICES_JSON); no live ceiling-breach
+gate yet.
+
+(original plan below)
+
+## (was IN PROGRESS) — B11: Phase S — kill-switch (S-1) + metered-$ ceiling (S-2) — /goal 2026-07-15
+
+**Goal (Paco): "kill-switch and $-ceiling"** — the interleaved safety floor (roadmap Phase S),
+timely now that the scheduler can run autonomously overnight.
+
+**S-1 kill-switch (own small ADR):** durable tombstone — /kill (slash-only, unforgeable,
+allowlist) writes a file flag checked at BOOT so launchd KeepAlive cannot resurrect a stopped
+agent; plus one-command disarm-all posture (evolution flags OFF) surviving restart; tombstone
+file joins PROTECTED_FILES.
+
+**S-2 metered-$ ceiling (own small ADR):** metered usage (kimi-api/gemini-api tokens × price)
+tracked in the global budget ledger; hard daily/monthly ceiling; on breach drop metered legs
+from chains (flat-rate legs keep working) + ONE deduped alert. Extends the breaker pattern;
+llm-usage.ts already normalizes token counts.
+
+**Checklist:**
+- [x] Recon. Key facts: /guard NEVER EXISTED (docs-only concept) — S-1 is greenfield; launchd
+      KeepAlive is unconditional <true/> (ThrottleInterval 10s) → tombstone-exit would
+      restart-loop → design = PARK-ALIVE at boot; allowlist auth already rejects forwards
+      (unforgeable = explicit parser branch + that auth); arming flags read process.env LIVE
+      (disarm = env mutation now + posture file loaded BEFORE .env for restart survival,
+      first-writer-wins load-env precedence); kimi/gemini report tokens via openai-compat
+      onUsage → llm_call events carry an EMPTY optional cost_usd (no pricing exists anywhere);
+      fuse-latch single-row 0→1 transition is the one-deduped-alert precedent; buildLlmChain
+      is the single chokepoint for dropping metered legs (all roles).
+- [x] Sharpen specs; build subagent (55 tests, 1440/1440; park-alive smoke caught a real
+      event-loop bug pre-commit)
+- [x] Adversarial verifier (SHIP-WITH-NITS); F1 launchd-wrapper revival hole fixed → 57a03dd
+- [x] LIVE gate: /disarm flags-off ✓; /kill → launchd relaunch PARKED (stable, 0 CPU, no
+      lock) — resurrection defeated ✓; manual revival ✓. Ceiling breach NOT live-exercised
+      (test-proven). Daemon rolled onto F1-fixed dist.
+- [x] Session record + 2 ADRs (0018 kill-switch, 0019 metered-ceiling)
+
+---
+
 # ✅ DONE — B10: outbox→chat_turns fix + scheduler v1 — SHIPPED + LIVE-GATED 2026-07-15 09:0x
 
 **Commits 6011afb (build) + a5d903d (in_minutes fix). Daemon live, HOUGE_SCHEDULER_ENABLED=true
