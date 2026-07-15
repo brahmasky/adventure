@@ -10,7 +10,7 @@
 //      seeded life details) without re-asking. Memory, not thread: the seeds are outside
 //      the chat-context window, so only B3 retrieval can carry them.
 //   S3 "supersede": the user states a correction (moved cities) → distill → expect the
-//      old location fact superseded (chain intact) and retrieval returning only the new.
+//      old location fact superseded (chain intact) and the new location the top retrieval hit.
 // Run: node scripts/live-gate-episodic.mjs [s1|s2|s3]   (default: all; s2/s3 auto-seed)
 import { loadHougeEnv } from "../dist/config/load-env.js";
 import { RunStore } from "../dist/run/run-store.js";
@@ -172,10 +172,19 @@ async function s3() {
   console.log("--- active facts after correction ---");
   printFacts(active);
 
-  const melbourneActive = active.filter((f) => f.fact.includes("墨尔本"));
-  const sydneyLivingActive = active.filter((f) => f.fact.includes("悉尼") && /住|居住|lives/.test(f.fact));
-  verdict("S3 new location fact (墨尔本) active", melbourneActive.length >= 1);
-  verdict("S3 no active 住在悉尼 fact remains", sydneyLivingActive.length === 0, sydneyLivingActive.map((f) => f.fact).join(" | "));
+  // Language-agnostic: the chain may store facts in either language (first run stored
+  // English facts from a Chinese transcript) — key on both forms, and verify the chain
+  // via the supersedes POINTER, never by keyword-guessing which row was retired.
+  const MELBOURNE = /墨尔本|Melbourne/i;
+  const LIVES_IN_SYDNEY = /(住在|居住在|lives in|resides in)\s*(悉尼|Sydney)/i;
+  const melbourneActive = active.filter((f) => MELBOURNE.test(f.fact));
+  verdict("S3 new location fact (Melbourne/墨尔本) active", melbourneActive.length >= 1);
+  verdict("S3 distill pass reports a supersede", pass.superseded >= 1);
+  verdict(
+    "S3 no active fact still claims living in Sydney",
+    !active.some((f) => LIVES_IN_SYDNEY.test(f.fact)),
+    active.filter((f) => LIVES_IN_SYDNEY.test(f.fact)).map((f) => f.fact).join(" | ") || undefined
+  );
 
   const superseded = melbourneActive
     .map((f) => f.supersedes)
@@ -186,9 +195,9 @@ async function s3() {
     printFacts(superseded);
   }
   verdict(
-    "S3 supersede chain links new → old (superseded row keeps valid_until)",
-    superseded.some((f) => f && f.status === "superseded" && f.valid_until !== null),
-    superseded.length === 0 ? "reconcile verdict was ADD, not SUPERSEDE — inspect facts above" : undefined
+    "S3 supersede chain links new → old Sydney fact (superseded row keeps valid_until)",
+    superseded.some((f) => f && f.status === "superseded" && f.valid_until !== null && /悉尼|Sydney/i.test(f.fact)),
+    superseded.length === 0 ? "the new row carries no supersedes pointer — inspect facts above" : undefined
   );
 
   const query = "我现在住在哪个城市？";
@@ -201,9 +210,11 @@ async function s3() {
   });
   console.log("--- retrieval for 「我现在住在哪个城市？」 ---");
   printFacts(retrieved);
+  // Retrieval legitimately returns other active facts too (cap 6) — the bar is: the
+  // TOP hit for a location question is the new location, and no retired claim leaks.
   verdict(
-    "S3 retrieval returns the NEW location only",
-    retrieved.some((f) => f.fact.includes("墨尔本")) && !retrieved.some((f) => f.fact.includes("悉尼") && /住|居住/.test(f.fact))
+    "S3 top retrieval hit is the NEW location; no lives-in-Sydney claim retrieved",
+    retrieved.length > 0 && MELBOURNE.test(retrieved[0].fact) && !retrieved.some((f) => LIVES_IN_SYDNEY.test(f.fact))
   );
 }
 
