@@ -10,7 +10,10 @@ export type TelegramCommand =
   | { type: "schedule_admin"; action: "list" }
   | { type: "schedule_admin"; action: "cancel"; schedule_id: string }
   | { type: "approve"; approval_id: string }
-  | { type: "deny"; approval_id: string };
+  | { type: "deny"; approval_id: string }
+  | { type: "kill"; reason?: string }
+  | { type: "disarm" }
+  | { type: "rearm" };
 
 export type TelegramCommandParseResult =
   | { ok: true; command: TelegramCommand }
@@ -42,6 +45,12 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
   if (command === "/schedule") return parseSchedule(rest);
   if (command === "/approve") return requiredApproval("approve", rest);
   if (command === "/deny") return requiredApproval("deny", rest);
+  // Kill switch + disarm posture (ADR 0018). These MUST be explicit branches: unknown
+  // slash text falls through to a natural-language turn below, and a stop command must
+  // never be re-interpreted by a model — unforgeable = slash-only + the allowlist auth.
+  if (command === "/kill") return parseKill(rest);
+  if (command === "/disarm") return parseNoArgs("disarm", rest);
+  if (command === "/rearm") return parseNoArgs("rearm", rest);
   // Unknown slash-prefixed text is NOT a control command — treat it as natural
   // language (a `turn`), carrying the text verbatim, rather than rejecting it.
   return { ok: true, command: { type: "turn", goal: trimmed } };
@@ -95,6 +104,18 @@ function parseSchedule(words: string[]): TelegramCommandParseResult {
     return { ok: true, command: { type: "schedule_admin", action: "cancel", schedule_id } };
   }
   return invalid("/schedule takes no arguments, or: /schedule cancel <schedule_id>");
+}
+
+/** `/kill [reason…]` — everything after the command is an optional free-text reason. */
+function parseKill(words: string[]): TelegramCommandParseResult {
+  const reason = words.join(" ").trim();
+  return { ok: true, command: { type: "kill", ...(reason ? { reason } : {}) } };
+}
+
+/** `/disarm` and `/rearm` take no arguments — reject extras so a typo can't half-apply. */
+function parseNoArgs(type: Extract<TaskEventType, "disarm" | "rearm">, words: string[]): TelegramCommandParseResult {
+  if (words.length > 0) return invalid(`/${type} takes no arguments`);
+  return { ok: true, command: { type } };
 }
 
 function requiredApproval(type: Extract<TaskEventType, "approve" | "deny">, words: string[]): TelegramCommandParseResult {

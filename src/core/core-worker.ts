@@ -18,6 +18,7 @@ import type { ReviewResult } from "../capabilities/diff-reviewer.js";
 import { runSelfWriter, resolveSelfWriteWriter } from "../capabilities/self-write-writer.js";
 import { resolveCodexModel } from "../capabilities/coding-agent.js";
 import { normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
+import { computeCostUsd } from "../llm/metered-pricing.js";
 import { publishBranch, selfWriteBranchName } from "../run/branch-publish.js";
 import { createWorktree, removeWorktree } from "../run/worktree.js";
 import { buildGateAQuestion, GATE_A_DISCIPLINE, parseGateAVerdict } from "../capabilities/skill-router.js";
@@ -276,7 +277,11 @@ export class CoreWorker {
     // build a telemetry-instrumented adapter per role (kimi/pi usage → recordLlmCall). A test-
     // INJECTED adapter is used as-is, so telemetry simply doesn't fire there — best-effort.
     this.llmAdapterIsDefault = llmAdapter === undefined;
-    this.llmAdapter = llmAdapter ?? createLlmAnswerAdapter(broker ? { broker } : {});
+    this.llmAdapter = llmAdapter ?? createLlmAnswerAdapter({
+      ...(broker ? { broker } : {}),
+      // Metered-$ ceiling (ADR 0019): a latched fuse drops the metered legs (cheap latch read).
+      meteredBreached: () => this.runStore.meteredFuseLatched()
+    });
     this.webSearchAdapter = webSearchAdapter ?? createWebSearchAdapter(broker ? { broker } : {});
     this.codingAgentAdapter = codingAgentAdapter ?? createCodingAgentAdapter({ projectRoot });
     this.httpFetchAdapter = httpFetchAdapter ?? createHttpFetchAdapter();
@@ -1231,7 +1236,15 @@ export class CoreWorker {
     info: { provider: string; model: string; role: "writer" | "reviewer" | "classify" | "frame" | "answer" | "compose" | "reader"; usage: LlmUsage; latency_ms?: number }
   ): void {
     try {
-      this.runStore.recordLlmCall(run_id, info);
+      // Metered-$ ceiling (ADR 0019): price the call AT the recording seam — the one place
+      // provider + model + usage meet for every role (writer/reviewer/cheap-chain). Only
+      // metered providers price (null otherwise); the cost rides the existing optional
+      // `cost_usd` payload field. Counts/metadata only — the bodies invariant is untouched.
+      const cost_usd = info.usage.cost_usd ?? computeCostUsd(info.provider, info.model, info.usage) ?? undefined;
+      this.runStore.recordLlmCall(run_id, {
+        ...info,
+        usage: cost_usd !== undefined ? { ...info.usage, cost_usd } : info.usage
+      });
     } catch (error) {
       console.warn(`[self-write] failed to record ${info.role} telemetry (non-fatal): ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -1251,6 +1264,8 @@ export class CoreWorker {
       ...(this.broker ? { broker: this.broker } : {}),
       // Dual-LLM (ADR 0014): the quarantined reader runs on its own (default cross-family) chain.
       ...(role === "reader" ? { providers: resolveReaderProviders(process.env) } : {}),
+      // Metered-$ ceiling (ADR 0019): a latched fuse drops the metered legs (cheap latch read).
+      meteredBreached: () => this.runStore.meteredFuseLatched(),
       onUsage: (provider, usage, model) =>
         this.recordLlmCallSafe(run_id, { provider, model, role, usage })
     });

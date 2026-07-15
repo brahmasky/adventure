@@ -1413,6 +1413,77 @@ export class RunStore {
     `).run();
   }
 
+  // --- Metered-API $ ceiling (ADR 0019) -----------------------------------
+
+  /**
+   * Metered spend, DERIVED from `llm_call` ledger events' `cost_usd` (populated at the
+   * recording seam via src/llm/metered-pricing.ts — no second bookkeeping):
+   *   - `daily_usd`   — rolling 24h window (same precedent as the count caps),
+   *   - `monthly_usd` — the calendar month (UTC) containing `now` (how the bill arrives).
+   * Events without a `cost_usd` (flat-rate legs, unknown metered models) contribute 0.
+   */
+  meteredSpendUsd(now: string): { daily_usd: number; monthly_usd: number } {
+    const windowStart = this.addSeconds(now, -GLOBAL_BUDGET_WINDOW_HOURS * 3600);
+    const daily = this.db.prepare(`
+      SELECT COALESCE(SUM(CAST(json_extract(payload_json, '$.cost_usd') AS REAL)), 0) AS spend
+      FROM ledger_events
+      WHERE event_type = 'llm_call'
+        AND json_extract(payload_json, '$.cost_usd') IS NOT NULL
+        AND occurred_at > ?
+    `).get<{ spend: number }>(windowStart);
+    const monthly = this.db.prepare(`
+      SELECT COALESCE(SUM(CAST(json_extract(payload_json, '$.cost_usd') AS REAL)), 0) AS spend
+      FROM ledger_events
+      WHERE event_type = 'llm_call'
+        AND json_extract(payload_json, '$.cost_usd') IS NOT NULL
+        AND strftime('%Y-%m', occurred_at) = strftime('%Y-%m', ?)
+    `).get<{ spend: number }>(now);
+    return { daily_usd: daily?.spend ?? 0, monthly_usd: monthly?.spend ?? 0 };
+  }
+
+  /**
+   * Single-row latch so exactly ONE alert fires per metered-fuse episode (the twin of
+   * {@link armGlobalFuseIfNeeded}). `armed: true` only on the 0→1 transition.
+   */
+  armMeteredFuseIfNeeded(now: string): { armed: boolean; since: string } {
+    const row = this.db.prepare(`
+      SELECT fused, since FROM metered_fuse_state WHERE id = 1
+    `).get<{ fused: number; since: string | null }>();
+
+    if (row && row.fused === 1 && row.since) {
+      return { armed: false, since: row.since };
+    }
+
+    this.db.prepare(`
+      UPDATE metered_fuse_state SET fused = 1, since = ? WHERE id = 1
+    `).run(now);
+    return { armed: true, since: now };
+  }
+
+  /** Disarm once spend falls back under both ceilings (the window rolled) — a future episode alerts again. */
+  disarmMeteredFuse(): void {
+    this.db.prepare(`
+      UPDATE metered_fuse_state SET fused = 0, since = NULL WHERE id = 1 AND fused = 1
+    `).run();
+  }
+
+  /**
+   * Cheap latch read consulted by the chain builder on EVERY LLM call (enforcement is
+   * latch-driven — the sums above run once per poll tick, not per call). DEFENSIVE:
+   * any error reads as "not breached" — the ceiling is a cost net, not a security gate,
+   * and a broken latch must never take the answer path down with it.
+   */
+  meteredFuseLatched(): boolean {
+    try {
+      const row = this.db.prepare(`
+        SELECT fused FROM metered_fuse_state WHERE id = 1
+      `).get<{ fused: number }>();
+      return row?.fused === 1;
+    } catch {
+      return false;
+    }
+  }
+
   /** Run counts grouped by state within the rolling window (for `/status`). */
   runCountsByStateSince(now: string): Record<string, number> {
     const windowStart = this.addSeconds(now, -GLOBAL_BUDGET_WINDOW_HOURS * 3600);
@@ -3512,6 +3583,50 @@ export class RunStore {
     this.applyEpisodicFactsMigration();
     this.applyEpisodicConsolidateMigration();
     this.applyScheduledTasksMigration();
+    this.applyMeteredFuseMigration();
+  }
+
+  /**
+   * Metered-API $ ceiling (ADR 0019): the single-row alert-dedupe latch for the metered
+   * fuse — the exact twin of `global_budget_fuse_state` (one alert per fuse episode via
+   * the 0→1 transition; disarmed when spend falls back under the ceilings).
+   */
+  private applyMeteredFuseMigration(): void {
+    const version = "2026-07-15-metered-fuse";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS metered_fuse_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          fused INTEGER NOT NULL DEFAULT 0,
+          since TEXT
+        );
+
+        INSERT OR IGNORE INTO metered_fuse_state (id, fused, since)
+          VALUES (1, 0, NULL);
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
   }
 
   /**

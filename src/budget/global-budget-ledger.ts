@@ -115,3 +115,85 @@ export function formatFuseAlert(breaches: GlobalBudgetBreach[]): string {
     "Runs resume automatically as the 24h window clears."
   ].join("\n");
 }
+
+// --- Metered-API $ ceiling (ADR 0019, Phase S-2) -----------------------------------
+//
+// The count caps above bound VOLUME; this bounds DOLLARS on the pay-per-token legs
+// (kimi-api/gemini-api). Spend is derived from `llm_call` ledger events' `cost_usd`
+// (see src/llm/metered-pricing.ts — no second bookkeeping). Two windows: a rolling
+// 24h ceiling (same precedent as the count caps) and a calendar-month (UTC) ceiling
+// (how the bill actually arrives). Breach = drop the metered legs from the chain
+// (flat-rate legs keep working — charter: flat-rate first) + ONE deduped alert via
+// a single-row latch, mirroring the global fuse.
+
+export interface MeteredCeilings {
+  daily_usd: number;
+  monthly_usd: number;
+}
+
+/** Conservative defaults for a single-operator deployment; override via env. */
+export const DEFAULT_METERED_DAILY_USD = 5;
+export const DEFAULT_METERED_MONTHLY_USD = 50;
+
+function nonNegativeNumberEnv(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
+/** Resolve ceilings from the environment (`0` is a valid "hard off"); garbage → default. */
+export function resolveMeteredCeilings(env: NodeJS.ProcessEnv): MeteredCeilings {
+  return {
+    daily_usd: nonNegativeNumberEnv(env.HOUGE_METERED_DAILY_USD) ?? DEFAULT_METERED_DAILY_USD,
+    monthly_usd:
+      nonNegativeNumberEnv(env.HOUGE_METERED_MONTHLY_USD) ?? DEFAULT_METERED_MONTHLY_USD
+  };
+}
+
+/** Spend as summed from the ledger (see RunStore.meteredSpendUsd). */
+export interface MeteredSpend {
+  daily_usd: number;
+  monthly_usd: number;
+}
+
+export interface MeteredBreach {
+  window: "daily" | "monthly";
+  spend_usd: number;
+  ceiling_usd: number;
+}
+
+/** A window is breached once spend has REACHED its ceiling (same >= rule as the count caps). */
+export function computeMeteredBreaches(spend: MeteredSpend, ceilings: MeteredCeilings): MeteredBreach[] {
+  const breaches: MeteredBreach[] = [];
+  if (spend.daily_usd >= ceilings.daily_usd) {
+    breaches.push({ window: "daily", spend_usd: spend.daily_usd, ceiling_usd: ceilings.daily_usd });
+  }
+  if (spend.monthly_usd >= ceilings.monthly_usd) {
+    breaches.push({ window: "monthly", spend_usd: spend.monthly_usd, ceiling_usd: ceilings.monthly_usd });
+  }
+  return breaches;
+}
+
+/** The ONE deduped Telegram alert per metered-fuse episode (0→1 latch transition only). */
+export function formatMeteredFuseAlert(breaches: MeteredBreach[]): string {
+  const windowLabel: Record<MeteredBreach["window"], string> = {
+    daily: `rolling ${GLOBAL_BUDGET_WINDOW_HOURS}h`,
+    monthly: "calendar month, UTC"
+  };
+  const lines = breaches.map(
+    (b) => `• ${b.window}: $${b.spend_usd.toFixed(2)}/$${b.ceiling_usd.toFixed(2)} (${windowLabel[b.window]})`
+  );
+  return [
+    "💸 Houge metered-API $ ceiling reached — kimi-api/gemini-api legs are dropped from the chain.",
+    ...lines,
+    "Flat-rate legs (pi/agy-cli) keep working. Metered legs return as the window clears."
+  ].join("\n");
+}
+
+/** The `/status` overview line: metered spend vs both ceilings. */
+export function formatMeteredStatusLine(spend: MeteredSpend, ceilings: MeteredCeilings): string {
+  return (
+    `Metered: $${spend.daily_usd.toFixed(2)}/$${ceilings.daily_usd.toFixed(2)} 24h, ` +
+    `$${spend.monthly_usd.toFixed(2)}/$${ceilings.monthly_usd.toFixed(2)} month`
+  );
+}

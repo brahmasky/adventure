@@ -91,6 +91,14 @@ const PROTECTED_FILES: readonly string[] = [
   "src/run/branch-publish.ts", // new Phase-3 module (step 7 — branch publish)
   "src/capabilities/self-write-merge.ts", // merge→build→gate→restart executor — a self-write must not reorder its own landing sequence
   "src/telegram/self-write-action-handler.ts", // the authenticated merge-button path (M4) — same landing-sequence class
+  // ── Operator stop switches (ADR 0018) — a self-write must never remove Paco's stop ──
+  "houge.kill", // the /kill tombstone (gitignored runtime state, but a diff could still delete/replace it)
+  "houge.disarm", // the /disarm posture file — same class
+  "src/run/tombstone.ts", // tombstone read/write machinery — neutering readTombstone would revive a killed agent
+  "src/config/disarm-posture.ts", // posture machinery — same class
+  "src/config/load-env.ts", // applies the disarm posture BEFORE .env (removing the call re-arms on restart)
+  "deploy/launchd/run-daemon.sh", // the wrapper launchd EXECS — a self-write could prepend `rm -f houge.kill` to auto-revive a killed daemon on the next relaunch
+  "deploy/launchd/com.houge.daemon.plist.template", // the LaunchAgent spec (KeepAlive/ProgramArguments) — same boot-path revival class
   // ── Identity / rules ──
   "memory/core/houge.md",
   "agents.md", // stored lower-case; matching is case-insensitive

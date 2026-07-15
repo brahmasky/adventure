@@ -471,6 +471,9 @@ noted), and `/approve` · `/deny` are **unforgeable** — never inferred from pr
 | `/skills pending` | control | Read-only **viewer** of the parked (blocked auto-author) drafts under `skills/_pending/` — inert, never applied. Inspect to hand-fix + promote, or discard. |
 | `/schedule` | control | List this chat's scheduled tasks (id · spec · next fire · goal; `⚠ failed` rows shown so they can be cleared). |
 | `/schedule cancel <id>` | control | Cancel a schedule (reversible state flip, never deleted; failed rows cancellable too). Chat-scoped — other chats' ids read as not-found. |
+| `/kill [reason]` | safety | **Durable kill switch** (ADR 0018): writes the `houge.kill` tombstone, acks with the revival steps, stops the daemon. launchd relaunches into a PARKED process (no polling, no runs) until the file is manually deleted. Unforgeable — slash-only + allowlist + no-forwards; exempt from the command rate limit. |
+| `/disarm` | safety | One-command posture: forces `HOUGE_SELFWRITE_ENABLED` / `HOUGE_CODEX_ENABLED` / `HOUGE_SKILLS_ENABLED` / `HOUGE_SCHEDULER_ENABLED` to `false` — live AND across restarts (`houge.disarm` posture file outranks `.env`). Conversation + episodic memory stay on. |
+| `/rearm` | safety | Delete the disarm posture; flags re-apply from `.env` on the **next restart** (the ack says how). |
 
 ## Scheduler (ADR 0017)
 
@@ -518,3 +521,32 @@ window clears. Status/approve/deny are never blocked. Rationale and design:
 Defaults live in `DEFAULT_GLOBAL_BUDGET_CAPS` (`src/budget/global-budget-ledger.ts`);
 a missing or non-numeric override falls back to the default. `/status` surfaces
 per-cap headroom (used/limit/remaining), run counts by state, and the last error.
+
+## Metered-API $ ceiling (ADR 0019)
+
+The count caps above bound volume; this bounds **dollars** on the pay-per-token legs
+(`kimi-api`/`gemini-api`). Every metered `llm_call` is priced at the recording seam
+(`src/llm/metered-pricing.ts`) into the ledger's `cost_usd`; spend is derived by summing
+the ledger. On breach the metered legs are **dropped from every chain** (flat-rate `pi`/
+`agy-cli` keep working; an all-metered chain falls back to `pi` — never zero legs) and ONE
+deduped Telegram alert fires per episode. `/status` shows
+`Metered: $d.dd/$D.DD 24h, $m.mm/$M.MM month`.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `HOUGE_METERED_DAILY_USD` | `5` | Ceiling over a rolling 24h window (USD). `0` = hard off (metered legs always dropped). |
+| `HOUGE_METERED_MONTHLY_USD` | `50` | Ceiling over the calendar month, UTC — how the invoice actually resets. |
+| `HOUGE_METERED_PRICES_JSON` | seed table | JSON object of model-id **prefix** → `{input_usd_per_mtok, output_usd_per_mtok, cached_input_usd_per_mtok?}`, merged over the seed table (longest prefix wins). A metered model matching NO prefix logs once and its spend is invisible until priced. |
+
+## Kill switch + disarm posture (ADR 0018)
+
+`/kill` writes a tombstone; the boot gate then **parks** the daemon (launchd `KeepAlive`
+relaunches into an idle process — never a live agent) until the file is manually deleted.
+`/disarm` writes a posture file that forces the evolution/scheduler flags to `false` live
+and on every restart (applied BEFORE `.env`, so it outranks it); `/rearm` deletes it.
+Revival steps: [deploy/launchd/README.md](../../deploy/launchd/README.md#kill-switch--revival-adr-0018).
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `HOUGE_TOMBSTONE_PATH` | `houge.kill` (cwd) | Where `/kill` writes and the boot gate reads the tombstone. A present-but-corrupt file still kills (fail-closed). |
+| `HOUGE_DISARM_PATH` | `houge.disarm` (cwd) | Where `/disarm` writes the posture. Must be a REAL env var if moved — it is read before `.env` is loaded. |

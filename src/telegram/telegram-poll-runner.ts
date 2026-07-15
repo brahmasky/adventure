@@ -75,7 +75,12 @@ export async function runTelegramPollOnce(
   const worker = new CoreWorker(
     options.store,
     options.projectRoot,
-    options.llmAdapter ?? createLlmAnswerAdapter(options.broker ? { broker: options.broker } : {}),
+    options.llmAdapter ??
+      createLlmAnswerAdapter({
+        ...(options.broker ? { broker: options.broker } : {}),
+        // Metered-$ ceiling (ADR 0019): a latched fuse drops the metered legs (cheap latch read).
+        meteredBreached: () => options.store.meteredFuseLatched()
+      }),
     undefined,
     undefined,
     undefined,

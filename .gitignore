@@ -14,6 +14,9 @@ houge.sqlite
 # Daemon runtime artifacts
 logs/
 houge.daemon.lock
+# Operator stop switches (ADR 0018): the /kill tombstone + /disarm posture are runtime state
+houge.kill
+houge.disarm
 
 # Learned memory is runtime state (what /teach writes, what Houge learns);
 # memory/core is committed (his spine), everything else stays local.

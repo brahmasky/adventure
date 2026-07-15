@@ -46,6 +46,27 @@ tail -f logs/houge-daemon.err.log          # daemon logs to stderr
 Send `/ask` to the bot — it should be answered within seconds, with no manual
 poll. `npm run houge -- status` shows the daemon heartbeat (last poll, last error).
 
+## Kill switch + revival (ADR 0018)
+
+`/kill` (Telegram, allowlisted operator only) writes a tombstone file — `houge.kill` at the
+project root — and stops the daemon. **KeepAlive will relaunch the process, but it PARKS
+idle** (no polling, no runs) while the tombstone exists: launchd sees a healthy process,
+the agent stays stopped across crashes, restarts, and reboots. `houge status` and other
+read-only commands keep working while parked.
+
+Revival is **manual by design** (nothing automatic can undo a kill):
+
+```bash
+cd /path/to/adventure                                # the project root
+cat houge.kill                                       # who killed it, when, why
+rm houge.kill
+launchctl kickstart -k gui/$UID/com.houge.daemon     # restart the parked process
+```
+
+Related: `/disarm` writes `houge.disarm` (evolution + scheduler flags forced off, survives
+restarts); `/rearm` deletes it — flags re-apply on the next restart (same `kickstart` as
+above). See [ADR 0018](../../docs/decisions/0018-kill-switch.md).
+
 ## Uninstall
 
 ```bash

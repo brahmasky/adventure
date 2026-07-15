@@ -125,6 +125,10 @@ describe("checkSelfWriteDiff — every protected class is hard-denied", () => {
     ["diff-reviewer (Phase-3)", entry({ status: "M", path: "src/capabilities/diff-reviewer.ts" })],
     ["self-write-merge (landing sequence)", entry({ status: "M", path: "src/capabilities/self-write-merge.ts" })],
     ["self-write-action-handler (merge-button path)", entry({ status: "M", path: "src/telegram/self-write-action-handler.ts" })],
+    // verifier-added (B11): the boot-path revival class — a self-write editing the launch
+    // wrapper (which launchd EXECS) to `rm -f houge.kill` would auto-revive a killed daemon.
+    ["run-daemon.sh launch wrapper (kill-switch boot path)", entry({ status: "M", path: "deploy/launchd/run-daemon.sh" })],
+    ["plist template (LaunchAgent spec)", entry({ status: "M", path: "deploy/launchd/com.houge.daemon.plist.template" })],
     ["houge.md identity", entry({ status: "M", path: "memory/core/houge.md" })],
     ["docs/decisions ADR dir", entry({ status: "M", path: "docs/decisions/0011-self-evolution-architecture.md" })],
     ["AGENTS.md", entry({ status: "M", path: "AGENTS.md" })],

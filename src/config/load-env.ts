@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseEnv } from "node:util";
+import { applyDisarmPosture } from "./disarm-posture.js";
 
 /**
  * Loads `.env` into process.env without any third-party dependency
@@ -23,6 +24,12 @@ import { parseEnv } from "node:util";
 export function loadHougeEnv(options: { path?: string; cwd?: string } = {}): string[] {
   const cwd = options.cwd ?? process.cwd();
   const path = options.path ?? process.env.HOUGE_ENV_FILE ?? join(cwd, ".env");
+
+  // Disarm posture (ADR 0018): if `/disarm` left its posture file, force the arming flags
+  // to "false" BEFORE the .env parse below — first-writer-wins means the posture then
+  // outranks any `HOUGE_*_ENABLED=true` in the file (and, as the operator's STOP, it is
+  // written over a pre-existing real-env value too). `/rearm` deletes the file.
+  applyDisarmPosture(process.env);
 
   let content: string;
   try {

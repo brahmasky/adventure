@@ -46,12 +46,18 @@ export interface LlmAnswerAdapterConfig {
    * injected (tests bring their own providers).
    */
   providers?: string;
+  /**
+   * Metered-$ ceiling (ADR 0019): threaded to `buildLlmChain` so a latched fuse drops the
+   * metered legs (kimi-api/gemini-api) at construction. The daemon/worker wire this to the
+   * store's cheap latch read. Ignored when a `chain` is injected (tests bring their own).
+   */
+  meteredBreached?: () => boolean;
 }
 
 export function createLlmAnswerAdapter(
   config: LlmAnswerAdapterConfig = {}
 ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
-  const { chain: injectedChain, onUsage, broker, providers } = config;
+  const { chain: injectedChain, onUsage, broker, providers, meteredBreached } = config;
 
   return async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
     const question = input.question;
@@ -64,14 +70,17 @@ export function createLlmAnswerAdapter(
     // injected chain (tests) is used as-is.
     const chain = injectedChain ?? buildLlmChain(
       providers ? { ...process.env, HOUGE_LLM_PROVIDERS: providers } : process.env,
-      onUsage
-        ? {
-            piConfig: { onUsage: (usage, model) => onUsage("pi", usage, model) },
-            kimiConfig: { onUsage: (usage, model) => onUsage("kimi-api", usage, model) },
-            // gemini-api reports OpenAI-style usage; agy-cli (print mode) emits none, so it has no hook.
-            geminiConfig: { onUsage: (usage, model) => onUsage("gemini-api", usage, model) }
-          }
-        : {},
+      {
+        ...(meteredBreached ? { meteredBreached } : {}),
+        ...(onUsage
+          ? {
+              piConfig: { onUsage: (usage, model) => onUsage("pi", usage, model) },
+              kimiConfig: { onUsage: (usage, model) => onUsage("kimi-api", usage, model) },
+              // gemini-api reports OpenAI-style usage; agy-cli (print mode) emits none, so it has no hook.
+              geminiConfig: { onUsage: (usage, model) => onUsage("gemini-api", usage, model) }
+            }
+          : {})
+      },
       broker
     );
     const system = resolveSystemPrompt(input);

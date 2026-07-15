@@ -131,6 +131,7 @@ slash-only control commands keep it inspectable (idempotent, no run, no budget):
 - `/lessons [scope]` — view the lesson block(s); shows the raw block plus char-count/cap so you can see consolidation pressure. With no scope, lists all scopes.
 - `/forget <scope>` — clears that scope's lesson block and acks.
 - `/schedule` · `/schedule cancel <id>` — list/cancel this chat's scheduled tasks; schedules are created conversationally via the `schedule_task` loop tool ("每周一早上8点给我AI周报") — ADR 0017.
+- `/kill [reason]` — the durable kill switch (ADR 0018): writes the `houge.kill` tombstone and stops the daemon; launchd relaunches into a PARKED process, so nothing automatic can resurrect it. Revival is manual (delete the file, restart). `/disarm` · `/rearm` — one-command evolution/scheduler stand-down that survives restarts (posture file outranks `.env`).
 
 → The composer, conversational learning, and the self-critique pass:
 [configuration reference](docs/reference/configuration.md#learning--conversational-distillation-and-lesson_blocks).
@@ -248,7 +249,11 @@ Deterministic code owns the irreversible; the LLM owns judgment
 the cognitive interior is the model's to run — the gates sit at irreversible action).
 Defense-in-depth: per-run budget bounds one task; Telegram rate limits bound intake
 spikes; a **global circuit-breaker** bounds Houge as a whole over a rolling 24h window
-(the autonomy floor for the always-on daemon); approval gates require your consent for
+(the autonomy floor for the always-on daemon); a **metered-$ ceiling** bounds the
+pay-per-token legs in dollars ($5/24h · $50/month defaults — breach drops the metered
+legs, flat-rate keeps working, [ADR 0019](docs/decisions/0019-metered-ceiling.md)); a
+durable **kill switch** (`/kill`, [ADR 0018](docs/decisions/0018-kill-switch.md)) parks
+the daemon so not even launchd can resurrect it; approval gates require your consent for
 each risky action. On top of that floor: the self-write **protected-path guard** (fail-closed,
 not overridable by `/approve`), the worktree **test gate**, an **independent diff reviewer**,
 branch-only publish with a **human-tapped merge**, the **secrets firewall**

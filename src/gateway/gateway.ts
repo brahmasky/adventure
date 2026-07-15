@@ -3,9 +3,20 @@ import type { ApprovalDecision, TypedTaskEvent } from "../domain/types.js";
 import type { CompiledTaskContract } from "../domain/types.js";
 import {
   formatFuseAlert,
+  formatMeteredStatusLine,
   resolveGlobalBudgetCaps,
+  resolveMeteredCeilings,
   type GlobalBudgetCaps
 } from "../budget/global-budget-ledger.js";
+import {
+  applyDisarmPosture,
+  clearDisarmPosture,
+  formatDisarmAckText,
+  formatRearmAckText,
+  resolveDisarmPath,
+  writeDisarmPosture
+} from "../config/disarm-posture.js";
+import { formatKillAckText, writeTombstone } from "../run/tombstone.js";
 import { parseRatingHistory, type LessonRow, type RunStore, type ScheduledTaskRow } from "../run/run-store.js";
 import { describeScheduleSpec, formatInstantInZone, parseScheduleSpec } from "../run/schedule-spec.js";
 import {
@@ -33,6 +44,9 @@ export type GatewayIntakeResult =
   | { ok: true; status: "skills_returned"; run_id: string }
   | { ok: true; status: "forgotten"; run_id: string }
   | { ok: true; status: "schedule_admin_returned"; run_id: string }
+  | { ok: true; status: "killed"; run_id: string }
+  | { ok: true; status: "disarmed"; run_id: string }
+  | { ok: true; status: "rearmed"; run_id: string }
   | {
       ok: true;
       status: "rating_captured";
@@ -59,26 +73,41 @@ interface RatingCommentMarker {
   comment: string;
 }
 
+/**
+ * Runtime hooks the daemon threads in (ADR 0018). `requestShutdown` lets `/kill` stop the
+ * poll loop AFTER its ack is durably enqueued (the daemon's flush delivers it before exit).
+ * Absent in `--once`/`run` contexts — the tombstone is still written, the ack still queued.
+ */
+export interface GatewayHooks {
+  requestShutdown?: () => void;
+}
+
 export class Gateway {
   private readonly caps: GlobalBudgetCaps;
   private readonly projectRoot: string;
   private readonly skillStore: SkillStore;
+  private readonly hooks: GatewayHooks;
 
   constructor(
     private readonly runStore: RunStore,
     caps?: GlobalBudgetCaps,
     projectRoot?: string,
-    skillStore?: SkillStore
+    skillStore?: SkillStore,
+    hooks?: GatewayHooks
   ) {
     this.caps = caps ?? resolveGlobalBudgetCaps(process.env);
     this.projectRoot = projectRoot ?? process.cwd();
     // Skills live as markdown under `<projectRoot>/skills/` (same root the worker reads);
     // injectable so tests point at a temp dir.
     this.skillStore = skillStore ?? new SkillStore({ root: join(this.projectRoot, "skills") });
+    this.hooks = hooks ?? {};
   }
 
   intake(event: TypedTaskEvent, now: string = new Date().toISOString()): GatewayIntakeResult {
-    if (event.source === "telegram") {
+    // ADR 0018: the kill switch is the operator's emergency stop — the per-chat command
+    // rate limit (5 accepted/min) must never delay it. Auth (allowlist, no forwards) was
+    // already enforced upstream in the trigger adapter; nothing here weakens it.
+    if (event.source === "telegram" && event.type !== "kill") {
       const limit = this.runStore.checkTelegramRateLimit({
         actor_id: event.requested_by.id,
         chat_id: this.telegramChatId(event),
@@ -124,6 +153,18 @@ export class Gateway {
 
     if (event.type === "schedule_admin") {
       return this.handleScheduleAdmin(event, now);
+    }
+
+    if (event.type === "kill") {
+      return this.handleKill(event, now);
+    }
+
+    if (event.type === "disarm") {
+      return this.handleDisarm(event, now);
+    }
+
+    if (event.type === "rearm") {
+      return this.handleRearm(event, now);
     }
 
     if (event.type === "turn") {
@@ -406,6 +447,120 @@ export class Gateway {
     return result;
   }
 
+  /**
+   * `/kill` — the durable kill switch (ADR 0018). Order is load-bearing:
+   *   1. write the tombstone (the boot gate now refuses to start — launchd KeepAlive
+   *      relaunches into a PARKED process, never a live agent),
+   *   2. enqueue the ack (killed + the manual revival steps),
+   *   3. record the trigger, THEN
+   *   4. signal shutdown — the daemon's flush delivers the already-queued ack on the
+   *      way out. In `--once`/`run` contexts the hook is absent; steps 1–3 still hold.
+   * Unforgeable: slash-only in the parser's explicit chain + the allowlist auth upstream.
+   * Revival is MANUAL by design (delete the file, restart) — nothing automatic undoes a kill.
+   */
+  private handleKill(event: TypedTaskEvent, now: string): GatewayIntakeResult {
+    const replay = this.runStore.beginTriggerProcessing(event);
+    if (replay.status === "duplicate") {
+      // A redelivered /kill repeats its verdict but never re-signals shutdown — the
+      // tombstone already parks the next boot; re-aborting a healthy replay is noise.
+      return JSON.parse(replay.result_json) as GatewayIntakeResult;
+    }
+    if (replay.status === "conflict") {
+      return {
+        ok: false,
+        error: { code: replay.error, message: "Trigger idempotency key conflicts with a different payload" }
+      };
+    }
+
+    const reason = typeof event.goal === "string" && event.goal.trim() ? event.goal.trim() : undefined;
+    const path = writeTombstone({
+      killed_at: now,
+      by: event.requested_by.id,
+      ...(reason ? { reason } : {})
+    });
+
+    const result: GatewayIntakeResult = { ok: true, status: "killed", run_id: "" };
+    this.runStore.enqueueNotification({
+      target: event.notify,
+      intent_type: "progress",
+      idempotency_key: `${event.idempotency_key}:kill`,
+      correlation_id: event.source_reference,
+      payload: { text: formatKillAckText(path) }
+    });
+    this.runStore.recordTriggerProcessed(event, result);
+    this.recordTelegramAccepted(event, now);
+    // LAST: the ack is durably queued and the trigger recorded — now stop the daemon.
+    this.hooks.requestShutdown?.();
+    return result;
+  }
+
+  /**
+   * `/disarm` — the one-command "hands off the controls" posture (ADR 0018): flips the
+   * evolution + unattended-autonomy flags to "false" LIVE (they are read at every call
+   * site) and writes the posture file so the disarm survives restarts (applied before
+   * `.env` in `loadHougeEnv`). Idempotent on the trigger key.
+   */
+  private handleDisarm(event: TypedTaskEvent, now: string): GatewayIntakeResult {
+    const replay = this.runStore.beginTriggerProcessing(event);
+    if (replay.status === "duplicate") {
+      return JSON.parse(replay.result_json) as GatewayIntakeResult;
+    }
+    if (replay.status === "conflict") {
+      return {
+        ok: false,
+        error: { code: replay.error, message: "Trigger idempotency key conflicts with a different payload" }
+      };
+    }
+
+    const path = writeDisarmPosture({ disarmed_at: now, by: event.requested_by.id });
+    applyDisarmPosture(); // immediate effect: flags are read live at their call sites
+
+    const result: GatewayIntakeResult = { ok: true, status: "disarmed", run_id: "" };
+    this.runStore.enqueueNotification({
+      target: event.notify,
+      intent_type: "progress",
+      idempotency_key: `${event.idempotency_key}:disarm`,
+      correlation_id: event.source_reference,
+      payload: { text: formatDisarmAckText(path) }
+    });
+    this.runStore.recordTriggerProcessed(event, result);
+    this.recordTelegramAccepted(event, now);
+    return result;
+  }
+
+  /**
+   * `/rearm` — deletes the posture file; the flags re-apply from `.env` on the NEXT
+   * restart (live re-enable would need the pre-disarm values remembered — deliberately
+   * not done; the ack says so). Idempotent on the trigger key.
+   */
+  private handleRearm(event: TypedTaskEvent, now: string): GatewayIntakeResult {
+    const replay = this.runStore.beginTriggerProcessing(event);
+    if (replay.status === "duplicate") {
+      return JSON.parse(replay.result_json) as GatewayIntakeResult;
+    }
+    if (replay.status === "conflict") {
+      return {
+        ok: false,
+        error: { code: replay.error, message: "Trigger idempotency key conflicts with a different payload" }
+      };
+    }
+
+    const path = resolveDisarmPath();
+    clearDisarmPosture();
+
+    const result: GatewayIntakeResult = { ok: true, status: "rearmed", run_id: "" };
+    this.runStore.enqueueNotification({
+      target: event.notify,
+      intent_type: "progress",
+      idempotency_key: `${event.idempotency_key}:rearm`,
+      correlation_id: event.source_reference,
+      payload: { text: formatRearmAckText(path) }
+    });
+    this.runStore.recordTriggerProcessed(event, result);
+    this.recordTelegramAccepted(event, now);
+    return result;
+  }
+
   private handleStatus(event: TypedTaskEvent, now: string): GatewayIntakeResult {
     const replay = this.runStore.beginTriggerProcessing(event);
     if (replay.status === "duplicate") {
@@ -433,7 +588,7 @@ export class Gateway {
       idempotency_key: `${event.idempotency_key}:status`,
       ...(run_id ? { run_id } : {}),
       correlation_id: event.source_reference,
-      payload: { text: this.formatStatusText(status), status }
+      payload: { text: this.formatStatusText(status, now), status }
     });
 
     this.runStore.recordTriggerProcessed(event, result);
@@ -566,7 +721,7 @@ export class Gateway {
     return event.notify.kind === "telegram" ? event.notify.chat_id : "";
   }
 
-  private formatStatusText(status: ReturnType<typeof queryStatus>): string {
+  private formatStatusText(status: ReturnType<typeof queryStatus>, now: string): string {
     if (!status.ok) {
       return status.error.message;
     }
@@ -603,6 +758,8 @@ export class Gateway {
         `Last ${window_hours}h: ${byState || "no runs"}`,
         `Last error: ${last_error ?? "none"}`,
         `Budget: ${budgetText}`,
+        // Metered-$ ceiling (ADR 0019): spend vs both ceilings at a glance.
+        formatMeteredStatusLine(this.runStore.meteredSpendUsd(now), resolveMeteredCeilings(process.env)),
         `Daemon: ${pollerText}`,
         ...(lane.busy && lane.current ? [`Evolution: ${lane.current.tool} running since ${lane.current.started_at}`] : []),
         `Rating: ${ratingText}`

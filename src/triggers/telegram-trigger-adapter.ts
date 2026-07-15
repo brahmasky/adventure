@@ -202,6 +202,12 @@ function buildTelegramEvent(command: TelegramCommand, base: TelegramEventBase): 
     case "approve":
     case "deny":
       return buildTypedTaskEvent({ ...base, type: command.type, approval_id: command.approval_id });
+    case "kill":
+      // ADR 0018: the optional free-text reason rides `goal` (recorded in the tombstone).
+      return buildTypedTaskEvent({ ...base, type: "kill", ...(command.reason ? { goal: command.reason } : {}) });
+    case "disarm":
+    case "rearm":
+      return buildTypedTaskEvent({ ...base, type: command.type });
   }
 }
 

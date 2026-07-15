@@ -20,16 +20,31 @@ import {
 } from "./providers/agy-cli.js";
 import type { LlmProvider, LlmRequest, LlmResult } from "./types.js";
 import type { SecretBroker } from "../config/secret-broker.js";
+import { METERED_PROVIDERS } from "./metered-pricing.js";
 
 export interface BuildLlmChainDeps {
   piConfig?: PiProviderConfig;
   kimiConfig?: KimiProviderConfig;
   geminiConfig?: GeminiProviderConfig;
   agyConfig?: AgyCliProviderConfig;
+  /**
+   * Metered-$ ceiling (ADR 0019): when this returns true, the metered legs
+   * (kimi-api/gemini-api) are dropped from the chain before construction — the
+   * flat-rate legs keep working. Latch-driven and cheap (a single-row read); the
+   * expensive spend sums run once per daemon tick, not here. Absent → no filtering.
+   */
+  meteredBreached?: () => boolean;
 }
 
 /** Default chain when `HOUGE_LLM_PROVIDERS` is unset. */
 export const DEFAULT_LLM_PROVIDERS = "pi,kimi-api";
+
+/**
+ * Fallback when the metered-ceiling filter would empty the chain (an all-metered
+ * `HOUGE_LLM_PROVIDERS`): a zero-leg chain would silence Houge entirely, which is a
+ * worse failure than one more flat-rate call — so fall back to the flat-rate default.
+ */
+export const METERED_FALLBACK_PROVIDERS: readonly string[] = ["pi"];
 
 /**
  * Slack added on top of the chain budget for the CapabilityRunner's wall-clock
@@ -90,7 +105,15 @@ export function buildLlmChain(
   deps: BuildLlmChainDeps = {},
   broker?: SecretBroker
 ): LlmProvider[] {
-  const names = parseProviderNames(env);
+  let names = parseProviderNames(env);
+
+  // Metered-$ ceiling (ADR 0019): with the fuse latched, drop the metered legs BEFORE
+  // mapping. NEVER a zero-leg chain — an all-metered list falls back to the flat-rate
+  // default instead of silencing Houge.
+  if (deps.meteredBreached?.()) {
+    const flatRate = names.filter((name) => !METERED_PROVIDERS.has(name));
+    names = flatRate.length > 0 ? flatRate : [...METERED_FALLBACK_PROVIDERS];
+  }
 
   // Single source of truth for the HTTP providers' key (ADR 0015): resolve it HERE — from the
   // broker when the firewall is armed, else from env — and populate each provider's `config.apiKey`.

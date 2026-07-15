@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { checkMeteredCeiling } from "../budget/metered-ceiling.js";
 import { runEpisodicConsolidateTick } from "../capabilities/episodic-consolidate.js";
 import { maybeRunEpisodicDistill } from "../capabilities/episodic-extract.js";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
@@ -41,6 +42,12 @@ export interface RunTelegramDaemonOptions {
   telegramClient: TelegramPollClient;
   /** Abort to stop the loop AND cancel an idle long-poll for a prompt shutdown. */
   stopSignal: AbortSignal;
+  /**
+   * ADR 0018: threaded into the Gateway so `/kill` can stop the loop AFTER its ack is
+   * enqueued (the in-loop outbox flush delivers it before exit). The CLI wires this to
+   * the boot AbortController; absent in tests/one-shot contexts.
+   */
+  requestShutdown?: () => void;
   llmAdapter?: (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
   /** Secrets firewall broker (ADR 0015) — passed at boot when armed; else undefined (firewall OFF). */
   broker?: SecretBroker;
@@ -103,9 +110,20 @@ export async function runTelegramDaemon(
   const baseMs = options.backoff?.baseMs ?? DEFAULT_BACKOFF_BASE_MS;
   const maxMs = options.backoff?.maxMs ?? DEFAULT_BACKOFF_MAX_MS;
 
-  const gateway = new Gateway(options.store, undefined, options.projectRoot);
+  const gateway = new Gateway(
+    options.store,
+    undefined,
+    options.projectRoot,
+    undefined,
+    options.requestShutdown ? { requestShutdown: options.requestShutdown } : {}
+  );
   const llmAdapter =
-    options.llmAdapter ?? createLlmAnswerAdapter(options.broker ? { broker: options.broker } : {});
+    options.llmAdapter ??
+    createLlmAnswerAdapter({
+      ...(options.broker ? { broker: options.broker } : {}),
+      // Metered-$ ceiling (ADR 0019): a latched fuse drops the metered legs (cheap latch read).
+      meteredBreached: () => options.store.meteredFuseLatched()
+    });
   const worker = new CoreWorker(
     options.store,
     options.projectRoot,
@@ -297,6 +315,14 @@ async function runSignalPathTick(
     // run's final report is enqueued during executeRun, so the outbox flush right
     // after this tick delivers it the same cycle.
     await maybeFireScheduledTasks({ store: options.store, gateway, worker, now });
+    // ADR 0019: the metered-$ ceiling check — drives the alert-dedupe latch (the chain
+    // builder's cheap enforcement read) once per cycle; the 0→1 transition enqueues ONE
+    // alert, delivered by the outbox flush right after this tick.
+    checkMeteredCeiling({
+      store: options.store,
+      ...(chat ? { chatId: String(chat.telegram_chat_id) } : {}),
+      now
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[telegram-daemon] signal-path tick failed: ${message}`);

@@ -11,6 +11,11 @@ import { Gateway } from "./gateway/gateway.js";
 import { runEvalSuite } from "./eval/eval-runner.js";
 import { getHougeVersion } from "./index.js";
 import { RunStore } from "./run/run-store.js";
+import {
+  formatTombstoneParkedMessage,
+  readTombstone,
+  resolveTombstonePath
+} from "./run/tombstone.js";
 import { parseCliTrigger } from "./triggers/cli-trigger.js";
 
 // Load `.env` (cwd or $HOUGE_ENV_FILE) before any command reads configuration.
@@ -36,6 +41,13 @@ if (!command || command === "--version" || command === "version") {
 }
 
 if (command === "run") {
+  // Kill-switch boot gate (ADR 0018): a tombstone refuses run execution. Interactive
+  // invocation → clear message + exit 1 (only the DAEMON parks). Read-only commands
+  // (status/send-outbox/…) stay usable — inspection must survive a kill.
+  if (readTombstone()) {
+    console.error(formatTombstoneParkedMessage(resolveTombstonePath(process.env)));
+    process.exit(1);
+  }
   const trigger = parseCliTrigger([command, ...rest]);
   if (!trigger.ok) {
     console.error(JSON.stringify(trigger));
@@ -118,6 +130,31 @@ if (command === "run") {
   }
 } else if (command === "telegram-poll") {
   const once = rest.includes("--once");
+
+  // Kill-switch boot gate (ADR 0018). launchd's KeepAlive is UNCONDITIONAL (plist
+  // template), so a killed daemon must not exit — it would be relaunched every 10s
+  // (ThrottleInterval) forever. Instead the daemon PARKS ALIVE: log one line, construct
+  // nothing (no gateway/store/poll), and hold the process idle while still honoring
+  // SIGTERM/SIGINT so `launchctl unload` stays clean. `--once` is an interactive
+  // invocation → message + exit 1. Revival is manual: delete the file, restart.
+  if (readTombstone()) {
+    const parked = formatTombstoneParkedMessage(resolveTombstonePath(process.env));
+    if (once) {
+      console.error(parked);
+      process.exit(1);
+    }
+    console.error(`[${new Date().toISOString()}] [daemon] ${parked}`);
+    await new Promise<void>((resolve) => {
+      process.once("SIGTERM", () => resolve());
+      process.once("SIGINT", () => resolve());
+      // Signal listeners alone do NOT keep Node's event loop alive — without an active
+      // handle the process would exit immediately and KeepAlive would relaunch it every
+      // 10s (the exact crash loop park-alive exists to avoid). A long no-op interval
+      // holds the loop open; ~24.8 days is setInterval's max delay, and re-arming is free.
+      setInterval(() => {}, 2 ** 31 - 1);
+    });
+    process.exit(0);
+  }
 
   const { TelegramClient } = await import("./telegram/telegram-client.js");
 
@@ -211,6 +248,8 @@ if (command === "run") {
         allowlist,
         telegramClient: client,
         stopSignal: controller.signal,
+        // ADR 0018: lets /kill stop the loop after its ack is enqueued (same abort as SIGTERM).
+        requestShutdown: () => onStop("/kill"),
         ...brokerOption,
         longPollTimeoutSeconds,
         backoff
