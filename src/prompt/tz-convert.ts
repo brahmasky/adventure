@@ -118,8 +118,12 @@ const WHEN_PATTERN = /^\s*(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))
  * instant, correct once at the corrected instant. Two evaluations converge everywhere except
  * the ambiguous hour of a DST fall-back, where it lands on a valid instant of that wall time.
  * This is DST-correct because the offset is measured AT the candidate date, not assumed.
+ *
+ * Exported (B10b) so the scheduler's next-run math (src/run/schedule-spec.ts) reuses this
+ * solver instead of reimplementing DST arithmetic. Callers pass an ALREADY-RESOLVED IANA
+ * zone (resolveTimeZone) — a garbage zone makes Intl throw.
  */
-function wallClockToInstant(when: string, tz: string): Date | undefined {
+export function wallClockToInstant(when: string, tz: string): Date | undefined {
   const m = WHEN_PATTERN.exec(when);
   if (!m) return undefined;
   const [, y, mo, d, h, mi, s] = m;

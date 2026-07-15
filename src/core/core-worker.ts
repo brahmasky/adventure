@@ -73,6 +73,7 @@ import {
 } from "./quarantine.js";
 import { manifestFor } from "./tool-manifest.js";
 import { composeSystemPrompt, intentToScope, memoryRootFor, SKILL_AUTHOR_DISCIPLINE } from "../prompt/composer.js";
+import { resolveLocalTimeZone, resolveTimeZone } from "../prompt/tz-convert.js";
 import { resolveSkillMaxPerScope, resolveSkillRefinePasses, resolveSkillsEnabled, setFrontmatterFields, SkillStore } from "../skills/skill-store.js";
 import { resolveWebMaxResults } from "../web/registry.js";
 import type { WebResult } from "../web/types.js";
@@ -83,6 +84,15 @@ import { canonicalJson, stableHash } from "../domain/canonical.js";
 import type { Identity } from "../domain/types.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import { createLedgerEvent } from "../run/run-ledger.js";
+import {
+  computeNextRunAt,
+  describeScheduleSpec,
+  formatInstantInZone,
+  parseScheduleSpec,
+  resolveSchedulerMaxPerChat,
+  sanitizeScheduleGoal,
+  type ScheduleSpec
+} from "../run/schedule-spec.js";
 import { writeRunReport } from "../report/report-writer.js";
 import { resolveLessonCapPerScope, RunStore } from "../run/run-store.js";
 import type { ChatTurnRow, ClaimedRun, EpisodicFactRow, LessonRow, LessonSaveResult, LessonSource } from "../run/run-store.js";
@@ -2255,6 +2265,13 @@ export class CoreWorker {
       // does the tz arithmetic in code. No provenance audit — nothing external was read.
       return (input) => this.timeConvertAdapter(input);
     }
+    if (name === "schedule_task") {
+      // Scheduler v1 (B10b): local sqlite bookkeeping only — the FIRE happens later on
+      // the daemon tick through the normal gateway path. Validation, the per-chat cap,
+      // and goal sanitizing all live in code; the digest is code-rendered (never model
+      // text), naming the schedule id + next fire in the schedule tz AND UTC.
+      return async (input) => this.executeScheduleTask(claim, input);
+    }
     if (name === "lesson_write") {
       // TRUST ANCHORS: feedback = the turn's real user message (the contract objective);
       // prior_answer = the real prior assistant turn. The model's step input can carry
@@ -2296,6 +2313,74 @@ export class CoreWorker {
         question: typeof input.question === "string" ? input.question : "",
         system: askSystem
       });
+  }
+
+  /**
+   * The schedule_task adapter (B10b, ADR 0017). Everything untrusted is validated or
+   * neutralized in code: the spec parses tolerantly, the tz must resolve (defaulting to
+   * the local zone), the goal passes the digest sanitizer BEFORE storing (it replays as
+   * a future turn text and renders in digests/lists), and creation is capped per chat.
+   * Cancellation is scoped to the run's OWN chat — a cross-chat cancel is refused
+   * identically to not-found (no probe signal). Digests are code-rendered.
+   */
+  private executeScheduleTask(claim: ClaimedRun, input: Record<string, unknown>): ToolAdapterResult {
+    const target = this.runStore.getRunNotifyTarget(claim.run_id);
+    if (target.kind !== "telegram") {
+      return { ok: false, error: SCHEDULE_TASK_NO_CHAT_ERROR };
+    }
+    const chat_id = target.chat_id;
+
+    if (typeof input.cancel === "string" && input.cancel.trim().length > 0) {
+      const schedule_id = input.cancel.trim();
+      // Shape-check before any lookup so a hostile id is never echoed into a digest.
+      if (!/^sch_[0-9a-fA-F-]{8,}$/.test(schedule_id)) {
+        return { ok: false, error: SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR };
+      }
+      const row = this.runStore.getScheduledTask(schedule_id);
+      if (!row || row.chat_id !== chat_id || !this.runStore.cancelScheduledTask(schedule_id)) {
+        return { ok: false, error: SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR };
+      }
+      return { ok: true, output: { answer: buildScheduleCancelledDigest(schedule_id) } };
+    }
+
+    const spec = parseScheduleSpec(input.spec);
+    if (!spec) {
+      return { ok: false, error: SCHEDULE_TASK_INVALID_SPEC_ERROR };
+    }
+    const rawTz =
+      typeof input.tz === "string" && input.tz.trim().length > 0
+        ? input.tz.trim()
+        : resolveLocalTimeZone(process.env);
+    const tz = resolveTimeZone(rawTz);
+    if (!tz) {
+      return { ok: false, error: SCHEDULE_TASK_INVALID_TZ_ERROR };
+    }
+    const goal = sanitizeScheduleGoal(typeof input.goal === "string" ? input.goal : "");
+    if (goal.length === 0) {
+      return { ok: false, error: SCHEDULE_TASK_GOAL_REQUIRED_ERROR };
+    }
+    const cap = resolveSchedulerMaxPerChat(process.env);
+    if (this.runStore.countActiveSchedules(chat_id) >= cap) {
+      return { ok: false, error: buildScheduleCapError(cap) };
+    }
+    const now = new Date().toISOString();
+    const next_run_at = computeNextRunAt(spec, tz, now);
+    if (!next_run_at) {
+      return { ok: false, error: SCHEDULE_TASK_NEXT_UNCOMPUTABLE_ERROR };
+    }
+    const row = this.runStore.addScheduledTask({
+      chat_id,
+      goal,
+      spec_json: JSON.stringify(spec),
+      tz,
+      next_run_at,
+      created_by: `run:${claim.run_id}`,
+      now
+    });
+    return {
+      ok: true,
+      output: { answer: buildScheduleCreatedDigest(row.schedule_id, spec, tz, next_run_at) }
+    };
   }
 
   private async classifyIntent(
@@ -2771,6 +2856,45 @@ export function buildEvolutionTimeoutText(tool: string, minutes: number): string
     `${tool} step failed: timed out after ${minutes} minutes — ` +
     `超时了，目前没有发布任何分支；如果后台残留任务最终完成，可能会出现一个迟到的分支，用 git branch 能看到。`
   );
+}
+
+/**
+ * schedule_task digests + refusal texts (B10b, ADR 0017). Code-rendered and EXPORTED so
+ * tests assert via the constants, never pinned literals (the wording stays evolvable).
+ * The created digest names the id + the next fire in BOTH the schedule tz wall-clock
+ * and UTC — the model relays it; the numbers are code's, never the model's arithmetic.
+ */
+export const SCHEDULE_TASK_NO_CHAT_ERROR =
+  "schedule_task needs a telegram chat to deliver into — this run has no chat target";
+export const SCHEDULE_TASK_INVALID_SPEC_ERROR =
+  'invalid schedule spec — use {"kind":"weekly","day":"mon".."sun","at":"HH:MM"}, {"kind":"daily","at":"HH:MM"}, or {"kind":"once","at_iso":"<UTC ISO>"}';
+export const SCHEDULE_TASK_INVALID_TZ_ERROR =
+  "invalid tz — use an IANA zone name like Australia/Sydney";
+export const SCHEDULE_TASK_GOAL_REQUIRED_ERROR =
+  "goal is required — the message Houge should run at each scheduled fire";
+export const SCHEDULE_TASK_NEXT_UNCOMPUTABLE_ERROR =
+  "could not compute the next fire time — a once schedule must lie in the future";
+export const SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR =
+  "no active schedule with that id in this chat — check /schedule for the list";
+
+export function buildScheduleCapError(cap: number): string {
+  return `schedule cap reached (${cap} active schedules for this chat) — cancel one first (/schedule)`;
+}
+
+export function buildScheduleCreatedDigest(
+  schedule_id: string,
+  spec: ScheduleSpec,
+  tz: string,
+  next_run_at: string
+): string {
+  return (
+    `Scheduled ✓ ${schedule_id} — ${describeScheduleSpec(spec)} ${tz}; ` +
+    `next fire ${formatInstantInZone(next_run_at, tz)} (${tz}) = ${next_run_at} UTC`
+  );
+}
+
+export function buildScheduleCancelledDigest(schedule_id: string): string {
+  return `Cancelled ✓ ${schedule_id} — it will not fire again`;
 }
 
 /**

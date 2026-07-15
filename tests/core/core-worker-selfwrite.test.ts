@@ -59,7 +59,10 @@ const PINNED_ENV = [
   "HOUGE_TELEGRAM_BOT_TOKEN",
   // Dual-LLM (ADR 0014): pin the flag + reader-chain env so the OFF default is hermetic.
   "HOUGE_DUAL_LLM_ENABLED",
-  "HOUGE_LLM_READER_PROVIDERS"
+  "HOUGE_LLM_READER_PROVIDERS",
+  // Scheduler (B10b): the flag shapes the manifest; the cap shapes the adapter refusal.
+  "HOUGE_SCHEDULER_ENABLED",
+  "HOUGE_SCHEDULER_MAX_PER_CHAT"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
@@ -259,11 +262,16 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
 
       // The turn recorded the loop's reply under the selfcode hint intent. ⓪·3g
       // kickoff-terminal: the kickoff ENDS the turn, so the reply IS the kickoff digest
-      // (the scripted "final" is never reached).
+      // (the scripted "final" is never reached). B10a: the lane's completion report is
+      // recorded as a SECOND assistant turn at its true time — without it the thread
+      // context ends at the kickoff and a follow-up about the report cannot resolve.
       const turns = store.getRecentChatTurns("777", 6);
-      const last = turns[turns.length - 1]!;
-      expect(last.intent).toBe("selfcode");
-      expect(last.text).toBe(KICKOFF);
+      const kickoffTurn = turns[turns.length - 2]!;
+      expect(kickoffTurn.intent).toBe("selfcode");
+      expect(kickoffTurn.text).toBe(KICKOFF);
+      const reportTurn = turns[turns.length - 1]!;
+      expect(reportTurn.intent).toBe("evolution_report");
+      expect(reportTurn.text).toContain("🐒 Fixed");
 
       // TWO notifications: the turn's reply (the kickoff digest, NO buttons) and the lane's
       // completion (publish text + the three merge-control buttons targeting THIS run).

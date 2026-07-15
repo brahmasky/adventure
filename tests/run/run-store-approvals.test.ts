@@ -582,14 +582,14 @@ describe("RunStore approval storage", () => {
       expect(store.getRunStatus("run_m1")?.state).toBe("completed");
       expect(store.getLedgerEvents("run_m1")).toHaveLength(1);
       expectTablesAndIndexes(store);
-      // 10 = milestone-2 + guardrails + daemon + chat-turns + lesson-blocks + lessons-rows + reload-marker + signal-path + episodic-facts + episodic-consolidate-state.
+      // 11 = milestone-2 + guardrails + daemon + chat-turns + lesson-blocks + lessons-rows + reload-marker + signal-path + episodic-facts + episodic-consolidate-state + scheduled-tasks.
       expect(db(store).prepare("SELECT COUNT(*) AS count FROM schema_migrations")
-        .get<{ count: number }>()?.count).toBe(10);
+        .get<{ count: number }>()?.count).toBe(11);
       store.close();
 
       store = RunStore.open(path);
       expect(db(store).prepare("SELECT COUNT(*) AS count FROM schema_migrations")
-        .get<{ count: number }>()?.count).toBe(10);
+        .get<{ count: number }>()?.count).toBe(11);
       expect(store.getRunStatus("run_m1")?.state).toBe("completed");
     } finally {
       store?.close();

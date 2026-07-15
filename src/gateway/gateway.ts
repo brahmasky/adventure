@@ -6,7 +6,8 @@ import {
   resolveGlobalBudgetCaps,
   type GlobalBudgetCaps
 } from "../budget/global-budget-ledger.js";
-import { parseRatingHistory, type LessonRow, type RunStore } from "../run/run-store.js";
+import { parseRatingHistory, type LessonRow, type RunStore, type ScheduledTaskRow } from "../run/run-store.js";
+import { describeScheduleSpec, formatInstantInZone, parseScheduleSpec } from "../run/schedule-spec.js";
 import {
   parseBareRating,
   RATING_ACK_TEXT,
@@ -31,6 +32,7 @@ export type GatewayIntakeResult =
   | { ok: true; status: "lessons_returned"; run_id: string }
   | { ok: true; status: "skills_returned"; run_id: string }
   | { ok: true; status: "forgotten"; run_id: string }
+  | { ok: true; status: "schedule_admin_returned"; run_id: string }
   | {
       ok: true;
       status: "rating_captured";
@@ -120,6 +122,10 @@ export class Gateway {
       return this.handleForget(event, now);
     }
 
+    if (event.type === "schedule_admin") {
+      return this.handleScheduleAdmin(event, now);
+    }
+
     if (event.type === "turn") {
       // ⓪·3 S2a: an active rating ask intercepts a rating reply BEFORE the turn compiles;
       // any other message lets the pending expire silently and rides the normal path.
@@ -152,6 +158,9 @@ export class Gateway {
    * digit with NO active pending routes to the normal turn. Idempotent on the trigger key.
    */
   private captureRatingReply(event: TypedTaskEvent, now: string): RatingCaptureOutcome | undefined {
+    // B10b: a scheduled fire replays a STORED goal — never a human reply. A scheduled
+    // goal that happens to be a bare digit must run as a turn, not be eaten as a rating.
+    if (event.source === "schedule") return undefined;
     if (event.notify.kind !== "telegram") return undefined;
     const chat_id = event.notify.chat_id;
 
@@ -341,6 +350,54 @@ export class Gateway {
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:forget`,
+      correlation_id: event.source_reference,
+      payload: { text }
+    });
+    this.runStore.recordTriggerProcessed(event, result);
+    this.recordTelegramAccepted(event, now);
+    return result;
+  }
+
+  /**
+   * `/schedule [cancel <id>]` — a control command (no run, no budget; B10b, ADR 0017).
+   * Bare `/schedule` lists the REQUESTING chat's schedules (enabled + failed — disabled
+   * rows are history, not noise); `cancel` flips one of THIS chat's schedules to
+   * 'disabled' — another chat's id cancels nothing and reads exactly like not-found (no
+   * cross-chat probe signal). Idempotent on the trigger key, like `/lessons`.
+   */
+  private handleScheduleAdmin(event: TypedTaskEvent, now: string): GatewayIntakeResult {
+    const replay = this.runStore.beginTriggerProcessing(event);
+    if (replay.status === "duplicate") {
+      return JSON.parse(replay.result_json) as GatewayIntakeResult;
+    }
+    if (replay.status === "conflict") {
+      return {
+        ok: false,
+        error: { code: replay.error, message: "Trigger idempotency key conflicts with a different payload" }
+      };
+    }
+
+    const chat_id = this.telegramChatId(event);
+    const action = typeof event.program === "string" ? event.program : "list";
+
+    let text: string;
+    if (action === "cancel") {
+      const schedule_id =
+        typeof event.metadata?.schedule_id === "string" ? event.metadata.schedule_id : "";
+      const row = schedule_id ? this.runStore.getScheduledTask(schedule_id) : undefined;
+      text =
+        row && row.chat_id === chat_id && this.runStore.cancelScheduledTask(schedule_id, now)
+          ? formatScheduleCancelledText(schedule_id)
+          : SCHEDULE_CANCEL_NOT_FOUND_TEXT;
+    } else {
+      text = formatScheduleListText(this.runStore.listScheduledTasks(chat_id));
+    }
+
+    const result: GatewayIntakeResult = { ok: true, status: "schedule_admin_returned", run_id: "" };
+    this.runStore.enqueueNotification({
+      target: event.notify,
+      intent_type: "progress",
+      idempotency_key: `${event.idempotency_key}:schedule`,
       correlation_id: event.source_reference,
       payload: { text }
     });
@@ -678,6 +735,46 @@ function formatSkillsText(scope: string | undefined, metas: SkillMeta[]): string
   return metas
     .map((m) => `## ${m.name} (${m.scope}) v${m.version ?? 1}\nwhen: ${m.when}`)
     .join("\n\n");
+}
+
+/** `/schedule` reply when the chat has no visible (enabled/failed) schedules. */
+export const SCHEDULE_LIST_EMPTY_TEXT =
+  "No schedules for this chat yet. Ask Houge in plain language to schedule a recurring task.";
+
+/** `/schedule cancel` refusal — not-found and cross-chat read IDENTICALLY (no probe signal). */
+export const SCHEDULE_CANCEL_NOT_FOUND_TEXT =
+  "No active schedule with that id in this chat — see /schedule for the list.";
+
+export function formatScheduleCancelledText(schedule_id: string): string {
+  return `Cancelled ✓ ${schedule_id} — it will not fire again.`;
+}
+
+/** Goal preview length on a `/schedule` list row. */
+export const SCHEDULE_GOAL_PREVIEW_CHARS = 60;
+
+/**
+ * Render the `/schedule` reply (B10b): one line per non-disabled schedule —
+ * `sch_x · weekly mon 08:00 Australia/Sydney · next 2026-07-20 08:00 (Sydney) · <goal ≤60>`.
+ * Failed rows keep their line, prefixed `⚠ failed · ` (the owner must see a schedule
+ * that stopped retrying). Disabled rows are history — omitted.
+ */
+export function formatScheduleListText(rows: ScheduledTaskRow[]): string {
+  const visible = rows.filter((row) => row.state !== "disabled");
+  if (visible.length === 0) return SCHEDULE_LIST_EMPTY_TEXT;
+  return visible.map((row) => formatScheduleLine(row)).join("\n");
+}
+
+function formatScheduleLine(row: ScheduledTaskRow): string {
+  const spec = parseScheduleSpec(row.spec_json);
+  const specText = spec ? describeScheduleSpec(spec) : "unreadable spec";
+  // The city segment keeps the `next` clause short; the full IANA zone already rendered.
+  const city = row.tz.split("/").pop() ?? row.tz;
+  const goal =
+    row.goal.length > SCHEDULE_GOAL_PREVIEW_CHARS
+      ? `${row.goal.slice(0, SCHEDULE_GOAL_PREVIEW_CHARS)}…`
+      : row.goal;
+  const prefix = row.state === "failed" ? "⚠ failed · " : "";
+  return `${prefix}${row.schedule_id} · ${specText} ${row.tz} · next ${formatInstantInZone(row.next_run_at, row.tz)} (${city}) · ${goal}`;
 }
 
 /**

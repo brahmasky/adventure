@@ -108,6 +108,30 @@ describe("arming policy (step ⓪·2): evolution tools appear only when their fl
     expect(lines[0]).toContain("never do timezone math yourself");
   });
 
+  it("schedule_task defaults OFF: unlisted (and therefore unreachable) at code defaults", () => {
+    const names = manifestFor(["llm_answer", "schedule_task"], {}).map((m) => m.name);
+    expect(names).toEqual(["llm_answer"]);
+  });
+
+  it("schedule_task armed: listed in contract order, mirroring lesson_write's none/low (no approval gate trips)", () => {
+    const env = { HOUGE_SCHEDULER_ENABLED: "1" };
+    const names = manifestFor(["llm_answer", "schedule_task"], env).map((m) => m.name);
+    expect(names).toEqual(["llm_answer", "schedule_task"]);
+    const [entry] = manifestFor(["schedule_task"], env);
+    // Creating a schedule is local sqlite bookkeeping (the FIRE rides the gated normal
+    // path later) — the lesson_write class, so no approval prompt can fire.
+    const [lessonWrite] = manifestFor(["lesson_write"], env);
+    expect(entry!.side_effect_level).toBe(lessonWrite!.side_effect_level);
+    expect(entry!.risk_level).toBe(lessonWrite!.risk_level);
+    const lines = renderManifestLines(manifestFor(["schedule_task"], env));
+    expect(lines[0]).toMatch(/^- schedule_task: .+ Input: \{"goal"/);
+    // The sketch teaches all three spec kinds AND the cancel shape.
+    expect(entry!.inputSketch).toContain('"kind":"weekly"');
+    expect(entry!.inputSketch).toContain('"kind":"daily"');
+    expect(entry!.inputSketch).toContain('"kind":"once"');
+    expect(entry!.description).toContain('{"cancel":"sch_..."}');
+  });
+
   it("to_local_time carries the event label in BOTH input sketches, and the description says to pass it (B6)", () => {
     const [plain] = manifestFor(["to_local_time"], { HOUGE_TIME_TOOL_ENABLED: "1" });
     expect(plain!.inputSketch).toContain('"label":"Argentina vs Egypt"');

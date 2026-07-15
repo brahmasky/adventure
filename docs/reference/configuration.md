@@ -469,6 +469,36 @@ noted), and `/approve` · `/deny` are **unforgeable** — never inferred from pr
 | `/forget <scope\|id>` | control | Prune that scope's lessons, or one lesson by numeric id (a reversible status flip — rows are never deleted) and ack. |
 | `/skills [scope]` | control | Read-only **viewer** of the ambient skills (name · scope · `when:` · version); regenerates `skills/REGISTRY.md`. Never invokes a skill. No scope → lists all scopes. |
 | `/skills pending` | control | Read-only **viewer** of the parked (blocked auto-author) drafts under `skills/_pending/` — inert, never applied. Inspect to hand-fix + promote, or discard. |
+| `/schedule` | control | List this chat's scheduled tasks (id · spec · next fire · goal; `⚠ failed` rows shown so they can be cleared). |
+| `/schedule cancel <id>` | control | Cancel a schedule (reversible state flip, never deleted; failed rows cancellable too). Chat-scoped — other chats' ids read as not-found. |
+
+## Scheduler (ADR 0017)
+
+Recurring/one-time tasks fired from the daemon poll loop; created conversationally via the
+`schedule_task` loop tool ("每周一早上8点给我AI周报") or cancelled via `/schedule cancel`.
+Fired runs are ordinary `turn` runs (`source:"schedule"`) through the same gateway→worker
+path; the global 24h breaker is the blast-radius net (a fuse PAUSES due schedules — they
+catch up with exactly one fire when it lifts). Misfire policy: fire once, advance from now.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `HOUGE_SCHEDULER_ENABLED` | `false` | Master arm for the tick AND the `schedule_task` tool (unlisted when disarmed). `/schedule` viewing stays available either way. |
+| `HOUGE_SCHEDULER_MAX_PER_CHAT` | `10` | Cap on active (enabled) schedules per chat — also the self-replication bound. |
+
+## Episodic memory (Phase M, ADR 0016)
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `HOUGE_EPISODIC_ENABLED` | `false` | Master arm: fast-path distillation, composer retrieval, daily consolidation. |
+| `HOUGE_EMBED_URL` | `http://localhost:11434` | Local Ollama endpoint for embeddings. |
+| `HOUGE_EMBED_MODEL` | `embeddinggemma` | Embedding model (multilingual; CJK recall rides the cosine leg). |
+| `HOUGE_EMBED_TIMEOUT_MS` | `5000` | Per-embed cap; any failure degrades to BM25/recency (never blocks a turn). |
+| `HOUGE_EPISODIC_FACT_CAP_PER_CHAT` | `200` | Active-fact cap per chat (lowest reuse pruned reversibly). |
+| `HOUGE_EPISODIC_RETRIEVE_CAP` | `6` | Facts folded into a turn's prompt (≈900-char guard). |
+| `HOUGE_EPISODIC_RECENCY_HALFLIFE_DAYS` | `14` | Recency decay half-life in retrieval scoring. |
+| `HOUGE_EPISODIC_DECAY_DAYS` | `30` | Idle age before a fact starts losing reuse_value in the daily tick. |
+| `HOUGE_EPISODIC_PRUNE_THRESHOLD` | `0.2` | reuse_value floor below which an idle fact is reversibly pruned. |
+| `HOUGE_EPISODIC_MERGE_SIM` | `0.92` | Cosine threshold for the nightly duplicate-merge clustering. |
 
 ## Global autonomy circuit-breaker
 

@@ -15,6 +15,7 @@ import { NotificationDispatcher } from "../notifications/notification-dispatcher
 import { NotificationOutbox } from "../notifications/notification-outbox.js";
 import { TelegramNotificationAdapter } from "../notifications/telegram-notification-adapter.js";
 import type { RunStore } from "../run/run-store.js";
+import { maybeFireScheduledTasks } from "../run/schedule-tick.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import {
@@ -196,8 +197,9 @@ export async function runTelegramDaemon(
       options.store.expirePendingApprovals(t);
       options.store.expireUndeliveredApprovalPrompts(t);
       // ⓪·3 S2: the signal path rides the poll loop (before the outbox flush, so a
-      // rating ask enqueued this cycle is delivered this cycle).
-      await runSignalPathTick(options, llmAdapter, t);
+      // rating ask enqueued this cycle is delivered this cycle). B10b threads the
+      // gateway + worker in so the scheduler tick fires due tasks down the SAME path.
+      await runSignalPathTick(options, llmAdapter, gateway, worker, t);
       for (;;) {
         const result = await dispatcher.dispatchOnce("telegram-daemon-dispatcher");
         if (result.status === "idle") break;
@@ -242,13 +244,17 @@ export async function runTelegramDaemon(
 /**
  * ⓪·3 S2 — the signal path's per-cycle tick: the daily lesson decay+prune pass (the
  * store makes it idempotent per 24h), the session-rating ask trigger (substance +
- * lull + cooldown — cheap sqlite checks), and the episodic fast-path distill (Phase M
- * B2 — flag-gated OFF by default, per-chat lull, at most one chat per tick). NEVER
- * throws (like notifyReloadOnBoot): a signal-path error must not stop the daemon.
+ * lull + cooldown — cheap sqlite checks), the episodic fast-path distill (Phase M
+ * B2 — flag-gated OFF by default, per-chat lull, at most one chat per tick), and the
+ * scheduler fire tick (B10b — flag-gated OFF, capped fires, same gateway→worker path
+ * as a message). NEVER throws (like notifyReloadOnBoot): a signal-path error must not
+ * stop the daemon.
  */
 async function runSignalPathTick(
   options: RunTelegramDaemonOptions,
   llmAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
+  gateway: Gateway,
+  worker: CoreWorker,
   now: string
 ): Promise<void> {
   try {
@@ -286,6 +292,11 @@ async function runSignalPathTick(
       embed: episodicEmbed,
       now
     });
+    // B10b: fire due schedules through the normal gateway→worker path (breaker,
+    // contracts, and policy all apply). Flag-gated OFF; ≤3 fires per tick; the fired
+    // run's final report is enqueued during executeRun, so the outbox flush right
+    // after this tick delivers it the same cycle.
+    await maybeFireScheduledTasks({ store: options.store, gateway, worker, now });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[telegram-daemon] signal-path tick failed: ${message}`);

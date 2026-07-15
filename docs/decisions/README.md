@@ -28,6 +28,7 @@ Read these first when onboarding — they explain choices the code alone can't.
 | [0014](0014-dual-llm-privilege-separation.md) | Dual-LLM privilege separation — the reader that touches untrusted bytes cannot act (quarantined Q-LLM reader + privileged P-LLM planner; restores the [0006](0006-web-read-capability.md) wall inside the [0013](0013-llm-inner-composition.md) loop) | accepted (design; build after secrets firewall) |
 | [0015](0015-secrets-firewall.md) | Secrets firewall — the main process holds no ambient credentials (boot-time SecretBroker + strip `process.env`; single source of truth; Codex env lockdown; output redaction; Phase 2 = broker process, deferred) | accepted (design; build as its own /goal) |
 | [0016](0016-episodic-local-embeddings.md) | Episodic retrieval — local embeddings via Ollama (`embeddinggemma` over localhost HTTP, `dependencies:{}` intact; graceful BM25/recency degradation; vectors as SQLite BLOBs; amends [0005](0005-agent-memory-architecture.md) §1) | accepted |
+| [0017](0017-scheduler.md) | Scheduler v1 — a new trigger source feeding the same gateway→worker spine (wall-clock+tz specs, DST-correct next-run math, fire-then-advance misfire policy; the [0003](0003-global-budget-breaker.md) breaker is the blast-radius net; vestigial schedule types go live) | accepted |
 
 ## Writing a new ADR
 

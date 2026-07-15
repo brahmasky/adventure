@@ -7,6 +7,7 @@ import type {
   Identity,
   RiskLevel,
   RunState,
+  ScheduleState,
   SideEffectLevel,
   TypedTaskEvent
 } from "../domain/types.js";
@@ -358,6 +359,31 @@ export interface EpisodicFactRow {
   embedding_model: string | null;
   created_at: string;
   last_used: string | null;
+}
+
+/**
+ * One scheduled task (B10b, ADR 0017). ROW-level `state` is enabled|disabled|failed
+ * (the vestigial ScheduleState's durable subset — fired/enqueued/skipped_duplicate are
+ * PER-FIRE ledger events, not row states). Rows are never deleted: cancel flips state
+ * to 'disabled'; three consecutive fire failures flip it to 'failed'.
+ */
+export interface ScheduledTaskRow {
+  schedule_id: string;
+  chat_id: string;
+  /** The turn text a fire replays (sanitized at creation — schedule-spec.ts). */
+  goal: string;
+  /** JSON ScheduleSpec (schedule-spec.ts; parse tolerantly — a corrupt row must not throw). */
+  spec_json: string;
+  /** IANA zone the spec's wall-clock times are stated in. */
+  tz: string;
+  state: ScheduleState;
+  /** UTC ISO of the next fire (the tick's due query + the fire's idempotency key). */
+  next_run_at: string;
+  last_fired_at: string | null;
+  consecutive_failures: number;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 /** The candidate {@link RunStore.saveReconciledFact} stores (all metadata rides ADD/SUPERSEDE/UPDATE). */
@@ -2085,6 +2111,155 @@ export class RunStore {
     );
   }
 
+  // --- Scheduled tasks (B10b, ADR 0017) ---------------------------------------
+
+  /** Insert a new enabled schedule (id minted here, like run ids). */
+  addScheduledTask(input: {
+    chat_id: string;
+    goal: string;
+    spec_json: string;
+    tz: string;
+    next_run_at: string;
+    created_by?: string;
+    now?: string;
+  }): ScheduledTaskRow {
+    const schedule_id = `sch_${randomUUID()}`;
+    const now = input.now ?? new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO scheduled_tasks (
+        schedule_id, chat_id, goal, spec_json, tz, state, next_run_at,
+        last_fired_at, consecutive_failures, created_by, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'enabled', ?, NULL, 0, ?, ?, ?)
+    `).run(
+      schedule_id,
+      input.chat_id,
+      input.goal,
+      input.spec_json,
+      input.tz,
+      input.next_run_at,
+      input.created_by ?? null,
+      now,
+      now
+    );
+    return this.getScheduledTask(schedule_id)!;
+  }
+
+  /** Every schedule (or one chat's), newest first. Disabled/failed rows included — the caller filters. */
+  listScheduledTasks(chat_id?: string): ScheduledTaskRow[] {
+    return chat_id
+      ? this.db.prepare(`
+          SELECT * FROM scheduled_tasks WHERE chat_id = ? ORDER BY created_at DESC, schedule_id DESC
+        `).all<ScheduledTaskRow>(chat_id)
+      : this.db.prepare(`
+          SELECT * FROM scheduled_tasks ORDER BY created_at DESC, schedule_id DESC
+        `).all<ScheduledTaskRow>();
+  }
+
+  getScheduledTask(schedule_id: string): ScheduledTaskRow | undefined {
+    return this.db.prepare(`
+      SELECT * FROM scheduled_tasks WHERE schedule_id = ?
+    `).get<ScheduledTaskRow>(schedule_id);
+  }
+
+  /** Enabled schedules due at/before `now`, soonest first (the tick's fire query). */
+  listDueScheduledTasks(now: string, limit: number): ScheduledTaskRow[] {
+    return this.db.prepare(`
+      SELECT * FROM scheduled_tasks
+      WHERE state = 'enabled' AND next_run_at <= ?
+      ORDER BY next_run_at ASC, schedule_id ASC
+      LIMIT ?
+    `).all<ScheduledTaskRow>(now, limit);
+  }
+
+  /**
+   * Cancel = state→'disabled' (reversible — rows are NEVER deleted). False when
+   * absent/already off. 'failed' rows are cancellable too, or the ⚠ list entry could
+   * never be cleared (verifier F2: no re-enable path exists, so a parked row was
+   * permanent list noise).
+   */
+  cancelScheduledTask(schedule_id: string, now: string = new Date().toISOString()): boolean {
+    const result = this.db.prepare(`
+      UPDATE scheduled_tasks SET state = 'disabled', updated_at = ?
+      WHERE schedule_id = ? AND state IN ('enabled', 'failed')
+    `).run(now, schedule_id);
+    return result.changes === 1;
+  }
+
+  /**
+   * Advance a fired schedule: stamp last_fired_at, move next_run_at, reset the
+   * consecutive-failure counter. Called BEFORE the fired run executes (fire-then-run:
+   * a crash mid-run must not re-fire the same occurrence — see schedule-tick.ts).
+   */
+  markScheduleFired(schedule_id: string, fired_at: string, next_run_at: string): void {
+    this.db.prepare(`
+      UPDATE scheduled_tasks
+      SET last_fired_at = ?, next_run_at = ?, consecutive_failures = 0, updated_at = ?
+      WHERE schedule_id = ?
+    `).run(fired_at, next_run_at, fired_at, schedule_id);
+  }
+
+  /**
+   * Count a failed fire attempt; at `maxConsecutive` the row flips to 'failed' (a schedule
+   * that cannot fire must not retry forever — the /schedule list surfaces the state).
+   */
+  recordScheduleFailure(
+    schedule_id: string,
+    now: string,
+    maxConsecutive: number
+  ): { failures: number; failed: boolean } {
+    const row = this.getScheduledTask(schedule_id);
+    if (!row) return { failures: 0, failed: false };
+    const failures = row.consecutive_failures + 1;
+    const failed = failures >= maxConsecutive;
+    this.db.prepare(`
+      UPDATE scheduled_tasks SET consecutive_failures = ?${failed ? ", state = 'failed'" : ""}, updated_at = ?
+      WHERE schedule_id = ?
+    `).run(failures, now, schedule_id);
+    return { failures, failed };
+  }
+
+  /** Enabled schedules for one chat (the per-chat creation cap). */
+  countActiveSchedules(chat_id: string): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM scheduled_tasks WHERE chat_id = ? AND state = 'enabled'
+    `).get<{ count: number }>(chat_id);
+    return row?.count ?? 0;
+  }
+
+  /** Per-fire audit: the vestigial `schedule_fired` ledger event, now live (run-ledger.ts). */
+  recordScheduleFired(input: {
+    run_id: string;
+    schedule_id: string;
+    scheduled_time: string;
+    command_hash: string;
+  }): void {
+    this.appendRunLedgerEvent(input.run_id, "schedule_fired", "trigger_adapter", {
+      schedule_id: input.schedule_id,
+      scheduled_time: input.scheduled_time,
+      command_hash: input.command_hash
+    });
+  }
+
+  /** Per-fire audit: a fire whose idempotency key hit an existing run (crash replay). */
+  recordScheduleSkippedDuplicate(input: {
+    schedule_id: string;
+    scheduled_time: string;
+    idempotency_key: string;
+    existing_run_id: string;
+  }): void {
+    this.appendRunLedgerEvent(
+      input.existing_run_id,
+      "schedule_skipped_duplicate",
+      "trigger_adapter",
+      {
+        schedule_id: input.schedule_id,
+        scheduled_time: input.scheduled_time,
+        idempotency_key: input.idempotency_key,
+        existing_run_id: input.existing_run_id
+      }
+    );
+  }
+
   createApprovalRequest(input: ApprovalRequestInput): ApprovalRequestRecord {
     const approval_id = `appr_${randomUUID()}`;
     const created_at = new Date().toISOString();
@@ -2415,17 +2590,34 @@ export class RunStore {
     tool: string,
     input: { text: string; buttons?: NotificationButton[] }
   ): NotificationQueueResult {
-    return this.enqueueNotification({
-      target: this.getRunNotifyTarget(run_id),
+    const target = this.getRunNotifyTarget(run_id);
+    const text = truncateForChat(input.text, this.redact);
+    const result = this.enqueueNotification({
+      target,
       intent_type: "final_report",
       idempotency_key: `${run_id}:evolution_report:${tool}`,
       run_id,
       correlation_id: run_id,
       payload: {
-        text: truncateForChat(input.text, this.redact),
+        text,
         ...(input.buttons ? { buttons: input.buttons } : {})
       }
     });
+    // B10a: the delivered report ALSO becomes an assistant chat turn, at its true time —
+    // without it the model's next-turn thread context ends at the kickoff digest, so a
+    // follow-up about "the report above" cannot resolve (live gap, 07-13 03:27 report).
+    // The `queued` status is the exactly-once latch (a duplicate/conflict re-enqueue must
+    // not re-record); a `local` target has no chat thread, so nothing is recorded.
+    if (result.status === "queued" && target.kind === "telegram") {
+      this.recordChatTurn({
+        chat_id: target.chat_id,
+        run_id,
+        role: "assistant",
+        text,
+        intent: "evolution_report"
+      });
+    }
+    return result;
   }
 
   /**
@@ -3319,6 +3511,7 @@ export class RunStore {
     this.applySignalPathMigration();
     this.applyEpisodicFactsMigration();
     this.applyEpisodicConsolidateMigration();
+    this.applyScheduledTasksMigration();
   }
 
   /**
@@ -3491,6 +3684,59 @@ export class RunStore {
         );
 
         INSERT OR IGNORE INTO episodic_consolidate_state (id) VALUES (1);
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Scheduled tasks (B10b, ADR 0017): one row per schedule — the declarative spec
+   * (spec_json + tz) and the durable fire cursor (next_run_at, UTC ISO). Row state is
+   * enabled|disabled|failed; per-fire outcomes are ledger events. The (state, next_run_at)
+   * index is the tick's due query.
+   */
+  private applyScheduledTasksMigration(): void {
+    const version = "2026-07-15-scheduled-tasks";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS scheduled_tasks (
+          schedule_id TEXT PRIMARY KEY,
+          chat_id TEXT NOT NULL,
+          goal TEXT NOT NULL,
+          spec_json TEXT NOT NULL,
+          tz TEXT NOT NULL,
+          state TEXT NOT NULL,
+          next_run_at TEXT NOT NULL,
+          last_fired_at TEXT,
+          consecutive_failures INTEGER NOT NULL DEFAULT 0,
+          created_by TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS scheduled_tasks_state_next_run_idx
+          ON scheduled_tasks(state, next_run_at);
       `);
 
       if (!applied) {

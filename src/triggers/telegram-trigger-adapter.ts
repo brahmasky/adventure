@@ -189,6 +189,16 @@ function buildTelegramEvent(command: TelegramCommand, base: TelegramEventBase): 
     case "forget":
       // scope rides `program`.
       return buildTypedTaskEvent({ ...base, type: "forget", program: command.scope });
+    case "schedule_admin":
+      // action rides `program` ("list" | "cancel"); a cancel's target id rides metadata.
+      return buildTypedTaskEvent({
+        ...base,
+        type: "schedule_admin",
+        program: command.action,
+        ...(command.action === "cancel"
+          ? { metadata: { ...base.metadata, schedule_id: command.schedule_id } }
+          : {})
+      });
     case "approve":
     case "deny":
       return buildTypedTaskEvent({ ...base, type: command.type, approval_id: command.approval_id });

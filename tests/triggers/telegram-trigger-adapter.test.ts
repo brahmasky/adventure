@@ -142,6 +142,38 @@ describe("normalizeTelegramUpdate", () => {
     });
   });
 
+  it("normalizes /schedule into schedule_admin: action on program, cancel id in metadata (B10b)", () => {
+    const list = taskEvent(
+      normalizeTelegramUpdate(
+        {
+          update_id: 1010,
+          message: { message_id: 70, text: "/schedule", from: { id: 111 }, chat: { id: 222 } }
+        },
+        allowlist
+      )
+    );
+    expect(list.type).toBe("schedule_admin");
+    expect(list.program).toBe("list");
+    expect(list.metadata).toEqual({ telegram_update_id: 1010, telegram_message_id: 70 });
+
+    const cancel = taskEvent(
+      normalizeTelegramUpdate(
+        {
+          update_id: 1011,
+          message: { message_id: 71, text: "/schedule cancel sch_abc", from: { id: 111 }, chat: { id: 222 } }
+        },
+        allowlist
+      )
+    );
+    expect(cancel.type).toBe("schedule_admin");
+    expect(cancel.program).toBe("cancel");
+    expect(cancel.metadata).toEqual({
+      telegram_update_id: 1011,
+      telegram_message_id: 71,
+      schedule_id: "sch_abc"
+    });
+  });
+
   it("normalizes /deny without creating a program", () => {
     const result = normalizeTelegramUpdate(
       {

@@ -4,6 +4,7 @@ import { resolveTzEvidenceEnabled } from "../capabilities/time-convert.js";
 import { resolveSkillsEnabled } from "../skills/skill-store.js";
 import { resolveHttpFetchEnabled } from "../web/http-fetch.js";
 import { resolveTimeToolEnabled } from "../prompt/tz-convert.js";
+import { resolveSchedulerEnabled } from "../run/schedule-spec.js";
 import type { RiskLevel, SideEffectLevel } from "../domain/types.js";
 
 /**
@@ -96,6 +97,22 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
     side_effect_level: "none",
     risk_level: "low",
     output_limit_bytes: 100_000
+  },
+  // Scheduler v1 (B10b, ADR 0017): the schedule is internal bookkeeping like lesson_write —
+  // a local sqlite row, no external side effect at creation time (the FIRE rides the normal
+  // gateway path later), so it mirrors lesson_write's none/low and trips no approval gate.
+  // The adapter validates the spec, caps schedules per chat, and sanitizes the goal.
+  schedule_task: {
+    name: "schedule_task",
+    description:
+      "Schedule a recurring or one-time task: at each scheduled time Houge runs the given goal as a fresh message in this chat and sends the result. Use it when the user asks for something periodic or at a future time ('每周一早上8点给我AI周报', 'remind me tomorrow 9am'). To cancel an existing schedule, pass its id as {\"cancel\":\"sch_...\"}.",
+    inputSketch:
+      '{"goal":"AI周报：搜HN/X本周AI新闻并总结","spec":{"kind":"weekly","day":"mon","at":"08:00"} or {"kind":"daily","at":"08:00"} or {"kind":"once","at_iso":"2026-07-20T22:00:00Z"},"tz":"Australia/Sydney (optional; defaults to your local timezone)"}',
+    category: "tool",
+    side_effect_level: "none",
+    risk_level: "low",
+    output_limit_bytes: 100_000,
+    armed: resolveSchedulerEnabled
   },
   // The evolution layers as loop tools (ADR 0013, step ⓪·2). Each is a THIN boundary
   // around the unchanged legacy pipeline: inside, the machinery runs under its own

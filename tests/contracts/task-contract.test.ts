@@ -65,6 +65,7 @@ describe("compileTaskContract", () => {
         "to_local_time",
         "llm_answer",
         "lesson_write",
+        "schedule_task",
         "self_diagnose",
         "self_write_propose",
         "skill_author",

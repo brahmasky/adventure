@@ -130,6 +130,7 @@ slash-only control commands keep it inspectable (idempotent, no run, no budget):
 
 - `/lessons [scope]` — view the lesson block(s); shows the raw block plus char-count/cap so you can see consolidation pressure. With no scope, lists all scopes.
 - `/forget <scope>` — clears that scope's lesson block and acks.
+- `/schedule` · `/schedule cancel <id>` — list/cancel this chat's scheduled tasks; schedules are created conversationally via the `schedule_task` loop tool ("每周一早上8点给我AI周报") — ADR 0017.
 
 → The composer, conversational learning, and the self-critique pass:
 [configuration reference](docs/reference/configuration.md#learning--conversational-distillation-and-lesson_blocks).

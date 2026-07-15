@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
-import { Gateway } from "../../src/gateway/gateway.js";
+import {
+  formatScheduleCancelledText,
+  Gateway,
+  SCHEDULE_CANCEL_NOT_FOUND_TEXT,
+  SCHEDULE_GOAL_PREVIEW_CHARS,
+  SCHEDULE_LIST_EMPTY_TEXT
+} from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { SkillStore } from "../../src/skills/skill-store.js";
 import { isSelfWriteActionEvent, normalizeTelegramUpdate } from "../../src/triggers/telegram-trigger-adapter.js";
@@ -338,6 +344,126 @@ describe("Gateway telegram events", () => {
     } finally {
       store.close();
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("/schedule lists THIS chat's schedules in the documented row shape, idempotent on redelivery (B10b)", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      const longGoal = `AI周报：${"搜".repeat(SCHEDULE_GOAL_PREVIEW_CHARS)}`; // > preview cap
+      const mine = store.addScheduledTask({
+        chat_id: "222",
+        goal: longGoal,
+        spec_json: '{"kind":"weekly","day":"mon","at":"08:00"}',
+        tz: "Australia/Sydney",
+        next_run_at: "2026-07-19T22:00:00.000Z", // = Mon 2026-07-20 08:00 Sydney
+        now: "2026-07-15T00:00:00.000Z"
+      });
+      // Another chat's schedule must never leak into this chat's list.
+      store.addScheduledTask({
+        chat_id: "999",
+        goal: "other chat secret",
+        spec_json: '{"kind":"daily","at":"07:00"}',
+        tz: "Australia/Sydney",
+        next_run_at: "2026-07-15T21:00:00.000Z",
+        now: "2026-07-15T00:00:00.000Z"
+      });
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "schedule_admin",
+        program: "list",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:schedule-list",
+        source_reference: "telegram:update:30:message:1"
+      });
+      const first = gateway.intake(event);
+      const second = gateway.intake(event); // redelivered update
+      expect(first).toEqual({ ok: true, status: "schedule_admin_returned", run_id: "" });
+      expect(second).toEqual(first);
+      expect(store.countNotificationsByIdempotencyKey("telegram:schedule-list:schedule")).toBe(1);
+
+      const note = store.claimNextNotification("test", 30);
+      const text = String(note?.payload.text);
+      // Row shape: sch_x · weekly mon 08:00 Australia/Sydney · next 2026-07-20 08:00 (Sydney) · <goal ≤60>…
+      expect(text).toContain(`${mine.schedule_id} · weekly mon 08:00 Australia/Sydney · next 2026-07-20 08:00 (Sydney) · `);
+      expect(text).toContain(`${longGoal.slice(0, SCHEDULE_GOAL_PREVIEW_CHARS)}…`);
+      expect(text).not.toContain(longGoal); // the full goal is capped on the row
+      expect(text).not.toContain("other chat secret"); // list is chat-scoped
+    } finally {
+      store.close();
+    }
+  });
+
+  it("/schedule with no schedules reports the code-owned empty text", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "schedule_admin",
+        program: "list",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:schedule-empty",
+        source_reference: "telegram:update:31:message:1"
+      });
+      expect(gateway.intake(event)).toEqual({ ok: true, status: "schedule_admin_returned", run_id: "" });
+      const note = store.claimNextNotification("test", 30);
+      expect(note?.payload.text).toBe(SCHEDULE_LIST_EMPTY_TEXT);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("/schedule cancel disables THIS chat's schedule; a cross-chat cancel reads exactly like not-found", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      const mine = store.addScheduledTask({
+        chat_id: "222",
+        goal: "mine",
+        spec_json: '{"kind":"daily","at":"08:00"}',
+        tz: "Australia/Sydney",
+        next_run_at: "2026-07-15T22:00:00.000Z",
+        now: "2026-07-15T00:00:00.000Z"
+      });
+      const theirs = store.addScheduledTask({
+        chat_id: "999",
+        goal: "theirs",
+        spec_json: '{"kind":"daily","at":"08:00"}',
+        tz: "Australia/Sydney",
+        next_run_at: "2026-07-15T22:00:00.000Z",
+        now: "2026-07-15T00:00:00.000Z"
+      });
+      const cancelEvent = (key: string, schedule_id: string) =>
+        buildTypedTaskEvent({
+          source: "telegram",
+          type: "schedule_admin",
+          program: "cancel",
+          metadata: { schedule_id },
+          requested_by: { kind: "user", id: "paco" },
+          notify: { kind: "telegram", chat_id: "222" },
+          idempotency_key: key,
+          source_reference: `telegram:update:${key}:message:1`
+        });
+
+      // CROSS-CHAT REFUSED: chat 222 cannot cancel chat 999's schedule, and the reply
+      // is byte-identical to a nonexistent id (no probe signal).
+      expect(gateway.intake(cancelEvent("telegram:schedule-cancel-theirs", theirs.schedule_id)).ok).toBe(true);
+      expect(store.claimNextNotification("a", 30)?.payload.text).toBe(SCHEDULE_CANCEL_NOT_FOUND_TEXT);
+      expect(store.getScheduledTask(theirs.schedule_id)!.state).toBe("enabled");
+
+      expect(gateway.intake(cancelEvent("telegram:schedule-cancel-missing", "sch_missing")).ok).toBe(true);
+      expect(store.claimNextNotification("b", 30)?.payload.text).toBe(SCHEDULE_CANCEL_NOT_FOUND_TEXT);
+
+      // Own-chat cancel works and acks with the schedule id.
+      expect(gateway.intake(cancelEvent("telegram:schedule-cancel-mine", mine.schedule_id)).ok).toBe(true);
+      expect(store.claimNextNotification("c", 30)?.payload.text).toBe(formatScheduleCancelledText(mine.schedule_id));
+      expect(store.getScheduledTask(mine.schedule_id)!.state).toBe("disabled");
+    } finally {
+      store.close();
     }
   });
 

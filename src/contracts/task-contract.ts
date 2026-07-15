@@ -177,6 +177,9 @@ function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
       "to_local_time",
       "llm_answer",
       "lesson_write",
+      // schedule_task (B10b, ADR 0017) is armed-listed like http_fetch: allowed in the
+      // envelope, on the model's menu only when HOUGE_SCHEDULER_ENABLED arms it.
+      "schedule_task",
       "self_diagnose",
       "self_write_propose",
       "skill_author",

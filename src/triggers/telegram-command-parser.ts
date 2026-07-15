@@ -7,6 +7,8 @@ export type TelegramCommand =
   | { type: "lessons"; scope?: string }
   | { type: "skills"; scope?: string }
   | { type: "forget"; scope: string }
+  | { type: "schedule_admin"; action: "list" }
+  | { type: "schedule_admin"; action: "cancel"; schedule_id: string }
   | { type: "approve"; approval_id: string }
   | { type: "deny"; approval_id: string };
 
@@ -37,6 +39,7 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
   if (command === "/lessons") return parseLessons(rest);
   if (command === "/skills") return parseSkills(rest);
   if (command === "/forget") return parseForget(rest);
+  if (command === "/schedule") return parseSchedule(rest);
   if (command === "/approve") return requiredApproval("approve", rest);
   if (command === "/deny") return requiredApproval("deny", rest);
   // Unknown slash-prefixed text is NOT a control command — treat it as natural
@@ -81,6 +84,17 @@ function parseForget(words: string[]): TelegramCommandParseResult {
   if (words.length === 0) return invalid("/forget requires a scope");
   if (words.length > 1) return invalid("/forget requires exactly one scope");
   return { ok: true, command: { type: "forget", scope: words[0]! } };
+}
+
+/** `/schedule` (bare) lists this chat's schedules; `/schedule cancel <id>` disables one. */
+function parseSchedule(words: string[]): TelegramCommandParseResult {
+  if (words.length === 0) return { ok: true, command: { type: "schedule_admin", action: "list" } };
+  if (words[0] === "cancel") {
+    const schedule_id = words[1];
+    if (words.length !== 2 || !schedule_id) return invalid("/schedule cancel requires exactly one schedule id");
+    return { ok: true, command: { type: "schedule_admin", action: "cancel", schedule_id } };
+  }
+  return invalid("/schedule takes no arguments, or: /schedule cancel <schedule_id>");
 }
 
 function requiredApproval(type: Extract<TaskEventType, "approve" | "deny">, words: string[]): TelegramCommandParseResult {

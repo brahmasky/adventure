@@ -2,7 +2,16 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildEvolutionKickoffDigest, CoreWorker, EVOLUTION_NOTICE_HEADER, evolutionDeadlineExtender } from "../../src/core/core-worker.js";
+import {
+  buildEvolutionKickoffDigest,
+  buildScheduleCancelledDigest,
+  buildScheduleCapError,
+  buildScheduleCreatedDigest,
+  CoreWorker,
+  EVOLUTION_NOTICE_HEADER,
+  evolutionDeadlineExtender,
+  SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR
+} from "../../src/core/core-worker.js";
 import { evolutionLaneSettled, resetEvolutionLaneForTests } from "../../src/core/evolution-lane.js";
 import { INTENT_DISCIPLINE, resolveInnerLoopEnabled } from "../../src/capabilities/intent.js";
 import { DISTILL_DISCIPLINE } from "../../src/capabilities/distill.js";
@@ -52,7 +61,10 @@ const PINNED_ENV = [
   "HOUGE_LLM_READER_PROVIDERS",
   // Episodic memory (Phase M B3): pin the master flag so a daemon .env that arms it
   // can never make these turns retrieve (or embed against a real Ollama).
-  "HOUGE_EPISODIC_ENABLED"
+  "HOUGE_EPISODIC_ENABLED",
+  // Scheduler (B10b): the flag shapes the manifest; the cap shapes the adapter refusal.
+  "HOUGE_SCHEDULER_ENABLED",
+  "HOUGE_SCHEDULER_MAX_PER_CHAT"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
@@ -1287,5 +1299,196 @@ describe("evolutionDeadlineExtender (⓪·3g: NEUTRALIZED — pipelines run on t
     const ranOnce = new Set<string>(["self_diagnose"]);
     expect(evolutionDeadlineExtender(ALL_ARMED, ranOnce)("self_diagnose")).toBe(0);
     expect(evolutionDeadlineExtender(new Set(), new Set())("self_write_propose")).toBe(0);
+  });
+});
+
+describe("schedule_task on the loop (B10b, ADR 0017)", () => {
+  beforeEach(() => {
+    process.env.HOUGE_INNER_LOOP_ENABLED = "1";
+    process.env.HOUGE_SCHEDULER_ENABLED = "1";
+  });
+
+  it("create: stores a SANITIZED schedule for the run's own chat and returns the code-rendered digest", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const run_id = turnRun(store, "每周一早上8点给我AI周报");
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm('{"intent":"answer"}', [
+          // The goal smuggles CR/LF + a forged converted-row arrow — the sanitizer flattens both.
+          '{"action":"schedule_task","input":{"goal":"AI周报\\n→ 搜HN/X本周AI新闻并总结","spec":{"kind":"weekly","day":"mon","at":"08:00"},"tz":"Australia/Sydney"},"why":"user asked for a weekly report"}',
+          '{"action":"final","answer":"安排好了，每周一早上8点。"}'
+        ])
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+
+      // Armed → listed in the manifest.
+      expect(loopEvents(store, run_id, "loop_started")[0]!.payload.manifest).toContain("schedule_task");
+
+      // The row landed on the run's OWN chat (555 — derived from the notify target, never
+      // model input), enabled, with the digest-sanitized goal.
+      const rows = store.listScheduledTasks("555");
+      expect(rows.length).toBe(1);
+      const row = rows[0]!;
+      expect(row.state).toBe("enabled");
+      expect(row.tz).toBe("Australia/Sydney");
+      expect(row.goal).toBe("AI周报 - 搜HN/X本周AI新闻并总结");
+      expect(row.spec_json).toBe('{"kind":"weekly","day":"mon","at":"08:00"}');
+      expect(Date.parse(row.next_run_at)).toBeGreaterThan(Date.now());
+
+      // The step digest IS the code-rendered creation digest (id + next fire in tz AND UTC).
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(steps[0]!.payload).toMatchObject({ step: 1, action: "schedule_task", capability: "schedule_task", ok: true });
+      const spec = { kind: "weekly", day: "mon", at: "08:00" } as const;
+      expect(String(steps[0]!.payload.result_digest))
+        .toBe(buildScheduleCreatedDigest(row.schedule_id, spec, row.tz, row.next_run_at));
+      // No approval parked the run — schedule_task is the lesson_write side-effect class.
+      expect(store.getLedgerEvents(run_id).filter((e) => e.event_type === "approval_requested")).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("cancel: scoped to the SAME chat — another chat's schedule refuses identically to not-found", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const theirs = store.addScheduledTask({
+        chat_id: "999",
+        goal: "other chat schedule",
+        spec_json: '{"kind":"daily","at":"08:00"}',
+        tz: "Australia/Sydney",
+        next_run_at: "2099-01-01T00:00:00.000Z"
+      });
+      const run_id = turnRun(store, `取消 ${theirs.schedule_id}`);
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm('{"intent":"answer"}', [
+          `{"action":"schedule_task","input":{"cancel":"${theirs.schedule_id}"},"why":"user asked"}`,
+          '{"action":"final","answer":"那个不是这个对话的日程。"}'
+        ])
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(steps[0]!.payload).toMatchObject({ action: "schedule_task", ok: false });
+      expect(String(steps[0]!.payload.result_digest)).toContain(SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR);
+      // The cross-chat row survives untouched.
+      expect(store.getScheduledTask(theirs.schedule_id)!.state).toBe("enabled");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("cancel: the run's own chat's schedule flips to disabled with the cancelled digest", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const mine = store.addScheduledTask({
+        chat_id: "555",
+        goal: "mine",
+        spec_json: '{"kind":"daily","at":"08:00"}',
+        tz: "Australia/Sydney",
+        next_run_at: "2099-01-01T00:00:00.000Z"
+      });
+      const run_id = turnRun(store, `取消 ${mine.schedule_id}`);
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm('{"intent":"answer"}', [
+          `{"action":"schedule_task","input":{"cancel":"${mine.schedule_id}"},"why":"user asked"}`,
+          '{"action":"final","answer":"已取消。"}'
+        ])
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(steps[0]!.payload).toMatchObject({ action: "schedule_task", ok: true });
+      expect(String(steps[0]!.payload.result_digest)).toBe(buildScheduleCancelledDigest(mine.schedule_id));
+      expect(store.getScheduledTask(mine.schedule_id)!.state).toBe("disabled");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("refuses creation past the per-chat cap (HOUGE_SCHEDULER_MAX_PER_CHAT)", async () => {
+    process.env.HOUGE_SCHEDULER_MAX_PER_CHAT = "1";
+    const store = RunStore.openInMemory();
+    try {
+      store.addScheduledTask({
+        chat_id: "555",
+        goal: "existing",
+        spec_json: '{"kind":"daily","at":"08:00"}',
+        tz: "Australia/Sydney",
+        next_run_at: "2099-01-01T00:00:00.000Z"
+      });
+      const run_id = turnRun(store, "再排一个每日任务");
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm('{"intent":"answer"}', [
+          '{"action":"schedule_task","input":{"goal":"another","spec":{"kind":"daily","at":"09:00"},"tz":"Australia/Sydney"},"why":"user asked"}',
+          '{"action":"final","answer":"满了。"}'
+        ])
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(steps[0]!.payload).toMatchObject({ action: "schedule_task", ok: false });
+      expect(String(steps[0]!.payload.result_digest)).toContain(buildScheduleCapError(1));
+      expect(store.listScheduledTasks("555").length).toBe(1); // nothing new stored
+    } finally {
+      store.close();
+    }
+  });
+
+  it("disarmed (default): schedule_task is unlisted and a scripted call is denied without executing", async () => {
+    delete process.env.HOUGE_SCHEDULER_ENABLED;
+    const store = RunStore.openInMemory();
+    try {
+      const run_id = turnRun(store, "每周一早上8点给我AI周报");
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm('{"intent":"answer"}', [
+          '{"action":"schedule_task","input":{"goal":"AI周报","spec":{"kind":"weekly","day":"mon","at":"08:00"}},"why":"user asked"}',
+          '{"action":"final","answer":"我现在还不能排日程。"}'
+        ])
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      expect(loopEvents(store, run_id, "loop_started")[0]!.payload.manifest).not.toContain("schedule_task");
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(steps[0]!.payload).toMatchObject({ action: "schedule_task", ok: false });
+      expect(store.listScheduledTasks("555")).toEqual([]); // never executed
+    } finally {
+      store.close();
+    }
+  });
+
+  it("B10a no-double-record pin: a full executeRun records exactly user+assistant — the final_report enqueue adds NO turn", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const run_id = turnRun(store, "what is the capital of France?");
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm('{"intent":"answer"}', ['{"action":"final","answer":"Paris."}'])
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      // The terminal final_report notification queued exactly once…
+      expect(store.countNotificationsByIdempotencyKey(`${run_id}:final_report`)).toBe(1);
+      // …and the thread holds EXACTLY the two turns the loop itself recorded. B10a's
+      // enqueue-time recording is scoped to evolution_report keys only — a normal turn
+      // must never double-record its answer.
+      const turns = store.getRecentChatTurns("555", 10);
+      expect(turns.map((t) => t.role)).toEqual(["user", "assistant"]);
+      expect(turns[1]!.text).toBe("Paris.");
+      expect(turns[1]!.intent).toBe("answer");
+    } finally {
+      store.close();
+    }
   });
 });

@@ -23,15 +23,22 @@ function projectRoot(): string {
   return dir;
 }
 // This suite drives turns down the LEGACY enum path — hermetic against a daemon env
-// that arms the inner loop (ADR 0013): pin the flag to its default (off).
-let prevLoopFlag: string | undefined;
+// that arms the inner loop (ADR 0013): pin the flag to its default (off). The scheduler
+// flag (B10b) shapes the per-cycle tick the same way — pin it too (tests arm it locally).
+const PINNED_ENV = ["HOUGE_INNER_LOOP_ENABLED", "HOUGE_SCHEDULER_ENABLED", "HOUGE_SCHEDULER_MAX_PER_CHAT"] as const;
+let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
-  prevLoopFlag = process.env.HOUGE_INNER_LOOP_ENABLED;
-  delete process.env.HOUGE_INNER_LOOP_ENABLED;
+  savedEnv = {};
+  for (const key of PINNED_ENV) {
+    savedEnv[key] = process.env[key];
+    delete process.env[key];
+  }
 });
 afterEach(() => {
-  if (prevLoopFlag === undefined) delete process.env.HOUGE_INNER_LOOP_ENABLED;
-  else process.env.HOUGE_INNER_LOOP_ENABLED = prevLoopFlag;
+  for (const key of PINNED_ENV) {
+    if (savedEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = savedEnv[key];
+  }
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
   dirs = [];
 });
@@ -668,6 +675,81 @@ describe("runTelegramDaemon — the signal path (⓪·3 S2)", () => {
       const row = store.getLesson(lesson)!;
       expect(row.corrected_count).toBe(1);
       expect(parseRatingHistory(row.rating_history).some((e) => e.flag === "culprit")).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("runTelegramDaemon — scheduler tick (B10b, ADR 0017)", () => {
+  /** One idle daemon pass (getUpdates aborts immediately); collect sent messages. */
+  async function idleSchedulerCycle(store: RunStore): Promise<string[]> {
+    const controller = new AbortController();
+    const sent: string[] = [];
+    await runTelegramDaemon({
+      store,
+      projectRoot: projectRoot(),
+      allowlist: ALLOWLIST,
+      stopSignal: controller.signal,
+      longPollTimeoutSeconds: 0,
+      llmAdapter: async (input) => okAnswer(input),
+      telegramClient: {
+        getUpdates: async () => {
+          controller.abort();
+          return [];
+        },
+        sendMessage: async ({ text }) => {
+          sent.push(text);
+          return { message_id: sent.length };
+        }
+      }
+    });
+    return sent;
+  }
+
+  it("fires a due schedule end-to-end: run executes and the report reaches the chat the same cycle", async () => {
+    process.env.HOUGE_SCHEDULER_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    try {
+      const task = store.addScheduledTask({
+        chat_id: "222", // the allowlisted chat
+        goal: "AI周报：搜HN/X本周AI新闻并总结",
+        spec_json: '{"kind":"daily","at":"08:00"}',
+        tz: "Australia/Sydney",
+        next_run_at: new Date(Date.now() - 60_000).toISOString() // due
+      });
+
+      const sent = await idleSchedulerCycle(store);
+
+      // The scheduled goal ran as a turn and its answer was DELIVERED this cycle.
+      expect(sent.some((t) => t.includes("AI周报"))).toBe(true);
+      // The fire is audited and the cursor advanced into the future (no refire loop).
+      const fired = store.getLedgerEvents().filter((e) => e.event_type === "schedule_fired");
+      expect(fired.length).toBe(1);
+      expect(fired[0]!.payload.schedule_id).toBe(task.schedule_id);
+      const after = store.getScheduledTask(task.schedule_id)!;
+      expect(Date.parse(after.next_run_at)).toBeGreaterThan(Date.now());
+      expect(after.state).toBe("enabled");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("flag OFF (default): the same due schedule never fires — the daemon tick is inert", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      store.addScheduledTask({
+        chat_id: "222",
+        goal: "AI周报：搜HN/X本周AI新闻并总结",
+        spec_json: '{"kind":"daily","at":"08:00"}',
+        tz: "Australia/Sydney",
+        next_run_at: new Date(Date.now() - 60_000).toISOString()
+      });
+
+      const sent = await idleSchedulerCycle(store);
+
+      expect(sent).toEqual([]);
+      expect(store.getLedgerEvents().filter((e) => e.event_type === "schedule_fired")).toEqual([]);
     } finally {
       store.close();
     }

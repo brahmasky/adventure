@@ -247,9 +247,9 @@ Flip [Merge & reload] from human-tapped to autonomous (notify-after) ONLY when A
 
 ### Backlog (ranked, with pointers; none scheduled)
 
-1. **Scheduler ADR** — proactive/self-initiated runs (「等我确认后告诉你」, scheduled wiki
-   refresh). New trigger SOURCE feeding the same gateway→worker path; must design self-initiated
-   runs × breaker × rate limits. Vestigial schedule types exist in `domain/state-machines`.
+1. **Scheduler** — SHIPPED as scheduler v1 (B10b, 2026-07-15): see
+   [ADR 0017](decisions/0017-scheduler.md) for the design (new trigger SOURCE, same
+   gateway→worker path, breaker as the blast-radius net, fire-then-advance misfire policy).
 2. **Phase 3.2 provider quota/cost surfacing** — design done (todo.md), classify provider
    errors (rate_limit/auth/timeout), per-run cost line; notify-only. Partly overlaps S-2.
 3. **`houge.sqlite` backup/durability** — WAL-safe periodic snapshot or litestream; low effort,

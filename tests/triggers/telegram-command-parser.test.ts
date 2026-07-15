@@ -104,6 +104,29 @@ describe("parseTelegramCommand", () => {
     });
   });
 
+  it("parses /schedule (bare = list) and /schedule cancel <id> (B10b)", () => {
+    expect(parseTelegramCommand("/schedule")).toEqual({
+      ok: true,
+      command: { type: "schedule_admin", action: "list" }
+    });
+    expect(parseTelegramCommand("/schedule cancel sch_abc")).toEqual({
+      ok: true,
+      command: { type: "schedule_admin", action: "cancel", schedule_id: "sch_abc" }
+    });
+    expect(parseTelegramCommand("/schedule cancel")).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/schedule cancel requires exactly one schedule id" }
+    });
+    expect(parseTelegramCommand("/schedule cancel sch_a sch_b")).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/schedule cancel requires exactly one schedule id" }
+    });
+    expect(parseTelegramCommand("/schedule list")).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/schedule takes no arguments, or: /schedule cancel <schedule_id>" }
+    });
+  });
+
   it("no longer parses /teach — it becomes a turn", () => {
     expect(parseTelegramCommand("/teach research: prefer filings")).toEqual({
       ok: true,
