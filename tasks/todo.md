@@ -1,3 +1,70 @@
+# ✅ DONE — B10: outbox→chat_turns fix + scheduler v1 — SHIPPED + LIVE-GATED 2026-07-15 09:0x
+
+**Commits 6011afb (build) + a5d903d (in_minutes fix). Daemon live, HOUGE_SCHEDULER_ENABLED=true
+(PID 89248). Two real schedules exist: Paco's weekly AI周报 (Mon 08:00 Sydney, next 07-20) and
+the fired+disabled water-reminder test.**
+
+**Live gate (real daemon, Paco's Telegram):** planner created both schedules via schedule_task
+on step 1 (weekly wall-clock math verified: 2026-07-19T22:00Z = Mon 08:00 AEST); tick fired the
+once schedule within 30s of due time → source:"schedule" run → answer delivered to Telegram AND
+recorded in chat_turns (user goal + assistant reply) → row self-disabled; schedule_fired ledger
+event with occurrence-keyed idempotency. GATE CATCH: the planner computed once.at_iso itself
+with a +11 (AEDT) offset in July — prose said 18:04 Sydney, at_iso said 19:04 — the
+timezone-math-by-LLM class re-entering through the scheduler's front door. FIXED same session:
+{kind:"once",in_minutes:N} code-side math + tool-description steering (a5d903d); the mistimed
+test row was left to fire naturally (live-DB write declined by permission layer — correctly).
+
+**Verifier: SHIP-WITH-NITS.** Held: self-replication bounded at cap under a real
+schedule-creates-schedule loop (60 ticks); goal injection (digest can't forge CONVERTED_ROW;
+bare-digit goal survives rating capture; /commands are literal turn text); DST both directions
++ nonexistent/ambiguous hours; misfire single-fire; real-DB migration copy. Fixed pre-commit:
+F1 U+2028/29/85 goal smuggling (verifier, in-tree); F2 failed rows now cancellable; F3 budget
+fuse now PAUSES schedules instead of bricking them in 3 ticks. F4 (advance→execute crash window
+orphans one occurrence) documented in ADR as accepted v1 + boot-sweep residual. 1385/1385 both
+sweeps incl. armed env.
+
+**Residuals queued:** boot-sweep for queued schedule-sourced runs (F4); sibling sanitizers
+time-convert.ts/quarantine.ts missing U+2028/29/85 (pre-existing class, verifier note); the
+weekly-report skill body is still the off-target generic status report (Gate B 0.00) — Monday's
+fire will use the goal text not the skill, fine, but the skill file could be cleaned/discarded.
+
+(original plan below)
+
+## (was IN PROGRESS) — /goal 2026-07-15
+
+**Goal (Paco): "fix the chat_turns bug and add scheduler".**
+
+**B10a — background reports become chat turns:** outbox-delivered final_reports from background
+lanes (evolution/skill pipelines) are invisible to conversational context + episodic distiller
+(03:27 Gate B report → "上面的" reference failed twice). Record them as assistant chat_turns —
+dedupe against delivery retries; decide record-at-enqueue vs record-at-delivery after recon.
+
+**B10b — scheduler v1:** `scheduled_tasks` store + daemon-tick firing (the poll loop is the
+clock, like decay/consolidate) + a loop tool so Houge can create schedules from conversation
+("每周一早上来一份周报") + list/cancel path. Schedule spec v1: weekly/daily/once at HH:MM in
+Australia/Sydney (code-computed next_run, no deps). Fired task = synthesized turn/run through
+the Gateway (CLI-trigger precedent), result delivered via outbox (which, after B10a, also
+lands in chat_turns).
+
+**Checklist:**
+- [x] Recon. Key: B10a records at enqueue-time inside enqueueEvolutionReportNotification gated
+      on the existing (target_key, idempotency_key) latch status==="queued" + telegram target
+      (exactly-once free; delivery-time hooking rejected — transport coupling + retry dedupe).
+      B10b: vestigial schedule types EXIST (TriggerSource "schedule", Identity kind, ScheduleState
+      machine, schedule_fired/schedule_skipped_duplicate ledger events — all unused); tick slots
+      into runSignalPathTick (single-threaded with runs; must thread gateway+worker in);
+      synthesized events skip telegram rate-limit/allowlist → self-discipline requested_by
+      {kind:"schedule"}; global 24h breaker was BUILT for this consumer; wallClockToInstant
+      (tz-convert, private) is the DST-correct next-run primitive to export; rating-capture
+      digit-swallow caveat needs a source guard; ADR = roadmap backlog #1.
+- [x] Sharpen specs; build subagent (resumed once across a session-limit kill; 1358/1358)
+- [x] Adversarial verifier (SHIP-WITH-NITS); F1 in-tree, F2+F3 fixed pre-commit → 6011afb
+- [x] LIVE gate: both schedules created conversationally; once-fire → Telegram + chat_turns;
+      gate caught the at_iso offset slip → in_minutes fix a5d903d; daemon rolled twice
+- [x] Session record
+
+---
+
 # ✅ DONE — Phase M: ② conversational-episodic memory (B1–B5 + accelerated B6) — SHIPPED + LIVE 2026-07-15 03:0x
 
 **Commits 0ac9bc2 (build, +3950 lines) + 3b7c90b (gate-script fix). Daemon live with
@@ -30,6 +97,23 @@ sanitization lives in parse layer not store (future direct-store callers must sa
 **B6 soak protocol:** Paco states durable facts naturally over Telegram; distill fires ~30min
 after chat lull (watch ledger episodic_distill_pass); days later Houge should use them
 unprompted; corrections should supersede. Judge over the week.
+
+**Soak findings 07-15 morning (chat review after restart):**
+- Backfill bootstrap: watermark started null → distill churned the FULL history oldest-first,
+  24 turns/tick ×12 ticks (06-19→07-07 consumed; ~90 turns remain for next lull). Bounded,
+  one-time, fact quality good (21 active: cybersecurity pro, Sydney-time rule, stock style…).
+  Working as designed but undocumented — note for ops.
+- NEW BUG (queued): background evolution/skill reports (outbox final_report, e.g. the 03:27
+  Gate B message) are NOT recorded as chat_turns → Houge cannot resolve "上面的" references to
+  its own reports (guessed Black Myth Wukong for "Gate B 零分" twice). Fix candidate: record
+  outbox-delivered reports as assistant turns.
+- Skill gap (queued): "每周一早上来一份周报" → skill_author wrote generate-weekly-report v1 but
+  Gate B scored it 0.00 (body drifted to generic work-status report, not the asked-for AI-news
+  digest; near-dup of existing ai-weekly-industry-news-report.md). AND no scheduler exists —
+  a skill is retrieved-on-ask; nothing will proactively fire Monday mornings. Paco's ask is
+  unserved without a cron/schedule mechanism (roadmap candidate).
+- Recon erratum: skill_author was armed all along (resolveSkillsEnabled defaults ON; the
+  07-13 recon read it as disarmed).
 
 (original plan below)
 

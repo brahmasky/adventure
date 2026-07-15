@@ -557,3 +557,34 @@ Build + independent adversarial verification subagents; each live round found a 
 - Residuals: English-fact language slip (cosmetic), inline distill latency in the poll loop
   (watch first ticks), embeddings-only merge clustering (backfill deferred), legacy enum path
   unwired (dead in production), parse-layer-only sanitization (contract note).
+
+## 2026-07-15 (late) — B10: background reports → chat_turns + scheduler v1 (SHIPPED, live-gated)
+- Paco /goal: "fix the chat_turns bug and add scheduler" — both born from the morning chat
+  review (Gate B reference miss; 每周一周报 ask unserved by a skill alone).
+- Recon: outbox (target_key, idempotency_key) uniqueness is a free exactly-once latch for
+  B10a; the repo carried VESTIGIAL scheduler scaffolding (schedule TriggerSource/Identity,
+  ScheduleState machine, schedule_fired events) since Milestone 2 — B10b wired it live.
+  Roadmap backlog #1 (Scheduler ADR) → ADR 0017.
+- BUILD (subagent, resumed once after a session-limit kill mid-edit — SendMessage continuation
+  worked cleanly): B10a records the assistant turn at enqueue-time on the queued latch;
+  B10b = scheduled_tasks store + DST-correct spec math (wallClockToInstant exported) +
+  schedule_task loop tool (per-chat cap = self-replication bound) + daemon tick (≤3/tick,
+  fire-then-advance-from-now) + /schedule list/cancel + docs. Verifier SHIP-WITH-NITS:
+  self-replication converged AT the cap under a real create-loop; F1 U+2028 goal smuggling
+  fixed in-tree; I fixed F2 (failed rows cancellable) + F3 (budget fuse now PAUSES due
+  schedules — counting fuse refusals had bricked them in ~3 ticks against the breaker's whole
+  purpose) pre-commit; F4 (advance→execute crash orphan) accepted in ADR + residual.
+  1383/1383 → commit 6011afb; scheduler armed in .env after the armed-env sweep.
+- LIVE GATE on the real daemon (Paco's Telegram): weekly AI周报 created conversationally
+  (Mon 08:00 Sydney = 2026-07-19T22:00Z ✓); "3分钟后提醒喝水" created a once schedule — and
+  CAUGHT the next bug class: the planner computed at_iso itself with a +11 offset (July =
+  AEST +10); prose said 18:04, row said 19:04. Fixed same session: {kind:"once",in_minutes}
+  code-side math + description steering ("never compute a UTC timestamp yourself"), a5d903d.
+  The mistimed row fired naturally at 19:04:30 Sydney: source:"schedule" run → «川哥，喝水时间
+  到了！» delivered AND recorded in chat_turns (B10a mechanism carries scheduler output too) →
+  row self-disabled → schedule_fired ledger event. Full chain proven.
+- Ops notes: permission layer correctly declined my direct live-DB row edit (left the row to
+  fire naturally — right call); daemon rolled twice (B10 then in_minutes), PID 89248 final.
+- Day's arc: three /goals shipped (Phase M episodic memory; B10). Houge now: remembers
+  conversations, sees its own background reports in-thread, and acts proactively on schedule.
+  Next roadmap: Phase S (kill-switch + $-ceiling), then ④ wiki.
