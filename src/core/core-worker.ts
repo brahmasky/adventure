@@ -95,6 +95,28 @@ import {
   type ScheduleSpec
 } from "../run/schedule-spec.js";
 import { writeRunReport } from "../report/report-writer.js";
+import { writeWikiPageFile } from "../report/wiki-writer.js";
+import {
+  buildWikiContradictionNotice,
+  buildWikiNeedSourcesError,
+  buildWikiSavedDigest,
+  buildWikiSynthQuestion,
+  dedupeSourceUrls,
+  normalizeTopicSlug,
+  parseWikiContradictions,
+  parseWikiStringArray,
+  parseWikiSynthResult,
+  resolveWikiMaxPages,
+  resolveWikiMinSources,
+  resolveWikiVerifyPasses,
+  sanitizeWikiText,
+  verifyWikiPage,
+  WIKI_SYNTH_DISCIPLINE,
+  WIKI_SYNTH_PARSE_ERROR,
+  WIKI_TITLE_MAX_CHARS,
+  WIKI_TOPIC_REQUIRED_ERROR,
+  type WikiVerifyOutcome
+} from "../capabilities/wiki.js";
 import { resolveLessonCapPerScope, RunStore } from "../run/run-store.js";
 import type { ChatTurnRow, ClaimedRun, EpisodicFactRow, LessonRow, LessonSaveResult, LessonSource } from "../run/run-store.js";
 import { renderEpisodicFactsBlock, retrieveEpisodicFacts } from "../run/episodic-retrieval.js";
@@ -145,6 +167,15 @@ interface LoopTurnContext {
   turnChars: number;
   ranOnce: Set<string>;
   evolutionNotices: string[];
+  /**
+   * Phase W (ADR 0020): the turn's RECORDED external-read step digests, in step order —
+   * post-quarantine by construction (when Dual-LLM is armed, the recorded digest IS the
+   * reader's schema-only extraction). This is the wiki's synthesis material: the model
+   * picks only WHEN and the TOPIC; code supplies what was actually read.
+   */
+  externalReads: Array<{ action: string; digest: string }>;
+  /** The provenance URLs the turn's web_search/http_fetch steps actually read (C3 floor). */
+  sourceUrls: string[];
 }
 
 /** The ⓪·2 evolution tools — their non-success outcomes are surfaced code-owned (see LoopTurnContext). */
@@ -1962,7 +1993,9 @@ export class CoreWorker {
       recentTurns,
       turnChars,
       ranOnce: new Set<string>(),
-      evolutionNotices: []
+      evolutionNotices: [],
+      externalReads: [],
+      sourceUrls: []
     };
 
     const llmTimeoutMs = resolveChainBudgetMs(process.env) + RUNNER_TIMEOUT_BUFFER_MS;
@@ -2040,7 +2073,7 @@ export class CoreWorker {
         // Dual-LLM (ADR 0014): route external-read outputs through the Q-LLM ONLY when armed;
         // absent when OFF ⇒ every action digests inline (byte-identical to today).
         ...(dualLlmOn ? { quarantineReadActions: (action: string) => UNTRUSTED_READ_TOOLS.has(action) } : {}),
-        onStep: (step) =>
+        onStep: (step) => {
           this.runStore.recordLoopStep(claim.run_id, {
             step: step.index,
             action: step.action,
@@ -2050,7 +2083,14 @@ export class CoreWorker {
             // Audit which steps were quarantined: exactly the successful external-read steps
             // when Dual-LLM is ON (the same condition under which the reader hook fires).
             ...(dualLlmOn && step.ok && UNTRUSTED_READ_TOOLS.has(step.action) ? { reader_applied: true } : {})
-          })
+          });
+          // Phase W (ADR 0020): capture the turn's external-read material for the wiki.
+          // The RECORDED digest is post-quarantine by construction — when Dual-LLM is
+          // armed it is the reader's schema-only extraction, never the raw bytes.
+          if (step.ok && UNTRUSTED_READ_TOOLS.has(step.action)) {
+            turnCtx.externalReads.push({ action: step.action, digest: step.resultDigest });
+          }
+        }
       },
       {
         compose: async (input) => {
@@ -2231,6 +2271,11 @@ export class CoreWorker {
         // Provenance audit (parity with runResearch): the URLs Houge read hit the ledger.
         if (result.ok) {
           const rawResults = Array.isArray(result.output.results) ? result.output.results : [];
+          const sourceUrls = rawResults
+            .map((r) => (typeof (r as WebResult).url === "string" ? (r as WebResult).url : ""))
+            .filter((u) => u.length > 0);
+          // Phase W (ADR 0020): the same provenance URLs feed the wiki's min-sources floor.
+          turnCtx.sourceUrls.push(...sourceUrls);
           this.runStore.appendLedgerEvent(
             createLedgerEvent({
               run_id: claim.run_id,
@@ -2241,9 +2286,7 @@ export class CoreWorker {
               payload: {
                 query,
                 provider: typeof result.output.provider === "string" ? result.output.provider : "unknown",
-                source_urls: rawResults
-                  .map((r) => (typeof (r as WebResult).url === "string" ? (r as WebResult).url : ""))
-                  .filter((u) => u.length > 0),
+                source_urls: sourceUrls,
                 result_count: rawResults.length
               }
             })
@@ -2257,6 +2300,10 @@ export class CoreWorker {
         const result = await this.httpFetchAdapter(input);
         // Provenance audit (parity with web_search): the URL Houge read hits the ledger.
         if (result.ok) {
+          // Phase W (ADR 0020): the fetched URL feeds the wiki's min-sources floor too.
+          if (typeof result.output.url === "string" && result.output.url.length > 0) {
+            turnCtx.sourceUrls.push(result.output.url);
+          }
           this.runStore.appendLedgerEvent(
             createLedgerEvent({
               run_id: claim.run_id,
@@ -2286,6 +2333,12 @@ export class CoreWorker {
       // and goal sanitizing all live in code; the digest is code-rendered (never model
       // text), naming the schedule id + next fire in the schedule tz AND UTC.
       return async (input) => this.executeScheduleTask(claim, input);
+    }
+    if (name === "wiki_build" || name === "wiki_refine") {
+      // LLM wiki (Phase W, ADR 0020): one shared adapter — build⇄refine auto-route on
+      // page identity, so the two names can never mint a duplicate page. The synthesis
+      // material is turnCtx's RECORDED external reads (trust anchor), never model input.
+      return async (input) => this.executeWikiUpsert(turnCtx, name, input, claim);
     }
     if (name === "lesson_write") {
       // TRUST ANCHORS: feedback = the turn's real user message (the contract objective);
@@ -2395,6 +2448,183 @@ export class CoreWorker {
     return {
       ok: true,
       output: { answer: buildScheduleCreatedDigest(row.schedule_id, spec, tz, next_run_at) }
+    };
+  }
+
+  /**
+   * The wiki_build/wiki_refine adapter (Phase W, ADR 0020) — one shared upsert. TRUST
+   * ANCHOR: the model's input carries ONLY the topic; any content/body field is ignored.
+   * Synthesis reads the turn's RECORDED external-read digests, the C3 floor demands
+   * ≥ min distinct source URLs this turn, verification runs on the walled "reader"
+   * chain (author ≠ grader), and everything user-facing is code-rendered. The markdown
+   * render and the embedding are best-effort — neither can fail the save; a non-empty
+   * contradiction set is surfaced CODE-OWNED via evolutionNotices (decision 6).
+   */
+  private async executeWikiUpsert(
+    turnCtx: LoopTurnContext,
+    name: string,
+    input: Record<string, unknown>,
+    claim: ClaimedRun
+  ): Promise<ToolAdapterResult> {
+    const topic =
+      typeof input.topic === "string" ? sanitizeWikiText(input.topic).slice(0, WIKI_TITLE_MAX_CHARS) : "";
+    const slug = normalizeTopicSlug(topic);
+    if (topic.length === 0 || slug.length === 0) {
+      return { ok: false, error: WIKI_TOPIC_REQUIRED_ERROR };
+    }
+
+    // C3 deterministic floor: distinct sources actually read THIS turn, else refuse
+    // with the steering digest (fetch first, then save).
+    const minSources = resolveWikiMinSources(process.env);
+    const sources = dedupeSourceUrls(turnCtx.sourceUrls);
+    if (sources.length < minSources || turnCtx.externalReads.length === 0) {
+      return { ok: false, error: buildWikiNeedSourcesError(minSources) };
+    }
+    const digests = turnCtx.externalReads.map((r) => r.digest);
+
+    // Topic identity (C6): exact slug → FTS → cosine (the query embedding is
+    // best-effort — Ollama down just skips the cosine leg). A hit auto-routes to
+    // REFINE regardless of which tool name the model chose — never a duplicate page.
+    let topicEmbedding: Float32Array | null = null;
+    try {
+      topicEmbedding = await this.embedAdapter(topic);
+    } catch {
+      topicEmbedding = null;
+    }
+    const prior = this.runStore.findWikiPageForTopic(topic, slug, topicEmbedding);
+
+    // Synthesis (role "answer"; general-model legs, metered fuse inherited). On refine
+    // the prior page rides the DATA channel with a reconcile instruction (decision 8).
+    const synth = await this.llmAdapterFor(claim.run_id, "answer")({
+      question: buildWikiSynthQuestion(
+        topic,
+        digests,
+        prior
+          ? {
+              title: prior.title,
+              summary: prior.summary,
+              key_facts: parseWikiStringArray(prior.key_facts),
+              body_md: prior.body_md
+            }
+          : undefined
+      ),
+      system: WIKI_SYNTH_DISCIPLINE
+    });
+    if (!synth.ok) {
+      return { ok: false, error: synth.error };
+    }
+    const draft = parseWikiSynthResult(typeof synth.output.answer === "string" ? synth.output.answer : "");
+    if (!draft || (draft.unchanged && !prior)) {
+      return { ok: false, error: WIKI_SYNTH_PARSE_ERROR };
+    }
+
+    // Cross-source verification (decision 5): the walled "reader" chain, ensemble mean.
+    // All passes failing saves the page UNVERIFIED (confidence null) — never blocks.
+    let outcome: WikiVerifyOutcome = { confidence: null, verified_passes: 0, contradictions: [], unsupported: [] };
+    if (!draft.unchanged) {
+      const readerAdapter = this.llmAdapterFor(claim.run_id, "reader");
+      outcome = await verifyWikiPage(
+        draft,
+        digests,
+        async (verifyInput) => {
+          const r = await readerAdapter(verifyInput);
+          return r.ok && typeof r.output.answer === "string" ? { ok: true, answer: r.output.answer } : { ok: false };
+        },
+        resolveWikiVerifyPasses(process.env)
+      );
+    }
+
+    // Page embedding for the future cosine identity/retrieval legs — best-effort.
+    let pageEmbedding: Float32Array | null = null;
+    if (!draft.unchanged) {
+      try {
+        pageEmbedding = await this.embedAdapter(`${draft.title}\n${draft.summary}`);
+      } catch {
+        pageEmbedding = null;
+      }
+    }
+
+    const now = new Date().toISOString();
+    const saved = this.runStore.saveReconciledWikiPage(
+      {
+        // Refine keeps the prior page's slug identity (the topic may be phrased anew).
+        topic_slug: prior?.topic_slug ?? slug,
+        title: draft.title,
+        summary: draft.summary,
+        key_facts: draft.key_facts,
+        body_md: draft.body_md,
+        sources,
+        contradictions: outcome.contradictions,
+        confidence: outcome.confidence,
+        verified_passes: outcome.verified_passes,
+        last_verified: outcome.verified_passes > 0 ? now : null,
+        embedding: pageEmbedding,
+        ...(pageEmbedding ? { embedding_model: resolveEmbedConfig(process.env).model } : {}),
+        unchanged: draft.unchanged,
+        // The prior pays corrected_count/reuse ONLY when the refine surfaced contradictions.
+        priorContradicted: outcome.contradictions.length > 0
+      },
+      prior,
+      now,
+      resolveWikiMaxPages(process.env)
+    );
+
+    // SQLite is truth; the .md file is a RENDER — a write failure never fails the save.
+    const page = this.runStore.getWikiPage(saved.id);
+    if (page) {
+      try {
+        writeWikiPageFile(this.projectRoot, {
+          topic_slug: page.topic_slug,
+          title: page.title,
+          summary: page.summary,
+          key_facts: parseWikiStringArray(page.key_facts),
+          body_md: page.body_md,
+          sources: parseWikiStringArray(page.sources),
+          last_verified: page.last_verified,
+          confidence: page.confidence,
+          supersedes: page.supersedes,
+          reuse_value: page.reuse_value,
+          contradictions: parseWikiContradictions(page.contradictions)
+        });
+      } catch (error) {
+        console.warn(
+          `[wiki] page render failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+
+    const savedSlug = page?.topic_slug ?? slug;
+    this.runStore.appendLedgerEvent(
+      createLedgerEvent({
+        run_id: claim.run_id,
+        correlation_id: claim.run_id,
+        event_type: "wiki_page_saved",
+        actor: "core",
+        sequence: this.nextSequence(claim.run_id),
+        payload: {
+          verb: saved.verb,
+          id: saved.id,
+          topic_slug: savedSlug,
+          tool: name,
+          source_count: sources.length,
+          confidence: outcome.confidence,
+          contradiction_count: outcome.contradictions.length,
+          ...(saved.supersededId !== undefined ? { superseded_id: saved.supersededId } : {})
+        }
+      })
+    );
+
+    // Code-owned contradiction surfacing (decision 6): appended to the outgoing reply
+    // via evolutionNotices — the model's final answer alone can never hide it.
+    if (outcome.contradictions.length > 0) {
+      turnCtx.evolutionNotices.push(buildWikiContradictionNotice(savedSlug, outcome.contradictions));
+    }
+
+    return {
+      ok: true,
+      output: {
+        answer: buildWikiSavedDigest(saved.verb, savedSlug, sources.length, outcome.confidence, outcome.contradictions.length)
+      }
     };
   }
 
@@ -2826,6 +3056,10 @@ function loopToolTimeoutMs(name: string, llmTimeoutMs: number): number {
     case "lesson_write":
       // lesson_write may run distill + the reconcile compare (two chain calls).
       return llmTimeoutMs * 2;
+    case "wiki_build":
+    case "wiki_refine":
+      // One synthesis call + the verify ensemble (each pass may retry once).
+      return llmTimeoutMs * (1 + 2 * resolveWikiVerifyPasses(process.env));
     case "self_diagnose":
       return compileSelfDiagnoseContract("").budget.time_minutes * 60_000;
     case "self_write_propose":

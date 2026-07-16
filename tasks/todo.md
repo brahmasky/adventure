@@ -1,4 +1,4 @@
-# 🔜 NEXT — Phase W: ④ LLM Wiki (spine Slice B, C1–C6) — PLAN APPROVED 2026-07-16, awaiting /goal
+# 🔨 IN PROGRESS — Phase W Slice W1 — /goal 2026-07-16 (plan approved same day)
 
 **Next roadmap item (Phases R/M/S all shipped). Full approved plan:
 `/Users/pluo/.claude/plans/declarative-jingling-dragonfly.md` — executable by any model.**
@@ -18,9 +18,11 @@ averaged); verify-fail ⇒ saved UNVERIFIED (calibrates, never blocks); contradi
 code-owned via evolutionNotices. Pages GLOBAL (no chat_id). Breaker: loop_step-only; LLM legs
 inherit metered fuse. New flags all default OFF + PINNED_ENV.
 
-- [ ] **Slice W1** (needs /goal): store+migration `2026-07-16-wiki-pages`, tools+manifest+
-      contract, synthesis+verification, .md render, ADR 0020, 4 test suites. LIVE gate: ASML
-      research → page built+verified, contradiction surfaced; re-ask → REFINE not duplicate.
+- [ ] **Slice W1** (/goal FIRED 2026-07-16): store+migration `2026-07-16-wiki-pages`,
+      tools+manifest+contract, synthesis+verification, .md render, ADR 0020, 4 test suites.
+      Steps: build subagent → adversarial verifier → orchestrator gates (typecheck·test·build·
+      deps{}·hermetic sweep w/ daemon .env + hostile HOUGE_WIKI_*) → commit+push → LIVE gate:
+      ASML research → page built+verified, contradiction surfaced; re-ask → REFINE not dup.
 - [ ] **Slice W2** (needs /goal): wiki-retrieval + composer wikiReader fold (byte-identical
       when absent), applied_artifacts.wiki_page_ids + rating +0.25 + decay tick (24h latch).
       LIVE gate C6: recurrence → page folded, fewer fetches, supersede lineage, reuse_value up.

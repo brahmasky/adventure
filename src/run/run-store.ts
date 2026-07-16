@@ -32,7 +32,7 @@ import {
 } from "./run-ledger.js";
 import { canTransitionRun } from "./state-machines.js";
 import type { LlmUsage } from "./llm-usage.js";
-import { float32ToBlob } from "../llm/embeddings.js";
+import { blobToFloat32, cosineSimilarity, float32ToBlob } from "../llm/embeddings.js";
 
 /** The LLM-call roles recorded by {@link RunStore.recordLlmCall} (spec §"Real telemetry"). */
 export type LlmCallRole = "writer" | "reviewer" | "classify" | "frame" | "answer" | "compose" | "reader";
@@ -414,6 +414,74 @@ export interface EpisodicDistillWatermark {
   chat_id: string;
   last_turn_created_at: string | null;
   last_distilled_at: string | null;
+}
+
+/**
+ * One wiki page (Phase W, ADR 0020): a durable per-topic knowledge page synthesized from
+ * external-read digests and cross-source verified. Pages are GLOBAL (no chat_id —
+ * knowledge isn't per-conversation) and NEVER deleted: a refine inserts a NEW row and
+ * links the prior via bidirectional supersede pointers; overflow prunes reversibly.
+ */
+export interface WikiPageRow {
+  id: number;
+  topic_slug: string;
+  title: string;
+  summary: string;
+  /** JSON array of key-fact strings (sanitized/capped at parse time). */
+  key_facts: string;
+  body_md: string;
+  /** JSON array of source URLs (deduped host+path at save time). */
+  sources: string;
+  /** JSON array of {claim,a,b} contradictions — both sides verbatim, never averaged. */
+  contradictions: string;
+  /** Mean verifier confidence in [0,1]; NULL = saved UNVERIFIED (all passes failed). */
+  confidence: number | null;
+  verified_passes: number;
+  last_verified: string | null;
+  status: string;
+  supersedes: number | null;
+  superseded_by: number | null;
+  applied_count: number;
+  corrected_count: number;
+  reuse_value: number;
+  /** JSON array of rating entries (same shape as lessons; written by W2 signal wiring). */
+  rating_history: string;
+  /** Float32Array bytes of embed(title+"\n"+summary); null = not embedded (backfillable). */
+  embedding: Uint8Array | null;
+  embedding_model: string | null;
+  created_at: string;
+  last_used: string | null;
+}
+
+/** The candidate {@link RunStore.saveReconciledWikiPage} stores. */
+export interface WikiPageCandidate {
+  topic_slug: string;
+  title: string;
+  summary?: string;
+  key_facts?: string[];
+  body_md?: string;
+  sources?: string[];
+  contradictions?: Array<{ claim: string; a: string; b: string }>;
+  confidence?: number | null;
+  verified_passes?: number;
+  last_verified?: string | null;
+  embedding?: Float32Array | null;
+  embedding_model?: string;
+  /** Refine-only: the synthesis judged the digests add nothing — touch, don't insert. */
+  unchanged?: boolean;
+  /** Refine-only: the prior page was contradicted — it pays corrected_count/reuse. */
+  priorContradicted?: boolean;
+}
+
+export type WikiWriteVerb = "add" | "refine" | "unchanged";
+
+export interface WikiPageSaveResult {
+  verb: WikiWriteVerb;
+  /** The active row's id (the prior row's on "unchanged"). */
+  id: number;
+  supersededId?: number;
+  /** Rows pruned by the global cap (lowest reuse_value first; never the new row). */
+  prunedIds: number[];
 }
 
 /** One captured session rating (⓪·3 S2a): 0–3 + optional comment + the applied set. */
@@ -2182,6 +2250,170 @@ export class RunStore {
     );
   }
 
+  // --- Wiki pages (Phase W, ADR 0020) -----------------------------------------
+
+  /** Insert one active page row; returns its id. */
+  addWikiPage(input: WikiPageCandidate & { created_at?: string }): number {
+    const created = input.created_at ?? new Date().toISOString();
+    const blob = input.embedding ? float32ToBlob(input.embedding) : null;
+    const result = this.db.prepare(`
+      INSERT INTO wiki_pages (
+        topic_slug, title, summary, key_facts, body_md, sources, contradictions,
+        confidence, verified_passes, last_verified, embedding, embedding_model, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.topic_slug,
+      input.title.trim(),
+      input.summary?.trim() ?? "",
+      JSON.stringify(input.key_facts ?? []),
+      input.body_md ?? "",
+      JSON.stringify(input.sources ?? []),
+      JSON.stringify(input.contradictions ?? []),
+      input.confidence ?? null,
+      input.verified_passes ?? 0,
+      input.last_verified ?? null,
+      blob,
+      blob ? input.embedding_model ?? null : null,
+      created
+    );
+    return Number(result.lastInsertRowid);
+  }
+
+  getWikiPage(id: number): WikiPageRow | undefined {
+    return this.db.prepare(`
+      SELECT ${WIKI_PAGE_COLUMNS} FROM wiki_pages WHERE id = ?
+    `).get<WikiPageRow>(id);
+  }
+
+  /** ACTIVE pages, newest first (W2 retrieval + the cosine identity leg read through this). */
+  getActiveWikiPages(cap?: number): WikiPageRow[] {
+    const limit = cap ?? -1; // SQLite: LIMIT -1 = unbounded
+    return this.db.prepare(`
+      SELECT ${WIKI_PAGE_COLUMNS} FROM wiki_pages
+      WHERE status = 'active'
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+    `).all<WikiPageRow>(limit);
+  }
+
+  /**
+   * FTS5/BM25 keyword leg over ACTIVE pages (title/summary/body_md), best rank first,
+   * id ASC on ties. The query's letter/number tokens are individually quoted, so hostile
+   * MATCH syntax cannot reach the parser; an unsegmentable query (CJK under unicode61)
+   * or a parse error degrades to [] — NEVER throws.
+   */
+  searchWikiPagesFts(queryText: string, k: number): Array<WikiPageRow & { rank: number }> {
+    const tokens = (queryText.match(/[\p{L}\p{N}]+/gu) ?? []).slice(0, 12);
+    if (tokens.length === 0) return [];
+    const match = tokens.map((t) => `"${t}"`).join(" OR ");
+    try {
+      return this.db.prepare(`
+        SELECT ${WIKI_PAGE_COLUMNS_QUALIFIED}, fts.rank AS rank
+        FROM wiki_pages_fts fts
+        JOIN wiki_pages w ON w.id = fts.rowid
+        WHERE wiki_pages_fts MATCH ? AND w.status = 'active'
+        ORDER BY fts.rank, w.id
+        LIMIT ?
+      `).all<WikiPageRow & { rank: number }>(match, k);
+    } catch {
+      return []; // MATCH parse error → keyword leg contributes nothing
+    }
+  }
+
+  /**
+   * Topic identity (C6, ADR 0020 decision 4): does an active page for this topic already
+   * exist? Three legs, each graceful: exact slug → FTS top-1 over the topic's tokens →
+   * best cosine ≥ {@link WIKI_TOPIC_COSINE_THRESHOLD} over the active embeddings. A null
+   * query embedding (Ollama down) simply skips the cosine leg — degradation, never an
+   * error. build⇄refine auto-route rides this: a hit means REFINE, never a duplicate.
+   */
+  findWikiPageForTopic(topic: string, slug: string, embedding: Float32Array | null): WikiPageRow | undefined {
+    const exact = this.db.prepare(`
+      SELECT ${WIKI_PAGE_COLUMNS} FROM wiki_pages
+      WHERE topic_slug = ? AND status = 'active'
+      ORDER BY id DESC LIMIT 1
+    `).get<WikiPageRow>(slug);
+    if (exact) return exact;
+
+    const fts = this.searchWikiPagesFts(topic, 1);
+    if (fts.length > 0) return fts[0];
+
+    if (!embedding) return undefined;
+    let best: WikiPageRow | undefined;
+    let bestSim = 0;
+    for (const row of this.getActiveWikiPages()) {
+      if (!row.embedding) continue;
+      const sim = cosineSimilarity(embedding, blobToFloat32(row.embedding));
+      // ≥ the floor, best similarity wins; ties keep the NEWEST (rows arrive newest first).
+      if (sim >= WIKI_TOPIC_COSINE_THRESHOLD && (best === undefined || sim > bestSim)) {
+        best = row;
+        bestSim = sim;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Link a supersede pair BIDIRECTIONALLY (invalidate-don't-delete — the superseded page
+   * stays queryable as lineage). NEVER deletes. `_now` is reserved for a bi-temporal
+   * stamp should wiki pages ever grow one (episodic's valid_until); unused today.
+   */
+  supersedeWikiPage(oldId: number, newId: number, _now: string): void {
+    this.db.prepare(`
+      UPDATE wiki_pages SET status = 'superseded', superseded_by = ? WHERE id = ?
+    `).run(newId, oldId);
+    this.db.prepare(`UPDATE wiki_pages SET supersedes = ? WHERE id = ?`).run(oldId, newId);
+  }
+
+  /**
+   * Save a synthesized page against its (optional) prior (Phase W, mirroring
+   * {@link RunStore.saveReconciledFact}): unchanged+prior touches last_verified only;
+   * a prior means insert NEW + supersede (never an in-place rewrite, never a delete) —
+   * the old row pays corrected_count/reuse ONLY when it was contradicted; no prior is a
+   * plain add. A stale prior (no longer active) degrades to add. Overflow beyond the
+   * global cap prunes the lowest reuse_value rows (never the row just written).
+   */
+  saveReconciledWikiPage(
+    candidate: WikiPageCandidate,
+    prior: WikiPageRow | undefined,
+    now: string,
+    cap: number
+  ): WikiPageSaveResult {
+    const target = prior && this.getWikiPage(prior.id)?.status === "active" ? prior : undefined;
+
+    if (candidate.unchanged && target) {
+      this.db.prepare(`UPDATE wiki_pages SET last_verified = ? WHERE id = ?`).run(now, target.id);
+      return { verb: "unchanged", id: target.id, prunedIds: [] };
+    }
+
+    const id = this.addWikiPage({ ...candidate, created_at: now });
+    if (target) {
+      this.supersedeWikiPage(target.id, id, now);
+      if (candidate.priorContradicted) {
+        this.db.prepare(`
+          UPDATE wiki_pages SET corrected_count = corrected_count + 1, reuse_value = reuse_value - 0.5 WHERE id = ?
+        `).run(target.id);
+      }
+    }
+    const prunedIds = this.pruneWikiOverflow(cap, id);
+    return { verb: target ? "refine" : "add", id, ...(target ? { supersededId: target.id } : {}), prunedIds };
+  }
+
+  /** Prune (reversibly) the lowest-value active rows over the global cap, sparing `keepId`. */
+  private pruneWikiOverflow(cap: number, keepId: number): number[] {
+    if (cap <= 0) return [];
+    const others = this.db.prepare(`
+      SELECT id FROM wiki_pages
+      WHERE status = 'active' AND id != ?
+      ORDER BY reuse_value ASC, COALESCE(last_used, created_at) ASC, id ASC
+    `).all<{ id: number }>(keepId);
+    const toPrune = others.slice(0, Math.max(0, others.length + 1 - cap)).map((r) => r.id);
+    for (const id of toPrune) {
+      this.db.prepare(`UPDATE wiki_pages SET status = 'pruned' WHERE id = ?`).run(id);
+    }
+    return toPrune;
+  }
+
   // --- Scheduled tasks (B10b, ADR 0017) ---------------------------------------
 
   /** Insert a new enabled schedule (id minted here, like run ids). */
@@ -3584,6 +3816,100 @@ export class RunStore {
     this.applyEpisodicConsolidateMigration();
     this.applyScheduledTasksMigration();
     this.applyMeteredFuseMigration();
+    this.applyWikiPagesMigration();
+  }
+
+  /**
+   * Wiki pages (Phase W, ADR 0020): one row per synthesized knowledge page — global
+   * (no chat_id), lesson-style eval metadata, bidirectional supersede lineage, an
+   * optional local embedding (BLOB; null when Ollama was down — backfillable), and the
+   * FTS5 mirror (external-content + sync triggers) as the keyword identity/retrieval
+   * floor that works with no embedding at all. `wiki_decay_state` is W2's single-row
+   * 24h decay latch (the lesson_decay_state pattern), created NOW so the schema is
+   * complete in one migration.
+   */
+  private applyWikiPagesMigration(): void {
+    const version = "2026-07-16-wiki-pages";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS wiki_pages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          topic_slug TEXT NOT NULL,
+          title TEXT NOT NULL,
+          summary TEXT NOT NULL DEFAULT '',
+          key_facts TEXT NOT NULL DEFAULT '[]',
+          body_md TEXT NOT NULL DEFAULT '',
+          sources TEXT NOT NULL DEFAULT '[]',
+          contradictions TEXT NOT NULL DEFAULT '[]',
+          confidence REAL,
+          verified_passes INTEGER NOT NULL DEFAULT 0,
+          last_verified TEXT,
+          status TEXT NOT NULL DEFAULT 'active',
+          supersedes INTEGER,
+          superseded_by INTEGER,
+          applied_count INTEGER NOT NULL DEFAULT 0,
+          corrected_count INTEGER NOT NULL DEFAULT 0,
+          reuse_value REAL NOT NULL DEFAULT 1.0,
+          rating_history TEXT NOT NULL DEFAULT '[]',
+          embedding BLOB,
+          embedding_model TEXT,
+          created_at TEXT NOT NULL,
+          last_used TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS wiki_pages_slug_status_idx
+          ON wiki_pages(topic_slug, status);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS wiki_pages_fts
+          USING fts5(title, summary, body_md, content='wiki_pages', content_rowid='id');
+
+        CREATE TRIGGER IF NOT EXISTS wiki_pages_fts_ai AFTER INSERT ON wiki_pages BEGIN
+          INSERT INTO wiki_pages_fts(rowid, title, summary, body_md)
+            VALUES (new.id, new.title, new.summary, new.body_md);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS wiki_pages_fts_ad AFTER DELETE ON wiki_pages BEGIN
+          INSERT INTO wiki_pages_fts(wiki_pages_fts, rowid, title, summary, body_md)
+            VALUES ('delete', old.id, old.title, old.summary, old.body_md);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS wiki_pages_fts_au AFTER UPDATE OF title, summary, body_md ON wiki_pages BEGIN
+          INSERT INTO wiki_pages_fts(wiki_pages_fts, rowid, title, summary, body_md)
+            VALUES ('delete', old.id, old.title, old.summary, old.body_md);
+          INSERT INTO wiki_pages_fts(rowid, title, summary, body_md)
+            VALUES (new.id, new.title, new.summary, new.body_md);
+        END;
+
+        CREATE TABLE IF NOT EXISTS wiki_decay_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          last_decay_at TEXT
+        );
+
+        INSERT OR IGNORE INTO wiki_decay_state (id) VALUES (1);
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
   }
 
   /**
@@ -4590,6 +4916,21 @@ const EPISODIC_FACT_COLUMNS =
 const EPISODIC_FACT_COLUMNS_QUALIFIED = EPISODIC_FACT_COLUMNS.split(", ")
   .map((column) => `f.${column}`)
   .join(", ");
+
+/** SELECT list for WikiPageRow reads (one place, so every accessor returns the same shape). */
+const WIKI_PAGE_COLUMNS =
+  "id, topic_slug, title, summary, key_facts, body_md, sources, contradictions, " +
+  "confidence, verified_passes, last_verified, status, supersedes, superseded_by, " +
+  "applied_count, corrected_count, reuse_value, rating_history, embedding, embedding_model, " +
+  "created_at, last_used";
+
+/** The same list qualified for the FTS join (`w.` = wiki_pages). */
+const WIKI_PAGE_COLUMNS_QUALIFIED = WIKI_PAGE_COLUMNS.split(", ")
+  .map((column) => `w.${column}`)
+  .join(", ");
+
+/** Cosine floor for the topic-identity embedding leg (ADR 0020 decision 4). */
+export const WIKI_TOPIC_COSINE_THRESHOLD = 0.75;
 
 /** Per-chat active-fact cap (Phase M B1): overflow prunes the lowest reuse_value rows. */
 export const DEFAULT_EPISODIC_FACT_CAP_PER_CHAT = 200;

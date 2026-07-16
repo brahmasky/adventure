@@ -180,6 +180,10 @@ function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
       // schedule_task (B10b, ADR 0017) is armed-listed like http_fetch: allowed in the
       // envelope, on the model's menu only when HOUGE_SCHEDULER_ENABLED arms it.
       "schedule_task",
+      // wiki_build/wiki_refine (Phase W, ADR 0020) are armed-listed the same way:
+      // allowed in the envelope, listed only when HOUGE_WIKI_ENABLED arms them.
+      "wiki_build",
+      "wiki_refine",
       "self_diagnose",
       "self_write_propose",
       "skill_author",

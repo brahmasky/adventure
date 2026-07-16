@@ -1,5 +1,6 @@
 import { resolveCodexEnabled } from "../capabilities/coding-agent.js";
 import { resolveSelfWriteEnabled } from "../capabilities/intent.js";
+import { resolveWikiEnabled } from "../capabilities/wiki.js";
 import { resolveTzEvidenceEnabled } from "../capabilities/time-convert.js";
 import { resolveSkillsEnabled } from "../skills/skill-store.js";
 import { resolveHttpFetchEnabled } from "../web/http-fetch.js";
@@ -113,6 +114,32 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
     risk_level: "low",
     output_limit_bytes: 100_000,
     armed: resolveSchedulerEnabled
+  },
+  // LLM wiki (Phase W, ADR 0020): internal knowledge bookkeeping like lesson_write —
+  // local sqlite + a markdown render under memory/, no external side effect. The model
+  // supplies ONLY the topic; code synthesizes from the turn's RECORDED external-read
+  // digests (trust anchor), so there is no channel to launder fetched content through.
+  wiki_build: {
+    name: "wiki_build",
+    description:
+      "Save this turn's gathered research as a durable knowledge page on one topic — future turns reuse it instead of re-searching. Call it AFTER you have fetched at least 2 independent sources this turn (web_search/http_fetch), BEFORE your final answer; you supply only the topic, the page is built from what you actually read this turn.",
+    inputSketch: '{"topic": "ASML 2026 Q2 earnings"}',
+    category: "tool",
+    side_effect_level: "none",
+    risk_level: "low",
+    output_limit_bytes: 100_000,
+    armed: resolveWikiEnabled
+  },
+  wiki_refine: {
+    name: "wiki_refine",
+    description:
+      "Refine an EXISTING knowledge page with this turn's newly fetched sources (same rules as wiki_build: ≥2 independent sources fetched this turn, call it BEFORE your final answer). If no page exists for the topic one is built — never a duplicate.",
+    inputSketch: '{"topic": "ASML 2026 Q2 earnings"}',
+    category: "tool",
+    side_effect_level: "none",
+    risk_level: "low",
+    output_limit_bytes: 100_000,
+    armed: resolveWikiEnabled
   },
   // The evolution layers as loop tools (ADR 0013, step ⓪·2). Each is a THIN boundary
   // around the unchanged legacy pipeline: inside, the machinery runs under its own

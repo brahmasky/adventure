@@ -66,6 +66,8 @@ describe("compileTaskContract", () => {
         "llm_answer",
         "lesson_write",
         "schedule_task",
+        "wiki_build",
+        "wiki_refine",
         "self_diagnose",
         "self_write_propose",
         "skill_author",

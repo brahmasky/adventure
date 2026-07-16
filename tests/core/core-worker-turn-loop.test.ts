@@ -64,7 +64,12 @@ const PINNED_ENV = [
   "HOUGE_EPISODIC_ENABLED",
   // Scheduler (B10b): the flag shapes the manifest; the cap shapes the adapter refusal.
   "HOUGE_SCHEDULER_ENABLED",
-  "HOUGE_SCHEDULER_MAX_PER_CHAT"
+  "HOUGE_SCHEDULER_MAX_PER_CHAT",
+  // Wiki (Phase W): the flag shapes the manifest exactly like the scheduler's.
+  "HOUGE_WIKI_ENABLED",
+  "HOUGE_WIKI_MIN_SOURCES",
+  "HOUGE_WIKI_VERIFY_PASSES",
+  "HOUGE_WIKI_MAX_PAGES"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {

@@ -49,7 +49,8 @@ export type LedgerEventType =
   | "loop_halted"
   | "lesson_decay_tick"
   | "episodic_distill_pass"
-  | "episodic_consolidate_tick";
+  | "episodic_consolidate_tick"
+  | "wiki_page_saved";
 
 export interface LedgerEvent {
   event_id: string;
@@ -162,7 +163,10 @@ const requiredPayloadFields = {
   // Phase M B2: one summary per executed episodic fast-path distill pass (run-less).
   episodic_distill_pass: ["facts_added", "superseded", "dropped", "turns_read"],
   // Phase M B4: one summary per daily episodic consolidate tick that did work (run-less).
-  episodic_consolidate_tick: ["facts_decayed", "pruned_ids", "clusters_merged", "promoted_ids"]
+  episodic_consolidate_tick: ["facts_decayed", "pruned_ids", "clusters_merged", "promoted_ids"],
+  // Phase W (ADR 0020): one event per wiki page save (add/refine/unchanged); confidence
+  // is null on an UNVERIFIED save; superseded_id rides as optional metadata on refine.
+  wiki_page_saved: ["verb", "id", "topic_slug", "source_count", "confidence", "contradiction_count"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(
