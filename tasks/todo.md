@@ -1,3 +1,32 @@
+# 🔜 NEXT — Phase W: ④ LLM Wiki (spine Slice B, C1–C6) — PLAN APPROVED 2026-07-16, awaiting /goal
+
+**Next roadmap item (Phases R/M/S all shipped). Full approved plan:
+`/Users/pluo/.claude/plans/declarative-jingling-dragonfly.md` — executable by any model.**
+
+**Paco's decisions (2026-07-16):** TWO live-gateable slices; store = `memory/wiki/` (spec's
+`knowledge/` drift → ADR 0020); DEFER prediction-error feed + built-in scheduled refresh
+(schedule_task with goal "refresh your page on X" already covers refresh zero-code).
+
+**Design skeleton:** SQLite `wiki_pages` = truth (episodic_facts blueprint: FTS5 mirror,
+nullable embedding, supersede lineage), `memory/wiki/<slug>.md` = best-effort render.
+Loop-native `wiki_build`/`wiki_refine` → one `executeWikiUpsert` adapter; NO internal fetching
+— synthesis input = the turn's recorded external-read digests (post-quarantine) captured into
+LoopTurnContext; code owns the ≥2-distinct-sources floor (C3 deterministic half). Topic
+identity: slug → FTS → cosine. Cross-source verification = separate walled verifier on the
+reader chain (Gate B pattern), confidence + contradictions (both sides verbatim, never
+averaged); verify-fail ⇒ saved UNVERIFIED (calibrates, never blocks); contradiction notice is
+code-owned via evolutionNotices. Pages GLOBAL (no chat_id). Breaker: loop_step-only; LLM legs
+inherit metered fuse. New flags all default OFF + PINNED_ENV.
+
+- [ ] **Slice W1** (needs /goal): store+migration `2026-07-16-wiki-pages`, tools+manifest+
+      contract, synthesis+verification, .md render, ADR 0020, 4 test suites. LIVE gate: ASML
+      research → page built+verified, contradiction surfaced; re-ask → REFINE not duplicate.
+- [ ] **Slice W2** (needs /goal): wiki-retrieval + composer wikiReader fold (byte-identical
+      when absent), applied_artifacts.wiki_page_ids + rating +0.25 + decay tick (24h latch).
+      LIVE gate C6: recurrence → page folded, fewer fetches, supersede lineage, reuse_value up.
+
+---
+
 # ✅ DONE — B11: Phase S — kill-switch (S-1) + metered-$ ceiling (S-2) — SHIPPED + LIVE-GATED 2026-07-15 12:2x
 
 **Commit 57a03dd. Daemon live on B11 dist (PID 49207 after the gate's kill→revive). ADRs 0018
