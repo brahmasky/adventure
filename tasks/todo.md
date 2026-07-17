@@ -140,7 +140,36 @@ wiki; ledger off by exactly the completion event itself); restore drill on a cop
 
 ---
 
-# 🎯 NEXT MAJOR: Houge earns money (human-fronted) — P0 charter re-decision DONE 2026-07-17; P1 next
+# 🔨 IN PROGRESS — P1: external engineering workspace + container sandbox — /goal 2026-07-17
+
+**Money-work roadmap P1 (charter-clean under ADR 0022): clone+fix+test an external repo INSIDE a
+container → tested patch Paco reviews. No money/credentials/external-write/autonomy.**
+
+**Locked design (Plan agent + Paco decisions 2026-07-17):**
+- SEQUENCING: build+verify+gate the CODE here (MacBook Pro, machine-agnostic, fake container-
+  runner in tests) NOW; then migrate Houge→Mac mini + install colima; LIVE-gate P1 on the mini.
+  (Daemon is currently on this MacBook Pro — the mini is the documented + better home.)
+- TRUST BOUNDARY: untrusted external code EXECUTES only in the container; host does clone
+  (git clone runs no hooks), Codex edit (HOST, its own Seatbelt workspace-write sandbox confined
+  to the throwaway clone dir, net OFF, no creds), git diff, artifact write. Codex host-side
+  (Paco decision) — subscription never enters the untrusted path.
+- Container: detect docker/podman graceful (embeddings.ts pattern); buildContainerArgs security-
+  critical (--network none build/test / egress install-stage only, single -v scratch mount,
+  --user non-root, --read-only --tmpfs, --cap-drop ALL, --security-opt no-new-privileges,
+  --memory/--cpus/--pids-limit, NO docker.sock, NO host-root mount). Single configurable image
+  HOUGE_EXTWORK_IMAGE (Paco decision).
+- Trigger: armed loop tool `external_work` → the singleton evolution lane (mirror
+  self_write_propose); artifact runs/<id>/patch.diff + report.md; notify View-diff/Discard (NO
+  merge — P3 owns any push). Flag HOUGE_EXTWORK_ENABLED default OFF, side_effect_level
+  external_read, joins DISARM_FLAGS, no new /approve gate (containment = flag-off + container +
+  local reversible artifact).
+- Steps: build subagent → adversarial verifier → gates (fake runner; live-container tests deferred
+  to the mini) → commit+push → [migrate + colima] → LIVE gate on mini (fix a real GitHub issue
+  in-container; hostile-postinstall containment probe).
+
+---
+
+# 🎯 NEXT MAJOR: Houge earns money (human-fronted) — P0 charter re-decision DONE 2026-07-17; P1 in progress
 
 **P0 DONE (ADR 0022, /goal p0 2026-07-17):** charter fork 3 re-opened NARROWLY — EARNING is IN
 (human-fronted); holding funds/keys, trading, custody stay OUT. ROADMAP fork 3 amended, index

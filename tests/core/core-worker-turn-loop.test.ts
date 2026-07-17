@@ -69,7 +69,11 @@ const PINNED_ENV = [
   "HOUGE_WIKI_ENABLED",
   "HOUGE_WIKI_MIN_SOURCES",
   "HOUGE_WIKI_VERIFY_PASSES",
-  "HOUGE_WIKI_MAX_PAGES"
+  "HOUGE_WIKI_MAX_PAGES",
+  // External workspace (Money-Work P1): the flag shapes the manifest — pin it so a daemon
+  // .env that arms extwork can't red-fail this exact-manifest assertion (and thus the
+  // self-write test-gate). The cardinal PINNED_ENV rule (selfwrite-testgate-inherits-env).
+  "HOUGE_EXTWORK_ENABLED"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {

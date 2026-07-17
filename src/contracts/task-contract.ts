@@ -145,6 +145,29 @@ export function compileCodeSelfWriteContract(objective: string): CompiledTaskCon
   return { ...base, contract_hash: stableHash(base) };
 }
 
+/**
+ * The `external-work` contract (ADR 0023, Money-Work Phase P1). Derived in-route when the
+ * `external_work` loop tool kicks off (and only when `HOUGE_EXTWORK_ENABLED=true`). It OPENS
+ * `coding_agent_cli` (write-mode Codex, `-C <clone>`) alongside `llm_answer`/`write_report`,
+ * while keeping `generic_shell`/`external_write`/`destructive`/`paid_action` forbidden — the
+ * result is a LOCAL patch, never a push. NO new approval gate: nothing runs on the host and the
+ * artifact is local + reversible (a human applies it). Long time ceiling (clone + container
+ * build/test are slow); small tool budget — the refine loop is capped at ≤3 write attempts.
+ */
+export function compileExternalWorkContract(objective: string): CompiledTaskContract {
+  const base = {
+    objective,
+    budget: { time_minutes: 45, max_tool_calls: 4, max_agent_delegations: 0 },
+    allowed_actions: ["coding_agent_cli", "llm_answer", "write_report"],
+    forbidden_actions: ["generic_shell", "external_write", "destructive", "paid_action"],
+    output: { path: "runs/<run-id>/report.md", format: "sourced_markdown_report" as const },
+    approval_gates: ["local_write", "external_write", "destructive", "paid"] as SideEffectLevel[],
+    stop_condition: "external-work patch produced, refused, or failed after refine; or budget exhausted",
+    eval_hooks: []
+  };
+  return { ...base, contract_hash: stableHash(base) };
+}
+
 function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
   if (!event.goal?.trim()) {
     return invalid("Message is required");
@@ -187,6 +210,9 @@ function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
       "self_diagnose",
       "self_write_propose",
       "skill_author",
+      // external_work (ADR 0023) is armed-listed like the other evolution tools: allowed in
+      // the envelope, on the model's menu only when HOUGE_EXTWORK_ENABLED arms it.
+      "external_work",
       "write_report"
     ],
     forbidden_actions: ["coding_agent_cli", "generic_shell", "external_write", "paid_action"],

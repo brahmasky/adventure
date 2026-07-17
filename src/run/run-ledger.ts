@@ -43,6 +43,8 @@ export type LedgerEventType =
   | "self_write_published"
   | "self_write_blocked"
   | "self_write_failed"
+  | "external_work_published"
+  | "external_work_failed"
   | "llm_call"
   | "loop_started"
   | "loop_step"
@@ -148,6 +150,11 @@ const requiredPayloadFields = {
   self_write_published: ["branch", "summary", "verdict", "gate_results"],
   self_write_blocked: ["attempted_paths", "context"],
   self_write_failed: ["reason", "last_output"],
+  // Money-Work Phase P1 external-work audit trail (ADR 0023). Each is the structured signal
+  // for an outcome — the local artifact's ledger record. patch_ref is the runs/<id>/patch.diff
+  // path; NON-NEGOTIABLE: counts/metadata + the repo url ONLY — never the repo's code or diff.
+  external_work_published: ["repo_url", "task", "patch_ref", "gate"],
+  external_work_failed: ["repo_url", "task", "reason"],
   // Phase 3.1 real LLM telemetry (spec §"Real telemetry", backlog #3). Token usage captured at
   // the source for every LLM call. role ∈ writer|reviewer|classify|frame|answer. cached_input_tokens,
   // cost_usd, latency_ms are optional. NON-NEGOTIABLE: counts/metadata ONLY — never prompt/diff/response.

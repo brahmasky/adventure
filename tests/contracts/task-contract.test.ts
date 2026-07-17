@@ -71,6 +71,7 @@ describe("compileTaskContract", () => {
         "self_diagnose",
         "self_write_propose",
         "skill_author",
+        "external_work",
         "write_report"
       ]);
       // 10 (was 6): a search → fetch×2-3 → answer chain must fit in ONE turn (step ③).

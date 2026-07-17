@@ -33,7 +33,10 @@ export const DISARM_FLAGS: readonly string[] = [
   "HOUGE_SELFWRITE_ENABLED",
   "HOUGE_CODEX_ENABLED",
   "HOUGE_SKILLS_ENABLED",
-  "HOUGE_SCHEDULER_ENABLED"
+  "HOUGE_SCHEDULER_ENABLED",
+  // External engineering workspace (ADR 0023): an autonomous evolution capability — the STOP
+  // switch must cover it too (it clones + runs external code in a container unattended).
+  "HOUGE_EXTWORK_ENABLED"
 ];
 
 export function resolveDisarmPath(env: NodeJS.ProcessEnv = process.env): string {

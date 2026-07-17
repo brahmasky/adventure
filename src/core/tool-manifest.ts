@@ -1,4 +1,5 @@
 import { resolveCodexEnabled } from "../capabilities/coding-agent.js";
+import { resolveExtWorkEnabled } from "../capabilities/external-workspace.js";
 import { resolveSelfWriteEnabled } from "../capabilities/intent.js";
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
 import { resolveTzEvidenceEnabled } from "../capabilities/time-convert.js";
@@ -177,6 +178,22 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
     risk_level: "low",
     output_limit_bytes: 100_000,
     armed: resolveSkillsEnabled
+  },
+  // External engineering workspace (ADR 0023, Money-Work Phase P1): clone an EXTERNAL repo,
+  // have Codex implement a fix, build/test it in a locked-down CONTAINER, and produce a LOCAL
+  // patch — no money, no push. side_effect_level "external_read": the one outward flow is the
+  // git-clone read of a public repo; the patch stays local (a human applies it), so it is not
+  // a write. Runs on the background evolution lane; a successful kickoff ENDS this turn.
+  external_work: {
+    name: "external_work",
+    description:
+      "Do engineering work on an EXTERNAL public repo: clone it, implement the requested fix, build+test it in a sandboxed container, and produce a local patch for review. Use it when the user gives you a repo URL and an engineering task. Runs in the background; calling it ENDS this turn.",
+    inputSketch: '{"repo_url": "https://github.com/owner/repo", "task": "one line: the fix to implement"}',
+    category: "tool",
+    side_effect_level: "external_read",
+    risk_level: "medium",
+    output_limit_bytes: 200_000,
+    armed: resolveExtWorkEnabled
   }
 };
 

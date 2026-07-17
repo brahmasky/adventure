@@ -1095,6 +1095,26 @@ export class RunStore {
   }
 
   /**
+   * Money-Work Phase P1 external-work audit (ADR 0023). Two outcomes, each a structured
+   * run-store event (audit trail + future dashboard source). The Telegram notification rides
+   * the evolution lane's completion notification, not these events. Records the repo url +
+   * task + local patch ref ONLY — never the external repo's code or diff.
+   */
+  recordExternalWorkPublished(
+    run_id: string,
+    payload: { repo_url: string; task: string; patch_ref: string; gate: string }
+  ): void {
+    this.appendRunLedgerEvent(run_id, "external_work_published", "core", payload);
+  }
+
+  recordExternalWorkFailed(
+    run_id: string,
+    payload: { repo_url: string; task: string; reason: string }
+  ): void {
+    this.appendRunLedgerEvent(run_id, "external_work_failed", "core", payload);
+  }
+
+  /**
    * Inner-loop observation hooks (ADR 0013, step ⓪·1) — read-only audit trail.
    * `loop_started.applied_artifacts` is the attribution seed (which lesson/skill scope
    * blocks were injected); `loop_step` records each step's action/capability + the

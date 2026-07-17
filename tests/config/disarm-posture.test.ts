@@ -50,7 +50,10 @@ describe("DISARM_FLAGS", () => {
       "HOUGE_SELFWRITE_ENABLED",
       "HOUGE_CODEX_ENABLED",
       "HOUGE_SKILLS_ENABLED",
-      "HOUGE_SCHEDULER_ENABLED"
+      "HOUGE_SCHEDULER_ENABLED",
+      // ADR 0023: the external engineering workspace is an autonomous evolution capability
+      // (clones + runs external code in a container unattended) — the STOP switch covers it.
+      "HOUGE_EXTWORK_ENABLED"
     ]);
     expect(DISARM_FLAGS).not.toContain("HOUGE_EPISODIC_ENABLED");
   });
