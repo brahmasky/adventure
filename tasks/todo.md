@@ -140,16 +140,32 @@ wiki; ledger off by exactly the completion event itself); restore drill on a cop
 
 ---
 
-# 🎯 DECLARED (Paco, 2026-07-17) — NEXT MAJOR: Houge earns money autonomously
+# 🎯 SCOPE APPROVED (Paco, 2026-07-17) — NEXT MAJOR: Houge earns money (human-fronted)
 
-**Bounty jobs / hackathon projects / credits — Houge independently completes monetized
-projects.** The charter deferred money "until the spine proves stable autonomy" (fork 3);
-spine ⓪–④ is now complete, so this re-opens that fork — a charter-level /goal decision.
-Design pass must cover: external-project coding (self-write today targets ONLY Houge's own
-repo), browser tier (SPA/auth surfaces), account+credential handling under the secrets
-firewall, payment/custody boundaries, and which autonomy-flip preconditions (S-3
-auto-rollback, soak record) become prerequisites. Gap review against this ambition: see
-sessions.md 2026-07-17 (second entry). NOT scheduled — awaiting Paco's design discussion + /goal.
+**Full phased roadmap: `docs/superpowers/specs/2026-07-17-money-work-roadmap.md` (scope APPROVED
+in plan mode; each phase awaits its own /goal). Grounded in 3 recon subagents (capability
+inventory + charter constraints + money-task surface).**
+
+**Governing insight:** the human-gated split the real world forces (account/KYC/accept/payment
+are human-gated everywhere) == the split the charter forces (ADR 0001: payments, identity,
+external writes stay deterministic + human-`/approve`d). So the first versions need NONE of the
+heavy autonomy infra — the existing human tap is both safety net and real-world requirement.
+
+**Locked decisions:** (1) HUMAN-FRONTED FUNDS ONLY — Houge does the engineering; the human owns
+account/wallet/KYC and receives money; Houge never holds keys/custody/moves money (fork 3's
+custody core stays deferred; only earning unlocks); an earnings ledger = accounting mirror of the
+spend governor. (2) External engineering workspace FIRST. (3) Local container sandbox (Docker/
+Podman, system-service dep like Ollama).
+
+**Phases:** P0 charter re-decision (Paco, /goal, no code) → **P1 external engineering workspace +
+container sandbox (the NEXT build /goal): clone+fix+test an external repo in a container →
+tested patch Paco reviews; charter-clean, no money/creds/autonomy** → P2 bounty intake + scam
+classifier + durable project state → P3 human-gated external delivery + scoped credential store +
+earnings ledger (the "first dollar") → P4 (LATER, optional) autonomy increments (only here do
+S-3 auto-rollback / firewall Phase 2 / dual-LLM Phase 2 CaMeL / 2-week soak become prerequisites).
+
+**DEFERRED (not in roadmap):** Houge holding funds/keys, trading, custody; the browser tier
+(target API-driven venues); the autonomy flip. NOT scheduled — awaiting Paco's /goal for P0/P1.
 
 ---
 

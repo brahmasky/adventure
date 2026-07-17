@@ -818,3 +818,29 @@ Build + independent adversarial verification subagents; each live round found a 
   ⓪·4 ✓, convergence metric ✓. Next: the money-work design discussion (charter fork 3 re-decision;
   needs external-coding + browser + credentials + S-3 design — see the 07-17 gap review + the
   [[houge-next-major-money-work]] memory).
+
+## 2026-07-17 (seventh entry) — Money-work scoping (SCOPE APPROVED, no build)
+- Paco: "scope it properly with the capabilities and supporting infra." Plan-mode scoping session,
+  3 recon subagents (capability inventory / charter constraints / money-task surface).
+- Governing insight: the human-gated split the real world forces (account/KYC/accept/payment are
+  human-gated on every venue) == the split the charter forces (ADR 0001 keeps payments/identity/
+  external-writes deterministic + human-/approve'd). So the first versions need NONE of the heavy
+  autonomy infra — the existing human tap is both the safety net and a real-world requirement.
+- Locked decisions (Paco, AskUserQuestion): (1) HUMAN-FRONTED FUNDS ONLY — Houge never holds
+  keys/custody/moves money; earnings ledger = accounting mirror of the spend governor; fork 3's
+  custody core stays deferred, only earning unlocks. (2) External engineering workspace FIRST.
+  (3) Local container sandbox (Docker/Podman, system-service dep like Ollama).
+- Phased roadmap written to docs/superpowers/specs/2026-07-17-money-work-roadmap.md (analogue of
+  the spine roadmap): P0 charter re-decision → P1 external workspace + container sandbox (NEXT
+  build /goal) → P2 intake + scam classifier + project state → P3 human-gated delivery + scoped
+  credential store + earnings ledger ("first dollar") → P4 autonomy (LATER; only then do S-3/
+  firewall-Phase-2/dual-LLM-Phase-2 CaMeL/2-week-soak become prerequisites).
+- Recon highlights: 4 hard capability blockers (no external workspace — write path hardwired to
+  process.cwd(); no acting-web tier; no runtime credential lifecycle — firewall strips new tokens;
+  zero financial rail — `paid` is an empty policy placeholder). Reusable seams: worktree+Codex
+  sandbox, test-gate structure, armed loop-tool pattern, dual-LLM quarantine, the existing paid/
+  external_write gate (needs adapters not gates), evolution-lane, spend governor. Money-task
+  reality: accept + payment identity is the bottleneck, not code quality; agent-native platforms
+  (TaskBounty, automated accept gate) = least friction; wallet is the only agent-holdable rail.
+- STOPPED at scope. P0 = Paco's formal charter re-decision (/goal); first build = P1. No coding
+  without the /goal. todo.md top block + [[houge-next-major-money-work]] memory updated.
