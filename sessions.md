@@ -722,3 +722,25 @@ Build + independent adversarial verification subagents; each live round found a 
   ② S12+D12 probes (one Telegram session); ③ ⓪·4 retirement; ④ convergence soak metric over
   a week's runs; ⑤ THEN the money-work design discussion (external coding + browser +
   credentials + S-3 as its likely prerequisite stack).
+
+## 2026-07-17 (third entry) — DB backup shipped (ROADMAP backlog #3, ADR 0021)
+- /goal "DB backup" — item ① of the pre-money-design sequence; houge.sqlite had ZERO redundancy.
+- BUILD (subagent): daily tick riding runSignalPathTick — VACUUM INTO tmp → PRAGMA quick_check →
+  rename → verify → retention → latch advance → db_backup_completed. Flags default OFF
+  (HOUGE_BACKUP_ENABLED/_INTERVAL_HOURS/_KEEP), backup_state latch migration, backups/
+  gitignored, restore runbook in README + ADR 0021. Fail-open like decay ticks.
+- Adversarial VERIFY: **REJECT** — the pipeline's first rejection, both MAJORs surgical:
+  (1) runbook restart step broken (kickstart 503s after bootout removes the service → bootstrap);
+  the verifier proved this live on a dummy agent AND rehearsed the whole restore verbatim on a
+  WAL-mode copy, proving the stale-WAL rm line is load-bearing (without it SQLite silently
+  replays the old WAL over the restored file). (2) latch advanced before statSync — a foreign
+  future-dated file in backups/ + retention could evict every real backup FOREVER while
+  getLastBackupAt claimed health. Orchestrator fixed both in-tree + failure-event 1h throttle
+  (was: one ledger row per 30s poll forever on a stuck disk) + backupFileName path-segment guard
+  + "WAL mode" doc premise corrected (live DB is journal_mode=delete; VACUUM INTO is
+  mode-agnostic). Regression tests for all. 1575/1575 × clean/daemon-env/hostile. Commit 8788ef9.
+- LIVE GATE: armed + restarted via the CORRECTED runbook verbatim (bootout → bootstrap, PID
+  49100) — the MAJOR-1 fix live-proven by the arming procedure itself. First snapshot 30s later:
+  4.2MB in 48ms, quick_check ok, exact row parity (412/412 chat_turns; ledger −1 = the
+  completion event itself), restore drill on a copy readable+ok.
+- Residual: LOCAL-ONLY protection — offsite replication deferred (ADR 0021).

@@ -1,3 +1,30 @@
+# ✅ DONE — DB backup (ROADMAP backlog #3) — SHIPPED + LIVE-GATED 2026-07-17 08:4x
+
+**Commit 8788ef9. Daemon live (PID 49100), HOUGE_BACKUP_ENABLED=true. ADR 0021. houge.sqlite
+is no longer a single point of failure: daily VACUUM INTO snapshot → quick_check gate →
+tmp+rename → retention (never evicts the snapshot just written) → latch advances ONLY after
+the landed file is verified. Fail-open: a broken backup never breaks the daemon; failure
+events throttled to 1/hour; retries every tick.**
+
+**Verifier: REJECT → both MAJORs fixed pre-commit:** (1) restore runbook's restart step was
+wrong — launchctl kickstart fails 503 after bootout (service removed); corrected to
+bootstrap, then PROVEN LIVE (the arming restart used the runbook verbatim). (2) latch
+advanced before verifying the snapshot existed — a foreign future-dated file in backups/
+could evict every real backup forever while the latch claimed health; reordered +
+prune-spares-fresh + regression tests. Verifier also rehearsed the restore verbatim on a
+WAL-mode copy and proved the stale-WAL rm line is load-bearing (leaving it silently reverts
+the restore). MINORs fixed: failure-event spam throttle; false "WAL mode" doc premise
+(live DB is journal_mode=delete; mechanism is mode-agnostic); backupFileName path-segment
+validation.
+
+**LIVE GATE:** first snapshot fired 30s after arming (4.2MB, 48ms, db_backup_completed in
+ledger); quick_check ok; EXACT row parity vs live (chat_turns 412=412, lessons, episodic,
+wiki; ledger off by exactly the completion event itself); restore drill on a copy ✓.
+**Residual:** LOCAL-ONLY (protects against corruption/rm, not disk death) — offsite
+(litestream/rsync) deferred, stated in ADR 0021. 1575/1575 all sweeps.
+
+---
+
 # 🎯 DECLARED (Paco, 2026-07-17) — NEXT MAJOR: Houge earns money autonomously
 
 **Bounty jobs / hackathon projects / credits — Houge independently completes monetized
