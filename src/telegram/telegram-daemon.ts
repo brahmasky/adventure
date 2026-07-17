@@ -16,6 +16,7 @@ import { LocalNotificationAdapter } from "../notifications/local-notification-ad
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import { NotificationOutbox } from "../notifications/notification-outbox.js";
 import { TelegramNotificationAdapter } from "../notifications/telegram-notification-adapter.js";
+import { resolveBackupEnabled, runDbBackupTick } from "../run/db-backup.js";
 import type { RunStore } from "../run/run-store.js";
 import { maybeFireScheduledTasks } from "../run/schedule-tick.js";
 import type { SecretBroker } from "../config/secret-broker.js";
@@ -284,6 +285,12 @@ async function runSignalPathTick(
     // single-row wiki_decay_state latch.
     if (resolveWikiEnabled(process.env)) {
       options.store.runWikiDecayTick(now);
+    }
+    // Backlog #3 (ADR 0021): the periodic WAL-safe DB snapshot (VACUUM INTO) — flag-gated
+    // OFF, interval-latched in the store, and internally fail-open (a failed snapshot
+    // logs + records db_backup_failed without advancing the latch; never throws).
+    if (resolveBackupEnabled(process.env)) {
+      runDbBackupTick({ store: options.store, projectRoot: options.projectRoot, now });
     }
     const chat = options.allowlist.chats[0];
     if (chat) {

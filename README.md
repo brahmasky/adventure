@@ -264,6 +264,23 @@ branch-only publish with a **human-tapped merge**, the **secrets firewall**
 [configuration reference](docs/reference/configuration.md#global-autonomy-circuit-breaker)
 and [ADR 0003](docs/decisions/0003-global-budget-breaker.md).
 
+## Backup & restore
+
+With `HOUGE_BACKUP_ENABLED=true` the daemon snapshots `houge.sqlite` into `backups/`
+every `HOUGE_BACKUP_INTERVAL_HOURS` (default 24h): a WAL-safe `VACUUM INTO`,
+integrity-checked before it gets its final name, newest `HOUGE_BACKUP_KEEP` (default 7)
+kept. **Local-only** — protects against corruption and accidental deletes, not disk death
+([ADR 0021](docs/decisions/0021-db-backup.md)).
+
+Restore:
+
+```bash
+launchctl bootout gui/$UID/com.houge.daemon        # stop the daemon
+cp backups/houge-<stamp>Z.sqlite houge.sqlite      # copy the snapshot over the live db
+rm -f houge.sqlite-wal houge.sqlite-shm            # stale WAL siblings must not replay
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.houge.daemon.plist  # restart (kickstart fails after bootout), verify /status
+```
+
 ## Documentation
 
 - [Roadmap](docs/ROADMAP.md) — the model-agnostic handoff plan: verified state, non-negotiables, sequenced next builds.

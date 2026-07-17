@@ -2541,6 +2541,78 @@ export class RunStore {
     return { ran: true, pages_decayed: stale.length, pruned_ids };
   }
 
+  // --- DB backup (backlog #3, ADR 0021) ---------------------------------------
+
+  /** The backup latch's last successful snapshot time (NULL = never — first tick fires). */
+  getLastBackupAt(): string | null {
+    const row = this.db.prepare(`
+      SELECT last_backup_at FROM backup_state WHERE id = 1
+    `).get<{ last_backup_at: string | null }>();
+    return row?.last_backup_at ?? null;
+  }
+
+  /** Advance the backup latch — called ONLY after a verified snapshot landed. */
+  advanceBackupLatch(now: string): void {
+    this.db.prepare(`UPDATE backup_state SET last_backup_at = ? WHERE id = 1`).run(now);
+  }
+
+  /**
+   * Transactional WAL-safe snapshot of the LIVE database into `path` (SQLite
+   * `VACUUM INTO` — refuses an existing path, so callers write tmp + rename).
+   */
+  vacuumInto(path: string): void {
+    this.db.prepare(`VACUUM INTO ?`).run(path);
+  }
+
+  /** One `db_backup_completed` ledger event per landed snapshot (run-less, like decay ticks). */
+  recordDbBackupCompleted(payload: {
+    path: string;
+    bytes: number;
+    kept_count: number;
+    duration_ms: number;
+  }): void {
+    this.appendLedgerEvent(
+      createLedgerEvent({
+        correlation_id: "db-backup",
+        event_type: "db_backup_completed",
+        actor: "system",
+        sequence: this.nextLedgerSequence(),
+        payload
+      })
+    );
+  }
+
+  /**
+   * A `db_backup_failed` ledger event (the latch stays put — retries). Emission is
+   * THROTTLED by the caller via the failure-event timestamp below: a permanently
+   * broken backup retries every poll tick (~30s) but must not append thousands of
+   * identical ledger rows a day.
+   */
+  recordDbBackupFailed(payload: { reason: string }): void {
+    this.appendLedgerEvent(
+      createLedgerEvent({
+        correlation_id: "db-backup",
+        event_type: "db_backup_failed",
+        actor: "system",
+        sequence: this.nextLedgerSequence(),
+        payload
+      })
+    );
+  }
+
+  /** When the last db_backup_failed EVENT was emitted (NULL = never). Throttle input. */
+  getLastBackupFailureEventAt(): string | null {
+    const row = this.db.prepare(`
+      SELECT last_failure_event_at FROM backup_state WHERE id = 1
+    `).get<{ last_failure_event_at: string | null }>();
+    return row?.last_failure_event_at ?? null;
+  }
+
+  /** Stamp the failure-event throttle clock (called only when an event was emitted). */
+  markBackupFailureEvent(now: string): void {
+    this.db.prepare(`UPDATE backup_state SET last_failure_event_at = ? WHERE id = 1`).run(now);
+  }
+
   // --- Scheduled tasks (B10b, ADR 0017) ---------------------------------------
 
   /** Insert a new enabled schedule (id minted here, like run ids). */
@@ -3944,6 +4016,50 @@ export class RunStore {
     this.applyScheduledTasksMigration();
     this.applyMeteredFuseMigration();
     this.applyWikiPagesMigration();
+    this.applyBackupStateMigration();
+  }
+
+  /**
+   * DB backup latch (backlog #3, ADR 0021): the single-row interval latch for the
+   * periodic VACUUM INTO snapshot (the lesson_decay_state pattern; seeded NULL so the
+   * first armed tick fires immediately). Advanced only on a verified snapshot — a
+   * failed attempt leaves it put, so the next tick retries.
+   */
+  private applyBackupStateMigration(): void {
+    const version = "2026-07-17-backup-state";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS backup_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          last_backup_at TEXT,
+          last_failure_event_at TEXT
+        );
+
+        INSERT OR IGNORE INTO backup_state (id) VALUES (1);
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
   }
 
   /**

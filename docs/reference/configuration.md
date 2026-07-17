@@ -550,3 +550,17 @@ Revival steps: [deploy/launchd/README.md](../../deploy/launchd/README.md#kill-sw
 |----------|---------|---------|
 | `HOUGE_TOMBSTONE_PATH` | `houge.kill` (cwd) | Where `/kill` writes and the boot gate reads the tombstone. A present-but-corrupt file still kills (fail-closed). |
 | `HOUGE_DISARM_PATH` | `houge.disarm` (cwd) | Where `/disarm` writes the posture. Must be a REAL env var if moved — it is read before `.env` is loaded. |
+
+## DB backup (ADR 0021)
+
+WAL-safe periodic snapshot of `houge.sqlite` riding the daemon poll loop: `VACUUM INTO`
+a `.tmp` path, `PRAGMA quick_check` gate, rename into `backups/houge-<stamp>Z.sqlite`,
+prune to the newest K. Fail-open (a failed snapshot logs `db_backup_failed` and retries
+next tick — never breaks the daemon). **Local-only** — see the restore runbook in
+[README § Backup & restore](../../README.md#backup--restore).
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `HOUGE_BACKUP_ENABLED` | `false` | Master arm for the backup tick (accepts 1/true/yes/on). |
+| `HOUGE_BACKUP_INTERVAL_HOURS` | `24` | Hours between snapshots (latch advances only on a verified snapshot). ≤0/garbage → default. |
+| `HOUGE_BACKUP_KEEP` | `7` | Newest snapshots kept by retention; older ones unlinked. Min 1. |

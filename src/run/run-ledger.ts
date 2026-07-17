@@ -51,7 +51,9 @@ export type LedgerEventType =
   | "episodic_distill_pass"
   | "episodic_consolidate_tick"
   | "wiki_page_saved"
-  | "wiki_decay_tick";
+  | "wiki_decay_tick"
+  | "db_backup_completed"
+  | "db_backup_failed";
 
 export interface LedgerEvent {
   event_id: string;
@@ -169,7 +171,11 @@ const requiredPayloadFields = {
   // is null on an UNVERIFIED save; superseded_id rides as optional metadata on refine.
   wiki_page_saved: ["verb", "id", "topic_slug", "source_count", "confidence", "contradiction_count"],
   // Phase W W2: the daily wiki reuse-value decay+prune pass — one summary per executed tick.
-  wiki_decay_tick: ["pages_decayed", "pruned_ids"]
+  wiki_decay_tick: ["pages_decayed", "pruned_ids"],
+  // Backlog #3 (ADR 0021): the periodic WAL-safe VACUUM INTO snapshot — one event per
+  // landed snapshot; a failed attempt records the reason and the latch stays put (retry).
+  db_backup_completed: ["path", "bytes", "kept_count", "duration_ms"],
+  db_backup_failed: ["reason"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(

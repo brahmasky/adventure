@@ -17,6 +17,8 @@ houge.daemon.lock
 # Operator stop switches (ADR 0018): the /kill tombstone + /disarm posture are runtime state
 houge.kill
 houge.disarm
+# WAL-safe DB snapshots (ADR 0021) — local runtime state, never committed
+backups/
 
 # Learned memory is runtime state (what /teach writes, what Houge learns);
 # memory/core is committed (his spine), everything else stays local.
