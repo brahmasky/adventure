@@ -1,4 +1,35 @@
-# 🔨 IN PROGRESS — location grounding + reconcile over-merge — /goal 2026-07-17
+# ✅ DONE — location grounding + reconcile over-merge — SHIPPED + LIVE-GATED 2026-07-17 11:0x
+
+**Commit 5f756d7. Daemon live on the fix (PID 93851). Verifier: clean SHIP, no findings —
+byte-identity proven vs pre-change composer, is_core inheritance across supersede chains proven,
+shared RECONCILE_DISCIPLINE change confirmed NOT to weaken legitimate lesson supersession.**
+
+**Fixed a real data-loss bug (3 stacked failures) + added durable location grounding:**
+- Atomicity: EPISODIC_EXTRACT_DISCIPLINE now splits biography from preference into atomic rows.
+- Reconcile over-merge: RECONCILE_DISCIPLINE (shared w/ lessons) — SUPERSEDE only when the new
+  fact covers EVERYTHING the old asserts; partial overlap ⇒ UPDATE-merge or ADD; never drop info.
+- Location grounding: is_core flag (migration 2026-07-17-episodic-core) + always-fold band
+  ("## About the user (always known)"), ungated by BM25/cosine, deduped, capped
+  (HOUGE_EPISODIC_CORE_CAP=8), byte-identical when empty; is_core inherits across chains.
+
+**LIVE GATE (real daemon, Paco's Telegram, 1-min lull temporarily for the gate then restored):**
+Paco stated 「我住在悉尼，悉尼北区」→ new-code distiller extracted an ATOMIC biography fact and
+marked it is_core=1 → **fact 46 "Paco lives in Sydney, specifically in the northern part of
+Sydney"** (facts_added=1). Backend proof: composer folds it into EVERY turn's system prompt
+ungated (prove-fold.mjs on the live DB). Live confirm: 「明天适合骑车吗」→ Houge grounded to
+Sydney immediately, searched Sydney weather, gave a full northern-Sydney forecast + cycling
+rec — NEVER asked "which city" (the pre-fix behavior). 1607/1607 all sweeps.
+
+**Residuals:** (1) research convergence RE-OBSERVED — the weather turn ran ~9 web_searches
+escalating timezone precision instead of converging (gap #1, Phase R; NOT a location failure).
+(2) reconcile chose ADD not SUPERSEDE for fact 46 vs the older is_core=0 fact 43 ("paco 当前居住
+在悉尼") — erring toward keep-both (safe side of the fix; a benign near-duplicate, 46 is the
+core one that folds). (3) is_core backfill: pre-fix active facts stay is_core=0 (going-forward
+only; fine).
+
+---
+
+# ✅ DONE — S12 + D12 safety-floor live probes — PASSED 2026-07-17 09:5x (open since 07-07)
 
 **Root cause (subagent, file:line-verified): THREE stacked failures lost the "Paco lives in
 Sydney" fact.** (1) Extraction atomicity instructed but NOT enforced → fact 13 stored as a

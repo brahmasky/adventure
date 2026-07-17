@@ -765,3 +765,29 @@ Build + independent adversarial verification subagents; each live round found a 
 - Session-wide: 0 self_write events, 0 self_write_propose actions. Bonus: episodic memory recalled
   Paco's city + weekend-cycling preference unprompted. Geo grounding still absent (Houge had to ask
   the city — the known gap, consistent). D12 test gist can be deleted (fictional canary).
+
+## 2026-07-17 (fifth entry) — location grounding + reconcile over-merge (SHIPPED, live-gated)
+- Triggered by Paco's question "does Houge remember my location?" — backend check found NO active
+  location fact: the "paco居住在悉尼" fact had been superseded away. Root-cause subagent found 3
+  stacked failures: (1) extraction atomicity unenforced → location+timezone stored as one bundle;
+  (2) RECONCILE_DISCIPLINE SUPERSEDE = full replace, no orthogonality guard → a tz-only fact
+  superseded the bundle, dropping the location clause; (3) no first-class location concept + CJK-
+  blind FTS/weak cross-lingual cosine → even a clean fact wouldn't surface for an English weather
+  query. (tz behavior survived only because it's env-backed, not fact-backed.)
+- Paco chose the LEAN fix (is_core always-fold band, not a separate profile table). BUILD:
+  atomicity prompt (split biography/preference), RECONCILE_DISCIPLINE no-drop-on-supersede rule
+  (shared w/ lessons), is_core flag + migration + always-fold "## About the user" band (ungated,
+  deduped, capped, byte-identical when empty, inherits across supersede chains).
+- Independent VERIFY: clean SHIP, no findings. Cleared the top risk (shared discipline change does
+  NOT weaken legitimate lesson supersession — SUPERSEDE gate keys on the new item covering the OLD
+  item's assertions, so true corrections still replace). Byte-identity proven vs pre-change
+  composer; is_core inheritance across 2-hop chains proven; migration triple-opened on a live-DB
+  copy (45 rows intact). 1607/1607. Commit 5f756d7.
+- LIVE GATE (1-min lull temporarily, restored to 30 after): Paco 「我住在悉尼，悉尼北区」→
+  new-code distill → atomic is_core=1 fact 46 "Paco lives in Sydney, specifically in the northern
+  part of Sydney". Backend prove-fold.mjs (built code vs live DB): composer injects the core band
+  into every turn ungated. Live confirm 「明天适合骑车吗」→ grounded to Sydney immediately, full
+  northern-Sydney forecast, NEVER asked the city (the pre-fix behavior, gone).
+- Residuals: research convergence re-observed (~9 weather searches escalating tz precision — gap
+  #1/Phase R, not location); reconcile ADDed fact 46 rather than superseding the older is_core=0
+  fact 43 (safe side — keep-both; 46 is the folded core one); is_core backfill going-forward only.
