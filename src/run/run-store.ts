@@ -33,6 +33,7 @@ import {
 import { canTransitionRun } from "./state-machines.js";
 import type { LlmUsage } from "./llm-usage.js";
 import { blobToFloat32, cosineSimilarity, float32ToBlob } from "../llm/embeddings.js";
+import { resolveWikiDecayDays } from "../capabilities/wiki.js";
 
 /** The LLM-call roles recorded by {@link RunStore.recordLlmCall} (spec §"Real telemetry"). */
 export type LlmCallRole = "writer" | "reviewer" | "classify" | "frame" | "answer" | "compose" | "reader";
@@ -2300,12 +2301,18 @@ export class RunStore {
    * FTS5/BM25 keyword leg over ACTIVE pages (title/summary/body_md), best rank first,
    * id ASC on ties. The query's letter/number tokens are individually quoted, so hostile
    * MATCH syntax cannot reach the parser; an unsegmentable query (CJK under unicode61)
-   * or a parse error degrades to [] — NEVER throws.
+   * or a parse error degrades to [] — NEVER throws. `mode` selects the token semantics:
+   * `"any"` (default — the W2 retrieval pool wants breadth) ORs the tokens; `"all"`
+   * ANDs them (the identity leg's F2 relevance floor — see findWikiPageForTopic).
    */
-  searchWikiPagesFts(queryText: string, k: number): Array<WikiPageRow & { rank: number }> {
+  searchWikiPagesFts(
+    queryText: string,
+    k: number,
+    mode: "any" | "all" = "any"
+  ): Array<WikiPageRow & { rank: number }> {
     const tokens = (queryText.match(/[\p{L}\p{N}]+/gu) ?? []).slice(0, 12);
     if (tokens.length === 0) return [];
-    const match = tokens.map((t) => `"${t}"`).join(" OR ");
+    const match = tokens.map((t) => `"${t}"`).join(mode === "all" ? " AND " : " OR ");
     try {
       return this.db.prepare(`
         SELECT ${WIKI_PAGE_COLUMNS_QUALIFIED}, fts.rank AS rank
@@ -2326,6 +2333,13 @@ export class RunStore {
    * best cosine ≥ {@link WIKI_TOPIC_COSINE_THRESHOLD} over the active embeddings. A null
    * query embedding (Ollama down) simply skips the cosine leg — degradation, never an
    * error. build⇄refine auto-route rides this: a hit means REFINE, never a duplicate.
+   *
+   * F2 (W2, live-observed W1 residual): the FTS leg requires EVERY topic token to match
+   * (`"all"` mode) — an any-token match let token-overlapping DISTINCT topics merge
+   * ("Tesla Q2 earnings" matched the ASML Q2-earnings page on q2+earnings alone). A
+   * fractional floor cannot separate that shape (2/3 overlap on the false merge vs 1/2
+   * on a legitimate rephrase), so identity demands full coverage; PARAPHRASE recurrence
+   * is the cosine leg's job, unchanged.
    */
   findWikiPageForTopic(topic: string, slug: string, embedding: Float32Array | null): WikiPageRow | undefined {
     const exact = this.db.prepare(`
@@ -2335,7 +2349,7 @@ export class RunStore {
     `).get<WikiPageRow>(slug);
     if (exact) return exact;
 
-    const fts = this.searchWikiPagesFts(topic, 1);
+    const fts = this.searchWikiPagesFts(topic, 1, "all");
     if (fts.length > 0) return fts[0];
 
     if (!embedding) return undefined;
@@ -2412,6 +2426,119 @@ export class RunStore {
       this.db.prepare(`UPDATE wiki_pages SET status = 'pruned' WHERE id = ?`).run(id);
     }
     return toPrune;
+  }
+
+  /** Attribution (W2): these pages were folded into a turn's prompt (touchApplied twin). */
+  touchWikiApplied(ids: number[], now: string = new Date().toISOString()): void {
+    const stmt = this.db.prepare(`
+      UPDATE wiki_pages SET applied_count = applied_count + 1, last_used = ? WHERE id = ?
+    `);
+    for (const id of ids) stmt.run(now, id);
+  }
+
+  /**
+   * Attribution (W2, the appliedLessonIdsForChat twin): the union of
+   * `loop_started.applied_artifacts.wiki_page_ids` across the window's runs — the wiki
+   * pages that rode the rated session's prompts. Window's runs = runs with a chat turn
+   * in this chat at/after `sinceIso` (all of the chat's runs when omitted).
+   */
+  appliedWikiPageIdsForChat(chat_id: string, sinceIso?: string): number[] {
+    const rows = sinceIso
+      ? this.db.prepare(`
+          SELECT payload_json FROM ledger_events
+          WHERE event_type = 'loop_started'
+            AND run_id IN (SELECT DISTINCT run_id FROM chat_turns WHERE chat_id = ? AND created_at >= ?)
+        `).all<{ payload_json: string }>(chat_id, sinceIso)
+      : this.db.prepare(`
+          SELECT payload_json FROM ledger_events
+          WHERE event_type = 'loop_started'
+            AND run_id IN (SELECT DISTINCT run_id FROM chat_turns WHERE chat_id = ?)
+        `).all<{ payload_json: string }>(chat_id);
+    const ids = new Set<number>();
+    for (const row of rows) {
+      try {
+        const payload = JSON.parse(row.payload_json) as {
+          applied_artifacts?: { wiki_page_ids?: unknown };
+        };
+        const list = payload.applied_artifacts?.wiki_page_ids;
+        if (!Array.isArray(list)) continue;
+        for (const id of list) {
+          if (typeof id === "number" && Number.isInteger(id)) ids.add(id);
+        }
+      } catch {
+        // A malformed payload never blocks attribution over the rest.
+      }
+    }
+    return [...ids].sort((a, b) => a - b);
+  }
+
+  /**
+   * Absorb one captured session rating into the applied wiki pages (W2, the
+   * applyRatingToLessons twin): append {rating, at} to each rating_history; a good
+   * session (≥2) is the positive reuse signal (+0.25 per applied page). A low rating
+   * appends only — culprit attribution stays lessons-only for now (ADR 0020 deferral).
+   */
+  applyRatingToWikiPages(ids: number[], rating: number, at: string): void {
+    for (const id of ids) {
+      const row = this.getWikiPage(id);
+      if (!row) continue;
+      const history = parseRatingHistory(row.rating_history);
+      history.push({ rating, at });
+      this.db.prepare(`
+        UPDATE wiki_pages SET rating_history = ?, reuse_value = reuse_value + ? WHERE id = ?
+      `).run(JSON.stringify(history), rating >= 2 ? 0.25 : 0, id);
+    }
+  }
+
+  /**
+   * The daily wiki decay+prune pass (W2, the runLessonDecayTick twin): at most once per
+   * 24h (the `wiki_decay_state` row makes it idempotent across poll cycles). ACTIVE
+   * pages unused for `decayDays` (never-used rows date from created_at) lose 20%
+   * reuse_value; below `pruneThreshold` (the lessons prune line) they demote to
+   * 'pruned' — reversible, never a DELETE. Superseded rows are exempt by construction
+   * (they are already inactive lineage, not candidates). One summary ledger event per
+   * executed tick.
+   */
+  runWikiDecayTick(
+    now: string,
+    options: { decayDays?: number; pruneThreshold?: number } = {}
+  ): { ran: boolean; pages_decayed: number; pruned_ids: number[] } {
+    const state = this.db.prepare(`
+      SELECT last_decay_at FROM wiki_decay_state WHERE id = 1
+    `).get<{ last_decay_at: string | null }>();
+    if (state?.last_decay_at && Date.parse(now) - Date.parse(state.last_decay_at) < 86_400_000) {
+      return { ran: false, pages_decayed: 0, pruned_ids: [] };
+    }
+
+    const decayDays = options.decayDays ?? resolveWikiDecayDays(process.env);
+    const threshold = options.pruneThreshold ?? resolveLessonPruneThreshold(process.env);
+    const cutoff = new Date(Date.parse(now) - decayDays * 86_400_000).toISOString();
+    const stale = this.db.prepare(`
+      SELECT id, reuse_value FROM wiki_pages
+      WHERE status = 'active' AND COALESCE(last_used, created_at) < ?
+    `).all<{ id: number; reuse_value: number }>(cutoff);
+
+    const pruned_ids: number[] = [];
+    for (const row of stale) {
+      const decayed = row.reuse_value * 0.8;
+      const prune = decayed < threshold;
+      this.db.prepare(`
+        UPDATE wiki_pages SET reuse_value = ?${prune ? ", status = 'pruned'" : ""} WHERE id = ?
+      `).run(decayed, row.id);
+      if (prune) pruned_ids.push(row.id);
+    }
+
+    this.db.prepare(`UPDATE wiki_decay_state SET last_decay_at = ? WHERE id = 1`).run(now);
+    this.appendLedgerEvent(
+      createLedgerEvent({
+        correlation_id: "wiki-decay",
+        event_type: "wiki_decay_tick",
+        actor: "system",
+        sequence: this.nextLedgerSequence(),
+        payload: { pages_decayed: stale.length, pruned_ids }
+      })
+    );
+    return { ran: true, pages_decayed: stale.length, pruned_ids };
   }
 
   // --- Scheduled tasks (B10b, ADR 0017) ---------------------------------------

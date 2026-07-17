@@ -50,7 +50,8 @@ export type LedgerEventType =
   | "lesson_decay_tick"
   | "episodic_distill_pass"
   | "episodic_consolidate_tick"
-  | "wiki_page_saved";
+  | "wiki_page_saved"
+  | "wiki_decay_tick";
 
 export interface LedgerEvent {
   event_id: string;
@@ -166,7 +167,9 @@ const requiredPayloadFields = {
   episodic_consolidate_tick: ["facts_decayed", "pruned_ids", "clusters_merged", "promoted_ids"],
   // Phase W (ADR 0020): one event per wiki page save (add/refine/unchanged); confidence
   // is null on an UNVERIFIED save; superseded_id rides as optional metadata on refine.
-  wiki_page_saved: ["verb", "id", "topic_slug", "source_count", "confidence", "contradiction_count"]
+  wiki_page_saved: ["verb", "id", "topic_slug", "source_count", "confidence", "contradiction_count"],
+  // Phase W W2: the daily wiki reuse-value decay+prune pass — one summary per executed tick.
+  wiki_decay_tick: ["pages_decayed", "pruned_ids"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(

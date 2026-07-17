@@ -43,6 +43,30 @@ export function resolveWikiMaxPages(env: NodeJS.ProcessEnv): number {
   return Number.isInteger(n) && n > 0 ? n : DEFAULT_WIKI_MAX_PAGES;
 }
 
+/** W2 retrieval: max pages folded into one prompt (HOUGE_WIKI_RETRIEVE_CAP). */
+export const DEFAULT_WIKI_RETRIEVE_CAP = 1;
+
+export function resolveWikiRetrieveCap(env: NodeJS.ProcessEnv): number {
+  const n = Number(env.HOUGE_WIKI_RETRIEVE_CAP);
+  return Number.isInteger(n) && n > 0 ? n : DEFAULT_WIKI_RETRIEVE_CAP;
+}
+
+/** W2 retrieval: recency half-life in days (HOUGE_WIKI_RECENCY_HALFLIFE_DAYS). */
+export const DEFAULT_WIKI_RECENCY_HALFLIFE_DAYS = 30;
+
+export function resolveWikiRecencyHalflifeDays(env: NodeJS.ProcessEnv): number {
+  const n = Number(env.HOUGE_WIKI_RECENCY_HALFLIFE_DAYS);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_WIKI_RECENCY_HALFLIFE_DAYS;
+}
+
+/** W2 decay: days without use before an active page decays (HOUGE_WIKI_DECAY_DAYS). */
+export const DEFAULT_WIKI_DECAY_DAYS = 45;
+
+export function resolveWikiDecayDays(env: NodeJS.ProcessEnv): number {
+  const n = Number(env.HOUGE_WIKI_DECAY_DAYS);
+  return Number.isInteger(n) && n > 0 ? n : DEFAULT_WIKI_DECAY_DAYS;
+}
+
 /** Slug length cap — a filename and an identity key, not a summary. */
 export const WIKI_SLUG_MAX_CHARS = 64;
 

@@ -221,7 +221,8 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
         lesson_scopes: [],
         lesson_ids: [],
         skill_scopes: [],
-        episodic_fact_ids: []
+        episodic_fact_ids: [],
+        wiki_page_ids: [] // W2: the wiki attribution seed (empty when the flag is off)
       });
       const halted = loopEvents(store, run_id, "loop_halted");
       expect(halted.length).toBe(1);
@@ -711,7 +712,8 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
         lesson_scopes: ["ask"],
         lesson_ids: [a, b], // most valuable first; equal values tie in reading order (⓪·3f P3)
         skill_scopes: [],
-        episodic_fact_ids: []
+        episodic_fact_ids: [],
+        wiki_page_ids: [] // W2: the wiki attribution seed (empty when the flag is off)
       });
       // Both applied lessons earned their reuse credit for the turn.
       expect(store.getLesson(a)!.applied_count).toBe(1);

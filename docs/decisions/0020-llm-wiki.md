@@ -96,3 +96,47 @@ spine spec's `knowledge/` — recorded here as deliberate drift.
 `HOUGE_WIKI_RETRIEVE_CAP` / `HOUGE_WIKI_RECENCY_HALFLIFE_DAYS` / `HOUGE_WIKI_DECAY_DAYS`
 (the `wiki_decay_state` latch table already exists — the schema landed complete in W1's
 one migration, `2026-07-16-wiki-pages`).
+
+## Slice W2 — the reuse loop (2026-07-17)
+
+- **Retrieval scoring** (`src/run/wiki-retrieval.ts`, the episodic-retrieval clone):
+  `score = relevance × recency × reuse` where relevance = max(normalized BM25, cosine,
+  0.05 floor), recency = exponential half-life (`HOUGE_WIKI_RECENCY_HALFLIFE_DAYS`,
+  default 30) on **max(created_at, last_verified, last_used)** — a re-verified or
+  re-applied page is alive, never stale-by-birthday — and reuse =
+  1 + 0.15·log1p(reuse_value), a log-compressed tie-breaker. Cap
+  `HOUGE_WIKI_RETRIEVE_CAP` (default 1), 1200-char guard on the rendered projection
+  (drops lowest-scored first). Never throws — any failure folds nothing.
+- **Confidence is DISPLAYED, never ranked.** The verifier's confidence calibrates the
+  reader's trust in a page (`(confidence 0.82, verified …)` / `(unverified)` on the
+  title line); it must not hide an unverified-but-relevant page from retrieval — the
+  human rating signal, not the verifier, governs a page's standing (reuse_value).
+- **Prompt fold:** `WIKI_SECTION_HEADER` (web-derived reference DATA, not instructions;
+  ⚠ disagreements surfaced, never settled) between the episodic and lessons sections;
+  only the sanitized projection renders (title + key facts + ⚠ contradiction claims) —
+  body_md never enters a prompt (decision 7c upheld). `wikiReader` absent ⇒
+  byte-identical prompt. One query embedding per turn is SHARED by episodic + wiki
+  retrieval (a single Ollama call).
+- **Eval loop:** `loop_started.applied_artifacts.wiki_page_ids` seeds attribution;
+  applied pages earn `applied_count`/`last_used` per turn; a session rating ≥2 pays
+  +0.25 reuse_value to the window's applied pages (rating_history appended either way);
+  the daily `runWikiDecayTick` (24h `wiki_decay_state` latch, riding the daemon's
+  signal-path tick, flag-gated) decays actives unused for `HOUGE_WIKI_DECAY_DAYS`
+  (default 45) by 20% and prunes — reversibly, never DELETE — below the lessons prune
+  line; superseded rows are exempt (inactive lineage). One `wiki_decay_tick` ledger
+  event per executed tick.
+- **Known residual (W2 verifier F1, accepted for v1 — watch in soak):** the 0.05
+  relevance floor means an armed daemon folds the top page into EVERY turn (a greeting
+  still folds the best-scored page at cap 1), and each fold refreshes `last_used` +
+  earns rating credit — the perpetually-folded top page never goes decay-stale and
+  absorbs credit from unrelated turns. Same shape episodic shipped with; wiki's
+  chunkier winner-take-all cap makes it more visible. Future fix if soak confirms:
+  exclude pure-floor matches from fold/touch/credit.
+- **F2 identity floor (W1 residual, live-observed):** `findWikiPageForTopic`'s FTS leg
+  now requires EVERY topic token to match (FTS5 `AND`), not any. An any-token match
+  merged token-overlapping DISTINCT topics ("Tesla Q2 earnings" hit the ASML page on
+  q2+earnings); no fractional floor separates that shape (2/3 overlap on the false
+  merge vs 1/2 on a legitimate rephrase), so identity demands full coverage —
+  paraphrase recurrence stays the cosine leg's job. Exact-slug and cosine legs
+  unchanged; W2 retrieval keeps OR semantics (breadth is fine there — it ranks, it
+  never merges identity).

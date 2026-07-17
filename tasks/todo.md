@@ -35,10 +35,11 @@ code-owned via evolutionNotices. Pages GLOBAL (no chat_id). Breaker: loop_step-o
 inherit metered fuse. New flags all default OFF + PINNED_ENV.
 
 - [x] **Slice W1** DONE (see block above): built, verified, gated, live.
-- [ ] **Slice W2** (needs /goal): wiki-retrieval + composer wikiReader fold (byte-identical
-      when absent), applied_artifacts.wiki_page_ids + rating +0.25 + decay tick (24h latch),
-      + W1 residuals (F2 BM25 floor on FTS identity leg).
-      LIVE gate C6: recurrence → page folded, fewer fetches, supersede lineage, reuse_value up.
+- [ ] **Slice W2** (/goal FIRED 2026-07-17): wiki-retrieval + composer wikiReader fold
+      (byte-identical when absent), applied_artifacts.wiki_page_ids + rating +0.25 + decay tick
+      (24h latch), + W1 residual F2 (BM25 floor on FTS identity leg). Steps: build subagent →
+      adversarial verifier → orchestrator gates → commit+push → LIVE gate C6: recurrence →
+      page folded, fewer fetches, supersede lineage, reuse_value up.
 
 ---
 

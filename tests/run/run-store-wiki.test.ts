@@ -278,11 +278,13 @@ describe("findWikiPageForTopic (3 identity legs, each graceful)", () => {
     }
   });
 
-  it("leg 2 — FTS top-1 catches a re-phrased topic with a different slug", () => {
+  it("leg 2 — FTS top-1 catches a re-phrased topic with a different slug (F2: every token must match)", () => {
     const store = RunStore.openInMemory();
     try {
       const id = store.addWikiPage(candidate({ created_at: NOW }));
-      const hit = store.findWikiPageForTopic("ASML latest earnings report", "asml-latest-earnings-report", null);
+      // W2 F2 tightened this leg to all-tokens (AND): the rephrase's tokens must all
+      // appear in the page ("latest"/"report" would now miss — the cosine leg's job).
+      const hit = store.findWikiPageForTopic("ASML 2026 earnings", "asml-2026-earnings", null);
       expect(hit?.id).toBe(id);
     } finally {
       store.close();

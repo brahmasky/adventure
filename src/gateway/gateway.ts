@@ -250,6 +250,11 @@ export class Gateway {
       applied_lesson_ids: applied
     });
     this.runStore.applyRatingToLessons(applied, parsed.rating, now);
+    // Phase W W2: the wiki pages folded into the window's turns absorb the same signal
+    // (+0.25 reuse on a good session). Attribution rides the ledger, so this is inert
+    // ([] → no-op) unless wiki retrieval actually seeded wiki_page_ids.
+    const appliedWiki = this.runStore.appliedWikiPageIdsForChat(chat_id, pending.window_start);
+    this.runStore.applyRatingToWikiPages(appliedWiki, parsed.rating, now);
     const rating_signal: RatingSignal = { chat_id, rating: parsed.rating, applied_lesson_ids: applied };
 
     if (parsed.comment) {

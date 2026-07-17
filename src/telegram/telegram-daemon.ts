@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { checkMeteredCeiling } from "../budget/metered-ceiling.js";
 import { runEpisodicConsolidateTick } from "../capabilities/episodic-consolidate.js";
 import { maybeRunEpisodicDistill } from "../capabilities/episodic-extract.js";
+import { resolveWikiEnabled } from "../capabilities/wiki.js";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
 import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
@@ -261,7 +262,8 @@ export async function runTelegramDaemon(
 
 /**
  * ⓪·3 S2 — the signal path's per-cycle tick: the daily lesson decay+prune pass (the
- * store makes it idempotent per 24h), the session-rating ask trigger (substance +
+ * store makes it idempotent per 24h), the daily wiki decay pass (W2 — flag-gated OFF,
+ * same 24h idempotency), the session-rating ask trigger (substance +
  * lull + cooldown — cheap sqlite checks), the episodic fast-path distill (Phase M
  * B2 — flag-gated OFF by default, per-chat lull, at most one chat per tick), and the
  * scheduler fire tick (B10b — flag-gated OFF, capped fires, same gateway→worker path
@@ -277,6 +279,12 @@ async function runSignalPathTick(
 ): Promise<void> {
   try {
     options.store.runLessonDecayTick(now);
+    // Phase W W2: the daily wiki decay+prune pass (the lesson tick's twin) — gated on
+    // the wiki master flag (disarmed ⇒ zero behavior), idempotent per 24h via its
+    // single-row wiki_decay_state latch.
+    if (resolveWikiEnabled(process.env)) {
+      options.store.runWikiDecayTick(now);
+    }
     const chat = options.allowlist.chats[0];
     if (chat) {
       maybeAskSessionRating({

@@ -106,6 +106,7 @@ import {
   parseWikiContradictions,
   parseWikiStringArray,
   parseWikiSynthResult,
+  resolveWikiEnabled,
   resolveWikiMaxPages,
   resolveWikiMinSources,
   resolveWikiVerifyPasses,
@@ -118,8 +119,9 @@ import {
   type WikiVerifyOutcome
 } from "../capabilities/wiki.js";
 import { resolveLessonCapPerScope, RunStore } from "../run/run-store.js";
-import type { ChatTurnRow, ClaimedRun, EpisodicFactRow, LessonRow, LessonSaveResult, LessonSource } from "../run/run-store.js";
+import type { ChatTurnRow, ClaimedRun, EpisodicFactRow, LessonRow, LessonSaveResult, LessonSource, WikiPageRow } from "../run/run-store.js";
 import { renderEpisodicFactsBlock, retrieveEpisodicFacts } from "../run/episodic-retrieval.js";
+import { renderWikiBlock, retrieveWikiPages } from "../run/wiki-retrieval.js";
 import { resolveEpisodicEnabled } from "../capabilities/episodic-extract.js";
 import { embedText, resolveEmbedConfig } from "../llm/embeddings.js";
 import { ToolRegistry } from "../tools/tool-registry.js";
@@ -821,24 +823,49 @@ export class CoreWorker {
   }
 
   /**
-   * Phase M B3 — the per-turn episodic retrieval: gated on the master flag; the query
-   * embedding is resolved ONCE here (null → BM25/recency-only degradation, NO retry —
-   * a memory hiccup never blocks the turn). Latency note: HOUGE_EMBED_TIMEOUT_MS
-   * (default 5s) is the worst-case CAP on this hot-path call, not its typical cost —
-   * local Ollama embeds in ~50ms; acceptable for v1 and the whole leg degrades to
-   * null at the cap. Never throws; empty on any failure.
+   * The turn's ONE query embedding (Phase M B3 + Phase W W2): resolved once and SHARED
+   * by episodic and wiki retrieval — a second hot-path Ollama call would double the
+   * cost for the same vector. Null → BM25/recency-only degradation, NO retry — a
+   * memory hiccup never blocks the turn. Latency note: HOUGE_EMBED_TIMEOUT_MS (default
+   * 5s) is the worst-case CAP, not the typical cost — local Ollama embeds in ~50ms.
    */
-  private async episodicFactsForTurn(chat_id: string, message: string): Promise<EpisodicFactRow[]> {
-    if (!resolveEpisodicEnabled(process.env)) return [];
-    let queryEmbedding: Float32Array | null = null;
+  private async embedQueryForTurn(message: string): Promise<Float32Array | null> {
     try {
-      queryEmbedding = await this.embedAdapter(message);
+      return await this.embedAdapter(message);
     } catch {
-      queryEmbedding = null; // fire-and-degrade, same contract as the distill pass
+      return null; // fire-and-degrade, same contract as the distill pass
     }
+  }
+
+  /**
+   * Phase M B3 — the per-turn episodic retrieval: gated on the master flag; the shared
+   * query embedding is passed in (see {@link embedQueryForTurn}). Never throws; empty
+   * on any failure.
+   */
+  private episodicFactsForTurn(
+    chat_id: string,
+    message: string,
+    queryEmbedding: Float32Array | null
+  ): EpisodicFactRow[] {
+    if (!resolveEpisodicEnabled(process.env)) return [];
     return retrieveEpisodicFacts({
       store: this.runStore,
       chat_id,
+      queryText: message,
+      queryEmbedding,
+      now: new Date().toISOString()
+    });
+  }
+
+  /**
+   * Phase W W2 — the per-turn wiki retrieval (episodicFactsForTurn's twin, but GLOBAL:
+   * pages carry no chat_id): gated on the master flag — disarmed means no store read at
+   * all — and sharing the turn's one query embedding. Never throws; empty on any failure.
+   */
+  private wikiPagesForTurn(message: string, queryEmbedding: Float32Array | null): WikiPageRow[] {
+    if (!resolveWikiEnabled(process.env)) return [];
+    return retrieveWikiPages({
+      store: this.runStore,
       queryText: message,
       queryEmbedding,
       now: new Date().toISOString()
@@ -1954,18 +1981,27 @@ export class CoreWorker {
     const scope = intentToScope(hint.intent);
     const lessonsReader = this.lessonsReader();
     const skillsReader = this.skillsReader();
-    // Phase M B3: this chat's episodic memory, retrieved ONCE per turn against the
-    // incoming message (the query embedding is resolved once too). Flag-gated OFF by
-    // default; empty → both composed prompts are byte-identical to today.
-    const episodicFacts = await this.episodicFactsForTurn(chat_id, message);
+    // Phase M B3 + Phase W W2: this chat's episodic memory and the global wiki pages,
+    // each retrieved ONCE per turn against the incoming message — SHARING one query
+    // embedding (a single Ollama call, resolved only when a retrieval is armed). Both
+    // flag-gated OFF by default; empty → both composed prompts are byte-identical to today.
+    const queryEmbedding =
+      resolveEpisodicEnabled(process.env) || resolveWikiEnabled(process.env)
+        ? await this.embedQueryForTurn(message)
+        : null;
+    const episodicFacts = this.episodicFactsForTurn(chat_id, message, queryEmbedding);
     const episodicBlock = episodicFacts.length > 0 ? renderEpisodicFactsBlock(episodicFacts) : undefined;
     const episodicReader = () => episodicBlock;
+    const wikiPages = this.wikiPagesForTurn(message, queryEmbedding);
+    const wikiBlock = wikiPages.length > 0 ? renderWikiBlock(wikiPages) : undefined;
+    const wikiReader = () => wikiBlock;
     const system = composeSystemPrompt(memoryRoot, "loop", {
       lessonsReader,
       lessonsScope: scope,
       skillsReader,
       skillsScope: scope,
-      episodicReader
+      episodicReader,
+      wikiReader
     });
     // llm_answer steps answer in Houge's voice under the ask discipline; the model's
     // parsed input can never override the composed system prompt (forced below). The
@@ -1977,7 +2013,8 @@ export class CoreWorker {
         lessonsScope: scope,
         skillsReader,
         skillsScope: scope,
-        episodicReader
+        episodicReader,
+        wikiReader
       });
 
     // lesson_write trust anchors: the REAL prior assistant turn (and the real user
@@ -2027,7 +2064,10 @@ export class CoreWorker {
         skill_scopes: skillsReader(scope) ? [scope] : [],
         // Phase M B3: the episodic attribution seed — which fact rows rode this
         // turn's prompt (empty array when the feature is off, mirroring lesson_ids).
-        episodic_fact_ids: episodicFacts.map((f) => f.id)
+        episodic_fact_ids: episodicFacts.map((f) => f.id),
+        // Phase W W2: the wiki attribution seed — which page rows rode this turn's
+        // prompt (the rating capture unions these via appliedWikiPageIdsForChat).
+        wiki_page_ids: wikiPages.map((p) => p.id)
       }
     });
     // The applied lessons earn their reuse credit per turn (applied_count + last_used).
@@ -2038,6 +2078,11 @@ export class CoreWorker {
     // reuse leg and consolidation's promote/decay both read these).
     if (episodicFacts.length > 0) {
       this.runStore.touchEpisodicApplied(episodicFacts.map((f) => f.id));
+    }
+    // And the applied wiki pages (applied_count + last_used — retrieval's reuse leg
+    // and the daily decay tick both read these).
+    if (wikiPages.length > 0) {
+      this.runStore.touchWikiApplied(wikiPages.map((p) => p.id));
     }
 
     // No approval sink on purpose (like runAnswer/runResearch): a gated capability
