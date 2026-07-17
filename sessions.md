@@ -791,3 +791,30 @@ Build + independent adversarial verification subagents; each live round found a 
 - Residuals: research convergence re-observed (~9 weather searches escalating tz precision — gap
   #1/Phase R, not location); reconcile ADDed fact 46 rather than superseding the older is_core=0
   fact 43 (safe side — keep-both; 46 is the folded core one); is_core backfill going-forward only.
+
+## 2026-07-17 (sixth entry) — ⓪·4 legacy retirement + convergence soak metric (both SHIPPED, live-gated)
+- Two-part /goal, the last pre-money-design cleanup items.
+- CONVERGENCE SOAK METRIC (c895bcb): npm run soak — read-only ledger report (scripts/
+  convergence-soak.mjs). Recon found the key insight: searches-per-run is the load-bearing
+  signal, NOT step_cap (both recent degraded runs ended 'final' but burned 8-10 searches).
+  Built inline, validated against the real DB; caught + fixed 2 false-positive verdicts (a
+  clarify halt and a single injection-probe re-fetch dedup are NOT degradation). Baseline: 88%
+  overall / 86% research convergence; the 2 degraded = the Phase R search-loops. The instrument
+  to watch the convergence residual trend over the soak.
+- ⓪·4 LEGACY RETIREMENT (5535dae, −1108 net lines): recon mapped the exact dead surface — only
+  runFeedback (+3 helpers) is truly dead; the other per-intent handlers are reused by live paths
+  (runResearch/runAnswer by /research·/ask, runSelfDiagnose/runSelfWrite/runSkill by the loop's
+  evolution adapter). Resolved the one parity question: legacy auto-author-skill-on-feedback is
+  intentionally replaced by the explicit skill_author tool + lesson_write (ADR 0013 §4), not a
+  regression. Build subagent deleted the legacy enum branch + runFeedback + the flag entirely;
+  orchestrator finished the job (verifier caught that the recon's claim about lesson-write reusing
+  looksLikeSkillProcedure was FALSE → it too was orphaned → deleted it + its test). Verifier: SHIP
+  no findings (every deleted symbol grep-confirmed orphaned, all live handlers intact, no assertion
+  weakened, executeTurnLoop subsumes the deleted tail). Deleted the legacy-enum test suite (ported
+  6 live skill tests to the loop suite), reworked daemon fakes loop-aware, removed all flag pins.
+  1580/1580 clean + daemon-env. LIVE: normal turn on loop-only dist → loop_halted final, clean
+  tech-news answer. Spine step ⓪ now 100% complete.
+- Pre-money-design sequence COMPLETE: DB backup ✓, S12/D12 probes ✓, location/reconcile fix ✓,
+  ⓪·4 ✓, convergence metric ✓. Next: the money-work design discussion (charter fork 3 re-decision;
+  needs external-coding + browser + credentials + S-3 design — see the 07-17 gap review + the
+  [[houge-next-major-money-work]] memory).

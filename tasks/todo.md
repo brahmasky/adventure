@@ -1,3 +1,32 @@
+# ✅ DONE — ⓪·4 legacy retirement + convergence soak metric — SHIPPED + LIVE-GATED 2026-07-17 11:4x
+
+**Two-part /goal, both shipped. Daemon live on loop-only dist (PID 17299).**
+
+**Convergence soak metric (commit c895bcb):** `npm run soak [--days N]` — read-only report over
+ledger_events (scripts/convergence-soak.mjs, modeled on inspect-live.mjs, no schema/event
+changes). Per research/answer run: converged vs DEGRADED (forced-fallback OR >5 searches OR ≥2
+repeated actions OR >8 tool calls; clarify/kickoff/single-dedup are NOT degraded — fixed those
+false positives). Load-bearing signal = searches-per-run (step_cap is a rare tail — both recent
+degraded runs ended 'final' but burned 8-10 searches). BASELINE: 88% overall / 86% research-only;
+the 2 degraded runs = the exact Phase R search-loops (10 + 8 searches).
+
+**⓪·4 legacy retirement (commit 5535dae, −1108 net lines):** the inner loop (ADR 0013) has been
+the sole prod path for weeks; deleted the dead legacy enum branch + runFeedback (+
+resolveFeedbackTarget/tryAutoAuthorSkill/buildFeedbackContext/normalizeIntent) + the
+HOUGE_INNER_LOOP_ENABLED flag entirely + the orphaned looksLikeSkillProcedure. executeTurn now
+unconditionally calls executeTurnLoop. feedback→lesson = the always-armed lesson_write tool;
+skill authoring = the explicit skill_author tool (auto-author-on-feedback intentionally gone,
+ADR 0013 §4). Verifier SHIP no findings: every deleted symbol orphaned, all live handlers intact,
+no assertion weakened, executeTurnLoop fully subsumes the deleted tail. Obsolete legacy-enum test
+suite deleted (6 live skill tests ported to the loop suite), daemon fakes reworked loop-aware,
+all flag-pins removed; zero legacy refs remain. 1580/1580 clean + daemon-env sweep; deps {}.
+
+**LIVE GATE:** daemon reloaded on loop-only dist → normal turn 「最近科技新闻…」→ loop_halted
+final, 4 tool calls, full tech-news digest delivered (behavior-neutral, as expected — the loop
+was already prod). ⓪ inner-loop spine step now 100% complete.
+
+---
+
 # ✅ DONE — location grounding + reconcile over-merge — SHIPPED + LIVE-GATED 2026-07-17 11:0x
 
 **Commit 5f756d7. Daemon live on the fix (PID 93851). Verifier: clean SHIP, no findings —
