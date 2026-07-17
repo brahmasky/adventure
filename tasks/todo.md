@@ -1,3 +1,30 @@
+# ✅ DONE — Phase W COMPLETE: Slice W2 reuse loop — SHIPPED + C6 LIVE-GATED 2026-07-17 01:5x
+
+**Commit f452d89. Daemon live on W2 dist (PID 96417). ④ LLM wiki = the last major spine
+capability, DONE (C1–C6). Verifier SHIP-WITH-NITS, no MAJORs — byte-identity with wiki
+disabled proven programmatically vs the pre-W2 build; F2 identity bug (Tesla→ASML merge)
+reproduced on a DB copy and fixed (FTS all-tokens; CJK verified end-to-end).**
+
+**C6 LIVE GATE (real daemon, recurrence turn 01:53):** `loop_started.applied_artifacts.
+wiki_page_ids: [2]` — page FOLDED into the turn beside episodic facts ✓; page 2 touched
+(applied_count 1, last_used stamped) ✓; fewer external reads than the original build (1 search /
+2 steps vs 2 searches / 3 steps) ✓; the model then REFINED organically, unprompted — row 3
+superseding row 2, lineage 1→2→3 with exactly one active row ✓; .md render regenerated
+(supersedes: 2) ✓. Decay tick fired live on daemon boot (0 decayed — correct, pages fresh) ✓.
+
+**Honest caveats:** confidence dropped 0.775→0.334 on the organic refine (5 thin single-search
+snippets vs 13 sources — the calibration working, and lineage preserves the richer prior), and
+the rating→+0.25 leg wasn't live-exercised yet (needs a natural session rating — soak).
+
+**Residuals → soak watch:** thin-source organic refines can downgrade confidence (possible
+future lever: don't supersede when new confidence ≪ old absent contradictions); W2-F1 floor-fold
+(top page folds into every armed turn, refreshing last_used — ADR 0020); one web_search's URLs
+satisfy the ≥2-source floor; U+FFFD mojibake in W1-era key_facts folds into prompts (cosmetic);
+wiki.ts:362 raw U+0000 bytes make the file grep-hostile (cleanup pass); render duplicates
+title/summary inside body_md (Houge-self-writable polish).
+
+---
+
 # ✅ DONE — Phase W Slice W1: wiki store + wiki_build/wiki_refine + cross-source verification — SHIPPED + LIVE-GATED 2026-07-17 00:4x
 
 **Commit 9752cc3. Daemon live on W1 dist (PID 15955), HOUGE_WIKI_ENABLED=true. ADR 0020.
@@ -35,11 +62,7 @@ code-owned via evolutionNotices. Pages GLOBAL (no chat_id). Breaker: loop_step-o
 inherit metered fuse. New flags all default OFF + PINNED_ENV.
 
 - [x] **Slice W1** DONE (see block above): built, verified, gated, live.
-- [ ] **Slice W2** (/goal FIRED 2026-07-17): wiki-retrieval + composer wikiReader fold
-      (byte-identical when absent), applied_artifacts.wiki_page_ids + rating +0.25 + decay tick
-      (24h latch), + W1 residual F2 (BM25 floor on FTS identity leg). Steps: build subagent →
-      adversarial verifier → orchestrator gates → commit+push → LIVE gate C6: recurrence →
-      page folded, fewer fetches, supersede lineage, reuse_value up.
+- [x] **Slice W2** DONE (see Phase W COMPLETE block above): built, verified, gated, C6 live.
 
 ---
 

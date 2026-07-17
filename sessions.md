@@ -664,3 +664,32 @@ Build + independent adversarial verification subagents; each live round found a 
   point of W2); render duplicates title/summary inside body_md (cosmetic, Houge-self-writable);
   sources can all come from ONE web_search's result URLs (verifier NOTE 4 — plan-conformant,
   watch in soak).
+
+## 2026-07-17 — Phase W Slice W2: the reuse loop — PHASE W COMPLETE (SHIPPED, C6 live-gated)
+- /goal W2 straight after W1's gate. BUILD (subagent): wiki-retrieval.ts (episodic clone —
+  relevance(max norm-BM25/cosine/0.05 floor) × recency(30d half-life on max(created/verified/
+  used)) × reuse; confidence DISPLAYED never ranked; cap 1; 1200-char guard on the RENDERED
+  projection; body_md never renders); composer WIKI_SECTION_HEADER folded between episodic and
+  lessons (absent ⇒ byte-identical); core-worker shares ONE query embedding across episodic+wiki;
+  applied_artifacts.wiki_page_ids + touchWikiApplied; gateway rating capture pays +0.25 reuse at
+  ≥2; runWikiDecayTick (24h latch, ×0.8 past 45d, prune-reversible, superseded exempt) rides the
+  signal tick. F2 fixed: identity FTS leg requires ALL topic tokens — the live Tesla→ASML merge
+  bug reproduced on a DB copy under old mode, dead under new; CJK identity verified end-to-end
+  (contiguous CJK tokenizes identically in query and index). 1550/1550.
+- Independent adversarial VERIFY: SHIP-WITH-NITS, NO MAJORs. Byte-identity proven
+  programmatically (built pre-W2 HEAD in a scratch worktree, diffed composeSystemPrompt across 7
+  surfaces). Injection laundering blocked (render-time flatten = defense-in-depth over write-time
+  sanitize; char guard measures rendered text; FTS all-mode unreachable by syntax injection).
+  Notable finding accepted+ADR'd: the 0.05 floor folds the top page into EVERY armed turn,
+  refreshing last_used (watch in soak; future lever = exclude pure-floor matches from
+  fold/touch/credit). Commit f452d89.
+- C6 LIVE GATE (recurrence turn, Paco's Telegram): wiki_page_ids [2] folded ✓, page touched
+  (applied_count 1) ✓, 1 search/2 steps vs the original 2/3 ✓, then the model REFINED organically
+  unprompted — row 3 superseding row 2, lineage 1→2→3, one active row, render regenerated ✓.
+  Decay tick fired live at daemon boot (0 decayed) ✓. Honest caveats: organic refine on 5 thin
+  snippets dropped confidence 0.775→0.334 (calibration working; richer prior preserved in
+  lineage); rating→+0.25 leg not yet live-exercised (needs a natural session rating — soak).
+- Phase W = the last major spine capability. Spine now: ⓪①②③④ all DONE+LIVE (⑤ skills eval
+  metadata = tiny backlog item). Roadmap next: soak; Phase K (⑤, tiny) or Phase 0 closeouts
+  (S12/D12 probes, ⓪·4) as small /goals; Milestone A (autonomy flip) still gated on S-3
+  auto-rollback + soak record.
