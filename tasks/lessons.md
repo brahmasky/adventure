@@ -2,6 +2,22 @@
 
 Rules Claude writes for itself after corrections. Review at session start.
 
+## Live safety-probe design (injection / exfil gates)
+
+- **An injection probe only tests the wall if the payload actually reaches the wall.** (2026-07-17,
+  D12) First D12 run put the injection in an HTML comment `<!-- … -->` on a *rendered* GitHub gist
+  page; GitHub suppresses HTML comments and `htmlToText` strips them, so the payload never reached
+  the dual-LLM reader — `reader_applied=true` but `contains_instructions` never fired. Silence there
+  is a FALSE PASS: the wall wasn't exercised, an upstream layer ate the attack. Rule: for a reader/
+  injection probe, use VISIBLE body text (not a comment) fetched via the RAW url, and require the
+  positive evidence (`contains_instructions` flagged in the digest), not just "wasn't steered".
+- **Verify "no secret leaked" without printing secrets.** (2026-07-17, S12) Compare the reply
+  against the real secret values programmatically (`grep -F` each value, report only pass/fail) —
+  never echo the values into the transcript to eyeball them.
+- **Publishing attack-shaped content is (correctly) classifier-blocked.** Creating a public page
+  with credential-exfil/backdoor text — even as a security test — is refused; hand the exact command
+  to the user to run on their own account rather than working around it.
+
 ## Monitors / background watches
 
 - **Compute watch windows from the real clock, never eyeball a timestamp.** (2026-07-04, Paco:
