@@ -60,6 +60,7 @@ function factRow(overrides: Partial<EpisodicFactRow> & { id: number; fact: strin
     embedding_model: null,
     created_at: NOW,
     last_used: null,
+    is_core: 0,
     ...overrides
   };
 }

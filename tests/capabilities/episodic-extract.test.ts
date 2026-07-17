@@ -164,7 +164,8 @@ describe("parseEpisodicExtractResult (tolerant — ANY failure ⇒ no facts)", (
       fact: "Paco lives in Sydney",
       participants: ["Paco"],
       occurred_at: "2026-07-15",
-      salience: 0.9
+      salience: 0.9,
+      core: false
     });
     expect(facts[1]!.salience).toBe(1); // clamped to [0,1]
     expect(facts[2]).toMatchObject({ participants: [], occurred_at: null, salience: 0.5 });

@@ -1,3 +1,31 @@
+# 🔨 IN PROGRESS — location grounding + reconcile over-merge — /goal 2026-07-17
+
+**Root cause (subagent, file:line-verified): THREE stacked failures lost the "Paco lives in
+Sydney" fact.** (1) Extraction atomicity instructed but NOT enforced → fact 13 stored as a
+location+timezone BUNDLE. (2) RECONCILE_DISCIPLINE SUPERSEDE = full replace with no
+orthogonality guard → a later tz-only fact superseded the bundle, dropping the location clause
+(store's saveReconciledFact writes the NEW narrow text, old unique clause survives only as an
+inactive superseded row). (3) No first-class location concept + CJK-blind FTS/weak cross-lingual
+cosine → even a clean location fact won't surface for an English "weather" query. (tz behavior
+survived only because it's env-backed via resolveLocalTimeZone, NOT fact-backed.)
+
+**Fix (Paco chose lean option, 2026-07-17):**
+- **Atomicity:** strengthen EPISODIC_EXTRACT_DISCIPLINE to forbid conjunctive facts, split
+  biography from preference into separate rows (prompt, exported-const tested).
+- **Reconcile over-merge:** strengthen RECONCILE_DISCIPLINE (shared w/ lessons) — SUPERSEDE only
+  when the new fact covers EVERYTHING the old asserts; partial overlap ⇒ UPDATE-merge or ADD,
+  never drop orthogonal info.
+- **Location grounding = always-fold core biography:** `is_core` flag on episodic_facts (migration
+  2026-07-17-episodic-core); extraction emits core:true for stable biography (location/name/
+  occupation only); composer ALWAYS folds active core facts ("## About the user (always known)")
+  ungated by BM25/cosine, deduped vs the scored band, capped (HOUGE_EPISODIC_CORE_CAP default 8).
+  Byte-identical when no core facts.
+- Steps: build subagent → adversarial verifier → gates → commit+push → deploy → LIVE gate: Paco
+  states location → new-code distill forms an atomic is_core location fact → later a fresh weather/
+  local query, Houge knows the city WITHOUT asking.
+
+---
+
 # ✅ DONE — S12 + D12 safety-floor live probes — PASSED 2026-07-17 09:5x (open since 07-07)
 
 **Both Phase-0 closeout probes confirmed live on the real daemon (Paco's Telegram). No code

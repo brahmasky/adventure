@@ -118,9 +118,9 @@ import {
   WIKI_TOPIC_REQUIRED_ERROR,
   type WikiVerifyOutcome
 } from "../capabilities/wiki.js";
-import { resolveLessonCapPerScope, RunStore } from "../run/run-store.js";
+import { resolveEpisodicCoreCap, resolveLessonCapPerScope, RunStore } from "../run/run-store.js";
 import type { ChatTurnRow, ClaimedRun, EpisodicFactRow, LessonRow, LessonSaveResult, LessonSource, WikiPageRow } from "../run/run-store.js";
-import { renderEpisodicFactsBlock, retrieveEpisodicFacts } from "../run/episodic-retrieval.js";
+import { renderCoreFactsBlock, renderEpisodicFactsBlock, retrieveEpisodicFacts } from "../run/episodic-retrieval.js";
 import { renderWikiBlock, retrieveWikiPages } from "../run/wiki-retrieval.js";
 import { resolveEpisodicEnabled } from "../capabilities/episodic-extract.js";
 import { embedText, resolveEmbedConfig } from "../llm/embeddings.js";
@@ -1989,7 +1989,20 @@ export class CoreWorker {
       resolveEpisodicEnabled(process.env) || resolveWikiEnabled(process.env)
         ? await this.embedQueryForTurn(message)
         : null;
-    const episodicFacts = this.episodicFactsForTurn(chat_id, message, queryEmbedding);
+    // Location grounding: the always-known core biography band, resolved once per turn
+    // (gated on the same episodic master flag). It folds ABOVE the scored episodic band,
+    // and its ids are deduped OUT of that band so a core fact never renders twice. Core
+    // facts are always-on grounding — NOT a retrieval hit — so they get no reuse credit
+    // (no applied_artifacts entry, no touch) to avoid diluting the scored band's signal.
+    const coreFacts = resolveEpisodicEnabled(process.env)
+      ? this.runStore.getCoreEpisodicFacts(chat_id, resolveEpisodicCoreCap(process.env))
+      : [];
+    const coreIds = new Set(coreFacts.map((f) => f.id));
+    const coreBlock = coreFacts.length > 0 ? renderCoreFactsBlock(coreFacts) : undefined;
+    const coreReader = () => coreBlock;
+    const episodicFacts = this.episodicFactsForTurn(chat_id, message, queryEmbedding).filter(
+      (f) => !coreIds.has(f.id)
+    );
     const episodicBlock = episodicFacts.length > 0 ? renderEpisodicFactsBlock(episodicFacts) : undefined;
     const episodicReader = () => episodicBlock;
     const wikiPages = this.wikiPagesForTurn(message, queryEmbedding);
@@ -2000,6 +2013,7 @@ export class CoreWorker {
       lessonsScope: scope,
       skillsReader,
       skillsScope: scope,
+      coreReader,
       episodicReader,
       wikiReader
     });
@@ -2013,6 +2027,7 @@ export class CoreWorker {
         lessonsScope: scope,
         skillsReader,
         skillsScope: scope,
+        coreReader,
         episodicReader,
         wikiReader
       });

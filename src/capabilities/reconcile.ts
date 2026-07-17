@@ -21,8 +21,12 @@ export const RECONCILE_DISCIPLINE =
   "changes what existing preference <n> says (a contradiction, a correction, or a newer " +
   'version of the same rule); {"verdict":"UPDATE","id":<n>,"text":"<merged rule>"} when it ' +
   "supplements preference <n> — set \"text\" to ONE revised imperative rule merging both; " +
-  '{"verdict":"DROP"} when an existing preference already fully covers it. Judge meaning, ' +
-  "not wording. When unsure, choose ADD.";
+  '{"verdict":"DROP"} when an existing preference already fully covers it. Choose SUPERSEDE ' +
+  "ONLY when the new item covers EVERYTHING existing item <n> asserts. If the new item " +
+  "overlaps <n> but <n> carries ADDITIONAL orthogonal information the new item omits, you " +
+  "MUST NOT supersede — return UPDATE with a merged text preserving BOTH, or ADD if they are " +
+  "genuinely separate. NEVER drop information by superseding. Judge meaning, not wording. " +
+  "When unsure, choose ADD.";
 
 export interface ReconcileCandidate {
   scope: string;

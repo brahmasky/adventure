@@ -210,6 +210,15 @@ export const EPISODIC_SECTION_HEADER =
   "## What you remember about this user — use naturally; never re-ask what's already here";
 
 /**
+ * Section header for the always-known core-facts band (location grounding). Exported so
+ * tests assert containment via the constant (never a pinned literal — self-write rule).
+ * These are durable biography/identity facts folded on EVERY turn (not a retrieval hit),
+ * so the answer is always grounded in who the user is and where they live.
+ */
+export const CORE_FACTS_SECTION_HEADER =
+  "## About the user (always known — durable facts)";
+
+/**
  * Section header for the wiki-pages block (Phase W Slice W2, ADR 0020 decision 7c).
  * Exported so tests assert containment via the constant (never a pinned literal). The
  * header states the trust posture in-line: the block is web-derived reference DATA
@@ -268,6 +277,14 @@ export interface ComposeOptions {
    */
   episodicReader?: () => string | undefined;
   /**
+   * Injected core-facts reader (location grounding): `() => block | undefined`. Zero-arg
+   * like `episodicReader` — the always-known biography band is CHAT-keyed and resolved
+   * once per turn by the caller, folded ABOVE the scored episodic section. Absent (or
+   * returning nothing) → the band is omitted and the prompt is byte-identical to today
+   * (composer goldens unaffected).
+   */
+  coreReader?: () => string | undefined;
+  /**
    * Injected wiki-pages reader (Phase W Slice W2): `() => block | undefined`. Zero-arg
    * like `episodicReader` — wiki pages are GLOBAL and retrieved once per turn against
    * the incoming message, so the caller binds the retrieval result and the composer
@@ -295,6 +312,7 @@ export function composeSystemPrompt(
   const lessons = options.lessonsReader?.(lessonsScope);
   const skillsScope = options.skillsScope ?? surface;
   const skills = options.skillsReader?.(skillsScope);
+  const core = options.coreReader?.();
   const episodic = options.episodicReader?.();
   const wiki = options.wikiReader?.();
 
@@ -303,6 +321,8 @@ export function composeSystemPrompt(
     identity,
     discipline,
     skills ? `## Skills — apply when relevant\n${skills}` : "",
+    // Always-known biography grounds the answer BEFORE the scored episodic recollection.
+    core ? `${CORE_FACTS_SECTION_HEADER}\n${core}` : "",
     episodic ? `${EPISODIC_SECTION_HEADER}\n${episodic}` : "",
     // Phase W W2: web-derived knowledge folds AFTER personal memory and BEFORE the
     // behavioural lessons (facts ground the answer before preferences shape it).

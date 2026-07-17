@@ -360,6 +360,8 @@ export interface EpisodicFactRow {
   embedding_model: string | null;
   created_at: string;
   last_used: string | null;
+  /** 1 = stable biography/identity, folded into the always-known core band (default 0). */
+  is_core: number;
 }
 
 /**
@@ -397,6 +399,8 @@ export interface EpisodicFactCandidate {
   salience?: number;
   embedding?: Float32Array | null;
   embedding_model?: string;
+  /** Stable biography/identity — folds into the always-known core band (default false). */
+  is_core?: boolean;
 }
 
 export interface EpisodicFactSaveResult {
@@ -1895,8 +1899,8 @@ export class RunStore {
     const result = this.db.prepare(`
       INSERT INTO episodic_facts (
         fact, participants, chat_id, source_turn_ids, occurred_at, valid_from,
-        salience, embedding, embedding_model, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        salience, embedding, embedding_model, created_at, is_core
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.fact.trim(),
       JSON.stringify(input.participants ?? []),
@@ -1907,7 +1911,8 @@ export class RunStore {
       input.salience ?? 1.0,
       blob,
       blob ? input.embedding_model ?? null : null,
-      created
+      created,
+      input.is_core ? 1 : 0
     );
     return Number(result.lastInsertRowid);
   }
@@ -1927,6 +1932,20 @@ export class RunStore {
       ORDER BY created_at DESC, id DESC
       LIMIT ?
     `).all<EpisodicFactRow>(chat_id, limit);
+  }
+
+  /**
+   * A chat's ACTIVE core facts (is_core=1) — the always-known biography band folded above
+   * the scored retrieval. Highest-salience first, then newest, capped by the core cap;
+   * the caller dedupes these ids out of the scored episodic band so nothing renders twice.
+   */
+  getCoreEpisodicFacts(chat_id: string, cap: number = resolveEpisodicCoreCap(process.env)): EpisodicFactRow[] {
+    return this.db.prepare(`
+      SELECT ${EPISODIC_FACT_COLUMNS} FROM episodic_facts
+      WHERE chat_id = ? AND status = 'active' AND is_core = 1
+      ORDER BY salience DESC, created_at DESC, id DESC
+      LIMIT ?
+    `).all<EpisodicFactRow>(chat_id, Math.max(1, cap));
   }
 
   /**
@@ -1966,8 +1985,11 @@ export class RunStore {
     const target = prior?.status === "active" && prior.chat_id === candidate.chat_id ? prior : undefined;
     const merged =
       verdict.verdict === "UPDATE" && target && verdict.text?.trim() ? verdict.text.trim() : fact;
+    // Preserve core across the supersede chain: a row that replaces or supplements a core
+    // fact inherits core (never demote biography by superseding it with a narrower item).
+    const is_core = Boolean(candidate.is_core) || target?.is_core === 1;
 
-    const id = this.addEpisodicFact({ ...candidate, fact: merged, created_at: now });
+    const id = this.addEpisodicFact({ ...candidate, fact: merged, is_core, created_at: now });
     if (target) this.supersedeEpisodicFact(target.id, id, now);
     if (verdict.verdict === "SUPERSEDE" && target) {
       this.db.prepare(`
@@ -4013,6 +4035,7 @@ export class RunStore {
     this.applySignalPathMigration();
     this.applyEpisodicFactsMigration();
     this.applyEpisodicConsolidateMigration();
+    this.applyEpisodicCoreMigration();
     this.applyScheduledTasksMigration();
     this.applyMeteredFuseMigration();
     this.applyWikiPagesMigration();
@@ -4369,6 +4392,44 @@ export class RunStore {
 
         INSERT OR IGNORE INTO episodic_consolidate_state (id) VALUES (1);
       `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Episodic core band (location-grounding): add `is_core` to episodic_facts so stable
+   * biography/identity facts (where the user lives, their name, occupation) can be folded
+   * into an always-known band above the scored retrieval. Its OWN migration — the M1
+   * episodic-facts table is already live; existing rows default 0 (not core). The ALTER
+   * is guarded by table_info so a double-open is idempotent even before the version row.
+   */
+  private applyEpisodicCoreMigration(): void {
+    const version = "2026-07-17-episodic-core";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      if (!this.tableColumns("episodic_facts").has("is_core")) {
+        this.db.exec(`ALTER TABLE episodic_facts ADD COLUMN is_core INTEGER NOT NULL DEFAULT 0`);
+      }
 
       if (!applied) {
         this.db.prepare(`
@@ -5153,7 +5214,7 @@ export function resolveLessonPruneThreshold(env: NodeJS.ProcessEnv): number {
 const EPISODIC_FACT_COLUMNS =
   "id, fact, participants, chat_id, source_turn_ids, occurred_at, valid_from, valid_until, " +
   "salience, status, supersedes, superseded_by, applied_count, corrected_count, reuse_value, " +
-  "rating_history, embedding, embedding_model, created_at, last_used";
+  "rating_history, embedding, embedding_model, created_at, last_used, is_core";
 
 /** The same list qualified for the FTS join (`f.` = episodic_facts). */
 const EPISODIC_FACT_COLUMNS_QUALIFIED = EPISODIC_FACT_COLUMNS.split(", ")
@@ -5181,6 +5242,14 @@ export const DEFAULT_EPISODIC_FACT_CAP_PER_CHAT = 200;
 export function resolveEpisodicFactCapPerChat(env: NodeJS.ProcessEnv): number {
   const n = Number(env.HOUGE_EPISODIC_FACT_CAP_PER_CHAT);
   return Number.isInteger(n) && n > 0 ? n : DEFAULT_EPISODIC_FACT_CAP_PER_CHAT;
+}
+
+/** Cap on core facts folded into the always-known band (HOUGE_EPISODIC_CORE_CAP, min 1). */
+export const DEFAULT_EPISODIC_CORE_CAP = 8;
+
+export function resolveEpisodicCoreCap(env: NodeJS.ProcessEnv): number {
+  const n = Number(env.HOUGE_EPISODIC_CORE_CAP);
+  return Number.isInteger(n) && n >= 1 ? n : DEFAULT_EPISODIC_CORE_CAP;
 }
 
 /**

@@ -133,6 +133,33 @@ export function renderEpisodicFactsBlock(facts: ReadonlyArray<Pick<EpisodicFactR
     .join("\n");
 }
 
+/** Total char budget for the always-known core band (kept tight — durable biography is short). */
+export const CORE_FACTS_CHAR_GUARD = 600;
+
+/**
+ * Render the always-known core facts as the core band's body, one `- <fact>` per line
+ * (the {@link renderEpisodicFactsBlock} shape). Facts are sanitized at write time; the
+ * whitespace flatten here is defense-in-depth against a stored line break forging a
+ * section line. The char guard walks input order and stops at the first overflow. NEVER
+ * throws — a render hiccup degrades to whatever fit, never costs the turn.
+ */
+export function renderCoreFactsBlock(facts: ReadonlyArray<Pick<EpisodicFactRow, "fact">>): string {
+  try {
+    const lines: string[] = [];
+    let chars = 0;
+    for (const f of facts) {
+      const fact = f.fact.replace(/\s+/g, " ").trim();
+      if (fact.length === 0) continue;
+      if (chars + fact.length > CORE_FACTS_CHAR_GUARD) break;
+      chars += fact.length;
+      lines.push(`- ${fact}`);
+    }
+    return lines.join("\n");
+  } catch {
+    return "";
+  }
+}
+
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
