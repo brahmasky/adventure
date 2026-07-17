@@ -44,8 +44,8 @@ optional phase.
 
 ## Phases
 
-- **P0 — Charter re-decision (Paco, `/goal`-level, no code):** open the fork; ADR + ROADMAP
-  update. Earning via human-fronted accounts IN; Houge holding/moving money OUT.
+- **P0 — Charter re-decision — DONE 2026-07-17 (ADR 0022, `/goal p0`):** fork re-opened narrowly
+  — earning via human-fronted accounts IN; Houge holding/moving money OUT. ROADMAP fork 3 amended.
 - **P1 — External engineering workspace + container sandbox (NEXT build `/goal`):** clone an
   external repo + fix an issue + build/test it **inside a container** (real fs/process/network
   isolation; no live-node_modules symlink — fresh deps), produce a tested patch/branch Paco

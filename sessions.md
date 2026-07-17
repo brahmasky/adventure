@@ -844,3 +844,17 @@ Build + independent adversarial verification subagents; each live round found a 
   (TaskBounty, automated accept gate) = least friction; wallet is the only agent-holdable rail.
 - STOPPED at scope. P0 = Paco's formal charter re-decision (/goal); first build = P1. No coding
   without the /goal. todo.md top block + [[houge-next-major-money-work]] memory updated.
+
+## 2026-07-17 (eighth entry) — P0: money fork re-opened (ADR 0022, /goal p0)
+- Paco fired /goal p0 — the charter re-decision. Governance/docs milestone, no code, no runtime
+  change (nothing to live-gate; the /goal itself is the decision, recorded faithfully).
+- ADR 0022 (accepted): fork 3 re-opened NARROWLY. EARNING is IN (human-fronted — Houge does the
+  engineering; human owns account/wallet/KYC + receives funds). Holding funds/keys, trading, fund
+  CUSTODY stay DEFERRED (fork 3's hard core). ADR 0001 floor unchanged: payments/account-creation/
+  acting-under-identity/external-submission/credential-handling stay deterministic + human-/approve
+  -gated. Two hard lines still bind. Earnings ledger = accounting mirror of the spend governor,
+  holds no value/keys. Reversible scope decision; capabilities will be flag-gated OFF + covered by
+  kill-switch/disarm. Autonomous money movement = a separate later charter ADR (roadmap P4).
+- Updated: docs/ROADMAP.md fork 3, docs/decisions/README.md index, the money-work spec P0 line,
+  todo.md top block. Next build = P1 (external engineering workspace + container sandbox), awaits
+  its own /goal.

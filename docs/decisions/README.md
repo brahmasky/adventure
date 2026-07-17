@@ -33,6 +33,7 @@ Read these first when onboarding — they explain choices the code alone can't.
 | [0019](0019-metered-ceiling.md) | Metered-API $ ceiling — ledger-derived spend, latch-driven enforcement | accepted |
 | [0020](0020-llm-wiki.md) | LLM wiki — verified, reusable knowledge pages (Phase W) | accepted |
 | [0021](0021-db-backup.md) | DB backup — WAL-safe periodic snapshots via `VACUUM INTO` (tmp+rename, quick_check gate, latch-retry, local-only) | accepted |
+| [0022](0022-money-fork-reopened.md) | Money fork re-opened — earning is IN (human-fronted), custody/trading/fund-holding stay OUT (re-decides charter fork 3; ADR 0001 floor unchanged) | accepted |
 
 ## Writing a new ADR
 

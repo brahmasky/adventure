@@ -140,7 +140,12 @@ wiki; ledger off by exactly the completion event itself); restore drill on a cop
 
 ---
 
-# 🎯 SCOPE APPROVED (Paco, 2026-07-17) — NEXT MAJOR: Houge earns money (human-fronted)
+# 🎯 NEXT MAJOR: Houge earns money (human-fronted) — P0 charter re-decision DONE 2026-07-17; P1 next
+
+**P0 DONE (ADR 0022, /goal p0 2026-07-17):** charter fork 3 re-opened NARROWLY — EARNING is IN
+(human-fronted); holding funds/keys, trading, custody stay OUT. ROADMAP fork 3 amended, index
+updated. Governance/docs only — no code, no runtime change (nothing to live-gate). The NEXT
+build is **P1 — external engineering workspace + container sandbox** (awaits its own /goal).
 
 **Full phased roadmap: `docs/superpowers/specs/2026-07-17-money-work-roadmap.md` (scope APPROVED
 in plan mode; each phase awaits its own /goal). Grounded in 3 recon subagents (capability

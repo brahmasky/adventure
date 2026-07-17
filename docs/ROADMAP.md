@@ -32,7 +32,11 @@ framing; OK for Houge to fail; only core principles stay constant.
 1. Full autonomy + safety nets (notify-after, not approve-before) — as the end state; the
    human-tapped merge stays until auto-rollback ships (§5).
 2. First build = the self-evolution SPINE, before task capabilities.
-3. Real money / trading / fund custody DEFERRED until the spine proves stable autonomy.
+3. Money fork RE-OPENED NARROWLY (2026-07-17, ADR 0022): EARNING is IN (human-fronted — Houge
+   does the engineering; the human owns account/wallet/KYC and receives funds). Holding
+   funds/keys, trading, and fund CUSTODY stay DEFERRED. (Original: "Real money / trading / fund
+   custody DEFERRED until the spine proves stable autonomy" — the spine-complete precondition was
+   met.) Roadmap: `docs/superpowers/specs/2026-07-17-money-work-roadmap.md`.
 4. Best model per capability, flat-rate legs first.
 
 **Governance:** Paco is the sole decision-maker on scope and sequencing. Every build waits for
