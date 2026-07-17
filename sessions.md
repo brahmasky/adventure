@@ -858,3 +858,26 @@ Build + independent adversarial verification subagents; each live round found a 
 - Updated: docs/ROADMAP.md fork 3, docs/decisions/README.md index, the money-work spec P0 line,
   todo.md top block. Next build = P1 (external engineering workspace + container sandbox), awaits
   its own /goal.
+
+## 2026-07-17 (ninth entry) — P1 external workspace + container sandbox (CODE done+verified; live gate pending mini)
+- /goal P1. Design pass (Plan agent) + 2 Paco decisions: host-side Codex (Seatbelt) w/ container
+  for builds; single configurable image HOUGE_EXTWORK_IMAGE. Sequencing (Paco): build+verify here
+  now, migrate to mini + colima next, live-gate there. KEY discovery: no docker/podman installed;
+  and the daemon is on THIS MacBook Pro, not the mini — Paco wants to migrate Houge to the mini
+  (its documented home) and put colima there.
+- BUILD (subagent): container-runner (graceful detect + buildContainerArgs security surface),
+  toolchain-gate (generalized per-project runner in-container), external-workspace (SSRF clone,
+  tmp scratch, host-side Codex, DI seam), runExternalWork on the evolution lane → local patch
+  artifact + View/Discard notify (no merge). Flag default OFF, external_read, joins DISARM_FLAGS.
+  ADR 0023. Trust boundary: untrusted code executes ONLY in the container.
+- Adversarial VERIFY: **REJECT**, 3 MAJORs — all real, all fixed by the orchestrator + regression-
+  tested: (1) HOUGE_EXTWORK_ENABLED unpinned → arming red-fails the self-write test-gate (cardinal
+  trap) → pinned. (2) host `git diff` without --no-ext-diff/--no-textconv → a malicious
+  .gitattributes+repo-config could run a host command (the ONE container-bypass host-exec path) →
+  hardened (extwork + self-write diffs) + real-git regression. (3) clone SSRF string-only →
+  public-name→private-IP bypass → resolve-and-pin DNS classify (reused http-fetch classifyFetchIp).
+  Plus the image leading-dash guard. 1622/1622 clean+armed+daemon-env; deps {}. Commit 57b2294.
+- P1 LIVE GATE deferred to the mini (needs colima). Remaining to CLOSE P1: migrate Houge
+  MacBook Pro→mini (repo + houge.sqlite + .env + runs/ + full toolchain) → install colima → arm
+  the flag → fix a real GitHub issue in-container + hostile-postinstall containment probe. Needs
+  Paco's hands on the mini (or SSH access).

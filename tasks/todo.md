@@ -140,7 +140,28 @@ wiki; ledger off by exactly the completion event itself); restore drill on a cop
 
 ---
 
-# 🔨 IN PROGRESS — P1: external engineering workspace + container sandbox — /goal 2026-07-17
+# 🔨 P1 CODE DONE + VERIFIED (commit 57b2294) — LIVE GATE pending Mac-mini migration + colima
+
+**P1 external engineering workspace + container sandbox — code built, adversarially verified,
+shipped. Live gate deferred to the mini (needs colima) per the approved sequencing.**
+
+**Verifier: REJECT → all 3 MAJORs fixed + regression-tested → 1622/1622 clean+armed+daemon-env:**
+- MAJOR-1: HOUGE_EXTWORK_ENABLED now PINNED in core-worker-turn-loop.test.ts — arming it no
+  longer red-fails the self-write test-gate (the cardinal selfwrite-testgate-inherits-env trap).
+- MAJOR-2: git diff now `--no-ext-diff --no-textconv` (extwork + both self-write diffs) — a
+  malicious .gitattributes/repo-config can't run a host command during diff (the one host-exec
+  path that bypassed the container). Real-git regression test proves the driver doesn't fire.
+- MAJOR-3: clone SSRF now resolve-and-pins DNS (assertCloneHostPublic — classify every A-record)
+  — a public hostname → private IP / 169.254 metadata is refused before git runs.
+- NOTE fixed: resolveExtWorkImage rejects a leading-dash image (can't inject a docker flag).
+
+**REMAINING for P1 close (needs Paco + the mini):** migrate Houge MacBook Pro → Mac mini
+(git repo 22M + houge.sqlite 5M [the memory/lessons/wiki/ledger] + .env secrets + runs/ 10M +
+toolchain: Node, pi/agy/kimi/gemini CLIs, Ollama, Codex, launchd) → install colima → arm
+HOUGE_EXTWORK_ENABLED → LIVE gate: fix a real GitHub issue in-container + hostile-postinstall
+containment probe. Daemon currently on THIS MacBook Pro (PID 17299).
+
+---
 
 **Money-work roadmap P1 (charter-clean under ADR 0022): clone+fix+test an external repo INSIDE a
 container → tested patch Paco reviews. No money/credentials/external-write/autonomy.**
