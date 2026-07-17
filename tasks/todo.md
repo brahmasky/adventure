@@ -1,4 +1,20 @@
-# 🔨 IN PROGRESS — Phase W Slice W1 — /goal 2026-07-16 (plan approved same day)
+# ✅ DONE — Phase W Slice W1: wiki store + wiki_build/wiki_refine + cross-source verification — SHIPPED + LIVE-GATED 2026-07-17 00:4x
+
+**Commit 9752cc3. Daemon live on W1 dist (PID 15955), HOUGE_WIKI_ENABLED=true. ADR 0020.
+Verifier SHIP-WITH-NITS; F1 (source-URL newline → frontmatter forgery) fixed pre-commit.**
+
+**LIVE GATE (real daemon, Paco's Telegram):** ① ASML research → wiki_build add id 1 (9 sources,
+confidence 0.845, 2 verify passes); sources disagreed on Q2 EPS ($8.69 vs $8.81) → ⚠ contradiction
+notice in the reply, both sides verbatim ✓. ② plain re-ask → no wiki call (EXPECTED: planner can't
+see pages until W2 retrieval — organic reuse is W2's C6 gate). ③ explicit refresh → wiki_refine
+id 2 SUPERSEDING id 1 (13 sources, same slug, one active row, bidirectional pointers, .md
+frontmatter supersedes: 1) — never a duplicate ✓. 1505/1505 clean+daemon-env+hostile sweeps.
+
+**Residuals → W2:** F2 BM25 floor on the FTS identity leg (token-overlap cross-topic merge risk);
+organic recurrence-reuse; render duplicates title/summary inside body_md (cosmetic,
+Houge-self-writable); one web_search's URLs can satisfy the ≥2-source floor (watch in soak).
+
+## (was IN PROGRESS) — Phase W Slice W1 — /goal 2026-07-16 (plan approved same day)
 
 **Next roadmap item (Phases R/M/S all shipped). Full approved plan:
 `/Users/pluo/.claude/plans/declarative-jingling-dragonfly.md` — executable by any model.**
@@ -18,13 +34,10 @@ averaged); verify-fail ⇒ saved UNVERIFIED (calibrates, never blocks); contradi
 code-owned via evolutionNotices. Pages GLOBAL (no chat_id). Breaker: loop_step-only; LLM legs
 inherit metered fuse. New flags all default OFF + PINNED_ENV.
 
-- [ ] **Slice W1** (/goal FIRED 2026-07-16): store+migration `2026-07-16-wiki-pages`,
-      tools+manifest+contract, synthesis+verification, .md render, ADR 0020, 4 test suites.
-      Steps: build subagent → adversarial verifier → orchestrator gates (typecheck·test·build·
-      deps{}·hermetic sweep w/ daemon .env + hostile HOUGE_WIKI_*) → commit+push → LIVE gate:
-      ASML research → page built+verified, contradiction surfaced; re-ask → REFINE not dup.
+- [x] **Slice W1** DONE (see block above): built, verified, gated, live.
 - [ ] **Slice W2** (needs /goal): wiki-retrieval + composer wikiReader fold (byte-identical
-      when absent), applied_artifacts.wiki_page_ids + rating +0.25 + decay tick (24h latch).
+      when absent), applied_artifacts.wiki_page_ids + rating +0.25 + decay tick (24h latch),
+      + W1 residuals (F2 BM25 floor on FTS identity leg).
       LIVE gate C6: recurrence → page folded, fewer fetches, supersede lineage, reuse_value up.
 
 ---

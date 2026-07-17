@@ -624,3 +624,43 @@ Build + independent adversarial verification subagents; each live round found a 
 - Phase S done. Roadmap now: ④ LLM wiki (last major spine capability). Day's arc: FOUR /goals
   shipped (Phase M episodic memory; B10 chat-turns+scheduler; B11 safety floor) — Houge now
   remembers, sees its own background work, acts on schedule, and can be durably, unforgeably stopped.
+
+## 2026-07-16/17 — Phase W Slice W1: ④ LLM wiki — store + wiki_build/wiki_refine + cross-source verification (SHIPPED, live-gated)
+- Paco: "proceed to the next item in the roadmap" → recon confirmed R/M/S all done → Phase W is
+  next. Plan designed via 3 explore + 1 plan subagents; Paco locked: TWO slices (W1 build/verify,
+  W2 reuse loop), store = memory/wiki/ (spec's knowledge/ drift → ADR 0020), DEFER prediction-error
+  + built-in scheduled refresh (schedule_task covers refresh zero-code). /goal W1 fired same day.
+- BUILD (subagent): wiki_pages SQLite store = truth (episodic_facts blueprint: FTS5 mirror +
+  triggers, nullable embeddinggemma embedding, supersede lineage; migration 2026-07-16-wiki-pages
+  incl. the W2 decay latch) + memory/wiki/<slug>.md best-effort render; loop-native wiki_build/
+  wiki_refine → ONE executeWikiUpsert adapter — synthesis from the turn's recorded post-quarantine
+  external-read digests (NO internal fetching; model picks only when + topic), code-owned
+  ≥2-distinct-source floor (clamps — MIN_SOURCES=0/-3/garbage all → 2), topic identity
+  slug→FTS→cosine≥0.75, build⇄refine auto-route (never duplicates); cross-source verification =
+  separate walled verifier on the READER chain (Gate B pattern, 2-pass ensemble, contradictions
+  both-sides-verbatim never averaged, all-fail ⇒ saved UNVERIFIED — calibrates, never blocks);
+  contradiction notice code-owned via evolutionNotices. Flags default OFF, PINNED_ENV throughout.
+- Independent adversarial VERIFY: SHIP-WITH-NITS. F1 MINOR fixed pre-commit: a newline inside a
+  source URL could forge .md frontmatter lines (flatten at render + regression test). F2
+  (plan-locked design, queued for W2): the FTS identity leg has no BM25 floor — token-overlapping
+  DISTINCT topics ("Tesla Q2 earnings" hitting the ASML page) would wrongly auto-route to refine.
+  Held under attack: trust anchor (model-supplied content ignored), MATCH/SQL injection, path-
+  hostile slugs incl. full-width lookalikes, migration idempotent on a COPY of the real DB, FTS
+  au-trigger sync, prune spares newest, manifest disarm ⇒ unlisted ⇒ denied. 1505/1505 clean +
+  daemon-env + hostile-env sweeps. Commit 9752cc3.
+- LIVE GATE (real daemon, Paco's Telegram): ① 「帮我调研一下 ASML 最近的财报和分析师观点」→ 2
+  searches → wiki_build add id 1 (9 sources, confidence 0.845, verified_passes 2) → the verifier
+  caught sources disagreeing on Q2 EPS ($8.69 vs $8.81) → ⚠ contradiction notice reached the
+  Telegram reply, both sides named ✓. ② plain re-ask produced NO wiki call — expected: without W2
+  retrieval the planner can't know a page exists (organic recurrence-reuse IS W2's C6 gate). ③
+  explicit refresh ask → 3 searches → wiki_refine verb refine id 2 superseding id 1 (13 sources,
+  same slug, exactly one active row, bidirectional pointers, .md frontmatter supersedes: 1, no
+  reuse penalty on the uncontradicted prior) ✓. No duplicate page ever created.
+- Orchestrator lesson (memory updated): my first ledger monitor guessed column names
+  (created_at/payload vs the real occurred_at/payload_json) and swallowed stderr — sat silent
+  through the whole first gate run. Rule: self-test the exact watch query against known rows
+  before trusting silence.
+- Residuals queued for W2: F2 BM25 floor on the FTS identity leg; organic recurrence-reuse (the
+  point of W2); render duplicates title/summary inside body_md (cosmetic, Houge-self-writable);
+  sources can all come from ONE web_search's result URLs (verifier NOTE 4 — plan-conformant,
+  watch in soak).
