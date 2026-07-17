@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -13,11 +13,12 @@ import {
   SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR
 } from "../../src/core/core-worker.js";
 import { evolutionLaneSettled, resetEvolutionLaneForTests } from "../../src/core/evolution-lane.js";
-import { INTENT_DISCIPLINE, resolveInnerLoopEnabled } from "../../src/capabilities/intent.js";
+import { INTENT_DISCIPLINE } from "../../src/capabilities/intent.js";
 import { DISTILL_DISCIPLINE } from "../../src/capabilities/distill.js";
 import { RECONCILE_DISCIPLINE } from "../../src/capabilities/reconcile.js";
 import { GATE_A_DISCIPLINE } from "../../src/capabilities/skill-router.js";
-import { ASK_DISCIPLINE, EPISODIC_SECTION_HEADER, LOOP_DISCIPLINE, READER_DISCIPLINE } from "../../src/prompt/composer.js";
+import { GATE_B_DISCIPLINE } from "../../src/capabilities/anchor-verify.js";
+import { ASK_DISCIPLINE, EPISODIC_SECTION_HEADER, LOOP_DISCIPLINE, READER_DISCIPLINE, SKILL_AUTHOR_DISCIPLINE } from "../../src/prompt/composer.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -36,7 +37,6 @@ function projectRoot(): string {
 // arming flags are pinned too — the manifest derives from them (codex/selfwrite default
 // OFF, skills default ON).
 const PINNED_ENV = [
-  "HOUGE_INNER_LOOP_ENABLED",
   "HOUGE_MAX_CONSECUTIVE_CLARIFY",
   "HOUGE_SELFWRITE_ENABLED",
   "HOUGE_CODEX_ENABLED",
@@ -143,49 +143,7 @@ function loopEvents(store: RunStore, run_id: string, type: string) {
   return store.getLedgerEvents(run_id).filter((e) => e.event_type === type);
 }
 
-describe("resolveInnerLoopEnabled", () => {
-  it("defaults OFF (env deleted — hermetic) and accepts the truthy spellings", () => {
-    delete process.env.HOUGE_INNER_LOOP_ENABLED;
-    expect(resolveInnerLoopEnabled(process.env)).toBe(false);
-    expect(resolveInnerLoopEnabled({})).toBe(false);
-    expect(resolveInnerLoopEnabled({ HOUGE_INNER_LOOP_ENABLED: "1" })).toBe(true);
-    expect(resolveInnerLoopEnabled({ HOUGE_INNER_LOOP_ENABLED: "true" })).toBe(true);
-    expect(resolveInnerLoopEnabled({ HOUGE_INNER_LOOP_ENABLED: "on" })).toBe(true);
-    expect(resolveInnerLoopEnabled({ HOUGE_INNER_LOOP_ENABLED: "0" })).toBe(false);
-    expect(resolveInnerLoopEnabled({ HOUGE_INNER_LOOP_ENABLED: "off" })).toBe(false);
-  });
-});
-
-describe("executeTurn — inner loop OFF (default): the legacy enum path, loop never constructed", () => {
-  it("dispatches exactly like the legacy path and emits NO loop ledger events", async () => {
-    const store = RunStore.openInMemory();
-    const calls: Array<Record<string, unknown>> = [];
-    try {
-      const run_id = turnRun(store, "what is the capital of France?");
-      const worker = new CoreWorker(store, projectRoot(), loopLlm('{"intent":"answer"}', [], calls));
-      const result = await worker.executeRun(run_id, "w");
-
-      expect(result.status).toBe("completed");
-      // Legacy shape: classifier + one ask-discipline answer, no compose calls.
-      expect(calls.length).toBe(2);
-      expect(String(calls[0]!.system)).toContain(INTENT_DISCIPLINE);
-      expect(String(calls[1]!.system)).toContain(ASK_DISCIPLINE);
-      expect(calls.some((c) => String(c.system).includes(LOOP_DISCIPLINE))).toBe(false);
-      // The loop was never constructed: zero loop_* events in the ledger.
-      expect(loopEvents(store, run_id, "loop_started")).toEqual([]);
-      expect(loopEvents(store, run_id, "loop_step")).toEqual([]);
-      expect(loopEvents(store, run_id, "loop_halted")).toEqual([]);
-    } finally {
-      store.close();
-    }
-  });
-});
-
-describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
-  beforeEach(() => {
-    process.env.HOUGE_INNER_LOOP_ENABLED = "1";
-  });
-
+describe("executeTurn — the inner loop (the only `turn` path)", () => {
   it("answer-only: a first-step final completes the turn and records chat turns + loop events", async () => {
     const store = RunStore.openInMemory();
     const calls: Array<Record<string, unknown>> = [];
@@ -1155,10 +1113,6 @@ describe("executeTurn — inner loop ON (HOUGE_INNER_LOOP_ENABLED)", () => {
 });
 
 describe("episodic memory on the loop (Phase M B3: retrieval + attribution)", () => {
-  beforeEach(() => {
-    process.env.HOUGE_INNER_LOOP_ENABLED = "1";
-  });
-
   /** CoreWorker with an injected embed (position 10) — episodic tests NEVER touch the network. */
   function episodicWorker(
     store: RunStore,
@@ -1311,7 +1265,6 @@ describe("evolutionDeadlineExtender (⓪·3g: NEUTRALIZED — pipelines run on t
 
 describe("schedule_task on the loop (B10b, ADR 0017)", () => {
   beforeEach(() => {
-    process.env.HOUGE_INNER_LOOP_ENABLED = "1";
     process.env.HOUGE_SCHEDULER_ENABLED = "1";
   });
 
@@ -1494,6 +1447,202 @@ describe("schedule_task on the loop (B10b, ADR 0017)", () => {
       expect(turns.map((t) => t.role)).toEqual(["user", "assistant"]);
       expect(turns[1]!.text).toBe("Paris.");
       expect(turns[1]!.intent).toBe("answer");
+    } finally {
+      store.close();
+    }
+  });
+});
+
+/**
+ * The skill-authoring gate stack on the loop (ported from the retired legacy enum suite).
+ * `skill_author` runs the UNCHANGED `runSkill` → Gate A → author → Gate B → writeActiveSkill
+ * pipeline inside the tool, now on the background evolution lane: the skill file is written
+ * exactly as before, and the gate-stack report rides the lane's completion NOTIFICATION
+ * (`report.notifyText`) instead of the turn's chat turn. These pin the still-live worker
+ * orchestration (writeActiveSkill, the mechanical version bump, the malformed-author retry,
+ * the by-origin Gate B policy) that only lived at the worker level.
+ */
+describe("skill_author gate stack on the loop (ported from the legacy enum suite)", () => {
+  /** Drain every queued outbox notification's text (unique lease owner per read). */
+  function drainNotifications(store: RunStore): string[] {
+    const notes: string[] = [];
+    for (;;) {
+      const n = store.claimNextNotification(`test-${notes.length}`, 30);
+      if (!n) break;
+      notes.push(String(n.payload.text));
+    }
+    return notes;
+  }
+
+  /**
+   * A loop LLM stub that drives `skill_author` then `final`, and serves the skill pipeline's
+   * inner passes: Gate A (`gateA`), the author draft (`authored`), and Gate B (`gateB`).
+   * A fresh instance is used per run so the compose script restarts each turn.
+   */
+  function skillLoopLlm(
+    gateA: string,
+    authored?: string,
+    gateB?: string,
+    onAuthor?: () => void
+  ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
+    const composeScript = [
+      '{"action":"skill_author","input":{},"why":"user asks for a procedure"}',
+      '{"action":"final","answer":"记下了。"}'
+    ];
+    let composeIndex = 0;
+    return async (input) => {
+      const system = typeof input.system === "string" ? input.system : "";
+      let answer = `ANSWER: ${input.question}`;
+      if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"skill"}';
+      else if (system.includes(LOOP_DISCIPLINE)) {
+        answer = composeScript[Math.min(composeIndex, composeScript.length - 1)] ?? "";
+        composeIndex += 1;
+      } else if (system.includes(GATE_A_DISCIPLINE)) answer = gateA;
+      else if (system.includes(GATE_B_DISCIPLINE) && gateB !== undefined) answer = gateB;
+      else if (system.includes(SKILL_AUTHOR_DISCIPLINE) && authored !== undefined) {
+        onAuthor?.();
+        answer = authored;
+      }
+      return { ok: true, output: { question: input.question, answer, model: "f", provider: "f" } };
+    };
+  }
+
+  const CROSS_CHECK = [
+    "---", "name: cross-check-figures", "scope: research",
+    "when: comparing numbers across multiple sources",
+    "anchors:", "  - a part never exceeds its whole",
+    "version: 1", "origin: commanded", "---", "", "1. Verify each figure against its source."
+  ].join("\n");
+
+  it("Gate A=skill: authors a valid skill, writes it under skills/, report carries the gate stack", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    try {
+      const run_id = turnRun(store, "write a skill for cross-checking figures in research");
+      const worker = new CoreWorker(store, root, skillLoopLlm('{"verdict":"skill","reason":"recurring method"}', CROSS_CHECK));
+      expect((await worker.executeRun(run_id, "w")).status).toBe("completed");
+      await evolutionLaneSettled();
+
+      // The skill file was written under skills/research/ and the registry regenerated.
+      expect(readFileSync(join(root, "skills", "research", "cross-check-figures.md"), "utf8")).toContain("name: cross-check-figures");
+      expect(readFileSync(join(root, "skills", "REGISTRY.md"), "utf8")).toContain("cross-check-figures");
+
+      // The gate-stack report rides the lane's completion notification.
+      const report = drainNotifications(store).find((t) => t.includes("Skill attempt"));
+      expect(report).toContain("Gate A qualify: ✓");
+      expect(report).toContain("Wrote skills/research/cross-check-figures.md");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("refine: bumps the version MECHANICALLY (v1→v2) even when the writer re-emits version:1", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const path = join(root, "skills", "research", "cross-check-figures.md");
+    try {
+      // First authoring → new skill at v1.
+      const w1 = new CoreWorker(store, root, skillLoopLlm('{"verdict":"skill","reason":"recurring method"}', CROSS_CHECK));
+      await w1.executeRun(turnRun(store, "write a cross-check skill"), "w");
+      await evolutionLaneSettled();
+      expect(readFileSync(path, "utf8")).toContain("version: 1");
+
+      // Second authoring of the same skill → refine → v2 (mechanical, not the writer's v1).
+      const w2 = new CoreWorker(store, root, skillLoopLlm('{"verdict":"skill","reason":"recurring method"}', CROSS_CHECK));
+      await w2.executeRun(turnRun(store, "improve the cross-check skill", "t:refine2"), "w");
+      await evolutionLaneSettled();
+      expect(readFileSync(path, "utf8")).toContain("version: 2");
+      const report = drainNotifications(store).find((t) => t.includes("v1→v2"));
+      expect(report).toContain("Refined");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("Gate A=code: reports a code-capability flag, writes no skill and no lesson", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    try {
+      const run_id = turnRun(store, "write a skill that calls the GitHub API");
+      const worker = new CoreWorker(store, root, skillLoopLlm('{"verdict":"code","reason":"needs an API"}'));
+      expect((await worker.executeRun(run_id, "w")).status).toBe("completed");
+      await evolutionLaneSettled();
+      expect(drainNotifications(store).find((t) => t.includes("Skill attempt"))).toContain("CODE");
+      expect(store.readLessonBlock("ask")).toBeUndefined();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("malformed author output retries once then fails cleanly (no garbage written)", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    let authorCalls = 0;
+    try {
+      const run_id = turnRun(store, "write a skill for verifying dates");
+      const worker = new CoreWorker(
+        store,
+        root,
+        skillLoopLlm('{"verdict":"skill","reason":"ok"}', "sorry, I can't write that", undefined, () => {
+          authorCalls += 1;
+        })
+      );
+      expect((await worker.executeRun(run_id, "w")).status).toBe("completed");
+      await evolutionLaneSettled();
+      expect(authorCalls).toBe(2); // one attempt + one retry
+      expect(existsSync(join(root, "skills", "research"))).toBe(false); // nothing written
+      expect(drainNotifications(store).find((t) => t.includes("Skill attempt"))).toContain("did not produce a valid skill file");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("commanded Gate B passes: writes active, stamps the score, shows it in the report", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    try {
+      const worker = new CoreWorker(
+        store,
+        root,
+        skillLoopLlm(
+          '{"verdict":"skill","reason":"recurring method"}',
+          CROSS_CHECK,
+          '{"criteria":[{"text":"checks a source","ok":1},{"text":"sanity-checks","ok":1}]}'
+        )
+      );
+      await worker.executeRun(turnRun(store, "write a cross-check skill"), "w");
+      await evolutionLaneSettled();
+      const file = readFileSync(join(root, "skills", "research", "cross-check-figures.md"), "utf8");
+      expect(file).toContain("score: 1.00");
+      expect(file).toMatch(/last_verified: \d{4}-\d{2}-\d{2}/);
+      const report = drainNotifications(store).find((t) => t.includes("Skill attempt"));
+      expect(report).toContain("Gate B anchors: ✓ passed");
+      expect(report).toContain("1.00");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("commanded Gate B low score: still writes active (advisory) with a ⚠ low-score note", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const AUTHORED = [
+      "---", "name: weak-skill", "scope: ask", "when: something",
+      "anchors:", "  - x", "version: 1", "origin: commanded", "---", "", "1. Do a vague thing."
+    ].join("\n");
+    try {
+      const worker = new CoreWorker(
+        store,
+        root,
+        skillLoopLlm('{"verdict":"skill","reason":"ok"}', AUTHORED, '{"criteria":[{"text":"a","ok":0},{"text":"b","ok":0}]}')
+      );
+      await worker.executeRun(turnRun(store, "write a weak skill"), "w");
+      await evolutionLaneSettled();
+      // Advisory: the file IS written despite the low score.
+      expect(existsSync(join(root, "skills", "ask", "weak-skill.md"))).toBe(true);
+      const report = drainNotifications(store).find((t) => t.includes("Skill attempt"));
+      expect(report).toContain("⚠ low score");
+      expect(report).toContain("Wrote skills/ask/weak-skill.md");
     } finally {
       store.close();
     }

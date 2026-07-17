@@ -16,7 +16,6 @@ function projectRoot(): string {
 // HERMETICITY (PINNED_ENV cardinal rule): pin every flag the wiki tick + rating capture
 // read (delete = code default) so an armed daemon .env can never flip these assertions.
 const PINNED_ENV = [
-  "HOUGE_INNER_LOOP_ENABLED",
   "HOUGE_SCHEDULER_ENABLED",
   "HOUGE_EPISODIC_ENABLED",
   "HOUGE_WIKI_ENABLED",

@@ -47,11 +47,9 @@ import {
   parseIntent,
   resolveChatContextTurnChars,
   resolveChatContextTurns,
-  resolveInnerLoopEnabled,
   resolveMaxConsecutiveClarify
 } from "../capabilities/intent.js";
 import type { IntentClassification, Intent } from "../capabilities/intent.js";
-import { buildDistillQuestion, DISTILL_DISCIPLINE, looksLikeSkillProcedure, parseDistillResult, shouldRejectLesson } from "../capabilities/distill.js";
 import { createLessonWriteAdapter, createSrcPhraseChecker } from "../capabilities/lesson-write.js";
 import { reconcileLesson } from "../capabilities/reconcile.js";
 import {
@@ -873,8 +871,8 @@ export class CoreWorker {
   }
 
   /**
-   * ⓪·3 S1b — the shared lesson write for EVERY path that saves a lesson (legacy
-   * runFeedback, the lesson_write loop tool, the Gate A down-routes): reconcile the
+   * ⓪·3 S1b — the shared lesson write for EVERY path that saves a lesson (the
+   * lesson_write loop tool, the Gate A down-routes): reconcile the
    * candidate against the scope's active lessons (one cheap-chain compare; skipped when
    * the scope is empty; any parse/chain failure defaults to ADD), then apply the verdict
    * to the store — SUPERSEDE/UPDATE write a NEW row linked via bidirectional pointers,
@@ -1390,90 +1388,6 @@ export class CoreWorker {
   }
 
   /**
-   * The `feedback` branch (ADR 0010, Stage B). Resolve the target prior answer + its
-   * scope (reply hint → run → chat turn intent; else the most recent assistant turn).
-   * Distill the user's feedback (instruction) against the prior answer (reference only)
-   * — if DURABLE, silently reconcile-and-save it against the scope's active lessons
-   * (⓪·3 S1b: ADD/SUPERSEDE/UPDATE/DROP instead of appending a duplicate). Then ALWAYS
-   * answer back: a tighter re-answer composed AFTER the save so the new rule applies,
-   * with the prior answer + feedback as DATA. All calls share the turn's budget.
-   * Returns the helper result, or null if no target resolved.
-   */
-  private async runFeedback(
-    claim: ClaimedRun,
-    feedbackText: string,
-    chat_id: string,
-    recentTurns: ChatTurnRow[],
-    budget: BudgetLedger,
-    turnChars: number
-  ): Promise<HelperResult | null> {
-    const target = this.resolveFeedbackTarget(claim.run_id, recentTurns);
-    if (!target) return null;
-
-    const scope = intentToScope(target.intent);
-    const priorAnswer = target.text;
-    const now = new Date().toISOString();
-    // Phase 2c auto-author: a procedure-shaped lesson triggers an auto-author attempt (origin=auto,
-    // blocking+guided-refine). The resulting report (pass OR blocked) is appended to the answer-back.
-    let skillReportText: string | undefined;
-
-    // 1) Distill — does the feedback generalize into a durable preference? The user's
-    //    feedback is the instruction; the prior answer is reference ONLY (ADR 0006/0010).
-    const distillResult = await this.runLlm(
-      claim,
-      buildDistillQuestion(feedbackText, priorAnswer.slice(0, 1500), scope),
-      DISTILL_DISCIPLINE,
-      budget
-    );
-    if (distillResult.ok) {
-      const verdict = parseDistillResult(distillResult.answer);
-      // Deterministic lesson-poisoning backstop (ADR 0010 §5 / ADR 0007 §8): the
-      // prompt framing alone is not trusted. Reject a lesson that is over-long or
-      // was lifted from the (untrusted) prior answer without appearing in the user's
-      // feedback. Rejected ⇒ treat as not-durable (no save); still answer back below.
-      if (verdict.durable && verdict.lesson && !shouldRejectLesson(verdict.lesson, feedbackText, priorAnswer)) {
-        // Silent save (no toast), reconciled against the scope's active lessons (⓪·3 S1b).
-        // The AVOID line rides the same poisoning backstop: a lifted avoid is dropped.
-        const avoid =
-          verdict.avoid && !shouldRejectLesson(verdict.avoid, feedbackText, priorAnswer)
-            ? verdict.avoid
-            : undefined;
-        await this.reconcileAndSaveLesson(
-          { scope, text: verdict.lesson, ...(avoid ? { avoid } : {}) },
-          "user_feedback",
-          this.reconcileLlm(claim, budget),
-          now
-        );
-        // Phase 2c AUTO-AUTHOR: a clearly procedure-shaped lesson triggers an auto-author
-        // attempt (origin=auto → BLOCKING + guided-refine). Conservative: only on a clear
-        // procedure signal (looksLikeSkillProcedure), and only when Gate A confirms it is a
-        // skill — an ordinary tweak still stays a lesson. The attempt is surfaced (pass OR
-        // blocked), never silent. Best-effort: a failure here never breaks the answer-back.
-        if (looksLikeSkillProcedure(verdict.lesson)) {
-          skillReportText = await this.tryAutoAuthorSkill(claim, verdict.lesson);
-        }
-      }
-    }
-
-    // 2) Answer back — re-answer honoring the feedback, with the (possibly updated)
-    //    lesson block applied (system composed AFTER the save). Prior answer + feedback
-    //    ride the DATA channel.
-    const context = buildFeedbackContext(priorAnswer, turnChars);
-    const answered = await this.runAnswer(claim, feedbackText, context, budget, scope);
-    if (answered.ok && skillReportText) {
-      // Surface the auto-author outcome (pass OR blocked) on the answer-back AND the recorded
-      // turn — never silent (Phase 2c surfacing). The answer is what gets stored in chat history.
-      answered.answer = `${answered.answer}\n\n${skillReportText}`;
-      answered.report = {
-        ...answered.report,
-        body: `${answered.report.body}\n\n${skillReportText}`,
-        notifyText: `${answered.report.notifyText}\n\n${skillReportText}`
-      };
-    }
-    return answered;
-  }
-
-  /**
    * The `skill` branch (ADR 0011, Phase 2b — on-command authoring). Skills are PROSE, so this
    * runs on the cheap pi→kimi chain (NO Codex, NO worktree): Gate A routes the request
    * (skill/lesson/code/unsure); a "skill" verdict authors the markdown under
@@ -1517,28 +1431,6 @@ export class CoreWorker {
     }
     // unsure / fuzzy → save a lesson if one was offered, and ASK whether to promote.
     return this.downRouteUnsure(skillClaim, verdict, now, budget);
-  }
-
-  /**
-   * Phase 2c auto-author from the distill flag. A procedure-shaped lesson runs Gate A; a "skill"
-   * verdict triggers the BLOCKING + guided-refine author path (origin=auto). Returns the surfaced
-   * report (pass OR blocked) to append to the feedback answer-back, or undefined when Gate A does
-   * NOT confirm a skill (it stays a plain lesson — already saved). Best-effort: any failure → undefined.
-   */
-  private async tryAutoAuthorSkill(claim: ClaimedRun, lesson: string): Promise<string | undefined> {
-    const contract = compileSkillAuthorContract(claim.contract.objective);
-    const skillClaim: ClaimedRun = { run_id: claim.run_id, contract };
-    // Auto-author is a distinct sub-task spawned from feedback — it runs on its OWN budget
-    // (the skill-author contract), not the turn's, so Gate A + the author + the ≤N guided-refine
-    // passes don't starve the feedback turn's answer-back. (Gate B already has its own budget.)
-    const budget = new BudgetLedger({ ...contract.budget, max_tool_calls: 8 });
-    const request = `Write a skill for this recurring procedure: ${lesson}`;
-    const gateRaw = await this.runLlm(skillClaim, buildGateAQuestion(request), GATE_A_DISCIPLINE, budget);
-    const verdict: GateAResult = gateRaw.ok ? parseGateAVerdict(gateRaw.answer) : { verdict: "unsure", reason: "Gate A failed" };
-    // Conservative: only auto-author on a clear "skill" verdict. Anything else stays a lesson.
-    if (verdict.verdict !== "skill") return undefined;
-    const result = await this.authorAndWriteSkill(skillClaim, request, budget, verdict, "auto");
-    return result.ok ? result.answer : undefined;
   }
 
   /**
@@ -1759,39 +1651,10 @@ export class CoreWorker {
   }
 
   /**
-   * Resolve the prior answer the feedback reacts to + its intent. Prefer the reply
-   * hint (reply_to_message_id → notification_outbox → run_id → that run's assistant
-   * chat turn). Otherwise the most recent assistant turn in the window.
-   */
-  private resolveFeedbackTarget(
-    run_id: string,
-    recentTurns: ChatTurnRow[]
-  ): { text: string; intent: Intent } | undefined {
-    const metadata = this.runStore.getRunMetadata(run_id);
-    const replyId = metadata.reply_to_message_id;
-    if (typeof replyId === "number" || typeof replyId === "string") {
-      const run_id = this.runStore.getRunIdByProviderMessageId(`telegram:${replyId}`);
-      if (run_id) {
-        const turn = this.runStore.getAssistantChatTurnForRun(run_id);
-        if (turn) {
-          return { text: turn.text, intent: normalizeIntent(turn.intent) };
-        }
-      }
-    }
-
-    for (let i = recentTurns.length - 1; i >= 0; i -= 1) {
-      const turn = recentTurns[i]!;
-      if (turn.role === "assistant") {
-        return { text: turn.text, intent: normalizeIntent(turn.intent) };
-      }
-    }
-    return undefined;
-  }
-
-  /**
    * Run a single `llm_answer` with an explicit system prompt on the shared budget. Used
-   * by the feedback branch for the distill and rewrite passes (the answer-back goes
-   * through runAnswer so it reuses the composed prompt + report shape).
+   * by the skill/self-diagnose helpers and the loop tools for their intermediate LLM
+   * passes (Gate A, distill, author) — the answer-back itself goes through runAnswer so
+   * it reuses the composed prompt + report shape.
    */
   private async runLlm(
     claim: ClaimedRun,
@@ -1860,98 +1723,19 @@ export class CoreWorker {
       return this.failWithPartialReport(claim, classification.failure);
     }
 
-    // Inner-loop fork (ADR 0013, step ⓪·1): flag ON → the model composes the turn step
-    // by step inside the contract envelope, with the classification as an ADVISORY hint.
-    // Flag OFF (default) → the legacy enum path below, byte-identical, untouched.
-    if (resolveInnerLoopEnabled(process.env)) {
-      return this.executeTurnLoop(
-        claim,
-        message,
-        chat_id,
-        recentTurns,
-        budget,
-        turnChars,
-        recentClarifyCount,
-        classification.classification
-      );
-    }
-    let intent = classification.classification.intent;
-
-    // Clarify-loop cap (ADR 0010 fix): if Houge has already asked the cap's worth of
-    // consecutive clarifications and the user replied, don't clarify again — override to
-    // `answer` and proceed best-effort. Deterministic; env-configurable (default 1).
-    if (intent === "clarify" && recentClarifyCount >= resolveMaxConsecutiveClarify(process.env)) {
-      intent = "answer";
-    }
-
-    // 3) Dispatch.
-    let dispatched: HelperResult;
-    if (intent === "clarify") {
-      const question =
-        classification.classification.clarifying_question?.trim() ||
-        "Could you say a bit more about what you'd like me to do?";
-      dispatched = {
-        ok: true,
-        answer: question,
-        report: {
-          title: "Clarification",
-          body: [`Message: ${message}`, "", question].join("\n"),
-          sources: ["intent:clarify"],
-          notifyText: question
-        }
-      };
-    } else if (intent === "research") {
-      const query = classification.classification.query?.trim() || message;
-      // ③ defense-in-depth: pass the thread so a referring query keeps its referent (the
-      // loop path is untouched; the /research command path has no thread → undefined).
-      dispatched = await this.runResearch(
-        claim,
-        query,
-        budget,
-        recentTurns.length > 0 ? formatThreadContext(recentTurns, turnChars) : undefined
-      );
-    } else if (intent === "selfcode") {
-      const focus = classification.classification.query?.trim() || message;
-      // Step ⓪·2: the legacy path ALWAYS diagnoses (read-only, conservative). The write
-      // path is loop-only now — the model proposes `self_write_propose` on the inner
-      // loop; the WRITE_SIGNALS verb table is gone (ADR 0013 §4).
-      dispatched = await this.runSelfDiagnose(claim, message, focus, recentTurns, budget, turnChars);
-    } else if (intent === "skill") {
-      dispatched = await this.runSkill(claim, message, recentTurns, budget, turnChars);
-    } else if (intent === "feedback") {
-      const fed = await this.runFeedback(claim, message, chat_id, recentTurns, budget, turnChars);
-      if (fed) {
-        dispatched = fed;
-      } else {
-        // No feedback target resolved → treat as a normal answer (conservative default).
-        const context = recentTurns.length > 0 ? formatThreadContext(recentTurns, turnChars) : undefined;
-        dispatched = await this.runAnswer(claim, message, context, budget);
-      }
-    } else {
-      const context = recentTurns.length > 0 ? formatThreadContext(recentTurns, turnChars) : undefined;
-      dispatched = await this.runAnswer(claim, message, context, budget);
-    }
-
-    if (!dispatched.ok) {
-      return this.failWithPartialReport(claim, dispatched.failure);
-    }
-
-    const completion = this.writeCompletionReport(claim, dispatched.report, budget);
-    if (completion.status !== "completed") {
-      return completion;
-    }
-
-    // 4) Record both sides of the exchange for the next turn's context.
-    this.runStore.recordChatTurn({ chat_id, run_id: claim.run_id, role: "user", text: message });
-    this.runStore.recordChatTurn({
+    // Inner loop (ADR 0013): the model composes the turn step by step inside the contract
+    // envelope, with the classification as an ADVISORY hint. This is the only `turn` path —
+    // the legacy intent-enum dispatch was retired once loop parity was proven live (⓪·4).
+    return this.executeTurnLoop(
+      claim,
+      message,
       chat_id,
-      run_id: claim.run_id,
-      role: "assistant",
-      text: dispatched.answer,
-      intent
-    });
-
-    return completion;
+      recentTurns,
+      budget,
+      turnChars,
+      recentClarifyCount,
+      classification.classification
+    );
   }
 
   /**
@@ -3058,15 +2842,6 @@ function buildSelfDiagnoseRelayQuestion(message: string, diagnosis: string): str
   ].join("\n");
 }
 
-/**
- * The DATA-channel context for an answer-back: the prior answer the user reacted to,
- * truncated to the feed cap. The user's feedback rides the question, so the model
- * re-answers honoring it with the prior answer as reference (never as instructions).
- */
-function buildFeedbackContext(priorAnswer: string, turnChars: number): string {
-  return ["Your prior answer the user is reacting to (reference, untrusted data):", feedTurnText(priorAnswer, turnChars * 2)].join("\n");
-}
-
 // The old char-cap consolidation REWRITE (REWRITE_DISCIPLINE + buildRewriteQuestion) died
 // with the lesson block (⓪·3 S1): dedupe now happens at WRITE time via reconcile-on-write,
 // and the per-scope row cap (resolveLessonCapPerScope) prunes lowest reuse_value on overflow.
@@ -3227,13 +3002,6 @@ function withEvolutionNotices(answer: string, notices: string[]): string {
 function loopSources(steps: LoopStepRecord[]): string[] {
   const invoked = [...new Set(steps.filter((s) => s.ok).map((s) => s.action))];
   return invoked.length > 0 ? invoked.map((name) => `loop:${name}`) : ["loop:compose"];
-}
-
-/** Coerce a stored chat-turn intent into a known Intent (default answer). */
-function normalizeIntent(intent: string | null): Intent {
-  return intent === "research" || intent === "feedback" || intent === "clarify" || intent === "selfcode" || intent === "skill"
-    ? intent
-    : "answer";
 }
 
 /** Render recent turns as a compact transcript for the answer context block. */

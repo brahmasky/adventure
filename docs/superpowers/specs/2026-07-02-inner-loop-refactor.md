@@ -40,7 +40,8 @@ combination, in one turn.
    native function-calling dependency.
 3. **Every step of every action passes `CapabilityRunner.execute`** — the loop adds no side-channel.
 4. **Flag-gated parallel paths:** `HOUGE_INNER_LOOP_ENABLED` (default off) per surface; the enum
-   path stays until live parity; no big-bang rewrite.
+   path stayed until live parity; no big-bang rewrite. **(⓪·4 DONE 2026-07-17: parity proven, the
+   flag + enum path are now deleted — the loop is the only `turn` path.)**
 5. **Floor tests stay green untouched** (guard 42+72 adversarial, merge order, reviewer isolation,
    test-gate); composer goldens stay byte-stable (the loop gets its own prompt surface, a new
    `loop` discipline — never mutate existing disciplines).
@@ -90,7 +91,8 @@ final action · step cap = contract `max_tool_calls` · budget reserve denial ·
 - L2. Tool manifest derivation from the compiled contract (`allowed_actions` → manifest entries);
   a small per-tool descriptor registry (name, description, input schema sketch, adapter binding).
 - L3. Wire the `turn` contract to the loop behind `HOUGE_INNER_LOOP_ENABLED` (default off);
-  `executeTurn`'s enum path untouched as the fallback. Initial manifest: `llm_answer`,
+  `executeTurn`'s enum path untouched as the fallback. **(⓪·4: flag + enum path since deleted;
+  the loop is unconditional.)** Initial manifest: `llm_answer`,
   `web_search`, `lesson_write` (wraps distill + `shouldRejectLesson` backstop + append/reconcile),
   `clarify`.
 - L4. Ledger events (`loop_started`, `loop_step`, `loop_halted{reason}`) + attribution recording.
@@ -124,14 +126,23 @@ reconcile ADD/SUPERSEDE/UPDATE, reuse-value + decay, low-rating attribution pass
 A1 (attribution) already emitted by the loop's observation hook. Live gate = spine A9 (visible
 compounding).
 
-### Step ⓪·4 — retire the legacy paths
+### Step ⓪·4 — retire the legacy paths — DONE (2026-07-17)
 
-- Flip `HOUGE_INNER_LOOP_ENABLED` default on for migrated surfaces; remove `executeTurn`'s
-  if-chain and the per-intent handlers whose logic now lives in tools; `runResearch`'s fixed
-  search → synth → critique dissolves into loop composition under budget.
-- Contracts become envelope-only; `executeClaim`'s tier if-chain collapses to loop-vs-legacy.
-- **LIVE GATE:** a normal day's traffic (answer, research, feedback, selfcode) over Telegram on
-  the loop path only; `/status`, `/lessons`, `/approve`, `/deny` unchanged.
+- `HOUGE_INNER_LOOP_ENABLED` (and `resolveInnerLoopEnabled`) deleted; `executeTurn` now classifies
+  then unconditionally calls `executeTurnLoop`. The enum if-chain and the feedback-only handlers
+  (`runFeedback` + `resolveFeedbackTarget`/`tryAutoAuthorSkill`/`buildFeedbackContext`, and the
+  orphaned `normalizeIntent`) are removed — their logic lives in the `lesson_write`/`skill_author`
+  tools. `runResearch`/`runAnswer`/`runSkill`/`runSelfDiagnose` are KEPT (reached by the loop's
+  tools and the `/research`·`/ask` command surfaces).
+- The feedback auto-author-on-lesson path is intentionally gone (the model reaches for
+  `skill_author` explicitly instead) — not a regression.
+- Legacy-path test suites retired: `core-worker-turn.test.ts` deleted (dispatch/feedback/clarify
+  coverage lives in the loop + `lesson-write`/`intent` unit suites; the still-live skill-authoring
+  worker orchestration was PORTED to the loop's `skill_author` path). Every
+  `HOUGE_INNER_LOOP_ENABLED` pin/set removed across suites; the daemon suite reworked to the loop's
+  tool-based path.
+- **LIVE GATE (met earlier):** a normal day's traffic (answer, research, feedback, selfcode) over
+  Telegram ran on the loop path only; `/status`, `/lessons`, `/approve`, `/deny` unchanged.
 
 ### Later (per spine spec, loop-native)
 

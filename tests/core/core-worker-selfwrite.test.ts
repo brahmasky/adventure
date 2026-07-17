@@ -38,7 +38,6 @@ function projectRoot(): string {
 // assertion from the legacy suite still holds, awaited via `evolutionLaneSettled()`.
 // HERMETICITY: pin the env this suite asserts on (delete = code default), restore after.
 const PINNED_ENV = [
-  "HOUGE_INNER_LOOP_ENABLED",
   "HOUGE_SELFWRITE_ENABLED",
   "HOUGE_CODEX_ENABLED",
   "HOUGE_MAX_CONSECUTIVE_CLARIFY",
@@ -71,7 +70,6 @@ beforeEach(() => {
     savedEnv[key] = process.env[key];
     delete process.env[key];
   }
-  process.env.HOUGE_INNER_LOOP_ENABLED = "1";
   resetEvolutionLaneForTests();
 });
 afterEach(async () => {
@@ -1047,34 +1045,4 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
     }
   });
 
-  it("LEGACY (flag off): selfcode ALWAYS diagnoses — write verbs no longer reach the write stack (⓪·2)", async () => {
-    // The WRITE_SIGNALS verb table is gone: even an explicit write-verb message with the
-    // channel ARMED stays read-only on the legacy enum path (the write path is loop-only).
-    delete process.env.HOUGE_INNER_LOOP_ENABLED;
-    process.env.HOUGE_SELFWRITE_ENABLED = "1";
-    process.env.HOUGE_CODEX_ENABLED = "1";
-    const store = RunStore.openInMemory();
-    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
-    const codexCalls: Array<Record<string, unknown>> = [];
-    try {
-      const run_id = turnRun(store, "修复一下 intent router — fix it so it sees your identity");
-      const codex = (input: Record<string, unknown>): ToolAdapterResult => {
-        codexCalls.push(input);
-        return { ok: true, output: { diagnosis: "ROOT CAUSE: x", model: "fake", bin: "codex" } };
-      };
-      const result = await makeWorker(store, deps({}, log), loopLlm(), codex).executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
-
-      // Read-only Codex consult ran; the write stack was NEVER entered.
-      expect(codexCalls.length).toBe(1);
-      expect(log.writeTasks).toEqual([]);
-      expect(log.published).toEqual([]);
-      expect(log.teardowns).toEqual([]);
-      expect(store.getLedgerEvents(run_id).some((e) => String(e.event_type).startsWith("self_write_"))).toBe(false);
-      const turns = store.getRecentChatTurns("777", 6);
-      expect(turns[turns.length - 1]!.intent).toBe("selfcode");
-    } finally {
-      store.close();
-    }
-  });
 });

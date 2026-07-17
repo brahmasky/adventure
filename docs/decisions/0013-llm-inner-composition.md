@@ -127,10 +127,13 @@ warning against single-user exceptions.)
 
 ### 6. Migration is flag-gated per surface, live-gated per step
 
-`HOUGE_INNER_LOOP_ENABLED` (default off) flips one surface at a time, starting with the `turn`
-front door; the intent-enum path remains the fallback until parity is proven **live over
-Telegram**. The enum may survive as an advisory hint in the loop prompt; it stops being dispatch.
-Detail in [the inner-loop spec](../superpowers/specs/2026-07-02-inner-loop-refactor.md).
+`HOUGE_INNER_LOOP_ENABLED` (default off) flipped one surface at a time, starting with the `turn`
+front door; the intent-enum path remained the fallback until parity was proven **live over
+Telegram**. Parity held, so **step ⓪·4 (2026-07-17) retired the legacy path entirely**: the loop
+is now the only `turn` path, `executeTurn` classifies then unconditionally composes, and the flag
++ enum if-chain + per-intent handlers are deleted. The enum survives ONLY as an advisory hint in
+the loop prompt (`classifyIntent`); it is no longer dispatch. Detail in
+[the inner-loop spec](../superpowers/specs/2026-07-02-inner-loop-refactor.md).
 
 ### 7. The spine roadmap is re-sequenced, not detoured
 

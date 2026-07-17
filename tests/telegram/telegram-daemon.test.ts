@@ -15,6 +15,8 @@ import {
   RATING_ASK_TEXT,
   RATING_ATTRIBUTION_DISCIPLINE
 } from "../../src/capabilities/session-rating.js";
+import { INTENT_DISCIPLINE } from "../../src/capabilities/intent.js";
+import { LOOP_DISCIPLINE } from "../../src/prompt/composer.js";
 
 let dirs: string[] = [];
 function projectRoot(): string {
@@ -22,10 +24,10 @@ function projectRoot(): string {
   dirs.push(dir);
   return dir;
 }
-// This suite drives turns down the LEGACY enum path — hermetic against a daemon env
-// that arms the inner loop (ADR 0013): pin the flag to its default (off). The scheduler
-// flag (B10b) shapes the per-cycle tick the same way — pin it too (tests arm it locally).
-const PINNED_ENV = ["HOUGE_INNER_LOOP_ENABLED", "HOUGE_SCHEDULER_ENABLED", "HOUGE_SCHEDULER_MAX_PER_CHAT"] as const;
+// This suite drives turns down the inner loop (ADR 0013 — the only `turn` path). The
+// scheduler flag (B10b) shapes the per-cycle tick — pin it to its default (tests arm it
+// locally), hermetic against a daemon env that would flip it.
+const PINNED_ENV = ["HOUGE_SCHEDULER_ENABLED", "HOUGE_SCHEDULER_MAX_PER_CHAT"] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
   savedEnv = {};
@@ -55,10 +57,28 @@ function askUpdate(update_id: number, text: string) {
   };
 }
 
-const okAnswer = (input: Record<string, unknown>) => ({
-  ok: true as const,
-  output: { question: input.question, answer: `A:${input.question}`, model: "fake" }
-});
+/**
+ * A loop-aware LLM fake (the only `turn` path is the inner loop, ADR 0013): the classifier
+ * picks `answer`, and the single compose step emits a `final` action. `finalAnswer` defaults
+ * to echoing the turn's user message (parsed out of the compose DATA channel) so a turn's
+ * reply carries it — preserving the daemon-level "each turn's text shows up in its reply"
+ * coverage. Non-loop calls (ask-chain, rating attribution, …) echo the question.
+ */
+function loopReply(input: Record<string, unknown>, finalAnswer?: string) {
+  const system = typeof input.system === "string" ? input.system : "";
+  const question = typeof input.question === "string" ? input.question : "";
+  if (system.includes(INTENT_DISCIPLINE)) {
+    return { ok: true as const, output: { question, answer: '{"intent":"answer"}', model: "fake" } };
+  }
+  if (system.includes(LOOP_DISCIPLINE)) {
+    const echoed = /User message \(untrusted data\):\n(.+)/.exec(question)?.[1] ?? question;
+    const answer = JSON.stringify({ action: "final", answer: finalAnswer ?? `A:${echoed}` });
+    return { ok: true as const, output: { question, answer, model: "fake" } };
+  }
+  return { ok: true as const, output: { question, answer: `A:${question}`, model: "fake" } };
+}
+
+const okAnswer = (input: Record<string, unknown>) => loopReply(input);
 
 describe("runTelegramDaemon", () => {
   it("loops over multiple poll batches, answering each turn, and records the heartbeat", async () => {
@@ -112,10 +132,11 @@ describe("runTelegramDaemon", () => {
         allowlist: ALLOWLIST,
         stopSignal: controller.signal,
         longPollTimeoutSeconds: 0,
-        // Shutdown arrives WHILE the run is executing.
+        // Shutdown arrives WHILE the run is executing (on its first LLM call — the
+        // classifier); the loop still composes a `final` answer and the run completes.
         llmAdapter: async (input) => {
           controller.abort();
-          return { ok: true, output: { question: input.question, answer: "graceful-answer", model: "fake" } };
+          return loopReply(input, "graceful-answer");
         },
         telegramClient: {
           getUpdates: async () => {

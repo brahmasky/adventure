@@ -31,7 +31,6 @@ function projectRoot(): string {
 // restored after. The wiki flags + the embed sidecar env are pinned so an armed daemon
 // .env can never flip a default assertion or point a test at a real Ollama.
 const PINNED_ENV = [
-  "HOUGE_INNER_LOOP_ENABLED",
   "HOUGE_MAX_CONSECUTIVE_CLARIFY",
   "HOUGE_SELFWRITE_ENABLED",
   "HOUGE_CODEX_ENABLED",
@@ -59,7 +58,6 @@ beforeEach(() => {
     savedEnv[key] = process.env[key];
     delete process.env[key];
   }
-  process.env.HOUGE_INNER_LOOP_ENABLED = "1";
   process.env.HOUGE_WIKI_ENABLED = "1";
   resetEvolutionLaneForTests();
 });

@@ -53,7 +53,8 @@ Houge self-writes. The floor (§3) is never weakened by any agent.
   `HOUGE_TIME_TOOL_ENABLED` · `HOUGE_TZ_EVIDENCE_ENABLED`. Planner chain
   `pi,agy-cli,kimi-api,gemini-api`.
 - **Test suite:** ~1156 tests green; hermeticity via the PINNED_ENV pattern (§4).
-- **Spine status:** ⓪ inner loop DONE (except ⓪·4 legacy retirement) · ① Slice A eval loop
+- **Spine status:** ⓪ inner loop DONE (⓪·4 legacy retirement DONE — loop is the only `turn`
+  path; `HOUGE_INNER_LOOP_ENABLED` and the enum if-chain deleted) · ① Slice A eval loop
   DONE+LIVE (compounding observed) · ② episodic memory PENDING (spec B1–B6) · ③ http_fetch
   DONE+LIVE · ④ LLM wiki PENDING (spec C1–C6) · ⑤ skills eval metadata PENDING (tiny).
 - **Houge's own track record:** 13+ merged self-writes, including the timezone-evidence gate
@@ -140,10 +141,13 @@ preconditions, not a near-term target.
 - **0c. Docs sync:** todo.md top block still says "awaiting ARMING" — arming happened 07-07
   14:15; update. ADR 0014/0015 status lines still say "design; build to follow" — both are
   built + armed; update to reflect reality.
-- **0d. ⓪·4 retire legacy paths** — flip `HOUGE_INNER_LOOP_ENABLED` to default-ON, delete the
-  legacy `executeTurn` enum if-chain + per-intent handlers. **Trigger: after a quiet week on
-  the loop** (the timezone saga means the week hasn't been quiet; re-check ~2026-07-14).
-  Mostly deletions; live gate = a normal day's traffic on loop-only.
+- **0d. ⓪·4 retire legacy paths** — DONE (2026-07-17). The inner loop is now the ONLY `turn`
+  path: `executeTurn` classifies then unconditionally calls `executeTurnLoop`; the legacy enum
+  if-chain + per-intent handlers (`runFeedback` + `resolveFeedbackTarget`/`tryAutoAuthorSkill`/
+  `buildFeedbackContext`, `normalizeIntent`) and the `HOUGE_INNER_LOOP_ENABLED` flag
+  (`resolveInnerLoopEnabled`) are deleted. Feedback→lesson is the `lesson_write` tool; skill
+  authoring is the `skill_author` tool (the feedback auto-author path is intentionally gone).
+  The legacy-path test suites were retired/ported to the loop. Pure dead-code removal.
 
 ### Phase R — Research convergence under the evidence regime (IMMEDIATE next build)
 

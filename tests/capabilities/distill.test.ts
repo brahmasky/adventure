@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   buildDistillQuestion,
   LESSON_MAX_CHARS,
-  looksLikeSkillProcedure,
   parseDistillResult,
   shouldRejectLesson
 } from "../../src/capabilities/distill.js";
@@ -90,19 +89,6 @@ describe("shouldRejectLesson (deterministic poisoning backstop)", () => {
 
   it("accepts when the lesson appears nowhere (neither answer nor feedback)", () => {
     expect(shouldRejectLesson("prefer primary sources", "this is wrong", "the answer text")).toBe(false);
-  });
-});
-
-describe("looksLikeSkillProcedure (Phase 2b promotion flag)", () => {
-  it("flags a procedure-shaped lesson", () => {
-    expect(looksLikeSkillProcedure("when comparing figures, first list each source then cross-check")).toBe(true);
-    expect(looksLikeSkillProcedure("always verify units before comparing numbers")).toBe(true);
-  });
-
-  it("does NOT flag a plain style/format preference", () => {
-    expect(looksLikeSkillProcedure("be more concise")).toBe(false);
-    expect(looksLikeSkillProcedure("prefer a friendly tone")).toBe(false);
-    expect(looksLikeSkillProcedure("")).toBe(false);
   });
 });
 
