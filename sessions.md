@@ -693,3 +693,32 @@ Build + independent adversarial verification subagents; each live round found a 
   metadata = tiny backlog item). Roadmap next: soak; Phase K (⑤, tiny) or Phase 0 closeouts
   (S12/D12 probes, ⓪·4) as small /goals; Milestone A (autonomy flip) still gated on S-3
   auto-rollback + soak record.
+
+## 2026-07-17 (second entry) — Gap review against the declared next major (autonomous money work)
+- Paco declared the next major: Houge autonomously earns money (bounty/hackathon/credits) —
+  re-opens charter fork 3, a /goal-level re-decision now that spine ⓪–④ is complete. Recorded
+  in todo.md top + orchestrator memory. NOT scheduled.
+- Full residual sweep (subagent, todo.md+sessions.md+ROADMAP+lessons+ADRs 0016–0020): 47 open
+  items — 5 capability gaps, 8 utility-quality nits, 10 learning-loop, 11 safety-floor,
+  6 data-quality, 7 ops-durability. 9 previously-flagged items verified CLOSED by later builds
+  (BST alias→B4, scheduler→B10, kill-switch→B11, F2 wiki merge→W2, etc.).
+- **Tier 1 — capability ceilings between today and the ambition:** (1) NO external-project
+  coding (self-write targets only Houge's repo — a bounty/hackathon agent must scaffold, build,
+  test, deliver THIRD-PARTY code); (2) NO browser tier (SPA/auth/JS pages — job boards, bounty
+  platforms, submission forms are all behind it); (3) research convergence under the evidence
+  regime still unproven at n=1 (search-loops instead of synthesizing from held digests);
+  (4) no structured/market-data connector; (5) no geo grounding. Plus zero account/credential/
+  payment machinery (greenfield + firewall design work).
+- **Tier 2 — trust prerequisites for autonomy:** S-3 auto-rollback (the flip's named
+  precondition) + the ≥2-week clean-soak record; S12/D12 live probes STILL open (minutes of
+  work); houge.sqlite has NO BACKUP (single source of truth, highest value/effort item in the
+  whole list); metered-ceiling blind spots (unknown-model + run-less reads unmetered); ⓪·4
+  legacy retirement (quiet-week trigger keeps slipping).
+- **Tier 3 — intelligence-quality hygiene:** Gate B 0.00 weekly-report skill (clean/discard);
+  cross-scope lesson dedup; W2 floor-fold credit dilution (watch); relative-day mislabel +
+  zone-adornment prose slips (mechanical candidates queued); skill dedup/name normalization;
+  Telegram formatting discipline.
+- Recommended near-term sequence (pre-money-design): ① DB backup (small /goal, hours);
+  ② S12+D12 probes (one Telegram session); ③ ⓪·4 retirement; ④ convergence soak metric over
+  a week's runs; ⑤ THEN the money-work design discussion (external coding + browser +
+  credentials + S-3 as its likely prerequisite stack).

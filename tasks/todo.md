@@ -1,3 +1,16 @@
+# 🎯 DECLARED (Paco, 2026-07-17) — NEXT MAJOR: Houge earns money autonomously
+
+**Bounty jobs / hackathon projects / credits — Houge independently completes monetized
+projects.** The charter deferred money "until the spine proves stable autonomy" (fork 3);
+spine ⓪–④ is now complete, so this re-opens that fork — a charter-level /goal decision.
+Design pass must cover: external-project coding (self-write today targets ONLY Houge's own
+repo), browser tier (SPA/auth surfaces), account+credential handling under the secrets
+firewall, payment/custody boundaries, and which autonomy-flip preconditions (S-3
+auto-rollback, soak record) become prerequisites. Gap review against this ambition: see
+sessions.md 2026-07-17 (second entry). NOT scheduled — awaiting Paco's design discussion + /goal.
+
+---
+
 # ✅ DONE — Phase W COMPLETE: Slice W2 reuse loop — SHIPPED + C6 LIVE-GATED 2026-07-17 01:5x
 
 **Commit f452d89. Daemon live on W2 dist (PID 96417). ④ LLM wiki = the last major spine
