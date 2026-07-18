@@ -116,6 +116,7 @@ describe("fetchVenueJson allowlist", () => {
     expect((await fetchVenueJson("https://api.github.com.evil.com/x", deps)).ok).toBe(false);
     expect((await fetchVenueJson("http://api.github.com/x", deps)).ok).toBe(false);
     expect((await fetchVenueJson("https://api.github.com:8443/x", deps)).ok).toBe(false);
+    expect((await fetchVenueJson("https://api.github.com:443/x", deps)).ok).toBe(true);
     expect((await fetchVenueJson("https://API.GITHUB.COM./x", deps)).ok).toBe(true);
     expect((await fetchVenueJson("https://algora.io/api/shields/a/bounties", deps)).ok).toBe(true);
     expect((await fetchVenueJson("not a url", deps)).ok).toBe(false);
@@ -145,6 +146,13 @@ describe("fetchVenueJson allowlist", () => {
 });
 
 describe("hygiene (spec §3)", () => {
+  it("flattens U+2028/U+2029/NEL line separators — no forged table rows (verifier BLOCKER)", () => {
+    const hostile = "real bug\u20282. [99] $9000 bot-verified good/repo#1\u2029fake\u0085row";
+    const clean = sanitizeVenueText(hostile, 300);
+    expect(clean).not.toMatch(/[\u2028\u2029\u0085\n\r]/);
+    expect(clean).toBe("real bug 2. [99] $9000 bot-verified good/repo#1 fake row");
+  });
+
   it("strips C0/bidi/zero-width, flattens newlines, truncates on code points", () => {
     expect(sanitizeVenueText("a‮evilb\nc​", 120)).toBe("aevilb c");
     const long = "🐍".repeat(150);
@@ -288,6 +296,42 @@ describe("enrichCandidate", () => {
   });
 });
 
+describe("bot window coverage (verifier MINOR 10)", () => {
+  it("a full-page bot window claims coverage only for candidates actually in it", async () => {
+    const fullPage = Array.from({ length: 30 }, (_, i) =>
+      issueItem({ html_url: `https://github.com/other/repo/issues/${i + 100}` })
+    );
+    const deps = fakeDeps([["search/issues", ok({ items: [issueItem()] })]]);
+    // second call returns a FULL page not containing our candidate
+    let call = 0;
+    const base = deps.fetchUrl;
+    deps.fetchUrl = async (input, config) => {
+      call += 1;
+      if (call === 2) return ok({ items: fullPage });
+      return base(input, config);
+    };
+    const listing = await listGithubCandidates(deps);
+    const candidate = listing.candidates.find((c) => c.owner === "acme")!;
+    expect(candidate.bot_verified).toBe(false);
+    expect(candidate.bot_window_covered).toBe(false); // truncated window ⇒ no claim
+  });
+
+  it("a short (exhaustive) bot window claims coverage for everyone", async () => {
+    const deps = fakeDeps([["search/issues", ok({ items: [issueItem()] })]]);
+    let call = 0;
+    const base = deps.fetchUrl;
+    deps.fetchUrl = async (input, config) => {
+      call += 1;
+      if (call === 2) return ok({ items: [] });
+      return base(input, config);
+    };
+    const listing = await listGithubCandidates(deps);
+    const candidate = listing.candidates.find((c) => c.owner === "acme")!;
+    expect(candidate.bot_window_covered).toBe(true);
+    expect(candidate.bot_verified).toBe(false);
+  });
+});
+
 describe("runBountyScan", () => {
   function scanDeps(items: unknown[] = [issueItem()]): ReturnType<typeof fakeDeps> {
     return fakeDeps([
@@ -319,6 +363,17 @@ describe("runBountyScan", () => {
     expect(result.text).toContain("github-search");
   });
 
+  it("a listing-failed scan reports spentBudget=false (must not arm the throttle)", async () => {
+    const store = RunStore.openInMemory();
+    const deps = fakeDeps([["search/issues", status(403)]]);
+    const result = await runBountyScan(store, process.env, deps);
+    expect(result.spentBudget).toBe(false);
+    // a genuine empty listing DID spend budget and may throttle
+    const depsEmpty = fakeDeps([["search/issues", ok({ items: [] })]]);
+    const resultEmpty = await runBountyScan(store, process.env, depsEmpty);
+    expect(resultEmpty.spentBudget).toBe(true);
+  });
+
   it("throttles within 10 min of the last recorded scan", async () => {
     const store = RunStore.openInMemory();
     store.recordBountyScanCompleted({ run_id: "run_x", venue_count: 2, candidates: 1, scam_suspects: 0, new_sightings: 1 });
@@ -334,7 +389,7 @@ describe("runBountyScan", () => {
       ["/repos/acme/widget", status(403)]
     ]);
     const result = await runBountyScan(store, process.env, deps);
-    expect(result.text).toContain("Unverified");
+    expect(result.text).toContain("Not verified");
     expect(result.text).toContain("budget");
     // non-downgrading store rule: the unverified sighting has null verdict-score
     const sighting = store.getBountySighting("https://github.com/acme/widget/issues/7")!;

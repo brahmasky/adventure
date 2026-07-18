@@ -116,7 +116,7 @@ const STRIP_RE = /[\u0000-\u001F\u007F-\u009F\u200B-\u200D\uFEFF\u202A-\u202E\u2
 
 export function sanitizeVenueText(raw: unknown, maxChars: number): string {
   if (typeof raw !== "string") return "";
-  const flat = raw.replace(/[\r\n\t]+/g, " ").replace(STRIP_RE, "").replace(/\s{2,}/g, " ").trim();
+  const flat = raw.replace(/[\r\n\t\u2028\u2029\u0085]+/g, " ").replace(STRIP_RE, "").replace(/\s{2,}/g, " ").trim();
   const points = Array.from(flat);
   return points.length > maxChars ? `${points.slice(0, maxChars).join("")}…` : flat;
 }
@@ -272,6 +272,8 @@ export interface VenueListing {
   candidates: BountyCandidate[];
   degraded: string[];
   rateLimited: boolean;
+  /** True when the broad listing search itself succeeded (budget genuinely spent). */
+  listingOk: boolean;
 }
 
 /**
@@ -283,7 +285,12 @@ export async function listGithubCandidates(deps: BountyIntakeDeps): Promise<Venu
   const degraded: string[] = [];
   const broad = await fetchVenueJson(searchUrl('label:"💎 Bounty" is:issue state:open'), deps);
   if (!broad.ok) {
-    return { candidates: [], degraded: [`github-search: ${broad.error}`], rateLimited: broad.rateLimited };
+    return {
+      candidates: [],
+      degraded: [`github-search: ${broad.error}`],
+      rateLimited: broad.rateLimited,
+      listingOk: false
+    };
   }
   const items = asArray(asRecord(broad.json)?.items);
   const byUrl = new Map<string, BountyCandidate>();
@@ -305,20 +312,25 @@ export async function listGithubCandidates(deps: BountyIntakeDeps): Promise<Venu
   const verified = await fetchVenueJson(searchUrl("commenter:algora-pbc is:issue state:open"), deps);
   let rateLimited = false;
   if (verified.ok) {
+    const verifiedItems = asArray(asRecord(verified.json)?.items);
     const verifiedUrls = new Set(
-      asArray(asRecord(verified.json)?.items)
+      verifiedItems
         .map((item) => normalizeSearchItem(item)?.issue_url)
         .filter((url): url is string => typeof url === "string")
     );
+    // Coverage is only claimable when the bot window was exhaustive (returned fewer than
+    // a full page) or the candidate itself is in it — a truncated window must not turn
+    // "outside the page" into "no bot comment" (spec MAJOR 5 / verifier MINOR 10).
+    const windowExhaustive = verifiedItems.length < BOUNTY_SEARCH_PER_PAGE;
     for (const candidate of byUrl.values()) {
-      candidate.bot_window_covered = true;
       candidate.bot_verified = verifiedUrls.has(candidate.issue_url);
+      candidate.bot_window_covered = windowExhaustive || candidate.bot_verified;
     }
   } else {
     degraded.push(`github-bot-window: ${verified.error}`);
     rateLimited = verified.rateLimited;
   }
-  return { candidates: [...byUrl.values()], degraded, rateLimited };
+  return { candidates: [...byUrl.values()], degraded, rateLimited, listingOk: true };
 }
 
 /**
@@ -449,6 +461,9 @@ export interface BountyScanResult {
   text: string;
   stats: { venue_count: number; candidates: number; scam_suspects: number; new_sightings: number };
   throttled: boolean;
+  /** False when the listing spine failed outright — such a pass is NOT ledgered as a scan
+   *  (verifier MAJOR 5: a transient 403 must not burn the 10-min re-scan window). */
+  spentBudget: boolean;
 }
 
 let scanInFlight = false;
@@ -460,6 +475,8 @@ function escapeForTelegram(text: string): string {
 
 function renderTable(ranked: BountyCandidate[], newUrls: Set<string>): string {
   const lines = ranked.map((candidate, index) => {
+    // owner/repo/issue_url are grammar-validated ([A-Za-z0-9._-]) — only the free-text
+    // title needs metachar escaping. If the grammar ever loosens, escape those too.
     const flag = newUrls.has(candidate.issue_url) ? " NEW" : "";
     const amount = candidate.amount_usd !== null ? `$${candidate.amount_usd} (claimed)` : "$?";
     const verified = candidate.bot_verified ? "bot-verified" : candidate.verdict;
@@ -486,11 +503,12 @@ export async function runBountyScan(
     return {
       text: `Bounty scan throttled: last scan was ${minutes} min ago (min interval 10 min, shared per-IP API budget). Ask again shortly or use the previous plan.`,
       stats: emptyStats,
-      throttled: true
+      throttled: true,
+      spentBudget: false
     };
   }
   if (scanInFlight) {
-    return { text: "Bounty scan already in progress.", stats: emptyStats, throttled: true };
+    return { text: "Bounty scan already in progress.", stats: emptyStats, throttled: true, spentBudget: false };
   }
 
   scanInFlight = true;
@@ -502,7 +520,12 @@ export async function runBountyScan(
 
     if (listing.candidates.length === 0) {
       const status = degraded.length > 0 ? `\nVenue status: ${degraded.join("; ")}` : "";
-      return { text: `Bounty scan: no open candidates found.${status}`, stats: emptyStats, throttled: false };
+      return {
+        text: `Bounty scan: no open candidates found.${status}`,
+        stats: emptyStats,
+        throttled: false,
+        spentBudget: listing.listingOk
+      };
     }
 
     // Enrich the newest window first; stop on rate limit or deadline (degrade, don't fail).
@@ -539,7 +562,7 @@ export async function runBountyScan(
     sections.push(ranked.length > 0 ? renderTable(ranked, newUrls) : "No candidates passed the legitimacy floor.");
     if (unverified.length > 0) {
       sections.push(
-        `Unverified (budget/deadline stopped before checks): ${unverified
+        `Not verified (budget, deadline, or venue error before checks): ${unverified
           .map((candidate) => `${candidate.owner}/${candidate.repo}`)
           .join(", ")}`
       );
@@ -559,7 +582,8 @@ export async function runBountyScan(
         scam_suspects: suspects.length,
         new_sightings: newUrls.size
       },
-      throttled: false
+      throttled: false,
+      spentBudget: true
     };
   } finally {
     scanInFlight = false;

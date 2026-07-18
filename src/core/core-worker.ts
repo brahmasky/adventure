@@ -50,6 +50,8 @@ import { createTimeConvertAdapter } from "../capabilities/time-convert.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import { HTTP_FETCH_CONTENT_CHAR_CAP, resolveHttpFetchTimeoutMs } from "../web/http-fetch.js";
 import {
+  BOUNTY_AMOUNT_MAX_USD,
+  BOUNTY_AMOUNT_MIN_USD,
   BOUNTY_RESULT_CHAR_CAP,
   defaultBountyIntakeDeps,
   type BountyIntakeDeps,
@@ -2357,7 +2359,9 @@ export class CoreWorker {
       // are NOT ledgered as scans (they spent no API budget and read no venue).
       return async () => {
         const result = await runBountyScan(this.runStore, process.env, this.bountyDeps);
-        if (!result.throttled) {
+        // Ledger (and thus arm the 10-min throttle) only when venue budget was genuinely
+        // spent — a transient 403 pass must not burn the re-scan window (verifier MAJOR 5).
+        if (!result.throttled && result.spentBudget) {
           this.runStore.recordBountyScanCompleted({ run_id: claim.run_id, ...result.stats });
         }
         return { ok: true, output: { answer: result.text } };
@@ -2509,16 +2513,21 @@ export class CoreWorker {
         return { ok: false, error: PROJECT_TRACK_INVALID_URL_ERROR };
       }
       const source_url = `https://github.com/${parsed.owner}/${parsed.repo}/issues/${parsed.issue}`;
+      // Anchor (spec §carve-out): a recorded sighting or the user's REAL message. A
+      // sighting judged scam_suspect is NOT an anchor — a hostile title must not be able
+      // to steer a durable write to a scam URL; only the user's own message overrides
+      // (verifier MAJOR 2).
+      const sighting = this.runStore.getBountySighting(source_url);
+      const inUserMessage = claim.contract.objective.includes(source_url);
       const anchored =
-        this.runStore.getBountySighting(source_url) !== undefined ||
-        claim.contract.objective.includes(source_url);
+        inUserMessage || (sighting !== undefined && sighting.last_verdict !== "scam_suspect");
       if (!anchored) {
         return { ok: false, error: PROJECT_TRACK_ANCHOR_ERROR };
       }
       const title = sanitizeVenueText(input.title, 120);
       const amount =
         typeof input.amount_usd === "number" && Number.isInteger(input.amount_usd) &&
-        input.amount_usd >= 1 && input.amount_usd <= 100_000
+        input.amount_usd >= BOUNTY_AMOUNT_MIN_USD && input.amount_usd <= BOUNTY_AMOUNT_MAX_USD
           ? input.amount_usd
           : null;
       const { row, created } = this.runStore.addProject({
