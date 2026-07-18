@@ -204,7 +204,7 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
   bounty_scan: {
     name: "bounty_scan",
     description:
-      "Scan real bounty venues (GitHub bounty labels + Algora paid-history) and return a scam-filtered, legitimacy-ranked table of open software bounties. Use when the user asks to find bounties / paid work. The table's scores and verdicts are computed deterministically — report them as-is, never re-rank across the scam line.",
+      "Scan real bounty venues (GitHub bounty labels + Algora paid-history + Devpost hackathons) and return a scam-filtered, legitimacy-ranked table of open software bounties plus a prize-ranked hackathon list. Use when the user asks to find bounties / hackathons / paid work. The table's scores and verdicts are computed deterministically — report them as-is, never re-rank across the scam line.",
     inputSketch: "{}",
     category: "tool",
     side_effect_level: "external_read",
@@ -215,7 +215,7 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
   project_track: {
     name: "project_track",
     description:
-      "Track a bounty the USER explicitly decided to pursue (durable across sessions). Only call it when the user clearly says to pursue/track a specific bounty; source_url must be a GitHub issue URL from a scan or from the user's own message.",
+      "Track a bounty or hackathon the USER explicitly decided to pursue (durable across sessions). Only call it when the user clearly says to pursue/track a specific item; source_url must be a GitHub issue URL or <slug>.devpost.com URL from a scan or from the user's own message.",
     inputSketch: '{"source_url": "https://github.com/owner/repo/issues/1", "title": "optional", "amount_usd": 500}',
     category: "tool",
     side_effect_level: "none",

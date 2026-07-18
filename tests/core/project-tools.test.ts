@@ -87,6 +87,22 @@ describe("project_track anchor (P2)", () => {
     expect(created).toHaveLength(1);
   });
 
+  it("tracks a Devpost hackathon URL as kind hackathon (anchor still applies)", () => {
+    const store = RunStore.openInMemory();
+    const worker = makeWorker(store);
+    const url = "https://openai.devpost.com/";
+
+    const unseen = worker.executeProjectTool("project_track", claim("track it"), { source_url: url });
+    expect(unseen.ok).toBe(false);
+
+    store.upsertBountySighting({ issue_url: url, score: null, verdict: "candidate" });
+    const tracked = worker.executeProjectTool("project_track", claim("参加这个 hackathon"), { source_url: url });
+    expect(tracked.ok).toBe(true);
+    const row = store.getProjectBySourceUrl(url)!;
+    expect(row.kind).toBe("hackathon");
+    expect(row.state).toBe("tracked");
+  });
+
   it("rejects malformed URLs before any anchor lookup", () => {
     const store = RunStore.openInMemory();
     const worker = makeWorker(store);

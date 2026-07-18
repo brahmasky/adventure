@@ -33,7 +33,7 @@ export function resolveBountyMaxCandidates(env: NodeJS.ProcessEnv): number {
 // --- venue I/O floor -----------------------------------------------------------
 
 /** Exact-hostname allowlist — tighter than the general SSRF floor (spec §1). */
-export const BOUNTY_VENUE_HOSTS: ReadonlySet<string> = new Set(["api.github.com", "algora.io"]);
+export const BOUNTY_VENUE_HOSTS: ReadonlySet<string> = new Set(["api.github.com", "algora.io", "devpost.com"]);
 
 export const BOUNTY_FETCH_TIMEOUT_MS = 8_000;
 export const BOUNTY_FETCH_MAX_BYTES = 512_000;
@@ -163,6 +163,79 @@ export function parseIssueUrl(raw: string): { owner: string; repo: string; issue
   if (!isValidOwner(owner) || !isValidRepo(repo) || !Number.isInteger(issue) || issue < 1) return null;
   if (String(issue) !== parts[3]) return null;
   return { owner, repo, issue };
+}
+
+/**
+ * Strict Devpost hackathon URL: `https://<slug>.devpost.com/` (the platform's canonical
+ * per-hackathon host). Same role as parseIssueUrl — the project_track anchor grammar.
+ */
+export function parseDevpostUrl(raw: string): { slug: string } | null {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  const host = url.hostname.replace(/\.$/, "").toLowerCase();
+  const match = /^([a-z0-9][a-z0-9-]{0,80})\.devpost\.com$/.exec(host);
+  if (!match) return null;
+  if (url.protocol !== "https:" || url.port !== "" || url.search !== "" || url.hash !== "") return null;
+  if (url.pathname !== "/" && url.pathname !== "") return null;
+  return { slug: match[1]! };
+}
+
+/** Devpost wraps prize amounts in HTML (`$<span …>100,000</span>`): strip tags, then parse. */
+export function parseDevpostPrizeUsd(raw: unknown): number | null {
+  if (typeof raw !== "string") return null;
+  return parseAmountUsd(raw.replace(/<[^>]*>/g, ""));
+}
+
+export interface DevpostHackathon {
+  url: string;
+  title: string;
+  prize_usd: number | null;
+  organization: string;
+  submission_dates: string;
+  registrations: number;
+  managed_by_devpost: boolean;
+}
+
+/**
+ * Devpost listing (2026-07-19): the site's own unauth JSON (`/api/hackathons`,
+ * server-forced 9/page). ONE call per scan: open-state, prize-ordered. Platform-curated
+ * venue — no scam floor applied; deterministic prize-desc ordering. Filters:
+ * open_state === "open" only (live state is IN the payload — no lag problem here),
+ * invite-only excluded.
+ */
+export async function listDevpostHackathons(deps: BountyIntakeDeps): Promise<{
+  hackathons: DevpostHackathon[];
+  degraded: string | null;
+}> {
+  const listing = await fetchVenueJson(
+    "https://devpost.com/api/hackathons?status%5B%5D=open&order_by=prize-amount&page=1",
+    deps
+  );
+  if (!listing.ok) return { hackathons: [], degraded: `devpost: ${listing.error}` };
+  const hackathons: DevpostHackathon[] = [];
+  for (const item of asArray(asRecord(listing.json)?.hackathons)) {
+    const record = asRecord(item);
+    if (!record) continue;
+    if (asString(record.open_state) !== "open") continue;
+    if (record.invite_only === true) continue;
+    const parsed = parseDevpostUrl(asString(record.url) ?? "");
+    if (!parsed) continue;
+    hackathons.push({
+      url: `https://${parsed.slug}.devpost.com/`,
+      title: sanitizeVenueText(record.title, BOUNTY_TITLE_CHAR_MAX),
+      prize_usd: parseDevpostPrizeUsd(record.prize_amount),
+      organization: sanitizeVenueText(record.organization_name, 60),
+      submission_dates: sanitizeVenueText(record.submission_period_dates, 40),
+      registrations: asNumber(record.registrations_count) ?? 0,
+      managed_by_devpost: record.managed_by_devpost_badge === true
+    });
+  }
+  hackathons.sort((a, b) => (b.prize_usd ?? 0) - (a.prize_usd ?? 0));
+  return { hackathons, degraded: null };
 }
 
 // --- candidate model -----------------------------------------------------------
@@ -530,7 +603,7 @@ export async function runBountyScan(
   env: NodeJS.ProcessEnv,
   deps: BountyIntakeDeps = defaultBountyIntakeDeps()
 ): Promise<BountyScanResult> {
-  const emptyStats = { venue_count: 2, candidates: 0, scam_suspects: 0, new_sightings: 0 };
+  const emptyStats = { venue_count: 3, candidates: 0, scam_suspects: 0, new_sightings: 0 };
   const now = deps.now();
 
   const lastScan = store.latestBountyScanAt();
@@ -552,9 +625,10 @@ export async function runBountyScan(
     const deadline = now.getTime() + BOUNTY_SCAN_DEADLINE_MS;
     const maxCandidates = resolveBountyMaxCandidates(env);
     const listing = await listGithubCandidates(deps);
-    const degraded = [...listing.degraded];
+    const devpost = await listDevpostHackathons(deps);
+    const degraded = [...listing.degraded, ...(devpost.degraded ? [devpost.degraded] : [])];
 
-    if (listing.candidates.length === 0) {
+    if (listing.candidates.length === 0 && devpost.hackathons.length === 0) {
       const status = degraded.length > 0 ? `\nVenue status: ${degraded.join("; ")}` : "";
       return {
         text: `Bounty scan: no open candidates found.${status}`,
@@ -619,6 +693,24 @@ export async function runBountyScan(
     sections.push(
       `Scam-filtered: ${suspects.length} issue(s) across ${suspectsByRepo.size} repo(s) (${[...suspectsByRepo.entries()].map(([key, suspect]) => `${key}: ${suspect.reject_reasons.join(", ") || "?"}`).join("; ") || "none"})`
     );
+    const topHackathons = devpost.hackathons.slice(0, 5);
+    if (topHackathons.length > 0) {
+      const lines = topHackathons.map((h, index) => {
+        const prize = h.prize_usd !== null ? `$${h.prize_usd}` : "$?";
+        const badge = h.managed_by_devpost ? " devpost-managed" : "";
+        return `${index + 1}. ${prize}${badge} ${escapeForTelegram(h.title)} (${escapeForTelegram(h.organization)}, ${h.submission_dates}, ${h.registrations} registered)\n   ${h.url}`;
+      });
+      sections.push(`Hackathons (Devpost, open, prize-ranked):\n${lines.join("\n")}`);
+      for (const h of topHackathons) {
+        const { isNew } = store.upsertBountySighting({
+          issue_url: h.url,
+          score: null,
+          verdict: "candidate",
+          now: now.toISOString()
+        });
+        if (isNew) newUrls.add(h.url);
+      }
+    }
     if (degraded.length > 0 || budgetStopped) {
       sections.push(`Venue status: ${[...degraded, ...(budgetStopped ? ["API budget stopped early"] : [])].join("; ")}`);
     }
@@ -626,7 +718,7 @@ export async function runBountyScan(
     return {
       text: sections.join("\n\n"),
       stats: {
-        venue_count: 2,
+        venue_count: 3,
         candidates: ranked.length,
         scam_suspects: suspects.length,
         new_sightings: newUrls.size
@@ -648,7 +740,7 @@ export function resetBountyIntakeStateForTests(): void {
 // --- project tools (code-rendered digests + error constants, schedule_task style) --
 
 export const PROJECT_TRACK_INVALID_URL_ERROR =
-  "project_track requires source_url in the exact form https://github.com/<owner>/<repo>/issues/<n>.";
+  "project_track requires source_url as https://github.com/<owner>/<repo>/issues/<n> or https://<slug>.devpost.com/.";
 export const PROJECT_TRACK_ANCHOR_ERROR =
   "project_track refused: that URL was never seen in a bounty scan and is not in the user's message. Run bounty_scan first, or ask the user to paste the issue URL.";
 export const PROJECT_UPDATE_INVALID_ID_ERROR = "project_update requires a valid project_id (proj_...).";

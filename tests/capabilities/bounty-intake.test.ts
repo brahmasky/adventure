@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   BOUNTY_DEFAULT_MAX_CANDIDATES,
+  listDevpostHackathons,
+  parseDevpostPrizeUsd,
+  parseDevpostUrl,
   BOUNTY_SCORE_WEIGHTS,
   BOUNTY_TITLE_CHAR_MAX,
   enrichCandidate,
@@ -306,6 +309,61 @@ describe("enrichCandidate", () => {
   });
 });
 
+describe("devpost adapter (2026-07-19)", () => {
+  function hackathonItem(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      url: "https://openai.devpost.com/",
+      title: "OpenAI Build Week",
+      open_state: "open",
+      prize_amount: '$<span data-currency-value>100,000</span>',
+      organization_name: "OpenAI",
+      submission_period_dates: "Jul 13 - 21, 2026",
+      registrations_count: 41169,
+      invite_only: false,
+      managed_by_devpost_badge: true,
+      ...overrides
+    };
+  }
+
+  it("URL grammar: exact slug host only", () => {
+    expect(parseDevpostUrl("https://openai.devpost.com/")).toEqual({ slug: "openai" });
+    expect(parseDevpostUrl("https://openai.devpost.com.evil.com/")).toBeNull();
+    expect(parseDevpostUrl("https://devpost.com/hackathons")).toBeNull();
+    expect(parseDevpostUrl("https://openai.devpost.com/rules")).toBeNull();
+    expect(parseDevpostUrl("http://openai.devpost.com/")).toBeNull();
+  });
+
+  it("prize parse strips HTML wrapper; bounds apply", () => {
+    expect(parseDevpostPrizeUsd('$<span data-currency-value>100,000</span>')).toBe(100000);
+    expect(parseDevpostPrizeUsd("$500")).toBe(500);
+    expect(parseDevpostPrizeUsd('<b>$999,999</b>')).toBeNull();
+    expect(parseDevpostPrizeUsd(42)).toBeNull();
+  });
+
+  it("lists open non-invite hackathons prize-desc; drops ended/invite-only/malformed", async () => {
+    const deps = fakeDeps([["devpost.com", ok({ hackathons: [
+      hackathonItem(),
+      hackathonItem({ url: "https://small.devpost.com/", title: "Small", prize_amount: "$5,000", managed_by_devpost_badge: false }),
+      hackathonItem({ url: "https://done.devpost.com/", open_state: "ended" }),
+      hackathonItem({ url: "https://vip.devpost.com/", invite_only: true }),
+      hackathonItem({ url: "https://devpost.com/not-a-hackathon-url" }),
+      "garbage"
+    ] })]]);
+    const { hackathons, degraded } = await listDevpostHackathons(deps);
+    expect(degraded).toBeNull();
+    expect(hackathons.map((h) => h.url)).toEqual(["https://openai.devpost.com/", "https://small.devpost.com/"]);
+    expect(hackathons[0]!.prize_usd).toBe(100000);
+    expect(hackathons[0]!.managed_by_devpost).toBe(true);
+  });
+
+  it("venue failure degrades, never throws", async () => {
+    const deps = fakeDeps([["devpost.com", status(403)]]);
+    const { hackathons, degraded } = await listDevpostHackathons(deps);
+    expect(hackathons).toEqual([]);
+    expect(degraded).toContain("devpost");
+  });
+});
+
 describe("bot window coverage (verifier MINOR 10)", () => {
   it("a full-page bot window claims coverage only for candidates actually in it", async () => {
     const fullPage = Array.from({ length: 30 }, (_, i) =>
@@ -404,6 +462,26 @@ describe("runBountyScan", () => {
     // non-downgrading store rule: the unverified sighting has null verdict-score
     const sighting = store.getBountySighting("https://github.com/acme/widget/issues/7")!;
     expect(sighting.last_verdict).toBe("unverified");
+  });
+
+  it("renders the Devpost section and records hackathon sightings", async () => {
+    const store = RunStore.openInMemory();
+    const deps = fakeDeps([
+      ["search/issues", ok({ items: [issueItem()] })],
+      ["/repos/acme/widget/pulls", ok([{ merged_at: "2026-07-01T00:00:00.000Z" }])],
+      ["/repos/acme/widget", ok(repoMeta())],
+      ["algora.io", ok({ message: "$15,014" })],
+      ["devpost.com", ok({ hackathons: [{
+        url: "https://openai.devpost.com/", title: "OpenAI Build Week", open_state: "open",
+        prize_amount: "$<span>100,000</span>", organization_name: "OpenAI",
+        submission_period_dates: "Jul 13 - 21, 2026", registrations_count: 41169,
+        invite_only: false, managed_by_devpost_badge: true
+      }] })]
+    ]);
+    const result = await runBountyScan(store, process.env, deps);
+    expect(result.text).toContain("Hackathons (Devpost");
+    expect(result.text).toContain("$100000 devpost-managed OpenAI Build Week");
+    expect(store.getBountySighting("https://openai.devpost.com/")).toBeTruthy();
   });
 
   it("escapes markdown metacharacters in venue titles (link spoof defense)", async () => {

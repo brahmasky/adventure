@@ -60,6 +60,7 @@ import {
   buildProjectTrackedDigest,
   buildProjectUpdatedDigest,
   isProjectState,
+  parseDevpostUrl,
   parseIssueUrl,
   PROJECT_TRACK_ANCHOR_ERROR,
   PROJECT_TRACK_INVALID_URL_ERROR,
@@ -2508,11 +2509,14 @@ export class CoreWorker {
 
     if (name === "project_track") {
       const raw = typeof input.source_url === "string" ? input.source_url.trim() : "";
-      const parsed = parseIssueUrl(raw);
-      if (!parsed) {
+      const issue = parseIssueUrl(raw);
+      const hackathon = issue ? null : parseDevpostUrl(raw);
+      if (!issue && !hackathon) {
         return { ok: false, error: PROJECT_TRACK_INVALID_URL_ERROR };
       }
-      const source_url = `https://github.com/${parsed.owner}/${parsed.repo}/issues/${parsed.issue}`;
+      const source_url = issue
+        ? `https://github.com/${issue.owner}/${issue.repo}/issues/${issue.issue}`
+        : `https://${hackathon!.slug}.devpost.com/`;
       // Anchor (spec §carve-out): a recorded sighting or the user's REAL message. A
       // sighting judged scam_suspect is NOT an anchor — a hostile title must not be able
       // to steer a durable write to a scam URL; only the user's own message overrides
@@ -2532,6 +2536,7 @@ export class CoreWorker {
           : null;
       const { row, created } = this.runStore.addProject({
         source_url,
+        kind: issue ? "bounty" : "hackathon",
         title: title.length > 0 ? title : null,
         amount_usd: amount
       });
