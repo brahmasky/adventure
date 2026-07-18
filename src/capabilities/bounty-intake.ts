@@ -167,7 +167,7 @@ export function parseIssueUrl(raw: string): { owner: string; repo: string; issue
 
 // --- candidate model -----------------------------------------------------------
 
-export type BountyVerdict = "candidate" | "scam_suspect" | "unverified";
+export type BountyVerdict = "candidate" | "scam_suspect" | "unverified" | "closed";
 
 export interface BountyCandidate {
   issue_url: string;
@@ -190,6 +190,9 @@ export interface BountyCandidate {
     stars: number;
     forks: number;
     merged_pr_in_window: boolean;
+    /** Live issue state at enrich time ("open"/"closed"); null = check failed (treated open,
+     *  never false-filter). Search-index lag means state:open results CAN be stale. */
+    issue_state: string | null;
     /** null = shields unknown (404/keying mismatch) — score-neutral, never negative. */
     shields_completed_total: number | null;
   };
@@ -361,6 +364,19 @@ export async function enrichCandidate(
   const meta = asRecord(repoMeta.json);
   if (!meta) return { rateLimited: false };
 
+  // Freshness check (2026-07-19, Paco): the search index lags — a result can be closed by
+  // the time we rank it. Live per-issue state, UNCACHED on purpose.
+  let issueState: string | null = null;
+  const parsedIssue = parseIssueUrl(candidate.issue_url);
+  if (parsedIssue) {
+    const issue = await fetchVenueJson(`${repoUrl}/issues/${parsedIssue.issue}`, deps);
+    if (issue.ok) {
+      issueState = asString(asRecord(issue.json)?.state);
+    } else if (issue.rateLimited) {
+      return { rateLimited: true };
+    }
+  }
+
   let mergedInWindow = false;
   const pulls = await fetchVenueJson(`${repoUrl}/pulls?state=closed&per_page=30`, deps, { cache: true });
   if (pulls.ok) {
@@ -389,6 +405,7 @@ export async function enrichCandidate(
     stars: asNumber(meta.stargazers_count) ?? 0,
     forks: asNumber(meta.forks_count) ?? 0,
     merged_pr_in_window: mergedInWindow,
+    issue_state: issueState,
     shields_completed_total: shieldsTotal
   };
   return { rateLimited: false };
@@ -428,6 +445,12 @@ export function scoreCandidate(candidate: BountyCandidate, now: Date): void {
   if (!enrich) {
     candidate.verdict = "unverified";
     candidate.score = 0;
+    return;
+  }
+  if (typeof enrich.issue_state === "string" && enrich.issue_state !== "open") {
+    candidate.verdict = "closed";
+    candidate.score = 0;
+    candidate.reject_reasons = [`issue is ${enrich.issue_state}`];
     return;
   }
   const reasons: string[] = [];
@@ -567,6 +590,7 @@ export async function runBountyScan(
       .sort((a, b) => b.score - a.score);
     const unverified = top.filter((candidate) => candidate.verdict === "unverified");
     const suspects = top.filter((candidate) => candidate.verdict === "scam_suspect");
+    const closed = top.filter((candidate) => candidate.verdict === "closed");
 
     const sections: string[] = [];
     sections.push(
@@ -577,6 +601,13 @@ export async function runBountyScan(
       sections.push(
         `Not verified (budget, deadline, or venue error before checks): ${unverified
           .map((candidate) => `${candidate.owner}/${candidate.repo}`)
+          .join(", ")}`
+      );
+    }
+    if (closed.length > 0) {
+      sections.push(
+        `Closed/stale filtered (search-index lag): ${closed
+          .map((candidate) => `${candidate.owner}/${candidate.repo}#${candidate.issue_url.split("/").pop()}`)
           .join(", ")}`
       );
     }

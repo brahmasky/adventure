@@ -205,7 +205,7 @@ describe("scorer (spec §2)", () => {
     candidate.enrich = {
       fork: false, org_owner: true, repo_created_at: "2024-01-01T00:00:00.000Z",
       pushed_at: "2026-07-17T00:00:00.000Z", stars: 500, forks: 40,
-      merged_pr_in_window: true, shields_completed_total: 15000, ...over
+      merged_pr_in_window: true, issue_state: "open", shields_completed_total: 15000, ...over
     };
     return candidate;
   }
@@ -243,6 +243,16 @@ describe("scorer (spec §2)", () => {
     );
     scoreCandidate(candidate, NOW);
     expect(candidate.verdict).toBe("candidate");
+  });
+
+  it("a live-closed issue is filtered as 'closed' (search-index lag), never as scam", () => {
+    const candidate = enriched({ issue_state: "closed" }, { bot_verified: true });
+    scoreCandidate(candidate, NOW);
+    expect(candidate.verdict).toBe("closed");
+    expect(candidate.reject_reasons).toEqual(["issue is closed"]);
+    const unknown = enriched({ issue_state: null });
+    scoreCandidate(unknown, NOW);
+    expect(unknown.verdict).toBe("candidate"); // state-check failure never false-filters
   });
 
   it("shields 404 (null) is score-neutral, never a reject signal", () => {
