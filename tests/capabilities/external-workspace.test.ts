@@ -78,6 +78,7 @@ describe("validateCloneUrl — SSRF floor + https-only (P1)", () => {
 
 describe("cloneExternalRepo", () => {
   const publicResolve = async () => [{ address: "140.82.112.3" }]; // github.com, public
+  const scratch = () => { const d = mkdtempSync(join(tmpdir(), "houge-extwork-scratch-")); dirs.push(d); return d; };
 
   it("refuses a bad URL WITHOUT invoking git or DNS", async () => {
     let execCalled = false;
@@ -98,6 +99,7 @@ describe("cloneExternalRepo", () => {
       sizeCapMB: 500,
       timeoutMs: 1000,
       resolveHost: publicResolve,
+      scratchRoot: scratch(),
       exec: async () => { throw new Error("fatal: could not read from remote"); }
     });
     expect(result.ok).toBe(false);
@@ -110,6 +112,7 @@ describe("cloneExternalRepo", () => {
       sizeCapMB: 500,
       timeoutMs: 1000,
       exec: async () => { execCalled = true; return {}; },
+      scratchRoot: scratch(),
       resolveHost: async () => [{ address: "10.0.0.5" }] // A-record → private
     });
     expect(result.ok).toBe(false);
@@ -122,6 +125,7 @@ describe("cloneExternalRepo", () => {
       sizeCapMB: 500,
       timeoutMs: 1000,
       exec: async () => ({}),
+      scratchRoot: scratch(),
       resolveHost: async () => [{ address: "169.254.169.254" }]
     });
     expect(result.ok).toBe(false);

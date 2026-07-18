@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { execFileAsync } from "../run/exec-file-async.js";
 import { buildChildEnv } from "../llm/providers/cli-spawn.js";
@@ -51,6 +51,18 @@ export function resolveExtWorkSizeCapMB(env: NodeJS.ProcessEnv): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_SIZE_CAP_MB;
 }
 
+/**
+ * The scratch root that holds throwaway clones. It MUST be under a path the container runtime
+ * shares into its VM (colima mounts `$HOME` writable by default; `os.tmpdir()` — macOS
+ * `/var/folders/…` — is NOT shared, so a clone there bind-mounts EMPTY and the non-root
+ * container user can't write `node_modules`). Live-gate finding 2026-07-18. Default
+ * `~/.houge/extwork`; override with `HOUGE_EXTWORK_SCRATCH_DIR`. NEVER `process.cwd()`.
+ */
+export function resolveExtWorkScratchRoot(env: NodeJS.ProcessEnv): string {
+  const override = env.HOUGE_EXTWORK_SCRATCH_DIR?.trim();
+  return override && override.length > 0 ? override : join(homedir(), ".houge", "extwork");
+}
+
 /** Clone wall-clock timeout in ms (`HOUGE_EXTWORK_CLONE_TIMEOUT_MS`, default 120000). */
 export function resolveExtWorkCloneTimeoutMs(env: NodeJS.ProcessEnv): number {
   const n = Number(env.HOUGE_EXTWORK_CLONE_TIMEOUT_MS);
@@ -86,6 +98,8 @@ export interface CloneExternalRepoOpts {
   exec?: (file: string, args: string[], opts: { timeout: number; env: NodeJS.ProcessEnv }) => Promise<unknown>;
   /** Injectable DNS resolver (tests) — defaults to node:dns/promises lookup(all). */
   resolveHost?: (host: string) => Promise<Array<{ address: string }>>;
+  /** Scratch root override (tests) — defaults to resolveExtWorkScratchRoot(process.env). */
+  scratchRoot?: string;
 }
 
 /**
@@ -135,7 +149,9 @@ export async function cloneExternalRepo(url: string, opts: CloneExternalRepoOpts
   const resolved = await assertCloneHostPublic(host, opts.resolveHost);
   if (!resolved.ok) return resolved;
 
-  const path = join(tmpdir(), `houge-extwork-${randomUUID()}`);
+  const root = opts.scratchRoot ?? resolveExtWorkScratchRoot(process.env);
+  mkdirSync(root, { recursive: true });
+  const path = join(root, `houge-extwork-${randomUUID()}`);
   const exec =
     opts.exec ??
     ((file, args, o) => execFileAsync(file, args, { timeout: o.timeout, env: o.env }));
