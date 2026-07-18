@@ -256,6 +256,12 @@ export interface HttpFetchConfig {
   timeoutMs?: number;
   maxBytes?: number;
   deny?: string[];
+  /**
+   * Content char cap override (default HTTP_FETCH_CONTENT_CHAR_CAP). P2 venue adapters
+   * raise it for structured API JSON they parse deterministically — the 6k default
+   * exists to bound what enters an LLM transcript, which that path never does.
+   */
+  charCap?: number;
 }
 
 /** Minimal request/response shapes (satisfied by node:http, fakeable without sockets). */
@@ -371,7 +377,8 @@ function shapeBody(
   status: number,
   contentType: string,
   body: Buffer,
-  truncatedBytes: boolean
+  truncatedBytes: boolean,
+  charCap: number = HTTP_FETCH_CONTENT_CHAR_CAP
 ): HttpFetchResult {
   const mime = (contentType.split(";")[0] ?? "").trim().toLowerCase();
   if (!isTextualMime(mime)) {
@@ -387,12 +394,12 @@ function shapeBody(
   }
   const text = decodeBody(body, contentType);
   const shaped = mime === "text/html" || mime === "application/xhtml+xml" ? htmlToText(text) : text;
-  const overCap = shaped.length > HTTP_FETCH_CONTENT_CHAR_CAP;
+  const overCap = shaped.length > charCap;
   return {
     url: url.toString(),
     status,
     content_type: contentType,
-    content: overCap ? shaped.slice(0, HTTP_FETCH_CONTENT_CHAR_CAP) : shaped,
+    content: overCap ? shaped.slice(0, charCap) : shaped,
     truncated: truncatedBytes || overCap,
     bytes: body.length
   };
@@ -517,7 +524,7 @@ export async function fetchUrl(
         let truncatedBytes = false;
         const finish = (): void => {
           if (settled) return;
-          settle({ ok: true, result: shapeBody(url, status, contentType, Buffer.concat(chunks), truncatedBytes) });
+          settle({ ok: true, result: shapeBody(url, status, contentType, Buffer.concat(chunks), truncatedBytes, config.charCap) });
         };
         const onChunk = (chunk: Buffer): void => {
           if (settled) return;
