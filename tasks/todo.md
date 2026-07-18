@@ -20,11 +20,11 @@ ever a temporary host; the mini is the documented home.**
   extwork job from migrated memory (「帮咱把 houge-p1-live-gate 里的 add 函数掰正了」) →
   notification_delivered. Telegram + provider + memory-continuity + delivery all on the mini ✓.
 
-**Follow-ups (not blocking):** mini GitHub auth expired — `gh auth login` on the mini needed for
-self-write branch pushes / `git pull` there (the daemon runs on built code fine without it).
-colima still idling on the MacBook Pro (colima stop to reclaim). MacBook Pro keeps the stale
-pre-migration houge.sqlite as an incidental backup. NEXT money-work: P2 (bounty intake + scam
-classifier + durable project state), now on the mini's always-on home.
+**Follow-ups — ALL CLOSED 2026-07-18:** ✓ `gh auth login` done on the mini (self-write push /
+`git pull` restored). ✓ `colima stop` on the MacBook Pro. ✓ Docker Desktop auto-start enabled on
+the mini (verified `"AutoStart": true` in settings-store.json) — extwork survives reboot. MacBook
+Pro keeps the stale pre-migration houge.sqlite as an incidental backup. NEXT money-work: P2
+(bounty intake + scam classifier + durable project state), now on the mini's always-on home.
 
 ---
 

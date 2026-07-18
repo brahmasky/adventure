@@ -80,6 +80,17 @@ export type ScheduleState =
   | "enqueued"
   | "skipped_duplicate"
   | "failed";
+/**
+ * P2 money-work (roadmap §P2): a pursued bounty's durable lifecycle. States record
+ * what Paco reached externally (bookkeeping, never acting — ADR 0022); `paid` is a
+ * status flag only, money accounting stays in the P3 earnings ledger.
+ */
+export type ProjectState =
+  | "tracked"
+  | "working"
+  | "submitted"
+  | "paid"
+  | "dropped";
 export type SideEffectLevel =
   | "none"
   | "local_write"

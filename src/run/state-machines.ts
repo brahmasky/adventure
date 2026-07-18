@@ -1,5 +1,6 @@
 import type {
   ApprovalState,
+  ProjectState,
   RunState,
   ScheduleState,
   ToolCallState
@@ -56,6 +57,20 @@ const scheduleTransitions: Record<ScheduleState, readonly ScheduleState[]> = {
   skipped_duplicate: [],
   failed: []
 };
+
+// P2 (spec §4): forward chain + drop-anywhere + un-drop (with reason). Skipping ahead
+// (e.g. tracked→paid) is illegal — each externally-reached state gets its own ledgered move.
+const projectTransitions: Record<ProjectState, readonly ProjectState[]> = {
+  tracked: ["working", "dropped"],
+  working: ["submitted", "dropped"],
+  submitted: ["paid", "dropped"],
+  paid: ["dropped"],
+  dropped: ["tracked"]
+};
+
+export function canTransitionProject(from: ProjectState, to: ProjectState): boolean {
+  return projectTransitions[from].includes(to);
+}
 
 export function canTransitionRun(from: RunState, to: RunState): boolean {
   return runTransitions[from].includes(to);

@@ -931,3 +931,10 @@ Build + independent adversarial verification subagents; each live round found a 
   `colima stop` on the MacBook Pro. NEXT money-work: P2 on the mini.
 - Lesson: mini login shell is FISH — remote bash must be forced (`ssh host bash -s < script` or
   `bash -lc`); heredocs/for-loops fail under fish over ssh.
+
+## 2026-07-18 (mini) — migration follow-ups closed
+- Paco confirmed: gh auth login done on the mini + colima stopped on the MacBook Pro.
+- Found Docker Desktop not auto-starting on the mini (login items empty of it) — extwork would
+  silently degrade after reboot. Paco enabled auto-start; verified "AutoStart": true in
+  ~/Library/Group Containers/group.com.docker/settings-store.json. All 3 follow-ups closed.
+- Next: P2 (bounty intake + scam classifier + durable project state).

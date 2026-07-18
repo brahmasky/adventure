@@ -55,7 +55,10 @@ export type LedgerEventType =
   | "wiki_page_saved"
   | "wiki_decay_tick"
   | "db_backup_completed"
-  | "db_backup_failed";
+  | "db_backup_failed"
+  | "bounty_scan_completed"
+  | "project_created"
+  | "project_state_changed";
 
 export interface LedgerEvent {
   event_id: string;
@@ -182,7 +185,13 @@ const requiredPayloadFields = {
   // Backlog #3 (ADR 0021): the periodic WAL-safe VACUUM INTO snapshot — one event per
   // landed snapshot; a failed attempt records the reason and the latch stays put (retry).
   db_backup_completed: ["path", "bytes", "kept_count", "duration_ms"],
-  db_backup_failed: ["reason"]
+  db_backup_failed: ["reason"],
+  // Money-Work P2 (spec 2026-07-18): bounty intake + durable project state. Counts and
+  // deterministic identifiers ONLY — never venue-derived free text (titles/labels stay
+  // out of the ledger; the sanitized table lives in the turn transcript, not here).
+  bounty_scan_completed: ["venue_count", "candidates", "scam_suspects", "new_sightings"],
+  project_created: ["project_id", "source_url"],
+  project_state_changed: ["project_id", "from", "to"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(

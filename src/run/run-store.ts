@@ -5,6 +5,7 @@ import type {
   ApprovalState,
   CompiledTaskContract,
   Identity,
+  ProjectState,
   RiskLevel,
   RunState,
   ScheduleState,
@@ -30,7 +31,7 @@ import {
   type LedgerEvent,
   type LedgerEventType
 } from "./run-ledger.js";
-import { canTransitionRun } from "./state-machines.js";
+import { canTransitionProject, canTransitionRun } from "./state-machines.js";
 import type { LlmUsage } from "./llm-usage.js";
 import { blobToFloat32, cosineSimilarity, float32ToBlob } from "../llm/embeddings.js";
 import { resolveWikiDecayDays } from "../capabilities/wiki.js";
@@ -387,6 +388,42 @@ export interface ScheduledTaskRow {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * One pursued bounty (P2, spec 2026-07-18 §4). A row exists ONLY once Paco decides to
+ * pursue (listing ≠ project). Rows are never deleted — `dropped` is a state. All text
+ * columns hold sanitizer-passed values (the capability validates before the store).
+ */
+export interface ProjectRow {
+  project_id: string;
+  /** v1: always "bounty". */
+  kind: string;
+  /** Grammar-validated GitHub issue URL — UNIQUE (duplicate track = idempotent return). */
+  source_url: string;
+  title: string | null;
+  /** Whole USD, as CLAIMED by the venue — never verified, never money accounting. */
+  amount_usd: number | null;
+  state: ProjectState;
+  state_reason: string | null;
+  /** Valid JSON ≤ 4 KB (capability-enforced). */
+  notes_json: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Scan memory (P2): one row per bounty issue URL ever seen — dedupe, NEW-in-window
+ * deltas, and the durable record of the last substantive judgment. Non-downgrading:
+ * an `unverified` scan never overwrites a substantive verdict/score.
+ */
+export interface BountySightingRow {
+  issue_url: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  last_score: number | null;
+  last_verdict: string | null;
+  times_seen: number;
 }
 
 /** The candidate {@link RunStore.saveReconciledFact} stores (all metadata rides ADD/SUPERSEDE/UPDATE). */
@@ -2804,6 +2841,190 @@ export class RunStore {
     );
   }
 
+  // --- Projects + bounty sightings (Money-Work P2, spec 2026-07-18) ------------
+
+  /**
+   * Track a pursued bounty. Idempotent on source_url (UNIQUE): tracking an already-
+   * tracked URL returns the existing row unchanged — no duplicate, no ledger event.
+   * Returns `{ row, created }` so the caller ledgers only genuine creations.
+   */
+  addProject(input: {
+    source_url: string;
+    kind?: string;
+    title?: string | null;
+    amount_usd?: number | null;
+    now?: string;
+  }): { row: ProjectRow; created: boolean } {
+    const existing = this.getProjectBySourceUrl(input.source_url);
+    if (existing) {
+      return { row: existing, created: false };
+    }
+    const project_id = `proj_${randomUUID()}`;
+    const now = input.now ?? new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO projects (
+        project_id, kind, source_url, title, amount_usd, state, state_reason,
+        notes_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'tracked', NULL, NULL, ?, ?)
+    `).run(
+      project_id,
+      input.kind ?? "bounty",
+      input.source_url,
+      input.title ?? null,
+      input.amount_usd ?? null,
+      now,
+      now
+    );
+    return { row: this.getProject(project_id)!, created: true };
+  }
+
+  getProject(project_id: string): ProjectRow | undefined {
+    return this.db.prepare(`
+      SELECT * FROM projects WHERE project_id = ?
+    `).get<ProjectRow>(project_id);
+  }
+
+  getProjectBySourceUrl(source_url: string): ProjectRow | undefined {
+    return this.db.prepare(`
+      SELECT * FROM projects WHERE source_url = ?
+    `).get<ProjectRow>(source_url);
+  }
+
+  /** All projects (or one state's), newest first. Rows are never deleted — callers filter. */
+  listProjects(state?: ProjectState): ProjectRow[] {
+    return state
+      ? this.db.prepare(`
+          SELECT * FROM projects WHERE state = ? ORDER BY created_at DESC, project_id DESC
+        `).all<ProjectRow>(state)
+      : this.db.prepare(`
+          SELECT * FROM projects ORDER BY created_at DESC, project_id DESC
+        `).all<ProjectRow>();
+  }
+
+  /**
+   * Move a project along the P2 state machine (state-machines.ts). An illegal move
+   * returns `{ ok: false }` and writes NOTHING (no row change, no ledger event) — the
+   * tool surfaces the error; bookkeeping never silently skips a state.
+   */
+  transitionProject(
+    project_id: string,
+    to: ProjectState,
+    reason?: string,
+    now: string = new Date().toISOString()
+  ): { ok: true; row: ProjectRow; from: ProjectState } | { ok: false; error: string } {
+    const row = this.getProject(project_id);
+    if (!row) {
+      return { ok: false, error: `unknown project: ${project_id}` };
+    }
+    const from = row.state;
+    if (from === to) {
+      return { ok: false, error: `project already in state '${to}'` };
+    }
+    if (!canTransitionProject(from, to)) {
+      return { ok: false, error: `illegal transition ${from} → ${to}` };
+    }
+    this.db.prepare(`
+      UPDATE projects SET state = ?, state_reason = ?, updated_at = ? WHERE project_id = ?
+    `).run(to, reason ?? null, now, project_id);
+    return { ok: true, row: this.getProject(project_id)!, from };
+  }
+
+  /**
+   * Record a scan sighting. Non-downgrading (spec §4): an `unverified` pass never
+   * overwrites a substantive verdict/score; last_seen_at/times_seen always advance.
+   * Returns true when the URL was never seen before (the NEW marker).
+   */
+  upsertBountySighting(input: {
+    issue_url: string;
+    score: number | null;
+    verdict: string | null;
+    now?: string;
+  }): { isNew: boolean } {
+    const now = input.now ?? new Date().toISOString();
+    const existing = this.db.prepare(`
+      SELECT * FROM bounty_sightings WHERE issue_url = ?
+    `).get<BountySightingRow>(input.issue_url);
+    if (!existing) {
+      this.db.prepare(`
+        INSERT INTO bounty_sightings (
+          issue_url, first_seen_at, last_seen_at, last_score, last_verdict, times_seen
+        ) VALUES (?, ?, ?, ?, ?, 1)
+      `).run(input.issue_url, now, now, input.score, input.verdict);
+      return { isNew: true };
+    }
+    const downgrade =
+      input.verdict === "unverified" &&
+      existing.last_verdict !== null &&
+      existing.last_verdict !== "unverified";
+    if (downgrade) {
+      this.db.prepare(`
+        UPDATE bounty_sightings SET last_seen_at = ?, times_seen = times_seen + 1
+        WHERE issue_url = ?
+      `).run(now, input.issue_url);
+    } else {
+      this.db.prepare(`
+        UPDATE bounty_sightings
+        SET last_seen_at = ?, times_seen = times_seen + 1, last_score = ?, last_verdict = ?
+        WHERE issue_url = ?
+      `).run(now, input.score, input.verdict, input.issue_url);
+    }
+    return { isNew: false };
+  }
+
+  getBountySighting(issue_url: string): BountySightingRow | undefined {
+    return this.db.prepare(`
+      SELECT * FROM bounty_sightings WHERE issue_url = ?
+    `).get<BountySightingRow>(issue_url);
+  }
+
+  /** The last scan's completion time (the 10-min re-scan throttle reads this). */
+  latestBountyScanAt(): string | undefined {
+    const row = this.db.prepare(`
+      SELECT occurred_at FROM ledger_events
+      WHERE event_type = 'bounty_scan_completed'
+      ORDER BY occurred_at DESC LIMIT 1
+    `).get<{ occurred_at: string }>();
+    return row?.occurred_at;
+  }
+
+  /** P2 audit: one event per completed scan — counts only, never venue text. */
+  recordBountyScanCompleted(input: {
+    run_id: string;
+    venue_count: number;
+    candidates: number;
+    scam_suspects: number;
+    new_sightings: number;
+  }): void {
+    this.appendRunLedgerEvent(input.run_id, "bounty_scan_completed", "core", {
+      venue_count: input.venue_count,
+      candidates: input.candidates,
+      scam_suspects: input.scam_suspects,
+      new_sightings: input.new_sightings
+    });
+  }
+
+  /** P2 audit: a genuinely-new tracked project (idempotent re-tracks are NOT ledgered). */
+  recordProjectCreated(input: { run_id: string; project_id: string; source_url: string }): void {
+    this.appendRunLedgerEvent(input.run_id, "project_created", "core", {
+      project_id: input.project_id,
+      source_url: input.source_url
+    });
+  }
+
+  /** P2 audit: one event per legal state move (illegal moves write nothing). */
+  recordProjectStateChanged(input: {
+    run_id: string;
+    project_id: string;
+    from: ProjectState;
+    to: ProjectState;
+  }): void {
+    this.appendRunLedgerEvent(input.run_id, "project_state_changed", "core", {
+      project_id: input.project_id,
+      from: input.from,
+      to: input.to
+    });
+  }
+
   createApprovalRequest(input: ApprovalRequestInput): ApprovalRequestRecord {
     const approval_id = `appr_${randomUUID()}`;
     const created_at = new Date().toISOString();
@@ -4060,6 +4281,63 @@ export class RunStore {
     this.applyMeteredFuseMigration();
     this.applyWikiPagesMigration();
     this.applyBackupStateMigration();
+    this.applyProjectsMigration();
+  }
+
+  /**
+   * Money-Work P2 (spec 2026-07-18): `projects` (durable pursued-bounty state, rows
+   * never deleted) + `bounty_sightings` (scan memory: dedupe, NEW deltas, last
+   * substantive judgment). No indexes — row counts are human-decision-scale.
+   */
+  private applyProjectsMigration(): void {
+    const version = "2026-07-18-projects";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS projects (
+          project_id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          source_url TEXT NOT NULL UNIQUE,
+          title TEXT,
+          amount_usd INTEGER,
+          state TEXT NOT NULL,
+          state_reason TEXT,
+          notes_json TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS bounty_sightings (
+          issue_url TEXT PRIMARY KEY,
+          first_seen_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          last_score INTEGER,
+          last_verdict TEXT,
+          times_seen INTEGER NOT NULL
+        );
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
   }
 
   /**
