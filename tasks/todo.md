@@ -1,3 +1,37 @@
+# 🟡 P2 CODE DONE + VERIFIED + ARMED — LIVE GATE PENDING (Paco's Telegram) 2026-07-18 22:3x
+
+**Money-Work P2 (bounty intake + scam/legitimacy classifier + durable project state) is fully
+implemented, reviewed, adversarially verified, and ARMED on the mini's daemon (PID 88154,
+HOUGE_BOUNTY_ENABLED=true in .env). Spec: docs/superpowers/specs/2026-07-18-p2-bounty-intake-design.md.**
+
+- **Store:** `projects` (tracked→working→submitted→paid, *→dropped, dropped→tracked; rows never
+  deleted; duplicate-track idempotent) + `bounty_sightings` (non-downgrading upsert, NEW deltas);
+  migration `2026-07-18-projects`; ledger events bounty_scan_completed / project_created /
+  project_state_changed (actor core, counts/ids only — never venue text).
+- **Capability `bounty-intake.ts`:** 2-host exact allowlist (api.github.com, algora.io) wrapping
+  the pinned `fetchUrl` (new opt-in charCap); hygiene table (C0/bidi/zero-width strip,
+  U+2028/29/NEL flatten, code-point truncation, amount bounds $1–$100k claimed-only); GitHub
+  search listing + **bot-verified window (commenter:algora-pbc) as first-class candidates,
+  verified-first** (live probe: the newest-first broad window was 100% spam); Algora shields =
+  paid-history oracle (404 ⇒ neutral); deterministic scorer, exported weights; conditional hard
+  rejects (fork-with-label unconditional); 10-min throttle (only budget-spending scans arm it),
+  75 s deadline, 403 budget-stop, 1 h TTL cache.
+- **Tools:** bounty_scan (external_read, 6k digest carve-out, 90 s timeout case) +
+  project_track/update/list (none-level, schedule_task class). project_track ANCHOR: URL must be
+  a non-scam recorded sighting or verbatim in the user's message (injection→write closed).
+  HOUGE_BOUNTY_ENABLED in DISARM_FLAGS. ADR 0014 carve-out argued in spec.
+- **Gates passed:** eng review + senior spec review pre-code (4 BLOCKERs fixed in spec v2);
+  adversarial verifier REJECT → all fixed + regression-tested (U+2028 frame forgery,
+  scam-sighting anchor, throttle burn, window coverage). 1667/1667 clean + daemon-env sweeps.
+  Host-envelope fixes: status-cli stderr filter (node25 warning), b10 probe 90 s.
+- **Real-API probe (dist):** scam filter caught the wild fakes live (WillSmithTE/qdrant-qdrant
+  fork-fake, xevrion-v2 agent-bait); ranked plan tops with microg/GmsCore $1340 WearOS bounty.
+- **LIVE GATE (pending Paco):** Telegram 「找找有什么值得做的 bounty」→ expect ranked scam-filtered
+  plan; optionally 「跟进第 N 个」→ projects row must survive daemon restart; then flip this
+  header to DONE. Amounts show $? unless in title/label (bot comment not fetched in v1 — fine).
+
+---
+
 # ✅ DONE — Houge MIGRATED to the Mac mini — LIVE 2026-07-18 06:5x
 
 **Houge's always-on home is now the Mac mini (Macmini8,1, user xiaochuan, /Users/xiaochuan/

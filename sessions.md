@@ -938,3 +938,20 @@ Build + independent adversarial verification subagents; each live round found a 
   silently degrade after reboot. Paco enabled auto-start; verified "AutoStart": true in
   ~/Library/Group Containers/group.com.docker/settings-store.json. All 3 follow-ups closed.
 - Next: P2 (bounty intake + scam classifier + durable project state).
+
+## 2026-07-18 (mini, evening) — P2 bounty intake BUILT + VERIFIED + ARMED (live gate pending)
+- /goal P2. Full flow: 3 research subagents (store/scheduler seams, extwork/loop-tool seams,
+  live venue-API recon) → spec v2 (eng + senior reviews resolved 4 BLOCKERs pre-code: no approval
+  sink on the turn lane so project_* are none-level like schedule_task; ADR 0014 carve-out argued;
+  budget math rewritten; bodies-discarded invariant) → plan → implement → adversarial verifier
+  REJECT (U+2028 frame-forgery live-reproduced; scam-sighting anchor hole; 403 throttle burn) →
+  all fixed + regression-tested → 1667/1667 clean + daemon-env sweeps.
+- Venue recon (live-verified): Algora listing API dead; shields aggregate = paid-history oracle;
+  GitHub search is the spine; TaskBounty needs an API key → P3. Real-API probe through the dist:
+  newest-first broad window 100% spam (caught the known wild fakes) → made commenter:algora-pbc
+  the first-class verified-first candidate source → ranked plan tops with microg/GmsCore $1340.
+- New host-envelope fixes (were red on clean HEAD on the mini): status-cli ignores node25's
+  sqlite ExperimentalWarning on stderr; b10 probe 90 s under armed-env parallel sweep.
+- Armed HOUGE_BOUNTY_ENABLED=true, daemon reloaded (PID 88154). LIVE GATE PENDING: Paco idle
+  (evening) — ledger watch found no scan events in 60 min. Next session: Telegram scan +
+  project_track + restart-survival, then flip todo.md header to DONE.
