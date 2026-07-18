@@ -881,3 +881,28 @@ Build + independent adversarial verification subagents; each live round found a 
   MacBook Pro→mini (repo + houge.sqlite + .env + runs/ + full toolchain) → install colima → arm
   the flag → fix a real GitHub issue in-container + hostile-postinstall containment probe. Needs
   Paco's hands on the mini (or SSH access).
+
+## 2026-07-18 — P1 external workspace LIVE-GATED (money-work foundation shipped)
+- Paco chose to run P1's live gate on THIS MacBook Pro (install colima here) rather than block on
+  the mini migration — the container capability is box-agnostic; the mini move becomes its own
+  /goal. Installed colima+docker (brew), colima start, node:20-slim pulled.
+- Pre-gate integration probes against REAL docker via the dist proved the security surface live:
+  non-root user, --network none blocks egress, --read-only rootfs, single-mount confinement.
+- LIVE-GATE-DRIVEN BUG (fixed, de70cf6): os.tmpdir() (macOS /var/folders) is NOT shared into
+  colima's VM → clones bind-mounted EMPTY, non-root couldn't write node_modules. Moved scratch to
+  ~/.houge/extwork ($HOME, colima-shared) + HOUGE_EXTWORK_SCRATCH_DIR override. Proven end-to-end.
+- Created a public fixture repo (github.com/brahmasky/houge-p1-live-gate: buggy add() a-b, 2
+  failing tests + lockfile). Armed daemon (HOUGE_EXTWORK_ENABLED=true, node:20-slim), reloaded.
+- LIVE GATE (real daemon, Telegram): 「修复失败的测试 <url>」→ external_work on the evolution lane
+  → clone → Codex host-side fixed a-b→a+b (exactly right) → container npm ci [egress] + npm test
+  [none] → 2/2 PASS → gate:pass → runs/<id>/patch.diff + report → external_work_published +
+  View/Discard notify (NO push). Own repo untouched, charter-clean.
+- CONTAINMENT probe: hostile actions confined — non-root, host-home write BLOCKED, rootfs
+  read-only, network-off, no host escape (only /work host-connected). Both gate halves PASS.
+- Earlier this build: adversarial verifier REJECT → 3 MAJORs fixed+regression-tested (PINNED_ENV
+  arming-brick; git diff --no-ext-diff/--no-textconv host-exec bypass; clone SSRF resolve-and-pin).
+  1622/1622. Commits 57b2294 + de70cf6.
+- Money-work status: P0 (charter, ADR 0022) ✓, P1 (external workspace, ADR 0023) ✓ LIVE. NEXT:
+  migrate Houge→Mac mini (own /goal; the always-on home + colima there), then P2 (bounty intake +
+  scam/legitimacy classifier + durable project state). Env caveat: colima must run for extwork
+  (graceful-degrades otherwise); not auto-start on this laptop.

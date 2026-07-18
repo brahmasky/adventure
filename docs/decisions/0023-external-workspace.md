@@ -89,3 +89,18 @@ OUR repo; an external patch is the human's to apply upstream). P3 owns external 
   report-writer artifact pattern, and the run-store ledger-event pattern
   (`external_work_published`/`external_work_failed`).
 - Does NOT touch `quarantine.ts` / `self-write-guard.ts` / `secret-broker.ts`; zero npm deps.
+
+## Amendment (2026-07-18) — live-gate findings
+
+Live-gated on a real colima container (fix a real GitHub issue + containment probe). Two things
+the gate surfaced, now fixed/recorded:
+
+1. **Scratch root must be under a container-shared path.** `os.tmpdir()` on macOS
+   (`/var/folders/…`) is NOT shared into colima's VM, so a clone there bind-mounts EMPTY and the
+   non-root container user cannot write `node_modules`. Scratch clones now live under
+   `~/.houge/extwork` (colima mounts `$HOME` writable), override `HOUGE_EXTWORK_SCRATCH_DIR`.
+   Still never `process.cwd()`.
+2. **Containment proven live:** in-container `id`=non-root, a write to the host home is BLOCKED
+   (only the scratch `/work` is bind-mounted), the root fs is read-only, and `--network none`
+   blocks egress on the build/test stage. The happy path ran real `npm ci [egress]` + `npm test
+   [none]` and produced a correct local patch with the own repo untouched.

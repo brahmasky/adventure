@@ -140,7 +140,31 @@ wiki; ledger off by exactly the completion event itself); restore drill on a cop
 
 ---
 
-# 🔨 P1 CODE DONE + VERIFIED (commit 57b2294) — LIVE GATE pending Mac-mini migration + colima
+# ✅ DONE — P1: external engineering workspace + container sandbox — SHIPPED + LIVE-GATED 2026-07-18 06:2x
+
+**Money-work P1 COMPLETE (charter-clean, ADR 0022/0023). Commits 57b2294 + de70cf6. Daemon armed
+(HOUGE_EXTWORK_ENABLED=true, image node:20-slim, PID 71410) on this MacBook Pro; colima installed
++ running here for the gate. Verifier REJECT→3 MAJORs fixed; live gate found+fixed a 4th (scratch
+dir).**
+
+**LIVE GATE (real daemon, Paco's Telegram, real container):** Paco 「修复失败的测试：
+github.com/brahmasky/houge-p1-live-gate」→ external_work dispatched on the evolution lane →
+cloned the real external repo → Codex (host, Seatbelt) fixed math.js (a-b → a+b, exactly right)
+→ container `npm ci [egress]` then `npm test [none]` → 2/2 tests PASS → gate:pass → runs/<id>/
+patch.diff + report written → external_work_published + View-diff/Discard notify (NO push).
+Own repo untouched. CONTAINMENT probe: hostile actions confined — non-root, host-write BLOCKED,
+rootfs read-only, network-off, only /work host-connected, no host-home escape. ✓✓
+
+**Live-gate-driven fix (de70cf6):** os.tmpdir() (macOS /var/folders) is NOT shared into colima's
+VM → clone bind-mounted EMPTY, non-root couldn't write node_modules. Scratch moved to
+~/.houge/extwork ($HOME, colima-shared); HOUGE_EXTWORK_SCRATCH_DIR override. 1622/1622.
+
+**Env note:** colima must be running for extwork (else graceful-degrades to unavailable); not
+auto-start on this laptop. Test fixture repo github.com/brahmasky/houge-p1-live-gate can be
+deleted. NEXT money-work: migrate Houge→Mac mini (its own /goal) then P2 (bounty intake + scam
+classifier + project state). P1 is the foundation — proven.
+
+---
 
 **P1 external engineering workspace + container sandbox — code built, adversarially verified,
 shipped. Live gate deferred to the mini (needs colima) per the approved sequencing.**
