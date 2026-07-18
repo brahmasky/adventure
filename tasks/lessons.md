@@ -59,3 +59,21 @@ Rules Claude writes for itself after corrections. Review at session start.
   to self-writes, so a pinned literal makes that string permanently un-self-writable (2026-07-03:
   Houge's header rename was structurally impossible until the literal moved behind an exported
   constant). Assert via exported constants.
+
+## Clock discipline before state-changing ops (2026-07-19)
+
+- **Convert ledger UTC to local time BEFORE declaring anything stale/hung.** Read
+  `occurred_at 21:14Z` as "10 hours ago" when it was 07:14 AEST *two minutes ago*, sampled a
+  healthy daemon mid-turn, and restarted it. Graceful SIGTERM saved the in-flight run, but the
+  restart was unjustified. Rule: before restart/kill, (1) `date -u` and diff explicitly;
+  (2) check event CADENCE (a run emitting loop_steps every ~10s is alive, not wedged) — ties to
+  [[monitor-windows-from-real-clock]].
+
+## P2 first-use gap: ordinal follow-up not resolved against the prior table (2026-07-19)
+
+- 「跟进第五个」after a bounty_scan: the planner web-searched 11 steps, misidentified #5 as an
+  unrelated CLOSED issue, and never called project_track — although the true #5 was a recorded
+  candidate sighting the anchor would have accepted. The numbered list lived in the immediately
+  prior assistant turn; the model ignored it. Candidate fixes: deterministic rank→URL store from
+  the last scan (project_track accepts {rank}), and/or steering lines in the scan digest +
+  project_track description. Same family as the Phase-R convergence gap.
