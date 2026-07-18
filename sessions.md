@@ -955,3 +955,11 @@ Build + independent adversarial verification subagents; each live round found a 
 - Armed HOUGE_BOUNTY_ENABLED=true, daemon reloaded (PID 88154). LIVE GATE PENDING: Paco idle
   (evening) — ledger watch found no scan events in 60 min. Next session: Telegram scan +
   project_track + restart-survival, then flip todo.md header to DONE.
+
+## 2026-07-19 — P2 LIVE GATE PASSED
+- 2026-07-18T21:12Z (Paco's morning): Telegram 「找找有什么值得做的 bounty」→ run_created →
+  bounty_scan_completed {candidates:8, scam:0, new:8} → loop_halted final → ranked plan
+  delivered in 52 s, naming real Algora bot-verified bounties (markdown-oxide #274/#269/#263).
+  8 scored sightings durable in the live DB. Money-work status: P0 ✓ P1 ✓ **P2 ✓ LIVE**.
+- NEXT: P3 — human-gated external delivery (external_write behind /approve, generalize
+  branch-publish beyond own-origin) + scoped credential store + earnings ledger → first dollar.

@@ -1,4 +1,13 @@
-# 🟡 P2 CODE DONE + VERIFIED + ARMED — LIVE GATE PENDING (Paco's Telegram) 2026-07-18 22:3x
+# ✅ DONE — Money-Work P2 SHIPPED + LIVE-GATED 2026-07-19 07:1x
+
+**LIVE GATE PASSED (real daemon on the mini, Paco's Telegram, 2026-07-18T21:12Z):** Paco
+「找找有什么值得做的 bounty」→ full pipeline run_created → `bounty_scan_completed`
+{candidates:8, scam_suspects:0, new_sightings:8} → loop_halted final → ranked plan delivered
+(`notification_delivered`, 52 s end-to-end) naming real Algora bot-verified bounties
+(markdown-oxide #274/#269/#263 …). 8 scored sightings durable in the live DB. Scam-rejection
+logic proven by fixtures + the pre-gate real-API probe (caught the wild fakes live);
+`project_track` restart-survival is unit-proven — first real project row lands whenever Paco
+picks one to pursue (needs no gate).
 
 **Money-Work P2 (bounty intake + scam/legitimacy classifier + durable project state) is fully
 implemented, reviewed, adversarially verified, and ARMED on the mini's daemon (PID 88154,
