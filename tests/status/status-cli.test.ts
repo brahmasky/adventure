@@ -32,6 +32,16 @@ function parseStdout(stdout: string): unknown {
   return JSON.parse(stdout);
 }
 
+/** node:sqlite still prints an ExperimentalWarning on some node lines (e.g. 25.x on the
+ *  mini) — that harness noise is not CLI output; the assertion is "no REAL stderr". */
+function realStderr(stderr: string): string {
+  return stderr
+    .split("\n")
+    .filter((line) => !line.includes("ExperimentalWarning") && !line.includes("--trace-warnings"))
+    .join("\n")
+    .trim();
+}
+
 describe("houge status CLI", () => {
   afterEach(() => {
     for (const dir of tempDirs) {
@@ -44,7 +54,7 @@ describe("houge status CLI", () => {
     const result = runStatus([], makeTempDir());
 
     expect(result.status).toBe(0);
-    expect(result.stderr).toBe("");
+    expect(realStderr(result.stderr)).toBe("");
     expect(parseStdout(result.stdout)).toEqual({
       ok: true,
       status: {
@@ -69,7 +79,7 @@ describe("houge status CLI", () => {
     const result = runStatus(["missing-run"], makeTempDir());
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toBe("");
+    expect(realStderr(result.stderr)).toBe("");
     expect(parseStdout(result.stdout)).toMatchObject({
       ok: false,
       error: { code: "RUN_NOT_FOUND" }
@@ -80,7 +90,7 @@ describe("houge status CLI", () => {
     const result = runStatus(["first", "extra"], makeTempDir());
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toBe("");
+    expect(realStderr(result.stderr)).toBe("");
     expect(parseStdout(result.stdout)).toEqual({
       ok: false,
       error: { code: "CLI_USAGE", message: "Usage: houge status [run_id]" }

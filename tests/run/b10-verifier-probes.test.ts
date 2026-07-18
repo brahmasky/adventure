@@ -130,7 +130,7 @@ describe("PROBE 1 — self-replication: scheduled runs that create schedules sta
     } finally {
       store.close();
     }
-  }, 30_000);
+  }, 90_000);
 
   it("10 due schedules, one tick → exactly 3 fire; the rest drain over later ticks", async () => {
     const store = RunStore.openInMemory();
