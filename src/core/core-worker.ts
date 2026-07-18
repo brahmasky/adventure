@@ -50,6 +50,23 @@ import { createTimeConvertAdapter } from "../capabilities/time-convert.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import { HTTP_FETCH_CONTENT_CHAR_CAP, resolveHttpFetchTimeoutMs } from "../web/http-fetch.js";
 import {
+  BOUNTY_RESULT_CHAR_CAP,
+  defaultBountyIntakeDeps,
+  type BountyIntakeDeps,
+  BOUNTY_SCAN_DEADLINE_MS,
+  buildProjectListDigest,
+  buildProjectTrackedDigest,
+  buildProjectUpdatedDigest,
+  isProjectState,
+  parseIssueUrl,
+  PROJECT_TRACK_ANCHOR_ERROR,
+  PROJECT_TRACK_INVALID_URL_ERROR,
+  PROJECT_UPDATE_INVALID_ID_ERROR,
+  PROJECT_UPDATE_INVALID_STATE_ERROR,
+  runBountyScan,
+  sanitizeVenueText
+} from "../capabilities/bounty-intake.js";
+import {
   buildIntentQuestion,
   buildIntentSystemPrompt,
   chatContextSince,
@@ -319,7 +336,10 @@ export class CoreWorker {
     // The external-workspace stack (ADR 0023, Money-Work Phase P1). Injectable so tests mock the
     // clone/Codex/container/gate/diff/artifact seams; default wires the real modules. Appended
     // last so existing positional callers are unaffected.
-    private readonly externalWorkDeps: ExternalWorkDeps = defaultExternalWorkDeps()
+    private readonly externalWorkDeps: ExternalWorkDeps = defaultExternalWorkDeps(),
+    // P2 bounty intake (spec 2026-07-18): injectable venue transport so tests never touch
+    // the network; default wires fetchUrl + the per-process TTL cache. Appended last.
+    private readonly bountyDeps: BountyIntakeDeps = defaultBountyIntakeDeps()
   ) {
     // Phase 3.1 (W3): when the DEFAULT llm adapter is in use (production), cheap-chain telemetry can
     // build a telemetry-instrumented adapter per role (kimi/pi usage → recordLlmCall). A test-
@@ -2049,7 +2069,12 @@ export class CoreWorker {
         clarifyAllowed: recentClarifyCount < resolveMaxConsecutiveClarify(process.env),
         // http_fetch carries a PAGE — the global 2k cap is exactly the snippet ceiling
         // it exists to break; 6k not more because the transcript re-sends every step.
-        resultCharCapFor: (action) => (action === "http_fetch" ? HTTP_FETCH_CONTENT_CHAR_CAP : undefined),
+        resultCharCapFor: (action) =>
+          action === "http_fetch"
+            ? HTTP_FETCH_CONTENT_CHAR_CAP
+            : action === "bounty_scan"
+              ? BOUNTY_RESULT_CHAR_CAP
+              : undefined,
         // Wall-clock halt (⓪·1 deferred): the contract's time budget bounds the loop.
         // ⓪·3g: no extendDeadlineFor — evolution kickoffs return immediately (the
         // pipeline runs on the background lane), so the base deadline always suffices.
@@ -2326,6 +2351,25 @@ export class CoreWorker {
       // text), naming the schedule id + next fire in the schedule tz AND UTC.
       return async (input) => this.executeScheduleTask(claim, input);
     }
+    if (name === "bounty_scan") {
+      // P2 (spec 2026-07-18): the scan is deterministic end-to-end; the model receives
+      // only the sanitized code-rendered table (ADR 0014 carve-out). Throttled passes
+      // are NOT ledgered as scans (they spent no API budget and read no venue).
+      return async () => {
+        const result = await runBountyScan(this.runStore, process.env, this.bountyDeps);
+        if (!result.throttled) {
+          this.runStore.recordBountyScanCompleted({ run_id: claim.run_id, ...result.stats });
+        }
+        return { ok: true, output: { answer: result.text } };
+      };
+    }
+    if (name === "project_track" || name === "project_update" || name === "project_list") {
+      // P2 bookkeeping rows (the schedule_task/lesson_write class). project_track is
+      // structurally anchored: the URL must be a recorded scan sighting or appear
+      // verbatim in the user's REAL message — a hostile scan title can't steer a write
+      // to an unseen URL.
+      return async (input) => this.executeProjectTool(name, claim, input);
+    }
     if (name === "wiki_build" || name === "wiki_refine") {
       // LLM wiki (Phase W, ADR 0020): one shared adapter — build⇄refine auto-route on
       // page identity, so the two names can never mint a duplicate page. The synthesis
@@ -2441,6 +2485,76 @@ export class CoreWorker {
       ok: true,
       output: { answer: buildScheduleCreatedDigest(row.schedule_id, spec, tz, next_run_at) }
     };
+  }
+
+  /**
+   * The project_track/update/list adapters (P2, spec 2026-07-18 §4). Everything the
+   * model supplies is validated in code: the URL by the strict issue grammar + the
+   * sightings/user-message anchor, the state by the closed union + the transition
+   * table (an illegal move writes nothing). Digests are code-rendered.
+   */
+  private executeProjectTool(
+    name: "project_track" | "project_update" | "project_list",
+    claim: ClaimedRun,
+    input: Record<string, unknown>
+  ): ToolAdapterResult {
+    if (name === "project_list") {
+      return { ok: true, output: { answer: buildProjectListDigest(this.runStore.listProjects()) } };
+    }
+
+    if (name === "project_track") {
+      const raw = typeof input.source_url === "string" ? input.source_url.trim() : "";
+      const parsed = parseIssueUrl(raw);
+      if (!parsed) {
+        return { ok: false, error: PROJECT_TRACK_INVALID_URL_ERROR };
+      }
+      const source_url = `https://github.com/${parsed.owner}/${parsed.repo}/issues/${parsed.issue}`;
+      const anchored =
+        this.runStore.getBountySighting(source_url) !== undefined ||
+        claim.contract.objective.includes(source_url);
+      if (!anchored) {
+        return { ok: false, error: PROJECT_TRACK_ANCHOR_ERROR };
+      }
+      const title = sanitizeVenueText(input.title, 120);
+      const amount =
+        typeof input.amount_usd === "number" && Number.isInteger(input.amount_usd) &&
+        input.amount_usd >= 1 && input.amount_usd <= 100_000
+          ? input.amount_usd
+          : null;
+      const { row, created } = this.runStore.addProject({
+        source_url,
+        title: title.length > 0 ? title : null,
+        amount_usd: amount
+      });
+      if (created) {
+        this.runStore.recordProjectCreated({ run_id: claim.run_id, project_id: row.project_id, source_url });
+      }
+      return { ok: true, output: { answer: buildProjectTrackedDigest(row, created) } };
+    }
+
+    const project_id = typeof input.project_id === "string" ? input.project_id.trim() : "";
+    if (!/^proj_[0-9a-fA-F-]{8,}$/.test(project_id)) {
+      return { ok: false, error: PROJECT_UPDATE_INVALID_ID_ERROR };
+    }
+    if (!isProjectState(input.state)) {
+      return { ok: false, error: PROJECT_UPDATE_INVALID_STATE_ERROR };
+    }
+    const reason = sanitizeVenueText(input.reason, 200);
+    const result = this.runStore.transitionProject(
+      project_id,
+      input.state,
+      reason.length > 0 ? reason : undefined
+    );
+    if (!result.ok) {
+      return { ok: false, error: `project_update refused: ${result.error}` };
+    }
+    this.runStore.recordProjectStateChanged({
+      run_id: claim.run_id,
+      project_id,
+      from: result.from,
+      to: result.row.state
+    });
+    return { ok: true, output: { answer: buildProjectUpdatedDigest(result.row, result.from) } };
   }
 
   /**
@@ -3095,6 +3209,9 @@ function loopToolTimeoutMs(name: string, llmTimeoutMs: number): number {
       return compileSkillAuthorContract("").budget.time_minutes * 60_000;
     case "external_work":
       return compileExternalWorkContract("").budget.time_minutes * 60_000;
+    case "bounty_scan":
+      // The scan enforces its own 75s wall clock; the outer race bound adds headroom.
+      return BOUNTY_SCAN_DEADLINE_MS + 15_000;
     default:
       return llmTimeoutMs;
   }

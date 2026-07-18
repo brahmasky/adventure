@@ -53,7 +53,10 @@ describe("DISARM_FLAGS", () => {
       "HOUGE_SCHEDULER_ENABLED",
       // ADR 0023: the external engineering workspace is an autonomous evolution capability
       // (clones + runs external code in a container unattended) — the STOP switch covers it.
-      "HOUGE_EXTWORK_ENABLED"
+      "HOUGE_EXTWORK_ENABLED",
+      // P2 (spec 2026-07-18): bounty intake reads external venues + writes durable
+      // project rows unattended-adjacent (scheduled scans) — the STOP switch covers it.
+      "HOUGE_BOUNTY_ENABLED"
     ]);
     expect(DISARM_FLAGS).not.toContain("HOUGE_EPISODIC_ENABLED");
   });

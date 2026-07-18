@@ -1,5 +1,6 @@
 import { resolveCodexEnabled } from "../capabilities/coding-agent.js";
 import { resolveExtWorkEnabled } from "../capabilities/external-workspace.js";
+import { resolveBountyEnabled } from "../capabilities/bounty-intake.js";
 import { resolveSelfWriteEnabled } from "../capabilities/intent.js";
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
 import { resolveTzEvidenceEnabled } from "../capabilities/time-convert.js";
@@ -194,6 +195,55 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
     risk_level: "medium",
     output_limit_bytes: 200_000,
     armed: resolveExtWorkEnabled
+  },
+  // Money-Work P2 (spec 2026-07-18): bounty intake. bounty_scan is an external READ of
+  // public venue APIs whose output is a deterministic sanitized digest (ADR 0014
+  // carve-out — never raw venue bytes). The project_* tools are internal bookkeeping
+  // rows like schedule_task/lesson_write (side effect "none"); the pursue decision is
+  // Paco's, enforced structurally by the sightings/user-message URL anchor in the worker.
+  bounty_scan: {
+    name: "bounty_scan",
+    description:
+      "Scan real bounty venues (GitHub bounty labels + Algora paid-history) and return a scam-filtered, legitimacy-ranked table of open software bounties. Use when the user asks to find bounties / paid work. The table's scores and verdicts are computed deterministically — report them as-is, never re-rank across the scam line.",
+    inputSketch: "{}",
+    category: "tool",
+    side_effect_level: "external_read",
+    risk_level: "medium",
+    output_limit_bytes: 200_000,
+    armed: resolveBountyEnabled
+  },
+  project_track: {
+    name: "project_track",
+    description:
+      "Track a bounty the USER explicitly decided to pursue (durable across sessions). Only call it when the user clearly says to pursue/track a specific bounty; source_url must be a GitHub issue URL from a scan or from the user's own message.",
+    inputSketch: '{"source_url": "https://github.com/owner/repo/issues/1", "title": "optional", "amount_usd": 500}',
+    category: "tool",
+    side_effect_level: "none",
+    risk_level: "low",
+    output_limit_bytes: 100_000,
+    armed: resolveBountyEnabled
+  },
+  project_update: {
+    name: "project_update",
+    description:
+      "Record a tracked project's state change the user reports (tracked→working→submitted→paid, drop/undrop). Bookkeeping only — it performs no external action.",
+    inputSketch: '{"project_id": "proj_...", "state": "working", "reason": "optional"}',
+    category: "tool",
+    side_effect_level: "none",
+    risk_level: "low",
+    output_limit_bytes: 100_000,
+    armed: resolveBountyEnabled
+  },
+  project_list: {
+    name: "project_list",
+    description:
+      "List tracked bounty projects and their states. Use when the user asks what's being pursued or for a status overview.",
+    inputSketch: "{}",
+    category: "tool",
+    side_effect_level: "none",
+    risk_level: "low",
+    output_limit_bytes: 100_000,
+    armed: resolveBountyEnabled
   }
 };
 

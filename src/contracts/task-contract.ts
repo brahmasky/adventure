@@ -213,6 +213,11 @@ function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
       // external_work (ADR 0023) is armed-listed like the other evolution tools: allowed in
       // the envelope, on the model's menu only when HOUGE_EXTWORK_ENABLED arms it.
       "external_work",
+      // P2 bounty intake (spec 2026-07-18): armed-listed on HOUGE_BOUNTY_ENABLED.
+      "bounty_scan",
+      "project_track",
+      "project_update",
+      "project_list",
       "write_report"
     ],
     forbidden_actions: ["coding_agent_cli", "generic_shell", "external_write", "paid_action"],

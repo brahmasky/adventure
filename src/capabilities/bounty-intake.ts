@@ -1,6 +1,7 @@
 import type { HttpFetchConfig, HttpFetchInput, HttpFetchOutcome } from "../web/http-fetch.js";
 import { fetchUrl } from "../web/http-fetch.js";
-import type { RunStore } from "../run/run-store.js";
+import type { ProjectRow, RunStore } from "../run/run-store.js";
+import type { ProjectState } from "../domain/types.js";
 
 /**
  * Money-Work P2 (spec 2026-07-18): bounty venue intake + deterministic legitimacy
@@ -570,3 +571,48 @@ export function resetBountyIntakeStateForTests(): void {
   scanInFlight = false;
   processCache.clear();
 }
+
+// --- project tools (code-rendered digests + error constants, schedule_task style) --
+
+export const PROJECT_TRACK_INVALID_URL_ERROR =
+  "project_track requires source_url in the exact form https://github.com/<owner>/<repo>/issues/<n>.";
+export const PROJECT_TRACK_ANCHOR_ERROR =
+  "project_track refused: that URL was never seen in a bounty scan and is not in the user's message. Run bounty_scan first, or ask the user to paste the issue URL.";
+export const PROJECT_UPDATE_INVALID_ID_ERROR = "project_update requires a valid project_id (proj_...).";
+export const PROJECT_UPDATE_INVALID_STATE_ERROR =
+  "project_update state must be one of tracked|working|submitted|paid|dropped.";
+
+export const PROJECT_STATES: ReadonlySet<ProjectState> = new Set([
+  "tracked",
+  "working",
+  "submitted",
+  "paid",
+  "dropped"
+]);
+
+export function isProjectState(value: unknown): value is ProjectState {
+  return typeof value === "string" && PROJECT_STATES.has(value as ProjectState);
+}
+
+export function buildProjectTrackedDigest(row: ProjectRow, created: boolean): string {
+  const head = created ? "Project tracked" : "Already tracked (unchanged)";
+  const amount = row.amount_usd !== null ? ` $${row.amount_usd} (claimed)` : "";
+  return `${head}: ${row.project_id} [${row.state}]${amount} ${row.source_url}`;
+}
+
+export function buildProjectUpdatedDigest(row: ProjectRow, from: ProjectState): string {
+  return `Project ${row.project_id}: ${from} → ${row.state}${row.state_reason ? ` (${row.state_reason})` : ""}`;
+}
+
+export function buildProjectListDigest(rows: ProjectRow[]): string {
+  if (rows.length === 0) return "No tracked projects.";
+  const lines = rows.map((row) => {
+    const amount = row.amount_usd !== null ? ` $${row.amount_usd}` : "";
+    const title = row.title ? ` — ${row.title}` : "";
+    return `- ${row.project_id} [${row.state}]${amount}${title}\n  ${row.source_url}`;
+  });
+  return `Tracked projects (${rows.length}):\n${lines.join("\n")}`;
+}
+
+/** The transcript cap for bounty_scan's table (the http_fetch-style carve-out). */
+export const BOUNTY_RESULT_CHAR_CAP = 6_000;

@@ -36,7 +36,10 @@ export const DISARM_FLAGS: readonly string[] = [
   "HOUGE_SCHEDULER_ENABLED",
   // External engineering workspace (ADR 0023): an autonomous evolution capability — the STOP
   // switch must cover it too (it clones + runs external code in a container unattended).
-  "HOUGE_EXTWORK_ENABLED"
+  "HOUGE_EXTWORK_ENABLED",
+  // P2 bounty intake (spec 2026-07-18): reads external venues + writes durable project
+  // rows — money-work surface, covered by the STOP switch like extwork.
+  "HOUGE_BOUNTY_ENABLED"
 ];
 
 export function resolveDisarmPath(env: NodeJS.ProcessEnv = process.env): string {

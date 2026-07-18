@@ -73,7 +73,11 @@ const PINNED_ENV = [
   // External workspace (Money-Work P1): the flag shapes the manifest — pin it so a daemon
   // .env that arms extwork can't red-fail this exact-manifest assertion (and thus the
   // self-write test-gate). The cardinal PINNED_ENV rule (selfwrite-testgate-inherits-env).
-  "HOUGE_EXTWORK_ENABLED"
+  "HOUGE_EXTWORK_ENABLED",
+  // P2 bounty intake: the flag shapes the manifest; the cap shapes the scan. Pinned for
+  // the same reason as extwork (the cardinal PINNED_ENV rule).
+  "HOUGE_BOUNTY_ENABLED",
+  "HOUGE_BOUNTY_MAX_CANDIDATES"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
