@@ -313,11 +313,18 @@ export async function listGithubCandidates(deps: BountyIntakeDeps): Promise<Venu
   let rateLimited = false;
   if (verified.ok) {
     const verifiedItems = asArray(asRecord(verified.json)?.items);
-    const verifiedUrls = new Set(
-      verifiedItems
-        .map((item) => normalizeSearchItem(item)?.issue_url)
-        .filter((url): url is string => typeof url === "string")
-    );
+    // The bot-verified window is the HIGH-SIGNAL listing (live probe 2026-07-18: the
+    // newest-first broad window was 100% spam-flooded). Its items become candidates
+    // too — verified-first — not just flags on the broad window.
+    const verifiedUrls = new Set<string>();
+    for (const item of verifiedItems) {
+      const candidate = normalizeSearchItem(item);
+      if (!candidate) continue;
+      verifiedUrls.add(candidate.issue_url);
+      if (!byUrl.has(candidate.issue_url)) {
+        byUrl.set(candidate.issue_url, candidate);
+      }
+    }
     // Coverage is only claimable when the bot window was exhaustive (returned fewer than
     // a full page) or the candidate itself is in it — a truncated window must not turn
     // "outside the page" into "no bot comment" (spec MAJOR 5 / verifier MINOR 10).
@@ -326,6 +333,12 @@ export async function listGithubCandidates(deps: BountyIntakeDeps): Promise<Venu
       candidate.bot_verified = verifiedUrls.has(candidate.issue_url);
       candidate.bot_window_covered = windowExhaustive || candidate.bot_verified;
     }
+    // Verified-first ordering: the enrichment budget goes to the high-signal set before
+    // the spam-prone newest window.
+    const ordered = [...byUrl.values()].sort(
+      (a, b) => Number(b.bot_verified) - Number(a.bot_verified)
+    );
+    return { candidates: ordered, degraded, rateLimited: false, listingOk: true };
   } else {
     degraded.push(`github-bot-window: ${verified.error}`);
     rateLimited = verified.rateLimited;
@@ -567,8 +580,13 @@ export async function runBountyScan(
           .join(", ")}`
       );
     }
+    const suspectsByRepo = new Map<string, BountyCandidate>();
+    for (const suspect of suspects) {
+      const key = `${suspect.owner}/${suspect.repo}`;
+      if (!suspectsByRepo.has(key)) suspectsByRepo.set(key, suspect);
+    }
     sections.push(
-      `Scam-filtered: ${suspects.length} (${suspects.map((s) => `${s.owner}/${s.repo}: ${s.reject_reasons.join(", ") || "?"}`).join("; ") || "none"})`
+      `Scam-filtered: ${suspects.length} issue(s) across ${suspectsByRepo.size} repo(s) (${[...suspectsByRepo.entries()].map(([key, suspect]) => `${key}: ${suspect.reject_reasons.join(", ") || "?"}`).join("; ") || "none"})`
     );
     if (degraded.length > 0 || budgetStopped) {
       sections.push(`Venue status: ${[...degraded, ...(budgetStopped ? ["API budget stopped early"] : [])].join("; ")}`);
