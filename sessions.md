@@ -906,3 +906,28 @@ Build + independent adversarial verification subagents; each live round found a 
   migrate Houge→Mac mini (own /goal; the always-on home + colima there), then P2 (bounty intake +
   scam/legitimacy classifier + durable project state). Env caveat: colima must run for extwork
   (graceful-degrades otherwise); not auto-start on this laptop.
+
+## 2026-07-18 — Houge MIGRATED from MacBook Pro to the Mac mini (LIVE)
+- /goal "migrate Houge to mac mini". Discovery: the live daemon was on Paco's MacBook Pro (SCNM5),
+  NOT the mini as docs implied. The mini (Macmini8,1, user xiaochuan) is the documented always-on
+  home; P1's container work made the move due.
+- Blocked several turns on SSH access (no key on the mini). Root cause of the first failure: this
+  MacBook Pro had NO ssh keypair ("ssh-copy-id: No identities found") — generated an ed25519 key;
+  Paco manually installed the pubkey on the mini. Then SSH-driven the whole migration from here.
+- Mini prereqs: full toolchain already present (git/node25/npm/docker-Desktop/codex/pi/agy/ollama/
+  kimi-cli). Started Docker Desktop; pulled ollama embeddinggemma + docker node:20-slim.
+- Repo transfer: private repo + mini's gh auth EXPIRED + no GitHub SSH key → couldn't clone from
+  GitHub. Transferred via `git bundle` over SSH (macbook→mini), origin reset to the GitHub URL.
+  npm ci + build on the mini. (Committed deploy/launchd/setup-new-host.sh earlier as the reusable
+  new-host bootstrap; the actual run used the bundle path since GitHub auth was down.)
+- .env adjusted for the mini (pluo→xiaochuan, homebrew→/usr/local paths) + memory/wiki copied.
+- CLEAN CUTOVER (single-daemon Telegram invariant held): stop MacBook Pro daemon → sqlite .backup
+  snapshot (quick_check ok) → scp DB → generate launchd plist (mini PATH incl /usr/local/bin +
+  ~/.local/bin so docker/codex/agy/kimi resolve) → bootstrap. EXACT row parity (441/20/36/2/3149).
+  MacBook Pro launchd disabled + plist parked → no dual-daemon on reboot.
+- LIVE GATE: Paco 「换了新家感觉怎么样」→ mini received + answered + RECALLED the P1 extwork job from
+  migrated memory + notification_delivered. Full stack on the mini ✓.
+- Follow-ups: `gh auth login` on the mini (for self-write push / git pull — daemon fine without);
+  `colima stop` on the MacBook Pro. NEXT money-work: P2 on the mini.
+- Lesson: mini login shell is FISH — remote bash must be forced (`ssh host bash -s < script` or
+  `bash -lc`); heredocs/for-loops fail under fish over ssh.

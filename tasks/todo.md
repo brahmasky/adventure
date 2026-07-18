@@ -1,3 +1,33 @@
+# ✅ DONE — Houge MIGRATED to the Mac mini — LIVE 2026-07-18 06:5x
+
+**Houge's always-on home is now the Mac mini (Macmini8,1, user xiaochuan, /Users/xiaochuan/
+Projects/adventure). Daemon PID 13009 live + polling Telegram. The MacBook Pro (SCNM5) was only
+ever a temporary host; the mini is the documented home.**
+
+**Migration (SSH-driven from the MacBook Pro after Paco installed the orchestrator's ed25519 key):**
+- Mini already had the full toolchain (git/node25/npm/docker-Desktop/codex/pi/agy/ollama/
+  kimi-cli). Docker Desktop started; ollama embeddinggemma pulled; node:20-slim pulled (extwork).
+- Repo private + mini's GitHub auth EXPIRED → transferred via `git bundle` over SSH (not GitHub);
+  origin reset to the GitHub URL; npm ci + build on the mini.
+- .env copied with paths adjusted (pluo→xiaochuan, /opt/homebrew/bin/codex→/usr/local/bin/codex,
+  ~/.local/bin agy+kimi-cli); memory/wiki copied.
+- CLEAN CUTOVER: stopped the MacBook Pro daemon → `.backup` snapshot (quick_check ok) → scp DB →
+  generated launchd plist (mini PATH incl /usr/local/bin + ~/.local/bin) → bootstrap. Row parity
+  EXACT: chat_turns 441, lessons 20, episodic 36, wiki 2, ledger 3149. MacBook Pro launchd
+  DISABLED + plist parked (com.houge.daemon.plist.migrated-to-mini) → only the mini polls Telegram
+  (no dual-daemon conflict, even across reboots).
+- LIVE GATE: Paco 「换了新家感觉怎么样」→ the MINI received + answered on Telegram, RECALLING the P1
+  extwork job from migrated memory (「帮咱把 houge-p1-live-gate 里的 add 函数掰正了」) →
+  notification_delivered. Telegram + provider + memory-continuity + delivery all on the mini ✓.
+
+**Follow-ups (not blocking):** mini GitHub auth expired — `gh auth login` on the mini needed for
+self-write branch pushes / `git pull` there (the daemon runs on built code fine without it).
+colima still idling on the MacBook Pro (colima stop to reclaim). MacBook Pro keeps the stale
+pre-migration houge.sqlite as an incidental backup. NEXT money-work: P2 (bounty intake + scam
+classifier + durable project state), now on the mini's always-on home.
+
+---
+
 # ✅ DONE — ⓪·4 legacy retirement + convergence soak metric — SHIPPED + LIVE-GATED 2026-07-17 11:4x
 
 **Two-part /goal, both shipped. Daemon live on loop-only dist (PID 17299).**
