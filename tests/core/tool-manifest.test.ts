@@ -158,3 +158,21 @@ describe("arming policy (step ⓪·2): evolution tools appear only when their fl
     ]);
   });
 });
+
+describe("P2 bounty tools arming (spec 2026-07-18)", () => {
+  const P2_TOOLS = ["bounty_scan", "project_track", "project_update", "project_list"];
+
+  it("unlisted by default (flag off ⇒ off the model's menu entirely)", () => {
+    expect(manifestFor(P2_TOOLS, {})).toEqual([]);
+  });
+
+  it("all four listed when HOUGE_BOUNTY_ENABLED arms them", () => {
+    const manifest = manifestFor(P2_TOOLS, { HOUGE_BOUNTY_ENABLED: "1" } as NodeJS.ProcessEnv);
+    expect(manifest.map((entry) => entry.name)).toEqual(P2_TOOLS);
+    const scan = manifest.find((entry) => entry.name === "bounty_scan")!;
+    expect(scan.side_effect_level).toBe("external_read");
+    for (const name of ["project_track", "project_update", "project_list"]) {
+      expect(manifest.find((entry) => entry.name === name)!.side_effect_level).toBe("none");
+    }
+  });
+});
