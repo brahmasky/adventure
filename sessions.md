@@ -963,3 +963,15 @@ Build + independent adversarial verification subagents; each live round found a 
   8 scored sightings durable in the live DB. Money-work status: P0 ✓ P1 ✓ **P2 ✓ LIVE**.
 - NEXT: P3 — human-gated external delivery (external_write behind /approve, generalize
   branch-publish beyond own-origin) + scoped credential store + earnings ledger → first dollar.
+
+## 2026-07-19 — P2 hardening after first real use (Paco requests)
+- 「跟进第五个」postmortem: Houge misidentified its own #5 (searched the web instead of reading
+  its prior table; picked a closed unrelated issue; never called project_track). Lessons written
+  (+ my own: UTC/AEST misread nearly caused an unjustified daemon restart — clock discipline rule).
+- Shipped: live per-issue open-state check (closed/stale filtered, own tally line; check failure
+  never false-filters). Shipped: Devpost venue (unauth /api/hackathons JSON, prize-ranked
+  section, <slug>.devpost.com trackable as kind=hackathon; real probe: $100k OpenAI Build Week
+  top). HackerOne → P3 (token-gated REST; unauth path is POST GraphQL, GET-only tier excludes).
+- 1674/1674 both sweeps; daemon reloaded on the new dist.
+- OPEN (proposed, awaiting Paco): deterministic {rank: N} for project_track (persist last scan
+  order) so 「跟进第N个」can't misresolve again.
