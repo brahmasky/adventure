@@ -2767,6 +2767,41 @@ export class RunStore {
   }
 
   /**
+   * Update an existing schedule in place (scheduler v2, ADR 0017 amendment). Only the
+   * provided fields change; omitted fields keep the stored value. Enabled AND failed
+   * rows are updatable — an update re-enables a failed row and resets its counter,
+   * because fixing the goal/spec IS the repair path (cancel is the only other exit).
+   * Disabled rows are history — untouchable, same scoping as cancel. next_run_at is
+   * the CALLER's decision (the adapter recomputes it only when spec/tz changed).
+   */
+  updateScheduledTask(input: {
+    schedule_id: string;
+    goal?: string;
+    spec_json?: string;
+    tz?: string;
+    next_run_at?: string;
+    now?: string;
+  }): boolean {
+    const row = this.getScheduledTask(input.schedule_id);
+    if (!row || row.state === "disabled") return false;
+    const now = input.now ?? new Date().toISOString();
+    const result = this.db.prepare(`
+      UPDATE scheduled_tasks
+      SET goal = ?, spec_json = ?, tz = ?, next_run_at = ?,
+          state = 'enabled', consecutive_failures = 0, updated_at = ?
+      WHERE schedule_id = ? AND state IN ('enabled', 'failed')
+    `).run(
+      input.goal ?? row.goal,
+      input.spec_json ?? row.spec_json,
+      input.tz ?? row.tz,
+      input.next_run_at ?? row.next_run_at,
+      now,
+      input.schedule_id
+    );
+    return result.changes === 1;
+  }
+
+  /**
    * Advance a fired schedule: stamp last_fired_at, move next_run_at, reset the
    * consecutive-failure counter. Called BEFORE the fired run executes (fire-then-run:
    * a crash mid-run must not re-fire the same occurrence — see schedule-tick.ts).

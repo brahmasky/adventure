@@ -110,3 +110,49 @@ describe("scheduled_tasks store (B10b, ADR 0017)", () => {
     expect(store.recordScheduleFailure("sch_missing", NOW, 3)).toEqual({ failures: 0, failed: false });
   });
 });
+
+describe("updateScheduledTask (scheduler v2)", () => {
+  it("updates only the provided fields and stamps updated_at", () => {
+    const row = addTask({ goal: "old goal", next_run_at: "2099-01-01T00:00:00.000Z" });
+    const ok = store.updateScheduledTask({
+      schedule_id: row.schedule_id,
+      goal: "new goal",
+      now: "2026-07-21T00:00:00.000Z"
+    });
+    expect(ok).toBe(true);
+    const after = store.getScheduledTask(row.schedule_id)!;
+    expect(after.goal).toBe("new goal");
+    expect(after.spec_json).toBe('{"kind":"weekly","day":"mon","at":"08:00"}'); // untouched
+    expect(after.tz).toBe("Australia/Sydney"); // untouched
+    expect(after.next_run_at).toBe("2099-01-01T00:00:00.000Z"); // untouched
+    expect(after.updated_at).toBe("2026-07-21T00:00:00.000Z");
+    expect(after.state).toBe("enabled");
+  });
+
+  it("re-enables a failed row and resets its failure counter — fixing the row IS the repair path", () => {
+    const row = addTask();
+    // Park the row as 'failed' the way the tick does.
+    store.recordScheduleFailure(row.schedule_id, NOW, 1);
+    expect(store.getScheduledTask(row.schedule_id)!.state).toBe("failed");
+
+    const ok = store.updateScheduledTask({
+      schedule_id: row.schedule_id,
+      spec_json: '{"kind":"daily","at":"09:00"}',
+      next_run_at: "2099-02-01T00:00:00.000Z"
+    });
+    expect(ok).toBe(true);
+    const after = store.getScheduledTask(row.schedule_id)!;
+    expect(after.state).toBe("enabled");
+    expect(after.consecutive_failures).toBe(0);
+    expect(after.spec_json).toBe('{"kind":"daily","at":"09:00"}');
+    expect(after.next_run_at).toBe("2099-02-01T00:00:00.000Z");
+  });
+
+  it("refuses absent and disabled rows — disabled is history, identical to cancel's scoping", () => {
+    expect(store.updateScheduledTask({ schedule_id: "sch_missing", goal: "x" })).toBe(false);
+    const row = addTask({ goal: "g" });
+    store.cancelScheduledTask(row.schedule_id);
+    expect(store.updateScheduledTask({ schedule_id: row.schedule_id, goal: "x" })).toBe(false);
+    expect(store.getScheduledTask(row.schedule_id)!.goal).toBe("g"); // untouched
+  });
+});
