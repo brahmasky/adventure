@@ -190,36 +190,43 @@ function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
   // search until a zone-LABELED source appears before converting — live gate runs
   // showed that honest workflow needs ~9 searches + conversions + a bounced final,
   // which step_capped at 10 with the correct answer one step out of reach.
+  // Scheduler v2 provenance strip: a run BORN FROM a schedule fire must not create or
+  // mutate schedules — its goal text is replayed schedule data, not a fresh user ask.
+  // 2026-07-19: the weekly AI周报 fire misread its own goal as "set up a weekly report"
+  // and minted a duplicate row. The capability leaves the envelope HERE, so the manifest
+  // (derived from allowed_actions) never shows the tool and a scripted call is denied.
+  const turnActions = [
+    "intent_router",
+    "web_search",
+    "http_fetch",
+    "to_local_time",
+    "llm_answer",
+    "lesson_write",
+    // schedule_task (B10b, ADR 0017) is armed-listed like http_fetch: allowed in the
+    // envelope, on the model's menu only when HOUGE_SCHEDULER_ENABLED arms it.
+    "schedule_task",
+    // wiki_build/wiki_refine (Phase W, ADR 0020) are armed-listed the same way:
+    // allowed in the envelope, listed only when HOUGE_WIKI_ENABLED arms them.
+    "wiki_build",
+    "wiki_refine",
+    "self_diagnose",
+    "self_write_propose",
+    "skill_author",
+    // external_work (ADR 0023) is armed-listed like the other evolution tools: allowed in
+    // the envelope, on the model's menu only when HOUGE_EXTWORK_ENABLED arms it.
+    "external_work",
+    // P2 bounty intake (spec 2026-07-18): armed-listed on HOUGE_BOUNTY_ENABLED.
+    "bounty_scan",
+    "project_track",
+    "project_update",
+    "project_list",
+    "write_report"
+  ].filter((action) => !(event.source === "schedule" && action === "schedule_task"));
+
   const base = {
     objective: event.goal,
     budget: { time_minutes: 10, max_tool_calls: 14, max_agent_delegations: 0 },
-    allowed_actions: [
-      "intent_router",
-      "web_search",
-      "http_fetch",
-      "to_local_time",
-      "llm_answer",
-      "lesson_write",
-      // schedule_task (B10b, ADR 0017) is armed-listed like http_fetch: allowed in the
-      // envelope, on the model's menu only when HOUGE_SCHEDULER_ENABLED arms it.
-      "schedule_task",
-      // wiki_build/wiki_refine (Phase W, ADR 0020) are armed-listed the same way:
-      // allowed in the envelope, listed only when HOUGE_WIKI_ENABLED arms them.
-      "wiki_build",
-      "wiki_refine",
-      "self_diagnose",
-      "self_write_propose",
-      "skill_author",
-      // external_work (ADR 0023) is armed-listed like the other evolution tools: allowed in
-      // the envelope, on the model's menu only when HOUGE_EXTWORK_ENABLED arms it.
-      "external_work",
-      // P2 bounty intake (spec 2026-07-18): armed-listed on HOUGE_BOUNTY_ENABLED.
-      "bounty_scan",
-      "project_track",
-      "project_update",
-      "project_list",
-      "write_report"
-    ],
+    allowed_actions: turnActions,
     forbidden_actions: ["coding_agent_cli", "generic_shell", "external_write", "paid_action"],
     output: { path: "runs/<run-id>/report.md", format: "sourced_markdown_report" as const },
     approval_gates: ["local_write", "external_write", "destructive", "paid"] as SideEffectLevel[],

@@ -120,6 +120,24 @@ function turnRun(store: RunStore, message: string, key = `t:${message}`): string
   return intake.run_id;
 }
 
+/** A run born from a schedule fire (source=schedule) — the v2 provenance-strip path. */
+function scheduleRun(store: RunStore, goal: string, key = `s:${goal}`): string {
+  const intake = new Gateway(store).intake(
+    buildTypedTaskEvent({
+      source: "schedule",
+      type: "turn",
+      program: "turn",
+      goal,
+      requested_by: { kind: "schedule", id: "sch_test" },
+      notify: { kind: "telegram", chat_id: "555" },
+      idempotency_key: key,
+      source_reference: "scheduled_tasks.sch_test"
+    })
+  );
+  if (!intake.ok) throw new Error(`intake failed: ${JSON.stringify(intake)}`);
+  return intake.run_id;
+}
+
 /**
  * An LLM stub for the loop path: the classifier (INTENT_DISCIPLINE) returns `verdict`;
  * each compose call (LOOP_DISCIPLINE) shifts the next scripted action; the distill
@@ -1582,6 +1600,31 @@ describe("schedule_task on the loop (B10b, ADR 0017)", () => {
       expect(steps[0]!.payload).toMatchObject({ action: "schedule_task", ok: false });
       expect(String(steps[0]!.payload.result_digest)).toContain(buildScheduleCapError(1));
       expect(store.listScheduledTasks("555").length).toBe(1); // nothing new stored
+    } finally {
+      store.close();
+    }
+  });
+
+  it("schedule-born run: schedule_task is unlisted and a scripted call is denied — no twin rows possible", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const run_id = scheduleRun(store, "AI周报：搜索Hacker News和X/Twitter本周AI领域最新进展并总结");
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm('{"intent":"answer"}', [
+          '{"action":"schedule_task","input":{"goal":"AI周报","spec":{"kind":"weekly","day":"mon","at":"08:00"},"tz":"Australia/Sydney"},"why":"set up the weekly report"}',
+          '{"action":"final","answer":"本周AI进展如下……"}'
+        ])
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      // Armed flag is ON (describe beforeEach) yet the manifest excludes the tool:
+      // the strip happened at contract compile, upstream of arming.
+      expect(loopEvents(store, run_id, "loop_started")[0]!.payload.manifest).not.toContain("schedule_task");
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(steps[0]!.payload).toMatchObject({ action: "schedule_task", ok: false });
+      expect(store.listScheduledTasks("555")).toEqual([]); // nothing stored
     } finally {
       store.close();
     }

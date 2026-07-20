@@ -184,3 +184,40 @@ describe("compileTaskContract", () => {
     }
   });
 });
+
+describe("scheduler v2 provenance strip", () => {
+  it("turn contract: a schedule-born run's allowed_actions EXCLUDE schedule_task", () => {
+    const telegramEvent = buildTypedTaskEvent({
+      source: "telegram",
+      type: "turn",
+      program: "turn",
+      goal: "每周一早上8点给我AI周报",
+      requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "telegram", chat_id: "555" },
+      idempotency_key: "t:strip-telegram",
+      source_reference: "telegram:update:1:message:1"
+    });
+    const scheduleEvent = buildTypedTaskEvent({
+      source: "schedule",
+      type: "turn",
+      program: "turn",
+      goal: "AI周报：搜索Hacker News和X/Twitter本周AI领域最新进展并总结",
+      requested_by: { kind: "schedule", id: "sch_test" },
+      notify: { kind: "telegram", chat_id: "555" },
+      idempotency_key: "schedule:sch_test:2026-07-26T22:00:00.000Z",
+      source_reference: "scheduled_tasks.sch_test"
+    });
+    const fromTelegram = compileTaskContract(telegramEvent);
+    const fromSchedule = compileTaskContract(scheduleEvent);
+    expect(fromTelegram.ok).toBe(true);
+    expect(fromSchedule.ok).toBe(true);
+    if (fromTelegram.ok && fromSchedule.ok) {
+      expect(fromTelegram.contract.allowed_actions).toContain("schedule_task");
+      expect(fromSchedule.contract.allowed_actions).not.toContain("schedule_task");
+      // The strip is the ONLY difference in the action envelope.
+      expect(fromSchedule.contract.allowed_actions).toEqual(
+        fromTelegram.contract.allowed_actions.filter((a) => a !== "schedule_task")
+      );
+    }
+  });
+});
