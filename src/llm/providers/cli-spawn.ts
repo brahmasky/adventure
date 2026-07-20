@@ -4,6 +4,7 @@
 // deterministic error handling. The prompt-delivery channel differs per CLI (pi reads
 // stdin; agy takes an argv value) — that is the caller's concern, not this module's.
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 
 /**
  * Result shape returned by a {@link SpawnImpl}. The impl must RESOLVE this shape for every
@@ -53,6 +54,8 @@ export const defaultSpawnImpl: SpawnImpl = (file, args, opts) =>
     let overflow = false;
     let timedOut = false;
     let settled = false;
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
 
     const child = spawn(file, args, { cwd: opts.cwd, env: opts.env });
 
@@ -60,7 +63,7 @@ export const defaultSpawnImpl: SpawnImpl = (file, args, opts) =>
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(result);
+      resolve({ ...result, stdout: result.stdout + stdoutDecoder.end(), stderr: result.stderr + stderrDecoder.end() });
     };
 
     const timer = setTimeout(() => {
@@ -82,15 +85,15 @@ export const defaultSpawnImpl: SpawnImpl = (file, args, opts) =>
         // then kill to bound memory.
         if (!overflow) {
           overflow = true;
-          stdout += chunk.toString("utf8");
+          stdout += stdoutDecoder.write(chunk);
           child.kill("SIGKILL");
         }
         return;
       }
-      stdout += chunk.toString("utf8");
+      stdout += stdoutDecoder.write(chunk);
     });
     child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
+      stderr += stderrDecoder.write(chunk);
     });
 
     child.on("close", (code) => {
