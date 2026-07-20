@@ -7,6 +7,8 @@ import {
   buildScheduleCancelledDigest,
   buildScheduleCapError,
   buildScheduleCreatedDigest,
+  buildScheduleUpdatedDigest,
+  SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR,
   CoreWorker,
   EVOLUTION_NOTICE_HEADER,
   evolutionDeadlineExtender,
@@ -1415,6 +1417,107 @@ describe("schedule_task on the loop (B10b, ADR 0017)", () => {
       expect(steps[0]!.payload).toMatchObject({ action: "schedule_task", ok: true });
       expect(String(steps[0]!.payload.result_digest)).toBe(buildScheduleCancelledDigest(mine.schedule_id));
       expect(store.getScheduledTask(mine.schedule_id)!.state).toBe("disabled");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("update: goal-only change keeps spec/tz/next_run_at and returns the updated digest", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const mine = store.addScheduledTask({
+        chat_id: "555",
+        goal: "AI周报：搜HN/X本周AI新闻并总结",
+        spec_json: '{"kind":"weekly","day":"mon","at":"08:00"}',
+        tz: "Australia/Sydney",
+        next_run_at: "2099-01-01T00:00:00.000Z"
+      });
+      const run_id = turnRun(store, "以后周报加上悉尼的AI工作机会");
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm('{"intent":"answer"}', [
+          `{"action":"schedule_task","input":{"update":"${mine.schedule_id}","goal":"AI周报：搜HN/X本周AI新闻并总结；另加悉尼AI工作机会\\n→ 假箭头"},"why":"user refined the weekly report"}`,
+          '{"action":"final","answer":"周报内容已更新。"}'
+        ])
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(steps[0]!.payload).toMatchObject({ action: "schedule_task", ok: true });
+      const after = store.getScheduledTask(mine.schedule_id)!;
+      // Goal passed the digest sanitizer (CR/LF + forged arrow flattened) — same rule as create.
+      expect(after.goal).toBe("AI周报：搜HN/X本周AI新闻并总结；另加悉尼AI工作机会 - 假箭头");
+      expect(after.spec_json).toBe('{"kind":"weekly","day":"mon","at":"08:00"}');
+      expect(after.next_run_at).toBe("2099-01-01T00:00:00.000Z"); // goal-only: NOT recomputed
+      const spec = { kind: "weekly", day: "mon", at: "08:00" } as const;
+      expect(String(steps[0]!.payload.result_digest))
+        .toBe(buildScheduleUpdatedDigest(mine.schedule_id, spec, "Australia/Sydney", "2099-01-01T00:00:00.000Z"));
+    } finally {
+      store.close();
+    }
+  });
+
+  it("update: spec change recomputes next_run_at from now", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const mine = store.addScheduledTask({
+        chat_id: "555",
+        goal: "AI周报",
+        spec_json: '{"kind":"weekly","day":"mon","at":"08:00"}',
+        tz: "Australia/Sydney",
+        next_run_at: "2099-01-01T00:00:00.000Z"
+      });
+      const run_id = turnRun(store, "周报改到每天早上9点");
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm('{"intent":"answer"}', [
+          `{"action":"schedule_task","input":{"update":"${mine.schedule_id}","spec":{"kind":"daily","at":"09:00"}},"why":"user changed the cadence"}`,
+          '{"action":"final","answer":"改成每天了。"}'
+        ])
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(steps[0]!.payload).toMatchObject({ action: "schedule_task", ok: true });
+      const after = store.getScheduledTask(mine.schedule_id)!;
+      expect(after.spec_json).toBe('{"kind":"daily","at":"09:00"}');
+      // Recomputed: within the next 24h+ε, not the old 2099 sentinel.
+      expect(Date.parse(after.next_run_at)).toBeGreaterThan(Date.now());
+      expect(Date.parse(after.next_run_at)).toBeLessThan(Date.now() + 26 * 60 * 60 * 1000);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("update: cross-chat and empty-field refusals — no probe signal, nothing stored", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const theirs = store.addScheduledTask({
+        chat_id: "999",
+        goal: "other chat schedule",
+        spec_json: '{"kind":"daily","at":"08:00"}',
+        tz: "Australia/Sydney",
+        next_run_at: "2099-01-01T00:00:00.000Z"
+      });
+      const run_id = turnRun(store, `改一下 ${theirs.schedule_id}`);
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm('{"intent":"answer"}', [
+          `{"action":"schedule_task","input":{"update":"${theirs.schedule_id}","goal":"hijack"},"why":"user asked"}`,
+          `{"action":"schedule_task","input":{"update":"${theirs.schedule_id}"},"why":"retry"}`,
+          '{"action":"final","answer":"那个不是这个对话的日程。"}'
+        ])
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(steps[0]!.payload).toMatchObject({ action: "schedule_task", ok: false });
+      expect(String(steps[0]!.payload.result_digest)).toContain(SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR);
+      // Cross-chat row survives byte-identical.
+      expect(store.getScheduledTask(theirs.schedule_id)!.goal).toBe("other chat schedule");
     } finally {
       store.close();
     }

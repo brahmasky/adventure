@@ -2465,6 +2465,67 @@ export class CoreWorker {
       return { ok: true, output: { answer: buildScheduleCancelledDigest(schedule_id) } };
     }
 
+    // v2 update verb (ADR 0017 amendment): partial in-place edit of an own-chat row.
+    // Same shape-check-before-lookup and identical-to-not-found refusal as cancel; the
+    // goal passes the SAME sanitizer as create (it replays as a future turn text);
+    // next_run_at recomputes ONLY when spec/tz changed — a goal edit must not move a
+    // pending fire. Updating a 'failed' row re-enables it (store semantics).
+    if (typeof input.update === "string" && input.update.trim().length > 0) {
+      const schedule_id = input.update.trim();
+      if (!/^sch_[0-9a-fA-F-]{8,}$/.test(schedule_id)) {
+        return { ok: false, error: SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR };
+      }
+      const row = this.runStore.getScheduledTask(schedule_id);
+      if (!row || row.chat_id !== chat_id || row.state === "disabled") {
+        return { ok: false, error: SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR };
+      }
+      const hasGoal = typeof input.goal === "string" && input.goal.trim().length > 0;
+      const hasSpec = input.spec !== undefined && input.spec !== null;
+      const hasTz = typeof input.tz === "string" && input.tz.trim().length > 0;
+      if (!hasGoal && !hasSpec && !hasTz) {
+        return { ok: false, error: SCHEDULE_TASK_UPDATE_EMPTY_ERROR };
+      }
+      const goal = hasGoal ? sanitizeScheduleGoal(input.goal as string) : undefined;
+      if (hasGoal && (goal === undefined || goal.length === 0)) {
+        return { ok: false, error: SCHEDULE_TASK_GOAL_REQUIRED_ERROR };
+      }
+      const spec = hasSpec ? parseScheduleSpec(input.spec) : parseScheduleSpec(row.spec_json);
+      // A corrupt STORED spec surfaces here too: the model must supply a fresh spec.
+      if (!spec) {
+        return { ok: false, error: SCHEDULE_TASK_INVALID_SPEC_ERROR };
+      }
+      const tz = hasTz ? resolveTimeZone((input.tz as string).trim()) : row.tz;
+      if (!tz) {
+        return { ok: false, error: SCHEDULE_TASK_INVALID_TZ_ERROR };
+      }
+      const now = new Date().toISOString();
+      let next_run_at = row.next_run_at;
+      if (hasSpec || hasTz) {
+        const recomputed = computeNextRunAt(spec, tz, now);
+        if (!recomputed) {
+          return { ok: false, error: SCHEDULE_TASK_NEXT_UNCOMPUTABLE_ERROR };
+        }
+        next_run_at = recomputed;
+      }
+      const updated = this.runStore.updateScheduledTask({
+        schedule_id,
+        goal,
+        spec_json: hasSpec ? JSON.stringify(spec) : undefined,
+        tz: hasTz ? tz : undefined,
+        next_run_at: hasSpec || hasTz ? next_run_at : undefined,
+        now
+      });
+      // The store can still say no (state changed under us) — a digest must never
+      // claim a write that didn't land.
+      if (!updated) {
+        return { ok: false, error: SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR };
+      }
+      return {
+        ok: true,
+        output: { answer: buildScheduleUpdatedDigest(schedule_id, spec, tz, next_run_at) }
+      };
+    }
+
     const spec = parseScheduleSpec(input.spec);
     if (!spec) {
       return { ok: false, error: SCHEDULE_TASK_INVALID_SPEC_ERROR };
@@ -3298,6 +3359,12 @@ export const SCHEDULE_TASK_NEXT_UNCOMPUTABLE_ERROR =
   "could not compute the next fire time — a once schedule must lie in the future";
 export const SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR =
   "no active schedule with that id in this chat — check /schedule for the list";
+// Update refusals (scheduler v2). Not-found wording matches cancel's EXACTLY —
+// cross-chat, absent, and disabled must stay indistinguishable across verbs too.
+export const SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR =
+  "no active schedule with that id in this chat — check /schedule for the list";
+export const SCHEDULE_TASK_UPDATE_EMPTY_ERROR =
+  "update needs at least one of goal, spec, or tz — nothing to change";
 
 export function buildScheduleCapError(cap: number): string {
   return `schedule cap reached (${cap} active schedules for this chat) — cancel one first (/schedule)`;
@@ -3317,6 +3384,18 @@ export function buildScheduleCreatedDigest(
 
 export function buildScheduleCancelledDigest(schedule_id: string): string {
   return `Cancelled ✓ ${schedule_id} — it will not fire again`;
+}
+
+export function buildScheduleUpdatedDigest(
+  schedule_id: string,
+  spec: ScheduleSpec,
+  tz: string,
+  next_run_at: string
+): string {
+  return (
+    `Updated ✓ ${schedule_id} — ${describeScheduleSpec(spec)} ${tz}; ` +
+    `next fire ${formatInstantInZone(next_run_at, tz)} (${tz}) = ${next_run_at} UTC`
+  );
 }
 
 /**
