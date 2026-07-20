@@ -7,6 +7,7 @@ import {
   buildScheduleCancelledDigest,
   buildScheduleCapError,
   buildScheduleCreatedDigest,
+  buildScheduleExistsDigest,
   buildScheduleUpdatedDigest,
   SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR,
   CoreWorker,
@@ -1417,6 +1418,38 @@ describe("schedule_task on the loop (B10b, ADR 0017)", () => {
       expect(steps[0]!.payload).toMatchObject({ action: "schedule_task", ok: true });
       expect(String(steps[0]!.payload.result_digest)).toBe(buildScheduleCancelledDigest(mine.schedule_id));
       expect(store.getScheduledTask(mine.schedule_id)!.state).toBe("disabled");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("create dedups: an identical enabled row (chat+spec+tz+goal) short-circuits to the exists digest", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const existing = store.addScheduledTask({
+        chat_id: "555",
+        goal: "AI周报",
+        spec_json: '{"kind":"weekly","day":"mon","at":"08:00"}',
+        tz: "Australia/Sydney",
+        next_run_at: "2099-01-01T00:00:00.000Z"
+      });
+      const run_id = turnRun(store, "每周一早上8点给我AI周报");
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm('{"intent":"answer"}', [
+          '{"action":"schedule_task","input":{"goal":"AI周报","spec":{"kind":"weekly","day":"mon","at":"08:00"},"tz":"Australia/Sydney"},"why":"user asked for a weekly report"}',
+          '{"action":"final","answer":"这个周报已经安排过了。"}'
+        ])
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(steps[0]!.payload).toMatchObject({ action: "schedule_task", ok: true });
+      const spec = { kind: "weekly", day: "mon", at: "08:00" } as const;
+      expect(String(steps[0]!.payload.result_digest))
+        .toBe(buildScheduleExistsDigest(existing.schedule_id, spec, "Australia/Sydney", "2099-01-01T00:00:00.000Z"));
+      expect(store.listScheduledTasks("555").length).toBe(1); // NO second row
     } finally {
       store.close();
     }

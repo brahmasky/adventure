@@ -2542,6 +2542,22 @@ export class CoreWorker {
     if (goal.length === 0) {
       return { ok: false, error: SCHEDULE_TASK_GOAL_REQUIRED_ERROR };
     }
+    // v2 dedup (the 2026-07-19 duplicate-AI周报 bug): an ENABLED row with identical
+    // spec+tz+goal in this chat makes creation an idempotent no-op that names the
+    // existing id — the model relays it instead of minting sch_ twins. Runs BEFORE the
+    // cap check: refusing an idempotent retry because the cap is full would be wrong.
+    const spec_json = JSON.stringify(spec);
+    const duplicate = this.runStore
+      .listScheduledTasks(chat_id)
+      .find((r) => r.state === "enabled" && r.spec_json === spec_json && r.tz === tz && r.goal === goal);
+    if (duplicate) {
+      return {
+        ok: true,
+        output: {
+          answer: buildScheduleExistsDigest(duplicate.schedule_id, spec, duplicate.tz, duplicate.next_run_at)
+        }
+      };
+    }
     const cap = resolveSchedulerMaxPerChat(process.env);
     if (this.runStore.countActiveSchedules(chat_id) >= cap) {
       return { ok: false, error: buildScheduleCapError(cap) };
@@ -2554,7 +2570,7 @@ export class CoreWorker {
     const row = this.runStore.addScheduledTask({
       chat_id,
       goal,
-      spec_json: JSON.stringify(spec),
+      spec_json,
       tz,
       next_run_at,
       created_by: `run:${claim.run_id}`,
@@ -3395,6 +3411,19 @@ export function buildScheduleUpdatedDigest(
   return (
     `Updated ✓ ${schedule_id} — ${describeScheduleSpec(spec)} ${tz}; ` +
     `next fire ${formatInstantInZone(next_run_at, tz)} (${tz}) = ${next_run_at} UTC`
+  );
+}
+
+export function buildScheduleExistsDigest(
+  schedule_id: string,
+  spec: ScheduleSpec,
+  tz: string,
+  next_run_at: string
+): string {
+  return (
+    `Already scheduled ✓ ${schedule_id} — ${describeScheduleSpec(spec)} ${tz}; ` +
+    `next fire ${formatInstantInZone(next_run_at, tz)} (${tz}) = ${next_run_at} UTC. ` +
+    `No duplicate created — use {"update":"${schedule_id}"} to change it.`
   );
 }
 
