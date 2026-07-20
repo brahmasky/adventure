@@ -1035,3 +1035,23 @@ Build + independent adversarial verification subagents; each live round found a 
   it's unproven infrastructure, not a closed loop.
 - NEXT: Slice B (promise ledger + LLM judgment pass) only after Slice A earns it; P3 first dollar
   when Paco unblocks the account step.
+
+### 2026-07-20 (pm, addendum) — sweep cadence 5min → 12h; self-observation bug found by the change
+- Paco: "every 5 mins may be too much; 1-2 times each day max." Adopted: cadence now
+  HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES, default 720 (twice daily).
+- Clarified for the record: sweep frequency ≠ alert frequency. Alerts fire on incident
+  TRANSITIONS, so a persistent violation costs exactly one Telegram message at any cadence, and
+  a clean DB is silent at any cadence. The interval buys DETECTION LATENCY only. Fine for the
+  five retro-style invariants; stuck_run is the one class where hours of latency costs something
+  (Houge silently not doing something Paco asked) — hence the override knob.
+- THE CADENCE CHANGE IMMEDIATELY EXPOSED A REAL BUG: at any interval longer than the
+  undelivered-notification grace (15 min), the sweep's OWN alert from the previous sweep trips
+  the delivery invariant. Broken Telegram delivery would then self-amplify — an incident about
+  its own undelivered alert, whose alert is also undelivered, forever, during an outage where
+  Paco can't see any of it. Fix: findUndeliveredNotifications excludes incident_* outbox keys
+  (narrow — genuine stuck reports still surface). Regression test pins the rule.
+- Lesson worth keeping: a monitor must never observe its own output. Invisible at 5-min cadence
+  because the alert got delivered before the next sweep looked. A human's "this feels off" found
+  a class of bug that Slice A watching itself could not have.
+- 1708/1708 green. Pushed a3a04a8, latch cleared, daemon reloaded; first sweep on the new build
+  confirmed 2026-07-20T11:18:25Z, 0 incidents (clean).
