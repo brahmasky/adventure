@@ -989,3 +989,20 @@ Build + independent adversarial verification subagents; each live round found a 
 - OPEN: systemic guard — trigger_adapter could prefix scheduled-run goals with "execute only,
   never re-create schedule" so the fix isn't data-only. Lesson insert into houge.sqlite lessons
   table was blocked by permission classifier; goal-text guard covers it for now.
+
+## 2026-07-20 — Scheduler v2 SHIPPED (plan → senior review → TDD execution)
+- Plan: docs/superpowers/plans/2026-07-20-scheduler-v2-list-update-dedup-provenance.md
+  (senior-reviewed; 2 WARNINGs resolved pre-code: store-return guard, verb precedence invariant).
+- Shipped in 8 task commits: RunStore.updateScheduledTask (failed-row repair, disabled
+  untouchable) · list renderer moved to schedule-spec (core+gateway share one) · schedule_task
+  {list:true} · {update:"sch_…"} (partial edit, own-chat, recompute only on spec/tz change) ·
+  dedup-on-create (exists digest, pre-cap) · PROVENANCE STRIP (compileTurnContract drops
+  schedule_task when event.source==="schedule") · manifest teaches 4 verbs · ADR 0017 amendment.
+- Verb precedence spec'd: list → cancel → update → create (first match wins).
+- B10 Probe 1 rewritten to the STRONGER invariant: self-replication now impossible (chain dies
+  at step 0, denied at contract layer); per-chat cap demoted to defense-in-depth. Old assertion
+  ("compounds up to cap") was the v1 containment model — obsolete by design, not by accident.
+- 1684/1684 green (baseline 1674 + 10 new). Built, pushed (77e8a4e), daemon reloaded 16:10,
+  heartbeat confirmed on new dist.
+- Next Monday's 周报 is the live gate: exactly one report, 悉尼 jobs section, no new sch_ row,
+  no mojibake (StringDecoder fix's first long-output test).
