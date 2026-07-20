@@ -1006,3 +1006,32 @@ Build + independent adversarial verification subagents; each live round found a 
   heartbeat confirmed on new dist.
 - Next Monday's 周报 is the live gate: exactly one report, 悉尼 jobs section, no new sch_ row,
   no mojibake (StringDecoder fix's first long-output test).
+
+## 2026-07-20 (pm) — Strategy reset + Introspection Slice A SHIPPED
+- Strategy: Pinch Me hackathon DROPPED (deadline Jul 22, Paco on work commitments) — projects row
+  updated with reason, so the DB reflects reality. Holistic review produced the standing frame:
+  **push on Earn (P3 first dollar), sense with Audit (introspection), fix only what incidents pull.**
+  P3 remains blocked on Paco (Google account for registration, bounty pick, /approve taps), so the
+  sense track was chosen as the next push — it needs nothing from Paco and serves the stated
+  eventual goal (Houge routinely reviewing his own interactions and root-causing his own bugs).
+- Gap named: the 4-level memory spine stores CONTENT (said/learned/known). Nothing read the
+  BEHAVIORAL record (ledger_events/runs/scheduled_tasks/outbox) — write-only until today. All three
+  bugs this week were found by a human running SQL. ADR 0012 said the eval loop needs an executable
+  verifier and conversation has none; the insight added: BEHAVIOR has one, and it's cheap.
+- SHIPPED (ADR 0024, plan docs/superpowers/plans/2026-07-20-introspection-slice-a-invariant-sweep.md):
+  incidents table + open/touch/resolve lifecycle (rows never deleted; recurrence opens a new row) ·
+  six invariant queries (duplicate schedules, stuck runs, undelivered notifications, overdue
+  schedules, failed schedules, heartbeat gaps) · invariant-sweep.ts tick on the signal path ·
+  incident_opened/incident_resolved ledger events · flag HOUGE_INVARIANT_SWEEP_ENABLED (default OFF,
+  deliberately NOT in DISARM_FLAGS — disarming must not blind him).
+- Two BLOCKERs caught in spec review BEFORE code: alert storm cap (a broken outbox would have
+  alerted about every undelivered alert — records all, alerts ≤3 + one summary) and flap damping
+  (reopen within 30 min is silent). Scope cut in review: /incidents command deferred to Slice B.
+- waiting_for_approval runs are NEVER incidents — alerting there would be noisiest exactly when
+  Paco is slowest, training him to ignore the monitor.
+- 1705/1705 green (baseline 1684 + 21). Migration count test 16→17 (expected). Pushed 02168fd,
+  armed in .env, daemon reloaded.
+- NORTH STAR for this track: the first incident Houge reports BEFORE Paco notices it. Until then
+  it's unproven infrastructure, not a closed loop.
+- NEXT: Slice B (promise ledger + LLM judgment pass) only after Slice A earns it; P3 first dollar
+  when Paco unblocks the account step.
