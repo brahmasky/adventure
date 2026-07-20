@@ -486,7 +486,48 @@ catch up with exactly one fire when it lifts). Misfire policy: fire once, advanc
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `HOUGE_SCHEDULER_ENABLED` | `false` | Master arm for the tick AND the `schedule_task` tool (unlisted when disarmed). `/schedule` viewing stays available either way. |
-| `HOUGE_SCHEDULER_MAX_PER_CHAT` | `10` | Cap on active (enabled) schedules per chat — also the self-replication bound. |
+| `HOUGE_SCHEDULER_MAX_PER_CHAT` | `10` | Cap on active (enabled) schedules per chat. Defense-in-depth only since scheduler v2 — the self-replication bound is now the provenance strip (below), not the cap. |
+
+**Scheduler v2 (ADR 0017 amendment, 2026-07-20).** `schedule_task` has four verbs:
+`{goal,spec,tz}` create · `{list:true}` · `{update:"sch_…", goal?/spec?/tz?}` · `{cancel:"sch_…"}`.
+Creating an exact duplicate of an enabled schedule returns the existing id instead of a twin.
+A goal-only update never moves the next fire time; a spec/tz update recomputes it. Updating a
+`failed` row re-enables it (the repair path).
+
+**Provenance strip (the self-replication bound).** `compileTurnContract` removes `schedule_task`
+from `allowed_actions` when `event.source === "schedule"`, so a run BORN FROM a schedule fire
+cannot create or mutate schedules — the tool never reaches the model's menu, and a scripted call
+is denied. This replaced the per-chat cap as the containment mechanism after a fired run misread
+its own replayed goal as "set up a weekly report" and minted a duplicate (2026-07-19).
+
+## Introspection — the invariant sweep (slice A, ADR 0024)
+
+A deterministic, zero-LLM sweep on the daemon signal path: reads Houge's own flight recorder
+(schedules, runs, outbox, heartbeat), checks six invariants, and records violations as
+**incidents** with an open→resolve lifecycle. Pure SQL reads plus incident bookkeeping — no LLM,
+no capability, no run creation, so it can never act on what it finds.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `HOUGE_INVARIANT_SWEEP_ENABLED` | `false` | Master arm for the sweep. Deliberately NOT in `DISARM_FLAGS` — disarming Houge must not blind him. |
+| `HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES` | `720` (12 h) | Sweep cadence. Invalid/non-positive values fall back to the default. |
+
+Invariants: duplicate enabled schedules · stuck runs (active state, lease expired >10 min;
+`waiting_for_approval` is NEVER an incident — that run is parked on Paco, working as designed) ·
+undelivered notifications (>15 min, EXCLUDING the sweep's own `incident_*` alerts) · overdue
+schedules (>15 min past cursor) · failed schedules · heartbeat gaps (>10 min).
+
+**Cadence buys detection latency, not quiet.** Alerts fire on incident *transitions*, so a
+persistent violation costs exactly one Telegram message at any cadence and a clean database is
+silent at any cadence. Twice a day suits the retro-style invariants; lower it toward 30 min if
+`stuck_run` latency starts to matter (that is the one class meaning Houge is silently not doing
+something Paco asked).
+
+**Alert damping.** At most 3 alerts per sweep plus one summary line (a systemic failure trips
+many invariants at once); a reopen within 30 min of the previous resolve is recorded silently.
+Incident rows and ledger events are always complete — only the human channel is throttled.
+
+Inspect: `sqlite3 houge.sqlite "SELECT kind, subject, state, seen_count, first_seen_at FROM incidents ORDER BY first_seen_at DESC"`
 
 ## Episodic memory (Phase M, ADR 0016)
 

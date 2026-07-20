@@ -34,6 +34,8 @@ Read these first when onboarding — they explain choices the code alone can't.
 | [0020](0020-llm-wiki.md) | LLM wiki — verified, reusable knowledge pages (Phase W) | accepted |
 | [0021](0021-db-backup.md) | DB backup — WAL-safe periodic snapshots via `VACUUM INTO` (tmp+rename, quick_check gate, latch-retry, local-only) | accepted |
 | [0022](0022-money-fork-reopened.md) | Money fork re-opened — earning is IN (human-fronted), custody/trading/fund-holding stay OUT (re-decides charter fork 3; ADR 0001 floor unchanged) | accepted |
+| [0023](0023-external-workspace.md) | External engineering workspace — container-sandboxed work on third-party repos | accepted |
+| [0024](0024-introspection-invariant-sweep.md) | Introspection — the deterministic invariant sweep as Houge's first self-sensing organ (the **sense** stage ADR 0012 left open) | accepted |
 
 ## Writing a new ADR
 

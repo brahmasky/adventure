@@ -1,3 +1,44 @@
+# 🧭 CURRENT SYSTEM STATE — 2026-07-20 (read this first)
+
+**Live config (mini daemon, .env is the arming truth — read it, don't assume):**
+HOUGE_SCHEDULER_ENABLED · HOUGE_BOUNTY_ENABLED · HOUGE_EPISODIC_ENABLED · HOUGE_WIKI_ENABLED ·
+HOUGE_BACKUP_ENABLED · **HOUGE_INVARIANT_SWEEP_ENABLED (new today)**. Sweep cadence
+HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES, default 720 (twice a day).
+
+**Shipped 2026-07-20 (both live, daemon reloaded, 1708/1708 green):**
+1. **Scheduler v2** (ADR 0017 amendment) — `schedule_task` gains `{list:true}` and
+   `{update:"sch_…"}` verbs; dedup-on-create returns the existing id instead of a twin; and the
+   **provenance strip**: `compileTurnContract` removes `schedule_task` when
+   `event.source === "schedule"`, so a schedule-born run can no longer create/mutate schedules.
+   That strip — not the per-chat cap — is now the self-replication bound (B10 Probe 1 was
+   rewritten to the stronger invariant; the cap is defense-in-depth).
+2. **Introspection slice A** (ADR 0024) — deterministic zero-LLM invariant sweep on the signal
+   path; six invariants over the flight recorder; `incidents` table with open→resolve lifecycle;
+   one Telegram alert per transition, ≤3 per sweep + summary, 30-min flap damping. The sweep
+   NEVER observes its own alerts (self-amplification bug, see tasks/lessons.md).
+
+**Strategic frame (agreed 2026-07-20):** *push on Earn, sense with Audit, fix only what incidents
+pull.* One push-track at a time.
+- **Earn (P3, first dollar)** — BLOCKED ON PACO: one-time Google account setup
+  (wukong.houge@gmail.com + OAuth) for registration; picking a bounty; `/approve` taps. Thin
+  slice when unblocked: earnings ledger + `external_write` behind `/approve` for ONE delivery
+  path (GitHub PR, generalizing branch-publish beyond own-origin). Defer credential store.
+- **Sense (introspection)** — slice A live. Slice B (promise ledger, LLM judgment pass,
+  `/incidents` view, incident→self_diagnose bridge) ONLY after slice A earns it.
+- **North star, sense track:** the first incident Houge reports BEFORE Paco notices it. Until
+  then it is unproven infrastructure, not a closed loop.
+
+**Open / watch:**
+- Next Monday 2026-07-27 08:00 AEST is the live gate for the scheduler work: expect exactly ONE
+  AI周报, containing the 悉尼/澳洲 AI-jobs section, no new `sch_` row after the fire, and no
+  mojibake (first long-output test of the 2026-07-20 StringDecoder fix).
+- Pinch Me hackathon DROPPED 2026-07-20 (deadline Jul 22, Paco on work commitments) — projects
+  row updated with reason.
+- Still open from 2026-07-19: deterministic `{rank:N}` for `project_track` so 「跟进第N个」cannot
+  misresolve.
+
+---
+
 # ✅ DONE — Money-Work P2 SHIPPED + LIVE-GATED 2026-07-19 07:1x
 
 **LIVE GATE PASSED (real daemon on the mini, Paco's Telegram, 2026-07-18T21:12Z):** Paco

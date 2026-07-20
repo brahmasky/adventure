@@ -77,3 +77,35 @@ Rules Claude writes for itself after corrections. Review at session start.
   prior assistant turn; the model ignored it. Candidate fixes: deterministic rank→URL store from
   the last scan (project_track accepts {rank}), and/or steering lines in the scan digest +
   project_track description. Same family as the Phase-R convergence gap.
+
+## A monitor must never observe its own output (2026-07-20)
+
+- The invariant sweep checks for undelivered Telegram notifications; its OWN incident alerts are
+  Telegram notifications. Without an exclusion, a delivery outage self-amplifies: an incident
+  opens about the sweep's own undelivered alert, the alert about that is also undelivered, the
+  next sweep opens an incident about THAT — growing every cycle, never resolving, during an
+  outage where Paco can see none of it. Fix: `findUndeliveredNotifications` excludes
+  `incident_*` outbox keys (narrow — genuine stuck reports still surface).
+- **Rule:** when building ANY self-observing component (slice B's promise ledger, the LLM retro
+  pass, any future watchdog), explicitly ask *what does this component's own output look like to
+  its own detectors* — and exclude it.
+
+## Cadence changes are not "just tuning" (2026-07-20)
+
+- Moving the sweep from 5 min → 12 h (Paco's call) immediately exposed the self-observation bug
+  above. It was invisible at 5 min purely because the alert got DELIVERED before the next sweep
+  looked; the flaw only appears once the interval exceeds the 15-min undelivered grace window.
+- **Rule:** an interval change moves components across each other's time windows and can expose
+  latent coupling. Re-run the full suite on any cadence/threshold change and ask which OTHER
+  timing constants the new value now crosses. Corollary for review: when a config value looks
+  like a free knob, check the windows it is implicitly ordered against.
+
+## Distinguish "how often it checks" from "how often it speaks" (2026-07-20)
+
+- Paco read a 5-minute sweep as "too much self-inspection", reasonably. But alerts fire on
+  incident TRANSITIONS, so a persistent violation costs exactly one message at any cadence, and
+  a clean database is silent at any cadence. The interval buys DETECTION LATENCY only.
+- **Rule:** when proposing a polling cadence, state the noise consequence and the latency
+  consequence separately — otherwise the reviewer optimizes the wrong one. And still take the
+  slower default when latency is cheap: the pushback was right on the merits for five of the six
+  invariants, and it paid for itself by surfacing a real bug.

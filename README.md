@@ -130,7 +130,7 @@ slash-only control commands keep it inspectable (idempotent, no run, no budget):
 
 - `/lessons [scope]` — view the lesson block(s); shows the raw block plus char-count/cap so you can see consolidation pressure. With no scope, lists all scopes.
 - `/forget <scope>` — clears that scope's lesson block and acks.
-- `/schedule` · `/schedule cancel <id>` — list/cancel this chat's scheduled tasks; schedules are created conversationally via the `schedule_task` loop tool ("每周一早上8点给我AI周报") — ADR 0017.
+- `/schedule` · `/schedule cancel <id>` — list/cancel this chat's scheduled tasks; schedules are created, listed, **updated**, and cancelled conversationally via the `schedule_task` loop tool ("每周一早上8点给我AI周报", "周报以后加上悉尼工作机会") — ADR 0017 + its 2026-07-20 v2 amendment.
 - `/kill [reason]` — the durable kill switch (ADR 0018): writes the `houge.kill` tombstone and stops the daemon; launchd relaunches into a PARKED process, so nothing automatic can resurrect it. Revival is manual (delete the file, restart). `/disarm` · `/rearm` — one-command evolution/scheduler stand-down that survives restarts (posture file outranks `.env`).
 
 → The composer, conversational learning, and the self-critique pass:
@@ -263,6 +263,34 @@ branch-only publish with a **human-tapped merge**, the **secrets firewall**
 → Breaker caps, defaults, and rationale:
 [configuration reference](docs/reference/configuration.md#global-autonomy-circuit-breaker)
 and [ADR 0003](docs/decisions/0003-global-budget-breaker.md).
+
+## Self-inspection — the invariant sweep
+
+Houge's memory (lessons, skills, wiki, episodic facts) stores *content*: what was said,
+learned, known. The **invariant sweep** ([ADR 0024](docs/decisions/0024-introspection-invariant-sweep.md))
+covers the other half — his own *behavior*. With `HOUGE_INVARIANT_SWEEP_ENABLED=true` the
+daemon checks six assertions over its own flight recorder (`runs`, `scheduled_tasks`,
+`notification_outbox`, `daemon_heartbeat`) every `HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES`
+(default 720 — twice a day): duplicate enabled schedules, stuck runs, undelivered
+notifications, overdue schedules, failed schedules, heartbeat gaps.
+
+A violation opens a durable **incident** (fingerprint `kind:subject`), emits a ledger event,
+and sends **one** Telegram line. Recurrences bump a counter silently; a clean sweep resolves
+the row; rows are never deleted, and a recurrence after resolution opens a new row so
+recurrence stays countable. At most 3 alerts per sweep plus a summary line, and reopens inside
+30 minutes are silent — a monitor that spams during an outage gets muted, and a muted monitor
+is worse than none.
+
+It is the least-privileged component in the system by construction: pure SQL reads plus
+incident bookkeeping — no LLM, no capability, no run creation. It cannot act on what it finds.
+
+```bash
+sqlite3 houge.sqlite "SELECT kind, subject, state, seen_count, first_seen_at FROM incidents ORDER BY first_seen_at DESC"
+```
+
+Deferred to slice B: the judgment half — promise-vs-action diffing, plan-vs-execution
+divergence, a daily LLM retro digest, an `/incidents` view, and the
+incident → `self_diagnose` → regression-tested self-write bridge.
 
 ## Backup & restore
 

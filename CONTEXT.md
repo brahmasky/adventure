@@ -67,3 +67,13 @@ This file defines domain language for Houge architecture reviews and implementat
 **Self-Repair**: A V2 loop that restores expected Houge behavior after a runtime failure by diagnosing evidence, delegating to contained coding agents when allowed, validating a patch, and leaving a rollback receipt.
 
 **Self-Evolution**: A V2 loop that improves expected future behavior through measured changes to programs, skills, wiki, guidebooks, evals, or code. It differs from self-repair because it changes the target behavior rather than restoring it.
+
+**Behavioral Record (Flight Recorder)**: The durable record of what Houge actually *did* — `runs`, `ledger_events`, `scheduled_tasks`, `notification_outbox`, `daemon_heartbeat`. Distinct from the memory types, which store what was said, learned, or known. It is machine-checkable, which is what makes autonomous self-verification possible in the behavioral domain where conversation offers no verifier.
+
+**Invariant**: A deterministic assertion over the behavioral record that must hold in a healthy system (e.g. "no two enabled schedules share chat + spec + tz + goal"; "an active run holds a live lease"). Checked by code, never by model judgment.
+
+**Invariant Sweep**: The periodic tick that evaluates every invariant and maintains incidents. Least-privileged by construction: pure reads plus incident bookkeeping — no LLM, no capability, no run creation, so it can observe but never act.
+
+**Incident**: A durable record of a violated invariant, fingerprinted `kind:subject`, with an open→resolved lifecycle. Rows are never deleted; a recurrence after resolution opens a new row so recurrence stays countable. Alerts fire on transitions only, never per sweep.
+
+**Provenance Strip**: The rule that a run born from a schedule fire (`event.source === "schedule"`) has `schedule_task` removed from its task contract, so replayed schedule text can never be acted on as a fresh instruction to create or mutate schedules. The general principle: a capability is withheld based on how a run was *born*, not on what its text says.
