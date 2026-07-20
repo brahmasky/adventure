@@ -1,4 +1,5 @@
 import { resolveTimeZone, wallClockToInstant } from "../prompt/tz-convert.js";
+import type { ScheduledTaskRow } from "./run-store.js";
 
 /**
  * Scheduler v1 spec + next-run math (B10b, ADR 0017). A schedule is a tiny declarative
@@ -181,4 +182,36 @@ export const DEFAULT_SCHEDULER_MAX_PER_CHAT = 10;
 export function resolveSchedulerMaxPerChat(env: NodeJS.ProcessEnv): number {
   const n = Number(env.HOUGE_SCHEDULER_MAX_PER_CHAT);
   return Number.isInteger(n) && n > 0 ? n : DEFAULT_SCHEDULER_MAX_PER_CHAT;
+}
+
+/** `/schedule` reply when the chat has no visible (enabled/failed) schedules. */
+export const SCHEDULE_LIST_EMPTY_TEXT =
+  "No schedules for this chat yet. Ask Houge in plain language to schedule a recurring task.";
+
+/** Goal preview length on a `/schedule` list row. */
+export const SCHEDULE_GOAL_PREVIEW_CHARS = 60;
+
+/**
+ * Render the schedule list (B10b; moved from gateway in scheduler v2 — the
+ * schedule_task list verb and the /schedule command share ONE renderer): one line per
+ * non-disabled schedule. Failed rows keep their line, prefixed `⚠ failed · ` (the
+ * owner must see a schedule that stopped retrying). Disabled rows are history — omitted.
+ */
+export function formatScheduleListText(rows: ScheduledTaskRow[]): string {
+  const visible = rows.filter((row) => row.state !== "disabled");
+  if (visible.length === 0) return SCHEDULE_LIST_EMPTY_TEXT;
+  return visible.map((row) => formatScheduleLine(row)).join("\n");
+}
+
+function formatScheduleLine(row: ScheduledTaskRow): string {
+  const spec = parseScheduleSpec(row.spec_json);
+  const specText = spec ? describeScheduleSpec(spec) : "unreadable spec";
+  // The city segment keeps the `next` clause short; the full IANA zone already rendered.
+  const city = row.tz.split("/").pop() ?? row.tz;
+  const goal =
+    row.goal.length > SCHEDULE_GOAL_PREVIEW_CHARS
+      ? `${row.goal.slice(0, SCHEDULE_GOAL_PREVIEW_CHARS)}…`
+      : row.goal;
+  const prefix = row.state === "failed" ? "⚠ failed · " : "";
+  return `${prefix}${row.schedule_id} · ${specText} ${row.tz} · next ${formatInstantInZone(row.next_run_at, row.tz)} (${city}) · ${goal}`;
 }

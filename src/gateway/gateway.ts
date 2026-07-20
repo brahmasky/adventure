@@ -18,7 +18,12 @@ import {
 } from "../config/disarm-posture.js";
 import { formatKillAckText, writeTombstone } from "../run/tombstone.js";
 import { parseRatingHistory, type LessonRow, type RunStore, type ScheduledTaskRow } from "../run/run-store.js";
-import { describeScheduleSpec, formatInstantInZone, parseScheduleSpec } from "../run/schedule-spec.js";
+import {
+  describeScheduleSpec,
+  formatInstantInZone,
+  formatScheduleListText,
+  parseScheduleSpec
+} from "../run/schedule-spec.js";
 import {
   parseBareRating,
   RATING_ACK_TEXT,
@@ -899,9 +904,14 @@ function formatSkillsText(scope: string | undefined, metas: SkillMeta[]): string
     .join("\n\n");
 }
 
-/** `/schedule` reply when the chat has no visible (enabled/failed) schedules. */
-export const SCHEDULE_LIST_EMPTY_TEXT =
-  "No schedules for this chat yet. Ask Houge in plain language to schedule a recurring task.";
+// The list renderer lives in schedule-spec.ts since scheduler v2 (the schedule_task
+// list verb and the /schedule command share ONE renderer); re-exported here for the
+// command-path callers and their tests.
+export {
+  SCHEDULE_LIST_EMPTY_TEXT,
+  SCHEDULE_GOAL_PREVIEW_CHARS,
+  formatScheduleListText
+} from "../run/schedule-spec.js";
 
 /** `/schedule cancel` refusal — not-found and cross-chat read IDENTICALLY (no probe signal). */
 export const SCHEDULE_CANCEL_NOT_FOUND_TEXT =
@@ -909,34 +919,6 @@ export const SCHEDULE_CANCEL_NOT_FOUND_TEXT =
 
 export function formatScheduleCancelledText(schedule_id: string): string {
   return `Cancelled ✓ ${schedule_id} — it will not fire again.`;
-}
-
-/** Goal preview length on a `/schedule` list row. */
-export const SCHEDULE_GOAL_PREVIEW_CHARS = 60;
-
-/**
- * Render the `/schedule` reply (B10b): one line per non-disabled schedule —
- * `sch_x · weekly mon 08:00 Australia/Sydney · next 2026-07-20 08:00 (Sydney) · <goal ≤60>`.
- * Failed rows keep their line, prefixed `⚠ failed · ` (the owner must see a schedule
- * that stopped retrying). Disabled rows are history — omitted.
- */
-export function formatScheduleListText(rows: ScheduledTaskRow[]): string {
-  const visible = rows.filter((row) => row.state !== "disabled");
-  if (visible.length === 0) return SCHEDULE_LIST_EMPTY_TEXT;
-  return visible.map((row) => formatScheduleLine(row)).join("\n");
-}
-
-function formatScheduleLine(row: ScheduledTaskRow): string {
-  const spec = parseScheduleSpec(row.spec_json);
-  const specText = spec ? describeScheduleSpec(spec) : "unreadable spec";
-  // The city segment keeps the `next` clause short; the full IANA zone already rendered.
-  const city = row.tz.split("/").pop() ?? row.tz;
-  const goal =
-    row.goal.length > SCHEDULE_GOAL_PREVIEW_CHARS
-      ? `${row.goal.slice(0, SCHEDULE_GOAL_PREVIEW_CHARS)}…`
-      : row.goal;
-  const prefix = row.state === "failed" ? "⚠ failed · " : "";
-  return `${prefix}${row.schedule_id} · ${specText} ${row.tz} · next ${formatInstantInZone(row.next_run_at, row.tz)} (${city}) · ${goal}`;
 }
 
 /**
