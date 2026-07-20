@@ -371,6 +371,26 @@ export interface EpisodicFactRow {
  * PER-FIRE ledger events, not row states). Rows are never deleted: cancel flips state
  * to 'disabled'; three consecutive fire failures flip it to 'failed'.
  */
+/** An open/resolved behavioral incident (introspection slice A, ADR 0024). Never deleted. */
+export interface IncidentRow {
+  incident_id: string;
+  /** Invariant family — the `kind` half of the fingerprint. */
+  kind: string;
+  /** Stable id of the offending thing (schedule_id / run_id / notification_id / "daemon"). */
+  subject: string;
+  /** `${kind}:${subject}` — deterministic, so the same violation always dedupes. */
+  fingerprint: string;
+  state: "open" | "resolved";
+  /** Counts and ids ONLY — never user text (same redaction rule as ledger payloads). */
+  detail_json: string;
+  seen_count: number;
+  first_seen_at: string;
+  last_seen_at: string;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ScheduledTaskRow {
   schedule_id: string;
   chat_id: string;
@@ -2834,6 +2854,242 @@ export class RunStore {
     return { failures, failed };
   }
 
+  // --- introspection: incidents + invariant detection (ADR 0024) -----------------
+
+  /** Fingerprint an invariant violation — deterministic, so repeat detections dedupe. */
+  incidentFingerprint(kind: string, subject: string): string {
+    return `${kind}:${subject}`;
+  }
+
+  /**
+   * Open a new incident and record the transition on the ledger. The ledger append happens
+   * HERE (not in the sweep) so the store's redaction pass applies, matching how the wiki and
+   * lesson decay ticks emit their own run-less system events.
+   */
+  openIncident(input: {
+    kind: string;
+    subject: string;
+    detail: Record<string, unknown>;
+    now?: string | undefined;
+  }): IncidentRow {
+    const incident_id = `inc_${randomUUID()}`;
+    const now = input.now ?? new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO incidents (
+        incident_id, kind, subject, fingerprint, state, detail_json,
+        seen_count, first_seen_at, last_seen_at, resolved_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'open', ?, 1, ?, ?, NULL, ?, ?)
+    `).run(
+      incident_id,
+      input.kind,
+      input.subject,
+      this.incidentFingerprint(input.kind, input.subject),
+      JSON.stringify(input.detail),
+      now,
+      now,
+      now,
+      now
+    );
+    this.appendLedgerEvent(
+      createLedgerEvent({
+        correlation_id: incident_id,
+        event_type: "incident_opened",
+        actor: "system",
+        sequence: this.nextLedgerSequence(),
+        payload: { incident_id, kind: input.kind, subject: input.subject }
+      })
+    );
+    return this.getIncident(incident_id)!;
+  }
+
+  getIncident(incident_id: string): IncidentRow | undefined {
+    return this.db.prepare(`
+      SELECT * FROM incidents WHERE incident_id = ?
+    `).get<IncidentRow>(incident_id);
+  }
+
+  /** The open row for a fingerprint, if any (resolved rows never match — recurrence reopens). */
+  findOpenIncident(fingerprint: string): IncidentRow | undefined {
+    return this.db.prepare(`
+      SELECT * FROM incidents WHERE fingerprint = ? AND state = 'open'
+      ORDER BY first_seen_at ASC LIMIT 1
+    `).get<IncidentRow>(fingerprint);
+  }
+
+  /**
+   * The most recent RESOLVED incident for a fingerprint closed at/after `since` — the flap
+   * detector. A condition oscillating around its threshold reopens legitimately (recurrence
+   * must stay countable) but must not re-alert every cycle.
+   */
+  findRecentlyResolvedIncident(fingerprint: string, since: string): IncidentRow | undefined {
+    return this.db.prepare(`
+      SELECT * FROM incidents
+      WHERE fingerprint = ? AND state = 'resolved' AND resolved_at >= ?
+      ORDER BY resolved_at DESC LIMIT 1
+    `).get<IncidentRow>(fingerprint, since);
+  }
+
+  /** A repeat detection: bump recency + counter ONLY — no notification, no new row. */
+  touchIncident(incident_id: string, now: string): void {
+    this.db.prepare(`
+      UPDATE incidents SET seen_count = seen_count + 1, last_seen_at = ?, updated_at = ?
+      WHERE incident_id = ? AND state = 'open'
+    `).run(now, now, incident_id);
+  }
+
+  /** Close an incident. False when absent or already resolved (idempotent, never a throw). */
+  resolveIncident(incident_id: string, now: string): boolean {
+    const result = this.db.prepare(`
+      UPDATE incidents SET state = 'resolved', resolved_at = ?, updated_at = ?
+      WHERE incident_id = ? AND state = 'open'
+    `).run(now, now, incident_id);
+    if (result.changes !== 1) return false;
+    const row = this.getIncident(incident_id)!;
+    this.appendLedgerEvent(
+      createLedgerEvent({
+        correlation_id: incident_id,
+        event_type: "incident_resolved",
+        actor: "system",
+        sequence: this.nextLedgerSequence(),
+        payload: {
+          incident_id,
+          kind: row.kind,
+          subject: row.subject,
+          open_minutes: Math.floor((Date.parse(now) - Date.parse(row.first_seen_at)) / 60000)
+        }
+      })
+    );
+    return true;
+  }
+
+  /** Every currently-open incident, oldest first (the sweep's resolve pass + SQL inspection). */
+  listOpenIncidents(): IncidentRow[] {
+    return this.db.prepare(`
+      SELECT * FROM incidents WHERE state = 'open' ORDER BY first_seen_at ASC, incident_id ASC
+    `).all<IncidentRow>();
+  }
+
+  /**
+   * Throttle latch for the invariant sweep: true at most once per `intervalMs`. Persisted
+   * (not in-memory) so a daemon restart cannot turn a 5-minute cadence into a per-restart storm.
+   */
+  claimInvariantSweep(now: string, intervalMs: number): boolean {
+    const row = this.db.prepare(`
+      SELECT last_swept_at FROM invariant_sweep_state WHERE id = 1
+    `).get<{ last_swept_at: string }>();
+    if (row && Date.parse(now) - Date.parse(row.last_swept_at) < intervalMs) return false;
+    this.db.prepare(`
+      INSERT INTO invariant_sweep_state (id, last_swept_at) VALUES (1, ?)
+      ON CONFLICT(id) DO UPDATE SET last_swept_at = excluded.last_swept_at
+    `).run(now);
+    return true;
+  }
+
+  /**
+   * Invariant detection (ADR 0024). Each query returns rows carrying a `subject` (the
+   * fingerprint's stable half) plus counts/ids for the incident detail — never user text.
+   * All six are pure reads: the sweep can never mutate through them.
+   */
+  findDuplicateEnabledSchedules(): Array<{
+    subject: string;
+    chat_id: string;
+    duplicate_count: number;
+    schedule_ids: string[];
+  }> {
+    const rows = this.db.prepare(`
+      SELECT MIN(schedule_id) AS subject, chat_id, COUNT(*) AS duplicate_count,
+             GROUP_CONCAT(schedule_id) AS ids
+      FROM scheduled_tasks
+      WHERE state = 'enabled'
+      GROUP BY chat_id, spec_json, tz, goal
+      HAVING COUNT(*) > 1
+      ORDER BY subject ASC
+    `).all<{ subject: string; chat_id: string; duplicate_count: number; ids: string }>();
+    return rows.map((r) => ({
+      subject: r.subject,
+      chat_id: r.chat_id,
+      duplicate_count: r.duplicate_count,
+      schedule_ids: r.ids.split(",").sort()
+    }));
+  }
+
+  /**
+   * Runs stuck mid-flight: an ACTIVE state whose lease expired before `leaseExpiredBefore`.
+   * `waiting_for_approval` is EXCLUDED by design — a run parked on Paco's /approve is the
+   * system working, and alerting on it would make the sweep noisiest exactly when Paco is
+   * slowest to answer.
+   */
+  findStuckRuns(leaseExpiredBefore: string): Array<{
+    subject: string;
+    state: string;
+    lease_expires_at: string | null;
+  }> {
+    return this.db.prepare(`
+      SELECT run_id AS subject, state, lease_expires_at
+      FROM runs
+      WHERE state IN ('created', 'contracted', 'queued', 'running', 'reconciliation_required', 'reporting')
+        AND lease_expires_at IS NOT NULL
+        AND lease_expires_at < ?
+      ORDER BY updated_at ASC
+    `).all<{ subject: string; state: string; lease_expires_at: string | null }>(leaseExpiredBefore);
+  }
+
+  findUndeliveredNotifications(now: string, graceMs: number): Array<{
+    subject: string;
+    intent_type: string;
+    attempt_count: number;
+  }> {
+    const cutoff = new Date(Date.parse(now) - graceMs).toISOString();
+    return this.db.prepare(`
+      SELECT notification_id AS subject, intent_type, attempt_count
+      FROM notification_outbox
+      WHERE state != 'delivered' AND created_at < ?
+      ORDER BY created_at ASC
+    `).all<{ subject: string; intent_type: string; attempt_count: number }>(cutoff);
+  }
+
+  findOverdueSchedules(now: string, graceMs: number): Array<{
+    subject: string;
+    next_run_at: string;
+    overdue_minutes: number;
+  }> {
+    const cutoff = new Date(Date.parse(now) - graceMs).toISOString();
+    const rows = this.db.prepare(`
+      SELECT schedule_id AS subject, next_run_at
+      FROM scheduled_tasks
+      WHERE state = 'enabled' AND next_run_at < ?
+      ORDER BY next_run_at ASC
+    `).all<{ subject: string; next_run_at: string }>(cutoff);
+    return rows.map((r) => ({
+      ...r,
+      overdue_minutes: Math.floor((Date.parse(now) - Date.parse(r.next_run_at)) / 60000)
+    }));
+  }
+
+  findFailedSchedules(): Array<{ subject: string; consecutive_failures: number }> {
+    return this.db.prepare(`
+      SELECT schedule_id AS subject, consecutive_failures
+      FROM scheduled_tasks
+      WHERE state = 'failed'
+      ORDER BY updated_at ASC
+    `).all<{ subject: string; consecutive_failures: number }>();
+  }
+
+  /**
+   * A heartbeat older than the grace window means the daemon was DOWN and has just come back
+   * (the sweep only runs inside a live daemon) — a retroactive gap report, which is exactly
+   * the thing Paco cannot otherwise see.
+   */
+  findHeartbeatGap(now: string, graceMs: number): { subject: string; gap_minutes: number } | undefined {
+    const row = this.db.prepare(`
+      SELECT last_success_at FROM daemon_heartbeat WHERE id = 1
+    `).get<{ last_success_at: string | null }>();
+    if (!row?.last_success_at) return undefined;
+    const gapMs = Date.parse(now) - Date.parse(row.last_success_at);
+    if (gapMs < graceMs) return undefined;
+    return { subject: "daemon", gap_minutes: Math.floor(gapMs / 60000) };
+  }
+
   /** Enabled schedules for one chat (the per-chat creation cap). */
   countActiveSchedules(chat_id: string): number {
     const row = this.db.prepare(`
@@ -4317,6 +4573,63 @@ export class RunStore {
     this.applyWikiPagesMigration();
     this.applyBackupStateMigration();
     this.applyProjectsMigration();
+    this.applyIncidentsMigration();
+  }
+
+  /**
+   * Introspection slice A (ADR 0024): `incidents` (behavioral invariant violations with an
+   * open/resolved lifecycle — rows are NEVER deleted, a recurrence opens a new row) plus the
+   * sweep's throttle latch. Indexed on (state, fingerprint): every sweep looks up the open
+   * row for a fingerprint, which is the only hot path.
+   */
+  private applyIncidentsMigration(): void {
+    const version = "2026-07-20-incidents";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS incidents (
+          incident_id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          subject TEXT NOT NULL,
+          fingerprint TEXT NOT NULL,
+          state TEXT NOT NULL,
+          detail_json TEXT NOT NULL,
+          seen_count INTEGER NOT NULL DEFAULT 1,
+          first_seen_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          resolved_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      `);
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS incidents_state_fingerprint_idx
+          ON incidents(state, fingerprint)
+      `);
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS invariant_sweep_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          last_swept_at TEXT NOT NULL
+        )
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   /**

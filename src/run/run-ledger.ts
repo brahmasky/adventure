@@ -58,7 +58,9 @@ export type LedgerEventType =
   | "db_backup_failed"
   | "bounty_scan_completed"
   | "project_created"
-  | "project_state_changed";
+  | "project_state_changed"
+  | "incident_opened"
+  | "incident_resolved";
 
 export interface LedgerEvent {
   event_id: string;
@@ -191,7 +193,11 @@ const requiredPayloadFields = {
   // out of the ledger; the sanitized table lives in the turn transcript, not here).
   bounty_scan_completed: ["venue_count", "candidates", "scam_suspects", "new_sightings"],
   project_created: ["project_id", "source_url"],
-  project_state_changed: ["project_id", "from", "to"]
+  project_state_changed: ["project_id", "from", "to"],
+  // Introspection slice A (ADR 0024): ids + counts only — the incident detail lives in the
+  // incidents row, not the ledger.
+  incident_opened: ["incident_id", "kind", "subject"],
+  incident_resolved: ["incident_id", "kind", "subject", "open_minutes"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(
