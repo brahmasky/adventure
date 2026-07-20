@@ -2989,6 +2989,12 @@ export class RunStore {
    * Invariant detection (ADR 0024). Each query returns rows carrying a `subject` (the
    * fingerprint's stable half) plus counts/ids for the incident detail — never user text.
    * All six are pure reads: the sweep can never mutate through them.
+   *
+   * NOTE on the duplicate-group subject: it is MIN(schedule_id) over the group, which is
+   * deterministic for a FIXED group but shifts if the group's membership changes. A group
+   * that loses and regains a member can therefore fingerprint differently — correctly so,
+   * since it is a different set of rows; it just means flap damping does not span such a
+   * change. Per-row invariants (failed/overdue/stuck) use the row id and are stable.
    */
   findDuplicateEnabledSchedules(): Array<{
     subject: string;
