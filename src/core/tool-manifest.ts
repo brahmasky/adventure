@@ -105,12 +105,14 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
   // a local sqlite row, no external side effect at creation time (the FIRE rides the normal
   // gateway path later), so it mirrors lesson_write's none/low and trips no approval gate.
   // The adapter validates the spec, caps schedules per chat, and sanitizes the goal.
+  // v2 adds list/update verbs + dedup-on-create; schedule-born runs never see this
+  // tool (contract strip in task-contract.ts).
   schedule_task: {
     name: "schedule_task",
     description:
-      "Schedule a recurring or one-time task: at each scheduled time Houge runs the given goal as a fresh message in this chat and sends the result. Use it when the user asks for something periodic or at a future time ('每周一早上8点给我AI周报', 'remind me tomorrow 9am'). For a RELATIVE one-shot ('3分钟后', 'in 2 hours') pass {\"kind\":\"once\",\"in_minutes\":N} — never compute a UTC timestamp yourself. To cancel an existing schedule, pass its id as {\"cancel\":\"sch_...\"}.",
+      "Manage this chat's scheduled tasks — four verbs in one tool. CREATE: schedule a recurring or one-time task; at each scheduled time Houge runs the given goal as a fresh message in this chat and sends the result ('每周一早上8点给我AI周报', 'remind me tomorrow 9am'). For a RELATIVE one-shot ('3分钟后', 'in 2 hours') pass {\"kind\":\"once\",\"in_minutes\":N} — never compute a UTC timestamp yourself. Creating an exact duplicate of an enabled schedule returns the existing id instead of a twin. LIST: pass {\"list\":true} to see this chat's schedules with their ids — do this FIRST when the user refers to an existing schedule. UPDATE: pass {\"update\":\"sch_...\"} plus any of goal/spec/tz to change an existing schedule in place — use this when the user refines a recurring task ('周报以后加上悉尼工作机会'); a goal-only update never moves the next fire time. CANCEL: pass {\"cancel\":\"sch_...\"}.",
     inputSketch:
-      '{"goal":"AI周报：搜HN/X本周AI新闻并总结","spec":{"kind":"weekly","day":"mon","at":"08:00"} or {"kind":"daily","at":"08:00"} or {"kind":"once","in_minutes":3} or {"kind":"once","at_iso":"2026-07-20T22:00:00Z (only when the user stated an explicit absolute time)"},"tz":"Australia/Sydney (optional; defaults to your local timezone)"}',
+      '{"goal":"AI周报：搜HN/X本周AI新闻并总结","spec":{"kind":"weekly","day":"mon","at":"08:00"} or {"kind":"daily","at":"08:00"} or {"kind":"once","in_minutes":3} or {"kind":"once","at_iso":"2026-07-20T22:00:00Z (only when the user stated an explicit absolute time)"},"tz":"Australia/Sydney (optional; defaults to your local timezone)"} — or {"list":true} — or {"update":"sch_...","goal":"...","spec":{...},"tz":"..."} (any subset of the three) — or {"cancel":"sch_..."}',
     category: "tool",
     side_effect_level: "none",
     risk_level: "low",
