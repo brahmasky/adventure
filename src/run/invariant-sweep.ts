@@ -11,8 +11,23 @@ import type { RunStore } from "./run-store.js";
  * That is what makes it safe to run unattended on every poll cycle.
  */
 
-/** Minimum gap between sweeps — the poll loop ticks ~every 30s; six queries that often is waste. */
-export const INVARIANT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+/**
+ * Default gap between sweeps: 12 h, i.e. twice a day (Paco, 2026-07-20).
+ *
+ * Note what this knob does NOT control: alert volume. Alerts fire on incident TRANSITIONS,
+ * never per sweep, so a persistent violation costs exactly one message whether it is swept
+ * twice a day or every five minutes, and a clean database is silent at any cadence. What the
+ * interval actually buys is DETECTION LATENCY — how long a stuck run or an undelivered
+ * notification sits unnoticed. Twice a day suits the retro-style invariants (failed/overdue
+ * schedules, heartbeat gaps); lower it toward 30 min if blocked-work latency starts to matter.
+ */
+export const DEFAULT_INVARIANT_SWEEP_INTERVAL_MS = 12 * 60 * 60 * 1000;
+
+/** Sweep cadence override in MINUTES (`HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES`). */
+export function resolveInvariantSweepIntervalMs(env: NodeJS.ProcessEnv): number {
+  const raw = Number(env.HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES);
+  return Number.isFinite(raw) && raw > 0 ? raw * 60 * 1000 : DEFAULT_INVARIANT_SWEEP_INTERVAL_MS;
+}
 /** A run whose lease expired this long ago is stuck, not slow. */
 export const STUCK_RUN_GRACE_MS = 10 * 60 * 1000;
 /** An undelivered notification older than this is a delivery failure, not a queue delay. */
@@ -154,7 +169,7 @@ export function runInvariantSweep(input: InvariantSweepInput): InvariantSweepRes
   // The latch is claimed BEFORE detection on purpose: if detection throws, the daemon's
   // try/catch swallows it and the next sweep waits a full interval — a crash degrades to
   // "sweeps less often", never to "sweeps every 30s in a hot loop".
-  if (!input.store.claimInvariantSweep(input.now, INVARIANT_SWEEP_INTERVAL_MS)) return result;
+  if (!input.store.claimInvariantSweep(input.now, resolveInvariantSweepIntervalMs(env))) return result;
   result.swept = true;
 
   const violations = detectViolations(input.store, input.now);

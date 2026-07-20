@@ -63,8 +63,24 @@ path, backed by a durable incident store.
   `DISARM_FLAGS`. That list covers flags granting *autonomous action* (self-write, codex,
   skills, scheduler, extwork, bounty); passive memory is already excluded. Disarming Houge must
   not blind him — a disarmed agent is precisely when Paco most wants to know something is wrong.
-- **Latch before detection.** The 5-minute throttle is claimed *before* the queries run, so a
-  detection crash degrades to "sweeps less often", never to a hot loop.
+- **Cadence: twice a day by default** (`HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES`, default 720).
+  The first cut used 5 minutes; Paco pushed back on 2026-07-20 and the slower cadence was
+  adopted. The key fact behind the decision: **sweep frequency is decoupled from alert
+  frequency** — alerts fire on incident *transitions*, so a persistent violation costs exactly
+  one message at any cadence and a clean database is silent at any cadence. What the interval
+  actually buys is detection latency. Twice a day fits the retro-style invariants; the override
+  exists because `stuck_run` (Houge silently not doing something Paco asked) is the one class
+  where hours of latency has a real cost.
+- **The sweep never observes its own output.** `findUndeliveredNotifications` excludes
+  `incident_*` outbox keys. Without that exclusion a Telegram delivery outage is
+  self-amplifying: the sweep opens an incident about its own undelivered alert, the alert about
+  that is also undelivered, and the next sweep opens an incident about THAT — a pile that grows
+  every cycle and never resolves. The exclusion is narrow (own alerts only): a genuinely stuck
+  run report still surfaces. This flaw was invisible at 5-minute cadence and only appeared once
+  the interval exceeded the undelivered-notification grace window — the cadence change paid for
+  itself immediately.
+- **Latch before detection.** The throttle is claimed *before* the queries run, so a detection
+  crash degrades to "sweeps less often", never to a hot loop.
 
 ## Consequences
 

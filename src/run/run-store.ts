@@ -3040,6 +3040,15 @@ export class RunStore {
     `).all<{ subject: string; state: string; lease_expires_at: string | null }>(leaseExpiredBefore);
   }
 
+  /**
+   * Undelivered outbox rows, EXCLUDING the sweep's own alerts (`incident_*` keys).
+   *
+   * A monitor must not observe its own output. Without this exclusion, broken Telegram
+   * delivery is self-amplifying: the sweep opens an incident about an undelivered alert, its
+   * alert about that is also undelivered, the next sweep opens an incident about THAT, and the
+   * pile grows every cycle while never resolving. Excluding own-alerts means a delivery outage
+   * surfaces once — via the genuinely stuck run/schedule notifications — and stays bounded.
+   */
   findUndeliveredNotifications(now: string, graceMs: number): Array<{
     subject: string;
     intent_type: string;
@@ -3049,7 +3058,9 @@ export class RunStore {
     return this.db.prepare(`
       SELECT notification_id AS subject, intent_type, attempt_count
       FROM notification_outbox
-      WHERE state != 'delivered' AND created_at < ?
+      WHERE state != 'delivered'
+        AND created_at < ?
+        AND idempotency_key NOT LIKE 'incident\\_%' ESCAPE '\\'
       ORDER BY created_at ASC
     `).all<{ subject: string; intent_type: string; attempt_count: number }>(cutoff);
   }

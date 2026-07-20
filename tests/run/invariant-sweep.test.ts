@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
 import {
   INCIDENT_ALERTS_PER_SWEEP_MAX,
-  INVARIANT_SWEEP_INTERVAL_MS,
+  DEFAULT_INVARIANT_SWEEP_INTERVAL_MS,
   buildIncidentOpenedText,
+  resolveInvariantSweepIntervalMs,
   runInvariantSweep
 } from "../../src/run/invariant-sweep.js";
 
@@ -23,6 +24,15 @@ afterEach(() => {
 
 const NOW = "2026-07-20T00:00:00.000Z";
 const ARMED: NodeJS.ProcessEnv = { HOUGE_INVARIANT_SWEEP_ENABLED: "1" };
+/**
+ * Flap damping only has meaning when the cadence is faster than the 30-min quiet window; at
+ * the 12h default a "reopen" half a day later is a genuinely new episode and SHOULD alert.
+ */
+const ARMED_FAST: NodeJS.ProcessEnv = {
+  HOUGE_INVARIANT_SWEEP_ENABLED: "1",
+  HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES: "5"
+};
+const FAST_INTERVAL_MS = 5 * 60 * 1000;
 
 /** Private-db accessor, same shape tests/budget/metered-ceiling.test.ts uses for the outbox. */
 function outboxDb(): {
@@ -97,7 +107,7 @@ describe("runInvariantSweep (introspection slice A)", () => {
   it("throttles: a second sweep inside the interval is a no-op", () => {
     addDuplicatePair();
     runInvariantSweep({ store, now: NOW, env: ARMED, chat_id: "555" });
-    const soon = new Date(Date.parse(NOW) + INVARIANT_SWEEP_INTERVAL_MS - 1000).toISOString();
+    const soon = new Date(Date.parse(NOW) + DEFAULT_INVARIANT_SWEEP_INTERVAL_MS - 1000).toISOString();
     expect(runInvariantSweep({ store, now: soon, env: ARMED, chat_id: "555" })).toMatchObject({
       swept: false
     });
@@ -106,7 +116,7 @@ describe("runInvariantSweep (introspection slice A)", () => {
   it("recurrence is silent: a later sweep bumps seen_count without a second incident or alert", () => {
     addDuplicatePair();
     runInvariantSweep({ store, now: NOW, env: ARMED, chat_id: "555" });
-    const later = new Date(Date.parse(NOW) + INVARIANT_SWEEP_INTERVAL_MS + 1000).toISOString();
+    const later = new Date(Date.parse(NOW) + DEFAULT_INVARIANT_SWEEP_INTERVAL_MS + 1000).toISOString();
     const second = runInvariantSweep({ store, now: later, env: ARMED, chat_id: "555" });
 
     expect(second).toMatchObject({ swept: true, opened: 0, recurring: 1 });
@@ -122,7 +132,7 @@ describe("runInvariantSweep (introspection slice A)", () => {
     runInvariantSweep({ store, now: NOW, env: ARMED, chat_id: "555" });
     store.cancelScheduledTask(b!.schedule_id, NOW); // the human fixed it
 
-    const later = new Date(Date.parse(NOW) + INVARIANT_SWEEP_INTERVAL_MS + 1000).toISOString();
+    const later = new Date(Date.parse(NOW) + DEFAULT_INVARIANT_SWEEP_INTERVAL_MS + 1000).toISOString();
     const second = runInvariantSweep({ store, now: later, env: ARMED, chat_id: "555" });
     expect(second).toMatchObject({ swept: true, resolved: 1 });
     expect(store.listOpenIncidents()).toEqual([]);
@@ -176,25 +186,82 @@ describe("runInvariantSweep (introspection slice A)", () => {
       now: NOW
     });
     store.recordScheduleFailure(row.schedule_id, NOW, 1); // → failed
-    runInvariantSweep({ store, now: NOW, env: ARMED, chat_id: "555" });
+    runInvariantSweep({ store, now: NOW, env: ARMED_FAST, chat_id: "555" });
     expect(openedAlertKeys().length).toBe(1);
 
     // Repaired (an update re-enables a failed row) → next sweep resolves it.
     store.updateScheduledTask({ schedule_id: row.schedule_id, goal: "flapper fixed" });
-    const t1 = new Date(Date.parse(NOW) + INVARIANT_SWEEP_INTERVAL_MS + 1000).toISOString();
-    runInvariantSweep({ store, now: t1, env: ARMED, chat_id: "555" });
+    const t1 = new Date(Date.parse(NOW) + FAST_INTERVAL_MS + 1000).toISOString();
+    runInvariantSweep({ store, now: t1, env: ARMED_FAST, chat_id: "555" });
     expect(store.listOpenIncidents()).toEqual([]);
 
     // Fails again immediately (inside the quiet window) → row reopens, alert suppressed.
     store.recordScheduleFailure(row.schedule_id, t1, 1);
-    const t2 = new Date(Date.parse(t1) + INVARIANT_SWEEP_INTERVAL_MS + 1000).toISOString();
-    const third = runInvariantSweep({ store, now: t2, env: ARMED, chat_id: "555" });
+    const t2 = new Date(Date.parse(t1) + FAST_INTERVAL_MS + 1000).toISOString();
+    const third = runInvariantSweep({ store, now: t2, env: ARMED_FAST, chat_id: "555" });
 
     expect(third.opened).toBe(1);
     expect(third.alerts_suppressed).toBe(1);
     expect(store.listOpenIncidents().length).toBe(1);
     // Still only the FIRST open's alert exists — the reopen added none.
     expect(openedAlertKeys().length).toBe(1);
+  });
+
+  it("cadence: defaults to twice a day and honours the minutes override", () => {
+    expect(DEFAULT_INVARIANT_SWEEP_INTERVAL_MS).toBe(12 * 60 * 60 * 1000);
+    expect(resolveInvariantSweepIntervalMs({})).toBe(DEFAULT_INVARIANT_SWEEP_INTERVAL_MS);
+    expect(resolveInvariantSweepIntervalMs({ HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES: "30" })).toBe(
+      30 * 60 * 1000
+    );
+    // Garbage and non-positive values fall back to the default rather than sweeping every tick.
+    expect(resolveInvariantSweepIntervalMs({ HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES: "nope" })).toBe(
+      DEFAULT_INVARIANT_SWEEP_INTERVAL_MS
+    );
+    expect(resolveInvariantSweepIntervalMs({ HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES: "0" })).toBe(
+      DEFAULT_INVARIANT_SWEEP_INTERVAL_MS
+    );
+    expect(resolveInvariantSweepIntervalMs({ HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES: "-5" })).toBe(
+      DEFAULT_INVARIANT_SWEEP_INTERVAL_MS
+    );
+  });
+
+  it("at the default cadence a sweep 6h later is still throttled; 12h+ later runs", () => {
+    addDuplicatePair();
+    runInvariantSweep({ store, now: NOW, env: ARMED, chat_id: "555" });
+    const sixHours = new Date(Date.parse(NOW) + 6 * 60 * 60 * 1000).toISOString();
+    expect(runInvariantSweep({ store, now: sixHours, env: ARMED })).toMatchObject({ swept: false });
+    const halfDay = new Date(Date.parse(NOW) + 12 * 60 * 60 * 1000 + 1000).toISOString();
+    expect(runInvariantSweep({ store, now: halfDay, env: ARMED })).toMatchObject({ swept: true });
+  });
+
+  it("never observes its OWN alerts — a delivery outage must not self-amplify", () => {
+    addDuplicatePair();
+    // Sweep 1 opens an incident and enqueues an alert. Nothing delivers it (no dispatcher).
+    expect(runInvariantSweep({ store, now: NOW, env: ARMED, chat_id: "555" }).opened).toBe(1);
+    expect(openedAlertKeys().length).toBe(1);
+
+    // Sweep 2, twelve hours later: that alert is long past the undelivered grace window. If
+    // the sweep counted its own output, it would open an incident about its own alert — and
+    // the alert about THAT would also sit undelivered, growing the pile every cycle forever.
+    const later = new Date(Date.parse(NOW) + DEFAULT_INVARIANT_SWEEP_INTERVAL_MS + 1000).toISOString();
+    const second = runInvariantSweep({ store, now: later, env: ARMED, chat_id: "555" });
+    expect(second).toMatchObject({ swept: true, opened: 0, recurring: 1 });
+    expect(store.listOpenIncidents().length).toBe(1); // still just the duplicate-schedule one
+
+    // A NON-sweep notification stuck in the outbox is still reported — the exclusion is
+    // narrow (own alerts only), not a blanket blindness to delivery failure.
+    store.enqueueNotification({
+      target: { kind: "telegram", chat_id: "555" },
+      intent_type: "progress",
+      idempotency_key: "some-run-report",
+      correlation_id: "run_x",
+      payload: { text: "a real report" }
+    });
+    const third = new Date(Date.parse(later) + DEFAULT_INVARIANT_SWEEP_INTERVAL_MS + 1000).toISOString();
+    runInvariantSweep({ store, now: third, env: ARMED, chat_id: "555" });
+    expect(
+      store.listOpenIncidents().filter((r) => r.kind === "undelivered_notification").length
+    ).toBe(1);
   });
 
   it("without a chat_id the sweep still records incidents, silently", () => {
