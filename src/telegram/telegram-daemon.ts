@@ -19,6 +19,7 @@ import { TelegramNotificationAdapter } from "../notifications/telegram-notificat
 import { resolveBackupEnabled, runDbBackupTick } from "../run/db-backup.js";
 import type { RunStore } from "../run/run-store.js";
 import { maybeFireScheduledTasks } from "../run/schedule-tick.js";
+import { runInvariantSweep } from "../run/invariant-sweep.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import {
@@ -336,6 +337,15 @@ async function runSignalPathTick(
     checkMeteredCeiling({
       store: options.store,
       ...(chat ? { chatId: String(chat.telegram_chat_id) } : {}),
+      now
+    });
+    // ADR 0024: the deterministic self-sensing sweep. Runs LAST among the state-changing
+    // ticks so it observes this cycle's work, self-throttles to 5 min, and alerts at most
+    // once per incident transition. Flag-gated OFF; pure reads + incident bookkeeping —
+    // it can never act on what it finds.
+    runInvariantSweep({
+      store: options.store,
+      ...(chat ? { chat_id: String(chat.telegram_chat_id) } : {}),
       now
     });
   } catch (error) {
