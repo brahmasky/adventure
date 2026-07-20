@@ -118,6 +118,7 @@ import {
   computeNextRunAt,
   describeScheduleSpec,
   formatInstantInZone,
+  formatScheduleListText,
   parseScheduleSpec,
   resolveSchedulerMaxPerChat,
   sanitizeScheduleGoal,
@@ -2438,6 +2439,18 @@ export class CoreWorker {
       return { ok: false, error: SCHEDULE_TASK_NO_CHAT_ERROR };
     }
     const chat_id = target.chat_id;
+
+    // v2 list verb: the model's discovery path for update/cancel — the SAME renderer
+    // as the /schedule command, scoped to the run's own chat (no cross-chat reads).
+    // VERB PRECEDENCE (spec'd invariant, senior review 2026-07-20): first match wins,
+    // in this order: list → cancel → update → create. Combined inputs resolve to the
+    // first present verb; reordering these branches is a behavior change.
+    if (input.list === true) {
+      return {
+        ok: true,
+        output: { answer: formatScheduleListText(this.runStore.listScheduledTasks(chat_id)) }
+      };
+    }
 
     if (typeof input.cancel === "string" && input.cancel.trim().length > 0) {
       const schedule_id = input.cancel.trim();

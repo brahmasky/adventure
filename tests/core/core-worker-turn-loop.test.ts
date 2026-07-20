@@ -22,6 +22,7 @@ import { ASK_DISCIPLINE, EPISODIC_SECTION_HEADER, LOOP_DISCIPLINE, READER_DISCIP
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
+import { formatScheduleListText } from "../../src/run/schedule-spec.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
 import { createTimeConvertAdapter } from "../../src/capabilities/time-convert.js";
 
@@ -1314,6 +1315,45 @@ describe("schedule_task on the loop (B10b, ADR 0017)", () => {
         .toBe(buildScheduleCreatedDigest(row.schedule_id, spec, row.tz, row.next_run_at));
       // No approval parked the run — schedule_task is the lesson_write side-effect class.
       expect(store.getLedgerEvents(run_id).filter((e) => e.event_type === "approval_requested")).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("list: returns the code-rendered list of the run's OWN chat's schedules only", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const mine = store.addScheduledTask({
+        chat_id: "555",
+        goal: "AI周报",
+        spec_json: '{"kind":"weekly","day":"mon","at":"08:00"}',
+        tz: "Australia/Sydney",
+        next_run_at: "2099-01-01T00:00:00.000Z"
+      });
+      store.addScheduledTask({
+        chat_id: "999",
+        goal: "other chat schedule",
+        spec_json: '{"kind":"daily","at":"08:00"}',
+        tz: "Australia/Sydney",
+        next_run_at: "2099-01-01T00:00:00.000Z"
+      });
+      const run_id = turnRun(store, "我现在有哪些定时任务？");
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm('{"intent":"answer"}', [
+          '{"action":"schedule_task","input":{"list":true},"why":"user asked what is scheduled"}',
+          '{"action":"final","answer":"你有一个每周一的AI周报。"}'
+        ])
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(steps[0]!.payload).toMatchObject({ action: "schedule_task", ok: true });
+      const digest = String(steps[0]!.payload.result_digest);
+      expect(digest).toBe(formatScheduleListText([mine])); // own chat only — 999's row absent
+      expect(digest).toContain(mine.schedule_id);
+      expect(digest).not.toContain("other chat schedule");
     } finally {
       store.close();
     }
