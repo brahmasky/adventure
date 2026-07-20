@@ -2776,11 +2776,11 @@ export class RunStore {
    */
   updateScheduledTask(input: {
     schedule_id: string;
-    goal?: string;
-    spec_json?: string;
-    tz?: string;
-    next_run_at?: string;
-    now?: string;
+    goal?: string | undefined;
+    spec_json?: string | undefined;
+    tz?: string | undefined;
+    next_run_at?: string | undefined;
+    now?: string | undefined;
   }): boolean {
     const row = this.getScheduledTask(input.schedule_id);
     if (!row || row.state === "disabled") return false;

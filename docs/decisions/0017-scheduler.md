@@ -101,3 +101,33 @@ gateway→worker path** a Telegram message takes. Nothing downstream is schedule
 - **An approval gate on schedule creation:** creation is reversible bookkeeping; the charter
   says mechanical nets over human approvals, and the fire path already carries every gate a
   normal run has. Rejected.
+
+## Amendment — Scheduler v2 (2026-07-20)
+
+Incident: the 2026-07-19 weekly AI周报 fire replayed its goal as a fresh turn; the model
+misread the goal text as a request to CREATE the schedule and minted a duplicate row
+(`sch_b6095c61`). Separately, user feedback refining the report ("以后加上悉尼AI工作机会")
+had no durable landing — the tool had no update verb, so the promise lived only in chat.
+
+Four changes, each independently shippable:
+
+1. **Provenance strip** — `compileTurnContract` removes `schedule_task` from
+   `allowed_actions` when `event.source === "schedule"`. A run born from a schedule fire
+   cannot create/mutate schedules; the manifest derives from the contract, so the tool
+   never reaches the model's menu. Enforcement, not prompt advice.
+2. **`{list:true}` verb** — own-chat discovery for the model, same renderer as `/schedule`
+   (moved to `schedule-spec.ts`, re-exported from gateway).
+3. **`{update:"sch_…"}` verb** — partial in-place edit (goal/spec/tz), own-chat scoped
+   with not-found-identical refusals, goal through the same sanitizer as create,
+   `next_run_at` recomputed only when spec/tz change. Updating a `failed` row re-enables
+   it (repair path). Re-enable may exceed the per-chat cap: accepted — the cap remains a
+   creation guard, not an invariant.
+4. **Dedup-on-create** — an enabled row with identical chat+spec+tz+goal makes creation
+   an idempotent no-op returning the existing id (checked before the cap, so idempotent
+   retries never bounce off a full cap).
+
+Verb precedence is a spec'd invariant: first match wins, `list → cancel → update → create`.
+
+Unchanged: fire path, fire idempotency, per-chat cap semantics on genuine creates,
+`/schedule` command behavior, `none/low` side-effect class (all four verbs are local
+sqlite bookkeeping).
