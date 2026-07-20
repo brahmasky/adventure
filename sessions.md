@@ -975,3 +975,17 @@ Build + independent adversarial verification subagents; each live round found a 
 - 1674/1674 both sweeps; daemon reloaded on the new dist.
 - OPEN (proposed, awaiting Paco): deterministic {rank: N} for project_track (persist last scan
   order) so 「跟进第N个」can't misresolve again.
+
+## 2026-07-20 — Daily audit of Houge's day + 2 fixes (Paco request)
+- Audit verdict: 5/5 runs completed per design — weekly AI周报 fired on time (Mon 08:00 AEST),
+  feedback→clarify→selfcode chain clean, self-write mojibake fix (StringDecoder for chunk-split
+  UTF-8 in cli-spawn.ts) passed all gates, Paco merged (98e9f83), dist rebuilt + daemon
+  restarted 14:40 — fix live. World Cup Q&A fine. No bounty scan = correct (user-invoked only).
+- Miss #1 FIXED: the scheduled run misread its own goal as "set up a schedule" and created a
+  duplicate (sch_b6095c61) → would double-fire and compound weekly. Disabled the duplicate;
+  original goal text now says 「此定时任务已存在……绝不要再创建新的定时任务」.
+- Miss #2 FIXED: promised Sydney/AU AI-jobs section lived only in chat (post-distill-watermark);
+  appended it to the schedule goal so next Monday's report includes it deterministically.
+- OPEN: systemic guard — trigger_adapter could prefix scheduled-run goals with "execute only,
+  never re-create schedule" so the fix isn't data-only. Lesson insert into houge.sqlite lessons
+  table was blocked by permission classifier; goal-text guard covers it for now.
