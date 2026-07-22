@@ -91,6 +91,14 @@ literally "no free text" for links. This is bounded, not eliminated: the links r
 not deterministically provable. Revisit link handling (e.g. a length/charset floor on path
 segments) if send-scope or a higher-trust venue ever arrives.
 
+Amendment (2026-07-22, post-live-gate): the same side-channel also carries **message ids** for
+`{list}`/`{search}` as a positional map (`1=<id> 2=<id> …`), because the reader summarizes the
+ids away and the planner otherwise cannot chain `{list}` → `{get}`. Ids are re-validated
+`^[A-Za-z0-9_-]+$` before entering the un-quarantined channel (a hostile id from the API JSON is
+dropped, not surfaced). Separately, `{list}` defaults to `q: in:inbox` (excludes Sent/Drafts,
+keeps all inbox categories); `{search}` passes the operator/planner query verbatim so any tab or
+label (`category:promotions`, `in:sent`) stays reachable.
+
 ### 6. Residual risk, recorded honestly
 
 **The email → `http_fetch` chain has the lethal-trifecta shape**: a hostile mail can ask the
