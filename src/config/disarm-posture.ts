@@ -39,7 +39,9 @@ export const DISARM_FLAGS: readonly string[] = [
   "HOUGE_EXTWORK_ENABLED",
   // P2 bounty intake (spec 2026-07-18): reads external venues + writes durable project
   // rows — money-work surface, covered by the STOP switch like extwork.
-  "HOUGE_BOUNTY_ENABLED"
+  "HOUGE_BOUNTY_ENABLED",
+  // ADR 0025: acts under Houge's own Google identity — the STOP switch must cover identity reads too.
+  "HOUGE_GOOGLE_ENABLED"
 ];
 
 export function resolveDisarmPath(env: NodeJS.ProcessEnv = process.env): string {

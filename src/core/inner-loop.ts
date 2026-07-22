@@ -482,6 +482,13 @@ export async function runInnerLoop(input: InnerLoopInput, deps: InnerLoopDeps): 
       if (deps.quarantineReader && input.quarantineReadActions?.(action.action)) {
         const summary = await deps.quarantineReader(action.action, result.output, input.objective);
         resultDigest = summary.length > stepCharCap ? `${summary.slice(0, stepCharCap)}…` : summary;
+        // ADR 0025: deterministic post-quarantine side-channel. Code-built, hygiened, hard-capped
+        // upstream (600 chars); carries verification codes/links VERBATIM because the Q-LLM may
+        // not (same trust argument as time_claims: structured, no free text, no verb).
+        const trusted = (result.output as Record<string, unknown>)["trusted_extract"];
+        if (typeof trusted === "string" && trusted.length > 0) {
+          resultDigest = `${resultDigest}\n${trusted.slice(0, 600)}`;
+        }
       } else {
         resultDigest = digestOutput(result.output, stepCharCap);
       }

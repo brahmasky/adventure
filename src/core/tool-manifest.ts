@@ -1,6 +1,8 @@
 import { resolveCodexEnabled } from "../capabilities/coding-agent.js";
 import { resolveExtWorkEnabled } from "../capabilities/external-workspace.js";
 import { resolveBountyEnabled } from "../capabilities/bounty-intake.js";
+import { resolveGoogleEnabled } from "../capabilities/google-api.js";
+import { resolveDualLlmEnabled } from "./quarantine.js";
 import { resolveSelfWriteEnabled } from "../capabilities/intent.js";
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
 import { resolveTzEvidenceEnabled } from "../capabilities/time-convert.js";
@@ -246,6 +248,31 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
     risk_level: "low",
     output_limit_bytes: 100_000,
     armed: resolveBountyEnabled
+  },
+  // ADR 0025: Houge's Google identity surface. Both are external READs quarantined by the
+  // Q-LLM (UNTRUSTED_READ_TOOLS — mail is free hostile text, NOT a bounty-style deterministic
+  // digest); armed only when HOUGE_GOOGLE_ENABLED and the dual-LLM reader are BOTH on.
+  gmail_read: {
+    name: "gmail_read",
+    description:
+      "Read Houge's own Gmail inbox (wukong.houge@gmail.com, read-only). Ops: list recent messages, search with Gmail query syntax, or get one message body. get returns an 'extracted' block of verification codes/links found deterministically — use those verbatim for registrations, never retype them from the body.",
+    inputSketch: '{"list": true} | {"search": "<gmail query>"} | {"get": "<messageId>"} (+ optional "max": 1-25)',
+    category: "tool",
+    side_effect_level: "external_read",
+    risk_level: "medium",
+    output_limit_bytes: 200_000,
+    armed: (env) => resolveGoogleEnabled(env) && resolveDualLlmEnabled(env)
+  },
+  google_api: {
+    name: "google_api",
+    description:
+      "GET a Google API endpoint under Houge's own identity. Allowlisted paths only (today: gmail/v1/users/me/*). Returns the JSON response as a sanitized digest. Prefer gmail_read for mail — this is the raw escape hatch.",
+    inputSketch: '{"path": "gmail/v1/users/me/…", "query": {"k": "v"}?}',
+    category: "tool",
+    side_effect_level: "external_read",
+    risk_level: "medium",
+    output_limit_bytes: 200_000,
+    armed: (env) => resolveGoogleEnabled(env) && resolveDualLlmEnabled(env)
   }
 };
 

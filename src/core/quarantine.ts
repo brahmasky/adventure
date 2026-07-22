@@ -31,8 +31,9 @@ export interface ReaderExtraction {
   contains_instructions: boolean;
 }
 
-/** External-read tools whose raw output is routed through the Q-LLM (ADR 0014 §"Scope"). */
-export const UNTRUSTED_READ_TOOLS = new Set(["web_search", "http_fetch"]);
+/** External-read tools whose raw output is routed through the Q-LLM (ADR 0014 §"Scope").
+ * gmail_read/google_api (ADR 0025): mail/API bodies are free hostile text — no bounty-style carve-out. */
+export const UNTRUSTED_READ_TOOLS = new Set(["web_search", "http_fetch", "gmail_read", "google_api"]);
 
 /**
  * Char cap on the raw external content rendered INTO the reader's question. Generous enough to

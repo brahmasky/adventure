@@ -81,7 +81,10 @@ const PINNED_ENV = [
   // P2 bounty intake: the flag shapes the manifest; the cap shapes the scan. Pinned for
   // the same reason as extwork (the cardinal PINNED_ENV rule).
   "HOUGE_BOUNTY_ENABLED",
-  "HOUGE_BOUNTY_MAX_CANDIDATES"
+  "HOUGE_BOUNTY_MAX_CANDIDATES",
+  // ADR 0025: the Google flag shapes the manifest (couple with HOUGE_DUAL_LLM_ENABLED,
+  // pinned above) — pin it so a daemon .env that arms Google can't red-fail these turns.
+  "HOUGE_GOOGLE_ENABLED"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
@@ -466,6 +469,51 @@ describe("executeTurn — the inner loop (the only `turn` path)", () => {
       expect(steps[0]!.payload).toMatchObject({ action: "http_fetch", ok: false });
       expect(fetchCalled).toBe(false); // never registered, never executed
       expect(loopEvents(store, run_id, "http_fetch_performed")).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("gmail_read disarmed (default): unlisted in the manifest and denied when invoked anyway", async () => {
+    const store = RunStore.openInMemory();
+    const calls: Array<Record<string, unknown>> = [];
+    // ADR 0025: inject googleDeps (the LAST constructor positional) rather than mocking
+    // global fetch — a global mock would also intercept the token refresh and make the
+    // "never fetched" assertion lie.
+    let googleFetchCalled = false;
+    const fakeGoogleFetch = (async () => {
+      googleFetchCalled = true;
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    try {
+      const run_id = turnRun(store, "看看我邮箱里有什么新邮件");
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm('{"intent":"research"}', [
+          '{"action":"gmail_read","input":{"list":true}}',
+          '{"action":"final","answer":"读不了，邮箱工具没有开启。"}'
+        ], calls),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { fetchImpl: fakeGoogleFetch, now: () => new Date() }
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      const compose = calls.find((c) => String(c.system).includes(LOOP_DISCIPLINE));
+      expect(String(compose!.question)).not.toContain("- gmail_read:");
+      expect(loopEvents(store, run_id, "loop_started")[0]!.payload.manifest).not.toContain("gmail_read");
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(steps[0]!.payload).toMatchObject({ action: "gmail_read", ok: false });
+      expect(googleFetchCalled).toBe(false); // never registered, never executed — no token mint either
+      expect(loopEvents(store, run_id, "google_api_call_completed")).toEqual([]);
     } finally {
       store.close();
     }

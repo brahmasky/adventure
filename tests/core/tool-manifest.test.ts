@@ -176,3 +176,28 @@ describe("P2 bounty tools arming (spec 2026-07-18)", () => {
     }
   });
 });
+
+describe("Google identity tools arming (ADR 0025): the GOOGLE × DUAL_LLM couple", () => {
+  const GOOGLE_TOOLS = ["gmail_read", "google_api"];
+
+  it("unlisted by default (both flags off ⇒ off the model's menu entirely)", () => {
+    expect(manifestFor(GOOGLE_TOOLS, {})).toEqual([]);
+  });
+
+  it("both listed when HOUGE_GOOGLE_ENABLED and HOUGE_DUAL_LLM_ENABLED are BOTH on (quarantined external reads)", () => {
+    const manifest = manifestFor(GOOGLE_TOOLS, {
+      HOUGE_GOOGLE_ENABLED: "1",
+      HOUGE_DUAL_LLM_ENABLED: "1"
+    } as NodeJS.ProcessEnv);
+    expect(manifest.map((entry) => entry.name)).toEqual(GOOGLE_TOOLS);
+    for (const entry of manifest) {
+      expect(entry.side_effect_level).toBe("external_read");
+      expect(entry.risk_level).toBe("medium");
+    }
+  });
+
+  it("each flag ALONE arms nothing — the couple is the point (no un-quarantined mail read, no dark listing)", () => {
+    expect(manifestFor(GOOGLE_TOOLS, { HOUGE_GOOGLE_ENABLED: "1" } as NodeJS.ProcessEnv)).toEqual([]);
+    expect(manifestFor(GOOGLE_TOOLS, { HOUGE_DUAL_LLM_ENABLED: "1" } as NodeJS.ProcessEnv)).toEqual([]);
+  });
+});

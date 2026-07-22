@@ -220,6 +220,10 @@ function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
     "project_track",
     "project_update",
     "project_list",
+    // ADR 0025: Google identity reads — armed-listed on HOUGE_GOOGLE_ENABLED AND the
+    // dual-LLM couple (composed in tool-manifest). Turn contract only (bounty precedent).
+    "gmail_read",
+    "google_api",
     "write_report"
   ].filter((action) => !(event.source === "schedule" && action === "schedule_task"));
 

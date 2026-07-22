@@ -76,6 +76,9 @@ describe("compileTaskContract", () => {
         "project_track",
         "project_update",
         "project_list",
+        // ADR 0025: Google identity reads — armed-listed on the GOOGLE × DUAL_LLM couple.
+        "gmail_read",
+        "google_api",
         "write_report"
       ]);
       // 10 (was 6): a search → fetch×2-3 → answer chain must fit in ONE turn (step ③).

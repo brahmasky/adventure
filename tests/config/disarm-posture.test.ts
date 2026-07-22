@@ -56,7 +56,10 @@ describe("DISARM_FLAGS", () => {
       "HOUGE_EXTWORK_ENABLED",
       // P2 (spec 2026-07-18): bounty intake reads external venues + writes durable
       // project rows unattended-adjacent (scheduled scans) — the STOP switch covers it.
-      "HOUGE_BOUNTY_ENABLED"
+      "HOUGE_BOUNTY_ENABLED",
+      // ADR 0025: acts under Houge's own Google identity — the STOP switch must cover
+      // identity reads too.
+      "HOUGE_GOOGLE_ENABLED"
     ]);
     expect(DISARM_FLAGS).not.toContain("HOUGE_EPISODIC_ENABLED");
   });

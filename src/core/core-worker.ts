@@ -47,6 +47,11 @@ import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
 import { buildCritiqueQuestion, buildResearchQuestion, createWebSearchAdapter } from "../capabilities/web-search.js";
 import { createHttpFetchAdapter } from "../capabilities/http-fetch.js";
 import { createTimeConvertAdapter } from "../capabilities/time-convert.js";
+import { defaultGoogleApiDeps, GOOGLE_RESULT_CHAR_CAP, runGoogleApi } from "../capabilities/google-api.js";
+import type { GoogleApiDeps } from "../capabilities/google-api.js";
+import { GMAIL_OP_DEADLINE_MS, runGmailRead } from "../capabilities/gmail-read.js";
+import { createGoogleAuthClient } from "../capabilities/google-auth.js";
+import type { GoogleAuthClient } from "../capabilities/google-auth.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import { HTTP_FETCH_CONTENT_CHAR_CAP, resolveHttpFetchTimeoutMs } from "../web/http-fetch.js";
 import {
@@ -343,7 +348,10 @@ export class CoreWorker {
     private readonly externalWorkDeps: ExternalWorkDeps = defaultExternalWorkDeps(),
     // P2 bounty intake (spec 2026-07-18): injectable venue transport so tests never touch
     // the network; default wires fetchUrl + the per-process TTL cache. Appended last.
-    private readonly bountyDeps: BountyIntakeDeps = defaultBountyIntakeDeps()
+    private readonly bountyDeps: BountyIntakeDeps = defaultBountyIntakeDeps(),
+    // ADR 0025: Google identity reads (gmail_read/google_api). Injectable transport so tests
+    // never touch the network (token mint included); default wires global fetch. Appended last.
+    private readonly googleDeps: GoogleApiDeps = defaultGoogleApiDeps()
   ) {
     // Phase 3.1 (W3): when the DEFAULT llm adapter is in use (production), cheap-chain telemetry can
     // build a telemetry-instrumented adapter per role (kimi/pi usage → recordLlmCall). A test-
@@ -367,6 +375,25 @@ export class CoreWorker {
 
   /** Ambient skills live as markdown under `<projectRoot>/skills/<scope>/` (Phase 2a). */
   private readonly skillStore: SkillStore;
+
+  /** ADR 0025: the per-worker Google OAuth client, built lazily on first Google tool use.
+   * The access token lives and dies inside its closure — never in errors, digests, or ledger
+   * rows. Secrets arrive as getters: broker-fed when the firewall is armed, env-fallback
+   * otherwise (same idiom as llm/registry.ts). */
+  private googleAuth?: GoogleAuthClient;
+  private googleAuthClient(): GoogleAuthClient {
+    if (!this.googleAuth) {
+      this.googleAuth = createGoogleAuthClient(
+        {
+          clientId: process.env.HOUGE_GMAIL_CLIENT_ID,
+          clientSecret: () => (this.broker ? this.broker.gmailClientSecret() : process.env.HOUGE_GMAIL_CLIENT_SECRET),
+          refreshToken: () => (this.broker ? this.broker.gmailRefreshToken() : process.env.HOUGE_GMAIL_REFRESH_TOKEN)
+        },
+        { fetchImpl: this.googleDeps.fetchImpl }
+      );
+    }
+    return this.googleAuth;
+  }
 
   async executeOnce(worker_id: string): Promise<CoreWorkerResult> {
     const claim = this.runStore.claimNext(worker_id, 30);
@@ -2078,7 +2105,9 @@ export class CoreWorker {
             ? HTTP_FETCH_CONTENT_CHAR_CAP
             : action === "bounty_scan"
               ? BOUNTY_RESULT_CHAR_CAP
-              : undefined,
+              : action === "gmail_read" || action === "google_api"
+                ? GOOGLE_RESULT_CHAR_CAP
+                : undefined,
         // Wall-clock halt (⓪·1 deferred): the contract's time budget bounds the loop.
         // ⓪·3g: no extendDeadlineFor — evolution kickoffs return immediately (the
         // pipeline runs on the background lane), so the base deadline always suffices.
@@ -2375,6 +2404,37 @@ export class CoreWorker {
       // verbatim in the user's REAL message — a hostile scan title can't steer a write
       // to an unseen URL.
       return async (input) => this.executeProjectTool(name, claim, input);
+    }
+    if (name === "gmail_read" || name === "google_api") {
+      // ADR 0025: quarantined external reads of Houge's own Google identity. The ledger row
+      // carries counts only — never mail content, never tokens. `trusted_extract` rides the
+      // output so the inner loop's post-quarantine seam can append the code-built codes/links
+      // line AFTER the reader digest (google_api has no such side-channel).
+      return async (input) => {
+        const result =
+          name === "gmail_read"
+            ? await runGmailRead(input, process.env, this.googleDeps, this.googleAuthClient())
+            : await runGoogleApi(input, process.env, this.googleDeps, this.googleAuthClient());
+        if (result.ledger) {
+          this.runStore.recordGoogleApiCallCompleted({
+            run_id: claim.run_id,
+            extracted_codes: 0,
+            extracted_links: 0,
+            ...result.ledger
+          });
+        }
+        const trustedExtract =
+          "trustedExtract" in result && typeof result.trustedExtract === "string" && result.trustedExtract.length > 0
+            ? result.trustedExtract
+            : undefined;
+        return {
+          ok: true,
+          output: {
+            answer: result.text,
+            ...(trustedExtract ? { trusted_extract: trustedExtract } : {})
+          }
+        };
+      };
     }
     if (name === "wiki_build" || name === "wiki_refine") {
       // LLM wiki (Phase W, ADR 0020): one shared adapter — build⇄refine auto-route on
@@ -3316,6 +3376,10 @@ function loopToolTimeoutMs(name: string, llmTimeoutMs: number): number {
     case "bounty_scan":
       // The scan enforces its own 75s wall clock; the outer race bound adds headroom.
       return BOUNTY_SCAN_DEADLINE_MS + 15_000;
+    case "gmail_read":
+    case "google_api":
+      // ADR 0025: the Gmail ops enforce their own 75s wall clock; headroom mirrors bounty_scan.
+      return GMAIL_OP_DEADLINE_MS + 15_000;
     default:
       return llmTimeoutMs;
   }
