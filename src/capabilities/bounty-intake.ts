@@ -2,6 +2,9 @@ import type { HttpFetchConfig, HttpFetchInput, HttpFetchOutcome } from "../web/h
 import { fetchUrl } from "../web/http-fetch.js";
 import type { ProjectRow, RunStore } from "../run/run-store.js";
 import type { ProjectState } from "../domain/types.js";
+import { escapeForTelegram, sanitizeVenueText } from "./text-hygiene.js";
+
+export { sanitizeVenueText };
 
 /**
  * Money-Work P2 (spec 2026-07-18): bounty venue intake + deterministic legitimacy
@@ -107,18 +110,6 @@ export async function fetchVenueJson(
   } catch {
     return { ok: false, error: "venue payload is not valid JSON", rateLimited: false };
   }
-}
-
-// --- hygiene (spec §3 — the ONLY gate venue strings pass to reach a transcript) --
-
-// C0/C1 controls, bidi overrides/isolates, zero-width + BOM.
-const STRIP_RE = /[\u0000-\u001F\u007F-\u009F\u200B-\u200D\uFEFF\u202A-\u202E\u2066-\u2069]/g;
-
-export function sanitizeVenueText(raw: unknown, maxChars: number): string {
-  if (typeof raw !== "string") return "";
-  const flat = raw.replace(/[\r\n\t\u2028\u2029\u0085]+/g, " ").replace(STRIP_RE, "").replace(/\s{2,}/g, " ").trim();
-  const points = Array.from(flat);
-  return points.length > maxChars ? `${points.slice(0, maxChars).join("")}…` : flat;
 }
 
 export const BOUNTY_AMOUNT_MIN_USD = 1;
@@ -576,11 +567,6 @@ export interface BountyScanResult {
 }
 
 let scanInFlight = false;
-
-function escapeForTelegram(text: string): string {
-  // Venue-derived strings are rendered inert (spec §3): no markdown/link spoofing.
-  return text.replace(/([[\]()*_`~])/g, "");
-}
 
 function renderTable(ranked: BountyCandidate[], newUrls: Set<string>): string {
   const lines = ranked.map((candidate, index) => {
