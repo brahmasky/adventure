@@ -31,6 +31,13 @@ export const GMAIL_TRUSTED_EXTRACT_CHAR_CAP = 600;
 const MESSAGES_PATH = "/gmail/v1/users/me/messages";
 const HEADER_FIELD_CAP = 200;
 const SNIPPET_CAP = 300;
+// {list} is forced to the inbox (excludes Sent/Drafts; Spam/Trash already excluded by the API).
+// {search} is NEVER touched — the user's query is passed verbatim (may target Sent, a label, etc.).
+const LIST_INBOX_QUERY = "in:inbox";
+// Navigation side-channel (ADR 0025): positional id map so the planner can chain list/search → get.
+const TRUSTED_IDS_PREFIX = "message ids (use with gmail_read get):";
+// Strict token charset for the un-quarantined channel — stricter than the transport allowlist (no dot).
+const MESSAGE_ID_RE = /^[A-Za-z0-9_-]+$/;
 const OPERATOR_HINT =
   "(operator: Gmail refresh token likely revoked — re-run scripts/gmail-auth.mjs)";
 /** googleApiGetJson renders a GoogleAuthError as `google auth <kind>: <message>`. */
@@ -239,6 +246,32 @@ function extractIds(json: unknown): string[] {
   return ids;
 }
 
+/**
+ * Deterministic navigation side-channel (ADR 0025): a positional id map, aligned with the reader
+ * summary's message order (id N ↔ "message N"), so the planner can chain list/search → get without
+ * improvising a non-id from a subject or RFC822 header.
+ *
+ * IDs are structured tokens (no free text, no verb) — verb-proof by construction. DEFENSE IN DEPTH:
+ * the Gmail API response is untrusted, and extractIds does NOT validate charset, so a hostile/
+ * malformed id could ride the messages[].id field into `ids`. Every id is re-validated here and
+ * DROPPED if it fails MESSAGE_ID_RE — a hostile id must never enter this un-quarantined channel.
+ * The whole line is hard-capped at GMAIL_TRUSTED_EXTRACT_CHAR_CAP; on overflow, keep as many
+ * LEADING ids as fit (whole entries only — never a partial id). Absent when no valid ids remain.
+ */
+function buildIdTrustedExtract(ids: string[]): string | undefined {
+  let line = TRUSTED_IDS_PREFIX;
+  let count = 0;
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i];
+    if (id === undefined || !MESSAGE_ID_RE.test(id)) continue;
+    const entry = ` ${i + 1}=${id}`;
+    if (Array.from(line + entry).length > GMAIL_TRUSTED_EXTRACT_CHAR_CAP) break;
+    line += entry;
+    count += 1;
+  }
+  return count > 0 ? line : undefined;
+}
+
 function digestLine(message: unknown): string {
   const msg = asRecord(message);
   const snippet = typeof msg?.snippet === "string" ? msg.snippet : "";
@@ -287,8 +320,11 @@ async function runDigestList(
   const header = `gmail ${opName}: ${lines.length}${partial} message${lines.length === 1 ? "" : "s"}`;
   const parts = [header, ...lines];
   if (note !== undefined) parts.push(note);
+  // ids are navigation, not verification material — ledger extracted_codes/links stay 0.
+  const trustedExtract = buildIdTrustedExtract(ids);
   return {
     text: capResultText(parts.join("\n")),
+    ...(trustedExtract !== undefined ? { trustedExtract } : {}),
     ledger: { service: "gmail", op: opName, count: lines.length, extracted_codes: 0, extracted_links: 0 }
   };
 }
@@ -349,7 +385,8 @@ export async function runGmailRead(
   if (op.kind === "get") return runGet(op.id, deps, auth);
   return runDigestList(
     op.kind,
-    op.kind === "search" ? op.q : undefined,
+    // {list} is default-scoped to the inbox; {search} passes the user's query VERBATIM.
+    op.kind === "search" ? op.q : LIST_INBOX_QUERY,
     clampMax(input.max),
     deps,
     auth

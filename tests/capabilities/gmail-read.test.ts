@@ -151,6 +151,8 @@ function gmailResponder(fixtures: {
 
 const BASE = "https://gmail.googleapis.com/gmail/v1/users/me/messages";
 const METADATA_SUFFIX = "?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date";
+const TRUSTED_IDS_PREFIX = "message ids (use with gmail_read get):";
+const TRUSTED_IDS_PREFIX_LEN = TRUSTED_IDS_PREFIX.length;
 
 // ---------- constants ----------
 
@@ -347,13 +349,14 @@ describe("runGmailRead — list", () => {
     );
     const result = await runGmailRead({ list: true }, process.env, depsFor(impl), fakeAuth());
     expect(calls).toHaveLength(3);
-    expect(calls[0]!.url).toBe(`${BASE}?maxResults=10`);
+    expect(calls[0]!.url).toBe(`${BASE}?maxResults=10&q=in%3Ainbox`);
     expect(calls[1]!.url).toBe(`${BASE}/m1${METADATA_SUFFIX}`);
     expect(calls[2]!.url).toBe(`${BASE}/m2${METADATA_SUFFIX}`);
     expect(result.text).toContain("alice@example.com — Hello — Tue, 22 Jul 2026 10:00:00 +1000 — first snippet");
     expect(result.text).toContain("bob@example.com — Re: Hello — Tue, 22 Jul 2026 11:00:00 +1000 — second snippet");
     expect(result.ledger).toEqual({ service: "gmail", op: "list", count: 2, extracted_codes: 0, extracted_links: 0 });
-    expect(result.trustedExtract).toBeUndefined();
+    // Navigation side-channel: positional id map aligned with the digest order (id N ↔ message N).
+    expect(result.trustedExtract).toBe("message ids (use with gmail_read get): 1=m1 2=m2");
     expect(result.text).not.toContain(TEST_TOKEN);
   });
 
@@ -366,7 +369,7 @@ describe("runGmailRead — list", () => {
     ] as const) {
       const { impl, calls } = fakeFetch(gmailResponder({ list: listResponse([]) }));
       await runGmailRead({ list: true, max }, process.env, depsFor(impl), fakeAuth());
-      expect(calls[0]!.url).toBe(`${BASE}?maxResults=${expected}`);
+      expect(calls[0]!.url).toBe(`${BASE}?maxResults=${expected}&q=in%3Ainbox`);
     }
   });
 
@@ -377,6 +380,53 @@ describe("runGmailRead — list", () => {
     expect(calls).toHaveLength(1);
     expect(result.text).toContain("0 message");
     expect(result.ledger).toEqual({ service: "gmail", op: "list", count: 0, extracted_codes: 0, extracted_links: 0 });
+    // Empty result → navigation side-channel absent (same absent-when-empty rule as {get}).
+    expect("trustedExtract" in result).toBe(false);
+  });
+
+  it("default-scopes {list} to the inbox (q=in:inbox), never touching Sent/Drafts", async () => {
+    enable();
+    const { impl, calls } = fakeFetch(gmailResponder({ list: listResponse([]) }));
+    await runGmailRead({ list: true }, process.env, depsFor(impl), fakeAuth());
+    expect(calls[0]!.url).toBe(`${BASE}?maxResults=10&q=in%3Ainbox`);
+  });
+
+  it("drops a hostile/malformed message id from the trusted line (untrusted API response)", async () => {
+    enable();
+    // The Gmail API response is untrusted: a hostile id rides messages[].id into `ids`. The first
+    // id digests fine; the hostile one (contains '/') is dropped from the un-quarantined channel.
+    const { impl } = fakeFetch((url) => {
+      if (url.includes("/messages?")) return jsonResponse(listResponse(["m1", "ev/il"]));
+      if (url.includes("/messages/m1")) {
+        return jsonResponse(metadataMessage("m1", { from: "a@x.io", subject: "ok", date: "d", snippet: "s" }));
+      }
+      // Never reached for the hostile id in practice (transport rejects '/'), but be defensive.
+      return jsonResponse({}, 500);
+    });
+    const result = await runGmailRead({ list: true }, process.env, depsFor(impl), fakeAuth());
+    expect(result.trustedExtract).toContain("1=m1");
+    expect(result.trustedExtract).not.toContain("ev/il");
+    expect(result.trustedExtract).not.toMatch(/2=/);
+  });
+
+  it("hard-caps the trusted line at GMAIL_TRUSTED_EXTRACT_CHAR_CAP with whole leading entries only", async () => {
+    enable();
+    // Many long ids: the trusted line must truncate to whole leading entries — never a partial id.
+    const ids = Array.from({ length: 40 }, (_, i) => `id${String(i).padStart(3, "0")}${"z".repeat(20)}`);
+    const metadata: Record<string, unknown> = {};
+    for (const id of ids) metadata[id] = metadataMessage(id, { from: "a@x.io", subject: "s", date: "d", snippet: "n" });
+    const { impl } = fakeFetch(gmailResponder({ list: listResponse(ids), metadata }));
+    const result = await runGmailRead({ list: true, max: 25 }, process.env, depsFor(impl), fakeAuth());
+    const trusted = result.trustedExtract ?? "";
+    expect(Array.from(trusted).length).toBeLessThanOrEqual(GMAIL_TRUSTED_EXTRACT_CHAR_CAP);
+    // No partial id: every "N=<id>" entry present is a complete, valid token from the fixture.
+    for (const entry of trusted.slice(TRUSTED_IDS_PREFIX_LEN).trim().split(" ")) {
+      const [, id] = entry.split("=");
+      if (id !== undefined && id !== "") expect(ids).toContain(id);
+    }
+    // At least one id fit, and it truncated (not all 40 leading ids present).
+    expect(trusted).toContain("1=");
+    expect(trusted).not.toContain("40=");
   });
 
   it("renders a hostile markdown-spoof subject inert (escapeForTelegram on header lines)", async () => {
@@ -472,6 +522,22 @@ describe("runGmailRead — search", () => {
     expect(calls[1]!.url).toBe(`${BASE}/m1${METADATA_SUFFIX}`);
     expect(result.text).toContain("hi@algora.io");
     expect(result.ledger).toEqual({ service: "gmail", op: "search", count: 1, extracted_codes: 0, extracted_links: 0 });
+    // Search exposes the same positional id map for list→get chaining.
+    expect(result.trustedExtract).toBe("message ids (use with gmail_read get): 1=m1");
+  });
+
+  it("passes the user's query VERBATIM — never injects in:inbox (may target Sent, a label, a category)", async () => {
+    enable();
+    const { impl, calls } = fakeFetch(
+      gmailResponder({
+        list: listResponse(["m1"]),
+        metadata: { m1: metadataMessage("m1", { from: "promo@x.io", subject: "Sale", date: "d", snippet: "s" }) }
+      })
+    );
+    await runGmailRead({ search: "category:promotions" }, process.env, depsFor(impl), fakeAuth());
+    expect(calls[0]!.url).toBe(`${BASE}?maxResults=10&q=category%3Apromotions`);
+    expect(calls[0]!.url).not.toContain("in%3Ainbox");
+    expect(calls[0]!.url).not.toContain("in:inbox");
   });
 });
 
