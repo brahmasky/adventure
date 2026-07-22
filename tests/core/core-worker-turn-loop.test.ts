@@ -519,6 +519,56 @@ describe("executeTurn — the inner loop (the only `turn` path)", () => {
     }
   });
 
+  it("SECURITY: gmail_read with dual-LLM OFF but HOUGE_GOOGLE_ENABLED never fetches mail — the couple holds at execution, not just manifest visibility", async () => {
+    // Adversarial-review MAJOR probe: with the Q-LLM reader off, an executed gmail_read would
+    // hand raw hostile mail to the planner un-quarantined. This test pins the composition
+    // invariant the review said was untested: the tool must NOT reach the network in this
+    // posture. TWO layers enforce it and this proves their composition — (1) the manifest
+    // arming couple drops gmail_read from the registry, so CapabilityRunner denies it as an
+    // unknown capability BEFORE any handler runs; (2) the handler itself refuses if ever
+    // reached with the reader off (defense-in-depth for a mid-turn flag toggle). Either way:
+    // no fetch, no token mint, no hostile mail body in the planner transcript.
+    const store = RunStore.openInMemory();
+    const calls: Array<Record<string, unknown>> = [];
+    let googleFetchCalled = false;
+    const fakeGoogleFetch = (async () => {
+      googleFetchCalled = true;
+      return new Response(JSON.stringify({ payload: { body: { data: "SUdOT1JFIEFMTA" } } }), { status: 200 });
+    }) as typeof fetch;
+    process.env.HOUGE_GOOGLE_ENABLED = "1"; // enabled…
+    delete process.env.HOUGE_DUAL_LLM_ENABLED; // …but the quarantine half is OFF
+    try {
+      const run_id = turnRun(store, "看看我邮箱");
+      const worker = new CoreWorker(
+        store,
+        projectRoot(),
+        loopLlm('{"intent":"research"}', [
+          '{"action":"gmail_read","input":{"list":true}}',
+          '{"action":"final","answer":"邮箱工具没开。"}'
+        ], calls),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { fetchImpl: fakeGoogleFetch, now: () => new Date() }
+      );
+      const result = await worker.executeRun(run_id, "w");
+      expect(result.status).toBe("completed");
+      expect(googleFetchCalled).toBe(false); // the invariant: no mail was ever fetched
+      const steps = loopEvents(store, run_id, "loop_step");
+      expect(steps[0]!.payload).toMatchObject({ action: "gmail_read", ok: false }); // denied, not executed
+      expect(String(steps[0]!.payload.result_digest)).not.toContain("IGNORE"); // no hostile body reached the planner
+      expect(loopEvents(store, run_id, "google_api_call_completed")).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
   it("mixed intent: lesson_write AND a final answer land in ONE turn (impossible on the enum path)", async () => {
     const store = RunStore.openInMemory();
     const calls: Array<Record<string, unknown>> = [];

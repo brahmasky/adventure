@@ -2411,6 +2411,14 @@ export class CoreWorker {
       // output so the inner loop's post-quarantine seam can append the code-built codes/links
       // line AFTER the reader digest (google_api has no such side-channel).
       return async (input) => {
+        // The dual-LLM half of the arming couple is a SECURITY invariant, not just manifest
+        // visibility: mail is free hostile text, and with the Q-LLM reader off the inner loop's
+        // ELSE branch would hand the raw body to the planner un-quarantined. The manifest gate
+        // (resolveGoogleArmed) hides the tool, but a scripted/scheduled/eval-emitted action can
+        // still reach here — so REFUSE BEFORE FETCH when the reader is off (adversarial review).
+        if (!resolveDualLlmEnabled(process.env)) {
+          return { ok: true, output: { answer: `${name} is disabled (dual-LLM quarantine is off).` } };
+        }
         const result =
           name === "gmail_read"
             ? await runGmailRead(input, process.env, this.googleDeps, this.googleAuthClient())
