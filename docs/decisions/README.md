@@ -36,6 +36,7 @@ Read these first when onboarding — they explain choices the code alone can't.
 | [0022](0022-money-fork-reopened.md) | Money fork re-opened — earning is IN (human-fronted), custody/trading/fund-holding stay OUT (re-decides charter fork 3; ADR 0001 floor unchanged) | accepted |
 | [0023](0023-external-workspace.md) | External engineering workspace — container-sandboxed work on third-party repos | accepted |
 | [0024](0024-introspection-invariant-sweep.md) | Introspection — the deterministic invariant sweep as Houge's first self-sensing organ (the **sense** stage ADR 0012 left open) | accepted |
+| [0025](0025-google-api-surface.md) | Google API surface + Gmail read — Houge reads his own inbox (S33 registration authorization made durable; `gmail.readonly` scope bounds the blast radius; GET-only exact-allowlist registry, 1:1 scope↔row; both tools Q-LLM-quarantined with a dual-LLM arming couple; deterministic `trusted_extract` side-channel; broker five→seven; amends [0008](0008-houge-identity-authenticated-read.md) §4 + [0015](0015-secrets-firewall.md)) | accepted |
 
 ## Writing a new ADR
 
