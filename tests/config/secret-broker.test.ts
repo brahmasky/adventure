@@ -15,7 +15,9 @@ const FAKE = {
   GEMINI_API_KEY: "gemini-secret-def456789",
   TAVILY_API_KEY: "tvly-secret-ghi012345",
   FIRECRAWL_API_KEY: "fc-secret-jkl678901",
-  HOUGE_TELEGRAM_BOT_TOKEN: "111222333:bot-token-secret-value"
+  HOUGE_TELEGRAM_BOT_TOKEN: "111222333:bot-token-secret-value",
+  HOUGE_GMAIL_CLIENT_SECRET: "GOCSPX-fake-gmail-client-secret-123",
+  HOUGE_GMAIL_REFRESH_TOKEN: "1//fake-gmail-refresh-token-456789"
 };
 
 function fakeEnv(): NodeJS.ProcessEnv {
@@ -30,6 +32,8 @@ describe("createSecretBroker — typed getters over a private closure", () => {
     expect(b.tavilyKey()).toBe(FAKE.TAVILY_API_KEY);
     expect(b.firecrawlKey()).toBe(FAKE.FIRECRAWL_API_KEY);
     expect(b.telegramToken()).toBe(FAKE.HOUGE_TELEGRAM_BOT_TOKEN);
+    expect(b.gmailClientSecret()).toBe(FAKE.HOUGE_GMAIL_CLIENT_SECRET);
+    expect(b.gmailRefreshToken()).toBe(FAKE.HOUGE_GMAIL_REFRESH_TOKEN);
   });
 
   it("getters keep working AFTER the env is stripped (values live in the closure, not env)", () => {
@@ -59,6 +63,15 @@ describe("broker.redact — masks secret VALUES only", () => {
     expect(out).not.toContain(FAKE.HOUGE_TELEGRAM_BOT_TOKEN);
     expect(out).toContain(REDACTED_PLACEHOLDER);
     expect(out).toBe(`key=${REDACTED_PLACEHOLDER} tok=${REDACTED_PLACEHOLDER}`);
+  });
+
+  it("masks both Gmail OAuth secret values", () => {
+    const b = createSecretBroker(fakeEnv());
+    const text = `cs=${FAKE.HOUGE_GMAIL_CLIENT_SECRET} rt=${FAKE.HOUGE_GMAIL_REFRESH_TOKEN}`;
+    const out = b.redact(text);
+    expect(out).not.toContain(FAKE.HOUGE_GMAIL_CLIENT_SECRET);
+    expect(out).not.toContain(FAKE.HOUGE_GMAIL_REFRESH_TOKEN);
+    expect(out).toBe(`cs=${REDACTED_PLACEHOLDER} rt=${REDACTED_PLACEHOLDER}`);
   });
 
   it("leaves non-secret text untouched", () => {
@@ -94,7 +107,7 @@ describe("broker.redact — masks secret VALUES only", () => {
 });
 
 describe("stripSecretsFromEnv — empties ambient credentials in place", () => {
-  it("deletes the exact five secret names", () => {
+  it("deletes the exact seven secret names", () => {
     const env = fakeEnv();
     const stripped = stripSecretsFromEnv(env);
     for (const name of SECRET_ENV_NAMES) {

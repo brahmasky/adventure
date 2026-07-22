@@ -1,7 +1,7 @@
 /**
  * The secrets firewall (ADR 0015, Phase 1 — in-process broker).
  *
- * After boot loads `.env` into `process.env`, the five real secrets are lifted into a
+ * After boot loads `.env` into `process.env`, the seven real secrets are lifted into a
  * {@link SecretBroker} — a PRIVATE closure with narrow typed getters — and then DELETED from
  * `process.env` (see {@link stripSecretsFromEnv}). For the rest of the process lifetime the
  * ambient environment holds no credential, so a self-written `process.env.KIMI_API_KEY` reads
@@ -13,13 +13,15 @@
  * nothing is stripped, so behavior is byte-for-byte identical to before the firewall existed.
  */
 
-/** The exact five real secrets the daemon holds (ADR 0015 §Context). */
+/** The exact seven real secrets the daemon holds (ADR 0015 §Context). */
 export const SECRET_ENV_NAMES = [
   "KIMI_API_KEY",
   "GEMINI_API_KEY",
   "TAVILY_API_KEY",
   "FIRECRAWL_API_KEY",
-  "HOUGE_TELEGRAM_BOT_TOKEN"
+  "HOUGE_TELEGRAM_BOT_TOKEN",
+  "HOUGE_GMAIL_CLIENT_SECRET",
+  "HOUGE_GMAIL_REFRESH_TOKEN"
 ] as const;
 
 /**
@@ -49,6 +51,8 @@ export interface SecretBroker {
   tavilyKey(): string | undefined;
   firecrawlKey(): string | undefined;
   telegramToken(): string | undefined;
+  gmailClientSecret(): string | undefined;
+  gmailRefreshToken(): string | undefined;
   /**
    * Replace every known NON-EMPTY secret VALUE with {@link REDACTED_PLACEHOLDER}. Safe on empty/
    * undefined input (returned unchanged) and never masks everything (short values are ignored per
@@ -58,7 +62,7 @@ export interface SecretBroker {
 }
 
 /**
- * Build the broker from a snapshot of the loaded env. The five values are captured into a private
+ * Build the broker from a snapshot of the loaded env. The seven values are captured into a private
  * closure at construction; the getters return those captured values, so the broker keeps working
  * after the env is stripped. `redact` masks the captured values (longest-first, so a value that is
  * a substring of another is handled after the longer one).
@@ -69,8 +73,18 @@ export function createSecretBroker(env: NodeJS.ProcessEnv): SecretBroker {
   const tavily = env.TAVILY_API_KEY;
   const firecrawl = env.FIRECRAWL_API_KEY;
   const telegram = env.HOUGE_TELEGRAM_BOT_TOKEN;
+  const gmailClientSecret = env.HOUGE_GMAIL_CLIENT_SECRET;
+  const gmailRefreshToken = env.HOUGE_GMAIL_REFRESH_TOKEN;
 
-  const redactable = [kimi, gemini, tavily, firecrawl, telegram]
+  const redactable = [
+    kimi,
+    gemini,
+    tavily,
+    firecrawl,
+    telegram,
+    gmailClientSecret,
+    gmailRefreshToken
+  ]
     .filter((v): v is string => typeof v === "string" && v.length >= MIN_REDACTABLE_SECRET_LENGTH)
     .sort((a, b) => b.length - a.length);
 
@@ -80,6 +94,8 @@ export function createSecretBroker(env: NodeJS.ProcessEnv): SecretBroker {
     tavilyKey: () => tavily,
     firecrawlKey: () => firecrawl,
     telegramToken: () => telegram,
+    gmailClientSecret: () => gmailClientSecret,
+    gmailRefreshToken: () => gmailRefreshToken,
     redact: (text: string): string => {
       if (typeof text !== "string" || text.length === 0) return text;
       let out = text;
