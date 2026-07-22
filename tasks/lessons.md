@@ -109,3 +109,28 @@ Rules Claude writes for itself after corrections. Review at session start.
   consequence separately — otherwise the reviewer optimizes the wrong one. And still take the
   slower default when latency is cheap: the pushback was right on the merits for five of the six
   invariants, and it paid for itself by surfacing a real bug.
+
+## The quarantine reader summarizes away structured tokens the planner needs (2026-07-22)
+
+- gmail_read shipped, live-gated. `{list}` worked (real inbox digest, quarantine ran,
+  secret-silent), but a follow-up `{get}` FAILED: "path segment contains characters outside the
+  allowlist." Root cause was not the path validator (it did its job) — it was that the Q-LLM
+  reader (ADR 0014) summarizes external-read output, so the Gmail MESSAGE IDS never survived into
+  the planner's view. With no clean id, the planner improvised a non-id (a subject / RFC822
+  Message-ID with `@<>`) and the allowlist correctly rejected it. list→get chaining was structurally
+  impossible through the quarantine.
+- Same class the senior spec review flagged earlier for VERIFICATION CODES: the reader is designed
+  to strip structure, so anything the NEXT step must consume verbatim (ids, OTP codes, exact URLs)
+  cannot come through the reader. The fix both times is the same seam: a deterministic,
+  code-built `trusted_extract` side-channel appended AFTER the reader digest (verb-proof because
+  it is structured + hygiened + hard-capped, same trust argument as `time_claims`). Ids are
+  re-validated `^[A-Za-z0-9_-]+$` before entering that un-quarantined channel.
+- **Rule:** whenever a quarantined external-read tool produces a token the planner must reuse
+  verbatim on a later step (id to fetch, code to submit, link to open), it will be lost or mangled
+  by the Q-LLM reader — design a deterministic trusted side-channel for that token from the start,
+  and validate its charset so the channel stays verb-proof. Ask of every new read tool: "what must
+  the next step quote exactly, and does it survive the reader?"
+- **Process corollary:** the live gate earned its keep. Unit tests + adversarial review were all
+  green; only a real Telegram tap against the real inbox surfaced the chaining break, because the
+  reader is mocked/bypassed in tests. Keep the live gate as a required step, not a formality —
+  reserve one end-to-end path that exercises the REAL quarantine reader.
