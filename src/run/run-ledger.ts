@@ -60,7 +60,8 @@ export type LedgerEventType =
   | "project_created"
   | "project_state_changed"
   | "incident_opened"
-  | "incident_resolved";
+  | "incident_resolved"
+  | "google_api_call_completed";
 
 export interface LedgerEvent {
   event_id: string;
@@ -197,7 +198,10 @@ const requiredPayloadFields = {
   // Introspection slice A (ADR 0024): ids + counts only — the incident detail lives in the
   // incidents row, not the ledger.
   incident_opened: ["incident_id", "kind", "subject"],
-  incident_resolved: ["incident_id", "kind", "subject", "open_minutes"]
+  incident_resolved: ["incident_id", "kind", "subject", "open_minutes"],
+  // ADR 0025: Google API surface (gmail_read / google_api). Counts and deterministic
+  // identifiers ONLY — never mail content or API response text.
+  google_api_call_completed: ["service", "op", "count", "extracted_codes", "extracted_links"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createLedgerEvent } from "../../src/run/run-ledger.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { canTransitionProject } from "../../src/run/state-machines.js";
 
@@ -150,5 +151,37 @@ describe("P2 ledger events", () => {
       run_id: "run_p2", venue_count: 1, candidates: 0, scam_suspects: 0, new_sightings: 0
     });
     expect(store.latestBountyScanAt()).toBeTruthy();
+  });
+});
+
+describe("google_api_call_completed ledger event (ADR 0025)", () => {
+  it("records counts-only payload via recordGoogleApiCallCompleted, actor core", () => {
+    const store = RunStore.openInMemory();
+    store.recordGoogleApiCallCompleted({
+      run_id: "run_g1", service: "gmail", op: "get", count: 1, extracted_codes: 1, extracted_links: 2
+    });
+    const events = store.getLedgerEvents("run_g1");
+    expect(events).toHaveLength(1);
+    const event = events[0]!;
+    expect(event.event_type).toBe("google_api_call_completed");
+    expect(event.actor).toBe("core");
+    expect(event.payload).toEqual({
+      service: "gmail", op: "get", count: 1, extracted_codes: 1, extracted_links: 2
+    });
+  });
+
+  it("rejects a payload missing the required count field", () => {
+    const store = RunStore.openInMemory();
+    const event = createLedgerEvent({
+      run_id: "run_g1",
+      correlation_id: "run_g1",
+      event_type: "google_api_call_completed",
+      actor: "core",
+      sequence: 1,
+      payload: { service: "gmail", op: "list", extracted_codes: 0, extracted_links: 0 }
+    });
+    expect(() => store.appendLedgerEvent(event)).toThrowError(
+      "google_api_call_completed missing required payload field: count"
+    );
   });
 });

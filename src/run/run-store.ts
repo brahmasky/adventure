@@ -3311,6 +3311,24 @@ export class RunStore {
     });
   }
 
+  /** ADR 0025 audit: one event per Google API tool op — counts only, never mail content. */
+  recordGoogleApiCallCompleted(input: {
+    run_id: string;
+    service: string;
+    op: string;
+    count: number;
+    extracted_codes: number;
+    extracted_links: number;
+  }): void {
+    this.appendRunLedgerEvent(input.run_id, "google_api_call_completed", "core", {
+      service: input.service,
+      op: input.op,
+      count: input.count,
+      extracted_codes: input.extracted_codes,
+      extracted_links: input.extracted_links
+    });
+  }
+
   /** P2 audit: a genuinely-new tracked project (idempotent re-tracks are NOT ledgered). */
   recordProjectCreated(input: { run_id: string; project_id: string; source_url: string }): void {
     this.appendRunLedgerEvent(input.run_id, "project_created", "core", {
