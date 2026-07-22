@@ -19,10 +19,12 @@ HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES, default 720 (twice a day).
 
 **Strategic frame (agreed 2026-07-20):** *push on Earn, sense with Audit, fix only what incidents
 pull.* One push-track at a time.
-- **Earn (P3, first dollar)** — BLOCKED ON PACO: one-time Google account setup
-  (wukong.houge@gmail.com + OAuth) for registration; picking a bounty; `/approve` taps. Thin
-  slice when unblocked: earnings ledger + `external_write` behind `/approve` for ONE delivery
-  path (GitHub PR, generalizing branch-publish beyond own-origin). Defer credential store.
+- **Earn (P3, first dollar)** — Google/OAuth setup DONE 2026-07-22 (wukong.houge@gmail.com
+  authorized `gmail.readonly`; gmail_read/google_api shipped dark behind HOUGE_GOOGLE_ENABLED,
+  ADR 0025). Verification-email reads unblock self-serve signup — **next Earn move: pick a
+  venue + register.** Still on Paco: picking a bounty; `/approve` taps. Thin slice after
+  registration: earnings ledger + `external_write` behind `/approve` for ONE delivery path
+  (GitHub PR, generalizing branch-publish beyond own-origin). Defer credential store.
 - **Sense (introspection)** — slice A live. Slice B (promise ledger, LLM judgment pass,
   `/incidents` view, incident→self_diagnose bridge) ONLY after slice A earns it.
 - **North star, sense track:** the first incident Houge reports BEFORE Paco notices it. Until

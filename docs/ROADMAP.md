@@ -288,7 +288,7 @@ Flip [Merge & reload] from human-tapped to autonomous (notify-after) ONLY when A
   gates, close out `tasks/todo.md` + `sessions.md`, capture lessons after corrections.
 - **Where truth lives:** `tasks/todo.md` (current state; reverse-chronological work log),
   `tasks/lessons.md` (process rules — binding), `sessions.md` (narrative), `docs/decisions/`
-  (ADRs 0001–0024; 0012/0013/0014/0015 are the load-bearing spine ones, and 0024 adds the
+  (ADRs 0001–0025; 0012/0013/0014/0015 are the load-bearing spine ones, and 0024 adds the
   behavioral **sense** stage the spine left open),
   `docs/superpowers/specs/` (spine + inner-loop locked designs), `docs/reference/configuration.md`
   (flag reference). The production `.env` (gitignored) is the arming truth — read it, don't

@@ -172,6 +172,30 @@ steer the planner. On a reader parse miss the fallback is a metadata-only
 | `HOUGE_DUAL_LLM_ENABLED` | off | Arms the quarantined reader for external-read tools. Accepts 1/true/yes/on. OFF ⇒ byte-identical to before Dual-LLM existed (raw output digested inline). |
 | `HOUGE_LLM_READER_PROVIDERS` | `HOUGE_LLM_PROVIDERS` | The reader's own provider chain (same names/format as `HOUGE_LLM_PROVIDERS`). Unset ⇒ the planner chain. Point it at a cheap, **cross-family** leg (e.g. `agy-cli,gemini-api`) for free injection resistance. |
 
+## Google identity — `gmail_read` / `google_api` (ADR 0025)
+
+Houge's read surface onto his own Google identity (`wukong.houge@gmail.com`, ADR 0008):
+**`gmail_read`** (list / search / get one message, plus deterministic verification code/link
+extraction for venue registration) and **`google_api`** (generic GET behind an exact allowlist
+registry — one row per granted OAuth scope, 1:1; today `gmail/v1/users/me/*` ↔ `gmail.readonly`).
+The OAuth scope is the hard floor: the refresh token carries `gmail.readonly` and nothing else.
+Credentials are produced by `scripts/gmail-auth.mjs`; the two secrets below are broker-held
+(ADR 0015's "exact five" → seven). See [ADR 0025](../decisions/0025-google-api-surface.md).
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_GOOGLE_ENABLED` | off | Arms both tools (armed-listing). Accepts 1/true/yes/on. In `DISARM_FLAGS` — this surface acts under Houge's identity, so `/disarm` covers it. **Not sufficient alone — see the arming couple below.** |
+| `HOUGE_GMAIL_CLIENT_ID` | — | OAuth client id of the Gmail desktop client. Plain config, not a secret (client ids are public identifiers); read from env at call time. |
+| `HOUGE_GMAIL_CLIENT_SECRET` | — | **Secret — broker-held** (ADR 0015): lifted into the secret broker at boot, stripped from `process.env`, redacted from egress. Written by `scripts/gmail-auth.mjs`. |
+| `HOUGE_GMAIL_REFRESH_TOKEN` | — | **Secret — broker-held** (ADR 0015), same treatment. The long-lived `gmail.readonly` grant; revoking it in the Google console is the remote kill for this surface. |
+
+**The dual-LLM arming couple (debuggability note).** Both tools are armed only when
+`HOUGE_GOOGLE_ENABLED` **and** `HOUGE_DUAL_LLM_ENABLED` are BOTH on — mail bodies are free
+hostile text, so there is deliberately no configuration in which un-quarantined mail bytes reach
+the planner (ADR 0025 §4). If either flag is off, both tools **silently vanish from the tool
+manifest**: no error, no warning, no log line (`manifestFor` is pure and evaluated per-turn).
+If the Gmail tools seem to be "missing", check **both** flags before debugging anything else.
+
 ## Deterministic timezone tool (`to_local_time`, loop tool)
 
 A trusted, zero-dep loop tool that fixes the recurring cross-dateline date errors (the World Cup

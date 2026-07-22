@@ -77,3 +77,11 @@ This file defines domain language for Houge architecture reviews and implementat
 **Incident**: A durable record of a violated invariant, fingerprinted `kind:subject`, with an open→resolved lifecycle. Rows are never deleted; a recurrence after resolution opens a new row so recurrence stays countable. Alerts fire on transitions only, never per sweep.
 
 **Provenance Strip**: The rule that a run born from a schedule fire (`event.source === "schedule"`) has `schedule_task` removed from its task contract, so replayed schedule text can never be acted on as a fresh instruction to create or mutate schedules. The general principle: a capability is withheld based on how a run was *born*, not on what its text says.
+
+**Google-Auth Client**: The shared OAuth closure that exchanges the broker-held Gmail refresh token for short-lived Google access tokens. The runtime-minted access token lives and dies inside the closure — it never appears in results, errors, digests, or ledger rows.
+
+**Allowlist Registry**: The code-constant table in the google-api transport with exactly one row per granted OAuth scope (host + path prefix ↔ scope, 1:1 — ADR 0025 §3). Widening it is a three-party act: console OAuth grant (Paco) + registry row (code review) + ADR amendment. Path validation rejects rather than normalizes.
+
+**Verification Extraction (`trusted_extract` side-channel)**: The deterministic regex pass over a raw mail body that extracts OTP codes and verification links, appended *after* the Q-LLM reader digest. Trusted for the same reason as time claims: structured, hygiened, hard-capped, no verb — code built it, so it cannot carry an instruction. Links stay byte-exact and remain attacker-controlled data.
+
+**Dual-LLM Arming Couple**: The manifest rule that `gmail_read`/`google_api` are armed only when `HOUGE_GOOGLE_ENABLED` and `HOUGE_DUAL_LLM_ENABLED` are both on, composed in the tool manifest. There is no configuration in which un-quarantined mail bytes reach the planner; if either flag is off, the tools silently vanish from the manifest.

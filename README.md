@@ -292,6 +292,27 @@ Deferred to slice B: the judgment half — promise-vs-action diffing, plan-vs-ex
 divergence, a daily LLM retro digest, an `/incidents` view, and the
 incident → `self_diagnose` → regression-tested self-write bridge.
 
+## Google identity — gmail_read / google_api
+
+Houge has his own Google identity (`wukong.houge@gmail.com`,
+[ADR 0008](docs/decisions/0008-houge-identity-authenticated-read.md)), and with
+`HOUGE_GOOGLE_ENABLED=true` he can read it. **`gmail_read`** lists, searches, and opens messages
+in his own inbox, appending a deterministic code-built block of verification codes/links (the
+registration trust anchor — regexes over the raw body, not model transcription). **`google_api`**
+is the generic GET escape hatch behind an exact allowlist registry (one row per granted OAuth
+scope; today `gmail/v1/users/me/*` ↔ `gmail.readonly`). The OAuth scope is the hard floor: the
+refresh token can read mail and do nothing else, no matter what a hostile email asks for. Both
+tools are quarantined behind the dual-LLM wall and armed **only as a couple** —
+`HOUGE_GOOGLE_ENABLED` AND `HOUGE_DUAL_LLM_ENABLED`, or they silently leave the tool manifest
+([ADR 0025](docs/decisions/0025-google-api-surface.md)). This closes the Earn-P3 registration
+loop: sign up on a venue → the verification mail lands in Houge's inbox → he reads the code
+himself.
+
+**Runbook — Gmail ops fail with `auth_failed`.** This is the *expected* failure mode.
+Cause: the refresh token was revoked (or hit the 7-day testing-mode expiry, if the OAuth consent
+screen was ever un-published). Fix: re-run `node scripts/gmail-auth.mjs <client_secret.json>`
+and copy the three `HOUGE_GMAIL_*` lines into the mini's `.env`.
+
 ## Backup & restore
 
 With `HOUGE_BACKUP_ENABLED=true` the daemon snapshots `houge.sqlite` into `backups/`
