@@ -127,7 +127,7 @@ async function readBodyCapped(
 async function performGet(
   path: string,
   host: string,
-  query: Record<string, string> | undefined,
+  query: GoogleApiQuery | undefined,
   deps: GoogleApiDeps,
   auth: GoogleAuthClient
 ): Promise<CoreOutcome> {
@@ -140,7 +140,9 @@ async function performGet(
 
   // Host ALWAYS from the matched registry row; query values re-encoded, never concatenated.
   const url = new URL(path, `https://${host}`);
-  url.search = new URLSearchParams(query ?? {}).toString();
+  url.search = new URLSearchParams(
+    query === undefined ? {} : isPairSequence(query) ? query.map(([k, v]) => [k, v]) : query
+  ).toString();
 
   const attempt = (bearer: string): Promise<Response> =>
     deps.fetchImpl(url.toString(), {
@@ -204,6 +206,11 @@ async function performGet(
   return { kind: "ok", status: response.status, json: parsed };
 }
 
+// Array.isArray alone cannot narrow ReadonlyArray out of the record branch of the union.
+function isPairSequence(q: GoogleApiQuery): q is ReadonlyArray<[string, string]> {
+  return Array.isArray(q);
+}
+
 function findRegistryRow(path: string): { host: string; pathPrefix: string; oauthScope: string } | undefined {
   return GOOGLE_API_REGISTRY.find((row) => path.startsWith(row.pathPrefix));
 }
@@ -218,10 +225,13 @@ function normalizeQuery(raw: unknown): Record<string, string> | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/** A query is a plain record, or a pair sequence when a param repeats (e.g. metadataHeaders). */
+export type GoogleApiQuery = Record<string, string> | ReadonlyArray<[string, string]>;
+
 /** Internal shared GET used by gmail-read too. 401 → one re-mint+retry; else single attempt. */
 export async function googleApiGetJson(
   path: string,
-  query: Record<string, string> | undefined,
+  query: GoogleApiQuery | undefined,
   deps: GoogleApiDeps,
   auth: GoogleAuthClient
 ): Promise<{ ok: true; json: unknown } | { ok: false; error: string }> {
