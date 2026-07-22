@@ -36,11 +36,21 @@ const FAST_INTERVAL_MS = 5 * 60 * 1000;
 
 /** Private-db accessor, same shape tests/budget/metered-ceiling.test.ts uses for the outbox. */
 function outboxDb(): {
-  prepare(sql: string): { all<T>(...v: unknown[]): T[]; get<T>(...v: unknown[]): T | undefined };
+  prepare(sql: string): {
+    all<T>(...v: unknown[]): T[];
+    get<T>(...v: unknown[]): T | undefined;
+    run(...v: unknown[]): unknown;
+  };
 } {
   return (
     store as unknown as {
-      db: { prepare(sql: string): { all<T>(...v: unknown[]): T[]; get<T>(...v: unknown[]): T | undefined } };
+      db: {
+        prepare(sql: string): {
+          all<T>(...v: unknown[]): T[];
+          get<T>(...v: unknown[]): T | undefined;
+          run(...v: unknown[]): unknown;
+        };
+      };
     }
   ).db;
 }
@@ -257,6 +267,12 @@ describe("runInvariantSweep (introspection slice A)", () => {
       correlation_id: "run_x",
       payload: { text: "a real report" }
     });
+    // enqueueNotification stamps created_at from the WALL clock; this test runs on the fixture
+    // clock (NOW). Pin the row onto the fixture timeline or the row is "in the future" relative
+    // to the third sweep and the assertion rots as real time passes the fixture dates.
+    outboxDb()
+      .prepare("UPDATE notification_outbox SET created_at = ? WHERE idempotency_key = 'some-run-report'")
+      .run(later);
     const third = new Date(Date.parse(later) + DEFAULT_INVARIANT_SWEEP_INTERVAL_MS + 1000).toISOString();
     runInvariantSweep({ store, now: third, env: ARMED, chat_id: "555" });
     expect(
