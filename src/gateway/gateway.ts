@@ -642,7 +642,7 @@ export class Gateway {
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:usage`,
       correlation_id: event.source_reference,
-      payload: { text: `📊 Houge · usage\n\`\`\`\n${table}\n\`\`\`` }
+      payload: { text: `📊 Houge · usage · all-time\n\`\`\`\n${table}\n\`\`\`` }
     });
     this.runStore.recordTriggerProcessed(event, result);
     this.recordTelegramAccepted(event, now);

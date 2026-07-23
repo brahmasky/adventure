@@ -19,6 +19,15 @@ import type { LlmUsage } from "../run/llm-usage.js";
 /** Provider names (chain leg names) whose usage is metered (pay-per-token). */
 export const METERED_PROVIDERS: ReadonlySet<string> = new Set(["kimi-api", "gemini-api"]);
 
+/**
+ * Transport class of a usage leg: `"api"` = a metered pay-per-token HTTP API (real money), `"cli"` =
+ * a subscription coding-CLI leg (pi/agy-cli/codex/claude — marginal $0). Drives the honest
+ * split in the usage report: tokens are shown for every leg, but real $ only for `"api"`.
+ */
+export function usageTransport(provider: string): "api" | "cli" {
+  return METERED_PROVIDERS.has(provider) ? "api" : "cli";
+}
+
 export interface MeteredModelPrice {
   input_usd_per_mtok: number;
   output_usd_per_mtok: number;

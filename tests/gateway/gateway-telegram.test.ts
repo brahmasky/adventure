@@ -539,10 +539,13 @@ describe("Gateway telegram events", () => {
       const note = store.claimNextNotification("test", 30);
       const text = String(note?.payload.text);
       expect(text).toContain("```"); // fixed-width table kept monospaced in Telegram
+      expect(text).toContain("all-time"); // one-line window header
       expect(text).toContain("PROVIDER");
+      // Grouped, honest split: kimi-api is a metered API leg; openai is a subscription CLI leg.
+      expect(text).toContain("API — metered (pay-per-token)");
+      expect(text).toContain("CLI — subscription (tokens only, no marginal $)");
       expect(text).toContain("moonshot-v1-auto");
       expect(text).toContain("gpt-4o");
-      expect(text).toContain("TOTAL");
     } finally {
       store.close();
     }

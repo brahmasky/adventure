@@ -684,9 +684,11 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       expect(writer!.payload.input_tokens).toBe(100);
       expect(writer!.payload.output_tokens).toBe(20);
       expect(typeof writer!.payload.latency_ms).toBe("number");
-      // Reviewer telemetry came from review.usage: 200 in + 40 out + cost.
+      // Reviewer telemetry came from review.usage: 200 in + 40 out.
       expect(reviewer!.payload.input_tokens).toBe(200);
-      expect(reviewer!.payload.cost_usd).toBe(0.08);
+      // The default reviewer (kimi/codex) is a subscription CLI leg, NOT metered — its self-reported
+      // cost_usd (0.08) is a phantom list price and must NOT reach the ledger as a real-$ figure.
+      expect(reviewer!.payload.cost_usd).toBeUndefined();
     } finally {
       store.close();
     }

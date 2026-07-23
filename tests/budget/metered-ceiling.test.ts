@@ -258,6 +258,43 @@ describe("cost lands at the CoreWorker recording seam", () => {
       store.close();
     }
   });
+
+  it("drops a subscription CLI leg's self-reported cost_usd (phantom); a metered leg still gets a real $", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const worker = new CoreWorker(store, dir);
+      const seam = worker as unknown as {
+        recordLlmCallSafe(run_id: string, info: Record<string, unknown>): void;
+      };
+
+      // A non-metered CLI leg self-reports a list price (0.42). It is a subscription leg — that
+      // figure is a phantom and must NOT be stored as a real-$ ledger cost.
+      seam.recordLlmCallSafe("run_phantom", {
+        provider: "claude",
+        model: "sonnet",
+        role: "reviewer",
+        usage: { input_tokens: 500, output_tokens: 100, cached_input_tokens: 0, cost_usd: 0.42 }
+      });
+      // A metered leg with the same self-reported cost is still priced from the seed table, not 0.42.
+      seam.recordLlmCallSafe("run_phantom", {
+        provider: "kimi-api",
+        model: "moonshot-v1-auto",
+        role: "answer",
+        usage: { input_tokens: 1_000_000, output_tokens: 1_000_000, cached_input_tokens: 0, cost_usd: 0.42 }
+      });
+
+      const events = store.getLedgerEvents("run_phantom");
+      const claude = events.find((e) => e.payload.provider === "claude")!;
+      const kimi = events.find((e) => e.payload.provider === "kimi-api")!;
+      expect(claude.payload.cost_usd).toBeUndefined(); // phantom dropped — tokens only
+      expect(kimi.payload.cost_usd).toBeCloseTo(7.0, 10); // computed, NOT the self-reported 0.42
+
+      // Ledger-derived spend reflects only the metered leg.
+      expect(store.meteredSpendUsd(new Date().toISOString()).daily_usd).toBeCloseTo(7.0, 10);
+    } finally {
+      store.close();
+    }
+  });
 });
 
 describe("/status renders the metered line", () => {

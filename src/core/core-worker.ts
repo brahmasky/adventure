@@ -29,7 +29,7 @@ import type { ReviewResult } from "../capabilities/diff-reviewer.js";
 import { runSelfWriter, resolveSelfWriteWriter } from "../capabilities/self-write-writer.js";
 import { resolveCodexModel } from "../capabilities/coding-agent.js";
 import { normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
-import { computeCostUsd } from "../llm/metered-pricing.js";
+import { computeCostUsd, METERED_PROVIDERS } from "../llm/metered-pricing.js";
 import { publishBranch, selfWriteBranchName } from "../run/branch-publish.js";
 import { createWorktree, removeWorktree } from "../run/worktree.js";
 import { buildGateAQuestion, GATE_A_DISCIPLINE, parseGateAVerdict } from "../capabilities/skill-router.js";
@@ -1364,10 +1364,19 @@ export class CoreWorker {
       // provider + model + usage meet for every role (writer/reviewer/cheap-chain). Only
       // metered providers price (null otherwise); the cost rides the existing optional
       // `cost_usd` payload field. Counts/metadata only — the bodies invariant is untouched.
-      const cost_usd = info.usage.cost_usd ?? computeCostUsd(info.provider, info.model, info.usage) ?? undefined;
+      // Only a METERED provider yields a real $ figure. A subscription coding-CLI leg's
+      // self-reported list price (e.g. the kimi/codex reviewer's cost_usd) is a phantom — it must
+      // NOT become a real-$ ledger figure, so non-metered legs record NO cost (tokens only).
+      const metered = METERED_PROVIDERS.has(info.provider);
+      const cost_usd = metered
+        ? (computeCostUsd(info.provider, info.model, info.usage) ?? info.usage.cost_usd)
+        : undefined;
+      // Strip any incoming self-reported cost so a non-metered leg records NONE — only a metered
+      // leg's honored/computed figure is (re)attached below.
+      const { cost_usd: _selfReported, ...usageNoCost } = info.usage;
       this.runStore.recordLlmCall(run_id, {
         ...info,
-        usage: cost_usd !== undefined ? { ...info.usage, cost_usd } : info.usage
+        usage: cost_usd !== undefined ? { ...usageNoCost, cost_usd } : usageNoCost
       });
     } catch (error) {
       console.warn(`[self-write] failed to record ${info.role} telemetry (non-fatal): ${error instanceof Error ? error.message : String(error)}`);
