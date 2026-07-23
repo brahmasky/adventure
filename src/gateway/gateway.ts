@@ -736,12 +736,7 @@ export class Gateway {
       return status.error.message;
     }
     if ("runs" in status.status) {
-      const runsText =
-        status.status.runs.length === 0
-          ? "No runs yet"
-          : status.status.runs.map((run) => `${run.run_id} ${run.state}`).join("\n");
-
-      const { runs_by_state, last_error, budget, window_hours, poller, rating } =
+      const { runs_by_state, last_error, budget, window_hours, poller, rating, sweep } =
         status.status.overview;
       const byState = Object.entries(runs_by_state)
         .map(([state, count]) => `${state} ${count}`)
@@ -749,9 +744,6 @@ export class Gateway {
       const budgetText = budget
         .map((b) => `${b.kind} ${b.used}/${b.limit}`)
         .join(", ");
-      const pollerText = poller
-        ? `last poll ${poller.last_success_at ?? "never"}${poller.last_error ? `, last error ${poller.last_error}` : ""}`
-        : "not running";
       // ⓪·3 S2c: the rating signal at a glance — an open ask, or the last capture.
       const ratingText = rating.pending_since
         ? `pending ask since ${rating.pending_since}`
@@ -759,20 +751,42 @@ export class Gateway {
           ? `last ${rating.last_rating}/3 at ${rating.last_rating_at}`
           : "none yet";
 
+      // HEALTH — daemon liveness, the invariant-sweep self-check, and the last poll error.
+      const daemonText = poller
+        ? `polling, last ${poller.last_success_at ?? "never"}`
+        : "not running";
+      const sweptText = sweep.last_swept_at ? `${relativeTimeAgo(sweep.last_swept_at, now)} ago` : "never";
+      const incidentText = `${sweep.open_incidents} open incident${sweep.open_incidents === 1 ? "" : "s"}`;
+      const errorsText =
+        poller && poller.last_error
+          ? `${poller.last_error}${poller.last_error_at ? ` (${poller.last_error_at})` : ""}`
+          : "none";
+
       // ⓪·3g: surface an in-flight background evolution pipeline (in-process lane state,
       // so only the daemon's own /status shows it — exactly where it is meaningful).
       const lane = evolutionLaneSnapshot();
+
       return [
-        runsText,
+        "📊 Houge · status",
         "",
-        `Last ${window_hours}h: ${byState || "no runs"}`,
+        "🟢 HEALTH",
+        `Daemon: ${daemonText}`,
+        `Self-check: swept ${sweptText} · ${incidentText}`,
+        `Errors: ${errorsText}`,
+        ...(lane.busy && lane.current
+          ? [`Evolution: ${lane.current.tool} running since ${lane.current.started_at}`]
+          : []),
+        "",
+        "📈 ACTIVITY (24h)",
+        `Runs: ${byState || "no runs"}`,
         `Last error: ${last_error ?? "none"}`,
-        `Budget: ${budgetText}`,
-        // Metered-$ ceiling (ADR 0019): spend vs both ceilings at a glance.
+        `Rating: ${ratingText}`,
+        "",
+        "💰 COST & USAGE",
+        // Metered-$ ceiling (ADR 0019): spend vs both ceilings at a glance (line self-labels "Metered:").
         formatMeteredStatusLine(this.runStore.meteredSpendUsd(now), resolveMeteredCeilings(process.env)),
-        `Daemon: ${pollerText}`,
-        ...(lane.busy && lane.current ? [`Evolution: ${lane.current.tool} running since ${lane.current.started_at}`] : []),
-        `Rating: ${ratingText}`
+        `Volume: ${budgetText}`,
+        "Tokens: run `houge usage` for per-model breakdown"
       ].join("\n");
     }
     return `${status.status.run_id} ${status.status.state}`;
@@ -846,6 +860,19 @@ export class Gateway {
 
     return { ok: true, status: "created", run_id };
   }
+}
+
+/**
+ * Compact "how long ago" label for /status (e.g. "5m", "2h", "3d"). Caller appends " ago".
+ * Sub-minute deltas floor to "0m" rather than a negative — /status favors scannability over
+ * second-level precision.
+ */
+function relativeTimeAgo(then: string, now: string): string {
+  const minutes = Math.max(0, Math.floor((Date.parse(now) - Date.parse(then)) / 60_000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 /**

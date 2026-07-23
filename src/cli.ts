@@ -101,6 +101,16 @@ if (command === "run") {
   } finally {
     store.close();
   }
+} else if (command === "usage") {
+  const { formatUsageTable, resolveUsageSince } = await import("./status/usage-report.js");
+  const since = resolveUsageSince(rest, new Date().toISOString());
+  const store = RunStore.open("houge.sqlite", storeOptions);
+  try {
+    console.log(formatUsageTable(store.usageByModel(since)));
+    process.exitCode = 0;
+  } finally {
+    store.close();
+  }
 } else if (command === "eval") {
   const suite = rest[0] ?? "milestone-0";
   const result = await runEvalSuite(process.cwd(), suite);

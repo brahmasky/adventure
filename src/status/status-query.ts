@@ -17,6 +17,8 @@ export interface StatusOverview {
   poller: PollHeartbeat | null;
   /** Session-rating state (⓪·3 S2c): an open ask + the last capture. */
   rating: RatingStatus;
+  /** Invariant-sweep self-check (ADR 0024): when it last swept + how many incidents are open. */
+  sweep: { last_swept_at: string | null; open_incidents: number };
 }
 
 export type StatusQueryResult =
@@ -56,7 +58,11 @@ export function queryStatus(
           last_error: store.lastRunError(),
           budget: store.globalBudgetUsage(caps, now),
           poller: store.getPollHeartbeat(),
-          rating: store.getRatingStatus(now, resolveRatingPendingMinutes(process.env) * 60_000)
+          rating: store.getRatingStatus(now, resolveRatingPendingMinutes(process.env) * 60_000),
+          sweep: {
+            last_swept_at: store.getInvariantSweepState()?.last_swept_at ?? null,
+            open_incidents: store.listOpenIncidents().length
+          }
         }
       }
     };

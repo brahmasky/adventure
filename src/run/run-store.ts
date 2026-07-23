@@ -1592,6 +1592,43 @@ export class RunStore {
   }
 
   /**
+   * Per-model token/cost breakdown DERIVED from `llm_call` ledger events (the same source as
+   * {@link meteredSpendUsd}) — powers `houge usage`. Groups by provider+model, summing calls,
+   * input/output tokens, and cost_usd (unpriced events contribute 0 to cost). An optional
+   * `sinceIso` scopes to calls strictly after that instant; omitted → all time. Pure read.
+   */
+  usageByModel(sinceIso?: string): Array<{
+    provider: string;
+    model: string;
+    calls: number;
+    input_tokens: number;
+    output_tokens: number;
+    cost_usd: number;
+  }> {
+    return this.db.prepare(`
+      SELECT
+        json_extract(payload_json, '$.provider') AS provider,
+        json_extract(payload_json, '$.model') AS model,
+        COUNT(*) AS calls,
+        COALESCE(SUM(CAST(json_extract(payload_json, '$.input_tokens') AS INTEGER)), 0) AS input_tokens,
+        COALESCE(SUM(CAST(json_extract(payload_json, '$.output_tokens') AS INTEGER)), 0) AS output_tokens,
+        COALESCE(SUM(CAST(json_extract(payload_json, '$.cost_usd') AS REAL)), 0) AS cost_usd
+      FROM ledger_events
+      WHERE event_type = 'llm_call'
+        AND (? IS NULL OR occurred_at > ?)
+      GROUP BY provider, model
+      ORDER BY cost_usd DESC, calls DESC
+    `).all<{
+      provider: string;
+      model: string;
+      calls: number;
+      input_tokens: number;
+      output_tokens: number;
+      cost_usd: number;
+    }>(sinceIso ?? null, sinceIso ?? null);
+  }
+
+  /**
    * Single-row latch so exactly ONE alert fires per metered-fuse episode (the twin of
    * {@link armGlobalFuseIfNeeded}). `armed: true` only on the 0→1 transition.
    */
@@ -2967,6 +3004,19 @@ export class RunStore {
     return this.db.prepare(`
       SELECT * FROM incidents WHERE state = 'open' ORDER BY first_seen_at ASC, incident_id ASC
     `).all<IncidentRow>();
+  }
+
+  /**
+   * Read-only twin of {@link claimInvariantSweep}: the self-check's last sweep instant for
+   * /status, or null if it has never swept. MUST NOT mutate — reading must never reset the
+   * throttle latch.
+   */
+  getInvariantSweepState(): { last_swept_at: string } | null {
+    return (
+      this.db.prepare(`
+        SELECT last_swept_at FROM invariant_sweep_state WHERE id = 1
+      `).get<{ last_swept_at: string }>() ?? null
+    );
   }
 
   /**

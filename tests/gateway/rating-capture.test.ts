@@ -297,4 +297,85 @@ describe("surfacing (⓪·3 S2c)", () => {
       store.close();
     }
   });
+
+  it("/status renders three labeled sections and drops the run-id list", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      // A real run so there IS a run_id that the OLD flat layout would have listed.
+      const turn = gateway.intake(turnEvent("do a thing", "run-1"));
+      if (!turn.ok) throw new Error("expected turn intake");
+
+      gateway.intake(
+        buildTypedTaskEvent({
+          source: "telegram",
+          type: "status",
+          requested_by: { kind: "user", id: "paco" },
+          notify: { kind: "telegram", chat_id: CHAT },
+          idempotency_key: "telegram:sec1",
+          source_reference: "telegram:update:sec1"
+        })
+      );
+      const text = notificationText(store, "telegram:sec1:status")!;
+
+      // Three sections present.
+      expect(text).toContain("HEALTH");
+      expect(text).toContain("Self-check:");
+      expect(text).toContain("ACTIVITY");
+      expect(text).toContain("COST & USAGE");
+      expect(text).toContain("Tokens: run `houge usage`");
+      // The meaningless run-id list is gone — no bare run id line.
+      expect(text).not.toContain(turn.run_id);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("/status Self-check line shows the sweep age and open-incident count", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      // Seed a sweep that ran ~2h ago and one open incident. Clock-relative: /status reads
+      // the real clock for its "Xh ago" helper.
+      const sweptAt = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+      store.claimInvariantSweep(sweptAt, 60_000);
+      store.openIncident({ kind: "stuck_run", subject: "run_x", detail: { run_id: "run_x" } });
+
+      gateway.intake(
+        buildTypedTaskEvent({
+          source: "telegram",
+          type: "status",
+          requested_by: { kind: "user", id: "paco" },
+          notify: { kind: "telegram", chat_id: CHAT },
+          idempotency_key: "telegram:sec2",
+          source_reference: "telegram:update:sec2"
+        })
+      );
+      const text = notificationText(store, "telegram:sec2:status")!;
+      expect(text).toContain("Self-check: swept 2h ago · 1 open incident");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("/status Self-check line reads 'never' when the sweep has never run", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      gateway.intake(
+        buildTypedTaskEvent({
+          source: "telegram",
+          type: "status",
+          requested_by: { kind: "user", id: "paco" },
+          notify: { kind: "telegram", chat_id: CHAT },
+          idempotency_key: "telegram:sec3",
+          source_reference: "telegram:update:sec3"
+        })
+      );
+      const text = notificationText(store, "telegram:sec3:status")!;
+      expect(text).toContain("Self-check: swept never · 0 open incidents");
+    } finally {
+      store.close();
+    }
+  });
 });

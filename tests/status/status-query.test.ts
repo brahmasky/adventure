@@ -49,9 +49,34 @@ describe("queryStatus", () => {
               { kind: "gated_attempts", used: 0, limit: 3, remaining: 3 }
             ],
             poller: null,
-            rating: { pending_since: null, last_rating: null, last_rating_at: null }
+            rating: { pending_since: null, last_rating: null, last_rating_at: null },
+            sweep: { last_swept_at: null, open_incidents: 0 }
           }
         }
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("surfaces the invariant-sweep self-check state: last sweep instant + open incident count", () => {
+    // Why: /status HEALTH renders the self-check line from these two fields — a never-swept
+    // system must read null (→ "never"), and open incidents must be counted, not listed.
+    const store = RunStore.openInMemory();
+    try {
+      store.claimInvariantSweep("2026-06-18T00:00:00.000Z", 60_000);
+      store.openIncident({
+        kind: "stuck_run",
+        subject: "run_abc",
+        detail: { run_id: "run_abc" },
+        now: "2026-06-18T00:00:00.000Z"
+      });
+
+      const result = queryStatus(store, undefined, { now: "2026-06-18T00:05:00.000Z" });
+      if (!result.ok || !("runs" in result.status)) throw new Error("expected overview");
+      expect(result.status.overview.sweep).toEqual({
+        last_swept_at: "2026-06-18T00:00:00.000Z",
+        open_incidents: 1
       });
     } finally {
       store.close();
