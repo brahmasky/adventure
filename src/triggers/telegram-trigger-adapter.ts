@@ -9,6 +9,13 @@ export interface TelegramUpdate {
   message?: {
     message_id: number;
     text?: string;
+    /** A photo/document/etc. carries its accompanying text here, NOT in `.text`. */
+    caption?: string;
+    /**
+     * Present when the message is a photo. Declared only so a captioned photo is
+     * recognized as a real message — we do NOT fetch the image (that's a future slice).
+     */
+    photo?: Array<{ file_id: string; file_unique_id: string; width: number; height: number; file_size?: number }>;
     forward_date?: number;
     forward_origin?: unknown;
     reply_to_message?: { message_id: number };
@@ -57,9 +64,29 @@ export function isSelfWriteActionEvent(event: TelegramNormalizedEvent): event is
   return (event as { type?: string }).type === "selfwrite_action";
 }
 
+/**
+ * A one-line reply the poll loop should send instead of ghosting the sender when a
+ * message has no usable text (a bare photo/sticker/voice/document with no caption). It
+ * is NOT an event — the skip bookkeeping is unchanged; this rides the existing
+ * notification outbox. `idempotency_key` is derived from the update so a redelivery or
+ * restart re-enqueues the SAME row (a no-op duplicate) — never a repeated nag.
+ */
+export interface TelegramAcknowledgement {
+  chat_id: string;
+  text: string;
+  idempotency_key: string;
+}
+
 export type TelegramNormalizeResult =
   | { ok: true; event: TelegramNormalizedEvent }
-  | { ok: false; error: { code: string; message: string } };
+  | { ok: false; error: { code: string; message: string }; acknowledgement?: TelegramAcknowledgement };
+
+/**
+ * Reply for a text-less/caption-less message. We can't read images yet (a future slice),
+ * so we tell the sender how to reach us: type the question, or add a caption to the photo.
+ */
+const TELEGRAM_UNSUPPORTED_MEDIA_REPLY =
+  "我收到一条非文字消息（图片/语音/文件）。我暂时看不了图片内容，你可以把问题打成文字，或者给图片配上文字说明（caption）。";
 
 export function normalizeTelegramUpdate(update: TelegramUpdate, allowlist: TelegramAllowlist): TelegramNormalizeResult {
   if (update.channel_post) {
@@ -71,10 +98,13 @@ export function normalizeTelegramUpdate(update: TelegramUpdate, allowlist: Teleg
   }
 
   const message = update.message;
-  if (!message?.text) {
-    return { ok: false, error: { code: "TELEGRAM_COMMAND_INVALID", message: "Telegram text message is required" } };
+  if (!message) {
+    return { ok: false, error: { code: "TELEGRAM_COMMAND_INVALID", message: "Telegram message is required" } };
   }
 
+  // Auth runs BEFORE the text/media resolution so a non-allowlisted sender is denied
+  // outright — never acknowledged (we must not reply to, or leak our existence to, a
+  // stranger who sends a bare photo).
   const auth = authorizeTelegramUpdate(
     {
       from_id: message.from?.id,
@@ -86,7 +116,25 @@ export function normalizeTelegramUpdate(update: TelegramUpdate, allowlist: Teleg
   );
   if (!auth.ok) return auth;
 
-  const parsed = parseTelegramCommand(message.text);
+  // A photo's question lives in `.caption`, not `.text`. Fall back to it so a captioned
+  // photo is answered exactly like a text message.
+  const bodyText = message.text ?? message.caption;
+  if (typeof bodyText !== "string" || bodyText.trim().length === 0) {
+    // Truly text-less (bare photo/sticker/voice/document). Keep it OUT of the command
+    // path but do NOT ghost the sender: carry an acknowledgement the poll loop sends via
+    // the existing outbox. The skip record + single offset advance are unchanged.
+    return {
+      ok: false,
+      error: { code: "TELEGRAM_UNSUPPORTED_MEDIA", message: "Telegram message has no text or caption" },
+      acknowledgement: {
+        chat_id: String(message.chat.id),
+        text: TELEGRAM_UNSUPPORTED_MEDIA_REPLY,
+        idempotency_key: `telegram:${update.update_id}:unsupported_media`
+      }
+    };
+  }
+
+  const parsed = parseTelegramCommand(bodyText);
   if (!parsed.ok) return parsed;
 
   return { ok: true, event: buildTelegramEvent(parsed.command, buildEventBase(update, message, auth.identity)) };
@@ -245,11 +293,20 @@ export const TELEGRAM_ALLOWED_UPDATES: readonly string[] = ["message", "callback
 
 export type TelegramEmit = (event: TelegramNormalizedEvent) => Promise<void>;
 
+/**
+ * Best-effort sink for the no-ghost acknowledgement of a text-less message. The runner
+ * wires this to enqueue a notification on the existing outbox (option b). It is called
+ * AFTER the offset has advanced, and any throw is swallowed by the poll loop — the
+ * durable `skipped_telegram_updates` row is the source of truth; the reply is a nicety.
+ */
+export type TelegramAcknowledgeSink = (acknowledgement: TelegramAcknowledgement) => void;
+
 export interface TelegramLongPollingAdapterOptions {
   allowlist: TelegramAllowlist;
   client: TelegramGetUpdatesClient;
   offsetStore: TelegramOffsetStore;
   skippedUpdateStore?: TelegramSkippedUpdateStore;
+  acknowledgeSink?: TelegramAcknowledgeSink;
   timeout_seconds?: number;
 }
 
@@ -305,6 +362,16 @@ export function createTelegramLongPollingAdapter(
           });
           options.offsetStore.setOffset(TELEGRAM_OFFSET_SOURCE, update.update_id + 1);
           skipped += 1;
+          // No-ghost reply for a text-less message. Best-effort and idempotent (the ack's
+          // key is derived from the update): a throw here must never break the poll loop
+          // since the offset has already advanced and the skip is already recorded.
+          if (normalized.acknowledgement && options.acknowledgeSink) {
+            try {
+              options.acknowledgeSink(normalized.acknowledgement);
+            } catch {
+              // Swallow: the durable skipped_telegram_updates row is the source of truth.
+            }
+          }
           continue;
         }
 

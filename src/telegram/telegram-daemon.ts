@@ -147,6 +147,17 @@ export async function runTelegramDaemon(
     },
     skippedUpdateStore: {
       recordSkippedTelegramUpdate: (input) => options.store.recordSkippedTelegramUpdate(input)
+    },
+    // No-ghost reply for a text-less message: enqueue on the existing outbox; the
+    // in-loop dispatch flush delivers it. Deterministic key → idempotent across restarts.
+    acknowledgeSink: (ack) => {
+      new NotificationOutbox(options.store).enqueue({
+        target: { kind: "telegram", chat_id: ack.chat_id },
+        intent_type: "progress",
+        idempotency_key: ack.idempotency_key,
+        correlation_id: ack.idempotency_key,
+        payload: { text: ack.text }
+      });
     }
   });
   const dispatcher = new NotificationDispatcher(new NotificationOutbox(options.store), {

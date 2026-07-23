@@ -292,6 +292,80 @@ describe("normalizeTelegramUpdate", () => {
     expect(result).toMatchObject({ ok: false, error: { code: "TELEGRAM_COMMAND_INVALID" } });
   });
 
+  it("normalizes a captioned photo into a turn event with goal = caption (no .text)", () => {
+    // The operator sent a PHOTO with the question in the caption. Telegram puts it in
+    // `.caption`, not `.text`. It must be answered exactly like a text message.
+    const result = normalizeTelegramUpdate(
+      {
+        update_id: 1020,
+        message: {
+          message_id: 80,
+          caption: "这是什么？",
+          photo: [{ file_id: "f1", file_unique_id: "u1", width: 90, height: 90 }],
+          from: { id: 111 },
+          chat: { id: 222 }
+        }
+      },
+      allowlist
+    );
+
+    const event = taskEvent(result);
+    expect(event).toMatchObject({
+      source: "telegram",
+      type: "turn",
+      program: "turn",
+      goal: "这是什么？",
+      requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "telegram", chat_id: "222" },
+      idempotency_key: "telegram:1020:80"
+    });
+  });
+
+  it("acknowledges (does not ghost) a truly text-less message: bare photo, no caption", () => {
+    const result = normalizeTelegramUpdate(
+      {
+        update_id: 1021,
+        message: {
+          message_id: 81,
+          photo: [{ file_id: "f2", file_unique_id: "u2", width: 90, height: 90 }],
+          from: { id: 111 },
+          chat: { id: 222 }
+        }
+      },
+      allowlist
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected a skip result");
+    expect(result.error.code).toBe("TELEGRAM_UNSUPPORTED_MEDIA");
+    // The sender gets a one-line reply instead of silence.
+    expect(result.acknowledgement).toBeDefined();
+    expect(result.acknowledgement?.chat_id).toBe("222");
+    expect(result.acknowledgement?.text).toContain("非文字消息");
+    expect(result.acknowledgement?.idempotency_key).toBe("telegram:1021:unsupported_media");
+  });
+
+  it("AUTH FLOOR: a non-allowlisted sender's text-less message is denied, with NO acknowledgement", () => {
+    // Auth must run before the media check so we never reply to (or leak existence to) a
+    // stranger who sends a bare photo.
+    const result = normalizeTelegramUpdate(
+      {
+        update_id: 1022,
+        message: {
+          message_id: 82,
+          photo: [{ file_id: "f3", file_unique_id: "u3", width: 90, height: 90 }],
+          from: { id: 999 },
+          chat: { id: 222 }
+        }
+      },
+      allowlist
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { code: "TELEGRAM_AUTH_DENIED" } });
+    if (result.ok) throw new Error("expected a skip result");
+    expect(result.acknowledgement).toBeUndefined();
+  });
+
   it("rejects Telegram messages with forward_origin as forwarded commands", () => {
     const result = normalizeTelegramUpdate(
       {

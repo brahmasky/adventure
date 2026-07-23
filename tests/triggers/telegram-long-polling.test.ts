@@ -171,6 +171,85 @@ describe("createTelegramLongPollingAdapter", () => {
     expect(skipped).toHaveLength(2);
   });
 
+  it("acknowledges a truly text-less update via the sink, advances offset exactly once, never emits", async () => {
+    const offsets: number[] = [];
+    const skipped: { update_id: number; reason_code: string }[] = [];
+    const acks: { chat_id: string; text: string; idempotency_key: string }[] = [];
+    const emitted: unknown[] = [];
+    const adapter = createTelegramLongPollingAdapter({
+      allowlist,
+      client: {
+        getUpdates: async () => [
+          {
+            update_id: 90,
+            message: {
+              message_id: 3,
+              photo: [{ file_id: "f", file_unique_id: "u", width: 90, height: 90 }],
+              from: { id: 111 },
+              chat: { id: 222 }
+            }
+          }
+        ]
+      },
+      offsetStore: {
+        getOffset: () => 0,
+        setOffset: (_source, offset) => offsets.push(offset)
+      },
+      skippedUpdateStore: {
+        recordSkippedTelegramUpdate: (input) => skipped.push(input)
+      },
+      acknowledgeSink: (ack) => acks.push(ack)
+    });
+
+    const result = await adapter.pollOnce(async (event) => {
+      emitted.push(event); // must NOT run — this is a skip
+    });
+
+    expect(emitted).toEqual([]);
+    expect(result).toEqual({ processed_updates: 0, skipped_updates: 1 });
+    expect(offsets).toEqual([91]); // advanced exactly once
+    expect(skipped).toEqual([
+      expect.objectContaining({ update_id: 90, reason_code: "TELEGRAM_UNSUPPORTED_MEDIA" })
+    ]);
+    expect(acks).toHaveLength(1);
+    expect(acks[0]?.chat_id).toBe("222");
+    expect(acks[0]?.text).toContain("非文字消息");
+    expect(acks[0]?.idempotency_key).toBe("telegram:90:unsupported_media");
+  });
+
+  it("a throwing acknowledgeSink never breaks the poll loop (offset still advances)", async () => {
+    const offsets: number[] = [];
+    const adapter = createTelegramLongPollingAdapter({
+      allowlist,
+      client: {
+        getUpdates: async () => [
+          {
+            update_id: 92,
+            message: {
+              message_id: 4,
+              photo: [{ file_id: "f", file_unique_id: "u", width: 90, height: 90 }],
+              from: { id: 111 },
+              chat: { id: 222 }
+            }
+          }
+        ]
+      },
+      offsetStore: {
+        getOffset: () => 0,
+        setOffset: (_source, offset) => offsets.push(offset)
+      },
+      acknowledgeSink: () => {
+        throw new Error("outbox exploded");
+      }
+    });
+
+    await expect(adapter.pollOnce(async () => undefined)).resolves.toEqual({
+      processed_updates: 0,
+      skipped_updates: 1
+    });
+    expect(offsets).toEqual([93]);
+  });
+
   it("stops a multi-update batch without advancing past a transient intake failure", async () => {
     const offsets: number[] = [];
     const adapter = createTelegramLongPollingAdapter({
