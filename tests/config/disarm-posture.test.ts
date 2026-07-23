@@ -59,7 +59,8 @@ describe("DISARM_FLAGS", () => {
       "HOUGE_BOUNTY_ENABLED",
       // ADR 0025: acts under Houge's own Google identity — the STOP switch must cover
       // identity reads too.
-      "HOUGE_GOOGLE_ENABLED"
+      "HOUGE_GOOGLE_ENABLED",
+      "HOUGE_LESSON_CONSOLIDATE_ENABLED"
     ]);
     expect(DISARM_FLAGS).not.toContain("HOUGE_EPISODIC_ENABLED");
   });

@@ -41,7 +41,10 @@ export const DISARM_FLAGS: readonly string[] = [
   // rows — money-work surface, covered by the STOP switch like extwork.
   "HOUGE_BOUNTY_ENABLED",
   // ADR 0025: acts under Houge's own Google identity — the STOP switch must cover identity reads too.
-  "HOUGE_GOOGLE_ENABLED"
+  "HOUGE_GOOGLE_ENABLED",
+  // Lesson-consolidation design (2026-07-23): rewrites Houge's OWN behavioral guidance (merges
+  // its lessons) — the STOP switch must halt a capability that edits how Houge thinks.
+  "HOUGE_LESSON_CONSOLIDATE_ENABLED"
 ];
 
 export function resolveDisarmPath(env: NodeJS.ProcessEnv = process.env): string {

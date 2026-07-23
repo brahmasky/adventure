@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { checkMeteredCeiling } from "../budget/metered-ceiling.js";
 import { runEpisodicConsolidateTick } from "../capabilities/episodic-consolidate.js";
 import { maybeRunEpisodicDistill } from "../capabilities/episodic-extract.js";
+import { runLessonConsolidateTick } from "../capabilities/lesson-consolidate.js";
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
 import { newestMtimeMs } from "../capabilities/self-write-merge.js";
@@ -340,6 +341,16 @@ async function runSignalPathTick(
       store: options.store,
       llm: episodicLlm,
       embed: episodicEmbed,
+      now
+    });
+    // Lesson-consolidation design (2026-07-23): the daily preserve-all lesson-merge tick — same
+    // master signal path, flag-gated OFF (and in DISARM_FLAGS), idempotent per interval via its
+    // single-row state marker, bounded three ways. Rides the tick's local llmAnswer adapter (the
+    // same `{question,system} → {ok,answer}` wrapper episodic uses). Best-effort; never throws.
+    await runLessonConsolidateTick({
+      store: options.store,
+      llmAnswer: episodicLlm,
+      env: process.env,
       now
     });
     // B10b: fire due schedules through the normal gateway→worker path (breaker,

@@ -16,6 +16,7 @@ import {
   RATING_ATTRIBUTION_DISCIPLINE
 } from "../../src/capabilities/session-rating.js";
 import { INTENT_DISCIPLINE } from "../../src/capabilities/intent.js";
+import { LESSON_CONSOLIDATE_DISCIPLINE } from "../../src/capabilities/lesson-consolidate.js";
 import { LOOP_DISCIPLINE } from "../../src/prompt/composer.js";
 
 let dirs: string[] = [];
@@ -557,6 +558,33 @@ describe("runTelegramDaemon — the signal path (⓪·3 S2)", () => {
       expect(store.getPollHeartbeat()?.last_success_at).not.toBeNull();
     } finally {
       store.close();
+    }
+  });
+
+  it("the lesson-consolidate tick is wired into the signal path (armed → merges dupes)", async () => {
+    const saved = process.env.HOUGE_LESSON_CONSOLIDATE_ENABLED;
+    process.env.HOUGE_LESSON_CONSOLIDATE_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    try {
+      const a = store.addLesson({ scope: "ask", text: "be concise", source: "user_feedback" });
+      const b = store.addLesson({ scope: "ask", text: "keep it short", source: "user_feedback" });
+      // The tick's llmAnswer rides the injected daemon adapter; answer the consolidate call with
+      // a valid clusters JSON, and fall back to okAnswer for every other (loop/intent) call.
+      const clusters = JSON.stringify({ clusters: [{ ids: [a, b], text: "be concise; keep it short merged", avoid: null }] });
+      await idleCycle(store, async (input) => {
+        const system = typeof input.system === "string" ? input.system : "";
+        if (system.includes(LESSON_CONSOLIDATE_DISCIPLINE)) {
+          return { ok: true as const, output: { question: "", answer: clusters, model: "fake" } };
+        }
+        return okAnswer(input);
+      });
+      // 2 dupes collapsed to 1, and the tick emitted its ledger event.
+      expect(store.getActiveLessons("ask")).toHaveLength(1);
+      expect(store.getLedgerEvents().filter((e) => e.event_type === "lesson_consolidate_tick")).toHaveLength(1);
+    } finally {
+      store.close();
+      if (saved === undefined) delete process.env.HOUGE_LESSON_CONSOLIDATE_ENABLED;
+      else process.env.HOUGE_LESSON_CONSOLIDATE_ENABLED = saved;
     }
   });
 

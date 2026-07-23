@@ -297,6 +297,57 @@ if (command === "run") {
   } finally {
     store.close();
   }
+} else if (command === "lessons-consolidate") {
+  // Preserve-all lesson consolidation (design 2026-07-23). `--dry-run` is the pre-arm safety net:
+  // it makes the REAL cluster+merge LLM calls but takes NO write path, rendering every member text
+  // → the proposed merge so a dropped directive is visible before anything is armed. A non-dry
+  // invocation runs one pass immediately (flag-gated + interval-latched like the daemon tick).
+  const dryRun = rest.includes("--dry-run");
+  const { runLessonConsolidateTick } = await import("./capabilities/lesson-consolidate.js");
+  const { createLlmAnswerAdapter } = await import("./capabilities/llm-answer.js");
+
+  const llmAdapter = createLlmAnswerAdapter(brokerOption);
+  const llmAnswer = async (input: { question: string; system: string }) => {
+    const read = await llmAdapter({ question: input.question, system: input.system });
+    return read.ok && typeof read.output.answer === "string"
+      ? ({ ok: true, answer: read.output.answer } as const)
+      : ({ ok: false } as const);
+  };
+
+  const store = RunStore.open("houge.sqlite", storeOptions);
+  try {
+    const result = await runLessonConsolidateTick({
+      store,
+      llmAnswer,
+      env: process.env,
+      now: new Date().toISOString(),
+      dryRun
+    });
+    if (dryRun) {
+      const proposals = result.proposals ?? [];
+      if (proposals.length === 0) {
+        console.log("No consolidation proposed (no near-duplicate clusters, or the flag path was empty).");
+      } else {
+        console.log(`Proposed ${proposals.length} merge(s) across ${result.scopes_processed} scope(s):\n`);
+        for (const p of proposals) {
+          console.log(`── scope "${p.scope}" — merge #${p.superseded_ids.join(", #")} ──`);
+          for (const text of p.member_texts) console.log(`  • ${text}`);
+          console.log(`  ⇒ ${p.merged_text}`);
+          if (p.merged_avoid) console.log(`     AVOID: ${p.merged_avoid}`);
+          console.log("");
+        }
+        console.log("(dry run — nothing was written.)");
+      }
+    } else {
+      console.log(JSON.stringify(result, null, 2));
+    }
+    process.exitCode = 0;
+  } catch (error) {
+    console.error(`lessons-consolidate failed: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  } finally {
+    store.close();
+  }
 } else {
   console.error(`Unknown command: ${command}`);
   process.exit(1);
