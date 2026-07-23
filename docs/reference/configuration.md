@@ -264,6 +264,25 @@ time, and overflow past the row cap prunes the lowest `reuse_value` rows (revers
 |---------|---------|---------|
 | `HOUGE_LESSON_CAP_PER_SCOPE` | `20` | Max **active** lesson rows per scope. Writing past the cap prunes the lowest-`reuse_value` rows (a reversible status flip, never a delete; the just-written row is always spared). Also caps how many rows the composer even considers when rendering. |
 
+**Lesson consolidation — the daily preserve-all merge tick (spec 2026-07-23).** Reconcile-on-write
+dedupes at *write* time, but the backlog still accumulates near-duplicates across many sessions
+(e.g. several "be concise" variants). A daily tick (`src/capabilities/lesson-consolidate.ts`, wired
+into the daemon signal path right after the episodic-facts consolidation) clusters semantically
+near-duplicate ACTIVE lessons **within a scope** and merges each cluster into ONE **preserve-all**
+lesson — every distinct directive (and every `AVOID` clause) kept. It is **ADD-then-supersede-all**
+like episodic-facts (a new merged row is added; the members are marked superseded, never deleted —
+fully reversible; `lessonsSupersededBy(id)` enumerates the members). Bounded (≤1 LLM call/scope,
+≤5 clusters/tick, ≤4 members/cluster), scope-isolated, and guarded by two floors: a gross-collapse
+floor (reject a merge shorter than its longest member) and an avoid-drop floor (reject a merge that
+drops any member's `AVOID`). Preview merges without writing via `houge lessons-consolidate --dry-run`
+(shows each member text → the proposed merge, and `⚠ REJECTED` for floor-blocked clusters) — the
+**pre-arm eyeball is the real preserve-all net**, so run it before arming.
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `HOUGE_LESSON_CONSOLIDATE_ENABLED` | off | Arms the daily consolidation tick. Accepts 1/true/yes/on. In `DISARM_FLAGS` — it rewrites Houge's own behavioral guidance, so `/disarm` halts it. Off = no tick, no writes. |
+| `HOUGE_LESSON_CONSOLIDATE_INTERVAL_HOURS` | `24` | Min hours between consolidation ticks (END-stamped latch). |
+
 Inspect and undo with the slash-only control commands `/lessons` (shows each row's id,
 reuse/applied counters, AVOID, and `supersedes #n` lineage) and `/forget <scope|id>` (see the
 [command reference](#telegram-command-reference)). `memory/core/houge.md` is committed (his
