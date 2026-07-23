@@ -5,6 +5,7 @@ import {
   LESSON_CONSOLIDATE_DISCIPLINE,
   LESSON_MERGE_MAX_CLUSTER_SIZE,
   LESSON_MERGE_MAX_CLUSTERS_PER_TICK,
+  mergeDropsAvoid,
   mergeDropsContent,
   parseLessonConsolidation,
   resolveLessonConsolidateEnabled,
@@ -101,6 +102,23 @@ describe("mergeDropsContent (gross-collapse floor)", () => {
   });
   it("accepts a merge at least as long as its longest member", () => {
     expect(mergeDropsContent("a; b; c combined and preserved", ["a", "b", "c combined"])).toBe(false);
+  });
+});
+
+// --- avoid-drop floor (FIX 1) ------------------------------------------------
+
+describe("mergeDropsAvoid (avoid-drop floor)", () => {
+  it("rejects when a member carries an avoid but the merge dropped it (null)", () => {
+    expect(mergeDropsAvoid(null, ["rambling", null])).toBe(true);
+  });
+  it("rejects when the merged avoid is empty/whitespace but members had one", () => {
+    expect(mergeDropsAvoid("   ", ["rambling"])).toBe(true);
+  });
+  it("accepts when the merged avoid is preserved", () => {
+    expect(mergeDropsAvoid("rambling; verbosity", ["rambling", "verbosity"])).toBe(false);
+  });
+  it("accepts when NO member had an avoid (nothing to drop)", () => {
+    expect(mergeDropsAvoid(null, [null, null])).toBe(false);
   });
 });
 
@@ -306,5 +324,64 @@ describe("runLessonConsolidateTick", () => {
       now: soon
     });
     expect(second.ran).toBe(false);
+  });
+
+  // --- FIX 1: avoid-drop floor -----------------------------------------------
+
+  it("avoid-drop floor: rejects a cluster whose members carry avoids but the merge drops them all", async () => {
+    const store = openStore();
+    const a = store.addLesson({ scope: "ask", text: "be concise here", avoid: "rambling", source: "user_feedback", created_at: NOW });
+    const b = store.addLesson({ scope: "ask", text: "keep it short please", avoid: "verbosity", source: "user_feedback", created_at: NOW });
+    const before = store.getActiveLessons("ask");
+
+    // Merged text is long enough to clear the gross-collapse floor, but avoid:null silently drops
+    // BOTH members' AVOID clauses → the avoid-drop floor must reject it.
+    const result = await runLessonConsolidateTick({
+      store,
+      llmAnswer: cannedLlm(JSON.stringify({ clusters: [{ ids: [a, b], text: "be concise here; keep it short please, merged and long", avoid: null }] })),
+      env: ENABLED,
+      now: NOW
+    });
+    expect(result.clusters_merged).toBe(0);
+    // Members stay active, no merged row, no ledger event.
+    expect(store.getActiveLessons("ask")).toEqual(before);
+    expect(store.getLedgerEvents().filter((e) => e.event_type === "lesson_consolidate_tick")).toHaveLength(0);
+  });
+
+  it("avoid-drop floor: a cluster that DOES carry a merged avoid still applies", async () => {
+    const store = openStore();
+    const a = store.addLesson({ scope: "ask", text: "be concise here", avoid: "rambling", source: "user_feedback", created_at: NOW });
+    const b = store.addLesson({ scope: "ask", text: "keep it short please", avoid: "verbosity", source: "user_feedback", created_at: NOW });
+
+    const result = await runLessonConsolidateTick({
+      store,
+      llmAnswer: cannedLlm(JSON.stringify({ clusters: [{ ids: [a, b], text: "be concise here; keep it short please, merged and long", avoid: "rambling; verbosity" }] })),
+      env: ENABLED,
+      now: NOW
+    });
+    expect(result.clusters_merged).toBe(1);
+    const active = store.getActiveLessons("ask");
+    expect(active).toHaveLength(1);
+    expect(active[0]!.avoid).toBe("rambling; verbosity");
+  });
+
+  // --- FIX 4: dry-run surfaces floor-rejected clusters -----------------------
+
+  it("dryRun surfaces a floor-rejected cluster with a `rejected` reason; a non-dry run applies nothing", async () => {
+    const store = openStore();
+    const [a, b] = seed(store, "ask", ["a fairly long lesson about staying concise", "b2"]);
+    // Merged text SHORTER than the longest member → gross-collapse floor.
+    const llm = cannedLlm(JSON.stringify({ clusters: [{ ids: [a, b], text: "short", avoid: null }] }));
+
+    const dry = await runLessonConsolidateTick({ store, llmAnswer: llm, env: {}, now: NOW, dryRun: true });
+    expect(dry.proposals).toHaveLength(1);
+    expect(dry.proposals![0]!.rejected).toContain("gross-collapse");
+    // The aggregate does not count a rejected cluster as merged.
+    expect(dry.clusters_merged).toBe(0);
+
+    // Non-dry over the SAME cluster: floor skips it, nothing written.
+    const wet = await runLessonConsolidateTick({ store, llmAnswer: llm, env: ENABLED, now: NOW });
+    expect(wet.clusters_merged).toBe(0);
+    expect(store.getActiveLessons("ask")).toHaveLength(2);
   });
 });

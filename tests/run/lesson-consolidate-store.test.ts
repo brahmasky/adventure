@@ -114,6 +114,55 @@ describe("applyLessonMerge (ADD-then-supersede-all)", () => {
     expect(store.applyLessonMerge({ scope: "ask", memberIds: [a], text: "merged", avoid: null, now: NOW }))
       .toBeUndefined();
   });
+
+  // --- FIX 2: TOCTOU — the active-check runs INSIDE the write lock ------------
+
+  it("re-validates members INSIDE the write lock: a member superseded between check and lock refuses", () => {
+    const store = openStore();
+    const a = store.addLesson({ scope: "ask", text: "x1", source: "user_feedback", created_at: NOW });
+    const b = store.addLesson({ scope: "ask", text: "x2", source: "user_feedback", created_at: NOW });
+
+    // Simulate the race: a concurrent writer supersedes member `b` at the exact moment we take the
+    // BEGIN IMMEDIATE lock. If the active-check runs BEFORE the lock (the TOCTOU bug), the merge
+    // proceeds and returns a new_id; if it runs INSIDE the lock, the re-read sees `b` inactive and
+    // refuses. We inject the concurrent supersede by hooking the first BEGIN IMMEDIATE.
+    const raw = (store as unknown as {
+      db: { exec(sql: string): unknown; prepare(sql: string): { run(...v: Array<string | number>): unknown } };
+    }).db;
+    const realExec = raw.exec.bind(raw);
+    let injected = false;
+    raw.exec = (sql: string) => {
+      const out = realExec(sql);
+      if (sql === "BEGIN IMMEDIATE" && !injected) {
+        injected = true;
+        raw.prepare("UPDATE lessons SET status = 'superseded' WHERE id = ?").run(b);
+      }
+      return out;
+    };
+
+    const result = store.applyLessonMerge({ scope: "ask", memberIds: [a, b], text: "x1; x2 merged", avoid: null, now: NOW });
+    raw.exec = realExec;
+
+    // In-lock re-read catches the superseded member → refuse. The ROLLBACK also unwinds the injected
+    // supersede, so BOTH members stay active and NO merged row is written.
+    expect(result).toBeUndefined();
+    expect(store.getActiveLessons("ask").map((r) => r.id)).toEqual([a, b]);
+    expect(store.getActiveLessons("ask").filter((r) => r.source === "consolidation")).toHaveLength(0);
+  });
+
+  // --- FIX 3: N→1 members-of read for undo/inspect ---------------------------
+
+  it("lessonsSupersededBy returns ALL members merged into a new row (N→1)", () => {
+    const store = openStore();
+    const a = store.addLesson({ scope: "ask", text: "x1", source: "user_feedback", created_at: NOW });
+    const b = store.addLesson({ scope: "ask", text: "x2", source: "user_feedback", created_at: NOW });
+    const c = store.addLesson({ scope: "ask", text: "x3", source: "user_feedback", created_at: NOW });
+
+    const result = store.applyLessonMerge({ scope: "ask", memberIds: [a, b, c], text: "x1; x2; x3 merged", avoid: null, now: NOW });
+    expect(result).toBeDefined();
+    // The scalar `supersedes` pointer names only the LAST member; this recovers all three.
+    expect(store.lessonsSupersededBy(result!.new_id)).toEqual([a, b, c]);
+  });
 });
 
 describe("lesson consolidate markers + ledger", () => {

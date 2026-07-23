@@ -967,6 +967,18 @@ export class RunStore {
   }
 
   /**
+   * The member ids an N→1 merge folded into a new row: every lesson whose `superseded_by`
+   * names `new_id`. Unlike the scalar `supersedes` pointer (which, after {@link RunStore.applyLessonMerge},
+   * names only the LAST member), this recovers ALL merged members for undo/inspect.
+   */
+  lessonsSupersededBy(new_id: number): number[] {
+    return this.db
+      .prepare(`SELECT id FROM lessons WHERE superseded_by = ? ORDER BY id`)
+      .all<{ id: number }>(new_id)
+      .map((r) => r.id);
+  }
+
+  /**
    * Apply a reconcile verdict (⓪·3 S1b, ADR 0012 §2): ADD inserts; SUPERSEDE/UPDATE
    * insert a NEW row linked to the prior via bidirectional pointers (auditable — never
    * an in-place rewrite, never a delete); DROP writes nothing. A SUPERSEDE/UPDATE whose
@@ -2421,26 +2433,35 @@ export class RunStore {
     now?: string;
   }): { new_id: number } | undefined {
     if (input.memberIds.length < 2) return undefined;
-    const members: LessonRow[] = [];
-    for (const id of input.memberIds) {
-      const row = this.getLesson(id);
-      if (!row || row.status !== "active" || row.scope !== input.scope) return undefined;
-      members.push(row);
-    }
     const text = input.text.trim();
     if (text.length === 0) return undefined;
     const avoid = input.avoid?.trim() || null;
     const now = input.now ?? new Date().toISOString();
-    const applied_count = members.reduce((sum, m) => sum + m.applied_count, 0);
-    const reuse_value = Math.min(
-      LESSON_MERGE_REUSE_CAP,
-      members.reduce((sum, m) => sum + Math.max(0, m.reuse_value), 0)
-    );
 
     let activeTransaction = false;
     this.db.exec("BEGIN IMMEDIATE");
     activeTransaction = true;
     try {
+      // AUTHORITATIVE member check INSIDE the write lock (TOCTOU close): re-SELECT every member's
+      // status+scope now that we hold BEGIN IMMEDIATE, so check-and-supersede is serialized against
+      // a concurrent writer (daemon tick vs. a manual `houge lessons-consolidate`). Any member no
+      // longer active or drifted to another scope → ROLLBACK and refuse (non-destructive contract).
+      const members: LessonRow[] = [];
+      for (const id of input.memberIds) {
+        const row = this.getLesson(id);
+        if (!row || row.status !== "active" || row.scope !== input.scope) {
+          this.db.exec("ROLLBACK");
+          activeTransaction = false;
+          return undefined;
+        }
+        members.push(row);
+      }
+      const applied_count = members.reduce((sum, m) => sum + m.applied_count, 0);
+      const reuse_value = Math.min(
+        LESSON_MERGE_REUSE_CAP,
+        members.reduce((sum, m) => sum + Math.max(0, m.reuse_value), 0)
+      );
+
       const new_id = this.addLesson({
         scope: input.scope,
         text,

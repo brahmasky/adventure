@@ -136,6 +136,21 @@ export function mergeDropsContent(mergedText: string, memberTexts: readonly stri
   return mergedText.length < longest;
 }
 
+/**
+ * AVOID-drop floor (design step 4, twin of {@link mergeDropsContent}): reject a cluster if ANY
+ * member carries a non-empty `avoid` but the merged `avoid` is null/empty — a preserve-all merge
+ * that silently dropped every AVOID clause. `mergeDropsContent` only inspects text length and is
+ * blind to AVOID, so this is a separate deterministic guard.
+ */
+export function mergeDropsAvoid(
+  mergedAvoid: string | null,
+  memberAvoids: readonly (string | null)[]
+): boolean {
+  const anyMemberAvoid = memberAvoids.some((a) => a !== null && a.trim().length > 0);
+  const mergedEmpty = mergedAvoid === null || mergedAvoid.trim().length === 0;
+  return anyMemberAvoid && mergedEmpty;
+}
+
 /** One dry-run proposal (rollout step 2): every member text → the proposed merge, for eyeballing. */
 export interface LessonConsolidateProposal {
   scope: string;
@@ -143,6 +158,8 @@ export interface LessonConsolidateProposal {
   member_texts: string[];
   merged_text: string;
   merged_avoid: string | null;
+  /** Present only when a deterministic floor blocked this cluster (dry-run surfaces it anyway). */
+  rejected?: string;
 }
 
 export interface LessonConsolidateResult {
@@ -230,7 +247,17 @@ export async function runLessonConsolidateTick(input: {
     for (const cluster of parseLessonConsolidation(answer, validIds)) {
       if (applied >= LESSON_MERGE_MAX_CLUSTERS_PER_TICK) break;
       const memberTexts = cluster.ids.map((id) => byId.get(id)!.text);
-      if (mergeDropsContent(cluster.text, memberTexts)) continue; // gross-collapse floor
+      const memberAvoids = cluster.ids.map((id) => byId.get(id)!.avoid);
+
+      // Deterministic floors (design step 4) — the last-line defense before a write. An armed tick
+      // SKIPs a floor-rejected cluster; a dry run SURFACES it (tagged) so the pre-arm eyeball sees
+      // exactly what the LLM proposed and why the floor blocked it.
+      let rejected: string | null = null;
+      if (mergeDropsContent(cluster.text, memberTexts)) {
+        rejected = "gross-collapse: merged shorter than longest member";
+      } else if (mergeDropsAvoid(cluster.avoid, memberAvoids)) {
+        rejected = "avoid-drop: members carry AVOID clauses the merge dropped";
+      }
 
       if (dryRun) {
         proposals.push({
@@ -238,11 +265,14 @@ export async function runLessonConsolidateTick(input: {
           superseded_ids: cluster.ids,
           member_texts: memberTexts,
           merged_text: cluster.text,
-          merged_avoid: cluster.avoid
+          merged_avoid: cluster.avoid,
+          ...(rejected ? { rejected } : {})
         });
         applied += 1;
         continue;
       }
+
+      if (rejected) continue; // armed tick: skip a floor-rejected cluster (no write)
 
       const result = input.store.applyLessonMerge({
         scope,
@@ -259,11 +289,14 @@ export async function runLessonConsolidateTick(input: {
   }
 
   if (dryRun) {
+    // Aggregates count only clusters that WOULD apply — a floor-rejected proposal is surfaced in
+    // `proposals` (tagged) but is not a merge.
+    const willApply = proposals.filter((p) => p.rejected === undefined);
     return {
       ran: true,
       scopes_processed,
-      clusters_merged: proposals.length,
-      lessons_superseded: proposals.reduce((sum, p) => sum + p.superseded_ids.length, 0),
+      clusters_merged: willApply.length,
+      lessons_superseded: willApply.reduce((sum, p) => sum + p.superseded_ids.length, 0),
       merges: [],
       proposals
     };

@@ -334,6 +334,7 @@ if (command === "run") {
           for (const text of p.member_texts) console.log(`  • ${text}`);
           console.log(`  ⇒ ${p.merged_text}`);
           if (p.merged_avoid) console.log(`     AVOID: ${p.merged_avoid}`);
+          if (p.rejected) console.log(`  ⚠ REJECTED (${p.rejected}) — an armed tick would SKIP this`);
           console.log("");
         }
         console.log("(dry run — nothing was written.)");
