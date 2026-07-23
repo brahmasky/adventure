@@ -145,8 +145,9 @@ v1; nothing automatic).
   AND emits **no** `lesson_consolidate_tick` event (clusters_merged === 0 ⇒ no event).
 - Bounded: a scope proposing 20 valid clusters applies only `LESSON_MERGE_MAX_CLUSTERS_PER_TICK`;
   a proposed cluster of 12 ids is dropped by the size cap.
-- Convergence (mocked clusterer): seed 5 "be concise" dupes → after one tick, 1 new active +
-  5 superseded; a second tick with the clusterer mocked to `[]` is a no-op.
+- Convergence (mocked clusterer): seed 4 "be concise" dupes (= LESSON_MERGE_MAX_CLUSTER_SIZE; a
+  size-5 cluster is correctly DROPPED by the cap and needs a second tick) → after one tick, 1 new
+  active + 4 superseded; a second tick with the clusterer mocked to `[]` is a no-op.
 - Scope isolation: `ask` dupes + `research` dupes → each merges within its scope; a cross-scope id
   in a cluster is dropped.
 - Latch: END-stamp gates the interval; a crash before the mark retries next cycle; `BEGIN
