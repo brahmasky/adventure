@@ -12,7 +12,10 @@ import {
   resolveSchedulerMaxPerChat,
   sanitizeScheduleGoal,
   scheduleDisplayName,
-  SCHEDULE_GOAL_CHAR_CAP
+  SCHEDULE_CANCEL_HINT_TEXT,
+  SCHEDULE_GOAL_CHAR_CAP,
+  SCHEDULE_LIST_EMPTY_TEXT,
+  visibleSchedules
 } from "../../src/run/schedule-spec.js";
 import type { ScheduledTaskRow } from "../../src/run/run-store.js";
 
@@ -177,8 +180,9 @@ describe("formatScheduleListText (the /schedule list line — human-readable)", 
     };
   }
 
-  it("hides the guard preamble, shows the city once, and keeps the full cancel id", () => {
-    const line = formatScheduleListText([row()]);
+  it("hides the guard preamble, shows the city once, numbers the row, and drops the id", () => {
+    const text = formatScheduleListText([row()]);
+    const [line] = text.split("\n");
     // Guard plumbing never leaks.
     expect(line).not.toContain("此定时任务");
     expect(line).not.toContain("绝不要");
@@ -188,13 +192,54 @@ describe("formatScheduleListText (the /schedule list line — human-readable)", 
     // Local next-fire time, not a bare UTC ...Z.
     expect(line).toContain("下次 2026-07-24 08:00");
     expect(line).not.toContain("Z ·");
-    // Cancel needs the FULL id (exact match) — it stays on the line, at the end.
-    expect(line).toContain("sch_e8460e2d-1111-2222-3333-444455556666");
+    // The opaque sch_<uuid> no longer appears anywhere — the user cancels by list number.
+    expect(text).not.toContain("sch_");
+    // 1-based number leads the row.
+    expect(line!.startsWith("#1 ")).toBe(true);
   });
 
-  it("keeps the ⚠ failed prefix for failed rows", () => {
-    const line = formatScheduleListText([row({ state: "failed" })]);
-    expect(line.startsWith("⚠ failed · ")).toBe(true);
+  it("numbers rows #1..#N in the given order and appends the cancel-hint footer", () => {
+    const rows = [
+      row({ schedule_id: "sch_aaaa", goal: "first" }),
+      row({ schedule_id: "sch_bbbb", goal: "second" }),
+      row({ schedule_id: "sch_cccc", goal: "third" })
+    ];
+    const lines = formatScheduleListText(rows).split("\n");
+    expect(lines[0]!.startsWith("#1 ")).toBe(true);
+    expect(lines[0]).toContain("first");
+    expect(lines[1]!.startsWith("#2 ")).toBe(true);
+    expect(lines[1]).toContain("second");
+    expect(lines[2]!.startsWith("#3 ")).toBe(true);
+    expect(lines[2]).toContain("third");
+    // Footer is the last line; no id leaks.
+    expect(lines[3]).toBe(SCHEDULE_CANCEL_HINT_TEXT);
+    expect(formatScheduleListText(rows)).not.toContain("sch_");
+  });
+
+  it("numbers over VISIBLE rows only — a disabled row is skipped, so #N stays contiguous", () => {
+    const rows = [
+      row({ schedule_id: "sch_1", goal: "keep-a", state: "enabled" }),
+      row({ schedule_id: "sch_2", goal: "gone", state: "disabled" }),
+      row({ schedule_id: "sch_3", goal: "keep-b", state: "enabled" })
+    ];
+    // visibleSchedules is the ONE filter both the renderer and cancel-by-number use.
+    expect(visibleSchedules(rows).map((r) => r.goal)).toEqual(["keep-a", "keep-b"]);
+    const lines = formatScheduleListText(rows).split("\n");
+    expect(lines[0]!.startsWith("#1 ")).toBe(true);
+    expect(lines[0]).toContain("keep-a");
+    expect(lines[1]!.startsWith("#2 ")).toBe(true);
+    expect(lines[1]).toContain("keep-b");
+    expect(formatScheduleListText(rows)).not.toContain("gone");
+  });
+
+  it("keeps the ⚠ failed prefix after the number for failed rows", () => {
+    const line = formatScheduleListText([row({ state: "failed" })]).split("\n")[0];
+    expect(line!.startsWith("#1 ⚠ failed · ")).toBe(true);
+  });
+
+  it("empty list → the existing empty text, with no footer", () => {
+    expect(formatScheduleListText([])).toBe(SCHEDULE_LIST_EMPTY_TEXT);
+    expect(formatScheduleListText([row({ state: "disabled" })])).toBe(SCHEDULE_LIST_EMPTY_TEXT);
   });
 });
 

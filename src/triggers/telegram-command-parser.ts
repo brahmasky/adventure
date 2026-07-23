@@ -106,15 +106,20 @@ function parseForget(words: string[]): TelegramCommandParseResult {
   return { ok: true, command: { type: "forget", scope: words[0]! } };
 }
 
-/** `/schedule` (bare) lists this chat's schedules; `/schedule cancel <id>` disables one. */
+/**
+ * `/schedule` (bare) lists this chat's schedules; `/schedule cancel <编号或 id>` disables
+ * one. The argument rides through as a string — a list number (`#N` from the list) OR a
+ * full `sch_<uuid>`; the gateway decides which (a pure integer resolves the Nth listed
+ * schedule, anything else is an exact id match), so the parser stays intentionally loose.
+ */
 function parseSchedule(words: string[]): TelegramCommandParseResult {
   if (words.length === 0) return { ok: true, command: { type: "schedule_admin", action: "list" } };
   if (words[0] === "cancel") {
     const schedule_id = words[1];
-    if (words.length !== 2 || !schedule_id) return invalid("/schedule cancel requires exactly one schedule id");
+    if (words.length !== 2 || !schedule_id) return invalid("/schedule cancel requires exactly one 编号或 id");
     return { ok: true, command: { type: "schedule_admin", action: "cancel", schedule_id } };
   }
-  return invalid("/schedule takes no arguments, or: /schedule cancel <schedule_id>");
+  return invalid("/schedule takes no arguments, or: /schedule cancel <编号或 id>");
 }
 
 /** `/kill [reason…]` — everything after the command is an optional free-text reason. */

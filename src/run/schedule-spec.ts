@@ -198,6 +198,9 @@ export function resolveSchedulerMaxPerChat(env: NodeJS.ProcessEnv): number {
 export const SCHEDULE_LIST_EMPTY_TEXT =
   "No schedules for this chat yet. Ask Houge in plain language to schedule a recurring task.";
 
+/** Footer on a non-empty `/schedule` list — tells the user how to cancel by list number. */
+export const SCHEDULE_CANCEL_HINT_TEXT = "用 /schedule cancel <编号> 取消";
+
 /** Goal preview length on a `/schedule` list row. */
 export const SCHEDULE_GOAL_PREVIEW_CHARS = 60;
 
@@ -226,18 +229,31 @@ export function scheduleDisplayName(goal: string): string {
 }
 
 /**
- * Render the schedule list (B10b; moved from gateway in scheduler v2 — the
- * schedule_task list verb and the /schedule command share ONE renderer): one line per
- * non-disabled schedule. Failed rows keep their line, prefixed `⚠ failed · ` (the
- * owner must see a schedule that stopped retrying). Disabled rows are history — omitted.
+ * The rows a bare `/schedule` renders and numbers: enabled + failed (disabled rows are
+ * history — untouchable, omitted). Exported so the cancel-by-number path resolves `#N`
+ * against the EXACT same ordered, filtered list the renderer numbers — numbering parity
+ * is one code path, not two queries that must be kept in sync.
  */
-export function formatScheduleListText(rows: ScheduledTaskRow[]): string {
-  const visible = rows.filter((row) => row.state !== "disabled");
-  if (visible.length === 0) return SCHEDULE_LIST_EMPTY_TEXT;
-  return visible.map((row) => formatScheduleLine(row)).join("\n");
+export function visibleSchedules(rows: ScheduledTaskRow[]): ScheduledTaskRow[] {
+  return rows.filter((row) => row.state !== "disabled");
 }
 
-function formatScheduleLine(row: ScheduledTaskRow): string {
+/**
+ * Render the schedule list (B10b; moved from gateway in scheduler v2 — the
+ * schedule_task list verb and the /schedule command share ONE renderer): one numbered
+ * line per non-disabled schedule (`#N`, 1-based, in the given order), plus a cancel-hint
+ * footer. Failed rows keep their line, prefixed `⚠ failed · ` after the number (the owner
+ * must see a schedule that stopped retrying). Disabled rows are history — omitted.
+ */
+export function formatScheduleListText(rows: ScheduledTaskRow[]): string {
+  const visible = visibleSchedules(rows);
+  if (visible.length === 0) return SCHEDULE_LIST_EMPTY_TEXT;
+  const lines = visible.map((row, index) => formatScheduleLine(row, index + 1));
+  lines.push(SCHEDULE_CANCEL_HINT_TEXT);
+  return lines.join("\n");
+}
+
+function formatScheduleLine(row: ScheduledTaskRow, displayNumber: number): string {
   const spec = parseScheduleSpec(row.spec_json);
   const cadence = spec ? describeScheduleSpec(spec) : "unreadable spec";
   // City only — the full IANA zone is redundant once the wall-clock is rendered in it.
@@ -245,7 +261,8 @@ function formatScheduleLine(row: ScheduledTaskRow): string {
   const name = scheduleDisplayName(row.goal);
   const nextLocal = formatInstantInZone(row.next_run_at, row.tz);
   const prefix = row.state === "failed" ? "⚠ failed · " : "";
-  // The id trails, de-emphasized — /schedule cancel matches it EXACTLY (run-store
-  // getScheduledTask/cancelScheduledTask are `WHERE schedule_id = ?`), so the full id stays.
-  return `${prefix}${name} · ${cadence} (${city}) · 下次 ${nextLocal} · ${row.schedule_id}`;
+  // Numbered, not id-tagged: /schedule cancel <编号> resolves #N against the SAME ordered,
+  // chat-scoped visible list this renders (visibleSchedules), so the opaque sch_<uuid> no
+  // longer needs to trail the line. (A full id still cancels — the number is a convenience.)
+  return `#${displayNumber} ${prefix}${name} · ${cadence} (${city}) · 下次 ${nextLocal}`;
 }

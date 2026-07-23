@@ -1471,7 +1471,7 @@ describe("schedule_task on the loop (B10b, ADR 0017)", () => {
       expect(steps[0]!.payload).toMatchObject({ action: "schedule_task", ok: true });
       const digest = String(steps[0]!.payload.result_digest);
       expect(digest).toBe(formatScheduleListText([mine])); // own chat only — 999's row absent
-      expect(digest).toContain(mine.schedule_id);
+      expect(digest).toContain("#1 "); // numbered list, no opaque id
       expect(digest).not.toContain("other chat schedule");
     } finally {
       store.close();

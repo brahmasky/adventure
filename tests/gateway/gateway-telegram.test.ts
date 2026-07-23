@@ -5,12 +5,14 @@ import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import {
   formatScheduleCancelledText,
+  formatScheduleNumberNotFoundText,
   Gateway,
   HELP_TEXT,
   SCHEDULE_CANCEL_NOT_FOUND_TEXT,
   SCHEDULE_GOAL_PREVIEW_CHARS,
   SCHEDULE_LIST_EMPTY_TEXT
 } from "../../src/gateway/gateway.js";
+import { formatScheduleListText, visibleSchedules } from "../../src/run/schedule-spec.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { SkillStore } from "../../src/skills/skill-store.js";
 import { isSelfWriteActionEvent, normalizeTelegramUpdate } from "../../src/triggers/telegram-trigger-adapter.js";
@@ -390,10 +392,13 @@ describe("Gateway telegram events", () => {
 
       const note = store.claimNextNotification("test", 30);
       const text = String(note?.payload.text);
-      // Row shape: <name> · weekly mon 08:00 (Sydney) · 下次 2026-07-20 08:00 · <full cancel id>
+      // Row shape: #1 <name> · weekly mon 08:00 (Sydney) · 下次 2026-07-20 08:00
+      expect(text).toContain("#1 "); // 1-based list number leads the row
       expect(text).toContain("weekly mon 08:00 (Sydney)");
       expect(text).toContain("下次 2026-07-20 08:00"); // local wall-clock, not a bare ...Z
-      expect(text).toContain(mine.schedule_id); // full id trails — /schedule cancel matches it exactly
+      expect(text).not.toContain(mine.schedule_id); // opaque id is gone — user cancels by number
+      expect(text).not.toContain("sch_"); // no id of any kind leaks
+      expect(text).toContain("用 /schedule cancel"); // cancel-hint footer
       expect(text).not.toContain("Australia/Sydney"); // the full IANA tz is not doubled on the line
       expect(text).not.toContain(longGoal); // the long goal name is capped on the row
       expect(text).not.toContain("other chat secret"); // list is chat-scoped
@@ -468,6 +473,97 @@ describe("Gateway telegram events", () => {
       expect(gateway.intake(cancelEvent("telegram:schedule-cancel-mine", mine.schedule_id)).ok).toBe(true);
       expect(store.claimNextNotification("c", 30)?.payload.text).toBe(formatScheduleCancelledText(mine.schedule_id));
       expect(store.getScheduledTask(mine.schedule_id)!.state).toBe("disabled");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("/schedule cancel <N> cancels the Nth listed schedule; #2 is untouched (numbering parity)", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      // Two schedules in chat 222. listScheduledTasks orders by created_at DESC, so the
+      // MORE RECENT one is #1. Seed with distinct created_at to pin the order.
+      const older = store.addScheduledTask({
+        chat_id: "222",
+        goal: "older",
+        spec_json: '{"kind":"daily","at":"08:00"}',
+        tz: "Australia/Sydney",
+        next_run_at: "2026-07-15T22:00:00.000Z",
+        now: "2026-07-15T00:00:00.000Z"
+      });
+      const newer = store.addScheduledTask({
+        chat_id: "222",
+        goal: "newer",
+        spec_json: '{"kind":"daily","at":"09:00"}',
+        tz: "Australia/Sydney",
+        next_run_at: "2026-07-15T23:00:00.000Z",
+        now: "2026-07-16T00:00:00.000Z"
+      });
+
+      // Ordering parity: the schedule the renderer shows as #1 is exactly what `cancel 1`
+      // resolves — assert against the SAME query/filter the cancel path reuses.
+      const listed = visibleSchedules(store.listScheduledTasks("222"));
+      expect(listed[0]!.schedule_id).toBe(newer.schedule_id); // #1
+      expect(listed[1]!.schedule_id).toBe(older.schedule_id); // #2
+      const renderedFirstLine = formatScheduleListText(store.listScheduledTasks("222")).split("\n")[0];
+      expect(renderedFirstLine!.startsWith("#1 ")).toBe(true);
+      expect(renderedFirstLine).toContain("newer");
+
+      const cancelEvent = (key: string, arg: string) =>
+        buildTypedTaskEvent({
+          source: "telegram",
+          type: "schedule_admin",
+          program: "cancel",
+          metadata: { schedule_id: arg },
+          requested_by: { kind: "user", id: "paco" },
+          notify: { kind: "telegram", chat_id: "222" },
+          idempotency_key: key,
+          source_reference: `telegram:update:${key}:message:1`
+        });
+
+      // cancel 1 → the #1 (newer) schedule flips; #2 (older) is untouched.
+      expect(gateway.intake(cancelEvent("telegram:cancel-num-1", "1")).ok).toBe(true);
+      expect(store.claimNextNotification("a", 30)?.payload.text).toBe(
+        formatScheduleCancelledText(newer.schedule_id)
+      );
+      expect(store.getScheduledTask(newer.schedule_id)!.state).toBe("disabled");
+      expect(store.getScheduledTask(older.schedule_id)!.state).toBe("enabled");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("/schedule cancel <N> out of range → a distinct error, nothing cancelled", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      const only = store.addScheduledTask({
+        chat_id: "222",
+        goal: "only one",
+        spec_json: '{"kind":"daily","at":"08:00"}',
+        tz: "Australia/Sydney",
+        next_run_at: "2026-07-15T22:00:00.000Z",
+        now: "2026-07-15T00:00:00.000Z"
+      });
+      const cancelEvent = (key: string, arg: string) =>
+        buildTypedTaskEvent({
+          source: "telegram",
+          type: "schedule_admin",
+          program: "cancel",
+          metadata: { schedule_id: arg },
+          requested_by: { kind: "user", id: "paco" },
+          notify: { kind: "telegram", chat_id: "222" },
+          idempotency_key: key,
+          source_reference: `telegram:update:${key}:message:1`
+        });
+
+      // #9 does not exist — distinct from the id not-found text, and nothing is touched.
+      expect(gateway.intake(cancelEvent("telegram:cancel-num-9", "9")).ok).toBe(true);
+      expect(store.claimNextNotification("a", 30)?.payload.text).toBe(
+        formatScheduleNumberNotFoundText(9)
+      );
+      expect(store.getScheduledTask(only.schedule_id)!.state).toBe("enabled");
     } finally {
       store.close();
     }

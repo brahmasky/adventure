@@ -127,26 +127,32 @@ describe("parseTelegramCommand", () => {
     });
   });
 
-  it("parses /schedule (bare = list) and /schedule cancel <id> (B10b)", () => {
+  it("parses /schedule (bare = list) and /schedule cancel <编号或 id> (B10b)", () => {
     expect(parseTelegramCommand("/schedule")).toEqual({
       ok: true,
       command: { type: "schedule_admin", action: "list" }
     });
+    // Full id — backward compat: the arg passes through as a string, gateway matches exactly.
     expect(parseTelegramCommand("/schedule cancel sch_abc")).toEqual({
       ok: true,
       command: { type: "schedule_admin", action: "cancel", schedule_id: "sch_abc" }
     });
+    // A list number rides through the SAME string field — the gateway resolves #N.
+    expect(parseTelegramCommand("/schedule cancel 1")).toEqual({
+      ok: true,
+      command: { type: "schedule_admin", action: "cancel", schedule_id: "1" }
+    });
     expect(parseTelegramCommand("/schedule cancel")).toEqual({
       ok: false,
-      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/schedule cancel requires exactly one schedule id" }
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/schedule cancel requires exactly one 编号或 id" }
     });
     expect(parseTelegramCommand("/schedule cancel sch_a sch_b")).toEqual({
       ok: false,
-      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/schedule cancel requires exactly one schedule id" }
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/schedule cancel requires exactly one 编号或 id" }
     });
     expect(parseTelegramCommand("/schedule list")).toEqual({
       ok: false,
-      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/schedule takes no arguments, or: /schedule cancel <schedule_id>" }
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/schedule takes no arguments, or: /schedule cancel <编号或 id>" }
     });
   });
 

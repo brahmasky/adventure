@@ -23,7 +23,8 @@ import {
   formatInstantInZone,
   formatScheduleListText,
   parseScheduleSpec,
-  resolveDisplayZone
+  resolveDisplayZone,
+  visibleSchedules
 } from "../run/schedule-spec.js";
 import {
   parseBareRating,
@@ -445,13 +446,9 @@ export class Gateway {
 
     let text: string;
     if (action === "cancel") {
-      const schedule_id =
+      const arg =
         typeof event.metadata?.schedule_id === "string" ? event.metadata.schedule_id : "";
-      const row = schedule_id ? this.runStore.getScheduledTask(schedule_id) : undefined;
-      text =
-        row && row.chat_id === chat_id && this.runStore.cancelScheduledTask(schedule_id, now)
-          ? formatScheduleCancelledText(schedule_id)
-          : SCHEDULE_CANCEL_NOT_FOUND_TEXT;
+      text = this.cancelSchedule(chat_id, arg, now);
     } else {
       text = formatScheduleListText(this.runStore.listScheduledTasks(chat_id));
     }
@@ -467,6 +464,30 @@ export class Gateway {
     this.runStore.recordTriggerProcessed(event, result);
     this.recordTelegramAccepted(event, now);
     return result;
+  }
+
+  /**
+   * Resolve `/schedule cancel <arg>` to a reply. `arg` is either a stable list number
+   * (`#N` from the bare `/schedule` list) or a full `sch_<uuid>` (backward compat).
+   * A pure positive integer resolves against the SAME ordered, chat-scoped, non-disabled
+   * list the renderer numbers (listScheduledTasks → visibleSchedules) — so `#N` in the
+   * list maps to the same schedule here; out-of-range `#N` gets a distinct error. A
+   * non-integer is an exact id match, chat-scoped (cross-chat reads as not-found — no
+   * probe signal).
+   */
+  private cancelSchedule(chat_id: string, arg: string, now: string): string {
+    if (/^[1-9][0-9]*$/.test(arg)) {
+      const n = Number(arg);
+      const target = visibleSchedules(this.runStore.listScheduledTasks(chat_id))[n - 1];
+      if (!target) return formatScheduleNumberNotFoundText(n);
+      return this.runStore.cancelScheduledTask(target.schedule_id, now)
+        ? formatScheduleCancelledText(target.schedule_id)
+        : SCHEDULE_CANCEL_NOT_FOUND_TEXT;
+    }
+    const row = arg ? this.runStore.getScheduledTask(arg) : undefined;
+    return row && row.chat_id === chat_id && this.runStore.cancelScheduledTask(arg, now)
+      ? formatScheduleCancelledText(arg)
+      : SCHEDULE_CANCEL_NOT_FOUND_TEXT;
   }
 
   /**
@@ -1032,7 +1053,7 @@ export const HELP_TEXT = [
   "",
   "/status — 运行与健康状态",
   "/usage — 各模型 token/费用用量",
-  "/schedule — 列出定时任务（/schedule cancel <id> 取消）",
+  "/schedule — 列出定时任务（/schedule cancel <编号或 id> 取消）",
   "/lessons — 已学到的经验（可选 scope）",
   "/skills — 可用技能（可选 scope）",
   "/forget <scope|id> — 清除某条经验",
@@ -1053,6 +1074,11 @@ export const SCHEDULE_CANCEL_NOT_FOUND_TEXT =
 
 export function formatScheduleCancelledText(schedule_id: string): string {
   return `Cancelled ✓ ${schedule_id} — it will not fire again.`;
+}
+
+/** `/schedule cancel <N>` when there is no Nth row (out of range / empty list). */
+export function formatScheduleNumberNotFoundText(n: number): string {
+  return `没有第 ${n} 个定时任务 (no schedule #${n}) — see /schedule for the list.`;
 }
 
 /**
