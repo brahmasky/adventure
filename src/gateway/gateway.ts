@@ -22,7 +22,8 @@ import {
   describeScheduleSpec,
   formatInstantInZone,
   formatScheduleListText,
-  parseScheduleSpec
+  parseScheduleSpec,
+  resolveDisplayZone
 } from "../run/schedule-spec.js";
 import {
   parseBareRating,
@@ -814,28 +815,43 @@ export class Gateway {
     if ("runs" in status.status) {
       const { runs_by_state, last_error, budget, window_hours, poller, rating, sweep } =
         status.status.overview;
+      // Count first reads naturally ("21 completed"), not "completed 21".
       const byState = Object.entries(runs_by_state)
-        .map(([state, count]) => `${state} ${count}`)
+        .map(([state, count]) => `${count} ${state}`)
         .join(", ");
       const budgetText = budget
         .map((b) => `${b.kind} ${b.used}/${b.limit}`)
         .join(", ");
-      // ⓪·3 S2c: the rating signal at a glance — an open ask, or the last capture.
+
+      // Human-facing times render in the display zone (no per-item tz on these lines).
+      const zone = resolveDisplayZone(process.env);
+      const city = zone.split("/").pop() ?? zone;
+      const localOf = (iso: string): string => `${formatInstantInZone(iso, zone)} (${city})`;
+
+      // ⓪·3 S2c: the rating signal at a glance — an open ask, or the last capture (local time).
       const ratingText = rating.pending_since
         ? `pending ask since ${rating.pending_since}`
-        : rating.last_rating !== null
-          ? `last ${rating.last_rating}/3 at ${rating.last_rating_at}`
+        : rating.last_rating !== null && rating.last_rating_at
+          ? `last ${rating.last_rating}/3 at ${localOf(rating.last_rating_at)}`
           : "none yet";
 
       // HEALTH — daemon liveness, the invariant-sweep self-check, and the last poll error.
       const daemonText = poller
-        ? `polling, last ${poller.last_success_at ?? "never"}`
+        ? poller.last_success_at
+          ? `polling · last ${localOf(poller.last_success_at)} · ${relativeTimeAgo(poller.last_success_at, now)} ago`
+          : "polling · last never"
         : "not running";
       const sweptText = sweep.last_swept_at ? `${relativeTimeAgo(sweep.last_swept_at, now)} ago` : "never";
       const incidentText = `${sweep.open_incidents} open incident${sweep.open_incidents === 1 ? "" : "s"}`;
+      // Only a STILL-CURRENT error shows: if a poll succeeded after the last error, it
+      // already recovered — don't leave a stale red line under a green header.
+      const errorRecovered =
+        !!poller?.last_success_at &&
+        !!poller?.last_error_at &&
+        Date.parse(poller.last_success_at) > Date.parse(poller.last_error_at);
       const errorsText =
-        poller && poller.last_error
-          ? `${poller.last_error}${poller.last_error_at ? ` (${poller.last_error_at})` : ""}`
+        poller && poller.last_error && !errorRecovered
+          ? `${poller.last_error}${poller.last_error_at ? ` · ${localOf(poller.last_error_at)}` : ""}`
           : "none";
 
       // ⓪·3g: surface an in-flight background evolution pipeline (in-process lane state,
@@ -953,8 +969,9 @@ function relativeTimeAgo(then: string, now: string): string {
 
 /**
  * Render the `/lessons` reply (⓪·3 S1): active rows grouped by scope, most valuable
- * first, each with its id, reuse_value/applied counts, AVOID line, and supersede lineage
- * (`supersedes #n`). `scope` set → one scope (or "none yet"); unset → every scope.
+ * first, each with its id + text (+ an AVOID line, + a ⚠ flag when a low-rating pass
+ * implicated it). Internal telemetry (reuse/applied/ratings counts, supersede lineage) is
+ * NOT shown — it is plumbing, not signal. `scope` set → one scope; unset → every scope.
  */
 function formatLessonsText(scope: string | undefined, lessons: LessonRow[]): string {
   if (lessons.length === 0) {
@@ -976,18 +993,11 @@ function formatLessonsText(scope: string | undefined, lessons: LessonRow[]): str
 }
 
 function formatLessonLines(lesson: LessonRow): string {
-  // ⓪·3 S2c: surface the rating signal — how many session ratings touched the lesson,
-  // and a ⚠ when the low-rating attribution pass implicated it.
-  const history = parseRatingHistory(lesson.rating_history);
-  const ratings = history.filter((entry) => typeof entry.rating === "number").length;
-  const flagged = history.some((entry) => entry.flag === "culprit");
-  const lines = [
-    `#${lesson.id} ${lesson.text} — reuse ${lesson.reuse_value.toFixed(1)}, applied ${lesson.applied_count}` +
-      (ratings > 0 ? `, ratings ${ratings}` : "") +
-      (flagged ? " ⚠ flagged" : "")
-  ];
+  // ⓪·3 S2c: the ⚠ flag (a low-rating attribution pass implicated this lesson) is a real
+  // signal and stays; the reuse/applied/ratings counts and supersede lineage are internal.
+  const flagged = parseRatingHistory(lesson.rating_history).some((entry) => entry.flag === "culprit");
+  const lines = [`#${lesson.id} ${lesson.text}${flagged ? " ⚠ flagged" : ""}`];
   if (lesson.avoid) lines.push(`   AVOID: ${lesson.avoid}`);
-  if (lesson.supersedes !== null) lines.push(`   supersedes #${lesson.supersedes}`);
   return lines.join("\n");
 }
 

@@ -123,6 +123,16 @@ export function computeNextRunAt(spec: ScheduleSpec, tz: string, afterIso: strin
   return null;
 }
 
+/**
+ * The IANA zone to render human-facing times in when there is no per-item tz (e.g. the
+ * /status daemon/errors/rating lines). Per-schedule rows already carry their own `tz`; this
+ * is only the fallback display zone. Defaults to Sydney (all schedules use it); overridable
+ * via HOUGE_DISPLAY_TZ. Houge's own lessons #10/#15: render in the user's local zone, not UTC.
+ */
+export function resolveDisplayZone(env: NodeJS.ProcessEnv = process.env): string {
+  return env.HOUGE_DISPLAY_TZ?.trim() || "Australia/Sydney";
+}
+
 /** Render `iso` as a "YYYY-MM-DD HH:MM" wall-clock in `tz` (the digest/list rendering). */
 export function formatInstantInZone(iso: string, tz: string): string {
   const fmt = new Intl.DateTimeFormat("en-CA", {
@@ -191,6 +201,30 @@ export const SCHEDULE_LIST_EMPTY_TEXT =
 /** Goal preview length on a `/schedule` list row. */
 export const SCHEDULE_GOAL_PREVIEW_CHARS = 60;
 
+/** Display-name length on a `/schedule` list row (after the guard preamble is stripped). */
+export const SCHEDULE_DISPLAY_NAME_CHARS = 40;
+
+/** Marks the dedup-guard preamble the planner prepends to a schedule goal (never user-facing). */
+const SCHEDULE_GUARD_MARKER = /此定时任务|绝不要再创建/;
+
+/**
+ * The human-facing name for a schedule's stored goal: strips a dedup-guard parenthetical
+ * (full-width `（…）` or half-width `(…)`) whose content carries the guard marker — that
+ * preamble ("此定时任务已存在…绝不要再创建新的定时任务") is internal plumbing steering the
+ * planner, and must NEVER show in the /schedule list. Then trims a separator left where the
+ * group sat and caps to a readable length.
+ */
+export function scheduleDisplayName(goal: string): string {
+  const name = goal
+    .replace(/（[^）]*）|\([^)]*\)/g, (group) => (SCHEDULE_GUARD_MARKER.test(group) ? "" : group))
+    .replace(/\s+/g, " ")
+    .replace(/^[\s：:，,、·—-]+/, "")
+    .trim();
+  return name.length > SCHEDULE_DISPLAY_NAME_CHARS
+    ? `${name.slice(0, SCHEDULE_DISPLAY_NAME_CHARS)}…`
+    : name;
+}
+
 /**
  * Render the schedule list (B10b; moved from gateway in scheduler v2 — the
  * schedule_task list verb and the /schedule command share ONE renderer): one line per
@@ -205,13 +239,13 @@ export function formatScheduleListText(rows: ScheduledTaskRow[]): string {
 
 function formatScheduleLine(row: ScheduledTaskRow): string {
   const spec = parseScheduleSpec(row.spec_json);
-  const specText = spec ? describeScheduleSpec(spec) : "unreadable spec";
-  // The city segment keeps the `next` clause short; the full IANA zone already rendered.
+  const cadence = spec ? describeScheduleSpec(spec) : "unreadable spec";
+  // City only — the full IANA zone is redundant once the wall-clock is rendered in it.
   const city = row.tz.split("/").pop() ?? row.tz;
-  const goal =
-    row.goal.length > SCHEDULE_GOAL_PREVIEW_CHARS
-      ? `${row.goal.slice(0, SCHEDULE_GOAL_PREVIEW_CHARS)}…`
-      : row.goal;
+  const name = scheduleDisplayName(row.goal);
+  const nextLocal = formatInstantInZone(row.next_run_at, row.tz);
   const prefix = row.state === "failed" ? "⚠ failed · " : "";
-  return `${prefix}${row.schedule_id} · ${specText} ${row.tz} · next ${formatInstantInZone(row.next_run_at, row.tz)} (${city}) · ${goal}`;
+  // The id trails, de-emphasized — /schedule cancel matches it EXACTLY (run-store
+  // getScheduledTask/cancelScheduledTask are `WHERE schedule_id = ?`), so the full id stays.
+  return `${prefix}${name} · ${cadence} (${city}) · 下次 ${nextLocal} · ${row.schedule_id}`;
 }

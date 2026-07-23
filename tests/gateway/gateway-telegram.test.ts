@@ -126,7 +126,7 @@ describe("Gateway telegram events", () => {
     }
   });
 
-  it("/lessons renders the scope's rows with id/reuse/lineage (⓪·3 S1), idempotent on redelivery", async () => {
+  it("/lessons renders the scope's rows as id + text + AVOID (⓪·3 S1), idempotent on redelivery", async () => {
     const store = RunStore.openInMemory();
     try {
       const gateway = new Gateway(store);
@@ -163,9 +163,12 @@ describe("Gateway telegram events", () => {
       expect(store.countNotificationsByIdempotencyKey("telegram:lessons-1:lessons")).toBe(1);
       const note = store.claimNextNotification("test", 30);
       expect(note?.payload.text).toContain("## research (1 active)");
-      expect(note?.payload.text).toContain(`#${saved.id} prefer primary sources — reuse 1.0, applied 0`);
+      expect(note?.payload.text).toContain(`#${saved.id} prefer primary sources`);
       expect(note?.payload.text).toContain("AVOID: quoting forums as fact");
-      expect(note?.payload.text).toContain(`supersedes #${v1}`); // lineage visible
+      // Internal telemetry (reuse/applied counts, supersede lineage) is not surfaced.
+      expect(note?.payload.text).not.toContain("reuse");
+      expect(note?.payload.text).not.toContain("applied");
+      expect(note?.payload.text).not.toContain(`supersedes #${v1}`);
       // The superseded predecessor is no longer listed as its own row.
       expect(note?.payload.text).not.toContain(`#${v1} prefer forums`);
     } finally {
@@ -387,10 +390,12 @@ describe("Gateway telegram events", () => {
 
       const note = store.claimNextNotification("test", 30);
       const text = String(note?.payload.text);
-      // Row shape: sch_x · weekly mon 08:00 Australia/Sydney · next 2026-07-20 08:00 (Sydney) · <goal ≤60>…
-      expect(text).toContain(`${mine.schedule_id} · weekly mon 08:00 Australia/Sydney · next 2026-07-20 08:00 (Sydney) · `);
-      expect(text).toContain(`${longGoal.slice(0, SCHEDULE_GOAL_PREVIEW_CHARS)}…`);
-      expect(text).not.toContain(longGoal); // the full goal is capped on the row
+      // Row shape: <name> · weekly mon 08:00 (Sydney) · 下次 2026-07-20 08:00 · <full cancel id>
+      expect(text).toContain("weekly mon 08:00 (Sydney)");
+      expect(text).toContain("下次 2026-07-20 08:00"); // local wall-clock, not a bare ...Z
+      expect(text).toContain(mine.schedule_id); // full id trails — /schedule cancel matches it exactly
+      expect(text).not.toContain("Australia/Sydney"); // the full IANA tz is not doubled on the line
+      expect(text).not.toContain(longGoal); // the long goal name is capped on the row
       expect(text).not.toContain("other chat secret"); // list is chat-scoped
     } finally {
       store.close();

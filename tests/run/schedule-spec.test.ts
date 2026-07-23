@@ -4,13 +4,17 @@ import {
   DEFAULT_SCHEDULER_MAX_PER_CHAT,
   describeScheduleSpec,
   formatInstantInZone,
+  formatScheduleListText,
   ONCE_IN_MINUTES_MAX,
   parseScheduleSpec,
+  resolveDisplayZone,
   resolveSchedulerEnabled,
   resolveSchedulerMaxPerChat,
   sanitizeScheduleGoal,
+  scheduleDisplayName,
   SCHEDULE_GOAL_CHAR_CAP
 } from "../../src/run/schedule-spec.js";
+import type { ScheduledTaskRow } from "../../src/run/run-store.js";
 
 describe("parseScheduleSpec (tolerant — bad shapes degrade to null, never throw)", () => {
   it("accepts the three v1 kinds, from an object or a JSON string", () => {
@@ -115,6 +119,82 @@ describe("rendering helpers", () => {
   it("formatInstantInZone renders the wall clock in the schedule tz", () => {
     expect(formatInstantInZone("2026-10-03T21:00:00.000Z", "Australia/Sydney")).toBe("2026-10-04 08:00");
     expect(formatInstantInZone("2026-09-26T22:00:00.000Z", "Australia/Sydney")).toBe("2026-09-27 08:00");
+  });
+});
+
+describe("resolveDisplayZone (the human-facing render zone — no per-item tz)", () => {
+  it("defaults to Australia/Sydney", () => {
+    expect(resolveDisplayZone({})).toBe("Australia/Sydney");
+    expect(resolveDisplayZone({ HOUGE_DISPLAY_TZ: "   " })).toBe("Australia/Sydney");
+  });
+  it("honors a HOUGE_DISPLAY_TZ override (trimmed)", () => {
+    expect(resolveDisplayZone({ HOUGE_DISPLAY_TZ: "  America/New_York " })).toBe("America/New_York");
+  });
+});
+
+describe("scheduleDisplayName (the dedup-guard preamble must NEVER surface)", () => {
+  it("strips a guard parenthetical (full-width) and keeps the meaningful goal", () => {
+    const goal =
+      "AI日报（此定时任务已存在，绝不要再创建新的定时任务）：搜索过去24小时的AI新闻并总结";
+    const name = scheduleDisplayName(goal);
+    expect(name).not.toContain("此定时任务");
+    expect(name).not.toContain("绝不要");
+    expect(name.startsWith("AI日报：搜索过去24小时")).toBe(true);
+  });
+
+  it("strips a half-width guard parenthetical too", () => {
+    const name = scheduleDisplayName("Report (此定时任务已存在): summarize AI news");
+    expect(name).not.toContain("此定时任务");
+    expect(name).toContain("Report");
+    expect(name).toContain("summarize AI news");
+  });
+
+  it("leaves a plain goal unchanged (only capping long ones)", () => {
+    expect(scheduleDisplayName("AI周报：搜HN/X本周AI新闻并总结")).toBe("AI周报：搜HN/X本周AI新闻并总结");
+    const long = "x".repeat(80);
+    const capped = scheduleDisplayName(long);
+    expect(capped.length).toBeLessThanOrEqual(41); // 40 chars + the … marker
+    expect(capped.endsWith("…")).toBe(true);
+  });
+});
+
+describe("formatScheduleListText (the /schedule list line — human-readable)", () => {
+  function row(overrides: Partial<ScheduledTaskRow> = {}): ScheduledTaskRow {
+    return {
+      schedule_id: "sch_e8460e2d-1111-2222-3333-444455556666",
+      chat_id: "555",
+      goal: "AI日报（此定时任务已存在，绝不要再创建新的定时任务）：搜索过去24小时的AI新闻并总结",
+      spec_json: '{"kind":"daily","at":"08:00"}',
+      tz: "Australia/Sydney",
+      state: "enabled",
+      next_run_at: "2026-07-23T22:00:00.000Z",
+      last_fired_at: null,
+      consecutive_failures: 0,
+      created_by: null,
+      created_at: "2026-07-20T00:00:00.000Z",
+      updated_at: "2026-07-20T00:00:00.000Z",
+      ...overrides
+    };
+  }
+
+  it("hides the guard preamble, shows the city once, and keeps the full cancel id", () => {
+    const line = formatScheduleListText([row()]);
+    // Guard plumbing never leaks.
+    expect(line).not.toContain("此定时任务");
+    expect(line).not.toContain("绝不要");
+    // The full IANA tz is not duplicated on the line — only the city.
+    expect(line).not.toContain("Australia/Sydney");
+    expect(line).toContain("(Sydney)");
+    // Local next-fire time, not a bare UTC ...Z.
+    expect(line).toContain("下次 2026-07-24 08:00");
+    expect(line).not.toContain("Z ·");
+    // Cancel needs the FULL id (exact match) — it stays on the line, at the end.
+    expect(line).toContain("sch_e8460e2d-1111-2222-3333-444455556666");
+  });
+
+  it("keeps the ⚠ failed prefix for failed rows", () => {
+    const line = formatScheduleListText([row({ state: "failed" })]);
+    expect(line.startsWith("⚠ failed · ")).toBe(true);
   });
 });
 

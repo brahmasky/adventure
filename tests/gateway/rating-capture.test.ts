@@ -6,6 +6,7 @@ import {
   RATING_ACK_COMMENT_TEXT,
   RATING_ACK_TEXT
 } from "../../src/capabilities/session-rating.js";
+import { formatInstantInZone } from "../../src/run/schedule-spec.js";
 
 // Hermetic: pin the capture window env var to its default.
 let savedPending: string | undefined;
@@ -246,12 +247,16 @@ describe("surfacing (⓪·3 S2c)", () => {
       expect(result.ok && result.status).toBe("lessons_returned");
 
       const text = notificationText(store, "telegram:lessons-1:lessons")!;
-      expect(text).toContain("ratings 1");
-      expect(text).toContain("ratings 2");
+      // The lesson text + the ⚠ flag (a real signal) show; internal telemetry does not.
+      expect(text).toContain("结尾加俏皮话");
       expect(text).toContain("⚠ flagged");
+      expect(text).not.toContain("ratings");
+      expect(text).not.toContain("reuse");
+      expect(text).not.toContain("applied");
+      expect(text).not.toContain("supersedes");
       // The un-flagged lesson's line carries no warning.
       const ratedLine = text.split("\n").find((line) => line.includes("简短回答"))!;
-      expect(ratedLine).toContain("ratings 1");
+      expect(ratedLine).toContain("简短回答");
       expect(ratedLine).not.toContain("⚠ flagged");
     } finally {
       store.close();
@@ -292,7 +297,11 @@ describe("surfacing (⓪·3 S2c)", () => {
         applied_lesson_ids: []
       });
       gateway.intake(statusEvent("s3"), NOW);
-      expect(notificationText(store, "telegram:s3:status")).toContain(`Rating: last 2/3 at ${capturedAt}`);
+      // The captured-at timestamp renders Sydney-local, not a bare UTC ...Z.
+      const localCaptured = formatInstantInZone(capturedAt, "Australia/Sydney");
+      expect(notificationText(store, "telegram:s3:status")).toContain(
+        `Rating: last 2/3 at ${localCaptured} (Sydney)`
+      );
     } finally {
       store.close();
     }
@@ -353,6 +362,124 @@ describe("surfacing (⓪·3 S2c)", () => {
       );
       const text = notificationText(store, "telegram:sec2:status")!;
       expect(text).toContain("Self-check: swept 2h ago · 1 open incident");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("/status Runs line reads '<count> <state>' (count first), not '<state> <count>'", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      // 21 completed runs in the window (queued → running → reporting → completed).
+      // Space the intakes 1 min apart so the per-chat telegram rate limit (5/min) never trips.
+      const base = Date.now() - 30 * 60_000;
+      for (let i = 0; i < 21; i += 1) {
+        const t = new Date(base + i * 60_000).toISOString();
+        const turn = gateway.intake(turnEvent("do a thing", `run-c${i}`), t);
+        if (!turn.ok || !turn.run_id) throw new Error("expected turn intake");
+        store.transition(turn.run_id, "queued", "running", "start");
+        store.transition(turn.run_id, "running", "reporting", "report");
+        store.transition(turn.run_id, "reporting", "completed", "done");
+      }
+      gateway.intake(
+        buildTypedTaskEvent({
+          source: "telegram",
+          type: "status",
+          requested_by: { kind: "user", id: "paco" },
+          notify: { kind: "telegram", chat_id: CHAT },
+          idempotency_key: "telegram:runs1",
+          source_reference: "telegram:update:runs1"
+        })
+      );
+      const text = notificationText(store, "telegram:runs1:status")!;
+      const runsLine = text.split("\n").find((l) => l.startsWith("Runs:"))!;
+      expect(runsLine).toContain("21 completed");
+      expect(runsLine).not.toContain("completed 21");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("/status Daemon line renders the last poll Sydney-local + relative, never a bare UTC ...Z", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      // A successful poll ~2h ago; no error at all.
+      const polledAt = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+      store.recordPollHeartbeat({ now: polledAt, ok: true });
+      gateway.intake(
+        buildTypedTaskEvent({
+          source: "telegram",
+          type: "status",
+          requested_by: { kind: "user", id: "paco" },
+          notify: { kind: "telegram", chat_id: CHAT },
+          idempotency_key: "telegram:daemon1",
+          source_reference: "telegram:update:daemon1"
+        })
+      );
+      const text = notificationText(store, "telegram:daemon1:status")!;
+      const daemonLine = text.split("\n").find((l) => l.startsWith("Daemon:"))!;
+      expect(daemonLine).toContain("polling");
+      expect(daemonLine).toContain("(Sydney)");
+      expect(daemonLine).toContain("2h ago");
+      expect(daemonLine).not.toContain(polledAt); // no raw ISO leaked
+      expect(daemonLine).not.toMatch(/\dZ\b/);
+      // Errors line: a clean poll → none.
+      expect(text.split("\n").find((l) => l.startsWith("Errors:"))).toBe("Errors: none");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("/status Errors line drops a RECOVERED error (a success landed after it)", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      // Error first, then a later success → the error already recovered.
+      store.recordPollHeartbeat({ now: new Date(Date.now() - 60 * 60_000).toISOString(), ok: false, error: "fetch failed" });
+      store.recordPollHeartbeat({ now: new Date(Date.now() - 5 * 60_000).toISOString(), ok: true });
+      gateway.intake(
+        buildTypedTaskEvent({
+          source: "telegram",
+          type: "status",
+          requested_by: { kind: "user", id: "paco" },
+          notify: { kind: "telegram", chat_id: CHAT },
+          idempotency_key: "telegram:err1",
+          source_reference: "telegram:update:err1"
+        })
+      );
+      const text = notificationText(store, "telegram:err1:status")!;
+      expect(text.split("\n").find((l) => l.startsWith("Errors:"))).toBe("Errors: none");
+      expect(text).not.toContain("fetch failed");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("/status Errors line shows a STILL-CURRENT error Sydney-local (no later success)", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      // A success, then a LATER error → the error is the current state.
+      const errAt = new Date(Date.now() - 5 * 60_000).toISOString();
+      store.recordPollHeartbeat({ now: new Date(Date.now() - 60 * 60_000).toISOString(), ok: true });
+      store.recordPollHeartbeat({ now: errAt, ok: false, error: "fetch failed" });
+      gateway.intake(
+        buildTypedTaskEvent({
+          source: "telegram",
+          type: "status",
+          requested_by: { kind: "user", id: "paco" },
+          notify: { kind: "telegram", chat_id: CHAT },
+          idempotency_key: "telegram:err2",
+          source_reference: "telegram:update:err2"
+        })
+      );
+      const text = notificationText(store, "telegram:err2:status")!;
+      const errorsLine = text.split("\n").find((l) => l.startsWith("Errors:"))!;
+      expect(errorsLine).toContain("fetch failed");
+      expect(errorsLine).toContain("(Sydney)");
+      expect(errorsLine).not.toContain(errAt); // rendered local, not raw ISO
     } finally {
       store.close();
     }
