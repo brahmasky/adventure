@@ -242,7 +242,7 @@ export interface ChatTurnRow {
 }
 
 export type LessonStatus = "active" | "superseded" | "pruned";
-export type LessonSource = "user_feedback" | "loop" | "migration";
+export type LessonSource = "user_feedback" | "loop" | "migration" | "consolidation";
 
 /**
  * One durable lesson (⓪·3 S1, ADR 0012 §2/§3): a per-lesson row with eval metadata
@@ -2380,6 +2380,97 @@ export class RunStore {
       createLedgerEvent({
         correlation_id: "episodic-consolidate",
         event_type: "episodic_consolidate_tick",
+        actor: "system",
+        sequence: this.nextLedgerSequence(),
+        payload
+      })
+    );
+  }
+
+  // --- Lesson consolidation primitives (lesson-consolidation design, 2026-07-23) ------
+
+  /** Last executed lesson-consolidate tick (single-row state, like episodic_consolidate_state). */
+  getLessonConsolidateLastRun(): string | null {
+    const row = this.db.prepare(`
+      SELECT last_consolidated_at FROM lesson_consolidate_state WHERE id = 1
+    `).get<{ last_consolidated_at: string | null }>();
+    return row?.last_consolidated_at ?? null;
+  }
+
+  markLessonConsolidateRan(now: string): void {
+    this.db.prepare(`UPDATE lesson_consolidate_state SET last_consolidated_at = ? WHERE id = 1`).run(now);
+  }
+
+  /**
+   * Preserve-all lesson merge (ADD-then-supersede-all — mirrors {@link RunStore.mergeEpisodicFacts}):
+   * store the merged text/avoid as a NEW active lesson and supersede EVERY member (bidirectional
+   * pointers via {@link RunStore.supersedeLesson} — invalidate, never delete; the single
+   * `supersedes` column ends up naming the last member, `superseded_by` is set on all). The merged
+   * row starts fresh: `applied_count` = Σ members' applied_count, `reuse_value` = the members' summed
+   * reuse CAPPED at {@link LESSON_MERGE_REUSE_CAP} and NEGATIVE-CLAMPED (a negative member can't drag
+   * it below 0; a huge sum can't inflate past the cap — decay can still walk it down), empty
+   * rating_history. One `BEGIN IMMEDIATE` txn. Non-destructive refusal (`undefined`) unless ALL
+   * members are ≥2 ACTIVE lessons of the SAME scope — a bad cluster can never retire another scope's
+   * lesson or half-merge.
+   */
+  applyLessonMerge(input: {
+    scope: string;
+    memberIds: number[];
+    text: string;
+    avoid: string | null;
+    now?: string;
+  }): { new_id: number } | undefined {
+    if (input.memberIds.length < 2) return undefined;
+    const members: LessonRow[] = [];
+    for (const id of input.memberIds) {
+      const row = this.getLesson(id);
+      if (!row || row.status !== "active" || row.scope !== input.scope) return undefined;
+      members.push(row);
+    }
+    const text = input.text.trim();
+    if (text.length === 0) return undefined;
+    const avoid = input.avoid?.trim() || null;
+    const now = input.now ?? new Date().toISOString();
+    const applied_count = members.reduce((sum, m) => sum + m.applied_count, 0);
+    const reuse_value = Math.min(
+      LESSON_MERGE_REUSE_CAP,
+      members.reduce((sum, m) => sum + Math.max(0, m.reuse_value), 0)
+    );
+
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+    try {
+      const new_id = this.addLesson({
+        scope: input.scope,
+        text,
+        ...(avoid ? { avoid } : {}),
+        source: "consolidation",
+        created_at: now
+      });
+      this.db.prepare(`UPDATE lessons SET applied_count = ?, reuse_value = ? WHERE id = ?`)
+        .run(applied_count, reuse_value, new_id);
+      for (const m of members) this.supersedeLesson(m.id, new_id);
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+      return { new_id };
+    } catch (error) {
+      if (activeTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** One summary event per lesson-consolidate tick THAT DID WORK (run-less, like episodic). */
+  recordLessonConsolidateTick(payload: {
+    scopes_processed: number;
+    clusters_merged: number;
+    lessons_superseded: number;
+    merges: Array<{ new_id: number; superseded_ids: number[] }>;
+  }): void {
+    this.appendLedgerEvent(
+      createLedgerEvent({
+        correlation_id: "lesson-consolidate",
+        event_type: "lesson_consolidate_tick",
         actor: "system",
         sequence: this.nextLedgerSequence(),
         payload
@@ -4652,6 +4743,7 @@ export class RunStore {
     this.applySignalPathMigration();
     this.applyEpisodicFactsMigration();
     this.applyEpisodicConsolidateMigration();
+    this.applyLessonConsolidateMigration();
     this.applyEpisodicCoreMigration();
     this.applyScheduledTasksMigration();
     this.applyMeteredFuseMigration();
@@ -5122,6 +5214,49 @@ export class RunStore {
         );
 
         INSERT OR IGNORE INTO episodic_consolidate_state (id) VALUES (1);
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) {
+        this.db.exec("ROLLBACK");
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Lesson consolidation state (lesson-consolidation design, 2026-07-23): the single-row
+   * last-run marker that makes the daily preserve-all lesson-merge tick idempotent per
+   * interval across poll cycles (mirrors episodic_consolidate_state exactly; seeded NULL
+   * so the first tick runs immediately). Its OWN migration — a stamp table, never touching
+   * the live `lessons` table.
+   */
+  private applyLessonConsolidateMigration(): void {
+    const version = "2026-07-23-lesson-consolidate-state";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS lesson_consolidate_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          last_consolidated_at TEXT
+        );
+
+        INSERT OR IGNORE INTO lesson_consolidate_state (id) VALUES (1);
       `);
 
       if (!applied) {
@@ -5919,6 +6054,14 @@ const LESSON_COLUMNS =
 
 /** Per-scope active-row cap (⓪·3 S1): overflow prunes the lowest reuse_value rows. */
 export const DEFAULT_LESSON_CAP_PER_SCOPE = 20;
+
+/**
+ * Ceiling on a merged lesson's inherited reuse_value (lesson-consolidation merge): the sum of
+ * the members, capped so a merged near-duplicate carries its earned standing without becoming
+ * immortal — decay can still walk it down to the prune line. Reuses the episodic cap value (5)
+ * for consistency across the two consolidators.
+ */
+export const LESSON_MERGE_REUSE_CAP = 5;
 
 export function resolveLessonCapPerScope(env: NodeJS.ProcessEnv): number {
   const n = Number(env.HOUGE_LESSON_CAP_PER_SCOPE);

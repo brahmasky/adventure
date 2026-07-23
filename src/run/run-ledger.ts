@@ -50,6 +50,7 @@ export type LedgerEventType =
   | "loop_step"
   | "loop_halted"
   | "lesson_decay_tick"
+  | "lesson_consolidate_tick"
   | "episodic_distill_pass"
   | "episodic_consolidate_tick"
   | "wiki_page_saved"
@@ -176,6 +177,10 @@ const requiredPayloadFields = {
   loop_halted: ["reason", "steps"],
   // ⓪·3 S2 (ADR 0012 §1/§3): the daily reuse-value decay+prune pass — one summary per tick.
   lesson_decay_tick: ["lessons_decayed", "pruned_ids"],
+  // Lesson-consolidation design (2026-07-23): one summary per daily preserve-all lesson-merge
+  // tick that did work. `merges` is id-only ([{new_id, superseded_ids}]) — traceable for undo,
+  // but no lesson text (the bodies-out-of-the-ledger invariant holds).
+  lesson_consolidate_tick: ["scopes_processed", "clusters_merged", "lessons_superseded", "merges"],
   // Phase M B2: one summary per executed episodic fast-path distill pass (run-less).
   episodic_distill_pass: ["facts_added", "superseded", "dropped", "turns_read"],
   // Phase M B4: one summary per daily episodic consolidate tick that did work (run-less).
