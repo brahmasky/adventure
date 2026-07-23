@@ -61,10 +61,13 @@ interface ParsedAnswer {
 }
 
 /**
- * Normalize a pi `message_end` message's `usage` object into {@link LlmUsage}, tolerant of pi's
- * OpenAI-ish field names (`input_tokens`/`prompt_tokens`, `output_tokens`/`completion_tokens`,
- * `cached_input_tokens`/`cache_read_input_tokens`). Returns `undefined` when no usable usage block
- * is present — pi versions that don't report usage simply emit no telemetry.
+ * Normalize a pi `message_end` message's `usage` object into {@link LlmUsage}, tolerant of two
+ * schemas: the OpenAI-ish names (`input_tokens`/`prompt_tokens`, `output_tokens`/
+ * `completion_tokens`, `cached_input_tokens`/`cache_read_input_tokens`) AND pi's own native
+ * block (verified on pi 0.81.1: `input`/`output`/`cacheRead`/`cacheWrite`/`totalTokens`).
+ * `input` is the TOTAL prompt count (OpenAI semantics: it includes the cached subset, which
+ * `cacheRead` reports separately). Returns `undefined` only when no usable usage block is
+ * present — pi versions that emit no usage simply produce no telemetry.
  */
 function extractPiUsage(usage: unknown): LlmUsage | undefined {
   if (typeof usage !== "object" || usage === null) return undefined;
@@ -76,14 +79,14 @@ function extractPiUsage(usage: unknown): LlmUsage | undefined {
     }
     return 0;
   };
-  const hasAny = ["input_tokens", "prompt_tokens", "output_tokens", "completion_tokens"].some(
+  const hasAny = ["input_tokens", "prompt_tokens", "input", "output_tokens", "completion_tokens", "output"].some(
     (k) => u[k] !== undefined
   );
   if (!hasAny) return undefined;
   return {
-    input_tokens: toNum("input_tokens", "prompt_tokens"),
-    output_tokens: toNum("output_tokens", "completion_tokens"),
-    cached_input_tokens: toNum("cached_input_tokens", "cache_read_input_tokens")
+    input_tokens: toNum("input_tokens", "prompt_tokens", "input"),
+    output_tokens: toNum("output_tokens", "completion_tokens", "output"),
+    cached_input_tokens: toNum("cached_input_tokens", "cache_read_input_tokens", "cacheRead")
   };
 }
 

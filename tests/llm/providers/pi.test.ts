@@ -115,6 +115,35 @@ describe("createPiProvider", () => {
     ]);
   });
 
+  it("normalizes pi's NATIVE usage schema (input/output/cacheRead — verified on pi 0.81.1)", async () => {
+    // Regression: pi 0.81.1 emits `input`/`output`/`cacheRead`, not the OpenAI `*_tokens`
+    // names. Before this was handled, extractPiUsage returned undefined and every pi (kimi)
+    // turn was invisible in the usage ledger. `input` is the TOTAL prompt count (includes the
+    // cached subset reported by `cacheRead`).
+    const stdout = [
+      JSON.stringify({ type: "session", sessionId: "abc" }),
+      JSON.stringify({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          provider: "kimi-coder",
+          model: "kimi-for-coding",
+          content: [{ type: "text", text: "OK" }],
+          usage: { input: 1789, output: 22, cacheRead: 256, cacheWrite: 0, totalTokens: 1811, cost: { total: 0 } }
+        }
+      })
+    ].join("\n");
+    const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout }));
+    const calls: Array<{ usage: unknown; model: string }> = [];
+    const provider = createPiProvider({ spawnImpl, onUsage: (usage, model) => calls.push({ usage, model }) });
+
+    await provider.answer({ question: "hi" });
+
+    expect(calls).toEqual([
+      { usage: { input_tokens: 1789, output_tokens: 22, cached_input_tokens: 256 }, model: "kimi-for-coding" }
+    ]);
+  });
+
   it("does not fire onUsage when pi reports no usage block", async () => {
     const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout: jsonlSuccess("Paris.") }));
     const onUsage = vi.fn();
