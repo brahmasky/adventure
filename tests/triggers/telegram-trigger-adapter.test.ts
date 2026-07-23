@@ -68,22 +68,37 @@ describe("normalizeTelegramUpdate", () => {
     });
   });
 
-  it("still no longer produces ask/research events from /ask or /research", () => {
+  it("routes removed /ask and /research to unknown_command events, not turns", () => {
     const ask = normalizeTelegramUpdate(
       { update_id: 1011, message: { message_id: 71, text: "/ask hi", from: { id: 111 }, chat: { id: 222 } } },
       allowlist
     );
     const askEvent = taskEvent(ask);
-    expect(askEvent.type).toBe("turn");
-    expect(askEvent.goal).toBe("/ask hi");
+    expect(askEvent.type).toBe("unknown_command");
+    // The attempted command word rides `program` for the help reply.
+    expect(askEvent.program).toBe("/ask");
 
     const research = normalizeTelegramUpdate(
       { update_id: 1012, message: { message_id: 72, text: "/research x", from: { id: 111 }, chat: { id: 222 } } },
       allowlist
     );
     const researchEvent = taskEvent(research);
-    expect(researchEvent.type).toBe("turn");
-    expect(researchEvent.program).toBe("turn");
+    expect(researchEvent.type).toBe("unknown_command");
+    expect(researchEvent.program).toBe("/research");
+  });
+
+  it("round-trips /usage and /help through buildTelegramEvent", () => {
+    const usage = normalizeTelegramUpdate(
+      { update_id: 1013, message: { message_id: 73, text: "/usage", from: { id: 111 }, chat: { id: 222 } } },
+      allowlist
+    );
+    expect(taskEvent(usage).type).toBe("usage");
+
+    const help = normalizeTelegramUpdate(
+      { update_id: 1014, message: { message_id: 74, text: "/help", from: { id: 111 }, chat: { id: 222 } } },
+      allowlist
+    );
+    expect(taskEvent(help).type).toBe("help");
   });
 
   it("normalizes /approve without creating a program", () => {

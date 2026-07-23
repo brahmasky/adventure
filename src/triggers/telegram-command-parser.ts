@@ -4,6 +4,9 @@ export type TelegramCommand =
   | { type: "turn"; goal: string }
   | { type: "run"; program: string; goal: string }
   | { type: "status"; run_id?: string }
+  | { type: "usage" }
+  | { type: "help" }
+  | { type: "unknown_command"; attempted: string }
   | { type: "lessons"; scope?: string }
   | { type: "skills"; scope?: string }
   | { type: "forget"; scope: string }
@@ -39,6 +42,8 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
 
   if (command === "/run") return parseRun(rest);
   if (command === "/status") return parseStatus(rest);
+  if (command === "/usage") return { ok: true, command: { type: "usage" } };
+  if (command === "/help") return { ok: true, command: { type: "help" } };
   if (command === "/lessons") return parseLessons(rest);
   if (command === "/skills") return parseSkills(rest);
   if (command === "/forget") return parseForget(rest);
@@ -51,8 +56,14 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
   if (command === "/kill") return parseKill(rest);
   if (command === "/disarm") return parseNoArgs("disarm", rest);
   if (command === "/rearm") return parseNoArgs("rearm", rest);
-  // Unknown slash-prefixed text is NOT a control command — treat it as natural
-  // language (a `turn`), carrying the text verbatim, rather than rejecting it.
+  // Unknown slash-prefixed text: if the first token is a CLEAN command word (letters,
+  // digits, underscore only — no inner slashes or dots), the user attempted a command
+  // that doesn't exist (a typo/removed command). Guide them with the command list rather
+  // than hallucinating an LLM answer. Slashy natural text (file paths like `/usr/bin/x`
+  // or `/etc/hosts …`) fails this and still falls through to a verbatim `turn`.
+  if (/^\/[A-Za-z][A-Za-z0-9_]*$/.test(command)) {
+    return { ok: true, command: { type: "unknown_command", attempted: command } };
+  }
   return { ok: true, command: { type: "turn", goal: trimmed } };
 }
 

@@ -32,21 +32,44 @@ describe("parseTelegramCommand", () => {
     });
   });
 
-  it("no longer parses /ask or /research — they become turns", () => {
+  it("parses /usage and /help as real control commands (no LLM turn)", () => {
+    expect(parseTelegramCommand("/usage")).toEqual({ ok: true, command: { type: "usage" } });
+    expect(parseTelegramCommand("/help")).toEqual({ ok: true, command: { type: "help" } });
+    // The `@BotName` suffix is stripped before matching (group-chat mentions).
+    expect(parseTelegramCommand("/usage@HougeBot")).toEqual({ ok: true, command: { type: "usage" } });
+    expect(parseTelegramCommand("/help@HougeBot")).toEqual({ ok: true, command: { type: "help" } });
+  });
+
+  it("routes a clean but unknown /command to unknown_command, not a hallucinated turn", () => {
+    // A command-shaped first token (removed/typo'd command) → guide with the command list.
+    expect(parseTelegramCommand("/nonsense")).toEqual({
+      ok: true,
+      command: { type: "unknown_command", attempted: "/nonsense" }
+    });
+    expect(parseTelegramCommand("/foo bar")).toEqual({
+      ok: true,
+      command: { type: "unknown_command", attempted: "/foo" }
+    });
+    // Removed commands (ADR 0010) are now unknown commands, not verbatim turns.
     expect(parseTelegramCommand("/ask compare Pi and Hermes")).toEqual({
       ok: true,
-      command: { type: "turn", goal: "/ask compare Pi and Hermes" }
+      command: { type: "unknown_command", attempted: "/ask" }
     });
     expect(parseTelegramCommand("/research latest SpaceX news")).toEqual({
       ok: true,
-      command: { type: "turn", goal: "/research latest SpaceX news" }
+      command: { type: "unknown_command", attempted: "/research" }
     });
   });
 
-  it("routes unknown slash commands to a turn instead of rejecting", () => {
-    expect(parseTelegramCommand("/foo bar")).toEqual({
+  it("keeps slashy natural text (file paths) as a verbatim turn, not a command", () => {
+    // Inner slashes/dots mean it is NOT a clean command word — preserve the message.
+    expect(parseTelegramCommand("/usr/bin/foo is slow")).toEqual({
       ok: true,
-      command: { type: "turn", goal: "/foo bar" }
+      command: { type: "turn", goal: "/usr/bin/foo is slow" }
+    });
+    expect(parseTelegramCommand("/etc/hosts got edited")).toEqual({
+      ok: true,
+      command: { type: "turn", goal: "/etc/hosts got edited" }
     });
   });
 
@@ -127,11 +150,21 @@ describe("parseTelegramCommand", () => {
     });
   });
 
-  it("no longer parses /teach — it becomes a turn", () => {
+  it("no longer parses /teach — its clean command word routes to unknown_command", () => {
     expect(parseTelegramCommand("/teach research: prefer filings")).toEqual({
       ok: true,
-      command: { type: "turn", goal: "/teach research: prefer filings" }
+      command: { type: "unknown_command", attempted: "/teach" }
     });
+  });
+
+  it("keeps the kill-switch/disarm commands slash-only (regression: not unknown_command)", () => {
+    expect(parseTelegramCommand("/kill")).toEqual({ ok: true, command: { type: "kill" } });
+    expect(parseTelegramCommand("/kill runaway loop")).toEqual({
+      ok: true,
+      command: { type: "kill", reason: "runaway loop" }
+    });
+    expect(parseTelegramCommand("/disarm")).toEqual({ ok: true, command: { type: "disarm" } });
+    expect(parseTelegramCommand("/rearm")).toEqual({ ok: true, command: { type: "rearm" } });
   });
 
   it("takes a turn message literally, including apostrophes and quotes", () => {

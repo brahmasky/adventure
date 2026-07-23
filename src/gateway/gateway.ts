@@ -33,6 +33,7 @@ import { SkillStore, type SkillMeta } from "../skills/skill-store.js";
 import { join } from "node:path";
 import { evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import { queryStatus } from "../status/status-query.js";
+import { formatUsageTable } from "../status/usage-report.js";
 
 /** A freshly captured rating the daemon follows up on (the low-rating attribution pass). */
 export interface RatingSignal {
@@ -44,6 +45,8 @@ export interface RatingSignal {
 export type GatewayIntakeResult =
   | { ok: true; status: "created" | "duplicate"; run_id: string; rating_signal?: RatingSignal }
   | { ok: true; status: "status_returned"; run_id: string }
+  | { ok: true; status: "usage_returned"; run_id: string }
+  | { ok: true; status: "help_returned"; run_id: string }
   | { ok: true; status: "approval_resolved"; run_id: string }
   | { ok: true; status: "lessons_returned"; run_id: string }
   | { ok: true; status: "skills_returned"; run_id: string }
@@ -138,6 +141,14 @@ export class Gateway {
 
     if (event.type === "status") {
       return this.handleStatus(event, now);
+    }
+
+    if (event.type === "usage") {
+      return this.handleUsage(event, now);
+    }
+
+    if (event.type === "help" || event.type === "unknown_command") {
+      return this.handleHelp(event, now);
     }
 
     if (event.type === "approve" || event.type === "deny") {
@@ -606,6 +617,71 @@ export class Gateway {
     return result;
   }
 
+  /**
+   * `/usage` — a control command (no run, no budget). Renders the SAME per-model token/cost
+   * table as the `houge usage` CLI (all-time window, matching a bare `houge usage`), wrapped
+   * in a code fence so the fixed-width columns stay aligned in Telegram (the outbound HTML
+   * converter renders the fence as <pre>). Idempotent on the trigger key, like /status.
+   */
+  private handleUsage(event: TypedTaskEvent, now: string): GatewayIntakeResult {
+    const replay = this.runStore.beginTriggerProcessing(event);
+    if (replay.status === "duplicate") {
+      return JSON.parse(replay.result_json) as GatewayIntakeResult;
+    }
+    if (replay.status === "conflict") {
+      return {
+        ok: false,
+        error: { code: replay.error, message: "Trigger idempotency key conflicts with a different payload" }
+      };
+    }
+
+    const table = formatUsageTable(this.runStore.usageByModel());
+    const result: GatewayIntakeResult = { ok: true, status: "usage_returned", run_id: "" };
+    this.runStore.enqueueNotification({
+      target: event.notify,
+      intent_type: "progress",
+      idempotency_key: `${event.idempotency_key}:usage`,
+      correlation_id: event.source_reference,
+      payload: { text: `📊 Houge · usage\n\`\`\`\n${table}\n\`\`\`` }
+    });
+    this.runStore.recordTriggerProcessed(event, result);
+    this.recordTelegramAccepted(event, now);
+    return result;
+  }
+
+  /**
+   * `/help` (and any unknown `/command`) — a control command (no run, no budget). Lists the
+   * real supported commands so a typo/removed command guides the user instead of hallucinating
+   * an LLM answer. An `unknown_command` names the attempted word first. Idempotent, like /status.
+   */
+  private handleHelp(event: TypedTaskEvent, now: string): GatewayIntakeResult {
+    const replay = this.runStore.beginTriggerProcessing(event);
+    if (replay.status === "duplicate") {
+      return JSON.parse(replay.result_json) as GatewayIntakeResult;
+    }
+    if (replay.status === "conflict") {
+      return {
+        ok: false,
+        error: { code: replay.error, message: "Trigger idempotency key conflicts with a different payload" }
+      };
+    }
+
+    const attempted =
+      event.type === "unknown_command" && typeof event.program === "string" ? event.program : undefined;
+    const text = attempted ? `${attempted} 不是命令。\n\n${HELP_TEXT}` : HELP_TEXT;
+    const result: GatewayIntakeResult = { ok: true, status: "help_returned", run_id: "" };
+    this.runStore.enqueueNotification({
+      target: event.notify,
+      intent_type: "progress",
+      idempotency_key: `${event.idempotency_key}:help`,
+      correlation_id: event.source_reference,
+      payload: { text }
+    });
+    this.runStore.recordTriggerProcessed(event, result);
+    this.recordTelegramAccepted(event, now);
+    return result;
+  }
+
   private handleApproval(event: TypedTaskEvent, now: string): GatewayIntakeResult {
     const decision: ApprovalDecision = event.type === "approve" ? "approved" : "denied";
     const resolution = this.runStore.processApprovalTrigger({
@@ -939,6 +1015,27 @@ export {
   SCHEDULE_GOAL_PREVIEW_CHARS,
   formatScheduleListText
 } from "../run/schedule-spec.js";
+
+/** `/help` (and any unknown `/command`) reply — the ACTUAL supported commands, one line each. */
+export const HELP_TEXT = [
+  "Houge · 命令",
+  "",
+  "/status — 运行与健康状态",
+  "/usage — 各模型 token/费用用量",
+  "/schedule — 列出定时任务（/schedule cancel <id> 取消）",
+  "/lessons — 已学到的经验（可选 scope）",
+  "/skills — 可用技能（可选 scope）",
+  "/forget <scope|id> — 清除某条经验",
+  "/approve <id> — 批准待处理操作",
+  "/deny <id> — 拒绝待处理操作",
+  "/kill — 紧急停机（写入 tombstone）",
+  "/disarm — 关闭自主/进化开关",
+  "/rearm — 重新启用（下次重启生效）",
+  "/run <program> <goal> — 运行指定程序",
+  "/help — 显示本帮助",
+  "",
+  "或者直接用自然语言提问。"
+].join("\n");
 
 /** `/schedule cancel` refusal — not-found and cross-chat read IDENTICALLY (no probe signal). */
 export const SCHEDULE_CANCEL_NOT_FOUND_TEXT =

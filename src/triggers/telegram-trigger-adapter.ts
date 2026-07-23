@@ -228,6 +228,13 @@ function buildTelegramEvent(command: TelegramCommand, base: TelegramEventBase): 
       return buildTypedTaskEvent({ ...base, type: "run", program: command.program, goal: command.goal });
     case "status":
       return buildTypedTaskEvent({ ...base, type: "status", metadata: { ...base.metadata, run_id: command.run_id } });
+    case "usage":
+      return buildTypedTaskEvent({ ...base, type: "usage" });
+    case "help":
+      return buildTypedTaskEvent({ ...base, type: "help" });
+    case "unknown_command":
+      // The attempted command word rides `program` so the help reply can name it.
+      return buildTypedTaskEvent({ ...base, type: "unknown_command", program: command.attempted });
     case "lessons":
       // scope (optional) rides `program`; absent → list all scopes.
       return buildTypedTaskEvent({ ...base, type: "lessons", ...(command.scope ? { program: command.scope } : {}) });

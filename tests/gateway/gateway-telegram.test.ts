@@ -6,6 +6,7 @@ import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import {
   formatScheduleCancelledText,
   Gateway,
+  HELP_TEXT,
   SCHEDULE_CANCEL_NOT_FOUND_TEXT,
   SCHEDULE_GOAL_PREVIEW_CHARS,
   SCHEDULE_LIST_EMPTY_TEXT
@@ -495,6 +496,133 @@ describe("Gateway telegram events", () => {
         ok: false,
         error: { code: "TELEGRAM_RATE_LIMITED", message: "Telegram command rate limit exceeded" }
       });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("/usage renders the per-model table (code-fenced), enqueues once, creates NO run", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      store.recordLlmCall("run_a", {
+        provider: "kimi-api",
+        model: "moonshot-v1-auto",
+        role: "answer",
+        usage: { input_tokens: 100, output_tokens: 50, cached_input_tokens: 0, cost_usd: 0.5 }
+      });
+      store.recordLlmCall("run_b", {
+        provider: "openai",
+        model: "gpt-4o",
+        role: "answer",
+        usage: { input_tokens: 200, output_tokens: 30, cached_input_tokens: 0, cost_usd: 1.25 }
+      });
+
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "usage",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:usage-1",
+        source_reference: "telegram:update:40:message:1"
+      });
+
+      const first = gateway.intake(event);
+      const second = gateway.intake(event); // redelivered update
+
+      expect(first).toEqual({ ok: true, status: "usage_returned", run_id: "" });
+      expect(second).toEqual(first); // replayed, not recomputed
+      expect(store.countNotificationsByIdempotencyKey("telegram:usage-1:usage")).toBe(1);
+      // A control command: no run row is ever created.
+      expect(store.listRecentRunStatuses(10)).toHaveLength(0);
+
+      const note = store.claimNextNotification("test", 30);
+      const text = String(note?.payload.text);
+      expect(text).toContain("```"); // fixed-width table kept monospaced in Telegram
+      expect(text).toContain("PROVIDER");
+      expect(text).toContain("moonshot-v1-auto");
+      expect(text).toContain("gpt-4o");
+      expect(text).toContain("TOTAL");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("/usage on an empty ledger reports the empty-window text, no run", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "usage",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:usage-empty",
+        source_reference: "telegram:update:41:message:1"
+      });
+      expect(gateway.intake(event)).toEqual({ ok: true, status: "usage_returned", run_id: "" });
+      expect(store.listRecentRunStatuses(10)).toHaveLength(0);
+      const note = store.claimNextNotification("test", 30);
+      expect(String(note?.payload.text)).toContain("No usage recorded in this window.");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("/help lists the real commands (incl. /status and /usage), enqueues once, no run", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "help",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:help-1",
+        source_reference: "telegram:update:42:message:1"
+      });
+
+      const first = gateway.intake(event);
+      const second = gateway.intake(event);
+
+      expect(first).toEqual({ ok: true, status: "help_returned", run_id: "" });
+      expect(second).toEqual(first);
+      expect(store.countNotificationsByIdempotencyKey("telegram:help-1:help")).toBe(1);
+      expect(store.listRecentRunStatuses(10)).toHaveLength(0);
+
+      const note = store.claimNextNotification("test", 30);
+      const text = String(note?.payload.text);
+      expect(text).toBe(HELP_TEXT);
+      expect(text).toContain("/status");
+      expect(text).toContain("/usage");
+      expect(text).toContain("或者直接用自然语言提问");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("an unknown /command replies with the command list prefixed by the attempted word, no run", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "unknown_command",
+        program: "/nonsense", // the attempted command word rides program
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:unknown-1",
+        source_reference: "telegram:update:43:message:1"
+      });
+
+      expect(gateway.intake(event)).toEqual({ ok: true, status: "help_returned", run_id: "" });
+      expect(store.listRecentRunStatuses(10)).toHaveLength(0);
+
+      const note = store.claimNextNotification("test", 30);
+      const text = String(note?.payload.text);
+      expect(text).toContain("/nonsense 不是命令");
+      expect(text).toContain("/status"); // still lists the real commands
+      expect(text).toContain("/usage");
     } finally {
       store.close();
     }

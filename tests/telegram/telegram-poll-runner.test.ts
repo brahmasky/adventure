@@ -38,7 +38,7 @@ describe("runTelegramPollOnce", () => {
         telegramClient: {
           getUpdates: async () => [{
             update_id: 30,
-            message: { message_id: 1, text: "/ask summarize rules", from: { id: 111 }, chat: { id: 222 } }
+            message: { message_id: 1, text: "summarize the rules", from: { id: 111 }, chat: { id: 222 } }
           }],
           sendMessage: async ({ text }) => {
             sent.push(text);
@@ -81,11 +81,11 @@ describe("runTelegramPollOnce", () => {
           getUpdates: async () => [
             {
               update_id: 40,
-              message: { message_id: 1, text: "/ask first", from: { id: 111 }, chat: { id: 222 } }
+              message: { message_id: 1, text: "first question", from: { id: 111 }, chat: { id: 222 } }
             },
             {
               update_id: 41,
-              message: { message_id: 2, text: "/ask second", from: { id: 111 }, chat: { id: 222 } }
+              message: { message_id: 2, text: "second question", from: { id: 111 }, chat: { id: 222 } }
             }
           ],
           sendMessage: async ({ text }) => {

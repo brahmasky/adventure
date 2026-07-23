@@ -26,12 +26,13 @@ describe("parser: /kill /disarm /rearm (ADR 0018)", () => {
     expect(parseTelegramCommand("/rearm now").ok).toBe(false);
   });
 
-  it("NEAR-MISS slash text still falls through to a natural-language turn — proving the stop commands exist only as explicit branches", () => {
-    // WHY: an unknown slash command becomes a `turn` the MODEL interprets. If /kill were
-    // not an explicit parser branch it would ride that path — a stop command re-interpreted
-    // by an LLM is forgeable. The near-miss shows the fallthrough is alive right next to it.
+  it("NEAR-MISS slash text does NOT trigger a stop command — it routes to unknown_command, never kill", () => {
+    // WHY: a typo'd stop command must NEVER be treated as `/kill`. Because /kill is an
+    // explicit parser branch, `/killl` misses it and falls through — now to unknown_command
+    // (the command-list reply), never to a `kill`. It is also never a model-interpreted turn
+    // that could be coaxed into stopping the daemon: a stop command stays unforgeable.
     const nearMiss = parseTelegramCommand("/killl");
-    expect(nearMiss).toEqual({ ok: true, command: { type: "turn", goal: "/killl" } });
+    expect(nearMiss).toEqual({ ok: true, command: { type: "unknown_command", attempted: "/killl" } });
   });
 });
 
