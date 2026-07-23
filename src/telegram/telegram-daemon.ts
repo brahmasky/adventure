@@ -130,7 +130,12 @@ export async function runTelegramDaemon(
   const worker = new CoreWorker(
     options.store,
     options.projectRoot,
-    llmAdapter,
+    // Pass the RAW optional (undefined in prod), NOT the built `llmAdapter` above: CoreWorker
+    // instruments its OWN default cheap-chain adapter per role (answer/classify/… usage →
+    // recordLlmCall) only when none is injected. Handing it the pre-built adapter set
+    // llmAdapterIsDefault=false and silently disabled all conversational telemetry. Tests still
+    // inject options.llmAdapter and get it verbatim. The local `llmAdapter` above stays for the tick.
+    options.llmAdapter,
     undefined,
     undefined,
     undefined,

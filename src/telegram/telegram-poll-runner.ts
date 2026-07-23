@@ -75,12 +75,10 @@ export async function runTelegramPollOnce(
   const worker = new CoreWorker(
     options.store,
     options.projectRoot,
-    options.llmAdapter ??
-      createLlmAnswerAdapter({
-        ...(options.broker ? { broker: options.broker } : {}),
-        // Metered-$ ceiling (ADR 0019): a latched fuse drops the metered legs (cheap latch read).
-        meteredBreached: () => options.store.meteredFuseLatched()
-      }),
+    // RAW optional (undefined in prod) so CoreWorker builds + INSTRUMENTS its own cheap-chain
+    // adapter per role — a pre-built adapter here sets llmAdapterIsDefault=false and disables all
+    // conversational telemetry (answer/classify/… never recorded). Tests inject and get it verbatim.
+    options.llmAdapter,
     undefined,
     undefined,
     undefined,
