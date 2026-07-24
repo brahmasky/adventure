@@ -69,10 +69,12 @@ describe("/radar", () => {
       const note = store.claimNextNotification("test", 30);
       const text = String(note?.payload.text);
       // Momentum order: the 3-item card first; markdown characters stripped inert.
-      expect(text).toContain("• Big idea withmarkdown spice — momentum 3, seen 2h ago, seen");
+      expect(text).toContain("• Big idea withmarkdown spice — momentum 3, seen 2h ago");
       expect(text).not.toContain("[with](markdown)");
       expect(text).not.toContain("*spice*");
-      expect(text).toContain("• Small idea — momentum 1, seen 2h ago, seen");
+      expect(text).toContain("• Small idea — momentum 1, seen 2h ago");
+      // Default `seen` status is hidden ("seen 2h ago, seen" read as a stutter).
+      expect(text).not.toContain(", seen\n");
       expect(text).toContain("2 active · last tick 3h ago");
       expect(text.indexOf("Big idea")).toBeLessThan(text.indexOf("Small idea"));
     } finally {
@@ -180,7 +182,25 @@ describe("formatRadarText", () => {
       null,
       NOW
     );
-    expect(text).toContain("• code sneaky — momentum 4, seen 0m ago, seen");
+    expect(text).toContain("• code sneaky — momentum 4, seen 0m ago");
     expect(text).toContain("1 active · last tick never");
+  });
+
+  it("renders a non-default lifecycle status (R2 verbs) while hiding the default `seen`", () => {
+    const card = {
+      id: 1,
+      slug: "picked-idea",
+      title: "Picked idea",
+      summary: "s",
+      status: "shortlisted",
+      sources: {},
+      distinct_items: 2,
+      distinct_sources: 2,
+      momentum: 4,
+      first_seen: "2026-07-24T09:00:00.000Z",
+      last_seen: "2026-07-24T11:00:00.000Z"
+    } as Parameters<typeof formatRadarText>[0][number];
+    const text = formatRadarText([card], 1, null, NOW);
+    expect(text).toContain("• Picked idea — momentum 4, seen 1h ago, shortlisted");
   });
 });

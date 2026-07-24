@@ -1129,9 +1129,12 @@ export const RADAR_OFF_TEXT = "📡 Houge · radar\nradar off — HOUGE_RADAR_EN
 
 /**
  * Render the `/radar` reply: top active cards by momentum, each
- * `• <title> — momentum <n>, seen <age>, <status>`, plus the one-line footer
- * (`N active · last tick <when>`). Card titles originated in EXTERNAL feeds (slimmed +
- * sanitized at parse time) — `escapeForTelegram` at render keeps them markdown-inert.
+ * `• <title> — momentum <n>, seen <age>[, <status>]`, plus the one-line footer
+ * (`N active · last tick <when>`). The default `seen` status is HIDDEN — every fresh card
+ * carries it, and "seen 21m ago, seen" read as a stutter (Paco, first live render); a
+ * status is only news once R2 moves a card to tracked/shortlisted/picked.
+ * Card titles originated in EXTERNAL feeds (slimmed + sanitized at parse time) —
+ * `escapeForTelegram` at render keeps them markdown-inert.
  */
 export function formatRadarText(
   cards: IdeaRow[],
@@ -1141,7 +1144,7 @@ export function formatRadarText(
 ): string {
   const lines = cards.map(
     (card) =>
-      `• ${escapeForTelegram(card.title)} — momentum ${card.momentum}, seen ${relativeTimeAgo(card.last_seen, now)} ago, ${card.status}`
+      `• ${escapeForTelegram(card.title)} — momentum ${card.momentum}, seen ${relativeTimeAgo(card.last_seen, now)} ago${card.status === "seen" ? "" : `, ${card.status}`}`
   );
   const footer = `${activeCount} active · last tick ${lastTick ? `${relativeTimeAgo(lastTick, now)} ago` : "never"}`;
   return [
