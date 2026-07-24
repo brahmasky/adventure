@@ -230,6 +230,8 @@ function buildTelegramEvent(command: TelegramCommand, base: TelegramEventBase): 
       return buildTypedTaskEvent({ ...base, type: "status", metadata: { ...base.metadata, run_id: command.run_id } });
     case "usage":
       return buildTypedTaskEvent({ ...base, type: "usage" });
+    case "radar":
+      return buildTypedTaskEvent({ ...base, type: "radar" });
     case "help":
       return buildTypedTaskEvent({ ...base, type: "help" });
     case "unknown_command":

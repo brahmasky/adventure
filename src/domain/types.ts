@@ -1,7 +1,7 @@
 import { stableHash } from "./canonical.js";
 
 export type TriggerSource = "telegram" | "schedule" | "cli" | "event";
-export type TaskEventType = "ask" | "run" | "turn" | "approve" | "deny" | "status" | "usage" | "help" | "unknown_command" | "lessons" | "forget" | "skills" | "schedule_admin" | "kill" | "disarm" | "rearm";
+export type TaskEventType = "ask" | "run" | "turn" | "approve" | "deny" | "status" | "usage" | "help" | "unknown_command" | "lessons" | "forget" | "skills" | "schedule_admin" | "kill" | "disarm" | "rearm" | "radar";
 
 export type Identity =
   | { kind: "user"; id: string }

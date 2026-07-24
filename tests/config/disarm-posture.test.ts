@@ -60,7 +60,10 @@ describe("DISARM_FLAGS", () => {
       // ADR 0025: acts under Houge's own Google identity — the STOP switch must cover
       // identity reads too.
       "HOUGE_GOOGLE_ENABLED",
-      "HOUGE_LESSON_CONSOLIDATE_ENABLED"
+      "HOUGE_LESSON_CONSOLIDATE_ENABLED",
+      // Idea Radar R1 (spec 2026-07-24): unattended external reads + a daily metered LLM
+      // call + durable card writes — the STOP switch covers it like bounty intake.
+      "HOUGE_RADAR_ENABLED"
     ]);
     expect(DISARM_FLAGS).not.toContain("HOUGE_EPISODIC_ENABLED");
   });

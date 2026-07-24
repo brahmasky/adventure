@@ -36,6 +36,9 @@ import { join } from "node:path";
 import { evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import { queryStatus } from "../status/status-query.js";
 import { formatUsageTable } from "../status/usage-report.js";
+import { resolveRadarEnabled } from "../capabilities/idea-radar.js";
+import { escapeForTelegram } from "../capabilities/text-hygiene.js";
+import type { IdeaRow } from "../run/run-store.js";
 
 /** A freshly captured rating the daemon follows up on (the low-rating attribution pass). */
 export interface RatingSignal {
@@ -48,6 +51,7 @@ export type GatewayIntakeResult =
   | { ok: true; status: "created" | "duplicate"; run_id: string; rating_signal?: RatingSignal }
   | { ok: true; status: "status_returned"; run_id: string }
   | { ok: true; status: "usage_returned"; run_id: string }
+  | { ok: true; status: "radar_returned"; run_id: string }
   | { ok: true; status: "help_returned"; run_id: string }
   | { ok: true; status: "approval_resolved"; run_id: string }
   | { ok: true; status: "lessons_returned"; run_id: string }
@@ -147,6 +151,10 @@ export class Gateway {
 
     if (event.type === "usage") {
       return this.handleUsage(event, now);
+    }
+
+    if (event.type === "radar") {
+      return this.handleRadar(event, now);
     }
 
     if (event.type === "help" || event.type === "unknown_command") {
@@ -672,6 +680,41 @@ export class Gateway {
   }
 
   /**
+   * `/radar` — a read-only VIEWER over the ideas store (Idea Radar R1; no run, no budget).
+   * Renders the top 10 active cards by momentum, every card-derived string through
+   * `escapeForTelegram` (card text originated in external feeds — render it inert). No
+   * ordinal numbering promises: pick-by-number arrives with the R2 shortlist snapshot.
+   * Flag off → a one-line "radar off" notice. Idempotent on the trigger key, like /usage.
+   */
+  private handleRadar(event: TypedTaskEvent, now: string): GatewayIntakeResult {
+    const replay = this.runStore.beginTriggerProcessing(event);
+    if (replay.status === "duplicate") {
+      return JSON.parse(replay.result_json) as GatewayIntakeResult;
+    }
+    if (replay.status === "conflict") {
+      return {
+        ok: false,
+        error: { code: replay.error, message: "Trigger idempotency key conflicts with a different payload" }
+      };
+    }
+
+    const text = resolveRadarEnabled(process.env)
+      ? formatRadarText(this.runStore.listActiveIdeas(10), this.runStore.countActiveIdeas(), this.runStore.getRadarLastRun(), now)
+      : RADAR_OFF_TEXT;
+    const result: GatewayIntakeResult = { ok: true, status: "radar_returned", run_id: "" };
+    this.runStore.enqueueNotification({
+      target: event.notify,
+      intent_type: "progress",
+      idempotency_key: `${event.idempotency_key}:radar`,
+      correlation_id: event.source_reference,
+      payload: { text }
+    });
+    this.runStore.recordTriggerProcessed(event, result);
+    this.recordTelegramAccepted(event, now);
+    return result;
+  }
+
+  /**
    * `/help` (and any unknown `/command`) — a control command (no run, no budget). Lists the
    * real supported commands so a typo/removed command guides the user instead of hallucinating
    * an LLM answer. An `unknown_command` names the attempted word first. Idempotent, like /status.
@@ -864,6 +907,17 @@ export class Gateway {
         : "not running";
       const sweptText = sweep.last_swept_at ? `${relativeTimeAgo(sweep.last_swept_at, now)} ago` : "never";
       const incidentText = `${sweep.open_incidents} open incident${sweep.open_incidents === 1 ? "" : "s"}`;
+      // Idea Radar R1: the sweeps-section rot line — last tick + active-card count. Absent
+      // when the flag is off (a dark feature must not advertise itself in /status).
+      const radarLine = resolveRadarEnabled(process.env)
+        ? [
+            `Radar: last tick ${
+              this.runStore.getRadarLastRun()
+                ? `${relativeTimeAgo(this.runStore.getRadarLastRun()!, now)} ago`
+                : "never"
+            } · ${this.runStore.countActiveIdeas()} active cards`
+          ]
+        : [];
       // Only a STILL-CURRENT error shows: if a poll succeeded after the last error, it
       // already recovered — don't leave a stale red line under a green header.
       const errorRecovered =
@@ -885,6 +939,7 @@ export class Gateway {
         "🟢 HEALTH",
         `Daemon: ${daemonText}`,
         `Self-check: swept ${sweptText} · ${incidentText}`,
+        ...radarLine,
         `Errors: ${errorsText}`,
         ...(lane.busy && lane.current
           ? [`Evolution: ${lane.current.tool} running since ${lane.current.started_at}`]
@@ -1053,6 +1108,7 @@ export const HELP_TEXT = [
   "",
   "/status — 运行与健康状态",
   "/usage — 各模型 token/费用用量",
+  "/radar — 创意雷达：活跃 idea 卡片",
   "/schedule — 列出定时任务（/schedule cancel <编号或 id> 取消）",
   "/lessons — 已学到的经验（可选 scope）",
   "/skills — 可用技能（可选 scope）",
@@ -1067,6 +1123,34 @@ export const HELP_TEXT = [
   "",
   "或者直接用自然语言提问。"
 ].join("\n");
+
+/** `/radar` while the feature is dark — name the flag so the operator knows what to arm. */
+export const RADAR_OFF_TEXT = "📡 Houge · radar\nradar off — HOUGE_RADAR_ENABLED 未开启";
+
+/**
+ * Render the `/radar` reply: top active cards by momentum, each
+ * `• <title> — momentum <n>, seen <age>, <status>`, plus the one-line footer
+ * (`N active · last tick <when>`). Card titles originated in EXTERNAL feeds (slimmed +
+ * sanitized at parse time) — `escapeForTelegram` at render keeps them markdown-inert.
+ */
+export function formatRadarText(
+  cards: IdeaRow[],
+  activeCount: number,
+  lastTick: string | null,
+  now: string
+): string {
+  const lines = cards.map(
+    (card) =>
+      `• ${escapeForTelegram(card.title)} — momentum ${card.momentum}, seen ${relativeTimeAgo(card.last_seen, now)} ago, ${card.status}`
+  );
+  const footer = `${activeCount} active · last tick ${lastTick ? `${relativeTimeAgo(lastTick, now)} ago` : "never"}`;
+  return [
+    "📡 Houge · radar",
+    ...(lines.length > 0 ? lines : ["还没有活跃的 idea 卡片。"]),
+    "",
+    footer
+  ].join("\n");
+}
 
 /** `/schedule cancel` refusal — not-found and cross-chat read IDENTICALLY (no probe signal). */
 export const SCHEDULE_CANCEL_NOT_FOUND_TEXT =

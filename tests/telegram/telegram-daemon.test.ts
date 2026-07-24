@@ -16,6 +16,7 @@ import {
   RATING_ATTRIBUTION_DISCIPLINE
 } from "../../src/capabilities/session-rating.js";
 import { INTENT_DISCIPLINE } from "../../src/capabilities/intent.js";
+import { RADAR_EXTRACT_DISCIPLINE } from "../../src/capabilities/idea-radar.js";
 import { LESSON_CONSOLIDATE_DISCIPLINE } from "../../src/capabilities/lesson-consolidate.js";
 import { LOOP_DISCIPLINE } from "../../src/prompt/composer.js";
 
@@ -28,7 +29,9 @@ function projectRoot(): string {
 // This suite drives turns down the inner loop (ADR 0013 — the only `turn` path). The
 // scheduler flag (B10b) shapes the per-cycle tick — pin it to its default (tests arm it
 // locally), hermetic against a daemon env that would flip it.
-const PINNED_ENV = ["HOUGE_SCHEDULER_ENABLED", "HOUGE_SCHEDULER_MAX_PER_CHAT"] as const;
+// HOUGE_RADAR_ENABLED is pinned too: an ambient armed radar flag would make idle cycles
+// fetch REAL sources (the radar test arms it locally with an injected radarFetch).
+const PINNED_ENV = ["HOUGE_SCHEDULER_ENABLED", "HOUGE_SCHEDULER_MAX_PER_CHAT", "HOUGE_RADAR_ENABLED"] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
   savedEnv = {};
@@ -585,6 +588,59 @@ describe("runTelegramDaemon — the signal path (⓪·3 S2)", () => {
       store.close();
       if (saved === undefined) delete process.env.HOUGE_LESSON_CONSOLIDATE_ENABLED;
       else process.env.HOUGE_LESSON_CONSOLIDATE_ENABLED = saved;
+    }
+  });
+
+  it("the idea-radar tick is wired into the signal path (armed → card inserted + ledger)", async () => {
+    const saved = process.env.HOUGE_RADAR_ENABLED;
+    process.env.HOUGE_RADAR_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const controller = new AbortController();
+    try {
+      // Hermetic sources: only the Algolia URLs answer (injected radarFetch — no real network).
+      const hnBody = JSON.stringify({
+        hits: [{ objectID: "9001", title: "Show HN: cron for humans", points: 10, num_comments: 3 }]
+      });
+      const radarFetch = async (input: { url: string }) =>
+        input.url.includes("hn.algolia.com")
+          ? ({
+              ok: true as const,
+              result: { url: input.url, status: 200, content_type: "application/json", content: hnBody, truncated: false, bytes: 1 }
+            })
+          : ({ ok: false as const, error: "offline in tests" });
+      const extract = JSON.stringify({
+        cards: [{ verdict: "new", title: "Cron for humans", summary: "s", item_refs: ["hn_front:9001"] }]
+      });
+      await runTelegramDaemon({
+        store,
+        projectRoot: projectRoot(),
+        allowlist: ALLOWLIST,
+        stopSignal: controller.signal,
+        longPollTimeoutSeconds: 0,
+        radarFetch,
+        llmAdapter: async (input) => {
+          const system = typeof input.system === "string" ? input.system : "";
+          if (system.includes(RADAR_EXTRACT_DISCIPLINE)) {
+            return { ok: true as const, output: { question: "", answer: extract, model: "fake" } };
+          }
+          return okAnswer(input);
+        },
+        telegramClient: {
+          getUpdates: async () => {
+            controller.abort();
+            return [];
+          },
+          sendMessage: async () => ({ message_id: 1 })
+        }
+      });
+      // The tick rode the cycle: card landed, marker stamped, ledger event emitted.
+      expect(store.listActiveIdeas(10).map((c) => c.slug)).toEqual(["cron-for-humans"]);
+      expect(store.getRadarLastRun()).not.toBeNull();
+      expect(store.getLedgerEvents().filter((e) => e.event_type === "idea_radar_tick")).toHaveLength(1);
+    } finally {
+      store.close();
+      if (saved === undefined) delete process.env.HOUGE_RADAR_ENABLED;
+      else process.env.HOUGE_RADAR_ENABLED = saved;
     }
   });
 

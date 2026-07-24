@@ -349,6 +349,58 @@ if (command === "run") {
   } finally {
     store.close();
   }
+} else if (command === "radar") {
+  // Idea Radar R1 (spec 2026-07-24). `--dry-run` is the §7 pre-arm gate: REAL fetches +
+  // the REAL extract LLM call, ZERO writes — renders every proposed card (member item
+  // titles → proposed title/summary) for Paco's eyeball while the flag is still unset.
+  // A non-dry invocation runs one pass immediately (flag-gated + interval-latched like
+  // the daemon tick).
+  const dryRun = rest.includes("--dry-run");
+  const { runIdeaRadarTick } = await import("./capabilities/idea-radar.js");
+  const { createLlmAnswerAdapter } = await import("./capabilities/llm-answer.js");
+
+  const llmAdapter = createLlmAnswerAdapter(brokerOption);
+  const llmAnswer = async (input: { question: string; system: string }) => {
+    const read = await llmAdapter({ question: input.question, system: input.system });
+    return read.ok && typeof read.output.answer === "string"
+      ? ({ ok: true, answer: read.output.answer } as const)
+      : ({ ok: false } as const);
+  };
+
+  const store = RunStore.open("houge.sqlite", storeOptions);
+  try {
+    const result = await runIdeaRadarTick({
+      store,
+      llmAnswer,
+      env: process.env,
+      now: new Date().toISOString(),
+      dryRun
+    });
+    if (dryRun) {
+      const proposals = result.proposals ?? [];
+      if (proposals.length === 0) {
+        console.log("No cards proposed (sources empty/failed, or the extract found nothing).");
+      } else {
+        console.log(`Proposed ${proposals.length} card(s):\n`);
+        for (const p of proposals) {
+          const head = p.verdict === "new" ? `NEW「${p.title}」` : `MATCH #${p.matched_id}「${p.title}」`;
+          console.log(`── ${head} ──`);
+          for (const title of p.member_titles) console.log(`  • ${title}`);
+          if (p.summary) console.log(`  ⇒ ${p.summary}`);
+          console.log("");
+        }
+        console.log("(dry run — nothing was written.)");
+      }
+    } else {
+      console.log(JSON.stringify(result, null, 2));
+    }
+    process.exitCode = 0;
+  } catch (error) {
+    console.error(`radar failed: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  } finally {
+    store.close();
+  }
 } else {
   console.error(`Unknown command: ${command}`);
   process.exit(1);

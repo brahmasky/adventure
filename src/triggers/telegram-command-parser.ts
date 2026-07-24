@@ -5,6 +5,7 @@ export type TelegramCommand =
   | { type: "run"; program: string; goal: string }
   | { type: "status"; run_id?: string }
   | { type: "usage" }
+  | { type: "radar" }
   | { type: "help" }
   | { type: "unknown_command"; attempted: string }
   | { type: "lessons"; scope?: string }
@@ -43,6 +44,8 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
   if (command === "/run") return parseRun(rest);
   if (command === "/status") return parseStatus(rest);
   if (command === "/usage") return { ok: true, command: { type: "usage" } };
+  // Idea Radar R1: a read-only viewer over the ideas store (no run, no budget — /usage twin).
+  if (command === "/radar") return { ok: true, command: { type: "radar" } };
   if (command === "/help") return { ok: true, command: { type: "help" } };
   if (command === "/lessons") return parseLessons(rest);
   if (command === "/skills") return parseSkills(rest);

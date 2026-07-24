@@ -99,6 +99,12 @@ describe("normalizeTelegramUpdate", () => {
       allowlist
     );
     expect(taskEvent(help).type).toBe("help");
+
+    const radar = normalizeTelegramUpdate(
+      { update_id: 1015, message: { message_id: 75, text: "/radar", from: { id: 111 }, chat: { id: 222 } } },
+      allowlist
+    );
+    expect(taskEvent(radar).type).toBe("radar");
   });
 
   it("normalizes /approve without creating a program", () => {

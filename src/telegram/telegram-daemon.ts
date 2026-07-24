@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { checkMeteredCeiling } from "../budget/metered-ceiling.js";
 import { runEpisodicConsolidateTick } from "../capabilities/episodic-consolidate.js";
 import { maybeRunEpisodicDistill } from "../capabilities/episodic-extract.js";
+import { runIdeaRadarTick } from "../capabilities/idea-radar.js";
 import { runLessonConsolidateTick } from "../capabilities/lesson-consolidate.js";
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
@@ -69,6 +70,11 @@ export interface RunTelegramDaemonOptions {
    * boot reload confirmation to warn instead of silently confirming a possibly-stale reload.
    */
   resolveDistStale?: () => boolean;
+  /**
+   * Injectable for tests ONLY: the radar tick's source fetch (Idea Radar R1). Prod never
+   * sets it — the tick defaults to the real `fetchUrl` (SSRF floor + pinned request).
+   */
+  radarFetch?: Parameters<typeof runIdeaRadarTick>[0]["fetch"];
 }
 
 export interface RunTelegramDaemonResult {
@@ -350,6 +356,17 @@ async function runSignalPathTick(
     await runLessonConsolidateTick({
       store: options.store,
       llmAnswer: episodicLlm,
+      env: process.env,
+      now
+    });
+    // Idea Radar R1 (spec 2026-07-24): the daily flag-gated sensing tick — fetch+slim the
+    // code-owned public sources, ONE extract LLM call on the same tick-local adapter, fold
+    // verdicts into the ideas store. Flag-gated OFF (and in DISARM_FLAGS), idempotent per
+    // interval via radar_state, per-source failure isolation. Best-effort; never throws.
+    await runIdeaRadarTick({
+      store: options.store,
+      llmAnswer: episodicLlm,
+      ...(options.radarFetch ? { fetch: options.radarFetch } : {}),
       env: process.env,
       now
     });

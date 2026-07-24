@@ -40,6 +40,11 @@ describe("parseTelegramCommand", () => {
     expect(parseTelegramCommand("/help@HougeBot")).toEqual({ ok: true, command: { type: "help" } });
   });
 
+  it("parses /radar as a real control command (Idea Radar R1 viewer)", () => {
+    expect(parseTelegramCommand("/radar")).toEqual({ ok: true, command: { type: "radar" } });
+    expect(parseTelegramCommand("/radar@HougeBot")).toEqual({ ok: true, command: { type: "radar" } });
+  });
+
   it("routes a clean but unknown /command to unknown_command, not a hallucinated turn", () => {
     // A command-shaped first token (removed/typo'd command) → guide with the command list.
     expect(parseTelegramCommand("/nonsense")).toEqual({
