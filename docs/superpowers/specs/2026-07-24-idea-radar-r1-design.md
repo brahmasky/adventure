@@ -21,7 +21,7 @@ Code-owned, model never picks URLs. Each entry:
 export type RadarSource = {
   key: string;                      // "hn_front" | "hn_show" | "hf_papers" | "devpost" | "gh_new" | "lobsters"
   url: string;                      // exact GET URL (gh_new interpolates a code-computed date)
-  maxBytes: number;                 // per-source fetch cap (default 262_144)
+  maxBytes: number;                 // per-source fetch cap (default 524_288)
   slim: (body: string) => RadarItem[];  // deterministic parser, pure, throws → source failed
   dormant?: boolean;                // reddit/x placeholders — never fetched while dormant
 };
@@ -159,7 +159,7 @@ contains no slug field; a builder must not add one.
 
 **Constants:** `RADAR_MAX_ITEMS_PER_SOURCE=25`, `RADAR_MAX_NEW_CARDS_PER_TICK=10`,
 `RADAR_MAX_ACTIVE_CARDS=100`, `RADAR_ARCHIVE_AFTER_DAYS=30`, per-card-per-source item cap 20,
-source `maxBytes` 262_144.
+source `maxBytes` 524_288 (raised from 262_144 after the first live tick: HF daily_papers = 267KB).
 
 **Builder notes (spec-review suggestions):** extract-call input lands ~12k tokens (6×25 items +
 100 card lines) — comfortably inside the tick adapter's context, but re-check this line when

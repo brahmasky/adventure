@@ -32,8 +32,13 @@ export type RadarSource = {
 /** Slimmer output cap per source (spec §3 constants). */
 export const RADAR_MAX_ITEMS_PER_SOURCE = 25;
 
-/** Per-source fetch byte cap AND char cap (B1: charCap must equal maxBytes). */
-export const RADAR_SOURCE_MAX_BYTES = 262_144;
+/**
+ * Per-source fetch byte cap AND char cap (B1: charCap must equal maxBytes). 512 KB —
+ * the first live tick (2026-07-24) saw HF daily_papers at 267 KB, just over the original
+ * 256 KB cap (truncated JSON → slimmer throw → source failed, isolation as designed).
+ * A truncation here fails the SOURCE loudly rather than shrinking coverage silently.
+ */
+export const RADAR_SOURCE_MAX_BYTES = 524_288;
 
 /** Wall-clock cap per source fetch (mirrors BOUNTY_FETCH_TIMEOUT_MS — structured JSON APIs). */
 export const RADAR_FETCH_TIMEOUT_MS = 8_000;
