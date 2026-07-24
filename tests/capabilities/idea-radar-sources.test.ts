@@ -244,6 +244,35 @@ describe("slimmers (hostile fixtures)", () => {
     expect(items.map((i) => i.id)).toEqual(["gh_new:ok/fine"]);
   });
 
+  it("M1: strips terminal-escape and bidi chars from titles/metas before capping", () => {
+    // ESC]0;evil BEL is an OSC title-set sequence; U+202E flips render direction.
+    const hostile = JSON.stringify({
+      hits: [
+        {
+          objectID: "501",
+          title: "Nice tool \u001B]0;evil\u0007 with \u202Ereversed\u202C text\u200B",
+          points: 3,
+          num_comments: 1
+        }
+      ]
+    });
+    const items = sourceByKey("hn_front").slim(hostile);
+    expect(items).toHaveLength(1);
+    // Fully stripped: no C0/C1 control, bidi override/isolate, or zero-width survives.
+    expect(items[0]!.title).toBe("Nice tool ]0;evil with reversed text");
+    expect(items[0]!.title).not.toMatch(/[\u0000-\u001F\u007F-\u009F\u200B-\u200D\uFEFF\u202A-\u202E\u2066-\u2069]/);
+  });
+
+  it("L6: caps on code points — an emoji straddling the cap boundary never leaves a lone surrogate", () => {
+    // 159 ASCII chars + 2 astral emoji = 161 code points; cap 160 keeps the first emoji whole.
+    const hostile = JSON.stringify({
+      hits: [{ objectID: "502", title: `${"a".repeat(159)}💩💩`, points: 1, num_comments: 0 }]
+    });
+    const items = sourceByKey("hn_front").slim(hostile);
+    expect(items[0]!.title).toBe(`${"a".repeat(159)}💩`);
+    expect(items[0]!.title.isWellFormed()).toBe(true);
+  });
+
   it("drops non-string/missing fields instead of throwing", () => {
     const mixed = JSON.stringify({
       hits: [
@@ -340,5 +369,50 @@ describe("fetchRadarSources", () => {
     };
     const result = await fetchRadarSources({ fetch: mockFetch(respond, []), now: NOW });
     expect(result.failed).toEqual(["hn_front", "hn_show"]);
+  });
+});
+
+describe("adversarial-review item floor (L1/L2/L5)", () => {
+  it("L2: path-shaped native ids are dropped by the per-source shape locks", () => {
+    const hf = JSON.stringify([
+      { paper: { id: "../../spaces/evil", title: "Escape attempt", upvotes: 9 } },
+      { paper: { id: "2407.12345", title: "Legit paper", upvotes: 3 } }
+    ]);
+    expect(sourceByKey("hf_papers").slim(hf).map((i) => i.id)).toEqual(["hf_papers:2407.12345"]);
+
+    const lobsters = JSON.stringify([
+      { short_id: "../x", title: "Escape attempt", score: 1, comment_count: 0 },
+      { short_id: "abc123", title: "Legit story", score: 5, comment_count: 2 }
+    ]);
+    expect(sourceByKey("lobsters").slim(lobsters).map((i) => i.id)).toEqual(["lobsters:abc123"]);
+
+    // HN ids are numeric-only now — an id that previously passed the global charset dies.
+    const hn = JSON.stringify({
+      hits: [{ objectID: "123/../456", title: "Escape attempt", points: 1, num_comments: 0 }]
+    });
+    expect(sourceByKey("hn_front").slim(hn)).toEqual([]);
+  });
+
+  it("L1: an over-length payload URL drops the item whole (never truncated)", () => {
+    const devpost = JSON.stringify({
+      hackathons: [
+        {
+          id: 7,
+          title: "Legit hackathon",
+          url: `https://devpost.com/${"a".repeat(600)}`,
+          registrations_count: 10
+        }
+      ]
+    });
+    expect(sourceByKey("devpost").slim(devpost)).toEqual([]);
+  });
+
+  it("L5: userinfo URLs are dropped even on an allowed host", () => {
+    const devpost = JSON.stringify({
+      hackathons: [
+        { id: 8, title: "Spoof", url: "https://user:pass@devpost.com/x", registrations_count: 1 }
+      ]
+    });
+    expect(sourceByKey("devpost").slim(devpost)).toEqual([]);
   });
 });

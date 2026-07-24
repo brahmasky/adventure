@@ -2,6 +2,7 @@ import type { IdeaSourceItem, RunStore } from "../run/run-store.js";
 import type { HttpFetchConfig, HttpFetchInput, HttpFetchOutcome } from "../web/http-fetch.js";
 import { extractFirstJsonObject } from "./distill.js";
 import { fetchRadarSources, type RadarItem } from "./idea-radar-sources.js";
+import { stripHostileChars } from "./text-hygiene.js";
 import { normalizeTopicSlug, sanitizeWikiText } from "./wiki.js";
 
 /**
@@ -94,9 +95,14 @@ export type RadarExtractCard =
   | { verdict: "new"; title: string; summary: string; item_refs: string[] }
   | { verdict: "match"; matched_id: number; item_refs: string[]; summary_update: string | null };
 
-/** Sanitize (line-break classes flattened, markers neutralized) then cap — parse-time floor. */
+/**
+ * Sanitize (line-break classes flattened, markers neutralized), strip the shared
+ * hostile-char class (M2: same floor as the slimmers — controls/bidi/zero-width must
+ * never reach the store), then cap on code points (L6: no lone surrogates) — the
+ * parse-time floor.
+ */
 function cleanText(value: string, cap: number): string {
-  return sanitizeWikiText(value).slice(0, cap).trim();
+  return Array.from(stripHostileChars(sanitizeWikiText(value))).slice(0, cap).join("").trim();
 }
 
 /**
@@ -125,6 +131,9 @@ export function parseRadarExtraction(
   if (!Array.isArray(rawCards)) return [];
 
   const cards: RadarExtractCard[] = [];
+  // L3: one touch per card per tick — duplicate `match` verdicts on the same id would
+  // double-count momentum and let the LAST summary_update win; first wins instead.
+  const matchedIds = new Set<number>();
   for (const raw of rawCards) {
     if (typeof raw !== "object" || raw === null) continue;
     const entry = raw as Record<string, unknown>;
@@ -157,6 +166,8 @@ export function parseRadarExtraction(
       if (typeof matched_id !== "number" || !Number.isInteger(matched_id) || !validCardIds.has(matched_id)) {
         continue;
       }
+      if (matchedIds.has(matched_id)) continue;
+      matchedIds.add(matched_id);
       const summary_update =
         typeof entry.summary_update === "string" && entry.summary_update.trim().length > 0
           ? cleanText(entry.summary_update, RADAR_CARD_SUMMARY_MAX_CHARS)
@@ -165,6 +176,27 @@ export function parseRadarExtraction(
     }
   }
   return cards;
+}
+
+/**
+ * Render dry-run proposals exactly as the CLI prints them — extracted from cli.ts so a
+ * test can assert the terminal surface stays inside the sanitized floor (M1/M2: no
+ * control/bidi/zero-width char may survive into a terminal escape sequence).
+ */
+export function renderRadarProposals(proposals: readonly RadarProposal[]): string[] {
+  if (proposals.length === 0) {
+    return ["No cards proposed (sources empty/failed, or the extract found nothing)."];
+  }
+  const lines: string[] = [`Proposed ${proposals.length} card(s):`, ""];
+  for (const p of proposals) {
+    const head = p.verdict === "new" ? `NEW「${p.title}」` : `MATCH #${p.matched_id}「${p.title}」`;
+    lines.push(`── ${head} ──`);
+    for (const title of p.member_titles) lines.push(`  • ${title}`);
+    if (p.summary) lines.push(`  ⇒ ${p.summary}`);
+    lines.push("");
+  }
+  lines.push("(dry run — nothing was written.)");
+  return lines;
 }
 
 /** One dry-run proposal (§7 pre-arm gate): the member item titles + the proposed card. */
@@ -208,8 +240,9 @@ function groupRefsBySource(
  * isolation) → zero-sources short-circuit (markRan + all-failed ledger, NO LLM call) →
  * ONE extract call → pure parse → apply (new-card cap, code-computed slug) → maintenance
  * (stale archive + overflow prune) → markRan + ledger. `dryRun` skips the gates and every
- * write. Never throws — any unexpected error degrades to `{ran:false}` (no stamp, so the
- * next cycle retries).
+ * write. Never throws — a pre-commit error degrades to `{ran:false}` and the next cycle
+ * retries; once the interval latch is stamped (M3, before any fetch) a later fault costs
+ * at most the current interval, never a fetch/LLM retry storm.
  */
 export async function runIdeaRadarTick(input: {
   store: RunStore;
@@ -228,6 +261,12 @@ export async function runIdeaRadarTick(input: {
       if (last && Date.parse(input.now) - Date.parse(last) < resolveRadarIntervalMs(input.env)) {
         return { ran: false };
       }
+      // M3: stamp the interval latch the moment the tick commits to running — BEFORE the
+      // fetches. Stamping after apply meant a persistent store fault (disk full,
+      // SQLITE_BUSY) turned the ~30s signal-path poll into an endless loop of 6 real
+      // fetches + 1 metered LLM call. Early-stamp worst case is ONE lost day, and the
+      // missing ledger event makes that day visible.
+      input.store.markRadarRan(input.now);
     }
 
     const fetched = await fetchRadarSources({
@@ -238,7 +277,6 @@ export async function runIdeaRadarTick(input: {
     if (fetched.ok.length === 0) {
       // Every source down: record the outage, spend NOTHING on the LLM.
       if (dryRun) return { ran: true, proposals: [] };
-      input.store.markRadarRan(input.now);
       input.store.recordIdeaRadarTick({
         sources_ok: [],
         sources_failed: fetched.failed,
@@ -300,38 +338,44 @@ export async function runIdeaRadarTick(input: {
 
     let cards_new = 0;
     let cards_updated = 0;
-    for (const card of cards) {
-      if (card.verdict === "new") {
-        if (cards_new >= RADAR_MAX_NEW_CARDS_PER_TICK) continue;
-        // B3: slug derived in code from the (sanitized, capped) title — the model has no
-        // slug channel; the store adds the -2/-3 collision suffix.
-        const slug = normalizeTopicSlug(card.title);
-        if (slug.length === 0) continue;
-        input.store.insertIdeaCard({
-          slug,
-          title: card.title,
-          summary: card.summary,
-          sources: groupRefsBySource(card.item_refs, itemsById),
-          now: input.now
-        });
-        cards_new += 1;
-      } else {
-        const touched = input.store.touchIdeaCard({
-          id: card.matched_id,
-          newItems: groupRefsBySource(card.item_refs, itemsById),
-          summaryUpdate: card.summary_update,
-          now: input.now
-        });
-        if (touched.updated) cards_updated += 1;
+    let cards_archived = 0;
+    // M3: the latch is already stamped — a store fault below must not re-run the tick,
+    // and it must still try to leave a ledger trace of what happened before the fault.
+    try {
+      for (const card of cards) {
+        if (card.verdict === "new") {
+          if (cards_new >= RADAR_MAX_NEW_CARDS_PER_TICK) continue;
+          // B3: slug derived in code from the (sanitized, capped) title — the model has no
+          // slug channel; the store adds the -2/-3 collision suffix.
+          const slug = normalizeTopicSlug(card.title);
+          if (slug.length === 0) continue;
+          input.store.insertIdeaCard({
+            slug,
+            title: card.title,
+            summary: card.summary,
+            sources: groupRefsBySource(card.item_refs, itemsById),
+            now: input.now
+          });
+          cards_new += 1;
+        } else {
+          const touched = input.store.touchIdeaCard({
+            id: card.matched_id,
+            newItems: groupRefsBySource(card.item_refs, itemsById),
+            summaryUpdate: card.summary_update,
+            now: input.now
+          });
+          if (touched.updated) cards_updated += 1;
+        }
       }
+
+      // Deterministic maintenance, same tick, no LLM: stale-out then bound the herd.
+      cards_archived =
+        input.store.archiveStaleIdeas({ now: input.now, afterDays: RADAR_ARCHIVE_AFTER_DAYS }) +
+        input.store.pruneIdeaOverflow({ cap: RADAR_MAX_ACTIVE_CARDS, now: input.now });
+    } catch {
+      // Swallow the apply-phase fault; the ledger emit below reports what landed.
     }
 
-    // Deterministic maintenance, same tick, no LLM: stale-out then bound the herd.
-    const cards_archived =
-      input.store.archiveStaleIdeas({ now: input.now, afterDays: RADAR_ARCHIVE_AFTER_DAYS }) +
-      input.store.pruneIdeaOverflow({ cap: RADAR_MAX_ACTIVE_CARDS, now: input.now });
-
-    input.store.markRadarRan(input.now);
     input.store.recordIdeaRadarTick({
       sources_ok: fetched.ok.map((s) => s.key),
       sources_failed: fetched.failed,

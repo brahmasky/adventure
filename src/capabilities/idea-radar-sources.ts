@@ -1,5 +1,6 @@
 import type { HttpFetchConfig, HttpFetchInput, HttpFetchOutcome } from "../web/http-fetch.js";
 import { fetchUrl } from "../web/http-fetch.js";
+import { stripHostileChars } from "./text-hygiene.js";
 
 /**
  * Idea Radar R1 (spec 2026-07-24) — the code-owned source registry + deterministic
@@ -40,6 +41,8 @@ export const RADAR_FETCH_TIMEOUT_MS = 8_000;
 /** Item field caps (spec §1): id validated then length-checked, title/meta sliced. */
 export const RADAR_ITEM_ID_MAX_CHARS = 64;
 export const RADAR_ITEM_TITLE_MAX_CHARS = 160;
+/** L1: the one field the spec left un-capped — an over-length URL drops the item whole. */
+export const RADAR_ITEM_URL_MAX_CHARS = 512;
 export const RADAR_ITEM_META_MAX_CHARS = 120;
 
 /** Namespaced id charset — path-safe, no whitespace/quotes/markup can survive into an id. */
@@ -47,9 +50,16 @@ const RADAR_ITEM_ID_RE = /^[A-Za-z0-9_:\-\/\.]+$/;
 
 // --- item floor -----------------------------------------------------------------
 
-/** Flatten every line-break class + collapse runs — titles/metas render into prompts and Telegram. */
+/**
+ * Flatten every line-break class + collapse runs — titles/metas render into prompts and
+ * Telegram. Strips the shared hostile-char class BEFORE capping (M1: C0/C1 controls incl.
+ * ESC, bidi overrides/isolates, zero-width/BOM — the same class sanitizeVenueText strips)
+ * and caps on code points (L6: a naive .slice can shear a surrogate pair in half and
+ * store a lone surrogate).
+ */
 function flatCap(value: string, cap: number): string {
-  return value.replace(/\s+/g, " ").trim().slice(0, cap).trim();
+  const flat = stripHostileChars(value).replace(/\s+/g, " ").trim();
+  return Array.from(flat).slice(0, cap).join("").trim();
 }
 
 /** Exact host or dot-suffix subdomain match against the source's allowed content hosts. */
@@ -71,9 +81,15 @@ function radarItem(input: {
   url: string;
   meta: string;
   hosts: readonly string[];
+  idPattern: RegExp;
 }): RadarItem | undefined {
   if (typeof input.nativeId !== "string" && typeof input.nativeId !== "number") return undefined;
-  const id = `${input.key}:${String(input.nativeId)}`;
+  // L2: per-source native-id shape lock BEFORE namespacing — the global charset alone
+  // admits `.`/`/`, which lets a hostile `../..`-style id steer a code-constructed URL
+  // to an arbitrary path on the allowed host (inert in R1, a stored-URL bomb for R2).
+  const native = String(input.nativeId);
+  if (!input.idPattern.test(native) || /\.\.|\/\//.test(native)) return undefined;
+  const id = `${input.key}:${native}`;
   if (!RADAR_ITEM_ID_RE.test(id) || id.length > RADAR_ITEM_ID_MAX_CHARS) return undefined;
 
   if (typeof input.title !== "string") return undefined;
@@ -89,8 +105,13 @@ function radarItem(input: {
   if (url.protocol !== "https:" || url.port !== "" || !hostAllowed(url.hostname, input.hosts)) {
     return undefined;
   }
+  // L5: userinfo would smuggle a foreign-looking origin past a casual reader; L1: an
+  // over-length URL is dropped whole — truncating one just stores garbage.
+  if (url.username !== "" || url.password !== "") return undefined;
+  const urlText = url.toString();
+  if (urlText.length > RADAR_ITEM_URL_MAX_CHARS) return undefined;
 
-  return { id, title, url: url.toString(), meta: flatCap(input.meta, RADAR_ITEM_META_MAX_CHARS) };
+  return { id, title, url: urlText, meta: flatCap(input.meta, RADAR_ITEM_META_MAX_CHARS) };
 }
 
 // --- slimmers ---------------------------------------------------------------------
@@ -120,6 +141,7 @@ function slimAlgolia(key: string): (body: string) => RadarItem[] {
       const item = radarItem({
         key,
         nativeId: hit.objectID,
+        idPattern: /^\d+$/,
         title: hit.title,
         url: `https://news.ycombinator.com/item?id=${hit.objectID}`,
         meta: `${num(hit.points)} points · ${num(hit.num_comments)} comments`,
@@ -141,6 +163,7 @@ function slimHfPapers(body: string): RadarItem[] {
     const item = radarItem({
       key: "hf_papers",
       nativeId: paper.id,
+      idPattern: /^\d{4}\.\d{4,5}(v\d+)?$/,
       title: paper.title,
       url: `https://huggingface.co/papers/${paper.id}`,
       meta: `${num(paper.upvotes)} upvotes`,
@@ -161,6 +184,7 @@ function slimDevpost(body: string): RadarItem[] {
     const item = radarItem({
       key: "devpost",
       nativeId: hackathon.id,
+      idPattern: /^\d+$/,
       title: hackathon.title,
       url: hackathon.url,
       meta: `open · ${num(hackathon.registrations_count)} registrations`,
@@ -182,6 +206,7 @@ function slimGhNew(body: string): RadarItem[] {
     const item = radarItem({
       key: "gh_new",
       nativeId: repo.full_name,
+      idPattern: /^[A-Za-z0-9_.\-]+\/[A-Za-z0-9_.\-]+$/,
       title: description ? `${repo.full_name} — ${description}` : repo.full_name,
       url: repo.html_url,
       meta: `${num(repo.stargazers_count)} stars`,
@@ -202,6 +227,7 @@ function slimLobsters(body: string): RadarItem[] {
     const item = radarItem({
       key: "lobsters",
       nativeId: story.short_id,
+      idPattern: /^[A-Za-z0-9]+$/,
       title: story.title,
       url: `https://lobste.rs/s/${story.short_id}`,
       meta: `${num(story.score)} points · ${num(story.comment_count)} comments`,

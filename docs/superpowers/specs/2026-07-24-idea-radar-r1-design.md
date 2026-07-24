@@ -210,7 +210,8 @@ payload + the `/status` radar line.
   hostile fixture (bad ids/foreign urls/oversized fields) → dropped items, no throw escape.
 - **Store:** insert + slug collision suffix; touch unions items, per-source cap 20, re-sighting
   same id bumps `last_seen` only; momentum ordering; archive (stale yes / shortlisted no /
-  reversible); overflow prune; state markers; migration count +2; ledger payload validation.
+  reversible); overflow prune; state markers; migration count 18→19 (one block, per W1);
+  ledger payload validation.
 - **Parse:** contract happy path; unknown item ref → card dropped; unknown matched_id → dropped;
   oversize fields capped; instruction-bearing titles survive only as inert sanitized text;
   malformed → `[]`.
@@ -243,3 +244,22 @@ one-liner, ADR 0026 (idea-radar read surface), `tasks/todo.md`, `sessions.md`.
 - **W1** one `idea-radar` migration block, count 18→19. **W2** registry URLs recorded at final
   post-redirect form. **W3** consecutive-failure alerting deferred to invariant sweep,
   explicitly noted. **W4 + suggestions** captured as builder notes in §1/§3.
+
+## Adversarial-review resolution (2026-07-24, post-build)
+
+No CRITICAL/HIGH. Fixed pre-arm: **M1/M2** shared hostile-char strip (C0/C1 incl. ESC, bidi,
+zero-width — `stripHostileChars` in text-hygiene.ts) applied in `flatCap` + `cleanText`, CLI
+render extracted to `renderRadarProposals` and held to the floor by test; **M3** interval latch
+stamped when the tick commits to running (before fetches) so a persistent store fault costs one
+interval, never a 30s fetch+LLM retry storm; **L1** URL cap 512 (drop, not truncate); **L2**
+per-source native-id regexes (`^\d+$` HN/Devpost, arXiv shape HF, `owner/repo` GH, alnum
+lobsters, global `..`//`//` reject); **L3** match-verdict dedupe (first wins); **L5** userinfo
+URLs dropped; **L6** code-point capping (no lone surrogates).
+
+**R2 guards (deferred from adversarial review):**
+- **L4** — at the 100-card cap, `pruneIdeaOverflow` can archive a card created the same tick
+  (new cards start at momentum 1×1). Consider excluding `first_seen == now` from prune when the
+  cap starts binding.
+- **L7** — `summary_update` via a `match` verdict can rewrite the summary of a `shortlisted`/
+  `picked` card (statuses R1 never writes but R2 will). Guard operator-blessed cards from LLM
+  summary drift when R2 introduces those statuses.

@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildRadarQuestion,
   DEFAULT_RADAR_INTERVAL_HOURS,
   parseRadarExtraction,
+  renderRadarProposals,
   RADAR_CARD_SUMMARY_MAX_CHARS,
   RADAR_CARD_TITLE_MAX_CHARS,
   RADAR_EXTRACT_DISCIPLINE,
@@ -202,6 +203,65 @@ describe("parseRadarExtraction", () => {
     const match = out[1]!;
     if (match.verdict !== "match") throw new Error("expected match");
     expect(match.summary_update!.length).toBeLessThanOrEqual(RADAR_CARD_SUMMARY_MAX_CHARS);
+  });
+
+  it("M2: strips control/bidi/zero-width chars from title/summary before capping (same class as the slimmers)", () => {
+    // Explicit escapes only (no literal invisibles in test source): \u001B]0;...\u0007 is an
+    // OSC title-set attempt; \u202E/\u202C bidi override; \u200B zero-width; \u2066/\u2069 isolates.
+    const STRIP_CLASS_RE = /[\u0000-\u001F\u007F-\u009F\u200B-\u200D\uFEFF\u202A-\u202E\u2066-\u2069]/;
+    const out = parseRadarExtraction(
+      JSON.stringify({
+        cards: [
+          {
+            verdict: "new",
+            title: "Evil\u001B]0;pwn\u0007 title with \u202Ebidi\u202C and \u200Bzero-width",
+            summary: "summary\u2066 text\u2069",
+            item_refs: ["hn_front:101"]
+          }
+        ]
+      }),
+      items,
+      cardIds
+    );
+    expect(out).toHaveLength(1);
+    const card = out[0]!;
+    if (card.verdict !== "new") throw new Error("expected new");
+    expect(card.title).toBe("Evil]0;pwn title with bidi and zero-width");
+    expect(card.title).not.toMatch(STRIP_CLASS_RE);
+    expect(card.summary).toBe("summary text");
+    expect(card.summary).not.toMatch(STRIP_CLASS_RE);
+  });
+
+  it("L6: caps title on code points — an emoji straddling the cap never leaves a lone surrogate", () => {
+    // 79 chars + 2 astral emoji = 81 code points; title cap 80 keeps the first emoji whole.
+    const out = parseRadarExtraction(
+      JSON.stringify({
+        cards: [{ verdict: "new", title: `${"T".repeat(79)}💩💩`, summary: "s", item_refs: ["hn_front:101"] }]
+      }),
+      items,
+      cardIds
+    );
+    const card = out[0]!;
+    if (card.verdict !== "new") throw new Error("expected new");
+    expect(card.title).toBe(`${"T".repeat(79)}💩`);
+    expect(card.title.isWellFormed()).toBe(true);
+  });
+
+  it("L3: duplicate match verdicts on the same card dedupe — first wins", () => {
+    const out = parseRadarExtraction(
+      JSON.stringify({
+        cards: [
+          { verdict: "match", matched_id: 7, item_refs: ["hn_front:101"], summary_update: "first" },
+          { verdict: "match", matched_id: 7, item_refs: ["hn_show:102"], summary_update: "second" }
+        ]
+      }),
+      items,
+      cardIds
+    );
+    expect(out).toHaveLength(1);
+    const card = out[0]!;
+    if (card.verdict !== "match") throw new Error("expected match");
+    expect(card.summary_update).toBe("first");
   });
 
   it("returns [] on malformed output", () => {
@@ -477,5 +537,90 @@ describe("runIdeaRadarTick", () => {
     const result = await runIdeaRadarTick({ store, llmAnswer: explosive, fetch: hnOnlyFetch(), env: ENABLED, now: NOW });
     expect(result.ran).toBe(true);
     expect(store.getRadarLastRun()).toBe(NOW);
+  });
+});
+
+describe("adversarial-review tick fixes (M1/M3)", () => {
+  it("M3: the interval latch is stamped BEFORE fetch/apply — an apply-phase store fault cannot cause a retry storm", async () => {
+    const store = openStore();
+    vi.spyOn(store, "insertIdeaCard").mockImplementation(() => {
+      throw new Error("disk full");
+    });
+    const answer = JSON.stringify({
+      cards: [
+        { verdict: "new", title: "Doomed card", summary: "will hit the broken store", item_refs: ["hn_front:101"] }
+      ]
+    });
+    const calls: string[] = [];
+    const result = await runIdeaRadarTick({
+      store,
+      llmAnswer: cannedLlm(answer),
+      fetch: hnOnlyFetch(calls),
+      env: ENABLED,
+      now: NOW
+    });
+    // The tick ran, swallowed the fault, stamped the latch, and still left a ledger trace.
+    expect(result.ran).toBe(true);
+    expect(store.getRadarLastRun()).toBe(NOW);
+    const events = store.getLedgerEvents().filter((e) => e.event_type === "idea_radar_tick");
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload.cards_new).toBe(0);
+
+    // Same interval, next poll cycle: latched — NO second fetch/LLM spend.
+    const callsBefore = calls.length;
+    const second = await runIdeaRadarTick({
+      store,
+      llmAnswer: cannedLlm(answer),
+      fetch: hnOnlyFetch(calls),
+      env: ENABLED,
+      now: "2026-07-24T12:00:30.000Z"
+    });
+    expect(second.ran).toBe(false);
+    expect(calls.length).toBe(callsBefore);
+  });
+
+  it("M1: the dry-run terminal render is held to the sanitized floor end-to-end", async () => {
+    const STRIP_CLASS_RE = /[\u0000-\u001F\u007F-\u009F\u200B-\u200D\uFEFF\u202A-\u202E\u2066-\u2069]/;
+    const store = openStore();
+    // Hostile SOURCE title (OSC escape + bidi) AND a hostile model echo — both floors engage.
+    const hostileHn = JSON.stringify({
+      hits: [
+        {
+          objectID: "901",
+          title: "Show HN: nice tool \u001B]0;evil\u0007 \u202Espoof\u202C",
+          points: 5,
+          num_comments: 2
+        }
+      ]
+    });
+    const hostileFetch: Fetch = async (input) =>
+      input.url.includes("hn.algolia.com")
+        ? {
+            ok: true,
+            result: { url: input.url, status: 200, content_type: "application/json", content: hostileHn, truncated: false, bytes: 1 }
+          }
+        : { ok: false, error: "offline in tests" };
+    const answer = JSON.stringify({
+      cards: [
+        {
+          verdict: "new",
+          title: "Evil\u001B[2Jcard",
+          summary: "sum\u202Emary",
+          item_refs: ["hn_front:901"]
+        }
+      ]
+    });
+    const result = await runIdeaRadarTick({
+      store,
+      llmAnswer: cannedLlm(answer),
+      fetch: hostileFetch,
+      env: {},
+      now: NOW,
+      dryRun: true
+    });
+    const lines = renderRadarProposals(result.proposals ?? []);
+    expect(lines.join("\n")).toContain("Evil[2Jcard");
+    // Per line: the only C0 char in the terminal surface is the join newline itself.
+    for (const line of lines) expect(line).not.toMatch(STRIP_CLASS_RE);
   });
 });

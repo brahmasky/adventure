@@ -356,7 +356,7 @@ if (command === "run") {
   // A non-dry invocation runs one pass immediately (flag-gated + interval-latched like
   // the daemon tick).
   const dryRun = rest.includes("--dry-run");
-  const { runIdeaRadarTick } = await import("./capabilities/idea-radar.js");
+  const { renderRadarProposals, runIdeaRadarTick } = await import("./capabilities/idea-radar.js");
   const { createLlmAnswerAdapter } = await import("./capabilities/llm-answer.js");
 
   const llmAdapter = createLlmAnswerAdapter(brokerOption);
@@ -377,20 +377,9 @@ if (command === "run") {
       dryRun
     });
     if (dryRun) {
-      const proposals = result.proposals ?? [];
-      if (proposals.length === 0) {
-        console.log("No cards proposed (sources empty/failed, or the extract found nothing).");
-      } else {
-        console.log(`Proposed ${proposals.length} card(s):\n`);
-        for (const p of proposals) {
-          const head = p.verdict === "new" ? `NEW「${p.title}」` : `MATCH #${p.matched_id}「${p.title}」`;
-          console.log(`── ${head} ──`);
-          for (const title of p.member_titles) console.log(`  • ${title}`);
-          if (p.summary) console.log(`  ⇒ ${p.summary}`);
-          console.log("");
-        }
-        console.log("(dry run — nothing was written.)");
-      }
+      // Rendering lives in renderRadarProposals so tests can hold the terminal surface
+      // to the sanitized floor (no control/bidi char can reach the terminal).
+      for (const line of renderRadarProposals(result.proposals ?? [])) console.log(line);
     } else {
       console.log(JSON.stringify(result, null, 2));
     }
