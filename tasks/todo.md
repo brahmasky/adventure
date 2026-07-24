@@ -9,9 +9,13 @@ Claude Code session (runtime build pipeline OVERTURNED in review; extwork stays 
 substrate). Sources R1: HN Algolia (front + Show/Ask), HF daily papers, Devpost, GitHub
 search-proxy, lobste.rs. Reddit = dormant (Data-API approval request submitted 2026-07-24 under
 Wukong's account, no SLA); X = dormant (pay-per-use ~$0.005/read via bearer transport, needs dev
-account). Build steps: [ ] spec doc [ ] spec-review-senior (blockers clear) [ ] plan doc
-[ ] subagent build T1 registry+fetch → T2 ideas store → T3 tick → T4 wire-up (/radar, DISARM,
-CLI dry-run) → T5 green + adversarial review + live dry-run gate → Paco eyeball → arm.
+account). Build steps: [x] spec doc [x] spec-review-senior (3 blockers fixed: fetch charCap, dryRun
+gate-bypass, code-computed slug) [x] plan doc [x] subagent build T1–T4 (7752cc2..587d41c,
++60 tests) [x] adversarial review (0 crit/high; M1/M2 hostile-char strip, M3 early latch
+stamp, L1/L2/L3/L5/L6 fixed in 5b5ef84; L4/L7 deferred to R2, spec note) [x] full green
+(1991 tests) [x] live dry-run gate PASSED 2026-07-24 (8 real cards, cross-source clustering
+confirmed) [x] docs (ADR 0026, configuration.md, README) → **[ ] PACO EYEBALL + ARM
+(`HOUGE_RADAR_ENABLED=1` + kickstart) — the only remaining step.**
 
 **Live config (mini daemon, .env is the arming truth — read it, don't assume):**
 HOUGE_SCHEDULER_ENABLED · HOUGE_BOUNTY_ENABLED · HOUGE_EPISODIC_ENABLED · HOUGE_WIKI_ENABLED ·

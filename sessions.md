@@ -1,5 +1,26 @@
 # Sessions
 
+## 2026-07-24 (evening) — Idea Radar R1 built + live-gated (ships dark, pending arm)
+
+The radar→review→build loop's sensing half (ADR 0026, spec
+`docs/superpowers/specs/2026-07-24-idea-radar-r1-design.md`). Architecture survived two
+adversarial passes first: the autonomous R3 build pipeline was **overturned** (→ kickoff brief
+into a Claude Code session; extwork stays the delegated-build substrate), pre-pick planning
+dropped, slug-dedupe replaced with LLM match-or-new, Reddit dropped-then-reinstated-then-gated
+(Data-API approval submitted under Wukong's account; lesson recorded: never silently drop an
+integration blocked only on operator-side registration).
+
+- Daily tick: 6 code-owned sources (HN×2/HF/Devpost/GitHub/lobste.rs; Reddit+X dormant) →
+  deterministic slimmers → ONE DATA-framed extract call → bounded `ideas` store
+  (momentum = distinct items × sources, archive at 30d, cap 100) → `/radar` + `/status` line.
+- Gates: spec-review-senior BLOCKED→CLEAR (fetch `charCap`, dryRun bypass, code-computed
+  slug); adversarial review 0 crit/high, M1–M3 + 5 LOWs fixed (hostile-char strip shared via
+  `stripHostileChars`, early latch stamp kills the retry-storm, per-source id shape locks);
+  live `houge radar --dry-run` produced 8 real cross-source cards. 1991 tests green.
+- R2 next: weekly 3-judge panel + contained claude-cli chair (needs its own ADR amending
+  0010/0011) + shortlist snapshot + `/idea pick`. Session limit interrupted the fix subagent
+  mid-flight; remaining findings were finished inline.
+
 ## 2026-07-24 — Lesson consolidation ARMED + first live merge tick
 
 Shipped the daily **preserve-all lesson merge** (design spec

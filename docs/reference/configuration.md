@@ -512,6 +512,7 @@ noted), and `/approve` · `/deny` are **unforgeable** — never inferred from pr
 | `/forget <scope\|id>` | control | Prune that scope's lessons, or one lesson by numeric id (a reversible status flip — rows are never deleted) and ack. |
 | `/skills [scope]` | control | Read-only **viewer** of the ambient skills (name · scope · `when:` · version); regenerates `skills/REGISTRY.md`. Never invokes a skill. No scope → lists all scopes. |
 | `/skills pending` | control | Read-only **viewer** of the parked (blocked auto-author) drafts under `skills/_pending/` — inert, never applied. Inspect to hand-fix + promote, or discard. |
+| `/radar` | control | Top 10 active idea cards by momentum (title · momentum · age · status) + last-tick footer. Flag off → off notice. Read-only view of the ADR 0026 `ideas` store. |
 | `/schedule` | control | List this chat's scheduled tasks (id · spec · next fire · goal; `⚠ failed` rows shown so they can be cleared). |
 | `/schedule cancel <id>` | control | Cancel a schedule (reversible state flip, never deleted; failed rows cancellable too). Chat-scoped — other chats' ids read as not-found. |
 | `/kill [reason]` | safety | **Durable kill switch** (ADR 0018): writes the `houge.kill` tombstone, acks with the revival steps, stops the daemon. launchd relaunches into a PARKED process (no polling, no runs) until the file is manually deleted. Unforgeable — slash-only + allowlist + no-forwards; exempt from the command rate limit. |
@@ -542,6 +543,20 @@ from `allowed_actions` when `event.source === "schedule"`, so a run BORN FROM a 
 cannot create or mutate schedules — the tool never reaches the model's menu, and a scripted call
 is denied. This replaced the per-chat cap as the containment mechanism after a fired run misread
 its own replayed goal as "set up a weekly report" and minted a duplicate (2026-07-19).
+
+## Idea Radar (R1, ADR 0026)
+
+A daily flag-gated tick fetches a code-owned set of public builder-idea sources (HN, HF daily
+papers, Devpost, GitHub new-repo search, lobste.rs — Reddit/X dormant pending approvals),
+extracts deduplicated idea cards via ONE DATA-framed LLM call, and maintains a bounded `ideas`
+store (momentum = distinct items × sources; auto-archive after 30 stale days; active cap 100).
+Views: `/radar` (top cards) and a `/status` line. Pre-arm gate: `houge radar --dry-run` — real
+fetches + real LLM call, zero writes, bypasses flag and latch by design.
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `HOUGE_RADAR_ENABLED` | off | Arms the daily radar tick. Accepts 1/true/yes/on. In `DISARM_FLAGS`. Off = no fetches, no LLM spend, no writes; `/radar` renders the off notice. |
+| `HOUGE_RADAR_INTERVAL_HOURS` | `24` | Min hours between ticks. The latch stamps when the tick COMMITS to running (before fetches) — a store fault costs one interval, never a retry storm. |
 
 ## Introspection — the invariant sweep (slice A, ADR 0024)
 
