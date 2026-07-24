@@ -1,5 +1,18 @@
 # 🧭 CURRENT SYSTEM STATE — 2026-07-24 (read this first)
 
+**IN FLIGHT (crash-resume point): Idea Radar R1 build — 2026-07-24.** Architecture approved by
+Paco after dual adversarial review (see sessions.md + docs/superpowers/specs/2026-07-24-idea-radar-r1-design.md).
+Slices: R1 = daily source tick + `ideas` table + `/radar` (THIS BUILD) → R2 = weekly 3-judge
+panel + claude-cli chair (contained: dedicated CLAUDE_CONFIG_DIR, --strict-mcp-config, tool-less,
+needs ADR superseding "Claude is NOT a runtime backend") → R3 = picked-card → kickoff brief →
+Claude Code session (runtime build pipeline OVERTURNED in review; extwork stays the delegated-build
+substrate). Sources R1: HN Algolia (front + Show/Ask), HF daily papers, Devpost, GitHub
+search-proxy, lobste.rs. Reddit = dormant (Data-API approval request submitted 2026-07-24 under
+Wukong's account, no SLA); X = dormant (pay-per-use ~$0.005/read via bearer transport, needs dev
+account). Build steps: [ ] spec doc [ ] spec-review-senior (blockers clear) [ ] plan doc
+[ ] subagent build T1 registry+fetch → T2 ideas store → T3 tick → T4 wire-up (/radar, DISARM,
+CLI dry-run) → T5 green + adversarial review + live dry-run gate → Paco eyeball → arm.
+
 **Live config (mini daemon, .env is the arming truth — read it, don't assume):**
 HOUGE_SCHEDULER_ENABLED · HOUGE_BOUNTY_ENABLED · HOUGE_EPISODIC_ENABLED · HOUGE_WIKI_ENABLED ·
 HOUGE_BACKUP_ENABLED · HOUGE_INVARIANT_SWEEP_ENABLED · **HOUGE_GOOGLE_ENABLED (new — Gmail

@@ -134,3 +134,15 @@ Rules Claude writes for itself after corrections. Review at session start.
   green; only a real Telegram tap against the real inbox surfaced the chaining break, because the
   reader is mocked/bypassed in tests. Keep the live gate as a required step, not a formality —
   reserve one end-to-end path that exercises the REAL quarantine reader.
+
+## Don't drop an integration that's only blocked on operator-side registration (2026-07-24)
+
+- During the idea-radar adversarial review, Reddit was overturned as a source ("unauthenticated
+  .json is 403'd; OAuth needs app registration + approval friction") and I dropped it from R1
+  unilaterally. Paco corrected: he had already registered a Reddit account with Wukong's email
+  and would happily have done the console-side setup — exactly the division of labor the Gmail
+  OAuth slice proved days earlier (operator does the console clicks, Claude does the script +
+  code + broker wiring).
+- **Rule:** when a source/integration is blocked ONLY by operator-side registration or console
+  work (dev account, OAuth app, API key request), do not silently drop it — ask Paco. He can
+  usually clear it in minutes. Reserve "drop the source" for genuine technical or ToS dead ends.
