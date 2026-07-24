@@ -556,7 +556,9 @@ fetches + real LLM call, zero writes, bypasses flag and latch by design.
 | Env var | Default | Purpose |
 |---------|---------|---------|
 | `HOUGE_RADAR_ENABLED` | off | Arms the daily radar tick. Accepts 1/true/yes/on. In `DISARM_FLAGS`. Off = no fetches, no LLM spend, no writes; `/radar` renders the off notice. |
-| `HOUGE_RADAR_INTERVAL_HOURS` | `24` | Min hours between ticks. The latch stamps when the tick COMMITS to running (before fetches) — a store fault costs one interval, never a retry storm. |
+| `HOUGE_RADAR_AT` | `07:30` | Wall-clock pin (`HH:MM` in `HOUGE_RADAR_TZ`): the tick fires on the first daemon cycle past this time daily — fresh cards each morning, no drift with restarts. `off` reverts to the rolling interval. First arm (no prior run) fires immediately. |
+| `HOUGE_RADAR_TZ` | display zone (Australia/Sydney) | IANA zone for the pin; DST-safe via the scheduler's calendar walk. |
+| `HOUGE_RADAR_INTERVAL_HOURS` | `24` | Rolling-interval fallback, only used when `HOUGE_RADAR_AT=off`. The latch stamps when the tick COMMITS to running (before fetches) — a store fault costs one interval, never a retry storm. |
 
 ## Introspection — the invariant sweep (slice A, ADR 0024)
 

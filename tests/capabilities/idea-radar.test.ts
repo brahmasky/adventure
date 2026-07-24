@@ -10,6 +10,7 @@ import {
   RADAR_MAX_NEW_CARDS_PER_TICK,
   resolveRadarEnabled,
   resolveRadarIntervalMs,
+  resolveRadarAt,
   runIdeaRadarTick,
   type RadarLlm
 } from "../../src/capabilities/idea-radar.js";
@@ -622,5 +623,65 @@ describe("adversarial-review tick fixes (M1/M3)", () => {
     expect(lines.join("\n")).toContain("Evil[2Jcard");
     // Per line: the only C0 char in the terminal surface is the join newline itself.
     for (const line of lines) expect(line).not.toMatch(STRIP_CLASS_RE);
+  });
+});
+
+describe("pinned wall-clock schedule (HOUGE_RADAR_AT)", () => {
+  // Sydney is UTC+10 in July: 07:30 AEST == 21:30 UTC the previous calendar day.
+  const PINNED: NodeJS.ProcessEnv = { HOUGE_RADAR_ENABLED: "1", HOUGE_RADAR_TZ: "Australia/Sydney" };
+
+  it("resolveRadarAt: default 07:30, valid HH:MM honored, off → null, malformed → default", () => {
+    expect(resolveRadarAt({})).toBe("07:30");
+    expect(resolveRadarAt({ HOUGE_RADAR_AT: "06:15" })).toBe("06:15");
+    expect(resolveRadarAt({ HOUGE_RADAR_AT: "off" })).toBe(null);
+    expect(resolveRadarAt({ HOUGE_RADAR_AT: "25:99" })).toBe("07:30");
+  });
+
+  it("not due before the pin, due after — and never doubled within the same day", async () => {
+    const store = openStore();
+    // Yesterday's run: 2026-07-24 07:31 AEST == 2026-07-23T21:31:00Z.
+    store.markRadarRan("2026-07-23T21:31:00.000Z");
+
+    // 07:29 AEST next day (21:29 UTC): one minute before the pin — not due.
+    const early = await runIdeaRadarTick({
+      store, llmAnswer: cannedLlm(NO_CARDS), fetch: hnOnlyFetch(), env: PINNED,
+      now: "2026-07-24T21:29:00.000Z"
+    });
+    expect(early.ran).toBe(false);
+
+    // 07:31 AEST (21:31 UTC): past the pin — due.
+    const due = await runIdeaRadarTick({
+      store, llmAnswer: cannedLlm(NO_CARDS), fetch: hnOnlyFetch(), env: PINNED,
+      now: "2026-07-24T21:31:00.000Z"
+    });
+    expect(due.ran).toBe(true);
+
+    // Five minutes later: latched until tomorrow's pin.
+    const again = await runIdeaRadarTick({
+      store, llmAnswer: cannedLlm(NO_CARDS), fetch: hnOnlyFetch(), env: PINNED,
+      now: "2026-07-24T21:36:00.000Z"
+    });
+    expect(again.ran).toBe(false);
+  });
+
+  it("first arm (no lastRun) fires immediately so arming produces cards today", async () => {
+    const store = openStore();
+    const result = await runIdeaRadarTick({
+      store, llmAnswer: cannedLlm(NO_CARDS), fetch: hnOnlyFetch(), env: PINNED,
+      now: "2026-07-24T02:00:00.000Z"
+    });
+    expect(result.ran).toBe(true);
+  });
+
+  it("HOUGE_RADAR_AT=off reverts to the rolling interval", async () => {
+    const store = openStore();
+    store.markRadarRan("2026-07-23T21:31:00.000Z");
+    const env = { ...PINNED, HOUGE_RADAR_AT: "off" };
+    // 23h59m after the last run — interval mode says not due (even though the pin passed).
+    const notDue = await runIdeaRadarTick({
+      store, llmAnswer: cannedLlm(NO_CARDS), fetch: hnOnlyFetch(), env,
+      now: "2026-07-24T21:30:00.000Z"
+    });
+    expect(notDue.ran).toBe(false);
   });
 });

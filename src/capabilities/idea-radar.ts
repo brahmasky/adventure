@@ -2,6 +2,7 @@ import type { IdeaSourceItem, RunStore } from "../run/run-store.js";
 import type { HttpFetchConfig, HttpFetchInput, HttpFetchOutcome } from "../web/http-fetch.js";
 import { extractFirstJsonObject } from "./distill.js";
 import { fetchRadarSources, type RadarItem } from "./idea-radar-sources.js";
+import { computeNextRunAt, resolveDisplayZone } from "../run/schedule-spec.js";
 import { stripHostileChars } from "./text-hygiene.js";
 import { normalizeTopicSlug, sanitizeWikiText } from "./wiki.js";
 
@@ -35,8 +36,16 @@ export const RADAR_MAX_CARDS_IN_PROMPT = 100;
 export const RADAR_CARD_TITLE_MAX_CHARS = 80;
 export const RADAR_CARD_SUMMARY_MAX_CHARS = 400;
 
-/** Default cadence: one radar pass per 24h. */
+/** Default cadence: one radar pass per 24h (fallback when the wall-clock pin is off). */
 export const DEFAULT_RADAR_INTERVAL_HOURS = 24;
+
+/**
+ * Wall-clock pin (Paco, 2026-07-24 live gate): the tick fires at a fixed local time so
+ * cards are fresh each morning rather than drifting with daemon restarts. `HOUGE_RADAR_AT`
+ * takes `HH:MM` (default 07:30), `off` reverts to the rolling interval; the zone rides
+ * `HOUGE_RADAR_TZ` else the display zone (Australia/Sydney).
+ */
+export const DEFAULT_RADAR_AT = "07:30";
 
 export function resolveRadarEnabled(env: NodeJS.ProcessEnv): boolean {
   const raw = env.HOUGE_RADAR_ENABLED?.trim().toLowerCase();
@@ -47,6 +56,28 @@ export function resolveRadarIntervalMs(env: NodeJS.ProcessEnv): number {
   const n = Number(env.HOUGE_RADAR_INTERVAL_HOURS);
   const hours = Number.isFinite(n) && n > 0 ? n : DEFAULT_RADAR_INTERVAL_HOURS;
   return hours * 3_600_000;
+}
+
+/** `HH:MM` pin or null (pin disabled via `HOUGE_RADAR_AT=off`); malformed → the default. */
+export function resolveRadarAt(env: NodeJS.ProcessEnv): string | null {
+  const raw = env.HOUGE_RADAR_AT?.trim().toLowerCase();
+  if (raw === "off") return null;
+  return raw !== undefined && /^([01]\d|2[0-3]):[0-5]\d$/.test(raw) ? raw : DEFAULT_RADAR_AT;
+}
+
+export function resolveRadarTz(env: NodeJS.ProcessEnv): string {
+  const raw = env.HOUGE_RADAR_TZ?.trim();
+  return raw !== undefined && raw !== "" ? raw : resolveDisplayZone(env);
+}
+
+/**
+ * Pinned-mode due check: due iff the next daily `at` occurrence AFTER lastRun has passed.
+ * DST-safe via the scheduler's calendar walk; a daemon that slept through 07:30 fires on
+ * its next cycle (late but never doubled — the M3 stamp still latches the run).
+ */
+export function radarPinnedDue(lastRun: string, at: string, tz: string, now: string): boolean {
+  const due = computeNextRunAt({ kind: "daily", at }, tz, lastRun);
+  return due !== null && Date.parse(now) >= Date.parse(due);
 }
 
 /** The extract LLM interface (mirrors LessonConsolidateLlm): DATA in / strict JSON out. */
@@ -258,9 +289,19 @@ export async function runIdeaRadarTick(input: {
     if (!dryRun) {
       if (!resolveRadarEnabled(input.env)) return { ran: false };
       const last = input.store.getRadarLastRun();
-      if (last && Date.parse(input.now) - Date.parse(last) < resolveRadarIntervalMs(input.env)) {
-        return { ran: false };
+      const at = resolveRadarAt(input.env);
+      if (last) {
+        // Pinned mode (default 07:30 local): due only when the next daily occurrence
+        // after the last run has passed. `HOUGE_RADAR_AT=off` → the rolling interval.
+        if (at !== null) {
+          if (!radarPinnedDue(last, at, resolveRadarTz(input.env), input.now)) {
+            return { ran: false };
+          }
+        } else if (Date.parse(input.now) - Date.parse(last) < resolveRadarIntervalMs(input.env)) {
+          return { ran: false };
+        }
       }
+      // last === null (first arm): fire immediately so arming produces cards today.
       // M3: stamp the interval latch the moment the tick commits to running — BEFORE the
       // fetches. Stamping after apply meant a persistent store fault (disk full,
       // SQLITE_BUSY) turned the ~30s signal-path poll into an endless loop of 6 real
