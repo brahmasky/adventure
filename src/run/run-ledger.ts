@@ -58,6 +58,7 @@ export type LedgerEventType =
   | "db_backup_completed"
   | "db_backup_failed"
   | "bounty_scan_completed"
+  | "idea_radar_tick"
   | "project_created"
   | "project_state_changed"
   | "incident_opened"
@@ -198,6 +199,10 @@ const requiredPayloadFields = {
   // deterministic identifiers ONLY — never venue-derived free text (titles/labels stay
   // out of the ledger; the sanitized table lives in the turn transcript, not here).
   bounty_scan_completed: ["venue_count", "candidates", "scam_suspects", "new_sightings"],
+  // Idea Radar R1 (spec 2026-07-24): one summary per non-dry tick that actually ran —
+  // visibility over parsimony (once/day). Source keys + counts ONLY — card text stays
+  // in the ideas rows, never the ledger.
+  idea_radar_tick: ["sources_ok", "sources_failed", "cards_new", "cards_updated", "cards_archived"],
   project_created: ["project_id", "source_url"],
   project_state_changed: ["project_id", "from", "to"],
   // Introspection slice A (ADR 0024): ids + counts only — the incident detail lives in the

@@ -446,6 +446,90 @@ export interface BountySightingRow {
   times_seen: number;
 }
 
+export type IdeaStatus = "seen" | "tracked" | "shortlisted" | "picked" | "killed" | "archived";
+
+/** One contributing item inside an idea card's sources map — always slimmer-sourced values. */
+export interface IdeaSourceItem {
+  /** Namespaced radar item id (`<sourceKey>:<native>`), slimmer-validated. */
+  id: string;
+  /** Slimmer-validated https URL (the LLM never emits a URL that gets stored). */
+  url: string;
+  title: string;
+}
+
+/**
+ * One idea card (Idea Radar R1, spec 2026-07-24 §2). `slug` is a filename/identity key
+ * ONLY — dedupe is the extract-LLM's match-or-new verdict, never slug equality. Rows are
+ * never deleted: `archived`/`killed` are states; momentum = distinct_items ×
+ * distinct_sources (computed, the /radar ordering).
+ */
+export interface IdeaRow {
+  id: number;
+  slug: string;
+  title: string;
+  summary: string;
+  status: IdeaStatus;
+  sources: Record<string, IdeaSourceItem[]>;
+  distinct_items: number;
+  distinct_sources: number;
+  /** Null in R1; the R2 judge panel writes it. */
+  scores_json: string | null;
+  first_seen: string;
+  last_seen: string;
+  archived_at: string | null;
+  momentum: number;
+}
+
+/** Per-card, per-source contributing-item cap (spec §2) — overflow drops oldest-first. */
+export const IDEA_CARD_ITEMS_PER_SOURCE_CAP = 20;
+
+/** Bound every per-source list (insert path) — the touch path re-caps after its union. */
+function capIdeaSources(sources: Record<string, IdeaSourceItem[]>): Record<string, IdeaSourceItem[]> {
+  const capped: Record<string, IdeaSourceItem[]> = {};
+  for (const [key, items] of Object.entries(sources)) {
+    if (items.length === 0) continue;
+    capped[key] = items.slice(-IDEA_CARD_ITEMS_PER_SOURCE_CAP);
+  }
+  return capped;
+}
+
+/** The card's distinct counts, always recomputed from the sources map (never caller-trusted). */
+function countIdeaSources(sources: Record<string, IdeaSourceItem[]>): {
+  distinct_items: number;
+  distinct_sources: number;
+} {
+  let distinct_items = 0;
+  let distinct_sources = 0;
+  for (const items of Object.values(sources)) {
+    if (items.length === 0) continue;
+    distinct_items += items.length;
+    distinct_sources += 1;
+  }
+  return { distinct_items, distinct_sources };
+}
+
+/** Raw ideas row (sources_json still serialized) as selected by listActiveIdeas. */
+interface IdeaRawRow {
+  id: number;
+  slug: string;
+  title: string;
+  summary: string;
+  status: IdeaStatus;
+  sources_json: string;
+  distinct_items: number;
+  distinct_sources: number;
+  scores_json: string | null;
+  first_seen: string;
+  last_seen: string;
+  archived_at: string | null;
+  momentum: number;
+}
+
+function parseIdeaRow(row: IdeaRawRow): IdeaRow {
+  const { sources_json, ...rest } = row;
+  return { ...rest, sources: JSON.parse(sources_json) as Record<string, IdeaSourceItem[]> };
+}
+
 /** The candidate {@link RunStore.saveReconciledFact} stores (all metadata rides ADD/SUPERSEDE/UPDATE). */
 export interface EpisodicFactCandidate {
   chat_id: string;
@@ -2492,6 +2576,182 @@ export class RunStore {
       createLedgerEvent({
         correlation_id: "lesson-consolidate",
         event_type: "lesson_consolidate_tick",
+        actor: "system",
+        sequence: this.nextLedgerSequence(),
+        payload
+      })
+    );
+  }
+
+  // --- Idea radar (Idea Radar R1, spec 2026-07-24) -----------------------------
+
+  /** Last executed radar tick (single-row state, like lesson_consolidate_state). */
+  getRadarLastRun(): string | null {
+    const row = this.db.prepare(`
+      SELECT last_run_at FROM radar_state WHERE id = 1
+    `).get<{ last_run_at: string | null }>();
+    return row?.last_run_at ?? null;
+  }
+
+  markRadarRan(now: string): void {
+    this.db.prepare(`UPDATE radar_state SET last_run_at = ? WHERE id = 1`).run(now);
+  }
+
+  /**
+   * Insert one NEW idea card (extract verdict "new"). Distinct counts are computed
+   * HERE from the sources map (never trusted from a caller); each source list is
+   * bounded at {@link IDEA_CARD_ITEMS_PER_SOURCE_CAP}. A slug collision gets a
+   * deterministic `-2`/`-3` suffix — slug is a filename/identity key, NOT the dedupe
+   * mechanism (B3: the tick computes it in code via normalizeTopicSlug).
+   */
+  insertIdeaCard(input: {
+    slug: string;
+    title: string;
+    summary: string;
+    sources: Record<string, IdeaSourceItem[]>;
+    now: string;
+  }): { id: number } {
+    const sources = capIdeaSources(input.sources);
+    const { distinct_items, distinct_sources } = countIdeaSources(sources);
+
+    // Deterministic collision suffix: first free of slug, slug-2, slug-3, …
+    let slug = input.slug;
+    for (let n = 2; this.ideaSlugTaken(slug); n += 1) {
+      slug = `${input.slug}-${n}`;
+    }
+
+    const result = this.db.prepare(`
+      INSERT INTO ideas (slug, title, summary, status, sources_json, distinct_items, distinct_sources, first_seen, last_seen)
+      VALUES (?, ?, ?, 'seen', ?, ?, ?, ?, ?)
+    `).run(
+      slug,
+      input.title,
+      input.summary,
+      JSON.stringify(sources),
+      distinct_items,
+      distinct_sources,
+      input.now,
+      input.now
+    );
+    return { id: Number(result.lastInsertRowid) };
+  }
+
+  private ideaSlugTaken(slug: string): boolean {
+    return this.db.prepare(`SELECT id FROM ideas WHERE slug = ?`).get<{ id: number }>(slug) !== undefined;
+  }
+
+  /**
+   * Touch an existing card (extract verdict "match"): union the new items into the
+   * per-source lists (known ids never re-add — the front-page-persistence fix: a
+   * re-sighting bumps `last_seen` ONLY, no count inflation), cap each list at
+   * {@link IDEA_CARD_ITEMS_PER_SOURCE_CAP} dropping oldest-first, recompute the
+   * distinct counts, and apply `summaryUpdate` when non-null. Missing card → no-op
+   * (the parse floor should have dropped it; stay non-destructive anyway).
+   */
+  touchIdeaCard(input: {
+    id: number;
+    newItems: Record<string, IdeaSourceItem[]>;
+    summaryUpdate: string | null;
+    now: string;
+  }): { updated: boolean } {
+    const row = this.db.prepare(`
+      SELECT sources_json FROM ideas WHERE id = ?
+    `).get<{ sources_json: string }>(input.id);
+    if (!row) return { updated: false };
+
+    const sources = JSON.parse(row.sources_json) as Record<string, IdeaSourceItem[]>;
+    for (const [key, items] of Object.entries(input.newItems)) {
+      const existing = sources[key] ?? [];
+      const known = new Set(existing.map((i) => i.id));
+      for (const item of items) {
+        if (known.has(item.id)) continue; // re-sighted → last_seen only
+        known.add(item.id);
+        existing.push(item);
+      }
+      // Oldest-first drop: lists append in sighting order, so overflow trims the front.
+      sources[key] = existing.slice(-IDEA_CARD_ITEMS_PER_SOURCE_CAP);
+    }
+    const { distinct_items, distinct_sources } = countIdeaSources(sources);
+
+    this.db.prepare(`
+      UPDATE ideas
+      SET sources_json = ?, distinct_items = ?, distinct_sources = ?, last_seen = ?,
+          summary = COALESCE(?, summary)
+      WHERE id = ?
+    `).run(
+      JSON.stringify(sources),
+      distinct_items,
+      distinct_sources,
+      input.now,
+      input.summaryUpdate,
+      input.id
+    );
+    return { updated: true };
+  }
+
+  /** Active cards (NOT archived/killed), momentum DESC then last_seen DESC — the /radar order. */
+  listActiveIdeas(limit: number): IdeaRow[] {
+    return this.db.prepare(`
+      SELECT id, slug, title, summary, status, sources_json, distinct_items, distinct_sources,
+             scores_json, first_seen, last_seen, archived_at,
+             distinct_items * distinct_sources AS momentum
+      FROM ideas
+      WHERE status NOT IN ('archived', 'killed')
+      ORDER BY momentum DESC, last_seen DESC, id ASC
+      LIMIT ?
+    `).all<IdeaRawRow>(limit).map(parseIdeaRow);
+  }
+
+  countActiveIdeas(): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM ideas WHERE status NOT IN ('archived', 'killed')
+    `).get<{ count: number }>();
+    return row?.count ?? 0;
+  }
+
+  /**
+   * Archive active cards not sighted for `afterDays` — ONLY statuses seen/tracked
+   * (shortlisted/picked are operator judgments, never auto-archived). Reversible:
+   * status flips back re-activate; `archived_at` is bookkeeping. Returns the count.
+   */
+  archiveStaleIdeas(input: { now: string; afterDays: number }): number {
+    const cutoff = new Date(Date.parse(input.now) - input.afterDays * 86_400_000).toISOString();
+    return this.db.prepare(`
+      UPDATE ideas SET status = 'archived', archived_at = ?
+      WHERE status IN ('seen', 'tracked') AND last_seen < ?
+    `).run(input.now, cutoff).changes;
+  }
+
+  /**
+   * Overflow guard: while more than `cap` cards are active, archive the lowest-momentum
+   * (oldest-sighted on ties) first. Deterministic, no LLM. Returns the count archived.
+   */
+  pruneIdeaOverflow(input: { cap: number; now: string }): number {
+    const overflow = this.countActiveIdeas() - input.cap;
+    if (overflow <= 0) return 0;
+    return this.db.prepare(`
+      UPDATE ideas SET status = 'archived', archived_at = ?
+      WHERE id IN (
+        SELECT id FROM ideas
+        WHERE status NOT IN ('archived', 'killed')
+        ORDER BY distinct_items * distinct_sources ASC, last_seen ASC, id ASC
+        LIMIT ?
+      )
+    `).run(input.now, overflow).changes;
+  }
+
+  /** One summary event per non-dry radar tick that RAN (visibility over parsimony — once/day). */
+  recordIdeaRadarTick(payload: {
+    sources_ok: string[];
+    sources_failed: string[];
+    cards_new: number;
+    cards_updated: number;
+    cards_archived: number;
+  }): void {
+    this.appendLedgerEvent(
+      createLedgerEvent({
+        correlation_id: "idea-radar",
+        event_type: "idea_radar_tick",
         actor: "system",
         sequence: this.nextLedgerSequence(),
         payload
@@ -4772,6 +5032,7 @@ export class RunStore {
     this.applyBackupStateMigration();
     this.applyProjectsMigration();
     this.applyIncidentsMigration();
+    this.applyIdeaRadarMigration();
   }
 
   /**
@@ -4815,6 +5076,56 @@ export class RunStore {
           id INTEGER PRIMARY KEY CHECK (id = 1),
           last_swept_at TEXT NOT NULL
         )
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
+   * Idea Radar R1 (spec 2026-07-24, W1): ONE migration block for BOTH radar tables —
+   * `ideas` (durable idea cards; rows never deleted, archived/killed are states) +
+   * `radar_state` (the single-row last-run marker, seeded NULL so the first tick runs
+   * immediately — mirrors lesson_consolidate_state). No indexes — active cards are
+   * capped at human-decision scale (RADAR_MAX_ACTIVE_CARDS).
+   */
+  private applyIdeaRadarMigration(): void {
+    const version = "2026-07-24-idea-radar";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS ideas (
+          id INTEGER PRIMARY KEY,
+          slug TEXT NOT NULL UNIQUE,
+          title TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'seen',
+          sources_json TEXT NOT NULL,
+          distinct_items INTEGER NOT NULL DEFAULT 1,
+          distinct_sources INTEGER NOT NULL DEFAULT 1,
+          scores_json TEXT,
+          first_seen TEXT NOT NULL,
+          last_seen TEXT NOT NULL,
+          archived_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS radar_state (id INTEGER PRIMARY KEY, last_run_at TEXT);
+        INSERT OR IGNORE INTO radar_state (id) VALUES (1);
       `);
 
       if (!applied) {
