@@ -1,43 +1,129 @@
-# 🧭 CURRENT SYSTEM STATE — 2026-07-20 (read this first)
+# 🧭 CURRENT SYSTEM STATE — 2026-07-24 (read this first)
 
 **Live config (mini daemon, .env is the arming truth — read it, don't assume):**
 HOUGE_SCHEDULER_ENABLED · HOUGE_BOUNTY_ENABLED · HOUGE_EPISODIC_ENABLED · HOUGE_WIKI_ENABLED ·
-HOUGE_BACKUP_ENABLED · **HOUGE_INVARIANT_SWEEP_ENABLED (new today)**. Sweep cadence
-HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES, default 720 (twice a day).
+HOUGE_BACKUP_ENABLED · HOUGE_INVARIANT_SWEEP_ENABLED · **HOUGE_GOOGLE_ENABLED (new — Gmail
+identity, LIVE + live-gated)** · **HOUGE_LESSON_CONSOLIDATE_ENABLED (new — ARMED, first live
+merge tick 2026-07-24)**. Google identity arms ONLY as a couple with HOUGE_DUAL_LLM_ENABLED; its
+three broker-held secrets are HOUGE_GMAIL_CLIENT_ID / _CLIENT_SECRET / _REFRESH_TOKEN. Sweep
+cadence HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES, default 720 (twice a day). Both new flags are in
+DISARM_FLAGS.
 
-**Shipped 2026-07-20 (both live, daemon reloaded, 1708/1708 green):**
-1. **Scheduler v2** (ADR 0017 amendment) — `schedule_task` gains `{list:true}` and
-   `{update:"sch_…"}` verbs; dedup-on-create returns the existing id instead of a twin; and the
-   **provenance strip**: `compileTurnContract` removes `schedule_task` when
-   `event.source === "schedule"`, so a schedule-born run can no longer create/mutate schedules.
-   That strip — not the per-chat cap — is now the self-replication bound (B10 Probe 1 was
-   rewritten to the stronger invariant; the cap is defense-in-depth).
-2. **Introspection slice A** (ADR 0024) — deterministic zero-LLM invariant sweep on the signal
-   path; six invariants over the flight recorder; `incidents` table with open→resolve lifecycle;
-   one Telegram alert per transition, ≤3 per sweep + summary, 30-min flap damping. The sweep
-   NEVER observes its own alerts (self-amplification bug, see tasks/lessons.md).
+**Shipped this session 2026-07-22→24 (all live on the mini; DONE blocks below):** Google identity
+(gmail_read/google_api, ADR 0025) · /status redesign · token/cost observability (/usage +
+`houge usage`) · conversational-telemetry double-bug fix · caption-fallback for photos · /help +
+unknown-slash → command list · command-output polish · /schedule #N numbering · lesson
+consolidation (design spec 2026-07-23; armed + first live merge tick 2026-07-24).
 
-**Strategic frame (agreed 2026-07-20):** *push on Earn, sense with Audit, fix only what incidents
-pull.* One push-track at a time.
-- **Earn (P3, first dollar)** — Google/OAuth setup DONE 2026-07-22 (wukong.houge@gmail.com
-  authorized `gmail.readonly`; gmail_read/google_api shipped dark behind HOUGE_GOOGLE_ENABLED,
-  ADR 0025). Verification-email reads unblock self-serve signup — **next Earn move: pick a
-  venue + register.** Still on Paco: picking a bounty; `/approve` taps. Thin slice after
-  registration: earnings ledger + `external_write` behind `/approve` for ONE delivery path
-  (GitHub PR, generalizing branch-publish beyond own-origin). Defer credential store.
+**Strategic frame (push on Earn, sense with Audit, fix only what incidents pull — one push-track
+at a time):**
+- **Earn (P3, first dollar)** — the **Google blocker is now CLEARED** (Gmail identity LIVE +
+  live-gated 2026-07-24: real inbox digest, quarantine ran, zero secret leakage). Verification-code
+  reads now unblock self-serve signup. **Next Earn move: pick a venue + register.** Still on Paco:
+  picking a bounty; `/approve` taps. Thin slice after registration: earnings ledger +
+  `external_write` behind `/approve` for ONE delivery path (GitHub PR, generalizing branch-publish
+  beyond own-origin). Defer credential store.
 - **Sense (introspection)** — slice A live. Slice B (promise ledger, LLM judgment pass,
   `/incidents` view, incident→self_diagnose bridge) ONLY after slice A earns it.
 - **North star, sense track:** the first incident Houge reports BEFORE Paco notices it. Until
   then it is unproven infrastructure, not a closed loop.
 
-**Open / watch:**
-- Next Monday 2026-07-27 08:00 AEST is the live gate for the scheduler work: expect exactly ONE
-  AI周报, containing the 悉尼/澳洲 AI-jobs section, no new `sch_` row after the fire, and no
-  mojibake (first long-output test of the 2026-07-20 StringDecoder fix).
-- Pinch Me hackathon DROPPED 2026-07-20 (deadline Jul 22, Paco on work commitments) — projects
-  row updated with reason.
+**Parked / watch:**
+- **Real photo/vision** (Gemini + image) — the remaining medium slice; caption-fallback shipped
+  the text path, actual image understanding is still parked.
+- **/status-floor (lesson-merge) tuning** — revisit the gross-collapse / avoid-drop floors if the
+  consolidation floor proves too conservative once live soak accrues.
+- Monday 2026-07-27 08:00 AEST scheduler live gate still pending: expect exactly ONE AI周报 with
+  the 悉尼/澳洲 AI-jobs section, no new `sch_` row after the fire, no mojibake (first long-output
+  test of the 2026-07-20 StringDecoder fix).
 - Still open from 2026-07-19: deterministic `{rank:N}` for `project_track` so 「跟进第N个」cannot
   misresolve.
+
+---
+
+# ✅ DONE — Lesson consolidation (preserve-all merge) — ARMED + FIRST LIVE MERGE 2026-07-24
+
+Spec: `docs/superpowers/specs/2026-07-23-lesson-consolidation-design.md`. A daily preserve-all
+merge tick mirroring episodic-consolidate: clusters near-duplicate ACTIVE lessons within a scope
+and merges each cluster into ONE lesson that keeps every directive + AVOID. **ADD-then-supersede-all**
+(never deletes), capped/clamped reuse, cluster-size cap (4), gross-collapse + avoid-drop floors,
+`houge lessons-consolidate --dry-run` preview. Passed spec-review-senior (5 blockers) + adversarial
+review (4 fixes). Flag `HOUGE_LESSON_CONSOLIDATE_ENABLED` (in DISARM_FLAGS). **First live tick
+2026-07-24:** `ask` scope 18→15 lessons — merged #3/#4/#5→#26 and #10/#15→#27, every directive+AVOID
+preserved. Related domain lesson (2026-07-23): a quarantine reader strips structured tokens → use a
+trusted side-channel (see tasks/lessons.md).
+
+---
+
+# ✅ DONE — Google identity — gmail_read / google_api (ADR 0025) — LIVE + LIVE-GATED 2026-07-22→24
+
+**Earn-P3 Google blocker CLEARED.** Houge now has his own Google identity and can read it.
+- **OAuth bootstrap:** one-time `scripts/gmail-auth.mjs` (wukong.houge@gmail.com authorized,
+  read-only `gmail.readonly`); the broker extended 5→7 secrets (ADR 0015) to hold
+  HOUGE_GMAIL_CLIENT_ID / _CLIENT_SECRET / _REFRESH_TOKEN.
+- **Client/transport:** service-agnostic `google-auth` closure (refresh/cache/single-flight/
+  invalidate; the runtime access token lives+dies inside the closure, never in results/errors/
+  digests/ledger) → GET-only allowlisted `google-api` transport whose registry is exactly one row
+  per granted scope (`gmail/v1/users/me/*` ↔ `gmail.readonly`). The OAuth scope is the hard floor.
+- **Ops:** `gmail-read` list/search/get with deterministic verification-code/link extraction; a
+  message-id `trusted_extract` post-quarantine side-channel (code-built regex block appended AFTER
+  the Q-LLM digest); `{list}` defaults to `in:inbox`.
+- **Walls:** both tools in UNTRUSTED_READ_TOOLS (dual-LLM quarantined) + an arming COUPLE (require
+  HOUGE_GOOGLE_ENABLED AND HOUGE_DUAL_LLM_ENABLED, else they silently leave the manifest) + in
+  DISARM_FLAGS. `google_api_call_completed` ledger event = counts only.
+- **LIVE GATE PASSED 2026-07-24:** real inbox digest, quarantine ran, **zero secret leakage**.
+  Next Earn move: pick a venue + register.
+
+---
+
+# ✅ DONE — Observability & command surface — SHIPPED + LIVE 2026-07-22→24
+
+A cluster of user-facing + telemetry fixes, surfaced by a health-audit (Paco: "is Houge checking
+himself?") that also turned up the dropped-photo bug and the telemetry gaps.
+- **/status redesign** — three sections (🟢 HEALTH / 📈 ACTIVITY / 💰 COST & USAGE); the
+  invariant-sweep self-check line ("swept Xh ago · N open incidents") makes the silent-healthy
+  sweep visible; Sydney-local times; recovered poll-errors show "none"; "N completed" wording;
+  dropped the run-id wall.
+- **Token/cost observability** — new `/usage` Telegram command + `houge usage` CLI; splits **API
+  (metered, real $) vs CLI (subscription, tokens-only "sub")** with the model per leg;
+  `recordLlmCallSafe` no longer stores a phantom self-reported cost for non-metered legs. OTel
+  stays deferred by design — the SQLite ledger is the telemetry substrate.
+- **Conversational telemetry fixed (two stacked bugs)** — (a) `fix(pi)`: pi 0.81.1 reports usage
+  as `input`/`output`/`cacheRead`, not `*_tokens`, so exact Kimi tokens were silently discarded;
+  (b) `fix(telemetry)`: the daemon injected its own `llmAdapter` into CoreWorker, tripping
+  `llmAdapterIsDefault=false` and disabling ALL cheap-chain (answer/classify/…) usage recording.
+  Both fixed; pi→Kimi turns now record.
+- **Caption-fallback** — non-text Telegram messages (photos) were silently dropped by the
+  `.text`-only parser; now a photo's caption routes as the turn text, a truly text-less message
+  gets a one-line ack (no ghosting), and auth runs FIRST (a stranger's bare photo is denied, never
+  acked). Real photo/vision (Gemini + image) remains the parked medium slice.
+- **/usage + /help commands** — real control commands; a typo'd/unknown `/slash-command` returns
+  the command list instead of falling through to an expensive LLM turn (which had re-run a research
+  dump).
+- **Command-output polish** — `/status` `/schedule` `/lessons` made human-readable: Sydney-local
+  times; `/schedule` strips the internal dedup-guard preamble + shows the city once; `/lessons`
+  drops the internal reuse/applied/ratings/supersedes telemetry.
+- **/schedule numbering** — dropped the opaque `sch_<uuid>` from the list; `#1..#N` with
+  `/schedule cancel <N>` (same `visibleSchedules()` order as the renderer for parity); full-id
+  cancel still works.
+- **Process note:** a research/strategy thread (a builder-ideas prompt over HN/X/HF) produced
+  project candidates — noted, not built.
+
+---
+
+# ✅ DONE — Scheduler v2 + Introspection slice A — SHIPPED + LIVE 2026-07-20
+
+(Preserved from the prior CURRENT SYSTEM STATE header; both live, daemon reloaded, 1708/1708 green.)
+1. **Scheduler v2** (ADR 0017 amendment) — `schedule_task` gains `{list:true}` and `{update:"sch_…"}`
+   verbs; dedup-on-create returns the existing id instead of a twin; and the **provenance strip**:
+   `compileTurnContract` removes `schedule_task` when `event.source === "schedule"`, so a
+   schedule-born run can no longer create/mutate schedules. That strip — not the per-chat cap — is
+   now the self-replication bound (B10 Probe 1 was rewritten to the stronger invariant; the cap is
+   defense-in-depth).
+2. **Introspection slice A** (ADR 0024) — deterministic zero-LLM invariant sweep on the signal
+   path; six invariants over the flight recorder; `incidents` table with open→resolve lifecycle;
+   one Telegram alert per transition, ≤3 per sweep + summary, 30-min flap damping. The sweep NEVER
+   observes its own alerts (self-amplification bug, see tasks/lessons.md).
 
 ---
 

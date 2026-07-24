@@ -1,5 +1,79 @@
 # Sessions
 
+## 2026-07-24 — Lesson consolidation ARMED + first live merge tick
+
+Shipped the daily **preserve-all lesson merge** (design spec
+`docs/superpowers/specs/2026-07-23-lesson-consolidation-design.md`), a tick mirroring
+episodic-consolidate that clusters near-duplicate ACTIVE lessons within a scope and merges each
+cluster into ONE lesson keeping every directive + AVOID.
+
+- **ADD-then-supersede-all**, never deletes; capped/clamped reuse; cluster-size cap 4;
+  gross-collapse + avoid-drop floors; `houge lessons-consolidate --dry-run` preview.
+- Passed **spec-review-senior** (5 blockers) + adversarial review (4 fixes) before code.
+- Flag `HOUGE_LESSON_CONSOLIDATE_ENABLED` (in `DISARM_FLAGS`).
+- **First live tick 2026-07-24:** `ask` scope 18→15 lessons — merged #3/#4/#5→#26 and #10/#15→#27,
+  every directive + AVOID preserved.
+- Watch: if the gross-collapse / avoid-drop floors prove too conservative in soak, tune them.
+
+## 2026-07-23 — Google identity (gmail_read / google_api, ADR 0025) — Earn-P3 blocker CLEARED
+
+Houge got his **own Google identity** (`wukong.houge@gmail.com`) and can now read it, unblocking
+self-serve venue registration (the verification mail lands in his inbox; he reads the code himself).
+LIVE-gated 2026-07-24.
+
+- **OAuth bootstrap:** one-time `scripts/gmail-auth.mjs` authorized read-only `gmail.readonly`; the
+  secrets broker was extended **5→7 secrets** (ADR 0015) to hold `HOUGE_GMAIL_CLIENT_ID` /
+  `_CLIENT_SECRET` / `_REFRESH_TOKEN`.
+- **`google-auth` client:** service-agnostic closure (refresh / cache / single-flight / invalidate);
+  the runtime access token lives and dies inside the closure — never in a result, error, digest, or
+  ledger row.
+- **`google-api` transport:** GET-only, exact-allowlist registry = one row per granted scope
+  (`gmail/v1/users/me/*` ↔ `gmail.readonly`); path validation rejects rather than normalizes. The
+  OAuth scope is the hard floor — the refresh token can read mail and nothing else.
+- **`gmail-read` ops:** list / search / get; deterministic verification-code/link extraction via a
+  message-id **`trusted_extract` post-quarantine side-channel** (code-built regex block appended
+  AFTER the Q-LLM digest — trusted because code built it, so it can't carry an instruction; links
+  stay byte-exact attacker data); `{list}` defaults to `in:inbox`.
+- **Walls:** both tools in `UNTRUSTED_READ_TOOLS` (dual-LLM quarantined) + an **arming couple**
+  (armed only when `HOUGE_GOOGLE_ENABLED` AND `HOUGE_DUAL_LLM_ENABLED`, else they silently leave the
+  manifest) + in `DISARM_FLAGS`; `google_api_call_completed` ledger event = counts only.
+- **LIVE GATE PASSED:** real inbox digest, quarantine ran, **zero secret leakage**. Next Earn move:
+  pick a venue + register.
+- **Lesson captured (2026-07-23):** a quarantine reader strips structured tokens → recover them via
+  a trusted, code-built side-channel, not by trusting the Q-LLM to transcribe (see `tasks/lessons.md`).
+
+## 2026-07-22 — Observability & command surface (health-audit fallout)
+
+A health-audit prompt from Paco ("is Houge checking himself?") surfaced a dropped-photo bug and
+telemetry gaps; a research/strategy thread (builder-ideas over HN/X/HF) produced project candidates
+(noted, not built). Fixes shipped + live on the mini:
+
+- **/status redesign** — three sections (🟢 HEALTH / 📈 ACTIVITY / 💰 COST & USAGE); the
+  invariant-sweep **self-check line** ("swept Xh ago · N open incidents") makes the silent-healthy
+  sweep visible; Sydney-local times; recovered poll-errors show "none"; "N completed" wording;
+  dropped the run-id wall.
+- **Token/cost observability** — new **`/usage`** Telegram command + **`houge usage`** CLI; splits
+  **API (metered, real $) vs CLI (subscription, tokens-only "sub")** with the model per leg;
+  `recordLlmCallSafe` no longer stores a phantom self-reported cost for non-metered legs. OTel stays
+  deferred by design — the SQLite ledger is the telemetry substrate.
+- **Conversational telemetry fixed (two stacked bugs)** — (a) `fix(pi)`: pi 0.81.1 reports usage as
+  `input`/`output`/`cacheRead`, not `*_tokens`, so exact Kimi tokens were silently discarded;
+  (b) `fix(telemetry)`: the daemon injected its own `llmAdapter` into CoreWorker, tripping
+  `llmAdapterIsDefault=false` and disabling ALL cheap-chain (answer/classify/…) usage recording —
+  conversational turns recorded nothing. Both fixed; pi→Kimi turns now record.
+- **Caption-fallback** — non-text Telegram messages (photos) were silently dropped by the
+  `.text`-only parser; now a photo's caption routes as the turn text, a truly text-less message gets
+  a one-line ack (no ghosting), and **auth runs first** (a stranger's bare photo is denied, never
+  acked). Real photo/vision (Gemini + image) is the remaining parked medium slice.
+- **/usage + /help** — real control commands; a typo'd/unknown `/slash-command` now returns the
+  command list instead of falling through to an expensive LLM turn (which had re-run a research dump).
+- **Command-output polish** — `/status` `/schedule` `/lessons` human-readable: Sydney-local times;
+  `/schedule` strips the internal dedup-guard preamble + shows the city once; `/lessons` drops the
+  internal reuse/applied/ratings/supersedes telemetry.
+- **/schedule numbering** — dropped the opaque `sch_<uuid>` from the list; `#1..#N` with
+  `/schedule cancel <N>` (same `visibleSchedules()` order as the renderer for parity); full-id cancel
+  still works.
+
 ## 2026-06-20 — Self-evolution: philosophy reframe, ADR 0011, Phase 1 (code self-diagnose) LIVE
 
 Branch `feat/learning-v1` (3+ commits ahead of main; Houge runs from this branch's `dist/`, not main).

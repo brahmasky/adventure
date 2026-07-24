@@ -124,13 +124,25 @@ the untrusted-data wall holds, so Houge never adopts an instruction embedded in 
 as a lesson. When a scope's block exceeds its `char_cap`, an LLM rewrite pass consolidates it
 (deduping into the strongest rules).
 
+**Consolidation (preserve-all merge).** As lessons accumulate, near-duplicates within a scope are
+merged by a **daily preserve-all merge tick** (mirroring episodic consolidation): it clusters
+near-duplicate ACTIVE lessons and merges each cluster into ONE lesson that keeps **every** directive
+and every AVOID. It is **ADD-then-supersede-all** — it never deletes; the originals are superseded,
+not dropped, and reuse value is carried (capped/clamped). A cluster-size cap plus gross-collapse and
+avoid-drop floors keep a merge from over-collapsing. Preview a run with `houge lessons-consolidate
+--dry-run`; the tick is gated by `HOUGE_LESSON_CONSOLIDATE_ENABLED` (in `DISARM_FLAGS`). Design:
+[lesson-consolidation spec](docs/superpowers/specs/2026-07-23-lesson-consolidation-design.md).
+
 This trades ADR 0007's upfront `/teach` + per-lesson approval gate for **precision +
 reversibility** on *user-sourced* lessons — the human's own feedback is the trust anchor. Two
 slash-only control commands keep it inspectable (idempotent, no run, no budget):
 
 - `/lessons [scope]` — view the lesson block(s); shows the raw block plus char-count/cap so you can see consolidation pressure. With no scope, lists all scopes.
 - `/forget <scope>` — clears that scope's lesson block and acks.
-- `/schedule` · `/schedule cancel <id>` — list/cancel this chat's scheduled tasks; schedules are created, listed, **updated**, and cancelled conversationally via the `schedule_task` loop tool ("每周一早上8点给我AI周报", "周报以后加上悉尼工作机会") — ADR 0017 + its 2026-07-20 v2 amendment.
+- `/schedule` · `/schedule cancel <N>` — list/cancel this chat's scheduled tasks; the list numbers them `#1..#N` (cancel by number or full id), and schedules are created, listed, **updated**, and cancelled conversationally via the `schedule_task` loop tool ("每周一早上8点给我AI周报", "周报以后加上悉尼工作机会") — ADR 0017 + its 2026-07-20 v2 amendment.
+- `/status` — a three-section health digest (🟢 HEALTH / 📈 ACTIVITY / 💰 COST & USAGE), including the invariant-sweep self-check line ("swept Xh ago · N open incidents") so a silent-healthy sweep is still visible; Sydney-local times.
+- `/usage` (Telegram) / `houge usage` (CLI) — token/cost observability from the SQLite ledger, split **API (metered, real $) vs CLI (subscription, tokens-only)** with the model per leg.
+- `/help` — the command list. Any typo'd/unknown `/slash-command` returns this list rather than falling through to an (expensive) LLM turn.
 - `/kill [reason]` — the durable kill switch (ADR 0018): writes the `houge.kill` tombstone and stops the daemon; launchd relaunches into a PARKED process, so nothing automatic can resurrect it. Revival is manual (delete the file, restart). `/disarm` · `/rearm` — one-command evolution/scheduler stand-down that survives restarts (posture file outranks `.env`).
 
 → The composer, conversational learning, and the self-critique pass:

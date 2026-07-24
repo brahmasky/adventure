@@ -277,6 +277,16 @@ Flip [Merge & reload] from human-tapped to autonomous (notify-after) ONLY when A
 
 ## 5. Handoff notes for the successor orchestrator model
 
+- **Shipped since this doc was written (2026-07-07 → 2026-07-24), all live on the mini:**
+  scheduler v2 + introspection slice A (ADR 0024, 2026-07-20); the **Gmail identity**
+  (`gmail_read`/`google_api`, **ADR 0025**, LIVE + live-gated 2026-07-24 with zero secret leakage)
+  — this **CLEARS the Earn-P3 Google blocker**, so the next Earn move is pick a venue + register;
+  observability + command-surface fixes (/status redesign, `/usage` + `houge usage`, `/help`,
+  caption-fallback, `/schedule` #N numbering, conversational-telemetry double-bug fix); and
+  **lesson consolidation** (preserve-all daily merge, ARMED + first live merge tick 2026-07-24,
+  flag `HOUGE_LESSON_CONSOLIDATE_ENABLED`, design spec
+  `docs/superpowers/specs/2026-07-23-lesson-consolidation-design.md` — no ADR).
+  **ADR range is now 0001–0025.**
 - **Nothing in Houge's runtime depends on the departing model.** The daemon runs pi/agy/kimi/
   gemini chains; self-write writer=codex, reviewer=kimi. Claude wiring was REMOVED from the
   runtime entirely 2026-07-12 (Paco: keep Claude focused on building) — the once-optional
