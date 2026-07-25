@@ -196,7 +196,8 @@ describe("archiveStaleIdeas / pruneIdeaOverflow", () => {
       sources: { hn_front: [item("hn_front:4"), item("hn_front:5")], gh_new: [{ id: "gh_new:s/s", url: "https://github.com/s/s", title: "s" }] }
     });
 
-    const archived = store.pruneIdeaOverflow({ cap: 2, now: NOW });
+    // Prune on a LATER tick: R2's L4 rule exempts cards with first_seen == now.
+    const archived = store.pruneIdeaOverflow({ cap: 2, now: "2026-07-25T12:00:00.000Z" });
     expect(archived).toBe(1);
     expect(getIdea(store, weak.id).status).toBe("archived");
     expect(getIdea(store, mid.id).status).not.toBe("archived");

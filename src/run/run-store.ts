@@ -530,6 +530,44 @@ function parseIdeaRow(row: IdeaRawRow): IdeaRow {
   return { ...rest, sources: JSON.parse(sources_json) as Record<string, IdeaSourceItem[]> };
 }
 
+/**
+ * The ONLY status transitions {@link RunStore.setIdeaStatus} will write (Idea Radar R2,
+ * spec 2026-07-25 §8): the panel shortlists seen/tracked cards and reverts un-re-shortlisted
+ * ones to tracked; the operator pick flips shortlisted↔picked. Everything else —
+ * same-status, archived/killed source, seen→picked leaps — is refused in code, never thrown.
+ */
+const IDEA_STATUS_TRANSITIONS: ReadonlyArray<readonly [IdeaStatus, IdeaStatus]> = [
+  ["seen", "shortlisted"],
+  ["tracked", "shortlisted"],
+  ["shortlisted", "tracked"],
+  ["shortlisted", "picked"],
+  ["picked", "shortlisted"]
+];
+
+/** One frozen shortlist entry inside a snapshot's cards_json (Idea Radar R2, spec §4 apply). */
+export interface ShortlistCard {
+  rank: number;
+  idea_id: number;
+  slug: string;
+  title: string;
+  mean_score: number;
+  chair_rationale: string | null;
+}
+
+/**
+ * One weekly shortlist snapshot (Idea Radar R2, spec §4/§5). Frozen history: `/idea pick <n>`
+ * resolves ranks against the LATEST snapshot's cards, never the live board — board drift after
+ * the panel cannot misresolve a pick. `picked_idea_id` is display bookkeeping; the pick truth
+ * is the global `status='picked'` singleton on the ideas table.
+ */
+export interface ShortlistRow {
+  id: number;
+  created_at: string;
+  week_key: string;
+  cards: ShortlistCard[];
+  picked_idea_id: number | null;
+}
+
 /** The candidate {@link RunStore.saveReconciledFact} stores (all metadata rides ADD/SUPERSEDE/UPDATE). */
 export interface EpisodicFactCandidate {
   chat_id: string;
@@ -2647,6 +2685,10 @@ export class RunStore {
    * {@link IDEA_CARD_ITEMS_PER_SOURCE_CAP} dropping oldest-first, recompute the
    * distinct counts, and apply `summaryUpdate` when non-null. Missing card → no-op
    * (the parse floor should have dropped it; stay non-destructive anyway).
+   *
+   * R2 L7 fix: `summaryUpdate` applies ONLY while status ∈ seen|tracked —
+   * shortlisted/picked summaries are panel/operator-blessed, LLM drift blocked.
+   * The item union + counts + last_seen still apply for every active status.
    */
   touchIdeaCard(input: {
     id: number;
@@ -2655,9 +2697,11 @@ export class RunStore {
     now: string;
   }): { updated: boolean } {
     const row = this.db.prepare(`
-      SELECT sources_json FROM ideas WHERE id = ?
-    `).get<{ sources_json: string }>(input.id);
+      SELECT sources_json, status FROM ideas WHERE id = ?
+    `).get<{ sources_json: string; status: IdeaStatus }>(input.id);
     if (!row) return { updated: false };
+    const summaryUpdate =
+      row.status === "seen" || row.status === "tracked" ? input.summaryUpdate : null;
 
     const sources = JSON.parse(row.sources_json) as Record<string, IdeaSourceItem[]>;
     for (const [key, items] of Object.entries(input.newItems)) {
@@ -2683,13 +2727,18 @@ export class RunStore {
       distinct_items,
       distinct_sources,
       input.now,
-      input.summaryUpdate,
+      summaryUpdate,
       input.id
     );
     return { updated: true };
   }
 
-  /** Active cards (NOT archived/killed), momentum DESC then last_seen DESC — the /radar order. */
+  /**
+   * Active cards (NOT archived/killed) — the /radar order AND the panel's input order.
+   * Status priority pins picked, then shortlisted, above the momentum ranking (R2 W5:
+   * a top-10 render must never hide the shortlist below un-blessed high-momentum cards);
+   * within a band: momentum DESC, last_seen DESC, id ASC.
+   */
   listActiveIdeas(limit: number): IdeaRow[] {
     return this.db.prepare(`
       SELECT id, slug, title, summary, status, sources_json, distinct_items, distinct_sources,
@@ -2697,7 +2746,8 @@ export class RunStore {
              distinct_items * distinct_sources AS momentum
       FROM ideas
       WHERE status NOT IN ('archived', 'killed')
-      ORDER BY momentum DESC, last_seen DESC, id ASC
+      ORDER BY CASE status WHEN 'picked' THEN 0 WHEN 'shortlisted' THEN 1 ELSE 2 END ASC,
+               momentum DESC, last_seen DESC, id ASC
       LIMIT ?
     `).all<IdeaRawRow>(limit).map(parseIdeaRow);
   }
@@ -2725,6 +2775,12 @@ export class RunStore {
   /**
    * Overflow guard: while more than `cap` cards are active, archive the lowest-momentum
    * (oldest-sighted on ties) first. Deterministic, no LLM. Returns the count archived.
+   *
+   * Victim exclusions (R2): a card created THIS tick (`first_seen = now`) is never the
+   * victim (L4 — a fresh signal must survive its birth tick), and shortlisted/picked
+   * cards are never auto-archived (B1 — panel/operator judgments have no third archive
+   * path). Excluded cards still COUNT toward the cap total, so the board can overshoot
+   * by at most the shortlist size + 1.
    */
   pruneIdeaOverflow(input: { cap: number; now: string }): number {
     const overflow = this.countActiveIdeas() - input.cap;
@@ -2734,10 +2790,12 @@ export class RunStore {
       WHERE id IN (
         SELECT id FROM ideas
         WHERE status NOT IN ('archived', 'killed')
+          AND first_seen != ?
+          AND status NOT IN ('shortlisted', 'picked')
         ORDER BY distinct_items * distinct_sources ASC, last_seen ASC, id ASC
         LIMIT ?
       )
-    `).run(input.now, overflow).changes;
+    `).run(input.now, input.now, overflow).changes;
   }
 
   /** One summary event per non-dry radar tick that RAN (visibility over parsimony — once/day). */
@@ -2757,6 +2815,130 @@ export class RunStore {
         payload
       })
     );
+  }
+
+  // --- Idea panel (Idea Radar R2, spec 2026-07-25) -----------------------------
+
+  /** Last executed panel tick (single-row weekly latch, like radar_state; NULL = first arm). */
+  getPanelLastRun(): string | null {
+    const row = this.db.prepare(`
+      SELECT last_run_at FROM radar_panel_state WHERE id = 1
+    `).get<{ last_run_at: string | null }>();
+    return row?.last_run_at ?? null;
+  }
+
+  /** Stamped BEFORE any judge call (M3 posture) — a crashing panel never retry-storms. */
+  markPanelRan(now: string): void {
+    this.db.prepare(`UPDATE radar_panel_state SET last_run_at = ? WHERE id = 1`).run(now);
+  }
+
+  /**
+   * Guarded status write — the ONLY path the panel and `/idea pick` use. Allowed
+   * transitions are exactly {@link IDEA_STATUS_TRANSITIONS}; anything else (same-status,
+   * archived/killed source, unknown id) returns `{updated: false}` and never throws.
+   * `now` is accepted for write-path parity but deliberately NOT stamped anywhere:
+   * a status change is a judgment, not a sighting — last_seen stays put.
+   */
+  setIdeaStatus(input: { id: number; status: IdeaStatus; now: string }): { updated: boolean } {
+    void input.now;
+    const row = this.db.prepare(`
+      SELECT status FROM ideas WHERE id = ?
+    `).get<{ status: IdeaStatus }>(input.id);
+    if (!row) return { updated: false };
+    const allowed = IDEA_STATUS_TRANSITIONS.some(
+      ([from, to]) => from === row.status && to === input.status
+    );
+    if (!allowed) return { updated: false };
+    this.db.prepare(`UPDATE ideas SET status = ? WHERE id = ?`).run(input.status, input.id);
+    return { updated: true };
+  }
+
+  /**
+   * Full scores_json overwrite per panel run (history lives in snapshots + briefs,
+   * not in the card). Missing card → `{updated: false}` (partial-trace posture).
+   */
+  writeIdeaScores(input: { id: number; scoresJson: string }): { updated: boolean } {
+    const changes = this.db.prepare(`
+      UPDATE ideas SET scores_json = ? WHERE id = ?
+    `).run(input.scoresJson, input.id).changes;
+    return { updated: changes > 0 };
+  }
+
+  /**
+   * Frozen weekly shortlist snapshot — idempotent per week: a re-fired week REPLACES
+   * created_at/cards_json and RESETS picked_idea_id to NULL (the old pick pointed at
+   * ranks that no longer exist; the ideas-table `picked` status is untouched here).
+   */
+  upsertShortlistSnapshot(input: { weekKey: string; cardsJson: string; now: string }): { id: number } {
+    this.db.prepare(`
+      INSERT INTO radar_shortlists (created_at, week_key, cards_json, picked_idea_id)
+      VALUES (?, ?, ?, NULL)
+      ON CONFLICT(week_key) DO UPDATE SET
+        created_at = excluded.created_at,
+        cards_json = excluded.cards_json,
+        picked_idea_id = NULL
+    `).run(input.now, input.weekKey, input.cardsJson);
+    const row = this.db.prepare(`
+      SELECT id FROM radar_shortlists WHERE week_key = ?
+    `).get<{ id: number }>(input.weekKey);
+    if (!row) throw new Error(`shortlist upsert failed for week ${input.weekKey}`);
+    return { id: row.id };
+  }
+
+  /** The snapshot `/idea` renders and `/idea pick` resolves against (max id = latest fire). */
+  getLatestShortlist(): ShortlistRow | null {
+    const row = this.db.prepare(`
+      SELECT id, created_at, week_key, cards_json, picked_idea_id
+      FROM radar_shortlists
+      ORDER BY id DESC
+      LIMIT 1
+    `).get<{
+      id: number;
+      created_at: string;
+      week_key: string;
+      cards_json: string;
+      picked_idea_id: number | null;
+    }>();
+    if (!row) return null;
+    const { cards_json, ...rest } = row;
+    return { ...rest, cards: JSON.parse(cards_json) as ShortlistCard[] };
+  }
+
+  /** Display bookkeeping only — the pick truth is the ideas-table `picked` singleton. */
+  setShortlistPick(input: { snapshotId: number; ideaId: number }): void {
+    this.db.prepare(`
+      UPDATE radar_shortlists SET picked_idea_id = ? WHERE id = ?
+    `).run(input.ideaId, input.snapshotId);
+  }
+
+  /** One card by id, any status (the /radar <n> detail + pick-resolution read). */
+  getIdeaById(id: number): IdeaRow | null {
+    const row = this.db.prepare(`
+      SELECT id, slug, title, summary, status, sources_json, distinct_items, distinct_sources,
+             scores_json, first_seen, last_seen, archived_at,
+             distinct_items * distinct_sources AS momentum
+      FROM ideas
+      WHERE id = ?
+    `).get<IdeaRawRow>(id);
+    return row ? parseIdeaRow(row) : null;
+  }
+
+  /**
+   * The global pick singleton backing `/idea pick` (spec §5 B3): at most one
+   * `status='picked'` card exists by construction — the pick handler reverts the
+   * previous one before setting the next. Read first-by-id; tests assert the count.
+   */
+  getPickedIdea(): IdeaRow | null {
+    const row = this.db.prepare(`
+      SELECT id, slug, title, summary, status, sources_json, distinct_items, distinct_sources,
+             scores_json, first_seen, last_seen, archived_at,
+             distinct_items * distinct_sources AS momentum
+      FROM ideas
+      WHERE status = 'picked'
+      ORDER BY id ASC
+      LIMIT 1
+    `).get<IdeaRawRow>();
+    return row ? parseIdeaRow(row) : null;
   }
 
   // --- Wiki pages (Phase W, ADR 0020) -----------------------------------------
@@ -5033,6 +5215,7 @@ export class RunStore {
     this.applyProjectsMigration();
     this.applyIncidentsMigration();
     this.applyIdeaRadarMigration();
+    this.applyIdeaPanelMigration();
   }
 
   /**
@@ -5126,6 +5309,49 @@ export class RunStore {
 
         CREATE TABLE IF NOT EXISTS radar_state (id INTEGER PRIMARY KEY, last_run_at TEXT);
         INSERT OR IGNORE INTO radar_state (id) VALUES (1);
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
+   * Idea Radar R2 (spec 2026-07-25 §8): ONE migration block for BOTH panel tables —
+   * `radar_panel_state` (the single-row weekly latch, seeded NULL so the first armed
+   * tick fires immediately — mirrors radar_state) + `radar_shortlists` (frozen weekly
+   * shortlist snapshots; `week_key` UNIQUE so a re-fired week replaces via upsert).
+   * No indexes — one snapshot row per week, human-decision scale.
+   */
+  private applyIdeaPanelMigration(): void {
+    const version = "2026-07-25-idea-panel";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS radar_panel_state (id INTEGER PRIMARY KEY, last_run_at TEXT);
+        INSERT OR IGNORE INTO radar_panel_state (id) VALUES (1);
+
+        CREATE TABLE IF NOT EXISTS radar_shortlists (
+          id INTEGER PRIMARY KEY,
+          created_at TEXT NOT NULL,
+          week_key TEXT NOT NULL UNIQUE,
+          cards_json TEXT NOT NULL,
+          picked_idea_id INTEGER
+        );
       `);
 
       if (!applied) {

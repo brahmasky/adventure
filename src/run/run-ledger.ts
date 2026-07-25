@@ -59,6 +59,7 @@ export type LedgerEventType =
   | "db_backup_failed"
   | "bounty_scan_completed"
   | "idea_radar_tick"
+  | "idea_panel_tick"
   | "project_created"
   | "project_state_changed"
   | "incident_opened"
@@ -203,6 +204,20 @@ const requiredPayloadFields = {
   // visibility over parsimony (once/day). Source keys + counts ONLY — card text stays
   // in the ideas rows, never the ledger.
   idea_radar_tick: ["sources_ok", "sources_failed", "cards_new", "cards_updated", "cards_archived"],
+  // Idea Radar R2 (spec 2026-07-25 §4): ONE event per weekly panel tick covering ALL
+  // outcomes — result ∈ ok|skipped|aborted; skip/abort paths zero the counts and set the
+  // optional `reason` (thin_board|quorum). Counts + ids only, zero prose — card text and
+  // judge rationales live in the ideas/radar_shortlists rows, never the ledger.
+  idea_panel_tick: [
+    "result",
+    "judges_ok",
+    "judges_failed",
+    "chair_used",
+    "cards_scored",
+    "shortlist_ids",
+    "week_key",
+    "brief_written"
+  ],
   project_created: ["project_id", "source_url"],
   project_state_changed: ["project_id", "from", "to"],
   // Introspection slice A (ADR 0024): ids + counts only — the incident detail lives in the
