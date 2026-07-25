@@ -1,21 +1,27 @@
-# 🧭 CURRENT SYSTEM STATE — 2026-07-24 (read this first)
+# 🧭 CURRENT SYSTEM STATE — 2026-07-25 (read this first)
 
-**IN FLIGHT (crash-resume point): Idea Radar R1 build — 2026-07-24.** Architecture approved by
-Paco after dual adversarial review (see sessions.md + docs/superpowers/specs/2026-07-24-idea-radar-r1-design.md).
-Slices: R1 = daily source tick + `ideas` table + `/radar` (THIS BUILD) → R2 = weekly 3-judge
-panel + claude-cli chair (contained: dedicated CLAUDE_CONFIG_DIR, --strict-mcp-config, tool-less,
-needs ADR superseding "Claude is NOT a runtime backend") → R3 = picked-card → kickoff brief →
-Claude Code session (runtime build pipeline OVERTURNED in review; extwork stays the delegated-build
-substrate). Sources R1: HN Algolia (front + Show/Ask), HF daily papers, Devpost, GitHub
-search-proxy, lobste.rs. Reddit = dormant (Data-API approval request submitted 2026-07-24 under
-Wukong's account, no SLA); X = dormant (pay-per-use ~$0.005/read via bearer transport, needs dev
-account). Build steps: [x] spec doc [x] spec-review-senior (3 blockers fixed: fetch charCap, dryRun
-gate-bypass, code-computed slug) [x] plan doc [x] subagent build T1–T4 (7752cc2..587d41c,
-+60 tests) [x] adversarial review (0 crit/high; M1/M2 hostile-char strip, M3 early latch
-stamp, L1/L2/L3/L5/L6 fixed in 5b5ef84; L4/L7 deferred to R2, spec note) [x] full green
-(1991 tests) [x] live dry-run gate PASSED 2026-07-24 (8 real cards, cross-source clustering
-confirmed) [x] docs (ADR 0026, configuration.md, README) → **[ ] PACO EYEBALL + ARM
-(`HOUGE_RADAR_ENABLED=1` + kickstart) — the only remaining step.**
+**IN FLIGHT (crash-resume point): Idea Radar R2 build — started 2026-07-25.** Paco's go:
+"proceed with R2 using our agreed flow, subagents preferred." Scope (agreed in R1 architecture
+round, see spec R2 sections): weekly 3-judge panel (kimi-api / gemini-api / codex lenses) +
+contained claude-cli chair (dedicated CLAUDE_CONFIG_DIR, `--tools ""`, `--strict-mcp-config
+--mcp-config '{}'`, `--max-turns 1`, canary probe; auth `claude setup-token` →
+CLAUDE_CODE_OAUTH_TOKEN via broker) + shortlist snapshot + `/idea pick <n>` + `/radar <n>`
+detail view + weekly brief file. Must amend ADR 0010/0011 ("Claude is NOT a runtime backend")
+per Paco's 2026-07-24 decision; ADR 0023/extwork untouched. Also fold in R1-deferred L4
+(same-tick prune shadowing) + L7 (summary_update rewriting shortlisted/picked cards). Steps:
+[ ] research subagents (substrate + decisions) [ ] spec doc [ ] spec-review-senior gate
+[ ] plan doc [ ] subagent build [ ] adversarial review [ ] live dry-run gate [ ] docs/ADR
+amendments [ ] Paco eyeball + arm. **Operator homework (Paco): run `claude setup-token` on the
+mini when asked — chair auth.**
+
+**DONE 2026-07-24: Idea Radar R1 — SHIPPED + ARMED LIVE.** Daily source tick (HN front/show,
+HF papers, Devpost, GH new, lobste.rs; Reddit/X dormant) → `ideas` store → `/radar`. Pinned
+07:30 Sydney (HOUGE_RADAR_AT, DST-safe). First live tick 2026-07-24 11:08Z: 9 cards, 5/6
+sources; HF byte-cap fix (512KB) in — expect 6/6 next tick. Full pipeline: spec →
+spec-review-senior (3 blockers fixed) → subagent build T1–T4 → adversarial review (M1–M3,
+L1–L6 fixed; L4/L7 → R2) → 1996 tests green → live gate → ADR 0026 → armed
+(`HOUGE_RADAR_ENABLED=1`, in DISARM_FLAGS). Reddit Data-API approval pending (submitted
+2026-07-24, no SLA; ~1hr wiring when it lands).
 
 **Live config (mini daemon, .env is the arming truth — read it, don't assume):**
 HOUGE_SCHEDULER_ENABLED · HOUGE_BOUNTY_ENABLED · HOUGE_EPISODIC_ENABLED · HOUGE_WIKI_ENABLED ·
