@@ -1,0 +1,252 @@
+// Idea Radar R2 panel seats (ADR 0027, spec §§1–2): TWO contained spawn legs — the claude CLI
+// "chair" and the codex CLI "buildability judge". Panel-local by design: NEITHER seat joins the
+// LLM registry / `buildLlmChain` (`answerWithChain` never sees them); only `runIdeaPanelTick`
+// invokes them, so the ADR 0010 "Claude is never the engine" amendment stays narrow.
+//
+// Containment posture mirrors the pi provider leg: `defaultSpawnImpl` (never-reject, our own
+// SIGKILL timeout, hard stdout byte cap), untrusted digest on STDIN ONLY (never argv),
+// `buildChildEnv()` allowlist base, neutral `os.tmpdir()` cwd.
+import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import os from "node:os";
+import {
+  buildChildEnv,
+  defaultSpawnImpl,
+  type SpawnImpl,
+  type SpawnResult
+} from "../llm/providers/cli-spawn.js";
+import { resolveCodexBin } from "./coding-agent.js";
+import type { SecretBroker } from "../config/secret-broker.js";
+
+/** Both seats resolve to this total shape — a seat NEVER throws into the panel tick. */
+export type SeatResult = { ok: true; answer: string } | { ok: false; unavailable?: boolean };
+
+/** Default chair wall-clock timeout (`HOUGE_RADAR_CHAIR_TIMEOUT_MS` overrides). */
+export const CHAIR_DEFAULT_TIMEOUT_MS = 120_000;
+/** Default codex-judge wall-clock timeout (`HOUGE_CODEX_TIMEOUT_MS` overrides). */
+export const CODEX_JUDGE_DEFAULT_TIMEOUT_MS = 120_000;
+/** Hard stdout byte cap for both seats (the pi leg's 256 KB bound). */
+export const SEAT_MAX_BYTES = 262_144;
+
+function numericEnv(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Chair: claude CLI, single-shot, tools disabled, isolated config dir, broker-injected OAuth.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Code-owned chair config dir: `~/.houge/claude-chair` — a CONSTANT path (not env-configurable,
+ * spec §2) so the chair can never be pointed at the operator's `~/.claude` (skills, hooks, MCP
+ * servers must be unreachable). Resolved lazily via `os.homedir()` so tests can stub it.
+ */
+export function chairConfigDir(): string {
+  return join(os.homedir(), ".houge", "claude-chair");
+}
+
+/**
+ * Minimal `settings.json` written into the chair config dir on first use: empty allow list plus
+ * a deny-all pattern, no hooks, no MCP servers, no plugins — pure defense-in-depth behind the
+ * argv-level `--tools ""` (which is the real lever: it disables the whole built-in tool set).
+ */
+const CHAIR_SETTINGS_JSON = '{"permissions":{"allow":[],"deny":["*"]}}\n';
+
+/** mkdir + settings.json on first use; returns false when the dir can't be prepared. */
+function ensureChairConfigDir(dir: string): boolean {
+  try {
+    mkdirSync(dir, { recursive: true });
+    const settingsPath = join(dir, "settings.json");
+    if (!existsSync(settingsPath)) {
+      writeFileSync(settingsPath, CHAIR_SETTINGS_JSON, "utf8");
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Chair argv — every flag verified against the PINNED binary `/usr/local/bin/claude` v2.1.219
+ * (`--help` + a live parse probe with a throwaway `CLAUDE_CONFIG_DIR`; unknown options are hard
+ * errors in `-p` mode — `error: unknown option`, no API call — so a wrong flag can't silently
+ * degrade; live gate step 0 re-verifies on the deploy host):
+ *   - `-p, --print`            — non-interactive, print response and exit.
+ *   - `--output-format json`   — "json (single result)": ONE JSON object on stdout whose
+ *                                `result` string field carries the assistant text and whose
+ *                                `is_error` flags failure (probe-verified shape).
+ *   - `--max-turns 1`          — accepted by the parser (hidden from `--help` in 2.1.219 but
+ *                                probe-verified); belt-and-braces on top of the tool disable.
+ *   - `--tools ""`             — 'Use "" to disable all tools' (built-in set) — the real lever.
+ *   - `--strict-mcp-config`    — only `--mcp-config` servers, ignoring all other MCP config.
+ *   - `--mcp-config {"mcpServers":{}}` — the empty server set. NOTE: bare `{}` is REJECTED by
+ *                                2.1.219 ("mcpServers: Invalid input: expected record").
+ *   - `--system-prompt <s>`    — Houge-controlled discipline (never the untrusted digest).
+ * The untrusted digest goes on STDIN, never argv.
+ */
+export function buildChairArgs(system: string): string[] {
+  return [
+    "-p",
+    "--output-format",
+    "json",
+    "--max-turns",
+    "1",
+    "--tools",
+    "",
+    "--strict-mcp-config",
+    "--mcp-config",
+    '{"mcpServers":{}}',
+    "--system-prompt",
+    system
+  ];
+}
+
+export interface ChairParams {
+  /** Untrusted card digest — delivered on stdin ONLY. */
+  digest: string;
+  /** Houge-controlled system discipline (safe as an argv value, like the pi leg). */
+  system: string;
+  /** The chair's OAuth token comes from the broker — never from ambient `process.env`. */
+  broker: SecretBroker;
+  /** Config env (bin path, timeout override) — injectable for tests. */
+  env: NodeJS.ProcessEnv;
+  spawnImpl?: SpawnImpl;
+}
+
+/**
+ * Parse `--output-format json` stdout: a single JSON object whose `result` field (string) is the
+ * assistant text. Anything else — malformed JSON, missing/empty `result`, `is_error: true` —
+ * is a plain failure (the tick falls back to mean-score synthesis).
+ */
+function extractChairAnswer(stdout: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout.trim());
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const obj = parsed as Record<string, unknown>;
+  if (obj.is_error === true) return undefined;
+  if (typeof obj.result !== "string" || obj.result.length === 0) return undefined;
+  return obj.result;
+}
+
+/**
+ * Spawn the contained claude chair (spec §2). Unavailable (no spawn attempted) when
+ * `HOUGE_CLAUDE_BIN` is unset/empty — an absolute path is required (launchd PATH won't have
+ * `claude`; DAEMON_PATH precedent) — or when the broker holds no OAuth token. ENOENT at spawn
+ * time is likewise `unavailable`; timeout / non-zero exit / overflow / parse failure are plain
+ * `{ok:false}` — the panel publishes either way via the deterministic fallback.
+ */
+export async function spawnPanelChair(params: ChairParams): Promise<SeatResult> {
+  const spawnImpl = params.spawnImpl ?? defaultSpawnImpl;
+
+  const bin = params.env.HOUGE_CLAUDE_BIN?.trim();
+  if (!bin) return { ok: false, unavailable: true };
+
+  const token = params.broker.claudeOauthToken();
+  if (token === null || token.length === 0) return { ok: false, unavailable: true };
+
+  const configDir = chairConfigDir();
+  if (!ensureChairConfigDir(configDir)) return { ok: false };
+
+  const timeoutMs = numericEnv(params.env.HOUGE_RADAR_CHAIR_TIMEOUT_MS, CHAIR_DEFAULT_TIMEOUT_MS);
+
+  // buildChildEnv() allowlist base (PATH/HOME/TERM/LANG/USER) + EXACTLY two additions: the
+  // isolated config dir and the broker-held OAuth token. No bot token, no API keys (spec §2).
+  const env: Record<string, string> = {
+    ...buildChildEnv(undefined),
+    CLAUDE_CONFIG_DIR: configDir,
+    CLAUDE_CODE_OAUTH_TOKEN: token
+  };
+
+  let result: SpawnResult;
+  try {
+    result = await spawnImpl(bin, buildChairArgs(params.system), {
+      timeoutMs,
+      cwd: os.tmpdir(),
+      env,
+      maxBytes: SEAT_MAX_BYTES,
+      input: params.digest // untrusted digest: stdin ONLY, never argv
+    });
+  } catch {
+    // defaultSpawnImpl never rejects; a rejecting injected impl still must not throw upward.
+    return { ok: false };
+  }
+
+  if (result.spawnError?.code === "ENOENT") return { ok: false, unavailable: true };
+  if (result.spawnError) return { ok: false, unavailable: true };
+  if (result.timedOut) return { ok: false };
+  if (Buffer.byteLength(result.stdout, "utf8") > SEAT_MAX_BYTES) return { ok: false };
+  if (result.code !== 0) return { ok: false };
+
+  const answer = extractChairAnswer(result.stdout);
+  if (answer === undefined) return { ok: false };
+  return { ok: true, answer };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Codex judge: codex CLI, read-only sandbox, no secrets at all.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Codex judge argv — mirrors the coding-agent containment idiom (`buildCodexArgs`,
+ * coding-agent.ts): `exec --sandbox read-only` with a trailing `-` so the prompt is read from
+ * STDIN (never a bypass flag, never the digest on argv). No `-C` (neutral `os.tmpdir()` cwd —
+ * the judge reads no repo) and no `-o` outfile (the single JSON verdict is read from stdout,
+ * byte-capped).
+ */
+export function buildCodexJudgeArgs(): string[] {
+  return ["exec", "--sandbox", "read-only", "-"];
+}
+
+export interface CodexJudgeParams {
+  /** Untrusted card digest — delivered on stdin ONLY. */
+  digest: string;
+  /** Houge-controlled framing; joined ahead of the digest on stdin (codex exec has no system-prompt flag). */
+  system: string;
+  env: NodeJS.ProcessEnv;
+  spawnImpl?: SpawnImpl;
+}
+
+/**
+ * Spawn the contained codex judge (spec §1). Env is `buildChildEnv()` ONLY — codex authenticates
+ * via its own subscription state in `$HOME` and gets none of our secrets (no broker parameter on
+ * purpose: this seat cannot leak what it never receives). Missing binary (ENOENT) →
+ * `unavailable`; everything else degrades to `{ok:false}` and the quorum rule decides.
+ */
+export async function spawnCodexJudge(params: CodexJudgeParams): Promise<SeatResult> {
+  const spawnImpl = params.spawnImpl ?? defaultSpawnImpl;
+
+  const bin = resolveCodexBin(params.env);
+  const timeoutMs = numericEnv(params.env.HOUGE_CODEX_TIMEOUT_MS, CODEX_JUDGE_DEFAULT_TIMEOUT_MS);
+
+  // Prompt delivery per the coding-agent contract: the WHOLE prompt (framing + digest) goes to
+  // stdin behind the trailing `-` argv token — the untrusted digest is never an argv value.
+  const input = `${params.system}\n\n${params.digest}`;
+
+  let result: SpawnResult;
+  try {
+    result = await spawnImpl(bin, buildCodexJudgeArgs(), {
+      timeoutMs,
+      cwd: os.tmpdir(),
+      env: buildChildEnv(undefined),
+      maxBytes: SEAT_MAX_BYTES,
+      input
+    });
+  } catch {
+    return { ok: false };
+  }
+
+  if (result.spawnError?.code === "ENOENT") return { ok: false, unavailable: true };
+  if (result.spawnError) return { ok: false, unavailable: true };
+  if (result.timedOut) return { ok: false };
+  if (Buffer.byteLength(result.stdout, "utf8") > SEAT_MAX_BYTES) return { ok: false };
+  if (result.code !== 0) return { ok: false };
+
+  const answer = result.stdout.trim();
+  if (answer.length === 0) return { ok: false };
+  return { ok: true, answer };
+}

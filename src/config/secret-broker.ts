@@ -1,7 +1,7 @@
 /**
  * The secrets firewall (ADR 0015, Phase 1 — in-process broker).
  *
- * After boot loads `.env` into `process.env`, the seven real secrets are lifted into a
+ * After boot loads `.env` into `process.env`, the eight real secrets are lifted into a
  * {@link SecretBroker} — a PRIVATE closure with narrow typed getters — and then DELETED from
  * `process.env` (see {@link stripSecretsFromEnv}). For the rest of the process lifetime the
  * ambient environment holds no credential, so a self-written `process.env.KIMI_API_KEY` reads
@@ -13,7 +13,10 @@
  * nothing is stripped, so behavior is byte-for-byte identical to before the firewall existed.
  */
 
-/** The exact seven real secrets the daemon holds (ADR 0015 §Context). */
+/**
+ * The exact eight real secrets the daemon holds (ADR 0015 §Context; ADR 0027 "seven becomes
+ * eight" — `CLAUDE_CODE_OAUTH_TOKEN` funds the panel chair's contained claude CLI spawn).
+ */
 export const SECRET_ENV_NAMES = [
   "KIMI_API_KEY",
   "GEMINI_API_KEY",
@@ -21,7 +24,8 @@ export const SECRET_ENV_NAMES = [
   "FIRECRAWL_API_KEY",
   "HOUGE_TELEGRAM_BOT_TOKEN",
   "HOUGE_GMAIL_CLIENT_SECRET",
-  "HOUGE_GMAIL_REFRESH_TOKEN"
+  "HOUGE_GMAIL_REFRESH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN"
 ] as const;
 
 /**
@@ -54,6 +58,13 @@ export interface SecretBroker {
   gmailClientSecret(): string | undefined;
   gmailRefreshToken(): string | undefined;
   /**
+   * The Claude Code subscription OAuth token (`claude setup-token`) the panel chair injects into
+   * its contained child env (ADR 0027). `null` when unset — the chair treats that as
+   * "unavailable" and falls back without spawning. Ends in `_TOKEN`, so the armed firewall
+   * strips it from `process.env`; this getter is the ONLY sanctioned read.
+   */
+  claudeOauthToken(): string | null;
+  /**
    * Replace every known NON-EMPTY secret VALUE with {@link REDACTED_PLACEHOLDER}. Safe on empty/
    * undefined input (returned unchanged) and never masks everything (short values are ignored per
    * {@link MIN_REDACTABLE_SECRET_LENGTH}). A pure closure — safe to pass unbound.
@@ -62,7 +73,7 @@ export interface SecretBroker {
 }
 
 /**
- * Build the broker from a snapshot of the loaded env. The seven values are captured into a private
+ * Build the broker from a snapshot of the loaded env. The eight values are captured into a private
  * closure at construction; the getters return those captured values, so the broker keeps working
  * after the env is stripped. `redact` masks the captured values (longest-first, so a value that is
  * a substring of another is handled after the longer one).
@@ -75,6 +86,7 @@ export function createSecretBroker(env: NodeJS.ProcessEnv): SecretBroker {
   const telegram = env.HOUGE_TELEGRAM_BOT_TOKEN;
   const gmailClientSecret = env.HOUGE_GMAIL_CLIENT_SECRET;
   const gmailRefreshToken = env.HOUGE_GMAIL_REFRESH_TOKEN;
+  const claudeOauth = env.CLAUDE_CODE_OAUTH_TOKEN;
 
   const redactable = [
     kimi,
@@ -83,7 +95,8 @@ export function createSecretBroker(env: NodeJS.ProcessEnv): SecretBroker {
     firecrawl,
     telegram,
     gmailClientSecret,
-    gmailRefreshToken
+    gmailRefreshToken,
+    claudeOauth
   ]
     .filter((v): v is string => typeof v === "string" && v.length >= MIN_REDACTABLE_SECRET_LENGTH)
     .sort((a, b) => b.length - a.length);
@@ -96,6 +109,7 @@ export function createSecretBroker(env: NodeJS.ProcessEnv): SecretBroker {
     telegramToken: () => telegram,
     gmailClientSecret: () => gmailClientSecret,
     gmailRefreshToken: () => gmailRefreshToken,
+    claudeOauthToken: () => claudeOauth ?? null,
     redact: (text: string): string => {
       if (typeof text !== "string" || text.length === 0) return text;
       let out = text;
@@ -109,7 +123,7 @@ export function createSecretBroker(env: NodeJS.ProcessEnv): SecretBroker {
 }
 
 /**
- * Delete every credential from `env`, in place: the exact five names AND any key whose name matches
+ * Delete every credential from `env`, in place: the exact {@link SECRET_ENV_NAMES} AND any key whose name matches
  * the credential-shaped suffix pattern. Returns the names that were stripped (for logging/tests).
  * Non-secret vars (base URLs, models, timeouts, the Telegram identity allowlist) are untouched.
  */

@@ -17,7 +17,8 @@ const FAKE = {
   FIRECRAWL_API_KEY: "fc-secret-jkl678901",
   HOUGE_TELEGRAM_BOT_TOKEN: "111222333:bot-token-secret-value",
   HOUGE_GMAIL_CLIENT_SECRET: "GOCSPX-fake-gmail-client-secret-123",
-  HOUGE_GMAIL_REFRESH_TOKEN: "1//fake-gmail-refresh-token-456789"
+  HOUGE_GMAIL_REFRESH_TOKEN: "1//fake-gmail-refresh-token-456789",
+  CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-fake-chair-token-987654"
 };
 
 function fakeEnv(): NodeJS.ProcessEnv {
@@ -34,6 +35,20 @@ describe("createSecretBroker — typed getters over a private closure", () => {
     expect(b.telegramToken()).toBe(FAKE.HOUGE_TELEGRAM_BOT_TOKEN);
     expect(b.gmailClientSecret()).toBe(FAKE.HOUGE_GMAIL_CLIENT_SECRET);
     expect(b.gmailRefreshToken()).toBe(FAKE.HOUGE_GMAIL_REFRESH_TOKEN);
+    expect(b.claudeOauthToken()).toBe(FAKE.CLAUDE_CODE_OAUTH_TOKEN);
+  });
+
+  it("SECRET_ENV_NAMES is the exact eight-name list (ADR 0027: seven becomes eight)", () => {
+    expect([...SECRET_ENV_NAMES]).toEqual([
+      "KIMI_API_KEY",
+      "GEMINI_API_KEY",
+      "TAVILY_API_KEY",
+      "FIRECRAWL_API_KEY",
+      "HOUGE_TELEGRAM_BOT_TOKEN",
+      "HOUGE_GMAIL_CLIENT_SECRET",
+      "HOUGE_GMAIL_REFRESH_TOKEN",
+      "CLAUDE_CODE_OAUTH_TOKEN"
+    ]);
   });
 
   it("getters keep working AFTER the env is stripped (values live in the closure, not env)", () => {
@@ -52,6 +67,11 @@ describe("createSecretBroker — typed getters over a private closure", () => {
     expect(b.geminiKey()).toBeUndefined();
     expect(b.tavilyKey()).toBeUndefined();
   });
+
+  it("claudeOauthToken() returns null (not undefined) when unset — the chair's no-spawn signal", () => {
+    const b = createSecretBroker({} as NodeJS.ProcessEnv);
+    expect(b.claudeOauthToken()).toBeNull();
+  });
 });
 
 describe("broker.redact — masks secret VALUES only", () => {
@@ -63,6 +83,13 @@ describe("broker.redact — masks secret VALUES only", () => {
     expect(out).not.toContain(FAKE.HOUGE_TELEGRAM_BOT_TOKEN);
     expect(out).toContain(REDACTED_PLACEHOLDER);
     expect(out).toBe(`key=${REDACTED_PLACEHOLDER} tok=${REDACTED_PLACEHOLDER}`);
+  });
+
+  it("masks the Claude Code OAuth token (eighth secret)", () => {
+    const b = createSecretBroker(fakeEnv());
+    const out = b.redact(`chair auth: ${FAKE.CLAUDE_CODE_OAUTH_TOKEN}`);
+    expect(out).not.toContain(FAKE.CLAUDE_CODE_OAUTH_TOKEN);
+    expect(out).toBe(`chair auth: ${REDACTED_PLACEHOLDER}`);
   });
 
   it("masks both Gmail OAuth secret values", () => {
@@ -107,13 +134,16 @@ describe("broker.redact — masks secret VALUES only", () => {
 });
 
 describe("stripSecretsFromEnv — empties ambient credentials in place", () => {
-  it("deletes the exact seven secret names", () => {
+  it("deletes the exact eight secret names", () => {
     const env = fakeEnv();
     const stripped = stripSecretsFromEnv(env);
     for (const name of SECRET_ENV_NAMES) {
       expect(env[name]).toBeUndefined();
       expect(stripped).toContain(name);
     }
+    // The eighth secret specifically: stripped both as an exact name and by the _TOKEN suffix.
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(stripped).toContain("CLAUDE_CODE_OAUTH_TOKEN");
   });
 
   it("deletes any credential-shaped var by pattern (_API_KEY / _TOKEN / _SECRET)", () => {
