@@ -37,6 +37,7 @@ import { evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import { queryStatus } from "../status/status-query.js";
 import { formatUsageTable } from "../status/usage-report.js";
 import { resolveRadarEnabled } from "../capabilities/idea-radar.js";
+import { CHAIR_FALLBACK_RATIONALE, resolvePanelEnabled } from "../capabilities/idea-panel.js";
 import { resolvePanelAt } from "../capabilities/week-key.js";
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import type { IdeaRow, ShortlistRow } from "../run/run-store.js";
@@ -783,14 +784,17 @@ export class Gateway {
   }
 
   /**
-   * Resolve `/idea pick <n>` to a reply (spec §5 singleton mechanism, EXACT order):
+   * Resolve `/idea pick <n>` to a reply (spec §5 singleton mechanism, set-BEFORE-revert):
    *   1. rank n resolves in the LATEST snapshot (frozen — board drift cannot misresolve);
-   *   2. the CURRENT pick comes from the global `status='picked'` query (never snapshot
-   *      fields — those diverge across weeks); if it exists it reverts `picked→shortlisted`;
-   *      a refused revert, or a snapshot pick pointer whose card left the singleton, means
-   *      the previous pick was archived/killed — the reply notes it and proceeds;
-   *   3. the new card flips `→ picked`; a refusal here means IT was archived since the
-   *      snapshot froze — reply the failure line, write nothing else;
+   *   2. the new card flips `→ picked` FIRST; a refusal here means IT was archived since
+   *      the snapshot froze — reply the failure line, write NOTHING else (the prior pick,
+   *      if any, stays intact — never end with zero picked cards);
+   *   3. only then the CURRENT prior pick (global `status='picked'` query, never snapshot
+   *      fields — those diverge across weeks) reverts `picked→shortlisted`; a refused
+   *      revert, or a snapshot pick pointer whose card left the singleton, means the
+   *      previous pick was archived/killed — the reply notes it. The transient two-picked
+   *      state between steps 2 and 3 lives inside this synchronous handler only; the
+   *      handler always ends with the singleton restored;
    *   4. stamp the snapshot's display pointer, confirm "picked #n from <week_key>".
    * Re-picking the already-picked card skips the status churn (the guard refuses
    * picked→picked) and just re-stamps + confirms — an idempotent operator nudge.
@@ -810,6 +814,13 @@ export class Gateway {
       this.runStore.setShortlistPick({ snapshotId: snapshot.id, ideaId: card.idea_id });
       return formatIdeaPickedText(card.rank, snapshot.week_key, card.title);
     }
+    // Set BEFORE revert: `shortlisted→picked` is an allowed transition even while the prior
+    // card is still `picked` (no uniqueness guard in setIdeaStatus), so a refusal here —
+    // the card was archived since the snapshot froze — leaves the prior pick untouched
+    // instead of ending the system with ZERO picked cards.
+    const set = this.runStore.setIdeaStatus({ id: card.idea_id, status: "picked", now });
+    if (!set.updated) return IDEA_PICK_CARD_ARCHIVED_TEXT;
+
     if (prior) {
       const reverted = this.runStore.setIdeaStatus({ id: prior.id, status: "shortlisted", now });
       if (!reverted.updated) notes.push("上一个 pick 已归档");
@@ -818,9 +829,6 @@ export class Gateway {
       // picked card was archived/killed out from under it — nothing to revert, say so.
       notes.push("上一个 pick 已归档");
     }
-
-    const set = this.runStore.setIdeaStatus({ id: card.idea_id, status: "picked", now });
-    if (!set.updated) return IDEA_PICK_CARD_ARCHIVED_TEXT;
 
     this.runStore.setShortlistPick({ snapshotId: snapshot.id, ideaId: card.idea_id });
     return [formatIdeaPickedText(card.rank, snapshot.week_key, card.title), ...notes].join("\n");
@@ -1039,9 +1047,16 @@ export class Gateway {
               const lastRun = this.runStore.getPanelLastRun();
               const slot = resolvePanelAt(process.env);
               const shortlist = this.runStore.getLatestShortlist();
+              // Spec §2 W3: a rejected chair argv flag would silently fall back to
+              // mean-score forever — when EVERY rationale in the latest snapshot is the
+              // fallback constant, the last panel ran chairless; say so here.
+              const chairOff =
+                shortlist !== null &&
+                shortlist.cards.length > 0 &&
+                shortlist.cards.every((c) => c.chair_rationale === CHAIR_FALLBACK_RATIONALE);
               return `Panel: last ${lastRun ? `${relativeTimeAgo(lastRun, now)} ago` : "never"} · ${
                 slot ? `${slot.day} ${slot.at}` : "off"
-              } · shortlist ${shortlist ? shortlist.cards.length : "none"}`;
+              } · shortlist ${shortlist ? shortlist.cards.length : "none"}${chairOff ? " · chair off" : ""}`;
             })()
           ]
         : [];
@@ -1360,14 +1375,6 @@ function formatPanelScoreLine(scoresJson: string | null): string | null {
 /** `/radar <n>` when there is no nth active card (out of range / empty board). */
 export function formatRadarNumberNotFoundText(n: number): string {
   return `没有第 ${n} 个 idea 卡片 (no idea #${n}) — see /radar for the list.`;
-}
-
-// TODO(T5): swap to the idea-panel module's exported resolver once T3 lands (same
-// semantics as resolveRadarEnabled — this local copy exists only to avoid coupling
-// the T4 command surface to the concurrently-built panel tick module).
-function resolvePanelEnabled(env: NodeJS.ProcessEnv): boolean {
-  const raw = env.HOUGE_RADAR_PANEL_ENABLED?.trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
 /** `/idea` while the panel is dark — name the flag so the operator knows what to arm. */

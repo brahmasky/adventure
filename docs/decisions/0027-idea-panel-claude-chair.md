@@ -187,3 +187,31 @@ operator-chosen input.
 - **Skip the brief file (SQLite + Telegram only)** — avoids the §4 residual entirely, but
   Paco's review workflow lives in repo files, and a regenerable projection is the cheapest
   honest form. Accepted with the banner + never-read-back posture instead.
+
+## Adversarial review (2026-07-27)
+
+Verdict FIX-FIRST → fixed:
+
+- **Codex outfile idiom** — `codex exec` stdout is a session transcript (echoed prompt first),
+  so parsing it dead-seated the judge every week and opened verdict forgery via hostile card
+  text; the judge now writes `-o <outfile>` in a fresh tempdir outside any sandbox path
+  (coding-agent idiom) and reads ONLY the outfile, byte-capped, tempdir cleaned in `finally`.
+- **`chair off` status signal** — `/status` panel line now appends `· chair off` when every
+  rationale in the latest snapshot is the fallback constant (spec §2 W3 mandate: a rejected
+  chair argv flag must not fall back silently forever).
+- **Pick set-before-revert** — `/idea pick` flips the new card `→ picked` FIRST and only then
+  reverts the prior; a refused set (card archived since the snapshot froze) can no longer end
+  the system with zero picked cards.
+- **Resolver dedupe** — the gateway's stale `TODO(T5)` local `resolvePanelEnabled` copy is
+  deleted in favor of the idea-panel export (identical semantics).
+
+Noted, not fixed:
+
+- CLI `radar-panel` non-dry consumes the shared weekly latch + no `meteredBreached` in the CLI
+  judge bindings — operator-deliberate, R1-consistent.
+- Chair `settings.json` deny `"*"` shape unverified against the pinned binary — the canary
+  probe covers it; the argv `--tools ""` is the real lever.
+- `/idea` ✅ picked marker rides the snapshot pointer, which can lag the global singleton —
+  cosmetic.
+- Inline ordinal spoofing via card titles (a title containing "2.") — inherent to a numbered
+  text list; the pick confirmation echoes the real title.

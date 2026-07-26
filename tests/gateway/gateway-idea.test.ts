@@ -7,6 +7,7 @@ import {
   IDEA_OFF_TEXT,
   IDEA_PICK_CARD_ARCHIVED_TEXT
 } from "../../src/gateway/gateway.js";
+import { CHAIR_FALLBACK_RATIONALE } from "../../src/capabilities/idea-panel.js";
 import { RunStore } from "../../src/run/run-store.js";
 
 const NOW = "2026-07-25T12:00:00.000Z";
@@ -291,6 +292,35 @@ describe("/idea", () => {
     }
   });
 
+  it("pick of an archived card leaves the prior pick INTACT (set-before-revert — zero-picked unreachable)", () => {
+    process.env.HOUGE_RADAR_PANEL_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      const a = seedShortlisted(store, "a", "Alpha");
+      const b = seedShortlisted(store, "b", "Beta");
+      seedSnapshot(store, [
+        { rank: 1, idea_id: a, slug: "a", title: "Alpha", mean_score: 7, chair_rationale: null },
+        { rank: 2, idea_id: b, slug: "b", title: "Beta", mean_score: 6, chair_rationale: null }
+      ]);
+      gateway.intake(ideaPickEvent(1, "telegram:idea-pick-keeper"), NOW);
+      store.claimNextNotification("test", 30);
+      // The NEW target is archived out from under the frozen snapshot; the pick must
+      // refuse BEFORE touching the prior — the singleton never drops to zero.
+      dbExec(store, `UPDATE ideas SET status = 'archived', archived_at = '${NOW}' WHERE id = ${b}`);
+
+      gateway.intake(ideaPickEvent(2, "telegram:idea-pick-archived-new"), NOW);
+      expect(String(store.claimNextNotification("test", 30)?.payload.text)).toBe(
+        IDEA_PICK_CARD_ARCHIVED_TEXT
+      );
+      expect(store.getIdeaById(a)?.status).toBe("picked");
+      expect(store.getPickedIdea()?.id).toBe(a);
+      expect(store.getLatestShortlist()?.picked_idea_id).toBe(a);
+    } finally {
+      store.close();
+    }
+  });
+
   it("deduplicates a redelivered pick (replayed verdict, single notification, no double flip)", () => {
     process.env.HOUGE_RADAR_PANEL_ENABLED = "1";
     const store = RunStore.openInMemory();
@@ -341,6 +371,45 @@ describe("/status panel line", () => {
       gateway.intake(statusEvent("telegram:status-idea-never"), NOW);
       const text = String(store.claimNextNotification("test", 30)?.payload.text);
       expect(text).toContain("Panel: last never · off · shortlist none");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("renders '· chair off' when EVERY rationale in the latest snapshot is the chair fallback", () => {
+    process.env.HOUGE_RADAR_PANEL_ENABLED = "1";
+    delete process.env.HOUGE_RADAR_PANEL_AT;
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      const a = seedShortlisted(store, "a", "Alpha");
+      const b = seedShortlisted(store, "b", "Beta");
+      seedSnapshot(store, [
+        { rank: 1, idea_id: a, slug: "a", title: "Alpha", mean_score: 7, chair_rationale: CHAIR_FALLBACK_RATIONALE },
+        { rank: 2, idea_id: b, slug: "b", title: "Beta", mean_score: 6, chair_rationale: CHAIR_FALLBACK_RATIONALE }
+      ]);
+      gateway.intake(statusEvent("telegram:status-chair-off"), NOW);
+      const text = String(store.claimNextNotification("test", 30)?.payload.text);
+      expect(text).toContain("shortlist 2 · chair off");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("does NOT render 'chair off' when any rationale is real (mixed snapshot = chair ran)", () => {
+    process.env.HOUGE_RADAR_PANEL_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      const a = seedShortlisted(store, "a", "Alpha");
+      const b = seedShortlisted(store, "b", "Beta");
+      seedSnapshot(store, [
+        { rank: 1, idea_id: a, slug: "a", title: "Alpha", mean_score: 7, chair_rationale: "clear wedge" },
+        { rank: 2, idea_id: b, slug: "b", title: "Beta", mean_score: 6, chair_rationale: CHAIR_FALLBACK_RATIONALE }
+      ]);
+      gateway.intake(statusEvent("telegram:status-chair-on"), NOW);
+      const text = String(store.claimNextNotification("test", 30)?.payload.text);
+      expect(text).not.toContain("chair off");
     } finally {
       store.close();
     }

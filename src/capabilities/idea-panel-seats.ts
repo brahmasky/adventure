@@ -6,7 +6,7 @@
 // Containment posture mirrors the pi provider leg: `defaultSpawnImpl` (never-reject, our own
 // SIGKILL timeout, hard stdout byte cap), untrusted digest on STDIN ONLY (never argv),
 // `buildChildEnv()` allowlist base, neutral `os.tmpdir()` cwd.
-import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import os from "node:os";
 import {
@@ -195,11 +195,14 @@ export async function spawnPanelChair(params: ChairParams): Promise<SeatResult> 
  * Codex judge argv — mirrors the coding-agent containment idiom (`buildCodexArgs`,
  * coding-agent.ts): `exec --sandbox read-only` with a trailing `-` so the prompt is read from
  * STDIN (never a bypass flag, never the digest on argv). No `-C` (neutral `os.tmpdir()` cwd —
- * the judge reads no repo) and no `-o` outfile (the single JSON verdict is read from stdout,
- * byte-capped).
+ * the judge reads no repo). The `-o <outfile>` carries the FINAL message only: codex stdout is
+ * a session transcript (banner + echoed prompt + thinking + counts), so parsing stdout both
+ * dead-seats the judge (the echoed prompt's JSON template is the first balanced `{…}`) and
+ * opens verdict forgery (a hostile card summary containing a valid `{"scores":[…]}` the model
+ * quotes back). The outfile lives outside any sandbox path, like coding-agent's.
  */
-export function buildCodexJudgeArgs(): string[] {
-  return ["exec", "--sandbox", "read-only", "-"];
+export function buildCodexJudgeArgs(outfile: string): string[] {
+  return ["exec", "--sandbox", "read-only", "-o", outfile, "-"];
 }
 
 export interface CodexJudgeParams {
@@ -227,26 +230,49 @@ export async function spawnCodexJudge(params: CodexJudgeParams): Promise<SeatRes
   // stdin behind the trailing `-` argv token — the untrusted digest is never an argv value.
   const input = `${params.system}\n\n${params.digest}`;
 
-  let result: SpawnResult;
+  // Fresh `-o` outfile in a tempdir OUTSIDE any sandbox path (coding-agent's outDir idiom) —
+  // the read-only sandbox can't be asked to write into its own root, and only the outfile
+  // content (codex's final message) counts as the answer; stdout transcript is discarded.
+  let outDir: string;
   try {
-    result = await spawnImpl(bin, buildCodexJudgeArgs(), {
-      timeoutMs,
-      cwd: os.tmpdir(),
-      env: buildChildEnv(undefined),
-      maxBytes: SEAT_MAX_BYTES,
-      input
-    });
+    outDir = mkdtempSync(join(os.tmpdir(), "houge-panel-codex-"));
   } catch {
     return { ok: false };
   }
+  const outfile = join(outDir, "verdict.txt");
 
-  if (result.spawnError?.code === "ENOENT") return { ok: false, unavailable: true };
-  if (result.spawnError) return { ok: false, unavailable: true };
-  if (result.timedOut) return { ok: false };
-  if (Buffer.byteLength(result.stdout, "utf8") > SEAT_MAX_BYTES) return { ok: false };
-  if (result.code !== 0) return { ok: false };
+  try {
+    let result: SpawnResult;
+    try {
+      result = await spawnImpl(bin, buildCodexJudgeArgs(outfile), {
+        timeoutMs,
+        cwd: os.tmpdir(),
+        env: buildChildEnv(undefined),
+        maxBytes: SEAT_MAX_BYTES,
+        input
+      });
+    } catch {
+      return { ok: false };
+    }
 
-  const answer = result.stdout.trim();
-  if (answer.length === 0) return { ok: false };
-  return { ok: true, answer };
+    if (result.spawnError?.code === "ENOENT") return { ok: false, unavailable: true };
+    if (result.spawnError) return { ok: false, unavailable: true };
+    if (result.timedOut) return { ok: false };
+    if (result.code !== 0) return { ok: false };
+
+    // The answer is the outfile, never stdout. Missing/unreadable → the seat just failed.
+    let raw: string;
+    try {
+      raw = readFileSync(outfile, "utf8");
+    } catch {
+      return { ok: false };
+    }
+    if (Buffer.byteLength(raw, "utf8") > SEAT_MAX_BYTES) return { ok: false };
+
+    const answer = raw.trim();
+    if (answer.length === 0) return { ok: false };
+    return { ok: true, answer };
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
 }

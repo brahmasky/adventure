@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import os from "node:os";
 import {
   buildChairArgs,
@@ -265,10 +265,38 @@ describe("spawnPanelChair — contained claude CLI chair", () => {
 });
 
 describe("spawnCodexJudge — contained codex CLI judge", () => {
-  it("spawns `exec --sandbox read-only -` with framing+digest on stdin (coding-agent idiom)", async () => {
-    const spawnImpl = vi.fn<SpawnImpl>(async () =>
-      spawnResult({ stdout: '{"scores":[{"card":1,"score":7,"reason":"ok"}]}' })
-    );
+  const VERDICT = '{"scores":[{"card":1,"score":7,"reason":"ok"}]}';
+
+  /** `codex exec` stdout is a session transcript — the echoed prompt (with its JSON answer
+   *  template) comes FIRST, so any stdout parse would find the template, not the verdict. */
+  const TRANSCRIPT = [
+    "OpenAI Codex (session abc123)",
+    "user instructions:",
+    SYSTEM,
+    DIGEST,
+    'Answer as {"scores":[{"card":0,"score":0,"reason":"template"}]}',
+    "thinking… tokens used: 1234"
+  ].join("\n");
+
+  /** Extract the `-o` outfile path the judge put on argv. */
+  function outfileOf(args: readonly string[]): string {
+    const i = args.indexOf("-o");
+    expect(i).toBeGreaterThanOrEqual(0);
+    return args[i + 1]!;
+  }
+
+  /** Spawn stub that behaves like the real codex: writes the final message to the
+   *  argv-provided `-o` outfile (unless told not to) and emits transcript noise on stdout. */
+  function codexSpawnStub(opts: { outfileContent?: string; writeOutfile?: boolean } = {}) {
+    const write = opts.writeOutfile ?? true;
+    return vi.fn<SpawnImpl>(async (_file, args) => {
+      if (write) writeFileSync(outfileOf(args), opts.outfileContent ?? VERDICT);
+      return spawnResult({ stdout: TRANSCRIPT });
+    });
+  }
+
+  it("spawns `exec --sandbox read-only -o <outfile> -` and reads the OUTFILE, not stdout", async () => {
+    const spawnImpl = codexSpawnStub();
 
     const result = await spawnCodexJudge({
       digest: DIGEST,
@@ -277,11 +305,14 @@ describe("spawnCodexJudge — contained codex CLI judge", () => {
       spawnImpl
     });
 
-    expect(result).toEqual({ ok: true, answer: '{"scores":[{"card":1,"score":7,"reason":"ok"}]}' });
+    // The answer is the outfile verdict — never the transcript's echoed JSON template.
+    expect(result).toEqual({ ok: true, answer: VERDICT });
     const [file, args, opts] = spawnImpl.mock.calls[0]!;
     expect(file).toBe("codex"); // resolveCodexBin default
-    expect(args).toEqual(buildCodexJudgeArgs());
-    expect(args).toEqual(["exec", "--sandbox", "read-only", "-"]);
+    const outfile = outfileOf(args);
+    expect(dirname(outfile)).toMatch(/houge-panel-codex-/);
+    expect(args).toEqual(buildCodexJudgeArgs(outfile));
+    expect(args).toEqual(["exec", "--sandbox", "read-only", "-o", outfile, "-"]);
     expect(args).not.toContain(DIGEST);
     // Prompt delivery mirrors coding-agent: trailing `-` + whole prompt (system, then digest)
     // on stdin — the untrusted digest is never an argv token.
@@ -289,10 +320,33 @@ describe("spawnCodexJudge — contained codex CLI judge", () => {
     expect(opts.cwd).toBe(os.tmpdir());
     expect(opts.timeoutMs).toBe(CODEX_JUDGE_DEFAULT_TIMEOUT_MS);
     expect(opts.maxBytes).toBe(SEAT_MAX_BYTES);
+    // The `-o` tempdir is cleaned up after a successful run.
+    expect(existsSync(dirname(outfile))).toBe(false);
+  });
+
+  it("missing outfile (codex wrote nothing) and empty outfile → {ok:false}; tempdir still cleaned", async () => {
+    const missing = codexSpawnStub({ writeOutfile: false });
+    expect(
+      await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, spawnImpl: missing })
+    ).toEqual({ ok: false });
+    expect(existsSync(dirname(outfileOf(missing.mock.calls[0]![1])))).toBe(false);
+
+    const empty = codexSpawnStub({ outfileContent: "   \n" });
+    expect(
+      await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, spawnImpl: empty })
+    ).toEqual({ ok: false });
+    expect(existsSync(dirname(outfileOf(empty.mock.calls[0]![1])))).toBe(false);
+  });
+
+  it("oversized outfile (> SEAT_MAX_BYTES) → {ok:false}", async () => {
+    const huge = codexSpawnStub({ outfileContent: "x".repeat(SEAT_MAX_BYTES + 1) });
+    expect(
+      await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, spawnImpl: huge })
+    ).toEqual({ ok: false });
   });
 
   it("honors HOUGE_CODEX_BIN and HOUGE_CODEX_TIMEOUT_MS", async () => {
-    const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout: "verdict" }));
+    const spawnImpl = codexSpawnStub();
 
     await spawnCodexJudge({
       digest: DIGEST,
@@ -310,7 +364,7 @@ describe("spawnCodexJudge — contained codex CLI judge", () => {
   });
 
   it("child env is the bare buildChildEnv() allowlist — NO oauth token, NO secrets", async () => {
-    const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout: "verdict" }));
+    const spawnImpl = codexSpawnStub();
 
     await spawnCodexJudge({
       digest: DIGEST,
@@ -326,27 +380,27 @@ describe("spawnCodexJudge — contained codex CLI judge", () => {
     expect(opts.env.KIMI_API_KEY).toBeUndefined();
   });
 
-  it("ENOENT → unavailable; timeout and empty stdout → plain {ok:false}", async () => {
+  it("ENOENT → unavailable; timeout → plain {ok:false}; tempdir cleaned on failure too", async () => {
     const enoent = vi.fn<SpawnImpl>(async () =>
       spawnResult({ code: null, spawnError: { code: "ENOENT" } })
     );
     expect(
       await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, spawnImpl: enoent })
     ).toEqual({ ok: false, unavailable: true });
+    expect(existsSync(dirname(outfileOf(enoent.mock.calls[0]![1])))).toBe(false);
 
     const timedOut = vi.fn<SpawnImpl>(async () => spawnResult({ code: null, timedOut: true }));
     expect(
       await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, spawnImpl: timedOut })
     ).toEqual({ ok: false });
-
-    const empty = vi.fn<SpawnImpl>(async () => spawnResult({ stdout: "   " }));
-    expect(
-      await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, spawnImpl: empty })
-    ).toEqual({ ok: false });
+    expect(existsSync(dirname(outfileOf(timedOut.mock.calls[0]![1])))).toBe(false);
   });
 
-  it("non-zero exit → {ok:false}", async () => {
-    const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ code: 2, stdout: "chatter" }));
+  it("non-zero exit → {ok:false} even when the outfile carries a verdict (refusal posture)", async () => {
+    const spawnImpl = vi.fn<SpawnImpl>(async (_file, args) => {
+      writeFileSync(outfileOf(args), VERDICT);
+      return spawnResult({ code: 2, stdout: "chatter" });
+    });
     expect(
       await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, spawnImpl })
     ).toEqual({ ok: false });
