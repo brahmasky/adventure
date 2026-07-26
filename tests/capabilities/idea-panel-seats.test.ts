@@ -312,7 +312,7 @@ describe("spawnCodexJudge — contained codex CLI judge", () => {
     const outfile = outfileOf(args);
     expect(dirname(outfile)).toMatch(/houge-panel-codex-/);
     expect(args).toEqual(buildCodexJudgeArgs(outfile));
-    expect(args).toEqual(["exec", "--sandbox", "read-only", "-o", outfile, "-"]);
+    expect(args).toEqual(["exec", "--sandbox", "read-only", "--skip-git-repo-check", "-o", outfile, "-"]);
     expect(args).not.toContain(DIGEST);
     // Prompt delivery mirrors coding-agent: trailing `-` + whole prompt (system, then digest)
     // on stdin — the untrusted digest is never an argv token.

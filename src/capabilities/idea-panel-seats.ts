@@ -200,9 +200,13 @@ export async function spawnPanelChair(params: ChairParams): Promise<SeatResult> 
  * dead-seats the judge (the echoed prompt's JSON template is the first balanced `{…}`) and
  * opens verdict forgery (a hostile card summary containing a valid `{"scores":[…]}` the model
  * quotes back). The outfile lives outside any sandbox path, like coding-agent's.
+ * `--skip-git-repo-check` is required BECAUSE of the neutral cwd: codex exec refuses to run
+ * outside a trusted/git directory (live-gate finding 2026-07-27) — coding-agent never hits this
+ * since it runs `-C <worktree>` inside a repo. The flag only skips the cwd trust prompt; the
+ * read-only sandbox is unchanged.
  */
 export function buildCodexJudgeArgs(outfile: string): string[] {
-  return ["exec", "--sandbox", "read-only", "-o", outfile, "-"];
+  return ["exec", "--sandbox", "read-only", "--skip-git-repo-check", "-o", outfile, "-"];
 }
 
 export interface CodexJudgeParams {

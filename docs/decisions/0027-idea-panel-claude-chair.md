@@ -82,8 +82,10 @@ tool manifest):
 - **Env:** the `buildChildEnv()` allowlist base plus EXACTLY two additions: the config dir
   and the broker-held OAuth token. No bot token, no API keys.
 
-The codex judge rides the same containment idiom (`codex exec --sandbox read-only`, stdin
-prompt, neutral cwd, byte cap) and receives **no secrets at all**.
+The codex judge rides the same containment idiom (`codex exec --sandbox read-only
+--skip-git-repo-check`, stdin prompt, neutral cwd, byte cap) and receives **no secrets at
+all**. The skip flag exists because the neutral tmpdir cwd is untrusted to codex (live-gate
+finding 2026-07-27); it bypasses only the cwd trust prompt, never the sandbox.
 
 ### 3. Broker extension — seven becomes eight
 
