@@ -146,3 +146,14 @@ Rules Claude writes for itself after corrections. Review at session start.
 - **Rule:** when a source/integration is blocked ONLY by operator-side registration or console
   work (dev account, OAuth app, API key request), do not silently drop it — ask Paco. He can
   usually clear it in minutes. Reserve "drop the source" for genuine technical or ToS dead ends.
+
+## 2026-07-27 — Telegram output must use the rich renderer, not plain text (Paco correction)
+- Pattern: R2 shipped /idea and /radar renders as flat escaped text although EVERY notification
+  already flows through markdownToTelegramHtml (parse_mode HTML + fallback). Paco: "output ...
+  not user friendly ... should have good readability", and "why two commands for the same task".
+- Rule 1: any NEW user-facing Telegram surface starts from "what should this look like on a
+  phone" — bold headers, per-item blocks, labeled bullets (what/build/why) — with escapeForTelegram
+  on values and markdown only in code-owned scaffolding. Plain rows are for logs, not operators.
+- Rule 2: don't mint a new top-level command per feature slice; extend the existing command
+  family (subcommands) unless the mental model is genuinely different. Operator surface area is
+  a cost.
