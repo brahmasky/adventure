@@ -9,10 +9,22 @@ CLAUDE_CODE_OAUTH_TOKEN via broker) + shortlist snapshot + `/idea pick <n>` + `/
 detail view + weekly brief file. Must amend ADR 0010/0011 ("Claude is NOT a runtime backend")
 per Paco's 2026-07-24 decision; ADR 0023/extwork untouched. Also fold in R1-deferred L4
 (same-tick prune shadowing) + L7 (summary_update rewriting shortlisted/picked cards). Steps:
-[ ] research subagents (substrate + decisions) [ ] spec doc [ ] spec-review-senior gate
-[ ] plan doc [ ] subagent build [ ] adversarial review [ ] live dry-run gate [ ] docs/ADR
-amendments [ ] Paco eyeball + arm. **Operator homework (Paco): run `claude setup-token` on the
-mini when asked — chair auth.**
+[x] research subagents (substrate + decisions) [x] spec doc [x] spec-review-senior gate
+(BLOCKED→CLEAR: B1 prune-archives-blessed, B2 week_key collision/tz, B3 pick singleton; 15
+findings resolved, spec §14) [x] plan doc (2458199) [x] subagent build T1–T5 (d23e929 store+
+guards, 04a2158 seats+broker#8+week-key [verified claude 2.1.219: --mcp-config needs
+{"mcpServers":{}}, zero-auth config-dir isolation probe], 1f9f793 commands, 4ef7d58 panel tick+
+brief, f81900c wiring+CLI+ADR 0027+0010/0011/0026 amendments; 2112 tests green)
+[x] adversarial review (FIX-FIRST → fixed d44936e: codex outfile parse [HIGH: dead seat +
+verdict forgery], chair-off /status signal, pick set-before-revert, resolver dedupe; 4 noted
+residuals in ADR 0027) [x] live gate PASSED 2026-07-27: dry-run 3/3 judges + live chair
+synthesis (codex needed --skip-git-repo-check for neutral cwd, d2928db); canary probe all-green
+(no tool use, no passwd, no file write, chair config dir clean, chair refused injected card
+with empty shortlist) → **[ ] PACO EYEBALL + ARM (`HOUGE_RADAR_PANEL_ENABLED=1` +
+`HOUGE_CLAUDE_BIN=/usr/local/bin/claude` in .env + kickstart) — the only remaining step.**
+2117 tests green, all pushed (HEAD d2928db).
+**Operator homework DONE 2026-07-25: CLAUDE_CODE_OAUTH_TOKEN in .env:114.** Two builder deaths
+on session/weekly limits mid-build (T1, T4) — both resumed from partial work, zero rework.
 
 **DONE 2026-07-24: Idea Radar R1 — SHIPPED + ARMED LIVE.** Daily source tick (HN front/show,
 HF papers, Devpost, GH new, lobste.rs; Reddit/X dormant) → `ideas` store → `/radar`. Pinned

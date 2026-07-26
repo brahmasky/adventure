@@ -1150,3 +1150,26 @@ Build + independent adversarial verification subagents; each live round found a 
   a class of bug that Slice A watching itself could not have.
 - 1708/1708 green. Pushed a3a04a8, latch cleared, daemon reloaded; first sweep on the new build
   confirmed 2026-07-20T11:18:25Z, 0 incidents (clean).
+
+## 2026-07-25→27 — Idea Radar R2: weekly judge panel + contained claude chair (BUILT, gate passed, awaiting arm)
+
+- Full pipeline in one arc: research subagents → spec → spec-review-senior (BLOCKED→CLEAR: B1
+  prune-archives-blessed-cards, B2 week_key push-dedupe collision + tz basis, B3 pick-singleton
+  semantics; 15 findings resolved in spec §14) → 5-task subagent build → adversarial review
+  (FIX-FIRST → fixed) → live gate PASSED.
+- Shipped: 3-judge panel (kimi-api/gemini-api pinned single-leg adapters + codex CLI leg),
+  contained claude chair (dedicated CLAUDE_CONFIG_DIR, verified v2.1.219 argv incl.
+  --mcp-config '{"mcpServers":{}}', broker secret #8 CLAUDE_CODE_OAUTH_TOKEN, stdin-only digest),
+  mean-score fallback, shortlist snapshots + /idea + /idea pick <n> (global pick singleton),
+  /radar numbered + /radar <n> detail, weekly brief projection memory/briefs/ with injection
+  banner, per-fire push key, ADR 0027 amending 0010/0011 (chair seat ≠ engine), houge radar-panel
+  --dry-run. HOUGE_RADAR_PANEL_ENABLED ships dark (DISARM_FLAGS), default sun 09:00 Sydney.
+- Adversarial review found HIGH: codex judge parsed raw `codex exec` transcript stdout — dead
+  seat every week + verdict-forgery tail via hostile card quoting valid JSON; fixed with the
+  coding-agent -o outfile idiom. Live gate found codex refusing the neutral tmpdir cwd —
+  --skip-git-repo-check added (sandbox unchanged). Canary probe: chair refused injected card
+  (empty shortlist), zero tool use, config-dir isolation clean.
+- Two builder subagents died on session/weekly API limits mid-task; both resumed from partial
+  work with zero rework (uncommitted trees verified then finished).
+- 2117 tests green (159 files), HEAD d2928db pushed. Remaining: Paco eyeball + arm
+  (HOUGE_RADAR_PANEL_ENABLED=1 + HOUGE_CLAUDE_BIN=/usr/local/bin/claude + kickstart).
