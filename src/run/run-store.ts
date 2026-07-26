@@ -2941,6 +2941,34 @@ export class RunStore {
     return row ? parseIdeaRow(row) : null;
   }
 
+  /**
+   * ONE event per weekly panel tick covering ALL outcomes (R2 spec §4 W7): result ∈
+   * ok|skipped|aborted; skip/abort paths zero the counts and set `reason`. Judge names +
+   * counts + ids only, zero prose — card text and judge rationales live in the
+   * ideas/radar_shortlists rows, never the ledger. Mirrors {@link recordIdeaRadarTick}.
+   */
+  recordIdeaPanelTick(payload: {
+    result: "ok" | "skipped" | "aborted";
+    reason?: "thin_board" | "quorum";
+    judges_ok: string[];
+    judges_failed: string[];
+    chair_used: boolean;
+    cards_scored: number;
+    shortlist_ids: number[];
+    week_key: string;
+    brief_written: boolean;
+  }): void {
+    this.appendLedgerEvent(
+      createLedgerEvent({
+        correlation_id: "idea-panel",
+        event_type: "idea_panel_tick",
+        actor: "system",
+        sequence: this.nextLedgerSequence(),
+        payload
+      })
+    );
+  }
+
   // --- Wiki pages (Phase W, ADR 0020) -----------------------------------------
 
   /** Insert one active page row; returns its id. */

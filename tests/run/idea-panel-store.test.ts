@@ -367,6 +367,36 @@ describe("idea_panel_tick ledger event", () => {
       error: "idea_panel_tick missing required payload field: brief_written"
     });
   });
+
+  it("recordIdeaPanelTick appends ONE validated idea-panel event (T3 tick emit)", () => {
+    const store = openStore();
+    store.recordIdeaPanelTick({
+      result: "aborted",
+      reason: "quorum",
+      judges_ok: ["kimi"],
+      judges_failed: ["gemini", "codex"],
+      chair_used: false,
+      cards_scored: 0,
+      shortlist_ids: [],
+      week_key: "2026-W30",
+      brief_written: false
+    });
+    const events = store.getLedgerEvents().filter((e) => e.event_type === "idea_panel_tick");
+    expect(events.length).toBe(1);
+    expect(events[0]?.correlation_id).toBe("idea-panel");
+    expect(events[0]?.actor).toBe("system");
+    expect(events[0]?.payload).toEqual({
+      result: "aborted",
+      reason: "quorum",
+      judges_ok: ["kimi"],
+      judges_failed: ["gemini", "codex"],
+      chair_used: false,
+      cards_scored: 0,
+      shortlist_ids: [],
+      week_key: "2026-W30",
+      brief_written: false
+    });
+  });
 });
 
 // --- helpers -------------------------------------------------------------------------------
