@@ -63,7 +63,10 @@ describe("DISARM_FLAGS", () => {
       "HOUGE_LESSON_CONSOLIDATE_ENABLED",
       // Idea Radar R1 (spec 2026-07-24): unattended external reads + a daily metered LLM
       // call + durable card writes — the STOP switch covers it like bounty intake.
-      "HOUGE_RADAR_ENABLED"
+      "HOUGE_RADAR_ENABLED",
+      // Idea Radar R2 (ADR 0027): the weekly judge panel — unattended metered calls, status/
+      // snapshot writes, the memory/briefs/ projection, and the first proactive weekly push.
+      "HOUGE_RADAR_PANEL_ENABLED"
     ]);
     expect(DISARM_FLAGS).not.toContain("HOUGE_EPISODIC_ENABLED");
   });

@@ -47,7 +47,11 @@ export const DISARM_FLAGS: readonly string[] = [
   "HOUGE_LESSON_CONSOLIDATE_ENABLED",
   // Idea Radar R1 (spec 2026-07-24): unattended daily reads of external feeds + one metered
   // LLM call + durable idea-card writes — unattended autonomy, covered like bounty intake.
-  "HOUGE_RADAR_ENABLED"
+  "HOUGE_RADAR_ENABLED",
+  // Idea Radar R2 (ADR 0027): the weekly judge panel — unattended metered LLM calls + status/
+  // snapshot writes + the memory/briefs/ projection + the first proactive weekly push — the
+  // STOP switch covers it like the radar it rides on.
+  "HOUGE_RADAR_PANEL_ENABLED"
 ];
 
 export function resolveDisarmPath(env: NodeJS.ProcessEnv = process.env): string {

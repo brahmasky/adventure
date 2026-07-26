@@ -14,7 +14,9 @@ import { normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
  * a DIFFERENT agent (kimi by default, model diversity) from the writer (Codex). The kimi CLI
  * runs in headless print mode by ABSOLUTE bin under the daemon's restricted PATH. The
  * Codex-session path is the fallback (independent fresh session + the same adversarial prompt
- * → same verdict shape). Claude is NOT a runtime backend — it is the build-orchestrator seat.
+ * → same verdict shape). Claude is NOT a runtime backend — it is the build-orchestrator seat
+ * (one narrow exception, ADR 0027: the contained, tool-less, single-turn idea-panel CHAIR seat
+ * — panel-local inference only, never a reviewer/writer/chain backend).
  */
 
 /** The daemon's launchd PATH (com.houge.daemon.plist). Reviewer CLIs are NOT on it → absolute bin. */

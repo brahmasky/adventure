@@ -3,7 +3,9 @@ import { join } from "node:path";
 import { checkMeteredCeiling } from "../budget/metered-ceiling.js";
 import { runEpisodicConsolidateTick } from "../capabilities/episodic-consolidate.js";
 import { maybeRunEpisodicDistill } from "../capabilities/episodic-extract.js";
-import { runIdeaRadarTick } from "../capabilities/idea-radar.js";
+import { runIdeaPanelTick, type PanelSeat } from "../capabilities/idea-panel.js";
+import { spawnCodexJudge, spawnPanelChair } from "../capabilities/idea-panel-seats.js";
+import { runIdeaRadarTick, type RadarLlm } from "../capabilities/idea-radar.js";
 import { runLessonConsolidateTick } from "../capabilities/lesson-consolidate.js";
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
@@ -75,6 +77,19 @@ export interface RunTelegramDaemonOptions {
    * sets it — the tick defaults to the real `fetchUrl` (SSRF floor + pinned request).
    */
   radarFetch?: Parameters<typeof runIdeaRadarTick>[0]["fetch"];
+  /**
+   * Injectable for tests ONLY: the panel's seat bindings (Idea Radar R2, ADR 0027). Prod
+   * never sets it — the daemon builds PINNED single-provider judge adapters (kimi/gemini)
+   * plus the contained codex/claude spawn seats via {@link buildPanelSeatBindings}.
+   */
+  panelSeats?: PanelSeatBindings;
+}
+
+/** The panel's injected seats (spec §1: per-seat pinning — `answerWithChain` never sees them). */
+export interface PanelSeatBindings {
+  judges: { kimi: RadarLlm; gemini: RadarLlm };
+  codexJudge: PanelSeat;
+  chair: PanelSeat;
 }
 
 export interface RunTelegramDaemonResult {
@@ -370,6 +385,20 @@ async function runSignalPathTick(
       env: process.env,
       now
     });
+    // Idea Radar R2 (ADR 0027): the weekly judged review over the ideas store — flag-gated
+    // OFF (DISARM_FLAGS), weekly latch stamped before any seat call, quorum(2) else abort.
+    // Seats are pinned per provider, NEVER a chain (a healthy-leg fallback would silently
+    // void model diversity and the quorum semantics); the codex/claude seats are the
+    // contained panel-local spawns. Self-contained (never throws), but rides this try/catch
+    // posture like every tick above.
+    await runIdeaPanelTick({
+      store: options.store,
+      ...(options.panelSeats ?? buildPanelSeatBindings(options)),
+      env: process.env,
+      now,
+      chatId: chat ? String(chat.telegram_chat_id) : null,
+      projectRoot: options.projectRoot
+    });
     // B10b: fire due schedules through the normal gateway→worker path (breaker,
     // contracts, and policy all apply). Flag-gated OFF; ≤3 fires per tick; the fired
     // run's final report is enqueued during executeRun, so the outbox flush right
@@ -396,6 +425,40 @@ async function runSignalPathTick(
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[telegram-daemon] signal-path tick failed: ${message}`);
   }
+}
+
+/**
+ * Build the panel's real seat bindings (Idea Radar R2, spec §1). The kimi/gemini judges are
+ * SINGLE-provider `createLlmAnswerAdapter` instances — the `providers` override pins each to
+ * exactly one registry leg, so judge diversity is structural (never `answerWithChain` over the
+ * configured chain). Usage/ceiling accounting rides the same construction the radar extract's
+ * adapter uses: the broker (when armed) + the metered-fuse latch read. The codex judge and the
+ * claude chair are the contained spawn seats (idea-panel-seats); the chair requires the broker
+ * (its OAuth token is broker-held, NEVER ambient env — spec §§2–3), so firewall-OFF means
+ * chair-unavailable → the tick's deterministic mean-score fallback.
+ */
+function buildPanelSeatBindings(options: RunTelegramDaemonOptions): PanelSeatBindings {
+  const broker = options.broker;
+  const pinnedJudge = (providers: string): RadarLlm => {
+    const adapter = createLlmAnswerAdapter({
+      ...(broker ? { broker } : {}),
+      providers,
+      meteredBreached: () => options.store.meteredFuseLatched()
+    });
+    return async (input) => {
+      const read = await adapter({ question: input.question, system: input.system });
+      return read.ok && typeof read.output.answer === "string"
+        ? ({ ok: true, answer: read.output.answer } as const)
+        : ({ ok: false } as const);
+    };
+  };
+  return {
+    judges: { kimi: pinnedJudge("kimi-api"), gemini: pinnedJudge("gemini-api") },
+    codexJudge: ({ digest, system }) => spawnCodexJudge({ digest, system, env: process.env }),
+    chair: broker
+      ? ({ digest, system }) => spawnPanelChair({ digest, system, broker, env: process.env })
+      : async () => ({ ok: false, unavailable: true })
+  };
 }
 
 /**

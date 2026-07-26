@@ -398,10 +398,14 @@ spec: [Phase 3 spec](../superpowers/specs/2026-06-25-phase3-code-self-write.md).
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `HOUGE_SELFWRITE_ENABLED` | `false` | Master switch for the **entire** code-self-write surface. Off until Paco flips it. When not truthy, a write-intent `selfcode` message **falls back to read-only diagnose** (Phase 1) — the safe direction (read before write) — so the feature ships dark and is opt-in. |
-| `HOUGE_SELFWRITE_REVIEWER` | `kimi` | Which agent runs **checker 3** (the independent reviewer). `kimi` — the local `kimi-cli` agent (**default**: cheap + model-diverse from the Codex writer; the free test-gate + the human merge are the real safety net). `claude` — the Claude CLI reviewer (spike-validated GO). `codex` — an independent Codex session (fresh session + adversarial prompt). writer≠checker is preserved either way. |
-| `HOUGE_CLAUDE_BIN` | — (no default) | **Absolute** path to the `claude` CLI, used by **both** the Claude reviewer and the Claude writer. **No default by design:** the launchd daemon's PATH does not include `~/.local/bin`, so `claude` is not resolvable by name — an absolute path is required (e.g. `/Users/pluo/.local/bin/claude`). If unset, whichever Claude role is selected is **disabled** (for the reviewer, set `HOUGE_SELFWRITE_REVIEWER=codex` to use the fallback). Spike-validated invocation: `claude -p` (print mode), with the prompt/task fed on **stdin**, under the daemon's restricted PATH. |
-| `HOUGE_CLAUDE_TIMEOUT_MS` | `180000` | Wall-clock timeout (ms) for one Claude pass — **shared** by the reviewer and the writer. The spike measured ~7–29s for a real reviewer verdict and ~15s for a headless writer edit; the cap leaves headroom for the async ack-then-deliver UX. |
+| `HOUGE_SELFWRITE_REVIEWER` | `kimi` | Which agent runs **checker 3** (the independent reviewer). Valid values are exactly the code's `ReviewerKind`: `kimi` — the local `kimi-cli` agent (**default**: cheap + model-diverse from the Codex writer; the free test-gate + the human merge are the real safety net) · `codex` — an independent Codex session (fresh session + adversarial prompt). There is **no `claude` reviewer** — Claude is not a self-write runtime backend (ADR 0011; its one runtime seat is the contained ADR 0027 panel chair). writer≠checker is preserved either way. |
 | `HOUGE_TESTGATE_TIMEOUT_MS` | `300000` | Wall-clock timeout (ms) for the whole **test gate** (typecheck + test + build) run in the worktree. A gate that exceeds it is treated as red (no publish), not a crash. |
+
+> **Stale-row cleanup (2026-07-27):** the former `claude` reviewer option, its
+> `HOUGE_CLAUDE_TIMEOUT_MS`, and the self-write `HOUGE_CLAUDE_BIN` row documented a Claude
+> reviewer/writer that no longer exists in code (`ReviewerKind = "codex" | "kimi"`,
+> `WriterKind = "codex"`). `HOUGE_CLAUDE_BIN` lives on with ONE consumer: the ADR 0027
+> panel chair (see [Idea Panel](#idea-panel-r2-adr-0027)).
 
 #### Phase 3.5 — kimi reviewer backend (`HOUGE_SELFWRITE_REVIEWER=kimi`)
 
@@ -512,7 +516,8 @@ noted), and `/approve` · `/deny` are **unforgeable** — never inferred from pr
 | `/forget <scope\|id>` | control | Prune that scope's lessons, or one lesson by numeric id (a reversible status flip — rows are never deleted) and ack. |
 | `/skills [scope]` | control | Read-only **viewer** of the ambient skills (name · scope · `when:` · version); regenerates `skills/REGISTRY.md`. Never invokes a skill. No scope → lists all scopes. |
 | `/skills pending` | control | Read-only **viewer** of the parked (blocked auto-author) drafts under `skills/_pending/` — inert, never applied. Inspect to hand-fix + promote, or discard. |
-| `/radar` | control | Top 10 active idea cards by momentum (title · momentum · age · status) + last-tick footer. Flag off → off notice. Read-only view of the ADR 0026 `ideas` store. |
+| `/radar [n]` | control | Numbered top-10 active idea cards (picked > shortlisted pinned first, then momentum) + last-tick footer; `/radar <n>` 详情 — per-card drill-down with summary, momentum, panel scores, and source titles + URLs. Flag off → off notice. Read-only view of the ADR 0026 `ideas` store. |
+| `/idea [pick <n>]` | control | Latest weekly panel shortlist snapshot (ADR 0027): rank · title · mean score · chair rationale, with the picked marker. `/idea pick <n>` resolves rank n IN the frozen snapshot and maintains the global pick singleton (at most one `picked` card, ever — re-pick reverts the prior). |
 | `/schedule` | control | List this chat's scheduled tasks (id · spec · next fire · goal; `⚠ failed` rows shown so they can be cleared). |
 | `/schedule cancel <id>` | control | Cancel a schedule (reversible state flip, never deleted; failed rows cancellable too). Chat-scoped — other chats' ids read as not-found. |
 | `/kill [reason]` | safety | **Durable kill switch** (ADR 0018): writes the `houge.kill` tombstone, acks with the revival steps, stops the daemon. launchd relaunches into a PARKED process (no polling, no runs) until the file is manually deleted. Unforgeable — slash-only + allowlist + no-forwards; exempt from the command rate limit. |
@@ -559,6 +564,28 @@ fetches + real LLM call, zero writes, bypasses flag and latch by design.
 | `HOUGE_RADAR_AT` | `07:30` | Wall-clock pin (`HH:MM` in `HOUGE_RADAR_TZ`): the tick fires on the first daemon cycle past this time daily — fresh cards each morning, no drift with restarts. `off` reverts to the rolling interval. First arm (no prior run) fires immediately. |
 | `HOUGE_RADAR_TZ` | display zone (Australia/Sydney) | IANA zone for the pin; DST-safe via the scheduler's calendar walk. |
 | `HOUGE_RADAR_INTERVAL_HOURS` | `24` | Rolling-interval fallback, only used when `HOUGE_RADAR_AT=off`. The latch stamps when the tick COMMITS to running (before fetches) — a store fault costs one interval, never a retry storm. |
+
+## Idea Panel (R2, ADR 0027)
+
+A weekly flag-gated tick judges the top 12 active idea cards through three pinned seats
+(kimi-api opportunity · gemini-api novelty · codex-CLI buildability; quorum 2) and a contained
+claude-CLI chair synthesizes a shortlist of 3 (chair absent/broken → deterministic mean-score
+fallback). Writes: per-card `scores_json`, `shortlisted`/`tracked` status transitions, a frozen
+weekly snapshot (`/idea` + `/idea pick <n>` resolve against it), a `memory/briefs/<week>-ideas.md`
+projection, and ONE Sunday digest push. Cost: 2 metered HTTP calls + 2 subscription CLI spawns
+per week. Pre-arm gate: `houge radar-panel --dry-run` — real seats, zero writes, no push, no
+brief, bypasses flag and latch by design.
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `HOUGE_RADAR_PANEL_ENABLED` | off | Arms the weekly panel tick. Accepts 1/true/yes/on. In `DISARM_FLAGS`. Off = no seat calls, no writes, no push; `/idea` still renders the last snapshot. |
+| `HOUGE_RADAR_PANEL_AT` | `sun 09:00` | Weekly slot, grammar exactly `"<day> HH:MM"` (day ∈ sun…sat, zero-padded 24h — `sun 9:00` is malformed). `off` disables tick AND push (no interval fallback). Malformed → default; `/status` renders the RESOLVED slot so a swallowed typo is visible. First arm (no prior run) fires immediately. Tz: `HOUGE_RADAR_TZ`. |
+| `HOUGE_RADAR_CHAIR_TIMEOUT_MS` | `120000` | Chair spawn wall-clock bound (our own SIGKILL; stdout capped at 256 KB either way). |
+| `HOUGE_CLAUDE_BIN` | — (no default) | **Absolute** path to the `claude` CLI for the chair seat (e.g. `/usr/local/bin/claude` — the launchd PATH cannot resolve it by name; no PATH guessing by design). Unset → chair unavailable → mean-score fallback (`/status` shows `chair off`). |
+| `CLAUDE_CODE_OAUTH_TOKEN` | — | Broker secret #8 (`claude setup-token`, subscription auth). Held by the secrets broker, injected only into the chair child env — never passthrough, never printed, never in argv or the ledger. |
+
+Reuses: `HOUGE_RADAR_TZ` (slot + week-key zone), `HOUGE_CODEX_BIN` + `HOUGE_CODEX_TIMEOUT_MS`
+(the codex judge's contained spawn — read-only sandbox, no secrets).
 
 ## Introspection — the invariant sweep (slice A, ADR 0024)
 

@@ -390,6 +390,71 @@ if (command === "run") {
   } finally {
     store.close();
   }
+} else if (command === "radar-panel") {
+  // Idea Radar R2 (spec 2026-07-25 §13.1). `--dry-run` is the pre-arm gate: the REAL seats
+  // (pinned kimi/gemini judges, contained codex + claude spawns), ZERO write paths — no
+  // scores, no statuses, no snapshot, no brief, no push — rendering the would-be shortlist
+  // for Paco's eyeball while the flag is still unset (bypasses flag + latch by design).
+  // A non-dry invocation runs one flag-gated + latched pass: brief written (real repo
+  // root), but chatId null → no push (the daemon owns the weekly digest).
+  const dryRun = rest.includes("--dry-run");
+  const { renderPanelProposals, runIdeaPanelTick } = await import("./capabilities/idea-panel.js");
+  const { spawnCodexJudge, spawnPanelChair } = await import("./capabilities/idea-panel-seats.js");
+  const { createLlmAnswerAdapter } = await import("./capabilities/llm-answer.js");
+
+  // PINNED single-provider judges (spec §1: never a chain — a healthy-leg fallback would
+  // silently void model diversity and the quorum semantics). Same wrapper the daemon uses.
+  const pinnedJudge = (providers: string) => {
+    const adapter = createLlmAnswerAdapter({ ...brokerOption, providers });
+    return async (input: { question: string; system: string }) => {
+      const read = await adapter({ question: input.question, system: input.system });
+      return read.ok && typeof read.output.answer === "string"
+        ? ({ ok: true, answer: read.output.answer } as const)
+        : ({ ok: false } as const);
+    };
+  };
+  const chairBroker = broker;
+  const seats = {
+    judges: { kimi: pinnedJudge("kimi-api"), gemini: pinnedJudge("gemini-api") },
+    codexJudge: (input: { digest: string; system: string }) =>
+      spawnCodexJudge({ digest: input.digest, system: input.system, env: process.env }),
+    // The chair's OAuth token is broker-held (spec §§2–3) — firewall OFF ⇒ chair
+    // unavailable ⇒ the tick's deterministic mean-score fallback (self-describing output).
+    chair: chairBroker
+      ? (input: { digest: string; system: string }) =>
+          spawnPanelChair({ digest: input.digest, system: input.system, broker: chairBroker, env: process.env })
+      : async () => ({ ok: false as const, unavailable: true })
+  };
+
+  const store = RunStore.open("houge.sqlite", storeOptions);
+  try {
+    if (dryRun) {
+      // §13.1: say the cost out loud — run this deliberately, not in a loop.
+      console.log("dry-run cost: 2 metered calls + 2 subscription spawns");
+    }
+    const result = await runIdeaPanelTick({
+      store,
+      ...seats,
+      env: process.env,
+      now: new Date().toISOString(),
+      chatId: null,
+      projectRoot: dryRun ? null : process.cwd(),
+      dryRun
+    });
+    if (dryRun) {
+      // Rendering lives in renderPanelProposals so tests can hold the terminal surface
+      // to the sanitized floor (no control/bidi char can reach the terminal).
+      for (const line of renderPanelProposals(result)) console.log(line);
+    } else {
+      console.log(JSON.stringify(result, null, 2));
+    }
+    process.exitCode = 0;
+  } catch (error) {
+    console.error(`radar-panel failed: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  } finally {
+    store.close();
+  }
 } else {
   console.error(`Unknown command: ${command}`);
   process.exit(1);

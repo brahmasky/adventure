@@ -1,13 +1,13 @@
 # ADR 0026: Idea Radar — a code-owned read surface for builder-idea sensing
 
-- **Status:** accepted
+- **Status:** accepted · **extended by [ADR 0027](0027-idea-panel-claude-chair.md)** (panel write path + chair)
 - **Date:** 2026-07-24
 - **Deciders:** Paco (2026-07-24 session)
 - **Relates to:** extends the [ADR 0022](0022-money-fork-reopened.md) money fork with a
   sensing loop (radar → review → build); reuses the [ADR 0025](0025-google-api-surface.md)
-  registry pattern and the http-fetch SSRF floor; feeds the future R2 weekly panel, whose
-  claude-cli chair will amend [ADR 0010](0010-no-frontier-runtime.md)/[ADR 0011](0011-provider-chain.md)
-  in its own ADR — **this ADR grants no new provider and no write path**
+  registry pattern and the http-fetch SSRF floor; feeds the R2 weekly panel, whose
+  claude-cli chair amends [ADR 0010](0010-natural-language-intent-layer.md)/[ADR 0011](0011-self-evolution-architecture.md)
+  in [ADR 0027](0027-idea-panel-claude-chair.md) — **this ADR grants no new provider and no write path**
 
 ## Context
 

@@ -2,6 +2,7 @@
 
 - **Status:** accepted (direction; built in phases) · intent *enum-as-dispatch* refined by
   [ADR 0013](0013-llm-inner-composition.md) (loop composition; the enum survives as an advisory hint)
+  · **amended 2026-07-27 by [ADR 0027](0027-idea-panel-claude-chair.md)** (contained panel chair seat — see end)
 - **Date:** 2026-06-19
 - **Deciders:** Paco
 
@@ -114,3 +115,13 @@ commands survive only for the control/safety plane.**
 - **Preserves:** ADR 0001 (deterministic harness, as amended), 0003 (breaker), 0005 (memory),
   0006 (untrusted-data wall), 0007 (constitution boundary, quarantine, self-proposal eval gate),
   0009 (composer).
+
+## Amendment (2026-07-27): a contained panel chair seat — the "never the engine" claim narrows
+
+[ADR 0027](0027-idea-panel-claude-chair.md) narrows §1's "never the engine" (and the rejected
+"Make Houge *be* Claude Code" alternative): Claude is never the **conversational/chain**
+engine — it joins no provider chain, no registry, no tool manifest — but ONE contained,
+tool-less, single-turn **chair seat** in the weekly idea panel is granted: subscription-auth,
+broker-held token, spawn-bounded, panel-local, with a deterministic fallback so Houge still
+has no hard Claude dependency. Everything else in this ADR stands as written; see ADR 0027
+for the containment bar future seats must argue against.

@@ -1,6 +1,6 @@
 # ADR 0011: Self-evolution architecture — how Houge improves his code, skills, and lessons
 
-- **Status:** accepted (direction; built in phases) — **refined by [ADR 0012](0012-self-evolution-spine-closed-loop.md)** (the closed-loop spine: feedback signal, four memory types, auto-rollback). This ADR's machinery stands; 0012 reframes the three-layers model as one closed loop.
+- **Status:** accepted (direction; built in phases) — **refined by [ADR 0012](0012-self-evolution-spine-closed-loop.md)** (the closed-loop spine: feedback signal, four memory types, auto-rollback). This ADR's machinery stands; 0012 reframes the three-layers model as one closed loop. · **amended 2026-07-27 by [ADR 0027](0027-idea-panel-claude-chair.md)** (contained panel chair seat — see end)
 - **Date:** 2026-06-20
 - **Deciders:** Paco
 
@@ -250,3 +250,13 @@ the post-merge test-gate) and keep the human's yes/no, drop only the terminal fr
 This amendment refines the *input method* of the §5 merge checkpoint for the Phase-3.3 surface; the §5
 "daemon never hot-swaps without Paco's authorization" constant, the original §5, and the first amendment
 all stand as written.
+
+## Amendment (2026-07-27): runtime inference vs runtime engineering — the chair seat
+
+[ADR 0027](0027-idea-panel-claude-chair.md) narrows this ADR's "Claude/Codex are build-time
+muscle, never the runtime engine" constraint. The build-time/runtime split **holds for
+self-write** — Claude still never writes Houge's code at runtime, and the writer/reviewer
+seats are unchanged. What is granted is runtime *inference*, not runtime *engineering*: a
+contained, tool-less, single-turn claude-cli **chair seat** in the weekly idea panel whose
+output is data (a shortlist), never code, config, or a tool action. See ADR 0027 for the
+containment posture and the broker-held auth.

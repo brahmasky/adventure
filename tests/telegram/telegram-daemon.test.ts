@@ -31,7 +31,14 @@ function projectRoot(): string {
 // locally), hermetic against a daemon env that would flip it.
 // HOUGE_RADAR_ENABLED is pinned too: an ambient armed radar flag would make idle cycles
 // fetch REAL sources (the radar test arms it locally with an injected radarFetch).
-const PINNED_ENV = ["HOUGE_SCHEDULER_ENABLED", "HOUGE_SCHEDULER_MAX_PER_CHAT", "HOUGE_RADAR_ENABLED"] as const;
+// HOUGE_RADAR_PANEL_ENABLED likewise: an ambient armed panel flag would make idle cycles
+// call REAL judge seats (the panel test arms it locally with injected panelSeats).
+const PINNED_ENV = [
+  "HOUGE_SCHEDULER_ENABLED",
+  "HOUGE_SCHEDULER_MAX_PER_CHAT",
+  "HOUGE_RADAR_ENABLED",
+  "HOUGE_RADAR_PANEL_ENABLED"
+] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
   savedEnv = {};
@@ -641,6 +648,70 @@ describe("runTelegramDaemon — the signal path (⓪·3 S2)", () => {
       store.close();
       if (saved === undefined) delete process.env.HOUGE_RADAR_ENABLED;
       else process.env.HOUGE_RADAR_ENABLED = saved;
+    }
+  });
+
+  it("the idea-panel tick is wired into the signal path (armed → latch + snapshot + ledger)", async () => {
+    const saved = process.env.HOUGE_RADAR_PANEL_ENABLED;
+    process.env.HOUGE_RADAR_PANEL_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const controller = new AbortController();
+    try {
+      // Seed the thin-board floor (3 active cards, distinct momenta).
+      for (const [slug, n] of [["a", 3], ["b", 2], ["c", 1]] as const) {
+        store.insertIdeaCard({
+          slug,
+          title: `Idea ${slug}`,
+          summary: `summary ${slug}`,
+          sources: {
+            hn_front: Array.from({ length: n }, (_, i) => ({
+              id: `hn_front:${slug}-${i}`,
+              url: `https://news.ycombinator.com/item?id=${slug}${i}`,
+              title: `item ${slug}-${i}`
+            }))
+          },
+          now: "2026-07-20T10:00:00.000Z"
+        });
+      }
+      // Hermetic seats (prod builds pinned kimi/gemini adapters + real spawns; tests inject):
+      // two judges vote → quorum holds; codex + chair fail → mean-score fallback publishes.
+      const scores = JSON.stringify({
+        scores: [1, 2, 3].map((card) => ({ card, score: 5, reason: `r${card}` }))
+      });
+      await runTelegramDaemon({
+        store,
+        projectRoot: projectRoot(),
+        allowlist: ALLOWLIST,
+        stopSignal: controller.signal,
+        longPollTimeoutSeconds: 0,
+        panelSeats: {
+          judges: {
+            kimi: async () => ({ ok: true, answer: scores }),
+            gemini: async () => ({ ok: true, answer: scores })
+          },
+          codexJudge: async () => ({ ok: false, unavailable: true }),
+          chair: async () => ({ ok: false, unavailable: true })
+        },
+        llmAdapter: async (input) => okAnswer(input),
+        telegramClient: {
+          getUpdates: async () => {
+            controller.abort();
+            return [];
+          },
+          sendMessage: async () => ({ message_id: 1 })
+        }
+      });
+      // The tick rode the cycle: weekly latch stamped, snapshot upserted, ledger event emitted.
+      expect(store.getPanelLastRun()).not.toBeNull();
+      const snapshot = store.getLatestShortlist();
+      expect(snapshot).not.toBeNull();
+      expect(snapshot!.cards).toHaveLength(3);
+      const events = store.getLedgerEvents().filter((e) => e.event_type === "idea_panel_tick");
+      expect(events).toHaveLength(1);
+    } finally {
+      store.close();
+      if (saved === undefined) delete process.env.HOUGE_RADAR_PANEL_ENABLED;
+      else process.env.HOUGE_RADAR_PANEL_ENABLED = saved;
     }
   });
 
