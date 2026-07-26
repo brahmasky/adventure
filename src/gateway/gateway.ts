@@ -37,8 +37,9 @@ import { evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import { queryStatus } from "../status/status-query.js";
 import { formatUsageTable } from "../status/usage-report.js";
 import { resolveRadarEnabled } from "../capabilities/idea-radar.js";
+import { resolvePanelAt } from "../capabilities/week-key.js";
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
-import type { IdeaRow } from "../run/run-store.js";
+import type { IdeaRow, ShortlistRow } from "../run/run-store.js";
 
 /** A freshly captured rating the daemon follows up on (the low-rating attribution pass). */
 export interface RatingSignal {
@@ -52,6 +53,7 @@ export type GatewayIntakeResult =
   | { ok: true; status: "status_returned"; run_id: string }
   | { ok: true; status: "usage_returned"; run_id: string }
   | { ok: true; status: "radar_returned"; run_id: string }
+  | { ok: true; status: "idea_returned"; run_id: string }
   | { ok: true; status: "help_returned"; run_id: string }
   | { ok: true; status: "approval_resolved"; run_id: string }
   | { ok: true; status: "lessons_returned"; run_id: string }
@@ -155,6 +157,10 @@ export class Gateway {
 
     if (event.type === "radar") {
       return this.handleRadar(event, now);
+    }
+
+    if (event.type === "idea") {
+      return this.handleIdea(event, now);
     }
 
     if (event.type === "help" || event.type === "unknown_command") {
@@ -680,10 +686,12 @@ export class Gateway {
   }
 
   /**
-   * `/radar` — a read-only VIEWER over the ideas store (Idea Radar R1; no run, no budget).
-   * Renders the top 10 active cards by momentum, every card-derived string through
-   * `escapeForTelegram` (card text originated in external feeds — render it inert). No
-   * ordinal numbering promises: pick-by-number arrives with the R2 shortlist snapshot.
+   * `/radar` — a read-only VIEWER over the ideas store (Idea Radar R1/R2; no run, no
+   * budget). Bare: the numbered top-10 active cards (status-pinned ordering — the ordinals
+   * ARE the addressing scheme for `/radar <n>` and `/idea pick`). With `metadata.radar_number`:
+   * one card's detail view resolved against the SAME ordered list, out-of-range → a distinct
+   * not-found line (the `/schedule cancel <N>` idiom). Every card-derived string renders
+   * through `escapeForTelegram` (card text originated in external feeds — render it inert).
    * Flag off → a one-line "radar off" notice. Idempotent on the trigger key, like /usage.
    */
   private handleRadar(event: TypedTaskEvent, now: string): GatewayIntakeResult {
@@ -698,20 +706,124 @@ export class Gateway {
       };
     }
 
-    const text = resolveRadarEnabled(process.env)
-      ? formatRadarText(this.runStore.listActiveIdeas(10), this.runStore.countActiveIdeas(), this.runStore.getRadarLastRun(), now)
-      : RADAR_OFF_TEXT;
+    const rawNumber = event.metadata?.radar_number;
+    const radarNumber =
+      typeof rawNumber === "number" && Number.isInteger(rawNumber) && rawNumber >= 1
+        ? rawNumber
+        : undefined;
+
+    let text: string;
+    if (!resolveRadarEnabled(process.env)) {
+      text = RADAR_OFF_TEXT;
+    } else if (radarNumber !== undefined) {
+      const card = this.runStore.listActiveIdeas(10)[radarNumber - 1];
+      text = card ? formatRadarDetailText(radarNumber, card, now) : formatRadarNumberNotFoundText(radarNumber);
+    } else {
+      text = formatRadarText(this.runStore.listActiveIdeas(10), this.runStore.countActiveIdeas(), this.runStore.getRadarLastRun(), now);
+    }
     const result: GatewayIntakeResult = { ok: true, status: "radar_returned", run_id: "" };
     this.runStore.enqueueNotification({
       target: event.notify,
       intent_type: "progress",
-      idempotency_key: `${event.idempotency_key}:radar`,
+      // The list reply keeps the R1 `:radar` key; a detail reply keys on its ordinal so a
+      // hypothetical list+detail pair from one update could never collapse to one row.
+      idempotency_key: `${event.idempotency_key}:radar${radarNumber !== undefined ? `:${radarNumber}` : ""}`,
       correlation_id: event.source_reference,
       payload: { text }
     });
     this.runStore.recordTriggerProcessed(event, result);
     this.recordTelegramAccepted(event, now);
     return result;
+  }
+
+  /**
+   * `/idea` — the weekly shortlist viewer + pick control (Idea Radar R2, spec §5; no run,
+   * no budget). Show renders the LATEST frozen snapshot (week_key header, ranked rows, the
+   * picked marker); pick resolves rank n in that snapshot and flips the global pick
+   * singleton. Gated on the PANEL flag (its own dark-feature notice — `/idea` surfaces
+   * belong to the panel, not the R1 radar). Idempotent on the trigger key, like /radar.
+   */
+  private handleIdea(event: TypedTaskEvent, now: string): GatewayIntakeResult {
+    const replay = this.runStore.beginTriggerProcessing(event);
+    if (replay.status === "duplicate") {
+      return JSON.parse(replay.result_json) as GatewayIntakeResult;
+    }
+    if (replay.status === "conflict") {
+      return {
+        ok: false,
+        error: { code: replay.error, message: "Trigger idempotency key conflicts with a different payload" }
+      };
+    }
+
+    const action = event.metadata?.idea_action === "pick" ? "pick" : "show";
+    let text: string;
+    if (!resolvePanelEnabled(process.env)) {
+      text = IDEA_OFF_TEXT;
+    } else if (action === "pick") {
+      text = this.pickIdea(event, now);
+    } else {
+      const snapshot = this.runStore.getLatestShortlist();
+      text = snapshot ? formatIdeaText(snapshot, snapshot.picked_idea_id) : IDEA_EMPTY_TEXT;
+    }
+
+    const rawNumber = event.metadata?.idea_number;
+    const pickSuffix =
+      action === "pick" && typeof rawNumber === "number" ? `:pick:${rawNumber}` : "";
+    const result: GatewayIntakeResult = { ok: true, status: "idea_returned", run_id: "" };
+    this.runStore.enqueueNotification({
+      target: event.notify,
+      intent_type: "progress",
+      idempotency_key: `${event.idempotency_key}:idea${pickSuffix}`,
+      correlation_id: event.source_reference,
+      payload: { text }
+    });
+    this.runStore.recordTriggerProcessed(event, result);
+    this.recordTelegramAccepted(event, now);
+    return result;
+  }
+
+  /**
+   * Resolve `/idea pick <n>` to a reply (spec §5 singleton mechanism, EXACT order):
+   *   1. rank n resolves in the LATEST snapshot (frozen — board drift cannot misresolve);
+   *   2. the CURRENT pick comes from the global `status='picked'` query (never snapshot
+   *      fields — those diverge across weeks); if it exists it reverts `picked→shortlisted`;
+   *      a refused revert, or a snapshot pick pointer whose card left the singleton, means
+   *      the previous pick was archived/killed — the reply notes it and proceeds;
+   *   3. the new card flips `→ picked`; a refusal here means IT was archived since the
+   *      snapshot froze — reply the failure line, write nothing else;
+   *   4. stamp the snapshot's display pointer, confirm "picked #n from <week_key>".
+   * Re-picking the already-picked card skips the status churn (the guard refuses
+   * picked→picked) and just re-stamps + confirms — an idempotent operator nudge.
+   */
+  private pickIdea(event: TypedTaskEvent, now: string): string {
+    const rawNumber = event.metadata?.idea_number;
+    const n = typeof rawNumber === "number" && Number.isInteger(rawNumber) && rawNumber >= 1 ? rawNumber : undefined;
+    const snapshot = this.runStore.getLatestShortlist();
+    if (!snapshot) return IDEA_EMPTY_TEXT;
+    const card = n !== undefined ? snapshot.cards.find((c) => c.rank === n) : undefined;
+    if (n === undefined || !card) return formatIdeaNumberNotFoundText(n ?? 0);
+
+    const notes: string[] = [];
+    const prior = this.runStore.getPickedIdea();
+    if (prior && prior.id === card.idea_id) {
+      // Same-week same-card re-pick: already the singleton — re-stamp display + confirm.
+      this.runStore.setShortlistPick({ snapshotId: snapshot.id, ideaId: card.idea_id });
+      return formatIdeaPickedText(card.rank, snapshot.week_key, card.title);
+    }
+    if (prior) {
+      const reverted = this.runStore.setIdeaStatus({ id: prior.id, status: "shortlisted", now });
+      if (!reverted.updated) notes.push("上一个 pick 已归档");
+    } else if (snapshot.picked_idea_id !== null && snapshot.picked_idea_id !== card.idea_id) {
+      // The snapshot remembers a pick the global singleton no longer has: the previous
+      // picked card was archived/killed out from under it — nothing to revert, say so.
+      notes.push("上一个 pick 已归档");
+    }
+
+    const set = this.runStore.setIdeaStatus({ id: card.idea_id, status: "picked", now });
+    if (!set.updated) return IDEA_PICK_CARD_ARCHIVED_TEXT;
+
+    this.runStore.setShortlistPick({ snapshotId: snapshot.id, ideaId: card.idea_id });
+    return [formatIdeaPickedText(card.rank, snapshot.week_key, card.title), ...notes].join("\n");
   }
 
   /**
@@ -918,6 +1030,21 @@ export class Gateway {
             } · ${this.runStore.countActiveIdeas()} active cards`
           ]
         : [];
+      // Idea Radar R2: the panel health line — last weekly tick, the RESOLVED schedule
+      // slot (a swallowed HOUGE_RADAR_PANEL_AT typo is visible here as the default), and
+      // the latest shortlist size. Absent when the panel flag is off (dark feature).
+      const panelLine = resolvePanelEnabled(process.env)
+        ? [
+            (() => {
+              const lastRun = this.runStore.getPanelLastRun();
+              const slot = resolvePanelAt(process.env);
+              const shortlist = this.runStore.getLatestShortlist();
+              return `Panel: last ${lastRun ? `${relativeTimeAgo(lastRun, now)} ago` : "never"} · ${
+                slot ? `${slot.day} ${slot.at}` : "off"
+              } · shortlist ${shortlist ? shortlist.cards.length : "none"}`;
+            })()
+          ]
+        : [];
       // Only a STILL-CURRENT error shows: if a poll succeeded after the last error, it
       // already recovered — don't leave a stale red line under a green header.
       const errorRecovered =
@@ -940,6 +1067,7 @@ export class Gateway {
         `Daemon: ${daemonText}`,
         `Self-check: swept ${sweptText} · ${incidentText}`,
         ...radarLine,
+        ...panelLine,
         `Errors: ${errorsText}`,
         ...(lane.busy && lane.current
           ? [`Evolution: ${lane.current.tool} running since ${lane.current.started_at}`]
@@ -1109,6 +1237,8 @@ export const HELP_TEXT = [
   "/status — 运行与健康状态",
   "/usage — 各模型 token/费用用量",
   "/radar — 创意雷达：活跃 idea 卡片",
+  "/radar <n> — 查看第 n 个 idea 卡片详情",
+  "/idea — 本周 shortlist（/idea pick <n> 选定）",
   "/schedule — 列出定时任务（/schedule cancel <编号或 id> 取消）",
   "/lessons — 已学到的经验（可选 scope）",
   "/skills — 可用技能（可选 scope）",
@@ -1128,13 +1258,14 @@ export const HELP_TEXT = [
 export const RADAR_OFF_TEXT = "📡 Houge · radar\nradar off — HOUGE_RADAR_ENABLED 未开启";
 
 /**
- * Render the `/radar` reply: top active cards by momentum, each
- * `• <title> — momentum <n>, seen <age>[, <status>]`, plus the one-line footer
- * (`N active · last tick <when>`). The default `seen` status is HIDDEN — every fresh card
- * carries it, and "seen 21m ago, seen" read as a stutter (Paco, first live render); a
- * status is only news once R2 moves a card to tracked/shortlisted/picked.
- * Card titles originated in EXTERNAL feeds (slimmed + sanitized at parse time) —
- * `escapeForTelegram` at render keeps them markdown-inert.
+ * Render the `/radar` reply: top active cards (status-pinned, then momentum), each
+ * `<n>. <title> — momentum <m>, seen <age>[, <status>]`, plus the one-line footer
+ * (`N active · last tick <when> · /radar <n> 看详情`). Rows are NUMBERED (R2): the ordinal
+ * is the `/radar <n>` address, resolved against this same ordering. The default `seen`
+ * status is HIDDEN — every fresh card carries it, and "seen 21m ago, seen" read as a
+ * stutter (Paco, first live render); a status is only news once R2 moves a card to
+ * tracked/shortlisted/picked. Card titles originated in EXTERNAL feeds (slimmed +
+ * sanitized at parse time) — `escapeForTelegram` at render keeps them markdown-inert.
  */
 export function formatRadarText(
   cards: IdeaRow[],
@@ -1143,15 +1274,142 @@ export function formatRadarText(
   now: string
 ): string {
   const lines = cards.map(
-    (card) =>
-      `• ${escapeForTelegram(card.title)} — momentum ${card.momentum}, seen ${relativeTimeAgo(card.last_seen, now)} ago${card.status === "seen" ? "" : `, ${card.status}`}`
+    (card, index) =>
+      `${index + 1}. ${escapeForTelegram(card.title)} — momentum ${card.momentum}, seen ${relativeTimeAgo(card.last_seen, now)} ago${card.status === "seen" ? "" : `, ${card.status}`}`
   );
-  const footer = `${activeCount} active · last tick ${lastTick ? `${relativeTimeAgo(lastTick, now)} ago` : "never"}`;
+  const footer = `${activeCount} active · last tick ${lastTick ? `${relativeTimeAgo(lastTick, now)} ago` : "never"} · /radar <n> 看详情`;
   return [
     "📡 Houge · radar",
     ...(lines.length > 0 ? lines : ["还没有活跃的 idea 卡片。"]),
     "",
     footer
+  ].join("\n");
+}
+
+/** Per-source item cap in the `/radar <n>` detail view (spec §5). */
+const RADAR_DETAIL_ITEMS_PER_SOURCE = 3;
+/** Total source-item line cap in the detail view (spec §5). */
+const RADAR_DETAIL_ITEM_LINES_MAX = 12;
+
+/**
+ * Render the `/radar <n>` detail view (Idea Radar R2, spec §5): title line under the list
+ * ordinal, summary, the momentum/age/status line (status ALWAYS shows here — a detail view
+ * is where "seen" is an answer, not a stutter), the panel line when `scores_json` carries
+ * one (stale weeks render as-is — the week label makes them self-describing), and up to
+ * 3 items per source / 12 lines total from the sources map. URLs render as plain escaped
+ * text (no markdown link syntax — Telegram auto-links, and escaping stays trivial).
+ * EVERY stored string (title/summary/source keys/item titles/URLs/panel week) escapes.
+ */
+export function formatRadarDetailText(n: number, card: IdeaRow, now: string): string {
+  const lines = [
+    `${n}. ${escapeForTelegram(card.title)}`,
+    escapeForTelegram(card.summary),
+    `momentum ${card.momentum} (${card.distinct_items} items × ${card.distinct_sources} sources) · seen ${relativeTimeAgo(card.last_seen, now)} ago · first seen ${relativeTimeAgo(card.first_seen, now)} ago · status ${card.status}`
+  ];
+  const panelLine = formatPanelScoreLine(card.scores_json);
+  if (panelLine) lines.push(panelLine);
+  const itemLines: string[] = [];
+  for (const [sourceKey, items] of Object.entries(card.sources)) {
+    for (const item of items.slice(0, RADAR_DETAIL_ITEMS_PER_SOURCE)) {
+      if (itemLines.length >= RADAR_DETAIL_ITEM_LINES_MAX) break;
+      // The source key is a CODE-OWNED registry constant (`hn_front`, `hf_papers`, …) —
+      // never feed/model-derived — so it renders verbatim (escaping would mangle the
+      // underscore). Item titles/URLs originated in external feeds: escaped.
+      itemLines.push(
+        `  ${sourceKey}: ${escapeForTelegram(item.title)} — ${escapeForTelegram(item.url)}`
+      );
+    }
+    if (itemLines.length >= RADAR_DETAIL_ITEM_LINES_MAX) break;
+  }
+  if (itemLines.length > 0) lines.push("sources:", ...itemLines);
+  return lines.join("\n");
+}
+
+/**
+ * The detail view's panel line, or null when the card has no (parseable) panel scores:
+ * `panel <week>: kimi <s> · gemini <s> · codex <s> · chair #<r>` — an absent judge omits
+ * its segment; a null chair_rank omits the chair segment. Total function over hostile
+ * JSON: any parse/shape failure renders as "no panel line", never a throw.
+ */
+function formatPanelScoreLine(scoresJson: string | null): string | null {
+  if (!scoresJson) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(scoresJson);
+  } catch {
+    return null;
+  }
+  const panel = (parsed as { panel?: unknown } | null)?.panel;
+  if (typeof panel !== "object" || panel === null) return null;
+  const { week, judges, chair_rank } = panel as { week?: unknown; judges?: unknown; chair_rank?: unknown };
+  const segments: string[] = [];
+  for (const judge of ["kimi", "gemini", "codex"]) {
+    const entry = (judges as Record<string, { score?: unknown }> | undefined)?.[judge];
+    if (entry && typeof entry.score === "number" && Number.isFinite(entry.score)) {
+      segments.push(`${judge} ${entry.score}`);
+    }
+  }
+  if (typeof chair_rank === "number" && Number.isFinite(chair_rank)) {
+    segments.push(`chair #${chair_rank}`);
+  }
+  if (segments.length === 0) return null;
+  const weekLabel = typeof week === "string" ? escapeForTelegram(week) : "?";
+  return `panel ${weekLabel}: ${segments.join(" · ")}`;
+}
+
+/** `/radar <n>` when there is no nth active card (out of range / empty board). */
+export function formatRadarNumberNotFoundText(n: number): string {
+  return `没有第 ${n} 个 idea 卡片 (no idea #${n}) — see /radar for the list.`;
+}
+
+// TODO(T5): swap to the idea-panel module's exported resolver once T3 lands (same
+// semantics as resolveRadarEnabled — this local copy exists only to avoid coupling
+// the T4 command surface to the concurrently-built panel tick module).
+function resolvePanelEnabled(env: NodeJS.ProcessEnv): boolean {
+  const raw = env.HOUGE_RADAR_PANEL_ENABLED?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+/** `/idea` while the panel is dark — name the flag so the operator knows what to arm. */
+export const IDEA_OFF_TEXT = "📋 Houge · idea\npanel off — HOUGE_RADAR_PANEL_ENABLED 未开启";
+
+/** `/idea` (and a pick) before the first panel run — no snapshot exists yet. */
+export const IDEA_EMPTY_TEXT = "📋 Houge · idea\npanel 未跑过 — 周日 09:00";
+
+/** `/idea pick <n>` when the resolved card was archived after the snapshot froze (§11). */
+export const IDEA_PICK_CARD_ARCHIVED_TEXT =
+  "pick 失败 — 该卡片在 snapshot 之后已归档 (card archived since snapshot)。";
+
+/** `/idea pick <n>` when the latest snapshot has no rank n. */
+export function formatIdeaNumberNotFoundText(n: number): string {
+  return `没有第 ${n} 个 shortlist 项 (no shortlist #${n}) — see /idea for the list.`;
+}
+
+/** The `/idea pick` confirmation (spec §5 step 4). Title is stored card text — escape. */
+export function formatIdeaPickedText(rank: number, weekKey: string, title: string): string {
+  return `picked #${rank} from ${weekKey}: ${escapeForTelegram(title)}`;
+}
+
+/**
+ * Render the `/idea` shortlist reply from a frozen snapshot (Idea Radar R2, spec §5) —
+ * PURE so the §7 Sunday digest push reuses it verbatim (T3). Header names the week_key;
+ * rows render the frozen rank/title/mean/rationale (+ the picked marker against
+ * `pickedIdeaId` — passed separately because the push renders a just-created snapshot
+ * whose pointer is still NULL); footer teaches the pick verb. Titles and rationales are
+ * stored card/chair text — `escapeForTelegram` keeps them markdown-inert.
+ */
+export function formatIdeaText(snapshot: ShortlistRow, pickedIdeaId: number | null): string {
+  const rows = snapshot.cards.map(
+    (card) =>
+      `${card.rank}. ${escapeForTelegram(card.title)} — mean ${card.mean_score}${
+        card.chair_rationale ? `, ${escapeForTelegram(card.chair_rationale)}` : ""
+      }${card.idea_id === pickedIdeaId ? " ✅ picked" : ""}`
+  );
+  return [
+    `📋 ${snapshot.week_key} shortlist`,
+    ...(rows.length > 0 ? rows : ["(空 shortlist)"]),
+    "",
+    "· /idea pick <n>"
   ].join("\n");
 }
 

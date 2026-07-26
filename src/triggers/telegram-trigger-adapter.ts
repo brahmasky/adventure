@@ -231,7 +231,25 @@ function buildTelegramEvent(command: TelegramCommand, base: TelegramEventBase): 
     case "usage":
       return buildTypedTaskEvent({ ...base, type: "usage" });
     case "radar":
-      return buildTypedTaskEvent({ ...base, type: "radar" });
+      // A detail request's ordinal rides metadata (schedule_id precedent); bare list has none.
+      return buildTypedTaskEvent({
+        ...base,
+        type: "radar",
+        ...(command.radar_number !== undefined
+          ? { metadata: { ...base.metadata, radar_number: command.radar_number } }
+          : {})
+      });
+    case "idea":
+      // action ("show" | "pick") + a pick's rank ride metadata — the gateway resolves both.
+      return buildTypedTaskEvent({
+        ...base,
+        type: "idea",
+        metadata: {
+          ...base.metadata,
+          idea_action: command.idea_action,
+          ...(command.idea_action === "pick" ? { idea_number: command.idea_number } : {})
+        }
+      });
     case "help":
       return buildTypedTaskEvent({ ...base, type: "help" });
     case "unknown_command":

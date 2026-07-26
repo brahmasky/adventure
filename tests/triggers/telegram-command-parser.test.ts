@@ -45,6 +45,63 @@ describe("parseTelegramCommand", () => {
     expect(parseTelegramCommand("/radar@HougeBot")).toEqual({ ok: true, command: { type: "radar" } });
   });
 
+  it("parses /radar <n> as a detail request; anything non-ordinal is a named parse error (R2)", () => {
+    expect(parseTelegramCommand("/radar 3")).toEqual({
+      ok: true,
+      command: { type: "radar", radar_number: 3 }
+    });
+    expect(parseTelegramCommand("/radar 12")).toEqual({
+      ok: true,
+      command: { type: "radar", radar_number: 12 }
+    });
+    // Quoted noise: shell-style tokenizing strips the quotes, the ordinal survives.
+    expect(parseTelegramCommand('/radar "3"')).toEqual({
+      ok: true,
+      command: { type: "radar", radar_number: 3 }
+    });
+    const badArg = {
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/radar takes no arguments, or: /radar <编号>" }
+    };
+    expect(parseTelegramCommand("/radar 0")).toEqual(badArg);
+    expect(parseTelegramCommand("/radar -1")).toEqual(badArg);
+    expect(parseTelegramCommand("/radar x")).toEqual(badArg);
+    expect(parseTelegramCommand("/radar 1.5")).toEqual(badArg);
+    expect(parseTelegramCommand("/radar 3 4")).toEqual(badArg);
+  });
+
+  it("parses /idea (show) and /idea pick <n>; loose args are named parse errors (R2)", () => {
+    expect(parseTelegramCommand("/idea")).toEqual({
+      ok: true,
+      command: { type: "idea", idea_action: "show" }
+    });
+    expect(parseTelegramCommand("/idea@HougeBot")).toEqual({
+      ok: true,
+      command: { type: "idea", idea_action: "show" }
+    });
+    expect(parseTelegramCommand("/idea pick 2")).toEqual({
+      ok: true,
+      command: { type: "idea", idea_action: "pick", idea_number: 2 }
+    });
+    // Quoted noise: tokenizing strips the quotes, the rank survives.
+    expect(parseTelegramCommand('/idea pick "2"')).toEqual({
+      ok: true,
+      command: { type: "idea", idea_action: "pick", idea_number: 2 }
+    });
+    const badPick = {
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/idea pick requires exactly one 编号" }
+    };
+    expect(parseTelegramCommand("/idea pick")).toEqual(badPick);
+    expect(parseTelegramCommand("/idea pick 0")).toEqual(badPick);
+    expect(parseTelegramCommand("/idea pick x")).toEqual(badPick);
+    expect(parseTelegramCommand("/idea pick 2 3")).toEqual(badPick);
+    expect(parseTelegramCommand("/idea junk")).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/idea takes no arguments, or: /idea pick <编号>" }
+    });
+  });
+
   it("routes a clean but unknown /command to unknown_command, not a hallucinated turn", () => {
     // A command-shaped first token (removed/typo'd command) → guide with the command list.
     expect(parseTelegramCommand("/nonsense")).toEqual({
