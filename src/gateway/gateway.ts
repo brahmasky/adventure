@@ -337,7 +337,13 @@ export class Gateway {
     }
 
     const scope = typeof event.program === "string" ? event.program.trim() : "";
-    const lessons = this.runStore.listLessons(scope || undefined);
+    // `/lessons <编号>` (with or without the leading #) — the compact index labels rows
+    // #29 etc., so drilling in by number must work (operator expectation 2026-07-27,
+    // the /radar <n> idiom). Ids are the real DB ids the index shows, not positions.
+    const idMatch = /^#?([1-9][0-9]*)$/.exec(scope);
+    const text = idMatch
+      ? formatLessonDetailText(this.runStore.getLesson(Number(idMatch[1])), Number(idMatch[1]))
+      : formatLessonsText(scope || undefined, this.runStore.listLessons(scope || undefined));
 
     const result: GatewayIntakeResult = { ok: true, status: "lessons_returned", run_id: "" };
     this.runStore.enqueueNotification({
@@ -345,7 +351,7 @@ export class Gateway {
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:lessons`,
       correlation_id: event.source_reference,
-      payload: { text: formatLessonsText(scope || undefined, lessons) }
+      payload: { text }
     });
     this.runStore.recordTriggerProcessed(event, result);
     this.recordTelegramAccepted(event, now);
@@ -1249,8 +1255,23 @@ function formatLessonsText(scope: string | undefined, lessons: LessonRow[]): str
   return [
     `📚 **Lessons — ${lessons.length} active** (${counts})`,
     ...sections,
-    `· /lessons <scope> 看全文`
+    `· /lessons <编号> 看单条 · /lessons <scope> 看整组`
   ].join("\n\n");
+}
+
+/** `/lessons <编号>` single-lesson view: full text + AVOID + scope; lineage-aware. */
+function formatLessonDetailText(lesson: LessonRow | undefined, id: number): string {
+  if (!lesson) return `没有 #${id} 这条 lesson。/lessons 看列表。`;
+  if (lesson.status === "superseded") {
+    const successor = lesson.superseded_by !== null ? ` — 已并入 #${lesson.superseded_by}` : "";
+    return `#${id} 已在合并中退役${successor}。/lessons 看现役列表。`;
+  }
+  if (lesson.status === "pruned") {
+    return `#${id} 已被 /forget 清除。/lessons 看现役列表。`;
+  }
+  const lines = [`📚 **#${lesson.id}** (${lesson.scope})`, "", escapeForTelegram(lesson.text)];
+  if (lesson.avoid) lines.push("", `AVOID: ${escapeForTelegram(lesson.avoid)}`);
+  return lines.join("\n");
 }
 
 function formatLessonLines(lesson: LessonRow): string {

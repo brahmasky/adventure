@@ -799,3 +799,61 @@ describe("/schedule 系统任务 footer (read-only built-in ticks)", () => {
     }
   });
 });
+
+describe("/lessons <编号> single-lesson drill-in", () => {
+  function lessonsEvent(key: string, program: string) {
+    return buildTypedTaskEvent({
+      source: "telegram",
+      type: "lessons",
+      program,
+      requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "telegram", chat_id: "222" },
+      idempotency_key: `telegram:${key}`,
+      source_reference: `telegram:update:${key}`
+    });
+  }
+
+  it("resolves a bare id and a #-prefixed id to the full lesson text + AVOID", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const id = store.addLesson({
+        scope: "ask",
+        text: "Use the user's local timezone when reporting times, not UTC",
+        avoid: "raw UTC timestamps in replies",
+        source: "user_feedback"
+      });
+      const gateway = new Gateway(store);
+      gateway.intake(lessonsEvent("l-id-1", String(id)));
+      const bare = String(store.claimNextNotification("test", 30)?.payload.text);
+      expect(bare).toContain(`#${id}`);
+      expect(bare).toContain("local timezone");
+      expect(bare).toContain("AVOID: raw UTC timestamps");
+
+      gateway.intake(lessonsEvent("l-id-2", `#${id}`));
+      const hashed = String(store.claimNextNotification("test", 30)?.payload.text);
+      expect(hashed).toContain("local timezone");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("unknown id → distinct not-found; superseded id → points at the successor", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const old = store.addLesson({ scope: "ask", text: "be brief", source: "user_feedback" });
+      const merged = store.addLesson({ scope: "ask", text: "be concise, prefer brevity", source: "consolidation" });
+      store.supersedeLesson(old, merged);
+      const gateway = new Gateway(store);
+
+      gateway.intake(lessonsEvent("l-id-3", "9999"));
+      expect(String(store.claimNextNotification("test", 30)?.payload.text)).toContain("没有 #9999");
+
+      gateway.intake(lessonsEvent("l-id-4", String(old)));
+      const text = String(store.claimNextNotification("test", 30)?.payload.text);
+      expect(text).toContain("退役");
+      expect(text).toContain(`#${merged}`);
+    } finally {
+      store.close();
+    }
+  });
+});
