@@ -1196,6 +1196,22 @@ function relativeTimeAgo(then: string, now: string): string {
  * implicated it). Internal telemetry (reuse/applied/ratings counts, supersede lineage) is
  * NOT shown — it is plumbing, not signal. `scope` set → one scope; unset → every scope.
  */
+/** Compact one-liner budget for the no-scope `/lessons` view (word-boundary truncated). */
+const LESSON_COMPACT_CHARS = 72;
+
+function truncateLessonText(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (Array.from(flat).length <= LESSON_COMPACT_CHARS) return flat;
+  const slice = Array.from(flat).slice(0, LESSON_COMPACT_CHARS).join("");
+  const cut = slice.lastIndexOf(" ") > LESSON_COMPACT_CHARS / 2 ? slice.slice(0, slice.lastIndexOf(" ")) : slice;
+  return `${cut}…`;
+}
+
+/**
+ * `/lessons` render. No scope → compact index (one truncated line per lesson, counts header,
+ * no AVOID lines) — 14 merged lessons at full text read as a wall on a phone (operator
+ * feedback 2026-07-27). `/lessons <scope>` keeps the full text + AVOID view.
+ */
 function formatLessonsText(scope: string | undefined, lessons: LessonRow[]): string {
   if (lessons.length === 0) {
     return scope
@@ -1208,19 +1224,38 @@ function formatLessonsText(scope: string | undefined, lessons: LessonRow[]): str
     group.push(lesson);
     byScope.set(lesson.scope, group);
   }
-  return [...byScope.entries()]
-    .map(([s, group]) =>
-      [`## ${s} (${group.length} active)`, ...group.map((l) => formatLessonLines(l))].join("\n")
-    )
-    .join("\n\n");
+  if (scope) {
+    return [...byScope.entries()]
+      .map(([s, group]) =>
+        [`## ${s} (${group.length} active)`, ...group.map((l) => formatLessonLines(l))].join("\n")
+      )
+      .join("\n\n");
+  }
+  const counts = [...byScope.entries()].map(([s, g]) => `${s} ${g.length}`).join(" · ");
+  const sections = [...byScope.entries()].map(([s, group]) =>
+    [
+      `**${s}**`,
+      ...group.map((l) => {
+        const flagged = parseRatingHistory(l.rating_history).some((entry) => entry.flag === "culprit");
+        return `#${l.id} ${escapeForTelegram(truncateLessonText(l.text))}${flagged ? " ⚠" : ""}`;
+      })
+    ].join("\n")
+  );
+  return [
+    `📚 **Lessons — ${lessons.length} active** (${counts})`,
+    ...sections,
+    `· /lessons <scope> 看全文`
+  ].join("\n\n");
 }
 
 function formatLessonLines(lesson: LessonRow): string {
   // ⓪·3 S2c: the ⚠ flag (a low-rating attribution pass implicated this lesson) is a real
   // signal and stays; the reuse/applied/ratings counts and supersede lineage are internal.
   const flagged = parseRatingHistory(lesson.rating_history).some((entry) => entry.flag === "culprit");
-  const lines = [`#${lesson.id} ${lesson.text}${flagged ? " ⚠ flagged" : ""}`];
-  if (lesson.avoid) lines.push(`   AVOID: ${lesson.avoid}`);
+  // Lesson text is distilled from feedback by an LLM — escape it so stray markdown
+  // can't become formatting now that replies render as Telegram HTML.
+  const lines = [`#${lesson.id} ${escapeForTelegram(lesson.text)}${flagged ? " ⚠ flagged" : ""}`];
+  if (lesson.avoid) lines.push(`   AVOID: ${escapeForTelegram(lesson.avoid)}`);
   return lines.join("\n");
 }
 

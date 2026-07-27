@@ -248,8 +248,9 @@ describe("surfacing (⓪·3 S2c)", () => {
 
       const text = notificationText(store, "telegram:lessons-1:lessons")!;
       // The lesson text + the ⚠ flag (a real signal) show; internal telemetry does not.
+      // (No-scope /lessons is the compact index: bare ⚠ marker, truncated text.)
       expect(text).toContain("结尾加俏皮话");
-      expect(text).toContain("⚠ flagged");
+      expect(text).toContain("⚠");
       expect(text).not.toContain("ratings");
       expect(text).not.toContain("reuse");
       expect(text).not.toContain("applied");
@@ -257,7 +258,7 @@ describe("surfacing (⓪·3 S2c)", () => {
       // The un-flagged lesson's line carries no warning.
       const ratedLine = text.split("\n").find((line) => line.includes("简短回答"))!;
       expect(ratedLine).toContain("简短回答");
-      expect(ratedLine).not.toContain("⚠ flagged");
+      expect(ratedLine).not.toContain("⚠");
     } finally {
       store.close();
     }
