@@ -450,9 +450,13 @@ describe("runIdeaPanelTick", () => {
       brief_written: false
     });
 
-    // Push: per-fire dedupe key, /idea render + fixed footer.
+    // Push: per-fire dedupe key, the rich /radar week render (own footer, no extra suffix).
     expect(result.pushed).toBe(true);
     expect(store.countNotificationsByIdempotencyKey(`idea-panel:${WEEK}:${NOW}`)).toBe(1);
+    const pushText = String(store.claimNextNotification("test", 30)?.payload.text);
+    expect(pushText).toContain(`🏆 **本周 idea shortlist — ${WEEK}**`);
+    expect(pushText).toContain("· /radar pick <n> 选定 · /radar <n> 看详情");
+    expect(pushText).not.toContain("详情 /idea");
   });
 
   it("M3: the weekly latch is stamped BEFORE any seat call — all-throwing judges still cost the week", async () => {

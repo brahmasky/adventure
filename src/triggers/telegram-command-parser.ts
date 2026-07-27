@@ -46,7 +46,8 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
   if (command === "/run") return parseRun(rest);
   if (command === "/status") return parseStatus(rest);
   if (command === "/usage") return { ok: true, command: { type: "usage" } };
-  // Idea Radar R1/R2: read-only viewers over the ideas store (no run, no budget — /usage twins).
+  // Idea Radar R1/R2: read-only viewers over the ideas store (no run, no budget — /usage
+  // twins). /idea is a silent alias for the /radar week/pick branches since the merge.
   if (command === "/radar") return parseRadar(rest);
   if (command === "/idea") return parseIdea(rest);
   if (command === "/help") return { ok: true, command: { type: "help" } };
@@ -112,25 +113,45 @@ function parseForget(words: string[]): TelegramCommandParseResult {
   return { ok: true, command: { type: "forget", scope: words[0]! } };
 }
 
+/** The one usage line every malformed /radar invocation gets — the whole family, spelled out. */
+const RADAR_FAMILY_USAGE = "/radar 用法: /radar · /radar <编号> · /radar week · /radar pick <编号>";
+
 /**
- * `/radar` (bare) lists the numbered top-10 board; `/radar <n>` opens card n's detail view
- * (Idea Radar R2, spec §5). The argument must be a pure positive integer — the list ordinals
- * ARE the addressing scheme, so anything else is a typo we name rather than reinterpret
- * (mirrors the `/schedule cancel <arg>` error idiom).
+ * The `/radar` FAMILY (Idea Radar R1/R2 + the /idea merge): bare lists the numbered top-10
+ * board; `/radar <n>` opens card n's detail view; `/radar week` renders the latest weekly
+ * shortlist snapshot; `/radar pick <n>` picks rank n in that snapshot. The last two emit the
+ * SAME `idea` command shapes `/idea` produced pre-merge — routing, gating, and idempotency
+ * keys downstream are untouched, and `/idea` survives as a silent alias (parseIdea).
+ * Ordinals must be pure positive integers — the list/snapshot ordinals ARE the addressing
+ * scheme, so anything else (including an unknown subcommand) is a typo we name with the
+ * family usage line rather than reinterpret (the `/schedule cancel <arg>` error idiom).
  */
 function parseRadar(words: string[]): TelegramCommandParseResult {
   if (words.length === 0) return { ok: true, command: { type: "radar" } };
-  const arg = words[0];
-  if (words.length !== 1 || !arg || !/^[1-9][0-9]*$/.test(arg)) {
-    return invalid("/radar takes no arguments, or: /radar <编号>");
+  const [sub, ...rest] = words;
+  if (sub === "week") {
+    if (rest.length !== 0) return invalid(RADAR_FAMILY_USAGE);
+    return { ok: true, command: { type: "idea", idea_action: "show" } };
   }
-  return { ok: true, command: { type: "radar", radar_number: Number(arg) } };
+  if (sub === "pick") {
+    const arg = rest[0];
+    if (rest.length !== 1 || !arg || !/^[1-9][0-9]*$/.test(arg)) {
+      return invalid("/radar pick requires exactly one 编号");
+    }
+    return { ok: true, command: { type: "idea", idea_action: "pick", idea_number: Number(arg) } };
+  }
+  if (words.length !== 1 || !sub || !/^[1-9][0-9]*$/.test(sub)) {
+    return invalid(RADAR_FAMILY_USAGE);
+  }
+  return { ok: true, command: { type: "radar", radar_number: Number(sub) } };
 }
 
 /**
- * `/idea` (bare) renders the latest weekly shortlist snapshot; `/idea pick <n>` picks the
- * rank-n shortlist entry (Idea Radar R2, spec §5). `pick` requires exactly one pure positive
- * integer — ranks are frozen in the snapshot, so a loose arg has nothing safe to resolve.
+ * `/idea` — a silent ALIAS for the /radar family since the merge: bare ≡ `/radar week`
+ * (the latest weekly shortlist snapshot); `/idea pick <n>` ≡ `/radar pick <n>`. Emits the
+ * exact same command shapes as parseRadar's week/pick branches, so nothing downstream can
+ * tell the surfaces apart (idempotency keys stay per-update, as always). `pick` requires
+ * exactly one pure positive integer — ranks are frozen in the snapshot.
  */
 function parseIdea(words: string[]): TelegramCommandParseResult {
   if (words.length === 0) return { ok: true, command: { type: "idea", idea_action: "show" } };

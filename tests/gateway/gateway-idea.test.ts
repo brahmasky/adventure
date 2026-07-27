@@ -38,6 +38,11 @@ function ideaShowEvent(key = "telegram:idea-show-1") {
   });
 }
 
+/**
+ * The ONE event shape BOTH `/radar pick <n>` and its silent alias `/idea pick <n>` parse
+ * to (post-merge) — the gateway cannot tell the surfaces apart, so every pick test here
+ * covers `/radar pick` too.
+ */
 function ideaPickEvent(n: number, key = `telegram:idea-pick-${n}`) {
   return buildTypedTaskEvent({
     source: "telegram",
@@ -160,13 +165,17 @@ describe("/idea", () => {
 
       gateway.intake(ideaShowEvent("telegram:idea-show-full"), NOW);
       const text = String(store.claimNextNotification("test", 30)?.payload.text);
-      expect(text).toContain(`📋 ${WEEK} shortlist`);
-      // Frozen snapshot text renders escaped (card/chair prose is stored LLM/feed output).
-      expect(text).toContain("1. Alpha idea — mean 7.5, clear wedge");
+      expect(text).toContain(`🏆 **本周 idea shortlist — ${WEEK}**`);
+      // Frozen snapshot text renders escaped BEFORE the code-owned bold scaffolding wraps
+      // it (card/chair prose is stored LLM/feed output).
+      expect(text).toContain("**1. Alpha idea** — 综合 7.5/10");
+      expect(text).toContain("🧠 评审: clear wedge");
       expect(text).not.toContain("*idea*");
       expect(text).not.toContain("[wedge]");
-      expect(text).toContain("2. Beta idea — mean 6 ✅ picked");
-      expect(text).toContain("· /idea pick <n>");
+      expect(text).toContain("**2. Beta idea** — 综合 6/10 ✅ picked");
+      // Live-card summary bullet (both cards are on the board with summary "s").
+      expect(text).toContain("💡 s");
+      expect(text).toContain("· /radar pick <n> 选定 · /radar <n> 看详情");
     } finally {
       store.close();
     }
@@ -208,7 +217,7 @@ describe("/idea", () => {
       ]);
       gateway.intake(ideaPickEvent(9, "telegram:idea-pick-oob"), NOW);
       expect(String(store.claimNextNotification("test", 30)?.payload.text)).toBe(
-        "没有第 9 个 shortlist 项 (no shortlist #9) — see /idea for the list."
+        "没有第 9 个 shortlist 项 (no shortlist #9) — see /radar week for the list."
       );
       // Nothing flipped.
       expect(store.getPickedIdea()).toBeNull();
@@ -430,28 +439,138 @@ describe("/status panel line", () => {
 });
 
 describe("/help R2 lines", () => {
-  it("lists /radar <n> and /idea", () => {
+  it("lists ONE /radar family entry and no separate /idea line (post-merge)", () => {
     const store = RunStore.openInMemory();
     try {
       const gateway = new Gateway(store);
       gateway.intake(helpEvent(), NOW);
       const text = String(store.claimNextNotification("test", 30)?.payload.text);
-      expect(text).toContain("/radar <n> — 查看第 n 个 idea 卡片详情");
-      expect(text).toContain("/idea — 本周 shortlist（/idea pick <n> 选定）");
+      expect(text).toContain("/radar — 创意雷达：/radar · /radar <n> · /radar week · /radar pick <n>");
+      expect(text).not.toContain("\n/idea");
     } finally {
       store.close();
     }
   });
 });
 
-describe("formatIdeaText", () => {
+describe("formatIdeaText (week render)", () => {
   it("renders an empty snapshot's header + footer around the empty marker", () => {
     const text = formatIdeaText(
       { id: 1, created_at: NOW, week_key: WEEK, cards: [], picked_idea_id: null },
-      null
+      null,
+      () => null
     );
-    expect(text).toContain(`📋 ${WEEK} shortlist`);
+    expect(text).toContain(`🏆 **本周 idea shortlist — ${WEEK}**`);
     expect(text).toContain("(空 shortlist)");
-    expect(text).toContain("· /idea pick <n>");
+    expect(text).toContain("· /radar pick <n> 选定 · /radar <n> 看详情");
+  });
+
+  it("renders judge-reason bullets from scores_json, omitting absent judges (escaped)", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const a = seedShortlisted(store, "a", "Alpha");
+      const b = seedShortlisted(store, "b", "Beta");
+      store.writeIdeaScores({
+        id: a,
+        scoresJson: JSON.stringify({
+          panel: {
+            week: WEEK,
+            judges: {
+              kimi: { score: 7, reason: "real demand [gap]" },
+              gemini: { score: 8, reason: "genuinely *new*" },
+              codex: { score: 6, reason: "one-week `slice`" }
+            },
+            chair_rank: 1
+          }
+        })
+      });
+      // Beta: kimi only — the 🔧/✨ bullets must be OMITTED, not rendered empty.
+      store.writeIdeaScores({
+        id: b,
+        scoresJson: JSON.stringify({
+          panel: { week: WEEK, judges: { kimi: { score: 5, reason: "meh" } }, chair_rank: null }
+        })
+      });
+      seedSnapshot(store, [
+        { rank: 1, idea_id: a, slug: "a", title: "Alpha", mean_score: 7, chair_rationale: "sharp wedge" },
+        { rank: 2, idea_id: b, slug: "b", title: "Beta", mean_score: 5, chair_rationale: null }
+      ]);
+      const snapshot = store.getLatestShortlist()!;
+      const text = formatIdeaText(snapshot, null, (id) => store.getIdeaById(id));
+      // Alpha: all three lens bullets, hostile chars stripped inert.
+      expect(text).toContain("🔧 打造: one-week slice");
+      expect(text).toContain("📈 需求: real demand gap");
+      expect(text).toContain("✨ 新意: genuinely new");
+      expect(text).not.toContain("*new*");
+      expect(text).not.toContain("[gap]");
+      expect(text).toContain("🧠 评审: sharp wedge");
+      // Beta: only the kimi bullet; no chair line (rationale null).
+      const betaBlock = text.slice(text.indexOf("**2. Beta**"));
+      expect(betaBlock).toContain("📈 需求: meh");
+      expect(betaBlock).not.toContain("🔧");
+      expect(betaBlock).not.toContain("✨");
+      expect(betaBlock).not.toContain("🧠");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("renders the chair-fallback sentinel as 均分排序（chair 缺席）, never the raw sentinel", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const a = seedShortlisted(store, "a", "Alpha");
+      seedSnapshot(store, [
+        { rank: 1, idea_id: a, slug: "a", title: "Alpha", mean_score: 7, chair_rationale: CHAIR_FALLBACK_RATIONALE }
+      ]);
+      const text = formatIdeaText(store.getLatestShortlist()!, null, (id) => store.getIdeaById(id));
+      expect(text).toContain("🧠 评审: 均分排序（chair 缺席）");
+      expect(text).not.toContain("mean-score fallback");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("degrades an archived-away card to the cards_json-only block (no summary/judge bullets)", () => {
+    const store = RunStore.openInMemory();
+    try {
+      // idea_id 999 does not exist — the snapshot outlived the card.
+      seedSnapshot(store, [
+        { rank: 1, idea_id: 999, slug: "gone", title: "Ghost card", mean_score: 6.5, chair_rationale: "was solid" }
+      ]);
+      const text = formatIdeaText(store.getLatestShortlist()!, null, (id) => store.getIdeaById(id));
+      expect(text).toContain("**1. Ghost card** — 综合 6.5/10");
+      expect(text).toContain("🧠 评审: was solid");
+      expect(text).not.toContain("💡");
+      expect(text).not.toContain("🔧");
+      expect(text).not.toContain("📈");
+      expect(text).not.toContain("✨");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("truncates a long summary ~200 chars on a word boundary with an ellipsis", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const longSummary = Array.from({ length: 60 }, (_, i) => `word${i}`).join(" "); // > 200 chars
+      const { id } = store.insertIdeaCard({
+        slug: "long",
+        title: "Long",
+        summary: longSummary,
+        sources: { hn_front: [{ id: "hn_front:long", url: "https://news.ycombinator.com/item?id=9", title: "t" }] },
+        now: "2026-07-25T09:00:00.000Z"
+      });
+      seedSnapshot(store, [
+        { rank: 1, idea_id: id, slug: "long", title: "Long", mean_score: 7, chair_rationale: null }
+      ]);
+      const text = formatIdeaText(store.getLatestShortlist()!, null, (i) => store.getIdeaById(i));
+      const summaryLine = text.split("\n").find((line) => line.startsWith("💡"))!;
+      expect(summaryLine.length).toBeLessThanOrEqual(206); // emoji prefix + ~200 budget + …
+      expect(summaryLine.endsWith("…")).toBe(true);
+      // Word boundary: never cut mid-word — the last token before … is a complete wordN.
+      expect(summaryLine).toMatch(/word\d+…$/);
+    } finally {
+      store.close();
+    }
   });
 });

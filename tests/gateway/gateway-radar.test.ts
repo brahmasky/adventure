@@ -68,16 +68,19 @@ describe("/radar", () => {
 
       const note = store.claimNextNotification("test", 30);
       const text = String(note?.payload.text);
-      // Momentum order: the 3-item card first; rows NUMBERED (the /radar <n> address);
-      // markdown characters stripped inert.
-      expect(text).toContain("1. Big idea withmarkdown spice — momentum 3, seen 2h ago");
+      // Header line carries the identity + counts.
+      expect(text).toContain("📡 **Idea Radar** — 2 active · last tick 3h ago");
+      // Momentum order: the 3-item card first; rows NUMBERED (the /radar <n> address) with
+      // the code-owned bold ordinal; hostile title markdown stripped inert BEFORE the
+      // scaffolding wraps anything.
+      expect(text).toContain("**1.** Big idea withmarkdown spice — 动量 3 · 2h ago");
       expect(text).not.toContain("[with](markdown)");
       expect(text).not.toContain("*spice*");
-      expect(text).toContain("2. Small idea — momentum 1, seen 2h ago");
-      // Default `seen` status is hidden ("seen 2h ago, seen" read as a stutter).
-      expect(text).not.toContain(", seen\n");
-      // Footer teaches the detail verb (R2).
-      expect(text).toContain("2 active · last tick 3h ago · /radar <n> 看详情");
+      expect(text).toContain("**2.** Small idea — 动量 1 · 2h ago");
+      // Default `seen` status is hidden ("2h ago · seen" would read as a stutter).
+      expect(text).not.toContain("· seen");
+      // Footer teaches the family verbs (detail + week).
+      expect(text).toContain("· /radar <n> 详情 · /radar week 本周评审");
       expect(text.indexOf("Big idea")).toBeLessThan(text.indexOf("Small idea"));
     } finally {
       store.close();
@@ -92,7 +95,7 @@ describe("/radar", () => {
       gateway.intake(radarEvent(), NOW);
       const text = String(store.claimNextNotification("test", 30)?.payload.text);
       expect(text).toContain("还没有活跃的 idea 卡片");
-      expect(text).toContain("0 active · last tick never");
+      expect(text).toContain("📡 **Idea Radar** — 0 active · last tick never");
     } finally {
       store.close();
     }
@@ -167,16 +170,20 @@ describe("/radar <n> detail view", () => {
       const result = gateway.intake(radarDetailEvent(1), NOW);
       expect(result).toEqual({ ok: true, status: "radar_returned", run_id: "" });
       const text = String(store.claimNextNotification("test", 30)?.payload.text);
-      expect(text).toContain("1. Big idea");
-      expect(text).toContain("\ns\n"); // the summary line
-      // Detail ALWAYS shows the status — even the default `seen` the list hides.
+      // Bold title line ALWAYS shows the status — even the default `seen` the board hides.
+      expect(text).toContain("**1. Big idea** — seen");
+      expect(text).toContain("\n\ns\n\n"); // the summary paragraph, blank-line separated
       expect(text).toContain(
-        "momentum 3 (3 items × 1 sources) · seen 2h ago · first seen 2h ago · status seen"
+        "📊 momentum 3（3 items × 1 sources）· 首见 2h ago · 最近 2h ago"
       );
-      expect(text).toContain("panel 2026-W30: kimi 7 · gemini 8 · codex 5 · chair #2");
-      expect(text).toContain("sources:");
-      // Up to 3 items per source; URLs render as plain escaped text.
-      expect(text).toContain("  hn_front: item 0 — https://news.ycombinator.com/item?id=0");
+      expect(text).toContain("🗳 panel 2026-W30: kimi 7 · gemini 8 · codex 5 · chair #2");
+      // One reason sub-bullet per judge (lens emoji: kimi 📈 · gemini ✨ · codex 🔧).
+      expect(text).toContain("  📈 r");
+      expect(text).toContain("  ✨ r");
+      expect(text).toContain("  🔧 r");
+      expect(text).toContain("🔗 sources:");
+      // Up to 3 items per source; item title bullet + its URL bare on the next line.
+      expect(text).toContain("• hn_front: item 0\n  https://news.ycombinator.com/item?id=0");
       expect(text).toContain("item 2");
       expect(text).not.toContain("item 3");
     } finally {
@@ -253,9 +260,9 @@ describe("/radar <n> detail view", () => {
       });
       gateway.intake(radarDetailEvent(1, "telegram:radar-detail-hostile"), NOW);
       const text = String(store.claimNextNotification("test", 30)?.payload.text);
-      expect(text).toContain("1. Sneaky linkhttps://evil.example bold");
+      expect(text).toContain("**1. Sneaky linkhttps://evil.example bold** — seen");
       expect(text).toContain("underscored code");
-      expect(text).toContain("hn_front: item xy — https://news.ycombinator.com/item?id=123");
+      expect(text).toContain("• hn_front: item xy\n  https://news.ycombinator.com/item?id=123");
       expect(text).not.toContain("[link]");
       expect(text).not.toContain("*bold*");
       expect(text).not.toContain("(y)");
@@ -335,8 +342,8 @@ describe("formatRadarText", () => {
       null,
       NOW
     );
-    expect(text).toContain("1. code sneaky — momentum 4, seen 0m ago");
-    expect(text).toContain("1 active · last tick never");
+    expect(text).toContain("**1.** code sneaky — 动量 4 · 0m ago");
+    expect(text).toContain("📡 **Idea Radar** — 1 active · last tick never");
   });
 
   it("renders a non-default lifecycle status (R2 verbs) while hiding the default `seen`", () => {
@@ -354,6 +361,6 @@ describe("formatRadarText", () => {
       last_seen: "2026-07-24T11:00:00.000Z"
     } as Parameters<typeof formatRadarText>[0][number];
     const text = formatRadarText([card], 1, null, NOW);
-    expect(text).toContain("1. Picked idea — momentum 4, seen 1h ago, shortlisted");
+    expect(text).toContain("**1.** Picked idea — 动量 4 · 1h ago · shortlisted");
   });
 });

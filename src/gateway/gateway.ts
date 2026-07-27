@@ -738,11 +738,13 @@ export class Gateway {
   }
 
   /**
-   * `/idea` — the weekly shortlist viewer + pick control (Idea Radar R2, spec §5; no run,
-   * no budget). Show renders the LATEST frozen snapshot (week_key header, ranked rows, the
-   * picked marker); pick resolves rank n in that snapshot and flips the global pick
-   * singleton. Gated on the PANEL flag (its own dark-feature notice — `/idea` surfaces
-   * belong to the panel, not the R1 radar). Idempotent on the trigger key, like /radar.
+   * `/radar week` + `/radar pick <n>` (and the silent `/idea` aliases — both surfaces parse
+   * to this ONE `idea` event shape) — the weekly shortlist viewer + pick control (Idea Radar
+   * R2, spec §5; no run, no budget). Show renders the LATEST frozen snapshot (week_key
+   * header, per-candidate blocks with summary/judge/chair bullets, the picked marker); pick
+   * resolves rank n in that snapshot and flips the global pick singleton. Gated on the PANEL
+   * flag (its own dark-feature notice — these surfaces belong to the panel, not the R1
+   * radar board). Idempotent on the trigger key, like /radar.
    */
   private handleIdea(event: TypedTaskEvent, now: string): GatewayIntakeResult {
     const replay = this.runStore.beginTriggerProcessing(event);
@@ -764,7 +766,9 @@ export class Gateway {
       text = this.pickIdea(event, now);
     } else {
       const snapshot = this.runStore.getLatestShortlist();
-      text = snapshot ? formatIdeaText(snapshot, snapshot.picked_idea_id) : IDEA_EMPTY_TEXT;
+      text = snapshot
+        ? formatIdeaText(snapshot, snapshot.picked_idea_id, (id) => this.runStore.getIdeaById(id))
+        : IDEA_EMPTY_TEXT;
     }
 
     const rawNumber = event.metadata?.idea_number;
@@ -1251,9 +1255,7 @@ export const HELP_TEXT = [
   "",
   "/status — 运行与健康状态",
   "/usage — 各模型 token/费用用量",
-  "/radar — 创意雷达：活跃 idea 卡片",
-  "/radar <n> — 查看第 n 个 idea 卡片详情",
-  "/idea — 本周 shortlist（/idea pick <n> 选定）",
+  "/radar — 创意雷达：/radar · /radar <n> · /radar week · /radar pick <n>",
   "/schedule — 列出定时任务（/schedule cancel <编号或 id> 取消）",
   "/lessons — 已学到的经验（可选 scope）",
   "/skills — 可用技能（可选 scope）",
@@ -1273,14 +1275,15 @@ export const HELP_TEXT = [
 export const RADAR_OFF_TEXT = "📡 Houge · radar\nradar off — HOUGE_RADAR_ENABLED 未开启";
 
 /**
- * Render the `/radar` reply: top active cards (status-pinned, then momentum), each
- * `<n>. <title> — momentum <m>, seen <age>[, <status>]`, plus the one-line footer
- * (`N active · last tick <when> · /radar <n> 看详情`). Rows are NUMBERED (R2): the ordinal
- * is the `/radar <n>` address, resolved against this same ordering. The default `seen`
- * status is HIDDEN — every fresh card carries it, and "seen 21m ago, seen" read as a
- * stutter (Paco, first live render); a status is only news once R2 moves a card to
- * tracked/shortlisted/picked. Card titles originated in EXTERNAL feeds (slimmed +
- * sanitized at parse time) — `escapeForTelegram` at render keeps them markdown-inert.
+ * Render the `/radar` board: the `📡 **Idea Radar**` header (active count + last tick),
+ * numbered rows `**<n>.** <title> — 动量 <m> · <age>[ · <status>]`, and the family footer
+ * (`· /radar <n> 详情 · /radar week 本周评审`). Rows are NUMBERED (R2): the ordinal is the
+ * `/radar <n>` address, resolved against this same ordering (count and order untouched by
+ * the render polish). The default `seen` status is HIDDEN — every fresh card carries it,
+ * and "seen 21m ago, seen" read as a stutter (Paco, first live render); a status is only
+ * news once R2 moves a card to tracked/shortlisted/picked. Card titles originated in
+ * EXTERNAL feeds (slimmed + sanitized at parse time) — `escapeForTelegram` runs BEFORE the
+ * code-owned `**` scaffolding wraps anything, so titles stay markdown-inert.
  */
 export function formatRadarText(
   cards: IdeaRow[],
@@ -1288,88 +1291,102 @@ export function formatRadarText(
   lastTick: string | null,
   now: string
 ): string {
+  const header = `📡 **Idea Radar** — ${activeCount} active · last tick ${lastTick ? `${relativeTimeAgo(lastTick, now)} ago` : "never"}`;
   const lines = cards.map(
     (card, index) =>
-      `${index + 1}. ${escapeForTelegram(card.title)} — momentum ${card.momentum}, seen ${relativeTimeAgo(card.last_seen, now)} ago${card.status === "seen" ? "" : `, ${card.status}`}`
+      `**${index + 1}.** ${escapeForTelegram(card.title)} — 动量 ${card.momentum} · ${relativeTimeAgo(card.last_seen, now)} ago${card.status === "seen" ? "" : ` · ${card.status}`}`
   );
-  const footer = `${activeCount} active · last tick ${lastTick ? `${relativeTimeAgo(lastTick, now)} ago` : "never"} · /radar <n> 看详情`;
   return [
-    "📡 Houge · radar",
+    header,
+    "",
     ...(lines.length > 0 ? lines : ["还没有活跃的 idea 卡片。"]),
     "",
-    footer
+    "· /radar <n> 详情 · /radar week 本周评审"
   ].join("\n");
 }
 
 /** Per-source item cap in the `/radar <n>` detail view (spec §5). */
 const RADAR_DETAIL_ITEMS_PER_SOURCE = 3;
-/** Total source-item line cap in the detail view (spec §5). */
+/** Total source-item cap in the detail view (spec §5; each item renders as title + URL lines). */
 const RADAR_DETAIL_ITEM_LINES_MAX = 12;
 
 /**
- * Render the `/radar <n>` detail view (Idea Radar R2, spec §5): title line under the list
- * ordinal, summary, the momentum/age/status line (status ALWAYS shows here — a detail view
- * is where "seen" is an answer, not a stutter), the panel line when `scores_json` carries
- * one (stale weeks render as-is — the week label makes them self-describing), and up to
- * 3 items per source / 12 lines total from the sources map. URLs render as plain escaped
- * text (no markdown link syntax — Telegram auto-links, and escaping stays trivial).
- * EVERY stored string (title/summary/source keys/item titles/URLs/panel week) escapes.
+ * Render the `/radar <n>` detail view (Idea Radar R2, spec §5): bold title line under the
+ * list ordinal with the status (status ALWAYS shows here — a detail view is where "seen"
+ * is an answer, not a stutter), the full summary, the 📊 momentum/age line, the 🗳 panel
+ * block when `scores_json` carries one (score line + per-judge reason sub-bullets; stale
+ * weeks render as-is — the week label makes them self-describing), and up to 3 items per
+ * source / 12 items total from the sources map (each item = title bullet + its URL on the
+ * next line). URLs render as plain escaped text (NO markdown link syntax — Telegram
+ * auto-links, escaping stays trivial, and `markdownToTelegramHtml` passes bare URLs
+ * through untouched). EVERY stored string (title/summary/item titles/URLs/panel
+ * week/judge reasons) escapes BEFORE the code-owned markdown scaffolding wraps it.
  */
 export function formatRadarDetailText(n: number, card: IdeaRow, now: string): string {
   const lines = [
-    `${n}. ${escapeForTelegram(card.title)}`,
+    `**${n}. ${escapeForTelegram(card.title)}** — ${card.status}`,
+    "",
     escapeForTelegram(card.summary),
-    `momentum ${card.momentum} (${card.distinct_items} items × ${card.distinct_sources} sources) · seen ${relativeTimeAgo(card.last_seen, now)} ago · first seen ${relativeTimeAgo(card.first_seen, now)} ago · status ${card.status}`
+    "",
+    `📊 momentum ${card.momentum}（${card.distinct_items} items × ${card.distinct_sources} sources）· 首见 ${relativeTimeAgo(card.first_seen, now)} ago · 最近 ${relativeTimeAgo(card.last_seen, now)} ago`
   ];
-  const panelLine = formatPanelScoreLine(card.scores_json);
-  if (panelLine) lines.push(panelLine);
+  lines.push(...formatPanelBlock(card.scores_json));
   const itemLines: string[] = [];
+  let itemCount = 0;
   for (const [sourceKey, items] of Object.entries(card.sources)) {
     for (const item of items.slice(0, RADAR_DETAIL_ITEMS_PER_SOURCE)) {
-      if (itemLines.length >= RADAR_DETAIL_ITEM_LINES_MAX) break;
+      if (itemCount >= RADAR_DETAIL_ITEM_LINES_MAX) break;
       // The source key is a CODE-OWNED registry constant (`hn_front`, `hf_papers`, …) —
       // never feed/model-derived — so it renders verbatim (escaping would mangle the
       // underscore). Item titles/URLs originated in external feeds: escaped.
-      itemLines.push(
-        `  ${sourceKey}: ${escapeForTelegram(item.title)} — ${escapeForTelegram(item.url)}`
-      );
+      itemLines.push(`• ${sourceKey}: ${escapeForTelegram(item.title)}`, `  ${escapeForTelegram(item.url)}`);
+      itemCount += 1;
     }
-    if (itemLines.length >= RADAR_DETAIL_ITEM_LINES_MAX) break;
+    if (itemCount >= RADAR_DETAIL_ITEM_LINES_MAX) break;
   }
-  if (itemLines.length > 0) lines.push("sources:", ...itemLines);
+  if (itemLines.length > 0) lines.push("🔗 sources:", ...itemLines);
   return lines.join("\n");
 }
 
+/** Per-judge lens emoji for detail/week renders (kimi=demand, gemini=novelty, codex=build). */
+const PANEL_JUDGE_EMOJI: Record<string, string> = { kimi: "📈", gemini: "✨", codex: "🔧" };
+
 /**
- * The detail view's panel line, or null when the card has no (parseable) panel scores:
- * `panel <week>: kimi <s> · gemini <s> · codex <s> · chair #<r>` — an absent judge omits
- * its segment; a null chair_rank omits the chair segment. Total function over hostile
- * JSON: any parse/shape failure renders as "no panel line", never a throw.
+ * The detail view's 🗳 panel block, or `[]` when the card has no (parseable) panel scores:
+ * `🗳 panel <week>: kimi <s> · gemini <s> · codex <s> · chair #<r>` followed by one
+ * indented reason sub-bullet per judge that supplied one — an absent judge omits both its
+ * segment and its bullet; a null chair_rank omits the chair segment. Total function over
+ * hostile JSON: any parse/shape failure renders as "no panel block", never a throw.
+ * Reasons are stored judge-model prose over untrusted feed text — escaped.
  */
-function formatPanelScoreLine(scoresJson: string | null): string | null {
-  if (!scoresJson) return null;
+function formatPanelBlock(scoresJson: string | null): string[] {
+  if (!scoresJson) return [];
   let parsed: unknown;
   try {
     parsed = JSON.parse(scoresJson);
   } catch {
-    return null;
+    return [];
   }
   const panel = (parsed as { panel?: unknown } | null)?.panel;
-  if (typeof panel !== "object" || panel === null) return null;
+  if (typeof panel !== "object" || panel === null) return [];
   const { week, judges, chair_rank } = panel as { week?: unknown; judges?: unknown; chair_rank?: unknown };
   const segments: string[] = [];
+  const reasonLines: string[] = [];
   for (const judge of ["kimi", "gemini", "codex"]) {
-    const entry = (judges as Record<string, { score?: unknown }> | undefined)?.[judge];
+    const entry = (judges as Record<string, { score?: unknown; reason?: unknown }> | undefined)?.[judge];
     if (entry && typeof entry.score === "number" && Number.isFinite(entry.score)) {
       segments.push(`${judge} ${entry.score}`);
+      if (typeof entry.reason === "string" && entry.reason.trim() !== "") {
+        reasonLines.push(`  ${PANEL_JUDGE_EMOJI[judge]} ${escapeForTelegram(entry.reason)}`);
+      }
     }
   }
   if (typeof chair_rank === "number" && Number.isFinite(chair_rank)) {
     segments.push(`chair #${chair_rank}`);
   }
-  if (segments.length === 0) return null;
+  if (segments.length === 0) return [];
   const weekLabel = typeof week === "string" ? escapeForTelegram(week) : "?";
-  return `panel ${weekLabel}: ${segments.join(" · ")}`;
+  return [`🗳 panel ${weekLabel}: ${segments.join(" · ")}`, ...reasonLines];
 }
 
 /** `/radar <n>` when there is no nth active card (out of range / empty board). */
@@ -1377,47 +1394,122 @@ export function formatRadarNumberNotFoundText(n: number): string {
   return `没有第 ${n} 个 idea 卡片 (no idea #${n}) — see /radar for the list.`;
 }
 
-/** `/idea` while the panel is dark — name the flag so the operator knows what to arm. */
-export const IDEA_OFF_TEXT = "📋 Houge · idea\npanel off — HOUGE_RADAR_PANEL_ENABLED 未开启";
+/** `/radar week` (and the /idea alias) while the panel is dark — name the flag to arm. */
+export const IDEA_OFF_TEXT = "📋 Houge · radar week\npanel off — HOUGE_RADAR_PANEL_ENABLED 未开启";
 
-/** `/idea` (and a pick) before the first panel run — no snapshot exists yet. */
-export const IDEA_EMPTY_TEXT = "📋 Houge · idea\npanel 未跑过 — 周日 09:00";
+/** `/radar week` (and a pick) before the first panel run — no snapshot exists yet. */
+export const IDEA_EMPTY_TEXT = "📋 Houge · radar week\npanel 未跑过 — 周日 09:00";
 
-/** `/idea pick <n>` when the resolved card was archived after the snapshot froze (§11). */
+/** `/radar pick <n>` when the resolved card was archived after the snapshot froze (§11). */
 export const IDEA_PICK_CARD_ARCHIVED_TEXT =
   "pick 失败 — 该卡片在 snapshot 之后已归档 (card archived since snapshot)。";
 
-/** `/idea pick <n>` when the latest snapshot has no rank n. */
+/** `/radar pick <n>` when the latest snapshot has no rank n. */
 export function formatIdeaNumberNotFoundText(n: number): string {
-  return `没有第 ${n} 个 shortlist 项 (no shortlist #${n}) — see /idea for the list.`;
+  return `没有第 ${n} 个 shortlist 项 (no shortlist #${n}) — see /radar week for the list.`;
 }
 
-/** The `/idea pick` confirmation (spec §5 step 4). Title is stored card text — escape. */
+/** The `/radar pick` confirmation (spec §5 step 4). Title is stored card text — escape. */
 export function formatIdeaPickedText(rank: number, weekKey: string, title: string): string {
   return `picked #${rank} from ${weekKey}: ${escapeForTelegram(title)}`;
 }
 
+/** Summary preview budget in the week render — cut on a word boundary, never mid-word. */
+const IDEA_SUMMARY_PREVIEW_CHARS = 200;
+
 /**
- * Render the `/idea` shortlist reply from a frozen snapshot (Idea Radar R2, spec §5) —
- * PURE so the §7 Sunday digest push reuses it verbatim (T3). Header names the week_key;
- * rows render the frozen rank/title/mean/rationale (+ the picked marker against
- * `pickedIdeaId` — passed separately because the push renders a just-created snapshot
- * whose pointer is still NULL); footer teaches the pick verb. Titles and rationales are
- * stored card/chair text — `escapeForTelegram` keeps them markdown-inert.
+ * Truncate to ~`max` chars on a word boundary (`…` appended). A boundary only counts when
+ * it keeps a substantial prefix (>60% of the budget) — spaceless text (e.g. pure-CJK
+ * summaries) falls back to a hard cut rather than degenerating to a stub.
  */
-export function formatIdeaText(snapshot: ShortlistRow, pickedIdeaId: number | null): string {
-  const rows = snapshot.cards.map(
-    (card) =>
-      `${card.rank}. ${escapeForTelegram(card.title)} — mean ${card.mean_score}${
-        card.chair_rationale ? `, ${escapeForTelegram(card.chair_rationale)}` : ""
-      }${card.idea_id === pickedIdeaId ? " ✅ picked" : ""}`
-  );
+function truncateOnWordBoundary(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+/**
+ * Render the `/radar week` shortlist reply from a frozen snapshot (Idea Radar R2, spec §5;
+ * merged surface — `/idea` aliases here). One block per candidate:
+ *
+ *   `**<rank>. <title>** — 综合 <mean>/10[ ✅ picked]` then the 💡 summary preview
+ *   (live card via `getIdeaById`), the 🔧/📈/✨ judge-reason bullets (codex=打造,
+ *   kimi=需求, gemini=新意 — parsed from the card's panel `scores_json`), and the 🧠 评审
+ *   chair line (the CHAIR_FALLBACK_RATIONALE sentinel renders as `均分排序（chair 缺席）`).
+ *
+ * Any bullet whose datum is missing is OMITTED; a card archived since the snapshot froze
+ * (`getIdeaById` → null) degrades to the cards_json-only block (title/mean/rationale).
+ * The header names the week_key; the footer teaches the family verbs. PURE over the store
+ * lookup so the §7 Sunday digest push reuses it verbatim (T3) — the picked marker renders
+ * against `pickedIdeaId`, passed separately because the push renders a just-created
+ * snapshot whose pointer is still NULL. Titles, summaries, reasons and rationales are
+ * stored card/judge/chair text — `escapeForTelegram` runs on every one BEFORE the
+ * code-owned markdown scaffolding wraps it.
+ */
+export function formatIdeaText(
+  snapshot: ShortlistRow,
+  pickedIdeaId: number | null,
+  getIdeaById: (id: number) => IdeaRow | null
+): string {
+  const blocks = snapshot.cards.map((card) => {
+    const lines = [
+      `**${card.rank}. ${escapeForTelegram(card.title)}** — 综合 ${card.mean_score}/10${
+        card.idea_id === pickedIdeaId ? " ✅ picked" : ""
+      }`
+    ];
+    const idea = getIdeaById(card.idea_id);
+    if (idea) {
+      if (idea.summary.trim() !== "") {
+        lines.push(
+          `💡 ${escapeForTelegram(truncateOnWordBoundary(idea.summary, IDEA_SUMMARY_PREVIEW_CHARS))}`
+        );
+      }
+      const reasons = parsePanelJudgeReasons(idea.scores_json);
+      if (reasons.codex) lines.push(`🔧 打造: ${escapeForTelegram(reasons.codex)}`);
+      if (reasons.kimi) lines.push(`📈 需求: ${escapeForTelegram(reasons.kimi)}`);
+      if (reasons.gemini) lines.push(`✨ 新意: ${escapeForTelegram(reasons.gemini)}`);
+    }
+    if (card.chair_rationale) {
+      lines.push(
+        card.chair_rationale === CHAIR_FALLBACK_RATIONALE
+          ? "🧠 评审: 均分排序（chair 缺席）"
+          : `🧠 评审: ${escapeForTelegram(card.chair_rationale)}`
+      );
+    }
+    return lines.join("\n");
+  });
   return [
-    `📋 ${snapshot.week_key} shortlist`,
-    ...(rows.length > 0 ? rows : ["(空 shortlist)"]),
+    `🏆 **本周 idea shortlist — ${escapeForTelegram(snapshot.week_key)}**`,
     "",
-    "· /idea pick <n>"
+    blocks.length > 0 ? blocks.join("\n\n") : "(空 shortlist)",
+    "",
+    "· /radar pick <n> 选定 · /radar <n> 看详情"
   ].join("\n");
+}
+
+/**
+ * The week render's judge reasons out of a card's panel `scores_json`, keyed by judge —
+ * a judge is present only with a non-empty string reason. Total function over hostile
+ * JSON (same posture as {@link formatPanelBlock}): parse/shape failures → `{}`.
+ */
+function parsePanelJudgeReasons(scoresJson: string | null): Partial<Record<"kimi" | "gemini" | "codex", string>> {
+  if (!scoresJson) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(scoresJson);
+  } catch {
+    return {};
+  }
+  const judges = ((parsed as { panel?: { judges?: unknown } } | null)?.panel as { judges?: unknown } | undefined)
+    ?.judges;
+  if (typeof judges !== "object" || judges === null) return {};
+  const reasons: Partial<Record<"kimi" | "gemini" | "codex", string>> = {};
+  for (const judge of ["kimi", "gemini", "codex"] as const) {
+    const reason = (judges as Record<string, { reason?: unknown }>)[judge]?.reason;
+    if (typeof reason === "string" && reason.trim() !== "") reasons[judge] = reason;
+  }
+  return reasons;
 }
 
 /** `/schedule cancel` refusal — not-found and cross-chat read IDENTICALLY (no probe signal). */

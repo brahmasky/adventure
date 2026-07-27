@@ -61,13 +61,55 @@ describe("parseTelegramCommand", () => {
     });
     const badArg = {
       ok: false,
-      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/radar takes no arguments, or: /radar <编号>" }
+      error: {
+        code: "TELEGRAM_COMMAND_INVALID",
+        message: "/radar 用法: /radar · /radar <编号> · /radar week · /radar pick <编号>"
+      }
     };
     expect(parseTelegramCommand("/radar 0")).toEqual(badArg);
     expect(parseTelegramCommand("/radar -1")).toEqual(badArg);
     expect(parseTelegramCommand("/radar x")).toEqual(badArg);
     expect(parseTelegramCommand("/radar 1.5")).toEqual(badArg);
     expect(parseTelegramCommand("/radar 3 4")).toEqual(badArg);
+  });
+
+  it("parses /radar week and /radar pick <n> as the merged shortlist surfaces", () => {
+    expect(parseTelegramCommand("/radar week")).toEqual({
+      ok: true,
+      command: { type: "idea", idea_action: "show" }
+    });
+    expect(parseTelegramCommand("/radar pick 2")).toEqual({
+      ok: true,
+      command: { type: "idea", idea_action: "pick", idea_number: 2 }
+    });
+    // Quoted noise: tokenizing strips the quotes, the rank survives.
+    expect(parseTelegramCommand('/radar pick "2"')).toEqual({
+      ok: true,
+      command: { type: "idea", idea_action: "pick", idea_number: 2 }
+    });
+    const badPick = {
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/radar pick requires exactly one 编号" }
+    };
+    expect(parseTelegramCommand("/radar pick")).toEqual(badPick);
+    expect(parseTelegramCommand("/radar pick 0")).toEqual(badPick);
+    expect(parseTelegramCommand("/radar pick x")).toEqual(badPick);
+    expect(parseTelegramCommand("/radar pick 2 3")).toEqual(badPick);
+    // `week` takes nothing after it; an unknown subcommand names the whole family.
+    const family = {
+      ok: false,
+      error: {
+        code: "TELEGRAM_COMMAND_INVALID",
+        message: "/radar 用法: /radar · /radar <编号> · /radar week · /radar pick <编号>"
+      }
+    };
+    expect(parseTelegramCommand("/radar week 2")).toEqual(family);
+    expect(parseTelegramCommand("/radar junk")).toEqual(family);
+  });
+
+  it("/idea and /idea pick <n> are silent aliases — byte-identical command shapes", () => {
+    expect(parseTelegramCommand("/idea")).toEqual(parseTelegramCommand("/radar week"));
+    expect(parseTelegramCommand("/idea pick 3")).toEqual(parseTelegramCommand("/radar pick 3"));
   });
 
   it("parses /idea (show) and /idea pick <n>; loose args are named parse errors (R2)", () => {

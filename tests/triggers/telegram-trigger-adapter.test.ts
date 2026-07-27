@@ -105,6 +105,21 @@ describe("normalizeTelegramUpdate", () => {
       allowlist
     );
     expect(taskEvent(radar).type).toBe("radar");
+
+    // The merged shortlist surfaces ride the pre-merge `idea` event shape (silent alias).
+    const week = normalizeTelegramUpdate(
+      { update_id: 1016, message: { message_id: 76, text: "/radar week", from: { id: 111 }, chat: { id: 222 } } },
+      allowlist
+    );
+    expect(taskEvent(week).type).toBe("idea");
+    expect(taskEvent(week).metadata).toMatchObject({ idea_action: "show" });
+
+    const pick = normalizeTelegramUpdate(
+      { update_id: 1017, message: { message_id: 77, text: "/radar pick 2", from: { id: 111 }, chat: { id: 222 } } },
+      allowlist
+    );
+    expect(taskEvent(pick).type).toBe("idea");
+    expect(taskEvent(pick).metadata).toMatchObject({ idea_action: "pick", idea_number: 2 });
   });
 
   it("normalizes /approve without creating a program", () => {

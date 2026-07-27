@@ -599,7 +599,8 @@ export async function runIdeaPanelTick(input: PanelTickInput): Promise<PanelTick
             intent_type: "progress",
             idempotency_key: `idea-panel:${weekKey}:${input.now}`,
             correlation_id: "idea-panel",
-            payload: { text: `${formatIdeaText(snapshot, null)}\n详情 /idea · 卡片 /radar` }
+            // The week render's own footer teaches the /radar family verbs — no extra suffix.
+            payload: { text: formatIdeaText(snapshot, null, (id) => input.store.getIdeaById(id)) }
           });
           pushed = true;
         }
