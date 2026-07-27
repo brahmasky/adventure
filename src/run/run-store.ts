@@ -1819,15 +1819,21 @@ export class RunStore {
     return counts;
   }
 
-  /** Most recent failed run's reason, or null (for `/status`). */
-  lastRunError(): string | null {
+  /**
+   * Most recent failed run's reason WITHIN the /status ACTIVITY window, or null.
+   * Scoped to the same window as runCountsByStateSince — an undated all-time error
+   * under a "24h" header reads as fresh (operator confusion, 2026-07-27: a July-5
+   * tool timeout looked like a live fault three weeks later).
+   */
+  lastRunError(now: string): string | null {
+    const windowStart = this.addSeconds(now, -GLOBAL_BUDGET_WINDOW_HOURS * 3600);
     const row = this.db.prepare(`
       SELECT state_reason
       FROM runs
-      WHERE state = 'failed'
+      WHERE state = 'failed' AND updated_at > ?
       ORDER BY updated_at DESC, run_id DESC
       LIMIT 1
-    `).get<{ state_reason: string | null }>();
+    `).get<{ state_reason: string | null }>(windowStart);
     return row?.state_reason ?? null;
   }
 

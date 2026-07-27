@@ -55,7 +55,7 @@ export function queryStatus(
         overview: {
           window_hours: GLOBAL_BUDGET_WINDOW_HOURS,
           runs_by_state: store.runCountsByStateSince(now),
-          last_error: store.lastRunError(),
+          last_error: store.lastRunError(now),
           budget: store.globalBudgetUsage(caps, now),
           poller: store.getPollHeartbeat(),
           rating: store.getRatingStatus(now, resolveRatingPendingMinutes(process.env) * 60_000),

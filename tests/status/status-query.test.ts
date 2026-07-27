@@ -116,3 +116,34 @@ describe("queryStatus", () => {
     }
   });
 });
+
+describe("lastRunError window", () => {
+  it("shows a failure inside the 24h ACTIVITY window and hides it once the window has passed", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const intake = new Gateway(store).intake(buildTypedTaskEvent({
+        source: "cli",
+        type: "run",
+        program: "research-brief",
+        goal: "will fail",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "local" },
+        idempotency_key: "cli:status-timeout",
+        source_reference: "argv"
+      }));
+      if (!intake.ok) throw new Error("expected intake");
+      const claim = store.claimNext("w1", 60);
+      if (!claim) throw new Error("expected claim");
+      expect(store.transition(claim.run_id, "running", "failed", "Tool execution timed out")).toBe(true);
+
+      const now = new Date().toISOString();
+      const dayLater = new Date(Date.now() + 25 * 3600_000).toISOString();
+      // Inside the window: the fresh failure shows.
+      expect(store.lastRunError(now)).toBe("Tool execution timed out");
+      // A 3-week-old error must not read as fresh under a "24h" header (2026-07-27 operator report).
+      expect(store.lastRunError(dayLater)).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+});
