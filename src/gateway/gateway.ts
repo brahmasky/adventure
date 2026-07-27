@@ -1275,8 +1275,9 @@ function formatSkillsText(scope: string | undefined, metas: SkillMeta[]): string
       ? `No skills for "${scope}" yet.`
       : "No skills yet. Skills are reusable procedures Houge applies automatically when relevant.";
   }
+  // Bold, not `##` — markdownToTelegramHtml has no heading support.
   return metas
-    .map((m) => `## ${m.name} (${m.scope}) v${m.version ?? 1}\nwhen: ${m.when}`)
+    .map((m) => `**${m.name}** (${m.scope}) v${m.version ?? 1}\nwhen: ${m.when}`)
     .join("\n\n");
 }
 
@@ -1613,6 +1614,6 @@ function formatPendingText(metas: SkillMeta[]): string {
   return [
     "Pending (blocked) skills — parked, NOT applied. Hand-fix + move to active, or discard:",
     "",
-    ...metas.map((m) => `## ${m.name} (${m.scope})\nwhen: ${m.when}`)
+    ...metas.map((m) => `**${m.name}** (${m.scope})\nwhen: ${m.when}`)
   ].join("\n");
 }
