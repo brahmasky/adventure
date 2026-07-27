@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import {
   formatScheduleCancelledText,
@@ -727,6 +727,71 @@ describe("Gateway telegram events", () => {
       expect(text).toContain("/nonsense 不是命令");
       expect(text).toContain("/status"); // still lists the real commands
       expect(text).toContain("/usage");
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("/schedule 系统任务 footer (read-only built-in ticks)", () => {
+  let savedRadar: string | undefined;
+  let savedPanel: string | undefined;
+  let savedAt: string | undefined;
+  beforeEach(() => {
+    savedRadar = process.env.HOUGE_RADAR_ENABLED;
+    savedPanel = process.env.HOUGE_RADAR_PANEL_ENABLED;
+    savedAt = process.env.HOUGE_RADAR_AT;
+  });
+  afterEach(() => {
+    const restore = (key: string, value: string | undefined) => {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    };
+    restore("HOUGE_RADAR_ENABLED", savedRadar);
+    restore("HOUGE_RADAR_PANEL_ENABLED", savedPanel);
+    restore("HOUGE_RADAR_AT", savedAt);
+  });
+
+  function scheduleEvent(key: string) {
+    return buildTypedTaskEvent({
+      source: "telegram",
+      type: "schedule_admin",
+      requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "telegram", chat_id: "222" },
+      idempotency_key: `telegram:${key}`,
+      source_reference: `telegram:update:${key}`
+    });
+  }
+
+  it("appends radar + panel lines with a computed next fire when both flags are armed", () => {
+    process.env.HOUGE_RADAR_ENABLED = "1";
+    process.env.HOUGE_RADAR_PANEL_ENABLED = "1";
+    delete process.env.HOUGE_RADAR_AT; // default 07:30
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      gateway.intake(scheduleEvent("sys-sched-1"), "2026-07-27T00:00:00.000Z");
+      const text = String(store.claimNextNotification("test", 30)?.payload.text);
+      expect(text).toContain("系统任务");
+      expect(text).toContain("· idea radar ·");
+      expect(text).toContain("· idea panel ·");
+      expect(text).toContain("下次");
+      // Unnumbered: system rows must never look addressable by /schedule cancel <n>.
+      expect(text).not.toMatch(/#\d+ .*idea radar/);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("omits the footer entirely when neither built-in tick is armed", () => {
+    delete process.env.HOUGE_RADAR_ENABLED;
+    delete process.env.HOUGE_RADAR_PANEL_ENABLED;
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      gateway.intake(scheduleEvent("sys-sched-2"), "2026-07-27T00:00:00.000Z");
+      const text = String(store.claimNextNotification("test", 30)?.payload.text);
+      expect(text).not.toContain("系统任务");
     } finally {
       store.close();
     }

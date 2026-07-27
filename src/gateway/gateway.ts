@@ -19,6 +19,7 @@ import {
 import { formatKillAckText, writeTombstone } from "../run/tombstone.js";
 import { parseRatingHistory, type LessonRow, type RunStore, type ScheduledTaskRow } from "../run/run-store.js";
 import {
+  computeNextRunAt,
   describeScheduleSpec,
   formatInstantInZone,
   formatScheduleListText,
@@ -36,7 +37,7 @@ import { join } from "node:path";
 import { evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import { queryStatus } from "../status/status-query.js";
 import { formatUsageTable } from "../status/usage-report.js";
-import { resolveRadarEnabled } from "../capabilities/idea-radar.js";
+import { resolveRadarAt, resolveRadarEnabled, resolveRadarTz } from "../capabilities/idea-radar.js";
 import { CHAIR_FALLBACK_RATIONALE, resolvePanelEnabled } from "../capabilities/idea-panel.js";
 import { resolvePanelAt } from "../capabilities/week-key.js";
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
@@ -465,7 +466,9 @@ export class Gateway {
         typeof event.metadata?.schedule_id === "string" ? event.metadata.schedule_id : "";
       text = this.cancelSchedule(chat_id, arg, now);
     } else {
-      text = formatScheduleListText(this.runStore.listScheduledTasks(chat_id));
+      text =
+        formatScheduleListText(this.runStore.listScheduledTasks(chat_id)) +
+        formatSystemScheduleSection(process.env, now);
     }
 
     const result: GatewayIntakeResult = { ok: true, status: "schedule_admin_returned", run_id: "" };
@@ -1556,6 +1559,43 @@ export function formatScheduleCancelledText(schedule_id: string): string {
 }
 
 /** `/schedule cancel <N>` when there is no Nth row (out of range / empty list). */
+/**
+ * Read-only "系统任务" footer for the `/schedule` command: the env-pinned built-in ticks
+ * (idea radar daily, idea panel weekly) with a live-computed next fire. Unnumbered — they
+ * can never collide with `/schedule cancel <编号>` — and appended ONLY on the /schedule
+ * command surface, never the schedule_task list verb (the model must not reason about, or
+ * try to cancel, rows it cannot own). Empty string when neither tick is armed.
+ */
+export function formatSystemScheduleSection(env: NodeJS.ProcessEnv, now: string): string {
+  const lines: string[] = [];
+  const tz = resolveRadarTz(env);
+  const city = tz.split("/").pop() ?? tz;
+  const nextSuffix = (next: string | null): string =>
+    next ? ` · 下次 ${formatInstantInZone(next, tz)}` : "";
+  if (resolveRadarEnabled(env)) {
+    const at = resolveRadarAt(env);
+    if (at === null) {
+      lines.push("· idea radar · 滚动间隔（HOUGE_RADAR_AT=off）");
+    } else {
+      const spec = { kind: "daily", at } as const;
+      lines.push(
+        `· idea radar · ${describeScheduleSpec(spec)} (${city})${nextSuffix(computeNextRunAt(spec, tz, now))}`
+      );
+    }
+  }
+  if (resolvePanelEnabled(env)) {
+    const panelAt = resolvePanelAt(env);
+    if (panelAt !== null) {
+      const spec = { kind: "weekly", day: panelAt.day, at: panelAt.at } as const;
+      lines.push(
+        `· idea panel · ${describeScheduleSpec(spec)} (${city})${nextSuffix(computeNextRunAt(spec, tz, now))}`
+      );
+    }
+  }
+  if (lines.length === 0) return "";
+  return ["", "", "**系统任务**（只读 · env 控制）", ...lines].join("\n");
+}
+
 export function formatScheduleNumberNotFoundText(n: number): string {
   return `没有第 ${n} 个定时任务 (no schedule #${n}) — see /schedule for the list.`;
 }
