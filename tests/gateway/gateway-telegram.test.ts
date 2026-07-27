@@ -164,7 +164,9 @@ describe("Gateway telegram events", () => {
       // Exactly one notification despite two intakes (idempotent).
       expect(store.countNotificationsByIdempotencyKey("telegram:lessons-1:lessons")).toBe(1);
       const note = store.claimNextNotification("test", 30);
-      expect(note?.payload.text).toContain("## research (1 active)");
+      // Bold, not `##` — markdownToTelegramHtml has no heading support, so `##` would
+      // reach the phone as literal characters.
+      expect(note?.payload.text).toContain("**research — 1 active**");
       expect(note?.payload.text).toContain(`#${saved.id} prefer primary sources`);
       expect(note?.payload.text).toContain("AVOID: quoting forums as fact");
       // Internal telemetry (reuse/applied counts, supersede lineage) is not surfaced.

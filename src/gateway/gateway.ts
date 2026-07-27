@@ -1228,9 +1228,11 @@ function formatLessonsText(scope: string | undefined, lessons: LessonRow[]): str
     byScope.set(lesson.scope, group);
   }
   if (scope) {
+    // `##` headings pass through markdownToTelegramHtml literally (no heading support) —
+    // bold is the only header the Telegram surface has.
     return [...byScope.entries()]
       .map(([s, group]) =>
-        [`## ${s} (${group.length} active)`, ...group.map((l) => formatLessonLines(l))].join("\n")
+        [`📚 **${s} — ${group.length} active**`, "", ...group.map((l) => formatLessonLines(l))].join("\n")
       )
       .join("\n\n");
   }
