@@ -1,30 +1,25 @@
-# 🧭 CURRENT SYSTEM STATE — 2026-07-25 (read this first)
+# 🧭 CURRENT SYSTEM STATE — 2026-07-28 (read this first)
 
-**IN FLIGHT (crash-resume point): Idea Radar R2 build — started 2026-07-25.** Paco's go:
-"proceed with R2 using our agreed flow, subagents preferred." Scope (agreed in R1 architecture
-round, see spec R2 sections): weekly 3-judge panel (kimi-api / gemini-api / codex lenses) +
-contained claude-cli chair (dedicated CLAUDE_CONFIG_DIR, `--tools ""`, `--strict-mcp-config
---mcp-config '{}'`, `--max-turns 1`, canary probe; auth `claude setup-token` →
-CLAUDE_CODE_OAUTH_TOKEN via broker) + shortlist snapshot + `/idea pick <n>` + `/radar <n>`
-detail view + weekly brief file. Must amend ADR 0010/0011 ("Claude is NOT a runtime backend")
-per Paco's 2026-07-24 decision; ADR 0023/extwork untouched. Also fold in R1-deferred L4
-(same-tick prune shadowing) + L7 (summary_update rewriting shortlisted/picked cards). Steps:
-[x] research subagents (substrate + decisions) [x] spec doc [x] spec-review-senior gate
-(BLOCKED→CLEAR: B1 prune-archives-blessed, B2 week_key collision/tz, B3 pick singleton; 15
-findings resolved, spec §14) [x] plan doc (2458199) [x] subagent build T1–T5 (d23e929 store+
-guards, 04a2158 seats+broker#8+week-key [verified claude 2.1.219: --mcp-config needs
-{"mcpServers":{}}, zero-auth config-dir isolation probe], 1f9f793 commands, 4ef7d58 panel tick+
-brief, f81900c wiring+CLI+ADR 0027+0010/0011/0026 amendments; 2112 tests green)
-[x] adversarial review (FIX-FIRST → fixed d44936e: codex outfile parse [HIGH: dead seat +
-verdict forgery], chair-off /status signal, pick set-before-revert, resolver dedupe; 4 noted
-residuals in ADR 0027) [x] live gate PASSED 2026-07-27: dry-run 3/3 judges + live chair
-synthesis (codex needed --skip-git-repo-check for neutral cwd, d2928db); canary probe all-green
-(no tool use, no passwd, no file write, chair config dir clean, chair refused injected card
-with empty shortlist) → **[ ] PACO EYEBALL + ARM (`HOUGE_RADAR_PANEL_ENABLED=1` +
-`HOUGE_CLAUDE_BIN=/usr/local/bin/claude` in .env + kickstart) — the only remaining step.**
-2117 tests green, all pushed (HEAD d2928db).
-**Operator homework DONE 2026-07-25: CLAUDE_CODE_OAUTH_TOKEN in .env:114.** Two builder deaths
-on session/weekly limits mid-build (T1, T4) — both resumed from partial work, zero rework.
+**No build in flight.** Next push move: Earn P3 — pick venue + register (see strategic frame).
+
+**DONE 2026-07-27: Idea Radar R2 — SHIPPED + ARMED + FIRST LIVE PANEL.** Weekly 3-judge panel
+(kimi-api / gemini-api / codex lenses) + contained claude-cli chair (dedicated
+CLAUDE_CONFIG_DIR, `--tools ""`, `--strict-mcp-config --mcp-config '{"mcpServers":{}}'`,
+`--max-turns 1`, canary probe; auth CLAUDE_CODE_OAUTH_TOKEN via broker #8) + shortlist
+snapshot + `/idea pick <n>` + `/radar <n>` detail + weekly brief file. Full trail: spec →
+spec-review-senior (3 blockers cleared, 15 findings) → plan → subagent build T1–T5 (d23e929,
+04a2158, 1f9f793, 4ef7d58, f81900c; ADR 0027 + 0010/0011/0026 amendments) → adversarial
+review (d44936e: codex outfile parse HIGH, chair-off /status, pick set-before-revert,
+resolver dedupe; 4 residuals noted in ADR 0027) → live gate PASSED (dry-run 3/3 judges,
+live chair synthesis, canary all-green; codex needs --skip-git-repo-check, d2928db) →
+**ARMED (`HOUGE_RADAR_PANEL_ENABLED=1` + `HOUGE_CLAUDE_BIN` in .env)** → **first live panel
+2026-07-27 09:22 Sydney: `memory/briefs/2026-W31-ideas.md`, 3/3 judges, 3-card shortlist
+(top: AI video editor suite, mean 6).** `memory/briefs/` gitignored (runtime state, like
+memory/journal). **Awaiting: Paco `/idea pick <n>` from the W31 shortlist.**
+
+**Shipped 2026-07-27 (all live):** compact /lessons index + `/lessons <编号>` drill-down ·
+/schedule read-only 系统任务 footer (radar/panel next-fire) · ##-heading→**bold** converter
+fixes in /lessons + /skills renders (00d4997…fd14120, 2117+ tests green).
 
 **DONE 2026-07-24: Idea Radar R1 — SHIPPED + ARMED LIVE.** Daily source tick (HN front/show,
 HF papers, Devpost, GH new, lobste.rs; Reddit/X dormant) → `ideas` store → `/radar`. Pinned
@@ -68,9 +63,10 @@ at a time):**
   the text path, actual image understanding is still parked.
 - **/status-floor (lesson-merge) tuning** — revisit the gross-collapse / avoid-drop floors if the
   consolidation floor proves too conservative once live soak accrues.
-- Monday 2026-07-27 08:00 AEST scheduler live gate still pending: expect exactly ONE AI周报 with
-  the 悉尼/澳洲 AI-jobs section, no new `sch_` row after the fire, no mojibake (first long-output
-  test of the 2026-07-20 StringDecoder fix).
+- Monday scheduler live gate PASSED 2026-07-27: the daily AI日报 (weekly `sch_b6095c61`
+  disabled; daily `sch_e8460e2d` is the live row) fired 08:00 Sydney, 0 failures, no new
+  `sch_` row after the fire. Content/mojibake check = Paco eyeball on the Telegram message
+  (not verifiable from the ledger).
 - Still open from 2026-07-19: deterministic `{rank:N}` for `project_track` so 「跟进第N个」cannot
   misresolve.
 
