@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 /**
@@ -24,6 +24,17 @@ const DEFAULT_MAX_PER_SCOPE = 4;
  */
 export const PENDING_DIR = "_pending";
 
+/**
+ * The graveyard (spec 2026-07-29): retired skills move to `<root>/_retired/<scope>/<name>.md`
+ * — INERT exactly like `_pending` (under containment, excluded from every active read, never
+ * folded, never counted against the cap). Retire-never-delete: the only removal verb moves a
+ * file here; restore moves it back. Nothing in the skill lifecycle ever unlinks content
+ * except as the second half of a move whose copy has already been written. Retiring a name
+ * that already has a graveyard copy overwrites it — same name = same skill lineage; the
+ * graveyard holds the latest retired version.
+ */
+export const RETIRED_DIR = "_retired";
+
 export type SkillOrigin = "commanded" | "learned" | "refined";
 
 /** Parsed frontmatter of a skill file (the source of truth). */
@@ -35,6 +46,10 @@ export interface SkillMeta {
   version?: number;
   last_verified?: string;
   origin?: string;
+  /** Retire stamps — present only on metas parsed out of `_retired/`. */
+  retired?: string;
+  retired_by?: string;
+  superseded_by?: string;
   chars: number;
 }
 
@@ -64,7 +79,7 @@ export function resolveSkillRefinePasses(env: NodeJS.ProcessEnv): number {
 }
 
 interface ParsedSkill {
-  meta: { name: string; scope: string; when: string; anchors: string[]; version?: number; last_verified?: string; origin?: string };
+  meta: { name: string; scope: string; when: string; anchors: string[]; version?: number; last_verified?: string; origin?: string; retired?: string; retired_by?: string; superseded_by?: string };
   body: string;
 }
 
@@ -115,7 +130,10 @@ export function parseSkillFile(input: string): ParsedSkill | null {
       anchors,
       ...(versionNum !== undefined && Number.isFinite(versionNum) ? { version: versionNum } : {}),
       ...(flat.last_verified ? { last_verified: flat.last_verified } : {}),
-      ...(flat.origin ? { origin: flat.origin } : {})
+      ...(flat.origin ? { origin: flat.origin } : {}),
+      ...(flat.retired ? { retired: flat.retired } : {}),
+      ...(flat.retired_by ? { retired_by: flat.retired_by } : {}),
+      ...(flat.superseded_by ? { superseded_by: flat.superseded_by } : {})
     },
     body: (body ?? "").trim()
   };
@@ -220,6 +238,118 @@ export class SkillStore {
     return out;
   }
 
+  /**
+   * Retire an active skill: stamp `retired`/`retired_by`(/`superseded_by`) and MOVE the file to
+   * `_retired/<scope>/` (write-then-unlink, so a failed write never loses the skill). Inert
+   * afterwards. `"not found"` vs `"already retired"` are distinct so commands can answer cleanly.
+   */
+  retireSkill(
+    scope: string,
+    name: string,
+    opts: { date: string; by: "paco" | "refine"; supersededBy?: string }
+  ): { ok: true; path: string } | { ok: false; error: string } {
+    const safeScope = sanitizeSlug(scope);
+    const safeName = sanitizeSlug(name);
+    if (!safeScope || !safeName) {
+      return { ok: false, error: "scope and name must contain at least one [a-z0-9_-] character" };
+    }
+    const activePath = join(this.root, safeScope, `${safeName}.md`);
+    const text = this.readSafe(activePath);
+    if (text === undefined) {
+      const parked = this.readSafe(join(this.root, RETIRED_DIR, safeScope, `${safeName}.md`));
+      return { ok: false, error: parked !== undefined ? "already retired" : "not found" };
+    }
+    const stamped = setFrontmatterFields(text, {
+      retired: opts.date,
+      retired_by: opts.by,
+      ...(opts.supersededBy ? { superseded_by: opts.supersededBy } : {})
+    });
+    const written = this.writeContained([RETIRED_DIR, safeScope], safeName, stamped);
+    if (!written.ok) return written;
+    try {
+      unlinkSync(activePath);
+    } catch (error) {
+      return { ok: false, error: `retired copy written but active file not removed: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    this.regenerateRegistry();
+    return written;
+  }
+
+  /** Restore a retired skill: strip the retire stamps and MOVE back. Never overwrites an active name. */
+  restoreSkill(scope: string, name: string): { ok: true; path: string } | { ok: false; error: string } {
+    const safeScope = sanitizeSlug(scope);
+    const safeName = sanitizeSlug(name);
+    if (!safeScope || !safeName) {
+      return { ok: false, error: "scope and name must contain at least one [a-z0-9_-] character" };
+    }
+    const retiredPath = join(this.root, RETIRED_DIR, safeScope, `${safeName}.md`);
+    const text = this.readSafe(retiredPath);
+    if (text === undefined) return { ok: false, error: "not found in _retired" };
+    if (this.readSafe(join(this.root, safeScope, `${safeName}.md`)) !== undefined) {
+      return { ok: false, error: `an active skill named "${safeName}" already exists in "${safeScope}" — refusing to overwrite` };
+    }
+    const stripped = stripFrontmatterFields(text, ["retired", "retired_by", "superseded_by"]);
+    const written = this.writeContained([safeScope], safeName, stripped);
+    if (!written.ok) return written;
+    try {
+      unlinkSync(retiredPath);
+    } catch (error) {
+      return { ok: false, error: `restored copy written but retired file not removed: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    this.regenerateRegistry();
+    return written;
+  }
+
+  /** The graveyard view — parsed metas (incl. retire stamps) under `_retired/**`. */
+  listRetired(): SkillMeta[] {
+    const retiredRoot = join(this.root, RETIRED_DIR);
+    const out: SkillMeta[] = [];
+    let scopes: string[];
+    try {
+      scopes = readdirSync(retiredRoot, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name)
+        .sort();
+    } catch {
+      return [];
+    }
+    for (const s of scopes) {
+      const dir = join(retiredRoot, s);
+      for (const file of this.listMarkdown(dir)) {
+        const text = this.readSafe(join(dir, file));
+        if (text === undefined) continue;
+        const parsed = parseSkillFile(text);
+        if (parsed) out.push({ ...parsed.meta, scope: s, chars: parsed.body.length });
+      }
+    }
+    return out;
+  }
+
+  /** Raw file text of an active skill (frontmatter + body) — the refine feed. Null if absent. */
+  readRawSkill(scope: string, name: string): string | null {
+    const safeScope = sanitizeSlug(scope);
+    const safeName = sanitizeSlug(name);
+    if (!safeScope || !safeName) return null;
+    return this.readSafe(join(this.root, safeScope, `${safeName}.md`)) ?? null;
+  }
+
+  /** Re-verify stamp (weekly advisor): update score + last_verified in place — no version bump. */
+  stampVerification(scope: string, name: string, fields: { score: number; last_verified: string }): boolean {
+    const safeScope = sanitizeSlug(scope);
+    const safeName = sanitizeSlug(name);
+    if (!safeScope || !safeName) return false;
+    const path = join(this.root, safeScope, `${safeName}.md`);
+    const text = this.readSafe(path);
+    if (text === undefined) return false;
+    try {
+      writeFileSync(path, setFrontmatterFields(text, fields), "utf8");
+    } catch {
+      return false;
+    }
+    this.regenerateRegistry();
+    return true;
+  }
+
   /** Shared write core: join the slugged path parts under the real root, containment-check, write. */
   private writeContained(parts: string[], safeName: string, body: string): { ok: true; path: string } | { ok: false; error: string } {
     if (parts.some((p) => !p) || !safeName) {
@@ -287,8 +417,9 @@ export class SkillStore {
       return readdirSync(this.root, { withFileTypes: true })
         .filter((e) => e.isDirectory())
         .map((e) => e.name)
-        // EXCLUDE the parking lot: a pending skill is inert — never an active scope.
-        .filter((name) => name !== PENDING_DIR)
+        // EXCLUDE the parking lot and the graveyard: pending/retired skills are inert —
+        // never an active scope.
+        .filter((name) => name !== PENDING_DIR && name !== RETIRED_DIR)
         .sort();
     } catch {
       return [];
@@ -331,7 +462,7 @@ export class SkillStore {
  */
 export function setFrontmatterFields(
   file: string,
-  fields: { score?: number; last_verified?: string }
+  fields: { score?: number; last_verified?: string; retired?: string; retired_by?: string; superseded_by?: string }
 ): string {
   const m = /^(---\n[\s\S]*?\n)(---\n[\s\S]*)$/.exec(file.replace(/\r\n/g, "\n"));
   if (!m) return file;
@@ -345,7 +476,44 @@ export function setFrontmatterFields(
   };
   if (typeof fields.score === "number") set("score", fields.score.toFixed(2));
   if (fields.last_verified) set("last_verified", fields.last_verified);
+  if (fields.retired) set("retired", fields.retired);
+  if (fields.retired_by) set("retired_by", fields.retired_by);
+  if (fields.superseded_by) set("superseded_by", fields.superseded_by);
   return frontmatter + m[2]!;
+}
+
+/** Remove the named `key: …` lines from the leading frontmatter block (restore un-stamps). */
+export function stripFrontmatterFields(file: string, keys: string[]): string {
+  const m = /^(---\n[\s\S]*?\n)(---\n[\s\S]*)$/.exec(file.replace(/\r\n/g, "\n"));
+  if (!m) return file;
+  let frontmatter = m[1]!;
+  for (const key of keys) {
+    frontmatter = frontmatter.replace(new RegExp(`^${key}:.*\\n`, "m"), "");
+  }
+  return frontmatter + m[2]!;
+}
+
+/**
+ * Resolve a user-supplied skill reference against a meta list: exact `name` (optionally
+ * `scope/name`) wins; else a substring match on the name; ambiguous → the candidates, so the
+ * caller ASKS instead of guessing. The resolver is CODE — an LLM only ever supplies `query`.
+ */
+export function resolveSkillName(
+  metas: SkillMeta[],
+  query: string
+): { status: "one"; meta: SkillMeta } | { status: "none" } | { status: "many"; metas: SkillMeta[] } {
+  const raw = query.trim().toLowerCase();
+  const slash = raw.indexOf("/");
+  const scope = slash > 0 ? raw.slice(0, slash) : undefined;
+  const name = slash > 0 ? raw.slice(slash + 1) : raw;
+  const pool = scope ? metas.filter((m) => m.scope === scope) : metas;
+  const exact = pool.filter((m) => m.name === name);
+  if (exact.length === 1) return { status: "one", meta: exact[0]! };
+  if (exact.length > 1) return { status: "many", metas: exact };
+  const partial = pool.filter((m) => m.name.includes(name));
+  if (partial.length === 1) return { status: "one", meta: partial[0]! };
+  if (partial.length > 1) return { status: "many", metas: partial };
+  return { status: "none" };
 }
 
 /** Sanitize a scope/name to a filename-safe slug: lowercase, [a-z0-9_-] only, no path parts. */

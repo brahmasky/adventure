@@ -1,14 +1,17 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   parseSkillFile,
   resolveSkillMaxPerScope,
+  resolveSkillName,
   resolveSkillRefinePasses,
   resolveSkillsEnabled,
   setFrontmatterFields,
-  SkillStore
+  stripFrontmatterFields,
+  SkillStore,
+  type SkillMeta
 } from "../../src/skills/skill-store.js";
 
 let dirs: string[] = [];
@@ -309,5 +312,209 @@ describe("setFrontmatterFields (Phase 2c stamping)", () => {
 
   it("returns the file unchanged when there is no frontmatter fence", () => {
     expect(setFrontmatterFields("just body", { score: 0.5 })).toBe("just body");
+  });
+});
+
+/** A skill whose frontmatter name matches its filename slug — needed for meta assertions. */
+function skillNamed(scope: string, name: string): string {
+  return `---\nname: ${name}\nscope: ${scope}\nwhen: using ${name}\nanchors:\n  - a\nversion: 2\nlast_verified: 2026-06-21\norigin: refined\n---\n\nBody of ${name}.`;
+}
+
+describe("retire / restore lifecycle (skill retirement)", () => {
+  it("retireSkill moves to _retired/<scope>/, stamps retired/retired_by, and goes inert", () => {
+    const root = tempRoot();
+    const store = new SkillStore({ root });
+    store.writeSkill("research", "cross-check-figures", skillNamed("research", "cross-check-figures"));
+    const r = store.retireSkill("research", "cross-check-figures", { date: "2026-07-29", by: "paco" });
+    expect(r.ok).toBe(true);
+    // Moved: retired copy exists (stamped), active file is gone.
+    const retiredText = readFileSync(join(root, "_retired", "research", "cross-check-figures.md"), "utf8");
+    expect(retiredText).toContain("retired: 2026-07-29");
+    expect(retiredText).toContain("retired_by: paco");
+    expect(existsSync(join(root, "research", "cross-check-figures.md"))).toBe(false);
+    // Inert: excluded from list() and never folded into a prompt block.
+    expect(store.list().some((m) => m.name === "cross-check-figures")).toBe(false);
+    expect(store.readScopeBlock("research")).toBeUndefined();
+    // Visible in the graveyard view, with the retire stamps parsed onto the meta.
+    const retired = store.listRetired();
+    expect(retired).toHaveLength(1);
+    expect(retired[0]).toMatchObject({
+      name: "cross-check-figures",
+      scope: "research",
+      retired: "2026-07-29",
+      retired_by: "paco"
+    });
+  });
+
+  it("retireSkill with supersededBy stamps superseded_by", () => {
+    const root = tempRoot();
+    const store = new SkillStore({ root });
+    store.writeSkill("research", "old-way", skillNamed("research", "old-way"));
+    const r = store.retireSkill("research", "old-way", {
+      date: "2026-07-29",
+      by: "refine",
+      supersededBy: "new-way"
+    });
+    expect(r.ok).toBe(true);
+    const retiredText = readFileSync(join(root, "_retired", "research", "old-way.md"), "utf8");
+    expect(retiredText).toContain("retired_by: refine");
+    expect(retiredText).toContain("superseded_by: new-way");
+    expect(store.listRetired()[0]!.superseded_by).toBe("new-way");
+  });
+
+  it("answers 'not found' vs 'already retired' distinctly", () => {
+    const root = tempRoot();
+    const store = new SkillStore({ root });
+    expect(store.retireSkill("research", "ghost", { date: "2026-07-29", by: "paco" })).toEqual({
+      ok: false,
+      error: "not found"
+    });
+    store.writeSkill("research", "real", skillNamed("research", "real"));
+    expect(store.retireSkill("research", "real", { date: "2026-07-29", by: "paco" }).ok).toBe(true);
+    expect(store.retireSkill("research", "real", { date: "2026-07-30", by: "paco" })).toEqual({
+      ok: false,
+      error: "already retired"
+    });
+  });
+
+  it("restoreSkill moves back, strips all three stamps, keeps version/last_verified", () => {
+    const root = tempRoot();
+    const store = new SkillStore({ root });
+    store.writeSkill("research", "comeback", skillNamed("research", "comeback"));
+    store.retireSkill("research", "comeback", { date: "2026-07-29", by: "paco", supersededBy: "x" });
+    const r = store.restoreSkill("research", "comeback");
+    expect(r.ok).toBe(true);
+    const text = readFileSync(join(root, "research", "comeback.md"), "utf8");
+    expect(text).not.toContain("retired:");
+    expect(text).not.toContain("retired_by:");
+    expect(text).not.toContain("superseded_by:");
+    expect(text).toContain("version: 2");
+    expect(text).toContain("last_verified: 2026-06-21");
+    // Moved, not copied: the graveyard slot is empty again and the skill is active.
+    expect(existsSync(join(root, "_retired", "research", "comeback.md"))).toBe(false);
+    expect(store.listRetired()).toHaveLength(0);
+    expect(store.list().some((m) => m.name === "comeback")).toBe(true);
+  });
+
+  it("restoreSkill refuses when an active same-name skill exists (never overwrites)", () => {
+    const root = tempRoot();
+    const store = new SkillStore({ root });
+    store.writeSkill("research", "dup", skillNamed("research", "dup"));
+    store.retireSkill("research", "dup", { date: "2026-07-29", by: "paco" });
+    store.writeSkill("research", "dup", skillNamed("research", "dup")); // a new active generation
+    const r = store.restoreSkill("research", "dup");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("refusing to overwrite");
+    // The retired copy is untouched by the refusal.
+    expect(existsSync(join(root, "_retired", "research", "dup.md"))).toBe(true);
+  });
+
+  it("restoreSkill answers 'not found in _retired' for an absent graveyard entry", () => {
+    const store = new SkillStore({ root: tempRoot() });
+    expect(store.restoreSkill("research", "ghost")).toEqual({ ok: false, error: "not found in _retired" });
+  });
+
+  it("_retired is never an active scope; a malformed graveyard file is skipped by listRetired", () => {
+    const root = tempRoot();
+    const store = new SkillStore({ root });
+    writeSkill(root, join("_retired", "research"), "good.md", skillNamed("research", "good"));
+    writeSkill(root, join("_retired", "research"), "bad.md", "this file has no frontmatter at all");
+    // Excluded from every active view.
+    expect(store.list().every((m) => m.scope !== "_retired")).toBe(true);
+    expect(store.list().some((m) => m.name === "good")).toBe(false);
+    // The graveyard view keeps the valid one and never throws on the bad one.
+    expect(store.listRetired().map((m) => m.name)).toEqual(["good"]);
+  });
+});
+
+describe("SkillStore.readRawSkill", () => {
+  it("returns the full file text (frontmatter + body), null when absent", () => {
+    const root = tempRoot();
+    const store = new SkillStore({ root });
+    const content = skillNamed("research", "raw-read");
+    store.writeSkill("research", "raw-read", content);
+    const raw = store.readRawSkill("research", "raw-read");
+    expect(raw).toBe(content);
+    expect(raw).toContain("---\nname: raw-read");
+    expect(store.readRawSkill("research", "nope")).toBeNull();
+    expect(store.readRawSkill("", "...")).toBeNull();
+  });
+});
+
+describe("SkillStore.stampVerification", () => {
+  it("updates score + last_verified in place with no version bump", () => {
+    const root = tempRoot();
+    const store = new SkillStore({ root });
+    store.writeSkill("research", "verified", skillNamed("research", "verified"));
+    expect(store.stampVerification("research", "verified", { score: 0.8, last_verified: "2026-07-29" })).toBe(true);
+    const text = readFileSync(join(root, "research", "verified.md"), "utf8");
+    expect(text).toContain("score: 0.80");
+    expect(text).toContain("last_verified: 2026-07-29");
+    expect(text).toContain("version: 2"); // no bump
+    expect(text).toContain("Body of verified."); // body untouched
+  });
+
+  it("returns false for an absent skill or an empty slug", () => {
+    const store = new SkillStore({ root: tempRoot() });
+    expect(store.stampVerification("research", "ghost", { score: 0.5, last_verified: "2026-07-29" })).toBe(false);
+    expect(store.stampVerification("", "...", { score: 0.5, last_verified: "2026-07-29" })).toBe(false);
+  });
+});
+
+describe("stripFrontmatterFields", () => {
+  it("removes only the named keys from the leading frontmatter block", () => {
+    const stamped = `---\nname: x\nscope: ask\nwhen: w\nretired: 2026-07-29\nretired_by: paco\n---\n\nbody`;
+    const out = stripFrontmatterFields(stamped, ["retired", "retired_by", "superseded_by"]);
+    expect(out).not.toContain("retired");
+    expect(out).toContain("name: x");
+    expect(out).toContain("body");
+  });
+
+  it("returns the file unchanged when there is no frontmatter fence", () => {
+    expect(stripFrontmatterFields("just body", ["retired"])).toBe("just body");
+  });
+});
+
+describe("resolveSkillName", () => {
+  const meta = (scope: string, name: string): SkillMeta => ({ name, scope, when: "w", anchors: [], chars: 1 });
+  const metas = [
+    meta("research", "cross-check-figures"),
+    meta("ask", "cross-check-figures"),
+    meta("research", "verify-sources")
+  ];
+
+  it("exact name match wins; same name in two scopes → many", () => {
+    const r = resolveSkillName(metas, "cross-check-figures");
+    expect(r.status).toBe("many");
+    if (r.status === "many") expect(r.metas).toHaveLength(2);
+  });
+
+  it("scope/name disambiguates", () => {
+    const r = resolveSkillName(metas, "research/cross-check-figures");
+    expect(r.status).toBe("one");
+    if (r.status === "one") expect(r.meta.scope).toBe("research");
+  });
+
+  it("an unambiguous substring resolves to one", () => {
+    const r = resolveSkillName(metas, "verify");
+    expect(r.status).toBe("one");
+    if (r.status === "one") expect(r.meta.name).toBe("verify-sources");
+  });
+
+  it("exact beats substring when both would match", () => {
+    const pool = [meta("a", "check"), meta("a", "check-twice")];
+    const r = resolveSkillName(pool, "check");
+    expect(r.status).toBe("one");
+    if (r.status === "one") expect(r.meta.name).toBe("check");
+  });
+
+  it("an ambiguous substring → many (caller asks, never guesses)", () => {
+    const r = resolveSkillName(metas, "cross");
+    expect(r.status).toBe("many");
+    if (r.status === "many") expect(r.metas).toHaveLength(2);
+  });
+
+  it("unknown → none", () => {
+    expect(resolveSkillName(metas, "zzz").status).toBe("none");
   });
 });
