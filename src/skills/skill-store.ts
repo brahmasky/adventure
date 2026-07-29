@@ -338,14 +338,12 @@ export class SkillStore {
     const safeScope = sanitizeSlug(scope);
     const safeName = sanitizeSlug(name);
     if (!safeScope || !safeName) return false;
-    const path = join(this.root, safeScope, `${safeName}.md`);
-    const text = this.readSafe(path);
+    const text = this.readSafe(join(this.root, safeScope, `${safeName}.md`));
     if (text === undefined) return false;
-    try {
-      writeFileSync(path, setFrontmatterFields(text, fields), "utf8");
-    } catch {
-      return false;
-    }
+    // Through the shared containment core, so the stamp write gets the same post-mkdir
+    // realpath re-check as every other write.
+    const written = this.writeContained([safeScope], safeName, setFrontmatterFields(text, fields));
+    if (!written.ok) return false;
     this.regenerateRegistry();
     return true;
   }

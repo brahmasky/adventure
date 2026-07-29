@@ -414,6 +414,23 @@ describe("retire / restore lifecycle (skill retirement)", () => {
     expect(store.restoreSkill("research", "ghost")).toEqual({ ok: false, error: "not found in _retired" });
   });
 
+  it("re-retiring a name overwrites the graveyard copy — the graveyard holds the latest", () => {
+    const root = tempRoot();
+    const store = new SkillStore({ root });
+    store.writeSkill("research", "x", skillNamed("research", "x"));
+    store.retireSkill("research", "x", { date: "2026-07-29", by: "paco" });
+    // A new active generation under the same name (same lineage), retired again later.
+    store.writeSkill("research", "x", skillNamed("research", "x").replace("Body of x.", "Second-generation body of x."));
+    const r = store.retireSkill("research", "x", { date: "2026-08-01", by: "refine" });
+    expect(r.ok).toBe(true);
+    const retired = store.listRetired().filter((m) => m.name === "x");
+    expect(retired).toHaveLength(1);
+    expect(retired[0]).toMatchObject({ retired: "2026-08-01", retired_by: "refine" });
+    const text = readFileSync(join(root, "_retired", "research", "x.md"), "utf8");
+    expect(text).toContain("Second-generation body of x.");
+    expect(text).not.toContain("retired: 2026-07-29");
+  });
+
   it("_retired is never an active scope; a malformed graveyard file is skipped by listRetired", () => {
     const root = tempRoot();
     const store = new SkillStore({ root });
@@ -472,6 +489,14 @@ describe("stripFrontmatterFields", () => {
 
   it("returns the file unchanged when there is no frontmatter fence", () => {
     expect(stripFrontmatterFields("just body", ["retired"])).toBe("just body");
+  });
+
+  it("removes the frontmatter key but never touches an identical-looking line in the body", () => {
+    const file = `---\nname: x\nscope: ask\nwhen: w\nretired: 2026-07-29\n---\n\nretired: keep-me\nmore body`;
+    const out = stripFrontmatterFields(file, ["retired"]);
+    const fenceEnd = out.indexOf("\n---\n") + "\n---\n".length;
+    expect(out.slice(0, fenceEnd)).not.toContain("retired:"); // frontmatter key gone
+    expect(out.slice(fenceEnd)).toContain("retired: keep-me"); // body line survives
   });
 });
 
