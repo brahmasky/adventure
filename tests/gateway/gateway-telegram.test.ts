@@ -355,6 +355,154 @@ describe("Gateway telegram events", () => {
     }
   });
 
+  it("/skills retire <name> moves the skill to the graveyard and confirms with a restore hint", () => {
+    const store = RunStore.openInMemory();
+    const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-retire-"));
+    try {
+      const skillStore = new SkillStore({ root });
+      skillStore.writeSkill("research", "old-skill", "---\nname: old-skill\nscope: research\nwhen: w\n---\nbody");
+      const gateway = new Gateway(store, undefined, undefined, skillStore);
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "skills",
+        program: "retire old-skill",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:skills-retire-1",
+        source_reference: "telegram:update:23:message:1"
+      });
+      expect(gateway.intake(event)).toEqual({ ok: true, status: "skills_returned", run_id: "" });
+      const note = store.claimNextNotification("test", 30);
+      expect(note?.payload.text).toContain("Retired");
+      expect(note?.payload.text).toContain("old-skill");
+      expect(note?.payload.text).toContain("/skills restore");
+      // The skill is gone from the active library.
+      expect(skillStore.list().map((m) => m.name)).not.toContain("old-skill");
+      expect(skillStore.listRetired().map((m) => m.name)).toContain("old-skill");
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("/skills retire with an unknown name answers with the available actives, no mutation", () => {
+    const store = RunStore.openInMemory();
+    const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-retire-miss-"));
+    try {
+      const skillStore = new SkillStore({ root });
+      skillStore.writeSkill("research", "old-skill", "---\nname: old-skill\nscope: research\nwhen: w\n---\nbody");
+      const gateway = new Gateway(store, undefined, undefined, skillStore);
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "skills",
+        program: "retire nope",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:skills-retire-miss",
+        source_reference: "telegram:update:24:message:1"
+      });
+      expect(gateway.intake(event)).toEqual({ ok: true, status: "skills_returned", run_id: "" });
+      const note = store.claimNextNotification("test", 30);
+      expect(note?.payload.text).toContain('No active skill matches "nope"');
+      expect(note?.payload.text).toContain("research/old-skill");
+      expect(skillStore.list().map((m) => m.name)).toContain("old-skill"); // untouched
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("/skills retired renders the graveyard with retire stamps and bold headers (no ##)", () => {
+    const store = RunStore.openInMemory();
+    const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-retired-"));
+    try {
+      const skillStore = new SkillStore({ root });
+      skillStore.writeSkill("research", "old-skill", "---\nname: old-skill\nscope: research\nwhen: w\n---\nbody");
+      const retired = skillStore.retireSkill("research", "old-skill", { date: "2026-07-29", by: "paco" });
+      expect(retired.ok).toBe(true);
+      const gateway = new Gateway(store, undefined, undefined, skillStore);
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "skills",
+        program: "retired",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:skills-retired-view",
+        source_reference: "telegram:update:25:message:1"
+      });
+      expect(gateway.intake(event)).toEqual({ ok: true, status: "skills_returned", run_id: "" });
+      const note = store.claimNextNotification("test", 30);
+      expect(note?.payload.text).toContain("**old-skill**");
+      expect(note?.payload.text).toContain("retired 2026-");
+      expect(note?.payload.text).toContain("by paco");
+      expect(note?.payload.text).not.toContain("##");
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("/skills restore <name> brings a retired skill back to the active library", () => {
+    const store = RunStore.openInMemory();
+    const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-restore-"));
+    try {
+      const skillStore = new SkillStore({ root });
+      skillStore.writeSkill("research", "old-skill", "---\nname: old-skill\nscope: research\nwhen: w\n---\nbody");
+      expect(skillStore.retireSkill("research", "old-skill", { date: "2026-07-29", by: "paco" }).ok).toBe(true);
+      const gateway = new Gateway(store, undefined, undefined, skillStore);
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "skills",
+        program: "restore old-skill",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:skills-restore-1",
+        source_reference: "telegram:update:26:message:1"
+      });
+      expect(gateway.intake(event)).toEqual({ ok: true, status: "skills_returned", run_id: "" });
+      const note = store.claimNextNotification("test", 30);
+      expect(note?.payload.text).toContain("Restored");
+      expect(note?.payload.text).toContain("old-skill");
+      expect(skillStore.list().map((m) => m.name)).toContain("old-skill");
+      expect(skillStore.listRetired()).toEqual([]);
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("/skills retire with an ambiguous substring asks instead of guessing", () => {
+    const store = RunStore.openInMemory();
+    const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-retire-ambig-"));
+    try {
+      const skillStore = new SkillStore({ root });
+      skillStore.writeSkill("research", "cross-check", "---\nname: cross-check\nscope: research\nwhen: w\n---\nbody");
+      skillStore.writeSkill("ask", "fact-check", "---\nname: fact-check\nscope: ask\nwhen: w\n---\nbody");
+      const gateway = new Gateway(store, undefined, undefined, skillStore);
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "skills",
+        program: "retire check",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:skills-retire-ambig",
+        source_reference: "telegram:update:27:message:1"
+      });
+      expect(gateway.intake(event)).toEqual({ ok: true, status: "skills_returned", run_id: "" });
+      const note = store.claimNextNotification("test", 30);
+      expect(note?.payload.text).toContain("ambiguous");
+      expect(note?.payload.text).toContain("<scope>/<name>");
+      expect(note?.payload.text).toContain("research/cross-check");
+      expect(note?.payload.text).toContain("ask/fact-check");
+      // Nothing was retired.
+      expect(skillStore.listRetired()).toEqual([]);
+      expect(skillStore.list()).toHaveLength(2);
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("/schedule lists THIS chat's schedules in the documented row shape, idempotent on redelivery (B10b)", () => {
     const store = RunStore.openInMemory();
     try {

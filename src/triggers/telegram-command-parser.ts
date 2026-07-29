@@ -11,7 +11,7 @@ export type TelegramCommand =
   | { type: "help" }
   | { type: "unknown_command"; attempted: string }
   | { type: "lessons"; scope?: string }
-  | { type: "skills"; scope?: string }
+  | { type: "skills"; scope?: string; action?: "retire" | "restore"; name?: string }
   | { type: "forget"; scope: string }
   | { type: "schedule_admin"; action: "list" }
   | { type: "schedule_admin"; action: "cancel"; schedule_id: string }
@@ -100,11 +100,15 @@ function parseLessons(words: string[]): TelegramCommandParseResult {
 
 function parseSkills(words: string[]): TelegramCommandParseResult {
   if (words.length === 0) return { ok: true, command: { type: "skills" } };
+  const first = words[0]!.toLowerCase();
+  // Lifecycle verbs (`retire`/`restore <name>`) take exactly one name; everything else is
+  // the scope-arg form — including `/skills retired` (the graveyard view), deliberately.
+  if (first === "retire" || first === "restore") {
+    if (words.length !== 2) return invalid(`/skills ${first} requires exactly one skill name`);
+    return { ok: true, command: { type: "skills", action: first, name: words[1]! } };
+  }
   if (words.length > 1) return invalid("/skills requires at most one scope");
-  const scope = words[0];
-  return scope
-    ? { ok: true, command: { type: "skills", scope } }
-    : { ok: true, command: { type: "skills" } };
+  return { ok: true, command: { type: "skills", scope: words[0]! } };
 }
 
 function parseForget(words: string[]): TelegramCommandParseResult {

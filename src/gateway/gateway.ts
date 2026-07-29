@@ -32,7 +32,7 @@ import {
   RATING_ACK_TEXT,
   resolveRatingPendingMinutes
 } from "../capabilities/session-rating.js";
-import { SkillStore, type SkillMeta } from "../skills/skill-store.js";
+import { resolveSkillName, SkillStore, type SkillMeta } from "../skills/skill-store.js";
 import { join } from "node:path";
 import { evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import { queryStatus } from "../status/status-query.js";
@@ -376,11 +376,26 @@ export class Gateway {
       };
     }
 
-    const scope = typeof event.program === "string" ? event.program.trim() : "";
-    // `/skills pending` → list the parked (blocked) drafts instead of the active library.
-    const isPending = scope.toLowerCase() === "pending";
-    this.skillStore.regenerateRegistry();
-    const metas = isPending ? this.skillStore.listPending() : this.skillStore.list(scope || undefined);
+    // `program` carries either a lifecycle verb (`retire <name>` / `restore <name>`) or a
+    // scope — where `pending` and `retired` name the special inert views.
+    const program = typeof event.program === "string" ? event.program.trim() : "";
+    const [first, ...restWords] = program.split(/\s+/).filter(Boolean);
+    const action = first === "retire" || first === "restore" ? first : undefined;
+
+    let text: string;
+    if (action) {
+      text = this.executeSkillLifecycle(action, restWords.join(" "), now);
+    } else {
+      const scope = program;
+      const isPending = scope.toLowerCase() === "pending";
+      const isRetired = scope.toLowerCase() === "retired";
+      this.skillStore.regenerateRegistry();
+      text = isPending
+        ? formatPendingText(this.skillStore.listPending())
+        : isRetired
+          ? formatRetiredText(this.skillStore.listRetired())
+          : formatSkillsText(scope || undefined, this.skillStore.list(scope || undefined));
+    }
 
     const result: GatewayIntakeResult = { ok: true, status: "skills_returned", run_id: "" };
     this.runStore.enqueueNotification({
@@ -388,11 +403,37 @@ export class Gateway {
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:skills`,
       correlation_id: event.source_reference,
-      payload: { text: isPending ? formatPendingText(metas) : formatSkillsText(scope || undefined, metas) }
+      payload: { text }
     });
     this.runStore.recordTriggerProcessed(event, result);
     this.recordTelegramAccepted(event, now);
     return result;
+  }
+
+  /** `/skills retire|restore <name>` — deterministic lifecycle verbs on the skill store. */
+  private executeSkillLifecycle(action: "retire" | "restore", name: string, now: string): string {
+    const pool = action === "retire" ? this.skillStore.list() : this.skillStore.listRetired();
+    const resolved = resolveSkillName(pool, name);
+    if (resolved.status === "none") {
+      const names = pool.map((m) => `${m.scope}/${m.name}`).join(" · ") || "(none)";
+      const where = action === "retire" ? "active" : "retired";
+      return `No ${where} skill matches "${name}". Available: ${names}`;
+    }
+    if (resolved.status === "many") {
+      const names = resolved.metas.map((m) => `${m.scope}/${m.name}`).join(" · ");
+      return `"${name}" is ambiguous — use /skills ${action} <scope>/<name>. Matches: ${names}`;
+    }
+    const { scope, name: skillName } = resolved.meta;
+    if (action === "retire") {
+      const r = this.skillStore.retireSkill(scope, skillName, { date: now.slice(0, 10), by: "paco" });
+      return r.ok
+        ? `Retired **${skillName}** (${scope}) → skills/_retired/. Inert — restore with /skills restore ${skillName}.`
+        : `Could not retire "${skillName}": ${r.error}`;
+    }
+    const r = this.skillStore.restoreSkill(scope, skillName);
+    return r.ok
+      ? `Restored **${skillName}** (${scope}) — active again, folds on the next matching run.`
+      : `Could not restore "${skillName}": ${r.error}`;
   }
 
   /**
@@ -1320,7 +1361,7 @@ export const HELP_TEXT = [
   "/radar — 创意雷达：/radar · /radar <n> · /radar week · /radar pick <n>",
   "/schedule — 列出定时任务（/schedule cancel <编号或 id> 取消）",
   "/lessons — 已学到的经验（可选 scope）",
-  "/skills — 可用技能（可选 scope）",
+  "/skills — 可用技能（/skills <scope> · retire/restore <name> · retired · pending）",
   "/forget <scope|id> — 清除某条经验",
   "/approve <id> — 批准待处理操作",
   "/deny <id> — 拒绝待处理操作",
@@ -1636,5 +1677,19 @@ function formatPendingText(metas: SkillMeta[]): string {
     "Pending (blocked) skills — parked, NOT applied. Hand-fix + move to active, or discard:",
     "",
     ...metas.map((m) => `**${m.name}** (${m.scope})\nwhen: ${m.when}`)
+  ].join("\n");
+}
+
+/** Render `/skills retired`: the graveyard — inert, restorable, with lineage stamps. */
+function formatRetiredText(metas: SkillMeta[]): string {
+  if (metas.length === 0) return "No retired skills. Retire one with /skills retire <name>.";
+  return [
+    "Retired skills — inert (never folded). /skills restore <name> to bring one back:",
+    "",
+    ...metas.map(
+      (m) =>
+        `**${m.name}** (${m.scope}) · retired ${m.retired ?? "?"} · by ${m.retired_by ?? "?"}` +
+        (m.superseded_by ? ` · superseded by ${m.superseded_by}` : "")
+    )
   ].join("\n");
 }

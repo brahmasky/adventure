@@ -122,6 +122,19 @@ describe("normalizeTelegramUpdate", () => {
     expect(taskEvent(pick).metadata).toMatchObject({ idea_action: "pick", idea_number: 2 });
   });
 
+  it("normalizes a /skills lifecycle command with '<action> <name>' riding program", () => {
+    const retire = normalizeTelegramUpdate(
+      {
+        update_id: 1018,
+        message: { message_id: 78, text: "/skills retire old-skill", from: { id: 111 }, chat: { id: 222 } }
+      },
+      allowlist
+    );
+    const event = taskEvent(retire);
+    expect(event.type).toBe("skills");
+    expect(event.program).toBe("retire old-skill");
+  });
+
   it("normalizes /approve without creating a program", () => {
     const result = normalizeTelegramUpdate(
       {

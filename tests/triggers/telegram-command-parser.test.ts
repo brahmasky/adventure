@@ -231,6 +231,31 @@ describe("parseTelegramCommand", () => {
     });
   });
 
+  it("parses /skills retire|restore <name> lifecycle verbs and /skills retired as a scope", () => {
+    expect(parseTelegramCommand("/skills retire old-skill")).toEqual({
+      ok: true,
+      command: { type: "skills", action: "retire", name: "old-skill" }
+    });
+    // A scope-qualified name rides through intact — the gateway's resolver splits it.
+    expect(parseTelegramCommand("/skills restore research/old-skill")).toEqual({
+      ok: true,
+      command: { type: "skills", action: "restore", name: "research/old-skill" }
+    });
+    expect(parseTelegramCommand("/skills retire")).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/skills retire requires exactly one skill name" }
+    });
+    expect(parseTelegramCommand("/skills retire a b")).toEqual({
+      ok: false,
+      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/skills retire requires exactly one skill name" }
+    });
+    // `/skills retired` rides the scope slot (graveyard view — handled by the gateway).
+    expect(parseTelegramCommand("/skills retired")).toEqual({
+      ok: true,
+      command: { type: "skills", scope: "retired" }
+    });
+  });
+
   it("parses /schedule (bare = list) and /schedule cancel <编号或 id> (B10b)", () => {
     expect(parseTelegramCommand("/schedule")).toEqual({
       ok: true,
