@@ -157,3 +157,16 @@ Rules Claude writes for itself after corrections. Review at session start.
 - Rule 2: don't mint a new top-level command per feature slice; extend the existing command
   family (subcommands) unless the mental model is genuinely different. Operator surface area is
   a cost.
+
+## 2026-07-29 — Investigate before fixing, even when a diagnosis is handed to you (Paco correction)
+- Pattern: Houge's AI日报 misreported stale news; his self_diagnose named the root cause and his
+  self-write failed tests-red. I verified the type-level gap and went straight to implementing the
+  fix. Paco: "i thought you should investigate the problem first before going straight into a fix."
+- What investigation would have added BEFORE the fix: why his patch failed (led to the test-gate
+  noise discovery — a second, separate bug), whether his diagnosis was complete, and what the
+  actual live misreport looked like. The fix was right, but the order was wrong: the second bug
+  was found only after Paco pushed back.
+- **Rule:** when picking up a failed fix (Houge's or anyone's), first reconstruct WHY the previous
+  attempt failed (gate output, ledger, artifacts) and reproduce/characterize the live failure.
+  Only then write code. A correct-looking diagnosis from another agent is an input to
+  investigation, not a substitute for it.
