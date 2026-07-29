@@ -52,9 +52,17 @@ export function createWebSearchAdapter(
       typeof input.max_results === "number" && input.max_results > 0
         ? Math.floor(input.max_results)
         : resolveWebMaxResults(process.env);
+    const freshness_days =
+      typeof input.freshness_days === "number" && input.freshness_days > 0
+        ? Math.floor(input.freshness_days)
+        : undefined;
 
     const chain = injectedChain ?? buildWebChain(process.env, {}, broker);
-    const result = await searchWithChain(chain, { query, max_results });
+    const result = await searchWithChain(chain, {
+      query,
+      max_results,
+      ...(freshness_days !== undefined ? { freshness_days } : {})
+    });
     if (!result.ok) {
       return { ok: false, error: result.error };
     }
@@ -79,7 +87,8 @@ export function buildResearchQuestion(topic: string, results: WebResult[], optio
     const content = strippedContent.length > WEB_RESULT_CONTENT_CAP
       ? `${strippedContent.slice(0, WEB_RESULT_CONTENT_CAP)}…`
       : strippedContent;
-    return `[${i + 1}] ${r.title} — ${r.url}\n${content}`;
+    const published = r.published ? ` (published ${r.published})` : "";
+    return `[${i + 1}] ${r.title} — ${r.url}${published}\n${content}`;
   });
   const question = [
     `Topic: ${topic}`,
@@ -99,7 +108,9 @@ export function buildResearchQuestion(topic: string, results: WebResult[], optio
 
 /** Build the self-critique *question* — the draft answer to review, with its sources. */
 export function buildCritiqueQuestion(topic: string, draft: string, results: WebResult[], options?: ResearchQuestionOptions): string {
-  const sources = results.map((r, i) => `[${i + 1}] ${r.title} — ${r.url}`).join("\n");
+  const sources = results
+    .map((r, i) => `[${i + 1}] ${r.title} — ${r.url}${r.published ? ` (published ${r.published})` : ""}`)
+    .join("\n");
   const question = [
     `Topic: ${topic}`,
     "",

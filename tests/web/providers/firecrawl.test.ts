@@ -43,6 +43,29 @@ describe("createFirecrawlProvider", () => {
     expect(JSON.parse(init.body)).toEqual({ query: "claude news", limit: 2 });
   });
 
+  it("freshness_days maps to the coarsest covering tbs window", async () => {
+    const fetchImpl = vi.fn<WebFetchImpl>(async () => okResponse(firecrawlBody));
+    const provider = createFirecrawlProvider({ apiKey: "fc-test", fetchImpl });
+
+    await provider.search({ query: "q", max_results: 2, freshness_days: 1 });
+    await provider.search({ query: "q", max_results: 2, freshness_days: 7 });
+    await provider.search({ query: "q", max_results: 2, freshness_days: 30 });
+    await provider.search({ query: "q", max_results: 2, freshness_days: 90 });
+
+    const tbsOf = (i: number) => JSON.parse(fetchImpl.mock.calls[i]![1].body).tbs;
+    expect(tbsOf(0)).toBe("qdr:d");
+    expect(tbsOf(1)).toBe("qdr:w");
+    expect(tbsOf(2)).toBe("qdr:m");
+    expect(tbsOf(3)).toBe("qdr:y");
+  });
+
+  it("no freshness_days → request body unchanged (no tbs key)", async () => {
+    const fetchImpl = vi.fn<WebFetchImpl>(async () => okResponse(firecrawlBody));
+    const provider = createFirecrawlProvider({ apiKey: "fc-test", fetchImpl });
+    await provider.search({ query: "q", max_results: 2 });
+    expect(JSON.parse(fetchImpl.mock.calls[0]![1].body)).toEqual({ query: "q", limit: 2 });
+  });
+
   it("classifies a missing API key as unavailable without calling fetch", async () => {
     delete process.env.FIRECRAWL_API_KEY;
     const fetchImpl = vi.fn<WebFetchImpl>(async () => okResponse(firecrawlBody));

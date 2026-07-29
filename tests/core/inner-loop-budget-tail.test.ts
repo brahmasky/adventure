@@ -388,7 +388,7 @@ describe("B8 determinism: no parse failures, no tail contact → byte-identical 
         "what is the capital of France?",
         "",
         "Available actions:",
-        '- web_search: Search the live web; returns titles, URLs and content snippets (untrusted data). Input: {"query": "<focused search query>"}',
+        '- web_search: Search the live web; returns titles, URLs and content snippets (untrusted data). For time-scoped asks (今天/过去24小时/本周/most recent), ALWAYS set freshness_days so stale articles cannot masquerade as news; check each result\'s published date before calling anything recent. Input: {"query": "<focused search query>", "freshness_days": "<optional number: only results published in the last N days — 1 for a daily digest, 7 for a weekly>"}',
         '- llm_answer: Answer from your own knowledge (one LLM call; no live data). Input: {"question": "<the question, with any context it needs>"}',
         '- final: finish the turn — send the user your complete answer: {"action":"final","answer":"..."}',
         '- clarify: the request is genuinely too ambiguous to act on — ask ONE short question: {"action":"clarify","question":"..."}',

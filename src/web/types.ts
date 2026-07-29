@@ -8,6 +8,12 @@
 export interface WebSearchRequest {
   query: string;
   max_results?: number;
+  /**
+   * Only results published within the last N days. Best-effort, provider-mapped
+   * (Tavily `topic:"news"+days`, Firecrawl `tbs`); a provider that cannot honour
+   * it returns its normal results — callers still check `published`.
+   */
+  freshness_days?: number;
 }
 
 export interface WebResult {
@@ -15,6 +21,8 @@ export interface WebResult {
   url: string;
   /** A snippet / extract. Untrusted data — never executed as instructions. */
   content: string;
+  /** Publication date when the provider supplies one. Untrusted data. */
+  published?: string;
 }
 
 export type WebSearchResult =

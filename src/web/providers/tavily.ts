@@ -24,7 +24,10 @@ function parseResults(data: unknown): WebResult[] | undefined {
       parsed.push({
         title: r.title,
         url: r.url,
-        content: typeof r.content === "string" ? r.content : ""
+        content: typeof r.content === "string" ? r.content : "",
+        ...(typeof r.published_date === "string" && r.published_date.length > 0
+          ? { published: r.published_date }
+          : {})
       });
     }
   }
@@ -67,7 +70,14 @@ export function createTavilyProvider(config: TavilyProviderConfig = {}): WebProv
             Authorization: `Bearer ${apiKey}`,
             "Content-Type": "application/json"
           },
-          body: JSON.stringify({ query: req.query, max_results }),
+          body: JSON.stringify({
+            query: req.query,
+            max_results,
+            // Tavily only honours `days` on the news topic; `published_date` comes back with it.
+            ...(req.freshness_days !== undefined && req.freshness_days > 0
+              ? { topic: "news", days: Math.floor(req.freshness_days) }
+              : {})
+          }),
           signal: controller.signal
         });
       } catch (error) {

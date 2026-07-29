@@ -43,6 +43,42 @@ describe("createTavilyProvider", () => {
     expect(body).toEqual({ query: "claude news", max_results: 2 });
   });
 
+  it("freshness_days switches to the news topic with days, and published_date maps through", async () => {
+    const body = {
+      query: "x",
+      results: [
+        { url: "https://a.com", title: "A", content: "alpha", published_date: "2026-07-28" },
+        { url: "https://b.com", title: "B", content: "beta" }
+      ]
+    };
+    const fetchImpl = vi.fn<WebFetchImpl>(async () => okResponse(body));
+    const provider = createTavilyProvider({ apiKey: "tvly-test", fetchImpl });
+
+    const result = await provider.search({ query: "claude news", max_results: 2, freshness_days: 1 });
+
+    expect(JSON.parse(fetchImpl.mock.calls[0]![1].body)).toEqual({
+      query: "claude news",
+      max_results: 2,
+      topic: "news",
+      days: 1
+    });
+    expect(result).toEqual({
+      ok: true,
+      provider: "tavily",
+      results: [
+        { title: "A", url: "https://a.com", content: "alpha", published: "2026-07-28" },
+        { title: "B", url: "https://b.com", content: "beta" }
+      ]
+    });
+  });
+
+  it("no freshness_days → request body unchanged (no topic/days keys)", async () => {
+    const fetchImpl = vi.fn<WebFetchImpl>(async () => okResponse(tavilyBody));
+    const provider = createTavilyProvider({ apiKey: "tvly-test", fetchImpl });
+    await provider.search({ query: "q", max_results: 3 });
+    expect(JSON.parse(fetchImpl.mock.calls[0]![1].body)).toEqual({ query: "q", max_results: 3 });
+  });
+
   it("classifies a missing API key as unavailable without calling fetch", async () => {
     delete process.env.TAVILY_API_KEY;
     const fetchImpl = vi.fn<WebFetchImpl>(async () => okResponse(tavilyBody));

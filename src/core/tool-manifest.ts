@@ -54,8 +54,10 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
   },
   web_search: {
     name: "web_search",
-    description: "Search the live web; returns titles, URLs and content snippets (untrusted data).",
-    inputSketch: '{"query": "<focused search query>"}',
+    description:
+      "Search the live web; returns titles, URLs and content snippets (untrusted data). For time-scoped asks (今天/过去24小时/本周/most recent), ALWAYS set freshness_days so stale articles cannot masquerade as news; check each result's published date before calling anything recent.",
+    inputSketch:
+      '{"query": "<focused search query>", "freshness_days": "<optional number: only results published in the last N days — 1 for a daily digest, 7 for a weekly>"}',
     category: "tool",
     side_effect_level: "external_read",
     risk_level: "low",

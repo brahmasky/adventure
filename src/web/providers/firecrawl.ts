@@ -40,6 +40,14 @@ function numericEnv(raw: string | undefined): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+/** Firecrawl freshness rides Google's `tbs` window — the coarsest bucket that covers N days. */
+function tbsForDays(days: number): string {
+  if (days <= 1) return "qdr:d";
+  if (days <= 7) return "qdr:w";
+  if (days <= 31) return "qdr:m";
+  return "qdr:y";
+}
+
 export function createFirecrawlProvider(config: FirecrawlProviderConfig = {}): WebProvider {
   return {
     name: "firecrawl",
@@ -70,7 +78,13 @@ export function createFirecrawlProvider(config: FirecrawlProviderConfig = {}): W
             Authorization: `Bearer ${apiKey}`,
             "Content-Type": "application/json"
           },
-          body: JSON.stringify({ query: req.query, limit }),
+          body: JSON.stringify({
+            query: req.query,
+            limit,
+            ...(req.freshness_days !== undefined && req.freshness_days > 0
+              ? { tbs: tbsForDays(req.freshness_days) }
+              : {})
+          }),
           signal: controller.signal
         });
       } catch (error) {
