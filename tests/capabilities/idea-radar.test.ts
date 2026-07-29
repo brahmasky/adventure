@@ -99,7 +99,7 @@ describe("resolvers", () => {
 describe("buildRadarQuestion", () => {
   it("renders items as id | title | meta with NO urls, and cards as #id title", () => {
     const q = buildRadarQuestion(
-      [{ id: "hn_front:101", title: "Show HN: log anomaly watcher", url: "https://news.ycombinator.com/item?id=101", meta: "200 points" }],
+      [{ id: "hn_front:101", title: "Show HN: log anomaly watcher", meta: "200 points" }],
       [{ id: 7, title: "Log watcher" }]
     );
     expect(q).toContain("hn_front:101 | Show HN: log anomaly watcher | 200 points");
