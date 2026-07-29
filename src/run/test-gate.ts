@@ -61,13 +61,28 @@ interface NodeError extends Error {
   stderr?: Buffer | string | null;
 }
 
+/**
+ * Node runtime warning noise: every vitest worker emits `(node:PID) ExperimentalWarning: …`
+ * + its `(Use \`node --trace-warnings …\`)` hint on stderr. Since stderr is appended after
+ * stdout, hundreds of these can fill the whole last-8KB tail and push the ACTUAL failure out
+ * of `output` — a refine pass fed that tail retries blind (live case: run_9d35d3c9).
+ */
+const NOISE_LINE = /^\((?:node|Use `node --trace-warnings)[^)]*\)(?: (?:ExperimentalWarning|DeprecationWarning|Warning):)?/;
+
+function stripRuntimeNoise(text: string): string {
+  return text
+    .split("\n")
+    .filter((line) => !NOISE_LINE.test(line))
+    .join("\n");
+}
+
 /** Collect a spawn error's captured stdout+stderr (best-effort) into a capped string. */
 function errorOutput(err: NodeError): string {
   const parts: string[] = [];
-  const stdout = err.stdout != null ? err.stdout.toString() : "";
-  const stderr = err.stderr != null ? err.stderr.toString() : "";
-  if (stdout) parts.push(stdout);
-  if (stderr) parts.push(stderr);
+  const stdout = err.stdout != null ? stripRuntimeNoise(err.stdout.toString()) : "";
+  const stderr = err.stderr != null ? stripRuntimeNoise(err.stderr.toString()) : "";
+  if (stdout.trim()) parts.push(stdout);
+  if (stderr.trim()) parts.push(stderr);
   if (parts.length === 0) parts.push(err.message ?? "unknown error");
   return capOutput(parts.join("\n"));
 }

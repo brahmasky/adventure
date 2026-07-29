@@ -85,6 +85,40 @@ describe("runTestGate", () => {
     }
   });
 
+  it("strips node runtime-warning noise so the capped tail keeps the ACTUAL failure", () => {
+    // Mirror the live failure (run_9d35d3c9): the real assertion error prints on stdout, then
+    // stderr floods with per-worker ExperimentalWarning pairs. Unfiltered, the last-8KB tail
+    // would be 100% warnings; the gate must surface the failure line instead.
+    const warn =
+      "echo '(node:45248) ExperimentalWarning: SQLite is an experimental feature and might change at any time' 1>&2; " +
+      "echo '(Use `node --trace-warnings ...` to show where the warning was created)' 1>&2; ";
+    const wt = fakeProject({
+      typecheck: "exit 0",
+      test: `echo 'FAIL tests/x.test.ts > pins the question string'; ${warn.repeat(200)} exit 1`,
+      build: "exit 0"
+    });
+    const result = runTestGate(wt, { env: {} });
+    expect(result.green).toBe(false);
+    if (!result.green) {
+      // npm's own preamble re-prints the script text (which mentions the warning words),
+      // so assert on emitted warning LINES, not substrings.
+      expect(result.output).toContain("FAIL tests/x.test.ts");
+      expect(result.output).not.toMatch(/^\(node:\d+\) ExperimentalWarning/m);
+      expect(result.output).not.toMatch(/^\(Use `node --trace-warnings/m);
+    }
+  });
+
+  it("noise-only stderr does not blank the output (falls back to the error message)", () => {
+    const wt = fakeProject({
+      typecheck: "echo '(node:1) ExperimentalWarning: x' 1>&2; exit 1",
+      test: "exit 0",
+      build: "exit 0"
+    });
+    const result = runTestGate(wt, { env: {} });
+    expect(result.green).toBe(false);
+    if (!result.green) expect(result.output.trim().length).toBeGreaterThan(0);
+  });
+
   it("caps a huge failure log so it can't blow memory (<= ~8KB)", () => {
     // Print far more than the 8KB cap on the failing stage.
     const wt = fakeProject({
