@@ -1656,10 +1656,17 @@ export class CoreWorker {
   ): Promise<HelperResult> {
     const originLine = origin === "commanded" ? "Origin: you asked" : "Origin: auto-promoted from learning";
 
+    // True-refine detection: the request names exactly ONE active skill → feed its file to the
+    // writer (the writer must see what it is improving — spec §3). Zero or many mentions → author
+    // fresh; auto-retire is gated on this feed, so a passing mention can never kill a skill.
+    const mentioned = this.skillStore.list().filter((m) => message.includes(m.name));
+    const fed = mentioned.length === 1 ? mentioned[0]! : undefined;
+    const fedFile = fed ? this.skillStore.readRawSkill(fed.scope, fed.name) ?? undefined : undefined;
+
     // 1) Author the initial draft — one attempt + one retry on malformed output.
     let parsed: AuthoredSkill | undefined;
     for (let attempt = 0; attempt < 2 && !parsed; attempt += 1) {
-      const authored = await this.runLlm(claim, buildSkillAuthorQuestion(message), SKILL_AUTHOR_DISCIPLINE, budget);
+      const authored = await this.runLlm(claim, buildSkillAuthorQuestion(message, fedFile), SKILL_AUTHOR_DISCIPLINE, budget);
       if (!authored.ok) break; // capability failure (e.g. budget) → clean failure below
       const p = parseAuthoredSkill(authored.answer);
       if (p.ok) parsed = p.skill;
@@ -1677,19 +1684,19 @@ export class CoreWorker {
 
     // 3a) COMMANDED → advisory: write active regardless, score is informational.
     if (origin === "commanded") {
-      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate);
+      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, fedFile ? fed : undefined);
     }
 
     // 3b) A Gate B ERROR (unscored — verifier disabled or unavailable) must NEVER block: infra
     // flakiness must not destroy a good auto-authored skill. Fall back to advisory-write (the report's
     // gateBLine notes "unscored — advisory only"). ONLY a real low SCORE blocks an auto skill.
     if (gate.unscored) {
-      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate);
+      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, fedFile ? fed : undefined);
     }
 
     // 3c) AUTO → blocking + guided-refine. Pass now ⇒ write active.
     if (gate.passed) {
-      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate);
+      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, fedFile ? fed : undefined);
     }
     const refinePasses = resolveSkillRefinePasses(process.env);
     for (let i = 0; i < refinePasses && !gate.passed; i += 1) {
@@ -1706,7 +1713,7 @@ export class CoreWorker {
       gate = await this.verifyAuthored(parsed);
     }
     if (gate.passed) {
-      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate);
+      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, fedFile ? fed : undefined);
     }
     // Still failing after the passes → park + lesson + report (nothing silent, nothing lost).
     return this.parkBlockedSkill(claim, message, parsed, verdict, originLine, gate, budget);
@@ -1730,7 +1737,8 @@ export class CoreWorker {
     parsed: AuthoredSkill,
     verdict: GateAResult,
     originLine: string,
-    gate: VerifyResult
+    gate: VerifyResult,
+    fed: { scope: string; name: string } | undefined
   ): HelperResult {
     // Refine if a skill with this name already exists; bump version MECHANICALLY (old+1).
     const existing = this.skillStore.readSkill(parsed.scope, parsed.name);
@@ -1749,14 +1757,33 @@ export class CoreWorker {
         `→ Write failed: ${write.error}`
       ]);
     }
+    // Fed-refine RENAME → the fed predecessor is superseded: retire it with lineage. Gated on
+    // the feed (a request that named exactly ONE active skill whose file the writer saw), so a
+    // fresh authoring or a passing mention can never retire anything.
+    const retiredLines = fed && fed.name !== parsed.name ? this.retireSuperseded(fed, parsed.name) : [];
     const versionLine = existing ? ` (v${existing.meta.version ?? 1}→v${newVersion})` : ` (v${newVersion})`;
     return this.skillReport(`${action.toLowerCase()} skill "${parsed.name}" (${parsed.scope})`, [
       originLine,
       `Gate A qualify: ✓ all 4 held (${verdict.reason})`,
       gateBLine(gate),
       `→ ${action} skills/${parsed.scope}/${parsed.name}.md${versionLine} ` +
-        `(${parsed.meta.anchors.length} anchors authored). /skills to view, reply to refine.`
+        `(${parsed.meta.anchors.length} anchors authored). /skills to view, reply to refine.`,
+      ...retiredLines
     ]);
+  }
+
+  /** Fed-refine rename: the predecessor moves to the graveyard with lineage (spec §3). */
+  private retireSuperseded(fed: { scope: string; name: string }, successor: string): string[] {
+    const r = this.skillStore.retireSkill(fed.scope, fed.name, {
+      date: new Date().toISOString().slice(0, 10),
+      by: "refine",
+      supersededBy: successor
+    });
+    return [
+      r.ok
+        ? `→ Retired predecessor skills/${fed.scope}/${fed.name}.md (superseded by ${successor}). /skills retired to view.`
+        : `→ Could not retire predecessor "${fed.name}": ${r.error}`
+    ];
   }
 
   /** Auto-author blocked after guided-refine → park in `_pending/` + lesson + surfaced report. */

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -25,6 +25,7 @@ import { ASK_DISCIPLINE, EPISODIC_SECTION_HEADER, LOOP_DISCIPLINE, READER_DISCIP
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
+import { SkillStore } from "../../src/skills/skill-store.js";
 import { formatScheduleListText } from "../../src/run/schedule-spec.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
 import { createTimeConvertAdapter } from "../../src/capabilities/time-convert.js";
@@ -1968,6 +1969,181 @@ describe("skill_author gate stack on the loop (ported from the legacy enum suite
       const report = drainNotifications(store).find((t) => t.includes("Skill attempt"));
       expect(report).toContain("⚠ low score");
       expect(report).toContain("Wrote skills/ask/weak-skill.md");
+    } finally {
+      store.close();
+    }
+  });
+});
+
+/**
+ * Task 3 (skill retirement): the TRUE-REFINE feed + rename auto-retire. A request that names
+ * exactly ONE active skill feeds that skill's raw file to the writer (the writer must SEE what
+ * it is improving); when a fed-refine's authored name differs from the fed skill's name, the
+ * predecessor is auto-retired with `superseded_by` lineage. Auto-retire is gated on the feed:
+ * zero or many mentions → author fresh, and nothing is ever retired.
+ */
+describe("true refine feed + rename auto-retire (fed-refine gating)", () => {
+  /** Drain every queued outbox notification's text (unique lease owner per read). */
+  function drainNotifications(store: RunStore): string[] {
+    const notes: string[] = [];
+    for (;;) {
+      const n = store.claimNextNotification(`test-${notes.length}`, 30);
+      if (!n) break;
+      notes.push(String(n.payload.text));
+    }
+    return notes;
+  }
+
+  /**
+   * A loop LLM stub (same shape as skillLoopLlm above) that drives `skill_author` then
+   * `final`, and CAPTURES every author-pass question so the feed can be asserted on.
+   */
+  function refineLoopLlm(
+    gateA: string,
+    authored: string,
+    authorQuestions: string[]
+  ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
+    const composeScript = [
+      '{"action":"skill_author","input":{},"why":"user asks to refine a procedure"}',
+      '{"action":"final","answer":"记下了。"}'
+    ];
+    let composeIndex = 0;
+    return async (input) => {
+      const system = typeof input.system === "string" ? input.system : "";
+      const question = typeof input.question === "string" ? input.question : "";
+      let answer = `ANSWER: ${question}`;
+      if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"skill"}';
+      else if (system.includes(LOOP_DISCIPLINE)) {
+        answer = composeScript[Math.min(composeIndex, composeScript.length - 1)] ?? "";
+        composeIndex += 1;
+      } else if (system.includes(GATE_A_DISCIPLINE)) answer = gateA;
+      else if (system.includes(SKILL_AUTHOR_DISCIPLINE)) {
+        authorQuestions.push(question);
+        answer = authored;
+      }
+      return { ok: true, output: { question, answer, model: "f", provider: "f" } };
+    };
+  }
+
+  const OLD_SKILL = [
+    "---", "name: cross-check-figures", "scope: research",
+    "when: comparing numbers across multiple sources",
+    "anchors:", "  - a part never exceeds its whole",
+    "version: 1", "origin: commanded", "---", "", "1. Verify each figure against its source."
+  ].join("\n");
+
+  /** The writer's output under a NEW name (the live-failure shape: a fed-refine that renamed). */
+  const RENAMED_SKILL = [
+    "---", "name: verify-figures", "scope: research",
+    "when: comparing numbers across multiple sources",
+    "anchors:", "  - a part never exceeds its whole",
+    "version: 1", "origin: commanded", "---", "", "1. Verify each figure and flag stale data."
+  ].join("\n");
+
+  const SECOND_SKILL = [
+    "---", "name: verify-sources", "scope: research",
+    "when: judging whether a source is trustworthy",
+    "anchors:", "  - primary beats secondary",
+    "version: 1", "origin: commanded", "---", "", "1. Prefer primary sources."
+  ].join("\n");
+
+  function seedSkill(root: string, scope: string, name: string, file: string): void {
+    mkdirSync(join(root, "skills", scope), { recursive: true });
+    writeFileSync(join(root, "skills", scope, `${name}.md`), file, "utf8");
+  }
+
+  it("a request naming exactly ONE active skill feeds its raw file to the writer", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const questions: string[] = [];
+    try {
+      seedSkill(root, "research", "cross-check-figures", OLD_SKILL);
+      const run_id = turnRun(store, "improve the cross-check-figures skill to also flag stale data");
+      const worker = new CoreWorker(store, root, refineLoopLlm('{"verdict":"skill","reason":"refine"}', OLD_SKILL, questions));
+      expect((await worker.executeRun(run_id, "w")).status).toBe("completed");
+      await evolutionLaneSettled();
+
+      expect(questions.length).toBeGreaterThan(0);
+      expect(questions[0]).toContain("This skill ALREADY EXISTS");
+      expect(questions[0]).toContain("name: cross-check-figures");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("fed-refine RENAME: auto-retires the predecessor with superseded_by lineage", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const questions: string[] = [];
+    try {
+      seedSkill(root, "research", "cross-check-figures", OLD_SKILL);
+      const run_id = turnRun(store, "refine the cross-check-figures skill so it flags stale data");
+      const worker = new CoreWorker(store, root, refineLoopLlm('{"verdict":"skill","reason":"refine"}', RENAMED_SKILL, questions));
+      expect((await worker.executeRun(run_id, "w")).status).toBe("completed");
+      await evolutionLaneSettled();
+
+      // The successor is active; the predecessor moved to the graveyard with lineage.
+      const skills = new SkillStore({ root: join(root, "skills") });
+      expect(existsSync(join(root, "skills", "research", "verify-figures.md"))).toBe(true);
+      expect(skills.list().some((m) => m.name === "cross-check-figures")).toBe(false);
+      const retired = skills.listRetired();
+      expect(retired).toHaveLength(1);
+      expect(retired[0]).toMatchObject({
+        name: "cross-check-figures",
+        retired_by: "refine",
+        superseded_by: "verify-figures"
+      });
+      const report = drainNotifications(store).find((t) => t.includes("Skill attempt"));
+      expect(report).toContain("Retired predecessor");
+      expect(report).toContain("skills/research/cross-check-figures.md");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("same-name fed-refine: refines in place, retires NOTHING", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const questions: string[] = [];
+    try {
+      seedSkill(root, "research", "cross-check-figures", OLD_SKILL);
+      const run_id = turnRun(store, "tighten the cross-check-figures skill");
+      const worker = new CoreWorker(store, root, refineLoopLlm('{"verdict":"skill","reason":"refine"}', OLD_SKILL, questions));
+      expect((await worker.executeRun(run_id, "w")).status).toBe("completed");
+      await evolutionLaneSettled();
+
+      const skills = new SkillStore({ root: join(root, "skills") });
+      expect(skills.listRetired()).toHaveLength(0);
+      expect(existsSync(join(root, "skills", "research", "cross-check-figures.md"))).toBe(true);
+      const report = drainNotifications(store).find((t) => t.includes("Skill attempt"));
+      expect(report).not.toContain("Retired predecessor");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("MULTIPLE skills mentioned: no feed, and a rename never retires anything", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const questions: string[] = [];
+    try {
+      seedSkill(root, "research", "cross-check-figures", OLD_SKILL);
+      seedSkill(root, "research", "verify-sources", SECOND_SKILL);
+      const run_id = turnRun(store, "write a skill like cross-check-figures crossed with verify-sources");
+      const worker = new CoreWorker(store, root, refineLoopLlm('{"verdict":"skill","reason":"new blend"}', RENAMED_SKILL, questions));
+      expect((await worker.executeRun(run_id, "w")).status).toBe("completed");
+      await evolutionLaneSettled();
+
+      // No feed (a passing mention must never look like a refine) …
+      expect(questions.length).toBeGreaterThan(0);
+      expect(questions[0]).not.toContain("This skill ALREADY EXISTS");
+      // … and therefore no retire, even though the authored name differs from both.
+      const skills = new SkillStore({ root: join(root, "skills") });
+      expect(skills.listRetired()).toHaveLength(0);
+      expect(existsSync(join(root, "skills", "research", "cross-check-figures.md"))).toBe(true);
+      expect(existsSync(join(root, "skills", "research", "verify-sources.md"))).toBe(true);
+      const report = drainNotifications(store).find((t) => t.includes("Skill attempt"));
+      expect(report).not.toContain("Retired predecessor");
     } finally {
       store.close();
     }

@@ -504,6 +504,9 @@ export function resolveSkillName(
   const slash = raw.indexOf("/");
   const scope = slash > 0 ? raw.slice(0, slash) : undefined;
   const name = slash > 0 ? raw.slice(slash + 1) : raw;
+  // Empty query guard: `includes("")` matches everything — an empty/whitespace-only reference
+  // must resolve to nothing, not to the whole store.
+  if (!name) return { status: "none" };
   const pool = scope ? metas.filter((m) => m.scope === scope) : metas;
   const exact = pool.filter((m) => m.name === name);
   if (exact.length === 1) return { status: "one", meta: exact[0]! };

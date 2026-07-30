@@ -542,4 +542,10 @@ describe("resolveSkillName", () => {
   it("unknown → none", () => {
     expect(resolveSkillName(metas, "zzz").status).toBe("none");
   });
+
+  it("empty / whitespace-only queries → none (never a match-everything substring)", () => {
+    expect(resolveSkillName(metas, "").status).toBe("none");
+    expect(resolveSkillName(metas, "   ").status).toBe("none");
+    expect(resolveSkillName(metas, "research/").status).toBe("none"); // empty name after the slash
+  });
 });
