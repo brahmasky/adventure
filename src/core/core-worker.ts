@@ -109,7 +109,7 @@ import {
 import { manifestFor } from "./tool-manifest.js";
 import { composeSystemPrompt, intentToScope, memoryRootFor, SKILL_AUTHOR_DISCIPLINE } from "../prompt/composer.js";
 import { resolveLocalTimeZone, resolveTimeZone } from "../prompt/tz-convert.js";
-import { resolveSkillMaxPerScope, resolveSkillRefinePasses, resolveSkillsEnabled, setFrontmatterFields, SkillStore } from "../skills/skill-store.js";
+import { resolveSkillMaxPerScope, resolveSkillName, resolveSkillRefinePasses, resolveSkillsEnabled, setFrontmatterFields, SkillStore } from "../skills/skill-store.js";
 import { resolveWebMaxResults } from "../web/registry.js";
 import type { WebResult } from "../web/types.js";
 import { resolveChainBudgetMs, RUNNER_TIMEOUT_BUFFER_MS } from "../llm/registry.js";
@@ -1619,6 +1619,9 @@ export class CoreWorker {
       : { verdict: "unsure", reason: "Gate A classification call failed" };
 
     // 2) Branch on the verdict.
+    if (verdict.verdict === "retire" || verdict.verdict === "restore") {
+      return this.skillLifecycleFromGateA(verdict);
+    }
     if (verdict.verdict === "skill") {
       return this.authorAndWriteSkill(skillClaim, message, budget, verdict, "commanded");
     }
@@ -1872,6 +1875,53 @@ export class CoreWorker {
       lesson ? `→ Saved a LESSON (${scope}) for now: "${lesson}".` : "→ Nothing durable to save yet.",
       '→ Want me to promote this to a skill? Reply "yes, write a skill for it" and I will.'
     ]);
+  }
+
+  /** NL retire/restore: Gate A extracted the user's words; resolution + action are code. */
+  private skillLifecycleFromGateA(verdict: GateAResult): HelperResult {
+    const action = verdict.verdict as "retire" | "restore";
+    const target = verdict.target ?? "";
+    const pool = action === "retire" ? this.skillStore.list() : this.skillStore.listRetired();
+    const resolved = resolveSkillName(pool, target);
+    if (resolved.status === "none") {
+      const names = pool.map((m) => `${m.scope}/${m.name}`).join(" · ") || "(none)";
+      return this.skillReport(`${action}: no match for "${target}"`, [
+        "Origin: you asked",
+        `Gate A qualify: → ${action.toUpperCase()} (${verdict.reason})`,
+        `→ No ${action === "retire" ? "active" : "retired"} skill matches "${target}". Available: ${names}`
+      ]);
+    }
+    if (resolved.status === "many") {
+      const names = resolved.metas.map((m) => `${m.scope}/${m.name}`).join(" · ");
+      return this.skillReport(`${action}: "${target}" is ambiguous`, [
+        "Origin: you asked",
+        `Gate A qualify: → ${action.toUpperCase()} (${verdict.reason})`,
+        `→ Which one? ${names} — reply with /skills ${action} <scope>/<name>.`
+      ]);
+    }
+    const { scope, name } = resolved.meta;
+    if (action === "retire") {
+      const r = this.skillStore.retireSkill(scope, name, { date: new Date().toISOString().slice(0, 10), by: "paco" });
+      return this.skillReport(`${r.ok ? "retired" : "retire failed for"} "${name}" (${scope})`, [
+        "Origin: you asked",
+        `Gate A qualify: → RETIRE (${verdict.reason})`,
+        r.ok
+          ? `→ Retired skills/${scope}/${name}.md — inert. /skills restore ${name} to undo.`
+          : `→ ${r.error}`
+      ]);
+    }
+    // Read the lineage stamp BEFORE restoreSkill — restore strips it from the file.
+    const supersededBy = resolved.meta.superseded_by;
+    const r = this.skillStore.restoreSkill(scope, name);
+    const lines = [
+      "Origin: you asked",
+      `Gate A qualify: → RESTORE (${verdict.reason})`,
+      r.ok ? `→ Restored skills/${scope}/${name}.md — active again.` : `→ ${r.error}`
+    ];
+    if (r.ok && supersededBy) {
+      lines.push(`→ Note: it was superseded by ${supersededBy} — both are now active.`);
+    }
+    return this.skillReport(`${r.ok ? "restored" : "restore failed for"} "${name}" (${scope})`, lines);
   }
 
   /**

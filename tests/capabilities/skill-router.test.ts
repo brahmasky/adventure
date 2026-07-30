@@ -48,4 +48,35 @@ describe("parseGateAVerdict", () => {
     expect(parseGateAVerdict('{"verdict":"nonsense","reason":"x"}').verdict).toBe("unsure");
     expect(parseGateAVerdict("").verdict).toBe("unsure");
   });
+
+  it("routes a retire verdict carrying the target", () => {
+    expect(parseGateAVerdict('{"verdict":"retire","target":"siem-soar-ueba-weekly-report","reason":"r"}')).toEqual({
+      verdict: "retire",
+      target: "siem-soar-ueba-weekly-report",
+      reason: "r"
+    });
+  });
+
+  it("routes a restore verdict carrying the target", () => {
+    expect(parseGateAVerdict('{"verdict":"restore","target":"newsletter","reason":"re-enable"}')).toEqual({
+      verdict: "restore",
+      target: "newsletter",
+      reason: "re-enable"
+    });
+  });
+
+  it("degrades a retire/restore verdict WITHOUT a usable target to unsure (never acts blind)", () => {
+    expect(parseGateAVerdict('{"verdict":"retire","reason":"r"}')).toEqual({
+      verdict: "unsure",
+      reason: "retire/restore verdict without a target"
+    });
+    expect(parseGateAVerdict('{"verdict":"restore","target":"   ","reason":"r"}')).toEqual({
+      verdict: "unsure",
+      reason: "retire/restore verdict without a target"
+    });
+  });
+
+  it("still defaults an unknown verdict to unsure after the retire/restore extension", () => {
+    expect(parseGateAVerdict('{"verdict":"deactivate","reason":"x"}').verdict).toBe("unsure");
+  });
 });

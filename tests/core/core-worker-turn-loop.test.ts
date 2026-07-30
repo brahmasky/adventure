@@ -2235,3 +2235,152 @@ describe("true refine feed + rename auto-retire (fed-refine gating)", () => {
     }
   });
 });
+
+/**
+ * Natural-language retire/restore (Task 4): Gate A extracts the user's words as `target`;
+ * resolution (resolveSkillName) and the store action are CODE. The LLM never picks the file.
+ */
+describe("natural-language skill retire/restore via Gate A", () => {
+  /** Drain every queued outbox notification's text (unique lease owner per read). */
+  function drainNotifications(store: RunStore): string[] {
+    const notes: string[] = [];
+    for (;;) {
+      const n = store.claimNextNotification(`test-${notes.length}`, 30);
+      if (!n) break;
+      notes.push(String(n.payload.text));
+    }
+    return notes;
+  }
+
+  /** A loop LLM stub driving `skill_author` then `final`; Gate A answers `gateA`. */
+  function lifecycleLoopLlm(gateA: string): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
+    const composeScript = [
+      '{"action":"skill_author","input":{},"why":"user asks about a skill"}',
+      '{"action":"final","answer":"记下了。"}'
+    ];
+    let composeIndex = 0;
+    return async (input) => {
+      const system = typeof input.system === "string" ? input.system : "";
+      const question = typeof input.question === "string" ? input.question : "";
+      let answer = `ANSWER: ${question}`;
+      if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"skill"}';
+      else if (system.includes(LOOP_DISCIPLINE)) {
+        answer = composeScript[Math.min(composeIndex, composeScript.length - 1)] ?? "";
+        composeIndex += 1;
+      } else if (system.includes(GATE_A_DISCIPLINE)) answer = gateA;
+      return { ok: true, output: { question, answer, model: "f", provider: "f" } };
+    };
+  }
+
+  const WEEKLY_REPORT_SKILL = [
+    "---", "name: cross-check-figures", "scope: research",
+    "when: comparing numbers across multiple sources",
+    "anchors:", "  - a part never exceeds its whole",
+    "version: 1", "origin: commanded", "---", "", "1. Verify each figure against its source."
+  ].join("\n");
+
+  const SECOND_FIGURES_SKILL = [
+    "---", "name: verify-figures", "scope: ask",
+    "when: sanity-checking a single figure",
+    "anchors:", "  - a part never exceeds its whole",
+    "version: 1", "origin: commanded", "---", "", "1. Sanity-check the figure."
+  ].join("\n");
+
+  function seedSkill(root: string, scope: string, name: string, file: string): void {
+    mkdirSync(join(root, "skills", scope), { recursive: true });
+    writeFileSync(join(root, "skills", scope, `${name}.md`), file, "utf8");
+  }
+
+  it("NL retire happy path: the active skill moves to the graveyard stamped retired_by: paco", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    try {
+      seedSkill(root, "research", "cross-check-figures", WEEKLY_REPORT_SKILL);
+      const run_id = turnRun(store, "退役 cross-check-figures 技能");
+      const worker = new CoreWorker(
+        store,
+        root,
+        lifecycleLoopLlm('{"verdict":"retire","target":"cross-check-figures","reason":"user asked to retire it"}')
+      );
+      expect((await worker.executeRun(run_id, "w")).status).toBe("completed");
+      await evolutionLaneSettled();
+
+      expect(existsSync(join(root, "skills", "research", "cross-check-figures.md"))).toBe(false);
+      const skills = new SkillStore({ root: join(root, "skills") });
+      const retired = skills.listRetired();
+      expect(retired).toHaveLength(1);
+      expect(retired[0]).toMatchObject({ name: "cross-check-figures", scope: "research", retired_by: "paco" });
+
+      const report = drainNotifications(store).find((t) => t.includes("Skill attempt"));
+      expect(report).toContain("Retired skills/research/cross-check-figures.md");
+      expect(report).toContain("/skills restore cross-check-figures");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("NL retire ambiguous target: nothing moves, the report ASKS which one", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    try {
+      seedSkill(root, "research", "cross-check-figures", WEEKLY_REPORT_SKILL);
+      seedSkill(root, "ask", "verify-figures", SECOND_FIGURES_SKILL);
+      const run_id = turnRun(store, "retire the figures skill");
+      const worker = new CoreWorker(
+        store,
+        root,
+        lifecycleLoopLlm('{"verdict":"retire","target":"figures","reason":"user asked to retire it"}')
+      );
+      expect((await worker.executeRun(run_id, "w")).status).toBe("completed");
+      await evolutionLaneSettled();
+
+      // Both actives untouched; the graveyard stays empty.
+      expect(existsSync(join(root, "skills", "research", "cross-check-figures.md"))).toBe(true);
+      expect(existsSync(join(root, "skills", "ask", "verify-figures.md"))).toBe(true);
+      const skills = new SkillStore({ root: join(root, "skills") });
+      expect(skills.listRetired()).toHaveLength(0);
+
+      const report = drainNotifications(store).find((t) => t.includes("Skill attempt"));
+      expect(report).toContain("Which one?");
+      expect(report).toContain("/skills retire <scope>/<name>");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("NL restore surfaces the superseded_by stamp (read BEFORE restoreSkill strips it)", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    try {
+      seedSkill(root, "research", "cross-check-figures", WEEKLY_REPORT_SKILL);
+      const seedStore = new SkillStore({ root: join(root, "skills") });
+      const retiredSeed = seedStore.retireSkill("research", "cross-check-figures", {
+        date: "2026-07-29",
+        by: "refine",
+        supersededBy: "verify-figures"
+      });
+      expect(retiredSeed.ok).toBe(true);
+
+      const run_id = turnRun(store, "restore the cross-check-figures skill");
+      const worker = new CoreWorker(
+        store,
+        root,
+        lifecycleLoopLlm('{"verdict":"restore","target":"cross-check-figures","reason":"user wants it back"}')
+      );
+      expect((await worker.executeRun(run_id, "w")).status).toBe("completed");
+      await evolutionLaneSettled();
+
+      // Restored active, graveyard empty, stamps stripped from the file.
+      expect(existsSync(join(root, "skills", "research", "cross-check-figures.md"))).toBe(true);
+      const skills = new SkillStore({ root: join(root, "skills") });
+      expect(skills.listRetired()).toHaveLength(0);
+      expect(readFileSync(join(root, "skills", "research", "cross-check-figures.md"), "utf8")).not.toContain("superseded_by");
+
+      const report = drainNotifications(store).find((t) => t.includes("Skill attempt"));
+      expect(report).toContain("Restored skills/research/cross-check-figures.md");
+      expect(report).toContain("was superseded by verify-figures");
+    } finally {
+      store.close();
+    }
+  });
+});
