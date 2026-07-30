@@ -33,7 +33,8 @@ export interface GateAResult {
 /** System prompt for the Gate A classifier — strict JSON, the 4 criteria encoded. */
 export const GATE_A_DISCIPLINE =
   "You are a routing gate. Decide whether a request to 'write a skill' is actually a SKILL, " +
-  "a LESSON, or needs CODE. A SKILL is a reusable PROCEDURE for a class of task. Reply with " +
+  "a LESSON, needs CODE, or is a LIFECYCLE action (retire/restore) on an existing skill. " +
+  "A SKILL is a reusable PROCEDURE for a class of task. Reply with " +
   "STRICT JSON only — no prose, no code fences — of the form " +
   '{"verdict":"skill"|"lesson"|"code"|"unsure"|"retire"|"restore","scope"?:string,"lesson"?:string,"target"?:string,"reason":string}. ' +
   "Choose \"skill\" ONLY when ALL FOUR hold: (1) RECURRING class of task, not a one-off; " +

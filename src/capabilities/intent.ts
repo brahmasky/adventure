@@ -123,14 +123,17 @@ export const INTENT_DISCIPLINE =
   "'try again to fix this intent classifier issue', 'why did you do X internally / why did you " +
   "ask which 猴哥', 'look at / diagnose your <file>'; set \"query\" to a focused restatement of " +
   "what to look at or change. Choose \"skill\" when the " +
-  "message asks Houge to CREATE, WRITE, IMPROVE, or REFINE a reusable skill/procedure — e.g. " +
+  "message asks Houge to CREATE, WRITE, IMPROVE, or REFINE a reusable skill/procedure, or to " +
+  "RETIRE/RESTORE/deactivate/re-enable (退役/停用/恢复/启用) an EXISTING skill — e.g. " +
   "'write a skill for cross-checking figures', 'make a skill that verifies dates', 'teach " +
-  "yourself a skill to compare sources'; set \"query\" to a restatement of the procedure to " +
+  "yourself a skill to compare sources', '退役周报技能', 'restore the newsletter skill'; set " +
+  "\"query\" to a restatement of the procedure to " +
   "author. This is distinct from \"selfcode\" (read existing code) and \"feedback\" (react to a " +
   "prior answer). IMPORTANT: a request to PERFORM a task — do the research, analyze, find, " +
   "look into, answer (e.g. '研究一下…', 'analyze…', 'find me…') — is \"research\" or \"answer\", " +
   "NOT \"skill\", EVEN IF the topic matches a skill you already have. Choose \"skill\" ONLY when " +
-  "the user explicitly asks you to create/write/improve the reusable PROCEDURE itself, not to " +
+  "the user explicitly asks you to create/write/improve the reusable PROCEDURE itself, or " +
+  "RETIRE/RESTORE (退役/恢复) an existing one, not to " +
   "execute it on a topic. Choose \"answer\" for " +
   "questions you can answer directly from general knowledge. Choose \"clarify\" only when the " +
   "message is genuinely ambiguous or underspecified — set \"clarifying_question\" to ONE short " +

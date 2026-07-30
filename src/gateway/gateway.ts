@@ -430,10 +430,12 @@ export class Gateway {
         ? `Retired **${skillName}** (${scope}) → skills/_retired/. Inert — restore with /skills restore ${skillName}.`
         : `Could not retire "${skillName}": ${r.error}`;
     }
+    // Read the lineage stamp BEFORE restoreSkill — restore strips it from the file.
+    const supersededBy = resolved.meta.superseded_by;
     const r = this.skillStore.restoreSkill(scope, skillName);
-    return r.ok
-      ? `Restored **${skillName}** (${scope}) — active again, folds on the next matching run.`
-      : `Could not restore "${skillName}": ${r.error}`;
+    if (!r.ok) return `Could not restore "${skillName}": ${r.error}`;
+    const lineageNote = supersededBy ? ` Note: it was superseded by ${supersededBy} — both are now active.` : "";
+    return `Restored **${skillName}** (${scope}) — active again, folds on the next matching run.${lineageNote}`;
   }
 
   /**

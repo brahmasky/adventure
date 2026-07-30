@@ -471,6 +471,39 @@ describe("Gateway telegram events", () => {
     }
   });
 
+  it("/skills restore surfaces the superseded_by lineage note (read before restore strips it)", () => {
+    const store = RunStore.openInMemory();
+    const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-restore-lineage-"));
+    try {
+      const skillStore = new SkillStore({ root });
+      skillStore.writeSkill("research", "old-skill", "---\nname: old-skill\nscope: research\nwhen: w\n---\nbody");
+      expect(
+        skillStore.retireSkill("research", "old-skill", { date: "2026-07-29", by: "refine", supersededBy: "new-skill" }).ok
+      ).toBe(true);
+      const gateway = new Gateway(store, undefined, undefined, skillStore);
+      const event = buildTypedTaskEvent({
+        source: "telegram",
+        type: "skills",
+        program: "restore old-skill",
+        requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "222" },
+        idempotency_key: "telegram:skills-restore-lineage",
+        source_reference: "telegram:update:28:message:1"
+      });
+      expect(gateway.intake(event)).toEqual({ ok: true, status: "skills_returned", run_id: "" });
+      const note = store.claimNextNotification("test", 30);
+      expect(note?.payload.text).toContain("Restored");
+      expect(note?.payload.text).toContain("superseded by new-skill");
+      expect(note?.payload.text).toContain("both are now active");
+      // Restored for real, and the stamp is stripped from the file itself.
+      expect(skillStore.list().map((m) => m.name)).toContain("old-skill");
+      expect(skillStore.listRetired()).toEqual([]);
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("/skills retire with an ambiguous substring asks instead of guessing", () => {
     const store = RunStore.openInMemory();
     const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-retire-ambig-"));

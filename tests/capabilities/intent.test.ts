@@ -88,6 +88,14 @@ describe("INTENT_DISCIPLINE (selfcode routing, ADR 0011)", () => {
     expect(INTENT_DISCIPLINE.toLowerCase()).toContain("write a skill");
     expect(INTENT_DISCIPLINE.toLowerCase()).toContain("refine a reusable");
   });
+
+  it("routes skill LIFECYCLE verbs (retire/restore, 退役/恢复) through the skill lane too (Task 4)", () => {
+    expect(INTENT_DISCIPLINE).toContain("RETIRE/RESTORE");
+    expect(INTENT_DISCIPLINE).toContain("退役");
+    expect(INTENT_DISCIPLINE).toContain("恢复");
+    // The ONLY-clause must not steer lifecycle verbs away from the skill lane.
+    expect(INTENT_DISCIPLINE).toContain("or RETIRE/RESTORE (退役/恢复) an existing one");
+  });
 });
 
 describe("buildIntentQuestion", () => {
