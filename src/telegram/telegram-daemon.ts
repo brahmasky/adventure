@@ -7,6 +7,7 @@ import { runIdeaPanelTick, type PanelSeat } from "../capabilities/idea-panel.js"
 import { spawnCodexJudge, spawnPanelChair } from "../capabilities/idea-panel-seats.js";
 import { runIdeaRadarTick, type RadarLlm } from "../capabilities/idea-radar.js";
 import { runLessonConsolidateTick } from "../capabilities/lesson-consolidate.js";
+import { runSkillReverifyTick } from "../capabilities/skill-reverify.js";
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
 import { newestMtimeMs } from "../capabilities/self-write-merge.js";
@@ -23,6 +24,7 @@ import { TelegramNotificationAdapter } from "../notifications/telegram-notificat
 import { resolveBackupEnabled, runDbBackupTick } from "../run/db-backup.js";
 import type { RunStore } from "../run/run-store.js";
 import { maybeFireScheduledTasks } from "../run/schedule-tick.js";
+import { SkillStore } from "../skills/skill-store.js";
 import { runInvariantSweep } from "../run/invariant-sweep.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
@@ -398,6 +400,20 @@ async function runSignalPathTick(
       now,
       chatId: chat ? String(chat.telegram_chat_id) : null,
       projectRoot: options.projectRoot
+    });
+    // Skill retirement spec (2026-07-29): the weekly suggest-only re-verify advisor — stale
+    // skills get a fresh Gate B pass; failures are flagged to Paco, passers re-stamped. Flag-
+    // gated OFF (DISARM_FLAGS), weekly latch stamped before any LLM call, never throws.
+    await runSkillReverifyTick({
+      store: options.store,
+      skills: new SkillStore({ root: join(options.projectRoot, "skills") }),
+      anchorLlm: async (system, question) => {
+        const read = await episodicLlm({ question, system });
+        return read.ok ? read.answer : undefined;
+      },
+      env: process.env,
+      now,
+      chatId: chat ? String(chat.telegram_chat_id) : null
     });
     // B10b: fire due schedules through the normal gateway→worker path (breaker,
     // contracts, and policy all apply). Flag-gated OFF; ≤3 fires per tick; the fired

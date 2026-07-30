@@ -39,6 +39,7 @@ import { queryStatus } from "../status/status-query.js";
 import { formatUsageTable } from "../status/usage-report.js";
 import { resolveRadarAt, resolveRadarEnabled, resolveRadarTz } from "../capabilities/idea-radar.js";
 import { CHAIR_FALLBACK_RATIONALE, resolvePanelEnabled } from "../capabilities/idea-panel.js";
+import { resolveSkillReverifyAt, resolveSkillReverifyEnabled } from "../capabilities/skill-reverify.js";
 import { resolvePanelAt } from "../capabilities/week-key.js";
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import type { IdeaRow, ShortlistRow } from "../run/run-store.js";
@@ -1628,7 +1629,8 @@ export function formatScheduleCancelledText(schedule_id: string): string {
 /** `/schedule cancel <N>` when there is no Nth row (out of range / empty list). */
 /**
  * Read-only "系统任务" footer for the `/schedule` command: the env-pinned built-in ticks
- * (idea radar daily, idea panel weekly) with a live-computed next fire. Unnumbered — they
+ * (idea radar daily, idea panel weekly, skill re-verify weekly) with a live-computed next
+ * fire. Unnumbered — they
  * can never collide with `/schedule cancel <编号>` — and appended ONLY on the /schedule
  * command surface, never the schedule_task list verb (the model must not reason about, or
  * try to cancel, rows it cannot own). Empty string when neither tick is armed.
@@ -1656,6 +1658,15 @@ export function formatSystemScheduleSection(env: NodeJS.ProcessEnv, now: string)
       const spec = { kind: "weekly", day: panelAt.day, at: panelAt.at } as const;
       lines.push(
         `· idea panel · ${describeScheduleSpec(spec)} (${city})${nextSuffix(computeNextRunAt(spec, tz, now))}`
+      );
+    }
+  }
+  if (resolveSkillReverifyEnabled(env)) {
+    const reverifyAt = resolveSkillReverifyAt(env);
+    if (reverifyAt !== null) {
+      const spec = { kind: "weekly", day: reverifyAt.day, at: reverifyAt.at } as const;
+      lines.push(
+        `· skill re-verify · ${describeScheduleSpec(spec)} (${city})${nextSuffix(computeNextRunAt(spec, tz, now))}`
       );
     }
   }

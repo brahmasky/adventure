@@ -60,6 +60,7 @@ export type LedgerEventType =
   | "bounty_scan_completed"
   | "idea_radar_tick"
   | "idea_panel_tick"
+  | "skill_reverify_tick"
   | "project_created"
   | "project_state_changed"
   | "incident_opened"
@@ -218,6 +219,9 @@ const requiredPayloadFields = {
     "week_key",
     "brief_written"
   ],
+  // Skill retirement spec (2026-07-29): one summary per weekly re-verify tick — counts only,
+  // no skill text (bodies-out-of-the-ledger invariant).
+  skill_reverify_tick: ["checked", "passed", "flagged"],
   project_created: ["project_id", "source_url"],
   project_state_changed: ["project_id", "from", "to"],
   // Introspection slice A (ADR 0024): ids + counts only — the incident detail lives in the

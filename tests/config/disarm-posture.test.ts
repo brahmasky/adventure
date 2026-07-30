@@ -61,6 +61,9 @@ describe("DISARM_FLAGS", () => {
       // identity reads too.
       "HOUGE_GOOGLE_ENABLED",
       "HOUGE_LESSON_CONSOLIDATE_ENABLED",
+      // Skill retirement spec (2026-07-29): the weekly re-verify advisor re-scores Houge's
+      // OWN procedures — evolution surface, covered like lesson consolidation.
+      "HOUGE_SKILL_REVERIFY_ENABLED",
       // Idea Radar R1 (spec 2026-07-24): unattended external reads + a daily metered LLM
       // call + durable card writes — the STOP switch covers it like bounty intake.
       "HOUGE_RADAR_ENABLED",

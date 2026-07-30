@@ -2838,6 +2838,34 @@ export class RunStore {
     this.db.prepare(`UPDATE radar_panel_state SET last_run_at = ? WHERE id = 1`).run(now);
   }
 
+  // --- Skill re-verify advisor (skill retirement spec, 2026-07-29) -------------
+
+  /** Last executed re-verify tick (single-row weekly latch, like radar_panel_state). */
+  getSkillReverifyLastRun(): string | null {
+    const row = this.db.prepare(`
+      SELECT last_run_at FROM skill_reverify_state WHERE id = 1
+    `).get<{ last_run_at: string | null }>();
+    return row?.last_run_at ?? null;
+  }
+
+  /** Stamped BEFORE any Gate B call (M3 posture) — a crashing tick never retry-storms. */
+  setSkillReverifyLastRun(now: string): void {
+    this.db.prepare(`UPDATE skill_reverify_state SET last_run_at = ? WHERE id = 1`).run(now);
+  }
+
+  /** One summary event per weekly re-verify tick — counts only, no skill text. */
+  recordSkillReverifyTick(payload: { checked: number; passed: number; flagged: number }): void {
+    this.appendLedgerEvent(
+      createLedgerEvent({
+        correlation_id: "skill-reverify",
+        event_type: "skill_reverify_tick",
+        actor: "system",
+        sequence: this.nextLedgerSequence(),
+        payload
+      })
+    );
+  }
+
   /**
    * Guarded status write — the ONLY path the panel and `/idea pick` use. Allowed
    * transitions are exactly {@link IDEA_STATUS_TRANSITIONS}; anything else (same-status,
@@ -5250,6 +5278,7 @@ export class RunStore {
     this.applyIncidentsMigration();
     this.applyIdeaRadarMigration();
     this.applyIdeaPanelMigration();
+    this.applySkillReverifyMigration();
   }
 
   /**
@@ -5386,6 +5415,39 @@ export class RunStore {
           cards_json TEXT NOT NULL,
           picked_idea_id INTEGER
         );
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
+   * Skill retirement spec (2026-07-29): `skill_reverify_state` — the single-row weekly
+   * latch for the suggest-only re-verify advisor (seeded NULL so the first armed tick
+   * fires at the next slot; mirrors radar_panel_state).
+   */
+  private applySkillReverifyMigration(): void {
+    const version = "2026-07-29-skill-reverify";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS skill_reverify_state (id INTEGER PRIMARY KEY, last_run_at TEXT);
+        INSERT OR IGNORE INTO skill_reverify_state (id) VALUES (1);
       `);
 
       if (!applied) {

@@ -45,6 +45,9 @@ export const DISARM_FLAGS: readonly string[] = [
   // Lesson-consolidation design (2026-07-23): rewrites Houge's OWN behavioral guidance (merges
   // its lessons) — the STOP switch must halt a capability that edits how Houge thinks.
   "HOUGE_LESSON_CONSOLIDATE_ENABLED",
+  // Skill retirement spec (2026-07-29): the re-verify advisor re-scores Houge's OWN procedures
+  // weekly — evolution surface, covered by the STOP switch like lesson consolidation.
+  "HOUGE_SKILL_REVERIFY_ENABLED",
   // Idea Radar R1 (spec 2026-07-24): unattended daily reads of external feeds + one metered
   // LLM call + durable idea-card writes — unattended autonomy, covered like bounty intake.
   "HOUGE_RADAR_ENABLED",

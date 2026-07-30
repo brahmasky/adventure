@@ -920,10 +920,12 @@ describe("/schedule 系统任务 footer (read-only built-in ticks)", () => {
   let savedRadar: string | undefined;
   let savedPanel: string | undefined;
   let savedAt: string | undefined;
+  let savedReverify: string | undefined;
   beforeEach(() => {
     savedRadar = process.env.HOUGE_RADAR_ENABLED;
     savedPanel = process.env.HOUGE_RADAR_PANEL_ENABLED;
     savedAt = process.env.HOUGE_RADAR_AT;
+    savedReverify = process.env.HOUGE_SKILL_REVERIFY_ENABLED;
   });
   afterEach(() => {
     const restore = (key: string, value: string | undefined) => {
@@ -933,6 +935,7 @@ describe("/schedule 系统任务 footer (read-only built-in ticks)", () => {
     restore("HOUGE_RADAR_ENABLED", savedRadar);
     restore("HOUGE_RADAR_PANEL_ENABLED", savedPanel);
     restore("HOUGE_RADAR_AT", savedAt);
+    restore("HOUGE_SKILL_REVERIFY_ENABLED", savedReverify);
   });
 
   function scheduleEvent(key: string) {
@@ -950,6 +953,7 @@ describe("/schedule 系统任务 footer (read-only built-in ticks)", () => {
     process.env.HOUGE_RADAR_ENABLED = "1";
     process.env.HOUGE_RADAR_PANEL_ENABLED = "1";
     delete process.env.HOUGE_RADAR_AT; // default 07:30
+    delete process.env.HOUGE_SKILL_REVERIFY_ENABLED; // advisor OFF by default
     const store = RunStore.openInMemory();
     try {
       const gateway = new Gateway(store);
@@ -959,6 +963,8 @@ describe("/schedule 系统任务 footer (read-only built-in ticks)", () => {
       expect(text).toContain("· idea radar ·");
       expect(text).toContain("· idea panel ·");
       expect(text).toContain("下次");
+      // The re-verify advisor is disabled → its line is absent.
+      expect(text).not.toContain("skill re-verify");
       // Unnumbered: system rows must never look addressable by /schedule cancel <n>.
       expect(text).not.toMatch(/#\d+ .*idea radar/);
     } finally {
@@ -966,9 +972,28 @@ describe("/schedule 系统任务 footer (read-only built-in ticks)", () => {
     }
   });
 
-  it("omits the footer entirely when neither built-in tick is armed", () => {
+  it("appends the skill re-verify line when the weekly advisor is armed", () => {
     delete process.env.HOUGE_RADAR_ENABLED;
     delete process.env.HOUGE_RADAR_PANEL_ENABLED;
+    process.env.HOUGE_SKILL_REVERIFY_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    try {
+      const gateway = new Gateway(store);
+      gateway.intake(scheduleEvent("sys-sched-3"), "2026-07-27T00:00:00.000Z");
+      const text = String(store.claimNextNotification("test", 30)?.payload.text);
+      expect(text).toContain("系统任务");
+      expect(text).toContain("· skill re-verify ·");
+      expect(text).toContain("weekly sun 10:00"); // the documented default slot
+      expect(text).toContain("下次");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("omits the footer entirely when no built-in tick is armed", () => {
+    delete process.env.HOUGE_RADAR_ENABLED;
+    delete process.env.HOUGE_RADAR_PANEL_ENABLED;
+    delete process.env.HOUGE_SKILL_REVERIFY_ENABLED;
     const store = RunStore.openInMemory();
     try {
       const gateway = new Gateway(store);
