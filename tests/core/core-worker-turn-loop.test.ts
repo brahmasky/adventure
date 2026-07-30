@@ -2148,4 +2148,90 @@ describe("true refine feed + rename auto-retire (fed-refine gating)", () => {
       store.close();
     }
   });
+
+  it("WORD BOUNDARY: a single-word skill name inside a longer word is NOT a mention", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const questions: string[] = [];
+    const SINGLE_WORD_SKILL = [
+      "---", "name: verify", "scope: research",
+      "when: checking a claim against evidence",
+      "anchors:", "  - primary beats secondary",
+      "version: 1", "origin: commanded", "---", "", "1. Check the claim."
+    ].join("\n");
+    try {
+      seedSkill(root, "research", "verify", SINGLE_WORD_SKILL);
+      // "verifying" contains "verify" as a prefix — a substring scan would false-positive
+      // into a feed (and an in-place overwrite); the bounded scan must not.
+      const run_id = turnRun(store, "write a skill for verifying dates in old documents");
+      const worker = new CoreWorker(store, root, refineLoopLlm('{"verdict":"skill","reason":"new"}', RENAMED_SKILL, questions));
+      expect((await worker.executeRun(run_id, "w")).status).toBe("completed");
+      await evolutionLaneSettled();
+
+      expect(questions.length).toBeGreaterThan(0);
+      expect(questions[0]).not.toContain("This skill ALREADY EXISTS");
+      const skills = new SkillStore({ root: join(root, "skills") });
+      expect(skills.listRetired()).toHaveLength(0);
+      expect(existsSync(join(root, "skills", "research", "verify.md"))).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("CASE-INSENSITIVE: a mixed-case mention of a lowercase slug still feeds", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const questions: string[] = [];
+    try {
+      seedSkill(root, "research", "cross-check-figures", OLD_SKILL);
+      const run_id = turnRun(store, "改进 Cross-Check-Figures 这个技能，补充过期数据的处理");
+      const worker = new CoreWorker(store, root, refineLoopLlm('{"verdict":"skill","reason":"refine"}', OLD_SKILL, questions));
+      expect((await worker.executeRun(run_id, "w")).status).toBe("completed");
+      await evolutionLaneSettled();
+
+      expect(questions.length).toBeGreaterThan(0);
+      expect(questions[0]).toContain("This skill ALREADY EXISTS");
+      expect(questions[0]).toContain("name: cross-check-figures");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("SCOPE DISOBEDIENCE: fed research/x re-authored as ask/x retires the predecessor with scope/name lineage", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const questions: string[] = [];
+    const SCOPE_MOVED_SKILL = [
+      "---", "name: cross-check-figures", "scope: ask",
+      "when: comparing numbers across multiple sources",
+      "anchors:", "  - a part never exceeds its whole",
+      "version: 1", "origin: commanded", "---", "", "1. Verify each figure."
+    ].join("\n");
+    try {
+      seedSkill(root, "research", "cross-check-figures", OLD_SKILL);
+      const run_id = turnRun(store, "refine the cross-check-figures skill for everyday questions");
+      const worker = new CoreWorker(store, root, refineLoopLlm('{"verdict":"skill","reason":"refine"}', SCOPE_MOVED_SKILL, questions));
+      expect((await worker.executeRun(run_id, "w")).status).toBe("completed");
+      await evolutionLaneSettled();
+
+      // Same name, different scope: the predecessor is superseded all the same, and the
+      // lineage pointer carries the scope so it is unambiguous.
+      const skills = new SkillStore({ root: join(root, "skills") });
+      expect(existsSync(join(root, "skills", "ask", "cross-check-figures.md"))).toBe(true);
+      expect(existsSync(join(root, "skills", "research", "cross-check-figures.md"))).toBe(false);
+      const retired = skills.listRetired();
+      expect(retired).toHaveLength(1);
+      expect(retired[0]).toMatchObject({
+        name: "cross-check-figures",
+        scope: "research",
+        retired_by: "refine",
+        superseded_by: "ask/cross-check-figures"
+      });
+      const report = drainNotifications(store).find((t) => t.includes("Skill attempt"));
+      expect(report).toContain("Retired predecessor skills/research/cross-check-figures.md");
+      expect(report).toContain("superseded by ask/cross-check-figures");
+    } finally {
+      store.close();
+    }
+  });
 });

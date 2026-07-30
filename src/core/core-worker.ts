@@ -1659,9 +1659,17 @@ export class CoreWorker {
     // True-refine detection: the request names exactly ONE active skill → feed its file to the
     // writer (the writer must see what it is improving — spec §3). Zero or many mentions → author
     // fresh; auto-retire is gated on this feed, so a passing mention can never kill a skill.
-    const mentioned = this.skillStore.list().filter((m) => message.includes(m.name));
+    // WORD-BOUNDED + case-insensitive: names are lowercase slugs, so the boundary class is the
+    // slug alphabet's complement (`\b` fails on `-`) — "verifying" must not hit a skill named
+    // "verify", and "Cross-Check-Figures" must still hit "cross-check-figures".
+    const lowered = message.toLowerCase();
+    const mentioned = this.skillStore.list().filter((m) =>
+      new RegExp(`(^|[^a-z0-9_-])${m.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9_-]|$)`).test(lowered)
+    );
     const fed = mentioned.length === 1 ? mentioned[0]! : undefined;
     const fedFile = fed ? this.skillStore.readRawSkill(fed.scope, fed.name) ?? undefined : undefined;
+    // A feed that failed to read is NOT a fed-refine (no writer sight → no retire authority).
+    const feed = fed && fedFile ? fed : undefined;
 
     // 1) Author the initial draft — one attempt + one retry on malformed output.
     let parsed: AuthoredSkill | undefined;
@@ -1684,19 +1692,19 @@ export class CoreWorker {
 
     // 3a) COMMANDED → advisory: write active regardless, score is informational.
     if (origin === "commanded") {
-      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, fedFile ? fed : undefined);
+      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, feed);
     }
 
     // 3b) A Gate B ERROR (unscored — verifier disabled or unavailable) must NEVER block: infra
     // flakiness must not destroy a good auto-authored skill. Fall back to advisory-write (the report's
     // gateBLine notes "unscored — advisory only"). ONLY a real low SCORE blocks an auto skill.
     if (gate.unscored) {
-      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, fedFile ? fed : undefined);
+      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, feed);
     }
 
     // 3c) AUTO → blocking + guided-refine. Pass now ⇒ write active.
     if (gate.passed) {
-      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, fedFile ? fed : undefined);
+      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, feed);
     }
     const refinePasses = resolveSkillRefinePasses(process.env);
     for (let i = 0; i < refinePasses && !gate.passed; i += 1) {
@@ -1713,7 +1721,7 @@ export class CoreWorker {
       gate = await this.verifyAuthored(parsed);
     }
     if (gate.passed) {
-      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, fedFile ? fed : undefined);
+      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, feed);
     }
     // Still failing after the passes → park + lesson + report (nothing silent, nothing lost).
     return this.parkBlockedSkill(claim, message, parsed, verdict, originLine, gate, budget);
@@ -1757,10 +1765,12 @@ export class CoreWorker {
         `→ Write failed: ${write.error}`
       ]);
     }
-    // Fed-refine RENAME → the fed predecessor is superseded: retire it with lineage. Gated on
-    // the feed (a request that named exactly ONE active skill whose file the writer saw), so a
-    // fresh authoring or a passing mention can never retire anything.
-    const retiredLines = fed && fed.name !== parsed.name ? this.retireSuperseded(fed, parsed.name) : [];
+    // Fed-refine RENAME (or scope disobedience — same failure class) → the fed predecessor is
+    // superseded: retire it with lineage. Gated on the feed (a request that named exactly ONE
+    // active skill whose file the writer saw), so a fresh authoring or a passing mention can
+    // never retire anything.
+    const retiredLines =
+      fed && (fed.scope !== parsed.scope || fed.name !== parsed.name) ? this.retireSuperseded(fed, parsed) : [];
     const versionLine = existing ? ` (v${existing.meta.version ?? 1}→v${newVersion})` : ` (v${newVersion})`;
     return this.skillReport(`${action.toLowerCase()} skill "${parsed.name}" (${parsed.scope})`, [
       originLine,
@@ -1772,16 +1782,19 @@ export class CoreWorker {
     ]);
   }
 
-  /** Fed-refine rename: the predecessor moves to the graveyard with lineage (spec §3). */
-  private retireSuperseded(fed: { scope: string; name: string }, successor: string): string[] {
+  /** Fed-refine rename/scope-move: the predecessor moves to the graveyard with lineage (spec §3).
+   * The lineage pointer is the bare name when the successor stayed in the same scope, and the
+   * unambiguous `scope/name` when it moved. */
+  private retireSuperseded(fed: { scope: string; name: string }, successor: { scope: string; name: string }): string[] {
+    const supersededBy = fed.scope === successor.scope ? successor.name : `${successor.scope}/${successor.name}`;
     const r = this.skillStore.retireSkill(fed.scope, fed.name, {
       date: new Date().toISOString().slice(0, 10),
       by: "refine",
-      supersededBy: successor
+      supersededBy
     });
     return [
       r.ok
-        ? `→ Retired predecessor skills/${fed.scope}/${fed.name}.md (superseded by ${successor}). /skills retired to view.`
+        ? `→ Retired predecessor skills/${fed.scope}/${fed.name}.md (superseded by ${supersededBy}). /skills retired to view.`
         : `→ Could not retire predecessor "${fed.name}": ${r.error}`
     ];
   }
