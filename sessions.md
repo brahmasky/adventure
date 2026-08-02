@@ -1173,3 +1173,34 @@ Build + independent adversarial verification subagents; each live round found a 
   work with zero rework (uncommitted trees verified then finished).
 - 2117 tests green (159 files), HEAD d2928db pushed. Remaining: Paco eyeball + arm
   (HOUGE_RADAR_PANEL_ENABLED=1 + HOUGE_CLAUDE_BIN=/usr/local/bin/claude + kickstart).
+
+## 2026-07-28→08-02 — Skill retirement lifecycle: retire/restore + weekly re-verify advisor (BUILT + DEPLOYED, awaiting Paco live gate)
+
+- Full arc: spec `docs/superpowers/specs/2026-07-29-skill-retirement-design.md` (3de8977) →
+  plan + spec-review-senior gate 929ba33 (1 blocker fixed: auto-retire gated on TRUE fed-refine,
+  not any refine mention) → subagent build T1–T5, each closed through spec-compliance +
+  code-quality fix-first loops.
+- Shipped: store lifecycle e998e40+b4f3366 (`skills/_retired/<scope>/` graveyard, retired/
+  retired_by/superseded_by stamps, resolveSkillName, stampVerification via writeContained with
+  double-realpath containment) · 808a8c2 `/skills retire|restore <name>` + `/skills retired`
+  graveyard view · a9a2374+6b73d4b true refine feed (writer now SEES the file it improves — the
+  SOC-skill bug class) + rename/scope auto-retire with superseded_by lineage, word-bounded
+  case-insensitive mention scan · 2d8deaa+635366a NL retire/restore (退役/恢复) via Gate A
+  target extraction + intent-lane routing + lineage-note parity on restore · 6e6d1f5+3a376c9
+  weekly re-verify advisor: suggest-only Gate B 3-pass re-score of stale skills
+  (`last_verified` > HOUGE_SKILL_REVERIFY_AGE_DAYS, default 28), latch-first (M3 lesson),
+  unscored-never-condemns, REVERIFY_MAX_PER_TICK=12 cap, shared parseWeeklyAt grammar
+  extracted from resolvePanelAt, `skill_reverify_tick` ledger, 系统任务 footer line. Ships
+  dark: HOUGE_SKILL_REVERIFY_ENABLED in DISARM_FLAGS; first armed tick fires immediately
+  (NULL latch), then weekly at HOUGE_SKILL_REVERIFY_AT (default sun 10:00).
+- Retire is the ONLY death verb — no hard delete; _retired/ and _pending/ excluded from all
+  active store reads; restore reads superseded_by lineage BEFORE restoreSkill strips it.
+- Also this window: 0f41959 freshness_days time filter for web_search (stale-news bug Houge
+  diagnosed but couldn't commit) · 2d5477a test-gate strips node runtime-warning noise from
+  red-stage output (was blocking refine loop) · lessons.md "investigate before fixing" (373f934).
+- Docs: README lifecycle section + configuration.md HOUGE_SKILL_REVERIFY_* rows (ca445b7).
+  2201 tests green; known pre-existing gateway-telegram flake noted in todo (4052e6d). Dist
+  rebuilt, daemon restarted, verified running.
+- Remaining (Paco live gate, spec §7): `/skills retire siem-soar-ueba-weekly-report` · restore
+  round-trip · NL 退役 happy+ambiguous · arm reverify with AGE_DAYS=1 (not 0 — resolver
+  rejects) → immediate first sweep → ledger check → restore default.
