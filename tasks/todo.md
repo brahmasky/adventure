@@ -77,6 +77,9 @@ at a time):**
   then it is unproven infrastructure, not a closed loop.
 
 **Parked / watch:**
+- Flaky test (pre-existing, NOT retirement-related — fails ~2/10 at e998e40^ too):
+  gateway-telegram "superseded id → points at successor" (/lessons drill-in, fd14120) — timing on
+  `claimNextNotification` re-claim. De-flake when touched next.
 - **Real photo/vision** (Gemini + image) — the remaining medium slice; caption-fallback shipped
   the text path, actual image understanding is still parked.
 - **/status-floor (lesson-merge) tuning** — revisit the gross-collapse / avoid-drop floors if the
