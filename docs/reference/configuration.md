@@ -348,6 +348,9 @@ most, it can never break a turn. Use `/skills [scope]` to view the loaded skills
 | `HOUGE_SKILLS_ENABLED` | `on` | Kill switch for the ambient skills layer. Skills are read-only/low-risk, so this defaults **on** — only an explicit `0`/`false`/`no`/`off` disables it, in which case the composer omits the skills section (composing byte-identically to a no-skills run). |
 | `HOUGE_SKILL_MAX_PER_SCOPE` | `4` | Max skills folded into a prompt per scope (alphabetical by filename; the rest are dropped). Bounds the prompt and keeps self-selection precise. |
 | `HOUGE_SKILL_REFINE_PASSES` | `3` | Max **guided-refine** passes for a blocked auto-authored skill (the paper peaks at 3). Each pass re-authors the draft against Gate B's specific failing criteria, then re-verifies. |
+| `HOUGE_SKILL_REVERIFY_ENABLED` | `off` | Arms the **weekly re-verify advisor** (skill-retirement spec 2026-07-29): stale skills get a fresh Gate B ensemble; passers are re-stamped, failers are flagged to you with the failing criteria and the exact `/skills retire <name>` command. **Suggest-only — it never moves a file.** In `DISARM_FLAGS`. First armed tick fires immediately (a first sweep today), then weekly at the slot. |
+| `HOUGE_SKILL_REVERIFY_AT` | `sun 10:00` | The advisor's weekly slot (same `"<weekday> HH:MM"` grammar as `HOUGE_RADAR_PANEL_AT`, rendered in the radar tz). `off` disables the slot; malformed falls back to the default. Shown in the `/schedule` 系统任务 footer when armed. |
+| `HOUGE_SKILL_REVERIFY_AGE_DAYS` | `28` | A skill is **stale** (a re-verify candidate) when `last_verified` is missing or older than this many days. Positive integers only — `0` is rejected back to the default, so use `1` to force staleness at a live gate. ≤12 skills re-verified per tick (`REVERIFY_MAX_PER_TICK`); excess picked up next week. |
 
 ### Gate B — the anchor verifier (Phase 2c)
 

@@ -1,6 +1,24 @@
-# 🧭 CURRENT SYSTEM STATE — 2026-07-28 (read this first)
+# 🧭 CURRENT SYSTEM STATE — 2026-08-02 (read this first)
 
 **No build in flight.** Next push move: Earn P3 — pick venue + register (see strategic frame).
+
+**DONE 2026-08-02: Skill retirement — BUILT, AWAITING PACO LIVE GATE + ARM.** Spec
+`docs/superpowers/specs/2026-07-29-skill-retirement-design.md`, plan + spec-review-senior gate
+(1 blocker fixed: auto-retire gated on true fed-refine). Subagent build T1–T5, each with
+spec-compliance + code-quality review (fix-first loops all closed): e998e40+b4f3366 store
+lifecycle (`_retired/` graveyard, stamps, resolveSkillName) · 808a8c2 `/skills
+retire|restore <name>` + `/skills retired` · a9a2374+6b73d4b true refine feed (writer now SEES
+the file it improves — the SOC-skill bug class) + rename/scope auto-retire with `superseded_by`
+lineage, word-bounded case-insensitive mention scan · 2d8deaa+635366a NL retire/restore via
+Gate A `target` extraction + intent-lane reachability (退役/恢复) + lineage-note parity ·
+6e6d1f5+3a376c9 weekly re-verify advisor (suggest-only, latch-first, unscored-never-condemns,
+≤12/tick, shared `parseWeeklyAt` grammar, `skill_reverify_tick` ledger, 系统任务 footer line,
+`HOUGE_SKILL_REVERIFY_ENABLED` in DISARM_FLAGS). 2201 tests green. **Live gate (Paco, spec §7):
+[ ] `/skills retire siem-soar-ueba-weekly-report` (the real cleanup — the wrong SOC-ops skill
+must stop folding into Friday's SIEM fire) [ ] restore + re-retire round-trip [ ] NL 退役 happy
++ ambiguous [ ] reverify: arm `HOUGE_SKILL_REVERIFY_ENABLED=1` (+`HOUGE_SKILL_REVERIFY_AGE_DAYS=1`
+to force staleness — NOT 0, resolver rejects it) → first armed tick sweeps immediately →
+`skill_reverify_tick` in ledger → restore age default.**
 
 **DONE 2026-07-27: Idea Radar R2 — SHIPPED + ARMED + FIRST LIVE PANEL.** Weekly 3-judge panel
 (kimi-api / gemini-api / codex lenses) + contained claude-cli chair (dedicated

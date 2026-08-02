@@ -196,6 +196,17 @@ else **guided-refine ≤3** against the failing criteria, then if still failing 
 On by default (`HOUGE_SKILLS_ENABLED` / `HOUGE_GATE_B_ENABLED` are the kill switches) — see
 [configuration](docs/reference/configuration.md#self-evolution-phase-2a--ambient-skills).
 
+**Retirement (spec 2026-07-29).** The lifecycle's death verb is **retire, never delete**: a
+retired skill moves to `skills/_retired/<scope>/` (inert, stamped with `retired`/`retired_by`/
+`superseded_by` lineage), reversible via restore. Surfaces: `/skills retire|restore <name>`
+(`<scope>/<name>` disambiguates) · `/skills retired` (the graveyard view) · natural language
+("退役周报技能") routed through Gate A with **code-side** name resolution — ambiguity asks,
+never guesses. A **fed-refine** (a request naming exactly one active skill feeds its file to
+the writer) that renames auto-retires the predecessor with `superseded_by` lineage. A weekly
+**re-verify advisor** (`HOUGE_SKILL_REVERIFY_ENABLED`, suggest-only, quiet-when-healthy)
+re-scores stale skills with Gate B and flags failures with the exact retire command — it
+never moves a file itself.
+
 ## Self-evolution (Phase 3) — code self-write (gated)
 
 The highest-risk surface: Houge can **write a diff to his own source**. A `selfcode` message with
