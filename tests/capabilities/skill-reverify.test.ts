@@ -9,6 +9,7 @@ import {
   resolveSkillReverifyAt,
   resolveSkillReverifyEnabled,
   REVERIFY_DEFAULT_SCHEDULE,
+  REVERIFY_MAX_PER_TICK,
   runSkillReverifyTick,
   type FlaggedSkill,
   type SkillReverifyStateStore
@@ -260,6 +261,49 @@ describe("runSkillReverifyTick", () => {
     expect(stale).toContain("last_verified: 2026-06-01"); // an error never launders staleness
     const fresh = readFileSync(join(root, "research", "fresh-skill.md"), "utf8");
     expect(fresh).toContain("last_verified: 2026-08-25");
+  });
+
+  it("first arm (NULL latch) fires immediately mid-week — a first sweep today, then weekly", async () => {
+    const { store: skills, root } = tempSkillStore();
+    writeSkillFile(root, "research", "stale-skill", "2026-06-01");
+    const state = fakeStateStore(null); // seeded-NULL latch = never ran
+    // Wednesday 12:00 Sydney — nowhere near the sun 10:00 slot; the epoch anchor still fires.
+    const NOW_WED = "2026-08-26T02:00:00.000Z";
+    const out = await runSkillReverifyTick({
+      store: state,
+      skills,
+      anchorLlm: cannedGateB(ALL_PASS),
+      env: ARMED,
+      now: NOW_WED,
+      chatId: "222"
+    });
+    expect(out).toEqual({ ran: true });
+    expect(state.events[0]).toBe(`latch:${NOW_WED}`);
+    expect(state.ticks).toEqual([{ checked: 1, passed: 1, flagged: 0 }]);
+  });
+
+  it("bounds a tick at REVERIFY_MAX_PER_TICK candidates — excess stays stale for next week", async () => {
+    const { store: skills, root } = tempSkillStore();
+    for (let i = 1; i <= 13; i += 1) {
+      writeSkillFile(root, "research", `skill-${String(i).padStart(2, "0")}`, "2026-06-01");
+    }
+    const state = fakeStateStore();
+    const out = await runSkillReverifyTick({
+      store: state,
+      skills,
+      anchorLlm: cannedGateB(ALL_PASS),
+      env: ARMED,
+      now: NOW,
+      chatId: "222"
+    });
+    expect(out).toEqual({ ran: true });
+    expect(REVERIFY_MAX_PER_TICK).toBe(12);
+    expect(state.ticks).toEqual([{ checked: 12, passed: 12, flagged: 0 }]);
+    // The 13th (last in list order) was left for the next tick — still stale, untouched.
+    const leftover = readFileSync(join(root, "research", "skill-13.md"), "utf8");
+    expect(leftover).toContain("last_verified: 2026-06-01");
+    const swept = readFileSync(join(root, "research", "skill-12.md"), "utf8");
+    expect(swept).toContain("last_verified: 2026-08-30");
   });
 
   it("not due (lastRun after this week's slot): no work, latch not re-stamped", async () => {

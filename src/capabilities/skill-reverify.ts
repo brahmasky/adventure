@@ -10,6 +10,7 @@ import {
 } from "./anchor-verify.js";
 import { resolveRadarTz } from "./idea-radar.js";
 import { escapeForTelegram } from "./text-hygiene.js";
+import { parseWeeklyAt } from "./week-key.js";
 
 /**
  * Weekly SUGGEST-ONLY skill re-verify advisor (skill retirement spec, 2026-07-29 — the
@@ -33,21 +34,11 @@ const DEFAULT_AGE_DAYS = 28;
 
 const DAY_MS = 86_400_000;
 
+/** Max stale skills verified per tick — excess is picked up next week (bounded, like every tick). */
+export const REVERIFY_MAX_PER_TICK = 12;
+
 /** Failing criteria shown per flagged skill in the report (the rest is noise at a glance). */
 const REPORT_FAILING_CAP = 3;
-
-const REVERIFY_WEEKDAYS: ReadonlySet<string> = new Set([
-  "sun",
-  "mon",
-  "tue",
-  "wed",
-  "thu",
-  "fri",
-  "sat"
-]);
-
-/** Same shape as schedule-spec's AT_PATTERN: zero-padded 24h `HH:MM` (so `9:00` is malformed). */
-const REVERIFY_AT_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /** Whether the advisor is armed (`HOUGE_SKILL_REVERIFY_ENABLED`). Default OFF — "1" arms. */
 export function resolveSkillReverifyEnabled(env: NodeJS.ProcessEnv): boolean {
@@ -56,26 +47,14 @@ export function resolveSkillReverifyEnabled(env: NodeJS.ProcessEnv): boolean {
 }
 
 /**
- * Resolve `HOUGE_SKILL_REVERIFY_AT` (the resolvePanelAt grammar, EXACT):
- *   - unset → default `sun 10:00`;
- *   - trim+lowercase `"off"` → `null` (the advisor never fires);
- *   - else trim → lowercase → split on whitespace → exactly 2 tokens, token 1 ∈ the
- *     `ScheduleWeekday` union, token 2 zero-padded `HH:MM`;
- *   - anything malformed → default (never a throw, never a half-parse).
+ * Resolve `HOUGE_SKILL_REVERIFY_AT` via the shared weekly-slot grammar
+ * ({@link parseWeeklyAt} — the panel's parser, one grammar, no drift): unset →
+ * default `sun 10:00`; `"off"` → null (the advisor never fires); malformed → default.
  */
 export function resolveSkillReverifyAt(
   env: NodeJS.ProcessEnv
 ): { day: ScheduleWeekday; at: string } | null {
-  const raw = env.HOUGE_SKILL_REVERIFY_AT;
-  if (raw === undefined) return { ...REVERIFY_DEFAULT_SCHEDULE };
-  const folded = raw.trim().toLowerCase();
-  if (folded === "off") return null;
-  const tokens = folded.split(/\s+/);
-  if (tokens.length !== 2) return { ...REVERIFY_DEFAULT_SCHEDULE };
-  const [day, at] = tokens as [string, string];
-  if (!REVERIFY_WEEKDAYS.has(day)) return { ...REVERIFY_DEFAULT_SCHEDULE };
-  if (!REVERIFY_AT_PATTERN.test(at)) return { ...REVERIFY_DEFAULT_SCHEDULE };
-  return { day: day as ScheduleWeekday, at };
+  return parseWeeklyAt(env.HOUGE_SKILL_REVERIFY_AT, REVERIFY_DEFAULT_SCHEDULE);
 }
 
 /** Staleness horizon in days (`HOUGE_SKILL_REVERIFY_AGE_DAYS`, default 28, positive int). */
@@ -127,8 +106,10 @@ export function formatReverifyReport(flags: FlaggedSkill[]): string {
 
 /**
  * The weekly re-verify tick (order): flags → slot (off → out) → weekly due-check (the
- * epoch anchor makes the first armed tick fire at the next slot) → STAMP LATCH (before any
- * LLM call) → stale candidates → per skill: Gate B; `unscored` skips (an error never
+ * NULL-seeded latch means arming fires immediately — a first sweep today, then weekly at
+ * the slot; the radar/panel first-arm posture) → STAMP LATCH (before any LLM call) →
+ * stale candidates, bounded at {@link REVERIFY_MAX_PER_TICK} (≤12 skills × 3 passes per
+ * tick; excess picked up next week) → per skill: Gate B; `unscored` skips (an error never
  * condemns a skill and never launders staleness into a fresh stamp), pass re-stamps,
  * fail flags → ledger summary (counts only) → ONE notification iff something was flagged
  * (quiet when healthy). Wrapped whole — a tick must never throw into the daemon.
@@ -157,12 +138,17 @@ export async function runSkillReverifyTick(input: {
 
     const ageMs = resolveSkillReverifyAgeDays(env) * DAY_MS;
     const nowMs = Date.parse(input.now);
-    const candidates = input.skills.list().filter((m) => {
-      if (!m.last_verified) return true;
-      const stamped = Date.parse(m.last_verified);
-      if (!Number.isFinite(stamped)) return true;
-      return nowMs - stamped > ageMs;
-    });
+    // Bounded: at most REVERIFY_MAX_PER_TICK candidates per tick, in the store's stable
+    // list order — the rest stay stale and are picked up next week.
+    const candidates = input.skills
+      .list()
+      .filter((m) => {
+        if (!m.last_verified) return true;
+        const stamped = Date.parse(m.last_verified);
+        if (!Number.isFinite(stamped)) return true;
+        return nowMs - stamped > ageMs;
+      })
+      .slice(0, REVERIFY_MAX_PER_TICK);
 
     const opts = { passes: resolveGateBPasses(env), threshold: resolveGateBThreshold(env) };
     let passed = 0;

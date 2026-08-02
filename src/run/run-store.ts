@@ -5432,8 +5432,8 @@ export class RunStore {
 
   /**
    * Skill retirement spec (2026-07-29): `skill_reverify_state` — the single-row weekly
-   * latch for the suggest-only re-verify advisor (seeded NULL so the first armed tick
-   * fires at the next slot; mirrors radar_panel_state).
+   * latch for the suggest-only re-verify advisor (seeded NULL so arming fires immediately
+   * — a first sweep today, then weekly at the slot; mirrors radar_panel_state).
    */
   private applySkillReverifyMigration(): void {
     const version = "2026-07-29-skill-reverify";

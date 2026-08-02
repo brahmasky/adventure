@@ -83,23 +83,31 @@ const PANEL_AT_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 export const PANEL_DEFAULT_SCHEDULE: PanelSchedule = { day: "sun", at: "09:00" };
 
 /**
- * Resolve `HOUGE_RADAR_PANEL_AT` (spec §4 grammar, EXACT):
- *   - unset → default `sun 09:00`;
- *   - trim+lowercase `"off"` → `null` (panel never fires — no interval fallback);
+ * The shared weekly-slot grammar (spec §4, EXACT — one parser for the panel AND the skill
+ * re-verify advisor, so the grammars can never drift):
+ *   - `undefined` → a copy of `fallback`;
+ *   - trim+lowercase `"off"` → `null` (the tick never fires — no interval fallback);
  *   - else trim → lowercase → split on whitespace → exactly 2 tokens, token 1 ∈ the
  *     `ScheduleWeekday` union, token 2 zero-padded `HH:MM`;
- *   - anything malformed → default (the /status line renders the RESOLVED slot, so a swallowed
- *     typo is visible there — never a throw, never a half-parse).
+ *   - anything malformed → a copy of `fallback` (the /status line renders the RESOLVED
+ *     slot, so a swallowed typo is visible there — never a throw, never a half-parse).
  */
-export function resolvePanelAt(env: NodeJS.ProcessEnv): PanelSchedule | null {
-  const raw = env.HOUGE_RADAR_PANEL_AT;
-  if (raw === undefined) return { ...PANEL_DEFAULT_SCHEDULE };
+export function parseWeeklyAt(
+  raw: string | undefined,
+  fallback: { day: ScheduleWeekday; at: string }
+): { day: ScheduleWeekday; at: string } | null {
+  if (raw === undefined) return { ...fallback };
   const folded = raw.trim().toLowerCase();
   if (folded === "off") return null;
   const tokens = folded.split(/\s+/);
-  if (tokens.length !== 2) return { ...PANEL_DEFAULT_SCHEDULE };
+  if (tokens.length !== 2) return { ...fallback };
   const [day, at] = tokens as [string, string];
-  if (!PANEL_WEEKDAYS.has(day)) return { ...PANEL_DEFAULT_SCHEDULE };
-  if (!PANEL_AT_PATTERN.test(at)) return { ...PANEL_DEFAULT_SCHEDULE };
+  if (!PANEL_WEEKDAYS.has(day)) return { ...fallback };
+  if (!PANEL_AT_PATTERN.test(at)) return { ...fallback };
   return { day: day as ScheduleWeekday, at };
+}
+
+/** Resolve `HOUGE_RADAR_PANEL_AT` via the shared grammar (default `sun 09:00`). */
+export function resolvePanelAt(env: NodeJS.ProcessEnv): PanelSchedule | null {
+  return parseWeeklyAt(env.HOUGE_RADAR_PANEL_AT, PANEL_DEFAULT_SCHEDULE);
 }
