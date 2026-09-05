@@ -9,8 +9,17 @@ import { computeWeekKey, resolvePanelAt } from "./week-key.js";
 import { sanitizeWikiText } from "./wiki.js";
 
 /**
+ * Registry leg pinned behind each named panel judge seat — the ONE source of truth for both
+ * seat-binding sites (the daemon tick and `houge radar-panel`). Seat names are MODEL FAMILIES,
+ * not provider names: the Kimi seat rides the flat-rate `pi` CLI and the Gemini seat the
+ * flat-rate `agy` CLI. Both were metered APIs (`kimi-api`/`gemini-api`) until the CLI-only
+ * migration, when the CLI site was missed precisely because each site typed its own literals.
+ */
+export const PANEL_JUDGE_PROVIDERS = { kimi: "pi", gemini: "agy-cli" } as const;
+
+/**
  * Idea Radar R2 panel tick (spec 2026-07-25 §§1,4): once per week at the pinned wall-clock
- * slot, 3 judges (kimi HTTP, gemini HTTP, codex CLI) score the top active idea cards through
+ * slot, 3 judges (kimi CLI, gemini CLI, codex CLI) score the top active idea cards through
  * one lens each, and a contained claude-cli chair synthesizes a shortlist of 3 — or the
  * deterministic mean-score fallback publishes when the chair is absent/broken. The panel
  * reads ONLY the local `ideas` store (zero network reads), latches BEFORE any seat call

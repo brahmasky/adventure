@@ -104,6 +104,90 @@ describe("createGeminiProvider", () => {
     ]);
   });
 
+  describe("thinking/reasoning tokens are counted as output (D3)", () => {
+    /** Fire one completion and hand back the usage the provider reported. */
+    async function usageFor(usage: Record<string, unknown>): Promise<unknown> {
+      const fetchImpl = vi.fn<GeminiFetchImpl>(async () =>
+        okResponse({ choices: [{ message: { content: "Paris." } }], usage })
+      );
+      const calls: unknown[] = [];
+      const provider = createGeminiProvider({
+        apiKey: "test-key",
+        model: "gemini-test",
+        fetchImpl,
+        onUsage: (u) => calls.push(u)
+      });
+      await provider.answer({ question: "Q" });
+      return calls[0];
+    }
+
+    it("derives output from total_tokens when the gap is reported only there", async () => {
+      // The measured Google shape: 12 prompt / 54 completion / 611 total. Billing the 54 undercounts
+      // output ~11x, which is what blinded the ADR 0019 metered-$ ceiling.
+      expect(await usageFor({ prompt_tokens: 12, completion_tokens: 54, total_tokens: 611 }))
+        .toEqual({ input_tokens: 12, output_tokens: 599, cached_input_tokens: 0 });
+    });
+
+    it("does NOT add reasoning_tokens to completion_tokens (they are a subset, not a sibling)", async () => {
+      // A self-consistent OpenAI-shaped envelope: prompt + completion === total, and reasoning is
+      // INSIDE completion. Summing them would report 1250 for a call that produced 650 tokens of
+      // output, inflating cost ~1.9x and latching the metered fuse at half the real spend.
+      expect(
+        await usageFor({
+          prompt_tokens: 100,
+          completion_tokens: 650,
+          total_tokens: 750,
+          completion_tokens_details: { reasoning_tokens: 600 }
+        })
+      ).toEqual({ input_tokens: 100, output_tokens: 650, cached_input_tokens: 0 });
+    });
+
+    it("still derives from the total when reasoning_tokens is present but ZERO", async () => {
+      // The trap in branching on field PRESENCE: a vendor that always emits the details object with
+      // reasoning_tokens: 0 would skip the total-based derivation and silently restore the 11x
+      // undercount — on exactly the Google shape the fix exists for.
+      expect(
+        await usageFor({
+          prompt_tokens: 12,
+          completion_tokens: 54,
+          total_tokens: 611,
+          completion_tokens_details: { reasoning_tokens: 0 }
+        })
+      ).toEqual({ input_tokens: 12, output_tokens: 599, cached_input_tokens: 0 });
+    });
+
+    it("still derives from the total when reasoning_tokens is null", async () => {
+      expect(
+        await usageFor({
+          prompt_tokens: 12,
+          completion_tokens: 54,
+          total_tokens: 611,
+          completion_tokens_details: { reasoning_tokens: null }
+        })
+      ).toEqual({ input_tokens: 12, output_tokens: 599, cached_input_tokens: 0 });
+    });
+
+    it("keeps completion_tokens when the total agrees with it", async () => {
+      expect(await usageFor({ prompt_tokens: 13, completion_tokens: 2, total_tokens: 15 }))
+        .toEqual({ input_tokens: 13, output_tokens: 2, cached_input_tokens: 0 });
+    });
+
+    it("keeps completion_tokens when no total is reported at all", async () => {
+      expect(await usageFor({ prompt_tokens: 13, completion_tokens: 2 }))
+        .toEqual({ input_tokens: 13, output_tokens: 2, cached_input_tokens: 0 });
+    });
+
+    it("never lets a nonsense total drive output below completion_tokens", async () => {
+      expect(await usageFor({ prompt_tokens: 900, completion_tokens: 40, total_tokens: 100 }))
+        .toEqual({ input_tokens: 900, output_tokens: 40, cached_input_tokens: 0 });
+    });
+
+    it("accepts a string-valued total (the field the whole derivation now hangs on)", async () => {
+      expect(await usageFor({ prompt_tokens: 12, completion_tokens: 54, total_tokens: "611" }))
+        .toEqual({ input_tokens: 12, output_tokens: 599, cached_input_tokens: 0 });
+    });
+  });
+
   it("classifies a missing API key as unavailable without calling fetch", async () => {
     delete process.env.GEMINI_API_KEY;
     const fetchImpl = vi.fn<GeminiFetchImpl>(async () => okResponse(contentResponse));

@@ -18,6 +18,17 @@ With the scheduler firing unattended overnight, an unbounded metered bill is the
 runaway the count caps can't see. The `llm_call` ledger event has carried an optional
 `cost_usd` field since Phase 3.1 — never populated, because no pricing existed anywhere.
 
+**Amendment 2026-09-06 (CLI-only migration).** Two findings from tracing an unexplained Google
+bill bear directly on this ADR. First, the ceiling was **blind**, not merely unbreached:
+`extractUsage` read `completion_tokens` only, while Google's OpenAI-compat endpoint bills the gap
+up to `total_tokens` as output — measured undercounts of 5–11× on output and ~3.6× on cost. A
+`metered_fuse_state.fused = 0` was therefore not evidence of restraint; the fuse cannot trip on
+spend it cannot see. Fixed: output now derives from `completion_tokens_details.reasoning_tokens`
+when present, else from `total_tokens - prompt_tokens` when that exceeds `completion_tokens`.
+Historical pre-cutover `llm_call` rows for `gemini-api` remain undercounted and are NOT backfilled.
+Second, the metered legs left every default chain, so the ceiling now guards an escape hatch rather
+than the normal path — which is exactly why both the price table and the fuse stay.
+
 ## Decision
 
 ### 1. Price at the recording seam; spend is DERIVED from the ledger

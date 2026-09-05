@@ -36,8 +36,13 @@ export interface BuildLlmChainDeps {
   meteredBreached?: () => boolean;
 }
 
-/** Default chain when `HOUGE_LLM_PROVIDERS` is unset. */
-export const DEFAULT_LLM_PROVIDERS = "pi,kimi-api";
+/**
+ * Default chain when `HOUGE_LLM_PROVIDERS` is unset. CLI-only by construction: both legs are
+ * flat-rate subscription CLIs, so no runtime path reaches a metered pay-per-token API unless an
+ * operator names one explicitly. The metered providers below stay buildable for exactly that
+ * escape hatch — re-enabling one is an env change, not a redeploy.
+ */
+export const DEFAULT_LLM_PROVIDERS = "pi,agy-cli";
 
 /**
  * Fallback when the metered-ceiling filter would empty the chain (an all-metered
@@ -96,8 +101,9 @@ function numericEnv(raw: string | undefined): number | undefined {
  * Known providers: `pi` + `agy-cli` (hardened CLIs) and `kimi-api` + `gemini-api`
  * (OpenAI-compatible HTTP). `agy-cli`/`gemini-api` are general-model legs (Gemini Flash)
  * for the research/answer surface, so synthesis doesn't over-produce like the coding-tuned
- * pi/kimi legs (Phase 3.4). `HOUGE_LLM_PROVIDERS` (a comma-separated, ordered list) defaults
- * to `"pi,kimi-api"`; opt into the 4-leg chain `pi,agy-cli,kimi-api,gemini-api` via the env.
+ * pi/kimi legs (Phase 3.4). `HOUGE_LLM_PROVIDERS` (a comma-separated, ordered list) defaults to
+ * {@link DEFAULT_LLM_PROVIDERS} — CLI-only, no metered leg. Naming a metered leg here is the
+ * deliberate escape hatch for both flat-rate CLIs being down at once.
  * Unknown provider names throw a clear error so misconfiguration fails loud.
  */
 export function buildLlmChain(
@@ -112,6 +118,17 @@ export function buildLlmChain(
   // default instead of silencing Houge.
   if (deps.meteredBreached?.()) {
     const flatRate = names.filter((name) => !METERED_PROVIDERS.has(name));
+    if (flatRate.length !== names.length) {
+      // Loud, because this can UNDO the documented escape hatch: an operator who set
+      // HOUGE_LLM_PROVIDERS to a metered leg because both CLIs were down gets that leg dropped
+      // the moment the ceiling latches, and the fallback is the very leg that was failing.
+      console.warn(
+        `[llm-chain] metered ceiling latched — dropped ${names.filter((n) => METERED_PROVIDERS.has(n)).join(",")} from the chain; ` +
+          (flatRate.length > 0
+            ? `continuing on ${flatRate.join(",")}`
+            : `no flat-rate leg remained, falling back to ${METERED_FALLBACK_PROVIDERS.join(",")}`)
+      );
+    }
     names = flatRate.length > 0 ? flatRate : [...METERED_FALLBACK_PROVIDERS];
   }
 
@@ -164,6 +181,12 @@ export function resolveChainBudgetMs(env: NodeJS.ProcessEnv): number {
  * Try each provider in order. Returns the first `ok:true`; skips providers that
  * report `unavailable`; treats other failures as fallthrough. If every provider
  * fails, returns one aggregated `ok:false` with per-provider reasons joined.
+ *
+ * A leg that fails while a LATER leg succeeds is logged rather than discarded. Silence on that
+ * path is exactly how the D1 regression survived ~3 months: agy failed every single call, `pi`
+ * answered, and the aggregate reason string — the only record that agy had failed — was thrown
+ * away on success. Counts and provider names only, never prompt or response content. This is an
+ * interim console signal; the `llm_attempt` audit chokepoint (slice 2) is the durable answer.
  */
 export async function answerWithChain(
   chain: LlmProvider[],
@@ -174,6 +197,11 @@ export async function answerWithChain(
   for (const provider of chain) {
     const result = await provider.answer(req);
     if (result.ok) {
+      if (reasons.length > 0) {
+        console.warn(
+          `[llm-chain] ${result.provider} served after ${reasons.length} leg(s) fell through: ${reasons.join("; ")}`
+        );
+      }
       return result;
     }
     const tag = result.unavailable ? "unavailable" : "error";

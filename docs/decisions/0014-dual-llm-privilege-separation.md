@@ -79,6 +79,26 @@ read the poison and the reader cannot emit a verb.
   reader + kimi/Claude planner) — an injection tuned to one model's quirks is less likely to transfer.
   Diversity is injection resistance for free.
 
+**Amendment 2026-09-06 (CLI-only migration).** For ~3 months the live config contradicted the
+paragraph above: `HOUGE_LLM_READER_PROVIDERS=gemini-api,agy-cli` put the reader — the system's
+highest-volume LLM consumer — on a *metered* API first, with a leg that was dead (retired model
+pin) as its only fallback. The intent was right and the wiring was wrong: reaching for the Gemini
+*API* instead of the Gemini *CLI*. Corrected to `agy-cli,pi`, deliberately the planner reversed, so
+cross-family separation holds on the primary legs while both stay flat-rate. Note the degradation
+case: if `agy` is down, reader and planner both resolve to `pi` — same model, different call, which
+this ADR already accepts (the reader has no action vocabulary), but it is the exact condition that
+went unnoticed before, so the audit chokepoint (slice 2) exists to make it loud.
+
+`agy` is **agentic** where `gemini-api` was a plain completion, so the reader now processes
+attacker-controlled content in a CLI that can attempt tools. Tool use is permitted by operator
+decision (2026-09-06), contained rather than forbidden: `--disable-slash-commands` so untrusted text
+can never expand a slash command or skill, an empty temp cwd, a minimal env allowlist with no
+secrets, and `--dangerously-skip-permissions` never passed — so any tool the model reaches for hits
+agy's own permission model and is auto-denied absent an explicit operator allow-rule. Denied attempts
+surface in the failure text rather than passing silently, which is what makes an injection attempt
+visible. Widening `permissions.allow` in agy's own settings widens the reader's blast radius; that is
+an operator decision, not a Houge default.
+
 **Scope discipline:** only **external-read** tool outputs are quarantined (`side_effect_level:
 "external_read"` — `web_search`, `http_fetch`, wiki source reads). Trusted-origin tool results
 (`lesson_write` acks, internal digests) skip the Q-LLM. The cost is one cheap Q-LLM call per external

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeCodexUsage } from "../../src/run/llm-usage.js";
+import { normalizeAgyUsage, normalizeCodexUsage } from "../../src/run/llm-usage.js";
 
 // Real shape (validated live):
 //  - Codex `--json` streams JSONL; usage is in the LAST `token_count` event's `total_token_usage`.
@@ -69,5 +69,82 @@ describe("normalizeCodexUsage", () => {
       output_tokens: 38, // 28 + 10 reasoning
       cached_input_tokens: 10624
     });
+  });
+});
+
+// Real shape (validated live 2026-09-06 against `agy --output-format json`):
+//  {"usage":{"input_tokens":13379,"output_tokens":1,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":13380}}
+
+describe("normalizeAgyUsage", () => {
+  it("does NOT add thinking_tokens to output — agy nests them inside it", () => {
+    // Measured live (Gemini 3.1 Pro High): in 5590 / out 1511 / thinking 842 / total 7101.
+    // total == input + output EXACTLY, so thinking is already counted in output. Adding it
+    // would break agy's own identity and inflate output ~56% on any reasoning model.
+    expect(
+      normalizeAgyUsage({
+        input_tokens: 5590,
+        output_tokens: 1511,
+        thinking_tokens: 842,
+        cache_read_tokens: 8090,
+        total_tokens: 7101
+      })
+    ).toEqual({ input_tokens: 5590, output_tokens: 1511, cached_input_tokens: 8090 });
+  });
+
+  it("keeps agy's total_tokens identity intact for a thinking-heavy call", () => {
+    // The invariant that proves the subset relationship, pinned so a future "fold it back in"
+    // change has to argue with real numbers.
+    const usage = normalizeAgyUsage({
+      input_tokens: 5284,
+      output_tokens: 1353,
+      thinking_tokens: 905,
+      cache_read_tokens: 0,
+      total_tokens: 6637
+    })!;
+    expect(usage.input_tokens + usage.output_tokens).toBe(6637);
+  });
+
+  it("maps cache_read_tokens to cached input", () => {
+    expect(
+      normalizeAgyUsage({
+        input_tokens: 13379,
+        output_tokens: 40,
+        thinking_tokens: 0,
+        cache_read_tokens: 8128,
+        total_tokens: 13419
+      })
+    ).toEqual({ input_tokens: 13379, output_tokens: 40, cached_input_tokens: 8128 });
+  });
+
+  it("handles a zero-thinking envelope unchanged", () => {
+    expect(
+      normalizeAgyUsage({
+        input_tokens: 13379,
+        output_tokens: 1,
+        thinking_tokens: 0,
+        cache_read_tokens: 0,
+        total_tokens: 13380
+      })
+    ).toEqual({ input_tokens: 13379, output_tokens: 1, cached_input_tokens: 0 });
+  });
+
+  it("ignores total_tokens rather than deriving from it", () => {
+    // Measured: agy's total IS input + output — which is exactly why it carries no information
+    // the components don't, and every consumer wants the components.
+    expect(normalizeAgyUsage({ input_tokens: 5264, output_tokens: 56, total_tokens: 5320 }))
+      .toEqual({ input_tokens: 5264, output_tokens: 56, cached_input_tokens: 0 });
+  });
+
+  it("returns null for a missing, non-object, or token-less usage block", () => {
+    expect(normalizeAgyUsage(undefined)).toBeNull();
+    expect(normalizeAgyUsage(null)).toBeNull();
+    expect(normalizeAgyUsage("nope")).toBeNull();
+    expect(normalizeAgyUsage({})).toBeNull();
+    expect(normalizeAgyUsage({ total_tokens: 12 })).toBeNull();
+  });
+
+  it("is tolerant of garbage values (never throws, coerces to 0)", () => {
+    expect(normalizeAgyUsage({ input_tokens: "abc", output_tokens: -5, thinking_tokens: null }))
+      .toEqual({ input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 });
   });
 });

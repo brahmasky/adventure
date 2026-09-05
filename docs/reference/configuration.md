@@ -51,11 +51,11 @@ front door.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `HOUGE_LLM_PROVIDERS` | `pi,kimi-api` | Ordered, comma-separated chain with automatic fallback (first success wins; unavailable/error/timeout falls through). Known providers: `pi` + `agy-cli` (hardened single-shot CLIs), `kimi-api` + `gemini-api` (OpenAI-compatible HTTP). `agy-cli`/`gemini-api` are **general-model** legs (Gemini Flash) so research synthesis doesn't over-produce like the coding-tuned `pi`/`kimi` legs (Phase 3.4). Recommended live chain: `pi,agy-cli,kimi-api,gemini-api`. The singular `HOUGE_LLM_PROVIDER` is ignored when this plural is set. |
+| `HOUGE_LLM_PROVIDERS` | `pi,agy-cli` | Ordered, comma-separated chain with automatic fallback (first success wins; unavailable/error/timeout falls through). Known providers: `pi` + `agy-cli` (hardened single-shot CLIs), `kimi-api` + `gemini-api` (OpenAI-compatible HTTP). `agy-cli`/`gemini-api` are **general-model** legs (Gemini Flash) so research synthesis doesn't over-produce like the coding-tuned `pi`/`kimi` legs (Phase 3.4). **CLI-only since 2026-09-06:** the default is both flat-rate CLIs and the metered legs are named nowhere — setting one here is the deliberate escape hatch for both CLIs being down at once. The hatch needs `HOUGE_LLM_READER_PROVIDERS` set too (the reader has its own chain), a daemon restart (env is read once at boot, never reloaded), and possibly a raised `HOUGE_METERED_DAILY_USD`, since a latched ceiling drops the leg you just enabled. The singular `HOUGE_LLM_PROVIDER` is ignored when this plural is set. |
 | `HOUGE_LLM_MODEL_PI` | unset → pi's own configured model | Model is configured **per provider** (namespaces differ). Set this only to make Houge override pi's own choice. |
 | `HOUGE_LLM_MODEL_KIMI` | `moonshot-v1-auto` (stable alias) | A model your `KIMI_API_KEY` can access (`GET /v1/models`). |
 | `HOUGE_LLM_MODEL_GEMINI` | `gemini-3.5-flash` | Model for the `gemini-api` leg (a general model; the latest Flash on the public API). |
-| `HOUGE_AGY_MODEL` | `Gemini 3.5 Flash (Low)` | Model for the `agy-cli` leg (`agy models` lists choices). |
+| `HOUGE_AGY_MODEL` | `Gemini 3.8 Flash (Low)` | Model for the `agy-cli` leg (`agy models` lists choices). **Pin it in `.env`, not the code default.** The vendor retired `Gemini 3.5 Flash (Low)`; because a bad pin maps to `unavailable`, every agy call failed and fell through to the paid legs silently for ~3 months. `agy` reports a retirement as `status:"ERROR"` with `invalid model selection` — and still exits 0. |
 | `HOUGE_ASK_SYSTEM_PROMPT` | composed from `memory/` + `lessons` | The **answer**-path system prompt. When unset it is **composed** (identity + answer discipline + the `ask` scope's lessons + guardrails — see [Learning](#learning--conversational-distillation-and-the-lessons-table) below), replacing pi's default *coding-assistant* persona. Set this to override the whole prompt. |
 | `HOUGE_LLM_TIMEOUT_MS` | — | Fallback per-provider wall-clock timeout (ms) for any provider without a specific one. |
 | `HOUGE_LLM_TIMEOUT_MS_PI` | `60000` | pi timeout (ms). |
@@ -170,7 +170,7 @@ steer the planner. On a reader parse miss the fallback is a metadata-only
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `HOUGE_DUAL_LLM_ENABLED` | off | Arms the quarantined reader for external-read tools. Accepts 1/true/yes/on. OFF ⇒ byte-identical to before Dual-LLM existed (raw output digested inline). |
-| `HOUGE_LLM_READER_PROVIDERS` | `HOUGE_LLM_PROVIDERS` | The reader's own provider chain (same names/format as `HOUGE_LLM_PROVIDERS`). Unset ⇒ the planner chain. Point it at a cheap, **cross-family** leg (e.g. `agy-cli,gemini-api`) for free injection resistance. |
+| `HOUGE_LLM_READER_PROVIDERS` | `HOUGE_LLM_PROVIDERS` | The reader's own provider chain (same names/format as `HOUGE_LLM_PROVIDERS`). Unset ⇒ the planner chain. Point it at a cheap, **cross-family** leg for free injection resistance. Live value `agy-cli,pi` — deliberately the planner reversed, so the highest-volume LLM consumer in the system leads with a different model family than the planner while staying flat-rate. |
 
 ## Google identity — `gmail_read` / `google_api` (ADR 0025)
 
@@ -571,12 +571,14 @@ fetches + real LLM call, zero writes, bypasses flag and latch by design.
 ## Idea Panel (R2, ADR 0027)
 
 A weekly flag-gated tick judges the top 12 active idea cards through three pinned seats
-(kimi-api opportunity · gemini-api novelty · codex-CLI buildability; quorum 2) and a contained
+(Kimi opportunity · Gemini novelty · codex-CLI buildability; quorum 2) and a contained
 claude-CLI chair synthesizes a shortlist of 3 (chair absent/broken → deterministic mean-score
 fallback). Writes: per-card `scores_json`, `shortlisted`/`tracked` status transitions, a frozen
 weekly snapshot (`/idea` + `/idea pick <n>` resolve against it), a `memory/briefs/<week>-ideas.md`
-projection, and ONE Sunday digest push. Cost: 2 metered HTTP calls + 2 subscription CLI spawns
-per week. Pre-arm gate: `houge radar-panel --dry-run` — real seats, zero writes, no push, no
+projection, and ONE Sunday digest push. Cost: 4 subscription CLI spawns per week — CLI-only since
+2026-09-06, when the Kimi and Gemini seats moved off the metered `kimi-api`/`gemini-api` legs onto
+the flat-rate `pi` and `agy` CLIs (`PANEL_JUDGE_PROVIDERS`). Seat names are model families, not
+provider names; panel diversity (Gemini · Kimi · OpenAI · Claude) is unchanged. Pre-arm gate: `houge radar-panel --dry-run` — real seats, zero writes, no push, no
 brief, bypasses flag and latch by design.
 
 | Env var | Default | Purpose |

@@ -80,15 +80,41 @@ intelligence, not a command parser ([ADR 0010](docs/decisions/0010-natural-langu
 ## LLM providers
 
 Cognition resolves an ordered provider chain with automatic fallback (first `ok`
-wins; `unavailable`/error/timeout fall through). Default chain `pi,kimi-api`; the
-recommended live chain is `pi,agy-cli,kimi-api,gemini-api`. Two kinds of leg:
-**coding-tuned** — `pi` (hardened single-shot CLI, tools disabled) and `kimi-api`
-(OpenAI-compatible HTTP) — and **general** — `agy-cli` (the Antigravity CLI in
-`--print` mode, Gemini Flash) and `gemini-api` (Google's OpenAI-compat endpoint).
-The general legs exist because a coding model over-produces on research/answer prose
-and blew `pi`'s 256KB output cap (the 2026-06-26 silent-failure incident); a general
-leg synthesizes cleanly and catches the fall-through. All model-agnostic — best model per
-capability, flat-rate legs first, metered APIs as capped fallback.
+wins; `unavailable`/error/timeout fall through). Default and live chain `pi,agy-cli`;
+the reader runs it reversed, `agy-cli,pi`. Two kinds of leg: **coding-tuned** — `pi`
+(hardened single-shot CLI, tools disabled) and `kimi-api` (OpenAI-compatible HTTP) —
+and **general** — `agy-cli` (the Antigravity CLI in `--print` mode, Gemini Flash) and
+`gemini-api` (Google's OpenAI-compat endpoint). The general legs exist because a coding
+model over-produces on research/answer prose and blew `pi`'s 256KB output cap (the
+2026-06-26 silent-failure incident); a general leg synthesizes cleanly and catches the
+fall-through. Postscript 2026-09-06: that cap was measuring pi's JSONL *stream* — one line
+per token, each carrying a zeroed usage struct, ~60× the answer — so it was really a
+~600-word answer cap. It is now an 8 MB stream memory bound plus a 256 KB cap on the
+extracted answer; an ordinary long answer no longer falls through. All model-agnostic — best model per capability.
+
+**CLI-only since 2026-09-06.** Every default chain is flat-rate CLI: the metered legs
+(`kimi-api`, `gemini-api`) still build, but nothing reaches them unless an operator
+names one in `HOUGE_LLM_PROVIDERS`. The migration repaired four defects found while
+tracing an unexplained Google bill — a retired model pin that made the flat-rate `agy`
+leg fail *every* call and fall through to the paid ones silently, a reader chain that
+led with the paid API on the system's highest-volume LLM path, thinking tokens counted
+as zero (5–11× output undercount, which also blinded the ADR 0019 metered-$ ceiling),
+and whole call paths emitting no telemetry at all. See
+[the design](docs/superpowers/specs/2026-09-04-cli-only-llm-and-audit-chokepoint-design.md).
+Both CLI legs down at once has an operator escape hatch, but read it carefully — it is **two**
+env vars and a restart, not one line:
+
+```
+HOUGE_LLM_PROVIDERS=gemini-api          # the planner
+HOUGE_LLM_READER_PROVIDERS=gemini-api   # the reader has its OWN chain and ignores the line above
+```
+
+`loadHougeEnv` never overrides an already-set variable and there is no reload path, so the daemon
+must be restarted; the hatch is not reachable from Telegram, since every message route needs the
+LLM that is down. Setting only the planner var leaves the reader pinned to the dead CLIs, where it
+fails *silently* — an unreadable external source looks the same to the planner as a page that had
+no content. Note also that the ADR 0019 metered ceiling will drop the leg you just enabled once it
+latches (it logs when it does); raise `HOUGE_METERED_DAILY_USD` for the duration of the incident.
 Houge answers in its own voice — a projection of its Core Identity
 ([memory/core/houge.md](memory/core/houge.md)): the cheerful, capable 猴哥, but
 *inference only* (it answers; it doesn't act) on the **answer** path. Override the

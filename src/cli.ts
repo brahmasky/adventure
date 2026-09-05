@@ -398,7 +398,9 @@ if (command === "run") {
   // A non-dry invocation runs one flag-gated + latched pass: brief written (real repo
   // root), but chatId null → no push (the daemon owns the weekly digest).
   const dryRun = rest.includes("--dry-run");
-  const { renderPanelProposals, runIdeaPanelTick } = await import("./capabilities/idea-panel.js");
+  const { PANEL_JUDGE_PROVIDERS, renderPanelProposals, runIdeaPanelTick } = await import(
+    "./capabilities/idea-panel.js"
+  );
   const { spawnCodexJudge, spawnPanelChair } = await import("./capabilities/idea-panel-seats.js");
   const { createLlmAnswerAdapter } = await import("./capabilities/llm-answer.js");
 
@@ -415,7 +417,13 @@ if (command === "run") {
   };
   const chairBroker = broker;
   const seats = {
-    judges: { kimi: pinnedJudge("kimi-api"), gemini: pinnedJudge("gemini-api") },
+    // Same pinning the daemon uses — imported, never re-typed, so the two panel seat sites
+    // cannot drift apart again (this one was missed in the CLI-only migration and kept firing
+    // the metered APIs, including on the `--dry-run` pre-arm gate).
+    judges: {
+      kimi: pinnedJudge(PANEL_JUDGE_PROVIDERS.kimi),
+      gemini: pinnedJudge(PANEL_JUDGE_PROVIDERS.gemini)
+    },
     codexJudge: (input: { digest: string; system: string }) =>
       spawnCodexJudge({ digest: input.digest, system: input.system, env: process.env }),
     // The chair's OAuth token is broker-held (spec §§2–3) — firewall OFF ⇒ chair

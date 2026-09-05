@@ -1,12 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   answerWithChain,
   buildLlmChain,
   resolveChainBudgetMs,
+  METERED_FALLBACK_PROVIDERS,
   RUNNER_TIMEOUT_BUFFER_MS
 } from "../../src/llm/registry.js";
 import { PI_DEFAULT_TIMEOUT_MS } from "../../src/llm/providers/pi.js";
-import { KIMI_DEFAULT_TIMEOUT_MS } from "../../src/llm/providers/kimi.js";
+import { AGY_DEFAULT_TIMEOUT_MS } from "../../src/llm/providers/agy-cli.js";
+import { METERED_PROVIDERS } from "../../src/llm/metered-pricing.js";
 import type { LlmProvider, LlmResult } from "../../src/llm/types.js";
 
 function provider(name: string, result: LlmResult): LlmProvider {
@@ -14,9 +16,26 @@ function provider(name: string, result: LlmResult): LlmProvider {
 }
 
 describe("buildLlmChain", () => {
-  it("defaults to the pi,kimi-api chain", () => {
+  it("defaults to the flat-rate pi,agy-cli chain", () => {
     const chain = buildLlmChain({});
-    expect(chain.map((p) => p.name)).toEqual(["pi", "kimi-api"]);
+    expect(chain.map((p) => p.name)).toEqual(["pi", "agy-cli"]);
+  });
+
+  it("has a non-empty metered set, so the guarantee below cannot be emptied away", () => {
+    // The assertion under test iterates METERED_PROVIDERS; an empty set would pass vacuously.
+    expect(METERED_PROVIDERS.size).toBeGreaterThan(0);
+  });
+
+  it("names NO metered provider in the default chain", () => {
+    // The guarantee of the CLI-only migration: nothing reaches a pay-per-token API by default.
+    // An unset HOUGE_LLM_PROVIDERS must never be able to spend money.
+    const names = buildLlmChain({}).map((p) => p.name);
+    for (const metered of METERED_PROVIDERS) expect(names).not.toContain(metered);
+  });
+
+  it("still builds a metered chain when one is named explicitly (the escape hatch)", () => {
+    const chain = buildLlmChain({ HOUGE_LLM_PROVIDERS: "gemini-api,kimi-api" } as NodeJS.ProcessEnv);
+    expect(chain.map((p) => p.name)).toEqual(["gemini-api", "kimi-api"]);
   });
 
   it("resolves the pi provider when named (but does not default to it)", () => {
@@ -48,6 +67,24 @@ describe("buildLlmChain", () => {
     expect(chain.map((p) => p.name)).toEqual(["pi", "agy-cli", "kimi-api", "gemini-api"]);
   });
 
+  it("drops an operator's EXPLICIT metered leg once the ceiling latches", () => {
+    // Documents the sharp edge in the escape hatch: an operator who names a metered leg because
+    // both CLIs are down loses it the moment the fuse latches, and the fallback is a flat-rate leg
+    // — possibly the very one that was failing. The chain builder logs when it does this; this
+    // test pins the behavior so the substitution is a decision, not a surprise.
+    const chain = buildLlmChain({ HOUGE_LLM_PROVIDERS: "gemini-api" } as NodeJS.ProcessEnv, {
+      meteredBreached: () => true
+    });
+    expect(chain.map((p) => p.name)).toEqual([...METERED_FALLBACK_PROVIDERS]);
+  });
+
+  it("keeps the flat-rate legs when the ceiling latches on a mixed chain", () => {
+    const chain = buildLlmChain({ HOUGE_LLM_PROVIDERS: "pi,gemini-api,agy-cli" } as NodeJS.ProcessEnv, {
+      meteredBreached: () => true
+    });
+    expect(chain.map((p) => p.name)).toEqual(["pi", "agy-cli"]);
+  });
+
   it("throws a clear error on an unknown provider name", () => {
     expect(() =>
       buildLlmChain({ HOUGE_LLM_PROVIDERS: "pi,kimi" } as NodeJS.ProcessEnv)
@@ -62,10 +99,13 @@ describe("buildLlmChain", () => {
 });
 
 describe("resolveChainBudgetMs", () => {
-  it("sums the per-provider timeouts of the default pi,kimi-api chain", () => {
+  // NOTE: the CLI-only default (pi,agy-cli) budgets 120s, up from 90s for pi,kimi-api — agy's
+  // 60s leg replaces kimi's 30s one. The derived runner cap moves 105s → 135s. That is the
+  // worst case of a chain falling through every leg, not the normal path.
+  it("sums the per-provider timeouts of the default pi,agy-cli chain", () => {
     const budget = resolveChainBudgetMs({});
-    expect(budget).toBe(PI_DEFAULT_TIMEOUT_MS + KIMI_DEFAULT_TIMEOUT_MS);
-    expect(budget).toBe(90_000);
+    expect(budget).toBe(PI_DEFAULT_TIMEOUT_MS + AGY_DEFAULT_TIMEOUT_MS);
+    expect(budget).toBe(120_000);
   });
 
   it("honors HOUGE_LLM_TIMEOUT_MS_<NAME> per-provider overrides", () => {
@@ -91,7 +131,42 @@ describe("resolveChainBudgetMs", () => {
     const chainBudget = resolveChainBudgetMs({});
     const runnerTimeout = chainBudget + RUNNER_TIMEOUT_BUFFER_MS;
     expect(runnerTimeout).toBeGreaterThan(chainBudget);
-    expect(runnerTimeout).toBe(105_000);
+    expect(runnerTimeout).toBe(135_000);
+  });
+});
+
+describe("answerWithChain fall-through visibility", () => {
+  it("logs the legs that fell through even when a later leg succeeds", async () => {
+    // The exact mechanism by which D1 hid for ~3 months: agy failed every call, pi answered, and
+    // the only record that agy had failed was the reason string — discarded on success.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const chain = [
+        provider("agy-cli", { ok: false, provider: "agy-cli", error: "dead model", unavailable: true }),
+        provider("pi", { ok: true, provider: "pi", model: "m", answer: "hi" })
+      ];
+
+      const result = await answerWithChain(chain, { question: "q" });
+
+      expect(result.ok).toBe(true);
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0]![0]).toContain("agy-cli");
+      expect(warn.mock.calls[0]![0]).toContain("dead model");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("stays quiet when the first leg serves", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await answerWithChain([provider("pi", { ok: true, provider: "pi", model: "m", answer: "hi" })], {
+        question: "q"
+      });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

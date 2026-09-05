@@ -682,7 +682,10 @@ export class CoreWorker {
     // contract's time_minutes is not enforced). Derive it from the chain so a
     // healthy chain that legitimately falls through every provider is never
     // killed mid-flight: sum(per-provider timeouts) + buffer. Default chain
-    // (pi 60s + kimi 30s) + 15s buffer = 105s.
+    // (pi 60s + agy 60s) + 15s buffer = 135s.
+    // CAVEAT: `resolveChainBudgetMs` reads HOUGE_LLM_PROVIDERS only, so this cap does NOT bound
+    // the quarantined reader, which resolves its own chain (HOUGE_LLM_READER_PROVIDERS) and is
+    // invoked outside the runner entirely. See `quarantineRead`.
     const llmTimeoutMs = resolveChainBudgetMs(process.env) + RUNNER_TIMEOUT_BUFFER_MS;
     registry.register({
       name: "llm_answer",

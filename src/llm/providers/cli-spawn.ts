@@ -42,9 +42,23 @@ export type SpawnImpl = (
 ) => Promise<SpawnResult>;
 
 /**
+ * Grace period after a SIGKILL before we stop waiting for `close` and settle anyway. `close` fires
+ * only once the child has exited AND its stdio streams have closed — and an AGENTIC CLI's
+ * grandchild inherits the stdout write end, so a surviving grandchild holds the pipe open and
+ * `close` never arrives. Without this the promise never settles, and because the daemon's poll loop
+ * is a single serialized `while`, one such call stops Telegram polling, every scheduled tick, the
+ * outbox flush, and the heartbeat — permanently, and invisibly to `/status`, which the same loop
+ * writes. The timeout must therefore be authoritative on its own, not contingent on the pipe.
+ */
+const KILL_GRACE_MS = 2_000;
+
+/**
  * Default spawn impl: uses `spawn` so the prompt can be written to the child's stdin (never argv
  * for pi), resolving (never rejecting) a SpawnResult. Enforces our own timeout (SIGKILL) and a hard
  * stdout byte cap (kills on overflow).
+ *
+ * Children are spawned DETACHED so each gets its own process group and a kill reaches the whole
+ * tree, not just the leader — `agy` is agentic and may spawn tool grandchildren that outlive it.
  */
 export const defaultSpawnImpl: SpawnImpl = (file, args, opts) =>
   new Promise<SpawnResult>((resolve) => {
@@ -57,18 +71,46 @@ export const defaultSpawnImpl: SpawnImpl = (file, args, opts) =>
     const stdoutDecoder = new StringDecoder("utf8");
     const stderrDecoder = new StringDecoder("utf8");
 
-    const child = spawn(file, args, { cwd: opts.cwd, env: opts.env });
+    const child = spawn(file, args, { cwd: opts.cwd, env: opts.env, detached: true });
+
+    let graceTimer: NodeJS.Timeout | undefined;
 
     const finish = (result: SpawnResult): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (graceTimer) clearTimeout(graceTimer);
       resolve({ ...result, stdout: result.stdout + stdoutDecoder.end(), stderr: result.stderr + stderrDecoder.end() });
+    };
+
+    /**
+     * Kill the child's whole PROCESS GROUP, then start the grace timer. Killing only the leader
+     * leaves tool grandchildren alive holding our stdout pipe, which is what would hang `close`.
+     */
+    const killTree = (): void => {
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch {
+        // ESRCH (already gone) or EPERM — fall back to the leader, then let the grace timer settle.
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* nothing left to kill */
+        }
+      }
+      if (!graceTimer) {
+        graceTimer = setTimeout(() => {
+          // `close` never came — a grandchild still holds the pipe. Settle on what we have.
+          finish({ code: null, stdout, stderr, timedOut });
+        }, KILL_GRACE_MS);
+        graceTimer.unref?.();
+      }
     };
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      killTree();
     }, opts.timeoutMs);
 
     child.on("error", (error: NodeJS.ErrnoException) => {
@@ -86,7 +128,7 @@ export const defaultSpawnImpl: SpawnImpl = (file, args, opts) =>
         if (!overflow) {
           overflow = true;
           stdout += stdoutDecoder.write(chunk);
-          child.kill("SIGKILL");
+          killTree();
         }
         return;
       }

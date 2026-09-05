@@ -33,10 +33,17 @@ network reads — and runs one call per seat:
 
 | Seat | Backend | Transport | Lens |
 |------|---------|-----------|------|
-| Judge 1 | kimi-api | existing HTTP leg, pinned single-provider adapter | **Opportunity** — a real gap someone would pay for / adopt? |
-| Judge 2 | gemini-api | existing HTTP leg, pinned single-provider adapter | **Technical novelty** — substantively new or a rehash? |
+| Judge 1 | Kimi via `pi` | flat-rate CLI leg, pinned single-provider adapter | **Opportunity** — a real gap someone would pay for / adopt? |
+| Judge 2 | Gemini via `agy-cli` | flat-rate CLI leg, pinned single-provider adapter | **Technical novelty** — substantively new or a rehash? |
 | Judge 3 | codex CLI | contained spawn (panel-local) | **Buildability** — a credible slice shippable in ~1 week? |
 | Chair | claude CLI | contained spawn (panel-local) | Synthesis — rank, pick 3, one-paragraph rationale each |
+
+**Amendment 2026-09-06 (CLI-only migration).** Judges 1 and 2 were `kimi-api` and `gemini-api` —
+two pay-per-token legs firing every panel tick, pinned outside the main chain and recording no
+telemetry at all. They now ride the flat-rate `pi` and `agy` CLIs (`PANEL_JUDGE_PROVIDERS` in
+`telegram-daemon.ts`). Seat names stayed as model *families*, so the lens assignments and the
+four-family diversity argument below are unchanged; only the transport moved. Weekly cost drops
+from 2 metered HTTP calls + 2 CLI spawns to 4 CLI spawns.
 
 Seat→provider binding is **injected per seat, never a chain**: the kimi/gemini judges are
 single-provider adapters pinned to their registry legs (`answerWithChain` never sees any

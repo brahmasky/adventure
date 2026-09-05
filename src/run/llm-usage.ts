@@ -72,3 +72,40 @@ export function normalizeCodexUsage(stdout: string): LlmUsage | null {
     cached_input_tokens: num(last.cached_input_tokens)
   };
 }
+
+/**
+ * Normalize the `usage` block of an `agy --output-format json` envelope into {@link LlmUsage}:
+ * `{input_tokens, output_tokens, thinking_tokens, cache_read_tokens, total_tokens}`.
+ *
+ * `thinking_tokens` is deliberately NOT added to `output_tokens` — it is already INSIDE it.
+ * Measured live 2026-09-06 across four probes, two with non-zero thinking:
+ *
+ * | model                  | input | output | thinking | total |
+ * |------------------------|-------|--------|----------|-------|
+ * | Gemini 3.8 Flash (Low) |  5281 |   1486 |        0 |  6767 |
+ * | Gemini 3.1 Pro (High)  |  5590 |   1511 |      842 |  7101 |
+ * | Gemini 3.8 Flash (High)|  5284 |   1353 |      905 |  6637 |
+ *
+ * `total_tokens == input_tokens + output_tokens` holds in every row, including the thinking ones —
+ * so adding thinking would break agy's own identity and inflate output by 40–60% on any
+ * thinking-enabled model. The design doc proposed the fold by analogy to `normalizeCodexUsage`,
+ * but that analogy does not carry: Codex reports `reasoning_output_tokens` DISJOINTLY from
+ * `output_tokens`, whereas agy (like OpenAI's `reasoning_tokens`) nests it. The default model
+ * pins "Low", which reports zero thinking, so the fold was inert until someone pinned a
+ * reasoning model — which `HOUGE_AGY_MODEL` openly invites.
+ *
+ * `cache_read_tokens` maps to `cached_input_tokens`. `total_tokens` is ignored: every consumer
+ * wants the components, and the identity above makes it redundant.
+ *
+ * Returns `null` when no usable usage object is present. Never throws.
+ */
+export function normalizeAgyUsage(raw: unknown): LlmUsage | null {
+  const usage = asObject(raw);
+  if (!usage) return null;
+  if (usage.input_tokens === undefined && usage.output_tokens === undefined) return null;
+  return {
+    input_tokens: num(usage.input_tokens),
+    output_tokens: num(usage.output_tokens),
+    cached_input_tokens: num(usage.cache_read_tokens)
+  };
+}

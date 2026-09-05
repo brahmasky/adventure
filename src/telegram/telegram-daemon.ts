@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { checkMeteredCeiling } from "../budget/metered-ceiling.js";
 import { runEpisodicConsolidateTick } from "../capabilities/episodic-consolidate.js";
 import { maybeRunEpisodicDistill } from "../capabilities/episodic-extract.js";
-import { runIdeaPanelTick, type PanelSeat } from "../capabilities/idea-panel.js";
+import { PANEL_JUDGE_PROVIDERS, runIdeaPanelTick, type PanelSeat } from "../capabilities/idea-panel.js";
 import { spawnCodexJudge, spawnPanelChair } from "../capabilities/idea-panel-seats.js";
 import { runIdeaRadarTick, type RadarLlm } from "../capabilities/idea-radar.js";
 import { runLessonConsolidateTick } from "../capabilities/lesson-consolidate.js";
@@ -469,7 +469,10 @@ function buildPanelSeatBindings(options: RunTelegramDaemonOptions): PanelSeatBin
     };
   };
   return {
-    judges: { kimi: pinnedJudge("kimi-api"), gemini: pinnedJudge("gemini-api") },
+    judges: {
+      kimi: pinnedJudge(PANEL_JUDGE_PROVIDERS.kimi),
+      gemini: pinnedJudge(PANEL_JUDGE_PROVIDERS.gemini)
+    },
     codexJudge: ({ digest, system }) => spawnCodexJudge({ digest, system, env: process.env }),
     chair: broker
       ? ({ digest, system }) => spawnPanelChair({ digest, system, broker, env: process.env })

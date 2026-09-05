@@ -67,6 +67,25 @@ export interface OpenAiCompatSpec {
  * Normalize the OpenAI-compatible `usage` block into {@link LlmUsage}. `prompt_tokens`/
  * `completion_tokens` are the OpenAI field names; cached prompt tokens (when reported) live under
  * `prompt_tokens_details.cached_tokens`. Returns `null` when no usable `usage` block is present.
+ *
+ * D3: `completion_tokens` alone UNDERCOUNTS output on engines that bill reasoning/thinking tokens.
+ * Google's OpenAI-compat endpoint was measured undercounting 5–11x (12/54/611 on a trivial probe),
+ * and the metered-$ ceiling (ADR 0019) sums these same figures — a fuse cannot trip on spend it
+ * cannot see. Output is therefore `max(completion_tokens, total_tokens - prompt_tokens)`.
+ *
+ * Why a max and not a sum. Vendors disagree on whether reasoning is inside `completion_tokens`:
+ * OpenAI's schema puts `completion_tokens_details.reasoning_tokens` INSIDE it, while Google reports
+ * neither field and leaves the gap visible only in `total_tokens`. Adding `reasoning_tokens` — which
+ * the design doc proposed, by analogy to `normalizeCodexUsage`, whose engine really does report the
+ * two disjointly — would double-count on every spec-compliant engine and latch the fuse at half the
+ * real spend. Worse, branching on the mere PRESENCE of `reasoning_tokens` would skip the total-based
+ * derivation whenever a vendor sent `reasoning_tokens: 0`, restoring the exact 11x undercount this
+ * fix exists to remove. The max needs no knowledge of which convention an engine follows: it is
+ * exact for OpenAI (total - prompt == completion), exact for Google (the gap), and cannot regress
+ * below the reported completion count. `reasoning_tokens` is deliberately not read.
+ *
+ * The metered legs are out of every default chain as of the CLI-only migration, but re-enabling one
+ * must not silently reintroduce D3.
  */
 function extractUsage(data: unknown): LlmUsage | null {
   if (typeof data !== "object" || data === null) return null;
@@ -82,9 +101,22 @@ function extractUsage(data: unknown): LlmUsage | null {
     typeof details === "object" && details !== null
       ? toNum((details as Record<string, unknown>).cached_tokens)
       : 0;
+
+  const prompt = toNum(u.prompt_tokens);
+  const completion = toNum(u.completion_tokens);
+  // The gap is only meaningful when the engine actually reported BOTH ends of it. With
+  // `prompt_tokens` absent, `toNum` yields 0 and the derivation would read the entire prompt as
+  // output — at output pricing, on the one leg the spend fuse is guarding. A missing or nonsensical
+  // total yields a derived value <= completion, so the max discards it.
+  const derivedFromTotal =
+    u.prompt_tokens !== undefined && u.total_tokens !== undefined
+      ? toNum(u.total_tokens) - prompt
+      : 0;
+  const output = Math.max(completion, derivedFromTotal);
+
   return {
-    input_tokens: toNum(u.prompt_tokens),
-    output_tokens: toNum(u.completion_tokens),
+    input_tokens: prompt,
+    output_tokens: output,
     cached_input_tokens: cached
   };
 }
