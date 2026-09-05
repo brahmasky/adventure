@@ -4509,6 +4509,26 @@ export class RunStore {
     activeTransaction = true;
 
     try {
+      // Resolve the winner FIRST (BEGIN IMMEDIATE holds the write lock, so nothing can
+      // claim it between this SELECT and the UPDATE), then claim and return THAT id.
+      // Re-discovering the claimed row afterwards via `lease_owner + state='sending'
+      // ORDER BY updated_at DESC, notification_id DESC` was wrong: an owner with an
+      // earlier, still-unacked `sending` row claimed within the same millisecond ties on
+      // updated_at, and the random-UUID tiebreak then returned the OLD row half the time.
+      const next = this.db.prepare(`
+        SELECT notification_id
+        FROM notification_outbox
+        WHERE state = 'queued' AND next_attempt_at <= ?
+        ORDER BY next_attempt_at ASC, created_at ASC
+        LIMIT 1
+      `).get<{ notification_id: string }>(now);
+
+      if (!next) {
+        this.db.exec("COMMIT");
+        activeTransaction = false;
+        return null;
+      }
+
       const updated = this.db.prepare(`
         UPDATE notification_outbox
         SET state = 'sending',
@@ -4516,32 +4536,12 @@ export class RunStore {
             lease_expires_at = ?,
             attempt_count = attempt_count + 1,
             updated_at = ?
-        WHERE notification_id = (
-          SELECT notification_id
-          FROM notification_outbox
-          WHERE state = 'queued' AND next_attempt_at <= ?
-          ORDER BY next_attempt_at ASC, created_at ASC
-          LIMIT 1
-        )
-      `).run(lease_owner, lease_expires_at, now, now);
-
-      if (updated.changes !== 1) {
-        this.db.exec("COMMIT");
-        activeTransaction = false;
-        return null;
-      }
-
-      const claimed = this.db.prepare(`
-        SELECT notification_id
-        FROM notification_outbox
-        WHERE lease_owner = ? AND state = 'sending'
-        ORDER BY updated_at DESC, notification_id DESC
-        LIMIT 1
-      `).get<{ notification_id: string }>(lease_owner);
+        WHERE notification_id = ? AND state = 'queued'
+      `).run(lease_owner, lease_expires_at, now, next.notification_id);
 
       this.db.exec("COMMIT");
       activeTransaction = false;
-      return claimed ? this.getNotificationRecord(claimed.notification_id) : null;
+      return updated.changes === 1 ? this.getNotificationRecord(next.notification_id) : null;
     } catch (error) {
       if (activeTransaction) {
         this.db.exec("ROLLBACK");

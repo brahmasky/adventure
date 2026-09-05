@@ -1,8 +1,49 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { NotificationOutbox } from "../../src/notifications/notification-outbox.js";
 import { RunStore } from "../../src/run/run-store.js";
 
 describe("NotificationOutbox", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("claimNext returns the row it just claimed, not an earlier unacked same-owner row with a tying updated_at", () => {
+    // Regression: claimNextNotification used to UPDATE the oldest queued row and then
+    // RE-FIND "the claimed row" via `lease_owner + state='sending' ORDER BY updated_at DESC,
+    // notification_id DESC`. When the same owner still holds an earlier `sending` row
+    // (unacked/in flight) and both claims land in the same millisecond, updated_at ties
+    // and the random-UUID id decides — the OLD row came back ~50% of the time.
+    // Pin the clock so the tie is certain, and pin the tiebreak so the old row wins it.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-25T12:00:00.000Z"));
+    const store = RunStore.openInMemory();
+    try {
+      const outbox = new NotificationOutbox(store);
+      const enqueue = (key: string) =>
+        outbox.enqueue({
+          target: { kind: "telegram", chat_id: "222" },
+          intent_type: "progress",
+          idempotency_key: key,
+          correlation_id: `telegram:update:${key}`,
+          payload: { text: key }
+        });
+      const first = enqueue("pick:1");
+      expect(outbox.claimNext("sender-1", 30)?.notification_id).toBe(first.notification_id);
+      // Left in `sending` on purpose (never acked) — then make its id sort LAST.
+      (store as unknown as { db: { exec(sql: string): void } }).db.exec(
+        `UPDATE notification_outbox SET notification_id = 'notif_zzzzzzzz' WHERE notification_id = '${first.notification_id}'`
+      );
+
+      const second = enqueue("pick:2");
+      const claimed = outbox.claimNext("sender-1", 30);
+      expect(claimed?.notification_id).toBe(second.notification_id);
+      expect(claimed?.payload.text).toBe("pick:2");
+      expect(outbox.get(second.notification_id)?.state).toBe("sending");
+      // A third claim finds nothing queued — the second row was really claimed, not skipped.
+      expect(outbox.claimNext("sender-1", 30)).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
   it("deduplicates by target and idempotency key and marks delivery", () => {
     const store = RunStore.openInMemory();
     try {

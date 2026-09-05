@@ -77,9 +77,13 @@ at a time):**
   then it is unproven infrastructure, not a closed loop.
 
 **Parked / watch:**
-- Flaky test (pre-existing, NOT retirement-related — fails ~2/10 at e998e40^ too):
-  gateway-telegram "superseded id → points at successor" (/lessons drill-in, fd14120) — timing on
-  `claimNextNotification` re-claim. De-flake when touched next.
+- Flaky test FIXED (was pre-existing, NOT retirement-related — failed ~2/10 at e998e40^ too):
+  gateway-telegram "superseded id → points at successor" (/lessons drill-in, fd14120). Not a lease
+  re-claim: `claimNextNotification` re-found "the row it just claimed" via `lease_owner + sending
+  ORDER BY updated_at DESC, notification_id DESC`; two claims by one owner in the same ms tie on
+  updated_at and the random-UUID tiebreak handed back the OLD (#9999 not-found) row. Now selects
+  the winner first and UPDATEs by id. Regression: tests/run/run-store-notification-claim-tie.test.ts
+  (0/5 at HEAD 1720b0e, 12/12 after).
 - **Real photo/vision** (Gemini + image) — the remaining medium slice; caption-fallback shipped
   the text path, actual image understanding is still parked.
 - **/status-floor (lesson-merge) tuning** — revisit the gross-collapse / avoid-drop floors if the
