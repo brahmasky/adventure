@@ -19,7 +19,10 @@ export type { SpawnImpl, SpawnOpts, SpawnResult };
 export interface PiProviderConfig {
   model?: string;
   timeoutMs?: number;
+  /** Raw stdout STREAM cap (memory bound passed to spawn). See PI_DEFAULT_MAX_BYTES. */
   maxBytes?: number;
+  /** Cap on the EXTRACTED ANSWER text. See PI_DEFAULT_MAX_ANSWER_BYTES. */
+  maxAnswerBytes?: number;
   spawnImpl?: SpawnImpl;
   /**
    * Phase 3.1 telemetry seam (spec §"Real telemetry"). Fired once per SUCCESSFUL answer IF pi
@@ -32,7 +35,26 @@ export interface PiProviderConfig {
 }
 
 export const PI_DEFAULT_TIMEOUT_MS = 60_000;
-export const PI_DEFAULT_MAX_BYTES = 262_144; // 256 KB
+/**
+ * Raw stdout STREAM cap — the memory bound handed to spawn (which kills the child past it).
+ * This bounds the JSONL stream, NOT the answer: in `--mode json` pi emits one `message_update`
+ * line PER TOKEN, each carrying a full zeroed usage+cost struct (~249 bytes of line per ~4.6
+ * bytes of answer text). Measured live: an 812-word answer was 5,661 answer bytes inside
+ * 331,528 stdout bytes — a ~60x ratio. 8 MB therefore leaves ~140 KB of answer headroom.
+ *
+ * Which bound fires first, at defaults: the 60 s timeout (8 MB ≈ 34K tokens needs ~560 tok/s),
+ * then this stream cap (~140 KB of answer), and only then the 256 KB answer cap below — which
+ * is therefore a FORWARD guard for a leaner pi JSONL format, not the bound an operator will see
+ * today. All three are plain errors that fall through identically; the point of the split is
+ * that an ordinary long answer (5–50 KB) no longer trips a cap meant for 256 KB.
+ */
+export const PI_DEFAULT_MAX_BYTES = 8_388_608; // 8 MB (stream)
+/**
+ * Cap on the EXTRACTED ANSWER text (the last assistant `message_end`, or the accumulated
+ * deltas as fallback). This is the original 256 KB intent — an over-cap answer is an error,
+ * never a truncated success.
+ */
+export const PI_DEFAULT_MAX_ANSWER_BYTES = 262_144; // 256 KB (answer)
 export const PI_BINARY = "pi";
 
 /** Auth markers pi prints as PLAIN TEXT while exiting 0 — treat as unavailable. */
@@ -165,6 +187,7 @@ export function createPiProvider(config: PiProviderConfig = {}): LlmProvider {
         PI_DEFAULT_TIMEOUT_MS;
 
       const maxBytes = config.maxBytes ?? PI_DEFAULT_MAX_BYTES;
+      const maxAnswerBytes = config.maxAnswerBytes ?? PI_DEFAULT_MAX_ANSWER_BYTES;
 
       // The question is delivered on stdin (see SpawnOpts.input), NEVER as an
       // argv token — pi reads its prompt from stdin in -p mode and has no `--`
@@ -229,17 +252,28 @@ export function createPiProvider(config: PiProviderConfig = {}): LlmProvider {
         return { ok: false, provider: "pi", error: `pi timed out after ${timeoutMs}ms` };
       }
 
-      // Output bound: over-cap is an error, never a (possibly truncated) success.
+      // Stream bound (memory guard, mirrors what spawn enforces): over-cap is an error, never a
+      // (possibly truncated) success. With the 8 MB default this essentially never fires — the
+      // answer cap below is the one that bites on genuinely oversized answers.
       if (byteLength(result.stdout) > maxBytes) {
         return {
           ok: false,
           provider: "pi",
-          error: `pi output exceeded ${maxBytes} byte cap`
+          error: `pi output stream exceeded ${maxBytes} byte cap`
         };
       }
 
       const parsed = parsePiJsonl(result.stdout);
       const answer = extractAnswer(parsed);
+
+      // Answer bound: applied to the EXTRACTED text, not the ~60x-inflated JSONL stream.
+      if (answer !== undefined && byteLength(answer) > maxAnswerBytes) {
+        return {
+          ok: false,
+          provider: "pi",
+          error: `pi answer exceeded ${maxAnswerBytes} byte cap`
+        };
+      }
 
       // Auth markers (printed as plain text, exit 0) → unavailable.
       const combined = stripAnsi(`${result.stdout}\n${result.stderr}`).toLowerCase();

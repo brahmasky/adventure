@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import os from "node:os";
 import {
   createPiProvider,
+  PI_DEFAULT_MAX_ANSWER_BYTES,
+  PI_DEFAULT_MAX_BYTES,
   type SpawnImpl,
   type SpawnResult
 } from "../../../src/llm/providers/pi.js";
@@ -419,7 +421,7 @@ describe("createPiProvider", () => {
       expect(spawnImpl.mock.calls[0]![2].maxBytes).toBe(99);
     });
 
-    it("fails (not success) when output exceeds the byte cap", async () => {
+    it("fails (not success) when the raw stdout STREAM exceeds maxBytes (memory guard)", async () => {
       const big = jsonlSuccess("x".repeat(1000));
       const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout: big }));
       const provider = createPiProvider({ spawnImpl, model: "m", maxBytes: 10 });
@@ -427,7 +429,126 @@ describe("createPiProvider", () => {
       const result = await provider.answer({ question: "hi" });
 
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.error).toMatch(/exceed|cap|byte/i);
+      if (!result.ok) expect(result.error).toBe("pi output stream exceeded 10 byte cap");
+    });
+
+    it("passes the 8 MB stream default as maxBytes to the spawn impl (the real memory bound)", async () => {
+      const spawnImpl = vi.fn<SpawnImpl>(async () =>
+        spawnResult({ stdout: jsonlSuccess("ok") })
+      );
+      const provider = createPiProvider({ spawnImpl, model: "m" });
+
+      await provider.answer({ question: "hi" });
+
+      expect(PI_DEFAULT_MAX_BYTES).toBe(8_388_608);
+      expect(spawnImpl.mock.calls[0]![2].maxBytes).toBe(PI_DEFAULT_MAX_BYTES);
+    });
+
+    it("accepts a realistic per-token JSONL stream (~60x the answer) under default caps", async () => {
+      // Regression for the conflated cap: pi --mode json emits one message_update line PER
+      // TOKEN, each with a full zeroed usage+cost struct. Measured live: an 812-word answer =
+      // 5,661 answer bytes inside 331,528 stdout bytes. With the old 256 KB cap applied to
+      // stdout, this ordinary answer failed on the stream cap and fell through to the next leg.
+      const answer = "Using the measured ratio, ordinary prose overflows. ".repeat(120); // ~6 KB
+      const deltaLine = (delta: string): string =>
+        JSON.stringify({
+          type: "message_update",
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+          },
+          assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta }
+        });
+      const deltas: string[] = [];
+      for (let i = 0; i < answer.length; i += 5) deltas.push(deltaLine(answer.slice(i, i + 5)));
+      const stdout = [
+        JSON.stringify({ type: "session", sessionId: "abc" }),
+        ...deltas,
+        JSON.stringify({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            model: "kimi-for-coding",
+            content: [{ type: "text", text: answer }],
+            usage: { input: 10, output: 1300, cacheRead: 0, cacheWrite: 0, totalTokens: 1310, cost: { total: 0 } }
+          }
+        }),
+        JSON.stringify({ type: "agent_end", messages: [] })
+      ].join("\n");
+      expect(deltas.length).toBeGreaterThan(1200);
+      // The stream is well past the OLD 256 KB stdout cap while the answer is tiny.
+      expect(Buffer.byteLength(stdout, "utf8")).toBeGreaterThan(262_144);
+      expect(Buffer.byteLength(answer, "utf8")).toBeLessThan(8_192);
+
+      const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout }));
+      const provider = createPiProvider({ spawnImpl, model: "m" });
+
+      const result = await provider.answer({ question: "hi" });
+
+      expect(result).toEqual({ ok: true, provider: "pi", model: "kimi-for-coding", answer });
+    });
+
+    it("fails (not success) when the EXTRACTED answer exceeds maxAnswerBytes", async () => {
+      const stdout = [
+        JSON.stringify({
+          type: "message_end",
+          message: { role: "assistant", content: [{ type: "text", text: "y".repeat(101) }] }
+        })
+      ].join("\n");
+      const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout }));
+      const provider = createPiProvider({ spawnImpl, model: "m", maxAnswerBytes: 100 });
+
+      const result = await provider.answer({ question: "hi" });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain("answer exceeded");
+        expect(result.error).toBe("pi answer exceeded 100 byte cap");
+        expect(result.unavailable).toBeUndefined();
+      }
+    });
+
+    it("measures the answer cap in BYTES, not characters (CJK boundary)", async () => {
+      // 34 CJK chars = 102 UTF-8 bytes. With a 100-byte cap this must FAIL; a `.length`
+      // comparison (34 < 100) would wrongly pass it. Houge answers in Chinese constantly.
+      const answer = "拥".repeat(34);
+      expect(Buffer.byteLength(answer, "utf8")).toBe(102);
+      const stdout = JSON.stringify({
+        type: "message_end",
+        message: { role: "assistant", content: [{ type: "text", text: answer }] }
+      });
+      const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout }));
+      const provider = createPiProvider({ spawnImpl, model: "m", maxAnswerBytes: 100 });
+
+      const result = await provider.answer({ question: "hi" });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("answer exceeded");
+    });
+
+    it("accepts an answer exactly AT maxAnswerBytes (boundary is inclusive)", async () => {
+      const answer = "y".repeat(100);
+      const stdout = [
+        JSON.stringify({
+          type: "message_end",
+          message: { role: "assistant", content: [{ type: "text", text: answer }] }
+        })
+      ].join("\n");
+      const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout }));
+      const provider = createPiProvider({ spawnImpl, model: "m", maxAnswerBytes: 100 });
+
+      const result = await provider.answer({ question: "hi" });
+
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.answer).toBe(answer);
+    });
+
+    it("defaults the answer cap to 256 KB (the original intent, now on the answer)", () => {
+      expect(PI_DEFAULT_MAX_ANSWER_BYTES).toBe(262_144);
     });
   });
 
