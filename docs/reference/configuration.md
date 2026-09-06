@@ -444,36 +444,59 @@ roles to the **same provider** logs a soft warning — it is **not blocked**.
 > differ only in model: the writer resolves `HOUGE_CLAUDE_WRITER_MODEL` (→ `HOUGE_CLAUDE_MODEL` →
 > `sonnet`), the reviewer resolves `HOUGE_CLAUDE_MODEL` (→ `sonnet`).
 
-### Phase 3.1 — LLM telemetry (the `llm_call` ledger event)
+### LLM telemetry — the `llm_attempt` ledger event (slice 2, 2026-09-07)
 
-Phase 3.1 captures **real token usage at the source** for every LLM call — replacing the prior
-hand-grepping of Codex rollout logs — and records it as a structured ledger event. This realizes the
-backlog "LLM telemetry" item.
+Every LLM **leg attempt** in Houge — success, error, or unavailable; run-scoped or run-less —
+lands in the ledger as one **`llm_attempt`** event. Not by remembering a hook: the adapter factory
+(`createLlmAnswerAdapter`) and the two panel spawn seats take a **required** `LlmAuditSink`
+(`src/llm/audit.ts`), built by `RunStore.llmAuditSink(scope)`; `answerWithChain` records every leg
+it tries, and `tests/llm/audit-coverage.test.ts` scans `src/` so no construction site can omit it.
+This replaced the Phase 3.1 opt-in `onUsage` hook and its `llm_call` event, which recorded only
+successes and only where someone had passed the hook — whole call paths (every daemon tick, both
+panel judges, the self-write reviewer's fallback legs) recorded nothing (defect D4, spec
+2026-09-04). Historical `llm_call` rows are never rewritten; the readers union them.
 
-Each LLM call emits one **`llm_call`** ledger event (`RunStore.recordLlmCall`,
-`src/run/run-store.ts`; actor `capability_runner`). Usage is normalized to one canonical shape
-(`src/run/llm-usage.ts`) regardless of engine — Codex `--json` `token_count` events, Claude
-`--output-format json` `usage` + `total_cost_usd`, and the kimi cheap-chain client all feed the same
-`recordLlmCall`. Payload fields:
+Scopes: a run (`run_id`) or a run-less correlation — `tick:episodic_distill`,
+`tick:episodic_consolidate`, `tick:lesson_consolidate`, `tick:idea_radar`, `tick:idea_panel`,
+`tick:skill_reverify`, `cli:lessons-consolidate`, `cli:radar`, `cli:radar-panel`,
+`rating:attribution`, `gate:b` (skill Gate B verify). Run-less rows read back with `run_id`
+absent, not null. Payload fields:
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `provider` | yes | The engine (e.g. `codex`, `claude`, `pi`, `agy-cli`, `kimi-api`, `gemini-api`). |
-| `model` | yes | The resolved model name. |
-| `role` | yes | One of `writer` \| `reviewer` \| `classify` \| `frame` \| `answer` \| `compose` \| `reader` (the Dual-LLM quarantined reader, ADR 0014). |
-| `input_tokens` | yes | Prompt/input token count. |
-| `output_tokens` | yes | Output tokens, reasoning/thinking INCLUDED for every engine — but by different routes, and getting this wrong was D3 (2026-09-06): Codex reports `reasoning_output_tokens` disjointly and it is added; agy nests `thinking_tokens` inside `output_tokens` (measured: `total == input + output` on every probe) and it is never re-added; the OpenAI-compat legs derive `max(completion_tokens, total_tokens − prompt_tokens)`, which counts Google's hidden thinking gap without double-counting OpenAI's nested `reasoning_tokens`. |
-| `cached_input_tokens` | yes | Cached input (Claude: cache_read + cache_creation). |
-| `cost_usd` | optional | Present when the provider reports it (Claude `total_cost_usd`); Codex reports no per-call cost. |
-| `latency_ms` | optional | Per-call wall-clock when measured by the caller. |
+| `provider` | yes | The leg (`pi`, `agy-cli`, `kimi-api`, `gemini-api`, `codex`, `kimi-cli`, `claude`). |
+| `role` | yes | The call's purpose, set by the scoped sink (the chain does not know it): `answer` \| `compose` \| `classify` \| `frame` \| `reader` \| `writer` \| `reviewer` \| `distill` \| `consolidate` \| `extract` \| `judge` \| `chair` \| `verify` \| `attribution`. |
+| `outcome` | yes | `ok` \| `error` \| `unavailable`. *Unavailable* = the provider was not constructively callable (binary absent, not authenticated, model retired, key unset); timeout, non-zero exit, over-cap and parse failures are `error`. Both fall through the chain identically. |
+| `model` | on `ok` | The model that answered (`unknown` + a warning if a provider ever omits it). |
+| `latency_ms` | optional | Wall-clock for this leg. |
+| `attempt_group` · `leg_index` | optional | One 12-hex id per chain invocation and the leg's 0-based position, so "agy failed, then pi served" is reconstructable, not inferred from timestamps. |
+| `input_tokens` · `output_tokens` · `cached_input_tokens` | on `ok` | `output_tokens` is the total billable output for every engine: Codex reports `reasoning_output_tokens` disjointly and it is added; agy nests thinking inside `output_tokens` (measured `total == input + output`) and it is never re-added; the OpenAI-compat legs derive `max(completion, total − prompt)`. |
+| `thinking_tokens` | optional | Informational — already inside `output_tokens`, never priced, never summed. Reported by agy and Codex. |
+| `cost_usd` | metered only | Priced **in the sink** (`computeCostUsd`, the one seam every path shares) for `kimi-api`/`gemini-api`; a flat-rate leg's self-reported list price is a phantom and is stripped. |
+| `error_kind` | on failure | Bounded: `auth` \| `model_missing` \| `timeout` \| `spawn` \| `transport` \| `parse` \| `other` — classified per leg from our own provider strings, never the joined aggregate, never vendor prose. |
 
-**Counts/metadata ONLY — by construction.** The prompt, diff, and response bodies are **never**
-passed to `recordLlmCall` and are **never** stored. The usage normalizers are tolerant: malformed or
-absent usage returns `null` (no event), never throws — telemetry can never break a run.
+**Counts/metadata ONLY — by construction and by test.** The prompt, diff, and response bodies never
+reach the sink; `tests/run/llm-audit-sink.test.ts` pins the payload's key set and asserts no body
+field can appear. Recording is best-effort: a sink failure logs a warning and never fails an answer.
+A provider that *throws* is recorded as an error and falls through like any other failure.
+
+The spawn seats outside the chain record at their spawn site: the codex judge (now `--json`, so its
+row carries usage; the answer still comes from the outfile), the claude chair (json envelope usage),
+the no-broker chair fallback (an `unavailable`/`auth` row, so "chair off" is never invisible), and
+the self-write writer and each **reviewer leg** — the reviewer's internal retry/fallback chain
+records every leg it tries, so a dead configured reviewer cannot hide behind a fallback that passed.
+
+`houge usage` / `/usage` (`usageByModel`) and the metered ceiling (`meteredSpendUsd`) read
+`llm_attempt` rows with `outcome = 'ok'` unioned with the pre-cutover `llm_call` history (whose
+`gemini-api` output figures undercount ~5×, ADR 0019 amendment). Both predicates are indexed
+(`ledger_events_type_time_idx`; the monthly window is a sargable range, not `strftime`).
 
 In addition, the **`self_write_published`** event carries an optional compact **`usage_summary`**
 (writer + reviewer token totals for the published run — counts/metadata only, same no-bodies rule),
-so a published branch's per-role cost is visible without scanning the individual `llm_call` events.
+so a published branch's per-role cost is visible without scanning the individual attempt events.
+
+Live gate: `node scripts/live-gate-llm-attempt.mjs` (real chains into an in-memory store — one row
+per leg tried, or FAIL). Run-less proof after a daemon restart: rows under `tick:*` correlations.
 
 ### Phase 3.3 — interactive Telegram merge controls
 
@@ -595,7 +618,7 @@ Reuses: `HOUGE_RADAR_TZ` (slot + week-key zone), `HOUGE_CODEX_BIN` + `HOUGE_CODE
 ## Introspection — the invariant sweep (slice A, ADR 0024)
 
 A deterministic, zero-LLM sweep on the daemon signal path: reads Houge's own flight recorder
-(schedules, runs, outbox, heartbeat), checks six invariants, and records violations as
+(schedules, runs, outbox, heartbeat, LLM attempts), checks seven invariants, and records violations as
 **incidents** with an open→resolve lifecycle. Pure SQL reads plus incident bookkeeping — no LLM,
 no capability, no run creation, so it can never act on what it finds.
 
@@ -607,7 +630,7 @@ no capability, no run creation, so it can never act on what it finds.
 Invariants: duplicate enabled schedules · stuck runs (active state, lease expired >10 min;
 `waiting_for_approval` is NEVER an incident — that run is parked on Paco, working as designed) ·
 undelivered notifications (>15 min, EXCLUDING the sweep's own `incident_*` alerts) · overdue
-schedules (>15 min past cursor) · failed schedules · heartbeat gaps (>10 min).
+schedules (>15 min past cursor) · failed schedules · heartbeat gaps (>10 min; a gap that spans a deliberate `/kill` park is logged, not opened) · **failing LLM legs** (`llm_leg_failing`, slice 2: a provider with ≥3 `llm_attempt` rows and zero `ok` in the rolling 24 h — the shape in which the agy leg died silently for three months; subject = provider, detail = attempts/ok/latest error_kind; a leg that recovers but is not called again stays open until its failed rows age out, ≤24 h at the 12 h cadence).
 
 **Cadence buys detection latency, not quiet.** Alerts fire on incident *transitions*, so a
 persistent violation costs exactly one Telegram message at any cadence and a clean database is
@@ -658,9 +681,11 @@ per-cap headroom (used/limit/remaining), run counts by state, and the last error
 ## Metered-API $ ceiling (ADR 0019)
 
 The count caps above bound volume; this bounds **dollars** on the pay-per-token legs
-(`kimi-api`/`gemini-api`). Every metered `llm_call` is priced at the recording seam
-(`src/llm/metered-pricing.ts`) into the ledger's `cost_usd`; spend is derived by summing
-the ledger. On breach the metered legs are **dropped from every chain** (flat-rate `pi`/
+(`kimi-api`/`gemini-api`). Every metered `llm_attempt` is priced in the audit sink — the one
+seam every path shares since slice 2 (`RunStore.llmAuditSink` → `src/llm/metered-pricing.ts`) —
+into the ledger's `cost_usd`; spend is derived by summing the ledger (unioned with the
+pre-cutover `llm_call` history). Every adapter, including the three CLI commands, honors a
+latched fuse. On breach the metered legs are **dropped from every chain** (flat-rate `pi`/
 `agy-cli` keep working; an all-metered chain falls back to `pi` — never zero legs) and ONE
 deduped Telegram alert fires per episode. `/status` shows
 `Metered: $d.dd/$D.DD 24h, $m.mm/$M.MM month`.

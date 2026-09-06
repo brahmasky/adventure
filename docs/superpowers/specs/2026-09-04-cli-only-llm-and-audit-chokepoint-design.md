@@ -1,7 +1,7 @@
 # CLI-only LLM legs + structural audit chokepoint
 
 Date: 2026-09-04
-Status: spec reviewed + independently code-reviewed 2026-09-06 (findings below). **Slice 1 SHIPPED** 2026-09-06 as `9abb92e`, live gate PASS; same-day follow-ups `04ced06` (pi answer cap), `7ea5e77` (outbox same-ms claim), `b11f8ed` (park marker). Slice 2 (audit chokepoint) not started.
+Status: spec reviewed + independently code-reviewed 2026-09-06 (findings below). **Slice 1 SHIPPED** 2026-09-06 as `9abb92e`, live gate PASS; same-day follow-ups `04ced06` (pi answer cap), `7ea5e77` (outbox same-ms claim), `b11f8ed` (park marker). **Slice 2 SHIPPED** 2026-09-07 — `0f03e68`…`27e6728` (21 commits, 11 plan tasks + a codex-review fix task), live gate PASS; see §"Slice 2 — shipped".
 Author: Paco + Claude
 
 ## Problem
@@ -592,3 +592,45 @@ normalizer adds them to produce the billable total. The comment it quotes descri
 normalized field, not the raw envelope. Verified against `llm-usage.ts:44-73`.
 
 Plan: `docs/superpowers/plans/2026-09-06-llm-attempt-audit-chokepoint.md`.
+
+## Slice 2 — shipped 2026-09-07
+
+Plan: `docs/superpowers/plans/2026-09-06-llm-attempt-audit-chokepoint.md` (eleven tasks in
+codex's build order). Executed one implementer per task with a spec-compliance review and a code-
+quality review after each; every finding was verified against the code before acting.
+
+**Commits (main):** `0f03e68` ledger event · `78f496c`+`a8d7674` audit contract (review caught
+`KIMI_API_KEY is not set` classifying as `other` — a fabricated test string had masked it) ·
+`d8fbaff` store sink with pricing · `9e3b53f` readers union + `(event_type, occurred_at)` and
+`(sequence)` indexes (review found `MAX(sequence)` was a full scan; proven on a backup of the live
+DB) · `14cf58f` providers return usage · `0f46e89`+`758bd48` chain chokepoint (review: a throwing
+provider escaped unrecorded — fixed) · `9946797`+`7a2d7a4`+`f66f4c0` required sink at the factory,
+six sites, per-tick adapters, every direct adapter use rerouted with honest roles (the implementer
+found four more direct uses passed as values that a `this.llmAdapter(` grep had missed), Gate B
+made run-less · `2dd876d`+`cb02785` spawn seats (the spec was wrong that the judge ran `--json`;
+probed `--json` + `-o` combine, then added it) · `ab1c3f9` hooks deleted + source-scan guard
+(proven to bite: omitting `audit` fails `tsc`; an inline discarding sink passes `tsc` and is caught
+by the scan) · `060c057` `llm_leg_failing` invariant + no-bodies assertion · `769cd91` live gate ·
+`27e6728` codex-review fixes.
+
+**Codex adversarial review of the whole diff** (high effort, read-only, 4.29 M tokens): 3 P1, 2 P2,
+all confirmed and fixed in `27e6728` — the three CLI adapters never honored a latched metered fuse;
+the self-write reviewer's own retry/fallback chain recorded only the aggregate verdict, so a dead
+configured reviewer hid behind a fallback that passed (the D1 shape, one layer down); the
+no-broker chair fallback returned `unavailable` without a row; the monthly spend predicate wrapped
+`occurred_at` in `strftime` and defeated the new index; `last_error_kind` was lexical, not latest.
+None of these were visible to the per-task reviews — they are cross-task integration defects.
+
+**Live gate** (`node scripts/live-gate-llm-attempt.mjs`, in-memory store, real chains):
+```
+planner · chain [pi,agy-cli] · ok via pi        role answer · 1924 in / 7 out · group f7eb5dd10a3e leg 0
+reader  · chain [agy-cli,pi] · ok via agy-cli   role reader · 5304 in / 1 out / 8129 cached · thinking 0
+✓ PASS — every leg tried is in the ledger as llm_attempt, and the spend readers see it
+```
+
+**Goals, closed:** (1) held from slice 1; (2) every attempt recorded, structurally; (3) thinking
+counted (nested for agy, disjoint-then-folded for Codex, derived for OpenAI-compat); (4) a dying leg
+opens an incident within one sweep. **Still open:** the run-less proof on the live daemon (needs a
+restart onto this dist; expect `tick:episodic_distill` rows within ~30 min); the reader's wall
+clock; `/usage` by role/outcome; a role-specific model pin dying while the provider is healthy in
+another role (the sweep groups by provider).

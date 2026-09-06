@@ -204,3 +204,25 @@ Rules Claude writes for itself after corrections. Review at session start.
   answered — that is the exact mechanism by which a dead first leg stayed invisible for three
   months. A fallback that succeeds must still log what it fell back FROM.
 
+## Multi-task builds (slice 2, 2026-09-07)
+
+- **Per-task review cannot see cross-task defects; keep a whole-diff adversarial pass.** Eleven
+  tasks each passed a spec review and a quality review. Codex's single pass over the whole diff then
+  found three P1s none of them could: a fallback chain INSIDE a component the chain-level audit
+  wrapped (the self-write reviewer), an unaudited fallback closure substituted at a binding site,
+  and three CLI adapters that never honored the fuse. Rule: after the last task, one review that
+  reads the entire diff with a "what did the per-task reviews structurally miss" brief — it is
+  expensive (4.3 M tokens here) and it is the step that found the real ones.
+- **Grep for `this.x(` misses `this.x` passed as a value.** The slice-2 spec review found three
+  direct adapter calls; the implementer found four more (`execute: this.llmAdapter`) once it
+  grepped `this.llmAdapter` without the paren. Rule: when auditing "every use of X", grep the bare
+  identifier, not the call syntax.
+- **Prove a guard bites before trusting it.** The source-scan test looked right; the reviewer
+  temporarily removed an `audit:` line (tsc failed), then replaced it with an inline discarding
+  sink (tsc PASSED — structurally valid) and the scan caught that one. A guard you have not seen go
+  red is a comment.
+- **A fabricated test string can mask the real bug.** `"Gemini API key is not configured"` (never
+  emitted anywhere) passed the auth classifier; the real `"GEMINI_API_KEY is not set"` (underscore)
+  went to `other`. Rule: classifier tests use strings copied from the code that emits them.
+- **`codex exec` needs `</dev/null` from a non-TTY, and `codex review` won't take a prompt with
+  `--base`** (0.144.5). Twenty minutes lost to a process waiting on stdin that never closed.

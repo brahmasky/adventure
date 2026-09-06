@@ -277,9 +277,11 @@ hardcoded to Codex), so the heavy-token role can sit on whichever subscription i
 `HOUGE_SELFWRITE_WRITER` (`codex` | `claude`, default `codex`) pairs with `HOUGE_SELFWRITE_REVIEWER` —
 e.g. `WRITER=claude` + `REVIEWER=codex` for Claude Max 5x writer + Codex Plus reviewer. The guard
 checks the diff, not the author, so the swap can't widen what may land; same-provider writer+reviewer
-logs a soft warning (model diversity), never blocks. **Token usage is now recorded per call**: each
-LLM call emits an `llm_call` ledger event (provider, model, role, in/out/cached tokens, optional
-cost + latency — **counts/metadata only, never prompt/diff/response bodies**), and a published branch
+logs a soft warning (model diversity), never blocks. **Every LLM leg attempt is recorded**: each leg
+tried — success, failure, or fallthrough, run-scoped or daemon tick — emits an `llm_attempt`
+ledger event (provider, role, outcome, model, latency, tokens, priced cost on metered legs, a
+bounded error kind — **counts/metadata only, never prompt/diff/response bodies**) through a
+required audit sink the compiler will not let a call site omit, and a published branch
 also stamps a compact writer+reviewer `usage_summary` on its `self_write_published` event. See
 [configuration](docs/reference/configuration.md#phase-31--swappable-writer--per-role-models).
 
@@ -320,10 +322,11 @@ and [ADR 0003](docs/decisions/0003-global-budget-breaker.md).
 Houge's memory (lessons, skills, wiki, episodic facts) stores *content*: what was said,
 learned, known. The **invariant sweep** ([ADR 0024](docs/decisions/0024-introspection-invariant-sweep.md))
 covers the other half — his own *behavior*. With `HOUGE_INVARIANT_SWEEP_ENABLED=true` the
-daemon checks six assertions over its own flight recorder (`runs`, `scheduled_tasks`,
+daemon checks seven assertions over its own flight recorder (`runs`, `scheduled_tasks`,
 `notification_outbox`, `daemon_heartbeat`) every `HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES`
 (default 720 — twice a day): duplicate enabled schedules, stuck runs, undelivered
-notifications, overdue schedules, failed schedules, heartbeat gaps (a gap that spans a
+notifications, overdue schedules, failed schedules, a provider leg that keeps failing with no
+success (the shape in which a dead flat-rate leg hid for three months), heartbeat gaps (a gap that spans a
 deliberate `/kill` park is logged, not opened — the parked process leaves `houge.parked`).
 
 A violation opens a durable **incident** (fingerprint `kind:subject`), emits a ledger event,

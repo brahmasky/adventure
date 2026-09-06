@@ -81,6 +81,16 @@ path down. When spend falls back under both ceilings (the window rolls), the lat
 so a future breach is a new episode and alerts again. `/status` gains one line:
 `Metered: $d.dd/$D.DD 24h, $m.mm/$M.MM month`.
 
+**Amendment 2026-09-07 (slice 2, audit chokepoint).** Pricing moved from `CoreWorker`'s
+private recording helper into `RunStore.llmAuditSink`, the one seam every LLM path now shares —
+daemon ticks, panel judges, CLI commands, the self-write reviewer's fallback legs — so a metered
+attempt is priced wherever it happens, not only inside a run. Spend readers (`meteredSpendUsd`,
+`usageByModel`) read `llm_attempt` rows with `outcome = 'ok'` unioned with the pre-cutover
+`llm_call` history; the monthly window is a sargable `occurred_at` range on
+`ledger_events_type_time_idx`. The "run-less LLM reads are unmetered" residual below is CLOSED.
+Codex's independent review also found the three CLI adapters had never honored a latched fuse —
+fixed the same day (`27e6728`).
+
 ## Consequences
 
 - A runaway metered bill is now bounded at ~$5/day and ~$50/month by default, with the

@@ -92,6 +92,18 @@ gap of N min spans a deliberate park`) and no incident opens; without it, behavi
 unchanged. The marker suppresses ONLY the heartbeat gap — every other detector still runs.
 See ADR 0018's amendment of the same date; commit b11f8ed.
 
+### Amendment 2026-09-07 — `llm_leg_failing` (slice 2)
+
+The seventh invariant, and the first that reads the new `llm_attempt` events. Codex's challenge
+of the slice-2 design (2026-09-06) put it plainly: a ledger row is evidence, not detection —
+"visible within one tick" needs something that reads the row within one tick. So: a provider with
+≥ `LLM_LEG_FAILING_MIN_ATTEMPTS` (3) attempts and ZERO `ok` in the rolling 24 h opens an incident
+(subject = provider; detail = attempts, ok, latest non-ok `error_kind`). This is exactly the shape
+in which the agy leg died silently for three months: every call failed, `pi` answered, and no one
+was told. Resolves when an `ok` lands; a leg that recovers but is not called again stays open until
+its failed rows age out (≤ 24 h at the 12 h cadence). Grouped by provider — one binary is dead for
+every role at once; a role-specific model pin is the residual.
+
 ## Consequences
 
 - Houge gains the **sense** stage: he can detect a class of his own failures without Paco.

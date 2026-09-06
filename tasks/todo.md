@@ -91,9 +91,14 @@ per-token JSONL stream (~60× the answer) — was a ~600-word answer cap. `7ea5e
 gateway flakes). `b11f8ed` park marker: revival no longer opens a false heartbeat_gap incident.
 
 **Parked / watch:**
-- **Slice 2 — `llm_attempt` audit chokepoint** (spec §"Slice 2"): `answerWithChain` takes a
-  required audit sink, one event per leg attempt incl. failures and run-less daemon ticks. Until
-  it lands, a dead leg is visible only via the `[llm-chain] … fell through` console line.
+- **Slice 2 SHIPPED 2026-09-07** (`0f03e68`…`27e6728`): every LLM leg attempt is an `llm_attempt`
+  row through a REQUIRED sink; `llm_leg_failing` sweep invariant; readers union; codex whole-diff
+  review found 3 P1 the per-task reviews missed (CLI fuse, reviewer fallback legs, chair fallback) —
+  fixed. REMAINING for close: Paco kickstarts the daemon onto this dist, then
+  `SELECT correlation_id, COUNT(*) FROM ledger_events WHERE event_type='llm_attempt' AND run_id IS NULL GROUP BY 1`
+  shows `tick:*` rows (first distill tick ≈30 min) — the D4 work that had zero trace.
+- **Role-specific pin residual** — `llm_leg_failing` groups by provider; a model pinned for one
+  role could die while the provider is healthy elsewhere. Watch, don't build.
 - **Reader wall-clock is unbounded** — `quarantineRead` runs outside the CapabilityRunner and
   retries the whole chain twice: 240 s worst case per external read (was 180 s), checked only
   between loop steps. Bound it or size it before slice 2's numbers make it look worse.

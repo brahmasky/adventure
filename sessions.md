@@ -1244,3 +1244,29 @@ Build + independent adversarial verification subagents; each live round found a 
   from the default chain; agy quota under reader volume; agy inherits `$HOME` allow-rules. Daemon
   on `b11f8ed` dist after Paco's second kickstart; first Google bill cycle still to confirm.
 
+## 2026-09-06→07 — Slice 2: the `llm_attempt` audit chokepoint (SHIPPED; live gate PASS; daemon restart pending)
+
+- Paco: "proceed with the next piece of work as planned … subagents and test and validations,
+  bring codex when appropriate, update docs, commit and push — the usual style". Saved as a memory.
+- Spec review of slice 2 against the live code found the chokepoint could not be `answerWithChain`
+  (one caller); it is the adapter factory (six sites). Codex challenge (medium, 183 k tokens)
+  reproduced that plus per-tick adapters and pricing-in-the-sink as blockers, and added: readers
+  before writers, `attempt_group`/`leg_index`, test sink out of `src/`, and — the goal-changing
+  one — a ledger row is evidence not detection, so `llm_leg_failing` joined the slice. Review
+  record in the spec; plan `docs/superpowers/plans/2026-09-06-llm-attempt-audit-chokepoint.md`.
+- Build: subagent-driven, one implementer per task, two-stage review each (spec, then quality),
+  every finding verified before acting. Catches along the way: real `API_KEY is not set` strings
+  misclassified (fabricated test string masked it); `MAX(sequence)` full scan (indexed; proven on a
+  backup of the live DB); a throwing provider escaping unrecorded; four more direct adapter uses
+  passed as values; Gate B verify under a phantom `run_id`; the spec's false claim that the judge
+  ran `--json` (probed `--json` + `-o` combine — they do); the guard proven to bite; lost money-
+  path assertions restored. Sonnet and then the default model each hit a session rate limit mid-
+  build; reviews moved between them. An observer session Paco had open sent a diverging Task 2
+  spec — declined with reasons; it stood down to review-only.
+- Codex whole-diff review (high, 4.29 M tokens): 3 P1 + 2 P2 that per-task review structurally
+  cannot see (reviewer-internal fallback legs unaudited, CLI adapters bypassing the fuse, no-broker
+  chair fallback unrecorded, non-sargable monthly spend, lexical `last_error_kind`) → `27e6728`.
+- 21 commits `0f03e68`…`27e6728`; suite 168 files / 2344 green; tsc clean; live gate PASS at
+  `060c057` and again after `27e6728`. Docs synced (this entry). Push follows the final reviews.
+- Open: Paco kickstarts the daemon onto this dist → run-less proof query; reader wall-clock;
+  `/usage` by role/outcome; role-specific-pin residual.
