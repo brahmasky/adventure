@@ -270,20 +270,21 @@ export function createAgyCliProvider(config: AgyCliProviderConfig = {}): LlmProv
         };
       }
 
+      // Usage is normalized once and rides the result (slice 2); thinking stays inside output —
+      // the normalizer reports it separately and never re-adds it. A missing block is not an error.
+      const usage = normalizeAgyUsage(envelope.usage);
+
       // Telemetry side channel — best-effort; a missing usage block or a throwing hook never
-      // fails a good answer. Thinking tokens are folded into output by the normalizer.
-      if (config.onUsage) {
-        const usage = normalizeAgyUsage(envelope.usage);
-        if (usage) {
-          try {
-            config.onUsage(usage, model);
-          } catch {
-            // a failing telemetry hook must never break a good answer
-          }
+      // fails a good answer. Kept until the chain switch (Task 9) retires provider hooks.
+      if (config.onUsage && usage) {
+        try {
+          config.onUsage(usage, model);
+        } catch {
+          // a failing telemetry hook must never break a good answer
         }
       }
 
-      return { ok: true, provider: "agy-cli", model, answer };
+      return { ok: true, provider: "agy-cli", model, answer, ...(usage ? { usage } : {}) };
     }
   };
 }

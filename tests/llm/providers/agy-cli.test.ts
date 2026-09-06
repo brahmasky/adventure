@@ -74,7 +74,9 @@ describe("createAgyCliProvider", () => {
       ok: true,
       provider: "agy-cli",
       model: "Gemini 3.8 Flash (Low)",
-      answer: "Paris."
+      answer: "Paris.",
+      // The fixture envelope carries a zeroed usage block; it rides the result (slice 2).
+      usage: { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, thinking_tokens: 0 }
     });
   });
 
@@ -634,10 +636,25 @@ describe("createAgyCliProvider", () => {
 
       expect(seen).toEqual([
         {
-          usage: { input_tokens: 5590, output_tokens: 1511, cached_input_tokens: 8090 },
+          usage: { input_tokens: 5590, output_tokens: 1511, cached_input_tokens: 8090, thinking_tokens: 842 },
           model: "m"
         }
       ]);
+    });
+
+    it("ALSO returns usage on the result — thinking reported separately, never re-added (slice 2)", async () => {
+      const spawnImpl = vi.fn<SpawnImpl>(async () =>
+        spawnResult({ stdout: envelope({ response: "hi", usage: { input_tokens: 5590, output_tokens: 1511, thinking_tokens: 842, cache_read_tokens: 8090, total_tokens: 7101 } }) })
+      );
+      const result = await createAgyCliProvider({ spawnImpl, model: "m" }).answer({ question: "hi" });
+      expect(result.ok && result.usage).toEqual({ input_tokens: 5590, output_tokens: 1511, cached_input_tokens: 8090, thinking_tokens: 842 });
+    });
+
+    it("omits usage on the result when the envelope has none, and still answers", async () => {
+      const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout: JSON.stringify({ status: "SUCCESS", response: "hi" }) }));
+      const result = await createAgyCliProvider({ spawnImpl, model: "m" }).answer({ question: "hi" });
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.usage).toBeUndefined();
     });
 
     it("does not report usage on a failed answer", async () => {

@@ -110,11 +110,38 @@ describe("createPiProvider", () => {
 
     const result = await provider.answer({ question: "hi" });
 
-    // Result shape UNCHANGED; usage rides the side channel with pi's reported model.
-    expect(result).toEqual({ ok: true, provider: "pi", model: "kimi-k2.7", answer: "OK" });
+    // Slice 2: usage rides BOTH the side channel and the result, with pi's reported model.
+    expect(result).toEqual({
+      ok: true,
+      provider: "pi",
+      model: "kimi-k2.7",
+      answer: "OK",
+      usage: { input_tokens: 100, output_tokens: 25, cached_input_tokens: 60 }
+    });
     expect(calls).toEqual([
       { usage: { input_tokens: 100, output_tokens: 25, cached_input_tokens: 60 }, model: "kimi-k2.7" }
     ]);
+  });
+
+  it("ALSO returns the same normalized usage on the result (slice 2)", async () => {
+    const stdout = [
+      JSON.stringify({ type: "session", sessionId: "abc" }),
+      JSON.stringify({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          model: "kimi-k2.7",
+          content: [{ type: "text", text: "OK" }],
+          usage: { input_tokens: 100, output_tokens: 25, cached_input_tokens: 60 }
+        }
+      })
+    ].join("\n");
+    const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout }));
+    const provider = createPiProvider({ spawnImpl, model: "configured-x" });
+
+    const result = await provider.answer({ question: "hi" });
+
+    expect(result.ok && result.usage).toEqual({ input_tokens: 100, output_tokens: 25, cached_input_tokens: 60 });
   });
 
   it("normalizes pi's NATIVE usage schema (input/output/cacheRead — verified on pi 0.81.1)", async () => {
@@ -144,6 +171,28 @@ describe("createPiProvider", () => {
     expect(calls).toEqual([
       { usage: { input_tokens: 1789, output_tokens: 22, cached_input_tokens: 256 }, model: "kimi-for-coding" }
     ]);
+  });
+
+  it("returns pi's NATIVE-schema usage on the result too (slice 2)", async () => {
+    const stdout = [
+      JSON.stringify({ type: "session", sessionId: "abc" }),
+      JSON.stringify({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          provider: "kimi-coder",
+          model: "kimi-for-coding",
+          content: [{ type: "text", text: "OK" }],
+          usage: { input: 1789, output: 22, cacheRead: 256, cacheWrite: 0, totalTokens: 1811, cost: { total: 0 } }
+        }
+      })
+    ].join("\n");
+    const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout }));
+    const provider = createPiProvider({ spawnImpl });
+
+    const result = await provider.answer({ question: "hi" });
+
+    expect(result.ok && result.usage).toEqual({ input_tokens: 1789, output_tokens: 22, cached_input_tokens: 256 });
   });
 
   it("does not fire onUsage when pi reports no usage block", async () => {
@@ -489,7 +538,13 @@ describe("createPiProvider", () => {
 
       const result = await provider.answer({ question: "hi" });
 
-      expect(result).toEqual({ ok: true, provider: "pi", model: "kimi-for-coding", answer });
+      expect(result).toEqual({
+        ok: true,
+        provider: "pi",
+        model: "kimi-for-coding",
+        answer,
+        usage: { input_tokens: 10, output_tokens: 1300, cached_input_tokens: 0 }
+      });
     });
 
     it("fails (not success) when the EXTRACTED answer exceeds maxAnswerBytes", async () => {

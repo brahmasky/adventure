@@ -312,7 +312,8 @@ export function createPiProvider(config: PiProviderConfig = {}): LlmProvider {
         provider: "pi",
         // Prefer the model pi actually reported, then the configured one.
         model: reportedModel,
-        answer
+        answer,
+        ...(parsed.usage ? { usage: parsed.usage } : {})
       };
     }
   };

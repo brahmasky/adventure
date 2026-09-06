@@ -85,14 +85,38 @@ describe("createKimiProvider", () => {
 
     const result = await provider.answer({ question: "What is the capital of France?" });
 
-    // The result shape is UNCHANGED (usage rides the side channel, not the result).
-    expect(result).toEqual({ ok: true, provider: "kimi-api", model: "kimi-test", answer: "Paris." });
+    // Slice 2: usage rides BOTH the side channel and the result (hooks retire in Task 9).
+    expect(result).toEqual({
+      ok: true,
+      provider: "kimi-api",
+      model: "kimi-test",
+      answer: "Paris.",
+      usage: { input_tokens: 42, output_tokens: 7, cached_input_tokens: 30 }
+    });
     expect(calls).toEqual([
       {
         usage: { input_tokens: 42, output_tokens: 7, cached_input_tokens: 30 },
         model: "kimi-test"
       }
     ]);
+  });
+
+  it("ALSO returns the same normalized usage on the result (slice 2)", async () => {
+    const fetchImpl = vi.fn<KimiFetchImpl>(async () =>
+      okResponse({
+        choices: [{ message: { content: "Paris." } }],
+        usage: {
+          prompt_tokens: 42,
+          completion_tokens: 7,
+          prompt_tokens_details: { cached_tokens: 30 }
+        }
+      })
+    );
+    const provider = createKimiProvider({ apiKey: "test-key", model: "kimi-test", fetchImpl });
+
+    const result = await provider.answer({ question: "What is the capital of France?" });
+
+    expect(result.ok && result.usage).toEqual({ input_tokens: 42, output_tokens: 7, cached_input_tokens: 30 });
   });
 
   it("does not fire onUsage when the response has no usage block", async () => {

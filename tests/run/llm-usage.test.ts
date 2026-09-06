@@ -88,7 +88,7 @@ describe("normalizeAgyUsage", () => {
         cache_read_tokens: 8090,
         total_tokens: 7101
       })
-    ).toEqual({ input_tokens: 5590, output_tokens: 1511, cached_input_tokens: 8090 });
+    ).toEqual({ input_tokens: 5590, output_tokens: 1511, cached_input_tokens: 8090, thinking_tokens: 842 });
   });
 
   it("keeps agy's total_tokens identity intact for a thinking-heavy call", () => {
@@ -113,7 +113,7 @@ describe("normalizeAgyUsage", () => {
         cache_read_tokens: 8128,
         total_tokens: 13419
       })
-    ).toEqual({ input_tokens: 13379, output_tokens: 40, cached_input_tokens: 8128 });
+    ).toEqual({ input_tokens: 13379, output_tokens: 40, cached_input_tokens: 8128, thinking_tokens: 0 });
   });
 
   it("handles a zero-thinking envelope unchanged", () => {
@@ -125,14 +125,14 @@ describe("normalizeAgyUsage", () => {
         cache_read_tokens: 0,
         total_tokens: 13380
       })
-    ).toEqual({ input_tokens: 13379, output_tokens: 1, cached_input_tokens: 0 });
+    ).toEqual({ input_tokens: 13379, output_tokens: 1, cached_input_tokens: 0, thinking_tokens: 0 });
   });
 
   it("ignores total_tokens rather than deriving from it", () => {
     // Measured: agy's total IS input + output — which is exactly why it carries no information
     // the components don't, and every consumer wants the components.
     expect(normalizeAgyUsage({ input_tokens: 5264, output_tokens: 56, total_tokens: 5320 }))
-      .toEqual({ input_tokens: 5264, output_tokens: 56, cached_input_tokens: 0 });
+      .toEqual({ input_tokens: 5264, output_tokens: 56, cached_input_tokens: 0, thinking_tokens: 0 });
   });
 
   it("returns null for a missing, non-object, or token-less usage block", () => {
@@ -145,6 +145,6 @@ describe("normalizeAgyUsage", () => {
 
   it("is tolerant of garbage values (never throws, coerces to 0)", () => {
     expect(normalizeAgyUsage({ input_tokens: "abc", output_tokens: -5, thinking_tokens: null }))
-      .toEqual({ input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 });
+      .toEqual({ input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, thinking_tokens: 0 });
   });
 });

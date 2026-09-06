@@ -255,20 +255,20 @@ export function createOpenAiCompatProvider(
         };
       }
 
-      // Telemetry side channel (Phase 3.1): surface normalized usage without altering the result
-      // shape. Best-effort — a missing usage block or a throwing hook never fails the answer.
-      if (config.onUsage) {
-        const usage = extractUsage(data);
-        if (usage) {
-          try {
-            config.onUsage(usage, model);
-          } catch {
-            // a failing telemetry hook must never break a good answer
-          }
+      // Usage is normalized once and rides the result (slice 2). A missing block is not an error.
+      const usage = extractUsage(data);
+
+      // Telemetry side channel (Phase 3.1) — best-effort; a missing usage block or a throwing hook
+      // never fails the answer. Kept until the chain switch (Task 9) retires provider hooks.
+      if (config.onUsage && usage) {
+        try {
+          config.onUsage(usage, model);
+        } catch {
+          // a failing telemetry hook must never break a good answer
         }
       }
 
-      return { ok: true, provider: spec.name, model, answer };
+      return { ok: true, provider: spec.name, model, answer, ...(usage ? { usage } : {}) };
     }
   };
 }

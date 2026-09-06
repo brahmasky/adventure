@@ -205,8 +205,13 @@ describe("provider usage tagging (D4 interim wiring)", () => {
       expect(seen).toHaveLength(1);
       expect(seen[0]!.provider).toBe("agy-cli");
       // agy nests thinking inside output, so output_tokens is reported as-is (never +thinking),
-      // and cache_read maps to cached input.
-      expect(seen[0]!.usage).toEqual({ input_tokens: 120, output_tokens: 5, cached_input_tokens: 7 });
+      // and cache_read maps to cached input. Thinking rides alongside, informational only.
+      expect(seen[0]!.usage).toEqual({
+        input_tokens: 120,
+        output_tokens: 5,
+        cached_input_tokens: 7,
+        thinking_tokens: 40
+      });
     } finally {
       for (const [key, value] of [
         ["HOUGE_AGY_BIN", saved.bin],

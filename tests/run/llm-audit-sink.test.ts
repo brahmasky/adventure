@@ -117,8 +117,7 @@ describe("RunStore.llmAuditSink", () => {
         role: "",
         outcome: "ok",
         model: "g",
-        // `thinking_tokens` is typed on LlmUsage in Task 5; until then it rides as an extra property.
-        usage: { input_tokens: 5590, output_tokens: 1511, cached_input_tokens: 8090, thinking_tokens: 842 } as never
+        usage: { input_tokens: 5590, output_tokens: 1511, cached_input_tokens: 8090, thinking_tokens: 842 }
       });
       expect(attemptsOf(store)[0]!.payload).toMatchObject({ output_tokens: 1511, thinking_tokens: 842 });
     } finally {

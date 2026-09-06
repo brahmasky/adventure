@@ -1429,8 +1429,7 @@ export class RunStore {
             payload.input_tokens = usage.input_tokens;
             payload.output_tokens = usage.output_tokens;
             payload.cached_input_tokens = usage.cached_input_tokens;
-            const thinking = (usage as { thinking_tokens?: number }).thinking_tokens; // typed in Task 5
-            if (thinking !== undefined) payload.thinking_tokens = thinking;
+            if (usage.thinking_tokens !== undefined) payload.thinking_tokens = usage.thinking_tokens;
             if (METERED_PROVIDERS.has(attempt.provider)) {
               // `null` = unknown metered model (warned once inside computeCostUsd); fall back to
               // the provider's own figure if it reported one, else leave the row unpriced.
@@ -6577,6 +6576,8 @@ export class RunStore {
       "approvals",
       "approvals_one_pending_action",
       "ledger_events_run_sequence_idx",
+      "ledger_events_type_time_idx",
+      "ledger_events_sequence_idx",
       "runs_created_at_idx",
       "runs_updated_at_idx",
       "approvals_run_state_idx",

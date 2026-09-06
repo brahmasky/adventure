@@ -104,6 +104,20 @@ describe("createGeminiProvider", () => {
     ]);
   });
 
+  it("ALSO returns the same normalized usage on the result (slice 2)", async () => {
+    const fetchImpl = vi.fn<GeminiFetchImpl>(async () =>
+      okResponse({
+        choices: [{ message: { content: "Paris." } }],
+        usage: { prompt_tokens: 13, completion_tokens: 2 }
+      })
+    );
+    const provider = createGeminiProvider({ apiKey: "test-key", model: "gemini-test", fetchImpl });
+
+    const result = await provider.answer({ question: "Q" });
+
+    expect(result.ok && result.usage).toEqual({ input_tokens: 13, output_tokens: 2, cached_input_tokens: 0 });
+  });
+
   describe("thinking/reasoning tokens are counted as output (D3)", () => {
     /** Fire one completion and hand back the usage the provider reported. */
     async function usageFor(usage: Record<string, unknown>): Promise<unknown> {

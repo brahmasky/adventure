@@ -12,9 +12,17 @@
 
 export interface LlmUsage {
   input_tokens: number;
+  /**
+   * The TOTAL billable output, whatever the engine's raw shape (review S3): Codex reports
+   * `reasoning_output_tokens` disjointly and the normalizer folds it in; agy nests thinking
+   * inside `output_tokens` and it is never re-added; the OpenAI-compat legs derive
+   * `max(completion, total − prompt)`. Pricing reads this field alone.
+   */
   output_tokens: number;
   cached_input_tokens: number;
   cost_usd?: number;
+  /** Informational side channel — already inside `output_tokens`. Never priced, never summed. */
+  thinking_tokens?: number;
 }
 
 function asObject(value: unknown): Record<string, unknown> | undefined {
@@ -106,6 +114,7 @@ export function normalizeAgyUsage(raw: unknown): LlmUsage | null {
   return {
     input_tokens: num(usage.input_tokens),
     output_tokens: num(usage.output_tokens),
-    cached_input_tokens: num(usage.cache_read_tokens)
+    cached_input_tokens: num(usage.cache_read_tokens),
+    thinking_tokens: num(usage.thinking_tokens)
   };
 }

@@ -1,3 +1,5 @@
+import type { LlmUsage } from "../run/llm-usage.js";
+
 export interface LlmRequest {
   question: string;
   model?: string;
@@ -11,7 +13,7 @@ export interface LlmRequest {
 }
 
 export type LlmResult =
-  | { ok: true; provider: string; model: string; answer: string }
+  | { ok: true; provider: string; model: string; answer: string; usage?: LlmUsage }
   | { ok: false; provider: string; error: string; unavailable?: boolean };
 
 export interface LlmProvider {
