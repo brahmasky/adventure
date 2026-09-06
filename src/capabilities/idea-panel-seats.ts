@@ -282,7 +282,9 @@ async function spawnPanelChairInner(params: ChairParams): Promise<SeatResult> {
  * read-only sandbox is unchanged.
  */
 export function buildCodexJudgeArgs(outfile: string): string[] {
-  return ["exec", "--sandbox", "read-only", "--skip-git-repo-check", "-o", outfile, "-"];
+  // `--json` + `-o` combine (live-probed 2026-09-06): the outfile still carries the final message,
+  // stdout carries the JSONL stream `normalizeCodexUsage` reads for the attempt row.
+  return ["exec", "--sandbox", "read-only", "--skip-git-repo-check", "--json", "-o", outfile, "-"];
 }
 
 export interface CodexJudgeParams {

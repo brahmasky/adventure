@@ -324,7 +324,7 @@ describe("spawnCodexJudge — contained codex CLI judge", () => {
     const outfile = outfileOf(args);
     expect(dirname(outfile)).toMatch(/houge-panel-codex-/);
     expect(args).toEqual(buildCodexJudgeArgs(outfile));
-    expect(args).toEqual(["exec", "--sandbox", "read-only", "--skip-git-repo-check", "-o", outfile, "-"]);
+    expect(args).toEqual(["exec", "--sandbox", "read-only", "--skip-git-repo-check", "--json", "-o", outfile, "-"]);
     expect(args).not.toContain(DIGEST);
     // Prompt delivery mirrors coding-agent: trailing `-` + whole prompt (system, then digest)
     // on stdin — the untrusted digest is never an argv token.
@@ -510,6 +510,36 @@ describe("seat audit (slice 2)", () => {
       outcome: "ok",
       model: "default",
       usage: { input_tokens: 200, output_tokens: 25, cached_input_tokens: 50 }
+    });
+  });
+
+  it("codex judge: a {type:error} event before turn.completed does not mask the usage (live-probed stream shape)", async () => {
+    const sink = recordingSink();
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "t1" }),
+      JSON.stringify({ type: "error", message: "memories phase: transient log line" }),
+      JSON.stringify({
+        type: "turn.completed",
+        usage: { input_tokens: 20564, cached_input_tokens: 5504, output_tokens: 87, reasoning_output_tokens: 80 }
+      }),
+      ""
+    ].join("\n");
+    const spawnImpl = vi.fn<SpawnImpl>(async (_file, args) => {
+      writeFileSync(args[args.indexOf("-o") + 1]!, '{"scores":[{"card":1,"score":7,"reason":"ok"}]}');
+      return spawnResult({ stdout });
+    });
+    const result = await spawnCodexJudge({
+      digest: "d",
+      system: "s",
+      env: {} as NodeJS.ProcessEnv,
+      audit: sink,
+      spawnImpl
+    });
+    expect(result.ok).toBe(true);
+    expect(sink.attempts[0]).toMatchObject({
+      provider: "codex",
+      outcome: "ok",
+      usage: { input_tokens: 20564, output_tokens: 167, cached_input_tokens: 5504 }
     });
   });
 
