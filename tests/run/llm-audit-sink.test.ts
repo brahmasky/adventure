@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
+import { computeCostUsd } from "../../src/llm/metered-pricing.js";
 import { RunStore } from "../../src/run/run-store.js";
 
 function event(goal: string) {
@@ -104,6 +105,69 @@ describe("RunStore.llmAuditSink", () => {
       const [metered, flat] = attemptsOf(store);
       expect(metered!.payload.cost_usd as number).toBeGreaterThan(0);
       expect(flat!.payload.cost_usd).toBeUndefined();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a METERED leg's self-reported cost is replaced by the computed figure", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const usage = { input_tokens: 1_000_000, output_tokens: 0, cached_input_tokens: 0, cost_usd: 123 };
+      store
+        .llmAuditSink({ correlation_id: "tick:idea_radar", role: "extract" })
+        .record({ provider: "gemini-api", role: "", outcome: "ok", model: "gemini-3.5-flash", usage });
+      const expected = computeCostUsd("gemini-api", "gemini-3.5-flash", usage, process.env);
+      expect(expected).not.toBeNull();
+      const cost = attemptsOf(store)[0]!.payload.cost_usd;
+      expect(typeof cost).toBe("number");
+      expect(cost as number).toBeGreaterThan(0);
+      expect(cost).not.toBe(123);
+      expect(cost as number).toBeCloseTo(expected as number, 10);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("an UNKNOWN metered model stays unpriced unless the provider self-reported", () => {
+    const store = RunStore.openInMemory();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const sink = store.llmAuditSink({ correlation_id: "tick:idea_radar", role: "extract" });
+      // No family prefix: a `gemini-*` name would prefix-match the gemini price row and be priced.
+      const model = `mystery-model-${Date.now()}`;
+      sink.record({
+        provider: "gemini-api",
+        role: "",
+        outcome: "ok",
+        model,
+        usage: { input_tokens: 1_000_000, output_tokens: 1_000_000, cached_input_tokens: 0 }
+      });
+      sink.record({
+        provider: "gemini-api",
+        role: "",
+        outcome: "ok",
+        model,
+        usage: { input_tokens: 1_000_000, output_tokens: 1_000_000, cached_input_tokens: 0, cost_usd: 0.25 }
+      });
+      const [unpriced, selfReported] = attemptsOf(store);
+      expect(unpriced!.payload.cost_usd).toBeUndefined();
+      expect(selfReported!.payload.cost_usd).toBe(0.25); // the `?? selfReported` fallback
+    } finally {
+      warn.mockRestore();
+      store.close();
+    }
+  });
+
+  it("sink → meteredSpendUsd end-to-end: the computed figure is what the ceiling sees", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const usage = { input_tokens: 1_000_000, output_tokens: 0, cached_input_tokens: 0, cost_usd: 123 };
+      store
+        .llmAuditSink({ correlation_id: "tick:idea_radar", role: "extract" })
+        .record({ provider: "gemini-api", role: "", outcome: "ok", model: "gemini-3.5-flash", usage });
+      const expected = computeCostUsd("gemini-api", "gemini-3.5-flash", usage, process.env) as number;
+      expect(store.meteredSpendUsd(new Date().toISOString()).daily_usd).toBeCloseTo(expected, 10);
     } finally {
       store.close();
     }

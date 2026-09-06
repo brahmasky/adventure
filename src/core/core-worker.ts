@@ -974,7 +974,7 @@ export class CoreWorker {
     budget: BudgetLedger
   ): (input: { question: string; system: string }) => Promise<{ ok: true; answer: string } | { ok: false }> {
     return async (input) => {
-      const r = await this.runLlm(claim, input.question, input.system, budget);
+      const r = await this.runLlm(claim, input.question, input.system, budget, "compose");
       return r.ok ? { ok: true, answer: r.answer } : { ok: false };
     };
   }
@@ -1394,6 +1394,23 @@ export class CoreWorker {
   }
 
   /**
+   * `llmAdapterFor`'s run-less twin: a call with NO run (Gate B verify runs walled-off under a
+   * synthetic contract) is audited under an honest correlation id instead of a phantom run id.
+   * Same injected-adapter passthrough as `llmAdapterFor`.
+   */
+  private llmAdapterRunless(
+    correlation_id: string,
+    role: LlmCallRole
+  ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
+    if (!this.llmAdapterIsDefault) return this.llmAdapter;
+    return createLlmAnswerAdapter({
+      ...(this.broker ? { broker: this.broker } : {}),
+      meteredBreached: () => this.runStore.meteredFuseLatched(),
+      audit: this.runStore.llmAuditSink({ correlation_id, role })
+    });
+  }
+
+  /**
    * Dual-LLM privilege separation (ADR 0014, Phase 1): the quarantined reader (Q-LLM) call. An
    * external-read tool's raw untrusted output is summarized into a schema-constrained extraction
    * that the planner reads instead of the raw bytes. Mirrors the anchor-verify tolerant parse
@@ -1602,7 +1619,7 @@ export class CoreWorker {
     const now = new Date().toISOString();
 
     // 1) Gate A — is this even a skill? (the §2 routing rubric).
-    const gateRaw = await this.runLlm(skillClaim, buildGateAQuestion(message, recentTurns, turnChars), GATE_A_DISCIPLINE, budget);
+    const gateRaw = await this.runLlm(skillClaim, buildGateAQuestion(message, recentTurns, turnChars), GATE_A_DISCIPLINE, budget, "classify");
     const verdict: GateAResult = gateRaw.ok
       ? parseGateAVerdict(gateRaw.answer)
       : { verdict: "unsure", reason: "Gate A classification call failed" };
@@ -1666,7 +1683,7 @@ export class CoreWorker {
     // 1) Author the initial draft — one attempt + one retry on malformed output.
     let parsed: AuthoredSkill | undefined;
     for (let attempt = 0; attempt < 2 && !parsed; attempt += 1) {
-      const authored = await this.runLlm(claim, buildSkillAuthorQuestion(message, fedFile), SKILL_AUTHOR_DISCIPLINE, budget);
+      const authored = await this.runLlm(claim, buildSkillAuthorQuestion(message, fedFile), SKILL_AUTHOR_DISCIPLINE, budget, "compose");
       if (!authored.ok) break; // capability failure (e.g. budget) → clean failure below
       const p = parseAuthoredSkill(authored.answer);
       if (p.ok) parsed = p.skill;
@@ -1704,7 +1721,8 @@ export class CoreWorker {
         claim,
         buildGuidedRefineQuestion(message, parsed.file, gate.failing),
         SKILL_AUTHOR_DISCIPLINE,
-        budget
+        budget,
+        "compose"
       );
       if (!refined.ok) break;
       const p = parseAuthoredSkill(refined.answer);
@@ -1830,7 +1848,8 @@ export class CoreWorker {
   private anchorLlm(): (system: string, question: string) => Promise<string | undefined> {
     const contract = compileSkillAuthorContract("gate-b-verify");
     return async (system, question) => {
-      const r = await this.runLlm({ run_id: "gate-b", contract }, question, system, new BudgetLedger(contract.budget));
+      // Run-less (no phantom run id): audited under `gate:b` as a "verify" call.
+      const r = await this.runLlmWith(this.llmAdapterRunless("gate:b", "verify"), contract, question, system, new BudgetLedger(contract.budget));
       return r.ok ? r.answer : undefined;
     };
   }
@@ -1943,6 +1962,20 @@ export class CoreWorker {
     claim: ClaimedRun,
     question: string,
     system: string,
+    budget: BudgetLedger,
+    // The call's purpose on its `llm_attempt` rows — EXPLICIT at every caller (no default), so a
+    // Gate A classification is never booked as an "answer".
+    role: LlmCallRole
+  ): Promise<{ ok: true; answer: string } | { ok: false; failure: Exclude<CapabilityResult, { status: "succeeded" }> }> {
+    return this.runLlmWith(this.llmAdapterFor(claim.run_id, role), claim.contract, question, system, budget);
+  }
+
+  /** `runLlm`'s body over an explicit adapter — the run-less callers (Gate B) bring their own scope. */
+  private async runLlmWith(
+    adapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
+    contract: ClaimedRun["contract"],
+    question: string,
+    system: string,
     budget: BudgetLedger
   ): Promise<{ ok: true; answer: string } | { ok: false; failure: Exclude<CapabilityResult, { status: "succeeded" }> }> {
     const registry = new ToolRegistry();
@@ -1954,10 +1987,10 @@ export class CoreWorker {
       risk_level: "low",
       timeout_ms: llmTimeoutMs,
       output_limit_bytes: 100_000,
-      execute: this.llmAdapterFor(claim.run_id, "answer")
+      execute: adapter
     });
     const result = await new CapabilityRunner(registry).execute({
-      contract: claim.contract,
+      contract,
       capability: "llm_answer",
       input: { question, system },
       budget
