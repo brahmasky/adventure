@@ -177,4 +177,24 @@ describe("Run Ledger events", () => {
       store.close();
     }
   });
+
+  it("validates an llm_attempt event: provider/role/outcome required, tokens optional", () => {
+    const ok = createLedgerEvent({
+      correlation_id: "tick:episodic_distill",
+      event_type: "llm_attempt",
+      actor: "capability_runner",
+      sequence: 1,
+      payload: { provider: "agy-cli", role: "distill", outcome: "unavailable", error_kind: "model_missing", latency_ms: 12 }
+    });
+    expect(validateLedgerEvent(ok)).toEqual({ ok: true });
+
+    const missing = createLedgerEvent({
+      correlation_id: "tick:episodic_distill",
+      event_type: "llm_attempt",
+      actor: "capability_runner",
+      sequence: 2,
+      payload: { provider: "agy-cli", role: "distill" }
+    });
+    expect(validateLedgerEvent(missing).ok).toBe(false);
+  });
 });

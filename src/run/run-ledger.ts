@@ -46,6 +46,7 @@ export type LedgerEventType =
   | "external_work_published"
   | "external_work_failed"
   | "llm_call"
+  | "llm_attempt"
   | "loop_started"
   | "loop_step"
   | "loop_halted"
@@ -169,6 +170,13 @@ const requiredPayloadFields = {
   // the source for every LLM call. role ∈ writer|reviewer|classify|frame|answer. cached_input_tokens,
   // cost_usd, latency_ms are optional. NON-NEGOTIABLE: counts/metadata ONLY — never prompt/diff/response.
   llm_call: ["provider", "model", "role", "input_tokens", "output_tokens"],
+  // Slice 2 audit chokepoint (spec 2026-09-04 §"Slice 2"). ONE row per leg ATTEMPT — success,
+  // error, or unavailable — emitted by `answerWithChain` and by the spawn seats outside it.
+  // outcome ∈ ok|error|unavailable; error_kind is a bounded classifier, never provider prose.
+  // Optional: model, latency_ms, input_tokens, output_tokens, thinking_tokens,
+  // cached_input_tokens, cost_usd, error_kind, attempt_group, leg_index. Counts/metadata ONLY —
+  // never prompt or response content.
+  llm_attempt: ["provider", "role", "outcome"],
   // Inner-loop observation hooks (ADR 0013, step ⓪·1). `loop_started.applied_artifacts`
   // is the attribution seed (which lesson/skill scope blocks were injected); `loop_step`
   // records each composed step (result_digest is the truncated transcript entry — never
