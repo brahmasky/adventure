@@ -1081,7 +1081,7 @@ describe("audit chokepoint coverage (structural, not by convention)", () => {
 
 - [ ] **Step 2: Run it** — `npx vitest run tests/llm/audit-coverage.test.ts` → FAIL on "no onUsage" and "recordLlmCall" (they still exist).
 
-- [ ] **Step 3: Delete.** Remove `onUsage` (member + doc comment) from `PiProviderConfig`, `AgyCliProviderConfig`, `OpenAiCompatConfig` and the three `if (config.onUsage …)` blocks. Delete `RunStore.recordLlmCall` and the `LlmCallRole`-doc reference to it (keep the type). In the four provider test files, delete the tests that assert the hook fired (their `result.usage` siblings from Task 5 remain).
+- [ ] **Step 3: Delete.** Remove `onUsage` (member + doc comment) from `PiProviderConfig`, `AgyCliProviderConfig`, `OpenAiCompatConfig` and the three `if (config.onUsage …)` blocks. Also (Task 5 quality review): in `src/run/llm-usage.ts` `normalizeCodexUsage`, add `thinking_tokens: num(last.reasoning_output_tokens)` to the returned object so Codex's reasoning is visible on `llm_attempt` rows like agy's (it stays folded into `output_tokens` — the invariant holds); update its `toEqual` expectations in `tests/run/llm-usage.test.ts` accordingly, and amend the `LlmUsage.thinking_tokens` doc to say it is reported by every engine that exposes reasoning separately. Delete `RunStore.recordLlmCall` and the `LlmCallRole`-doc reference to it (keep the type). In the four provider test files, delete the tests that assert the hook fired (their `result.usage` siblings from Task 5 remain).
 
 - [ ] **Step 4: Run** — `npx vitest run tests/llm/ tests/run/` → PASS; `npx tsc --noEmit -p tsconfig.json` clean; then the FULL suite `npm test` → PASS.
 
