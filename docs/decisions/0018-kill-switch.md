@@ -56,7 +56,7 @@ Park-alive needs zero infra migration and is self-evidently durable.
 the agent.
 
 **Revival is manual by design:** delete the file, then
-`launchctl kickstart -k gui/$UID/com.houge.daemon`. There is deliberately no `/revive` —
+`launchctl kickstart -k gui/$(id -u)/com.houge.daemon`. There is deliberately no `/revive` —
 a stop that the stopped system could be talked into undoing is not a stop.
 
 ### 2. Unforgeability chain
@@ -95,6 +95,24 @@ re-enable would require remembering pre-disarm values; the ack says so instead o
 `src/config/load-env.ts` join `PROTECTED_FILES` in the self-write guard: a self-write that
 deletes the tombstone revives a killed agent; one that edits `readTombstone` (or removes the
 posture application from env loading) does the same one hop removed. All are Paco's-hand-only.
+
+### Amendment 2026-09-06 — the park marker (`houge.parked`)
+
+Every revival opened a false `heartbeat_gap` incident equal to the park duration (observed
+live: `gap_minutes 2134` for a 35.6 h park). The invariant sweep (ADR 0024) reads a heartbeat
+that stopped and assumes the daemon was down; the tombstone that would explain the silence is
+deleted as part of revival, so nothing on disk says it was deliberate. The park path may not
+touch the store (§1: construct nothing), but it already writes a file, so it now leaves one
+more: `houge.parked` (`HOUGE_PARK_MARKER_PATH`), carrying `parked_at` plus the tombstone's
+fields. The sweep reads it after revival and logs the gap as a deliberate park instead of
+opening an incident; the daemon removes it on its first successful poll cycle, so a later
+crash is reported normally. A corrupt marker still counts as present — the file's existence is
+the evidence. It is NOT a stop switch: deleting it revives nothing, it only changes how the
+next gap is reported, so it is deliberately absent from the §4 self-write protected list.
+Commit b11f8ed; regression tests `tests/run/invariant-sweep-park.test.ts`.
+
+Also from that day: the revival command is now written `gui/$(id -u)/` everywhere — `$UID`
+is a bash/zsh variable that fish does not define, and the operator's shell is fish.
 
 ## Consequences
 

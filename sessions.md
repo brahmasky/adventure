@@ -1204,3 +1204,43 @@ Build + independent adversarial verification subagents; each live round found a 
 - Remaining (Paco live gate, spec §7): `/skills retire siem-soar-ueba-weekly-report` · restore
   round-trip · NL 退役 happy+ambiguous · arm reverify with AGE_DAYS=1 (not 0 — resolver
   rejects) → immediate first sweep → ledger check → restore default.
+
+## 2026-09-04→06 — CLI-only LLM migration slice 1 + pi cap + outbox claim + park marker (SHIPPED, live)
+
+- Trigger: an unexplained ~15–16 AUD/month Google bill vs $1.06 of recorded `gemini-api` spend.
+  Investigation (09-04) found four defects → design `docs/superpowers/specs/2026-09-04-cli-only-llm-
+  and-audit-chokepoint-design.md` (1720b0e) → Paco parked the daemon via the kill tombstone.
+- 09-06 build: `spec-review-senior` against the LIVE `agy` binary changed the design in three
+  places (agy exits 0 on ERROR; SUCCESS can carry an empty response + `denied_actions`; the reader
+  moves onto an AGENTIC CLI — Paco: "allow tools, audit and prompt properly"). Shipped `9abb92e`:
+  planner `pi,agy-cli`, reader `agy-cli,pi`, judges `pi`/`agy-cli`, agy JSON envelope with
+  status-authoritative parse, `--disable-slash-commands`, fresh mkdtemp cwd, D3 fix, fall-through
+  + fuse-drop logging, cli-spawn detached + process-group kill + grace timer.
+- Paco: "where is the subagent test and validation?" → four parallel reviewers (security /
+  correctness / testing / adversarial) over the diff. Confirmed and fixed: `src/cli.ts` radar-panel
+  still on the metered APIs; `reasoning_tokens + completion` double-counts (and a present-but-zero
+  field restored the undercount); "empty temp cwd" was `os.tmpdir()` holding Houge's own run
+  state; a tool grandchild holding the stdout pipe left `defaultSpawnImpl` unsettled forever —
+  the daemon's single `while` loop would wedge; stderr dropped from the new parse; unbounded
+  attacker-influenced `denied_actions` text; README's "one env line" escape hatch was two vars +
+  a restart. Rejected with reasons: usage on failed legs (slice 2's `llm_attempt`), `--sandbox` +
+  dedicated `$HOME` (Paco's permit-and-contain call, recorded in ADR 0014).
+- Revival (Paco, fish: `gui/(id -u)/`) → immediate false `heartbeat_gap` incident (2134 min = the
+  park) + `[llm-chain] agy-cli served after 1 leg(s) fell through: pi output exceeded 262144 byte
+  cap` ×4 — the new logging's first catch. Measured: pi's `--mode json` streams one line per token
+  with a zeroed usage+cost struct, 58.6× the answer; the cap was a ~600-word answer cap. Paco
+  asked for agy's stdout reviewed too → 1.06×, raw UTF-8, but `thinking_tokens` is NESTED in
+  `output_tokens` (`total == input + output` on every probe incl. two with thinking) — the spec's
+  fold, which I had shipped, double-counted; fixed. Live agy profile: ~12.2 K input/reader call.
+- Paco: "use subagents to fix pi's cap, validate both, commit and push, then fix the flake" →
+  `04ced06` (8 MB stream bound + 256 KB answer cap; validated on the real binary against the exact
+  prompt shape that failed ×4), `7ea5e77` (two flake agents converged: `claimNextNotification`
+  re-found "the row it just claimed" by `updated_at DESC, notification_id DESC` — a same-ms tie
+  handed back the old row; proven 0/5 at pristine HEAD, 10/10 + 12/12 after; the todo's theory
+  was right about the function, wrong about the mechanism), `b11f8ed` (park marker).
+- Docs synced (this entry): ADR 0014/0018/0019/0024/0027 amendments + index, roadmap delta,
+  configuration reference, deploy README (`$(id -u)` — `$UID` is not a thing in fish), lessons.
+- Open: slice 2 audit chokepoint; reader wall-clock unbounded (240 s worst case); fast-fail gone
+  from the default chain; agy quota under reader volume; agy inherits `$HOME` allow-rules. Daemon
+  on `b11f8ed` dist after Paco's second kickstart; first Google bill cycle still to confirm.
+

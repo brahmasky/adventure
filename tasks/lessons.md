@@ -170,3 +170,37 @@ Rules Claude writes for itself after corrections. Review at session start.
   attempt failed (gate output, ledger, artifacts) and reproduce/characterize the live failure.
   Only then write code. A correct-looking diagnosis from another agent is an input to
   investigation, not a substitute for it.
+
+## LLM accounting / provider migrations
+
+- **Check the vendor's own `total` identity, not the field name.** (2026-09-06, D3) The spec said
+  "fold `thinking_tokens` into output, like Codex's `reasoning_output_tokens`". Codex really does
+  report reasoning disjointly; agy and OpenAI nest it INSIDE `output_tokens`, so the fold
+  double-counted 40–60% on any reasoning model. The tell was one line of arithmetic: agy's
+  `total_tokens == input + output` held on every probe INCLUDING the ones with non-zero thinking,
+  so thinking was already inside output. Rule: before summing two usage fields, find the vendor's
+  own identity (`total == ?`) and confirm the sum keeps it. And test with a fixture where the two
+  readings give DIFFERENT numbers — `{prompt:100, completion:50, total:750, reasoning:600}` passed
+  under both formulas and caught nothing.
+- **A field that is present-but-zero is not "absent".** (2026-09-06) Branching on
+  `reasoning_tokens !== undefined` skipped the total-based derivation whenever a vendor sent
+  `reasoning_tokens: 0`, quietly restoring the exact undercount the fix existed to remove. Prefer
+  `max()` over the candidates to a presence branch.
+- **Asserting a constant does not guard the call sites that should use it.** (2026-09-06)
+  `expect(PANEL_JUDGE_PROVIDERS).toEqual({kimi:"pi", gemini:"agy-cli"})` was green while
+  `src/cli.ts` still pinned `pinnedJudge("kimi-api")` — a second seat site typed its own literals.
+  Rule: when an invariant is "no X anywhere", scan the source for X (`tests/capabilities/
+  panel-judge-providers.test.ts` now greps `src/` for `pinnedJudge("…")` and metered names).
+- **Self-run tests and self-run review skills are not validation.** (2026-09-06, Paco: "where is
+  the subagent test and validation?") I wrote the code, its tests, ran `spec-review-senior` on my
+  own spec, and built the gate that graded my own work. Four parallel reviewers then found what
+  that loop structurally could not: a missed call site, a formula wrong in both directions, three
+  documented containment controls absent from the code, and a daemon-wedging spawn bug. Rule: for
+  any diff a person would review, run independent reviewers over the working tree BEFORE
+  reporting done, hand them the probe facts already established, then verify each finding
+  first-hand (one of them was wrong about a fixture) and report both confirmed and rejected.
+- **"Silent fall-through" means the reason string is thrown away on success.** (2026-09-06)
+  `answerWithChain` accumulated per-leg failure reasons and discarded them the moment a later leg
+  answered — that is the exact mechanism by which a dead first leg stayed invisible for three
+  months. A fallback that succeeds must still log what it fell back FROM.
+

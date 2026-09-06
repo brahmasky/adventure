@@ -16,8 +16,8 @@ still goes through Paco's `/goal` gate; nothing here is pre-authorization to sta
 
 Houge (猴哥) is an **autonomous self-evolving agent** (NOT a chatbot) living as a Telegram-first
 daemon on Paco's Mac mini. Zero runtime dependencies; Node + TypeScript; SQLite; model-agnostic
-LLM provider chains (flat-rate CLIs first: pi/kimi, agy/gemini, codex; metered APIs =
-capped fallback). Claude is EXCLUDED from Houge's runtime by decision (Paco, 2026-07-12):
+LLM provider chains (flat-rate CLIs ONLY on every default chain since 2026-09-06: pi/kimi,
+agy/gemini, codex; the metered APIs stay buildable as the operator's escape hatch, capped). Claude is EXCLUDED from Houge's runtime by decision (Paco, 2026-07-12):
 it is the build-orchestrator seat only — the runtime must never depend on it.
 
 **Thesis (LOCKED 2026-06-26):** Houge improves himself without asking permission; mechanical
@@ -56,6 +56,13 @@ Houge self-writes. The floor (§3) is never weakened by any agent.
   `HOUGE_DUAL_LLM_ENABLED` (reader chain `gemini-api,agy-cli` — cross-family) ·
   `HOUGE_TIME_TOOL_ENABLED` · `HOUGE_TZ_EVIDENCE_ENABLED`. Planner chain
   `pi,agy-cli,kimi-api,gemini-api`.
+  - **Delta 2026-09-06 (CLI-only migration slice 1, `9abb92e`; verified live):** planner
+    `pi,agy-cli` · reader `agy-cli,pi` · panel judges `pi`/`agy-cli` · `HOUGE_AGY_MODEL` pinned
+    `Gemini 3.8 Flash (Low)` (the old pin was vendor-retired and had silently failed every call
+    for ~3 months). No metered leg on any default chain. Follow-ups the same day: pi answer cap
+    (`04ced06`), outbox same-ms claim bug (`7ea5e77`), park marker (`b11f8ed`). Suite 2283 green.
+    Design + full review record: `docs/superpowers/specs/2026-09-04-cli-only-llm-and-audit-chokepoint-design.md`;
+    slice 2 (the `llm_attempt` audit chokepoint) is the next build there.
 - **Test suite:** ~1156 tests green; hermeticity via the PINNED_ENV pattern (§4).
 - **Spine status:** ⓪ inner loop DONE (⓪·4 legacy retirement DONE — loop is the only `turn`
   path; `HOUGE_INNER_LOOP_ENABLED` and the enum if-chain deleted) · ① Slice A eval loop

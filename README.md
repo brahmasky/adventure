@@ -323,7 +323,8 @@ covers the other half — his own *behavior*. With `HOUGE_INVARIANT_SWEEP_ENABLE
 daemon checks six assertions over its own flight recorder (`runs`, `scheduled_tasks`,
 `notification_outbox`, `daemon_heartbeat`) every `HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES`
 (default 720 — twice a day): duplicate enabled schedules, stuck runs, undelivered
-notifications, overdue schedules, failed schedules, heartbeat gaps.
+notifications, overdue schedules, failed schedules, heartbeat gaps (a gap that spans a
+deliberate `/kill` park is logged, not opened — the parked process leaves `houge.parked`).
 
 A violation opens a durable **incident** (fingerprint `kind:subject`), emits a ledger event,
 and sends **one** Telegram line. Recurrences bump a counter silently; a clean sweep resolves
@@ -391,3 +392,4 @@ launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.houge.daemon.plist  # re
 - [Design spec](docs/superpowers/specs/2026-05-25-houge-chatops-orchestrator-design.md) — architecture and milestone plan.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — documentation convention and definition of done (tests **and** a live run).
 - [AGENTS.md](AGENTS.md) — coding, safety, and workflow rules. [CONTEXT.md](CONTEXT.md) — domain language.
+- Working logs: [sessions.md](sessions.md) — what each build session did and why, newest last; [tasks/todo.md](tasks/todo.md) — live config truth, shipped blocks, parked/watch list; [tasks/lessons.md](tasks/lessons.md) — orchestration mistakes and the rules that prevent them.

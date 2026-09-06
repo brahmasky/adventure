@@ -82,6 +82,16 @@ path, backed by a durable incident store.
 - **Latch before detection.** The throttle is claimed *before* the queries run, so a detection
   crash degrades to "sweeps less often", never to a hot loop.
 
+### Amendment 2026-09-06 — `heartbeat_gap` is park-aware
+
+The heartbeat-gap invariant conflated two silences: a crash and a deliberate `/kill` park (ADR
+0018). Both stop the heartbeat; only one is an incident. Since the tombstone is gone by the
+time the daemon is back, the sweep now consults the park marker the parked process leaves
+behind (`houge.parked`): with the marker present the gap is logged (`[invariant-sweep] heartbeat
+gap of N min spans a deliberate park`) and no incident opens; without it, behaviour is
+unchanged. The marker suppresses ONLY the heartbeat gap — every other detector still runs.
+See ADR 0018's amendment of the same date; commit b11f8ed.
+
 ## Consequences
 
 - Houge gains the **sense** stage: he can detect a class of his own failures without Paco.

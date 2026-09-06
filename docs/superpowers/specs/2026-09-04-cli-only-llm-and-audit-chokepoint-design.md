@@ -1,7 +1,7 @@
 # CLI-only LLM legs + structural audit chokepoint
 
 Date: 2026-09-04
-Status: spec reviewed + independently code-reviewed 2026-09-06 (findings below). **Slice 1 SHIPPED** 2026-09-06, live gate PASS. Slice 2 (audit chokepoint) not started.
+Status: spec reviewed + independently code-reviewed 2026-09-06 (findings below). **Slice 1 SHIPPED** 2026-09-06 as `9abb92e`, live gate PASS; same-day follow-ups `04ced06` (pi answer cap), `7ea5e77` (outbox same-ms claim), `b11f8ed` (park marker). Slice 2 (audit chokepoint) not started.
 Author: Paco + Claude
 
 ## Problem

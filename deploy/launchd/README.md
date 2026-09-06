@@ -60,8 +60,14 @@ Revival is **manual by design** (nothing automatic can undo a kill):
 cd /path/to/adventure                                # the project root
 cat houge.kill                                       # who killed it, when, why
 rm houge.kill
-launchctl kickstart -k gui/$UID/com.houge.daemon     # restart the parked process
+launchctl kickstart -k gui/$(id -u)/com.houge.daemon # restart the parked process (bash, zsh, fish)
 ```
+
+`$(id -u)` rather than `$UID`: fish does not define `$UID`, and a bare `gui//com.houge.daemon`
+just prints launchctl's usage. The parked process also leaves `houge.parked` beside the
+tombstone; the invariant sweep reads it once after revival so the heartbeat gap is logged as a
+deliberate park rather than opened as an incident, then the daemon removes it on its first good
+cycle. Leave it alone — it is not a stop switch.
 
 Related: `/disarm` writes `houge.disarm` (evolution + scheduler flags forced off, survives
 restarts); `/rearm` deletes it — flags re-apply on the next restart (same `kickstart` as

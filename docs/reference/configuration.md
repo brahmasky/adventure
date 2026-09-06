@@ -458,11 +458,11 @@ Each LLM call emits one **`llm_call`** ledger event (`RunStore.recordLlmCall`,
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `provider` | yes | The engine (e.g. `codex`, `claude`, `kimi`, `pi`). |
+| `provider` | yes | The engine (e.g. `codex`, `claude`, `pi`, `agy-cli`, `kimi-api`, `gemini-api`). |
 | `model` | yes | The resolved model name. |
-| `role` | yes | One of `writer` \| `reviewer` \| `classify` \| `frame` \| `answer`. |
+| `role` | yes | One of `writer` \| `reviewer` \| `classify` \| `frame` \| `answer` \| `compose` \| `reader` (the Dual-LLM quarantined reader, ADR 0014). |
 | `input_tokens` | yes | Prompt/input token count. |
-| `output_tokens` | yes | Output tokens (Codex includes reasoning output here). |
+| `output_tokens` | yes | Output tokens, reasoning/thinking INCLUDED for every engine — but by different routes, and getting this wrong was D3 (2026-09-06): Codex reports `reasoning_output_tokens` disjointly and it is added; agy nests `thinking_tokens` inside `output_tokens` (measured: `total == input + output` on every probe) and it is never re-added; the OpenAI-compat legs derive `max(completion_tokens, total_tokens − prompt_tokens)`, which counts Google's hidden thinking gap without double-counting OpenAI's nested `reasoning_tokens`. |
 | `cached_input_tokens` | yes | Cached input (Claude: cache_read + cache_creation). |
 | `cost_usd` | optional | Present when the provider reports it (Claude `total_cost_usd`); Codex reports no per-call cost. |
 | `latency_ms` | optional | Per-call wall-clock when measured by the caller. |

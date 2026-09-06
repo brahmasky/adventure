@@ -20,8 +20,12 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 /** Default tombstone path — repo root, beside `houge.daemon.lock` (cwd-relative). Gitignored. */
 export const DEFAULT_TOMBSTONE_PATH = "houge.kill";
 
-/** The manual revival command (per-user launchd job). */
-export const REVIVE_COMMAND = "launchctl kickstart -k gui/$UID/com.houge.daemon";
+/**
+ * The manual revival command (per-user launchd job). `$(id -u)`, not `$UID`: this string is
+ * pasted into a shell by the operator, whose shell is fish — which does not define `$UID`.
+ * `$(…)` works in bash, zsh, and fish ≥ 3.4.
+ */
+export const REVIVE_COMMAND = "launchctl kickstart -k gui/$(id -u)/com.houge.daemon";
 
 /** What `/kill` records. All fields are best-effort on READ (a corrupt file still kills). */
 export interface TombstoneRecord {

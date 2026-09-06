@@ -55,7 +55,10 @@ identity, LIVE + live-gated)** · **HOUGE_LESSON_CONSOLIDATE_ENABLED (new — AR
 merge tick 2026-07-24)**. Google identity arms ONLY as a couple with HOUGE_DUAL_LLM_ENABLED; its
 three broker-held secrets are HOUGE_GMAIL_CLIENT_ID / _CLIENT_SECRET / _REFRESH_TOKEN. Sweep
 cadence HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES, default 720 (twice a day). Both new flags are in
-DISARM_FLAGS.
+DISARM_FLAGS. **LLM chains since 2026-09-06 (CLI-only):** HOUGE_LLM_PROVIDERS=pi,agy-cli ·
+HOUGE_LLM_READER_PROVIDERS=agy-cli,pi · HOUGE_AGY_MODEL=Gemini 3.8 Flash (Low) (pinned in .env —
+check `agy models` when it next fails). The metered legs are the escape hatch only: BOTH chain
+vars plus a restart, and a latched HOUGE_METERED_DAILY_USD ceiling drops the leg you just enabled.
 
 **Shipped this session 2026-07-22→24 (all live on the mini; DONE blocks below):** Google identity
 (gmail_read/google_api, ADR 0025) · /status redesign · token/cost observability (/usage +
@@ -76,7 +79,34 @@ at a time):**
 - **North star, sense track:** the first incident Houge reports BEFORE Paco notices it. Until
   then it is unproven infrastructure, not a closed loop.
 
+**Shipped 2026-09-06 (4 commits, all live after Paco's kickstart; full record in the spec doc):**
+`9abb92e` CLI-only LLM chains slice 1 — the unexplained Google bill traced to a vendor-retired agy
+model pin (every flat-rate call fell through to the metered legs, silently, ~3 months), a reader
+chain leading with gemini-api, thinking tokens counted as zero, and whole call paths with no
+telemetry. Plus what four independent reviewers found in the diff: a spawn hang that could wedge
+the daemon's serialized poll loop, a non-empty "empty temp cwd", a second panel seat site still on
+the metered APIs, and a D3 formula that double-counted. `04ced06` pi's 256 KB cap measured the
+per-token JSONL stream (~60× the answer) — was a ~600-word answer cap. `7ea5e77` outbox
+`claimNextNotification` handed back an older unacked row on a same-ms tie (root cause of BOTH
+gateway flakes). `b11f8ed` park marker: revival no longer opens a false heartbeat_gap incident.
+
 **Parked / watch:**
+- **Slice 2 — `llm_attempt` audit chokepoint** (spec §"Slice 2"): `answerWithChain` takes a
+  required audit sink, one event per leg attempt incl. failures and run-less daemon ticks. Until
+  it lands, a dead leg is visible only via the `[llm-chain] … fell through` console line.
+- **Reader wall-clock is unbounded** — `quarantineRead` runs outside the CapabilityRunner and
+  retries the whole chain twice: 240 s worst case per external read (was 180 s), checked only
+  between loop steps. Bound it or size it before slice 2's numbers make it look worse.
+- **Fast-fail is gone from the default chain** — two CLI legs cannot fail faster than their
+  timeouts (120 s floor to chain exhaustion; HTTP refused in ms). All three panel judges are now
+  local CLI spawns sharing one failure domain (PATH/$HOME/launchd env).
+- **agy flat-rate quota under reader volume (W2)** — ~12.2 K input tokens/reader call (8.1 K
+  system preamble, cache-hit ~53%); 742 historical searches ≈ 9 M tokens. No defined behaviour on
+  quota refusal beyond falling through to `pi` — which collapses the ADR 0014 cross-family
+  separation (planner and reader both `pi`) with nothing reporting it.
+- **agy inherits the operator's interactive allow-rules via `$HOME`** — any "always allow" clicked
+  in an interactive agy session becomes an allow-rule for the quarantined reader. Paco's decision
+  is permit-and-contain; recorded in ADR 0014, not actioned.
 - Flaky test FIXED (was pre-existing, NOT retirement-related — failed ~2/10 at e998e40^ too):
   gateway-telegram "superseded id → points at successor" (/lessons drill-in, fd14120). Not a lease
   re-claim: `claimNextNotification` re-found "the row it just claimed" via `lease_owner + sending
