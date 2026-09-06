@@ -96,3 +96,74 @@ export function formatTombstoneParkedMessage(path: string): string {
     `Revive manually: delete the file, then run: ${REVIVE_COMMAND}`
   );
 }
+
+// --- Park marker -------------------------------------------------------------------------
+//
+// The tombstone is deleted BEFORE revival, so by the time the daemon is back and the invariant
+// sweep runs, nothing on disk says the silence was deliberate. The sweep then reads a heartbeat
+// that stopped hours or days ago and opens a `heartbeat_gap` incident equal to the park duration
+// — a false alarm on every single park (observed live 2026-09-06: "gap_minutes 2134" for a 35.6 h
+// park). The park path is forbidden from touching the store (ADR 0018: construct nothing), but
+// it already writes a file, so it leaves ONE more: a marker the sweep can read after revival.
+//
+// Lifecycle: written by the park path (idempotent across launchd relaunches while parked), read
+// by the sweep to classify the gap as deliberate, removed by the daemon on its first successful
+// poll cycle after revival. It is NOT a stop switch — deleting it revives nothing, it only
+// changes how the next gap is reported — so it is deliberately absent from the self-write guard.
+
+/** Default marker path — beside the tombstone. Gitignored. */
+export const DEFAULT_PARK_MARKER_PATH = "houge.parked";
+
+/** What the park path records. Best-effort on READ: a corrupt marker still counts as present. */
+export interface ParkMarkerRecord {
+  parked_at?: string;
+  killed_at?: string;
+  by?: string;
+  reason?: string;
+}
+
+export function resolveParkMarkerPath(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.HOUGE_PARK_MARKER_PATH?.trim();
+  return override && override.length > 0 ? override : DEFAULT_PARK_MARKER_PATH;
+}
+
+/** Write the marker (JSON body). Returns the path written. */
+export function writeParkMarker(
+  record: { parked_at: string } & Omit<ParkMarkerRecord, "parked_at">,
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const path = resolveParkMarkerPath(env);
+  writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`);
+  return path;
+}
+
+/**
+ * Read the marker. `null` means ABSENT — the gap is unexplained and should be reported.
+ * Present-but-unreadable or unparseable returns `{}`: the park happened even if its record is
+ * damaged, so the gap is still deliberate.
+ */
+export function readParkMarker(env: NodeJS.ProcessEnv = process.env): ParkMarkerRecord | null {
+  const path = resolveParkMarkerPath(env);
+  let content: string;
+  try {
+    content = readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    return {};
+  }
+  try {
+    const parsed: unknown = JSON.parse(content);
+    if (typeof parsed !== "object" || parsed === null) return {};
+    const record = parsed as Record<string, unknown>;
+    const pick = (key: keyof ParkMarkerRecord): Partial<ParkMarkerRecord> =>
+      typeof record[key] === "string" ? { [key]: record[key] as string } : {};
+    return { ...pick("parked_at"), ...pick("killed_at"), ...pick("by"), ...pick("reason") };
+  } catch {
+    return {};
+  }
+}
+
+/** Remove the marker. Called once by the daemon after its first successful cycle post-revival. */
+export function clearParkMarker(env: NodeJS.ProcessEnv = process.env): void {
+  rmSync(resolveParkMarkerPath(env), { force: true });
+}

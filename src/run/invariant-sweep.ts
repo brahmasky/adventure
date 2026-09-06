@@ -1,4 +1,5 @@
 import type { RunStore } from "./run-store.js";
+import { readParkMarker } from "./tombstone.js";
 
 /**
  * The invariant sweep (introspection slice A, ADR 0024): Houge's deterministic self-sensing
@@ -100,7 +101,11 @@ export function buildSweepSummaryText(opened: number, suppressed: number): strin
 }
 
 /** Pure detection: compose the store's six invariant queries into a flat violation list. */
-export function detectViolations(store: RunStore, now: string): InvariantViolation[] {
+export function detectViolations(
+  store: RunStore,
+  now: string,
+  env: NodeJS.ProcessEnv = process.env
+): InvariantViolation[] {
   const violations: InvariantViolation[] = [];
 
   for (const row of store.findDuplicateEnabledSchedules()) {
@@ -136,7 +141,19 @@ export function detectViolations(store: RunStore, now: string): InvariantViolati
   }
   const gap = store.findHeartbeatGap(now, HEARTBEAT_GAP_GRACE_MS);
   if (gap) {
-    violations.push({ kind: "heartbeat_gap", subject: gap.subject, detail: { gap_minutes: gap.gap_minutes } });
+    // A heartbeat that stopped because the operator PARKED the daemon (ADR 0018 kill switch) is
+    // not an incident — it is the kill switch working. The park path leaves a marker precisely
+    // so this sweep can tell the two apart after the tombstone is gone; the daemon removes the
+    // marker on its first good cycle, so a later crash is reported normally.
+    const park = readParkMarker(env);
+    if (park) {
+      console.log(
+        `[invariant-sweep] heartbeat gap of ${gap.gap_minutes} min spans a deliberate park` +
+          `${park.parked_at ? ` (parked_at ${park.parked_at})` : ""} — not an incident`
+      );
+    } else {
+      violations.push({ kind: "heartbeat_gap", subject: gap.subject, detail: { gap_minutes: gap.gap_minutes } });
+    }
   }
   return violations;
 }
@@ -172,7 +189,7 @@ export function runInvariantSweep(input: InvariantSweepInput): InvariantSweepRes
   if (!input.store.claimInvariantSweep(input.now, resolveInvariantSweepIntervalMs(env))) return result;
   result.swept = true;
 
-  const violations = detectViolations(input.store, input.now);
+  const violations = detectViolations(input.store, input.now, env);
   const seen = new Set<string>();
   let alertsSent = 0;
 

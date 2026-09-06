@@ -14,6 +14,7 @@ import { RunStore } from "./run/run-store.js";
 import {
   formatTombstoneParkedMessage,
   readTombstone,
+  writeParkMarker,
   resolveTombstonePath
 } from "./run/tombstone.js";
 import { parseCliTrigger } from "./triggers/cli-trigger.js";
@@ -147,13 +148,22 @@ if (command === "run") {
   // nothing (no gateway/store/poll), and hold the process idle while still honoring
   // SIGTERM/SIGINT so `launchctl unload` stays clean. `--once` is an interactive
   // invocation → message + exit 1. Revival is manual: delete the file, restart.
-  if (readTombstone()) {
+  const tombstone = readTombstone();
+  if (tombstone) {
     const parked = formatTombstoneParkedMessage(resolveTombstonePath(process.env));
     if (once) {
       console.error(parked);
       process.exit(1);
     }
     console.error(`[${new Date().toISOString()}] [daemon] ${parked}`);
+    // Leave the park marker so the post-revival invariant sweep can tell a deliberate park from a
+    // crash (else every revival opens a false heartbeat_gap incident). File-only — the park path
+    // still constructs no store. Best-effort: a marker write must never stop the park itself.
+    try {
+      writeParkMarker({ parked_at: new Date().toISOString(), ...tombstone });
+    } catch (error) {
+      console.error(`[daemon] park marker not written: ${error instanceof Error ? error.message : String(error)}`);
+    }
     await new Promise<void>((resolve) => {
       process.once("SIGTERM", () => resolve());
       process.once("SIGINT", () => resolve());

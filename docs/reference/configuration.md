@@ -682,6 +682,7 @@ Revival steps: [deploy/launchd/README.md](../../deploy/launchd/README.md#kill-sw
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `HOUGE_TOMBSTONE_PATH` | `houge.kill` (cwd) | Where `/kill` writes and the boot gate reads the tombstone. A present-but-corrupt file still kills (fail-closed). |
+| `HOUGE_PARK_MARKER_PATH` | `houge.parked` (cwd) | Written by the parked daemon beside the tombstone, read by the invariant sweep after revival so the heartbeat gap is classified as a deliberate park (logged, no incident) rather than a crash, removed on the first successful poll cycle. Not a stop switch — deleting it revives nothing. |
 | `HOUGE_DISARM_PATH` | `houge.disarm` (cwd) | Where `/disarm` writes the posture. Must be a REAL env var if moved — it is read before `.env` is loaded. |
 
 ## DB backup (ADR 0021)

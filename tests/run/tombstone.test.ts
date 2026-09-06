@@ -1,15 +1,19 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
-  clearTombstone,
   DEFAULT_TOMBSTONE_PATH,
+  REVIVE_COMMAND,
+  clearParkMarker,
+  clearTombstone,
   formatKillAckText,
   formatTombstoneParkedMessage,
+  readParkMarker,
   readTombstone,
+  resolveParkMarkerPath,
   resolveTombstonePath,
-  REVIVE_COMMAND,
+  writeParkMarker,
   writeTombstone
 } from "../../src/run/tombstone.js";
 
@@ -84,5 +88,46 @@ describe("user-facing strings", () => {
     const text = formatTombstoneParkedMessage("/x/houge.kill");
     expect(text).toContain("/x/houge.kill");
     expect(text).toContain(REVIVE_COMMAND);
+  });
+});
+
+describe("park marker (the sweep's evidence that a heartbeat gap was deliberate)", () => {
+  const markerDir = mkdtempSync(join(tmpdir(), "houge-park-marker-"));
+  const env = { HOUGE_PARK_MARKER_PATH: join(markerDir, "houge.parked") } as NodeJS.ProcessEnv;
+
+  afterEach(() => clearParkMarker(env));
+  afterAll(() => rmSync(markerDir, { recursive: true, force: true }));
+
+  it("defaults to houge.parked beside the tombstone and honors HOUGE_PARK_MARKER_PATH", () => {
+    expect(resolveParkMarkerPath({} as NodeJS.ProcessEnv)).toBe("houge.parked");
+    expect(resolveParkMarkerPath(env)).toBe(join(markerDir, "houge.parked"));
+  });
+
+  it("write → read roundtrips parked_at plus whatever the tombstone said", () => {
+    writeParkMarker({ parked_at: "2026-09-04T11:41:08.000Z", killed_at: "2026-09-04T11:41:07.000Z", by: "paco", reason: "cli-only migration" }, env);
+    expect(readParkMarker(env)).toEqual({
+      parked_at: "2026-09-04T11:41:08.000Z",
+      killed_at: "2026-09-04T11:41:07.000Z",
+      by: "paco",
+      reason: "cli-only migration"
+    });
+  });
+
+  it("absent marker reads null — the ONLY state in which a gap is reported as an incident", () => {
+    expect(readParkMarker(env)).toBeNull();
+  });
+
+  it("a CORRUPT marker still reads as present: the park happened even if its record is damaged", () => {
+    writeFileSync(env.HOUGE_PARK_MARKER_PATH!, "not json");
+    expect(readParkMarker(env)).toEqual({});
+    writeFileSync(env.HOUGE_PARK_MARKER_PATH!, "[1,2]");
+    expect(readParkMarker(env)).toEqual({});
+  });
+
+  it("clearParkMarker removes the file; clearing a missing file is a no-op", () => {
+    writeParkMarker({ parked_at: "2026-09-04T11:41:08.000Z" }, env);
+    clearParkMarker(env);
+    expect(readParkMarker(env)).toBeNull();
+    expect(() => clearParkMarker(env)).not.toThrow();
   });
 });

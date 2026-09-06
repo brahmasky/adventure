@@ -931,3 +931,48 @@ describe("runTelegramDaemon — scheduler tick (B10b, ADR 0017)", () => {
     }
   });
 });
+
+describe("park marker retirement (ADR 0018 revival)", () => {
+  it("clears the park marker on the first successful cycle — so the NEXT gap is reported for real", async () => {
+    // The parked process leaves houge.parked so the post-revival sweep can classify the heartbeat
+    // gap as deliberate. Once the daemon has demonstrably completed a cycle, that evidence must
+    // go, or a later crash would be misread as another park.
+    const { clearParkMarker, readParkMarker, writeParkMarker } = await import("../../src/run/tombstone.js");
+    const markerDir = mkdtempSync(join(tmpdir(), "houge-daemon-park-"));
+    const saved = process.env.HOUGE_PARK_MARKER_PATH;
+    process.env.HOUGE_PARK_MARKER_PATH = join(markerDir, "houge.parked");
+    writeParkMarker({ parked_at: "2026-09-04T11:41:08.000Z", by: "paco" });
+    expect(readParkMarker()).not.toBeNull();
+
+    const store = RunStore.openInMemory();
+    const controller = new AbortController();
+    let calls = 0;
+    try {
+      await runTelegramDaemon({
+        store,
+        projectRoot: projectRoot(),
+        allowlist: ALLOWLIST,
+        stopSignal: controller.signal,
+        longPollTimeoutSeconds: 0,
+        llmAdapter: async (input) => okAnswer(input),
+        telegramClient: {
+          getUpdates: async () => {
+            calls += 1;
+            if (calls >= 2) controller.abort(); // one full successful cycle, then stop
+            return [];
+          },
+          sendMessage: async () => ({ message_id: 1 })
+        }
+      });
+
+      expect(store.getPollHeartbeat()?.last_success_at).not.toBeNull();
+      expect(readParkMarker()).toBeNull();
+    } finally {
+      store.close();
+      clearParkMarker();
+      if (saved === undefined) delete process.env.HOUGE_PARK_MARKER_PATH;
+      else process.env.HOUGE_PARK_MARKER_PATH = saved;
+      rmSync(markerDir, { recursive: true, force: true });
+    }
+  });
+});

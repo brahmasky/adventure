@@ -26,6 +26,7 @@ import type { RunStore } from "../run/run-store.js";
 import { maybeFireScheduledTasks } from "../run/schedule-tick.js";
 import { SkillStore } from "../skills/skill-store.js";
 import { runInvariantSweep } from "../run/invariant-sweep.js";
+import { clearParkMarker } from "../run/tombstone.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import {
@@ -209,6 +210,7 @@ export async function runTelegramDaemon(
 
   let cycles = 0;
   let failures = 0;
+  let parkMarkerCleared = false;
 
   while (!options.stopSignal.aborted) {
     try {
@@ -267,6 +269,16 @@ export async function runTelegramDaemon(
       }
 
       options.store.recordPollHeartbeat({ now: now(), ok: true });
+      // The daemon is demonstrably back: retire the park marker so the NEXT gap is reported as a
+      // real one. Once per boot — the sweep has already had its chance to read it this cycle.
+      if (!parkMarkerCleared) {
+        parkMarkerCleared = true;
+        try {
+          clearParkMarker();
+        } catch {
+          /* best-effort; a stale marker only softens the next gap report */
+        }
+      }
       failures = 0;
       cycles += 1;
     } catch (err) {
