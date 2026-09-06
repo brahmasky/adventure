@@ -513,3 +513,82 @@ Live token profile (15 agy calls): agy carries an ~8.1 K-token system preamble, 
 of calls. A cache hit costs ~7–8 K input; a miss costs 16–20 K. Reader average ≈ 12.2 K input/call,
 which is the number to size W2 (flat-rate quota) against, not the 13.4 K single-probe figure quoted
 earlier in this document.
+
+
+## Slice 2 spec review, 2026-09-06 (senior review + codex challenge, before build)
+
+Reviewed against the live code, then challenged by codex (`codex exec`, medium effort, 183k
+tokens, session `01a07525-5902-7623-a86c-51ae341bb58d`). Codex independently reproduced the three
+blockers below before seeing them named; the rest are its additions, verified against the code.
+
+**B1 — the chokepoint is the adapter factory, not `answerWithChain`.** `answerWithChain` has ONE
+caller (`llm-answer.ts:89`); a required third parameter there forces nothing upstream.
+`createLlmAnswerAdapter` has six construction sites (`cli.ts` ×3, `core-worker.ts` ×2,
+`telegram-daemon.ts` ×2). So `LlmAnswerAdapterConfig.audit` is required with NO default config
+parameter (the `= {}` default is deleted), and `answerWithChain(chain, req, audit)` is audited
+internally. Codex: same finding, blocker.
+
+**B2 — per-tick correlation needs per-tick adapters.** `telegram-daemon.ts:150` builds one adapter
+shared by six ticks through a single `episodicLlm` closure; it cannot know which tick it serves.
+Fix: a `tickLlm(name, role)` factory, six closures. Codex rejected the alternative of a per-call
+correlation riding the tool input, correctly — that reopens the canonicalized-input problem.
+
+**B3 — three direct `this.llmAdapter` calls bypass instrumentation.** `core-worker.ts:2565/:2582`
+have `claim.run_id` → route through `llmAdapterFor(run_id, "compose")`; `:1004` (rating
+attribution) is run-less → correlation `rating:attribution`, role `attribution`.
+
+**W1 — pricing must move into the sink.** `computeCostUsd` lives in `CoreWorker.recordLlmCallSafe`;
+a store-side sink that does not price leaves daemon ticks and panel judges — the escape-hatch
+paths — unpriced, so the ADR 0019 fuse stays blind exactly where this slice claims visibility.
+Codex: blocker. `recordLlmCallSafe` and `RunStore.recordLlmCall` are deleted.
+
+**W2 (codex #4, #18) — sequence readers before writers.** Union `usageByModel`/`meteredSpendUsd`
+FIRST, then switch writers, then delete hooks last — so `tsc` and the readers stay green at every
+intermediate commit. Build order: ledger type → audit contract → store sink (priced) → union
+readers + index → providers return usage (hooks kept) → chain audited → factory required + all
+sites → spawn seats + self-write → delete hooks + source-scan → sweep invariant → live gate.
+
+**W3 (codex #7) — `attempt_group` + `leg_index`.** Without them, "agy failed then pi served" is
+reconstructable only by time adjacency. The chain mints one short group id per invocation and
+numbers the legs. Optional payload fields; counts and ids only.
+
+**W4 (codex #6) — a ledger row is evidence, not detection.** Goal 4 says "visible within one
+tick"; nothing reads the row within one tick. Added to this slice: an invariant-sweep check
+(ADR 0024) `llm_leg_failing` — a provider with ≥3 attempts and zero `ok` in the rolling 24 h
+opens an incident (subject = provider), resolving when an `ok` lands. The fall-through
+`console.warn` stays as the immediate signal.
+
+**W5 (codex #5) — index the ledger for the readers' predicate.** `ledger_events` has only
+`(run_id, sequence)`; every spend/usage reader and the new invariant scan by
+`event_type` + `occurred_at`. Add `ledger_events_type_time_idx (event_type, occurred_at)`,
+idempotent in the schema init.
+
+**W6 (codex #15) — the test sink lives in `tests/helpers/`, not `src/`.** A discarding sink
+exported from `src/` is one import away from production. Moved; the source-scan test then has
+nothing to forbid on that axis and instead pins "no `onUsage`, no `llm_call` writer, every
+factory call passes a store-built sink".
+
+**W7 (codex #14) — self-write failure branches return before telemetry.** Wrap the writer and
+reviewer invocations so every outcome (ok / error / unavailable, incl. timeout and spawn)
+records; usage is optional metadata, never the trigger for recording. Same rule for the spawn
+seats (codex #13): record in finally-style at the spawn site.
+
+**S1 (codex #11) — `unavailable` gets a strict definition**, written into `audit.ts`: the
+provider was not constructively callable (binary absent, not authenticated, model retired, key
+unset). Timeout, non-zero exit, over-cap and parse failures are `error`. This matches what the
+providers already emit.
+
+**S2 (codex #17) — `model` is required when `outcome = "ok"`.** Every provider and seat reports
+a model on success; the sink test pins it so `usageByModel` never grows a null-model group.
+
+**S3 (codex #9) — the `LlmUsage` invariant, stated once:** `output_tokens` is always the total
+billable output (Codex: `output + reasoning_output_tokens`, reported disjointly and folded by the
+normalizer; agy: nested, never re-added; OpenAI-compat: `max(completion, total − prompt)`).
+`thinking_tokens` is an informational side channel and is never priced.
+
+**Rejected — codex #8** ("`normalizeCodexUsage` adds reasoning to output, which conflicts with
+Codex being disjoint"). No conflict: Codex REPORTS the two disjointly, which is exactly why the
+normalizer adds them to produce the billable total. The comment it quotes describes the
+normalized field, not the raw envelope. Verified against `llm-usage.ts:44-73`.
+
+Plan: `docs/superpowers/plans/2026-09-06-llm-attempt-audit-chokepoint.md`.
