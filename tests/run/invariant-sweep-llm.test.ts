@@ -45,4 +45,63 @@ describe("llm_leg_failing invariant", () => {
       store.close();
     }
   });
+
+  /**
+   * `last_error_kind` must reflect the MOST RECENT non-ok attempt, not the alphabetically
+   * greatest `error_kind` string — "transport" > "timeout" lexically, so a naive
+   * `MAX(CASE ... error_kind)` picks "transport" even when "timeout" is what just happened.
+   * Back-dates by SEQUENCE rank (like the window test above) so insertion order and
+   * chronological order can be pinned independently.
+   */
+  function backdateBySequenceOrder(store: RunStore, timestamps: string[]): void {
+    const db = (store as unknown as { db: { exec(sql: string): void } }).db;
+    timestamps.forEach((ts, i) => {
+      db.exec(`
+        UPDATE ledger_events SET occurred_at = '${ts}'
+        WHERE event_id = (
+          SELECT event_id FROM ledger_events WHERE event_type = 'llm_attempt' ORDER BY sequence LIMIT 1 OFFSET ${i}
+        )
+      `);
+    });
+  }
+
+  it("last_error_kind is the LATEST failing attempt's kind: an older transport then a newer timeout wins timeout", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const sink = store.llmAuditSink({ correlation_id: "tick:x", role: "distill" });
+      sink.record({ provider: "agy-cli", role: "", outcome: "error", latency_ms: 1, error_kind: "transport" });
+      sink.record({ provider: "agy-cli", role: "", outcome: "error", latency_ms: 1, error_kind: "transport" });
+      sink.record({ provider: "agy-cli", role: "", outcome: "error", latency_ms: 1, error_kind: "timeout" });
+      backdateBySequenceOrder(store, [
+        "2026-09-06T12:00:00.000Z",
+        "2026-09-06T12:05:00.000Z",
+        "2026-09-06T12:10:00.000Z"
+      ]);
+      expect(legs(store)).toEqual([
+        { kind: "llm_leg_failing", subject: "agy-cli", detail: { attempts: 3, ok: 0, last_error_kind: "timeout" } }
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("last_error_kind is the LATEST failing attempt's kind: an older timeout then a newer transport wins transport", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const sink = store.llmAuditSink({ correlation_id: "tick:x", role: "distill" });
+      sink.record({ provider: "agy-cli", role: "", outcome: "error", latency_ms: 1, error_kind: "timeout" });
+      sink.record({ provider: "agy-cli", role: "", outcome: "error", latency_ms: 1, error_kind: "timeout" });
+      sink.record({ provider: "agy-cli", role: "", outcome: "error", latency_ms: 1, error_kind: "transport" });
+      backdateBySequenceOrder(store, [
+        "2026-09-06T12:00:00.000Z",
+        "2026-09-06T12:05:00.000Z",
+        "2026-09-06T12:10:00.000Z"
+      ]);
+      expect(legs(store)).toEqual([
+        { kind: "llm_leg_failing", subject: "agy-cli", detail: { attempts: 3, ok: 0, last_error_kind: "transport" } }
+      ]);
+    } finally {
+      store.close();
+    }
+  });
 });

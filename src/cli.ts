@@ -320,7 +320,8 @@ if (command === "run") {
   try {
     const llmAdapter = createLlmAnswerAdapter({
       ...brokerOption,
-      audit: store.llmAuditSink({ correlation_id: "cli:lessons-consolidate", role: "consolidate" })
+      audit: store.llmAuditSink({ correlation_id: "cli:lessons-consolidate", role: "consolidate" }),
+      meteredBreached: () => store.meteredFuseLatched()
     });
     const llmAnswer = async (input: { question: string; system: string }) => {
       const read = await llmAdapter({ question: input.question, system: input.system });
@@ -376,7 +377,8 @@ if (command === "run") {
   try {
     const llmAdapter = createLlmAnswerAdapter({
       ...brokerOption,
-      audit: store.llmAuditSink({ correlation_id: "cli:radar", role: "extract" })
+      audit: store.llmAuditSink({ correlation_id: "cli:radar", role: "extract" }),
+      meteredBreached: () => store.meteredFuseLatched()
     });
     const llmAnswer = async (input: { question: string; system: string }) => {
       const read = await llmAdapter({ question: input.question, system: input.system });
@@ -417,7 +419,7 @@ if (command === "run") {
   const { PANEL_JUDGE_PROVIDERS, renderPanelProposals, runIdeaPanelTick } = await import(
     "./capabilities/idea-panel.js"
   );
-  const { spawnCodexJudge, spawnPanelChair } = await import("./capabilities/idea-panel-seats.js");
+  const { spawnCodexJudge, spawnPanelChair, unavailableChairSeat } = await import("./capabilities/idea-panel-seats.js");
   const { createLlmAnswerAdapter } = await import("./capabilities/llm-answer.js");
 
   const store = RunStore.open("houge.sqlite", storeOptions);
@@ -428,7 +430,8 @@ if (command === "run") {
       const adapter = createLlmAnswerAdapter({
         ...brokerOption,
         providers,
-        audit: store.llmAuditSink({ correlation_id: "cli:radar-panel", role: "judge" })
+        audit: store.llmAuditSink({ correlation_id: "cli:radar-panel", role: "judge" }),
+        meteredBreached: () => store.meteredFuseLatched()
       });
       return async (input: { question: string; system: string }) => {
         const read = await adapter({ question: input.question, system: input.system });
@@ -464,7 +467,7 @@ if (command === "run") {
               env: process.env,
               audit: store.llmAuditSink({ correlation_id: "cli:radar-panel", role: "chair" })
             })
-        : async () => ({ ok: false as const, unavailable: true })
+        : unavailableChairSeat(store.llmAuditSink({ correlation_id: "cli:radar-panel", role: "chair" }))
     };
 
     if (dryRun) {

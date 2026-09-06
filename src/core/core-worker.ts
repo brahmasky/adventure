@@ -29,6 +29,7 @@ import type { ReviewResult } from "../capabilities/diff-reviewer.js";
 import { runSelfWriter, resolveSelfWriteWriter } from "../capabilities/self-write-writer.js";
 import { resolveCodexModel } from "../capabilities/coding-agent.js";
 import { normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
+import type { LlmAuditSink } from "../llm/audit.js";
 import type { LlmCallRole } from "../run/run-store.js";
 import { publishBranch, selfWriteBranchName } from "../run/branch-publish.js";
 import { createWorktree, removeWorktree } from "../run/worktree.js";
@@ -237,7 +238,7 @@ export interface SelfWriteDeps {
   /** Read the worktree's full unified diff against HEAD (`git diff HEAD`) — fed to the reviewer. */
   unifiedDiff: (worktree: string) => string | Promise<string>;
   runTestGate: (worktree: string) => TestGateResult | Promise<TestGateResult>;
-  reviewDiff: (input: { task: string; diff: string }) => ReviewResult | Promise<ReviewResult>;
+  reviewDiff: (input: { task: string; diff: string; audit: LlmAuditSink }) => ReviewResult | Promise<ReviewResult>;
   publishBranch: (worktree: string, branch: string, summary?: string) => string | Promise<string>;
 }
 
@@ -1257,27 +1258,23 @@ export class CoreWorker {
 
         // (f) CHECKER 3 — independent reviewer (only on a green diff). Reject → refine ≤3 total.
         const diff = await deps.unifiedDiff(worktree);
-        const reviewerStart = Date.now();
-        const review = await deps.reviewDiff({ task: claim.contract.objective, diff });
-        const reviewerLatencyMs = Date.now() - reviewerStart;
+        // Slice 2 / codex review (Task 12 fix 2): `reviewDiff` now audits its OWN retry/fallback
+        // chain leg-by-leg through this sink (one `llm_attempt` per backend it actually tries —
+        // e.g. a failing kimi-cli retried twice, then a codex fallback's ok). There is
+        // deliberately NO aggregate record here any more: writing one would double-count the
+        // winning leg that `reviewDiff` already recorded.
+        const review = await deps.reviewDiff({
+          task: claim.contract.objective,
+          diff,
+          audit: this.runStore.llmAuditSink({ run_id: claim.run_id, role: "reviewer" })
+        });
         // H1 attribution: the backend that actually verdicted (the fallback chain may have moved
         // past the configured reviewer). Absent on injected test deps → the configured reviewer.
         const reviewerBackend = review.ok ? (review.reviewer ?? reviewerProvider) : reviewerProvider;
-        // Slice 2 (review W7) REVIEWER audit: EVERY reviewer invocation lands exactly one
-        // `llm_attempt` row — verdict or unavailable — through the store sink. Only the codex
-        // reviewer reports usage today (kimi's --final-message-only emits none), so the model
-        // derives from the codex resolver; absent usage records the attempt without counts.
+        // Only the codex reviewer reports usage today (kimi's --final-message-only emits none),
+        // so the model for the self-write report's usage summary derives from the codex resolver.
         const reviewerModel = reviewerBackend === "codex" ? (resolveCodexModel(process.env) ?? "default") : "default";
         const reviewerUsage = review.ok ? review.usage : undefined;
-        this.runStore.llmAuditSink({ run_id: claim.run_id, role: "reviewer" }).record({
-          provider: reviewerBackend,
-          model: reviewerModel,
-          role: "",
-          outcome: review.ok ? "ok" : "error",
-          latency_ms: reviewerLatencyMs,
-          ...(reviewerUsage ? { usage: reviewerUsage } : {}),
-          ...(review.ok ? {} : { error_kind: "other" as const })
-        });
         if (reviewerUsage) {
           lastReviewerUsage = reviewerUsage;
           lastReviewerMeta = { provider: reviewerBackend, model: reviewerModel };

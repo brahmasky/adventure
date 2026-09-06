@@ -1795,6 +1795,14 @@ export class RunStore {
         AND json_extract(payload_json, '$.cost_usd') IS NOT NULL
         AND occurred_at > ?
     `).get<{ spend: number }>(windowStart);
+    // UTC calendar-month bounds, computed in JS — never `strftime('%Y-%m', occurred_at) =
+    // strftime('%Y-%m', ?)` (codex review, Task 12 fix 4): that equality can't be bound by the
+    // `ledger_events_type_time_idx` (event_type, occurred_at) index, so every tick's
+    // `checkMeteredCeiling` scanned all history of the type instead of one month's worth. A
+    // `>= start AND < end` range on the same column IS sargable.
+    const nowDate = new Date(now);
+    const monthStart = new Date(Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), 1)).toISOString();
+    const monthEnd = new Date(Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth() + 1, 1)).toISOString();
     const monthly = this.db.prepare(`
       SELECT COALESCE(SUM(CAST(json_extract(payload_json, '$.cost_usd') AS REAL)), 0) AS spend
       FROM ledger_events
@@ -1803,8 +1811,8 @@ export class RunStore {
         OR (event_type = 'llm_attempt' AND json_extract(payload_json, '$.outcome') = 'ok')
       )
         AND json_extract(payload_json, '$.cost_usd') IS NOT NULL
-        AND strftime('%Y-%m', occurred_at) = strftime('%Y-%m', ?)
-    `).get<{ spend: number }>(now);
+        AND occurred_at >= ? AND occurred_at < ?
+    `).get<{ spend: number }>(monthStart, monthEnd);
     return { daily_usd: daily?.spend ?? 0, monthly_usd: monthly?.spend ?? 0 };
   }
 
@@ -3851,6 +3859,16 @@ export class RunStore {
    * `ok` is a dead leg — the D1 shape (agy failed every call for ~3 months while `pi` answered),
    * now detectable instead of silent. Reads `llm_attempt` only (history has no failures to
    * count). Pure read.
+   *
+   * `last_error_kind` is a correlated subquery over the SAME provider's non-ok rows in the SAME
+   * window, ordered by `occurred_at DESC, sequence DESC` (codex review, Task 12 fix 5) — the
+   * kind of the most recent failure. A plain `MAX(CASE ... error_kind)` returns the
+   * ALPHABETICALLY GREATEST kind ("transport" > "timeout" lexically), which is wrong whenever
+   * two error kinds both occur in the window: the ledger would report a stale cause instead of
+   * what just happened. `sequence` breaks ties within the same millisecond.
+   *
+   * Grouped by PROVIDER — one binary is dead for every role at once; a role-specific pin that
+   * differs by model is the residual this grouping does not catch.
    */
   findFailingLlmLegs(now: string, windowMs: number, minAttempts: number): Array<{ subject: string; attempts: number; ok: number; last_error_kind: string | null }> {
     const since = new Date(Date.parse(now) - windowMs).toISOString();
@@ -3859,13 +3877,22 @@ export class RunStore {
         json_extract(payload_json, '$.provider') AS subject,
         COUNT(*) AS attempts,
         SUM(CASE WHEN json_extract(payload_json, '$.outcome') = 'ok' THEN 1 ELSE 0 END) AS ok,
-        MAX(CASE WHEN json_extract(payload_json, '$.outcome') <> 'ok' THEN json_extract(payload_json, '$.error_kind') END) AS last_error_kind
+        (
+          SELECT json_extract(e2.payload_json, '$.error_kind')
+          FROM ledger_events e2
+          WHERE e2.event_type = 'llm_attempt'
+            AND e2.occurred_at > ?
+            AND json_extract(e2.payload_json, '$.provider') = json_extract(ledger_events.payload_json, '$.provider')
+            AND json_extract(e2.payload_json, '$.outcome') <> 'ok'
+          ORDER BY e2.occurred_at DESC, e2.sequence DESC
+          LIMIT 1
+        ) AS last_error_kind
       FROM ledger_events
       WHERE event_type = 'llm_attempt' AND occurred_at > ?
       GROUP BY subject
       HAVING attempts >= ? AND ok = 0
       ORDER BY subject
-    `).all<{ subject: string; attempts: number; ok: number; last_error_kind: string | null }>(since, minAttempts);
+    `).all<{ subject: string; attempts: number; ok: number; last_error_kind: string | null }>(since, since, minAttempts);
   }
 
   /**

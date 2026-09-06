@@ -50,6 +50,20 @@ describe("audit chokepoint coverage (structural, not by convention)", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("every createLlmAnswerAdapter( construction in src passes meteredBreached", () => {
+    const offenders: string[] = [];
+    for (const f of files) {
+      if (f.endsWith(join("src", "capabilities", "llm-answer.ts"))) continue;
+      const text = read(f);
+      let i = text.indexOf("createLlmAnswerAdapter(");
+      while (i !== -1) {
+        if (!/meteredBreached:/.test(text.slice(i, i + 900))) offenders.push(`${f}@${i}`);
+        i = text.indexOf("createLlmAnswerAdapter(", i + 1);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it("every spawn seat call in src passes a store-built sink", () => {
     const offenders: string[] = [];
     for (const f of files) {

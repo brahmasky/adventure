@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { execFileAsync } from "../run/exec-file-async.js";
 import { resolveCodexBin, resolveCodexEnabled, resolveCodexTimeoutMs } from "./coding-agent.js";
 import { normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
+import { classifyLlmError, type LlmAttemptOutcome, type LlmAuditSink, type LlmErrorKind } from "../llm/audit.js";
 
 /**
  * Independent diff reviewer (Phase 3, checker 3 — ADR 0011 §7 / spec
@@ -151,6 +152,14 @@ export interface ReviewDiffInput {
   diff: string;
   /** Injectable env for config resolution + spawn env (tests). Defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
+  /**
+   * Required audit chokepoint (slice 2 / codex review, Task 12 fix 2): `reviewDiff` runs its OWN
+   * retry/fallback chain (kimi retries, then a codex fallback) — a single aggregate record at the
+   * call site would show only the winning leg and silently drop every failed attempt underneath
+   * it (the exact silent-fallthrough class this slice exists to end). ONE `llm_attempt` per leg
+   * actually tried, recorded here at the point of attempt, in order.
+   */
+  audit: LlmAuditSink;
 }
 
 interface NodeError extends Error {
@@ -184,7 +193,7 @@ export async function reviewDiff(input: ReviewDiffInput): Promise<ReviewResult> 
       details.push(`${backend} reviewer skipped (not configured)`);
       continue;
     }
-    const result = await runReviewer(backend, input.task, input.diff, env);
+    const result = await runReviewer(backend, input.task, input.diff, env, input.audit);
     if (result.ok) return { ...result, reviewer: backend };
     details.push(result.error);
   }
@@ -201,12 +210,51 @@ function reviewerConfigured(kind: ReviewerKind, env: NodeJS.ProcessEnv): boolean
   }
 }
 
-function runReviewer(kind: ReviewerKind, task: string, diff: string, env: NodeJS.ProcessEnv): Promise<ReviewResult> {
+function runReviewer(
+  kind: ReviewerKind,
+  task: string,
+  diff: string,
+  env: NodeJS.ProcessEnv,
+  audit: LlmAuditSink
+): Promise<ReviewResult> {
   switch (kind) {
     case "codex":
-      return reviewViaCodex(task, diff, env);
+      return reviewViaCodex(task, diff, env, audit);
     case "kimi":
-      return reviewViaKimiCli(task, diff, env);
+      return reviewViaKimiCli(task, diff, env, audit);
+  }
+}
+
+/**
+ * One `llm_attempt` per reviewer leg actually tried (codex review, Task 12 fix 2) — the provider
+ * name identifies the backend binary (`kimi-cli` / `codex`), never the reviewer role (the scoped
+ * store sink fills `role`). Best-effort by contract: a throwing sink must never fail a review.
+ */
+function recordReviewLeg(
+  audit: LlmAuditSink,
+  provider: string,
+  info: {
+    outcome: LlmAttemptOutcome;
+    latency_ms: number;
+    error_kind?: LlmErrorKind;
+    model?: string;
+    usage?: LlmUsage;
+  }
+): void {
+  try {
+    audit.record({
+      provider,
+      role: "", // the scoped store sink fills the role
+      outcome: info.outcome,
+      latency_ms: info.latency_ms,
+      ...(info.model !== undefined ? { model: info.model } : {}),
+      ...(info.error_kind !== undefined ? { error_kind: info.error_kind } : {}),
+      ...(info.usage !== undefined ? { usage: info.usage } : {})
+    });
+  } catch (error) {
+    console.warn(
+      `[diff-reviewer] audit sink failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`
+    );
   }
 }
 
@@ -216,10 +264,16 @@ function runReviewer(kind: ReviewerKind, task: string, diff: string, env: NodeJS
  * new infra). Read-only: the reviewer only judges the diff, it never writes. Reuses the shared
  * Codex resolvers; runs in `cwd` (no `-C`/worktree needed — the diff is in the prompt).
  */
-async function reviewViaCodex(task: string, diff: string, env: NodeJS.ProcessEnv): Promise<ReviewResult> {
+async function reviewViaCodex(
+  task: string,
+  diff: string,
+  env: NodeJS.ProcessEnv,
+  audit: LlmAuditSink
+): Promise<ReviewResult> {
   const bin = resolveCodexBin(env);
   const timeout = resolveCodexTimeoutMs(env);
   const prompt = buildReviewPrompt(task, diff);
+  const t0 = Date.now();
 
   let raw: string;
   try {
@@ -231,23 +285,33 @@ async function reviewViaCodex(task: string, diff: string, env: NodeJS.ProcessEnv
       maxBuffer: REVIEW_MAX_BUFFER
     }));
   } catch (error) {
+    const latency_ms = Date.now() - t0;
     const err = error as NodeError;
     if (err.code === "ENOENT") {
-      return { ok: false, error: `Codex reviewer binary not found: ${bin} (set HOUGE_CODEX_BIN)` };
+      const message = `Codex reviewer binary not found: ${bin} (set HOUGE_CODEX_BIN)`;
+      recordReviewLeg(audit, "codex", { outcome: "unavailable", latency_ms, error_kind: "spawn" });
+      return { ok: false, error: message };
     }
     if (err.signal === "SIGTERM" || err.code === "ETIMEDOUT") {
+      recordReviewLeg(audit, "codex", { outcome: "error", latency_ms, error_kind: "timeout" });
       return { ok: false, error: `Codex reviewer timed out after ${timeout}ms` };
     }
-    return { ok: false, error: `Codex reviewer failed: ${errorMessage(error)}` };
+    const message = `Codex reviewer failed: ${errorMessage(error)}`;
+    recordReviewLeg(audit, "codex", { outcome: "error", latency_ms, error_kind: classifyLlmError(message) });
+    return { ok: false, error: message };
   }
 
   // The verdict text is the agent's message inside the JSONL stream (escaped). Reconstruct that
   // text, then parse the verdict from it; also normalize the `token_count` usage for telemetry.
+  const latency_ms = Date.now() - t0;
   const usage = normalizeCodexUsage(raw) ?? undefined;
   const verdict = parseVerdict(extractCodexAgentText(raw));
   if (!verdict) {
-    return { ok: false, error: "Codex reviewer returned an unparseable verdict" };
+    const message = "Codex reviewer returned an unparseable verdict";
+    recordReviewLeg(audit, "codex", { outcome: "error", latency_ms, error_kind: classifyLlmError(message) });
+    return { ok: false, error: message };
   }
+  recordReviewLeg(audit, "codex", { outcome: "ok", latency_ms, model: "default", ...(usage ? { usage } : {}) });
   return usage ? { ok: true, verdict, usage } : { ok: true, verdict };
 }
 
@@ -262,10 +326,17 @@ async function reviewViaCodex(task: string, diff: string, env: NodeJS.ProcessEnv
  * stdout is plain text — we parse it directly with parseVerdict (NO JSON envelope). No
  * usage telemetry is emitted in this mode → no `usage` on the result.
  */
-async function reviewViaKimiCli(task: string, diff: string, env: NodeJS.ProcessEnv): Promise<ReviewResult> {
+async function reviewViaKimiCli(
+  task: string,
+  diff: string,
+  env: NodeJS.ProcessEnv,
+  audit: LlmAuditSink
+): Promise<ReviewResult> {
   const bin = resolveKimiCliBin(env);
   if (bin === KIMI_CLI_BIN_UNSET) {
-    return { ok: false, error: "kimi reviewer disabled: set HOUGE_KIMI_CLI_BIN to the absolute kimi-cli path" };
+    const message = "kimi reviewer disabled: set HOUGE_KIMI_CLI_BIN to the absolute kimi-cli path";
+    recordReviewLeg(audit, "kimi-cli", { outcome: "unavailable", latency_ms: 0, error_kind: "auth" });
+    return { ok: false, error: message };
   }
   const timeout = resolveKimiCliTimeoutMs(env);
   const model = resolveKimiCliModel(env);
@@ -283,6 +354,7 @@ async function reviewViaKimiCli(task: string, diff: string, env: NodeJS.ProcessE
     // `reject` verdict is a real answer and is NOT retried). Exhausting retries → not-published.
     let lastError = "kimi reviewer unavailable";
     for (let attempt = 1; attempt <= KIMI_REVIEW_ATTEMPTS; attempt++) {
+      const t0 = Date.now();
       let raw: string;
       try {
         // Headless review call, prompt on STDIN. `--agent-file` pins the no-tools reviewer agent;
@@ -313,21 +385,35 @@ async function reviewViaKimiCli(task: string, diff: string, env: NodeJS.ProcessE
           }
         ));
       } catch (error) {
+        const latency_ms = Date.now() - t0;
         const err = error as NodeError;
         if (err.code === "ENOENT") {
           // A missing binary won't fix itself on retry — fail immediately.
-          return { ok: false, error: `kimi reviewer binary not found: ${bin} (set HOUGE_KIMI_CLI_BIN)` };
+          const message = `kimi reviewer binary not found: ${bin} (set HOUGE_KIMI_CLI_BIN)`;
+          recordReviewLeg(audit, "kimi-cli", { outcome: "unavailable", latency_ms, error_kind: "spawn" });
+          return { ok: false, error: message };
         }
-        lastError = (err.signal === "SIGTERM" || err.code === "ETIMEDOUT")
+        const timedOut = err.signal === "SIGTERM" || err.code === "ETIMEDOUT";
+        lastError = timedOut
           ? `kimi reviewer timed out after ${timeout}ms`
           : `kimi reviewer failed: ${errorMessage(error)}`;
+        recordReviewLeg(audit, "kimi-cli", {
+          outcome: "error",
+          latency_ms,
+          error_kind: timedOut ? "timeout" : classifyLlmError(lastError)
+        });
         continue; // transient — retry
       }
 
       // kimi prints plain text (NOT a JSON envelope), so parse the verdict straight from stdout.
+      const latency_ms = Date.now() - t0;
       const verdict = parseVerdict(raw);
-      if (verdict) return { ok: true, verdict };
+      if (verdict) {
+        recordReviewLeg(audit, "kimi-cli", { outcome: "ok", latency_ms, model: model || "kimi-for-coding" });
+        return { ok: true, verdict };
+      }
       lastError = "kimi reviewer returned an unparseable verdict";
+      recordReviewLeg(audit, "kimi-cli", { outcome: "error", latency_ms, error_kind: classifyLlmError(lastError) });
       // unparseable → retry (the model may have rambled); fall through to next attempt
     }
     return { ok: false, error: `${lastError} (after ${KIMI_REVIEW_ATTEMPTS} attempts)` };

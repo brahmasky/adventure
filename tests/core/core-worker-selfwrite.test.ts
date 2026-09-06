@@ -158,8 +158,18 @@ function deps(overrides: Partial<SelfWriteDeps>, log: { teardowns: string[]; wri
     rawDiff: () => ":100644 100644 a b M\tsrc/capabilities/intent.ts\n",
     unifiedDiff: () => "diff --git a/src/capabilities/intent.ts b/src/capabilities/intent.ts\n+fixed",
     runTestGate: (): TestGateResult => ({ green: true }),
-    // The reviewer reports normalized usage on the same call (W2) → the audit sink records a `reviewer` llm_attempt.
-    reviewDiff: (): ReviewResult => ({ ok: true, verdict: { verdict: "pass", fixes_task: true, introduces_bugs: false, scope_creep: false, reasons: [] }, usage: { input_tokens: 200, output_tokens: 40, cached_input_tokens: 10, cost_usd: 0.08 } }),
+    // Task 12 fix 2: reviewDiff now audits its OWN leg(s) — the fake reproduces that contract
+    // (one ok attempt through the audit sink it receives) so the reviewer llm_attempt assertions
+    // below still exercise something real, not just core-worker's (now-removed) aggregate write.
+    reviewDiff: (input): ReviewResult => {
+      const usage = { input_tokens: 200, output_tokens: 40, cached_input_tokens: 10, cost_usd: 0.08 };
+      input.audit.record({ provider: "kimi-cli", role: "", outcome: "ok", latency_ms: 1, model: "kimi-for-coding", usage });
+      return {
+        ok: true,
+        verdict: { verdict: "pass", fixes_task: true, introduces_bugs: false, scope_creep: false, reasons: [] },
+        usage
+      };
+    },
     publishBranch: (_wt, branch) => { log.published.push(branch); return branch; }
   };
   return { ...base, ...overrides };
@@ -758,7 +768,10 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
           log.writeTasks.push(input.task);
           return { ok: true, output: { worktree: "/fake/wt", provider: "codex", model: "gpt-fake", usageRaw: "not-json-garbage" } };
         },
-        reviewDiff: (): ReviewResult => ({ ok: true, verdict: { verdict: "pass" } }) // no usage
+        reviewDiff: (input): ReviewResult => {
+          input.audit.record({ provider: "kimi-cli", role: "", outcome: "ok", latency_ms: 1, model: "kimi-for-coding" });
+          return { ok: true, verdict: { verdict: "pass" } }; // no usage
+        }
       }, log);
       const { status } = await executeAndSettle(makeWorker(store, d), store, run_id);
       expect(status).toBe("completed");
@@ -842,11 +855,17 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
           return { ok: true, output: { worktree: "/fake/wt", provider: "codex", model: "gpt-fake", usageRaw } };
         },
         // The reviewer's verdict reason carries body-like content; only counts/metadata reach the ledger.
-        reviewDiff: (): ReviewResult => ({
-          ok: true,
-          verdict: { verdict: "pass", fixes_task: true, introduces_bugs: false, scope_creep: false, reasons: [DIFFBODY, SECRET] },
-          usage: { input_tokens: 200, output_tokens: 40, cached_input_tokens: 10, cost_usd: 0.08 }
-        })
+        // The fake reproduces reviewDiff's own audit contract (Task 12 fix 2) — it must record
+        // through the sink it receives, and ONLY counts/metadata, never the body-like reasons.
+        reviewDiff: (input): ReviewResult => {
+          const usage = { input_tokens: 200, output_tokens: 40, cached_input_tokens: 10, cost_usd: 0.08 };
+          input.audit.record({ provider: "kimi-cli", role: "", outcome: "ok", latency_ms: 1, model: "kimi-for-coding", usage });
+          return {
+            ok: true,
+            verdict: { verdict: "pass", fixes_task: true, introduces_bugs: false, scope_creep: false, reasons: [DIFFBODY, SECRET] },
+            usage
+          };
+        }
       }, log);
       const { status } = await executeAndSettle(makeWorker(store, d), store, run_id);
       expect(status).toBe("completed");

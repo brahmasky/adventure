@@ -4,7 +4,7 @@ import { checkMeteredCeiling } from "../budget/metered-ceiling.js";
 import { runEpisodicConsolidateTick } from "../capabilities/episodic-consolidate.js";
 import { maybeRunEpisodicDistill } from "../capabilities/episodic-extract.js";
 import { PANEL_JUDGE_PROVIDERS, runIdeaPanelTick, type PanelSeat } from "../capabilities/idea-panel.js";
-import { spawnCodexJudge, spawnPanelChair } from "../capabilities/idea-panel-seats.js";
+import { spawnCodexJudge, spawnPanelChair, unavailableChairSeat } from "../capabilities/idea-panel-seats.js";
 import { runIdeaRadarTick, type RadarLlm } from "../capabilities/idea-radar.js";
 import { runLessonConsolidateTick } from "../capabilities/lesson-consolidate.js";
 import { runSkillReverifyTick } from "../capabilities/skill-reverify.js";
@@ -507,7 +507,7 @@ function buildPanelSeatBindings(options: RunTelegramDaemonOptions): PanelSeatBin
             env: process.env,
             audit: options.store.llmAuditSink({ correlation_id: "tick:idea_panel", role: "chair" })
           })
-      : async () => ({ ok: false, unavailable: true })
+      : unavailableChairSeat(options.store.llmAuditSink({ correlation_id: "tick:idea_panel", role: "chair" }))
   };
 }
 

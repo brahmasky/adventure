@@ -136,6 +136,50 @@ describe("usageByModel", () => {
     }
   });
 
+  it("meteredSpendUsd's monthly window uses UTC calendar-month bounds", () => {
+    // Last instant of the PREVIOUS month, the first instant of THIS month, and the first
+    // instant of NEXT month — only the middle row is inside [monthStart, monthEnd).
+    recordCallAt("2026-06-30T23:59:59.999Z", { provider: "kimi-api", model: "m", input: 1, output: 1, cost: 1 });
+    recordCallAt("2026-07-01T00:00:00.000Z", { provider: "kimi-api", model: "m", input: 1, output: 1, cost: 2 });
+    recordCallAt("2026-08-01T00:00:00.000Z", { provider: "kimi-api", model: "m", input: 1, output: 1, cost: 4 });
+
+    const result = store.meteredSpendUsd("2026-07-15T12:00:00.000Z");
+    expect(result.monthly_usd).toBeCloseTo(2, 6);
+  });
+
+  it("meteredSpendUsd's monthly statement is sargable — EXPLAIN QUERY PLAN bounds occurred_at through the index, never a table SCAN", () => {
+    // Intercepts the REAL SQL text (and bind args) meteredSpendUsd hands to db.prepare — not a
+    // hand-copied duplicate — so this test tracks the production statement, not a fixture of it.
+    const db = (store as unknown as {
+      db: { prepare(sql: string): { all<T>(...args: unknown[]): T[]; get<T>(...args: unknown[]): T } };
+    }).db;
+    const originalPrepare = db.prepare.bind(db);
+    const calls: { sql: string; args: unknown[] }[] = [];
+    const spy = vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+      const stmt = originalPrepare(sql);
+      return {
+        ...stmt,
+        get: (...args: unknown[]) => {
+          calls.push({ sql, args });
+          return stmt.get(...args);
+        }
+      };
+    });
+    store.meteredSpendUsd("2026-07-15T12:00:00.000Z");
+    spy.mockRestore();
+
+    expect(calls.length).toBe(2); // daily half, then monthly half
+    const monthly = calls[1]!;
+    expect(monthly.sql).not.toMatch(/strftime/);
+
+    const plan = originalPrepare(`EXPLAIN QUERY PLAN ${monthly.sql}`).all<{ detail: string }>(...monthly.args);
+    const details = plan.map((r) => r.detail);
+    expect(details.some((d) => d.includes("SCAN"))).toBe(false);
+    expect(
+      details.some((d) => d.includes("USING INDEX ledger_events_type_time_idx") && /occurred_at\s*[<>]/.test(d))
+    ).toBe(true);
+  });
+
   it("the ledger has indexes for the readers' predicate and for nextLedgerSequence", () => {
     const store = RunStore.openInMemory();
     try {

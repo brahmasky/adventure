@@ -317,6 +317,36 @@ export interface CodexJudgeParams {
  * purpose: this seat cannot leak what it never receives). Missing binary (ENOENT) →
  * `unavailable`; everything else degrades to `{ok:false}` and the quorum rule decides.
  */
+/**
+ * No-broker fallback for the chair seat (codex review, Task 12 fix 3): when the firewall is OFF
+ * there is no broker to hold the chair's OAuth token, so the panel tick never even attempts a
+ * spawn. That must still leave a row — silently skipping the attempt is the exact
+ * silent-fallthrough class slice 2 exists to end. Records ONE `unavailable`/`auth` claude
+ * attempt through the caller's sink (the same sink the real chair would use) and returns the
+ * seat's standard unavailable result. Used at both call sites that build this fallback
+ * (telegram-daemon's tick and cli.ts's `radar-panel --dry-run`), so they cannot drift apart.
+ */
+export function unavailableChairSeat(
+  audit: LlmAuditSink
+): (input: { digest: string; system: string }) => Promise<SeatResult> {
+  return async () => {
+    try {
+      audit.record({
+        provider: "claude",
+        role: "", // the scoped store sink fills the role
+        outcome: "unavailable",
+        latency_ms: 0,
+        error_kind: "auth"
+      });
+    } catch (error) {
+      console.warn(
+        `[panel-seat] audit sink failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    return { ok: false, unavailable: true };
+  };
+}
+
 export async function spawnCodexJudge(params: CodexJudgeParams): Promise<SeatResult> {
   const t0 = Date.now();
   const result = await spawnCodexJudgeInner(params);

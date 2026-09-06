@@ -11,7 +11,8 @@ import {
   JUDGE_STREAM_MAX_BYTES,
   SEAT_MAX_BYTES,
   spawnCodexJudge,
-  spawnPanelChair
+  spawnPanelChair,
+  unavailableChairSeat
 } from "../../src/capabilities/idea-panel-seats.js";
 import { buildChildEnv, type SpawnImpl, type SpawnResult } from "../../src/llm/providers/cli-spawn.js";
 import { createSecretBroker, type SecretBroker } from "../../src/config/secret-broker.js";
@@ -613,5 +614,31 @@ describe("buildChairArgs", () => {
     const args = buildChairArgs("SYS");
     expect(args[args.length - 2]).toBe("--system-prompt");
     expect(args[args.length - 1]).toBe("SYS");
+  });
+});
+
+describe("unavailableChairSeat — the no-broker fallback", () => {
+  it("records one unavailable/auth claude attempt and returns { ok: false, unavailable: true }", async () => {
+    const sink = recordingSink();
+    const seat = unavailableChairSeat(sink);
+    const result = await seat({ digest: DIGEST, system: SYSTEM });
+    expect(result).toEqual({ ok: false, unavailable: true });
+    expect(sink.attempts).toEqual([
+      {
+        provider: "claude",
+        role: "",
+        outcome: "unavailable",
+        latency_ms: 0,
+        error_kind: "auth"
+      }
+    ]);
+  });
+
+  it("a throwing sink never breaks the fallback", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const throwing = { record: () => { throw new Error("sink down"); } };
+    const seat = unavailableChairSeat(throwing);
+    await expect(seat({ digest: DIGEST, system: SYSTEM })).resolves.toEqual({ ok: false, unavailable: true });
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });

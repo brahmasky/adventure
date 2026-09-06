@@ -13,6 +13,7 @@ import {
   reviewDiff,
   writeKimiReviewerAgent
 } from "../../src/capabilities/diff-reviewer.js";
+import { recordingSink, UNAUDITED_TEST_SINK } from "../helpers/llm-audit.js";
 
 let temps: string[] = [];
 
@@ -185,7 +186,7 @@ describe("buildReviewPrompt", () => {
 
 describe("reviewDiff", () => {
   it("defaults to the kimi reviewer; returns disabled error when HOUGE_KIMI_CLI_BIN is unset", async () => {
-    const result = await reviewDiff({ task: "t", diff: "d", env: {} }); // no reviewer set → default kimi
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK, task: "t", diff: "d", env: {} }); // no reviewer set → default kimi
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/kimi reviewer disabled/);
   });
@@ -194,7 +195,7 @@ describe("reviewDiff", () => {
     // Claude was removed from the runtime; a stale HOUGE_SELFWRITE_REVIEWER=claude must degrade
     // gracefully to the default reviewer, never crash or try to spawn a claude bin.
     const bin = fakeBin("kimi-cli", kimiOutput('{"verdict":"pass","fixes_task":true}'));
-    const result = await reviewDiff({
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "fix it",
       diff: "the diff",
       env: { HOUGE_SELFWRITE_REVIEWER: "claude", HOUGE_KIMI_CLI_BIN: bin }
@@ -208,7 +209,7 @@ describe("reviewDiff", () => {
 
   it("dispatches to the Codex fallback (--json JSONL) when reviewer=codex and returns usage", async () => {
     const bin = fakeBin("codex", codexJsonl('{"verdict":"pass","fixes_task":true}'));
-    const result = await reviewDiff({
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "fix it",
       diff: "the diff",
       env: { HOUGE_SELFWRITE_REVIEWER: "codex", HOUGE_CODEX_BIN: bin }
@@ -228,14 +229,14 @@ describe("reviewDiff", () => {
   });
 
   it("returns disabled error when reviewer=kimi but HOUGE_KIMI_CLI_BIN is unset", async () => {
-    const result = await reviewDiff({ task: "t", diff: "d", env: { HOUGE_SELFWRITE_REVIEWER: "kimi" } });
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK, task: "t", diff: "d", env: { HOUGE_SELFWRITE_REVIEWER: "kimi" } });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/disabled|HOUGE_KIMI_CLI_BIN/);
   });
 
   it("dispatches to the kimi reviewer (plain-text stdout + trailing resume line) and parses a pass", async () => {
     const bin = fakeBin("kimi-cli", kimiOutput('{"verdict":"pass","fixes_task":true,"introduces_bugs":false,"scope_creep":false}'));
-    const result = await reviewDiff({
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "fix it",
       diff: "the diff",
       env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin }
@@ -250,7 +251,7 @@ describe("reviewDiff", () => {
 
   it("dispatches to the kimi reviewer and parses a reject (a real answer, not retried)", async () => {
     const bin = fakeBin("kimi-cli", kimiOutput('{"verdict":"reject","reasons":["deletes a test to pass the gate"]}'));
-    const result = await reviewDiff({
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "fix it",
       diff: "the diff",
       env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin }
@@ -261,7 +262,7 @@ describe("reviewDiff", () => {
 
   it("maps an unparseable kimi response to a clean error", async () => {
     const bin = fakeBin("kimi-cli", "I think it looks fine to me, no JSON here.");
-    const result = await reviewDiff({
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "fix it",
       diff: "the diff",
       env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin }
@@ -276,7 +277,7 @@ describe("reviewDiff", () => {
     temps.push(argvFile, stdinFile);
     const bin = capturingBin("kimi-cli", kimiOutput('{"verdict":"pass"}'), { argvFile, stdinFile });
 
-    const result = await reviewDiff({
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "fix the 猴哥 bug",
       diff: "diff --git a/x b/x",
       env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin }
@@ -313,7 +314,7 @@ describe("reviewDiff", () => {
     temps.push(argvFile);
     const bin = capturingBin("kimi-cli", kimiOutput('{"verdict":"pass"}'), { argvFile });
 
-    const result = await reviewDiff({
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "fix it",
       diff: "the diff",
       env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin, HOUGE_KIMI_CLI_MODEL: "kimi-for-coding" }
@@ -327,7 +328,7 @@ describe("reviewDiff", () => {
   });
 
   it("maps a missing kimi-cli binary (ENOENT) to a clean error", async () => {
-    const result = await reviewDiff({
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "t",
       diff: "d",
       env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: "/nonexistent/kimi-cli-xyz" }
@@ -340,14 +341,14 @@ describe("reviewDiff", () => {
 describe("reviewDiff — H1 fallback chain (unavailable → next backend; a delivered verdict is terminal)", () => {
   it("records the winning backend on a primary success (attribution)", async () => {
     const bin = fakeBin("kimi-cli", kimiOutput('{"verdict":"pass","fixes_task":true}'));
-    const result = await reviewDiff({ task: "t", diff: "d", env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin } });
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK, task: "t", diff: "d", env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin } });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.reviewer).toBe("kimi");
   });
 
   it("a fallback REJECT is a delivered verdict (never an error): kimi unavailable → codex's reject is returned", async () => {
     const codex = fakeBin("codex", codexJsonl('{"verdict":"reject","reasons":["scope creep"]}'));
-    const result = await reviewDiff({
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "fix it",
       diff: "the diff",
       env: {
@@ -369,7 +370,7 @@ describe("reviewDiff — H1 fallback chain (unavailable → next backend; a deli
     const codexArgv = join(mkdtempSync(join(tmpdir(), "houge-rev-cap-")), "argv");
     temps.push(codexArgv);
     const codex = capturingBin("codex", codexJsonl('{"verdict":"pass"}'), { argvFile: codexArgv });
-    const result = await reviewDiff({
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "fix it",
       diff: "the diff",
       env: {
@@ -391,7 +392,7 @@ describe("reviewDiff — H1 fallback chain (unavailable → next backend; a deli
     const codexArgv = join(mkdtempSync(join(tmpdir(), "houge-rev-cap-")), "argv");
     temps.push(codexArgv);
     const codex = capturingBin("codex", codexJsonl('{"verdict":"pass"}'), { argvFile: codexArgv });
-    const result = await reviewDiff({
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "t",
       diff: "d",
       env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: "/nonexistent/kimi-cli-xyz", HOUGE_CODEX_BIN: codex }
@@ -406,7 +407,7 @@ describe("reviewDiff — H1 fallback chain (unavailable → next backend; a deli
 
   it("falls through to an ENABLED codex when kimi is unavailable", async () => {
     const codex = fakeBin("codex", codexJsonl('{"verdict":"pass","fixes_task":true}'));
-    const result = await reviewDiff({
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "fix it",
       diff: "the diff",
       env: {
@@ -421,7 +422,7 @@ describe("reviewDiff — H1 fallback chain (unavailable → next backend; a deli
   });
 
   it("whole chain unavailable → the attempt fails exactly as before, with every backend's detail", async () => {
-    const result = await reviewDiff({
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "t",
       diff: "d",
       env: {
@@ -441,7 +442,7 @@ describe("reviewDiff — H1 fallback chain (unavailable → next backend; a deli
   it("the chain honors the configured reviewer FIRST (codex configured → kimi is the fallback, never reached)", async () => {
     const codex = fakeBin("codex", codexJsonl('{"verdict":"pass"}'));
     const kimi = fakeBin("kimi-cli", kimiOutput('{"verdict":"reject","reasons":["should not be reached"]}'));
-    const result = await reviewDiff({
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "t",
       diff: "d",
       env: { HOUGE_SELFWRITE_REVIEWER: "codex", HOUGE_CODEX_ENABLED: "1", HOUGE_CODEX_BIN: codex, HOUGE_KIMI_CLI_BIN: kimi }
@@ -451,5 +452,46 @@ describe("reviewDiff — H1 fallback chain (unavailable → next backend; a deli
       expect(result.reviewer).toBe("codex");
       expect(result.verdict.verdict).toBe("pass");
     }
+  });
+});
+
+describe("reviewDiff — per-leg audit (Task 12 fix 2: the reviewer's own fallback chain, audited)", () => {
+  it("records one attempt per actually-tried leg, in order: two failing kimi-cli attempts then the codex fallback's ok", async () => {
+    const kimi = fakeBin("kimi-cli", "no json here, sorry");
+    const codex = fakeBin("codex", codexJsonl('{"verdict":"pass","fixes_task":true}'));
+    const sink = recordingSink();
+    const result = await reviewDiff({
+      audit: sink,
+      task: "fix it",
+      diff: "the diff",
+      env: {
+        HOUGE_SELFWRITE_REVIEWER: "kimi",
+        HOUGE_KIMI_CLI_BIN: kimi,
+        HOUGE_CODEX_ENABLED: "1",
+        HOUGE_CODEX_BIN: codex
+      }
+    });
+    expect(result.ok).toBe(true);
+    expect(sink.attempts.map((a) => [a.provider, a.outcome])).toEqual([
+      ["kimi-cli", "error"],
+      ["kimi-cli", "error"],
+      ["codex", "ok"]
+    ]);
+  });
+
+  it("a single successful reviewer records exactly one ok attempt with usage", async () => {
+    const bin = fakeBin("codex", codexJsonl('{"verdict":"pass","fixes_task":true}'));
+    const sink = recordingSink();
+    const result = await reviewDiff({
+      audit: sink,
+      task: "fix it",
+      diff: "the diff",
+      env: { HOUGE_SELFWRITE_REVIEWER: "codex", HOUGE_CODEX_BIN: bin }
+    });
+    expect(result.ok).toBe(true);
+    expect(sink.attempts).toHaveLength(1);
+    expect(sink.attempts[0]?.provider).toBe("codex");
+    expect(sink.attempts[0]?.outcome).toBe("ok");
+    expect(sink.attempts[0]?.usage).toBeDefined();
   });
 });
