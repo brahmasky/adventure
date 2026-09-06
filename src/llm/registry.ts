@@ -18,7 +18,9 @@ import {
   AGY_DEFAULT_TIMEOUT_MS,
   type AgyCliProviderConfig
 } from "./providers/agy-cli.js";
+import { randomBytes } from "node:crypto";
 import type { LlmProvider, LlmRequest, LlmResult } from "./types.js";
+import { classifyLlmError, type LlmAuditSink } from "./audit.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import { METERED_PROVIDERS } from "./metered-pricing.js";
 
@@ -178,24 +180,65 @@ export function resolveChainBudgetMs(env: NodeJS.ProcessEnv): number {
 }
 
 /**
- * Try each provider in order. Returns the first `ok:true`; skips providers that
- * report `unavailable`; treats other failures as fallthrough. If every provider
- * fails, returns one aggregated `ok:false` with per-provider reasons joined.
+ * Try each provider in order. Returns the first `ok:true`; skips providers that report
+ * `unavailable`; treats other failures as fallthrough. If every provider fails, returns one
+ * aggregated `ok:false` with per-provider reasons joined.
  *
- * A leg that fails while a LATER leg succeeds is logged rather than discarded. Silence on that
- * path is exactly how the D1 regression survived ~3 months: agy failed every single call, `pi`
- * answered, and the aggregate reason string — the only record that agy had failed — was thrown
- * away on success. Counts and provider names only, never prompt or response content. This is an
- * interim console signal; the `llm_attempt` audit chokepoint (slice 2) is the durable answer.
+ * THE AUDIT CHOKEPOINT (spec 2026-09-04 §"Slice 2"): every leg attempted is recorded through the
+ * REQUIRED `audit` sink — success, error, or unavailable — with its latency, its position in the
+ * invocation (`attempt_group` + `leg_index`, so "agy failed then pi served" is reconstructable),
+ * and on success the usage the provider returned. Providers only parse; this loop is the one
+ * place that reports, so coverage is structural. `error_kind` is classified HERE, per leg, never
+ * from the joined aggregate. Recording is best-effort: a sink failure logs and never fails an
+ * answer. The `role` is filled by the scoped sink — the chain does not know a call's purpose.
+ *
+ * A leg that fails while a LATER leg succeeds is ALSO logged to the console — that line is the
+ * D1 visibility signal that would have shown agy dead for three months. Counts and provider
+ * names only, never prompt or response content.
  */
 export async function answerWithChain(
   chain: LlmProvider[],
-  req: LlmRequest
+  req: LlmRequest,
+  audit: LlmAuditSink
 ): Promise<LlmResult> {
   const reasons: string[] = [];
+  const attempt_group = randomBytes(6).toString("hex");
 
-  for (const provider of chain) {
+  for (let leg_index = 0; leg_index < chain.length; leg_index++) {
+    const provider = chain[leg_index]!;
+    const t0 = Date.now();
     const result = await provider.answer(req);
+    const latency_ms = Date.now() - t0;
+
+    try {
+      if (result.ok) {
+        audit.record({
+          provider: result.provider,
+          role: "",
+          outcome: "ok",
+          model: result.model,
+          latency_ms,
+          attempt_group,
+          leg_index,
+          ...(result.usage ? { usage: result.usage } : {})
+        });
+      } else {
+        audit.record({
+          provider: result.provider,
+          role: "",
+          outcome: result.unavailable ? "unavailable" : "error",
+          latency_ms,
+          attempt_group,
+          leg_index,
+          error_kind: classifyLlmError(result.error)
+        });
+      }
+    } catch (error) {
+      console.warn(
+        `[llm-chain] audit sink failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
     if (result.ok) {
       if (reasons.length > 0) {
         console.warn(

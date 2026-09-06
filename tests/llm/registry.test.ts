@@ -10,6 +10,8 @@ import { PI_DEFAULT_TIMEOUT_MS } from "../../src/llm/providers/pi.js";
 import { AGY_DEFAULT_TIMEOUT_MS } from "../../src/llm/providers/agy-cli.js";
 import { METERED_PROVIDERS } from "../../src/llm/metered-pricing.js";
 import type { LlmProvider, LlmResult } from "../../src/llm/types.js";
+import type { LlmAuditSink } from "../../src/llm/audit.js";
+import { recordingSink } from "../helpers/llm-audit.js";
 
 function provider(name: string, result: LlmResult): LlmProvider {
   return { name, answer: async () => result };
@@ -146,7 +148,7 @@ describe("answerWithChain fall-through visibility", () => {
         provider("pi", { ok: true, provider: "pi", model: "m", answer: "hi" })
       ];
 
-      const result = await answerWithChain(chain, { question: "q" });
+      const result = await answerWithChain(chain, { question: "q" }, recordingSink());
 
       expect(result.ok).toBe(true);
       expect(warn).toHaveBeenCalledOnce();
@@ -160,9 +162,11 @@ describe("answerWithChain fall-through visibility", () => {
   it("stays quiet when the first leg serves", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      await answerWithChain([provider("pi", { ok: true, provider: "pi", model: "m", answer: "hi" })], {
-        question: "q"
-      });
+      await answerWithChain(
+        [provider("pi", { ok: true, provider: "pi", model: "m", answer: "hi" })],
+        { question: "q" },
+        recordingSink()
+      );
       expect(warn).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();
@@ -177,7 +181,7 @@ describe("answerWithChain", () => {
       provider("b", { ok: true, provider: "b", model: "m2", answer: "second" })
     ];
 
-    const result = await answerWithChain(chain, { question: "hi" });
+    const result = await answerWithChain(chain, { question: "hi" }, recordingSink());
 
     expect(result).toEqual({ ok: true, provider: "a", model: "m1", answer: "first" });
   });
@@ -188,7 +192,7 @@ describe("answerWithChain", () => {
       provider("b", { ok: true, provider: "b", model: "m2", answer: "from b" })
     ];
 
-    const result = await answerWithChain(chain, { question: "hi" });
+    const result = await answerWithChain(chain, { question: "hi" }, recordingSink());
 
     expect(result).toEqual({ ok: true, provider: "b", model: "m2", answer: "from b" });
   });
@@ -199,7 +203,7 @@ describe("answerWithChain", () => {
       provider("b", { ok: true, provider: "b", model: "m2", answer: "from b" })
     ];
 
-    const result = await answerWithChain(chain, { question: "hi" });
+    const result = await answerWithChain(chain, { question: "hi" }, recordingSink());
 
     expect(result).toEqual({ ok: true, provider: "b", model: "m2", answer: "from b" });
   });
@@ -210,12 +214,109 @@ describe("answerWithChain", () => {
       provider("b", { ok: false, provider: "b", error: "HTTP 500" })
     ];
 
-    const result = await answerWithChain(chain, { question: "hi" });
+    const result = await answerWithChain(chain, { question: "hi" }, recordingSink());
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.provider).toBe("chain");
       expect(result.error).toBe("a: no key (unavailable); b: HTTP 500 (error)");
+    }
+  });
+});
+
+describe("answerWithChain audit", () => {
+  it("records exactly one attempt per leg tried, in order, with outcome, latency, group and index", async () => {
+    const sink = recordingSink();
+    const chain = [
+      provider("agy-cli", {
+        ok: false,
+        provider: "agy-cli",
+        error: 'agy status ERROR: invalid model selection (--model "x")',
+        unavailable: true
+      }),
+      provider("kimi-api", { ok: false, provider: "kimi-api", error: "Kimi request returned HTTP 503" }),
+      provider("pi", {
+        ok: true,
+        provider: "pi",
+        model: "kimi-for-coding",
+        answer: "hi",
+        usage: { input_tokens: 10, output_tokens: 2, cached_input_tokens: 0 }
+      })
+    ];
+
+    const result = await answerWithChain(chain, { question: "q" }, sink);
+
+    expect(result.ok).toBe(true);
+    expect(sink.attempts.map((a) => [a.provider, a.outcome, a.error_kind, a.leg_index])).toEqual([
+      ["agy-cli", "unavailable", "model_missing", 0],
+      ["kimi-api", "error", "transport", 1],
+      ["pi", "ok", undefined, 2]
+    ]);
+    expect(sink.attempts[2]).toMatchObject({
+      model: "kimi-for-coding",
+      usage: { input_tokens: 10, output_tokens: 2, cached_input_tokens: 0 }
+    });
+    const groups = new Set(sink.attempts.map((a) => a.attempt_group));
+    expect(groups.size).toBe(1);
+    expect([...groups][0]).toMatch(/^[0-9a-f]{8,}$/);
+    for (const a of sink.attempts) expect(typeof a.latency_ms).toBe("number");
+  });
+
+  it("mints a NEW attempt_group per invocation", async () => {
+    const sink = recordingSink();
+    const p = provider("pi", { ok: true, provider: "pi", model: "m", answer: "hi" });
+    await answerWithChain([p], { question: "a" }, sink);
+    await answerWithChain([p], { question: "b" }, sink);
+    expect(sink.attempts[0]!.attempt_group).not.toBe(sink.attempts[1]!.attempt_group);
+  });
+
+  it("does not record legs that were never tried", async () => {
+    const sink = recordingSink();
+    await answerWithChain(
+      [
+        provider("pi", { ok: true, provider: "pi", model: "m", answer: "hi" }),
+        provider("agy-cli", { ok: true, provider: "agy-cli", model: "g", answer: "never" })
+      ],
+      { question: "q" },
+      sink
+    );
+    expect(sink.attempts.map((a) => a.provider)).toEqual(["pi"]);
+  });
+
+  it("records every leg when all fail and still returns the aggregate error", async () => {
+    const sink = recordingSink();
+    const result = await answerWithChain(
+      [
+        provider("pi", { ok: false, provider: "pi", error: "pi timed out after 60000ms" }),
+        provider("agy-cli", { ok: false, provider: "agy-cli", error: "agy binary not found (ENOENT)", unavailable: true })
+      ],
+      { question: "q" },
+      sink
+    );
+    expect(result.ok).toBe(false);
+    expect(sink.attempts.map((a) => [a.outcome, a.error_kind])).toEqual([
+      ["error", "timeout"],
+      ["unavailable", "spawn"]
+    ]);
+  });
+
+  it("a throwing sink never fails a good answer, and is logged", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const sink: LlmAuditSink = {
+        record: () => {
+          throw new Error("ledger down");
+        }
+      };
+      const result = await answerWithChain(
+        [provider("pi", { ok: true, provider: "pi", model: "m", answer: "hi" })],
+        { question: "q" },
+        sink
+      );
+      expect(result.ok).toBe(true);
+      expect(warn.mock.calls.some((c) => String(c[0]).includes("ledger down"))).toBe(true);
+    } finally {
+      warn.mockRestore();
     }
   });
 });

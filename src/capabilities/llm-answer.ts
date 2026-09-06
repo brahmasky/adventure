@@ -86,7 +86,7 @@ export function createLlmAnswerAdapter(
       broker
     );
     const system = resolveSystemPrompt(input);
-    const result = await answerWithChain(chain, { question, system });
+    const result = await answerWithChain(chain, { question, system }, { record: () => {} }); // TEMP until Task 7 makes the sink a required constructor parameter
 
     if (!result.ok) {
       return { ok: false, error: result.error };
