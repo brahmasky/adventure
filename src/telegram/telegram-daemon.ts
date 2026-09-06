@@ -491,9 +491,22 @@ function buildPanelSeatBindings(options: RunTelegramDaemonOptions): PanelSeatBin
       kimi: pinnedJudge(PANEL_JUDGE_PROVIDERS.kimi),
       gemini: pinnedJudge(PANEL_JUDGE_PROVIDERS.gemini)
     },
-    codexJudge: ({ digest, system }) => spawnCodexJudge({ digest, system, env: process.env }),
+    codexJudge: ({ digest, system }) =>
+      spawnCodexJudge({
+        digest,
+        system,
+        env: process.env,
+        audit: options.store.llmAuditSink({ correlation_id: "tick:idea_panel", role: "judge" })
+      }),
     chair: broker
-      ? ({ digest, system }) => spawnPanelChair({ digest, system, broker, env: process.env })
+      ? ({ digest, system }) =>
+          spawnPanelChair({
+            digest,
+            system,
+            broker,
+            env: process.env,
+            audit: options.store.llmAuditSink({ correlation_id: "tick:idea_panel", role: "chair" })
+          })
       : async () => ({ ok: false, unavailable: true })
   };
 }

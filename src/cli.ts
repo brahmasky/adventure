@@ -447,12 +447,23 @@ if (command === "run") {
         gemini: pinnedJudge(PANEL_JUDGE_PROVIDERS.gemini)
       },
       codexJudge: (input: { digest: string; system: string }) =>
-        spawnCodexJudge({ digest: input.digest, system: input.system, env: process.env }),
+        spawnCodexJudge({
+          digest: input.digest,
+          system: input.system,
+          env: process.env,
+          audit: store.llmAuditSink({ correlation_id: "cli:radar-panel", role: "judge" })
+        }),
       // The chair's OAuth token is broker-held (spec §§2–3) — firewall OFF ⇒ chair
       // unavailable ⇒ the tick's deterministic mean-score fallback (self-describing output).
       chair: chairBroker
         ? (input: { digest: string; system: string }) =>
-            spawnPanelChair({ digest: input.digest, system: input.system, broker: chairBroker, env: process.env })
+            spawnPanelChair({
+              digest: input.digest,
+              system: input.system,
+              broker: chairBroker,
+              env: process.env,
+              audit: store.llmAuditSink({ correlation_id: "cli:radar-panel", role: "chair" })
+            })
         : async () => ({ ok: false as const, unavailable: true })
     };
 

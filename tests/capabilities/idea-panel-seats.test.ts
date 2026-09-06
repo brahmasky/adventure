@@ -14,6 +14,7 @@ import {
 } from "../../src/capabilities/idea-panel-seats.js";
 import { buildChildEnv, type SpawnImpl, type SpawnResult } from "../../src/llm/providers/cli-spawn.js";
 import { createSecretBroker, type SecretBroker } from "../../src/config/secret-broker.js";
+import { recordingSink, UNAUDITED_TEST_SINK } from "../helpers/llm-audit.js";
 
 const FAKE_TOKEN = "sk-ant-oat01-fake-chair-token-987654";
 
@@ -70,10 +71,11 @@ describe("spawnPanelChair — contained claude CLI chair", () => {
       system: SYSTEM,
       broker: brokerWithToken(),
       env: CHAIR_ENV,
+      audit: UNAUDITED_TEST_SINK,
       spawnImpl
     });
 
-    expect(result).toEqual({ ok: true, answer: '{"shortlist":[]}' });
+    expect(result).toEqual({ ok: true, answer: '{"shortlist":[]}', model: "claude" });
     expect(spawnImpl).toHaveBeenCalledTimes(1);
     const [file, args, opts] = spawnImpl.mock.calls[0]!;
     expect(file).toBe("/usr/local/bin/claude");
@@ -111,6 +113,7 @@ describe("spawnPanelChair — contained claude CLI chair", () => {
       system: SYSTEM,
       broker: brokerWithToken(),
       env: CHAIR_ENV,
+      audit: UNAUDITED_TEST_SINK,
       spawnImpl
     });
 
@@ -137,6 +140,7 @@ describe("spawnPanelChair — contained claude CLI chair", () => {
       system: SYSTEM,
       broker: brokerWithToken(),
       env: CHAIR_ENV,
+      audit: UNAUDITED_TEST_SINK,
       spawnImpl
     });
 
@@ -156,6 +160,7 @@ describe("spawnPanelChair — contained claude CLI chair", () => {
         system: SYSTEM,
         broker: brokerWithToken(),
         env,
+        audit: UNAUDITED_TEST_SINK,
         spawnImpl
       });
       expect(result).toEqual({ ok: false, unavailable: true });
@@ -171,6 +176,7 @@ describe("spawnPanelChair — contained claude CLI chair", () => {
       system: SYSTEM,
       broker: brokerWithoutToken(),
       env: CHAIR_ENV,
+      audit: UNAUDITED_TEST_SINK,
       spawnImpl
     });
 
@@ -188,6 +194,7 @@ describe("spawnPanelChair — contained claude CLI chair", () => {
       system: SYSTEM,
       broker: brokerWithToken(),
       env: { ...CHAIR_ENV, HOUGE_RADAR_CHAIR_TIMEOUT_MS: "5000" } as NodeJS.ProcessEnv,
+      audit: UNAUDITED_TEST_SINK,
       spawnImpl
     });
 
@@ -204,6 +211,7 @@ describe("spawnPanelChair — contained claude CLI chair", () => {
       system: SYSTEM,
       broker: brokerWithToken(),
       env: CHAIR_ENV,
+      audit: UNAUDITED_TEST_SINK,
       spawnImpl
     });
 
@@ -220,10 +228,11 @@ describe("spawnPanelChair — contained claude CLI chair", () => {
       system: SYSTEM,
       broker: brokerWithToken(),
       env: CHAIR_ENV,
+      audit: UNAUDITED_TEST_SINK,
       spawnImpl
     });
 
-    expect(result).toEqual({ ok: false });
+    expect(result).toEqual({ ok: false, timedOut: true });
   });
 
   it("malformed / non-result stdout → {ok:false}", async () => {
@@ -241,6 +250,7 @@ describe("spawnPanelChair — contained claude CLI chair", () => {
         system: SYSTEM,
         broker: brokerWithToken(),
         env: CHAIR_ENV,
+        audit: UNAUDITED_TEST_SINK,
         spawnImpl
       });
       expect(result).toEqual({ ok: false });
@@ -257,6 +267,7 @@ describe("spawnPanelChair — contained claude CLI chair", () => {
       system: SYSTEM,
       broker: brokerWithToken(),
       env: CHAIR_ENV,
+      audit: UNAUDITED_TEST_SINK,
       spawnImpl
     });
 
@@ -302,11 +313,12 @@ describe("spawnCodexJudge — contained codex CLI judge", () => {
       digest: DIGEST,
       system: SYSTEM,
       env: {} as NodeJS.ProcessEnv,
+      audit: UNAUDITED_TEST_SINK,
       spawnImpl
     });
 
     // The answer is the outfile verdict — never the transcript's echoed JSON template.
-    expect(result).toEqual({ ok: true, answer: VERDICT });
+    expect(result).toEqual({ ok: true, answer: VERDICT, model: "default" });
     const [file, args, opts] = spawnImpl.mock.calls[0]!;
     expect(file).toBe("codex"); // resolveCodexBin default
     const outfile = outfileOf(args);
@@ -327,13 +339,13 @@ describe("spawnCodexJudge — contained codex CLI judge", () => {
   it("missing outfile (codex wrote nothing) and empty outfile → {ok:false}; tempdir still cleaned", async () => {
     const missing = codexSpawnStub({ writeOutfile: false });
     expect(
-      await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, spawnImpl: missing })
+      await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, audit: UNAUDITED_TEST_SINK, spawnImpl: missing })
     ).toEqual({ ok: false });
     expect(existsSync(dirname(outfileOf(missing.mock.calls[0]![1])))).toBe(false);
 
     const empty = codexSpawnStub({ outfileContent: "   \n" });
     expect(
-      await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, spawnImpl: empty })
+      await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, audit: UNAUDITED_TEST_SINK, spawnImpl: empty })
     ).toEqual({ ok: false });
     expect(existsSync(dirname(outfileOf(empty.mock.calls[0]![1])))).toBe(false);
   });
@@ -341,7 +353,7 @@ describe("spawnCodexJudge — contained codex CLI judge", () => {
   it("oversized outfile (> SEAT_MAX_BYTES) → {ok:false}", async () => {
     const huge = codexSpawnStub({ outfileContent: "x".repeat(SEAT_MAX_BYTES + 1) });
     expect(
-      await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, spawnImpl: huge })
+      await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, audit: UNAUDITED_TEST_SINK, spawnImpl: huge })
     ).toEqual({ ok: false });
   });
 
@@ -355,6 +367,7 @@ describe("spawnCodexJudge — contained codex CLI judge", () => {
         HOUGE_CODEX_BIN: "/opt/bin/codex",
         HOUGE_CODEX_TIMEOUT_MS: "9000"
       } as NodeJS.ProcessEnv,
+      audit: UNAUDITED_TEST_SINK,
       spawnImpl
     });
 
@@ -370,6 +383,7 @@ describe("spawnCodexJudge — contained codex CLI judge", () => {
       digest: DIGEST,
       system: SYSTEM,
       env: {} as NodeJS.ProcessEnv,
+      audit: UNAUDITED_TEST_SINK,
       spawnImpl
     });
 
@@ -385,14 +399,14 @@ describe("spawnCodexJudge — contained codex CLI judge", () => {
       spawnResult({ code: null, spawnError: { code: "ENOENT" } })
     );
     expect(
-      await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, spawnImpl: enoent })
+      await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, audit: UNAUDITED_TEST_SINK, spawnImpl: enoent })
     ).toEqual({ ok: false, unavailable: true });
     expect(existsSync(dirname(outfileOf(enoent.mock.calls[0]![1])))).toBe(false);
 
     const timedOut = vi.fn<SpawnImpl>(async () => spawnResult({ code: null, timedOut: true }));
     expect(
-      await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, spawnImpl: timedOut })
-    ).toEqual({ ok: false });
+      await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, audit: UNAUDITED_TEST_SINK, spawnImpl: timedOut })
+    ).toEqual({ ok: false, timedOut: true });
     expect(existsSync(dirname(outfileOf(timedOut.mock.calls[0]![1])))).toBe(false);
   });
 
@@ -402,8 +416,140 @@ describe("spawnCodexJudge — contained codex CLI judge", () => {
       return spawnResult({ code: 2, stdout: "chatter" });
     });
     expect(
-      await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, spawnImpl })
+      await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, audit: UNAUDITED_TEST_SINK, spawnImpl })
     ).toEqual({ ok: false });
+  });
+});
+
+describe("seat audit (slice 2)", () => {
+  const CHAIR_ENV = { HOUGE_CLAUDE_BIN: "/usr/local/bin/claude" } as NodeJS.ProcessEnv;
+
+  it("chair: records an ok attempt with claude's usage parsed from the json envelope", async () => {
+    const sink = recordingSink();
+    const stdout = JSON.stringify({
+      result: "1. Alpha\n2. Beta\n3. Gamma",
+      is_error: false,
+      usage: {
+        input_tokens: 120,
+        output_tokens: 40,
+        cache_read_input_tokens: 30,
+        cache_creation_input_tokens: 10
+      },
+      total_cost_usd: 0.0123
+    });
+    const result = await spawnPanelChair({
+      digest: "d",
+      system: "s",
+      broker: brokerWithToken(),
+      env: CHAIR_ENV,
+      audit: sink,
+      spawnImpl: async () => spawnResult({ stdout })
+    });
+    expect(result.ok).toBe(true);
+    expect(sink.attempts).toHaveLength(1);
+    expect(sink.attempts[0]).toMatchObject({
+      provider: "claude",
+      outcome: "ok",
+      model: "claude",
+      usage: { input_tokens: 120, output_tokens: 40, cached_input_tokens: 40 }
+    });
+    expect(typeof sink.attempts[0]!.latency_ms).toBe("number");
+  });
+
+  it("chair: records unavailable when the binary is unset, WITHOUT spawning", async () => {
+    const sink = recordingSink();
+    const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({}));
+    await spawnPanelChair({
+      digest: "d",
+      system: "s",
+      broker: brokerWithToken(),
+      env: {} as NodeJS.ProcessEnv,
+      audit: sink,
+      spawnImpl
+    });
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(sink.attempts.map((a) => [a.outcome, a.error_kind])).toEqual([["unavailable", "spawn"]]);
+  });
+
+  it("chair: a timeout records outcome error with error_kind timeout", async () => {
+    const sink = recordingSink();
+    await spawnPanelChair({
+      digest: "d",
+      system: "s",
+      broker: brokerWithToken(),
+      env: CHAIR_ENV,
+      audit: sink,
+      spawnImpl: async () => spawnResult({ timedOut: true, code: null })
+    });
+    expect(sink.attempts.map((a) => [a.outcome, a.error_kind])).toEqual([["error", "timeout"]]);
+  });
+
+  it("codex judge: records an ok attempt with usage from the --json stream", async () => {
+    const sink = recordingSink();
+    const stdout =
+      JSON.stringify({
+        type: "turn.completed",
+        usage: { input_tokens: 200, cached_input_tokens: 50, output_tokens: 20, reasoning_output_tokens: 5 }
+      }) + "\n";
+    const spawnImpl = vi.fn<SpawnImpl>(async (_file, args) => {
+      const i = args.indexOf("-o");
+      writeFileSync(args[i + 1]!, '{"scores":[{"card":1,"score":7,"reason":"ok"}]}');
+      return spawnResult({ stdout });
+    });
+    const result = await spawnCodexJudge({
+      digest: "d",
+      system: "s",
+      env: {} as NodeJS.ProcessEnv,
+      audit: sink,
+      spawnImpl
+    });
+    expect(result.ok).toBe(true);
+    expect(sink.attempts).toHaveLength(1);
+    expect(sink.attempts[0]).toMatchObject({
+      provider: "codex",
+      outcome: "ok",
+      model: "default",
+      usage: { input_tokens: 200, output_tokens: 25, cached_input_tokens: 50 }
+    });
+  });
+
+  it("codex judge: a timeout records outcome error with error_kind timeout", async () => {
+    const sink = recordingSink();
+    await spawnCodexJudge({
+      digest: "d",
+      system: "s",
+      env: {} as NodeJS.ProcessEnv,
+      audit: sink,
+      spawnImpl: async () => spawnResult({ timedOut: true, code: null })
+    });
+    expect(sink.attempts).toHaveLength(1);
+    expect(sink.attempts[0]).toMatchObject({ provider: "codex", outcome: "error", error_kind: "timeout" });
+  });
+
+  it("codex judge: ENOENT records unavailable/spawn; a rejecting sink never breaks the seat", async () => {
+    const sink = recordingSink();
+    const result = await spawnCodexJudge({
+      digest: "d",
+      system: "s",
+      env: {} as NodeJS.ProcessEnv,
+      audit: sink,
+      spawnImpl: async () => spawnResult({ code: null, spawnError: { code: "ENOENT" } })
+    });
+    expect(result).toEqual({ ok: false, unavailable: true });
+    expect(sink.attempts.map((a) => [a.outcome, a.error_kind])).toEqual([["unavailable", "spawn"]]);
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const throwing = { record: () => { throw new Error("sink down"); } };
+    await expect(
+      spawnCodexJudge({
+        digest: "d",
+        system: "s",
+        env: {} as NodeJS.ProcessEnv,
+        audit: throwing,
+        spawnImpl: async () => spawnResult({ timedOut: true, code: null })
+      })
+    ).resolves.toEqual({ ok: false, timedOut: true });
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });
 

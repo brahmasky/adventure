@@ -17,9 +17,17 @@ import {
 } from "../llm/providers/cli-spawn.js";
 import { resolveCodexBin } from "./coding-agent.js";
 import type { SecretBroker } from "../config/secret-broker.js";
+import type { LlmAuditSink } from "../llm/audit.js";
+import { normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
 
-/** Both seats resolve to this total shape — a seat NEVER throws into the panel tick. */
-export type SeatResult = { ok: true; answer: string } | { ok: false; unavailable?: boolean };
+/**
+ * Both seats resolve to this total shape — a seat NEVER throws into the panel tick. `usage` /
+ * `model` / `timedOut` are telemetry-only extras consumed by {@link recordSeat}; the panel tick
+ * reads `ok` / `answer` / `unavailable` alone.
+ */
+export type SeatResult =
+  | { ok: true; answer: string; usage?: LlmUsage; model?: string }
+  | { ok: false; unavailable?: boolean; timedOut?: true };
 
 /** Default chair wall-clock timeout (`HOUGE_RADAR_CHAIR_TIMEOUT_MS` overrides). */
 export const CHAIR_DEFAULT_TIMEOUT_MS = 120_000;
@@ -31,6 +39,64 @@ export const SEAT_MAX_BYTES = 262_144;
 function numericEnv(raw: string | undefined, fallback: number): number {
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Audit (slice 2): the seats live OUTSIDE the chain, so `answerWithChain` never sees them — each
+// seat records its own `llm_attempt` at the spawn site through the same required sink.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * claude `--output-format json` usage block → {@link LlmUsage}. Cache read + cache creation both
+ * count as cached input (neither is billed at the full input rate). Malformed → undefined.
+ */
+function extractChairUsage(stdout: string): LlmUsage | undefined {
+  try {
+    const obj = JSON.parse(stdout.trim()) as Record<string, unknown>;
+    const u = obj.usage as Record<string, unknown> | undefined;
+    if (!u || typeof u !== "object") return undefined;
+    const n = (v: unknown): number =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0;
+    return {
+      input_tokens: n(u.input_tokens),
+      output_tokens: n(u.output_tokens),
+      cached_input_tokens: n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens)
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * One attempt per seat spawn — ok / error / unavailable — recorded finally-style so a seat that
+ * never produced usage (or never spawned) still leaves a row (review W7 / codex #13). Never
+ * throws: the sink is best-effort by contract, and a seat must not fail the tick over telemetry.
+ */
+function recordSeat(audit: LlmAuditSink, provider: string, result: SeatResult, latency_ms: number): void {
+  try {
+    if (result.ok) {
+      audit.record({
+        provider,
+        role: "", // the scoped store sink fills the role
+        outcome: "ok",
+        latency_ms,
+        model: result.model ?? provider,
+        ...(result.usage ? { usage: result.usage } : {})
+      });
+    } else {
+      audit.record({
+        provider,
+        role: "",
+        outcome: result.unavailable ? "unavailable" : "error",
+        latency_ms,
+        error_kind: result.unavailable ? "spawn" : result.timedOut ? "timeout" : "other"
+      });
+    }
+  } catch (error) {
+    console.warn(
+      `[panel-seat] audit sink failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -111,6 +177,8 @@ export interface ChairParams {
   broker: SecretBroker;
   /** Config env (bin path, timeout override) — injectable for tests. */
   env: NodeJS.ProcessEnv;
+  /** Required audit chokepoint (slice 2): one `llm_attempt` per spawn, every outcome. */
+  audit: LlmAuditSink;
   spawnImpl?: SpawnImpl;
 }
 
@@ -141,6 +209,13 @@ function extractChairAnswer(stdout: string): string | undefined {
  * `{ok:false}` — the panel publishes either way via the deterministic fallback.
  */
 export async function spawnPanelChair(params: ChairParams): Promise<SeatResult> {
+  const t0 = Date.now();
+  const result = await spawnPanelChairInner(params);
+  recordSeat(params.audit, "claude", result, Date.now() - t0);
+  return result;
+}
+
+async function spawnPanelChairInner(params: ChairParams): Promise<SeatResult> {
   const spawnImpl = params.spawnImpl ?? defaultSpawnImpl;
 
   const bin = params.env.HOUGE_CLAUDE_BIN?.trim();
@@ -178,13 +253,14 @@ export async function spawnPanelChair(params: ChairParams): Promise<SeatResult> 
 
   if (result.spawnError?.code === "ENOENT") return { ok: false, unavailable: true };
   if (result.spawnError) return { ok: false, unavailable: true };
-  if (result.timedOut) return { ok: false };
+  if (result.timedOut) return { ok: false, timedOut: true };
   if (Buffer.byteLength(result.stdout, "utf8") > SEAT_MAX_BYTES) return { ok: false };
   if (result.code !== 0) return { ok: false };
 
   const answer = extractChairAnswer(result.stdout);
   if (answer === undefined) return { ok: false };
-  return { ok: true, answer };
+  const usage = extractChairUsage(result.stdout);
+  return { ok: true, answer, model: "claude", ...(usage ? { usage } : {}) };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -215,6 +291,8 @@ export interface CodexJudgeParams {
   /** Houge-controlled framing; joined ahead of the digest on stdin (codex exec has no system-prompt flag). */
   system: string;
   env: NodeJS.ProcessEnv;
+  /** Required audit chokepoint (slice 2): one `llm_attempt` per spawn, every outcome. */
+  audit: LlmAuditSink;
   spawnImpl?: SpawnImpl;
 }
 
@@ -225,6 +303,13 @@ export interface CodexJudgeParams {
  * `unavailable`; everything else degrades to `{ok:false}` and the quorum rule decides.
  */
 export async function spawnCodexJudge(params: CodexJudgeParams): Promise<SeatResult> {
+  const t0 = Date.now();
+  const result = await spawnCodexJudgeInner(params);
+  recordSeat(params.audit, "codex", result, Date.now() - t0);
+  return result;
+}
+
+async function spawnCodexJudgeInner(params: CodexJudgeParams): Promise<SeatResult> {
   const spawnImpl = params.spawnImpl ?? defaultSpawnImpl;
 
   const bin = resolveCodexBin(params.env);
@@ -236,7 +321,8 @@ export async function spawnCodexJudge(params: CodexJudgeParams): Promise<SeatRes
 
   // Fresh `-o` outfile in a tempdir OUTSIDE any sandbox path (coding-agent's outDir idiom) —
   // the read-only sandbox can't be asked to write into its own root, and only the outfile
-  // content (codex's final message) counts as the answer; stdout transcript is discarded.
+  // content (codex's final message) counts as the answer; stdout is never the answer — it is
+  // only scanned by `normalizeCodexUsage` for token-usage events (telemetry, slice 2).
   let outDir: string;
   try {
     outDir = mkdtempSync(join(os.tmpdir(), "houge-panel-codex-"));
@@ -261,7 +347,7 @@ export async function spawnCodexJudge(params: CodexJudgeParams): Promise<SeatRes
 
     if (result.spawnError?.code === "ENOENT") return { ok: false, unavailable: true };
     if (result.spawnError) return { ok: false, unavailable: true };
-    if (result.timedOut) return { ok: false };
+    if (result.timedOut) return { ok: false, timedOut: true };
     if (result.code !== 0) return { ok: false };
 
     // The answer is the outfile, never stdout. Missing/unreadable → the seat just failed.
@@ -275,7 +361,10 @@ export async function spawnCodexJudge(params: CodexJudgeParams): Promise<SeatRes
 
     const answer = raw.trim();
     if (answer.length === 0) return { ok: false };
-    return { ok: true, answer };
+    // The judge passes no `-m`, so codex's own default model serves — "default" is the honest
+    // label (not `HOUGE_CODEX_MODEL`, which this seat deliberately does not honor).
+    const usage = normalizeCodexUsage(result.stdout);
+    return { ok: true, answer, model: "default", ...(usage ? { usage } : {}) };
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }
