@@ -8,6 +8,7 @@ import {
   chairConfigDir,
   CHAIR_DEFAULT_TIMEOUT_MS,
   CODEX_JUDGE_DEFAULT_TIMEOUT_MS,
+  JUDGE_STREAM_MAX_BYTES,
   SEAT_MAX_BYTES,
   spawnCodexJudge,
   spawnPanelChair
@@ -331,7 +332,10 @@ describe("spawnCodexJudge — contained codex CLI judge", () => {
     expect(opts.input).toBe(`${SYSTEM}\n\n${DIGEST}`);
     expect(opts.cwd).toBe(os.tmpdir());
     expect(opts.timeoutMs).toBe(CODEX_JUDGE_DEFAULT_TIMEOUT_MS);
-    expect(opts.maxBytes).toBe(SEAT_MAX_BYTES);
+    // The judge's stdout is a --json telemetry STREAM, never the answer: it gets the 8 MB stream
+    // cap, not the 256 KB answer cap (the outfile answer is still bounded by SEAT_MAX_BYTES).
+    expect(opts.maxBytes).toBe(JUDGE_STREAM_MAX_BYTES);
+    expect(JUDGE_STREAM_MAX_BYTES).toBeGreaterThan(SEAT_MAX_BYTES);
     // The `-o` tempdir is cleaned up after a successful run.
     expect(existsSync(dirname(outfile))).toBe(false);
   });
@@ -408,6 +412,20 @@ describe("spawnCodexJudge — contained codex CLI judge", () => {
       await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, audit: UNAUDITED_TEST_SINK, spawnImpl: timedOut })
     ).toEqual({ ok: false, timedOut: true });
     expect(existsSync(dirname(outfileOf(timedOut.mock.calls[0]![1])))).toBe(false);
+  });
+
+  it("stdout stream overflow (child killed, code null, no outfile) → {ok:false}; tempdir cleaned", async () => {
+    // defaultSpawnImpl kills the child once stdout passes maxBytes and reports `code: null` with
+    // `timedOut: false`; codex never got to write its final message.
+    const sink = recordingSink();
+    const overflow = vi.fn<SpawnImpl>(async () =>
+      spawnResult({ code: null, stdout: "x".repeat(JUDGE_STREAM_MAX_BYTES + 1) })
+    );
+    expect(
+      await spawnCodexJudge({ digest: DIGEST, system: SYSTEM, env: {} as NodeJS.ProcessEnv, audit: sink, spawnImpl: overflow })
+    ).toEqual({ ok: false });
+    expect(sink.attempts.map((a) => [a.provider, a.outcome, a.error_kind])).toEqual([["codex", "error", "other"]]);
+    expect(existsSync(dirname(outfileOf(overflow.mock.calls[0]![1])))).toBe(false);
   });
 
   it("non-zero exit → {ok:false} even when the outfile carries a verdict (refusal posture)", async () => {
@@ -509,7 +527,8 @@ describe("seat audit (slice 2)", () => {
       provider: "codex",
       outcome: "ok",
       model: "default",
-      usage: { input_tokens: 200, output_tokens: 25, cached_input_tokens: 50 }
+      // reasoning (5) is folded INTO output (20 + 5) and ALSO visible as thinking_tokens
+      usage: { input_tokens: 200, output_tokens: 25, cached_input_tokens: 50, thinking_tokens: 5 }
     });
   });
 
@@ -539,7 +558,7 @@ describe("seat audit (slice 2)", () => {
     expect(sink.attempts[0]).toMatchObject({
       provider: "codex",
       outcome: "ok",
-      usage: { input_tokens: 20564, output_tokens: 167, cached_input_tokens: 5504 }
+      usage: { input_tokens: 20564, output_tokens: 167, cached_input_tokens: 5504, thinking_tokens: 80 }
     });
   });
 

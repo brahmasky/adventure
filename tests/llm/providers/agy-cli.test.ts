@@ -7,7 +7,6 @@ import {
   ERROR_EXCERPT_MAX
 } from "../../../src/llm/providers/agy-cli.js";
 import type { SpawnImpl, SpawnResult } from "../../../src/llm/providers/cli-spawn.js";
-import type { LlmUsage } from "../../../src/run/llm-usage.js";
 
 /** Build a SpawnResult with sane defaults so tests only set what they assert. */
 function spawnResult(partial: Partial<SpawnResult> = {}): SpawnResult {
@@ -610,39 +609,7 @@ describe("createAgyCliProvider", () => {
   });
 
   describe("usage telemetry", () => {
-    it("reports output WITHOUT re-adding thinking, and cache_read as cached input", async () => {
-      const seen: Array<{ usage: LlmUsage; model: string }> = [];
-      const spawnImpl = vi.fn<SpawnImpl>(async () =>
-        spawnResult({
-          stdout: envelope({
-            response: "hi",
-            usage: {
-              input_tokens: 5590,
-              output_tokens: 1511,
-              thinking_tokens: 842,
-              cache_read_tokens: 8090,
-              total_tokens: 7101
-            }
-          })
-        })
-      );
-      const provider = createAgyCliProvider({
-        spawnImpl,
-        model: "m",
-        onUsage: (usage, model) => seen.push({ usage, model })
-      });
-
-      await provider.answer({ question: "hi" });
-
-      expect(seen).toEqual([
-        {
-          usage: { input_tokens: 5590, output_tokens: 1511, cached_input_tokens: 8090, thinking_tokens: 842 },
-          model: "m"
-        }
-      ]);
-    });
-
-    it("ALSO returns usage on the result — thinking reported separately, never re-added (slice 2)", async () => {
+    it("returns usage on the result — thinking reported separately, never re-added; cache_read as cached input (slice 2)", async () => {
       const spawnImpl = vi.fn<SpawnImpl>(async () =>
         spawnResult({ stdout: envelope({ response: "hi", usage: { input_tokens: 5590, output_tokens: 1511, thinking_tokens: 842, cache_read_tokens: 8090, total_tokens: 7101 } }) })
       );
@@ -657,44 +624,5 @@ describe("createAgyCliProvider", () => {
       if (result.ok) expect(result.usage).toBeUndefined();
     });
 
-    it("does not report usage on a failed answer", async () => {
-      const onUsage = vi.fn();
-      const spawnImpl = vi.fn<SpawnImpl>(async () =>
-        spawnResult({ code: 0, stdout: envelope({ status: "ERROR", error: "boom" }) })
-      );
-      const provider = createAgyCliProvider({ spawnImpl, model: "m", onUsage });
-
-      await provider.answer({ question: "hi" });
-
-      expect(onUsage).not.toHaveBeenCalled();
-    });
-
-    it("still answers when the usage block is missing", async () => {
-      const onUsage = vi.fn();
-      const spawnImpl = vi.fn<SpawnImpl>(async () =>
-        spawnResult({ stdout: JSON.stringify({ status: "SUCCESS", response: "hi" }) })
-      );
-      const provider = createAgyCliProvider({ spawnImpl, model: "m", onUsage });
-
-      const result = await provider.answer({ question: "hi" });
-
-      expect(result.ok).toBe(true);
-      expect(onUsage).not.toHaveBeenCalled();
-    });
-
-    it("a throwing telemetry hook never breaks a good answer", async () => {
-      const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout: envelope({ response: "hi" }) }));
-      const provider = createAgyCliProvider({
-        spawnImpl,
-        model: "m",
-        onUsage: () => {
-          throw new Error("telemetry down");
-        }
-      });
-
-      const result = await provider.answer({ question: "hi" });
-
-      expect(result.ok).toBe(true);
-    });
   });
 });

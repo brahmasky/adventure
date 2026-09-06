@@ -33,8 +33,21 @@ export type SeatResult =
 export const CHAIR_DEFAULT_TIMEOUT_MS = 120_000;
 /** Default codex-judge wall-clock timeout (`HOUGE_CODEX_TIMEOUT_MS` overrides). */
 export const CODEX_JUDGE_DEFAULT_TIMEOUT_MS = 120_000;
-/** Hard stdout byte cap for both seats (the pi leg's 256 KB bound). */
+/**
+ * Hard ANSWER byte cap for both seats (the pi leg's 256 KB answer bound): the chair's stdout IS
+ * its answer (one JSON object), and the judge's outfile is checked against it after the read.
+ */
 export const SEAT_MAX_BYTES = 262_144;
+/**
+ * Raw stdout STREAM cap for the codex judge — the memory bound handed to spawn, decoupled from
+ * {@link SEAT_MAX_BYTES} because the judge's stdout is a `--json` telemetry stream, never the
+ * answer (the answer is the outfile). Same lesson as the pi stream cap fixed 2026-09-06: bounding
+ * a token/event stream by an ANSWER cap dead-seats the leg. `codex --json` is one event per ITEM,
+ * not per token, but a judge that runs a command echoes its output; 8 MB mirrors the pi leg's
+ * stream sizing (`PI_DEFAULT_MAX_BYTES`; coding-agent's codex writer buffers 32 MB) — the outfile
+ * answer stays bounded by `SEAT_MAX_BYTES`.
+ */
+export const JUDGE_STREAM_MAX_BYTES = 8 * 1024 * 1024;
 
 function numericEnv(raw: string | undefined, fallback: number): number {
   const n = Number(raw);
@@ -340,7 +353,7 @@ async function spawnCodexJudgeInner(params: CodexJudgeParams): Promise<SeatResul
         timeoutMs,
         cwd: os.tmpdir(),
         env: buildChildEnv(undefined),
-        maxBytes: SEAT_MAX_BYTES,
+        maxBytes: JUDGE_STREAM_MAX_BYTES, // stream cap, not the answer cap (see the constant)
         input
       });
     } catch {
@@ -350,6 +363,7 @@ async function spawnCodexJudgeInner(params: CodexJudgeParams): Promise<SeatResul
     if (result.spawnError?.code === "ENOENT") return { ok: false, unavailable: true };
     if (result.spawnError) return { ok: false, unavailable: true };
     if (result.timedOut) return { ok: false, timedOut: true };
+    // A stream overflow (`JUDGE_STREAM_MAX_BYTES`) kills the child → `code: null` lands here.
     if (result.code !== 0) return { ok: false };
 
     // The answer is the outfile, never stdout. Missing/unreadable → the seat just failed.

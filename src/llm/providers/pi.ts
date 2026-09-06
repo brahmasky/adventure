@@ -24,14 +24,6 @@ export interface PiProviderConfig {
   /** Cap on the EXTRACTED ANSWER text. See PI_DEFAULT_MAX_ANSWER_BYTES. */
   maxAnswerBytes?: number;
   spawnImpl?: SpawnImpl;
-  /**
-   * Phase 3.1 telemetry seam (spec §"Real telemetry"). Fired once per SUCCESSFUL answer IF pi
-   * reported token usage on the assistant `message_end`, with the call's normalized usage and the
-   * actual model id — the W3 caller wires this to `recordLlmCall`. Optional: existing callers are
-   * unaffected, and the provider's `LlmResult` shape is unchanged (usage rides this side channel).
-   * NON-NEGOTIABLE: carries ONLY counts/metadata — never prompt or response bodies.
-   */
-  onUsage?: (usage: LlmUsage, model: string) => void;
 }
 
 export const PI_DEFAULT_TIMEOUT_MS = 60_000;
@@ -297,16 +289,7 @@ export function createPiProvider(config: PiProviderConfig = {}): LlmProvider {
       // exit 0 is a legitimate answer.
       const reportedModel = parsed.model ?? model ?? "pi-default";
 
-      // Telemetry side channel (Phase 3.1): surface normalized usage without altering the result
-      // shape. Best-effort — absent usage or a throwing hook never fails the answer.
-      if (config.onUsage && parsed.usage) {
-        try {
-          config.onUsage(parsed.usage, reportedModel);
-        } catch {
-          // a failing telemetry hook must never break a good answer
-        }
-      }
-
+      // Usage rides the result (slice 2); the audit chokepoint on `answerWithChain` records it.
       return {
         ok: true,
         provider: "pi",

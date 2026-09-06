@@ -5,9 +5,10 @@ import type { LlmUsage } from "../run/llm-usage.js";
  *
  * Every LLM leg attempt in Houge — `answerWithChain` legs and the spawn seats outside the chain —
  * is reported through ONE of these. It is a REQUIRED constructor parameter wherever an adapter or
- * seat is built: the opt-in `onUsage` hook it replaces is what produced defect D4 (whole call
- * paths recording nothing because nobody passed the hook). A required parameter cannot be
- * forgotten; the compiler enforces coverage.
+ * seat is built: the opt-in per-provider usage hook it replaced (deleted 2026-09-06) is what
+ * produced defect D4 (whole call paths recording nothing because nobody passed the hook). A
+ * required parameter cannot be forgotten; the compiler enforces coverage, and
+ * `tests/llm/audit-coverage.test.ts` scans the source so a bypass cannot land quietly.
  *
  * NON-NEGOTIABLE: an attempt carries counts and metadata ONLY — never prompt or response bodies.
  */

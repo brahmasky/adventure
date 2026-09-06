@@ -216,11 +216,13 @@ describe("reviewDiff", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.verdict.verdict).toBe("pass");
-      // output includes reasoning_output_tokens (300 + 50); cached from cached_input_tokens.
+      // output includes reasoning_output_tokens (300 + 50); cached from cached_input_tokens;
+      // the reasoning figure is ALSO surfaced as thinking_tokens (informational, never summed).
       expect(result.usage).toEqual({
         input_tokens: 1200,
         output_tokens: 350,
-        cached_input_tokens: 900
+        cached_input_tokens: 900,
+        thinking_tokens: 50
       });
     }
   });

@@ -2,8 +2,8 @@
  * Shared LLM usage normalizer + type (Phase 3.1, spec §"Real telemetry" — backlog #3).
  *
  * One canonical {@link LlmUsage} shape for token accounting across every engine. The CLI
- * writer/reviewer (Codex `--json`) and the kimi/pi cheap chain all feed this shape into
- * `recordLlmCall`, which emits the `llm_call` ledger event.
+ * writer/reviewer (Codex `--json`), the panel seats and every chain leg feed this shape into the
+ * audit chokepoint (`RunStore.llmAuditSink`), which emits the `llm_attempt` ledger event.
  *
  * NON-NEGOTIABLE: usage carries ONLY counts/metadata — never prompt, diff, or response bodies.
  *
@@ -21,7 +21,10 @@ export interface LlmUsage {
   output_tokens: number;
   cached_input_tokens: number;
   cost_usd?: number;
-  /** Informational side channel — already inside `output_tokens`. Never priced, never summed. */
+  /**
+   * Informational side channel. Reported by every engine that exposes reasoning separately (agy,
+   * Codex); always already inside `output_tokens`. Never priced, never summed.
+   */
   thinking_tokens?: number;
 }
 
@@ -43,8 +46,9 @@ function num(value: unknown): number {
  *   - stdout stream: `{"type":"turn.completed","usage":{input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens}}`
  *   - rollout/older: `{"type":"token_count","info":{"total_token_usage":{...same fields...}}}`
  * We take the LAST usage-bearing event of either shape. `output_tokens` includes
- * `reasoning_output_tokens` (reasoning is real output). Codex reports no per-call cost → no cost_usd.
- * Returns `null` if no usage event is found.
+ * `reasoning_output_tokens` (reasoning is real output; Codex reports it DISJOINTLY, so it is folded
+ * in here), and the same figure is surfaced as `thinking_tokens` for visibility, like agy's. Codex
+ * reports no per-call cost → no cost_usd. Returns `null` if no usage event is found.
  */
 export function normalizeCodexUsage(stdout: string): LlmUsage | null {
   let last: Record<string, unknown> | undefined;
@@ -77,7 +81,8 @@ export function normalizeCodexUsage(stdout: string): LlmUsage | null {
   return {
     input_tokens: num(last.input_tokens),
     output_tokens: num(last.output_tokens) + num(last.reasoning_output_tokens),
-    cached_input_tokens: num(last.cached_input_tokens)
+    cached_input_tokens: num(last.cached_input_tokens),
+    thinking_tokens: num(last.reasoning_output_tokens)
   };
 }
 

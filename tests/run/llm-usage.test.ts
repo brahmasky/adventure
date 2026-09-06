@@ -8,7 +8,7 @@ describe("normalizeCodexUsage", () => {
   const tokenCountEvent = (info: Record<string, unknown>): string =>
     JSON.stringify({ type: "token_count", info });
 
-  it("takes the LAST token_count event and folds reasoning into output", () => {
+  it("takes the LAST token_count event, folds reasoning into output, and surfaces it as thinking_tokens", () => {
     const stdout = [
       JSON.stringify({ type: "session", id: "s1" }),
       tokenCountEvent({
@@ -25,11 +25,13 @@ describe("normalizeCodexUsage", () => {
         }
       })
     ].join("\n");
-    // The LAST cumulative total wins; output = output + reasoning (300 + 50).
+    // The LAST cumulative total wins; output = output + reasoning (300 + 50). Codex reports
+    // reasoning DISJOINTLY, so it is folded in — and ALSO visible as thinking_tokens, like agy's.
     expect(normalizeCodexUsage(stdout)).toEqual({
       input_tokens: 1200,
       output_tokens: 350,
-      cached_input_tokens: 900
+      cached_input_tokens: 900,
+      thinking_tokens: 50
     });
   });
 
@@ -42,7 +44,8 @@ describe("normalizeCodexUsage", () => {
     expect(normalizeCodexUsage(stdout)).toEqual({
       input_tokens: 7,
       output_tokens: 3,
-      cached_input_tokens: 0
+      cached_input_tokens: 0,
+      thinking_tokens: 0
     });
   });
 
@@ -67,7 +70,8 @@ describe("normalizeCodexUsage", () => {
     expect(normalizeCodexUsage(stdout)).toEqual({
       input_tokens: 19060,
       output_tokens: 38, // 28 + 10 reasoning
-      cached_input_tokens: 10624
+      cached_input_tokens: 10624,
+      thinking_tokens: 10
     });
   });
 });

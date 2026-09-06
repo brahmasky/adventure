@@ -32,13 +32,16 @@ import {
   type LedgerEventType
 } from "./run-ledger.js";
 import { canTransitionProject, canTransitionRun } from "./state-machines.js";
-import type { LlmUsage } from "./llm-usage.js";
 import type { LlmAttempt, LlmAuditSink } from "../llm/audit.js";
 import { computeCostUsd, METERED_PROVIDERS } from "../llm/metered-pricing.js";
 import { blobToFloat32, cosineSimilarity, float32ToBlob } from "../llm/embeddings.js";
 import { resolveWikiDecayDays } from "../capabilities/wiki.js";
 
-/** LLM-call roles on `llm_attempt`: chain calls, spawn seats, and the daemon-tick purposes. */
+/**
+ * The `role` recorded on every `llm_attempt` row (via `llmAuditSink`'s scope): chain calls, spawn
+ * seats, and the daemon-tick purposes. The pre-slice-2 `llm_call` writer is gone; its history
+ * stays readable through the usage readers' UNION.
+ */
 export type LlmCallRole =
   | "writer"
   | "reviewer"
@@ -1358,32 +1361,6 @@ export class RunStore {
 
   recordLoopHalted(run_id: string, payload: { reason: string; steps: number }): void {
     this.appendRunLedgerEvent(run_id, "loop_halted", "core", payload);
-  }
-
-  /**
-   * Phase 3.1 real LLM telemetry (spec §"Real telemetry", backlog #3). Emits one `llm_call`
-   * ledger event with token usage captured at the source — the structured replacement for
-   * hand-grepping logs (and the future per-role dashboard's data source).
-   *
-   * NON-NEGOTIABLE: records ONLY counts/metadata. The prompt, diff, and response bodies are
-   * NEVER passed here and NEVER stored — only `provider`, `model`, `role`, token counts, an
-   * optional cost, and an optional latency.
-   */
-  recordLlmCall(
-    run_id: string,
-    info: { provider: string; model: string; role: LlmCallRole; usage: LlmUsage; latency_ms?: number }
-  ): void {
-    const payload: Record<string, unknown> = {
-      provider: info.provider,
-      model: info.model,
-      role: info.role,
-      input_tokens: info.usage.input_tokens,
-      output_tokens: info.usage.output_tokens,
-      cached_input_tokens: info.usage.cached_input_tokens
-    };
-    if (info.usage.cost_usd !== undefined) payload.cost_usd = info.usage.cost_usd;
-    if (info.latency_ms !== undefined) payload.latency_ms = info.latency_ms;
-    this.appendRunLedgerEvent(run_id, "llm_call", "capability_runner", payload);
   }
 
   /**

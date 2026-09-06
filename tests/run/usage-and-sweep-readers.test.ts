@@ -18,7 +18,14 @@ afterEach(() => {
   store.close();
 });
 
-/** Record one llm_call at a CONTROLLED wall-clock instant (occurred_at is stamped internally). */
+/**
+ * Append one HISTORICAL `llm_call` row at a CONTROLLED wall-clock instant (occurred_at is stamped
+ * by `createLedgerEvent`). The `recordLlmCall` writer is gone (slice 2: `llm_attempt` via
+ * `llmAuditSink` supersedes it), but pre-2026-09-06 history stays readable through the readers'
+ * UNION — these tests pin the reader semantics (grouping, ordering, windowing) on that shape with
+ * arbitrary providers/costs, which the pricing seam in `llmAuditSink` would rewrite.
+ */
+let historicalSequence = 0;
 function recordCallAt(
   at: string,
   info: { provider: string; model: string; input: number; output: number; cost?: number },
@@ -27,17 +34,24 @@ function recordCallAt(
   vi.useFakeTimers();
   vi.setSystemTime(new Date(at));
   try {
-    store.recordLlmCall(run, {
-      provider: info.provider,
-      model: info.model,
-      role: "answer",
-      usage: {
-        input_tokens: info.input,
-        output_tokens: info.output,
-        cached_input_tokens: 0,
-        ...(info.cost !== undefined ? { cost_usd: info.cost } : {})
-      }
-    });
+    store.appendLedgerEvent(
+      createLedgerEvent({
+        run_id: run,
+        correlation_id: run,
+        event_type: "llm_call",
+        actor: "capability_runner",
+        sequence: ++historicalSequence,
+        payload: {
+          provider: info.provider,
+          model: info.model,
+          role: "answer",
+          input_tokens: info.input,
+          output_tokens: info.output,
+          cached_input_tokens: 0,
+          ...(info.cost !== undefined ? { cost_usd: info.cost } : {})
+        }
+      })
+    );
   } finally {
     vi.useRealTimers();
   }

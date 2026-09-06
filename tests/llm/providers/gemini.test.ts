@@ -82,29 +82,7 @@ describe("createGeminiProvider", () => {
     expect(body.messages[0]).toEqual({ role: "system", content: "Be neutral." });
   });
 
-  it("fires onUsage with normalized token usage when the response carries a usage block", async () => {
-    const fetchImpl = vi.fn<GeminiFetchImpl>(async () =>
-      okResponse({
-        choices: [{ message: { content: "Paris." } }],
-        usage: { prompt_tokens: 13, completion_tokens: 2 }
-      })
-    );
-    const calls: Array<{ usage: unknown; model: string }> = [];
-    const provider = createGeminiProvider({
-      apiKey: "test-key",
-      model: "gemini-test",
-      fetchImpl,
-      onUsage: (usage, model) => calls.push({ usage, model })
-    });
-
-    await provider.answer({ question: "Q" });
-
-    expect(calls).toEqual([
-      { usage: { input_tokens: 13, output_tokens: 2, cached_input_tokens: 0 }, model: "gemini-test" }
-    ]);
-  });
-
-  it("ALSO returns the same normalized usage on the result (slice 2)", async () => {
+  it("returns normalized token usage on the result when the response carries a usage block (slice 2)", async () => {
     const fetchImpl = vi.fn<GeminiFetchImpl>(async () =>
       okResponse({
         choices: [{ message: { content: "Paris." } }],
@@ -124,15 +102,9 @@ describe("createGeminiProvider", () => {
       const fetchImpl = vi.fn<GeminiFetchImpl>(async () =>
         okResponse({ choices: [{ message: { content: "Paris." } }], usage })
       );
-      const calls: unknown[] = [];
-      const provider = createGeminiProvider({
-        apiKey: "test-key",
-        model: "gemini-test",
-        fetchImpl,
-        onUsage: (u) => calls.push(u)
-      });
-      await provider.answer({ question: "Q" });
-      return calls[0];
+      const provider = createGeminiProvider({ apiKey: "test-key", model: "gemini-test", fetchImpl });
+      const result = await provider.answer({ question: "Q" });
+      return result.ok ? result.usage : undefined;
     }
 
     it("derives output from total_tokens when the gap is reported only there", async () => {

@@ -87,7 +87,7 @@ describe("createPiProvider", () => {
     });
   });
 
-  it("fires onUsage with normalized usage when message_end carries a usage block", async () => {
+  it("returns normalized usage on the result when message_end carries a usage block, with pi's reported model", async () => {
     const stdout = [
       JSON.stringify({ type: "session", sessionId: "abc" }),
       JSON.stringify({
@@ -101,16 +101,11 @@ describe("createPiProvider", () => {
       })
     ].join("\n");
     const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout }));
-    const calls: Array<{ usage: unknown; model: string }> = [];
-    const provider = createPiProvider({
-      spawnImpl,
-      model: "configured-x",
-      onUsage: (usage, model) => calls.push({ usage, model })
-    });
+    const provider = createPiProvider({ spawnImpl, model: "configured-x" });
 
     const result = await provider.answer({ question: "hi" });
 
-    // Slice 2: usage rides BOTH the side channel and the result, with pi's reported model.
+    // Slice 2: usage rides the result ONLY — the audit chokepoint on `answerWithChain` records it.
     expect(result).toEqual({
       ok: true,
       provider: "pi",
@@ -118,12 +113,9 @@ describe("createPiProvider", () => {
       answer: "OK",
       usage: { input_tokens: 100, output_tokens: 25, cached_input_tokens: 60 }
     });
-    expect(calls).toEqual([
-      { usage: { input_tokens: 100, output_tokens: 25, cached_input_tokens: 60 }, model: "kimi-k2.7" }
-    ]);
   });
 
-  it("ALSO returns the same normalized usage on the result (slice 2)", async () => {
+  it("result.usage alone carries the normalized usage (slice 2)", async () => {
     const stdout = [
       JSON.stringify({ type: "session", sessionId: "abc" }),
       JSON.stringify({
@@ -163,46 +155,22 @@ describe("createPiProvider", () => {
       })
     ].join("\n");
     const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout }));
-    const calls: Array<{ usage: unknown; model: string }> = [];
-    const provider = createPiProvider({ spawnImpl, onUsage: (usage, model) => calls.push({ usage, model }) });
-
-    await provider.answer({ question: "hi" });
-
-    expect(calls).toEqual([
-      { usage: { input_tokens: 1789, output_tokens: 22, cached_input_tokens: 256 }, model: "kimi-for-coding" }
-    ]);
-  });
-
-  it("returns pi's NATIVE-schema usage on the result too (slice 2)", async () => {
-    const stdout = [
-      JSON.stringify({ type: "session", sessionId: "abc" }),
-      JSON.stringify({
-        type: "message_end",
-        message: {
-          role: "assistant",
-          provider: "kimi-coder",
-          model: "kimi-for-coding",
-          content: [{ type: "text", text: "OK" }],
-          usage: { input: 1789, output: 22, cacheRead: 256, cacheWrite: 0, totalTokens: 1811, cost: { total: 0 } }
-        }
-      })
-    ].join("\n");
-    const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout }));
     const provider = createPiProvider({ spawnImpl });
 
     const result = await provider.answer({ question: "hi" });
 
     expect(result.ok && result.usage).toEqual({ input_tokens: 1789, output_tokens: 22, cached_input_tokens: 256 });
+    expect(result.ok && result.model).toBe("kimi-for-coding");
   });
 
-  it("does not fire onUsage when pi reports no usage block", async () => {
+  it("omits usage on the result when pi reports no usage block, and still answers", async () => {
     const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout: jsonlSuccess("Paris.") }));
-    const onUsage = vi.fn();
-    const provider = createPiProvider({ spawnImpl, model: "pi-model-x", onUsage });
+    const provider = createPiProvider({ spawnImpl, model: "pi-model-x" });
 
-    await provider.answer({ question: "hi" });
+    const result = await provider.answer({ question: "hi" });
 
-    expect(onUsage).not.toHaveBeenCalled();
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.usage).toBeUndefined();
   });
 
   it("reports the model pi actually used (from message_end) over the configured one", async () => {

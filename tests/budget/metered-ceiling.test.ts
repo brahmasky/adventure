@@ -14,6 +14,7 @@ import { checkMeteredCeiling } from "../../src/budget/metered-ceiling.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { buildLlmChain, METERED_FALLBACK_PROVIDERS } from "../../src/llm/registry.js";
+import { createLedgerEvent } from "../../src/run/run-ledger.js";
 import { RunStore } from "../../src/run/run-store.js";
 
 const dir = mkdtempSync(join(tmpdir(), "houge-metered-"));
@@ -40,17 +41,35 @@ afterEach(() => {
   }
 });
 
-/** Record one priced llm_call at a CONTROLLED wall-clock instant (occurred_at is stamped internally). */
+/**
+ * Append one priced HISTORICAL `llm_call` row at a CONTROLLED wall-clock instant (occurred_at is
+ * stamped by `createLedgerEvent`). The `recordLlmCall` writer is gone (slice 2: `llm_attempt`
+ * via `llmAuditSink`, which PRICES at the seam), but the spend readers UNION the pre-2026-09-06
+ * history — and these tests need exact, arbitrary `cost_usd` figures to pin the window math.
+ */
+let historicalSequence = 0;
 function recordSpendAt(store: RunStore, at: string, cost_usd: number, run = "run_spend"): void {
   vi.useFakeTimers();
   vi.setSystemTime(new Date(at));
   try {
-    store.recordLlmCall(run, {
-      provider: "kimi-api",
-      model: "moonshot-v1-auto",
-      role: "answer",
-      usage: { input_tokens: 1000, output_tokens: 1000, cached_input_tokens: 0, cost_usd }
-    });
+    store.appendLedgerEvent(
+      createLedgerEvent({
+        run_id: run,
+        correlation_id: run,
+        event_type: "llm_call",
+        actor: "capability_runner",
+        sequence: ++historicalSequence,
+        payload: {
+          provider: "kimi-api",
+          model: "moonshot-v1-auto",
+          role: "answer",
+          input_tokens: 1000,
+          output_tokens: 1000,
+          cached_input_tokens: 0,
+          cost_usd
+        }
+      })
+    );
   } finally {
     vi.useRealTimers();
   }
@@ -80,20 +99,22 @@ describe("computeMeteredBreaches", () => {
   });
 });
 
-describe("meteredSpendUsd (derived from the llm_call ledger)", () => {
+describe("meteredSpendUsd (derived from llm_attempt ∪ historical llm_call)", () => {
   it("sums cost_usd over the rolling 24h and the calendar month; unpriced events contribute nothing", () => {
     const store = RunStore.openInMemory();
     try {
       recordSpendAt(store, "2026-07-15T10:00:00.000Z", 1.25);
       recordSpendAt(store, "2026-07-15T11:00:00.000Z", 0.75);
-      // an event WITHOUT cost_usd (flat-rate leg / unknown metered model) is invisible:
+      // a flat-rate leg's attempt gets NO cost_usd from the audit sink (pricing is metered-only)
+      // and is therefore invisible to the spend readers, however many tokens it burned:
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-07-15T11:30:00.000Z"));
-      store.recordLlmCall("run_spend", {
+      store.llmAuditSink({ run_id: "run_spend", role: "answer" }).record({
         provider: "pi",
+        role: "",
+        outcome: "ok",
         model: "whatever",
-        role: "answer",
-        usage: { input_tokens: 9_999_999, output_tokens: 9_999_999, cached_input_tokens: 0 }
+        usage: { input_tokens: 9_999_999, output_tokens: 9_999_999, cached_input_tokens: 0, cost_usd: 123 }
       });
       vi.useRealTimers();
 

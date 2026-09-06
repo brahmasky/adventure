@@ -789,17 +789,19 @@ describe("Gateway telegram events", () => {
     const store = RunStore.openInMemory();
     try {
       const gateway = new Gateway(store);
-      store.recordLlmCall("run_a", {
+      store.llmAuditSink({ run_id: "run_a", role: "answer" }).record({
         provider: "kimi-api",
+        role: "",
+        outcome: "ok",
         model: "moonshot-v1-auto",
-        role: "answer",
-        usage: { input_tokens: 100, output_tokens: 50, cached_input_tokens: 0, cost_usd: 0.5 }
+        usage: { input_tokens: 100, output_tokens: 50, cached_input_tokens: 0 }
       });
-      store.recordLlmCall("run_b", {
+      store.llmAuditSink({ run_id: "run_b", role: "answer" }).record({
         provider: "openai",
+        role: "",
+        outcome: "ok",
         model: "gpt-4o",
-        role: "answer",
-        usage: { input_tokens: 200, output_tokens: 30, cached_input_tokens: 0, cost_usd: 1.25 }
+        usage: { input_tokens: 200, output_tokens: 30, cached_input_tokens: 0 }
       });
 
       const event = buildTypedTaskEvent({

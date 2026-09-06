@@ -24,14 +24,6 @@ export interface OpenAiCompatConfig {
   baseUrl?: string;
   timeoutMs?: number;
   fetchImpl?: OpenAiCompatFetchImpl;
-  /**
-   * Phase 3.1 telemetry seam. Fired once per SUCCESSFUL completion with the call's normalized token
-   * usage and the actual model id — the W3 caller wires this to `recordLlmCall`. Optional: existing
-   * callers are unaffected, and the provider's `LlmResult` shape is unchanged (usage rides this side
-   * channel, not the result). NON-NEGOTIABLE: carries ONLY counts/metadata — never prompt or response
-   * bodies.
-   */
-  onUsage?: (usage: LlmUsage, model: string) => void;
 }
 
 /**
@@ -257,16 +249,6 @@ export function createOpenAiCompatProvider(
 
       // Usage is normalized once and rides the result (slice 2). A missing block is not an error.
       const usage = extractUsage(data);
-
-      // Telemetry side channel (Phase 3.1) — best-effort; a missing usage block or a throwing hook
-      // never fails the answer. Kept until the chain switch (Task 9) retires provider hooks.
-      if (config.onUsage && usage) {
-        try {
-          config.onUsage(usage, model);
-        } catch {
-          // a failing telemetry hook must never break a good answer
-        }
-      }
 
       return { ok: true, provider: spec.name, model, answer, ...(usage ? { usage } : {}) };
     }

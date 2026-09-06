@@ -19,7 +19,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { LlmProvider, LlmRequest, LlmResult } from "../types.js";
-import { type LlmUsage, normalizeAgyUsage } from "../../run/llm-usage.js";
+import { normalizeAgyUsage } from "../../run/llm-usage.js";
 import { buildChildEnv, defaultSpawnImpl, type SpawnImpl, type SpawnResult } from "./cli-spawn.js";
 
 export const AGY_DEFAULT_TIMEOUT_MS = 60_000;
@@ -99,13 +99,6 @@ export interface AgyCliProviderConfig {
   timeoutMs?: number;
   maxBytes?: number;
   spawnImpl?: SpawnImpl;
-  /**
-   * Telemetry side channel, mirroring {@link PiProviderConfig.onUsage}. Fired once per SUCCESSFUL
-   * answer with agy's parsed token counts (thinking already inside output — never re-added) and the model actually
-   * pinned. Interim: the audit chokepoint (slice 2) replaces every provider hook with a required
-   * sink on `answerWithChain`. Counts/metadata ONLY — never prompt or response bodies.
-   */
-  onUsage?: (usage: LlmUsage, model: string) => void;
 }
 
 /**
@@ -273,16 +266,6 @@ export function createAgyCliProvider(config: AgyCliProviderConfig = {}): LlmProv
       // Usage is normalized once and rides the result (slice 2); thinking stays inside output —
       // the normalizer reports it separately and never re-adds it. A missing block is not an error.
       const usage = normalizeAgyUsage(envelope.usage);
-
-      // Telemetry side channel — best-effort; a missing usage block or a throwing hook never
-      // fails a good answer. Kept until the chain switch (Task 9) retires provider hooks.
-      if (config.onUsage && usage) {
-        try {
-          config.onUsage(usage, model);
-        } catch {
-          // a failing telemetry hook must never break a good answer
-        }
-      }
 
       return { ok: true, provider: "agy-cli", model, answer, ...(usage ? { usage } : {}) };
     }

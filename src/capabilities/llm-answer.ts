@@ -27,10 +27,10 @@ export interface LlmAnswerAdapterConfig {
   chain?: LlmProvider[];
   /**
    * THE AUDIT CHOKEPOINT (spec 2026-09-04 §"Slice 2"; review B1). REQUIRED, no default: every
-   * leg the chain tries is recorded through this sink. It replaces the opt-in `onUsage` hook that
-   * produced D4 (whole call paths recording nothing because nobody passed it). Build one with
-   * `RunStore.llmAuditSink(scope)`; tests that are not about telemetry use the helper in
-   * `tests/helpers/llm-audit.ts`.
+   * leg the chain tries is recorded through this sink. It replaces the opt-in per-provider usage
+   * hook that produced D4 (whole call paths recording nothing because nobody passed it). Build one
+   * with `RunStore.llmAuditSink(scope)`; tests that are not about telemetry use the tests-only
+   * discarding sink helper (never imported from `src/`).
    */
   audit: LlmAuditSink;
   /**

@@ -64,7 +64,7 @@ describe("createKimiProvider", () => {
     expect(body.model).toBe("kimi-test");
   });
 
-  it("fires onUsage with normalized token usage when the response carries a usage block", async () => {
+  it("returns the full result with normalized token usage when the response carries a usage block", async () => {
     const fetchImpl = vi.fn<KimiFetchImpl>(async () =>
       okResponse({
         choices: [{ message: { content: "Paris." } }],
@@ -75,17 +75,11 @@ describe("createKimiProvider", () => {
         }
       })
     );
-    const calls: Array<{ usage: unknown; model: string }> = [];
-    const provider = createKimiProvider({
-      apiKey: "test-key",
-      model: "kimi-test",
-      fetchImpl,
-      onUsage: (usage, model) => calls.push({ usage, model })
-    });
+    const provider = createKimiProvider({ apiKey: "test-key", model: "kimi-test", fetchImpl });
 
     const result = await provider.answer({ question: "What is the capital of France?" });
 
-    // Slice 2: usage rides BOTH the side channel and the result (hooks retire in Task 9).
+    // Slice 2: usage rides the result ONLY — the audit chokepoint on `answerWithChain` records it.
     expect(result).toEqual({
       ok: true,
       provider: "kimi-api",
@@ -93,15 +87,9 @@ describe("createKimiProvider", () => {
       answer: "Paris.",
       usage: { input_tokens: 42, output_tokens: 7, cached_input_tokens: 30 }
     });
-    expect(calls).toEqual([
-      {
-        usage: { input_tokens: 42, output_tokens: 7, cached_input_tokens: 30 },
-        model: "kimi-test"
-      }
-    ]);
   });
 
-  it("ALSO returns the same normalized usage on the result (slice 2)", async () => {
+  it("result.usage alone carries the normalized usage (slice 2)", async () => {
     const fetchImpl = vi.fn<KimiFetchImpl>(async () =>
       okResponse({
         choices: [{ message: { content: "Paris." } }],
@@ -119,14 +107,14 @@ describe("createKimiProvider", () => {
     expect(result.ok && result.usage).toEqual({ input_tokens: 42, output_tokens: 7, cached_input_tokens: 30 });
   });
 
-  it("does not fire onUsage when the response has no usage block", async () => {
+  it("omits usage on the result when the response has no usage block, and still answers", async () => {
     const fetchImpl = vi.fn<KimiFetchImpl>(async () => okResponse(contentResponse));
-    const onUsage = vi.fn();
-    const provider = createKimiProvider({ apiKey: "test-key", model: "kimi-test", fetchImpl, onUsage });
+    const provider = createKimiProvider({ apiKey: "test-key", model: "kimi-test", fetchImpl });
 
-    await provider.answer({ question: "hi" });
+    const result = await provider.answer({ question: "hi" });
 
-    expect(onUsage).not.toHaveBeenCalled();
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.usage).toBeUndefined();
   });
 
   it("prepends a system message when a system prompt is provided", async () => {
