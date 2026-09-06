@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
+import { createLedgerEvent } from "../../src/run/run-ledger.js";
 
 /**
  * Read-only reporting seams added for the /status redesign + `houge usage` CLI:
@@ -94,5 +95,44 @@ describe("usageByModel", () => {
     expect(rows).toEqual([
       { provider: "kimi-api", model: "m", calls: 1, input_tokens: 200, output_tokens: 200, cost_usd: 2 }
     ]);
+  });
+
+  it("usageByModel and meteredSpendUsd read llm_attempt(ok) UNIONED with historical llm_call", () => {
+    const store = RunStore.openInMemory();
+    try {
+      // one historical row, written the pre-slice-2 way
+      store.appendLedgerEvent(createLedgerEvent({
+        correlation_id: "run:old", event_type: "llm_call", actor: "capability_runner", sequence: 1,
+        payload: { provider: "gemini-api", model: "gemini-3.5-flash", role: "reader", input_tokens: 100, output_tokens: 10, cached_input_tokens: 0, cost_usd: 0.5 }
+      }));
+      const sink = store.llmAuditSink({ correlation_id: "tick:idea_radar", role: "extract" });
+      sink.record({ provider: "gemini-api", role: "", outcome: "ok", model: "gemini-3.5-flash", usage: { input_tokens: 1_000_000, output_tokens: 0, cached_input_tokens: 0 } });
+      sink.record({ provider: "gemini-api", role: "", outcome: "error", model: "gemini-3.5-flash", error_kind: "transport" });
+      sink.record({ provider: "agy-cli", role: "", outcome: "ok", model: "g", usage: { input_tokens: 7, output_tokens: 3, cached_input_tokens: 0 } });
+
+      const gemini = store.usageByModel().find((r) => r.provider === "gemini-api")!;
+      expect(gemini.calls).toBe(2);                 // the failed attempt is NOT a call
+      expect(gemini.input_tokens).toBe(1_000_100);
+      expect(gemini.cost_usd).toBeGreaterThan(0.5); // historical 0.5 + the priced attempt
+      expect(store.usageByModel().find((r) => r.provider === "agy-cli")!.cost_usd).toBe(0);
+
+      expect(store.meteredSpendUsd(new Date().toISOString()).daily_usd).toBeCloseTo(gemini.cost_usd, 6);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("the ledger has indexes for the readers' predicate and for nextLedgerSequence", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const names = (store as unknown as { db: { prepare(sql: string): { all<T>(): T[] } } }).db
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'ledger_events'`)
+        .all<{ name: string }>()
+        .map((r) => r.name);
+      expect(names).toContain("ledger_events_type_time_idx");
+      expect(names).toContain("ledger_events_sequence_idx");
+    } finally {
+      store.close();
+    }
   });
 });

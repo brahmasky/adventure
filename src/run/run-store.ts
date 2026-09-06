@@ -1397,6 +1397,11 @@ export class RunStore {
    * gets a `cost_usd`; a flat-rate leg's self-reported list price is a phantom and is stripped.
    * Cost reads `output_tokens` alone — `thinking_tokens` is informational and already inside it.
    * Best-effort by contract: a failed write logs a warning and never fails the caller.
+   *
+   * Cross-process (the daemon plus a `cli:*` writer on the same file) can mint the same global
+   * `sequence`; `event_id` is the primary key so both rows land and readers tie-break on
+   * `occurred_at, event_id` — benign, the `recordEvalCompleted` precedent; not worth serializing
+   * every LLM call behind `BEGIN IMMEDIATE`.
    */
   llmAuditSink(scope: LlmAuditScope): LlmAuditSink {
     return {
@@ -1794,8 +1799,10 @@ export class RunStore {
   // --- Metered-API $ ceiling (ADR 0019) -----------------------------------
 
   /**
-   * Metered spend, DERIVED from `llm_call` ledger events' `cost_usd` (populated at the
-   * recording seam via src/llm/metered-pricing.ts — no second bookkeeping):
+   * Metered spend, DERIVED from `llm_attempt` rows with `outcome = 'ok'`, unioned with the
+   * pre-2026-09-06 `llm_call` history (never rewritten; its `gemini-api` output figures
+   * undercount ~5×, see the ADR 0019 amendment) — `cost_usd` is populated at the recording
+   * seam via src/llm/metered-pricing.ts, no second bookkeeping:
    *   - `daily_usd`   — rolling 24h window (same precedent as the count caps),
    *   - `monthly_usd` — the calendar month (UTC) containing `now` (how the bill arrives).
    * Events without a `cost_usd` (flat-rate legs, unknown metered models) contribute 0.
@@ -1805,14 +1812,20 @@ export class RunStore {
     const daily = this.db.prepare(`
       SELECT COALESCE(SUM(CAST(json_extract(payload_json, '$.cost_usd') AS REAL)), 0) AS spend
       FROM ledger_events
-      WHERE event_type = 'llm_call'
+      WHERE (
+        event_type = 'llm_call'
+        OR (event_type = 'llm_attempt' AND json_extract(payload_json, '$.outcome') = 'ok')
+      )
         AND json_extract(payload_json, '$.cost_usd') IS NOT NULL
         AND occurred_at > ?
     `).get<{ spend: number }>(windowStart);
     const monthly = this.db.prepare(`
       SELECT COALESCE(SUM(CAST(json_extract(payload_json, '$.cost_usd') AS REAL)), 0) AS spend
       FROM ledger_events
-      WHERE event_type = 'llm_call'
+      WHERE (
+        event_type = 'llm_call'
+        OR (event_type = 'llm_attempt' AND json_extract(payload_json, '$.outcome') = 'ok')
+      )
         AND json_extract(payload_json, '$.cost_usd') IS NOT NULL
         AND strftime('%Y-%m', occurred_at) = strftime('%Y-%m', ?)
     `).get<{ spend: number }>(now);
@@ -1820,8 +1833,10 @@ export class RunStore {
   }
 
   /**
-   * Per-model token/cost breakdown DERIVED from `llm_call` ledger events (the same source as
-   * {@link meteredSpendUsd}) — powers `houge usage`. Groups by provider+model, summing calls,
+   * Per-model token/cost breakdown, DERIVED from `llm_attempt` rows with `outcome = 'ok'`,
+   * unioned with the pre-2026-09-06 `llm_call` history (never rewritten; its `gemini-api`
+   * output figures undercount ~5×, see the ADR 0019 amendment) — the same source as
+   * {@link meteredSpendUsd} — powers `houge usage`. Groups by provider+model, summing calls,
    * input/output tokens, and cost_usd (unpriced events contribute 0 to cost). An optional
    * `sinceIso` scopes to calls strictly after that instant; omitted → all time. Pure read.
    */
@@ -1842,7 +1857,10 @@ export class RunStore {
         COALESCE(SUM(CAST(json_extract(payload_json, '$.output_tokens') AS INTEGER)), 0) AS output_tokens,
         COALESCE(SUM(CAST(json_extract(payload_json, '$.cost_usd') AS REAL)), 0) AS cost_usd
       FROM ledger_events
-      WHERE event_type = 'llm_call'
+      WHERE (
+        event_type = 'llm_call'
+        OR (event_type = 'llm_attempt' AND json_extract(payload_json, '$.outcome') = 'ok')
+      )
         AND (? IS NULL OR occurred_at > ?)
       GROUP BY provider, model
       ORDER BY cost_usd DESC, calls DESC
@@ -6462,6 +6480,11 @@ export class RunStore {
 
         CREATE INDEX IF NOT EXISTS ledger_events_run_sequence_idx
           ON ledger_events(run_id, sequence);
+
+        CREATE INDEX IF NOT EXISTS ledger_events_type_time_idx
+          ON ledger_events(event_type, occurred_at);
+        CREATE INDEX IF NOT EXISTS ledger_events_sequence_idx
+          ON ledger_events(sequence);
 
         CREATE INDEX IF NOT EXISTS runs_created_at_idx
           ON runs(created_at);
