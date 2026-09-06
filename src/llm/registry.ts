@@ -191,6 +191,8 @@ export function resolveChainBudgetMs(env: NodeJS.ProcessEnv): number {
  * place that reports, so coverage is structural. `error_kind` is classified HERE, per leg, never
  * from the joined aggregate. Recording is best-effort: a sink failure logs and never fails an
  * answer. The `role` is filled by the scoped sink — the chain does not know a call's purpose.
+ * A provider that throws is recorded as an error and treated as fall-through — the chain's
+ * contract is that a leg failure never escapes it.
  *
  * A leg that fails while a LATER leg succeeds is ALSO logged to the console — that line is the
  * D1 visibility signal that would have shown agy dead for three months. Counts and provider
@@ -207,13 +209,19 @@ export async function answerWithChain(
   for (let leg_index = 0; leg_index < chain.length; leg_index++) {
     const provider = chain[leg_index]!;
     const t0 = Date.now();
-    const result = await provider.answer(req);
+    let result: LlmResult;
+    try {
+      result = await provider.answer(req);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      result = { ok: false, provider: provider.name, error: `${provider.name} threw: ${message}` };
+    }
     const latency_ms = Date.now() - t0;
 
     try {
       if (result.ok) {
         audit.record({
-          provider: result.provider,
+          provider: provider.name,
           role: "",
           outcome: "ok",
           model: result.model,
@@ -224,7 +232,7 @@ export async function answerWithChain(
         });
       } else {
         audit.record({
-          provider: result.provider,
+          provider: provider.name,
           role: "",
           outcome: result.unavailable ? "unavailable" : "error",
           latency_ms,

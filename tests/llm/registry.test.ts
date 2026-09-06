@@ -258,7 +258,7 @@ describe("answerWithChain audit", () => {
     });
     const groups = new Set(sink.attempts.map((a) => a.attempt_group));
     expect(groups.size).toBe(1);
-    expect([...groups][0]).toMatch(/^[0-9a-f]{8,}$/);
+    expect([...groups][0]).toMatch(/^[0-9a-f]{12}$/);
     for (const a of sink.attempts) expect(typeof a.latency_ms).toBe("number");
   });
 
@@ -298,6 +298,31 @@ describe("answerWithChain audit", () => {
       ["error", "timeout"],
       ["unavailable", "spawn"]
     ]);
+  });
+
+  it("a THROWING provider is recorded as an error and the chain falls through", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const sink = recordingSink();
+      const boom: LlmProvider = {
+        name: "agy-cli",
+        answer: async () => {
+          throw new Error("socket hang up");
+        }
+      };
+      const result = await answerWithChain(
+        [boom, provider("pi", { ok: true, provider: "pi", model: "m", answer: "hi" })],
+        { question: "q" },
+        sink
+      );
+      expect(result.ok).toBe(true);
+      expect(sink.attempts.map((a) => [a.provider, a.outcome, a.error_kind])).toEqual([
+        ["agy-cli", "error", "other"],
+        ["pi", "ok", undefined]
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("a throwing sink never fails a good answer, and is logged", async () => {
