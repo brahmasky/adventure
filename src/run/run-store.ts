@@ -33,11 +33,32 @@ import {
 } from "./run-ledger.js";
 import { canTransitionProject, canTransitionRun } from "./state-machines.js";
 import type { LlmUsage } from "./llm-usage.js";
+import type { LlmAttempt, LlmAuditSink } from "../llm/audit.js";
+import { computeCostUsd, METERED_PROVIDERS } from "../llm/metered-pricing.js";
 import { blobToFloat32, cosineSimilarity, float32ToBlob } from "../llm/embeddings.js";
 import { resolveWikiDecayDays } from "../capabilities/wiki.js";
 
-/** The LLM-call roles recorded by {@link RunStore.recordLlmCall} (spec §"Real telemetry"). */
-export type LlmCallRole = "writer" | "reviewer" | "classify" | "frame" | "answer" | "compose" | "reader";
+/** LLM-call roles on `llm_attempt`: chain calls, spawn seats, and the daemon-tick purposes. */
+export type LlmCallRole =
+  | "writer"
+  | "reviewer"
+  | "classify"
+  | "frame"
+  | "answer"
+  | "compose"
+  | "reader"
+  | "distill"
+  | "consolidate"
+  | "extract"
+  | "judge"
+  | "chair"
+  | "verify"
+  | "attribution";
+
+/** Where an audited attempt belongs: a run, or a run-less correlation (`tick:*`, `cli:*`, `rating:*`). */
+export type LlmAuditScope =
+  | { run_id: string; role: LlmCallRole }
+  | { correlation_id: string; role: LlmCallRole };
 
 type SqliteValue = string | number | bigint | Uint8Array | null;
 
@@ -1363,6 +1384,79 @@ export class RunStore {
     if (info.usage.cost_usd !== undefined) payload.cost_usd = info.usage.cost_usd;
     if (info.latency_ms !== undefined) payload.latency_ms = info.latency_ms;
     this.appendRunLedgerEvent(run_id, "llm_call", "capability_runner", payload);
+  }
+
+  /**
+   * The audit chokepoint's ledger sink (spec 2026-09-04 §"Slice 2"; review 2026-09-06 W1).
+   * One `llm_attempt` row per call — run-scoped (`appendRunLedgerEvent`) or run-less
+   * (`appendLedgerEvent` under a `tick:*` / `cli:*` / `rating:*` correlation id, the
+   * `recordEvalCompleted` precedent). The scoped ROLE overrides whatever the chain passed: the
+   * chain does not know a call's purpose.
+   *
+   * Pricing happens HERE, the one seam every path shares (ADR 0019): only a METERED provider
+   * gets a `cost_usd`; a flat-rate leg's self-reported list price is a phantom and is stripped.
+   * Cost reads `output_tokens` alone — `thinking_tokens` is informational and already inside it.
+   * Best-effort by contract: a failed write logs a warning and never fails the caller.
+   */
+  llmAuditSink(scope: LlmAuditScope): LlmAuditSink {
+    return {
+      record: (attempt: LlmAttempt): void => {
+        try {
+          const payload: Record<string, unknown> = {
+            provider: attempt.provider,
+            role: scope.role,
+            outcome: attempt.outcome
+          };
+          if (attempt.outcome === "ok" && attempt.model === undefined) {
+            console.warn(
+              `[llm-audit] ok attempt from ${attempt.provider} carries no model — recording "unknown"`
+            );
+            payload.model = "unknown";
+          } else if (attempt.model !== undefined) {
+            payload.model = attempt.model;
+          }
+          if (attempt.latency_ms !== undefined) payload.latency_ms = attempt.latency_ms;
+          if (attempt.error_kind !== undefined) payload.error_kind = attempt.error_kind;
+          if (attempt.attempt_group !== undefined) payload.attempt_group = attempt.attempt_group;
+          if (attempt.leg_index !== undefined) payload.leg_index = attempt.leg_index;
+          if (attempt.usage) {
+            const { cost_usd: selfReported, ...usage } = attempt.usage;
+            payload.input_tokens = usage.input_tokens;
+            payload.output_tokens = usage.output_tokens;
+            payload.cached_input_tokens = usage.cached_input_tokens;
+            const thinking = (usage as { thinking_tokens?: number }).thinking_tokens; // typed in Task 5
+            if (thinking !== undefined) payload.thinking_tokens = thinking;
+            if (METERED_PROVIDERS.has(attempt.provider)) {
+              // `null` = unknown metered model (warned once inside computeCostUsd); fall back to
+              // the provider's own figure if it reported one, else leave the row unpriced.
+              const cost =
+                computeCostUsd(attempt.provider, String(payload.model ?? ""), usage, process.env) ??
+                selfReported;
+              if (cost !== undefined) payload.cost_usd = cost;
+            }
+          }
+          if ("run_id" in scope) {
+            this.appendRunLedgerEvent(scope.run_id, "llm_attempt", "capability_runner", payload);
+          } else {
+            this.appendLedgerEvent(
+              createLedgerEvent({
+                correlation_id: scope.correlation_id,
+                event_type: "llm_attempt",
+                actor: "capability_runner",
+                sequence: this.nextLedgerSequence(),
+                payload
+              })
+            );
+          }
+        } catch (error) {
+          console.warn(
+            `[llm-audit] failed to record ${scope.role} attempt (non-fatal): ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
+      }
+    };
   }
 
   recordEvalCompleted(eval_suite: string, passed: boolean, failed_case_ids: string[]): void {
