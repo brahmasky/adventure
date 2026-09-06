@@ -775,7 +775,8 @@ In `tests/telegram/telegram-daemon.test.ts` add a new test (the file's existing 
       });
       const attempts = store.getLedgerEvents().filter((e) => e.event_type === "llm_attempt");
       expect(attempts.length).toBeGreaterThan(0);
-      expect(attempts.every((e) => e.run_id !== null)).toBe(true);
+      // run-scoped rows carry a string run_id; run-less ones read back with the key ABSENT (not null)
+      expect(attempts.every((e) => typeof e.run_id === "string")).toBe(true);
       expect(attempts.every((e) => e.payload.provider === "pi" && e.payload.outcome === "ok")).toBe(true);
     } finally {
       store.close();
@@ -1221,7 +1222,8 @@ async function fire(label, providers, role, question, system) {
 
   if (!result.ok) failures.push(`${label}: no answer`);
   if (rows.length === 0) failures.push(`${label}: NO llm_attempt rows — the chokepoint is not wired`);
-  if (rows.some((r) => r.run_id !== null)) failures.push(`${label}: run-less scope wrote a run_id`);
+  // readLedgerEvents omits run_id when the column is NULL (run-ledger.ts ~325) — absent, not null
+  if (rows.some((r) => r.run_id !== undefined)) failures.push(`${label}: run-less scope wrote a run_id`);
   if (!rows.every((r) => r.correlation_id === `gate:${label}`)) failures.push(`${label}: wrong correlation id`);
   if (new Set(rows.map((r) => r.payload.attempt_group)).size !== 1) failures.push(`${label}: legs not grouped under one attempt_group`);
   const last = rows[rows.length - 1];
@@ -1266,4 +1268,4 @@ git commit -m "test(llm): live gate for the llm_attempt audit chokepoint"
 
 - **Spec coverage:** `llm_attempt` registered (T1) · required sink at the factory, no default (T2/T7) · providers return usage, hooks deleted last (T5/T9) · chain records per leg with latency + group/index (T6) · run-less audit via correlation (T3/T7) · spawn seats + self-write every outcome (T7/T8) · readers union + index (T4) · dead-leg incident (T10) · every spec test bullet has a task · live gate + run-less proof (T11). Out of scope by spec: the `/usage` breakdown surface.
 - **Placeholders:** T3's `createRun` and T8's `/*helper*/` markers point at named helpers in existing test files the worker must read and copy; both tasks say so explicitly.
-- **Type consistency:** `LlmAttempt.role: string` (chain passes `""`, sink overrides with `LlmAuditScope.role: LlmCallRole`) · `SeatResult` failure arm `{ ok: false; unavailable?: boolean; timedOut?: true }` read by `recordSeat` · `answerWithChain(chain, req, audit)` everywhere · `classifyLlmError(message)` one argument.
+- **Type consistency:** run-less `LedgerEvent.run_id` reads back as *absent* (`undefined`), never `null` — every assertion uses `typeof … === "string"` / `=== undefined` · `LlmAttempt.role: string` (chain passes `""`, sink overrides with `LlmAuditScope.role: LlmCallRole`) · `SeatResult` failure arm `{ ok: false; unavailable?: boolean; timedOut?: true }` read by `recordSeat` · `answerWithChain(chain, req, audit)` everywhere · `classifyLlmError(message)` one argument.
