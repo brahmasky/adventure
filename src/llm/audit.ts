@@ -16,7 +16,10 @@ export type LlmAttemptOutcome = "ok" | "error" | "unavailable";
 
 /**
  * Bounded classifier for a failed attempt. Never raw provider text — the ledger must not carry
- * bytes that could be untrusted. Derived from OUR OWN provider error strings, which are fixed.
+ * bytes that could be untrusted. Derived from OUR OWN bounded provider strings, plus — for the
+ * agy leg — a length-capped, whitespace-flattened excerpt of agy's own error text (see
+ * `errorExcerpt` in `src/llm/providers/agy-cli.ts`): the excerpt is bounded so substring matching
+ * stays safe, but it is not a closed enumeration.
  */
 export type LlmErrorKind = "auth" | "model_missing" | "timeout" | "spawn" | "transport" | "parse" | "other";
 
@@ -49,9 +52,9 @@ export interface LlmAuditSink {
 }
 
 /**
- * Map one of our provider error strings to a bounded kind. Classify at the LEG boundary, never
- * on the chain's joined aggregate (codex #10) — the aggregate destroys provider-specific cause.
- * Order matters: the earlier match wins.
+ * Map one of our provider error strings (or an agy error excerpt, see above) to a bounded kind.
+ * Classify at the LEG boundary, never on the chain's joined aggregate (codex #10) — the aggregate
+ * destroys provider-specific cause. Order matters: the earlier match wins.
  */
 export function classifyLlmError(message: string): LlmErrorKind {
   const m = message.toLowerCase();
@@ -63,6 +66,7 @@ export function classifyLlmError(message: string): LlmErrorKind {
     m.includes("not logged in") ||
     m.includes("log in") ||
     m.includes("api key") ||
+    m.includes("api_key") ||
     m.includes("unauthenticated") ||
     m.includes("sign in")
   ) {
