@@ -492,7 +492,17 @@ In the schema-init block, directly after the existing `CREATE INDEX IF NOT EXIST
 ```sql
         CREATE INDEX IF NOT EXISTS ledger_events_type_time_idx
           ON ledger_events(event_type, occurred_at);
+        CREATE INDEX IF NOT EXISTS ledger_events_sequence_idx
+          ON ledger_events(sequence);
 ```
+
+The second index is from the Task 3 quality review: run-less writes call `nextLedgerSequence()` =
+`SELECT MAX(sequence) FROM ledger_events`, which had no usable index — a full scan the sink turns
+from rare (eval completion) into every daemon-tick LLM call. Also add to `llmAuditSink`'s doc
+comment: "Cross-process (daemon + a `cli:*` writer on the same file) can mint the same global
+`sequence`; `event_id` is the primary key so both rows land, and readers tie-break on
+`occurred_at, event_id` — benign, same as the `recordEvalCompleted` precedent; not worth
+serializing every LLM call behind `BEGIN IMMEDIATE`." Extend the index test to expect BOTH names.
 
 - [ ] **Step 4: Run to verify passing** — `npx vitest run tests/run/ tests/budget/` → PASS.
 
@@ -558,6 +568,8 @@ export interface LlmUsage {
 ```
 
 `normalizeAgyUsage` returns `{ input_tokens, output_tokens, cached_input_tokens, thinking_tokens: num(usage.thinking_tokens) }`.
+
+Now that the field is typed, REMOVE both stopgap casts from Task 3: in `src/run/run-store.ts` `llmAuditSink` replace `(usage as { thinking_tokens?: number }).thinking_tokens` with `usage.thinking_tokens`, and in `tests/run/llm-audit-sink.test.ts` drop the `as never` on the thinking_tokens literal.
 
 `src/llm/types.ts`: `import type { LlmUsage } from "../run/llm-usage.js";` and the success arm becomes `{ ok: true; provider: string; model: string; answer: string; usage?: LlmUsage }`.
 
