@@ -22,7 +22,7 @@ import { NotificationDispatcher } from "../notifications/notification-dispatcher
 import { NotificationOutbox } from "../notifications/notification-outbox.js";
 import { TelegramNotificationAdapter } from "../notifications/telegram-notification-adapter.js";
 import { resolveBackupEnabled, runDbBackupTick } from "../run/db-backup.js";
-import type { RunStore } from "../run/run-store.js";
+import type { LlmCallRole, RunStore } from "../run/run-store.js";
 import { maybeFireScheduledTasks } from "../run/schedule-tick.js";
 import { SkillStore } from "../skills/skill-store.js";
 import { runInvariantSweep } from "../run/invariant-sweep.js";
@@ -145,21 +145,14 @@ export async function runTelegramDaemon(
     undefined,
     options.requestShutdown ? { requestShutdown: options.requestShutdown } : {}
   );
-  const llmAdapter =
-    options.llmAdapter ??
-    createLlmAnswerAdapter({
-      ...(options.broker ? { broker: options.broker } : {}),
-      // Metered-$ ceiling (ADR 0019): a latched fuse drops the metered legs (cheap latch read).
-      meteredBreached: () => options.store.meteredFuseLatched()
-    });
   const worker = new CoreWorker(
     options.store,
     options.projectRoot,
-    // Pass the RAW optional (undefined in prod), NOT the built `llmAdapter` above: CoreWorker
-    // instruments its OWN default cheap-chain adapter per role (answer/classify/… usage →
-    // recordLlmCall) only when none is injected. Handing it the pre-built adapter set
-    // llmAdapterIsDefault=false and silently disabled all conversational telemetry. Tests still
-    // inject options.llmAdapter and get it verbatim. The local `llmAdapter` above stays for the tick.
+    // Pass the RAW optional (undefined in prod): CoreWorker builds its OWN run-scoped, audited
+    // adapter per role (`llmAdapterFor`) only when none is injected. Handing it a pre-built
+    // adapter would set llmAdapterIsDefault=false and silently disable all conversational
+    // telemetry. Tests still inject options.llmAdapter and get it verbatim. The signal-path
+    // ticks build their own per-tick adapters (`tickLlm`).
     options.llmAdapter,
     undefined,
     undefined,
@@ -262,7 +255,7 @@ export async function runTelegramDaemon(
       // ⓪·3 S2: the signal path rides the poll loop (before the outbox flush, so a
       // rating ask enqueued this cycle is delivered this cycle). B10b threads the
       // gateway + worker in so the scheduler tick fires due tasks down the SAME path.
-      await runSignalPathTick(options, llmAdapter, gateway, worker, t);
+      await runSignalPathTick(options, gateway, worker, t);
       for (;;) {
         const result = await dispatcher.dispatchOnce("telegram-daemon-dispatcher");
         if (result.status === "idle") break;
@@ -326,7 +319,6 @@ export async function runTelegramDaemon(
  */
 async function runSignalPathTick(
   options: RunTelegramDaemonOptions,
-  llmAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
   gateway: Gateway,
   worker: CoreWorker,
   now: string
@@ -353,19 +345,31 @@ async function runSignalPathTick(
         now
       });
     }
-    // Phase M B2: the distill's LLM reads ride the same adapter processRatingSignal
-    // uses (the unreserved chain — no run, no turn budget); embeddings are best-effort
-    // local Ollama (null on any failure — the store degrades gracefully).
-    const episodicLlm = async (input: { question: string; system: string }) => {
-      const read = await llmAdapter({ question: input.question, system: input.system });
-      return read.ok && typeof read.output.answer === "string"
-        ? ({ ok: true, answer: read.output.answer } as const)
-        : ({ ok: false } as const);
+    // Slice 2 (review B2): ONE adapter per tick, each with its own run-less audit scope, so every
+    // LLM leg a tick tries lands in the ledger under `tick:<name>` — the daemon-tick work that
+    // recorded nothing at all before (D4). The unreserved chain — no run, no turn budget. A
+    // test-injected `options.llmAdapter` is used verbatim (it brings its own fakes, no chain).
+    // Embeddings stay best-effort local Ollama (null on any failure — the store degrades).
+    const tickLlm = (name: string, role: LlmCallRole) => {
+      const adapter =
+        options.llmAdapter ??
+        createLlmAnswerAdapter({
+          ...(options.broker ? { broker: options.broker } : {}),
+          // Metered-$ ceiling (ADR 0019): a latched fuse drops the metered legs (cheap latch read).
+          meteredBreached: () => options.store.meteredFuseLatched(),
+          audit: options.store.llmAuditSink({ correlation_id: `tick:${name}`, role })
+        });
+      return async (input: { question: string; system: string }) => {
+        const read = await adapter({ question: input.question, system: input.system });
+        return read.ok && typeof read.output.answer === "string"
+          ? ({ ok: true, answer: read.output.answer } as const)
+          : ({ ok: false } as const);
+      };
     };
     const episodicEmbed = (text: string) => embedText(text, resolveEmbedConfig(process.env));
     await maybeRunEpisodicDistill({
       store: options.store,
-      llm: episodicLlm,
+      llm: tickLlm("episodic_distill", "distill"),
       embed: episodicEmbed,
       userName: options.allowlist.users[0]?.identity_id ?? "the user",
       now
@@ -374,7 +378,7 @@ async function runSignalPathTick(
     // flag, idempotent per 24h via its single-row state marker, all steps bounded.
     await runEpisodicConsolidateTick({
       store: options.store,
-      llm: episodicLlm,
+      llm: tickLlm("episodic_consolidate", "consolidate"),
       embed: episodicEmbed,
       now
     });
@@ -384,7 +388,7 @@ async function runSignalPathTick(
     // same `{question,system} → {ok,answer}` wrapper episodic uses). Best-effort; never throws.
     await runLessonConsolidateTick({
       store: options.store,
-      llmAnswer: episodicLlm,
+      llmAnswer: tickLlm("lesson_consolidate", "consolidate"),
       env: process.env,
       now
     });
@@ -394,7 +398,7 @@ async function runSignalPathTick(
     // interval via radar_state, per-source failure isolation. Best-effort; never throws.
     await runIdeaRadarTick({
       store: options.store,
-      llmAnswer: episodicLlm,
+      llmAnswer: tickLlm("idea_radar", "extract"),
       ...(options.radarFetch ? { fetch: options.radarFetch } : {}),
       env: process.env,
       now
@@ -416,11 +420,12 @@ async function runSignalPathTick(
     // Skill retirement spec (2026-07-29): the weekly suggest-only re-verify advisor — stale
     // skills get a fresh Gate B pass; failures are flagged to Paco, passers re-stamped. Flag-
     // gated OFF (DISARM_FLAGS), weekly latch stamped before any LLM call, never throws.
+    const reverifyLlm = tickLlm("skill_reverify", "verify");
     await runSkillReverifyTick({
       store: options.store,
       skills: new SkillStore({ root: join(options.projectRoot, "skills") }),
       anchorLlm: async (system, question) => {
-        const read = await episodicLlm({ question, system });
+        const read = await reverifyLlm({ question, system });
         return read.ok ? read.answer : undefined;
       },
       env: process.env,
@@ -471,7 +476,8 @@ function buildPanelSeatBindings(options: RunTelegramDaemonOptions): PanelSeatBin
     const adapter = createLlmAnswerAdapter({
       ...(broker ? { broker } : {}),
       providers,
-      meteredBreached: () => options.store.meteredFuseLatched()
+      meteredBreached: () => options.store.meteredFuseLatched(),
+      audit: options.store.llmAuditSink({ correlation_id: "tick:idea_panel", role: "judge" })
     });
     return async (input) => {
       const read = await adapter({ question: input.question, system: input.system });

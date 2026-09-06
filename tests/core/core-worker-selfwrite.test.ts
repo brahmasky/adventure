@@ -158,7 +158,7 @@ function deps(overrides: Partial<SelfWriteDeps>, log: { teardowns: string[]; wri
     rawDiff: () => ":100644 100644 a b M\tsrc/capabilities/intent.ts\n",
     unifiedDiff: () => "diff --git a/src/capabilities/intent.ts b/src/capabilities/intent.ts\n+fixed",
     runTestGate: (): TestGateResult => ({ green: true }),
-    // The reviewer reports normalized usage on the same call (W2) → W3 records a `reviewer` llm_call.
+    // The reviewer reports normalized usage on the same call (W2) → the audit sink records a `reviewer` llm_attempt.
     reviewDiff: (): ReviewResult => ({ ok: true, verdict: { verdict: "pass", fixes_task: true, introduces_bugs: false, scope_creep: false, reasons: [] }, usage: { input_tokens: 200, output_tokens: 40, cached_input_tokens: 10, cost_usd: 0.08 } }),
     publishBranch: (_wt, branch) => { log.published.push(branch); return branch; }
   };
@@ -665,7 +665,7 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
     }
   });
 
-  it("Phase 3.1 (W3): a successful run records a `writer` llm_call AND a `reviewer` llm_call", async () => {
+  it("slice 2: a successful run records a `writer` llm_attempt AND a `reviewer` llm_attempt", async () => {
     process.env.HOUGE_SELFWRITE_ENABLED = "1";
     const store = RunStore.openInMemory();
     const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
@@ -674,11 +674,13 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       const { status } = await executeAndSettle(makeWorker(store, deps({}, log)), store, run_id);
       expect(status).toBe("completed");
 
-      const llmCalls = store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_call");
+      const llmCalls = store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_attempt");
       const writer = llmCalls.find((e) => e.payload.role === "writer");
       const reviewer = llmCalls.find((e) => e.payload.role === "reviewer");
       expect(writer).toBeDefined();
       expect(reviewer).toBeDefined();
+      expect(writer!.payload.outcome).toBe("ok");
+      expect(reviewer!.payload.outcome).toBe("ok");
       // Writer telemetry came from the (codex) usageRaw normalize: 100 in + 20 out.
       expect(writer!.payload.provider).toBe("codex");
       expect(writer!.payload.input_tokens).toBe(100);
@@ -762,10 +764,15 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       expect(status).toBe("completed");
       // Still published — telemetry is best-effort.
       expect(log.published).toEqual([`houge/selfwrite/${run_id}`]);
-      // No writer/reviewer llm_call recorded (normalize null / no usage → skipped, not crashed).
-      const llmCalls = store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_call");
-      expect(llmCalls.some((e) => e.payload.role === "writer")).toBe(false);
-      expect(llmCalls.some((e) => e.payload.role === "reviewer")).toBe(false);
+      // Slice 2 (review W7): EVERY writer/reviewer invocation is recorded — here WITHOUT token
+      // counts (normalize null / no usage), never skipped, never crashed.
+      const attempts = store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_attempt");
+      const writer = attempts.find((e) => e.payload.role === "writer");
+      const reviewer = attempts.find((e) => e.payload.role === "reviewer");
+      expect(writer?.payload.outcome).toBe("ok");
+      expect(writer?.payload.input_tokens).toBeUndefined();
+      expect(reviewer?.payload.outcome).toBe("ok");
+      expect(reviewer?.payload.input_tokens).toBeUndefined();
       // usage_summary is present but empty (no role had usage).
       const pub = store.getLedgerEvents(run_id).filter((e) => e.event_type === "self_write_published");
       expect(pub[0]!.payload.usage_summary).toEqual({});
@@ -809,7 +816,7 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
     }
   });
 
-  it("MANDATE 3 — llm_call + usage_summary leak NO bodies even when writer/reviewer carry body-like junk", async () => {
+  it("MANDATE 3 — llm_attempt + usage_summary leak NO bodies even when writer/reviewer carry body-like junk", async () => {
     // Telemetry must record ONLY counts/metadata. We feed the writer a usageRaw whose JSON ALSO carries
     // a fake prompt/diff/response/secret, and the reviewer a verdict with a body-like reason, and assert
     // the SERIALIZED llm_call + usage_summary payloads contain none of those body markers.
@@ -844,8 +851,8 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       const { status } = await executeAndSettle(makeWorker(store, d), store, run_id);
       expect(status).toBe("completed");
 
-      // Trace every llm_call payload: NO body/secret leaks.
-      const llmCalls = store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_call");
+      // Trace every llm_attempt payload: NO body/secret leaks.
+      const llmCalls = store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_attempt");
       expect(llmCalls.length).toBeGreaterThanOrEqual(2);
       for (const call of llmCalls) {
         const serialized = JSON.stringify(call.payload);
@@ -853,7 +860,7 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
           expect(serialized).not.toContain(marker);
         }
         // Only the allowed keys are present.
-        const allowed = new Set(["provider", "model", "role", "input_tokens", "output_tokens", "cached_input_tokens", "cost_usd", "latency_ms"]);
+        const allowed = new Set(["provider", "model", "role", "outcome", "error_kind", "attempt_group", "leg_index", "input_tokens", "output_tokens", "cached_input_tokens", "thinking_tokens", "cost_usd", "latency_ms"]);
         for (const key of Object.keys(call.payload)) expect(allowed.has(key)).toBe(true);
       }
 

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -973,6 +973,68 @@ describe("park marker retirement (ADR 0018 revival)", () => {
       if (saved === undefined) delete process.env.HOUGE_PARK_MARKER_PATH;
       else process.env.HOUGE_PARK_MARKER_PATH = saved;
       rmSync(markerDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("runTelegramDaemon — the audit chokepoint (slice 2)", () => {
+  it("slice 2: the daemon's own chain records llm_attempt rows for a turn (run-scoped)", async () => {
+    // No injected llmAdapter: the turn rides CoreWorker's REAL chain. pi has no binary-path
+    // override (PI_BINARY is the constant "pi", resolved through the child's PATH — which
+    // cli-spawn's env allowlist always passes through), so the stub is a `pi` executable in a
+    // temp dir prepended to PATH. It drains stdin (the question) and emits one message_end line
+    // in the shape parsePiJsonl/extractPiUsage read.
+    const dir = mkdtempSync(join(tmpdir(), "houge-pi-stub-"));
+    const stub = join(dir, "pi");
+    writeFileSync(
+      stub,
+      "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '" +
+        JSON.stringify({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            model: "stub",
+            content: [{ type: "text", text: "stub answer" }],
+            usage: { input: 3, output: 2, cacheRead: 0 }
+          }
+        }) +
+        "'\n",
+      { mode: 0o755 }
+    );
+    const saved = { p: process.env.HOUGE_LLM_PROVIDERS, path: process.env.PATH };
+    process.env.HOUGE_LLM_PROVIDERS = "pi";
+    process.env.PATH = `${dir}:${process.env.PATH ?? ""}`;
+    const store = RunStore.openInMemory();
+    const controller = new AbortController();
+    let calls = 0;
+    try {
+      await runTelegramDaemon({
+        store,
+        projectRoot: projectRoot(),
+        allowlist: ALLOWLIST,
+        stopSignal: controller.signal,
+        longPollTimeoutSeconds: 0,
+        telegramClient: {
+          getUpdates: async () => {
+            calls += 1;
+            if (calls === 1) return [askUpdate(50, "question one")];
+            controller.abort();
+            return [];
+          },
+          sendMessage: async () => ({ message_id: 1 })
+        }
+      });
+      const attempts = store.getLedgerEvents().filter((e) => e.event_type === "llm_attempt");
+      expect(attempts.length).toBeGreaterThan(0);
+      expect(attempts.every((e) => typeof e.run_id === "string")).toBe(true);
+      expect(attempts.every((e) => e.payload.provider === "pi" && e.payload.outcome === "ok")).toBe(true);
+    } finally {
+      store.close();
+      if (saved.p === undefined) delete process.env.HOUGE_LLM_PROVIDERS;
+      else process.env.HOUGE_LLM_PROVIDERS = saved.p;
+      if (saved.path === undefined) delete process.env.PATH;
+      else process.env.PATH = saved.path;
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

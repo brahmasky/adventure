@@ -316,16 +316,19 @@ if (command === "run") {
   const { runLessonConsolidateTick } = await import("./capabilities/lesson-consolidate.js");
   const { createLlmAnswerAdapter } = await import("./capabilities/llm-answer.js");
 
-  const llmAdapter = createLlmAnswerAdapter(brokerOption);
-  const llmAnswer = async (input: { question: string; system: string }) => {
-    const read = await llmAdapter({ question: input.question, system: input.system });
-    return read.ok && typeof read.output.answer === "string"
-      ? ({ ok: true, answer: read.output.answer } as const)
-      : ({ ok: false } as const);
-  };
-
   const store = RunStore.open("houge.sqlite", storeOptions);
   try {
+    const llmAdapter = createLlmAnswerAdapter({
+      ...brokerOption,
+      audit: store.llmAuditSink({ correlation_id: "cli:lessons-consolidate", role: "consolidate" })
+    });
+    const llmAnswer = async (input: { question: string; system: string }) => {
+      const read = await llmAdapter({ question: input.question, system: input.system });
+      return read.ok && typeof read.output.answer === "string"
+        ? ({ ok: true, answer: read.output.answer } as const)
+        : ({ ok: false } as const);
+    };
+
     const result = await runLessonConsolidateTick({
       store,
       llmAnswer,
@@ -369,16 +372,19 @@ if (command === "run") {
   const { renderRadarProposals, runIdeaRadarTick } = await import("./capabilities/idea-radar.js");
   const { createLlmAnswerAdapter } = await import("./capabilities/llm-answer.js");
 
-  const llmAdapter = createLlmAnswerAdapter(brokerOption);
-  const llmAnswer = async (input: { question: string; system: string }) => {
-    const read = await llmAdapter({ question: input.question, system: input.system });
-    return read.ok && typeof read.output.answer === "string"
-      ? ({ ok: true, answer: read.output.answer } as const)
-      : ({ ok: false } as const);
-  };
-
   const store = RunStore.open("houge.sqlite", storeOptions);
   try {
+    const llmAdapter = createLlmAnswerAdapter({
+      ...brokerOption,
+      audit: store.llmAuditSink({ correlation_id: "cli:radar", role: "extract" })
+    });
+    const llmAnswer = async (input: { question: string; system: string }) => {
+      const read = await llmAdapter({ question: input.question, system: input.system });
+      return read.ok && typeof read.output.answer === "string"
+        ? ({ ok: true, answer: read.output.answer } as const)
+        : ({ ok: false } as const);
+    };
+
     const result = await runIdeaRadarTick({
       store,
       llmAnswer,
@@ -414,38 +420,42 @@ if (command === "run") {
   const { spawnCodexJudge, spawnPanelChair } = await import("./capabilities/idea-panel-seats.js");
   const { createLlmAnswerAdapter } = await import("./capabilities/llm-answer.js");
 
-  // PINNED single-provider judges (spec §1: never a chain — a healthy-leg fallback would
-  // silently void model diversity and the quorum semantics). Same wrapper the daemon uses.
-  const pinnedJudge = (providers: string) => {
-    const adapter = createLlmAnswerAdapter({ ...brokerOption, providers });
-    return async (input: { question: string; system: string }) => {
-      const read = await adapter({ question: input.question, system: input.system });
-      return read.ok && typeof read.output.answer === "string"
-        ? ({ ok: true, answer: read.output.answer } as const)
-        : ({ ok: false } as const);
-    };
-  };
-  const chairBroker = broker;
-  const seats = {
-    // Same pinning the daemon uses — imported, never re-typed, so the two panel seat sites
-    // cannot drift apart again (this one was missed in the CLI-only migration and kept firing
-    // the metered APIs, including on the `--dry-run` pre-arm gate).
-    judges: {
-      kimi: pinnedJudge(PANEL_JUDGE_PROVIDERS.kimi),
-      gemini: pinnedJudge(PANEL_JUDGE_PROVIDERS.gemini)
-    },
-    codexJudge: (input: { digest: string; system: string }) =>
-      spawnCodexJudge({ digest: input.digest, system: input.system, env: process.env }),
-    // The chair's OAuth token is broker-held (spec §§2–3) — firewall OFF ⇒ chair
-    // unavailable ⇒ the tick's deterministic mean-score fallback (self-describing output).
-    chair: chairBroker
-      ? (input: { digest: string; system: string }) =>
-          spawnPanelChair({ digest: input.digest, system: input.system, broker: chairBroker, env: process.env })
-      : async () => ({ ok: false as const, unavailable: true })
-  };
-
   const store = RunStore.open("houge.sqlite", storeOptions);
   try {
+    // PINNED single-provider judges (spec §1: never a chain — a healthy-leg fallback would
+    // silently void model diversity and the quorum semantics). Same wrapper the daemon uses.
+    const pinnedJudge = (providers: string) => {
+      const adapter = createLlmAnswerAdapter({
+        ...brokerOption,
+        providers,
+        audit: store.llmAuditSink({ correlation_id: "cli:radar-panel", role: "judge" })
+      });
+      return async (input: { question: string; system: string }) => {
+        const read = await adapter({ question: input.question, system: input.system });
+        return read.ok && typeof read.output.answer === "string"
+          ? ({ ok: true, answer: read.output.answer } as const)
+          : ({ ok: false } as const);
+      };
+    };
+    const chairBroker = broker;
+    const seats = {
+      // Same pinning the daemon uses — imported, never re-typed, so the two panel seat sites
+      // cannot drift apart again (this one was missed in the CLI-only migration and kept firing
+      // the metered APIs, including on the `--dry-run` pre-arm gate).
+      judges: {
+        kimi: pinnedJudge(PANEL_JUDGE_PROVIDERS.kimi),
+        gemini: pinnedJudge(PANEL_JUDGE_PROVIDERS.gemini)
+      },
+      codexJudge: (input: { digest: string; system: string }) =>
+        spawnCodexJudge({ digest: input.digest, system: input.system, env: process.env }),
+      // The chair's OAuth token is broker-held (spec §§2–3) — firewall OFF ⇒ chair
+      // unavailable ⇒ the tick's deterministic mean-score fallback (self-describing output).
+      chair: chairBroker
+        ? (input: { digest: string; system: string }) =>
+            spawnPanelChair({ digest: input.digest, system: input.system, broker: chairBroker, env: process.env })
+        : async () => ({ ok: false as const, unavailable: true })
+    };
+
     if (dryRun) {
       // §13.1: say the cost out loud — run this deliberately, not in a loop.
       console.log("dry-run cost: 2 metered calls + 2 subscription spawns");

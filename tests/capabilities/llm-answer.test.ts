@@ -4,6 +4,7 @@ import {
   createLlmAnswerAdapter
 } from "../../src/capabilities/llm-answer.js";
 import type { LlmProvider, LlmRequest } from "../../src/llm/types.js";
+import { UNAUDITED_TEST_SINK, recordingSink } from "../helpers/llm-audit.js";
 
 /** A provider that records the request it received, so we can assert on `system`. */
 function capturingProvider(): { provider: LlmProvider; last(): LlmRequest | undefined } {
@@ -34,7 +35,7 @@ describe("createLlmAnswerAdapter", () => {
         return { ok: true, provider: "fake", model: "fake-model", answer: `A:${question}` };
       }
     };
-    const adapter = createLlmAnswerAdapter({ chain: [fakeProvider] });
+    const adapter = createLlmAnswerAdapter({ chain: [fakeProvider], audit: UNAUDITED_TEST_SINK });
 
     const result = await adapter({ question: "What is the capital of France?" });
 
@@ -52,7 +53,7 @@ describe("createLlmAnswerAdapter", () => {
   it("threads the default identity system prompt to the chain", async () => {
     delete process.env.HOUGE_ASK_SYSTEM_PROMPT;
     const { provider, last } = capturingProvider();
-    const adapter = createLlmAnswerAdapter({ chain: [provider] });
+    const adapter = createLlmAnswerAdapter({ chain: [provider], audit: UNAUDITED_TEST_SINK });
 
     await adapter({ question: "hi" });
 
@@ -62,7 +63,7 @@ describe("createLlmAnswerAdapter", () => {
   it("lets HOUGE_ASK_SYSTEM_PROMPT override the default", async () => {
     process.env.HOUGE_ASK_SYSTEM_PROMPT = "Answer like a pirate.";
     const { provider, last } = capturingProvider();
-    const adapter = createLlmAnswerAdapter({ chain: [provider] });
+    const adapter = createLlmAnswerAdapter({ chain: [provider], audit: UNAUDITED_TEST_SINK });
 
     await adapter({ question: "hi" });
 
@@ -72,7 +73,7 @@ describe("createLlmAnswerAdapter", () => {
   it("lets a per-call input.system take precedence over the env and default", async () => {
     process.env.HOUGE_ASK_SYSTEM_PROMPT = "env one";
     const { provider, last } = capturingProvider();
-    const adapter = createLlmAnswerAdapter({ chain: [provider] });
+    const adapter = createLlmAnswerAdapter({ chain: [provider], audit: UNAUDITED_TEST_SINK });
 
     await adapter({ question: "hi", system: "call one" });
 
@@ -88,7 +89,7 @@ describe("createLlmAnswerAdapter", () => {
         return { ok: true, provider: "fake", model: "fake-model", answer: "x" };
       }
     };
-    const adapter = createLlmAnswerAdapter({ chain: [fakeProvider] });
+    const adapter = createLlmAnswerAdapter({ chain: [fakeProvider], audit: UNAUDITED_TEST_SINK });
 
     expect(await adapter({ question: "" })).toEqual({
       ok: false,
@@ -108,7 +109,7 @@ describe("createLlmAnswerAdapter", () => {
         return { ok: false, provider: "fake", error: "boom" };
       }
     };
-    const adapter = createLlmAnswerAdapter({ chain: [fakeProvider] });
+    const adapter = createLlmAnswerAdapter({ chain: [fakeProvider], audit: UNAUDITED_TEST_SINK });
 
     const result = await adapter({ question: "hi" });
 
@@ -119,109 +120,28 @@ describe("createLlmAnswerAdapter", () => {
   });
 });
 
-describe("provider usage tagging (D4 interim wiring)", () => {
-  it("tags agy-cli usage with its own provider name, not a metered one", async () => {
-    // The one line that makes agy's tokens reach `recordLlmCall` at all. A copy-paste slip here
-    // would attribute flat-rate CLI tokens to a metered provider and feed the ADR 0019 fuse
-    // spend that never happened — and every other test would stay green, because they all inject
-    // a chain and bypass `buildLlmChain` entirely.
-    const seen: Array<{ provider: string; model: string }> = [];
-    const spawnCalls: string[][] = [];
-
-    // Route the real agy provider at a fake binary that emits a SUCCESS envelope with usage.
-    const previousBin = process.env.HOUGE_AGY_BIN;
-    const previousModel = process.env.HOUGE_AGY_MODEL;
-    process.env.HOUGE_AGY_MODEL = "test-model";
-    try {
-      const { createAgyCliProvider } = await import("../../src/llm/providers/agy-cli.js");
-      const provider = createAgyCliProvider({
-        onUsage: (usage, model) => seen.push({ provider: "agy-cli", model }),
-        spawnImpl: async (_file, args) => {
-          spawnCalls.push(args);
-          return {
-            code: 0,
-            stdout: JSON.stringify({
-              status: "SUCCESS",
-              response: "hi",
-              usage: { input_tokens: 10, output_tokens: 2, thinking_tokens: 3, cache_read_tokens: 0 }
-            }),
-            stderr: "",
-            timedOut: false
-          };
-        }
-      });
-
-      const result = await provider.answer({ question: "q" });
-
-      expect(result.ok).toBe(true);
-      expect(seen).toEqual([{ provider: "agy-cli", model: "test-model" }]);
-    } finally {
-      if (previousBin === undefined) delete process.env.HOUGE_AGY_BIN;
-      else process.env.HOUGE_AGY_BIN = previousBin;
-      if (previousModel === undefined) delete process.env.HOUGE_AGY_MODEL;
-      else process.env.HOUGE_AGY_MODEL = previousModel;
-    }
-  });
-
-  it("carries agy usage all the way through createLlmAnswerAdapter's own chain build", async () => {
-    // End-to-end over the actual diff line in llm-answer.ts: a REAL agy binary stub, resolved
-    // through buildLlmChain by provider name, with the adapter's construction-time hook. Without
-    // `agyConfig` threaded in, this reports nothing and the interim D4 fix does not exist.
-    const fs = await import("node:fs");
-    const os = await import("node:os");
-    const path = await import("node:path");
-
-    // A stub that ignores argv entirely and emits one real-shaped envelope on stdout.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "houge-agy-stub-"));
-    const stub = path.join(dir, "agy-stub.sh");
-    fs.writeFileSync(
-      stub,
-      "#!/bin/sh\nprintf '%s' '" +
-        JSON.stringify({
-          status: "SUCCESS",
-          response: "Paris.",
-          usage: { input_tokens: 120, output_tokens: 5, thinking_tokens: 40, cache_read_tokens: 7 }
-        }) +
-        "'\n",
-      { mode: 0o755 }
-    );
-
-    const saved = {
-      bin: process.env.HOUGE_AGY_BIN,
-      model: process.env.HOUGE_AGY_MODEL,
-      providers: process.env.HOUGE_LLM_PROVIDERS
+describe("audit is a required constructor parameter (slice 2, B1)", () => {
+  it("threads the sink to answerWithChain — one attempt per leg tried", async () => {
+    const sink = recordingSink();
+    const dead: LlmProvider = {
+      name: "agy-cli",
+      answer: async () => ({ ok: false, provider: "agy-cli", error: "agy binary not found (ENOENT)", unavailable: true })
     };
-    process.env.HOUGE_AGY_BIN = stub;
-    try {
-      const seen: Array<{ provider: string; usage: unknown; model: string }> = [];
-      const adapter = createLlmAnswerAdapter({
-        providers: "agy-cli",
-        onUsage: (provider, usage, model) => seen.push({ provider, usage, model })
-      });
-
-      const result = await adapter({ question: "Capital of France?" });
-
-      expect(result.ok).toBe(true);
-      expect(seen).toHaveLength(1);
-      expect(seen[0]!.provider).toBe("agy-cli");
-      // agy nests thinking inside output, so output_tokens is reported as-is (never +thinking),
-      // and cache_read maps to cached input. Thinking rides alongside, informational only.
-      expect(seen[0]!.usage).toEqual({
-        input_tokens: 120,
-        output_tokens: 5,
-        cached_input_tokens: 7,
-        thinking_tokens: 40
-      });
-    } finally {
-      for (const [key, value] of [
-        ["HOUGE_AGY_BIN", saved.bin],
-        ["HOUGE_AGY_MODEL", saved.model],
-        ["HOUGE_LLM_PROVIDERS", saved.providers]
-      ] as const) {
-        if (value === undefined) delete process.env[key];
-        else process.env[key] = value;
-      }
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    const live: LlmProvider = {
+      name: "pi",
+      answer: async () => ({
+        ok: true,
+        provider: "pi",
+        model: "m",
+        answer: "hi",
+        usage: { input_tokens: 1, output_tokens: 1, cached_input_tokens: 0 }
+      })
+    };
+    const result = await createLlmAnswerAdapter({ chain: [dead, live], audit: sink })({ question: "q" });
+    expect(result.ok).toBe(true);
+    expect(sink.attempts.map((a) => [a.provider, a.outcome])).toEqual([
+      ["agy-cli", "unavailable"],
+      ["pi", "ok"]
+    ]);
   });
 });

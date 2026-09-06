@@ -11,7 +11,6 @@ import {
   resolveMeteredCeilings
 } from "../../src/budget/global-budget-ledger.js";
 import { checkMeteredCeiling } from "../../src/budget/metered-ceiling.js";
-import { CoreWorker } from "../../src/core/core-worker.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { buildLlmChain, METERED_FALLBACK_PROVIDERS } from "../../src/llm/registry.js";
@@ -215,85 +214,6 @@ describe("buildLlmChain metered filter (enforcement)", () => {
     const env = { HOUGE_LLM_PROVIDERS: "pi,kimi-api" };
     expect(buildLlmChain(env).map((p) => p.name)).toEqual(["pi", "kimi-api"]);
     expect(buildLlmChain(env, { meteredBreached: () => false }).map((p) => p.name)).toEqual(["pi", "kimi-api"]);
-  });
-});
-
-describe("cost lands at the CoreWorker recording seam", () => {
-  it("recordLlmCallSafe prices a metered call so the ledger-derived spend sees it; unknown models stay invisible", () => {
-    const store = RunStore.openInMemory();
-    try {
-      const worker = new CoreWorker(store, dir);
-      const seam = worker as unknown as {
-        recordLlmCallSafe(run_id: string, info: Record<string, unknown>): void;
-      };
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-      // a metered call: priced from the seed table (1M in @ $2 + 1M out @ $5 = $7)
-      seam.recordLlmCallSafe("run_seam", {
-        provider: "kimi-api",
-        model: "moonshot-v1-auto",
-        role: "answer",
-        usage: { input_tokens: 1_000_000, output_tokens: 1_000_000, cached_input_tokens: 0 }
-      });
-      // an UNKNOWN metered model: recorded, but unpriced → spend unaffected
-      seam.recordLlmCallSafe("run_seam", {
-        provider: "kimi-api",
-        model: `mystery-${Date.now()}`,
-        role: "answer",
-        usage: { input_tokens: 9_999_999, output_tokens: 9_999_999, cached_input_tokens: 0 }
-      });
-      // a flat-rate call: never priced
-      seam.recordLlmCallSafe("run_seam", {
-        provider: "pi",
-        model: "whatever",
-        role: "classify",
-        usage: { input_tokens: 1_000_000, output_tokens: 1_000_000, cached_input_tokens: 0 }
-      });
-      warn.mockRestore();
-
-      const spend = store.meteredSpendUsd(new Date().toISOString());
-      expect(spend.daily_usd).toBeCloseTo(7.0, 10);
-      expect(store.getLedgerEvents("run_seam")).toHaveLength(3); // all recorded, one priced
-    } finally {
-      store.close();
-    }
-  });
-
-  it("drops a subscription CLI leg's self-reported cost_usd (phantom); a metered leg still gets a real $", () => {
-    const store = RunStore.openInMemory();
-    try {
-      const worker = new CoreWorker(store, dir);
-      const seam = worker as unknown as {
-        recordLlmCallSafe(run_id: string, info: Record<string, unknown>): void;
-      };
-
-      // A non-metered CLI leg self-reports a list price (0.42). It is a subscription leg — that
-      // figure is a phantom and must NOT be stored as a real-$ ledger cost.
-      seam.recordLlmCallSafe("run_phantom", {
-        provider: "claude",
-        model: "sonnet",
-        role: "reviewer",
-        usage: { input_tokens: 500, output_tokens: 100, cached_input_tokens: 0, cost_usd: 0.42 }
-      });
-      // A metered leg with the same self-reported cost is still priced from the seed table, not 0.42.
-      seam.recordLlmCallSafe("run_phantom", {
-        provider: "kimi-api",
-        model: "moonshot-v1-auto",
-        role: "answer",
-        usage: { input_tokens: 1_000_000, output_tokens: 1_000_000, cached_input_tokens: 0, cost_usd: 0.42 }
-      });
-
-      const events = store.getLedgerEvents("run_phantom");
-      const claude = events.find((e) => e.payload.provider === "claude")!;
-      const kimi = events.find((e) => e.payload.provider === "kimi-api")!;
-      expect(claude.payload.cost_usd).toBeUndefined(); // phantom dropped — tokens only
-      expect(kimi.payload.cost_usd).toBeCloseTo(7.0, 10); // computed, NOT the self-reported 0.42
-
-      // Ledger-derived spend reflects only the metered leg.
-      expect(store.meteredSpendUsd(new Date().toISOString()).daily_usd).toBeCloseTo(7.0, 10);
-    } finally {
-      store.close();
-    }
   });
 });
 

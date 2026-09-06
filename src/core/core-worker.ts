@@ -29,7 +29,7 @@ import type { ReviewResult } from "../capabilities/diff-reviewer.js";
 import { runSelfWriter, resolveSelfWriteWriter } from "../capabilities/self-write-writer.js";
 import { resolveCodexModel } from "../capabilities/coding-agent.js";
 import { normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
-import { computeCostUsd, METERED_PROVIDERS } from "../llm/metered-pricing.js";
+import type { LlmCallRole } from "../run/run-store.js";
 import { publishBranch, selfWriteBranchName } from "../run/branch-publish.js";
 import { createWorktree, removeWorktree } from "../run/worktree.js";
 import { buildGateAQuestion, GATE_A_DISCIPLINE, parseGateAVerdict } from "../capabilities/skill-router.js";
@@ -353,14 +353,15 @@ export class CoreWorker {
     // never touch the network (token mint included); default wires global fetch. Appended last.
     private readonly googleDeps: GoogleApiDeps = defaultGoogleApiDeps()
   ) {
-    // Phase 3.1 (W3): when the DEFAULT llm adapter is in use (production), cheap-chain telemetry can
-    // build a telemetry-instrumented adapter per role (kimi/pi usage → recordLlmCall). A test-
-    // INJECTED adapter is used as-is, so telemetry simply doesn't fire there — best-effort.
+    // When the DEFAULT llm adapter is in use (production), `llmAdapterFor` builds a run-scoped,
+    // audited adapter per role. A test-INJECTED adapter is used as-is (it brings its own fakes).
+    // The default adapter itself is only used RUN-LESS (rating attribution), hence its scope.
     this.llmAdapterIsDefault = llmAdapter === undefined;
     this.llmAdapter = llmAdapter ?? createLlmAnswerAdapter({
       ...(broker ? { broker } : {}),
       // Metered-$ ceiling (ADR 0019): a latched fuse drops the metered legs (cheap latch read).
-      meteredBreached: () => this.runStore.meteredFuseLatched()
+      meteredBreached: () => this.runStore.meteredFuseLatched(),
+      audit: this.runStore.llmAuditSink({ correlation_id: "rating:attribution", role: "attribution" })
     });
     this.webSearchAdapter = webSearchAdapter ?? createWebSearchAdapter(broker ? { broker } : {});
     this.codingAgentAdapter = codingAgentAdapter ?? createCodingAgentAdapter({ projectRoot });
@@ -1193,20 +1194,28 @@ export class CoreWorker {
         const writerStart = Date.now();
         const written = await this.runSelfWriteCapability(selfContract, writeAdapter, task, budget);
         const writerLatencyMs = Date.now() - writerStart;
+        // Slice 2 (review W7) WRITER audit: EVERY writer invocation lands exactly one `llm_attempt`
+        // row — success or failure — through the store sink (which prices metered legs and strips
+        // phantom costs). Codex is the only writer backend, so its JSONL normalizer applies; a null
+        // normalize (garbage/empty usageRaw) records the attempt without token counts. A failed
+        // capability carries no provider/model, so the resolved writer backend names the row.
+        // Best-effort by the sink's contract — a failed write never fails the run.
+        const writerAudit = this.runStore.llmAuditSink({ run_id: claim.run_id, role: "writer" });
+        const writerUsage = written.ok ? (normalizeCodexUsage(written.usageRaw) ?? undefined) : undefined;
+        writerAudit.record({
+          provider: written.ok ? written.provider : writerProvider,
+          role: "",
+          outcome: written.ok ? "ok" : "error",
+          latency_ms: writerLatencyMs,
+          ...(written.ok ? { model: written.model } : { error_kind: "other" as const }),
+          ...(writerUsage ? { usage: writerUsage } : {})
+        });
         if (!written.ok) {
           // A capability failure (budget, writer missing/timeout) is terminal — no diff to check.
           this.runStore.recordSelfWriteFailed(claim.run_id, { reason: `writer failed: ${written.error}`, last_output: written.error });
           return this.selfWriteReport(`Tried to fix \`${focus}\`, but the coding agent failed (${written.error}). Not publishing.`);
         }
-
-        // Phase 3.1 (W3) WRITER telemetry: normalize the writer's raw usage at the source and emit one
-        // `llm_call`. Codex is the only writer backend, so its JSONL normalizer applies. Best-effort —
-        // a null normalize (garbage/empty/unknown provider) skips recording, never crashes.
-        const writerUsage = normalizeCodexUsage(written.usageRaw) ?? undefined;
-        if (writerUsage) {
-          this.recordLlmCallSafe(claim.run_id, { provider: written.provider, model: written.model, role: "writer", usage: writerUsage, latency_ms: writerLatencyMs });
-          lastWriterUsage = writerUsage;
-        }
+        if (writerUsage) lastWriterUsage = writerUsage;
         lastWriterMeta = { provider: written.provider, model: written.model };
 
         // (d) CHECKER 1 — protected-path guard. A deny NEVER lands. But distinguish two cases:
@@ -1254,14 +1263,23 @@ export class CoreWorker {
         // H1 attribution: the backend that actually verdicted (the fallback chain may have moved
         // past the configured reviewer). Absent on injected test deps → the configured reviewer.
         const reviewerBackend = review.ok ? (review.reviewer ?? reviewerProvider) : reviewerProvider;
-        // Phase 3.1 (W3) REVIEWER telemetry: the reviewer captured usage on the same call. Emit one
-        // `llm_call` when present (best-effort; absence never fails the write). Only the codex
+        // Slice 2 (review W7) REVIEWER audit: EVERY reviewer invocation lands exactly one
+        // `llm_attempt` row — verdict or unavailable — through the store sink. Only the codex
         // reviewer reports usage today (kimi's --final-message-only emits none), so the model
-        // derives from the codex resolver.
-        if (review.ok && review.usage) {
-          const reviewerModel = reviewerBackend === "codex" ? (resolveCodexModel(process.env) ?? "default") : "default";
-          this.recordLlmCallSafe(claim.run_id, { provider: reviewerBackend, model: reviewerModel, role: "reviewer", usage: review.usage, latency_ms: reviewerLatencyMs });
-          lastReviewerUsage = review.usage;
+        // derives from the codex resolver; absent usage records the attempt without counts.
+        const reviewerModel = reviewerBackend === "codex" ? (resolveCodexModel(process.env) ?? "default") : "default";
+        const reviewerUsage = review.ok ? review.usage : undefined;
+        this.runStore.llmAuditSink({ run_id: claim.run_id, role: "reviewer" }).record({
+          provider: reviewerBackend,
+          model: reviewerModel,
+          role: "",
+          outcome: review.ok ? "ok" : "error",
+          latency_ms: reviewerLatencyMs,
+          ...(reviewerUsage ? { usage: reviewerUsage } : {}),
+          ...(review.ok ? {} : { error_kind: "other" as const })
+        });
+        if (reviewerUsage) {
+          lastReviewerUsage = reviewerUsage;
           lastReviewerMeta = { provider: reviewerBackend, model: reviewerModel };
         }
         if (!review.ok) {
@@ -1355,45 +1373,14 @@ export class CoreWorker {
   }
 
   /**
-   * Phase 3.1 (W3): record an `llm_call` defensively. Telemetry is ALWAYS best-effort — a thrown
-   * store/normalize error must NEVER fail an otherwise-good write. Swallow + log, never propagate.
-   */
-  private recordLlmCallSafe(
-    run_id: string,
-    info: { provider: string; model: string; role: "writer" | "reviewer" | "classify" | "frame" | "answer" | "compose" | "reader"; usage: LlmUsage; latency_ms?: number }
-  ): void {
-    try {
-      // Metered-$ ceiling (ADR 0019): price the call AT the recording seam — the one place
-      // provider + model + usage meet for every role (writer/reviewer/cheap-chain). Only
-      // metered providers price (null otherwise); the cost rides the existing optional
-      // `cost_usd` payload field. Counts/metadata only — the bodies invariant is untouched.
-      // Only a METERED provider yields a real $ figure. A subscription coding-CLI leg's
-      // self-reported list price (e.g. the kimi/codex reviewer's cost_usd) is a phantom — it must
-      // NOT become a real-$ ledger figure, so non-metered legs record NO cost (tokens only).
-      const metered = METERED_PROVIDERS.has(info.provider);
-      const cost_usd = metered
-        ? (computeCostUsd(info.provider, info.model, info.usage) ?? info.usage.cost_usd)
-        : undefined;
-      // Strip any incoming self-reported cost so a non-metered leg records NONE — only a metered
-      // leg's honored/computed figure is (re)attached below.
-      const { cost_usd: _selfReported, ...usageNoCost } = info.usage;
-      this.runStore.recordLlmCall(run_id, {
-        ...info,
-        usage: cost_usd !== undefined ? { ...usageNoCost, cost_usd } : usageNoCost
-      });
-    } catch (error) {
-      console.warn(`[self-write] failed to record ${info.role} telemetry (non-fatal): ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  /**
-   * Phase 3.1 (W3): resolve the llm_answer adapter for a cheap-chain call, instrumenting it with a
-   * telemetry `onUsage` hook that records the given role. Only the DEFAULT adapter is instrumented
-   * (it owns the real chain); a test-injected adapter is returned as-is (telemetry won't fire).
+   * Resolve the llm_answer adapter for a run-scoped call: one adapter per (run, role), built on the
+   * store's audit sink so EVERY leg the chain tries lands as an `llm_attempt` row under the run
+   * (spec 2026-09-04 §"Slice 2"). Only the DEFAULT adapter is scoped this way (it owns the real
+   * chain); a test-injected adapter is returned as-is (it brings its own fakes).
    */
   private llmAdapterFor(
     run_id: string,
-    role: "classify" | "frame" | "answer" | "compose" | "reader"
+    role: LlmCallRole
   ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
     if (!this.llmAdapterIsDefault) return this.llmAdapter;
     return createLlmAnswerAdapter({
@@ -1402,8 +1389,7 @@ export class CoreWorker {
       ...(role === "reader" ? { providers: resolveReaderProviders(process.env) } : {}),
       // Metered-$ ceiling (ADR 0019): a latched fuse drops the metered legs (cheap latch read).
       meteredBreached: () => this.runStore.meteredFuseLatched(),
-      onUsage: (provider, usage, model) =>
-        this.recordLlmCallSafe(run_id, { provider, model, role, usage })
+      audit: this.runStore.llmAuditSink({ run_id, role })
     });
   }
 
@@ -2562,7 +2548,7 @@ export class CoreWorker {
         priorAnswer: lessonAnchor.priorAnswer,
         allowedScopes: ["ask", "research"],
         defaultScope: lessonAnchor.defaultScope,
-        llm: (input) => this.llmAdapter(input),
+        llm: (input) => this.llmAdapterFor(claim.run_id, "compose")(input),
         // Layer routing (⓪·3 S1c): feedback quoting a code-owned literal (verbatim in
         // src/*.ts) is refused with a digest steering the model to self_write_propose.
         srcContains: createSrcPhraseChecker(this.projectRoot),
@@ -2579,7 +2565,7 @@ export class CoreWorker {
         // the tool's internal distill (never the turn ledger, which may be drained here).
         saveLesson: (candidate, now) =>
           this.reconcileAndSaveLesson(candidate, "loop", async (input) => {
-            const r = await this.llmAdapter(input);
+            const r = await this.llmAdapterFor(claim.run_id, "compose")(input);
             return r.ok && typeof r.output.answer === "string"
               ? { ok: true, answer: r.output.answer }
               : { ok: false };

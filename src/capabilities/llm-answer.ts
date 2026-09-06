@@ -1,7 +1,7 @@
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { answerWithChain, buildLlmChain } from "../llm/registry.js";
 import type { LlmProvider } from "../llm/types.js";
-import type { LlmUsage } from "../run/llm-usage.js";
+import type { LlmAuditSink } from "../llm/audit.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import { ASK_DISCIPLINE, FALLBACK_IDENTITY, GUARDRAILS } from "../prompt/composer.js";
 
@@ -26,13 +26,13 @@ export interface LlmAnswerAdapterConfig {
   /** Inject a pre-built provider chain (tests). Bypasses env-based resolution. */
   chain?: LlmProvider[];
   /**
-   * Phase 3.1 (W3) cheap-chain telemetry seam. Fired once per SUCCESSFUL kimi/pi completion with the
-   * provider name + normalized token usage + the actual model id. The CoreWorker wires this to
-   * `recordLlmCall` for the cheap-chain roles (classify/answer). Bound at adapter-construction time
-   * (NOT passed through the capability `input`, which the runner canonicalizes/hashes). Counts/
-   * metadata ONLY — never prompt or response bodies. Ignored when a `chain` is injected (tests).
+   * THE AUDIT CHOKEPOINT (spec 2026-09-04 §"Slice 2"; review B1). REQUIRED, no default: every
+   * leg the chain tries is recorded through this sink. It replaces the opt-in `onUsage` hook that
+   * produced D4 (whole call paths recording nothing because nobody passed it). Build one with
+   * `RunStore.llmAuditSink(scope)`; tests that are not about telemetry use the helper in
+   * `tests/helpers/llm-audit.ts`.
    */
-  onUsage?: (provider: string, usage: LlmUsage, model: string) => void;
+  audit: LlmAuditSink;
   /**
    * Secrets firewall (ADR 0015): when armed, the provider API keys come from the broker instead of
    * `process.env` (which has been stripped). Absent (firewall OFF) → the chain builder reads env.
@@ -55,9 +55,9 @@ export interface LlmAnswerAdapterConfig {
 }
 
 export function createLlmAnswerAdapter(
-  config: LlmAnswerAdapterConfig = {}
+  config: LlmAnswerAdapterConfig
 ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
-  const { chain: injectedChain, onUsage, broker, providers, meteredBreached } = config;
+  const { chain: injectedChain, audit, broker, providers, meteredBreached } = config;
 
   return async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
     const question = input.question;
@@ -65,28 +65,14 @@ export function createLlmAnswerAdapter(
       return { ok: false, error: "question must be a non-empty string" };
     }
 
-    // Thread the construction-time `onUsage` hook into the chain's provider configs, tagging each
-    // completion with its provider name (the provider's own hook only carries usage+model). An
-    // injected chain (tests) is used as-is.
+    // An injected chain (tests) is used as-is; otherwise resolve it from env (+ the metered latch).
     const chain = injectedChain ?? buildLlmChain(
       providers ? { ...process.env, HOUGE_LLM_PROVIDERS: providers } : process.env,
-      {
-        ...(meteredBreached ? { meteredBreached } : {}),
-        ...(onUsage
-          ? {
-              piConfig: { onUsage: (usage, model) => onUsage("pi", usage, model) },
-              kimiConfig: { onUsage: (usage, model) => onUsage("kimi-api", usage, model) },
-              // gemini-api reports OpenAI-style usage; agy-cli reports its own JSON envelope
-              // (`normalizeAgyUsage` normalizes it; thinking is already inside output).
-              geminiConfig: { onUsage: (usage, model) => onUsage("gemini-api", usage, model) },
-              agyConfig: { onUsage: (usage, model) => onUsage("agy-cli", usage, model) }
-            }
-          : {})
-      },
+      meteredBreached ? { meteredBreached } : {},
       broker
     );
     const system = resolveSystemPrompt(input);
-    const result = await answerWithChain(chain, { question, system }, { record: () => {} }); // TEMP until Task 7 makes the sink a required constructor parameter
+    const result = await answerWithChain(chain, { question, system }, audit);
 
     if (!result.ok) {
       return { ok: false, error: result.error };
