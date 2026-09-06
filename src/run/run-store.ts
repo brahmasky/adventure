@@ -3847,6 +3847,28 @@ export class RunStore {
   }
 
   /**
+   * Slice 2 (review W4): a provider tried at least `minAttempts` times in the window with ZERO
+   * `ok` is a dead leg — the D1 shape (agy failed every call for ~3 months while `pi` answered),
+   * now detectable instead of silent. Reads `llm_attempt` only (history has no failures to
+   * count). Pure read.
+   */
+  findFailingLlmLegs(now: string, windowMs: number, minAttempts: number): Array<{ subject: string; attempts: number; ok: number; last_error_kind: string | null }> {
+    const since = new Date(Date.parse(now) - windowMs).toISOString();
+    return this.db.prepare(`
+      SELECT
+        json_extract(payload_json, '$.provider') AS subject,
+        COUNT(*) AS attempts,
+        SUM(CASE WHEN json_extract(payload_json, '$.outcome') = 'ok' THEN 1 ELSE 0 END) AS ok,
+        MAX(CASE WHEN json_extract(payload_json, '$.outcome') <> 'ok' THEN json_extract(payload_json, '$.error_kind') END) AS last_error_kind
+      FROM ledger_events
+      WHERE event_type = 'llm_attempt' AND occurred_at > ?
+      GROUP BY subject
+      HAVING attempts >= ? AND ok = 0
+      ORDER BY subject
+    `).all<{ subject: string; attempts: number; ok: number; last_error_kind: string | null }>(since, minAttempts);
+  }
+
+  /**
    * A heartbeat older than the grace window means the daemon was DOWN and has just come back
    * (the sweep only runs inside a live daemon) — a retroactive gap report, which is exactly
    * the thing Paco cannot otherwise see.

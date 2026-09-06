@@ -204,6 +204,40 @@ describe("RunStore.llmAuditSink", () => {
     }
   });
 
+  it("no-bodies guarantee: an ok attempt with usage never carries a prompt/response field", () => {
+    const store = RunStore.openInMemory();
+    try {
+      store.llmAuditSink({ correlation_id: "tick:x", role: "distill" }).record({
+        provider: "pi",
+        role: "",
+        outcome: "ok",
+        model: "m",
+        latency_ms: 5,
+        usage: { input_tokens: 10, output_tokens: 3, cached_input_tokens: 0 }
+      });
+      const row = attemptsOf(store)[0]!;
+      expect(JSON.stringify(row.payload)).not.toMatch(/prompt|diff|response|answer_text|content|question|system/i);
+      const allowedKeys = new Set([
+        "provider",
+        "role",
+        "outcome",
+        "model",
+        "latency_ms",
+        "error_kind",
+        "attempt_group",
+        "leg_index",
+        "input_tokens",
+        "output_tokens",
+        "cached_input_tokens",
+        "thinking_tokens",
+        "cost_usd"
+      ]);
+      expect(Object.keys(row.payload).every((k) => allowedKeys.has(k))).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
   it("never throws: a failed write logs a warning and returns", () => {
     const store = RunStore.openInMemory();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

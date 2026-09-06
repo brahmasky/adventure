@@ -2,6 +2,20 @@ import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
+/**
+ * NOTE: this guard is LEXICAL, not scope-aware. It regex-matches the text following a
+ * `createLlmAnswerAdapter(` / spawn-seat call site for an `audit: ...llmAuditSink(` substring —
+ * it does not resolve identifiers or trace where a value came from. Two shapes would fool it in
+ * opposite directions:
+ *   - a wrapper like `audit: buildSink()` would FALSE-NEGATIVE (pass) even if `buildSink` does
+ *     not build its sink from `store.llmAuditSink(...)` at all;
+ *   - a hoisted `const audit = store.llmAuditSink(...)` reused via shorthand `{ audit }` at the
+ *     call site would FALSE-POSITIVE (fail) even though the sink IS store-built, because the
+ *     literal text `llmAuditSink(` does not appear near the call site.
+ * Neither shape exists in src today. The convention this guard enforces is deliberately narrow:
+ * call `llmAuditSink(` inline, at the construction site, every time.
+ */
+
 function sourceFiles(dir: string, acc: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);

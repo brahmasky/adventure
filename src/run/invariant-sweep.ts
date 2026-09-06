@@ -4,7 +4,8 @@ import { readParkMarker } from "./tombstone.js";
 /**
  * The invariant sweep (introspection slice A, ADR 0024): Houge's deterministic self-sensing
  * organ. Every cycle it reads its OWN flight recorder — schedules, runs, the outbox, the
- * heartbeat — and turns violations into durable incidents with an open/resolve lifecycle.
+ * heartbeat, the LLM leg ledger (slice 2, audit chokepoint) — and turns violations into durable
+ * incidents with an open/resolve lifecycle.
  *
  * Deliberately the least-privileged component in the system: pure SQL reads plus incident
  * bookkeeping. No LLM, no capability, no run creation. It cannot act on what it finds — the
@@ -53,13 +54,18 @@ export const INCIDENT_ALERTS_PER_SWEEP_MAX = 3;
  */
 export const INCIDENT_REOPEN_QUIET_MS = 30 * 60 * 1000;
 
+/** A leg tried this often in the window with zero successes is dead, not unlucky (slice 2, W4). */
+export const LLM_LEG_FAILING_MIN_ATTEMPTS = 3;
+export const LLM_LEG_FAILING_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 export type IncidentKind =
   | "duplicate_schedule"
   | "stuck_run"
   | "undelivered_notification"
   | "overdue_schedule"
   | "failed_schedule"
-  | "heartbeat_gap";
+  | "heartbeat_gap"
+  | "llm_leg_failing";
 
 export interface InvariantViolation {
   kind: IncidentKind;
@@ -100,7 +106,7 @@ export function buildSweepSummaryText(opened: number, suppressed: number): strin
   );
 }
 
-/** Pure detection: compose the store's six invariant queries into a flat violation list. */
+/** Pure detection: compose the store's seven invariant queries into a flat violation list. */
 export function detectViolations(
   store: RunStore,
   now: string,
@@ -138,6 +144,9 @@ export function detectViolations(
       subject: row.subject,
       detail: { consecutive_failures: row.consecutive_failures }
     });
+  }
+  for (const row of store.findFailingLlmLegs(now, LLM_LEG_FAILING_WINDOW_MS, LLM_LEG_FAILING_MIN_ATTEMPTS)) {
+    violations.push({ kind: "llm_leg_failing", subject: row.subject, detail: { attempts: row.attempts, ok: row.ok, last_error_kind: row.last_error_kind } });
   }
   const gap = store.findHeartbeatGap(now, HEARTBEAT_GAP_GRACE_MS);
   if (gap) {
