@@ -355,8 +355,8 @@ export class CoreWorker {
   ) {
     // When the DEFAULT llm adapter is in use (production), `llmAdapterFor` builds a run-scoped,
     // audited adapter per role. A test-INJECTED adapter is used as-is (it brings its own fakes).
-    // The default adapter itself is only used RUN-LESS (rating attribution), hence its scope.
     this.llmAdapterIsDefault = llmAdapter === undefined;
+    // run-less; attribution only — every run-scoped call goes through llmAdapterFor
     this.llmAdapter = llmAdapter ?? createLlmAnswerAdapter({
       ...(broker ? { broker } : {}),
       // Metered-$ ceiling (ADR 0019): a latched fuse drops the metered legs (cheap latch read).
@@ -774,7 +774,7 @@ export class CoreWorker {
       risk_level: "low",
       timeout_ms: llmTimeoutMs,
       output_limit_bytes: 100_000,
-      execute: this.llmAdapter
+      execute: this.llmAdapterFor(claim.run_id, "compose")
     });
 
     const runner = new CapabilityRunner(registry);
@@ -1076,7 +1076,7 @@ export class CoreWorker {
       risk_level: "low",
       timeout_ms: llmTimeoutMs,
       output_limit_bytes: 100_000,
-      execute: this.llmAdapter
+      execute: this.llmAdapterFor(claim.run_id, "answer")
     });
 
     const runner = new CapabilityRunner(registry);
@@ -1954,7 +1954,7 @@ export class CoreWorker {
       risk_level: "low",
       timeout_ms: llmTimeoutMs,
       output_limit_bytes: 100_000,
-      execute: this.llmAdapter
+      execute: this.llmAdapterFor(claim.run_id, "answer")
     });
     const result = await new CapabilityRunner(registry).execute({
       contract: claim.contract,
