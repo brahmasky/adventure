@@ -1,3 +1,4 @@
+import { JEV_MODEL } from "./jev-client.js";
 import type { ReplayRow } from "./replay.js";
 
 /** Replay GO/STOP screen (Jev spec 2026-09-25). Replay is a feasibility screen, not the promotion gate. */
@@ -14,13 +15,21 @@ export interface ReplaySummary {
   fallbackAnchors: number;
   thresholds: { t: number; slice: number; agreement: number | null; coverage: number | null }[];
   byLang: Record<string, { matched: number; agreementAt07: number | null; coverageAt07: number | null }>;
+  /** ok rows per Jev response model (spec: "the report splits by jev_model"). */
+  byModel: Record<string, number>;
   verdict: "GO" | "STOP";
   verdictReason: string;
   disagreements: { turn_id: string; jev: string; llm: string; confidence: number; lang: string }[];
 }
 
+/**
+ * A row only "matches" — and so only enters the GO/STOP gate, thresholds, byLang and disagreements —
+ * when its Jev response came from the pinned model. A response from a different model is recorded
+ * (`byModel`) but never gates: it wasn't the evaluation Jev spec 2026-09-25 asked for.
+ */
 const isMatched = (r: ReplayRow): boolean =>
-  r.status === "ok" && r.llm_parsed === true && r.jev_intent !== undefined && r.llm_intent !== undefined && r.jev_confidence !== undefined;
+  r.status === "ok" && r.llm_parsed === true && r.jev_intent !== undefined && r.llm_intent !== undefined &&
+  r.jev_confidence !== undefined && r.jev_model === JEV_MODEL;
 
 function atThreshold(matched: ReplayRow[], t: number) {
   const slice = matched.filter((r) => (r.jev_confidence ?? 0) >= t);
@@ -59,6 +68,10 @@ export function summarizeReplay(rows: ReplayRow[]): ReplaySummary {
     .sort((a, b) => (b.jev_confidence ?? 0) - (a.jev_confidence ?? 0))
     .slice(0, MAX_DISAGREEMENTS)
     .map((r) => ({ turn_id: r.turn_id, jev: r.jev_intent!, llm: r.llm_intent!, confidence: r.jev_confidence!, lang: r.lang }));
+  const byModel: Record<string, number> = {};
+  for (const r of eligibleRows) {
+    if (r.status === "ok" && r.jev_model !== undefined) byModel[r.jev_model] = (byModel[r.jev_model] ?? 0) + 1;
+  }
   return {
     eligible: eligibleRows.length,
     matched: matched.length,
@@ -66,6 +79,7 @@ export function summarizeReplay(rows: ReplayRow[]): ReplaySummary {
     fallbackAnchors: eligibleRows.filter((r) => r.anchor_kind === "run_start").length,
     thresholds: THRESHOLDS.map((t) => atThreshold(matched, t)),
     byLang,
+    byModel,
     verdict,
     verdictReason,
     disagreements
@@ -85,12 +99,33 @@ function confusion(rows: ReplayRow[], other: (r: ReplayRow) => string | undefine
   return [`Jev vs ${label}:`, ...[...counts.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => `  ${k}: ${n}`)];
 }
 
+/** F4: a --dry-run-only run has no verdict to give — the operator pre-flight expects a dispatch estimate. */
+function dryRunLine(rows: ReplayRow[], estimatedUsd: number): string {
+  const dispatch = rows.filter((r) => r.status === "dry_run").length;
+  const skipReasons: Record<string, number> = {};
+  for (const r of rows) {
+    if (r.status === "skipped_state_too_large" || r.status === "skipped_no_anchor") {
+      skipReasons[r.status] = (skipReasons[r.status] ?? 0) + 1;
+    }
+  }
+  const skipped = Object.values(skipReasons).reduce((a, b) => a + b, 0);
+  const byReason = Object.entries(skipReasons).map(([k, n]) => `${k} ${n}`).join(", ");
+  return `DRY RUN — no verdict: would dispatch ${dispatch}, skipped ${skipped}${byReason ? ` (${byReason})` : ""}, estimated $${estimatedUsd.toFixed(4)}`;
+}
+
 export function formatReplayReport(rows: ReplayRow[], outcome: { spentUsd: number; estimatedUsd: number; stopped?: string }): string {
   const s = summarizeReplay(rows);
   const matched = rows.filter(isMatched);
+  const nonPinnedRows = Object.entries(s.byModel).reduce((sum, [model, n]) => sum + (model === JEV_MODEL ? 0 : n), 0);
+  const dispatched = rows.some((r) => r.status === "ok" || r.status === "jev_failed" || r.status === "llm_failed");
+  const dryRunOnly = !dispatched && rows.some((r) => r.status === "dry_run");
+  const headline = outcome.stopped
+    ? `Verdict: INCOMPLETE — run stopped early (${outcome.stopped}); re-run to resume`
+    : dryRunOnly
+      ? dryRunLine(rows, outcome.estimatedUsd)
+      : `Verdict: ${s.verdict} — ${s.verdictReason}`;
   return [
-    `Verdict: ${s.verdict} — ${s.verdictReason}`,
-    outcome.stopped ? `Run STOPPED early: ${outcome.stopped}` : "",
+    headline,
     `Counts: eligible ${s.eligible}, matched ${s.matched}; by status ${JSON.stringify(s.byStatus)}`,
     `Cost: spent $${outcome.spentUsd.toFixed(4)} (estimated $${outcome.estimatedUsd.toFixed(4)})`,
     `Thread reconstruction is approximate: ${s.fallbackAnchors} turn(s) used the run-start fallback anchor.`,
@@ -100,6 +135,10 @@ export function formatReplayReport(rows: ReplayRow[], outcome: { spentUsd: numbe
     "",
     "By language (at ≥0.7):",
     ...Object.entries(s.byLang).map(([lang, v]) => `  ${lang}: matched ${v.matched}, agreement ${pct(v.agreementAt07)}, coverage ${pct(v.coverageAt07)}`),
+    "",
+    "By Jev model:",
+    ...Object.entries(s.byModel).map(([model, n]) => `  ${model}: ${n}`),
+    ...(nonPinnedRows > 0 ? [`${nonPinnedRows} row(s) from non-pinned models excluded from the verdict`] : []),
     "",
     ...confusion(matched, (r) => r.llm_intent, "replayed LLM (gates)"),
     ...confusion(matched, (r) => r.recorded_intent, "recorded intent (noisy proxy, reported only)"),

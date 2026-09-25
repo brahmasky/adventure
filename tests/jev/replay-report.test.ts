@@ -60,4 +60,38 @@ describe("summarizeReplay — the GO/STOP screen", () => {
     expect(text).toMatch(/\$0\.0012/);
     expect(text).toMatch(/approximate/);
   });
+
+  it("F2: a run stopped early prints INCOMPLETE, never a GO/STOP verdict, even over rows that would otherwise be GO", () => {
+    const text = formatReplayReport([...agreeing(8), ...disagreeing(2)], { spentUsd: 0.0012, estimatedUsd: 0.0012, stopped: "budget" });
+    expect(text).toMatch(/INCOMPLETE/);
+    expect(text).not.toMatch(/Verdict: GO/);
+  });
+
+  it("F5: rows from a non-pinned jev_model are excluded from matched/gate and reported in byModel", () => {
+    const pinned = agreeing(10); // jev_model "jev-1.13.0" by default
+    const offModel = [row(9000, "research", "research", 0.9, { jev_model: "jev-1.14.0" }), row(9001, "answer", "research", 0.9, { jev_model: "jev-1.14.0" })];
+    const s = summarizeReplay([...pinned, ...offModel]);
+    expect(s.matched).toBe(10); // the two off-model rows never enter the gate
+    expect(s.byModel).toEqual({ "jev-1.13.0": 10, "jev-1.14.0": 2 });
+  });
+
+  it("F5: the report prints a By Jev model line and flags rows excluded from the verdict", () => {
+    const pinned = agreeing(10);
+    const offModel = [row(9000, "research", "research", 0.9, { jev_model: "jev-1.14.0" })];
+    const text = formatReplayReport([...pinned, ...offModel], { spentUsd: 0, estimatedUsd: 0 });
+    expect(text).toMatch(/By Jev model:/);
+    expect(text).toMatch(/1 row\(s\) from non-pinned models excluded from the verdict/);
+  });
+
+  it("F4: all-dry-run rows print a DRY RUN pre-flight line, not a verdict", () => {
+    const rows = [
+      ...Array.from({ length: 3 }, (_, i) => row(i, "research", "research", 0.9, { status: "dry_run" })),
+      row(50, "x", "x", 0, { status: "skipped_no_anchor" }),
+      row(51, "x", "x", 0, { status: "skipped_state_too_large" })
+    ];
+    const text = formatReplayReport(rows, { spentUsd: 0, estimatedUsd: 0.015 });
+    expect(text).toMatch(/DRY RUN/);
+    expect(text).toMatch(/would dispatch 3/);
+    expect(text).not.toMatch(/Verdict:/);
+  });
 });
