@@ -1,7 +1,8 @@
 # Jev intent shadow — replay first, then live shadow
 
 Date: 2026-09-25
-Status: design approved in brainstorming (Paco + Claude); pending codex spec review → writing-plans
+Status: design approved in brainstorming (Paco + Claude). Codex spec review done 2026-09-25: 5
+BLOCKERs + 4 RISKs + 1 NIT, all verified against the code and folded in (see "Codex review"). Next: Paco reviews → writing-plans.
 Author: Paco + Claude
 
 ## Problem
@@ -42,9 +43,14 @@ on every turn (role `classify`, chain `pi,agy-cli`) that returns strict JSON par
    under the same window and caps the LLM classifier gets.
 3. **Approach 1:** replay history first. **If agreement is below ~75%, stop without touching the
    daemon.** If it passes, build the live shadow, which captures the clean raw LLM label.
+   - *Amended after codex review.* Replay re-runs the **current** LLM classifier (`classifyIntent`'s
+     prompt, on the flat-rate chain) on the same rebuilt inputs, and compares Jev against **that**
+     raw label. Historical `recorded_intent` is a noisy proxy: clarify gets rewritten, and the prompt
+     drifted over the window. It is reported, but does not decide GO/STOP.
+   - Replay is a feasibility screen. The formal promotion bar is judged on live matched pairs only.
 4. **Promotion bar** (all must hold; evaluated per language, and a language that fails is not promoted):
    - at least 200 shadowed turns AND at least 2 weeks of shadowing;
-   - at Jev `confidence ≥ 0.7`, agreement ≥ 90% (vs the raw LLM label; the behaviour label is reported alongside);
+   - at Jev `confidence ≥ 0.7`, agreement ≥ 90% (vs the raw LLM label; `observed_action` is reported alongside but never gates);
    - the `confidence ≥ 0.7` slice covers ≥ 60% of turns.
    Promotion itself is a **separate spec**. This spec only produces the verdict.
 5. **Multimodal-ready:** the Jev state carries `modality` from day one (always `"text"` for now). This
@@ -56,12 +62,22 @@ on every turn (role `classify`, chain `pi,agy-cli`) that returns strict JSON par
 
 - It uses plain `fetch`, **not** `@typesafe-ai/sdk`. The SDK retries internally, which would hide
   attempts from the audit. We want one `llm_attempt` row per HTTP attempt.
-- The model is pinned to `jev-1.13.0`, never an alias. The key comes from `TYPESAFE_API_KEY`. With
-  no key, the call records `unavailable`/`auth` and performs no fetch.
+- The model is pinned to `jev-1.13.0`, never an alias.
+- **The key comes from the `SecretBroker`, not `process.env`.** The armed firewall strips every
+  `_API_KEY` (`src/config/secret-broker.ts:36`). Add `TYPESAFE_API_KEY` to `SECRET_ENV_NAMES`, add a
+  `typesafeKey()` getter, and include it in `redact`. With no key, the call records
+  `unavailable`/`auth` and performs no fetch.
+- **Jev is a priced, metered provider.** Add `"jev"` to `METERED_PROVIDERS` and give it a price at the
+  shared pricing seam (`src/llm/metered-pricing.ts`): $0.042 per million input tokens, $0 output.
+  Without this, `llmAuditSink` strips `cost_usd` (`run-store.ts:1410`) and the ceiling never sees
+  Jev spend.
+  - Tests assert the **stored** ledger row carries `cost_usd`, and that the fuse sum includes it. Not
+    just the value passed into the sink.
 - Constructor: `createJevClient({ audit, meteredBreached, retry, timeoutMs })`.
   - **`audit`** must be built inline from `store.llmAuditSink(...)`. Records carry `provider:"jev"`,
-    `role:"classify_shadow"`, model (the versioned ID the response reports), `latency_ms`,
-    `input_tokens`, and `cost_usd = input_tokens × 0.042e-6`.
+    `role:"classify_shadow"` (live) or `role:"classify_replay"` (replay), model (the versioned ID the
+    response reports), `latency_ms`, and `input_tokens`. `cost_usd` is computed by the sink through
+    the pricing seam.
   - **`meteredBreached`:** when it returns true, no fetch happens. Jev counts toward the metered
     ceiling (ADR 0019).
   - **`retry`:** `none` for the live shadow. For replay: up to 3 retries, honouring `retry-after`,
@@ -80,6 +96,11 @@ on every turn (role `classify`, chain `pi,agy-cli`) that returns strict JSON par
   Thread text uses `feedTurnText` with the same `turnChars` cap.
 - `latest_message` is capped at 8,000 chars. **Anything over the cap is skipped, never truncated:** a
   truncated message would silently yield a worse label.
+- **A second hard bound covers the whole serialized request: 24,000 chars.** It is also a skip. The
+  thread caps are env-configurable (`HOUGE_CHAT_CONTEXT_*`), so "same caps as the classifier" alone
+  does not bound what leaves Houge.
+  - **What leaves Houge:** the latest message plus at most the recent thread the classifier already
+    sees, and nothing else. No wiki pages, no lessons, no email.
 - One question, `intent`: a `choice` with six options. The criteria are rewritten from
   `INTENT_DISCIPLINE` in literal, boundary-explicit wording (Jev reads literally). Example: "asking
   Houge to PERFORM a task is not `skill`, even if a matching skill exists". The criteria live in one
@@ -88,39 +109,60 @@ on every turn (role `classify`, chain `pi,agy-cli`) that returns strict JSON par
 
 ### `houge jev-shadow replay [--since ISO] [--limit N] [--max-usd 1] [--dry-run]`
 
-- **Input.** It opens `houge.sqlite` **read-only**. A user turn is eligible when its `run_id` has an
-  assistant turn with a classified intent (excluding `evolution_report`), which drops failures and
-  slash commands. For each eligible turn it rebuilds the thread exactly as it stood at that turn's
-  `created_at`: same window, same turn count, same clarify count.
-  - `RunStore.getRecentChatTurns` has no upper time bound today. Replay therefore needs a read-only
-    variant, `getChatTurnsBefore(chat_id, limit, since, before)`. `before` is exclusive, so the turn
-    being classified is not in its own thread.
-- **Calls.** Jev is called with at most 4 requests in flight.
+- **Input.** It opens the store normally, **not** read-only. The chat and ledger reads are plain
+  SELECTs, but the audit sink appends `llm_attempt` rows. Those rows (roles `classify_replay` and
+  `classify_replay_llm`) are its only writes.
+  - A user turn is eligible when its `run_id` has an assistant turn with a classified intent
+    (excluding `evolution_report`). This drops failures and slash commands.
+- **Thread reconstruction is approximate, and the report says so.** `chat_turns.created_at` is
+  *completion* time: both rows are written after the loop (`core-worker.ts:2337`). So:
+  - The anchor is the run's **classification time**, i.e. the `occurred_at` of its first `llm_attempt`
+    with role `classify`. The fallback, for runs before the audit chokepoint (2026-09-07), is the
+    run's earliest ledger event.
+  - The thread is every turn with `created_at < anchor` and `run_id ≠ target`, under the same window
+    and turn count.
+  - A new read-only store method provides this: `getChatTurnsBefore(chat_id, limit, since, before,
+    excludeRunId)`.
+  - The report prints how many turns used the fallback anchor.
+- **Two classifiers per turn, on identical inputs:**
+  - Jev, with at most 4 requests in flight.
+  - The **current** LLM classifier, reusing `buildIntentQuestion`, `buildIntentSystemPrompt` and
+    `parseIntent` through the normal chain adapter (role `classify_replay_llm`), 1 in flight so it
+    doesn't compete with the live daemon.
+    - `buildIntentSystemPrompt(now)` gets the **anchor** time, so time-sensitive
+      "research" judgements see the date the user saw.
 - **Labels joined per turn:**
   - `jev_intent` (plus probabilities and confidence);
-  - `recorded_intent`, from the assistant `chat_turns` row;
-  - `behaviour_label`, from the run's `loop_step.capability` set, with this precedence:
+  - `llm_intent`: the replayed current classifier's raw label. **This one decides GO/STOP.**
+  - `recorded_intent`, from the assistant `chat_turns` row. Reported only; it is a noisy proxy.
+  - `observed_action`, from the run's `loop_step.capability` set, with this precedence:
     `self_diagnose` or `self_write_propose` → selfcode; `skill_author` → skill; `web_search` or
-    `http_fetch` → research; no tool → answer; anything else → `unknown`. It cannot tell feedback
-    from clarify, and the report says so.
+    `http_fetch` → research; no tool → answer; anything else → `unknown`. It is reported separately
+    and **never used in GO/STOP or PROMOTE**: the loop picks actions on its own, so a correct intent
+    can still disagree with the tool it chose.
 - **Output.**
   - JSONL at `.houge/jev-shadow/replay.jsonl`, keyed by `turn_id` (resumable, so done turns are
     skipped). Each row holds: `turn_id`, `run_id`, the labels, probabilities, confidence, `lang`,
     `jev_model`, and a skip or error reason. **No message text is stored.**
   - Nothing is written to the database, except `llm_attempt` audit rows through the sink.
-- **`--max-usd`** stops the run once the running `input_tokens` cost exceeds the cap. Expected
-  total: about $0.05.
+- **`--max-usd`** reserves each request's *estimated* cost before dispatch. It stops dispatching
+  once reserved plus spent would exceed the cap, so 4 requests in flight cannot overshoot. Expected
+  total: about $0.05 for Jev. The replayed LLM leg is flat-rate, so it costs $0 but takes wall-time
+  (about 373 CLI calls).
 - **`--dry-run`** builds every request and estimates tokens (chars ÷ 3 for zh, ÷ 4 otherwise),
   without calling Jev.
 - **Report (stdout):**
   - counts: eligible / sent / ok / skipped (by reason) / failed;
-  - confusion matrices vs `recorded_intent` and vs `behaviour_label`;
+  - confusion matrices vs `llm_intent` (primary), `recorded_intent` and `observed_action`;
   - agreement and coverage at confidence 0.5, 0.6, 0.7, 0.8 and 0.9;
   - the same split by `lang`;
   - total cost;
-  - **a GO/STOP line against the 75% replay bar.** The bar: `confidence ≥ 0.7` agreement vs
-    `recorded_intent`, restricted to turns where `recorded_intent ≠ clarify`, because clarify is
-    rewritten in history.
+  - **a GO/STOP line against the 75% replay bar.** The bar: `confidence ≥ 0.7` agreement vs the
+    replayed `llm_intent`, on turns where both classifiers returned a label.
+    - STOP also triggers if under 60% of eligible turns reach a matched pair, because a screen built
+      on a biased remnant is not evidence.
+  - **a hand-check list of 20 disagreements** (turn_id, both labels, confidence), for Paco to eyeball
+    before confirming GO. Printed by `turn_id`; Paco reads the text locally.
 
 ### Live shadow (built only after replay prints GO and Paco confirms)
 
@@ -132,23 +174,32 @@ on every turn (role `classify`, chain `pi,agy-cli`) that returns strict JSON par
 - **Raw label captured.** `llm_intent` is `classification.intent` exactly as `parseIntent` returned
   it, **before** the clarify cap or the `recordedIntent` rewrite.
 - **New ledger event `intent_shadow`.** It is added to the `run-ledger.ts` event union, and its
-  required fields are `["llm_intent", "jev_intent", "jev_confidence", "jev_model"]`.
+  required fields are `["status", "llm_intent", "lang"]` (see below).
   - Payload: `llm_intent`, `jev_intent`, `jev_confidence`, `jev_probabilities` (all six options),
     `jev_model`, `jev_latency_ms`, `lang`, `modality`.
   - Counts and metadata only, **never message text** (the existing bodies-out-of-the-ledger
     invariant). Tokens and cost live only on the paired `llm_attempt` row.
-  - Written only when Jev returned a valid answer. A failed attempt shows up only as its
-    `llm_attempt` row.
+  - **Written for every eligible turn, whatever happened, so there is a denominator.** A `status`
+    field takes one of `ok | skipped_state_too_large | error | timeout | fused | no_key`. The `jev_*`
+    fields are present only when `status = ok`. Required fields become `["status", "llm_intent", "lang"]`.
+  - Shutdown losses are the one gap: the event is never written. The report derives them as
+    classify runs with no `intent_shadow` row after shadow enablement, and prints that count.
 - **Flag.** `HOUGE_JEV_SHADOW_ENABLED` (default off; accepts 1/true/yes/on). If it is on but
   `TYPESAFE_API_KEY` is missing, the daemon logs **one** startup warning and the shadow stays off.
-- **Sweep.** Jev legs participate in `llm_leg_failing` (`findFailingLlmLegs`), so a key that expires
-  in week one opens an incident the same day instead of silently voiding the measurement window.
-  Incident text names the role `classify_shadow`.
-- **`houge jev-shadow report [--since ISO]`** reads `intent_shadow` events and joins the
-  `behaviour_label` by `run_id`. It prints the replay-style report plus a **PROMOTE / HOLD / KILL**
+- **Sweep.** Live Jev legs participate in `llm_leg_failing`, so a key that expires in week one opens
+  an incident the same day instead of silently voiding the measurement window.
+  - `findFailingLlmLegs` groups by provider (`run-store.ts:3877`), so the incident subject is `jev`.
+    That is unambiguous, because `classify_shadow` is Jev's only live role.
+  - **Rows with role `classify_replay*` are excluded from that query**, so a replay run on the mini
+    cannot open daemon incidents.
+- **`houge jev-shadow report [--since ISO]`** reads `intent_shadow` events and joins
+  `observed_action` by `run_id`. It also prints the missingness (every non-`ok` status plus shutdown
+  losses) by language and model. Agreement is computed on `ok` matched pairs only. It prints the replay-style report plus a **PROMOTE / HOLD / KILL**
   verdict per language against the promotion bar:
   - **HOLD** — the minimums (200 turns, 2 weeks) are not met yet.
   - **KILL** — the minimums are met but agreement or coverage misses the bar.
+  - Coverage is measured against **all** eligible turns, including every non-`ok` status. Errors can
+    only lower coverage, never inflate it.
 
 ## Error handling
 
@@ -186,7 +237,7 @@ Under `tests/jev/`, with no network:
   - The key never appears in logger output.
 - **`replay.test.ts`** (in-memory store seeded with turns and loop steps)
   - The eligibility filter.
-  - `behaviour_label` precedence.
+  - `observed_action` precedence, plus a replayed LLM classifier getting the anchor time and the identical thread.
   - Thread reconstruction as of each turn's timestamp.
   - Resume skips done turns.
   - `--max-usd` stops the run.
@@ -224,6 +275,23 @@ In the existing suites:
 5. At ≥ 2 weeks, run `jev-shadow report`. A PROMOTE verdict opens a separate promotion spec. Its
    likely shape: Jev owns the label at high confidence, and the LLM is called only when `query` or
    `clarifying_question` is needed.
+
+## Codex review (2026-09-25) — findings and disposition
+
+Every finding was verified against the code before acting on it. All ten were confirmed.
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| 1 | BLOCKER | `chat_turns.created_at` is completion time (`core-worker.ts:2337`), so the thread reconstruction wasn't "exact" | Anchor on classification time; exclude the target run; the report states it is approximate |
+| 2 | BLOCKER | The recorded intent rewrites clarify→answer, so excluding `clarify` rows doesn't clean it | Replay re-runs the current LLM classifier and gates on that raw label. We did this instead of codex's suggested hand-labelled sample: it gives raw labels on every turn at no cost. A 20-row hand-check list is kept |
+| 3 | BLOCKER | `cost_usd` is stripped for non-`METERED_PROVIDERS` (`run-store.ts:1410`) | Add `jev` to `METERED_PROVIDERS` and price it; test the stored row and the fuse sum |
+| 4 | BLOCKER | The "read-only DB" claim contradicts the audit writes | The claim is dropped; replay's only writes are `llm_attempt` rows |
+| 5 | BLOCKER | The firewall strips `*_API_KEY` from env (`secret-broker.ts:36`) | Add a `SecretBroker.typesafeKey()` getter and redaction |
+| 6 | RISK | An unawaited shadow disappears uncounted | An `intent_shadow` row for every eligible turn, with `status`; shutdown losses derived; missingness reported |
+| 7 | RISK | The sweep groups by provider; replay could open daemon incidents | Subject `jev` is unambiguous; `classify_replay*` excluded from the sweep query |
+| 8 | RISK | The behaviour label is a weak ground truth | Renamed `observed_action`; reported only, and never gates |
+| 9 | RISK | Egress is bounded only by env-configurable caps; `--max-usd` can overshoot | Hard 24k-char request bound; cost reserved before dispatch |
+| 10 | NIT | Replay should be a screen, not the promotion gate | Adopted: the promotion bar uses live matched pairs only |
 
 ## Out of scope
 
