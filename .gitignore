@@ -34,3 +34,6 @@ memory/briefs/
 # Anchored to top-level only: must NOT swallow src/skills/ or tests/skills/.
 /skills/
 .context/
+
+# Jev shadow replay output (labels/numbers only, no message text) — local runtime state
+.houge/
