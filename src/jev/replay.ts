@@ -51,7 +51,7 @@ export interface ReplayOutcome {
   rows: ReplayRow[];
   spentUsd: number;
   estimatedUsd: number;
-  stopped?: "budget" | "auth";
+  stopped?: "budget" | "auth" | "fused";
 }
 
 const DONE: ReadonlySet<ReplayStatus> = new Set(["ok", "skipped_state_too_large", "skipped_no_anchor"]);
@@ -88,7 +88,12 @@ function readDone(outPath: string): Map<string, ReplayRow> {
   if (!existsSync(outPath)) return done;
   for (const line of readFileSync(outPath, "utf8").split("\n")) {
     if (line.trim().length === 0) continue;
-    const row = JSON.parse(line) as ReplayRow;
+    let row: ReplayRow;
+    try {
+      row = JSON.parse(line) as ReplayRow;
+    } catch {
+      continue; // a torn line from a crash mid-append — skip it, don't crash resume
+    }
     if (DONE.has(row.status)) done.set(row.turn_id, row);
     else done.delete(row.turn_id);
   }
@@ -106,6 +111,7 @@ export async function runReplay(deps: ReplayDeps): Promise<ReplayOutcome> {
   const rows: ReplayRow[] = [];
   let spentUsd = 0;
   let estimatedUsd = 0;
+  const offModelWarned = { warned: false };
 
   for (const turn of turns) {
     const prior = done.get(turn.turn_id);
@@ -118,7 +124,7 @@ export async function runReplay(deps: ReplayDeps): Promise<ReplayOutcome> {
       emit(deps, rows, prepared.row);
       continue;
     }
-    const step = await dispatchTurn(deps, turn, prepared, rows, spentUsd, log, turns.length);
+    const step = await dispatchTurn(deps, turn, prepared, rows, spentUsd, log, turns.length, offModelWarned);
     spentUsd = step.spentUsd;
     estimatedUsd += step.estimatedUsd;
     if (step.stopped) return { rows, spentUsd, estimatedUsd, stopped: step.stopped };
@@ -138,8 +144,8 @@ type PreparedOk = Extract<Prepared, { request: JevRequest }>;
  */
 async function dispatchTurn(
   deps: ReplayDeps, turn: ReplayTurnRow, prepared: PreparedOk, rows: ReplayRow[],
-  spentUsd: number, log: (line: string) => void, total: number
-): Promise<{ spentUsd: number; estimatedUsd: number; stopped?: "budget" | "auth" }> {
+  spentUsd: number, log: (line: string) => void, total: number, offModelWarned: { warned: boolean }
+): Promise<{ spentUsd: number; estimatedUsd: number; stopped?: "budget" | "auth" | "fused" }> {
   const estUsd = jevUsd(prepared.base.est_tokens, deps.env);
   if (deps.dryRun) {
     rows.push({ ...prepared.base, status: "dry_run" });
@@ -151,9 +157,18 @@ async function dispatchTurn(
   }
   const jev = await deps.jev(prepared.request);
   if (!jev.ok) {
-    emit(deps, rows, { ...prepared.base, status: "jev_failed", error: jev.detail });
-    const authFailed = jev.reason === "auth" || jev.reason === "no_key";
-    return { spentUsd, estimatedUsd: estUsd, ...(authFailed ? { stopped: "auth" as const } : {}) };
+    // Never the provider's own prose here — only our fixed-literal reason/detail (jev-client only
+    // emits bounded strings like "HTTP 500" / "timed out after Nms").
+    emit(deps, rows, { ...prepared.base, status: "jev_failed", error: `${jev.reason}: ${jev.detail}` });
+    const stopped =
+      jev.reason === "fused" ? ("fused" as const)
+      : jev.reason === "auth" || jev.reason === "no_key" ? ("auth" as const)
+      : undefined;
+    return { spentUsd, estimatedUsd: estUsd, ...(stopped ? { stopped } : {}) };
+  }
+  if (jev.model !== JEV_MODEL && !offModelWarned.warned) {
+    offModelWarned.warned = true;
+    log(`warning: Jev responded with model "${jev.model}", pinned model is ${JEV_MODEL} — report splits by jev_model`);
   }
   const newSpent = spentUsd + jevUsd(jev.input_tokens, deps.env);
   const answer = jev.answers.intent!;
@@ -163,7 +178,8 @@ async function dispatchTurn(
   };
   const llm = await deps.classifyLlm(prepared.llmQuestion, prepared.llmSystem);
   if (!llm.ok) {
-    emit(deps, rows, { ...withJev, status: "llm_failed", error: llm.error });
+    // Fixed literal only — a stderr excerpt from the agy-cli leg can echo the prompt.
+    emit(deps, rows, { ...withJev, status: "llm_failed", error: "llm_chain_failed" });
     return { spentUsd: newSpent, estimatedUsd: estUsd };
   }
   const label = llmLabel(llm.raw);
@@ -215,7 +231,7 @@ export function parseReplayArgs(
     const flag = argv[i];
     const value = argv[i + 1];
     if (flag === "--dry-run") { dryRun = true; continue; }
-    if (flag === "--since" && value && !Number.isNaN(Date.parse(value)) && /^\d{4}-\d{2}-\d{2}T/.test(value)) { sinceIso = value; i += 1; continue; }
+    if (flag === "--since" && value && !Number.isNaN(Date.parse(value)) && /^\d{4}-\d{2}-\d{2}T/.test(value)) { sinceIso = new Date(value).toISOString(); i += 1; continue; }
     if (flag === "--limit" && value && /^\d+$/.test(value)) { limit = Number(value); i += 1; continue; }
     if (flag === "--max-usd" && value && Number(value) > 0) { maxUsd = Number(value); i += 1; continue; }
     return { ok: false, error: `bad argument near "${flag ?? ""}". Usage: houge jev-shadow replay [--since ISO] [--limit N] [--max-usd USD] [--dry-run]` };

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -102,6 +102,17 @@ describe("runReplay", () => {
     expect(d.classifyLlm).not.toHaveBeenCalled();
   });
 
+  it("F9: a torn/unparseable trailing line (crash mid-append) does not crash resume — the valid row above it still counts as done", async () => {
+    const turns = [T(1), T(2)];
+    const { d, outPath } = deps(turns);
+    const validRow = { turn_id: "u1", run_id: "r1", lang: "en", anchor_kind: "classify", status: "ok", recorded_intent: "answer", observed_action: "answer", est_tokens: 10 };
+    writeFileSync(outPath, `${JSON.stringify(validRow)}\n{"turn_id":"u2","status":"o`);
+    const out = await runReplay(d);
+    expect(out.rows.map((r) => r.turn_id)).toEqual(["u1", "u2"]);
+    expect(out.rows[0]).toMatchObject({ turn_id: "u1", status: "ok" });
+    expect(d.jev).toHaveBeenCalledTimes(1); // only u2 dispatched; u1 was reused from the valid row
+  });
+
   it("--dry-run calls nothing and reports an estimate", async () => {
     const { d } = deps([T(1)], { dryRun: true });
     const out = await runReplay(d);
@@ -109,6 +120,37 @@ describe("runReplay", () => {
     expect(d.classifyLlm).not.toHaveBeenCalled();
     expect(out.rows[0]!.status).toBe("dry_run");
     expect(out.estimatedUsd).toBeGreaterThan(0);
+  });
+
+  it("F1: an llm_failed row never carries the provider's raw error prose into the JSONL ledger", async () => {
+    const sentinel = "SENTINEL-PROMPT-ECHO-xyz";
+    const { d, outPath } = deps([T(1)], { classifyLlm: vi.fn(async () => ({ ok: false as const, error: `stderr: ...${sentinel}...` })) });
+    const out = await runReplay(d);
+    expect(out.rows[0]).toMatchObject({ status: "llm_failed", error: "llm_chain_failed" });
+    const file = readFileSync(outPath, "utf8");
+    expect(file).not.toContain(sentinel);
+  });
+
+  it("F1: a jev_failed row keeps jev's own fixed-literal detail, prefixed with the reason", async () => {
+    const { d } = deps([T(1)], { jev: vi.fn(async (): Promise<JevResult> => ({ ok: false, reason: "error", detail: "HTTP 500" })) });
+    const out = await runReplay(d);
+    expect(out.rows[0]).toMatchObject({ status: "jev_failed", error: "error: HTTP 500" });
+  });
+
+  it("F3: a metered-fuse ('fused') result stops the run like auth, distinct from budget/auth", async () => {
+    const { d } = deps([T(1), T(2)], { jev: vi.fn(async (): Promise<JevResult> => ({ ok: false, reason: "fused", detail: "metered fuse latched" })) });
+    const out = await runReplay(d);
+    expect(out.stopped).toBe("fused");
+    expect(d.jev).toHaveBeenCalledTimes(1);
+  });
+
+  it("F5: a response model off the pin logs exactly one warning for the whole run, however many turns hit it", async () => {
+    const offModel = { ...jevOk(), model: "jev-1.14.0" } as JevResult;
+    const log = vi.fn();
+    const { d } = deps([T(1), T(2)], { jev: vi.fn(async () => offModel), log });
+    await runReplay(d);
+    const warnings = log.mock.calls.filter(([line]) => typeof line === "string" && line.includes("jev-1.14.0"));
+    expect(warnings).toHaveLength(1);
   });
 });
 
@@ -120,5 +162,10 @@ describe("parseReplayArgs", () => {
     expect(parseReplayArgs(["--limit", "-3"]).ok).toBe(false);
     expect(parseReplayArgs(["--since", "yesterday"]).ok).toBe(false);
     expect(parseReplayArgs(["--bogus"]).ok).toBe(false);
+  });
+
+  it("F6: --since with a UTC offset is normalised to UTC, so it compares correctly against lexical created_at", () => {
+    const r = parseReplayArgs(["--since", "2026-09-01T10:00:00+10:00"]);
+    expect(r).toMatchObject({ ok: true, sinceIso: "2026-09-01T00:00:00.000Z" });
   });
 });
