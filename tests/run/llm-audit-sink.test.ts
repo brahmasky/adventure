@@ -238,6 +238,20 @@ describe("RunStore.llmAuditSink", () => {
     }
   });
 
+  it("stores cost_usd on a jev attempt and the metered ceiling sums it", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const sink = store.llmAuditSink({ correlation_id: "cli:jev-replay", role: "classify_replay" });
+      sink.record({ provider: "jev", role: "", outcome: "ok", model: "jev-1.13.0", latency_ms: 3, usage: { input_tokens: 2_000_000, output_tokens: 20, cached_input_tokens: 0 } });
+      const [row] = attemptsOf(store);
+      expect(row!.payload.role).toBe("classify_replay");
+      expect(row!.payload.cost_usd).toBeCloseTo(0.084, 10);
+      expect(store.meteredSpendUsd(new Date().toISOString()).daily_usd).toBeCloseTo(0.084, 10);
+    } finally {
+      store.close();
+    }
+  });
+
   it("never throws: a failed write logs a warning and returns", () => {
     const store = RunStore.openInMemory();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

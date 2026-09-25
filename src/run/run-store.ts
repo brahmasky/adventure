@@ -56,7 +56,10 @@ export type LlmCallRole =
   | "judge"
   | "chair"
   | "verify"
-  | "attribution";
+  | "attribution"
+  | "classify_replay"
+  | "classify_replay_llm"
+  | "classify_shadow";
 
 /** Where an audited attempt belongs: a run, or a run-less correlation (`tick:*`, `cli:*`, `rating:*`). */
 export type LlmAuditScope =
@@ -3869,6 +3872,8 @@ export class RunStore {
    *
    * Grouped by PROVIDER — one binary is dead for every role at once; a role-specific pin that
    * differs by model is the residual this grouping does not catch.
+   *
+   * Replay roles (`classify_replay*`) are operator CLI runs, not daemon health, and are excluded.
    */
   findFailingLlmLegs(now: string, windowMs: number, minAttempts: number): Array<{ subject: string; attempts: number; ok: number; last_error_kind: string | null }> {
     const since = new Date(Date.parse(now) - windowMs).toISOString();
@@ -3884,11 +3889,13 @@ export class RunStore {
             AND e2.occurred_at > ?
             AND json_extract(e2.payload_json, '$.provider') = json_extract(ledger_events.payload_json, '$.provider')
             AND json_extract(e2.payload_json, '$.outcome') <> 'ok'
+            AND COALESCE(json_extract(e2.payload_json, '$.role'), '') NOT LIKE 'classify_replay%'
           ORDER BY e2.occurred_at DESC, e2.sequence DESC
           LIMIT 1
         ) AS last_error_kind
       FROM ledger_events
       WHERE event_type = 'llm_attempt' AND occurred_at > ?
+        AND COALESCE(json_extract(payload_json, '$.role'), '') NOT LIKE 'classify_replay%'
       GROUP BY subject
       HAVING attempts >= ? AND ok = 0
       ORDER BY subject

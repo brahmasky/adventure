@@ -18,7 +18,8 @@ const FAKE = {
   HOUGE_TELEGRAM_BOT_TOKEN: "111222333:bot-token-secret-value",
   HOUGE_GMAIL_CLIENT_SECRET: "GOCSPX-fake-gmail-client-secret-123",
   HOUGE_GMAIL_REFRESH_TOKEN: "1//fake-gmail-refresh-token-456789",
-  CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-fake-chair-token-987654"
+  CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-fake-chair-token-987654",
+  TYPESAFE_API_KEY: "ts-fake-typesafe-key-000111222"
 };
 
 function fakeEnv(): NodeJS.ProcessEnv {
@@ -38,7 +39,7 @@ describe("createSecretBroker — typed getters over a private closure", () => {
     expect(b.claudeOauthToken()).toBe(FAKE.CLAUDE_CODE_OAUTH_TOKEN);
   });
 
-  it("SECRET_ENV_NAMES is the exact eight-name list (ADR 0027: seven becomes eight)", () => {
+  it("SECRET_ENV_NAMES is the exact nine-name list (Jev spec 2026-09-25: eight becomes nine)", () => {
     expect([...SECRET_ENV_NAMES]).toEqual([
       "KIMI_API_KEY",
       "GEMINI_API_KEY",
@@ -47,7 +48,8 @@ describe("createSecretBroker — typed getters over a private closure", () => {
       "HOUGE_TELEGRAM_BOT_TOKEN",
       "HOUGE_GMAIL_CLIENT_SECRET",
       "HOUGE_GMAIL_REFRESH_TOKEN",
-      "CLAUDE_CODE_OAUTH_TOKEN"
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "TYPESAFE_API_KEY"
     ]);
   });
 
@@ -90,6 +92,12 @@ describe("broker.redact — masks secret VALUES only", () => {
     const out = b.redact(`chair auth: ${FAKE.CLAUDE_CODE_OAUTH_TOKEN}`);
     expect(out).not.toContain(FAKE.CLAUDE_CODE_OAUTH_TOKEN);
     expect(out).toBe(`chair auth: ${REDACTED_PLACEHOLDER}`);
+  });
+
+  it("returns and redacts the TypeSafe key (ninth secret, Jev spec 2026-09-25)", () => {
+    const b = createSecretBroker(fakeEnv());
+    expect(b.typesafeKey()).toBe(FAKE.TYPESAFE_API_KEY);
+    expect(b.redact(`k=${FAKE.TYPESAFE_API_KEY}`)).toBe(`k=${REDACTED_PLACEHOLDER}`);
   });
 
   it("masks both Gmail OAuth secret values", () => {
