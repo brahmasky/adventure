@@ -268,6 +268,19 @@ export interface ChatTurnRow {
   created_at: string;
 }
 
+/** One historical user turn eligible for Jev replay (Jev spec 2026-09-25). */
+export interface ReplayTurnRow {
+  turn_id: string;
+  chat_id: string;
+  run_id: string;
+  text: string;
+  created_at: string;
+  recorded_intent: string;
+  /** When the classifier ran: its first `classify` llm_attempt, else the run's first ledger event. */
+  anchor: string | null;
+  anchor_kind: "classify" | "run_start" | null;
+}
+
 export type LessonStatus = "active" | "superseded" | "pruned";
 export type LessonSource = "user_feedback" | "loop" | "migration" | "consolidation";
 
@@ -949,6 +962,55 @@ export class RunStore {
           LIMIT ?
         `).all<ChatTurnRow>(chat_id, limit);
     return rows.reverse();
+  }
+
+  /**
+   * The thread as it stood at `beforeIso` (exclusive), for Jev replay. `chat_turns.created_at` is
+   * COMPLETION time — both rows of a turn are written after the loop — so the target run's own rows
+   * are excluded explicitly, and a run that completed after the anchor is naturally left out.
+   */
+  getChatTurnsBefore(chat_id: string, limit: number, sinceIso: string, beforeIso: string, excludeRunId: string): ChatTurnRow[] {
+    return this.db.prepare(`
+      SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+      FROM chat_turns
+      WHERE chat_id = ? AND created_at >= ? AND created_at < ? AND run_id <> ?
+      ORDER BY created_at DESC, rowid DESC
+      LIMIT ?
+    `).all<ChatTurnRow>(chat_id, sinceIso, beforeIso, excludeRunId, limit).reverse();
+  }
+
+  /** User turns whose run produced a classified assistant reply, oldest first (Jev replay). */
+  listReplayTurns(opts: { sinceIso?: string; limit?: number }): ReplayTurnRow[] {
+    const rows = this.db.prepare(`
+      SELECT u.turn_id, u.chat_id, u.run_id, u.text, u.created_at, a.intent AS recorded_intent,
+        (SELECT MIN(e.occurred_at) FROM ledger_events e
+          WHERE e.run_id = u.run_id AND e.event_type = 'llm_attempt'
+            AND json_extract(e.payload_json, '$.role') = 'classify') AS classify_at,
+        (SELECT MIN(e.occurred_at) FROM ledger_events e WHERE e.run_id = u.run_id) AS run_start
+      FROM chat_turns u
+      JOIN chat_turns a ON a.run_id = u.run_id AND a.role = 'assistant'
+      WHERE u.role = 'user' AND a.intent IS NOT NULL AND a.intent <> 'evolution_report'
+        AND u.created_at >= ?
+      ORDER BY u.created_at ASC, u.rowid ASC
+      LIMIT ?
+    `).all<Omit<ReplayTurnRow, "anchor" | "anchor_kind"> & { classify_at: string | null; run_start: string | null }>(
+      opts.sinceIso ?? "", opts.limit ?? -1
+    );
+    return rows.map(({ classify_at, run_start, ...row }) => ({
+      ...row,
+      anchor: classify_at ?? run_start,
+      anchor_kind: classify_at ? "classify" : run_start ? "run_start" : null
+    }));
+  }
+
+  /** Distinct `loop_step.capability` values for a run — the replay's observed-action proxy. */
+  runLoopCapabilities(run_id: string): string[] {
+    return this.db.prepare(`
+      SELECT DISTINCT json_extract(payload_json, '$.capability') AS capability
+      FROM ledger_events WHERE run_id = ? AND event_type = 'loop_step'
+    `).all<{ capability: string | null }>(run_id)
+      .map((r) => r.capability)
+      .filter((c): c is string => typeof c === "string" && c.length > 0);
   }
 
   /**
