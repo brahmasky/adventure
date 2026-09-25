@@ -49,7 +49,7 @@ on every turn (role `classify`, chain `pi,agy-cli`) that returns strict JSON par
      drifted over the window. It is reported, but does not decide GO/STOP.
    - Replay is a feasibility screen. The formal promotion bar is judged on live matched pairs only.
 4. **Promotion bar** (all must hold; evaluated per language, and a language that fails is not promoted):
-   - at least 200 shadowed turns AND at least 2 weeks of shadowing;
+   - at least 60 matched live turns AND at least 4 weeks of shadowing (amended 2026-09-26: live volume is ~1.5 turns/day — Aug 44, Sep 46 — so 200 turns would take ~4 months; the 373-turn replay carries the bulk of the evidence);
    - at Jev `confidence ≥ 0.7`, agreement ≥ 90% (vs the raw LLM label; `observed_action` is reported alongside but never gates);
    - the `confidence ≥ 0.7` slice covers ≥ 60% of turns.
    Promotion itself is a **separate spec**. This spec only produces the verdict.
@@ -196,7 +196,7 @@ on every turn (role `classify`, chain `pi,agy-cli`) that returns strict JSON par
   `observed_action` by `run_id`. It also prints the missingness (every non-`ok` status plus shutdown
   losses) by language and model. Agreement is computed on `ok` matched pairs only. It prints the replay-style report plus a **PROMOTE / HOLD / KILL**
   verdict per language against the promotion bar:
-  - **HOLD** — the minimums (200 turns, 2 weeks) are not met yet.
+  - **HOLD** — the minimums (60 matched turns, 4 weeks) are not met yet.
   - **KILL** — the minimums are met but agreement or coverage misses the bar.
   - Coverage is measured against **all** eligible turns, including every non-`ok` status. Errors can
     only lower coverage, never inflate it.
@@ -242,7 +242,7 @@ Under `tests/jev/`, with no network:
   - Resume skips done turns.
   - `--max-usd` stops the run.
   - The report identity: eligible = ok + skipped + failed.
-- **`report.test.ts`** checks the verdict edges: 199 turns → HOLD; 13 days → HOLD; exactly 90% → PROMOTE;
+- **`report.test.ts`** checks the verdict edges: 59 matched turns → HOLD; 27 days → HOLD; exactly 90% → PROMOTE;
   89.9% → KILL; 59% coverage → KILL; zh fails while en passes → per-language verdicts.
 
 In the existing suites:
@@ -272,7 +272,7 @@ In the existing suites:
    confirmation.
 4. Build the live shadow with tests. Paco enables `HOUGE_JEV_SHADOW_ENABLED` on the mini (the daemon
    restart is Paco's action).
-5. At ≥ 2 weeks, run `jev-shadow report`. A PROMOTE verdict opens a separate promotion spec. Its
+5. At ≥ 4 weeks and ≥ 60 matched turns, run `jev-shadow report`. A PROMOTE verdict opens a separate promotion spec. Its
    likely shape: Jev owns the label at high confidence, and the LLM is called only when `query` or
    `clarifying_question` is needed.
 
