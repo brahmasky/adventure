@@ -979,18 +979,30 @@ export class RunStore {
     `).all<ChatTurnRow>(chat_id, sinceIso, beforeIso, excludeRunId, limit).reverse();
   }
 
-  /** User turns whose run produced a classified assistant reply, oldest first (Jev replay). */
+  /**
+   * User turns whose run produced a classified assistant reply, oldest first (Jev replay).
+   * `recorded_intent` is picked as the EARLIEST qualifying assistant row of the run (correlated
+   * subquery, not a JOIN) so a run with more than one qualifying assistant row still yields exactly
+   * one row per user turn — a JOIN would double-count the turn and inflate the GO/STOP denominator
+   * (review finding, fix round 1).
+   */
   listReplayTurns(opts: { sinceIso?: string; limit?: number }): ReplayTurnRow[] {
+    const earliestAssistantIntent = `(
+      SELECT a.intent FROM chat_turns a
+      WHERE a.run_id = u.run_id AND a.role = 'assistant'
+        AND a.intent IS NOT NULL AND a.intent <> 'evolution_report'
+      ORDER BY a.rowid ASC LIMIT 1
+    )`;
     const rows = this.db.prepare(`
-      SELECT u.turn_id, u.chat_id, u.run_id, u.text, u.created_at, a.intent AS recorded_intent,
+      SELECT u.turn_id, u.chat_id, u.run_id, u.text, u.created_at,
+        ${earliestAssistantIntent} AS recorded_intent,
         (SELECT MIN(e.occurred_at) FROM ledger_events e
           WHERE e.run_id = u.run_id AND e.event_type = 'llm_attempt'
             AND json_extract(e.payload_json, '$.role') = 'classify') AS classify_at,
         (SELECT MIN(e.occurred_at) FROM ledger_events e WHERE e.run_id = u.run_id) AS run_start
       FROM chat_turns u
-      JOIN chat_turns a ON a.run_id = u.run_id AND a.role = 'assistant'
-      WHERE u.role = 'user' AND a.intent IS NOT NULL AND a.intent <> 'evolution_report'
-        AND u.created_at >= ?
+      WHERE u.role = 'user' AND u.created_at >= ?
+        AND ${earliestAssistantIntent} IS NOT NULL
       ORDER BY u.created_at ASC, u.rowid ASC
       LIMIT ?
     `).all<Omit<ReplayTurnRow, "anchor" | "anchor_kind"> & { classify_at: string | null; run_start: string | null }>(

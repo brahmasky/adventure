@@ -66,6 +66,21 @@ describe("replay reads", () => {
     }
   });
 
+  it("returns exactly one row per user turn even when its run has two qualifying assistant rows (no double-counted turns — review fix round 1)", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const run = createRun(store, "d");
+      store.recordChatTurn({ chat_id: "c", run_id: run, role: "user", text: "q", created_at: "2026-09-01T00:00:00.000Z" });
+      store.recordChatTurn({ chat_id: "c", run_id: run, role: "assistant", text: "a1", intent: "research", created_at: "2026-09-01T00:00:01.000Z" });
+      store.recordChatTurn({ chat_id: "c", run_id: run, role: "assistant", text: "a2", intent: "answer", created_at: "2026-09-01T00:00:02.000Z" });
+      const rows = store.listReplayTurns({});
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ text: "q", recorded_intent: "research" });
+    } finally {
+      store.close();
+    }
+  });
+
   it("getChatTurnsBefore: strictly before the anchor, inside the window, never the target run's own rows", () => {
     const store = RunStore.openInMemory();
     try {
