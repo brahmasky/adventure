@@ -65,9 +65,17 @@ export function observedAction(capabilities: string[]): ObservedAction {
   return capabilities.length === 0 ? "answer" : "unknown";
 }
 
-/** parseIntent defaults to "answer" on garbage; `parsed` tells a real verdict from that default. */
+/**
+ * parseIntent defaults to "answer" on garbage — including JSON that has a well-formed `"intent"`
+ * field but is otherwise broken (e.g. a trailing `undefined` literal), where a naive regex probe
+ * would still "see" the field. `parsed` is true only when the regex-captured intent agrees with
+ * what parseIntent actually read, so a malformed reply can never enter the GO/STOP gate under a
+ * label the model didn't really produce.
+ */
 export function llmLabel(raw: string): { intent: Intent; parsed: boolean } {
-  return { intent: parseIntent(raw).intent, parsed: INTENT_IN_JSON.test(raw) };
+  const intent = parseIntent(raw).intent;
+  const captured = raw.match(INTENT_IN_JSON)?.[1]?.trim().toLowerCase();
+  return { intent, parsed: captured === intent };
 }
 
 /** chars/3 for CJK-heavy text, chars/4 otherwise — only for the pre-dispatch cost reservation. */

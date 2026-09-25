@@ -43,6 +43,10 @@ describe("observedAction / llmLabel", () => {
     expect(llmLabel("sorry, I can't")).toEqual({ intent: "answer", parsed: false });
     expect(llmLabel('```json\n{"intent": "Selfcode"}\n```')).toEqual({ intent: "selfcode", parsed: true });
   });
+
+  it("a regex-matched intent whose JSON is otherwise broken must not count as parsed — the recorded label (parseIntent's silent 'answer' fallback) disagrees with what the model actually wrote, so it cannot be treated as a confident verdict", () => {
+    expect(llmLabel('{"intent": "skill", "note": undefined}')).toEqual({ intent: "answer", parsed: false });
+  });
 });
 
 describe("runReplay", () => {
