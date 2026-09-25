@@ -16,8 +16,11 @@ import type { LlmUsage } from "../run/llm-usage.js";
  * `null`: its spend is invisible to the ceiling until priced (documented residual).
  */
 
+/** The TypeSafe/Jev metered provider name (Jev spec 2026-09-25). */
+export const JEV_PROVIDER = "jev";
+
 /** Provider names (chain leg names) whose usage is metered (pay-per-token). */
-export const METERED_PROVIDERS: ReadonlySet<string> = new Set(["kimi-api", "gemini-api", "jev"]);
+export const METERED_PROVIDERS: ReadonlySet<string> = new Set(["kimi-api", "gemini-api", JEV_PROVIDER]);
 
 /**
  * Transport class of a usage leg: `"api"` = a metered pay-per-token HTTP API (real money), `"cli"` =
