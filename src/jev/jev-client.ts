@@ -9,6 +9,7 @@ import { JEV_PROVIDER } from "../llm/metered-pricing.js";
 export const JEV_MODEL = "jev-1.13.0";
 const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 const BACKOFF_BASE_MS = 500;
+const RETRY_AFTER_CAP_MS = 60_000;
 const PROBABILITY_SUM_TOLERANCE = 0.01;
 
 export interface JevChoiceQuestion {
@@ -53,10 +54,12 @@ export function createJevClient(config: JevClientConfig): (req: JevRequest) => P
       config.audit.record({ provider: JEV_PROVIDER, role: "", outcome: "unavailable", error_kind: "auth", latency_ms: 0 });
       return { ok: false, reason: "no_key", detail: "TYPESAFE_API_KEY is not set" };
     }
-    if (config.meteredBreached()) {
-      return { ok: false, reason: "fused", detail: "metered fuse latched" };
-    }
     for (let attempt = 0; ; attempt += 1) {
+      // Checked before EVERY attempt, not just the first: a retry that lands after the fuse
+      // latches mid-run must not fetch (ADR 0019 ceiling covers jev).
+      if (config.meteredBreached()) {
+        return { ok: false, reason: "fused", detail: "metered fuse latched" };
+      }
       const started = Date.now();
       const a = await attemptOnce(fetchImpl, config.apiKey, req, config.timeoutMs);
       const latency_ms = Date.now() - started;
@@ -75,47 +78,57 @@ export function createJevClient(config: JevClientConfig): (req: JevRequest) => P
   };
 }
 
+/**
+ * The abort timer stays armed for the whole attempt — fetch AND the body read — and is cleared
+ * only in the outer `finally`. A slow/hanging `res.json()` must still time out: clearing the timer
+ * right after `fetch()` resolves (the old bug) leaves nothing to abort a stalled body read.
+ */
 async function attemptOnce(fetchImpl: typeof fetch, apiKey: string, req: JevRequest, timeoutMs: number): Promise<Attempt> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  let res: Response;
   try {
-    res = await fetchImpl(JEV_ENDPOINT, {
-      method: "POST",
-      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-      body: JSON.stringify({ model: JEV_MODEL, state: req.state, questions: req.questions }),
-      signal: controller.signal
-    });
-  } catch (error) {
-    const timedOut = error instanceof Error && error.name === "AbortError";
-    return timedOut
-      ? { kind: "fail", outcome: "error", error_kind: "timeout", retryable: false, detail: `timed out after ${timeoutMs}ms` }
-      : { kind: "fail", outcome: "error", error_kind: "transport", retryable: true, detail: "network error" };
+    let res: Response;
+    try {
+      res = await fetchImpl(JEV_ENDPOINT, {
+        method: "POST",
+        headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+        body: JSON.stringify({ model: JEV_MODEL, state: req.state, questions: req.questions }),
+        signal: controller.signal
+      });
+    } catch (error) {
+      const timedOut = error instanceof Error && error.name === "AbortError";
+      return timedOut
+        ? { kind: "fail", outcome: "error", error_kind: "timeout", retryable: false, detail: `timed out after ${timeoutMs}ms` }
+        : { kind: "fail", outcome: "error", error_kind: "transport", retryable: true, detail: "network error" };
+    }
+    // Never echo the body into `detail`: a provider error may reflect the Authorization header.
+    if (res.status === 401 || res.status === 403) {
+      return { kind: "fail", outcome: "unavailable", error_kind: "auth", retryable: false, detail: `HTTP ${res.status}` };
+    }
+    if (res.status === 429 || res.status >= 500) {
+      const after = Number(res.headers.get("retry-after"));
+      return {
+        kind: "fail", outcome: "error", error_kind: "transport", retryable: true, detail: `HTTP ${res.status}`,
+        ...(Number.isFinite(after) && after > 0 ? { retryAfterMs: Math.min(after * 1000, RETRY_AFTER_CAP_MS) } : {})
+      };
+    }
+    if (!res.ok) return { kind: "fail", outcome: "error", error_kind: "other", retryable: false, detail: `HTTP ${res.status}` };
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch (error) {
+      const timedOut = error instanceof Error && error.name === "AbortError";
+      return timedOut
+        ? { kind: "fail", outcome: "error", error_kind: "timeout", retryable: false, detail: `timed out after ${timeoutMs}ms` }
+        : { kind: "fail", outcome: "error", error_kind: "parse", retryable: false, detail: "response is not JSON" };
+    }
+    const parsed = validateResponse(body, req);
+    return parsed
+      ? { kind: "ok", result: { ok: true, model: parsed.model, answers: parsed.answers, input_tokens: parsed.input_tokens, latency_ms: 0 }, output_tokens: parsed.output_tokens }
+      : { kind: "fail", outcome: "error", error_kind: "parse", retryable: false, detail: "response failed validation" };
   } finally {
     clearTimeout(timer);
   }
-  // Never echo the body into `detail`: a provider error may reflect the Authorization header.
-  if (res.status === 401 || res.status === 403) {
-    return { kind: "fail", outcome: "unavailable", error_kind: "auth", retryable: false, detail: `HTTP ${res.status}` };
-  }
-  if (res.status === 429 || res.status >= 500) {
-    const after = Number(res.headers.get("retry-after"));
-    return {
-      kind: "fail", outcome: "error", error_kind: "transport", retryable: true, detail: `HTTP ${res.status}`,
-      ...(Number.isFinite(after) && after > 0 ? { retryAfterMs: after * 1000 } : {})
-    };
-  }
-  if (!res.ok) return { kind: "fail", outcome: "error", error_kind: "other", retryable: false, detail: `HTTP ${res.status}` };
-  let body: unknown;
-  try {
-    body = await res.json();
-  } catch {
-    return { kind: "fail", outcome: "error", error_kind: "parse", retryable: false, detail: "response is not JSON" };
-  }
-  const parsed = validateResponse(body, req);
-  return parsed
-    ? { kind: "ok", result: { ok: true, model: parsed.model, answers: parsed.answers, input_tokens: parsed.input_tokens, latency_ms: 0 }, output_tokens: parsed.output_tokens }
-    : { kind: "fail", outcome: "error", error_kind: "parse", retryable: false, detail: "response failed validation" };
 }
 
 function validateResponse(

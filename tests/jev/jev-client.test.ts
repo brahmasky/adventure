@@ -107,6 +107,40 @@ describe("createJevClient", () => {
     expect(audit.attempts[0]).toMatchObject({ outcome: "error", error_kind: "parse" });
   });
 
+  it("F7: the fuse is re-checked before EVERY attempt — latching mid-retry stops the retry, not just the first call", async () => {
+    let breached = false;
+    const fetchImpl = vi.fn(async () => {
+      breached = true; // the fuse latches as a side effect of the first (429) attempt
+      return json(429, {});
+    });
+    const { call } = client(fetchImpl as unknown as typeof fetch, { retries: 3, meteredBreached: () => breached });
+    expect(await call(REQ)).toMatchObject({ ok: false, reason: "fused" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1); // the retry is refused by the fuse check, never a second fetch
+  });
+
+  it("F8: retry-after is capped at 60s — a huge header value never sleeps past the cap", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(json(429, {}, { "retry-after": "3600" }))
+      .mockResolvedValueOnce(json(200, okBody()));
+    const { call, sleep } = client(fetchImpl as unknown as typeof fetch, { retries: 1 });
+    expect((await call(REQ)).ok).toBe(true);
+    expect(sleep).toHaveBeenCalledWith(60_000);
+  });
+
+  it("F8: the abort timer stays armed through the body read — a res.json() that hangs past timeoutMs times out instead of never resolving", async () => {
+    const fetchImpl = vi.fn((_u: string, init: RequestInit) => Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json: () => new Promise((_resolve, reject) => {
+        init.signal!.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
+      })
+    } as unknown as Response));
+    const { call, audit } = client(fetchImpl as unknown as typeof fetch, { timeoutMs: 5, retries: 0 });
+    expect(await call(REQ)).toMatchObject({ ok: false, reason: "error" });
+    expect(audit.attempts[0]).toMatchObject({ outcome: "error", error_kind: "timeout" });
+  });
+
   it("never writes the key to any console channel", async () => {
     const spies = (["log", "warn", "error", "debug", "info"] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => {}));
     const fetchImpl = vi.fn(async () => json(500, { error: `echo ${KEY}` }));
