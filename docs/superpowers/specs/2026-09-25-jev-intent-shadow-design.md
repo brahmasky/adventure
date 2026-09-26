@@ -205,6 +205,42 @@ on every turn (role `classify`, chain `pi,agy-cli`) that returns strict JSON par
   - Coverage is measured against **all** eligible turns, including every non-`ok` status. Errors can
     only lower coverage, never inflate it.
 
+#### Live-shadow amendments from the replay and the plan research (2026-09-26)
+
+These amend the bullets above. Where they conflict, these win.
+
+1. **`llm_parsed` is recorded and gates.** Replay showed `parseIntent` silently falls back to
+   `answer`; a fallback is not a classifier verdict. The payload carries `llm_parsed` (computed as the
+   replay does — the regex-captured intent must equal `parseIntent`'s), and only parsed turns count
+   as matched. Required fields become `["status", "llm_intent", "llm_parsed", "lang"]`.
+2. **Status set** gains `auth` (the client distinguishes a rejected key from a missing one):
+   `ok | skipped_state_too_large | error | timeout | fused | no_key | auth`.
+3. **`jev_error`** (optional, non-`ok` rows only) carries jev-client's code-owned failure string —
+   `HTTP 503`, `timed out after 5000ms`, `response failed validation: probability_sum` — never
+   provider prose (the client never echoes a response body). Replay's 2 unexplained rejects could not
+   be diagnosed because nothing recorded *which* check failed; jev-client's validation now names it.
+4. **Eligible turn = the classifier produced a reply.** When the LLM classifier fails, the turn fails
+   and no `intent_shadow` row is written (there is no label to pair with); Jev's own `llm_attempt` row
+   still exists. Shutdown losses are therefore counted as runs with an `ok` `classify` attempt and no
+   `intent_shadow` row, **between the first and the last shadow row** (so a later flag-off period is
+   not miscounted as loss).
+5. **Hermetic by construction.** The real Jev client is built only when `CoreWorker`'s LLM adapter is
+   the production default. A test-injected LLM adapter never pairs with a real Jev call — the
+   daemon's `.env` leaks into test runs (the self-write test gate), so relying on env pinning alone
+   could send test traffic to TypeSafe. Tests inject a fake Jev call instead.
+6. **Flag read live and covered by `/disarm`.** `HOUGE_JEV_SHADOW_ENABLED` joins `DISARM_FLAGS` (an
+   unattended metered third-party call per turn — covered like the radar's calls) and is read per turn,
+   because `/disarm` flips flags in the live `process.env`. The missing-key warning fires once, when
+   `CoreWorker` is constructed (daemon boot).
+7. **The report adds two report-only lines**, never gates:
+   - the costly direction — of turns where the classifier said `research` and Jev was ≥ 0.7 confident,
+     how often Jev said something else (replay: 7 of 136);
+   - clarify — how often the classifier said `clarify` and how often Jev matched (replay: 3 of 7).
+8. **Per-language coverage** uses that language's `intent_shadow` rows (every status) as the
+   denominator. Shutdown losses have no language (it would take reading message text) and are
+   reported overall.
+9. **"4 weeks"** is measured from the first `intent_shadow` row to the time the report runs.
+
 ## Error handling
 
 | Case | Live shadow | Replay |
