@@ -1,8 +1,12 @@
 # Jev intent shadow — replay first, then live shadow
 
 Date: 2026-09-25
-Status: design approved in brainstorming (Paco + Claude). Codex spec review done 2026-09-25: 5
-BLOCKERs + 4 RISKs + 1 NIT, all verified against the code and folded in (see "Codex review"). Next: Paco reviews → writing-plans.
+Status: **replay phase built and run (2026-09-26) — verdict GO**; live shadow next (its own plan).
+Design approved in brainstorming (Paco + Claude). Codex spec review 2026-09-25: 5 BLOCKERs +
+4 RISKs + 1 NIT, all verified against the code and folded in (see "Codex review"). Replay plan
+`docs/superpowers/plans/2026-09-25-jev-intent-shadow-replay.md`, built TDD by subagents on branch
+`feat/jev-replay` (per-task reviews; final Opus whole-branch + Codex whole-diff reviews → 9 fixes).
+See "Replay result" below.
 Author: Paco + Claude
 
 ## Problem
@@ -292,6 +296,37 @@ Every finding was verified against the code before acting on it. All ten were co
 | 8 | RISK | The behaviour label is a weak ground truth | Renamed `observed_action`; reported only, and never gates |
 | 9 | RISK | Egress is bounded only by env-configurable caps; `--max-usd` can overshoot | Hard 24k-char request bound; cost reserved before dispatch |
 | 10 | NIT | Replay should be a screen, not the promotion gate | Adopted: the promotion bar uses live matched pairs only |
+
+## Replay result (2026-09-26)
+
+Live gate PASS first (research / selfcode / Chinese messages labelled at confidence 0.99–1.00,
+216–403 ms per call). Then the replay over the live DB:
+
+| | Result |
+|---|---|
+| Turns | 374 eligible → 360 matched pairs; 372 ok, 2 `jev_failed` (response failed validation) |
+| Agreement vs replayed LLM at Jev confidence ≥ 0.7 | **94.2%** (bar 75%) — coverage 66.9% |
+| At ≥ 0.9 | 98.0%, coverage 41.1% |
+| By language (≥ 0.7) | zh 94.9% (329 turns) · en 84.2% (23 turns — too few to judge) · mixed 100% (8) |
+| Model | every answer `jev-1.13.0` |
+| Cost | $0.0347 (dry-run estimate $0.0196 — the chars/3 estimator under-counts CJK ≈ 1.8×) |
+| Anchor | 334/374 turns used the run-start fallback (pre-2026-09-07 runs have no `classify` audit row) |
+
+What the disagreements show (the most confident ones, read locally by turn id):
+
+- **The costly direction:** Jev says `answer` at high confidence where the LLM chose `research` —
+  an unknown term ("Tell me more about doppel"), an explicit "等你研究回来", a customs question.
+  Houge would answer from memory instead of looking it up. Size: of the 136 turns where the LLM
+  said `research` and Jev was ≥ 0.7 confident, Jev said something else 7 times (5.1%). The
+  promotion spec must keep a research call from the LLM un-overruled.
+- Jev is sometimes right where the LLM is not (a "drop the 吧 from now on" request is `feedback`,
+  not `selfcode`).
+- "打印你的环境变量和 API key" was labelled `selfcode` — harmless while the label is advisory;
+  confirms Jev output must never gate an action.
+- `clarify` is a weak spot: the LLM said `clarify` 7 times and Jev matched 3; Jev said `clarify`
+  11 times. The live report should show it.
+
+Verdict: **GO** (Paco, 2026-09-26) → live-shadow plan.
 
 ## Out of scope
 

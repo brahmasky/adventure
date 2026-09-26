@@ -347,6 +347,22 @@ Deferred to slice B: the judgment half — promise-vs-action diffing, plan-vs-ex
 divergence, a daily LLM retro digest, an `/incidents` view, and the
 incident → `self_diagnose` → regression-tested self-write bridge.
 
+## Jev intent shadow — replay
+
+Every chat turn starts with an intent label (answer / research / feedback / clarify /
+selfcode / skill) that today costs one CLI LLM call, about 6 s. [Jev](https://docs.typesafe.ai/llms.txt)
+is a decision model that returns a typed choice with calibrated confidence in a few hundred
+milliseconds. `houge jev-shadow replay` measures whether it can take that label over, without
+touching the daemon: for each historical turn it rebuilds the thread as of classification time,
+asks Jev and the current classifier the same question, and prints GO / STOP (`--dry-run` first;
+resumable; labels only, never message text, in `.houge/jev-shadow/replay.jsonl`).
+
+First run, 2026-09-26: **GO** — 94.2% agreement at Jev confidence ≥ 0.7 over 374 turns (Chinese
+94.9%; English 84.2% on only 23 turns), $0.035 total. Jev's label stays advisory — it never gates
+an action. Next: the live shadow beside every real classification, then a separate promotion
+decision. Configuration: [docs/reference/configuration.md](docs/reference/configuration.md)
+("Jev intent shadow"); design: `docs/superpowers/specs/2026-09-25-jev-intent-shadow-design.md`.
+
 ## Google identity — gmail_read / google_api
 
 Houge has his own Google identity (`wukong.houge@gmail.com`,

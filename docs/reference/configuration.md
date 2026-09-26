@@ -681,7 +681,8 @@ per-cap headroom (used/limit/remaining), run counts by state, and the last error
 ## Metered-API $ ceiling (ADR 0019)
 
 The count caps above bound volume; this bounds **dollars** on the pay-per-token legs
-(`kimi-api`/`gemini-api`). Every metered `llm_attempt` is priced in the audit sink — the one
+(`kimi-api`/`gemini-api`, and TypeSafe `jev` since 2026-09-26 — priced input-only, see "Jev
+intent shadow" below). Every metered `llm_attempt` is priced in the audit sink — the one
 seam every path shares since slice 2 (`RunStore.llmAuditSink` → `src/llm/metered-pricing.ts`) —
 into the ledger's `cost_usd`; spend is derived by summing the ledger (unioned with the
 pre-cutover `llm_call` history). Every adapter, including the three CLI commands, honors a
@@ -695,6 +696,44 @@ deduped Telegram alert fires per episode. `/status` shows
 | `HOUGE_METERED_DAILY_USD` | `5` | Ceiling over a rolling 24h window (USD). `0` = hard off (metered legs always dropped). |
 | `HOUGE_METERED_MONTHLY_USD` | `50` | Ceiling over the calendar month, UTC — how the invoice actually resets. |
 | `HOUGE_METERED_PRICES_JSON` | seed table | JSON object of model-id **prefix** → `{input_usd_per_mtok, output_usd_per_mtok, cached_input_usd_per_mtok?}`, merged over the seed table (longest prefix wins). A metered model matching NO prefix logs once and its spend is invisible until priced. |
+
+## Jev intent shadow — replay (spec 2026-09-25)
+
+[Jev](https://docs.typesafe.ai/llms.txt) (TypeSafe's "System One" model) answers typed questions
+with calibrated probabilities; it does not generate text. The question under test: can Jev take
+over the intent label that `classifyIntent` currently spends a ~6 s CLI call on? The **replay**
+answers it offline, with no daemon change: for every historical user turn it rebuilds the thread
+as it stood at classification time, asks Jev AND the current LLM classifier the same question on
+identical inputs, and prints a GO/STOP report (spec:
+`docs/superpowers/specs/2026-09-25-jev-intent-shadow-design.md`).
+
+```bash
+houge jev-shadow replay --dry-run          # pre-flight: counts + estimated cost, calls nothing
+houge jev-shadow replay                    # resumable; re-run to continue after a stop
+houge jev-shadow replay --since 2026-09-01T00:00:00Z --limit 50 --max-usd 0.2
+node scripts/live-gate-jev.mjs             # opt-in real-API gate (3 fixed messages, in-memory store)
+```
+
+- **Output:** `.houge/jev-shadow/replay.jsonl` (git-ignored) — labels, probabilities, confidence,
+  `jev_model`, a fixed error category; **never message text**. The report prints turn ids only.
+- **Verdict:** GO when Jev agrees with the replayed LLM label ≥ 75% at Jev confidence ≥ 0.7 and
+  ≥ 60% of eligible turns reached a matched pair; `INCOMPLETE` if the run stopped early (budget,
+  auth, fuse); `DRY RUN — no verdict` for a dry run. Only answers from the pinned `jev-1.13.0`
+  count toward the verdict; the report splits by model and language.
+- **Egress:** the latest message (≤ 8,000 chars) plus the thread the classifier already sees,
+  ≤ 24,000 chars per request; over-cap turns are skipped, never truncated.
+- **Audit:** every Jev HTTP attempt is one `llm_attempt` row (`provider: "jev"`, role
+  `classify_replay`; the replayed classifier is `classify_replay_llm`). Both replay roles are
+  excluded from the `llm_leg_failing` sweep, so an operator run cannot open daemon incidents.
+- **Cost guard:** Jev honours the metered fuse before every attempt; `--max-usd` (default `1`)
+  reserves each request's estimate before dispatch. The 2026-09-26 run over 374 turns cost $0.035.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `TYPESAFE_API_KEY` | — | Broker secret #9. Held by the secrets broker when the firewall is armed (stripped from `process.env` like every `*_API_KEY`); sent only as the `Authorization` header to `api.typesafe.ai`; never logged. Unset → every Jev call is audited `unavailable`/`auth` and the replay stops. |
+
+The **live shadow** (a Jev call beside every real `classifyIntent`, flag
+`HOUGE_JEV_SHADOW_ENABLED`) is specified but not yet built.
 
 ## Kill switch + disarm posture (ADR 0018)
 
