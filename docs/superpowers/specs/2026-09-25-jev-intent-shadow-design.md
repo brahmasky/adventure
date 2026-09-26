@@ -312,12 +312,30 @@ Live gate PASS first (research / selfcode / Chinese messages labelled at confide
 | Cost | $0.0347 (dry-run estimate $0.0196 — the chars/3 estimator under-counts CJK ≈ 1.8×) |
 | Anchor | 334/374 turns used the run-start fallback (pre-2026-09-07 runs have no `classify` audit row) |
 
+**Correction (same day, found in the live-plan review): the headline is inflated by scheduled
+turns.** 70 of the 374 turns are schedule fires of only 3 distinct scheduled prompts (100% agreement)
+and 10 are CLI runs. On Paco's own Telegram messages alone:
+
+| Telegram messages only (294 turns) | Agreement | Coverage of all turns |
+|---|---|---|
+| Jev confidence ≥ 0.6 | 87.8% | 66.7% |
+| **Jev confidence ≥ 0.7** | **91.7%** — GO still holds (bar 75%) | **57.1%** |
+| Jev confidence ≥ 0.8 | 93.6% | 47.6% |
+| zh at ≥ 0.7 (262 turns) | 92.4% | 55.0% |
+| en at ≥ 0.7 (24 turns) | 84.2% | 79.2% |
+
+Against the *live* promotion bar (≥ 90% agreement AND ≥ 60% coverage) no threshold passes both on
+these messages: the live shadow, if it behaves like the replay, would end in KILL on coverage. In the
+last 30 days 34 of 56 turn runs were schedule fires (2 distinct prompts), so the live gate must not
+count them (see the amendments).
+
 What the disagreements show (the most confident ones, read locally by turn id):
 
 - **The costly direction:** Jev says `answer` at high confidence where the LLM chose `research` —
   an unknown term ("Tell me more about doppel"), an explicit "等你研究回来", a customs question.
-  Houge would answer from memory instead of looking it up. Size: of the 136 turns where the LLM
-  said `research` and Jev was ≥ 0.7 confident, Jev said something else 7 times (5.1%). The
+  Houge would answer from memory instead of looking it up. Size: of the 63 of Paco's own messages
+  where the LLM said `research` and Jev was ≥ 0.7 confident, Jev said something else 7 times (11%);
+  all 7 misses are Telegram turns (across all sources it is 7 of 136, diluted by schedule fires). The
   promotion spec must keep a research call from the LLM un-overruled.
 - Jev is sometimes right where the LLM is not (a "drop the 吧 from now on" request is `feedback`,
   not `selfcode`).

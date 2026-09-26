@@ -1291,7 +1291,10 @@ Build + independent adversarial verification subagents; each live round found a 
   fix wave F1–F9 (error prose off disk, INCOMPLETE verdict, fuse stops the run, dry-run headline,
   pinned-model split, `--since` normalisation, per-attempt fuse, retry-after cap, torn-line
   resume). 2413 tests green.
-- Run: live gate PASS (0.2–0.4 s per call); replay 374 turns → GO, 94.2% at conf ≥ 0.7, $0.035.
-  Costly direction: Jev `answer` where the LLM chose `research` (7 of 136 confident research turns).
+- Run: live gate PASS (0.2–0.4 s per call); replay 374 turns → GO: 91.7% at conf ≥ 0.7 on Paco's own
+  294 messages (coverage 57%); the 94.2% all-sources headline was inflated by 70 schedule fires. $0.035.
+  Costly direction: Jev `answer` where the LLM chose `research` — 7 of 63 confident research turns on
+  Paco's own messages (11%). Against the live bar (≥ 90% AND ≥ 60% coverage) his messages give 91.7% but
+  57% coverage — a likely KILL on coverage; surfaced to Paco before building the live shadow.
 - Open: PR review/merge; live-shadow plan (Paco: GO); CJK cost-estimate under-count (~1.8×); the 2
   `jev_failed` validation rejects are unexplained.

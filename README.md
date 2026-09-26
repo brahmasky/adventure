@@ -357,8 +357,10 @@ touching the daemon: for each historical turn it rebuilds the thread as of class
 asks Jev and the current classifier the same question, and prints GO / STOP (`--dry-run` first;
 resumable; labels only, never message text, in `.houge/jev-shadow/replay.jsonl`).
 
-First run, 2026-09-26: **GO** — 94.2% agreement at Jev confidence ≥ 0.7 over 374 turns (Chinese
-94.9%; English 84.2% on only 23 turns), $0.035 total. Jev's label stays advisory — it never gates
+First run, 2026-09-26: **GO** — on Paco's own Telegram messages (294 turns) Jev agrees with the
+classifier 91.7% of the time at confidence ≥ 0.7, covering 57% of turns (Chinese 92.4%; English
+84.2% on 19 confident turns). The all-sources headline, 94.2% over 374 turns, is inflated by 70
+repeats of 3 scheduled prompts. $0.035 total. Jev's label stays advisory — it never gates
 an action. Next: the live shadow beside every real classification, then a separate promotion
 decision. Configuration: [docs/reference/configuration.md](docs/reference/configuration.md)
 ("Jev intent shadow"); design: `docs/superpowers/specs/2026-09-25-jev-intent-shadow-design.md`.
