@@ -96,15 +96,54 @@ describe("createJevClient", () => {
   });
 
   it.each([
-    ["an option missing from probabilities", { probabilities: { research: 1 } }],
-    ["probabilities that do not sum to 1", { probabilities: { answer: 0.5, research: 0.9, feedback: 0, clarify: 0, selfcode: 0, skill: 0 } }],
-    ["confidence out of range", { confidence: 1.4 }],
-    ["a choice that is not an option", { choice: "banana" }]
-  ])("malformed answer (%s) → error/parse, no answer returned", async (_label, overrides) => {
+    ["an option missing from probabilities", { probabilities: { research: 1 } }, "probability_keys"],
+    ["probabilities that do not sum to 1", { probabilities: { answer: 0.5, research: 0.9, feedback: 0, clarify: 0, selfcode: 0, skill: 0 } }, "probability_sum"],
+    ["confidence out of range", { confidence: 1.4 }, "confidence_out_of_range"],
+    ["a choice that is not an option", { choice: "banana" }, "choice_not_option"]
+  ])("malformed answer (%s) → error/parse, and the detail NAMES the failed check", async (_label, overrides, code) => {
     const fetchImpl = vi.fn(async () => json(200, okBody(overrides)));
     const { call, audit } = client(fetchImpl as unknown as typeof fetch);
-    expect(await call(REQ)).toMatchObject({ ok: false, reason: "error" });
+    const r = await call(REQ);
+    expect(r).toMatchObject({ ok: false, reason: "error", error_kind: "parse", detail: `response failed validation: ${code}` });
     expect(audit.attempts[0]).toMatchObject({ outcome: "error", error_kind: "parse" });
+  });
+
+  it("a body without usage.input_tokens is rejected by name (replay's 2 rejects were undiagnosable without this)", async () => {
+    const body = okBody();
+    delete (body as { usage?: unknown }).usage;
+    const fetchImpl = vi.fn(async () => json(200, body));
+    const { call } = client(fetchImpl as unknown as typeof fetch);
+    expect(await call(REQ)).toMatchObject({ ok: false, detail: "response failed validation: usage_input_tokens_missing" });
+  });
+
+  it("a model field that is not a bounded id is rejected by name — provider prose can never reach the ledger as jev_model (Codex B2)", async () => {
+    const prose = { ...okBody(), model: "jev-1.13.0 — echoing your message: what's the ASX close today?" };
+    const fetchImpl = vi.fn(async () => json(200, prose));
+    const { call, audit } = client(fetchImpl as unknown as typeof fetch);
+    expect(await call(REQ)).toMatchObject({ ok: false, reason: "error", error_kind: "parse", detail: "response failed validation: model_invalid" });
+    expect(JSON.stringify(audit.attempts)).not.toContain("echoing");
+  });
+
+  it("failures carry error_kind so the live shadow can tell a timeout from other errors", async () => {
+    const noKey = client(vi.fn() as unknown as typeof fetch, { apiKey: undefined });
+    expect(await noKey.call(REQ)).toMatchObject({ ok: false, reason: "no_key", error_kind: "auth" });
+
+    const denied = client(vi.fn(async () => json(401, {})) as unknown as typeof fetch);
+    expect(await denied.call(REQ)).toMatchObject({ ok: false, reason: "auth", error_kind: "auth" });
+
+    const flaky = client(vi.fn(async () => json(503, {})) as unknown as typeof fetch);
+    expect(await flaky.call(REQ)).toMatchObject({ ok: false, reason: "error", error_kind: "transport", detail: "HTTP 503" });
+
+    const hang = vi.fn((_u: string, init: RequestInit) => new Promise<Response>((_, reject) => {
+      init.signal!.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
+    }));
+    const slow = client(hang as unknown as typeof fetch, { timeoutMs: 5 });
+    expect(await slow.call(REQ)).toMatchObject({ ok: false, reason: "error", error_kind: "timeout" });
+
+    const fused = client(vi.fn() as unknown as typeof fetch, { meteredBreached: () => true });
+    const r = await fused.call(REQ);
+    expect(r).toMatchObject({ ok: false, reason: "fused" });
+    expect(r.ok === false && r.error_kind).toBe(undefined);
   });
 
   it("F7: the fuse is re-checked before EVERY attempt — latching mid-retry stops the retry, not just the first call", async () => {
