@@ -27,6 +27,8 @@ export interface ShadowRow {
   jev_model?: string;
   jev_error?: string;
   observed_action: ObservedAction;
+  /** The triggering run's source (`telegram` | `schedule` | `cli` | `event`). Schedule fires never gate the verdict (spec amendment 13). */
+  source: string;
 }
 export type LangVerdict = "PROMOTE" | "HOLD" | "KILL";
 export interface LangSummary {
@@ -50,6 +52,10 @@ export interface ShadowSummary {
   byLang: Record<string, LangSummary>;
   costly: { research: number; missed: number };
   clarify: { llm: number; matched: number };
+  /** Report-only counts by trigger source (spec amendment 13) — schedule fires never gate the verdict. */
+  bySource: Record<string, number>;
+  /** The campaign's start (the oldest intent_shadow row ever), independent of any `--since`. */
+  campaignStart?: string;
 }
 
 /** Matched = a parsed classifier label AND an ok answer from the pinned Jev model. */
@@ -57,7 +63,7 @@ export function isShadowMatched(r: ShadowRow): boolean {
   return r.status === "ok" && r.llm_parsed && r.jev_intent !== undefined && r.jev_confidence !== undefined && r.jev_model === JEV_MODEL;
 }
 
-export function loadShadowRows(store: Pick<RunStore, "listIntentShadows" | "runLoopCapabilities">, sinceIso?: string): ShadowRow[] {
+export function loadShadowRows(store: Pick<RunStore, "listIntentShadows" | "runLoopCapabilities" | "runSource">, sinceIso?: string): ShadowRow[] {
   return store.listIntentShadows(sinceIso).map(({ run_id, occurred_at, payload: p }) => ({
     run_id,
     occurred_at,
@@ -70,7 +76,8 @@ export function loadShadowRows(store: Pick<RunStore, "listIntentShadows" | "runL
     ...(typeof p.jev_model === "string" ? { jev_model: p.jev_model } : {}),
     ...(typeof p.jev_error === "string" ? { jev_error: p.jev_error } : {}),
     // One loop-capabilities read per row, the replay's pattern: hundreds of rows on in-process SQLite.
-    observed_action: observedAction(store.runLoopCapabilities(run_id))
+    observed_action: observedAction(store.runLoopCapabilities(run_id)),
+    source: store.runSource(run_id) ?? "unknown"
   }));
 }
 
@@ -100,12 +107,16 @@ function langSummary(langRows: ShadowRow[], days: number): LangSummary {
 }
 
 export function summarizeShadow(rows: ShadowRow[], missing: number, nowIso: string, campaignStartIso?: string): ShadowSummary {
-  const matched = rows.filter(isShadowMatched);
+  // Schedule fires (2-3 repeated prompts at near-100% agreement) never gate the verdict (spec
+  // amendment 13): they are excluded from matched/thresholds/costly/clarify and per-language
+  // grouping, and printed report-only via bySource. `rows` and `byStatus` stay over everything.
+  const judged = rows.filter((r) => r.source !== "schedule");
+  const matched = judged.filter(isShadowMatched);
   // Tenure is the campaign's age — the first intent_shadow row EVER — not the first row inside --since.
   const first = campaignStartIso ?? rows[0]?.occurred_at;
   const days = first === undefined ? 0 : (Date.parse(nowIso) - Date.parse(first)) / DAY_MS;
   const byLang: Record<string, LangSummary> = {};
-  for (const lang of new Set(rows.map((r) => r.lang))) byLang[lang] = langSummary(rows.filter((r) => r.lang === lang), days);
+  for (const lang of new Set(judged.map((r) => r.lang))) byLang[lang] = langSummary(judged.filter((r) => r.lang === lang), days);
   const confidentResearch = matched.filter((r) => r.llm_intent === "research" && (r.jev_confidence ?? 0) >= GATE_CONFIDENCE);
   const llmClarify = matched.filter((r) => r.llm_intent === "clarify");
   return {
@@ -118,12 +129,18 @@ export function summarizeShadow(rows: ShadowRow[], missing: number, nowIso: stri
     thresholds: THRESHOLDS.map((t) => atThreshold(matched, t)),
     byLang,
     costly: { research: confidentResearch.length, missed: confidentResearch.filter((r) => r.jev_intent !== "research").length },
-    clarify: { llm: llmClarify.length, matched: llmClarify.filter((r) => r.jev_intent === "clarify").length }
+    clarify: { llm: llmClarify.length, matched: llmClarify.filter((r) => r.jev_intent === "clarify").length },
+    bySource: countBy(rows, (r) => r.source),
+    ...(campaignStartIso !== undefined ? { campaignStart: campaignStartIso } : {})
   };
 }
 
 export function formatShadowReport(s: ShadowSummary, matchedRows: ShadowRow[]): string {
-  if (s.rows === 0) return "No intent_shadow rows yet — is HOUGE_JEV_SHADOW_ENABLED on, and has the daemon been restarted?";
+  if (s.rows === 0) {
+    return s.campaignStart !== undefined
+      ? `No intent_shadow rows in the requested window (campaign started ${s.campaignStart})`
+      : "No intent_shadow rows yet — is HOUGE_JEV_SHADOW_ENABLED on, and has the daemon been restarted?";
+  }
   return [
     `Verdict by language (bar: ≥${pct(PROMOTE_AGREEMENT)} agreement at Jev confidence ≥${GATE_CONFIDENCE}, ≥${pct(PROMOTE_COVERAGE)} coverage, ≥${MIN_MATCHED} matched turns, ≥${MIN_DAYS} days):`,
     ...Object.entries(s.byLang).flatMap(([lang, v]) => [
@@ -133,6 +150,7 @@ export function formatShadowReport(s: ShadowSummary, matchedRows: ShadowRow[]): 
     "Promote only the languages marked PROMOTE; the promotion itself is a separate spec.",
     "",
     `Counts: shadowed ${s.rows}, matched ${s.matched}, missing ${s.missing} (shutdown, flag toggled, or failure after the classifier); by status ${JSON.stringify(s.byStatus)}`,
+    `By source (schedule fires never count in the verdict): ${JSON.stringify(s.bySource)}`,
     `Shadowing for ${s.days.toFixed(1)} days.`,
     "",
     "Agreement vs the live classifier by Jev confidence (coverage here = share of matched turns):",

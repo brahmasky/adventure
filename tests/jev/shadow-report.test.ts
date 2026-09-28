@@ -9,13 +9,13 @@ const DAY = 86_400_000;
 const after = (days: number) => new Date(Date.parse(START) + days * DAY).toISOString();
 const row = (i: number, over: Partial<ShadowRow> = {}): ShadowRow => ({
   run_id: `r${i}`, occurred_at: i === 0 ? START : after(1), status: "ok", lang: "zh", llm_intent: "research", llm_parsed: true,
-  jev_intent: "research", jev_confidence: 0.9, jev_model: JEV_MODEL, observed_action: "research", ...over
+  jev_intent: "research", jev_confidence: 0.9, jev_model: JEV_MODEL, observed_action: "research", source: "telegram", ...over
 });
 const rows = (n: number, over: Partial<ShadowRow> = {}, from = 0) => Array.from({ length: n }, (_, k) => row(from + k, over));
 // A failed shadow row carries no jev_* fields at all (exactOptionalPropertyTypes forbids `jev_intent: undefined`).
 const failed = (i: number): ShadowRow => ({
   run_id: `r${i}`, occurred_at: after(1), status: "timeout", lang: "zh", llm_intent: "research", llm_parsed: true,
-  jev_error: "timed out after 5000ms", observed_action: "research"
+  jev_error: "timed out after 5000ms", observed_action: "research", source: "telegram"
 });
 
 describe("summarizeShadow — the per-language promotion bar", () => {
@@ -83,6 +83,19 @@ describe("summarizeShadow — the per-language promotion bar", () => {
     expect(s.byLang.zh!.byModel).toEqual({ [JEV_MODEL]: 5, "jev-1.14.0": 1 });
     expect(s.byLang.en!.byStatus).toEqual({ ok: 2 });
   });
+
+  it("schedule fires never count in the verdict (spec amendment 13)", () => {
+    const s = summarizeShadow([
+      ...rows(55),                                                          // telegram, agreeing
+      ...rows(10, { jev_intent: "answer" }, 55),                             // telegram, disagreeing → 84.6% agreement
+      ...rows(40, { source: "schedule" }, 65)                                // schedule, 100% agreement, must be excluded from the verdict
+    ], 0, after(30));
+    expect(s.byLang.zh!.verdict).toBe("KILL");
+    expect(s.byLang.zh!.rows).toBe(65);
+    expect(s.bySource.schedule).toBe(40);
+    const text = formatShadowReport(s, []);
+    expect(text).toMatch(/By source \(schedule fires never count in the verdict\): \{.*"schedule":40.*\}/);
+  });
 });
 
 describe("formatShadowReport", () => {
@@ -101,6 +114,15 @@ describe("formatShadowReport", () => {
   it("an empty ledger says so instead of printing a verdict", () => {
     expect(formatShadowReport(summarizeShadow([], 0, after(1)), [])).toMatch(/No intent_shadow rows yet/);
   });
+
+  it("no rows in the requested --since window, but the campaign has started: names the campaign start (M4)", () => {
+    const text = formatShadowReport(summarizeShadow([], 0, after(30), START), []);
+    expect(text).toMatch(/No intent_shadow rows in the requested window \(campaign started 2026-09-01T00:00:00\.000Z\)/);
+  });
+
+  it("no rows anywhere and no campaign start: the original message", () => {
+    expect(formatShadowReport(summarizeShadow([], 0, after(1)), [])).toBe("No intent_shadow rows yet — is HOUGE_JEV_SHADOW_ENABLED on, and has the daemon been restarted?");
+  });
 });
 
 describe("loadShadowRows", () => {
@@ -117,7 +139,8 @@ describe("loadShadowRows", () => {
       store.recordLoopStep(created.run_id, { step: 1, action: "tool", capability: "web_search", ok: true, result_digest: "" });
       expect(loadShadowRows(store)).toEqual([expect.objectContaining({
         run_id: created.run_id, status: "ok", lang: "en", llm_intent: "research", llm_parsed: true,
-        jev_intent: "research", jev_confidence: 0.8, jev_model: JEV_MODEL, observed_action: "research"
+        jev_intent: "research", jev_confidence: 0.8, jev_model: JEV_MODEL, observed_action: "research",
+        source: "cli"
       })]);
     } finally {
       store.close();

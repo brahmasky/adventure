@@ -739,7 +739,8 @@ the classifier's label exactly as before, and Jev's answer is written to the led
 `intent_shadow` row per classified turn: `status`, the classifier's raw `llm_intent`, `llm_parsed`,
 `lang`, Jev's label/confidence/model/latency or a code-owned `jev_error` — never message text). The
 Jev call is audited as `llm_attempt` role `classify_shadow` (5 s timeout, no retries, metered fuse);
-a dead key opens an `llm_leg_failing` incident for subject `jev`. `/disarm` turns it off (the flag
+a rejected key opens an `llm_leg_failing` incident for subject `jev` at the next invariant sweep
+(12 h cadence). `/disarm` turns it off (the flag
 is in `DISARM_FLAGS` and read per turn).
 
 ```bash

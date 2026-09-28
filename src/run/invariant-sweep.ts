@@ -57,7 +57,9 @@ export const INCIDENT_REOPEN_QUIET_MS = 30 * 60 * 1000;
 /**
  * A leg tried this often in the window with zero successes is dead, not unlucky (slice 2, W4).
  * A leg that recovers but is not called again keeps the incident open until its failed rows age
- * out of the window (≤ 24 h) — acceptable at the 12 h sweep cadence.
+ * out of the window (≤ 24 h) — acceptable at the 12 h sweep cadence. Exception (spec amendment 14):
+ * a single `error_kind: "auth"` failure with zero `ok` is enough on its own — a rejected key is
+ * deterministic, not unlucky, and a low-volume leg would never reach this floor in the window.
  */
 export const LLM_LEG_FAILING_MIN_ATTEMPTS = 3;
 export const LLM_LEG_FAILING_WINDOW_MS = 24 * 60 * 60 * 1000;

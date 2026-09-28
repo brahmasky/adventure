@@ -101,6 +101,35 @@ describe("intent_shadow in the ledger", () => {
     }
   });
 
+  it("countClassifiedRunsWithoutShadow: an ok-classified schedule run with no shadow row is NOT counted (spec amendment 13)", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const store = RunStore.openInMemory();
+    try {
+      at("2026-09-10T00:00:00.000Z");
+      const created = store.createOrGet(buildTypedTaskEvent({
+        source: "schedule", type: "run", program: "research-brief", goal: "sched",
+        requested_by: { kind: "user", id: "paco" }, notify: { kind: "local" },
+        idempotency_key: "sched1", source_reference: "schedule:1", created_at: "2026-09-10T00:00:00.000Z"
+      }));
+      if (created.status !== "created") throw new Error("expected created");
+      classifyOk(store, created.run_id);                          // no shadow row, but source is schedule
+      expect(store.countClassifiedRunsWithoutShadow("2026-09-10T00:00:00.000Z", "2026-09-12T00:00:00.000Z")).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("runSource: the run's trigger source, from the runs table", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const run = createRun(store, "g1");
+      expect(store.runSource(run)).toBe("cli");
+      expect(store.runSource("nonexistent-run-id")).toBeUndefined();
+    } finally {
+      store.close();
+    }
+  });
+
   it("firstIntentShadowAt: the campaign start — the oldest intent_shadow row, independent of any --since (Codex B3)", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const store = RunStore.openInMemory();

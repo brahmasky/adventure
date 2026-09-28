@@ -270,7 +270,7 @@ describe("the live Jev intent shadow inside classifyIntent", () => {
   it("hermetic by construction: an injected LLM + a real key in env + no Jev fake → no network, no row", async () => {
     process.env.HOUGE_JEV_SHADOW_ENABLED = "true";
     process.env.TYPESAFE_API_KEY = "ts-live-looking-key-0000000000";
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden in tests"));
     const store = RunStore.openInMemory();
     try {
       const run = turnRun(store, "is this hermetic?");
