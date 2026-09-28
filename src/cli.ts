@@ -311,7 +311,7 @@ if (command === "run") {
   // Jev intent-shadow replay (spec 2026-09-25): both classifiers on each historical turn's rebuilt
   // thread → JSONL + GO/STOP report. Makes external calls, so the kill switch refuses it like `run`.
   if (rest[0] === "report") {
-    const { formatShadowReport, isShadowMatched, loadShadowRows, parseShadowReportArgs, summarizeShadow } = await import("./jev/shadow-report.js");
+    const { formatShadowReport, isJudgedMatch, loadShadowRows, parseShadowReportArgs, summarizeShadow } = await import("./jev/shadow-report.js");
     const args = parseShadowReportArgs(rest.slice(1));
     if (!args.ok) {
       console.error(args.error);
@@ -323,7 +323,7 @@ if (command === "run") {
       const first = rows[0]?.occurred_at;
       const last = rows[rows.length - 1]?.occurred_at;
       const missing = first !== undefined && last !== undefined ? store.countClassifiedRunsWithoutShadow(first, last) : 0;
-      console.log(formatShadowReport(summarizeShadow(rows, missing, new Date().toISOString(), store.firstIntentShadowAt()), rows.filter(isShadowMatched)));
+      console.log(formatShadowReport(summarizeShadow(rows, missing, new Date().toISOString(), store.firstIntentShadowAt()), rows.filter(isJudgedMatch)));
       process.exitCode = 0;
     } finally {
       store.close();

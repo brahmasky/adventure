@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { JEV_MODEL } from "../../src/jev/jev-client.js";
-import { formatShadowReport, isShadowMatched, loadShadowRows, parseShadowReportArgs, summarizeShadow, type ShadowRow } from "../../src/jev/shadow-report.js";
+import { formatShadowReport, isJudgedMatch, isShadowMatched, loadShadowRows, parseShadowReportArgs, summarizeShadow, type ShadowRow } from "../../src/jev/shadow-report.js";
 import { RunStore } from "../../src/run/run-store.js";
 
 const START = "2026-09-01T00:00:00.000Z";
@@ -57,6 +57,13 @@ describe("summarizeShadow — the per-language promotion bar", () => {
     expect(isShadowMatched(row(1, { jev_model: "jev-1.14.0" }))).toBe(false);
     expect(isShadowMatched(row(1, { status: "error" }))).toBe(false);
     expect(isShadowMatched(row(1))).toBe(true);
+  });
+
+  it("isJudgedMatch: the confusion-matrix rows the CLI prints exclude schedule fires like the verdict does (parked follow-up)", () => {
+    expect(isJudgedMatch(row(1))).toBe(true);
+    expect(isJudgedMatch(row(1, { source: "schedule" }))).toBe(false);
+    expect(isJudgedMatch(row(1, { source: "cli" }))).toBe(true);
+    expect(isJudgedMatch(row(1, { status: "error" }))).toBe(false);
   });
 
   it("reports the costly direction and clarify — reported, never gating", () => {

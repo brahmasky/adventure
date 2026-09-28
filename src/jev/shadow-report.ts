@@ -63,6 +63,11 @@ export function isShadowMatched(r: ShadowRow): boolean {
   return r.status === "ok" && r.llm_parsed && r.jev_intent !== undefined && r.jev_confidence !== undefined && r.jev_model === JEV_MODEL;
 }
 
+/** A matched row that also counts in the verdict: schedule fires never do (spec amendment 13). */
+export function isJudgedMatch(r: ShadowRow): boolean {
+  return r.source !== "schedule" && isShadowMatched(r);
+}
+
 export function loadShadowRows(store: Pick<RunStore, "listIntentShadows" | "runLoopCapabilities" | "runSource">, sinceIso?: string): ShadowRow[] {
   return store.listIntentShadows(sinceIso).map(({ run_id, occurred_at, payload: p }) => ({
     run_id,
@@ -111,7 +116,7 @@ export function summarizeShadow(rows: ShadowRow[], missing: number, nowIso: stri
   // amendment 13): they are excluded from matched/thresholds/costly/clarify and per-language
   // grouping, and printed report-only via bySource. `rows` and `byStatus` stay over everything.
   const judged = rows.filter((r) => r.source !== "schedule");
-  const matched = judged.filter(isShadowMatched);
+  const matched = rows.filter(isJudgedMatch);
   // Tenure is the campaign's age — the first intent_shadow row EVER — not the first row inside --since.
   const first = campaignStartIso ?? rows[0]?.occurred_at;
   const days = first === undefined ? 0 : (Date.parse(nowIso) - Date.parse(first)) / DAY_MS;

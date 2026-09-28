@@ -1323,4 +1323,5 @@ Build + independent adversarial verification subagents; each live round found a 
   `src/llm/`. Live gate PASS from the worktree with `HOUGE_ENV_FILE` → main `.env`: turn 15.3 s,
   one `intent_shadow` row ok on `jev-1.13.0`, one `classify_shadow` attempt at $0.000031.
 - Open: Paco merges #1 then the stacked PR; arm on the mini (`HOUGE_JEV_SHADOW_ENABLED=true`,
-  build, kickstart); the parked `cli.ts` one-liner; the report after ~6 weeks.
+  build, kickstart); the report after ~6 weeks. The parked `cli.ts` one-liner landed the same day
+  (`isJudgedMatch`, shared by the summary and the CLI); Paco has armed the flag on the mini.

@@ -96,8 +96,7 @@ off, in `DISARM_FLAGS`, read per turn). Codex plan review (4 BLOCKERs folded in)
 final Fable + Codex whole-diff reviews (schedule-fire exclusion, first-sweep auth kill) → 2482 tests
 green, live gate PASS ($0.00003 per Jev call). **Next (Paco):** merge #1 then the stacked PR; add
 `HOUGE_JEV_SHADOW_ENABLED=true` to the mini's `.env`, build, kickstart; the report reads after ~6
-weeks. One parked follow-up: `cli.ts` confusion matrices still include schedule rows (verdict
-unaffected). Queued after it (Paco, 2026-09-25): multimodal ingest, then Paco's own inbox via the
+weeks. Queued after it (Paco, 2026-09-25): multimodal ingest, then Paco's own inbox via the
 quarantined `gmail_read` path.
 
 **Shipped 2026-09-06 (4 commits, all live after Paco's kickstart; full record in the spec doc):**
