@@ -1903,3 +1903,23 @@ verified first-hand against the live code before it was folded in.
 | 4 | BLOCKER | `runJevShadow` awaited the call with no deadline; its own test expected a never-settling call to leave no row, contradicting the 5 s hard timeout and "a row for every eligible turn" | The client's abort timer covers HTTP only; an injected or wedged call had no backstop | Task 2: `withDeadline` (6 s, `unref`'d, cleared on settle) → `status: "timeout"`. New fake-timer test. The core-worker test keeps "the turn never waits" and points at the unit test for the row |
 | 5 | RISK | Status and model counts were global; the design asks for missingness by language and model | Plan `ShadowSummary.byStatus`/`byModel` only | Task 5: `LangSummary.byStatus`/`byModel`, printed under each language's verdict; a model appears only for `ok` rows. New test |
 | 6 | NIT | `loadShadowRows` runs `runLoopCapabilities` once per row | True; same pattern as `replay.ts` | Accepted as-is: hundreds of rows over the campaign, in-process SQLite, read-only CLI. A comment says so |
+
+---
+
+## Final reviews (2026-09-28) — findings and disposition
+
+Whole-branch review (Fable, most capable model) over `d29708c..e43f11f` plus the mandatory Codex
+whole-diff pass (`codex exec -s read-only`, reasoning high). Both verified first-hand.
+
+| # | Source | Sev | Finding | Verified | Disposition |
+|---|---|---|---|---|---|
+| F1 | Fable | Important | The report counts schedule-fired turns in the verdict; the spec's replay result says they must not count but no amendment recorded it, so the plan built a source-blind report | Spec L373–376; `runs.source = 'schedule'` for fires (`schedule-tick.ts`); `ShadowRow` has no source | Fix wave: `runSource(run_id)` store read; `ShadowRow.source`; verdict, agreement, coverage and missingness over non-`schedule` rows; by-source counts printed. Spec amendment 13. Test: 40 scheduled rows at 100% must not flip a KILL |
+| F2 | Codex | P1 | `llm_leg_failing` needs ≥ 3 failures and zero `ok` inside 24 h; at ~1.5 turns/day a dead Jev key never alerts, contradicting the spec's "same day" | `LLM_LEG_FAILING_MIN_ATTEMPTS = 3`, window 24 h (`invariant-sweep.ts:62-63`); `HAVING attempts >= ? AND ok = 0` (`run-store.ts:4018`) | Fix wave: HAVING becomes `ok = 0 AND (attempts >= ? OR last_error_kind = 'auth')` for every provider — an auth rejection is deterministic. Spec amendment 14. Test: one `classify_shadow` auth failure → incident; a later `ok` clears it; `classify_replay*` auth rows still ignored |
+| M2 | Fable | Minor | Hermetic test spies `fetch` without a stub; a guard regression would hit the network before the assertion | `core-worker-jev-shadow.test.ts` | Fix wave: `mockRejectedValue` |
+| M4 | Fable | Minor | "No intent_shadow rows yet" also prints when `--since` is past the last row | `shadow-report.ts:126` | Fix wave: say "no rows since <since>" when the campaign has started |
+| M5 | Fable | Minor | configuration.md's dead-key sentence implied same-day detection | — | Fix wave: "at the next sweep (12 h cadence)"; true once F2 lands |
+| M3 | Fable | Minor | Never-settles test leaves an unref'd 6 s deadline | plan-as-written | Deferred; noted in the ledger |
+| M6 | Fable | Minor | Missingness window bounded by shadow-row times can miss the last pre-shutdown turn by ~6 s | real, immaterial | Deferred |
+
+Ledger triage: every per-task deferred minor and the one parked ruling (gate-script `throw`) were
+judged not-before-merge by the final reviewer; the ruling stands.

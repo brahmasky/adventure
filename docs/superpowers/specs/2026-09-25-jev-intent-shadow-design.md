@@ -250,6 +250,18 @@ These amend the bullets above. Where they conflict, these win.
     (timer `unref`'d, cleared on settle), so every eligible turn has a row except at shutdown.
     **`--since`** on the report narrows the evaluated rows and the missingness window only; the 4
     weeks are always measured from the first `intent_shadow` row ever.
+13. **Schedule fires do not count** (final whole-branch review 2026-09-28; the replay result above
+    said so but no amendment recorded it). The report reads each row's run `source`; rows from
+    `schedule` runs (2–3 repeated prompts at near-100% agreement, 34 of 56 turns in the last 30 days)
+    are excluded from the per-language verdict, its agreement, and its coverage denominator, and from
+    the missingness count. They are printed as report-only counts by source. Every other source
+    (`telegram`, `cli`) counts.
+14. **A rejected key is a dead leg at the first sweep** (Codex whole-diff review 2026-09-28).
+    `llm_leg_failing` needed ≥ 3 attempts with zero `ok` in 24 h; at ~1.5 turns/day a dead Jev key
+    would never reach that, so the "same day" claim in §Sweep was false as built. The rule becomes:
+    zero `ok` in the window AND (≥ 3 attempts OR the latest failure is `error_kind: "auth"`). An
+    auth rejection is deterministic, not unlucky, so one is enough — for any provider, not only Jev.
+    The incident still resolves on the next `ok`, and `classify_replay*` rows stay excluded.
 
 ## Error handling
 
