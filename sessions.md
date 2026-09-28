@@ -1298,3 +1298,29 @@ Build + independent adversarial verification subagents; each live round found a 
   57% coverage — a likely KILL on coverage; surfaced to Paco before building the live shadow.
 - Open: PR review/merge; live-shadow plan (Paco: GO); CJK cost-estimate under-count (~1.8×); the 2
   `jev_failed` validation rejects are unexplained.
+
+## 2026-09-28 — Jev intent shadow: live phase (BUILT; live gate PASS; stacked PR open)
+
+- Picked up where 09-26 stopped: the live-phase plan was committed and Codex had reviewed it
+  (4 BLOCKERs + 1 RISK + 1 NIT) but nothing was folded in. Verified each against the code: the
+  shadow started before `CapabilityRunner` admission (a denied classifier still paid Jev); `model`
+  accepted any string into the ledger; `--since` moved the 28-day clock; no outer deadline on a
+  hung call; global-only missingness. All folded into the plan and spec amendments 10–12.
+- Build: subagent-driven, TDD, six tasks (jev-client `error_kind` + named validation codes; the
+  pure shadow module with a 6 s unref'd deadline; `intent_shadow` ledger event + store reads;
+  wiring inside the classifier adapter's `execute` via a holder object; `jev-shadow report`;
+  gate script + docs). One implementer + one reviewer per task (Opus on the core-worker wiring);
+  every task approved first pass. 2474 tests green at e43f11f.
+- Final Fable whole-branch review + Codex whole-diff pass, both verified first-hand: (F1) the
+  replay result said schedule fires must not count but no amendment recorded it, so the report
+  judged an inflated population → `runSource`, verdict over non-schedule rows, by-source counts,
+  spec amendment 13; (F2, Codex P1) `llm_leg_failing` needs 3 failures in 24 h — at 1.5 turns/day
+  a dead key never alerts → `HAVING ok = 0 AND (attempts ≥ 3 OR last_error_kind = 'auth')` for
+  every provider, spec amendment 14. Plus three minors (fetch stub, "no rows since", doc wording).
+  One fix wave, scoped re-review clean; one parked minor (`cli.ts` confusion matrices still include
+  schedule rows; verdict unaffected).
+- First-hand: typecheck clean, 177 files / 2482 tests, build OK, no `"jev"` literal outside
+  `src/llm/`. Live gate PASS from the worktree with `HOUGE_ENV_FILE` → main `.env`: turn 15.3 s,
+  one `intent_shadow` row ok on `jev-1.13.0`, one `classify_shadow` attempt at $0.000031.
+- Open: Paco merges #1 then the stacked PR; arm on the mini (`HOUGE_JEV_SHADOW_ENABLED=true`,
+  build, kickstart); the parked `cli.ts` one-liner; the report after ~6 weeks.

@@ -282,8 +282,10 @@ Flip [Merge & reload] from human-tapped to autonomous (notify-after) ONLY when A
 8. **Jev intent shadow** (spec `docs/superpowers/specs/2026-09-25-jev-intent-shadow-design.md`) —
    replay built + run 2026-09-26: **GO** (91.7% agreement at confidence ≥ 0.7 on Paco's own 294 messages,
    57% coverage; 94.2% all-sources incl. schedule fires; $0.035).
-   Next: live shadow beside `classifyIntent` (flag-gated, advisory, never waits); promotion is a
-   separate spec after ≥ 60 matched live turns and ≥ 4 weeks. Queued behind it (Paco, 2026-09-25):
+   Live shadow built 2026-09-28 (`feat/jev-live-shadow`, stacked PR; live gate PASS): flag-gated,
+   advisory, never waits; `houge jev-shadow report` gives PROMOTE / HOLD / KILL per language.
+   Next: merge, arm on the mini, read the report after ≥ 60 matched live turns and ≥ 4 weeks;
+   promotion is a separate spec. Queued behind it (Paco, 2026-09-25):
    multimodal ingest (voice/photo/video → text at the Telegram adapter) and reading Paco's own
    inbox through the existing quarantined `gmail_read` path.
 

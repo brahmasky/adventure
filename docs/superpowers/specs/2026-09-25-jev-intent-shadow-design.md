@@ -1,7 +1,7 @@
 # Jev intent shadow — replay first, then live shadow
 
 Date: 2026-09-25
-Status: **replay phase built and run (2026-09-26) — verdict GO**; live shadow next (its own plan).
+Status: **replay GO (2026-09-26); live shadow BUILT (2026-09-28, branch `feat/jev-live-shadow`, live gate PASS, PR stacked on #1)** — arm after merge; verdict after ≥ 60 matched turns and ≥ 28 days.
 Design approved in brainstorming (Paco + Claude). Codex spec review 2026-09-25: 5 BLOCKERs +
 4 RISKs + 1 NIT, all verified against the code and folded in (see "Codex review"). Replay plan
 `docs/superpowers/plans/2026-09-25-jev-intent-shadow-replay.md`, built TDD by subagents on branch
