@@ -361,8 +361,10 @@ First run, 2026-09-26: **GO** — on Paco's own Telegram messages (294 turns) Je
 classifier 91.7% of the time at confidence ≥ 0.7, covering 57% of turns (Chinese 92.4%; English
 84.2% on 19 confident turns). The all-sources headline, 94.2% over 374 turns, is inflated by 70
 repeats of 3 scheduled prompts. $0.035 total. Jev's label stays advisory — it never gates
-an action. Next: the live shadow beside every real classification, then a separate promotion
-decision. Configuration: [docs/reference/configuration.md](docs/reference/configuration.md)
+an action. The live shadow runs beside every real classification when `HOUGE_JEV_SHADOW_ENABLED` is on (never
+awaited, advisory only). `houge jev-shadow report` gives the per-language PROMOTE / HOLD / KILL
+verdict once four weeks and 60 matched turns have accrued; promotion is a separate decision.
+Configuration: [docs/reference/configuration.md](docs/reference/configuration.md)
 ("Jev intent shadow"); design: `docs/superpowers/specs/2026-09-25-jev-intent-shadow-design.md`.
 
 ## Google identity — gmail_read / google_api
