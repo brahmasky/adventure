@@ -94,9 +94,9 @@ label + `llm_parsed`, Jev label/confidence/model or a code-owned `jev_error`, ne
 conf ≥ 0.7, ≥ 60% coverage; schedule fires never count). Flag `HOUGE_JEV_SHADOW_ENABLED` (default
 off, in `DISARM_FLAGS`, read per turn). Codex plan review (4 BLOCKERs folded in) + per-task reviews +
 final Fable + Codex whole-diff reviews (schedule-fire exclusion, first-sweep auth kill) → 2482 tests
-green, live gate PASS ($0.00003 per Jev call). **Next (Paco):** merge #1 then the stacked PR; add
-`HOUGE_JEV_SHADOW_ENABLED=true` to the mini's `.env`, build, kickstart; the report reads after ~6
-weeks. Queued after it (Paco, 2026-09-25): multimodal ingest, then Paco's own inbox via the
+green, live gate PASS ($0.00003 per Jev call). **Merged + armed 2026-09-28** (#1 b95a612, #2 861c2fc;
+flag on, daemon kickstarted). **Next:** confirm the first real turn's `intent_shadow` row; the report
+reads after ~6 weeks. Queued after it (Paco, 2026-09-25): multimodal ingest, then Paco's own inbox via the
 quarantined `gmail_read` path.
 
 **Shipped 2026-09-06 (4 commits, all live after Paco's kickstart; full record in the spec doc):**

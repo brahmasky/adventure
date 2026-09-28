@@ -1322,6 +1322,6 @@ Build + independent adversarial verification subagents; each live round found a 
 - First-hand: typecheck clean, 177 files / 2482 tests, build OK, no `"jev"` literal outside
   `src/llm/`. Live gate PASS from the worktree with `HOUGE_ENV_FILE` → main `.env`: turn 15.3 s,
   one `intent_shadow` row ok on `jev-1.13.0`, one `classify_shadow` attempt at $0.000031.
-- Open: Paco merges #1 then the stacked PR; arm on the mini (`HOUGE_JEV_SHADOW_ENABLED=true`,
-  build, kickstart); the report after ~6 weeks. The parked `cli.ts` one-liner landed the same day
+- Shipped: #1 (b95a612) and #2 (861c2fc) merged to main the same day; built and kickstarted on the
+  mini with the flag armed. Open: the first real turn's `intent_shadow` row; the report after ~6 weeks. The parked `cli.ts` one-liner landed the same day
   (`isJudgedMatch`, shared by the summary and the CLI); Paco has armed the flag on the mini.
