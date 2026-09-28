@@ -240,6 +240,16 @@ These amend the bullets above. Where they conflict, these win.
    denominator. Shutdown losses have no language (it would take reading message text) and are
    reported overall.
 9. **"4 weeks"** is measured from the first `intent_shadow` row to the time the report runs.
+10. **Admission first** (Codex plan review 2026-09-26). The Jev call starts inside the classifier
+    adapter, after `CapabilityRunner` has admitted the classifier (budget reserved, contract allows
+    it). A denied classifier never sends the message to Jev. Concurrency with the LLM call is kept.
+11. **`jev_model` is a bounded id.** jev-client validates the response's `model` against
+    `/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/` (else `model_invalid`, a parse failure), so provider prose
+    can never reach the audit or the ledger through that field.
+12. **Outer deadline.** `runJevShadow` resolves `timeout` after 6 s even if the client never settles
+    (timer `unref`'d, cleared on settle), so every eligible turn has a row except at shutdown.
+    **`--since`** on the report narrows the evaluated rows and the missingness window only; the 4
+    weeks are always measured from the first `intent_shadow` row ever.
 
 ## Error handling
 

@@ -25,6 +25,11 @@ turns those rows into a PROMOTE / HOLD / KILL verdict per language.
 §"Live-shadow amendments from the replay and the plan research (2026-09-26)". The amendments win
 where they conflict.
 
+**Codex plan review (2026-09-26):** 4 BLOCKERs + 1 RISK + 1 NIT, each verified first-hand against the
+live code and folded into the tasks below (B1 admission-first, B2 bounded `jev_model`, B3 tenure vs
+`--since`, B4 outer deadline, R5 per-language missingness; N6 accepted as-is). Record and disposition:
+§"Codex plan review" at the end.
+
 **Builds on:** PR #1 (`feat/jev-replay`). This branch (`feat/jev-live-shadow`) is stacked on it and
 reuses `src/jev/jev-client.ts`, `src/jev/intent-question.ts`, `src/jev/replay.ts` and
 `src/jev/replay-report.ts`.
@@ -39,6 +44,13 @@ reuses `src/jev/jev-client.ts`, `src/jev/intent-question.ts`, `src/jev/replay.ts
 - **Turn safety:**
   - The turn **never awaits** Jev.
   - Nothing in the shadow may throw into a turn.
+  - The shadow starts **inside the classifier adapter's `execute`** — only after `CapabilityRunner`
+    has admitted the call (budget reserved, contract allows `llm_answer`). A denied classifier never
+    sends the message to Jev. (Codex B1.)
+  - `runJevShadow` has an **outer deadline**, `JEV_SHADOW_DEADLINE_MS` = 6 000 ms, `unref`'d and
+    cleared on settle: a call that never settles still resolves to `status: "timeout"`, so every
+    eligible turn gets a row except at shutdown. The client's own 5 s abort normally fires first and
+    writes the `llm_attempt` row. (Codex B4.)
   - Jev output never enters a prompt and never gates an action. It goes only to the ledger.
 - **Flag:** `HOUGE_JEV_SHADOW_ENABLED`, default OFF, accepts `1/true/yes/on` (trimmed,
   case-insensitive).
@@ -56,6 +68,9 @@ reuses `src/jev/jev-client.ts`, `src/jev/intent-question.ts`, `src/jev/replay.ts
   - `jev_*` fields only on `ok`; `jev_error` only on non-`ok`.
   - `modality: "text"`.
   - **Never message text.**
+  - `jev_model` is the response's `model` field after jev-client validates it against a bounded id
+    format (`/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/`, else the code-owned `model_invalid`), so provider
+    prose can never reach the audit or the ledger through it. (Codex B2.)
 - **Recording rules:**
   - An `intent_shadow` row is written only when the LLM classifier succeeded.
   - `llm_intent` is the RAW classifier label, taken before the clarify cap and the `recordedIntent`
@@ -63,14 +78,18 @@ reuses `src/jev/jev-client.ts`, `src/jev/intent-question.ts`, `src/jev/replay.ts
   - `llm_parsed` is computed by `llmLabel`.
 - **Promotion bar, per language:**
   - HOLD until ≥ 60 matched turns AND ≥ 28 days since the first shadow row.
+    The 28 days are measured from the first `intent_shadow` row **ever** (`firstIntentShadowAt`), never
+    from the first row inside `--since`. `--since` only narrows the rows that are counted and matched,
+    and the window the missingness count uses. (Codex B3.)
   - Then PROMOTE iff agreement ≥ 0.90 at Jev confidence ≥ 0.7 AND coverage ≥ 0.60; else KILL.
   - Matched = `status ok` AND `llm_parsed` AND `jev_model === JEV_MODEL`.
   - Coverage = (confidence ≥ 0.7 matched turns) ÷ (that language's `intent_shadow` rows, every
     status).
+  - The report prints status counts and Jev-model counts **per language** as well as overall; a model
+    appears only where an `ok` row returned one. (Codex R5.)
 - **Conventions:**
   - Conventional Commits. Each commit message ends with a blank line and then exactly:
-    `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` and
-    `Claude-Session: https://claude.ai/code/session_01RfAsvE8x4stKRZ753huKgU`.
+    `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
   - `git add` named files only.
   - Tests with `npx vitest run <path>`; `npm run typecheck`; full `npx vitest run` before each commit.
 
@@ -109,7 +128,7 @@ reuses `src/jev/jev-client.ts`, `src/jev/intent-question.ts`, `src/jev/replay.ts
     `no_key` and `auth` carry `error_kind: "auth"`; `error` carries the attempt's kind (`timeout`,
     `transport`, `parse`, `other`); `fused` has none.
   - A validation failure's `detail` is `response failed validation: <code>`, with `<code>` one of:
-    `body_not_object`, `model_missing`, `answers_missing`, `usage_input_tokens_missing`,
+    `body_not_object`, `model_missing`, `model_invalid`, `answers_missing`, `usage_input_tokens_missing`,
     `answer_missing:<question id>`, `answer_not_object`, `not_choice`, `choice_not_option`,
     `confidence_out_of_range`, `probabilities_missing`, `probability_keys`, `probability_sum`.
 
@@ -136,6 +155,14 @@ reuses `src/jev/jev-client.ts`, `src/jev/intent-question.ts`, `src/jev/replay.ts
     const fetchImpl = vi.fn(async () => json(200, body));
     const { call } = client(fetchImpl as unknown as typeof fetch);
     expect(await call(REQ)).toMatchObject({ ok: false, detail: "response failed validation: usage_input_tokens_missing" });
+  });
+
+  it("a model field that is not a bounded id is rejected by name — provider prose can never reach the ledger as jev_model (Codex B2)", async () => {
+    const prose = { ...okBody(), model: "jev-1.13.0 — echoing your message: what's the ASX close today?" };
+    const fetchImpl = vi.fn(async () => json(200, prose));
+    const { call, audit } = client(fetchImpl as unknown as typeof fetch);
+    expect(await call(REQ)).toMatchObject({ ok: false, reason: "error", error_kind: "parse", detail: "response failed validation: model_invalid" });
+    expect(JSON.stringify(audit.attempts)).not.toContain("echoing");
   });
 
   it("failures carry error_kind so the live shadow can tell a timeout from other errors", async () => {
@@ -188,9 +215,13 @@ In `createJevClient`, update the three failure returns (the `fused` return stays
 ```
 
 Replace `validateResponse` and `validateChoice` with versions that name the failed check, and
-update the one call site in `attemptOnce`:
+update the one call site in `attemptOnce`. Add `JEV_MODEL_ID` beside `PROBABILITY_SUM_TOLERANCE`:
 
 ```ts
+/** A model id is a short token (Codex B2): anything else is a parse failure, so a response that echoes
+ *  prose in `model` can never be written to the audit or the ledger. */
+const JEV_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+
 type Validated<T> = { ok: true; value: T } | { ok: false; code: string };
 
 function validateResponse(
@@ -200,6 +231,7 @@ function validateResponse(
   if (typeof body !== "object" || body === null) return { ok: false, code: "body_not_object" };
   const b = body as Record<string, unknown>;
   if (typeof b.model !== "string") return { ok: false, code: "model_missing" };
+  if (!JEV_MODEL_ID.test(b.model)) return { ok: false, code: "model_invalid" };
   if (typeof b.answers !== "object" || b.answers === null) return { ok: false, code: "answers_missing" };
   const usage = b.usage as Record<string, unknown> | undefined;
   if (typeof usage?.input_tokens !== "number") return { ok: false, code: "usage_input_tokens_missing" };
@@ -280,6 +312,7 @@ export function llmLabel(raw: string): { intent: Intent; parsed: boolean };
 export type JevShadowCall = (req: JevRequest) => Promise<JevResult>;
 export type ShadowStatus = "ok" | "skipped_state_too_large" | "error" | "timeout" | "fused" | "no_key" | "auth";
 export const JEV_SHADOW_TIMEOUT_MS = 5_000;
+export const JEV_SHADOW_DEADLINE_MS = 6_000;
 export interface JevShadowOutcome {
   status: ShadowStatus; lang: Lang;
   jev?: { intent: string; confidence: number; probabilities: Record<string, number>; model: string; latency_ms: number };
@@ -300,7 +333,7 @@ export function intentShadowPayload(outcome: JevShadowOutcome, llmRaw: string): 
 ```ts
 import { describe, expect, it, vi } from "vitest";
 import type { JevRequest, JevResult } from "../../src/jev/jev-client.js";
-import { intentShadowPayload, resolveJevShadowEnabled, runJevShadow, type JevShadowOutcome } from "../../src/jev/shadow.js";
+import { intentShadowPayload, JEV_SHADOW_DEADLINE_MS, resolveJevShadowEnabled, runJevShadow, type JevShadowOutcome } from "../../src/jev/shadow.js";
 import { MAX_LATEST_MESSAGE_CHARS } from "../../src/jev/intent-question.js";
 
 const ok = (choice = "research", confidence = 0.91, model = "jev-1.13.0"): JevResult => ({
@@ -343,6 +376,17 @@ describe("runJevShadow — never rejects; every outcome is a status", () => {
     const threw = await runJevShadow(() => { throw new Error("boom"); }, "hi", [], 500, 0);
     const rejected = await runJevShadow(async () => { throw new Error("boom"); }, "hi", [], 500, 0);
     for (const out of [threw, rejected]) expect(out).toMatchObject({ status: "error", jev_error: "shadow call threw" });
+  });
+
+  it("a call that never settles resolves timeout at the outer deadline — a row exists even if the client's own timer never fires (Codex B4)", async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = runJevShadow(() => new Promise<JevResult>(() => {}), "hi", [], 500, 0);
+      await vi.advanceTimersByTimeAsync(JEV_SHADOW_DEADLINE_MS);
+      expect(await pending).toMatchObject({ status: "timeout", lang: "en", jev_error: `no result after ${JEV_SHADOW_DEADLINE_MS}ms (shadow deadline)` });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("an over-cap message is skipped without calling Jev (egress cap, never truncated)", async () => {
@@ -462,6 +506,8 @@ import { llmLabel } from "./labels.js";
 export type JevShadowCall = (req: JevRequest) => Promise<JevResult>;
 export type ShadowStatus = "ok" | "skipped_state_too_large" | "error" | "timeout" | "fused" | "no_key" | "auth";
 export const JEV_SHADOW_TIMEOUT_MS = 5_000;
+/** Backstop over the client's own abort (Codex B4): a shadow that never settles still yields a `timeout` row. */
+export const JEV_SHADOW_DEADLINE_MS = 6_000;
 
 export interface JevShadowOutcome {
   status: ShadowStatus;
@@ -492,7 +538,10 @@ export function resolveJevShadowEnabled(env: NodeJS.ProcessEnv): boolean {
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
-/** Run Jev on the classifier's inputs. Resolves on every path — a throw becomes `status: "error"`. */
+/**
+ * Run Jev on the classifier's inputs. Resolves on every path — a throw becomes `status: "error"`, and
+ * a call that never settles becomes `status: "timeout"` at the outer deadline.
+ */
 export async function runJevShadow(
   call: JevShadowCall,
   message: string,
@@ -501,14 +550,15 @@ export async function runJevShadow(
   recentClarifyCount: number
 ): Promise<JevShadowOutcome> {
   const lang = langOf(message);
-  let result: JevResult;
+  let result: JevResult | "deadline";
   try {
     const built = buildJevIntentRequest(message, recentTurns, turnChars, recentClarifyCount);
     if (!built.ok) return { status: "skipped_state_too_large", lang };
-    result = await call(built.request);
+    result = await withDeadline(call(built.request), JEV_SHADOW_DEADLINE_MS);
   } catch {
     return { status: "error", lang, jev_error: "shadow call threw" };
   }
+  if (result === "deadline") return { status: "timeout", lang, jev_error: `no result after ${JEV_SHADOW_DEADLINE_MS}ms (shadow deadline)` };
   if (!result.ok) return { status: failureStatus(result), lang, jev_error: result.detail };
   const answer = result.answers.intent;
   if (!answer) return { status: "error", lang, jev_error: "response failed validation: answer_missing:intent" };
@@ -522,6 +572,16 @@ export async function runJevShadow(
 function failureStatus(result: Extract<JevResult, { ok: false }>): ShadowStatus {
   if (result.reason === "no_key" || result.reason === "fused" || result.reason === "auth") return result.reason;
   return result.error_kind === "timeout" ? "timeout" : "error";
+}
+
+/** The timer is unref'd (a pending shadow never holds the daemon open at shutdown) and cleared on settle. */
+function withDeadline<T>(p: Promise<T>, ms: number): Promise<T | "deadline"> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<"deadline">((resolve) => {
+    timer = setTimeout(() => resolve("deadline"), ms);
+    timer.unref();
+  });
+  return Promise.race([p, deadline]).finally(() => clearTimeout(timer));
 }
 
 /** The `intent_shadow` payload: the Jev outcome joined to the classifier's RAW reply. Pure. */
@@ -586,6 +646,7 @@ git commit -m "feat(jev): live shadow module — never-rejecting Jev run, intent
 recordIntentShadow(run_id: string, payload: IntentShadowPayload): void;
 listIntentShadows(sinceIso?: string): Array<{ run_id: string; occurred_at: string; payload: Record<string, unknown> }>;
 countClassifiedRunsWithoutShadow(fromIso: string, toIso: string): number;
+firstIntentShadowAt(): string | undefined;
 ```
 
 - [ ] **Step 1: Write the failing tests** in `tests/run/intent-shadow-store.test.ts`
@@ -693,6 +754,21 @@ describe("intent_shadow in the ledger", () => {
       store.close();
     }
   });
+
+  it("firstIntentShadowAt: the campaign start — the oldest intent_shadow row, independent of any --since (Codex B3)", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const store = RunStore.openInMemory();
+    try {
+      expect(store.firstIntentShadowAt()).toBeUndefined();
+      at("2026-09-01T00:00:00.000Z");
+      store.recordIntentShadow(createRun(store, "f1"), payload());
+      at("2026-09-05T00:00:00.000Z");
+      store.recordIntentShadow(createRun(store, "f2"), payload());
+      expect(store.firstIntentShadowAt()).toBe("2026-09-01T00:00:00.000Z");
+    } finally {
+      store.close();
+    }
+  });
 });
 ```
 
@@ -732,6 +808,14 @@ In `src/run/run-store.ts`:
       ORDER BY occurred_at ASC, sequence ASC
     `).all<{ run_id: string; occurred_at: string; payload_json: string }>(sinceIso ?? "")
       .map((r) => ({ run_id: r.run_id, occurred_at: r.occurred_at, payload: JSON.parse(r.payload_json) as Record<string, unknown> }));
+  }
+
+  /** When the shadow campaign started: the oldest `intent_shadow` row. The report's 28-day tenure clock. */
+  firstIntentShadowAt(): string | undefined {
+    return this.db.prepare(`
+      SELECT occurred_at FROM ledger_events WHERE event_type = 'intent_shadow'
+      ORDER BY occurred_at ASC, sequence ASC LIMIT 1
+    `).get<{ occurred_at: string }>()?.occurred_at;
   }
 
   /**
@@ -799,6 +883,7 @@ import { RECONCILE_DISCIPLINE } from "../../src/capabilities/reconcile.js";
 import { GATE_A_DISCIPLINE } from "../../src/capabilities/skill-router.js";
 import { LOOP_DISCIPLINE } from "../../src/prompt/composer.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
+import { CapabilityRunner } from "../../src/capabilities/capability-runner.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import type { JevRequest, JevResult } from "../../src/jev/jev-client.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -929,7 +1014,7 @@ describe("the live Jev intent shadow inside classifyIntent", () => {
     }
   });
 
-  it("the turn NEVER waits: a Jev call that never settles leaves the turn unaffected and writes no row", async () => {
+  it("the turn NEVER waits: a Jev call that never settles leaves the turn unaffected — its timeout row lands at the outer deadline (shadow.test.ts)", async () => {
     process.env.HOUGE_JEV_SHADOW_ENABLED = "true";
     const store = RunStore.openInMemory();
     try {
@@ -992,6 +1077,30 @@ describe("the live Jev intent shadow inside classifyIntent", () => {
       const result = await worker(store, fakeLlm('{"intent":"answer"}', [], undefined, true), async () => jevOk()).executeRun(run, "w");
       expect(result.status).not.toBe("completed");
       await new Promise((r) => setTimeout(r, 20));
+      expect(shadowRows(store, run)).toHaveLength(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("runner admission comes FIRST: a classifier the runner denies never sends the message to Jev (Codex B1)", async () => {
+    process.env.HOUGE_JEV_SHADOW_ENABLED = "true";
+    const store = RunStore.openInMemory();
+    const original = CapabilityRunner.prototype.execute;
+    vi.spyOn(CapabilityRunner.prototype, "execute").mockImplementation(async function (this: CapabilityRunner, input) {
+      const system = typeof input.input.system === "string" ? input.input.system : "";
+      if (input.capability === "llm_answer" && system.includes(INTENT_DISCIPLINE)) {
+        return { status: "denied", reason: "budget exhausted (test)", recovery_hint: "Write a partial report" };
+      }
+      return original.call(this, input);
+    });
+    try {
+      const jev = vi.fn(async () => jevOk());
+      const run = turnRun(store, "a denied turn");
+      const result = await worker(store, fakeLlm('{"intent":"answer"}'), jev).executeRun(run, "w");
+      expect(result.status).not.toBe("completed");
+      await new Promise((r) => setTimeout(r, 20));
+      expect(jev).not.toHaveBeenCalled();
       expect(shadowRows(store, run)).toHaveLength(0);
     } finally {
       store.close();
@@ -1160,26 +1269,47 @@ New private helpers, next to `llmAdapterFor`:
 ```
 
 In `classifyIntent`:
-- Immediately BEFORE `const result = await new CapabilityRunner(registry).execute({`, insert:
+- Replace the existing `registry.register({ name: "llm_answer", … execute: this.llmAdapterFor(claim.run_id, "classify") })`
+  call with this, so the shadow starts INSIDE the adapter — after the runner's admission:
 
 ```ts
-    // Jev intent shadow: started BEFORE the classifier so the two run concurrently on identical
-    // inputs. Never awaited here; runJevShadow resolves on every path.
+    // Jev intent shadow: started INSIDE the classifier adapter, i.e. only after CapabilityRunner has
+    // admitted the call (budget reserved, contract allows it) — a denied classifier never sends the
+    // message to Jev. Not awaited: Jev and the classifier run concurrently on identical inputs, and
+    // runJevShadow resolves on every path. A holder object rather than a `let`, so TypeScript keeps
+    // the widened type after the await (closure assignments do not reset narrowing).
     const shadowCall = this.jevShadowCallFor(claim.run_id);
-    const shadow = shadowCall ? runJevShadow(shadowCall, message, recentTurns, turnChars, recentClarifyCount) : null;
+    const shadow: { pending: Promise<JevShadowOutcome> | null } = { pending: null };
+    const classifier = this.llmAdapterFor(claim.run_id, "classify");
+    registry.register({
+      name: "llm_answer",
+      category: "tool",
+      side_effect_level: "external_read",
+      risk_level: "low",
+      timeout_ms: llmTimeoutMs,
+      output_limit_bytes: 100_000,
+      // Phase 3.1 (W3): the intent classifier is a `classify`-role cheap-chain call → instrumented.
+      execute: shadowCall
+        ? (input) => {
+            shadow.pending = runJevShadow(shadowCall, message, recentTurns, turnChars, recentClarifyCount);
+            return classifier(input);
+          }
+        : classifier
+    });
 ```
 
 - Replace the method's tail (from `const raw = ...` to the end):
 
 ```ts
     const raw = typeof result.output.answer === "string" ? result.output.answer : "";
-    if (shadow) this.recordJevShadow(claim.run_id, shadow, raw);
+    if (shadow.pending) this.recordJevShadow(claim.run_id, shadow.pending, raw);
     return { ok: true, classification: parseIntent(raw) };
 ```
 
 - Leave the `if (result.status !== "succeeded") { return { ok: false, failure: result }; }` branch
-  unchanged. With no label there is no row; the pending `shadow` resolves harmlessly because it
-  never rejects.
+  unchanged. With no label there is no row. A denied or unknown-capability result never ran the
+  adapter, so `shadow.pending` is still null and Jev was never called; a failed or timed-out adapter
+  leaves a pending shadow that resolves harmlessly because it never rejects.
 
 The existing guard in `tests/llm/audit-coverage.test.ts` now also checks this `createJevClient(`
 site (inline `audit: this.runStore.llmAuditSink(` + `meteredBreached:`). It must stay green.
@@ -1209,7 +1339,7 @@ git commit -m "feat(core): live Jev intent shadow beside classifyIntent — conc
 - Test: `tests/jev/shadow-report.test.ts`
 
 **Interfaces:**
-- Consumes: Task 3 `listIntentShadows`, `countClassifiedRunsWithoutShadow`; `runLoopCapabilities`;
+- Consumes: Task 3 `listIntentShadows`, `countClassifiedRunsWithoutShadow`, `firstIntentShadowAt`; `runLoopCapabilities`;
   Task 2 `observedAction`, `ObservedAction`; `JEV_MODEL`.
 - Produces:
 ```ts
@@ -1223,13 +1353,14 @@ export function confusion<R extends AgreementRow>(rows: R[], other: (r: R) => st
 export interface ShadowRow { run_id: string; occurred_at: string; status: string; lang: string; llm_intent: string; llm_parsed: boolean;
   jev_intent?: string; jev_confidence?: number; jev_model?: string; jev_error?: string; observed_action: ObservedAction }
 export type LangVerdict = "PROMOTE" | "HOLD" | "KILL";
-export interface LangSummary { rows: number; matched: number; agreement: number | null; coverage: number | null; verdict: LangVerdict; reason: string }
+export interface LangSummary { rows: number; matched: number; agreement: number | null; coverage: number | null; verdict: LangVerdict; reason: string;
+  byStatus: Record<string, number>; byModel: Record<string, number> }
 export interface ShadowSummary { rows: number; matched: number; missing: number; days: number; byStatus: Record<string, number>;
   byModel: Record<string, number>; thresholds: ReturnType<typeof atThreshold>[]; byLang: Record<string, LangSummary>;
   costly: { research: number; missed: number }; clarify: { llm: number; matched: number } }
 export function isShadowMatched(r: ShadowRow): boolean;
 export function loadShadowRows(store: Pick<RunStore, "listIntentShadows" | "runLoopCapabilities">, sinceIso?: string): ShadowRow[];
-export function summarizeShadow(rows: ShadowRow[], missing: number, nowIso: string): ShadowSummary;
+export function summarizeShadow(rows: ShadowRow[], missing: number, nowIso: string, campaignStartIso?: string): ShadowSummary;
 export function formatShadowReport(s: ShadowSummary, matchedRows: ShadowRow[]): string;
 export function parseShadowReportArgs(argv: string[]): { ok: true; sinceIso?: string } | { ok: false; error: string };
 ```
@@ -1308,6 +1439,20 @@ describe("summarizeShadow — the per-language promotion bar", () => {
     expect(s.costly).toEqual({ research: 12, missed: 2 });
     expect(s.clarify).toEqual({ llm: 7, matched: 3 });
   });
+
+  it("tenure is the campaign's age, not the age of the first --since row (Codex B3)", () => {
+    // 100 rows in the last day, but the campaign started 30 days ago: not a tenure HOLD.
+    const recent = rows(100).map((r) => ({ ...r, occurred_at: after(29) }));
+    expect(summarizeShadow(recent, 0, after(30), START).byLang.zh!.verdict).toBe("PROMOTE");
+    expect(summarizeShadow(recent, 0, after(30)).byLang.zh!.verdict).toBe("HOLD");
+  });
+
+  it("status and model counts are split per language — missingness by language and model (Codex R5)", () => {
+    const s = summarizeShadow([...rows(5), ...rows(2, { lang: "en" }, 5), failed(7), row(8, { jev_model: "jev-1.14.0" })], 0, after(30));
+    expect(s.byLang.zh!.byStatus).toEqual({ ok: 6, timeout: 1 });
+    expect(s.byLang.zh!.byModel).toEqual({ [JEV_MODEL]: 5, "jev-1.14.0": 1 });
+    expect(s.byLang.en!.byStatus).toEqual({ ok: 2 });
+  });
 });
 
 describe("formatShadowReport", () => {
@@ -1316,6 +1461,7 @@ describe("formatShadowReport", () => {
     const text = formatShadowReport(summarizeShadow(all, 3, after(30)), all.filter(isShadowMatched));
     expect(text).toMatch(/zh: PROMOTE/);
     expect(text).toMatch(/en: HOLD/);
+    expect(text).toMatch(/by status \{"ok":80\}/);
     expect(text).toMatch(/missing 3/);
     expect(text).toMatch(/Costly direction/);
     expect(text).toMatch(/Clarify/);
@@ -1409,7 +1555,16 @@ export interface ShadowRow {
   observed_action: ObservedAction;
 }
 export type LangVerdict = "PROMOTE" | "HOLD" | "KILL";
-export interface LangSummary { rows: number; matched: number; agreement: number | null; coverage: number | null; verdict: LangVerdict; reason: string }
+export interface LangSummary {
+  rows: number;
+  matched: number;
+  agreement: number | null;
+  coverage: number | null;
+  verdict: LangVerdict;
+  reason: string;
+  byStatus: Record<string, number>;
+  byModel: Record<string, number>;
+}
 export interface ShadowSummary {
   rows: number;
   matched: number;
@@ -1440,6 +1595,7 @@ export function loadShadowRows(store: Pick<RunStore, "listIntentShadows" | "runL
     ...(typeof p.jev_confidence === "number" ? { jev_confidence: p.jev_confidence } : {}),
     ...(typeof p.jev_model === "string" ? { jev_model: p.jev_model } : {}),
     ...(typeof p.jev_error === "string" ? { jev_error: p.jev_error } : {}),
+    // One loop-capabilities read per row, the replay's pattern: hundreds of rows on in-process SQLite.
     observed_action: observedAction(store.runLoopCapabilities(run_id))
   }));
 }
@@ -1455,7 +1611,11 @@ function langSummary(langRows: ShadowRow[], days: number): LangSummary {
   const slice = matched.filter((r) => (r.jev_confidence ?? 0) >= GATE_CONFIDENCE);
   const agreement = slice.length > 0 ? slice.filter((r) => r.jev_intent === r.llm_intent).length / slice.length : null;
   const coverage = langRows.length > 0 ? slice.length / langRows.length : null;
-  const base = { rows: langRows.length, matched: matched.length, agreement, coverage };
+  const base = {
+    rows: langRows.length, matched: matched.length, agreement, coverage,
+    byStatus: countBy(langRows, (r) => r.status),
+    byModel: countBy(langRows.filter((r) => r.status === "ok" && r.jev_model !== undefined), (r) => r.jev_model ?? "")
+  };
   if (matched.length < MIN_MATCHED || days < MIN_DAYS) {
     return { ...base, verdict: "HOLD", reason: `needs ≥${MIN_MATCHED} matched turns and ≥${MIN_DAYS} days (has ${matched.length}, ${days.toFixed(1)} days)` };
   }
@@ -1465,9 +1625,10 @@ function langSummary(langRows: ShadowRow[], days: number): LangSummary {
   return { ...base, verdict: "KILL", reason: `agreement ${pct(agreement)} (bar ${pct(PROMOTE_AGREEMENT)}), coverage ${pct(coverage)} (bar ${pct(PROMOTE_COVERAGE)})` };
 }
 
-export function summarizeShadow(rows: ShadowRow[], missing: number, nowIso: string): ShadowSummary {
+export function summarizeShadow(rows: ShadowRow[], missing: number, nowIso: string, campaignStartIso?: string): ShadowSummary {
   const matched = rows.filter(isShadowMatched);
-  const first = rows[0]?.occurred_at;
+  // Tenure is the campaign's age — the first intent_shadow row EVER — not the first row inside --since.
+  const first = campaignStartIso ?? rows[0]?.occurred_at;
   const days = first === undefined ? 0 : (Date.parse(nowIso) - Date.parse(first)) / DAY_MS;
   const byLang: Record<string, LangSummary> = {};
   for (const lang of new Set(rows.map((r) => r.lang))) byLang[lang] = langSummary(rows.filter((r) => r.lang === lang), days);
@@ -1491,7 +1652,10 @@ export function formatShadowReport(s: ShadowSummary, matchedRows: ShadowRow[]): 
   if (s.rows === 0) return "No intent_shadow rows yet — is HOUGE_JEV_SHADOW_ENABLED on, and has the daemon been restarted?";
   return [
     `Verdict by language (bar: ≥${pct(PROMOTE_AGREEMENT)} agreement at Jev confidence ≥${GATE_CONFIDENCE}, ≥${pct(PROMOTE_COVERAGE)} coverage, ≥${MIN_MATCHED} matched turns, ≥${MIN_DAYS} days):`,
-    ...Object.entries(s.byLang).map(([lang, v]) => `  ${lang}: ${v.verdict} — ${v.reason}`),
+    ...Object.entries(s.byLang).flatMap(([lang, v]) => [
+      `  ${lang}: ${v.verdict} — ${v.reason}`,
+      `     rows ${v.rows}, by status ${JSON.stringify(v.byStatus)}, by Jev model ${JSON.stringify(v.byModel)}`
+    ]),
     "Promote only the languages marked PROMOTE; the promotion itself is a separate spec.",
     "",
     `Counts: shadowed ${s.rows}, matched ${s.matched}, missing ${s.missing} (shutdown, flag toggled, or failure after the classifier); by status ${JSON.stringify(s.byStatus)}`,
@@ -1540,7 +1704,7 @@ export function parseShadowReportArgs(argv: string[]): { ok: true; sinceIso?: st
       const first = rows[0]?.occurred_at;
       const last = rows[rows.length - 1]?.occurred_at;
       const missing = first !== undefined && last !== undefined ? store.countClassifiedRunsWithoutShadow(first, last) : 0;
-      console.log(formatShadowReport(summarizeShadow(rows, missing, new Date().toISOString()), rows.filter(isShadowMatched)));
+      console.log(formatShadowReport(summarizeShadow(rows, missing, new Date().toISOString(), store.firstIntentShadowAt()), rows.filter(isShadowMatched)));
       process.exitCode = 0;
     } finally {
       store.close();
@@ -1669,7 +1833,7 @@ is in `DISARM_FLAGS` and read per turn).
 
 ```bash
 houge jev-shadow report                    # PROMOTE / HOLD / KILL per language
-houge jev-shadow report --since 2026-10-01T00:00:00Z
+houge jev-shadow report --since 2026-10-01T00:00:00Z   # narrows the evaluated rows; tenure still counts from the first shadow row
 node scripts/live-gate-jev-shadow.mjs      # opt-in: one real turn in memory, real classifier + real Jev
 ```
 
@@ -1723,3 +1887,19 @@ git commit -m "docs(jev): live shadow — flag, report, live gate script"
   ~1.5 turns/day), run `houge jev-shadow report`. For each language marked PROMOTE, open a promotion
   spec, which must keep "never overrule a research call from the LLM".
 - [ ] **Step 6: Docs sync** at ship: spec status line, `tasks/todo.md`, `sessions.md`, `docs/ROADMAP.md` item 8.
+
+---
+
+## Codex plan review (2026-09-26) — findings and disposition
+
+`codex exec -s read-only` over this plan + the spec amendments, before any code. Every finding was
+verified first-hand against the live code before it was folded in.
+
+| # | Sev | Finding | Verified | Disposition |
+|---|---|---|---|---|
+| 1 | BLOCKER | The shadow started before `CapabilityRunner.execute`, so a classifier the runner denies (budget, contract) still sends the message to Jev and pays for it | `capability-runner.ts` has three `denied` returns before `executeAdapter` | Task 4: the shadow starts inside the `llm_answer` adapter's `execute`, after admission; a holder object carries the promise out. New test: a denied classifier → Jev never called, no row |
+| 2 | BLOCKER | `validateResponse` accepts any string as `model`; the shadow writes it as `jev_model`, so echoed prose could enter the ledger | `jev-client.ts` line 140 — `typeof b.model !== "string"` only; the audit already writes `a.result.model` | Task 1: `JEV_MODEL_ID` (bounded token) → `model_invalid`, a parse failure. New test with prose in `model`: rejected by name, nothing echoed in the audit |
+| 3 | BLOCKER | `--since` filtered the rows, then the 28 days were measured from the first *filtered* row — amendment 9 says the first shadow row | Plan `summarizeShadow` used `rows[0]`; the CLI passed `args.sinceIso` to `loadShadowRows` | Task 3: `firstIntentShadowAt()`. Task 5: `summarizeShadow(…, campaignStartIso)`; `--since` narrows the evaluated rows and the missingness window only. New test: old campaign + recent rows → not a tenure HOLD |
+| 4 | BLOCKER | `runJevShadow` awaited the call with no deadline; its own test expected a never-settling call to leave no row, contradicting the 5 s hard timeout and "a row for every eligible turn" | The client's abort timer covers HTTP only; an injected or wedged call had no backstop | Task 2: `withDeadline` (6 s, `unref`'d, cleared on settle) → `status: "timeout"`. New fake-timer test. The core-worker test keeps "the turn never waits" and points at the unit test for the row |
+| 5 | RISK | Status and model counts were global; the design asks for missingness by language and model | Plan `ShadowSummary.byStatus`/`byModel` only | Task 5: `LangSummary.byStatus`/`byModel`, printed under each language's verdict; a model appears only for `ok` rows. New test |
+| 6 | NIT | `loadShadowRows` runs `runLoopCapabilities` once per row | True; same pattern as `replay.ts` | Accepted as-is: hundreds of rows over the campaign, in-process SQLite, read-only CLI. A comment says so |
