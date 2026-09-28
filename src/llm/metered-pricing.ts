@@ -16,8 +16,11 @@ import type { LlmUsage } from "../run/llm-usage.js";
  * `null`: its spend is invisible to the ceiling until priced (documented residual).
  */
 
+/** The TypeSafe/Jev metered provider name (Jev spec 2026-09-25). */
+export const JEV_PROVIDER = "jev";
+
 /** Provider names (chain leg names) whose usage is metered (pay-per-token). */
-export const METERED_PROVIDERS: ReadonlySet<string> = new Set(["kimi-api", "gemini-api"]);
+export const METERED_PROVIDERS: ReadonlySet<string> = new Set(["kimi-api", "gemini-api", JEV_PROVIDER]);
 
 /**
  * Transport class of a usage leg: `"api"` = a metered pay-per-token HTTP API (real money), `"cli"` =
@@ -46,7 +49,9 @@ export const DEFAULT_METERED_PRICES: Readonly<Record<string, MeteredModelPrice>>
   "kimi-": { input_usd_per_mtok: 0.6, output_usd_per_mtok: 2.5, cached_input_usd_per_mtok: 0.15 },
   // Google / gemini-api. `gemini-3.5-flash` is the code default.
   "gemini-3.5-flash": { input_usd_per_mtok: 0.3, output_usd_per_mtok: 2.5, cached_input_usd_per_mtok: 0.075 },
-  "gemini-": { input_usd_per_mtok: 0.3, output_usd_per_mtok: 2.5, cached_input_usd_per_mtok: 0.075 }
+  "gemini-": { input_usd_per_mtok: 0.3, output_usd_per_mtok: 2.5, cached_input_usd_per_mtok: 0.075 },
+  // TypeSafe / jev (Jev spec 2026-09-25). Charged per INPUT token only; output is free.
+  "jev-": { input_usd_per_mtok: 0.042, output_usd_per_mtok: 0 }
 };
 
 function asPrice(value: unknown): MeteredModelPrice | null {

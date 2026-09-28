@@ -307,6 +307,62 @@ if (command === "run") {
   } finally {
     store.close();
   }
+} else if (command === "jev-shadow") {
+  // Jev intent-shadow replay (spec 2026-09-25): both classifiers on each historical turn's rebuilt
+  // thread → JSONL + GO/STOP report. Makes external calls, so the kill switch refuses it like `run`.
+  if (rest[0] !== "replay") {
+    console.error("Usage: houge jev-shadow replay [--since ISO] [--limit N] [--max-usd USD] [--dry-run]");
+    process.exit(1);
+  }
+  if (readTombstone()) {
+    console.error(formatTombstoneParkedMessage(resolveTombstonePath(process.env)));
+    process.exit(1);
+  }
+  const { parseReplayArgs, runReplay, REPLAY_OUT_PATH } = await import("./jev/replay.js");
+  const { formatReplayReport } = await import("./jev/replay-report.js");
+  const { createJevClient } = await import("./jev/jev-client.js");
+  const { createLlmAnswerAdapter } = await import("./capabilities/llm-answer.js");
+  const args = parseReplayArgs(rest.slice(1));
+  if (!args.ok) {
+    console.error(args.error);
+    process.exit(1);
+  }
+  const store = RunStore.open("houge.sqlite", storeOptions);
+  try {
+    const jev = createJevClient({
+      apiKey: broker ? broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
+      audit: store.llmAuditSink({ correlation_id: "cli:jev-replay", role: "classify_replay" }),
+      meteredBreached: () => store.meteredFuseLatched(),
+      retries: 3,
+      timeoutMs: 15_000
+    });
+    const llm = createLlmAnswerAdapter({
+      ...brokerOption,
+      audit: store.llmAuditSink({ correlation_id: "cli:jev-replay", role: "classify_replay_llm" }),
+      meteredBreached: () => store.meteredFuseLatched()
+    });
+    const outcome = await runReplay({
+      store,
+      env: process.env,
+      jev,
+      classifyLlm: async (question, system) => {
+        const r = await llm({ question, system });
+        return r.ok && typeof r.output.answer === "string"
+          ? { ok: true as const, raw: r.output.answer }
+          : { ok: false as const, error: r.ok ? "no answer" : r.error };
+      },
+      outPath: REPLAY_OUT_PATH,
+      maxUsd: args.maxUsd,
+      dryRun: args.dryRun,
+      ...(args.sinceIso !== undefined ? { sinceIso: args.sinceIso } : {}),
+      ...(args.limit !== undefined ? { limit: args.limit } : {}),
+      log: (line) => console.error(line)
+    });
+    console.log(formatReplayReport(outcome.rows, outcome));
+    process.exitCode = outcome.stopped ? 1 : 0;
+  } finally {
+    store.close();
+  }
 } else if (command === "lessons-consolidate") {
   // Preserve-all lesson consolidation (design 2026-07-23). `--dry-run` is the pre-arm safety net:
   // it makes the REAL cluster+merge LLM calls but takes NO write path, rendering every member text

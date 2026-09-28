@@ -79,6 +79,15 @@ at a time):**
 - **North star, sense track:** the first incident Houge reports BEFORE Paco notices it. Until
   then it is unproven infrastructure, not a closed loop.
 
+**Built 2026-09-26: Jev intent shadow — REPLAY phase (branch `feat/jev-replay`, PR open; not on
+main yet).** `houge jev-shadow replay` + `scripts/live-gate-jev.mjs`; `TYPESAFE_API_KEY` is broker
+secret #9 (in the mini's `.env`); `jev` is a metered provider (input-only $0.042/Mtok). Live gate
+PASS; replay over 374 turns → **GO**: 91.7% agreement at confidence ≥ 0.7 on Paco's own messages
+(294; coverage 57%), 94.2% all-sources (inflated by 70 schedule fires), $0.035. Record: spec
+§"Replay result" incl. the correction. **Next (Paco said GO):** live-shadow plan →
+Codex review → TDD build on a branch stacked on `feat/jev-replay`. Queued after it (Paco,
+2026-09-25): multimodal ingest, then Paco's own inbox via the quarantined `gmail_read` path.
+
 **Shipped 2026-09-06 (4 commits, all live after Paco's kickstart; full record in the spec doc):**
 `9abb92e` CLI-only LLM chains slice 1 — the unexplained Google bill traced to a vendor-retired agy
 model pin (every flat-rate call fell through to the metered legs, silently, ~3 months), a reader

@@ -1270,3 +1270,31 @@ Build + independent adversarial verification subagents; each live round found a 
   `060c057` and again after `27e6728`. Docs synced (this entry). Push follows the final reviews.
 - Open: Paco kickstarts the daemon onto this dist → run-less proof query; reader wall-clock;
   `/usage` by role/outcome; role-specific-pin residual.
+
+## 2026-09-25→26 — Jev intent shadow: replay phase (BUILT + RUN → GO; PR open)
+
+- Paco has a TypeSafe key: "optimise Houge with Jev shadowing or even in charge of the decision
+  process, including the LLM routing". Brainstorm reading the Jev docs + the live code: Jev is a
+  typed decision model (choice/score/noul + calibrated confidence), not an LLM — "in charge"
+  rejected; LLM routing today is a static fallback chain, so nothing to shadow there yet. Best
+  target: `classifyIntent` (six intents, advisory-only since ADR 0013, ~5.9 s per CLI call). Paco:
+  full message + thread may go to TypeSafe; promotion bar ≥ 90% at conf ≥ 0.7. Also queued:
+  multimodal ingest, and Paco's own inbox (found `gmail_read` already live for Houge's inbox).
+- Spec → Codex spec review (5 BLOCKERs, all verified: completion-time anchors, rewritten clarify
+  labels, `cost_usd` stripped for non-metered providers, firewall strips `*_API_KEY`, "read-only"
+  replay that writes audit rows) → replay now re-runs the CURRENT classifier as ground truth. Plan →
+  spec-review-senior against the live DB → promotion bar lowered to ≥ 60 turns / 4 weeks.
+- Paco, new standing rules: Codex reviews every spec and every major implementation; TDD with
+  subagents by default. Saved as memory.
+- Build: worktree `feat/jev-replay`, 6 tasks, implementer + review per task; fixes for double-counted
+  turns and a lying `parsed` flag. Final Opus whole-branch + Codex whole-diff (2 P1, 3 P2) → one
+  fix wave F1–F9 (error prose off disk, INCOMPLETE verdict, fuse stops the run, dry-run headline,
+  pinned-model split, `--since` normalisation, per-attempt fuse, retry-after cap, torn-line
+  resume). 2413 tests green.
+- Run: live gate PASS (0.2–0.4 s per call); replay 374 turns → GO: 91.7% at conf ≥ 0.7 on Paco's own
+  294 messages (coverage 57%); the 94.2% all-sources headline was inflated by 70 schedule fires. $0.035.
+  Costly direction: Jev `answer` where the LLM chose `research` — 7 of 63 confident research turns on
+  Paco's own messages (11%). Against the live bar (≥ 90% AND ≥ 60% coverage) his messages give 91.7% but
+  57% coverage — a likely KILL on coverage; surfaced to Paco before building the live shadow.
+- Open: PR review/merge; live-shadow plan (Paco: GO); CJK cost-estimate under-count (~1.8×); the 2
+  `jev_failed` validation rejects are unexplained.

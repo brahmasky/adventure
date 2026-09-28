@@ -18,7 +18,7 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("METERED_PROVIDERS", () => {
   it("is exactly the pay-per-token HTTP legs — the flat-rate CLIs are never priced", () => {
-    expect([...METERED_PROVIDERS].sort()).toEqual(["gemini-api", "kimi-api"]);
+    expect([...METERED_PROVIDERS].sort()).toEqual(["gemini-api", "jev", "kimi-api"]);
   });
 });
 
@@ -56,6 +56,12 @@ describe("computeCostUsd", () => {
     expect(computeCostUsd("pi", "whatever", usage(1_000_000, 1_000_000), {})).toBeNull();
     expect(computeCostUsd("agy-cli", "gemini-3.5-flash", usage(1_000_000, 0), {})).toBeNull();
     expect(computeCostUsd("codex", "gpt-5", usage(1_000_000, 0), {})).toBeNull();
+  });
+
+  it("prices jev input-only at $0.042/Mtok — output is free (TypeSafe Models page)", () => {
+    expect(METERED_PROVIDERS.has("jev")).toBe(true);
+    const cost = computeCostUsd("jev", "jev-1.13.0", { input_tokens: 1_000_000, output_tokens: 500, cached_input_tokens: 0 }, {});
+    expect(cost).toBeCloseTo(0.042, 10);
   });
 
   it("an UNKNOWN metered model costs null and warns exactly once (spend is invisible until priced)", () => {

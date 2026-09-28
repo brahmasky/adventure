@@ -56,7 +56,10 @@ export type LlmCallRole =
   | "judge"
   | "chair"
   | "verify"
-  | "attribution";
+  | "attribution"
+  | "classify_replay"
+  | "classify_replay_llm"
+  | "classify_shadow";
 
 /** Where an audited attempt belongs: a run, or a run-less correlation (`tick:*`, `cli:*`, `rating:*`). */
 export type LlmAuditScope =
@@ -263,6 +266,19 @@ export interface ChatTurnRow {
   text: string;
   intent: string | null;
   created_at: string;
+}
+
+/** One historical user turn eligible for Jev replay (Jev spec 2026-09-25). */
+export interface ReplayTurnRow {
+  turn_id: string;
+  chat_id: string;
+  run_id: string;
+  text: string;
+  created_at: string;
+  recorded_intent: string;
+  /** When the classifier ran: its first `classify` llm_attempt, else the run's first ledger event. */
+  anchor: string | null;
+  anchor_kind: "classify" | "run_start" | null;
 }
 
 export type LessonStatus = "active" | "superseded" | "pruned";
@@ -946,6 +962,67 @@ export class RunStore {
           LIMIT ?
         `).all<ChatTurnRow>(chat_id, limit);
     return rows.reverse();
+  }
+
+  /**
+   * The thread as it stood at `beforeIso` (exclusive), for Jev replay. `chat_turns.created_at` is
+   * COMPLETION time — both rows of a turn are written after the loop — so the target run's own rows
+   * are excluded explicitly, and a run that completed after the anchor is naturally left out.
+   */
+  getChatTurnsBefore(chat_id: string, limit: number, sinceIso: string, beforeIso: string, excludeRunId: string): ChatTurnRow[] {
+    return this.db.prepare(`
+      SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+      FROM chat_turns
+      WHERE chat_id = ? AND created_at >= ? AND created_at < ? AND run_id <> ?
+      ORDER BY created_at DESC, rowid DESC
+      LIMIT ?
+    `).all<ChatTurnRow>(chat_id, sinceIso, beforeIso, excludeRunId, limit).reverse();
+  }
+
+  /**
+   * User turns whose run produced a classified assistant reply, oldest first (Jev replay).
+   * `recorded_intent` is picked as the EARLIEST qualifying assistant row of the run (correlated
+   * subquery, not a JOIN) so a run with more than one qualifying assistant row still yields exactly
+   * one row per user turn — a JOIN would double-count the turn and inflate the GO/STOP denominator
+   * (review finding, fix round 1).
+   */
+  listReplayTurns(opts: { sinceIso?: string; limit?: number }): ReplayTurnRow[] {
+    const earliestAssistantIntent = `(
+      SELECT a.intent FROM chat_turns a
+      WHERE a.run_id = u.run_id AND a.role = 'assistant'
+        AND a.intent IS NOT NULL AND a.intent <> 'evolution_report'
+      ORDER BY a.rowid ASC LIMIT 1
+    )`;
+    const rows = this.db.prepare(`
+      SELECT u.turn_id, u.chat_id, u.run_id, u.text, u.created_at,
+        ${earliestAssistantIntent} AS recorded_intent,
+        (SELECT MIN(e.occurred_at) FROM ledger_events e
+          WHERE e.run_id = u.run_id AND e.event_type = 'llm_attempt'
+            AND json_extract(e.payload_json, '$.role') = 'classify') AS classify_at,
+        (SELECT MIN(e.occurred_at) FROM ledger_events e WHERE e.run_id = u.run_id) AS run_start
+      FROM chat_turns u
+      WHERE u.role = 'user' AND u.created_at >= ?
+        AND ${earliestAssistantIntent} IS NOT NULL
+      ORDER BY u.created_at ASC, u.rowid ASC
+      LIMIT ?
+    `).all<Omit<ReplayTurnRow, "anchor" | "anchor_kind"> & { classify_at: string | null; run_start: string | null }>(
+      opts.sinceIso ?? "", opts.limit ?? -1
+    );
+    return rows.map(({ classify_at, run_start, ...row }) => ({
+      ...row,
+      anchor: classify_at ?? run_start,
+      anchor_kind: classify_at ? "classify" : run_start ? "run_start" : null
+    }));
+  }
+
+  /** Distinct `loop_step.capability` values for a run — the replay's observed-action proxy. */
+  runLoopCapabilities(run_id: string): string[] {
+    return this.db.prepare(`
+      SELECT DISTINCT json_extract(payload_json, '$.capability') AS capability
+      FROM ledger_events WHERE run_id = ? AND event_type = 'loop_step'
+    `).all<{ capability: string | null }>(run_id)
+      .map((r) => r.capability)
+      .filter((c): c is string => typeof c === "string" && c.length > 0);
   }
 
   /**
@@ -3869,6 +3946,8 @@ export class RunStore {
    *
    * Grouped by PROVIDER — one binary is dead for every role at once; a role-specific pin that
    * differs by model is the residual this grouping does not catch.
+   *
+   * Replay roles (`classify_replay*`) are operator CLI runs, not daemon health, and are excluded.
    */
   findFailingLlmLegs(now: string, windowMs: number, minAttempts: number): Array<{ subject: string; attempts: number; ok: number; last_error_kind: string | null }> {
     const since = new Date(Date.parse(now) - windowMs).toISOString();
@@ -3884,11 +3963,13 @@ export class RunStore {
             AND e2.occurred_at > ?
             AND json_extract(e2.payload_json, '$.provider') = json_extract(ledger_events.payload_json, '$.provider')
             AND json_extract(e2.payload_json, '$.outcome') <> 'ok'
+            AND COALESCE(json_extract(e2.payload_json, '$.role'), '') NOT LIKE 'classify_replay%'
           ORDER BY e2.occurred_at DESC, e2.sequence DESC
           LIMIT 1
         ) AS last_error_kind
       FROM ledger_events
       WHERE event_type = 'llm_attempt' AND occurred_at > ?
+        AND COALESCE(json_extract(payload_json, '$.role'), '') NOT LIKE 'classify_replay%'
       GROUP BY subject
       HAVING attempts >= ? AND ok = 0
       ORDER BY subject

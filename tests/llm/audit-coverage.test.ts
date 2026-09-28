@@ -88,4 +88,22 @@ describe("audit chokepoint coverage (structural, not by convention)", () => {
   it("answerWithChain is never called with a discarding inline sink", () => {
     expect(files.filter((f) => /answerWithChain\([^)]*\{\s*record:\s*\(\)\s*=>\s*\{\s*\}\s*\}/.test(read(f)))).toEqual([]);
   });
+
+  it("every createJevClient( call site in src passes a store-built sink and meteredBreached (Jev spec 2026-09-25)", () => {
+    const offenders: string[] = [];
+    let sites = 0;
+    for (const f of files) {
+      if (f.endsWith(join("src", "jev", "jev-client.ts"))) continue;
+      const text = read(f);
+      let i = text.indexOf("createJevClient(");
+      while (i !== -1) {
+        sites += 1;
+        const window = text.slice(i, i + 900);
+        if (!/audit:\s*[A-Za-z_.]*llmAuditSink\(/.test(window) || !/meteredBreached:/.test(window)) offenders.push(`${f}@${i}`);
+        i = text.indexOf("createJevClient(", i + 1);
+      }
+    }
+    expect(offenders).toEqual([]);
+    expect(sites).toBeGreaterThan(0); // the CLI site exists — a guard over zero sites guards nothing
+  });
 });

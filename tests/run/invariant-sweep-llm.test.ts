@@ -85,6 +85,20 @@ describe("llm_leg_failing invariant", () => {
     }
   });
 
+  it("ignores classify_replay* attempts (a replay run must not open daemon incidents)", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const sink = store.llmAuditSink({ correlation_id: "cli:jev-replay", role: "classify_replay" });
+      for (let i = 0; i < LLM_LEG_FAILING_MIN_ATTEMPTS + 2; i++) sink.record({ provider: "jev", role: "", outcome: "unavailable", latency_ms: 1, error_kind: "auth" });
+      expect(legs(store)).toEqual([]);
+      const live = store.llmAuditSink({ correlation_id: "tick:x", role: "classify_shadow" });
+      for (let i = 0; i < LLM_LEG_FAILING_MIN_ATTEMPTS; i++) live.record({ provider: "jev", role: "", outcome: "unavailable", latency_ms: 1, error_kind: "auth" });
+      expect(legs(store)).toEqual([{ kind: "llm_leg_failing", subject: "jev", detail: { attempts: LLM_LEG_FAILING_MIN_ATTEMPTS, ok: 0, last_error_kind: "auth" } }]);
+    } finally {
+      store.close();
+    }
+  });
+
   it("last_error_kind is the LATEST failing attempt's kind: an older timeout then a newer transport wins transport", () => {
     const store = RunStore.openInMemory();
     try {

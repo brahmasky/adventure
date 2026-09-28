@@ -226,3 +226,25 @@ Rules Claude writes for itself after corrections. Review at session start.
   went to `other`. Rule: classifier tests use strings copied from the code that emits them.
 - **`codex exec` needs `</dev/null` from a non-TTY, and `codex review` won't take a prompt with
   `--base`** (0.144.5). Twenty minutes lost to a process waiting on stdin that never closed.
+
+## Shadow / A-B measurement (Jev replay, 2026-09-25→26)
+
+- **Check live volume before fixing a statistical bar.** The spec asked for ≥ 200 live shadow turns;
+  the live DB showed ~1.5 turns/day (Aug 44, Sep 46) — four months to a verdict. Found only because
+  the plan review queried `houge.sqlite`, not the spec text. Rule: size every "N samples" gate
+  against the measured rate first.
+- **A verdict over a partial run is not a verdict.** A replay stopped by budget/auth/fuse could print
+  GO from a favourable prefix, and a dry run printed `STOP — 0% matched` over zero dispatched turns.
+  Rule: any GO/STOP report has an INCOMPLETE state for early stops and its own headline for a
+  dry run; neither may reuse the verdict line.
+- **A success flag computed apart from the parser lies.** `llmLabel` took the intent from
+  `parseIntent` (silent `"answer"` fallback) but `parsed` from an independent regex, so broken JSON
+  counted as a confident parsed answer. Rule: derive "parsed" from the same parse that produced
+  the value, or require both to agree.
+- **Provider error prose is not body-free.** The agy leg's error carries a stderr excerpt that can
+  echo the prompt; persisting `llm.error` broke a "no message text on disk" promise. Rule: files
+  promised body-free store fixed error categories, never provider text.
+- **Plans with full reference code still contradict their own tests** (2 of 6 tasks here:
+  hard-coded `output_tokens: 0` vs a test expecting 20; a budget fixture whose arithmetic tripped
+  on call one). TDD from the plan caught both at RED. Rule: when an implementer reports code-vs-test
+  contradiction in the plan, rule on it in the ledger — never bend the test to the code silently.
