@@ -69,7 +69,10 @@ describe("DISARM_FLAGS", () => {
       "HOUGE_RADAR_ENABLED",
       // Idea Radar R2 (ADR 0027): the weekly judge panel — unattended metered calls, status/
       // snapshot writes, the memory/briefs/ projection, and the first proactive weekly push.
-      "HOUGE_RADAR_PANEL_ENABLED"
+      "HOUGE_RADAR_PANEL_ENABLED",
+      // Jev intent shadow (spec 2026-09-25): an unattended per-turn metered call that sends the
+      // message + thread to a third party — the STOP switch covers it like the radar's calls.
+      "HOUGE_JEV_SHADOW_ENABLED"
     ]);
     expect(DISARM_FLAGS).not.toContain("HOUGE_EPISODIC_ENABLED");
   });

@@ -84,9 +84,20 @@ main yet).** `houge jev-shadow replay` + `scripts/live-gate-jev.mjs`; `TYPESAFE_
 secret #9 (in the mini's `.env`); `jev` is a metered provider (input-only $0.042/Mtok). Live gate
 PASS; replay over 374 turns → **GO**: 91.7% agreement at confidence ≥ 0.7 on Paco's own messages
 (294; coverage 57%), 94.2% all-sources (inflated by 70 schedule fires), $0.035. Record: spec
-§"Replay result" incl. the correction. **Next (Paco said GO):** live-shadow plan →
-Codex review → TDD build on a branch stacked on `feat/jev-replay`. Queued after it (Paco,
-2026-09-25): multimodal ingest, then Paco's own inbox via the quarantined `gmail_read` path.
+§"Replay result" incl. the correction.
+
+**Built 2026-09-28: Jev intent shadow — LIVE phase (branch `feat/jev-live-shadow`, stacked on
+`feat/jev-replay`; PR open).** Beside every real `classifyIntent`, Jev answers the same question
+concurrently and never awaited; one `intent_shadow` ledger row per classified turn (raw classifier
+label + `llm_parsed`, Jev label/confidence/model or a code-owned `jev_error`, never text);
+`houge jev-shadow report` → PROMOTE / HOLD / KILL per language (≥ 60 matched, ≥ 28 days, ≥ 90% at
+conf ≥ 0.7, ≥ 60% coverage; schedule fires never count). Flag `HOUGE_JEV_SHADOW_ENABLED` (default
+off, in `DISARM_FLAGS`, read per turn). Codex plan review (4 BLOCKERs folded in) + per-task reviews +
+final Fable + Codex whole-diff reviews (schedule-fire exclusion, first-sweep auth kill) → 2482 tests
+green, live gate PASS ($0.00003 per Jev call). **Next (Paco):** merge #1 then the stacked PR; add
+`HOUGE_JEV_SHADOW_ENABLED=true` to the mini's `.env`, build, kickstart; the report reads after ~6
+weeks. Queued after it (Paco, 2026-09-25): multimodal ingest, then Paco's own inbox via the
+quarantined `gmail_read` path.
 
 **Shipped 2026-09-06 (4 commits, all live after Paco's kickstart; full record in the spec doc):**
 `9abb92e` CLI-only LLM chains slice 1 — the unexplained Google bill traced to a vendor-retired agy

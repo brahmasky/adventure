@@ -36,6 +36,7 @@ import type { LlmAttempt, LlmAuditSink } from "../llm/audit.js";
 import { computeCostUsd, METERED_PROVIDERS } from "../llm/metered-pricing.js";
 import { blobToFloat32, cosineSimilarity, float32ToBlob } from "../llm/embeddings.js";
 import { resolveWikiDecayDays } from "../capabilities/wiki.js";
+import type { IntentShadowPayload } from "../jev/shadow.js";
 
 /**
  * The `role` recorded on every `llm_attempt` row (via `llmAuditSink`'s scope): chain calls, spawn
@@ -1025,6 +1026,52 @@ export class RunStore {
       .filter((c): c is string => typeof c === "string" && c.length > 0);
   }
 
+  /** A run's trigger source (`telegram` | `schedule` | `cli` | `event`) — undefined if the run does not exist. */
+  runSource(run_id: string): string | undefined {
+    return this.db.prepare(`SELECT source FROM runs WHERE run_id = ?`).get<{ source: string }>(run_id)?.source;
+  }
+
+  /** `intent_shadow` rows, oldest first — the input of `houge jev-shadow report`. */
+  listIntentShadows(sinceIso?: string): Array<{ run_id: string; occurred_at: string; payload: Record<string, unknown> }> {
+    return this.db.prepare(`
+      SELECT run_id, occurred_at, payload_json FROM ledger_events
+      WHERE event_type = 'intent_shadow' AND occurred_at >= ?
+      ORDER BY occurred_at ASC, sequence ASC
+    `).all<{ run_id: string; occurred_at: string; payload_json: string }>(sinceIso ?? "")
+      .map((r) => ({ run_id: r.run_id, occurred_at: r.occurred_at, payload: JSON.parse(r.payload_json) as Record<string, unknown> }));
+  }
+
+  /** When the shadow campaign started: the oldest `intent_shadow` row. The report's 28-day tenure clock. */
+  firstIntentShadowAt(): string | undefined {
+    return this.db.prepare(`
+      SELECT occurred_at FROM ledger_events WHERE event_type = 'intent_shadow'
+      ORDER BY occurred_at ASC, sequence ASC LIMIT 1
+    `).get<{ occurred_at: string }>()?.occurred_at;
+  }
+
+  /**
+   * Runs whose `classify` leg succeeded inside [fromIso, toIso] but that left no `intent_shadow` row:
+   * a daemon shutdown mid-shadow, the flag toggled, or a failure after the classifier. The report's
+   * missingness line. Callers pass the first and last shadow row times, so a later flag-off period is
+   * not counted as loss. Schedule-fired runs are excluded (spec amendment 13): they never enter the
+   * verdict, so a missing shadow row for one is not loss either.
+   */
+  countClassifiedRunsWithoutShadow(fromIso: string, toIso: string): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(DISTINCT e.run_id) AS n FROM ledger_events e
+      JOIN runs r ON r.run_id = e.run_id
+      WHERE e.event_type = 'llm_attempt' AND e.run_id IS NOT NULL
+        AND json_extract(e.payload_json, '$.role') = 'classify'
+        AND json_extract(e.payload_json, '$.outcome') = 'ok'
+        AND e.occurred_at >= ? AND e.occurred_at <= ?
+        AND r.source <> 'schedule'
+        AND NOT EXISTS (
+          SELECT 1 FROM ledger_events s WHERE s.run_id = e.run_id AND s.event_type = 'intent_shadow'
+        )
+    `).get<{ n: number }>(fromIso, toIso);
+    return row?.n ?? 0;
+  }
+
   /**
    * The OLDEST `limit` turns strictly after `afterIso` (or from the beginning), in
    * chronological order. The episodic distill pass reads with this so a burst longer
@@ -1438,6 +1485,11 @@ export class RunStore {
 
   recordLoopHalted(run_id: string, payload: { reason: string; steps: number }): void {
     this.appendRunLedgerEvent(run_id, "loop_halted", "core", payload);
+  }
+
+  /** Jev intent shadow (spec 2026-09-25): one `intent_shadow` row per classified turn. */
+  recordIntentShadow(run_id: string, payload: IntentShadowPayload): void {
+    this.appendRunLedgerEvent(run_id, "intent_shadow", "core", { ...payload });
   }
 
   /**
@@ -3937,6 +3989,10 @@ export class RunStore {
    * now detectable instead of silent. Reads `llm_attempt` only (history has no failures to
    * count). Pure read.
    *
+   * An `error_kind: "auth"` rejection is deterministic, not unlucky (spec amendment 14): a low-
+   * volume leg (~1.5 turns/day) would never reach `minAttempts` in the window, so one auth failure
+   * with zero `ok` is enough on its own, for any provider.
+   *
    * `last_error_kind` is a correlated subquery over the SAME provider's non-ok rows in the SAME
    * window, ordered by `occurred_at DESC, sequence DESC` (codex review, Task 12 fix 5) — the
    * kind of the most recent failure. A plain `MAX(CASE ... error_kind)` returns the
@@ -3971,7 +4027,7 @@ export class RunStore {
       WHERE event_type = 'llm_attempt' AND occurred_at > ?
         AND COALESCE(json_extract(payload_json, '$.role'), '') NOT LIKE 'classify_replay%'
       GROUP BY subject
-      HAVING attempts >= ? AND ok = 0
+      HAVING ok = 0 AND (attempts >= ? OR last_error_kind = 'auth')
       ORDER BY subject
     `).all<{ subject: string; attempts: number; ok: number; last_error_kind: string | null }>(since, since, minAttempts);
   }

@@ -697,7 +697,7 @@ deduped Telegram alert fires per episode. `/status` shows
 | `HOUGE_METERED_MONTHLY_USD` | `50` | Ceiling over the calendar month, UTC — how the invoice actually resets. |
 | `HOUGE_METERED_PRICES_JSON` | seed table | JSON object of model-id **prefix** → `{input_usd_per_mtok, output_usd_per_mtok, cached_input_usd_per_mtok?}`, merged over the seed table (longest prefix wins). A metered model matching NO prefix logs once and its spend is invisible until priced. |
 
-## Jev intent shadow — replay (spec 2026-09-25)
+## Jev intent shadow — replay and live shadow (spec 2026-09-25)
 
 [Jev](https://docs.typesafe.ai/llms.txt) (TypeSafe's "System One" model) answers typed questions
 with calibrated probabilities; it does not generate text. The question under test: can Jev take
@@ -731,9 +731,28 @@ node scripts/live-gate-jev.mjs             # opt-in real-API gate (3 fixed messa
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `TYPESAFE_API_KEY` | — | Broker secret #9. Held by the secrets broker when the firewall is armed (stripped from `process.env` like every `*_API_KEY`); sent only as the `Authorization` header to `api.typesafe.ai`; never logged. Unset → every Jev call is audited `unavailable`/`auth` and the replay stops. |
+| `HOUGE_JEV_SHADOW_ENABLED` | off | Arms the live intent shadow. Accepts 1/true/yes/on; read per turn; in `DISARM_FLAGS`. On without `TYPESAFE_API_KEY` → one boot warning and the shadow stays off. |
 
-The **live shadow** (a Jev call beside every real `classifyIntent`, flag
-`HOUGE_JEV_SHADOW_ENABLED`) is specified but not yet built.
+**Live shadow** (flag-gated, default OFF). With `HOUGE_JEV_SHADOW_ENABLED` on, every real
+`classifyIntent` also asks Jev the same question, **concurrently and never awaited**: the turn uses
+the classifier's label exactly as before, and Jev's answer is written to the ledger only (one
+`intent_shadow` row per classified turn: `status`, the classifier's raw `llm_intent`, `llm_parsed`,
+`lang`, Jev's label/confidence/model/latency or a code-owned `jev_error` — never message text). The
+Jev call is audited as `llm_attempt` role `classify_shadow` (5 s timeout, no retries, metered fuse);
+a rejected key opens an `llm_leg_failing` incident for subject `jev` at the next invariant sweep
+(12 h cadence). `/disarm` turns it off (the flag
+is in `DISARM_FLAGS` and read per turn).
+
+```bash
+houge jev-shadow report                    # PROMOTE / HOLD / KILL per language
+houge jev-shadow report --since 2026-10-01T00:00:00Z   # narrows the evaluated rows; tenure still counts from the first shadow row
+node scripts/live-gate-jev-shadow.mjs      # opt-in: one real turn in memory, real classifier + real Jev
+```
+
+The verdict per language is HOLD until ≥ 60 matched turns and ≥ 28 days since the first shadow row,
+then PROMOTE only if Jev agrees with the classifier ≥ 90% at confidence ≥ 0.7 on ≥ 60% of that
+language's turns (else KILL). The report also prints the costly direction (Jev overruling a
+`research` call) and clarify agreement, which never gate. Promotion itself is a separate spec.
 
 ## Kill switch + disarm posture (ADR 0018)
 

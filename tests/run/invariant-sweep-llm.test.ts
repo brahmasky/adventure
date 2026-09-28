@@ -85,6 +85,41 @@ describe("llm_leg_failing invariant", () => {
     }
   });
 
+  it("a rejected key is a dead leg at the first sweep: one auth failure is enough (spec amendment 14)", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const sink = store.llmAuditSink({ correlation_id: "tick:x", role: "classify_shadow" });
+      sink.record({ provider: "jev", role: "", outcome: "unavailable", latency_ms: 1, error_kind: "auth" });
+      expect(legs(store)).toEqual([{ kind: "llm_leg_failing", subject: "jev", detail: { attempts: 1, ok: 0, last_error_kind: "auth" } }]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a later ok from the same provider clears the auth-triggered incident", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const sink = store.llmAuditSink({ correlation_id: "tick:x", role: "classify_shadow" });
+      sink.record({ provider: "jev", role: "", outcome: "unavailable", latency_ms: 1, error_kind: "auth" });
+      expect(legs(store)).toHaveLength(1);
+      sink.record({ provider: "jev", role: "", outcome: "ok", model: "jev-1.13.0", latency_ms: 1 });
+      expect(legs(store)).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("an auth failure under classify_replay alone opens nothing (replay is excluded entirely)", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const sink = store.llmAuditSink({ correlation_id: "cli:jev-replay", role: "classify_replay" });
+      sink.record({ provider: "jev", role: "", outcome: "unavailable", latency_ms: 1, error_kind: "auth" });
+      expect(legs(store)).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
   it("ignores classify_replay* attempts (a replay run must not open daemon incidents)", () => {
     const store = RunStore.openInMemory();
     try {

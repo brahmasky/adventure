@@ -2,12 +2,15 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   buildIntentQuestion, buildIntentSystemPrompt, chatContextSince, countTrailingClarifyTurns,
-  parseIntent, resolveChatContextTurnChars, resolveChatContextTurns, type Intent
+  resolveChatContextTurnChars, resolveChatContextTurns, type Intent
 } from "../capabilities/intent.js";
 import { computeCostUsd, JEV_PROVIDER } from "../llm/metered-pricing.js";
 import type { ReplayTurnRow, RunStore } from "../run/run-store.js";
 import { JEV_MODEL, type JevRequest, type JevResult } from "./jev-client.js";
 import { buildJevIntentRequest, langOf, type Lang } from "./intent-question.js";
+import { llmLabel, observedAction, type ObservedAction } from "./labels.js";
+
+export { llmLabel, observedAction, type ObservedAction } from "./labels.js";
 
 /**
  * `houge jev-shadow replay` engine (Jev spec 2026-09-25, rollout steps 1–3). Sequential by design:
@@ -16,7 +19,6 @@ import { buildJevIntentRequest, langOf, type Lang } from "./intent-question.js";
  */
 export const REPLAY_OUT_PATH = ".houge/jev-shadow/replay.jsonl";
 
-export type ObservedAction = "selfcode" | "skill" | "research" | "answer" | "unknown";
 export type ReplayStatus = "ok" | "dry_run" | "skipped_state_too_large" | "skipped_no_anchor" | "jev_failed" | "llm_failed";
 export interface ReplayRow {
   turn_id: string;
@@ -55,28 +57,6 @@ export interface ReplayOutcome {
 }
 
 const DONE: ReadonlySet<ReplayStatus> = new Set(["ok", "skipped_state_too_large", "skipped_no_anchor"]);
-const INTENT_IN_JSON = /"intent"\s*:\s*"\s*(answer|research|feedback|clarify|selfcode|skill)\s*"/i;
-
-export function observedAction(capabilities: string[]): ObservedAction {
-  const has = (...names: string[]) => names.some((n) => capabilities.includes(n));
-  if (has("self_diagnose", "self_write_propose")) return "selfcode";
-  if (has("skill_author")) return "skill";
-  if (has("web_search", "http_fetch")) return "research";
-  return capabilities.length === 0 ? "answer" : "unknown";
-}
-
-/**
- * parseIntent defaults to "answer" on garbage — including JSON that has a well-formed `"intent"`
- * field but is otherwise broken (e.g. a trailing `undefined` literal), where a naive regex probe
- * would still "see" the field. `parsed` is true only when the regex-captured intent agrees with
- * what parseIntent actually read, so a malformed reply can never enter the GO/STOP gate under a
- * label the model didn't really produce.
- */
-export function llmLabel(raw: string): { intent: Intent; parsed: boolean } {
-  const intent = parseIntent(raw).intent;
-  const captured = raw.match(INTENT_IN_JSON)?.[1]?.trim().toLowerCase();
-  return { intent, parsed: captured === intent };
-}
 
 /** chars/3 for CJK-heavy text, chars/4 otherwise — only for the pre-dispatch cost reservation. */
 function estimateTokens(chars: number, lang: Lang): number {

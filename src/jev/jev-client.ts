@@ -11,6 +11,9 @@ const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 const BACKOFF_BASE_MS = 500;
 const RETRY_AFTER_CAP_MS = 60_000;
 const PROBABILITY_SUM_TOLERANCE = 0.01;
+/** A model id is a short token (Codex B2): anything else is a parse failure, so a response that echoes
+ *  prose in `model` can never be written to the audit or the ledger. */
+const JEV_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 
 export interface JevChoiceQuestion {
   type: "choice";
@@ -28,7 +31,7 @@ export interface JevChoiceAnswer {
 }
 export type JevResult =
   | { ok: true; model: string; answers: Record<string, JevChoiceAnswer>; input_tokens: number; latency_ms: number }
-  | { ok: false; reason: "no_key" | "fused" | "auth" | "error"; detail: string };
+  | { ok: false; reason: "no_key" | "fused" | "auth" | "error"; detail: string; error_kind?: LlmErrorKind };
 
 export interface JevClientConfig {
   apiKey: string | undefined;
@@ -52,7 +55,7 @@ export function createJevClient(config: JevClientConfig): (req: JevRequest) => P
   return async (req: JevRequest): Promise<JevResult> => {
     if (!config.apiKey) {
       config.audit.record({ provider: JEV_PROVIDER, role: "", outcome: "unavailable", error_kind: "auth", latency_ms: 0 });
-      return { ok: false, reason: "no_key", detail: "TYPESAFE_API_KEY is not set" };
+      return { ok: false, reason: "no_key", detail: "TYPESAFE_API_KEY is not set", error_kind: "auth" };
     }
     for (let attempt = 0; ; attempt += 1) {
       // Checked before EVERY attempt, not just the first: a retry that lands after the fuse
@@ -71,12 +74,14 @@ export function createJevClient(config: JevClientConfig): (req: JevRequest) => P
         return { ...a.result, latency_ms };
       }
       config.audit.record({ provider: JEV_PROVIDER, role: "", outcome: a.outcome, error_kind: a.error_kind, latency_ms });
-      if (a.error_kind === "auth") return { ok: false, reason: "auth", detail: a.detail };
-      if (!a.retryable || attempt >= config.retries) return { ok: false, reason: "error", detail: a.detail };
+      if (a.error_kind === "auth") return { ok: false, reason: "auth", detail: a.detail, error_kind: "auth" };
+      if (!a.retryable || attempt >= config.retries) return { ok: false, reason: "error", detail: a.detail, error_kind: a.error_kind };
       await sleep(a.retryAfterMs ?? BACKOFF_BASE_MS * 2 ** attempt);
     }
   };
 }
+
+type Validated<T> = { ok: true; value: T } | { ok: false; code: string };
 
 /**
  * The abort timer stays armed for the whole attempt — fetch AND the body read — and is cleared
@@ -123,9 +128,9 @@ async function attemptOnce(fetchImpl: typeof fetch, apiKey: string, req: JevRequ
         : { kind: "fail", outcome: "error", error_kind: "parse", retryable: false, detail: "response is not JSON" };
     }
     const parsed = validateResponse(body, req);
-    return parsed
-      ? { kind: "ok", result: { ok: true, model: parsed.model, answers: parsed.answers, input_tokens: parsed.input_tokens, latency_ms: 0 }, output_tokens: parsed.output_tokens }
-      : { kind: "fail", outcome: "error", error_kind: "parse", retryable: false, detail: "response failed validation" };
+    return parsed.ok
+      ? { kind: "ok", result: { ok: true, model: parsed.value.model, answers: parsed.value.answers, input_tokens: parsed.value.input_tokens, latency_ms: 0 }, output_tokens: parsed.value.output_tokens }
+      : { kind: "fail", outcome: "error", error_kind: "parse", retryable: false, detail: `response failed validation: ${parsed.code}` };
   } finally {
     clearTimeout(timer);
   }
@@ -134,33 +139,38 @@ async function attemptOnce(fetchImpl: typeof fetch, apiKey: string, req: JevRequ
 function validateResponse(
   body: unknown,
   req: JevRequest
-): { model: string; answers: Record<string, JevChoiceAnswer>; input_tokens: number; output_tokens: number } | null {
-  if (typeof body !== "object" || body === null) return null;
+): Validated<{ model: string; answers: Record<string, JevChoiceAnswer>; input_tokens: number; output_tokens: number }> {
+  if (typeof body !== "object" || body === null) return { ok: false, code: "body_not_object" };
   const b = body as Record<string, unknown>;
-  if (typeof b.model !== "string" || typeof b.answers !== "object" || b.answers === null) return null;
+  if (typeof b.model !== "string") return { ok: false, code: "model_missing" };
+  if (!JEV_MODEL_ID.test(b.model)) return { ok: false, code: "model_invalid" };
+  if (typeof b.answers !== "object" || b.answers === null) return { ok: false, code: "answers_missing" };
   const usage = b.usage as Record<string, unknown> | undefined;
-  const input_tokens = typeof usage?.input_tokens === "number" ? usage.input_tokens : null;
-  if (input_tokens === null) return null;
-  const output_tokens = typeof usage?.output_tokens === "number" ? usage.output_tokens : 0;
+  if (typeof usage?.input_tokens !== "number") return { ok: false, code: "usage_input_tokens_missing" };
+  const output_tokens = typeof usage.output_tokens === "number" ? usage.output_tokens : 0;
   const answers: Record<string, JevChoiceAnswer> = {};
   for (const [id, question] of Object.entries(req.questions)) {
-    const answer = validateChoice((b.answers as Record<string, unknown>)[id], Object.keys(question.criteria));
-    if (!answer) return null;
-    answers[id] = answer;
+    const raw = (b.answers as Record<string, unknown>)[id];
+    if (raw === undefined) return { ok: false, code: `answer_missing:${id}` };
+    const answer = validateChoice(raw, Object.keys(question.criteria));
+    if (!answer.ok) return answer;
+    answers[id] = answer.value;
   }
-  return { model: b.model, answers, input_tokens, output_tokens };
+  return { ok: true, value: { model: b.model, answers, input_tokens: usage.input_tokens, output_tokens } };
 }
 
-function validateChoice(raw: unknown, options: string[]): JevChoiceAnswer | null {
-  if (typeof raw !== "object" || raw === null) return null;
+function validateChoice(raw: unknown, options: string[]): Validated<JevChoiceAnswer> {
+  if (typeof raw !== "object" || raw === null) return { ok: false, code: "answer_not_object" };
   const a = raw as Record<string, unknown>;
-  if (a.type !== "choice" || typeof a.choice !== "string" || !options.includes(a.choice)) return null;
-  if (typeof a.confidence !== "number" || a.confidence < 0 || a.confidence > 1) return null;
-  if (typeof a.probabilities !== "object" || a.probabilities === null) return null;
+  if (a.type !== "choice" || typeof a.choice !== "string") return { ok: false, code: "not_choice" };
+  if (!options.includes(a.choice)) return { ok: false, code: "choice_not_option" };
+  if (typeof a.confidence !== "number" || a.confidence < 0 || a.confidence > 1) return { ok: false, code: "confidence_out_of_range" };
+  if (typeof a.probabilities !== "object" || a.probabilities === null) return { ok: false, code: "probabilities_missing" };
   const probs = a.probabilities as Record<string, unknown>;
-  const keys = Object.keys(probs);
-  if (keys.length !== options.length || !options.every((o) => typeof probs[o] === "number")) return null;
+  if (Object.keys(probs).length !== options.length || !options.every((o) => typeof probs[o] === "number")) {
+    return { ok: false, code: "probability_keys" };
+  }
   const sum = options.reduce((s, o) => s + (probs[o] as number), 0);
-  if (Math.abs(sum - 1) > PROBABILITY_SUM_TOLERANCE) return null;
-  return { choice: a.choice, probabilities: probs as Record<string, number>, confidence: a.confidence };
+  if (Math.abs(sum - 1) > PROBABILITY_SUM_TOLERANCE) return { ok: false, code: "probability_sum" };
+  return { ok: true, value: { choice: a.choice, probabilities: probs as Record<string, number>, confidence: a.confidence } };
 }

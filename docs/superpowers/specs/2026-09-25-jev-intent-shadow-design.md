@@ -1,7 +1,7 @@
 # Jev intent shadow — replay first, then live shadow
 
 Date: 2026-09-25
-Status: **replay phase built and run (2026-09-26) — verdict GO**; live shadow next (its own plan).
+Status: **replay GO (2026-09-26); live shadow BUILT (2026-09-28, branch `feat/jev-live-shadow`, live gate PASS, PR stacked on #1)** — arm after merge; verdict after ≥ 60 matched turns and ≥ 28 days.
 Design approved in brainstorming (Paco + Claude). Codex spec review 2026-09-25: 5 BLOCKERs +
 4 RISKs + 1 NIT, all verified against the code and folded in (see "Codex review"). Replay plan
 `docs/superpowers/plans/2026-09-25-jev-intent-shadow-replay.md`, built TDD by subagents on branch
@@ -204,6 +204,64 @@ on every turn (role `classify`, chain `pi,agy-cli`) that returns strict JSON par
   - **KILL** — the minimums are met but agreement or coverage misses the bar.
   - Coverage is measured against **all** eligible turns, including every non-`ok` status. Errors can
     only lower coverage, never inflate it.
+
+#### Live-shadow amendments from the replay and the plan research (2026-09-26)
+
+These amend the bullets above. Where they conflict, these win.
+
+1. **`llm_parsed` is recorded and gates.** Replay showed `parseIntent` silently falls back to
+   `answer`; a fallback is not a classifier verdict. The payload carries `llm_parsed` (computed as the
+   replay does — the regex-captured intent must equal `parseIntent`'s), and only parsed turns count
+   as matched. Required fields become `["status", "llm_intent", "llm_parsed", "lang"]`.
+2. **Status set** gains `auth` (the client distinguishes a rejected key from a missing one):
+   `ok | skipped_state_too_large | error | timeout | fused | no_key | auth`.
+3. **`jev_error`** (optional, non-`ok` rows only) carries jev-client's code-owned failure string —
+   `HTTP 503`, `timed out after 5000ms`, `response failed validation: probability_sum` — never
+   provider prose (the client never echoes a response body). Replay's 2 unexplained rejects could not
+   be diagnosed because nothing recorded *which* check failed; jev-client's validation now names it.
+4. **Eligible turn = the classifier produced a reply.** When the LLM classifier fails, the turn fails
+   and no `intent_shadow` row is written (there is no label to pair with); Jev's own `llm_attempt` row
+   still exists. Shutdown losses are therefore counted as runs with an `ok` `classify` attempt and no
+   `intent_shadow` row, **between the first and the last shadow row** (so a later flag-off period is
+   not miscounted as loss).
+5. **Hermetic by construction.** The real Jev client is built only when `CoreWorker`'s LLM adapter is
+   the production default. A test-injected LLM adapter never pairs with a real Jev call — the
+   daemon's `.env` leaks into test runs (the self-write test gate), so relying on env pinning alone
+   could send test traffic to TypeSafe. Tests inject a fake Jev call instead.
+6. **Flag read live and covered by `/disarm`.** `HOUGE_JEV_SHADOW_ENABLED` joins `DISARM_FLAGS` (an
+   unattended metered third-party call per turn — covered like the radar's calls) and is read per turn,
+   because `/disarm` flips flags in the live `process.env`. The missing-key warning fires once, when
+   `CoreWorker` is constructed (daemon boot).
+7. **The report adds two report-only lines**, never gates:
+   - the costly direction — of turns where the classifier said `research` and Jev was ≥ 0.7 confident,
+     how often Jev said something else (replay: 7 of 136);
+   - clarify — how often the classifier said `clarify` and how often Jev matched (replay: 3 of 7).
+8. **Per-language coverage** uses that language's `intent_shadow` rows (every status) as the
+   denominator. Shutdown losses have no language (it would take reading message text) and are
+   reported overall.
+9. **"4 weeks"** is measured from the first `intent_shadow` row to the time the report runs.
+10. **Admission first** (Codex plan review 2026-09-26). The Jev call starts inside the classifier
+    adapter, after `CapabilityRunner` has admitted the classifier (budget reserved, contract allows
+    it). A denied classifier never sends the message to Jev. Concurrency with the LLM call is kept.
+11. **`jev_model` is a bounded id.** jev-client validates the response's `model` against
+    `/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/` (else `model_invalid`, a parse failure), so provider prose
+    can never reach the audit or the ledger through that field.
+12. **Outer deadline.** `runJevShadow` resolves `timeout` after 6 s even if the client never settles
+    (timer `unref`'d, cleared on settle), so every eligible turn has a row except at shutdown.
+    **`--since`** on the report narrows the evaluated rows and the missingness window only; the 4
+    weeks are always measured from the first `intent_shadow` row ever.
+13. **Schedule fires do not count** (final whole-branch review 2026-09-28; the replay result above
+    said so but no amendment recorded it). The report reads each row's run `source`; rows from
+    `schedule` runs (2–3 repeated prompts at near-100% agreement, 34 of 56 turns in the last 30 days)
+    are excluded from the per-language verdict, its agreement, and its coverage denominator, and from
+    the missingness count. They are printed as report-only counts by source. Every other source
+    (`telegram`, `cli`) counts.
+14. **A rejected key is a dead leg at the first sweep** (Codex whole-diff review 2026-09-28).
+    `llm_leg_failing` needed ≥ 3 attempts with zero `ok` in 24 h; at ~1.5 turns/day a dead Jev key
+    would never reach that, so the "same day" claim in §Sweep was false as built. The rule becomes:
+    zero `ok` in the window AND (≥ 3 attempts OR the latest failure is `error_kind: "auth"`). An
+    auth rejection is deterministic, not unlucky, so one is enough — for any provider, not only Jev.
+    The incident still resolves on the next `ok`, and `classify_replay*` rows stay excluded.
 
 ## Error handling
 

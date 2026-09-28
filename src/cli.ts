@@ -310,8 +310,27 @@ if (command === "run") {
 } else if (command === "jev-shadow") {
   // Jev intent-shadow replay (spec 2026-09-25): both classifiers on each historical turn's rebuilt
   // thread → JSONL + GO/STOP report. Makes external calls, so the kill switch refuses it like `run`.
+  if (rest[0] === "report") {
+    const { formatShadowReport, isJudgedMatch, loadShadowRows, parseShadowReportArgs, summarizeShadow } = await import("./jev/shadow-report.js");
+    const args = parseShadowReportArgs(rest.slice(1));
+    if (!args.ok) {
+      console.error(args.error);
+      process.exit(1);
+    }
+    const store = RunStore.open("houge.sqlite", storeOptions);
+    try {
+      const rows = loadShadowRows(store, args.sinceIso);
+      const first = rows[0]?.occurred_at;
+      const last = rows[rows.length - 1]?.occurred_at;
+      const missing = first !== undefined && last !== undefined ? store.countClassifiedRunsWithoutShadow(first, last) : 0;
+      console.log(formatShadowReport(summarizeShadow(rows, missing, new Date().toISOString(), store.firstIntentShadowAt()), rows.filter(isJudgedMatch)));
+      process.exitCode = 0;
+    } finally {
+      store.close();
+    }
+  } else {
   if (rest[0] !== "replay") {
-    console.error("Usage: houge jev-shadow replay [--since ISO] [--limit N] [--max-usd USD] [--dry-run]");
+    console.error("Usage: houge jev-shadow replay [--since ISO] [--limit N] [--max-usd USD] [--dry-run] | houge jev-shadow report [--since ISO]");
     process.exit(1);
   }
   if (readTombstone()) {
@@ -362,6 +381,7 @@ if (command === "run") {
     process.exitCode = outcome.stopped ? 1 : 0;
   } finally {
     store.close();
+  }
   }
 } else if (command === "lessons-consolidate") {
   // Preserve-all lesson consolidation (design 2026-07-23). `--dry-run` is the pre-arm safety net:

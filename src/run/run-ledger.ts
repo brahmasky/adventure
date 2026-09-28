@@ -47,6 +47,7 @@ export type LedgerEventType =
   | "external_work_failed"
   | "llm_call"
   | "llm_attempt"
+  | "intent_shadow"
   | "loop_started"
   | "loop_step"
   | "loop_halted"
@@ -177,6 +178,10 @@ const requiredPayloadFields = {
   // cached_input_tokens, cost_usd, error_kind, attempt_group, leg_index. Counts/metadata ONLY —
   // never prompt or response content.
   llm_attempt: ["provider", "role", "outcome"],
+  // Jev intent shadow (spec 2026-09-25 §"Live shadow" + 2026-09-26 amendments): ONE row per classified
+  // turn while the shadow is armed — every status, so the report has a denominator. Labels, numbers,
+  // a lang tag and a code-owned error string ONLY — never message text (bodies stay out of the ledger).
+  intent_shadow: ["status", "llm_intent", "llm_parsed", "lang"],
   // Inner-loop observation hooks (ADR 0013, step ⓪·1). `loop_started.applied_artifacts`
   // is the attribution seed (which lesson/skill scope blocks were injected); `loop_step`
   // records each composed step (result_digest is the truncated transcript entry — never
