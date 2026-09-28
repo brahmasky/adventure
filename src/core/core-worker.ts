@@ -114,6 +114,11 @@ import { resolveSkillMaxPerScope, resolveSkillName, resolveSkillRefinePasses, re
 import { resolveWebMaxResults } from "../web/registry.js";
 import type { WebResult } from "../web/types.js";
 import { resolveChainBudgetMs, RUNNER_TIMEOUT_BUFFER_MS } from "../llm/registry.js";
+import { createJevClient, JEV_MODEL } from "../jev/jev-client.js";
+import {
+  intentShadowPayload, JEV_SHADOW_TIMEOUT_MS, resolveJevShadowEnabled, runJevShadow,
+  type JevShadowCall, type JevShadowOutcome
+} from "../jev/shadow.js";
 import { createLocalProjectWriteAdapter } from "../capabilities/local-project-write-adapter.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { canonicalJson, stableHash } from "../domain/canonical.js";
@@ -320,6 +325,7 @@ export class CoreWorker {
   private readonly timeConvertAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
   /** Query embedding for episodic retrieval (injected or the local-Ollama default). */
   private readonly embedAdapter: (text: string) => Promise<Float32Array | null>;
+  private jevOffModelWarned = false;
 
   constructor(
     private readonly runStore: RunStore,
@@ -352,7 +358,12 @@ export class CoreWorker {
     private readonly bountyDeps: BountyIntakeDeps = defaultBountyIntakeDeps(),
     // ADR 0025: Google identity reads (gmail_read/google_api). Injectable transport so tests
     // never touch the network (token mint included); default wires global fetch. Appended last.
-    private readonly googleDeps: GoogleApiDeps = defaultGoogleApiDeps()
+    private readonly googleDeps: GoogleApiDeps = defaultGoogleApiDeps(),
+    // Jev intent shadow (spec 2026-09-25 + 2026-09-26 amendments): tests inject a fake Jev call.
+    // Absent → production builds an audited client per run, but ONLY beside the production LLM
+    // adapter: a test-injected LLM never pairs with a real Jev call (the daemon's .env leaks into
+    // test runs). Appended last so existing positional callers are unaffected.
+    private readonly jevShadowCall?: JevShadowCall
   ) {
     // When the DEFAULT llm adapter is in use (production), `llmAdapterFor` builds a run-scoped,
     // audited adapter per role. A test-INJECTED adapter is used as-is (it brings its own fakes).
@@ -373,6 +384,10 @@ export class CoreWorker {
       root: join(projectRoot, "skills"),
       maxPerScope: resolveSkillMaxPerScope(process.env)
     });
+    // Jev intent shadow: armed without a key → ONE boot warning, and the shadow stays off.
+    if (resolveJevShadowEnabled(process.env) && !this.jevShadowCall && this.llmAdapterIsDefault && !this.typesafeKey()) {
+      console.warn("[jev-shadow] HOUGE_JEV_SHADOW_ENABLED is on but TYPESAFE_API_KEY is not set — the live intent shadow stays off");
+    }
   }
 
   /** Ambient skills live as markdown under `<projectRoot>/skills/<scope>/` (Phase 2a). */
@@ -1388,6 +1403,50 @@ export class CoreWorker {
       meteredBreached: () => this.runStore.meteredFuseLatched(),
       audit: this.runStore.llmAuditSink({ run_id, role })
     });
+  }
+
+  /** The TypeSafe key: broker-held when the secrets firewall is armed, else the ambient env. */
+  private typesafeKey(): string | undefined {
+    return this.broker ? this.broker.typesafeKey() : process.env.TYPESAFE_API_KEY;
+  }
+
+  /**
+   * The Jev call for this run's intent shadow, or null when the shadow is off. The flag is read LIVE
+   * (`/disarm` flips it). Production builds an audited client per run — `classify_shadow` rows, the
+   * metered fuse, no retries, a 5 s timeout — and only beside the production LLM adapter.
+   */
+  private jevShadowCallFor(run_id: string): JevShadowCall | null {
+    if (!resolveJevShadowEnabled(process.env)) return null;
+    if (this.jevShadowCall) return this.jevShadowCall;
+    if (!this.llmAdapterIsDefault) return null;
+    const apiKey = this.typesafeKey();
+    if (!apiKey) return null;
+    return createJevClient({
+      apiKey,
+      audit: this.runStore.llmAuditSink({ run_id, role: "classify_shadow" }),
+      meteredBreached: () => this.runStore.meteredFuseLatched(),
+      retries: 0,
+      timeoutMs: JEV_SHADOW_TIMEOUT_MS
+    });
+  }
+
+  /**
+   * Record the shadow once the classifier's raw reply is known. NEVER awaited by the turn: Jev has
+   * usually settled already (~0.3 s vs the classifier's ~6 s), and a failure here is a warning, never
+   * a turn failure. A shadow still in flight at shutdown is lost; the report counts it as missing.
+   */
+  private recordJevShadow(run_id: string, shadow: Promise<JevShadowOutcome>, llmRaw: string): void {
+    void shadow
+      .then((outcome) => {
+        if (outcome.jev && outcome.jev.model !== JEV_MODEL && !this.jevOffModelWarned) {
+          this.jevOffModelWarned = true;
+          console.warn(`[jev-shadow] Jev answered as ${outcome.jev.model}, not the pinned ${JEV_MODEL}; the report keeps it out of the verdict`);
+        }
+        this.runStore.recordIntentShadow(run_id, intentShadowPayload(outcome, llmRaw));
+      })
+      .catch((error: unknown) => {
+        console.warn(`[jev-shadow] recording failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`);
+      });
   }
 
   /**
@@ -3037,6 +3096,14 @@ export class CoreWorker {
   > {
     const registry = new ToolRegistry();
     const llmTimeoutMs = resolveChainBudgetMs(process.env) + RUNNER_TIMEOUT_BUFFER_MS;
+    // Jev intent shadow: started INSIDE the classifier adapter, i.e. only after CapabilityRunner has
+    // admitted the call (budget reserved, contract allows it) — a denied classifier never sends the
+    // message to Jev. Not awaited: Jev and the classifier run concurrently on identical inputs, and
+    // runJevShadow resolves on every path. A holder object rather than a `let`, so TypeScript keeps
+    // the widened type after the await (closure assignments do not reset narrowing).
+    const shadowCall = this.jevShadowCallFor(claim.run_id);
+    const shadow: { pending: Promise<JevShadowOutcome> | null } = { pending: null };
+    const classifier = this.llmAdapterFor(claim.run_id, "classify");
     registry.register({
       name: "llm_answer",
       category: "tool",
@@ -3045,7 +3112,12 @@ export class CoreWorker {
       timeout_ms: llmTimeoutMs,
       output_limit_bytes: 100_000,
       // Phase 3.1 (W3): the intent classifier is a `classify`-role cheap-chain call → instrumented.
-      execute: this.llmAdapterFor(claim.run_id, "classify")
+      execute: shadowCall
+        ? (input) => {
+            shadow.pending = runJevShadow(shadowCall, message, recentTurns, turnChars, recentClarifyCount);
+            return classifier(input);
+          }
+        : classifier
     });
 
     const result = await new CapabilityRunner(registry).execute({
@@ -3062,6 +3134,7 @@ export class CoreWorker {
       return { ok: false, failure: result };
     }
     const raw = typeof result.output.answer === "string" ? result.output.answer : "";
+    if (shadow.pending) this.recordJevShadow(claim.run_id, shadow.pending, raw);
     return { ok: true, classification: parseIntent(raw) };
   }
 
