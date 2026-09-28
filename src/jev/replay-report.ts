@@ -2,11 +2,17 @@ import { JEV_MODEL } from "./jev-client.js";
 import type { ReplayRow } from "./replay.js";
 
 /** Replay GO/STOP screen (Jev spec 2026-09-25). Replay is a feasibility screen, not the promotion gate. */
-const THRESHOLDS = [0.5, 0.6, 0.7, 0.8, 0.9];
+export const THRESHOLDS: readonly number[] = [0.5, 0.6, 0.7, 0.8, 0.9];
 const GATE_CONFIDENCE = 0.7;
 const GO_AGREEMENT = 0.75;
 const MIN_MATCHED_SHARE = 0.6;
 const MAX_DISAGREEMENTS = 20;
+
+export interface AgreementRow {
+  jev_intent?: string;
+  jev_confidence?: number;
+  llm_intent?: string;
+}
 
 export interface ReplaySummary {
   eligible: number;
@@ -31,7 +37,7 @@ const isMatched = (r: ReplayRow): boolean =>
   r.status === "ok" && r.llm_parsed === true && r.jev_intent !== undefined && r.llm_intent !== undefined &&
   r.jev_confidence !== undefined && r.jev_model === JEV_MODEL;
 
-function atThreshold(matched: ReplayRow[], t: number) {
+export function atThreshold<R extends AgreementRow>(matched: R[], t: number) {
   const slice = matched.filter((r) => (r.jev_confidence ?? 0) >= t);
   const agree = slice.filter((r) => r.jev_intent === r.llm_intent).length;
   return {
@@ -86,11 +92,11 @@ export function summarizeReplay(rows: ReplayRow[]): ReplaySummary {
   };
 }
 
-function pct(x: number | null): string {
+export function pct(x: number | null): string {
   return x === null ? "n/a" : `${(x * 100).toFixed(1)}%`;
 }
 
-function confusion(rows: ReplayRow[], other: (r: ReplayRow) => string | undefined, label: string): string[] {
+export function confusion<R extends AgreementRow>(rows: R[], other: (r: R) => string | undefined, label: string): string[] {
   const counts = new Map<string, number>();
   for (const r of rows) {
     const key = `${r.jev_intent} → ${other(r) ?? "?"}`;
