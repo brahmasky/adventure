@@ -127,6 +127,16 @@ describe("ingestMedia — failure statuses (never throws)", () => {
     expect((await ingestMedia(deps({ downloadFile: flaky }), voice, "")).ok).toBe(true);
     expect(flaky).toHaveBeenCalledTimes(2);
 
+    const flaky5xx = vi.fn().mockRejectedValueOnce(new Error("download_failed: http_503")).mockResolvedValueOnce({ bytes: new Uint8Array([1]) });
+    expect((await ingestMedia(deps({ downloadFile: flaky5xx }), voice, "")).ok).toBe(true);
+    expect(flaky5xx).toHaveBeenCalledTimes(2);
+
+    const down5xx = vi.fn().mockRejectedValue(new Error("download_failed: http_500"));
+    const d5 = await ingestMedia(deps({ downloadFile: down5xx }), voice, "");
+    expect(d5).toMatchObject({ ok: false, status: "download_failed" });
+    expect(d5.ledger.detail).toBe("http_500");
+    expect(down5xx).toHaveBeenCalledTimes(2);
+
     const notFound = vi.fn().mockRejectedValue(new Error("download_failed: http_404"));
     const nf = await ingestMedia(deps({ downloadFile: notFound }), voice, "");
     expect(nf).toMatchObject({ ok: false, status: "download_failed", reply: expect.stringMatching(/resend/) });

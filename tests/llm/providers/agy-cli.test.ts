@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import os from "node:os";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import {
   createAgyCliProvider,
   AGY_DEFAULT_MODEL,
@@ -642,13 +642,19 @@ describe("media calls (multimodal ingest, spec 2026-09-29)", () => {
   it("appends the code-owned @basename to the single --print element, runs in the media dir with --sandbox, and does NOT delete that dir", async () => {
     let seen: { args: string[]; cwd: string } | undefined;
     const spawnImpl = vi.fn<SpawnImpl>(async (_file, args, opts) => { seen = { args, cwd: opts.cwd }; return spawnResult({ stdout: envelope({ response: "hello world" }) }); });
-    const result = await createAgyCliProvider({ spawnImpl, model: "M" }).answer({ question: "Transcribe.", system: "You transcribe.", media });
-    expect(result).toMatchObject({ ok: true, answer: "hello world" });
-    expect(promptArg(seen!.args)).toBe("You transcribe.\n\nTranscribe.\n\n@media.opus");
-    expect(seen!.args).toContain("--sandbox");
-    expect(seen!.args).toContain("--disable-slash-commands");
-    expect(seen!.cwd).toBe(mediaDir);
-    // The caller owns the media dir; the provider must not remove it (there is nothing to remove here — assert no throw).
+    mkdirSync(mediaDir, { recursive: true });
+    try {
+      const result = await createAgyCliProvider({ spawnImpl, model: "M" }).answer({ question: "Transcribe.", system: "You transcribe.", media });
+      expect(result).toMatchObject({ ok: true, answer: "hello world" });
+      expect(promptArg(seen!.args)).toBe("You transcribe.\n\nTranscribe.\n\n@media.opus");
+      expect(seen!.args).toContain("--sandbox");
+      expect(seen!.args).toContain("--disable-slash-commands");
+      expect(seen!.cwd).toBe(mediaDir);
+      // The caller owns the media dir; the provider must leave it alone.
+      expect(existsSync(mediaDir)).toBe(true);
+    } finally {
+      rmSync(mediaDir, { recursive: true, force: true });
+    }
   });
 
   it("a caption full of flags, newlines and @paths never changes the argv shape (it is inside the --print value; agy attaches only files under its cwd — verified 2026-09-29)", async () => {
