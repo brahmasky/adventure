@@ -1,8 +1,9 @@
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
-import { answerWithChain, buildLlmChain } from "../llm/registry.js";
-import type { LlmProvider } from "../llm/types.js";
+import { answerWithChain, buildLlmChain, type BuildLlmChainDeps } from "../llm/registry.js";
+import type { LlmMediaAttachment, LlmProvider } from "../llm/types.js";
 import type { LlmAuditSink } from "../llm/audit.js";
 import type { SecretBroker } from "../config/secret-broker.js";
+import { isAllowedMediaFile } from "../media/media-config.js";
 import { ASK_DISCIPLINE, FALLBACK_IDENTITY, GUARDRAILS } from "../prompt/composer.js";
 
 /**
@@ -52,6 +53,20 @@ export interface LlmAnswerAdapterConfig {
    * store's cheap latch read. Ignored when a `chain` is injected (tests bring their own).
    */
   meteredBreached?: () => boolean;
+  /**
+   * Per-provider construction options threaded to `buildLlmChain` (the media adapter uses this for
+   * its 45 s per-leg timeout). Ignored when a `chain` is injected.
+   */
+  chainDeps?: BuildLlmChainDeps;
+}
+
+/** `input.media` → a validated attachment, `undefined` when absent, or `"invalid"`. */
+function parseMediaInput(raw: unknown): LlmMediaAttachment | undefined | "invalid" {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "object" || raw === null) return "invalid";
+  const { path, mime } = raw as Record<string, unknown>;
+  if (typeof path !== "string" || typeof mime !== "string") return "invalid";
+  return isAllowedMediaFile({ path, mime }) ? { path, mime } : "invalid";
 }
 
 export function createLlmAnswerAdapter(
@@ -64,15 +79,18 @@ export function createLlmAnswerAdapter(
     if (typeof question !== "string" || question.length === 0) {
       return { ok: false, error: "question must be a non-empty string" };
     }
+    // Multimodal ingest (spec 2026-09-29): the attachment is validated HERE, before any leg runs.
+    const media = parseMediaInput(input.media);
+    if (media === "invalid") return { ok: false, error: "media rejected" };
 
     // An injected chain (tests) is used as-is; otherwise resolve it from env (+ the metered latch).
     const chain = injectedChain ?? buildLlmChain(
       providers ? { ...process.env, HOUGE_LLM_PROVIDERS: providers } : process.env,
-      meteredBreached ? { meteredBreached } : {},
+      { ...(config.chainDeps ?? {}), ...(meteredBreached ? { meteredBreached } : {}) },
       broker
     );
     const system = resolveSystemPrompt(input);
-    const result = await answerWithChain(chain, { question, system }, audit);
+    const result = await answerWithChain(chain, { question, system, ...(media ? { media } : {}) }, audit);
 
     if (!result.ok) {
       return { ok: false, error: result.error };
