@@ -3,6 +3,7 @@ import { CoreWorker } from "../core/core-worker.js";
 import { evolutionLaneSettled } from "../core/evolution-lane.js";
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
+import { resolveMediaIngestEnabled } from "../media/media-config.js";
 import { LocalNotificationAdapter } from "../notifications/local-notification-adapter.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import type { DispatchResult } from "../notifications/notification-dispatcher.js";
@@ -96,6 +97,7 @@ export async function runTelegramPollOnce(
     skippedUpdateStore: {
       recordSkippedTelegramUpdate: (input) => options.store.recordSkippedTelegramUpdate(input)
     },
+    mediaIngestEnabled: () => resolveMediaIngestEnabled(process.env),
     // No-ghost reply for a text-less message: enqueue on the existing outbox; the
     // dispatch flush at the end of this cycle delivers it. Deterministic key → idempotent.
     acknowledgeSink: (ack) => {

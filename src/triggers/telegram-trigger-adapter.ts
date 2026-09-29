@@ -1,5 +1,6 @@
 import type { Identity, TelegramAllowlist, TypedTaskEvent } from "../domain/types.js";
 import { buildTypedTaskEvent } from "../domain/types.js";
+import { MEDIA_MIME, MEDIA_PLACEHOLDER, type TelegramMediaRef } from "../media/media-config.js";
 import { authorizeTelegramUpdate } from "./telegram-auth.js";
 import type { SelfWriteCallbackAction, TelegramCommand } from "./telegram-command-parser.js";
 import { parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
@@ -16,6 +17,8 @@ export interface TelegramUpdate {
      * recognized as a real message — we do NOT fetch the image (that's a future slice).
      */
     photo?: Array<{ file_id: string; file_unique_id: string; width: number; height: number; file_size?: number }>;
+    /** Present when the message is a voice note (Telegram sends OGG/Opus). */
+    voice?: { file_id: string; file_unique_id: string; duration: number; mime_type?: string; file_size?: number };
     forward_date?: number;
     forward_origin?: unknown;
     reply_to_message?: { message_id: number };
@@ -82,13 +85,23 @@ export type TelegramNormalizeResult =
   | { ok: false; error: { code: string; message: string }; acknowledgement?: TelegramAcknowledgement };
 
 /**
- * Reply for a text-less/caption-less message. We can't read images yet (a future slice),
- * so we tell the sender how to reach us: type the question, or add a caption to the photo.
+ * Reply for a text-less/caption-less message while multimodal ingest is OFF (today's text, unchanged).
  */
-const TELEGRAM_UNSUPPORTED_MEDIA_REPLY =
+export const TELEGRAM_UNSUPPORTED_MEDIA_REPLY =
   "我收到一条非文字消息（图片/语音/文件）。我暂时看不了图片内容，你可以把问题打成文字，或者给图片配上文字说明（caption）。";
 
-export function normalizeTelegramUpdate(update: TelegramUpdate, allowlist: TelegramAllowlist): TelegramNormalizeResult {
+/**
+ * The same reply while ingest is ON: voice notes and photos ARE readable now; stickers, documents
+ * and video are not yet (spec 2026-09-29).
+ */
+export const TELEGRAM_UNSUPPORTED_MEDIA_REPLY_WITH_INGEST =
+  "我收到一条非文字消息。我可以读文字、语音和图片；视频和文件暂时还不行。你可以把问题打成文字，或者发语音/图片。";
+
+export function normalizeTelegramUpdate(
+  update: TelegramUpdate,
+  allowlist: TelegramAllowlist,
+  options: { mediaIngestEnabled?: boolean } = {}
+): TelegramNormalizeResult {
   if (update.channel_post) {
     return { ok: false, error: { code: "TELEGRAM_AUTH_DENIED", message: "Channel posts are not accepted" } };
   }
@@ -104,7 +117,8 @@ export function normalizeTelegramUpdate(update: TelegramUpdate, allowlist: Teleg
 
   // Auth runs BEFORE the text/media resolution so a non-allowlisted sender is denied
   // outright — never acknowledged (we must not reply to, or leak our existence to, a
-  // stranger who sends a bare photo).
+  // stranger who sends a bare photo). Forwards are refused here too, which is what makes a
+  // voice transcript trustworthy: the allowlisted sender spoke it (spec 2026-09-29).
   const auth = authorizeTelegramUpdate(
     {
       from_id: message.from?.id,
@@ -119,25 +133,78 @@ export function normalizeTelegramUpdate(update: TelegramUpdate, allowlist: Teleg
   // A photo's question lives in `.caption`, not `.text`. Fall back to it so a captioned
   // photo is answered exactly like a text message.
   const bodyText = message.text ?? message.caption;
-  if (typeof bodyText !== "string" || bodyText.trim().length === 0) {
-    // Truly text-less (bare photo/sticker/voice/document). Keep it OUT of the command
-    // path but do NOT ghost the sender: carry an acknowledgement the poll loop sends via
-    // the existing outbox. The skip record + single offset advance are unchanged.
+  const caption = typeof bodyText === "string" ? bodyText.trim() : "";
+
+  // Multimodal ingest (spec 2026-09-29): a voice note or photo becomes a turn whose ingest step
+  // (inside the run) turns the media into text. A `/` caption is a command exactly as before —
+  // the image is ignored — so nothing an existing caller relies on changes. Flag OFF → the
+  // pre-existing paths below, byte for byte.
+  const ingestOn = options.mediaIngestEnabled === true;
+  const media = ingestOn ? mediaRefOf(message, caption.length > 0) : null;
+  if (media && !caption.startsWith("/")) {
+    const base = buildEventBase(update, message, auth.identity);
+    return {
+      ok: true,
+      event: buildTypedTaskEvent({
+        ...base,
+        type: "turn",
+        program: "turn",
+        goal: caption.length > 0 ? caption : MEDIA_PLACEHOLDER[media.kind],
+        metadata: { ...base.metadata, media }
+      })
+    };
+  }
+
+  if (caption.length === 0) {
+    // Truly text-less (bare sticker/document/video, or media with the flag off). Keep it OUT
+    // of the command path but do NOT ghost the sender: carry an acknowledgement the poll loop
+    // sends via the existing outbox. The skip record + single offset advance are unchanged.
     return {
       ok: false,
       error: { code: "TELEGRAM_UNSUPPORTED_MEDIA", message: "Telegram message has no text or caption" },
       acknowledgement: {
         chat_id: String(message.chat.id),
-        text: TELEGRAM_UNSUPPORTED_MEDIA_REPLY,
+        text: ingestOn ? TELEGRAM_UNSUPPORTED_MEDIA_REPLY_WITH_INGEST : TELEGRAM_UNSUPPORTED_MEDIA_REPLY,
         idempotency_key: `telegram:${update.update_id}:unsupported_media`
       }
     };
   }
 
-  const parsed = parseTelegramCommand(bodyText);
+  // `caption.length > 0` implies `bodyText` is a string; the parser keeps the untrimmed body as before.
+  const parsed = parseTelegramCommand(bodyText as string);
   if (!parsed.ok) return parsed;
 
   return { ok: true, event: buildTelegramEvent(parsed.command, buildEventBase(update, message, auth.identity)) };
+}
+
+/** The media reference the ingest step needs — ids, mime, the caption bit and counts only. Largest photo size wins. */
+function mediaRefOf(message: TelegramMessage, has_caption: boolean): TelegramMediaRef | null {
+  if (message.voice) {
+    const v = message.voice;
+    return {
+      kind: "voice",
+      file_id: v.file_id,
+      file_unique_id: v.file_unique_id,
+      mime_type: v.mime_type ?? MEDIA_MIME.voice,
+      has_caption,
+      ...(typeof v.file_size === "number" ? { file_size: v.file_size } : {}),
+      duration: v.duration
+    };
+  }
+  if (message.photo && message.photo.length > 0) {
+    const largest = message.photo.reduce((best, p) => (p.width * p.height > best.width * best.height ? p : best));
+    return {
+      kind: "photo",
+      file_id: largest.file_id,
+      file_unique_id: largest.file_unique_id,
+      mime_type: MEDIA_MIME.photo,
+      has_caption,
+      ...(typeof largest.file_size === "number" ? { file_size: largest.file_size } : {}),
+      width: largest.width,
+      height: largest.height
+    };
+  }
+  return null;
 }
 
 type TelegramCallbackQuery = NonNullable<TelegramUpdate["callback_query"]>;
@@ -338,6 +405,8 @@ export interface TelegramLongPollingAdapterOptions {
   skippedUpdateStore?: TelegramSkippedUpdateStore;
   acknowledgeSink?: TelegramAcknowledgeSink;
   timeout_seconds?: number;
+  /** Multimodal ingest flag, read per poll so `/disarm` takes effect without a restart. */
+  mediaIngestEnabled?: () => boolean;
 }
 
 export interface TelegramPollResult {
@@ -382,7 +451,9 @@ export function createTelegramLongPollingAdapter(
       let skipped = 0;
 
       for (const update of updates) {
-        const normalized = normalizeTelegramUpdate(update, options.allowlist);
+        const normalized = normalizeTelegramUpdate(update, options.allowlist, {
+          mediaIngestEnabled: options.mediaIngestEnabled?.() === true
+        });
         if (!normalized.ok) {
           options.skippedUpdateStore?.recordSkippedTelegramUpdate({
             update_id: update.update_id,

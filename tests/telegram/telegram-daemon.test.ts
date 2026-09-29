@@ -37,7 +37,11 @@ const PINNED_ENV = [
   "HOUGE_SCHEDULER_ENABLED",
   "HOUGE_SCHEDULER_MAX_PER_CHAT",
   "HOUGE_RADAR_ENABLED",
-  "HOUGE_RADAR_PANEL_ENABLED"
+  "HOUGE_RADAR_PANEL_ENABLED",
+  // Multimodal ingest (spec 2026-09-29): an ambient armed flag would route media updates
+  // into the ingest step; the media tests arm it locally.
+  "HOUGE_MEDIA_INGEST_ENABLED",
+  "HOUGE_LLM_MEDIA_PROVIDERS"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {

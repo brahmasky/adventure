@@ -267,4 +267,22 @@ describe("createTelegramLongPollingAdapter", () => {
 
     expect(offsets).toEqual([61]);
   });
+
+  it("reads mediaIngestEnabled per poll and hands it to the adapter: a bare voice note emits a turn only while ON", async () => {
+    let enabled = false;
+    const emitted: unknown[] = [];
+    const updates = [{ update_id: 9001, message: { message_id: 1, voice: { file_id: "v", file_unique_id: "u", duration: 3 }, from: { id: 111 }, chat: { id: 222 } } }];
+    const adapter = createTelegramLongPollingAdapter({
+      allowlist,
+      client: { getUpdates: async () => updates },
+      offsetStore: { getOffset: () => 0, setOffset: () => {} },
+      mediaIngestEnabled: () => enabled
+    });
+    await adapter.pollOnce(async (event) => { emitted.push(event); });
+    expect(emitted).toHaveLength(0);
+    enabled = true;
+    await adapter.pollOnce(async (event) => { emitted.push(event); });
+    expect(emitted).toHaveLength(1);
+    expect((emitted[0] as { goal?: string }).goal).toBe("[voice message]");
+  });
 });

@@ -3,6 +3,8 @@ import type { TypedTaskEvent } from "../../src/domain/types.js";
 import {
   isSelfWriteActionEvent,
   normalizeTelegramUpdate,
+  TELEGRAM_UNSUPPORTED_MEDIA_REPLY,
+  TELEGRAM_UNSUPPORTED_MEDIA_REPLY_WITH_INGEST,
   type TelegramNormalizeResult
 } from "../../src/triggers/telegram-trigger-adapter.js";
 
@@ -434,5 +436,113 @@ describe("normalizeTelegramUpdate", () => {
       ok: false,
       error: { code: "TELEGRAM_AUTH_DENIED", message: "Forwarded commands are not accepted" }
     });
+  });
+});
+
+describe("media turns (spec 2026-09-29)", () => {
+  const voice = { file_id: "vf1", file_unique_id: "vu1", duration: 7, mime_type: "audio/ogg", file_size: 12000 };
+  const photo = [
+    { file_id: "ps", file_unique_id: "pus", width: 90, height: 60, file_size: 900 },
+    { file_id: "pl", file_unique_id: "pul", width: 1280, height: 853, file_size: 180000 }
+  ];
+  const on = { mediaIngestEnabled: true };
+
+  it("flag ON: a bare voice note is a turn whose goal is the placeholder and whose metadata carries the ref", () => {
+    const event = taskEvent(normalizeTelegramUpdate(
+      { update_id: 2000, message: { message_id: 1, voice, from: { id: 111 }, chat: { id: 222 } } }, allowlist, on
+    ));
+    expect(event).toMatchObject({ type: "turn", program: "turn", goal: "[voice message]", idempotency_key: "telegram:2000:1" });
+    expect((event.metadata as Record<string, unknown>).media).toEqual({
+      kind: "voice", file_id: "vf1", file_unique_id: "vu1", mime_type: "audio/ogg", has_caption: false, file_size: 12000, duration: 7
+    });
+  });
+
+  it("flag ON: a captioned voice note keeps the caption as the goal and sets has_caption", () => {
+    const event = taskEvent(normalizeTelegramUpdate(
+      { update_id: 2001, message: { message_id: 2, voice, caption: " listen to this ", from: { id: 111 }, chat: { id: 222 } } }, allowlist, on
+    ));
+    expect(event.goal).toBe("listen to this");
+    expect((event.metadata as Record<string, unknown>).media).toMatchObject({ has_caption: true });
+  });
+
+  it("flag ON: a caption that looks like the placeholder is still a caption (has_caption true)", () => {
+    const event = taskEvent(normalizeTelegramUpdate(
+      { update_id: 2009, message: { message_id: 10, photo, caption: "[photo]", from: { id: 111 }, chat: { id: 222 } } }, allowlist, on
+    ));
+    expect(event.goal).toBe("[photo]");
+    expect((event.metadata as Record<string, unknown>).media).toMatchObject({ kind: "photo", has_caption: true });
+  });
+
+  it("a channel post is still refused before anything else, in both flag states", () => {
+    for (const options of [on, { mediaIngestEnabled: false }]) {
+      const result = normalizeTelegramUpdate({ update_id: 2010, channel_post: { text: "hi" } }, allowlist, options);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected refusal");
+      expect(result.error.code).toBe("TELEGRAM_AUTH_DENIED");
+    }
+  });
+
+  it("flag ON: a photo picks the LARGEST size and the caption is never parsed as a command", () => {
+    const event = taskEvent(normalizeTelegramUpdate(
+      { update_id: 2002, message: { message_id: 3, photo, caption: "what is this chart?", from: { id: 111 }, chat: { id: 222 } } }, allowlist, on
+    ));
+    expect(event).toMatchObject({ type: "turn", goal: "what is this chart?" });
+    expect((event.metadata as Record<string, unknown>).media).toEqual({
+      kind: "photo", file_id: "pl", file_unique_id: "pul", mime_type: "image/jpeg", has_caption: true, file_size: 180000, width: 1280, height: 853
+    });
+  });
+
+  it("flag ON: a bare photo gets the photo placeholder", () => {
+    const event = taskEvent(normalizeTelegramUpdate(
+      { update_id: 2003, message: { message_id: 4, photo, from: { id: 111 }, chat: { id: 222 } } }, allowlist, on
+    ));
+    expect(event.goal).toBe("[photo]");
+  });
+
+  it("a caption that starts with / stays a command in BOTH flag states (the image is ignored)", () => {
+    for (const options of [on, { mediaIngestEnabled: false }]) {
+      const event = taskEvent(normalizeTelegramUpdate(
+        { update_id: 2004, message: { message_id: 5, photo, caption: "/status run_x", from: { id: 111 }, chat: { id: 222 } } }, allowlist, options
+      ));
+      expect(event.type).toBe("status");
+      expect((event.metadata as Record<string, unknown>).media).toBeUndefined();
+    }
+  });
+
+  it("flag OFF (and the default): today's behaviour — captioned photo is a caption text turn, bare media gets TODAY's acknowledgement text", () => {
+    const captioned = taskEvent(normalizeTelegramUpdate(
+      { update_id: 2005, message: { message_id: 6, photo, caption: "what is this chart?", from: { id: 111 }, chat: { id: 222 } } }, allowlist
+    ));
+    expect(captioned).toMatchObject({ type: "turn", goal: "what is this chart?" });
+    expect((captioned.metadata as Record<string, unknown>).media).toBeUndefined();
+
+    const bare = normalizeTelegramUpdate(
+      { update_id: 2006, message: { message_id: 7, voice, from: { id: 111 }, chat: { id: 222 } } }, allowlist, { mediaIngestEnabled: false }
+    );
+    expect(bare.ok).toBe(false);
+    if (bare.ok) throw new Error("expected acknowledgement");
+    expect(bare.error.code).toBe("TELEGRAM_UNSUPPORTED_MEDIA");
+    expect(bare.acknowledgement?.text).toBe(TELEGRAM_UNSUPPORTED_MEDIA_REPLY);
+    // Today's text lists 语音 among the things it CANNOT read; it must never claim to read it.
+    expect(TELEGRAM_UNSUPPORTED_MEDIA_REPLY).not.toMatch(/可以读.*语音/);
+  });
+
+  it("flag ON: a forwarded voice note is refused at auth — no event, no acknowledgement", () => {
+    const result = normalizeTelegramUpdate(
+      { update_id: 2007, message: { message_id: 8, voice, forward_date: 1, from: { id: 111 }, chat: { id: 222 } } }, allowlist, on
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected refusal");
+    expect(result.acknowledgement).toBeUndefined();
+  });
+
+  it("flag ON: a sticker/document is still unsupported, and the acknowledgement now says what IS supported", () => {
+    const result = normalizeTelegramUpdate(
+      { update_id: 2008, message: { message_id: 9, from: { id: 111 }, chat: { id: 222 } } }, allowlist, on
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected acknowledgement");
+    expect(result.acknowledgement?.text).toBe(TELEGRAM_UNSUPPORTED_MEDIA_REPLY_WITH_INGEST);
+    expect(TELEGRAM_UNSUPPORTED_MEDIA_REPLY_WITH_INGEST).toMatch(/可以读.*语音/);
   });
 });

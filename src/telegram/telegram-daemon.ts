@@ -17,6 +17,7 @@ import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-l
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
 import { embedText, resolveEmbedConfig } from "../llm/embeddings.js";
+import { resolveMediaIngestEnabled } from "../media/media-config.js";
 import { LocalNotificationAdapter } from "../notifications/local-notification-adapter.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import { NotificationOutbox } from "../notifications/notification-outbox.js";
@@ -171,6 +172,7 @@ export async function runTelegramDaemon(
     skippedUpdateStore: {
       recordSkippedTelegramUpdate: (input) => options.store.recordSkippedTelegramUpdate(input)
     },
+    mediaIngestEnabled: () => resolveMediaIngestEnabled(process.env),
     // No-ghost reply for a text-less message: enqueue on the existing outbox; the
     // in-loop dispatch flush delivers it. Deterministic key → idempotent across restarts.
     acknowledgeSink: (ack) => {
