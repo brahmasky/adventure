@@ -1,3 +1,4 @@
+import os from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_ASK_SYSTEM_PROMPT,
@@ -143,5 +144,30 @@ describe("audit is a required constructor parameter (slice 2, B1)", () => {
       ["agy-cli", "unavailable"],
       ["pi", "ok"]
     ]);
+  });
+});
+
+describe("media forwarding (multimodal ingest, spec 2026-09-29)", () => {
+  const tmpMedia = { path: `${os.tmpdir()}/houge-media-t1/media.jpg`, mime: "image/jpeg" };
+
+  it("forwards a valid media attachment to the chain", async () => {
+    const { provider, last } = capturingProvider();
+    const adapter = createLlmAnswerAdapter({ chain: [{ ...provider, supportsMedia: () => true }], audit: UNAUDITED_TEST_SINK });
+    await adapter({ question: "describe", media: tmpMedia });
+    expect(last()?.media).toEqual(tmpMedia);
+  });
+
+  it("rejects a media path outside tmpdir, a foreign basename, or a malformed field BEFORE any leg runs", async () => {
+    for (const media of [
+      { path: "/etc/media.jpg", mime: "image/jpeg" },
+      { path: `${os.tmpdir()}/houge-media-t1/photo_9.jpg`, mime: "image/jpeg" },
+      { path: `${os.tmpdir()}/houge-media-t1/media.jpg` },
+      "media.jpg"
+    ]) {
+      const { provider, last } = capturingProvider();
+      const adapter = createLlmAnswerAdapter({ chain: [{ ...provider, supportsMedia: () => true }], audit: UNAUDITED_TEST_SINK });
+      expect(await adapter({ question: "describe", media })).toEqual({ ok: false, error: "media rejected" });
+      expect(last()).toBeUndefined();
+    }
   });
 });

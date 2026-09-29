@@ -697,6 +697,28 @@ deduped Telegram alert fires per episode. `/status` shows
 | `HOUGE_METERED_MONTHLY_USD` | `50` | Ceiling over the calendar month, UTC — how the invoice actually resets. |
 | `HOUGE_METERED_PRICES_JSON` | seed table | JSON object of model-id **prefix** → `{input_usd_per_mtok, output_usd_per_mtok, cached_input_usd_per_mtok?}`, merged over the seed table (longest prefix wins). A metered model matching NO prefix logs once and its spend is invisible until priced. |
 
+## Multimodal ingest — voice notes and photos (spec 2026-09-29)
+
+With `HOUGE_MEDIA_INGEST_ENABLED` on, a Telegram **voice note** becomes the turn's message (transcribed
+on the flat-rate agy leg; the reply opens with `🎙 I heard: “…”` so a mis-hearing is visible) and a
+**photo** is read through the dual-LLM reader: its digest (`[external source — untrusted-derived
+summary]`, with `contains_instructions`) is appended to the caption. Video, documents and stickers
+are still answered with the "not yet" acknowledgement. The bytes live in a temp dir for one call and
+never enter the DB; one `media_ingested` ledger row per media turn carries kind, status and counts only.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HOUGE_MEDIA_INGEST_ENABLED` | off | Arms the ingest step. Accepts 1/true/yes/on; read per poll; in `DISARM_FLAGS`. |
+| `HOUGE_LLM_MEDIA_PROVIDERS` | `agy-cli,pi` | The media chain. agy reads audio and images; pi images only; API legs never. |
+| `HOUGE_LLM_TIMEOUT_MS_MEDIA` | `45000` | Per-leg timeout for a media call. The whole stage is capped at 150 s, before the loop's 10 min. |
+
+Caps: 10 MB per file, 300 s per voice note. A failure (too large, download, no leg, empty, timeout)
+fails the turn with a one-line reply and a `media_ingested` row; resend to retry.
+
+```bash
+node scripts/live-gate-media.mjs   # opt-in: four real turns in memory, real agy leg, synthetic media
+```
+
 ## Jev intent shadow — replay and live shadow (spec 2026-09-25)
 
 [Jev](https://docs.typesafe.ai/llms.txt) (TypeSafe's "System One" model) answers typed questions

@@ -3,6 +3,7 @@ import { CoreWorker } from "../core/core-worker.js";
 import { evolutionLaneSettled } from "../core/evolution-lane.js";
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
+import { resolveMediaIngestEnabled } from "../media/media-config.js";
 import { LocalNotificationAdapter } from "../notifications/local-notification-adapter.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import type { DispatchResult } from "../notifications/notification-dispatcher.js";
@@ -18,12 +19,15 @@ import {
 } from "../triggers/telegram-trigger-adapter.js";
 import { handleSelfWriteAction, type SelfWriteActionTelegramClient } from "./self-write-action-handler.js";
 import type {
+  TelegramFileClient,
   TelegramSendMessageInput,
   TelegramSendMessageResult
 } from "./telegram-client.js";
 
 export interface TelegramPollClient extends TelegramGetUpdatesClient, SelfWriteActionTelegramClient {
   sendMessage(input: TelegramSendMessageInput): Promise<TelegramSendMessageResult>;
+  /** Multimodal ingest (spec 2026-09-29): present on the real client; tests may omit it. */
+  downloadFile?: TelegramFileClient["downloadFile"];
 }
 
 /**
@@ -83,7 +87,18 @@ export async function runTelegramPollOnce(
     undefined,
     undefined,
     undefined,
-    options.broker
+    options.broker,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    // Multimodal ingest: the Telegram client is the only thing that can fetch a file. A client
+    // without downloadFile (tests) yields no downloader, so every media turn fails loudly.
+    options.telegramClient.downloadFile
+      ? { downloadFile: options.telegramClient.downloadFile.bind(options.telegramClient) }
+      : undefined
   );
 
   const adapter = createTelegramLongPollingAdapter({
@@ -96,6 +111,7 @@ export async function runTelegramPollOnce(
     skippedUpdateStore: {
       recordSkippedTelegramUpdate: (input) => options.store.recordSkippedTelegramUpdate(input)
     },
+    mediaIngestEnabled: () => resolveMediaIngestEnabled(process.env),
     // No-ghost reply for a text-less message: enqueue on the existing outbox; the
     // dispatch flush at the end of this cycle delivers it. Deterministic key → idempotent.
     acknowledgeSink: (ack) => {

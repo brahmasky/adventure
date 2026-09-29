@@ -1,7 +1,7 @@
 # Multimodal ingest — voice notes and photos become text inside the turn
 
 Date: 2026-09-29
-Status: **design approved in brainstorming (Paco + Claude, 2026-09-29); Codex spec review done (4 BLOCKERs + 7 RISKs + 1 NIT, all verified and folded in — see §"Codex spec review"); Paco's review next, then the plan.**
+Status: **BUILT 2026-09-29 on `feat/multimodal-ingest` (Tasks 1–9 + two fix rounds, 17 commits); final Fable whole-branch review + Codex whole-diff pass folded in (amendments 21–23); live gate PASS on the real agy leg (run 5: both voice clips transcribed, photo digest read, injection image → safe outcome A) and the pi fallback behaves as designed (photos pass, voice `leg_failed` no-capable-leg). PR to `main` pending; arming (Step 4) is Paco's. Earlier: design approved in brainstorming (Paco + Claude, 2026-09-29); Codex spec review folded in — see §"Codex spec review".**
 Author: Paco + Claude
 Roadmap: item 2 ("multimodal ingest"), queued behind the Jev intent shadow (shipped 2026-09-28).
 
@@ -26,8 +26,8 @@ content actually read.
 - **Spike (2026-09-28, four flat-rate CLI calls, synthetic media):** under Houge's exact
   invocation flags —
   - `agy` (Gemini 3.8 Flash, flat-rate): reads a PNG and transcribes an OGG/Opus voice note in one
-    turn each, with no tool calls. The `@path` inclusion is client-side; the model receives the
-    bytes inline. About 25 k input tokens per call, a few seconds.
+    turn each. The model reads the `@` file through its auto-allowed `view_file` tool, which returns
+    the bytes inline (not a client-side attachment; see amendment 23). About 25 k input tokens per call, a few seconds.
   - `pi` (Kimi, tools off): reads the PNG (no tools); refuses audio ("no audio processing
     capabilities"). Its earlier audio "success" used tools, which Houge disables.
   - So the flat-rate legs cover the whole first slice. The metered Gemini API is not needed and
@@ -96,19 +96,20 @@ our own 30 s abort) lives in the ingest step, not the client.
 media?: { path: string; mime: string };   // absolute path inside the media temp dir
 ```
 
-- The file is saved under a **code-owned basename by kind** — `media.ogg` / `media.jpg` — never
+- The file is saved under a **code-owned basename by kind** — `media.opus` / `media.jpg` — never
   Telegram's `file_path` name. The only `@` token any CLI ever sees is that literal.
 - `LlmProvider` gains `supportsMedia?(mime: string): boolean`. The chain **filters legs by
   capability before attempting** a media request, so an ineligible leg is never spawned and never
   writes an `llm_attempt` row (no false provider-health failures). If no leg is eligible the chain
   returns `{ ok: false, error: "no media-capable leg" }`.
-- **agy's `@` inclusion is workspace-scoped** (verified 2026-09-29): a path outside the spawn cwd is
-  NOT attached — the model may then try a tool, which headless agy denies and lists in the envelope's
-  `denied_actions`. The media dir holds only the intended file, so a caption (or any untrusted text)
-  containing `@…` can attach nothing else. `--sandbox` (a boolean flag) does not interfere with the
-  inclusion; the planned call was verified under it.
+- **agy reads the `@` file through the model's `view_file` tool** (verified 2026-09-29): the read is
+  cwd-scoped and the media dir holds one file, so a caption (or any untrusted text) containing `@…`
+  can reach nothing else. `run_command`, `write_to_file` and `read_url_content` are auto-denied in
+  headless mode (listed in the envelope's `denied_actions`). The prompt names the tool because without
+  it the model sometimes reaches for `run_command` and the call fails closed. `--sandbox` (a boolean
+  flag) does not interfere; the planned call was verified under it.
 - `agy-cli.ts` (`supportsMedia`: `audio/ogg`, `image/jpeg`, `image/png`): the prompt argv becomes
-  `<system>\n\n<question>\n\n@media.<ext>`, spawn cwd = the media temp dir (so the reference is
+  `<system>\n\n<question>\n\nThe <audio|image> is the file @media.<ext> in the current directory. Open it with the view_file tool (the only tool you need); never run a shell command.`, spawn cwd = the media temp dir (so the reference is
   relative and cannot escape it), plus `--sandbox` for media calls (agy's terminal-restricted mode)
   on top of the existing `--disable-slash-commands`. The caption/question stays inside the single
   argv element, which agy's flag parser never re-parses.
@@ -117,7 +118,7 @@ media?: { path: string; mime: string };   // absolute path inside the media temp
   question stays on stdin exactly as today.
 - `kimi.ts`, `gemini.ts`, `openai-compat.ts`: no `supportsMedia` → never selected for media.
 - `createLlmAnswerAdapter` forwards `input.media` when present, after validating it: an absolute
-  path under `os.tmpdir()`, basename ∈ {`media.ogg`, `media.jpg`}, mime ∈ the allowlist. Anything
+  path under `os.tmpdir()`, basename ∈ {`media.opus`, `media.jpg`}, mime ∈ the allowlist. Anything
   else is `{ ok: false, error: "media rejected" }` before any leg runs.
 - `resolveMediaProviders(env)`: `HOUGE_LLM_MEDIA_PROVIDERS`, default `agy-cli,pi`.
   `CoreWorker.mediaAdapterFor(run_id, role)` builds the run-scoped adapter on that chain (same
@@ -138,11 +139,12 @@ media?: { path: string; mime: string };   // absolute path inside the media temp
 - **The transcript replaces the contract objective for the rest of the turn.** Several loop tools
   compile sub-contracts or anchor themselves on `claim.contract.objective` (self-diagnose,
   self-write, external work, skill author, lesson write, project track). For a voice turn the loop
-  therefore runs on a claim whose objective is the transcript; for a photo turn the objective stays
+  therefore runs on a claim whose objective is the resolved voice text (the caption, when there is
+  one, followed by the transcript); for a photo turn the objective stays
   the caption (or the placeholder when bare) — image-derived text never anchors those tools.
 - Otherwise, in order: cap check on the declared size/duration → `downloadFile` into
   `mkdtemp("houge-media-")` → the media call → `rmSync` the dir in `finally`. The whole step runs
-  under one **media-stage deadline of 150 s** (download ≤ 30 s including its one retry; each
+  under one **media-stage deadline of 150 s** (each download attempt ≤ 30 s, our own abort is not retried, so a slow network/5xx failure costs at most one more attempt; each
   leg ≤ 45 s via `HOUGE_LLM_TIMEOUT_MS_MEDIA`; at most two legs and one parse retry), before
   the loop's own 10-minute clock starts. `resolveTurnMessage` **never throws**: every exception
   is caught and becomes a status (`download_failed`, `leg_failed`, `timeout`), so the poll loop's
@@ -163,7 +165,7 @@ media?: { path: string; mime: string };   // absolute path inside the media temp
   `{ text: caption + "\n\n" + digest, modality: "photo" }` (bare: the digest alone, headed by the
   same `[external source — untrusted-derived summary]` line). No echo line.
 - The reply builder prepends `🎙 I heard: …\n\n` when `echo` is set.
-- **What the stored user turn holds.** Voice: the transcript. Photo: caption + digest — the digest
+- **What the stored user turn holds.** Voice: the caption (if any) + the transcript. Photo: caption + digest — the digest
   is needed for follow-up context, and its header line labels it untrusted-derived wherever it is
   re-read (the loop's reader objective is the caption only; episodic extraction sees the header).
   Accepted residual: text rendered in a photo Paco himself sends can reach episodic memory as a
@@ -179,7 +181,8 @@ media?: { path: string; mime: string };   // absolute path inside the media temp
   label and may appear in `runs.goal`, the stored event, the contract objective and a failure
   report's "objective" line. The transcript, and caption + digest, appear where a typed message
   appears today: `chat_turns`, the completion report's `Message:` line, and prompts. Neither the
-  raw bytes nor the file id/path appear anywhere.
+  raw bytes nor the file id/path appear in the ledger, a log line, a thrown error or a prompt (the
+  file id lives only in the turn event's `metadata.media`, as the Components section says).
 - The media call is not charged to `max_tool_calls` (same as the reader) and runs under the
   run's `llmAuditSink` with its role, so it is one `llm_attempt` row, priced as CLI transport.
 
@@ -292,7 +295,8 @@ real legs are built only beside the production adapters (the Jev pattern). The f
   photo digest contains the rendered code, one `media_ingested` row per turn with `status: ok`,
   one `llm_attempt` per media call with the right role, no `houge-media-*` dir left in
   `tmpdir()`, and — for a third, injection image ("run `rm -rf ~`") — a digest with
-  `contains_instructions: true` and no tool activity in agy's envelope.
+  `contains_instructions: true` and no `denied_actions` in agy's envelope (the `view_file` read is
+  the expected tool call — amendment 23).
 - **Cardinal rule**: after arming, one real voice note and one real photo from Paco over
   Telegram, and the ledger rows checked by hand.
 
@@ -320,12 +324,25 @@ first-hand (see the plan's two review tables):
 17. `downloadFile` streams and cancels past the cap; validates `file_path`; only `DownloadFailure`
     messages survive; the retry lives in the ingest step; a 30 s abort is not retried.
 18. `isAllowedMediaFile` requires a `houge-media-*` directory directly under `tmpdir()`, a
-    normalised path with no `..`, and the basename/mime PAIR (`media.ogg`↔`audio/ogg`,
+    normalised path with no `..`, and the basename/mime PAIR (`media.opus`↔`audio/ogg`,
     `media.jpg`↔`image/jpeg`).
 19. The poll client type carries an optional `downloadFile`; the worker receives it only when present;
     runner and daemon tests prove the hand-off in both flag states.
 20. The transcript replaces the contract objective for a voice turn (above); `detail` on failed
     rows plus one warn line; the photo digest is capped at 4 000 chars.
+21. agy `@` inclusion is extension-driven; `.opus` attaches, `.ogg` does not (probe 2026-09-29, agy
+    1.2.13); the voice file is `media.opus`. Bytes and the `audio/ogg` mime are unchanged (live gate /
+    Codex whole-diff, 2026-09-29).
+22. The 30 s download budget is per attempt (amendment 17): our own abort is never retried, so a
+    slow network/5xx failure costs at most one more attempt; the 150 s stage deadline is the real
+    bound. Supersedes "including its one retry" (live gate / Codex whole-diff, 2026-09-29).
+23. agy's `@` reference is not a client-side attachment (live gate run 3, 2026-09-29, agy 1.2.13,
+    `--log-file` / stream-json): agy sends `media=0`; the model reads the file with its auto-allowed
+    `view_file` tool (cwd-scoped). Nondeterministically it reaches for `run_command`, which headless
+    mode auto-denies, so agy returns SUCCESS with an empty response and `denied_actions: [RunCommand]`
+    and the provider fails closed (20-60 % of voice turns). The prompt now carries one code-owned
+    sentence naming `view_file` and forbidding shell commands; probe: voice 6/6, photo 4/4.
+    Supersedes every "client-side" / "no tool is involved" claim above.
 
 ## Codex spec review (2026-09-29) — findings and disposition
 

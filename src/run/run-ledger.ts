@@ -48,6 +48,7 @@ export type LedgerEventType =
   | "llm_call"
   | "llm_attempt"
   | "intent_shadow"
+  | "media_ingested"
   | "loop_started"
   | "loop_step"
   | "loop_halted"
@@ -182,6 +183,9 @@ const requiredPayloadFields = {
   // turn while the shadow is armed — every status, so the report has a denominator. Labels, numbers,
   // a lang tag and a code-owned error string ONLY — never message text (bodies stay out of the ledger).
   intent_shadow: ["status", "llm_intent", "llm_parsed", "lang"],
+  // Multimodal ingest (spec 2026-09-29): ONE row per media turn, whatever happened. Kind, status,
+  // counts and tags ONLY — never a transcript, caption, file id, file name or path.
+  media_ingested: ["kind", "status", "source"],
   // Inner-loop observation hooks (ADR 0013, step ⓪·1). `loop_started.applied_artifacts`
   // is the attribution seed (which lesson/skill scope blocks were injected); `loop_step`
   // records each composed step (result_digest is the truncated transcript entry — never

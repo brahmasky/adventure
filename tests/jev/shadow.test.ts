@@ -69,7 +69,7 @@ describe("runJevShadow — never rejects; every outcome is a status", () => {
 });
 
 describe("intentShadowPayload — the ledger row, joined to the RAW classifier reply", () => {
-  const okOutcome: JevShadowOutcome = { status: "ok", lang: "en", jev: { intent: "skill", confidence: 0.8, probabilities: { skill: 0.8, answer: 0.2 }, model: "jev-1.13.0", latency_ms: 300 } };
+  const okOutcome: JevShadowOutcome = { status: "ok", lang: "en", modality: "text", jev: { intent: "skill", confidence: 0.8, probabilities: { skill: 0.8, answer: 0.2 }, model: "jev-1.13.0", latency_ms: 300 } };
 
   it("ok: every jev_* field, the raw label, parsed=true, modality text — and no jev_error", () => {
     const p = intentShadowPayload(okOutcome, '{"intent":"research","query":"rba"}');
@@ -88,8 +88,16 @@ describe("intentShadowPayload — the ledger row, joined to the RAW classifier r
   });
 
   it("failure: jev_error present, no jev_* fields", () => {
-    const p = intentShadowPayload({ status: "timeout", lang: "zh", jev_error: "timed out after 5000ms" }, '{"intent":"answer"}');
+    const p = intentShadowPayload({ status: "timeout", lang: "zh", modality: "text", jev_error: "timed out after 5000ms" }, '{"intent":"answer"}');
     expect(p).toEqual({ status: "timeout", llm_intent: "answer", llm_parsed: true, lang: "zh", modality: "text", jev_error: "timed out after 5000ms" });
+  });
+
+  it("the modality flows into the request state AND the payload (spec 2026-09-29)", async () => {
+    const call = vi.fn(async (_req: JevRequest) => ok());
+    const out = await runJevShadow(call, "hello", [], 500, 0, "voice");
+    expect((call.mock.calls[0]![0].state as { modality: string }).modality).toBe("voice");
+    expect(out.modality).toBe("voice");
+    expect(intentShadowPayload(out, '{"intent":"answer"}').modality).toBe("voice");
   });
 
   it("never carries message text (bodies-out-of-the-ledger)", async () => {

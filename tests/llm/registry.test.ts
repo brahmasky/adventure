@@ -345,3 +345,42 @@ describe("answerWithChain audit", () => {
     }
   });
 });
+
+describe("answerWithChain with media (multimodal ingest, spec 2026-09-29)", () => {
+  const media = { path: "/tmp/houge-media-x/media.opus", mime: "audio/ogg" };
+  const ok = (name: string): LlmProvider => ({ ...provider(name, { ok: true, provider: name, model: "m", answer: `from ${name}` }), supportsMedia: (mime) => mime === "audio/ogg" });
+
+  it("attempts only legs that support the mime — an ineligible leg is never called and writes no audit row", async () => {
+    const calls: string[] = [];
+    const deaf: LlmProvider = { name: "deaf", answer: async () => { calls.push("deaf"); return { ok: true, provider: "deaf", model: "m", answer: "x" }; } };
+    const hears: LlmProvider = { name: "hears", supportsMedia: (mime) => mime === "audio/ogg", answer: async () => { calls.push("hears"); return { ok: true, provider: "hears", model: "m", answer: "transcript" }; } };
+    const audit = recordingSink();
+    const result = await answerWithChain([deaf, hears], { question: "transcribe", media }, audit);
+    expect(result).toMatchObject({ ok: true, provider: "hears", answer: "transcript" });
+    expect(calls).toEqual(["hears"]);
+    expect(audit.attempts.map((a) => a.provider)).toEqual(["hears"]);
+  });
+
+  it("no media-capable leg → a code-owned chain error, no attempts", async () => {
+    const audit = recordingSink();
+    const result = await answerWithChain([provider("deaf", { ok: true, provider: "deaf", model: "m", answer: "x" })], { question: "q", media }, audit);
+    expect(result).toEqual({ ok: false, provider: "chain", error: "no media-capable leg" });
+    expect(audit.attempts).toHaveLength(0);
+  });
+
+  it("fallthrough reasons for a media request carry the error KIND, never the leg's error text", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const flaky: LlmProvider = { name: "flaky", supportsMedia: () => true, answer: async () => ({ ok: false, provider: "flaky", error: "agy timed out after 45000ms; prompt was: SECRET CAPTION" }) };
+    const result = await answerWithChain([flaky, ok("good")], { question: "q", media }, recordingSink());
+    expect(result.ok).toBe(true);
+    const line = warn.mock.calls.map((c) => String(c[0])).find((l) => l.includes("[llm-chain]")) ?? "";
+    expect(line).toContain("flaky: timeout");
+    expect(line).not.toContain("SECRET CAPTION");
+    warn.mockRestore();
+  });
+
+  it("without media the chain is unchanged: every leg is eligible, reasons carry the text as before", async () => {
+    const result = await answerWithChain([provider("a", { ok: false, provider: "a", error: "boom" }), provider("b", { ok: true, provider: "b", model: "m", answer: "fine" })], { question: "q" }, recordingSink());
+    expect(result).toMatchObject({ ok: true, provider: "b" });
+  });
+});

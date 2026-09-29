@@ -57,7 +57,10 @@ export const DISARM_FLAGS: readonly string[] = [
   "HOUGE_RADAR_PANEL_ENABLED",
   // Jev intent shadow (spec 2026-09-25): an unattended per-turn metered call that sends the
   // message + thread to a third party — the STOP switch covers it like the radar's calls.
-  "HOUGE_JEV_SHADOW_ENABLED"
+  "HOUGE_JEV_SHADOW_ENABLED",
+  // Multimodal ingest (spec 2026-09-29): media bytes leave the mini per turn — the STOP
+  // switch covers it like the radar's and Jev's calls.
+  "HOUGE_MEDIA_INGEST_ENABLED"
 ];
 
 export function resolveDisarmPath(env: NodeJS.ProcessEnv = process.env): string {

@@ -77,6 +77,10 @@ Misclassification is bounded by the `clarify` intent and a conservative default
 (answer). Routing intent is itself a cognitive act, so it belongs to Houge's
 intelligence, not a command parser ([ADR 0010](docs/decisions/0010-natural-language-intent-layer.md)).
 
+Voice notes and photos work when `HOUGE_MEDIA_INGEST_ENABLED` is on: a voice note is transcribed
+and answered like typed text (the reply starts with what Houge heard); a photo is read behind the
+dual-LLM wall and its description joins your caption. Videos and files are not read yet.
+
 ## LLM providers
 
 Cognition resolves an ordered provider chain with automatic fallback (first `ok`

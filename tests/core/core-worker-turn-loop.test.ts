@@ -85,7 +85,10 @@ const PINNED_ENV = [
   "HOUGE_BOUNTY_MAX_CANDIDATES",
   // ADR 0025: the Google flag shapes the manifest (couple with HOUGE_DUAL_LLM_ENABLED,
   // pinned above) — pin it so a daemon .env that arms Google can't red-fail these turns.
-  "HOUGE_GOOGLE_ENABLED"
+  "HOUGE_GOOGLE_ENABLED",
+  // Multimodal ingest (spec 2026-09-29): an armed flag routes media metadata into the ingest step.
+  "HOUGE_MEDIA_INGEST_ENABLED",
+  "HOUGE_LLM_MEDIA_PROVIDERS"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {

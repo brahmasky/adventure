@@ -206,8 +206,15 @@ export async function answerWithChain(
   const reasons: string[] = [];
   const attempt_group = randomBytes(6).toString("hex");
 
-  for (let leg_index = 0; leg_index < chain.length; leg_index++) {
-    const provider = chain[leg_index]!;
+  // Multimodal ingest: a leg that cannot take the attachment is never attempted (and so never
+  // audited as a failure — Codex spec review R11). Text requests see the whole chain, as before.
+  const legs = req.media ? chain.filter((p) => p.supportsMedia?.(req.media!.mime) === true) : chain;
+  if (req.media && legs.length === 0) {
+    return { ok: false, provider: "chain", error: "no media-capable leg" };
+  }
+
+  for (let leg_index = 0; leg_index < legs.length; leg_index++) {
+    const provider = legs[leg_index]!;
     const t0 = Date.now();
     let result: LlmResult;
     try {
@@ -256,7 +263,9 @@ export async function answerWithChain(
       return result;
     }
     const tag = result.unavailable ? "unavailable" : "error";
-    reasons.push(`${result.provider}: ${result.error} (${tag})`);
+    // A media leg's error text can echo the prompt (a caption) or the temp path; keep the kind only.
+    const detail = req.media ? classifyLlmError(result.error) : result.error;
+    reasons.push(`${result.provider}: ${detail} (${tag})`);
   }
 
   return {

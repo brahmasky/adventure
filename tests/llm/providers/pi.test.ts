@@ -727,3 +727,31 @@ describe("createPiProvider", () => {
     });
   });
 });
+
+describe("media calls (multimodal ingest, spec 2026-09-29)", () => {
+  const media = { path: `${os.tmpdir()}/houge-media-pitest/media.jpg`, mime: "image/jpeg" };
+
+  it("supportsMedia: images only — Kimi via pi cannot hear audio (spike 2026-09-28)", () => {
+    const p = createPiProvider({ spawnImpl: async () => spawnResult() });
+    expect(p.supportsMedia?.("image/jpeg")).toBe(true);
+    expect(p.supportsMedia?.("image/png")).toBe(true);
+    expect(p.supportsMedia?.("audio/ogg")).toBe(false);
+  });
+
+  it("passes the code-owned @path after `--` as the last argv tokens; the question stays on stdin", async () => {
+    let seen: { args: string[]; input: string } | undefined;
+    const spawnImpl: SpawnImpl = async (_file, args, opts) => { seen = { args, input: opts.input }; return spawnResult({ stdout: jsonlSuccess("HOUGE PROBE") }); };
+    const result = await createPiProvider({ spawnImpl }).answer({ question: "What text is in this image? --print", media });
+    expect(result).toMatchObject({ ok: true, answer: "HOUGE PROBE" });
+    expect(seen!.args.slice(-2)).toEqual(["--", `@${media.path}`]);
+    expect(seen!.input).toBe("What text is in this image? --print");
+    expect(seen!.args).toContain("--no-tools");
+  });
+
+  it("refuses an unsupported mime itself, defensively, without spawning", async () => {
+    const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult());
+    const result = await createPiProvider({ spawnImpl }).answer({ question: "q", media: { path: `${os.tmpdir()}/houge-media-pitest/media.ogg`, mime: "audio/ogg" } });
+    expect(result).toEqual({ ok: false, provider: "pi", error: "media unsupported: audio/ogg" });
+    expect(spawnImpl).not.toHaveBeenCalled();
+  });
+});

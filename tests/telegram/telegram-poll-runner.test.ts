@@ -1,14 +1,30 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
 import { runTelegramPollOnce } from "../../src/telegram/telegram-poll-runner.js";
 
-const SAVED_RUNS_CAP = process.env.HOUGE_GLOBAL_MAX_RUNS_24H;
+// PINNED_ENV hermeticity (the daemon file's pattern): save, DELETE before each test so a value
+// leaked from the daemon's .env never arms a flag here, restore after.
+const PINNED_ENV = [
+  "HOUGE_GLOBAL_MAX_RUNS_24H",
+  "HOUGE_MEDIA_INGEST_ENABLED",
+  "HOUGE_LLM_MEDIA_PROVIDERS"
+] as const;
+let savedEnv: Record<string, string | undefined> = {};
+beforeEach(() => {
+  savedEnv = {};
+  for (const key of PINNED_ENV) {
+    savedEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+});
 afterEach(() => {
-  if (SAVED_RUNS_CAP === undefined) delete process.env.HOUGE_GLOBAL_MAX_RUNS_24H;
-  else process.env.HOUGE_GLOBAL_MAX_RUNS_24H = SAVED_RUNS_CAP;
+  for (const key of PINNED_ENV) {
+    if (savedEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = savedEnv[key];
+  }
 });
 
 describe("runTelegramPollOnce", () => {
@@ -103,6 +119,66 @@ describe("runTelegramPollOnce", () => {
       expect(sent.some((text) => text.includes("global budget fuse tripped"))).toBe(true);
     } finally {
       store.close();
+    }
+  });
+
+  it("flag ON in env: a bare voice note becomes a turn run (the runner reads the flag per poll)", async () => {
+    process.env.HOUGE_MEDIA_INGEST_ENABLED = "true";
+    const store = RunStore.openInMemory();
+    try {
+      const result = await runTelegramPollOnce({
+        store,
+        projectRoot: mkdtempSync(join(tmpdir(), "houge-poll-media-")),
+        // The injected worker never sees the real ingest step here; this pins the runner seam only.
+        llmAdapter: async (input) => ({ ok: true, output: { question: input.question, answer: "ok", model: "fake-model" } }),
+        allowlist: {
+          users: [{ telegram_user_id: 111, identity_id: "paco" }],
+          chats: [{ telegram_chat_id: 222, label: "private", allowed_identity_ids: ["paco"] }]
+        },
+        telegramClient: {
+          getUpdates: async () => [{ update_id: 31, message: { message_id: 1, voice: { file_id: "v", file_unique_id: "u", duration: 3 }, from: { id: 111 }, chat: { id: 222 } } }],
+          sendMessage: async () => ({ message_id: 1 })
+        }
+      });
+      expect(result.processed_updates).toBe(1);
+      // The newest run is the media turn; the store has no public "list runs", so read the row directly (test-only).
+      const newest = (store as unknown as { db: { prepare(sql: string): { get<T>(): T | undefined } } }).db
+        .prepare("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1").get<{ run_id: string }>();
+      expect(store.getRunMetadata(newest!.run_id).media).toMatchObject({ kind: "voice" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("hands the client's downloadFile to the worker: flag ON → a voice update reaches the downloader; flag OFF → it does not and today's acknowledgement is sent", async () => {
+    for (const flag of ["true", "false"]) {
+      process.env.HOUGE_MEDIA_INGEST_ENABLED = flag;
+      const store = RunStore.openInMemory();
+      const sent: string[] = [];
+      const downloadFile = vi.fn(async () => ({ bytes: new Uint8Array([1]) }));
+      try {
+        await runTelegramPollOnce({
+          store,
+          projectRoot: mkdtempSync(join(tmpdir(), "houge-poll-media-")),
+          llmAdapter: async (input) => ({ ok: true, output: { question: input.question, answer: "ok", model: "fake-model" } }),
+          allowlist: { users: [{ telegram_user_id: 111, identity_id: "paco" }], chats: [{ telegram_chat_id: 222, label: "private", allowed_identity_ids: ["paco"] }] },
+          telegramClient: {
+            getUpdates: async () => [{ update_id: 32, message: { message_id: 1, voice: { file_id: "v", file_unique_id: "u", duration: 3 }, from: { id: 111 }, chat: { id: 222 } } }],
+            sendMessage: async ({ text }) => { sent.push(text); return { message_id: sent.length }; },
+            downloadFile
+          }
+        });
+        if (flag === "true") {
+          // The injected LLM adapter means no real media leg: the download happens, then the run fails leg_failed — loudly.
+          expect(downloadFile).toHaveBeenCalledTimes(1);
+          expect(sent.some((t) => /couldn't transcribe/.test(t))).toBe(true);
+        } else {
+          expect(downloadFile).not.toHaveBeenCalled();
+          expect(sent.some((t) => t.includes("我暂时看不了图片内容"))).toBe(true);
+        }
+      } finally {
+        store.close();
+      }
     }
   });
 });
