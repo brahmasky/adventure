@@ -63,6 +63,17 @@ Houge self-writes. The floor (§3) is never weakened by any agent.
     (`04ced06`), outbox same-ms claim bug (`7ea5e77`), park marker (`b11f8ed`). Suite 2283 green.
     Design + full review record: `docs/superpowers/specs/2026-09-04-cli-only-llm-and-audit-chokepoint-design.md`;
     slice 2 (the `llm_attempt` audit chokepoint) is the next build there.
+  - **Delta 2026-09-29 (multimodal ingest, `feat/multimodal-ingest`, PR pending, NOT armed):** a Telegram
+    voice note is transcribed on the agy leg and becomes the turn (reply opens `🎙 I heard: …`); a photo is read
+    through the dual-LLM reader and its digest joins the caption. Flag `HOUGE_MEDIA_INGEST_ENABLED` (default off,
+    in `DISARM_FLAGS`); media chain `HOUGE_LLM_MEDIA_PROVIDERS=agy-cli,pi`; 10 MB / 300 s caps; bytes in a temp
+    dir for one call, counts-only `media_ingested` rows. Live gate PASS (injection image → flagged digest).
+    Two facts learned at the gate, both in the spec (amendments 21, 23): agy attaches by extension
+    (`media.opus`, never `.ogg`) and its `@file` is a model-driven `view_file` read, not a client-side attach.
+    **Open safety observation:** under `--sandbox` headless, agy auto-denies `run_command` / `write_to_file` /
+    `read_url_content` but auto-ALLOWS `search_web` — a web-search egress on the reader leg (pre-existing since
+    agy joined the reader chain 2026-09-06; now also reachable from an injected photo). Not fixed in this slice.
+    Spec: `docs/superpowers/specs/2026-09-29-multimodal-ingest-design.md`.
 - **Test suite:** ~1156 tests green; hermeticity via the PINNED_ENV pattern (§4).
 - **Spine status:** ⓪ inner loop DONE (⓪·4 legacy retirement DONE — loop is the only `turn`
   path; `HOUGE_INNER_LOOP_ENABLED` and the enum if-chain deleted) · ① Slice A eval loop

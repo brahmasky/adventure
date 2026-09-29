@@ -1325,3 +1325,37 @@ Build + independent adversarial verification subagents; each live round found a 
 - Shipped: #1 (b95a612) and #2 (861c2fc) merged to main the same day; built and kickstarted on the
   mini with the flag armed. Open: the first real turn's `intent_shadow` row; the report after ~6 weeks. The parked `cli.ts` one-liner landed the same day
   (`isJudgedMatch`, shared by the summary and the CLI); Paco has armed the flag on the mini.
+
+## 2026-09-29 — Multimodal ingest: Task 10 (final reviews, live gate, docs; BUILT; PR pending)
+
+- Tasks 1–9 were committed before this session (388b06a..1540fc0). This session ran the plan's Task 10.
+- Final Fable whole-branch review (0 Critical / 1 Important / 10 Minor) + Codex whole-diff pass (1 BLOCKER /
+  2 RISK; the first launch hung on "Reading additional input from stdin" in a background shell — relaunch with
+  `< /dev/null`). Every finding verified first-hand. Fix wave 1 (six commits): `http_5xx` retry test; the photo
+  digest cap kept the `contains_instructions` note (Codex BLOCKER); `fileBaseUrl` fails closed without a
+  `/bot<token>` suffix; the agy media-dir test now asserts; two spec rulings (captioned voice = caption +
+  transcript stands per plan Task 7; the 30 s download abort is per attempt per amendment 17). Scoped re-review clean.
+- Live gate, run 1: FAIL — both voice turns `leg_failed` on the real agy leg; photos fine. Root cause 1: agy
+  attaches by file EXTENSION — `.opus`/`.mp3`/`.flac` inline, `.ogg`/`.oga`/`.wav`/`.m4a`/`.aiff` never (the
+  model reaches for a shell command, headless auto-denies it, empty SUCCESS → our fail-closed `leg_failed`).
+  Fix: the code-owned voice file is `media.opus` (bytes unchanged; amendment 21).
+- Live gate, run 3 (after the fix): voice STILL failed 2/2. Root cause 2 (`agy --log-file` + stream-json): agy
+  sends the prompt with `media=0` — `@file` is NOT a client-side attachment; the model reads it through its
+  auto-allowed `view_file` tool and nondeterministically picks `run_command` instead (20–60 % of voice turns).
+  Fix round 2: one code-owned sentence in the agy media prompt naming `view_file` and forbidding shell commands
+  (probe: voice 6/6, photo 4/4). The spec/plan premise "client-side inclusion, no tool involved" is corrected
+  (amendment 23). Scoped re-review clean.
+- Live gate, run 5: **PASS** — 6 s and 280 s clips transcribed (17.7 s / 24.4 s), photo digest read, injection
+  image → digest flagged (safe outcome A). Run 6 (`HOUGE_LLM_MEDIA_PROVIDERS=pi`): photos pass on pi, voice
+  `leg_failed` "no media-capable leg", FAIL only on the voice lines — as the plan expects.
+- First-hand at fc182a2: typecheck clean, 181 files / 2573 tests, build OK, no `"jev"` literal outside
+  `src/llm/`, no `houge-media-*` dir left behind.
+- **Safety observation (not fixed, surfaced):** under `--sandbox` headless agy auto-denies `run_command`,
+  `write_to_file`, `read_url_content` but auto-ALLOWS `search_web` (stream-json: state DONE, answer returned).
+  A web-search egress on the reader leg — pre-existing since agy joined the reader chain (2026-09-06), now also
+  reachable from an injected photo. Recorded in ROADMAP §2 and tasks/todo.md.
+- Deferred minors (final review, not blocking): 50-line rule on `normalizeTelegramUpdate` / `executeTurn`
+  (comment-heavy); poll-runner test reads the private `db`; photo worst case is four leg calls (bounded by the
+  150 s stage); PINNED_ENV pins in 3 of 6 core-worker suites; `pi.test.ts:753` path literal still `media.ogg`;
+  plan task bodies / review tables keep the historical "client-side" wording.
+- Open: PR + merge (Paco), build, kickstart, arm (Step 4: one real voice note + one real photo, ledger check).
