@@ -19,12 +19,15 @@ import {
 } from "../triggers/telegram-trigger-adapter.js";
 import { handleSelfWriteAction, type SelfWriteActionTelegramClient } from "./self-write-action-handler.js";
 import type {
+  TelegramFileClient,
   TelegramSendMessageInput,
   TelegramSendMessageResult
 } from "./telegram-client.js";
 
 export interface TelegramPollClient extends TelegramGetUpdatesClient, SelfWriteActionTelegramClient {
   sendMessage(input: TelegramSendMessageInput): Promise<TelegramSendMessageResult>;
+  /** Multimodal ingest (spec 2026-09-29): present on the real client; tests may omit it. */
+  downloadFile?: TelegramFileClient["downloadFile"];
 }
 
 /**
@@ -84,7 +87,18 @@ export async function runTelegramPollOnce(
     undefined,
     undefined,
     undefined,
-    options.broker
+    options.broker,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    // Multimodal ingest: the Telegram client is the only thing that can fetch a file. A client
+    // without downloadFile (tests) yields no downloader, so every media turn fails loudly.
+    options.telegramClient.downloadFile
+      ? { downloadFile: options.telegramClient.downloadFile.bind(options.telegramClient) }
+      : undefined
   );
 
   const adapter = createTelegramLongPollingAdapter({

@@ -120,6 +120,11 @@ import {
   type JevShadowCall, type JevShadowOutcome
 } from "../jev/shadow.js";
 import { createLocalProjectWriteAdapter } from "../capabilities/local-project-write-adapter.js";
+import { ingestMedia, type MediaIngestDeps } from "../media/media-ingest.js";
+import {
+  mediaFailureReply, resolveMediaIngestEnabled, resolveMediaLegTimeoutMs, resolveMediaProviders,
+  type TelegramMediaRef, type TurnModality
+} from "../media/media-config.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { canonicalJson, stableHash } from "../domain/canonical.js";
 import type { Identity } from "../domain/types.js";
@@ -223,6 +228,14 @@ interface LoopTurnContext {
 
 /** The ⓪·2 evolution tools — their non-success outcomes are surfaced code-owned (see LoopTurnContext). */
 const EVOLUTION_TOOLS = new Set(["self_diagnose", "self_write_propose", "skill_author", "external_work"]);
+
+/** Multimodal ingest (spec 2026-09-29): tests inject all three; the daemon injects the downloader only. */
+export interface MediaWorkerDeps {
+  downloadFile?: MediaIngestDeps["downloadFile"];
+  mediaCall?: MediaIngestDeps["mediaCall"];
+  /** Tests use a per-file root so temp-dir assertions never see other suites' dirs. */
+  tmpRoot?: string;
+}
 
 /**
  * Injectable seams for the Phase-3 self-write stack (ADR 0011). These wrap the real S1–S4 +
@@ -363,7 +376,11 @@ export class CoreWorker {
     // Absent → production builds an audited client per run, but ONLY beside the production LLM
     // adapter: a test-injected LLM never pairs with a real Jev call (the daemon's .env leaks into
     // test runs). Appended last so existing positional callers are unaffected.
-    private readonly jevShadowCall?: JevShadowCall
+    private readonly jevShadowCall?: JevShadowCall,
+    // Multimodal ingest (spec 2026-09-29). The real media LEG is built per run, and ONLY beside the
+    // production LLM adapter (a test-injected LLM never pairs with a real CLI call). The downloader
+    // comes from the Telegram client the daemon holds; absent → every media turn fails download_failed.
+    private readonly mediaDeps?: MediaWorkerDeps
   ) {
     // When the DEFAULT llm adapter is in use (production), `llmAdapterFor` builds a run-scoped,
     // audited adapter per role. A test-INJECTED adapter is used as-is (it brings its own fakes).
@@ -1431,6 +1448,64 @@ export class CoreWorker {
   }
 
   /**
+   * The media leg for one run: the media chain (`HOUGE_LLM_MEDIA_PROVIDERS`), the run's audit sink
+   * under the given role, the 45 s per-leg timeout, the metered fuse. Null when the LLM adapter is
+   * test-injected and no media fake was given — hermetic by construction.
+   */
+  private mediaAdapterFor(run_id: string, role: LlmCallRole): MediaIngestDeps["mediaCall"] | null {
+    if (this.mediaDeps?.mediaCall) return this.mediaDeps.mediaCall;
+    if (!this.llmAdapterIsDefault) return null;
+    const timeoutMs = resolveMediaLegTimeoutMs(process.env);
+    return createLlmAnswerAdapter({
+      ...(this.broker ? { broker: this.broker } : {}),
+      providers: resolveMediaProviders(process.env),
+      chainDeps: { agyConfig: { timeoutMs }, piConfig: { timeoutMs } },
+      meteredBreached: () => this.runStore.meteredFuseLatched(),
+      audit: this.runStore.llmAuditSink({ run_id, role })
+    });
+  }
+
+  /**
+   * The turn's message. A media turn (metadata.media, flag on) runs the ingest step first; every
+   * failure is a code-owned reply through the normal failed-run path. Never throws.
+   */
+  private async resolveTurnMessage(claim: ClaimedRun): Promise<
+    | { ok: true; text: string; modality: TurnModality; echo?: string }
+    | { ok: false; failure: Extract<CapabilityResult, { status: "failed" }> }
+  > {
+    const ref = mediaRefOf(this.runStore.getRunMetadata(claim.run_id));
+    if (!ref) return { ok: true, text: claim.contract.objective, modality: "text" };
+    const caption = ref.has_caption ? claim.contract.objective : "";
+    if (!resolveMediaIngestEnabled(process.env)) {
+      // `/disarm` between intake and execution. A caption is still a fine text turn; a bare media
+      // turn has nothing but the placeholder, which must never become a message (plan review B3).
+      if (ref.has_caption) return { ok: true, text: caption, modality: "text" };
+      this.runStore.recordMediaIngested(claim.run_id, { kind: ref.kind, status: "disabled", source: "telegram" });
+      console.warn(`[media-ingest] ${ref.kind} disabled: flag off at run time`);
+      return { ok: false, failure: { status: "failed", error_ref: mediaFailureReply(ref.kind, "disabled") } };
+    }
+    const mediaCall = this.mediaAdapterFor(claim.run_id, ref.kind === "voice" ? "media_transcribe" : "reader");
+    const downloadFile = this.mediaDeps?.downloadFile;
+    const result = await ingestMedia(
+      {
+        downloadFile: downloadFile ?? (async () => { throw new Error("download_failed: no_downloader"); }),
+        mediaCall: mediaCall ?? (async () => ({ ok: false, error: "no media-capable leg" })),
+        readerSystem: composeSystemPrompt(memoryRootFor(this.projectRoot), "reader"),
+        ...(this.mediaDeps?.tmpRoot ? { tmpRoot: this.mediaDeps.tmpRoot } : {})
+      },
+      ref,
+      caption
+    );
+    this.runStore.recordMediaIngested(claim.run_id, result.ledger);
+    if (!result.ok) {
+      // ONE code-owned line per failed ingest (senior review: operability). Kind, status, detail — never text.
+      console.warn(`[media-ingest] ${ref.kind} ${result.status}${result.ledger.detail ? ` (${result.ledger.detail})` : ""}`);
+      return { ok: false, failure: { status: "failed", error_ref: result.reply } };
+    }
+    return { ok: true, text: result.text, modality: result.modality, ...(result.echo ? { echo: result.echo } : {}) };
+  }
+
+  /**
    * Record the shadow once the classifier's raw reply is known. NEVER awaited by the turn: Jev has
    * usually settled already (~0.3 s vs the classifier's ~6 s), and a failure here is a warning, never
    * a turn failure. A shadow still in flight at shutdown is lost; the report counts it as missing.
@@ -2065,7 +2140,17 @@ export class CoreWorker {
    * memory gives follow-ups context.
    */
   private async executeTurn(claim: ClaimedRun): Promise<CoreWorkerResult> {
-    const message = claim.contract.objective;
+    // Multimodal ingest (spec 2026-09-29): a voice note or photo becomes text HERE, before the
+    // classifier. For a VOICE turn the transcript also becomes the contract objective for the rest
+    // of the turn: several loop tools compile their sub-contracts from `claim.contract.objective`
+    // (self-diagnose, self-write, external work, skill author, lesson write, project track), and a
+    // spoken "remember: …" must reach them as words, not as "[voice message]". A photo keeps the
+    // caption (or placeholder) as objective — image-derived text never anchors a tool.
+    const resolved = await this.resolveTurnMessage(claim);
+    if (!resolved.ok) return this.failWithPartialReport(claim, resolved.failure);
+    const message = resolved.text;
+    const turnClaim: ClaimedRun =
+      resolved.modality === "voice" ? { ...claim, contract: { ...claim.contract, objective: resolved.text } } : claim;
     const target = this.runStore.getRunNotifyTarget(claim.run_id);
     const chat_id = target.kind === "telegram" ? target.chat_id : "local";
 
@@ -2082,31 +2167,33 @@ export class CoreWorker {
     //    turn shares one budget so the classifier counts against max_tool_calls. The
     //    recent-clarify count is fed in as a soft nudge (and used as the hard cap below).
     const recentClarifyCount = countTrailingClarifyTurns(recentTurns);
-    const budget = new BudgetLedger(claim.contract.budget);
+    const budget = new BudgetLedger(turnClaim.contract.budget);
     const classification = await this.classifyIntent(
-      claim,
+      turnClaim,
       message,
       recentTurns,
       budget,
       turnChars,
-      recentClarifyCount
+      recentClarifyCount,
+      resolved.modality
     );
     if (!classification.ok) {
-      return this.failWithPartialReport(claim, classification.failure);
+      return this.failWithPartialReport(turnClaim, classification.failure);
     }
 
     // Inner loop (ADR 0013): the model composes the turn step by step inside the contract
     // envelope, with the classification as an ADVISORY hint. This is the only `turn` path —
     // the legacy intent-enum dispatch was retired once loop parity was proven live (⓪·4).
     return this.executeTurnLoop(
-      claim,
+      turnClaim,
       message,
       chat_id,
       recentTurns,
       budget,
       turnChars,
       recentClarifyCount,
-      classification.classification
+      classification.classification,
+      resolved.echo
     );
   }
 
@@ -2127,7 +2214,8 @@ export class CoreWorker {
     budget: BudgetLedger,
     turnChars: number,
     recentClarifyCount: number,
-    hint: IntentClassification
+    hint: IntentClassification,
+    echo?: string
   ): Promise<CoreWorkerResult> {
     // Manifest = allowed_actions ∩ armed descriptors (step ⓪·2): a disarmed evolution
     // tool is unlisted, unregistered, and therefore denied as an unknown capability.
@@ -2360,8 +2448,10 @@ export class CoreWorker {
 
     // Code-owned surfacing (⓪·2): evolution-step outcomes are APPENDED verbatim to the
     // outgoing reply — never model-mediated (a "hide process" lesson must not hide them).
+    // The voice echo line opens the reply so a mis-hearing is visible (spec 2026-09-29). Code-owned,
+    // prepended after the model's answer is final — never model-mediated.
     const answer = withEvolutionNotices(
-      result.outcome === "clarify" ? result.question : result.answer,
+      (echo ? `${echo}\n\n` : "") + (result.outcome === "clarify" ? result.question : result.answer),
       turnCtx.evolutionNotices
     );
     const completion = this.writeCompletionReport(
@@ -3089,7 +3179,8 @@ export class CoreWorker {
     recentTurns: ChatTurnRow[],
     budget: BudgetLedger,
     turnChars: number,
-    recentClarifyCount = 0
+    recentClarifyCount = 0,
+    modality: TurnModality = "text"
   ): Promise<
     | { ok: true; classification: IntentClassification }
     | { ok: false; failure: Exclude<CapabilityResult, { status: "succeeded" }> }
@@ -3114,7 +3205,7 @@ export class CoreWorker {
       // Phase 3.1 (W3): the intent classifier is a `classify`-role cheap-chain call → instrumented.
       execute: shadowCall
         ? (input) => {
-            shadow.pending = runJevShadow(shadowCall, message, recentTurns, turnChars, recentClarifyCount);
+            shadow.pending = runJevShadow(shadowCall, message, recentTurns, turnChars, recentClarifyCount, modality);
             return classifier(input);
           }
         : classifier
@@ -3718,6 +3809,33 @@ function formatThreadContext(turns: ChatTurnRow[], turnChars: number): string {
   return turns
     .map((t) => `${t.role === "user" ? "User" : "Houge"}: ${feedTurnText(t.text, turnChars)}`)
     .join("\n");
+}
+
+/** `event.metadata.media` as the adapter wrote it, or null. Shape-checked; never trusted beyond that. */
+function mediaRefOf(metadata: Record<string, unknown>): TelegramMediaRef | null {
+  const m = metadata.media;
+  if (typeof m !== "object" || m === null) return null;
+  const r = m as Record<string, unknown>;
+  if (
+    (r.kind !== "voice" && r.kind !== "photo") ||
+    typeof r.file_id !== "string" ||
+    typeof r.file_unique_id !== "string" ||
+    typeof r.mime_type !== "string" ||
+    typeof r.has_caption !== "boolean"
+  ) {
+    return null;
+  }
+  return {
+    kind: r.kind,
+    file_id: r.file_id,
+    file_unique_id: r.file_unique_id,
+    mime_type: r.mime_type,
+    has_caption: r.has_caption,
+    ...(typeof r.file_size === "number" ? { file_size: r.file_size } : {}),
+    ...(typeof r.duration === "number" ? { duration: r.duration } : {}),
+    ...(typeof r.width === "number" ? { width: r.width } : {}),
+    ...(typeof r.height === "number" ? { height: r.height } : {})
+  };
 }
 
 function capabilityFailureDetail(result: Exclude<CapabilityResult, { status: "succeeded" }>): string {

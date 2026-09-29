@@ -159,7 +159,18 @@ export async function runTelegramDaemon(
     undefined,
     undefined,
     undefined,
-    options.broker
+    options.broker,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    // Multimodal ingest: the Telegram client is the only thing that can fetch a file. A client
+    // without downloadFile (tests) yields no downloader, so every media turn fails loudly.
+    options.telegramClient.downloadFile
+      ? { downloadFile: options.telegramClient.downloadFile.bind(options.telegramClient) }
+      : undefined
   );
   const adapter = createTelegramLongPollingAdapter({
     allowlist: options.allowlist,

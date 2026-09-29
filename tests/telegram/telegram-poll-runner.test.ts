@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
 import { runTelegramPollOnce } from "../../src/telegram/telegram-poll-runner.js";
 
@@ -147,6 +147,38 @@ describe("runTelegramPollOnce", () => {
       expect(store.getRunMetadata(newest!.run_id).media).toMatchObject({ kind: "voice" });
     } finally {
       store.close();
+    }
+  });
+
+  it("hands the client's downloadFile to the worker: flag ON → a voice update reaches the downloader; flag OFF → it does not and today's acknowledgement is sent", async () => {
+    for (const flag of ["true", "false"]) {
+      process.env.HOUGE_MEDIA_INGEST_ENABLED = flag;
+      const store = RunStore.openInMemory();
+      const sent: string[] = [];
+      const downloadFile = vi.fn(async () => ({ bytes: new Uint8Array([1]) }));
+      try {
+        await runTelegramPollOnce({
+          store,
+          projectRoot: mkdtempSync(join(tmpdir(), "houge-poll-media-")),
+          llmAdapter: async (input) => ({ ok: true, output: { question: input.question, answer: "ok", model: "fake-model" } }),
+          allowlist: { users: [{ telegram_user_id: 111, identity_id: "paco" }], chats: [{ telegram_chat_id: 222, label: "private", allowed_identity_ids: ["paco"] }] },
+          telegramClient: {
+            getUpdates: async () => [{ update_id: 32, message: { message_id: 1, voice: { file_id: "v", file_unique_id: "u", duration: 3 }, from: { id: 111 }, chat: { id: 222 } } }],
+            sendMessage: async ({ text }) => { sent.push(text); return { message_id: sent.length }; },
+            downloadFile
+          }
+        });
+        if (flag === "true") {
+          // The injected LLM adapter means no real media leg: the download happens, then the run fails leg_failed — loudly.
+          expect(downloadFile).toHaveBeenCalledTimes(1);
+          expect(sent.some((t) => /couldn't transcribe/.test(t))).toBe(true);
+        } else {
+          expect(downloadFile).not.toHaveBeenCalled();
+          expect(sent.some((t) => t.includes("我暂时看不了图片内容"))).toBe(true);
+        }
+      } finally {
+        store.close();
+      }
     }
   });
 });
