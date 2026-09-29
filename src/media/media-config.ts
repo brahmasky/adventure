@@ -50,8 +50,11 @@ export const MEDIA_ECHO_MAX_CHARS = 200;
 export const MEDIA_DIGEST_MAX_CHARS = 4_000;
 export const DEFAULT_MEDIA_PROVIDERS = "agy-cli,pi";
 
-/** Code-owned file names: the ONLY `@` tokens a CLI ever sees (Codex spec review R6). */
-export const MEDIA_BASENAME: Record<MediaKind, string> = { voice: "media.ogg", photo: "media.jpg" };
+/**
+ * Code-owned file names: the ONLY `@` tokens a CLI ever sees (Codex spec review R6). agy attaches by
+ * file EXTENSION: `.opus` is inlined, `.ogg` is not (probe 2026-09-29) — the bytes are Ogg/Opus either way.
+ */
+export const MEDIA_BASENAME: Record<MediaKind, string> = { voice: "media.opus", photo: "media.jpg" };
 export const MEDIA_MIME: Record<MediaKind, string> = { voice: "audio/ogg", photo: "image/jpeg" };
 /** The contract objective when there is no caption; replaced by the ingest step, never shown. */
 export const MEDIA_PLACEHOLDER: Record<MediaKind, string> = { voice: "[voice message]", photo: "[photo]" };

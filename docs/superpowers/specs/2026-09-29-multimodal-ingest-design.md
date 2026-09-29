@@ -96,7 +96,7 @@ our own 30 s abort) lives in the ingest step, not the client.
 media?: { path: string; mime: string };   // absolute path inside the media temp dir
 ```
 
-- The file is saved under a **code-owned basename by kind** — `media.ogg` / `media.jpg` — never
+- The file is saved under a **code-owned basename by kind** — `media.opus` / `media.jpg` — never
   Telegram's `file_path` name. The only `@` token any CLI ever sees is that literal.
 - `LlmProvider` gains `supportsMedia?(mime: string): boolean`. The chain **filters legs by
   capability before attempting** a media request, so an ineligible leg is never spawned and never
@@ -117,7 +117,7 @@ media?: { path: string; mime: string };   // absolute path inside the media temp
   question stays on stdin exactly as today.
 - `kimi.ts`, `gemini.ts`, `openai-compat.ts`: no `supportsMedia` → never selected for media.
 - `createLlmAnswerAdapter` forwards `input.media` when present, after validating it: an absolute
-  path under `os.tmpdir()`, basename ∈ {`media.ogg`, `media.jpg`}, mime ∈ the allowlist. Anything
+  path under `os.tmpdir()`, basename ∈ {`media.opus`, `media.jpg`}, mime ∈ the allowlist. Anything
   else is `{ ok: false, error: "media rejected" }` before any leg runs.
 - `resolveMediaProviders(env)`: `HOUGE_LLM_MEDIA_PROVIDERS`, default `agy-cli,pi`.
   `CoreWorker.mediaAdapterFor(run_id, role)` builds the run-scoped adapter on that chain (same
@@ -320,12 +320,15 @@ first-hand (see the plan's two review tables):
 17. `downloadFile` streams and cancels past the cap; validates `file_path`; only `DownloadFailure`
     messages survive; the retry lives in the ingest step; a 30 s abort is not retried.
 18. `isAllowedMediaFile` requires a `houge-media-*` directory directly under `tmpdir()`, a
-    normalised path with no `..`, and the basename/mime PAIR (`media.ogg`↔`audio/ogg`,
+    normalised path with no `..`, and the basename/mime PAIR (`media.opus`↔`audio/ogg`,
     `media.jpg`↔`image/jpeg`).
 19. The poll client type carries an optional `downloadFile`; the worker receives it only when present;
     runner and daemon tests prove the hand-off in both flag states.
 20. The transcript replaces the contract objective for a voice turn (above); `detail` on failed
     rows plus one warn line; the photo digest is capped at 4 000 chars.
+21. agy `@` inclusion is extension-driven; `.opus` attaches, `.ogg` does not (probe 2026-09-29, agy
+    1.2.13); the voice file is `media.opus`. Bytes and the `audio/ogg` mime are unchanged (live gate /
+    Codex whole-diff, 2026-09-29).
 
 ## Codex spec review (2026-09-29) — findings and disposition
 

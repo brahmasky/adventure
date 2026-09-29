@@ -347,7 +347,7 @@ describe("answerWithChain audit", () => {
 });
 
 describe("answerWithChain with media (multimodal ingest, spec 2026-09-29)", () => {
-  const media = { path: "/tmp/houge-media-x/media.ogg", mime: "audio/ogg" };
+  const media = { path: "/tmp/houge-media-x/media.opus", mime: "audio/ogg" };
   const ok = (name: string): LlmProvider => ({ ...provider(name, { ok: true, provider: name, model: "m", answer: `from ${name}` }), supportsMedia: (mime) => mime === "audio/ogg" });
 
   it("attempts only legs that support the mime — an ineligible leg is never called and writes no audit row", async () => {

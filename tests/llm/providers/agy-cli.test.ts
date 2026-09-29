@@ -629,7 +629,7 @@ describe("createAgyCliProvider", () => {
 
 describe("media calls (multimodal ingest, spec 2026-09-29)", () => {
   const mediaDir = `${os.tmpdir()}/houge-media-agytest`;
-  const media = { path: `${mediaDir}/media.ogg`, mime: "audio/ogg" };
+  const media = { path: `${mediaDir}/media.opus`, mime: "audio/ogg" };
 
   it("supportsMedia: ogg audio, jpeg and png images; nothing else", () => {
     const p = createAgyCliProvider({ spawnImpl: async () => spawnResult() });
@@ -644,7 +644,7 @@ describe("media calls (multimodal ingest, spec 2026-09-29)", () => {
     const spawnImpl = vi.fn<SpawnImpl>(async (_file, args, opts) => { seen = { args, cwd: opts.cwd }; return spawnResult({ stdout: envelope({ response: "hello world" }) }); });
     const result = await createAgyCliProvider({ spawnImpl, model: "M" }).answer({ question: "Transcribe.", system: "You transcribe.", media });
     expect(result).toMatchObject({ ok: true, answer: "hello world" });
-    expect(promptArg(seen!.args)).toBe("You transcribe.\n\nTranscribe.\n\n@media.ogg");
+    expect(promptArg(seen!.args)).toBe("You transcribe.\n\nTranscribe.\n\n@media.opus");
     expect(seen!.args).toContain("--sandbox");
     expect(seen!.args).toContain("--disable-slash-commands");
     expect(seen!.cwd).toBe(mediaDir);

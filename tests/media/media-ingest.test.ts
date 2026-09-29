@@ -25,7 +25,7 @@ function deps(over: Partial<MediaIngestDeps> = {}, seen: Array<Record<string, un
 const mediaDirs = () => readdirSync(TMP_ROOT).filter((n) => n.startsWith("houge-media-"));
 
 describe("ingestMedia — voice", () => {
-  it("downloads to media.ogg in a houge-media-* dir, asks the transcribe question with the file attached, returns the transcript + echo, ledgers counts, and removes the dir", async () => {
+  it("downloads to media.opus in a houge-media-* dir, asks the transcribe question with the file attached, returns the transcript + echo, ledgers counts, and removes the dir", async () => {
     const seen: Array<Record<string, unknown>> = [];
     let savedPath = "";
     const d = deps({ mediaCall: async (input) => { savedPath = (input.media as { path: string }).path; expect(readFileSync(savedPath)).toEqual(Buffer.from([1, 2, 3])); seen.push(input); return { ok: true, output: { question: "", answer: " the quick brown fox \n", model: "gem", provider: "agy-cli" } }; } }, seen);
@@ -33,7 +33,7 @@ describe("ingestMedia — voice", () => {
     const r = await ingestMedia(d, voice, "");
     expect(r).toMatchObject({ ok: true, text: "the quick brown fox", modality: "voice", echo: "🎙 I heard: “the quick brown fox”" });
     expect(seen[0]).toMatchObject({ question: VOICE_TRANSCRIBE_QUESTION, media: { mime: "audio/ogg" } });
-    expect(path.basename(savedPath)).toBe("media.ogg");
+    expect(path.basename(savedPath)).toBe("media.opus");
     expect(savedPath.startsWith(path.join(TMP_ROOT, "houge-media-"))).toBe(true);
     expect(existsSync(path.dirname(savedPath))).toBe(false);
     expect(mediaDirs().length).toBe(before);

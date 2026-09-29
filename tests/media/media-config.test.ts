@@ -55,13 +55,17 @@ describe("isAllowedMediaFile — the only files a leg may ever be handed", () =>
   });
   it("rejects a foreign basename, a foreign mime, a MISMATCHED pair, a relative path, a non-media dir, a nested dir, `..` traversal, and a path outside tmpdir", () => {
     expect(isAllowedMediaFile({ path: path.join(dir, "voice_1234.ogg"), mime: "audio/ogg" })).toBe(false);
-    expect(isAllowedMediaFile({ path: path.join(dir, "media.ogg"), mime: "text/plain" })).toBe(false);
-    expect(isAllowedMediaFile({ path: path.join(dir, "media.ogg"), mime: "image/jpeg" })).toBe(false);
-    expect(isAllowedMediaFile({ path: "media.ogg", mime: "audio/ogg" })).toBe(false);
-    expect(isAllowedMediaFile({ path: path.join(os.tmpdir(), "houge-agy-xyz", "media.ogg"), mime: "audio/ogg" })).toBe(false);
-    expect(isAllowedMediaFile({ path: path.join(dir, "sub", "media.ogg"), mime: "audio/ogg" })).toBe(false);
-    expect(isAllowedMediaFile({ path: `${dir}/../houge-media-other/media.ogg`, mime: "audio/ogg" })).toBe(false);
-    expect(isAllowedMediaFile({ path: "/etc/media.ogg", mime: "audio/ogg" })).toBe(false);
+    // agy attaches by extension: `.ogg` is not attached, `.opus` is (probe 2026-09-29) — the old name must not pass.
+    expect(isAllowedMediaFile({ path: path.join(dir, "media.ogg"), mime: "audio/ogg" })).toBe(false);
+    expect(MEDIA_BASENAME.voice).toBe("media.opus");
+    expect(MEDIA_MIME.voice).toBe("audio/ogg");
+    expect(isAllowedMediaFile({ path: path.join(dir, "media.opus"), mime: "text/plain" })).toBe(false);
+    expect(isAllowedMediaFile({ path: path.join(dir, "media.opus"), mime: "image/jpeg" })).toBe(false);
+    expect(isAllowedMediaFile({ path: "media.opus", mime: "audio/ogg" })).toBe(false);
+    expect(isAllowedMediaFile({ path: path.join(os.tmpdir(), "houge-agy-xyz", "media.opus"), mime: "audio/ogg" })).toBe(false);
+    expect(isAllowedMediaFile({ path: path.join(dir, "sub", "media.opus"), mime: "audio/ogg" })).toBe(false);
+    expect(isAllowedMediaFile({ path: `${dir}/../houge-media-other/media.opus`, mime: "audio/ogg" })).toBe(false);
+    expect(isAllowedMediaFile({ path: "/etc/media.opus", mime: "audio/ogg" })).toBe(false);
   });
 });
 
