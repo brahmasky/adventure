@@ -90,6 +90,55 @@ export interface TelegramPollClient {
   getUpdates(input: TelegramGetUpdatesInput): Promise<TelegramRawUpdate[]>;
 }
 
+export interface TelegramDownloadInput {
+  file_id: string;
+  maxBytes: number;
+  signal?: AbortSignal;
+}
+export interface TelegramDownloadedFile {
+  bytes: Uint8Array;
+}
+/** Multimodal ingest (spec 2026-09-29): fetch one Telegram file's bytes, bounded, token never leaked. */
+export interface TelegramFileClient {
+  downloadFile(input: TelegramDownloadInput): Promise<TelegramDownloadedFile>;
+}
+
+/** Telegram file paths look like `voice/file_12.oga`; anything else never joins the token URL. */
+const FILE_PATH_SHAPE = /^[\w./-]+$/;
+
+/** The only error class whose message may leave `downloadFile`; the message is a code, never a URL. */
+class DownloadFailure extends Error {
+  constructor(code: string) {
+    super(`download_failed: ${code}`);
+    this.name = "DownloadFailure";
+  }
+}
+
+/** Stream the body, stopping — and cancelling the reader — the moment the total passes `maxBytes`. */
+async function readBounded(res: Response, maxBytes: number): Promise<Uint8Array> {
+  if (!res.body) return new Uint8Array(await res.arrayBuffer());
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw new DownloadFailure("too_large");
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
 export interface TelegramClientOptions {
   token: string;
   /**
@@ -106,7 +155,7 @@ export interface TelegramClientOptions {
   fetchImpl?: typeof fetch;
 }
 
-export class TelegramClient implements TelegramSendClient, TelegramPollClient {
+export class TelegramClient implements TelegramSendClient, TelegramPollClient, TelegramFileClient {
   private readonly token: string;
   private readonly botBaseUrl: string;
   private readonly fetchImpl: typeof fetch;
@@ -183,6 +232,42 @@ export class TelegramClient implements TelegramSendClient, TelegramPollClient {
     }
 
     return body.result;
+  }
+
+  /**
+   * `getFile` then GET `<host>/file/bot<token>/<file_path>`. The URL carries the bot token, so this
+   * method never logs it, never returns it, and never lets a library error carry it: only its own
+   * `DownloadFailure`s keep their code-owned message; any other thrown value becomes
+   * `download_failed: network` (Codex spec review R7, plan review B4). Redirects are refused (a
+   * redirect would carry the token elsewhere); `file_path` is validated before it joins the URL.
+   * The size is checked on the declared `file_size`, on `content-length`, and on the streamed total,
+   * which cancels the read the moment it passes the cap (plan review R11) — an over-cap file never
+   * returns bytes and never buffers unboundedly.
+   */
+  async downloadFile(input: TelegramDownloadInput): Promise<TelegramDownloadedFile> {
+    if (!this.token) throw new DownloadFailure("no_token");
+    const init: RequestInit = { redirect: "error", ...(input.signal ? { signal: input.signal } : {}) };
+    try {
+      const info = await this.fetchImpl(`${this.botBaseUrl}/getFile?file_id=${encodeURIComponent(input.file_id)}`, init);
+      if (!info.ok) throw new DownloadFailure(`http_${info.status}`);
+      const body = (await info.json()) as { ok?: boolean; result?: { file_path?: string; file_size?: number } };
+      const filePath = body.result?.file_path;
+      if (body.ok !== true || typeof filePath !== "string" || !FILE_PATH_SHAPE.test(filePath)) throw new DownloadFailure("no_file_path");
+      if (typeof body.result?.file_size === "number" && body.result.file_size > input.maxBytes) throw new DownloadFailure("too_large");
+
+      const res = await this.fetchImpl(`${this.fileBaseUrl()}/${filePath}`, init);
+      if (!res.ok) throw new DownloadFailure(`http_${res.status}`);
+      const declared = Number(res.headers.get("content-length"));
+      if (Number.isFinite(declared) && declared > input.maxBytes) throw new DownloadFailure("too_large");
+      return { bytes: await readBounded(res, input.maxBytes) };
+    } catch (error) {
+      throw error instanceof DownloadFailure ? error : new DownloadFailure("network");
+    }
+  }
+
+  /** `https://host/bot<token>` → `https://host/file/bot<token>` (Telegram's file host path). */
+  private fileBaseUrl(): string {
+    return this.botBaseUrl.replace(/\/bot([^/]+)$/, "/file/bot$1");
   }
 
   async sendDocument(input: TelegramSendDocumentInput): Promise<void> {

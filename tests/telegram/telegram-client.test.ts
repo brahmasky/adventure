@@ -159,3 +159,84 @@ describe("TelegramClient", () => {
     ).rejects.toThrow("Telegram sendDocument failed: file too large");
   });
 });
+
+describe("downloadFile (multimodal ingest, spec 2026-09-29)", () => {
+  const BASE = "https://example.test/botSECRET-TOKEN";
+  const okGetFile = (file_size?: number) =>
+    new Response(JSON.stringify({ ok: true, result: { file_id: "f", file_path: "voice/file_1.oga", ...(file_size !== undefined ? { file_size } : {}) } }), { status: 200 });
+
+  it("calls getFile, then GETs the /file/bot<token>/<file_path> URL with redirects refused, and returns the bytes", async () => {
+    const urls: string[] = [];
+    const inits: RequestInit[] = [];
+    const client = new TelegramClient({
+      token: "SECRET-TOKEN", apiBase: BASE,
+      fetchImpl: async (url, init) => {
+        urls.push(String(url)); inits.push(init ?? {});
+        if (String(url).includes("/getFile")) return okGetFile(3);
+        return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+      }
+    });
+    const file = await client.downloadFile({ file_id: "f", maxBytes: 1000 });
+    expect(Array.from(file.bytes)).toEqual([1, 2, 3]);
+    expect(urls[0]).toBe(`${BASE}/getFile?file_id=f`);
+    expect(urls[1]).toBe("https://example.test/file/botSECRET-TOKEN/voice/file_1.oga");
+    expect(inits.every((i) => i.redirect === "error")).toBe(true);
+  });
+
+  it("rejects a declared over-cap size BEFORE fetching the body", async () => {
+    const urls: string[] = [];
+    const client = new TelegramClient({ token: "SECRET-TOKEN", apiBase: BASE, fetchImpl: async (url) => { urls.push(String(url)); return okGetFile(5000); } });
+    await expect(client.downloadFile({ file_id: "f", maxBytes: 1000 })).rejects.toThrow("download_failed: too_large");
+    expect(urls).toHaveLength(1);
+  });
+
+  it("rejects an actual over-cap body without returning bytes (content-length, then the body itself)", async () => {
+    const byHeader = new TelegramClient({ token: "SECRET-TOKEN", apiBase: BASE, fetchImpl: async (url) =>
+      String(url).includes("/getFile") ? okGetFile() : new Response(new Uint8Array(10), { status: 200, headers: { "content-length": "5000" } }) });
+    await expect(byHeader.downloadFile({ file_id: "f", maxBytes: 1000 })).rejects.toThrow("download_failed: too_large");
+    const byBody = new TelegramClient({ token: "SECRET-TOKEN", apiBase: BASE, fetchImpl: async (url) =>
+      String(url).includes("/getFile") ? okGetFile() : new Response(new Uint8Array(2000), { status: 200 }) });
+    await expect(byBody.downloadFile({ file_id: "f", maxBytes: 1000 })).rejects.toThrow("download_failed: too_large");
+  });
+
+  it("maps HTTP failures to code-owned strings and never echoes the token or URL", async () => {
+    const client = new TelegramClient({ token: "SECRET-TOKEN", apiBase: BASE, fetchImpl: async () => new Response("nope", { status: 404 }) });
+    const err = await client.downloadFile({ file_id: "f", maxBytes: 1000 }).catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe("download_failed: http_404");
+    expect((err as Error).message).not.toContain("SECRET-TOKEN");
+  });
+
+  it("a fetch that throws (with the URL in its message) surfaces as download_failed: network, token-free", async () => {
+    const client = new TelegramClient({ token: "SECRET-TOKEN", apiBase: BASE, fetchImpl: async (url) => { throw new Error(`redirect refused for ${String(url)}`); } });
+    const err = await client.downloadFile({ file_id: "f", maxBytes: 1000 }).catch((e: unknown) => e as Error);
+    expect((err as Error).message).toBe("download_failed: network");
+  });
+
+  it("a foreign error that MIMICS the prefix is still replaced — only the client's own failures keep their message (Codex plan review B4)", async () => {
+    const client = new TelegramClient({ token: "SECRET-TOKEN", apiBase: BASE, fetchImpl: async () => { throw new Error("download_failed: https://example.test/file/botSECRET-TOKEN/x"); } });
+    const err = await client.downloadFile({ file_id: "f", maxBytes: 1000 }).catch((e: unknown) => e as Error);
+    expect((err as Error).message).toBe("download_failed: network");
+  });
+
+  it("a file_path outside ^[\\w./-]+$ is refused before the token URL is built", async () => {
+    const urls: string[] = [];
+    const client = new TelegramClient({ token: "SECRET-TOKEN", apiBase: BASE, fetchImpl: async (url) => { urls.push(String(url)); return new Response(JSON.stringify({ ok: true, result: { file_path: "../..?x=1#f" } }), { status: 200 }); } });
+    await expect(client.downloadFile({ file_id: "f", maxBytes: 1000 })).rejects.toThrow("download_failed: no_file_path");
+    expect(urls).toHaveLength(1);
+  });
+
+  it("streams the body and cancels past the cap when there is no content-length (no unbounded buffering)", async () => {
+    let pulls = 0;
+    const endless = new ReadableStream<Uint8Array>({ pull(controller) { pulls += 1; controller.enqueue(new Uint8Array(400)); } });
+    const client = new TelegramClient({ token: "SECRET-TOKEN", apiBase: BASE, fetchImpl: async (url) =>
+      String(url).includes("/getFile") ? okGetFile() : new Response(endless, { status: 200 }) });
+    await expect(client.downloadFile({ file_id: "f", maxBytes: 1000 })).rejects.toThrow("download_failed: too_large");
+    expect(pulls).toBeLessThan(10);
+  });
+
+  it("a getFile envelope without a file_path is download_failed: no_file_path", async () => {
+    const client = new TelegramClient({ token: "SECRET-TOKEN", apiBase: BASE, fetchImpl: async () => new Response(JSON.stringify({ ok: false }), { status: 200 }) });
+    await expect(client.downloadFile({ file_id: "f", maxBytes: 1000 })).rejects.toThrow("download_failed: no_file_path");
+  });
+});
