@@ -1,159 +1,50 @@
-# Project Guidelines
+# Houge — agent rules
 
-## Code Style
-- Follow existing project conventions
-- Use meaningful variable names
-- Keep functions under 50 lines
-- Add comments for complex logic only
+Houge (猴哥) is an autonomous self-evolving, Telegram-first daemon on Paco's Mac mini. Node + TypeScript, SQLite, zero runtime dependencies. Claude is the build-orchestrator seat only. Global rules: `~/.claude/CLAUDE.md`; this file overrides it.
 
-## Git
-- Conventional Commits: feat/fix/refactor/docs/test/chore
-- Atomic commits, one concern per commit
-- Never force push to main
+## Read first
+1. `tasks/todo.md` — the top "CURRENT SYSTEM STATE" block only (the rest is shipped history).
+2. `tasks/lessons.md` — orchestration mistakes and the rules that prevent them. Review at session start.
+3. `docs/ROADMAP.md` — charter, locked decisions, sequenced next builds.
+4. `docs/decisions/README.md` — ADR index. Read the ADR before touching the area it governs.
+5. `CONTEXT.md` — domain terms (run, ledger, contract, invariant, …). Use these words.
+6. `sessions.md` — one arc entry per build session, newest last. Append one when shipping.
+7. `docs/reference/configuration.md` — every env var. Documented there, linked from README, never duplicated.
 
-## Safety
-- Never hardcode secrets or API keys
-- Always validate user input
-- Handle errors explicitly, no silent failures
+## Invariants (locked; change only by a new ADR and Paco's hand)
+- `dependencies: {}` stays empty (ADR 0001, 0016). Node stdlib plus devDeps only.
+- Claude is never in the runtime. Default LLM chains are flat-rate CLI legs only (pi, agy, codex); metered APIs are the capped escape hatch (ADR 0019).
+- Two hard lines: no adverse impact to Houge's own operation; no secret leak. The main process holds no ambient credentials (ADR 0015).
+- Code owns the gates, the model composes between them (ADR 0013). Routing, retries, status codes, deterministic transforms: plain code. Judgment calls only: LLM.
+- Protected surface (`src/capabilities/self-write-guard.ts`, `PROTECTED_DIRS` / `PROTECTED_FILES`): `AGENTS.md`, `docs/decisions/`, `src/policy/`, gate machinery, kill switch. Paco's hand only, never a self-write.
+- Repo is PUBLIC (`brahmasky/adventure`). A push is publishing.
 
-## Workflow
-- Read before write — understand context first
-- Minimal changes — don't refactor unrelated code
-- Verify after changes — run tests or check output
-
----
-
-## Karpathy-Inspired Guardrails (12 Rules)
-
-Behavioral guidelines to reduce common LLM coding mistakes. These bias toward caution over speed — for trivial tasks, use judgment.
-
-### 1. Think Before Coding
-
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
-
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them — don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
-
-### 2. Simplicity First
-
-**Minimum code that solves the problem. Nothing speculative.**
-
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Ask yourself: *"Would a senior engineer say this is overcomplicated?"* If yes, simplify.
-
-### 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it — don't delete it.
-
-When your changes create orphans:
-- Remove imports/variables/functions that **your** changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-**The test:** Every changed line should trace directly to the user's request.
-
-### 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
+## Commands
+```bash
+npm run typecheck && npm test && npm run build   # hermetic: real SQLite; clock, Telegram, subprocesses stubbed
+npm run houge -- <cmd>                            # live CLI against the real DB and .env
+node scripts/live-gate-<name>.mjs                 # live gate; every shipped slice gets one
 ```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
+- Definition of done = tests green **and** a live run shown (`CONTRIBUTING.md`). A wiring bug once survived 225 green tests.
+- Worktrees under `.worktrees/` have no `.env`: run `HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-<name>.mjs`. Gate scripts import `../dist/`, so build the branch first.
+- `scripts/live-gate-media.mjs` snapshots `houge-media-*` tmp dirs: never run vitest alongside it.
+- Daemon runs the built JS: `launchctl kickstart -k gui/$(id -u)/com.houge.daemon` (`deploy/launchd/README.md`). Restart, revive, `/rearm` are Paco's actions: say plainly whether a kickstart is needed and whether a run is in flight. A silent daemon may be parked on purpose: check `houge.parked` / `houge.kill` first.
+- Codex: `codex exec … < /dev/null -o <file>` (a non-TTY hangs on stdin otherwise). `-s read-only` cannot run vitest; use `-s workspace-write` when the pass must run tests. `codex review` rejects a prompt together with `--base`: use `codex exec` and "run git diff <base>".
 
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+## Build flow
+The global flow applies in full. Houge specifics:
+- Spec review probes the live binary / DB / env before trusting the spec text.
+- Docs sync on ship: ADR amendment + index row, `configuration.md`, README, ROADMAP delta, `tasks/todo.md` state block, `tasks/lessons.md`, `sessions.md` entry. Placement rules: `CONTRIBUTING.md`.
+- Commits land on `main` (direct, or a PR for a multi-task slice). One concern per commit, stage by name.
+- Rebuild `dist/` after merge.
 
-### 5. Use the Model Only for Judgment Calls
+## Code
+- Functions under 50 lines (reviewers enforce it).
+- Match surrounding style. Every changed line traces to the request. Remove only orphans your own change created; mention unrelated dead code and leave it.
+- Two contradicting patterns in the codebase: pick the more recent or better tested, say why, flag the other. A blend of both is worse than either.
+- Handle errors explicitly. No silent failure.
+- Telegram output goes through the rich renderer, never plain text.
+- Tests live in `tests/<area>/` mirroring `src/`. Each test encodes why the behaviour matters: a test that still passes when the business logic changes is wrong.
 
-Use the LLM for: classification, drafting, summarization, extraction from unstructured text.
-
-Do **not** use the LLM for: routing, retries, status-code handling, deterministic transforms.
-
-If a status code already answers the question, plain code answers the question.
-
-### 6. Token Budgets Are Not Advisory
-
-Per-task budget: 4,000 tokens.  
-Per-session budget: 30,000 tokens.
-
-If a task is approaching budget, summarize and start fresh. Do not push through.
-
-Surfacing the breach > silently overrunning.
-
-### 7. Surface Conflicts, Don't Average Them
-
-If two existing patterns in the codebase contradict, don't blend them.
-
-Pick one (the more recent / more tested), explain why, and flag the other for cleanup.
-
-"Average" code that satisfies both rules is the worst code.
-
-### 8. Read Before You Write
-
-Before adding code in a file, read the file's exports, the immediate caller, and any obvious shared utilities.
-
-If you don't understand why existing code is structured the way it is, ask before adding to it.
-
-"Looks orthogonal to me" is the most dangerous phrase in this codebase.
-
-### 9. Tests Verify Intent, Not Just Behavior
-
-Every test must encode **why** the behavior matters, not just **what** it does.
-
-A test like `expect(getUserName()).toBe('John')` is worthless if the function takes a hardcoded ID.
-
-If you can't write a test that would fail when business logic changes, the function is wrong.
-
-### 10. Checkpoint After Every Significant Step
-
-After completing each step in a multi-step task: summarize what was done, what's verified, what's left.
-
-Don't continue from a state you can't describe back to me.
-
-If you lose track, stop and restate.
-
-### 11. Match the Codebase's Conventions, Even If You Disagree
-
-If the codebase uses `snake_case` and you'd prefer `camelCase`: `snake_case`.
-
-If the codebase uses class-based components and you'd prefer hooks: class-based.
-
-Disagreement is a separate conversation. Inside the codebase, conformance > taste.
-
-If you genuinely think the convention is harmful, surface it. Don't fork it silently.
-
-### 12. Fail Loud
-
-If you can't be sure something worked, say so explicitly.
-
-"Migration completed" is wrong if 30 records were skipped silently.
-
-"Tests pass" is wrong if you skipped any.
-
-"Feature works" is wrong if you didn't verify the edge case asked about.
-
-Default to surfacing uncertainty, not hiding it.
-
----
-
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, clarifying questions come before implementation rather than after mistakes, and uncertainty is surfaced instead of hidden.
+## Reporting
+State assumptions before building; when readings differ materially, ask. Fail loud: "tests pass" only with none skipped, "done" only after the live run, uncertainty surfaced not hidden. Checkpoint after each step: done, verified, left.
