@@ -147,10 +147,10 @@ export function normalizeTelegramUpdate(
 
   // Truly text-less (bare sticker/document/video, or media with the flag off). Keep it OUT of
   // the command path but do NOT ghost the sender (see unsupportedMediaResult).
-  if (caption.length === 0) return unsupportedMediaResult(update, message, ingestOn);
+  if (typeof bodyText !== "string" || caption.length === 0) return unsupportedMediaResult(update, message, ingestOn);
 
-  // `caption.length > 0` implies `bodyText` is a string; the parser keeps the untrimmed body as before.
-  const parsed = parseTelegramCommand(bodyText as string);
+  // The parser keeps the untrimmed body as before.
+  const parsed = parseTelegramCommand(bodyText);
   if (!parsed.ok) return parsed;
 
   return { ok: true, event: buildTelegramEvent(parsed.command, buildEventBase(update, message, auth.identity)) };
