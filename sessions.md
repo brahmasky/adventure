@@ -1358,4 +1358,7 @@ Build + independent adversarial verification subagents; each live round found a 
   (comment-heavy); poll-runner test reads the private `db`; photo worst case is four leg calls (bounded by the
   150 s stage); PINNED_ENV pins in 3 of 6 core-worker suites; `pi.test.ts:753` path literal still `media.ogg`;
   plan task bodies / review tables keep the historical "client-side" wording.
-- Open: PR + merge (Paco), build, kickstart, arm (Step 4: one real voice note + one real photo, ledger check).
+- Shipped the same evening: #3 merged (`6f9381b`), `npm run build`, `launchctl kickstart` (pid 72684, clean
+  stop after 3513 cycles), flag already in the mini `.env`. Paco's first real turns: photo `ok` agy-cli 41.4 s
+  (12:01Z), voice `ok` agy-cli 16.4 s (12:03Z). Open: the `search_web` egress observation; watch for the
+  residual `run_command` flake in `media_ingested`.

@@ -1,7 +1,7 @@
 # Multimodal ingest — voice notes and photos become text inside the turn
 
 Date: 2026-09-29
-Status: **BUILT 2026-09-29 on `feat/multimodal-ingest` (Tasks 1–9 + two fix rounds, 17 commits); final Fable whole-branch review + Codex whole-diff pass folded in (amendments 21–23); live gate PASS on the real agy leg (run 5: both voice clips transcribed, photo digest read, injection image → safe outcome A) and the pi fallback behaves as designed (photos pass, voice `leg_failed` no-capable-leg). PR to `main` pending; arming (Step 4) is Paco's. Earlier: design approved in brainstorming (Paco + Claude, 2026-09-29); Codex spec review folded in — see §"Codex spec review".**
+Status: **BUILT 2026-09-29 on `feat/multimodal-ingest` (Tasks 1–9 + two fix rounds, 17 commits); final Fable whole-branch review + Codex whole-diff pass folded in (amendments 21–23); live gate PASS on the real agy leg (run 5: both voice clips transcribed, photo digest read, injection image → safe outcome A) and the pi fallback behaves as designed (photos pass, voice `leg_failed` no-capable-leg). **Merged 2026-09-29 (#3, `6f9381b`), built, kickstarted, ARMED on the mini; Paco's first real turns: photo `ok` agy-cli 41.4 s, voice `ok` agy-cli 16.4 s (`media_ingested` rows checked by hand — the cardinal rule).** Earlier: design approved in brainstorming (Paco + Claude, 2026-09-29); Codex spec review folded in — see §"Codex spec review".**
 Author: Paco + Claude
 Roadmap: item 2 ("multimodal ingest"), queued behind the Jev intent shadow (shipped 2026-09-28).
 

@@ -2,13 +2,12 @@
 
 **No build in flight.** Next push move: Earn P3 — pick venue + register (see strategic frame).
 
-**BUILT 2026-09-29: Multimodal ingest (voice notes + photos) — ON BRANCH `feat/multimodal-ingest`, PR PENDING,
-AWAITING PACO MERGE + ARM.** Spec `docs/superpowers/specs/2026-09-29-multimodal-ingest-design.md` (amendments
+**SHIPPED + ARMED 2026-09-29: Multimodal ingest (voice notes + photos) — #3 merged `6f9381b`, built,
+kickstarted, flag on; first real turns: photo `ok` 41.4 s, voice `ok` 16.4 s, both agy-cli.** Spec `docs/superpowers/specs/2026-09-29-multimodal-ingest-design.md` (amendments
 1–23), plan `docs/superpowers/plans/2026-09-29-multimodal-ingest.md`. Nine tasks + two fix rounds (final Fable
 whole-branch review, Codex whole-diff pass, live gate). Live gate PASS on the real agy leg (run 5) and the pi
-fallback as designed. **Next (Paco):** merge → `npm run build` → kickstart → `HOUGE_MEDIA_INGEST_ENABLED=true`
-in the mini `.env` → rebuild → kickstart → one voice note + one photo → check `media_ingested` rows (query in the
-plan, Task 10 Step 4). **Open:** agy headless `--sandbox` auto-allows `search_web` (reader-leg egress,
+fallback as designed. **Next:** watch the first week's `media_ingested` rows for `leg_failed`/`other` (the residual agy
+`run_command` flake) and the reply latency (photo 41 s on the first turn). **Open:** agy headless `--sandbox` auto-allows `search_web` (reader-leg egress,
 pre-existing; see ROADMAP §2 delta 2026-09-29).
 
 **DONE 2026-08-02: Skill retirement — BUILT, AWAITING PACO LIVE GATE + ARM.** Spec

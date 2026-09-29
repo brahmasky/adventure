@@ -63,7 +63,7 @@ Houge self-writes. The floor (§3) is never weakened by any agent.
     (`04ced06`), outbox same-ms claim bug (`7ea5e77`), park marker (`b11f8ed`). Suite 2283 green.
     Design + full review record: `docs/superpowers/specs/2026-09-04-cli-only-llm-and-audit-chokepoint-design.md`;
     slice 2 (the `llm_attempt` audit chokepoint) is the next build there.
-  - **Delta 2026-09-29 (multimodal ingest, `feat/multimodal-ingest`, PR pending, NOT armed):** a Telegram
+  - **Delta 2026-09-29 (multimodal ingest; #3 merged `6f9381b`, built, kickstarted, ARMED; first real voice + photo turns `ok` on agy-cli):** a Telegram
     voice note is transcribed on the agy leg and becomes the turn (reply opens `🎙 I heard: …`); a photo is read
     through the dual-LLM reader and its digest joins the caption. Flag `HOUGE_MEDIA_INGEST_ENABLED` (default off,
     in `DISARM_FLAGS`); media chain `HOUGE_LLM_MEDIA_PROVIDERS=agy-cli,pi`; 10 MB / 300 s caps; bytes in a temp
