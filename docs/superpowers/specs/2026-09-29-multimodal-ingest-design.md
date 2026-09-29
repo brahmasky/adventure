@@ -138,11 +138,12 @@ media?: { path: string; mime: string };   // absolute path inside the media temp
 - **The transcript replaces the contract objective for the rest of the turn.** Several loop tools
   compile sub-contracts or anchor themselves on `claim.contract.objective` (self-diagnose,
   self-write, external work, skill author, lesson write, project track). For a voice turn the loop
-  therefore runs on a claim whose objective is the transcript; for a photo turn the objective stays
+  therefore runs on a claim whose objective is the resolved voice text (the caption, when there is
+  one, followed by the transcript); for a photo turn the objective stays
   the caption (or the placeholder when bare) — image-derived text never anchors those tools.
 - Otherwise, in order: cap check on the declared size/duration → `downloadFile` into
   `mkdtemp("houge-media-")` → the media call → `rmSync` the dir in `finally`. The whole step runs
-  under one **media-stage deadline of 150 s** (download ≤ 30 s including its one retry; each
+  under one **media-stage deadline of 150 s** (each download attempt ≤ 30 s, our own abort is not retried, so a slow network/5xx failure costs at most one more attempt; each
   leg ≤ 45 s via `HOUGE_LLM_TIMEOUT_MS_MEDIA`; at most two legs and one parse retry), before
   the loop's own 10-minute clock starts. `resolveTurnMessage` **never throws**: every exception
   is caught and becomes a status (`download_failed`, `leg_failed`, `timeout`), so the poll loop's
@@ -163,7 +164,7 @@ media?: { path: string; mime: string };   // absolute path inside the media temp
   `{ text: caption + "\n\n" + digest, modality: "photo" }` (bare: the digest alone, headed by the
   same `[external source — untrusted-derived summary]` line). No echo line.
 - The reply builder prepends `🎙 I heard: …\n\n` when `echo` is set.
-- **What the stored user turn holds.** Voice: the transcript. Photo: caption + digest — the digest
+- **What the stored user turn holds.** Voice: the caption (if any) + the transcript. Photo: caption + digest — the digest
   is needed for follow-up context, and its header line labels it untrusted-derived wherever it is
   re-read (the loop's reader objective is the caption only; episodic extraction sees the header).
   Accepted residual: text rendered in a photo Paco himself sends can reach episodic memory as a
@@ -179,7 +180,8 @@ media?: { path: string; mime: string };   // absolute path inside the media temp
   label and may appear in `runs.goal`, the stored event, the contract objective and a failure
   report's "objective" line. The transcript, and caption + digest, appear where a typed message
   appears today: `chat_turns`, the completion report's `Message:` line, and prompts. Neither the
-  raw bytes nor the file id/path appear anywhere.
+  raw bytes nor the file id/path appear in the ledger, a log line, a thrown error or a prompt (the
+  file id lives only in the turn event's `metadata.media`, as the Components section says).
 - The media call is not charged to `max_tool_calls` (same as the reader) and runs under the
   run's `llmAuditSink` with its role, so it is one `llm_attempt` row, priced as CLI transport.
 
@@ -329,6 +331,9 @@ first-hand (see the plan's two review tables):
 21. agy `@` inclusion is extension-driven; `.opus` attaches, `.ogg` does not (probe 2026-09-29, agy
     1.2.13); the voice file is `media.opus`. Bytes and the `audio/ogg` mime are unchanged (live gate /
     Codex whole-diff, 2026-09-29).
+22. The 30 s download budget is per attempt (amendment 17): our own abort is never retried, so a
+    slow network/5xx failure costs at most one more attempt; the 150 s stage deadline is the real
+    bound. Supersedes "including its one retry" (live gate / Codex whole-diff, 2026-09-29).
 
 ## Codex spec review (2026-09-29) — findings and disposition
 
