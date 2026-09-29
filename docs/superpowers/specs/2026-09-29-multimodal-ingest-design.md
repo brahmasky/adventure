@@ -63,8 +63,9 @@ content actually read.
   - `goal` = the caption, or the placeholder `[voice message]` / `[photo]` when there is none,
     so the contract objective stays non-empty. The placeholder is never shown to the user; the
     ingest step replaces it.
-  - `metadata.media` = `{ kind: "voice" | "photo", file_id, file_unique_id, mime_type,
-    file_size?, duration? (voice), width?, height? (photo) }`.
+  - `metadata.media` = `{ kind: "voice" | "photo", file_id, file_unique_id, mime_type, has_caption,
+    file_size?, duration? (voice), width?, height? (photo) }`. `has_caption` is the explicit bit the
+    ingest step uses to tell a caption from the placeholder (a real caption may read `[photo]`).
   - The idempotency key, `source_reference`, `requested_by` and `notify` are unchanged.
 - A caption that starts with `/` is a command, exactly as today (the command runs, the image is
   ignored) — so nothing an existing caller relies on changes. Any other caption is the photo
@@ -79,11 +80,15 @@ content actually read.
 
 `downloadFile(file_id, maxBytes): Promise<{ bytes: Uint8Array; file_path: string }>`:
 `getFile`, then a GET on the file URL with `redirect: "error"` (a redirect would carry the
-token elsewhere). Rejects (no partial read) when `file_size` from `getFile` or the actual body
-exceeds `maxBytes`. The URL contains the bot token: it is never logged and never returned, and
-every exception (network, abort, JSON) is mapped to a code-owned error string —
-`download_failed: http_<status>` / `network` / `too_large` — so no library message that could
-embed the URL escapes. One retry on network or 5xx; none on 4xx or over-cap.
+token elsewhere). The returned `file_path` must match `^[\w./-]+$` before it is appended to the
+token URL. The body is **streamed** and the read is cancelled the moment the running total passes
+`maxBytes` (no unbounded buffering when `content-length` is absent). Rejects when the declared
+`file_size`, `content-length`, or the streamed total exceeds `maxBytes`. The URL contains the bot
+token: it is never logged and never returned, and only the client's own private `DownloadFailure`
+errors keep their code-owned message (`download_failed: http_<status>` / `network` / `too_large` /
+`no_file_path` / `no_token`); any other thrown value, whatever its text, becomes
+`download_failed: network`. The retry (one, on network or 5xx only; never on 4xx, over-cap, or
+our own 30 s abort) lives in the ingest step, not the client.
 
 ### `src/llm/types.ts` — `LlmRequest.media`
 
@@ -97,13 +102,19 @@ media?: { path: string; mime: string };   // absolute path inside the media temp
   capability before attempting** a media request, so an ineligible leg is never spawned and never
   writes an `llm_attempt` row (no false provider-health failures). If no leg is eligible the chain
   returns `{ ok: false, error: "no media-capable leg" }`.
+- **agy's `@` inclusion is workspace-scoped** (verified 2026-09-29): a path outside the spawn cwd is
+  NOT attached — the model may then try a tool, which headless agy denies and lists in the envelope's
+  `denied_actions`. The media dir holds only the intended file, so a caption (or any untrusted text)
+  containing `@…` can attach nothing else. `--sandbox` (a boolean flag) does not interfere with the
+  inclusion; the planned call was verified under it.
 - `agy-cli.ts` (`supportsMedia`: `audio/ogg`, `image/jpeg`, `image/png`): the prompt argv becomes
   `<system>\n\n<question>\n\n@media.<ext>`, spawn cwd = the media temp dir (so the reference is
   relative and cannot escape it), plus `--sandbox` for media calls (agy's terminal-restricted mode)
   on top of the existing `--disable-slash-commands`. The caption/question stays inside the single
   argv element, which agy's flag parser never re-parses.
-- `pi.ts` (`supportsMedia`: `image/*` only): the code-owned `@<abs temp path>` argv token before
-  `--`; the question stays on stdin exactly as today (pi has no safe argv prompt path).
+- `pi.ts` (`supportsMedia`: `image/*` only): the code-owned `@<abs temp path>` argv tokens after
+  `--` (pi 0.87 documents `[--] [@files...]`; verified 2026-09-29 with and without `--`); the
+  question stays on stdin exactly as today.
 - `kimi.ts`, `gemini.ts`, `openai-compat.ts`: no `supportsMedia` → never selected for media.
 - `createLlmAnswerAdapter` forwards `input.media` when present, after validating it: an absolute
   path under `os.tmpdir()`, basename ∈ {`media.ogg`, `media.jpg`}, mime ∈ the allowlist. Anything
@@ -119,7 +130,16 @@ media?: { path: string; mime: string };   // absolute path inside the media temp
 
 `resolveTurnMessage(claim): Promise<ResolvedTurnMessage>` runs at the top of `executeTurn`:
 
-- No `metadata.media`, or flag off → `{ text: objective, modality: "text" }`.
+- No `metadata.media` → `{ text: objective, modality: "text" }`.
+- `metadata.media` present but the flag is OFF at run time (`/disarm` between intake and
+  execution): a captioned turn proceeds on its caption as a text turn (no download, no row); a
+  bare one fails with status `disabled` and the reply "media ingest is off — please type it", so
+  the placeholder is never a message.
+- **The transcript replaces the contract objective for the rest of the turn.** Several loop tools
+  compile sub-contracts or anchor themselves on `claim.contract.objective` (self-diagnose,
+  self-write, external work, skill author, lesson write, project track). For a voice turn the loop
+  therefore runs on a claim whose objective is the transcript; for a photo turn the objective stays
+  the caption (or the placeholder when bare) — image-derived text never anchors those tools.
 - Otherwise, in order: cap check on the declared size/duration → `downloadFile` into
   `mkdtemp("houge-media-")` → the media call → `rmSync` the dir in `finally`. The whole step runs
   under one **media-stage deadline of 150 s** (download ≤ 30 s including its one retry; each
@@ -143,6 +163,11 @@ media?: { path: string; mime: string };   // absolute path inside the media temp
   `{ text: caption + "\n\n" + digest, modality: "photo" }` (bare: the digest alone, headed by the
   same `[external source — untrusted-derived summary]` line). No echo line.
 - The reply builder prepends `🎙 I heard: …\n\n` when `echo` is set.
+- **What the stored user turn holds.** Voice: the transcript. Photo: caption + digest — the digest
+  is needed for follow-up context, and its header line labels it untrusted-derived wherever it is
+  re-read (the loop's reader objective is the caption only; episodic extraction sees the header).
+  Accepted residual: text rendered in a photo Paco himself sends can reach episodic memory as a
+  labelled user turn. The digest is capped at 4 000 chars.
 - The Jev shadow carries the resolved modality (`text | voice | photo`) in **both** the request
   state (`buildJevIntentRequest`, today hardcoded `text`) and the `intent_shadow` payload; the
   shadow question uses the resolved text, as the classifier does. A long transcript can exceed the
@@ -161,9 +186,12 @@ media?: { path: string; mime: string };   // absolute path inside the media temp
 ### Ledger — `media_ingested`
 
 Required fields `["kind", "status", "source"]`. Payload:
-`kind: voice | photo`, `status: ok | too_large | download_failed | leg_failed | empty | timeout`,
+`kind: voice | photo`, `status: ok | too_large | download_failed | leg_failed | empty | timeout | disabled`,
 `source: "telegram"`, `bytes`, `duration_s` (voice) or `width`/`height` (photo), `provider`,
-`model`, `latency_ms`, `chars_out`. Counts, tags and code-owned strings only. Never a transcript,
+`model`, `latency_ms`, `chars_out`, and on failure a code-owned `detail` (the download code such
+as `http_404` / `no_downloader`, `no media-capable leg`, or the leg's `error_kind`). Counts, tags
+and code-owned strings only. Every failed ingest also logs ONE `console.warn` line with kind,
+status and detail. Never a transcript,
 caption, file name, file id or path. Written once per media turn, whatever happened.
 
 ### Caps and timeouts
@@ -185,7 +213,9 @@ Every failure is user-facing, run-failing and ledgered. No silent text-less turn
 
 | Case | Status | Reply | Run |
 |---|---|---|---|
-| Flag off | no row (the adapter never made a media event) | today's behaviour (caption text turn, or the acknowledgement) | as today |
+| Flag off at intake | no row (the adapter never made a media event) | today's behaviour (caption text turn, or today's acknowledgement text) | as today |
+| Flag off at run time, bare media | `disabled` | "media ingest is off — please type it" | fails |
+| Flag off at run time, captioned | no row | the caption is answered as text | continues |
 | Over cap (declared or actual) | `too_large` | "voice note too long (max 5 min)" / "photo too large (max 10 MB)" | fails |
 | `getFile`/download error after one retry | `download_failed` | "couldn't fetch your voice note / photo, please resend" | fails |
 | No eligible leg, or every eligible leg failed | `leg_failed` | "couldn't transcribe / read that right now" | fails |
@@ -205,15 +235,21 @@ terminal, and the user resends.
   agentic, has no `--no-tools`, and may use a tool the operator has allow-listed. Media calls add
   `--sandbox` (terminal restrictions) to the existing containment (fresh empty cwd, env allowlist,
   `--disable-slash-commands`, no `--dangerously-skip-permissions`). The live gate includes an
-  image whose rendered text asks for a shell command; PASS requires a digest with
-  `contains_instructions: true` and no tool activity in agy's JSON envelope.
+  image whose rendered text asks for a shell command. Two outcomes are safe and PASS: a digest with
+  `contains_instructions: true`, or a fail-closed turn (`leg_failed`, because agy denied the tool
+  the model reached for and returned an empty response — visible as `denied_actions` in its
+  envelope). Anything else fails the gate. A *successful* tool action is not observable from the
+  envelope; the containment for that is agy's own permission model (no allow-rules on the mini)
+  plus `--sandbox`.
 - A voice note is trusted because the sender is allowlisted and forwards are refused at auth. A
   future "forwarded voice note" feature would have to re-classify it as untrusted; note it here so
   nobody relaxes the forward check casually.
 - The bot-token file URL never appears in logs, errors or the ledger: redirects are refused and
   every download exception is mapped to a code-owned string before it can propagate.
 - Egress: media bytes go to the same party the text already goes to on the agy leg (Google,
-  flat-rate) and, for photos, possibly to pi's provider (Kimi). No new party.
+  flat-rate) and, for photos, possibly to pi's provider (Kimi). The Jev shadow, when armed, also
+  receives the transcript or the caption + digest as the turn's text, exactly as it receives typed
+  messages. No new party.
 - `/disarm` covers it (`DISARM_FLAGS`), and the kill switch stops the daemon as before.
 
 ## Testing
@@ -270,6 +306,27 @@ real legs are built only beside the production adapters (the Jev pattern). The f
    json_extract(payload_json,'$.status') FROM ledger_events WHERE event_type='media_ingested'
    ORDER BY occurred_at DESC LIMIT 5`.
 
+## Plan review amendments (2026-09-29)
+
+From the Codex plan review and the senior review of the implementation plan, each verified
+first-hand (see the plan's two review tables):
+
+15. The media temp dir is created BEFORE the stage deadline starts; the deadline aborts the
+    download through an `AbortSignal`; the dir is removed when the deadline fires and again when the
+    late work settles (both best-effort). A leg still running after the deadline settles on its own
+    45 s timeout and its result is discarded.
+16. `has_caption` on the media ref; flag-off-at-run-time semantics; status `disabled`; the
+    acknowledgement text depends on the flag (OFF keeps today's text).
+17. `downloadFile` streams and cancels past the cap; validates `file_path`; only `DownloadFailure`
+    messages survive; the retry lives in the ingest step; a 30 s abort is not retried.
+18. `isAllowedMediaFile` requires a `houge-media-*` directory directly under `tmpdir()`, a
+    normalised path with no `..`, and the basename/mime PAIR (`media.ogg`↔`audio/ogg`,
+    `media.jpg`↔`image/jpeg`).
+19. The poll client type carries an optional `downloadFile`; the worker receives it only when present;
+    runner and daemon tests prove the hand-off in both flag states.
+20. The transcript replaces the contract objective for a voice turn (above); `detail` on failed
+    rows plus one warn line; the photo digest is capped at 4 000 chars.
+
 ## Codex spec review (2026-09-29) — findings and disposition
 
 `codex exec -s read-only`, reasoning high, before any code. Every finding verified first-hand.
@@ -292,6 +349,10 @@ real legs are built only beside the production adapters (the Jev pattern). The f
 ## Out of scope
 
 - Video, documents, stickers, albums (media groups), voice replies from Houge.
+- A photo captioned with a bare digit is still consumed by rating capture as a rating (the image is
+  discarded), and a voice note cannot give a rating. Unchanged; documented.
+- Lease recovery: the 150 s media stage exceeds an un-renewed 30 s lease; if lease recovery is
+  ever wired to re-execute running turns, a media turn could be ingested twice. Not wired today.
 - The metered Gemini API as a media leg (documented fallback; not wired).
 - `look_at_media` as a loop tool, and Jev `needs_media` / `actionable` nouls (roadmap, later).
 - Any change to `parseIntent`, the loop, or the reader schema.
