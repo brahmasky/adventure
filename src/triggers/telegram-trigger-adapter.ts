@@ -142,39 +142,46 @@ export function normalizeTelegramUpdate(
   const ingestOn = options.mediaIngestEnabled === true;
   const media = ingestOn ? mediaRefOf(message, caption.length > 0) : null;
   if (media && !caption.startsWith("/")) {
-    const base = buildEventBase(update, message, auth.identity);
-    return {
-      ok: true,
-      event: buildTypedTaskEvent({
-        ...base,
-        type: "turn",
-        program: "turn",
-        goal: caption.length > 0 ? caption : MEDIA_PLACEHOLDER[media.kind],
-        metadata: { ...base.metadata, media }
-      })
-    };
+    return { ok: true, event: buildMediaTurnEvent(buildEventBase(update, message, auth.identity), media, caption) };
   }
 
-  if (caption.length === 0) {
-    // Truly text-less (bare sticker/document/video, or media with the flag off). Keep it OUT
-    // of the command path but do NOT ghost the sender: carry an acknowledgement the poll loop
-    // sends via the existing outbox. The skip record + single offset advance are unchanged.
-    return {
-      ok: false,
-      error: { code: "TELEGRAM_UNSUPPORTED_MEDIA", message: "Telegram message has no text or caption" },
-      acknowledgement: {
-        chat_id: String(message.chat.id),
-        text: ingestOn ? TELEGRAM_UNSUPPORTED_MEDIA_REPLY_WITH_INGEST : TELEGRAM_UNSUPPORTED_MEDIA_REPLY,
-        idempotency_key: `telegram:${update.update_id}:unsupported_media`
-      }
-    };
-  }
+  // Truly text-less (bare sticker/document/video, or media with the flag off). Keep it OUT of
+  // the command path but do NOT ghost the sender (see unsupportedMediaResult).
+  if (caption.length === 0) return unsupportedMediaResult(update, message, ingestOn);
 
   // `caption.length > 0` implies `bodyText` is a string; the parser keeps the untrimmed body as before.
   const parsed = parseTelegramCommand(bodyText as string);
   if (!parsed.ok) return parsed;
 
   return { ok: true, event: buildTelegramEvent(parsed.command, buildEventBase(update, message, auth.identity)) };
+}
+
+/** A media turn: the caption (or the kind's placeholder) is the goal; the ref rides `metadata.media`. */
+function buildMediaTurnEvent(base: TelegramEventBase, media: TelegramMediaRef, caption: string): TypedTaskEvent {
+  return buildTypedTaskEvent({
+    ...base,
+    type: "turn",
+    program: "turn",
+    goal: caption.length > 0 ? caption : MEDIA_PLACEHOLDER[media.kind],
+    metadata: { ...base.metadata, media }
+  });
+}
+
+/**
+ * The skip result for a text-less message, carrying the acknowledgement the poll loop sends via the
+ * existing outbox. The skip record + single offset advance are unchanged; the text depends on
+ * whether ingest is on (what Houge can read differs).
+ */
+function unsupportedMediaResult(update: TelegramUpdate, message: TelegramMessage, ingestOn: boolean): TelegramNormalizeResult {
+  return {
+    ok: false,
+    error: { code: "TELEGRAM_UNSUPPORTED_MEDIA", message: "Telegram message has no text or caption" },
+    acknowledgement: {
+      chat_id: String(message.chat.id),
+      text: ingestOn ? TELEGRAM_UNSUPPORTED_MEDIA_REPLY_WITH_INGEST : TELEGRAM_UNSUPPORTED_MEDIA_REPLY,
+      idempotency_key: `telegram:${update.update_id}:unsupported_media`
+    }
+  };
 }
 
 /** The media reference the ingest step needs — ids, mime, the caption bit and counts only. Largest photo size wins. */
