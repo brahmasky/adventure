@@ -248,6 +248,7 @@ export class TelegramClient implements TelegramSendClient, TelegramPollClient, T
     if (!this.token) throw new DownloadFailure("no_token");
     const init: RequestInit = { redirect: "error", ...(input.signal ? { signal: input.signal } : {}) };
     try {
+      const fileBase = this.fileBaseUrl();
       const info = await this.fetchImpl(`${this.botBaseUrl}/getFile?file_id=${encodeURIComponent(input.file_id)}`, init);
       if (!info.ok) throw new DownloadFailure(`http_${info.status}`);
       const body = (await info.json()) as { ok?: boolean; result?: { file_path?: string; file_size?: number } };
@@ -255,7 +256,7 @@ export class TelegramClient implements TelegramSendClient, TelegramPollClient, T
       if (body.ok !== true || typeof filePath !== "string" || !FILE_PATH_SHAPE.test(filePath)) throw new DownloadFailure("no_file_path");
       if (typeof body.result?.file_size === "number" && body.result.file_size > input.maxBytes) throw new DownloadFailure("too_large");
 
-      const res = await this.fetchImpl(`${this.fileBaseUrl()}/${filePath}`, init);
+      const res = await this.fetchImpl(`${fileBase}/${filePath}`, init);
       if (!res.ok) throw new DownloadFailure(`http_${res.status}`);
       const declared = Number(res.headers.get("content-length"));
       if (Number.isFinite(declared) && declared > input.maxBytes) throw new DownloadFailure("too_large");
@@ -267,7 +268,9 @@ export class TelegramClient implements TelegramSendClient, TelegramPollClient, T
 
   /** `https://host/bot<token>` → `https://host/file/bot<token>` (Telegram's file host path). */
   private fileBaseUrl(): string {
-    return this.botBaseUrl.replace(/\/bot([^/]+)$/, "/file/bot$1");
+    const base = this.botBaseUrl.replace(/\/bot([^/]+)$/, "/file/bot$1");
+    if (base === this.botBaseUrl) throw new DownloadFailure("no_file_base");
+    return base;
   }
 
   async sendDocument(input: TelegramSendDocumentInput): Promise<void> {

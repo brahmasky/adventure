@@ -226,6 +226,13 @@ describe("downloadFile (multimodal ingest, spec 2026-09-29)", () => {
     expect(urls).toHaveLength(1);
   });
 
+  it("an apiBase without a /bot<token> suffix fails closed with no_file_base — no request is made, the file host is never guessed", async () => {
+    const urls: string[] = [];
+    const client = new TelegramClient({ token: "SECRET-TOKEN", apiBase: "https://example.test/proxy", fetchImpl: async (url) => { urls.push(String(url)); return okGetFile(); } });
+    await expect(client.downloadFile({ file_id: "f", maxBytes: 1000 })).rejects.toThrow("download_failed: no_file_base");
+    expect(urls).toHaveLength(0);
+  });
+
   it("streams the body and cancels past the cap when there is no content-length (no unbounded buffering)", async () => {
     let pulls = 0;
     const endless = new ReadableStream<Uint8Array>({ pull(controller) { pulls += 1; controller.enqueue(new Uint8Array(400)); } });
