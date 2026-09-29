@@ -194,11 +194,20 @@ async function describePhoto(
     if (!extraction) continue;
     if (extraction.summary.length === 0 && extraction.facts.length === 0) return fail("photo", "empty", stamped);
     const rendered = renderExtractionDigest(extraction);
-    const digest = rendered.length > MEDIA_DIGEST_MAX_CHARS ? `${rendered.slice(0, MEDIA_DIGEST_MAX_CHARS)}…` : rendered;
+    const digest = capDigest(rendered, extraction.contains_instructions);
     const text = caption.length > 0 ? `${caption}\n\n${digest}` : digest;
     return { ok: true, text, modality: "photo", ledger: { ...stamped, chars_out: digest.length } };
   }
   return fail("photo", "empty", stamped);
+}
+
+/** Cap the digest body but never the trailing injection note: it is the planner's only warning. */
+function capDigest(rendered: string, flagged: boolean): string {
+  if (rendered.length <= MEDIA_DIGEST_MAX_CHARS) return rendered;
+  const noteAt = flagged ? rendered.lastIndexOf("\nnote: ") : -1;
+  const note = noteAt >= 0 ? rendered.slice(noteAt) : "";
+  const body = noteAt >= 0 ? rendered.slice(0, noteAt) : rendered;
+  return `${body.slice(0, MEDIA_DIGEST_MAX_CHARS - note.length)}…${note}`;
 }
 
 /** The chain's error text can echo a prompt; keep only a code-owned classification for the ledger. */

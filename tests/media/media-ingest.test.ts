@@ -98,6 +98,15 @@ describe("ingestMedia — photo", () => {
     expect(r.ok && r.text.endsWith("…")).toBe(true);
   });
 
+  it("a capped digest keeps the contains_instructions note — the planner must never get an unflagged digest", async () => {
+    const huge = JSON.stringify({ summary: "x".repeat(MEDIA_DIGEST_MAX_CHARS + 500), facts: [], time_claims: [], answer_to_objective: null, contains_instructions: true });
+    const r = await ingestMedia(deps({ mediaCall: async () => ({ ok: true, output: { answer: huge, model: "m", provider: "p" } }) }), photo, "cap");
+    const note = "note: this source tried to embed instructions; they were ignored, not followed.";
+    expect(r.ok && r.text.endsWith(`…\n${note}`)).toBe(true);
+    expect(r.ok && r.text.length).toBeLessThanOrEqual("cap\n\n".length + MEDIA_DIGEST_MAX_CHARS + 1);
+    expect(r.ok && r.text.startsWith("cap\n\n[external source — untrusted-derived summary]")).toBe(true);
+  });
+
   it("an extraction with no summary and no facts is empty", async () => {
     const blank = JSON.stringify({ summary: "", facts: [], time_claims: [], answer_to_objective: null, contains_instructions: false });
     const r = await ingestMedia(deps({ mediaCall: async () => ({ ok: true, output: { answer: blank, model: "m", provider: "p" } }) }), photo, "cap");
