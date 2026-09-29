@@ -166,7 +166,14 @@ export function createPiProvider(config: PiProviderConfig = {}): LlmProvider {
 
   return {
     name: "pi",
+    supportsMedia: (mime) => mime.startsWith("image/"),
     async answer(req: LlmRequest): Promise<LlmResult> {
+      // Multimodal ingest (spec 2026-09-29): Kimi via pi reads images (`@file` on argv) but not
+      // audio (spike 2026-09-28). The chain filters on supportsMedia first; this guard is defensive.
+      if (req.media && !req.media.mime.startsWith("image/")) {
+        return { ok: false, provider: "pi", error: `media unsupported: ${req.media.mime}` };
+      }
+
       // pi has NO Houge-side default model: when unset, --model is omitted and
       // pi uses its OWN configured provider/model. We deliberately do NOT read
       // the cross-provider global — pi's model namespace differs from the APIs'.
@@ -182,8 +189,9 @@ export function createPiProvider(config: PiProviderConfig = {}): LlmProvider {
       const maxAnswerBytes = config.maxAnswerBytes ?? PI_DEFAULT_MAX_ANSWER_BYTES;
 
       // The question is delivered on stdin (see SpawnOpts.input), NEVER as an
-      // argv token — pi reads its prompt from stdin in -p mode and has no `--`
-      // separator, so this is the only injection-safe form.
+      // argv token — pi reads its prompt from stdin in -p mode; the question stays on stdin
+      // (the only injection-safe form for user text). `--` exists in pi ≥ 0.87 and is used
+      // ONLY for the code-owned media token below.
       //
       // `--no-tools` is the real safety lever (disables read/bash/edit/write,
       // built-in AND extension tools). We do NOT pass `--no-extensions` because
@@ -202,7 +210,11 @@ export function createPiProvider(config: PiProviderConfig = {}): LlmProvider {
         "--mode",
         "json",
         ...(req.system ? ["--system-prompt", req.system] : []),
-        ...(model ? ["--model", model] : [])
+        ...(model ? ["--model", model] : []),
+        // The file reference is CODE-OWNED (the ingest step's temp path, a fixed basename) and sits
+        // after `--` (pi 0.87: `[--] [@files...]`; verified 2026-09-29 with and without it); the
+        // question itself stays on stdin exactly as for a text call.
+        ...(req.media ? ["--", `@${req.media.path}`] : [])
       ];
 
       const env = buildChildEnv(process.env.HOUGE_PI_ENV_PASSTHROUGH);

@@ -46,6 +46,9 @@ const UNAVAILABLE_MARKERS = [
 /** Cap on provider-supplied error text echoed into `LlmResult.error` — bounded, single line. */
 export const ERROR_EXCERPT_MAX = 200;
 
+/** What the Gemini leg reads inline via `@file` (spike 2026-09-28: one turn, no tools). */
+const AGY_MEDIA_MIMES: ReadonlySet<string> = new Set(["audio/ogg", "image/jpeg", "image/png"]);
+
 // eslint-disable-next-line no-control-regex
 const ANSI_REGEX = /\x1b\[[0-9;]*m/g;
 
@@ -126,6 +129,7 @@ export function createAgyCliProvider(config: AgyCliProviderConfig = {}): LlmProv
 
   return {
     name: "agy-cli",
+    supportsMedia: (mime) => AGY_MEDIA_MIMES.has(mime),
     async answer(req: LlmRequest): Promise<LlmResult> {
       const binary = process.env.HOUGE_AGY_BIN ?? AGY_BINARY;
       const model = req.model ?? config.model ?? process.env.HOUGE_AGY_MODEL ?? AGY_DEFAULT_MODEL;
@@ -141,10 +145,19 @@ export function createAgyCliProvider(config: AgyCliProviderConfig = {}): LlmProv
       // agy --print has no --system-prompt; the Houge-controlled persona is folded into the prompt
       // text (system first, then the question). The whole thing is ONE argv element — even if the
       // question looks like a flag, it is the literal value of `--print`, never re-parsed.
-      const prompt = req.system ? `${req.system}\n\n${req.question}` : req.question;
+      // Multimodal ingest (spec 2026-09-29): a media call appends the code-owned `@media.<ext>`
+      // reference — agy's `@` inclusion is client-side, the bytes go inline, no tool is involved —
+      // and runs in the media dir (owned and removed by the caller) under `--sandbox`.
+      const media = req.media;
+      const prompt = [req.system, req.question, media ? `@${path.basename(media.path)}` : undefined]
+        .filter((part): part is string => typeof part === "string" && part.length > 0)
+        .join("\n\n");
       const args = [
         "--model",
         model,
+        // `--sandbox` is a boolean flag (agy --help, 2026-09-29): terminal restrictions for media
+        // calls. Placed before --output-format so no value-taking flag can ever swallow `--print`.
+        ...(media ? ["--sandbox"] : []),
         "--output-format",
         "json",
         // Untrusted external content reaches this prompt on the reader path; it must never be
@@ -158,18 +171,24 @@ export function createAgyCliProvider(config: AgyCliProviderConfig = {}): LlmProv
       // HOUGE_AGY_ENV_PASSTHROUGH if a deployment stores agy auth in an env var.
       const env = buildChildEnv(process.env.HOUGE_AGY_ENV_PASSTHROUGH);
 
-      // A FRESH, EMPTY directory per call — never `os.tmpdir()` itself. agy is agentic and roots
-      // its workspace at the cwd (`--add-dir` extends it), and the shared temp dir is where Houge
-      // keeps its own live state: approval-park/approval-resume trees, coding-agent capability
+      // A FRESH, EMPTY directory per text call — never `os.tmpdir()` itself. agy is agentic and
+      // roots its workspace at the cwd (`--add-dir` extends it), and the shared temp dir is where
+      // Houge keeps its own live state: approval-park/approval-resume trees, coding-agent capability
       // dirs, and `houge-worktree-*` repo checkouts (see src/run/worktree.ts). Handing an agent
       // driven by attacker-controlled content a workspace rooted over Houge's own run state is a
       // read AND plant primitive; a per-call dir also means nothing survives between calls.
+      // A media call instead runs in the media temp dir the ingest step created, so the relative
+      // `@media.<ext>` resolves and cannot escape it; that dir is the caller's to remove.
       let workdir: string;
-      try {
-        workdir = await mkdtemp(path.join(os.tmpdir(), "houge-agy-"));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return { ok: false, provider: "agy-cli", error: `agy workdir setup failed: ${message}` };
+      if (media) {
+        workdir = path.dirname(media.path);
+      } else {
+        try {
+          workdir = await mkdtemp(path.join(os.tmpdir(), "houge-agy-"));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return { ok: false, provider: "agy-cli", error: `agy workdir setup failed: ${message}` };
+        }
       }
 
       let result: SpawnResult;
@@ -185,8 +204,9 @@ export function createAgyCliProvider(config: AgyCliProviderConfig = {}): LlmProv
         const message = error instanceof Error ? error.message : String(error);
         return { ok: false, provider: "agy-cli", error: `agy spawn failed: ${message}` };
       } finally {
-        // Best-effort: a leaked temp dir must never fail an otherwise good answer.
-        await rm(workdir, { recursive: true, force: true }).catch(() => {});
+        // Best-effort: a leaked temp dir must never fail an otherwise good answer. The media dir
+        // is not ours to remove.
+        if (!media) await rm(workdir, { recursive: true, force: true }).catch(() => {});
       }
 
       // Binary missing / spawn failure → unavailable (lets the chain fall through).
