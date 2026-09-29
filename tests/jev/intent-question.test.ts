@@ -32,6 +32,13 @@ describe("buildJevIntentRequest", () => {
     expect(r.request.state).toMatchObject({ modality: "text", latest_message: "the second one", already_asked_clarification: true });
   });
 
+  it("carries the resolved modality when given one (voice/photo turns, spec 2026-09-29)", () => {
+    const voice = buildJevIntentRequest("what's the ASX close?", [], 500, 0, "voice");
+    expect(voice.ok && (voice.request.state as { modality: string }).modality).toBe("voice");
+    const photo = buildJevIntentRequest("what is this chart?", [], 500, 0, "photo");
+    expect(photo.ok && (photo.request.state as { modality: string }).modality).toBe("photo");
+  });
+
   it("skips an over-cap message instead of truncating it (a truncated message yields a silently worse label)", () => {
     expect(buildJevIntentRequest("y".repeat(MAX_LATEST_MESSAGE_CHARS + 1), [], 500, 0)).toEqual({ ok: false, skip: "state_too_large" });
   });

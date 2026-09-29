@@ -1,4 +1,5 @@
 import type { Intent } from "../capabilities/intent.js";
+import type { TurnModality } from "../media/media-config.js";
 import type { ChatTurnRow } from "../run/run-store.js";
 import type { JevRequest, JevResult } from "./jev-client.js";
 import { buildJevIntentRequest, langOf, type Lang } from "./intent-question.js";
@@ -18,6 +19,7 @@ export const JEV_SHADOW_DEADLINE_MS = 6_000;
 export interface JevShadowOutcome {
   status: ShadowStatus;
   lang: Lang;
+  modality: TurnModality;
   jev?: { intent: string; confidence: number; probabilities: Record<string, number>; model: string; latency_ms: number };
   /** jev-client's code-owned failure string (HTTP status, timeout, validation code) — never provider prose. */
   jev_error?: string;
@@ -29,7 +31,7 @@ export type IntentShadowPayload = {
   llm_intent: Intent;
   llm_parsed: boolean;
   lang: Lang;
-  modality: "text";
+  modality: TurnModality;
   jev_intent?: string;
   jev_confidence?: number;
   jev_probabilities?: Record<string, number>;
@@ -53,24 +55,26 @@ export async function runJevShadow(
   message: string,
   recentTurns: ChatTurnRow[],
   turnChars: number,
-  recentClarifyCount: number
+  recentClarifyCount: number,
+  modality: TurnModality = "text"
 ): Promise<JevShadowOutcome> {
   const lang = langOf(message);
   let result: JevResult | "deadline";
   try {
-    const built = buildJevIntentRequest(message, recentTurns, turnChars, recentClarifyCount);
-    if (!built.ok) return { status: "skipped_state_too_large", lang };
+    const built = buildJevIntentRequest(message, recentTurns, turnChars, recentClarifyCount, modality);
+    if (!built.ok) return { status: "skipped_state_too_large", lang, modality };
     result = await withDeadline(call(built.request), JEV_SHADOW_DEADLINE_MS);
   } catch {
-    return { status: "error", lang, jev_error: "shadow call threw" };
+    return { status: "error", lang, modality, jev_error: "shadow call threw" };
   }
-  if (result === "deadline") return { status: "timeout", lang, jev_error: `no result after ${JEV_SHADOW_DEADLINE_MS}ms (shadow deadline)` };
-  if (!result.ok) return { status: failureStatus(result), lang, jev_error: result.detail };
+  if (result === "deadline") return { status: "timeout", lang, modality, jev_error: `no result after ${JEV_SHADOW_DEADLINE_MS}ms (shadow deadline)` };
+  if (!result.ok) return { status: failureStatus(result), lang, modality, jev_error: result.detail };
   const answer = result.answers.intent;
-  if (!answer) return { status: "error", lang, jev_error: "response failed validation: answer_missing:intent" };
+  if (!answer) return { status: "error", lang, modality, jev_error: "response failed validation: answer_missing:intent" };
   return {
     status: "ok",
     lang,
+    modality,
     jev: { intent: answer.choice, confidence: answer.confidence, probabilities: answer.probabilities, model: result.model, latency_ms: result.latency_ms }
   };
 }
@@ -98,7 +102,7 @@ export function intentShadowPayload(outcome: JevShadowOutcome, llmRaw: string): 
     llm_intent: label.intent,
     llm_parsed: label.parsed,
     lang: outcome.lang,
-    modality: "text",
+    modality: outcome.modality,
     ...(outcome.jev
       ? {
           jev_intent: outcome.jev.intent,

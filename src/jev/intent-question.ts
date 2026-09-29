@@ -1,4 +1,5 @@
 import { feedTurnText, type Intent } from "../capabilities/intent.js";
+import type { TurnModality } from "../media/media-config.js";
 import type { ChatTurnRow } from "../run/run-store.js";
 import type { JevChoiceQuestion, JevRequest } from "./jev-client.js";
 
@@ -62,12 +63,13 @@ export function buildJevIntentRequest(
   message: string,
   recentTurns: ChatTurnRow[],
   turnChars: number,
-  recentClarifyCount: number
+  recentClarifyCount: number,
+  modality: TurnModality = "text"
 ): JevIntentRequest {
   if (message.length > MAX_LATEST_MESSAGE_CHARS) return { ok: false, skip: "state_too_large" };
   const request: JevRequest = {
     state: {
-      modality: "text",
+      modality,
       latest_message: message,
       recent_turns: recentTurns.map((t) => ({ role: t.role === "user" ? "user" : "houge", text: feedTurnText(t.text, turnChars) })),
       already_asked_clarification: recentClarifyCount > 0

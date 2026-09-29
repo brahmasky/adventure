@@ -37,6 +37,7 @@ import { computeCostUsd, METERED_PROVIDERS } from "../llm/metered-pricing.js";
 import { blobToFloat32, cosineSimilarity, float32ToBlob } from "../llm/embeddings.js";
 import { resolveWikiDecayDays } from "../capabilities/wiki.js";
 import type { IntentShadowPayload } from "../jev/shadow.js";
+import type { MediaIngestedPayload } from "../media/media-config.js";
 
 /**
  * The `role` recorded on every `llm_attempt` row (via `llmAuditSink`'s scope): chain calls, spawn
@@ -60,7 +61,8 @@ export type LlmCallRole =
   | "attribution"
   | "classify_replay"
   | "classify_replay_llm"
-  | "classify_shadow";
+  | "classify_shadow"
+  | "media_transcribe";
 
 /** Where an audited attempt belongs: a run, or a run-less correlation (`tick:*`, `cli:*`, `rating:*`). */
 export type LlmAuditScope =
@@ -1490,6 +1492,11 @@ export class RunStore {
   /** Jev intent shadow (spec 2026-09-25): one `intent_shadow` row per classified turn. */
   recordIntentShadow(run_id: string, payload: IntentShadowPayload): void {
     this.appendRunLedgerEvent(run_id, "intent_shadow", "core", { ...payload });
+  }
+
+  /** Multimodal ingest (spec 2026-09-29): one `media_ingested` row per media turn. */
+  recordMediaIngested(run_id: string, payload: MediaIngestedPayload): void {
+    this.appendRunLedgerEvent(run_id, "media_ingested", "core", { ...payload });
   }
 
   /**
