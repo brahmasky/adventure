@@ -124,6 +124,11 @@ function parseAgyEnvelope(stdout: string): Record<string, unknown> | null {
     : null;
 }
 
+function mediaReadLine(media: { path: string; mime: string }): string {
+  const kind = media.mime.startsWith("audio/") ? "audio" : "image";
+  return `The ${kind} is the file @${path.basename(media.path)} in the current directory. Open it with the view_file tool (the only tool you need); never run a shell command.`;
+}
+
 export function createAgyCliProvider(config: AgyCliProviderConfig = {}): LlmProvider {
   const spawnImpl = config.spawnImpl ?? defaultSpawnImpl;
 
@@ -145,11 +150,13 @@ export function createAgyCliProvider(config: AgyCliProviderConfig = {}): LlmProv
       // agy --print has no --system-prompt; the Houge-controlled persona is folded into the prompt
       // text (system first, then the question). The whole thing is ONE argv element — even if the
       // question looks like a flag, it is the literal value of `--print`, never re-parsed.
-      // Multimodal ingest (spec 2026-09-29): a media call appends the code-owned `@media.<ext>`
-      // reference — agy's `@` inclusion is client-side, the bytes go inline, no tool is involved —
-      // and runs in the media dir (owned and removed by the caller) under `--sandbox`.
+      // Multimodal ingest (spec 2026-09-29): a media call appends a code-owned line holding the
+      // `@media.<ext>` reference and runs in the media dir (owned and removed by the caller) under
+      // `--sandbox`. agy's `@` is NOT a client-side attachment: the model reads the file with its
+      // auto-allowed, cwd-scoped `view_file` tool; `run_command` is auto-denied headless. Naming
+      // the tool is what makes the read deterministic (probe 2026-09-29).
       const media = req.media;
-      const prompt = [req.system, req.question, media ? `@${path.basename(media.path)}` : undefined]
+      const prompt = [req.system, req.question, media ? mediaReadLine(media) : undefined]
         .filter((part): part is string => typeof part === "string" && part.length > 0)
         .join("\n\n");
       const args = [

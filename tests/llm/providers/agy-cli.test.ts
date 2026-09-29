@@ -646,7 +646,9 @@ describe("media calls (multimodal ingest, spec 2026-09-29)", () => {
     try {
       const result = await createAgyCliProvider({ spawnImpl, model: "M" }).answer({ question: "Transcribe.", system: "You transcribe.", media });
       expect(result).toMatchObject({ ok: true, answer: "hello world" });
-      expect(promptArg(seen!.args)).toBe("You transcribe.\n\nTranscribe.\n\n@media.opus");
+      expect(promptArg(seen!.args)).toBe(
+        "You transcribe.\n\nTranscribe.\n\nThe audio is the file @media.opus in the current directory. Open it with the view_file tool (the only tool you need); never run a shell command."
+      );
       expect(seen!.args).toContain("--sandbox");
       expect(seen!.args).toContain("--disable-slash-commands");
       expect(seen!.cwd).toBe(mediaDir);
@@ -655,6 +657,15 @@ describe("media calls (multimodal ingest, spec 2026-09-29)", () => {
     } finally {
       rmSync(mediaDir, { recursive: true, force: true });
     }
+  });
+
+  it("a photo names the file as an image (the model reads it via view_file; naming the tool keeps it off run_command)", async () => {
+    let args: string[] = [];
+    const spawnImpl = vi.fn<SpawnImpl>(async (_f, a) => { args = a; return spawnResult({ stdout: envelope({ response: "ok" }) }); });
+    await createAgyCliProvider({ spawnImpl, model: "M" }).answer({ question: "Look.", media: { path: `${mediaDir}/media.jpg`, mime: "image/jpeg" } });
+    expect(promptArg(args)).toBe(
+      "Look.\n\nThe image is the file @media.jpg in the current directory. Open it with the view_file tool (the only tool you need); never run a shell command."
+    );
   });
 
   it("a caption full of flags, newlines and @paths never changes the argv shape (it is inside the --print value; agy attaches only files under its cwd — verified 2026-09-29)", async () => {

@@ -26,8 +26,8 @@ content actually read.
 - **Spike (2026-09-28, four flat-rate CLI calls, synthetic media):** under Houge's exact
   invocation flags —
   - `agy` (Gemini 3.8 Flash, flat-rate): reads a PNG and transcribes an OGG/Opus voice note in one
-    turn each, with no tool calls. The `@path` inclusion is client-side; the model receives the
-    bytes inline. About 25 k input tokens per call, a few seconds.
+    turn each. The model reads the `@` file through its auto-allowed `view_file` tool, which returns
+    the bytes inline (not a client-side attachment; see amendment 23). About 25 k input tokens per call, a few seconds.
   - `pi` (Kimi, tools off): reads the PNG (no tools); refuses audio ("no audio processing
     capabilities"). Its earlier audio "success" used tools, which Houge disables.
   - So the flat-rate legs cover the whole first slice. The metered Gemini API is not needed and
@@ -102,13 +102,14 @@ media?: { path: string; mime: string };   // absolute path inside the media temp
   capability before attempting** a media request, so an ineligible leg is never spawned and never
   writes an `llm_attempt` row (no false provider-health failures). If no leg is eligible the chain
   returns `{ ok: false, error: "no media-capable leg" }`.
-- **agy's `@` inclusion is workspace-scoped** (verified 2026-09-29): a path outside the spawn cwd is
-  NOT attached — the model may then try a tool, which headless agy denies and lists in the envelope's
-  `denied_actions`. The media dir holds only the intended file, so a caption (or any untrusted text)
-  containing `@…` can attach nothing else. `--sandbox` (a boolean flag) does not interfere with the
-  inclusion; the planned call was verified under it.
+- **agy reads the `@` file through the model's `view_file` tool** (verified 2026-09-29): the read is
+  cwd-scoped and the media dir holds one file, so a caption (or any untrusted text) containing `@…`
+  can reach nothing else. `run_command`, `write_to_file` and `read_url_content` are auto-denied in
+  headless mode (listed in the envelope's `denied_actions`). The prompt names the tool because without
+  it the model sometimes reaches for `run_command` and the call fails closed. `--sandbox` (a boolean
+  flag) does not interfere; the planned call was verified under it.
 - `agy-cli.ts` (`supportsMedia`: `audio/ogg`, `image/jpeg`, `image/png`): the prompt argv becomes
-  `<system>\n\n<question>\n\n@media.<ext>`, spawn cwd = the media temp dir (so the reference is
+  `<system>\n\n<question>\n\nThe <audio|image> is the file @media.<ext> in the current directory. Open it with the view_file tool (the only tool you need); never run a shell command.`, spawn cwd = the media temp dir (so the reference is
   relative and cannot escape it), plus `--sandbox` for media calls (agy's terminal-restricted mode)
   on top of the existing `--disable-slash-commands`. The caption/question stays inside the single
   argv element, which agy's flag parser never re-parses.
@@ -334,6 +335,13 @@ first-hand (see the plan's two review tables):
 22. The 30 s download budget is per attempt (amendment 17): our own abort is never retried, so a
     slow network/5xx failure costs at most one more attempt; the 150 s stage deadline is the real
     bound. Supersedes "including its one retry" (live gate / Codex whole-diff, 2026-09-29).
+23. agy's `@` reference is not a client-side attachment (live gate run 3, 2026-09-29, agy 1.2.13,
+    `--log-file` / stream-json): agy sends `media=0`; the model reads the file with its auto-allowed
+    `view_file` tool (cwd-scoped). Nondeterministically it reaches for `run_command`, which headless
+    mode auto-denies, so agy returns SUCCESS with an empty response and `denied_actions: [RunCommand]`
+    and the provider fails closed (20-60 % of voice turns). The prompt now carries one code-owned
+    sentence naming `view_file` and forbidding shell commands; probe: voice 6/6, photo 4/4.
+    Supersedes every "client-side" / "no tool is involved" claim above.
 
 ## Codex spec review (2026-09-29) — findings and disposition
 
