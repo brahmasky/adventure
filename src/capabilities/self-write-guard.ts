@@ -64,13 +64,13 @@ const SYMLINK_MODE = "120000";
  *
  * Paths are stored POSIX-normalized and lower-cased; matching is case-insensitive.
  */
-const PROTECTED_DIRS: readonly string[] = [
+export const PROTECTED_DIRS: readonly string[] = [
   "src/policy", // gate machinery (also covers src/policy/capability-policy.ts)
   "docs/decisions", // the ADRs — identity / rules
   ".github" // CI / supply-chain
 ];
 
-const PROTECTED_FILES: readonly string[] = [
+export const PROTECTED_FILES: readonly string[] = [
   // ── Gate machinery ──
   "src/contracts/task-contract.ts",
   "src/capabilities/capability-runner.ts",
@@ -102,6 +102,17 @@ const PROTECTED_FILES: readonly string[] = [
   // ── Identity / rules ──
   "memory/core/houge.md",
   "agents.md", // stored lower-case; matching is case-insensitive
+  // ── omp runtime (floor A): files the planner process executes or that render its sandbox ──
+  "src/omp/protected-paths.ts",
+  "src/omp/seatbelt.ts",
+  "src/omp/command-matcher.ts",
+  "src/omp/shell-wrapper.sh",
+  "src/omp/shell-wrapper.ts",
+  "src/omp/capability-map.ts",
+  "src/omp/extension/bridge-client.ts",
+  "src/omp/extension/houge-tools.ts",
+  "src/omp/extension/houge-policy.ts",
+  "scripts/copy-omp-assets.mjs",
   // ── Supply chain / build ──
   "package.json",
   "package-lock.json",
