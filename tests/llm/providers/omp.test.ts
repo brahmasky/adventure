@@ -1,11 +1,11 @@
 // tests/llm/providers/omp.test.ts
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { OMP_ENV_VARS, resolveOmpConfig } from "../../../src/omp/omp-config.js";
 import { parseModelChain } from "../../../src/omp/model-string.js";
-import { spawnOneShot } from "../../../src/llm/providers/omp.js";
+import { LEG_EXIT_GRACE_MS, spawnOneShot } from "../../../src/llm/providers/omp.js";
 import { recordingSink } from "../../helpers/llm-audit.js";
 
 const FAKE = new URL("../../fixtures/fake-omp.mjs", import.meta.url).pathname;
@@ -117,5 +117,40 @@ describe("omp one-shot seat — every non-planner LLM call in Houge", () => {
     const r = await spawnOneShot({ seat: "reader", chain: cfg.reader, prompt: "x", correlationId: "c", timeoutMs: 300 }, { cfg, audit, versionCheck: () => ({ ok: true, version: "18.4.4" }) });
     expect(r).toMatchObject({ ok: true, answer: "on time" });
     expect(audit.attempts[0]).toMatchObject({ outcome: "error", error_kind: "timeout" });
+  });
+
+  /** A fake omp that leaves a grandchild holding its stdout (a lingering helper); the grandchild writes its pid. */
+  function lingeringBin(body: string): { cfg: ReturnType<typeof resolveOmpConfig>; pidFile: string } {
+    const bin = join(dir, "omp-linger.sh"); const pidFile = join(dir, "helper.pid");
+    writeFileSync(bin, `#!/bin/sh\nsleep 30 &\necho $! > '${pidFile}'\ncat >/dev/null\n${body}\n`); chmodSync(bin, 0o755);
+    return { cfg: resolveOmpConfig({ HOUGE_OMP_BIN: bin, HOUGE_OMP_SANDBOX: "0" }), pidFile };
+  }
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const ANSWER = `echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"ok"}],"stopReason":"stop","model":"k3","provider":"kimi-code"}}'`;
+
+  it("settles on omp's exit plus a bounded grace when a helper still holds stdout — the poll loop is never frozen by it (B11)", async () => {
+    const { cfg, pidFile } = lingeringBin(`${ANSWER}\nexit 0`);
+    const t0 = Date.now();
+    const r = await spawnOneShot({ seat: "ticks", chain: parseModelChain("kimi-code/k3"), prompt: "x", correlationId: "c", timeoutMs: 5_000 },
+      { cfg, audit: recordingSink(), versionCheck: () => ({ ok: true, version: "18.4.4" }) });
+    expect(Date.now() - t0).toBeLessThan(LEG_EXIT_GRACE_MS + 1_500);
+    expect(r).toMatchObject({ ok: true, answer: "ok" });
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    await new Promise((res) => setTimeout(res, 100));
+    expect(alive(pid)).toBe(false); // the helper that held the pipe was killed with omp's process group
+  });
+
+  it("a hung leg is bounded by timeout plus grace and its whole process group is killed (B11)", async () => {
+    const { cfg, pidFile } = lingeringBin("sleep 30");
+    const t0 = Date.now();
+    const audit = recordingSink();
+    const r = await spawnOneShot({ seat: "ticks", chain: parseModelChain("kimi-code/k3"), prompt: "x", correlationId: "c", timeoutMs: 500 },
+      { cfg, audit, versionCheck: () => ({ ok: true, version: "18.4.4" }) });
+    expect(Date.now() - t0).toBeLessThan(500 + LEG_EXIT_GRACE_MS + 1_500);
+    expect(r.ok).toBe(false);
+    expect(audit.attempts[0]).toMatchObject({ outcome: "error", error_kind: "timeout" });
+    expect(existsSync(pidFile)).toBe(true);
+    await new Promise((res) => setTimeout(res, 100));
+    expect(alive(Number(readFileSync(pidFile, "utf8")))).toBe(false);
   });
 });

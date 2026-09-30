@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import type { LlmAuditSink } from "../audit.js";
 import type { LlmResult } from "../types.js";
 import { buildChildEnv } from "../../omp/child-env.js";
@@ -29,25 +29,49 @@ export function ompOneShotArgs(cfg: OmpConfig, m: ModelString, files: string[]):
 
 interface LegOutcome { summary: AssistantSummary | null; error?: string; timedOut: boolean; latencyMs: number }
 
+/** After omp exits (or is killed), how long its stdout may still drain before the leg settles without it. */
+export const LEG_EXIT_GRACE_MS = 500;
+
+interface LegState { out: string; err: string; bytes: number; timedOut: boolean; settled: boolean; code: number | null | undefined }
+
+function legOutcome(st: LegState, started: number): LegOutcome {
+  const summaries = st.out.split("\n").map(parseFrameLine).filter((f) => f !== null).map(summarizeAssistantMessage).filter((s) => s !== null);
+  const error = st.timedOut ? "timed out" : st.code !== 0 ? `exit ${st.code ?? "signal"}: ${st.err.slice(0, 300)}` : undefined;
+  return { summary: summaries.at(-1) ?? null, ...(error ? { error } : {}), timedOut: st.timedOut, latencyMs: Date.now() - started };
+}
+
+/** SIGKILL omp's whole process group (it is the group leader): a helper that inherited stdout dies with it. */
+function killGroup(child: ChildProcess): void {
+  if (child.pid === undefined) return;
+  try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+}
+
+/**
+ * One leg. Settles exactly once (explicit flag): on `close`, or on `exit` plus LEG_EXIT_GRACE_MS when a helper still
+ * holds stdout, or on the timeout plus the same grace after the group kill — never on a helper's lifetime (B11).
+ */
 function runLeg(cfg: OmpConfig, m: ModelString, input: OneShotInput): Promise<LegOutcome> {
   const started = Date.now();
   return new Promise((resolve) => {
     const child = spawn(cfg.bin, ompOneShotArgs(cfg, m, input.files ?? []), {
-      env: buildChildEnv(cfg.envPassthrough), stdio: ["pipe", "pipe", "pipe"]
+      env: buildChildEnv(cfg.envPassthrough), stdio: ["pipe", "pipe", "pipe"], detached: true
     });
-    let out = ""; let err = ""; let timedOut = false; let bytes = 0;
-    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, input.timeoutMs ?? cfg.oneshotTimeoutMs);
-    child.stdout.on("data", (d: Buffer) => { bytes += d.length; if (bytes <= STDOUT_CAP_BYTES) out += d.toString("utf8"); else child.kill("SIGKILL"); });
-    child.stderr.on("data", (d: Buffer) => { if (err.length < 4096) err += d.toString("utf8"); });
-    child.stdin.on("error", () => { /* child exited before reading stdin; close handler resolves */ });
-    child.on("error", (e) => { clearTimeout(timer); resolve({ summary: null, error: `spawn error: ${e.message}`, timedOut, latencyMs: Date.now() - started }); });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      const summaries = out.split("\n").map(parseFrameLine).filter((f) => f !== null).map(summarizeAssistantMessage).filter((s) => s !== null);
-      const summary = summaries.at(-1) ?? null;
-      const error = timedOut ? "timed out" : code !== 0 ? `exit ${code}: ${err.slice(0, 300)}` : undefined;
-      resolve({ summary, ...(error ? { error } : {}), timedOut, latencyMs: Date.now() - started });
-    });
+    const st: LegState = { out: "", err: "", bytes: 0, timedOut: false, settled: false, code: undefined };
+    let drain: ReturnType<typeof setTimeout> | undefined;
+    const settle = (o?: LegOutcome) => {
+      if (st.settled) return;
+      st.settled = true; clearTimeout(timer); clearTimeout(drain);
+      child.stdout.destroy(); child.stderr.destroy();
+      resolve(o ?? legOutcome(st, started));
+    };
+    const settleAfterGrace = () => { clearTimeout(drain); drain = setTimeout(() => { killGroup(child); settle(); }, LEG_EXIT_GRACE_MS); };
+    const timer = setTimeout(() => { st.timedOut = true; killGroup(child); settleAfterGrace(); }, input.timeoutMs ?? cfg.oneshotTimeoutMs);
+    child.stdout.on("data", (d: Buffer) => { st.bytes += d.length; if (st.bytes <= STDOUT_CAP_BYTES) st.out += d.toString("utf8"); else killGroup(child); });
+    child.stderr.on("data", (d: Buffer) => { if (st.err.length < 4096) st.err += d.toString("utf8"); });
+    child.stdin.on("error", () => { /* child exited before reading stdin; exit/close settles */ });
+    child.on("error", (e) => settle({ summary: null, error: `spawn error: ${e.message}`, timedOut: st.timedOut, latencyMs: Date.now() - started }));
+    child.on("exit", (code) => { st.code = code; settleAfterGrace(); });
+    child.on("close", (code) => { if (st.code === undefined) st.code = code; settle(); });
     child.stdin.end(input.prompt);
   });
 }
