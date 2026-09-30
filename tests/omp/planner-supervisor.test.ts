@@ -261,11 +261,18 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
 
   it("refuses to start when the omp version is wrong, failing the run with an incident instead of hanging", async () => {
     const { store, sup, outcome } = harness();
-    (sup as never as { d: { versionCheck: () => unknown } }).d.versionCheck = () => ({ ok: false, version: "18.5.0", reason: "omp 18.5.0 is not the pinned 18.4.4" });
+    (sup as never as { d: { versionCheck: () => unknown } }).d.versionCheck = () => ({ ok: false, kind: "version_mismatch" as const, version: "18.5.0", reason: "omp 18.5.0 is not the pinned 18.4.4" });
     const run_id = createQueuedTurnRun(store);
     sup.submit(req(run_id)); await sup.whenIdle();
     expect(outcome.failed[0]).toMatchObject({ error_type: "planner_exit" });
     expect(outcome.incidents).toContainEqual(expect.objectContaining({ k: "omp_version_mismatch" }));
+  });
+
+  it("an omp it cannot run is omp_unavailable, never a version mismatch (I2)", async () => {
+    const { store, sup, outcome } = harness();
+    (sup as never as { d: { versionCheck: () => unknown } }).d.versionCheck = () => ({ ok: false, kind: "not_runnable" as const, version: null, reason: "omp not runnable: ENOENT" });
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(outcome.incidents.map((i) => (i as { k: string }).k)).toEqual(["omp_unavailable"]);
   });
 
   it("fails the run when the child never asks for its manifest (omp only warns on an extension load failure)", async () => {

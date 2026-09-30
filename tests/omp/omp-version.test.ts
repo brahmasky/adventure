@@ -16,4 +16,9 @@ describe("omp version pin — hook and frame behaviour were probed on one binary
     expect(checkOmpVersion(cfg, () => { throw new Error("ENOENT"); })).toMatchObject({ ok: false, version: null });
     expect(checkOmpVersion(cfg, () => "hello").ok).toBe(false);
   });
+  it("names WHY it refused: only a version that was read and differs is version_mismatch (I2)", () => {
+    expect(checkOmpVersion(cfg, () => "omp/18.5.0")).toMatchObject({ ok: false, kind: "version_mismatch", version: "18.5.0" });
+    expect(checkOmpVersion(cfg, () => { throw new Error("ENOENT"); })).toMatchObject({ ok: false, kind: "not_runnable", version: null });
+    expect(checkOmpVersion(cfg, () => "hello")).toMatchObject({ ok: false, kind: "no_version", version: null });
+  });
 });

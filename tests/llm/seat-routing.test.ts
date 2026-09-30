@@ -65,12 +65,26 @@ describe("oneShotAdapter — the audited one-shot call every seat makes", () => 
 
   it("a version mismatch opens ONE omp_version_mismatch incident per version string and leaves no audit row", async () => {
     const cfg = fakeCfg({ "*": { text: "never" } });
-    const refuse = () => ({ ok: false as const, version: "18.5.0", reason: "omp 18.5.0 is not the pinned 18.4.4" });
+    const refuse = () => ({ ok: false as const, kind: "version_mismatch" as const, version: "18.5.0", reason: "omp 18.5.0 is not the pinned 18.4.4" });
     const seat = oneShotAdapter(store, cfg, { correlation_id: "tick:v", role: "extract" }, undefined, { versionCheck: refuse });
     for (let i = 0; i < 3; i += 1) expect(await seat.answer({ question: "q" })).toMatchObject({ ok: false, unavailable: true });
     const open = store.listOpenIncidents().filter((i) => i.kind === "omp_version_mismatch");
     expect(open.map((i) => i.subject)).toEqual(["omp:18.5.0"]);
     expect(store.getLedgerEventsByCorrelation("tick:v").filter((e) => e.event_type === "llm_attempt")).toEqual([]);
+  });
+
+  it("I2: a check that never READ a version opens omp_unavailable — even when the reason text looks like a version", async () => {
+    const cfg = fakeCfg({ "*": { text: "never" } });
+    const refuse = () => ({ ok: false as const, kind: "not_runnable" as const, version: null, reason: "omp not runnable: omp 1.2.3 is not the pinned 18.4.4" });
+    await oneShotAdapter(store, cfg, { correlation_id: "tick:u", role: "extract" }, undefined, { versionCheck: refuse }).answer({ question: "q" });
+    expect(store.listOpenIncidents().map((i) => [i.kind, i.subject])).toEqual([["omp_unavailable", "omp:not_runnable"]]);
+  });
+
+  it("I2: a refused check carries a structured omp_check out of spawnOneShot (no regex over the error text)", async () => {
+    const cfg = fakeCfg({ "*": { text: "never" } });
+    const refuse = () => ({ ok: false as const, kind: "no_version" as const, version: null, reason: "printed nothing" });
+    const r = await oneShotAdapter(store, cfg, { correlation_id: "tick:s", role: "extract" }, undefined, { versionCheck: refuse }).answer({ question: "q" });
+    expect(r).toMatchObject({ ok: false, unavailable: true, omp_check: { kind: "no_version" } });
   });
 
   it("a reader on the planner's family still answers and records family_collapse + a wall_collapse event (D10)", async () => {

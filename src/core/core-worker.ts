@@ -15,7 +15,7 @@ import type { TestGateResult } from "../run/test-gate.js";
 import { execFileAsync } from "../run/exec-file-async.js";
 import { EVOLUTION_LANE_BUSY_DIGEST, tryStartEvolutionPipeline } from "./evolution-lane.js";
 import { reviewDiff, resolveSelfWriteReviewer } from "../capabilities/diff-reviewer.js";
-import type { ReviewResult } from "../capabilities/diff-reviewer.js";
+import type { ReviewDiffInput, ReviewResult } from "../capabilities/diff-reviewer.js";
 import { runSelfWriter, resolveSelfWriteWriter } from "../capabilities/self-write-writer.js";
 import { resolveCodexModel } from "../capabilities/coding-agent.js";
 import { normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
@@ -66,7 +66,7 @@ import { resolveLocalTimeZone, resolveTimeZone } from "../prompt/tz-convert.js";
 import { resolveSkillMaxPerScope, resolveSkillName, resolveSkillRefinePasses, resolveSkillsEnabled, setFrontmatterFields, SkillStore } from "../skills/skill-store.js";
 import { resolveWebMaxResults } from "../web/registry.js";
 import type { WebResult } from "../web/types.js";
-import { llmToolAdapter, oneShotAdapter, RUNNER_TIMEOUT_BUFFER_MS, seatBudgetMs } from "../llm/registry.js";
+import { llmToolAdapter, oneShotAdapter, reportOmpCheck, RUNNER_TIMEOUT_BUFFER_MS, seatBudgetMs } from "../llm/registry.js";
 import type { ModelFamily } from "../omp/model-string.js";
 import { createLocalProjectWriteAdapter } from "../capabilities/local-project-write-adapter.js";
 import { buildMediaCall, ingestMedia, type MediaIngestDeps } from "../media/media-ingest.js";
@@ -239,7 +239,7 @@ export interface SelfWriteDeps {
   /** Read the worktree's full unified diff against HEAD (`git diff HEAD`) — fed to the reviewer. */
   unifiedDiff: (worktree: string) => string | Promise<string>;
   runTestGate: (worktree: string) => TestGateResult | Promise<TestGateResult>;
-  reviewDiff: (input: { task: string; diff: string; audit: LlmAuditSink }) => ReviewResult | Promise<ReviewResult>;
+  reviewDiff: (input: ReviewDiffInput) => ReviewResult | Promise<ReviewResult>;
   publishBranch: (worktree: string, branch: string, summary?: string) => string | Promise<string>;
 }
 
@@ -1272,7 +1272,8 @@ export class CoreWorker {
         const review = await deps.reviewDiff({
           task: claim.contract.objective,
           diff,
-          audit: this.runStore.llmAuditSink({ run_id: claim.run_id, role: "reviewer" })
+          audit: this.runStore.llmAuditSink({ run_id: claim.run_id, role: "reviewer" }),
+          onOmpCheck: (check) => reportOmpCheck(this.runStore, resolveOmpConfig(process.env), check)
         });
         // H1 attribution: the backend that actually verdicted (the fallback chain may have moved
         // past the configured reviewer). Absent on injected test deps → the configured reviewer.

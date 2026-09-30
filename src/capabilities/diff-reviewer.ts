@@ -5,6 +5,7 @@ import { normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
 import { classifyLlmError, type LlmAttemptOutcome, type LlmAuditSink, type LlmErrorKind } from "../llm/audit.js";
 import { spawnOneShot } from "../llm/providers/omp.js";
 import { resolveOmpConfig } from "../omp/omp-config.js";
+import type { OmpCheckFailure } from "../omp/omp-version.js";
 
 /**
  * Independent diff reviewer (Phase 3, checker 3 — ADR 0011 §7 / spec
@@ -126,6 +127,8 @@ export interface ReviewDiffInput {
    * actually tried, recorded here at the point of attempt, in order.
    */
   audit: LlmAuditSink;
+  /** A refused omp version check (no leg ran): the caller opens the incident (reportOmpCheck). */
+  onOmpCheck?: (check: OmpCheckFailure) => void;
 }
 
 interface NodeError extends Error {
@@ -159,7 +162,7 @@ export async function reviewDiff(input: ReviewDiffInput): Promise<ReviewResult> 
       details.push(`${backend} reviewer skipped (not configured)`);
       continue;
     }
-    const result = await runReviewer(backend, input.task, input.diff, env, input.audit);
+    const result = await runReviewer(backend, input, env);
     if (result.ok) return { ...result, reviewer: backend };
     details.push(result.error);
   }
@@ -171,18 +174,12 @@ function reviewerConfigured(kind: ReviewerKind, env: NodeJS.ProcessEnv): boolean
   return kind === "omp" || resolveCodexEnabled(env);
 }
 
-function runReviewer(
-  kind: ReviewerKind,
-  task: string,
-  diff: string,
-  env: NodeJS.ProcessEnv,
-  audit: LlmAuditSink
-): Promise<ReviewResult> {
+function runReviewer(kind: ReviewerKind, input: ReviewDiffInput, env: NodeJS.ProcessEnv): Promise<ReviewResult> {
   switch (kind) {
     case "codex":
-      return reviewViaCodex(task, diff, env, audit);
+      return reviewViaCodex(input.task, input.diff, env, input.audit);
     case "omp":
-      return reviewViaOmp(task, diff, env, audit);
+      return reviewViaOmp(input, env);
   }
 }
 
@@ -283,12 +280,13 @@ async function reviewViaCodex(
  * leg is audited by `spawnOneShot` itself; an unparseable verdict is not retried (the chain already
  * fell through dead legs), it fails over to the next backend.
  */
-async function reviewViaOmp(task: string, diff: string, env: NodeJS.ProcessEnv, audit: LlmAuditSink): Promise<ReviewResult> {
+async function reviewViaOmp(input: ReviewDiffInput, env: NodeJS.ProcessEnv): Promise<ReviewResult> {
   const cfg = resolveOmpConfig(env);
   const r = await spawnOneShot(
-    { seat: "reviewer", chain: cfg.reviewer, prompt: buildReviewPrompt(task, diff), correlationId: `review:${randomUUID()}` },
-    { cfg, audit }
+    { seat: "reviewer", chain: cfg.reviewer, prompt: buildReviewPrompt(input.task, input.diff), correlationId: `review:${randomUUID()}` },
+    { cfg, audit: input.audit }
   );
+  if (!r.ok && r.omp_check) input.onOmpCheck?.(r.omp_check);
   if (!r.ok) return { ok: false, error: `omp reviewer unavailable: ${r.error}` };
   const verdict = parseVerdict(r.answer);
   if (!verdict) return { ok: false, error: "omp reviewer returned an unparseable verdict" };

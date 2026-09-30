@@ -184,6 +184,12 @@ describe("reviewDiff", () => {
     if (!result.ok) expect(result.error).toMatch(/omp reviewer unavailable/);
   });
 
+  it("I2: an unrunnable omp reviewer reports the structured check to the caller's reporter (omp_unavailable path)", async () => {
+    const checks: unknown[] = [];
+    await reviewDiff({ audit: UNAUDITED_TEST_SINK, task: "t", diff: "d", env: NO_OMP, onOmpCheck: (c) => checks.push(c) });
+    expect(checks).toEqual([expect.objectContaining({ kind: "not_runnable" })]);
+  });
+
   it("reviewer=claude (stale .env value) falls back to the DEFAULT omp reviewer — the verdict comes from omp", async () => {
     const env = ompEnv({ "*": { text: '{"verdict":"pass","fixes_task":true}' } }, { HOUGE_SELFWRITE_REVIEWER: "claude" });
     const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK, task: "fix it", diff: "the diff", env });

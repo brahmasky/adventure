@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { spawnOneShot, type OneShotDeps } from "./providers/omp.js";
+import type { OmpCheckFailure } from "../omp/omp-version.js";
 import type { OmpConfig } from "../omp/omp-config.js";
 import type { ModelFamily, ModelString } from "../omp/model-string.js";
 import type { LlmAuditScope, LlmCallRole, RunStore } from "../run/run-store.js";
@@ -179,19 +180,28 @@ export function oneShotAdapter(
         },
         { cfg, audit, ...(opts.versionCheck ? { versionCheck: opts.versionCheck } : {}) }
       );
-      if (!r.ok && r.unavailable) reportVersionMismatch(store, cfg, r.error);
+      if (!r.ok && r.omp_check) reportOmpCheck(store, cfg, r.omp_check);
       return r;
     }
   };
 }
 
-/** One open incident per refused version string, alerted once (the open incident is the throttle). */
-function reportVersionMismatch(store: RunStore, cfg: OmpConfig, reason: string): void {
-  const found = /omp (\d+\.\d+\.\d+) is not/.exec(reason)?.[1] ?? "unknown";
+/**
+ * The incident for a refused omp version check (ruling 6), alerted once. Only a version that was
+ * READ and differs is `omp_version_mismatch` (one per version string); omp not runnable or silent
+ * about its version is `omp_unavailable`. The open incident is the throttle.
+ */
+export function reportOmpCheck(store: RunStore, cfg: OmpConfig, check: OmpCheckFailure): void {
+  const mismatch = check.kind === "version_mismatch";
   try {
-    openAlertedIncident(store, { kind: "omp_version_mismatch", subject: `omp:${found}`, detail: { version: found, expected: cfg.version }, chat_id: null });
+    openAlertedIncident(store, {
+      kind: mismatch ? "omp_version_mismatch" : "omp_unavailable",
+      subject: mismatch ? `omp:${check.version ?? "unknown"}` : `omp:${check.kind}`,
+      detail: { check: check.kind, version: check.version, expected: cfg.version },
+      chat_id: null
+    });
   } catch (error) {
-    console.warn(`[omp-seat] could not record omp_version_mismatch: ${error instanceof Error ? error.message : String(error)}`);
+    console.warn(`[omp-seat] could not record the omp check incident: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

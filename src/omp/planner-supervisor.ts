@@ -453,7 +453,12 @@ export class PlannerSupervisor {
   private preflight(): string | null {
     const { cfg, distDir, ctx } = this.d;
     const v = (this.d.versionCheck ?? (() => checkOmpVersion(cfg)))();
-    if (!v.ok) { this.incident("omp_version_mismatch", { version: v.version, expected: cfg.version }); return `omp_version_mismatch: ${v.reason}`; }
+    if (!v.ok) {
+      // Only a version that was read and differs is a mismatch; an unrunnable or silent omp is unavailable.
+      const kind = v.kind === "version_mismatch" ? "omp_version_mismatch" : "omp_unavailable";
+      this.incident(kind, { check: v.kind, version: v.version, expected: cfg.version });
+      return `${kind}: ${v.reason}`;
+    }
     if (this.d.skipPreflightForTest) return null;
     const w = verifyInstalledWrapper(distDir);
     if (!w.ok) { this.incident("wrapper_mismatch", { reason: w.reason }); return "wrapper_mismatch"; }

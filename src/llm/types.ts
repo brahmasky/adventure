@@ -1,4 +1,5 @@
 import type { LlmUsage } from "../run/llm-usage.js";
+import type { OmpCheckFailure } from "../omp/omp-version.js";
 
 /** Multimodal ingest (spec 2026-09-29): a file under the media temp dir, handed to a media-capable leg. */
 export interface LlmMediaAttachment {
@@ -22,7 +23,7 @@ export interface LlmRequest {
 
 export type LlmResult =
   | { ok: true; provider: string; model: string; answer: string; usage?: LlmUsage }
-  | { ok: false; provider: string; error: string; unavailable?: boolean };
+  | { ok: false; provider: string; error: string; unavailable?: boolean; omp_check?: OmpCheckFailure };
 
 export interface LlmProvider {
   name: string;

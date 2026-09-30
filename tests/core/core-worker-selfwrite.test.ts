@@ -961,6 +961,25 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
   // first pipeline runs is refused by the lane (the "lane busy" case above), and a repeat of the same
   // tool by the once-per-turn guard (the "once per turn" case above).
 
+  it("I2: the worker hands reviewDiff the shared omp-check reporter — an unrunnable reviewer opens omp_unavailable", async () => {
+    process.env.HOUGE_SELFWRITE_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
+    try {
+      const run_id = turnRun(store, "fix the router");
+      const d = deps({
+        reviewDiff: (input): ReviewResult => {
+          input.onOmpCheck?.({ ok: false, kind: "not_runnable", version: null, reason: "omp not runnable: ENOENT" });
+          return { ok: false, error: "omp reviewer unavailable" };
+        }
+      }, log);
+      await executeAndSettle(makeWorker(store, d), store, run_id);
+      expect(store.listOpenIncidents().map((i) => i.kind)).toEqual(["omp_unavailable"]);
+    } finally {
+      store.close();
+    }
+  });
+
   it("F3: the lane-timeout text is honest — no 'nothing was published' promise; names the possible late branch", () => {
     const text = buildEvolutionTimeoutText("self_write_propose", 60);
     expect(text).toContain("self_write_propose");

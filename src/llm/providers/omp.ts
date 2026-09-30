@@ -60,7 +60,8 @@ function legFailure(o: LegOutcome): string | null {
 
 export async function spawnOneShot(input: OneShotInput, deps: OneShotDeps): Promise<LlmResult> {
   const version = (deps.versionCheck ?? (() => checkOmpVersion(deps.cfg)))();
-  if (!version.ok) return { ok: false, provider: "omp", error: version.reason, unavailable: true };
+  // No leg ran, so no audit row: the structured check rides out for the caller's incident (ruling 6).
+  if (!version.ok) return { ok: false, provider: "omp", error: version.reason, unavailable: true, omp_check: version };
   const errors: string[] = [];
   for (const [i, m] of input.chain.entries()) {
     const o = await runLeg(deps.cfg, m, input);
