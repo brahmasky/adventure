@@ -8,6 +8,8 @@ import {
   GUARDRAILS,
   LOOP_DISCIPLINE,
   LOOP_GUARDRAILS,
+  OMP_LOOP_DISCIPLINE,
+  OMP_LOOP_GUARDRAILS,
   RESEARCH_DISCIPLINE
 } from "../../src/prompt/composer.js";
 
@@ -63,5 +65,18 @@ describe("the additive `loop` composer surface (ADR 0013, step ⓪·1)", () => {
     expect(research).toBe(
       ["Today's date is 2026-07-02 (UTC).", "I am 猴哥.", RESEARCH_DISCIPLINE, GUARDRAILS].join("\n\n")
     );
+  });
+});
+
+describe("the `omp` composer surface leaves the old loop surface untouched", () => {
+  it("omp carries its own discipline and ground rule; loop keeps LOOP_GUARDRAILS (old loop lives until Task 14)", () => {
+    const omp = composeSystemPrompt(memoryRoot(), "omp");
+    expect(omp).toContain(OMP_LOOP_DISCIPLINE);
+    expect(omp).toContain(OMP_LOOP_GUARDRAILS);
+    expect(omp).not.toContain(LOOP_GUARDRAILS);
+    const loop = composeSystemPrompt(memoryRoot(), "loop");
+    expect(loop).toContain(LOOP_DISCIPLINE);
+    expect(loop).toContain(LOOP_GUARDRAILS);
+    expect(loop).not.toContain(OMP_LOOP_GUARDRAILS);
   });
 });
