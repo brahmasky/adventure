@@ -9,6 +9,48 @@ import { appendFileSync, readFileSync } from "node:fs";
 const argv = process.argv.slice(2);
 if (argv.includes("--version")) { process.stdout.write("omp/18.4.4\n"); process.exit(0); }
 
+const modeIdx = argv.indexOf("--mode");
+if (modeIdx >= 0 && argv[modeIdx + 1] === "rpc") await runRpc();
+
+async function runRpc() {
+  const log = (o) => { if (process.env.FAKE_OMP_ARGV_LOG) appendFileSync(process.env.FAKE_OMP_ARGV_LOG, JSON.stringify(o) + "\n"); };
+  log({ argv, stdin: "" });
+  const scen = process.env.FAKE_OMP_SCENARIO ? JSON.parse(readFileSync(process.env.FAKE_OMP_SCENARIO, "utf8")) : {};
+  const mIdx = argv.indexOf("--model");
+  let model = mIdx >= 0 ? argv[mIdx + 1].split(":")[0] : "";
+  const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
+  let steered = [];
+  out({ type: "ready", protocolVersion: 1, supportedProtocolVersions: [1, 2], maxFrameBytes: 1048576, maxReassembledFrameBytes: 67108864 });
+  const handle = (cmd) => {
+    log({ cmd });
+    const b = scen[model] ?? scen["*"] ?? {};
+    const reply = (data) => out({ id: cmd.id, type: "response", command: cmd.type, success: true, ...(data === undefined ? {} : { data }) });
+    if (cmd.type === "open_session") return reply({ cancelled: false, resumed: process.env.FAKE_OMP_RESUMED === "1", sessionId: "s1", sessionFile: "/tmp/fake-s1.jsonl" });
+    if (cmd.type === "set_model") { model = `${cmd.provider}/${cmd.modelId}`; return reply({ id: cmd.modelId, provider: cmd.provider }); }
+    if (cmd.type === "steer") { steered.push(cmd.message); return reply(); }
+    if (cmd.type === "abort") { reply(); return out({ type: "agent_end", messages: [], aborted: true }); }
+    if (cmd.type !== "prompt") return reply();
+    if (b.rpcExitAfterPrompt) process.exit(3);
+    reply();
+    if (b.rpcHangAfterPrompt) return;
+    const [provider, mid] = model.split("/");
+    const text = (b.rpcErrorText ? "" : (b.rpcText ?? "RPC OK")) + steered.map((t) => " STEERED:" + t).join("");
+    steered = [];
+    const msg = { role: "assistant", content: [{ type: "text", text }], provider, model: mid,
+      usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 }, stopReason: b.rpcErrorText ? "error" : "stop",
+      ...(b.rpcErrorText ? { errorMessage: b.rpcErrorText } : {}) };
+    out({ type: "turn_start" }); out({ type: "message_end", message: msg });
+    out({ type: "turn_end", message: msg }); out({ type: "agent_end", messages: [msg] });
+  };
+  let buf = "";
+  process.stdin.on("data", (d) => {
+    buf += d; let i;
+    while ((i = buf.indexOf("\n")) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); if (line.trim()) handle(JSON.parse(line)); }
+  });
+  await new Promise((r) => process.stdin.on("end", r));
+  process.exit(0);
+}
+
 const stdin = await new Promise((resolve) => {
   if (process.stdin.isTTY) return resolve("");
   let s = ""; process.stdin.on("data", (d) => (s += d)); process.stdin.on("end", () => resolve(s));
