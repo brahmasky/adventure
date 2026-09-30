@@ -92,6 +92,8 @@ interface Turn {
   aborting: boolean;
   /** A prompt was sent for this turn (an n = 0 failure still gets its llm_attempt row). */
   dispatched: boolean;
+  /** The child generation this turn committed to (set as promptTop begins; -1 before): only its bridge loss aborts the turn. */
+  childGen: number;
   /** Concurrent approval waits: the deadline stays paused until every one resolved. */
   approvals: number;
   done: (r: "end" | "abort") => void; ended: Promise<"end" | "abort">;
@@ -291,7 +293,7 @@ export class PlannerSupervisor {
     const heartbeat = setInterval(() => this.renewLeases(), HEARTBEAT_MS);
     const turn: Turn = {
       req, claim, worker, startedAt: Date.now(), merged: [], active, abort, heartbeat, n: 0, recorded: 0, lastText: "", lastError: undefined, deadline: undefined, idle: undefined,
-      usedTool: false, legIndex: 0, live: false, finished: false, aborting: false, dispatched: false, approvals: 0, ...newDeferred(),
+      usedTool: false, legIndex: 0, live: false, finished: false, aborting: false, dispatched: false, childGen: -1, approvals: 0, ...newDeferred(),
       deadlineLeft: cfg.turnTimeoutMs, deadlineAt: Date.now()
     };
     this.armDeadline(turn); // the deadline covers child start and prompt build too
@@ -329,20 +331,27 @@ export class PlannerSupervisor {
     try {
       const text = await this.resolveText(turn);
       if (text === ENDED || turn.failure) return;
-      const fail = await this.startSession(turn);
-      if (fail === ENDED) { await this.settleStart(); return; } // ended while the child was starting
-      if (turn.failure) return;
-      if (fail) { this.failTurn(turn, "planner_exit", fail); return; }
+      if (!(await this.ensureReady(turn))) return;
       store.recordChatTurn({ chat_id: chatId, run_id: turn.req.run_id, role: "user", text });
       const prompt = await this.step(turn, buildTurnPrompt(turnContext, {
         run_id: turn.req.run_id, chat_id: chatId, message: text, source: turn.req.source,
         ...(turn.req.goal !== undefined ? { goal: turn.req.goal } : {})
       }));
       if (prompt === ENDED || turn.failure) return;
+      if (this.stale && !(await this.ensureReady(turn))) return; // the child lost its bridge during the prompt build
       await this.promptTop(turn, prompt);
     } catch (e) {
       this.failTurn(turn, "planner_exit", `start_failed: ${message(e)}`);
     }
+  }
+
+  /** A ready child for the turn, or false with the turn already failed/ended. */
+  private async ensureReady(turn: Turn): Promise<boolean> {
+    const fail = await this.startSession(turn);
+    if (fail === ENDED) { await this.settleStart(); return false; } // ended while the child was starting
+    if (turn.failure) return false;
+    if (fail) { this.failTurn(turn, "planner_exit", fail); return false; }
+    return true;
   }
 
   /** The message the planner sees: the ingest hook's text (a failed ingest fails the turn `media_failed`), else the request text. */
@@ -363,6 +372,7 @@ export class PlannerSupervisor {
   private async promptTop(turn: Turn, prompt: string): Promise<void> {
     const s = this.session;
     if (!s) { this.failTurn(turn, "planner_exit", "planner not running"); return; }
+    turn.childGen = this.gen;
     this.st = "RUNNING";
     this.armFrameIdle(turn);
     // a child spawned on a later string is reset by respawning at the next turn (ensureSession(0)), never by set_model
@@ -625,13 +635,15 @@ export class PlannerSupervisor {
   /**
    * During start the loss is recorded, not acted on: a child dying at start closes its bridge first (its start failure,
    * with its code, is the outcome); a child that stays up without its bridge fails the start after the waits. Later: the
-   * live turn aborts; an idle child is marked stale so the next turn restarts it (its extension never reconnects).
+   * child is always marked stale (retired at the next ensureSession); a turn aborts only if it committed to this child —
+   * one still resolving its text or building its prompt re-checks and gets a fresh child instead.
    */
   private onBridgeLost(gen: number): void {
     if (gen !== this.gen) return;
     if (this.spawning?.gen === gen) { this.spawning.bridgeLost = true; return; }
-    if (this.turn) void this.abortTurn("planner_exit", "bridge disconnected");
-    else this.stale = true;
+    this.stale = true; // its extension never reconnects: the next ensureSession retires this child
+    const t = this.turn;
+    if (t && t.childGen === gen) void this.abortTurn("planner_exit", "bridge disconnected");
   }
 
   private async stopSession(): Promise<void> {

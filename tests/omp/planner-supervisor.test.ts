@@ -32,6 +32,8 @@ const never = () => new Promise<never>(() => undefined);
 type Fake = PlannerSessionLike & {
   prompts: string[]; steers: string[]; models: string[]; options: PlannerSessionOptions[];
   exit: (c: number) => void; assistant: (text: string, extra?: object) => void; bind: (o: PlannerSessionOptions) => Fake;
+  /** The child stays up but its bridge socket closes (its extension never reconnects). */
+  dropBridge: () => void;
 };
 
 /** In-memory omp child. Its start() plays the extension against the REAL bridge socket (ruling 3). */
@@ -68,6 +70,7 @@ function fakeSession(script: Script = {}): Fake {
     setModel: async (m: { provider: string; model: string }) => { s.models.push(`${m.provider}/${m.model}`); await script.setModel?.(s.models.length); },
     onFrame: (cb: (f: OmpFrame) => void) => { frameCbs.push(cb); }, onExit: (cb: (i: ExitInfo) => void) => { exitCbs.push(cb); },
     stop: async () => { drop(); },
+    dropBridge: () => drop(),
     exit: (c: number) => { drop(); exitCbs.forEach((cb) => cb({ code: c, signal: null, stopped: false })); },
     assistant
   };
@@ -675,5 +678,62 @@ describe("PlannerSupervisor — start-phase edges (live-fix round 2)", () => {
     expect(session.options.map((o) => o.model.model)).toEqual(["claude-opus-5-5", "claude-opus-5-5", "claude-opus-5-5"]);
     const first = (outcome.failed[0] as { run_id: string }).run_id;
     expect(store.getLedgerEvents(first).filter((e) => e.event_type === "llm_attempt")).toEqual([]); // no model_missing row
+  });
+});
+
+describe("PlannerSupervisor — a lost bridge retires the child (live-fix round 3)", () => {
+  const settle = () => new Promise((r) => setTimeout(r, 30));
+
+  it("bridge dropped mid-turn with the child up: turn 1 fails planner_exit, turn 2 runs on a fresh child, child 1 is stopped", async () => {
+    let calls = 0;
+    const session: Fake = fakeSession({ onPrompt: (_t, e) => {
+      e({ type: "turn_start" });
+      if (calls++ === 0) { session.dropBridge(); return; } // no agent_end: only the abort ends it
+      session.assistant("fresh"); e({ type: "agent_end" });
+    } });
+    const { store, sup, outcome } = harness(session);
+    const stop = vi.spyOn(session, "stop");
+    const a = createQueuedTurnRun(store);
+    sup.submit(req(a)); await sup.whenIdle();
+    expect(failedOf(outcome, a)).toMatchObject({ error_type: "planner_exit", error_ref: "bridge disconnected" });
+    const b = createQueuedTurnRun(store);
+    sup.submit(req(b)); await sup.whenIdle();
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(session.options).toHaveLength(2);
+    expect(outcome.done[0]).toMatchObject({ run_id: b, text: "fresh" });
+  });
+
+  it("bridge dropped while IDLE: the next turn stops child 1 and runs on child 2", async () => {
+    const session = fakeSession();
+    const { store, sup, outcome } = harness(session);
+    const stop = vi.spyOn(session, "stop");
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    session.dropBridge(); await settle();
+    expect(sup.state()).toBe("IDLE");
+    const b = createQueuedTurnRun(store);
+    sup.submit(req(b)); await sup.whenIdle();
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(session.options).toHaveLength(2);
+    expect(outcome.done.map((d) => (d as { run_id: string }).run_id)).toContain(b);
+    expect(outcome.failed).toEqual([]);
+  });
+
+  it("the old child's bridge dropping while a fresh turn builds its prompt does not fail that turn; it gets a fresh child", async () => {
+    const log: string[] = [];
+    const session = fakeSession({ log });
+    const { store, sup, outcome } = harness(session);
+    let release: () => void = () => undefined; let calls = 0;
+    (sup as never as Mutable).d.turnContext.retrieve = async () => {
+      if (calls++ > 0) await new Promise<void>((r) => { release = r; }); // turn 2's prompt build waits
+      return { facts: [], pages: [] };
+    };
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    const b = createQueuedTurnRun(store);
+    sup.submit(req(b)); await settle(); // turn 2 is inside buildTurnPrompt on child 1
+    session.dropBridge(); await settle();
+    release(); await sup.whenIdle();
+    expect(failedOf(outcome, b)).toBeUndefined();
+    expect(outcome.done.map((d) => (d as { run_id: string }).run_id)).toContain(b);
+    expect(log).toEqual(["start:1", "manifest:1", "prompt:1", "start:2", "manifest:2", "prompt:2"]);
   });
 });
