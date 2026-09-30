@@ -61,6 +61,14 @@ describe("omp one-shot seat — every non-planner LLM call in Houge", () => {
     expect(audit.attempts.map((a) => [a.outcome, a.error_kind])).toEqual([["error", "model_missing"], ["ok", undefined]]);
   });
 
+  it("falls through a model omp refuses at process start (live 18.4.4 stderr: Model \"…\" not found + hint) to the next leg", async () => {
+    const cfg = setup({ rpcBadModelAtStart: ["google-antigravity/gemini-3.8-flash"], "kimi-code/k3": { text: "from kimi" } });
+    const audit = recordingSink();
+    const r = await spawnOneShot({ seat: "reader", chain: cfg.reader, prompt: "x", correlationId: "c" }, { cfg, audit, versionCheck: () => ({ ok: true, version: "18.4.4" }) });
+    expect(r).toMatchObject({ ok: true, answer: "from kimi" });
+    expect(audit.attempts.map((a) => [a.model, a.outcome, a.error_kind])).toEqual([["gemini-3.8-flash", "error", "model_missing"], ["k3", "ok", undefined]]);
+  });
+
   it("delivers the prompt on stdin, never argv, and disables every tool and extension", async () => {
     const cfg = setup({ "*": { text: "ok" } });
     await spawnOneShot({ seat: "ticks", chain: cfg.ticks, prompt: "--help me", correlationId: "c" }, { cfg, audit: recordingSink(), versionCheck: () => ({ ok: true, version: "18.4.4" }) });

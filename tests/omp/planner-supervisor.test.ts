@@ -7,7 +7,7 @@ import { RunStore } from "../../src/run/run-store.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { PlannerSupervisor, parseAttachments, type PlannerSessionLike, type SupervisorDeps, type SupervisorState, type TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
 import type { OmpFrame } from "../../src/omp/omp-frames.js";
-import type { ExitInfo, PlannerSessionOptions } from "../../src/omp/planner-session.js";
+import { PlannerRpcError, type ExitInfo, type PlannerSessionOptions } from "../../src/omp/planner-session.js";
 import { ToolRegistry } from "../../src/tools/tool-registry.js";
 import { chatWorkspace } from "../../src/omp/workspace.js";
 import { openManifestClient } from "../helpers/bridge-manifest.js";
@@ -19,6 +19,8 @@ type Script = {
   onPrompt?: (text: string, emit: (f: OmpFrame) => void) => void; noManifest?: boolean;
   /** Replaces start(): e.g. a child that never becomes ready. */
   start?: () => Promise<unknown>;
+  /** omp refuses these `provider/model` at spawn (live 18.4.4): the child plays the extension (connects), exits 1, start rejects exited:model_missing. */
+  badModels?: string[];
   /** Runs after the model is recorded: may throw or never resolve. */
   setModel?: (n: number) => Promise<void>;
 };
@@ -42,6 +44,11 @@ function fakeSession(script: Script = {}): Fake {
       const child = s.options.length; const o = s.options[child - 1] as PlannerSessionOptions;
       script.log?.push(`start:${child}`);
       if (script.start) await script.start();
+      if (script.badModels?.includes(`${o.model.provider}/${o.model.model}`)) {
+        sockets.push(await openManifestClient(o.bridgeSock, o.bridgeToken)); // the extension loads before omp checks --model
+        s.exit(1);
+        throw new PlannerRpcError("exited:model_missing");
+      }
       if (!script.noManifest) { sockets.push(await openManifestClient(o.bridgeSock, o.bridgeToken)); script.log?.push(`manifest:${child}`); }
       return { resumed: false, sessionId: "s" };
     },
@@ -519,7 +526,8 @@ describe("PlannerSupervisor — start phase (fix round 2)", () => {
     const session: Fake = fakeSession({ start: async () => { session.exit(1); throw new Error("planner exited 1 before ready"); } });
     const { store, sup, outcome } = harness(session);
     const turn = async () => { const r = createQueuedTurnRun(store); sup.submit(req(r)); await sup.whenIdle(); return failedOf(outcome, r); };
-    for (let i = 0; i < 3; i++) expect(await turn()).toMatchObject({ error_type: "planner_exit", error_ref: "exit 1" });
+    // an exit before ready ends as the start's failure, never the turn's bare exit or "bridge disconnected"
+    for (let i = 0; i < 3; i++) expect(await turn()).toMatchObject({ error_type: "planner_exit", error_ref: "start_failed: child exit 1 during start" });
     expect(incidentKinds(outcome)).toEqual(["planner_start_failed", "planner_start_failed", "planner_start_failed"]);
     expect(await turn()).toMatchObject({ error_ref: "crash_loop" });
     expect(incidentKinds(outcome)).toContain("planner_crash_loop");
@@ -563,5 +571,59 @@ describe("PlannerSupervisor — resolveMessage hook (Task 13: voice/photo ingest
     sup.submit(req(run_id)); await sup.whenIdle();
     expect(outcome.failed).toEqual([expect.objectContaining({ run_id, error_type: "media_failed", error_ref: "couldn't transcribe that right now" })]);
     expect(session.options).toHaveLength(0);
+  });
+});
+
+describe("PlannerSupervisor — omp rejects the model at spawn (live fix, omp 18.4.4)", () => {
+  const TOP = "anthropic/claude-opus-5-5"; const SECOND = "google-antigravity/claude-opus-4-6"; const THIRD = "kimi-code/k3";
+  const spawnedModels = (f: Fake) => f.options.map((o) => `${o.model.provider}/${o.model.model}`);
+  const attempts = (store: RunStore, run: string) => store.getLedgerEvents(run).filter((e) => e.event_type === "llm_attempt").map((e) => e.payload as Record<string, unknown>);
+
+  it("a bad first string respawns on the second; the turn completes there with rows [model_missing, ok] and no incident", async () => {
+    const session = fakeSession({ badModels: [TOP] });
+    const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(outcome.done[0]).toMatchObject({ run_id, text: "answer" });
+    expect(spawnedModels(session)).toEqual([TOP, SECOND]);
+    const rows = attempts(store, run_id);
+    expect(rows.map((r) => r.error_kind)).toEqual(["model_missing", undefined]);
+    expect(rows[0]).toMatchObject({ outcome: "error", model: "claude-opus-5-5", family: "claude", request_key: `${run_id}:0` });
+    expect(outcome.incidents).toEqual([]);
+    expect(session.models).toEqual([]); // the fallback is a respawn, never a live set_model to the bad string
+  });
+
+  it("every string rejected at spawn fails no_planner_leg with incident planner_no_leg, one row per string", async () => {
+    const session = fakeSession({ badModels: [TOP, SECOND, THIRD] });
+    const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "no_planner_leg", error_ref: "model_missing" });
+    expect(incidentKinds(outcome)).toEqual(["planner_no_leg"]);
+    expect(attempts(store, run_id).map((r) => [r.model, r.error_kind])).toEqual([["claude-opus-5-5", "model_missing"], ["claude-opus-4-6", "model_missing"], ["k3", "model_missing"]]);
+  });
+
+  it("model rejections never count toward the crash latch", async () => {
+    const session = fakeSession({ badModels: [TOP, SECOND, THIRD] });
+    const { store, sup, outcome } = harness(session);
+    for (let i = 0; i < 4; i++) { sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle(); }
+    expect(incidentKinds(outcome)).not.toContain("planner_crash_loop");
+    expect(outcome.failed.map((f) => (f as { error_type: string }).error_type)).toEqual(Array(4).fill("no_planner_leg"));
+    expect(session.options).toHaveLength(12); // every turn really tried every string
+  });
+
+  it("the next turn retries the top string once (a respawn), and returns to it when it is back", async () => {
+    const bad = [TOP];
+    const session = fakeSession({ badModels: bad });
+    const { store, sup, outcome } = harness(session);
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle(); // still bad: one retry of TOP, then SECOND again
+    expect(spawnedModels(session)).toEqual([TOP, SECOND, TOP, SECOND]);
+    bad.length = 0;
+    const third = createQueuedTurnRun(store);
+    sup.submit(req(third)); await sup.whenIdle();
+    expect(spawnedModels(session)).toEqual([TOP, SECOND, TOP, SECOND, TOP]);
+    expect(attempts(store, third).map((r) => r.error_kind)).toEqual([undefined]);
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle(); // on TOP now: the live child is kept
+    expect(session.options).toHaveLength(5);
+    expect(outcome.done).toHaveLength(4);
   });
 });

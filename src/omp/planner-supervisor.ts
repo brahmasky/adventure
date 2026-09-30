@@ -71,9 +71,15 @@ const TIMED_OUT = Symbol("timed_out");
 const ENDED = Symbol("ended");
 /** A start we stopped ourselves (abort, shutdown, replacement): no crash count, no incident. */
 const START_SUPERSEDED = "start_failed: superseded";
+/** A start whose child omp rejected for its --model (live, 18.4.4: exits before ready): the next planner string is tried. */
+const START_MODEL_MISSING = "exited:model_missing";
+/** null = a ready child; string = the start failure ref; missingLeg = omp rejected planner[missingLeg] at spawn. */
+type StartResult = string | null | { missingLeg: number };
 const exitRef = (i: ExitInfo) => (i.code !== null ? `exit ${i.code}` : `signal ${i.signal ?? "unknown"}`);
 /** omp profile config (spec §4): no xdev devices, no update checks, no telemetry. */
 const HOUGE_CONFIG_YML = "tools:\n  xdev: false\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: false\ntelemetry:\n  otlpExportEnabled: false\n";
+
+interface SpawnRec { gen: number; leg: number; exit?: string; started?: Promise<unknown> }
 
 interface Turn {
   req: TurnRequest; claim: ClaimedRun; worker: string; startedAt: number; merged: string[];
@@ -147,9 +153,11 @@ export class PlannerSupervisor {
   /** Latched by 3 crash exits in 10 min; only resetCrashGuard() (/rearm, the sweep) clears it. */
   private crashLatched = false;
   /** The one start in flight (never two spawns); a child is ready only once it resolved null. */
-  private startInFlight: Promise<string | null> | undefined;
+  private startInFlight: Promise<StartResult> | undefined;
   /** The spawn in progress: onExit records a start-phase crash here (counted once, there). */
-  private spawning: { gen: number; exit?: string } | undefined;
+  private spawning: SpawnRec | undefined;
+  /** Planner-string index the live child was spawned on; > 0 means a start-time fallback, so the next turn respawns on planner[0] once. */
+  private sessionLeg = 0;
   /** Resolves the current child's pending start/manifest waits when that child is replaced or stopped. */
   private supersede: () => void = () => undefined;
   /** A setModel failed or was cut off: the applied model is unknown, so the next turn resets to the top string. */
@@ -321,7 +329,7 @@ export class PlannerSupervisor {
     try {
       const text = await this.resolveText(turn);
       if (text === ENDED || turn.failure) return;
-      const fail = await this.step(turn, this.ensureSession());
+      const fail = await this.startSession(turn);
       if (fail === ENDED) { await this.settleStart(); return; } // ended while the child was starting
       if (turn.failure) return;
       if (fail) { this.failTurn(turn, "planner_exit", fail); return; }
@@ -357,7 +365,9 @@ export class PlannerSupervisor {
     if (!s) { this.failTurn(turn, "planner_exit", "planner not running"); return; }
     this.st = "RUNNING";
     this.armFrameIdle(turn);
-    if ((this.modelUnknown || !sameModel(this.model, this.top())) && (await this.resetTop(turn, s)) === ENDED) return;
+    // a child spawned on a later string is reset by respawning at the next turn (ensureSession(0)), never by set_model
+    const reset = this.sessionLeg === 0 && (this.modelUnknown || !sameModel(this.model, this.top()));
+    if (reset && (await this.resetTop(turn, s)) === ENDED) return;
     if (turn.failure) return;
     try {
       turn.live = true;
@@ -425,19 +435,54 @@ export class PlannerSupervisor {
   // ── child lifecycle ─────────────────────────────────────────────────────────
 
   /** null when a live, current child is ready; else the failure ref for the run. */
-  private async ensureSession(): Promise<string | null> {
+  /** `leg` = the planner string a spawn uses. At leg 0 a child running on a start-time fallback is replaced (the top string's one retry per turn). */
+  private async ensureSession(leg: number): Promise<StartResult> {
     const { turnContext, chatId } = this.d;
     // never two spawns: join the start in flight; if it did not produce a ready child, this turn makes its own attempt
     while (this.startInFlight) if ((await this.startInFlight) === null && this.session) return null;
     // compared only at turn start: a new lesson, identity edit, skill change or UTC day restarts the child here
-    if (this.session && (this.stale || systemPromptFingerprint(turnContext, chatId) !== this.fingerprint)) await this.stopSession();
+    const refresh = this.stale || systemPromptFingerprint(turnContext, chatId) !== this.fingerprint || (leg === 0 && this.sessionLeg > 0);
+    if (this.session && refresh) await this.stopSession();
     if (this.session) return null;
     if (this.crashLooping()) return "crash_loop";
     const pre = this.preflight();
     if (pre) return pre;
-    const p: Promise<string | null> = this.spawn().finally(() => { if (this.startInFlight === p) this.startInFlight = undefined; });
+    const p: Promise<StartResult> = this.spawn(leg).finally(() => { if (this.startInFlight === p) this.startInFlight = undefined; });
     this.startInFlight = p;
     return p;
+  }
+
+  /**
+   * The turn's child: omp rejects an unknown --model at process start (live, 18.4.4), so live set_model can never
+   * rescue a bad planner[0]. Each rejected string gets one error{model_missing} row and the next string is spawned;
+   * all rejected → no_planner_leg + incident. Not a crash-latch count.
+   */
+  private async startSession(turn: Turn): Promise<string | null | typeof ENDED> {
+    const planner = this.d.cfg.planner;
+    for (let leg = 0; ; leg++) {
+      const r = await this.step(turn, this.ensureSession(leg));
+      if (r === ENDED || r === null || typeof r === "string") {
+        if (r === null) turn.legIndex = this.sessionLeg;
+        return r;
+      }
+      this.recordStartMissing(turn, r.missingLeg);
+      leg = r.missingLeg;
+      if (leg + 1 >= planner.length) {
+        this.incident("planner_no_leg", { run_id: turn.req.run_id, error_kind: "model_missing", legs_tried: planner.length });
+        this.failTurn(turn, "no_planner_leg", "model_missing");
+        return ENDED;
+      }
+    }
+  }
+
+  /** One llm_attempt per string omp refused at spawn. request_key `<run>:0` for the top string, `<run>:0:<leg>` after (unique per row). */
+  private recordStartMissing(turn: Turn, leg: number): void {
+    const m = this.d.cfg.planner[leg] as ModelString;
+    const run = turn.req.run_id;
+    this.d.store.llmAuditSink({ run_id: run, role: "compose" }).record({
+      provider: m.provider, role: "", outcome: "error", model: m.model, family: familyOf(m),
+      request_key: leg === 0 ? `${run}:0` : `${run}:0:${leg}`, error_kind: "model_missing"
+    });
   }
 
   /** 3 crash exits within 10 min latch the guard (incident once); it holds until resetCrashGuard(). */
@@ -489,7 +534,7 @@ export class PlannerSupervisor {
     return { sessionDir, systemPromptFile, configFile, bridgeDir };
   }
 
-  private async spawn(): Promise<string | null> {
+  private async spawn(leg: number): Promise<StartResult> {
     const { ctx, chatId, distDir, cfg } = this.d;
     this.st = "STARTING";
     const p = this.preparePaths();
@@ -497,10 +542,10 @@ export class PlannerSupervisor {
     const sock = join(p.bridgeDir, `${chatId}-${randomUUID().slice(0, 8)}.sock`);
     if (Buffer.byteLength(sock) > MAX_SOCK_PATH) return this.startFailed(`bridge socket path over ${MAX_SOCK_PATH} bytes`);
     const gen = this.bumpGen();
-    const rec: { gen: number; exit?: string } = { gen };
+    const rec: SpawnRec = { gen, leg };
     this.spawning = rec;
     const superseded = new Promise<void>((r) => { this.supersede = r; });
-    this.model = this.top(); // a fresh child starts on the top planner string
+    this.model = this.d.cfg.planner[leg] as ModelString; // top string, or the next one after a start-time rejection
     this.modelUnknown = false;
     const opts: PlannerSessionOptions = {
       cfg, sessionDir: p.sessionDir, cwd: this.workspace(), systemPromptFile: p.systemPromptFile,
@@ -513,11 +558,13 @@ export class PlannerSupervisor {
       s.onFrame((f) => this.onFrame(gen, f));
       s.onExit((i) => this.onExit(gen, i));
       this.session = s;
-      await this.awaitStart(s.start(), superseded, this.d.startWaitMs ?? START_WAIT_MS, "start timed out");
+      rec.started = s.start();
+      await this.awaitStart(rec.started, superseded, this.d.startWaitMs ?? START_WAIT_MS, "start timed out");
       await this.awaitStart(manifestServed, superseded, this.d.manifestWaitMs ?? MANIFEST_WAIT_MS, "no manifest");
     } catch (e) {
       return this.spawnFailed(rec, e);
     } finally { if (this.spawning === rec) this.spawning = undefined; }
+    this.sessionLeg = leg;
     if (!this.turn?.live) this.st = "IDLE";
     return null;
   }
@@ -535,13 +582,20 @@ export class PlannerSupervisor {
     return ++this.gen;
   }
 
-  /** Tell a child that crashed during start (counted by onExit) from one we stopped (superseded) from any other failure. */
-  private async spawnFailed(rec: { gen: number; exit?: string }, e: unknown): Promise<string> {
-    if (rec.exit !== undefined) { await this.stopSession(); return this.startFailed(`child ${rec.exit} during start`); }
-    if (rec.gen !== this.gen) return START_SUPERSEDED;
-    this.exits.push(Date.now()); // a failed start (timeout, no manifest, spawn error) is a crash exit
+  /**
+   * A child that exited during start (its start() rejection carries the classified code; omp refusing the model is
+   * model_missing → next string, no crash count, no incident), one we stopped (superseded), or any other failure.
+   */
+  private async spawnFailed(rec: SpawnRec, e: unknown): Promise<StartResult> {
+    const exited = rec.exit !== undefined;
+    if (!exited && rec.gen !== this.gen) return START_SUPERSEDED;
+    // the exit superseded the wait: read start()'s own rejection, which carries the classified code
+    const err = exited && rec.started ? await bounded(rec.started.then(() => undefined, (x: unknown) => x), 1_000) : e;
     await this.stopSession();
-    return this.startFailed(message(e));
+    const code = err instanceof PlannerRpcError ? err.code : undefined;
+    if (code === START_MODEL_MISSING) return { missingLeg: rec.leg };
+    this.exits.push(Date.now()); // any other failed start (exit, timeout, no manifest, spawn error) is a crash exit
+    return this.startFailed(code ?? (exited ? `child ${rec.exit} during start` : message(e)));
   }
 
   private startFailed(reason: string): string {
@@ -562,7 +616,8 @@ export class PlannerSupervisor {
       return out;
     };
     const bridge = await BridgeServer.listen(sock, token, handle);
-    bridge.onDisconnect(() => { if (gen === this.gen && this.turn) void this.abortTurn("planner_exit", "bridge disconnected"); });
+    // a child dying during start closes its bridge first: the start failure (with its code) is the outcome, not "bridge disconnected"
+    bridge.onDisconnect(() => { if (gen === this.gen && this.spawning?.gen !== gen && this.turn) void this.abortTurn("planner_exit", "bridge disconnected"); });
     this.bridge = bridge;
     return { manifestServed }; // wrapped: an async function returning a promise would adopt it and wait for the manifest
   }
@@ -581,17 +636,15 @@ export class PlannerSupervisor {
     if (gen !== this.gen) return; // an older child, or one we stopped on purpose
     const rec = this.spawning?.gen === gen ? this.spawning : undefined;
     this.bumpGen();
-    if (!info.stopped) {
-      this.exits.push(Date.now());
-      if (rec) rec.exit = exitRef(info); // spawnFailed reports it; not counted twice
-    }
+    if (!info.stopped && rec) rec.exit = exitRef(info); // during start: spawnFailed classifies, counts and reports it
+    else if (!info.stopped) this.exits.push(Date.now());
     this.session = undefined;
     const b = this.bridge; this.bridge = undefined;
     void b?.close();
     clearTimeout(this.idleExit);
     this.st = "STOPPED";
     const t = this.turn;
-    if (t && !info.stopped) {
+    if (t && !info.stopped && !rec) { // a start-phase exit is the start's result, not the turn's
       this.clearTimers(t);
       this.failTurn(t, "planner_exit", exitRef(info));
     }

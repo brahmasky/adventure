@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { buildChildEnv } from "./child-env.js";
 import type { OmpConfig } from "./omp-config.js";
-import { parseFrameLine, type OmpFrame } from "./omp-frames.js";
+import { classifyOmpError, parseFrameLine, type OmpFrame } from "./omp-frames.js";
 import type { ModelString } from "./model-string.js";
 
 export interface PlannerSessionOptions {
@@ -23,13 +23,16 @@ type Waiter = { type: string; resolve: (d: unknown) => void; reject: (e: Error) 
 
 /**
  * A failed planner RPC. `code` is fixed — `command_failed:<type>` (omp answered success:false),
- * `timeout:<type>`, `not_running`, `exited`, `frame_too_large` — and is all that may reach an
+ * `timeout:<type>`, `not_running`, `exited`, `exited:<kind>` (the child died before `ready`; <kind> is
+ * classifyOmpError over its stderr tail, e.g. `exited:model_missing`), `frame_too_large` — and is all that may reach an
  * error_ref or an incident. omp's own error text never rides it (it is logged to stderr, capped).
  */
 export class PlannerRpcError extends Error {
   constructor(readonly code: string) { super(code); this.name = "PlannerRpcError"; }
 }
 const OMP_ERROR_LOG_CAP = 200;
+/** In-memory only: classified on an exit before ready, never logged, never written to the ledger or an incident. */
+const STDERR_TAIL_CAP = 4 * 1024;
 const MAX_FRAME_BUFFER = 64 * 1024 * 1024;
 
 export class PlannerSession {
@@ -39,6 +42,7 @@ export class PlannerSession {
   private readonly exitCbs: Array<(i: ExitInfo) => void> = [];
   private n = 0; private parts: string[] = []; private size = 0;
   private stopped = false; private closed = false; private cbErrorLogged = false;
+  private stderrTail = "";
 
   constructor(private readonly o: PlannerSessionOptions) {}
   get pid(): number | undefined { return this.child?.pid; }
@@ -53,15 +57,23 @@ export class PlannerSession {
     const ready = new Promise<void>((resolve, reject) => {
       this.onFrame((f) => { if (f.type === "ready") resolve(); });
       child.once("error", reject);
-      child.once("close", (code) => reject(new Error(`planner exited ${code} before ready`)));
+      child.once("close", () => reject(new PlannerRpcError(this.exitBeforeReadyCode())));
     });
     child.stdin?.on("error", () => undefined); // EPIPE: onClose rejects the waiters
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (d: string) => this.onData(d));
-    child.stderr?.on("data", () => undefined);
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (d: string) => { this.stderrTail = (this.stderrTail + d).slice(-STDERR_TAIL_CAP); });
     child.on("close", (code, signal) => this.onClose(code, signal));
     await ready;
     return (await this.send({ type: "open_session", sessionDir: this.o.sessionDir })) as { resumed: boolean; sessionId: string };
+  }
+
+  /** omp rejects a bad --model at process start (live, 18.4.4): the stderr tail is classified to a fixed kind, never forwarded. */
+  private exitBeforeReadyCode(): string {
+    const tail = this.stderrTail.trim();
+    this.stderrTail = ""; // classified once, then dropped: it never outlives the start failure
+    return tail.length > 0 ? `exited:${classifyOmpError(tail)}` : "exited";
   }
 
   prompt(text: string): Promise<void> { return this.send({ type: "prompt", message: text }).then(() => undefined); }

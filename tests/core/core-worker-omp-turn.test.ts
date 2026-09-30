@@ -94,6 +94,19 @@ describe("CoreWorker.submitTurn — turns run on the planner supervisor (Task 13
     expect(fakeLog(join(tmp.dir, "argv.log"))).toEqual([]);
   });
 
+  it("live gate case 6: omp refuses planner[0] at spawn — the turn completes on the next string, audited [model_missing, ok], never 'bridge disconnected'", async () => {
+    useFakeOmp({ rpcBadModelAtStart: ["anthropic/claude-opus-5-5"], "*": { rpcText: "from the second string" } }, tmp.dir);
+    worker = ompWorker(store, tmp.dir);
+    const run = createQueuedTurnRun(store, "hello");
+    worker.submitTurn(run);
+    await until(() => state(run) === "completed");
+    expect(drainOutbox(store).get(`${run}:final_report`)?.text).toBe("from the second string");
+    expect(events(run, "llm_attempt").map((e) => [e.payload.model, e.payload.error_kind])).toEqual([["claude-opus-5-5", "model_missing"], ["claude-opus-4-6", undefined]]);
+    expect(events(run, "run_failed")).toEqual([]);
+    const spawned = fakeLog(join(tmp.dir, "argv.log")).filter((l) => Array.isArray(l.argv) && (l.argv as string[]).includes("rpc"));
+    expect(spawned.map((l) => (l.argv as string[])[(l.argv as string[]).indexOf("--model") + 1])).toEqual(["anthropic/claude-opus-5-5", "google-antigravity/claude-opus-4-6"]);
+  });
+
   it("a non-turn run is refused (false) and left untouched for the old executeRun path", () => {
     worker = ompWorker(store, tmp.dir);
     const intake = new Gateway(store).intake(buildTypedTaskEvent({

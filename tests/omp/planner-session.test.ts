@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { parseModelString } from "../../src/omp/model-string.js";
-import { PlannerSession, plannerArgs } from "../../src/omp/planner-session.js";
+import { PlannerRpcError, PlannerSession, plannerArgs, type ExitInfo } from "../../src/omp/planner-session.js";
 
 const FAKE = new URL("../fixtures/fake-omp.mjs", import.meta.url).pathname;
 const sessions: PlannerSession[] = [];
@@ -65,6 +65,22 @@ describe("PlannerSession — one long-lived RPC child per chat (spec §4, §7)",
     await s.start(); await s.setModel(parseModelString("kimi-code/k3:low"));
     const cmds = readFileSync(join(d, "argv.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((x) => x.cmd).map((x) => x.cmd.type);
     expect(cmds).toEqual(["open_session", "set_model", "set_thinking_level"]);
+  });
+
+  it("a model omp refuses at spawn rejects start() with the fixed code exited:model_missing; omp's stderr text is never exposed", async () => {
+    const { s } = make({ rpcBadModelAtStart: ["anthropic/claude-opus-5-5"] });
+    let exited: ExitInfo | undefined; s.onExit((i) => { exited = i; });
+    const err = await s.start().then(() => undefined, (e: unknown) => e);
+    expect(err).toBeInstanceOf(PlannerRpcError);
+    expect((err as PlannerRpcError).code).toBe("exited:model_missing");
+    const surfaced = `${(err as Error).message} ${(err as Error).stack ?? ""} ${JSON.stringify(err)}`;
+    expect(surfaced).not.toMatch(/not found|list-models|claude-opus-5-5/);
+    expect(exited).toMatchObject({ code: 1, stopped: false });
+  });
+
+  it("an exit before ready with no stderr rejects start() with plain `exited`", async () => {
+    const { s } = make({ "*": { exit: 1 } }, { HOUGE_OMP_BIN: "/usr/bin/false" });
+    await expect(s.start()).rejects.toMatchObject({ code: "exited" });
   });
 
   it("rejects pending commands and fires onExit when the child dies mid-turn", async () => {

@@ -6,6 +6,9 @@
 //   rpc mode also reads: rpcText, rpcEcho (reply carries the prompt), rpcNoManifest (skip the bridge
 //   manifest at startup), rpcSteerError (answer a steer success:false with this text), rpcIgnoreAbort (ack an abort but never end the turn), rpcFinishOnSteer (hold the reply until a steer arrives), rpcCall: { tool, args } (one bridge `call` after the prompt; its content is
 //   appended to the reply as " CALL:<content>"), rpcHangAfterPrompt, rpcNoReply, rpcExitAfterPrompt, …
+// Top-level `rpcBadModelAtStart: ["<provider/model>", …]` (rpc AND -p modes): when --model matches, the fake does what
+// omp 18.4.4 does live — writes `Model "<provider/model>" not found` plus a hint line to stderr and exits 1 before
+// `ready` (in rpc mode after the extension's bridge hello/manifest, as the real extension loads first).
 // In rpc mode the fake plays the omp extension's load-time side of the bridge (hello + manifest over
 // HOUGE_BRIDGE_SOCK with HOUGE_BRIDGE_TOKEN, src/omp/bridge-protocol.ts) so the supervisor's start check passes.
 // FAKE_OMP_ARGV_LOG = path; each invocation appends one JSON line with argv and stdin.
@@ -25,6 +28,10 @@ async function runRpc() {
   const mIdx = argv.indexOf("--model");
   let model = mIdx >= 0 ? argv[mIdx + 1].split(":")[0] : "";
   const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
+  if ((scen.rpcBadModelAtStart ?? []).includes(model)) {
+    if (!(scen["*"] ?? {}).rpcNoManifest) await openBridge();
+    rejectModel(model);
+  }
   let steered = [];
   let held = null; // rpcFinishOnSteer: the prompt that answers once a steer arrives
   const bridge = (scen["*"] ?? {}).rpcNoManifest ? null : await openBridge();
@@ -87,6 +94,12 @@ async function runRpc() {
   process.exit(0);
 }
 
+/** omp's own start-time refusal of an unknown --model (text as observed live on 18.4.4). */
+function rejectModel(model) {
+  process.stderr.write(`Model "${model}" not found\nUse --list-models to see the available models.\n`);
+  process.exit(1);
+}
+
 /** hello + manifest over the bridge socket; resolves to a request() once the manifest answered. */
 function openBridge() {
   const sock = process.env.HOUGE_BRIDGE_SOCK; const token = process.env.HOUGE_BRIDGE_TOKEN;
@@ -120,6 +133,7 @@ const scenario = process.env.FAKE_OMP_SCENARIO ? JSON.parse(readFileSync(process
 const mi = argv.indexOf("--model");
 const modelArg = mi >= 0 ? argv[mi + 1] : "";
 const modelKey = modelArg.split(":")[0];
+if ((scenario.rpcBadModelAtStart ?? []).includes(modelKey)) rejectModel(modelKey);
 const b = scenario[modelKey] ?? scenario["*"] ?? { text: "OK" };
 if (b.sleepMs) await new Promise((r) => setTimeout(r, b.sleepMs));
 if (b.stderr) process.stderr.write(b.stderr);
