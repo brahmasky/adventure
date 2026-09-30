@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { OMP_AUDIO_REFUSED, spawnOneShot, type OneShotDeps } from "./providers/omp.js";
 import type { OmpCheckFailure } from "../omp/omp-version.js";
-import type { OmpConfig } from "../omp/omp-config.js";
+import { resolveOmpConfig, type OmpConfig } from "../omp/omp-config.js";
 import type { ModelFamily, ModelString } from "../omp/model-string.js";
 import type { LlmAuditScope, LlmCallRole, RunStore } from "../run/run-store.js";
 import type { LlmMediaAttachment, LlmProvider, LlmRequest, LlmResult } from "./types.js";
@@ -139,6 +139,24 @@ export function seatChain(cfg: OmpConfig, role: LlmCallRole): ModelString[] {
     case "writer": throw new Error("the writer seat is codex, not an omp chain");
     default: return cfg.ticks; // distill, consolidate, extract, attribution, frame, verify, classify*
   }
+}
+
+/** A tick's run-less correlation id: one per call, `tick:<name>:<uuid>` (spec §8 Audit). */
+export function tickCorrelationId(name: string): string {
+  return `tick:${name}:${randomUUID()}`;
+}
+
+/**
+ * A daemon tick's seat: each call is its own one-shot under a FRESH `tick:<name>:<uuid>`
+ * correlation, so one tick run's legs group together and never mix with the next run's.
+ */
+export function tickSeat(
+  store: RunStore, name: string, role: LlmCallRole, env: NodeJS.ProcessEnv = process.env
+): (input: { question: string; system: string }) => Promise<{ ok: true; answer: string } | { ok: false }> {
+  return async (input) => {
+    const r = await oneShotAdapter(store, resolveOmpConfig(env), { correlation_id: tickCorrelationId(name), role }).answer(input);
+    return r.ok ? { ok: true, answer: r.answer } : { ok: false };
+  };
 }
 
 /** One judge seat: exactly one model string by index — a judge never falls back (panel quorum semantics). */

@@ -9,8 +9,7 @@ import { runIdeaRadarTick } from "../capabilities/idea-radar.js";
 import { runLessonConsolidateTick } from "../capabilities/lesson-consolidate.js";
 import { runSkillReverifyTick } from "../capabilities/skill-reverify.js";
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
-import { oneShotAdapter } from "../llm/registry.js";
-import { resolveOmpConfig } from "../omp/omp-config.js";
+import { tickCorrelationId, tickSeat } from "../llm/registry.js";
 import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
 import { CoreWorker, type OmpWorkerOptions } from "../core/core-worker.js";
@@ -419,7 +418,7 @@ async function runSignalPathTick(
       });
     }
     // Slice 2 (review B2): ONE seat per tick, each with its own run-less audit scope, so every
-    // omp leg a tick tries lands in the ledger under `tick:<name>` (spec §8: one-shot seats). The
+    // omp leg a tick tries lands in the ledger under `tick:<name>:<uuid>` (spec §8: one-shot seats). The
     // role picks the chain (`seatChain`: memory ticks on HOUGE_OMP_TICKS). A test-injected
     // `options.llmAdapter` is used verbatim (it brings its own fakes, no omp).
     // Embeddings stay best-effort local Ollama (null on any failure — the store degrades).
@@ -430,8 +429,7 @@ async function runSignalPathTick(
           const read = await injected({ question: input.question, system: input.system });
           return read.ok && typeof read.output.answer === "string" ? { ok: true, answer: read.output.answer } : { ok: false };
         }
-        const r = await oneShotAdapter(options.store, resolveOmpConfig(process.env), { correlation_id: `tick:${name}`, role }).answer(input);
-        return r.ok ? { ok: true, answer: r.answer } : { ok: false };
+        return tickSeat(options.store, name, role)(input);
       };
     };
     const episodicEmbed = (text: string) => embedText(text, resolveEmbedConfig(process.env));
@@ -529,9 +527,9 @@ async function runSignalPathTick(
   }
 }
 
-/** The panel's real seats: the omp judge/chair seats (idea-panel-seats), audited under `tick:idea_panel`. */
+/** The panel's real seats: the omp judge/chair seats (idea-panel-seats), audited under one `tick:idea_panel:<uuid>` per panel run. */
 function buildPanelSeatBindings(options: RunTelegramDaemonOptions): PanelSeatBindings {
-  return buildOmpPanelSeats({ store: options.store, correlation_id: "tick:idea_panel", env: process.env });
+  return buildOmpPanelSeats({ store: options.store, correlation_id: tickCorrelationId("idea_panel"), env: process.env });
 }
 
 /**

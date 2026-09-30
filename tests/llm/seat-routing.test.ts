@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { familyOf } from "../../src/omp/model-string.js";
-import { judgeSeat, oneShotAdapter, seatBudgetMs, seatChain } from "../../src/llm/registry.js";
+import { judgeSeat, oneShotAdapter, seatBudgetMs, seatChain, tickSeat } from "../../src/llm/registry.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { OMP_AUDIO_REFUSED, spawnOneShot } from "../../src/llm/providers/omp.js";
 import { FAKE_OMP_BIN, pinOmpEnv } from "../helpers/omp-env.js";
@@ -87,6 +87,18 @@ describe("oneShotAdapter — the audited one-shot call every seat makes", () => 
     const refuse = () => ({ ok: false as const, kind: "no_version" as const, version: null, reason: "printed nothing" });
     const r = await oneShotAdapter(store, cfg, { correlation_id: "tick:s", role: "extract" }, undefined, { versionCheck: refuse }).answer({ question: "q" });
     expect(r).toMatchObject({ ok: false, unavailable: true, omp_check: { kind: "no_version" } });
+  });
+
+  it("M7: every tick call runs under its own tick:<name>:<uuid> correlation (spec §8)", async () => {
+    fakeCfg({ "*": { text: "fine" } });
+    Object.assign(process.env, { HOUGE_OMP_BIN: FAKE_OMP_BIN, HOUGE_OMP_SANDBOX: "0", HOUGE_OMP_ENV_PASSTHROUGH: "FAKE_OMP_SCENARIO,FAKE_OMP_ARGV_LOG" });
+    const seat = tickSeat(store, "episodic_distill", "distill");
+    expect(await seat({ question: "q", system: "s" })).toEqual({ ok: true, answer: "fine" });
+    await seat({ question: "q", system: "s" });
+    const ids = store.getLedgerEvents().filter((e) => e.event_type === "llm_attempt").map((e) => e.correlation_id);
+    expect(ids).toHaveLength(2);
+    for (const id of ids) expect(id).toMatch(/^tick:episodic_distill:[0-9a-f-]{36}$/);
+    expect(new Set(ids).size).toBe(2);
   });
 
   it("M4: audio never reaches omp — an audio/* attachment is refused code-owned at the adapter, and an audio file at spawnOneShot", async () => {
