@@ -59,6 +59,9 @@ const MAX_SOCK_PATH = 103;
 const TIMED_OUT = Symbol("timed_out");
 /** A turn step whose turn ended (abort, exit) before the step settled. */
 const ENDED = Symbol("ended");
+/** A start we stopped ourselves (abort, shutdown, replacement): no crash count, no incident. */
+const START_SUPERSEDED = "start_failed: superseded";
+const exitRef = (i: ExitInfo) => (i.code !== null ? `exit ${i.code}` : `signal ${i.signal ?? "unknown"}`);
 /** omp profile config (spec §4): no xdev devices, no update checks, no telemetry. */
 const HOUGE_CONFIG_YML = "tools:\n  xdev: false\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: false\ntelemetry:\n  otlpExportEnabled: false\n";
 
@@ -130,8 +133,10 @@ export class PlannerSupervisor {
   private exits: number[] = [];
   /** Latched by 3 crash exits in 10 min; only resetCrashGuard() (/rearm, the sweep) clears it. */
   private crashLatched = false;
-  /** True while spawn() awaits start/manifest: a failed start is counted there, not again in onExit. */
-  private starting = false;
+  /** The one start in flight (never two spawns); a child is ready only once it resolved null. */
+  private startInFlight: Promise<string | null> | undefined;
+  /** The spawn in progress: onExit records a start-phase crash here (counted once, there). */
+  private spawning: { gen: number; exit?: string } | undefined;
   /** Resolves the current child's pending start/manifest waits when that child is replaced or stopped. */
   private supersede: () => void = () => undefined;
   /** A setModel failed or was cut off: the applied model is unknown, so the next turn resets to the top string. */
@@ -277,13 +282,9 @@ export class PlannerSupervisor {
     for (const m of [...t.merged]) if (!store.heartbeat(m, t.worker, cfg.leaseTtlS)) this.mergedLeaseLost(t, m);
   }
 
-  /** A steered run whose renewal was refused leaves the turn; it is failed only if the claim is still ours. */
+  /** A steered run whose renewal was refused leaves the turn (its terminal write belongs to its new owner). */
   private mergedLeaseLost(t: Turn, m: string): void {
-    const { store, outcome } = this.d;
-    t.merged = t.merged.filter((x) => x !== m);
-    if (store.getRunState(m) === "running" && store.getRunLease(m).worker_id === t.worker) {
-      outcome.fail({ run_id: m, worker_id: t.worker, error_type: "lease_lost", error_ref: "heartbeat refused" });
-    }
+    t.merged = t.merged.filter((x) => x !== m); // refused = no longer ours or no longer running: no terminal write
     this.incident("lease_lost", { run_id: m, parent_run_id: t.req.run_id });
   }
 
@@ -302,7 +303,8 @@ export class PlannerSupervisor {
     const { store, chatId, turnContext } = this.d;
     try {
       const fail = await this.step(turn, this.ensureSession());
-      if (fail === ENDED || turn.failure) return; // aborted while the child was starting
+      if (fail === ENDED) { await this.settleStart(); return; } // ended while the child was starting
+      if (turn.failure) return;
       if (fail) { this.failTurn(turn, "planner_exit", fail); return; }
       store.recordChatTurn({ chat_id: chatId, run_id: turn.req.run_id, role: "user", text: turn.req.text });
       const prompt = await this.step(turn, buildTurnPrompt(turnContext, {
@@ -314,6 +316,11 @@ export class PlannerSupervisor {
     } catch (e) {
       this.failTurn(turn, "planner_exit", `start_failed: ${message(e)}`);
     }
+  }
+
+  /** A turn that ended mid-start finishes only after its start settled (stopped or failed): no late incident, no orphan child. */
+  private async settleStart(): Promise<void> {
+    if (this.startInFlight) await bounded(this.startInFlight, ABORT_GRACE_MS);
   }
 
   /** A later turn retries the top planner string once after a fallback (spec §8). */
@@ -392,13 +399,17 @@ export class PlannerSupervisor {
   /** null when a live, current child is ready; else the failure ref for the run. */
   private async ensureSession(): Promise<string | null> {
     const { turnContext, chatId } = this.d;
+    // never two spawns: join the start in flight; if it did not produce a ready child, this turn makes its own attempt
+    while (this.startInFlight) if ((await this.startInFlight) === null && this.session) return null;
     // compared only at turn start: a new lesson, identity edit, skill change or UTC day restarts the child here
     if (this.session && (this.stale || systemPromptFingerprint(turnContext, chatId) !== this.fingerprint)) await this.stopSession();
     if (this.session) return null;
     if (this.crashLooping()) return "crash_loop";
     const pre = this.preflight();
     if (pre) return pre;
-    return this.spawn();
+    const p: Promise<string | null> = this.spawn().finally(() => { if (this.startInFlight === p) this.startInFlight = undefined; });
+    this.startInFlight = p;
+    return p;
   }
 
   /** 3 crash exits within 10 min latch the guard (incident once); it holds until resetCrashGuard(). */
@@ -452,6 +463,8 @@ export class PlannerSupervisor {
     const sock = join(p.bridgeDir, `${chatId}-${randomUUID().slice(0, 8)}.sock`);
     if (Buffer.byteLength(sock) > MAX_SOCK_PATH) return this.startFailed(`bridge socket path over ${MAX_SOCK_PATH} bytes`);
     const gen = this.bumpGen();
+    const rec: { gen: number; exit?: string } = { gen };
+    this.spawning = rec;
     const superseded = new Promise<void>((r) => { this.supersede = r; });
     this.model = this.top(); // a fresh child starts on the top planner string
     this.modelUnknown = false;
@@ -466,16 +479,12 @@ export class PlannerSupervisor {
       s.onFrame((f) => this.onFrame(gen, f));
       s.onExit((i) => this.onExit(gen, i));
       this.session = s;
-      this.starting = true;
       await this.awaitStart(s.start(), superseded, this.d.startWaitMs ?? START_WAIT_MS, "start timed out");
       await this.awaitStart(manifestServed, superseded, this.d.manifestWaitMs ?? MANIFEST_WAIT_MS, "no manifest");
     } catch (e) {
-      if (gen !== this.gen) return "start_failed: superseded"; // stopped on purpose (abort, shutdown): no crash, no incident
-      this.exits.push(Date.now()); // a failed start is a crash exit
-      await this.stopSession();
-      return this.startFailed(message(e));
-    } finally { this.starting = false; }
-    this.st = "IDLE";
+      return this.spawnFailed(rec, e);
+    } finally { if (this.spawning === rec) this.spawning = undefined; }
+    if (!this.turn?.live) this.st = "IDLE";
     return null;
   }
 
@@ -490,6 +499,15 @@ export class PlannerSupervisor {
     this.supersede();
     this.supersede = () => undefined;
     return ++this.gen;
+  }
+
+  /** Tell a child that crashed during start (counted by onExit) from one we stopped (superseded) from any other failure. */
+  private async spawnFailed(rec: { gen: number; exit?: string }, e: unknown): Promise<string> {
+    if (rec.exit !== undefined) { await this.stopSession(); return this.startFailed(`child ${rec.exit} during start`); }
+    if (rec.gen !== this.gen) return START_SUPERSEDED;
+    this.exits.push(Date.now()); // a failed start (timeout, no manifest, spawn error) is a crash exit
+    await this.stopSession();
+    return this.startFailed(message(e));
   }
 
   private startFailed(reason: string): string {
@@ -527,8 +545,12 @@ export class PlannerSupervisor {
 
   private onExit(gen: number, info: ExitInfo): void {
     if (gen !== this.gen) return; // an older child, or one we stopped on purpose
+    const rec = this.spawning?.gen === gen ? this.spawning : undefined;
     this.bumpGen();
-    if (!info.stopped && !this.starting) this.exits.push(Date.now()); // during start, spawn() counts it
+    if (!info.stopped) {
+      this.exits.push(Date.now());
+      if (rec) rec.exit = exitRef(info); // spawnFailed reports it; not counted twice
+    }
     this.session = undefined;
     const b = this.bridge; this.bridge = undefined;
     void b?.close();
@@ -537,7 +559,7 @@ export class PlannerSupervisor {
     const t = this.turn;
     if (t && !info.stopped) {
       this.clearTimers(t);
-      this.failTurn(t, "planner_exit", info.code !== null ? `exit ${info.code}` : `signal ${info.signal ?? "unknown"}`);
+      this.failTurn(t, "planner_exit", exitRef(info));
     }
   }
 
@@ -614,7 +636,11 @@ export class PlannerSupervisor {
     this.st = "ABORTING";
     this.clearTimers(t);
     t.abort.abort(); // in-flight bridge calls and approval waits see the turn's signal
-    if (!t.live) { t.done("abort"); return; } // not prompted yet (or between legs): its pending step races `ended`
+    if (!t.live) { // not prompted yet (or between legs): its pending step races `ended`
+      t.done("abort");
+      if (this.startInFlight) await this.stopSession(); // cancel the start: the next turn gets a fresh child
+      return;
+    }
     void this.session?.abort().catch(() => undefined);
     if ((await bounded(t.ended, ABORT_GRACE_MS)) !== TIMED_OUT) return;
     t.live = false;

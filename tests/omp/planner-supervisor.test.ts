@@ -13,6 +13,8 @@ import { openManifestClient } from "../helpers/bridge-manifest.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 
 type Script = {
+  /** Event log shared with the test: start/ready/manifest/prompt, tagged with the child's index. */
+  log?: string[];
   onPrompt?: (text: string, emit: (f: OmpFrame) => void) => void; noManifest?: boolean;
   /** Replaces start(): e.g. a child that never becomes ready. */
   start?: () => Promise<unknown>;
@@ -36,12 +38,13 @@ function fakeSession(script: Script = {}): Fake {
     prompts: [], steers: [], models: [], options: [],
     bind: (o) => { s.options.push(o); return s; },
     start: async () => {
+      const child = s.options.length; const o = s.options[child - 1] as PlannerSessionOptions;
+      script.log?.push(`start:${child}`);
       if (script.start) await script.start();
-      const o = s.options[s.options.length - 1] as PlannerSessionOptions;
-      if (!script.noManifest) sockets.push(await openManifestClient(o.bridgeSock, o.bridgeToken));
+      if (!script.noManifest) { sockets.push(await openManifestClient(o.bridgeSock, o.bridgeToken)); script.log?.push(`manifest:${child}`); }
       return { resumed: false, sessionId: "s" };
     },
-    prompt: async (t: string) => { s.prompts.push(t); setTimeout(() => (script.onPrompt ?? ((_t, e) => { e({ type: "turn_start" }); assistant("answer"); e({ type: "agent_end" }); }))(t, emit), 5); },
+    prompt: async (t: string) => { s.prompts.push(t); script.log?.push(`prompt:${s.options.length}`); setTimeout(() => (script.onPrompt ?? ((_t, e) => { e({ type: "turn_start" }); assistant("answer"); e({ type: "agent_end" }); }))(t, emit), 5); },
     steer: async (t: string) => { s.steers.push(t); },
     abort: async () => { setTimeout(() => emit({ type: "agent_end", aborted: true }), 5); },
     setModel: async (m: { provider: string; model: string }) => { s.models.push(`${m.provider}/${m.model}`); await script.setModel?.(s.models.length); },
@@ -428,7 +431,7 @@ describe("PlannerSupervisor — approvals and merged leases (fix round 1)", () =
     expect(sup.state()).toBe("RUNNING");
   });
 
-  it("a steered run whose lease renewal is refused leaves the turn, fails lease_lost and raises an incident", async () => {
+  it("a steered run whose lease renewal is refused leaves the turn with an incident, and the turn never writes its terminal", async () => {
     const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "turn_start" }); } });
     const { store, sup, outcome } = harness(session);
     const a = createQueuedTurnRun(store); const b = createQueuedTurnRun(store);
@@ -440,10 +443,39 @@ describe("PlannerSupervisor — approvals and merged leases (fix round 1)", () =
       vi.spyOn(store, "heartbeat").mockImplementation((id, w, ttl) => (id === b ? false : beat(id, w, ttl)));
       await vi.advanceTimersByTimeAsync(30_000);
     } finally { vi.useRealTimers(); }
-    expect(failedOf(outcome, b)).toMatchObject({ error_type: "lease_lost" });
     expect(incidentKinds(outcome)).toContain("lease_lost");
     await sup.abortAll("killed");
-    expect(outcome.failed.filter((f) => (f as { run_id: string }).run_id === b)).toHaveLength(1); // never also merged_parent_failed
+    // refused = not ours any more: no lease_lost write, and never merged_parent_failed with the parent
+    expect(failedOf(outcome, b)).toBeUndefined();
     expect(failedOf(outcome, a)).toMatchObject({ error_type: "killed" });
+  });
+});
+
+describe("PlannerSupervisor — start phase (fix round 2)", () => {
+  it("a child that exits during start is counted: three such exits raise planner_start_failed each and latch the crash guard", async () => {
+    const session: Fake = fakeSession({ start: async () => { session.exit(1); throw new Error("planner exited 1 before ready"); } });
+    const { store, sup, outcome } = harness(session);
+    const turn = async () => { const r = createQueuedTurnRun(store); sup.submit(req(r)); await sup.whenIdle(); return failedOf(outcome, r); };
+    for (let i = 0; i < 3; i++) expect(await turn()).toMatchObject({ error_type: "planner_exit", error_ref: "exit 1" });
+    expect(incidentKinds(outcome)).toEqual(["planner_start_failed", "planner_start_failed", "planner_start_failed"]);
+    expect(await turn()).toMatchObject({ error_ref: "crash_loop" });
+    expect(incidentKinds(outcome)).toContain("planner_crash_loop");
+    expect(session.options).toHaveLength(3);
+  });
+
+  it("a start slower than the deadline is cancelled; the queued turn gets a fresh child that is ready before its prompt", async () => {
+    const log: string[] = []; let first = true;
+    const session = fakeSession({ log, start: async () => { if (first) { first = false; await never(); } } });
+    const { store, sup, outcome } = harness(session, { HOUGE_OMP_TURN_TIMEOUT_MS: "80" });
+    const stop = vi.spyOn(session, "stop");
+    const a = createQueuedTurnRun(store); const b = createQueuedTurnRun(store);
+    sup.submit(req(a)); sup.submit({ ...req(b, "brief", "schedule"), goal: "g" });
+    await sup.whenIdle();
+    expect(failedOf(outcome, a)).toMatchObject({ error_type: "turn_timeout" });
+    expect(stop).toHaveBeenCalled(); // the in-flight start was stopped, not left running
+    expect(outcome.done.map((d) => (d as { run_id: string }).run_id)).toEqual([b]);
+    expect(log).toEqual(["start:1", "start:2", "manifest:2", "prompt:2"]); // child 1 is never prompted
+    expect(outcome.incidents).toEqual([]); // a deliberate stop is not a start failure
+    expect(sup.state()).toBe("IDLE");
   });
 });
