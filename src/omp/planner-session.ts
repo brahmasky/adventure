@@ -19,7 +19,17 @@ export function plannerArgs(o: PlannerSessionOptions): { file: string; args: str
 }
 
 export interface ExitInfo { code: number | null; signal: NodeJS.Signals | null; stopped: boolean }
-type Waiter = { resolve: (d: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
+type Waiter = { type: string; resolve: (d: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
+
+/**
+ * A failed planner RPC. `code` is fixed — `command_failed:<type>` (omp answered success:false),
+ * `timeout:<type>`, `not_running`, `exited`, `frame_too_large` — and is all that may reach an
+ * error_ref or an incident. omp's own error text never rides it (it is logged to stderr, capped).
+ */
+export class PlannerRpcError extends Error {
+  constructor(readonly code: string) { super(code); this.name = "PlannerRpcError"; }
+}
+const OMP_ERROR_LOG_CAP = 200;
 const MAX_FRAME_BUFFER = 64 * 1024 * 1024;
 
 export class PlannerSession {
@@ -64,13 +74,13 @@ export class PlannerSession {
 
   private send(cmd: Record<string, unknown>): Promise<unknown> {
     const id = `c${++this.n}`;
-    if (this.closed || !this.child?.stdin?.writable) return Promise.reject(new Error("planner not running"));
+    if (this.closed || !this.child?.stdin?.writable) return Promise.reject(new PlannerRpcError("not_running"));
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.waiters.delete(id);
-        reject(new Error(`planner command timed out: ${String(cmd.type)}`));
+        reject(new PlannerRpcError(`timeout:${String(cmd.type)}`));
       }, this.o.sendTimeoutMs ?? 30_000);
-      this.waiters.set(id, { resolve, reject, timer });
+      this.waiters.set(id, { type: String(cmd.type), resolve, reject, timer });
       this.child?.stdin?.write(`${JSON.stringify({ ...cmd, id })}\n`);
     });
   }
@@ -91,7 +101,7 @@ export class PlannerSession {
     this.parts.push(tail); this.size += tail.length;
     if (this.size > (this.o.maxFrameBufferBytes ?? MAX_FRAME_BUFFER)) {
       this.parts = []; this.size = 0;
-      this.rejectAll(new Error("planner frame too large"));
+      this.rejectAll(new PlannerRpcError("frame_too_large"));
       this.child?.kill("SIGKILL");
     }
   }
@@ -101,7 +111,9 @@ export class PlannerSession {
     if (!f) return;
     if (f.type === "response" && typeof f.id === "string" && this.waiters.has(f.id)) {
       const w = this.waiters.get(f.id) as Waiter; this.waiters.delete(f.id); clearTimeout(w.timer);
-      if (f.success === false) w.reject(new Error(String(f.error ?? "command failed"))); else w.resolve(f.data);
+      if (f.success !== false) { w.resolve(f.data); return; }
+      console.error(`planner ${w.type} failed: ${String(f.error ?? "").slice(0, OMP_ERROR_LOG_CAP)}`);
+      w.reject(new PlannerRpcError(`command_failed:${w.type}`));
       return;
     }
     for (const cb of this.frameCbs) {
@@ -113,7 +125,7 @@ export class PlannerSession {
 
   private onClose(code: number | null, signal: NodeJS.Signals | null): void {
     this.closed = true;
-    this.rejectAll(new Error(`planner exited ${code ?? signal}`));
+    this.rejectAll(new PlannerRpcError("exited"));
     for (const cb of this.exitCbs) cb({ code, signal, stopped: this.stopped });
   }
 

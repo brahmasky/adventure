@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
 import { BudgetLedger } from "../budget/budget-ledger.js";
-import { safeReason } from "../domain/error-code.js";
+import { errorCode, safeReason } from "../domain/error-code.js";
 import type { Identity } from "../domain/types.js";
 import type { LlmAttempt } from "../llm/audit.js";
 import type { ClaimedRun, PlannerFailure, RunStore } from "../run/run-store.js";
@@ -14,7 +14,7 @@ import { familyOf, type ModelString } from "./model-string.js";
 import type { OmpConfig } from "./omp-config.js";
 import { classifyOmpError, summarizeAssistantMessage, type AssistantSummary, type OmpFrame } from "./omp-frames.js";
 import { checkOmpVersion } from "./omp-version.js";
-import { PlannerSession, type ExitInfo, type PlannerSessionOptions } from "./planner-session.js";
+import { PlannerRpcError, PlannerSession, type ExitInfo, type PlannerSessionOptions } from "./planner-session.js";
 import { realpathOrSelf, type PathContext } from "./protected-paths.js";
 import { writeSeatbeltProfiles } from "./seatbelt.js";
 import { verifyInstalledWrapper } from "./shell-wrapper.js";
@@ -93,6 +93,8 @@ interface Turn {
 
 /** Error text for error_refs, incidents and logs: a code or a short path-free reason, never an fs message (M-6). */
 const message = (e: unknown) => safeReason(e);
+/** A planner RPC failure as a fixed code (command_failed:<type>, timeout:<type>, …) or an errno code; never omp's text. */
+const rpcCode = (e: unknown) => (e instanceof PlannerRpcError ? e.code : errorCode(e));
 const sameModel = (a: ModelString, b: ModelString) => a.provider === b.provider && a.model === b.model && a.effort === b.effort;
 
 /** Race `p` against a timer that is always cleared (no timer outlives the wait). */
@@ -164,7 +166,7 @@ export class PlannerSupervisor {
   submit(req: TurnRequest): void {
     const t = this.turn;
     if (t?.live && req.source === "telegram" && !req.needsIngest && (this.st === "RUNNING" || this.st === "AWAITING_APPROVAL")) {
-      void this.steer(t, req).catch((e) => this.incident("planner_steer_failed", { run_id: req.run_id, reason: message(e) }));
+      void this.steer(t, req).catch((e) => this.incident("planner_steer_failed", { run_id: req.run_id, reason: rpcCode(e) }));
       return;
     }
     this.queue.push(req);
@@ -241,7 +243,7 @@ export class PlannerSupervisor {
     } catch (e) {
       if (turn.finished) return; // the parent already finished it with the turn
       turn.merged = turn.merged.filter((m) => m !== req.run_id);
-      this.d.outcome.fail({ run_id: req.run_id, worker_id: turn.worker, error_type: "planner_exit", error_ref: `steer_failed: ${message(e)}` });
+      this.d.outcome.fail({ run_id: req.run_id, worker_id: turn.worker, error_type: "planner_exit", error_ref: `steer_failed: ${rpcCode(e)}` });
     }
   }
 
@@ -357,7 +359,7 @@ export class PlannerSupervisor {
       turn.dispatched = true;
       await this.step(turn, s.prompt(prompt));
     } catch (e) {
-      this.failTurn(turn, "planner_exit", `prompt_failed: ${message(e)}`);
+      this.failTurn(turn, "planner_exit", `prompt_failed: ${rpcCode(e)}`);
     }
   }
 
@@ -369,8 +371,8 @@ export class PlannerSupervisor {
       this.model = this.top();
       this.modelUnknown = false;
     } catch (e) {
-      console.error(`planner supervisor: reset to the top planner string failed: ${message(e)}`);
-      this.incident("planner_model_reset_failed", { run_id: turn.req.run_id, reason: message(e) });
+      console.error(`planner supervisor: reset to the top planner string failed: ${rpcCode(e)}`);
+      this.incident("planner_model_reset_failed", { run_id: turn.req.run_id, reason: rpcCode(e) });
     }
   }
 
@@ -410,7 +412,7 @@ export class PlannerSupervisor {
       turn.live = true;
       await this.step(turn, s.prompt(RETRY_NOTE));
     } catch (e) {
-      this.failTurn(turn, "planner_exit", `retry_failed: ${message(e)}`);
+      this.failTurn(turn, "planner_exit", `retry_failed: ${rpcCode(e)}`);
     }
     return true;
   }

@@ -129,7 +129,7 @@ describe("PlannerSession — one long-lived RPC child per chat (spec §4, §7)",
   it("times out a command that gets no response, without killing the child", async () => {
     const { s } = make({ "*": { rpcNoReply: true } }, {}, { sendTimeoutMs: 150 });
     await s.start();
-    await expect(s.prompt("hi")).rejects.toThrow("planner command timed out: prompt");
+    await expect(s.prompt("hi")).rejects.toMatchObject({ name: "PlannerRpcError", code: "timeout:prompt" });
     expect(s.pid).toBeDefined();
     await expect(s.steer("still alive")).resolves.toBeUndefined();
   });

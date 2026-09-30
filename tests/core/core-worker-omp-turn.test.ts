@@ -257,3 +257,23 @@ describe("a denied evolution call is surfaced code-owned in the reply (fix round
     }
   });
 });
+
+describe("planner RPC failures carry fixed codes, never omp's error text (fix round 2, item 3)", () => {
+  it("a steer omp refuses fails the steered run `steer_failed: command_failed:steer`; the text is in no ledger row or incident", async () => {
+    useFakeOmp({ "*": { rpcHangAfterPrompt: true, rpcSteerError: "SECRET-ish text from /Users/p/.omp/agent" } }, tmp.dir);
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    worker = ompWorker(store, tmp.dir);
+    const parent = createQueuedTurnRun(store, "first");
+    worker.submitTurn(parent);
+    await until(() => fakeLog(join(tmp.dir, "argv.log")).some((l) => (l.cmd as { type?: string } | undefined)?.type === "prompt"));
+    const steered = createQueuedTurnRun(store, "second");
+    worker.submitTurn(steered);
+    await until(() => state(steered) === "failed");
+    expect(events(steered, "run_failed")[0]?.payload).toMatchObject({ error_type: "planner_exit", error_ref: "steer_failed: command_failed:steer" });
+    await worker.shutdownPlanners();
+    const everything = JSON.stringify([...store.getLedgerEvents(), ...store.listOpenIncidents()]);
+    expect(everything).not.toContain("SECRET-ish");
+    expect(log.mock.calls.flat().join("\n")).toContain("SECRET-ish"); // stderr may keep it for debugging (capped)
+    log.mockRestore();
+  });
+});

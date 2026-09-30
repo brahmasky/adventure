@@ -4,7 +4,7 @@
 //   Behaviour = { frames?: "<fixture file name>", text?: string, exit?: number, stderr?: string,
 //                 sleepMs?: number, usage?: {input:number, output:number} }
 //   rpc mode also reads: rpcText, rpcEcho (reply carries the prompt), rpcNoManifest (skip the bridge
-//   manifest at startup), rpcIgnoreAbort (ack an abort but never end the turn), rpcFinishOnSteer (hold the reply until a steer arrives), rpcCall: { tool, args } (one bridge `call` after the prompt; its content is
+//   manifest at startup), rpcSteerError (answer a steer success:false with this text), rpcIgnoreAbort (ack an abort but never end the turn), rpcFinishOnSteer (hold the reply until a steer arrives), rpcCall: { tool, args } (one bridge `call` after the prompt; its content is
 //   appended to the reply as " CALL:<content>"), rpcHangAfterPrompt, rpcNoReply, rpcExitAfterPrompt, …
 // In rpc mode the fake plays the omp extension's load-time side of the bridge (hello + manifest over
 // HOUGE_BRIDGE_SOCK with HOUGE_BRIDGE_TOKEN, src/omp/bridge-protocol.ts) so the supervisor's start check passes.
@@ -35,6 +35,9 @@ async function runRpc() {
     const reply = (data) => out({ id: cmd.id, type: "response", command: cmd.type, success: true, ...(data === undefined ? {} : { data }) });
     if (cmd.type === "open_session") return reply({ cancelled: false, resumed: process.env.FAKE_OMP_RESUMED === "1", sessionId: "s1", sessionFile: "/tmp/fake-s1.jsonl" });
     if (cmd.type === "set_model") { model = `${cmd.provider}/${cmd.modelId}`; return reply({ id: cmd.modelId, provider: cmd.provider }); }
+    if (cmd.type === "steer" && b.rpcSteerError) {
+      return out({ id: cmd.id, type: "response", command: "steer", success: false, error: b.rpcSteerError });
+    }
     if (cmd.type === "steer") {
       steered.push(cmd.message); reply();
       if (held) { const h = held; held = null; finish(h.b, h.message, ""); }
