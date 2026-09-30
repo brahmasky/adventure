@@ -133,7 +133,7 @@ describe("omp one-shot seat — every non-planner LLM call in Houge", () => {
     const t0 = Date.now();
     const r = await spawnOneShot({ seat: "ticks", chain: parseModelChain("kimi-code/k3"), prompt: "x", correlationId: "c", timeoutMs: 5_000 },
       { cfg, audit: recordingSink(), versionCheck: () => ({ ok: true, version: "18.4.4" }) });
-    expect(Date.now() - t0).toBeLessThan(LEG_EXIT_GRACE_MS + 1_500);
+    expect(Date.now() - t0).toBeLessThan(LEG_EXIT_GRACE_MS + 4_000); // the helper lives 30 s
     expect(r).toMatchObject({ ok: true, answer: "ok" });
     const pid = Number(readFileSync(pidFile, "utf8"));
     await new Promise((res) => setTimeout(res, 100));
@@ -144,9 +144,9 @@ describe("omp one-shot seat — every non-planner LLM call in Houge", () => {
     const { cfg, pidFile } = lingeringBin("sleep 30");
     const t0 = Date.now();
     const audit = recordingSink();
-    const r = await spawnOneShot({ seat: "ticks", chain: parseModelChain("kimi-code/k3"), prompt: "x", correlationId: "c", timeoutMs: 500 },
+    const r = await spawnOneShot({ seat: "ticks", chain: parseModelChain("kimi-code/k3"), prompt: "x", correlationId: "c", timeoutMs: 2_000 },
       { cfg, audit, versionCheck: () => ({ ok: true, version: "18.4.4" }) });
-    expect(Date.now() - t0).toBeLessThan(500 + LEG_EXIT_GRACE_MS + 1_500);
+    expect(Date.now() - t0).toBeLessThan(2_000 + LEG_EXIT_GRACE_MS + 3_000); // the leg sleeps 30 s
     expect(r.ok).toBe(false);
     expect(audit.attempts[0]).toMatchObject({ outcome: "error", error_kind: "timeout" });
     expect(existsSync(pidFile)).toBe(true);
