@@ -28,7 +28,7 @@ import { resolveBackupEnabled, runDbBackupTick } from "../run/db-backup.js";
 import type { LlmCallRole, RunStore } from "../run/run-store.js";
 import { maybeFireScheduledTasks } from "../run/schedule-tick.js";
 import { SkillStore } from "../skills/skill-store.js";
-import { runInvariantSweep } from "../run/invariant-sweep.js";
+import { runInvariantSweep, type InvariantSweepInput } from "../run/invariant-sweep.js";
 import { clearParkMarker } from "../run/tombstone.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
@@ -515,16 +515,22 @@ async function runSignalPathTick(
     // ticks so it observes this cycle's work, self-throttles to 5 min, and alerts at most
     // once per incident transition. Flag-gated OFF; pure reads + incident bookkeeping —
     // it can never act on what it finds.
-    runInvariantSweep({
-      store: options.store,
-      dataDir: options.omp?.dataDir ?? options.projectRoot,
-      ...(chat ? { chat_id: String(chat.telegram_chat_id) } : {}),
-      now
-    });
+    runInvariantSweep(invariantSweepInput(options, now));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[telegram-daemon] signal-path tick failed: ${message}`);
   }
+}
+
+/**
+ * The sweep's input: the operator chat, and the DATA volume for disk_free_low — houge.sqlite's
+ * directory (the omp data dir), falling back to the project root when none is configured.
+ */
+export function invariantSweepInput(
+  options: Pick<RunTelegramDaemonOptions, "store" | "omp" | "projectRoot" | "allowlist">, now: string
+): InvariantSweepInput {
+  const chat = options.allowlist.chats[0];
+  return { store: options.store, dataDir: options.omp?.dataDir ?? options.projectRoot, ...(chat ? { chat_id: String(chat.telegram_chat_id) } : {}), now };
 }
 
 /** The panel's real seats: the omp judge/chair seats (idea-panel-seats), audited under one `tick:idea_panel:<uuid>` per panel run. */

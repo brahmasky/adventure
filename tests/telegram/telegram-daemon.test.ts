@@ -8,7 +8,7 @@ import {
   tryStartEvolutionPipeline
 } from "../../src/core/evolution-lane.js";
 import { parseRatingHistory, RunStore } from "../../src/run/run-store.js";
-import { runTelegramDaemon } from "../../src/telegram/telegram-daemon.js";
+import { invariantSweepInput, runTelegramDaemon } from "../../src/telegram/telegram-daemon.js";
 import {
   RATING_ACK_COMMENT_TEXT,
   RATING_ACK_TEXT,
@@ -1077,6 +1077,19 @@ describe("runTelegramDaemon — the audit chokepoint (slice 2)", () => {
       } finally {
         store.close();
       }
+    }
+  });
+});
+
+describe("the daemon's sweep wiring (M9)", () => {
+  const allowlist = { users: [], chats: [{ telegram_chat_id: 222, label: "p", allowed_identity_ids: ["paco"] }] };
+  it("checks disk_free_low on the omp data dir (houge.sqlite's directory) and pages the operator chat", () => {
+    const store = RunStore.openInMemory();
+    try {
+      expect(invariantSweepInput({ store, allowlist, projectRoot: "/repo", omp: { dataDir: "/data" } }, "t")).toMatchObject({ dataDir: "/data", chat_id: "222", now: "t" });
+      expect(invariantSweepInput({ store, allowlist, projectRoot: "/repo" }, "t").dataDir).toBe("/repo");
+    } finally {
+      store.close();
     }
   });
 });
