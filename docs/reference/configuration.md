@@ -40,61 +40,77 @@ launchd: [deploy/launchd/README.md](../../deploy/launchd/README.md).
 | `HOUGE_DAEMON_BACKOFF_MAX_MS` | `60000` | Cap on the backoff delay. |
 | `HOUGE_DAEMON_LOCK_PATH` | `houge.daemon.lock` (cwd) | PID lockfile for the single-instance guard; a second daemon with the same lock exits instead of fighting over the Telegram long-poll (which would cause HTTP 409). |
 
-## LLM provider chain (powers cognition)
+## LLM runtime — omp (ADR 0028)
 
-Every cognitive call — intent classification, the **answer** path, research synthesis
-and critique, and the feedback distiller — runs on this model-agnostic chain (`pi` → kimi,
-never Claude). See [ADR 0002](../decisions/0002-pi-as-agent-runtime.md) for the
-inference-vs-agentic policy behind the `pi` provider and
-[ADR 0010](../decisions/0010-natural-language-intent-layer.md) for the natural-language
-front door.
+Every LLM call runs on **omp** (`@oh-my-pi/pi-coding-agent`), pinned at `18.4.4` and run under its own
+profile `houge` on subscription OAuth only ([ADR 0028](../decisions/0028-omp-runtime.md)). Each Telegram
+chat gets one supervised omp RPC process, the **planner**: sandboxed, with the built-ins `read,edit,write`
+and Houge's tools served through the bridge. Every other seat (reader, photo, ticks, judges, chair,
+reviewer) is a one-shot spawn (`-p --mode json --no-session --no-tools --no-extensions`). The self-write
+writer stays `codex exec`, and voice notes stay on `agy-cli` ([below](#voice-leg--agy-cli-voice-only)).
+
+**Model strings** have the form `provider/model[:effort]`, where effort is
+`off|minimal|low|medium|high|xhigh|max`. A seat variable is a comma-separated, ordered chain. On
+`quota`, `auth`, `transport`, `timeout` or `model_missing`, the next string serves: the planner switches
+with a live `set_model`, and a later turn retries the top string. `model_refusal` and `other` are final.
+Judges take one string per seat index and never fall back.
+
+**Pinned in tests (ROADMAP §3.5).** Every variable below is saved, deleted and restored around each suite
+that builds a worker, the daemon, or `resolveOmpConfig(process.env)` (`pinOmpEnv`,
+`tests/helpers/omp-env.ts`). `HOUGE_OMP_BIN` is then pointed at a non-executable path, so no suite can
+reach a real omp. The defaults below are copied from `src/omp/omp-config.ts`.
+
+| Variable | Default | Purpose | Pinned in tests |
+|----------|---------|---------|-----------------|
+| `HOUGE_OMP_BIN` | `omp` | The omp binary. Give the daemon an absolute path, because launchd runs it on a restricted PATH. | yes |
+| `HOUGE_OMP_PROFILE` | `houge` | `--profile` for every spawn; never the default profile. The OAuth store lives at `~/.omp/profiles/houge`, which is a secret path ([ADR 0015 amendment](../decisions/0015-secrets-firewall.md)). | yes |
+| `HOUGE_OMP_SANDBOX` | `1` | `0` runs the planner without `sandbox-exec` (tests only). With `1`, a missing `sandbox-exec` or a profile that fails to render stops the planner and opens incident `sandbox_unavailable`. | yes |
+| `HOUGE_OMP_VERSION` | `18.4.4` | `omp --version` must equal this at every planner and one-shot start, or the spawn is refused (incident `omp_version_mismatch`, resolved by the next passing check). | yes |
+| `HOUGE_OMP_VERSION_ALLOW` | *(empty)* | Comma-separated extra versions to accept. This is the operator's logged override after re-running `scripts/live-gate-omp.mjs` on a new binary. | yes |
+| `HOUGE_OMP_PLANNER` | `anthropic/claude-opus-5-5:medium,google-antigravity/claude-opus-4-6:medium,kimi-code/k3:low` | The per-chat planner chain. When every string is exhausted on a retryable error, the turn fails `no_planner_leg` and an incident opens. `/ask`, `/research` and `skill_author` authoring also use this chain. | yes |
+| `HOUGE_OMP_READER` | `google-antigravity/gemini-3.8-flash:low,kimi-code/k3:low,openai-codex/gpt-5.5:low` | The quarantined reader for `web_search`, `http_fetch`, `gmail_read` and `google_api` ([ADR 0014](../decisions/0014-dual-llm-privilege-separation.md)). Keep it cross-family from the planner. A same-family read still proceeds, but it is audited: the row gets `family_collapse`, a `wall_collapse` event is written, and incident `wall_collapsed` opens (D10). | yes |
+| `HOUGE_OMP_MEDIA` | `google-antigravity/gemini-3.8-flash:low` | The photo seat: the image is passed as `@file` and the call is audited as `reader`. Voice never uses omp. | yes |
+| `HOUGE_OMP_TICKS` | `kimi-code/k3:low` | Memory and background seats: distill, consolidate, extract, attribution, frame, verify, and `lesson_write`'s distill and reconcile. | yes |
+| `HOUGE_OMP_JUDGES` | `kimi-code/k3,openai-codex/gpt-5.5,google-antigravity/gemini-3.1-pro` | Idea-panel judges, one string per seat index, with no fallback (quorum 2, [ADR 0027](../decisions/0027-idea-panel-claude-chair.md)). | yes |
+| `HOUGE_OMP_CHAIR` | `anthropic/claude-opus-5-5:low` | The idea-panel chair, which replaces the claude-CLI chair. If it is unavailable, the panel uses the deterministic mean-score fallback. | yes |
+| `HOUGE_OMP_REVIEWER` | `kimi-code/k3:high,google-antigravity/claude-opus-4-6:medium` | Self-write checker 3 when `HOUGE_SELFWRITE_REVIEWER` is `omp` (the default). A gpt-family string here logs the writer≠checker warning, because the writer is codex. | yes |
+| `HOUGE_OMP_ENV_PASSTHROUGH` | `KIMI_CODE_OAUTH_HOST,KIMI_CODE_BASE_URL` | Extra env var **names** passed to every omp child, on top of `PATH HOME TERM LANG USER`. The default is the Kimi pair, kept for token refresh against kimi.ai. Never list a secret here. | yes |
+| `HOUGE_OMP_TURN_TIMEOUT_MS` | `600000` | The turn deadline, paused while a card awaits `/approve`. Expiry writes `loop_halted{turn_timeout}` and sends the partial answer. | yes |
+| `HOUGE_OMP_FRAME_IDLE_MS` | `180000` | Watchdog: no omp frame and no bridge activity for this long while a turn runs → abort (`frame_idle`). | yes |
+| `HOUGE_OMP_APPROVAL_TIMEOUT_MS` | `1800000` | How long an in-turn approval card waits. On expiry the call is refused (`approval_expired`); the planner is told and continues. | yes |
+| `HOUGE_OMP_ONESHOT_TIMEOUT_MS` | `120000` | Per-leg wall clock for one-shot seats, enforced with SIGKILL. A seat's runner cap is legs × this + 15 s. | yes |
+| `HOUGE_OMP_IDLE_EXIT_MS` | `3600000` | An idle planner child exits after this long. The next message restarts it and resumes the session. | yes |
+| `HOUGE_OMP_SHELL_TIMEOUT_MS` | `120000` | Deadline for one `bash` command; the adapter kills the process group. The runner's cap is this + 5 s. | yes |
+| `HOUGE_OMP_LEASE_TTL_S` | `120` | The planner's run lease, renewed every 30 s (also while awaiting approval). An expired `planner:*` lease is failed, never requeued. | yes |
+
+Set by the daemon, not operator config: `HOUGE_BRIDGE_SOCK` and `HOUGE_BRIDGE_TOKEN` are minted per
+planner child, and `HOUGE_SHELL_SANDBOX` is the shell wrapper's copy of `HOUGE_OMP_SANDBOX`.
+
+**Subscriptions.** Four OAuth logins live in the `houge` profile. Run each once on the mini with
+`omp --profile houge login <provider>`, for `anthropic` (Claude Max), `google-antigravity`, `kimi-code`
+and `openai-codex`. Every omp row has `cost_usd` 0 (shown as "sub" in `/usage`).
+
+**Moving the version pin.** Install the new omp, run `scripts/live-gate-omp.mjs --smoke`, then either
+set `HOUGE_OMP_VERSION` to the new version or list it in `HOUGE_OMP_VERSION_ALLOW`. Restart the daemon.
+omp's own update checks are off in the profile config.
+
+### Voice leg — agy-cli (voice only)
+
+Voice notes never reach omp, because omp inlines audio bytes as text and the model invents a transcript
+(ADR 0028, decision 16). They are transcribed on the flat-rate `agy-cli` leg. These variables only
+affect voice. The media chain and its timeout are in [Multimodal ingest](#multimodal-ingest--voice-notes-and-photos-spec-2026-09-29).
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `HOUGE_LLM_PROVIDERS` | `pi,agy-cli` | Ordered, comma-separated chain with automatic fallback (first success wins; unavailable/error/timeout falls through). Known providers: `pi` + `agy-cli` (hardened single-shot CLIs), `kimi-api` + `gemini-api` (OpenAI-compatible HTTP). `agy-cli`/`gemini-api` are **general-model** legs (Gemini Flash) so research synthesis doesn't over-produce like the coding-tuned `pi`/`kimi` legs (Phase 3.4). **CLI-only since 2026-09-06:** the default is both flat-rate CLIs and the metered legs are named nowhere — setting one here is the deliberate escape hatch for both CLIs being down at once. The hatch needs `HOUGE_LLM_READER_PROVIDERS` set too (the reader has its own chain), a daemon restart (env is read once at boot, never reloaded), and possibly a raised `HOUGE_METERED_DAILY_USD`, since a latched ceiling drops the leg you just enabled. The singular `HOUGE_LLM_PROVIDER` is ignored when this plural is set. |
-| `HOUGE_LLM_MODEL_PI` | unset → pi's own configured model | Model is configured **per provider** (namespaces differ). Set this only to make Houge override pi's own choice. |
-| `HOUGE_LLM_MODEL_KIMI` | `moonshot-v1-auto` (stable alias) | A model your `KIMI_API_KEY` can access (`GET /v1/models`). |
-| `HOUGE_LLM_MODEL_GEMINI` | `gemini-3.5-flash` | Model for the `gemini-api` leg (a general model; the latest Flash on the public API). |
-| `HOUGE_AGY_MODEL` | `Gemini 3.8 Flash (Low)` | Model for the `agy-cli` leg (`agy models` lists choices). **Pin it in `.env`, not the code default.** The vendor retired `Gemini 3.5 Flash (Low)`; because a bad pin maps to `unavailable`, every agy call failed and fell through to the paid legs silently for ~3 months. `agy` reports a retirement as `status:"ERROR"` with `invalid model selection` — and still exits 0. |
-| `HOUGE_ASK_SYSTEM_PROMPT` | composed from `memory/` + `lessons` | The **answer**-path system prompt. When unset it is **composed** (identity + answer discipline + the `ask` scope's lessons + guardrails — see [Learning](#learning--conversational-distillation-and-the-lessons-table) below), replacing pi's default *coding-assistant* persona. Set this to override the whole prompt. |
-| `HOUGE_LLM_TIMEOUT_MS` | — | Fallback per-provider wall-clock timeout (ms) for any provider without a specific one. |
-| `HOUGE_LLM_TIMEOUT_MS_PI` | `60000` | pi timeout (ms). |
-| `HOUGE_LLM_TIMEOUT_MS_KIMI` | `30000` | kimi timeout (ms). |
-| `HOUGE_LLM_TIMEOUT_MS_AGY` | `60000` | agy-cli timeout (ms). |
-| `HOUGE_LLM_TIMEOUT_MS_GEMINI` | `30000` | gemini-api timeout (ms). |
+| `HOUGE_AGY_BIN` | `agy` (on PATH) | Voice only. Absolute path to the `agy` binary. Set it for the daemon, which runs on a restricted PATH. |
+| `HOUGE_AGY_MODEL` | `Gemini 3.8 Flash (Low)` | Voice only. The transcription model (`agy models` lists the choices). **Pin it in `.env`, not the code default.** A retired pin fails every call: agy reports it as `status:"ERROR"` with `invalid model selection` and still exits 0. |
+| `HOUGE_AGY_ENV_PASSTHROUGH` | — | Voice only. Extra env var **names** for the agy child, on top of the same minimal allowlist. agy reads its auth from `$HOME`, so this is rarely needed. |
 
-> The CapabilityRunner's enforced wall-clock cap is **derived** from these:
-> `sum(per-provider timeouts) + 15000` buffer. With the 4-leg chain (pi 60s + agy 60s +
-> kimi 30s + gemini 30s) the runner cap is 195s — so a healthy chain that legitimately
-> falls through every provider is never killed mid-flight.
-
-### pi CLI provider
+### Answer-path prompt override
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `HOUGE_PI_ENV_PASSTHROUGH` | — | Extra env var **names** (comma-separated) to pass through to the pi child. The child runs with a minimal allowlist (`PATH, HOME, TERM, LANG, USER`) so the attacker-controlled question never sees the Telegram token or unrelated keys; add the var pi needs for auth here. |
-
-### agy CLI provider (Antigravity / Gemini)
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `HOUGE_AGY_BIN` | `agy` (on PATH) | Absolute path to the `agy` binary. Set this for the daemon, which runs under a restricted PATH (like `HOUGE_CLAUDE_BIN`/`HOUGE_CODEX_BIN`). |
-| `HOUGE_AGY_ENV_PASSTHROUGH` | — | Extra env var **names** (comma-separated) for the agy child. Same minimal allowlist as pi (`PATH, HOME, TERM, LANG, USER`); agy normally reads its auth from `$HOME`, so this is rarely needed. The prompt rides argv (`--print <prompt>`) as a single discrete element — injection-safe — and `--dangerously-skip-permissions` is never passed. |
-
-### Kimi API provider
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `KIMI_API_KEY` | — | Secret. Enables the `kimi-api` provider; if unset the provider reports `unavailable` and the chain falls through. |
-| `HOUGE_KIMI_BASE_URL` | `https://api.moonshot.ai` | Base URL for the OpenAI-compatible endpoint. |
-
-### Gemini API provider
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `GEMINI_API_KEY` | — | Secret. Enables the `gemini-api` provider; if unset the provider reports `unavailable` and the chain falls through. |
-| `HOUGE_GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` | Base URL for Google's OpenAI-compatibility endpoint (the factory appends `/chat/completions`). |
-| `HOUGE_GEMINI_MAX_TOKENS` | `8192` | Output token budget. Generous because 3.5-flash spends "thinking" tokens against the same budget — a tight cap can starve the visible answer. |
+| `HOUGE_ASK_SYSTEM_PROMPT` | composed from `memory/` + `lessons` | Overrides the whole `/ask` system prompt. When unset it is **composed** from identity, answer discipline, the `ask` scope's lessons and guardrails (see [Learning](#learning--conversational-distillation-and-the-lessons-table)). |
 
 ## Web read (powers the **research** intent)
 
@@ -155,22 +171,23 @@ explicit allowlisted env regardless of this flag. See
 | `HOUGE_SECRETS_FIREWALL_ENABLED` | off | Arms the firewall (lift-into-broker + strip `process.env` + redact egress). Accepts 1/true/yes/on. OFF ⇒ byte-identical to before the firewall existed. |
 | `HOUGE_CODEX_ENV_PASSTHROUGH` | — | Optional comma-separated extra env var names the Codex child may inherit, on top of the `PATH/HOME/TERM/LANG/USER` allowlist. |
 
-## Dual-LLM privilege separation (ADR 0014, Phase 1)
+> **After the omp cutover (2026-10):** `KIMI_API_KEY`, `GEMINI_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN`
+> have no consumer. The broker still lifts, strips and redacts them if they are present, so remove
+> them from `.env`. omp children never receive a broker secret; their env is the allowlist plus
+> `HOUGE_OMP_ENV_PASSTHROUGH` ([ADR 0015 amendment](../decisions/0015-secrets-firewall.md)).
 
-The **act** half of the lethal trifecta (the secrets firewall above is the **exfil** half). When
-armed, every successful external-read result (`web_search`/`http_fetch`) is summarized by a
-**quarantined reader (Q-LLM)** into a schema-constrained extraction
-(`{summary, facts[], answer_to_objective, contains_instructions}` — no action field), and the
-**planner (P-LLM)** — the only call that emits actions — reads that extraction, never the raw
-fetched bytes. An injection in a page can at worst corrupt a data field a human sees; it cannot
-steer the planner. On a reader parse miss the fallback is a metadata-only
-`[unreadable external source: N bytes]` digest — never the raw bytes. See
-[ADR 0014](../decisions/0014-dual-llm-privilege-separation.md).
+## Dual-LLM privilege separation (ADR 0014)
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `HOUGE_DUAL_LLM_ENABLED` | off | Arms the quarantined reader for external-read tools. Accepts 1/true/yes/on. OFF ⇒ byte-identical to before Dual-LLM existed (raw output digested inline). |
-| `HOUGE_LLM_READER_PROVIDERS` | `HOUGE_LLM_PROVIDERS` | The reader's own provider chain (same names/format as `HOUGE_LLM_PROVIDERS`). Unset ⇒ the planner chain. Point it at a cheap, **cross-family** leg for free injection resistance. Live value `agy-cli,pi` — deliberately the planner reversed, so the highest-volume LLM consumer in the system leads with a different model family than the planner while staying flat-rate. |
+The **act** half of the lethal trifecta (the secrets firewall above is the **exfil** half). Every
+successful result from the four read tools (`web_search`, `http_fetch`, `gmail_read`, `google_api`) is
+summarized by the **quarantined reader** (`HOUGE_OMP_READER`) into a schema-constrained extraction with
+no action field. The planner reads that extraction, never the raw fetched bytes. On a reader failure,
+a fixed code-owned text is returned instead of the raw bytes.
+
+Since the omp cutover this is **unconditional** and has no variables. The wall is enforced in the
+bridge (`normalizeExternalRead`), and `HOUGE_DUAL_LLM_ENABLED` and `HOUGE_LLM_READER_PROVIDERS` are
+gone. Output of the `bash` tool is **exempt** and reaches the planner raw (ADR 0028 D12). See
+[ADR 0014](../decisions/0014-dual-llm-privilege-separation.md) and its 2026-09-30 amendment.
 
 ## Google identity — `gmail_read` / `google_api` (ADR 0025)
 
@@ -184,17 +201,15 @@ Credentials are produced by `scripts/gmail-auth.mjs`; the two secrets below are 
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `HOUGE_GOOGLE_ENABLED` | off | Arms both tools (armed-listing). Accepts 1/true/yes/on. In `DISARM_FLAGS` — this surface acts under Houge's identity, so `/disarm` covers it. **Not sufficient alone — see the arming couple below.** |
+| `HOUGE_GOOGLE_ENABLED` | off | Arms both tools (armed-listing). Accepts 1/true/yes/on. In `DISARM_FLAGS` — this surface acts under Houge's identity, so `/disarm` covers it. Since the omp cutover this flag alone arms both tools (the reader wall is unconditional). |
 | `HOUGE_GMAIL_CLIENT_ID` | — | OAuth client id of the Gmail desktop client. Plain config, not a secret (client ids are public identifiers); read from env at call time. |
 | `HOUGE_GMAIL_CLIENT_SECRET` | — | **Secret — broker-held** (ADR 0015): lifted into the secret broker at boot, stripped from `process.env`, redacted from egress. Written by `scripts/gmail-auth.mjs`. |
 | `HOUGE_GMAIL_REFRESH_TOKEN` | — | **Secret — broker-held** (ADR 0015), same treatment. The long-lived `gmail.readonly` grant; revoking it in the Google console is the remote kill for this surface. |
 
-**The dual-LLM arming couple (debuggability note).** Both tools are armed only when
-`HOUGE_GOOGLE_ENABLED` **and** `HOUGE_DUAL_LLM_ENABLED` are BOTH on — mail bodies are free
-hostile text, so there is deliberately no configuration in which un-quarantined mail bytes reach
-the planner (ADR 0025 §4). If either flag is off, both tools **silently vanish from the tool
-manifest**: no error, no warning, no log line (`manifestFor` is pure and evaluated per-turn).
-If the Gmail tools seem to be "missing", check **both** flags before debugging anything else.
+**Arming (changed 2026-10).** The old arming couple (`HOUGE_GOOGLE_ENABLED` **and**
+`HOUGE_DUAL_LLM_ENABLED`) is gone. Under omp the reader wall is unconditional for both tools, so
+un-quarantined mail bytes still never reach the planner, and `HOUGE_GOOGLE_ENABLED` alone decides
+whether the tools appear in the turn's manifest.
 
 ## Deterministic timezone tool (`to_local_time`, loop tool)
 
@@ -388,8 +403,8 @@ intent** (*"fix it so you stop asking which 猴哥"*) routes to `runSelfWrite`: 
 has **Codex write a diff in a fresh git worktree** (`codex exec --sandbox workspace-write`), then runs
 it **autonomously** through three checkers — (1) a deterministic **protected-path check** (HARD DENY on
 any gate/identity/dep/existing-test path; **not** overridable by `/approve`), (2) the **test gate**
-(typecheck + test + build in the worktree), (3) an **independent Claude reviewer** (model diversity:
-the writer is Codex, the checker is Claude) — with a **refine loop ≤3**. Only if all pass does Houge
+(typecheck + test + build in the worktree), (3) an **independent reviewer** (model diversity:
+the writer is Codex, the checker is an omp seat on `HOUGE_OMP_REVIEWER` or a separate Codex session) — with a **refine loop ≤3**. Only if all pass does Houge
 **publish the diff as a branch** (`houge/selfwrite/<run-id>`) and **notify Paco**. The daemon **never
 hot-swaps**: Paco merges + reloads at his leisure (the [ADR 0011](../decisions/0011-self-evolution-architecture.md)
 §5 one constant). **Off by default.** Design: [ADR 0011](../decisions/0011-self-evolution-architecture.md)
@@ -401,26 +416,20 @@ spec: [Phase 3 spec](../superpowers/specs/2026-06-25-phase3-code-self-write.md).
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `HOUGE_SELFWRITE_ENABLED` | `false` | Master switch for the **entire** code-self-write surface. Off until Paco flips it. When not truthy, a write-intent `selfcode` message **falls back to read-only diagnose** (Phase 1) — the safe direction (read before write) — so the feature ships dark and is opt-in. |
-| `HOUGE_SELFWRITE_REVIEWER` | `kimi` | Which agent runs **checker 3** (the independent reviewer). Valid values are exactly the code's `ReviewerKind`: `kimi` — the local `kimi-cli` agent (**default**: cheap + model-diverse from the Codex writer; the free test-gate + the human merge are the real safety net) · `codex` — an independent Codex session (fresh session + adversarial prompt). There is **no `claude` reviewer** — Claude is not a self-write runtime backend (ADR 0011; its one runtime seat is the contained ADR 0027 panel chair). writer≠checker is preserved either way. |
+| `HOUGE_SELFWRITE_REVIEWER` | `omp` | Which agent runs **checker 3** (the independent reviewer). `omp` (**default**) is a one-shot on the `HOUGE_OMP_REVIEWER` chain, which is model-diverse from the Codex writer. `codex` is an independent Codex session with a fresh session and the adversarial prompt. Any other value, including a stale `kimi` or `claude`, falls back to `omp`. writer≠checker holds either way; a gpt-family reviewer string logs a warning. |
 | `HOUGE_TESTGATE_TIMEOUT_MS` | `300000` | Wall-clock timeout (ms) for the whole **test gate** (typecheck + test + build) run in the worktree. A gate that exceeds it is treated as red (no publish), not a crash. |
 
 > **Stale-row cleanup (2026-07-27):** the former `claude` reviewer option, its
 > `HOUGE_CLAUDE_TIMEOUT_MS`, and the self-write `HOUGE_CLAUDE_BIN` row documented a Claude
 > reviewer/writer that no longer exists in code (`ReviewerKind = "codex" | "kimi"`,
-> `WriterKind = "codex"`). `HOUGE_CLAUDE_BIN` lives on with ONE consumer: the ADR 0027
-> panel chair (see [Idea Panel](#idea-panel-r2-adr-0027)).
+> `WriterKind = "codex"`). `HOUGE_CLAUDE_BIN` kept one consumer, the ADR 0027 panel chair, until
+> the omp cutover removed it too (see [Removed 2026-10](#removed-2026-10-omp-cutover)).
 
-#### Phase 3.5 — kimi reviewer backend (`HOUGE_SELFWRITE_REVIEWER=kimi`)
+#### Phase 3.5 — kimi reviewer backend (removed 2026-10)
 
-The **default** checker-3 backend (cheap + model-diverse from the Codex writer). The local `kimi-cli` agent, invoked headless with the adversarial prompt on **stdin** — `kimi-cli --print --quiet --final-message-only --input-format text --agent-file <no-tools agent>` — which prints the clean final assistant message (the verdict JSON) to stdout (the "To resume this session" notice goes to stderr). `--final-message-only` emits no token telemetry, so a kimi review carries **no `usage`**. The `kimi-cli` wrapper has an absolute-path interpreter shebang, so it runs under the daemon's restricted PATH with no extra PATH setup.
-
-**Isolation (writer≠checker):** kimi-cli's *default* agent ships Shell/file tools and auto-approves them in `--print` mode, so an unconfined reviewer could read/write **any absolute path** on the host (a prompt-injection exfil/tamper surface). The reviewer is therefore pinned to a generated **no-tools agent** (`tools: []`, verified to refuse a file read) and run in a neutral temp cwd — the analogue of the Claude reviewer's tools-denied and the Codex reviewer's `--sandbox read-only`. The diff is judged purely as inline text.
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `HOUGE_KIMI_CLI_BIN` | — (no default) | **Absolute** path to the `kimi-cli` binary (e.g. `/Users/pluo/.local/bin/kimi-cli`). **No default by design:** the daemon's PATH does not include `~/.local/bin`, so `kimi-cli` is not resolvable by name. If unset while `HOUGE_SELFWRITE_REVIEWER=kimi`, the kimi reviewer is **disabled** (clean error, no publish). |
-| `HOUGE_KIMI_CLI_MODEL` | — (omitted) | Optional model override passed as `--model <m>`. When unset, `--model` is omitted and kimi-cli uses its own configured default (`kimi-for-coding`). |
-| `HOUGE_KIMI_CLI_TIMEOUT_MS` | `180000` | Wall-clock timeout (ms) for one kimi pass (per attempt; retried once on a transient timeout/unparseable). A normal kimi review returns in ~7s. |
+The `kimi-cli` reviewer backend and its `HOUGE_KIMI_CLI_*` variables were removed with the omp cutover.
+Its seat is now the `HOUGE_OMP_REVIEWER` chain, a tool-less omp one-shot (see
+[Removed 2026-10](#removed-2026-10-omp-cutover)).
 
 ### Phase 3.1 — swappable writer + per-role models
 
@@ -436,19 +445,17 @@ roles to the **same provider** logs a soft warning — it is **not blocked**.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `HOUGE_SELFWRITE_WRITER` | `codex` | Which agent **writes the diff** (the heavy-token role). `codex` — the existing `codex exec --sandbox workspace-write` adapter (now run with `--json` so token usage is captured). `claude` — a headless agentic Claude edit: `claude -p --model <m> --permission-mode bypassPermissions --output-format json`, with the framed task on stdin and `cwd` set to the throwaway worktree (so the permission bypass is scoped to that disposable tree). The Claude writer requires `HOUGE_CLAUDE_BIN` (absolute) just like the reviewer; if unset, the Claude writer is **disabled** (clean error, no publish). |
-| `HOUGE_CLAUDE_WRITER_MODEL` | `sonnet` | Claude **writer** model. Resolution: `HOUGE_CLAUDE_WRITER_MODEL` → `HOUGE_CLAUDE_MODEL` → `sonnet`. (Per-role override so the writer model can differ from the reviewer model while sharing one fallback.) |
-| `HOUGE_CLAUDE_MODEL` | `sonnet` | The Claude **reviewer** model, **and** the shared fallback for the writer model above. There is **no separate `HOUGE_CLAUDE_REVIEWER_MODEL`** — the reviewer reads `HOUGE_CLAUDE_MODEL` directly (default `sonnet`; the default Opus over-thinks a large diff and times out). |
+| `HOUGE_SELFWRITE_WRITER` | `codex` | Which agent **writes the diff** (the heavy-token role). `codex` is the only backend: `codex exec --sandbox workspace-write --json`, so token usage is captured. Any other value, including a stale `claude`, falls back to `codex`. |
 
-> The Claude writer and reviewer **share** `HOUGE_CLAUDE_BIN` and `HOUGE_CLAUDE_TIMEOUT_MS`. They
-> differ only in model: the writer resolves `HOUGE_CLAUDE_WRITER_MODEL` (→ `HOUGE_CLAUDE_MODEL` →
-> `sonnet`), the reviewer resolves `HOUGE_CLAUDE_MODEL` (→ `sonnet`).
+> The Claude writer/reviewer rows (`HOUGE_CLAUDE_WRITER_MODEL`, `HOUGE_CLAUDE_MODEL`,
+> `HOUGE_CLAUDE_REVIEWER_MODEL`, `HOUGE_CLAUDE_TIMEOUT_MS`) documented backends the code stopped
+> reading before the omp cutover. They were removed from this page on 2026-10.
 
 ### LLM telemetry — the `llm_attempt` ledger event (slice 2, 2026-09-07)
 
 Every LLM **leg attempt** in Houge — success, error, or unavailable; run-scoped or run-less —
 lands in the ledger as one **`llm_attempt`** event. Not by remembering a hook: the adapter factory
-(`createLlmAnswerAdapter`) and the two panel spawn seats take a **required** `LlmAuditSink`
+(`oneShotAdapter` / `spawnOneShot`), the planner supervisor and the voice leg take a **required** `LlmAuditSink`
 (`src/llm/audit.ts`), built by `RunStore.llmAuditSink(scope)`; `answerWithChain` records every leg
 it tries, and `tests/llm/audit-coverage.test.ts` scans `src/` so no construction site can omit it.
 This replaced the Phase 3.1 opt-in `onUsage` hook and its `llm_call` event, which recorded only
@@ -464,7 +471,7 @@ absent, not null. Payload fields:
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `provider` | yes | The leg (`pi`, `agy-cli`, `kimi-api`, `gemini-api`, `codex`, `kimi-cli`, `claude`). |
+| `provider` | yes | The leg. Since 2026-10: an omp provider (`anthropic`, `google-antigravity`, `kimi-code`, `openai-codex`), `agy-cli` (voice), `codex`, or `jev`. Older rows also carry `pi`, `kimi-api`, `gemini-api`, `kimi-cli` and `claude`. |
 | `role` | yes | The call's purpose, set by the scoped sink (the chain does not know it): `answer` \| `compose` \| `classify` \| `frame` \| `reader` \| `writer` \| `reviewer` \| `distill` \| `consolidate` \| `extract` \| `judge` \| `chair` \| `verify` \| `attribution`. |
 | `outcome` | yes | `ok` \| `error` \| `unavailable`. *Unavailable* = the provider was not constructively callable (binary absent, not authenticated, model retired, key unset); timeout, non-zero exit, over-cap and parse failures are `error`. Both fall through the chain identically. |
 | `model` | on `ok` | The model that answered (`unknown` + a warning if a provider ever omits it). |
@@ -472,8 +479,12 @@ absent, not null. Payload fields:
 | `attempt_group` · `leg_index` | optional | One 12-hex id per chain invocation and the leg's 0-based position, so "agy failed, then pi served" is reconstructable, not inferred from timestamps. |
 | `input_tokens` · `output_tokens` · `cached_input_tokens` | on `ok` | `output_tokens` is the total billable output for every engine: Codex reports `reasoning_output_tokens` disjointly and it is added; agy nests thinking inside `output_tokens` (measured `total == input + output`) and it is never re-added; the OpenAI-compat legs derive `max(completion, total − prompt)`. |
 | `thinking_tokens` | optional | Informational — already inside `output_tokens`, never priced, never summed. Reported by agy and Codex. |
-| `cost_usd` | metered only | Priced **in the sink** (`computeCostUsd`, the one seam every path shares) for `kimi-api`/`gemini-api`; a flat-rate leg's self-reported list price is a phantom and is stripped. |
-| `error_kind` | on failure | Bounded: `auth` \| `model_missing` \| `timeout` \| `spawn` \| `transport` \| `parse` \| `other` — classified per leg from our own provider strings, never the joined aggregate, never vendor prose. |
+| `cost_usd` | metered only | Priced **in the sink** (`computeCostUsd`, the one seam every path shares) for metered providers only. No metered leg exists since the omp cutover, so OAuth rows carry none; the live gate fails on any `cost_usd > 0` from an OAuth provider. |
+| `error_kind` | on failure | Bounded: `auth` \| `model_missing` \| `timeout` \| `spawn` \| `transport` \| `parse` \| `quota` \| `model_refusal` \| `aborted` \| `other`. It is classified per leg from our own provider strings or omp's error frames, never from the joined aggregate or vendor prose. |
+| `family` | omp rows | `claude` \| `gemini` \| `gpt` \| `kimi` \| `other`, taken from the model id (the D10 family resolver). |
+| `family_collapse` | optional | `true` on a reader call that ran on the planner's family (D10); a `wall_collapse` event is written beside it. |
+| `request_key` | omp rows | `<correlation_id>:<n>`, one per model request. A unique index makes a repeat a no-op. |
+| `credential_id` · `ttft_ms` | optional | omp: which stored OAuth credential served the request, and time to first token. |
 
 **Counts/metadata ONLY — by construction and by test.** The prompt, diff, and response bodies never
 reach the sink; `tests/run/llm-audit-sink.test.ts` pins the payload's key set and asserts no body
@@ -495,8 +506,9 @@ In addition, the **`self_write_published`** event carries an optional compact **
 (writer + reviewer token totals for the published run — counts/metadata only, same no-bodies rule),
 so a published branch's per-role cost is visible without scanning the individual attempt events.
 
-Live gate: `node scripts/live-gate-llm-attempt.mjs` (real chains into an in-memory store — one row
-per leg tried, or FAIL). Run-less proof after a daemon restart: rows under `tick:*` correlations.
+Live gate: `node scripts/live-gate-omp.mjs`. Its silent-degradation checks fail on a missing
+`llm_attempt`, on equal planner and reader families without a `wall_collapse`, and on `cost_usd > 0`
+from an OAuth provider. Run-less proof after a daemon restart: rows under `tick:*` correlations.
 
 ### Phase 3.3 — interactive Telegram merge controls
 
@@ -594,26 +606,25 @@ fetches + real LLM call, zero writes, bypasses flag and latch by design.
 ## Idea Panel (R2, ADR 0027)
 
 A weekly flag-gated tick judges the top 12 active idea cards through three pinned seats
-(Kimi opportunity · Gemini novelty · codex-CLI buildability; quorum 2) and a contained
-claude-CLI chair synthesizes a shortlist of 3 (chair absent/broken → deterministic mean-score
+(Kimi opportunity · GPT buildability · Gemini novelty on `HOUGE_OMP_JUDGES`; quorum 2) and the
+omp chair seat (`HOUGE_OMP_CHAIR`) synthesizes a shortlist of 3 (chair absent/broken → deterministic mean-score
 fallback). Writes: per-card `scores_json`, `shortlisted`/`tracked` status transitions, a frozen
 weekly snapshot (`/idea` + `/idea pick <n>` resolve against it), a `memory/briefs/<week>-ideas.md`
-projection, and ONE Sunday digest push. Cost: 4 subscription CLI spawns per week — CLI-only since
-2026-09-06, when the Kimi and Gemini seats moved off the metered `kimi-api`/`gemini-api` legs onto
-the flat-rate `pi` and `agy` CLIs (`PANEL_JUDGE_PROVIDERS`). Seat names are model families, not
-provider names; panel diversity (Gemini · Kimi · OpenAI · Claude) is unchanged. Pre-arm gate: `houge radar-panel --dry-run` — real seats, zero writes, no push, no
+projection, and ONE Sunday digest push. Cost: 4 subscription omp one-shots per week. Seat names are
+model families, not provider names; panel diversity (Gemini · Kimi · OpenAI · Claude) is unchanged. Pre-arm gate: `houge radar-panel --dry-run` — real seats, zero writes, no push, no
 brief, bypasses flag and latch by design.
 
 | Env var | Default | Purpose |
 |---------|---------|---------|
 | `HOUGE_RADAR_PANEL_ENABLED` | off | Arms the weekly panel tick. Accepts 1/true/yes/on. In `DISARM_FLAGS`. Off = no seat calls, no writes, no push; `/idea` still renders the last snapshot. |
 | `HOUGE_RADAR_PANEL_AT` | `sun 09:00` | Weekly slot, grammar exactly `"<day> HH:MM"` (day ∈ sun…sat, zero-padded 24h — `sun 9:00` is malformed). `off` disables tick AND push (no interval fallback). Malformed → default; `/status` renders the RESOLVED slot so a swallowed typo is visible. First arm (no prior run) fires immediately. Tz: `HOUGE_RADAR_TZ`. |
-| `HOUGE_RADAR_CHAIR_TIMEOUT_MS` | `120000` | Chair spawn wall-clock bound (our own SIGKILL; stdout capped at 256 KB either way). |
-| `HOUGE_CLAUDE_BIN` | — (no default) | **Absolute** path to the `claude` CLI for the chair seat (e.g. `/usr/local/bin/claude` — the launchd PATH cannot resolve it by name; no PATH guessing by design). Unset → chair unavailable → mean-score fallback (`/status` shows `chair off`). |
-| `CLAUDE_CODE_OAUTH_TOKEN` | — | Broker secret #8 (`claude setup-token`, subscription auth). Held by the secrets broker, injected only into the chair child env — never passthrough, never printed, never in argv or the ledger. |
 
-Reuses: `HOUGE_RADAR_TZ` (slot + week-key zone), `HOUGE_CODEX_BIN` + `HOUGE_CODEX_TIMEOUT_MS`
-(the codex judge's contained spawn — read-only sandbox, no secrets).
+> **Since 2026-10:** the seats are omp one-shots (see [LLM runtime](#llm-runtime--omp-adr-0028)).
+> `HOUGE_RADAR_CHAIR_TIMEOUT_MS` and `HOUGE_CLAUDE_BIN` are no longer read, and `CLAUDE_CODE_OAUTH_TOKEN`
+> has no consumer. The chair uses `HOUGE_OMP_ONESHOT_TIMEOUT_MS`.
+
+Reuses: `HOUGE_RADAR_TZ` (slot + week-key zone). All four seats, the GPT judge included, are omp
+one-shots; the panel no longer spawns `codex`.
 
 ## Introspection — the invariant sweep (slice A, ADR 0024)
 
@@ -674,11 +685,22 @@ window clears. Status/approve/deny are never blocked. Rationale and design:
 | `HOUGE_GLOBAL_MAX_TOOL_CALLS_24H` | `1000` | Cost (compute/$) | Aggregate LLM/tool spend across all runs — e.g. a single run that burns thousands of calls. |
 | `HOUGE_GLOBAL_MAX_GATED_ATTEMPTS_24H` | `100` | Risk (dangerous intent) | Repeated attempts at approval-requiring actions (bad lesson, injection, loop) and the approval-prompt spam they cause. |
 
+**Re-tune `tool_calls` for omp (2026-10).** Set `HOUGE_GLOBAL_MAX_TOOL_CALLS_24H=3000` in `.env`: 3×
+the code default of 1000, or 3× your current override if you already set one. Under omp more work
+writes `tool_finished` rows. Every bridge call counts, `bash` included, and so does every built-in
+`fs_write` gate. The per-run cap also rose from 14 to 40. Only `fs_read` is gated without counting.
+The old ceiling would trip on ordinary agentic days. Re-set it from the first week's numbers. The
+code default is unchanged.
+
 Defaults live in `DEFAULT_GLOBAL_BUDGET_CAPS` (`src/budget/global-budget-ledger.ts`);
 a missing or non-numeric override falls back to the default. `/status` surfaces
 per-cap headroom (used/limit/remaining), run counts by state, and the last error.
 
 ## Metered-API $ ceiling (ADR 0019)
+
+> **Dormant since 2026-10.** No metered leg exists after the omp cutover: every seat runs on
+> subscription OAuth, and voice runs on the flat-rate `agy-cli` leg. The ceiling code and these
+> variables stay for a future metered leg ([ADR 0019 amendment](../decisions/0019-metered-ceiling.md)).
 
 The count caps above bound volume; this bounds **dollars** on the pay-per-token legs
 (`kimi-api`/`gemini-api`, and TypeSafe `jev` since 2026-09-26 — priced input-only, see "Jev
@@ -701,7 +723,7 @@ deduped Telegram alert fires per episode. `/status` shows
 
 With `HOUGE_MEDIA_INGEST_ENABLED` on, a Telegram **voice note** becomes the turn's message (transcribed
 on the flat-rate agy leg; the reply opens with `🎙 I heard: “…”` so a mis-hearing is visible) and a
-**photo** is read through the dual-LLM reader: its digest (`[external source — untrusted-derived
+**photo** is read by the omp media seat (`HOUGE_OMP_MEDIA`, audited as `reader`): its digest (`[external source — untrusted-derived
 summary]`, with `contains_instructions`) is appended to the caption. Video, documents and stickers
 are still answered with the "not yet" acknowledgement. The bytes live in a temp dir for one call and
 never enter the DB; one `media_ingested` ledger row per media turn carries kind, status and counts only.
@@ -709,17 +731,21 @@ never enter the DB; one `media_ingested` ledger row per media turn carries kind,
 | Variable | Default | Meaning |
 |---|---|---|
 | `HOUGE_MEDIA_INGEST_ENABLED` | off | Arms the ingest step. Accepts 1/true/yes/on; read per poll; in `DISARM_FLAGS`. |
-| `HOUGE_LLM_MEDIA_PROVIDERS` | `agy-cli,pi` | The media chain. agy reads audio and images; pi images only; API legs never. |
-| `HOUGE_LLM_TIMEOUT_MS_MEDIA` | `45000` | Per-leg timeout for a media call. The whole stage is capped at 150 s, before the loop's 10 min. |
+| `HOUGE_LLM_MEDIA_PROVIDERS` | `agy-cli` | Voice only. The voice chain; `agy-cli` is the only leg that hears audio. Any other name (a stale `pi`) is dropped with one warning. Photos use `HOUGE_OMP_MEDIA`. |
+| `HOUGE_LLM_TIMEOUT_MS_MEDIA` | `45000` | Voice only. Per-leg timeout for the agy transcription call. The whole stage is capped at 150 s, before the turn's deadline. |
 
 Caps: 10 MB per file, 300 s per voice note. A failure (too large, download, no leg, empty, timeout)
 fails the turn with a one-line reply and a `media_ingested` row; resend to retry.
 
 ```bash
-node scripts/live-gate-media.mjs   # opt-in: four real turns in memory, real agy leg, synthetic media
+node scripts/live-gate-media.mjs   # opt-in: four real turns in memory on the omp planner; voice on agy, photos on omp
 ```
 
 ## Jev intent shadow — replay and live shadow (spec 2026-09-25)
+
+> **Dormant since the omp cutover (2026-10).** The classifier call is gone, so the live shadow has
+> nothing to shadow. `HOUGE_JEV_SHADOW_ENABLED` has left `DISARM_FLAGS`, and no caller reads its
+> resolver. The replay still reads historical rows.
 
 [Jev](https://docs.typesafe.ai/llms.txt) (TypeSafe's "System One" model) answers typed questions
 with calibrated probabilities; it does not generate text. The question under test: can Jev take
@@ -803,3 +829,33 @@ next tick — never breaks the daemon). **Local-only** — see the restore runbo
 | `HOUGE_BACKUP_ENABLED` | `false` | Master arm for the backup tick (accepts 1/true/yes/on). |
 | `HOUGE_BACKUP_INTERVAL_HOURS` | `24` | Hours between snapshots (latch advances only on a verified snapshot). ≤0/garbage → default. |
 | `HOUGE_BACKUP_KEEP` | `7` | Newest snapshots kept by retention; older ones unlinked. Min 1. |
+
+## Removed 2026-10 (omp cutover)
+
+These variables are no longer read anywhere in `src/`. They can be deleted from `.env`, and a
+leftover value is ignored. The list is every name read in `src/` at `e626e94` (the commit before
+the cutover deletions) and not at the head of `feat/omp-runtime`, checked by grepping for
+`env.NAME`, `env["NAME"]` and the quoted name.
+
+| Removed | Was | Now |
+|---------|-----|-----|
+| `HOUGE_LLM_PROVIDERS` | The provider chain | `HOUGE_OMP_PLANNER` and the other `HOUGE_OMP_*` seat chains |
+| `HOUGE_LLM_READER_PROVIDERS` | The reader chain | `HOUGE_OMP_READER` |
+| `HOUGE_DUAL_LLM_ENABLED` | Armed the quarantined reader | The wall is unconditional (ADR 0014 amendment) |
+| `HOUGE_LLM_MODEL_PI` · `HOUGE_LLM_MODEL_KIMI` · `HOUGE_LLM_MODEL_GEMINI` | Per-provider models | The model sits in each `HOUGE_OMP_*` string |
+| `HOUGE_LLM_TIMEOUT_MS` · `HOUGE_LLM_TIMEOUT_MS_<PROVIDER>` (`_PI`, `_AGY`, `_KIMI`, `_GEMINI`) | Per-provider timeouts | `HOUGE_OMP_ONESHOT_TIMEOUT_MS`; voice keeps `HOUGE_LLM_TIMEOUT_MS_MEDIA` |
+| `HOUGE_PI_ENV_PASSTHROUGH` | pi child env | `HOUGE_OMP_ENV_PASSTHROUGH` |
+| `HOUGE_KIMI_BASE_URL` · `HOUGE_KIMI_MAX_TOKENS` | kimi-api leg | Kimi Code OAuth inside omp |
+| `HOUGE_GEMINI_BASE_URL` · `HOUGE_GEMINI_MAX_TOKENS` | gemini-api leg | Google Antigravity OAuth inside omp |
+| `HOUGE_KIMI_CLI_BIN` · `HOUGE_KIMI_CLI_MODEL` · `HOUGE_KIMI_CLI_TIMEOUT_MS` | kimi-cli reviewer | `HOUGE_OMP_REVIEWER` |
+| `HOUGE_CLAUDE_BIN` · `HOUGE_RADAR_CHAIR_TIMEOUT_MS` | claude-CLI panel chair | `HOUGE_OMP_CHAIR`, `HOUGE_OMP_ONESHOT_TIMEOUT_MS` |
+| `HOUGE_BOUNTY_ENABLED` · `HOUGE_BOUNTY_MAX_CANDIDATES` | Money track, `bounty_scan` | Deleted ([ADR 0022 amendment](../decisions/0022-money-fork-reopened.md)) |
+| `HOUGE_EXTWORK_ENABLED` · `HOUGE_EXTWORK_IMAGE` · `HOUGE_EXTWORK_MEMORY` · `HOUGE_EXTWORK_CPUS` · `HOUGE_EXTWORK_PIDS` · `HOUGE_EXTWORK_SIZE_CAP_MB` · `HOUGE_EXTWORK_SCRATCH_DIR` · `HOUGE_EXTWORK_CLONE_TIMEOUT_MS` · `HOUGE_EXTWORK_STAGE_TIMEOUT_MS` | External workspace | Deleted ([ADR 0023 amendment](../decisions/0023-external-workspace.md)) |
+
+Still parsed but inert: `HOUGE_JEV_SHADOW_ENABLED`. Its resolver in `src/jev/shadow.ts` survives, but
+nothing calls it. Secrets with no consumer: `KIMI_API_KEY`, `GEMINI_API_KEY`,
+`CLAUDE_CODE_OAUTH_TOKEN` (see [Secrets firewall](#secrets-firewall-adr-0015-phase-1)).
+
+These were documented here but unread even before the cutover, and their rows are gone too:
+`HOUGE_LLM_PROVIDER`, `HOUGE_CLAUDE_MODEL`, `HOUGE_CLAUDE_WRITER_MODEL`,
+`HOUGE_CLAUDE_REVIEWER_MODEL`, `HOUGE_CLAUDE_TIMEOUT_MS`.

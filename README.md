@@ -83,51 +83,44 @@ dual-LLM wall and its description joins your caption. Videos and files are not r
 
 ## LLM providers
 
-Cognition resolves an ordered provider chain with automatic fallback (first `ok`
-wins; `unavailable`/error/timeout fall through). Default and live chain `pi,agy-cli`;
-the reader runs it reversed, `agy-cli,pi`. Two kinds of leg: **coding-tuned** — `pi`
-(hardened single-shot CLI, tools disabled) and `kimi-api` (OpenAI-compatible HTTP) —
-and **general** — `agy-cli` (the Antigravity CLI in `--print` mode, Gemini Flash) and
-`gemini-api` (Google's OpenAI-compat endpoint). The general legs exist because a coding
-model over-produces on research/answer prose and blew `pi`'s 256KB output cap (the
-2026-06-26 silent-failure incident); a general leg synthesizes cleanly and catches the
-fall-through. Postscript 2026-09-06: that cap was measuring pi's JSONL *stream* — one line
-per token, each carrying a zeroed usage struct, ~60× the answer — so it was really a
-~600-word answer cap. It is now an 8 MB stream memory bound plus a 256 KB cap on the
-extracted answer; an ordinary long answer no longer falls through. All model-agnostic — best model per capability.
+Houge runs on **omp** (`@oh-my-pi/pi-coding-agent`, an oh-my-pi fork), pinned at `18.4.4`, under
+its own profile `houge`, on **subscription OAuth only**: no metered API
+([ADR 0028](docs/decisions/0028-omp-runtime.md)). Each Telegram chat gets one supervised omp
+planner (Opus 5.5 by default, falling back to Opus 4.6 and then Kimi k3). The planner works with
+real tools: `read`/`edit`/`write` on the mini, a sandboxed `bash`, and Houge's own tools through a
+daemon-side bridge. Every other seat (the quarantined reader, photos, background ticks, the idea
+panel, the self-write reviewer) is a tool-less one-shot omp call on its own model chain. Voice notes
+stay on the flat-rate `agy-cli` leg, because omp cannot hear audio yet.
 
-**CLI-only since 2026-09-06.** Every default chain is flat-rate CLI: the metered legs
-(`kimi-api`, `gemini-api`) still build, but nothing reaches them unless an operator
-names one in `HOUGE_LLM_PROVIDERS`. The migration repaired four defects found while
-tracing an unexplained Google bill — a retired model pin that made the flat-rate `agy`
-leg fail *every* call and fall through to the paid ones silently, a reader chain that
-led with the paid API on the system's highest-volume LLM path, thinking tokens counted
-as zero (5–11× output undercount, which also blinded the ADR 0019 metered-$ ceiling),
-and whole call paths emitting no telemetry at all. See
-[the design](docs/superpowers/specs/2026-09-04-cli-only-llm-and-audit-chokepoint-design.md).
-Both CLI legs down at once has an operator escape hatch, but read it carefully — it is **two**
-env vars and a restart, not one line:
+**One-time setup: the four subscription logins.** Run these on the mini, under the `houge` profile,
+never the default one:
 
-```
-HOUGE_LLM_PROVIDERS=gemini-api          # the planner
-HOUGE_LLM_READER_PROVIDERS=gemini-api   # the reader has its OWN chain and ignores the line above
+```bash
+omp --profile houge login anthropic            # Claude Max: Opus 5.5 planner and chair
+omp --profile houge login google-antigravity   # Gemini reader and photos; Opus 4.6 fallback
+omp --profile houge login kimi-code            # k3: ticks, judge, reviewer, last planner fallback
+omp --profile houge login openai-codex         # GPT-5.5 judge and reader fallback
 ```
 
-`loadHougeEnv` never overrides an already-set variable and there is no reload path, so the daemon
-must be restarted; the hatch is not reachable from Telegram, since every message route needs the
-LLM that is down. Setting only the planner var leaves the reader pinned to the dead CLIs, where it
-fails *silently* — an unreadable external source looks the same to the planner as a page that had
-no content. Note also that the ADR 0019 metered ceiling will drop the leg you just enabled once it
-latches (it logs when it does); raise `HOUGE_METERED_DAILY_USD` for the duration of the incident.
-Houge answers in its own voice — a projection of its Core Identity
-([memory/core/houge.md](memory/core/houge.md)): the cheerful, capable 猴哥, but
-*inference only* (it answers; it doesn't act) on the **answer** path. Override the
-persona with `HOUGE_ASK_SYSTEM_PROMPT`.
+The grants live in `~/.omp/profiles/houge`, a secret path: the sandbox and the policy hook keep it
+from the planner's tools. Kimi Code refreshes its token against kimi.ai, so the daemon passes the
+`KIMI_CODE_OAUTH_HOST` and `KIMI_CODE_BASE_URL` pair into omp children. That pair is the default
+value of `HOUGE_OMP_ENV_PASSTHROUGH`, so leave the variable unset unless omp needs another name.
 
-→ Every provider/model/timeout/key variable: [configuration reference](docs/reference/configuration.md#llm-provider-chain-powers-cognition).
-The inference-vs-agentic safety boundary (why a tools-disabled `pi` is `external_read`):
-[ADR 0002](docs/decisions/0002-pi-as-agent-runtime.md). Identity & memory direction:
-[ADR 0005](docs/decisions/0005-agent-memory-architecture.md).
+**The version pin.** Every spawn checks `omp --version` against `HOUGE_OMP_VERSION` (default
+`18.4.4`) and refuses on a mismatch, opening incident `omp_version_mismatch`. To move the pin:
+install the new omp, run `node scripts/live-gate-omp.mjs --smoke`, set `HOUGE_OMP_VERSION` to the
+new version (or add it to `HOUGE_OMP_VERSION_ALLOW`), and restart the daemon. omp's own update
+checks are switched off in the profile config.
+
+Each seat's model is one `provider/model[:effort]` chain in a `HOUGE_OMP_*` variable. The old
+`HOUGE_LLM_*`, pi, kimi-api and gemini-api settings are gone. Houge answers in its own voice, a
+projection of its Core Identity ([memory/core/houge.md](memory/core/houge.md)).
+
+→ Every `HOUGE_OMP_*` variable, its default, and what was removed:
+[configuration reference](docs/reference/configuration.md#llm-runtime--omp-adr-0028).
+The threat model and floors: [ADR 0028](docs/decisions/0028-omp-runtime.md). Identity & memory
+direction: [ADR 0005](docs/decisions/0005-agent-memory-architecture.md).
 
 ## Learning
 
@@ -251,8 +244,8 @@ the synchronous loop**:
 1. **Protected-path check** (deterministic, ungameable) → **HARD DENY** if the diff touches the locked
    surface (gates, identity/ADRs, deps/build, or an *existing* test).
 2. **Test gate** → `typecheck` + `npm test` + `build` in the worktree; red fails.
-3. **Claude reviewer** (model diversity: Codex writes, Claude judges) → an adversarial
-   *fixes-it / bugs / scope-creep* verdict — the staff-engineer check tests can't give.
+3. **Independent reviewer** (model diversity: Codex writes, an omp seat on `HOUGE_OMP_REVIEWER` judges) →
+   an adversarial *fixes-it / bugs / scope-creep* verdict — the staff-engineer check tests can't give.
 
 A failed checker 2 or 3 feeds back to Codex for a **refine loop capped at ≤3** passes. Only if all three
 pass does Houge **auto-publish the diff as a branch** (`houge/selfwrite/<run-id>`) and **notify Paco**.
@@ -266,11 +259,10 @@ edit. **The daemon never hot-swaps** — Houge publishes a branch but **cannot m
 `git merge` can. **Off by default.** Every outcome (published / hard-deny / failed) is **signal, never a
 silent drop**: a structured run-store event plus an async Telegram notification in Houge's voice.
 
-**How Paco operates it.** Flip `HOUGE_SELFWRITE_ENABLED=true` (and point `HOUGE_CLAUDE_BIN` at the
-absolute `claude` path). Then, when notified of a published branch, **review the `houge/selfwrite/<run-id>`
+**How Paco operates it.** Flip `HOUGE_SELFWRITE_ENABLED=true`. Then, when notified of a published branch, **review the `houge/selfwrite/<run-id>`
 branch in git, `git merge` it, and reload the daemon** — at his leisure (pull-based, not a blocking
-gate). Config: `HOUGE_SELFWRITE_ENABLED` / `HOUGE_SELFWRITE_REVIEWER` / `HOUGE_CLAUDE_BIN` /
-`HOUGE_CLAUDE_TIMEOUT_MS` / `HOUGE_TESTGATE_TIMEOUT_MS` (the write adapter reuses `HOUGE_CODEX_*`) — see
+gate). Config: `HOUGE_SELFWRITE_ENABLED` / `HOUGE_SELFWRITE_REVIEWER` / `HOUGE_OMP_REVIEWER` /
+`HOUGE_TESTGATE_TIMEOUT_MS` (the write adapter reuses `HOUGE_CODEX_*`) — see
 [configuration](docs/reference/configuration.md#self-evolution-phase-3--code-self-write). Rationale:
 [ADR 0011](docs/decisions/0011-self-evolution-architecture.md) §7 + its
 [2026-06-25 amendment](docs/decisions/0011-self-evolution-architecture.md#amendment-2026-06-25-self-write-is-autonomous-to-branch-checkpoint--merge-not-approve);
@@ -278,8 +270,8 @@ spec: [Phase 3 spec](docs/superpowers/specs/2026-06-25-phase3-code-self-write.md
 
 **3.1: swappable writer/reviewer + token telemetry.** The **writer** is now swappable too (it was
 hardcoded to Codex), so the heavy-token role can sit on whichever subscription is largest:
-`HOUGE_SELFWRITE_WRITER` (`codex` | `claude`, default `codex`) pairs with `HOUGE_SELFWRITE_REVIEWER` —
-e.g. `WRITER=claude` + `REVIEWER=codex` for Claude Max 5x writer + Codex Plus reviewer. The guard
+`HOUGE_SELFWRITE_WRITER` (now `codex` only; the Claude writer was later removed) pairs with
+`HOUGE_SELFWRITE_REVIEWER` (`omp` by default, or `codex`). The guard
 checks the diff, not the author, so the swap can't widen what may land; same-provider writer+reviewer
 logs a soft warning (model diversity), never blocks. **Every LLM leg attempt is recorded**: each leg
 tried — success, failure, or fallthrough, run-scoped or daemon tick — emits an `llm_attempt`
