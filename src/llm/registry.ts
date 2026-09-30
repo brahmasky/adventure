@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { spawnOneShot, type OneShotDeps } from "./providers/omp.js";
+import { OMP_AUDIO_REFUSED, spawnOneShot, type OneShotDeps } from "./providers/omp.js";
 import type { OmpCheckFailure } from "../omp/omp-version.js";
 import type { OmpConfig } from "../omp/omp-config.js";
 import type { ModelFamily, ModelString } from "../omp/model-string.js";
@@ -171,6 +171,7 @@ export function oneShotAdapter(
   const base = "run_id" in scope ? scope.run_id : scope.correlation_id;
   return {
     answer: async (req) => {
+      if (req.media?.mime.startsWith("audio/")) return { ok: false, provider: "omp", error: OMP_AUDIO_REFUSED };
       const chain = req.media ? cfg.media : (opts.chain ?? seatChain(cfg, scope.role));
       const r = await spawnOneShot(
         {

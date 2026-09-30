@@ -1,5 +1,5 @@
 // tests/llm/seat-routing.test.ts
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { familyOf } from "../../src/omp/model-string.js";
 import { judgeSeat, oneShotAdapter, seatBudgetMs, seatChain } from "../../src/llm/registry.js";
 import { RunStore } from "../../src/run/run-store.js";
+import { OMP_AUDIO_REFUSED, spawnOneShot } from "../../src/llm/providers/omp.js";
 import { FAKE_OMP_BIN, pinOmpEnv } from "../helpers/omp-env.js";
 
 pinOmpEnv();
@@ -86,6 +87,16 @@ describe("oneShotAdapter — the audited one-shot call every seat makes", () => 
     const refuse = () => ({ ok: false as const, kind: "no_version" as const, version: null, reason: "printed nothing" });
     const r = await oneShotAdapter(store, cfg, { correlation_id: "tick:s", role: "extract" }, undefined, { versionCheck: refuse }).answer({ question: "q" });
     expect(r).toMatchObject({ ok: false, unavailable: true, omp_check: { kind: "no_version" } });
+  });
+
+  it("M4: audio never reaches omp — an audio/* attachment is refused code-owned at the adapter, and an audio file at spawnOneShot", async () => {
+    const cfg = fakeCfg({ "*": { text: "invented transcript" } });
+    const seat = oneShotAdapter(store, cfg, { correlation_id: "tick:a", role: "reader" });
+    expect(await seat.answer({ question: "q", media: { path: "/tmp/houge-media-x/media.opus", mime: "audio/ogg" } })).toEqual({ ok: false, provider: "omp", error: OMP_AUDIO_REFUSED });
+    expect(await spawnOneShot({ seat: "reader", chain: cfg.media, prompt: "q", files: ["/tmp/x/voice.ogg"], correlationId: "c" }, { cfg, audit: store.llmAuditSink({ correlation_id: "tick:a", role: "reader" }) }))
+      .toEqual({ ok: false, provider: "omp", error: OMP_AUDIO_REFUSED });
+    expect(existsSync(join(dir, "argv.log"))).toBe(false); // nothing spawned, not even the version check
+    expect(store.getLedgerEventsByCorrelation("tick:a")).toEqual([]);
   });
 
   it("a reader on the planner's family still answers and records family_collapse + a wall_collapse event (D10)", async () => {

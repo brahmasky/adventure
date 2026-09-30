@@ -58,7 +58,15 @@ function legFailure(o: LegOutcome): string | null {
   return null;
 }
 
+/**
+ * omp cannot hear audio: it inlines Ogg bytes as TEXT and the model invents a transcript (ruling 2,
+ * live probe 2026-09-30). Code-owned refusal at the chokepoint — voice belongs to the agy-cli leg.
+ */
+export const OMP_AUDIO_REFUSED = "omp one-shot refuses audio (voice runs on the agy-cli leg)";
+const AUDIO_FILE = /\.(opus|ogg|oga|mp3|wav|m4a|aac|flac|amr|weba)$/i;
+
 export async function spawnOneShot(input: OneShotInput, deps: OneShotDeps): Promise<LlmResult> {
+  if ((input.files ?? []).some((f) => AUDIO_FILE.test(f))) return { ok: false, provider: "omp", error: OMP_AUDIO_REFUSED };
   const version = (deps.versionCheck ?? (() => checkOmpVersion(deps.cfg)))();
   // No leg ran, so no audit row: the structured check rides out for the caller's incident (ruling 6).
   if (!version.ok) return { ok: false, provider: "omp", error: version.reason, unavailable: true, omp_check: version };
