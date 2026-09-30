@@ -7,6 +7,7 @@ import { RunStore } from "../../src/run/run-store.js";
 import { OMP_LOOP_DISCIPLINE } from "../../src/prompt/composer.js";
 import {
   assistantIntentFor,
+  CLARIFY_CAP_NOTICE,
   buildTurnPrompt,
   SCHEDULED_PREFIX,
   systemPromptFingerprint,
@@ -156,5 +157,33 @@ describe("turn context — what the planner knows and how ratings attribute (spe
       run_id: createQueuedTurnRun(store), chat_id: "1", message: "run it", source: "schedule"
     });
     expect(out.startsWith(SCHEDULED_PREFIX("run it"))).toBe(true);
+  });
+
+  describe("the consecutive-clarify cap (spec §6)", () => {
+    const prompt = (store: RunStore, env: NodeJS.ProcessEnv = {}) =>
+      buildTurnPrompt({ ...deps(store), env, now: () => new Date() }, { run_id: createQueuedTurnRun(store), chat_id: "42", message: "the pdf one", source: "telegram" });
+    const seedClarify = (store: RunStore) => {
+      store.recordChatTurn({ chat_id: "42", run_id: "r0", role: "user", text: "fix the file" });
+      store.recordChatTurn({ chat_id: "42", run_id: "r0", role: "assistant", text: "Which file do you mean?", intent: "clarify" });
+      store.recordChatTurn({ chat_id: "42", run_id: "r1", role: "user", text: "the pdf one" });
+    };
+
+    it("below the cap: no notice (a first clarifying question is allowed)", async () => {
+      const store = RunStore.openInMemory();
+      store.recordChatTurn({ chat_id: "42", run_id: "r0", role: "assistant", text: "Done.", intent: "loop" });
+      expect(await prompt(store)).toBe("the pdf one");
+    });
+
+    it("at the cap: the prompt opens with the code-owned notice so the planner acts instead of asking again", async () => {
+      const store = RunStore.openInMemory();
+      seedClarify(store);
+      expect(await prompt(store)).toBe(`${CLARIFY_CAP_NOTICE}the pdf one`);
+    });
+
+    it("HOUGE_MAX_CONSECUTIVE_CLARIFY raises the cap: one trailing clarify is below a cap of 2", async () => {
+      const store = RunStore.openInMemory();
+      seedClarify(store);
+      expect(await prompt(store, { HOUGE_MAX_CONSECUTIVE_CLARIFY: "2" })).toBe("the pdf one");
+    });
   });
 });

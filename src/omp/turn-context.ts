@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { chatContextSince, countTrailingClarifyTurns, resolveChatContextTurns, resolveMaxConsecutiveClarify } from "../capabilities/intent.js";
 import { composeSystemPrompt } from "../prompt/composer.js";
 import { resolveLessonCapPerScope, type RunStore } from "../run/run-store.js";
 
@@ -28,6 +29,20 @@ export interface TurnPromptInput {
 }
 
 export const SCHEDULED_PREFIX = (goal: string): string => `[scheduled: ${goal}]\n`;
+
+/**
+ * The consecutive-clarify cap (ADR 0010, spec §6): once Houge has asked `HOUGE_MAX_CONSECUTIVE_CLARIFY`
+ * clarifying questions in a row, the next prompt carries this code-owned line so the planner acts on
+ * its best reading instead of looping on questions.
+ */
+export const CLARIFY_CAP_NOTICE =
+  "[You have already asked a clarifying question. Do not ask another one: act on your best reading of the request and say what you assumed.]\n";
+
+/** True when this chat's trailing clarify turns have reached the cap. */
+export function clarifyCapReached(d: TurnContextDeps, chatId: string): boolean {
+  const turns = d.store.getRecentChatTurns(chatId, resolveChatContextTurns(d.env), chatContextSince(d.env, d.now?.() ?? new Date()));
+  return countTrailingClarifyTurns(turns) >= resolveMaxConsecutiveClarify(d.env);
+}
 const SCOPE = "ask";
 
 /** Telegram chat ids are numeric; anything else could escape <data>/omp through join(). */
@@ -94,7 +109,8 @@ export async function buildTurnPrompt(d: TurnContextDeps, i: TurnPromptInput): P
   const blocks = [...facts, ...pages].map((x) => x.block.replaceAll("[/context]", "[ /context]"));
   const context = blocks.length > 0 ? `[context]\n${blocks.join("\n\n")}\n[/context]\n\n` : "";
   const prefix = i.source === "schedule" ? SCHEDULED_PREFIX(i.goal ?? i.message) : "";
-  return `${prefix}${context}${i.message}`;
+  const cap = clarifyCapReached(d, i.chat_id) ? CLARIFY_CAP_NOTICE : "";
+  return `${prefix}${cap}${context}${i.message}`;
 }
 
 /** A tool-less reply ending in a short question is a clarify turn (feeds the consecutive-clarify cap). */
