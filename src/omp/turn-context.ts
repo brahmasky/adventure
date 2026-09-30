@@ -16,6 +16,7 @@ export interface TurnContextDeps {
     message: string
   ) => Promise<{ facts: Array<{ id: number; block: string }>; pages: Array<{ id: number; block: string }> }>;
   env: NodeJS.ProcessEnv;
+  now?: () => Date;
 }
 
 export interface TurnPromptInput {
@@ -29,8 +30,16 @@ export interface TurnPromptInput {
 export const SCHEDULED_PREFIX = (goal: string): string => `[scheduled: ${goal}]\n`;
 const SCOPE = "ask";
 
+/** Telegram chat ids are numeric; anything else could escape <data>/omp through join(). */
+function assertChatId(chatId: string): void {
+  if (!/^-?\d+$/.test(chatId)) throw new Error("invalid chat id");
+}
+
 function renderSystemPrompt(d: TurnContextDeps, chatId: string): string {
+  assertChatId(chatId);
+  // The date line makes the fingerprint flip daily (UTC midnight): intended, it restarts the child at the next turn so the date stays true.
   return composeSystemPrompt(d.memoryRoot, "omp", {
+    now: d.now?.(),
     lessonsReader: d.lessonsReader,
     lessonsScope: SCOPE,
     skillsReader: d.skillsReader,
@@ -82,7 +91,7 @@ function recordAttribution(
 export async function buildTurnPrompt(d: TurnContextDeps, i: TurnPromptInput): Promise<string> {
   const { facts, pages } = await d.retrieve(i.chat_id, i.message);
   recordAttribution(d, i.run_id, facts, pages);
-  const blocks = [...facts, ...pages].map((x) => x.block);
+  const blocks = [...facts, ...pages].map((x) => x.block.replaceAll("[/context]", "[ /context]"));
   const context = blocks.length > 0 ? `[context]\n${blocks.join("\n\n")}\n[/context]\n\n` : "";
   const prefix = i.source === "schedule" ? SCHEDULED_PREFIX(i.goal ?? i.message) : "";
   return `${prefix}${context}${i.message}`;
@@ -92,5 +101,5 @@ export async function buildTurnPrompt(d: TurnContextDeps, i: TurnPromptInput): P
 export function assistantIntentFor(text: string, usedTool: boolean): "clarify" | "loop" {
   if (usedTool) return "loop";
   const t = text.trim();
-  return /[?？]\s*$/.test(t) && t.length < 600 ? "clarify" : "loop";
+  return /[?？][\s"'”」）)]*$/.test(t) && t.length < 600 ? "clarify" : "loop";
 }
