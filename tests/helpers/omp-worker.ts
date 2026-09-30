@@ -6,6 +6,7 @@ import { CoreWorker, type MediaWorkerDeps } from "../../src/core/core-worker.js"
 import { createBridgeHandler, type ActiveTurn, type CallResult } from "../../src/omp/bridge-handler.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { loadToolDeclarations, TOOL_DECLS_DIR } from "../../src/omp/tool-decls.js";
+import { chatWorkspace } from "../../src/omp/workspace.js";
 import type { RunStore } from "../../src/run/run-store.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
 import { tmpOmpDist } from "./omp-env.js";
@@ -64,7 +65,7 @@ export function bridgeTurn(store: RunStore, worker: CoreWorker, run_id: string, 
   const turn: ActiveTurn = {
     run_id, worker_id, chat_id, requester: store.getRunRequester(run_id), contract: claim.contract,
     budget: new BudgetLedger(claim.contract.budget), registry: tools.registry, signal: new AbortController().signal,
-    cwd: join(dataDir, "omp", "workspace", `chat-${chat_id}`), step: { n: 0 }, cache: new Map(), unreported: new Map(),
+    cwd: chatWorkspace(dataDir, chat_id), step: { n: 0 }, cache: new Map(), unreported: new Map(),
     quarantine: tools.quarantine, setAwaitingApproval: () => undefined, postureOk: () => null
   };
   const decls = loadToolDeclarations(TOOL_DECLS_DIR);

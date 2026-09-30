@@ -17,6 +17,7 @@ import { PlannerSession, type ExitInfo, type PlannerSessionOptions } from "./pla
 import { realpathOrSelf, type PathContext } from "./protected-paths.js";
 import { writeSeatbeltProfiles } from "./seatbelt.js";
 import { verifyInstalledWrapper } from "./shell-wrapper.js";
+import { chatWorkspace } from "./workspace.js";
 import type { ToolDeclaration } from "./tool-decls.js";
 import { assistantIntentFor, buildTurnPrompt, systemPromptFingerprint, writeSystemPromptFile, type TurnContextDeps } from "./turn-context.js";
 
@@ -198,7 +199,7 @@ export class PlannerSupervisor {
   }
 
   private top(): ModelString { return this.d.cfg.planner[0] as ModelString; }
-  private workspace(): string { return join(this.d.ctx.data, "omp", "workspace", `chat-${this.d.chatId}`); }
+  private workspace(): string { return chatWorkspace(this.d.ctx.data, this.d.chatId); }
   private incident(kind: string, detail: Record<string, unknown>): void {
     this.d.outcome.incident(kind, { chat_id: this.d.chatId, ...detail });
   }

@@ -13,6 +13,7 @@ import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
 import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
 import { CoreWorker, type OmpWorkerOptions } from "../core/core-worker.js";
+import { chatWorkspace } from "../omp/workspace.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
@@ -204,7 +205,7 @@ export async function runTelegramDaemon(
   const dispatcher = new NotificationDispatcher(new NotificationOutbox(options.store), {
     local: new LocalNotificationAdapter(),
     telegram: new TelegramNotificationAdapter(options.telegramClient, {
-      workspaceFor: (chat_id) => join(options.omp?.dataDir ?? options.projectRoot, "omp", "workspace", `chat-${chat_id}`)
+      workspaceFor: (chat_id) => chatWorkspace(options.omp?.dataDir ?? options.projectRoot, chat_id)
     })
   });
   // Turns run detached: their approval cards and replies land in the outbox between polls, so a

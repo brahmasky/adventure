@@ -9,6 +9,7 @@ import { PlannerSupervisor, parseAttachments, type PlannerSessionLike, type Supe
 import type { OmpFrame } from "../../src/omp/omp-frames.js";
 import type { ExitInfo, PlannerSessionOptions } from "../../src/omp/planner-session.js";
 import { ToolRegistry } from "../../src/tools/tool-registry.js";
+import { chatWorkspace } from "../../src/omp/workspace.js";
 import { openManifestClient } from "../helpers/bridge-manifest.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 
@@ -114,7 +115,7 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
     expect(o.bridgeToken).toMatch(/^[0-9a-f]{48}$/);
     expect(o.bridgeSock.startsWith(join(data, "omp", "bridge"))).toBe(true);
     expect(Buffer.byteLength(o.bridgeSock)).toBeLessThan(104);
-    expect(o.cwd).toBe(join(data, "omp", "workspace", "chat-42"));
+    expect(o.cwd).toBe(chatWorkspace(data, "42"));
   });
 
   it("writes one llm_attempt per model request with request_key and family (spec §8)", async () => {

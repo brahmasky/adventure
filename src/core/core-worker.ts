@@ -181,6 +181,7 @@ import { shellToolExecute } from "../omp/shell-adapter.js";
 import { loadToolDeclarations, TOOL_DECLS_DIR, type ToolDeclaration } from "../omp/tool-decls.js";
 import type { TurnContextDeps } from "../omp/turn-context.js";
 import { readTombstone } from "../run/tombstone.js";
+import { chatWorkspace } from "../omp/workspace.js";
 import {
   EMPTY_REPLY_TEXT, failureNotifyText, OMP_BUILTIN_META, OMP_LOOP_TOOL_META, OMP_SHELL_META, plannerFailureText, TURN_UNAVAILABLE_TEXT
 } from "./omp-turn-wiring.js";
@@ -2317,7 +2318,7 @@ export class CoreWorker {
     const cfg = resolveOmpConfig(process.env);
     const shell = shellToolExecute({
       cfg, ctx: { home: homedir(), repo: this.projectRoot, data: this.ompDataDir() },
-      distDir: this.ompOptions.distDir ?? join(this.projectRoot, "dist"), cwd: join(this.ompDataDir(), "omp", "workspace", `chat-${chatId}`),
+      distDir: this.ompOptions.distDir ?? join(this.projectRoot, "dist"), cwd: chatWorkspace(this.ompDataDir(), chatId),
       onIncident: (kind, detail) => { this.runStore.openIncident({ kind, subject: `chat:${chatId}`, detail: { run_id: claim.run_id, ...detail } }); }
     });
     for (const [name, meta] of Object.entries(OMP_SHELL_META)) {
