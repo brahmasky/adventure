@@ -1,4 +1,6 @@
 import { CoreWorker, type OmpWorkerOptions } from "../core/core-worker.js";
+import { resolveOmpConfig } from "../omp/omp-config.js";
+import type { PlannerSupervisor } from "../omp/planner-supervisor.js";
 import { evolutionLaneSettled } from "../core/evolution-lane.js";
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
@@ -160,10 +162,9 @@ export async function runTelegramPollOnce(
 
   // One-shot: the caller closes the store right after this returns, so every submitted turn must
   // finish (its reply queued) and every planner child must stop BEFORE the dispatch flush below.
-  await Promise.all(worker.plannerSupervisors().map((s) => s.whenIdle()));
+  await settlePlannerTurns(worker.plannerSupervisors(), resolveOmpConfig(process.env).turnTimeoutMs);
   await worker.shutdownPlanners();
-  const lastTurn = turns.at(-1);
-  if (lastTurn) worker_status = options.store.getRunState(lastTurn);
+  worker_status = lastTurnState(options.store, turns) ?? worker_status;
 
   // ⓪·3g: a turn may have kicked off a background evolution pipeline. The ONE-SHOT
   // runner exits (and its caller closes the store) right after this function returns,
@@ -194,4 +195,27 @@ export async function runTelegramPollOnce(
     worker_status,
     dispatch_results
   };
+}
+
+/**
+ * Wait for every submitted turn, bounded by the turn timeout: a planner that never goes idle must
+ * not hang the one-shot runner. On timeout every supervisor is aborted with the `guard` posture
+ * (its turn fails with the code-owned reply) before the caller stops the children.
+ */
+export async function settlePlannerTurns(
+  supervisors: Array<Pick<PlannerSupervisor, "whenIdle" | "abortAll">>,
+  timeoutMs: number
+): Promise<"idle" | "aborted"> {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<"aborted">((resolve) => { timer = setTimeout(() => resolve("aborted"), timeoutMs); timer.unref(); });
+  const idle = Promise.all(supervisors.map((s) => s.whenIdle())).then(() => "idle" as const);
+  const outcome = await Promise.race([idle, expired]).finally(() => clearTimeout(timer));
+  if (outcome === "aborted") await Promise.all(supervisors.map((s) => s.abortAll("guard")));
+  return outcome;
+}
+
+/** The last submitted turn's run state, for the runner's result (undefined when no turn ran). */
+function lastTurnState(store: RunStore, turns: string[]): string | undefined {
+  const last = turns.at(-1);
+  return last ? store.getRunState(last) : undefined;
 }

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
-import { runTelegramPollOnce } from "../../src/telegram/telegram-poll-runner.js";
+import { runTelegramPollOnce, settlePlannerTurns } from "../../src/telegram/telegram-poll-runner.js";
 import { pinOmpEnv, shortTmp, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
 
 // PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
@@ -199,5 +199,23 @@ describe("runTelegramPollOnce", () => {
         store.close();
       }
     }
+  });
+});
+
+describe("settlePlannerTurns — the one-shot runner never hangs on a planner (M5)", () => {
+  it("returns idle once every supervisor is idle, aborting nothing", async () => {
+    const aborts: string[] = [];
+    const sup = { whenIdle: async () => undefined, abortAll: async (r: "killed" | "guard") => { aborts.push(r); } };
+    expect(await settlePlannerTurns([sup, sup], 1_000)).toBe("idle");
+    expect(aborts).toEqual([]);
+  });
+
+  it("a supervisor that never goes idle is aborted with the guard posture after the bound", async () => {
+    const aborts: string[] = [];
+    const stuck = { whenIdle: () => new Promise<void>(() => undefined), abortAll: async (r: "killed" | "guard") => { aborts.push(r); } };
+    const t0 = Date.now();
+    expect(await settlePlannerTurns([stuck], 50)).toBe("aborted");
+    expect(Date.now() - t0).toBeLessThan(2_000);
+    expect(aborts).toEqual(["guard"]);
   });
 });
