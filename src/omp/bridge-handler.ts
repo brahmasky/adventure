@@ -248,6 +248,7 @@ function pathDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, raw: string, entr
 }
 
 function gateDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, req: GateReq, entry: FsEntry): string | null {
+  if (turn.signal.aborted) return "turn_aborted"; // as handleCall: nothing new runs once the turn is aborted
   const posture = turn.postureOk();
   if (posture) return posture;
   const raws = gatePaths(req.input ?? {});

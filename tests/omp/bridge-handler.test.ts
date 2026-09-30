@@ -382,6 +382,16 @@ describe("bridge handler — the gate canonicalises paths exactly as omp does (s
     });
 });
 
+describe("bridge handler — a gate on an aborted turn (security M4, A10)", () => {
+  it("denies turn_aborted: a built-in write after a deadline or watchdog abort never runs, and reserves no budget", async () => {
+    const { handle, ac, turn, events } = setup();
+    ac.abort();
+    for (const tool of ["read", "write"] as const) expect(await handle(gate(tool, "/tmp/x", `ab-${tool}`))).toEqual({ decision: "deny", reason: "turn_aborted" });
+    expect(turn.budget.usage().tool_calls).toBe(0);
+    expect(events("tool_finished")).toContainEqual(expect.objectContaining({ tool_call_id: "ab-write", status: "denied", reason: "turn_aborted" }));
+  });
+});
+
 describe("bridge handler — posture and turn ownership (spec §5.2)", () => {
   it("any non-manifest request with no active turn fails no_active_turn", async () => {
     const { handle } = setup({ noTurn: true });
