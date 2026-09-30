@@ -67,7 +67,8 @@ const SYMLINK_MODE = "120000";
 export const PROTECTED_DIRS: readonly string[] = [
   "src/policy", // gate machinery (also covers src/policy/capability-policy.ts)
   "docs/decisions", // the ADRs — identity / rules
-  ".github" // CI / supply-chain
+  ".github", // CI / supply-chain
+  "src/omp" // omp runtime: floor A/B, the gate, the wall routing, the child env, the sandbox wrap (security I2)
 ];
 
 export const PROTECTED_FILES: readonly string[] = [
@@ -114,6 +115,9 @@ export const PROTECTED_FILES: readonly string[] = [
   "src/omp/extension/houge-policy.ts",
   "src/omp/extension/houge.ts",
   "scripts/copy-omp-assets.mjs",
+  "src/llm/providers/omp.ts", // the one-shot seats: `--no-tools` on the reader, the child env
+  "src/notifications/telegram-notification-adapter.ts", // the attachment check (workspace re-verification, C2)
+  "src/run/git-hardened.ts", // daemon-side git without user/system config, fsmonitor or hooks (A3)
   // ── Supply chain / build ──
   "package.json",
   "package-lock.json",

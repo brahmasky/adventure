@@ -323,4 +323,19 @@ describe("checkSelfWriteDiff — end-to-end from real raw output shape", () => {
       expect(deniedPaths(r), path).toEqual([path]);
     }
   });
+
+  it("a self-write cannot touch the code that APPLIES floor A and the wall: all of src/omp/, the one-shot provider, the attachment adapter, hardened git (security I2)", () => {
+    const files = [
+      "src/omp/child-env.ts", "src/omp/planner-session.ts", "src/omp/shell-adapter.ts", "src/omp/omp-config.ts",
+      "src/omp/bridge-handler.ts", "src/omp/external-read.ts", "src/omp/gate-path.ts", "src/omp/workspace.ts", "src/omp/new-file.ts",
+      "src/llm/providers/omp.ts", "src/notifications/telegram-notification-adapter.ts", "scripts/copy-omp-assets.mjs", "src/run/git-hardened.ts"
+    ];
+    for (const path of files) {
+      for (const status of ["M", "A", "D"] as const) {
+        const r = check(entry({ status, path }));
+        expect(r.allowed, `${status} ${path}`).toBe(false);
+      }
+    }
+    expect(check(entry({ status: "M", path: "src/omphalos.ts" })).allowed).toBe(true); // segment boundary
+  });
 });
