@@ -4,7 +4,7 @@
 //   Behaviour = { frames?: "<fixture file name>", text?: string, exit?: number, stderr?: string,
 //                 sleepMs?: number, usage?: {input:number, output:number} }
 //   rpc mode also reads: rpcText, rpcEcho (reply carries the prompt), rpcNoManifest (skip the bridge
-//   manifest at startup), rpcFinishOnSteer (hold the reply until a steer arrives), rpcCall: { tool, args } (one bridge `call` after the prompt; its content is
+//   manifest at startup), rpcIgnoreAbort (ack an abort but never end the turn), rpcFinishOnSteer (hold the reply until a steer arrives), rpcCall: { tool, args } (one bridge `call` after the prompt; its content is
 //   appended to the reply as " CALL:<content>"), rpcHangAfterPrompt, rpcNoReply, rpcExitAfterPrompt, …
 // In rpc mode the fake plays the omp extension's load-time side of the bridge (hello + manifest over
 // HOUGE_BRIDGE_SOCK with HOUGE_BRIDGE_TOKEN, src/omp/bridge-protocol.ts) so the supervisor's start check passes.
@@ -40,7 +40,7 @@ async function runRpc() {
       if (held) { const h = held; held = null; finish(h.b, h.message, ""); }
       return;
     }
-    if (cmd.type === "abort") { reply(); return out({ type: "agent_end", messages: [], aborted: true }); }
+    if (cmd.type === "abort") { reply(); if (b.rpcIgnoreAbort) return; return out({ type: "agent_end", messages: [], aborted: true }); }
     if (cmd.type !== "prompt") return reply();
     if (b.rpcExitAfterPrompt) process.exit(3);
     if (b.rpcNoReply) return;

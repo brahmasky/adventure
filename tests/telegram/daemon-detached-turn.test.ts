@@ -73,12 +73,15 @@ describe("detached turns in the daemon (Task 13)", () => {
     }
   });
 
-  it("/kill aborts the live turn without blocking the poll loop: the run fails killed and Paco is told", async () => {
+  it("/kill aborts the live turn without blocking the poll loop: the next poll runs while the run is still running", async () => {
+    // The fake acks the abort but never ends the turn, so abortAll must wait out its grace bound
+    // (≈5 s) before it stops the child. A detached /kill lets the next poll through meanwhile.
+    useFakeOmp({ "*": { rpcHangAfterPrompt: true, rpcIgnoreAbort: true, rpcCall: { tool: "bash", args: { command: "rm -rf ./scratch-dir" } } } }, root);
     const store = RunStore.openInMemory();
     const controller = new AbortController();
     const sent: string[] = [];
     let calls = 0;
-    let secondPollReached = false;
+    const seen = { nextPollWhileRunning: false };
     try {
       await runTelegramDaemon({
         store, projectRoot: root, omp: { dataDir: root, distDir: tmpOmpDist(root) }, allowlist: ALLOWLIST,
@@ -88,21 +91,21 @@ describe("detached turns in the daemon (Task 13)", () => {
             calls += 1;
             if (calls === 1) return [update(1, "clean up the scratch dir")];
             if (calls === 2) { await until(() => toolApprovalId(store) !== undefined); return [update(2, "/kill")]; }
-            secondPollReached = true; // the poll after /kill arrived while the abort ran detached
-            await until(() => sent.includes(KILLED_TEXT)).catch(() => undefined);
+            if (calls === 3) seen.nextPollWhileRunning = store.getRunState(turnRun(store)) === "running";
+            await until(() => sent.includes(KILLED_TEXT), 15_000).catch(() => undefined);
             controller.abort();
             return [];
           },
           sendMessage: async ({ text }) => { sent.push(text); return { message_id: sent.length }; }
         }
       });
-      expect(secondPollReached).toBe(true);
+      expect(seen.nextPollWhileRunning).toBe(true);
       expect(sent).toContain(KILLED_TEXT);
       expect(store.getLedgerEvents(turnRun(store)).find((e) => e.event_type === "run_failed")?.payload).toMatchObject({ error_type: "killed" });
     } finally {
       store.close();
     }
-  });
+  }, 30_000);
 
   it("/rearm clears every planner's crash-loop latch (spec §7)", async () => {
     const reset = vi.spyOn(PlannerSupervisor.prototype, "resetCrashGuard");
