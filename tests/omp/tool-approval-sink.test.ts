@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
 import { createToolApprovalSink, ToolApprovalWaiters } from "../../src/omp/tool-approval-sink.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
@@ -23,5 +23,20 @@ describe("tool-approval sink — the runner's existing approval contract, backed
     expect(await w.wait("a2", 20)).toBe("expired");
     const ac = new AbortController(); const p3 = w.wait("a3", 5_000, ac.signal); ac.abort();
     expect(await p3).toBe("aborted");
+  });
+
+  it("a decision that lands before wait() registers is not lost", async () => {
+    const w = new ToolApprovalWaiters();
+    w.resolve("early", "approved");
+    expect(await w.wait("early", 5_000)).toBe("approved");
+  });
+
+  it("wait removes its abort listener when it settles (per-turn signals are reused)", async () => {
+    const w = new ToolApprovalWaiters();
+    const ac = new AbortController();
+    const remove = vi.spyOn(ac.signal, "removeEventListener");
+    const p = w.wait("l1", 5_000, ac.signal); w.resolve("l1", "denied");
+    expect(await p).toBe("denied");
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
   });
 });

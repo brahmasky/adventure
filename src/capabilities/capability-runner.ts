@@ -54,6 +54,7 @@ export interface CapabilityExecutionInput {
   budget: BudgetLedger;
   signal?: AbortSignal;
   budget_reserved?: boolean;
+  action_summary?: string;
   tool_call_id?: string;
 }
 
@@ -73,7 +74,7 @@ export class CapabilityRunner {
       };
     }
 
-    const reservation = input.budget_reserved ? { ok: true as const } : input.budget.reserveToolCall();
+    const reservation = input.budget_reserved && input.approved_approval_id ? { ok: true as const } : input.budget.reserveToolCall();
     if (!reservation.ok) {
       return {
         status: "denied",
@@ -137,7 +138,7 @@ export class CapabilityRunner {
           action_fingerprint,
           adapter_input_hash,
           adapter_input_json,
-          action_summary: `Execute ${input.capability}`,
+          action_summary: input.action_summary ?? `Execute ${input.capability}`,
           side_effect_level: metadata.side_effect_level,
           risk_level: metadata.risk_level,
           affected_resources: affectedResources(input.input),
@@ -224,18 +225,26 @@ type Settled = { kind: "result"; value: ToolAdapterResult } | { kind: "timeout" 
 async function executeCancellable(
   execute: ToolExecute, input: Record<string, unknown>, timeout_ms: number, external?: AbortSignal
 ): Promise<Settled> {
+  if (external?.aborted) return { kind: "cancelled" };
   const ac = new AbortController();
   const adapter = Promise.resolve().then(() => execute(input, ac.signal));
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let cleanup: ReturnType<typeof setTimeout> | undefined;
+  let onExternalAbort: (() => void) | undefined;
   const stop = new Promise<Settled>((resolve) => {
     timer = setTimeout(() => resolve({ kind: "timeout" }), timeout_ms);
-    if (external?.aborted) resolve({ kind: "cancelled" });
-    external?.addEventListener("abort", () => resolve({ kind: "cancelled" }), { once: true });
+    onExternalAbort = () => resolve({ kind: "cancelled" });
+    external?.addEventListener("abort", onExternalAbort, { once: true });
   });
-  const first = await Promise.race([adapter.then((value): Settled => ({ kind: "result", value })), stop]);
-  clearTimeout(timer);
-  if (first.kind === "result") return first;
-  ac.abort();
-  await Promise.race([adapter.catch(() => undefined), new Promise((r) => setTimeout(r, CLEANUP_BOUND_MS))]);
-  return first;
+  try {
+    const first = await Promise.race([adapter.then((value): Settled => ({ kind: "result", value })), stop]);
+    if (first.kind === "result") return first;
+    ac.abort();
+    await Promise.race([adapter.catch(() => undefined), new Promise((r) => { cleanup = setTimeout(r, CLEANUP_BOUND_MS); })]);
+    return first;
+  } finally {
+    clearTimeout(timer);
+    clearTimeout(cleanup);
+    if (onExternalAbort) external?.removeEventListener("abort", onExternalAbort);
+  }
 }

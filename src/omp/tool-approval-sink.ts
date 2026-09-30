@@ -3,19 +3,40 @@ import type { RunStore } from "../run/run-store.js";
 
 export type WaitOutcome = "approved" | "denied" | "expired" | "aborted";
 
+const EARLY_DECISION_TTL_MS = 10 * 60_000;
+
 export class ToolApprovalWaiters {
   private readonly pending = new Map<string, (o: WaitOutcome) => void>();
+  /** Decisions that arrived before wait() registered (the bridge creates the row, then waits). */
+  private readonly early = new Map<string, { decision: "approved" | "denied"; timer: ReturnType<typeof setTimeout> }>();
+
   wait(approval_id: string, timeoutMs: number, signal?: AbortSignal): Promise<WaitOutcome> {
+    const early = this.early.get(approval_id);
+    if (early) {
+      clearTimeout(early.timer);
+      this.early.delete(approval_id);
+      return Promise.resolve(early.decision);
+    }
     return new Promise((resolve) => {
-      const done = (o: WaitOutcome) => { clearTimeout(timer); this.pending.delete(approval_id); resolve(o); };
+      const onAbort = () => done("aborted");
+      const done = (o: WaitOutcome) => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        this.pending.delete(approval_id);
+        resolve(o);
+      };
       const timer = setTimeout(() => done("expired"), timeoutMs);
       this.pending.set(approval_id, done);
-      if (signal?.aborted) done("aborted");
-      signal?.addEventListener("abort", () => done("aborted"), { once: true });
+      if (signal?.aborted) return done("aborted");
+      signal?.addEventListener("abort", onAbort, { once: true });
     });
   }
   resolve(approval_id: string, decision: "approved" | "denied"): void {
-    this.pending.get(approval_id)?.(decision);
+    const waiter = this.pending.get(approval_id);
+    if (waiter) return waiter(decision);
+    const timer = setTimeout(() => this.early.delete(approval_id), EARLY_DECISION_TTL_MS);
+    timer.unref?.();
+    this.early.set(approval_id, { decision, timer });
   }
 }
 
