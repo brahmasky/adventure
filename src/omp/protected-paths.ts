@@ -25,7 +25,7 @@ export function writableExceptions(ctx: PathContext, kind: "planner" | "shell"):
 export function operationalWriteDeny(ctx: PathContext): string[] {
   return [ctx.repo, join(ctx.repo, "dist"), join(ctx.data, "omp", "bridge"), join(ctx.data, "omp", "planner.sb"),
     join(ctx.data, "omp", "shell.sb"), join(ctx.data, "omp", "houge-config.yml"),
-    join(ctx.home, "Library/LaunchAgents/com.houge.daemon.plist"), join(ctx.data, "houge.kill"), join(ctx.data, "houge.parked")];
+    join(ctx.home, "Library/LaunchAgents"), join(ctx.data, "houge.kill"), join(ctx.data, "houge.parked")];
 }
 
 /**

@@ -20,10 +20,10 @@ describe("floor A path sets — the planner may touch anything under home except
     expect(isDeniedWrite("/Users/p/Downloads/out.csv", ctx)).toBe(false);
   });
 
-  it("denies writes to Houge's own operation: protected repo files, dist, DB, profiles, launch agents", () => {
+  it("denies writes to Houge's own operation: protected repo files, dist, DB, profiles, and any launch agent (a new plist is persistence)", () => {
     for (const p of ["/Users/p/Projects/adventure/src/policy/capability-policy.ts", "/Users/p/Projects/adventure/AGENTS.md",
       "/Users/p/Projects/adventure/dist/cli.js", "/Users/p/Projects/adventure/omp/shell.sb",
-      "/Users/p/Library/LaunchAgents/com.houge.daemon.plist"]) {
+      "/Users/p/Library/LaunchAgents/com.houge.daemon.plist", "/Users/p/Library/LaunchAgents/com.evil.persist.plist"]) {
       expect(isDeniedWrite(p, ctx), p).toBe(true);
     }
   });

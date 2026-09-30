@@ -1,34 +1,42 @@
-import { mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { operationalWriteDeny, protectedRepoPaths, realpathOrSelf, secretPaths, writableExceptions, type PathContext } from "./protected-paths.js";
 
 const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
-/** Not on disk yet: a real extension (or .env) means file; a bare dotdir such as .ssh means directory. */
-function looksLikeFile(p: string): boolean {
-  const base = p.slice(p.lastIndexOf("/") + 1);
-  return base === ".env" || /.\.[a-z0-9-]+$/i.test(base);
-}
+/** Every variant a rule must cover: Seatbelt matches canonical paths, callers may hold either form. */
+const variants = (p: string): string[] => [...new Set([p, realpathOrSelf(p)])];
 
-function isDir(p: string): boolean {
-  try { return statSync(p).isDirectory(); } catch { return !looksLikeFile(p); }
-}
-
+/** subpath always: for a file it is the file itself, so a path that does not exist yet cannot fail open. */
 function rule(verbs: string, p: string): string[] {
-  const variants = [...new Set([p, realpathOrSelf(p)])];
-  return variants.map((v) => `(deny ${verbs} (${isDir(v) ? "subpath" : "literal"} "${esc(v)}"))`);
+  return variants(p).map((v) => `(deny ${verbs} (subpath "${esc(v)}"))`);
+}
+
+/**
+ * Seatbelt checks a rename only against its source and destination, so moving an unprotected ancestor
+ * of a denied root would carry the subtree to a path no rule matches. A literal write deny on each
+ * ancestor directory blocks that rename while still allowing files to be created inside it.
+ */
+function ancestorRules(roots: string[]): string[] {
+  const out = new Set<string>();
+  for (const v of roots.flatMap(variants)) {
+    for (let d = dirname(v); d !== "/" && d !== "."; d = dirname(d)) out.add(`(deny file-write* (literal "${esc(d)}"))`);
+  }
+  return [...out];
 }
 
 function body(ctx: PathContext, kind: "planner" | "shell"): string[] {
   const ompStore = join(ctx.home, ".omp");
   const secrets = kind === "planner" ? secretPaths(ctx).filter((p) => p !== ompStore) : secretPaths(ctx);
+  const writeDeny = [...protectedRepoPaths(ctx), ...operationalWriteDeny(ctx)];
   const allow = (p: string) =>
-    [...new Set([p, realpathOrSelf(p)])].map((v) => `(allow file-write* (subpath "${esc(v)}"))`).join("\n");
+    variants(p).map((v) => `(allow file-write* (subpath "${esc(v)}"))`).join("\n");
   return [
     "(version 1)",
     "(allow default)",
-    ...[...protectedRepoPaths(ctx), ...operationalWriteDeny(ctx)].flatMap((p) => rule("file-write*", p)),
+    ...writeDeny.flatMap((p) => rule("file-write*", p)),
     ...writableExceptions(ctx, kind).map(allow),
+    ...ancestorRules([...writeDeny, ...secrets]),
     // secrets last: SBPL takes the last matching rule, so no allow above can re-open a secret
     ...secrets.flatMap((p) => rule("file-read* file-write*", p)),
     "(deny signal (target others))",
