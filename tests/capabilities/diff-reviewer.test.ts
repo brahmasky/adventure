@@ -206,7 +206,7 @@ describe("reviewDiff", () => {
     const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "fix it",
       diff: "the diff",
-      env: { HOUGE_SELFWRITE_REVIEWER: "codex", HOUGE_CODEX_BIN: bin }
+      env: { ...NO_OMP, HOUGE_SELFWRITE_REVIEWER: "codex", HOUGE_CODEX_BIN: bin }
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -399,7 +399,7 @@ describe("reviewDiff — per-leg audit (Task 12 fix 2: the reviewer's own fallba
       audit: sink,
       task: "fix it",
       diff: "the diff",
-      env: { HOUGE_SELFWRITE_REVIEWER: "codex", HOUGE_CODEX_BIN: bin }
+      env: { ...NO_OMP, HOUGE_SELFWRITE_REVIEWER: "codex", HOUGE_CODEX_BIN: bin }
     });
     expect(result.ok).toBe(true);
     expect(sink.attempts).toHaveLength(1);

@@ -6,6 +6,8 @@ import { OMP_ENV_VARS } from "../../src/omp/omp-config.js";
 
 /** A path that is never an executable: a suite that forgets to point at the fake can never reach a real omp. */
 export const NO_OMP_BIN = "/nonexistent/houge-tests/omp";
+/** The marker the PATH stubs (`omp`, `agy`; tests/helpers/setup-no-real-omp.ts) write to stderr. */
+export const STUB_MARKER = "HOUGE_TEST_STUB";
 export const FAKE_OMP_BIN = new URL("../fixtures/fake-omp.mjs", import.meta.url).pathname;
 const EXTRA = ["FAKE_OMP_SCENARIO", "FAKE_OMP_ARGV_LOG", "HOUGE_BRIDGE_SOCK", "HOUGE_BRIDGE_TOKEN", "FAKE_OMP_RESUMED"];
 
