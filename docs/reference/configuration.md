@@ -85,6 +85,10 @@ reach a real omp. The defaults below are copied from `src/omp/omp-config.ts`.
 
 Set by the daemon, not operator config: `HOUGE_BRIDGE_SOCK` and `HOUGE_BRIDGE_TOKEN` are minted per
 planner child, and `HOUGE_SHELL_SANDBOX` is the shell wrapper's copy of `HOUGE_OMP_SANDBOX`.
+`HOUGE_CONFIG_YML` is not an environment variable: it is the name of the code constant
+(`src/omp/planner-supervisor.ts`) holding the profile config the daemon writes to
+`<data>/omp/houge-config.yml` (`tools.xdev: false`, `startup.checkUpdate: false`,
+`marketplace.autoUpdate: false`, `telemetry.otlpExportEnabled: false`). There is nothing to set.
 
 **Subscriptions.** Four OAuth logins live in the `houge` profile. Run each once on the mini with
 `omp --profile houge login <provider>`, for `anthropic` (Claude Max), `google-antigravity`, `kimi-code`
@@ -226,6 +230,7 @@ pure-compute tool: no I/O, no untrusted bytes (so Dual-LLM never quarantines it)
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `HOUGE_TIME_TOOL_ENABLED` | off | Arms the tool (armed-listing). Accepts 1/true/yes/on. OFF ⇒ unlisted ⇒ loop behavior unchanged. |
+| `HOUGE_TZ_EVIDENCE_ENABLED` | off | Enforces source-stated timezone evidence per item (`zone_evidence` checked against the turn's prior digests). Accepts 1/true/yes/on. **The omp path has no `zone_evidence` input yet:** the `to_local_time` declaration (`src/omp/tools/to_local_time.json`) does not carry the field, so arming this under omp would refuse every converted row. Leave it off. |
 | `HOUGE_TIMEZONE` | runtime tz | Override Houge's local timezone (IANA name, e.g. `Australia/Sydney`). Unset ⇒ the daemon's runtime timezone. Resolves "today/tomorrow" for the converter. |
 
 ## Short-term conversation memory (`chat_turns`)
@@ -300,11 +305,20 @@ drops any member's `AVOID`). Preview merges without writing via `houge lessons-c
 | `HOUGE_LESSON_CONSOLIDATE_ENABLED` | off | Arms the daily consolidation tick. Accepts 1/true/yes/on. In `DISARM_FLAGS` — it rewrites Houge's own behavioral guidance, so `/disarm` halts it. Off = no tick, no writes. |
 | `HOUGE_LESSON_CONSOLIDATE_INTERVAL_HOURS` | `24` | Min hours between consolidation ticks (END-stamped latch). |
 
+Lesson lifecycle and the clarify cap:
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `HOUGE_LESSON_DECAY_DAYS` | `14` | Days without use before an active lesson starts to decay in the daily tick. Non-positive or non-integer → default. |
+| `HOUGE_LESSON_PRUNE_THRESHOLD` | `0.2` | `reuse_value` below which a decayed lesson is pruned (reversibly). The wiki decay tick uses the same line. |
+| `HOUGE_LESSON_REPEAT_DAYS` | `7` | A repeat supersede of the same lesson inside this window marks the memory layer ineffective (escalates). |
+| `HOUGE_MAX_CONSECUTIVE_CLARIFY` | `1` | Consecutive clarifying replies allowed. At the cap the next turn's prompt carries a code-owned line telling the planner not to ask again (read from `chat_turns.intent`). `0` = never clarify; negative or garbage → default. |
+
 Inspect and undo with the slash-only control commands `/lessons` (shows each row's id,
 reuse/applied counters, AVOID, and `supersedes #n` lineage) and `/forget <scope|id>` (see the
 [command reference](#telegram-command-reference)). `memory/core/houge.md` is committed (his
 spine); the `lessons` table is local runtime state. The only prompt knob is
-`HOUGE_ASK_SYSTEM_PROMPT` (in the [LLM provider chain](#llm-provider-chain-powers-cognition)
+`HOUGE_ASK_SYSTEM_PROMPT` (in [Answer-path prompt override](#answer-path-prompt-override)
 table) — an escape hatch to override the composed **answer**-path prompt wholesale.
 
 ## Self-evolution (Phase 1) — code self-diagnose
@@ -575,6 +589,7 @@ catch up with exactly one fire when it lifts). Misfire policy: fire once, advanc
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `HOUGE_SCHEDULER_ENABLED` | `false` | Master arm for the tick AND the `schedule_task` tool (unlisted when disarmed). `/schedule` viewing stays available either way. |
+| `HOUGE_DISPLAY_TZ` | `Australia/Sydney` | The fallback display zone for schedule lists and digests (`resolveDisplayZone`), used when a schedule carries no zone of its own. |
 | `HOUGE_SCHEDULER_MAX_PER_CHAT` | `10` | Cap on active (enabled) schedules per chat. Defense-in-depth only since scheduler v2 — the self-replication bound is now the provenance strip (below), not the cap. |
 
 **Scheduler v2 (ADR 0017 amendment, 2026-07-20).** `schedule_task` has four verbs:
@@ -671,6 +686,37 @@ Inspect: `sqlite3 houge.sqlite "SELECT kind, subject, state, seen_count, first_s
 | `HOUGE_EPISODIC_DECAY_DAYS` | `30` | Idle age before a fact starts losing reuse_value in the daily tick. |
 | `HOUGE_EPISODIC_PRUNE_THRESHOLD` | `0.2` | reuse_value floor below which an idle fact is reversibly pruned. |
 | `HOUGE_EPISODIC_MERGE_SIM` | `0.92` | Cosine threshold for the nightly duplicate-merge clustering. |
+| `HOUGE_EPISODIC_CORE_CAP` | `8` | Cap on core facts folded into the always-known band of every turn's context. Min 1; garbage → default. |
+
+## Session rating (ADR 0012, spine Slice A)
+
+Houge asks for a 0–3 rating at a session boundary: enough user turns, a lull, and outside the
+cooldown. A bare digit reply is captured against the session's applied lessons, and a low rating runs
+one attribution read on the ticks seat. The distill tick reuses the lull.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_RATING_ENABLED` | on | Kill switch for the ask. Only `0`/`false`/`no`/`off` turn it off. |
+| `HOUGE_RATING_MIN_TURNS` | `3` | User turns since the last ask or capture before a new ask is due. |
+| `HOUGE_SESSION_LULL_MINUTES` | `30` | Quiet time that marks a session boundary: for the rating ask, and for the episodic distill tick. |
+| `HOUGE_RATING_COOLDOWN_HOURS` | `20` | Minimum hours between two asks. |
+| `HOUGE_RATING_PENDING_MINUTES` | `120` | How long an ask stays answerable by a bare digit. |
+
+## LLM wiki (Phase W, ADR 0020)
+
+Durable per-topic knowledge pages built from a turn's quarantined read digests and cross-source
+verified by the reader seat (`wiki_build` / `wiki_refine` bridge tools, armed by the flag).
+SQLite is truth; `memory/wiki/<slug>.md` is the render.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_WIKI_ENABLED` | off | Arms the wiki tools, retrieval and the decay tick. Accepts 1/true/yes/on. |
+| `HOUGE_WIKI_MIN_SOURCES` | `2` | Distinct source URLs required in the turn before a page saves. |
+| `HOUGE_WIKI_VERIFY_PASSES` | `2` | Verify ensemble size (mean of independent passes). |
+| `HOUGE_WIKI_MAX_PAGES` | `200` | Global active-page cap; overflow prunes the lowest `reuse_value` rows reversibly. |
+| `HOUGE_WIKI_RETRIEVE_CAP` | `1` | Max pages folded into one turn's context. |
+| `HOUGE_WIKI_RECENCY_HALFLIFE_DAYS` | `30` | Retrieval recency half-life. |
+| `HOUGE_WIKI_DECAY_DAYS` | `45` | Days unused before a page decays; the prune line is `HOUGE_LESSON_PRUNE_THRESHOLD`. |
 
 ## Global autonomy circuit-breaker
 
