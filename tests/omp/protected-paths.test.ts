@@ -15,6 +15,15 @@ describe("floor A path sets — the planner may touch anything under home except
     }
   });
 
+  it("denies the widened credential set and top-level ~/.<name>.env files to the gate too (A4)", () => {
+    for (const p of ["/Users/p/.aws/credentials", "/Users/p/.config/gh/hosts.yml", "/Users/p/.npmrc", "/Users/p/.docker/config.json",
+      "/Users/p/.cargo/credentials.toml", "/Users/p/.git-credentials", "/Users/p/.houge/x", "/Users/p/.foo.env", "/Users/p/.ENV"]) {
+      expect(isDeniedRead(p, ctx), p).toBe(true);
+    }
+    expect(isDeniedRead("/Users/p/notes.env", ctx)).toBe(false);
+    expect(isDeniedRead("/Users/p/Projects/x/.foo.env", ctx)).toBe(false);
+  });
+
   it("allows Paco's own files — yolo under home is the decision", () => {
     expect(isDeniedRead("/Users/p/Documents/taxes.pdf", ctx)).toBe(false);
     expect(isDeniedWrite("/Users/p/Downloads/out.csv", ctx)).toBe(false);

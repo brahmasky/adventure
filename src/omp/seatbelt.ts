@@ -25,6 +25,19 @@ function ancestorRules(roots: string[]): string[] {
   return [...out];
 }
 
+/**
+ * A path as an SBPL regex body. Only [A-Za-z0-9/_-] is kept literally; any other ASCII char becomes `.` and any
+ * non-ASCII char `[^/]+`. Both only widen what a DENY matches (fail closed) and no quote or backslash survives.
+ */
+function regexPath(p: string): string {
+  return [...p].map((c) => (/^[A-Za-z0-9/_-]$/.test(c) ? c : c.charCodeAt(0) < 0x80 ? "." : "[^/]+")).join("");
+}
+
+/** Top-level `~/.<name>.env` / `~/.env` (protected-paths HOME_DOTENV_NAME): read and write denied, both home spellings. */
+function dotenvRules(home: string): string[] {
+  return variants(home).map((h) => `(deny file-read* file-write* (regex #"^${regexPath(h)}/\\.([^/]+\\.)?[Ee][Nn][Vv]$"))`);
+}
+
 /** The device nodes a normal process writes: the null sink, its controlling terminal, and its own fds. */
 const DEV_WRITES = ['(allow file-write* (literal "/dev/null"))', '(allow file-write* (literal "/dev/tty"))', '(allow file-write* (subpath "/dev/fd"))'];
 
@@ -53,8 +66,11 @@ function body(ctx: PathContext, kind: "planner" | "shell"): string[] {
     ...ancestorRules([...writeDeny, ...secrets]),
     // secrets last: SBPL takes the last matching rule, so no allow above can re-open a secret
     ...secrets.flatMap((p) => rule("file-read* file-write*", p)),
+    ...dotenvRules(ctx.home),
     "(deny signal (target others))",
     '(deny process-exec (literal "/bin/launchctl"))',
+    // the Keychain is reached over Mach IPC, not files: the CLI that asks securityd for a secret must not run
+    '(deny process-exec (literal "/usr/bin/security"))',
     '(deny mach-lookup (global-name "com.apple.launchd"))'
   ];
 }

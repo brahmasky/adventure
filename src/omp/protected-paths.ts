@@ -8,14 +8,30 @@ import { PROTECTED_DIRS, PROTECTED_FILES } from "../capabilities/self-write-guar
  */
 export interface PathContext { home: string; repo: string; data: string; binDirs?: string[] }
 
+/** Credential stores under $HOME: read- and write-denied in both profiles (the planner keeps ~/.omp, D11). */
+export const HOME_SECRETS: readonly string[] = [
+  ".ssh", ".omp",
+  // AI and dev tools
+  ".claude", ".claude.json", ".codex", ".gemini", ".kimi", ".kimi-code", ".copilot", ".grok", ".hermes", ".antigravity",
+  ".antigravity-ide", ".pi", ".agentmemory", ".agents",
+  // Houge and other bots
+  ".houge", ".dsh", ".whatsapp-bot",
+  // cloud and container
+  ".docker", ".config/gh", ".config/gcloud", ".aws", ".azure", ".kube",
+  // keys and tokens
+  ".npmrc", ".cargo/credentials", ".cargo/credentials.toml", ".gnupg", ".netrc", ".git-credentials",
+  "Library/Keychains"
+];
+
 export function secretPaths(ctx: PathContext): string[] {
-  const h = (p: string) => join(ctx.home, p);
   return [
     join(ctx.repo, ".env"), join(ctx.data, "houge.sqlite"), join(ctx.data, "houge.sqlite-wal"), join(ctx.data, "houge.sqlite-shm"),
-    h(".ssh"), h(".gnupg"), h(".pi"), h(".claude"), h(".codex"), h(".kimi"), h(".kimi-code"), h(".omp"),
-    h(".config/gcloud"), h("Library/Keychains"), h(".claude.json")
+    ...HOME_SECRETS.map((p) => join(ctx.home, p))
   ];
 }
+
+/** A top-level `~/.<name>.env` (or `~/.env`) file: other tools' secrets, by naming convention. */
+export const HOME_DOTENV_NAME = /^\.(?:[^/]+\.)?env$/i;
 
 export function protectedRepoPaths(ctx: PathContext): string[] {
   return [...PROTECTED_DIRS, ...PROTECTED_FILES].map((p) => join(ctx.repo, p));
@@ -100,8 +116,13 @@ function under(abs: string, roots: string[]): boolean {
   });
 }
 
+function isHomeDotenv(abs: string, ctx: PathContext): boolean {
+  const real = realpathOrSelf(abs);
+  return dirname(real).toLowerCase() === realpathOrSelf(ctx.home).toLowerCase() && HOME_DOTENV_NAME.test(real.slice(dirname(real).length + 1));
+}
+
 export function isDeniedRead(absPath: string, ctx: PathContext): boolean {
-  return under(absPath, secretPaths(ctx));
+  return under(absPath, secretPaths(ctx)) || isHomeDotenv(absPath, ctx);
 }
 
 /** Mirrors the profiles: secrets, then the re-allowed workspace (never sessions: the model must not edit its transcript), then the denies, then default-deny. */

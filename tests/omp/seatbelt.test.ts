@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { renderSeatbelt, writeSeatbeltProfiles } from "../../src/omp/seatbelt.js";
-import { HOME_CODE_CONFIG, HOME_INSTALL_TREES } from "../../src/omp/protected-paths.js";
+import { HOME_CODE_CONFIG, HOME_INSTALL_TREES, HOME_SECRETS } from "../../src/omp/protected-paths.js";
 
 describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () => {
   const ctx = { home: "/Users/p", repo: "/Users/p/Projects/adventure", data: "/Users/p/Projects/adventure" };
@@ -222,5 +222,28 @@ describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () 
     expect(stub.stdout).toBe("OMPCANARY");
     const node = run(profiles.planner, process.execPath, "-e", "process.stdout.write('up')");
     expect(node.stdout).toBe("up");
+  });
+  it("read-denies every credential store in both profiles except ~/.omp for the planner, and denies exec of /usr/bin/security (A4)", () => {
+    const { planner, shell } = renderSeatbelt(ctx);
+    for (const rel of HOME_SECRETS) {
+      expect(shell, rel).toContain(`(deny file-read* file-write* (subpath "/Users/p/${rel}"))`);
+      if (rel !== ".omp") expect(planner, rel).toContain(`(deny file-read* file-write* (subpath "/Users/p/${rel}"))`);
+    }
+    for (const p of [planner, shell]) expect(p).toContain('(deny process-exec (literal "/usr/bin/security"))');
+  });
+
+  it.runIf(process.platform === "darwin")("live: credential stores and top-level ~/.<name>.env files are unreadable, and /usr/bin/security cannot run, in both profiles", () => {
+    const { home, profiles, run } = fakeHome();
+    const canaries: Record<string, string> = { ".aws/credentials": "AWS", ".foo.env": "DOTENV", ".env": "ENV", ".npmrc": "NPM",
+      ".config/gh/hosts.yml": "GH", ".docker/config.json": "DOCKER", ".netrc": "NETRC", ".agents/token": "AGENTS" };
+    for (const [rel, body] of Object.entries(canaries)) { mkdirSync(join(home, rel, ".."), { recursive: true }); writeFileSync(join(home, rel), body); }
+    writeFileSync(join(home, "notes.env"), "PLAIN");
+    for (const prof of [profiles.planner, profiles.shell]) {
+      for (const rel of Object.keys(canaries)) expect(run(prof, "/bin/cat", join(home, rel)).status, rel).not.toBe(0);
+      expect(run(prof, "/bin/cat", join(home, "notes.env")).stdout).toBe("PLAIN");
+      const sec = run(prof, "/usr/bin/security", "help");
+      expect(sec.status).not.toBe(0);
+      expect(sec.stderr).toMatch(/Operation not permitted/);
+    }
   });
 });
