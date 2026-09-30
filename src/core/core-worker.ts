@@ -19,7 +19,6 @@ import type { ReviewDiffInput, ReviewResult } from "../capabilities/diff-reviewe
 import { runSelfWriter, resolveSelfWriteWriter } from "../capabilities/self-write-writer.js";
 import { resolveCodexModel } from "../capabilities/coding-agent.js";
 import { normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
-import type { LlmAuditSink } from "../llm/audit.js";
 import type { LlmAuditScope, LlmCallRole } from "../run/run-store.js";
 import { publishBranch, selfWriteBranchName } from "../run/branch-publish.js";
 import { createWorktree, removeWorktree } from "../run/worktree.js";
@@ -61,7 +60,7 @@ import {
   renderExtractionDigest,
   unreadableDigest
 } from "./quarantine.js";
-import { ASK_DISCIPLINE, composeSystemPrompt, FALLBACK_IDENTITY, GUARDRAILS, memoryRootFor, SKILL_AUTHOR_DISCIPLINE } from "../prompt/composer.js";
+import { composeSystemPrompt, memoryRootFor, SKILL_AUTHOR_DISCIPLINE } from "../prompt/composer.js";
 import { resolveLocalTimeZone, resolveTimeZone } from "../prompt/tz-convert.js";
 import { resolveSkillMaxPerScope, resolveSkillName, resolveSkillRefinePasses, resolveSkillsEnabled, setFrontmatterFields, SkillStore } from "../skills/skill-store.js";
 import { resolveWebMaxResults } from "../web/registry.js";
@@ -1398,7 +1397,7 @@ export class CoreWorker {
    */
   private seatAdapter(scope: LlmAuditScope, plannerFamily?: ModelFamily): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
     if (!this.llmAdapterIsDefault) return this.llmAdapter;
-    return (input) => llmToolAdapter(oneShotAdapter(this.runStore, resolveOmpConfig(process.env), scope, plannerFamily), askFallbackSystem())(input);
+    return (input) => llmToolAdapter(oneShotAdapter(this.runStore, resolveOmpConfig(process.env), scope, plannerFamily))(input);
   }
 
   /** The runner's wall-clock cap for one seat call: every leg of the seat's chain may time out, plus headroom. */
@@ -2906,16 +2905,6 @@ export class CoreWorker {
  * Build the answer *question*: the question plus optional recent-thread context, all
  * on the DATA channel (the untrusted-data wall, ADR 0006) — never the system prompt.
  */
-/**
- * The system prompt for a seat call that passes none: `HOUGE_ASK_SYSTEM_PROMPT`, else the thin
- * identity fallback (the live `/ask` path composes the real prompt and passes it explicitly).
- */
-export const DEFAULT_ASK_SYSTEM_PROMPT = [FALLBACK_IDENTITY, ASK_DISCIPLINE, GUARDRAILS].join("\n\n");
-function askFallbackSystem(): string {
-  const fromEnv = process.env.HOUGE_ASK_SYSTEM_PROMPT;
-  return typeof fromEnv === "string" && fromEnv.length > 0 ? fromEnv : DEFAULT_ASK_SYSTEM_PROMPT;
-}
-
 function buildAnswerQuestion(question: string, context?: string): string {
   if (!context) return question;
   return [

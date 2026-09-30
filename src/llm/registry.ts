@@ -7,6 +7,7 @@ import type { LlmAuditScope, LlmCallRole, RunStore } from "../run/run-store.js";
 import type { LlmMediaAttachment, LlmProvider, LlmRequest, LlmResult } from "./types.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { isAllowedMediaFile } from "../media/media-config.js";
+import { ASK_DISCIPLINE, FALLBACK_IDENTITY, GUARDRAILS } from "../prompt/composer.js";
 import { classifyLlmError, type LlmAuditSink } from "./audit.js";
 import { openAlertedIncident } from "../run/incident-alert.js";
 
@@ -205,6 +206,15 @@ export function reportOmpCheck(store: RunStore, cfg: OmpConfig, check: OmpCheckF
   }
 }
 
+/** The thin identity fallback for a seat call that passes no system prompt (the live /ask composes its own). */
+export const DEFAULT_ASK_SYSTEM_PROMPT = [FALLBACK_IDENTITY, ASK_DISCIPLINE, GUARDRAILS].join("\n\n");
+
+/** `HOUGE_ASK_SYSTEM_PROMPT` when set, else {@link DEFAULT_ASK_SYSTEM_PROMPT}. */
+export function askFallbackSystem(env: NodeJS.ProcessEnv): string {
+  const fromEnv = env.HOUGE_ASK_SYSTEM_PROMPT;
+  return typeof fromEnv === "string" && fromEnv.length > 0 ? fromEnv : DEFAULT_ASK_SYSTEM_PROMPT;
+}
+
 /** `input.media` → a validated attachment, `undefined` when absent, or `"invalid"`. */
 function parseMediaInput(raw: unknown): LlmMediaAttachment | undefined | "invalid" {
   if (raw === undefined) return undefined;
@@ -217,20 +227,20 @@ function parseMediaInput(raw: unknown): LlmMediaAttachment | undefined | "invali
 /**
  * The `(input) => ToolAdapterResult` shape the CapabilityRunner, the quarantine wall and the media
  * ingest step call: `{question, system?, media?}` in, `{question, answer, model, provider}` out.
- * The attachment is validated HERE, before any leg runs. `defaultSystem` applies when the caller
- * passes none.
+ * The attachment is validated HERE, before any leg runs. System prompt precedence: `input.system`,
+ * then `HOUGE_ASK_SYSTEM_PROMPT`, then {@link DEFAULT_ASK_SYSTEM_PROMPT}.
  */
 export function llmToolAdapter(
   seat: { answer(req: LlmRequest): Promise<LlmResult> },
-  defaultSystem?: string
+  defaultSystem: () => string = () => askFallbackSystem(process.env)
 ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
   return async (input) => {
     const question = input.question;
     if (typeof question !== "string" || question.length === 0) return { ok: false, error: "question must be a non-empty string" };
     const media = parseMediaInput(input.media);
     if (media === "invalid") return { ok: false, error: "media rejected" };
-    const system = typeof input.system === "string" && input.system.length > 0 ? input.system : defaultSystem;
-    const r = await seat.answer({ question, ...(system ? { system } : {}), ...(media ? { media } : {}) });
+    const system = typeof input.system === "string" && input.system.length > 0 ? input.system : defaultSystem();
+    const r = await seat.answer({ question, system, ...(media ? { media } : {}) });
     if (!r.ok) return { ok: false, error: r.error };
     return { ok: true, output: { question, answer: r.answer, model: r.model, provider: r.provider } };
   };
