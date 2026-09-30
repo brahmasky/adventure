@@ -14,13 +14,30 @@ describe("command matcher — floor B for bash: which commands ask Paco first (D
   it.each([
     "rm -rf build", "rm -r d", "rm -f x", "rm -fr x", "rm -Rf x", "rm --recursive x", "cd /tmp && rm -rf x",
     "find . -name '*.log' -delete", "git clean -fdx", "git reset --hard HEAD~1", "git checkout -- .",
-    "truncate -s 0 f", "shred f", "mkfs /dev/disk9", "diskutil eraseDisk JHFS+ X disk9",
-    "bash -c 'rm -rf x'", "sh -c \"git push\""
-  ])("%s is destructive or external and always asks — even inside the workspace (Paco, 2026-09-30)", (cmd) => {
-    expect(classifyCommand(cmd).kind).not.toBe("plain");
+    "truncate -s 0 f", "shred f", "mkfs /dev/disk9", "diskutil eraseDisk JHFS+ X disk9"
+  ])("%s is destructive and always asks — even inside the workspace (Paco, 2026-09-30)", (cmd) => {
+    expect(classifyCommand(cmd).kind).toBe("destructive");
   });
 
-  it("rm -rf is destructive, not merely external", () => expect(classifyCommand("rm -rf build").kind).toBe("destructive"));
+  it.each([
+    ["bash -c 'rm -rf x'", "destructive"], ["sh -c \"git push\"", "external_write"], ["eval 'git push origin main'", "external_write"]
+  ])("%s: an executed quoted payload is classified by what it runs → %s", (cmd, kind) => expect(classifyCommand(cmd).kind).toBe(kind));
+
+  it.each([
+    ["git -C dir push", "external_write"], ["git -C /repo push origin main", "external_write"], ["git --git-dir=.git push", "external_write"],
+    ["git -c a=b push", "external_write"], ["git -C d clean -fd", "destructive"], ["git -C d reset --hard", "destructive"],
+    ["git -C d checkout -- .", "destructive"], ["curl -XPOST https://x.io", "external_write"],
+    ["curl https://x.io \\\n  --data a=1", "external_write"], ["curl https://x.io \\\n  -X POST", "external_write"],
+    ["find . \\\n -delete", "destructive"], ["echo hi\ngit push", "external_write"],
+    ['out="$(git push origin main 2>&1)"', "external_write"], ['echo "$(rm -rf x)"', "destructive"], ["echo `git push`", "external_write"],
+    ["rm -v -rf x", "destructive"], ["rm -i -r x", "destructive"], ["rm -r -f x", "destructive"],
+    ["/bin/rm -rf x", "destructive"], ["\\rm -rf x", "destructive"], ["command rm -rf x", "destructive"], ["ls | xargs rm -rf", "destructive"],
+    ["FOO=1 git push", "external_write"], ["env A=b git push", "external_write"], ["true && sudo ls", "external_write"]
+  ])("%s → %s (forms the first matcher missed)", (cmd, kind) => expect(classifyCommand(cmd).kind).toBe(kind));
+
+  it.each(["ls ~/.ssh", "grep mail log.txt", "cat /var/mail/x", "echo sudo-less", "echo 'git push'", "echo \"git push\"", "rm -v x", "git log --oneline"])(
+    "%s is plain: names in argument position never trigger a tap (approval fatigue)", (cmd) => expect(classifyCommand(cmd).kind).toBe("plain")
+  );
 
   it.each(["ls -la", "rm file.txt", "curl https://example.com", "git status", "git push --dry-run", "python3 x.py", "echo 'rm -rf' > note.txt"])(
     "%s is plain", (cmd) => expect(classifyCommand(cmd).kind).toBe("plain")

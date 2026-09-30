@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { writeSeatbeltProfiles } from "../../src/omp/seatbelt.js";
 import { runShell, type ShellRunInput } from "../../src/omp/shell-adapter.js";
 
@@ -87,5 +87,39 @@ describe("bash tool adapter — R2–R7", () => {
     expect(r.output).toContain("Operation not permitted");
     expect(r.output).not.toContain("SECRET");
     expect(r.wrapperStatus).toBe("ok");
+  });
+});
+
+describe("bash tool adapter — process limit and escapees", () => {
+  const hardLimit = () => spawnSync("/bin/bash", ["-c", "ulimit -H -u"], { encoding: "utf8" }).stdout.trim();
+
+  it("sets the per-user process cap above the current user count, so a busy machine does not break every call", async () => {
+    const bin = tmp("houge-fakeps-");
+    writeFileSync(join(bin, "ps"), "#!/bin/sh\nseq 1 1000\n"); chmodSync(join(bin, "ps"), 0o755);
+    const r = await runShell(input("ulimit -u", { env: { PATH: `${bin}:/usr/bin:/bin`, HOUGE_SHELL_SANDBOX: "0" } }));
+    const hard = hardLimit(); const got = r.output.trim();
+    expect(r.wrapperStatus).toBe("ok");
+    expect(got === "unlimited" ? Infinity : Number(got)).toBe(hard === "unlimited" ? 1256 : Math.min(1256, Number(hard)));
+  });
+
+  it("fails closed with limits_failed when the process count cannot be computed", async () => {
+    const bin = tmp("houge-badps-");
+    writeFileSync(join(bin, "ps"), "#!/bin/sh\nexit 1\n"); chmodSync(join(bin, "ps"), 0o755);
+    const r = await runShell(input("echo should-not-run", { env: { PATH: `${bin}:/usr/bin:/bin`, HOUGE_SHELL_SANDBOX: "0" } }));
+    expect(r).toMatchObject({ status: "failed", reason: "limits_failed", wrapperStatus: "limits_failed" });
+    expect(r.output).not.toContain("should-not-run");
+  });
+
+  it("does not hang on a process that left the group holding stdout, and never signals after the leader exited", async () => {
+    const tag = `houge-esc-${Date.now()}`;
+    const spy = vi.spyOn(process, "kill");
+    try {
+      const t0 = Date.now();
+      const r = await runShell(input(`set -m; (exec -a ${tag} sleep 8) & echo m2`, { timeoutMs: 300 }));
+      expect(Date.now() - t0).toBeLessThan(1300);
+      expect(r).toMatchObject({ status: "succeeded", wrapperStatus: "ok", escaped: true });
+      await new Promise((res) => setTimeout(res, 1300));
+      expect(spy).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); spawnSync("pkill", ["-f", tag]); }
   });
 });
