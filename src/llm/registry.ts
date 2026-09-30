@@ -168,7 +168,6 @@ export interface OneShotAdapterOptions {
 export function oneShotAdapter(
   store: RunStore, cfg: OmpConfig, scope: LlmAuditScope, plannerFamily?: ModelFamily, opts: OneShotAdapterOptions = {}
 ): { answer(req: LlmRequest): Promise<LlmResult> } {
-  const audit = store.llmAuditSink(scope);
   const base = "run_id" in scope ? scope.run_id : scope.correlation_id;
   return {
     answer: async (req) => {
@@ -179,7 +178,7 @@ export function oneShotAdapter(
           files: req.media ? [req.media.path] : [], correlationId: `${base}:${scope.role}:${randomUUID()}`,
           ...(plannerFamily !== undefined ? { plannerFamily } : {})
         },
-        { cfg, audit, ...(opts.versionCheck ? { versionCheck: opts.versionCheck } : {}) }
+        { cfg, audit: store.llmAuditSink(scope), ...(opts.versionCheck ? { versionCheck: opts.versionCheck } : {}) }
       );
       if (!r.ok && r.omp_check) reportOmpCheck(store, cfg, r.omp_check);
       return r;

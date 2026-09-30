@@ -42,16 +42,37 @@ describe("audit chokepoint coverage (structural, not by convention)", () => {
     expect(omp.match(/deps\.audit\.record\(/g) ?? []).toHaveLength(2);
   });
 
-  it("every spawnOneShot( call site in src hands it an audit sink", () => {
+  it("every spawnOneShot( call site builds its sink inline from the store, or forwards the caller's REQUIRED sink explicitly", () => {
     const offenders: string[] = [];
+    let sites = 0;
     for (const f of files) {
       if (f.endsWith(join("src", "llm", "providers", "omp.ts"))) continue;
       const text = read(f);
       for (let i = text.indexOf("spawnOneShot("); i !== -1; i = text.indexOf("spawnOneShot(", i + 1)) {
-        if (!/\baudit\b/.test(text.slice(i, i + 600))) offenders.push(`${f}@${i}`);
+        if (text.slice(Math.max(0, i - 40), i).includes("import")) continue;
+        sites += 1;
+        if (!/audit:\s*(?:[A-Za-z_.]*llmAuditSink\(|input\.audit\b)/.test(text.slice(i, i + 600))) offenders.push(`${f}@${i}`);
       }
     }
     expect(offenders).toEqual([]);
+    expect(sites).toBeGreaterThan(0);
+  });
+
+  it("reviewDiff's sink is required, and every reviewDiff({…}) call in src passes a store-built one", () => {
+    const reviewer = read(join(process.cwd(), "src", "capabilities", "diff-reviewer.ts"));
+    const iface = reviewer.slice(reviewer.indexOf("export interface ReviewDiffInput"), reviewer.indexOf("interface NodeError"));
+    expect(iface).toMatch(/\n  audit: LlmAuditSink;/); // required, never `audit?:`
+    const offenders: string[] = [];
+    let sites = 0;
+    for (const f of files) {
+      const text = read(f);
+      for (let i = text.indexOf("reviewDiff({"); i !== -1; i = text.indexOf("reviewDiff({", i + 1)) {
+        sites += 1;
+        if (!/audit:\s*[A-Za-z_.]*llmAuditSink\(/.test(text.slice(i, i + 400))) offenders.push(`${f}@${i}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+    expect(sites).toBeGreaterThan(0);
   });
 
   it("oneShotAdapter builds its sink from the store for the call's scope (no caller can pass a discarding one)", () => {
