@@ -349,16 +349,20 @@ export function serialFlusher(dispatcher: Pick<NotificationDispatcher, "dispatch
   };
 }
 
-/** Log every failure; open an incident at most once per kind per window (a stuck outbox must be seen, not spammed). */
+/**
+ * A persistent failure (the pump retries every second) is reported, log line and incident together,
+ * only when its code changes or once per window per code — never a line a second.
+ */
 export function throttledIncident(store: Pick<RunStore, "openIncident">, windowMs: number, now: () => number = Date.now):
   (kind: string, error: unknown) => void {
-  const last = new Map<string, number>();
+  const last = new Map<string, { code: string; at: number }>();
   return (kind, error) => {
     const code = errorCode(error);
-    console.error(`[telegram-daemon] ${kind}: ${code}`);
     const t = now();
-    if (t - (last.get(kind) ?? -Infinity) < windowMs) return;
-    last.set(kind, t);
+    const prev = last.get(kind);
+    if (prev && prev.code === code && t - prev.at < windowMs) return;
+    last.set(kind, { code, at: t });
+    console.error(`[telegram-daemon] ${kind}: ${code}`);
     try { store.openIncident({ kind, subject: "daemon", detail: { code } }); } catch { /* the store itself may be the failure */ }
   };
 }

@@ -34,18 +34,21 @@ describe("the daemon's outbox sender (fix round 1, item 1)", () => {
     expect(d.delivered).toEqual(["a", "b", "c"]);
   });
 
-  it("every failure is logged; the incident opens at most once per kind per window, and carries a code, never the message", () => {
+  it("a persistent failure logs and opens an incident once per code per window, again when the code changes — never a line a second (N-2)", () => {
     const incidents: Array<{ kind: string; detail: Record<string, unknown> }> = [];
     const store = { openIncident: (i: { kind: string; subject: string; detail: Record<string, unknown> }) => { incidents.push(i); return {} as never; } };
     let t = 0;
     const report = throttledIncident(store, 600_000, () => t);
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const err = Object.assign(new Error("EACCES: /Users/x/secret"), { code: "EACCES" });
-    report("outbox_flush_failed", err);
-    t = 1_000; report("outbox_flush_failed", err);
-    t = 700_000; report("outbox_flush_failed", err);
-    expect(log).toHaveBeenCalledTimes(3);
-    expect(incidents.map((i) => i.detail)).toEqual([{ code: "EACCES" }, { code: "EACCES" }]);
+    const locked = Object.assign(new Error("EACCES: /Users/x/secret"), { code: "EACCES" });
+    for (t = 0; t < 60_000; t += 1_000) report("outbox_flush_failed", locked); // the 1 s pump, for a minute
+    expect(log).toHaveBeenCalledTimes(1);
+    t = 61_000; report("outbox_flush_failed", Object.assign(new Error("x"), { code: "ENOSPC" })); // new code: reported
+    t = 62_000; report("outbox_flush_failed", locked); // code changed back: reported
+    t = 700_000; report("outbox_flush_failed", locked); // same code, window over: reported
+    t = 701_000; report("outbox_flush_failed", locked); // within the window: silent
+    expect(log).toHaveBeenCalledTimes(4);
+    expect(incidents.map((i) => i.detail)).toEqual([{ code: "EACCES" }, { code: "ENOSPC" }, { code: "EACCES" }, { code: "EACCES" }]);
     expect(JSON.stringify(incidents)).not.toContain("/Users/x/secret");
     log.mockRestore();
   });
