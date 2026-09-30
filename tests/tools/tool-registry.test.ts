@@ -9,7 +9,7 @@ type Expect<Condition extends true> = Condition;
 
 type ToolAdapterInputMatchesPlan = Expect<Equal<
   NonNullable<ToolMetadata["execute"]>,
-  (input: Record<string, unknown>) => Promise<ToolAdapterResult> | ToolAdapterResult
+  (input: Record<string, unknown>, signal?: AbortSignal) => Promise<ToolAdapterResult> | ToolAdapterResult
 >>;
 
 describe("ToolRegistry", () => {

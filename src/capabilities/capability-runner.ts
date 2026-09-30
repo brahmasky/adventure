@@ -52,6 +52,9 @@ export interface CapabilityExecutionInput {
   capability: string;
   input: Record<string, unknown>;
   budget: BudgetLedger;
+  signal?: AbortSignal;
+  budget_reserved?: boolean;
+  tool_call_id?: string;
 }
 
 export class CapabilityRunner {
@@ -70,7 +73,7 @@ export class CapabilityRunner {
       };
     }
 
-    const reservation = input.budget.reserveToolCall();
+    const reservation = input.budget_reserved ? { ok: true as const } : input.budget.reserveToolCall();
     if (!reservation.ok) {
       return {
         status: "denied",
@@ -186,10 +189,10 @@ export class CapabilityRunner {
       return { status: "failed", error_ref: `adapter_not_connected:${input.capability}` };
     }
     try {
-      const adapterResult = await executeWithTimeout(
-        () => (metadata.execute as ToolExecute)(input.input),
-        metadata.timeout_ms
-      );
+      const settled = await executeCancellable(metadata.execute, input.input, metadata.timeout_ms, input.signal);
+      if (settled.kind === "timeout") return { status: "timed_out", error_ref: "Tool execution timed out" };
+      if (settled.kind === "cancelled") return { status: "cancelled", error_ref: "Tool execution cancelled" };
+      const adapterResult = settled.value;
       if (!adapterResult.ok) {
         return { status: "failed", error_ref: adapterResult.error };
       }
@@ -205,9 +208,6 @@ export class CapabilityRunner {
         output: adapterResult.output
       };
     } catch (error) {
-      if (error instanceof ToolTimeoutError) {
-        return { status: "timed_out", error_ref: "Tool execution timed out" };
-      }
       return { status: "failed", error_ref: errorRef(error) };
     }
   }
@@ -217,28 +217,25 @@ function affectedResources(input: Record<string, unknown>): string[] {
   return typeof input.path === "string" ? [`path:${input.path}`] : [];
 }
 
-class ToolTimeoutError extends Error {
-  constructor() {
-    super("Tool execution timed out");
-  }
-}
+export const CLEANUP_BOUND_MS = 5_000;
 
-async function executeWithTimeout(
-  execute: () => ReturnType<ToolExecute>,
-  timeout_ms: number
-): Promise<ToolAdapterResult> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      Promise.resolve().then(execute),
-      new Promise<ToolAdapterResult>((_resolve, reject) => {
-        timeout = setTimeout(
-          () => reject(new ToolTimeoutError()),
-          timeout_ms
-        );
-      })
-    ]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
+type Settled = { kind: "result"; value: ToolAdapterResult } | { kind: "timeout" } | { kind: "cancelled" };
+
+async function executeCancellable(
+  execute: ToolExecute, input: Record<string, unknown>, timeout_ms: number, external?: AbortSignal
+): Promise<Settled> {
+  const ac = new AbortController();
+  const adapter = Promise.resolve().then(() => execute(input, ac.signal));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stop = new Promise<Settled>((resolve) => {
+    timer = setTimeout(() => resolve({ kind: "timeout" }), timeout_ms);
+    if (external?.aborted) resolve({ kind: "cancelled" });
+    external?.addEventListener("abort", () => resolve({ kind: "cancelled" }), { once: true });
+  });
+  const first = await Promise.race([adapter.then((value): Settled => ({ kind: "result", value })), stop]);
+  clearTimeout(timer);
+  if (first.kind === "result") return first;
+  ac.abort();
+  await Promise.race([adapter.catch(() => undefined), new Promise((r) => setTimeout(r, CLEANUP_BOUND_MS))]);
+  return first;
 }
