@@ -55,8 +55,20 @@ describe("command matcher — floor B for bash: which commands ask Paco first (D
     ["echo it's\nrm -rf x", "destructive"]
   ])("%j → %s: apostrophes in comments and heredocs never hide later lines", (cmd, kind) => expect(classifyCommand(cmd).kind).toBe(kind));
 
-  it.each(["cat <<EOF > notes.md\nnever run rm -rf /\nEOF", "cat <<'EOF'\ngit push\nEOF\nls", "echo hi # rm -rf x", "echo ${#PATH}"])(
-    "%j is plain: heredoc bodies and comments are data", (cmd) => expect(classifyCommand(cmd).kind).toBe("plain"));
+  it.each([["cat <<EOF > notes.md\nrm -rf /tmp/x\nEOF", "destructive"], ["cat <<'EOF'\ngit push\nEOF\nls", "external_write"]])(
+    "%j → %s: a heredoc mentioning a destructive command asks (fail toward asking)", (cmd, kind) => expect(classifyCommand(cmd).kind).toBe(kind));
+
+  it.each(["echo hi # rm -rf x", "echo ${#PATH}", "cat <<EOF > notes.md\nnever run rm -rf /\nEOF", "cat <<EOF > n.md\nhello\nEOF"])("%j is plain: comments and harmless heredocs", (cmd) =>
+    expect(classifyCommand(cmd).kind).toBe("plain"));
+
+  it.each([
+    ["echo $((1<<2))\nrm -rf x", "destructive"], ["echo $((1<<2)); echo ok\ngit push", "external_write"], ["x=$((a<<1))\ngit push", "external_write"],
+    ['cat <<E"O"F\nEOF\nrm -rf x', "destructive"], ["cat <<E'O'F\nEOF\nrm -rf x", "destructive"]
+  ])("%j → %s: arithmetic shifts and partly quoted words are not heredocs", (cmd, kind) => expect(classifyCommand(cmd).kind).toBe(kind));
+
+  it("`let y=1<<3` followed by a destructive line does not crash and asks (bash would treat it as a heredoc; we fail toward asking)", () => {
+    expect(classifyCommand("let y=1<<3\nrm -rf x").kind).toBe("destructive");
+  });
 
   it("caps nesting and fails toward asking, quickly (10000 nested evals)", () => {
     const t0 = Date.now();

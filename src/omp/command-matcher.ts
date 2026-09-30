@@ -8,10 +8,11 @@ const SEPARATORS = new Set([";", "&", "|", "(", ")", "`", "\n"]);
 
 interface Heredoc { word: string; dash: boolean }
 
-/** Reads `<<[-]WORD`, `<<'WORD'`, `<<"WORD"` at i; returns the terminator word and the index after it. */
+/** Reads an unambiguous `<<[-]WORD` / `<<'WORD'` / `<<"WORD"` at i (word fully quoted or bare, then a delimiter); anything else is not a heredoc. */
 function readHeredocStart(text: string, i: number): { doc: Heredoc; end: number } | null {
-  const m = /^<<(-?)[ \t]*(['"]?)([\w.-]+)\2/.exec(text.slice(i, i + 200));
-  return m ? { doc: { word: m[3] as string, dash: m[1] === "-" }, end: i + m[0].length } : null;
+  const m = /^<<(-?)[ \t]*(?:([A-Za-z0-9_.-]+)|'([A-Za-z0-9_.-]+)'|"([A-Za-z0-9_.-]+)")(?=[\s;|&<>]|$)/.exec(text.slice(i, i + 200));
+  const word = m ? (m[2] ?? m[3] ?? m[4]) : undefined;
+  return m && word ? { doc: { word, dash: m[1] === "-" }, end: i + m[0].length } : null;
 }
 
 /** Returns the index just past the terminator line of each pending heredoc; the body is data, never classified. */
@@ -27,16 +28,9 @@ function skipHeredocBodies(text: string, from: number, pending: Heredoc[]): numb
   return pos;
 }
 
-/** Lines of the input with heredoc bodies removed, so each can be tokenized independently (unterminated quotes close at end of line). */
+/** Every line on its own. Never skips heredoc bodies: a heredoc misparse can then only make the matcher ask more, not less. */
 function codeLines(text: string): string[] {
-  const out: string[] = []; const pending: Heredoc[] = [];
-  for (const line of text.replace(/\\\n/g, " ").split("\n")) {
-    const p = pending[0];
-    if (p) { if ((p.dash ? line.trim() : line.trimEnd()) === p.word) pending.shift(); continue; }
-    out.push(line);
-    for (const m of line.matchAll(/(?<!<)<<(?!<)(-?)[ \t]*(['"]?)([\w.-]+)\2/g)) pending.push({ word: m[3] as string, dash: m[1] === "-" });
-  }
-  return out;
+  return text.replace(/\\\n/g, " ").split("\n");
 }
 
 /** Quote-aware split: separators only count unquoted; quoted text is inert but kept as token values. */
@@ -50,7 +44,7 @@ function parse(input: string): Parsed {
   for (let i = 0; i < text.length; i++) {
     const c = text[i] as string;
     if (c === "#" && !has) { const nl = text.indexOf("\n", i); i = nl < 0 ? text.length : nl - 1; }
-    else if (c === "<" && text[i + 1] === "<" && text[i + 2] !== "<" && text[i - 1] !== "<") {
+    else if (c === "<" && !has && text[i + 1] === "<" && text[i + 2] !== "<" && text[i - 1] !== "<") {
       const h = readHeredocStart(text, i);
       if (h) { pending.push(h.doc); endTok(); i = h.end - 1; } else { tok += c; has = true; }
     } else if (c === "\n" && pending.length) { endSeg(); i = skipHeredocBodies(text, i + 1, pending) - 1; }
