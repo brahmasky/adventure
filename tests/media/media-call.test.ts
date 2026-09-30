@@ -1,8 +1,8 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildMediaCall } from "../../src/media/media-ingest.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildMediaCall, voiceChain } from "../../src/media/media-ingest.js";
 import { RunStore } from "../../src/run/run-store.js";
 import type { LlmProvider } from "../../src/llm/types.js";
 import { FAKE_OMP_BIN, pinOmpEnv } from "../helpers/omp-env.js";
@@ -74,8 +74,26 @@ describe("buildMediaCall — which leg reads a photo and which hears a voice not
     expect(attempts("run_v2")).toEqual([expect.objectContaining({ provider: "agy-cli", outcome: "unavailable" })]);
   });
 
-  it("refuses any voice provider but agy-cli (pi and the API legs are gone)", () => {
-    process.env.HOUGE_LLM_MEDIA_PROVIDERS = "agy-cli,pi";
-    expect(() => buildMediaCall({ store, run_id: "r", kind: "voice", env: process.env })).toThrow(/only agy-cli/);
+  it("never throws on a stale voice list: pi (retired) and unknown names are dropped with ONE warning; agy-cli still serves", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.HOUGE_LLM_MEDIA_PROVIDERS = "pi,agy-cli,whisper";
+    expect(voiceChain(process.env).map((p) => p.name)).toEqual(["agy-cli"]);
+    expect(voiceChain(process.env).map((p) => p.name)).toEqual(["agy-cli"]);
+    const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("HOUGE_LLM_MEDIA_PROVIDERS"));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("pi (retired)");
+    expect(lines[0]).toContain("whisper (unknown)");
+    warn.mockRestore();
+  });
+
+  it("no usable voice leg: the call returns the normal media failure, never throws, spawns nothing", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.HOUGE_LLM_MEDIA_PROVIDERS = "pi";
+    const file = path.join(mediaDir, "media.opus");
+    writeFileSync(file, "ogg");
+    const call = buildMediaCall({ store, run_id: "run_none", kind: "voice", env: process.env });
+    expect(await call({ question: "t", media: { path: file, mime: "audio/ogg" } })).toEqual({ ok: false, error: "no media-capable leg" });
+    expect(ompSpawns()).toEqual([]);
+    vi.restoreAllMocks();
   });
 });

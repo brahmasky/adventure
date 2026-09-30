@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CoreWorker, MediaWorkerDeps } from "../../src/core/core-worker.js";
+import { CoreWorker, type MediaWorkerDeps } from "../../src/core/core-worker.js";
 import { evolutionLaneSettled, resetEvolutionLaneForTests } from "../../src/core/evolution-lane.js";
 import { DISTILL_DISCIPLINE } from "../../src/capabilities/distill.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
@@ -10,7 +10,7 @@ import { Gateway } from "../../src/gateway/gateway.js";
 import { echoLine, mediaFailureReply, type TelegramMediaRef } from "../../src/media/media-config.js";
 import { RunStore, type ClaimedRun } from "../../src/run/run-store.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
-import { pinEnabledFlags, pinOmpEnv, shortTmp, useFakeOmp } from "../helpers/omp-env.js";
+import { pinEnabledFlags, pinOmpEnv, shortTmp, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
 import { bridgeTurn, drainOutbox, fakeLog, ompWorker, until } from "../helpers/omp-worker.js";
 
 // The ingest step on the omp turn (spec 2026-09-29 + Task 13): the supervisor's resolveMessage hook
@@ -202,6 +202,24 @@ describe("the ingest step on the omp turn (spec 2026-09-29)", () => {
     expect(await runTurn(intake.run_id, mediaDeps({ downloadFile }))).toBe("completed");
     expect(downloadFile).not.toHaveBeenCalled();
     expect(rows(intake.run_id, "media_ingested")).toHaveLength(0);
+  });
+});
+
+describe("a stale voice provider list (I3)", () => {
+  it("HOUGE_LLM_MEDIA_PROVIDERS=pi never throws: the turn fails leg_failed with the code-owned reply and a media_ingested row", async () => {
+    process.env.HOUGE_MEDIA_INGEST_ENABLED = "true";
+    process.env.HOUGE_LLM_MEDIA_PROVIDERS = "pi";
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    useFakeOmp({ "*": { rpcText: "never" } }, tmp.dir);
+    // Production seats (no injected LLM): the real buildMediaCall runs, with only the downloader faked.
+    worker = new CoreWorker(store, join(tmp.dir, "project"), undefined, undefined, undefined, undefined, undefined, undefined, undefined, async () => null,
+      undefined, { downloadFile: async () => ({ bytes: new Uint8Array([1, 2, 3]) }), tmpRoot: TMP_ROOT }, { dataDir: tmp.dir, distDir: tmpOmpDist(tmp.dir) });
+    const run = mediaRun(voiceRef, "", "stale-pi");
+    worker.submitTurn(run);
+    await until(() => store.getRunState(run) === "failed");
+    expect(rows(run, "media_ingested")[0]!.payload).toMatchObject({ kind: "voice", status: "leg_failed" });
+    expect(reply(run)).toContain(mediaFailureReply("voice", "leg_failed"));
+    expect(prompts()).toEqual([]);
   });
 });
 

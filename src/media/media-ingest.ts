@@ -262,15 +262,30 @@ export function buildMediaCall(d: MediaCallDeps): MediaIngestDeps["mediaCall"] {
     return llmToolAdapter(oneShotAdapter(d.store, resolveOmpConfig(d.env), { run_id: d.run_id, role: "reader" }));
   }
   const chain = d.voiceLeg ? [d.voiceLeg] : voiceChain(d.env);
+  if (chain.length === 0) return async () => ({ ok: false, error: "no media-capable leg" });
   const audit = d.store.llmAuditSink({ run_id: d.run_id, role: "media_transcribe" });
   return llmToolAdapter({ answer: (req) => answerWithChain(chain, req, audit) });
 }
 
-/** The voice chain: agy-cli is the only leg that hears audio (pi and the API legs are gone). */
-function voiceChain(env: NodeJS.ProcessEnv): LlmProvider[] {
+/** Voice provider names that once existed and are known gone (the warning says "retired", not "unknown"). */
+const RETIRED_VOICE_PROVIDERS: ReadonlySet<string> = new Set(["pi"]);
+const warnedVoiceLists = new Set<string>();
+
+/**
+ * The voice chain: agy-cli is the only leg that hears audio (pi and the API legs are gone). NEVER
+ * throws — a stale `HOUGE_LLM_MEDIA_PROVIDERS` would otherwise crash the turn's ingest step. Any
+ * other name is dropped with ONE warning per configured list; an empty result is the caller's
+ * normal media failure (leg_failed + its reply + a media_ingested row).
+ */
+export function voiceChain(env: NodeJS.ProcessEnv): LlmProvider[] {
   const timeoutMs = resolveMediaLegTimeoutMs(env);
-  return resolveMediaProviders(env).split(",").map((n) => n.trim()).filter(Boolean).map((name) => {
-    if (name !== "agy-cli") throw new Error(`Unknown voice provider: ${name} (only agy-cli transcribes)`);
-    return createAgyCliProvider({ timeoutMs });
-  });
+  const names = resolveMediaProviders(env).split(",").map((n) => n.trim()).filter(Boolean);
+  const dropped = names.filter((n) => n !== "agy-cli");
+  const key = names.join(",");
+  if (dropped.length > 0 && !warnedVoiceLists.has(key)) {
+    warnedVoiceLists.add(key);
+    const why = dropped.map((n) => `${n} (${RETIRED_VOICE_PROVIDERS.has(n) ? "retired" : "unknown"})`).join(", ");
+    console.warn(`[media-ingest] HOUGE_LLM_MEDIA_PROVIDERS: dropped ${why}; only agy-cli transcribes voice`);
+  }
+  return names.filter((n) => n === "agy-cli").slice(0, 1).map(() => createAgyCliProvider({ timeoutMs }));
 }
