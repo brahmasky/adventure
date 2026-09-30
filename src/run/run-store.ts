@@ -142,6 +142,8 @@ export interface ToolApprovalInput {
   summary: string;
   side_effect_level: SideEffectLevel;
   expires_at: string;
+  /** Approval-card text only (e.g. the bash command, capped by the caller). Never stored, never in the ledger. */
+  card_detail?: string;
 }
 
 export interface ToolApprovalRow extends ToolApprovalInput {
@@ -4676,7 +4678,8 @@ export class RunStore {
         correlation_id: input.run_id,
         payload: {
           text: buildToolApprovalPromptText(approval_id, input, this.redact),
-          action_summary: input.summary
+          action_summary: input.summary,
+          ...(input.card_detail !== undefined ? { card_detail: this.redact(input.card_detail) } : {})
         }
       }));
       this.db.exec("COMMIT");
@@ -5771,7 +5774,8 @@ export class RunStore {
     this.appendLedgerEvent(createLedgerEvent(event));
   }
 
-  private appendRunLedgerEvent(
+  /** The run-scoped ledger writer (sequence + validation). Public for the omp bridge's tool events. */
+  appendRunLedgerEvent(
     run_id: string,
     event_type: LedgerEventType,
     actor: LedgerActor,
@@ -7497,6 +7501,7 @@ function buildToolApprovalPromptText(
   return redact([
     `Approval required: ${approval_id}`,
     `Action: ${input.summary}`,
+    ...(input.card_detail !== undefined ? [`Command: ${input.card_detail}`] : []),
     `Side effect: ${input.side_effect_level}`,
     `Capability: ${input.capability}`,
     `Requester: ${input.requester.kind}:${input.requester.id}`,

@@ -43,14 +43,18 @@ export class ToolApprovalWaiters {
 /** Process-wide: the gateway resolves, the bridge waits. */
 export const toolApprovalWaiters = new ToolApprovalWaiters();
 
-export function createToolApprovalSink(deps: { store: RunStore; worker_id: string; tool_call_id: string; approvalTimeoutMs: number }): ApprovalRequestSink {
+/** `card_detail` rides the factory closure to the approval card only (never the ledger); the runner stays unchanged. */
+export function createToolApprovalSink(deps: {
+  store: RunStore; worker_id: string; tool_call_id: string; approvalTimeoutMs: number; card_detail?: string;
+}): ApprovalRequestSink {
   return {
     requestApproval: (input) => {
       const row = deps.store.createToolApproval({
         run_id: input.run_id, worker_id: deps.worker_id, tool_call_id: deps.tool_call_id, capability: input.capability,
         input_hash: input.adapter_input_hash, action_fingerprint: input.action_fingerprint, requester: input.requester,
         summary: input.action_summary, side_effect_level: input.side_effect_level,
-        expires_at: new Date(Date.now() + deps.approvalTimeoutMs).toISOString()
+        expires_at: new Date(Date.now() + deps.approvalTimeoutMs).toISOString(),
+        ...(deps.card_detail !== undefined ? { card_detail: deps.card_detail } : {})
       });
       return { approval_id: row.approval_id };
     },
