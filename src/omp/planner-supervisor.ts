@@ -564,7 +564,10 @@ export class PlannerSupervisor {
       configFile: p.configFile, plannerProfile: join(ctx.data, "omp", "planner.sb")
     };
     try {
-      const { manifestServed } = await this.listen(gen, sock, token);
+      const { bridge, manifestServed } = await this.listen(gen, sock, token);
+      // an abort or stop landed while the socket opened (B9): this child was superseded before it existed
+      if (gen !== this.gen) { await bridge.close(); return START_SUPERSEDED; }
+      this.bridge = bridge;
       const s = (this.d.sessionFactory ?? ((o) => new PlannerSession(o)))(opts);
       s.onFrame((f) => this.onFrame(gen, f));
       s.onExit((i) => this.onExit(gen, i));
@@ -617,7 +620,7 @@ export class PlannerSupervisor {
   }
 
   /** One listener per child; resolves the returned promise once a manifest request was answered (ruling 2). */
-  private async listen(gen: number, sock: string, token: string): Promise<{ manifestServed: Promise<void> }> {
+  private async listen(gen: number, sock: string, token: string): Promise<{ bridge: BridgeServer; manifestServed: Promise<void> }> {
     const { store, cfg, ctx, decls, env, turnEnvelopeActions } = this.d;
     const inner = createBridgeHandler({ store, cfg, ctx, decls, env, turnEnvelopeActions, activeTurn: () => this.turn?.active ?? null });
     let served: () => void = () => undefined;
@@ -629,8 +632,7 @@ export class PlannerSupervisor {
     };
     const bridge = await BridgeServer.listen(sock, token, handle);
     bridge.onDisconnect(() => this.onBridgeLost(gen));
-    this.bridge = bridge;
-    return { manifestServed }; // wrapped: an async function returning a promise would adopt it and wait for the manifest
+    return { bridge, manifestServed }; // wrapped: an async function returning a promise would adopt it and wait for the manifest
   }
 
   /**

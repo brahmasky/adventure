@@ -9,6 +9,7 @@ import { PlannerSupervisor, parseAttachments, type PlannerSessionLike, type Supe
 import type { OmpFrame } from "../../src/omp/omp-frames.js";
 import { PlannerRpcError, type ExitInfo, type PlannerSessionOptions } from "../../src/omp/planner-session.js";
 import { ToolRegistry } from "../../src/tools/tool-registry.js";
+import { BridgeServer } from "../../src/omp/bridge-server.js";
 import { chatWorkspace } from "../../src/omp/workspace.js";
 import { openManifestClient } from "../helpers/bridge-manifest.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
@@ -781,5 +782,61 @@ describe("PlannerSupervisor — omp error frames and aborted ends (final review 
     sup.submit(req(run_id)); await sup.whenIdle();
     expect(outcome.done).toEqual([]);
     expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "planner_exit", error_ref: "agent_aborted" });
+  });
+});
+
+describe("PlannerSupervisor — an abort that lands while the bridge listens (final review B9, parked T12)", () => {
+  type Internals = { session?: unknown; bridge?: unknown };
+  /** Hold the first BridgeServer.listen until released; resolves `entered` once the spawn is inside it. */
+  function gateListen() {
+    const real = BridgeServer.listen.bind(BridgeServer);
+    let release: () => void = () => undefined; let entered: () => void = () => undefined;
+    const inside = new Promise<void>((r) => { entered = r; });
+    let n = 0;
+    const spy = vi.spyOn(BridgeServer, "listen").mockImplementation(async (...a: Parameters<typeof BridgeServer.listen>) => {
+      if (n++ === 0) { entered(); await new Promise<void>((r) => { release = r; }); }
+      return real(...a);
+    });
+    cleanups.push(() => spy.mockRestore());
+    return { inside, release: () => release() };
+  }
+
+  async function nextTurnRunsOnAFreshChild(h: ReturnType<typeof harness>, log: string[]) {
+    const internals = h.sup as never as Internals;
+    expect(internals.session).toBeUndefined(); // nothing left registered by the superseded spawn
+    expect(internals.bridge).toBeUndefined();
+    const b = createQueuedTurnRun(h.store);
+    h.sup.submit(req(b)); await h.sup.whenIdle();
+    expect(h.outcome.done.map((d) => (d as { run_id: string }).run_id)).toContain(b);
+    expect(log).toEqual(["start:1", "manifest:1", "prompt:1"]); // the superseded spawn never made a child; b's own child answered
+  }
+
+  it("a turn-deadline abort inside listen() leaves no orphan child; the next turn is answered on a fresh child", async () => {
+    const log: string[] = [];
+    const h = harness(fakeSession({ log }), { HOUGE_OMP_TURN_TIMEOUT_MS: "150" });
+    const gate = gateListen();
+    const a = createQueuedTurnRun(h.store);
+    h.sup.submit(req(a)); await gate.inside;
+    await new Promise((r) => setTimeout(r, 300)); // the deadline fires while the spawn waits in listen()
+    gate.release(); await h.sup.whenIdle(); await new Promise((r) => setTimeout(r, 50));
+    expect(failedOf(h.outcome, a)).toMatchObject({ error_type: "turn_timeout" });
+    (h.sup as never as { d: { cfg: { turnTimeoutMs: number } } }).d.cfg.turnTimeoutMs = 600_000;
+    await nextTurnRunsOnAFreshChild(h, log);
+  });
+
+  it("a lease-lost abort inside listen() leaves no orphan child; the next turn is answered on a fresh child", async () => {
+    const log: string[] = [];
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    cleanups.push(() => { vi.useRealTimers(); });
+    const h = harness(fakeSession({ log }));
+    const gate = gateListen();
+    const a = createQueuedTurnRun(h.store);
+    h.sup.submit(req(a)); await gate.inside;
+    const beat = vi.spyOn(h.store, "heartbeat").mockReturnValue(false);
+    vi.advanceTimersByTime(30_000); // the lease renewal is refused while the spawn waits in listen()
+    beat.mockRestore(); vi.useRealTimers();
+    gate.release(); await h.sup.whenIdle(); await new Promise((r) => setTimeout(r, 50));
+    expect(failedOf(h.outcome, a)).toMatchObject({ error_type: "lease_lost" });
+    await nextTurnRunsOnAFreshChild(h, log);
   });
 });
