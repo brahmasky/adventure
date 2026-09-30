@@ -145,21 +145,26 @@ const toHit = (c: CommandClass): Hit => (c.kind === "plain" ? null : c);
 
 const MAX_DEPTH = 8;
 const RANK = { plain: 0, external_write: 1, destructive: 2 } as const;
-const stricter = (a: CommandClass, b: CommandClass): CommandClass => (RANK[b.kind] > RANK[a.kind] ? b : a);
+type Found = NonNullable<Hit>;
 
-function classifyText(text: string, depth: number): CommandClass {
+function hitsOf(text: string, depth: number): Found[] {
   const { segments, subs } = parse(text);
-  const hits = [...segments.flatMap((sg) => segmentHit(sg, depth)), ...subs.map((sub) => toHit(classify(sub, depth + 1)))].filter((h): h is NonNullable<Hit> => h !== null);
-  return hits.find((h) => h.kind === "destructive") ?? hits[0] ?? { kind: "plain" };
+  return [...segments.flatMap((sg) => segmentHit(sg, depth)), ...subs.map((sub) => toHit(classify(sub, depth + 1)))].filter((h): h is Found => h !== null);
 }
 
-/** Whole-input result, tightened by a line-wise pass: an apostrophe in a comment must not hide later lines (fail toward asking). */
+/**
+ * The strictest kind over the whole input and, line by line, every line on its own (an apostrophe in a comment
+ * must not hide later lines). The label lists EVERY distinct match, strictest first: the approval card must not
+ * show only a decoy (security I1).
+ */
 function classify(text: string, depth: number): CommandClass {
   if (depth > MAX_DEPTH) return { kind: "destructive", label: "nesting too deep" };
-  let worst = classifyText(text, depth);
   const lines = codeLines(text);
-  if (lines.length > 1) for (const line of lines) worst = stricter(worst, classifyText(line, depth));
-  return worst;
+  const found = [...hitsOf(text, depth), ...(lines.length > 1 ? lines.flatMap((line) => hitsOf(line, depth)) : [])];
+  if (found.length === 0) return { kind: "plain" };
+  const kind = found.some((h) => h.kind === "destructive") ? "destructive" : "external_write";
+  const labels = [...new Set([...found].sort((a, b) => RANK[b.kind] - RANK[a.kind]).flatMap((h) => h.label.split(", ")))];
+  return { kind, label: labels.join(", ") };
 }
 
 export function classifyCommand(command: string): CommandClass {

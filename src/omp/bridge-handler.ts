@@ -44,7 +44,13 @@ export const READ_TOOL_FAILED_TEXT = "The read tool failed; its error text is wi
 export const TURN_ABORTED_TEXT = "The turn was aborted; this call did not run.";
 export const POLICY_VERSION = "omp-1";
 export const RESPONSE_CAP = 32 * 1024;
-const CARD_DETAIL_CAP = 300;
+/** The approval card shows the command whole up to this many characters (security I1: never a silent cut). */
+export const CARD_DETAIL_CAP = 3000;
+export const cardTruncationNote = (cut: number): string => `…[truncated ${cut} chars]`;
+/** The card's Command line: the whole command, or its first CARD_DETAIL_CAP characters plus how many were cut. */
+function cardDetail(command: string): string {
+  return command.length <= CARD_DETAIL_CAP ? command : `${command.slice(0, CARD_DETAIL_CAP)}${cardTruncationNote(command.length - CARD_DETAIL_CAP)}`;
+}
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const bytes = (s: string) => Buffer.byteLength(s, "utf8");
@@ -162,7 +168,7 @@ type Executed = { result: CapabilityResult } | { refusal: { reason: string; text
 async function executeWithApproval(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallReq, entry: RegistryEntry): Promise<Executed> {
   const command = req.tool === "bash" && typeof req.input.command === "string" ? req.input.command : undefined;
   const sink = createToolApprovalSink({ store: deps.store, worker_id: turn.worker_id, tool_call_id: req.toolCallId,
-    approvalTimeoutMs: deps.cfg.approvalTimeoutMs, ...(command !== undefined ? { card_detail: command.slice(0, CARD_DETAIL_CAP) } : {}) });
+    approvalTimeoutMs: deps.cfg.approvalTimeoutMs, ...(command !== undefined ? { card_detail: cardDetail(command) } : {}) });
   const runner = new CapabilityRunner(turn.registry, sink);
   const base: CapabilityExecutionInput = { run_id: turn.run_id, requester: turn.requester, contract: turn.contract, capability: entry,
     input: req.input, budget: turn.budget, signal: turn.signal, tool_call_id: req.toolCallId, action_summary: summaryFor(req.tool, command) };
