@@ -1,6 +1,6 @@
 # ADR 0023: External engineering workspace — container-sandboxed work on third-party repos
 
-- **Status:** accepted
+- **Status:** accepted; **dormant since 2026-09-30** (code removed at `3aabc04`, [ADR 0028](0028-omp-runtime.md) D8 — see end)
 - **Deciders:** Paco (Money-Work Phase P1, 2026-07-17)
 
 ## Context
@@ -104,3 +104,10 @@ the gate surfaced, now fixed/recorded:
    (only the scratch `/work` is bind-mounted), the root fs is read-only, and `--network none`
    blocks egress on the build/test stage. The happy path ran real `npm ci [egress]` + `npm test
    [none]` and produced a correct local patch with the own repo untouched.
+
+## Amendment (2026-09-30): dormant; code removed at 3aabc04 (ADR 0028)
+
+[ADR 0028](0028-omp-runtime.md) D8 deletes `external_work`, `external-workspace.ts`,
+`container-runner.ts` and the external_work publish path in commit `3aabc04`. The `HOUGE_EXTWORK_*`
+variables are no longer read. The container-containment findings above remain the reference if the
+capability returns.

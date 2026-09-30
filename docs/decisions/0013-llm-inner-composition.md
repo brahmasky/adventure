@@ -1,6 +1,6 @@
 # ADR 0013: LLM inner composition — code owns the gates, the model composes between them
 
-- **Status:** accepted (direction; flag-gated migration per surface)
+- **Status:** accepted (direction; flag-gated migration per surface); **amended 2026-09-30 by [ADR 0028](0028-omp-runtime.md)** (composition is omp's loop — see end)
 - **Date:** 2026-07-02
 - **Deciders:** Paco
 - **Relates to:** completes the [ADR 0001](0001-deterministic-harness-governs-everything.md)
@@ -194,3 +194,15 @@ is built **loop-native** from day one and never acquires a legacy pipeline.
   weakness; OpenClaw — the code-driven pole, the decision/observation hook taxonomy adopted here,
   and the relaxed-floor cautionary tale; MOSS (arXiv 2605.22794) — proof that source-evolution
   had to be bolted onto OpenClaw externally, whereas Houge carries it natively.
+
+## Amendment (2026-09-30): composition is omp's loop (ADR 0028)
+
+The inner loop this ADR introduced (`src/core/inner-loop.ts`, `src/core/tool-manifest.ts`) is
+deleted. Composition is now **omp's agent loop** ([ADR 0028](0028-omp-runtime.md)). Houge composes
+the **prompt** (the system-prompt file and a per-turn `[context]` block), the **tools** (JSON
+declarations under `src/omp/tools/`, served by the bridge), and the **gates**. The principle
+stands and has moved into the bridge: code owns the gates, the model composes between them. Every
+tool call runs daemon-side through `CapabilityRunner` (contract, budget, approval, ledger). The
+code-owned capability map (`src/omp/capability-map.ts`) decides each tool's policy class, never
+the declaration. The turn envelope drops `intent_router` and `llm_answer`, gains `fs_read`,
+`fs_write`, `shell` and `shell_external`, and the per-run `tool_calls` cap goes from 14 to 40.

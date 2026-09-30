@@ -1,6 +1,6 @@
 # ADR 0027: Idea panel — weekly judge panel with a contained Claude chair
 
-- **Status:** accepted
+- **Status:** accepted; **amended 2026-09-30 by [ADR 0028](0028-omp-runtime.md)** (the chair is an omp seat — see end)
 - **Date:** 2026-07-27
 - **Deciders:** Paco (2026-07-24 direction; spec-review-senior gate cleared 2026-07-25)
 - **Relates to:** builds R2 of the [ADR 0026](0026-idea-radar-read-surface.md) radar loop
@@ -224,3 +224,13 @@ Noted, not fixed:
   cosmetic.
 - Inline ordinal spoofing via card titles (a title containing "2.") — inherent to a numbered
   text list; the pick confirmation echoes the real title.
+
+## Amendment (2026-09-30): the chair is an omp seat (ADR 0028)
+
+The contained `claude` CLI chair spawn (isolated config dir, `--tools ""`, broker-injected
+`CLAUDE_CODE_OAUTH_TOKEN`) is removed in commit `3aabc04`. The chair is now an omp one-shot on
+`HOUGE_OMP_CHAIR` (default `anthropic/claude-opus-5-5:low`): tool-less, sessionless,
+extension-less, and spawned with the child env allowlist. The judges are omp one-shots on
+`HOUGE_OMP_JUDGES`, one string per seat index, with no fallback, so quorum semantics are kept.
+`HOUGE_CLAUDE_BIN` and `HOUGE_RADAR_CHAIR_TIMEOUT_MS` are no longer read. The deterministic
+mean-score fallback, quorum 2 and the `memory/briefs/` projection are unchanged.

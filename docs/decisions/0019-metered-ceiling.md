@@ -1,6 +1,6 @@
 # ADR 0019: Metered-API $ ceiling — ledger-derived spend, latch-driven enforcement
 
-- **Status:** accepted
+- **Status:** accepted; **dormant since 2026-09-30** ([ADR 0028](0028-omp-runtime.md): no metered leg exists — see end)
 - **Date:** 2026-07-15
 - **Deciders:** Paco
 - **Relates to:** extends the breaker pattern of [ADR 0003](0003-global-budget-breaker.md)
@@ -107,3 +107,12 @@ fixed the same day (`27e6728`).
   design a one-shot `run`/`--once` invocation consults whatever latch state the last daemon
   tick left. Both windows are small against a $5 ceiling.
 - Prices drift; the defaults are operator-tunable and the ADR's numbers are not a contract.
+
+## Amendment (2026-09-30): no metered leg exists; the ceiling is dormant (ADR 0028)
+
+After the omp cutover every LLM seat runs on subscription OAuth (Anthropic Max, Google Antigravity,
+Kimi Code, OpenAI Codex), and voice runs on the flat-rate `agy-cli` leg. The `kimi-api` and
+`gemini-api` legs are deleted, so nothing is priced and the ceiling never trips. omp rows carry
+`cost_usd: 0` (shown as "sub" in `/usage`). The ceiling code, its env vars and its `/status` line
+stay, dormant, for any future metered leg. The live gate checks that no `llm_attempt` on an OAuth
+provider has `cost_usd > 0`.

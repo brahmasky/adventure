@@ -1,6 +1,6 @@
 # ADR 0022: Money fork re-opened — earning is IN (human-fronted), custody stays OUT
 
-- **Status:** accepted
+- **Status:** accepted; **dormant since 2026-09-30** (code removed at `3aabc04`, [ADR 0028](0028-omp-runtime.md) D8 — see end)
 - **Deciders:** Paco (charter-level `/goal p0`, 2026-07-17)
 
 ## Context
@@ -88,3 +88,11 @@ holds, moves, or has custody of the money.
 - **Houge holds a scoped receive-only wallet now.** Rejected for v1 (offered and declined at
   scoping): even receive-only custody re-opens key handling and the deferred class prematurely.
   Deferred to a possible later ADR if human-fronted earning proves out and Paco re-decides.
+
+## Amendment (2026-09-30): dormant; code removed at 3aabc04 (ADR 0028)
+
+[ADR 0028](0028-omp-runtime.md) D8 deletes the money-track tools (`bounty_scan`, `project_track`,
+`project_update`, `project_list`, `external_work`) with the old loop, in commit `3aabc04`. The
+tables stay, and the historical rows remain readable. The decision above (earning is IN,
+human-fronted; custody stays OUT) is unchanged, but nothing implements it now. Reviving it means a
+bridge-tool declaration plus an adapter under ADR 0028's floors.

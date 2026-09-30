@@ -3,6 +3,7 @@
 - **Status:** accepted (direction; built in phases) · intent *enum-as-dispatch* refined by
   [ADR 0013](0013-llm-inner-composition.md) (loop composition; the enum survives as an advisory hint)
   · **amended 2026-07-27 by [ADR 0027](0027-idea-panel-claude-chair.md)** (contained panel chair seat — see end)
+  · **amended 2026-09-30 by [ADR 0028](0028-omp-runtime.md)** (classifier call removed; see end)
 - **Date:** 2026-06-19
 - **Deciders:** Paco
 
@@ -125,3 +126,18 @@ tool-less, single-turn **chair seat** in the weekly idea panel is granted: subsc
 broker-held token, spawn-bounded, panel-local, with a deterministic fallback so Houge still
 has no hard Claude dependency. Everything else in this ADR stands as written; see ADR 0027
 for the containment bar future seats must argue against.
+
+## Amendment (2026-09-30): the classifier call is removed (ADR 0028)
+
+Under [ADR 0028](0028-omp-runtime.md) every Telegram turn runs on the omp planner, which chooses
+its own steps. The intent **classifier call** (`CoreWorker.classifyIntent` and its live prompt
+builders) is deleted. `src/capabilities/intent.ts` is kept: it still hosts the chat-context
+resolvers, `countTrailingClarifyTurns`, the `Intent` type and `parseIntent`, which the composer,
+the skill router and the historical Jev report read. The supervisor now writes
+`chat_turns.intent` on each assistant row itself (`clarify` when the reply ends without a tool call
+and asks a question, else `loop`), so the consecutive-clarify cap keeps its input. At the cap, the turn prompt gains a code-owned line
+telling the planner not to ask again.
+
+ADR 0028 D7 also narrows the 2026-07-27 amendment below: Claude (Opus 5.5 inside omp, on
+subscription OAuth) is now the default **conversational** engine. The contained, tool-less chair
+seat is an omp one-shot on `HOUGE_OMP_CHAIR`.

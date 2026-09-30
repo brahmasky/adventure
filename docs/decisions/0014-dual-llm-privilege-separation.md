@@ -1,6 +1,6 @@
 # ADR 0014: Dual-LLM privilege separation — the reader that touches untrusted bytes cannot act
 
-- **Status:** accepted (design; flag-gated build to follow, sequenced after the secrets firewall)
+- **Status:** accepted (design; flag-gated build to follow, sequenced after the secrets firewall); **amended 2026-09-30 by [ADR 0028](0028-omp-runtime.md)** (wall in the bridge; shell output exempt; family resolver — see end)
 - **Date:** 2026-07-05
 - **Deciders:** Paco
 - **Relates to:** restores the reader/actor wall of [ADR 0006](0006-web-read-capability.md) inside the
@@ -163,3 +163,23 @@ already provider-agnostic with echo-defense); the Q-LLM built on the `anchor-ver
   deliberately `--no-tools` text-in/text-out; the harness owns action dispatch (ADR 0001/0013), and
   native tool-calling would hand the untrusted-reading model a trigger — the exact thing this ADR
   removes.
+
+## Amendment (2026-09-30): the wall moves into the bridge; shell output is exempt (ADR 0028)
+
+- **Where:** the wall is enforced in the omp bridge for the four read tools (`web_search`,
+  `http_fetch`, `gmail_read`, `google_api`). All four return through one function,
+  `normalizeExternalRead()`: a digest, `contains_instructions`, and only the code-built
+  `trusted_extract` may carry source bytes. The wall is **unconditional**:
+  `HOUGE_DUAL_LLM_ENABLED` is removed, and the reader chain is `HOUGE_OMP_READER`.
+- **Exemption (ADR 0028 D12):** output of the `bash` tool is returned raw (capped at 32 KiB) and is
+  **not** quarantined. A steered planner can fetch hostile bytes through `bash` around the wall.
+  Paco accepted this residual on 2026-09-30.
+- **Family resolver:** `family(provider/model)` = `claude | gemini | gpt | kimi | other`, taken
+  from the model id and independent of the route. It is checked against the resolved planner and
+  reader after every fallback.
+- **D10, audited degradation:** when the planner and reader end up on one family, the read
+  **proceeds**. The `llm_attempt` row carries `family_collapse: true`, a `wall_collapse` ledger event
+  is written per read, and the sweep keeps incident `wall_collapsed` open while the condition holds.
+  A GPT-family reader string makes collapse rare.
+- The planner now calls tools natively (the rejected "tool-calling-native providers" alternative).
+  The wall holds because the untrusted-reading model is still a separate, tool-less one-shot seat.

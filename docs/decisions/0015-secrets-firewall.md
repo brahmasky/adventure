@@ -1,6 +1,6 @@
 # ADR 0015: Secrets firewall — the main process holds no ambient credentials
 
-- **Status:** accepted (design; flag-gated build to follow as its own `/goal`)
+- **Status:** accepted (design; flag-gated build to follow as its own `/goal`); **amended 2026-09-30 by [ADR 0028](0028-omp-runtime.md)** (planner child env allowlist; new secret location — see end)
 - **Date:** 2026-07-05
 - **Deciders:** Paco
 - **Relates to:** implements the charter's **secrets firewall** (the load-bearing safety-net
@@ -132,3 +132,18 @@ these secrets because **the ambient target is empty**.
   mechanism (kept as possible defense-in-depth): a static check is an arms race against obfuscation,
   whereas emptying `process.env` of secrets makes the read return nothing regardless of how it is
   written — structural beats pattern-matching, consistent with [ADR 0001](0001-deterministic-harness-governs-everything.md).
+
+## Amendment (2026-09-30): planner child env and a new secret location (ADR 0028)
+
+- **Child env:** every omp child, the planner and each one-shot seat, starts from the `buildChildEnv`
+  allowlist (`PATH HOME TERM LANG USER`), plus the names in `HOUGE_OMP_ENV_PASSTHROUGH` (default
+  `KIMI_CODE_OAUTH_HOST,KIMI_CODE_BASE_URL`), plus a per-child `HOUGE_BRIDGE_SOCK` and
+  `HOUGE_BRIDGE_TOKEN`. No broker secret enters a child env (layer L0).
+- **New secret location:** `~/.omp/profiles/houge` holds the four subscription OAuth grants. It is
+  in `SECRET_PATHS`, so the Seatbelt profiles deny it to `bash` and the policy hook denies omp's
+  `read` of it.
+- **D11 residual (accepted by Paco, 2026-09-30):** the planner process must read its own OAuth
+  store, so the OS sandbox cannot deny that path to that one process. Mitigations: the policy hook,
+  no shell inside the planner process (D12), and the SP3 separate macOS user.
+- `KIMI_API_KEY`, `GEMINI_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` have no consumer after the cutover.
+  The broker still lifts, strips and redacts them if they are present.
