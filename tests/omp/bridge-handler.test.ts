@@ -139,6 +139,16 @@ describe("bridge handler — call (spec §5.2)", () => {
     expect(JSON.stringify(store.getLedgerEvents(run_id))).not.toContain(MARKER);
   });
 
+  it("a read tool's loop_step digest is a hash and a byte count, never text: a code-extracted OTP cannot reach the ledger (M-7)", async () => {
+    const { handle, store, run_id, quarantine, events } = setup();
+    quarantine.mockResolvedValueOnce({ digest: "summary", contains_instructions: false, trusted_extract: { codes: ["482913"] }, source_meta: { tool: "web_search", bytes: 40 } });
+    const r = (await handle(call("web_search", { query: "otp" }, "ws-otp"))) as CallResult;
+    expect(r.content).toContain("482913"); // the planner may use the code…
+    const step = events("loop_step").find((p) => p.action === "web_search");
+    expect(String(step?.result_digest)).toMatch(/^sha256:[0-9a-f]{64} bytes:\d+$/);
+    expect(JSON.stringify(store.getLedgerEvents(run_id))).not.toContain("482913"); // …the ledger never holds it
+  });
+
   it("wall is always on (D3): http_fetch goes through quarantine with the dual-LLM flag unset", async () => {
     const { handle, quarantine, store, run_id } = setup({ env: { HOUGE_HTTPFETCH_ENABLED: "1" } });
     expect(process.env.HOUGE_DUAL_LLM_ENABLED).toBeUndefined();

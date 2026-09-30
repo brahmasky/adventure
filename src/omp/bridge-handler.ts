@@ -45,7 +45,6 @@ export const TURN_ABORTED_TEXT = "The turn was aborted; this call did not run.";
 export const POLICY_VERSION = "omp-1";
 export const RESPONSE_CAP = 32 * 1024;
 const CARD_DETAIL_CAP = 300;
-const DIGEST_CAP = 200;
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const bytes = (s: string) => Buffer.byteLength(s, "utf8");
@@ -189,7 +188,7 @@ async function awaitApproval(turn: ActiveTurn, approval_id: string, timeoutMs: n
 
 interface Rendered { content: string; digest: string; failed?: string }
 
-/** Read tools cross the wall ALWAYS (D3); bash is raw (D12); a digest carries counts or the reader's rephrasing only. */
+/** Read tools cross the wall ALWAYS (D3); bash is raw (D12); a ledger digest carries counts and hashes only. */
 async function render(turn: ActiveTurn, entry: RegistryEntry, r: CapabilityResult): Promise<Rendered> {
   const isRead = UNTRUSTED_READ_ENTRIES.has(entry);
   if (r.status !== "succeeded") return { content: isRead ? `${READ_TOOL_FAILED_TEXT} ${r.status}` : cap(failureText(r)), digest: r.status };
@@ -210,7 +209,8 @@ async function renderRead(turn: ActiveTurn, entry: RegistryEntry, output: Record
     return { content: QUARANTINE_FAILED_TEXT, digest: "quarantine_failed", failed: "quarantine_failed" };
   }
   const text = cap(renderExternalRead(read));
-  return { content: text, digest: text.slice(0, DIGEST_CAP) };
+  // The ledger never holds read text: the rendered result may carry a code-extracted OTP or link.
+  return { content: text, digest: `sha256:${sha(text)} bytes:${bytes(text)}` };
 }
 
 function failureText(r: Exclude<CapabilityResult, { status: "succeeded" }>): string {
