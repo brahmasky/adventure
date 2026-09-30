@@ -86,7 +86,7 @@ describe("bridge server — one socket per planner child; every connection on it
     await s.close();
   });
 
-  it("an unterminated line over 1 MB drops the connection and fires onDisconnect (the turn aborts, nothing is silently lost)", async () => {
+  it("an unterminated line over 16 MB drops the connection and fires onDisconnect (the turn aborts, nothing is silently lost)", async () => {
     const sock = join(mkdtempSync(join(tmpdir(), "hb-")), "c.sock");
     const s = await BridgeServer.listen(sock, "tok", async () => ({}));
     let disconnected = false;
@@ -95,7 +95,7 @@ describe("bridge server — one socket per planner child; every connection on it
       const c = connect(sock);
       c.on("close", () => resolve(true)); c.on("error", () => undefined);
       c.write(encodeLine({ id: "h", kind: "hello", token: "tok" }));
-      c.write("x".repeat(1_100_000));
+      c.write("x".repeat(17 * 1024 * 1024));
     });
     expect(closed).toBe(true);
     await vi.waitFor(() => { expect(disconnected).toBe(true); });

@@ -8,25 +8,30 @@ export type BridgeResponse = { id: string; ok: true; result: unknown } | { id: s
 
 export const encodeLine = (msg: object): string => `${JSON.stringify(msg)}\n`;
 
-const MAX_BUFFERED = 1_000_000;
+// Contract: a `gate` request's input carries PATH FIELDS ONLY ({ path, file_path }), never a write/edit body
+// (the extension strips it), so no legitimate frame is large. 16 MB is headroom for big `call` results/inputs.
+const MAX_BUFFERED = 16 * 1024 * 1024;
 
 export class LineDecoder {
-  private buf = "";
+  /** Pieces of the current unterminated line; joined only when a newline arrives (a 16 MB line is never re-copied per chunk). */
+  private parts: string[] = [];
+  private size = 0;
   /** Set once an unterminated line passed MAX_BUFFERED; the caller must drop the connection. */
   overflowed = false;
   push(chunk: string): object[] {
-    this.buf += chunk;
     const out: object[] = [];
-    let i: number;
-    while ((i = this.buf.indexOf("\n")) >= 0) {
-      const line = this.buf.slice(0, i); this.buf = this.buf.slice(i + 1);
+    let rest = chunk;
+    for (let i = rest.indexOf("\n"); i >= 0; i = rest.indexOf("\n")) {
+      const line = this.parts.join("") + rest.slice(0, i);
+      this.parts = []; this.size = 0; rest = rest.slice(i + 1);
       if (line.trim().length === 0) continue;
       try {
         const v: unknown = JSON.parse(line);
         if (typeof v === "object" && v !== null && !Array.isArray(v)) out.push(v);
       } catch { /* drop malformed line */ }
     }
-    if (this.buf.length > MAX_BUFFERED) { this.buf = ""; this.overflowed = true; }
+    if (rest.length > 0) { this.parts.push(rest); this.size += rest.length; }
+    if (this.size > MAX_BUFFERED) { this.parts = []; this.size = 0; this.overflowed = true; }
     return out;
   }
 }
