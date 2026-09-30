@@ -39,6 +39,8 @@ export interface SupervisorDeps {
   skipPreflightForTest?: boolean;
   /** How long a started child has to ask for its manifest (default MANIFEST_WAIT_MS). */
   manifestWaitMs?: number;
+  /** How long `start()` (spawn → ready → open_session) may take (default START_WAIT_MS). */
+  startWaitMs?: number;
 }
 
 export const RETRY_NOTE = "(The previous model was unavailable. Continue answering my last message.)";
@@ -46,6 +48,7 @@ export const KILLED_TEXT = "⏹ Stopped by /kill.";
 export const TIMEOUT_TEXT = "⏱ I ran out of time on this one. Here is what I had so far:";
 export const PLANNER_EXIT_TEXT = "⚠ My runtime stopped unexpectedly. Nothing was retried; the ledger shows what ran.";
 export const MANIFEST_WAIT_MS = 15_000;
+export const START_WAIT_MS = 30_000;
 const RETRYABLE = new Set(["quota", "auth", "transport", "timeout", "model_missing"]);
 const HEARTBEAT_MS = 30_000;
 const ABORT_GRACE_MS = 5_000;
@@ -54,6 +57,8 @@ const CRASH_LIMIT = 3;
 /** macOS sun_path is 104 bytes including the terminating NUL. */
 const MAX_SOCK_PATH = 103;
 const TIMED_OUT = Symbol("timed_out");
+/** A turn step whose turn ended (abort, exit) before the step settled. */
+const ENDED = Symbol("ended");
 /** omp profile config (spec §4): no xdev devices, no update checks, no telemetry. */
 const HOUGE_CONFIG_YML = "tools:\n  xdev: false\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: false\ntelemetry:\n  otlpExportEnabled: false\n";
 
@@ -64,6 +69,12 @@ interface Turn {
   n: number; recorded: number; lastText: string; lastError: string | undefined; usedTool: boolean; legIndex: number;
   /** True while a prompt is out and its agent_end has not arrived: only then is a steer delivered. */
   live: boolean; finished: boolean;
+  /** Per-turn abort guard (never the supervisor-wide state, which a previous turn may have left ABORTING). */
+  aborting: boolean;
+  /** A prompt was sent for this turn (an n = 0 failure still gets its llm_attempt row). */
+  dispatched: boolean;
+  /** Concurrent approval waits: the deadline stays paused until every one resolved. */
+  approvals: number;
   done: (r: "end" | "abort") => void; ended: Promise<"end" | "abort">;
   deadlineLeft: number; deadlineAt: number; deadline: ReturnType<typeof setTimeout> | undefined; idle: ReturnType<typeof setTimeout> | undefined;
   failure?: { type: PlannerFailure; ref: string };
@@ -117,12 +128,21 @@ export class PlannerSupervisor {
   private draining: Promise<void> | undefined;
   private idleWaiters: Array<() => void> = [];
   private exits: number[] = [];
+  /** Latched by 3 crash exits in 10 min; only resetCrashGuard() (/rearm, the sweep) clears it. */
+  private crashLatched = false;
+  /** True while spawn() awaits start/manifest: a failed start is counted there, not again in onExit. */
+  private starting = false;
+  /** Resolves the current child's pending start/manifest waits when that child is replaced or stopped. */
+  private supersede: () => void = () => undefined;
+  /** A setModel failed or was cut off: the applied model is unknown, so the next turn resets to the top string. */
+  private modelUnknown = false;
   private idleExit: ReturnType<typeof setTimeout> | undefined;
   private model: ModelString;
 
   constructor(private readonly d: SupervisorDeps) { this.model = this.top(); }
   state(): SupervisorState { return this.st; }
   markStale(): void { this.stale = true; }
+  resetCrashGuard(): void { this.crashLatched = false; this.exits = []; }
   whenIdle(): Promise<void> {
     return this.busy || this.queue.length > 0 ? new Promise((r) => this.idleWaiters.push(r)) : Promise.resolve();
   }
@@ -138,21 +158,31 @@ export class PlannerSupervisor {
   }
 
   /** @internal Tests only: the same entry point the bridge receives through ActiveTurn.setAwaitingApproval. */
-  setAwaitingApprovalForTest(on: boolean): void { this.setAwaitingApproval(on); }
+  setAwaitingApprovalForTest(on: boolean): void { if (this.turn) this.setAwaitingApproval(this.turn, on); }
 
+  /** /kill and a guard pause: every queued run fails `killed`, the live turn aborts, the child stops (≈5 s bound). */
   async abortAll(reason: "killed" | "guard"): Promise<void> {
-    this.queue.length = 0;
+    this.failQueued(reason);
     await this.abortTurn("killed", reason);
-    await this.draining;
+    await bounded(this.draining ?? Promise.resolve(), ABORT_GRACE_MS);
     await this.stopSession();
   }
 
   async shutdown(): Promise<void> {
-    this.queue.length = 0;
+    this.queue.length = 0; // left queued in the DB: the next boot dispatches them
     const t = this.turn;
-    if (t) { t.failure ??= { type: "planner_exit", ref: "daemon shutdown" }; this.clearTimers(t); t.done("abort"); }
-    await this.draining;
+    if (t) { t.failure ??= { type: "planner_exit", ref: "daemon shutdown" }; this.clearTimers(t); t.live = false; t.done("abort"); }
+    await bounded(this.draining ?? Promise.resolve(), ABORT_GRACE_MS);
     await this.stopSession();
+  }
+
+  /** A queued run is claimed under its own planner owner so it can be failed (never left `queued`). */
+  private failQueued(reason: string): void {
+    const { store, cfg, chatId, outcome } = this.d;
+    for (const q of this.queue.splice(0)) {
+      const worker = `planner:${chatId}:${randomUUID()}`;
+      if (store.claimRun(q.run_id, worker, cfg.leaseTtlS)) outcome.fail({ run_id: q.run_id, worker_id: worker, error_type: "killed", error_ref: reason });
+    }
   }
 
   private top(): ModelString { return this.d.cfg.planner[0] as ModelString; }
@@ -207,6 +237,7 @@ export class PlannerSupervisor {
     clearTimeout(this.idleExit);
     const turn = this.newTurn(req, worker, claim);
     this.turn = turn;
+    this.st = this.session ? "IDLE" : "STARTING"; // never inherit a previous turn's ABORTING
     try {
       await this.startTurn(turn);
       await this.settle(turn);
@@ -225,14 +256,16 @@ export class PlannerSupervisor {
       run_id: req.run_id, worker_id: worker, chat_id: chatId, requester: req.requester, contract: claim.contract,
       budget: new BudgetLedger(claim.contract.budget), registry: tools.registry, signal: abort.signal, cwd: this.workspace(),
       step: { n: 0 }, cache: new Map(), unreported: new Map(), quarantine: tools.quarantine,
-      setAwaitingApproval: (on) => this.setAwaitingApproval(on), postureOk: this.d.posture
+      setAwaitingApproval: (on) => this.setAwaitingApproval(turn, on), postureOk: this.d.posture
     };
     const heartbeat = setInterval(() => this.renewLeases(), HEARTBEAT_MS);
-    return {
+    const turn: Turn = {
       req, worker, startedAt: Date.now(), merged: [], active, abort, heartbeat, n: 0, recorded: 0, lastText: "", lastError: undefined, deadline: undefined, idle: undefined,
-      usedTool: false, legIndex: 0, live: false, finished: false, ...newDeferred(),
+      usedTool: false, legIndex: 0, live: false, finished: false, aborting: false, dispatched: false, approvals: 0, ...newDeferred(),
       deadlineLeft: cfg.turnTimeoutMs, deadlineAt: Date.now()
     };
+    this.armDeadline(turn); // the deadline covers child start and prompt build too
+    return turn;
   }
 
   /** The lease keeps renewing while AWAITING_APPROVAL; losing the parent's lease aborts the turn (spec §7.1). */
@@ -241,9 +274,22 @@ export class PlannerSupervisor {
     if (!t) return;
     const { store, cfg } = this.d;
     if (!store.heartbeat(t.req.run_id, t.worker, cfg.leaseTtlS)) { void this.abortTurn("lease_lost", "heartbeat refused"); return; }
-    for (const m of t.merged) {
-      if (!store.heartbeat(m, t.worker, cfg.leaseTtlS)) console.warn(`planner supervisor: merged run ${m} lease renewal refused`);
+    for (const m of [...t.merged]) if (!store.heartbeat(m, t.worker, cfg.leaseTtlS)) this.mergedLeaseLost(t, m);
+  }
+
+  /** A steered run whose renewal was refused leaves the turn; it is failed only if the claim is still ours. */
+  private mergedLeaseLost(t: Turn, m: string): void {
+    const { store, outcome } = this.d;
+    t.merged = t.merged.filter((x) => x !== m);
+    if (store.getRunState(m) === "running" && store.getRunLease(m).worker_id === t.worker) {
+      outcome.fail({ run_id: m, worker_id: t.worker, error_type: "lease_lost", error_ref: "heartbeat refused" });
     }
+    this.incident("lease_lost", { run_id: m, parent_run_id: t.req.run_id });
+  }
+
+  /** Await a turn step, but give up as soon as the turn ended (an abort must never wait on a hung child call). */
+  private step<T>(t: Turn, p: Promise<T>): Promise<T | typeof ENDED> {
+    return Promise.race([p, t.ended.then((): typeof ENDED => ENDED)]);
   }
 
   private failTurn(turn: Turn, type: PlannerFailure, ref: string): void {
@@ -255,15 +301,15 @@ export class PlannerSupervisor {
   private async startTurn(turn: Turn): Promise<void> {
     const { store, chatId, turnContext } = this.d;
     try {
-      const fail = await this.ensureSession();
+      const fail = await this.step(turn, this.ensureSession());
+      if (fail === ENDED || turn.failure) return; // aborted while the child was starting
       if (fail) { this.failTurn(turn, "planner_exit", fail); return; }
-      if (turn.failure) return; // aborted while the child was starting
       store.recordChatTurn({ chat_id: chatId, run_id: turn.req.run_id, role: "user", text: turn.req.text });
-      const prompt = await buildTurnPrompt(turnContext, {
+      const prompt = await this.step(turn, buildTurnPrompt(turnContext, {
         run_id: turn.req.run_id, chat_id: chatId, message: turn.req.text, source: turn.req.source,
         ...(turn.req.goal !== undefined ? { goal: turn.req.goal } : {})
-      });
-      if (turn.failure) return;
+      }));
+      if (prompt === ENDED || turn.failure) return;
       await this.promptTop(turn, prompt);
     } catch (e) {
       this.failTurn(turn, "planner_exit", `start_failed: ${message(e)}`);
@@ -275,15 +321,28 @@ export class PlannerSupervisor {
     const s = this.session;
     if (!s) { this.failTurn(turn, "planner_exit", "planner not running"); return; }
     this.st = "RUNNING";
-    this.armDeadline(turn);
     this.armFrameIdle(turn);
+    if ((this.modelUnknown || !sameModel(this.model, this.top())) && (await this.resetTop(turn, s)) === ENDED) return;
+    if (turn.failure) return;
     try {
-      if (!sameModel(this.model, this.top())) { await s.setModel(this.top()); this.model = this.top(); }
-      if (turn.failure) return;
       turn.live = true;
-      await s.prompt(prompt);
+      turn.dispatched = true;
+      await this.step(turn, s.prompt(prompt));
     } catch (e) {
       this.failTurn(turn, "planner_exit", `prompt_failed: ${message(e)}`);
+    }
+  }
+
+  /** A failed reset is not fatal: log, raise an incident, answer on the current model; the next turn retries it. */
+  private async resetTop(turn: Turn, s: PlannerSessionLike): Promise<void | typeof ENDED> {
+    this.modelUnknown = true; // until set_model AND set_thinking_level both succeeded
+    try {
+      if ((await this.step(turn, s.setModel(this.top()))) === ENDED) return ENDED;
+      this.model = this.top();
+      this.modelUnknown = false;
+    } catch (e) {
+      console.error(`planner supervisor: reset to the top planner string failed: ${message(e)}`);
+      this.incident("planner_model_reset_failed", { run_id: turn.req.run_id, reason: message(e) });
     }
   }
 
@@ -302,7 +361,8 @@ export class PlannerSupervisor {
   private async retryNextLeg(turn: Turn, error: string): Promise<boolean> {
     const kind = classifyOmpError(error);
     const planner = this.d.cfg.planner;
-    if (!RETRYABLE.has(kind) || turn.legIndex + 1 >= planner.length) {
+    if (!RETRYABLE.has(kind)) { turn.failure = { type: "model_error", ref: kind }; return false; }
+    if (turn.legIndex + 1 >= planner.length) {
       turn.failure = { type: "no_planner_leg", ref: kind };
       this.incident("planner_no_leg", { run_id: turn.req.run_id, error_kind: kind, legs_tried: turn.legIndex + 1 });
       return false;
@@ -314,11 +374,13 @@ export class PlannerSupervisor {
     turn.lastError = undefined;
     Object.assign(turn, newDeferred());
     try {
-      await s.setModel(next);
+      this.modelUnknown = true;
+      if ((await this.step(turn, s.setModel(next))) === ENDED) return true;
       this.model = next;
+      this.modelUnknown = false;
       if (turn.failure) { turn.done("abort"); return true; }
       turn.live = true;
-      await s.prompt(RETRY_NOTE);
+      await this.step(turn, s.prompt(RETRY_NOTE));
     } catch (e) {
       this.failTurn(turn, "planner_exit", `retry_failed: ${message(e)}`);
     }
@@ -333,16 +395,21 @@ export class PlannerSupervisor {
     // compared only at turn start: a new lesson, identity edit, skill change or UTC day restarts the child here
     if (this.session && (this.stale || systemPromptFingerprint(turnContext, chatId) !== this.fingerprint)) await this.stopSession();
     if (this.session) return null;
-    if (this.crashLooping()) { this.incident("planner_crash_loop", { exits: this.exits.length }); return "crash_loop"; }
+    if (this.crashLooping()) return "crash_loop";
     const pre = this.preflight();
     if (pre) return pre;
     return this.spawn();
   }
 
+  /** 3 crash exits within 10 min latch the guard (incident once); it holds until resetCrashGuard(). */
   private crashLooping(): boolean {
+    if (this.crashLatched) return true;
     const cutoff = Date.now() - CRASH_WINDOW_MS;
     this.exits = this.exits.filter((t) => t > cutoff);
-    return this.exits.length >= CRASH_LIMIT;
+    if (this.exits.length < CRASH_LIMIT) return false;
+    this.crashLatched = true;
+    this.incident("planner_crash_loop", { exits: this.exits.length });
+    return true;
   }
 
   /** Version pin at every spawn (tests included); wrapper hash and Seatbelt render unless skipped for unit tests. */
@@ -354,8 +421,8 @@ export class PlannerSupervisor {
     const w = verifyInstalledWrapper(distDir);
     if (!w.ok) { this.incident("wrapper_mismatch", { reason: w.reason }); return "wrapper_mismatch"; }
     try { writeSeatbeltProfiles(ctx); } catch (e) {
-      this.incident("sandbox_render_failed", { reason: message(e) });
-      return "sandbox_render_failed";
+      this.incident("sandbox_unavailable", { reason: message(e) });
+      return "sandbox_unavailable";
     }
     return null;
   }
@@ -384,8 +451,10 @@ export class PlannerSupervisor {
     const token = randomBytes(24).toString("hex");
     const sock = join(p.bridgeDir, `${chatId}-${randomUUID().slice(0, 8)}.sock`);
     if (Buffer.byteLength(sock) > MAX_SOCK_PATH) return this.startFailed(`bridge socket path over ${MAX_SOCK_PATH} bytes`);
-    const gen = ++this.gen;
+    const gen = this.bumpGen();
+    const superseded = new Promise<void>((r) => { this.supersede = r; });
     this.model = this.top(); // a fresh child starts on the top planner string
+    this.modelUnknown = false;
     const opts: PlannerSessionOptions = {
       cfg, sessionDir: p.sessionDir, cwd: this.workspace(), systemPromptFile: p.systemPromptFile,
       extensions: [join(distDir, "omp", "extension", "houge.js")], bridgeSock: sock, bridgeToken: token, model: this.model,
@@ -397,15 +466,30 @@ export class PlannerSupervisor {
       s.onFrame((f) => this.onFrame(gen, f));
       s.onExit((i) => this.onExit(gen, i));
       this.session = s;
-      await s.start();
-      const served = await bounded(manifestServed, this.d.manifestWaitMs ?? MANIFEST_WAIT_MS);
-      if (served === TIMED_OUT) throw new Error("no manifest");
+      this.starting = true;
+      await this.awaitStart(s.start(), superseded, this.d.startWaitMs ?? START_WAIT_MS, "start timed out");
+      await this.awaitStart(manifestServed, superseded, this.d.manifestWaitMs ?? MANIFEST_WAIT_MS, "no manifest");
     } catch (e) {
+      if (gen !== this.gen) return "start_failed: superseded"; // stopped on purpose (abort, shutdown): no crash, no incident
+      this.exits.push(Date.now()); // a failed start is a crash exit
       await this.stopSession();
       return this.startFailed(message(e));
-    }
+    } finally { this.starting = false; }
     this.st = "IDLE";
     return null;
+  }
+
+  /** Bounded start wait that also ends (throws) the moment this child is stopped or replaced. */
+  private async awaitStart(p: Promise<unknown>, superseded: Promise<void>, ms: number, timeoutReason: string): Promise<void> {
+    const r = await bounded(Promise.race([p, superseded.then((): typeof ENDED => ENDED)]), ms);
+    if (r === TIMED_OUT) throw new Error(timeoutReason);
+    if (r === ENDED) throw new Error("superseded");
+  }
+
+  private bumpGen(): number {
+    this.supersede();
+    this.supersede = () => undefined;
+    return ++this.gen;
   }
 
   private startFailed(reason: string): string {
@@ -434,7 +518,7 @@ export class PlannerSupervisor {
   private async stopSession(): Promise<void> {
     const s = this.session; const b = this.bridge;
     this.session = undefined; this.bridge = undefined;
-    this.gen++;
+    this.bumpGen();
     clearTimeout(this.idleExit);
     if (!this.busy) this.st = "STOPPED";
     await s?.stop().catch((e) => console.error(`planner supervisor: stop failed: ${message(e)}`));
@@ -443,8 +527,8 @@ export class PlannerSupervisor {
 
   private onExit(gen: number, info: ExitInfo): void {
     if (gen !== this.gen) return; // an older child, or one we stopped on purpose
-    this.gen++;
-    if (!info.stopped) this.exits.push(Date.now());
+    this.bumpGen();
+    if (!info.stopped && !this.starting) this.exits.push(Date.now()); // during start, spawn() counts it
     this.session = undefined;
     const b = this.bridge; this.bridge = undefined;
     void b?.close();
@@ -473,7 +557,8 @@ export class PlannerSupervisor {
   /** One llm_attempt per model request, keyed `<run_id>:<n>` (spec §8). */
   private onAssistant(t: Turn, s: AssistantSummary | null): void {
     if (!s) return;
-    const error = s.stopReason === "error" || s.errorMessage !== undefined ? (s.errorMessage ?? "error") : undefined;
+    const failed = s.stopReason === "error" || s.stopReason === "aborted" || s.errorMessage !== undefined;
+    const error = failed ? (s.errorMessage ?? s.stopReason ?? "error") : undefined;
     const model = s.model ?? this.model.model;
     const attempt: LlmAttempt = {
       provider: s.provider ?? this.model.provider, role: "", outcome: error ? "error" : "ok", model,
@@ -506,14 +591,14 @@ export class PlannerSupervisor {
   }
 
   /** The turn deadline and the frame watchdog pause while Paco is asked; the deadline resumes with what was left. */
-  private setAwaitingApproval(on: boolean): void {
-    const t = this.turn;
-    if (!t) return;
-    if (on && this.st === "RUNNING") {
+  private setAwaitingApproval(t: Turn, on: boolean): void {
+    t.approvals = Math.max(0, t.approvals + (on ? 1 : -1));
+    if (this.turn !== t) return; // a finished turn's late release never touches the next turn
+    if (on && t.approvals === 1 && this.st === "RUNNING") {
       this.st = "AWAITING_APPROVAL";
       if (t.deadline) t.deadlineLeft -= Date.now() - t.deadlineAt;
       this.clearTimers(t);
-    } else if (!on && this.st === "AWAITING_APPROVAL") {
+    } else if (!on && t.approvals === 0 && this.st === "AWAITING_APPROVAL") {
       this.st = "RUNNING";
       this.armDeadline(t);
       this.armFrameIdle(t);
@@ -524,11 +609,12 @@ export class PlannerSupervisor {
     const t = this.turn;
     if (!t) return;
     t.failure ??= { type, ref };
-    if (this.st === "ABORTING") return;
+    if (t.aborting) return;
+    t.aborting = true;
     this.st = "ABORTING";
     this.clearTimers(t);
     t.abort.abort(); // in-flight bridge calls and approval waits see the turn's signal
-    if (!t.live) { t.done("abort"); return; }
+    if (!t.live) { t.done("abort"); return; } // not prompted yet (or between legs): its pending step races `ended`
     void this.session?.abort().catch(() => undefined);
     if ((await bounded(t.ended, ABORT_GRACE_MS)) !== TIMED_OUT) return;
     t.live = false;
@@ -553,7 +639,8 @@ export class PlannerSupervisor {
     const { store, outcome } = this.d;
     t.finished = true;
     flushUnreported(store, t.active);
-    if (t.n > t.recorded) this.recordAborted(t);
+    if (t.n > t.recorded || (t.dispatched && t.n === 0)) this.recordAborted(t);
+    if (f.type === "turn_timeout" || f.type === "frame_idle") store.recordLoopHalted(t.req.run_id, { reason: f.type, steps: t.n });
     const base = { worker_id: t.worker, error_ref: f.ref, ...(t.lastText ? { partial: t.lastText } : {}) };
     outcome.fail({ ...base, run_id: t.req.run_id, error_type: f.type });
     for (const m of t.merged) outcome.fail({ ...base, run_id: m, error_type: "merged_parent_failed" });

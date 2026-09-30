@@ -110,6 +110,7 @@ export type PlannerFailure =
   | "lease_expired"
   | "killed"
   | "no_planner_leg"
+  | "model_error"
   | "turn_timeout"
   | "frame_idle"
   | "merged_parent_failed";
