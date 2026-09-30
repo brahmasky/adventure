@@ -131,6 +131,8 @@ describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () 
     expect(shell.indexOf(denyWs)).toBeGreaterThan(shell.lastIndexOf(`(allow file-write* (subpath "${ws}"))`));
     expect(planner.indexOf(`(deny file-write* (literal "${ss}"))`)).toBeGreaterThan(planner.lastIndexOf(`(allow file-write* (subpath "${ss}"))`));
     expect(shell).not.toContain(`(literal "${ss}")`);
+    const pinChats = '(deny file-write* (regex #"^/Users/p/Projects/adventure/omp/workspace/chat-[^/]+$"))';
+    expect(shell.indexOf(pinChats)).toBeGreaterThan(shell.lastIndexOf(`(allow file-write* (subpath "${ws}"))`)); // C2: chat dirs pinned too
   });
 
   it.runIf(process.platform === "darwin")("the workspace root cannot be moved, removed or swapped for a symlink, but its contents stay fully usable", () => {

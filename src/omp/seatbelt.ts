@@ -63,6 +63,9 @@ function body(ctx: PathContext, kind: "planner" | "shell"): string[] {
     ...exceptions.flatMap(allowWrite),
     // the allow subpath also matches the root itself: pin the root so it cannot be moved or replaced by a symlink
     ...exceptions.flatMap((r) => variants(r).map((v) => `(deny file-write* (literal "${esc(v)}"))`)),
+    // and pin every chat dir under them (chat-<id>, which only the daemon creates) the same way: a swapped chat
+    // workspace would let the daemon attach files the sandbox denies (security C2)
+    ...exceptions.flatMap((r) => variants(r).map((v) => `(deny file-write* (regex #"^${regexPath(v)}/chat-[^/]+$"))`)),
     ...ancestorRules([...writeDeny, ...secrets]),
     // secrets last: SBPL takes the last matching rule, so no allow above can re-open a secret
     ...secrets.flatMap((p) => rule("file-read* file-write*", p)),

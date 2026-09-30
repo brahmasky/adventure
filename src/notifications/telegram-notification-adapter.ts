@@ -1,5 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, isAbsolute, relative, sep } from "node:path";
+import { verifiedWorkspace } from "../omp/workspace.js";
 import { markdownToTelegramHtml } from "../telegram/markdown-to-telegram-html.js";
 import type {
   TelegramInlineKeyboardMarkup,
@@ -84,7 +85,8 @@ export class TelegramNotificationAdapter implements NotificationAdapter {
    */
   private readAttachment(chat_id: string, path: string): AttachmentRefusal | { bytes: Uint8Array } {
     if (!this.client.sendDocument) return "unsupported";
-    const workspace = this.options.workspaceFor?.(chat_id);
+    const configured = this.options.workspaceFor?.(chat_id);
+    const workspace = configured ? verifiedWorkspace(configured) : null; // a swapped workspace is no workspace (C2)
     if (!workspace) return "outside_workspace";
     let fd: number | undefined;
     try {
@@ -95,7 +97,7 @@ export class TelegramNotificationAdapter implements NotificationAdapter {
       if (st.nlink > 1) return "linked";
       this.options.beforeRecheckForTest?.(path);
       const real = realpathSync(path);
-      if (!inside(realpathSync(workspace), real)) return "outside_workspace";
+      if (!inside(workspace, real)) return "outside_workspace";
       const again = statSync(real);
       if (again.dev !== st.dev || again.ino !== st.ino) return "changed";
       return { bytes: readExactly(fd, st.size) };
