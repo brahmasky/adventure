@@ -108,10 +108,16 @@ from the planner's tools. Kimi Code refreshes its token against kimi.ai, so the 
 value of `HOUGE_OMP_ENV_PASSTHROUGH`, so leave the variable unset unless omp needs another name.
 
 **The version pin.** Every spawn checks `omp --version` against `HOUGE_OMP_VERSION` (default
-`18.4.4`) and refuses on a mismatch, opening incident `omp_version_mismatch`. To move the pin:
-install the new omp, run `node scripts/live-gate-omp.mjs --smoke`, set `HOUGE_OMP_VERSION` to the
-new version (or add it to `HOUGE_OMP_VERSION_ALLOW`), and restart the daemon. omp's own update
-checks are switched off in the profile config.
+`18.4.4`) and refuses on a mismatch, opening incident `omp_version_mismatch`. To move the pin,
+install the new omp and smoke it with the pin overridden for that one run:
+
+```bash
+HOUGE_OMP_VERSION=<new> HOUGE_ENV_FILE=/abs/path/.env node scripts/live-gate-omp.mjs --smoke
+```
+
+Only when that passes, set `HOUGE_OMP_VERSION=<new>` in `.env` (or add it to
+`HOUGE_OMP_VERSION_ALLOW`) and restart the daemon. omp's own update checks are switched off in the
+profile config.
 
 Each seat's model is one `provider/model[:effort]` chain in a `HOUGE_OMP_*` variable. The old
 `HOUGE_LLM_*`, pi, kimi-api and gemini-api settings are gone. Houge answers in its own voice, a
@@ -357,9 +363,9 @@ First run, 2026-09-26: **GO** — on Paco's own Telegram messages (294 turns) Je
 classifier 91.7% of the time at confidence ≥ 0.7, covering 57% of turns (Chinese 92.4%; English
 84.2% on 19 confident turns). The all-sources headline, 94.2% over 374 turns, is inflated by 70
 repeats of 3 scheduled prompts. $0.035 total. Jev's label stays advisory — it never gates
-an action. The live shadow runs beside every real classification when `HOUGE_JEV_SHADOW_ENABLED` is on (never
-awaited, advisory only). `houge jev-shadow report` gives the per-language PROMOTE / HOLD / KILL
-verdict once four weeks and 60 matched turns have accrued; promotion is a separate decision.
+an action. The live shadow is **dormant since the omp cutover** (ADR 0028): the classifier call it
+shadowed is gone, so `HOUGE_JEV_SHADOW_ENABLED` has no effect. `houge jev-shadow report` still reads
+the historical shadow rows.
 Configuration: [docs/reference/configuration.md](docs/reference/configuration.md)
 ("Jev intent shadow"); design: `docs/superpowers/specs/2026-09-25-jev-intent-shadow-design.md`.
 
@@ -373,8 +379,8 @@ registration trust anchor — regexes over the raw body, not model transcription
 is the generic GET escape hatch behind an exact allowlist registry (one row per granted OAuth
 scope; today `gmail/v1/users/me/*` ↔ `gmail.readonly`). The OAuth scope is the hard floor: the
 refresh token can read mail and do nothing else, no matter what a hostile email asks for. Both
-tools are quarantined behind the dual-LLM wall and armed **only as a couple** —
-`HOUGE_GOOGLE_ENABLED` AND `HOUGE_DUAL_LLM_ENABLED`, or they silently leave the tool manifest
+tools are always read through the quarantined reader (the wall is unconditional under omp,
+ADR 0028), so `HOUGE_GOOGLE_ENABLED` alone arms them
 ([ADR 0025](docs/decisions/0025-google-api-surface.md)). This closes the Earn-P3 registration
 loop: sign up on a venue → the verification mail lands in Houge's inbox → he reads the code
 himself.

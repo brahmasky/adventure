@@ -66,7 +66,7 @@ reach a real omp. The defaults below are copied from `src/omp/omp-config.ts`.
 | `HOUGE_OMP_PROFILE` | `houge` | `--profile` for every spawn; never the default profile. The OAuth store lives at `~/.omp/profiles/houge`, which is a secret path ([ADR 0015 amendment](../decisions/0015-secrets-firewall.md)). | yes |
 | `HOUGE_OMP_SANDBOX` | `1` | `0` runs the planner without `sandbox-exec` (tests only). With `1`, a missing `sandbox-exec` or a profile that fails to render stops the planner and opens incident `sandbox_unavailable`. | yes |
 | `HOUGE_OMP_VERSION` | `18.4.4` | `omp --version` must equal this at every planner and one-shot start, or the spawn is refused (incident `omp_version_mismatch`, resolved by the next passing check). | yes |
-| `HOUGE_OMP_VERSION_ALLOW` | *(empty)* | Comma-separated extra versions to accept. This is the operator's logged override after re-running `scripts/live-gate-omp.mjs` on a new binary. | yes |
+| `HOUGE_OMP_VERSION_ALLOW` | *(empty)* | Comma-separated extra versions to accept. This is the operator's logged override, set only after `HOUGE_OMP_VERSION=<new> … scripts/live-gate-omp.mjs --smoke` passes on the new binary. | yes |
 | `HOUGE_OMP_PLANNER` | `anthropic/claude-opus-5-5:medium,google-antigravity/claude-opus-4-6:medium,kimi-code/k3:low` | The per-chat planner chain. When every string is exhausted on a retryable error, the turn fails `no_planner_leg` and an incident opens. `/ask`, `/research` and `skill_author` authoring also use this chain. | yes |
 | `HOUGE_OMP_READER` | `google-antigravity/gemini-3.8-flash:low,kimi-code/k3:low,openai-codex/gpt-5.5:low` | The quarantined reader for `web_search`, `http_fetch`, `gmail_read` and `google_api` ([ADR 0014](../decisions/0014-dual-llm-privilege-separation.md)). Keep it cross-family from the planner. A same-family read still proceeds, but it is audited: the row gets `family_collapse`, a `wall_collapse` event is written, and incident `wall_collapsed` opens (D10). | yes |
 | `HOUGE_OMP_MEDIA` | `google-antigravity/gemini-3.8-flash:low` | The photo seat: the image is passed as `@file` and the call is audited as `reader`. Voice never uses omp. | yes |
@@ -90,8 +90,10 @@ planner child, and `HOUGE_SHELL_SANDBOX` is the shell wrapper's copy of `HOUGE_O
 `omp --profile houge login <provider>`, for `anthropic` (Claude Max), `google-antigravity`, `kimi-code`
 and `openai-codex`. Every omp row has `cost_usd` 0 (shown as "sub" in `/usage`).
 
-**Moving the version pin.** Install the new omp, run `scripts/live-gate-omp.mjs --smoke`, then either
-set `HOUGE_OMP_VERSION` to the new version or list it in `HOUGE_OMP_VERSION_ALLOW`. Restart the daemon.
+**Moving the version pin.** Install the new omp, then smoke it with the pin overridden for that run
+only: `HOUGE_OMP_VERSION=<new> HOUGE_ENV_FILE=/abs/path/.env node scripts/live-gate-omp.mjs --smoke`.
+Only when it passes, set `HOUGE_OMP_VERSION=<new>` in `.env` (or list it in
+`HOUGE_OMP_VERSION_ALLOW`) and restart the daemon.
 omp's own update checks are off in the profile config.
 
 ### Voice leg — agy-cli (voice only)
@@ -689,8 +691,8 @@ window clears. Status/approve/deny are never blocked. Rationale and design:
 the code default of 1000, or 3× your current override if you already set one. Under omp more work
 writes `tool_finished` rows. Every bridge call counts, `bash` included, and so does every built-in
 `fs_write` gate. The per-run cap also rose from 14 to 40. Only `fs_read` is gated without counting.
-The old ceiling would trip on ordinary agentic days. Re-set it from the first week's numbers. The
-code default is unchanged.
+The old ceiling would trip on ordinary agentic days. The operator sets it in `.env` before the cutover
+kickstart, then re-sets it from the first week's numbers. The code default is unchanged.
 
 Defaults live in `DEFAULT_GLOBAL_BUDGET_CAPS` (`src/budget/global-budget-ledger.ts`);
 a missing or non-numeric override falls back to the default. `/status` surfaces
