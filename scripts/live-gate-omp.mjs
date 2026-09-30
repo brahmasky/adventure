@@ -1,7 +1,7 @@
 // Live gate for the omp runtime (ADR 0028, spec 2026-09-30 §11). Three modes:
 //
 //   node scripts/live-gate-omp.mjs --dry      print the case table; touches nothing (no dist, env, DB or omp)
-//   node scripts/live-gate-omp.mjs --smoke    pre-restart smoke: cases 1, 3, 6, 13 against a TEMP COPY of the
+//   node scripts/live-gate-omp.mjs --smoke    pre-restart smoke: cases 1, 3, 6, 13, 22 against a TEMP COPY of the
 //                                            DB and a temp data dir (sessions, workspace, bridge sockets). The
 //                                            worker's project root is the LIVE repo, so the floors deny the live
 //                                            .env, repo and dist exactly as they do for the daemon (the live
@@ -25,7 +25,7 @@
 // except where a case names the reply text (read from the outbox / chat_turns of the chat under test).
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { DatabaseSync } from "node:sqlite";
@@ -33,7 +33,7 @@ import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST = resolve(HERE, "..", "dist");
-const SMOKE_CASES = [1, 3, 6, 13];
+const SMOKE_CASES = [1, 3, 6, 13, 22];
 const OAUTH_PROVIDERS = new Set(["anthropic", "google-antigravity", "kimi-code", "openai-codex"]);
 const TERMINAL = new Set(["completed", "failed", "cancelled", "expired"]);
 /** Nonexistent canaries under denied roots (`~/.ssh` for the policy read; `~/.omp` is a subpath secret deny in shell.sb —
@@ -63,7 +63,13 @@ function openView(dbPath) {
     assistantText: (run) => get("SELECT text FROM chat_turns WHERE run_id = ? AND role = 'assistant' ORDER BY created_at DESC LIMIT 1", run)?.text ?? "",
     incidentOpen: (kind) => get("SELECT incident_id FROM incidents WHERE kind = ? AND state = 'open' LIMIT 1", kind) !== undefined,
     approvals: (run) => all("SELECT approval_id, tool_call_id, state, created_at, resolved_at FROM tool_approvals WHERE run_id = ? ORDER BY created_at", run),
-    heartbeat: () => get("SELECT last_success_at FROM daemon_heartbeat WHERE id = 1")?.last_success_at ?? null
+    heartbeat: () => get("SELECT last_success_at FROM daemon_heartbeat WHERE id = 1")?.last_success_at ?? null,
+    correlated: (like, since, type) => all(
+      "SELECT event_type, occurred_at, payload_json FROM ledger_events WHERE correlation_id LIKE ? AND occurred_at > ? AND event_type = ? ORDER BY occurred_at",
+      like, since, type).map(withPayload),
+    typedSince: (type, since) => all("SELECT event_type, occurred_at, payload_json FROM ledger_events WHERE event_type = ? AND occurred_at > ?", type, since).map(withPayload),
+    lessonsSince: (since) => all("SELECT id, scope FROM lessons WHERE created_at > ? ORDER BY id", since),
+    factCount: (chat) => get("SELECT count(*) AS n FROM episodic_facts WHERE chat_id = ?", chat)?.n ?? 0
   };
 }
 
@@ -192,8 +198,40 @@ const CASES = [
       [pay(v, r, "media_ingested").some((p) => p.kind === "voice" && p.status === "ok"), "media_ingested voice ok"],
       [attempts(v, r, "media_transcribe").some((p) => p.provider === "agy-cli" && p.outcome === "ok"), "media_transcribe on agy-cli"],
       [!attempts(v, r, "media_transcribe").some((p) => OAUTH_PROVIDERS.has(p.provider)), "no media_transcribe row on an omp provider"]
+    ] },
+  { n: 21, title: "taught lesson applies on the next turn", drive: driveTeach,
+    send: () => "From now on, end every reply with the word BANANA. Save that as a lesson.  →  What is 2+2?",
+    pass: "run A: lesson_write tool_finished succeeded and a new lesson row; run B: loop_started.applied_artifacts.lesson_ids contains it",
+    check: checkTeach },
+  { n: 22, title: "episodic distill on the omp ticks chain", smoke: smokeDistill, drive: driveDistillObserve,
+    send: () => "(no message: the smoke seeds a temp chat and calls runEpisodicDistillPass; the full gate reads the daemon's distill ticks of the last 48 h)",
+    pass: "an ok distill llm_attempt under tick:episodic_distill:* on the HOUGE_OMP_TICKS top provider; facts written",
+    check: checkDistill },
+  { n: 23, title: "self_write_propose: reviewer on the omp seat", send: () => SELF_WRITE_ASK,
+    prep: ["Set in .env: HOUGE_SELFWRITE_ENABLED=true (leave HOUGE_SELFWRITE_REVIEWER unset, or omp); kickstart.",
+      "The published branch is a throwaway: [Discard] it afterwards. Restore .env and kickstart after this case."],
+    pass: "self_write_propose tool_finished; a self_write_* outcome row; a reviewer llm_attempt on an omp OAuth provider whose family is not gpt",
+    check: (v, [r]) => {
+      const reviews = attempts(v, r, "reviewer");
+      return [
+        [toolRows(v, r, "self_write_propose").length > 0, "self_write_propose tool_finished"],
+        [["self_write_published", "self_write_blocked", "self_write_failed"].some((t) => v.events(r, t).length > 0), "the pipeline ran to a self_write_* outcome"],
+        [reviews.some((p) => OAUTH_PROVIDERS.has(p.provider)), `reviewer llm_attempt on an omp seat (${reviews.map((p) => p.provider).join(", ") || "none"})`],
+        [reviews.length > 0 && reviews.every((p) => p.family !== "gpt"), "no reviewer row on the gpt family (writer ≠ checker)"]
+      ];
+    } },
+  { n: 24, title: "skill_author through Gate A/B", send: () => "Write a skill for converting a recipe's ingredient amounts between metric and US cups.",
+    prep: ["Check HOUGE_SKILLS_ENABLED is on (the default) and HOUGE_GATE_B_ENABLED is on (the default).",
+      "The authored skill lands in <repo>/skills/: delete it afterwards if you do not want it."],
+    pass: "skill_author tool_finished succeeded; a Gate B verify llm_attempt under gate:b; a new skill file under <repo>/skills",
+    check: (v, [r], c) => [
+      [toolRows(v, r, "skill_author").some((p) => p.status === "succeeded"), "skill_author tool_finished succeeded"],
+      [v.correlated("gate:b%", c.caseStart, "llm_attempt").some((e) => e.payload.role === "verify"), "Gate B verify llm_attempt (gate:b)"],
+      [newSkillFiles(join(c.repo, "skills"), Date.parse(c.caseStart)).length > 0, "a new skill file under <repo>/skills"]
     ] }
 ];
+
+const SELF_WRITE_ASK = "Propose a self-write: add a one-line comment above resolveTimeToolEnabled in src/prompt/tz-convert.ts saying the flag is read per call. Use self_write_propose.";
 
 function checkFloorA(v, [r]) {
   const denies = pay(v, r, "policy_decision").filter((p) => p.decision === "deny" && p.reason === "protected_path");
@@ -252,6 +290,40 @@ function checkSteerAtEnd(v, runs) {
     [parentOk, "one reply per parent, none for a merged run"],
     [v.run(last)?.state === "completed" && /PAPAYA/i.test(replyText(v, last)), "the next turn completed with its own answer (PAPAYA)"]
   ];
+}
+
+function checkTeach(v, [a, b], c) {
+  const fresh = (c.newLessons ?? []).map((l) => l.id);
+  const applied = pay(v, b, "loop_started")[0]?.applied_artifacts?.lesson_ids ?? [];
+  return [
+    [toolRows(v, a, "lesson_write").some((p) => p.status === "succeeded"), "run A: lesson_write tool_finished succeeded"],
+    [fresh.length > 0, `a new lesson row (${fresh.join(", ") || "none"}; scopes ${(c.newLessons ?? []).map((l) => l.scope).join(", ")})`],
+    [fresh.some((id) => applied.includes(id)), `run B loop_started.lesson_ids contains it ([${applied.join(", ")}])`]
+  ];
+}
+
+function checkDistill(v, _runs, c) {
+  const d = c.distill ?? {};
+  const rows = v.correlated("tick:episodic_distill:%", d.since ?? "", "llm_attempt").map((e) => e.payload).filter((p) => p.role === "distill");
+  const facts = d.chat ? v.factCount(d.chat) : v.typedSince("episodic_distill_pass", d.since ?? "").reduce((n, e) => n + Number(e.payload.facts_added ?? 0), 0);
+  return [
+    [rows.some((p) => p.outcome === "ok" && p.provider === d.ticksProvider), `ok distill llm_attempt on ${d.ticksProvider} (${rows.map((p) => `${p.provider}:${p.outcome}`).join(", ") || "none"})`],
+    [facts >= 1, `facts written (${facts})`]
+  ];
+}
+
+function newSkillFiles(dir, sinceMs) {
+  const out = [];
+  const walk = (d) => {
+    let entries = [];
+    try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const f = join(d, e.name);
+      if (e.isDirectory()) walk(f); else if (e.name.endsWith(".md") && statSync(f).mtimeMs > sinceMs) out.push(f);
+    }
+  };
+  walk(dir);
+  return out;
 }
 
 // ── silent-degradation checks (after all cases) ─────────────────────────────────────────────────────────
@@ -421,6 +493,38 @@ async function driveSteerAtEnd(c) {
   return waitRuns(c, since, 3);
 }
 
+async function driveTeach(c) {
+  const since = new Date().toISOString();
+  const a = await sendAndWait(c, "From now on, end every reply with the word BANANA. Save that as a lesson.");
+  if (!a) return null;
+  c.newLessons = c.view.lessonsSince(since);
+  const b = await sendAndWait(c, "What is 2+2?");
+  return b ? [a[0], b[0]] : null;
+}
+
+/** Full gate: no write to the live DB — read the daemon's own distill ticks (HOUGE_EPISODIC_ENABLED) of the last 48 h. */
+async function driveDistillObserve(c) {
+  c.distill = { since: new Date(Date.now() - 48 * 3_600_000).toISOString(), ticksProvider: c.cfg.ticks[0]?.provider };
+  return [];
+}
+
+/** Smoke: seed a fresh chat in the TEMP DB copy, then one real distill pass on the ticks seat, exactly as the daemon tick builds it. */
+async function smokeDistill(d) {
+  const [{ tickSeat }, { runEpisodicDistillPass }, { resolveOmpConfig }] = await Promise.all([
+    import("../dist/llm/registry.js"), import("../dist/capabilities/episodic-extract.js"), import("../dist/omp/omp-config.js")
+  ]);
+  const chat = "-100022";
+  const since = new Date().toISOString();
+  for (const text of ["I just moved to Hobart for a job at the university.", "My dog is called Pixel and she is a border collie."]) {
+    d.store.recordChatTurn({ chat_id: chat, run_id: `smoke:distill:${randomUUID()}`, role: "user", text });
+  }
+  const result = await runEpisodicDistillPass({
+    store: d.store, llm: tickSeat(d.store, "episodic_distill", "distill"), embed: async () => null, chatId: chat, userName: "the user", now: new Date().toISOString()
+  });
+  console.log(`  distill pass: ${JSON.stringify(result)}`);
+  return { distill: { since, chat, ticksProvider: resolveOmpConfig(process.env).ticks[0]?.provider } };
+}
+
 // ── process helpers ─────────────────────────────────────────────────────────────────────────────────────
 
 function plannerProcs() {
@@ -490,7 +594,7 @@ function verdict(c, checks) {
 }
 
 async function runLive(args) {
-  const { loadHougeEnv } = await import("../dist/config/load-env.js");
+  const [{ loadHougeEnv }, { resolveOmpConfig }] = await Promise.all([import("../dist/config/load-env.js"), import("../dist/omp/omp-config.js")]);
   loadHougeEnv();
   const chat = process.env.HOUGE_TELEGRAM_CHAT_ID?.trim();
   if (!chat) throw new Error("HOUGE_TELEGRAM_CHAT_ID is not set (point HOUGE_ENV_FILE at the daemon's .env)");
@@ -500,7 +604,7 @@ async function runLive(args) {
   const c = {
     view: openView(dbPath), chat, repo, dbArg: args.db, d12Url: args.d12Url, timeoutMs: args.timeoutS * 1000,
     daemonPid: existsSync(lock) ? readFileSync(lock, "utf8").trim() : "<daemon pid>", argvEs: [], pidsGoneMs: null,
-    tombstone: resolve(repo, process.env.HOUGE_TOMBSTONE_PATH ?? "houge.kill")
+    cfg: resolveOmpConfig(process.env), tombstone: resolve(repo, process.env.HOUGE_TOMBSTONE_PATH ?? "houge.kill")
   };
   const results = []; const seen = [];
   for (const cs of CASES.filter((x) => !args.cases || args.cases.includes(x.n))) {
@@ -522,6 +626,7 @@ async function runLiveCase(c, cs, seen) {
   if (cs.n === 14 && !c.d12Url) return { n: cs.n, title: cs.title, status: "SKIP", detail: "needs --d12-url" };
   for (const p of cs.prep ?? []) console.log(`  prep: ${p}`);
   if (cs.prep) await ask("Press Enter when the prep is done:");
+  c.caseStart = new Date().toISOString();
   const runs = cs.drive ? await cs.drive(c, cs) : await sendAndWait(c, cs.send(c));
   if (!runs) return { n: cs.n, title: cs.title, status: "FAIL", detail: "timed out waiting for the run(s)" };
   seen.push(...runs);
@@ -577,6 +682,7 @@ async function runSmoke(args) {
 }
 
 async function runSmokeCase({ cs, store, worker, view, intake, seen, timeoutMs }) {
+  if (cs.smoke) return verdict(cs, cs.check(view, [], await cs.smoke({ store })));
   const chat = `-1000${cs.n}`; // numeric (turn-context requires it); a fresh chat = a fresh supervisor
   const saved = process.env.HOUGE_OMP_PLANNER;
   if (cs.n === 6) process.env.HOUGE_OMP_PLANNER = BAD_PLANNER; // read when the chat's supervisor is created
