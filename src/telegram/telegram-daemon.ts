@@ -281,7 +281,7 @@ export async function runTelegramDaemon(
       // rating ask enqueued this cycle is delivered this cycle). B10b threads the
       // gateway + worker in so the scheduler tick fires due tasks down the SAME path.
       await runSignalPathTick(options, gateway, worker, t);
-      await flushOutbox();
+      await flushLogged(); // a failed drain is logged + incident'd, never a poll failure: the next flush retries
 
       options.store.recordPollHeartbeat({ now: now(), ok: true });
       // The daemon is demonstrably back: retire the park marker so the NEXT gap is reported as a

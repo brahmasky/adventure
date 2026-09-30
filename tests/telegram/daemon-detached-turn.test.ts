@@ -135,4 +135,39 @@ describe("detached turns in the daemon (Task 13)", () => {
       store.close();
     }
   });
+
+  it("one failed outbox drain never silences the daemon: the turn's reply still goes out (fix round 1, items 1 and 7)", async () => {
+    useFakeOmp({ "*": { rpcText: "still here" } }, root);
+    const store = RunStore.openInMemory();
+    const controller = new AbortController();
+    const sent: string[] = [];
+    let calls = 0;
+    const real = store.claimNextNotification.bind(store);
+    let armed = false;
+    vi.spyOn(store, "claimNextNotification").mockImplementation((owner, ttl) => {
+      if (armed) { armed = false; throw Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR" }); }
+      return real(owner, ttl);
+    });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await runTelegramDaemon({
+        store, projectRoot: root, omp: { dataDir: root, distDir: tmpOmpDist(root) }, allowlist: ALLOWLIST,
+        stopSignal: controller.signal, longPollTimeoutSeconds: 0, outboxPumpMs: 20,
+        telegramClient: {
+          getUpdates: async () => {
+            calls += 1;
+            if (calls === 1) { armed = true; return [update(1, "hello")]; } // the next drain throws once
+            await until(() => sent.includes("still here")).catch(() => undefined);
+            controller.abort();
+            return [];
+          },
+          sendMessage: async ({ text }) => { sent.push(text); return { message_id: sent.length }; }
+        }
+      });
+      expect(sent).toContain("still here");
+      expect(store.listOpenIncidents().map((i) => i.kind)).toContain("outbox_flush_failed");
+    } finally {
+      store.close();
+    }
+  });
 });
