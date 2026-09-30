@@ -128,7 +128,7 @@ import {
 } from "../media/media-config.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { canonicalJson, stableHash } from "../domain/canonical.js";
-import { safeReason } from "../domain/error-code.js";
+import { errorCode } from "../domain/error-code.js";
 import type { CompiledTaskContract, Identity } from "../domain/types.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import { createLedgerEvent } from "../run/run-ledger.js";
@@ -1256,7 +1256,7 @@ export class CoreWorker {
         // node_modules available BEFORE the test gate (symlink the live project's). See deps.
         deps.mkNodeModulesLink(this.projectRoot, worktree);
       } catch (error) {
-        const detail = safeReason(error);
+        const detail = error instanceof Error ? error.message : String(error);
         this.runStore.recordSelfWriteFailed(claim.run_id, { reason: `worktree setup failed: ${detail}`, last_output: "" });
         return this.selfWriteReport(`I couldn't set up an isolated workspace to fix \`${focus}\` (${detail}). Not publishing.`);
       }
@@ -2410,8 +2410,7 @@ export class CoreWorker {
     try {
       report = stageRunReport(this.projectRoot, { run_id: i.run_id, title: "Answer", body: text, sources: state?.turnCtx.sourceUrls ?? [], partial: false });
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      this.ompFail({ run_id: i.run_id, worker_id: i.worker_id, error_type: merged ? "merged_parent_failed" : "planner_exit", error_ref: `report_write_failed: ${detail}` });
+      this.ompFail({ run_id: i.run_id, worker_id: i.worker_id, error_type: merged ? "merged_parent_failed" : "planner_exit", error_ref: `report_write_failed: ${errorCode(error)}` });
       return;
     }
     const won = this.runStore.finishRun({

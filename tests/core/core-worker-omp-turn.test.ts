@@ -215,6 +215,18 @@ describe("the outcome sink never lets a stale owner overwrite the winner's repor
     expect(events(run, "report_written")).toEqual([]);
   });
 
+  it("a report that cannot be written fails the run with an errno code, never the fs message or path (fix round 2, M-6)", () => {
+    worker = ompWorker(store, tmp.dir);
+    const run = createQueuedTurnRun(store);
+    store.claimRun(run, "planner:555:winner", 120);
+    mkdirSync(join(tmp.dir, "project", "runs"), { recursive: true });
+    writeFileSync(join(tmp.dir, "project", "runs", run), "a file where the run's directory should be");
+    sinkOf(worker).complete({ run_id: run, worker_id: "planner:555:winner", text: "x", attachments: [], duration_ms: 1, tool_calls: 0 });
+    const ref = String(events(run, "run_failed")[0]?.payload.error_ref);
+    expect(ref).toMatch(/^report_write_failed: [A-Z0-9_]+$/);
+    expect(JSON.stringify(store.getLedgerEvents(run))).not.toContain(tmp.dir);
+  });
+
   it("the winner's report is renamed into place and recorded once", () => {
     worker = ompWorker(store, tmp.dir);
     const run = createQueuedTurnRun(store);
