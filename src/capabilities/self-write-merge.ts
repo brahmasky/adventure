@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { gitIdentityEnv, HARDENED_GIT_FLAGS, hardenedGitSync } from "../run/git-hardened.js";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { runTestGate, type TestGateResult } from "../run/test-gate.js";
@@ -273,8 +274,9 @@ export function defaultMergeActionDeps(opts: {
 }): MergeActionDeps {
   const { dir, notifyDurable } = opts;
   const env = opts.env ?? process.env;
-  const git = (...args: string[]): string =>
-    execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  // A3: no user/system git config, fsmonitor or hooks on the live repo; a merge commit keeps the configured identity.
+  const git = (...args: string[]): string => hardenedGitSync(["-C", dir, ...args]);
+  const gitAs = (...args: string[]): string => hardenedGitSync(["-C", dir, ...args], { env: { ...process.env, ...gitIdentityEnv(dir) } });
 
   return {
     branchExists(branch: string): boolean {
@@ -303,7 +305,7 @@ export function defaultMergeActionDeps(opts: {
       // abort so the working tree is left clean before the caller maps to merge_conflict.
       try {
         git("checkout", into);
-        git("merge", "--no-edit", branch);
+        gitAs("merge", "--no-edit", branch);
       } catch (error) {
         try {
           git("merge", "--abort");
@@ -365,7 +367,8 @@ export function defaultMergeActionDeps(opts: {
       child.unref();
     },
     push(into: string): void {
-      git("push", "origin", into);
+      // The push keeps user/system config: the https credential helper lives there. Hooks and fsmonitor stay off.
+      execFileSync("git", [...HARDENED_GIT_FLAGS, "-C", dir, "push", "origin", into], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     }
   };
 }

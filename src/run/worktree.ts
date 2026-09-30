@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execFileAsync } from "./exec-file-async.js";
+import { hardenedGit } from "./git-hardened.js";
 
 /**
  * Git-worktree harness (ADR 0011 §5). A self-diagnose / self-write consult runs Codex
@@ -31,7 +31,7 @@ export async function createWorktree(projectRoot: string): Promise<Worktree> {
   // unique, not-yet-existing dir under the OS tmp.
   const path = join(tmpdir(), `houge-worktree-${randomUUID()}`);
   // `--detach` checks out HEAD without creating a branch.
-  await execFileAsync("git", ["-C", projectRoot, "worktree", "add", "--detach", path, "HEAD"]);
+  await hardenedGit(["-C", projectRoot, "worktree", "add", "--detach", path, "HEAD"]);
   return { path };
 }
 
@@ -43,7 +43,7 @@ export async function createWorktree(projectRoot: string): Promise<Worktree> {
  */
 export async function removeWorktree(path: string): Promise<void> {
   try {
-    await execFileAsync("git", ["worktree", "remove", "--force", path]);
+    await hardenedGit(["worktree", "remove", "--force", path]);
   } catch {
     // Idempotent teardown: already gone, never added, or git unavailable — fall through.
   }

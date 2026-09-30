@@ -1,4 +1,4 @@
-import { execFileAsync } from "./exec-file-async.js";
+import { gitIdentityEnv, hardenedGit } from "./git-hardened.js";
 
 /**
  * Branch publish (ADR 0011, Phase 3 — code self-write, step 7). After all three checkers pass,
@@ -41,13 +41,13 @@ export async function publishBranch(worktree: string, branchName: string, taskSu
     : `houge self-write: ${branchName}`;
   try {
     // Create + switch the worktree onto the new branch (from its detached HEAD).
-    await execFileAsync("git", ["-C", worktree, "checkout", "-b", branchName]);
+    await hardenedGit(["-C", worktree, "checkout", "-b", branchName]);
     // Stage every change Codex made in the worktree — but NEVER the `node_modules` the orchestrator
     // symlinks in for the test-gate. It's a symlink FILE, so `.gitignore`'s `node_modules/` dir
     // pattern doesn't catch it; an explicit pathspec exclude keeps it out of the published branch.
-    await execFileAsync("git", ["-C", worktree, "add", "-A", "--", ".", ":(exclude)node_modules"]);
+    await hardenedGit(["-C", worktree, "add", "-A", "--", ".", ":(exclude)node_modules"]);
     // Commit so the branch ref carries the diff and persists after the worktree is removed.
-    await execFileAsync("git", ["-C", worktree, "commit", "-m", message]);
+    await hardenedGit(["-C", worktree, "commit", "-m", message], { env: { ...process.env, ...gitIdentityEnv(worktree) } });
   } catch (error) {
     const err = error as NodeError;
     const detail = err.stderr != null ? err.stderr.toString().trim() : err.message;

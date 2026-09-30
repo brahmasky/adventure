@@ -12,7 +12,6 @@ import { checkSelfWriteDiff, parseDiffRaw } from "../capabilities/self-write-gua
 import type { GuardResult } from "../capabilities/self-write-guard.js";
 import { resolveTestGateTimeoutMs, runTestGateAsync } from "../run/test-gate.js";
 import type { TestGateResult } from "../run/test-gate.js";
-import { execFileAsync } from "../run/exec-file-async.js";
 import { EVOLUTION_LANE_BUSY_DIGEST, tryStartEvolutionPipeline } from "./evolution-lane.js";
 import { reviewDiff, resolveSelfWriteReviewer, reviewerDiversityWarning } from "../capabilities/diff-reviewer.js";
 import type { ReviewDiffInput, ReviewResult } from "../capabilities/diff-reviewer.js";
@@ -132,6 +131,7 @@ import type { TurnContextDeps } from "../omp/turn-context.js";
 import { readTombstone } from "../run/tombstone.js";
 import { chatWorkspace } from "../omp/workspace.js";
 import { installedBinaryDirs, type PathContext } from "../omp/protected-paths.js";
+import { hardenedGit } from "../run/git-hardened.js";
 import {
   EMPTY_REPLY_TEXT, failureNotifyText, OMP_BUILTIN_META, OMP_LOOP_TOOL_META, OMP_SHELL_META, plannerFailureText, TURN_OUTSIDE_PLANNER_ERROR,
   TURN_UNAVAILABLE_TEXT
@@ -256,7 +256,7 @@ export interface SelfWriteDeps {
  * new symlink on every write. Idempotent — safe on every refine-loop re-check.
  */
 async function registerUntrackedFiles(worktree: string): Promise<void> {
-  await execFileAsync("git", ["-C", worktree, "add", "-N", "--", ".", ":(exclude)node_modules"]);
+  await hardenedGit(["-C", worktree, "add", "-N", "--", ".", ":(exclude)node_modules"]);
 }
 
 /** Default wiring of the self-write stack to the real S1–S4 + worktree/branch modules. Exported for the deps tests. */
@@ -285,13 +285,13 @@ export function defaultSelfWriteDeps(): SelfWriteDeps {
     // net-new files or the guard/reviewer are blind to file creation (see helper above).
     rawDiff: async (worktree) => {
       await registerUntrackedFiles(worktree);
-      return (await execFileAsync("git", ["-C", worktree, "diff", "--no-ext-diff", "--no-textconv", "--raw", "-M", "-C", "HEAD"])).stdout;
+      return (await hardenedGit(["-C", worktree, "diff", "--no-ext-diff", "--no-textconv", "--raw", "-M", "-C", "HEAD"])).stdout;
     },
     // `--no-ext-diff --no-textconv`: defense-in-depth so a .gitattributes/config diff driver
     // can never run a host command during diff (own trusted repo here; mirrors the extwork fix).
     unifiedDiff: async (worktree) => {
       await registerUntrackedFiles(worktree);
-      return (await execFileAsync("git", ["-C", worktree, "diff", "--no-ext-diff", "--no-textconv", "HEAD"], { maxBuffer: 16 * 1024 * 1024 })).stdout;
+      return (await hardenedGit(["-C", worktree, "diff", "--no-ext-diff", "--no-textconv", "HEAD"], { maxBuffer: 16 * 1024 * 1024 })).stdout;
     },
     runTestGate: (worktree) => runTestGateAsync(worktree),
     reviewDiff: (input) => reviewDiff(input),

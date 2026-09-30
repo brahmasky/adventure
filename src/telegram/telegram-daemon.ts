@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { checkMeteredCeiling } from "../budget/metered-ceiling.js";
 import { runEpisodicConsolidateTick } from "../capabilities/episodic-consolidate.js";
@@ -31,6 +30,7 @@ import { SkillStore } from "../skills/skill-store.js";
 import { runInvariantSweep, type InvariantSweepInput } from "../run/invariant-sweep.js";
 import { clearParkMarker } from "../run/tombstone.js";
 import type { SecretBroker } from "../config/secret-broker.js";
+import { hardenedGitSync } from "../run/git-hardened.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import {
   createTelegramLongPollingAdapter,
@@ -556,10 +556,7 @@ function notifyReloadOnBoot(options: RunTelegramDaemonOptions): void {
     try {
       head = options.resolveHead
         ? options.resolveHead()
-        : execFileSync("git", ["-C", options.projectRoot, "rev-parse", "HEAD"], {
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "pipe"]
-          }).trim();
+        : hardenedGitSync(["-C", options.projectRoot, "rev-parse", "HEAD"]).trim();
     } catch {
       // Unknown HEAD → skip the mismatch check, still confirm the reload.
     }
