@@ -1,11 +1,11 @@
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { failureNotifyText, TURN_UNAVAILABLE_TEXT } from "../../src/core/omp-turn-wiring.js";
 import type { CoreWorker } from "../../src/core/core-worker.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { mediaFailureReply, type TelegramMediaRef } from "../../src/media/media-config.js";
-import { KILLED_TEXT } from "../../src/omp/planner-supervisor.js";
+import { KILLED_TEXT, PlannerSupervisor } from "../../src/omp/planner-supervisor.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { pinOmpEnv, shortTmp, useFakeOmp } from "../helpers/omp-env.js";
 import { drainOutbox, fakeLog, ompWorker, until } from "../helpers/omp-worker.js";
@@ -161,5 +161,19 @@ describe("merged (steered) runs — one reply, the parent's (ruling 7)", () => {
     expect(out.get(`${parent}:final_report`)?.text).toBe(KILLED_TEXT);
     expect(out.has(`${child}:final_report`)).toBe(false);
     expect(events(child, "run_failed")[0]?.payload).toMatchObject({ error_type: "merged_parent_failed" });
+  });
+});
+
+describe("media turns never steer (fix round 1, I-1)", () => {
+  it("submitTurn marks a voice/photo run needsIngest (a plain text run is not marked)", () => {
+    const seen: Array<{ run_id: string; needsIngest?: boolean }> = [];
+    const spy = vi.spyOn(PlannerSupervisor.prototype, "submit").mockImplementation((r) => { seen.push(r); });
+    worker = ompWorker(store, tmp.dir);
+    const text = createQueuedTurnRun(store, "hi");
+    const media = mediaRun(voice);
+    worker.submitTurn(text); worker.submitTurn(media);
+    spy.mockRestore();
+    expect(seen.find((r) => r.run_id === text)?.needsIngest).toBeUndefined();
+    expect(seen.find((r) => r.run_id === media)?.needsIngest).toBe(true);
   });
 });

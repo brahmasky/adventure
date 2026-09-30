@@ -2200,8 +2200,10 @@ export class CoreWorker {
     // Telegram chat ids are numeric; turn-context would throw inside the supervisor on anything else.
     if (!/^-?\d+$/.test(chatId)) { this.refuseOmpTurn(run_id, chatId, "invalid_chat_id"); return true; }
     const goal = run.goal ?? "";
+    const needsIngest = mediaRefOf(this.runStore.getRunMetadata(run_id)) !== null;
     this.supervisorFor(chatId).submit({
-      run_id, text: goal, source: run.source === "schedule" ? "schedule" : "telegram", goal, requester: run.requested_by
+      run_id, text: goal, source: run.source === "schedule" ? "schedule" : "telegram", goal, requester: run.requested_by,
+      ...(needsIngest ? { needsIngest } : {})
     });
     return true;
   }

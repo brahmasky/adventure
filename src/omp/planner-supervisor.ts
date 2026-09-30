@@ -22,7 +22,11 @@ import { assistantIntentFor, buildTurnPrompt, systemPromptFingerprint, writeSyst
 
 export type SupervisorState = "STOPPED" | "STARTING" | "IDLE" | "RUNNING" | "AWAITING_APPROVAL" | "ABORTING";
 export type PlannerSessionLike = Pick<PlannerSession, "start" | "prompt" | "steer" | "abort" | "setModel" | "onFrame" | "onExit" | "stop">;
-export interface TurnRequest { run_id: string; text: string; source: "telegram" | "schedule"; goal?: string; requester: Identity }
+export interface TurnRequest {
+  run_id: string; text: string; source: "telegram" | "schedule"; goal?: string; requester: Identity;
+  /** A voice/photo turn: its text is a placeholder until resolveMessage ingests it, so it never steers (it queues as its own turn). */
+  needsIngest?: boolean;
+}
 export interface TurnOutcomeSink {
   complete(i: { run_id: string; worker_id: string; text: string; attachments: string[]; duration_ms: number; tool_calls: number; merged_into?: string }): void;
   fail(i: { run_id: string; worker_id: string; error_type: PlannerFailure; error_ref: string; partial?: string }): void;
@@ -156,7 +160,7 @@ export class PlannerSupervisor {
 
   submit(req: TurnRequest): void {
     const t = this.turn;
-    if (t?.live && req.source === "telegram" && (this.st === "RUNNING" || this.st === "AWAITING_APPROVAL")) {
+    if (t?.live && req.source === "telegram" && !req.needsIngest && (this.st === "RUNNING" || this.st === "AWAITING_APPROVAL")) {
       void this.steer(t, req).catch((e) => this.incident("planner_steer_failed", { run_id: req.run_id, reason: message(e) }));
       return;
     }

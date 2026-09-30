@@ -147,6 +147,22 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
     expect(session.prompts[1]).toContain("[scheduled: AI日报]");
   });
 
+  it("never steers a voice/photo message into a live turn: it queues as its own turn and is ingested first (fix round 1, I-1)", async () => {
+    const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "turn_start" }); setTimeout(() => { session.assistant("ok"); e({ type: "agent_end" }); }, 40); } });
+    const ingested: string[] = [];
+    const { store, sup, outcome } = harness(session, {}, {
+      resolveMessage: async (claim) => (claim.run_id === voice ? (ingested.push(claim.run_id), { ok: true, text: "transcript" }) : { ok: true, text: "user" })
+    });
+    const a = createQueuedTurnRun(store); const voice = createQueuedTurnRun(store, "[voice message]");
+    sup.submit(req(a, "user")); await new Promise((r) => setTimeout(r, 10));
+    sup.submit({ ...req(voice, "[voice message]"), needsIngest: true });
+    await sup.whenIdle(); await sup.whenIdle();
+    expect(session.steers).toEqual([]);
+    expect(ingested).toEqual([voice]);
+    expect(session.prompts).toEqual(["user", "transcript"]);
+    expect(outcome.done.find((d) => (d as { run_id: string }).run_id === voice)).not.toHaveProperty("merged_into");
+  });
+
   it("falls back to the next planner model on a quota error and keeps the conversation (live set_model)", async () => {
     let calls = 0;
     const session = fakeSession({ onPrompt: (_t, e) => {
