@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -15,6 +15,18 @@ function input(command: string, over: Partial<ShellRunInput> = {}): ShellRunInpu
   const cwd = tmp("houge-shell-");
   return { command, cwd, profilePath: "/nonexistent.sb", wrapperPath: WRAPPER, env: { PATH: process.env.PATH ?? "", HOME: cwd, HOUGE_SHELL_SANDBOX: "0" },
     timeoutMs: 10_000, outputCapBytes: 32 * 1024, sandbox: false, ...over };
+}
+/**
+ * The wrapper's fail-closed branches need a failing helper; helpers run by absolute path (A2), so a copy of the
+ * wrapper has that one path swapped for a stub. The shipped file itself is pinned by its hash (shell-wrapper.test.ts).
+ */
+function wrapperWith(helper: string, stub: string): string {
+  const dir = tmp("houge-wrap-");
+  const fake = join(dir, "helper"); writeFileSync(fake, stub); chmodSync(fake, 0o755);
+  const text = readFileSync(WRAPPER, "utf8");
+  if (!text.includes(helper)) throw new Error(`wrapper does not call ${helper}`);
+  const copy = join(dir, "shell-wrapper.sh"); writeFileSync(copy, text.split(helper).join(fake));
+  return copy;
 }
 const alive = (pattern: string) => spawnSync("pgrep", ["-f", pattern], { encoding: "utf8" }).stdout.trim().length > 0;
 
@@ -43,11 +55,29 @@ describe("bash tool adapter — R2–R7", () => {
     expect(r.output).toMatch(/Bad file descriptor/);
   });
 
-  it("reports cleanup_failed when pgrep is unavailable and never calls that success (R5)", async () => {
-    const bin = tmp("houge-fakebin-");
-    writeFileSync(join(bin, "pgrep"), "#!/bin/sh\nexit 3\n"); chmodSync(join(bin, "pgrep"), 0o755);
-    const r = await runShell(input("true", { env: { PATH: `${bin}:/usr/bin:/bin`, HOUGE_SHELL_SANDBOX: "0" } }));
+  it("reports cleanup_failed when pgrep fails and never calls that success (R5)", async () => {
+    const r = await runShell(input("true", { wrapperPath: wrapperWith("/usr/bin/pgrep", "#!/bin/sh\nexit 3\n") }));
     expect(r).toMatchObject({ status: "failed", reason: "cleanup_failed", wrapperStatus: "cleanup_failed" });
+  });
+
+  it.runIf(process.platform === "darwin")("never runs a helper planted on the caller's PATH, sandbox on or off, yet the command keeps that PATH (A2)", async () => {
+    const bin = tmp("houge-hijack-");
+    const marker = join(bin, "HIJACKED");
+    for (const name of ["sandbox-exec", "pgrep", "ps", "id", "grep", "seq", "nice", "kill", "sleep"]) {
+      writeFileSync(join(bin, name), `#!/bin/sh\necho ${name} >> '${marker}'\nexit 0\n`); chmodSync(join(bin, name), 0o755);
+    }
+    const root = tmp("houge-sbx-");
+    const ctx = { home: join(root, "home"), repo: join(root, "repo"), data: join(root, "data") };
+    mkdirSync(join(ctx.data, "omp", "workspace"), { recursive: true });
+    const profiles = writeSeatbeltProfiles(ctx);
+    const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: ctx.home };
+    const off = await runShell(input('echo "$PATH"', { env: { ...env, HOUGE_SHELL_SANDBOX: "0" } }));
+    const on = await runShell(input('echo "$PATH"', { sandbox: true, profilePath: profiles.shell, cwd: join(ctx.data, "omp", "workspace"), env }));
+    for (const r of [off, on]) {
+      expect(r).toMatchObject({ status: "succeeded", exitCode: 0, wrapperStatus: "ok" });
+      expect(r.output.trim()).toBe(`${bin}:/usr/bin:/bin`);
+    }
+    expect(existsSync(marker)).toBe(false);
   });
 
   it("kills the whole group on deadline and returns timeout (R6)", async () => {
@@ -94,18 +124,14 @@ describe("bash tool adapter — process limit and escapees", () => {
   const hardLimit = () => spawnSync("/bin/bash", ["-c", "ulimit -H -u"], { encoding: "utf8" }).stdout.trim();
 
   it("sets the per-user process cap above the current user count, so a busy machine does not break every call", async () => {
-    const bin = tmp("houge-fakeps-");
-    writeFileSync(join(bin, "ps"), "#!/bin/sh\nseq 1 1000\n"); chmodSync(join(bin, "ps"), 0o755);
-    const r = await runShell(input("ulimit -u", { env: { PATH: `${bin}:/usr/bin:/bin`, HOUGE_SHELL_SANDBOX: "0" } }));
+    const r = await runShell(input("ulimit -u", { wrapperPath: wrapperWith("/bin/ps", "#!/bin/sh\n/usr/bin/seq 1 1000\n") }));
     const hard = hardLimit(); const got = r.output.trim();
     expect(r.wrapperStatus).toBe("ok");
     expect(got === "unlimited" ? Infinity : Number(got)).toBe(hard === "unlimited" ? 1256 : Math.min(1256, Number(hard)));
   });
 
   it("fails closed with limits_failed when the process count cannot be computed", async () => {
-    const bin = tmp("houge-badps-");
-    writeFileSync(join(bin, "ps"), "#!/bin/sh\nexit 1\n"); chmodSync(join(bin, "ps"), 0o755);
-    const r = await runShell(input("echo should-not-run", { env: { PATH: `${bin}:/usr/bin:/bin`, HOUGE_SHELL_SANDBOX: "0" } }));
+    const r = await runShell(input("echo should-not-run", { wrapperPath: wrapperWith("/bin/ps", "#!/bin/sh\nexit 1\n") }));
     expect(r).toMatchObject({ status: "failed", reason: "limits_failed", wrapperStatus: "limits_failed" });
     expect(r.output).not.toContain("should-not-run");
   });

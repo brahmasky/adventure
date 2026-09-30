@@ -45,7 +45,7 @@ describe("PlannerSession — one long-lived RPC child per chat (spec §4, §7)",
     const cfg = resolveOmpConfig({ HOUGE_OMP_BIN: "omp", HOUGE_OMP_SANDBOX: "1" });
     const { file, args } = plannerArgs({ ...base, cfg, extensions: ["/a/houge.js"], plannerProfile: "/planner.sb",
       model: parseModelString("anthropic/claude-opus-5-5:medium") });
-    expect(file).toBe("sandbox-exec");
+    expect(file).toBe("/usr/bin/sandbox-exec"); // absolute: a planted sandbox-exec on PATH must never wrap the planner (A2)
     expect(args.slice(0, 3)).toEqual(["-f", "/planner.sb", "omp"]);
     expect(args).not.toContain("--no-ui");
     expect(args).not.toContain("--no-session"); // open_session needs persistence

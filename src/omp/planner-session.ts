@@ -15,7 +15,7 @@ export function plannerArgs(o: PlannerSessionOptions): { file: string; args: str
     "--cwd", o.cwd, "--tools", "read,edit,write", ...o.extensions.flatMap((e) => ["-e", e]), "--no-extensions",
     "--no-rules", "--approval-mode", "yolo", "--model", `${o.model.provider}/${o.model.model}`,
     ...(o.model.effort ? ["--thinking", o.model.effort] : []), "--append-system-prompt", o.systemPromptFile];
-  return o.cfg.sandbox ? { file: "sandbox-exec", args: ["-f", o.plannerProfile, o.cfg.bin, ...omp] } : { file: o.cfg.bin, args: omp };
+  return o.cfg.sandbox ? { file: "/usr/bin/sandbox-exec", args: ["-f", o.plannerProfile, o.cfg.bin, ...omp] } : { file: o.cfg.bin, args: omp };
 }
 
 export interface ExitInfo { code: number | null; signal: NodeJS.Signals | null; stopped: boolean }
