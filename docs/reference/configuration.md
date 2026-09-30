@@ -794,7 +794,6 @@ is in `DISARM_FLAGS` and read per turn).
 ```bash
 houge jev-shadow report                    # PROMOTE / HOLD / KILL per language
 houge jev-shadow report --since 2026-10-01T00:00:00Z   # narrows the evaluated rows; tenure still counts from the first shadow row
-node scripts/live-gate-jev-shadow.mjs      # opt-in: one real turn in memory, real classifier + real Jev
 ```
 
 The verdict per language is HOLD until ≥ 60 matched turns and ≥ 28 days since the first shadow row,
