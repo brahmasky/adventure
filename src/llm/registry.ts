@@ -7,6 +7,7 @@ import type { LlmMediaAttachment, LlmProvider, LlmRequest, LlmResult } from "./t
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { isAllowedMediaFile } from "../media/media-config.js";
 import { classifyLlmError, type LlmAuditSink } from "./audit.js";
+import { openAlertedIncident } from "../run/incident-alert.js";
 
 /**
  * The LLM seam after the omp cutover (spec §8, Task 14). Every non-planner call is an omp one-shot
@@ -184,13 +185,11 @@ export function oneShotAdapter(
   };
 }
 
-/** One open incident per refused version string (the incident row is the throttle: an open one is never re-opened). */
+/** One open incident per refused version string, alerted once (the open incident is the throttle). */
 function reportVersionMismatch(store: RunStore, cfg: OmpConfig, reason: string): void {
   const found = /omp (\d+\.\d+\.\d+) is not/.exec(reason)?.[1] ?? "unknown";
-  const subject = `omp:${found}`;
   try {
-    if (store.findOpenIncident(store.incidentFingerprint("omp_version_mismatch", subject))) return;
-    store.openIncident({ kind: "omp_version_mismatch", subject, detail: { version: found, expected: cfg.version } });
+    openAlertedIncident(store, { kind: "omp_version_mismatch", subject: `omp:${found}`, detail: { version: found, expected: cfg.version }, chat_id: null });
   } catch (error) {
     console.warn(`[omp-seat] could not record omp_version_mismatch: ${error instanceof Error ? error.message : String(error)}`);
   }

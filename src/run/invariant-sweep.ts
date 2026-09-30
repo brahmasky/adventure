@@ -67,16 +67,13 @@ export const LLM_LEG_FAILING_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** Free bytes on the data volume below which the omp session and ledger writes are at risk (spec §8). */
 export const DISK_FREE_LOW_BYTES = 2 * 1024 ** 3;
 
-export type IncidentKind =
-  | "duplicate_schedule"
-  | "stuck_run"
-  | "undelivered_notification"
-  | "overdue_schedule"
-  | "failed_schedule"
-  | "heartbeat_gap"
-  | "llm_leg_failing"
-  | "disk_free_low"
-  | "wall_collapsed";
+/** The kinds the sweep detects — and therefore the ONLY kinds it may resolve. */
+export const SWEEP_INCIDENT_KINDS = [
+  "duplicate_schedule", "stuck_run", "undelivered_notification", "overdue_schedule", "failed_schedule",
+  "heartbeat_gap", "llm_leg_failing", "disk_free_low", "wall_collapsed"
+] as const;
+export type IncidentKind = (typeof SWEEP_INCIDENT_KINDS)[number];
+const SWEEP_KINDS: ReadonlySet<string> = new Set(SWEEP_INCIDENT_KINDS);
 
 export interface InvariantViolation {
   kind: IncidentKind;
@@ -311,7 +308,9 @@ export function runInvariantSweep(input: InvariantSweepInput): InvariantSweepRes
   }
 
   for (const open of input.store.listOpenIncidents()) {
-    if (seen.has(open.fingerprint)) continue;
+    // Only the sweep's own kinds: an incident opened elsewhere (omp_version_mismatch, …) is never
+    // re-detected here, so "not seen this sweep" says nothing about it being over.
+    if (seen.has(open.fingerprint) || !SWEEP_KINDS.has(open.kind)) continue;
     // resolveIncident appends the incident_resolved ledger event itself.
     if (!input.store.resolveIncident(open.incident_id, input.now)) continue;
     const open_minutes = Math.floor((Date.parse(input.now) - Date.parse(open.first_seen_at)) / 60000);

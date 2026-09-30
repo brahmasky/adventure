@@ -80,6 +80,7 @@ import { errorCode } from "../domain/error-code.js";
 import type { Identity } from "../domain/types.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import { createLedgerEvent } from "../run/run-ledger.js";
+import { openAlertedIncident } from "../run/incident-alert.js";
 import {
   computeNextRunAt,
   describeScheduleSpec,
@@ -440,7 +441,11 @@ export class CoreWorker {
   }
 
   private refuseTurnOutsidePlanner(claim: ClaimedRun): CoreWorkerResult {
-    this.runStore.openIncident({ kind: "turn_outside_planner", subject: `run:${claim.run_id}`, detail: { run_id: claim.run_id } });
+    const target = this.runStore.getRunNotifyTarget(claim.run_id);
+    openAlertedIncident(this.runStore, {
+      kind: "turn_outside_planner", subject: `run:${claim.run_id}`, detail: { run_id: claim.run_id },
+      chat_id: target.kind === "telegram" ? target.chat_id : null
+    });
     return this.failWithPartialReport(claim, { status: "failed", error_ref: TURN_OUTSIDE_PLANNER_ERROR });
   }
 
