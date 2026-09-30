@@ -3,8 +3,8 @@
 - **Status:** accepted
 - **Date:** 2026-09-30
 - **Deciders:** Paco
-- **Supersedes:** the inference-only mode of [ADR 0002](0002-pi-as-agent-runtime.md) (its agentic
-  clause is realised here, on omp instead of pi)
+- **Supersedes:** the agentic clause of [ADR 0002](0002-pi-as-agent-runtime.md) (the agentic mode is
+  built here, on omp instead of pi)
 - **Amends:** [0002](0002-pi-as-agent-runtime.md), [0010](0010-natural-language-intent-layer.md),
   [0013](0013-llm-inner-composition.md), [0014](0014-dual-llm-privilege-separation.md),
   [0015](0015-secrets-firewall.md), [0019](0019-metered-ceiling.md),
@@ -16,7 +16,8 @@
 ## Context
 
 Four months produced a safety harness with one real tool: `web_search` was 78% of all tool steps in
-the ledger, and human messages fell from 193 (July) to 14 (August). On 2026-09-09 Paco observed that the tool limits in the backend were holding Houge back. Houge picked pi as its agent and then ran it with `--no-tools`
+the ledger, and human messages fell from 193 (July) to 14 (August). On 2026-09-09 Paco observed that
+the tool limits in the backend were holding Houge back. Houge picked pi as its agent and then ran it with `--no-tools`
 (ADR 0002 "inference mode"), rebuilding a weaker loop on top of it (ADR 0013's inner loop).
 
 ADR 0002 always named an agentic mode, gated on "V2 containment". This ADR is that mode. The agent
@@ -47,7 +48,7 @@ slice. Code keeps owning the gates. omp composes between them.
 | D9 | Gmail | port with an `account` key designed in | rewrite later |
 | D10 | Family collapse (planner and reader on one model family after fallback) | **accept the degradation, audited** (Paco, 2026-09-30): the read proceeds; every such read writes a `wall_collapse` ledger event and opens/keeps an incident so the frequency is visible; a fourth reader string on the GPT family (Codex Plus) makes collapse rare in practice | fail closed |
 | D11 | Floor A residual | **accepted** (Paco, 2026-09-30): the omp planner process must read its own OAuth store (`~/.omp/profiles/houge`), so the OS sandbox cannot deny it to that process; the policy hook denies omp's `read` of it, and with D12 no shell runs inside that process. Revisited in SP3 (separate macOS user) | block yolo until SP3 |
-| D12 | Shell = bridge tool, **Claude Code posture** (Paco, 2026-09-30) | omp's built-in `bash` is replaced by a Houge bridge tool **registered under the same name**. Commands run daemon-side under `sandbox-exec` with the floor-A file denies and the signal/launchctl denies, **network allowed**, output returned **raw** (capped). Consequence accepted by Paco: a steered planner can fetch hostile bytes through `bash` around the reader wall; ADR 0014 is amended to exempt shell output. Floor B for `bash` = the regex matcher (`git push`, `gh … create`, `curl\|wget\|http` with `-X POST\|PUT\|PATCH\|DELETE\|--data`, `mail\|sendmail`, `ssh\|scp\|rsync`, `npm publish`, `sudo`, `launchctl`, `crontab`, destructive deletes) → `/approve`; misses run — accepted residual | the recommended Codex posture (network off by default, `network:true` = one tap, output quarantined) — rejected by Paco as too restrictive |
+| D12 | Shell = bridge tool, **Claude Code posture** (Paco, 2026-09-30) | omp's built-in `bash` is replaced by a Houge bridge tool **registered under the same name** (*probed*: an extension tool named `bash` supersedes the built-in). Commands run daemon-side under `sandbox-exec` with the floor-A file denies and the signal/launchctl denies, **network allowed**, output returned **raw** (capped). Consequence accepted by Paco: a steered planner can fetch hostile bytes through `bash` around the reader wall; ADR 0014 is amended to exempt shell output. Floor B for `bash` = the regex matcher (`git push`, `gh … create`, `curl\|wget\|http` with `-X POST\|PUT\|PATCH\|DELETE\|--data`, `mail\|sendmail`, `ssh\|scp\|rsync`, `npm publish`, `sudo`, `launchctl`, `crontab`, destructive deletes) → `/approve`; misses run — accepted residual | the recommended Codex posture (network off by default, `network:true` = one tap, output quarantined) — rejected by Paco as too restrictive |
 
 ### Shape
 
@@ -146,6 +147,10 @@ change the architecture the spec describes:
 14. **Version drift is loud.** A one-shot on a mismatched binary returns `unavailable` without an
     audit row, because no leg ran. The caller opens `omp_version_mismatch`, and the next passing check
     resolves it.
+    **An unknown model fails at spawn.** omp 18.4.4 rejects an unknown `--model` at process start,
+    before `ready`, so live `set_model` cannot rescue a bad top planner string. The supervisor instead
+    falls back at spawn: one `error{model_missing}` row per rejected string, then a spawn on the next
+    string (commit `96448cd`).
 15. **The wall is unconditional.** The four read tools always cross `normalizeExternalRead`, so
     `HOUGE_DUAL_LLM_ENABLED` is gone and `gmail_read`/`google_api` arm on `HOUGE_GOOGLE_ENABLED` alone.
 16. **Voice stays on agy-cli.** The live probe on 2026-09-30 showed that omp inlines Ogg bytes into
@@ -156,7 +161,8 @@ change the architecture the spec describes:
 17. **Budgets.** The per-run `tool_calls` cap goes from 14 to 40 and counts bridge calls plus
     `fs_write`. `fs_read` is gated but not budgeted. The global 24 h breaker's `tool_calls` ceiling is
     re-tuned in `.env` to 3× its old value
-    ([configuration.md](../reference/configuration.md#global-autonomy-circuit-breaker)).
+    ([configuration.md](../reference/configuration.md#global-autonomy-circuit-breaker)). The operator
+    sets it before the cutover kickstart; the code default is unchanged.
 
 ## Consequences
 
@@ -173,10 +179,11 @@ change the architecture the spec describes:
 - **Operator surface:** four subscription logins under `omp --profile houge login <provider>`
   (Anthropic Max, Google Antigravity, Kimi Code, OpenAI Codex). The Kimi env pair
   (`KIMI_CODE_OAUTH_HOST`, `KIMI_CODE_BASE_URL`) passes through `HOUGE_OMP_ENV_PASSTHROUGH`. Moving the
-  version pin means re-running the live gate first, then `HOUGE_OMP_VERSION_ALLOW` or a new
-  `HOUGE_OMP_VERSION`.
-- **Verification:** `scripts/live-gate-omp.mjs` (cases 1–20 plus silent-degradation checks;
-  `--smoke` = cases 1, 3, 6, 13 against a temp DB copy) and `scripts/eval-replay.mjs` (the answer-only
+  version pin means smoking the new binary first, with the pin overridden for that run only
+  (`HOUGE_OMP_VERSION=<new> HOUGE_ENV_FILE=… node scripts/live-gate-omp.mjs --smoke`), and then
+  setting the pin in `.env` (`HOUGE_OMP_VERSION`, or `HOUGE_OMP_VERSION_ALLOW`).
+- **Verification:** `scripts/live-gate-omp.mjs` (cases 1–24 plus silent-degradation checks;
+  `--smoke` = cases 1, 3, 6, 13, 22 against a temp DB copy) and `scripts/eval-replay.mjs` (the answer-only
   replay eval, spec §13 seam 3).
 
 ### Residuals (spec §14 plus the build)
@@ -194,7 +201,11 @@ change the architecture the spec describes:
   automatically, and an incident tells Paco.
 - Antigravity's weekly ceiling covers a shared Claude/GPT bucket; reader volume rides Gemini's bucket.
 - omp moves fast: the version is pinned, update checks are off, and frames are re-captured on
-  upgrade.
+  upgrade. The sequential-tool attribute name and the omp config key semantics are verified at build.
+- **A bridge call dropped mid-flight is invisible.** The silent-degradation check proves that every
+  gated built-in and every approval has a `tool_finished`. A bridge `call` that dies between request
+  and finish (child exit, daemon crash) leaves no row to miss. Follow-up: `handleCall` writes a
+  `tool_started` row, so a `tool_started` without a `tool_finished` is detectable.
 - k3's default thinking is verbose (525 tokens for "OK"), so every k3 string carries `:low` except
   the reviewer's.
 - A `steer` merge means one reply answers two messages. The ledger records both runs; Paco sees one

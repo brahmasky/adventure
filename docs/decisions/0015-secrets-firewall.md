@@ -137,8 +137,9 @@ these secrets because **the ambient target is empty**.
 
 - **Child env:** every omp child, the planner and each one-shot seat, starts from the `buildChildEnv`
   allowlist (`PATH HOME TERM LANG USER`), plus the names in `HOUGE_OMP_ENV_PASSTHROUGH` (default
-  `KIMI_CODE_OAUTH_HOST,KIMI_CODE_BASE_URL`), plus a per-child `HOUGE_BRIDGE_SOCK` and
-  `HOUGE_BRIDGE_TOKEN`. No broker secret enters a child env (layer L0).
+  `KIMI_CODE_OAUTH_HOST,KIMI_CODE_BASE_URL`). Only the planner child also gets `HOUGE_BRIDGE_SOCK`
+  and `HOUGE_BRIDGE_TOKEN`, minted per child by its supervisor; one-shot seats have no bridge. No broker
+  secret enters a child env (layer L0).
 - **New secret location:** `~/.omp/profiles/houge` holds the four subscription OAuth grants. It is
   in `SECRET_PATHS`, so the Seatbelt profiles deny it to `bash` and the policy hook denies omp's
   `read` of it.
