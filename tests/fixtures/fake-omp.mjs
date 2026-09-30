@@ -3,8 +3,14 @@
 // Env: FAKE_OMP_SCENARIO = path to a JSON file { "<provider/model>": Behaviour, "*": Behaviour }
 //   Behaviour = { frames?: "<fixture file name>", text?: string, exit?: number, stderr?: string,
 //                 sleepMs?: number, usage?: {input:number, output:number} }
+//   rpc mode also reads: rpcText, rpcEcho (reply carries the prompt), rpcNoManifest (skip the bridge
+//   manifest at startup), rpcFinishOnSteer (hold the reply until a steer arrives), rpcCall: { tool, args } (one bridge `call` after the prompt; its content is
+//   appended to the reply as " CALL:<content>"), rpcHangAfterPrompt, rpcNoReply, rpcExitAfterPrompt, …
+// In rpc mode the fake plays the omp extension's load-time side of the bridge (hello + manifest over
+// HOUGE_BRIDGE_SOCK with HOUGE_BRIDGE_TOKEN, src/omp/bridge-protocol.ts) so the supervisor's start check passes.
 // FAKE_OMP_ARGV_LOG = path; each invocation appends one JSON line with argv and stdin.
 import { appendFileSync, readFileSync } from "node:fs";
+import { connect } from "node:net";
 
 const argv = process.argv.slice(2);
 if (argv.includes("--version")) { process.stdout.write("omp/18.4.4\n"); process.exit(0); }
@@ -14,12 +20,14 @@ if (modeIdx >= 0 && argv[modeIdx + 1] === "rpc") await runRpc();
 
 async function runRpc() {
   const log = (o) => { if (process.env.FAKE_OMP_ARGV_LOG) appendFileSync(process.env.FAKE_OMP_ARGV_LOG, JSON.stringify(o) + "\n"); };
-  log({ argv, stdin: "" });
+  log({ argv, stdin: "", pid: process.pid });
   const scen = process.env.FAKE_OMP_SCENARIO ? JSON.parse(readFileSync(process.env.FAKE_OMP_SCENARIO, "utf8")) : {};
   const mIdx = argv.indexOf("--model");
   let model = mIdx >= 0 ? argv[mIdx + 1].split(":")[0] : "";
   const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
   let steered = [];
+  let held = null; // rpcFinishOnSteer: the prompt that answers once a steer arrives
+  const bridge = (scen["*"] ?? {}).rpcNoManifest ? null : await openBridge();
   out({ type: "ready", protocolVersion: 1, supportedProtocolVersions: [1, 2], maxFrameBytes: 1048576, maxReassembledFrameBytes: 67108864 });
   const handle = (cmd) => {
     log({ cmd });
@@ -27,7 +35,11 @@ async function runRpc() {
     const reply = (data) => out({ id: cmd.id, type: "response", command: cmd.type, success: true, ...(data === undefined ? {} : { data }) });
     if (cmd.type === "open_session") return reply({ cancelled: false, resumed: process.env.FAKE_OMP_RESUMED === "1", sessionId: "s1", sessionFile: "/tmp/fake-s1.jsonl" });
     if (cmd.type === "set_model") { model = `${cmd.provider}/${cmd.modelId}`; return reply({ id: cmd.modelId, provider: cmd.provider }); }
-    if (cmd.type === "steer") { steered.push(cmd.message); return reply(); }
+    if (cmd.type === "steer") {
+      steered.push(cmd.message); reply();
+      if (held) { const h = held; held = null; finish(h.b, h.message, ""); }
+      return;
+    }
     if (cmd.type === "abort") { reply(); return out({ type: "agent_end", messages: [], aborted: true }); }
     if (cmd.type !== "prompt") return reply();
     if (b.rpcExitAfterPrompt) process.exit(3);
@@ -41,9 +53,21 @@ async function runRpc() {
     }
     if (b.rpcHuge) { reply(); return void process.stdout.write("x".repeat(200_000)); }
     reply();
+    if (b.rpcCall) return void callThenFinish(b, cmd.message);
     if (b.rpcHangAfterPrompt) return;
+    if (b.rpcFinishOnSteer) { held = { b, message: cmd.message }; return; }
+    finish(b, cmd.message, "");
+  };
+  const callThenFinish = async (b, message) => {
+    out({ type: "turn_start" }); out({ type: "tool_execution_start", toolName: b.rpcCall.tool });
+    let content = "no bridge";
+    if (bridge) { try { content = (await bridge.request({ kind: "call", tool: b.rpcCall.tool, input: b.rpcCall.args ?? {}, toolCallId: "tc1" })).content; } catch (e) { content = `error ${e.message}`; } }
+    if (b.rpcHangAfterPrompt) return;
+    finish(b, message, " CALL:" + content);
+  };
+  const finish = (b, message, suffix) => {
     const [provider, mid] = model.split("/");
-    const text = (b.rpcErrorText ? "" : (b.rpcText ?? "RPC OK")) + steered.map((t) => " STEERED:" + t).join("");
+    const text = (b.rpcErrorText ? "" : (b.rpcText ?? "RPC OK")) + (b.rpcEcho ? ` ECHO:${message}` : "") + suffix + steered.map((t) => " STEERED:" + t).join("");
     steered = [];
     const msg = { role: "assistant", content: [{ type: "text", text }], provider, model: mid,
       usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 }, stopReason: b.rpcErrorText ? "error" : "stop",
@@ -58,6 +82,29 @@ async function runRpc() {
   });
   await new Promise((r) => process.stdin.on("end", r));
   process.exit(0);
+}
+
+/** hello + manifest over the bridge socket; resolves to a request() once the manifest answered. */
+function openBridge() {
+  const sock = process.env.HOUGE_BRIDGE_SOCK; const token = process.env.HOUGE_BRIDGE_TOKEN;
+  if (!sock || !token) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const s = connect(sock); const pending = new Map(); let n = 0; let buf = "";
+    s.setEncoding("utf8");
+    s.on("error", () => resolve(null));
+    s.on("data", (d) => {
+      buf += d; let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const m = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1);
+        const p = pending.get(m.id); if (p) { pending.delete(m.id); m.ok ? p.ok(m.result) : p.err(new Error(String(m.error))); }
+      }
+    });
+    const request = (msg) => new Promise((ok, err) => { const id = `f${++n}`; pending.set(id, { ok, err }); s.write(JSON.stringify({ ...msg, id }) + "\n"); });
+    s.on("connect", () => {
+      s.write(JSON.stringify({ id: "hello", kind: "hello", token }) + "\n");
+      request({ kind: "manifest" }).then(() => resolve({ request }), () => resolve({ request }));
+    });
+  });
 }
 
 const stdin = await new Promise((resolve) => {

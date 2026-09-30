@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { symlinkSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { BudgetLedger } from "../budget/budget-ledger.js";
 import { CapabilityRunner } from "../capabilities/capability-runner.js";
@@ -127,7 +128,7 @@ import {
 } from "../media/media-config.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { canonicalJson, stableHash } from "../domain/canonical.js";
-import type { Identity } from "../domain/types.js";
+import type { CompiledTaskContract, Identity } from "../domain/types.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import { createLedgerEvent } from "../run/run-ledger.js";
 import {
@@ -171,6 +172,18 @@ import { renderWikiBlock, retrieveWikiPages } from "../run/wiki-retrieval.js";
 import { resolveEpisodicEnabled } from "../capabilities/episodic-extract.js";
 import { embedText, resolveEmbedConfig } from "../llm/embeddings.js";
 import { ToolRegistry } from "../tools/tool-registry.js";
+import { TURN_ACTIONS } from "../contracts/task-contract.js";
+import type { ActiveTurn } from "../omp/bridge-handler.js";
+import type { ExternalReadResult } from "../omp/external-read.js";
+import { resolveOmpConfig } from "../omp/omp-config.js";
+import { PlannerSupervisor, type SupervisorDeps, type TurnOutcomeSink } from "../omp/planner-supervisor.js";
+import { shellToolExecute } from "../omp/shell-adapter.js";
+import { loadToolDeclarations, TOOL_DECLS_DIR, type ToolDeclaration } from "../omp/tool-decls.js";
+import type { TurnContextDeps } from "../omp/turn-context.js";
+import { readTombstone } from "../run/tombstone.js";
+import {
+  EMPTY_REPLY_TEXT, failureNotifyText, OMP_BUILTIN_META, OMP_LOOP_TOOL_META, OMP_SHELL_META, plannerFailureText, TURN_UNAVAILABLE_TEXT
+} from "./omp-turn-wiring.js";
 
 export type CoreWorkerResult =
   | { status: "idle"; run_id?: never; report_path?: never; error?: never }
@@ -224,6 +237,26 @@ interface LoopTurnContext {
   externalReads: Array<{ action: string; digest: string }>;
   /** The provenance URLs the turn's web_search/http_fetch steps actually read (C3 floor). */
   sourceUrls: string[];
+  /** omp turns: every read tool crosses the quarantine wall regardless of HOUGE_DUAL_LLM_ENABLED (D3). */
+  wallAlways?: boolean;
+}
+
+/** Per-run state of an omp turn's loop tools, held from buildOmpTools until the outcome sink finishes the run. */
+interface OmpTurnState {
+  turnCtx: LoopTurnContext;
+  anchor: { priorAnswer: string; defaultScope: string };
+  /** A voice turn's transcript: the tools' objective (the claim still carries the placeholder). */
+  objective?: string;
+  /** The voice echo line that opens the reply. */
+  echo?: string;
+}
+
+/** omp planner seams: tests point these at tmp dirs (the real preflight runs against `distDir`). */
+export interface OmpWorkerOptions {
+  /** The directory of houge.sqlite (spec §2 `<data>`); default the project root. */
+  dataDir?: string;
+  /** Where the installed shell wrapper and extension live; default `<projectRoot>/dist`. */
+  distDir?: string;
 }
 
 /** The ⓪·2 evolution tools — their non-success outcomes are surfaced code-owned (see LoopTurnContext). */
@@ -380,8 +413,12 @@ export class CoreWorker {
     // Multimodal ingest (spec 2026-09-29). The real media LEG is built per run, and ONLY beside the
     // production LLM adapter (a test-injected LLM never pairs with a real CLI call). The downloader
     // comes from the Telegram client the daemon holds; absent → every media turn fails download_failed.
-    private readonly mediaDeps?: MediaWorkerDeps
+    private readonly mediaDeps?: MediaWorkerDeps,
+    // omp planner turns (Task 13): data/dist dirs. Tests point them at tmp dirs. Appended last.
+    private readonly ompOptions: OmpWorkerOptions = {}
   ) {
+    // Tool declarations load once; a bad file fails every turn loudly (incident per refused turn).
+    this.ompDecls = loadToolDeclarations(TOOL_DECLS_DIR);
     // When the DEFAULT llm adapter is in use (production), `llmAdapterFor` builds a run-scoped,
     // audited adapter per role. A test-INJECTED adapter is used as-is (it brings its own fakes).
     this.llmAdapterIsDefault = llmAdapter === undefined;
@@ -409,6 +446,11 @@ export class CoreWorker {
 
   /** Ambient skills live as markdown under `<projectRoot>/skills/<scope>/` (Phase 2a). */
   private readonly skillStore: SkillStore;
+  /** One planner supervisor per chat (created on the chat's first turn). */
+  private readonly supervisors = new Map<string, PlannerSupervisor>();
+  /** Live omp turns' loop-tool state, by run id. */
+  private readonly ompTurns = new Map<string, OmpTurnState>();
+  private readonly ompDecls: { ok: true; decls: ToolDeclaration[] } | { ok: false; error: string };
 
   /** ADR 0025: the per-worker Google OAuth client, built lazily on first Google tool use.
    * The access token lives and dies inside its closure — never in errors, digests, or ledger
@@ -452,11 +494,11 @@ export class CoreWorker {
       return this.executeGatedFixture(claim);
     }
 
-    // The natural-language front door (ADR 0010): `intent_router` is a routing
-    // sentinel (never executed as a capability), checked FIRST so a `turn` run
-    // classifies + dispatches rather than falling through to web-research.
-    if (claim.contract.allowed_actions.includes("intent_router")) {
-      return this.executeTurn(claim);
+    // A `turn` the daemon did not hand to a planner supervisor (the one-shot poll runner, the
+    // CLI) still runs the pre-omp inner loop until Task 14 deletes it. Routed by run type: the
+    // omp turn contract no longer carries the `intent_router` sentinel.
+    if (this.runStore.getRunForWorker(claim.run_id)?.type === "turn") {
+      return this.executeTurn({ ...claim, contract: legacyTurnEnvelope(claim.contract) });
     }
 
     if (claim.contract.allowed_actions.includes("web_search")) {
@@ -1555,18 +1597,29 @@ export class CoreWorker {
     rawOutput: Record<string, unknown>,
     objective: string
   ): Promise<string> {
+    return (await this.quarantineExtract(readerAdapter, memoryRoot, rawOutput, objective)).digest;
+  }
+
+  /** {@link quarantineRead} plus the reader's instruction flag and the raw byte count (the omp wall's result shape). */
+  private async quarantineExtract(
+    readerAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
+    memoryRoot: string,
+    rawOutput: Record<string, unknown>,
+    objective: string
+  ): Promise<{ digest: string; contains_instructions: boolean; bytes: number }> {
     const system = composeSystemPrompt(memoryRoot, "reader");
     const rawContent = digestOutput(rawOutput, READER_INPUT_CHAR_CAP);
+    const bytes = Buffer.byteLength(rawContent, "utf8");
     const question = buildReaderQuestion(objective, rawContent);
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const r = await readerAdapter({ question, system });
       if (r.ok) {
         const extraction = parseReaderExtraction(typeof r.output.answer === "string" ? r.output.answer : "");
-        if (extraction) return renderExtractionDigest(extraction);
+        if (extraction) return { digest: renderExtractionDigest(extraction), contains_instructions: extraction.contains_instructions, bytes };
       }
     }
     // Fail-safe: never inline raw bytes — that would be the exact leak the wall prevents.
-    return unreadableDigest(Buffer.byteLength(rawContent, "utf8"));
+    return { digest: unreadableDigest(bytes), contains_instructions: false, bytes };
   }
 
   /** CHECKER 1: read the worktree's raw diff and run it through the protected-path guard. */
@@ -2139,6 +2192,244 @@ export class CoreWorker {
    * answer/research/feedback helpers, or ask a clarifying question. Short-term chat
    * memory gives follow-ups context.
    */
+  // ── omp planner turns (Task 13): the daemon hands a turn over and returns at once ────────
+
+  /**
+   * Hand a queued `turn` run to its chat's planner supervisor and return immediately (the poll
+   * loop is never blocked by a turn). `false` = not a turn: the caller runs it the old way.
+   */
+  submitTurn(run_id: string): boolean {
+    const run = this.runStore.getRunForWorker(run_id);
+    if (!run || run.type !== "turn") return false;
+    const chatId = run.notify.kind === "telegram" ? run.notify.chat_id : "";
+    if (!this.ompDecls.ok) { this.refuseOmpTurn(run_id, chatId, "tool_decl_invalid"); return true; }
+    // Telegram chat ids are numeric; turn-context would throw inside the supervisor on anything else.
+    if (!/^-?\d+$/.test(chatId)) { this.refuseOmpTurn(run_id, chatId, "invalid_chat_id"); return true; }
+    const goal = run.goal ?? "";
+    this.supervisorFor(chatId).submit({
+      run_id, text: goal, source: run.source === "schedule" ? "schedule" : "telegram", goal, requester: run.requested_by
+    });
+    return true;
+  }
+
+  /** Every live supervisor (for /kill, /rearm and shutdown). */
+  plannerSupervisors(): PlannerSupervisor[] {
+    return [...this.supervisors.values()];
+  }
+
+  /** Daemon shutdown: every chat's child stops; queued turns stay queued in the DB for the next boot. */
+  async shutdownPlanners(): Promise<void> {
+    await Promise.all(this.plannerSupervisors().map((s) => s.shutdown()));
+  }
+
+  /** A turn that cannot reach a planner fails loudly: incident, terminal row, and a reply. Never left queued. */
+  private refuseOmpTurn(run_id: string, chatId: string, reason: "tool_decl_invalid" | "invalid_chat_id"): void {
+    const detail = reason === "tool_decl_invalid" && !this.ompDecls.ok ? { reason, error: this.ompDecls.error } : { reason };
+    this.runStore.openIncident({ kind: reason === "tool_decl_invalid" ? "tool_decl_invalid" : "planner_turn_refused", subject: `chat:${chatId || "none"}`, detail: { run_id, ...detail } });
+    const worker = `planner:refused:${randomUUID()}`;
+    if (!this.runStore.claimRun(run_id, worker, 30)) return;
+    if (this.runStore.finishRun({ run_id, expected_worker_id: worker, next: "failed", error_type: "planner_exit", error_ref: reason })) {
+      this.runStore.enqueueFailureNotification(run_id, TURN_UNAVAILABLE_TEXT);
+    }
+  }
+
+  private chatOf(run_id: string): string {
+    const target = this.runStore.getRunNotifyTarget(run_id);
+    return target.kind === "telegram" ? target.chat_id : "";
+  }
+
+  private supervisorFor(chatId: string): PlannerSupervisor {
+    let s = this.supervisors.get(chatId);
+    if (!s) {
+      s = new PlannerSupervisor(this.supervisorDeps(chatId));
+      this.supervisors.set(chatId, s);
+    }
+    return s;
+  }
+
+  private ompDataDir(): string {
+    return this.ompOptions.dataDir ?? this.projectRoot;
+  }
+
+  private supervisorDeps(chatId: string): SupervisorDeps {
+    const data = this.ompDataDir();
+    return {
+      chatId, store: this.runStore, cfg: resolveOmpConfig(process.env), ctx: { home: homedir(), repo: this.projectRoot, data },
+      distDir: this.ompOptions.distDir ?? join(this.projectRoot, "dist"), decls: this.ompDecls.ok ? this.ompDecls.decls : [],
+      env: process.env, turnEnvelopeActions: [...TURN_ACTIONS], turnContext: this.ompTurnContext(data),
+      buildTools: (claim) => this.buildOmpTools(claim, chatId),
+      // The tombstone is the kill posture; a parked daemon never polls, so it never reaches here.
+      posture: () => (readTombstone() ? "killed" : null),
+      outcome: this.ompOutcomeSink(chatId),
+      resolveMessage: (claim) => this.resolveOmpMessage(claim)
+    };
+  }
+
+  private ompTurnContext(dataDir: string): TurnContextDeps {
+    return {
+      store: this.runStore, memoryRoot: memoryRootFor(this.projectRoot), dataDir,
+      lessonsReader: this.lessonsReader(), skillsReader: this.skillsReader(),
+      coreBlock: (chatId) => {
+        if (!resolveEpisodicEnabled(process.env)) return undefined;
+        const facts = this.runStore.getCoreEpisodicFacts(chatId, resolveEpisodicCoreCap(process.env));
+        return facts.length > 0 ? renderCoreFactsBlock(facts) : undefined;
+      },
+      retrieve: (chatId, message) => this.retrieveForOmpTurn(chatId, message),
+      env: process.env
+    };
+  }
+
+  /** The turn's episodic facts (core band excluded) and wiki pages, one shared query embedding, one block per row. */
+  private async retrieveForOmpTurn(chatId: string, message: string): Promise<{
+    facts: Array<{ id: number; block: string }>; pages: Array<{ id: number; block: string }>;
+  }> {
+    const embedding = resolveEpisodicEnabled(process.env) || resolveWikiEnabled(process.env) ? await this.embedQueryForTurn(message) : null;
+    const coreIds = new Set(
+      resolveEpisodicEnabled(process.env) ? this.runStore.getCoreEpisodicFacts(chatId, resolveEpisodicCoreCap(process.env)).map((f) => f.id) : []
+    );
+    const facts = this.episodicFactsForTurn(chatId, message, embedding).filter((f) => !coreIds.has(f.id));
+    const pages = this.wikiPagesForTurn(message, embedding);
+    return {
+      facts: facts.map((f) => ({ id: f.id, block: renderEpisodicFactsBlock([f]) })),
+      pages: pages.map((p) => ({ id: p.id, block: renderWikiBlock([p]) }))
+    };
+  }
+
+  /** Per-turn state for the loop tools, kept until the outcome sink finishes the run. */
+  private ompTurnState(claim: ClaimedRun, chatId: string): OmpTurnState {
+    const recentTurns = this.runStore.getRecentChatTurns(chatId, resolveChatContextTurns(process.env), chatContextSince(process.env));
+    const state: OmpTurnState = {
+      turnCtx: {
+        recentTurns, turnChars: resolveChatContextTurnChars(process.env), ranOnce: new Set<string>(), evolutionNotices: [],
+        externalReads: [], sourceUrls: [], wallAlways: true
+      },
+      anchor: { priorAnswer: [...recentTurns].reverse().find((t) => t.role === "assistant")?.text ?? "", defaultScope: "ask" }
+    };
+    this.ompTurns.set(claim.run_id, state);
+    return state;
+  }
+
+  /**
+   * The turn's registry: bash as three entries (the matcher picks one; all run the shell wrapper),
+   * the omp built-ins as metadata-only entries (the bridge `gate` decides them), and the twelve
+   * loop tools bound to the unchanged `loopToolExecute` pipelines. Read tools cross the wall
+   * through `quarantine`, always (D3).
+   */
+  buildOmpTools(claim: ClaimedRun, chatId = this.chatOf(claim.run_id)): { registry: ToolRegistry; quarantine: ActiveTurn["quarantine"] } {
+    const state = this.ompTurnState(claim, chatId);
+    const registry = new ToolRegistry();
+    const cfg = resolveOmpConfig(process.env);
+    const shell = shellToolExecute({
+      cfg, ctx: { home: homedir(), repo: this.projectRoot, data: this.ompDataDir() },
+      distDir: this.ompOptions.distDir ?? join(this.projectRoot, "dist"), cwd: join(this.ompDataDir(), "omp", "workspace", `chat-${chatId}`),
+      onIncident: (kind, detail) => { this.runStore.openIncident({ kind, subject: `chat:${chatId}`, detail: { run_id: claim.run_id, ...detail } }); }
+    });
+    for (const [name, meta] of Object.entries(OMP_SHELL_META)) {
+      registry.register({ name, category: "tool", ...meta, timeout_ms: cfg.shellTimeoutMs + 10_000, execute: shell });
+    }
+    for (const [name, meta] of Object.entries(OMP_BUILTIN_META)) registry.register({ name, category: "tool", ...meta, timeout_ms: 0 });
+    const llmTimeoutMs = resolveChainBudgetMs(process.env) + RUNNER_TIMEOUT_BUFFER_MS;
+    for (const [name, meta] of Object.entries(OMP_LOOP_TOOL_META)) {
+      registry.register({ name, category: "tool", ...meta, timeout_ms: loopToolTimeoutMs(name, llmTimeoutMs), execute: this.ompLoopExecute(name, claim, state) });
+    }
+    return { registry, quarantine: (tool, output) => this.ompQuarantine(claim, state, tool, output) };
+  }
+
+  /** A loop tool on the omp path; the claim's objective is read at call time (a voice turn's transcript lands after the claim). */
+  private ompLoopExecute(name: string, claim: ClaimedRun, state: OmpTurnState): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
+    return async (input) => {
+      const objective = state.objective;
+      const effective = objective ? { ...claim, contract: { ...claim.contract, objective } } : claim;
+      const r = await this.loopToolExecute(name, effective, new BudgetLedger(claim.contract.budget), "", state.anchor, state.turnCtx)(input);
+      // Code-owned surfacing (⓪·2): a failed evolution step is appended to the reply, never model-mediated.
+      if (!r.ok && EVOLUTION_TOOLS.has(name)) state.turnCtx.evolutionNotices.push(`${name} step failed: ${r.error}`);
+      return r;
+    };
+  }
+
+  /**
+   * The wall (ADR 0014, D3): a read tool's raw output goes to the quarantined reader only; the
+   * planner gets the schema-only digest, plus the code-built trusted extract (gmail codes/links).
+   * The recorded digest also feeds the wiki's synthesis material (Phase W trust anchor).
+   */
+  private async ompQuarantine(claim: ClaimedRun, state: OmpTurnState, tool: string, output: Record<string, unknown>): Promise<ExternalReadResult> {
+    const reader = this.llmAdapterFor(claim.run_id, "reader");
+    const x = await this.quarantineExtract(reader, memoryRootFor(this.projectRoot), output, state.objective ?? claim.contract.objective);
+    const trusted = typeof output.trusted_extract === "string" && output.trusted_extract.length > 0 ? output.trusted_extract : undefined;
+    const digest = trusted ? `${x.digest}\n${trusted}` : x.digest;
+    state.turnCtx.externalReads.push({ action: tool, digest });
+    return { digest, contains_instructions: x.contains_instructions, source_meta: { tool, bytes: x.bytes } };
+  }
+
+  /** The supervisor's ingest hook over the existing media path; a voice transcript also becomes the tools' objective. */
+  private async resolveOmpMessage(claim: ClaimedRun): Promise<{ ok: true; text: string } | { ok: false; error_ref: string }> {
+    const r = await this.resolveTurnMessage(claim);
+    if (!r.ok) return { ok: false, error_ref: capabilityFailureDetail(r.failure) };
+    const state = this.ompTurns.get(claim.run_id);
+    if (state) {
+      if (r.modality === "voice") state.objective = r.text;
+      if (r.echo) state.echo = r.echo;
+    }
+    return { ok: true, text: r.text };
+  }
+
+  private ompOutcomeSink(chatId: string): TurnOutcomeSink {
+    return {
+      complete: (i) => this.ompComplete(i),
+      fail: (i) => this.ompFail(i),
+      incident: (kind, detail) => { this.runStore.openIncident({ kind, subject: `chat:${chatId}`, detail }); }
+    };
+  }
+
+  /** The reply: the voice echo, the planner's text (or a code-owned placeholder), then the evolution notices. */
+  private ompReplyText(text: string, attachments: string[], state: OmpTurnState | undefined): string {
+    const body = text.trim().length > 0 || attachments.length > 0 ? text : EMPTY_REPLY_TEXT;
+    return withEvolutionNotices((state?.echo ? `${state.echo}\n\n` : "") + body, state?.turnCtx.evolutionNotices ?? []);
+  }
+
+  /**
+   * Terminal success. A merged (steered) run is finished alongside its parent but sends nothing
+   * and reports no tool calls: Paco gets ONE reply, the parent's (ruling 7).
+   */
+  private ompComplete(i: Parameters<TurnOutcomeSink["complete"]>[0]): void {
+    const state = this.ompTurns.get(i.run_id);
+    this.ompTurns.delete(i.run_id);
+    const merged = i.merged_into !== undefined;
+    const text = merged ? i.text : this.ompReplyText(i.text, i.attachments, state);
+    let report: { path: string; hash: string };
+    try {
+      report = writeRunReport(this.projectRoot, { run_id: i.run_id, title: "Answer", body: text, sources: state?.turnCtx.sourceUrls ?? [], partial: false });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.ompFail({ run_id: i.run_id, worker_id: i.worker_id, error_type: merged ? "merged_parent_failed" : "planner_exit", error_ref: `report_write_failed: ${detail}` });
+      return;
+    }
+    const won = this.runStore.finishRun({
+      run_id: i.run_id, expected_worker_id: i.worker_id, next: "completed", report_ref: report.path, duration_ms: i.duration_ms, tool_calls: merged ? 0 : i.tool_calls
+    });
+    if (!won) return;
+    this.runStore.recordReportWritten(i.run_id, report.path, report.hash, false);
+    if (!merged) this.runStore.enqueueFinalReportNotification(i.run_id, { text, report_path: report.path, attachments: i.attachments });
+  }
+
+  /** Terminal failure: one code-owned reply by failure type; a failed ingest also leaves a partial report (old media path). */
+  private ompFail(i: Parameters<TurnOutcomeSink["fail"]>[0]): void {
+    this.ompTurns.delete(i.run_id);
+    const text = plannerFailureText(i.error_type, i.error_ref, i.partial);
+    const partial = i.error_type === "media_failed" ? this.writePartialOmpReport(i.run_id, i.error_ref) : undefined;
+    if (!this.runStore.finishRun({ run_id: i.run_id, expected_worker_id: i.worker_id, next: "failed", error_type: i.error_type, error_ref: i.error_ref })) return;
+    if (partial) this.runStore.recordReportWritten(i.run_id, partial.path, partial.hash, true);
+    if (text !== null) this.runStore.enqueueFailureNotification(i.run_id, text, partial?.path);
+  }
+
+  private writePartialOmpReport(run_id: string, detail: string): { path: string; hash: string } | undefined {
+    try {
+      return writeRunReport(this.projectRoot, { run_id, title: "Partial report", body: `Error: ${detail}`, sources: [], partial: true });
+    } catch {
+      return undefined; // delivery never depends on the report (Phase 3.4)
+    }
+  }
+
   private async executeTurn(claim: ClaimedRun): Promise<CoreWorkerResult> {
     // Multimodal ingest (spec 2026-09-29): a voice note or photo becomes text HERE, before the
     // classifier. For a VOICE turn the transcript also becomes the contract objective for the rest
@@ -2683,7 +2974,8 @@ export class CoreWorker {
         // ELSE branch would hand the raw body to the planner un-quarantined. The manifest gate
         // (resolveGoogleArmed) hides the tool, but a scripted/scheduled/eval-emitted action can
         // still reach here — so REFUSE BEFORE FETCH when the reader is off (adversarial review).
-        if (!resolveDualLlmEnabled(process.env)) {
+        // omp turns quarantine every read tool unconditionally (D3), so the refusal is the old loop's only.
+        if (!turnCtx.wallAlways && !resolveDualLlmEnabled(process.env)) {
           return { ok: true, output: { answer: `${name} is disabled (dual-LLM quarantine is off).` } };
         }
         const result =
@@ -3349,7 +3641,7 @@ export class CoreWorker {
     // Phase 3.4: a failed run must NEVER be silent. Always surface a short error reply to the run's
     // notify target so the user sees "I hit an error" instead of nothing. The partial report path is
     // attached when one was written (audit only); delivery does not depend on it.
-    const notifyText = `I hit an error on that one: ${detail}`;
+    const notifyText = failureNotifyText(detail);
     let report_path: string | undefined;
     try {
       const report = writeRunReport(this.projectRoot, {
@@ -3853,3 +4145,26 @@ function capabilityFailureDetail(result: Exclude<CapabilityResult, { status: "su
       return `Reconciliation required: ${result.reconciliation_ref}`;
   }
 }
+
+/**
+ * The pre-omp turn envelope for the old inner loop (retired in Task 14): the classifier sentinel
+ * and `llm_answer` the omp contract dropped, the old 14-call cap and the old gates. Only the
+ * non-daemon callers of `executeRun` reach it; the daemon hands every turn to `submitTurn`.
+ */
+function legacyTurnEnvelope(contract: CompiledTaskContract): CompiledTaskContract {
+  const scheduleBorn = !contract.allowed_actions.includes("schedule_task");
+  return {
+    ...contract,
+    allowed_actions: LEGACY_TURN_ACTIONS.filter((a) => !(scheduleBorn && a === "schedule_task")),
+    forbidden_actions: ["coding_agent_cli", "generic_shell", "external_write", "paid_action"],
+    approval_gates: ["local_write", "external_write", "destructive", "paid"],
+    budget: { ...contract.budget, max_tool_calls: 14 }
+  };
+}
+
+/** The pre-omp turn envelope's actions, verbatim (Task 14 deletes this with the old loop). */
+const LEGACY_TURN_ACTIONS: readonly string[] = [
+  "intent_router", "web_search", "http_fetch", "to_local_time", "llm_answer", "lesson_write", "schedule_task",
+  "wiki_build", "wiki_refine", "self_diagnose", "self_write_propose", "skill_author", "external_work",
+  "bounty_scan", "project_track", "project_update", "project_list", "gmail_read", "google_api", "write_report"
+];

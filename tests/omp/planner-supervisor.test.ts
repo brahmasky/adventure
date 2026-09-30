@@ -479,3 +479,26 @@ describe("PlannerSupervisor — start phase (fix round 2)", () => {
     expect(sup.state()).toBe("IDLE");
   });
 });
+
+describe("PlannerSupervisor — resolveMessage hook (Task 13: voice/photo ingest)", () => {
+  it("prompts the planner with the resolved text, not the placeholder (a voice note is answered as words)", async () => {
+    const seen: string[] = [];
+    const { store, sup, session } = harness(fakeSession(), {}, {
+      resolveMessage: async (claim) => { seen.push(claim.run_id); return { ok: true, text: "transcribed" }; }
+    });
+    const run_id = createQueuedTurnRun(store, "[voice message]");
+    sup.submit(req(run_id, "[voice message]")); await sup.whenIdle();
+    expect(seen).toEqual([run_id]);
+    expect(session.prompts).toEqual(["transcribed"]);
+  });
+
+  it("a failed ingest fails the run media_failed with its reply and never spawns a child", async () => {
+    const { store, sup, outcome, session } = harness(fakeSession(), {}, {
+      resolveMessage: async () => ({ ok: false, error_ref: "couldn't transcribe that right now" })
+    });
+    const run_id = createQueuedTurnRun(store, "[voice message]");
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(outcome.failed).toEqual([expect.objectContaining({ run_id, error_type: "media_failed", error_ref: "couldn't transcribe that right now" })]);
+    expect(session.options).toHaveLength(0);
+  });
+});

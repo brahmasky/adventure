@@ -113,7 +113,8 @@ export type PlannerFailure =
   | "model_error"
   | "turn_timeout"
   | "frame_idle"
-  | "merged_parent_failed";
+  | "merged_parent_failed"
+  | "media_failed";
 
 export type FinishRunInput =
   | {
@@ -4749,6 +4750,17 @@ export class RunStore {
     `).all<{ approval_id: string }>().map((r) => r.approval_id);
   }
 
+  /** Pending approvals from both tables that can still be answered (expires_at > now), oldest first — `/approvals`. */
+  listLiveApprovals(now: string): Array<{ approval_id: string; summary: string; expires_at: string }> {
+    return this.db.prepare(`
+      SELECT approval_id, action_summary AS summary, expires_at, created_at FROM approvals WHERE state = 'pending' AND expires_at > ?
+      UNION ALL
+      SELECT approval_id, summary, expires_at, created_at FROM tool_approvals WHERE state = 'pending' AND expires_at > ?
+      ORDER BY created_at ASC, approval_id ASC
+    `).all<{ approval_id: string; summary: string; expires_at: string }>(now, now)
+      .map((r) => ({ approval_id: r.approval_id, summary: r.summary, expires_at: r.expires_at }));
+  }
+
   /** @internal Test hook: resolves through the same private resolver `processApprovalTrigger` uses. */
   resolveToolApprovalForTest(approval_id: string, decision: ApprovalDecision): ApprovalResolutionResult {
     const row = this.getToolApproval(approval_id);
@@ -4856,7 +4868,7 @@ export class RunStore {
    */
   enqueueFinalReportNotification(
     run_id: string,
-    input: { text: string; report_path: string; buttons?: NotificationButton[] }
+    input: { text: string; report_path: string; buttons?: NotificationButton[]; attachments?: string[] }
   ): NotificationQueueResult {
     return this.enqueueNotification({
       target: this.getRunNotifyTarget(run_id),
@@ -4871,7 +4883,9 @@ export class RunStore {
         report_path: input.report_path,
         // Phase 3.3: inline buttons (the self-write merge controls) ride only when supplied;
         // every other final report omits them and stays byte-identical to before.
-        ...(input.buttons ? { buttons: input.buttons } : {})
+        ...(input.buttons ? { buttons: input.buttons } : {}),
+        // omp turns: workspace files the planner attached; the Telegram adapter re-checks each at send time.
+        ...(input.attachments && input.attachments.length > 0 ? { attachments: input.attachments } : {})
       }
     });
   }
@@ -5364,6 +5378,16 @@ export class RunStore {
       ORDER BY created_at DESC, approval_id DESC
     `).get<ApprovalRow>(run_id, state);
     return row ? this.approvalRecordFromRow(row) : undefined;
+  }
+
+  /** The fields the worker needs to route a queued run (turns go to the planner supervisor). Undefined when absent. */
+  getRunForWorker(run_id: string): { type: string; source: string; goal: string | null; contract_json: string | null; notify: NotificationIntent["target"]; requested_by: Identity } | undefined {
+    const row = this.db.prepare(`
+      SELECT type, source, goal, contract_json, notify_json, requested_by_json FROM runs WHERE run_id = ?
+    `).get<{ type: string; source: string; goal: string | null; contract_json: string | null; notify_json: string; requested_by_json: string }>(run_id);
+    if (!row) return undefined;
+    const { notify_json, requested_by_json, ...rest } = row;
+    return { ...rest, notify: JSON.parse(notify_json) as NotificationIntent["target"], requested_by: JSON.parse(requested_by_json) as Identity };
   }
 
   getRunRequester(run_id: string): Identity {

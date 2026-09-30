@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
-import { compileCodeSelfWriteContract, compileSelfDiagnoseContract, compileSkillAuthorContract, compileTaskContract } from "../../src/contracts/task-contract.js";
+import { compileCodeSelfWriteContract, compileSelfDiagnoseContract, compileSkillAuthorContract, compileTaskContract, TURN_ACTIONS } from "../../src/contracts/task-contract.js";
 
 const runEvent = buildTypedTaskEvent({
   source: "cli",
@@ -38,7 +38,7 @@ describe("compileTaskContract", () => {
     });
   });
 
-  it("compiles a turn into the intent-router front-door contract (ADR 0010)", () => {
+  it("compiles a turn into the omp planner envelope (spec §9; the classifier front door is gone)", () => {
     const turnEvent = buildTypedTaskEvent({
       source: "telegram",
       type: "turn",
@@ -55,35 +55,14 @@ describe("compileTaskContract", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.contract.objective).toBe("what's new with SpaceX?");
-      // lesson_write (ADR 0013, step ⓪·1) and the evolution tools (step ⓪·2) live in
-      // the one turn envelope — only the flag-gated inner loop invokes them (the policy
-      // only ALLOWS; the manifest lists an evolution tool only when its flag arms it).
-      expect(result.contract.allowed_actions).toEqual([
-        "intent_router",
-        "web_search",
-        "http_fetch",
-        "to_local_time",
-        "llm_answer",
-        "lesson_write",
-        "schedule_task",
-        "wiki_build",
-        "wiki_refine",
-        "self_diagnose",
-        "self_write_propose",
-        "skill_author",
-        "external_work",
-        "bounty_scan",
-        "project_track",
-        "project_update",
-        "project_list",
-        // ADR 0025: Google identity reads — armed-listed on the GOOGLE × DUAL_LLM couple.
-        "gmail_read",
-        "google_api",
-        "write_report"
-      ]);
-      // 10 (was 6): a search → fetch×2-3 → answer chain must fit in ONE turn (step ③).
-      expect(result.contract.budget.max_tool_calls).toBe(14);
-      expect(result.contract.forbidden_actions).toContain("external_write");
+      // The envelope is every registry entry the bridge may execute; arming flags pick the manifest.
+      // Bounty/external-work actions left with their features; intent_router/llm_answer with the classifier.
+      expect(result.contract.allowed_actions).toEqual([...TURN_ACTIONS]);
+      expect(result.contract.allowed_actions).not.toContain("bounty_scan");
+      expect(result.contract.allowed_actions).not.toContain("external_work");
+      expect(result.contract.budget.max_tool_calls).toBe(40);
+      // external_write is reachable (bash `git push`), but only behind Paco's approval.
+      expect(result.contract.forbidden_actions).not.toContain("external_write");
       expect(result.contract.approval_gates).toContain("external_write");
       expect(result.contract.contract_hash).toMatch(/^[a-f0-9]{64}$/);
     }

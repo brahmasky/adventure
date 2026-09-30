@@ -33,6 +33,8 @@ export interface SupervisorDeps {
   env: NodeJS.ProcessEnv; turnEnvelopeActions: string[]; turnContext: TurnContextDeps;
   buildTools: (claim: ClaimedRun) => { registry: ToolRegistry; quarantine: ActiveTurn["quarantine"] };
   posture: () => string | null; outcome: TurnOutcomeSink;
+  /** Runs after the claim, before the child starts or is prompted (voice/photo ingest). A failure fails the run `media_failed`. */
+  resolveMessage?: (claim: ClaimedRun) => Promise<{ ok: true; text: string } | { ok: false; error_ref: string }>;
   sessionFactory?: (o: PlannerSessionOptions) => PlannerSessionLike;
   versionCheck?: () => ReturnType<typeof checkOmpVersion>;
   /** Unit tests only: skips the wrapper hash check and the Seatbelt render (the bridge socket stays real). */
@@ -66,7 +68,7 @@ const exitRef = (i: ExitInfo) => (i.code !== null ? `exit ${i.code}` : `signal $
 const HOUGE_CONFIG_YML = "tools:\n  xdev: false\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: false\ntelemetry:\n  otlpExportEnabled: false\n";
 
 interface Turn {
-  req: TurnRequest; worker: string; startedAt: number; merged: string[];
+  req: TurnRequest; claim: ClaimedRun; worker: string; startedAt: number; merged: string[];
   active: ActiveTurn; abort: AbortController; heartbeat: ReturnType<typeof setInterval>;
   /** Model requests seen (turn_start frames) and the last one an llm_attempt row was written for. */
   n: number; recorded: number; lastText: string; lastError: string | undefined; usedTool: boolean; legIndex: number;
@@ -265,7 +267,7 @@ export class PlannerSupervisor {
     };
     const heartbeat = setInterval(() => this.renewLeases(), HEARTBEAT_MS);
     const turn: Turn = {
-      req, worker, startedAt: Date.now(), merged: [], active, abort, heartbeat, n: 0, recorded: 0, lastText: "", lastError: undefined, deadline: undefined, idle: undefined,
+      req, claim, worker, startedAt: Date.now(), merged: [], active, abort, heartbeat, n: 0, recorded: 0, lastText: "", lastError: undefined, deadline: undefined, idle: undefined,
       usedTool: false, legIndex: 0, live: false, finished: false, aborting: false, dispatched: false, approvals: 0, ...newDeferred(),
       deadlineLeft: cfg.turnTimeoutMs, deadlineAt: Date.now()
     };
@@ -302,13 +304,15 @@ export class PlannerSupervisor {
   private async startTurn(turn: Turn): Promise<void> {
     const { store, chatId, turnContext } = this.d;
     try {
+      const text = await this.resolveText(turn);
+      if (text === ENDED || turn.failure) return;
       const fail = await this.step(turn, this.ensureSession());
       if (fail === ENDED) { await this.settleStart(); return; } // ended while the child was starting
       if (turn.failure) return;
       if (fail) { this.failTurn(turn, "planner_exit", fail); return; }
-      store.recordChatTurn({ chat_id: chatId, run_id: turn.req.run_id, role: "user", text: turn.req.text });
+      store.recordChatTurn({ chat_id: chatId, run_id: turn.req.run_id, role: "user", text });
       const prompt = await this.step(turn, buildTurnPrompt(turnContext, {
-        run_id: turn.req.run_id, chat_id: chatId, message: turn.req.text, source: turn.req.source,
+        run_id: turn.req.run_id, chat_id: chatId, message: text, source: turn.req.source,
         ...(turn.req.goal !== undefined ? { goal: turn.req.goal } : {})
       }));
       if (prompt === ENDED || turn.failure) return;
@@ -316,6 +320,15 @@ export class PlannerSupervisor {
     } catch (e) {
       this.failTurn(turn, "planner_exit", `start_failed: ${message(e)}`);
     }
+  }
+
+  /** The message the planner sees: the ingest hook's text (a failed ingest fails the turn `media_failed`), else the request text. */
+  private async resolveText(turn: Turn): Promise<string | typeof ENDED> {
+    if (!this.d.resolveMessage) return turn.req.text;
+    const r = await this.step(turn, this.d.resolveMessage(turn.claim));
+    if (r === ENDED) return ENDED;
+    if (!r.ok) { this.failTurn(turn, "media_failed", r.error_ref); return ENDED; }
+    return r.text;
   }
 
   /** A turn that ended mid-start finishes only after its start settled (stopped or failed): no late incident, no orphan child. */

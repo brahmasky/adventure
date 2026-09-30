@@ -168,73 +168,36 @@ export function compileExternalWorkContract(objective: string): CompiledTaskCont
   return { ...base, contract_hash: stableHash(base) };
 }
 
+/** The omp turn envelope (spec §9): the planner's Houge tools plus the omp built-ins and bash. */
+export const TURN_ACTIONS: readonly string[] = [
+  "web_search", "http_fetch", "to_local_time", "lesson_write", "schedule_task", "wiki_build", "wiki_refine",
+  "self_diagnose", "self_write_propose", "skill_author", "gmail_read", "google_api",
+  "fs_read", "fs_write", "shell", "shell_external", "shell_destructive", "write_report"
+];
+
 function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
   if (!event.goal?.trim()) {
     return invalid("Message is required");
   }
 
-  // The natural-language front door (ADR 0010). The worker first classifies intent
-  // on the LLM chain (the `intent_router` sentinel — never executed as a capability),
-  // then dispatches to answer (llm_answer) or research (web_search + llm_answer).
-  // Same safety floor as web-research; budget headroom for the extra classifier call.
-  // `lesson_write` (ADR 0013, step ⓪·1) is the distill→backstop→append flow as a
-  // capability: only the flag-gated inner loop invokes it (the legacy path never does;
-  // the policy only ALLOWS, never forces), but it lives in the one turn envelope.
-  // `self_diagnose`/`self_write_propose`/`skill_author` (step ⓪·2) are the evolution
-  // layers as loop tools — same deal: allowed in the envelope, listed only when armed,
-  // and each runs its unchanged legacy pipeline under its own sub-contract inside.
-  // `http_fetch` (Phase 3.6 step ③) is a plain armed loop tool like web_search; the
-  // 10-call budget lets a search → fetch×2-3 → answer chain fit in ONE turn (the old
-  // 6 hit step_cap on real research turns — soak 07-05). Bumped 10→14 (07-07): the
-  // zone-evidence gate + convert-before-final guard deliberately make schedule turns
-  // search until a zone-LABELED source appears before converting — live gate runs
-  // showed that honest workflow needs ~9 searches + conversions + a bounced final,
-  // which step_capped at 10 with the correct answer one step out of reach.
+  // The omp planner turn (spec §9, plan deviation 4). The envelope lists every registry entry
+  // the bridge may execute; arming flags decide what the manifest shows. `local_write` is not
+  // gated (D5: fs_write and plain shell run yolo inside the Seatbelt floor); external writes,
+  // destructive commands and paid actions ask Paco mid-turn. Reads are not budgeted, so the
+  // cap counts actions: 40.
   // Scheduler v2 provenance strip: a run BORN FROM a schedule fire must not create or
-  // mutate schedules — its goal text is replayed schedule data, not a fresh user ask.
-  // 2026-07-19: the weekly AI周报 fire misread its own goal as "set up a weekly report"
-  // and minted a duplicate row. The capability leaves the envelope HERE, so the manifest
-  // (derived from allowed_actions) never shows the tool and a scripted call is denied.
-  const turnActions = [
-    "intent_router",
-    "web_search",
-    "http_fetch",
-    "to_local_time",
-    "llm_answer",
-    "lesson_write",
-    // schedule_task (B10b, ADR 0017) is armed-listed like http_fetch: allowed in the
-    // envelope, on the model's menu only when HOUGE_SCHEDULER_ENABLED arms it.
-    "schedule_task",
-    // wiki_build/wiki_refine (Phase W, ADR 0020) are armed-listed the same way:
-    // allowed in the envelope, listed only when HOUGE_WIKI_ENABLED arms them.
-    "wiki_build",
-    "wiki_refine",
-    "self_diagnose",
-    "self_write_propose",
-    "skill_author",
-    // external_work (ADR 0023) is armed-listed like the other evolution tools: allowed in
-    // the envelope, on the model's menu only when HOUGE_EXTWORK_ENABLED arms it.
-    "external_work",
-    // P2 bounty intake (spec 2026-07-18): armed-listed on HOUGE_BOUNTY_ENABLED.
-    "bounty_scan",
-    "project_track",
-    "project_update",
-    "project_list",
-    // ADR 0025: Google identity reads — armed-listed on HOUGE_GOOGLE_ENABLED AND the
-    // dual-LLM couple (composed in tool-manifest). Turn contract only (bounty precedent).
-    "gmail_read",
-    "google_api",
-    "write_report"
-  ].filter((action) => !(event.source === "schedule" && action === "schedule_task"));
+  // mutate schedules — its goal text is replayed schedule data, not a fresh user ask
+  // (2026-07-19: the weekly AI周报 fire minted a duplicate row).
+  const turnActions = TURN_ACTIONS.filter((action) => !(event.source === "schedule" && action === "schedule_task"));
 
   const base = {
     objective: event.goal,
-    budget: { time_minutes: 10, max_tool_calls: 14, max_agent_delegations: 0 },
+    budget: { time_minutes: 10, max_tool_calls: 40, max_agent_delegations: 0 },
     allowed_actions: turnActions,
-    forbidden_actions: ["coding_agent_cli", "generic_shell", "external_write", "paid_action"],
+    forbidden_actions: ["coding_agent_cli", "paid_action"],
     output: { path: "runs/<run-id>/report.md", format: "sourced_markdown_report" as const },
-    approval_gates: ["local_write", "external_write", "destructive", "paid"] as SideEffectLevel[],
-    stop_condition: "intent classified and answered, or budget exhausted",
+    approval_gates: ["external_write", "destructive", "paid"] as SideEffectLevel[],
+    stop_condition: "turn answered, or budget exhausted",
     eval_hooks: []
   };
 
