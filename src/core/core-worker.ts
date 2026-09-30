@@ -2619,6 +2619,9 @@ export class CoreWorker {
 
     // Synthesis (role "answer"; general-model legs, metered fuse inherited). On refine
     // the prior page rides the DATA channel with a reconcile instruction (decision 8).
+    // No plannerFamily here (M8): the synthesis reads only the turn's RECORDED post-wall reader
+    // digests (turnCtx.externalReads), never raw external bytes, so a same-family collapse cannot
+    // let untrusted content reach the planner's model through this call.
     const synth = await this.llmAdapterFor(claim.run_id, "answer")({
       question: buildWikiSynthQuestion(
         topic,
@@ -2646,6 +2649,8 @@ export class CoreWorker {
     // All passes failing saves the page UNVERIFIED (confidence null) — never blocks.
     let outcome: WikiVerifyOutcome = { confidence: null, verified_passes: 0, contradictions: [], unsupported: [] };
     if (!draft.unchanged) {
+      // No plannerFamily here (M8): the verifier judges the synthesized page against the recorded
+      // reader digests only — digests in, a verdict out — never raw external bytes.
       const readerAdapter = this.llmAdapterFor(claim.run_id, "reader");
       outcome = await verifyWikiPage(
         draft,

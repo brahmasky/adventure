@@ -5,9 +5,9 @@
  * tricks are rejected, never decoded), the host always comes from the matched registry row,
  * and the access token stays inside the auth closure — no result or error string carries it.
  *
- * The arming couple (HOUGE_GOOGLE_ENABLED AND HOUGE_DUAL_LLM_ENABLED) is composed in
- * tool-manifest.ts — this module only exposes `resolveGoogleEnabled` to avoid the codebase's
- * first `capabilities/ → core/` import edge.
+ * Arming: `resolveGoogleEnabled` (HOUGE_GOOGLE_ENABLED) gates gmail_read/google_api in the omp
+ * tool arming (src/omp/tool-arming.ts). The old dual-LLM half of the couple is satisfied by
+ * construction: every read tool crosses the quarantine wall on the omp path (D3).
  */
 import { sanitizeVenueText } from "./text-hygiene.js";
 import type { GoogleAuthClient } from "./google-auth.js";

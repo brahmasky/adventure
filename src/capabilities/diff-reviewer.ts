@@ -14,11 +14,11 @@ import { familyOf, formatModelString } from "../omp/model-string.js";
  *
  * The semantic / adversarial check tests can't give: "passes the test gate but wrong / hacky
  * / scope-creep / doesn't actually fix it." Writer ≠ checker by construction — the reviewer is
- * a DIFFERENT agent (the omp reviewer seat by default, model diversity) from the writer (Codex):
- * a tool-less omp one-shot (`--no-tools`) over `HOUGE_OMP_REVIEWER`. The Codex-session path is the fallback (independent fresh session + the same adversarial prompt
- * → same verdict shape). Claude is NOT a runtime backend — it is the build-orchestrator seat
- * (one narrow exception, ADR 0027: the contained, tool-less, single-turn idea-panel CHAIR seat
- * — panel-local inference only, never a reviewer/writer/chain backend).
+ * a DIFFERENT agent from the writer (Codex, the gpt family): by default the omp reviewer seat, a
+ * tool-less one-shot (`--no-tools`) over `HOUGE_OMP_REVIEWER` (kimi, then claude via the
+ * subscription profile). The Codex-session path is the fallback (independent fresh session + the
+ * same adversarial prompt → same verdict shape). `reviewerDiversityWarning` flags a gpt-family
+ * reviewer string. The Claude Code CLI is never a runtime backend.
  */
 
 const REVIEW_MAX_BUFFER = 8 * 1024 * 1024;
