@@ -230,15 +230,27 @@ function gatePath(deps: BridgeHandlerDeps, turn: ActiveTurn, raw: string): strin
   return isAbsolute(raw) ? raw : resolvePath(turn.cwd, raw);
 }
 
-function gateDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, req: GateReq, entry: FsEntry): string | null {
-  const posture = turn.postureOk();
-  if (posture) return posture;
-  const input = req.input ?? {};
-  const raw = typeof input.path === "string" ? input.path : typeof input.file_path === "string" ? input.file_path : "";
+/** path, file_path and (multi-file edit) paths[]: every one must pass; none present is missing_path. */
+function gatePaths(input: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  for (const k of ["path", "file_path"]) if (typeof input[k] === "string") out.push(input[k] as string);
+  if (Array.isArray(input.paths)) for (const p of input.paths) if (typeof p === "string") out.push(p);
+  return out;
+}
+
+function pathDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, raw: string, entry: FsEntry): string | null {
   if (raw.trim() === "") return "missing_path";
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) return "url_read";
   const abs = gatePath(deps, turn, raw);
-  if ((entry === "fs_read" ? isDeniedRead : isDeniedWrite)(abs, deps.ctx)) return "protected_path";
+  return (entry === "fs_read" ? isDeniedRead : isDeniedWrite)(abs, deps.ctx) ? "protected_path" : null;
+}
+
+function gateDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, req: GateReq, entry: FsEntry): string | null {
+  const posture = turn.postureOk();
+  if (posture) return posture;
+  const raws = gatePaths(req.input ?? {});
+  if (raws.length === 0) return "missing_path";
+  for (const raw of raws) { const d = pathDenial(deps, turn, raw, entry); if (d) return d; }
   const c = turn.contract;
   const d = decideCapability({ capability: entry, category: "tool", side_effect_level: entry === "fs_read" ? "none" : "local_write",
     risk_level: "low", allowed_actions: c.allowed_actions, forbidden_actions: c.forbidden_actions, approval_gates: c.approval_gates });

@@ -284,6 +284,20 @@ describe("bridge handler — gate and report for omp built-ins (spec §5.2, §5.
     expect(events("policy_decision")).toContainEqual(expect.objectContaining({ tool_call_id: "gw1", decision: "allow" }));
   });
 
+  it("multi-file edit: the gate checks EACH path in paths[] (one protected path among ordinary ones denies the whole edit)", async () => {
+    const { handle, deps, turn } = setup();
+    deps.ctx.home = join(turn.cwd, "home");
+    const multi = (paths: unknown, id: string): BridgeRequest => ({ id: `m${id}`, kind: "gate", tool: "edit", input: { paths } as Record<string, unknown>, toolCallId: id });
+    expect(await handle(multi(["/tmp/a", "~/.ssh/id_rsa"], "mp1"))).toEqual({ decision: "deny", reason: "protected_path" });
+    expect(await handle(multi(["/tmp/a", "/tmp/b"], "mp2"))).toEqual({ decision: "allow" });
+  });
+
+  it("gate with none of path/file_path/paths is denied missing_path", async () => {
+    const { handle } = setup();
+    const r = await handle({ id: "mm", kind: "gate", tool: "read", input: { paths: [] }, toolCallId: "mp3" } as BridgeRequest);
+    expect(r).toEqual({ decision: "deny", reason: "missing_path" });
+  });
+
   it("gate read of a URL is denied url_read", async () => {
     const { handle } = setup();
     expect(await handle(gate("read", "https://evil.example/x"))).toEqual({ decision: "deny", reason: "url_read" });

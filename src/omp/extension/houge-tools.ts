@@ -1,5 +1,5 @@
 // Runs inside the omp planner process. Protected (self-write guard). Imports nothing from Houge.
-import { getBridge } from "./bridge-client.js";
+import { getBridge, registered } from "./bridge-client.js";
 
 export const HEARTBEAT_MS = 30_000;
 export interface PiLike { registerTool(t: object): void; on(event: "tool_call" | "tool_result", h: (e: any, ctx?: any) => unknown): void }
@@ -17,5 +17,6 @@ export default async function hougeTools(pi: PiLike): Promise<void> {
         } finally { clearInterval(beat); }
       }
     });
+    registered.add(d.name); // only after registerTool returned: the policy trusts this set, not the manifest alone
   }
 }

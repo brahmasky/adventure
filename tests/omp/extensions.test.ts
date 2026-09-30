@@ -42,6 +42,7 @@ describe("omp extensions — what the planner sees and what it may call", () => 
 
   it("blocks any tool outside the allowlist — omp's own web_search/fetch must never run (D3)", async () => {
     const pi = stubPi();
+    await (await import("../../src/omp/extension/houge-tools.js")).default(stubPi().api);
     await (await import("../../src/omp/extension/houge-policy.js")).default(pi.api);
     expect(await pi.handlers.tool_call({ toolName: "web_search", toolCallId: "x", input: {} })).toMatchObject({ block: true });
     expect(await pi.handlers.tool_call({ toolName: "bash", toolCallId: "y", input: { command: "ls" } })).toBeUndefined();
@@ -82,6 +83,71 @@ describe("omp extensions — what the planner sees and what it may call", () => 
     expect(JSON.stringify(gate).length).toBeLessThan(1024);
     expect(gate).toMatchObject({ input: { path: "/tmp/a" } });
     expect(JSON.stringify(gate)).not.toContain("xxxx");
+  });
+});
+
+describe("omp extensions — fail closed", () => {
+  const policy = async () => { const pi = stubPi(); await (await import("../../src/omp/extension/houge-policy.js")).default(pi.api); return pi; };
+  const withServer = async (handle: (r: BridgeRequest) => Promise<unknown>) => {
+    await server.close(); resetBridgeForTest();
+    const sock = process.env.HOUGE_BRIDGE_SOCK as string;
+    server = await BridgeServer.listen(sock, "t", handle);
+  };
+
+  it("a manifest entry alone does not allow a tool: unregistered stubs (load-time fetch failed) => native bash is blocked", async () => {
+    const pi = await policy(); // houge-tools never ran, so nothing registered
+    expect(await pi.handlers.tool_call({ toolName: "bash", toolCallId: "n1", input: {} })).toMatchObject({ block: true });
+  });
+
+  it("only names whose registerTool returned are trusted: a throwing registerTool leaves the tool blocked", async () => {
+    const tools = await import("../../src/omp/extension/houge-tools.js");
+    await expect(tools.default({ registerTool: () => { throw new Error("boom"); }, on: () => undefined })).rejects.toThrow("boom");
+    const pi = await policy();
+    expect(await pi.handlers.tool_call({ toolName: "bash", toolCallId: "n2", input: {} })).toMatchObject({ block: true });
+  });
+
+  it("manifest fetch rejects for a non-builtin => block", async () => {
+    await (await import("../../src/omp/extension/houge-tools.js")).default(stubPi().api);
+    await withServer(async (req) => { if (req.kind === "manifest") throw new Error("nope"); return {}; });
+    const pi = await policy();
+    expect(await pi.handlers.tool_call({ toolName: "bash", toolCallId: "n3", input: {} })).toMatchObject({ block: true });
+  });
+
+  it.each([[null], [{}], ["allow"], [{ decision: "ALLOW" }]])("gate result %j is not an allow => block", async (bad) => {
+    await withServer(async () => bad);
+    const pi = await policy();
+    expect(await pi.handlers.tool_call({ toolName: "read", toolCallId: "n4", input: { path: "/tmp/a" } })).toMatchObject({ block: true });
+  });
+
+  it("bridge closes mid-request => block; next request reconnects and works", async () => {
+    let first = true; let sockets: () => void = () => undefined;
+    await withServer(async (req) => { if (req.kind === "gate" && first) { first = false; sockets(); return new Promise(() => undefined); } return { decision: "allow" }; });
+    sockets = () => { void server.close(); };
+    const pi = await policy();
+    expect(await pi.handlers.tool_call({ toolName: "read", toolCallId: "c1", input: { path: "/tmp/a" } })).toMatchObject({ block: true });
+    const sock = process.env.HOUGE_BRIDGE_SOCK as string;
+    server = await BridgeServer.listen(sock, "t", async () => ({ decision: "allow" }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(await pi.handlers.tool_call({ toolName: "read", toolCallId: "c2", input: { path: "/tmp/a" } })).toBeUndefined();
+  });
+
+  it("gate forwards paths[] (strings only, capped at 64) and never a body", async () => {
+    const pi = await policy();
+    const paths = Array.from({ length: 100 }, (_, i) => `/tmp/f${i}`); paths.push(5 as unknown as string);
+    await pi.handlers.tool_call({ toolName: "edit", toolCallId: "mp", input: { paths, edits: "y".repeat(5000) } });
+    const g = seen.find((s) => s.kind === "gate") as any;
+    expect(g.input.paths).toHaveLength(64);
+    expect(g.input.edits).toBeUndefined();
+  });
+
+  it("report: bytes_out counts UTF-8 bytes and duration_ms is measured from the tool_call hook", async () => {
+    const pi = await policy();
+    await pi.handlers.tool_call({ toolName: "write", toolCallId: "d1", input: { path: "/tmp/a" } });
+    await new Promise((r) => setTimeout(r, 60));
+    await pi.handlers.tool_result({ toolName: "write", toolCallId: "d1", isError: false, content: [{ type: "text", text: "é猴" }] });
+    const rep = seen.find((s) => s.kind === "report") as any;
+    expect(rep.bytes_out).toBe(5);
+    expect(rep.duration_ms).toBeGreaterThanOrEqual(50);
   });
 });
 
