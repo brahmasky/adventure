@@ -12,6 +12,8 @@ const MAX_BUFFERED = 1_000_000;
 
 export class LineDecoder {
   private buf = "";
+  /** Set once an unterminated line passed MAX_BUFFERED; the caller must drop the connection. */
+  overflowed = false;
   push(chunk: string): object[] {
     this.buf += chunk;
     const out: object[] = [];
@@ -24,7 +26,7 @@ export class LineDecoder {
         if (typeof v === "object" && v !== null && !Array.isArray(v)) out.push(v);
       } catch { /* drop malformed line */ }
     }
-    if (this.buf.length > MAX_BUFFERED) this.buf = "";
+    if (this.buf.length > MAX_BUFFERED) { this.buf = ""; this.overflowed = true; }
     return out;
   }
 }

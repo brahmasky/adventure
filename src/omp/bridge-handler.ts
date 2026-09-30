@@ -39,14 +39,25 @@ export interface CallResult { content: string; isError: boolean }
 
 export const APPROVAL_DENIED_TEXT = "Paco denied this action. It did not run. Do not retry it; tell him what you were trying to do.";
 export const APPROVAL_EXPIRED_TEXT = "The approval request got no answer in time. The action did not run.";
+export const QUARANTINE_FAILED_TEXT = "The reader could not process this source, so none of it is shown. Try another source.";
+export const READ_TOOL_FAILED_TEXT = "The read tool failed; its error text is withheld (it may carry source bytes). Status:";
+export const TURN_ABORTED_TEXT = "The turn was aborted; this call did not run.";
 export const POLICY_VERSION = "omp-1";
-const RESPONSE_CAP = 32 * 1024;
+export const RESPONSE_CAP = 32 * 1024;
 const CARD_DETAIL_CAP = 300;
 const DIGEST_CAP = 200;
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const bytes = (s: string) => Buffer.byteLength(s, "utf8");
-const cap = (s: string) => (s.length > RESPONSE_CAP ? `${s.slice(0, RESPONSE_CAP)}\n…[truncated at 32 KiB]` : s);
+export const TRUNCATION_NOTE = "\n…[truncated at 32 KiB]";
+/** Cap in UTF-8 bytes, cut on a character boundary (never inside a multi-byte sequence). */
+function cap(s: string): string {
+  const buf = Buffer.from(s, "utf8");
+  if (buf.length <= RESPONSE_CAP) return s;
+  let end = RESPONSE_CAP;
+  while (end > 0 && ((buf[end] ?? 0) & 0xc0) === 0x80) end--;
+  return `${buf.subarray(0, end).toString("utf8")}${TRUNCATION_NOTE}`;
+}
 type CallReq = Extract<BridgeRequest, { kind: "call" }>;
 type GateReq = Extract<BridgeRequest, { kind: "gate" }>;
 type ReportReq = Extract<BridgeRequest, { kind: "report" }>;
@@ -54,8 +65,21 @@ type ReportReq = Extract<BridgeRequest, { kind: "report" }>;
 /** Built-in name per allowed gate (edit and write share fs_write); read back by report/flush. */
 const builtinNames = new WeakMap<ActiveTurn, Map<string, string>>();
 
+const nonEmpty = (v: unknown) => typeof v === "string" && v.length > 0;
+const isObject = (v: unknown) => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** Shape check on the decoded wire value; a malformed request is never memoised. */
+function wellFormed(req: BridgeRequest): boolean {
+  const r = req as unknown as Record<string, unknown>;
+  if (r.kind === "call") return nonEmpty(r.toolCallId) && typeof r.tool === "string" && isObject(r.input);
+  if (r.kind === "gate") return nonEmpty(r.toolCallId) && typeof r.tool === "string" && isObject(r.input);
+  if (r.kind === "report") return typeof r.toolCallId === "string";
+  return true;
+}
+
 export function createBridgeHandler(deps: BridgeHandlerDeps): (req: BridgeRequest) => Promise<unknown> {
   return async (req) => {
+    if (!wellFormed(req)) throw new Error("bad_request");
     if (req.kind === "manifest") return manifestFor(deps);
     const turn = deps.activeTurn();
     if (!turn) throw new Error("no_active_turn");
@@ -111,6 +135,7 @@ async function handleCall(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallRe
   const decl = deps.decls.find((d) => d.name === req.tool);
   const entry = capabilityFor(req.tool, req.input ?? {});
   if (!decl || !entry) throw new Error(`unknown_tool: ${String(req.tool)}`);
+  if (turn.signal.aborted) return refuse(deps, turn, req, entry, "turn_aborted", TURN_ABORTED_TEXT, started);
   const posture = turn.postureOk();
   if (posture) return refuse(deps, turn, req, entry, posture, posture, started);
   if (!isToolArmed(req.tool, deps.env)) return refuse(deps, turn, req, entry, "not_armed", `${req.tool} is not armed`, started);
@@ -120,11 +145,16 @@ async function handleCall(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallRe
   if ("refusal" in executed) return refuse(deps, turn, req, entry, executed.refusal.reason, executed.refusal.text, started);
   const r = executed.result;
   const rendered = await render(turn, entry, r);
-  const content = cap(rendered.content);
-  const status = r.status === "succeeded" ? "succeeded" : r.status === "denied" || r.status === "denied_on_revalidation" ? "denied" : "failed";
-  finish(deps, turn, { toolCallId: req.toolCallId, tool: req.tool, capability: entry, status, content, started,
-    digest: rendered.digest, bytesIn: bytes(JSON.stringify(req.input)), ...(status === "succeeded" ? {} : { reason: reasonCode(r) }) });
-  return { content, isError: status !== "succeeded" };
+  const status = rendered.failed ? "failed" : statusOf(r);
+  const reason = rendered.failed ?? (status === "succeeded" ? undefined : reasonCode(r));
+  finish(deps, turn, { toolCallId: req.toolCallId, tool: req.tool, capability: entry, status, content: rendered.content, started,
+    digest: rendered.digest, bytesIn: bytes(JSON.stringify(req.input)), ...(reason !== undefined ? { reason } : {}) });
+  return { content: rendered.content, isError: status !== "succeeded" };
+}
+
+function statusOf(r: CapabilityResult): "succeeded" | "failed" | "denied" {
+  if (r.status === "succeeded") return "succeeded";
+  return r.status === "denied" || r.status === "denied_on_revalidation" ? "denied" : "failed";
 }
 
 type Executed = { result: CapabilityResult } | { refusal: { reason: string; text: string } };
@@ -157,20 +187,30 @@ async function awaitApproval(turn: ActiveTurn, approval_id: string, timeoutMs: n
   try { return await toolApprovalWaiters.wait(approval_id, timeoutMs, turn.signal); } finally { turn.setAwaitingApproval(false); }
 }
 
+interface Rendered { content: string; digest: string; failed?: string }
+
 /** Read tools cross the wall ALWAYS (D3); bash is raw (D12); a digest carries counts or the reader's rephrasing only. */
-async function render(turn: ActiveTurn, entry: RegistryEntry, r: CapabilityResult): Promise<{ content: string; digest: string }> {
-  if (r.status !== "succeeded") return { content: failureText(r), digest: r.status };
-  if (UNTRUSTED_READ_ENTRIES.has(entry)) {
-    const text = renderExternalRead(await turn.quarantine(entry, r.output));
-    return { content: text, digest: text.slice(0, DIGEST_CAP) };
-  }
+async function render(turn: ActiveTurn, entry: RegistryEntry, r: CapabilityResult): Promise<Rendered> {
+  const isRead = UNTRUSTED_READ_ENTRIES.has(entry);
+  if (r.status !== "succeeded") return { content: isRead ? `${READ_TOOL_FAILED_TEXT} ${r.status}` : cap(failureText(r)), digest: r.status };
+  if (isRead) return renderRead(turn, entry, r.output);
   if (entry === "shell" || entry === "shell_external" || entry === "shell_destructive") {
     const out = typeof r.output.output === "string" ? r.output.output : "";
     const code = String(r.output.exit_code ?? "none");
-    return { content: `${out}\n[exit ${code}]`, digest: `exit ${code}, ${bytes(out)} bytes` };
+    return { content: `${cap(out)}\n[exit ${code}]`, digest: `exit ${code}, ${bytes(out)} bytes` };
   }
   const json = JSON.stringify(r.output);
-  return { content: json, digest: `${bytes(json)} bytes` };
+  return { content: cap(json), digest: `${bytes(json)} bytes` };
+}
+
+/** A reader failure never forwards its message: reader stderr can echo the prompt, i.e. the raw source. */
+async function renderRead(turn: ActiveTurn, entry: RegistryEntry, output: Record<string, unknown>): Promise<Rendered> {
+  let read: ExternalReadResult;
+  try { read = await turn.quarantine(entry, output); } catch {
+    return { content: QUARANTINE_FAILED_TEXT, digest: "quarantine_failed", failed: "quarantine_failed" };
+  }
+  const text = cap(renderExternalRead(read));
+  return { content: text, digest: text.slice(0, DIGEST_CAP) };
 }
 
 function failureText(r: Exclude<CapabilityResult, { status: "succeeded" }>): string {

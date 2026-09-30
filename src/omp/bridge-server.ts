@@ -26,8 +26,11 @@ export class BridgeServer {
   private accept(s: Socket, token: string, handle: Handle): void {
     this.sockets.add(s);
     const dec = new LineDecoder(); let authed = false;
-    s.on("data", (d) => {
-      for (const msg of dec.push(d.toString("utf8")) as BridgeRequest[]) {
+    s.setEncoding("utf8"); // StringDecoder: a multi-byte character split across chunks arrives intact
+    s.on("data", (d: string) => {
+      const msgs = dec.push(d) as BridgeRequest[];
+      if (dec.overflowed) { s.destroy(); return; }
+      for (const msg of msgs) {
         if (!authed) {
           if (msg.kind === "hello" && msg.token === token) { authed = true; continue; }
           s.destroy(); return;
