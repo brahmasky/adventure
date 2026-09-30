@@ -13,7 +13,6 @@ import {
 import { checkMeteredCeiling } from "../../src/budget/metered-ceiling.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
-import { buildLlmChain, METERED_FALLBACK_PROVIDERS } from "../../src/llm/registry.js";
 import { createLedgerEvent } from "../../src/run/run-ledger.js";
 import { RunStore } from "../../src/run/run-store.js";
 
@@ -212,29 +211,6 @@ describe("checkMeteredCeiling: latch-driven, one deduped alert per episode", () 
     } finally {
       store.close();
     }
-  });
-});
-
-describe("buildLlmChain metered filter (enforcement)", () => {
-  it("drops the metered legs when breached; flat-rate legs keep working", () => {
-    const env = { HOUGE_LLM_PROVIDERS: "pi,agy-cli,kimi-api,gemini-api" };
-    const chain = buildLlmChain(env, { meteredBreached: () => true });
-    expect(chain.map((p) => p.name)).toEqual(["pi", "agy-cli"]);
-  });
-
-  it("NEVER yields an empty chain: an all-metered list falls back to the flat-rate default", () => {
-    // WHY: a zero-leg chain silences Houge entirely — a worse failure than one more
-    // flat-rate call. The fallback is the flat-rate default, charter: flat-rate first.
-    const env = { HOUGE_LLM_PROVIDERS: "kimi-api,gemini-api" };
-    const chain = buildLlmChain(env, { meteredBreached: () => true });
-    expect(chain.length).toBeGreaterThan(0);
-    expect(chain.map((p) => p.name)).toEqual([...METERED_FALLBACK_PROVIDERS]);
-  });
-
-  it("no dep / not breached → the chain is untouched", () => {
-    const env = { HOUGE_LLM_PROVIDERS: "pi,kimi-api" };
-    expect(buildLlmChain(env).map((p) => p.name)).toEqual(["pi", "kimi-api"]);
-    expect(buildLlmChain(env, { meteredBreached: () => false }).map((p) => p.name)).toEqual(["pi", "kimi-api"]);
   });
 });
 

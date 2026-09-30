@@ -1,18 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { digestOutput } from "../../src/core/inner-loop.js";
-import { manifestFor, renderManifestLines } from "../../src/core/tool-manifest.js";
-import { LOOP_DISCIPLINE, LOOP_TIME_PRESENTATION_RULE, READER_DISCIPLINE } from "../../src/prompt/composer.js";
+import { digestOutput } from "../../src/core/output-digest.js";
+import { loadToolDeclarations, TOOL_DECLS_DIR } from "../../src/omp/tool-decls.js";
+import { LOOP_TIME_PRESENTATION_RULE, OMP_LOOP_DISCIPLINE, READER_DISCIPLINE } from "../../src/prompt/composer.js";
 
 describe("planner timezone discipline", () => {
-  it("requires relative-day event filtering to come from to_local_time", () => {
-    expect(LOOP_DISCIPLINE).toContain("filter solely by the relative_day returned by to_local_time");
-    expect(LOOP_DISCIPLINE).toContain("do not filter by the source date");
+  it("requires relative-day event filtering to come from to_local_time (the omp planner's discipline)", () => {
+    expect(OMP_LOOP_DISCIPLINE).toContain("convert explicitly-zoned times with to_local_time and filter by its relative_day");
   });
 
   it("R5: the timezone block carries the lead-with-local-zone presentation rule (via the exported constant)", () => {
     // Asserted through the constant, never a pinned literal — a future self-write may reword
-    // the rule; this test only pins that LOOP_DISCIPLINE actually carries it.
-    expect(LOOP_DISCIPLINE).toContain(LOOP_TIME_PRESENTATION_RULE);
+    // the rule; this test only pins that the planner's discipline actually carries it.
+    expect(OMP_LOOP_DISCIPLINE).toContain(LOOP_TIME_PRESENTATION_RULE);
   });
 
   it("forbids the reader from making relative-day judgments (frame poisoning, 07-07)", () => {
@@ -21,8 +20,10 @@ describe("planner timezone discipline", () => {
     expect(READER_DISCIPLINE).toContain('never conclude "no matches tomorrow", "rest day"');
   });
 
-  it("tells the planner to reject missing source timezone markers instead of guessing", () => {
-    const [line] = renderManifestLines(manifestFor(["to_local_time"], { HOUGE_TIME_TOOL_ENABLED: "1" }));
+  it("tells the planner to reject missing source timezone markers instead of guessing (the to_local_time declaration)", () => {
+    const decls = loadToolDeclarations(TOOL_DECLS_DIR);
+    if (!decls.ok) throw new Error(decls.error);
+    const line = decls.decls.find((d) => d.name === "to_local_time")?.description ?? "";
 
     expect(line).toContain("If the source does not explicitly state a timezone marker");
     expect(line).toContain("search for another source that does");

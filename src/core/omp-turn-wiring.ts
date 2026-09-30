@@ -6,7 +6,7 @@ export interface OmpToolMeta { side_effect_level: SideEffectLevel; risk_level: R
 
 /**
  * The twelve Houge loop tools the planner reaches over the bridge, with the registration metadata
- * src/core/tool-manifest.ts gave them (copied here before Task 14 deletes the manifest). The
+ * the deleted src/core/tool-manifest.ts gave them (copied here before Task 14 deleted it). The
  * timeout per tool stays `loopToolTimeoutMs` in core-worker.ts.
  */
 export const OMP_LOOP_TOOL_META: Readonly<Record<string, OmpToolMeta>> = Object.freeze({
@@ -39,6 +39,8 @@ export const OMP_BUILTIN_META: Readonly<Record<"fs_read" | "fs_write", OmpToolMe
 
 /** Code-owned replies. Exported so tests assert against them, never literals. */
 export const EMPTY_REPLY_TEXT = "(I finished that turn without any reply text.)";
+/** A turn that reached executeRun instead of a planner supervisor (the inner loop is gone): the run fails with this. */
+export const TURN_OUTSIDE_PLANNER_ERROR = "turns run only on the planner runtime; this path no longer executes them";
 export const TURN_UNAVAILABLE_TEXT = "⚠ I can't run turns right now: my runtime failed its startup check. Paco has been alerted.";
 
 /** The terminal failure notice for a failed run (the same text the old turn path sent). */

@@ -4,10 +4,21 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
 import { runTelegramPollOnce } from "../../src/telegram/telegram-poll-runner.js";
-import { pinOmpEnv } from "../helpers/omp-env.js";
+import { pinOmpEnv, shortTmp, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
 
 // PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
 pinOmpEnv();
+
+/** Turns run on the planner (the one-shot runner submits them like the daemon): the fake omp answers `text`. */
+const ompRoots: Array<{ cleanup: () => void }> = [];
+afterEach(() => { for (const r of ompRoots.splice(0)) r.cleanup(); });
+function fakeOmp(text: string): { dataDir: string; distDir: string } {
+  const tmp = shortTmp("hpo-");
+  ompRoots.push(tmp);
+  const root = tmp.dir;
+  useFakeOmp({ "*": { rpcText: text } }, root);
+  return { dataDir: root, distDir: tmpOmpDist(root) };
+}
 
 // PINNED_ENV hermeticity (the daemon file's pattern): save, DELETE before each test so a value
 // leaked from the daemon's .env never arms a flag here, restore after.
@@ -41,8 +52,9 @@ describe("runTelegramPollOnce", () => {
       const result = await runTelegramPollOnce({
         store,
         projectRoot: root,
-        // Amendment 1: inject a fake llm adapter so the `/ask` run completes
-        // deterministically without any provider credentials / live network.
+        omp: fakeOmp("Houge is a deterministic agent harness."),
+        // The turn's reply comes from the fake omp planner; the injected llm adapter keeps every
+        // other seat (rating attribution) off any provider credentials / live network.
         llmAdapter: async (input) => ({
           ok: true,
           output: {
@@ -89,6 +101,7 @@ describe("runTelegramPollOnce", () => {
       const result = await runTelegramPollOnce({
         store,
         projectRoot: mkdtempSync(join(tmpdir(), "houge-poll-fuse-")),
+        omp: fakeOmp("answer one"),
         llmAdapter: async (input) => ({
           ok: true,
           output: { question: input.question, answer: "answer one", model: "fake-model" }
@@ -133,6 +146,7 @@ describe("runTelegramPollOnce", () => {
       const result = await runTelegramPollOnce({
         store,
         projectRoot: mkdtempSync(join(tmpdir(), "houge-poll-media-")),
+        omp: fakeOmp("ok"),
         // The injected worker never sees the real ingest step here; this pins the runner seam only.
         llmAdapter: async (input) => ({ ok: true, output: { question: input.question, answer: "ok", model: "fake-model" } }),
         allowlist: {
@@ -164,6 +178,7 @@ describe("runTelegramPollOnce", () => {
         await runTelegramPollOnce({
           store,
           projectRoot: mkdtempSync(join(tmpdir(), "houge-poll-media-")),
+          omp: fakeOmp("ok"),
           llmAdapter: async (input) => ({ ok: true, output: { question: input.question, answer: "ok", model: "fake-model" } }),
           allowlist: { users: [{ telegram_user_id: 111, identity_id: "paco" }], chats: [{ telegram_chat_id: 222, label: "private", allowed_identity_ids: ["paco"] }] },
           telegramClient: {

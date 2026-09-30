@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultSpawnImpl, buildChildEnv } from "../../../src/llm/providers/cli-spawn.js";
+import { defaultSpawnImpl, buildChildEnv } from "../../src/omp/child-env.js";
 
 /**
  * These spawn REAL processes, because the thing under test is the interaction between the kill,

@@ -29,12 +29,12 @@ describe("composeSystemPrompt — the wiki section (Phase W W2)", () => {
     // compose the exact bytes it did before W2, or the eval goldens (and the
     // self-write byte-differential) would move without a behaviour change.
     const root = memoryRoot();
-    const baseline = composeSystemPrompt(root, "loop", { now: NOW });
-    const withEmptyReader = composeSystemPrompt(root, "loop", { now: NOW, wikiReader: () => undefined });
+    const baseline = composeSystemPrompt(root, "omp", { now: NOW });
+    const withEmptyReader = composeSystemPrompt(root, "omp", { now: NOW, wikiReader: () => undefined });
     expect(withEmptyReader).toBe(baseline);
     expect(baseline).not.toContain(WIKI_SECTION_HEADER);
 
-    const emptyString = composeSystemPrompt(root, "loop", { now: NOW, wikiReader: () => "" });
+    const emptyString = composeSystemPrompt(root, "omp", { now: NOW, wikiReader: () => "" });
     expect(emptyString).toBe(baseline);
   });
 
@@ -52,7 +52,7 @@ describe("composeSystemPrompt — the wiki section (Phase W W2)", () => {
     // WHY: personal memory grounds the answer, web-derived knowledge informs it, and
     // behavioural lessons shape it — the composed order is part of the contract.
     const root = memoryRoot();
-    const prompt = composeSystemPrompt(root, "loop", {
+    const prompt = composeSystemPrompt(root, "omp", {
       episodicReader: () => "- Paco lives in Sydney",
       wikiReader: () => "- ASML Q2 2026 earnings (unverified):",
       lessonsReader: () => "- be concise",
@@ -64,7 +64,7 @@ describe("composeSystemPrompt — the wiki section (Phase W W2)", () => {
 
   it("with no episodic block the wiki section still lands before the lessons section", () => {
     const root = memoryRoot();
-    const prompt = composeSystemPrompt(root, "loop", {
+    const prompt = composeSystemPrompt(root, "omp", {
       wikiReader: () => "- topic (unverified):",
       lessonsReader: () => "- be concise"
     });

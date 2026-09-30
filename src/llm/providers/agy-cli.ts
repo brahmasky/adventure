@@ -20,7 +20,7 @@ import os from "node:os";
 import path from "node:path";
 import type { LlmProvider, LlmRequest, LlmResult } from "../types.js";
 import { normalizeAgyUsage } from "../../run/llm-usage.js";
-import { buildChildEnv, defaultSpawnImpl, type SpawnImpl, type SpawnResult } from "./cli-spawn.js";
+import { buildChildEnv, defaultSpawnImpl, type SpawnImpl, type SpawnResult } from "../../omp/child-env.js";
 
 export const AGY_DEFAULT_TIMEOUT_MS = 60_000;
 export const AGY_DEFAULT_MAX_BYTES = 262_144; // 256 KB — a general model won't over-produce; ample for prose.
@@ -58,12 +58,6 @@ function stripAnsi(input: string): string {
 
 function byteLength(input: string): number {
   return Buffer.byteLength(input, "utf8");
-}
-
-function numericEnv(raw: string | undefined): number | undefined {
-  if (raw === undefined) return undefined;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : undefined;
 }
 
 /** Flatten provider error prose to one bounded line — never a multi-line blob in a result. */
@@ -139,11 +133,9 @@ export function createAgyCliProvider(config: AgyCliProviderConfig = {}): LlmProv
       const binary = process.env.HOUGE_AGY_BIN ?? AGY_BINARY;
       const model = req.model ?? config.model ?? process.env.HOUGE_AGY_MODEL ?? AGY_DEFAULT_MODEL;
 
-      const timeoutMs =
-        config.timeoutMs ??
-        numericEnv(process.env.HOUGE_LLM_TIMEOUT_MS_AGY) ??
-        numericEnv(process.env.HOUGE_LLM_TIMEOUT_MS) ??
-        AGY_DEFAULT_TIMEOUT_MS;
+      // The voice leg passes its own timeout (the media leg timeout); the old chain-wide
+      // timeout knobs left with the chain (Task 14).
+      const timeoutMs = config.timeoutMs ?? AGY_DEFAULT_TIMEOUT_MS;
 
       const maxBytes = config.maxBytes ?? AGY_DEFAULT_MAX_BYTES;
 

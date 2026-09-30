@@ -307,25 +307,20 @@ async function runApprovalResumeCase(
   }
 }
 
+/**
+ * The ask pipeline end to end (the contract that carries the `milestone-2-ask-path` hook): intake →
+ * contract → lease → llm_answer → report → final_report, on a deterministic fake LLM. A Telegram
+ * text message is a planner turn since the omp cutover (Task 14) and cannot run deterministically
+ * here, so the case enters through the typed `ask` event the ask contract compiles from.
+ */
 async function runAskPathCase(projectRoot: string, input: { text: string }): Promise<unknown> {
   const store = RunStore.openInMemory();
   try {
-    const normalized = normalizeTelegramUpdate(
-      {
-        update_id: 1,
-        message: {
-          message_id: 1,
-          text: input.text,
-          from: { id: 111 },
-          chat: { id: 222 }
-        }
-      },
-      EVAL_ALLOWLIST
-    );
-    if (!normalized.ok) throw new Error("normalize failed");
-    if (isSelfWriteActionEvent(normalized.event)) throw new Error("unexpected self-write callback in eval");
-
-    const intake = new Gateway(store).intake(normalized.event);
+    const event = buildTypedTaskEvent({
+      source: "telegram", type: "ask", program: "ask", goal: input.text, requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "telegram", chat_id: "222" }, idempotency_key: "eval:ask-path", source_reference: "telegram:update:1:message:1"
+    });
+    const intake = new Gateway(store).intake(event);
     if (!intake.ok) throw new Error("intake failed");
 
     const worker = new CoreWorker(store, projectRoot, fakeLlmAdapter);
@@ -345,9 +340,7 @@ async function runAskPathCase(projectRoot: string, input: { text: string }): Pro
         return typeof payload.intent_type === "string" ? payload.intent_type : "unknown";
       });
 
-    const program = normalized.event.type === "ask" || normalized.event.type === "run" || normalized.event.type === "turn"
-      ? normalized.event.program
-      : null;
+    const program = event.type === "ask" ? event.program : null;
 
     return {
       program,

@@ -8,7 +8,6 @@ import {
   EPISODIC_SECTION_HEADER,
   FALLBACK_IDENTITY,
   GUARDRAILS,
-  intentToScope,
   RESEARCH_DISCIPLINE,
   SKILL_AUTHOR_DISCIPLINE
 } from "../../src/prompt/composer.js";
@@ -151,14 +150,5 @@ describe("composeSystemPrompt", () => {
     const withEmptyReader = composeSystemPrompt(root, "ask", { now, episodicReader: () => undefined });
     expect(withEmptyReader).toBe(baseline);
     expect(baseline).not.toContain(EPISODIC_SECTION_HEADER);
-  });
-});
-
-describe("intentToScope", () => {
-  it("maps answer→ask and research→research", () => {
-    expect(intentToScope("answer")).toBe("ask");
-    expect(intentToScope("research")).toBe("research");
-    expect(intentToScope("feedback")).toBe("ask");
-    expect(intentToScope("clarify")).toBe("ask");
   });
 });

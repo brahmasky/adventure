@@ -1,12 +1,6 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CoreWorker } from "../../src/core/core-worker.js";
 import { evolutionLaneSettled, resetEvolutionLaneForTests } from "../../src/core/evolution-lane.js";
-import { CONVERTED_ROW } from "../../src/core/inner-loop.js";
-import { INTENT_DISCIPLINE } from "../../src/capabilities/intent.js";
-import { LOOP_DISCIPLINE } from "../../src/prompt/composer.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway, formatScheduleListText, SCHEDULE_CANCEL_NOT_FOUND_TEXT } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -18,7 +12,6 @@ import {
 } from "../../src/run/schedule-spec.js";
 import { maybeFireScheduledTasks } from "../../src/run/schedule-tick.js";
 import { buildScheduleCreatedDigest } from "../../src/core/core-worker.js";
-import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
 import { pinOmpEnv } from "../helpers/omp-env.js";
 
 // PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
@@ -35,12 +28,6 @@ pinOmpEnv();
  */
 
 let dirs: string[] = [];
-function projectRoot(): string {
-  const dir = mkdtempSync(join(tmpdir(), "houge-b10-verify-"));
-  dirs.push(dir);
-  return dir;
-}
-
 const PINNED_ENV = [
   "HOUGE_SCHEDULER_ENABLED",
   "HOUGE_SCHEDULER_MAX_PER_CHAT",
@@ -75,71 +62,15 @@ afterEach(async () => {
 const ARMED = { HOUGE_SCHEDULER_ENABLED: "1" };
 
 /**
- * Content-aware LLM stub shared across MANY runs (the tick executes several runs through
- * one worker): on each loop compose call, if THIS run already took its schedule_task step
- * (the transcript in the question shows it), answer final; otherwise call schedule_task.
+ * A converted to_local_time row (`→ YYYY-MM-DD HH:MM (`): the shape the planner trusts as code-computed.
+ * Inlined from the deleted inner loop's relative-day guard — the probes below still prove that no
+ * schedule surface (goal, digest, list) can forge one.
  */
-function selfSchedulingLlm(): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
-  return async (input) => {
-    const system = typeof input.system === "string" ? input.system : "";
-    const question = typeof input.question === "string" ? input.question : "";
-    let answer = `ANSWER: ${input.question}`;
-    if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"answer"}';
-    else if (system.includes(LOOP_DISCIPLINE)) {
-      // The manifest ALSO names schedule_task — detect the taken STEP via the numbered
-      // transcript line ("1. schedule_task ..."), not a bare substring.
-      answer = /\n1\. schedule_task/.test(question)
-        ? '{"action":"final","answer":"done"}'
-        : '{"action":"schedule_task","input":{"goal":"每天再排一个日程","spec":{"kind":"daily","at":"08:00"},"tz":"Australia/Sydney"},"why":"self-replicate"}';
-    } else answer = '{"durable":false}';
-    return { ok: true, output: { question: input.question, answer, model: "fake", provider: "fake" } };
-  };
-}
+const CONVERTED_ROW = /→ \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(/;
 
 describe("PROBE 1 — self-replication: schedule-born runs cannot create schedules at all (scheduler v2 provenance strip)", () => {
-  it("a self-scheduling goal never replicates — the fired run's schedule_task is stripped at contract compile; the cap stays as defense-in-depth", async () => {
-    process.env.HOUGE_SCHEDULER_ENABLED = "1";
-    process.env.HOUGE_SCHEDULER_MAX_PER_CHAT = "4";
-    const store = RunStore.openInMemory();
-    try {
-      // Seed: one schedule whose fired run ALWAYS tries to create another schedule
-      // (planner glitch / "每天再排一个日程") — the compounding chain.
-      store.addScheduledTask({
-        chat_id: "555",
-        goal: "每天再排一个日程",
-        spec_json: '{"kind":"daily","at":"08:00"}',
-        tz: "Australia/Sydney",
-        next_run_at: "2026-07-15T00:00:00.000Z",
-        now: "2026-07-14T00:00:00.000Z"
-      });
-      const gateway = new Gateway(store);
-      // Every fired run: schedule_task create (daily) then final.
-      // The pre-omp inner loop drives this probe (executeRun only, no submitTurn): a fired turn would
-      // otherwise go detached to a planner. Its omp successor is core-worker-omp-tools.test.ts ›
-      // "schedule-born run: a scripted schedule_task call is denied by the contract". Task 14 retires this form.
-      const core = new CoreWorker(store, projectRoot(), selfSchedulingLlm());
-      const worker = { executeRun: (run_id: string, worker_id: string) => core.executeRun(run_id, worker_id) };
-
-      // Tick with an advancing clock so every enabled schedule keeps coming due.
-      let maxActive = 0;
-      for (let day = 0; day < 12; day += 1) {
-        // several ticks per "day" so the ≤3-per-tick cap drains backlogs
-        for (let sub = 0; sub < 5; sub += 1) {
-          const now = new Date(Date.UTC(2026, 6, 15 + day, sub, 0, 0)).toISOString();
-          await maybeFireScheduledTasks({ store, gateway, worker, now, env: process.env });
-          maxActive = Math.max(maxActive, store.countActiveSchedules("555"));
-        }
-      }
-      // Scheduler v1 asserted "compounds up to the cap, then refusals hold" (containment).
-      // Scheduler v2 (2026-07-20) strips schedule_task from schedule-born contracts, so
-      // the chain now dies at step 0: every fired run's create attempt is DENIED and the
-      // seed row stays the only schedule. The cap remains as defense-in-depth.
-      expect(maxActive).toBe(1);
-      expect(store.countActiveSchedules("555")).toBe(1);
-    } finally {
-      store.close();
-    }
-  }, 90_000);
+  // The loop-driven self-replication case retired with the inner loop (Task 14); its omp successor is
+  // core-worker-omp-tools.test.ts › "schedule-born run: a scripted schedule_task call is denied by the contract".
 
   it("10 due schedules, one tick → exactly 3 fire; the rest drain over later ticks", async () => {
     const store = RunStore.openInMemory();

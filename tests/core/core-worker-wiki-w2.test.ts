@@ -1,260 +1,112 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { INTENT_DISCIPLINE } from "../../src/capabilities/intent.js";
-import { CoreWorker, defaultSelfWriteDeps } from "../../src/core/core-worker.js";
-import { evolutionLaneSettled, resetEvolutionLaneForTests } from "../../src/core/evolution-lane.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
-import { LOOP_DISCIPLINE, WIKI_SECTION_HEADER } from "../../src/prompt/composer.js";
+import { buildTurnPrompt, type TurnContextDeps } from "../../src/omp/turn-context.js";
 import { RunStore } from "../../src/run/run-store.js";
-import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
-import { pinOmpEnv } from "../helpers/omp-env.js";
+import { pinEnabledFlags, pinOmpEnv, shortTmp } from "../helpers/omp-env.js";
+import { ompWorker } from "../helpers/omp-worker.js";
 
-// PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
+// Wiki retrieval on the omp turn (Phase W W2): the worker's turn context retrieves pages and the
+// daemon prepends them as the prompt's [context] block (plan deviation 1), recording attribution.
+// Ported from the inner-loop suite (Task 14), which asserted the same through the loop's system prompt.
 pinOmpEnv();
-
-let dirs: string[] = [];
-function projectRoot(): string {
-  const dir = mkdtempSync(join(tmpdir(), "houge-wiki-w2-"));
-  dirs.push(dir);
-  return dir;
-}
-
-// HERMETICITY (PINNED_ENV cardinal rule): every flag these turns depend on is pinned
-// (delete = code default) and restored, so an armed daemon .env can never flip a
-// default assertion or point a test at a real Ollama.
-const PINNED_ENV = [
-  "HOUGE_MAX_CONSECUTIVE_CLARIFY",
-  "HOUGE_SELFWRITE_ENABLED",
-  "HOUGE_CODEX_ENABLED",
-  "HOUGE_SKILLS_ENABLED",
-  "HOUGE_HTTPFETCH_ENABLED",
-  "HOUGE_TIME_TOOL_ENABLED",
-  "HOUGE_SCHEDULER_ENABLED",
-  "HOUGE_ASK_SYSTEM_PROMPT",
-  "HOUGE_LESSON_CAP_PER_SCOPE",
-  "HOUGE_SECRETS_FIREWALL_ENABLED",
-  "HOUGE_DUAL_LLM_ENABLED",
-  "HOUGE_LLM_READER_PROVIDERS",
-  "HOUGE_EPISODIC_ENABLED",
-  "HOUGE_EPISODIC_RETRIEVE_CAP",
-  "HOUGE_EPISODIC_RECENCY_HALFLIFE_DAYS",
-  "HOUGE_WIKI_ENABLED",
-  "HOUGE_WIKI_MIN_SOURCES",
-  "HOUGE_WIKI_VERIFY_PASSES",
-  "HOUGE_WIKI_MAX_PAGES",
-  "HOUGE_WIKI_RETRIEVE_CAP",
-  "HOUGE_WIKI_RECENCY_HALFLIFE_DAYS",
-  "HOUGE_WIKI_DECAY_DAYS",
-  "HOUGE_EMBED_URL",
-  "HOUGE_EMBED_MODEL"
-] as const;
-let savedEnv: Record<string, string | undefined> = {};
+pinEnabledFlags();
+const PINNED = ["HOUGE_EPISODIC_RETRIEVE_CAP", "HOUGE_EPISODIC_RECENCY_HALFLIFE_DAYS", "HOUGE_WIKI_RETRIEVE_CAP", "HOUGE_WIKI_RECENCY_HALFLIFE_DAYS",
+  "HOUGE_WIKI_DECAY_DAYS", "HOUGE_EMBED_URL", "HOUGE_EMBED_MODEL", "HOUGE_LESSON_CAP_PER_SCOPE"] as const;
+const saved: Record<string, string | undefined> = {};
+let tmp: { dir: string; cleanup: () => void };
+let store: RunStore;
 beforeEach(() => {
-  savedEnv = {};
-  for (const key of PINNED_ENV) {
-    savedEnv[key] = process.env[key];
-    delete process.env[key];
-  }
-  resetEvolutionLaneForTests();
+  for (const k of PINNED) { saved[k] = process.env[k]; delete process.env[k]; }
+  tmp = shortTmp("hw2-");
+  store = RunStore.openInMemory();
 });
-afterEach(async () => {
-  await evolutionLaneSettled();
-  resetEvolutionLaneForTests();
-  for (const key of PINNED_ENV) {
-    if (savedEnv[key] === undefined) delete process.env[key];
-    else process.env[key] = savedEnv[key];
-  }
-  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
-  dirs = [];
+afterEach(() => {
+  store.close();
+  tmp.cleanup();
+  for (const k of PINNED) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
 });
 
-function turnRun(store: RunStore, message: string, key = `t:${message}`): string {
-  const intake = new Gateway(store).intake(
-    buildTypedTaskEvent({
-      source: "telegram",
-      type: "turn",
-      program: "turn",
-      goal: message,
-      requested_by: { kind: "user", id: "paco" },
-      notify: { kind: "telegram", chat_id: "555" },
-      idempotency_key: key,
-      source_reference: "telegram:update:1:message:1"
-    })
-  );
-  if (!intake.ok) throw new Error(`intake failed: ${JSON.stringify(intake)}`);
+function run(message: string): string {
+  const intake = new Gateway(store).intake(buildTypedTaskEvent({
+    source: "telegram", type: "turn", program: "turn", goal: message, requested_by: { kind: "user", id: "paco" },
+    notify: { kind: "telegram", chat_id: "555" }, idempotency_key: `t:${message}:${Math.random()}`, source_reference: "telegram:update:1:message:1"
+  }));
+  if (!intake.ok) throw new Error("intake failed");
   return intake.run_id;
 }
 
-/** Loop LLM stub: intent classifier → answer; the loop finals immediately. */
-function finalLoopLlm(calls: Array<Record<string, unknown>> = []) {
-  return async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
-    calls.push(input);
-    const system = typeof input.system === "string" ? input.system : "";
-    let answer = `ANSWER: ${input.question}`;
-    if (system.includes(INTENT_DISCIPLINE)) answer = '{"intent":"answer"}';
-    else if (system.includes(LOOP_DISCIPLINE)) answer = '{"action":"final","answer":"好的。"}';
-    return { ok: true, output: { question: input.question, answer, model: "fake", provider: "fake" } };
-  };
+function context(embed: (text: string) => Promise<Float32Array | null>): TurnContextDeps {
+  const worker = ompWorker(store, tmp.dir, { project: join(tmp.dir, "project"), embed });
+  return (worker as unknown as { ompTurnContext(dir: string): TurnContextDeps }).ompTurnContext(tmp.dir);
 }
 
-function makeWorker(
-  store: RunStore,
-  llm: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
-  embed: (text: string) => Promise<Float32Array | null>
-): CoreWorker {
-  return new CoreWorker(
-    store,
-    projectRoot(),
-    llm,
-    async () => ({ ok: true, output: { provider: "fake", results: [] } }),
-    undefined,
-    defaultSelfWriteDeps(),
-    undefined,
-    undefined,
-    undefined,
-    embed
-  );
+async function prompt(message: string, embed: (text: string) => Promise<Float32Array | null> = async () => null) {
+  const run_id = run(message);
+  const text = await buildTurnPrompt(context(embed), { run_id, chat_id: "555", message, source: "telegram" });
+  const started = store.getLedgerEvents(run_id).find((e) => e.event_type === "loop_started");
+  return { text, artifacts: started?.payload.applied_artifacts as Record<string, unknown> };
 }
 
-function seedPage(store: RunStore): number {
+function seedPage(): number {
   return store.addWikiPage({
-    topic_slug: "asml-q2-2026-earnings",
-    title: "ASML Q2 2026 earnings",
-    summary: "Beat expectations.",
-    key_facts: ["EPS €4.9"],
-    body_md: "BODY-MUST-NEVER-REACH-A-PROMPT",
-    contradictions: [{ claim: "Q2 EPS", a: "source 1: $8.69", b: "source 2: $8.81" }],
-    confidence: 0.82,
-    verified_passes: 2,
-    last_verified: "2026-07-14T09:00:00.000Z",
-    created_at: "2026-07-14T09:00:00.000Z"
+    topic_slug: "asml-q2-2026-earnings", title: "ASML Q2 2026 earnings", summary: "Beat expectations.", key_facts: ["EPS €4.9"],
+    body_md: "BODY-MUST-NEVER-REACH-A-PROMPT", contradictions: [{ claim: "Q2 EPS", a: "source 1: $8.69", b: "source 2: $8.81" }],
+    confidence: 0.82, verified_passes: 2, last_verified: "2026-07-14T09:00:00.000Z", created_at: "2026-07-14T09:00:00.000Z"
   });
 }
 
-function loopStartedArtifacts(store: RunStore, run_id: string): Record<string, unknown> {
-  const event = store.getLedgerEvents(run_id).find((e) => e.event_type === "loop_started")!;
-  return event.payload.applied_artifacts as Record<string, unknown>;
-}
-
-describe("wiki retrieval folds into the turn (Phase W W2)", () => {
-  it("armed: the page's sanitized projection rides the loop SYSTEM prompt; ids recorded + touched; body_md never folds", async () => {
+describe("wiki retrieval folds into the omp turn (Phase W W2)", () => {
+  it("armed: the page's sanitized projection rides the context block; ids recorded + touched; body_md never folds", async () => {
+    // replaces: wiki retrieval folds into the turn › "armed: the page's sanitized projection rides the loop SYSTEM prompt; ids recorded + touched; body_md never folds"
     process.env.HOUGE_WIKI_ENABLED = "1";
-    const store = RunStore.openInMemory();
-    const calls: Array<Record<string, unknown>> = [];
-    try {
-      const pageId = seedPage(store);
-      const run_id = turnRun(store, "how were the ASML earnings?");
-      const worker = makeWorker(store, finalLoopLlm(calls), async () => null); // Ollama down — BM25 carries
-      const result = await worker.executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
-
-      // The composed loop prompt carries the wiki section: header + title + key fact.
-      const loopCall = calls.find(
-        (c) => typeof c.system === "string" && c.system.includes(LOOP_DISCIPLINE)
-      )!;
-      const system = String(loopCall.system);
-      expect(system).toContain(WIKI_SECTION_HEADER);
-      expect(system).toContain("ASML Q2 2026 earnings (confidence 0.82, verified 2026-07-14):");
-      expect(system).toContain("  - EPS €4.9");
-      // Contradictions surface as a ⚠ claim line; body_md NEVER enters a prompt (7c).
-      expect(system).toContain("⚠ sources disagree: Q2 EPS");
-      expect(system).not.toContain("BODY-MUST-NEVER-REACH-A-PROMPT");
-
-      // Attribution seed + reuse credit.
-      expect(loopStartedArtifacts(store, run_id).wiki_page_ids).toEqual([pageId]);
-      const row = store.getWikiPage(pageId)!;
-      expect(row.applied_count).toBe(1);
-      expect(row.last_used).not.toBeNull();
-    } finally {
-      store.close();
-    }
+    const pageId = seedPage();
+    const { text, artifacts } = await prompt("how were the ASML earnings?"); // Ollama down — BM25 carries
+    expect(text).toContain("ASML Q2 2026 earnings (confidence 0.82, verified 2026-07-14):");
+    expect(text).toContain("  - EPS €4.9");
+    expect(text).toContain("⚠ sources disagree: Q2 EPS");
+    expect(text).not.toContain("BODY-MUST-NEVER-REACH-A-PROMPT");
+    expect(artifacts.wiki_page_ids).toEqual([pageId]);
+    const row = store.getWikiPage(pageId)!;
+    expect(row.applied_count).toBe(1);
+    expect(row.last_used).not.toBeNull();
   });
 
   it("shares ONE query embedding between episodic and wiki retrieval (a single embed call per turn)", async () => {
+    // replaces: wiki retrieval folds into the turn › "shares ONE query embedding between episodic and wiki retrieval (a single embed call per turn)"
     process.env.HOUGE_WIKI_ENABLED = "1";
     process.env.HOUGE_EPISODIC_ENABLED = "1";
-    const store = RunStore.openInMemory();
-    try {
-      seedPage(store);
-      store.addEpisodicFact({ chat_id: "555", fact: "Paco follows ASML earnings", created_at: "2026-07-14T09:00:00.000Z" });
-      const run_id = turnRun(store, "how were the ASML earnings?");
-      let embedCalls = 0;
-      const worker = makeWorker(store, finalLoopLlm(), async () => {
-        embedCalls += 1;
-        return Float32Array.from([1, 0]);
-      });
-      const result = await worker.executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
-      // BOTH retrievals armed, exactly ONE Ollama round-trip.
-      expect(embedCalls).toBe(1);
-    } finally {
-      store.close();
-    }
+    seedPage();
+    store.addEpisodicFact({ chat_id: "555", fact: "Paco follows ASML earnings", created_at: "2026-07-14T09:00:00.000Z" });
+    let embeds = 0;
+    await prompt("how were the ASML earnings?", async () => { embeds += 1; return Float32Array.from([1, 0]); });
+    expect(embeds).toBe(1);
   });
 
   it("disarmed (default OFF): zero behavior — no store read, no embed call, empty attribution, no touch", async () => {
-    const store = RunStore.openInMemory();
-    try {
-      const pageId = seedPage(store);
-      // Counter-wrap the retrieval reads: disarmed means they are NEVER consulted.
-      let storeReads = 0;
-      const wrap = <K extends "searchWikiPagesFts" | "getActiveWikiPages">(method: K): void => {
-        const original = store[method].bind(store) as (...args: unknown[]) => unknown;
-        (store as unknown as Record<K, unknown>)[method] = (...args: unknown[]) => {
-          storeReads += 1;
-          return original(...args);
-        };
-      };
-      wrap("searchWikiPagesFts");
-      wrap("getActiveWikiPages");
-
-      const run_id = turnRun(store, "how were the ASML earnings?");
-      let embedCalls = 0;
-      const worker = makeWorker(store, finalLoopLlm(), async () => {
-        embedCalls += 1;
-        return null;
-      });
-      const result = await worker.executeRun(run_id, "w");
-      expect(result.status).toBe("completed");
-
-      expect(storeReads).toBe(0); // no retrieval call at all
-      expect(embedCalls).toBe(0); // no embedding resolved either (episodic off too)
-      expect(loopStartedArtifacts(store, run_id).wiki_page_ids).toEqual([]);
-      const row = store.getWikiPage(pageId)!;
-      expect(row.applied_count).toBe(0);
-      expect(row.last_used).toBeNull();
-    } finally {
-      store.close();
+    // replaces: wiki retrieval folds into the turn › "disarmed (default OFF): zero behavior — no store read, no embed call, empty attribution, no touch"
+    const pageId = seedPage();
+    let reads = 0;
+    for (const method of ["searchWikiPagesFts", "getActiveWikiPages"] as const) {
+      const original = store[method].bind(store) as (...args: unknown[]) => unknown;
+      (store as unknown as Record<string, unknown>)[method] = (...args: unknown[]) => { reads += 1; return original(...args); };
     }
+    let embeds = 0;
+    const { text, artifacts } = await prompt("how were the ASML earnings?", async () => { embeds += 1; return null; });
+    expect([reads, embeds]).toEqual([0, 0]);
+    expect(text).toBe("how were the ASML earnings?");
+    expect(artifacts.wiki_page_ids).toEqual([]);
+    expect(store.getWikiPage(pageId)).toMatchObject({ applied_count: 0, last_used: null });
   });
 
-  it("wiki armed with NO matching standing (empty store) composes byte-identically to disarmed (goldens safe)", async () => {
-    // Two identical turns, one armed one not, over EMPTY wiki stores: the loop
-    // system prompt must be the same shape (no wiki section leaks in when nothing
-    // was retrieved).
-    const runOnce = async (armed: boolean): Promise<string> => {
-      if (armed) process.env.HOUGE_WIKI_ENABLED = "1";
-      else delete process.env.HOUGE_WIKI_ENABLED;
-      const store = RunStore.openInMemory();
-      const calls: Array<Record<string, unknown>> = [];
-      try {
-        const run_id = turnRun(store, "hello there");
-        const worker = makeWorker(store, finalLoopLlm(calls), async () => null);
-        await worker.executeRun(run_id, "w");
-        const loopCall = calls.find(
-          (c) => typeof c.system === "string" && c.system.includes(LOOP_DISCIPLINE)
-        )!;
-        return String(loopCall.system).replace(/Today's date is [^.]+\./, "DATE.");
-      } finally {
-        store.close();
-      }
-    };
-    const armed = await runOnce(true);
-    const disarmed = await runOnce(false);
+  it("wiki armed with NO matching page (empty store) prompts byte-identically to disarmed (goldens safe)", async () => {
+    // replaces: wiki retrieval folds into the turn › "wiki armed with NO matching standing (empty store) composes byte-identically to disarmed (goldens safe)"
+    process.env.HOUGE_WIKI_ENABLED = "1";
+    const armed = (await prompt("hello there")).text;
+    delete process.env.HOUGE_WIKI_ENABLED;
+    const disarmed = (await prompt("hello there")).text;
     expect(armed).toBe(disarmed);
-    expect(armed).not.toContain(WIKI_SECTION_HEADER);
+    expect(armed).toBe("hello there");
   });
 });

@@ -15,10 +15,8 @@ import {
   RATING_ASK_TEXT,
   RATING_ATTRIBUTION_DISCIPLINE
 } from "../../src/capabilities/session-rating.js";
-import { INTENT_DISCIPLINE } from "../../src/capabilities/intent.js";
 import { RADAR_EXTRACT_DISCIPLINE } from "../../src/capabilities/idea-radar.js";
 import { LESSON_CONSOLIDATE_DISCIPLINE } from "../../src/capabilities/lesson-consolidate.js";
-import { LOOP_DISCIPLINE } from "../../src/prompt/composer.js";
 import { PLANNER_EXIT_TEXT } from "../../src/omp/planner-supervisor.js";
 import { pinOmpEnv, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
 import { until } from "../helpers/omp-worker.js";
@@ -79,27 +77,13 @@ function askUpdate(update_id: number, text: string) {
 }
 
 /**
- * A loop-aware LLM fake (the only `turn` path is the inner loop, ADR 0013): the classifier
- * picks `answer`, and the single compose step emits a `final` action. `finalAnswer` defaults
- * to echoing the turn's user message (parsed out of the compose DATA channel) so a turn's
- * reply carries it — preserving the daemon-level "each turn's text shows up in its reply"
- * coverage. Non-loop calls (ask-chain, rating attribution, …) echo the question.
+ * The LLM fake for the daemon's non-turn calls (ticks, rating attribution, /ask): echoes the
+ * question. Turns run on the fake omp planner (see `fakeOmp`), never through this adapter.
  */
-function loopReply(input: Record<string, unknown>, finalAnswer?: string) {
-  const system = typeof input.system === "string" ? input.system : "";
+const okAnswer = (input: Record<string, unknown>) => {
   const question = typeof input.question === "string" ? input.question : "";
-  if (system.includes(INTENT_DISCIPLINE)) {
-    return { ok: true as const, output: { question, answer: '{"intent":"answer"}', model: "fake" } };
-  }
-  if (system.includes(LOOP_DISCIPLINE)) {
-    const echoed = /User message \(untrusted data\):\n(.+)/.exec(question)?.[1] ?? question;
-    const answer = JSON.stringify({ action: "final", answer: finalAnswer ?? `A:${echoed}` });
-    return { ok: true as const, output: { question, answer, model: "fake" } };
-  }
   return { ok: true as const, output: { question, answer: `A:${question}`, model: "fake" } };
-}
-
-const okAnswer = (input: Record<string, unknown>) => loopReply(input);
+};
 const worker_runs_failed = (store: RunStore) =>
   store.getLedgerEvents().filter((e) => e.event_type === "run_failed").map((e) => String(e.payload.error_type));
 

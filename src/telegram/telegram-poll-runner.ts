@@ -1,4 +1,4 @@
-import { CoreWorker } from "../core/core-worker.js";
+import { CoreWorker, type OmpWorkerOptions } from "../core/core-worker.js";
 import { evolutionLaneSettled } from "../core/evolution-lane.js";
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
@@ -56,6 +56,8 @@ export interface RunTelegramPollOnceOptions {
   llmAdapter?: (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
   /** Secrets firewall broker (ADR 0015) — passed at boot when armed; else undefined (firewall OFF). */
   broker?: SecretBroker;
+  /** omp planner turns: the data dir (houge.sqlite's directory, default projectRoot) and dist dir. Tests use tmp dirs. */
+  omp?: OmpWorkerOptions;
 }
 
 export interface RunTelegramPollOnceResult {
@@ -90,14 +92,12 @@ export async function runTelegramPollOnce(
     undefined,
     undefined,
     undefined,
-    undefined,
-    undefined,
-    undefined,
     // Multimodal ingest: the Telegram client is the only thing that can fetch a file. A client
     // without downloadFile (tests) yields no downloader, so every media turn fails loudly.
     options.telegramClient.downloadFile
       ? { downloadFile: options.telegramClient.downloadFile.bind(options.telegramClient) }
-      : undefined
+      : undefined,
+    options.omp ?? {}
   );
 
   const adapter = createTelegramLongPollingAdapter({
@@ -125,6 +125,7 @@ export async function runTelegramPollOnce(
   });
 
   let worker_status = "idle";
+  const turns: string[] = [];
 
   const pollResult = await adapter.pollOnce(async (event) => {
     if (isSelfWriteActionEvent(event)) {
@@ -151,10 +152,18 @@ export async function runTelegramPollOnce(
     }
 
     if (intake.status === "created") {
-      const result = await worker.executeRun(intake.run_id, "telegram-poll-worker");
-      worker_status = result.status;
+      // A turn runs on the chat's planner supervisor, exactly as in the daemon; anything else runs here.
+      if (worker.submitTurn(intake.run_id)) turns.push(intake.run_id);
+      else worker_status = (await worker.executeRun(intake.run_id, "telegram-poll-worker")).status;
     }
   });
+
+  // One-shot: the caller closes the store right after this returns, so every submitted turn must
+  // finish (its reply queued) and every planner child must stop BEFORE the dispatch flush below.
+  await Promise.all(worker.plannerSupervisors().map((s) => s.whenIdle()));
+  await worker.shutdownPlanners();
+  const lastTurn = turns.at(-1);
+  if (lastTurn) worker_status = options.store.getRunState(lastTurn);
 
   // ⓪·3g: a turn may have kicked off a background evolution pipeline. The ONE-SHOT
   // runner exits (and its caller closes the store) right after this function returns,

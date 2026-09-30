@@ -17,12 +17,16 @@ type Adapter = (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
 /** A CoreWorker on the omp path: data + dist in `root` (real preflight against the copied wrapper), all adapters faked. Tests only. */
 export function ompWorker(
   store: RunStore, root: string,
-  o: { llm?: Adapter; web?: Adapter; http?: Adapter; media?: MediaWorkerDeps; project?: string; google?: GoogleApiDeps } = {}
+  o: {
+    llm?: Adapter; web?: Adapter; http?: Adapter; media?: MediaWorkerDeps; project?: string; google?: GoogleApiDeps;
+    codex?: (input: Record<string, unknown>) => ToolAdapterResult | Promise<ToolAdapterResult>; time?: Adapter;
+    embed?: (text: string) => Promise<Float32Array | null>;
+  } = {}
 ): CoreWorker {
   const llm: Adapter = o.llm ?? (async () => ({ ok: true, output: { answer: "stub" } }));
   return new CoreWorker(
-    store, o.project ?? join(root, "project"), llm, o.web, undefined, undefined, o.http, undefined, undefined, async () => null,
-    undefined, undefined, o.google, undefined, o.media, { dataDir: root, distDir: tmpOmpDist(root) }
+    store, o.project ?? join(root, "project"), llm, o.web, o.codex, undefined, o.http, undefined, o.time, o.embed ?? (async () => null),
+    o.google, o.media, { dataDir: root, distDir: tmpOmpDist(root) }
   );
 }
 

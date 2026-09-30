@@ -6,7 +6,7 @@ import {
   AGY_DEFAULT_MODEL,
   ERROR_EXCERPT_MAX
 } from "../../../src/llm/providers/agy-cli.js";
-import type { SpawnImpl, SpawnResult } from "../../../src/llm/providers/cli-spawn.js";
+import type { SpawnImpl, SpawnResult } from "../../../src/omp/child-env.js";
 
 /** Build a SpawnResult with sane defaults so tests only set what they assert. */
 function spawnResult(partial: Partial<SpawnResult> = {}): SpawnResult {
@@ -38,8 +38,6 @@ const ENV_KEYS = [
   "HOUGE_AGY_BIN",
   "HOUGE_AGY_MODEL",
   "HOUGE_AGY_ENV_PASSTHROUGH",
-  "HOUGE_LLM_TIMEOUT_MS_AGY",
-  "HOUGE_LLM_TIMEOUT_MS",
   "HOUGE_TELEGRAM_BOT_TOKEN",
   "GEMINI_API_KEY",
   "AGY_TEST_SECRET"

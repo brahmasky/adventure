@@ -39,7 +39,7 @@ async function readOnce(): Promise<string> {
   if (!intake.ok) throw new Error("intake failed");
   const web = async (): Promise<ToolAdapterResult> => ({ ok: true, output: { provider: "fake", results: [{ title: "t", url: "https://a.example/", snippet: "raw" }] } });
   const worker = new CoreWorker(store, join(tmp.dir, "project"), undefined, web, undefined, undefined, undefined, undefined, undefined, async () => null,
-    undefined, undefined, undefined, undefined, undefined, { dataDir: tmp.dir, distDir: tmpOmpDist(tmp.dir) });
+    undefined, undefined, { dataDir: tmp.dir, distDir: tmpOmpDist(tmp.dir) });
   // The chat's supervisor exists once its first turn is submitted; create it without starting a child.
   (worker as unknown as { supervisorFor(chat: string): unknown }).supervisorFor("555");
   const r = await bridgeTurn(store, worker, intake.run_id, tmp.dir).call("web_search", { query: "ASML" });

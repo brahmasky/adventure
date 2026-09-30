@@ -1,9 +1,8 @@
-import { DEFAULT_LLM_PROVIDERS } from "../llm/registry.js";
-
 /**
  * Dual-LLM privilege separation (ADR 0014, Phase 1) — the PURE half.
  *
- * When an external-read tool (web_search/http_fetch) succeeds and Dual-LLM is ON, its raw
+ * When an external-read tool (web_search/http_fetch/gmail_read/google_api) succeeds — always, on
+ * the omp path (D3: the wall is unconditional; the old HOUGE_DUAL_LLM_ENABLED arming is gone) — its raw
  * untrusted bytes are summarized by a quarantined reader (Q-LLM) into this schema-constrained
  * {@link ReaderExtraction}, and THAT extraction — never the raw content — becomes the transcript
  * digest the planner (P-LLM) reads on the next step. The schema is the guarantee: there is no
@@ -11,7 +10,7 @@ import { DEFAULT_LLM_PROVIDERS } from "../llm/registry.js";
  * corrupt a data field a human will see; it can never steer the planner's action.
  *
  * This module holds only the pure, unit-testable pieces (schema, tolerant parse, digest
- * renderers, resolvers) — NO model call. The Q-LLM call itself lives in the CoreWorker wiring.
+ * renderers) — NO model call. The Q-LLM call itself lives in the CoreWorker wiring.
  */
 
 /** The quarantined reader's ONLY output shape. No action field — that is the wall. */
@@ -31,40 +30,12 @@ export interface ReaderExtraction {
   contains_instructions: boolean;
 }
 
-/** External-read tools whose raw output is routed through the Q-LLM (ADR 0014 §"Scope").
- * gmail_read/google_api (ADR 0025): mail/API bodies are free hostile text — no bounty-style carve-out. */
-export const UNTRUSTED_READ_TOOLS = new Set(["web_search", "http_fetch", "gmail_read", "google_api"]);
-
 /**
  * Char cap on the raw external content rendered INTO the reader's question. Generous enough to
  * carry a full http_fetch page (its 6k content cap) plus the web-result formatting; the reader,
  * not the planner, absorbs the length.
  */
 export const READER_INPUT_CHAR_CAP = 8_000;
-
-/**
- * Whether Dual-LLM privilege separation is armed (`HOUGE_DUAL_LLM_ENABLED`, default OFF; mirrors
- * resolveHttpFetchEnabled/resolveSecretsFirewallEnabled). OFF ⇒ external reads digest inline
- * exactly as before this ADR existed (byte-identical). Accepts 1/true/yes/on.
- */
-export function resolveDualLlmEnabled(env: NodeJS.ProcessEnv): boolean {
-  const raw = env.HOUGE_DUAL_LLM_ENABLED?.trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
-}
-
-/**
- * Resolve the reader (Q-LLM) provider chain: `HOUGE_LLM_READER_PROVIDERS` when set, else the
- * planner chain `HOUGE_LLM_PROVIDERS`, else the built-in default. Same-model-different-CALL still
- * satisfies the invariant (the reader has no action vocabulary); the env upgrades the reader to a
- * cheap cross-family leg for free injection resistance (ADR 0014 §"Model assignment").
- */
-export function resolveReaderProviders(env: NodeJS.ProcessEnv): string {
-  const reader = env.HOUGE_LLM_READER_PROVIDERS?.trim();
-  if (reader && reader.length > 0) return reader;
-  const planner = env.HOUGE_LLM_PROVIDERS?.trim();
-  if (planner && planner.length > 0) return planner;
-  return DEFAULT_LLM_PROVIDERS;
-}
 
 /**
  * Build the Q-LLM *question* (DATA channel): the trusted objective + the untrusted external
