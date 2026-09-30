@@ -2,7 +2,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { failureNotifyText, TURN_UNAVAILABLE_TEXT } from "../../src/core/omp-turn-wiring.js";
-import type { CoreWorker } from "../../src/core/core-worker.js";
+import { EVOLUTION_NOTICE_HEADER, type CoreWorker } from "../../src/core/core-worker.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { mediaFailureReply, type TelegramMediaRef } from "../../src/media/media-config.js";
@@ -223,5 +223,24 @@ describe("the outcome sink never lets a stale owner overwrite the winner's repor
     expect(readdirSync(dir)).toEqual(["report.md"]);
     expect(readFileSync(join(dir, "report.md"), "utf8")).toContain("the answer");
     expect(events(run, "report_written")).toHaveLength(1);
+  });
+});
+
+describe("a denied evolution call is surfaced code-owned in the reply (fix round 1, M-3)", () => {
+  it("skill_author refused by the bridge (disarmed) appends the notice the old loop appended", async () => {
+    const saved = process.env.HOUGE_SKILLS_ENABLED;
+    process.env.HOUGE_SKILLS_ENABLED = "0";
+    try {
+      useFakeOmp({ "*": { rpcText: "done", rpcCall: { tool: "skill_author", args: {} } } }, tmp.dir);
+      worker = ompWorker(store, tmp.dir);
+      const run = createQueuedTurnRun(store, "write me a skill");
+      worker.submitTurn(run);
+      await until(() => state(run) === "completed");
+      const text = String(drainOutbox(store).get(`${run}:final_report`)?.text);
+      expect(text).toContain(EVOLUTION_NOTICE_HEADER);
+      expect(text).toContain("skill_author step failed: not_armed");
+    } finally {
+      if (saved === undefined) delete process.env.HOUGE_SKILLS_ENABLED; else process.env.HOUGE_SKILLS_ENABLED = saved;
+    }
   });
 });

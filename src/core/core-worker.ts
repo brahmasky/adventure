@@ -2379,10 +2379,22 @@ export class CoreWorker {
     };
   }
 
-  /** The reply: the voice echo, the planner's text (or a code-owned placeholder), then the evolution notices. */
-  private ompReplyText(text: string, attachments: string[], state: OmpTurnState | undefined): string {
+  /**
+   * The reply: the voice echo, the planner's text (or a code-owned placeholder), then the evolution
+   * notices — adapter failures, and the bridge's own denials (policy, arming, posture, Paco's "no"),
+   * which never reach the adapter (⓪·2: a failed evolution step is never hidden by the model's answer).
+   */
+  private ompReplyText(run_id: string, text: string, attachments: string[], state: OmpTurnState | undefined): string {
     const body = text.trim().length > 0 || attachments.length > 0 ? text : EMPTY_REPLY_TEXT;
-    return withEvolutionNotices((state?.echo ? `${state.echo}\n\n` : "") + body, state?.turnCtx.evolutionNotices ?? []);
+    const notices = [...this.evolutionDenials(run_id), ...(state?.turnCtx.evolutionNotices ?? [])];
+    return withEvolutionNotices((state?.echo ? `${state.echo}\n\n` : "") + body, notices);
+  }
+
+  /** The turn's denied evolution calls, read back from the bridge's tool_finished rows (code-owned reasons only). */
+  private evolutionDenials(run_id: string): string[] {
+    return this.runStore.getLedgerEvents(run_id)
+      .filter((e) => e.event_type === "tool_finished" && e.payload.status === "denied" && EVOLUTION_TOOLS.has(String(e.payload.tool)))
+      .map((e) => `${String(e.payload.tool)} step failed: ${String(e.payload.reason ?? "denied")}`);
   }
 
   /**
@@ -2393,7 +2405,7 @@ export class CoreWorker {
     const state = this.ompTurns.get(i.run_id);
     this.ompTurns.delete(i.run_id);
     const merged = i.merged_into !== undefined;
-    const text = merged ? i.text : this.ompReplyText(i.text, i.attachments, state);
+    const text = merged ? i.text : this.ompReplyText(i.run_id, i.text, i.attachments, state);
     let report: StagedRunReport;
     try {
       report = stageRunReport(this.projectRoot, { run_id: i.run_id, title: "Answer", body: text, sources: state?.turnCtx.sourceUrls ?? [], partial: false });
