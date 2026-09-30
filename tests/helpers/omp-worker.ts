@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { BudgetLedger } from "../../src/budget/budget-ledger.js";
+import type { GoogleApiDeps } from "../../src/capabilities/google-api.js";
 import { TURN_ACTIONS } from "../../src/contracts/task-contract.js";
 import { CoreWorker, type MediaWorkerDeps } from "../../src/core/core-worker.js";
 import { createBridgeHandler, type ActiveTurn, type CallResult } from "../../src/omp/bridge-handler.js";
@@ -15,12 +16,13 @@ type Adapter = (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
 
 /** A CoreWorker on the omp path: data + dist in `root` (real preflight against the copied wrapper), all adapters faked. Tests only. */
 export function ompWorker(
-  store: RunStore, root: string, o: { llm?: Adapter; web?: Adapter; http?: Adapter; media?: MediaWorkerDeps; project?: string } = {}
+  store: RunStore, root: string,
+  o: { llm?: Adapter; web?: Adapter; http?: Adapter; media?: MediaWorkerDeps; project?: string; google?: GoogleApiDeps } = {}
 ): CoreWorker {
   const llm: Adapter = o.llm ?? (async () => ({ ok: true, output: { answer: "stub" } }));
   return new CoreWorker(
     store, o.project ?? join(root, "project"), llm, o.web, undefined, undefined, o.http, undefined, undefined, async () => null,
-    undefined, undefined, undefined, undefined, o.media, { dataDir: root, distDir: tmpOmpDist(root) }
+    undefined, undefined, o.google, undefined, o.media, { dataDir: root, distDir: tmpOmpDist(root) }
   );
 }
 
