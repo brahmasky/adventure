@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -109,14 +109,14 @@ describe("TelegramNotificationAdapter", () => {
 describe("TelegramNotificationAdapter — omp turn attachments (Task 13, ruling 8)", () => {
   const dirs: string[] = [];
   afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
-  function setup() {
+  function setup(beforeRecheckForTest?: (path: string) => void) {
     const root = mkdtempSync(join(tmpdir(), "hna-")); dirs.push(root);
     const ws = join(root, "workspace", "chat-222"); mkdirSync(ws, { recursive: true });
     const log: string[] = []; const docs: TelegramSendDocumentInput[] = []; const texts: TelegramSendMessageInput[] = [];
     const adapter = new TelegramNotificationAdapter({
       sendMessage: async (input) => { log.push("message"); texts.push(input); return { message_id: texts.length }; },
       sendDocument: async (input) => { log.push(`document:${input.filename}`); docs.push(input); }
-    }, { workspaceFor: (chat) => join(root, "workspace", `chat-${chat}`) });
+    }, { workspaceFor: (chat) => join(root, "workspace", `chat-${chat}`), ...(beforeRecheckForTest ? { beforeRecheckForTest } : {}) });
     const send = (attachments: string[]) => adapter.send({ ...dispatch("here you go"), payload: { text: "here you go", attachments } });
     return { root, ws, log, docs, texts, send };
   }
@@ -158,5 +158,31 @@ describe("TelegramNotificationAdapter — omp turn attachments (Task 13, ruling 
     const adapter = new TelegramNotificationAdapter({ sendMessage: async (i) => { sent.push(i.text); return { message_id: 1 }; }, sendDocument: async () => { throw new Error("must not send"); } });
     await adapter.send({ ...dispatch("x"), payload: { text: "x", attachments: ["/tmp/whatever.txt"] } });
     expect(sent).toHaveLength(2);
+    expect(sent[1]).toContain(attachmentRefusedLine("whatever.txt", "outside_workspace"));
+  });
+
+  it("a directory swapped for a symlink between the check and the read never redirects the upload (fix round 1, I-3)", async () => {
+    // The swap lands after the file is opened: ws/sub (a real dir) becomes a symlink to a dir outside.
+    let root = "";
+    const ctx = setup((path) => {
+      if (!path.includes(`${join("sub", "report.txt")}`)) return;
+      renameSync(join(ctx.ws, "sub"), join(root, "moved-sub"));
+      symlinkSync(join(root, "outside"), join(ctx.ws, "sub"));
+    });
+    root = ctx.root;
+    mkdirSync(join(root, "outside")); writeFileSync(join(root, "outside", "report.txt"), "SECRET outside the workspace");
+    mkdirSync(join(ctx.ws, "sub")); writeFileSync(join(ctx.ws, "sub", "report.txt"), "fine");
+    await ctx.send([join(ctx.ws, "sub", "report.txt")]);
+    expect(ctx.docs).toEqual([]);
+    expect(ctx.texts[1]!.text).toContain(attachmentRefusedLine("report.txt", "outside_workspace"));
+  });
+
+  it("refuses a hard-linked file (nlink > 1): a link inside the workspace can name a file outside it", async () => {
+    const { root, ws, docs, texts, send } = setup();
+    writeFileSync(join(root, "secret.txt"), "SECRET outside the workspace");
+    linkSync(join(root, "secret.txt"), join(ws, "notes.txt"));
+    await send([join(ws, "notes.txt")]);
+    expect(docs).toEqual([]);
+    expect(texts[1]!.text).toContain(attachmentRefusedLine("notes.txt", "linked"));
   });
 });
