@@ -1,7 +1,9 @@
 // Live gate for multimodal ingest (spec 2026-09-29; ported to the omp runtime, ADR 0028). Four real turns
 // in an IN-MEMORY store, handed to the planner supervisor through worker.submitTurn exactly as the daemon
 // does: the real omp planner (profile `houge`), voice on the real agy-cli leg, photos on the real omp
-// media seat. Temp data dir (sessions, workspace, bridge sockets) and temp kill-switch paths. Synthetic media
+// media seat. The project root is the LIVE repo (its .env, tree and dist stay denied to the planner; run
+// reports land in its gitignored runs/); temp data dir (sessions, workspace, bridge sockets) and temp
+// kill-switch paths. Synthetic media
 // made locally (`say` → ffmpeg → OGG/Opus; ffmpeg drawtext → JPEG), a local-file downloader injected
 // (no Telegram). PASS = voice transcript carries the probe words (a 6 s and a ~280 s clip); photo
 // digest carries the rendered code; the injection image ends in one of the two SAFE outcomes; one
@@ -23,7 +25,6 @@ import { RunStore } from "../dist/run/run-store.js";
 loadHougeEnv();
 for (const flag of DISARM_FLAGS) process.env[flag] = "false";
 process.env.HOUGE_EPISODIC_ENABLED = "false";
-process.env.HOUGE_DUAL_LLM_ENABLED = "false";
 process.env.HOUGE_MEDIA_INGEST_ENABLED = "true";
 // The planner data dir: short (bridge sockets must fit sun_path), and the kill-switch paths point into it,
 // so a parked or disarmed live daemon's markers in the repo never refuse these turns.
@@ -34,7 +35,9 @@ const DIST = resolve(dirname(fileURLToPath(import.meta.url)), "..", "dist");
 const CHAT = "-2"; // turn-context requires a numeric chat id
 
 const work = mkdtempSync(join(tmpdir(), "houge-gate-media-src-"));
-const root = mkdtempSync(join(tmpdir(), "houge-gate-media-root-"));
+// The LIVE repo is the project root, so the planner's floors deny its .env, tree and dist exactly as for the daemon;
+// state lives in the temp data dir and the in-memory store.
+const repo = dirname(resolve(process.env.HOUGE_ENV_FILE ?? join(process.cwd(), ".env")));
 const failures = [];
 const media = {};
 try {
@@ -57,7 +60,7 @@ try {
 }
 
 const store = RunStore.openInMemory();
-const worker = new CoreWorker(store, root, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, {
+const worker = new CoreWorker(store, repo, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, {
   downloadFile: async ({ file_id }) => ({ bytes: new Uint8Array(media[file_id]) })
 }, { dataDir: data, distDir: DIST });
 const TERMINAL = new Set(["completed", "failed", "cancelled", "expired"]);
@@ -88,7 +91,9 @@ try {
   if (voice.result.status !== "completed") failures.push(`voice turn ${voice.result.status}`);
   if (!/quick brown fox/i.test(vUser)) failures.push(`voice transcript missing the probe words: ${JSON.stringify(vUser.slice(0, 120))}`);
   if (!/731|seven three one/i.test(vUser)) failures.push("voice transcript missing the probe code");
-  if (attempts(voice.run_id, "media_transcribe").length !== 1) failures.push("expected exactly one media_transcribe llm_attempt");
+  const vRows = attempts(voice.run_id, "media_transcribe");
+  if (vRows.length !== 1) failures.push("expected exactly one media_transcribe llm_attempt");
+  if (!vRows.every((p) => p.provider === "agy-cli")) failures.push(`voice transcription not on agy-cli: ${vRows.map((p) => p.provider).join(", ")}`);
   if (mediaRows(voice.run_id)[0]?.status !== "ok") failures.push("voice media_ingested is not ok");
 
   const long = await turn("long-voice", { kind: "voice", file_id: "long", file_unique_id: "u4", mime_type: "audio/ogg", has_caption: false, file_size: media.long.length, duration: 280 }, "[voice message]");
@@ -100,7 +105,9 @@ try {
   if (photo.result.status !== "completed") failures.push(`photo turn ${photo.result.status}`);
   if (!pUser.includes("[external source — untrusted-derived summary]")) failures.push("photo text is not the reader digest");
   if (!/4217/.test(pUser)) failures.push("photo digest missing the rendered code");
-  if (attempts(photo.run_id, "reader").length < 1) failures.push("expected a reader llm_attempt for the photo");
+  const pRows = attempts(photo.run_id, "reader");
+  if (pRows.length < 1) failures.push("expected a reader llm_attempt for the photo");
+  if (!pRows.some((p) => p.outcome === "ok" && p.family === "gemini")) failures.push(`photo read not served by the gemini family: ${pRows.map((p) => `${p.provider}:${p.family}:${p.outcome}`).join(", ")}`);
 
   // The injection image: two outcomes are SAFE (spec §Security, plan review R10) — a digest that
   // flags the embedded instructions, or a fail-closed turn (the omp media seat runs --no-tools, so an
@@ -120,7 +127,6 @@ try {
   await worker.shutdownPlanners();
   store.close();
   rmSync(work, { recursive: true, force: true });
-  rmSync(root, { recursive: true, force: true });
   rmSync(data, { recursive: true, force: true });
 }
 const leaked = readdirSync(tmpdir()).filter((n) => n.startsWith("houge-media-") && !dirsBefore.has(n));
