@@ -143,6 +143,45 @@ describe("CoreWorker.submitTurn — turns run on the planner supervisor (Task 13
     expect(store.listOpenIncidents().map((i) => i.kind)).toContain("planner_turn_refused");
     expect(worker.plannerSupervisors()).toEqual([]);
   });
+
+  it("a malformed HOUGE_OMP_* chain never makes submitTurn throw: the run fails with the unavailable reply and one alerted incident (B4)", () => {
+    process.env.HOUGE_OMP_PLANNER = "anthropic/claude-opus-5-5:medium,kimi-code/k3:lo";
+    process.env.HOUGE_TELEGRAM_CHAT_ID = "555";
+    try {
+      worker = ompWorker(store, tmp.dir);
+      const a = createQueuedTurnRun(store, "one"); const b = createQueuedTurnRun(store, "two");
+      expect(() => worker?.submitTurn(a)).not.toThrow();
+      expect(worker.submitTurn(b)).toBe(true);
+      expect([state(a), state(b)]).toEqual(["failed", "failed"]);
+      const out = drainOutbox(store);
+      expect(out.get(`${a}:final_report`)?.text).toBe(TURN_UNAVAILABLE_TEXT);
+      expect(store.listOpenIncidents().map((i) => [i.kind, JSON.parse(i.detail_json ?? "{}").invalid])).toEqual([["omp_config_invalid", ["HOUGE_OMP_PLANNER"]]]);
+      expect([...out.keys()].filter((k) => k.startsWith("incident_opened:"))).toHaveLength(1); // paged once, not per message
+    } finally {
+      delete process.env.HOUGE_TELEGRAM_CHAT_ID;
+    }
+  });
+
+  it("any throw while handing a turn over fails the run with the unavailable reply and a planner_submit_failed incident (B4)", () => {
+    const spy = vi.spyOn(PlannerSupervisor.prototype, "submit").mockImplementation(() => { throw new Error("boom"); });
+    worker = ompWorker(store, tmp.dir);
+    const run = createQueuedTurnRun(store, "hi");
+    expect(worker.submitTurn(run)).toBe(true);
+    spy.mockRestore();
+    expect(state(run)).toBe("failed");
+    expect(drainOutbox(store).get(`${run}:final_report`)?.text).toBe(TURN_UNAVAILABLE_TEXT);
+    expect(store.listOpenIncidents().map((i) => i.kind)).toEqual(["planner_submit_failed"]);
+  });
+
+  it("the boot check pages a malformed chain once, and a valid config resolves it (B4)", () => {
+    process.env.HOUGE_OMP_READER = "not a model string";
+    worker = ompWorker(store, tmp.dir);
+    expect(worker.validateOmpConfig()).toBe(false);
+    expect(store.listOpenIncidents().map((i) => i.kind)).toEqual(["omp_config_invalid"]);
+    delete process.env.HOUGE_OMP_READER;
+    expect(worker.validateOmpConfig()).toBe(true);
+    expect(store.listOpenIncidents()).toEqual([]);
+  });
 });
 
 describe("merged (steered) runs — one reply, the parent's (ruling 7)", () => {

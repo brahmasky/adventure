@@ -171,6 +171,8 @@ export async function runTelegramDaemon(
       : undefined,
     ompOptionsWithOperator(options.omp, options.allowlist)
   );
+  // B4: a malformed HOUGE_OMP_* chain pages Paco at boot (turns then fail loudly with a code-owned reply).
+  worker.validateOmpConfig();
   const adapter = createTelegramLongPollingAdapter({
     allowlist: options.allowlist,
     client: options.telegramClient,

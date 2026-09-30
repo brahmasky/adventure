@@ -45,6 +45,17 @@ const num = (env: NodeJS.ProcessEnv, k: Key): number => {
 };
 const list = (s: string): string[] => s.split(",").map((x) => x.trim()).filter(Boolean);
 
+const CHAIN_KEYS: readonly Key[] = [
+  "HOUGE_OMP_PLANNER", "HOUGE_OMP_READER", "HOUGE_OMP_MEDIA", "HOUGE_OMP_TICKS", "HOUGE_OMP_JUDGES", "HOUGE_OMP_CHAIR", "HOUGE_OMP_REVIEWER"
+];
+
+/** The seat-chain variables resolveOmpConfig would throw on (names only: safe for an incident). Empty = valid. */
+export function ompConfigProblems(env: NodeJS.ProcessEnv): string[] {
+  return CHAIN_KEYS.filter((k) => {
+    try { parseModelChain(read(env, k)); return false; } catch { return true; }
+  });
+}
+
 export function resolveOmpConfig(env: NodeJS.ProcessEnv): OmpConfig {
   return {
     bin: read(env, "HOUGE_OMP_BIN"),

@@ -107,6 +107,7 @@ export async function runTelegramPollOnce(
       : undefined,
     ompOptionsWithOperator(options.omp, options.allowlist)
   );
+  worker.validateOmpConfig(); // B4: a malformed HOUGE_OMP_* chain pages Paco before any turn
 
   const adapter = createTelegramLongPollingAdapter({
     allowlist: options.allowlist,

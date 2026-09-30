@@ -74,7 +74,7 @@ import {
 } from "../media/media-config.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { canonicalJson, stableHash } from "../domain/canonical.js";
-import { errorCode } from "../domain/error-code.js";
+import { errorCode, safeReason } from "../domain/error-code.js";
 import type { Identity } from "../domain/types.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import { createLedgerEvent } from "../run/run-ledger.js";
@@ -123,7 +123,7 @@ import { ToolRegistry } from "../tools/tool-registry.js";
 import { TURN_ACTIONS } from "../contracts/task-contract.js";
 import type { ActiveTurn } from "../omp/bridge-handler.js";
 import type { ExternalReadResult } from "../omp/external-read.js";
-import { resolveOmpConfig } from "../omp/omp-config.js";
+import { ompConfigProblems, resolveOmpConfig } from "../omp/omp-config.js";
 import { PlannerSupervisor, type SupervisorDeps, type TurnOutcomeSink } from "../omp/planner-supervisor.js";
 import { shellToolExecute } from "../omp/shell-adapter.js";
 import { loadToolDeclarations, TOOL_DECLS_DIR, type ToolDeclaration } from "../omp/tool-decls.js";
@@ -210,6 +210,8 @@ export interface OmpWorkerOptions {
   /** The operator (HOUGE_TELEGRAM_USER_ID's allowlist identity): answers a schedule-born turn's tool approvals (B2). */
   operator?: Identity;
 }
+
+const OMP_CONFIG_INCIDENT: ReadonlySet<string> = new Set(["omp_config_invalid"]);
 
 /** The ⓪·2 evolution tools — their non-success outcomes are surfaced code-owned (see LoopTurnContext). */
 const EVOLUTION_TOOLS = new Set(["self_diagnose", "self_write_propose", "skill_author"]);
@@ -1940,9 +1942,30 @@ export class CoreWorker {
     const run = this.runStore.getRunForWorker(run_id);
     if (!run || run.type !== "turn") return false;
     const chatId = run.notify.kind === "telegram" ? run.notify.chat_id : "";
-    if (!this.ompDecls.ok) { this.refuseOmpTurn(run_id, chatId, "tool_decl_invalid"); return true; }
+    // Never throws after intake (B4): a redelivered update is a duplicate, so a throw here would strand the run queued.
+    try { this.dispatchTurn(run_id, run, chatId); } catch (error) {
+      console.error(`[core-worker] submitTurn ${run_id} failed: ${safeReason(error)}`);
+      this.refuseOmpTurn(run_id, chatId, "submit_failed", safeReason(error));
+    }
+    return true;
+  }
+
+  /**
+   * Boot and per-turn check of the HOUGE_OMP_* seat chains (B4): a malformed chain pages Paco once
+   * (omp_config_invalid, the variable names only) instead of every turn throwing; a valid config resolves it.
+   */
+  validateOmpConfig(): boolean {
+    const invalid = ompConfigProblems(process.env);
+    if (invalid.length === 0) { resolveOpenIncidents(this.runStore, OMP_CONFIG_INCIDENT); return true; }
+    openAlertedIncident(this.runStore, { kind: "omp_config_invalid", subject: "omp", detail: { invalid } });
+    return false;
+  }
+
+  private dispatchTurn(run_id: string, run: NonNullable<ReturnType<RunStore["getRunForWorker"]>>, chatId: string): void {
+    if (!this.ompDecls.ok) { this.refuseOmpTurn(run_id, chatId, "tool_decl_invalid"); return; }
+    if (!this.validateOmpConfig()) { this.refuseOmpTurn(run_id, chatId, "omp_config_invalid"); return; }
     // Telegram chat ids are numeric; turn-context would throw inside the supervisor on anything else.
-    if (!/^-?\d+$/.test(chatId)) { this.refuseOmpTurn(run_id, chatId, "invalid_chat_id"); return true; }
+    if (!/^-?\d+$/.test(chatId)) { this.refuseOmpTurn(run_id, chatId, "invalid_chat_id"); return; }
     const goal = run.goal ?? "";
     const needsIngest = mediaRefOf(this.runStore.getRunMetadata(run_id)) !== null;
     const schedule = run.source === "schedule";
@@ -1950,7 +1973,6 @@ export class CoreWorker {
       run_id, text: goal, source: schedule ? "schedule" : "telegram", goal, requester: run.requested_by,
       ...(needsIngest ? { needsIngest } : {}), ...(schedule && this.ompOptions.operator ? { approver: this.ompOptions.operator } : {})
     });
-    return true;
   }
 
   /** Every live supervisor (for /kill, /rearm and shutdown). */
@@ -1963,10 +1985,15 @@ export class CoreWorker {
     await Promise.all(this.plannerSupervisors().map((s) => s.shutdown()));
   }
 
-  /** A turn that cannot reach a planner fails loudly: incident, terminal row, and a reply. Never left queued. */
-  private refuseOmpTurn(run_id: string, chatId: string, reason: "tool_decl_invalid" | "invalid_chat_id"): void {
-    const detail = { reason }; // never the loader's message: it names files and quotes their content
-    this.runStore.openIncident({ kind: reason === "tool_decl_invalid" ? "tool_decl_invalid" : "planner_turn_refused", subject: `chat:${chatId || "none"}`, detail: { run_id, ...detail } });
+  /**
+   * A turn that cannot reach a planner fails loudly: incident, terminal row, and a reply. Never left queued.
+   * omp_config_invalid was already paged by validateOmpConfig; a submit failure pages once while open.
+   */
+  private refuseOmpTurn(run_id: string, chatId: string, reason: "tool_decl_invalid" | "invalid_chat_id" | "omp_config_invalid" | "submit_failed", code?: string): void {
+    const subject = `chat:${chatId || "none"}`;
+    if (reason === "submit_failed") openAlertedIncident(this.runStore, { kind: "planner_submit_failed", subject, detail: { run_id, reason: code ?? "unknown" } });
+    // never the loader's message: it names files and quotes their content
+    else if (reason !== "omp_config_invalid") this.runStore.openIncident({ kind: reason === "tool_decl_invalid" ? "tool_decl_invalid" : "planner_turn_refused", subject, detail: { run_id, reason } });
     const worker = `planner:refused:${randomUUID()}`;
     if (!this.runStore.claimRun(run_id, worker, 30)) return;
     if (this.runStore.finishRun({ run_id, expected_worker_id: worker, next: "failed", error_type: "planner_exit", error_ref: reason })) {

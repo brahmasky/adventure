@@ -1093,6 +1093,20 @@ describe("the daemon's sweep wiring (M9)", () => {
     }
   });
 
+  it("boot validates the omp seat chains: a malformed chain opens omp_config_invalid before the first poll (B4)", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    process.env.HOUGE_OMP_TICKS = "kimi-code/k3:lo";
+    try {
+      const controller = new AbortController(); controller.abort();
+      await runTelegramDaemon({ store, projectRoot: root, omp: fakeOmp(root), allowlist: ALLOWLIST, stopSignal: controller.signal,
+        telegramClient: { getUpdates: async () => [], sendMessage: async () => ({ message_id: 1 }) } as never });
+      expect(store.listOpenIncidents().map((i) => [i.kind, JSON.parse(i.detail_json).invalid])).toEqual([["omp_config_invalid", ["HOUGE_OMP_TICKS"]]]);
+    } finally {
+      store.close();
+    }
+  });
+
   it("a sweep that runs clears every planner's crash latch (spec §7: 'until the next sweep or /rearm'); a throttled one does not (B3)", () => {
     const store = RunStore.openInMemory();
     const env = { HOUGE_INVARIANT_SWEEP_ENABLED: "1", HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES: "5" };
