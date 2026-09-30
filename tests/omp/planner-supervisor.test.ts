@@ -738,7 +738,7 @@ describe("PlannerSupervisor — a lost bridge retires the child (live-fix round 
   });
 });
 
-describe("PlannerSupervisor — omp error frames and aborted ends (final review B5)", () => {
+describe("PlannerSupervisor — omp error frames and aborted ends (final review B5, B6)", () => {
   const attempts = (store: RunStore, run_id: string) =>
     store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_attempt").map((e) => e.payload as { outcome: string; error_kind?: string; request_key: string });
 
@@ -773,5 +773,13 @@ describe("PlannerSupervisor — omp error frames and aborted ends (final review 
     expect(Date.now() - t0).toBeLessThan(2_000); // not the 180 s frame watchdog
     expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "no_planner_leg", error_ref: "transport" });
     expect(attempts(store, run_id)).toEqual([expect.objectContaining({ outcome: "error", error_kind: "transport", request_key: `${run_id}:0` })]);
+  });
+
+  it("an aborted agent_end the supervisor did not ask for fails planner_exit agent_aborted, never completed", async () => {
+    const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "turn_start" }); e({ type: "agent_end", aborted: true }); } });
+    const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(outcome.done).toEqual([]);
+    expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "planner_exit", error_ref: "agent_aborted" });
   });
 });

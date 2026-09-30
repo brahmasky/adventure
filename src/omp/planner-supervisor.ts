@@ -402,7 +402,9 @@ export class PlannerSupervisor {
 
   private async settle(turn: Turn): Promise<void> {
     for (;;) {
-      await turn.ended;
+      const how = await turn.ended;
+      // an abort omp reported itself (no supervisor failure set) is never a success (B6)
+      if (how === "abort" && !turn.failure) turn.failure = { type: "planner_exit", ref: "agent_aborted" };
       if (turn.failure || turn.lastError === undefined) break;
       if (!(await this.retryNextLeg(turn, turn.lastError))) break;
     }
