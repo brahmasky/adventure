@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { CoreWorker } from "../../src/core/core-worker.js";
+import { failureNotifyText, TURN_OUTSIDE_PLANNER_ERROR } from "../../src/core/omp-turn-wiring.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { pinOmpEnv } from "../helpers/omp-env.js";
 
@@ -169,6 +170,30 @@ describe("CoreWorker", () => {
       const report = readFileSync(join(root, "runs", intake.run_id, "report.md"), "utf8");
       expect(report).toContain("Ship the local run engine.");
       expect(report).toContain("llm:test-llm:test-model");
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("ruling 7: a turn that reaches executeRun fails loudly (the inner loop is gone)", () => {
+  it("opens turn_outside_planner, fails the run, and queues the code-owned reply to the run's chat", async () => {
+    const root = mkdtempSync(join(tmpdir(), "houge-turn-outside-"));
+    const store = RunStore.openInMemory();
+    try {
+      const intake = new Gateway(store).intake(buildTypedTaskEvent({
+        source: "telegram", type: "turn", program: "turn", goal: "hello", requested_by: { kind: "user", id: "paco" },
+        notify: { kind: "telegram", chat_id: "555" }, idempotency_key: "t:outside", source_reference: "telegram:update:1:message:1"
+      }));
+      if (!intake.ok) throw new Error("intake failed");
+      const result = await new CoreWorker(store, root, async () => ({ ok: true, output: { answer: "never" } })).executeRun(intake.run_id, "w");
+      expect(result).toMatchObject({ status: "failed", error: TURN_OUTSIDE_PLANNER_ERROR });
+      expect(store.getRunState(intake.run_id)).toBe("failed");
+      expect(store.listOpenIncidents()).toEqual([expect.objectContaining({ kind: "turn_outside_planner", subject: `run:${intake.run_id}` })]);
+      const texts: string[] = [];
+      for (let n = store.claimNextNotification("a", 30); n; n = store.claimNextNotification(`a${texts.length}`, 30)) texts.push(String(n.payload.text));
+      expect(texts).toContain(failureNotifyText(TURN_OUTSIDE_PLANNER_ERROR));
+      expect(texts.some((t) => t.includes("turn_outside_planner"))).toBe(true); // the one incident alert
     } finally {
       store.close();
     }
