@@ -26,6 +26,22 @@ describe("store changes for detached planner turns (spec §7.1, §7.2, §8)", ()
     expect(failed?.payload).toMatchObject({ error_type: "lease_expired", recoverable: false });
   });
 
+  it("a planner failure is the run's /status last error, never the stale 'ready for worker' (B10)", () => {
+    const store = RunStore.openInMemory();
+    const run_id = createQueuedTurnRun(store);
+    store.claimRun(run_id, "planner:c1:a", 120);
+    store.finishRun({ run_id, expected_worker_id: "planner:c1:a", next: "failed", error_type: "no_planner_leg", error_ref: "quota" });
+    expect(store.lastRunError(new Date().toISOString())).toBe("no_planner_leg");
+  });
+
+  it("an expired planner lease names lease_expired as the run's state_reason (B10)", () => {
+    const store = RunStore.openInMemory();
+    const run_id = createQueuedTurnRun(store);
+    store.claimRun(run_id, "planner:c1:a", 1);
+    store.recoverExpiredLeases(new Date(Date.now() + 5_000).toISOString(), 3);
+    expect(store.lastRunError(new Date(Date.now() + 5_000).toISOString())).toBe("lease_expired");
+  });
+
   it("a tool approval authorises exactly one execution, only while the same owner holds the lease", () => {
     const store = RunStore.openInMemory();
     const run_id = createQueuedTurnRun(store);

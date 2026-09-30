@@ -1494,9 +1494,9 @@ export class RunStore {
     active = true;
     try {
       const updated = this.db.prepare(`
-        UPDATE runs SET state = ?, worker_id = NULL, lease_expires_at = NULL, updated_at = ?
+        UPDATE runs SET state = ?, state_reason = COALESCE(?, state_reason), worker_id = NULL, lease_expires_at = NULL, updated_at = ?
         WHERE run_id = ? AND worker_id = ? AND state = 'running'
-      `).run(input.next, new Date().toISOString(), input.run_id, input.expected_worker_id);
+      `).run(input.next, input.next === "failed" ? input.error_type : null, new Date().toISOString(), input.run_id, input.expected_worker_id);
       if (updated.changes === 1) {
         if (input.next === "completed") {
           this.appendRunLedgerEvent(input.run_id, "run_completed", "core", {
@@ -1831,7 +1831,7 @@ export class RunStore {
       // A planner turn may already have produced side effects: fail it, never requeue (spec §7.2).
       if ((row.worker_id ?? "").startsWith("planner:")) {
         const failed = this.db.prepare(`
-          UPDATE runs SET state = 'failed', worker_id = NULL, lease_expires_at = NULL, updated_at = ?
+          UPDATE runs SET state = 'failed', state_reason = 'lease_expired', worker_id = NULL, lease_expires_at = NULL, updated_at = ?
           WHERE run_id = ? AND state = 'running' AND worker_id = ? AND lease_expires_at = ?
         `).run(new Date().toISOString(), row.run_id, row.worker_id, row.lease_expires_at);
         if (failed.changes !== 1) return [];
