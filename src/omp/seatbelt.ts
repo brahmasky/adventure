@@ -36,6 +36,8 @@ function body(ctx: PathContext, kind: "planner" | "shell"): string[] {
     "(allow default)",
     ...writeDeny.flatMap((p) => rule("file-write*", p)),
     ...writableExceptions(ctx, kind).map(allow),
+    // the allow subpath also matches the root itself: pin the root so it cannot be moved or replaced by a symlink
+    ...writableExceptions(ctx, kind).flatMap((r) => variants(r).map((v) => `(deny file-write* (literal "${esc(v)}"))`)),
     ...ancestorRules([...writeDeny, ...secrets]),
     // secrets last: SBPL takes the last matching rule, so no allow above can re-open a secret
     ...secrets.flatMap((p) => rule("file-read* file-write*", p)),

@@ -121,4 +121,39 @@ describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () 
     expect(run("sh", "-c", `echo y > ${join(live.data, "omp", "workspace", "ok.txt")}`).status).toBe(0);
     expect(run("sh", "-c", `echo y > ${join(live.repo, "evil.ts")}`).status).not.toBe(0);
   });
+
+  it("pins the workspace root (and sessions root for the planner) with a literal deny after the allows", () => {
+    const { planner, shell } = renderSeatbelt(ctx);
+    const ws = "/Users/p/Projects/adventure/omp/workspace";
+    const ss = "/Users/p/Projects/adventure/omp/sessions";
+    const denyWs = `(deny file-write* (literal "${ws}"))`;
+    expect(shell.indexOf(denyWs)).toBeGreaterThan(shell.indexOf(`(allow file-write* (subpath "${ws}"))`));
+    expect(planner.indexOf(`(deny file-write* (literal "${ss}"))`)).toBeGreaterThan(planner.indexOf(`(allow file-write* (subpath "${ss}"))`));
+    expect(shell).not.toContain(`(literal "${ss}")`);
+  });
+
+  it.runIf(process.platform === "darwin")("the workspace root cannot be moved, removed or swapped for a symlink, but its contents stay fully usable", () => {
+    const { root, live, run, elsewhere } = liveRoot();
+    const ws = join(live.data, "omp", "workspace");
+    const mv = run("mv", ws, elsewhere);
+    expect(mv.status).not.toBe(0);
+    expect(mv.stderr).toMatch(/Operation not permitted/);
+    expect(run("rm", "-rf", ws).status).not.toBe(0);
+    expect(existsSync(ws)).toBe(true);
+    expect(run("sh", "-c", `echo y > ${ws}/a.txt && mkdir ${ws}/d && mv ${ws}/a.txt ${ws}/d/b.txt`).status).toBe(0);
+    expect(existsSync(join(ws, "d", "b.txt"))).toBe(true);
+    expect(root).toBeTruthy();
+  });
+
+  it.runIf(process.platform === "darwin")("planner profile pins the sessions root the same way", () => {
+    const { live } = liveRoot();
+    const ss = join(live.data, "omp", "sessions");
+    mkdirSync(ss, { recursive: true });
+    const { planner } = writeSeatbeltProfiles(live);
+    const run = (...cmd: string[]) => spawnSync("sandbox-exec", ["-f", planner, ...cmd], { encoding: "utf8" });
+    const mv = run("mv", ss, join(live.data, "omp", "workspace", "s2"));
+    expect(mv.status).not.toBe(0);
+    expect(mv.stderr).toMatch(/Operation not permitted/);
+    expect(run("sh", "-c", `echo y > ${ss}/a.jsonl && mkdir ${ss}/d && mv ${ss}/a.jsonl ${ss}/d/b.jsonl`).status).toBe(0);
+  });
 });
