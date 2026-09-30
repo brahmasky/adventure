@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 
@@ -51,5 +52,60 @@ describe("store changes for detached planner turns (spec §7.1, §7.2, §8)", ()
     expect(events.filter((e) => e.event_type === "llm_attempt")).toHaveLength(1);
     expect(events.filter((e) => e.event_type === "wall_collapse")).toHaveLength(1);
     expect(events.find((e) => e.event_type === "llm_attempt")?.payload).toMatchObject({ family: "kimi", family_collapse: true, request_key: "tick:t:1:0" });
+  });
+
+  function setup(ttlSeconds = 120, expiresInMs = 60_000) {
+    const store = RunStore.openInMemory();
+    const run_id = createQueuedTurnRun(store);
+    store.claimRun(run_id, "planner:c1:a", ttlSeconds);
+    const requester = { kind: "user" as const, id: "paco" };
+    const row = store.createToolApproval({ run_id, worker_id: "planner:c1:a", tool_call_id: "tc1", capability: "shell_external",
+      input_hash: "h", action_fingerprint: "f", requester, summary: "git push", side_effect_level: "external_write",
+      expires_at: new Date(Date.now() + expiresInMs).toISOString() });
+    return { store, run_id, requester, row };
+  }
+  const ev = (id: string, type: "approve" | "deny", who = "paco") => buildTypedTaskEvent({
+    source: "telegram", type, approval_id: id, requested_by: { kind: "user", id: who },
+    notify: { kind: "local" }, idempotency_key: `telegram:${id}:${type}:${who}`,
+    source_reference: "telegram:update:1:message:1", created_at: new Date().toISOString()
+  });
+
+  it("consume refuses on an expired but unswept lease — the gated side effect must not run on a lost lease", () => {
+    const { store, run_id, requester, row } = setup(1);
+    store.resolveToolApprovalForTest(row.approval_id, "approved");
+    const later = new Date(Date.now() + 3_000).toISOString();
+    expect(store.consumeToolApproval({ approval_id: row.approval_id, run_id, worker_id: "planner:c1:a",
+      capability: "shell_external", action_fingerprint: "f", requester, now: later })).toMatchObject({ ok: false, code: "lease_lost" });
+    expect(store.getToolApproval(row.approval_id)?.state).toBe("approved");
+  });
+
+  it("the /approve trigger path resolves tool approvals: requester-bound, deduped, run stays running", () => {
+    const { store, run_id, row } = setup();
+    const id = row.approval_id;
+    const now = new Date().toISOString();
+    const wrong = store.processApprovalTrigger({ event: ev(id, "approve", "mallory"), decision: "approved", resolved_at: now });
+    expect(wrong).toMatchObject({ ok: false, error: { code: "APPROVAL_REQUESTER_MISMATCH" } });
+    expect(store.getToolApproval(id)?.state).toBe("pending");
+    const event = ev(id, "approve");
+    const ok = store.processApprovalTrigger({ event, decision: "approved", resolved_at: now });
+    expect(ok).toMatchObject({ ok: true, run_id });
+    const replay = store.processApprovalTrigger({ event, decision: "approved", resolved_at: now });
+    expect(replay).toEqual(ok);
+    expect(store.getLedgerEvents(run_id).filter((e) => e.event_type === "approval_resolved")).toHaveLength(1);
+    expect(store.getRunState(run_id)).toBe("running");
+    expect(store.getToolApproval(id)?.state).toBe("approved");
+  });
+
+  it("an expired tool approval cannot be approved; a denied one cannot be approved later", () => {
+    const expired = setup(120, 1_000);
+    const late = new Date(Date.now() + 5_000).toISOString();
+    expect(expired.store.processApprovalTrigger({ event: ev(expired.row.approval_id, "approve"), decision: "approved", resolved_at: late }))
+      .toMatchObject({ ok: false, error: { code: "APPROVAL_EXPIRED" } });
+    const { store, row } = setup();
+    const now = new Date().toISOString();
+    expect(store.processApprovalTrigger({ event: ev(row.approval_id, "deny"), decision: "denied", resolved_at: now })).toMatchObject({ ok: true });
+    expect(store.getToolApproval(row.approval_id)?.state).toBe("denied");
+    expect(store.processApprovalTrigger({ event: ev(row.approval_id, "approve"), decision: "approved", resolved_at: now }))
+      .toMatchObject({ ok: false, error: { code: "APPROVAL_NOT_PENDING" } });
   });
 });

@@ -4719,8 +4719,11 @@ export class RunStore {
     const updated = this.db.prepare(`
       UPDATE tool_approvals SET state = 'consumed', resolved_at = COALESCE(resolved_at, ?)
       WHERE approval_id = ? AND state = 'approved'
-        AND EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND worker_id = ? AND state = 'running')
-    `).run(input.now, input.approval_id, input.run_id, input.worker_id);
+        AND EXISTS (
+          SELECT 1 FROM runs
+          WHERE run_id = ? AND worker_id = ? AND state = 'running' AND lease_expires_at > ?
+        )
+    `).run(input.now, input.approval_id, input.run_id, input.worker_id, input.now);
     return updated.changes === 1 ? { ok: true } : { ok: false, code: "lease_lost" };
   }
 
