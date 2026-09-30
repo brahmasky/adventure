@@ -14,6 +14,7 @@ import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
 import { CoreWorker, type OmpWorkerOptions } from "../core/core-worker.js";
 import { chatWorkspace } from "../omp/workspace.js";
+import { errorCode } from "../domain/error-code.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
@@ -346,12 +347,6 @@ export function serialFlusher(dispatcher: Pick<NotificationDispatcher, "dispatch
     chain = run.catch(() => undefined);
     return run;
   };
-}
-
-/** The errno-style code of an error, never its message (messages can carry paths or payloads). */
-export function errorCode(error: unknown): string {
-  const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
-  return typeof code === "string" && /^[A-Z0-9_]{1,40}$/.test(code) ? code : error instanceof Error ? error.name : "unknown";
 }
 
 /** Log every failure; open an incident at most once per kind per window (a stuck outbox must be seen, not spammed). */

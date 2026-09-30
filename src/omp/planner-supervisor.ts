@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
 import { BudgetLedger } from "../budget/budget-ledger.js";
+import { safeReason } from "../domain/error-code.js";
 import type { Identity } from "../domain/types.js";
 import type { LlmAttempt } from "../llm/audit.js";
 import type { ClaimedRun, PlannerFailure, RunStore } from "../run/run-store.js";
@@ -90,7 +91,8 @@ interface Turn {
   failure?: { type: PlannerFailure; ref: string };
 }
 
-const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+/** Error text for error_refs, incidents and logs: a code or a short path-free reason, never an fs message (M-6). */
+const message = (e: unknown) => safeReason(e);
 const sameModel = (a: ModelString, b: ModelString) => a.provider === b.provider && a.model === b.model && a.effort === b.effort;
 
 /** Race `p` against a timer that is always cleared (no timer outlives the wait). */

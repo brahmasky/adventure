@@ -128,6 +128,7 @@ import {
 } from "../media/media-config.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { canonicalJson, stableHash } from "../domain/canonical.js";
+import { safeReason } from "../domain/error-code.js";
 import type { CompiledTaskContract, Identity } from "../domain/types.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import { createLedgerEvent } from "../run/run-ledger.js";
@@ -1255,7 +1256,7 @@ export class CoreWorker {
         // node_modules available BEFORE the test gate (symlink the live project's). See deps.
         deps.mkNodeModulesLink(this.projectRoot, worktree);
       } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
+        const detail = safeReason(error);
         this.runStore.recordSelfWriteFailed(claim.run_id, { reason: `worktree setup failed: ${detail}`, last_output: "" });
         return this.selfWriteReport(`I couldn't set up an isolated workspace to fix \`${focus}\` (${detail}). Not publishing.`);
       }
@@ -2221,7 +2222,7 @@ export class CoreWorker {
 
   /** A turn that cannot reach a planner fails loudly: incident, terminal row, and a reply. Never left queued. */
   private refuseOmpTurn(run_id: string, chatId: string, reason: "tool_decl_invalid" | "invalid_chat_id"): void {
-    const detail = reason === "tool_decl_invalid" && !this.ompDecls.ok ? { reason, error: this.ompDecls.error } : { reason };
+    const detail = { reason }; // never the loader's message: it names files and quotes their content
     this.runStore.openIncident({ kind: reason === "tool_decl_invalid" ? "tool_decl_invalid" : "planner_turn_refused", subject: `chat:${chatId || "none"}`, detail: { run_id, ...detail } });
     const worker = `planner:refused:${randomUUID()}`;
     if (!this.runStore.claimRun(run_id, worker, 30)) return;

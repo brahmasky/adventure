@@ -365,6 +365,17 @@ describe("PlannerSupervisor — aborts are per turn and bounded (fix round 1)", 
   });
 });
 
+describe("PlannerSupervisor — error refs carry a code, never an fs message (Task 13 fix round 1, M-6)", () => {
+  it("a start that fails with an fs error fails the run `start_failed: ENOENT`; neither the run nor the incident holds the path", async () => {
+    const session = fakeSession({ start: async () => { throw Object.assign(new Error("ENOENT: no such file, open '/Users/p/secret.sock'"), { code: "ENOENT" }); } });
+    const { store, sup, outcome } = harness(session);
+    const r = createQueuedTurnRun(store);
+    sup.submit(req(r)); await sup.whenIdle();
+    expect(failedOf(outcome, r)).toMatchObject({ error_type: "planner_exit", error_ref: "start_failed: ENOENT" });
+    expect(JSON.stringify(outcome.incidents)).not.toContain("/Users/p");
+  });
+});
+
 describe("PlannerSupervisor — shutdown never orphans a queued turn (Task 13 fix round 1, I-2)", () => {
   it("shutdown fails every queued, unstarted request planner_exit (nothing dispatches queued runs at boot)", async () => {
     const session = fakeSession({ onPrompt: () => undefined });

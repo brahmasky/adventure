@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { errorCode, serialFlusher, throttledIncident } from "../../src/telegram/telegram-daemon.js";
+import { errorCode } from "../../src/domain/error-code.js";
+import { serialFlusher, throttledIncident } from "../../src/telegram/telegram-daemon.js";
 
 /** A dispatcher whose queue holds `pending` sends; `failOnce` makes the first dispatch throw. */
 function fakeDispatcher(pending: string[], failOnce: boolean) {
