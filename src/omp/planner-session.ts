@@ -24,7 +24,8 @@ type Waiter = { type: string; resolve: (d: unknown) => void; reject: (e: Error) 
 /**
  * A failed planner RPC. `code` is fixed — `command_failed:<type>` (omp answered success:false),
  * `timeout:<type>`, `not_running`, `exited`, `exited:<kind>` (the child died before `ready`; <kind> is
- * classifyOmpError over its stderr tail, e.g. `exited:model_missing`), `frame_too_large` — and is all that may reach an
+ * classifyOmpError over its stderr tail; `exited:model_missing` only for omp's exact `Model "…" not found` line, a looser
+ * model mention is `exited:model_unconfirmed`), `frame_too_large` — and is all that may reach an
  * error_ref or an incident. omp's own error text never rides it (it is logged to stderr, capped).
  */
 export class PlannerRpcError extends Error {
@@ -33,6 +34,8 @@ export class PlannerRpcError extends Error {
 const OMP_ERROR_LOG_CAP = 200;
 /** In-memory only: classified on an exit before ready, never logged, never written to the ledger or an incident. */
 const STDERR_TAIL_CAP = 4 * 1024;
+/** omp 18.4.4's exact refusal of an unknown --model at start (live probe). Only this line is a model refusal. */
+const OMP_MODEL_NOT_FOUND = /^Model ".+" not found$/m;
 const MAX_FRAME_BUFFER = 64 * 1024 * 1024;
 
 export class PlannerSession {
@@ -73,7 +76,11 @@ export class PlannerSession {
   private exitBeforeReadyCode(): string {
     const tail = this.stderrTail.trim();
     this.stderrTail = ""; // classified once, then dropped: it never outlives the start failure
-    return tail.length > 0 ? `exited:${classifyOmpError(tail)}` : "exited";
+    if (tail.length === 0) return "exited";
+    if (OMP_MODEL_NOT_FOUND.test(tail)) return "exited:model_missing";
+    // a crash that merely mentions a model is not omp's refusal: it must stay a counted crash, never a fallback
+    const kind = classifyOmpError(tail);
+    return `exited:${kind === "model_missing" ? "model_unconfirmed" : kind}`;
   }
 
   prompt(text: string): Promise<void> { return this.send({ type: "prompt", message: text }).then(() => undefined); }

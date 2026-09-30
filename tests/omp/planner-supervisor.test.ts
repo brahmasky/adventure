@@ -21,6 +21,10 @@ type Script = {
   start?: () => Promise<unknown>;
   /** omp refuses these `provider/model` at spawn (live 18.4.4): the child plays the extension (connects), exits 1, start rejects exited:model_missing. */
   badModels?: string[];
+  /** The child answers its manifest, then loses its bridge socket but stays up (a genuine bridge loss during start). */
+  dropBridge?: boolean;
+  /** The child exits during start and start rejects with this PlannerRpcError code. */
+  exitCode?: string;
   /** Runs after the model is recorded: may throw or never resolve. */
   setModel?: (n: number) => Promise<void>;
 };
@@ -44,6 +48,12 @@ function fakeSession(script: Script = {}): Fake {
       const child = s.options.length; const o = s.options[child - 1] as PlannerSessionOptions;
       script.log?.push(`start:${child}`);
       if (script.start) await script.start();
+      if (script.exitCode) { s.exit(1); throw new PlannerRpcError(script.exitCode); }
+      if (script.dropBridge) {
+        const k = await openManifestClient(o.bridgeSock, o.bridgeToken);
+        await new Promise((r) => setTimeout(r, 20)); k.destroy(); await new Promise((r) => setTimeout(r, 20));
+        return { resumed: false, sessionId: "s" };
+      }
       if (script.badModels?.includes(`${o.model.provider}/${o.model.model}`)) {
         sockets.push(await openManifestClient(o.bridgeSock, o.bridgeToken)); // the extension loads before omp checks --model
         s.exit(1);
@@ -587,7 +597,7 @@ describe("PlannerSupervisor — omp rejects the model at spawn (live fix, omp 18
     expect(spawnedModels(session)).toEqual([TOP, SECOND]);
     const rows = attempts(store, run_id);
     expect(rows.map((r) => r.error_kind)).toEqual(["model_missing", undefined]);
-    expect(rows[0]).toMatchObject({ outcome: "error", model: "claude-opus-5-5", family: "claude", request_key: `${run_id}:0` });
+    expect(rows[0]).toMatchObject({ outcome: "error", model: "claude-opus-5-5", family: "claude", request_key: `${run_id}:0:0` });
     expect(outcome.incidents).toEqual([]);
     expect(session.models).toEqual([]); // the fallback is a respawn, never a live set_model to the bad string
   });
@@ -625,5 +635,45 @@ describe("PlannerSupervisor — omp rejects the model at spawn (live fix, omp 18
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle(); // on TOP now: the live child is kept
     expect(session.options).toHaveLength(5);
     expect(outcome.done).toHaveLength(4);
+  });
+});
+
+describe("PlannerSupervisor — start-phase edges (live-fix round 2)", () => {
+  it("a bridge lost during start while the child stays up fails the start (counted, incident); the run is never prompted", async () => {
+    const session = fakeSession({ dropBridge: true });
+    const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
+    const stop = vi.spyOn(session, "stop");
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "planner_exit", error_ref: "start_failed: bridge_lost_during_start" });
+    expect(incidentKinds(outcome)).toEqual(["planner_start_failed"]);
+    expect(session.prompts).toEqual([]);
+    expect(stop).toHaveBeenCalled();
+    expect(sup.state()).toBe("STOPPED");
+  });
+
+  it("a start refusal and an n = 0 dispatch in one turn keep two distinct audit rows (no request_key collision)", async () => {
+    const session = fakeSession({ badModels: ["anthropic/claude-opus-5-5"], onPrompt: () => undefined });
+    const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await new Promise((r) => setTimeout(r, 60));
+    expect(session.prompts).toHaveLength(1); // dispatched on the second string, no frame yet
+    await sup.abortAll("killed");
+    expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "killed" });
+    const rows = store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_attempt").map((e) => e.payload);
+    expect(rows).toEqual([
+      expect.objectContaining({ request_key: `${run_id}:0:0`, error_kind: "model_missing" }),
+      expect.objectContaining({ request_key: `${run_id}:0`, error_kind: "aborted" })
+    ]);
+  });
+
+  it("a start crash that merely mentions a model (exited:model_unconfirmed) is a counted crash, never a fallback", async () => {
+    const session = fakeSession({ exitCode: "exited:model_unconfirmed" });
+    const { store, sup, outcome } = harness(session);
+    const turn = async () => { const r = createQueuedTurnRun(store); sup.submit(req(r)); await sup.whenIdle(); return failedOf(outcome, r); };
+    for (let i = 0; i < 3; i++) expect(await turn()).toMatchObject({ error_ref: "start_failed: exited:model_unconfirmed" });
+    expect(await turn()).toMatchObject({ error_ref: "crash_loop" });
+    expect(incidentKinds(outcome)).toEqual(["planner_start_failed", "planner_start_failed", "planner_start_failed", "planner_crash_loop"]);
+    expect(session.options.map((o) => o.model.model)).toEqual(["claude-opus-5-5", "claude-opus-5-5", "claude-opus-5-5"]);
+    const first = (outcome.failed[0] as { run_id: string }).run_id;
+    expect(store.getLedgerEvents(first).filter((e) => e.event_type === "llm_attempt")).toEqual([]); // no model_missing row
   });
 });

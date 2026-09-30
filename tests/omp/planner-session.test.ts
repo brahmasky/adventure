@@ -78,6 +78,11 @@ describe("PlannerSession — one long-lived RPC child per chat (spec §4, §7)",
     expect(exited).toMatchObject({ code: 1, stopped: false });
   });
 
+  it("stderr that only mentions a model (not omp's exact `Model \"…\" not found` line) is exited:model_unconfirmed, never model_missing", async () => {
+    const { s } = make({ rpcStderrAtStart: "fatal: unknown model registry entry, cannot continue\n" });
+    await expect(s.start()).rejects.toMatchObject({ code: "exited:model_unconfirmed" });
+  });
+
   it("an exit before ready with no stderr rejects start() with plain `exited`", async () => {
     const { s } = make({ "*": { exit: 1 } }, { HOUGE_OMP_BIN: "/usr/bin/false" });
     await expect(s.start()).rejects.toMatchObject({ code: "exited" });

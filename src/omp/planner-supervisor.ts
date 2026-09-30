@@ -79,7 +79,7 @@ const exitRef = (i: ExitInfo) => (i.code !== null ? `exit ${i.code}` : `signal $
 /** omp profile config (spec §4): no xdev devices, no update checks, no telemetry. */
 const HOUGE_CONFIG_YML = "tools:\n  xdev: false\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: false\ntelemetry:\n  otlpExportEnabled: false\n";
 
-interface SpawnRec { gen: number; leg: number; exit?: string; started?: Promise<unknown> }
+interface SpawnRec { gen: number; leg: number; exit?: string; started?: Promise<unknown>; bridgeLost?: boolean }
 
 interface Turn {
   req: TurnRequest; claim: ClaimedRun; worker: string; startedAt: number; merged: string[];
@@ -475,13 +475,13 @@ export class PlannerSupervisor {
     }
   }
 
-  /** One llm_attempt per string omp refused at spawn. request_key `<run>:0` for the top string, `<run>:0:<leg>` after (unique per row). */
+  /** One llm_attempt per string omp refused at spawn, keyed `<run>:0:<leg>` (never `<run>:0`, the n = 0 dispatch row's key). */
   private recordStartMissing(turn: Turn, leg: number): void {
     const m = this.d.cfg.planner[leg] as ModelString;
     const run = turn.req.run_id;
     this.d.store.llmAuditSink({ run_id: run, role: "compose" }).record({
       provider: m.provider, role: "", outcome: "error", model: m.model, family: familyOf(m),
-      request_key: leg === 0 ? `${run}:0` : `${run}:0:${leg}`, error_kind: "model_missing"
+      request_key: `${run}:0:${leg}`, error_kind: "model_missing"
     });
   }
 
@@ -561,6 +561,7 @@ export class PlannerSupervisor {
       rec.started = s.start();
       await this.awaitStart(rec.started, superseded, this.d.startWaitMs ?? START_WAIT_MS, "start timed out");
       await this.awaitStart(manifestServed, superseded, this.d.manifestWaitMs ?? MANIFEST_WAIT_MS, "no manifest");
+      if (rec.bridgeLost && rec.exit === undefined) throw new PlannerRpcError("bridge_lost_during_start");
     } catch (e) {
       return this.spawnFailed(rec, e);
     } finally { if (this.spawning === rec) this.spawning = undefined; }
@@ -616,10 +617,21 @@ export class PlannerSupervisor {
       return out;
     };
     const bridge = await BridgeServer.listen(sock, token, handle);
-    // a child dying during start closes its bridge first: the start failure (with its code) is the outcome, not "bridge disconnected"
-    bridge.onDisconnect(() => { if (gen === this.gen && this.spawning?.gen !== gen && this.turn) void this.abortTurn("planner_exit", "bridge disconnected"); });
+    bridge.onDisconnect(() => this.onBridgeLost(gen));
     this.bridge = bridge;
     return { manifestServed }; // wrapped: an async function returning a promise would adopt it and wait for the manifest
+  }
+
+  /**
+   * During start the loss is recorded, not acted on: a child dying at start closes its bridge first (its start failure,
+   * with its code, is the outcome); a child that stays up without its bridge fails the start after the waits. Later: the
+   * live turn aborts; an idle child is marked stale so the next turn restarts it (its extension never reconnects).
+   */
+  private onBridgeLost(gen: number): void {
+    if (gen !== this.gen) return;
+    if (this.spawning?.gen === gen) { this.spawning.bridgeLost = true; return; }
+    if (this.turn) void this.abortTurn("planner_exit", "bridge disconnected");
+    else this.stale = true;
   }
 
   private async stopSession(): Promise<void> {
