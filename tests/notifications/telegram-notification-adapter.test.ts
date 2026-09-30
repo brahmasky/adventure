@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { linkSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -185,4 +186,12 @@ describe("TelegramNotificationAdapter — omp turn attachments (Task 13, ruling 
     expect(docs).toEqual([]);
     expect(texts[1]!.text).toContain(attachmentRefusedLine("notes.txt", "linked"));
   });
+
+  it("a FIFO is refused as not_a_file at once: opening it never blocks the daemon's only thread (fix round 2, N-1)", async () => {
+    const { ws, docs, texts, send } = setup();
+    execFileSync("mkfifo", [join(ws, "x.pdf")]);
+    await send([join(ws, "x.pdf")]);
+    expect(docs).toEqual([]);
+    expect(texts[1]!.text).toContain(attachmentRefusedLine("x.pdf", "not_a_file"));
+  }, 2_000);
 });

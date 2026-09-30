@@ -88,7 +88,7 @@ export class TelegramNotificationAdapter implements NotificationAdapter {
     if (!workspace) return "outside_workspace";
     let fd: number | undefined;
     try {
-      fd = openSync(path, constants.O_RDONLY);
+      fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK); // a FIFO must never block the daemon's only thread
       const st = fstatSync(fd);
       if (!st.isFile()) return "not_a_file";
       if (st.size > MAX_ATTACHMENT_BYTES) return "too_large";
