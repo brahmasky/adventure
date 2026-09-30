@@ -2186,12 +2186,6 @@ export class CoreWorker {
     return { ok: true, answer };
   }
 
-  /**
-   * The natural-language front door (ADR 0010). One `turn` run: classify the message's
-   * intent on the LLM chain (the `intent_router` sentinel), then dispatch to the shared
-   * answer/research/feedback helpers, or ask a clarifying question. Short-term chat
-   * memory gives follow-ups context.
-   */
   // ── omp planner turns (Task 13): the daemon hands a turn over and returns at once ────────
 
   /**
@@ -2430,6 +2424,12 @@ export class CoreWorker {
     }
   }
 
+  /**
+   * The natural-language front door (ADR 0010). One `turn` run: classify the message's
+   * intent on the LLM chain (the `intent_router` sentinel), then dispatch to the shared
+   * answer/research/feedback helpers, or ask a clarifying question. Short-term chat
+   * memory gives follow-ups context.
+   */
   private async executeTurn(claim: ClaimedRun): Promise<CoreWorkerResult> {
     // Multimodal ingest (spec 2026-09-29): a voice note or photo becomes text HERE, before the
     // classifier. For a VOICE turn the transcript also becomes the contract objective for the rest
