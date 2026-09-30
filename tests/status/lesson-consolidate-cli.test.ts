@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
+import { NO_OMP_BIN } from "../helpers/omp-env.js";
 
 const cliPath = resolve("src/cli.ts");
 const tsxPath = resolve("node_modules/.bin/tsx");
@@ -15,14 +16,15 @@ function makeTempDir(): string {
   return dir;
 }
 
-/** Run the CLI with an EMPTY provider chain — the merge LLM call fails fast (no network); the
- *  dry-run degrades to "no proposals" and, critically, must still write nothing. */
+/**
+ * Run the CLI with omp pointed at a path that is never an executable — the merge seat fails fast
+ * (no model, no network, and never the REAL omp, which the ambient PATH may well carry); the
+ * dry-run degrades to "no proposals" and, critically, must still write nothing.
+ */
 function runDryRun(cwd: string) {
-  return spawnSync(tsxPath, [cliPath, "lessons-consolidate", "--dry-run"], {
-    cwd,
-    encoding: "utf8",
-    env: { ...process.env, HOUGE_LLM_PROVIDERS: "" }
-  });
+  const env: NodeJS.ProcessEnv = { ...process.env, HOUGE_OMP_BIN: NO_OMP_BIN };
+  for (const k of Object.keys(env)) if (k.startsWith("HOUGE_OMP_") && k !== "HOUGE_OMP_BIN") delete env[k];
+  return spawnSync(tsxPath, [cliPath, "lessons-consolidate", "--dry-run"], { cwd, encoding: "utf8", env });
 }
 
 describe("houge lessons-consolidate --dry-run CLI", () => {
