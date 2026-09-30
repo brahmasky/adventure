@@ -33,9 +33,9 @@ describe("resolveMediaIngestEnabled", () => {
 });
 
 describe("resolveMediaProviders / resolveMediaLegTimeoutMs", () => {
-  it("defaults to the flat-rate agy-then-pi chain and honours the env override", () => {
+  it("defaults the VOICE chain to agy-cli alone (ruling 2: omp cannot hear audio, pi is gone) and honours the env override", () => {
     expect(resolveMediaProviders({})).toBe(DEFAULT_MEDIA_PROVIDERS);
-    expect(DEFAULT_MEDIA_PROVIDERS).toBe("agy-cli,pi");
+    expect(DEFAULT_MEDIA_PROVIDERS).toBe("agy-cli");
     expect(resolveMediaProviders({ HOUGE_LLM_MEDIA_PROVIDERS: " agy-cli " })).toBe("agy-cli");
   });
 

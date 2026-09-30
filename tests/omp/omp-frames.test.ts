@@ -25,6 +25,15 @@ describe("omp frames — the audit row and the answer both come from the assista
     expect(n).toBe(turns);
   });
 
+  it("parses the real one-shot IMAGE frames: the photo reaches the model as an image block and the answer is the assistant message_end (ruling 1 probe)", () => {
+    const f = frames("oneshot-image.jsonl");
+    const user = f.find((x) => x.type === "message_end" && (x.message as { role?: string }).role === "user");
+    const blocks = ((user?.message as { content?: Array<{ type: string }> }).content ?? []).map((c) => c.type);
+    expect(blocks).toContain("image");
+    const summaries = f.map(summarizeAssistantMessage).filter((s) => s !== null);
+    expect(summaries.at(-1)).toMatchObject({ text: "It is a solid bright red rectangular image.", provider: "google-antigravity", model: "gemini-3.8-flash", stopReason: "stop" });
+  });
+
   it("returns null for garbage lines instead of throwing — omp may print warnings on stdout", () => {
     expect(parseFrameLine("not json")).toBeNull();
     expect(parseFrameLine("")).toBeNull();

@@ -1,4 +1,3 @@
-import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
 import { CoreWorker } from "../core/core-worker.js";
 import { evolutionLaneSettled } from "../core/evolution-lane.js";
 import type { TelegramAllowlist } from "../domain/types.js";

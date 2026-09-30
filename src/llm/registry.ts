@@ -18,8 +18,14 @@ import {
   AGY_DEFAULT_TIMEOUT_MS,
   type AgyCliProviderConfig
 } from "./providers/agy-cli.js";
-import { randomBytes } from "node:crypto";
-import type { LlmProvider, LlmRequest, LlmResult } from "./types.js";
+import { randomBytes, randomUUID } from "node:crypto";
+import { spawnOneShot, type OneShotDeps } from "./providers/omp.js";
+import type { OmpConfig } from "../omp/omp-config.js";
+import type { ModelFamily, ModelString } from "../omp/model-string.js";
+import type { LlmAuditScope, LlmCallRole, RunStore } from "../run/run-store.js";
+import type { LlmMediaAttachment, LlmProvider, LlmRequest, LlmResult } from "./types.js";
+import type { ToolAdapterResult } from "../tools/tool-registry.js";
+import { isAllowedMediaFile } from "../media/media-config.js";
 import { classifyLlmError, type LlmAuditSink } from "./audit.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import { METERED_PROVIDERS } from "./metered-pricing.js";
@@ -272,5 +278,114 @@ export async function answerWithChain(
     ok: false,
     provider: "chain",
     error: reasons.length > 0 ? reasons.join("; ") : "no providers configured"
+  };
+}
+
+/**
+ * Which omp subscription chain serves a non-planner call (spec §8). Judges take ONE string per
+ * seat index from the returned list ({@link judgeSeat}); `writer` is codex, never an omp seat.
+ * `answer`/`compose` (the `/ask` and `/research` commands, the loop tools' internal calls) ride the
+ * planner chain: they answer Paco directly, like a turn does.
+ */
+export function seatChain(cfg: OmpConfig, role: LlmCallRole): ModelString[] {
+  switch (role) {
+    case "reader": return cfg.reader;
+    case "media_transcribe": return cfg.media;
+    case "judge": return cfg.judges;
+    case "chair": return cfg.chair;
+    case "reviewer": return cfg.reviewer;
+    case "answer":
+    case "compose": return cfg.planner;
+    case "writer": throw new Error("the writer seat is codex, not an omp chain");
+    default: return cfg.ticks; // distill, consolidate, extract, attribution, frame, verify, classify*
+  }
+}
+
+/** One judge seat: exactly one model string by index — a judge never falls back (panel quorum semantics). */
+export function judgeSeat(cfg: OmpConfig, index: number): ModelString[] {
+  const m = cfg.judges[index];
+  return m ? [m] : [];
+}
+
+/** Wall-clock budget of a seat's whole chain (every leg may time out) — the runner cap adds {@link RUNNER_TIMEOUT_BUFFER_MS}. */
+export function seatBudgetMs(cfg: OmpConfig, role: LlmCallRole): number {
+  return (role === "writer" ? 1 : seatChain(cfg, role).length) * cfg.oneshotTimeoutMs;
+}
+
+export interface OneShotAdapterOptions {
+  /** A seat-specific chain (a judge's single string); default {@link seatChain} for the scope's role. */
+  chain?: ModelString[];
+  /** Tests only: bypass the `omp --version` spawn. */
+  versionCheck?: OneShotDeps["versionCheck"];
+}
+
+/**
+ * The drop-in replacement for the old chain adapter: every non-planner call is ONE `spawnOneShot`
+ * over the seat's subscription chain, audited per leg under `scope`. A media request (a photo) runs
+ * on `cfg.media` with the file as an `@path` argument; voice never comes here (agy-cli, ruling 2).
+ * A version mismatch leaves no audit row (no leg ran), so the caller opens `omp_version_mismatch`.
+ */
+export function oneShotAdapter(
+  store: RunStore, cfg: OmpConfig, scope: LlmAuditScope, plannerFamily?: ModelFamily, opts: OneShotAdapterOptions = {}
+): { answer(req: LlmRequest): Promise<LlmResult> } {
+  const audit = store.llmAuditSink(scope);
+  const base = "run_id" in scope ? scope.run_id : scope.correlation_id;
+  return {
+    answer: async (req) => {
+      const chain = req.media ? cfg.media : (opts.chain ?? seatChain(cfg, scope.role));
+      const r = await spawnOneShot(
+        {
+          seat: scope.role, chain, prompt: req.system ? `${req.system}\n\n${req.question}` : req.question,
+          files: req.media ? [req.media.path] : [], correlationId: `${base}:${scope.role}:${randomUUID()}`,
+          ...(plannerFamily !== undefined ? { plannerFamily } : {})
+        },
+        { cfg, audit, ...(opts.versionCheck ? { versionCheck: opts.versionCheck } : {}) }
+      );
+      if (!r.ok && r.unavailable) reportVersionMismatch(store, cfg, r.error);
+      return r;
+    }
+  };
+}
+
+/** One open incident per refused version string (the incident row is the throttle: an open one is never re-opened). */
+function reportVersionMismatch(store: RunStore, cfg: OmpConfig, reason: string): void {
+  const found = /omp (\d+\.\d+\.\d+) is not/.exec(reason)?.[1] ?? "unknown";
+  const subject = `omp:${found}`;
+  try {
+    if (store.findOpenIncident(store.incidentFingerprint("omp_version_mismatch", subject))) return;
+    store.openIncident({ kind: "omp_version_mismatch", subject, detail: { version: found, expected: cfg.version } });
+  } catch (error) {
+    console.warn(`[omp-seat] could not record omp_version_mismatch: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** `input.media` → a validated attachment, `undefined` when absent, or `"invalid"`. */
+function parseMediaInput(raw: unknown): LlmMediaAttachment | undefined | "invalid" {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "object" || raw === null) return "invalid";
+  const { path, mime } = raw as Record<string, unknown>;
+  if (typeof path !== "string" || typeof mime !== "string") return "invalid";
+  return isAllowedMediaFile({ path, mime }) ? { path, mime } : "invalid";
+}
+
+/**
+ * The `(input) => ToolAdapterResult` shape the CapabilityRunner, the quarantine wall and the media
+ * ingest step call: `{question, system?, media?}` in, `{question, answer, model, provider}` out.
+ * The attachment is validated HERE, before any leg runs. `defaultSystem` applies when the caller
+ * passes none.
+ */
+export function llmToolAdapter(
+  seat: { answer(req: LlmRequest): Promise<LlmResult> },
+  defaultSystem?: string
+): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
+  return async (input) => {
+    const question = input.question;
+    if (typeof question !== "string" || question.length === 0) return { ok: false, error: "question must be a non-empty string" };
+    const media = parseMediaInput(input.media);
+    if (media === "invalid") return { ok: false, error: "media rejected" };
+    const system = typeof input.system === "string" && input.system.length > 0 ? input.system : defaultSystem;
+    const r = await seat.answer({ question, ...(system ? { system } : {}), ...(media ? { media } : {}) });
+    if (!r.ok) return { ok: false, error: r.error };
+    return { ok: true, output: { question, answer: r.answer, model: r.model, provider: r.provider } };
   };
 }

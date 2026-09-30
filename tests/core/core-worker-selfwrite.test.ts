@@ -502,8 +502,8 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
     }
   });
 
-  it("H1 attribution: no backend on the result → the configured reviewer is stamped (default kimi)", async () => {
-    process.env.HOUGE_SELFWRITE_ENABLED = "1"; // HOUGE_SELFWRITE_REVIEWER pinned-deleted → default kimi
+  it("H1 attribution: no backend on the result → the configured reviewer is stamped (default: the omp reviewer seat)", async () => {
+    process.env.HOUGE_SELFWRITE_ENABLED = "1"; // HOUGE_SELFWRITE_REVIEWER pinned-deleted → default omp
     const store = RunStore.openInMemory();
     const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
     try {
@@ -511,7 +511,7 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       const { status } = await executeAndSettle(makeWorker(store, deps({}, log)), store, run_id);
       expect(status).toBe("completed");
       const pub = store.getLedgerEvents(run_id).filter((e) => e.event_type === "self_write_published");
-      expect((pub[0]!.payload.gate_results as Record<string, unknown>).reviewer_backend).toBe("kimi");
+      expect((pub[0]!.payload.gate_results as Record<string, unknown>).reviewer_backend).toBe("omp");
     } finally {
       store.close();
     }

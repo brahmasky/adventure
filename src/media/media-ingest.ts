@@ -4,6 +4,11 @@ import path from "node:path";
 import { buildReaderQuestion, parseReaderExtraction, renderExtractionDigest } from "../core/quarantine.js";
 import { classifyLlmError } from "../llm/audit.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
+import { answerWithChain, llmToolAdapter, oneShotAdapter } from "../llm/registry.js";
+import { createAgyCliProvider } from "../llm/providers/agy-cli.js";
+import type { LlmProvider } from "../llm/types.js";
+import { resolveOmpConfig } from "../omp/omp-config.js";
+import type { RunStore } from "../run/run-store.js";
 import {
   MEDIA_BASENAME,
   MEDIA_DIGEST_MAX_CHARS,
@@ -14,6 +19,8 @@ import {
   VOICE_MAX_SECONDS,
   echoLine,
   mediaFailureReply,
+  resolveMediaLegTimeoutMs,
+  resolveMediaProviders,
   type MediaIngestStatus,
   type MediaIngestedPayload,
   type MediaKind,
@@ -232,4 +239,38 @@ function withDeadline<T>(p: Promise<T>, ms: number): Promise<T | typeof DEADLINE
     timer.unref();
   });
   return Promise.race([p, deadline]).finally(() => clearTimeout(timer));
+}
+
+export interface MediaCallDeps {
+  store: RunStore;
+  run_id: string;
+  kind: MediaKind;
+  env: NodeJS.ProcessEnv;
+  /** Tests only: the voice leg (default: the agy-cli provider with the media timeout). */
+  voiceLeg?: LlmProvider;
+}
+
+/**
+ * The media leg for one run (ruling 2, live probe 2026-09-30). A PHOTO is an omp one-shot on
+ * `cfg.media` with the image as an `@path` argument (omp sends it as an image block), audited as
+ * `reader`. A VOICE note NEVER reaches omp: omp inlines Ogg bytes as text and the model invents a
+ * transcript, so voice stays on the agy-cli leg (`HOUGE_LLM_MEDIA_PROVIDERS`, agy-cli only),
+ * audited as `media_transcribe`.
+ */
+export function buildMediaCall(d: MediaCallDeps): MediaIngestDeps["mediaCall"] {
+  if (d.kind === "photo") {
+    return llmToolAdapter(oneShotAdapter(d.store, resolveOmpConfig(d.env), { run_id: d.run_id, role: "reader" }));
+  }
+  const chain = d.voiceLeg ? [d.voiceLeg] : voiceChain(d.env);
+  const audit = d.store.llmAuditSink({ run_id: d.run_id, role: "media_transcribe" });
+  return llmToolAdapter({ answer: (req) => answerWithChain(chain, req, audit) });
+}
+
+/** The voice chain: agy-cli is the only leg that hears audio (pi and the API legs are gone). */
+function voiceChain(env: NodeJS.ProcessEnv): LlmProvider[] {
+  const timeoutMs = resolveMediaLegTimeoutMs(env);
+  return resolveMediaProviders(env).split(",").map((n) => n.trim()).filter(Boolean).map((name) => {
+    if (name !== "agy-cli") throw new Error(`Unknown voice provider: ${name} (only agy-cli transcribes)`);
+    return createAgyCliProvider({ timeoutMs });
+  });
 }

@@ -10,7 +10,7 @@ import type { ToolRegistry } from "../tools/tool-registry.js";
 import type { BridgeRequest } from "./bridge-protocol.js";
 import { BridgeServer } from "./bridge-server.js";
 import { createBridgeHandler, flushUnreported, type ActiveTurn } from "./bridge-handler.js";
-import { familyOf, type ModelString } from "./model-string.js";
+import { familyOf, type ModelFamily, type ModelString } from "./model-string.js";
 import type { OmpConfig } from "./omp-config.js";
 import { classifyOmpError, summarizeAssistantMessage, type AssistantSummary, type OmpFrame } from "./omp-frames.js";
 import { checkOmpVersion } from "./omp-version.js";
@@ -156,6 +156,9 @@ export class PlannerSupervisor {
   private model: ModelString;
 
   constructor(private readonly d: SupervisorDeps) { this.model = this.top(); }
+
+  /** The planner's CURRENT model family (after any fallback) — the reader seat compares against it (D10). */
+  plannerFamily(): ModelFamily { return familyOf(this.model); }
   state(): SupervisorState { return this.st; }
   markStale(): void { this.stale = true; }
   resetCrashGuard(): void { this.crashLatched = false; this.exits = []; }

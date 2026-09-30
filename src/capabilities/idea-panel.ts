@@ -9,25 +9,15 @@ import { computeWeekKey, resolvePanelAt } from "./week-key.js";
 import { sanitizeWikiText } from "./wiki.js";
 
 /**
- * Registry leg pinned behind each named panel judge seat — the ONE source of truth for both
- * seat-binding sites (the daemon tick and `houge radar-panel`). Seat names are MODEL FAMILIES,
- * not provider names: the Kimi seat rides the flat-rate `pi` CLI and the Gemini seat the
- * flat-rate `agy` CLI. Both were metered APIs (`kimi-api`/`gemini-api`) until the CLI-only
- * migration, when the CLI site was missed precisely because each site typed its own literals.
- */
-export const PANEL_JUDGE_PROVIDERS = { kimi: "pi", gemini: "agy-cli" } as const;
-
-/**
  * Idea Radar R2 panel tick (spec 2026-07-25 §§1,4): once per week at the pinned wall-clock
- * slot, 3 judges (kimi CLI, gemini CLI, codex CLI) score the top active idea cards through
- * one lens each, and a contained claude-cli chair synthesizes a shortlist of 3 — or the
+ * slot, 3 judges (the omp judge seats, one model string each) score the top active idea cards
+ * through one lens each, and the omp chair seat synthesizes a shortlist of 3 — or the
  * deterministic mean-score fallback publishes when the chair is absent/broken. The panel
  * reads ONLY the local `ideas` store (zero network reads), latches BEFORE any seat call
  * (M3), ships dark behind `HOUGE_RADAR_PANEL_ENABLED`, and never throws into the daemon.
  *
- * Seats are injected pre-bound (per-seat pinning, spec §1 W2): `judges.kimi`/`judges.gemini`
- * are single-provider `RadarLlm` adapters, `codexJudge`/`chair` are the idea-panel-seats
- * closures already env/broker-bound by the caller. `answerWithChain` never sees any of them.
+ * Seats are injected pre-bound (per-seat pinning, spec §1 W2): `buildOmpPanelSeats`
+ * (idea-panel-seats) pins each judge to ONE omp model string; never a chain.
  */
 
 /** Cards shown to the panel — the top of the ONE stable `listActiveIdeas` ordering (§5 W5). */
@@ -254,7 +244,7 @@ export function resolvePanelEnabled(env: NodeJS.ProcessEnv): boolean {
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
-/** A pre-bound spawn seat (idea-panel-seats closure): digest + system in, total result out. */
+/** A pre-bound seat (idea-panel-seats closure): digest + system in, total result out. */
 export type PanelSeat = (input: {
   digest: string;
   system: string;
@@ -312,9 +302,9 @@ export interface PanelTickResult {
 
 export interface PanelTickInput {
   store: RunStore;
-  /** Single-provider adapters pinned to their registry legs (NEVER a chain — spec §1 W2). */
+  /** Single-model seats (NEVER a chain — spec §1 W2). */
   judges: { kimi: RadarLlm; gemini: RadarLlm };
-  /** Pre-bound seat closures from idea-panel-seats (env/broker already captured). */
+  /** Pre-bound seat closures from idea-panel-seats (env already captured). */
   codexJudge: PanelSeat;
   chair: PanelSeat;
   env: NodeJS.ProcessEnv;

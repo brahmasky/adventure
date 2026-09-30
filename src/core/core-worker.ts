@@ -31,7 +31,7 @@ import { runSelfWriter, resolveSelfWriteWriter } from "../capabilities/self-writ
 import { resolveCodexModel } from "../capabilities/coding-agent.js";
 import { normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
 import type { LlmAuditSink } from "../llm/audit.js";
-import type { LlmCallRole } from "../run/run-store.js";
+import type { LlmAuditScope, LlmCallRole } from "../run/run-store.js";
 import { publishBranch, selfWriteBranchName } from "../run/branch-publish.js";
 import { createWorktree, removeWorktree } from "../run/worktree.js";
 import { buildGateAQuestion, GATE_A_DISCIPLINE, parseGateAVerdict } from "../capabilities/skill-router.js";
@@ -45,7 +45,6 @@ import {
   verifySkill
 } from "../capabilities/anchor-verify.js";
 import type { VerifyResult } from "../capabilities/anchor-verify.js";
-import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
 import { buildCritiqueQuestion, buildResearchQuestion, createWebSearchAdapter } from "../capabilities/web-search.js";
 import { createHttpFetchAdapter } from "../capabilities/http-fetch.js";
 import { createTimeConvertAdapter } from "../capabilities/time-convert.js";
@@ -104,26 +103,26 @@ import {
   READER_INPUT_CHAR_CAP,
   renderExtractionDigest,
   resolveDualLlmEnabled,
-  resolveReaderProviders,
   unreadableDigest,
   UNTRUSTED_READ_TOOLS
 } from "./quarantine.js";
 import { manifestFor } from "./tool-manifest.js";
-import { composeSystemPrompt, intentToScope, memoryRootFor, SKILL_AUTHOR_DISCIPLINE } from "../prompt/composer.js";
+import { ASK_DISCIPLINE, composeSystemPrompt, FALLBACK_IDENTITY, GUARDRAILS, intentToScope, memoryRootFor, SKILL_AUTHOR_DISCIPLINE } from "../prompt/composer.js";
 import { resolveLocalTimeZone, resolveTimeZone } from "../prompt/tz-convert.js";
 import { resolveSkillMaxPerScope, resolveSkillName, resolveSkillRefinePasses, resolveSkillsEnabled, setFrontmatterFields, SkillStore } from "../skills/skill-store.js";
 import { resolveWebMaxResults } from "../web/registry.js";
 import type { WebResult } from "../web/types.js";
-import { resolveChainBudgetMs, RUNNER_TIMEOUT_BUFFER_MS } from "../llm/registry.js";
+import { llmToolAdapter, oneShotAdapter, RUNNER_TIMEOUT_BUFFER_MS, seatBudgetMs } from "../llm/registry.js";
+import type { ModelFamily } from "../omp/model-string.js";
 import { createJevClient, JEV_MODEL } from "../jev/jev-client.js";
 import {
   intentShadowPayload, JEV_SHADOW_TIMEOUT_MS, resolveJevShadowEnabled, runJevShadow,
   type JevShadowCall, type JevShadowOutcome
 } from "../jev/shadow.js";
 import { createLocalProjectWriteAdapter } from "../capabilities/local-project-write-adapter.js";
-import { ingestMedia, type MediaIngestDeps } from "../media/media-ingest.js";
+import { buildMediaCall, ingestMedia, type MediaIngestDeps } from "../media/media-ingest.js";
 import {
-  mediaFailureReply, resolveMediaIngestEnabled, resolveMediaLegTimeoutMs, resolveMediaProviders,
+  mediaFailureReply, resolveMediaIngestEnabled,
   type TelegramMediaRef, type TurnModality
 } from "../media/media-config.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
@@ -425,12 +424,7 @@ export class CoreWorker {
     // audited adapter per role. A test-INJECTED adapter is used as-is (it brings its own fakes).
     this.llmAdapterIsDefault = llmAdapter === undefined;
     // run-less; attribution only — every run-scoped call goes through llmAdapterFor
-    this.llmAdapter = llmAdapter ?? createLlmAnswerAdapter({
-      ...(broker ? { broker } : {}),
-      // Metered-$ ceiling (ADR 0019): a latched fuse drops the metered legs (cheap latch read).
-      meteredBreached: () => this.runStore.meteredFuseLatched(),
-      audit: this.runStore.llmAuditSink({ correlation_id: "rating:attribution", role: "attribution" })
-    });
+    this.llmAdapter = llmAdapter ?? this.seatAdapter({ correlation_id: "rating:attribution", role: "attribution" });
     this.webSearchAdapter = webSearchAdapter ?? createWebSearchAdapter(broker ? { broker } : {});
     this.codingAgentAdapter = codingAgentAdapter ?? createCodingAgentAdapter({ projectRoot });
     this.httpFetchAdapter = httpFetchAdapter ?? createHttpFetchAdapter();
@@ -764,7 +758,7 @@ export class CoreWorker {
     // CAVEAT: `resolveChainBudgetMs` reads HOUGE_LLM_PROVIDERS only, so this cap does NOT bound
     // the quarantined reader, which resolves its own chain (HOUGE_LLM_READER_PROVIDERS) and is
     // invoked outside the runner entirely. See `quarantineRead`.
-    const llmTimeoutMs = resolveChainBudgetMs(process.env) + RUNNER_TIMEOUT_BUFFER_MS;
+    const llmTimeoutMs = this.llmTimeoutMs("answer");
     registry.register({
       name: "llm_answer",
       category: "tool",
@@ -843,7 +837,7 @@ export class CoreWorker {
       output_limit_bytes: 200_000,
       execute: this.webSearchAdapter
     });
-    const llmTimeoutMs = resolveChainBudgetMs(process.env) + RUNNER_TIMEOUT_BUFFER_MS;
+    const llmTimeoutMs = this.llmTimeoutMs("answer");
     registry.register({
       name: "llm_answer",
       category: "tool",
@@ -1145,7 +1139,7 @@ export class CoreWorker {
       output_limit_bytes: 200_000,
       execute: this.codingAgentAdapter
     });
-    const llmTimeoutMs = resolveChainBudgetMs(process.env) + RUNNER_TIMEOUT_BUFFER_MS;
+    const llmTimeoutMs = this.llmTimeoutMs("answer");
     registry.register({
       name: "llm_answer",
       category: "tool",
@@ -1453,17 +1447,26 @@ export class CoreWorker {
    */
   private llmAdapterFor(
     run_id: string,
-    role: LlmCallRole
+    role: LlmCallRole,
+    plannerFamily?: ModelFamily
   ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
+    return this.seatAdapter({ run_id, role }, plannerFamily);
+  }
+
+  /**
+   * THE seat chokepoint: an omp one-shot over the role's subscription chain, audited per leg under
+   * `scope` (spec §8). Only the DEFAULT adapter is built this way; a test-injected adapter is
+   * returned as-is (it brings its own fakes). The omp config is read per call (`/disarm`-style env
+   * edits apply to the next call).
+   */
+  private seatAdapter(scope: LlmAuditScope, plannerFamily?: ModelFamily): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
     if (!this.llmAdapterIsDefault) return this.llmAdapter;
-    return createLlmAnswerAdapter({
-      ...(this.broker ? { broker: this.broker } : {}),
-      // Dual-LLM (ADR 0014): the quarantined reader runs on its own (default cross-family) chain.
-      ...(role === "reader" ? { providers: resolveReaderProviders(process.env) } : {}),
-      // Metered-$ ceiling (ADR 0019): a latched fuse drops the metered legs (cheap latch read).
-      meteredBreached: () => this.runStore.meteredFuseLatched(),
-      audit: this.runStore.llmAuditSink({ run_id, role })
-    });
+    return (input) => llmToolAdapter(oneShotAdapter(this.runStore, resolveOmpConfig(process.env), scope, plannerFamily), askFallbackSystem())(input);
+  }
+
+  /** The runner's wall-clock cap for one seat call: every leg of the seat's chain may time out, plus headroom. */
+  private llmTimeoutMs(role: LlmCallRole): number {
+    return seatBudgetMs(resolveOmpConfig(process.env), role) + RUNNER_TIMEOUT_BUFFER_MS;
   }
 
   /** The TypeSafe key: broker-held when the secrets firewall is armed, else the ambient env. */
@@ -1492,21 +1495,14 @@ export class CoreWorker {
   }
 
   /**
-   * The media leg for one run: the media chain (`HOUGE_LLM_MEDIA_PROVIDERS`), the run's audit sink
-   * under the given role, the 45 s per-leg timeout, the metered fuse. Null when the LLM adapter is
-   * test-injected and no media fake was given — hermetic by construction.
+   * The media leg for one run (ruling 2): a photo is an omp one-shot on `cfg.media`, a voice note
+   * the agy-cli leg — never omp. Null when the LLM adapter is test-injected and no media fake was
+   * given — hermetic by construction.
    */
-  private mediaAdapterFor(run_id: string, role: LlmCallRole): MediaIngestDeps["mediaCall"] | null {
+  private mediaAdapterFor(run_id: string, kind: TelegramMediaRef["kind"]): MediaIngestDeps["mediaCall"] | null {
     if (this.mediaDeps?.mediaCall) return this.mediaDeps.mediaCall;
     if (!this.llmAdapterIsDefault) return null;
-    const timeoutMs = resolveMediaLegTimeoutMs(process.env);
-    return createLlmAnswerAdapter({
-      ...(this.broker ? { broker: this.broker } : {}),
-      providers: resolveMediaProviders(process.env),
-      chainDeps: { agyConfig: { timeoutMs }, piConfig: { timeoutMs } },
-      meteredBreached: () => this.runStore.meteredFuseLatched(),
-      audit: this.runStore.llmAuditSink({ run_id, role })
-    });
+    return buildMediaCall({ store: this.runStore, run_id, kind, env: process.env });
   }
 
   /**
@@ -1528,7 +1524,7 @@ export class CoreWorker {
       console.warn(`[media-ingest] ${ref.kind} disabled: flag off at run time`);
       return { ok: false, failure: { status: "failed", error_ref: mediaFailureReply(ref.kind, "disabled") } };
     }
-    const mediaCall = this.mediaAdapterFor(claim.run_id, ref.kind === "voice" ? "media_transcribe" : "reader");
+    const mediaCall = this.mediaAdapterFor(claim.run_id, ref.kind);
     const downloadFile = this.mediaDeps?.downloadFile;
     const result = await ingestMedia(
       {
@@ -1577,12 +1573,7 @@ export class CoreWorker {
     correlation_id: string,
     role: LlmCallRole
   ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
-    if (!this.llmAdapterIsDefault) return this.llmAdapter;
-    return createLlmAnswerAdapter({
-      ...(this.broker ? { broker: this.broker } : {}),
-      meteredBreached: () => this.runStore.meteredFuseLatched(),
-      audit: this.runStore.llmAuditSink({ correlation_id, role })
-    });
+    return this.seatAdapter({ correlation_id, role });
   }
 
   /**
@@ -2165,7 +2156,7 @@ export class CoreWorker {
     budget: BudgetLedger
   ): Promise<{ ok: true; answer: string } | { ok: false; failure: Exclude<CapabilityResult, { status: "succeeded" }> }> {
     const registry = new ToolRegistry();
-    const llmTimeoutMs = resolveChainBudgetMs(process.env) + RUNNER_TIMEOUT_BUFFER_MS;
+    const llmTimeoutMs = this.llmTimeoutMs("answer");
     registry.register({
       name: "llm_answer",
       category: "tool",
@@ -2326,7 +2317,7 @@ export class CoreWorker {
       registry.register({ name, category: "tool", ...meta, timeout_ms: cfg.shellTimeoutMs + 10_000, execute: shell });
     }
     for (const [name, meta] of Object.entries(OMP_BUILTIN_META)) registry.register({ name, category: "tool", ...meta, timeout_ms: 0 });
-    const llmTimeoutMs = resolveChainBudgetMs(process.env) + RUNNER_TIMEOUT_BUFFER_MS;
+    const llmTimeoutMs = this.llmTimeoutMs("answer");
     for (const [name, meta] of Object.entries(OMP_LOOP_TOOL_META)) {
       registry.register({ name, category: "tool", ...meta, timeout_ms: loopToolTimeoutMs(name, llmTimeoutMs), execute: this.ompLoopExecute(name, claim, state) });
     }
@@ -2351,7 +2342,8 @@ export class CoreWorker {
    * The recorded digest also feeds the wiki's synthesis material (Phase W trust anchor).
    */
   private async ompQuarantine(claim: ClaimedRun, state: OmpTurnState, tool: string, output: Record<string, unknown>): Promise<ExternalReadResult> {
-    const reader = this.llmAdapterFor(claim.run_id, "reader");
+    // D10: the reader knows the planner's CURRENT family, so a collapse is audited (family_collapse + wall_collapse).
+    const reader = this.llmAdapterFor(claim.run_id, "reader", this.supervisors.get(this.chatOf(claim.run_id))?.plannerFamily());
     const x = await this.quarantineExtract(reader, memoryRootFor(this.projectRoot), output, state.objective ?? claim.contract.objective);
     const trusted = typeof output.trusted_extract === "string" && output.trusted_extract.length > 0 ? output.trusted_extract : undefined;
     const digest = trusted ? `${x.digest}\n${trusted}` : x.digest;
@@ -2613,7 +2605,7 @@ export class CoreWorker {
       sourceUrls: []
     };
 
-    const llmTimeoutMs = resolveChainBudgetMs(process.env) + RUNNER_TIMEOUT_BUFFER_MS;
+    const llmTimeoutMs = this.llmTimeoutMs("answer");
     const registry = new ToolRegistry();
     for (const entry of manifest) {
       registry.register({
@@ -3506,7 +3498,7 @@ export class CoreWorker {
     | { ok: false; failure: Exclude<CapabilityResult, { status: "succeeded" }> }
   > {
     const registry = new ToolRegistry();
-    const llmTimeoutMs = resolveChainBudgetMs(process.env) + RUNNER_TIMEOUT_BUFFER_MS;
+    const llmTimeoutMs = this.llmTimeoutMs("answer");
     // Jev intent shadow: started INSIDE the classifier adapter, i.e. only after CapabilityRunner has
     // admitted the call (budget reserved, contract allows it) — a denied classifier never sends the
     // message to Jev. Not awaited: Jev and the classifier run concurrently on identical inputs, and
@@ -3702,6 +3694,16 @@ export class CoreWorker {
  * Build the answer *question*: the question plus optional recent-thread context, all
  * on the DATA channel (the untrusted-data wall, ADR 0006) — never the system prompt.
  */
+/**
+ * The system prompt for a seat call that passes none: `HOUGE_ASK_SYSTEM_PROMPT`, else the thin
+ * identity fallback (the live `/ask` path composes the real prompt and passes it explicitly).
+ */
+export const DEFAULT_ASK_SYSTEM_PROMPT = [FALLBACK_IDENTITY, ASK_DISCIPLINE, GUARDRAILS].join("\n\n");
+function askFallbackSystem(): string {
+  const fromEnv = process.env.HOUGE_ASK_SYSTEM_PROMPT;
+  return typeof fromEnv === "string" && fromEnv.length > 0 ? fromEnv : DEFAULT_ASK_SYSTEM_PROMPT;
+}
+
 function buildAnswerQuestion(question: string, context?: string): string {
   if (!context) return question;
   return [

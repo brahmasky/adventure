@@ -34,12 +34,6 @@ export const DISARM_FLAGS: readonly string[] = [
   "HOUGE_CODEX_ENABLED",
   "HOUGE_SKILLS_ENABLED",
   "HOUGE_SCHEDULER_ENABLED",
-  // External engineering workspace (ADR 0023): an autonomous evolution capability — the STOP
-  // switch must cover it too (it clones + runs external code in a container unattended).
-  "HOUGE_EXTWORK_ENABLED",
-  // P2 bounty intake (spec 2026-07-18): reads external venues + writes durable project
-  // rows — money-work surface, covered by the STOP switch like extwork.
-  "HOUGE_BOUNTY_ENABLED",
   // ADR 0025: acts under Houge's own Google identity — the STOP switch must cover identity reads too.
   "HOUGE_GOOGLE_ENABLED",
   // Lesson-consolidation design (2026-07-23): rewrites Houge's OWN behavioral guidance (merges
@@ -49,18 +43,17 @@ export const DISARM_FLAGS: readonly string[] = [
   // weekly — evolution surface, covered by the STOP switch like lesson consolidation.
   "HOUGE_SKILL_REVERIFY_ENABLED",
   // Idea Radar R1 (spec 2026-07-24): unattended daily reads of external feeds + one metered
-  // LLM call + durable idea-card writes — unattended autonomy, covered like bounty intake.
+  // LLM call + durable idea-card writes — unattended autonomy.
   "HOUGE_RADAR_ENABLED",
   // Idea Radar R2 (ADR 0027): the weekly judge panel — unattended metered LLM calls + status/
   // snapshot writes + the memory/briefs/ projection + the first proactive weekly push — the
   // STOP switch covers it like the radar it rides on.
   "HOUGE_RADAR_PANEL_ENABLED",
-  // Jev intent shadow (spec 2026-09-25): an unattended per-turn metered call that sends the
-  // message + thread to a third party — the STOP switch covers it like the radar's calls.
-  "HOUGE_JEV_SHADOW_ENABLED",
   // Multimodal ingest (spec 2026-09-29): media bytes leave the mini per turn — the STOP
-  // switch covers it like the radar's and Jev's calls.
+  // switch covers it like the radar's calls.
   "HOUGE_MEDIA_INGEST_ENABLED"
+  // omp runtime (spec 2026-09-30, D2): the money track (extwork, bounty) and the live Jev shadow
+  // are deleted, so their flags left this set; omp itself has no arming flag (the cutover is hard).
 ];
 
 export function resolveDisarmPath(env: NodeJS.ProcessEnv = process.env): string {

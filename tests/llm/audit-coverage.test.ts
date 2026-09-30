@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 /**
  * NOTE: this guard is LEXICAL, not scope-aware. It regex-matches the text following a
- * `createLlmAnswerAdapter(` / spawn-seat call site for an `audit: ...llmAuditSink(` substring —
+ * seat call site for an `audit`/`llmAuditSink(` substring —
  * it does not resolve identifiers or trace where a value came from. Two shapes would fool it in
  * opposite directions:
  *   - a wrapper like `audit: buildSink()` would FALSE-NEGATIVE (pass) even if `buildSink` does
@@ -36,48 +36,34 @@ describe("audit chokepoint coverage (structural, not by convention)", () => {
     expect(files.filter((f) => read(f).includes("helpers/llm-audit"))).toEqual([]);
   });
 
-  it("every createLlmAnswerAdapter( construction in src passes a store-built sink", () => {
+  it("the omp one-shot seat audits EVERY leg through a REQUIRED sink (ok and error both recorded)", () => {
+    const omp = read(join(process.cwd(), "src", "llm", "providers", "omp.ts"));
+    expect(omp).toMatch(/audit: LlmAuditSink;/); // required, never `audit?:`
+    expect(omp.match(/deps\.audit\.record\(/g) ?? []).toHaveLength(2);
+  });
+
+  it("every spawnOneShot( call site in src hands it an audit sink", () => {
     const offenders: string[] = [];
     for (const f of files) {
-      if (f.endsWith(join("src", "capabilities", "llm-answer.ts"))) continue;
+      if (f.endsWith(join("src", "llm", "providers", "omp.ts"))) continue;
       const text = read(f);
-      let i = text.indexOf("createLlmAnswerAdapter(");
-      while (i !== -1) {
-        if (!/audit:\s*[A-Za-z_.]*llmAuditSink\(/.test(text.slice(i, i + 900))) offenders.push(`${f}@${i}`);
-        i = text.indexOf("createLlmAnswerAdapter(", i + 1);
+      for (let i = text.indexOf("spawnOneShot("); i !== -1; i = text.indexOf("spawnOneShot(", i + 1)) {
+        if (!/\baudit\b/.test(text.slice(i, i + 600))) offenders.push(`${f}@${i}`);
       }
     }
     expect(offenders).toEqual([]);
   });
 
-  it("every createLlmAnswerAdapter( construction in src passes meteredBreached", () => {
-    const offenders: string[] = [];
-    for (const f of files) {
-      if (f.endsWith(join("src", "capabilities", "llm-answer.ts"))) continue;
-      const text = read(f);
-      let i = text.indexOf("createLlmAnswerAdapter(");
-      while (i !== -1) {
-        if (!/meteredBreached:/.test(text.slice(i, i + 900))) offenders.push(`${f}@${i}`);
-        i = text.indexOf("createLlmAnswerAdapter(", i + 1);
-      }
-    }
-    expect(offenders).toEqual([]);
+  it("oneShotAdapter builds its sink from the store for the call's scope (no caller can pass a discarding one)", () => {
+    const registry = read(join(process.cwd(), "src", "llm", "registry.ts"));
+    const body = registry.slice(registry.indexOf("export function oneShotAdapter("), registry.indexOf("function reportVersionMismatch("));
+    expect(body).toContain("store.llmAuditSink(scope)");
   });
 
-  it("every spawn seat call in src passes a store-built sink", () => {
-    const offenders: string[] = [];
-    for (const f of files) {
-      if (f.endsWith(join("src", "capabilities", "idea-panel-seats.ts"))) continue;
-      const text = read(f);
-      for (const fn of ["spawnCodexJudge(", "spawnPanelChair("]) {
-        let i = text.indexOf(fn);
-        while (i !== -1) {
-          if (!/audit:\s*[A-Za-z_.]*llmAuditSink\(/.test(text.slice(i, i + 600))) offenders.push(`${f}@${i}:${fn}`);
-          i = text.indexOf(fn, i + 1);
-        }
-      }
-    }
-    expect(offenders).toEqual([]);
+  it("the planner supervisor writes its llm_attempt rows only through the store's sink", () => {
+    const sup = read(join(process.cwd(), "src", "omp", "planner-supervisor.ts"));
+    expect(sup).toContain("llmAuditSink(");
+    expect(sup).not.toMatch(/appendLedgerEvent\([^)]*llm_attempt/);
   });
 
   it("nothing writes llm_call any more (llm_attempt supersedes it; history stays readable)", () => {

@@ -51,12 +51,6 @@ describe("DISARM_FLAGS", () => {
       "HOUGE_CODEX_ENABLED",
       "HOUGE_SKILLS_ENABLED",
       "HOUGE_SCHEDULER_ENABLED",
-      // ADR 0023: the external engineering workspace is an autonomous evolution capability
-      // (clones + runs external code in a container unattended) — the STOP switch covers it.
-      "HOUGE_EXTWORK_ENABLED",
-      // P2 (spec 2026-07-18): bounty intake reads external venues + writes durable
-      // project rows unattended-adjacent (scheduled scans) — the STOP switch covers it.
-      "HOUGE_BOUNTY_ENABLED",
       // ADR 0025: acts under Houge's own Google identity — the STOP switch must cover
       // identity reads too.
       "HOUGE_GOOGLE_ENABLED",
@@ -65,19 +59,23 @@ describe("DISARM_FLAGS", () => {
       // OWN procedures — evolution surface, covered like lesson consolidation.
       "HOUGE_SKILL_REVERIFY_ENABLED",
       // Idea Radar R1 (spec 2026-07-24): unattended external reads + a daily metered LLM
-      // call + durable card writes — the STOP switch covers it like bounty intake.
+      // call + durable card writes — the STOP switch covers it.
       "HOUGE_RADAR_ENABLED",
       // Idea Radar R2 (ADR 0027): the weekly judge panel — unattended metered calls, status/
       // snapshot writes, the memory/briefs/ projection, and the first proactive weekly push.
       "HOUGE_RADAR_PANEL_ENABLED",
-      // Jev intent shadow (spec 2026-09-25): an unattended per-turn metered call that sends the
-      // message + thread to a third party — the STOP switch covers it like the radar's calls.
-      "HOUGE_JEV_SHADOW_ENABLED",
       // Multimodal ingest (spec 2026-09-29): media bytes leave the mini per turn — the STOP
       // switch covers it like the radar's and Jev's calls.
       "HOUGE_MEDIA_INGEST_ENABLED"
     ]);
     expect(DISARM_FLAGS).not.toContain("HOUGE_EPISODIC_ENABLED");
+  });
+
+  it("drops the flags of the features the omp cutover deleted, and adds none for omp (the cutover is hard, D2)", () => {
+    // A STOP switch listing dead flags reads as coverage that no longer exists; an omp arming
+    // flag would reintroduce the soft cutover D2 rejected.
+    for (const gone of ["HOUGE_EXTWORK_ENABLED", "HOUGE_BOUNTY_ENABLED", "HOUGE_JEV_SHADOW_ENABLED"]) expect(DISARM_FLAGS).not.toContain(gone);
+    expect(DISARM_FLAGS.filter((f) => f.startsWith("HOUGE_OMP"))).toEqual([]);
   });
 });
 

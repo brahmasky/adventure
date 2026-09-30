@@ -3,13 +3,14 @@ import { join } from "node:path";
 import { checkMeteredCeiling } from "../budget/metered-ceiling.js";
 import { runEpisodicConsolidateTick } from "../capabilities/episodic-consolidate.js";
 import { maybeRunEpisodicDistill } from "../capabilities/episodic-extract.js";
-import { PANEL_JUDGE_PROVIDERS, runIdeaPanelTick, type PanelSeat } from "../capabilities/idea-panel.js";
-import { spawnCodexJudge, spawnPanelChair, unavailableChairSeat } from "../capabilities/idea-panel-seats.js";
-import { runIdeaRadarTick, type RadarLlm } from "../capabilities/idea-radar.js";
+import { runIdeaPanelTick } from "../capabilities/idea-panel.js";
+import { buildOmpPanelSeats, type PanelSeatBindings } from "../capabilities/idea-panel-seats.js";
+import { runIdeaRadarTick } from "../capabilities/idea-radar.js";
 import { runLessonConsolidateTick } from "../capabilities/lesson-consolidate.js";
 import { runSkillReverifyTick } from "../capabilities/skill-reverify.js";
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
-import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
+import { oneShotAdapter } from "../llm/registry.js";
+import { resolveOmpConfig } from "../omp/omp-config.js";
 import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
 import { CoreWorker, type OmpWorkerOptions } from "../core/core-worker.js";
@@ -95,12 +96,7 @@ export interface RunTelegramDaemonOptions {
   outboxPumpMs?: number;
 }
 
-/** The panel's injected seats (spec §1: per-seat pinning — `answerWithChain` never sees them). */
-export interface PanelSeatBindings {
-  judges: { kimi: RadarLlm; gemini: RadarLlm };
-  codexJudge: PanelSeat;
-  chair: PanelSeat;
-}
+export type { PanelSeatBindings } from "../capabilities/idea-panel-seats.js";
 
 export interface RunTelegramDaemonResult {
   cycles: number;
@@ -425,25 +421,20 @@ async function runSignalPathTick(
         now
       });
     }
-    // Slice 2 (review B2): ONE adapter per tick, each with its own run-less audit scope, so every
-    // LLM leg a tick tries lands in the ledger under `tick:<name>` — the daemon-tick work that
-    // recorded nothing at all before (D4). The unreserved chain — no run, no turn budget. A
-    // test-injected `options.llmAdapter` is used verbatim (it brings its own fakes, no chain).
+    // Slice 2 (review B2): ONE seat per tick, each with its own run-less audit scope, so every
+    // omp leg a tick tries lands in the ledger under `tick:<name>` (spec §8: one-shot seats). The
+    // role picks the chain (`seatChain`: memory ticks on HOUGE_OMP_TICKS). A test-injected
+    // `options.llmAdapter` is used verbatim (it brings its own fakes, no omp).
     // Embeddings stay best-effort local Ollama (null on any failure — the store degrades).
     const tickLlm = (name: string, role: LlmCallRole) => {
-      const adapter =
-        options.llmAdapter ??
-        createLlmAnswerAdapter({
-          ...(options.broker ? { broker: options.broker } : {}),
-          // Metered-$ ceiling (ADR 0019): a latched fuse drops the metered legs (cheap latch read).
-          meteredBreached: () => options.store.meteredFuseLatched(),
-          audit: options.store.llmAuditSink({ correlation_id: `tick:${name}`, role })
-        });
-      return async (input: { question: string; system: string }) => {
-        const read = await adapter({ question: input.question, system: input.system });
-        return read.ok && typeof read.output.answer === "string"
-          ? ({ ok: true, answer: read.output.answer } as const)
-          : ({ ok: false } as const);
+      const injected = options.llmAdapter;
+      return async (input: { question: string; system: string }): Promise<{ ok: true; answer: string } | { ok: false }> => {
+        if (injected) {
+          const read = await injected({ question: input.question, system: input.system });
+          return read.ok && typeof read.output.answer === "string" ? { ok: true, answer: read.output.answer } : { ok: false };
+        }
+        const r = await oneShotAdapter(options.store, resolveOmpConfig(process.env), { correlation_id: `tick:${name}`, role }).answer(input);
+        return r.ok ? { ok: true, answer: r.answer } : { ok: false };
       };
     };
     const episodicEmbed = (text: string) => embedText(text, resolveEmbedConfig(process.env));
@@ -531,6 +522,7 @@ async function runSignalPathTick(
     // it can never act on what it finds.
     runInvariantSweep({
       store: options.store,
+      dataDir: options.omp?.dataDir ?? options.projectRoot,
       ...(chat ? { chat_id: String(chat.telegram_chat_id) } : {}),
       now
     });
@@ -540,55 +532,9 @@ async function runSignalPathTick(
   }
 }
 
-/**
- * Build the panel's real seat bindings (Idea Radar R2, spec §1). The kimi/gemini judges are
- * SINGLE-provider `createLlmAnswerAdapter` instances — the `providers` override pins each to
- * exactly one registry leg, so judge diversity is structural (never `answerWithChain` over the
- * configured chain). Usage/ceiling accounting rides the same construction the radar extract's
- * adapter uses: the broker (when armed) + the metered-fuse latch read. The codex judge and the
- * claude chair are the contained spawn seats (idea-panel-seats); the chair requires the broker
- * (its OAuth token is broker-held, NEVER ambient env — spec §§2–3), so firewall-OFF means
- * chair-unavailable → the tick's deterministic mean-score fallback.
- */
+/** The panel's real seats: the omp judge/chair seats (idea-panel-seats), audited under `tick:idea_panel`. */
 function buildPanelSeatBindings(options: RunTelegramDaemonOptions): PanelSeatBindings {
-  const broker = options.broker;
-  const pinnedJudge = (providers: string): RadarLlm => {
-    const adapter = createLlmAnswerAdapter({
-      ...(broker ? { broker } : {}),
-      providers,
-      meteredBreached: () => options.store.meteredFuseLatched(),
-      audit: options.store.llmAuditSink({ correlation_id: "tick:idea_panel", role: "judge" })
-    });
-    return async (input) => {
-      const read = await adapter({ question: input.question, system: input.system });
-      return read.ok && typeof read.output.answer === "string"
-        ? ({ ok: true, answer: read.output.answer } as const)
-        : ({ ok: false } as const);
-    };
-  };
-  return {
-    judges: {
-      kimi: pinnedJudge(PANEL_JUDGE_PROVIDERS.kimi),
-      gemini: pinnedJudge(PANEL_JUDGE_PROVIDERS.gemini)
-    },
-    codexJudge: ({ digest, system }) =>
-      spawnCodexJudge({
-        digest,
-        system,
-        env: process.env,
-        audit: options.store.llmAuditSink({ correlation_id: "tick:idea_panel", role: "judge" })
-      }),
-    chair: broker
-      ? ({ digest, system }) =>
-          spawnPanelChair({
-            digest,
-            system,
-            broker,
-            env: process.env,
-            audit: options.store.llmAuditSink({ correlation_id: "tick:idea_panel", role: "chair" })
-          })
-      : unavailableChairSeat(options.store.llmAuditSink({ correlation_id: "tick:idea_panel", role: "chair" }))
-  };
+  return buildOmpPanelSeats({ store: options.store, correlation_id: "tick:idea_panel", env: process.env });
 }
 
 /**

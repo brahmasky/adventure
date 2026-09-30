@@ -4,20 +4,18 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildReviewPrompt,
-  KIMI_CLI_BIN_UNSET,
   parseVerdict,
-  resolveKimiCliBin,
-  resolveKimiCliModel,
-  resolveKimiCliTimeoutMs,
   resolveSelfWriteReviewer,
-  reviewDiff,
-  writeKimiReviewerAgent
+  reviewDiff
 } from "../../src/capabilities/diff-reviewer.js";
 import { recordingSink, UNAUDITED_TEST_SINK } from "../helpers/llm-audit.js";
+import { FAKE_OMP_BIN, NO_OMP_BIN, pinOmpEnv } from "../helpers/omp-env.js";
+
+pinOmpEnv();
 
 let temps: string[] = [];
 
-/** A fake `kimi-cli` (or `codex`) that prints `output` on stdout, then exits 0/`exit`. */
+/** A fake `codex` that prints `output` on stdout, then exits 0/`exit`. */
 function fakeBin(name: string, output: string, exit = 0): string {
   const dir = mkdtempSync(join(tmpdir(), "houge-rev-bin-"));
   temps.push(dir);
@@ -74,10 +72,25 @@ function codexJsonl(agentText: string): string {
   ].join("\n");
 }
 
-/** kimi-cli `--final-message-only` stdout: the plain-text verdict JSON, then the trailing resume line. */
-function kimiOutput(verdictJson: string): string {
-  return `${verdictJson}\nTo resume this session: kimi -r 2e9db88f-3ec0-4268-a589-89bbc315c74f`;
+/**
+ * The omp reviewer seat on tests/fixtures/fake-omp.mjs: `scenario` maps `provider/model` → behaviour.
+ * The fake's env vars ride the passthrough (buildChildEnv reads them from process.env), and the
+ * version check is the fake's own `omp/18.4.4`. Returns the env reviewDiff resolves omp from.
+ */
+function ompEnv(scenario: Record<string, unknown>, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const dir = mkdtempSync(join(tmpdir(), "houge-rev-omp-"));
+  temps.push(dir);
+  writeFileSync(join(dir, "s.json"), JSON.stringify(scenario));
+  process.env.FAKE_OMP_SCENARIO = join(dir, "s.json");
+  process.env.FAKE_OMP_ARGV_LOG = join(dir, "argv.log");
+  return { HOUGE_OMP_BIN: FAKE_OMP_BIN, HOUGE_OMP_SANDBOX: "0", HOUGE_OMP_ENV_PASSTHROUGH: "FAKE_OMP_SCENARIO,FAKE_OMP_ARGV_LOG", ...extra };
 }
+const ompArgv = () => {
+  const f = process.env.FAKE_OMP_ARGV_LOG!;
+  return existsSync(f) ? readFileSync(f, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { argv: string[]; stdin: string }) : [];
+};
+/** omp unreachable: the version check cannot run the binary, so the seat is unavailable without spawning a model. */
+const NO_OMP: NodeJS.ProcessEnv = { HOUGE_OMP_BIN: NO_OMP_BIN };
 
 describe("parseVerdict", () => {
   it("parses a clean JSON verdict object", async () => {
@@ -140,36 +153,16 @@ describe("parseVerdict", () => {
 });
 
 describe("config resolvers", () => {
-  it("resolveSelfWriteReviewer defaults to kimi, honors codex", async () => {
-    expect(resolveSelfWriteReviewer({})).toBe("kimi"); // default flipped to kimi (cheap + diverse)
+  it("resolveSelfWriteReviewer defaults to the omp reviewer seat, honors codex", async () => {
+    expect(resolveSelfWriteReviewer({})).toBe("omp");
     expect(resolveSelfWriteReviewer({ HOUGE_SELFWRITE_REVIEWER: "CODEX" })).toBe("codex");
-    expect(resolveSelfWriteReviewer({ HOUGE_SELFWRITE_REVIEWER: "kimi" })).toBe("kimi");
-    expect(resolveSelfWriteReviewer({ HOUGE_SELFWRITE_REVIEWER: "garbage" })).toBe("kimi");
+    expect(resolveSelfWriteReviewer({ HOUGE_SELFWRITE_REVIEWER: "garbage" })).toBe("omp");
   });
 
-  it("maps a stale HOUGE_SELFWRITE_REVIEWER=claude to the default kimi (claude removed from the runtime — graceful degradation)", async () => {
-    expect(resolveSelfWriteReviewer({ HOUGE_SELFWRITE_REVIEWER: "claude" })).toBe("kimi");
-    expect(resolveSelfWriteReviewer({ HOUGE_SELFWRITE_REVIEWER: "  CLAUDE " })).toBe("kimi");
-  });
-
-  it("resolveKimiCliBin returns the disabled sentinel when unset (no bare-kimi-cli guess)", async () => {
-    expect(resolveKimiCliBin({})).toBe(KIMI_CLI_BIN_UNSET);
-    expect(resolveKimiCliBin({ HOUGE_KIMI_CLI_BIN: "  " })).toBe(KIMI_CLI_BIN_UNSET);
-    expect(resolveKimiCliBin({ HOUGE_KIMI_CLI_BIN: "/Users/pluo/.local/bin/kimi-cli" })).toBe(
-      "/Users/pluo/.local/bin/kimi-cli"
-    );
-  });
-
-  it("resolveKimiCliModel is empty (omit --model) when unset, honors an override", async () => {
-    expect(resolveKimiCliModel({})).toBe("");
-    expect(resolveKimiCliModel({ HOUGE_KIMI_CLI_MODEL: "  " })).toBe("");
-    expect(resolveKimiCliModel({ HOUGE_KIMI_CLI_MODEL: "kimi-for-coding" })).toBe("kimi-for-coding");
-  });
-
-  it("resolveKimiCliTimeoutMs defaults to 180000 (per-attempt), honors a valid override, rejects garbage", async () => {
-    expect(resolveKimiCliTimeoutMs({})).toBe(180_000);
-    expect(resolveKimiCliTimeoutMs({ HOUGE_KIMI_CLI_TIMEOUT_MS: "5000" })).toBe(5000);
-    expect(resolveKimiCliTimeoutMs({ HOUGE_KIMI_CLI_TIMEOUT_MS: "nope" })).toBe(180_000);
+  it("maps a stale HOUGE_SELFWRITE_REVIEWER=kimi or =claude to the default omp seat (both CLIs left the runtime — graceful degradation)", async () => {
+    expect(resolveSelfWriteReviewer({ HOUGE_SELFWRITE_REVIEWER: "kimi" })).toBe("omp");
+    expect(resolveSelfWriteReviewer({ HOUGE_SELFWRITE_REVIEWER: "claude" })).toBe("omp");
+    expect(resolveSelfWriteReviewer({ HOUGE_SELFWRITE_REVIEWER: "  CLAUDE " })).toBe("omp");
   });
 });
 
@@ -185,25 +178,19 @@ describe("buildReviewPrompt", () => {
 });
 
 describe("reviewDiff", () => {
-  it("defaults to the kimi reviewer; returns disabled error when HOUGE_KIMI_CLI_BIN is unset", async () => {
-    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK, task: "t", diff: "d", env: {} }); // no reviewer set → default kimi
+  it("defaults to the omp reviewer seat; an unreachable omp is a clean error, never a crash", async () => {
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK, task: "t", diff: "d", env: NO_OMP });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toMatch(/kimi reviewer disabled/);
+    if (!result.ok) expect(result.error).toMatch(/omp reviewer unavailable/);
   });
 
-  it("reviewer=claude (stale .env value) falls back to the DEFAULT kimi reviewer — the verdict comes from kimi", async () => {
-    // Claude was removed from the runtime; a stale HOUGE_SELFWRITE_REVIEWER=claude must degrade
-    // gracefully to the default reviewer, never crash or try to spawn a claude bin.
-    const bin = fakeBin("kimi-cli", kimiOutput('{"verdict":"pass","fixes_task":true}'));
-    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
-      task: "fix it",
-      diff: "the diff",
-      env: { HOUGE_SELFWRITE_REVIEWER: "claude", HOUGE_KIMI_CLI_BIN: bin }
-    });
+  it("reviewer=claude (stale .env value) falls back to the DEFAULT omp reviewer — the verdict comes from omp", async () => {
+    const env = ompEnv({ "*": { text: '{"verdict":"pass","fixes_task":true}' } }, { HOUGE_SELFWRITE_REVIEWER: "claude" });
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK, task: "fix it", diff: "the diff", env });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.verdict.verdict).toBe("pass");
-      expect(result.reviewer).toBe("kimi");
+      expect(result.reviewer).toBe("omp");
     }
   });
 
@@ -228,132 +215,54 @@ describe("reviewDiff", () => {
     }
   });
 
-  it("returns disabled error when reviewer=kimi but HOUGE_KIMI_CLI_BIN is unset", async () => {
-    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK, task: "t", diff: "d", env: { HOUGE_SELFWRITE_REVIEWER: "kimi" } });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toMatch(/disabled|HOUGE_KIMI_CLI_BIN/);
+  it("parses a pass and a reject from the omp seat (a reject is a real answer, not retried)", async () => {
+    const pass = await reviewDiff({ audit: UNAUDITED_TEST_SINK, task: "t", diff: "d", env: ompEnv({ "*": { text: 'Looks right.\n{"verdict":"pass","fixes_task":true,"introduces_bugs":false,"scope_creep":false}' } }) });
+    expect(pass.ok && pass.verdict.verdict).toBe("pass");
+    const reject = await reviewDiff({ audit: UNAUDITED_TEST_SINK, task: "t", diff: "d", env: ompEnv({ "*": { text: '{"verdict":"reject","reasons":["deletes a test to pass the gate"]}' } }) });
+    expect(reject.ok && reject.verdict.verdict).toBe("reject");
+    expect(ompArgv()).toHaveLength(1); // one leg, no retry
   });
 
-  it("dispatches to the kimi reviewer (plain-text stdout + trailing resume line) and parses a pass", async () => {
-    const bin = fakeBin("kimi-cli", kimiOutput('{"verdict":"pass","fixes_task":true,"introduces_bugs":false,"scope_creep":false}'));
-    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
-      task: "fix it",
-      diff: "the diff",
-      env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin }
-    });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.verdict.verdict).toBe("pass");
-      // final-message-only emits no usage telemetry → no usage on the result.
-      expect(result.usage).toBeUndefined();
-    }
-  });
-
-  it("dispatches to the kimi reviewer and parses a reject (a real answer, not retried)", async () => {
-    const bin = fakeBin("kimi-cli", kimiOutput('{"verdict":"reject","reasons":["deletes a test to pass the gate"]}'));
-    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
-      task: "fix it",
-      diff: "the diff",
-      env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin }
-    });
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.verdict.verdict).toBe("reject");
-  });
-
-  it("maps an unparseable kimi response to a clean error", async () => {
-    const bin = fakeBin("kimi-cli", "I think it looks fine to me, no JSON here.");
-    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
-      task: "fix it",
-      diff: "the diff",
-      env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin }
-    });
+  it("maps an unparseable omp answer to a clean error", async () => {
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK, task: "t", diff: "d", env: ompEnv({ "*": { text: "I think it looks fine to me, no JSON here." } }) });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/unparseable/);
   });
 
-  it("passes the prompt on stdin and the expected argv to kimi-cli (no --model when unset)", async () => {
-    const argvFile = join(mkdtempSync(join(tmpdir(), "houge-rev-cap-")), "argv");
-    const stdinFile = join(mkdtempSync(join(tmpdir(), "houge-rev-cap-")), "stdin");
-    temps.push(argvFile, stdinFile);
-    const bin = capturingBin("kimi-cli", kimiOutput('{"verdict":"pass"}'), { argvFile, stdinFile });
-
-    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
-      task: "fix the 猴哥 bug",
-      diff: "diff --git a/x b/x",
-      env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin }
-    });
+  it("runs the reviewer seat TOOL-LESS on the reviewer chain's first string, with the adversarial prompt on stdin (writer≠checker isolation)", async () => {
+    const env = ompEnv({ "*": { text: '{"verdict":"pass"}' } });
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK, task: "fix the 猴哥 bug", diff: "diff --git a/x b/x", env });
     expect(result.ok).toBe(true);
-
-    const argv = readFileSync(argvFile, "utf8").trim().split("\n");
-    // Fixed leading flags; then --agent-file pins the no-tools reviewer agent (dynamic temp path).
-    expect(argv.slice(0, 5)).toEqual(["--print", "--quiet", "--final-message-only", "--input-format", "text"]);
-    const ai = argv.indexOf("--agent-file");
-    expect(ai).toBeGreaterThan(-1);
-    expect(argv[ai + 1]).toMatch(/reviewer\.yaml$/);
-    expect(argv).not.toContain("--model");
-    // The adversarial review prompt (task + diff) arrives on stdin.
-    const stdin = readFileSync(stdinFile, "utf8");
-    expect(stdin).toContain("fix the 猴哥 bug");
-    expect(stdin).toContain("diff --git a/x b/x");
-    expect(stdin).toContain("INDEPENDENT, adversarial code reviewer");
+    const [call] = ompArgv();
+    expect(call?.argv).toEqual(expect.arrayContaining(["--profile", "houge", "--no-tools", "--no-extensions", "--no-session", "--model", "kimi-code/k3"]));
+    expect(call?.stdin).toContain("fix the 猴哥 bug");
+    expect(call?.stdin).toContain("diff --git a/x b/x");
+    expect(call?.stdin).toContain("INDEPENDENT, adversarial code reviewer");
   });
 
-  it("confines the kimi reviewer to a NO-TOOLS agent (tools: []) — the writer≠checker isolation fix", async () => {
-    const { dir, agentFile } = writeKimiReviewerAgent();
-    temps.push(dir);
-    const yaml = readFileSync(agentFile, "utf8");
-    // tools: [] strips Shell/ReadFile/etc., so a prompt-injected diff can't make the reviewer
-    // read/write the host (proven live: an unconfined kimi-cli read a secret + wrote into the repo).
-    expect(yaml).toContain("tools: []");
-    expect(yaml).toContain("system_prompt_path: ./reviewer-system.md");
-    expect(existsSync(join(dir, "reviewer-system.md"))).toBe(true);
-  });
-
-  it("passes --model to kimi-cli when HOUGE_KIMI_CLI_MODEL is set", async () => {
-    const argvFile = join(mkdtempSync(join(tmpdir(), "houge-rev-cap-")), "argv");
-    temps.push(argvFile);
-    const bin = capturingBin("kimi-cli", kimiOutput('{"verdict":"pass"}'), { argvFile });
-
-    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
-      task: "fix it",
-      diff: "the diff",
-      env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin, HOUGE_KIMI_CLI_MODEL: "kimi-for-coding" }
-    });
-    expect(result.ok).toBe(true);
-
-    const argv = readFileSync(argvFile, "utf8").trim().split("\n");
-    expect(argv.slice(0, 5)).toEqual(["--print", "--quiet", "--final-message-only", "--input-format", "text"]);
-    expect(argv).toContain("--agent-file");
-    expect(argv.slice(-2)).toEqual(["--model", "kimi-for-coding"]);
-  });
-
-  it("maps a missing kimi-cli binary (ENOENT) to a clean error", async () => {
-    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
-      task: "t",
-      diff: "d",
-      env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: "/nonexistent/kimi-cli-xyz" }
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toMatch(/not found/);
+  it("falls through the reviewer chain inside the seat: a dead kimi leg → the claude leg's verdict", async () => {
+    const env = ompEnv({ "kimi-code/k3": { exit: 1, stderr: "401 unauthenticated" }, "*": { text: '{"verdict":"pass"}' } });
+    const sink = recordingSink();
+    const result = await reviewDiff({ audit: sink, task: "t", diff: "d", env });
+    expect(result.ok && result.reviewer).toBe("omp");
+    expect(sink.attempts.map((a) => [a.provider, a.outcome])).toEqual([["kimi-code", "error"], ["google-antigravity", "ok"]]);
   });
 });
 
 describe("reviewDiff — H1 fallback chain (unavailable → next backend; a delivered verdict is terminal)", () => {
   it("records the winning backend on a primary success (attribution)", async () => {
-    const bin = fakeBin("kimi-cli", kimiOutput('{"verdict":"pass","fixes_task":true}'));
-    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK, task: "t", diff: "d", env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: bin } });
+    const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK, task: "t", diff: "d", env: ompEnv({ "*": { text: '{"verdict":"pass","fixes_task":true}' } }) });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.reviewer).toBe("kimi");
+    if (result.ok) expect(result.reviewer).toBe("omp");
   });
 
-  it("a fallback REJECT is a delivered verdict (never an error): kimi unavailable → codex's reject is returned", async () => {
+  it("a fallback REJECT is a delivered verdict (never an error): omp unavailable → codex's reject is returned", async () => {
     const codex = fakeBin("codex", codexJsonl('{"verdict":"reject","reasons":["scope creep"]}'));
     const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "fix it",
       diff: "the diff",
       env: {
-        HOUGE_SELFWRITE_REVIEWER: "kimi",
-        HOUGE_KIMI_CLI_BIN: "/nonexistent/kimi-cli-xyz",
+        ...NO_OMP,
         HOUGE_CODEX_ENABLED: "1",
         HOUGE_CODEX_BIN: codex
       }
@@ -365,8 +274,8 @@ describe("reviewDiff — H1 fallback chain (unavailable → next backend; a deli
     }
   });
 
-  it("a DELIVERED verdict from the configured reviewer ends the chain: kimi's reject → codex never probed", async () => {
-    const kimi = fakeBin("kimi-cli", kimiOutput('{"verdict":"reject","reasons":["scope creep"]}'));
+  it("a DELIVERED verdict from the configured reviewer ends the chain: omp's reject → codex never probed", async () => {
+    const omp = ompEnv({ "*": { text: '{"verdict":"reject","reasons":["scope creep"]}' } });
     const codexArgv = join(mkdtempSync(join(tmpdir(), "houge-rev-cap-")), "argv");
     temps.push(codexArgv);
     const codex = capturingBin("codex", codexJsonl('{"verdict":"pass"}'), { argvFile: codexArgv });
@@ -374,8 +283,7 @@ describe("reviewDiff — H1 fallback chain (unavailable → next backend; a deli
       task: "fix it",
       diff: "the diff",
       env: {
-        HOUGE_SELFWRITE_REVIEWER: "kimi",
-        HOUGE_KIMI_CLI_BIN: kimi,
+        ...omp,
         HOUGE_CODEX_ENABLED: "1",
         HOUGE_CODEX_BIN: codex
       }
@@ -383,7 +291,7 @@ describe("reviewDiff — H1 fallback chain (unavailable → next backend; a deli
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.verdict.verdict).toBe("reject"); // never fallen past to codex's pass
-      expect(result.reviewer).toBe("kimi");
+      expect(result.reviewer).toBe("omp");
     }
     expect(existsSync(codexArgv)).toBe(false); // codex never spawned
   });
@@ -395,24 +303,23 @@ describe("reviewDiff — H1 fallback chain (unavailable → next backend; a deli
     const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "t",
       diff: "d",
-      env: { HOUGE_SELFWRITE_REVIEWER: "kimi", HOUGE_KIMI_CLI_BIN: "/nonexistent/kimi-cli-xyz", HOUGE_CODEX_BIN: codex }
+      env: { ...NO_OMP, HOUGE_CODEX_BIN: codex }
     });
-    expect(result.ok).toBe(false); // kimi ENOENT, codex disabled → chain exhausted
+    expect(result.ok).toBe(false); // omp unreachable, codex disabled → chain exhausted
     if (!result.ok) {
-      expect(result.error).toMatch(/kimi reviewer binary not found/);
+      expect(result.error).toMatch(/omp reviewer unavailable/);
       expect(result.error).toMatch(/codex reviewer skipped \(not configured\)/);
     }
     expect(existsSync(codexArgv)).toBe(false); // disabled → never spawned
   });
 
-  it("falls through to an ENABLED codex when kimi is unavailable", async () => {
+  it("falls through to an ENABLED codex when omp is unavailable", async () => {
     const codex = fakeBin("codex", codexJsonl('{"verdict":"pass","fixes_task":true}'));
     const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "fix it",
       diff: "the diff",
       env: {
-        HOUGE_SELFWRITE_REVIEWER: "kimi",
-        HOUGE_KIMI_CLI_BIN: "/nonexistent/kimi-cli-xyz",
+        ...NO_OMP,
         HOUGE_CODEX_ENABLED: "1",
         HOUGE_CODEX_BIN: codex
       }
@@ -426,38 +333,38 @@ describe("reviewDiff — H1 fallback chain (unavailable → next backend; a deli
       task: "t",
       diff: "d",
       env: {
-        HOUGE_SELFWRITE_REVIEWER: "kimi",
-        HOUGE_KIMI_CLI_BIN: "/nonexistent/kimi-cli-xyz",
+        ...NO_OMP,
         HOUGE_CODEX_ENABLED: "1",
         HOUGE_CODEX_BIN: "/nonexistent/codex-xyz"
       }
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error).toMatch(/kimi reviewer binary not found/);
+      expect(result.error).toMatch(/omp reviewer unavailable/);
       expect(result.error).toMatch(/Codex reviewer binary not found/);
     }
   });
 
-  it("the chain honors the configured reviewer FIRST (codex configured → kimi is the fallback, never reached)", async () => {
+  it("the chain honors the configured reviewer FIRST (codex configured → omp is the fallback, never reached)", async () => {
     const codex = fakeBin("codex", codexJsonl('{"verdict":"pass"}'));
-    const kimi = fakeBin("kimi-cli", kimiOutput('{"verdict":"reject","reasons":["should not be reached"]}'));
+    const omp = ompEnv({ "*": { text: '{"verdict":"reject","reasons":["should not be reached"]}' } });
     const result = await reviewDiff({ audit: UNAUDITED_TEST_SINK,
       task: "t",
       diff: "d",
-      env: { HOUGE_SELFWRITE_REVIEWER: "codex", HOUGE_CODEX_ENABLED: "1", HOUGE_CODEX_BIN: codex, HOUGE_KIMI_CLI_BIN: kimi }
+      env: { ...omp, HOUGE_SELFWRITE_REVIEWER: "codex", HOUGE_CODEX_ENABLED: "1", HOUGE_CODEX_BIN: codex }
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.reviewer).toBe("codex");
       expect(result.verdict.verdict).toBe("pass");
     }
+    expect(ompArgv()).toEqual([]); // omp never spawned
   });
 });
 
 describe("reviewDiff — per-leg audit (Task 12 fix 2: the reviewer's own fallback chain, audited)", () => {
-  it("records one attempt per actually-tried leg, in order: two failing kimi-cli attempts then the codex fallback's ok", async () => {
-    const kimi = fakeBin("kimi-cli", "no json here, sorry");
+  it("records one attempt per actually-tried leg, in order: every omp reviewer leg then the codex fallback's ok", async () => {
+    const omp = ompEnv({ "*": { exit: 1, stderr: "429 usage limit reached" } });
     const codex = fakeBin("codex", codexJsonl('{"verdict":"pass","fixes_task":true}'));
     const sink = recordingSink();
     const result = await reviewDiff({
@@ -465,16 +372,15 @@ describe("reviewDiff — per-leg audit (Task 12 fix 2: the reviewer's own fallba
       task: "fix it",
       diff: "the diff",
       env: {
-        HOUGE_SELFWRITE_REVIEWER: "kimi",
-        HOUGE_KIMI_CLI_BIN: kimi,
+        ...omp,
         HOUGE_CODEX_ENABLED: "1",
         HOUGE_CODEX_BIN: codex
       }
     });
     expect(result.ok).toBe(true);
     expect(sink.attempts.map((a) => [a.provider, a.outcome])).toEqual([
-      ["kimi-cli", "error"],
-      ["kimi-cli", "error"],
+      ["kimi-code", "error"],
+      ["google-antigravity", "error"],
       ["codex", "ok"]
     ]);
   });

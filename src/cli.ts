@@ -340,7 +340,8 @@ if (command === "run") {
   const { parseReplayArgs, runReplay, REPLAY_OUT_PATH } = await import("./jev/replay.js");
   const { formatReplayReport } = await import("./jev/replay-report.js");
   const { createJevClient } = await import("./jev/jev-client.js");
-  const { createLlmAnswerAdapter } = await import("./capabilities/llm-answer.js");
+  const { oneShotAdapter } = await import("./llm/registry.js");
+  const { resolveOmpConfig } = await import("./omp/omp-config.js");
   const args = parseReplayArgs(rest.slice(1));
   if (!args.ok) {
     console.error(args.error);
@@ -355,20 +356,14 @@ if (command === "run") {
       retries: 3,
       timeoutMs: 15_000
     });
-    const llm = createLlmAnswerAdapter({
-      ...brokerOption,
-      audit: store.llmAuditSink({ correlation_id: "cli:jev-replay", role: "classify_replay_llm" }),
-      meteredBreached: () => store.meteredFuseLatched()
-    });
+    const llm = oneShotAdapter(store, resolveOmpConfig(process.env), { correlation_id: "cli:jev-replay", role: "classify_replay_llm" });
     const outcome = await runReplay({
       store,
       env: process.env,
       jev,
       classifyLlm: async (question, system) => {
-        const r = await llm({ question, system });
-        return r.ok && typeof r.output.answer === "string"
-          ? { ok: true as const, raw: r.output.answer }
-          : { ok: false as const, error: r.ok ? "no answer" : r.error };
+        const r = await llm.answer({ question, system });
+        return r.ok ? { ok: true as const, raw: r.answer } : { ok: false as const, error: r.error };
       },
       outPath: REPLAY_OUT_PATH,
       maxUsd: args.maxUsd,
@@ -390,20 +385,15 @@ if (command === "run") {
   // invocation runs one pass immediately (flag-gated + interval-latched like the daemon tick).
   const dryRun = rest.includes("--dry-run");
   const { runLessonConsolidateTick } = await import("./capabilities/lesson-consolidate.js");
-  const { createLlmAnswerAdapter } = await import("./capabilities/llm-answer.js");
+  const { oneShotAdapter } = await import("./llm/registry.js");
+  const { resolveOmpConfig } = await import("./omp/omp-config.js");
 
   const store = RunStore.open("houge.sqlite", storeOptions);
   try {
-    const llmAdapter = createLlmAnswerAdapter({
-      ...brokerOption,
-      audit: store.llmAuditSink({ correlation_id: "cli:lessons-consolidate", role: "consolidate" }),
-      meteredBreached: () => store.meteredFuseLatched()
-    });
+    const seat = oneShotAdapter(store, resolveOmpConfig(process.env), { correlation_id: "cli:lessons-consolidate", role: "consolidate" });
     const llmAnswer = async (input: { question: string; system: string }) => {
-      const read = await llmAdapter({ question: input.question, system: input.system });
-      return read.ok && typeof read.output.answer === "string"
-        ? ({ ok: true, answer: read.output.answer } as const)
-        : ({ ok: false } as const);
+      const read = await seat.answer(input);
+      return read.ok ? ({ ok: true, answer: read.answer } as const) : ({ ok: false } as const);
     };
 
     const result = await runLessonConsolidateTick({
@@ -447,20 +437,15 @@ if (command === "run") {
   // the daemon tick).
   const dryRun = rest.includes("--dry-run");
   const { renderRadarProposals, runIdeaRadarTick } = await import("./capabilities/idea-radar.js");
-  const { createLlmAnswerAdapter } = await import("./capabilities/llm-answer.js");
+  const { oneShotAdapter } = await import("./llm/registry.js");
+  const { resolveOmpConfig } = await import("./omp/omp-config.js");
 
   const store = RunStore.open("houge.sqlite", storeOptions);
   try {
-    const llmAdapter = createLlmAnswerAdapter({
-      ...brokerOption,
-      audit: store.llmAuditSink({ correlation_id: "cli:radar", role: "extract" }),
-      meteredBreached: () => store.meteredFuseLatched()
-    });
+    const seat = oneShotAdapter(store, resolveOmpConfig(process.env), { correlation_id: "cli:radar", role: "extract" });
     const llmAnswer = async (input: { question: string; system: string }) => {
-      const read = await llmAdapter({ question: input.question, system: input.system });
-      return read.ok && typeof read.output.answer === "string"
-        ? ({ ok: true, answer: read.output.answer } as const)
-        : ({ ok: false } as const);
+      const read = await seat.answer(input);
+      return read.ok ? ({ ok: true, answer: read.answer } as const) : ({ ok: false } as const);
     };
 
     const result = await runIdeaRadarTick({
@@ -492,63 +477,17 @@ if (command === "run") {
   // A non-dry invocation runs one flag-gated + latched pass: brief written (real repo
   // root), but chatId null → no push (the daemon owns the weekly digest).
   const dryRun = rest.includes("--dry-run");
-  const { PANEL_JUDGE_PROVIDERS, renderPanelProposals, runIdeaPanelTick } = await import(
-    "./capabilities/idea-panel.js"
-  );
-  const { spawnCodexJudge, spawnPanelChair, unavailableChairSeat } = await import("./capabilities/idea-panel-seats.js");
-  const { createLlmAnswerAdapter } = await import("./capabilities/llm-answer.js");
+  const { renderPanelProposals, runIdeaPanelTick } = await import("./capabilities/idea-panel.js");
+  const { buildOmpPanelSeats } = await import("./capabilities/idea-panel-seats.js");
 
   const store = RunStore.open("houge.sqlite", storeOptions);
   try {
-    // PINNED single-provider judges (spec §1: never a chain — a healthy-leg fallback would
-    // silently void model diversity and the quorum semantics). Same wrapper the daemon uses.
-    const pinnedJudge = (providers: string) => {
-      const adapter = createLlmAnswerAdapter({
-        ...brokerOption,
-        providers,
-        audit: store.llmAuditSink({ correlation_id: "cli:radar-panel", role: "judge" }),
-        meteredBreached: () => store.meteredFuseLatched()
-      });
-      return async (input: { question: string; system: string }) => {
-        const read = await adapter({ question: input.question, system: input.system });
-        return read.ok && typeof read.output.answer === "string"
-          ? ({ ok: true, answer: read.output.answer } as const)
-          : ({ ok: false } as const);
-      };
-    };
-    const chairBroker = broker;
-    const seats = {
-      // Same pinning the daemon uses — imported, never re-typed, so the two panel seat sites
-      // cannot drift apart again (this one was missed in the CLI-only migration and kept firing
-      // the metered APIs, including on the `--dry-run` pre-arm gate).
-      judges: {
-        kimi: pinnedJudge(PANEL_JUDGE_PROVIDERS.kimi),
-        gemini: pinnedJudge(PANEL_JUDGE_PROVIDERS.gemini)
-      },
-      codexJudge: (input: { digest: string; system: string }) =>
-        spawnCodexJudge({
-          digest: input.digest,
-          system: input.system,
-          env: process.env,
-          audit: store.llmAuditSink({ correlation_id: "cli:radar-panel", role: "judge" })
-        }),
-      // The chair's OAuth token is broker-held (spec §§2–3) — firewall OFF ⇒ chair
-      // unavailable ⇒ the tick's deterministic mean-score fallback (self-describing output).
-      chair: chairBroker
-        ? (input: { digest: string; system: string }) =>
-            spawnPanelChair({
-              digest: input.digest,
-              system: input.system,
-              broker: chairBroker,
-              env: process.env,
-              audit: store.llmAuditSink({ correlation_id: "cli:radar-panel", role: "chair" })
-            })
-        : unavailableChairSeat(store.llmAuditSink({ correlation_id: "cli:radar-panel", role: "chair" }))
-    };
+    // The SAME seat builder the daemon uses (idea-panel-seats), so the two panel sites cannot drift.
+    const seats = buildOmpPanelSeats({ store, correlation_id: "cli:radar-panel", env: process.env });
 
     if (dryRun) {
       // §13.1: say the cost out loud — run this deliberately, not in a loop.
-      console.log("dry-run cost: 2 metered calls + 2 subscription spawns");
+      console.log("dry-run cost: 4 omp subscription one-shots (3 judges + chair)");
     }
     const result = await runIdeaPanelTick({
       store,

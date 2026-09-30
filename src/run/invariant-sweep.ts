@@ -1,3 +1,4 @@
+import { statfsSync } from "node:fs";
 import type { RunStore } from "./run-store.js";
 import { readParkMarker } from "./tombstone.js";
 
@@ -63,6 +64,8 @@ export const INCIDENT_REOPEN_QUIET_MS = 30 * 60 * 1000;
  */
 export const LLM_LEG_FAILING_MIN_ATTEMPTS = 3;
 export const LLM_LEG_FAILING_WINDOW_MS = 24 * 60 * 60 * 1000;
+/** Free bytes on the data volume below which the omp session and ledger writes are at risk (spec §8). */
+export const DISK_FREE_LOW_BYTES = 2 * 1024 ** 3;
 
 export type IncidentKind =
   | "duplicate_schedule"
@@ -71,7 +74,9 @@ export type IncidentKind =
   | "overdue_schedule"
   | "failed_schedule"
   | "heartbeat_gap"
-  | "llm_leg_failing";
+  | "llm_leg_failing"
+  | "disk_free_low"
+  | "wall_collapsed";
 
 export interface InvariantViolation {
   kind: IncidentKind;
@@ -112,13 +117,45 @@ export function buildSweepSummaryText(opened: number, suppressed: number): strin
   );
 }
 
+/** The omp-runtime invariants' inputs (spec §8): the previous sweep instant and the data volume. */
+export interface OmpSweepProbe {
+  /** The previous sweep's instant; null on the first sweep. */
+  since?: string | null;
+  /** The data volume to check; absent → the disk invariant is not evaluated (hermetic callers). */
+  dataDir?: string;
+  statfs?: (dir: string) => { bavail: number | bigint; bsize: number | bigint };
+}
+
+/**
+ * `disk_free_low`: free bytes on the data volume under {@link DISK_FREE_LOW_BYTES}. `wall_collapsed`
+ * (D10): any `wall_collapse` row since the previous sweep — open while reads keep collapsing onto the
+ * planner's family, resolved by the first clean sweep. A statfs failure is not a violation (the
+ * sweep senses, it does not guess).
+ */
+export function detectOmpViolations(store: RunStore, probe: OmpSweepProbe): InvariantViolation[] {
+  const out: InvariantViolation[] = [];
+  if (probe.dataDir) {
+    try {
+      const fs = (probe.statfs ?? statfsSync)(probe.dataDir);
+      const free = Number(fs.bavail) * Number(fs.bsize);
+      if (free < DISK_FREE_LOW_BYTES) out.push({ kind: "disk_free_low", subject: "data_volume", detail: { free_mb: Math.floor(free / 1024 ** 2) } });
+    } catch (error) {
+      console.warn(`[invariant-sweep] statfs failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const collapses = store.countWallCollapsesSince(probe.since ?? null);
+  if (collapses > 0) out.push({ kind: "wall_collapsed", subject: "reader", detail: { collapses } });
+  return out;
+}
+
 /** Pure detection: compose the store's seven invariant queries into a flat violation list. */
 export function detectViolations(
   store: RunStore,
   now: string,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  probe: OmpSweepProbe = {}
 ): InvariantViolation[] {
-  const violations: InvariantViolation[] = [];
+  const violations: InvariantViolation[] = [...detectOmpViolations(store, probe)];
 
   for (const row of store.findDuplicateEnabledSchedules()) {
     violations.push({
@@ -179,6 +216,9 @@ export interface InvariantSweepInput {
   env?: NodeJS.ProcessEnv | undefined;
   /** Telegram chat for alerts; omit and the sweep still records incidents silently. */
   chat_id?: string | undefined;
+  /** The data volume for `disk_free_low` (the daemon passes houge.sqlite's directory). */
+  dataDir?: string;
+  statfs?: OmpSweepProbe["statfs"];
 }
 
 /**
@@ -201,10 +241,14 @@ export function runInvariantSweep(input: InvariantSweepInput): InvariantSweepRes
   // The latch is claimed BEFORE detection on purpose: if detection throws, the daemon's
   // try/catch swallows it and the next sweep waits a full interval — a crash degrades to
   // "sweeps less often", never to "sweeps every 30s in a hot loop".
+  // The previous instant is read BEFORE the claim moves it: `wall_collapsed` counts rows since then.
+  const since = input.store.getInvariantSweepState()?.last_swept_at ?? null;
   if (!input.store.claimInvariantSweep(input.now, resolveInvariantSweepIntervalMs(env))) return result;
   result.swept = true;
 
-  const violations = detectViolations(input.store, input.now, env);
+  const violations = detectViolations(input.store, input.now, env, {
+    since, ...(input.dataDir ? { dataDir: input.dataDir } : {}), ...(input.statfs ? { statfs: input.statfs } : {})
+  });
   const seen = new Set<string>();
   let alertsSent = 0;
 

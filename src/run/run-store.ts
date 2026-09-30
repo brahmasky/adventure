@@ -4220,6 +4220,14 @@ export class RunStore {
     return { subject: "daemon", gap_minutes: Math.floor(gapMs / 60000) };
   }
 
+  /** D10 sweep: how many `wall_collapse` rows landed after `since` (every row when null — the first sweep). Counts only. */
+  countWallCollapsesSince(since: string | null): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM ledger_events WHERE event_type = 'wall_collapse' AND (? IS NULL OR occurred_at > ?)
+    `).get<{ count: number }>(since, since);
+    return row?.count ?? 0;
+  }
+
   /** Enabled schedules for one chat (the per-chat creation cap). */
   countActiveSchedules(chat_id: string): number {
     const row = this.db.prepare(`
