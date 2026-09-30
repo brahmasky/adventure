@@ -39,7 +39,7 @@ function renderSystemPrompt(d: TurnContextDeps, chatId: string): string {
   assertChatId(chatId);
   // The date line makes the fingerprint flip daily (UTC midnight): intended, it restarts the child at the next turn so the date stays true.
   return composeSystemPrompt(d.memoryRoot, "omp", {
-    now: d.now?.(),
+    ...(d.now ? { now: d.now() } : {}),
     lessonsReader: d.lessonsReader,
     lessonsScope: SCOPE,
     skillsReader: d.skillsReader,
