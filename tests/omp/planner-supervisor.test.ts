@@ -364,6 +364,22 @@ describe("PlannerSupervisor — aborts are per turn and bounded (fix round 1)", 
   });
 });
 
+describe("PlannerSupervisor — shutdown never orphans a queued turn (Task 13 fix round 1, I-2)", () => {
+  it("shutdown fails every queued, unstarted request planner_exit (nothing dispatches queued runs at boot)", async () => {
+    const session = fakeSession({ onPrompt: () => undefined });
+    const { store, sup, outcome } = harness(session);
+    const a = createQueuedTurnRun(store); const q1 = createQueuedTurnRun(store); const q2 = createQueuedTurnRun(store);
+    sup.submit(req(a)); sup.submit(req(q1)); sup.submit(req(q2));
+    await new Promise((r) => setTimeout(r, 30));
+    await sup.shutdown();
+    for (const q of [q1, q2]) {
+      expect(failedOf(outcome, q)).toMatchObject({ error_type: "planner_exit", error_ref: "daemon shutdown" });
+      expect(store.getRunState(q)).toBe("failed");
+    }
+    expect(store.getRunState(a)).toBe("failed");
+  });
+});
+
 describe("PlannerSupervisor — model errors, incidents, crash guard (fix round 1)", () => {
   it("a non-retryable error on a later leg fails model_error with no incident and no further fallback", async () => {
     let calls = 0;

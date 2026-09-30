@@ -5,7 +5,7 @@ import type { CoreWorker } from "../../src/core/core-worker.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { mediaFailureReply, type TelegramMediaRef } from "../../src/media/media-config.js";
-import { KILLED_TEXT, PlannerSupervisor } from "../../src/omp/planner-supervisor.js";
+import { KILLED_TEXT, PLANNER_EXIT_TEXT, PlannerSupervisor } from "../../src/omp/planner-supervisor.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { pinOmpEnv, shortTmp, useFakeOmp } from "../helpers/omp-env.js";
 import { drainOutbox, fakeLog, ompWorker, until } from "../helpers/omp-worker.js";
@@ -175,5 +175,21 @@ describe("media turns never steer (fix round 1, I-1)", () => {
     spy.mockRestore();
     expect(seen.find((r) => r.run_id === text)?.needsIngest).toBeUndefined();
     expect(seen.find((r) => r.run_id === media)?.needsIngest).toBe(true);
+  });
+});
+
+describe("shutdown with turns still queued (fix round 1, I-2)", () => {
+  it("every queued turn fails planner_exit and its reply is queued for the exit flush", async () => {
+    useFakeOmp({ "*": { rpcHangAfterPrompt: true } }, tmp.dir);
+    worker = ompWorker(store, tmp.dir);
+    const runs = [createQueuedTurnRun(store, "one"), createQueuedTurnRun(store, "two"), createQueuedTurnRun(store, "three")];
+    for (const r of runs) worker.submitTurn(r);
+    await until(() => fakeLog(join(tmp.dir, "argv.log")).some((l) => (l.cmd as { type?: string } | undefined)?.type === "prompt"));
+    await worker.shutdownPlanners();
+    const out = drainOutbox(store);
+    for (const r of runs) {
+      expect(state(r)).toBe("failed");
+      expect(out.get(`${r}:final_report`)?.text).toBe(PLANNER_EXIT_TEXT);
+    }
   });
 });

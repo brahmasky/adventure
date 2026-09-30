@@ -173,14 +173,15 @@ export class PlannerSupervisor {
 
   /** /kill and a guard pause: every queued run fails `killed`, the live turn aborts, the child stops (≈5 s bound). */
   async abortAll(reason: "killed" | "guard"): Promise<void> {
-    this.failQueued(reason);
+    this.failQueued("killed", reason);
     await this.abortTurn("killed", reason);
     await bounded(this.draining ?? Promise.resolve(), ABORT_GRACE_MS);
     await this.stopSession();
   }
 
+  /** Daemon exit: nothing dispatches queued runs at boot, so every unstarted request fails planner_exit now (never orphaned). */
   async shutdown(): Promise<void> {
-    this.queue.length = 0; // left queued in the DB: the next boot dispatches them
+    this.failQueued("planner_exit", "daemon shutdown");
     const t = this.turn;
     if (t) { t.failure ??= { type: "planner_exit", ref: "daemon shutdown" }; this.clearTimers(t); t.live = false; t.done("abort"); }
     await bounded(this.draining ?? Promise.resolve(), ABORT_GRACE_MS);
@@ -188,11 +189,11 @@ export class PlannerSupervisor {
   }
 
   /** A queued run is claimed under its own planner owner so it can be failed (never left `queued`). */
-  private failQueued(reason: string): void {
+  private failQueued(type: "killed" | "planner_exit", reason: string): void {
     const { store, cfg, chatId, outcome } = this.d;
     for (const q of this.queue.splice(0)) {
       const worker = `planner:${chatId}:${randomUUID()}`;
-      if (store.claimRun(q.run_id, worker, cfg.leaseTtlS)) outcome.fail({ run_id: q.run_id, worker_id: worker, error_type: "killed", error_ref: reason });
+      if (store.claimRun(q.run_id, worker, cfg.leaseTtlS)) outcome.fail({ run_id: q.run_id, worker_id: worker, error_type: type, error_ref: reason });
     }
   }
 
