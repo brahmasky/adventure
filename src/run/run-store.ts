@@ -27,6 +27,7 @@ import {
   appendLedgerEvent,
   createLedgerEvent,
   readLedgerEvents,
+  readLedgerEventsByCorrelation,
   type LedgerActor,
   type LedgerEvent,
   type LedgerEventType
@@ -101,6 +102,70 @@ export type CreateOrGetResult =
 export interface ClaimedRun {
   run_id: string;
   contract: CompiledTaskContract;
+}
+
+export type PlannerFailure =
+  | "planner_exit"
+  | "lease_lost"
+  | "lease_expired"
+  | "killed"
+  | "no_planner_leg"
+  | "turn_timeout"
+  | "frame_idle"
+  | "merged_parent_failed";
+
+export type FinishRunInput =
+  | {
+      run_id: string;
+      expected_worker_id: string;
+      next: "completed";
+      report_ref: string;
+      duration_ms: number;
+      tool_calls: number;
+    }
+  | {
+      run_id: string;
+      expected_worker_id: string;
+      next: "failed";
+      error_type: PlannerFailure;
+      error_ref: string;
+    };
+
+export interface ToolApprovalInput {
+  run_id: string;
+  worker_id: string;
+  tool_call_id: string;
+  capability: string;
+  input_hash: string;
+  action_fingerprint: string;
+  requester: Identity;
+  summary: string;
+  side_effect_level: SideEffectLevel;
+  expires_at: string;
+}
+
+export interface ToolApprovalRow extends ToolApprovalInput {
+  approval_id: string;
+  state: "pending" | "approved" | "denied" | "expired" | "consumed";
+  created_at: string;
+  resolved_at: string | null;
+}
+
+interface ToolApprovalDbRow {
+  approval_id: string;
+  run_id: string;
+  worker_id: string;
+  tool_call_id: string;
+  capability: string;
+  input_hash: string;
+  action_fingerprint: string;
+  requester_json: string;
+  summary: string;
+  side_effect_level: SideEffectLevel;
+  state: ToolApprovalRow["state"];
+  created_at: string;
+  expires_at: string;
+  resolved_at: string | null;
 }
 
 export type LeaseRecovery =
@@ -896,6 +961,10 @@ export class RunStore {
     return readLedgerEvents(this.db, run_id);
   }
 
+  getLedgerEventsByCorrelation(correlation_id: string): LedgerEvent[] {
+    return readLedgerEventsByCorrelation(this.db, correlation_id);
+  }
+
   getRunStatus(run_id: string): RunStatusRow | undefined {
     return this.db.prepare(`
       SELECT
@@ -1397,12 +1466,57 @@ export class RunStore {
     });
   }
 
-  recordRunFailed(run_id: string, error_ref: string, recoverable: boolean): void {
+  recordRunFailed(
+    run_id: string,
+    error_ref: string,
+    recoverable: boolean,
+    error_type: string = "worker_error"
+  ): void {
     this.appendRunLedgerEvent(run_id, "run_failed", "core", {
-      error_type: "worker_error",
+      error_type,
       error_ref,
       recoverable
     });
+  }
+
+  /**
+   * Atomic, owner-checked terminal write for a detached planner turn (spec §7.1): the state
+   * flip and the terminal ledger event commit together, and only the current lease owner wins —
+   * a stale supervisor whose run was reclaimed gets `false` and writes nothing.
+   */
+  finishRun(input: FinishRunInput): boolean {
+    let active = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    active = true;
+    try {
+      const updated = this.db.prepare(`
+        UPDATE runs SET state = ?, worker_id = NULL, lease_expires_at = NULL, updated_at = ?
+        WHERE run_id = ? AND worker_id = ? AND state = 'running'
+      `).run(input.next, new Date().toISOString(), input.run_id, input.expected_worker_id);
+      if (updated.changes === 1) {
+        if (input.next === "completed") {
+          this.appendRunLedgerEvent(input.run_id, "run_completed", "core", {
+            report_ref: input.report_ref,
+            budget_used: { tool_calls: input.tool_calls },
+            duration_ms: input.duration_ms
+          });
+        } else {
+          this.appendRunLedgerEvent(input.run_id, "run_failed", "core", {
+            error_type: input.error_type,
+            error_ref: input.error_ref,
+            recoverable: false
+          });
+        }
+      } else {
+        console.warn(`[run-store] terminal_lost run=${input.run_id} owner=${input.expected_worker_id}`);
+      }
+      this.db.exec("COMMIT");
+      active = false;
+      return updated.changes === 1;
+    } catch (error) {
+      if (active) this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   /**
@@ -1552,6 +1666,11 @@ export class RunStore {
               if (cost !== undefined) payload.cost_usd = cost;
             }
           }
+          if (attempt.credential_id !== undefined) payload.credential_id = attempt.credential_id;
+          if (attempt.ttft_ms !== undefined) payload.ttft_ms = attempt.ttft_ms;
+          if (attempt.family !== undefined) payload.family = attempt.family;
+          if (attempt.family_collapse) payload.family_collapse = true;
+          if (attempt.request_key !== undefined) payload.request_key = attempt.request_key;
           if ("run_id" in scope) {
             this.appendRunLedgerEvent(scope.run_id, "llm_attempt", "capability_runner", payload);
           } else {
@@ -1565,7 +1684,10 @@ export class RunStore {
               })
             );
           }
+          if (attempt.family_collapse) this.appendWallCollapse(scope, attempt, payload);
         } catch (error) {
+          // A repeated request_key is the dedupe contract (unique index): a silent no-op.
+          if (isUniqueConstraintError(error)) return;
           console.warn(
             `[llm-audit] failed to record ${scope.role} attempt (non-fatal): ${
               error instanceof Error ? error.message : String(error)
@@ -1574,6 +1696,32 @@ export class RunStore {
         }
       }
     };
+  }
+
+  private appendWallCollapse(
+    scope: LlmAuditScope,
+    attempt: LlmAttempt,
+    payload: Record<string, unknown>
+  ): void {
+    const collapse = {
+      request_key: attempt.request_key ?? "",
+      family: attempt.family ?? "",
+      provider: attempt.provider,
+      model: String(payload.model ?? "")
+    };
+    if ("run_id" in scope) {
+      this.appendRunLedgerEvent(scope.run_id, "wall_collapse", "capability_runner", collapse);
+      return;
+    }
+    this.appendLedgerEvent(
+      createLedgerEvent({
+        correlation_id: scope.correlation_id,
+        event_type: "wall_collapse",
+        actor: "capability_runner",
+        sequence: this.nextLedgerSequence(),
+        payload: collapse
+      })
+    );
   }
 
   recordEvalCompleted(eval_suite: string, passed: boolean, failed_case_ids: string[]): void {
@@ -1676,6 +1824,20 @@ export class RunStore {
     `).all<RunRow>(now);
 
     return rows.flatMap((row) => {
+      // A planner turn may already have produced side effects: fail it, never requeue (spec §7.2).
+      if ((row.worker_id ?? "").startsWith("planner:")) {
+        const failed = this.db.prepare(`
+          UPDATE runs SET state = 'failed', worker_id = NULL, lease_expires_at = NULL, updated_at = ?
+          WHERE run_id = ? AND state = 'running' AND worker_id = ? AND lease_expires_at = ?
+        `).run(new Date().toISOString(), row.run_id, row.worker_id, row.lease_expires_at);
+        if (failed.changes !== 1) return [];
+        this.appendRunLedgerEvent(row.run_id, "run_failed", "system", {
+          error_type: "lease_expired",
+          error_ref: row.worker_id ?? "",
+          recoverable: false
+        });
+        return [{ run_id: row.run_id, action: "failed" as const }];
+      }
       const nextState: RunState = row.attempt_count < max_attempts ? "queued" : "failed";
       const action: LeaseRecovery["action"] = nextState === "queued" ? "requeued" : "failed";
       const updated = this.db.prepare(`
@@ -4440,12 +4602,15 @@ export class RunStore {
         };
       }
 
-      const result = this.resolveApprovalWithinTransaction({
+      const resolveInput = {
         approval_id: input.event.approval_id ?? "",
         decision: input.decision,
         requester: input.event.requested_by,
         resolved_at: input.resolved_at
-      });
+      };
+      const result = this.getToolApproval(resolveInput.approval_id)
+        ? this.resolveToolApprovalWithinTransaction(resolveInput)
+        : this.resolveApprovalWithinTransaction(resolveInput);
 
       if (result.ok) {
         const approval_id = input.event.approval_id ?? "";
@@ -4474,6 +4639,122 @@ export class RunStore {
       if (activeTransaction) {
         this.db.exec("ROLLBACK");
       }
+      throw error;
+    }
+  }
+
+  createToolApproval(input: ToolApprovalInput): ToolApprovalRow {
+    const approval_id = `appr_${randomUUID()}`;
+    const created_at = new Date().toISOString();
+    let active = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    active = true;
+    try {
+      this.db.prepare(`
+        INSERT INTO tool_approvals (
+          approval_id, run_id, worker_id, tool_call_id, capability, input_hash,
+          action_fingerprint, requester_json, summary, side_effect_level, state, created_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+      `).run(
+        approval_id, input.run_id, input.worker_id, input.tool_call_id, input.capability,
+        input.input_hash, input.action_fingerprint, JSON.stringify(input.requester),
+        input.summary, input.side_effect_level, created_at, input.expires_at
+      );
+      this.appendRunLedgerEvent(input.run_id, "approval_requested", "capability_runner", {
+        approval_id,
+        action_fingerprint: input.action_fingerprint,
+        action_summary: input.summary,
+        side_effect_level: input.side_effect_level,
+        expires_at: input.expires_at
+      });
+      this.assertNotificationQueued(this.enqueueNotification({
+        target: this.getRunNotifyTarget(input.run_id),
+        intent_type: "approval_prompt",
+        idempotency_key: `approval:${approval_id}:prompt`,
+        run_id: input.run_id,
+        approval_id,
+        correlation_id: input.run_id,
+        payload: {
+          text: buildToolApprovalPromptText(approval_id, input, this.redact),
+          action_summary: input.summary
+        }
+      }));
+      this.db.exec("COMMIT");
+      active = false;
+      return { ...input, approval_id, state: "pending", created_at, resolved_at: null };
+    } catch (error) {
+      if (active) this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  getToolApproval(approval_id: string): ToolApprovalRow | null {
+    const row = this.db.prepare(`
+      SELECT * FROM tool_approvals WHERE approval_id = ?
+    `).get<ToolApprovalDbRow>(approval_id);
+    if (!row) return null;
+    const { requester_json, summary, ...rest } = row;
+    return { ...rest, summary, requester: JSON.parse(requester_json) as Identity };
+  }
+
+  /** Single CAS approved -> consumed; valid only while the same owner still holds the run lease. */
+  consumeToolApproval(input: {
+    approval_id: string;
+    run_id: string;
+    worker_id: string;
+    capability: string;
+    action_fingerprint: string;
+    requester: Identity;
+    now: string;
+  }): { ok: true } | { ok: false; code: string } {
+    const row = this.getToolApproval(input.approval_id);
+    if (!row || row.run_id !== input.run_id) return { ok: false, code: "unknown_approval" };
+    if (row.state !== "approved") return { ok: false, code: "not_approved" };
+    if (row.expires_at <= input.now) return { ok: false, code: "expired" };
+    if (row.capability !== input.capability || row.action_fingerprint !== input.action_fingerprint) {
+      return { ok: false, code: "action_mismatch" };
+    }
+    if (row.worker_id !== input.worker_id) return { ok: false, code: "owner_mismatch" };
+    if (!sameIdentity(row.requester, input.requester)) return { ok: false, code: "requester_mismatch" };
+    const updated = this.db.prepare(`
+      UPDATE tool_approvals SET state = 'consumed', resolved_at = COALESCE(resolved_at, ?)
+      WHERE approval_id = ? AND state = 'approved'
+        AND EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND worker_id = ? AND state = 'running')
+    `).run(input.now, input.approval_id, input.run_id, input.worker_id);
+    return updated.changes === 1 ? { ok: true } : { ok: false, code: "lease_lost" };
+  }
+
+  expireToolApproval(approval_id: string, now: string): boolean {
+    const updated = this.db.prepare(`
+      UPDATE tool_approvals SET state = 'expired', resolved_at = ?
+      WHERE approval_id = ? AND state IN ('pending', 'approved')
+    `).run(now, approval_id);
+    return updated.changes === 1;
+  }
+
+  /** Pending approval ids from both tables, oldest first (for `/approvals`). */
+  listPendingApprovalIds(): string[] {
+    return this.db.prepare(`
+      SELECT approval_id, created_at FROM approvals WHERE state = 'pending'
+      UNION ALL
+      SELECT approval_id, created_at FROM tool_approvals WHERE state = 'pending'
+      ORDER BY created_at ASC, approval_id ASC
+    `).all<{ approval_id: string }>().map((r) => r.approval_id);
+  }
+
+  /** @internal Test hook: resolves through the same private resolver `processApprovalTrigger` uses. */
+  resolveToolApprovalForTest(approval_id: string, decision: ApprovalDecision): ApprovalResolutionResult {
+    const row = this.getToolApproval(approval_id);
+    if (!row) return approvalFailure("APPROVAL_NOT_FOUND");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.resolveToolApprovalWithinTransaction({
+        approval_id, decision, requester: row.requester, resolved_at: new Date().toISOString()
+      });
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
       throw error;
     }
   }
@@ -5345,6 +5626,29 @@ export class RunStore {
     };
   }
 
+  private resolveToolApprovalWithinTransaction(input: {
+    approval_id: string;
+    decision: ApprovalDecision;
+    requester: Identity;
+    resolved_at: string;
+  }): ApprovalResolutionResult {
+    const row = this.getToolApproval(input.approval_id);
+    if (!row) return approvalFailure("APPROVAL_NOT_FOUND");
+    if (!sameIdentity(row.requester, input.requester)) {
+      return approvalFailure("APPROVAL_REQUESTER_MISMATCH");
+    }
+    if (row.state === "pending" && row.expires_at <= input.resolved_at) {
+      return approvalFailure("APPROVAL_EXPIRED");
+    }
+    if (row.state !== "pending") return approvalFailure("APPROVAL_NOT_PENDING");
+    const updated = this.db.prepare(`
+      UPDATE tool_approvals SET state = ?, resolved_at = ?
+      WHERE approval_id = ? AND state = 'pending' AND expires_at > ?
+    `).run(input.decision, input.resolved_at, input.approval_id, input.resolved_at);
+    if (updated.changes !== 1) return approvalFailure("APPROVAL_NOT_PENDING");
+    return { ok: true, run_id: row.run_id, status: "approval_resolved" };
+  }
+
   private assertNotificationQueued(result: NotificationQueueResult): void {
     if (result.status === "conflict") {
       throw new Error(result.error);
@@ -5560,6 +5864,7 @@ export class RunStore {
     this.applyIdeaRadarMigration();
     this.applyIdeaPanelMigration();
     this.applySkillReverifyMigration();
+    this.applyOmpRuntimeMigration();
   }
 
   /**
@@ -5729,6 +6034,57 @@ export class RunStore {
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS skill_reverify_state (id INTEGER PRIMARY KEY, last_run_at TEXT);
         INSERT OR IGNORE INTO skill_reverify_state (id) VALUES (1);
+      `);
+
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
+   * omp runtime (spec 2026-09-30 §7, §8): `tool_approvals` (per-tool-call approvals for detached
+   * planner turns, one per (run, tool_call)) and the `llm_attempt` request_key unique index
+   * that makes audit replays idempotent. Rows without a request_key are outside the index.
+   */
+  private applyOmpRuntimeMigration(): void {
+    const version = "2026-10-01-omp-runtime";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS tool_approvals (
+          approval_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          worker_id TEXT NOT NULL,
+          tool_call_id TEXT NOT NULL,
+          capability TEXT NOT NULL,
+          input_hash TEXT NOT NULL,
+          action_fingerprint TEXT NOT NULL,
+          requester_json TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          side_effect_level TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('pending','approved','denied','expired','consumed')),
+          created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          resolved_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS tool_approvals_one_per_call ON tool_approvals(run_id, tool_call_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS ledger_llm_attempt_request_key
+          ON ledger_events(correlation_id, json_extract(payload_json, '$.request_key'))
+          WHERE event_type = 'llm_attempt' AND json_extract(payload_json, '$.request_key') IS NOT NULL;
       `);
 
       if (!applied) {
@@ -7126,6 +7482,22 @@ function buildApprovalPromptText(
     "Expected run state: waiting_for_approval",
     "Consequence if approved: the exact fingerprinted action may execute once after policy revalidation.",
     "Consequence if denied or expired: the run is cancelled and reports the blocked action.",
+    `Reply /approve ${approval_id} to continue or /deny ${approval_id} to stop.`
+  ].join("\n"));
+}
+
+function buildToolApprovalPromptText(
+  approval_id: string,
+  input: ToolApprovalInput,
+  redact: (s: string) => string = (s) => s
+): string {
+  return redact([
+    `Approval required: ${approval_id}`,
+    `Action: ${input.summary}`,
+    `Side effect: ${input.side_effect_level}`,
+    `Capability: ${input.capability}`,
+    `Requester: ${input.requester.kind}:${input.requester.id}`,
+    `Expires: ${input.expires_at}`,
     `Reply /approve ${approval_id} to continue or /deny ${approval_id} to stop.`
   ].join("\n"));
 }

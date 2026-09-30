@@ -68,7 +68,8 @@ export type LedgerEventType =
   | "project_state_changed"
   | "incident_opened"
   | "incident_resolved"
-  | "google_api_call_completed";
+  | "google_api_call_completed"
+  | "wall_collapse";
 
 export interface LedgerEvent {
   event_id: string;
@@ -247,7 +248,10 @@ const requiredPayloadFields = {
   incident_resolved: ["incident_id", "kind", "subject", "open_minutes"],
   // ADR 0025: Google API surface (gmail_read / google_api). Counts and deterministic
   // identifiers ONLY — never mail content or API response text.
-  google_api_call_completed: ["service", "op", "count", "extracted_codes", "extracted_links"]
+  google_api_call_completed: ["service", "op", "count", "extracted_codes", "extracted_links"],
+  // omp runtime (D10): a chain leg answered from a different model family than the wall expects.
+  // Ids and names only.
+  wall_collapse: ["request_key", "family", "provider", "model"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(
@@ -321,21 +325,32 @@ export function readLedgerEvents(db: LedgerDatabase, run_id?: string): LedgerEve
     ? db.prepare(sql).all<LedgerEventRow>(run_id)
     : db.prepare(sql).all<LedgerEventRow>();
 
-  return rows.map((row) => {
-    const event: LedgerEvent = {
-      event_id: row.event_id,
-      correlation_id: row.correlation_id,
-      event_type: row.event_type as LedgerEventType,
-      occurred_at: row.occurred_at,
-      actor: row.actor as LedgerActor,
-      sequence: row.sequence,
-      payload: JSON.parse(row.payload_json) as Record<string, unknown>
-    };
-    if (row.run_id !== null) {
-      event.run_id = row.run_id;
-    }
-    return event;
-  });
+  return rows.map(ledgerEventFromRow);
+}
+
+export function readLedgerEventsByCorrelation(db: LedgerDatabase, correlation_id: string): LedgerEvent[] {
+  return db.prepare(`
+    SELECT event_id, run_id, correlation_id, event_type, occurred_at, actor, sequence, payload_json
+    FROM ledger_events
+    WHERE correlation_id = ?
+    ORDER BY sequence ASC, occurred_at ASC, event_id ASC
+  `).all<LedgerEventRow>(correlation_id).map(ledgerEventFromRow);
+}
+
+function ledgerEventFromRow(row: LedgerEventRow): LedgerEvent {
+  const event: LedgerEvent = {
+    event_id: row.event_id,
+    correlation_id: row.correlation_id,
+    event_type: row.event_type as LedgerEventType,
+    occurred_at: row.occurred_at,
+    actor: row.actor as LedgerActor,
+    sequence: row.sequence,
+    payload: JSON.parse(row.payload_json) as Record<string, unknown>
+  };
+  if (row.run_id !== null) {
+    event.run_id = row.run_id;
+  }
+  return event;
 }
 
 interface LedgerEventRow {
