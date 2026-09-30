@@ -4,7 +4,7 @@ import type { LlmResult } from "../types.js";
 import { buildChildEnv } from "../../omp/child-env.js";
 import type { OmpConfig } from "../../omp/omp-config.js";
 import { checkOmpVersion } from "../../omp/omp-version.js";
-import { classifyOmpError, parseFrameLine, summarizeAssistantMessage, type AssistantSummary } from "../../omp/omp-frames.js";
+import { classifyOmpError, parseFrameLine, RETRYABLE_ERROR_KINDS, summarizeAssistantMessage, type AssistantSummary } from "../../omp/omp-frames.js";
 import { familyOf, formatModelString, type ModelFamily, type ModelString } from "../../omp/model-string.js";
 
 export interface OneShotInput {
@@ -94,6 +94,7 @@ export async function spawnOneShot(input: OneShotInput, deps: OneShotDeps): Prom
     const kind = o.timedOut ? "timeout" : classifyOmpError(failure ?? "");
     deps.audit.record({ ...base, outcome: "error", model: m.model, error_kind: kind });
     errors.push(`${formatModelString(m)}: ${kind}`);
+    if (!RETRYABLE_ERROR_KINDS.has(kind)) break; // a refusal or an unknown failure is final for the call (spec §8)
   }
   return { ok: false, provider: "omp", error: `all ${input.seat} legs failed — ${errors.join("; ")}` };
 }

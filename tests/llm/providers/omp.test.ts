@@ -50,6 +50,21 @@ describe("omp one-shot seat — every non-planner LLM call in Houge", () => {
     expect(audit.attempts.map((a) => [a.outcome, a.error_kind])).toEqual([["error", "quota"], ["ok", undefined]]);
   });
 
+  it.each([
+    ["model_refusal", "the request was blocked: refusal"],
+    ["other", "the model returned something unexpected"]
+  ])("stops the chain on a %s failure — a later leg must never silently answer what this seat refused (spec §8, B8)", async (kind, errorMessage) => {
+    const cfg = setup({
+      "google-antigravity/gemini-3.8-flash": { text: "", stopReason: "error", errorMessage },
+      "kimi-code/k3": { text: "from kimi" }
+    });
+    const audit = recordingSink();
+    const r = await spawnOneShot({ seat: "reader", chain: cfg.reader, prompt: "x", correlationId: "c" }, { cfg, audit, versionCheck: () => ({ ok: true, version: "18.4.4" }) });
+    expect(r.ok).toBe(false);
+    expect(audit.attempts.map((a) => [a.model, a.error_kind])).toEqual([["gemini-3.8-flash", kind]]);
+    expect(argvLog()).toHaveLength(1);
+  });
+
   it("classifies a bad model from stderr when omp exits 1 with empty stdout, then the next leg serves", async () => {
     const cfg = setup({
       "google-antigravity/gemini-3.8-flash": { exit: 1, stderr: 'Model "x" not found' },

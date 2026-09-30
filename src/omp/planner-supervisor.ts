@@ -12,7 +12,7 @@ import { BridgeServer } from "./bridge-server.js";
 import { createBridgeHandler, flushUnreported, type ActiveTurn } from "./bridge-handler.js";
 import { familyOf, type ModelFamily, type ModelString } from "./model-string.js";
 import type { OmpConfig } from "./omp-config.js";
-import { classifyOmpError, summarizeAssistantMessage, type AssistantSummary, type OmpFrame } from "./omp-frames.js";
+import { classifyOmpError, RETRYABLE_ERROR_KINDS, summarizeAssistantMessage, type AssistantSummary, type OmpFrame } from "./omp-frames.js";
 import { checkOmpVersion } from "./omp-version.js";
 import { PlannerRpcError, PlannerSession, type ExitInfo, type PlannerSessionOptions } from "./planner-session.js";
 import { realpathOrSelf, type PathContext } from "./protected-paths.js";
@@ -59,7 +59,6 @@ export const TIMEOUT_TEXT = "⏱ I ran out of time on this one. Here is what I h
 export const PLANNER_EXIT_TEXT = "⚠ My runtime stopped unexpectedly. Nothing was retried; the ledger shows what ran.";
 export const MANIFEST_WAIT_MS = 15_000;
 export const START_WAIT_MS = 30_000;
-const RETRYABLE = new Set(["quota", "auth", "transport", "timeout", "model_missing"]);
 const HEARTBEAT_MS = 30_000;
 const ABORT_GRACE_MS = 5_000;
 const CRASH_WINDOW_MS = 10 * 60_000;
@@ -416,7 +415,7 @@ export class PlannerSupervisor {
   private async retryNextLeg(turn: Turn, error: string): Promise<boolean> {
     const kind = classifyOmpError(error);
     const planner = this.d.cfg.planner;
-    if (!RETRYABLE.has(kind)) { turn.failure = { type: "model_error", ref: kind }; return false; }
+    if (!RETRYABLE_ERROR_KINDS.has(kind)) { turn.failure = { type: "model_error", ref: kind }; return false; }
     if (turn.legIndex + 1 >= planner.length) {
       turn.failure = { type: "no_planner_leg", ref: kind };
       this.incident("planner_no_leg", { run_id: turn.req.run_id, error_kind: kind, legs_tried: turn.legIndex + 1 });

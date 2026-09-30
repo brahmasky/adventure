@@ -54,6 +54,9 @@ export function summarizeAssistantMessage(frame: OmpFrame): AssistantSummary | n
   return out;
 }
 
+/** Error kinds that move a call to the next model string (spec §8); every other kind is final for that call. */
+export const RETRYABLE_ERROR_KINDS: ReadonlySet<LlmErrorKind> = new Set<LlmErrorKind>(["quota", "auth", "transport", "timeout", "model_missing"]);
+
 export function classifyOmpError(text: string): LlmErrorKind {
   const t = text.toLowerCase();
   if (/\b429\b|rate.?limit|quota|usage limit|limit reached|resets in/.test(t)) return "quota";
