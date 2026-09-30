@@ -772,7 +772,7 @@ export class CoreWorker {
       output_limit_bytes: 200_000,
       execute: this.webSearchAdapter
     });
-    const llmTimeoutMs = this.llmTimeoutMs("answer");
+    const llmTimeoutMs = this.llmTimeoutMs("compose");
     registry.register({
       name: "llm_answer",
       category: "tool",
@@ -1773,7 +1773,7 @@ export class CoreWorker {
     const contract = compileSkillAuthorContract("gate-b-verify");
     return async (system, question) => {
       // Run-less (no phantom run id): audited under `gate:b` as a "verify" call.
-      const r = await this.runLlmWith(this.llmAdapterRunless("gate:b", "verify"), contract, question, system, new BudgetLedger(contract.budget));
+      const r = await this.runLlmWith(this.llmAdapterRunless("gate:b", "verify"), "verify", contract, question, system, new BudgetLedger(contract.budget));
       return r.ok ? r.answer : undefined;
     };
   }
@@ -1891,19 +1891,20 @@ export class CoreWorker {
     // Gate A classification is never booked as an "answer".
     role: LlmCallRole
   ): Promise<{ ok: true; answer: string } | { ok: false; failure: Exclude<CapabilityResult, { status: "succeeded" }> }> {
-    return this.runLlmWith(this.llmAdapterFor(claim.run_id, role), claim.contract, question, system, budget);
+    return this.runLlmWith(this.llmAdapterFor(claim.run_id, role), role, claim.contract, question, system, budget);
   }
 
   /** `runLlm`'s body over an explicit adapter — the run-less callers (Gate B) bring their own scope. */
   private async runLlmWith(
     adapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
+    role: LlmCallRole,
     contract: ClaimedRun["contract"],
     question: string,
     system: string,
     budget: BudgetLedger
   ): Promise<{ ok: true; answer: string } | { ok: false; failure: Exclude<CapabilityResult, { status: "succeeded" }> }> {
     const registry = new ToolRegistry();
-    const llmTimeoutMs = this.llmTimeoutMs("answer");
+    const llmTimeoutMs = this.llmTimeoutMs(role); // the called role's chain, not the planner's
     registry.register({
       name: "llm_answer",
       category: "tool",
@@ -2064,9 +2065,9 @@ export class CoreWorker {
       registry.register({ name, category: "tool", ...meta, timeout_ms: cfg.shellTimeoutMs + 10_000, execute: shell });
     }
     for (const [name, meta] of Object.entries(OMP_BUILTIN_META)) registry.register({ name, category: "tool", ...meta, timeout_ms: 0 });
-    const llmTimeoutMs = this.llmTimeoutMs("answer");
+    const seat = (role: LlmCallRole) => this.llmTimeoutMs(role);
     for (const [name, meta] of Object.entries(OMP_LOOP_TOOL_META)) {
-      registry.register({ name, category: "tool", ...meta, timeout_ms: loopToolTimeoutMs(name, llmTimeoutMs), execute: this.ompLoopExecute(name, claim, state) });
+      registry.register({ name, category: "tool", ...meta, timeout_ms: loopToolTimeoutMs(name, seat), execute: this.ompLoopExecute(name, claim, state) });
     }
     return { registry, quarantine: (tool, output) => this.ompQuarantine(claim, state, tool, output) };
   }
@@ -2389,7 +2390,7 @@ export class CoreWorker {
         priorAnswer: lessonAnchor.priorAnswer,
         allowedScopes: ["ask", "research"],
         defaultScope: lessonAnchor.defaultScope,
-        llm: (input) => this.llmAdapterFor(claim.run_id, "compose")(input),
+        llm: (input) => this.llmAdapterFor(claim.run_id, LESSON_WRITE_ROLES.distill)(input),
         // Layer routing (⓪·3 S1c): feedback quoting a code-owned literal (verbatim in
         // src/*.ts) is refused with a digest steering the model to self_write_propose.
         srcContains: createSrcPhraseChecker(this.projectRoot),
@@ -2406,7 +2407,7 @@ export class CoreWorker {
         // the tool's internal distill (never the turn ledger, which may be drained here).
         saveLesson: (candidate, now) =>
           this.reconcileAndSaveLesson(candidate, "loop", async (input) => {
-            const r = await this.llmAdapterFor(claim.run_id, "compose")(input);
+            const r = await this.llmAdapterFor(claim.run_id, LESSON_WRITE_ROLES.reconcile)(input);
             return r.ok && typeof r.output.answer === "string"
               ? { ok: true, answer: r.output.answer }
               : { ok: false };
@@ -3116,7 +3117,7 @@ function gateBLine(gate: VerifyResult): string {
  * sub-contract's time ceiling (self-diagnose 30 min · code-self-write 60 min ·
  * skill-author 10 min); the light tools keep their ⓪·1 bounds.
  */
-function loopToolTimeoutMs(name: string, llmTimeoutMs: number): number {
+function loopToolTimeoutMs(name: string, seat: (role: LlmCallRole) => number): number {
   switch (name) {
     case "web_search":
       return WEB_RUNNER_TIMEOUT_MS;
@@ -3124,15 +3125,15 @@ function loopToolTimeoutMs(name: string, llmTimeoutMs: number): number {
       // The fetch enforces its own wall clock; the runner's outer race bound adds headroom.
       return resolveHttpFetchTimeoutMs(process.env) + 5_000;
     case "to_local_time":
-      // Pure in-process compute — one LLM-call bound is ample headroom.
-      return llmTimeoutMs;
+      // Pure in-process compute — no LLM call; the runner buffer is ample headroom.
+      return RUNNER_TIMEOUT_BUFFER_MS;
     case "lesson_write":
-      // lesson_write may run distill + the reconcile compare (two chain calls).
-      return llmTimeoutMs * 2;
+      // LESSON_WRITE_ROLES: distill + the reconcile compare (two seat calls, each on its own chain).
+      return seat(LESSON_WRITE_ROLES.distill) + seat(LESSON_WRITE_ROLES.reconcile);
     case "wiki_build":
     case "wiki_refine":
-      // One synthesis call + the verify ensemble (each pass may retry once).
-      return llmTimeoutMs * (1 + 2 * resolveWikiVerifyPasses(process.env));
+      // One synthesis call (answer) + the verify ensemble on the reader (each pass may retry once).
+      return seat("answer") + seat("reader") * 2 * resolveWikiVerifyPasses(process.env);
     case "self_diagnose":
       return compileSelfDiagnoseContract("").budget.time_minutes * 60_000;
     case "self_write_propose":
@@ -3144,9 +3145,12 @@ function loopToolTimeoutMs(name: string, llmTimeoutMs: number): number {
       // ADR 0025: the Gmail ops enforce their own 75s wall clock; the outer race bound adds headroom.
       return GMAIL_OP_DEADLINE_MS + 15_000;
     default:
-      return llmTimeoutMs;
+      return seat("answer");
   }
 }
+
+/** The seats lesson_write's internal calls ride (the routing lives here so the runner cap matches it). */
+const LESSON_WRITE_ROLES = { distill: "compose", reconcile: "compose" } as const satisfies Record<string, LlmCallRole>;
 
 /**
  * ⓪·3g: the kickoff digest the evolution tool adapter returns IMMEDIATELY after
