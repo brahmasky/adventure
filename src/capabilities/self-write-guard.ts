@@ -112,6 +112,7 @@ export const PROTECTED_FILES: readonly string[] = [
   "src/omp/extension/bridge-client.ts",
   "src/omp/extension/houge-tools.ts",
   "src/omp/extension/houge-policy.ts",
+  "src/omp/extension/houge.ts",
   "scripts/copy-omp-assets.mjs",
   // ── Supply chain / build ──
   "package.json",

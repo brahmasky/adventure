@@ -131,13 +131,30 @@ describe("omp extensions — fail closed", () => {
     expect(await pi.handlers.tool_call({ toolName: "read", toolCallId: "c2", input: { path: "/tmp/a" } })).toBeUndefined();
   });
 
-  it("gate forwards paths[] (strings only, capped at 64) and never a body", async () => {
+  it("paths[] over 64 entries is blocked whole, never truncated (a protected path at index 64+ must not slip through)", async () => {
     const pi = await policy();
-    const paths = Array.from({ length: 100 }, (_, i) => `/tmp/f${i}`); paths.push(5 as unknown as string);
-    await pi.handlers.tool_call({ toolName: "edit", toolCallId: "mp", input: { paths, edits: "y".repeat(5000) } });
+    const paths = Array.from({ length: 100 }, (_, i) => `/tmp/f${i}`);
+    expect(await pi.handlers.tool_call({ toolName: "edit", toolCallId: "mp", input: { paths, edits: "y".repeat(5000) } })).toEqual({ block: true, reason: "too_many_paths" });
+    expect(seen.find((s) => s.kind === "gate")).toBeUndefined();
+  });
+
+  it("a non-string paths entry is blocked bad_path; a valid paths[] is forwarded intact without the body", async () => {
+    const pi = await policy();
+    expect(await pi.handlers.tool_call({ toolName: "edit", toolCallId: "bp", input: { paths: ["/tmp/a", 5] } })).toEqual({ block: true, reason: "bad_path" });
+    expect(await pi.handlers.tool_call({ toolName: "edit", toolCallId: "ok", input: { paths: ["/tmp/a", "/tmp/b"], edits: "body" } })).toBeUndefined();
     const g = seen.find((s) => s.kind === "gate") as any;
-    expect(g.input.paths).toHaveLength(64);
-    expect(g.input.edits).toBeUndefined();
+    expect(g.input).toEqual({ paths: ["/tmp/a", "/tmp/b"] });
+  });
+
+  it("the single houge.ts entry registers stubs and allows them (omp loads each -e with a ?mtime query, so two entries cannot share `registered`; live-proven, vitest's graph cannot reproduce it)", async () => {
+    const base = (f: string) => new URL(`../../src/omp/extension/${f}`, import.meta.url).href;
+    const toolsA = await import(/* @vite-ignore */ `${base("houge-tools.ts")}?a`);
+    const policyB = await import(/* @vite-ignore */ `${base("houge-policy.ts")}?b`);
+    expect(typeof toolsA.default).toBe("function"); expect(typeof policyB.default).toBe("function"); // query-suffixed imports load
+    const entry = stubPi();
+    await (await import("../../src/omp/extension/houge.js")).default(entry.api);
+    expect(entry.tools.map((t) => t.name)).toEqual(["bash"]);
+    expect(await entry.handlers.tool_call({ toolName: "bash", toolCallId: "s2", input: {} })).toBeUndefined();
   });
 
   it("report: bytes_out counts UTF-8 bytes and duration_ms is measured from the tool_call hook", async () => {

@@ -4,7 +4,7 @@ import { getBridge, registered } from "./bridge-client.js";
 export const HEARTBEAT_MS = 30_000;
 export interface PiLike { registerTool(t: object): void; on(event: "tool_call" | "tool_result", h: (e: any, ctx?: any) => unknown): void }
 
-export default async function hougeTools(pi: PiLike): Promise<void> {
+export async function hougeTools(pi: PiLike): Promise<void> {
   const decls: Array<{ name: string; description: string; parameters: object }> = await getBridge().request({ kind: "manifest" });
   for (const d of decls) {
     pi.registerTool({
@@ -20,3 +20,5 @@ export default async function hougeTools(pi: PiLike): Promise<void> {
     registered.add(d.name); // only after registerTool returned: the policy trusts this set, not the manifest alone
   }
 }
+
+export default hougeTools;

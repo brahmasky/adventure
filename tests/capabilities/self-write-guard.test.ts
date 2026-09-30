@@ -315,7 +315,7 @@ describe("checkSelfWriteDiff — end-to-end from real raw output shape", () => {
       "src/omp/protected-paths.ts", "src/omp/seatbelt.ts", "src/omp/command-matcher.ts",
       "src/omp/shell-wrapper.sh", "src/omp/shell-wrapper.ts", "src/omp/capability-map.ts",
       "src/omp/extension/bridge-client.ts", "src/omp/extension/houge-tools.ts",
-      "src/omp/extension/houge-policy.ts", "scripts/copy-omp-assets.mjs"
+      "src/omp/extension/houge-policy.ts", "src/omp/extension/houge.ts", "scripts/copy-omp-assets.mjs"
     ];
     for (const path of files) {
       const r = check(entry({ status: "M", path }));
