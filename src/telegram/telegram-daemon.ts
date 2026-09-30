@@ -210,22 +210,18 @@ export async function runTelegramDaemon(
   // Turns run detached: their approval cards and replies land in the outbox between polls, so a
   // serialized flush runs on a short pump as well as after each poll cycle (a reply never waits
   // out a 30 s long-poll).
+  // One sender: the boot flush, the pump, the poll loop and the exit flushes all go through it.
   const flushOutbox = serialFlusher(dispatcher);
-  const pump = setInterval(() => void flushOutbox().catch(() => undefined), options.outboxPumpMs ?? 1_000);
+  const reportFlushFailure = throttledIncident(options.store, OUTBOX_INCIDENT_WINDOW_MS);
+  const flushLogged = () => flushOutbox().catch((error: unknown) => reportFlushFailure("outbox_flush_failed", error));
+  const pump = setInterval(() => void flushLogged(), options.outboxPumpMs ?? 1_000);
   pump.unref();
 
   // ⓪·2c U2: consume the reload marker (exactly once — consumption deletes it) and enqueue
   // the boot confirmation, then flush the outbox so it AND the pre-restart "merged, reloading…"
   // beacon arrive at boot instead of after the first long-poll times out.
   notifyReloadOnBoot(options);
-  try {
-    for (;;) {
-      const result = await dispatcher.dispatchOnce("telegram-daemon-dispatcher");
-      if (result.status === "idle") break;
-    }
-  } catch {
-    // Best-effort boot flush — the poll loop re-dispatches queued notifications anyway.
-  }
+  await flushLogged(); // best-effort: the poll loop re-dispatches queued notifications anyway
 
   let cycles = 0;
   let failures = 0;
@@ -315,7 +311,7 @@ export async function runTelegramDaemon(
   // flush whatever the stop produced.
   clearInterval(pump);
   await worker.shutdownPlanners();
-  await flushOutbox().catch(() => undefined);
+  await flushLogged();
 
   // ⓪·3g: an evolution pipeline may still be running on the background lane — finish it
   // before exiting (mirroring the in-flight-run guarantee above; bounded by the lane's
@@ -324,30 +320,50 @@ export async function runTelegramDaemon(
   if (lane.busy) {
     console.error(`[telegram-daemon] waiting for in-flight self-write (${lane.current?.tool ?? "unknown"})…`);
     await evolutionLaneSettled();
-    try {
-      for (;;) {
-        const result = await dispatcher.dispatchOnce("telegram-daemon-dispatcher");
-        if (result.status === "idle") break;
-      }
-    } catch {
-      // Best-effort flush — the durable notification delivers on the next boot anyway.
-    }
+    await flushLogged(); // best-effort: the durable notification delivers on the next boot anyway
   }
 
   return { cycles, consecutive_failures: failures };
 }
 
-/** One dispatcher drain at a time: the pump and the poll loop share it, never overlap. */
-function serialFlusher(dispatcher: NotificationDispatcher): () => Promise<void> {
+export const OUTBOX_INCIDENT_WINDOW_MS = 10 * 60_000;
+
+/**
+ * One dispatcher drain at a time: the pump and the poll loop share it, never overlap. A drain that
+ * throws rejects only its own caller; the chain itself stays alive, so the next flush still sends.
+ */
+export function serialFlusher(dispatcher: Pick<NotificationDispatcher, "dispatchOnce">): () => Promise<void> {
   let chain: Promise<void> = Promise.resolve();
+  const drain = async () => {
+    for (;;) {
+      const result = await dispatcher.dispatchOnce("telegram-daemon-dispatcher");
+      if (result.status === "idle") break;
+    }
+  };
   return () => {
-    chain = chain.then(async () => {
-      for (;;) {
-        const result = await dispatcher.dispatchOnce("telegram-daemon-dispatcher");
-        if (result.status === "idle") break;
-      }
-    });
-    return chain;
+    const run = chain.then(drain);
+    chain = run.catch(() => undefined);
+    return run;
+  };
+}
+
+/** The errno-style code of an error, never its message (messages can carry paths or payloads). */
+export function errorCode(error: unknown): string {
+  const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+  return typeof code === "string" && /^[A-Z0-9_]{1,40}$/.test(code) ? code : error instanceof Error ? error.name : "unknown";
+}
+
+/** Log every failure; open an incident at most once per kind per window (a stuck outbox must be seen, not spammed). */
+export function throttledIncident(store: Pick<RunStore, "openIncident">, windowMs: number, now: () => number = Date.now):
+  (kind: string, error: unknown) => void {
+  const last = new Map<string, number>();
+  return (kind, error) => {
+    const code = errorCode(error);
+    console.error(`[telegram-daemon] ${kind}: ${code}`);
+    const t = now();
+    if (t - (last.get(kind) ?? -Infinity) < windowMs) return;
+    last.set(kind, t);
+    try { store.openIncident({ kind, subject: "daemon", detail: { code } }); } catch { /* the store itself may be the failure */ }
   };
 }
 
@@ -364,9 +380,9 @@ function onPlannerControl(status: string, worker: CoreWorker, store: RunStore): 
   void Promise.allSettled(worker.plannerSupervisors().map((s) => s.abortAll("killed"))).then((results) => {
     for (const r of results) {
       if (r.status === "fulfilled") continue;
-      const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
-      console.error(`[telegram-daemon] /kill could not abort a planner: ${reason}`);
-      store.openIncident({ kind: "planner_kill_failed", subject: "daemon", detail: { reason } });
+      const code = errorCode(r.reason);
+      console.error(`[telegram-daemon] /kill could not abort a planner: ${code}`);
+      store.openIncident({ kind: "planner_kill_failed", subject: "daemon", detail: { code } });
     }
   });
 }
