@@ -84,7 +84,7 @@ function wellFormed(req: BridgeRequest): boolean {
 
 export function createBridgeHandler(deps: BridgeHandlerDeps): (req: BridgeRequest) => Promise<unknown> {
   return async (req) => {
-    if (!wellFormed(req)) throw new Error("bad_request");
+    if (!wellFormed(req)) { recordBadRequest(deps, req); throw new Error("bad_request"); }
     if (req.kind === "manifest") return manifestFor(deps);
     const turn = deps.activeTurn();
     if (!turn) throw new Error("no_active_turn");
@@ -130,6 +130,22 @@ function finish(deps: BridgeHandlerDeps, turn: ActiveTurn, f: Finish): void {
   });
 }
 
+/** A call that never reached the runner still counts (B7): tool_finished{failed, reason} + loop_step, and one budget unit. */
+function recordInvalid(deps: BridgeHandlerDeps, turn: ActiveTurn, f: { toolCallId: string; tool: string; capability: string; reason: string; started: number; content?: string }): void {
+  turn.budget.reserveToolCall();
+  finish(deps, turn, { toolCallId: f.toolCallId, tool: f.tool, capability: f.capability, status: "failed", content: f.content ?? f.reason,
+    started: f.started, digest: f.reason, reason: f.reason });
+}
+
+/** A malformed call or gate with a turn in flight is recorded like any invalid call; a malformed report is not a call. */
+function recordBadRequest(deps: BridgeHandlerDeps, req: BridgeRequest): void {
+  const r = req as unknown as Record<string, unknown>;
+  const turn = r.kind === "call" || r.kind === "gate" ? deps.activeTurn() : null;
+  if (!turn) return;
+  recordInvalid(deps, turn, { toolCallId: typeof r.toolCallId === "string" ? r.toolCallId : "", tool: typeof r.tool === "string" ? r.tool : "unknown",
+    capability: "unknown", reason: "bad_request", started: Date.now() });
+}
+
 function refuse(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallReq, capability: string, reason: string, text: string, started: number): CallResult {
   finish(deps, turn, { toolCallId: req.toolCallId, tool: req.tool, capability, status: "denied", content: text, started, digest: reason, reason });
   return { content: text, isError: true };
@@ -139,13 +155,20 @@ async function handleCall(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallRe
   const started = Date.now();
   const decl = deps.decls.find((d) => d.name === req.tool);
   const entry = capabilityFor(req.tool, req.input ?? {});
-  if (!decl || !entry) throw new Error(`unknown_tool: ${String(req.tool)}`);
+  if (!decl || !entry) {
+    recordInvalid(deps, turn, { toolCallId: req.toolCallId, tool: String(req.tool), capability: "unknown", reason: "unknown_tool", started });
+    throw new Error(`unknown_tool: ${String(req.tool)}`);
+  }
   if (turn.signal.aborted) return refuse(deps, turn, req, entry, "turn_aborted", TURN_ABORTED_TEXT, started);
   const posture = turn.postureOk();
   if (posture) return refuse(deps, turn, req, entry, posture, posture, started);
   if (!isToolArmed(req.tool, deps.env)) return refuse(deps, turn, req, entry, "not_armed", `${req.tool} is not armed`, started);
   const errors = validateInput(decl.parameters, req.input);
-  if (errors.length > 0) return { content: errors.join("; "), isError: true };
+  if (errors.length > 0) {
+    const content = errors.join("; ");
+    recordInvalid(deps, turn, { toolCallId: req.toolCallId, tool: req.tool, capability: entry, reason: "schema_invalid", started, content });
+    return { content, isError: true };
+  }
   const executed = await executeWithApproval(deps, turn, req, entry);
   if ("refusal" in executed) return refuse(deps, turn, req, entry, executed.refusal.reason, executed.refusal.text, started);
   const r = executed.result;

@@ -248,14 +248,24 @@ describe("bridge handler — call (spec §5.2)", () => {
     for (const label of ["git push", "HTTP write", "recursive/forced delete"]) expect(summary).toContain(label);
   });
 
-  it("input failing the schema returns the schema problems and reserves no budget", async () => {
-    const { handle, turn, calls } = setup();
-    const r = (await handle(call("web_search", { freshness_days: 0 }))) as CallResult;
+  it("input failing the schema returns the problems, writes tool_finished{failed, schema_invalid} + loop_step, and spends one budget unit (B7)", async () => {
+    const { handle, turn, calls, events } = setup();
+    const r = (await handle(call("web_search", { freshness_days: 0 }, "tcs"))) as CallResult;
     expect(r.isError).toBe(true);
     expect(r.content).toContain("input.query: required");
     expect(r.content).toContain("input.freshness_days: below 1");
-    expect(turn.budget.usage().tool_calls).toBe(0);
+    expect(turn.budget.usage().tool_calls).toBe(1); // a model looping on bad input is bounded by the budget and seen by the breaker
     expect(calls).toEqual([]);
+    expect(events("tool_finished")).toEqual([expect.objectContaining({ tool_call_id: "tcs", tool: "web_search", status: "failed", reason: "schema_invalid" })]);
+    expect(events("loop_step")).toEqual([expect.objectContaining({ action: "web_search", ok: false, result_digest: "schema_invalid" })]);
+  });
+
+  it("an unknown tool still fails, and is recorded tool_finished{failed, unknown_tool} + loop_step with one budget unit (B7)", async () => {
+    const { handle, turn, events } = setup();
+    await expect(handle(call("no_such_tool", {}, "tcu"))).rejects.toThrow("unknown_tool");
+    expect(turn.budget.usage().tool_calls).toBe(1);
+    expect(events("tool_finished")).toEqual([expect.objectContaining({ tool_call_id: "tcu", tool: "no_such_tool", status: "failed", reason: "unknown_tool" })]);
+    expect(events("loop_step")).toHaveLength(1);
   });
 
   it("a duplicate toolCallId executes once and both requests get the same result (replay, spec §5.2)", async () => {
@@ -457,5 +467,15 @@ describe("bridge handler — fix round 1 (review findings)", () => {
     ];
     for (const b of bad) await expect(handle(b as unknown as BridgeRequest)).rejects.toThrow("bad_request");
     expect(turn.cache.size).toBe(0);
+  });
+
+  it("a malformed call or gate is recorded tool_finished{failed, bad_request} + loop_step and spends a budget unit; a malformed report is not a call (B7)", async () => {
+    const { handle, turn, events } = setup();
+    await expect(handle({ id: "b1", kind: "call", tool: "bash", input: "ls", toolCallId: "x" } as unknown as BridgeRequest)).rejects.toThrow("bad_request");
+    await expect(handle({ id: "b2", kind: "gate", tool: "read", input: null, toolCallId: "y" } as unknown as BridgeRequest)).rejects.toThrow("bad_request");
+    await expect(handle({ id: "b3", kind: "report", outcome: "succeeded" } as unknown as BridgeRequest)).rejects.toThrow("bad_request");
+    expect(turn.budget.usage().tool_calls).toBe(2);
+    expect(events("tool_finished").map((e) => [e.tool_call_id, e.status, e.reason])).toEqual([["x", "failed", "bad_request"], ["y", "failed", "bad_request"]]);
+    expect(events("loop_step")).toHaveLength(2);
   });
 });
