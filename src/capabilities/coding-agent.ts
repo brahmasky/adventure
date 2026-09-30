@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { execFileAsync } from "../run/exec-file-async.js";
 import { createWorktree, removeWorktree } from "../run/worktree.js";
-import { buildChildEnv } from "../llm/providers/cli-spawn.js";
+import { buildChildEnv } from "../omp/child-env.js";
 
 /**
  * `coding_agent_cli` capability (ADR 0011, Phase 1 — code self-diagnose). Houge reads

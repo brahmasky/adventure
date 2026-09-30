@@ -150,25 +150,4 @@ export const defaultSpawnImpl: SpawnImpl = (file, args, opts) =>
     child.stdin?.end(opts.input);
   });
 
-/**
- * Env var names a CLI child is always allowed to inherit. Deliberately minimal: the question is
- * attacker-controlled, so the child must NOT see the Telegram bot token or unrelated API keys. Extra
- * var names are opted in per-provider (e.g. HOUGE_PI_ENV_PASSTHROUGH / HOUGE_AGY_ENV_PASSTHROUGH).
- */
-export const CLI_ENV_ALLOWLIST = ["PATH", "HOME", "TERM", "LANG", "USER"] as const;
-
-/** Build the child env from the allowlist plus any comma-separated opt-in passthrough names. */
-export function buildChildEnv(passthroughRaw: string | undefined): Record<string, string> {
-  const allowed = new Set<string>(CLI_ENV_ALLOWLIST);
-  if (passthroughRaw) {
-    for (const name of passthroughRaw.split(",").map((n) => n.trim())) {
-      if (name.length > 0) allowed.add(name);
-    }
-  }
-  const env: Record<string, string> = {};
-  for (const name of allowed) {
-    const value = process.env[name];
-    if (value !== undefined) env[name] = value;
-  }
-  return env;
-}
+export { CLI_ENV_ALLOWLIST, buildChildEnv } from "../../omp/child-env.js";
