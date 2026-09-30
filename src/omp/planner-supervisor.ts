@@ -12,7 +12,7 @@ import { BridgeServer } from "./bridge-server.js";
 import { createBridgeHandler, flushUnreported, type ActiveTurn } from "./bridge-handler.js";
 import { familyOf, type ModelFamily, type ModelString } from "./model-string.js";
 import type { OmpConfig } from "./omp-config.js";
-import { classifyOmpError, RETRYABLE_ERROR_KINDS, summarizeAssistantMessage, type AssistantSummary, type OmpFrame } from "./omp-frames.js";
+import { classifyOmpError, frameErrorText, RETRYABLE_ERROR_KINDS, summarizeAssistantMessage, type AssistantSummary, type OmpFrame } from "./omp-frames.js";
 import { checkOmpVersion } from "./omp-version.js";
 import { PlannerRpcError, PlannerSession, type ExitInfo, type PlannerSessionOptions } from "./planner-session.js";
 import { realpathOrSelf, type PathContext } from "./protected-paths.js";
@@ -683,7 +683,32 @@ export class PlannerSupervisor {
     if (f.type === "turn_start") t.n++;
     else if (f.type === "tool_execution_start") t.usedTool = true;
     else if (f.type === "message_end") this.onAssistant(t, summarizeAssistantMessage(f));
+    else if (f.type === "error") this.onErrorFrame(t, frameErrorText(f));
+    else if (f.type === "prompt_result" && f.agentInvoked === false && f.status === "error") this.onPromptRejected(t, frameErrorText(f));
     else if (f.type === "agent_end") { t.live = false; t.done(f.aborted === true ? "abort" : "end"); }
+  }
+
+  /**
+   * An omp `error` frame (B5): classified, audited as this request's llm_attempt (unless its message_end already
+   * was), and left for settle()'s retry-or-fail rule — a turn that ends on it never completes with an empty reply.
+   */
+  private onErrorFrame(t: Turn, text: string): void {
+    t.lastError = text;
+    if (t.n > 0 && t.recorded === t.n) return;
+    const model = this.model.model;
+    this.d.store.llmAuditSink({ run_id: t.req.run_id, role: "compose" }).record({
+      provider: this.model.provider, role: "", outcome: "error", model, family: familyOf({ model }),
+      request_key: `${t.req.run_id}:${t.n}`, error_kind: classifyOmpError(text)
+    });
+    t.recorded = t.n;
+  }
+
+  /** A prompt omp failed before it reached the agent: no agent_end follows, so the error also ends the turn. */
+  private onPromptRejected(t: Turn, text: string): void {
+    this.onErrorFrame(t, text);
+    if (!t.live) return;
+    t.live = false;
+    t.done("end");
   }
 
   /** One llm_attempt per model request, keyed `<run_id>:<n>` (spec §8). */

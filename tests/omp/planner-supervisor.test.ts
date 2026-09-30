@@ -737,3 +737,41 @@ describe("PlannerSupervisor — a lost bridge retires the child (live-fix round 
     expect(log).toEqual(["start:1", "manifest:1", "prompt:1", "start:2", "manifest:2", "prompt:2"]);
   });
 });
+
+describe("PlannerSupervisor — omp error frames and aborted ends (final review B5)", () => {
+  const attempts = (store: RunStore, run_id: string) =>
+    store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_attempt").map((e) => e.payload as { outcome: string; error_kind?: string; request_key: string });
+
+  it("an error frame with no assistant message is audited and falls back like any retryable error — never an empty 'success'", async () => {
+    let calls = 0;
+    const session = fakeSession({ onPrompt: (_t, e) => {
+      e({ type: "turn_start" });
+      if (calls++ === 0) { e({ type: "error", error: "429 usage limit reached" }); e({ type: "agent_end" }); return; }
+      session.assistant("from 4.6"); e({ type: "agent_end" });
+    } });
+    const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(session.models).toEqual(["google-antigravity/claude-opus-4-6"]);
+    expect(outcome.done[0]).toMatchObject({ run_id, text: "from 4.6" });
+    expect(attempts(store, run_id).map((a) => [a.outcome, a.error_kind])).toEqual([["error", "quota"], ["ok", undefined]]);
+  });
+
+  it("a non-retryable error frame fails the run model_error with its audit row (no completed run with a placeholder)", async () => {
+    const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "turn_start" }); e({ type: "error", error: { message: "something odd" } }); e({ type: "agent_end" }); } });
+    const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(outcome.done).toEqual([]);
+    expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "model_error", error_ref: "other" });
+    expect(attempts(store, run_id)).toEqual([expect.objectContaining({ outcome: "error", error_kind: "other", request_key: `${run_id}:1` })]);
+  });
+
+  it("a prompt that failed before reaching the agent (prompt_result error, no agent_end) ends the turn at once, classified", async () => {
+    const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "prompt_result", agentInvoked: false, status: "error", error: { message: "fetch failed", retryable: false } }); } });
+    const { store, sup, outcome } = harness(session, { HOUGE_OMP_PLANNER: "anthropic/claude-opus-5-5:medium" }); const run_id = createQueuedTurnRun(store);
+    const t0 = Date.now();
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(Date.now() - t0).toBeLessThan(2_000); // not the 180 s frame watchdog
+    expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "no_planner_leg", error_ref: "transport" });
+    expect(attempts(store, run_id)).toEqual([expect.objectContaining({ outcome: "error", error_kind: "transport", request_key: `${run_id}:0` })]);
+  });
+});

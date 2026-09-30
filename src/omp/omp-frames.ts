@@ -54,6 +54,14 @@ export function summarizeAssistantMessage(frame: OmpFrame): AssistantSummary | n
   return out;
 }
 
+/** The error text of an omp `error` frame or a failed `prompt_result` (a string, `{message}`, or `errorMessage`). */
+export function frameErrorText(frame: OmpFrame): string {
+  const e = frame.error;
+  if (typeof e === "string" && e.length > 0) return e;
+  if (typeof e === "object" && e !== null && typeof (e as { message?: unknown }).message === "string") return (e as { message: string }).message;
+  return str(frame.errorMessage) ?? str(frame.message) ?? "error";
+}
+
 /** Error kinds that move a call to the next model string (spec §8); every other kind is final for that call. */
 export const RETRYABLE_ERROR_KINDS: ReadonlySet<LlmErrorKind> = new Set<LlmErrorKind>(["quota", "auth", "transport", "timeout", "model_missing"]);
 
