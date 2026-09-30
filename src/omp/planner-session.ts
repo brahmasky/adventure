@@ -7,6 +7,7 @@ import type { ModelString } from "./model-string.js";
 export interface PlannerSessionOptions {
   cfg: OmpConfig; sessionDir: string; cwd: string; systemPromptFile: string; extensions: string[]; skills?: string;
   bridgeSock: string; bridgeToken: string; model: ModelString; configFile: string; plannerProfile: string;
+  sendTimeoutMs?: number; maxFrameBufferBytes?: number;
 }
 
 export function plannerArgs(o: PlannerSessionOptions): { file: string; args: string[] } {
@@ -17,34 +18,39 @@ export function plannerArgs(o: PlannerSessionOptions): { file: string; args: str
   return o.cfg.sandbox ? { file: "sandbox-exec", args: ["-f", o.plannerProfile, o.cfg.bin, ...omp] } : { file: o.cfg.bin, args: omp };
 }
 
-type Waiter = { resolve: (d: unknown) => void; reject: (e: Error) => void };
+export interface ExitInfo { code: number | null; signal: NodeJS.Signals | null; stopped: boolean }
+type Waiter = { resolve: (d: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
+const MAX_FRAME_BUFFER = 64 * 1024 * 1024;
 
 export class PlannerSession {
   private child: ChildProcess | undefined;
   private readonly waiters = new Map<string, Waiter>();
   private readonly frameCbs: Array<(f: OmpFrame) => void> = [];
-  private readonly exitCbs: Array<(c: number | null) => void> = [];
-  private ready: Promise<void> | undefined;
-  private n = 0; private buf = ""; private stopped = false;
+  private readonly exitCbs: Array<(i: ExitInfo) => void> = [];
+  private n = 0; private parts: string[] = []; private size = 0;
+  private stopped = false; private closed = false; private cbErrorLogged = false;
 
   constructor(private readonly o: PlannerSessionOptions) {}
   get pid(): number | undefined { return this.child?.pid; }
   onFrame(cb: (f: OmpFrame) => void): void { this.frameCbs.push(cb); }
-  onExit(cb: (c: number | null) => void): void { this.exitCbs.push(cb); }
+  onExit(cb: (i: ExitInfo) => void): void { this.exitCbs.push(cb); }
 
   async start(): Promise<{ resumed: boolean; sessionId: string }> {
     const { file, args } = plannerArgs(this.o);
     const env = { ...buildChildEnv(this.o.cfg.envPassthrough), HOUGE_BRIDGE_SOCK: this.o.bridgeSock, HOUGE_BRIDGE_TOKEN: this.o.bridgeToken };
-    this.child = spawn(file, args, { cwd: this.o.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
-    this.ready = new Promise((resolve, reject) => {
+    const child = spawn(file, args, { cwd: this.o.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+    this.child = child;
+    const ready = new Promise<void>((resolve, reject) => {
       this.onFrame((f) => { if (f.type === "ready") resolve(); });
-      this.child?.once("error", reject);
-      this.child?.once("close", (code) => reject(new Error(`planner exited ${code} before ready`)));
+      child.once("error", reject);
+      child.once("close", (code) => reject(new Error(`planner exited ${code} before ready`)));
     });
-    this.child.stdout?.on("data", (d: Buffer) => this.onData(d.toString("utf8")));
-    this.child.stderr?.on("data", () => undefined);
-    this.child.on("close", (code) => this.onClose(code));
-    await this.ready;
+    child.stdin?.on("error", () => undefined); // EPIPE: onClose rejects the waiters
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (d: string) => this.onData(d));
+    child.stderr?.on("data", () => undefined);
+    child.on("close", (code, signal) => this.onClose(code, signal));
+    await ready;
     return (await this.send({ type: "open_session", sessionDir: this.o.sessionDir })) as { resumed: boolean; sessionId: string };
   }
 
@@ -58,42 +64,73 @@ export class PlannerSession {
 
   private send(cmd: Record<string, unknown>): Promise<unknown> {
     const id = `c${++this.n}`;
-    if (!this.child?.stdin?.writable) return Promise.reject(new Error("planner not running"));
+    if (this.closed || !this.child?.stdin?.writable) return Promise.reject(new Error("planner not running"));
     return new Promise((resolve, reject) => {
-      this.waiters.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.waiters.delete(id);
+        reject(new Error(`planner command timed out: ${String(cmd.type)}`));
+      }, this.o.sendTimeoutMs ?? 30_000);
+      this.waiters.set(id, { resolve, reject, timer });
       this.child?.stdin?.write(`${JSON.stringify({ ...cmd, id })}\n`);
     });
   }
 
+  private rejectAll(err: Error): void {
+    for (const w of this.waiters.values()) { clearTimeout(w.timer); w.reject(err); }
+    this.waiters.clear();
+  }
+
   private onData(chunk: string): void {
-    this.buf += chunk; let i: number;
-    while ((i = this.buf.indexOf("\n")) >= 0) {
-      const f = parseFrameLine(this.buf.slice(0, i)); this.buf = this.buf.slice(i + 1);
-      if (!f) continue;
-      if (f.type === "response" && typeof f.id === "string" && this.waiters.has(f.id)) {
-        const w = this.waiters.get(f.id) as Waiter; this.waiters.delete(f.id);
-        f.success === false ? w.reject(new Error(String(f.error ?? "command failed"))) : w.resolve(f.data);
-        continue;
-      }
-      for (const cb of this.frameCbs) cb(f);
+    const segs = chunk.split("\n");
+    for (let k = 0; k < segs.length - 1; k++) {
+      this.parts.push(segs[k] as string);
+      const line = this.parts.join(""); this.parts = []; this.size = 0;
+      this.dispatch(line);
+    }
+    const tail = segs[segs.length - 1] as string;
+    this.parts.push(tail); this.size += tail.length;
+    if (this.size > (this.o.maxFrameBufferBytes ?? MAX_FRAME_BUFFER)) {
+      this.parts = []; this.size = 0;
+      this.rejectAll(new Error("planner frame too large"));
+      this.child?.kill("SIGKILL");
     }
   }
 
-  private onClose(code: number | null): void {
-    for (const w of this.waiters.values()) w.reject(new Error(`planner exited ${code}`));
-    this.waiters.clear();
-    for (const cb of this.exitCbs) cb(code);
+  private dispatch(line: string): void {
+    const f = parseFrameLine(line);
+    if (!f) return;
+    if (f.type === "response" && typeof f.id === "string" && this.waiters.has(f.id)) {
+      const w = this.waiters.get(f.id) as Waiter; this.waiters.delete(f.id); clearTimeout(w.timer);
+      if (f.success === false) w.reject(new Error(String(f.error ?? "command failed"))); else w.resolve(f.data);
+      return;
+    }
+    for (const cb of this.frameCbs) {
+      try { cb(f); } catch {
+        if (!this.cbErrorLogged) { this.cbErrorLogged = true; console.error(`planner onFrame callback threw (frame type ${f.type})`); }
+      }
+    }
+  }
+
+  private onClose(code: number | null, signal: NodeJS.Signals | null): void {
+    this.closed = true;
+    this.rejectAll(new Error(`planner exited ${code ?? signal}`));
+    for (const cb of this.exitCbs) cb({ code, signal, stopped: this.stopped });
   }
 
   async stop(): Promise<void> {
     if (this.stopped || !this.child) return;
     this.stopped = true;
     const c = this.child;
-    if (c.exitCode !== null) return;
-    await Promise.race([this.abort().catch(() => undefined), new Promise((r) => setTimeout(r, 1_000))]);
-    c.kill("SIGTERM");
-    const exited = new Promise((r) => c.once("close", r));
-    await Promise.race([exited, new Promise((r) => setTimeout(r, 5_000))]);
-    if (c.exitCode === null) c.kill("SIGKILL");
+    if (this.closed) return;
+    const timers: NodeJS.Timeout[] = [];
+    const wait = (ms: number) => new Promise<void>((r) => { timers.push(setTimeout(r, ms)); });
+    await Promise.race([this.abort().catch(() => undefined), wait(1_000)]);
+    if (!this.closed) {
+      const exited = new Promise<void>((r) => c.once("close", () => r()));
+      c.kill("SIGTERM");
+      await Promise.race([exited, wait(5_000)]);
+      if (!this.closed) c.kill("SIGKILL");
+    }
+    for (const t of timers) clearTimeout(t);
   }
 }

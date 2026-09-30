@@ -13,14 +13,14 @@ afterEach(async () => {
   delete process.env.FAKE_OMP_SCENARIO; delete process.env.FAKE_OMP_ARGV_LOG;
 });
 
-function make(scenario: object = {}, env: Record<string, string> = {}) {
+function make(scenario: object = {}, env: Record<string, string> = {}, extra: Record<string, unknown> = {}) {
   const d = mkdtempSync(join(tmpdir(), "hps-"));
   writeFileSync(join(d, "sc.json"), JSON.stringify(scenario));
   process.env.FAKE_OMP_SCENARIO = join(d, "sc.json"); process.env.FAKE_OMP_ARGV_LOG = join(d, "argv.log");
   const cfg = resolveOmpConfig({ HOUGE_OMP_BIN: FAKE, HOUGE_OMP_SANDBOX: "0",
     HOUGE_OMP_ENV_PASSTHROUGH: "FAKE_OMP_SCENARIO,FAKE_OMP_ARGV_LOG", ...env });
   const s = new PlannerSession({ cfg, sessionDir: d, cwd: d, systemPromptFile: join(d, "sys.md"), extensions: ["/x/houge.js"],
-    bridgeSock: join(d, "b.sock"), bridgeToken: "t", model: cfg.planner[0]!, configFile: join(d, "cfg.yml"), plannerProfile: join(d, "planner.sb") });
+    bridgeSock: join(d, "b.sock"), bridgeToken: "t", model: cfg.planner[0]!, configFile: join(d, "cfg.yml"), plannerProfile: join(d, "planner.sb"), ...extra });
   sessions.push(s);
   return { s, d };
 }
@@ -69,7 +69,7 @@ describe("PlannerSession — one long-lived RPC child per chat (spec §4, §7)",
 
   it("rejects pending commands and fires onExit when the child dies mid-turn", async () => {
     const { s } = make({ "*": { rpcExitAfterPrompt: true } });
-    await s.start(); let code: number | null | undefined; s.onExit((c) => { code = c; });
+    await s.start(); let code: number | null | undefined; s.onExit((i) => { code = i.code; });
     await expect(s.prompt("hi")).rejects.toThrow(/exited/);
     await new Promise((r) => setTimeout(r, 300));
     expect(code).toBe(3);
@@ -80,5 +80,64 @@ describe("PlannerSession — one long-lived RPC child per chat (spec §4, §7)",
     await s.start(); await s.prompt("hi");
     const t0 = Date.now(); await s.stop(); await s.stop();
     expect(Date.now() - t0).toBeLessThan(6_000);
+  });
+
+  it("reassembles a multibyte character split across stdout chunks (CJK traffic)", async () => {
+    const { s } = make({ "*": { rpcSplitUtf8: true } });
+    await s.start(); const texts: string[] = [];
+    s.onFrame((f) => texts.push(JSON.stringify(f)));
+    await s.prompt("hi");
+    await new Promise((r) => setTimeout(r, 300));
+    expect(texts.join("")).toContain("猴哥");
+  });
+
+  it("a command after the child exited rejects instead of crashing on EPIPE", async () => {
+    const { s } = make({ "*": { rpcExitAfterPrompt: true } });
+    await s.start(); await s.prompt("x").catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 200));
+    await expect(s.steer("late")).rejects.toThrow();
+  });
+
+  it("stop() on an already-dead child returns at once (no 5 s wait)", async () => {
+    const { s } = make({ "*": { rpcExitAfterPrompt: true } });
+    await s.start(); await s.prompt("x").catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 200));
+    const t0 = Date.now(); await s.stop();
+    expect(Date.now() - t0).toBeLessThan(500);
+  });
+
+  it("a throwing onFrame callback does not stop later frames or other callbacks", async () => {
+    const { s } = make();
+    await s.start(); const types: string[] = [];
+    s.onFrame(() => { throw new Error("boom"); });
+    s.onFrame((f) => types.push(f.type));
+    await s.prompt("hi");
+    await new Promise((r) => setTimeout(r, 200));
+    expect(types).toContain("agent_end");
+  });
+
+  it("kills the child and rejects waiters when a frame exceeds the buffer cap", async () => {
+    const { s } = make({ "*": { rpcHuge: true } }, {}, { maxFrameBufferBytes: 50_000 });
+    await s.start(); let info: { signal: string | null; stopped: boolean } | undefined;
+    s.onExit((i) => { info = i; });
+    const p = s.steer("x"); await p;
+    await s.prompt("hi");
+    await new Promise((r) => setTimeout(r, 300));
+    expect(info).toMatchObject({ signal: "SIGKILL", stopped: false });
+  });
+
+  it("times out a command that gets no response, without killing the child", async () => {
+    const { s } = make({ "*": { rpcNoReply: true } }, {}, { sendTimeoutMs: 150 });
+    await s.start();
+    await expect(s.prompt("hi")).rejects.toThrow("planner command timed out: prompt");
+    expect(s.pid).toBeDefined();
+    await expect(s.steer("still alive")).resolves.toBeUndefined();
+  });
+
+  it("onExit reports stopped=true only when stop() initiated it", async () => {
+    const { s } = make(); await s.start(); let info: { stopped: boolean } | undefined;
+    s.onExit((i) => { info = i; });
+    await s.stop();
+    expect(info?.stopped).toBe(true);
   });
 });

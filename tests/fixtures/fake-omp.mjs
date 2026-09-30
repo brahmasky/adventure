@@ -31,6 +31,15 @@ async function runRpc() {
     if (cmd.type === "abort") { reply(); return out({ type: "agent_end", messages: [], aborted: true }); }
     if (cmd.type !== "prompt") return reply();
     if (b.rpcExitAfterPrompt) process.exit(3);
+    if (b.rpcNoReply) return;
+    if (b.rpcSplitUtf8) {
+      reply();
+      const buf = Buffer.from(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "猴哥" }] } }) + "\n");
+      const cut = buf.indexOf(Buffer.from("猴")) + 1; // mid-character
+      process.stdout.write(buf.subarray(0, cut));
+      return void setTimeout(() => process.stdout.write(buf.subarray(cut)), 50);
+    }
+    if (b.rpcHuge) { reply(); return void process.stdout.write("x".repeat(200_000)); }
     reply();
     if (b.rpcHangAfterPrompt) return;
     const [provider, mid] = model.split("/");
