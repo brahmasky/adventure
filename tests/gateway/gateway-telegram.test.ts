@@ -17,6 +17,13 @@ import { RunStore } from "../../src/run/run-store.js";
 import { SkillStore } from "../../src/skills/skill-store.js";
 import { isSelfWriteActionEvent, normalizeTelegramUpdate } from "../../src/triggers/telegram-trigger-adapter.js";
 
+// PINNED_ENV (ROADMAP §3.5): the radar flags change what /schedule lists (the system ticks are shown
+// when armed), so every test starts with both unset; the radar tests below arm them explicitly.
+const RADAR_FLAGS = ["HOUGE_RADAR_ENABLED", "HOUGE_RADAR_PANEL_ENABLED"] as const;
+const savedRadarFlags: Record<string, string | undefined> = {};
+beforeEach(() => { for (const k of RADAR_FLAGS) { savedRadarFlags[k] = process.env[k]; delete process.env[k]; } });
+afterEach(() => { for (const k of RADAR_FLAGS) { if (savedRadarFlags[k] === undefined) delete process.env[k]; else process.env[k] = savedRadarFlags[k]; } });
+
 function seedWaitingApprovalRun(store: RunStore): string {
   const gateway = new Gateway(store);
   const intake = gateway.intake(buildTypedTaskEvent({
