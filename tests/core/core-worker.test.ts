@@ -7,6 +7,7 @@ import { Gateway } from "../../src/gateway/gateway.js";
 import { CoreWorker } from "../../src/core/core-worker.js";
 import { failureNotifyText, TURN_OUTSIDE_PLANNER_ERROR } from "../../src/core/omp-turn-wiring.js";
 import { RunStore } from "../../src/run/run-store.js";
+import { queryStatus } from "../../src/status/status-query.js";
 import { pinOmpEnv } from "../helpers/omp-env.js";
 
 // PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
@@ -189,11 +190,38 @@ describe("ruling 7: a turn that reaches executeRun fails loudly (the inner loop 
       const result = await new CoreWorker(store, root, async () => ({ ok: true, output: { answer: "never" } })).executeRun(intake.run_id, "w");
       expect(result).toMatchObject({ status: "failed", error: TURN_OUTSIDE_PLANNER_ERROR });
       expect(store.getRunState(intake.run_id)).toBe("failed");
-      expect(store.listOpenIncidents()).toEqual([expect.objectContaining({ kind: "turn_outside_planner", subject: `run:${intake.run_id}` })]);
+      // An EVENT, not a condition: recorded (and alerted) then resolved at once, so it never piles up as "open".
+      expect(store.listOpenIncidents()).toEqual([]);
       const texts: string[] = [];
       for (let n = store.claimNextNotification("a", 30); n; n = store.claimNextNotification(`a${texts.length}`, 30)) texts.push(String(n.payload.text));
       expect(texts).toContain(failureNotifyText(TURN_OUTSIDE_PLANNER_ERROR));
       expect(texts.some((t) => t.includes("turn_outside_planner"))).toBe(true); // the one incident alert
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("turn_outside_planner is an event: /status's open-incident count never grows with it (fix round 2)", () => {
+  it("three refused turns: three alerts, zero open incidents in /status", async () => {
+    const root = mkdtempSync(join(tmpdir(), "houge-turn-outside-"));
+    const store = RunStore.openInMemory();
+    try {
+      const worker = new CoreWorker(store, root, async () => ({ ok: true, output: { answer: "never" } }));
+      for (let i = 0; i < 3; i++) {
+        const intake = new Gateway(store).intake(buildTypedTaskEvent({
+          source: "telegram", type: "turn", program: "turn", goal: `hello ${i}`, requested_by: { kind: "user", id: "paco" },
+          notify: { kind: "telegram", chat_id: "555" }, idempotency_key: `t:outside:${i}`, source_reference: "telegram:update:1:message:1"
+        }));
+        if (!intake.ok) throw new Error("intake failed");
+        await worker.executeRun(intake.run_id, "w");
+      }
+      const status = queryStatus(store);
+      const overview = status.ok && "overview" in status.status ? status.status.overview : undefined;
+      expect(overview?.sweep.open_incidents).toBe(0);
+      const alerts: string[] = [];
+      for (let n = store.claimNextNotification("b", 30); n; n = store.claimNextNotification(`b${alerts.length}`, 30)) alerts.push(String(n.payload.text));
+      expect(alerts.filter((t) => t.includes("turn_outside_planner"))).toHaveLength(3);
     } finally {
       store.close();
     }

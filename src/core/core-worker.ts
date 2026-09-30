@@ -79,7 +79,7 @@ import { errorCode } from "../domain/error-code.js";
 import type { Identity } from "../domain/types.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import { createLedgerEvent } from "../run/run-ledger.js";
-import { openAlertedIncident } from "../run/incident-alert.js";
+import { openAlertedIncident, resolveOmpCheckIncidents } from "../run/incident-alert.js";
 import {
   computeNextRunAt,
   describeScheduleSpec,
@@ -443,7 +443,7 @@ export class CoreWorker {
     const target = this.runStore.getRunNotifyTarget(claim.run_id);
     openAlertedIncident(this.runStore, {
       kind: "turn_outside_planner", subject: `run:${claim.run_id}`, detail: { run_id: claim.run_id },
-      chat_id: target.kind === "telegram" ? target.chat_id : null
+      chat_id: target.kind === "telegram" ? target.chat_id : null, event: true
     });
     return this.failWithPartialReport(claim, { status: "failed", error_ref: TURN_OUTSIDE_PLANNER_ERROR });
   }
@@ -2115,7 +2115,8 @@ export class CoreWorker {
     return {
       complete: (i) => this.ompComplete(i),
       fail: (i) => this.ompFail(i),
-      incident: (kind, detail) => { this.runStore.openIncident({ kind, subject: `chat:${chatId}`, detail }); }
+      incident: (kind, detail) => { this.runStore.openIncident({ kind, subject: `chat:${chatId}`, detail }); },
+      versionOk: () => { resolveOmpCheckIncidents(this.runStore); }
     };
   }
 

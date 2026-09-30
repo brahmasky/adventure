@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openAlertedIncident } from "../../src/run/incident-alert.js";
+import { CoreWorker } from "../../src/core/core-worker.js";
+import type { TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
+import { openAlertedIncident, resolveOmpCheckIncidents } from "../../src/run/incident-alert.js";
 import { buildIncidentOpenedText, runInvariantSweep } from "../../src/run/invariant-sweep.js";
 import { RunStore } from "../../src/run/run-store.js";
 
@@ -46,6 +48,29 @@ describe("openAlertedIncident — one alert on open, throttled by the open incid
     openAlertedIncident(store, { kind: "omp_unavailable", subject: "omp", detail: {}, env: { HOUGE_TELEGRAM_CHAT_ID: "777" } });
     openAlertedIncident(store, { kind: "turn_outside_planner", subject: "run:x", detail: {}, env: {} });
     expect(store.listOpenIncidents()).toHaveLength(2);
+    expect(notes()).toHaveLength(1);
+  });
+});
+
+describe("clearable omp-check incidents (fix round 2)", () => {
+  it("resolveOmpCheckIncidents clears open omp_version_mismatch/omp_unavailable rows (any subject) and nothing else", () => {
+    store.openIncident({ kind: "omp_version_mismatch", subject: "omp:9.9.9", detail: {} });
+    store.openIncident({ kind: "omp_unavailable", subject: "chat:555", detail: {} });
+    store.openIncident({ kind: "heartbeat_gap", subject: "daemon", detail: {} });
+    expect(resolveOmpCheckIncidents(store)).toBe(2);
+    expect(store.listOpenIncidents().map((i) => i.kind)).toEqual(["heartbeat_gap"]);
+  });
+
+  it("the worker's supervisor sink clears them when a planner start passes its version check", () => {
+    store.openIncident({ kind: "omp_unavailable", subject: "chat:555", detail: {} });
+    const worker = new CoreWorker(store, "/nonexistent/project", async () => ({ ok: true, output: { answer: "x" } }));
+    (worker as unknown as { ompOutcomeSink(chat: string): TurnOutcomeSink }).ompOutcomeSink("555").versionOk?.();
+    expect(store.listOpenIncidents()).toEqual([]);
+  });
+
+  it("an event incident is resolved right after its alert is queued", () => {
+    expect(openAlertedIncident(store, { kind: "turn_outside_planner", subject: "run:x", detail: {}, chat_id: "555", event: true })).toBe(true);
+    expect(store.listOpenIncidents()).toEqual([]);
     expect(notes()).toHaveLength(1);
   });
 });

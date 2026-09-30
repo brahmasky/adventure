@@ -10,6 +10,7 @@ const defaultRun = (bin: string): string =>
  */
 export type OmpCheckKind = "version_mismatch" | "not_runnable" | "no_version";
 export interface OmpCheckFailure { ok: false; kind: OmpCheckKind; version: string | null; reason: string }
+export type OmpCheckResult = { ok: true; version: string } | OmpCheckFailure;
 
 export function checkOmpVersion(
   cfg: OmpConfig,

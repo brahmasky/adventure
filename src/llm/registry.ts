@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { OMP_AUDIO_REFUSED, spawnOneShot, type OneShotDeps } from "./providers/omp.js";
-import type { OmpCheckFailure } from "../omp/omp-version.js";
+import type { OmpCheckResult } from "../omp/omp-version.js";
 import { resolveOmpConfig, type OmpConfig } from "../omp/omp-config.js";
 import type { ModelFamily, ModelString } from "../omp/model-string.js";
 import type { LlmAuditScope, LlmCallRole, RunStore } from "../run/run-store.js";
@@ -9,7 +9,7 @@ import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { isAllowedMediaFile } from "../media/media-config.js";
 import { ASK_DISCIPLINE, FALLBACK_IDENTITY, GUARDRAILS } from "../prompt/composer.js";
 import { classifyLlmError, type LlmAuditSink } from "./audit.js";
-import { openAlertedIncident } from "../run/incident-alert.js";
+import { openAlertedIncident, resolveOmpCheckIncidents } from "../run/incident-alert.js";
 
 /**
  * The LLM seam after the omp cutover (spec §8, Task 14). Every non-planner call is an omp one-shot
@@ -197,20 +197,28 @@ export function oneShotAdapter(
           files: req.media ? [req.media.path] : [], correlationId: `${base}:${scope.role}:${randomUUID()}`,
           ...(plannerFamily !== undefined ? { plannerFamily } : {})
         },
-        { cfg, audit: store.llmAuditSink(scope), ...(opts.versionCheck ? { versionCheck: opts.versionCheck } : {}) }
+        {
+          cfg, audit: store.llmAuditSink(scope), onVersionCheck: (check) => reportOmpCheck(store, cfg, check),
+          ...(opts.versionCheck ? { versionCheck: opts.versionCheck } : {})
+        }
       );
-      if (!r.ok && r.omp_check) reportOmpCheck(store, cfg, r.omp_check);
       return r;
     }
   };
 }
 
 /**
- * The incident for a refused omp version check (ruling 6), alerted once. Only a version that was
- * READ and differs is `omp_version_mismatch` (one per version string); omp not runnable or silent
- * about its version is `omp_unavailable`. The open incident is the throttle.
+ * The incident for an omp version check (ruling 6). A refusal opens one, alerted once: only a
+ * version that was READ and differs is `omp_version_mismatch` (one per version string); omp not
+ * runnable or silent about its version is `omp_unavailable`. The open incident is the throttle.
+ * A PASSING check silently resolves every open omp_version_mismatch / omp_unavailable row, so the
+ * next refusal opens (and alerts) again.
  */
-export function reportOmpCheck(store: RunStore, cfg: OmpConfig, check: OmpCheckFailure): void {
+export function reportOmpCheck(store: RunStore, cfg: OmpConfig, check: OmpCheckResult): void {
+  if (check.ok) {
+    resolveOmpCheckIncidents(store);
+    return;
+  }
   const mismatch = check.kind === "version_mismatch";
   try {
     openAlertedIncident(store, {

@@ -268,6 +268,18 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
     expect(outcome.incidents).toContainEqual(expect.objectContaining({ k: "omp_version_mismatch" }));
   });
 
+  it("a passing version check tells the outcome sink so an open omp incident can clear (fix round 2)", async () => {
+    const { store, sup, outcome } = harness();
+    let oks = 0;
+    (outcome as unknown as { versionOk: () => void }).versionOk = () => { oks += 1; };
+    (sup as never as { d: { versionCheck: () => unknown } }).d.versionCheck = () => ({ ok: false, kind: "version_mismatch" as const, version: "18.5.0", reason: "x" });
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(oks).toBe(0);
+    (sup as never as { d: { versionCheck: () => unknown } }).d.versionCheck = () => ({ ok: true, version: "18.4.4" });
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(oks).toBe(1);
+  });
+
   it("an omp it cannot run is omp_unavailable, never a version mismatch (I2)", async () => {
     const { store, sup, outcome } = harness();
     (sup as never as { d: { versionCheck: () => unknown } }).d.versionCheck = () => ({ ok: false, kind: "not_runnable" as const, version: null, reason: "omp not runnable: ENOENT" });

@@ -33,6 +33,8 @@ export interface TurnOutcomeSink {
   complete(i: { run_id: string; worker_id: string; text: string; attachments: string[]; duration_ms: number; tool_calls: number; merged_into?: string }): void;
   fail(i: { run_id: string; worker_id: string; error_type: PlannerFailure; error_ref: string; partial?: string }): void;
   incident(kind: string, detail: Record<string, unknown>): void;
+  /** The version check passed: clear any open omp_version_mismatch / omp_unavailable condition. */
+  versionOk?(): void;
 }
 export interface SupervisorDeps {
   chatId: string; store: RunStore; cfg: OmpConfig; ctx: PathContext; distDir: string; decls: ToolDeclaration[];
@@ -459,6 +461,7 @@ export class PlannerSupervisor {
       this.incident(kind, { check: v.kind, version: v.version, expected: cfg.version });
       return `${kind}: ${v.reason}`;
     }
+    this.d.outcome.versionOk?.();
     if (this.d.skipPreflightForTest) return null;
     const w = verifyInstalledWrapper(distDir);
     if (!w.ok) { this.incident("wrapper_mismatch", { reason: w.reason }); return "wrapper_mismatch"; }

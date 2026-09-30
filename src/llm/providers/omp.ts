@@ -13,6 +13,8 @@ export interface OneShotInput {
 }
 export interface OneShotDeps {
   cfg: OmpConfig; audit: LlmAuditSink; versionCheck?: () => ReturnType<typeof checkOmpVersion>;
+  /** Every version check's outcome, pass or refuse — the caller opens or clears its omp incidents. */
+  onVersionCheck?: (check: ReturnType<typeof checkOmpVersion>) => void;
 }
 
 const STDOUT_CAP_BYTES = 8 * 1024 * 1024;
@@ -68,6 +70,7 @@ const AUDIO_FILE = /\.(opus|ogg|oga|mp3|wav|m4a|aac|flac|amr|weba)$/i;
 export async function spawnOneShot(input: OneShotInput, deps: OneShotDeps): Promise<LlmResult> {
   if ((input.files ?? []).some((f) => AUDIO_FILE.test(f))) return { ok: false, provider: "omp", error: OMP_AUDIO_REFUSED };
   const version = (deps.versionCheck ?? (() => checkOmpVersion(deps.cfg)))();
+  deps.onVersionCheck?.(version);
   // No leg ran, so no audit row: the structured check rides out for the caller's incident (ruling 6).
   if (!version.ok) return { ok: false, provider: "omp", error: version.reason, unavailable: true, omp_check: version };
   const errors: string[] = [];

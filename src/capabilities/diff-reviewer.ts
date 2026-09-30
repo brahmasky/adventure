@@ -5,7 +5,7 @@ import { normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
 import { classifyLlmError, type LlmAttemptOutcome, type LlmAuditSink, type LlmErrorKind } from "../llm/audit.js";
 import { spawnOneShot } from "../llm/providers/omp.js";
 import { resolveOmpConfig } from "../omp/omp-config.js";
-import type { OmpCheckFailure } from "../omp/omp-version.js";
+import type { OmpCheckResult } from "../omp/omp-version.js";
 import { familyOf, formatModelString } from "../omp/model-string.js";
 
 /**
@@ -145,7 +145,7 @@ export interface ReviewDiffInput {
    */
   audit: LlmAuditSink;
   /** A refused omp version check (no leg ran): the caller opens the incident (reportOmpCheck). */
-  onOmpCheck?: (check: OmpCheckFailure) => void;
+  onOmpCheck?: (check: OmpCheckResult) => void;
 }
 
 interface NodeError extends Error {
@@ -301,9 +301,8 @@ async function reviewViaOmp(input: ReviewDiffInput, env: NodeJS.ProcessEnv): Pro
   const cfg = resolveOmpConfig(env);
   const r = await spawnOneShot(
     { seat: "reviewer", chain: cfg.reviewer, prompt: buildReviewPrompt(input.task, input.diff), correlationId: `review:${randomUUID()}` },
-    { cfg, audit: input.audit }
+    { cfg, audit: input.audit, ...(input.onOmpCheck ? { onVersionCheck: input.onOmpCheck } : {}) }
   );
-  if (!r.ok && r.omp_check) input.onOmpCheck?.(r.omp_check);
   if (!r.ok) return { ok: false, error: `omp reviewer unavailable: ${r.error}` };
   const verdict = parseVerdict(r.answer);
   if (!verdict) return { ok: false, error: "omp reviewer returned an unparseable verdict" };
