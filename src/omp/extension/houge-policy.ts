@@ -56,5 +56,3 @@ export async function hougePolicy(pi: PiLike): Promise<void> {
     await getBridge().request({ kind: "report", toolCallId: e.toolCallId, outcome: e.isError ? "failed" : "succeeded", bytes_out: bytes, duration_ms: t0 === undefined ? 0 : Date.now() - t0 }).catch(() => undefined);
   });
 }
-
-export default hougePolicy;

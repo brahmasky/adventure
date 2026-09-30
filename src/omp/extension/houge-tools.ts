@@ -20,5 +20,3 @@ export async function hougeTools(pi: PiLike): Promise<void> {
     registered.add(d.name); // only after registerTool returned: the policy trusts this set, not the manifest alone
   }
 }
-
-export default hougeTools;

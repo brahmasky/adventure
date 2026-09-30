@@ -33,7 +33,7 @@ describe("omp extensions — what the planner sees and what it may call", () => 
   it("registers exactly the daemon's manifest; each stub forwards the call with omp's toolCallId", async () => {
     const pi = stubPi();
     const mod = await import("../../src/omp/extension/houge-tools.js");
-    await mod.default(pi.api);
+    await mod.hougeTools(pi.api);
     expect(pi.tools.map((t) => t.name)).toEqual(["bash"]);
     const r = await pi.tools[0].execute("tc-1", { command: "ls" }, undefined, () => {});
     expect(r.content[0].text).toBe("exit 0 output");
@@ -42,22 +42,22 @@ describe("omp extensions — what the planner sees and what it may call", () => 
 
   it("blocks any tool outside the allowlist — omp's own web_search/fetch must never run (D3)", async () => {
     const pi = stubPi();
-    await (await import("../../src/omp/extension/houge-tools.js")).default(stubPi().api);
-    await (await import("../../src/omp/extension/houge-policy.js")).default(pi.api);
+    await (await import("../../src/omp/extension/houge-tools.js")).hougeTools(stubPi().api);
+    await (await import("../../src/omp/extension/houge-policy.js")).hougePolicy(pi.api);
     expect(await pi.handlers.tool_call({ toolName: "web_search", toolCallId: "x", input: {} })).toMatchObject({ block: true });
     expect(await pi.handlers.tool_call({ toolName: "bash", toolCallId: "y", input: { command: "ls" } })).toBeUndefined();
   });
 
   it("gates read/edit/write through the daemon and blocks on deny with the daemon's reason", async () => {
     const pi = stubPi();
-    await (await import("../../src/omp/extension/houge-policy.js")).default(pi.api);
+    await (await import("../../src/omp/extension/houge-policy.js")).hougePolicy(pi.api);
     expect(await pi.handlers.tool_call({ toolName: "read", toolCallId: "r1", input: { path: "/secret" } })).toEqual({ block: true, reason: "protected_path" });
     expect(await pi.handlers.tool_call({ toolName: "read", toolCallId: "r2", input: { path: "/tmp/a" } })).toBeUndefined();
   });
 
   it("reports a built-in result with counts only — never the content", async () => {
     const pi = stubPi();
-    await (await import("../../src/omp/extension/houge-policy.js")).default(pi.api);
+    await (await import("../../src/omp/extension/houge-policy.js")).hougePolicy(pi.api);
     await pi.handlers.tool_call({ toolName: "write", toolCallId: "w1", input: { path: "/tmp/a" } });
     await pi.handlers.tool_result({ toolName: "write", toolCallId: "w1", isError: false, content: [{ type: "text", text: "secret body" }] });
     const report = seen.find((s) => s.kind === "report") as any;
@@ -70,13 +70,13 @@ describe("omp extensions — what the planner sees and what it may call", () => 
     const { resetBridgeForTest } = await import("../../src/omp/extension/bridge-client.js");
     resetBridgeForTest();
     const pi = stubPi();
-    await (await import("../../src/omp/extension/houge-policy.js")).default(pi.api);
+    await (await import("../../src/omp/extension/houge-policy.js")).hougePolicy(pi.api);
     expect(await pi.handlers.tool_call({ toolName: "read", toolCallId: "r3", input: { path: "/tmp/a" } })).toMatchObject({ block: true });
   });
 
   it("gate carries path fields only: a 2 MB write body never crosses the bridge (frame-size contract)", async () => {
     const pi = stubPi();
-    await (await import("../../src/omp/extension/houge-policy.js")).default(pi.api);
+    await (await import("../../src/omp/extension/houge-policy.js")).hougePolicy(pi.api);
     const big = "x".repeat(2 * 1024 * 1024);
     expect(await pi.handlers.tool_call({ toolName: "write", toolCallId: "big", input: { path: "/tmp/a", content: big } })).toBeUndefined();
     const gate = seen.find((s) => s.kind === "gate") as BridgeRequest;
@@ -87,7 +87,7 @@ describe("omp extensions — what the planner sees and what it may call", () => 
 });
 
 describe("omp extensions — fail closed", () => {
-  const policy = async () => { const pi = stubPi(); await (await import("../../src/omp/extension/houge-policy.js")).default(pi.api); return pi; };
+  const policy = async () => { const pi = stubPi(); await (await import("../../src/omp/extension/houge-policy.js")).hougePolicy(pi.api); return pi; };
   const withServer = async (handle: (r: BridgeRequest) => Promise<unknown>) => {
     await server.close(); resetBridgeForTest();
     const sock = process.env.HOUGE_BRIDGE_SOCK as string;
@@ -101,13 +101,13 @@ describe("omp extensions — fail closed", () => {
 
   it("only names whose registerTool returned are trusted: a throwing registerTool leaves the tool blocked", async () => {
     const tools = await import("../../src/omp/extension/houge-tools.js");
-    await expect(tools.default({ registerTool: () => { throw new Error("boom"); }, on: () => undefined })).rejects.toThrow("boom");
+    await expect(tools.hougeTools({ registerTool: () => { throw new Error("boom"); }, on: () => undefined })).rejects.toThrow("boom");
     const pi = await policy();
     expect(await pi.handlers.tool_call({ toolName: "bash", toolCallId: "n2", input: {} })).toMatchObject({ block: true });
   });
 
   it("manifest fetch rejects for a non-builtin => block", async () => {
-    await (await import("../../src/omp/extension/houge-tools.js")).default(stubPi().api);
+    await (await import("../../src/omp/extension/houge-tools.js")).hougeTools(stubPi().api);
     await withServer(async (req) => { if (req.kind === "manifest") throw new Error("nope"); return {}; });
     const pi = await policy();
     expect(await pi.handlers.tool_call({ toolName: "bash", toolCallId: "n3", input: {} })).toMatchObject({ block: true });
@@ -146,15 +146,20 @@ describe("omp extensions — fail closed", () => {
     expect(g.input).toEqual({ paths: ["/tmp/a", "/tmp/b"] });
   });
 
-  it("the single houge.ts entry registers stubs and allows them (omp loads each -e with a ?mtime query, so two entries cannot share `registered`; live-proven, vitest's graph cannot reproduce it)", async () => {
-    const base = (f: string) => new URL(`../../src/omp/extension/${f}`, import.meta.url).href;
-    const toolsA = await import(/* @vite-ignore */ `${base("houge-tools.ts")}?a`);
-    const policyB = await import(/* @vite-ignore */ `${base("houge-policy.ts")}?b`);
-    expect(typeof toolsA.default).toBe("function"); expect(typeof policyB.default).toBe("function"); // query-suffixed imports load
+  it("the single houge.ts entry registers stubs and allows them (omp loads each -e with a ?mtime query, so two entries cannot share `registered`; live-proven only)", async () => {
     const entry = stubPi();
     await (await import("../../src/omp/extension/houge.js")).default(entry.api);
     expect(entry.tools.map((t) => t.name)).toEqual(["bash"]);
     expect(await entry.handlers.tool_call({ toolName: "bash", toolCallId: "s2", input: {} })).toBeUndefined();
+  });
+
+  it("a failing manifest does not unload the gate (omp drops all handlers of an extension that throws): entry resolves, stubs absent, read and bash blocked", async () => {
+    await withServer(async () => { throw new Error("manifest down"); });
+    const pi = stubPi();
+    await (await import("../../src/omp/extension/houge.js")).default(pi.api);
+    expect(pi.tools).toEqual([]);
+    expect(await pi.handlers.tool_call({ toolName: "read", toolCallId: "f1", input: { path: "/tmp/a" } })).toMatchObject({ block: true });
+    expect(await pi.handlers.tool_call({ toolName: "bash", toolCallId: "f2", input: {} })).toMatchObject({ block: true });
   });
 
   it("report: bytes_out counts UTF-8 bytes and duration_ms is measured from the tool_call hook", async () => {
