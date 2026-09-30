@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
+import { familyOf } from "../../src/omp/model-string.js";
 import { judgeSeat, oneShotAdapter, seatBudgetMs, seatChain } from "../../src/llm/registry.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { FAKE_OMP_BIN, pinOmpEnv } from "../helpers/omp-env.js";
@@ -21,7 +22,7 @@ describe("seat routing — which subscription model serves each non-planner call
     for (const role of ["consolidate", "extract", "attribution", "frame", "verify"] as const) expect(seatChain(cfg, role)).toEqual(cfg.ticks);
   });
   it("keeps the reviewer on a different family from the codex writer", () => {
-    expect(seatChain(cfg, "reviewer").every((m) => !m.model.startsWith("gpt"))).toBe(true);
+    expect(seatChain(cfg, "reviewer").map(familyOf)).not.toContain("gpt");
   });
   it("gives each judge seat exactly ONE string by index — a judge never falls back to another model (quorum diversity)", () => {
     expect(cfg.judges.map((_, i) => judgeSeat(cfg, i))).toEqual(cfg.judges.map((m) => [m]));

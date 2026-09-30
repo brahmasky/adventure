@@ -6,6 +6,7 @@ import { classifyLlmError, type LlmAttemptOutcome, type LlmAuditSink, type LlmEr
 import { spawnOneShot } from "../llm/providers/omp.js";
 import { resolveOmpConfig } from "../omp/omp-config.js";
 import type { OmpCheckFailure } from "../omp/omp-version.js";
+import { familyOf, formatModelString } from "../omp/model-string.js";
 
 /**
  * Independent diff reviewer (Phase 3, checker 3 — ADR 0011 §7 / spec
@@ -44,6 +45,22 @@ export function resolveSelfWriteReviewer(env: NodeJS.ProcessEnv): ReviewerKind {
   const raw = env.HOUGE_SELFWRITE_REVIEWER?.trim().toLowerCase();
   if (raw === "codex") return "codex";
   return "omp";
+}
+
+/**
+ * Phase 3.1 (W3) writer ≠ checker: the writer is codex (the gpt family). A NON-FATAL warning when the
+ * reviewer shares that family — the codex reviewer, or any HOUGE_OMP_REVIEWER string whose family is
+ * gpt (a fallback leg counts: it may be the one that verdicts). Null when diversity holds.
+ */
+export function reviewerDiversityWarning(writer: string, env: NodeJS.ProcessEnv): string | null {
+  const reviewer = resolveSelfWriteReviewer(env);
+  if (reviewer === "codex" && writer === "codex") {
+    return `[self-write] writer and reviewer are BOTH "codex" — model diversity (writer ≠ checker) is lost. Set HOUGE_SELFWRITE_WRITER / HOUGE_SELFWRITE_REVIEWER to different providers.`;
+  }
+  if (reviewer !== "omp") return null;
+  const gpt = resolveOmpConfig(env).reviewer.filter((m) => familyOf(m) === "gpt").map(formatModelString);
+  return gpt.length === 0 ? null
+    : `[self-write] writer and reviewer are BOTH the gpt family (HOUGE_OMP_REVIEWER: ${gpt.join(", ")}) — model diversity (writer ≠ checker) is lost.`;
 }
 
 /**

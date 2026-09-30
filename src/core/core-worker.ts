@@ -14,7 +14,7 @@ import { resolveTestGateTimeoutMs, runTestGateAsync } from "../run/test-gate.js"
 import type { TestGateResult } from "../run/test-gate.js";
 import { execFileAsync } from "../run/exec-file-async.js";
 import { EVOLUTION_LANE_BUSY_DIGEST, tryStartEvolutionPipeline } from "./evolution-lane.js";
-import { reviewDiff, resolveSelfWriteReviewer } from "../capabilities/diff-reviewer.js";
+import { reviewDiff, resolveSelfWriteReviewer, reviewerDiversityWarning } from "../capabilities/diff-reviewer.js";
 import type { ReviewDiffInput, ReviewResult } from "../capabilities/diff-reviewer.js";
 import { runSelfWriter, resolveSelfWriteWriter } from "../capabilities/self-write-writer.js";
 import { resolveCodexModel } from "../capabilities/coding-agent.js";
@@ -1167,9 +1167,8 @@ export class CoreWorker {
     // resolve to the SAME provider, log a single NON-FATAL warning — never block.
     const writerProvider = resolveSelfWriteWriter(process.env);
     const reviewerProvider = resolveSelfWriteReviewer(process.env);
-    if (writerProvider === reviewerProvider) {
-      console.warn(`[self-write] writer and reviewer are BOTH "${writerProvider}" — model diversity (writer ≠ checker) is lost. Set HOUGE_SELFWRITE_WRITER / HOUGE_SELFWRITE_REVIEWER to different providers.`);
-    }
+    const diversity = reviewerDiversityWarning(writerProvider, process.env);
+    if (diversity) console.warn(diversity);
     // Captured across the loop so the published event can stamp the WINNING pass's usage (no bodies).
     let lastWriterUsage: LlmUsage | undefined;
     let lastWriterMeta: { provider: string; model: string } | undefined;

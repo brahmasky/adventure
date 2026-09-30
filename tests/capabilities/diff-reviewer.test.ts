@@ -6,6 +6,7 @@ import {
   buildReviewPrompt,
   parseVerdict,
   resolveSelfWriteReviewer,
+  reviewerDiversityWarning,
   reviewDiff
 } from "../../src/capabilities/diff-reviewer.js";
 import { recordingSink, UNAUDITED_TEST_SINK } from "../helpers/llm-audit.js";
@@ -405,5 +406,17 @@ describe("reviewDiff — per-leg audit (Task 12 fix 2: the reviewer's own fallba
     expect(sink.attempts[0]?.provider).toBe("codex");
     expect(sink.attempts[0]?.outcome).toBe("ok");
     expect(sink.attempts[0]?.usage).toBeDefined();
+  });
+});
+
+describe("reviewerDiversityWarning — writer (codex, the gpt family) ≠ checker (M2)", () => {
+  it("warns when any HOUGE_OMP_REVIEWER string is the gpt family, even a fallback leg", () => {
+    expect(reviewerDiversityWarning("codex", { HOUGE_OMP_REVIEWER: "kimi-code/k3:high,openai-codex/gpt-5.5" })).toContain("openai-codex/gpt-5.5");
+  });
+  it("is silent for the default omp reviewer chain (kimi, then claude)", () => {
+    expect(reviewerDiversityWarning("codex", {})).toBeNull();
+  });
+  it("still warns for the codex reviewer with the codex writer", () => {
+    expect(reviewerDiversityWarning("codex", { HOUGE_SELFWRITE_REVIEWER: "codex" })).toContain("BOTH");
   });
 });
