@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { classifyOmpError, parseFrameLine, summarizeAssistantMessage } from "../../src/omp/omp-frames.js";
 
@@ -47,5 +47,16 @@ describe("omp frames — the audit row and the answer both come from the assista
     expect(classifyOmpError('No models matching "no-such-model"')).toBe("model_missing");
     expect(classifyOmpError("stopReason=refusal")).toBe("model_refusal");
     expect(classifyOmpError("socket hang up")).toBe("transport");
+  });
+});
+
+describe("omp frame fixtures — the repo is public (A11)", () => {
+  it("carry no real home directory: every recorded path starts at <home>", () => {
+    const dir = new URL("../fixtures/omp-frames/", import.meta.url);
+    for (const name of readdirSync(dir)) {
+      const text = readFileSync(new URL(name, dir), "utf8");
+      expect(text, name).not.toMatch(/\/Users\/(?!Shared\/)[^/"<\s]+/);
+      for (const line of text.split("\n").filter((l) => l.trim())) expect(() => JSON.parse(line), name).not.toThrow();
+    }
   });
 });
