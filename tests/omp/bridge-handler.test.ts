@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -324,6 +324,48 @@ describe("bridge handler — gate and report for omp built-ins (spec §5.2, §5.
     expect(events("tool_finished")).toContainEqual(expect.objectContaining({ tool_call_id: "gr3", status: "failed", reason: "unreported" }));
     expect(turn.unreported.size).toBe(0);
   });
+});
+
+describe("bridge handler — the gate canonicalises paths exactly as omp does (security C1, A5)", () => {
+  function omp() {
+    const t = setup();
+    t.deps.ctx.home = join(t.turn.cwd, "home");
+    const H = t.deps.ctx.home;
+    mkdirSync(join(H, ".omp", "profiles", "houge"), { recursive: true });
+    const g = (tool: "read" | "edit" | "write", input: Record<string, unknown>) =>
+      t.handle({ id: `r${++seq}`, kind: "gate", tool, input, toolCallId: `c${++seq}` } as BridgeRequest);
+    return { ...t, H, g };
+  }
+
+  it.each([
+    "~.omp/profiles/houge/auth.json", "@~/.omp/profiles/houge/auth.json", ":~/.omp/profiles/houge/auth.json",
+    "@$H/.omp/profiles/houge/auth.json", ":$H/.omp/profiles/houge/auth.json", "~/.omp/profiles/houge/auth.json:1-5",
+    "~/.omp:1-5", "notes.txt;~/.omp/profiles/houge/auth.json", "a.md ~/.omp/x", '"~/.omp/profiles/houge/auth.json"',
+    "  ~/.omp/profiles/houge/auth.json  ", "~/.omp/x.png?what is this", "~/.omp/archive.zip:inner/file"
+  ])("%s never reaches ~/.omp through read or write", async (form) => {
+    const { g, H } = omp();
+    const raw = form.replace("$H", H);
+    for (const tool of ["read", "write"] as const) expect(await g(tool, { path: raw }), `${tool} ${form}`).toMatchObject({ decision: "deny" });
+  });
+
+  it.each([
+    ["file:///etc/passwd", "url_read"], ["local:/notes.md", "url_read"], ["@local://x", "url_read"], ["@notes.md", "bad_path"],
+    [":notes.md", "bad_path"], ["a\\b.txt", "bad_path"], ["a\u0000b", "bad_path"], ["@@/tmp/x", "bad_path"]
+  ])("%j is refused %s: a form the gate does not model fails closed", async (raw, reason) => {
+    const { g } = omp();
+    expect(await g("read", { path: raw })).toEqual({ decision: "deny", reason });
+  });
+
+  it("edit targets forwarded in paths[] (patch rename, hashline header, MV) are gated like the path", async () => {
+    const { g } = omp();
+    expect(await g("edit", { path: "ok.txt", paths: ["ok.txt", "~.omp/profiles/houge/auth.json"] })).toMatchObject({ decision: "deny" });
+  });
+
+  it.each(["notes.md", "./a/b.txt", "src/x.ts:10-20", "@/tmp/x", ":./a.txt", "~/Documents/a.txt", "/", "My File.txt"])(
+    "%s stays allowed: ordinary forms are not refused", async (raw) => {
+      const { g } = omp();
+      expect(await g("read", { path: raw })).toEqual({ decision: "allow" });
+    });
 });
 
 describe("bridge handler — posture and turn ownership (spec §5.2)", () => {

@@ -11,11 +11,60 @@ export const MAX_GATE_PATHS = 64;
 export const TOO_MANY_PATHS = "too_many_paths";
 export const BAD_PATH = "bad_path";
 
-/** Gate contract: the daemon sees path fields only, never a write/edit body (bridge-protocol.ts). Never truncates. */
-function gateInput(input: Record<string, unknown> | undefined): Record<string, unknown> {
+/** Every field any omp 18.4.4 edit mode accepts (replace, patch, hashline, apply_patch, sloppy) plus the intent `i`. */
+export const EDIT_KEYS: ReadonlySet<string> = new Set(["path", "file_path", "paths", "old_string", "new_string", "replace_all", "edits", "input", "i"]);
+
+/**
+ * The files a hashline or apply_patch body names (omp's parser is native; this is deliberately looser): `[path#HASH]`
+ * headers, `MV <dest>` moves, `*** Add|Update|Delete File:` and `*** Move to:` lines. Payload lines start with `+`.
+ */
+export function patchTargets(text: string): string[] {
+  const out: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const t = line.trim();
+    let m: RegExpExecArray | null;
+    if (t.length > 2 && t.startsWith("[") && t.endsWith("]")) { const inner = t.slice(1, -1); out.push(inner, inner.replace(/#[0-9A-Fa-f]*$/, "").trim()); }
+    else if ((m = /^MV[\s:.]+(.+)$/.exec(t))) { const d = (m[1] as string).trim(); out.push(d, d.replace(/^(["'])(.*)\1$/, "$2")); }
+    else if ((m = /^\*{3}\s*(?:(?:add|update|delete)\s+file|move\s+to)\s*:\s*(.+)$/i.exec(t))) out.push((m[1] as string).trim());
+  }
+  return [...new Set(out.filter((x) => x.length > 0))];
+}
+
+/** An edit's targets beyond `path`: patch-mode renames and a patch body's files. null = refuse (bad_path). */
+export function editTargets(input: Record<string, unknown> | undefined): string[] | null {
+  if (!input) return [];
+  if (Object.keys(input).some((k) => !EDIT_KEYS.has(k))) return null;
+  const out: string[] = [];
+  if (input.edits !== undefined) {
+    if (!Array.isArray(input.edits)) return null;
+    for (const e of input.edits as unknown[]) {
+      if (typeof e !== "object" || e === null || Array.isArray(e)) return null;
+      const rename = (e as Record<string, unknown>).rename;
+      if (rename !== undefined && typeof rename !== "string") return null;
+      if (typeof rename === "string") out.push(rename);
+    }
+  }
+  if (input.input !== undefined) {
+    if (typeof input.input !== "string") return null;
+    const targets = patchTargets(input.input);
+    if (targets.length === 0) return null; // a body whose target we cannot see is never allowed
+    out.push(...targets);
+  }
+  return out;
+}
+
+/**
+ * Gate contract: the daemon sees path fields only, never a write/edit body (bridge-protocol.ts). An edit's
+ * other targets ride in `paths`, so the daemon checks every file omp would touch. Never truncates.
+ */
+function gateInput(tool: string, input: Record<string, unknown> | undefined): Record<string, unknown> | string {
   const out: Record<string, unknown> = {};
   for (const k of ["path", "file_path", "paths"]) if (input?.[k] !== undefined) out[k] = input[k];
-  return out;
+  if (tool !== "edit") return out;
+  const extra = editTargets(input);
+  if (extra === null) return BAD_PATH;
+  if (extra.length > 0) out.paths = [...((out.paths as string[] | undefined) ?? []), ...extra];
+  return ((out.paths as string[] | undefined)?.length ?? 0) > MAX_GATE_PATHS ? TOO_MANY_PATHS : out;
 }
 
 /** A paths[] we cannot check in full is refused whole: a truncated check would let a late protected path through. */
@@ -37,8 +86,10 @@ export async function hougePolicy(pi: PiLike): Promise<void> {
       if (isBuiltin(e.toolName)) {
         const refused = pathsRefusal(e.input);
         if (refused) return { block: true, reason: refused };
+        const input = gateInput(e.toolName, e.input);
+        if (typeof input === "string") return { block: true, reason: input };
         startedAt.set(e.toolCallId, Date.now());
-        const r = await getBridge().request({ kind: "gate", tool: e.toolName, input: gateInput(e.input), toolCallId: e.toolCallId });
+        const r = await getBridge().request({ kind: "gate", tool: e.toolName, input, toolCallId: e.toolCallId });
         if (r?.decision === "allow") return undefined;
         startedAt.delete(e.toolCallId); // blocked: omp emits no tool_result to clear it
         return { block: true, reason: String(r?.reason ?? "denied") };

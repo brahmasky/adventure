@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { CapabilityRunner, type CapabilityExecutionInput, type CapabilityResult } from "../capabilities/capability-runner.js";
 import { decideCapability } from "../policy/capability-policy.js";
 import type { BudgetLedger } from "../budget/budget-ledger.js";
@@ -9,6 +8,7 @@ import type { ToolRegistry } from "../tools/tool-registry.js";
 import type { BridgeRequest } from "./bridge-protocol.js";
 import { BUILTIN_CAPABILITY, capabilityFor, type RegistryEntry } from "./capability-map.js";
 import { classifyCommand } from "./command-matcher.js";
+import { gateTargets } from "./gate-path.js";
 import { renderExternalRead, UNTRUSTED_READ_ENTRIES, type ExternalReadResult } from "./external-read.js";
 import type { OmpConfig } from "./omp-config.js";
 import { isDeniedRead, isDeniedWrite, type PathContext } from "./protected-paths.js";
@@ -225,11 +225,6 @@ function reasonCode(r: CapabilityResult): string {
   return r.status === "denied" || r.status === "denied_on_revalidation" ? r.reason : r.status;
 }
 
-function gatePath(deps: BridgeHandlerDeps, turn: ActiveTurn, raw: string): string {
-  if (raw === "~" || raw.startsWith("~/")) return join(deps.ctx.home, raw.slice(1));
-  return isAbsolute(raw) ? raw : resolvePath(turn.cwd, raw);
-}
-
 /** path, file_path and (multi-file edit) paths[]: every one must pass; none present is missing_path. */
 function gatePaths(input: Record<string, unknown>): string[] {
   const out: string[] = [];
@@ -238,11 +233,12 @@ function gatePaths(input: Record<string, unknown>): string[] {
   return out;
 }
 
+/** Every target omp may resolve `raw` to (gate-path.ts) must pass; a form the gate does not model is refused whole. */
 function pathDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, raw: string, entry: FsEntry): string | null {
-  if (raw.trim() === "") return "missing_path";
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) return "url_read";
-  const abs = gatePath(deps, turn, raw);
-  return (entry === "fs_read" ? isDeniedRead : isDeniedWrite)(abs, deps.ctx) ? "protected_path" : null;
+  const t = gateTargets(raw, deps.ctx.home, turn.cwd);
+  if (!t.ok) return t.reason;
+  const denied = entry === "fs_read" ? isDeniedRead : isDeniedWrite;
+  return t.targets.some((abs) => denied(abs, deps.ctx)) ? "protected_path" : null;
 }
 
 function gateDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, req: GateReq, entry: FsEntry): string | null {

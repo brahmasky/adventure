@@ -55,6 +55,30 @@ describe("omp extensions — what the planner sees and what it may call", () => 
     expect(await pi.handlers.tool_call({ toolName: "read", toolCallId: "r2", input: { path: "/tmp/a" } })).toBeUndefined();
   });
 
+  it("an edit's hidden targets reach the gate: patch renames, hashline headers and MV, apply_patch file lines (A5)", async () => {
+    const pi = stubPi();
+    await (await import("../../src/omp/extension/houge-policy.js")).hougePolicy(pi.api);
+    const gateOf = async (id: string, input: Record<string, unknown>) => {
+      await pi.handlers.tool_call({ toolName: "edit", toolCallId: id, input });
+      return (seen.find((s) => s.kind === "gate" && s.toolCallId === id) as { input: { paths?: string[] } } | undefined)?.input.paths;
+    };
+    expect(await gateOf("e1", { path: "ok.txt", edits: [{ rename: "~.omp/x" }] })).toContain("~.omp/x");
+    const hashline = "*** Begin Patch\n[decoy.txt#1A2B]\nSWAP 1.=1:\n+x\n[  ~/.omp/a.json#FFFF]\nMV \"~.omp/b\"\n*** End Patch\n";
+    expect(await gateOf("e2", { path: "decoy.txt", input: hashline })).toEqual(expect.arrayContaining(["decoy.txt", "~/.omp/a.json", "~.omp/b"]));
+    const applyPatch = "*** Begin Patch\n*** Update File: ok.py\n*** Move to: ~/.omp/c\n*** Delete File: @~/.omp/d\n*** End Patch\n";
+    expect(await gateOf("e3", { input: applyPatch })).toEqual(expect.arrayContaining(["ok.py", "~/.omp/c", "@~/.omp/d"]));
+  });
+
+  it.each([
+    [{ input: "no header here\n+x\n" }], [{ path: "a", edits: [{ rename: 7 }] }], [{ path: "a", edits: "x" }], [{ path: "a", target: "~/.omp/x" }], [{ input: 5 }]
+  ])("edit %j is blocked bad_path before the bridge: a target the gate cannot see is never allowed", async (input) => {
+    const pi = stubPi();
+    const policy = await import("../../src/omp/extension/houge-policy.js");
+    await policy.hougePolicy(pi.api);
+    expect(await pi.handlers.tool_call({ toolName: "edit", toolCallId: "eb", input })).toEqual({ block: true, reason: policy.BAD_PATH });
+    expect(seen.find((s) => s.kind === "gate")).toBeUndefined();
+  });
+
   it("reports a built-in result with counts only — never the content", async () => {
     const pi = stubPi();
     await (await import("../../src/omp/extension/houge-policy.js")).hougePolicy(pi.api);
@@ -141,7 +165,7 @@ describe("omp extensions — fail closed", () => {
   it("a non-string paths entry is blocked bad_path; a valid paths[] is forwarded intact without the body", async () => {
     const pi = await policy();
     expect(await pi.handlers.tool_call({ toolName: "edit", toolCallId: "bp", input: { paths: ["/tmp/a", 5] } })).toEqual({ block: true, reason: "bad_path" });
-    expect(await pi.handlers.tool_call({ toolName: "edit", toolCallId: "ok", input: { paths: ["/tmp/a", "/tmp/b"], edits: "body" } })).toBeUndefined();
+    expect(await pi.handlers.tool_call({ toolName: "edit", toolCallId: "ok", input: { paths: ["/tmp/a", "/tmp/b"], edits: [{ diff: "body" }] } })).toBeUndefined();
     const g = seen.find((s) => s.kind === "gate") as any;
     expect(g.input).toEqual({ paths: ["/tmp/a", "/tmp/b"] });
   });
