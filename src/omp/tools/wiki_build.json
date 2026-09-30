@@ -1,0 +1,17 @@
+{
+  "name": "wiki_build",
+  "description": "Save this turn's gathered research as a durable knowledge page on one topic — future turns reuse it instead of re-searching. Call it AFTER you have fetched at least 2 independent sources this turn (web_search/http_fetch), BEFORE your final answer; you supply only the topic, the page is built from what you actually read this turn.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "topic": {
+        "type": "string",
+        "maxLength": 300
+      }
+    },
+    "required": [
+      "topic"
+    ],
+    "additionalProperties": false
+  }
+}

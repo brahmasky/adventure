@@ -1,0 +1,14 @@
+{
+  "name": "self_write_propose",
+  "description": "Propose a change to Houge's OWN source code. It reads and diagnoses the code as part of writing — call it DIRECTLY to make a code change; you do NOT need self_diagnose first. Runs in the background; calling it ENDS this turn (do any answering/other steps BEFORE it).",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "focus": {
+        "type": "string",
+        "maxLength": 500
+      }
+    },
+    "additionalProperties": false
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "lesson_write",
+  "description": "Distill the user's CURRENT message into a durable lesson and save it (ignored when it does not generalize).",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "scope": {
+        "type": "string",
+        "enum": [
+          "ask",
+          "research"
+        ]
+      }
+    },
+    "additionalProperties": false
+  }
+}

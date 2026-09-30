@@ -1,0 +1,17 @@
+{
+  "name": "wiki_refine",
+  "description": "Refine an EXISTING knowledge page with this turn's newly fetched sources (same rules as wiki_build: ≥2 independent sources fetched this turn, call it BEFORE your final answer). If no page exists for the topic one is built — never a duplicate.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "topic": {
+        "type": "string",
+        "maxLength": 300
+      }
+    },
+    "required": [
+      "topic"
+    ],
+    "additionalProperties": false
+  }
+}

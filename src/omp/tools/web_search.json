@@ -1,0 +1,22 @@
+{
+  "name": "web_search",
+  "description": "Search the live web; returns titles, URLs and content snippets (untrusted data). For time-scoped asks (今天/过去24小时/本周/most recent), ALWAYS set freshness_days so stale articles cannot masquerade as news; check each result's published date before calling anything recent.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "maxLength": 500
+      },
+      "freshness_days": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 365
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "additionalProperties": false
+  }
+}

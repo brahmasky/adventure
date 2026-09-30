@@ -1,0 +1,20 @@
+{
+  "name": "bash",
+  "description": "Run a shell command on Paco's Mac mini (zsh-compatible bash, cwd = your workspace). Network works. Some commands ask Paco first and wait for his tap: pushes, posts, sends, remote copies, publishes, sudo/launchctl/crontab, and recursive or forced deletes (rm -r/-f, find -delete, git clean, git reset --hard). Output is capped at 32 KB; secrets and Houge's own files are unreadable by design.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "maxLength": 8000
+      }
+    },
+    "required": [
+      "command"
+    ],
+    "additionalProperties": false
+  },
+  "annotations": {
+    "openWorldHint": true
+  }
+}

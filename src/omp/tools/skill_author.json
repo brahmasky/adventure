@@ -1,0 +1,9 @@
+{
+  "name": "skill_author",
+  "description": "Author or refine a reusable SKILL (a verified procedure) from the user's request; may down-route to a lesson. Runs in the background; calling it ENDS this turn.",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  }
+}

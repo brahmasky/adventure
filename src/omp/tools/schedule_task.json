@@ -1,0 +1,32 @@
+{
+  "name": "schedule_task",
+  "description": "Manage this chat's scheduled tasks — four verbs in one tool. CREATE: schedule a recurring or one-time task; at each scheduled time Houge runs the given goal as a fresh message in this chat and sends the result ('每周一早上8点给我AI周报', 'remind me tomorrow 9am'). For a RELATIVE one-shot ('3分钟后', 'in 2 hours') pass {\"kind\":\"once\",\"in_minutes\":N} — never compute a UTC timestamp yourself. Creating an exact duplicate of an enabled schedule returns the existing id instead of a twin. LIST: pass {\"list\":true} to see this chat's schedules with their ids — do this FIRST when the user refers to an existing schedule. UPDATE: pass {\"update\":\"sch_...\"} plus any of goal/spec/tz to change an existing schedule in place — use this when the user refines a recurring task ('周报以后加上悉尼工作机会'); a goal-only update never moves the next fire time. CANCEL: pass {\"cancel\":\"sch_...\"}.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "goal": {
+        "type": "string",
+        "maxLength": 2000
+      },
+      "spec": {
+        "type": "object"
+      },
+      "tz": {
+        "type": "string",
+        "maxLength": 64
+      },
+      "list": {
+        "type": "boolean"
+      },
+      "update": {
+        "type": "string",
+        "maxLength": 64
+      },
+      "cancel": {
+        "type": "string",
+        "maxLength": 64
+      }
+    },
+    "additionalProperties": false
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "google_api",
+  "description": "GET a Google API endpoint under Houge's own identity. Allowlisted paths only (today: gmail/v1/users/me/*). Returns the JSON response as a sanitized digest. Prefer gmail_read for mail — this is the raw escape hatch.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "account": {
+        "type": "string",
+        "enum": [
+          "houge"
+        ]
+      },
+      "path": {
+        "type": "string",
+        "maxLength": 500
+      },
+      "query": {
+        "type": "object"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "additionalProperties": false
+  }
+}

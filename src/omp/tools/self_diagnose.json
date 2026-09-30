@@ -1,0 +1,14 @@
+{
+  "name": "self_diagnose",
+  "description": "Read and EXPLAIN Houge's own source without changing it. Use ONLY when the user wants an explanation, not a fix. Runs in the background; calling it ENDS this turn.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "focus": {
+        "type": "string",
+        "maxLength": 500
+      }
+    },
+    "additionalProperties": false
+  }
+}

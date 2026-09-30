@@ -70,3 +70,11 @@ async function writeViaCodex(worktree: string, task: string, env: NodeJS.Process
   const usageRaw = typeof out.usageRaw === "string" ? out.usageRaw : "";
   return { ok: true, provider: "codex", model, usageRaw };
 }
+
+/** Whether the self-write channel is armed (`HOUGE_SELFWRITE_ENABLED`). DEFAULT OFF — the
+ *  `self_write_propose` tool is unlisted (unreachable) unless this is truthy (ADR 0013, step ⓪·2).
+ *  Accepts 1/true/yes/on. */
+export function resolveSelfWriteEnabled(env: NodeJS.ProcessEnv): boolean {
+  const raw = env.HOUGE_SELFWRITE_ENABLED?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
