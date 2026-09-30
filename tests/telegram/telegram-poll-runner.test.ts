@@ -219,3 +219,12 @@ describe("settlePlannerTurns — the one-shot runner never hangs on a planner (M
     expect(aborts).toEqual(["guard"]);
   });
 });
+
+describe("ompOptionsWithOperator (final review B2)", () => {
+  it("names the allowlist's Telegram user as the operator who answers schedule-born approvals", async () => {
+    const { ompOptionsWithOperator } = await import("../../src/telegram/telegram-poll-runner.js");
+    const allowlist = { users: [{ telegram_user_id: 7, identity_id: "paco" }], chats: [] };
+    expect(ompOptionsWithOperator({ dataDir: "/d" }, allowlist)).toEqual({ dataDir: "/d", operator: { kind: "user", id: "paco" } });
+    expect(ompOptionsWithOperator(undefined, { users: [], chats: [] })).toEqual({});
+  });
+});

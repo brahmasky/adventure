@@ -840,3 +840,17 @@ describe("PlannerSupervisor — an abort that lands while the bridge listens (fi
     await nextTurnRunsOnAFreshChild(h, log);
   });
 });
+
+describe("PlannerSupervisor — a schedule-born turn is never steered into (final review B2)", () => {
+  it("Paco's message during a live schedule turn queues behind it and runs as its own turn under his own requester", async () => {
+    const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "turn_start" }); setTimeout(() => { session.assistant("ok"); e({ type: "agent_end" }); }, 60); } });
+    const { store, sup, outcome } = harness(session);
+    const s = createQueuedTurnRun(store); const m = createQueuedTurnRun(store);
+    sup.submit({ ...req(s, "brief", "schedule"), goal: "AI日报" }); await new Promise((r) => setTimeout(r, 20));
+    sup.submit(req(m, "hello"));
+    await sup.whenIdle(); await sup.whenIdle();
+    expect(session.steers).toEqual([]);
+    expect(session.prompts).toHaveLength(2);
+    expect(outcome.done.find((d) => (d as { run_id: string }).run_id === m)).not.toHaveProperty("merged_into");
+  });
+});

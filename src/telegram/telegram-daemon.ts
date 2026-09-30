@@ -37,7 +37,7 @@ import {
   isSelfWriteActionEvent
 } from "../triggers/telegram-trigger-adapter.js";
 import { handleSelfWriteAction } from "./self-write-action-handler.js";
-import { isHandledIntakeDenial, type TelegramPollClient } from "./telegram-poll-runner.js";
+import { isHandledIntakeDenial, ompOptionsWithOperator, type TelegramPollClient } from "./telegram-poll-runner.js";
 
 export const DEFAULT_LONGPOLL_TIMEOUT_SECONDS = 30;
 export const DEFAULT_BACKOFF_BASE_MS = 1_000;
@@ -169,7 +169,7 @@ export async function runTelegramDaemon(
     options.telegramClient.downloadFile
       ? { downloadFile: options.telegramClient.downloadFile.bind(options.telegramClient) }
       : undefined,
-    options.omp ?? {}
+    ompOptionsWithOperator(options.omp, options.allowlist)
   );
   const adapter = createTelegramLongPollingAdapter({
     allowlist: options.allowlist,

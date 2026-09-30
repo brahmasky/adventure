@@ -207,6 +207,8 @@ export interface OmpWorkerOptions {
   dataDir?: string;
   /** Where the installed shell wrapper and extension live; default `<projectRoot>/dist`. */
   distDir?: string;
+  /** The operator (HOUGE_TELEGRAM_USER_ID's allowlist identity): answers a schedule-born turn's tool approvals (B2). */
+  operator?: Identity;
 }
 
 /** The ⓪·2 evolution tools — their non-success outcomes are surfaced code-owned (see LoopTurnContext). */
@@ -1943,9 +1945,10 @@ export class CoreWorker {
     if (!/^-?\d+$/.test(chatId)) { this.refuseOmpTurn(run_id, chatId, "invalid_chat_id"); return true; }
     const goal = run.goal ?? "";
     const needsIngest = mediaRefOf(this.runStore.getRunMetadata(run_id)) !== null;
+    const schedule = run.source === "schedule";
     this.supervisorFor(chatId).submit({
-      run_id, text: goal, source: run.source === "schedule" ? "schedule" : "telegram", goal, requester: run.requested_by,
-      ...(needsIngest ? { needsIngest } : {})
+      run_id, text: goal, source: schedule ? "schedule" : "telegram", goal, requester: run.requested_by,
+      ...(needsIngest ? { needsIngest } : {}), ...(schedule && this.ompOptions.operator ? { approver: this.ompOptions.operator } : {})
     });
     return true;
   }

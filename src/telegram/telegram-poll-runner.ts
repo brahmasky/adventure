@@ -75,6 +75,12 @@ export interface RunTelegramPollOnceResult {
  *   3. Expire stale approvals/prompts.
  *   4. Dispatch the notification outbox until idle.
  */
+/** The worker's omp options plus the operator — the allowlist's Telegram user — who answers schedule-born approvals (B2). */
+export function ompOptionsWithOperator(omp: OmpWorkerOptions | undefined, allowlist: TelegramAllowlist): OmpWorkerOptions {
+  const user = allowlist.users[0];
+  return { ...(omp ?? {}), ...(user ? { operator: { kind: "user", id: user.identity_id } } : {}) };
+}
+
 export async function runTelegramPollOnce(
   options: RunTelegramPollOnceOptions
 ): Promise<RunTelegramPollOnceResult> {
@@ -99,7 +105,7 @@ export async function runTelegramPollOnce(
     options.telegramClient.downloadFile
       ? { downloadFile: options.telegramClient.downloadFile.bind(options.telegramClient) }
       : undefined,
-    options.omp ?? {}
+    ompOptionsWithOperator(options.omp, options.allowlist)
   );
 
   const adapter = createTelegramLongPollingAdapter({

@@ -191,6 +191,22 @@ describe("media turns never steer (fix round 1, I-1)", () => {
     expect(seen.find((r) => r.run_id === text)?.needsIngest).toBeUndefined();
     expect(seen.find((r) => r.run_id === media)?.needsIngest).toBe(true);
   });
+
+  it("a schedule-born turn's approvals are answered by the operator; a Paco turn carries no override (B2)", () => {
+    const seen: Array<{ run_id: string; approver?: unknown }> = [];
+    const spy = vi.spyOn(PlannerSupervisor.prototype, "submit").mockImplementation((r) => { seen.push(r); });
+    worker = ompWorker(store, tmp.dir, { operator: { kind: "user", id: "paco" } });
+    const text = createQueuedTurnRun(store, "hi");
+    const intake = new Gateway(store).intake(buildTypedTaskEvent({
+      source: "schedule", type: "turn", program: "turn", goal: "push notes", requested_by: { kind: "schedule", id: "sch_1" },
+      notify: { kind: "telegram", chat_id: "555" }, idempotency_key: "schedule:sch_1:t", source_reference: "scheduled_tasks.sch_1"
+    }));
+    if (!intake.ok) throw new Error("intake failed");
+    worker.submitTurn(text); worker.submitTurn(intake.run_id);
+    spy.mockRestore();
+    expect(seen.find((r) => r.run_id === text)?.approver).toBeUndefined();
+    expect(seen.find((r) => r.run_id === intake.run_id)?.approver).toEqual({ kind: "user", id: "paco" });
+  });
 });
 
 describe("shutdown with turns still queued (fix round 1, I-2)", () => {

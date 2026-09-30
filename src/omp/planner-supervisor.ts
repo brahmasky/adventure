@@ -28,6 +28,8 @@ export interface TurnRequest {
   run_id: string; text: string; source: "telegram" | "schedule"; goal?: string; requester: Identity;
   /** A voice/photo turn: its text is a placeholder until resolveMessage ingests it, so it never steers (it queues as its own turn). */
   needsIngest?: boolean;
+  /** Who may answer this turn's tool approvals when that is not the requester: the operator, for a schedule-born turn (B2). */
+  approver?: Identity;
 }
 export interface TurnOutcomeSink {
   complete(i: { run_id: string; worker_id: string; text: string; attachments: string[]; duration_ms: number; tool_calls: number; merged_into?: string }): void;
@@ -179,7 +181,8 @@ export class PlannerSupervisor {
 
   submit(req: TurnRequest): void {
     const t = this.turn;
-    if (t?.live && req.source === "telegram" && !req.needsIngest && (this.st === "RUNNING" || this.st === "AWAITING_APPROVAL")) {
+    // a message steers only into a Telegram turn: never into a schedule-born one (provenance, B2) — it queues behind it
+    if (t?.live && t.req.source === "telegram" && req.source === "telegram" && !req.needsIngest && (this.st === "RUNNING" || this.st === "AWAITING_APPROVAL")) {
       void this.steer(t, req).catch((e) => this.incident("planner_steer_failed", { run_id: req.run_id, reason: rpcCode(e) }));
       return;
     }
@@ -287,7 +290,8 @@ export class PlannerSupervisor {
       run_id: req.run_id, worker_id: worker, chat_id: chatId, requester: req.requester, contract: claim.contract,
       budget: new BudgetLedger(claim.contract.budget), registry: tools.registry, signal: abort.signal, cwd: this.workspace(),
       step: { n: 0 }, cache: new Map(), unreported: new Map(), quarantine: tools.quarantine,
-      setAwaitingApproval: (on) => this.setAwaitingApproval(turn, on), postureOk: this.d.posture
+      setAwaitingApproval: (on) => this.setAwaitingApproval(turn, on), postureOk: this.d.posture,
+      ...(req.approver ? { approver: req.approver } : {})
     };
     const heartbeat = setInterval(() => this.renewLeases(), HEARTBEAT_MS);
     const turn: Turn = {

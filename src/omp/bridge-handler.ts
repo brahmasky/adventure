@@ -24,6 +24,8 @@ export interface ActiveTurn {
   cache: Map<string, Promise<unknown>>; unreported: Map<string, FsEntry>;
   quarantine: (tool: string, output: Record<string, unknown>) => Promise<ExternalReadResult>;
   setAwaitingApproval: (on: boolean) => void; postureOk: () => string | null;
+  /** Who answers this turn's approvals when not the requester (the operator, for a schedule-born turn). */
+  approver?: Identity;
   /** Per-turn call queue: at most one call (and so one approval) in flight per turn. */
   serial?: Promise<unknown>;
 }
@@ -191,7 +193,8 @@ type Executed = { result: CapabilityResult } | { refusal: { reason: string; text
 async function executeWithApproval(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallReq, entry: RegistryEntry): Promise<Executed> {
   const command = req.tool === "bash" && typeof req.input.command === "string" ? req.input.command : undefined;
   const sink = createToolApprovalSink({ store: deps.store, worker_id: turn.worker_id, tool_call_id: req.toolCallId,
-    approvalTimeoutMs: deps.cfg.approvalTimeoutMs, ...(command !== undefined ? { card_detail: cardDetail(command) } : {}) });
+    approvalTimeoutMs: deps.cfg.approvalTimeoutMs, ...(command !== undefined ? { card_detail: cardDetail(command) } : {}),
+    ...(turn.approver ? { approver: turn.approver } : {}) });
   const runner = new CapabilityRunner(turn.registry, sink);
   const base: CapabilityExecutionInput = { run_id: turn.run_id, requester: turn.requester, contract: turn.contract, capability: entry,
     input: req.input, budget: turn.budget, signal: turn.signal, tool_call_id: req.toolCallId, action_summary: summaryFor(req.tool, command) };

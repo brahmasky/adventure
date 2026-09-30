@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BudgetLedger } from "../../src/budget/budget-ledger.js";
-import type { CompiledTaskContract, SideEffectLevel } from "../../src/domain/types.js";
+import { buildTypedTaskEvent, type CompiledTaskContract, type Identity, type SideEffectLevel } from "../../src/domain/types.js";
 import {
   APPROVAL_DENIED_TEXT, APPROVAL_EXPIRED_TEXT, CARD_DETAIL_CAP, cardTruncationNote, QUARANTINE_FAILED_TEXT, READ_TOOL_FAILED_TEXT, RESPONSE_CAP, TRUNCATION_NOTE,
   TURN_ABORTED_TEXT, createBridgeHandler, flushUnreported, type ActiveTurn, type BridgeHandlerDeps
@@ -40,7 +40,7 @@ const meta = (name: string, side_effect_level: SideEffectLevel, execute?: Exec):
   ...(execute ? { execute } : {})
 });
 
-interface Opts { actions?: string[]; env?: NodeJS.ProcessEnv; shell?: Exec; posture?: string | null; noTurn?: boolean; webSearch?: Exec }
+interface Opts { actions?: string[]; env?: NodeJS.ProcessEnv; shell?: Exec; posture?: string | null; noTurn?: boolean; webSearch?: Exec; requester?: Identity; approver?: Identity }
 
 function setup(opts: Opts = {}) {
   const store = RunStore.openInMemory();
@@ -67,7 +67,8 @@ function setup(opts: Opts = {}) {
   const ac = new AbortController();
   const dir = mkdtempSync(join(tmpdir(), "hbh-"));
   const turn: ActiveTurn = {
-    run_id, worker_id: "planner:c:a", chat_id: "555", requester: { kind: "user", id: "1" }, contract,
+    run_id, worker_id: "planner:c:a", chat_id: "555", requester: opts.requester ?? { kind: "user", id: "1" }, contract,
+    ...(opts.approver ? { approver: opts.approver } : {}),
     budget: new BudgetLedger(contract.budget), registry, signal: ac.signal, cwd: dir, step: { n: 0 },
     cache: new Map(), unreported: new Map(), quarantine, setAwaitingApproval: (on) => { awaiting.push(on); },
     postureOk: () => opts.posture ?? null
@@ -124,6 +125,34 @@ describe("bridge handler — manifest (spec §5.1, ledger ruling 1)", () => {
     const r = (await handle(call("schedule_task", { list: true }, "sch1"))) as CallResult;
     expect(r.isError).toBe(true);
     expect(events("tool_finished")).toContainEqual(expect.objectContaining({ tool_call_id: "sch1", status: "denied", tool: "schedule_task" }));
+  });
+});
+
+describe("bridge handler — schedule-born turns (final review B2)", () => {
+  const schedule: Identity = { kind: "schedule", id: "sch_1" };
+  const operator: Identity = { kind: "user", id: "paco" };
+  const approve = (store: RunStore, approval_id: string, requested_by: Identity, key: string) => store.processApprovalTrigger({
+    event: buildTypedTaskEvent({ source: "telegram", type: "approve", approval_id, requested_by, notify: { kind: "telegram", chat_id: "555" },
+      idempotency_key: key, source_reference: "telegram:update:9:message:1" }),
+    decision: "approved", resolved_at: new Date().toISOString()
+  });
+
+  it("the operator's /approve resolves a tool approval raised by a schedule-born turn, and the action runs once", async () => {
+    const { handle, calls, awaiting, store } = setup({ requester: schedule, approver: operator });
+    const p = handle(call("bash", { command: "git push" }, "sp1")) as Promise<CallResult>;
+    const id = await pendingApproval(store, awaiting);
+    expect(approve(store, id, operator, "tg:sched-approve")).toMatchObject({ ok: true });
+    toolApprovalWaiters.resolve(id, "approved");
+    expect((await p).isError).toBe(false);
+    expect(calls).toEqual(["git push"]);
+  });
+
+  it("without an approver the schedule identity stays the only one that could answer (unchanged for non-schedule turns)", async () => {
+    const { handle, awaiting, store, ac } = setup({ requester: schedule });
+    const p = handle(call("bash", { command: "git push" }, "sp2")) as Promise<CallResult>;
+    const id = await pendingApproval(store, awaiting);
+    expect(approve(store, id, operator, "tg:sched-approve-2")).toMatchObject({ ok: false, error: { code: "APPROVAL_REQUESTER_MISMATCH" } });
+    ac.abort(); await p;
   });
 });
 
