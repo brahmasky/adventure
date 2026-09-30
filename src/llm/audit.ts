@@ -22,7 +22,9 @@ export type LlmAttemptOutcome = "ok" | "error" | "unavailable";
  * `errorExcerpt` in `src/llm/providers/agy-cli.ts`): the excerpt is bounded so substring matching
  * stays safe, but it is not a closed enumeration.
  */
-export type LlmErrorKind = "auth" | "model_missing" | "timeout" | "spawn" | "transport" | "parse" | "other";
+export type LlmErrorKind =
+  | "auth" | "model_missing" | "timeout" | "spawn" | "transport" | "parse" | "other"
+  | "quota" | "model_refusal" | "aborted" | "wall_collapse";
 
 /**
  * `unavailable` (review S1, codex #11) means the provider was NOT constructively callable: binary
@@ -45,6 +47,16 @@ export interface LlmAttempt {
   attempt_group?: string;
   /** 0-based position of this leg within the invocation. */
   leg_index?: number;
+  /** omp: which stored OAuth credential served this request (profile-local integer id). */
+  credential_id?: number;
+  /** omp: time to first token, ms. */
+  ttft_ms?: number;
+  /** Model family (spec §8). Present on every omp row. */
+  family?: import("../omp/model-string.js").ModelFamily;
+  /** D10: true when this reader call ran on the planner's family. */
+  family_collapse?: boolean;
+  /** One per model request; durable dedupe key (spec §8 Audit). */
+  request_key?: string;
 }
 
 export interface LlmAuditSink {
