@@ -6,6 +6,39 @@ interface Parsed { segments: string[][]; subs: string[] }
 
 const SEPARATORS = new Set([";", "&", "|", "(", ")", "`", "\n"]);
 
+interface Heredoc { word: string; dash: boolean }
+
+/** Reads `<<[-]WORD`, `<<'WORD'`, `<<"WORD"` at i; returns the terminator word and the index after it. */
+function readHeredocStart(text: string, i: number): { doc: Heredoc; end: number } | null {
+  const m = /^<<(-?)[ \t]*(['"]?)([\w.-]+)\2/.exec(text.slice(i, i + 200));
+  return m ? { doc: { word: m[3] as string, dash: m[1] === "-" }, end: i + m[0].length } : null;
+}
+
+/** Returns the index just past the terminator line of each pending heredoc; the body is data, never classified. */
+function skipHeredocBodies(text: string, from: number, pending: Heredoc[]): number {
+  let pos = from;
+  for (const h of pending.splice(0)) {
+    while (pos < text.length) {
+      const nl = text.indexOf("\n", pos); const end = nl < 0 ? text.length : nl;
+      const line = text.slice(pos, end); pos = nl < 0 ? text.length : nl + 1;
+      if ((h.dash ? line.trim() : line.trimEnd()) === h.word) break;
+    }
+  }
+  return pos;
+}
+
+/** Lines of the input with heredoc bodies removed, so each can be tokenized independently (unterminated quotes close at end of line). */
+function codeLines(text: string): string[] {
+  const out: string[] = []; const pending: Heredoc[] = [];
+  for (const line of text.replace(/\\\n/g, " ").split("\n")) {
+    const p = pending[0];
+    if (p) { if ((p.dash ? line.trim() : line.trimEnd()) === p.word) pending.shift(); continue; }
+    out.push(line);
+    for (const m of line.matchAll(/(?<!<)<<(?!<)(-?)[ \t]*(['"]?)([\w.-]+)\2/g)) pending.push({ word: m[3] as string, dash: m[1] === "-" });
+  }
+  return out;
+}
+
 /** Quote-aware split: separators only count unquoted; quoted text is inert but kept as token values. */
 function parse(input: string): Parsed {
   const text = input.replace(/\\\n/g, " ");
@@ -13,9 +46,15 @@ function parse(input: string): Parsed {
   let seg: string[] = []; let tok = ""; let has = false;
   const endTok = () => { if (has) seg.push(tok); tok = ""; has = false; };
   const endSeg = () => { endTok(); if (seg.length) segments.push(seg); seg = []; };
+  const pending: Heredoc[] = [];
   for (let i = 0; i < text.length; i++) {
     const c = text[i] as string;
-    if (c === "'") {
+    if (c === "#" && !has) { const nl = text.indexOf("\n", i); i = nl < 0 ? text.length : nl - 1; }
+    else if (c === "<" && text[i + 1] === "<" && text[i + 2] !== "<" && text[i - 1] !== "<") {
+      const h = readHeredocStart(text, i);
+      if (h) { pending.push(h.doc); endTok(); i = h.end - 1; } else { tok += c; has = true; }
+    } else if (c === "\n" && pending.length) { endSeg(); i = skipHeredocBodies(text, i + 1, pending) - 1; }
+    else if (c === "'") {
       const j = text.indexOf("'", i + 1); const end = j < 0 ? text.length : j;
       tok += text.slice(i + 1, end); has = true; i = end;
     } else if (c === '"') {
@@ -94,15 +133,15 @@ function commandHit(cmd: string, a: string[]): Hit {
   }
 }
 
-function segmentHit(tokens: string[]): Hit[] {
+function segmentHit(tokens: string[], depth: number): Hit[] {
   const { rest, sudo } = stripPrefixes(tokens);
   const out: Hit[] = [];
   if (rest.length) {
     const cmd = (rest[0] as string).split("/").pop() as string; const args = rest.slice(1);
     out.push(commandHit(cmd, args));
     const ci = args.indexOf("-c");
-    if (["bash", "sh", "zsh"].includes(cmd) && ci >= 0 && args[ci + 1] !== undefined) out.push(toHit(classifyCommand(args[ci + 1] as string)));
-    if (cmd === "eval") out.push(toHit(classifyCommand(args.join(" "))));
+    if (["bash", "sh", "zsh"].includes(cmd) && ci >= 0 && args[ci + 1] !== undefined) out.push(toHit(classify(args[ci + 1] as string, depth + 1)));
+    if (cmd === "eval") out.push(toHit(classify(args.join(" "), depth + 1)));
   }
   if (sudo) out.push(ext("sudo"));
   return out;
@@ -110,8 +149,25 @@ function segmentHit(tokens: string[]): Hit[] {
 
 const toHit = (c: CommandClass): Hit => (c.kind === "plain" ? null : c);
 
-export function classifyCommand(command: string): CommandClass {
-  const { segments, subs } = parse(command);
-  const hits = [...segments.flatMap(segmentHit), ...subs.map((s) => toHit(classifyCommand(s)))].filter((h): h is NonNullable<Hit> => h !== null);
+const MAX_DEPTH = 8;
+const RANK = { plain: 0, external_write: 1, destructive: 2 } as const;
+const stricter = (a: CommandClass, b: CommandClass): CommandClass => (RANK[b.kind] > RANK[a.kind] ? b : a);
+
+function classifyText(text: string, depth: number): CommandClass {
+  const { segments, subs } = parse(text);
+  const hits = [...segments.flatMap((sg) => segmentHit(sg, depth)), ...subs.map((sub) => toHit(classify(sub, depth + 1)))].filter((h): h is NonNullable<Hit> => h !== null);
   return hits.find((h) => h.kind === "destructive") ?? hits[0] ?? { kind: "plain" };
+}
+
+/** Whole-input result, tightened by a line-wise pass: an apostrophe in a comment must not hide later lines (fail toward asking). */
+function classify(text: string, depth: number): CommandClass {
+  if (depth > MAX_DEPTH) return { kind: "destructive", label: "nesting too deep" };
+  let worst = classifyText(text, depth);
+  const lines = codeLines(text);
+  if (lines.length > 1) for (const line of lines) worst = stricter(worst, classifyText(line, depth));
+  return worst;
+}
+
+export function classifyCommand(command: string): CommandClass {
+  try { return classify(command, 0); } catch { return { kind: "destructive", label: "unparseable" }; }
 }

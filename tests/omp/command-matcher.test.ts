@@ -47,4 +47,24 @@ describe("command matcher — floor B for bash: which commands ask Paco first (D
     const c = classifyCommand("git push");
     expect(c.kind === "plain" ? "" : c.label).toBe("git push");
   });
+
+  it.each([
+    ["echo hi # don't worry\nrm -rf /tmp/x", "destructive"], ["ls # it's fine\ngit push origin main", "external_write"],
+    ["# Paco's cleanup\nrm -rf build", "destructive"], ["cat <<'EOF'\nit's\nEOF\nrm -rf x", "destructive"],
+    ["cat > n.md <<EOF\nPaco's notes\nEOF\ngit push", "external_write"], ["cat <<-EOF\n\tx's\n\tEOF\nrm -rf x", "destructive"],
+    ["echo it's\nrm -rf x", "destructive"]
+  ])("%j → %s: apostrophes in comments and heredocs never hide later lines", (cmd, kind) => expect(classifyCommand(cmd).kind).toBe(kind));
+
+  it.each(["cat <<EOF > notes.md\nnever run rm -rf /\nEOF", "cat <<'EOF'\ngit push\nEOF\nls", "echo hi # rm -rf x", "echo ${#PATH}"])(
+    "%j is plain: heredoc bodies and comments are data", (cmd) => expect(classifyCommand(cmd).kind).toBe("plain"));
+
+  it("caps nesting and fails toward asking, quickly (10000 nested evals)", () => {
+    const t0 = Date.now();
+    expect(classifyCommand("eval ".repeat(10000) + "rm -rf x")).toEqual({ kind: "destructive", label: "nesting too deep" });
+    expect(Date.now() - t0).toBeLessThan(200);
+  });
+
+  it("treats a parser throw as destructive 'unparseable'", () => {
+    expect(classifyCommand({ toString() { throw new Error("x"); } } as unknown as string)).toEqual({ kind: "destructive", label: "unparseable" });
+  });
 });
