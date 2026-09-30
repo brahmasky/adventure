@@ -50,3 +50,24 @@ export function shortTmp(prefix: string): { dir: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
+
+/**
+ * PINNED_ENV for feature flags: saves and deletes every HOUGE_*_ENABLED flag before each test and
+ * restores them after, so an armed flag in the environment (the radar, the panel, …) can never
+ * change what a suite's daemon cycle or turn does. Tests arm the flags they need explicitly.
+ */
+export function pinEnabledFlags(): void {
+  const saved = new Map<string, string>();
+  beforeEach(() => {
+    for (const k of Object.keys(process.env)) {
+      if (!/^HOUGE_[A-Z0-9_]+_ENABLED$/.test(k)) continue;
+      saved.set(k, process.env[k] as string);
+      delete process.env[k];
+    }
+  });
+  afterEach(() => {
+    for (const k of Object.keys(process.env)) if (/^HOUGE_[A-Z0-9_]+_ENABLED$/.test(k)) delete process.env[k];
+    for (const [k, v] of saved) process.env[k] = v;
+    saved.clear();
+  });
+}

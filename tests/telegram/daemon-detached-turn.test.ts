@@ -5,10 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { KILLED_TEXT, PlannerSupervisor } from "../../src/omp/planner-supervisor.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { runTelegramDaemon } from "../../src/telegram/telegram-daemon.js";
-import { pinOmpEnv, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
+import { pinEnabledFlags, pinOmpEnv, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
 import { until } from "../helpers/omp-worker.js";
 
 pinOmpEnv();
+pinEnabledFlags();
 const ALLOWLIST = {
   users: [{ telegram_user_id: 111, identity_id: "paco" }],
   chats: [{ telegram_chat_id: 222, label: "private", allowed_identity_ids: ["paco"] }]

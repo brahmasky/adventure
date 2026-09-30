@@ -8,11 +8,12 @@ import { Gateway } from "../../src/gateway/gateway.js";
 import { mediaFailureReply, type TelegramMediaRef } from "../../src/media/media-config.js";
 import { KILLED_TEXT, PLANNER_EXIT_TEXT, PlannerSupervisor } from "../../src/omp/planner-supervisor.js";
 import { RunStore } from "../../src/run/run-store.js";
-import { pinOmpEnv, shortTmp, useFakeOmp } from "../helpers/omp-env.js";
+import { pinEnabledFlags, pinOmpEnv, shortTmp, useFakeOmp } from "../helpers/omp-env.js";
 import { drainOutbox, fakeLog, ompWorker, until } from "../helpers/omp-worker.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 
 pinOmpEnv();
+pinEnabledFlags();
 const MEDIA_ENV = ["HOUGE_MEDIA_INGEST_ENABLED", "HOUGE_EPISODIC_ENABLED", "HOUGE_WIKI_ENABLED", "HOUGE_TOMBSTONE_PATH"] as const;
 const saved: Record<string, string | undefined> = {};
 let tmp: { dir: string; cleanup: () => void };

@@ -17,7 +17,7 @@ import { RunStore } from "../../src/run/run-store.js";
 import { formatScheduleListText } from "../../src/run/schedule-spec.js";
 import { SkillStore } from "../../src/skills/skill-store.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
-import { pinOmpEnv, shortTmp } from "../helpers/omp-env.js";
+import { pinEnabledFlags, pinOmpEnv, shortTmp } from "../helpers/omp-env.js";
 import { bridgeTurn, drainOutbox, ompWorker } from "../helpers/omp-worker.js";
 
 // Ported gate-stack coverage (Task 13 ruling 1): each case drives the omp path — bridge `call` →
@@ -25,6 +25,7 @@ import { bridgeTurn, drainOutbox, ompWorker } from "../helpers/omp-worker.js";
 // tests/core/core-worker-turn-loop.test.ts (or core-worker-wiki.test.ts) case it replaces.
 
 pinOmpEnv();
+pinEnabledFlags();
 const PINNED = ["HOUGE_SCHEDULER_ENABLED", "HOUGE_SCHEDULER_MAX_PER_CHAT", "HOUGE_SKILLS_ENABLED", "HOUGE_WIKI_ENABLED", "HOUGE_WIKI_MIN_SOURCES",
   "HOUGE_WIKI_VERIFY_PASSES", "HOUGE_WIKI_MAX_PAGES", "HOUGE_DUAL_LLM_ENABLED", "HOUGE_EPISODIC_ENABLED", "HOUGE_GATE_B_ENABLED", "HOUGE_TOMBSTONE_PATH"] as const;
 const saved: Record<string, string | undefined> = {};
