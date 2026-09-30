@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { renderSeatbelt, writeSeatbeltProfiles } from "../../src/omp/seatbelt.js";
+import { HOME_CODE_CONFIG, HOME_INSTALL_TREES } from "../../src/omp/protected-paths.js";
 
 describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () => {
   const ctx = { home: "/Users/p", repo: "/Users/p/Projects/adventure", data: "/Users/p/Projects/adventure" };
@@ -29,7 +30,7 @@ describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () 
     const { planner, shell } = renderSeatbelt(ctx);
     for (const p of [planner, shell]) expect(p).toContain('(deny file-write* (subpath "/Users/p/Projects/adventure"))');
     const allowWs = '(allow file-write* (subpath "/Users/p/Projects/adventure/omp/workspace"))';
-    expect(shell.indexOf(allowWs)).toBeGreaterThan(shell.indexOf('(deny file-write* (subpath "/Users/p/Projects/adventure"))'));
+    expect(shell.lastIndexOf(allowWs)).toBeGreaterThan(shell.indexOf('(deny file-write* (subpath "/Users/p/Projects/adventure"))'));
     expect(planner).toContain('(allow file-write* (subpath "/Users/p/Projects/adventure/omp/sessions"))');
     expect(shell).not.toContain("omp/sessions");
   });
@@ -127,8 +128,8 @@ describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () 
     const ws = "/Users/p/Projects/adventure/omp/workspace";
     const ss = "/Users/p/Projects/adventure/omp/sessions";
     const denyWs = `(deny file-write* (literal "${ws}"))`;
-    expect(shell.indexOf(denyWs)).toBeGreaterThan(shell.indexOf(`(allow file-write* (subpath "${ws}"))`));
-    expect(planner.indexOf(`(deny file-write* (literal "${ss}"))`)).toBeGreaterThan(planner.indexOf(`(allow file-write* (subpath "${ss}"))`));
+    expect(shell.indexOf(denyWs)).toBeGreaterThan(shell.lastIndexOf(`(allow file-write* (subpath "${ws}"))`));
+    expect(planner.indexOf(`(deny file-write* (literal "${ss}"))`)).toBeGreaterThan(planner.lastIndexOf(`(allow file-write* (subpath "${ss}"))`));
     expect(shell).not.toContain(`(literal "${ss}")`);
   });
 
@@ -155,5 +156,71 @@ describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () 
     expect(mv.status).not.toBe(0);
     expect(mv.stderr).toMatch(/Operation not permitted/);
     expect(run("sh", "-c", `echo y > ${ss}/a.jsonl && mkdir ${ss}/d && mv ${ss}/a.jsonl ${ss}/d/b.jsonl`).status).toBe(0);
+  });
+  it("denies every write by default and re-opens only $HOME, the temp roots and the /dev sinks, in that order (A1: yolo under $HOME, literally)", () => {
+    for (const p of [renderSeatbelt(ctx).planner, renderSeatbelt(ctx).shell]) {
+      const denyAll = p.indexOf("(deny file-write*)\n");
+      expect(denyAll).toBeGreaterThan(p.indexOf("(allow default)"));
+      for (const root of ["/Users/p", "/private/tmp", "/private/var/folders"]) {
+        expect(p.indexOf(`(allow file-write* (subpath "${root}"))`), root).toBeGreaterThan(denyAll);
+      }
+      expect(p).toContain('(allow file-write* (literal "/dev/null"))');
+      expect(p).not.toContain('(allow file-write* (subpath "/usr');
+    }
+  });
+
+  it("denies the $HOME install trees, the code-running dotfiles and the binary dirs AFTER the $HOME allow (last match wins)", () => {
+    const withBins = { ...ctx, binDirs: ["/usr/local/Cellar/node/25.5.0/bin", "/Users/p/.local/bin"] };
+    for (const p of [renderSeatbelt(withBins).planner, renderSeatbelt(withBins).shell]) {
+      const allowHome = p.indexOf('(allow file-write* (subpath "/Users/p"))');
+      for (const rel of [...HOME_INSTALL_TREES, ...HOME_CODE_CONFIG]) {
+        expect(p.indexOf(`(deny file-write* (subpath "/Users/p/${rel}"))`), rel).toBeGreaterThan(allowHome);
+      }
+      expect(p).toContain('(deny file-write* (subpath "/usr/local/Cellar/node/25.5.0/bin"))');
+    }
+  });
+
+  function fakeHome() {
+    const root = mkdtempSync(join(tmpdir(), "houge-sbh-"));
+    roots.push(root);
+    const home = join(root, "home"); const repo = join(home, "Projects", "adventure");
+    const live = { home, repo, data: repo };
+    for (const d of [".bun/bin", ".local/bin", ".config/fish", ".omp/profiles/houge", "Documents", "bin"]) mkdirSync(join(home, d), { recursive: true });
+    mkdirSync(join(repo, "omp", "workspace", "chat-1"), { recursive: true });
+    writeFileSync(join(home, ".omp/profiles/houge/auth.json"), "OMPCANARY");
+    // a stub "omp": the planner process must still read its own profile store (D11)
+    writeFileSync(join(home, "bin", "omp"), `#!/bin/sh\n/bin/cat "$HOME/.omp/profiles/houge/auth.json"\n`, { mode: 0o755 });
+    const profiles = writeSeatbeltProfiles(live);
+    const run = (prof: string, ...cmd: string[]) =>
+      spawnSync("/usr/bin/sandbox-exec", ["-f", prof, ...cmd], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", HOME: home } });
+    const canWrite = (prof: string, path: string) => run(prof, "/bin/sh", "-c", `echo x > '${path}'`).status === 0;
+    return { home, live, profiles, run, canWrite };
+  }
+
+  it.runIf(process.platform === "darwin")("live: install trees, dotfiles and outside-$HOME paths are write-denied; $HOME, the workspace, /tmp and /dev/null stay writable", () => {
+    const { home, live, profiles, canWrite } = fakeHome();
+    const outside = [`/private/var/tmp/houge-canary-${process.pid}`, `/Users/Shared/houge-canary-${process.pid}`];
+    try {
+      for (const prof of [profiles.planner, profiles.shell]) {
+        for (const rel of [".bun/bin/omp", ".local/bin/agy", ".zshrc", ".gitconfig", ".config/fish/config.fish", ".p10k.zsh"]) {
+          expect(canWrite(prof, join(home, rel)), rel).toBe(false);
+        }
+        for (const p of outside) expect(canWrite(prof, p), p).toBe(false);
+        expect(canWrite(prof, join(home, "Documents", "ok.txt"))).toBe(true);
+        expect(canWrite(prof, join(live.data, "omp", "workspace", "chat-1", "ok.txt"))).toBe(true);
+        expect(canWrite(prof, `/tmp/houge-sb-ok-${process.pid}`)).toBe(true);
+        expect(canWrite(prof, "/dev/null")).toBe(true);
+      }
+    } finally {
+      for (const p of [...outside, `/tmp/houge-sb-ok-${process.pid}`]) rmSync(p, { force: true });
+    }
+  });
+
+  it.runIf(process.platform === "darwin")("live: a stub omp under planner.sb still reads <home>/.omp, and node still starts (the planner keeps working)", () => {
+    const { home, profiles, run } = fakeHome();
+    const stub = run(profiles.planner, join(home, "bin", "omp"));
+    expect(stub.stdout).toBe("OMPCANARY");
+    const node = run(profiles.planner, process.execPath, "-e", "process.stdout.write('up')");
+    expect(node.stdout).toBe("up");
   });
 });

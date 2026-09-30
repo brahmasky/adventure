@@ -1,6 +1,6 @@
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { operationalWriteDeny, protectedRepoPaths, realpathOrSelf, secretPaths, writableExceptions, type PathContext } from "./protected-paths.js";
+import { operationalWriteDeny, protectedRepoPaths, realpathOrSelf, secretPaths, writableExceptions, writeRoots, type PathContext } from "./protected-paths.js";
 
 const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
@@ -25,19 +25,31 @@ function ancestorRules(roots: string[]): string[] {
   return [...out];
 }
 
+/** The device nodes a normal process writes: the null sink, its controlling terminal, and its own fds. */
+const DEV_WRITES = ['(allow file-write* (literal "/dev/null"))', '(allow file-write* (literal "/dev/tty"))', '(allow file-write* (subpath "/dev/fd"))'];
+
+const allowWrite = (p: string) => variants(p).map((v) => `(allow file-write* (subpath "${esc(v)}"))`);
+
+/**
+ * SBPL takes the LAST matching rule, so order is the policy: default-deny writes; allow the write roots ($HOME, the
+ * temp roots, the omp workspace/sessions); deny the repo, the install trees and the code-running dotfiles inside
+ * them; re-allow the workspace (and sessions for the planner); pin the roots; secrets last.
+ */
 function body(ctx: PathContext, kind: "planner" | "shell"): string[] {
   const ompStore = join(ctx.home, ".omp");
   const secrets = kind === "planner" ? secretPaths(ctx).filter((p) => p !== ompStore) : secretPaths(ctx);
   const writeDeny = [...protectedRepoPaths(ctx), ...operationalWriteDeny(ctx)];
-  const allow = (p: string) =>
-    variants(p).map((v) => `(allow file-write* (subpath "${esc(v)}"))`).join("\n");
+  const exceptions = writableExceptions(ctx, kind);
   return [
     "(version 1)",
     "(allow default)",
+    "(deny file-write*)",
+    ...writeRoots(ctx, kind).flatMap(allowWrite),
+    ...DEV_WRITES,
     ...writeDeny.flatMap((p) => rule("file-write*", p)),
-    ...writableExceptions(ctx, kind).map(allow),
+    ...exceptions.flatMap(allowWrite),
     // the allow subpath also matches the root itself: pin the root so it cannot be moved or replaced by a symlink
-    ...writableExceptions(ctx, kind).flatMap((r) => variants(r).map((v) => `(deny file-write* (literal "${esc(v)}"))`)),
+    ...exceptions.flatMap((r) => variants(r).map((v) => `(deny file-write* (literal "${esc(v)}"))`)),
     ...ancestorRules([...writeDeny, ...secrets]),
     // secrets last: SBPL takes the last matching rule, so no allow above can re-open a secret
     ...secrets.flatMap((p) => rule("file-read* file-write*", p)),

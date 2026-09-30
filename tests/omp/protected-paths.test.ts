@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { isDeniedRead, isDeniedWrite, realpathOrSelf, secretPaths } from "../../src/omp/protected-paths.js";
+import { installedBinaryDirs, isDeniedRead, isDeniedWrite, realpathOrSelf, secretPaths } from "../../src/omp/protected-paths.js";
 
 const ctx = { home: "/Users/p", repo: "/Users/p/Projects/adventure", data: "/Users/p/Projects/adventure" };
 
@@ -43,6 +43,31 @@ describe("floor A path sets — the planner may touch anything under home except
 
   it("lists absolute paths only — a relative entry would silently match nothing in Seatbelt", () => {
     for (const p of secretPaths(ctx)) expect(p.startsWith("/")).toBe(true);
+  });
+});
+
+describe("floor A write policy — the gate mirrors the profiles' default-deny (A1)", () => {
+  it("denies writes outside $HOME and the temp roots, and into the install trees and code-running dotfiles inside $HOME", () => {
+    for (const p of ["/usr/local/bin/omp", "/opt/homebrew/bin/x", "/Users/p/.bun/bin/omp", "/Users/p/.local/bin/agy",
+      "/Users/p/.zshrc", "/Users/p/.gitconfig", "/Users/p/.config/fish/config.fish", "/Users/p/.config/git/config"]) {
+      expect(isDeniedWrite(p, ctx), p).toBe(true);
+    }
+    expect(isDeniedWrite("/private/tmp/x", ctx)).toBe(false);
+    expect(isDeniedWrite("/Users/p/.config/other/x", ctx)).toBe(false);
+  });
+
+  it("denies the binary dirs the daemon later runs unsandboxed, when the context names them", () => {
+    expect(isDeniedWrite("/Users/p/tools/omp", { ...ctx, binDirs: ["/Users/p/tools"] })).toBe(true);
+    expect(isDeniedWrite("/Users/p/tools/omp", ctx)).toBe(false);
+  });
+
+  it("installedBinaryDirs finds a PATH symlink's own dir AND its real target's dir (replacing either runs code)", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "houge-bin-")));
+    mkdirSync(join(root, "pkg", "dist"), { recursive: true }); mkdirSync(join(root, "bin"));
+    writeFileSync(join(root, "pkg", "dist", "cli.js"), "#!/bin/sh\n", { mode: 0o755 });
+    symlinkSync(join(root, "pkg", "dist", "cli.js"), join(root, "bin", "omp"));
+    const dirs = installedBinaryDirs({ PATH: `${join(root, "bin")}:/nonexistent` }, "/usr/local/bin/node");
+    expect(dirs).toEqual(expect.arrayContaining([join(root, "bin"), join(root, "pkg", "dist"), "/usr/local/bin"]));
   });
 });
 

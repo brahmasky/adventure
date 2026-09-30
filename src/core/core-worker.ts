@@ -131,6 +131,7 @@ import { loadToolDeclarations, TOOL_DECLS_DIR, type ToolDeclaration } from "../o
 import type { TurnContextDeps } from "../omp/turn-context.js";
 import { readTombstone } from "../run/tombstone.js";
 import { chatWorkspace } from "../omp/workspace.js";
+import { installedBinaryDirs, type PathContext } from "../omp/protected-paths.js";
 import {
   EMPTY_REPLY_TEXT, failureNotifyText, OMP_BUILTIN_META, OMP_LOOP_TOOL_META, OMP_SHELL_META, plannerFailureText, TURN_OUTSIDE_PLANNER_ERROR,
   TURN_UNAVAILABLE_TEXT
@@ -1988,10 +1989,15 @@ export class CoreWorker {
     return this.ompOptions.dataDir ?? this.projectRoot;
   }
 
+  /** Floor A's path context; the binary dirs are resolved each time a supervisor or shell tool is built. */
+  private ompPathContext(): PathContext {
+    return { home: homedir(), repo: this.projectRoot, data: this.ompDataDir(), binDirs: installedBinaryDirs(process.env, process.execPath) };
+  }
+
   private supervisorDeps(chatId: string): SupervisorDeps {
     const data = this.ompDataDir();
     return {
-      chatId, store: this.runStore, cfg: resolveOmpConfig(process.env), ctx: { home: homedir(), repo: this.projectRoot, data },
+      chatId, store: this.runStore, cfg: resolveOmpConfig(process.env), ctx: this.ompPathContext(),
       distDir: this.ompOptions.distDir ?? join(this.projectRoot, "dist"), decls: this.ompDecls.ok ? this.ompDecls.decls : [],
       env: process.env, turnEnvelopeActions: [...TURN_ACTIONS], turnContext: this.ompTurnContext(data),
       buildTools: (claim) => this.buildOmpTools(claim, chatId),
@@ -2057,7 +2063,7 @@ export class CoreWorker {
     const registry = new ToolRegistry();
     const cfg = resolveOmpConfig(process.env);
     const shell = shellToolExecute({
-      cfg, ctx: { home: homedir(), repo: this.projectRoot, data: this.ompDataDir() },
+      cfg, ctx: this.ompPathContext(),
       distDir: this.ompOptions.distDir ?? join(this.projectRoot, "dist"), cwd: chatWorkspace(this.ompDataDir(), chatId),
       onIncident: (kind, detail) => { this.runStore.openIncident({ kind, subject: `chat:${chatId}`, detail: { run_id: claim.run_id, ...detail } }); }
     });
