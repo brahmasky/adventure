@@ -1,3 +1,4 @@
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { failureNotifyText, TURN_UNAVAILABLE_TEXT } from "../../src/core/omp-turn-wiring.js";
@@ -191,5 +192,36 @@ describe("shutdown with turns still queued (fix round 1, I-2)", () => {
       expect(state(r)).toBe("failed");
       expect(out.get(`${r}:final_report`)?.text).toBe(PLANNER_EXIT_TEXT);
     }
+  });
+});
+
+describe("the outcome sink never lets a stale owner overwrite the winner's report (fix round 1, M-2)", () => {
+  type Sink = { complete: (i: Record<string, unknown>) => void; fail: (i: Record<string, unknown>) => void };
+  // The sink is private: tests reach it the way the supervisor does, through ompOutcomeSink(chatId).
+  const sinkOf = (w: CoreWorker) => (w as unknown as { ompOutcomeSink: (chat: string) => Sink }).ompOutcomeSink("555");
+
+  it("a complete or media_failed that loses finishRun writes no report file and leaves no temp file", () => {
+    worker = ompWorker(store, tmp.dir);
+    const run = createQueuedTurnRun(store);
+    store.claimRun(run, "planner:555:winner", 120);
+    const dir = join(tmp.dir, "project", "runs", run);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "report.md"), "WINNER");
+    sinkOf(worker).complete({ run_id: run, worker_id: "planner:555:stale", text: "stale", attachments: [], duration_ms: 1, tool_calls: 0 });
+    sinkOf(worker).fail({ run_id: run, worker_id: "planner:555:stale", error_type: "media_failed", error_ref: "x" });
+    expect(readFileSync(join(dir, "report.md"), "utf8")).toBe("WINNER");
+    expect(readdirSync(dir)).toEqual(["report.md"]);
+    expect(events(run, "report_written")).toEqual([]);
+  });
+
+  it("the winner's report is renamed into place and recorded once", () => {
+    worker = ompWorker(store, tmp.dir);
+    const run = createQueuedTurnRun(store);
+    store.claimRun(run, "planner:555:winner", 120);
+    sinkOf(worker).complete({ run_id: run, worker_id: "planner:555:winner", text: "the answer", attachments: [], duration_ms: 1, tool_calls: 0 });
+    const dir = join(tmp.dir, "project", "runs", run);
+    expect(readdirSync(dir)).toEqual(["report.md"]);
+    expect(readFileSync(join(dir, "report.md"), "utf8")).toContain("the answer");
+    expect(events(run, "report_written")).toHaveLength(1);
   });
 });

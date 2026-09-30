@@ -141,7 +141,7 @@ import {
   sanitizeScheduleGoal,
   type ScheduleSpec
 } from "../run/schedule-spec.js";
-import { writeRunReport } from "../report/report-writer.js";
+import { stageRunReport, writeRunReport, type StagedRunReport } from "../report/report-writer.js";
 import { writeWikiPageFile } from "../report/wiki-writer.js";
 import {
   buildWikiContradictionNotice,
@@ -2393,9 +2393,9 @@ export class CoreWorker {
     this.ompTurns.delete(i.run_id);
     const merged = i.merged_into !== undefined;
     const text = merged ? i.text : this.ompReplyText(i.text, i.attachments, state);
-    let report: { path: string; hash: string };
+    let report: StagedRunReport;
     try {
-      report = writeRunReport(this.projectRoot, { run_id: i.run_id, title: "Answer", body: text, sources: state?.turnCtx.sourceUrls ?? [], partial: false });
+      report = stageRunReport(this.projectRoot, { run_id: i.run_id, title: "Answer", body: text, sources: state?.turnCtx.sourceUrls ?? [], partial: false });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       this.ompFail({ run_id: i.run_id, worker_id: i.worker_id, error_type: merged ? "merged_parent_failed" : "planner_exit", error_ref: `report_write_failed: ${detail}` });
@@ -2404,8 +2404,8 @@ export class CoreWorker {
     const won = this.runStore.finishRun({
       run_id: i.run_id, expected_worker_id: i.worker_id, next: "completed", report_ref: report.path, duration_ms: i.duration_ms, tool_calls: merged ? 0 : i.tool_calls
     });
-    if (!won) return;
-    this.runStore.recordReportWritten(i.run_id, report.path, report.hash, false);
+    if (!won) { report.discard(); return; }
+    this.commitReport(i.run_id, report, false);
     if (!merged) this.runStore.enqueueFinalReportNotification(i.run_id, { text, report_path: report.path, attachments: i.attachments });
   }
 
@@ -2413,15 +2413,28 @@ export class CoreWorker {
   private ompFail(i: Parameters<TurnOutcomeSink["fail"]>[0]): void {
     this.ompTurns.delete(i.run_id);
     const text = plannerFailureText(i.error_type, i.error_ref, i.partial);
-    const partial = i.error_type === "media_failed" ? this.writePartialOmpReport(i.run_id, i.error_ref) : undefined;
-    if (!this.runStore.finishRun({ run_id: i.run_id, expected_worker_id: i.worker_id, next: "failed", error_type: i.error_type, error_ref: i.error_ref })) return;
-    if (partial) this.runStore.recordReportWritten(i.run_id, partial.path, partial.hash, true);
+    const partial = i.error_type === "media_failed" ? this.stagePartialOmpReport(i.run_id, i.error_ref) : undefined;
+    if (!this.runStore.finishRun({ run_id: i.run_id, expected_worker_id: i.worker_id, next: "failed", error_type: i.error_type, error_ref: i.error_ref })) {
+      partial?.discard();
+      return;
+    }
+    if (partial) this.commitReport(i.run_id, partial, true);
     if (text !== null) this.runStore.enqueueFailureNotification(i.run_id, text, partial?.path);
   }
 
-  private writePartialOmpReport(run_id: string, detail: string): { path: string; hash: string } | undefined {
+  /** Rename a staged report into place (the terminal write is already ours); a failed rename leaves no report row. */
+  private commitReport(run_id: string, report: StagedRunReport, partial: boolean): void {
     try {
-      return writeRunReport(this.projectRoot, { run_id, title: "Partial report", body: `Error: ${detail}`, sources: [], partial: true });
+      report.commit();
+      this.runStore.recordReportWritten(run_id, report.path, report.hash, partial);
+    } catch {
+      report.discard(); // the reply still goes out: delivery never depends on the report (Phase 3.4)
+    }
+  }
+
+  private stagePartialOmpReport(run_id: string, detail: string): StagedRunReport | undefined {
+    try {
+      return stageRunReport(this.projectRoot, { run_id, title: "Partial report", body: `Error: ${detail}`, sources: [], partial: true });
     } catch {
       return undefined; // delivery never depends on the report (Phase 3.4)
     }
