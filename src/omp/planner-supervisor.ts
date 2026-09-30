@@ -37,6 +37,8 @@ export interface TurnOutcomeSink {
   incident(kind: string, detail: Record<string, unknown>): void;
   /** The version check passed: clear any open omp_version_mismatch / omp_unavailable condition. */
   versionOk?(): void;
+  /** A child started and is ready: clear this chat's start-condition incidents (crash loop, start failure, wrapper, sandbox). */
+  startOk?(): void;
 }
 export interface SupervisorDeps {
   chatId: string; store: RunStore; cfg: OmpConfig; ctx: PathContext; distDir: string; decls: ToolDeclaration[];
@@ -153,7 +155,7 @@ export class PlannerSupervisor {
   private draining: Promise<void> | undefined;
   private idleWaiters: Array<() => void> = [];
   private exits: number[] = [];
-  /** Latched by 3 crash exits in 10 min; only resetCrashGuard() (/rearm, the sweep) clears it. */
+  /** Latched by 3 crash exits in 10 min; only resetCrashGuard() (/rearm, or the daemon after each sweep) clears it. */
   private crashLatched = false;
   /** The one start in flight (never two spawns); a child is ready only once it resolved null. */
   private startInFlight: Promise<StartResult> | undefined;
@@ -585,6 +587,7 @@ export class PlannerSupervisor {
     } finally { if (this.spawning === rec) this.spawning = undefined; }
     this.sessionLeg = leg;
     if (!this.turn?.live) this.st = "IDLE";
+    this.d.outcome.startOk?.();
     return null;
   }
 

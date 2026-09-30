@@ -75,7 +75,7 @@ describe("oneShotAdapter — the audited one-shot call every seat makes", () => 
     expect(store.getLedgerEventsByCorrelation("tick:v").filter((e) => e.event_type === "llm_attempt")).toEqual([]);
   });
 
-  it("fix round 2: a mismatch opens + alerts, a later good check clears it silently, and the next mismatch alerts again", async () => {
+  it("fix round 2: a mismatch opens + alerts, a later good check clears it silently; a recurrence inside the quiet window is recorded, not re-paged (B3)", async () => {
     const cfg = fakeCfg({ "*": { text: "fine" } });
     process.env.HOUGE_TELEGRAM_CHAT_ID = "777";
     try {
@@ -92,7 +92,7 @@ describe("oneShotAdapter — the audited one-shot call every seat makes", () => 
       expect(alerts()).toEqual([]); // cleared silently
       await seat(refuse);
       expect(store.listOpenIncidents().map((i) => i.kind)).toEqual(["omp_version_mismatch"]);
-      expect(alerts()).toHaveLength(1); // the recurrence pages again
+      expect(alerts()).toEqual([]); // flap damping (ALERT_REOPEN_QUIET_MS): a later recurrence pages again (tests/run/incident-alert.test.ts)
     } finally {
       delete process.env.HOUGE_TELEGRAM_CHAT_ID;
     }

@@ -854,3 +854,19 @@ describe("PlannerSupervisor — a schedule-born turn is never steered into (fina
     expect(outcome.done.find((d) => (d as { run_id: string }).run_id === m)).not.toHaveProperty("merged_into");
   });
 });
+
+describe("PlannerSupervisor — a good start clears the start incidents (final review B3)", () => {
+  it("tells the outcome sink once per successful child start, never on a failed one", async () => {
+    const startOk = vi.fn();
+    const session = fakeSession({ exitCode: "exited:crash" });
+    const { store, sup, outcome } = harness(session);
+    outcome.startOk = startOk;
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(startOk).not.toHaveBeenCalled();
+    const ok = harness(fakeSession());
+    ok.outcome.startOk = startOk;
+    ok.sup.submit(req(createQueuedTurnRun(ok.store))); await ok.sup.whenIdle();
+    ok.sup.submit(req(createQueuedTurnRun(ok.store))); await ok.sup.whenIdle();
+    expect(startOk).toHaveBeenCalledTimes(1); // the second turn reuses the live child
+  });
+});

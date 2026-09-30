@@ -17,15 +17,23 @@ export interface AlertedIncidentInput {
   env?: NodeJS.ProcessEnv;
   /** An EVENT, not a condition (turn_outside_planner): resolved right after its alert is queued. */
   event?: boolean;
+  /** Injectable instant (tests); default now. */
+  now?: string;
 }
+
+/** Flap damping (B3): a condition reopened this soon after it resolved records its row but does not page again. */
+export const ALERT_REOPEN_QUIET_MS = 10 * 60_000;
 
 /** True when a new incident was opened (and, with a chat, alerted); false when one was already open. */
 export function openAlertedIncident(store: RunStore, input: AlertedIncidentInput): boolean {
-  if (store.findOpenIncident(store.incidentFingerprint(input.kind, input.subject))) return false;
-  const opened = store.openIncident({ kind: input.kind, subject: input.subject, detail: input.detail });
+  const fingerprint = store.incidentFingerprint(input.kind, input.subject);
+  if (store.findOpenIncident(fingerprint)) return false;
+  const now = input.now ?? new Date().toISOString();
+  const flapping = !input.event && store.findRecentlyResolvedIncident(fingerprint, new Date(Date.parse(now) - ALERT_REOPEN_QUIET_MS).toISOString()) !== undefined;
+  const opened = store.openIncident({ kind: input.kind, subject: input.subject, detail: input.detail, now });
   const chat = input.chat_id ?? (input.env ?? process.env).HOUGE_TELEGRAM_CHAT_ID?.trim();
-  if (chat) alertOpened(store, chat, opened.incident_id, input);
-  if (input.event) store.resolveIncident(opened.incident_id, new Date().toISOString());
+  if (chat && !flapping) alertOpened(store, chat, opened.incident_id, input);
+  if (input.event) store.resolveIncident(opened.incident_id, now);
   return true;
 }
 
@@ -44,9 +52,22 @@ export const OMP_CHECK_INCIDENT_KINDS: ReadonlySet<string> = new Set(["omp_versi
 
 /** Resolve every open omp_version_mismatch / omp_unavailable row. Returns how many were resolved. */
 export function resolveOmpCheckIncidents(store: RunStore, now = new Date().toISOString()): number {
+  return resolveOpenIncidents(store, OMP_CHECK_INCIDENT_KINDS, undefined, now);
+}
+
+/** The planner-supervisor conditions that page Paco once while open (B3). */
+export const SUPERVISOR_ALERT_KINDS: ReadonlySet<string> = new Set([
+  "planner_crash_loop", "planner_start_failed", "wrapper_mismatch", "sandbox_unavailable", "omp_version_mismatch", "omp_unavailable"
+]);
+/** The supervisor conditions a successful planner start in the same chat clears (the omp-check kinds clear on versionOk). */
+export const START_CONDITION_KINDS: ReadonlySet<string> = new Set(["planner_crash_loop", "planner_start_failed", "wrapper_mismatch", "sandbox_unavailable"]);
+
+/** Resolve the open incidents of `kinds` (only `subject`'s, when given). Returns how many were resolved. */
+export function resolveOpenIncidents(store: RunStore, kinds: ReadonlySet<string>, subject?: string, now = new Date().toISOString()): number {
   let resolved = 0;
   for (const open of store.listOpenIncidents()) {
-    if (OMP_CHECK_INCIDENT_KINDS.has(open.kind) && store.resolveIncident(open.incident_id, now)) resolved += 1;
+    if (!kinds.has(open.kind) || (subject !== undefined && open.subject !== subject)) continue;
+    if (store.resolveIncident(open.incident_id, now)) resolved += 1;
   }
   return resolved;
 }

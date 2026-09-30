@@ -27,7 +27,7 @@ import { resolveBackupEnabled, runDbBackupTick } from "../run/db-backup.js";
 import type { LlmCallRole, RunStore } from "../run/run-store.js";
 import { maybeFireScheduledTasks } from "../run/schedule-tick.js";
 import { SkillStore } from "../skills/skill-store.js";
-import { runInvariantSweep, type InvariantSweepInput } from "../run/invariant-sweep.js";
+import { runInvariantSweep, type InvariantSweepInput, type InvariantSweepResult } from "../run/invariant-sweep.js";
 import { clearParkMarker } from "../run/tombstone.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import { hardenedGitSync } from "../run/git-hardened.js";
@@ -515,7 +515,7 @@ async function runSignalPathTick(
     // ticks so it observes this cycle's work, self-throttles to 5 min, and alerts at most
     // once per incident transition. Flag-gated OFF; pure reads + incident bookkeeping —
     // it can never act on what it finds.
-    runInvariantSweep(invariantSweepInput(options, now));
+    sweepAndRearm(invariantSweepInput(options, now), worker);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[telegram-daemon] signal-path tick failed: ${message}`);
@@ -531,6 +531,16 @@ export function invariantSweepInput(
 ): InvariantSweepInput {
   const chat = options.allowlist.chats[0];
   return { store: options.store, dataDir: options.omp?.dataDir ?? options.projectRoot, ...(chat ? { chat_id: String(chat.telegram_chat_id) } : {}), now };
+}
+
+/**
+ * One sweep; when it actually ran (not throttled, not disarmed) every planner's crash latch is cleared, so a
+ * latched chat stays down only "until the next sweep or /rearm" (spec §7, B3). A still-broken child re-latches.
+ */
+export function sweepAndRearm(input: InvariantSweepInput, worker: { plannerSupervisors(): Array<{ resetCrashGuard(): void }> }): InvariantSweepResult {
+  const result = runInvariantSweep(input);
+  if (result.swept) for (const s of worker.plannerSupervisors()) s.resetCrashGuard();
+  return result;
 }
 
 /** The panel's real seats: the omp judge/chair seats (idea-panel-seats), audited under one `tick:idea_panel:<uuid>` per panel run. */

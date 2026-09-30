@@ -42,6 +42,10 @@ export const EMPTY_REPLY_TEXT = "(I finished that turn without any reply text.)"
 /** A turn that reached executeRun instead of a planner supervisor (the inner loop is gone): the run fails with this. */
 export const TURN_OUTSIDE_PLANNER_ERROR = "turns run only on the planner runtime; this path no longer executes them";
 export const TURN_UNAVAILABLE_TEXT = "⚠ I can't run turns right now: my runtime failed its startup check. Paco has been alerted.";
+/** The chat's planner crashed repeatedly and is latched (spec §7): it stays down until the next sweep or /rearm. */
+export const PLANNER_CRASH_LOOP_TEXT = "⚠ My runtime keeps crashing, so I stopped restarting it. Send /rearm to try again (the next sweep also re-arms it).";
+/** Supervisor preflight refs: a startup check failed, the runtime did not crash. */
+const STARTUP_CHECK_REF = /^(omp_version_mismatch|omp_unavailable|wrapper_mismatch|sandbox_unavailable)\b/;
 
 /** The terminal failure notice for a failed run (the same text the old turn path sent). */
 export function failureNotifyText(detail: string): string {
@@ -59,7 +63,8 @@ export function plannerFailureText(type: PlannerFailure, ref: string, partial?: 
     case "frame_idle":
       return partial ? `${TIMEOUT_TEXT}\n\n${partial}` : TIMEOUT_TEXT;
     case "planner_exit":
-      return PLANNER_EXIT_TEXT;
+      if (ref === "crash_loop") return PLANNER_CRASH_LOOP_TEXT;
+      return STARTUP_CHECK_REF.test(ref) ? TURN_UNAVAILABLE_TEXT : PLANNER_EXIT_TEXT;
     default:
       return failureNotifyText(ref);
   }

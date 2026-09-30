@@ -78,7 +78,7 @@ import { errorCode } from "../domain/error-code.js";
 import type { Identity } from "../domain/types.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import { createLedgerEvent } from "../run/run-ledger.js";
-import { openAlertedIncident, resolveOmpCheckIncidents } from "../run/incident-alert.js";
+import { openAlertedIncident, resolveOmpCheckIncidents, resolveOpenIncidents, START_CONDITION_KINDS, SUPERVISOR_ALERT_KINDS } from "../run/incident-alert.js";
 import {
   computeNextRunAt,
   describeScheduleSpec,
@@ -2124,9 +2124,17 @@ export class CoreWorker {
     return {
       complete: (i) => this.ompComplete(i),
       fail: (i) => this.ompFail(i),
-      incident: (kind, detail) => { this.runStore.openIncident({ kind, subject: `chat:${chatId}`, detail }); },
-      versionOk: () => { resolveOmpCheckIncidents(this.runStore); }
+      incident: (kind, detail) => this.supervisorIncident(chatId, kind, detail),
+      versionOk: () => { resolveOmpCheckIncidents(this.runStore); },
+      startOk: () => { resolveOpenIncidents(this.runStore, START_CONDITION_KINDS, `chat:${chatId}`); }
     };
+  }
+
+  /** A supervisor condition pages Paco once while its row is open (B3); a per-run event stays a plain row. */
+  private supervisorIncident(chatId: string, kind: string, detail: Record<string, unknown>): void {
+    const subject = `chat:${chatId}`;
+    if (!SUPERVISOR_ALERT_KINDS.has(kind)) { this.runStore.openIncident({ kind, subject, detail }); return; }
+    openAlertedIncident(this.runStore, { kind, subject, detail, chat_id: chatId });
   }
 
   /**

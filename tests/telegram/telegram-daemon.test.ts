@@ -8,7 +8,7 @@ import {
   tryStartEvolutionPipeline
 } from "../../src/core/evolution-lane.js";
 import { parseRatingHistory, RunStore } from "../../src/run/run-store.js";
-import { invariantSweepInput, runTelegramDaemon } from "../../src/telegram/telegram-daemon.js";
+import { invariantSweepInput, runTelegramDaemon, sweepAndRearm } from "../../src/telegram/telegram-daemon.js";
 import {
   RATING_ACK_COMMENT_TEXT,
   RATING_ACK_TEXT,
@@ -1088,6 +1088,22 @@ describe("the daemon's sweep wiring (M9)", () => {
     try {
       expect(invariantSweepInput({ store, allowlist, projectRoot: "/repo", omp: { dataDir: "/data" } }, "t")).toMatchObject({ dataDir: "/data", chat_id: "222", now: "t" });
       expect(invariantSweepInput({ store, allowlist, projectRoot: "/repo" }, "t").dataDir).toBe("/repo");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a sweep that runs clears every planner's crash latch (spec §7: 'until the next sweep or /rearm'); a throttled one does not (B3)", () => {
+    const store = RunStore.openInMemory();
+    const env = { HOUGE_INVARIANT_SWEEP_ENABLED: "1", HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES: "5" };
+    try {
+      const reset = vi.fn();
+      const worker = { plannerSupervisors: () => [{ resetCrashGuard: reset }, { resetCrashGuard: reset }] };
+      const input = { store, now: "2026-10-01T00:00:00.000Z", env };
+      expect(sweepAndRearm(input, worker).swept).toBe(true);
+      expect(reset).toHaveBeenCalledTimes(2);
+      expect(sweepAndRearm({ ...input, now: "2026-10-01T00:01:00.000Z" }, worker).swept).toBe(false);
+      expect(reset).toHaveBeenCalledTimes(2);
     } finally {
       store.close();
     }
