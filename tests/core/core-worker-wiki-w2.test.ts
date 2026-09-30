@@ -10,6 +10,10 @@ import { Gateway } from "../../src/gateway/gateway.js";
 import { LOOP_DISCIPLINE, WIKI_SECTION_HEADER } from "../../src/prompt/composer.js";
 import { RunStore } from "../../src/run/run-store.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
+import { pinOmpEnv } from "../helpers/omp-env.js";
+
+// PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
+pinOmpEnv();
 
 let dirs: string[] = [];
 function projectRoot(): string {

@@ -9,6 +9,10 @@ import {
   SCHEDULE_TICK_WORKER_ID
 } from "../../src/run/schedule-tick.js";
 import type { ScheduleTickGateway, ScheduleTickWorker } from "../../src/run/schedule-tick.js";
+import { pinOmpEnv } from "../helpers/omp-env.js";
+
+// PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
+pinOmpEnv();
 
 let store: RunStore;
 beforeEach(() => {
@@ -45,6 +49,25 @@ function fakeWorker(executed: Array<{ run_id: string; worker_id: string }>): Sch
 }
 
 describe("maybeFireScheduledTasks (B10b, ADR 0017)", () => {
+  it("omp: a fired turn is handed to the planner (submitTurn) and never also executed inline", async () => {
+    addWeekly();
+    const executed: Array<{ run_id: string; worker_id: string }> = [];
+    const submitted: string[] = [];
+    const worker: ScheduleTickWorker = { ...fakeWorker(executed), submitTurn: (run_id) => { submitted.push(run_id); return true; } };
+    const result = await maybeFireScheduledTasks({ store, gateway: new Gateway(store), worker, now: NOW, env: ARMED });
+    expect(result.fired).toBe(1);
+    expect(submitted).toHaveLength(1);
+    expect(executed).toEqual([]);
+  });
+
+  it("omp: a fired run that is not a turn (submitTurn → false) still executes inline", async () => {
+    addWeekly();
+    const executed: Array<{ run_id: string; worker_id: string }> = [];
+    const worker: ScheduleTickWorker = { ...fakeWorker(executed), submitTurn: () => false };
+    await maybeFireScheduledTasks({ store, gateway: new Gateway(store), worker, now: NOW, env: ARMED });
+    expect(executed).toHaveLength(1);
+  });
+
   it("flag OFF (default): a due schedule never fires — the tick is inert", async () => {
     addWeekly();
     const executed: Array<{ run_id: string; worker_id: string }> = [];

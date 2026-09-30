@@ -20,6 +20,10 @@ import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
 import type { TestGateResult } from "../../src/run/test-gate.js";
 import type { ReviewResult } from "../../src/capabilities/diff-reviewer.js";
 import type { GuardResult } from "../../src/capabilities/self-write-guard.js";
+import { pinOmpEnv } from "../helpers/omp-env.js";
+
+// PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
+pinOmpEnv();
 
 let dirs: string[] = [];
 function projectRoot(): string {

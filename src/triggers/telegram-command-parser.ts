@@ -19,7 +19,8 @@ export type TelegramCommand =
   | { type: "deny"; approval_id: string }
   | { type: "kill"; reason?: string }
   | { type: "disarm" }
-  | { type: "rearm" };
+  | { type: "rearm" }
+  | { type: "approvals" };
 
 export type TelegramCommandParseResult =
   | { ok: true; command: TelegramCommand }
@@ -57,6 +58,7 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
   if (command === "/schedule") return parseSchedule(rest);
   if (command === "/approve") return requiredApproval("approve", rest);
   if (command === "/deny") return requiredApproval("deny", rest);
+  if (command === "/approvals") return parseNoArgs("approvals", rest);
   // Kill switch + disarm posture (ADR 0018). These MUST be explicit branches: unknown
   // slash text falls through to a natural-language turn below, and a stop command must
   // never be re-interpreted by a model — unforgeable = slash-only + the allowlist auth.
@@ -192,7 +194,7 @@ function parseKill(words: string[]): TelegramCommandParseResult {
 }
 
 /** `/disarm` and `/rearm` take no arguments — reject extras so a typo can't half-apply. */
-function parseNoArgs(type: Extract<TaskEventType, "disarm" | "rearm">, words: string[]): TelegramCommandParseResult {
+function parseNoArgs(type: Extract<TaskEventType, "disarm" | "rearm" | "approvals">, words: string[]): TelegramCommandParseResult {
   if (words.length > 0) return invalid(`/${type} takes no arguments`);
   return { ok: true, command: { type } };
 }

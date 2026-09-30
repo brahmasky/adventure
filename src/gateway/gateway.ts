@@ -42,6 +42,7 @@ import { CHAIR_FALLBACK_RATIONALE, resolvePanelEnabled } from "../capabilities/i
 import { resolveSkillReverifyAt, resolveSkillReverifyEnabled } from "../capabilities/skill-reverify.js";
 import { resolvePanelAt } from "../capabilities/week-key.js";
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
+import { toolApprovalWaiters } from "../omp/tool-approval-sink.js";
 import type { IdeaRow, ShortlistRow } from "../run/run-store.js";
 
 /** A freshly captured rating the daemon follows up on (the low-rating attribution pass). */
@@ -59,6 +60,7 @@ export type GatewayIntakeResult =
   | { ok: true; status: "idea_returned"; run_id: string }
   | { ok: true; status: "help_returned"; run_id: string }
   | { ok: true; status: "approval_resolved"; run_id: string }
+  | { ok: true; status: "approvals_returned"; run_id: string }
   | { ok: true; status: "lessons_returned"; run_id: string }
   | { ok: true; status: "skills_returned"; run_id: string }
   | { ok: true; status: "forgotten"; run_id: string }
@@ -172,6 +174,10 @@ export class Gateway {
 
     if (event.type === "approve" || event.type === "deny") {
       return this.handleApproval(event, now);
+    }
+
+    if (event.type === "approvals") {
+      return this.handleApprovals(event, now);
     }
 
     if (event.type === "lessons") {
@@ -934,10 +940,37 @@ export class Gateway {
 
     if (resolution.ok) {
       this.recordTelegramAccepted(event, now);
+      // A tool approval (omp turn) is being waited on mid-turn: wake the bridge's waiter now.
+      const approval_id = event.approval_id ?? "";
+      if (this.runStore.getToolApproval(approval_id)) toolApprovalWaiters.resolve(approval_id, decision);
       return { ok: true, status: "approval_resolved", run_id: resolution.run_id };
     }
 
     return { ok: false, error: { code: resolution.error.code, message: resolution.error.message } };
+  }
+
+  /**
+   * `/approvals` — the answerable pending approvals, run-level and mid-turn tool approvals alike,
+   * oldest first. Expired rows are never shown (a dead id cannot be approved). Read-only; rendered
+   * by the Telegram adapter's rich renderer like every progress notification.
+   */
+  private handleApprovals(event: TypedTaskEvent, now: string): GatewayIntakeResult {
+    const replay = this.runStore.beginTriggerProcessing(event);
+    if (replay.status === "duplicate") return JSON.parse(replay.result_json) as GatewayIntakeResult;
+    if (replay.status === "conflict") {
+      return { ok: false, error: { code: replay.error, message: "Trigger idempotency key conflicts with a different payload" } };
+    }
+    const result: GatewayIntakeResult = { ok: true, status: "approvals_returned", run_id: "" };
+    this.runStore.enqueueNotification({
+      target: event.notify,
+      intent_type: "progress",
+      idempotency_key: `${event.idempotency_key}:approvals`,
+      correlation_id: event.source_reference,
+      payload: { text: formatApprovalsText(this.runStore.listLiveApprovals(now)) }
+    });
+    this.runStore.recordTriggerProcessed(event, result);
+    this.recordTelegramAccepted(event, now);
+    return result;
   }
 
   private handleTaskIntake(event: TypedTaskEvent, now: string): GatewayIntakeResult {
@@ -1368,6 +1401,7 @@ export const HELP_TEXT = [
   "/forget <scope|id> — 清除某条经验",
   "/approve <id> — 批准待处理操作",
   "/deny <id> — 拒绝待处理操作",
+  "/approvals — 列出待批准的操作",
   "/kill — 紧急停机（写入 tombstone）",
   "/disarm — 关闭自主/进化开关",
   "/rearm — 重新启用（下次重启生效）",
@@ -1705,4 +1739,14 @@ function formatRetiredText(metas: SkillMeta[]): string {
         (m.superseded_by ? ` · superseded by ${m.superseded_by}` : "")
     )
   ].join("\n");
+}
+
+/** `/approvals` with nothing waiting. Exported so tests assert against it. */
+export const NO_PENDING_APPROVALS_TEXT = "No approvals waiting.";
+
+/** `/approvals`: one line per answerable approval, with the command to answer it. */
+export function formatApprovalsText(rows: Array<{ approval_id: string; summary: string; expires_at: string }>): string {
+  if (rows.length === 0) return NO_PENDING_APPROVALS_TEXT;
+  const lines = rows.map((r) => `• **${escapeForTelegram(r.summary)}** — \`/approve ${r.approval_id}\` · \`/deny ${r.approval_id}\` (expires ${r.expires_at.slice(0, 16).replace("T", " ")} UTC)`);
+  return [`Waiting for you (${rows.length}):`, ...lines].join("\n");
 }

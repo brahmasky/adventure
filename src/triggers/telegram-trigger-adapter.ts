@@ -359,6 +359,7 @@ function buildTelegramEvent(command: TelegramCommand, base: TelegramEventBase): 
       return buildTypedTaskEvent({ ...base, type: "kill", ...(command.reason ? { goal: command.reason } : {}) });
     case "disarm":
     case "rearm":
+    case "approvals":
       return buildTypedTaskEvent({ ...base, type: command.type });
   }
 }

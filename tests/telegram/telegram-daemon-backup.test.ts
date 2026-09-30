@@ -5,6 +5,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { BACKUP_DIR_NAME } from "../../src/run/db-backup.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { runTelegramDaemon } from "../../src/telegram/telegram-daemon.js";
+import { pinOmpEnv } from "../helpers/omp-env.js";
+
+// PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
+pinOmpEnv();
 
 let dirs: string[] = [];
 function projectRoot(): string {

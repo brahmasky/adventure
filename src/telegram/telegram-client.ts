@@ -26,8 +26,8 @@ export interface TelegramSendDocumentInput {
   chat_id: string;
   /** Filename shown in the chat (e.g. `run_42.patch`). */
   filename: string;
-  /** File content, uploaded as a text attachment. */
-  content: string;
+  /** File content: text uploads as text/plain, bytes as application/octet-stream. */
+  content: string | Uint8Array;
   caption?: string;
 }
 
@@ -80,6 +80,8 @@ export interface TelegramSendClient {
   answerCallbackQuery?(input: TelegramAnswerCallbackQueryInput): Promise<void>;
   /** Replace/remove a message's inline keyboard (Phase 3.3) — e.g. to disable buttons after an action. */
   editMessageReplyMarkup?(input: TelegramEditMessageReplyMarkupInput): Promise<void>;
+  /** Upload a file (omp turn attachments). Optional: a client without it sends a follow-up line instead. */
+  sendDocument?(input: TelegramSendDocumentInput): Promise<void>;
 }
 
 /**
@@ -283,7 +285,8 @@ export class TelegramClient implements TelegramSendClient, TelegramPollClient, T
     const form = new FormData();
     form.append("chat_id", input.chat_id);
     if (input.caption) form.append("caption", input.caption);
-    form.append("document", new Blob([input.content], { type: "text/plain" }), input.filename);
+    const type = typeof input.content === "string" ? "text/plain" : "application/octet-stream";
+    form.append("document", new Blob([input.content as BlobPart], { type }), input.filename);
 
     const response = await this.fetchImpl(`${this.botBaseUrl}/sendDocument`, {
       method: "POST",

@@ -14,6 +14,10 @@ import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
+import { pinOmpEnv } from "../helpers/omp-env.js";
+
+// PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
+pinOmpEnv();
 
 // Money-Work Phase P1 (ADR 0023): external_work is an armed loop tool that KICKS OFF on the
 // background evolution lane (like self_write_propose) and returns the kickoff digest; the

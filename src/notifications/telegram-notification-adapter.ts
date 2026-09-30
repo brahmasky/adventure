@@ -1,3 +1,5 @@
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, isAbsolute, relative, sep } from "node:path";
 import { markdownToTelegramHtml } from "../telegram/markdown-to-telegram-html.js";
 import type {
   TelegramInlineKeyboardMarkup,
@@ -10,15 +12,83 @@ import type {
   NotificationSendResult
 } from "./notification-types.js";
 
+/** omp turn attachments (spec §7): at most 5 files, each at most 20 MB, re-checked at send time. */
+export const MAX_ATTACHMENTS = 5;
+export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+export type AttachmentRefusal = "outside_workspace" | "not_a_file" | "too_large" | "over_count" | "unreadable" | "send_failed" | "unsupported";
+const REFUSAL_TEXT: Record<AttachmentRefusal, string> = {
+  outside_workspace: "outside my workspace", not_a_file: "not a regular file", too_large: "over 20 MB",
+  over_count: "more than 5 files", unreadable: "could not be read", send_failed: "Telegram refused the upload", unsupported: "this chat cannot take files"
+};
+/** The one follow-up line per file that was not sent. Code-owned; exported so tests assert against it. */
+export function attachmentRefusedLine(name: string, why: AttachmentRefusal): string {
+  return `⚠ Not attached: ${name} (${REFUSAL_TEXT[why]})`;
+}
+
+export interface TelegramNotificationAdapterOptions {
+  /** The chat's omp workspace; an attachment must resolve (realpath) inside it. Absent → every attachment is refused. */
+  workspaceFor?: (chat_id: string) => string;
+}
+
+function inside(root: string, p: string): boolean {
+  const rel = relative(root, p);
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+}
+
 export class TelegramNotificationAdapter implements NotificationAdapter {
-  constructor(private readonly client: TelegramSendClient) {}
+  constructor(private readonly client: TelegramSendClient, private readonly options: TelegramNotificationAdapterOptions = {}) {}
 
   async send(notification: NotificationDispatchRecord): Promise<NotificationSendResult> {
     if (notification.target.kind !== "telegram") {
       throw new Error(`TelegramNotificationAdapter cannot send to target: ${notification.target.kind}`);
     }
-
     const chat_id = notification.target.chat_id;
+    const sent = await this.sendText(chat_id, notification);
+    const attachments = notification.payload.attachments;
+    if (Array.isArray(attachments) && attachments.length > 0) {
+      await this.sendAttachments(chat_id, attachments.filter((a): a is string => typeof a === "string"));
+    }
+    return sent;
+  }
+
+  /**
+   * Attachments go after the text. Each is re-checked NOW (the planner's workspace may have changed
+   * since the reply): realpath inside the chat's workspace, a regular file, at most 20 MB, at most 5.
+   * A failing file becomes one follow-up line, never a send. An upload failure never re-sends the text.
+   */
+  private async sendAttachments(chat_id: string, paths: string[]): Promise<void> {
+    const refused: string[] = [];
+    for (const [i, path] of paths.entries()) {
+      const name = basename(path);
+      const checked = i >= MAX_ATTACHMENTS ? "over_count" : this.checkAttachment(chat_id, path);
+      if (typeof checked === "string") { refused.push(attachmentRefusedLine(name, checked)); continue; }
+      try {
+        // the checked real path is what is read: a later swap of `path` cannot redirect the upload
+        await this.client.sendDocument?.({ chat_id, filename: name, content: readFileSync(checked.real) });
+      } catch {
+        refused.push(attachmentRefusedLine(name, "send_failed"));
+      }
+    }
+    if (refused.length === 0) return;
+    await this.sendText(chat_id, { payload: { text: refused.join("\n") } }).catch(() => undefined);
+  }
+
+  private checkAttachment(chat_id: string, path: string): AttachmentRefusal | { real: string } {
+    if (!this.client.sendDocument) return "unsupported";
+    const workspace = this.options.workspaceFor?.(chat_id);
+    if (!workspace) return "outside_workspace";
+    try {
+      const real = realpathSync(path);
+      if (!inside(realpathSync(workspace), real)) return "outside_workspace";
+      const st = statSync(real);
+      if (!st.isFile()) return "not_a_file";
+      return st.size > MAX_ATTACHMENT_BYTES ? "too_large" : { real };
+    } catch {
+      return "unreadable";
+    }
+  }
+
+  private async sendText(chat_id: string, notification: Pick<NotificationDispatchRecord, "payload">): Promise<NotificationSendResult> {
     const raw = notification.payload.text;
     // Inline keyboard (Phase 3.3). Omitted entirely when no buttons → byte-identical
     // to a button-less send (no reply_markup field).

@@ -15,6 +15,10 @@ import { Gateway } from "../../src/gateway/gateway.js";
 import type { JevRequest, JevResult } from "../../src/jev/jev-client.js";
 import { RunStore } from "../../src/run/run-store.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
+import { pinOmpEnv } from "../helpers/omp-env.js";
+
+// PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
+pinOmpEnv();
 
 // HERMETICITY (the cardinal PINNED_ENV rule): the daemon's .env leaks into test runs via the
 // self-write test gate — pin every flag that could arm the shadow or change the turn's path.

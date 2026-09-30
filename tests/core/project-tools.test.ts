@@ -10,6 +10,10 @@ import {
 import { CoreWorker } from "../../src/core/core-worker.js";
 import { RunStore } from "../../src/run/run-store.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
+import { pinOmpEnv } from "../helpers/omp-env.js";
+
+// PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
+pinOmpEnv();
 
 // P2 (spec §carve-out + verifier MAJOR 2 / MINOR 6): the project_track anchor is the
 // structural backstop against injection→write — it must refuse unseen URLs AND

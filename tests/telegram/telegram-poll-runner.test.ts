@@ -4,6 +4,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
 import { runTelegramPollOnce } from "../../src/telegram/telegram-poll-runner.js";
+import { pinOmpEnv } from "../helpers/omp-env.js";
+
+// PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
+pinOmpEnv();
 
 // PINNED_ENV hermeticity (the daemon file's pattern): save, DELETE before each test so a value
 // leaked from the daemon's .env never arms a flag here, restore after.

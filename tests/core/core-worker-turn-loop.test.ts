@@ -29,6 +29,10 @@ import { SkillStore } from "../../src/skills/skill-store.js";
 import { formatScheduleListText } from "../../src/run/schedule-spec.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
 import { createTimeConvertAdapter } from "../../src/capabilities/time-convert.js";
+import { pinOmpEnv } from "../helpers/omp-env.js";
+
+// PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
+pinOmpEnv();
 
 let dirs: string[] = [];
 function projectRoot(): string {

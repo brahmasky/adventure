@@ -19,6 +19,10 @@ import {
 import { maybeFireScheduledTasks } from "../../src/run/schedule-tick.js";
 import { buildScheduleCreatedDigest } from "../../src/core/core-worker.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
+import { pinOmpEnv } from "../helpers/omp-env.js";
+
+// PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
+pinOmpEnv();
 
 /**
  * verifier-added (B10 adversarial verification, 2026-07-15): adversarial probes that go
@@ -110,7 +114,11 @@ describe("PROBE 1 — self-replication: schedule-born runs cannot create schedul
       });
       const gateway = new Gateway(store);
       // Every fired run: schedule_task create (daily) then final.
-      const worker = new CoreWorker(store, projectRoot(), selfSchedulingLlm());
+      // The pre-omp inner loop drives this probe (executeRun only, no submitTurn): a fired turn would
+      // otherwise go detached to a planner. Its omp successor is core-worker-omp-tools.test.ts ›
+      // "schedule-born run: a scripted schedule_task call is denied by the contract". Task 14 retires this form.
+      const core = new CoreWorker(store, projectRoot(), selfSchedulingLlm());
+      const worker = { executeRun: (run_id: string, worker_id: string) => core.executeRun(run_id, worker_id) };
 
       // Tick with an advancing clock so every enabled schedule keeps coming due.
       let maxActive = 0;

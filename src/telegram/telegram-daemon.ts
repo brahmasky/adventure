@@ -12,7 +12,7 @@ import { resolveWikiEnabled } from "../capabilities/wiki.js";
 import { createLlmAnswerAdapter } from "../capabilities/llm-answer.js";
 import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
-import { CoreWorker } from "../core/core-worker.js";
+import { CoreWorker, type OmpWorkerOptions } from "../core/core-worker.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
@@ -87,6 +87,10 @@ export interface RunTelegramDaemonOptions {
    * plus the contained codex/claude spawn seats via {@link buildPanelSeatBindings}.
    */
   panelSeats?: PanelSeatBindings;
+  /** omp planner turns: the data dir (houge.sqlite's directory, default projectRoot) and dist dir. Tests use tmp dirs. */
+  omp?: OmpWorkerOptions;
+  /** How often detached turns' notifications (approval cards, replies) are flushed between polls (default 1 s). */
+  outboxPumpMs?: number;
 }
 
 /** The panel's injected seats (spec §1: per-seat pinning — `answerWithChain` never sees them). */
@@ -170,7 +174,8 @@ export async function runTelegramDaemon(
     // without downloadFile (tests) yields no downloader, so every media turn fails loudly.
     options.telegramClient.downloadFile
       ? { downloadFile: options.telegramClient.downloadFile.bind(options.telegramClient) }
-      : undefined
+      : undefined,
+    options.omp ?? {}
   );
   const adapter = createTelegramLongPollingAdapter({
     allowlist: options.allowlist,
@@ -198,8 +203,16 @@ export async function runTelegramDaemon(
   });
   const dispatcher = new NotificationDispatcher(new NotificationOutbox(options.store), {
     local: new LocalNotificationAdapter(),
-    telegram: new TelegramNotificationAdapter(options.telegramClient)
+    telegram: new TelegramNotificationAdapter(options.telegramClient, {
+      workspaceFor: (chat_id) => join(options.omp?.dataDir ?? options.projectRoot, "omp", "workspace", `chat-${chat_id}`)
+    })
   });
+  // Turns run detached: their approval cards and replies land in the outbox between polls, so a
+  // serialized flush runs on a short pump as well as after each poll cycle (a reply never waits
+  // out a 30 s long-poll).
+  const flushOutbox = serialFlusher(dispatcher);
+  const pump = setInterval(() => void flushOutbox().catch(() => undefined), options.outboxPumpMs ?? 1_000);
+  pump.unref();
 
   // ⓪·2c U2: consume the reload marker (exactly once — consumption deletes it) and enqueue
   // the boot confirmation, then flush the outbox so it AND the pre-restart "merged, reloading…"
@@ -237,11 +250,12 @@ export async function runTelegramDaemon(
           if (isHandledIntakeDenial(intake.error.code)) return;
           throw new Error(`Gateway intake failed: ${intake.error.code} ${intake.error.message}`);
         }
-        // Execute synchronously so a shutdown signal can't interrupt a run
-        // mid-flight: the await completes the in-flight run before the loop exits.
-        if (intake.status === "created") {
+        // A turn is handed to its chat's planner supervisor and runs detached (a waiting turn
+        // never blocks intake); anything else still executes inline so a shutdown cannot cut it.
+        if (intake.status === "created" && !worker.submitTurn(intake.run_id)) {
           await worker.executeRun(intake.run_id, "telegram-daemon-worker");
         }
+        onPlannerControl(intake.status, worker, options.store);
         // ⓪·3 S2a: the async follow-up on a captured rating (the low-rating attribution
         // pass). A bare digit arrives as `rating_captured`; a digit+comment ran as the
         // turn above with the signal riding `rating_signal`. The capture itself (store,
@@ -269,10 +283,7 @@ export async function runTelegramDaemon(
       // rating ask enqueued this cycle is delivered this cycle). B10b threads the
       // gateway + worker in so the scheduler tick fires due tasks down the SAME path.
       await runSignalPathTick(options, gateway, worker, t);
-      for (;;) {
-        const result = await dispatcher.dispatchOnce("telegram-daemon-dispatcher");
-        if (result.status === "idle") break;
-      }
+      await flushOutbox();
 
       options.store.recordPollHeartbeat({ now: now(), ok: true });
       // The daemon is demonstrably back: retire the park marker so the NEXT gap is reported as a
@@ -300,6 +311,12 @@ export async function runTelegramDaemon(
     }
   }
 
+  // Detached planner turns: stop every child (queued turns stay queued for the next boot), then
+  // flush whatever the stop produced.
+  clearInterval(pump);
+  await worker.shutdownPlanners();
+  await flushOutbox().catch(() => undefined);
+
   // ⓪·3g: an evolution pipeline may still be running on the background lane — finish it
   // before exiting (mirroring the in-flight-run guarantee above; bounded by the lane's
   // own wall-clock cap), then flush its completion notification through the outbox.
@@ -318,6 +335,40 @@ export async function runTelegramDaemon(
   }
 
   return { cycles, consecutive_failures: failures };
+}
+
+/** One dispatcher drain at a time: the pump and the poll loop share it, never overlap. */
+function serialFlusher(dispatcher: NotificationDispatcher): () => Promise<void> {
+  let chain: Promise<void> = Promise.resolve();
+  return () => {
+    chain = chain.then(async () => {
+      for (;;) {
+        const result = await dispatcher.dispatchOnce("telegram-daemon-dispatcher");
+        if (result.status === "idle") break;
+      }
+    });
+    return chain;
+  };
+}
+
+/**
+ * `/kill` stops every live planner turn without blocking the poll loop (the tombstone is already
+ * written, the ack queued); `/rearm` clears the planners' crash-loop latch (spec §7).
+ */
+function onPlannerControl(status: string, worker: CoreWorker, store: RunStore): void {
+  if (status === "rearmed") {
+    for (const s of worker.plannerSupervisors()) s.resetCrashGuard();
+    return;
+  }
+  if (status !== "killed") return;
+  void Promise.allSettled(worker.plannerSupervisors().map((s) => s.abortAll("killed"))).then((results) => {
+    for (const r of results) {
+      if (r.status === "fulfilled") continue;
+      const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
+      console.error(`[telegram-daemon] /kill could not abort a planner: ${reason}`);
+      store.openIncident({ kind: "planner_kill_failed", subject: "daemon", detail: { reason } });
+    }
+  });
 }
 
 /**

@@ -19,6 +19,12 @@ import { INTENT_DISCIPLINE } from "../../src/capabilities/intent.js";
 import { RADAR_EXTRACT_DISCIPLINE } from "../../src/capabilities/idea-radar.js";
 import { LESSON_CONSOLIDATE_DISCIPLINE } from "../../src/capabilities/lesson-consolidate.js";
 import { LOOP_DISCIPLINE } from "../../src/prompt/composer.js";
+import { PLANNER_EXIT_TEXT } from "../../src/omp/planner-supervisor.js";
+import { pinOmpEnv, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
+import { until } from "../helpers/omp-worker.js";
+
+// PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
+pinOmpEnv();
 
 let dirs: string[] = [];
 function projectRoot(): string {
@@ -94,6 +100,24 @@ function loopReply(input: Record<string, unknown>, finalAnswer?: string) {
 }
 
 const okAnswer = (input: Record<string, unknown>) => loopReply(input);
+const worker_runs_failed = (store: RunStore) =>
+  store.getLedgerEvents().filter((e) => e.event_type === "run_failed").map((e) => String(e.payload.error_type));
+
+/**
+ * Turns run on the planner (Task 13): the fake omp answers "A: ECHO:<message>" (so each turn's text
+ * shows up in its reply) from a tmp data dir with the shell wrapper copied in (rulings 4 and 6).
+ */
+function fakeOmp(root: string, scenario: Record<string, unknown> = { "*": { rpcText: "A:", rpcEcho: true } }) {
+  useFakeOmp(scenario, root);
+  return { dataDir: root, distDir: tmpOmpDist(root) };
+}
+
+/** Turns are detached: stop the daemon only once `done` holds (a stuck turn fails the assertions, never hangs the suite). */
+async function stopWhen(controller: AbortController, done: () => boolean): Promise<never[]> {
+  await until(done).catch(() => undefined);
+  controller.abort();
+  return [];
+}
 
 describe("runTelegramDaemon", () => {
   it("loops over multiple poll batches, answering each turn, and records the heartbeat", async () => {
@@ -101,10 +125,12 @@ describe("runTelegramDaemon", () => {
     const controller = new AbortController();
     const sent: string[] = [];
     let calls = 0;
+    const root = projectRoot();
     try {
       const result = await runTelegramDaemon({
         store,
-        projectRoot: projectRoot(),
+        projectRoot: root,
+        omp: fakeOmp(root),
         allowlist: ALLOWLIST,
         stopSignal: controller.signal,
         longPollTimeoutSeconds: 0,
@@ -113,9 +139,9 @@ describe("runTelegramDaemon", () => {
           getUpdates: async () => {
             calls += 1;
             if (calls === 1) return [askUpdate(50, "question one")];
-            if (calls === 2) return [askUpdate(51, "question two")];
-            controller.abort(); // stop after two real batches
-            return [];
+            // the second message waits for the first reply (sent mid-turn it would be steered in)
+            if (calls === 2) { await until(() => sent.length >= 1); return [askUpdate(51, "question two")]; }
+            return stopWhen(controller, () => sent.length >= 2); // stop after two answered batches
           },
           sendMessage: async ({ text }) => {
             sent.push(text);
@@ -135,28 +161,28 @@ describe("runTelegramDaemon", () => {
     }
   });
 
-  it("finishes the in-flight run and flushes its notification when shutdown arrives mid-run", async () => {
+  it("shutdown mid-turn stops the planner child and flushes the turn's terminal notification before exit", async () => {
+    // Under omp a turn is detached: shutdown no longer waits it out (a turn can wait 30 min on an
+    // approval); the supervisor stops the child, the run fails planner_exit, and the reply that says
+    // so is flushed on the way out — never a silent drop.
     const store = RunStore.openInMemory();
     const controller = new AbortController();
     const sent: string[] = [];
+    const root = projectRoot();
     let calls = 0;
     try {
       const result = await runTelegramDaemon({
         store,
-        projectRoot: projectRoot(),
+        projectRoot: root,
+        omp: fakeOmp(root, { "*": { rpcHangAfterPrompt: true } }),
         allowlist: ALLOWLIST,
         stopSignal: controller.signal,
         longPollTimeoutSeconds: 0,
-        // Shutdown arrives WHILE the run is executing (on its first LLM call — the
-        // classifier); the loop still composes a `final` answer and the run completes.
-        llmAdapter: async (input) => {
-          controller.abort();
-          return loopReply(input, "graceful-answer");
-        },
         telegramClient: {
           getUpdates: async () => {
             calls += 1;
-            return calls === 1 ? [askUpdate(60, "a question")] : [];
+            if (calls === 1) return [askUpdate(60, "a question")];
+            return stopWhen(controller, () => store.getLedgerEvents().some((e) => e.event_type === "loop_started"));
           },
           sendMessage: async ({ text }) => {
             sent.push(text);
@@ -164,10 +190,9 @@ describe("runTelegramDaemon", () => {
           }
         }
       });
-
-      // The in-flight run completed and its answer was dispatched before exit.
-      expect(result.cycles).toBe(1);
-      expect(sent.some((t) => t.includes("graceful-answer"))).toBe(true);
+      expect(result.cycles).toBeGreaterThanOrEqual(1);
+      expect(sent).toContain(PLANNER_EXIT_TEXT);
+      expect(worker_runs_failed(store)).toEqual(["planner_exit"]);
     } finally {
       store.close();
     }
@@ -255,9 +280,11 @@ describe("runTelegramDaemon — ⓪·3g background evolution lane", () => {
     let answeredWhileInFlight = false;
     try {
       const lane = occupyLane(store);
+      const root = projectRoot();
       await runTelegramDaemon({
         store,
-        projectRoot: projectRoot(),
+        projectRoot: root,
+        omp: fakeOmp(root),
         allowlist: ALLOWLIST,
         stopSignal: controller.signal,
         longPollTimeoutSeconds: 0,
@@ -266,6 +293,7 @@ describe("runTelegramDaemon — ⓪·3g background evolution lane", () => {
           getUpdates: async () => {
             calls += 1;
             if (calls === 1) return [askUpdate(90, "hello while busy")];
+            await until(() => sent.some((t) => t.includes("hello while busy"))).catch(() => undefined);
             // By the second poll the message got a full answer WHILE the pipeline
             // was still un-resolved — the poll loop never blocked on the lane.
             answeredWhileInFlight = sent.some((t) => t.includes("hello while busy")) && !lane.resolved();
@@ -731,13 +759,15 @@ describe("runTelegramDaemon — the signal path (⓪·3 S2)", () => {
   }
 
   /** Run the daemon over one update; the attribution pass names `lesson` culprit. */
-  async function captureCycle(store: RunStore, lesson: number, text: string): Promise<string[]> {
+  async function captureCycle(store: RunStore, lesson: number, text: string, waitForReply = false): Promise<string[]> {
     const controller = new AbortController();
     const sent: string[] = [];
+    const root = projectRoot();
     let calls = 0;
     await runTelegramDaemon({
       store,
-      projectRoot: projectRoot(),
+      projectRoot: root,
+      omp: fakeOmp(root),
       allowlist: ALLOWLIST,
       stopSignal: controller.signal,
       longPollTimeoutSeconds: 0,
@@ -754,6 +784,7 @@ describe("runTelegramDaemon — the signal path (⓪·3 S2)", () => {
         getUpdates: async () => {
           calls += 1;
           if (calls === 1) return [askUpdate(70, text)];
+          if (waitForReply) return stopWhen(controller, () => sent.some((t) => t.includes("ECHO:")));
           controller.abort();
           return [];
         },
@@ -840,7 +871,7 @@ describe("runTelegramDaemon — the signal path (⓪·3 S2)", () => {
     try {
       const lesson = store.addLesson({ scope: "ask", text: "结尾加俏皮话", source: "user_feedback" });
       seedPendingSession(store, lesson);
-      const sent = await captureCycle(store, lesson, "1 帮我查一下明天的天气");
+      const sent = await captureCycle(store, lesson, "1 帮我查一下明天的天气", true);
 
       // The piggy-backed request got a REAL answer (the fake chain echoes the question);
       // no code-owned ack was sent — the swallow case is dead.
@@ -866,17 +897,22 @@ describe("runTelegramDaemon — scheduler tick (B10b, ADR 0017)", () => {
   async function idleSchedulerCycle(store: RunStore): Promise<string[]> {
     const controller = new AbortController();
     const sent: string[] = [];
+    const root = projectRoot();
+    let calls = 0;
     await runTelegramDaemon({
       store,
-      projectRoot: projectRoot(),
+      projectRoot: root,
+      omp: fakeOmp(root),
       allowlist: ALLOWLIST,
       stopSignal: controller.signal,
       longPollTimeoutSeconds: 0,
       llmAdapter: async (input) => okAnswer(input),
       telegramClient: {
+        // the first cycle's tick fires the schedule; its detached turn answers before the second poll stops the daemon
         getUpdates: async () => {
-          controller.abort();
-          return [];
+          calls += 1;
+          if (calls === 1) return [];
+          return process.env.HOUGE_SCHEDULER_ENABLED === "1" ? stopWhen(controller, () => sent.length > 0) : (controller.abort(), []);
         },
         sendMessage: async ({ text }) => {
           sent.push(text);
@@ -887,7 +923,7 @@ describe("runTelegramDaemon — scheduler tick (B10b, ADR 0017)", () => {
     return sent;
   }
 
-  it("fires a due schedule end-to-end: run executes and the report reaches the chat the same cycle", async () => {
+  it("fires a due schedule end-to-end: the fired turn runs on the planner and its report reaches the chat", async () => {
     process.env.HOUGE_SCHEDULER_ENABLED = "1";
     const store = RunStore.openInMemory();
     try {
@@ -982,39 +1018,19 @@ describe("park marker retirement (ADR 0018 revival)", () => {
 });
 
 describe("runTelegramDaemon — the audit chokepoint (slice 2)", () => {
-  it("slice 2: the daemon's own chain records llm_attempt rows for a turn (run-scoped)", async () => {
-    // No injected llmAdapter: the turn rides CoreWorker's REAL chain. pi has no binary-path
-    // override (PI_BINARY is the constant "pi", resolved through the child's PATH — which
-    // cli-spawn's env allowlist always passes through), so the stub is a `pi` executable in a
-    // temp dir prepended to PATH. It drains stdin (the question) and emits one message_end line
-    // in the shape parsePiJsonl/extractPiUsage read.
-    const dir = mkdtempSync(join(tmpdir(), "houge-pi-stub-"));
-    const stub = join(dir, "pi");
-    writeFileSync(
-      stub,
-      "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '" +
-        JSON.stringify({
-          type: "message_end",
-          message: {
-            role: "assistant",
-            model: "stub",
-            content: [{ type: "text", text: "stub answer" }],
-            usage: { input: 3, output: 2, cacheRead: 0 }
-          }
-        }) +
-        "'\n",
-      { mode: 0o755 }
-    );
-    const saved = { p: process.env.HOUGE_LLM_PROVIDERS, path: process.env.PATH };
-    process.env.HOUGE_LLM_PROVIDERS = "pi";
-    process.env.PATH = `${dir}:${process.env.PATH ?? ""}`;
+  it("slice 2: a daemon turn records run-scoped llm_attempt rows (one per planner model request, spec §8)", async () => {
+    // The turn rides the planner now: its model requests are audited from the omp frames
+    // (request_key <run_id>:<n>), not from an injected chain.
     const store = RunStore.openInMemory();
     const controller = new AbortController();
+    const root = projectRoot();
     let calls = 0;
+    const sent: string[] = [];
     try {
       await runTelegramDaemon({
         store,
-        projectRoot: projectRoot(),
+        projectRoot: root,
+        omp: fakeOmp(root, { "*": { rpcText: "stub answer" } }),
         allowlist: ALLOWLIST,
         stopSignal: controller.signal,
         longPollTimeoutSeconds: 0,
@@ -1022,23 +1038,17 @@ describe("runTelegramDaemon — the audit chokepoint (slice 2)", () => {
           getUpdates: async () => {
             calls += 1;
             if (calls === 1) return [askUpdate(50, "question one")];
-            controller.abort();
-            return [];
+            return stopWhen(controller, () => sent.length > 0);
           },
-          sendMessage: async () => ({ message_id: 1 })
+          sendMessage: async ({ text }) => { sent.push(text); return { message_id: 1 }; }
         }
       });
       const attempts = store.getLedgerEvents().filter((e) => e.event_type === "llm_attempt");
       expect(attempts.length).toBeGreaterThan(0);
       expect(attempts.every((e) => typeof e.run_id === "string")).toBe(true);
-      expect(attempts.every((e) => e.payload.provider === "pi" && e.payload.outcome === "ok")).toBe(true);
+      expect(attempts.every((e) => e.payload.outcome === "ok" && String(e.payload.request_key).startsWith(`${e.run_id}:`))).toBe(true);
     } finally {
       store.close();
-      if (saved.p === undefined) delete process.env.HOUGE_LLM_PROVIDERS;
-      else process.env.HOUGE_LLM_PROVIDERS = saved.p;
-      if (saved.path === undefined) delete process.env.PATH;
-      else process.env.PATH = saved.path;
-      rmSync(dir, { recursive: true, force: true });
     }
   });
 
@@ -1050,10 +1060,12 @@ describe("runTelegramDaemon — the audit chokepoint (slice 2)", () => {
       const sent: string[] = [];
       const downloadFile = vi.fn(async () => ({ bytes: new Uint8Array([1]) }));
       let calls = 0;
+      const root = projectRoot();
       try {
         await runTelegramDaemon({
           store,
-          projectRoot: projectRoot(),
+          projectRoot: root,
+          omp: fakeOmp(root),
           allowlist: ALLOWLIST,
           stopSignal: controller.signal,
           longPollTimeoutSeconds: 0,
@@ -1064,8 +1076,7 @@ describe("runTelegramDaemon — the audit chokepoint (slice 2)", () => {
               if (calls === 1) {
                 return [{ update_id: 32, message: { message_id: 1, voice: { file_id: "v", file_unique_id: "u", duration: 3 }, from: { id: 111 }, chat: { id: 222 } } }];
               }
-              controller.abort();
-              return [];
+              return stopWhen(controller, () => sent.length > 0); // the ingest runs inside the detached turn
             },
             sendMessage: async ({ text }) => { sent.push(text); return { message_id: sent.length }; },
             downloadFile

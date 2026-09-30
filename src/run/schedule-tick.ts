@@ -34,6 +34,8 @@ export interface ScheduleTickGateway {
 
 export interface ScheduleTickWorker {
   executeRun(run_id: string, worker_id: string): Promise<unknown>;
+  /** omp: hand a fired turn to its chat's planner supervisor (detached); false = not a turn. */
+  submitTurn?(run_id: string): boolean;
 }
 
 export interface ScheduleTickInput {
@@ -152,7 +154,9 @@ async function fireScheduledTask(
     command_hash: event.payload_hash
   });
   result.fired += 1;
-  await input.worker.executeRun(intake.run_id, SCHEDULE_TICK_WORKER_ID);
+  if (!input.worker.submitTurn?.(intake.run_id)) {
+    await input.worker.executeRun(intake.run_id, SCHEDULE_TICK_WORKER_ID);
+  }
 }
 
 /**

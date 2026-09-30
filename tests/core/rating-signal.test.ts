@@ -5,6 +5,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { RATING_ATTRIBUTION_DISCIPLINE } from "../../src/capabilities/session-rating.js";
 import { CoreWorker } from "../../src/core/core-worker.js";
 import { parseRatingHistory, RunStore } from "../../src/run/run-store.js";
+import { pinOmpEnv } from "../helpers/omp-env.js";
+
+// PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
+pinOmpEnv();
 
 let dirs: string[] = [];
 function projectRoot(): string {
