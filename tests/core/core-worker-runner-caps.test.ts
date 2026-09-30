@@ -40,6 +40,6 @@ describe("runner caps follow the called seat's chain (M3)", () => {
   });
 
   it("lesson_write = its distill seat + its reconcile seat", () => {
-    expect(caps()("lesson_write")).toBe(seat("compose") + seat("compose"));
+    expect(caps()("lesson_write")).toBe(seat("distill") + seat("consolidate"));
   });
 });

@@ -3149,8 +3149,12 @@ function loopToolTimeoutMs(name: string, seat: (role: LlmCallRole) => number): n
   }
 }
 
-/** The seats lesson_write's internal calls ride (the routing lives here so the runner cap matches it). */
-const LESSON_WRITE_ROLES = { distill: "compose", reconcile: "compose" } as const satisfies Record<string, LlmCallRole>;
+/**
+ * The seats lesson_write's internal calls ride: memory work on the ticks chain (spec §8), like the
+ * episodic distill/consolidate ticks. /ask, /research and skill authoring stay on the planner chain.
+ * The routing lives here so the runner cap (loopToolTimeoutMs) matches it.
+ */
+const LESSON_WRITE_ROLES = { distill: "distill", reconcile: "consolidate" } as const satisfies Record<string, LlmCallRole>;
 
 /**
  * ⓪·3g: the kickoff digest the evolution tool adapter returns IMMEDIATELY after
