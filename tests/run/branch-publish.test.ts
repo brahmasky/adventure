@@ -87,7 +87,9 @@ describe("publishBranch (Phase 3 step 7)", () => {
     await expect(publishBranch("/no/such/worktree/path", "houge/selfwrite/x")).rejects.toThrow(/Failed to publish branch/);
   });
 
-  it("a long multi-line focus: the commit SUBJECT is the one-line summary, the full focus rides the BODY", async () => {
+  it("a long multi-line focus: the commit message is the one-line SUBJECT only — no focus text beyond the label", async () => {
+    // A Merge with push publishes the commit message to the PUBLIC repo, while Paco only ever saw
+    // the 120-char label and the diff: nothing he did not see may ride the commit.
     const repo = tmpRepo();
     const wt = (await createWorktree(repo)).path;
     worktrees.push(wt);
@@ -95,10 +97,10 @@ describe("publishBranch (Phase 3 step 7)", () => {
     const focus = `修复 createSrcPhraseChecker 的子串匹配\nCause: "regate" hits "aggregate". ${"d".repeat(1900)}`;
     const branch = selfWriteBranchName("run_long");
     await publishBranch(wt, branch, focus);
-    const subject = execFileSync("git", ["-C", repo, "log", "-1", "--format=%s", branch], { encoding: "utf8" }).trim();
-    expect(subject).toBe("houge self-write: 修复 createSrcPhraseChecker 的子串匹配");
-    const body = execFileSync("git", ["-C", repo, "log", "-1", "--format=%b", branch], { encoding: "utf8" });
-    expect(body).toContain(focus.split("\n")[1]);
+    const message = execFileSync("git", ["-C", repo, "log", "-1", "--format=%B", branch], { encoding: "utf8" }).trim();
+    expect(message).toBe("houge self-write: 修复 createSrcPhraseChecker 的子串匹配");
+    expect(message).not.toContain("regate");
+    expect(message).not.toContain("ddd");
   });
 });
 

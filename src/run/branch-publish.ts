@@ -47,14 +47,15 @@ export function selfWriteBranchName(runId: string): string {
 /**
  * Publish the worktree's verified changes as `branchName` in the common repo. Creates the branch
  * at the worktree's HEAD (`checkout -b`), stages everything (`git add -A`), and commits with a
- * message naming the task. Returns `branchName`. Throws on any git failure (the caller records a
- * failure event) — there is no silent half-publish.
+ * one-line subject naming the task (the focus summary, never the full focus). Returns
+ * `branchName`. Throws on any git failure (the caller records a failure event) — there is no
+ * silent half-publish.
  */
 export async function publishBranch(worktree: string, branchName: string, taskSummary?: string): Promise<string> {
   const summary = taskSummary ? summarizeFocus(taskSummary) : "";
-  const subject = `houge self-write: ${summary.length > 0 ? summary : branchName}`;
-  // The full focus rides the commit BODY whenever the one-line subject does not already carry it.
-  const message = taskSummary && taskSummary.trim() !== summary ? `${subject}\n\n${taskSummary.trim()}` : subject;
+  // SUBJECT ONLY: a Merge with push publishes this message to the PUBLIC repo, and Paco only ever
+  // saw the one-line label and the diff — the full focus never rides the commit.
+  const message = `houge self-write: ${summary.length > 0 ? summary : branchName}`;
   try {
     // Create + switch the worktree onto the new branch (from its detached HEAD).
     await hardenedGit(["-C", worktree, "checkout", "-b", branchName]);
