@@ -154,6 +154,16 @@ export const LOOP_GO_AHEAD_RULE =
   "earlier proposal.";
 
 /**
+ * How a self-write proposal reaches Paco (2026-10-02): he chats via Telegram with no view of the code and judges
+ * a proposal by whether the stated cause matches what he saw and whether the scope is what he asked — so the
+ * proposal leads in plain language and code names only follow in brackets. Exported for containment tests.
+ */
+export const LOOP_PLAIN_PROPOSAL_RULE =
+  "When you propose a code fix to Paco, write it in Paco's language and plain terms, in this order: what Paco saw " +
+  "(the symptom), the cause you confirmed, what will change, and how you checked it — with file or function names " +
+  "only in brackets after the plain sentence, never as the explanation itself. ";
+
+/**
  * The omp planner's discipline (ADR 0002 V2): real tools instead of the old loop's JSON action
  * protocol (deleted with the inner loop, Task 14).
  */
@@ -164,7 +174,9 @@ export const OMP_LOOP_DISCIPLINE =
   "later; houge_status for your own runtime: restarts, which code is live and your health; " +
   "memory_correct when Paco asks you to fix or forget something you remember (search first); " +
   "self_write_propose when the fix belongs in Houge's own code, after you have confirmed the cause in the code " +
-  "(put that verified cause, file, function and change in its focus). Prefer doing over asking — ask one clarifying " +
+  "(put that verified cause, file, function and change in its focus). " +
+  LOOP_PLAIN_PROPOSAL_RULE +
+  "Prefer doing over asking — ask one clarifying " +
   "question only when the request is genuinely too ambiguous to act on. " +
   LOOP_GO_AHEAD_RULE +
   " Some commands wait for Paco's tap " +

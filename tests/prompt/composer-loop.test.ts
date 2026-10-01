@@ -8,6 +8,7 @@ import {
   DISCIPLINES,
   GUARDRAILS,
   LOOP_GO_AHEAD_RULE,
+  LOOP_PLAIN_PROPOSAL_RULE,
   OMP_LOOP_DISCIPLINE,
   OMP_LOOP_GUARDRAILS,
   RESEARCH_DISCIPLINE
@@ -33,6 +34,15 @@ describe("the `omp` composer surface (ADR 0002 V2: the planner acts through real
 
   it("names memory_correct, search first, when Paco asks to fix or forget a memory (live 2026-10-02: 'no tool to change it')", () => {
     expect(OMP_LOOP_DISCIPLINE).toContain("memory_correct when Paco asks you to fix or forget something you remember (search first)");
+  });
+
+  it("a self-write proposal reaches Paco in plain language: symptom, cause, change, how it was checked; code names only in brackets", () => {
+    // Paco, 2026-10-02: he chats via Telegram with no view of the code, so he judges a proposal by whether its
+    // stated cause matches what he saw and whether the scope is what he asked. Function names first defeat that.
+    expect(OMP_LOOP_DISCIPLINE).toContain(LOOP_PLAIN_PROPOSAL_RULE);
+    for (const part of [/what Paco saw/i, /cause/i, /what will change/i, /how you checked/i]) expect(LOOP_PLAIN_PROPOSAL_RULE).toMatch(part);
+    expect(LOOP_PLAIN_PROPOSAL_RULE).toMatch(/in brackets/i);
+    expect(LOOP_PLAIN_PROPOSAL_RULE).toMatch(/Paco's language/i);
   });
 
   it("a short go-ahead to Houge's own concrete proposal means carry it out, restated in full in any task/focus input (run_79faefea)", () => {
