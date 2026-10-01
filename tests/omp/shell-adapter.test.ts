@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { writeSeatbeltProfiles } from "../../src/omp/seatbelt.js";
-import { runShell, type ShellRunInput } from "../../src/omp/shell-adapter.js";
+import { runShell, shellToolExecute, type ShellRunInput } from "../../src/omp/shell-adapter.js";
+import { resolveOmpConfig } from "../../src/omp/omp-config.js";
+import { tmpOmpDist } from "../helpers/omp-env.js";
 
 const WRAPPER = new URL("../../src/omp/shell-wrapper.sh", import.meta.url).pathname;
 const temps: string[] = [];
@@ -160,13 +162,23 @@ describe("bash tool — its TMPDIR (final review B13)", () => {
     const r = await run({ command: 'printf %s "$TMPDIR"; test -d "$TMPDIR"' });
     expect(r).toMatchObject({ ok: true, output: { exit_code: 0, output: join(ws, ".tmp") } });
   });
+});
+
+describe("bash tool — shellToolExecute, the adapter the bridge calls (testing I-1, I-2)", () => {
+  type Incident = { kind: string; detail: Record<string, unknown> };
+  /** The adapter over a tmp dist holding `wrapper` (default: the shipped wrapper), recording every incident it raises. */
+  function tool(opts: { wrapper?: string; env?: Record<string, string> } = {}) {
+    const ws = tmp("houge-shell-ws-"); const data = tmp("houge-shell-data-");
+    const dist = tmpOmpDist(data);
+    if (opts.wrapper !== undefined) { writeFileSync(join(dist, "omp", "shell-wrapper.sh"), opts.wrapper); chmodSync(join(dist, "omp", "shell-wrapper.sh"), 0o755); }
+    const incidents: Incident[] = [];
+    const run = shellToolExecute({ cfg: resolveOmpConfig({ HOUGE_OMP_SANDBOX: "0", ...opts.env }), ctx: { home: data, repo: data, data }, distDir: dist, cwd: ws,
+      onIncident: (kind, detail) => { incidents.push({ kind, detail }); } });
+    return { run, incidents, ws };
+  }
 
   it("never hands bash a daemon secret: `env` inside the tool shows only the allowlist (ADR 0015, testing I-1)", async () => {
-    const { shellToolExecute } = await import("../../src/omp/shell-adapter.js");
-    const { resolveOmpConfig } = await import("../../src/omp/omp-config.js");
-    const { tmpOmpDist } = await import("../helpers/omp-env.js");
-    const ws = tmp("houge-shell-ws-"); const data = tmp("houge-shell-data-");
-    const run = shellToolExecute({ cfg: resolveOmpConfig({ HOUGE_OMP_SANDBOX: "0" }), ctx: { home: data, repo: data, data }, distDir: tmpOmpDist(data), cwd: ws, onIncident: () => undefined });
+    const { run } = tool();
     process.env.HOUGE_TEST_CANARY_SECRET = "canary-bash-7f3";
     let r: Awaited<ReturnType<typeof run>>;
     try { r = await run({ command: "env" }); } finally { delete process.env.HOUGE_TEST_CANARY_SECRET; }
@@ -175,5 +187,46 @@ describe("bash tool — its TMPDIR (final review B13)", () => {
     expect(out).toMatch(/^PATH=/m); // env really ran and printed the child's environment
     expect(out).not.toContain("HOUGE_TEST_CANARY_SECRET");
     expect(out).not.toContain("canary-bash-7f3");
+  });
+
+  it("refuses an empty or blank command without spawning anything", async () => {
+    const marker = join(tmp("houge-shell-mk-"), "SPAWNED");
+    const { run } = tool({ wrapper: `#!/bin/bash\ntouch '${marker}'\n` });
+    for (const input of [{}, { command: "" }, { command: "  \n " }, { command: 42 }]) {
+      const r = await run(input as Record<string, unknown>);
+      expect(r.ok).toBe(false);
+    }
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("a wrapper that ran the command but wrote no status line is a failure with an incident, never a success (spec §11 R5)", async () => {
+    const { run, incidents } = tool({ wrapper: '#!/bin/bash\neval "$1"\n' }); // runs the command; fd 3 stays silent
+    const r = await run({ command: "true" });
+    expect(r).toEqual({ ok: false, error: "bash wrapper_unknown" }); // the error shape: `bash <reason>`, no output to append
+    expect(incidents).toEqual([{ kind: "shell_wrapper_unknown", detail: { exit_code: 0 } }]);
+  });
+
+  it("a cleanup the wrapper could not verify fails the call and raises shell_cleanup_failed (a runaway's only signal)", async () => {
+    const { run, incidents } = tool({ wrapper: readFileSync(wrapperWith("/usr/bin/pgrep", "#!/bin/sh\nexit 3\n"), "utf8") });
+    const r = await run({ command: "echo hi" });
+    expect(r).toEqual({ ok: false, error: "bash cleanup_failed\nhi\n" }); // the error shape: `bash <reason>\n<output>`
+    expect(incidents.map((i) => i.kind)).toEqual(["shell_cleanup_failed"]);
+  });
+
+  it("a process that left the group raises shell_escaped, while the command's own result still returns", async () => {
+    const tag = `houge-esc-tool-${Date.now()}`;
+    const { run, incidents } = tool();
+    try {
+      const r = await run({ command: `set -m; (exec -a ${tag} sleep 8) & echo m2` });
+      expect(r).toMatchObject({ ok: true, output: { exit_code: 0, output: "m2\n" } });
+      expect(incidents).toEqual([{ kind: "shell_escaped", detail: { exit_code: 0 } }]);
+    } finally { spawnSync("pkill", ["-f", tag]); }
+  });
+
+  it("a plain failure (timeout) returns its reason and the partial output, and raises no incident", async () => {
+    const { run, incidents } = tool({ env: { HOUGE_OMP_SHELL_TIMEOUT_MS: "300" } });
+    const r = await run({ command: "echo partial; sleep 5" });
+    expect(r).toEqual({ ok: false, error: "bash timeout\npartial\n" });
+    expect(incidents).toEqual([]);
   });
 });
