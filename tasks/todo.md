@@ -4,7 +4,7 @@
 `fix/live-gate-followups` (worktree `.worktrees/gate-fixes`, 7 fixes + 6 round-2 fixes after review), which
 awaits merge, rebuild, kickstart and a live re-gate.**
 
-**memory_correct (`feat/memory-correct`, 2026-10-02):** self-service memory correction — `memory_correct` bridge tool (search → retire/correct, code-owned trust limits, Undo card) + `/memories` + `/forget-memory <id>`; awaits review, merge, rebuild, kickstart and a live check (retire fact #108, tap Undo, retire again).
+**memory_correct (`feat/memory-correct`, 2026-10-02):** self-service memory correction — `memory_correct` bridge tool (ungated search; every retire/correct waits for Paco's Approve tap, after code-owned trust limits; Undo card) + `/memories` + `/forget_memory <id>`; awaits review, merge, rebuild, kickstart and a live check (retire fact #108, tap Undo, retire again).
 
 **houge_status (`feat/houge-status`, 2026-10-02):** read-only `houge_status` bridge tool + `daemon_boots` boot record + `[runtime]` restart note on each chat's first turn after a boot; awaits merge, rebuild, kickstart and a live check (ask Houge "did you restart / which code is live?").
 
