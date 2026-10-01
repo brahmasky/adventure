@@ -25,8 +25,9 @@ inner loop, voice + photos on agy).**
   Telegram messages verbatim; it is unpushed, so scrubbing it from history is still possible (Paco's call).
 - [ ] `tar` the current `dist/` to `backups/dist-pre-omp.tgz` (rollback = `git revert` the merge + build +
   kickstart).
-- [ ] `.env` on the mini: `HOUGE_OMP_BIN` as an absolute path (launchd PATH); breaker `tool_calls` ceiling
-  re-tuned to 3× (3000, ADR 0028 decision 17); dead pre-omp vars may be deleted (list in configuration.md
+- [x] `.env`: breaker `HOUGE_GLOBAL_MAX_TOOL_CALLS_24H=3000` (Paco, 2026-10-01; ADR 0028 decision 17).
+- [ ] `.env` on the mini: `HOUGE_OMP_BIN=/Users/xiaochuan/.bun/bin/omp` (launchd PATH is the node dir plus
+  system dirs only, so a bare `omp` is not found); dead pre-omp vars may be deleted (list in configuration.md
   "Removed 2026-10").
 - [ ] omp 18.4.4 installed and the four `omp --profile houge login` grants present (anthropic,
   google-antigravity, kimi-code, openai-codex).
@@ -43,8 +44,6 @@ third-party clients (planner falls to Opus 4.6, incident); the Antigravity weekl
 how often floor B asks.
 
 **Flags for Paco (not docs-fixable by an agent):**
-- `AGENTS.md` (protected) still says `scripts/live-gate-media.mjs` snapshots `houge-media-*` tmp dirs; media
-  temp now lives under the daemon temp root `~/Library/Caches/houge-daemon`.
 - A hermetic-test leak before the T14 fix spawned the real `omp` under profile `houge` (at least `omp
   --version`, possibly one lessons-merge call on test data): small subscription use, now pinned shut.
 - `deploy/launchd/setup-new-host.sh` still checks for `pi` and `docker` and names `HOUGE_KIMI_CLI_BIN`; it

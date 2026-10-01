@@ -1405,6 +1405,7 @@ Build + independent adversarial verification subagents; each live round found a 
 - First-hand at `90c87a7`: typecheck 0, build 0, 208 files / 2871 tests (also with the mini's real `.env`
   variables); real-omp smoke, cases 1, 3, 6, 13, 22 + silent-degradation: PASS. Paco updated the AGENTS.md
   runtime invariant by hand (D7). Docs synced to the new engine.
-- Open: merge, `dist/` backup, `.env` (absolute omp path, breaker `tool_calls` re-tune), Paco's kickstart,
-  the full live gate from Telegram. For Paco: the stale `houge-media-*` line in AGENTS.md, a verbatim message
-  in the unpushed spec commit, and `setup-new-host.sh` still checking for pi and docker.
+- Open: merge, `dist/` backup, `.env` absolute `HOUGE_OMP_BIN` (breaker re-tuned to 3000 by Paco), Paco's
+  kickstart, the full live gate from Telegram. Paco fixed AGENTS.md (Claude in runtime via omp; daemon temp
+  line). Still open for Paco: a verbatim message in unpushed spec/ADR file history, and `setup-new-host.sh`
+  still checking for pi and docker.
