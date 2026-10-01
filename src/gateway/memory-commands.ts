@@ -1,9 +1,12 @@
+import { enqueueMemoryChangeCard, searchActiveMemory } from "../capabilities/memory-correct.js";
+import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import type { TypedTaskEvent } from "../domain/types.js";
-import type { MemoryChange, RunStore } from "../run/run-store.js";
+import type { EpisodicFactRow, MemoryChange, RunStore } from "../run/run-store.js";
+import { clipText } from "../status/houge-status.js";
 import type { GatewayIntakeResult } from "./gateway.js";
 
 /**
- * Paco's memory control plane (2026-10-02): the Undo button on a memory change card. Control commands, no run, no
+ * Paco's memory control plane (2026-10-02): /memories, /forget-memory and the Undo button on a memory change card. Control commands, no run, no
  * budget; idempotent on the trigger key; every reply code-owned (never stored text beyond the row ids).
  */
 
@@ -52,5 +55,54 @@ export function handleMemoryUndo(store: RunStore, event: TypedTaskEvent): Gatewa
     const r = store.undoMemoryChange(change_id);
     replyTo(store, event, "memory_undo", r.status === "undone" ? undoneText(change) : MEMORY_ALREADY_UNDONE_TEXT);
     return { ok: true, status: "memory_undone", run_id: "" };
+  });
+}
+
+export const MEMORY_NOT_FOUND = "MEMORY_NOT_FOUND";
+export const MEMORIES_LIST_MAX = 10;
+export const MEMORIES_TEXT_CHARS = 120;
+
+/** `#id · text · YYYY-MM-DD`; the fact text is stored LLM output, so it is rendered markdown-inert. */
+function memoryLine(f: EpisodicFactRow): string {
+  return `#${f.id} · ${clipText(escapeForTelegram(f.fact), MEMORIES_TEXT_CHARS)} · ${f.created_at.slice(0, 10)}`;
+}
+
+/** The query's matches (same search as the tool, without the embedding leg: intake is synchronous), else the most applied. */
+function memoriesFor(store: RunStore, chat_id: string, query: string): EpisodicFactRow[] {
+  if (!query) {
+    return [...store.getActiveEpisodicFacts(chat_id)].sort((a, b) => b.applied_count - a.applied_count).slice(0, MEMORIES_LIST_MAX);
+  }
+  return searchActiveMemory(store, "fact", chat_id, query, null).slice(0, MEMORIES_LIST_MAX)
+    .map((c) => store.getEpisodicFact(c.id)).filter((f): f is EpisodicFactRow => f !== undefined);
+}
+
+/** `/memories [query]`: up to 10 of this chat's ACTIVE facts. Read-only (no applied counter moves). */
+export function handleMemories(store: RunStore, event: TypedTaskEvent): GatewayIntakeResult {
+  return oncePerTrigger(store, event, () => {
+    const query = typeof event.program === "string" ? event.program.trim() : "";
+    const rows = memoriesFor(store, chatOf(event), query);
+    const head = query ? `🧠 **Memories** matching your query (${rows.length})` : `🧠 **Memories** most used (${rows.length})`;
+    const text = rows.length === 0
+      ? (query ? "🧠 No active memories match." : "🧠 No active memories yet.")
+      : [head, ...rows.map(memoryLine), "· /forget-memory <id> retires one (with Undo)"].join("\n");
+    replyTo(store, event, "memories", text);
+    return { ok: true, status: "memories_returned", run_id: "" };
+  });
+}
+
+/** `/forget-memory <id>`: Paco's direct command, so no turn or taint rule; only an active fact of this chat. */
+export function handleForgetMemory(store: RunStore, event: TypedTaskEvent): GatewayIntakeResult {
+  return oncePerTrigger(store, event, () => {
+    const id = Number(event.program);
+    const change = Number.isSafeInteger(id) && id > 0
+      ? store.retireMemoryRows({ kind: "fact", ids: [id], chat_id: chatOf(event), run_id: null })
+      : null;
+    if (!change) {
+      replyTo(store, event, "forget_memory_refused", `No active memory #${Number.isSafeInteger(id) ? id : "?"} here. /memories lists them.`);
+      return { ok: false, error: { code: MEMORY_NOT_FOUND, message: "No active memory with that id in this chat" } };
+    }
+    enqueueMemoryChangeCard(store, change, { target: event.notify, idempotency_key: `${event.idempotency_key}:memory`,
+      correlation_id: event.source_reference });
+    return { ok: true, status: "memory_forgotten", run_id: "" };
   });
 }

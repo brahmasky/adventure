@@ -43,7 +43,7 @@ import { resolveSkillReverifyAt, resolveSkillReverifyEnabled } from "../capabili
 import { resolvePanelAt } from "../capabilities/week-key.js";
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import { toolApprovalWaiters } from "../omp/tool-approval-sink.js";
-import { handleMemoryUndo } from "./memory-commands.js";
+import { handleForgetMemory, handleMemories, handleMemoryUndo } from "./memory-commands.js";
 import type { IdeaRow, ShortlistRow } from "../run/run-store.js";
 
 /** A freshly captured rating the daemon follows up on (the low-rating attribution pass). */
@@ -66,6 +66,8 @@ export type GatewayIntakeResult =
   | { ok: true; status: "skills_returned"; run_id: string }
   | { ok: true; status: "forgotten"; run_id: string }
   | { ok: true; status: "memory_undone"; run_id: string }
+  | { ok: true; status: "memories_returned"; run_id: string }
+  | { ok: true; status: "memory_forgotten"; run_id: string }
   | { ok: true; status: "schedule_admin_returned"; run_id: string }
   | { ok: true; status: "killed"; run_id: string }
   | { ok: true; status: "disarmed"; run_id: string }
@@ -210,6 +212,14 @@ export class Gateway {
 
     if (event.type === "memory_undo") {
       return this.accepted(event, now, handleMemoryUndo(this.runStore, event));
+    }
+
+    if (event.type === "memories") {
+      return this.accepted(event, now, handleMemories(this.runStore, event));
+    }
+
+    if (event.type === "forget_memory") {
+      return this.accepted(event, now, handleForgetMemory(this.runStore, event));
     }
 
     if (event.type === "kill") {
@@ -1440,6 +1450,8 @@ export const HELP_TEXT = [
   "/lessons — 已学到的经验（可选 scope）",
   "/skills — 可用技能（/skills <scope> · retire/restore <name> · retired · pending）",
   "/forget <scope|id> — 清除某条经验",
+  "/memories [query] — 查看记住的事实（最多 10 条）",
+  "/forget-memory <id> — 忘掉一条记忆（附撤销按钮）",
   "/approve <id> — 批准待处理操作",
   "/deny <id> — 拒绝待处理操作",
   "/approvals — 列出待批准的操作",

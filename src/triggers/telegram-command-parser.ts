@@ -20,7 +20,9 @@ export type TelegramCommand =
   | { type: "kill"; reason?: string }
   | { type: "disarm" }
   | { type: "rearm" }
-  | { type: "approvals" };
+  | { type: "approvals" }
+  | { type: "memories"; query?: string }
+  | { type: "forget_memory"; id: number };
 
 export type TelegramCommandParseResult =
   | { ok: true; command: TelegramCommand }
@@ -59,6 +61,9 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
   if (command === "/approve") return requiredApproval("approve", rest);
   if (command === "/deny") return requiredApproval("deny", rest);
   if (command === "/approvals") return parseNoArgs("approvals", rest);
+  // Paco's own memory (2026-10-02): view what Houge remembers, retire one fact (with an Undo card).
+  if (command === "/memories") return parseMemories(rest);
+  if (command === "/forget-memory") return parseForgetMemory(rest);
   // Kill switch + disarm posture (ADR 0018). These MUST be explicit branches: unknown
   // slash text falls through to a natural-language turn below, and a stop command must
   // never be re-interpreted by a model — unforgeable = slash-only + the allowlist auth.
@@ -185,6 +190,19 @@ function parseSchedule(words: string[]): TelegramCommandParseResult {
     return { ok: true, command: { type: "schedule_admin", action: "cancel", schedule_id } };
   }
   return invalid("/schedule takes no arguments, or: /schedule cancel <编号或 id>");
+}
+
+/** `/memories [query…]` — everything after the command is the optional search query. */
+function parseMemories(words: string[]): TelegramCommandParseResult {
+  const query = words.join(" ").trim().slice(0, 200);
+  return { ok: true, command: { type: "memories", ...(query ? { query } : {}) } };
+}
+
+/** `/forget-memory <id>` — exactly one positive fact id. */
+function parseForgetMemory(words: string[]): TelegramCommandParseResult {
+  const [id] = words;
+  if (words.length !== 1 || !id || !/^[1-9][0-9]{0,15}$/.test(id)) return invalid("/forget-memory requires exactly one fact id");
+  return { ok: true, command: { type: "forget_memory", id: Number(id) } };
 }
 
 /** `/kill [reason…]` — everything after the command is an optional free-text reason. */

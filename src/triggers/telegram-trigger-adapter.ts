@@ -426,6 +426,11 @@ function buildTelegramEvent(command: TelegramCommand, base: TelegramEventBase): 
     case "rearm":
     case "approvals":
       return buildTypedTaskEvent({ ...base, type: command.type });
+    case "memories":
+      // The optional query rides `program` (the /lessons scope precedent).
+      return buildTypedTaskEvent({ ...base, type: "memories", ...(command.query ? { program: command.query } : {}) });
+    case "forget_memory":
+      return buildTypedTaskEvent({ ...base, type: "forget_memory", program: String(command.id) });
   }
 }
 
