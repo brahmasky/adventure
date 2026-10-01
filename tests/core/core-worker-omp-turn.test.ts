@@ -107,6 +107,36 @@ describe("CoreWorker.submitTurn — turns run on the planner supervisor (Task 13
     expect(spawned.map((l) => (l.argv as string[])[(l.argv as string[]).indexOf("--model") + 1])).toEqual(["anthropic/claude-opus-5-5", "google-antigravity/claude-opus-4-6"]);
   });
 
+  // Live gate 2026-10-01, item 6: omp's open_session restores the model the session last used and overrides --model,
+  // so the case-6 fallback answered on Opus 5.5, not 4.6. The supervisor pins the leg it spawned on with set_model
+  // before the first prompt; the frames' model is the proof.
+  it("a resumed session that restores another model: the first prompt still runs on the leg it spawned on (set_model first)", async () => {
+    useFakeOmp({ rpcBadModelAtStart: ["anthropic/claude-opus-5-5"], rpcResumeModel: "anthropic/claude-opus-5-5", "*": { rpcText: "answered" } }, tmp.dir);
+    worker = ompWorker(store, tmp.dir);
+    const run = createQueuedTurnRun(store, "hello");
+    worker.submitTurn(run);
+    await until(() => state(run) === "completed");
+    const cmds = fakeLog(join(tmp.dir, "argv.log")).map((l) => l.cmd as { type?: string; provider?: string; modelId?: string } | undefined).filter((c) => c !== undefined);
+    const firstPrompt = cmds.findIndex((c) => c.type === "prompt");
+    const pin = cmds.findIndex((c) => c.type === "set_model");
+    expect(pin).toBeGreaterThan(-1);
+    expect(pin).toBeLessThan(firstPrompt);
+    expect(cmds[pin]).toMatchObject({ provider: "google-antigravity", modelId: "claude-opus-4-6" });
+    expect(events(run, "llm_attempt").map((e) => [e.payload.provider, e.payload.model, e.payload.error_kind]))
+      .toEqual([["anthropic", "claude-opus-5-5", "model_missing"], ["google-antigravity", "claude-opus-4-6", undefined]]);
+  });
+
+  it("a refused pin: the turn answers on the resumed model, and the planner family is that ACTUAL model's (D10)", async () => {
+    process.env.HOUGE_OMP_PLANNER = "kimi-code/k3"; // restored by pinOmpEnv
+    useFakeOmp({ rpcResumeModel: "anthropic/claude-opus-5-5", rpcSetModelError: "no such model", "*": { rpcText: "answered" } }, tmp.dir);
+    worker = ompWorker(store, tmp.dir);
+    const run = createQueuedTurnRun(store, "hello");
+    worker.submitTurn(run);
+    await until(() => state(run) === "completed");
+    expect(events(run, "llm_attempt").map((e) => e.payload.model)).toEqual(["claude-opus-5-5"]);
+    expect(worker.plannerSupervisors()[0]?.plannerFamily()).toBe("claude");
+  });
+
   it("a non-turn run is refused (false) and left untouched for the old executeRun path", () => {
     worker = ompWorker(store, tmp.dir);
     const intake = new Gateway(store).intake(buildTypedTaskEvent({

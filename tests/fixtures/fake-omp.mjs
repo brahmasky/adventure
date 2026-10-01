@@ -10,6 +10,9 @@
 // omp 18.4.4 does live — writes `Model "<provider/model>" not found` plus a hint line to stderr and exits 1 before
 // `ready` (in rpc mode after the extension's bridge hello/manifest, as the real extension loads first).
 // Top-level `rpcStderrAtStart: "<text>"` (rpc): writes that text to stderr and exits 1 before `ready` (a crash at start).
+// Top-level `rpcResumeModel: "<provider/model>"` (rpc): emulates omp's session resume (live gate 2026-10-01). open_session
+// answers resumed:true and restores that model regardless of --model; only a later `set_model` changes it. Every
+// message_end then reports the model actually in use. Top-level `rpcSetModelError: "<text>"` answers set_model success:false.
 // In rpc mode the fake plays the omp extension's load-time side of the bridge (hello + manifest over
 // HOUGE_BRIDGE_SOCK with HOUGE_BRIDGE_TOKEN, src/omp/bridge-protocol.ts) so the supervisor's start check passes.
 // FAKE_OMP_ARGV_LOG = path; each invocation appends one JSON line with argv, stdin, TMPDIR and the env var NAMES it got
@@ -46,7 +49,11 @@ async function runRpc() {
     log({ cmd });
     const b = scen[model] ?? scen["*"] ?? {};
     const reply = (data) => out({ id: cmd.id, type: "response", command: cmd.type, success: true, ...(data === undefined ? {} : { data }) });
-    if (cmd.type === "open_session") return reply({ cancelled: false, resumed: process.env.FAKE_OMP_RESUMED === "1", sessionId: "s1", sessionFile: "/tmp/fake-s1.jsonl" });
+    if (cmd.type === "open_session") {
+      if (scen.rpcResumeModel) model = scen.rpcResumeModel;
+      return reply({ cancelled: false, resumed: process.env.FAKE_OMP_RESUMED === "1" || Boolean(scen.rpcResumeModel), sessionId: "s1", sessionFile: "/tmp/fake-s1.jsonl" });
+    }
+    if (cmd.type === "set_model" && scen.rpcSetModelError) return out({ id: cmd.id, type: "response", command: "set_model", success: false, error: scen.rpcSetModelError });
     if (cmd.type === "set_model") { model = `${cmd.provider}/${cmd.modelId}`; return reply({ id: cmd.modelId, provider: cmd.provider }); }
     if (cmd.type === "steer" && b.rpcSteerError) {
       return out({ id: cmd.id, type: "response", command: "steer", success: false, error: b.rpcSteerError });

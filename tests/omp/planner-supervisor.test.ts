@@ -28,8 +28,12 @@ type Script = {
   afterDrop?: () => Promise<void>;
   /** The child exits during start and start rejects with this PlannerRpcError code. */
   exitCode?: string;
-  /** Runs after the model is recorded: may throw or never resolve. */
+  /** Runs after the model is recorded: may throw or never resolve. A throw leaves the child on its previous model. */
   setModel?: (n: number) => Promise<void>;
+  /** omp's open_session restores this `provider/model` over --model (a resumed session, live gate 2026-10-01). */
+  resumeModel?: string;
+  /** Also log each set_model into `log` (`setModel:<provider/model>`), to assert its order against the prompt. */
+  logSetModel?: boolean;
 };
 const never = () => new Promise<never>(() => undefined);
 type Fake = PlannerSessionLike & {
@@ -46,7 +50,12 @@ function fakeSession(script: Script = {}): Fake {
   const frameCbs: Array<(f: OmpFrame) => void> = []; const exitCbs: Array<(i: ExitInfo) => void> = [];
   const sockets: Socket[] = [];
   const emit = (f: OmpFrame) => frameCbs.forEach((cb) => cb(f));
-  const assistant = (text: string, extra: object = {}) => emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], provider: "anthropic", model: "claude-opus-5-5", usage: { input: 10, output: 2 }, stopReason: "stop", ...extra } } as OmpFrame);
+  // the model the child really runs: the spawn's --model, a resumed session's stored one, then each successful set_model
+  let current = "anthropic/claude-opus-5-5";
+  const assistant = (text: string, extra: object = {}) => {
+    const [provider, model] = current.split("/");
+    emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], provider, model, usage: { input: 10, output: 2 }, stopReason: "stop", ...extra } } as OmpFrame);
+  };
   const drop = () => { for (const k of sockets.splice(0)) k.destroy(); };
   const s: Fake = {
     prompts: [], steers: [], models: [], options: [],
@@ -54,6 +63,7 @@ function fakeSession(script: Script = {}): Fake {
     start: async () => {
       const child = s.options.length; const o = s.options[child - 1] as PlannerSessionOptions;
       script.log?.push(`start:${child}`);
+      current = script.resumeModel ?? `${o.model.provider}/${o.model.model}`;
       if (script.start) await script.start();
       if (script.exitCode) { s.exit(1); throw new PlannerRpcError(script.exitCode); }
       if (script.dropBridge) {
@@ -73,7 +83,11 @@ function fakeSession(script: Script = {}): Fake {
     prompt: async (t: string) => { s.prompts.push(t); script.log?.push(`prompt:${s.options.length}`); setTimeout(() => (script.onPrompt ?? ((_t, e) => { e({ type: "turn_start" }); assistant("answer"); e({ type: "agent_end" }); }))(t, emit), 5); },
     steer: async (t: string) => { s.steers.push(t); },
     abort: async () => { setTimeout(() => emit({ type: "agent_end", aborted: true }), 5); },
-    setModel: async (m: { provider: string; model: string }) => { s.models.push(`${m.provider}/${m.model}`); await script.setModel?.(s.models.length); },
+    setModel: async (m: { provider: string; model: string }) => {
+      s.models.push(`${m.provider}/${m.model}`); if (script.logSetModel) script.log?.push(`setModel:${m.provider}/${m.model}`);
+      await script.setModel?.(s.models.length);
+      current = `${m.provider}/${m.model}`;
+    },
     onFrame: (cb: (f: OmpFrame) => void) => { frameCbs.push(cb); }, onExit: (cb: (i: ExitInfo) => void) => { exitCbs.push(cb); },
     stop: async () => { drop(); },
     dropBridge: () => drop(),
@@ -225,7 +239,8 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
     } });
     const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
     sup.submit(req(run_id)); await sup.whenIdle();
-    expect(session.models).toEqual(["google-antigravity/claude-opus-4-6"]);
+    // the fresh child is pinned to its spawn leg first (item 6), then the quota error moves it to the next string
+    expect(session.models).toEqual(["anthropic/claude-opus-5-5", "google-antigravity/claude-opus-4-6"]);
     expect(session.prompts).toEqual(["hi", RETRY_NOTE]); // the next model is told to continue, never sent a blank prompt
     expect(outcome.done[0]).toMatchObject({ text: "from 4.6" });
     const kinds = store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_attempt").map((e) => (e.payload as { error_kind?: string }).error_kind);
@@ -309,7 +324,7 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
     const { store, sup } = harness(session);
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
-    expect(session.models).toEqual(["google-antigravity/claude-opus-4-6", "anthropic/claude-opus-5-5"]);
+    expect(session.models).toEqual(["anthropic/claude-opus-5-5", "google-antigravity/claude-opus-4-6", "anthropic/claude-opus-5-5"]);
   });
 
   it("refuses to start when the omp version is wrong, failing the run with an incident instead of hanging", async () => {
@@ -478,7 +493,7 @@ describe("PlannerSupervisor — model errors, incidents, crash guard (fix round 
     const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
     sup.submit(req(run_id)); await sup.whenIdle();
     expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "model_error", error_ref: "model_refusal" });
-    expect(session.models).toHaveLength(1);
+    expect(session.models).toEqual(["anthropic/claude-opus-5-5", "google-antigravity/claude-opus-4-6"]); // the spawn pin, then one fallback
     expect(outcome.incidents).toEqual([]);
   });
 
@@ -524,7 +539,7 @@ describe("PlannerSupervisor — model errors, incidents, crash guard (fix round 
     let calls = 0;
     const session = fakeSession({
       onPrompt: (_t, e) => { e({ type: "turn_start" }); if (calls++ === 0) session.assistant("", { stopReason: "error", errorMessage: "429 quota" }); else session.assistant("ok"); e({ type: "agent_end" }); },
-      setModel: async (n) => { if (n === 2) throw new Error("set_thinking_level failed"); }
+      setModel: async (n) => { if (n === 3) throw new Error("set_thinking_level failed"); } // n=1 is the spawn pin, n=2 the fallback
     });
     const { store, sup, outcome } = harness(session);
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
@@ -533,7 +548,7 @@ describe("PlannerSupervisor — model errors, incidents, crash guard (fix round 
     expect(outcome.done.find((d) => (d as { run_id: string }).run_id === second)).toMatchObject({ text: "ok" });
     expect(incidentKinds(outcome)).toContain("planner_model_reset_failed");
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
-    expect(session.models).toEqual(["google-antigravity/claude-opus-4-6", "anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5"]);
+    expect(session.models).toEqual(["anthropic/claude-opus-5-5", "google-antigravity/claude-opus-4-6", "anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5"]);
   });
 });
 
@@ -637,7 +652,7 @@ describe("PlannerSupervisor — omp rejects the model at spawn (live fix, omp 18
     expect(rows.map((r) => r.error_kind)).toEqual(["model_missing", undefined]);
     expect(rows[0]).toMatchObject({ outcome: "error", model: "claude-opus-5-5", family: "claude", request_key: `${run_id}:0:0` });
     expect(outcome.incidents).toEqual([]);
-    expect(session.models).toEqual([]); // the fallback is a respawn, never a live set_model to the bad string
+    expect(session.models).toEqual([SECOND]); // the fallback is a respawn pinned to its own leg, never a set_model to the bad string
   });
 
   it("every string rejected at spawn fails no_planner_leg with incident planner_no_leg, one row per string", async () => {
@@ -787,7 +802,7 @@ describe("PlannerSupervisor — omp error frames and aborted ends (final review 
     } });
     const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
     sup.submit(req(run_id)); await sup.whenIdle();
-    expect(session.models).toEqual(["google-antigravity/claude-opus-4-6"]);
+    expect(session.models).toEqual(["anthropic/claude-opus-5-5", "google-antigravity/claude-opus-4-6"]); // the spawn pin, then the fallback
     expect(outcome.done[0]).toMatchObject({ run_id, text: "from 4.6" });
     expect(attempts(store, run_id).map((a) => [a.outcome, a.error_kind])).toEqual([["error", "quota"], ["ok", undefined]]);
   });
@@ -1049,5 +1064,42 @@ describe("PlannerSupervisor — frames after a turn's agent_end are ignored (rou
     const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
     sup.submit(req(run_id)); await sup.whenIdle();
     expect(outcome.done[0]).toMatchObject({ run_id, text: "from the next leg" });
+  });
+});
+
+// Live gate 2026-10-01, item 6: omp's open_session restores the session's last model over --model, so a fallback
+// leg or a HOUGE_OMP_PLANNER change never reached a resumed chat, and the D10 family check used the configured model.
+describe("PlannerSupervisor — the planner runs the configured model after a session resume", () => {
+  it("a fresh child is pinned to the leg it spawned on with set_model before the first prompt", async () => {
+    const log: string[] = [];
+    const session = fakeSession({ log, logSetModel: true, resumeModel: "anthropic/claude-opus-5-5" });
+    const { store, sup, outcome } = harness(session, { HOUGE_OMP_PLANNER: "kimi-code/k3" });
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(log.filter((l) => !l.startsWith("manifest"))).toEqual(["start:1", "setModel:kimi-code/k3", "prompt:1"]);
+    const row = store.getLedgerEvents(run_id).find((e) => e.event_type === "llm_attempt")?.payload;
+    expect(row).toMatchObject({ provider: "kimi-code", model: "k3", family: "kimi" });
+    expect(sup.plannerFamily()).toBe("kimi");
+    expect(outcome.incidents).toEqual([]);
+  });
+
+  it("a spawn-time fallback pins the fallback leg, never the refused top string", async () => {
+    const session = fakeSession({ badModels: ["anthropic/claude-opus-5-5"], resumeModel: "anthropic/claude-opus-5-5" });
+    const { store, sup } = harness(session);
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(session.models).toEqual(["google-antigravity/claude-opus-4-6"]);
+    expect(store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_attempt").at(-1)?.payload).toMatchObject({ model: "claude-opus-4-6" });
+  });
+
+  it("a failed pin follows the reset-failure path, and the family is the ACTUAL model's from message_end (D10)", async () => {
+    const session = fakeSession({ resumeModel: "anthropic/claude-opus-5-5", setModel: async () => { throw new Error("set_model refused"); } });
+    const { store, sup, outcome } = harness(session, { HOUGE_OMP_PLANNER: "kimi-code/k3" });
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(outcome.done).toHaveLength(1); // answered on the model it really has
+    expect(incidentKinds(outcome)).toContain("planner_model_reset_failed");
+    expect(sup.plannerFamily()).toBe("claude"); // not the configured kimi: the reader's family_collapse compares this
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(session.models).toEqual(["kimi-code/k3", "kimi-code/k3"]); // the next turn tries the pin again
   });
 });

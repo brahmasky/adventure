@@ -171,12 +171,15 @@ export class PlannerSupervisor {
   /** A setModel failed or was cut off: the applied model is unknown, so the next turn resets to the top string. */
   private modelUnknown = false;
   private idleExit: ReturnType<typeof setTimeout> | undefined;
+  /** The model the supervisor intends the child to run (the spawn leg, the top string, or a fallback leg). */
   private model: ModelString;
+  /** The model omp last reported in an assistant message_end: what really answered (live gate 2026-10-01). */
+  private actual: { provider: string; model: string } | undefined;
 
   constructor(private readonly d: SupervisorDeps) { this.model = this.top(); }
 
-  /** The planner's CURRENT model family (after any fallback) — the reader seat compares against it (D10). */
-  plannerFamily(): ModelFamily { return familyOf(this.model); }
+  /** The planner's CURRENT family — the model it actually ran on when known, else the intended one (D10 reader check). */
+  plannerFamily(): ModelFamily { return familyOf(this.actual ?? this.model); }
   state(): SupervisorState { return this.st; }
   markStale(): void { this.stale = true; }
   resetCrashGuard(): void { this.crashLatched = false; this.exits = []; }
@@ -398,9 +401,11 @@ export class PlannerSupervisor {
     turn.childGen = this.gen;
     this.st = "RUNNING";
     this.armFrameIdle(turn);
-    // a child spawned on a later string is reset by respawning at the next turn (ensureSession(0)), never by set_model
-    const reset = this.sessionLeg === 0 && (this.modelUnknown || !sameModel(this.model, this.top()));
-    if (reset && (await this.resetTop(turn, s)) === ENDED) return;
+    // pinned to the leg the child spawned on (the top string at leg 0): a child on a later string is moved back to the
+    // top by respawning at the next turn (ensureSession(0)), never by set_model to a string omp refused at spawn
+    const target = this.d.cfg.planner[this.sessionLeg] as ModelString;
+    const reset = this.modelUnknown || !sameModel(this.model, target);
+    if (reset && (await this.resetTop(turn, s, target)) === ENDED) return;
     if (turn.failure) return;
     try {
       turn.live = true;
@@ -412,12 +417,13 @@ export class PlannerSupervisor {
   }
 
   /** A failed reset is not fatal: log, raise an incident, answer on the current model; the next turn retries it. */
-  private async resetTop(turn: Turn, s: PlannerSessionLike): Promise<void | typeof ENDED> {
+  private async resetTop(turn: Turn, s: PlannerSessionLike, target: ModelString): Promise<void | typeof ENDED> {
     this.modelUnknown = true; // until set_model AND set_thinking_level both succeeded
     try {
-      if ((await this.step(turn, s.setModel(this.top()))) === ENDED) return ENDED;
-      this.model = this.top();
+      if ((await this.step(turn, s.setModel(target))) === ENDED) return ENDED;
+      this.model = target;
       this.modelUnknown = false;
+      this.actual = undefined; // the next message_end reports what the pin really produced
     } catch (e) {
       console.error(`planner supervisor: reset to the top planner string failed: ${rpcCode(e)}`);
       this.incident("planner_model_reset_failed", { run_id: turn.req.run_id, reason: rpcCode(e) });
@@ -458,6 +464,7 @@ export class PlannerSupervisor {
       if ((await this.step(turn, s.setModel(next))) === ENDED) return true;
       this.model = next;
       this.modelUnknown = false;
+      this.actual = undefined;
       if (turn.failure) { turn.done("abort"); return true; }
       turn.live = true;
       await this.step(turn, s.prompt(RETRY_NOTE));
@@ -581,7 +588,10 @@ export class PlannerSupervisor {
     this.spawning = rec;
     const superseded = new Promise<void>((r) => { this.supersede = r; });
     this.model = this.d.cfg.planner[leg] as ModelString; // top string, or the next one after a start-time rejection
-    this.modelUnknown = false;
+    // omp's open_session restores the model a resumed session last used, over --model (live gate 2026-10-01): the
+    // child's model is unknown until promptTop pins it with set_model before the first prompt
+    this.modelUnknown = true;
+    this.actual = undefined;
     const opts: PlannerSessionOptions = {
       cfg, sessionDir: p.sessionDir, cwd: this.workspace(), systemPromptFile: p.systemPromptFile,
       extensions: [join(distDir, "omp", "extension", "houge.js")], bridgeSock: sock, bridgeToken: token, model: this.model,
@@ -743,9 +753,16 @@ export class PlannerSupervisor {
     t.done("end");
   }
 
+  /** What really answered. A model other than the intended one (a pin that failed) is re-pinned at the next turn. */
+  private noteActualModel(provider: string, model: string): void {
+    this.actual = { provider, model };
+    if (provider !== this.model.provider || model !== this.model.model) this.modelUnknown = true;
+  }
+
   /** One llm_attempt per model request, keyed `<run_id>:<n>` (spec §8). */
   private onAssistant(t: Turn, s: AssistantSummary | null): void {
     if (!s) return;
+    if (s.provider !== undefined && s.model !== undefined) this.noteActualModel(s.provider, s.model);
     const failed = s.stopReason === "error" || s.stopReason === "aborted" || s.errorMessage !== undefined;
     const error = failed ? (s.errorMessage ?? s.stopReason ?? "error") : undefined;
     const model = s.model ?? this.model.model;
