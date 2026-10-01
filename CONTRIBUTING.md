@@ -35,18 +35,29 @@ would reasonably ask "why is it built this way?".
 ## Definition of done — tests **and** a live run
 
 `npm test` is hermetic: it proves the *logic* against real SQLite but stubs the clock,
-Telegram, and subprocesses — so it does **not** prove the pieces are wired together.
-A goal is done only when **both** hold:
+Telegram, and subprocesses — so it does **not** prove the pieces are wired together. omp
+and agy are stubbed too: a vitest setup file puts stub `omp`/`agy` executables (exit 1) first on
+`PATH`, and suites pin every `HOUGE_OMP_*` variable with the omp binary pointed at a
+non-executable path, so no test can reach a real binary or spend subscription quota. A goal is done only when **both** hold:
 
-1. `npm run typecheck` clean, `npm test` green, `npm run build` succeeds.
+1. `npm run typecheck` clean, `npm test` green, `npm run build` succeeds. The build is
+   `tsc` plus `scripts/copy-omp-assets.mjs`, which copies the files `tsc` does not emit
+   (`src/omp/shell-wrapper.sh` and `src/omp/tools/*.json`) into `dist/omp/`. A new
+   non-TypeScript runtime asset under `src/omp/` must be added to that script.
 2. A **live end-to-end run** demonstrates the user-facing behavior — via Telegram when
    the feature is bot-facing, otherwise a live CLI run (`npm run houge -- …`) against a
-   real on-disk DB with real env. Show the result.
+   real on-disk DB with real env. Show the result. A change to the omp runtime (planner,
+   bridge, extension, floors, seats) also needs the real-binary smoke,
+   `node scripts/live-gate-omp.mjs --smoke`: the omp single-extension load, model rejection
+   at spawn and Seatbelt answers cannot be reproduced under vitest. A refused safety probe
+   is INCONCLUSIVE, never PASS.
 
 This rule exists because it has already paid off: a real Gateway↔poll-runner wiring bug
 survived 225 green unit tests and was caught only by the live run (see
-[ADR 0003](docs/decisions/0003-global-budget-breaker.md)). Prefer a live run over
-adding yet another hermetic test for integration seams.
+[ADR 0003](docs/decisions/0003-global-budget-breaker.md)), and in the omp build a probe
+against the real binary found a planner that could never start on a bad model string,
+past 2,600 green tests. Prefer a live run over adding yet another hermetic test for
+integration seams.
 
 ## Working rhythm
 
