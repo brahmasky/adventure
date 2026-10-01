@@ -19,7 +19,7 @@ import { runSelfWriter, resolveSelfWriteWriter } from "../capabilities/self-writ
 import { resolveCodexModel } from "../capabilities/coding-agent.js";
 import { normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
 import type { LlmAuditScope, LlmCallRole } from "../run/run-store.js";
-import { publishBranch, selfWriteBranchName } from "../run/branch-publish.js";
+import { publishBranch, selfWriteBranchName, summarizeFocus } from "../run/branch-publish.js";
 import { createWorktree, removeWorktree } from "../run/worktree.js";
 import { daemonTmpRoot, gitAncestor, setDaemonDataDir } from "../run/daemon-tmp.js";
 import { buildGateAQuestion, GATE_A_DISCIPLINE, parseGateAVerdict } from "../capabilities/skill-router.js";
@@ -1185,6 +1185,10 @@ export class CoreWorker {
     const baseTask = buildSelfWriteTask(message, focus, recentTurns, turnChars, lessons);
     // run_79faefea: the reviewer judges against what the writer was asked, not the bare message.
     const reviewTask = buildSelfWriteReviewTask(message, focus, recentTurns, turnChars);
+    // A focus runs up to 2000 chars: Paco's notifications quote a one-line label, and the ledger
+    // keeps a 200-char summary plus the full length — never the whole brief.
+    const label = summarizeFocus(focus);
+    const ledgerFocus = { text: summarizeFocus(focus, LEDGER_FOCUS_CHARS - 1), chars: focus.length };
 
     // Phase 3.1 (W3) soft-warn: writer ≠ checker (model diversity) is the whole point. If both roles
     // resolve to the SAME provider, log a single NON-FATAL warning — never block.
@@ -1209,7 +1213,7 @@ export class CoreWorker {
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         this.runStore.recordSelfWriteFailed(claim.run_id, { reason: `worktree setup failed: ${detail}`, last_output: "" });
-        return this.selfWriteReport(`I couldn't set up an isolated workspace to fix \`${focus}\` (${detail}). Not publishing.`);
+        return this.selfWriteReport(`I couldn't set up an isolated workspace to fix \`${label}\` (${detail}). Not publishing.`);
       }
 
       const writeAdapter = deps.makeWriteAdapter(worktree);
@@ -1241,7 +1245,7 @@ export class CoreWorker {
         if (!written.ok) {
           // A capability failure (budget, writer missing/timeout) is terminal — no diff to check.
           this.runStore.recordSelfWriteFailed(claim.run_id, { reason: `writer failed: ${written.error}`, last_output: written.error });
-          return this.selfWriteReport(`Tried to fix \`${focus}\`, but the coding agent failed (${written.error}). Not publishing.`);
+          return this.selfWriteReport(`Tried to fix \`${label}\`, but the coding agent failed (${written.error}). Not publishing.`);
         }
         if (writerUsage) lastWriterUsage = writerUsage;
         lastWriterMeta = { provider: written.provider, model: written.model };
@@ -1267,8 +1271,8 @@ export class CoreWorker {
             continue;
           }
           const attemptedPaths = guard.denied.map((d) => ({ path: d.path, status: d.status, reason: d.reason }));
-          this.runStore.recordSelfWriteBlocked(claim.run_id, { attempted_paths: attemptedPaths, context: focus });
-          return this.selfWriteReport(buildHardDenyNotification(focus, guard.denied));
+          this.runStore.recordSelfWriteBlocked(claim.run_id, { attempted_paths: attemptedPaths, context: ledgerFocus.text, focus_chars: ledgerFocus.chars });
+          return this.selfWriteReport(buildHardDenyNotification(label, guard.denied));
         }
 
         // (e) CHECKER 2 — test gate. Red → refine (feed the failing stage+output back) ≤3 total.
@@ -1280,7 +1284,7 @@ export class CoreWorker {
             continue;
           }
           this.runStore.recordSelfWriteFailed(claim.run_id, { reason: lastFailure, last_output: gate.output });
-          return this.selfWriteReport(`Tried to fix \`${focus}\`, couldn't land a clean one (tests red at ${gate.stage}). Not publishing.`);
+          return this.selfWriteReport(`Tried to fix \`${label}\`, couldn't land a clean one (tests red at ${gate.stage}). Not publishing.`);
         }
 
         // (f) CHECKER 3 — independent reviewer (only on a green diff). Reject → refine ≤3 total.
@@ -1310,7 +1314,7 @@ export class CoreWorker {
         if (!review.ok) {
           lastFailure = `reviewer unavailable: ${review.error}`;
           this.runStore.recordSelfWriteFailed(claim.run_id, { reason: lastFailure, last_output: review.error });
-          return this.selfWriteReport(`Tried to fix \`${focus}\`, but the independent reviewer was unavailable (${review.error}). Not publishing.`);
+          return this.selfWriteReport(`Tried to fix \`${label}\`, but the independent reviewer was unavailable (${review.error}). Not publishing.`);
         }
         if (review.verdict.verdict === "reject") {
           const reasons = (review.verdict.reasons ?? []).join("; ") || "no specific reason given";
@@ -1320,13 +1324,13 @@ export class CoreWorker {
             continue;
           }
           this.runStore.recordSelfWriteFailed(claim.run_id, { reason: lastFailure, last_output: reasons });
-          return this.selfWriteReport(`Tried to fix \`${focus}\`, couldn't land a clean one (reviewer flagged: ${reasons}). Not publishing.`);
+          return this.selfWriteReport(`Tried to fix \`${label}\`, couldn't land a clean one (reviewer flagged: ${reasons}). Not publishing.`);
         }
 
         // (g) ALL GREEN → re-hash: what is published must be byte-for-byte what the reviewer passed (B13).
         if (!(await diffUnchangedSinceReview(deps, worktree, diff))) {
           this.runStore.recordSelfWriteFailed(claim.run_id, { reason: SELF_WRITE_DIFF_CHANGED, last_output: "" });
-          return this.selfWriteReport(`I had a reviewed fix for \`${focus}\`, but the workspace changed after review. Not publishing.`);
+          return this.selfWriteReport(`I had a reviewed fix for \`${label}\`, but the workspace changed after review. Not publishing.`);
         }
         // publish the branch + record + success notification.
         const branch = selfWriteBranchName(claim.run_id);
@@ -1336,18 +1340,19 @@ export class CoreWorker {
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
           this.runStore.recordSelfWriteFailed(claim.run_id, { reason: `publish failed: ${detail}`, last_output: detail });
-          return this.selfWriteReport(`I had a verified fix for \`${focus}\` but couldn't publish the branch (${detail}). Not publishing.`);
+          return this.selfWriteReport(`I had a verified fix for \`${label}\` but couldn't publish the branch (${detail}). Not publishing.`);
         }
         this.runStore.recordSelfWritePublished(claim.run_id, {
           branch: published,
-          summary: focus,
+          summary: ledgerFocus.text,
+          focus_chars: ledgerFocus.chars,
           verdict: { ...review.verdict },
           gate_results: { protected: "pass", tests: "pass", reviewer: review.verdict.verdict, reviewer_backend: reviewerBackend },
           // Phase 3.1 (W3): compact per-role usage stamp (counts/metadata ONLY — no bodies).
           usage_summary: buildUsageSummary(lastWriterMeta, lastWriterUsage, lastReviewerMeta, lastReviewerUsage)
         });
         // Phase 3.3: attach the interactive merge controls to ONLY this published notification.
-        return this.selfWriteReport(buildPublishNotification(focus, published, review), [
+        return this.selfWriteReport(buildPublishNotification(label, published, review), [
           { text: "🔀 Merge & reload", data: `selfwrite:merge:${claim.run_id}` },
           { text: "👀 View diff", data: `selfwrite:view:${claim.run_id}` },
           { text: "🗑 Discard", data: `selfwrite:discard:${claim.run_id}` }
@@ -1356,7 +1361,7 @@ export class CoreWorker {
 
       // Unreachable in practice (the loop always returns), but fail loud if it ever isn't.
       this.runStore.recordSelfWriteFailed(claim.run_id, { reason: lastFailure || "exhausted refine attempts", last_output: "" });
-      return this.selfWriteReport(`Tried to fix \`${focus}\`, couldn't land a clean one. Not publishing.`);
+      return this.selfWriteReport(`Tried to fix \`${label}\`, couldn't land a clean one. Not publishing.`);
     } finally {
       if (worktree) await deps.removeWorktree(worktree);
     }
@@ -3189,20 +3194,23 @@ function buildSelfWriteRefineTask(baseTask: string, failure: string): string {
   ].join("\n");
 }
 
+/** The ledger's cap on a self-write focus summary (the full focus is never recorded). */
+const LEDGER_FOCUS_CHARS = 200;
+
 /** The hard-deny notification (spec § surfacing): a fix that wants a protected file is Paco's to make. */
-function buildHardDenyNotification(focus: string, denied: Array<{ path: string; status: string; reason: string }>): string {
+function buildHardDenyNotification(label: string, denied: Array<{ path: string; status: string; reason: string }>): string {
   const files = denied.map((d) => `\`${d.path || "(unknown)"}\``).join(", ");
   return [
-    `I worked out a fix for \`${focus}\`, but it wanted to touch ${files} — the locked surface`,
+    `I worked out a fix for \`${label}\`, but it wanted to touch ${files} — the locked surface`,
     "(gates / identity / deps / existing tests), so I stopped. If this genuinely needs a change",
     "there, it's **yours to make** — I can't edit my own safety surface."
   ].join(" ");
 }
 
 /** The success notification (spec § surfacing): branch ready, Paco merges + reloads at his leisure. */
-function buildPublishNotification(focus: string, branch: string, review: { verdict: { verdict: string } }): string {
+function buildPublishNotification(label: string, branch: string, review: { verdict: { verdict: string } }): string {
   return (
-    `🐒 Fixed \`${focus}\`. Protected ✓ · tests ✓ · reviewer: ${review.verdict.verdict}. ` +
+    `🐒 Fixed \`${label}\`. Protected ✓ · tests ✓ · reviewer: ${review.verdict.verdict}. ` +
     `Branch \`${branch}\` is ready — merge + reload when you like.`
   );
 }

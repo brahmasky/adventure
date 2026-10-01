@@ -1103,5 +1103,47 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       store.close();
     }
   });
+
+  it("a 2000-char focus: Paco's notification quotes a one-line summary (≤121 chars) and the ledger summary is capped", async () => {
+    process.env.HOUGE_SELFWRITE_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
+    const focus = `Fix createSrcPhraseChecker substring matching\n${"z".repeat(2000)}`.slice(0, 2000);
+    try {
+      const run_id = turnRun(store, "好，修复一下");
+      const { notifications } = await executeAndSettle(makeWorker(store, deps({}, log)), store, run_id, { focus });
+      const text = String(notifications.find((n) => String(n.payload.text).includes("🐒 Fixed"))!.payload.text);
+      const quoted = /🐒 Fixed `([^`]*)`/.exec(text)![1]!;
+      expect(quoted.length).toBeLessThanOrEqual(121);
+      expect(quoted).toBe("Fix createSrcPhraseChecker substring matching");
+      // The writer still got the whole brief.
+      expect(log.writeTasks[0]).toContain(focus);
+      const published = store.getLedgerEvents(run_id).find((e) => e.event_type === "self_write_published")!;
+      expect(String(published.payload.summary).length).toBeLessThanOrEqual(200);
+      expect(published.payload.focus_chars).toBe(2000);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a hard-deny with a 2000-char focus: the notification quotes the summary and the ledger context is capped", async () => {
+    process.env.HOUGE_SELFWRITE_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
+    const focus = "w".repeat(2000);
+    try {
+      const run_id = turnRun(store, "好，修复一下");
+      const guarded = deps({ rawDiff: () => ":100644 100644 a b M\tsrc/policy/capability-policy.ts\n" }, log);
+      const { notifications } = await executeAndSettle(makeWorker(store, guarded), store, run_id, { focus });
+      const text = String(notifications.find((n) => String(n.payload.text).includes("locked surface"))!.payload.text);
+      const quoted = /fix for `([^`]*)`/.exec(text)![1]!;
+      expect(quoted.length).toBeLessThanOrEqual(121);
+      const blocked = store.getLedgerEvents(run_id).find((e) => e.event_type === "self_write_blocked")!;
+      expect(String(blocked.payload.context).length).toBeLessThanOrEqual(200);
+      expect(blocked.payload.focus_chars).toBe(2000);
+    } finally {
+      store.close();
+    }
+  });
 });
 

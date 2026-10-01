@@ -1532,7 +1532,10 @@ export class RunStore {
     run_id: string,
     payload: {
       branch: string;
+      /** At most 200 chars (the focus summary); the full focus never lands in the ledger. */
       summary: string;
+      /** The full focus's length in chars. */
+      focus_chars: number;
       verdict: Record<string, unknown>;
       gate_results: Record<string, unknown>;
       /** Phase 3.1 (W3): compact per-role token usage stamp (counts/metadata ONLY — no bodies). Optional. */
@@ -1544,7 +1547,7 @@ export class RunStore {
 
   recordSelfWriteBlocked(
     run_id: string,
-    payload: { attempted_paths: Array<Record<string, unknown>>; context: string }
+    payload: { attempted_paths: Array<Record<string, unknown>>; context: string; focus_chars: number }
   ): void {
     this.appendRunLedgerEvent(run_id, "self_write_blocked", "core", payload);
   }

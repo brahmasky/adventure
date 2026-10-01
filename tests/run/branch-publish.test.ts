@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { publishBranch, selfWriteBranchName } from "../../src/run/branch-publish.js";
+import { publishBranch, selfWriteBranchName, summarizeFocus } from "../../src/run/branch-publish.js";
 import { createWorktree, removeWorktree } from "../../src/run/worktree.js";
 
 let dirs: string[] = [];
@@ -86,4 +86,47 @@ describe("publishBranch (Phase 3 step 7)", () => {
   it("throws (no silent half-publish) when git cannot operate", async () => {
     await expect(publishBranch("/no/such/worktree/path", "houge/selfwrite/x")).rejects.toThrow(/Failed to publish branch/);
   });
+
+  it("a long multi-line focus: the commit SUBJECT is the one-line summary, the full focus rides the BODY", async () => {
+    const repo = tmpRepo();
+    const wt = (await createWorktree(repo)).path;
+    worktrees.push(wt);
+    writeFileSync(join(wt, "file.txt"), "fixed\n");
+    const focus = `修复 createSrcPhraseChecker 的子串匹配\nCause: "regate" hits "aggregate". ${"d".repeat(1900)}`;
+    const branch = selfWriteBranchName("run_long");
+    await publishBranch(wt, branch, focus);
+    const subject = execFileSync("git", ["-C", repo, "log", "-1", "--format=%s", branch], { encoding: "utf8" }).trim();
+    expect(subject).toBe("houge self-write: 修复 createSrcPhraseChecker 的子串匹配");
+    const body = execFileSync("git", ["-C", repo, "log", "-1", "--format=%b", branch], { encoding: "utf8" });
+    expect(body).toContain(focus.split("\n")[1]);
+  });
 });
+
+describe("summarizeFocus — the code-owned one-line label for a focus of up to 2000 chars", () => {
+  it("keeps a short CJK focus intact (no cut, no ellipsis)", () => {
+    expect(summarizeFocus("修复短语检查器的子串匹配")).toBe("修复短语检查器的子串匹配");
+  });
+
+  it("takes the first non-empty line of a multi-line focus, whitespace-collapsed", () => {
+    expect(summarizeFocus("\n  fix   the\tphrase checker  \nCause: substring match\nTest: add one")).toBe("fix the phrase checker");
+  });
+
+  it("exactly 120 chars is kept whole; 121 is cut to 120 plus an ellipsis", () => {
+    const at = "a".repeat(120);
+    expect(summarizeFocus(at)).toBe(at);
+    expect(summarizeFocus(`${at}b`)).toBe(`${at}…`);
+  });
+
+  it("a 2000-char focus becomes at most 121 chars ending in an ellipsis", () => {
+    const out = summarizeFocus("x".repeat(2000));
+    expect(out.length).toBe(121);
+    expect(out.endsWith("…")).toBe(true);
+  });
+
+  it("caps at a caller-chosen width (the ledger's 200-char field)", () => {
+    const out = summarizeFocus("y".repeat(2000), 199);
+    expect(out.length).toBe(200);
+    expect(out.endsWith("…")).toBe(true);
+  });
+});
+

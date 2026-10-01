@@ -24,6 +24,21 @@ interface NodeError extends Error {
   stderr?: Buffer | string | null;
 }
 
+/** The default width of a focus summary: Paco's notifications and the commit subject. */
+export const FOCUS_SUMMARY_CHARS = 120;
+
+/**
+ * The code-owned one-line label for a planner `focus` (up to 2000 chars since run_79faefea): the
+ * first non-empty line, whitespace-collapsed, cut to `maxChars` with a trailing "…" when cut (so
+ * the result is at most `maxChars + 1`). Used wherever Paco or the audit trail sees the focus;
+ * the writer and the reviewer still get the full text.
+ */
+export function summarizeFocus(focus: string, maxChars: number = FOCUS_SUMMARY_CHARS): string {
+  const line = focus.split("\n").map((l) => l.replace(/\s+/g, " ").trim()).find((l) => l.length > 0) ?? "";
+  const chars = Array.from(line);
+  return chars.length > maxChars ? `${chars.slice(0, maxChars).join("")}…` : line;
+}
+
 /** A self-write branch name from a run id: `houge/selfwrite/<run-id>`. */
 export function selfWriteBranchName(runId: string): string {
   return `houge/selfwrite/${runId}`;
@@ -36,9 +51,10 @@ export function selfWriteBranchName(runId: string): string {
  * failure event) — there is no silent half-publish.
  */
 export async function publishBranch(worktree: string, branchName: string, taskSummary?: string): Promise<string> {
-  const message = taskSummary && taskSummary.trim().length > 0
-    ? `houge self-write: ${taskSummary.trim()}`
-    : `houge self-write: ${branchName}`;
+  const summary = taskSummary ? summarizeFocus(taskSummary) : "";
+  const subject = `houge self-write: ${summary.length > 0 ? summary : branchName}`;
+  // The full focus rides the commit BODY whenever the one-line subject does not already carry it.
+  const message = taskSummary && taskSummary.trim() !== summary ? `${subject}\n\n${taskSummary.trim()}` : subject;
   try {
     // Create + switch the worktree onto the new branch (from its detached HEAD).
     await hardenedGit(["-C", worktree, "checkout", "-b", branchName]);
