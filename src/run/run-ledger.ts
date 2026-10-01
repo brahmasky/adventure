@@ -69,7 +69,8 @@ export type LedgerEventType =
   | "incident_opened"
   | "incident_resolved"
   | "google_api_call_completed"
-  | "wall_collapse";
+  | "wall_collapse"
+  | "memory_corrected";
 
 export interface LedgerEvent {
   event_id: string;
@@ -251,7 +252,9 @@ const requiredPayloadFields = {
   google_api_call_completed: ["service", "op", "count", "extracted_codes", "extracted_links"],
   // omp runtime (D10): a chain leg answered from a different model family than the wall expects.
   // Ids and names only.
-  wall_collapse: ["request_key", "family", "provider", "model"]
+  wall_collapse: ["request_key", "family", "provider", "model"],
+  // Self-service memory correction (2026-10-02): ids, kind, action and counts ONLY — never fact, query or correction text.
+  memory_corrected: ["action", "kind", "old_ids", "count"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(

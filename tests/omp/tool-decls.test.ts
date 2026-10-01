@@ -6,11 +6,11 @@ import { loadToolDeclarations, TOOL_DECLS_DIR, validateInput } from "../../src/o
 import { isToolArmed } from "../../src/omp/tool-arming.js";
 
 describe("tool declarations — data the daemon validates; nothing self-writable runs in the planner (spec §5.1)", () => {
-  it("loads all 14 shipped declarations", () => {
+  it("loads all 15 shipped declarations", () => {
     const r = loadToolDeclarations(TOOL_DECLS_DIR);
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.decls.map((d) => d.name).sort()).toEqual([
-      "bash", "gmail_read", "google_api", "houge_status", "http_fetch", "lesson_write", "schedule_task", "self_diagnose",
+      "bash", "gmail_read", "google_api", "houge_status", "http_fetch", "lesson_write", "memory_correct", "schedule_task", "self_diagnose",
       "self_write_propose", "skill_author", "to_local_time", "web_search", "wiki_build", "wiki_refine"
     ]);
   });
@@ -58,6 +58,21 @@ describe("tool declarations — data the daemon validates; nothing self-writable
     expect(decl.parameters).toEqual({ type: "object", properties: {}, additionalProperties: false });
     expect(validateInput(decl.parameters, {})).toEqual([]);
     expect(validateInput(decl.parameters, { verbose: true })).not.toEqual([]);
+  });
+
+  it("memory_correct is armed with no flag; its schema bounds every field and its text says search first, only on Paco's ask", () => {
+    expect(isToolArmed("memory_correct", {})).toBe(true);
+    const r = loadToolDeclarations(TOOL_DECLS_DIR);
+    if (!r.ok) throw new Error(r.error);
+    const decl = r.decls.find((d) => d.name === "memory_correct")!;
+    expect(decl.description).toContain("ONLY when Paco asks");
+    expect(decl.description).toContain("search");
+    expect(decl.description).toContain("Prefer \"correct\"");
+    expect(validateInput(decl.parameters, { action: "search", query: "ASML" })).toEqual([]);
+    expect(validateInput(decl.parameters, { action: "delete" })).not.toEqual([]);
+    expect(validateInput(decl.parameters, { action: "search", query: "x".repeat(201) })).not.toEqual([]);
+    expect(validateInput(decl.parameters, { action: "correct", ids: [1], correction: "x".repeat(501) })).not.toEqual([]);
+    expect(validateInput(decl.parameters, { action: "retire", ids: [1.5] })).not.toEqual([]);
   });
 
   it("self_write_propose asks for a VERIFIED cause before the call and leaves room for it (run_79faefea)", () => {

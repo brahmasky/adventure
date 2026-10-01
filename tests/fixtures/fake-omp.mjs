@@ -5,7 +5,7 @@
 //                 sleepMs?: number, usage?: {input:number, output:number} }
 //   rpc mode also reads: rpcText, rpcEcho (reply carries the prompt), rpcNoManifest (skip the bridge
 //   manifest at startup), rpcSteerError (answer a steer success:false with this text), rpcIgnoreAbort (ack an abort but never end the turn), rpcFinishOnSteer (hold the reply until a steer arrives), rpcCall: { tool, args } (one bridge `call` after the prompt; its content is
-//   appended to the reply as " CALL:<content>"), rpcHangAfterPrompt, rpcNoReply, rpcExitAfterPrompt, …
+//   appended to the reply as " CALL:<content>"), rpcCalls: [{ tool, args }, …] (the same, in order, toolCallIds tc1…tcN), rpcHangAfterPrompt, rpcNoReply, rpcExitAfterPrompt, …
 // Top-level `rpcBadModelAtStart: ["<provider/model>", …]` (rpc AND -p modes): when --model matches, the fake does what
 // omp 18.4.4 does live — writes `Model "<provider/model>" not found` plus a hint line to stderr and exits 1 before
 // `ready` (in rpc mode after the extension's bridge hello/manifest, as the real extension loads first).
@@ -76,17 +76,22 @@ async function runRpc() {
     }
     if (b.rpcHuge) { reply(); return void process.stdout.write("x".repeat(200_000)); }
     reply();
-    if (b.rpcCall) return void callThenFinish(b, cmd.message);
+    if (b.rpcCall || b.rpcCalls) return void callThenFinish(b, cmd.message);
     if (b.rpcHangAfterPrompt) return;
     if (b.rpcFinishOnSteer) { held = { b, message: cmd.message }; return; }
     finish(b, cmd.message, "");
   };
   const callThenFinish = async (b, message) => {
-    out({ type: "turn_start" }); out({ type: "tool_execution_start", toolName: b.rpcCall.tool });
-    let content = "no bridge";
-    if (bridge) { try { content = (await bridge.request({ kind: "call", tool: b.rpcCall.tool, input: b.rpcCall.args ?? {}, toolCallId: "tc1" })).content; } catch (e) { content = `error ${e.message}`; } }
+    out({ type: "turn_start" });
+    let suffix = "";
+    for (const [i, c] of (b.rpcCalls ?? [b.rpcCall]).entries()) {
+      out({ type: "tool_execution_start", toolName: c.tool });
+      let content = "no bridge";
+      if (bridge) { try { content = (await bridge.request({ kind: "call", tool: c.tool, input: c.args ?? {}, toolCallId: `tc${i + 1}` })).content; } catch (e) { content = `error ${e.message}`; } }
+      suffix += " CALL:" + content;
+    }
     if (b.rpcHangAfterPrompt) return;
-    finish(b, message, " CALL:" + content);
+    finish(b, message, suffix);
   };
   const finish = (b, message, suffix) => {
     const [provider, mid] = model.split("/");

@@ -127,6 +127,7 @@ import { embedText, resolveEmbedConfig } from "../llm/embeddings.js";
 import { ToolRegistry } from "../tools/tool-registry.js";
 import { TURN_ACTIONS } from "../contracts/task-contract.js";
 import { collectHougeStatus, renderHougeStatus } from "../status/houge-status.js";
+import { executeMemoryCorrect, newMemoryTurnState, type MemoryTurnState } from "../capabilities/memory-correct.js";
 import type { ActiveTurn } from "../omp/bridge-handler.js";
 import type { ExternalReadResult } from "../omp/external-read.js";
 import { ompConfigProblems, resolveOmpConfig } from "../omp/omp-config.js";
@@ -195,6 +196,8 @@ interface LoopTurnContext {
   externalReads: Array<{ action: string; digest: string }>;
   /** The provenance URLs the turn's web_search/http_fetch steps actually read (C3 floor). */
   sourceUrls: string[];
+  /** memory_correct: the ids this turn's searches offered and the rows it changed (2026-10-02). */
+  memory: MemoryTurnState;
 }
 
 /** Per-run state of an omp turn's loop tools, held from buildOmpTools until the outcome sink finishes the run. */
@@ -2146,7 +2149,7 @@ export class CoreWorker {
     const state: OmpTurnState = {
       turnCtx: {
         recentTurns, turnChars: resolveChatContextTurnChars(process.env), ranOnce: new Set<string>(), evolutionNotices: [],
-        externalReads: [], sourceUrls: []
+        externalReads: [], sourceUrls: [], memory: newMemoryTurnState()
       },
       anchor: { priorAnswer: [...recentTurns].reverse().find((t) => t.role === "assistant")?.text ?? "", defaultScope: "ask" }
     };
@@ -2543,7 +2546,12 @@ export class CoreWorker {
       // Read-only, Houge's own state (2026-10-02): code-rendered, no LLM call, never quarantined.
       return async () => ({ ok: true, output: { answer: this.hougeStatusText(this.chatOf(claim.run_id)) } });
     }
-    // Only the thirteen bridge tools reach here (OMP_LOOP_TOOL_META); `llm_answer` left the tool set (D8).
+    if (name === "memory_correct") {
+      // Paco's memory (2026-10-02): every trust limit is code-owned in the adapter; no LLM call.
+      return (input) => executeMemoryCorrect({ store: this.runStore, run_id: claim.run_id, chat_id: this.chatOf(claim.run_id),
+        state: turnCtx.memory, embed: (query) => this.embedQueryForTurn(query) }, input);
+    }
+    // Only the fourteen bridge tools reach here (OMP_LOOP_TOOL_META); `llm_answer` left the tool set (D8).
     return async () => ({ ok: false, error: `unknown loop tool: ${name}` });
   }
 
@@ -3309,6 +3317,9 @@ function loopToolTimeoutMs(name: string, seat: (role: LlmCallRole) => number): n
     case "http_fetch":
       // The fetch enforces its own wall clock; the runner's outer race bound adds headroom.
       return resolveHttpFetchTimeoutMs(process.env) + 5_000;
+    case "memory_correct":
+      // Store work plus at most one query embedding (search), which carries its own timeout.
+      return resolveEmbedConfig(process.env).timeoutMs + RUNNER_TIMEOUT_BUFFER_MS;
     case "to_local_time":
     case "houge_status":
       // Pure in-process compute — no LLM call; the runner buffer is ample headroom.

@@ -220,8 +220,8 @@ async function awaitApproval(turn: ActiveTurn, approval_id: string, timeoutMs: n
 
 interface Rendered { content: string; digest: string; failed?: string }
 
-/** Tools whose code-rendered `answer` reaches the planner as text, not a JSON envelope (houge_status). */
-const PLAIN_TEXT_ENTRIES: ReadonlySet<RegistryEntry> = new Set<RegistryEntry>(["houge_status"]);
+/** Tools whose code-rendered `answer` reaches the planner as text, not a JSON envelope. */
+const PLAIN_TEXT_ENTRIES: ReadonlySet<RegistryEntry> = new Set<RegistryEntry>(["houge_status", "memory_correct"]);
 
 /** Read tools cross the wall ALWAYS (D3); bash is raw (D12); a ledger digest carries counts and hashes only. */
 async function render(turn: ActiveTurn, entry: RegistryEntry, r: CapabilityResult): Promise<Rendered> {
