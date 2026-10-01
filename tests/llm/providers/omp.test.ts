@@ -129,10 +129,12 @@ describe("omp one-shot seat — every non-planner LLM call in Houge", () => {
     expect(r).toMatchObject({ ok: false, unavailable: true });
   });
 
-  it("times out a hung leg and moves on", async () => {
-    const cfg = setup({ "google-antigravity/gemini-3.8-flash": { sleepMs: 5_000, text: "late" }, "kimi-code/k3": { text: "on time" } });
+  // The timeout is per leg, so it must also fit the NEXT leg's node start on a loaded machine (300 ms failed 7/8 runs under
+  // CPU load, final review C4): 2 s still ends the 30 s hang far below the test timeout.
+  it("times out a hung leg and moves on", { timeout: 20_000 }, async () => {
+    const cfg = setup({ "google-antigravity/gemini-3.8-flash": { sleepMs: 30_000, text: "late" }, "kimi-code/k3": { text: "on time" } });
     const audit = recordingSink();
-    const r = await spawnOneShot({ seat: "reader", chain: cfg.reader, prompt: "x", correlationId: "c", timeoutMs: 300 }, { cfg, audit, versionCheck: () => ({ ok: true, version: "18.4.4" }) });
+    const r = await spawnOneShot({ seat: "reader", chain: cfg.reader, prompt: "x", correlationId: "c", timeoutMs: 2_000 }, { cfg, audit, versionCheck: () => ({ ok: true, version: "18.4.4" }) });
     expect(r).toMatchObject({ ok: true, answer: "on time" });
     expect(audit.attempts[0]).toMatchObject({ outcome: "error", error_kind: "timeout" });
   });
