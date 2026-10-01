@@ -140,7 +140,9 @@ export async function buildTurnPrompt(d: TurnContextDeps, i: TurnPromptInput): P
   const context = blocks.length > 0 ? `[context]\n${blocks.join("\n\n")}\n[/context]\n\n` : "";
   const prefix = i.source === "schedule" ? SCHEDULED_PREFIX(i.goal ?? i.message) : "";
   const cap = clarifyCapReached(d, i.chat_id) ? CLARIFY_CAP_NOTICE : "";
-  return `${restartNote(d, i.chat_id)}${prefix}${cap}${context}${i.message}`;
+  // a schedule fire is not Paco talking: it neither shows nor uses the note, so his first real turn gets it
+  const note = i.source === "schedule" ? "" : restartNote(d, i.chat_id);
+  return `${note}${prefix}${cap}${context}${i.message}`;
 }
 
 /** A tool-less reply ending in a short question is a clarify turn (feeds the consecutive-clarify cap). */

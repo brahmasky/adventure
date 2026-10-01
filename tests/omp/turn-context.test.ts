@@ -227,13 +227,18 @@ describe("the restart note on the first turn after a boot", () => {
     expect(await prompt(store, "2")).toBe("hello");
   });
 
-  it("a new boot notes again; a stale build says so; it sits before the schedule prefix", async () => {
+  it("a new boot notes again; a stale build says so; a schedule fire neither shows nor uses the note", async () => {
+    // Round 2: a schedule-born turn is not Paco talking; the note must reach his first real turn instead.
     const store = RunStore.openInMemory();
     seedBoot(store);
     await prompt(store, "1");
     seedBoot(store, { boot_id: "boot_2", reason: "crash_recovery", build_input_committed_at: "2026-09-30T05:00:00.000Z" });
-    const out = await prompt(store, "1", { source: "schedule", goal: "AI日报" });
-    expect(out.startsWith(`${RESTART_NOTE_PREFIX}Houge restarted 14:34 (after a crash); now running 4431d13 (stale build: dist is older than its sources).\n${SCHEDULED_PREFIX("AI日报")}`)).toBe(true);
+    const fired = await prompt(store, "1", { source: "schedule", goal: "AI日报" });
+    expect(fired.startsWith(SCHEDULED_PREFIX("AI日报"))).toBe(true);
+    expect(fired).not.toContain(RESTART_NOTE_PREFIX);
+    expect(await prompt(store, "1")).toBe(
+      `${RESTART_NOTE_PREFIX}Houge restarted 14:34 (after a crash); now running 4431d13 (stale build: dist is older than its sources).\nhello`
+    );
   });
 
   it("no note when the newest boot record is not this process (a one-shot CLI turn) or there is none", async () => {
