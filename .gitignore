@@ -6,6 +6,8 @@ artifacts/
 node_modules/
 dist/
 houge.sqlite
+houge.sqlite-wal
+houge.sqlite-shm
 .worktrees/
 .env
 .env.*
@@ -41,3 +43,7 @@ memory/briefs/
 # Self-write worktrees (<data>/selfwrite; B13) and a stray pre-N1 <data>/tmp — runtime state
 /tmp/
 /selfwrite/
+
+# omp runtime data (<data>/omp): sessions with full chat transcripts, chat workspaces, bridge sockets, Seatbelt
+# profiles, houge-config.yml. Anchored to top-level only: must NOT swallow src/omp/ or tests/omp/.
+/omp/
