@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { symlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -262,6 +262,15 @@ export interface SelfWriteDeps {
  */
 async function registerUntrackedFiles(worktree: string): Promise<void> {
   await hardenedGit(["-C", worktree, "add", "-N", "--", ".", ":(exclude)node_modules"]);
+}
+
+/** The self_write_failed reason when the worktree no longer matches the diff the reviewer passed. */
+export const SELF_WRITE_DIFF_CHANGED = "diff changed after review";
+
+/** Re-read the worktree's unified diff and compare its hash with the reviewed one; a read failure is a change (fail closed). */
+async function diffUnchangedSinceReview(deps: SelfWriteDeps, worktree: string, reviewed: string): Promise<boolean> {
+  const hash = (s: string) => createHash("sha256").update(s).digest("hex");
+  try { return hash(await deps.unifiedDiff(worktree)) === hash(reviewed); } catch { return false; }
 }
 
 /** Default wiring of the self-write stack to the real S1–S4 + worktree/branch modules. Exported for the deps tests. */
@@ -1308,7 +1317,12 @@ export class CoreWorker {
           return this.selfWriteReport(`Tried to fix \`${focus}\`, couldn't land a clean one (reviewer flagged: ${reasons}). Not publishing.`);
         }
 
-        // (g) ALL GREEN → publish the branch + record + success notification.
+        // (g) ALL GREEN → re-hash: what is published must be byte-for-byte what the reviewer passed (B13).
+        if (!(await diffUnchangedSinceReview(deps, worktree, diff))) {
+          this.runStore.recordSelfWriteFailed(claim.run_id, { reason: SELF_WRITE_DIFF_CHANGED, last_output: "" });
+          return this.selfWriteReport(`I had a reviewed fix for \`${focus}\`, but the workspace changed after review. Not publishing.`);
+        }
+        // publish the branch + record + success notification.
         const branch = selfWriteBranchName(claim.run_id);
         let published: string;
         try {

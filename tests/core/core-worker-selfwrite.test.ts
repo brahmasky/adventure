@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildEvolutionKickoffDigest, buildEvolutionTimeoutText, CoreWorker, EVOLUTION_NOTICE_HEADER } from "../../src/core/core-worker.js";
+import { buildEvolutionKickoffDigest, buildEvolutionTimeoutText, CoreWorker, EVOLUTION_NOTICE_HEADER, SELF_WRITE_DIFF_CHANGED } from "../../src/core/core-worker.js";
 import type { SelfWriteDeps } from "../../src/core/core-worker.js";
 import {
   EVOLUTION_LANE_BUSY_DIGEST,
@@ -473,6 +473,25 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       expect(String(failed[0]!.payload.reason)).toContain("reviewer rejected");
       const completion = notifications.find((n) => String(n.payload.text).includes("does not actually fix it"));
       expect(completion).toBeDefined();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a worktree changed after the reviewer passed it is NEVER published: the diff is re-hashed before publish (B13)", async () => {
+    process.env.HOUGE_SELFWRITE_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
+    try {
+      const run_id = turnRun(store, "fix the router");
+      let reads = 0;
+      const d = deps({ unifiedDiff: () => (reads++ === 0 ? "diff --git a/x b/x\n+reviewed" : "diff --git a/x b/x\n+swapped after review") }, log);
+      const { notifications } = await executeAndSettle(makeWorker(store, d), store, run_id);
+      expect(log.published).toEqual([]);
+      const failed = store.getLedgerEvents(run_id).filter((e) => e.event_type === "self_write_failed");
+      expect(failed.map((e) => e.payload.reason)).toEqual([SELF_WRITE_DIFF_CHANGED]);
+      expect(log.teardowns).toEqual(["/fake/wt"]);
+      expect(notifications.some((n) => String(n.payload.text).includes("Not publishing"))).toBe(true);
     } finally {
       store.close();
     }
