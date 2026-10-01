@@ -235,9 +235,19 @@ function writeRefusal(d: Pick<MemoryToolDeps, "store" | "run_id" | "state">, req
 
 function applyChange(d: MemoryToolDeps, req: Exclude<MemoryRequest, { action: "search" }>): MemoryChange | null {
   if (req.action === "retire") return d.store.retireMemoryRows({ kind: req.kind, ids: req.ids, chat_id: d.chat_id, run_id: d.run_id });
-  const userTurn = [...d.store.getRecentChatTurns(d.chat_id, 20)].reverse().find((t) => t.role === "user" && t.run_id === d.run_id);
+  const userTurn = currentUserTurn(d);
   return d.store.correctEpisodicFacts({ ids: req.ids, correction: req.correction, chat_id: d.chat_id, run_id: d.run_id,
     ...(userTurn ? { source_turn_id: userTurn.turn_id } : {}) });
+}
+
+/**
+ * L3: Paco's newest message in this turn — the run's own user turn, or a later message steered into it (the
+ * supervisor claims a steered run under the parent turn's worker and records the message under the steered run).
+ */
+function currentUserTurn(d: Pick<MemoryToolDeps, "store" | "run_id" | "chat_id">): { turn_id: string } | undefined {
+  const worker = d.store.getRunLease(d.run_id).worker_id;
+  const ours = (run_id: string) => run_id === d.run_id || (worker !== null && d.store.getRunLease(run_id).worker_id === worker);
+  return [...d.store.getRecentChatTurns(d.chat_id, 20)].reverse().find((t) => t.role === "user" && ours(t.run_id));
 }
 
 /** The ledger row (ids, kind, action, counts only) and the Undo card to the run's chat. */

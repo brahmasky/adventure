@@ -168,6 +168,30 @@ describe("memory_correct: retire and correct take only ids a search offered in t
     expect(card?.text).toBe(`🧠 Corrected #${id} → #${created.id}: "Paco's AI daily report covers AI news only, never ASML"\nwas #${id}: "${ASML}"`);
   });
 
+  it("L3: in a steered run the correction's source turn is the steered message's own user turn", async () => {
+    const id = fact(ASML);
+    const t = turn("what do you remember about the brief?");
+    const steered = new Gateway(store).intake(buildTypedTaskEvent({
+      source: "telegram", type: "turn", program: "turn", goal: "那条 ASML 不对，日报只要 AI 新闻", requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "telegram", chat_id: CHAT }, idempotency_key: `mc:${++seq}`, source_reference: `telegram:update:${seq}:message:${seq}`
+    }));
+    if (!steered.ok) throw new Error("intake failed");
+    // the supervisor's steer: claimed under the parent turn's worker, then Paco's message recorded under its own run
+    expect(store.claimRun(steered.run_id, t.turn.worker_id, 120)).toBeTruthy();
+    store.recordChatTurn({ chat_id: CHAT, run_id: steered.run_id, role: "user", text: "那条 ASML 不对，日报只要 AI 新闻" });
+    const queued = new Gateway(store).intake(buildTypedTaskEvent({
+      source: "telegram", type: "turn", program: "turn", goal: "unrelated later message", requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "telegram", chat_id: CHAT }, idempotency_key: `mc:${++seq}`, source_reference: `telegram:update:${seq}:message:${seq}`
+    }));
+    if (!queued.ok) throw new Error("intake failed");
+    store.recordChatTurn({ chat_id: CHAT, run_id: queued.run_id, role: "user", text: "unrelated later message" });
+    await t.call("memory_correct", { action: "search", query: "ASML" });
+    await write(t, { action: "correct", ids: [id], correction: "The AI daily report covers AI news only" });
+    const created = store.getActiveEpisodicFacts(CHAT).find((f) => f.fact === "The AI daily report covers AI news only")!;
+    const steeredTurn = store.getRecentChatTurns(CHAT, 10).find((x) => x.run_id === steered.run_id)!;
+    expect(JSON.parse(created.source_turn_ids)).toEqual([steeredTurn.turn_id]);
+  });
+
   it("correct needs a correction; a wiki page can only be retired", async () => {
     const id = fact(ASML);
     const page = store.addWikiPage({ topic_slug: "asml", title: "ASML", summary: "ASML lithography" });
