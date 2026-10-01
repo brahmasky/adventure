@@ -338,4 +338,11 @@ describe("checkSelfWriteDiff — end-to-end from real raw output shape", () => {
     }
     expect(check(entry({ status: "M", path: "src/omphalos.ts" })).allowed).toBe(true); // segment boundary
   });
+
+  it("a self-write cannot touch dist/, the built JS the daemon runs, even though it is gitignored (security re-review A, N5)", () => {
+    for (const path of ["dist/omp/extension/houge.js", "dist/omp/shell-wrapper.sh", "dist/core/core-worker.js"]) {
+      for (const status of ["M", "A", "D"] as const) expect(check(entry({ status, path })).allowed, `${status} ${path}`).toBe(false);
+    }
+    expect(check(entry({ status: "M", path: "src/distance.ts" })).allowed).toBe(true); // segment boundary
+  });
 });
