@@ -20,7 +20,9 @@ import { writeSeatbeltProfiles } from "./seatbelt.js";
 import { verifyInstalledWrapper } from "./shell-wrapper.js";
 import { chatWorkspace } from "./workspace.js";
 import type { ToolDeclaration } from "./tool-decls.js";
-import { assistantIntentFor, buildTurnPrompt, systemPromptFingerprint, writeSystemPromptFile, type TurnContextDeps } from "./turn-context.js";
+import {
+  assistantIntentFor, buildTurnPrompt, claimRestartNoteAtDispatch, systemPromptFingerprint, writeSystemPromptFile, type TurnContextDeps
+} from "./turn-context.js";
 
 export type SupervisorState = "STOPPED" | "STARTING" | "IDLE" | "RUNNING" | "AWAITING_APPROVAL" | "ABORTING";
 export type PlannerSessionLike = Pick<PlannerSession, "start" | "prompt" | "steer" | "abort" | "setModel" | "onFrame" | "onExit" | "stop">;
@@ -414,9 +416,10 @@ export class PlannerSupervisor {
     if (reset && (await this.resetTop(turn, s, target)) === ENDED) return;
     if (turn.failure) return;
     try {
+      const sent = claimRestartNoteAtDispatch(this.d.store, this.d.chatId, prompt, this.d.turnContext.pid);
       turn.live = true;
       turn.dispatched = true;
-      await this.step(turn, s.prompt(prompt));
+      await this.step(turn, s.prompt(sent));
     } catch (e) {
       this.failTurn(turn, "planner_exit", `prompt_failed: ${rpcCode(e)}`);
     }

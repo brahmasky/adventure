@@ -2392,6 +2392,11 @@ export class RunStore {
     this.db.prepare(`DELETE FROM boot_chat_notes WHERE boot_id NOT IN (SELECT boot_id FROM daemon_boots)`).run();
   }
 
+  /** Whether this boot's restart note already went to the chat (a peek: the claim happens at dispatch). */
+  hasRestartNote(boot_id: string, chat_id: string): boolean {
+    return this.db.prepare(`SELECT 1 AS hit FROM boot_chat_notes WHERE boot_id = ? AND chat_id = ?`).get<{ hit: number }>(boot_id, chat_id) !== undefined;
+  }
+
   /** The restart note goes to a chat once per boot: true only for the first claim of (boot, chat). */
   claimRestartNote(boot_id: string, chat_id: string, now: string = new Date().toISOString()): boolean {
     const r = this.db.prepare(`

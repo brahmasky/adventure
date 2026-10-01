@@ -10,6 +10,7 @@ import {
   CLARIFY_CAP_NOTICE,
   buildTurnPrompt,
   RESTART_NOTE_PREFIX,
+  claimRestartNoteAtDispatch,
   SCHEDULED_PREFIX,
   systemPromptFingerprint,
   writeSystemPromptFile,
@@ -207,8 +208,25 @@ describe("the restart note on the first turn after a boot", () => {
     head_sha: SHA, head_subject: SUBJECT, head_committed_at: "2026-09-30T04:33:00.000Z", dist_built_at: "2026-09-30T04:33:30.000Z", ...over
   });
   const sydney = (store: RunStore) => ({ ...deps(store), env: { HOUGE_TIMEZONE: "Australia/Sydney" } });
-  const prompt = (store: RunStore, chat: string, o: { source?: "telegram" | "schedule"; goal?: string } = {}) =>
+  const build = (store: RunStore, chat: string, o: { source?: "telegram" | "schedule"; goal?: string } = {}) =>
     buildTurnPrompt(sydney(store), { run_id: createQueuedTurnRun(store), chat_id: chat, message: "hello", source: o.source ?? "telegram", ...(o.goal ? { goal: o.goal } : {}) });
+  /** Build, then dispatch the way the supervisor does just before prompting the child. */
+  const prompt = async (store: RunStore, chat: string, o: { source?: "telegram" | "schedule"; goal?: string } = {}) =>
+    claimRestartNoteAtDispatch(store, chat, await build(store, chat, o));
+
+  it("building only peeks: the claim happens at dispatch, and a prompt dispatched after the claim loses its note", async () => {
+    // Round 2: a turn that ends between the prompt build and the dispatch must leave the note for the next turn.
+    const store = RunStore.openInMemory();
+    seedBoot(store, { reason: "kickstart", reload_sha: null, reload_subject: null, reload_branch: null, reload_merged_at: null });
+    const first = await build(store, "1");
+    const second = await build(store, "1");
+    expect(first.startsWith(RESTART_NOTE_PREFIX)).toBe(true);
+    expect(second).toBe(first);
+    expect(claimRestartNoteAtDispatch(store, "1", first)).toBe(first);
+    expect(claimRestartNoteAtDispatch(store, "1", second)).toBe("hello");
+    expect(await build(store, "1")).toBe("hello");
+    expect(claimRestartNoteAtDispatch(store, "1", "hello")).toBe("hello");
+  });
 
   it("a self-write reload boot names the merged sha and subject, and the code now running", async () => {
     const store = RunStore.openInMemory();

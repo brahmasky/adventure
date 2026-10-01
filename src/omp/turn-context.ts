@@ -60,12 +60,28 @@ export function restartNoteLine(boot: DaemonBoot, tz: string, now: Date): string
   return `${RESTART_NOTE_PREFIX}Houge restarted ${when} (${why}); now running ${(boot.head_sha ?? "unknown").slice(0, 7)}${stale}.\n`;
 }
 
-/** The note for this chat's first prompt since this daemon booted; "" on every later prompt, or outside the daemon. */
+/** This daemon's live boot record, or null outside the daemon (a one-shot CLI turn, a stopped boot). */
+function liveBoot(store: RunStore, pid: number): DaemonBoot | null {
+  const boot = store.getLatestDaemonBoot();
+  return boot && boot.pid === pid && boot.stopped_at === null ? boot : null;
+}
+
+/** The note while this chat has not been sent it since this daemon booted; a peek, never a claim. */
 function restartNote(d: TurnContextDeps, chatId: string): string {
-  const boot = d.store.getLatestDaemonBoot();
-  if (!boot || boot.pid !== (d.pid ?? process.pid) || boot.stopped_at !== null) return "";
-  if (!d.store.claimRestartNote(boot.boot_id, chatId)) return "";
+  const boot = liveBoot(d.store, d.pid ?? process.pid);
+  if (!boot || d.store.hasRestartNote(boot.boot_id, chatId)) return "";
   return restartNoteLine(boot, resolveLocalTimeZone(d.env), d.now?.() ?? new Date());
+}
+
+/**
+ * Called just before the prompt goes to the child: claims the chat's note for this boot, or strips the note line
+ * when another dispatch already claimed it. A turn that ends before dispatch never claims, so the next turn gets it.
+ */
+export function claimRestartNoteAtDispatch(store: RunStore, chatId: string, prompt: string, pid: number = process.pid): string {
+  if (!prompt.startsWith(RESTART_NOTE_PREFIX)) return prompt;
+  const boot = liveBoot(store, pid);
+  if (boot && store.claimRestartNote(boot.boot_id, chatId)) return prompt;
+  return prompt.slice(prompt.indexOf("\n") + 1);
 }
 
 /** True when this chat's trailing clarify turns have reached the cap. */

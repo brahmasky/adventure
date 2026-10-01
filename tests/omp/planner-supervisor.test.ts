@@ -1135,4 +1135,22 @@ describe("PlannerSupervisor — the restart note reaches the prompt, never the s
     const userTurns = store.getRecentChatTurns("42", 10).filter((t) => t.role === "user").map((t) => t.text);
     expect(userTurns).toEqual(["first", "second"]);
   });
+
+  it("a turn that ends before dispatch leaves the note for the next turn", async () => {
+    // Round 2: the note used to be claimed while the prompt was built, so a turn killed before its prompt went out lost it.
+    const session = fakeSession({ setModel: (n) => (n === 1 ? never() : Promise.resolve()) });
+    const { store, sup, outcome } = harness(session);
+    store.recordDaemonBoot({
+      boot_id: "boot_1", started_at: new Date().toISOString(), pid: process.pid, reason: "kickstart", reload_sha: null, reload_subject: null,
+      reload_branch: null, reload_merged_at: null, head_sha: "4431d13aaaa", head_subject: "s", head_committed_at: null, dist_built_at: null
+    });
+    const killed = createQueuedTurnRun(store);
+    sup.submit(req(killed, "first")); await until(() => session.models.length === 1); // hung in the pin, before dispatch
+    await sup.abortAll("killed");
+    expect(failedOf(outcome, killed)).toMatchObject({ error_type: "killed" });
+    expect(session.prompts).toEqual([]);
+    sup.submit(req(createQueuedTurnRun(store), "second")); await sup.whenIdle();
+    expect(session.prompts).toHaveLength(1);
+    expect(session.prompts[0]).toMatch(/^\[runtime\] Houge restarted .* \(kickstart\); now running 4431d13\.\nsecond$/);
+  });
 });
