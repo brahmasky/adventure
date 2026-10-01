@@ -1030,4 +1030,37 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       store.close();
     }
   });
+
+  it("run_79faefea: a 1500-char verified-cause focus passes the bridge and reaches the writer's task intact", async () => {
+    // The tool now asks for the verified cause, file, function, change and test in `focus`;
+    // a precise brief must fit and must not be clipped on its way to the writer.
+    process.env.HOUGE_SELFWRITE_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
+    const focus = `createSrcPhraseChecker matches substrings: "regate" hits "aggregate". `.padEnd(1500, "x");
+    try {
+      const run_id = turnRun(store, "好，修复一下");
+      const { status } = await executeAndSettle(makeWorker(store, deps({}, log)), store, run_id, { focus });
+      expect(status).toBe("kicked_off");
+      expect(focus.length).toBe(1500);
+      expect(log.writeTasks[0]).toContain(focus);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a focus over the 2000-char cap is refused at the bridge; the write stack is never entered", async () => {
+    process.env.HOUGE_SELFWRITE_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
+    try {
+      const run_id = turnRun(store, "好，修复一下");
+      const { status } = await executeAndSettle(makeWorker(store, deps({}, log)), store, run_id, { focus: "y".repeat(2001) });
+      expect(status).toBe("refused");
+      expect(log.writeTasks).toEqual([]);
+      expect(log.published).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
 });

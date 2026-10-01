@@ -40,6 +40,10 @@ describe("the `omp` composer surface (ADR 0002 V2: the planner acts through real
     expect(OMP_LOOP_DISCIPLINE).toMatch(/Prefer doing over asking/);
   });
 
+  it("self_write_propose is named with its precondition: verify the cause in the code first (run_79faefea)", () => {
+    expect(OMP_LOOP_DISCIPLINE).toMatch(/self_write_propose[^.]*after you have confirmed the cause in the code/);
+  });
+
   it("composes identity + the omp discipline + the omp ground rule — never the answer-don't-act GUARDRAILS", () => {
     const prompt = composeSystemPrompt(memoryRoot(), "omp");
     expect(prompt).toContain("I am 猴哥.");

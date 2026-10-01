@@ -49,4 +49,20 @@ describe("tool declarations — data the daemon validates; nothing self-writable
     expect(isToolArmed("schedule_task", { HOUGE_SCHEDULER_ENABLED: "1" })).toBe(true);
     expect(isToolArmed("bash", {})).toBe(true);
   });
+
+  it("self_write_propose asks for a VERIFIED cause before the call and leaves room for it (run_79faefea)", () => {
+    // Live: a guessed diagnosis sent the writer after the wrong cause for 11 min (empty diff).
+    const r = loadToolDeclarations(TOOL_DECLS_DIR);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const decl = r.decls.find((d) => d.name === "self_write_propose")!;
+    expect(decl.description).toMatch(/confirm the root cause in the code/i);
+    expect(decl.description).toMatch(/read and bash/);
+    expect(decl.description).not.toMatch(/do NOT need self_diagnose/i);
+    expect(decl.description).toMatch(/ENDS this turn/);
+    expect(decl.parameters.properties!.focus!.maxLength).toBe(2000);
+    expect(validateInput(decl.parameters, { focus: "z".repeat(2000) })).toEqual([]);
+    expect(validateInput(decl.parameters, { focus: "z".repeat(2001) }).length).toBeGreaterThan(0);
+  });
 });
+
