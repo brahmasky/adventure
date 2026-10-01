@@ -1,6 +1,7 @@
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { PROTECTED_DIRS, PROTECTED_FILES } from "../capabilities/self-write-guard.js";
+import { resolveDaemonTmpDir } from "../run/daemon-tmp.js";
 
 /**
  * `binDirs`: the directories holding the binaries the daemon later runs OUTSIDE the sandbox (omp, codex, agy,
@@ -26,6 +27,8 @@ export const HOME_SECRETS: readonly string[] = [
 export function secretPaths(ctx: PathContext): string[] {
   return [
     join(ctx.repo, ".env"), join(ctx.data, "houge.sqlite"), join(ctx.data, "houge.sqlite-wal"), join(ctx.data, "houge.sqlite-shm"),
+    // the daemon temp root holds Paco's media downloads and codex out-files: no child reads or writes it (N1)
+    resolveDaemonTmpDir(process.env, ctx.home),
     ...HOME_SECRETS.map((p) => join(ctx.home, p))
   ];
 }
@@ -65,9 +68,9 @@ export function writableExceptions(ctx: PathContext, kind: "planner" | "shell"):
   return kind === "planner" ? [ws, join(ctx.data, "omp", "sessions")] : [ws];
 }
 
-/** The daemon's own temp space and self-write worktrees (src/run/daemon-tmp.ts): never writable by a sandboxed child (B13). */
+/** The self-write worktrees (src/run/daemon-tmp.ts): never writable by a sandboxed child (B13). The temp root is a secret path. */
 export function daemonOnlyDirs(ctx: PathContext): string[] {
-  return [join(ctx.data, "tmp"), join(ctx.data, "selfwrite")];
+  return [join(ctx.data, "selfwrite")];
 }
 
 export function operationalWriteDeny(ctx: PathContext): string[] {

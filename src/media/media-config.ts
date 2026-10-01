@@ -83,7 +83,7 @@ export function resolveMediaLegTimeoutMs(env: NodeJS.ProcessEnv): number {
 
 /**
  * The answer adapter's gate: an absolute, normalised path (no `..`) to a code-owned basename inside a
- * `houge-media-*` directory that sits DIRECTLY under a daemon temp root (`<data>/tmp`, never os.tmpdir(): B13),
+ * `houge-media-*` directory that sits DIRECTLY under a daemon temp root (never os.tmpdir(): B13),
  * carrying that basename's one mime.
  */
 export function isAllowedMediaFile(input: { path: string; mime: string }): boolean {

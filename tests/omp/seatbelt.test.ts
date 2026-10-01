@@ -172,11 +172,22 @@ describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () 
     }
   });
 
-  it("denies <data>/tmp and <data>/selfwrite after the $HOME allow, even when the data dir is not the repo (B13)", () => {
+  it("denies <data>/selfwrite writes after the $HOME allow, even when the data dir is not the repo (B13)", () => {
     const apart = { ...ctx, data: "/Users/p/houge-data" };
     for (const p of [renderSeatbelt(apart).planner, renderSeatbelt(apart).shell]) {
       const allowHome = p.indexOf('(allow file-write* (subpath "/Users/p"))');
-      for (const d of ["tmp", "selfwrite"]) expect(p.indexOf(`(deny file-write* (subpath "/Users/p/houge-data/${d}"))`), d).toBeGreaterThan(allowHome);
+      expect(p.indexOf('(deny file-write* (subpath "/Users/p/houge-data/selfwrite"))')).toBeGreaterThan(allowHome);
+    }
+  });
+
+  it("read- AND write-denies the daemon temp root (~/Library/Caches/houge-daemon by default) in both profiles (round 2 N1)", () => {
+    const saved = process.env.HOUGE_DAEMON_TMP_DIR; delete process.env.HOUGE_DAEMON_TMP_DIR;
+    try {
+      for (const p of [renderSeatbelt(ctx).planner, renderSeatbelt(ctx).shell]) {
+        expect(p).toContain('(deny file-read* file-write* (subpath "/Users/p/Library/Caches/houge-daemon"))');
+      }
+    } finally {
+      if (saved !== undefined) process.env.HOUGE_DAEMON_TMP_DIR = saved;
     }
   });
 
@@ -232,17 +243,22 @@ describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () 
     const { home, live, run } = fakeHome();
     const apart = { ...live, data: join(home, "houge-data") }; // data apart from the repo: its own rules must hold
     const wt = join(apart.data, "selfwrite", "houge-worktree-x");
-    mkdirSync(join(apart.data, "tmp", "houge-media-x"), { recursive: true }); mkdirSync(join(apart.data, "omp", "workspace", "chat-1", ".tmp"), { recursive: true });
+    const daemonTmp = join(home, "Library", "Caches", "houge-daemon"); // the default root under the fake $HOME (N1)
+    const savedTmp = process.env.HOUGE_DAEMON_TMP_DIR; delete process.env.HOUGE_DAEMON_TMP_DIR;
+    mkdirSync(join(daemonTmp, "houge-media-x"), { recursive: true }); writeFileSync(join(daemonTmp, "houge-media-x", "media.jpg"), "PHOTO");
+    mkdirSync(join(apart.data, "omp", "workspace", "chat-1", ".tmp"), { recursive: true });
     mkdirSync(wt, { recursive: true }); writeFileSync(join(wt, ".git"), "gitdir: /repo/.git/worktrees/x\n");
     const profiles = writeSeatbeltProfiles(apart);
+    if (savedTmp !== undefined) process.env.HOUGE_DAEMON_TMP_DIR = savedTmp;
     const varFolders = join(realpathSync(tmpdir()), `houge-vf-canary-${process.pid}`); // outside the fake $HOME
     const writes = (prof: string, path: string) => run(prof, "/bin/sh", "-c", `echo x > '${path}'`).status === 0;
     try {
       for (const prof of [profiles.planner, profiles.shell]) {
-        for (const p of [join(apart.data, "tmp", "houge-media-x", "media.jpg"), join(apart.data, "tmp", "new"), join(wt, ".git"), join(wt, "src.ts"), varFolders]) {
+        for (const p of [join(daemonTmp, "houge-media-x", "media.jpg"), join(daemonTmp, "new"), join(wt, ".git"), join(wt, "src.ts"), varFolders]) {
           expect(writes(prof, p), p).toBe(false);
         }
-        expect(run(prof, "/bin/ln", "-s", "/etc/passwd", join(apart.data, "tmp", "houge-media-x", "media.opus")).status).not.toBe(0);
+        expect(run(prof, "/bin/cat", join(daemonTmp, "houge-media-x", "media.jpg")).stdout).not.toContain("PHOTO"); // read-denied too (N1)
+        expect(run(prof, "/bin/ln", "-s", "/etc/passwd", join(daemonTmp, "houge-media-x", "media.opus")).status).not.toBe(0);
         expect(run(prof, "/bin/mv", join(apart.data, "selfwrite"), join(home, "moved")).status).not.toBe(0);
         expect(writes(prof, join(apart.data, "omp", "workspace", "chat-1", ".tmp", "ok"))).toBe(true);
         expect(writes(prof, `/tmp/houge-sb-tmp-${process.pid}`)).toBe(true);

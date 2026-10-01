@@ -1,5 +1,5 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { daemonTmpRoot, registerDaemonTmpRoot } from "../run/daemon-tmp.js";
+import { daemonTmpRoot, gitAncestor, registerDaemonTmpRoot } from "../run/daemon-tmp.js";
 import path from "node:path";
 import { buildReaderQuestion, parseReaderExtraction, renderExtractionDigest } from "../core/quarantine.js";
 import { classifyLlmError } from "../llm/audit.js";
@@ -44,7 +44,7 @@ export interface MediaIngestDeps {
   stageDeadlineMs?: number;
   /** Default MEDIA_DOWNLOAD_TIMEOUT_MS; tests shrink it. */
   downloadTimeoutMs?: number;
-  /** Default `<data>/tmp` (never os.tmpdir(), B13); tests use a per-file root so dir assertions never see other suites' dirs. */
+  /** Default the daemon temp root (never os.tmpdir(), B13; outside the repo, N1); tests use a per-file root so dir assertions never see other suites' dirs. */
   tmpRoot?: string;
 }
 
@@ -71,11 +71,14 @@ export async function ingestMedia(deps: MediaIngestDeps, ref: TelegramMediaRef, 
     (ref.kind === "voice" && (ref.duration ?? 0) > VOICE_MAX_SECONDS);
   if (tooLarge) return fail(ref.kind, "too_large", base);
 
+  const root = mediaTmpRoot(deps.tmpRoot);
+  // agy (the only voice leg) would run in a media dir under this root: never inside a git repo (round 2 N1)
+  if (ref.kind === "voice" && gitAncestor(root) !== null) return fail(ref.kind, "disabled", { ...base, detail: "tmp_in_git_repo" });
   // The dir exists BEFORE the deadline starts (plan review B1): whichever way the race ends, there is
   // a known dir to remove, and nothing created later can leak.
   let dir: string;
   try {
-    dir = await mkdtemp(path.join(mediaTmpRoot(deps.tmpRoot), "houge-media-"));
+    dir = await mkdtemp(path.join(root, "houge-media-"));
   } catch {
     return fail(ref.kind, "leg_failed", { ...base, detail: "mkdtemp" });
   }

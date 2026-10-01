@@ -187,10 +187,12 @@ change the architecture the spec describes:
     - **The workspace is pinned.** Its root, the sessions root and every `chat-<id>` dir cannot be
       moved or replaced by a symlink, and the attachment adapter lstat-checks the chain and the
       realpath before it reads a file.
-    - **Daemon temp space moved to `<data>/tmp`, worktrees to `<data>/selfwrite`.** Both are
-      write-denied to every child. A self-write diff is re-hashed before publish.
+    - **Daemon temp space moved to `~/Library/Caches/houge-daemon` (`HOUGE_DAEMON_TMP_DIR`), outside
+      the repo, worktrees to `<data>/selfwrite`.** The temp root is read- and write-denied to every
+      child, the worktrees write-denied. A temp root inside a git repo pages at boot and disables
+      voice ingest; agy never runs with a cwd in a git repo. A self-write diff is re-hashed before publish.
     - **Children get a private `TMPDIR`**: `<workspace>/.tmp` for the planner and `bash`, and
-      `<data>/tmp` for one-shots, codex and agy.
+      the daemon temp root for one-shots, codex and agy.
     - **Daemon-side git runs without user or system config**, hooks or fsmonitor (push keeps the
       credential helper).
     - **`sandbox-exec` and every wrapper helper run by absolute path.**

@@ -38,6 +38,7 @@ launchd: [deploy/launchd/README.md](../../deploy/launchd/README.md).
 | `HOUGE_TELEGRAM_LONGPOLL_TIMEOUT_S` | `30` | Telegram `getUpdates` long-poll timeout (seconds). The daemon blocks on a held connection for up to this long; a message arriving sooner is delivered immediately. Not your message latency — just how long an *idle* connection is held. |
 | `HOUGE_DAEMON_BACKOFF_BASE_MS` | `1000` | Base delay for exponential backoff after a Telegram error (`base · 2^(failures-1)`). |
 | `HOUGE_DAEMON_BACKOFF_MAX_MS` | `60000` | Cap on the backoff delay. |
+| `HOUGE_DAEMON_TMP_DIR` | `~/Library/Caches/houge-daemon` | The daemon's temp root (media downloads, codex out-files, agy workdirs). Must be absolute (a relative value falls back to the default). Created and kept at 0700; both Seatbelt profiles read- and write-deny it. It must sit outside any git repo: at boot an ancestor holding `.git` raises the `daemon_tmp_in_git_repo` incident (one alert) and voice ingest refuses with the code-owned "media ingest is off" reply, because agy may root file access at the repo's top level (`.env` included). Never `<repo>/tmp`. |
 | `HOUGE_DAEMON_LOCK_PATH` | `houge.daemon.lock` (cwd) | PID lockfile for the single-instance guard; a second daemon with the same lock exits instead of fighting over the Telegram long-poll (which would cause HTTP 409). |
 
 ## LLM runtime — omp (ADR 0028)
@@ -85,11 +86,11 @@ reach a real omp. The defaults below are copied from `src/omp/omp-config.ts`.
 
 Set by the daemon, not operator config: `HOUGE_BRIDGE_SOCK` and `HOUGE_BRIDGE_TOKEN` are minted per
 planner child, and `HOUGE_SHELL_SANDBOX` is the shell wrapper's copy of `HOUGE_OMP_SANDBOX`. `TMPDIR` is
-set for every child: `<workspace>/.tmp` for the planner and each `bash` command, `<data>/tmp` for one-shots,
-codex and agy. The Seatbelt profiles deny `os.tmpdir()` (`/private/var/folders`), so a child never writes where
-the daemon later reads. The daemon's own temp space is `<data>/tmp` (media downloads, codex out-files, agy
-workdirs) and self-write worktrees live in `<data>/selfwrite`; `<data>` is the directory holding
-`houge.sqlite`. Both are 0700, gitignored and write-denied to every sandboxed child (ADR 0028, decision 18).
+set for every child: `<workspace>/.tmp` for the planner and each `bash` command, the daemon temp root for
+one-shots, codex and agy. The Seatbelt profiles deny `os.tmpdir()` (`/private/var/folders`), so a child never writes
+where the daemon later reads. The daemon's own temp space (media downloads, codex out-files, agy workdirs) is the
+daemon temp root below, outside the repo; self-write worktrees live in `<data>/selfwrite` (git by design; `<data>`
+is the directory holding `houge.sqlite`, gitignored, write-denied to every sandboxed child; ADR 0028, decision 18).
 `HOUGE_CONFIG_YML` is not an environment variable: it is the name of the code constant
 (`src/omp/planner-supervisor.ts`) holding the profile config the daemon writes to
 `<data>/omp/houge-config.yml` (`tools.xdev: false`, `startup.checkUpdate: false`,

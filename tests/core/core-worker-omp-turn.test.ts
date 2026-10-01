@@ -264,6 +264,28 @@ describe("shutdown with turns still queued (fix round 1, I-2)", () => {
   });
 });
 
+describe("the daemon temp root must not sit in a git repo (round 2 N1)", () => {
+  it("the boot check pages daemon_tmp_in_git_repo once and resolves it when the root is moved out", () => {
+    const savedTmp = process.env.HOUGE_DAEMON_TMP_DIR;
+    mkdirSync(join(tmp.dir, "repo", ".git"), { recursive: true });
+    process.env.HOUGE_DAEMON_TMP_DIR = join(tmp.dir, "repo", "tmp");
+    process.env.HOUGE_TELEGRAM_CHAT_ID = "555";
+    try {
+      worker = ompWorker(store, tmp.dir);
+      expect(worker.checkDaemonTmp()).toBe(false);
+      expect(worker.checkDaemonTmp()).toBe(false);
+      expect(store.listOpenIncidents().map((i) => i.kind)).toEqual(["daemon_tmp_in_git_repo"]);
+      expect([...drainOutbox(store).keys()].filter((k) => k.startsWith("incident_opened:"))).toHaveLength(1);
+      process.env.HOUGE_DAEMON_TMP_DIR = join(tmp.dir, "outside");
+      expect(worker.checkDaemonTmp()).toBe(true);
+      expect(store.listOpenIncidents()).toEqual([]);
+    } finally {
+      if (savedTmp === undefined) delete process.env.HOUGE_DAEMON_TMP_DIR; else process.env.HOUGE_DAEMON_TMP_DIR = savedTmp;
+      delete process.env.HOUGE_TELEGRAM_CHAT_ID;
+    }
+  });
+});
+
 describe("recovery of turns a crash stranded (final review B1)", () => {
   it("at boot every turn still queued from before it fails planner_exit 'daemon restarted' with the normal reply", () => {
     worker = ompWorker(store, tmp.dir);

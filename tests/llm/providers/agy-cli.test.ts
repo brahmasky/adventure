@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import os from "node:os";
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import {
-  createAgyCliProvider,
+  createAgyCliProvider, AGY_GIT_CWD_REFUSED,
   AGY_DEFAULT_MODEL,
   ERROR_EXCERPT_MAX
 } from "../../../src/llm/providers/agy-cli.js";
@@ -628,6 +629,20 @@ describe("createAgyCliProvider", () => {
 describe("media calls (multimodal ingest, spec 2026-09-29)", () => {
   const mediaDir = `${os.tmpdir()}/houge-media-agytest`;
   const media = { path: `${mediaDir}/media.opus`, mime: "audio/ogg" };
+
+  it("never runs agy with a cwd inside a git repo: a media dir under a .git ancestor is refused before any spawn (round 2 N1)", async () => {
+    const root = mkdtempSync(join(os.tmpdir(), "houge-agy-git-"));
+    const dir = join(root, "repo", "tmp", "houge-media-g");
+    mkdirSync(join(root, "repo", ".git"), { recursive: true }); mkdirSync(dir, { recursive: true });
+    const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout: envelope({ response: "leaked" }) }));
+    try {
+      const r = await createAgyCliProvider({ spawnImpl, model: "M" }).answer({ question: "Transcribe.", media: { path: join(dir, "media.opus"), mime: "audio/ogg" } });
+      expect(r).toEqual({ ok: false, provider: "agy-cli", error: AGY_GIT_CWD_REFUSED, unavailable: true });
+      expect(spawnImpl).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it("supportsMedia: ogg audio, jpeg and png images; nothing else", () => {
     const p = createAgyCliProvider({ spawnImpl: async () => spawnResult() });

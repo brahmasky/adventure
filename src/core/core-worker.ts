@@ -21,7 +21,7 @@ import { normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
 import type { LlmAuditScope, LlmCallRole } from "../run/run-store.js";
 import { publishBranch, selfWriteBranchName } from "../run/branch-publish.js";
 import { createWorktree, removeWorktree } from "../run/worktree.js";
-import { setDaemonDataDir } from "../run/daemon-tmp.js";
+import { daemonTmpRoot, gitAncestor, setDaemonDataDir } from "../run/daemon-tmp.js";
 import { buildGateAQuestion, GATE_A_DISCIPLINE, parseGateAVerdict } from "../capabilities/skill-router.js";
 import type { GateAResult } from "../capabilities/skill-router.js";
 import { buildGuidedRefineQuestion, buildSkillAuthorQuestion, parseAuthoredSkill } from "../capabilities/skill-author.js";
@@ -213,6 +213,7 @@ export interface OmpWorkerOptions {
 }
 
 const OMP_CONFIG_INCIDENT: ReadonlySet<string> = new Set(["omp_config_invalid"]);
+const DAEMON_TMP_INCIDENT: ReadonlySet<string> = new Set(["daemon_tmp_in_git_repo"]);
 
 /** The ⓪·2 evolution tools — their non-success outcomes are surfaced code-owned (see LoopTurnContext). */
 const EVOLUTION_TOOLS = new Set(["self_diagnose", "self_write_propose", "skill_author"]);
@@ -1975,6 +1976,16 @@ export class CoreWorker {
     const invalid = ompConfigProblems(process.env);
     if (invalid.length === 0) { resolveOpenIncidents(this.runStore, OMP_CONFIG_INCIDENT); return true; }
     openAlertedIncident(this.runStore, { kind: "omp_config_invalid", subject: "omp", detail: { invalid } });
+    return false;
+  }
+
+  /**
+   * Boot check (round 2 N1): the daemon temp root must not sit inside a git repo, or agy's voice workdir would.
+   * Inside one, daemon_tmp_in_git_repo pages once and voice ingest refuses (media-ingest); outside, it resolves.
+   */
+  checkDaemonTmp(): boolean {
+    if (gitAncestor(daemonTmpRoot()) === null) { resolveOpenIncidents(this.runStore, DAEMON_TMP_INCIDENT); return true; }
+    openAlertedIncident(this.runStore, { kind: "daemon_tmp_in_git_repo", subject: "daemon_tmp", detail: { voice_ingest: "disabled" } });
     return false;
   }
 

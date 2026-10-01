@@ -1,8 +1,8 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import { MEDIA_DIGEST_MAX_CHARS, MEDIA_MAX_BYTES, VOICE_MAX_SECONDS, type TelegramMediaRef } from "../../src/media/media-config.js";
+import { MEDIA_DIGEST_MAX_CHARS, MEDIA_MAX_BYTES, mediaFailureReply, VOICE_MAX_SECONDS, type TelegramMediaRef } from "../../src/media/media-config.js";
 import { ingestMedia, PHOTO_BARE_OBJECTIVE, VOICE_TRANSCRIBE_QUESTION, type MediaIngestDeps } from "../../src/media/media-ingest.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
 
@@ -56,6 +56,21 @@ describe("ingestMedia — voice", () => {
     let signal: unknown;
     await ingestMedia(deps({ downloadFile: async (input) => { signal = input.signal; return { bytes: new Uint8Array([1]) }; } }), voice, "");
     expect(signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
+describe("ingestMedia — a temp root inside a git repo (round 2 N1)", () => {
+  it("disables voice ingest with the code-owned reply and never downloads or calls agy", async () => {
+    const repo = mkdtempSync(path.join(os.tmpdir(), "houge-ingest-git-"));
+    mkdirSync(path.join(repo, ".git")); mkdirSync(path.join(repo, "tmp"));
+    const downloadFile = vi.fn(async () => ({ bytes: new Uint8Array([1]) })); const mediaCall = vi.fn();
+    try {
+      const r = await ingestMedia(deps({ tmpRoot: path.join(repo, "tmp"), downloadFile, mediaCall }), voice, "");
+      expect(r).toMatchObject({ ok: false, status: "disabled", reply: mediaFailureReply("voice", "disabled"), ledger: { detail: "tmp_in_git_repo" } });
+      expect(downloadFile).not.toHaveBeenCalled(); expect(mediaCall).not.toHaveBeenCalled();
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
 

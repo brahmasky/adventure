@@ -335,6 +335,7 @@ function leaseRecoveryIntervalMs(): number {
  */
 function bootPlanners(worker: CoreWorker, options: RunTelegramDaemonOptions, now: () => string): ReturnType<typeof setInterval> {
   worker.validateOmpConfig();
+  worker.checkDaemonTmp(); // N1: a temp root inside a git repo pages and disables voice ingest
   recoverPlannerRuns(worker, now(), true);
   const timer = setInterval(() => recoverPlannerRuns(worker, now(), false), options.leaseRecoveryMs ?? leaseRecoveryIntervalMs());
   timer.unref();

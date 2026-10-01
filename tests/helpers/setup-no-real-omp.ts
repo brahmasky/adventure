@@ -15,6 +15,8 @@ process.env.HOUGE_OMP_BIN = NO_OMP_BIN;
 // Daemon temp space (<data>/tmp, <data>/selfwrite: B13) defaults to the cwd, i.e. the repo: tests get a tmp data dir.
 const dataDir = mkdtempSync(join(tmpdir(), "houge-test-data-"));
 setDaemonDataDir(dataDir);
+const savedDaemonTmp = process.env.HOUGE_DAEMON_TMP_DIR;
+process.env.HOUGE_DAEMON_TMP_DIR = join(dataDir, "daemon-tmp"); // never the developer's ~/Library/Caches (round 2 N1)
 const stubDir = mkdtempSync(join(tmpdir(), "houge-stub-bin-"));
 for (const name of ["omp", "agy"]) {
   const file = join(stubDir, name);
@@ -27,5 +29,6 @@ afterAll(() => {
   // Threads reuse process.env across files: restore PATH so stub dirs never pile up.
   if (pathBefore === undefined) delete process.env.PATH; else process.env.PATH = pathBefore;
   rmSync(stubDir, { recursive: true, force: true });
+  if (savedDaemonTmp === undefined) delete process.env.HOUGE_DAEMON_TMP_DIR; else process.env.HOUGE_DAEMON_TMP_DIR = savedDaemonTmp;
   rmSync(dataDir, { recursive: true, force: true });
 });

@@ -106,11 +106,14 @@ bounded); local overwrites and unmatched destructive commands (D5). Upgrade path
   under them with literal/regex write denies (the daemon creates them), so the sandbox cannot move, remove or
   symlink-replace one. Before an attachment is read, `verifiedWorkspace` lstat-checks each component from
   `<data>/omp` down to `chat-<id>` and requires `realpath(ws)` to equal the expected path.
-- **Daemon temp space is off `os.tmpdir()`.** Media downloads, codex out-files and agy workdirs live in
-  `<data>/tmp`; self-write worktrees in `<data>/selfwrite` (both 0700, write-denied in both profiles). Before
-  publish the unified diff is re-hashed and compared with the reviewed one; a change refuses the publish.
+- **Daemon temp space is off `os.tmpdir()` and out of the repo.** Media downloads, codex out-files and agy
+  workdirs live in `~/Library/Caches/houge-daemon` (`HOUGE_DAEMON_TMP_DIR`; 0700, read- and write-denied in both
+  profiles). A root with a `.git` ancestor pages `daemon_tmp_in_git_repo` at boot and voice ingest refuses; agy
+  never runs with a cwd inside a git repo (it may root file access at the toplevel, `.env` included). Self-write
+  worktrees stay in `<data>/selfwrite` (0700, write-denied). Before publish the unified diff is re-hashed and
+  compared with the reviewed one; a change refuses the publish.
 - **Children get a private `TMPDIR`.** The planner and every `bash` command run with `TMPDIR=<workspace>/.tmp`;
-  one-shots, codex and agy with `TMPDIR=<data>/tmp`. Nothing a child writes lands where the daemon later reads.
+  one-shots, codex and agy with `TMPDIR=` the daemon temp root. Nothing a child writes lands where the daemon later reads.
 - **Daemon-side git ignores user and system config** (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, no
   fsmonitor, no hooks), except `push`, which keeps the credential helper; `~/.gitconfig` is write-denied.
 - **Absolute binaries.** `/usr/bin/sandbox-exec` and every wrapper helper are called by absolute path under a fixed

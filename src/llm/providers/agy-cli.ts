@@ -16,7 +16,7 @@
 // Tool use is deliberately permitted where the operator has allowed it; denied attempts are
 // surfaced in the failure text so an injection attempt is visible rather than silent.
 import { rm } from "node:fs/promises";
-import { daemonMkdtemp, daemonTmpRoot } from "../../run/daemon-tmp.js";
+import { daemonMkdtemp, daemonTmpRoot, gitAncestor } from "../../run/daemon-tmp.js";
 import path from "node:path";
 import type { LlmProvider, LlmRequest, LlmResult } from "../types.js";
 import { normalizeAgyUsage } from "../../run/llm-usage.js";
@@ -90,6 +90,9 @@ function deniedActionNames(raw: unknown): string[] {
     )
     .filter((name) => name.length > 0);
 }
+
+/** agy is never run with a cwd inside a git repo (round 2 N1): code-owned refusal, the chain treats it as unavailable. */
+export const AGY_GIT_CWD_REFUSED = "agy refused: its working directory is inside a git repository";
 
 export interface AgyCliProviderConfig {
   model?: string;
@@ -183,11 +186,17 @@ export function createAgyCliProvider(config: AgyCliProviderConfig = {}): LlmProv
         workdir = path.dirname(media.path);
       } else {
         try {
-          workdir = await daemonMkdtemp("houge-agy-"); // <data>/tmp, never os.tmpdir() (B13)
+          workdir = await daemonMkdtemp("houge-agy-"); // the daemon temp root, never os.tmpdir() (B13)
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           return { ok: false, provider: "agy-cli", error: `agy workdir setup failed: ${message}` };
         }
+      }
+
+      // agy roots file access at its workspace; inside a git repo that may be the repo's top level, .env included (N1)
+      if (gitAncestor(workdir) !== null) {
+        if (!media) await rm(workdir, { recursive: true, force: true }).catch(() => {});
+        return { ok: false, provider: "agy-cli", error: AGY_GIT_CWD_REFUSED, unavailable: true };
       }
 
       let result: SpawnResult;

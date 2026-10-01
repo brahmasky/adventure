@@ -59,13 +59,15 @@ try {
   process.exit(2);
 }
 
+process.env.HOUGE_DAEMON_TMP_DIR = join(data, "daemon-tmp");
 const store = RunStore.openInMemory();
 const worker = new CoreWorker(store, repo, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, {
   downloadFile: async ({ file_id }) => ({ bytes: new Uint8Array(media[file_id]) })
 }, { dataDir: data, distDir: DIST });
 const TERMINAL = new Set(["completed", "failed", "cancelled", "expired"]);
-// Media dirs live in the gate's own data dir (<data>/tmp, B13), never os.tmpdir(): no snapshot of a shared dir needed.
-const mediaTmp = join(data, "tmp");
+// Media dirs live in the daemon temp root (N1), pointed into the gate's own data dir (outside any git repo), never
+// os.tmpdir(): no snapshot of a shared dir needed. Set before the first daemonTmpRoot() call.
+const mediaTmp = join(data, "daemon-tmp");
 const mediaRows = (run) => store.getLedgerEvents(run).filter((e) => e.event_type === "media_ingested").map((e) => e.payload);
 const attempts = (run, role) => store.getLedgerEvents(run).filter((e) => e.event_type === "llm_attempt" && e.payload.role === role).map((e) => e.payload);
 
