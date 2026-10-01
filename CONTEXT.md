@@ -54,7 +54,7 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Context Pack**: The bounded set of instructions, memory artifacts, skills, and metadata selected for one LLM task.
 
-**Lesson**: A proposed, accepted, or activated reusable learning from `/teach`, run reflection, or delegated agent teaching packets.
+**Lesson**: A durable, scoped preference distilled from Paco's own feedback (the planner calls `lesson_write`), reconciled on write (ADD / SUPERSEDE / UPDATE) and folded into future prompts by the composer. Scope `ask` steers the planner; scope `research` steers the reader. Retired by status flip, never deleted.
 
 **Learning Lifecycle**: The module that owns learning artifact states, provenance, approval, eval gates, activation, and rollback.
 
@@ -84,8 +84,56 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Verification Extraction (`trusted_extract` side-channel)**: The deterministic regex pass over a raw mail body that extracts OTP codes and verification links, appended *after* the Q-LLM reader digest. Trusted for the same reason as time claims: structured, hygiened, hard-capped, no verb — code built it, so it cannot carry an instruction. Links stay byte-exact and remain attacker-controlled data.
 
-**Dual-LLM Arming Couple**: The manifest rule that `gmail_read`/`google_api` are armed only when `HOUGE_GOOGLE_ENABLED` and `HOUGE_DUAL_LLM_ENABLED` are both on, composed in the tool manifest. There is no configuration in which un-quarantined mail bytes reach the planner; if either flag is off, the tools silently vanish from the manifest.
-
 **Lesson Consolidation (Preserve-All Merge)**: A daily merge tick that clusters near-duplicate ACTIVE lessons within a scope and merges each cluster into one lesson keeping every directive and every AVOID. It is **ADD-then-supersede-all**: the merged lesson is added and the originals are superseded (never deleted), reuse value carried (capped/clamped). A cluster-size cap plus gross-collapse and avoid-drop floors prevent over-collapse. It mirrors episodic consolidation and is the lesson-side analogue of reconcile-on-write, operating in bulk rather than per-write.
 
-**API-vs-CLI Usage Split**: The `/usage` (Telegram) and `houge usage` (CLI) accounting distinction between **metered API legs** — pay-per-token providers whose real dollar cost is tracked (e.g. `kimi-api`, `gemini-api`; off every default chain since 2026-09-06, named only as the operator's escape hatch) — and **flat-rate CLI legs** — subscription-covered runtimes reported in tokens only, never dollars (labelled "sub", e.g. `pi`, `agy-cli`, `codex`). Only metered legs carry a cost; the audit sink (`RunStore.llmAuditSink`, the one pricing seam since slice 2) strips a non-metered leg's self-reported cost and prices metered legs itself. The SQLite ledger is the telemetry substrate (OTel deferred by design).
+**API-vs-Subscription Usage Split**: The `/usage` (Telegram) and `houge usage` (CLI) accounting distinction between **metered API legs**, pay-per-token providers whose real dollar cost is tracked, and **subscription legs**, reported in tokens only and labelled "sub". Since the omp cutover every default leg is a subscription leg (omp under profile `houge`, `agy-cli` for voice, `codex`), so no row is priced and the metered-$ ceiling is dormant (ADR 0019 amendment). The audit sink (`RunStore.llmAuditSink`) remains the one pricing seam if a metered leg returns. The SQLite ledger is the telemetry substrate (OTel deferred by design).
+
+## Runtime terms (omp, ADR 0028)
+
+**omp**: The agent runtime (`@oh-my-pi/pi-coding-agent`, an oh-my-pi fork), pinned at 18.4.4 and always run under its own profile `houge`, on subscription OAuth only. A spawn on any other version is refused.
+
+**Planner**: The one supervised omp RPC process per Telegram chat that runs every chat turn. It has omp's `read`, `edit` and `write` built-ins plus Houge's tools, runs under `sandbox-exec`, and keeps the chat's transcript in its omp session. Its model chain is Opus 5.5, then Opus 4.6 via Antigravity, then Kimi k3.
+
+**PlannerSupervisor**: The daemon-side owner of one chat's planner: it spawns and restarts the child, holds the run lease, queues and steers messages, enforces the turn deadline and frame watchdog, and finishes the run. A child counts as started only after the bridge has served it the tool manifest.
+
+**Detached Turn**: A `turn` run handed to its chat's PlannerSupervisor instead of being awaited by the poll loop. The loop keeps polling, so `/approve`, `/kill`, a second message and outbox flushes are handled while the turn runs. Non-turn runs keep the synchronous path.
+
+**Steered Run**: A message that arrives while its chat's turn is running. It is still its own run, claimed by the supervisor and `steer`ed into the live turn; Paco gets one reply (the parent's), and the steered run finishes as `merged_into:<run_id>`, or fails `merged_parent_failed` with its parent. Media and schedule-born runs never steer.
+
+**Bridge**: The per-planner-child Unix socket through which every Houge tool runs daemon-side. Its authority (run, lease, contract, budget) is server-owned: the child sends a tool name, input and call id, never a run id. Request kinds are `call`, `gate`, `report`, `context` and `manifest`.
+
+**Tool Declaration**: One JSON file per Houge tool under `src/omp/tools/` (name, description, JSON-Schema parameters). It is data: the daemon validates it at boot and serves it as the manifest, and it can never choose its own policy class.
+
+**Capability Map**: The protected, code-owned mapping from a tool name (and validated input) to a Tool Registry entry (`src/omp/capability-map.ts`). `bash` maps to `shell`, or to `shell_external` when the matcher classifies the command as an external write.
+
+**Policy Hook**: The `tool_call` hook in the planner's single extension (`dist/omp/extension/houge.js`). It allowlists tool names, refuses URL-shaped reads, canonicalises paths the way omp resolves them, and asks the bridge to `gate` every built-in file call before omp runs it.
+
+**Seat**: A named LLM role with its own model chain. The planner is the conversational seat; every other seat (reader, photo, ticks, judges, chair, reviewer) is a **one-shot seat**: a tool-less, sessionless, extension-less omp spawn, one per call. Voice transcription (agy-cli) and the self-write writer (codex) are seats outside omp.
+
+**Model String**: `provider/model[:effort]`, one entry in a seat's ordered chain. On a retryable error (quota, auth, transport, timeout, model missing) the next string serves; a refusal is final.
+
+**Floor A**: The file floor. The planner process and every `bash` command run under rendered Seatbelt profiles (`planner.sb`, `shell.sb`): writes denied by default outside `$HOME`, `/private/tmp` and the workspace, then denied again for the Houge repo, `dist/`, binary install trees and code-running dotfiles; credential stores read- and write-denied. The policy hook denies the same paths with a clean reason. Code-owned, not bypassable by the model.
+
+**Floor B**: The external-effect floor. A `bash` command that the code-owned matcher (`src/omp/command-matcher.ts`) classifies as an external write or a destructive delete, and any bridge tool whose registry level is `external_write`, waits for Paco's `/approve`. Best effort for `bash`: a command the matcher misses runs (accepted residual, D12).
+
+**Tool Approval**: The in-turn approval record (`tool_approvals`) created when a bridge call hits floor B. The run stays `running` while the call is suspended; `/approve <id>` or `/deny <id>` resolves it, it expires after the approval timeout, and a single compare-and-set consume means one approval authorises exactly one execution. One approval is in flight per turn.
+
+**Planner Workspace**: `<data>/omp/workspace/chat-<id>`, the planner's working directory and the only place `[[attach: <path>]]` may send a file from. Its root and chat directories are pinned against moves and symlink swaps.
+
+**Family Collapse**: The state in which the planner and the quarantined reader resolve to the same model family after fallback. The read proceeds but is audited: the `llm_attempt` row carries `family_collapse`, a `wall_collapse` event is written, and incident `wall_collapsed` stays open (D10).
+
+## Historical terms (retired by the omp cutover, 2026-10)
+
+These appear in older ledger rows, specs and sessions. They no longer describe the running system.
+
+**Inner Loop**: The pre-omp agentic loop (`src/core/inner-loop.ts`, ADR 0013) that handed the model a tool manifest and parsed one JSON action per step under a step cap. Replaced by omp's agent loop.
+
+**JSON Action Protocol**: The inner loop's contract that the model reply with one JSON object naming the next action. Gone: the planner calls tools natively.
+
+**Intent Classifier / Intent Router**: The per-turn LLM call (`classifyIntent`, the `intent_router` contract action) that labelled a message answer / research / feedback / clarify / selfcode / skill before dispatch. Deleted; the planner picks its own steps. The `Intent` type survives for historical rows, and `chat_turns.intent` is now `loop` or `clarify`, written by the supervisor.
+
+**llm_answer**: The inner-loop tool that asked the model chain for a final answer. Deleted as a planner tool; the planner answers directly. The internal `/run` research programs still use an answer capability.
+
+**Dual-LLM Arming Couple**: The rule that `gmail_read`/`google_api` armed only when both the Google flag and the dual-LLM flag were on. Gone: the wall is unconditional, so the Google flag alone arms them.
+
+**Money Track**: The earning tools (`bounty_scan`, `project_*`, `external_work`) and the external workspace (ADR 0022, 0023). Code deleted at `3aabc04`; the tables and historical rows stay readable.
