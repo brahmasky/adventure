@@ -1830,17 +1830,7 @@ export class RunStore {
     return rows.flatMap((row) => {
       // A planner turn may already have produced side effects: fail it, never requeue (spec §7.2).
       if ((row.worker_id ?? "").startsWith("planner:")) {
-        const failed = this.db.prepare(`
-          UPDATE runs SET state = 'failed', state_reason = 'lease_expired', worker_id = NULL, lease_expires_at = NULL, updated_at = ?
-          WHERE run_id = ? AND state = 'running' AND worker_id = ? AND lease_expires_at = ?
-        `).run(new Date().toISOString(), row.run_id, row.worker_id, row.lease_expires_at);
-        if (failed.changes !== 1) return [];
-        this.appendRunLedgerEvent(row.run_id, "run_failed", "system", {
-          error_type: "lease_expired",
-          error_ref: row.worker_id ?? "",
-          recoverable: false
-        });
-        return [{ run_id: row.run_id, action: "failed" as const }];
+        return this.failExpiredPlannerRow(row) ? [{ run_id: row.run_id, action: "failed" as const }] : [];
       }
       const nextState: RunState = row.attempt_count < max_attempts ? "queued" : "failed";
       const action: LeaseRecovery["action"] = nextState === "queued" ? "requeued" : "failed";
@@ -1861,6 +1851,38 @@ export class RunStore {
 
       return updated.changes === 1 ? [{ run_id: row.run_id, action }] : [];
     });
+  }
+
+  /**
+   * Only planner-owned expired leases (B1: the daemon runs this at boot and on a timer). An inline executeRun
+   * claims 30 s and never heartbeats, so a generic recovery would requeue a run that is still executing.
+   */
+  recoverExpiredPlannerLeases(now: string): Array<{ run_id: string; worker_id: string }> {
+    const rows = this.db.prepare(`
+      SELECT run_id, state, contract_json, attempt_count, created_at, worker_id, lease_expires_at
+      FROM runs
+      WHERE state = 'running' AND lease_expires_at <= ? AND worker_id LIKE 'planner:%'
+      ORDER BY created_at ASC, run_id ASC
+    `).all<RunRow>(now);
+    return rows.flatMap((row) => (this.failExpiredPlannerRow(row) ? [{ run_id: row.run_id, worker_id: row.worker_id ?? "" }] : []));
+  }
+
+  /** Fail one expired planner run, keyed on the observed owner and expiry (one transaction per row). */
+  private failExpiredPlannerRow(row: RunRow): boolean {
+    const failed = this.db.prepare(`
+      UPDATE runs SET state = 'failed', state_reason = 'lease_expired', worker_id = NULL, lease_expires_at = NULL, updated_at = ?
+      WHERE run_id = ? AND state = 'running' AND worker_id = ? AND lease_expires_at = ?
+    `).run(new Date().toISOString(), row.run_id, row.worker_id, row.lease_expires_at);
+    if (failed.changes !== 1) return false;
+    this.appendRunLedgerEvent(row.run_id, "run_failed", "system", { error_type: "lease_expired", error_ref: row.worker_id ?? "", recoverable: false });
+    return true;
+  }
+
+  /** Turn runs still queued from before `before` (a boot): nothing will ever dispatch them (B1). */
+  listQueuedTurnRunsBefore(before: string): string[] {
+    return this.db.prepare(`
+      SELECT run_id FROM runs WHERE state = 'queued' AND type = 'turn' AND created_at < ? ORDER BY created_at ASC, run_id ASC
+    `).all<{ run_id: string }>(before).map((r) => r.run_id);
   }
 
   beginTriggerProcessing(event: TypedTaskEvent): TriggerDedupeResult {
@@ -4084,7 +4106,8 @@ export class RunStore {
   }
 
   /**
-   * Runs stuck mid-flight: an ACTIVE state whose lease expired before `leaseExpiredBefore`.
+   * Runs stuck mid-flight: an ACTIVE state whose lease expired before `leaseExpiredBefore`, or a turn
+   * queued (never claimed) since before it.
    * `waiting_for_approval` is EXCLUDED by design — a run parked on Paco's /approve is the
    * system working, and alerting on it would make the sweep noisiest exactly when Paco is
    * slowest to answer.
@@ -4097,11 +4120,13 @@ export class RunStore {
     return this.db.prepare(`
       SELECT run_id AS subject, state, lease_expires_at
       FROM runs
-      WHERE state IN ('created', 'contracted', 'queued', 'running', 'reconciliation_required', 'reporting')
-        AND lease_expires_at IS NOT NULL
-        AND lease_expires_at < ?
+      WHERE (state IN ('created', 'contracted', 'queued', 'running', 'reconciliation_required', 'reporting')
+          AND lease_expires_at IS NOT NULL
+          AND lease_expires_at < ?)
+        -- a turn queued and never claimed has no lease to expire (B1)
+        OR (state = 'queued' AND type = 'turn' AND lease_expires_at IS NULL AND created_at < ?)
       ORDER BY updated_at ASC
-    `).all<{ subject: string; state: string; lease_expires_at: string | null }>(leaseExpiredBefore);
+    `).all<{ subject: string; state: string; lease_expires_at: string | null }>(leaseExpiredBefore, leaseExpiredBefore);
   }
 
   /**

@@ -42,6 +42,31 @@ describe("store changes for detached planner turns (spec §7.1, §7.2, §8)", ()
     expect(store.lastRunError(new Date(Date.now() + 5_000).toISOString())).toBe("lease_expired");
   });
 
+  it("planner lease recovery fails only planner-owned expired runs; an inline run's short lease is never touched (B1)", () => {
+    const store = RunStore.openInMemory();
+    const planner = createQueuedTurnRun(store); const inline = createQueuedTurnRun(store);
+    store.claimRun(planner, "planner:c1:a", 1);
+    store.claimRun(inline, "telegram-daemon-worker", 1); // executeRun claims 30 s and never heartbeats: it may outlive its lease
+    const later = new Date(Date.now() + 5_000).toISOString();
+    expect(store.recoverExpiredPlannerLeases(later)).toEqual([{ run_id: planner, worker_id: "planner:c1:a" }]);
+    expect([store.getRunState(planner), store.getRunState(inline)]).toEqual(["failed", "running"]);
+  });
+
+  it("lists the turns still queued from before a boot, never a newer one or a non-turn run (B1)", () => {
+    const store = RunStore.openInMemory();
+    const old = createQueuedTurnRun(store);
+    const boot = new Date(Date.now() + 1_000).toISOString();
+    expect(store.listQueuedTurnRunsBefore(boot)).toEqual([old]);
+    expect(store.listQueuedTurnRunsBefore(new Date(Date.now() - 60_000).toISOString())).toEqual([]);
+  });
+
+  it("stuck_run sees a turn queued and never claimed for 10 min (a queued run has no lease to expire) (B1)", () => {
+    const store = RunStore.openInMemory();
+    const run_id = createQueuedTurnRun(store);
+    expect(store.findStuckRuns(new Date(Date.now() - 60_000).toISOString())).toEqual([]);
+    expect(store.findStuckRuns(new Date(Date.now() + 60_000).toISOString())).toEqual([expect.objectContaining({ subject: run_id, state: "queued" })]);
+  });
+
   it("a tool approval authorises exactly one execution, only while the same owner holds the lease", () => {
     const store = RunStore.openInMemory();
     const run_id = createQueuedTurnRun(store);

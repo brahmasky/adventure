@@ -870,3 +870,13 @@ describe("PlannerSupervisor — a good start clears the start incidents (final r
     expect(startOk).toHaveBeenCalledTimes(1); // the second turn reuses the live child
   });
 });
+
+describe("PlannerSupervisor — a throw after the claim never strands the run (final review B1)", () => {
+  it("a turn whose tools cannot be built fails planner_exit at once (not left running until lease expiry)", async () => {
+    const { store, sup, outcome } = harness(fakeSession(), {}, { buildTools: () => { throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" }); } });
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(store.getRunState(run_id)).toBe("failed");
+    expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "planner_exit", error_ref: "turn_setup_failed: SQLITE_BUSY" });
+  });
+});

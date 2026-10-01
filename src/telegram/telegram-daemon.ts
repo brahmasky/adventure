@@ -13,6 +13,7 @@ import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
 import { CoreWorker, type OmpWorkerOptions } from "../core/core-worker.js";
 import { chatWorkspace } from "../omp/workspace.js";
+import { resolveOmpConfig } from "../omp/omp-config.js";
 import { errorCode } from "../domain/error-code.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import type { TelegramAllowlist } from "../domain/types.js";
@@ -93,6 +94,8 @@ export interface RunTelegramDaemonOptions {
   omp?: OmpWorkerOptions;
   /** How often detached turns' notifications (approval cards, replies) are flushed between polls (default 1 s). */
   outboxPumpMs?: number;
+  /** How often expired planner leases are recovered (default half of HOUGE_OMP_LEASE_TTL_S; B1). Tests shorten it. */
+  leaseRecoveryMs?: number;
 }
 
 export type { PanelSeatBindings } from "../capabilities/idea-panel-seats.js";
@@ -171,8 +174,7 @@ export async function runTelegramDaemon(
       : undefined,
     ompOptionsWithOperator(options.omp, options.allowlist)
   );
-  // B4: a malformed HOUGE_OMP_* chain pages Paco at boot (turns then fail loudly with a code-owned reply).
-  worker.validateOmpConfig();
+  const recovery = bootPlanners(worker, options, now);
   const adapter = createTelegramLongPollingAdapter({
     allowlist: options.allowlist,
     client: options.telegramClient,
@@ -303,9 +305,10 @@ export async function runTelegramDaemon(
     }
   }
 
-  // Detached planner turns: stop every child (queued turns stay queued for the next boot), then
+  // Detached planner turns: stop every child (queued turns fail planner_exit, never left queued), then
   // flush whatever the stop produced.
   clearInterval(pump);
+  clearInterval(recovery);
   await worker.shutdownPlanners();
   await flushLogged();
 
@@ -323,6 +326,35 @@ export async function runTelegramDaemon(
 }
 
 export const OUTBOX_INCIDENT_WINDOW_MS = 10 * 60_000;
+
+/** Half the planner lease TTL (a lease is recovered within 1.5 TTL of its last renewal); 60 s if the config cannot resolve. */
+function leaseRecoveryIntervalMs(): number {
+  try { return resolveOmpConfig(process.env).leaseTtlS * 500; } catch { return 60_000; }
+}
+
+/**
+ * Boot-time planner checks, before the first poll: a malformed HOUGE_OMP_* chain pages Paco (B4); what a crash
+ * stranded is failed now, its replies riding the boot flush (B1). Expired planner leases are then recovered on a timer
+ * of at most half the lease TTL, independent of the poll loop (an inline run can block it). The caller clears it.
+ */
+function bootPlanners(worker: CoreWorker, options: RunTelegramDaemonOptions, now: () => string): ReturnType<typeof setInterval> {
+  worker.validateOmpConfig();
+  recoverPlannerRuns(worker, now(), true);
+  const timer = setInterval(() => recoverPlannerRuns(worker, now(), false), options.leaseRecoveryMs ?? leaseRecoveryIntervalMs());
+  timer.unref();
+  return timer;
+}
+
+/** B1: boot fails the turns still queued from a dead process, and every tick fails expired planner leases. Never throws. */
+function recoverPlannerRuns(worker: CoreWorker, now: string, boot: boolean): void {
+  try {
+    const stranded = boot ? worker.failStrandedTurns(now) : 0;
+    const expired = worker.recoverPlannerLeases(now);
+    if (stranded + expired > 0) console.error(`[telegram-daemon] planner recovery: ${stranded} stranded, ${expired} expired`);
+  } catch (error) {
+    console.error(`[telegram-daemon] planner recovery failed: ${errorCode(error)}`);
+  }
+}
 
 /**
  * One dispatcher drain at a time: the pump and the poll loop share it, never overlap. A drain that

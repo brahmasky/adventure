@@ -264,6 +264,33 @@ describe("shutdown with turns still queued (fix round 1, I-2)", () => {
   });
 });
 
+describe("recovery of turns a crash stranded (final review B1)", () => {
+  it("at boot every turn still queued from before it fails planner_exit 'daemon restarted' with the normal reply", () => {
+    worker = ompWorker(store, tmp.dir);
+    const runs = [createQueuedTurnRun(store, "one"), createQueuedTurnRun(store, "two")];
+    expect(worker.failStrandedTurns(new Date(Date.now() + 1_000).toISOString())).toBe(2);
+    const out = drainOutbox(store);
+    for (const r of runs) {
+      expect(state(r)).toBe("failed");
+      expect(events(r, "run_failed")[0]?.payload).toMatchObject({ error_type: "planner_exit", error_ref: "daemon restarted" });
+      expect(out.get(`${r}:final_report`)?.text).toBe(PLANNER_EXIT_TEXT);
+    }
+  });
+
+  it("an expired planner lease fails lease_expired and Paco gets one reply; a run steered into it (same owner) sends nothing", async () => {
+    worker = ompWorker(store, tmp.dir);
+    const parent = createQueuedTurnRun(store, "parent");
+    await new Promise((r) => setTimeout(r, 5)); // a steered message arrives during its parent's turn: strictly later
+    const steered = createQueuedTurnRun(store, "steered");
+    store.claimRun(parent, "planner:555:x", 1); store.claimRun(steered, "planner:555:x", 1);
+    expect(worker.recoverPlannerLeases(new Date(Date.now() + 5_000).toISOString())).toBe(2);
+    const out = drainOutbox(store);
+    expect([state(parent), state(steered)]).toEqual(["failed", "failed"]);
+    expect(out.get(`${parent}:final_report`)?.text).toBe(PLANNER_EXIT_TEXT);
+    expect(out.has(`${steered}:final_report`)).toBe(false);
+  });
+});
+
 describe("the outcome sink never lets a stale owner overwrite the winner's report (fix round 1, M-2)", () => {
   type Sink = { complete: (i: Record<string, unknown>) => void; fail: (i: Record<string, unknown>) => void };
   // The sink is private: tests reach it the way the supervisor does, through ompOutcomeSink(chatId).

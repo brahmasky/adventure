@@ -271,7 +271,8 @@ export class PlannerSupervisor {
     const claim = this.d.store.claimRun(req.run_id, worker, this.d.cfg.leaseTtlS);
     if (!claim) return;
     clearTimeout(this.idleExit);
-    const turn = this.newTurn(req, worker, claim);
+    const turn = this.newTurnOrFail(req, worker, claim);
+    if (!turn) return;
     this.turn = turn;
     this.st = this.session ? "IDLE" : "STARTING"; // never inherit a previous turn's ABORTING
     try {
@@ -281,6 +282,15 @@ export class PlannerSupervisor {
       this.clearTimers(turn);
       clearInterval(turn.heartbeat);
       if (this.turn === turn) this.turn = undefined;
+    }
+  }
+
+  /** A setup throw after the claim (tools, fs, SQLite busy) fails the run now instead of stranding it to lease expiry (B1). */
+  private newTurnOrFail(req: TurnRequest, worker: string, claim: ClaimedRun): Turn | undefined {
+    try { return this.newTurn(req, worker, claim); } catch (e) {
+      this.incident("planner_turn_crashed", { run_id: req.run_id, reason: message(e) });
+      this.d.outcome.fail({ run_id: req.run_id, worker_id: worker, error_type: "planner_exit", error_ref: `turn_setup_failed: ${message(e)}` });
+      return undefined;
     }
   }
 

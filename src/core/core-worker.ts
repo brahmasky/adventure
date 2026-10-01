@@ -1975,12 +1975,44 @@ export class CoreWorker {
     });
   }
 
+  /**
+   * Boot (B1): a turn still queued from before this boot was only ever in a dead process's memory, so nothing
+   * will dispatch it. Each is failed planner_exit "daemon restarted" through the normal sink (as at shutdown).
+   */
+  failStrandedTurns(bootAt: string): number {
+    let failed = 0;
+    for (const run_id of this.runStore.listQueuedTurnRunsBefore(bootAt)) {
+      const worker = `planner:boot:${randomUUID()}`;
+      if (!this.runStore.claimRun(run_id, worker, 30)) continue;
+      this.ompFail({ run_id, worker_id: worker, error_type: "planner_exit", error_ref: "daemon restarted" });
+      failed += 1;
+    }
+    return failed;
+  }
+
+  /**
+   * Boot and timer (B1): expired planner leases fail lease_expired (the store's terminal write) and Paco gets
+   * the code-owned reply. Runs sharing one owner are a parent and its steered runs: only the first (the parent) replies.
+   */
+  recoverPlannerLeases(now: string): number {
+    const replied = new Set<string>();
+    const recovered = this.runStore.recoverExpiredPlannerLeases(now);
+    for (const r of recovered) {
+      this.ompTurns.delete(r.run_id);
+      if (replied.has(r.worker_id)) continue;
+      replied.add(r.worker_id);
+      const text = plannerFailureText("lease_expired", "");
+      if (text !== null) this.runStore.enqueueFailureNotification(r.run_id, text);
+    }
+    return recovered.length;
+  }
+
   /** Every live supervisor (for /kill, /rearm and shutdown). */
   plannerSupervisors(): PlannerSupervisor[] {
     return [...this.supervisors.values()];
   }
 
-  /** Daemon shutdown: every chat's child stops; queued turns stay queued in the DB for the next boot. */
+  /** Daemon shutdown: every chat's child stops; queued turns fail planner_exit (never left queued; the boot recovery covers a crash). */
   async shutdownPlanners(): Promise<void> {
     await Promise.all(this.plannerSupervisors().map((s) => s.shutdown()));
   }

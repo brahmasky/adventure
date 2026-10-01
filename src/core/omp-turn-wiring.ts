@@ -62,6 +62,8 @@ export function plannerFailureText(type: PlannerFailure, ref: string, partial?: 
     case "turn_timeout":
     case "frame_idle":
       return partial ? `${TIMEOUT_TEXT}\n\n${partial}` : TIMEOUT_TEXT;
+    case "lease_expired": // the owner stopped renewing: a crash or a hung daemon (B1)
+      return PLANNER_EXIT_TEXT;
     case "planner_exit":
       if (ref === "crash_loop") return PLANNER_CRASH_LOOP_TEXT;
       return STARTUP_CHECK_REF.test(ref) ? TURN_UNAVAILABLE_TEXT : PLANNER_EXIT_TEXT;

@@ -20,6 +20,7 @@ import { LESSON_CONSOLIDATE_DISCIPLINE } from "../../src/capabilities/lesson-con
 import { PLANNER_EXIT_TEXT } from "../../src/omp/planner-supervisor.js";
 import { pinOmpEnv, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
 import { until } from "../helpers/omp-worker.js";
+import { createQueuedTurnRun } from "../helpers/runs.js";
 
 // PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
 pinOmpEnv();
@@ -1088,6 +1089,47 @@ describe("the daemon's sweep wiring (M9)", () => {
     try {
       expect(invariantSweepInput({ store, allowlist, projectRoot: "/repo", omp: { dataDir: "/data" } }, "t")).toMatchObject({ dataDir: "/data", chat_id: "222", now: "t" });
       expect(invariantSweepInput({ store, allowlist, projectRoot: "/repo" }, "t").dataDir).toBe("/repo");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("boot fails the turns a crash left queued and the expired planner leases, and the replies go out (B1)", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const sent: string[] = [];
+    const queued = createQueuedTurnRun(store, "never dispatched"); const running = createQueuedTurnRun(store, "mid-turn at the crash");
+    store.claimRun(running, "planner:555:dead", 1);
+    await new Promise((r) => setTimeout(r, 1_100)); // the dead owner's lease runs out
+    try {
+      const controller = new AbortController();
+      await runTelegramDaemon({ store, projectRoot: root, omp: fakeOmp(root), allowlist: ALLOWLIST, stopSignal: controller.signal, longPollTimeoutSeconds: 0,
+        telegramClient: { getUpdates: async () => stopWhen(controller, () => sent.length >= 2), sendMessage: async ({ text }) => { sent.push(text); return { message_id: sent.length }; } } });
+      expect([store.getRunState(queued), store.getRunState(running)]).toEqual(["failed", "failed"]);
+      expect(sent).toEqual([PLANNER_EXIT_TEXT, PLANNER_EXIT_TEXT]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a planner lease that expires while the daemon runs is failed on the recovery timer, not left running (B1)", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const sent: string[] = [];
+    try {
+      const controller = new AbortController();
+      let run = "";
+      await runTelegramDaemon({ store, projectRoot: root, omp: fakeOmp(root), allowlist: ALLOWLIST, stopSignal: controller.signal, longPollTimeoutSeconds: 0,
+        leaseRecoveryMs: 50,
+        telegramClient: {
+          getUpdates: async () => {
+            if (!run) { run = createQueuedTurnRun(store, "owner hung"); store.claimRun(run, "planner:555:hung", 1); }
+            return stopWhen(controller, () => sent.length >= 1);
+          },
+          sendMessage: async ({ text }) => { sent.push(text); return { message_id: sent.length }; }
+        } });
+      expect(store.getRunState(run)).toBe("failed");
+      expect(sent).toEqual([PLANNER_EXIT_TEXT]);
     } finally {
       store.close();
     }
