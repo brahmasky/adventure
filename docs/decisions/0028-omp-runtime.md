@@ -265,6 +265,7 @@ change the architecture the spec describes:
   Mitigation: the supervisor pins the spawn leg with `set_model` before the first prompt, and audits and
   computes the D10 family from the model each `message_end` reports. A failed pin answers on the restored
   model and raises `planner_model_reset_failed`.
+- **`houge_status` and the boot record** (2026-10-02): an always-armed, side-effect-`none`, unquarantined bridge tool renders the daemon's boot record (`daemon_boots`) and health, and each chat's first prompt after a boot gets a `[runtime]` restart note (prompt only, never the stored turn); residual: `kickstart` means any clean stop with the host up (also `launchctl unload`/`load` or a manual `kill`), and a stop that ends in SIGKILL reads as `crash_recovery`.
 - **Voice on agy-cli** (decision 16) keeps one legacy provider and its env resolvers (`HOUGE_AGY_BIN`,
   `HOUGE_AGY_MODEL`, `HOUGE_AGY_ENV_PASSTHROUGH`, `HOUGE_LLM_MEDIA_PROVIDERS`,
   `HOUGE_LLM_TIMEOUT_MS_MEDIA`). Follow-up: omp audio support, or local whisper (installed, but only a

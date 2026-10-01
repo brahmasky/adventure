@@ -4,6 +4,8 @@
 `fix/live-gate-followups` (worktree `.worktrees/gate-fixes`, 7 fixes + 6 round-2 fixes after review), which
 awaits merge, rebuild, kickstart and a live re-gate.**
 
+**houge_status (`feat/houge-status`, 2026-10-02):** read-only `houge_status` bridge tool + `daemon_boots` boot record + `[runtime]` restart note on each chat's first turn after a boot; awaits merge, rebuild, kickstart and a live check (ask Houge "did you restart / which code is live?").
+
 **Gate fixes (`fix/live-gate-followups`, on `main@6a97039`):**
 - Approval cards get Approve / Deny buttons (same gateway path as the typed command). Ids render as inline code,
   and an intraword `_` is never emphasis.
