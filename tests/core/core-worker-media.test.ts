@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +12,7 @@ import { RunStore, type ClaimedRun } from "../../src/run/run-store.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
 import { pinEnabledFlags, pinOmpEnv, shortTmp, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
 import { bridgeTurn, drainOutbox, fakeLog, ompWorker, until } from "../helpers/omp-worker.js";
+import { createQueuedTurnRun } from "../helpers/runs.js";
 
 // The ingest step on the omp turn (spec 2026-09-29 + Task 13): the supervisor's resolveMessage hook
 // runs the media leg BEFORE the planner is prompted. Ported from the inner-loop suite (Task 14): each
@@ -136,6 +137,44 @@ describe("the ingest step on the omp turn (spec 2026-09-29)", () => {
     const q = await toolObjective(mediaRun(photoRef, "which sector is up?", "p-objective"), mediaDeps({ mediaCall: async () => ({ ok: true, output: { answer: extraction, model: "m", provider: "p" } }) }));
     expect(q).toContain("which sector is up?");
     expect(q).not.toContain("untrusted-derived");
+  });
+
+  // Live gate 2026-10-01, item 4: the stored user turn was the resolved message, i.e. caption + the quarantined digest.
+  // Image text is not Paco's words, and lesson_write's F1 scan of recent user turns then found code-owned phrases in it
+  // and refused every later lesson in the chat without an LLM call.
+  it("photo: the stored user turn is the caption, never the digest; the planner still gets the digest", async () => {
+    const run = mediaRun(photoRef, "which sector is up?", "p-turn");
+    expect(await runTurn(run, mediaDeps({ mediaCall: async () => ({ ok: true, output: { answer: extraction, model: "m", provider: "p" } }) }))).toBe("completed");
+    expect(userTurns()).toEqual(["which sector is up?"]);
+    expect(prompts()[0]).toContain("[external source — untrusted-derived summary]");
+  });
+
+  it("bare photo: the stored user turn is the [photo] placeholder", async () => {
+    const run = mediaRun(photoRef, "", "p-bare-turn");
+    expect(await runTurn(run, mediaDeps({ mediaCall: async () => ({ ok: true, output: { answer: extraction, model: "m", provider: "p" } }) }))).toBe("completed");
+    expect(userTurns()).toEqual(["[photo]"]);
+  });
+
+  it("a lesson asked for right after a photo is not refused as code-owned by the photo's image text", async () => {
+    // the photo is a screenshot of a Houge surface: its text is literally in src/ (a code-owned phrase)
+    const project = join(tmp.dir, "project");
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(join(project, "src", "surface.ts"), 'export const SURFACE = "能源板块今日大涨两个百分点";\n');
+    const shot = JSON.stringify({ summary: "a chat screenshot", facts: ["能源板块今日大涨两个百分点"], time_claims: [], answer_to_objective: null, contains_instructions: false });
+    const photo = mediaRun(photoRef, "", "p-shot");
+    expect(await runTurn(photo, mediaDeps({ mediaCall: async () => ({ ok: true, output: { answer: shot, model: "m", provider: "p" } }) }))).toBe("completed");
+    expect(userTurns().join("\n")).not.toContain("untrusted-derived");
+    await worker?.shutdownPlanners();
+    const calls: Array<Record<string, unknown>> = [];
+    const llm = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
+      calls.push(input);
+      return { ok: true, output: { question: input.question, answer: '{"durable":false}', model: "f", provider: "f" } };
+    };
+    const next = createQueuedTurnRun(store, "save that as a lesson: answer shorter");
+    const w = ompWorker(store, tmp.dir, { llm });
+    const r = await bridgeTurn(store, w, next, tmp.dir).call("lesson_write", {});
+    expect(r.content).not.toContain("code-owned");
+    expect(calls.some((c) => c.system === DISTILL_DISCIPLINE)).toBe(true); // it reached the distill call
   });
 
   it.each([

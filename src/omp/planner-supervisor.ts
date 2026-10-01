@@ -45,8 +45,12 @@ export interface SupervisorDeps {
   env: NodeJS.ProcessEnv; turnEnvelopeActions: string[]; turnContext: TurnContextDeps;
   buildTools: (claim: ClaimedRun) => { registry: ToolRegistry; quarantine: ActiveTurn["quarantine"] };
   posture: () => string | null; outcome: TurnOutcomeSink;
-  /** Runs after the claim, before the child starts or is prompted (voice/photo ingest). A failure fails the run `media_failed`. */
-  resolveMessage?: (claim: ClaimedRun) => Promise<{ ok: true; text: string } | { ok: false; error_ref: string }>;
+  /**
+   * Runs after the claim, before the child starts or is prompted (voice/photo ingest). A failure fails the run `media_failed`.
+   * `text` is what the planner is prompted with; `userText`, when present, is what is stored as Paco's chat turn (a photo's
+   * caption or placeholder: the image-derived digest is untrusted and never his words).
+   */
+  resolveMessage?: (claim: ClaimedRun) => Promise<{ ok: true; text: string; userText?: string } | { ok: false; error_ref: string }>;
   sessionFactory?: (o: PlannerSessionOptions) => PlannerSessionLike;
   versionCheck?: () => ReturnType<typeof checkOmpVersion>;
   /** Unit tests only: skips the wrapper hash check and the Seatbelt render (the bridge socket stays real). */
@@ -344,10 +348,11 @@ export class PlannerSupervisor {
   private async startTurn(turn: Turn): Promise<void> {
     const { store, chatId, turnContext } = this.d;
     try {
-      const text = await this.resolveText(turn);
-      if (text === ENDED || turn.failure) return;
+      const resolved = await this.resolveText(turn);
+      if (resolved === ENDED || turn.failure) return;
+      const { text, userText } = resolved;
       if (!(await this.ensureReady(turn))) return;
-      store.recordChatTurn({ chat_id: chatId, run_id: turn.req.run_id, role: "user", text });
+      store.recordChatTurn({ chat_id: chatId, run_id: turn.req.run_id, role: "user", text: userText });
       const prompt = await this.step(turn, buildTurnPrompt(turnContext, {
         run_id: turn.req.run_id, chat_id: chatId, message: text, source: turn.req.source,
         ...(turn.req.goal !== undefined ? { goal: turn.req.goal } : {})
@@ -369,13 +374,16 @@ export class PlannerSupervisor {
     return true;
   }
 
-  /** The message the planner sees: the ingest hook's text (a failed ingest fails the turn `media_failed`), else the request text. */
-  private async resolveText(turn: Turn): Promise<string | typeof ENDED> {
-    if (!this.d.resolveMessage) return turn.req.text;
+  /**
+   * The message the planner sees (the ingest hook's text; a failed ingest fails the turn `media_failed`, else the request
+   * text) and the text stored as the user's turn (the hook's userText when it gives one, else the same text).
+   */
+  private async resolveText(turn: Turn): Promise<{ text: string; userText: string } | typeof ENDED> {
+    if (!this.d.resolveMessage) return { text: turn.req.text, userText: turn.req.text };
     const r = await this.step(turn, this.d.resolveMessage(turn.claim));
     if (r === ENDED) return ENDED;
     if (!r.ok) { this.failTurn(turn, "media_failed", r.error_ref); return ENDED; }
-    return r.text;
+    return { text: r.text, userText: r.userText ?? r.text };
   }
 
   /** A turn that ended mid-start finishes only after its start settled (stopped or failed): no late incident, no orphan child. */

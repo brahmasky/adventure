@@ -2199,7 +2199,12 @@ export class CoreWorker {
   }
 
   /** The supervisor's ingest hook over the existing media path; a voice transcript also becomes the tools' objective. */
-  private async resolveOmpMessage(claim: ClaimedRun): Promise<{ ok: true; text: string } | { ok: false; error_ref: string }> {
+  /**
+   * The planner's message plus the text stored as Paco's turn. A photo's turn is its caption (or the placeholder): the
+   * digest is image-derived and untrusted, so storing it as his words would let it pose as him, and its code-owned header
+   * would trip lesson_write's thread scan (live gate 2026-10-01). A voice transcript IS his words; text is unchanged.
+   */
+  private async resolveOmpMessage(claim: ClaimedRun): Promise<{ ok: true; text: string; userText: string } | { ok: false; error_ref: string }> {
     const r = await this.resolveTurnMessage(claim);
     if (!r.ok) return { ok: false, error_ref: capabilityFailureDetail(r.failure) };
     const state = this.ompTurns.get(claim.run_id);
@@ -2207,7 +2212,7 @@ export class CoreWorker {
       if (r.modality === "voice") state.objective = r.text;
       if (r.echo) state.echo = r.echo;
     }
-    return { ok: true, text: r.text };
+    return { ok: true, text: r.text, userText: r.modality === "photo" ? claim.contract.objective : r.text };
   }
 
   private ompOutcomeSink(chatId: string): TurnOutcomeSink {
