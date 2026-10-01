@@ -3,7 +3,7 @@ import { buildTypedTaskEvent } from "../domain/types.js";
 import { MEDIA_MIME, MEDIA_PLACEHOLDER, type TelegramMediaRef } from "../media/media-config.js";
 import { authorizeTelegramUpdate } from "./telegram-auth.js";
 import type { ApprovalCallback, SelfWriteCallbackAction, TelegramCommand } from "./telegram-command-parser.js";
-import { parseApprovalCallback, parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
+import { parseApprovalCallback, parseMemoryUndoCallback, parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
 
 export interface TelegramUpdate {
   update_id: number;
@@ -267,6 +267,8 @@ function normalizeCallbackQuery(
 
   const approval = parseApprovalCallback(callback.data);
   if (approval) return { ok: true, event: buildApprovalTapEvent(update, callback, message.chat.id, auth.identity, approval) };
+  const undo = parseMemoryUndoCallback(callback.data);
+  if (undo) return { ok: true, event: buildMemoryUndoTapEvent(update, callback, message.chat.id, auth.identity, undo.change_id) };
 
   const parsed = parseSelfWriteCallback(callback.data);
   if (!parsed) {
@@ -306,6 +308,21 @@ function buildApprovalTapEvent(
     idempotency_key: `telegram:${update.update_id}:callback:${callback.id}`,
     source_reference: `telegram:update:${update.update_id}:callback:${callback.id}`,
     metadata: { telegram_update_id: update.update_id, telegram_callback_id: callback.id }
+  });
+}
+
+/** A memory card's Undo tap (2026-10-02): the approval tap's shape, with the change id in metadata. */
+function buildMemoryUndoTapEvent(
+  update: TelegramUpdate, callback: TelegramCallbackQuery, chat_id: number, identity: Identity, change_id: string
+): TypedTaskEvent {
+  return buildTypedTaskEvent({
+    source: "telegram",
+    type: "memory_undo",
+    requested_by: identity,
+    notify: { kind: "telegram", chat_id: String(chat_id) },
+    idempotency_key: `telegram:${update.update_id}:callback:${callback.id}`,
+    source_reference: `telegram:update:${update.update_id}:callback:${callback.id}`,
+    metadata: { telegram_update_id: update.update_id, telegram_callback_id: callback.id, change_id }
   });
 }
 

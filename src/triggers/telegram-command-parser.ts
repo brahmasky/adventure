@@ -259,6 +259,13 @@ export function parseApprovalCallback(data: unknown): ApprovalCallback | null {
   return { type, approval_id };
 }
 
+/** The Undo button on a memory change card (2026-10-02): `memory:undo:mc_<uuid>`; anything else returns null. */
+export function parseMemoryUndoCallback(data: unknown): { change_id: string } | null {
+  if (typeof data !== "string") return null;
+  const m = /^memory:undo:(mc_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(data);
+  return m ? { change_id: m[1]! } : null;
+}
+
 type SplitShellWordsResult = { ok: true; words: string[] } | { ok: false; error: { code: "TELEGRAM_COMMAND_INVALID"; message: string } };
 
 function splitShellWords(input: string): SplitShellWordsResult {

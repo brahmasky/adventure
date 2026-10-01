@@ -48,6 +48,8 @@ export const HANDLED_INTAKE_DENIAL_CODES: ReadonlySet<string> = new Set([
   "APPROVAL_NOT_PENDING",
   "APPROVAL_REQUESTER_MISMATCH",
   "APPROVAL_EXPIRED",
+  // A stale or foreign memory Undo tap (2026-10-02): replied to, never a poll failure.
+  "MEMORY_CHANGE_NOT_FOUND",
   "TRIGGER_IDEMPOTENCY_CONFLICT",
   "GLOBAL_BUDGET_FUSE"
 ]);

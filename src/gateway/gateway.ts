@@ -43,6 +43,7 @@ import { resolveSkillReverifyAt, resolveSkillReverifyEnabled } from "../capabili
 import { resolvePanelAt } from "../capabilities/week-key.js";
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import { toolApprovalWaiters } from "../omp/tool-approval-sink.js";
+import { handleMemoryUndo } from "./memory-commands.js";
 import type { IdeaRow, ShortlistRow } from "../run/run-store.js";
 
 /** A freshly captured rating the daemon follows up on (the low-rating attribution pass). */
@@ -64,6 +65,7 @@ export type GatewayIntakeResult =
   | { ok: true; status: "lessons_returned"; run_id: string }
   | { ok: true; status: "skills_returned"; run_id: string }
   | { ok: true; status: "forgotten"; run_id: string }
+  | { ok: true; status: "memory_undone"; run_id: string }
   | { ok: true; status: "schedule_admin_returned"; run_id: string }
   | { ok: true; status: "killed"; run_id: string }
   | { ok: true; status: "disarmed"; run_id: string }
@@ -204,6 +206,10 @@ export class Gateway {
 
     if (event.type === "schedule_admin") {
       return this.handleScheduleAdmin(event, now);
+    }
+
+    if (event.type === "memory_undo") {
+      return this.accepted(event, now, handleMemoryUndo(this.runStore, event));
     }
 
     if (event.type === "kill") {
@@ -1093,6 +1099,12 @@ export class Gateway {
       this.recordTelegramAccepted(event, now);
     }
     return queued;
+  }
+
+  /** Audit an accepted control command (memory commands, 2026-10-02) and pass its result through. */
+  private accepted(event: TypedTaskEvent, now: string, result: GatewayIntakeResult): GatewayIntakeResult {
+    if (result.ok) this.recordTelegramAccepted(event, now);
+    return result;
   }
 
   private recordTelegramAccepted(event: TypedTaskEvent, now: string): void {
