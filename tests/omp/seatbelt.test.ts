@@ -196,7 +196,7 @@ describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () 
     roots.push(root);
     const home = join(root, "home"); const repo = join(home, "Projects", "adventure");
     const live = { home, repo, data: repo };
-    for (const d of [".bun/bin", ".local/bin", ".config/fish", ".omp/profiles/houge", "Documents", "bin"]) mkdirSync(join(home, d), { recursive: true });
+    for (const d of [".bun/bin", ".local/bin", ".config/fish", ".config/nvim", ".omp/profiles/houge", "Documents", "bin"]) mkdirSync(join(home, d), { recursive: true });
     mkdirSync(join(repo, "omp", "workspace", "chat-1"), { recursive: true });
     writeFileSync(join(home, ".omp/profiles/houge/auth.json"), "OMPCANARY");
     // a stub "omp": the planner process must still read its own profile store (D11)
@@ -213,7 +213,8 @@ describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () 
     const outside = [`/private/var/tmp/houge-canary-${process.pid}`, `/Users/Shared/houge-canary-${process.pid}`];
     try {
       for (const prof of [profiles.planner, profiles.shell]) {
-        for (const rel of [".bun/bin/omp", ".local/bin/agy", ".zshrc", ".gitconfig", ".config/fish/config.fish", ".p10k.zsh"]) {
+        for (const rel of [".bun/bin/omp", ".local/bin/agy", ".zshrc", ".gitconfig", ".config/fish/config.fish", ".p10k.zsh",
+          ".bash_login", ".zlogout", ".vimrc", ".tmux.conf", ".envrc", ".config/nvim/init.lua"]) {
           expect(canWrite(prof, join(home, rel)), rel).toBe(false);
         }
         for (const p of outside) expect(canWrite(prof, p), p).toBe(false);

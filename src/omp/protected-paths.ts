@@ -50,10 +50,15 @@ export function writeRoots(ctx: PathContext, kind: "planner" | "shell"): string[
 export const HOME_INSTALL_TREES: readonly string[] = [".bun", ".local", ".npm", ".nvm", ".cargo", ".rustup", ".pyenv",
   ".volta", ".deno", "go", ".homebrew", ".oh-my-zsh"];
 
-/** Config that makes git, a shell or a terminal run code: a planted entry would fire outside the sandbox. */
+/**
+ * Config that makes git, a shell, a terminal or an editor run code: a planted entry would fire outside the sandbox. A
+ * denylist, so incomplete by nature (accepted residual until SP3, spec §14): an allowlist of writable $HOME subtrees is
+ * the structural fix.
+ */
 export const HOME_CODE_CONFIG: readonly string[] = [".gitconfig", ".config/git",
-  ".zshrc", ".zshenv", ".zprofile", ".zlogin", ".bashrc", ".bash_profile", ".profile", ".tcshrc", ".config/fish", ".p10k.zsh",
-  ".wezterm.lua", ".config/ghostty", ".config/iterm2", ".config/starship.toml"];
+  ".zshrc", ".zshenv", ".zprofile", ".zlogin", ".zlogout", ".zsh", ".config/zsh", ".bashrc", ".bash_profile", ".bash_login", ".profile",
+  ".tcshrc", ".config/fish", ".p10k.zsh", ".wezterm.lua", ".config/ghostty", ".config/iterm2", ".config/starship.toml",
+  ".vimrc", ".vim", ".config/nvim", ".tmux.conf", ".config/tmux", ".envrc"];
 
 export function writableExceptions(ctx: PathContext, kind: "planner" | "shell"): string[] {
   const ws = join(ctx.data, "omp", "workspace");

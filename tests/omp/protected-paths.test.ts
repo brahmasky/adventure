@@ -65,6 +65,15 @@ describe("floor A write policy — the gate mirrors the profiles' default-deny (
     expect(isDeniedWrite("/Users/p/.config/other/x", ctx)).toBe(false);
   });
 
+  it("denies the rest of the code-running dotfiles Paco's own tools load: login/logout shells, ZDOTDIR, vim/nvim, tmux, direnv (security N3)", () => {
+    for (const rel of [".bash_login", ".zlogout", ".zsh/.zshrc", ".config/zsh/.zshrc", ".vimrc", ".vim/plugin/x.vim", ".config/nvim/init.lua",
+      ".tmux.conf", ".config/tmux/tmux.conf", ".envrc"]) {
+      expect(isDeniedWrite(`/Users/p/${rel}`, ctx), rel).toBe(true);
+    }
+    expect(isDeniedWrite("/Users/p/Projects/other/.envrc", ctx)).toBe(false); // only the one directly in $HOME
+    expect(isDeniedWrite("/Users/p/.vimrc-notes.txt", ctx)).toBe(false); // segment boundary
+  });
+
   it("denies the binary dirs the daemon later runs unsandboxed, when the context names them", () => {
     expect(isDeniedWrite("/Users/p/tools/omp", { ...ctx, binDirs: ["/Users/p/tools"] })).toBe(true);
     expect(isDeniedWrite("/Users/p/tools/omp", ctx)).toBe(false);
