@@ -268,6 +268,25 @@ describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () 
     for (const p of [planner, shell]) expect(p).toContain('(deny process-exec (literal "/usr/bin/security"))');
   });
 
+  it("renders the secret denies after every write allow: SBPL's last match wins, so no allow ($HOME included) can re-open one (testing M-4)", () => {
+    for (const p of [renderSeatbelt(ctx).planner, renderSeatbelt(ctx).shell]) {
+      const lastAllow = p.lastIndexOf("(allow file-write*");
+      const firstSecret = p.indexOf("(deny file-read* file-write*");
+      expect(lastAllow).toBeGreaterThan(-1);
+      expect(firstSecret).toBeGreaterThan(lastAllow);
+    }
+  });
+
+  it.runIf(process.platform === "darwin")("live: a credential store cannot be written either, though $HOME around it is writable (no planted authorized_keys, testing M-4)", () => {
+    const { home, profiles, canWrite } = fakeHome();
+    for (const d of [".ssh", ".aws"]) mkdirSync(join(home, d), { recursive: true });
+    for (const prof of [profiles.planner, profiles.shell]) {
+      for (const rel of [".ssh/authorized_keys", ".aws/credentials", ".npmrc", ".foo.env"]) expect(canWrite(prof, join(home, rel)), rel).toBe(false);
+      expect(canWrite(prof, join(home, "Documents", "ok.txt"))).toBe(true);
+    }
+    expect(existsSync(join(home, ".ssh", "authorized_keys"))).toBe(false);
+  });
+
   it.runIf(process.platform === "darwin")("live: credential stores and top-level ~/.<name>.env files are unreadable, and /usr/bin/security cannot run, in both profiles", () => {
     const { home, profiles, run } = fakeHome();
     const canaries: Record<string, string> = { ".aws/credentials": "AWS", ".foo.env": "DOTENV", ".env": "ENV", ".npmrc": "NPM",

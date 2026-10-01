@@ -99,6 +99,13 @@ describe("turn context — what the planner knows and how ratings attribute (spe
     expect(withCtx).toBe("[context]\nfact-block\n[/context]\n\nhello");
   });
 
+  it("a long tool-less answer that merely ends in a question is a full answer, never a clarify turn (testing M-3)", () => {
+    const answer = `${"Here is the full comparison you asked for. ".repeat(14)}Want me to go deeper on one?`;
+    expect(answer.length).toBeGreaterThanOrEqual(600);
+    expect(assistantIntentFor(answer, false)).toBe("loop");
+    expect(assistantIntentFor(answer.slice(-120), false)).toBe("clarify"); // the same question alone is a clarify
+  });
+
   it("labels a tool-less question as clarify so the consecutive-clarify cap keeps its input", () => {
     expect(assistantIntentFor("你是指哪一场比赛？", false)).toBe("clarify");
     expect(assistantIntentFor("Which file do you mean?", false)).toBe("clarify");
