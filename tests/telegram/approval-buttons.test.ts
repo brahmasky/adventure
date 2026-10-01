@@ -7,7 +7,7 @@ import { buildTypedTaskEvent, type TypedTaskEvent } from "../../src/domain/types
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { runTelegramDaemon } from "../../src/telegram/telegram-daemon.js";
-import { runTelegramPollOnce } from "../../src/telegram/telegram-poll-runner.js";
+import { APPROVAL_TAP_ANSWER_TIMEOUT_MS, answerApprovalTap, runTelegramPollOnce } from "../../src/telegram/telegram-poll-runner.js";
 import { parseApprovalCallback } from "../../src/triggers/telegram-command-parser.js";
 import { normalizeTelegramUpdate, type TelegramUpdate } from "../../src/triggers/telegram-trigger-adapter.js";
 import { pinOmpEnv, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
@@ -128,6 +128,33 @@ describe("a tap resolves the approval through the gateway, end to end", () => {
       await runTelegramPollOnce({ store, projectRoot: r, omp, allowlist: ALLOWLIST, telegramClient });
       expect(store.getLedgerEvents().filter((e) => e.event_type === "approval_resolved").length).toBe(resolvedBefore);
     } finally { store.close(); }
+  });
+
+  it("poll runner: the decision lands BEFORE the spinner is answered, and a rejecting answer never blocks it", async () => {
+    const store = RunStore.openInMemory();
+    const sent: string[] = [];
+    const stateAtAnswer: Array<string | undefined> = [];
+    try {
+      const id = pendingToolApproval(store);
+      const r = root();
+      useFakeOmp({ "*": { rpcText: "x" } }, r);
+      const telegramClient = {
+        ...client(store, () => [tap(71, `approval:approve:${id}`), { update_id: 72, message: { message_id: 72, text: "/approvals", from: { id: 111 }, chat: { id: 222 } } }], sent, []),
+        answerCallbackQuery: async () => { stateAtAnswer.push(store.getToolApproval(id)?.state); throw new Error("HTTP 400 query is too old"); }
+      };
+      const result = await runTelegramPollOnce({ store, projectRoot: r, omp: { dataDir: r, distDir: tmpOmpDist(r) }, allowlist: ALLOWLIST, telegramClient });
+      expect(stateAtAnswer).toEqual(["approved"]); // intake first, then the best-effort answer
+      expect(store.getToolApproval(id)?.state).toBe("approved");
+      expect(result.processed_updates).toBe(2); // the loop went on to the next update
+    } finally { store.close(); }
+  });
+
+  it("a hanging answer is bounded: answerApprovalTap gives up after its timeout", async () => {
+    const event = { metadata: { telegram_callback_id: "cb1" } } as unknown as TypedTaskEvent;
+    const t0 = Date.now();
+    await answerApprovalTap(event, { answerCallbackQuery: () => new Promise<void>(() => undefined) }, 50);
+    expect(Date.now() - t0).toBeLessThan(1_000);
+    expect(APPROVAL_TAP_ANSWER_TIMEOUT_MS).toBeLessThanOrEqual(5_000);
   });
 
   it("daemon: Deny denies the approval through the same path", async () => {

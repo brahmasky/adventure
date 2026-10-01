@@ -31,6 +31,9 @@ export interface TelegramSendDocumentInput {
   caption?: string;
 }
 
+/** answerCallbackQuery only stops a spinner: a Telegram that does not answer within this is abandoned. */
+export const ANSWER_CALLBACK_TIMEOUT_MS = 5_000;
+
 export interface TelegramAnswerCallbackQueryInput {
   callback_query_id: string;
   /** Optional toast shown to the user; omitted → just stops the spinner. */
@@ -308,14 +311,19 @@ export class TelegramClient implements TelegramSendClient, TelegramPollClient, T
       throw new Error("Telegram bot token is not configured");
     }
 
+    // Bounded: only stops a spinner, so a Telegram that never answers must not hold the poll loop.
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(new Error("answerCallbackQuery timed out")), ANSWER_CALLBACK_TIMEOUT_MS);
+    timer.unref?.();
     const response = await this.fetchImpl(`${this.botBaseUrl}/answerCallbackQuery`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         callback_query_id: input.callback_query_id,
         ...(input.text ? { text: input.text } : {})
-      })
-    });
+      }),
+      signal: abort.signal
+    }).finally(() => clearTimeout(timer));
 
     if (!response.ok) {
       throw new Error(`Telegram answerCallbackQuery failed: HTTP ${response.status}`);

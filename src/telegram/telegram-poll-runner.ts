@@ -56,22 +56,25 @@ export function isHandledIntakeDenial(code: string): boolean {
   return HANDLED_INTAKE_DENIAL_CODES.has(code);
 }
 
+/** The bound on answering an approval tap: it only stops a spinner, so it never holds the poll loop longer. */
+export const APPROVAL_TAP_ANSWER_TIMEOUT_MS = 5_000;
+
 /**
- * An approval-card button tap (an approve/deny event carrying `telegram_callback_id`): stop the Telegram spinner
- * before the intake. Best-effort like the self-write handler's ack: a failed answer is cosmetic and never blocks
- * the decision, which then goes through the ordinary gateway intake exactly as the typed command does.
+ * An approval-card button tap (an approve/deny event carrying `telegram_callback_id`): stop the Telegram spinner AFTER
+ * the intake decided it, best-effort and bounded. A failed or hung answer is cosmetic and never blocks the decision
+ * (already made through the ordinary gateway intake, exactly as the typed command) or the next update.
  */
 export async function answerApprovalTap(
   event: TypedTaskEvent,
-  client: Pick<SelfWriteActionTelegramClient, "answerCallbackQuery">
+  client: Pick<SelfWriteActionTelegramClient, "answerCallbackQuery">,
+  timeoutMs: number = APPROVAL_TAP_ANSWER_TIMEOUT_MS
 ): Promise<void> {
   const callback_query_id = event.metadata?.telegram_callback_id;
-  if (typeof callback_query_id !== "string") return;
-  try {
-    await client.answerCallbackQuery?.({ callback_query_id });
-  } catch {
-    // The spinner not stopping is cosmetic; the tap still resolves the approval.
-  }
+  if (typeof callback_query_id !== "string" || !client.answerCallbackQuery) return;
+  let timer: NodeJS.Timeout | undefined;
+  const bound = new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); timer.unref(); });
+  const answer = client.answerCallbackQuery({ callback_query_id }).catch(() => undefined);
+  await Promise.race([answer, bound]).finally(() => clearTimeout(timer));
 }
 
 export interface RunTelegramPollOnceOptions {
@@ -178,8 +181,8 @@ export async function runTelegramPollOnce(
       });
       return;
     }
-    await answerApprovalTap(event, options.telegramClient);
     const intake = gateway.intake(event);
+    await answerApprovalTap(event, options.telegramClient);
 
     if (!intake.ok) {
       // Deterministic Gateway denials are handled (offset advances, the loop

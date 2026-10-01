@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { TelegramClient } from "../../src/telegram/telegram-client.js";
+import { describe, expect, it, vi } from "vitest";
+import { ANSWER_CALLBACK_TIMEOUT_MS, TelegramClient } from "../../src/telegram/telegram-client.js";
 
 describe("TelegramClient", () => {
   it("uses fetch for sendMessage and getUpdates", async () => {
@@ -90,6 +90,26 @@ describe("TelegramClient", () => {
     await client.answerCallbackQuery({ callback_query_id: "cbq_1", text: "Merging…" });
     expect(calledUrl).toContain("/answerCallbackQuery");
     expect(JSON.parse(body)).toEqual({ callback_query_id: "cbq_1", text: "Merging…" });
+  });
+
+  it("answerCallbackQuery is bounded: a Telegram that never answers is aborted, so a tap never hangs the poll loop", async () => {
+    let signal: AbortSignal | undefined;
+    const client = new TelegramClient({
+      token: "token",
+      apiBase: "https://example.test/bottoken",
+      fetchImpl: (_url, init) => {
+        signal = init?.signal ?? undefined;
+        return new Promise((_resolve, reject) => { signal?.addEventListener("abort", () => reject(signal?.reason)); });
+      }
+    });
+    vi.useFakeTimers();
+    try {
+      const p = client.answerCallbackQuery({ callback_query_id: "cbq_1" });
+      const settled = expect(p).rejects.toBeDefined();
+      await vi.advanceTimersByTimeAsync(ANSWER_CALLBACK_TIMEOUT_MS);
+      await settled;
+      expect(ANSWER_CALLBACK_TIMEOUT_MS).toBeLessThanOrEqual(5_000);
+    } finally { vi.useRealTimers(); }
   });
 
   it("editMessageReplyMarkup clears the keyboard with an empty inline_keyboard when none given (Phase 3.3)", async () => {

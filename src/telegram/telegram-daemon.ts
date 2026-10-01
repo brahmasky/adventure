@@ -238,8 +238,8 @@ export async function runTelegramDaemon(
           });
           return;
         }
-        await answerApprovalTap(event, options.telegramClient);
         const intake = gateway.intake(event);
+        await answerApprovalTap(event, options.telegramClient);
         if (!intake.ok) {
           if (isHandledIntakeDenial(intake.error.code)) return;
           throw new Error(`Gateway intake failed: ${intake.error.code} ${intake.error.message}`);
