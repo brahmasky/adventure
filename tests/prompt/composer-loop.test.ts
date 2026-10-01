@@ -7,6 +7,7 @@ import {
   composeSystemPrompt,
   DISCIPLINES,
   GUARDRAILS,
+  LOOP_GO_AHEAD_RULE,
   OMP_LOOP_DISCIPLINE,
   OMP_LOOP_GUARDRAILS,
   RESEARCH_DISCIPLINE
@@ -26,6 +27,19 @@ afterEach(() => {
 });
 
 describe("the `omp` composer surface (ADR 0002 V2: the planner acts through real tools)", () => {
+  it("a short go-ahead to Houge's own concrete proposal means carry it out, restated in full in any task/focus input (run_79faefea)", () => {
+    // Live: Paco answered a proposal with `好，修复一下`; downstream seats saw only those five
+    // characters. The rule is part of the planner discipline, not a self-write special case.
+    expect(OMP_LOOP_DISCIPLINE).toContain(LOOP_GO_AHEAD_RULE);
+    expect(LOOP_GO_AHEAD_RULE).toMatch(/proposal/i);
+    expect(LOOP_GO_AHEAD_RULE).toMatch(/without asking again/i);
+    expect(LOOP_GO_AHEAD_RULE).toMatch(/restate/i);
+    expect(LOOP_GO_AHEAD_RULE).toMatch(/focus/i);
+    for (const ack of ["go", "yes", "好", "可以"]) expect(LOOP_GO_AHEAD_RULE).toContain(`"${ack}"`);
+    // The spirit stays: prefer doing over asking.
+    expect(OMP_LOOP_DISCIPLINE).toMatch(/Prefer doing over asking/);
+  });
+
   it("composes identity + the omp discipline + the omp ground rule — never the answer-don't-act GUARDRAILS", () => {
     const prompt = composeSystemPrompt(memoryRoot(), "omp");
     expect(prompt).toContain("I am 猴哥.");
