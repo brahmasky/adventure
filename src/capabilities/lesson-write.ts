@@ -249,11 +249,12 @@ export function extractThreadPhrases(feedback: string, threadUserTexts: readonly
 
 /**
  * The default code-owned checker: one bounded, fixed-string grep over `src/` (only .ts
- * sources) per phrase — sync via child_process, exits on first match, 2s timeout.
+ * sources) per phrase — whole words for non-CJK, substrings for CJK. Sync via
+ * child_process, exits on first match, 2s timeout.
  */
 export function createSrcPhraseChecker(projectRoot: string): (phrase: string) => boolean {
   return (phrase) => {
-    const result = spawnSync("grep", ["-rqF", "--include=*.ts", "-e", phrase, "src"], {
+    const result = spawnSync("grep", [CJK_RE.test(phrase) ? "-rqF" : "-rqFw", "--include=*.ts", "-e", phrase, "src"], {
       cwd: projectRoot,
       timeout: 2000
     });
