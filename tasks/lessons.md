@@ -318,3 +318,11 @@ Rules Claude writes for itself after corrections. Review at session start.
   builds, installs, git or state changes; read-only inspection allowed" produced the correct fix first try.
   Rule: constrain side effects, never inspection; when an agent returns an empty result, reproduce it with
   the exact prompt and ask it to state why before changing anything else.
+
+- **"No run in flight" is not "nothing in flight": check the evolution lane before a restart.** 2026-10-02:
+  the controller kickstarted the daemon after confirming zero non-terminal runs, but a self-write had just
+  been kicked off in the background (its turn already completed). Codex had finished writing; the restart
+  cut the pipeline before the test gate and reviewer, so Paco got no card and the work was lost. Rule:
+  before any restart, also check for an in-flight self_write_propose / skill_author pipeline (a recent
+  `self_write_propose` tool_finished with no `self_write_published|failed|blocked` after it, or the
+  daemon log's "waiting for in-flight self-write"), and wait or ask.
