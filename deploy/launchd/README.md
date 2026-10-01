@@ -22,6 +22,9 @@ steps work on any macOS machine (e.g. this laptop, for verification).
   `… openai-codex`. launchd runs the daemon on the restricted PATH below, which usually
   does not include omp's bin dir (`~/.bun/bin`, for a bun install), so give the daemon
   omp's absolute path in `.env` ([LLM runtime — omp](../../docs/reference/configuration.md#llm-runtime--omp-adr-0028)).
+  An absolute path is not enough on its own: omp's launcher is a `#!/usr/bin/env bun` script, so the
+  plist's `PATH` must also contain the directory holding `bun` (`~/.bun/bin`). Without it every spawn
+  fails `omp not runnable` (seen on the 2026-10-01 cutover). Pass it via `EXTRA_PATH` to the setup script.
   Every spawn checks the version pin; a different omp is refused with an incident.
 - `agy` (voice notes) and `codex` (self-diagnose, self-write), also by absolute path in `.env`.
 

@@ -20,7 +20,7 @@
 
     <key>EnvironmentVariables</key>
     <dict>
-        <!-- launchd has a minimal PATH; include the dir that holds node/npm. -->
+        <!-- launchd has a minimal PATH; include the dirs that hold node/npm AND bun (omp's launcher is `#!/usr/bin/env bun`). -->
         <key>PATH</key>
         <string>__NODE_BIN_DIR__:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOUGE_ENV_FILE</key>

@@ -280,3 +280,9 @@ Rules Claude writes for itself after corrections. Review at session start.
 - **Check exit codes directly; a pipe eats them.** An implementer committed twice while the pre-commit
   check was red, because `npm test | tail` reported `tail`'s exit status. Rule: run gates unpiped (or with
   `pipefail`) and read `$?` (`$status` in fish) before committing; a report says "exit 0", not "looks green".
+
+- **A smoke run from the operator's shell does not prove the daemon's environment.** The omp cutover smoke
+  passed 5/5, then the first live turn under launchd failed `omp not runnable`: omp's launcher is
+  `#!/usr/bin/env bun` and launchd's PATH had no `~/.bun/bin`. Rule: before a kickstart, run the spawned
+  binaries once under the daemon's exact environment (`env -i` with the plist's PATH and HOME), or run the
+  smoke with that PATH; an absolute binary path does not cover its interpreter.
