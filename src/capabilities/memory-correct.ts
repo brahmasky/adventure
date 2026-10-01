@@ -16,7 +16,9 @@ export const MEMORY_SEARCH_MAX = 10;
 export const MEMORY_SEARCH_TEXT_CHARS = 200;
 export const MEMORY_IDS_PER_CALL_MAX = 5;
 export const MEMORY_CHANGES_PER_TURN_MAX = 10;
-export const MEMORY_CARD_TEXT_CHARS = 120;
+export const MEMORY_CARD_TEXT_CHARS = 200;
+/** M-H1: a correction is one short fact; the approval card and the Undo card show it whole. */
+export const MEMORY_CORRECTION_MAX_CHARS = 200;
 export const MEMORY_UNDO_PREFIX = "memory:undo:";
 /** Telegram's callback_data limit. */
 export const CALLBACK_DATA_MAX_BYTES = 64;
@@ -35,6 +37,7 @@ export const newMemoryTurnState = (): MemoryTurnState => ({ offered: { fact: new
 export const MEMORY_REFUSAL_TEXT: Readonly<Record<string, string>> = {
   bad_input: "give action search with a query, or retire/correct with 1 to 5 ids.",
   correction_required: "correct needs `correction`: Paco's corrected wording.",
+  correction_too_long: `a correction is one fact of at most ${MEMORY_CORRECTION_MAX_CHARS} characters.`,
   wiki_correct_unsupported: "wiki pages can only be retired, not corrected.",
   not_operator_turn: "retire and correct run only on Paco's own Telegram message, never on a scheduled turn.",
   tainted_turn: "another tool (web, mail, bash, a file read) already ran in this turn. Ask Paco to repeat the request in a fresh message.",
@@ -70,7 +73,9 @@ export function parseMemoryRequest(input: Record<string, unknown>): MemoryReques
   if (!ids) return { refusal: "bad_input" };
   if (input.action === "retire") return { action: "retire", kind, ids };
   if (kind === "wiki") return { refusal: "wiki_correct_unsupported" };
-  const correction = typeof input.correction === "string" ? input.correction.replace(/\s+/g, " ").trim().slice(0, 500) : "";
+  if (typeof input.correction === "string" && input.correction.length > MEMORY_CORRECTION_MAX_CHARS) return { refusal: "correction_too_long" };
+  // Stored exactly as both cards show it: one line, markdown-inert (the cards render through the rich renderer).
+  const correction = typeof input.correction === "string" ? escapeForTelegram(input.correction.replace(/\s+/g, " ").trim()) : "";
   return correction ? { action: "correct", kind, ids, correction } : { refusal: "correction_required" };
 }
 
@@ -138,7 +143,8 @@ export function memoryChangeCardText(store: RunStore, change: MemoryChange): str
   const tag = change.kind === "wiki" ? "wiki #" : "#";
   if (change.action === "correct" && change.new_id !== null) {
     const olds = change.old_ids.map((id) => `#${id}`).join(", ");
-    return `🧠 Corrected ${olds} → #${change.new_id}: ${quoted(memoryRowText(store, "fact", change.new_id))}`;
+    const was = change.old_ids.map((id) => `was #${id}: ${quoted(memoryRowText(store, "fact", id))}`);
+    return [`🧠 Corrected ${olds} → #${change.new_id}: ${quoted(memoryRowText(store, "fact", change.new_id))}`, ...was].join("\n");
   }
   return change.old_ids.map((id) => `🧠 Retired ${tag}${id}: ${quoted(memoryRowText(store, change.kind, id))}`).join("\n");
 }

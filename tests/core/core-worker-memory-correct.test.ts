@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TURN_ACTIONS } from "../../src/contracts/task-contract.js";
+import { parseMemoryRequest } from "../../src/capabilities/memory-correct.js";
 import { OMP_LOOP_TOOL_META } from "../../src/core/omp-turn-wiring.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
@@ -164,7 +165,7 @@ describe("memory_correct: retire and correct take only ids a search offered in t
     const texts = retrieveEpisodicFacts({ store, chat_id: CHAT, queryText: "daily report ASML", queryEmbedding: null, now: NOW }).map((f) => f.fact);
     expect(texts).not.toContain(ASML);
     const card = [...drainOutbox(store).values()].find((p) => String(p.text).startsWith("🧠"));
-    expect(card?.text).toBe(`🧠 Corrected #${id} → #${created.id}: "Paco's AI daily report covers AI news only, never ASML"`);
+    expect(card?.text).toBe(`🧠 Corrected #${id} → #${created.id}: "Paco's AI daily report covers AI news only, never ASML"\nwas #${id}: "${ASML}"`);
   });
 
   it("correct needs a correction; a wiki page can only be retired", async () => {
@@ -177,6 +178,39 @@ describe("memory_correct: retire and correct take only ids a search offered in t
     expect((await write(t, { action: "correct", kind: "wiki", ids: [page], correction: "x" })).content).toContain("wiki_correct_unsupported");
     expect((await write(t, { action: "retire", kind: "wiki", ids: [page] })).isError).toBe(false);
     expect(store.getWikiPage(page)?.status).toBe("pruned");
+  });
+});
+
+describe("memory_correct: correction size (M-H1)", () => {
+  it("a correction over 200 chars is refused by the schema and by code; nothing changes", async () => {
+    expect(parseMemoryRequest({ action: "correct", ids: [1], correction: "x".repeat(201) })).toEqual({ refusal: "correction_too_long" });
+    expect(parseMemoryRequest({ action: "correct", ids: [1], correction: "x".repeat(200) })).toMatchObject({ action: "correct" });
+    const id = fact(ASML);
+    const t = turn("fix it");
+    await t.call("memory_correct", { action: "search", query: "ASML" });
+    expect((await write(t, { action: "correct", ids: [id], correction: "y".repeat(201) })).isError).toBe(true);
+    expect(store.getEpisodicFact(id)?.status).toBe("active");
+  });
+
+  it("the Undo card shows the full correction and each replaced text, up to 200 chars each", async () => {
+    const old = `Paco's daily brief needs ASML ${"o".repeat(160)}`;
+    const id = fact(old);
+    const correction = `The daily brief covers AI news only ${"n".repeat(150)}`;
+    const t = turn("fix it");
+    await t.call("memory_correct", { action: "search", query: "ASML" });
+    await write(t, { action: "correct", ids: [id], correction });
+    const card = String([...drainOutbox(store).values()].find((x) => String(x.text).startsWith("🧠"))?.text);
+    expect(card).toContain(`"${correction}"`);
+    expect(card).toContain(`was #${id}: "${old}"`);
+  });
+
+  it("the Undo card of a retire shows each retired text up to 200 chars", async () => {
+    const old = `ASML note ${"q".repeat(180)}`;
+    const id = fact(old);
+    const t = turn("forget it");
+    await t.call("memory_correct", { action: "search", query: "ASML" });
+    await write(t, { action: "retire", ids: [id] });
+    expect([...drainOutbox(store).values()].some((x) => x.text === `🧠 Retired #${id}: "${old}"`)).toBe(true);
   });
 });
 
@@ -367,7 +401,7 @@ describe("memory_correct end to end: the fake omp child calls search, then corre
       expect(store.getEpisodicFact(id)).toMatchObject({ status: "superseded", superseded_by: created.id });
       const userTurn = store.getRecentChatTurns(CHAT, 10).find((x) => x.run_id === run && x.role === "user")!;
       expect(JSON.parse(created.source_turn_ids)).toEqual([userTurn.turn_id]);
-      expect([...outbox.values()].some((p) => p.text === `🧠 Corrected #${id} → #${created.id}: "The AI daily report never includes ASML"`)).toBe(true);
+      expect([...outbox.values()].some((p) => p.text === `🧠 Corrected #${id} → #${created.id}: "The AI daily report never includes ASML"\nwas #${id}: "${ASML}"`)).toBe(true);
     } finally {
       await worker.shutdownPlanners();
     }

@@ -65,10 +65,11 @@ describe("memory_changes: correct", () => {
     expect(got).toEqual(["The daily brief never includes ASML"]);
   });
 
-  it("keeps a core fact core, and refuses when any id is not active in this chat", () => {
+  it("a correction is a normal fact, never core (M-H1: a steered write must not mint always-on biography), and refuses when any id is not active in this chat", () => {
     const core = fact("Paco lives in Sydney", CHAT, { is_core: true });
     const change = store.correctEpisodicFacts({ ids: [core], correction: "Paco lives in Melbourne", chat_id: CHAT, run_id: null, now: NOW });
-    expect(store.getEpisodicFact(change!.new_id!)?.is_core).toBe(1);
+    expect(store.getEpisodicFact(change!.new_id!)?.is_core).toBe(0);
+    expect(store.getCoreEpisodicFacts(CHAT, 10).map((f) => f.id)).toEqual([]);
     expect(store.correctEpisodicFacts({ ids: [core], correction: "x", chat_id: CHAT, run_id: null, now: NOW })).toBeNull();
     const before = store.getActiveEpisodicFacts(CHAT).length;
     expect(store.correctEpisodicFacts({ ids: [fact("x", "999")], correction: "y", chat_id: CHAT, run_id: null, now: NOW })).toBeNull();

@@ -3909,8 +3909,9 @@ export class RunStore {
   }
 
   /**
-   * Replace active facts with Paco's corrected wording: one new active fact (core when any old one was), each old fact
-   * superseded by it, and the new row's `supersedes` = the first old id. Null and no write when any id is refused.
+   * Replace active facts with Paco's corrected wording: one new active, non-core fact (M-H1: a correction never mints
+   * always-on biography), each old fact superseded by it, and the new row's `supersedes` = the first old id. Null and
+   * no write when any id is refused.
    */
   correctEpisodicFacts(input: {
     ids: number[]; correction: string; chat_id: string; run_id: string | null; source_turn_id?: string; now?: string;
@@ -3920,7 +3921,7 @@ export class RunStore {
       const olds = input.ids.map((id) => this.getEpisodicFact(id));
       if (olds.some((f) => f?.status !== "active" || f.chat_id !== input.chat_id)) throw RunStore.MEMORY_REFUSED;
       const newId = this.addEpisodicFact({ chat_id: input.chat_id, fact: input.correction, created_at: now,
-        source_turn_ids: input.source_turn_id ? [input.source_turn_id] : [], is_core: olds.some((f) => f?.is_core === 1) });
+        source_turn_ids: input.source_turn_id ? [input.source_turn_id] : [] });
       // Reverse order: supersedeEpisodicFact sets the new row's `supersedes` each time, so the first id lands last.
       for (const id of [...input.ids].reverse()) this.supersedeEpisodicFact(id, newId, now);
       return this.insertMemoryChange({ kind: "fact", action: "correct", old_ids: [...input.ids], new_id: newId,
