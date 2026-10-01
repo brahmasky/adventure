@@ -3,7 +3,10 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// live sandbox-exec cases spawn many short processes (~4.5 s idle); the default 10 s timeout flakes under CPU load
+vi.setConfig({ testTimeout: 30_000 });
 import { renderSeatbelt, writeSeatbeltProfiles } from "../../src/omp/seatbelt.js";
 import { HOME_CODE_CONFIG, HOME_INSTALL_TREES, HOME_SECRETS } from "../../src/omp/protected-paths.js";
 

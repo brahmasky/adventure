@@ -73,7 +73,8 @@ describe("command matcher — floor B for bash: which commands ask Paco first (D
   it("caps nesting and fails toward asking, quickly (10000 nested evals)", () => {
     const t0 = Date.now();
     expect(classifyCommand("eval ".repeat(10000) + "rm -rf x")).toEqual({ kind: "destructive", label: "nesting too deep" });
-    expect(Date.now() - t0).toBeLessThan(200);
+    // a catastrophic-regex guard, not a benchmark: ~50 ms idle; generous so CPU load cannot flake it
+    expect(Date.now() - t0).toBeLessThan(2000);
   });
 
   it("treats a parser throw as destructive 'unparseable'", () => {
