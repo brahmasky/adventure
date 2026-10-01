@@ -21,7 +21,8 @@ import { verifyInstalledWrapper } from "./shell-wrapper.js";
 import { chatWorkspace } from "./workspace.js";
 import type { ToolDeclaration } from "./tool-decls.js";
 import {
-  assistantIntentFor, buildTurnPrompt, claimRestartNoteAtDispatch, systemPromptFingerprint, writeSystemPromptFile, type TurnContextDeps
+  assistantIntentFor, buildTurnPrompt, claimRestartNoteAtDispatch, systemPromptFingerprint, writeSystemPromptFile, type TurnContextDeps,
+  type TurnPrompt
 } from "./turn-context.js";
 
 export type SupervisorState = "STOPPED" | "STARTING" | "IDLE" | "RUNNING" | "AWAITING_APPROVAL" | "ABORTING";
@@ -403,7 +404,7 @@ export class PlannerSupervisor {
   }
 
   /** A later turn retries the top planner string once after a fallback (spec §8). */
-  private async promptTop(turn: Turn, prompt: string): Promise<void> {
+  private async promptTop(turn: Turn, prompt: TurnPrompt): Promise<void> {
     const s = this.session;
     if (!s) { this.failTurn(turn, "planner_exit", "planner not running"); return; }
     turn.childGen = this.gen;

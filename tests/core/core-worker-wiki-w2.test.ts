@@ -44,7 +44,7 @@ function context(embed: (text: string) => Promise<Float32Array | null>): TurnCon
 
 async function prompt(message: string, embed: (text: string) => Promise<Float32Array | null> = async () => null) {
   const run_id = run(message);
-  const text = await buildTurnPrompt(context(embed), { run_id, chat_id: "555", message, source: "telegram" });
+  const { prompt: text } = await buildTurnPrompt(context(embed), { run_id, chat_id: "555", message, source: "telegram" });
   const started = store.getLedgerEvents(run_id).find((e) => e.event_type === "loop_started");
   return { text, artifacts: started?.payload.applied_artifacts as Record<string, unknown> };
 }

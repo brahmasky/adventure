@@ -77,11 +77,12 @@ function restartNote(d: TurnContextDeps, chatId: string): string {
  * Called just before the prompt goes to the child: claims the chat's note for this boot, or strips the note line
  * when another dispatch already claimed it. A turn that ends before dispatch never claims, so the next turn gets it.
  */
-export function claimRestartNoteAtDispatch(store: RunStore, chatId: string, prompt: string, pid: number = process.pid): string {
-  if (!prompt.startsWith(RESTART_NOTE_PREFIX)) return prompt;
+export function claimRestartNoteAtDispatch(store: RunStore, chatId: string, built: TurnPrompt, pid: number = process.pid): string {
+  // Only the flag buildTurnPrompt set says a note is there: never the prompt text, which may be Paco's own "[runtime] …"
+  if (built.restartNote === "") return built.prompt;
   const boot = liveBoot(store, pid);
-  if (boot && store.claimRestartNote(boot.boot_id, chatId)) return prompt;
-  return prompt.slice(prompt.indexOf("\n") + 1);
+  if (boot && store.claimRestartNote(boot.boot_id, chatId)) return built.prompt;
+  return built.prompt.slice(built.restartNote.length);
 }
 
 /** True when this chat's trailing clarify turns have reached the cap. */
@@ -149,7 +150,10 @@ function recordAttribution(
   if (pages.length > 0) d.store.touchWikiApplied(pages.map((p) => p.id));
 }
 
-export async function buildTurnPrompt(d: TurnContextDeps, i: TurnPromptInput): Promise<string> {
+/** The planner prompt, and the exact restart note it opens with ("" when none) for the claim at dispatch. */
+export interface TurnPrompt { prompt: string; restartNote: string }
+
+export async function buildTurnPrompt(d: TurnContextDeps, i: TurnPromptInput): Promise<TurnPrompt> {
   const { facts, pages } = await d.retrieve(i.chat_id, i.message);
   recordAttribution(d, i.run_id, facts, pages);
   const blocks = [...facts, ...pages].map((x) => x.block.replaceAll("[/context]", "[ /context]"));
@@ -158,7 +162,7 @@ export async function buildTurnPrompt(d: TurnContextDeps, i: TurnPromptInput): P
   const cap = clarifyCapReached(d, i.chat_id) ? CLARIFY_CAP_NOTICE : "";
   // a schedule fire is not Paco talking: it neither shows nor uses the note, so his first real turn gets it
   const note = i.source === "schedule" ? "" : restartNote(d, i.chat_id);
-  return `${note}${prefix}${cap}${context}${i.message}`;
+  return { prompt: `${note}${prefix}${cap}${context}${i.message}`, restartNote: note };
 }
 
 /** A tool-less reply ending in a short question is a clarify turn (feeds the consecutive-clarify cap). */

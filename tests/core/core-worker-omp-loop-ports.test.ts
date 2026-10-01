@@ -235,7 +235,7 @@ describe("episodic memory in the omp turn context (Phase M B3: retrieval + attri
     const id = store.addEpisodicFact({ chat_id: "555", fact: "Paco 喜欢周末骑车", embedding: Float32Array.from([1, 0]), created_at: "2026-07-14T00:00:00.000Z" });
     const embeds: string[] = [];
     const run_id = run("明天我该干嘛？");
-    const prompt = await buildTurnPrompt(contextFor(async (text) => { embeds.push(text); return Float32Array.from([1, 0]); }), { run_id, chat_id: "555", message: "明天我该干嘛？", source: "telegram" });
+    const { prompt } = await buildTurnPrompt(contextFor(async (text) => { embeds.push(text); return Float32Array.from([1, 0]); }), { run_id, chat_id: "555", message: "明天我该干嘛？", source: "telegram" });
     expect(prompt).toContain("Paco 喜欢周末骑车");
     expect(embeds).toEqual(["明天我该干嘛？"]);
     expect(started(run_id)).toMatchObject({ episodic_fact_ids: [id] });
@@ -247,7 +247,7 @@ describe("episodic memory in the omp turn context (Phase M B3: retrieval + attri
     process.env.HOUGE_EPISODIC_ENABLED = "1";
     const id = store.addEpisodicFact({ chat_id: "555", fact: "Paco lives in Sydney", created_at: "2026-07-14T00:00:00.000Z" });
     const run_id = run("should I visit Sydney harbour?");
-    const prompt = await buildTurnPrompt(contextFor(async () => null), { run_id, chat_id: "555", message: "should I visit Sydney harbour?", source: "telegram" });
+    const { prompt } = await buildTurnPrompt(contextFor(async () => null), { run_id, chat_id: "555", message: "should I visit Sydney harbour?", source: "telegram" });
     expect(prompt).toContain("Paco lives in Sydney");
     expect(started(run_id)).toMatchObject({ episodic_fact_ids: [id] });
   });
@@ -256,7 +256,7 @@ describe("episodic memory in the omp turn context (Phase M B3: retrieval + attri
     // replaces: episodic memory on the loop › "flag OFF (default): NO section, empty ids, facts untouched, embed never called"
     const id = store.addEpisodicFact({ chat_id: "555", fact: "Paco lives in Sydney", created_at: "2026-07-14T00:00:00.000Z" });
     const run_id = run("should I visit Sydney harbour?");
-    const prompt = await buildTurnPrompt(contextFor(async () => { throw new Error("embed must not be called when the flag is off"); }), { run_id, chat_id: "555", message: "should I visit Sydney harbour?", source: "telegram" });
+    const { prompt } = await buildTurnPrompt(contextFor(async () => { throw new Error("embed must not be called when the flag is off"); }), { run_id, chat_id: "555", message: "should I visit Sydney harbour?", source: "telegram" });
     expect(prompt).toBe("should I visit Sydney harbour?");
     expect(started(run_id)).toMatchObject({ episodic_fact_ids: [] });
     expect(store.getEpisodicFact(id)!.applied_count).toBe(0);
@@ -267,6 +267,6 @@ describe("episodic memory in the omp turn context (Phase M B3: retrieval + attri
     process.env.HOUGE_EPISODIC_ENABLED = "1";
     store.addEpisodicFact({ chat_id: "555", fact: "Paco lives in Sydney", created_at: "2026-07-14T00:00:00.000Z" });
     const run_id = run("hello");
-    await expect(buildTurnPrompt(contextFor(async () => { throw new Error("embed exploded"); }), { run_id, chat_id: "555", message: "hello", source: "telegram" })).resolves.toContain("hello");
+    await expect(buildTurnPrompt(contextFor(async () => { throw new Error("embed exploded"); }), { run_id, chat_id: "555", message: "hello", source: "telegram" })).resolves.toMatchObject({ prompt: expect.stringContaining("hello") });
   });
 });

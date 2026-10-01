@@ -1154,3 +1154,22 @@ describe("PlannerSupervisor — the restart note reaches the prompt, never the s
     expect(session.prompts[0]).toMatch(/^\[runtime\] Houge restarted .* \(kickstart\); now running 4431d13\.\nsecond$/);
   });
 });
+
+describe("PlannerSupervisor — a message starting with [runtime] reaches the child intact (round 3, N1)", () => {
+  const message = "[runtime] Houge restarted 07:34 (kickstart) — why did this happen?\nalso check logs";
+  it("with no boot record, and after the note was delivered, the message is never cut", async () => {
+    const session = fakeSession();
+    const { store, sup } = harness(session);
+    sup.submit(req(createQueuedTurnRun(store), message)); await sup.whenIdle();
+    expect(session.prompts[0]).toBe(message);
+    store.recordDaemonBoot({
+      boot_id: "boot_1", started_at: new Date().toISOString(), pid: process.pid, reason: "kickstart", reload_sha: null, reload_subject: null,
+      reload_branch: null, reload_merged_at: null, head_sha: "4431d13aaaa", head_subject: "s", head_committed_at: null, dist_built_at: null
+    });
+    sup.submit(req(createQueuedTurnRun(store), message)); await sup.whenIdle();
+    expect(session.prompts[1]).toMatch(/^\[runtime\] Houge restarted .* \(kickstart\); now running 4431d13\.\n\[runtime\] Houge restarted 07:34 \(kickstart\) — why/);
+    expect(session.prompts[1]!.endsWith(`\n${message}`)).toBe(true);
+    sup.submit(req(createQueuedTurnRun(store), message)); await sup.whenIdle();
+    expect(session.prompts[2]).toBe(message);
+  });
+});
