@@ -1,6 +1,6 @@
 import { statfsSync } from "node:fs";
 import { resolveApprovalTimeoutMs } from "../omp/omp-config.js";
-import type { RunStore } from "./run-store.js";
+import { TERMINAL_NOTIFICATION_REPORT_MS, type RunStore } from "./run-store.js";
 import { readParkMarker } from "./tombstone.js";
 
 /**
@@ -154,6 +154,16 @@ export function detectOmpViolations(store: RunStore, probe: OmpSweepProbe): Inva
   return out;
 }
 
+/** Undelivered notifications. A terminal row counts for at least two sweep intervals, so none slips between sweeps. */
+function undeliveredViolations(store: RunStore, now: string, env: NodeJS.ProcessEnv): InvariantViolation[] {
+  const terminalWindowMs = Math.max(TERMINAL_NOTIFICATION_REPORT_MS, 2 * resolveInvariantSweepIntervalMs(env));
+  return store.findUndeliveredNotifications(now, UNDELIVERED_NOTIFICATION_GRACE_MS, terminalWindowMs).map((row) => ({
+    kind: "undelivered_notification",
+    subject: row.subject,
+    detail: { intent_type: row.intent_type, attempt_count: row.attempt_count }
+  }));
+}
+
 /** Pure detection: compose the store's seven invariant queries into a flat violation list. */
 export function detectViolations(
   store: RunStore,
@@ -174,13 +184,7 @@ export function detectViolations(
   for (const row of store.findStuckRuns(new Date(Date.parse(now) - STUCK_RUN_GRACE_MS).toISOString(), queuedTurnBefore)) {
     violations.push({ kind: "stuck_run", subject: row.subject, detail: { state: row.state } });
   }
-  for (const row of store.findUndeliveredNotifications(now, UNDELIVERED_NOTIFICATION_GRACE_MS)) {
-    violations.push({
-      kind: "undelivered_notification",
-      subject: row.subject,
-      detail: { intent_type: row.intent_type, attempt_count: row.attempt_count }
-    });
-  }
+  violations.push(...undeliveredViolations(store, now, env));
   for (const row of store.findOverdueSchedules(now, OVERDUE_SCHEDULE_GRACE_MS)) {
     violations.push({
       kind: "overdue_schedule",

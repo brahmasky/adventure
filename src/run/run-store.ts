@@ -4138,21 +4138,21 @@ export class RunStore {
    * pile grows every cycle while never resolving. Excluding own-alerts means a delivery outage
    * surfaces once — via the genuinely stuck run/schedule notifications — and stays bounded.
    */
-  findUndeliveredNotifications(now: string, graceMs: number): Array<{
+  findUndeliveredNotifications(now: string, graceMs: number, terminalWindowMs: number = TERMINAL_NOTIFICATION_REPORT_MS): Array<{
     subject: string;
     intent_type: string;
     attempt_count: number;
   }> {
     const cutoff = new Date(Date.parse(now) - graceMs).toISOString();
-    // A terminal row stops counting once it is older than the retry window: it was given up on (attempt cap, or
-    // abandoned as stale) and has been reported for a day; counting it forever would keep the incident open forever.
-    const abandonedBefore = new Date(Date.parse(now) - NOTIFICATION_RETRY_MAX_AGE_MS).toISOString();
+    // A terminal row (attempt cap, or abandoned as stale) stops counting `terminalWindowMs` after it WENT terminal
+    // (updated_at, not created_at): every one is reported by at least one sweep, and none keeps the incident open forever.
+    const abandonedBefore = new Date(Date.parse(now) - terminalWindowMs).toISOString();
     return this.db.prepare(`
       SELECT notification_id AS subject, intent_type, attempt_count
       FROM notification_outbox
       WHERE state != 'delivered'
         AND created_at < ?
-        AND NOT (state = 'failed_terminal' AND created_at < ?)
+        AND NOT (state = 'failed_terminal' AND updated_at < ?)
         AND idempotency_key NOT LIKE 'incident\\_%' ESCAPE '\\'
       ORDER BY created_at ASC
     `).all<{ subject: string; intent_type: string; attempt_count: number }>(cutoff, abandonedBefore);
@@ -7579,6 +7579,9 @@ export function resolveLessonRepeatDays(env: NodeJS.ProcessEnv): number {
   const n = Number(env.HOUGE_LESSON_REPEAT_DAYS);
   return Number.isInteger(n) && n > 0 ? n : DEFAULT_LESSON_REPEAT_DAYS;
 }
+
+/** How long a failed_terminal notification keeps counting as undelivered for the sweep, by when it went terminal. */
+export const TERMINAL_NOTIFICATION_REPORT_MS = 24 * 60 * 60_000;
 
 /** A notification retry older than this (by created_at) is abandoned, not sent (live gate 2026-10-01). */
 export const NOTIFICATION_RETRY_MAX_AGE_MS = 24 * 60 * 60_000;

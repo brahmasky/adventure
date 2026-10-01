@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { NotificationDispatcher } from "../../src/notifications/notification-dispatcher.js";
 import { NotificationOutbox } from "../../src/notifications/notification-outbox.js";
 import { NOTIFICATION_MAX_ATTEMPTS } from "../../src/notifications/notification-types.js";
+import { detectViolations } from "../../src/run/invariant-sweep.js";
 import { NOTIFICATION_RETRY_MAX_AGE_MS, RunStore } from "../../src/run/run-store.js";
 
 // Live gate 2026-10-01: requeueRetryWaitNotifications / recoverStaleSendingNotifications had no caller outside tests,
@@ -102,17 +103,33 @@ describe("RunStore.retryUndeliveredNotifications", () => {
 });
 
 describe("the sweep's undelivered_notification check after abandonment", () => {
-  it("a failed_terminal row older than 24 h no longer counts, so its incident can resolve; a young one still does", () => {
-    const { store, enqueue, backdate, outbox } = setup();
-    const old = enqueue("reply:old");
-    const young = enqueue("reply:young");
-    for (const id of [old.notification_id, young.notification_id]) {
-      outbox.claimNext("s", 30);
-      outbox.markFailed(id, "HTTP 400", false, new Date().toISOString(), 5);
+  const setUpdated = (store: RunStore, id: string, msAgo: number) => (store as unknown as Db).db
+    .prepare("UPDATE notification_outbox SET updated_at = ? WHERE notification_id = ?").run(new Date(Date.now() - msAgo).toISOString(), id);
+  function terminalRows() {
+    const t = setup();
+    const ids = ["reply:a", "reply:b"].map((k) => t.enqueue(k).notification_id);
+    for (const id of ids) {
+      t.outbox.claimNext("s", 30);
+      t.outbox.markFailed(id, "HTTP 400", false, new Date().toISOString(), 5);
+      t.backdate(id, 30 * HOUR); // both were CREATED long ago
     }
-    backdate(old.notification_id, NOTIFICATION_RETRY_MAX_AGE_MS + HOUR);
-    backdate(young.notification_id, 2 * HOUR);
+    return { ...t, ids };
+  }
+
+  it("keys on when the row went terminal (updated_at), not when it was created: a fresh failure is seen at least once", () => {
+    const { store, ids: [recent, old] } = terminalRows();
+    setUpdated(store, recent!, 1 * HOUR); // gave up an hour ago on a 30 h old row
+    setUpdated(store, old!, 25 * HOUR);
     const flagged = store.findUndeliveredNotifications(new Date().toISOString(), 30 * 60_000).map((r) => r.subject);
-    expect(flagged).toEqual([young.notification_id]);
+    expect(flagged).toEqual([recent]);
+  });
+
+  it("the sweep's window is never shorter than its own cadence, so a terminal row cannot fall between two sweeps", () => {
+    const { store, ids: [row] } = terminalRows();
+    setUpdated(store, row!, 30 * HOUR);
+    const kinds = (env: NodeJS.ProcessEnv) => detectViolations(store, new Date().toISOString(), env)
+      .filter((v) => v.kind === "undelivered_notification").map((v) => v.subject);
+    expect(kinds({})).not.toContain(row); // default 12 h cadence: a 30 h old terminal row has been seen
+    expect(kinds({ HOUGE_INVARIANT_SWEEP_INTERVAL_MINUTES: String(20 * 60) })).toContain(row); // 20 h cadence: window 40 h
   });
 });
