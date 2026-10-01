@@ -137,6 +137,16 @@ gate works; convergence under the evidence regime is now the top functional gap.
 
 ---
 
+## 4′. Delta 2026-09-30 — the omp runtime re-sequence (supersedes the order below until SP1 ships)
+
+Paco's review session found the harness had one real tool and usage had collapsed; the runtime is replaced
+before any new capability. Four sub-projects, each its own spec → review → plan → build → live gate:
+**SP1 omp runtime** (spec `docs/superpowers/specs/2026-09-30-omp-runtime-design.md`, decisions D1–D12, ADR 0028
+at ship) → **SP2 Paco's personal tools** (own Gmail/Calendar/reminders/files) → **SP3 hardening** (auth broker,
+OS user for the planner, quota invariant) → **SP4 self-evolution v2** (weakness mining, replay eval as a gate).
+Phase R below is subsumed by SP1 (a real agent loop replaces the step-cap fallback work); episodic/wiki stay as
+knowledge Houge owns; Earn is parked behind SP1.
+
 ## 4. The sequenced roadmap (Paco's decisions, 2026-07-07)
 
 Decision record: (1) research convergence is the immediate next build; (2) next major

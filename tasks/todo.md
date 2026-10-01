@@ -1,6 +1,22 @@
 # 🧭 CURRENT SYSTEM STATE — 2026-08-02 (read this first)
 
-**No build in flight.** Next push move: Earn P3 — pick venue + register (see strategic frame).
+**Build in design: omp runtime (SP1). Spec written 2026-09-30, Rev 15, awaiting Paco's read → writing-plans.**
+`docs/superpowers/specs/2026-09-30-omp-runtime-design.md`. Review of the repo (2026-09-30) found the gap is tools,
+not polish: web_search = 78% of tool steps, human messages 193 (Jul) → 14 (Aug). Decisions locked D1–D12 (omp
+18.4.4 under profile `houge`; hard cutover; Opus 5.5 via Anthropic Max OAuth in omp; yolo under $HOME with
+Seatbelt floors; `bash` in Claude Code posture with a matcher for external writes + destructive deletes; wall
+kept for read tools; family collapse audited). **Sequenced next builds, each its own spec:**
+- **SP1 omp runtime** — this spec. Ends with ADR 0028 + live gate on the mini.
+- **SP2 Paco's personal tools** — his Gmail (`account: paco`, send gated), Calendar, reminders, files, browser if
+  a real ask needs it. Not before SP1 is live on real turns.
+- **SP3 hardening** — `omp auth-broker` under launchd (no tokens on disk), dedicated macOS user for the planner,
+  flat-rate quota invariant, optional domain-allowlist proxy.
+- **SP4 self-evolution v2** — weakness-mining tick over the ledger → ranked proposals; replay eval in the
+  self-write test gate; prompt-section A/B. After a week of SP1 data.
+Earn P3 (pick venue + register) is parked behind SP1; the money-track tools are deleted in SP1 and return as a
+bridge tool if Earn resumes.
+
+
 
 **SHIPPED + ARMED 2026-09-29: Multimodal ingest (voice notes + photos) — #3 merged `6f9381b`, built,
 kickstarted, flag on; first real turns: photo `ok` 41.4 s, voice `ok` 16.4 s, both agy-cli.** Spec `docs/superpowers/specs/2026-09-29-multimodal-ingest-design.md` (amendments
