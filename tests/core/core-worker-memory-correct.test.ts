@@ -204,6 +204,41 @@ describe("memory_correct: trust limits (code-owned)", () => {
     expect((await write(clean, { action: "retire", ids: [id] })).isError).toBe(false);
   });
 
+  // H1 (review round 2): the same-turn rule is an ALLOWLIST. Any earlier step outside {memory_correct, houge_status,
+  // to_local_time} taints the turn: plain bash can curl a page (D12, unquarantined) and a file read can hold one.
+  const priorStep = (run_id: string, capability: string, action: string) =>
+    store.appendRunLedgerEvent(run_id, "loop_step", "core", { step: 1, action, capability, ok: true, result_digest: "12 bytes" });
+
+  it("taint allowlist: curl through PLAIN shell earlier in the turn refuses retire, before any card", async () => {
+    const id = fact(ASML);
+    const t = turn("curl that page, then forget ASML");
+    priorStep(t.run_id, "shell", "bash");
+    await t.call("memory_correct", { action: "search", query: "ASML" });
+    expect((await write(t, { action: "retire", ids: [id] })).content).toContain("tainted_turn");
+    expect(pendingApproval(t.run_id)).toBeUndefined();
+    expect(store.getEpisodicFact(id)?.status).toBe("active");
+  });
+
+  it("taint allowlist: a built-in file read earlier in the turn refuses retire", async () => {
+    const id = fact(ASML);
+    const t = turn("read notes.md, then forget ASML");
+    priorStep(t.run_id, "fs_read", "builtin:read");
+    await t.call("memory_correct", { action: "search", query: "ASML" });
+    expect((await write(t, { action: "retire", ids: [id] })).content).toContain("tainted_turn");
+  });
+
+  it("taint allowlist: houge_status earlier in the turn is clean, so retire goes on to the approval card", async () => {
+    const id = fact(ASML);
+    const t = turn("check yourself, then forget ASML");
+    expect((await t.call("houge_status", {})).isError).toBe(false);
+    await t.call("memory_correct", { action: "search", query: "ASML" });
+    const p = t.call("memory_correct", { action: "retire", ids: [id] });
+    await until(() => pendingApproval(t.run_id) !== undefined);
+    tapApproval(pendingApproval(t.run_id)!, "approve");
+    expect((await p).isError).toBe(false);
+    expect(store.getEpisodicFact(id)?.status).toBe("pruned");
+  });
+
   it("caps: more than 5 ids per call, or more than 10 changed rows per turn, is refused too_many", async () => {
     const ids = Array.from({ length: 12 }, (_, i) => fact(`ASML item ${i}`));
     const t = turn("forget all ASML");

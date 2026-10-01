@@ -1,6 +1,5 @@
 import { blobToFloat32, cosineSimilarity } from "../llm/embeddings.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
-import { UNTRUSTED_READ_ENTRIES } from "../omp/external-read.js";
 import type { MemoryChange, MemoryKind, RunStore } from "../run/run-store.js";
 import { clipText } from "../status/houge-status.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
@@ -23,10 +22,11 @@ export const MEMORY_UNDO_PREFIX = "memory:undo:";
 export const CALLBACK_DATA_MAX_BYTES = 64;
 
 /**
- * A turn that already ran one of these may not write memory: their output is untrusted (the four read tools of the
- * wall, plus network-reaching bash, whose raw output reaches the planner unquarantined under D12).
+ * H1 (review round 2): the only steps that may come before a write in the same turn. Anything else taints it — the
+ * read tools of the wall, any bash (plain bash can curl a page, unquarantined under D12), a file read, an unknown call.
+ * Earlier memory_correct steps (search, or a write Paco already approved) carry no outside text.
  */
-export const MEMORY_TAINT_ENTRIES: ReadonlySet<string> = new Set<string>([...UNTRUSTED_READ_ENTRIES, "shell_external"]);
+export const MEMORY_CLEAN_PRIOR_STEPS: ReadonlySet<string> = new Set<string>(["memory_correct", "memory_correct_write", "houge_status", "to_local_time"]);
 
 /** What this turn's searches offered, and how many rows it has changed. */
 export interface MemoryTurnState { offered: Record<MemoryKind, Set<number>>; changed: number }
@@ -37,7 +37,7 @@ export const MEMORY_REFUSAL_TEXT: Readonly<Record<string, string>> = {
   correction_required: "correct needs `correction`: Paco's corrected wording.",
   wiki_correct_unsupported: "wiki pages can only be retired, not corrected.",
   not_operator_turn: "retire and correct run only on Paco's own Telegram message, never on a scheduled turn.",
-  tainted_turn: "an untrusted read (web, mail, fetched page) already ran in this turn. Ask Paco to repeat the request in a fresh message.",
+  tainted_turn: "another tool (web, mail, bash, a file read) already ran in this turn. Ask Paco to repeat the request in a fresh message.",
   not_offered: "retire and correct take only ids a search in this turn returned. Search first.",
   too_many: `at most ${MEMORY_IDS_PER_CALL_MAX} ids per call and ${MEMORY_CHANGES_PER_TURN_MAX} changed rows per turn.`,
   not_active: "one of those ids is no longer active. Search again."
@@ -210,7 +210,7 @@ async function memorySearch(d: MemoryToolDeps, req: Extract<MemoryRequest, { act
 /** The trust limits, in order: Paco's own turn, no untrusted read earlier in it, caps, ids offered by this turn. */
 function writeRefusal(d: Pick<MemoryToolDeps, "store" | "run_id" | "state">, req: Exclude<MemoryRequest, { action: "search" }>): string | null {
   if (d.store.runSource(d.run_id) !== "telegram") return "not_operator_turn";
-  if (d.store.runLoopCapabilities(d.run_id).some((c) => MEMORY_TAINT_ENTRIES.has(c))) return "tainted_turn";
+  if (d.store.runLoopCapabilities(d.run_id).some((c) => !MEMORY_CLEAN_PRIOR_STEPS.has(c))) return "tainted_turn";
   if (req.ids.length > MEMORY_IDS_PER_CALL_MAX) return "too_many";
   if (req.ids.some((id) => !d.state.offered[req.kind].has(id))) return "not_offered";
   if (d.state.changed + req.ids.length > MEMORY_CHANGES_PER_TURN_MAX) return "too_many";
