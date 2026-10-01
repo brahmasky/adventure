@@ -103,6 +103,16 @@ export interface GatewayHooks {
   requestShutdown?: () => void;
 }
 
+/** The reason line per user-side approval refusal (code-owned). A code absent here gets no reply. */
+const APPROVAL_REFUSAL_TEXT: Readonly<Record<string, string>> = {
+  APPROVAL_NOT_FOUND: "no such approval.",
+  APPROVAL_NOT_PENDING: "already answered.",
+  APPROVAL_REQUESTER_MISMATCH: "not yours to answer.",
+  APPROVAL_EXPIRED: "expired before it was answered."
+};
+/** An `appr_<uuid>` is 41 characters; anything longer is not an id and is not echoed in full. */
+const APPROVAL_ID_ECHO_MAX = 48;
+
 export class Gateway {
   private readonly caps: GlobalBudgetCaps;
   private readonly projectRoot: string;
@@ -946,7 +956,26 @@ export class Gateway {
       return { ok: true, status: "approval_resolved", run_id: resolution.run_id };
     }
 
+    this.replyToApprovalRefusal(event, resolution.error.code);
     return { ok: false, error: { code: resolution.error.code, message: resolution.error.message } };
+  }
+
+  /**
+   * One short, code-owned reply to a refused /approve or /deny (live gate 2026-10-01: refusals were silent). Only the
+   * user-side codes in APPROVAL_REFUSAL_TEXT reply; an idempotency conflict stays silent. Keyed on the update, so a
+   * redelivered refusal never replies twice. The id is the only user text echoed, capped and stripped of markup.
+   */
+  private replyToApprovalRefusal(event: TypedTaskEvent, code: string): void {
+    const reason = APPROVAL_REFUSAL_TEXT[code];
+    if (reason === undefined) return;
+    const id = (event.approval_id ?? "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, APPROVAL_ID_ECHO_MAX);
+    this.runStore.enqueueNotification({
+      target: event.notify,
+      intent_type: "progress",
+      idempotency_key: `${event.idempotency_key}:approval_refused`,
+      correlation_id: event.source_reference,
+      payload: { text: `Approval \`${id}\`: ${reason} Use /approvals to list live ones.` }
+    });
   }
 
   /**

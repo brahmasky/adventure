@@ -1,9 +1,15 @@
 // tests/telegram/handled-intake-denials.test.ts
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { RunStore } from "../../src/run/run-store.js";
-import { isHandledIntakeDenial } from "../../src/telegram/telegram-poll-runner.js";
+import { isHandledIntakeDenial, runTelegramPollOnce } from "../../src/telegram/telegram-poll-runner.js";
+import { pinOmpEnv, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
+
+pinOmpEnv();
 
 // Live gate 2026-10-01: Paco's /approve of an already-denied id earned APPROVAL_NOT_PENDING, which the
 // daemon treated as a poll failure. The update offset was never acknowledged, the same update replayed
@@ -59,5 +65,33 @@ describe("approval refusals never wedge Telegram intake", () => {
     const code = codeOf(trigger(store, row.approval_id, "approve"));
     expect(code).not.toBe("ok");
     expect(isHandledIntakeDenial(code)).toBe(true);
+  });
+});
+
+// The same live gate: the refusal was handled but silent. Through the real poll loop, a malformed `/deny` and a
+// stale `/approve` each get their one reply in the same cycle, and the batch keeps going.
+describe("refused commands are answered through the poll loop", () => {
+  it("`/deny` (no id) and `/approve <unknown id>` each get a reply; the later turn still runs", async () => {
+    const store = RunStore.openInMemory();
+    const root = mkdtempSync(join(tmpdir(), "houge-refusal-"));
+    const sent: string[] = [];
+    try {
+      useFakeOmp({ "*": { rpcText: "answered" } }, root);
+      const msg = (update_id: number, text: string) => ({ update_id, message: { message_id: update_id, text, from: { id: 111 }, chat: { id: 222 } } });
+      await runTelegramPollOnce({
+        store, projectRoot: root, omp: { dataDir: root, distDir: tmpOmpDist(root) },
+        allowlist: { users: [{ telegram_user_id: 111, identity_id: "paco" }], chats: [{ telegram_chat_id: 222, label: "p", allowed_identity_ids: ["paco"] }] },
+        telegramClient: {
+          getUpdates: async () => [msg(90, "/deny"), msg(91, "/approve appr_nope"), msg(92, "hello")],
+          sendMessage: async ({ text }) => { sent.push(text); return { message_id: sent.length }; }
+        }
+      });
+      expect(sent.filter((t) => t.includes("/deny requires an approval id"))).toHaveLength(1);
+      expect(sent.filter((t) => t.includes("appr_nope") && t.includes("/approvals"))).toHaveLength(1);
+      expect(sent.some((t) => t.includes("answered"))).toBe(true);
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

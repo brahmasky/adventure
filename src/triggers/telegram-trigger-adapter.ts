@@ -151,7 +151,7 @@ export function normalizeTelegramUpdate(
 
   // The parser keeps the untrimmed body as before.
   const parsed = parseTelegramCommand(bodyText);
-  if (!parsed.ok) return parsed;
+  if (!parsed.ok) return invalidCommandResult(update, message, parsed.error);
 
   return { ok: true, event: buildTelegramEvent(parsed.command, buildEventBase(update, message, auth.identity)) };
 }
@@ -180,6 +180,25 @@ function unsupportedMediaResult(update: TelegramUpdate, message: TelegramMessage
       chat_id: String(message.chat.id),
       text: ingestOn ? TELEGRAM_UNSUPPORTED_MEDIA_REPLY_WITH_INGEST : TELEGRAM_UNSUPPORTED_MEDIA_REPLY,
       idempotency_key: `telegram:${update.update_id}:unsupported_media`
+    }
+  };
+}
+
+/**
+ * An allowlisted sender's malformed command (live gate 2026-10-01: `/deny` with no id was silently skipped). The skip
+ * bookkeeping is unchanged; the reply is the parser's own code-owned message, never the sender's text, keyed on the
+ * update so a redelivery never nags twice.
+ */
+function invalidCommandResult(
+  update: TelegramUpdate, message: TelegramMessage, error: { code: string; message: string }
+): TelegramNormalizeResult {
+  return {
+    ok: false,
+    error,
+    acknowledgement: {
+      chat_id: String(message.chat.id),
+      text: `That command was not accepted: ${error.message}. Send /help for the list.`,
+      idempotency_key: `telegram:${update.update_id}:invalid_command`
     }
   };
 }
