@@ -1,8 +1,9 @@
 import type { NotificationRecord } from "../run/run-store.js";
 import type { NotificationOutbox } from "./notification-outbox.js";
-import type {
-  NotificationAdapter,
-  NotificationDispatchRecord
+import {
+  NOTIFICATION_MAX_ATTEMPTS,
+  type NotificationAdapter,
+  type NotificationDispatchRecord
 } from "./notification-types.js";
 
 export interface NotificationAdapters {
@@ -21,7 +22,6 @@ export type DispatchResult =
   | { status: "failed"; notification_id: string; retryable: boolean };
 
 const DEFAULT_LEASE_TTL_SECONDS = 30;
-const DEFAULT_MAX_ATTEMPTS = 5;
 
 export class NotificationDispatcher {
   private readonly leaseTtlSeconds: number;
@@ -33,7 +33,7 @@ export class NotificationDispatcher {
     options: NotificationDispatcherOptions = {}
   ) {
     this.leaseTtlSeconds = options.lease_ttl_seconds ?? DEFAULT_LEASE_TTL_SECONDS;
-    this.maxAttempts = options.max_attempts ?? DEFAULT_MAX_ATTEMPTS;
+    this.maxAttempts = options.max_attempts ?? NOTIFICATION_MAX_ATTEMPTS;
   }
 
   async dispatchOnce(lease_owner: string): Promise<DispatchResult> {

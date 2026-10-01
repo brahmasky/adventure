@@ -33,6 +33,9 @@ export interface NotificationIntent {
   payload: NotificationPayload;
 }
 
+/** The attempt cap for one notification: the dispatcher's default, and what crash recovery honours too. */
+export const NOTIFICATION_MAX_ATTEMPTS = 5;
+
 export type NotificationState =
   | "queued"
   | "sending"

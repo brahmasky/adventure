@@ -22,7 +22,7 @@ import {
   type GlobalBudgetHeadroom,
   type GlobalBudgetKind
 } from "../budget/global-budget-ledger.js";
-import type { NotificationButton, NotificationIntent } from "../notifications/notification-types.js";
+import { NOTIFICATION_MAX_ATTEMPTS, type NotificationButton, type NotificationIntent } from "../notifications/notification-types.js";
 import {
   appendLedgerEvent,
   createLedgerEvent,
@@ -5289,10 +5289,11 @@ export class RunStore {
           OR (state = 'sending' AND lease_expires_at IS NOT NULL AND (lease_expires_at <= ? OR lease_expires_at <= updated_at)))
       ORDER BY created_at ASC
     `).all<{ notification_id: string }>(cutoff, now);
-    return rows.map((r) => r.notification_id).filter((id) => this.abandonNotification(id, now));
+    return rows.map((r) => r.notification_id).filter((id) => this.abandonNotification(id, now, "stale_retry_abandoned"));
   }
 
-  private abandonNotification(notification_id: string, now: string): boolean {
+  /** Move one undelivered row to failed_terminal (never sent again) with a `notification_failed` ledger line. */
+  private abandonNotification(notification_id: string, now: string, error_ref: string): boolean {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const record = this.getNotificationRecord(notification_id);
@@ -5303,7 +5304,7 @@ export class RunStore {
       `).run(now, notification_id);
       if (updated.changes === 1) {
         this.appendNotificationLedgerEvent(record, "notification_failed", {
-          notification_id, target: record.target, adapter: record.target.kind, error_ref: "stale_retry_abandoned",
+          notification_id, target: record.target, adapter: record.target.kind, error_ref,
           retryable: false, run_id: record.run_id, approval_id: record.approval_id, correlation_id: record.correlation_id
         });
       }
@@ -5342,18 +5343,27 @@ export class RunStore {
     return requeued;
   }
 
+  /**
+   * Orphaned `sending` rows (expired lease: the sender crashed mid-send) go back to the queue, unless the row already
+   * used every attempt: a send that crashes the daemon must not be re-sent on every launchd restart, so it ends
+   * failed_terminal (`attempt_cap_after_crash`). Returns the requeued ids only.
+   */
   recoverStaleSendingNotifications(now: string): string[] {
     const rows = this.db.prepare(`
-      SELECT notification_id
+      SELECT notification_id, attempt_count
       FROM notification_outbox
       WHERE state = 'sending'
         AND lease_expires_at IS NOT NULL
         AND (lease_expires_at <= ? OR lease_expires_at <= updated_at)
       ORDER BY lease_expires_at ASC, created_at ASC
-    `).all<{ notification_id: string }>(now);
+    `).all<{ notification_id: string; attempt_count: number }>(now);
 
     const recovered: string[] = [];
     for (const row of rows) {
+      if (row.attempt_count >= NOTIFICATION_MAX_ATTEMPTS) {
+        this.abandonNotification(row.notification_id, now, "attempt_cap_after_crash");
+        continue;
+      }
       const updated = this.db.prepare(`
         UPDATE notification_outbox
         SET state = 'queued',

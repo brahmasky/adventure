@@ -1,7 +1,8 @@
 // tests/notifications/notification-retry.test.ts
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { NotificationDispatcher } from "../../src/notifications/notification-dispatcher.js";
 import { NotificationOutbox } from "../../src/notifications/notification-outbox.js";
+import { NOTIFICATION_MAX_ATTEMPTS } from "../../src/notifications/notification-types.js";
 import { NOTIFICATION_RETRY_MAX_AGE_MS, RunStore } from "../../src/run/run-store.js";
 
 // Live gate 2026-10-01: requeueRetryWaitNotifications / recoverStaleSendingNotifications had no caller outside tests,
@@ -55,6 +56,24 @@ describe("RunStore.retryUndeliveredNotifications", () => {
     const later = new Date(Date.now() + 60_000).toISOString();
     expect(store.retryUndeliveredNotifications(later).recovered).toEqual([row.notification_id]);
     expect(outbox.get(row.notification_id)?.state).toBe("queued");
+  });
+
+  it("crash recovery honours the attempt cap: a send that crashes the daemon every time ends terminal, not requeued forever", () => {
+    const { store, outbox, enqueue } = setup();
+    const row = enqueue("reply:crashes");
+    let claims = 0;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      for (let crash = 0; crash < 10; crash += 1) {
+        if (outbox.claimNext("s", 1)) claims += 1; // the send starts, then the daemon dies mid-send
+        vi.setSystemTime(Date.now() + 60_000); // launchd restarts it a minute later
+        store.retryUndeliveredNotifications(new Date().toISOString()); // the restarted daemon's retry step
+      }
+    } finally { vi.useRealTimers(); }
+    expect(claims).toBe(NOTIFICATION_MAX_ATTEMPTS);
+    expect(outbox.get(row.notification_id)).toMatchObject({ state: "failed_terminal", attempt_count: NOTIFICATION_MAX_ATTEMPTS });
+    expect(store.getLedgerEvents().filter((e) => e.event_type === "notification_failed").at(-1)?.payload)
+      .toMatchObject({ notification_id: row.notification_id, error_ref: "attempt_cap_after_crash", retryable: false });
   });
 
   it("a stuck `sending` row older than 24 h is abandoned, not recovered", () => {
