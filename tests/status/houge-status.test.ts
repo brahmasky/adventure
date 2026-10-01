@@ -172,6 +172,22 @@ describe("readBootCode + isBuildStale against a real git repo", () => {
     expect(isBuildStale(code(root))).toBe(true);
   });
 
+  it("a --no-ff merge of a src commit dated before the build reads as stale (first-parent: the merge is when main changed)", () => {
+    // Round 3 (N2): without --first-parent, git log simplifies the merge away and reports the side commit's own
+    // (pre-build) date, so merged-but-unbuilt code would read as fresh.
+    const root = repo();
+    git(root, ["checkout", "-q", "-b", "side"]);
+    writeFileSync(join(root, "src", "b.ts"), "export {};\n");
+    git(root, ["add", "src"]); git(root, ["commit", "-q", "-m", "side src"], "2026-10-02T06:30:00Z"); // dist stays untracked
+    git(root, ["checkout", "-q", "-"]);
+    git(root, ["merge", "-q", "--no-ff", "-m", "merge side", "side"], T2);
+    for (const f of ["a.ts", "b.ts"]) utimesSync(join(root, "src", f), new Date(T0), new Date(T0)); // isolate the git rule
+    const c = code(root);
+    expect(c.src_newer_than_dist).toBe(false);
+    expect(c.build_input_committed_at).toBe(new Date(T2).toISOString());
+    expect(isBuildStale(c)).toBe(true);
+  });
+
   it("an uncommitted src edit newer than dist is stale", () => {
     const root = repo();
     utimesSync(join(root, "src", "a.ts"), new Date(T2), new Date(T2));
