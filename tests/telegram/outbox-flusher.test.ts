@@ -59,3 +59,50 @@ describe("the daemon's outbox sender (fix round 1, item 1)", () => {
     expect(errorCode("boom /path")).toBe("unknown");
   });
 });
+
+// Live gate 2026-10-01, item 5: a reply whose send failed once sat in retry_wait forever. The daemon's poll cycle now
+// runs the retry step inside the serialized sender, so a transient Telegram failure is redelivered on a later cycle.
+describe("the daemon retries a notification whose send failed once", () => {
+  it("a transient sendMessage failure is redelivered on a later poll cycle", async () => {
+    const { RunStore } = await import("../../src/run/run-store.js");
+    const { runTelegramDaemon } = await import("../../src/telegram/telegram-daemon.js");
+    const { pinOmpEnv, tmpOmpDist, useFakeOmp } = await import("../helpers/omp-env.js");
+    const { until } = await import("../helpers/omp-worker.js");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    pinOmpEnv();
+    const store = RunStore.openInMemory();
+    const root = mkdtempSync(join(tmpdir(), "houge-retry-"));
+    const controller = new AbortController();
+    const sent: string[] = [];
+    let failures = 0;
+    try {
+      useFakeOmp({ "*": { rpcText: "x" } }, root);
+      store.enqueueNotification({ target: { kind: "telegram", chat_id: "222" }, intent_type: "progress",
+        idempotency_key: "reply:transient", correlation_id: "c", payload: { text: "the reply" } });
+      let calls = 0;
+      await runTelegramDaemon({ store, projectRoot: root, omp: { dataDir: root, distDir: tmpOmpDist(root) },
+        allowlist: { users: [{ telegram_user_id: 111, identity_id: "paco" }], chats: [{ telegram_chat_id: 222, label: "p", allowed_identity_ids: ["paco"] }] },
+        stopSignal: controller.signal, longPollTimeoutSeconds: 0, outboxPumpMs: 60_000,
+        telegramClient: {
+          getUpdates: async () => {
+            calls += 1;
+            if (calls >= 2) { await until(() => sent.includes("the reply"), 3_000).catch(() => undefined); controller.abort(); }
+            return [];
+          },
+          sendMessage: async ({ text }) => {
+            // both attempts of the first dispatch fail (the adapter retries once without parse_mode)
+            if (text === "the reply" && failures < 2) { failures += 1; throw new Error("HTTP 502"); }
+            sent.push(text);
+            return { message_id: sent.length };
+          }
+        } });
+      expect(failures).toBe(2);
+      expect(sent.filter((t) => t === "the reply")).toHaveLength(1);
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

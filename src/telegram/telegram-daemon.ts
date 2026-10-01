@@ -205,9 +205,12 @@ export async function runTelegramDaemon(
   // serialized flush runs on a short pump as well as after each poll cycle (a reply never waits
   // out a 30 s long-poll).
   // One sender: the boot flush, the pump, the poll loop and the exit flushes all go through it.
-  const flushOutbox = serialFlusher(dispatcher);
+  // Once per poll cycle (not on the 1 s pump, so a failing send is retried per cycle, not per second) the sender
+  // first abandons day-old retries and requeues the rest (live gate 2026-10-01: retry_wait rows were never resent).
+  const flushOutbox = serialFlusher(dispatcher, () => { options.store.retryUndeliveredNotifications(now()); });
   const reportFlushFailure = throttledIncident(options.store, OUTBOX_INCIDENT_WINDOW_MS);
-  const flushLogged = () => flushOutbox().catch((error: unknown) => reportFlushFailure("outbox_flush_failed", error));
+  const flushLogged = (opts?: { retry?: boolean }) =>
+    flushOutbox(opts).catch((error: unknown) => reportFlushFailure("outbox_flush_failed", error));
   const pump = setInterval(() => void flushLogged(), options.outboxPumpMs ?? 1_000);
   pump.unref();
 
@@ -274,7 +277,7 @@ export async function runTelegramDaemon(
       // rating ask enqueued this cycle is delivered this cycle). B10b threads the
       // gateway + worker in so the scheduler tick fires due tasks down the SAME path.
       await runSignalPathTick(options, gateway, worker, t);
-      await flushLogged(); // a failed drain is logged + incident'd, never a poll failure: the next flush retries
+      await flushLogged({ retry: true }); // a failed drain is logged + incident'd, never a poll failure: the next flush retries
 
       options.store.recordPollHeartbeat({ now: now(), ok: true });
       // The daemon is demonstrably back: retire the park marker so the NEXT gap is reported as a
@@ -358,16 +361,22 @@ function recoverPlannerRuns(worker: CoreWorker, now: string, boot: boolean): voi
  * One dispatcher drain at a time: the pump and the poll loop share it, never overlap. A drain that
  * throws rejects only its own caller; the chain itself stays alive, so the next flush still sends.
  */
-export function serialFlusher(dispatcher: Pick<NotificationDispatcher, "dispatchOnce">): () => Promise<void> {
+export function serialFlusher(
+  dispatcher: Pick<NotificationDispatcher, "dispatchOnce">,
+  retry?: () => void
+): (opts?: { retry?: boolean }) => Promise<void> {
   let chain: Promise<void> = Promise.resolve();
-  const drain = async () => {
+  const drain = async (withRetry: boolean) => {
+    // The retry step runs INSIDE the chain: no send of this sender is in flight, so a `sending` row it recovers is
+    // truly orphaned (a crash mid-send), never one being sent right now.
+    if (withRetry) retry?.();
     for (;;) {
       const result = await dispatcher.dispatchOnce("telegram-daemon-dispatcher");
       if (result.status === "idle") break;
     }
   };
-  return () => {
-    const run = chain.then(drain);
+  return (opts = {}) => {
+    const run = chain.then(() => drain(opts.retry === true));
     chain = run.catch(() => undefined);
     return run;
   };

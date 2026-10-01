@@ -4144,14 +4144,18 @@ export class RunStore {
     attempt_count: number;
   }> {
     const cutoff = new Date(Date.parse(now) - graceMs).toISOString();
+    // A terminal row stops counting once it is older than the retry window: it was given up on (attempt cap, or
+    // abandoned as stale) and has been reported for a day; counting it forever would keep the incident open forever.
+    const abandonedBefore = new Date(Date.parse(now) - NOTIFICATION_RETRY_MAX_AGE_MS).toISOString();
     return this.db.prepare(`
       SELECT notification_id AS subject, intent_type, attempt_count
       FROM notification_outbox
       WHERE state != 'delivered'
         AND created_at < ?
+        AND NOT (state = 'failed_terminal' AND created_at < ?)
         AND idempotency_key NOT LIKE 'incident\\_%' ESCAPE '\\'
       ORDER BY created_at ASC
-    `).all<{ subject: string; intent_type: string; attempt_count: number }>(cutoff);
+    `).all<{ subject: string; intent_type: string; attempt_count: number }>(cutoff, abandonedBefore);
   }
 
   findOverdueSchedules(now: string, graceMs: number): Array<{
@@ -5257,6 +5261,56 @@ export class RunStore {
       if (activeTransaction) {
         this.db.exec("ROLLBACK");
       }
+      throw error;
+    }
+  }
+
+  /**
+   * The outbox retry step (live gate 2026-10-01: retry_wait rows were never sent again). The daemon runs it once per
+   * poll cycle inside its serialized sender, so no send of this process is in flight: abandon the stale rows first,
+   * then return orphaned `sending` rows and due `retry_wait` rows to the queue for the flush that follows.
+   */
+  retryUndeliveredNotifications(now: string): { abandoned: string[]; recovered: string[]; requeued: string[] } {
+    const abandoned = this.abandonStaleNotifications(now);
+    return { abandoned, recovered: this.recoverStaleSendingNotifications(now), requeued: this.requeueRetryWaitNotifications(now) };
+  }
+
+  /**
+   * A retry_wait row, or a `sending` row whose lease expired, created more than NOTIFICATION_RETRY_MAX_AGE_MS ago is
+   * moved to failed_terminal and never sent: a day-old reply arriving out of context is worse than none. Each one
+   * leaves a `notification_failed` ledger line (error_ref `stale_retry_abandoned`).
+   */
+  abandonStaleNotifications(now: string): string[] {
+    const cutoff = new Date(Date.parse(now) - NOTIFICATION_RETRY_MAX_AGE_MS).toISOString();
+    const rows = this.db.prepare(`
+      SELECT notification_id FROM notification_outbox
+      WHERE created_at < ?
+        AND (state = 'retry_wait'
+          OR (state = 'sending' AND lease_expires_at IS NOT NULL AND (lease_expires_at <= ? OR lease_expires_at <= updated_at)))
+      ORDER BY created_at ASC
+    `).all<{ notification_id: string }>(cutoff, now);
+    return rows.map((r) => r.notification_id).filter((id) => this.abandonNotification(id, now));
+  }
+
+  private abandonNotification(notification_id: string, now: string): boolean {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const record = this.getNotificationRecord(notification_id);
+      const updated = this.db.prepare(`
+        UPDATE notification_outbox
+        SET state = 'failed_terminal', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+        WHERE notification_id = ? AND state IN ('retry_wait', 'sending')
+      `).run(now, notification_id);
+      if (updated.changes === 1) {
+        this.appendNotificationLedgerEvent(record, "notification_failed", {
+          notification_id, target: record.target, adapter: record.target.kind, error_ref: "stale_retry_abandoned",
+          retryable: false, run_id: record.run_id, approval_id: record.approval_id, correlation_id: record.correlation_id
+        });
+      }
+      this.db.exec("COMMIT");
+      return updated.changes === 1;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
       throw error;
     }
   }
@@ -7515,6 +7569,9 @@ export function resolveLessonRepeatDays(env: NodeJS.ProcessEnv): number {
   const n = Number(env.HOUGE_LESSON_REPEAT_DAYS);
   return Number.isInteger(n) && n > 0 ? n : DEFAULT_LESSON_REPEAT_DAYS;
 }
+
+/** A notification retry older than this (by created_at) is abandoned, not sent (live gate 2026-10-01). */
+export const NOTIFICATION_RETRY_MAX_AGE_MS = 24 * 60 * 60_000;
 
 const TELEGRAM_COMMAND_WINDOW_SECONDS = 60;
 const TELEGRAM_MAX_COMMANDS_PER_WINDOW = 5;
