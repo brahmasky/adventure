@@ -310,3 +310,11 @@ Rules Claude writes for itself after corrections. Review at session start.
   cleanup function, find its production caller during review; a recovery path with only test callers is a
   missing feature, not a safety net.
 
+
+- **A blanket "no shell commands" rule blinds a coding agent whose file reader is a shell command.** Live
+  2026-10-01: every Houge self-write ended in an empty diff over ~11 min of Codex work, because the writer
+  task said "DO NOT run … any shell commands" and Codex read that as "do not read the code". Reproduced with
+  the exact framing ("I made no edit… the file-reading tool uses a shell command"); rewording to "no tests,
+  builds, installs, git or state changes; read-only inspection allowed" produced the correct fix first try.
+  Rule: constrain side effects, never inspection; when an agent returns an empty result, reproduce it with
+  the exact prompt and ask it to state why before changing anything else.

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildEvolutionKickoffDigest, buildEvolutionTimeoutText, CoreWorker, EVOLUTION_NOTICE_HEADER, SELF_WRITE_DIFF_CHANGED, SELF_WRITE_MESSAGE_IS_REQUEST } from "../../src/core/core-worker.js";
+import { buildEvolutionKickoffDigest, buildEvolutionTimeoutText, CoreWorker, EVOLUTION_NOTICE_HEADER, SELF_WRITE_COMMAND_RULE, SELF_WRITE_DIFF_CHANGED, SELF_WRITE_MESSAGE_IS_REQUEST } from "../../src/core/core-worker.js";
 import type { SelfWriteDeps } from "../../src/core/core-worker.js";
 import {
   EVOLUTION_LANE_BUSY_DIGEST,
@@ -1171,6 +1171,13 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       const afterMessage = task.indexOf(`\nUNTRUSTED-${nonce}>>>`, task.indexOf("好，修复一下"));
       expect(task.indexOf(SELF_WRITE_MESSAGE_IS_REQUEST)).toBeGreaterThan(afterMessage);
       expect(inside(task.indexOf(SELF_WRITE_MESSAGE_IS_REQUEST))).toBe(false);
+      // Live 2026-10-01 (runs 79faefea, 16071f04): "DO NOT run … any shell commands" made Codex refuse to READ
+      // the code (its file reader is a shell command), so every attempt ended in an empty diff. The writer may
+      // inspect read-only; only tests, builds, installs, git and other state changes are off limits.
+      expect(task).toContain(SELF_WRITE_COMMAND_RULE);
+      expect(task).not.toMatch(/any shell commands/);
+      expect(SELF_WRITE_COMMAND_RULE).toMatch(/MAY and SHOULD inspect the code with read-only commands/);
+      expect(SELF_WRITE_COMMAND_RULE).toMatch(/DO NOT run tests, builds, installs, git commands/);
     } finally {
       store.close();
     }
