@@ -162,15 +162,23 @@ describe("CoreWorker.submitTurn — turns run on the planner supervisor (Task 13
     }
   });
 
-  it("any throw while handing a turn over fails the run with the unavailable reply and a planner_submit_failed incident (B4)", () => {
+  it("any throw while handing a turn over fails the run with the unavailable reply and pages planner_submit_failed as an EVENT (B4, N4)", () => {
     const spy = vi.spyOn(PlannerSupervisor.prototype, "submit").mockImplementation(() => { throw new Error("boom"); });
-    worker = ompWorker(store, tmp.dir);
-    const run = createQueuedTurnRun(store, "hi");
-    expect(worker.submitTurn(run)).toBe(true);
-    spy.mockRestore();
-    expect(state(run)).toBe("failed");
-    expect(drainOutbox(store).get(`${run}:final_report`)?.text).toBe(TURN_UNAVAILABLE_TEXT);
-    expect(store.listOpenIncidents().map((i) => i.kind)).toEqual(["planner_submit_failed"]);
+    process.env.HOUGE_TELEGRAM_CHAT_ID = "555";
+    try {
+      worker = ompWorker(store, tmp.dir);
+      const run = createQueuedTurnRun(store, "hi"); const again = createQueuedTurnRun(store, "again");
+      expect(worker.submitTurn(run)).toBe(true);
+      worker.submitTurn(again);
+      expect(state(run)).toBe("failed");
+      const out = drainOutbox(store);
+      expect(out.get(`${run}:final_report`)?.text).toBe(TURN_UNAVAILABLE_TEXT);
+      expect(store.listOpenIncidents()).toEqual([]); // resolved once its alert is queued: never an open row that silences the next one
+      expect([...out.keys()].filter((k) => k.startsWith("incident_opened:"))).toHaveLength(2);
+    } finally {
+      spy.mockRestore();
+      delete process.env.HOUGE_TELEGRAM_CHAT_ID;
+    }
   });
 
   it("the boot check pages a malformed chain once, and a valid config resolves it (B4)", () => {

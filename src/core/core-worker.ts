@@ -2047,11 +2047,11 @@ export class CoreWorker {
 
   /**
    * A turn that cannot reach a planner fails loudly: incident, terminal row, and a reply. Never left queued.
-   * omp_config_invalid was already paged by validateOmpConfig; a submit failure pages once while open.
+   * omp_config_invalid was already paged by validateOmpConfig; a submit failure is an event, paged per occurrence (N4).
    */
   private refuseOmpTurn(run_id: string, chatId: string, reason: "tool_decl_invalid" | "invalid_chat_id" | "omp_config_invalid" | "submit_failed", code?: string): void {
     const subject = `chat:${chatId || "none"}`;
-    if (reason === "submit_failed") openAlertedIncident(this.runStore, { kind: "planner_submit_failed", subject, detail: { run_id, reason: code ?? "unknown" } });
+    if (reason === "submit_failed") openAlertedIncident(this.runStore, { kind: "planner_submit_failed", subject, detail: { run_id, reason: code ?? "unknown" }, event: true });
     // never the loader's message: it names files and quotes their content
     else if (reason !== "omp_config_invalid") this.runStore.openIncident({ kind: reason === "tool_decl_invalid" ? "tool_decl_invalid" : "planner_turn_refused", subject, detail: { run_id, reason } });
     const worker = `planner:refused:${randomUUID()}`;
