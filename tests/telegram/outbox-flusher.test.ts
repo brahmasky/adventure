@@ -82,12 +82,16 @@ describe("the daemon retries a notification whose send failed once", () => {
       store.enqueueNotification({ target: { kind: "telegram", chat_id: "222" }, intent_type: "progress",
         idempotency_key: "reply:transient", correlation_id: "c", payload: { text: "the reply" } });
       let calls = 0;
+      const elapseBackoff = () => (store as unknown as { db: { prepare(sql: string): { run(...a: unknown[]): unknown } } }).db
+        .prepare("UPDATE notification_outbox SET next_attempt_at = ? WHERE state = 'retry_wait'").run(new Date(Date.now() - 1_000).toISOString());
       await runTelegramDaemon({ store, projectRoot: root, omp: { dataDir: root, distDir: tmpOmpDist(root) },
         allowlist: { users: [{ telegram_user_id: 111, identity_id: "paco" }], chats: [{ telegram_chat_id: 222, label: "p", allowed_identity_ids: ["paco"] }] },
         stopSignal: controller.signal, longPollTimeoutSeconds: 0, outboxPumpMs: 60_000,
         telegramClient: {
           getUpdates: async () => {
             calls += 1;
+            // the first retry's 30 s backoff elapses between cycles (moved back instead of waiting it out)
+            if (calls === 2) elapseBackoff();
             if (calls >= 2) { await until(() => sent.includes("the reply"), 3_000).catch(() => undefined); controller.abort(); }
             return [];
           },

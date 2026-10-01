@@ -5229,7 +5229,7 @@ export class RunStore {
       const record = this.getNotificationRecord(notification_id);
       const willRetry = retryable && record.attempt_count < max_attempts;
       const nextState = willRetry ? "retry_wait" : "failed_terminal";
-      const next_attempt_at = willRetry ? now : record.next_attempt_at;
+      const next_attempt_at = willRetry ? this.addSeconds(now, retryBackoffMs(record.attempt_count) / 1000) : record.next_attempt_at;
 
       const updated = this.db.prepare(`
         UPDATE notification_outbox
@@ -7582,6 +7582,17 @@ export function resolveLessonRepeatDays(env: NodeJS.ProcessEnv): number {
 
 /** How long a failed_terminal notification keeps counting as undelivered for the sweep, by when it went terminal. */
 export const TERMINAL_NOTIFICATION_REPORT_MS = 24 * 60 * 60_000;
+
+/**
+ * Wait after the Nth failed attempt before the row is due again (code-owned; live gate round 2). With the 5-attempt cap
+ * the attempts span about 40 min, so a Telegram outage of minutes is ridden out instead of burning every attempt.
+ */
+export const NOTIFICATION_RETRY_BACKOFF_MS: readonly number[] = [30_000, 2 * 60_000, 8 * 60_000, 30 * 60_000];
+
+function retryBackoffMs(attempt_count: number): number {
+  const table = NOTIFICATION_RETRY_BACKOFF_MS;
+  return table[Math.min(Math.max(attempt_count, 1), table.length) - 1]!;
+}
 
 /**
  * A chat reply more than this late (by created_at) is stale: the retry step abandons it instead of sending it (live gate

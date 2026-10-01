@@ -89,7 +89,9 @@ describe("NotificationOutbox", () => {
       outbox.claimNext("sender-1", 30);
       outbox.markFailed(retry.notification_id, "network down", true, "2026-05-28T00:00:10.000Z", 3);
       expect(outbox.get(retry.notification_id)?.state).toBe("retry_wait");
-      expect(store.requeueRetryWaitNotifications("2026-05-28T00:00:11.000Z")).toEqual([retry.notification_id]);
+      // the first retry waits 30 s (NOTIFICATION_RETRY_BACKOFF_MS): not due at +1 s, due at +30 s
+      expect(store.requeueRetryWaitNotifications("2026-05-28T00:00:11.000Z")).toEqual([]);
+      expect(store.requeueRetryWaitNotifications("2026-05-28T00:00:40.000Z")).toEqual([retry.notification_id]);
 
       outbox.claimNext("sender-2", 30);
       outbox.markFailed(retry.notification_id, "bad request", false, "2026-05-28T00:00:12.000Z", 3);

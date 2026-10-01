@@ -4,7 +4,7 @@ import { NotificationDispatcher } from "../../src/notifications/notification-dis
 import { NotificationOutbox } from "../../src/notifications/notification-outbox.js";
 import { NOTIFICATION_MAX_ATTEMPTS } from "../../src/notifications/notification-types.js";
 import { detectViolations } from "../../src/run/invariant-sweep.js";
-import { NOTIFICATION_RESEND_MAX_AGE_MS, RunStore } from "../../src/run/run-store.js";
+import { NOTIFICATION_RESEND_MAX_AGE_MS, NOTIFICATION_RETRY_BACKOFF_MS, RunStore } from "../../src/run/run-store.js";
 
 // Live gate 2026-10-01: requeueRetryWaitNotifications / recoverStaleSendingNotifications had no caller outside tests,
 // so one transient Telegram error lost the reply for good (two rows stuck since 2026-09-18 and 2026-10-01). The
@@ -33,8 +33,9 @@ describe("RunStore.retryUndeliveredNotifications", () => {
     const row = enqueue("reply:1");
     failOnce(row.notification_id);
     expect(outbox.get(row.notification_id)?.state).toBe("retry_wait");
-    expect(store.retryUndeliveredNotifications(new Date().toISOString()).requeued).toEqual([row.notification_id]);
-    expect(outbox.claimNext("s", 30)?.notification_id).toBe(row.notification_id);
+    const due = new Date(Date.now() + 31_000).toISOString(); // past the first 30 s backoff
+    expect(store.retryUndeliveredNotifications(due).requeued).toEqual([row.notification_id]);
+    expect(outbox.get(row.notification_id)?.state).toBe("queued");
   });
 
   it("a retry_wait row older than the resend window is failed_terminal with a ledger line, never sent", () => {
@@ -59,7 +60,7 @@ describe("RunStore.retryUndeliveredNotifications", () => {
     failOnce(old.notification_id);
     backdate(young.notification_id, 6 * HOUR - 60_000);
     backdate(old.notification_id, 6 * HOUR + 60_000);
-    const r = store.retryUndeliveredNotifications(new Date().toISOString());
+    const r = store.retryUndeliveredNotifications(new Date(Date.now() + 31_000).toISOString()); // past the 30 s backoff
     expect(r.abandoned).toEqual([old.notification_id]);
     expect(r.requeued).toEqual([young.notification_id]);
     expect(outbox.get(old.notification_id)?.state).toBe("failed_terminal");
@@ -117,12 +118,43 @@ describe("RunStore.retryUndeliveredNotifications", () => {
     let attempts = 0;
     const failing = { send: async () => { attempts += 1; throw new Error("HTTP 502"); } };
     const dispatcher = new NotificationDispatcher(outbox, { local: failing, telegram: failing });
-    for (let cycle = 0; cycle < 8; cycle += 1) {
-      store.retryUndeliveredNotifications(new Date().toISOString());
-      await dispatcher.dispatchOnce("d");
-    }
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      for (let cycle = 0; cycle < 8; cycle += 1) {
+        store.retryUndeliveredNotifications(new Date().toISOString());
+        await dispatcher.dispatchOnce("d");
+        vi.setSystemTime(Date.now() + 31 * 60_000); // past the longest backoff
+      }
+    } finally { vi.useRealTimers(); }
     expect(attempts).toBe(5);
     expect(outbox.get(row.notification_id)?.state).toBe("failed_terminal");
+  });
+});
+
+describe("retry backoff (gate-fixes round 2)", () => {
+  it("each failed attempt waits 30 s, 2 min, 8 min, then 30 min before it is due again; the 5th failure is terminal", () => {
+    expect(NOTIFICATION_RETRY_BACKOFF_MS).toEqual([30_000, 120_000, 480_000, 1_800_000]);
+    const { store, outbox, enqueue } = setup();
+    const row = enqueue("reply:backoff");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const waits: number[] = [];
+      for (let attempt = 1; attempt <= NOTIFICATION_MAX_ATTEMPTS; attempt += 1) {
+        expect(outbox.claimNext("s", 30)?.notification_id).toBe(row.notification_id);
+        const failedAt = Date.now();
+        outbox.markFailed(row.notification_id, "HTTP 502", true, new Date(failedAt).toISOString(), NOTIFICATION_MAX_ATTEMPTS);
+        const after = outbox.get(row.notification_id)!;
+        if (after.state === "failed_terminal") break;
+        const wait = Date.parse(after.next_attempt_at) - failedAt;
+        waits.push(wait);
+        vi.setSystemTime(failedAt + wait - 1_000); // one second early: not due yet
+        expect(store.retryUndeliveredNotifications(new Date().toISOString()).requeued).toEqual([]);
+        vi.setSystemTime(failedAt + wait);
+        expect(store.retryUndeliveredNotifications(new Date().toISOString()).requeued).toEqual([row.notification_id]);
+      }
+      expect(waits).toEqual([30_000, 120_000, 480_000, 1_800_000]); // the 5 attempts span about 40 min
+      expect(outbox.get(row.notification_id)?.state).toBe("failed_terminal");
+    } finally { vi.useRealTimers(); }
   });
 });
 
