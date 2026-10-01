@@ -3,7 +3,9 @@
 **Written 2026-07-07 by Claude (Fable 5) with Paco.** This document exists so ANY capable model
 (Opus 4.8, GPT, Gemini, Kimi, …) can pick up the build and continue without verbal context
 transfer. It records where the project is, the rules that must not be broken, the sequenced
-plan (Paco's decisions of 2026-07-07), and the design briefs for each next step.
+plan (Paco's decisions of 2026-07-07), and the design briefs for each next step. **Updated
+2026-10-01 for the omp runtime (ADR 0028):** §1, §2′, §3, §4′ and §5 are current; §2 and §4 are the
+dated record they replaced.
 
 **How to use this file (successor model):** read the onboarding set first —
 `AGENTS.md` → `tasks/todo.md` (Current System State + top NEXT block) → `tasks/lessons.md` →
@@ -15,10 +17,14 @@ still goes through Paco's `/goal` gate; nothing here is pre-authorization to sta
 ## 1. What Houge is (charter, one screen)
 
 Houge (猴哥) is an **autonomous self-evolving agent** (NOT a chatbot) living as a Telegram-first
-daemon on Paco's Mac mini. Zero runtime dependencies; Node + TypeScript; SQLite; model-agnostic
-LLM provider chains (flat-rate CLIs ONLY on every default chain since 2026-09-06: pi/kimi,
-agy/gemini, codex; the metered APIs stay buildable as the operator's escape hatch, capped). Claude is EXCLUDED from Houge's runtime by decision (Paco, 2026-07-12):
-it is the build-orchestrator seat only — the runtime must never depend on it.
+daemon on Paco's Mac mini. Zero runtime dependencies; Node + TypeScript; SQLite. Every chat turn runs
+on an **omp agent loop** ([ADR 0028](decisions/0028-omp-runtime.md)): one supervised omp planner per
+chat with real tools, under code-owned floors, and one-shot omp seats for everything else. Every
+default LLM leg is **subscription OAuth** (omp under profile `houge`; agy-cli for voice; codex for the
+self-write writer); the metered APIs stay a capped escape hatch with no leg on any default chain
+(ADR 0019, dormant). Claude runs in the runtime **only** as a subscription model inside omp (Opus 5.5
+planner and chair, ADR 0028 D7, Paco 2026-09-30), never through a metered API or the Claude Code CLI;
+this replaces the 2026-07-12 exclusion. Claude Code remains the build-orchestrator seat.
 
 **Thesis (LOCKED 2026-06-26):** Houge improves himself without asking permission; mechanical
 safety NETS (not human approval) protect the two hard lines. Freedom over control — no cage
@@ -32,12 +38,28 @@ framing; OK for Houge to fail; only core principles stay constant.
 1. Full autonomy + safety nets (notify-after, not approve-before) — as the end state; the
    human-tapped merge stays until auto-rollback ships (§5).
 2. First build = the self-evolution SPINE, before task capabilities.
-3. Money fork RE-OPENED NARROWLY (2026-07-17, ADR 0022): EARNING is IN (human-fronted — Houge
+3. Money fork RE-OPENED NARROWLY (2026-07-17, ADR 0022) and now **dormant**: the money-track code
+   was deleted with the omp cutover (ADR 0022 amendment, `3aabc04`); Earn is parked behind SP1 and
+   returns, if at all, as a bridge tool under ADR 0028's floors. The decision itself stands: EARNING is IN (human-fronted — Houge
    does the engineering; the human owns account/wallet/KYC and receives funds). Holding
    funds/keys, trading, and fund CUSTODY stay DEFERRED. (Original: "Real money / trading / fund
    custody DEFERRED until the spine proves stable autonomy" — the spine-complete precondition was
    met.) Roadmap: `docs/superpowers/specs/2026-07-17-money-work-roadmap.md`.
-4. Best model per capability, flat-rate legs first.
+4. Best model per seat, subscription OAuth only (ADR 0028 D7): each seat is an ordered chain of
+   `provider/model[:effort]` strings that falls back on quota, auth, transport, timeout or a missing
+   model.
+
+**Locked runtime decisions (ADR 0028, D1–D12; change only by a new ADR and Paco's hand):**
+D1 omp 18.4.4 under profile `houge`, version pinned at every spawn · D2 hard cutover (inner loop,
+classifier and pi/kimi/gemini providers deleted) · D3 the dual-LLM wall kept for the four read tools,
+enforced in the bridge, with `bash` output exempt · D4 the omp session owns the transcript, Houge owns
+knowledge · D5 yolo under `$HOME` except external writes and destructive deletes · D6 two floors: (A)
+secret and protected paths denied by Seatbelt plus the policy hook, (B) external effects wait for
+`/approve` · D7 subscription OAuth only, Opus 5.5 inside omp · D8 12 tools ported as bridge tools plus
+`bash`; `llm_answer` and the money track deleted · D9 Gmail ported with an `account` key · D10 a
+planner/reader family collapse proceeds, audited · D11 the planner can read its own OAuth store
+(accepted until SP3) · D12 `bash` is a bridge tool in Claude Code posture (network on, raw output,
+matcher → `/approve`).
 
 **Governance:** Paco is the sole decision-maker on scope and sequencing. Every build waits for
 his user-invoked `/goal`. Division of labor: safety machinery / backend / wall changes = the
@@ -46,7 +68,21 @@ Houge self-writes. The floor (§3) is never weakened by any agent.
 
 ---
 
-## 2. State as of 2026-07-07 (verified live, not just from docs)
+## 2′. State as of 2026-10-01
+
+- **SP1 omp runtime: BUILT on `feat/omp-runtime`, NOT yet live.** 16 tasks (T0–T15) built
+  subagent-driven with per-task reviews; a five-reviewer final wave (security, correctness, testing,
+  adversarial, Codex) found 4 Criticals, all closed in one fix wave and scoped re-reviews; 208 files /
+  2871 tests green; the real-omp smoke (`live-gate-omp.mjs --smoke`, cases 1, 3, 6, 13, 22 +
+  silent-degradation) PASSED. **Remaining:** merge to `main`, build, Paco's kickstart, the full live
+  gate driven from Telegram, then a week of real turns.
+- **`main` still runs the pre-omp engine** (pi/agy CLI chains, the inner loop, multimodal ingest on
+  agy) until that merge and kickstart.
+- Operator steps before the cutover kickstart: the four `omp --profile houge login` grants; the global
+  breaker's `tool_calls` ceiling re-tuned in `.env` (ADR 0028 decision 17); `dist/` tarred to
+  `backups/dist-pre-omp.tgz` for rollback.
+
+## 2. State as of 2026-07-07 (historical; superseded by §2′)
 
 - **main @ `4a49f5d`**, tree clean, pushed. Daemon live via launchd (`com.houge.daemon`),
   restarted 2026-07-07 14:15 AEST on the current dist.
@@ -114,8 +150,9 @@ gate works; convergence under the evidence regime is now the top functional gap.
    cognitive interior. Never move a gate into the LLM.
 2. **The floor is never weakened**: guard · test gate · reviewer isolation · branch-only +
    human-tapped merge · unforgeable `/approve` `/deny` · breaker · DATA channel · secrets
-   firewall · dual-LLM wall. `PROTECTED_FILES`/`PROTECTED_DIRS` (in `self-write-guard.ts`)
-   are changed only by Paco's hand.
+   firewall · dual-LLM wall · ADR 0028's floor A (Seatbelt + policy hook) and floor B (the
+   `/approve` matcher). `PROTECTED_FILES`/`PROTECTED_DIRS` (in `self-write-guard.ts`), including
+   every file the planner process executes, are changed only by Paco's hand.
 3. **`/goal` is the stop-gate** — no build starts from an approved plan alone; wait for Paco's
    `/goal`. And **every `/goal` ends with a LIVE end-to-end run** over real Telegram (the
    cardinal rule; `npm test` alone never closes a goal).
@@ -133,21 +170,39 @@ gate works; convergence under the evidence regime is now the top functional gap.
    must be able to see already-fired events; check the ledger/`chat_turns` for in-flight user
    activity before concluding Paco is idle; verify current state before instructing him.
 8. **Daemon reload:** `npm run build && launchctl kickstart -k gui/$(id -u)/com.houge.daemon`.
-   Daemon runs built JS from main; conversation/lessons/identity/skills survive reloads.
+   Daemon runs built JS from main; conversation/lessons/identity/skills survive reloads. A reload
+   ends an in-flight chat turn (`planner_exit`), so check for one first.
+9. **The real omp binary is the only proof of runtime wiring.** Hermetic tests stub omp; any change to
+   the planner, bridge, extension, floors or seats closes on `scripts/live-gate-omp.mjs --smoke` (and
+   the full gate when user-facing). A planner refusal of a safety probe is INCONCLUSIVE, never PASS.
+   Moving the omp version pin means smoking the new binary first.
 
 ---
 
-## 4′. Delta 2026-09-30 — the omp runtime re-sequence (supersedes the order below until SP1 ships)
+## 4′. Delta 2026-09-30 — the omp runtime re-sequence (supersedes the order below)
 
 Paco's review session found the harness had one real tool and usage had collapsed; the runtime is replaced
 before any new capability. Four sub-projects, each its own spec → review → plan → build → live gate:
-**SP1 omp runtime** (spec `docs/superpowers/specs/2026-09-30-omp-runtime-design.md`, decisions D1–D12, ADR 0028
-at ship) → **SP2 Paco's personal tools** (own Gmail/Calendar/reminders/files) → **SP3 hardening** (auth broker,
+**SP1 omp runtime** (spec `docs/superpowers/specs/2026-09-30-omp-runtime-design.md`, decisions D1–D12,
+[ADR 0028](decisions/0028-omp-runtime.md); **built on `feat/omp-runtime`, reviewed, smoke PASS — awaiting
+merge, kickstart and the full live gate; not yet live**) → **SP2 Paco's personal tools** (own Gmail/Calendar/reminders/files) → **SP3 hardening** (auth broker,
 OS user for the planner, quota invariant) → **SP4 self-evolution v2** (weakness mining, replay eval as a gate).
 Phase R below is subsumed by SP1 (a real agent loop replaces the step-cap fallback work); episodic/wiki stay as
 knowledge Houge owns; Earn is parked behind SP1.
 
-## 4. The sequenced roadmap (Paco's decisions, 2026-07-07)
+**Next, in order:** ship SP1 (merge → build → kickstart → full live gate) → a week of real turns on the
+planner → **SP2** (Paco's own Gmail with `account: paco` and sends gated, Calendar, reminders, files) →
+**SP3** (`omp auth-broker` under launchd so no tokens sit on disk, a dedicated macOS user for the
+planner — closes D11 and the dotfile denylist gap — a flat-rate quota invariant, optional egress
+allowlist) → **SP4** (weakness mining over the ledger, `scripts/eval-replay.mjs` as a self-write gate,
+native omp skills, prompt-section A/B). Follow-ups recorded in ADR 0028: voice on omp or local whisper
+(voice stays on agy-cli until then), a `tool_started` row so a dropped bridge call is visible, and the
+matcher misses listed there.
+
+## 4. The sequenced roadmap (Paco's decisions, 2026-07-07; historical record)
+
+Phases 0, M, S-1, S-2 and W shipped; Phase R was subsumed by SP1. References below to the inner
+loop, `llm_answer`, the manifest and the pi/kimi/gemini legs describe the pre-omp engine.
 
 Decision record: (1) research convergence is the immediate next build; (2) next major
 capability = **② episodic memory** (④ wiki after); (3) safety floor is **interleaved** —
@@ -323,26 +378,29 @@ Flip [Merge & reload] from human-tapped to autonomous (notify-after) ONLY when A
   **lesson consolidation** (preserve-all daily merge, ARMED + first live merge tick 2026-07-24,
   flag `HOUGE_LESSON_CONSOLIDATE_ENABLED`, design spec
   `docs/superpowers/specs/2026-07-23-lesson-consolidation-design.md` — no ADR).
-  **ADR range is now 0001–0025.**
-- **Nothing in Houge's runtime depends on the departing model.** The daemon runs pi/agy/kimi/
-  gemini chains; self-write writer=codex, reviewer=kimi. Claude wiring was REMOVED from the
-  runtime entirely 2026-07-12 (Paco: keep Claude focused on building) — the once-optional
-  claude writer/reviewer backends and `HOUGE_CLAUDE_BIN` are gone; a stale
-  HOUGE_SELFWRITE_WRITER/REVIEWER=claude in .env degrades gracefully to codex/kimi. Losing
-  Fable 5 changes the ORCHESTRATOR seat (this Claude Code session), nothing in production.
+  **ADR range is now 0001–0028** (0028 = the omp runtime, 2026-09-30).
+- **What the runtime depends on (since ADR 0028).** The planner and chair default to Opus 5.5 on
+  Anthropic Max OAuth inside omp; if Anthropic blocks that, the planner falls to Opus 4.6 (via
+  Antigravity) and then Kimi k3 automatically, and an incident tells Paco. Every other seat is a
+  non-Anthropic subscription (Antigravity, Kimi Code, OpenAI Codex), voice is agy-cli, the self-write
+  writer is codex and the reviewer an omp seat. The 2026-07-12 removal of the claude-CLI writer,
+  reviewer and `HOUGE_CLAUDE_BIN` stands; Claude reaches the runtime only through omp. The
+  orchestrator seat (this Claude Code session) is separate from production.
 - **The orchestrator's job:** run the §3 workflow — plan with Paco, wait for `/goal`, drive
   build + adversarial-verify subagents, re-run gates, commit/push, watch the ledger during live
   gates, close out `tasks/todo.md` + `sessions.md`, capture lessons after corrections.
 - **Where truth lives:** `tasks/todo.md` (current state; reverse-chronological work log),
   `tasks/lessons.md` (process rules — binding), `sessions.md` (narrative), `docs/decisions/`
-  (ADRs 0001–0025; 0012/0013/0014/0015 are the load-bearing spine ones, and 0024 adds the
-  behavioral **sense** stage the spine left open),
+  (ADRs 0001–0028; 0028 is the runtime and its threat model, 0012/0013/0014/0015 are the
+  load-bearing spine ones as amended by 0028, and 0024 adds the behavioral **sense** stage),
   `docs/superpowers/specs/` (spine + inner-loop locked designs), `docs/reference/configuration.md`
   (flag reference). The production `.env` (gitignored) is the arming truth — read it, don't
   assume defaults.
 - **Debugging live behavior:** `houge.sqlite` — `runs`, `ledger_events` (per-run steps,
-  digests), `chat_turns`; per-run reports under `runs/<run_id>/report.md`; daemon stderr at
-  `logs/houge-daemon.err.log`; heartbeat via `npm run houge -- status`.
+  `llm_attempt`, `tool_finished`, approvals; counts and hashes, never bodies), `incidents`,
+  `chat_turns`; per-run reports under `runs/<run_id>/report.md`; the planner's own transcript under
+  `<data>/omp/sessions/chat-<id>`; daemon stderr at `logs/houge-daemon.err.log`; heartbeat via
+  `npm run houge -- status`.
 - **Style of work Paco expects:** plan mode for non-trivial work; subagents liberally (keep the
   main window clean); adversarial verification on every build; verify before claiming done;
   honest reporting of failures; simplicity first; and ask Paco rather than assume on anything
