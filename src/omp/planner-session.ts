@@ -56,7 +56,9 @@ export class PlannerSession {
     const { file, args } = plannerArgs(this.o);
     const env = { ...buildChildEnv(this.o.cfg.envPassthrough), TMPDIR: childTmpDir(this.o.cwd),
       HOUGE_BRIDGE_SOCK: this.o.bridgeSock, HOUGE_BRIDGE_TOKEN: this.o.bridgeToken };
-    const child = spawn(file, args, { cwd: this.o.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+    // detached: its own process group. Seatbelt's `(deny signal (target others))` spares the sender's own GROUP, so a
+    // planner sharing the daemon's group could signal the daemon. omp still exits on stdin EOF if the daemon dies.
+    const child = spawn(file, args, { cwd: this.o.cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
     this.child = child;
     const ready = new Promise<void>((resolve, reject) => {
       this.onFrame((f) => { if (f.type === "ready") resolve(); });
@@ -122,7 +124,7 @@ export class PlannerSession {
     if (this.size > (this.o.maxFrameBufferBytes ?? MAX_FRAME_BUFFER)) {
       this.parts = []; this.size = 0;
       this.rejectAll(new PlannerRpcError("frame_too_large"));
-      this.child?.kill("SIGKILL");
+      this.signalGroup("SIGKILL");
     }
   }
 
@@ -143,8 +145,18 @@ export class PlannerSession {
     }
   }
 
+  /** Signal the planner's whole process group (it is the leader): a helper it left behind goes with it. */
+  private signalGroup(sig: NodeJS.Signals): void {
+    const pid = this.child?.pid;
+    if (pid === undefined) return;
+    try { process.kill(-pid, sig); } catch { /* the group is already gone */ }
+  }
+
   private onClose(code: number | null, signal: NodeJS.Signals | null): void {
     this.closed = true;
+    // reap whatever the leader left in its group (stopped or crashed alike): no orphan outlives the child. The group id
+    // cannot be reused while a member is alive; an empty group answers ESRCH.
+    this.signalGroup("SIGKILL");
     this.rejectAll(new PlannerRpcError("exited"));
     for (const cb of this.exitCbs) cb({ code, signal, stopped: this.stopped });
   }
@@ -159,9 +171,9 @@ export class PlannerSession {
     await Promise.race([this.abort().catch(() => undefined), wait(1_000)]);
     if (!this.closed) {
       const exited = new Promise<void>((r) => c.once("close", () => r()));
-      c.kill("SIGTERM");
+      this.signalGroup("SIGTERM");
       await Promise.race([exited, wait(5_000)]);
-      if (!this.closed) c.kill("SIGKILL");
+      if (!this.closed) this.signalGroup("SIGKILL");
     }
     for (const t of timers) clearTimeout(t);
   }

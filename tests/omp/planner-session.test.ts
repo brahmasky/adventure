@@ -1,7 +1,8 @@
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { parseModelString } from "../../src/omp/model-string.js";
 import { PlannerRpcError, PlannerSession, plannerArgs, type ExitInfo } from "../../src/omp/planner-session.js";
@@ -179,5 +180,40 @@ describe("PlannerSession — one long-lived RPC child per chat (spec §4, §7)",
     s.onExit((i) => { info = i; });
     await s.stop();
     expect(info?.stopped).toBe(true);
+  });
+});
+
+describe("PlannerSession — the planner runs in its own process group (round 2, C's probe finding)", () => {
+  const pgidOf = (pid: number) => Number(spawnSync("/bin/ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim());
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const helperPid = async (file: string) => { await vi.waitFor(() => { expect(existsSync(file)).toBe(true); }); return Number(readFileSync(file, "utf8")); };
+
+  it("its pgid differs from the daemon's: Seatbelt's signal deny is per group, so a shared group could signal the daemon", async () => {
+    const { s } = make();
+    await s.start();
+    expect(s.pid).toBeDefined();
+    expect(pgidOf(s.pid as number)).toBe(s.pid); // its own group leader
+    expect(pgidOf(s.pid as number)).not.toBe(pgidOf(process.pid));
+  });
+
+  it("stop() kills the whole group, bounded: a helper left in the group dies too (no orphans)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hps-grp-")); const file = join(dir, "helper.pid");
+    const { s } = make({ rpcHelperPidFile: file });
+    await s.start();
+    const helper = await helperPid(file);
+    expect(alive(helper)).toBe(true);
+    const t0 = Date.now();
+    await s.stop();
+    expect(Date.now() - t0).toBeLessThan(7_000);
+    await vi.waitFor(() => { expect(alive(helper)).toBe(false); });
+  });
+
+  it("a child that dies on its own takes its group's helpers with it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hps-grp-")); const file = join(dir, "helper.pid");
+    const { s } = make({ rpcHelperPidFile: file, "*": { rpcExitAfterPrompt: true } });
+    await s.start();
+    const helper = await helperPid(file);
+    await s.prompt("bye").catch(() => undefined);
+    await vi.waitFor(() => { expect(alive(helper)).toBe(false); });
   });
 });

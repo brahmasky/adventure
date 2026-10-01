@@ -14,7 +14,8 @@
 // HOUGE_BRIDGE_SOCK with HOUGE_BRIDGE_TOKEN, src/omp/bridge-protocol.ts) so the supervisor's start check passes.
 // FAKE_OMP_ARGV_LOG = path; each invocation appends one JSON line with argv, stdin, TMPDIR and the env var NAMES it got
 //   (envKeys: names only, so a child-env canary test can prove a daemon secret never reached the child).
-import { appendFileSync, readFileSync } from "node:fs";
+import { spawn as spawnChild } from "node:child_process";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 
 const argv = process.argv.slice(2);
@@ -38,6 +39,8 @@ async function runRpc() {
   let steered = [];
   let held = null; // rpcFinishOnSteer: the prompt that answers once a steer arrives
   const bridge = (scen["*"] ?? {}).rpcNoManifest ? null : await openBridge();
+  // Top-level `rpcHelperPidFile`: leave a helper process in our process group (no pipes held) and write its pid.
+  if (scen.rpcHelperPidFile) { const h = spawnChild("/bin/sleep", ["60"], { stdio: "ignore" }); h.unref(); writeFileSync(scen.rpcHelperPidFile, String(h.pid)); }
   out({ type: "ready", protocolVersion: 1, supportedProtocolVersions: [1, 2], maxFrameBytes: 1048576, maxReassembledFrameBytes: 67108864 });
   const handle = (cmd) => {
     log({ cmd });
