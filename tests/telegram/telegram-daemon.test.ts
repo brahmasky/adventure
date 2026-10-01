@@ -1170,7 +1170,10 @@ describe("runTelegramDaemon — boot record (houge_status, 2026-10-02)", () => {
   // Live 2026-10-02: after a self-write reload Houge could not tell it had restarted. The daemon now
   // records each boot once, with a reason derived only from what it already knows at boot.
   const SHA = "4431d13aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-  const CODE = { head_sha: SHA, head_subject: "fix(x): y", head_committed_at: "2026-10-02T07:00:00.000Z", dist_built_at: "2026-10-02T07:30:00.000Z" };
+  const CODE = {
+    head_sha: SHA, head_subject: "fix(x): y", head_committed_at: "2026-10-02T07:00:00.000Z",
+    build_input_committed_at: "2026-10-02T06:00:00.000Z", dist_built_at: "2026-10-02T07:30:00.000Z", src_newer_than_dist: true
+  };
   const HOST_UP = () => "2026-01-01T00:00:00.000Z";
   let markerDir: string;
   let savedPark: string | undefined;

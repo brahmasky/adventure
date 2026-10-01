@@ -829,10 +829,16 @@ export interface DaemonBootInput {
   head_sha: string | null;
   head_subject: string | null;
   head_committed_at: string | null;
+  /** The newest first-parent commit touching a build input (houge-status BUILD_INPUTS); null when unknown. */
+  build_input_committed_at?: string | null;
   dist_built_at: string | null;
+  /** At boot the newest src .ts was newer than the newest dist .js. */
+  src_newer_than_dist?: boolean;
 }
 
 export interface DaemonBoot extends DaemonBootInput {
+  build_input_committed_at: string | null;
+  src_newer_than_dist: boolean;
   /** Set when the daemon loop exited cleanly; null on the live boot and on one that crashed. */
   stopped_at: string | null;
 }
@@ -2376,10 +2382,10 @@ export class RunStore {
   recordDaemonBoot(b: DaemonBootInput): void {
     this.db.prepare(`
       INSERT INTO daemon_boots (boot_id, started_at, pid, reason, reload_sha, reload_subject, reload_branch, reload_merged_at,
-        head_sha, head_subject, head_committed_at, dist_built_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        head_sha, head_subject, head_committed_at, build_input_committed_at, dist_built_at, src_newer_than_dist)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(b.boot_id, b.started_at, b.pid, b.reason, b.reload_sha, b.reload_subject, b.reload_branch, b.reload_merged_at,
-      b.head_sha, b.head_subject, b.head_committed_at, b.dist_built_at);
+      b.head_sha, b.head_subject, b.head_committed_at, b.build_input_committed_at ?? null, b.dist_built_at, b.src_newer_than_dist ? 1 : 0);
     this.db.prepare(`
       DELETE FROM daemon_boots WHERE seq NOT IN (SELECT seq FROM daemon_boots ORDER BY seq DESC LIMIT ?)
     `).run(DAEMON_BOOTS_KEPT);
@@ -2396,11 +2402,12 @@ export class RunStore {
 
   /** The newest boot (the live one, once the daemon recorded it), or null if none was ever recorded. */
   getLatestDaemonBoot(): DaemonBoot | null {
-    return this.db.prepare(`
+    const row = this.db.prepare(`
       SELECT boot_id, started_at, pid, reason, reload_sha, reload_subject, reload_branch, reload_merged_at,
-        head_sha, head_subject, head_committed_at, dist_built_at, stopped_at
+        head_sha, head_subject, head_committed_at, build_input_committed_at, dist_built_at, src_newer_than_dist, stopped_at
       FROM daemon_boots ORDER BY seq DESC LIMIT 1
-    `).get<DaemonBoot>() ?? null;
+    `).get<Omit<DaemonBoot, "src_newer_than_dist"> & { src_newer_than_dist: number }>();
+    return row ? { ...row, src_newer_than_dist: row.src_newer_than_dist === 1 } : null;
   }
 
   countDaemonBoots(): number {
@@ -6123,7 +6130,8 @@ export class RunStore {
           pid INTEGER NOT NULL,
           reason TEXT NOT NULL,
           reload_sha TEXT, reload_subject TEXT, reload_branch TEXT, reload_merged_at TEXT,
-          head_sha TEXT, head_subject TEXT, head_committed_at TEXT, dist_built_at TEXT,
+          head_sha TEXT, head_subject TEXT, head_committed_at TEXT, build_input_committed_at TEXT, dist_built_at TEXT,
+          src_newer_than_dist INTEGER NOT NULL DEFAULT 0,
           stopped_at TEXT
         );
         CREATE TABLE IF NOT EXISTS boot_chat_notes (

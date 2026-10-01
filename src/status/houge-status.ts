@@ -6,6 +6,7 @@ import { disarmPosturePresent } from "../config/disarm-posture.js";
 import { formatModelString } from "../omp/model-string.js";
 import { resolveOmpConfig } from "../omp/omp-config.js";
 import { resolveLocalTimeZone } from "../prompt/tz-convert.js";
+import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { hardenedGitSync } from "../run/git-hardened.js";
 import type { DaemonBoot, RunStore, SelfWriteMergeRecord } from "../run/run-store.js";
 import { readParkMarker, readTombstone } from "../run/tombstone.js";
@@ -45,21 +46,53 @@ export function hostBootedAt(now: Date = new Date()): string {
   return new Date(now.getTime() - uptime() * 1000).toISOString();
 }
 
-export interface BootCode { head_sha: string | null; head_subject: string | null; head_committed_at: string | null; dist_built_at: string | null }
+export interface BootCode {
+  head_sha: string | null; head_subject: string | null; head_committed_at: string | null;
+  /** The newest first-parent commit touching a build input (src, package files, tsconfigs, the asset copier). */
+  build_input_committed_at: string | null;
+  dist_built_at: string | null;
+  /** The newest src .ts mtime is newer than the newest dist .js mtime (an uncommitted edit never built). */
+  src_newer_than_dist: boolean;
+}
 
-/** HEAD sha, subject and commit time of the project root, and the dist build time. Read once at boot; never throws. */
-export function readBootCode(projectRoot: string, distDir: string): BootCode {
-  let head: string[] = [];
+/** What `npm run build` reads: a commit touching none of these (docs, tasks) never makes the dist stale. */
+export const BUILD_INPUTS: readonly string[] = [
+  "src", "package.json", "package-lock.json", "tsconfig.json", "tsconfig.build.json", "scripts/copy-omp-assets.mjs"
+];
+
+const isoOrNull = (raw: string | undefined): string | null => {
+  const t = raw ? new Date(raw) : null;
+  return t && !Number.isNaN(t.getTime()) ? t.toISOString() : null;
+};
+
+/** One git read; [] when the root is not a repo or git is unavailable (the status then says unknown). */
+function gitFields(projectRoot: string, args: string[]): string[] {
   try {
-    head = hardenedGitSync(["-C", projectRoot, "log", "-1", "--format=%H%x1f%s%x1f%cI"]).trim().split("\x1f");
-  } catch { /* not a repo, or git unavailable: the status says unknown */ }
+    return hardenedGitSync(["-C", projectRoot, ...args]).trim().split("\x1f");
+  } catch {
+    return [];
+  }
+}
+
+/** HEAD, the newest build-input commit, the dist build time and the src-vs-dist mtimes. Read once at boot; never throws. */
+export function readBootCode(projectRoot: string, distDir: string): BootCode {
+  const head = gitFields(projectRoot, ["log", "-1", "--format=%H%x1f%s%x1f%cI"]);
+  const input = gitFields(projectRoot, ["log", "-1", "--first-parent", "--format=%cI", "--", ...BUILD_INPUTS]);
   let dist: string | null = null;
   try { dist = statSync(join(distDir, "omp", "extension", "houge.js")).mtime.toISOString(); } catch { /* no build */ }
-  const iso = head[2] ? new Date(head[2]) : null;
+  const srcNewest = newestMtimeMs(join(projectRoot, "src"), ".ts");
+  const distNewest = newestMtimeMs(distDir, ".js");
   return {
-    head_sha: head[0] || null, head_subject: head[1] ?? null,
-    head_committed_at: iso && !Number.isNaN(iso.getTime()) ? iso.toISOString() : null, dist_built_at: dist
+    head_sha: head[0] || null, head_subject: head[1] ?? null, head_committed_at: isoOrNull(head[2]),
+    build_input_committed_at: isoOrNull(input[0]), dist_built_at: dist,
+    src_newer_than_dist: srcNewest !== undefined && (distNewest === undefined || srcNewest > distNewest)
   };
+}
+
+/** The one stale-build rule: a build-input commit newer than the dist, or a src edit newer than any dist .js. */
+export function isBuildStale(b: Pick<BootCode, "build_input_committed_at" | "dist_built_at" | "src_newer_than_dist">): boolean {
+  if (b.src_newer_than_dist) return true;
+  return b.build_input_committed_at !== null && b.dist_built_at !== null && Date.parse(b.build_input_committed_at) > Date.parse(b.dist_built_at);
 }
 
 /** What the chat's planner supervisor knows: the version its spawn check read, and the model that last answered. */
@@ -137,8 +170,7 @@ function codeLine(i: HougeStatusInput): string {
   const b = i.boot;
   if (!b) return "Code: unknown (no boot record)";
   const subject = b.head_subject !== null ? ` "${clipText(b.head_subject, SUBJECT_CHARS)}"` : "";
-  const stale = b.head_committed_at && b.dist_built_at && Date.parse(b.head_committed_at) > Date.parse(b.dist_built_at)
-    ? "; STALE: HEAD is newer than dist (built code is old)" : "";
+  const stale = isBuildStale(b) ? "; STALE: dist is older than its sources (rebuild + restart)" : "";
   return `Code: HEAD ${short(b.head_sha)}${subject}; dist built ${localStamp(b.dist_built_at, i.tz)}${stale}`;
 }
 

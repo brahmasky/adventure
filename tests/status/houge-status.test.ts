@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RunStore, type DaemonBootInput } from "../../src/run/run-store.js";
-import { classifyBoot, collectHougeStatus, renderHougeStatus, HOUGE_STATUS_MAX_CHARS, type StatusSupervisor } from "../../src/status/houge-status.js";
+import { classifyBoot, collectHougeStatus, isBuildStale, readBootCode, renderHougeStatus, HOUGE_STATUS_MAX_CHARS, type StatusSupervisor } from "../../src/status/houge-status.js";
 
 // houge_status (2026-10-02): Houge could not tell whether the daemon restarted or which code was live
 // and asked Paco to kickstart a daemon that had already restarted itself. Every field below is what the
@@ -70,10 +71,15 @@ describe("houge_status rendering", () => {
     store.close();
   });
 
-  it("flags built code as stale when HEAD is newer than the dist", () => {
+  it("a docs-only HEAD newer than the dist is not stale; a newer build-input commit or src edit is", () => {
+    // Round 2: comparing HEAD's commit time flagged every docs commit after a build (this branch's own cb214ac).
     const store = RunStore.openInMemory();
-    store.recordDaemonBoot(bootRow({ head_committed_at: "2026-10-02T07:40:00.000Z", dist_built_at: "2026-10-02T07:30:00.000Z" }));
-    expect(status(store)).toContain("STALE: HEAD is newer than dist");
+    store.recordDaemonBoot(bootRow({ head_committed_at: "2026-10-02T07:40:00.000Z", build_input_committed_at: "2026-10-02T07:00:00.000Z", dist_built_at: "2026-10-02T07:30:00.000Z" }));
+    expect(status(store)).not.toContain("STALE");
+    store.recordDaemonBoot(bootRow({ boot_id: "boot_2", build_input_committed_at: "2026-10-02T07:40:00.000Z", dist_built_at: "2026-10-02T07:30:00.000Z" }));
+    expect(status(store)).toContain("STALE: dist is older than its sources");
+    store.recordDaemonBoot(bootRow({ boot_id: "boot_3", build_input_committed_at: "2026-10-02T07:00:00.000Z", dist_built_at: "2026-10-02T07:30:00.000Z", src_newer_than_dist: true }));
+    expect(status(store)).toContain("STALE: dist is older than its sources");
     store.close();
   });
 
@@ -125,6 +131,50 @@ describe("houge_status rendering", () => {
     for (let i = 0; i < 40; i++) store.openIncident({ kind: `kind_${"k".repeat(30)}_${i}`, subject: `s${i}`, detail: {} });
     expect(status(store).length).toBeLessThanOrEqual(HOUGE_STATUS_MAX_CHARS);
     store.close();
+  });
+});
+
+describe("readBootCode + isBuildStale against a real git repo", () => {
+  const T0 = "2026-10-02T06:00:00Z", T1 = new Date("2026-10-02T07:00:00Z"), T2 = "2026-10-02T08:00:00Z";
+  const git = (root: string, args: string[], date?: string) => execFileSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@t", ...args],
+    { stdio: "ignore", env: { ...process.env, ...(date ? { GIT_COMMITTER_DATE: date, GIT_AUTHOR_DATE: date } : {}) } });
+  function repo(): string {
+    const root = join(dir, "repo");
+    mkdirSync(join(root, "src"), { recursive: true });
+    mkdirSync(join(root, "dist", "omp", "extension"), { recursive: true });
+    mkdirSync(join(root, "docs"), { recursive: true });
+    git(root, ["init", "-q"]);
+    writeFileSync(join(root, "src", "a.ts"), "export {};\n");
+    utimesSync(join(root, "src", "a.ts"), new Date(T0), new Date(T0));
+    git(root, ["add", "."]); git(root, ["commit", "-q", "-m", "src"], T0);
+    writeFileSync(join(root, "dist", "omp", "extension", "houge.js"), "x");
+    utimesSync(join(root, "dist", "omp", "extension", "houge.js"), T1, T1);
+    return root;
+  }
+  const code = (root: string) => readBootCode(root, join(root, "dist"));
+
+  it("a docs-only HEAD newer than dist is not stale", () => {
+    const root = repo();
+    writeFileSync(join(root, "docs", "x.md"), "d"); git(root, ["add", "."]); git(root, ["commit", "-q", "-m", "docs"], T2);
+    const c = code(root);
+    expect(c.head_subject).toBe("docs");
+    expect(c.build_input_committed_at).toBe(new Date(T0).toISOString());
+    expect(isBuildStale(c)).toBe(false);
+  });
+
+  it("a build-input commit newer than dist is stale", () => {
+    const root = repo();
+    writeFileSync(join(root, "package.json"), "{}"); utimesSync(join(root, "package.json"), new Date(T0), new Date(T0));
+    git(root, ["add", "."]); git(root, ["commit", "-q", "-m", "deps"], T2);
+    expect(isBuildStale(code(root))).toBe(true);
+  });
+
+  it("an uncommitted src edit newer than dist is stale", () => {
+    const root = repo();
+    utimesSync(join(root, "src", "a.ts"), new Date(T2), new Date(T2));
+    const c = code(root);
+    expect(c.src_newer_than_dist).toBe(true);
+    expect(isBuildStale(c)).toBe(true);
   });
 });
 

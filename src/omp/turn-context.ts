@@ -5,7 +5,7 @@ import { chatContextSince, countTrailingClarifyTurns, resolveChatContextTurns, r
 import { composeSystemPrompt } from "../prompt/composer.js";
 import { resolveLocalTimeZone } from "../prompt/tz-convert.js";
 import { resolveLessonCapPerScope, type DaemonBoot, type RunStore } from "../run/run-store.js";
-import { clipText, localStamp } from "../status/houge-status.js";
+import { clipText, isBuildStale, localStamp } from "../status/houge-status.js";
 
 export interface TurnContextDeps {
   store: RunStore;
@@ -56,8 +56,7 @@ export function restartNoteLine(boot: DaemonBoot, tz: string, now: Date): string
   const why = boot.reason === "self_write_reload"
     ? `self-write reload ${(boot.reload_sha ?? "unknown").slice(0, 7)} "${clipText(boot.reload_subject ?? "", 60)}"`
     : (BOOT_REASON_TEXT[boot.reason] ?? "restart");
-  const stale = boot.head_committed_at && boot.dist_built_at && Date.parse(boot.head_committed_at) > Date.parse(boot.dist_built_at)
-    ? " (stale build: HEAD is newer than dist)" : "";
+  const stale = isBuildStale(boot) ? " (stale build: dist is older than its sources)" : "";
   return `${RESTART_NOTE_PREFIX}Houge restarted ${when} (${why}); now running ${(boot.head_sha ?? "unknown").slice(0, 7)}${stale}.\n`;
 }
 
