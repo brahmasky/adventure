@@ -17,7 +17,9 @@ import { bridgeTurn, ompWorker } from "../helpers/omp-worker.js";
 
 pinOmpEnv();
 pinEnabledFlags();
-const PINNED = ["HOUGE_TOMBSTONE_PATH", "HOUGE_PARK_MARKER_PATH", "HOUGE_DISARM_PATH", "HOUGE_TIMEZONE", "HOUGE_STATUS_CANARY"] as const;
+const PINNED = ["HOUGE_TOMBSTONE_PATH", "HOUGE_PARK_MARKER_PATH", "HOUGE_DISARM_PATH", "HOUGE_TIMEZONE",
+  "HOUGE_TELEGRAM_BOT_TOKEN", "KIMI_API_KEY", "HOUGE_GMAIL_REFRESH_TOKEN"] as const;
+const CANARIES = { HOUGE_TELEGRAM_BOT_TOKEN: "canary-tg-7Qx9", KIMI_API_KEY: "canary-kimi-3Lm2", HOUGE_GMAIL_REFRESH_TOKEN: "canary-gmail-8Zp4" };
 const saved: Record<string, string | undefined> = {};
 let tmp: { dir: string; cleanup: () => void };
 let store: RunStore;
@@ -27,7 +29,7 @@ beforeEach(() => {
   process.env.HOUGE_TOMBSTONE_PATH = join(tmp.dir, "houge.kill");
   process.env.HOUGE_PARK_MARKER_PATH = join(tmp.dir, "houge.parked");
   process.env.HOUGE_DISARM_PATH = join(tmp.dir, "houge.disarm");
-  process.env.HOUGE_STATUS_CANARY = "canary-secret-7Qx9";
+  Object.assign(process.env, CANARIES);
   store = RunStore.openInMemory();
 });
 afterEach(() => {
@@ -59,7 +61,7 @@ describe("houge_status over the bridge", () => {
     expect(r.isError).toBe(false);
     expect(r.content.startsWith("Daemon: pid ")).toBe(true);
     expect(r.content).toContain("Boot reason: self_write_reload 4431d13");
-    expect(r.content).not.toContain("canary-secret-7Qx9");
+    for (const value of Object.values(CANARIES)) expect(r.content).not.toContain(value);
     expect(quarantine).not.toHaveBeenCalled();
     expect(t.turn.budget.usage().tool_calls).toBe(1);
     const events = store.getLedgerEvents(t.run_id);

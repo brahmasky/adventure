@@ -12,14 +12,17 @@ import { classifyBoot, collectHougeStatus, isBuildStale, readBootCode, renderHou
 
 const NOW = new Date("2026-10-02T09:39:00.000Z");
 const SHA = "4431d13aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const CANARY = "canary-secret-7Qx9";
+/** Distinct canaries in the secret env vars that sit beside what the status path reads (round 2: real names, not a made-up var). */
+const CANARIES = {
+  HOUGE_TELEGRAM_BOT_TOKEN: "canary-tg-7Qx9", KIMI_API_KEY: "canary-kimi-3Lm2", HOUGE_GMAIL_REFRESH_TOKEN: "canary-gmail-8Zp4"
+} as const;
 let dir: string;
 let env: NodeJS.ProcessEnv;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "hst-"));
   env = {
     HOUGE_TOMBSTONE_PATH: join(dir, "houge.kill"), HOUGE_PARK_MARKER_PATH: join(dir, "houge.parked"), HOUGE_DISARM_PATH: join(dir, "houge.disarm"),
-    HOUGE_TIMEZONE: "Australia/Sydney", HOUGE_TELEGRAM_BOT_TOKEN: CANARY, HOUGE_STATUS_CANARY: CANARY, HOUGE_GMAIL_REFRESH_TOKEN: CANARY
+    HOUGE_TIMEZONE: "Australia/Sydney", ...CANARIES
   };
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -116,7 +119,7 @@ describe("houge_status rendering", () => {
   it("never carries an env value, a home path or more than the size bound", () => {
     const store = seeded();
     const out = status(store);
-    expect(out).not.toContain(CANARY);
+    for (const value of Object.values(CANARIES)) expect(out).not.toContain(value);
     expect(out).not.toContain(dir);
     expect(out).not.toMatch(/\/Users\/|\/home\//);
     expect(out).not.toMatch(/[{}"]\s*:/); // no JSON noise
