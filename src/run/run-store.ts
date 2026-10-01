@@ -854,6 +854,29 @@ export interface SelfWriteMergeRecord {
 /** Boot rows kept (one per daemon start). */
 export const DAEMON_BOOTS_KEPT = 50;
 
+/** Self-service memory correction (2026-10-02): which store a memory_correct / /forget-memory change touched. */
+export type MemoryKind = "fact" | "wiki";
+
+/** One reversible memory change (memory_changes row): the ids it flipped, never any text. */
+export interface MemoryChange {
+  change_id: string;
+  kind: MemoryKind;
+  action: "retire" | "correct";
+  old_ids: number[];
+  /** The correction's new fact (correct only). */
+  new_id: number | null;
+  /** The turn that made it; null for Paco's own /forget-memory. */
+  run_id: string | null;
+  chat_id: string;
+  created_at: string;
+  undone_at: string | null;
+}
+
+export type MemoryUndoResult = { status: "undone" | "already_undone"; change: MemoryChange } | { status: "not_found" };
+
+/** The two memory tables a change may flip; never interpolated from input. */
+const MEMORY_TABLE: Readonly<Record<MemoryKind, "episodic_facts" | "wiki_pages">> = { fact: "episodic_facts", wiki: "wiki_pages" };
+
 export class RunStore {
   /**
    * Secrets-firewall redactor (ADR 0015): masks known secret VALUES at RunStore's own write seams —
@@ -3828,6 +3851,120 @@ export class RunStore {
     return { ran: true, pages_decayed: stale.length, pruned_ids };
   }
 
+  // --- Self-service memory correction (2026-10-02) -----------------------------
+
+  /** Run `fn` in one IMMEDIATE transaction; a throw rolls everything back. */
+  private inTransaction<T>(fn: () => T): T {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const out = fn();
+      this.db.exec("COMMIT");
+      return out;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** Thrown inside a memory transaction when an id is not an active row of this chat: rolls the whole change back. */
+  private static readonly MEMORY_REFUSED = new Error("memory_change_refused");
+
+  /** Flip one active row (a fact only when it is this chat's) to `next`; refuse the change otherwise. */
+  private flipActiveMemoryRow(kind: MemoryKind, id: number, chat_id: string, next: "pruned"): void {
+    const chatClause = kind === "fact" ? " AND chat_id = ?" : "";
+    const args: Array<string | number> = kind === "fact" ? [next, id, chat_id] : [next, id];
+    const changed = this.db.prepare(`
+      UPDATE ${MEMORY_TABLE[kind]} SET status = ? WHERE id = ? AND status = 'active'${chatClause}
+    `).run(...args).changes;
+    if (changed !== 1) throw RunStore.MEMORY_REFUSED;
+  }
+
+  private insertMemoryChange(c: Omit<MemoryChange, "change_id" | "undone_at">): MemoryChange {
+    const change: MemoryChange = { change_id: `mc_${randomUUID()}`, ...c, undone_at: null };
+    this.db.prepare(`
+      INSERT INTO memory_changes (change_id, kind, action, old_ids, new_id, run_id, chat_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(change.change_id, change.kind, change.action, JSON.stringify(change.old_ids), change.new_id, change.run_id,
+      change.chat_id, change.created_at);
+    return change;
+  }
+
+  /** Run a memory change; null (nothing written) when any id was refused. */
+  private memoryChange(fn: () => MemoryChange): MemoryChange | null {
+    try {
+      return this.inTransaction(fn);
+    } catch (error) {
+      if (error === RunStore.MEMORY_REFUSED) return null;
+      throw error;
+    }
+  }
+
+  /** Retire (prune, reversibly) active rows; null and no write when any id is not active (or, for a fact, not this chat's). */
+  retireMemoryRows(input: { kind: MemoryKind; ids: number[]; chat_id: string; run_id: string | null; now?: string }): MemoryChange | null {
+    return this.memoryChange(() => {
+      for (const id of input.ids) this.flipActiveMemoryRow(input.kind, id, input.chat_id, "pruned");
+      return this.insertMemoryChange({ kind: input.kind, action: "retire", old_ids: [...input.ids], new_id: null,
+        run_id: input.run_id, chat_id: input.chat_id, created_at: input.now ?? new Date().toISOString() });
+    });
+  }
+
+  /**
+   * Replace active facts with Paco's corrected wording: one new active fact (core when any old one was), each old fact
+   * superseded by it, and the new row's `supersedes` = the first old id. Null and no write when any id is refused.
+   */
+  correctEpisodicFacts(input: {
+    ids: number[]; correction: string; chat_id: string; run_id: string | null; source_turn_id?: string; now?: string;
+  }): MemoryChange | null {
+    const now = input.now ?? new Date().toISOString();
+    return this.memoryChange(() => {
+      const olds = input.ids.map((id) => this.getEpisodicFact(id));
+      if (olds.some((f) => f?.status !== "active" || f.chat_id !== input.chat_id)) throw RunStore.MEMORY_REFUSED;
+      const newId = this.addEpisodicFact({ chat_id: input.chat_id, fact: input.correction, created_at: now,
+        source_turn_ids: input.source_turn_id ? [input.source_turn_id] : [], is_core: olds.some((f) => f?.is_core === 1) });
+      // Reverse order: supersedeEpisodicFact sets the new row's `supersedes` each time, so the first id lands last.
+      for (const id of [...input.ids].reverse()) this.supersedeEpisodicFact(id, newId, now);
+      return this.insertMemoryChange({ kind: "fact", action: "correct", old_ids: [...input.ids], new_id: newId,
+        run_id: input.run_id, chat_id: input.chat_id, created_at: now });
+    });
+  }
+
+  getMemoryChange(change_id: string): MemoryChange | undefined {
+    const row = this.db.prepare(`
+      SELECT change_id, kind, action, old_ids, new_id, run_id, chat_id, created_at, undone_at FROM memory_changes WHERE change_id = ?
+    `).get<Omit<MemoryChange, "old_ids"> & { old_ids: string }>(change_id);
+    return row ? { ...row, old_ids: JSON.parse(row.old_ids) as number[] } : undefined;
+  }
+
+  /**
+   * Undo a change (the Undo button): the old rows it flipped go back to active with no successor, the correction's new
+   * row is pruned. Only rows still in the state this change left are touched. Idempotent: a second undo changes nothing.
+   */
+  undoMemoryChange(change_id: string, now: string = new Date().toISOString()): MemoryUndoResult {
+    return this.inTransaction(() => {
+      const change = this.getMemoryChange(change_id);
+      if (!change) return { status: "not_found" };
+      if (change.undone_at !== null) return { status: "already_undone", change };
+      this.db.prepare(`UPDATE memory_changes SET undone_at = ? WHERE change_id = ?`).run(now, change_id);
+      this.restoreMemoryRows(change);
+      return { status: "undone", change: { ...change, undone_at: now } };
+    });
+  }
+
+  private restoreMemoryRows(change: MemoryChange): void {
+    const table = MEMORY_TABLE[change.kind];
+    if (change.action === "retire") {
+      for (const id of change.old_ids) this.db.prepare(`UPDATE ${table} SET status = 'active' WHERE id = ? AND status = 'pruned'`).run(id);
+      return;
+    }
+    for (const id of change.old_ids) {
+      this.db.prepare(`
+        UPDATE episodic_facts SET status = 'active', superseded_by = NULL, valid_until = NULL
+        WHERE id = ? AND status = 'superseded' AND superseded_by = ?
+      `).run(id, change.new_id);
+    }
+    this.db.prepare(`UPDATE episodic_facts SET status = 'pruned' WHERE id = ? AND status = 'active'`).run(change.new_id);
+  }
+
   // --- DB backup (backlog #3, ADR 0021) ---------------------------------------
 
   /** The backup latch's last successful snapshot time (NULL = never — first tick fires). */
@@ -6112,6 +6249,29 @@ export class RunStore {
     this.applySkillReverifyMigration();
     this.applyOmpRuntimeMigration();
     this.applyDaemonBootsMigration();
+    this.applyMemoryChangesMigration();
+  }
+
+  /** Self-service memory correction (2026-10-02): one row per retire/correct, ids only, so Undo can reverse it. */
+  private applyMemoryChangesMigration(): void {
+    const version = "2026-10-02-memory-changes";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS memory_changes (
+          change_id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL CHECK (kind IN ('fact', 'wiki')),
+          action TEXT NOT NULL CHECK (action IN ('retire', 'correct')),
+          old_ids TEXT NOT NULL,
+          new_id INTEGER,
+          run_id TEXT,
+          chat_id TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          undone_at TEXT
+        );
+      `);
+      if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
   }
 
   /**
