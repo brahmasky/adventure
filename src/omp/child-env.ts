@@ -1,8 +1,20 @@
 import { spawn } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
 /** The child env for every spawned CLI: an allowlist, never process.env wholesale (ADR 0015 §5). */
 export const CLI_ENV_ALLOWLIST = ["PATH", "HOME", "TERM", "LANG", "USER"] as const;
+
+/**
+ * A sandboxed child's TMPDIR: `<its workspace>/.tmp`, created by the daemon (0700). The profiles deny
+ * /private/var/folders (os.tmpdir()), so without it a child's temp files would land in planner-writable /tmp (B13).
+ */
+export function childTmpDir(workspace: string): string {
+  const dir = join(workspace, ".tmp");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
 
 export function buildChildEnv(passthrough: string[] | string | undefined): Record<string, string> {
   const extra = Array.isArray(passthrough) ? passthrough : (passthrough ?? "").split(",");

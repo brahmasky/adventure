@@ -1,6 +1,6 @@
 // tests/omp/seatbelt.test.ts
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -163,11 +163,20 @@ describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () 
     for (const p of [renderSeatbelt(ctx).planner, renderSeatbelt(ctx).shell]) {
       const denyAll = p.indexOf("(deny file-write*)\n");
       expect(denyAll).toBeGreaterThan(p.indexOf("(allow default)"));
-      for (const root of ["/Users/p", "/private/tmp", "/private/var/folders"]) {
+      for (const root of ["/Users/p", "/private/tmp"]) {
         expect(p.indexOf(`(allow file-write* (subpath "${root}"))`), root).toBeGreaterThan(denyAll);
       }
+      expect(p).not.toContain('(allow file-write* (subpath "/private/var/folders"))'); // os.tmpdir(): daemon-read (B13)
       expect(p).toContain('(allow file-write* (literal "/dev/null"))');
       expect(p).not.toContain('(allow file-write* (subpath "/usr');
+    }
+  });
+
+  it("denies <data>/tmp and <data>/selfwrite after the $HOME allow, even when the data dir is not the repo (B13)", () => {
+    const apart = { ...ctx, data: "/Users/p/houge-data" };
+    for (const p of [renderSeatbelt(apart).planner, renderSeatbelt(apart).shell]) {
+      const allowHome = p.indexOf('(allow file-write* (subpath "/Users/p"))');
+      for (const d of ["tmp", "selfwrite"]) expect(p.indexOf(`(deny file-write* (subpath "/Users/p/houge-data/${d}"))`), d).toBeGreaterThan(allowHome);
     }
   });
 
@@ -215,6 +224,31 @@ describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () 
       }
     } finally {
       for (const p of [...outside, `/tmp/houge-sb-ok-${process.pid}`]) rmSync(p, { force: true });
+    }
+  });
+
+  it.runIf(process.platform === "darwin")("live: neither profile can write the daemon's temp space, a self-write worktree or os.tmpdir(); /tmp and <workspace>/.tmp stay writable (B13)", () => {
+    const { home, live, run } = fakeHome();
+    const apart = { ...live, data: join(home, "houge-data") }; // data apart from the repo: its own rules must hold
+    const wt = join(apart.data, "selfwrite", "houge-worktree-x");
+    mkdirSync(join(apart.data, "tmp", "houge-media-x"), { recursive: true }); mkdirSync(join(apart.data, "omp", "workspace", "chat-1", ".tmp"), { recursive: true });
+    mkdirSync(wt, { recursive: true }); writeFileSync(join(wt, ".git"), "gitdir: /repo/.git/worktrees/x\n");
+    const profiles = writeSeatbeltProfiles(apart);
+    const varFolders = join(realpathSync(tmpdir()), `houge-vf-canary-${process.pid}`); // outside the fake $HOME
+    const writes = (prof: string, path: string) => run(prof, "/bin/sh", "-c", `echo x > '${path}'`).status === 0;
+    try {
+      for (const prof of [profiles.planner, profiles.shell]) {
+        for (const p of [join(apart.data, "tmp", "houge-media-x", "media.jpg"), join(apart.data, "tmp", "new"), join(wt, ".git"), join(wt, "src.ts"), varFolders]) {
+          expect(writes(prof, p), p).toBe(false);
+        }
+        expect(run(prof, "/bin/ln", "-s", "/etc/passwd", join(apart.data, "tmp", "houge-media-x", "media.opus")).status).not.toBe(0);
+        expect(run(prof, "/bin/mv", join(apart.data, "selfwrite"), join(home, "moved")).status).not.toBe(0);
+        expect(writes(prof, join(apart.data, "omp", "workspace", "chat-1", ".tmp", "ok"))).toBe(true);
+        expect(writes(prof, `/tmp/houge-sb-tmp-${process.pid}`)).toBe(true);
+      }
+      expect(readFileSync(join(wt, ".git"), "utf8")).toBe("gitdir: /repo/.git/worktrees/x\n");
+    } finally {
+      rmSync(varFolders, { force: true }); rmSync(`/tmp/houge-sb-tmp-${process.pid}`, { force: true });
     }
   });
 

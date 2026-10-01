@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { OMP_ENV_VARS, resolveOmpConfig } from "../../../src/omp/omp-config.js";
 import { parseModelChain } from "../../../src/omp/model-string.js";
 import { LEG_EXIT_GRACE_MS, spawnOneShot } from "../../../src/llm/providers/omp.js";
+import { daemonTmpRoot } from "../../../src/run/daemon-tmp.js";
 import { recordingSink } from "../../helpers/llm-audit.js";
 
 const FAKE = new URL("../../fixtures/fake-omp.mjs", import.meta.url).pathname;
@@ -82,6 +83,12 @@ describe("omp one-shot seat — every non-planner LLM call in Houge", () => {
     const r = await spawnOneShot({ seat: "reader", chain: cfg.reader, prompt: "x", correlationId: "c" }, { cfg, audit, versionCheck: () => ({ ok: true, version: "18.4.4" }) });
     expect(r).toMatchObject({ ok: true, answer: "from kimi" });
     expect(audit.attempts.map((a) => [a.model, a.outcome, a.error_kind])).toEqual([["gemini-3.8-flash", "error", "model_missing"], ["k3", "ok", undefined]]);
+  });
+
+  it("runs the one-shot with TMPDIR=<data>/tmp — never planner-writable /tmp or os.tmpdir() (B13)", async () => {
+    const cfg = setup({ "*": { text: "ok" } });
+    await spawnOneShot({ seat: "ticks", chain: cfg.ticks, prompt: "x", correlationId: "c" }, { cfg, audit: recordingSink(), versionCheck: () => ({ ok: true, version: "18.4.4" }) });
+    expect(argvLog()[0].tmpdir).toBe(daemonTmpRoot());
   });
 
   it("delivers the prompt on stdin, never argv, and disables every tool and extension", async () => {

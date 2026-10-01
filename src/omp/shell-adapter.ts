@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
-import { buildChildEnv } from "./child-env.js";
+import { buildChildEnv, childTmpDir } from "./child-env.js";
 import type { OmpConfig } from "./omp-config.js";
 import type { PathContext } from "./protected-paths.js";
 
@@ -83,7 +83,7 @@ export function shellToolExecute(deps: {
     if (command.trim().length === 0) return { ok: false, error: "bash: command is required" };
     const r = await runShell({
       command, cwd: deps.cwd, profilePath: join(deps.ctx.data, "omp", "shell.sb"),
-      wrapperPath: join(deps.distDir, "omp", "shell-wrapper.sh"), env: buildChildEnv(deps.cfg.envPassthrough),
+      wrapperPath: join(deps.distDir, "omp", "shell-wrapper.sh"), env: { ...buildChildEnv(deps.cfg.envPassthrough), TMPDIR: childTmpDir(deps.cwd) },
       timeoutMs: deps.cfg.shellTimeoutMs, outputCapBytes: 32 * 1024, sandbox: deps.cfg.sandbox,
       ...(signal ? { signal } : {})
     });

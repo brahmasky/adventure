@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { buildChildEnv } from "./child-env.js";
+import { buildChildEnv, childTmpDir } from "./child-env.js";
 import type { OmpConfig } from "./omp-config.js";
 import { classifyOmpError, parseFrameLine, type OmpFrame } from "./omp-frames.js";
 import type { ModelString } from "./model-string.js";
@@ -54,7 +54,8 @@ export class PlannerSession {
 
   async start(): Promise<{ resumed: boolean; sessionId: string }> {
     const { file, args } = plannerArgs(this.o);
-    const env = { ...buildChildEnv(this.o.cfg.envPassthrough), HOUGE_BRIDGE_SOCK: this.o.bridgeSock, HOUGE_BRIDGE_TOKEN: this.o.bridgeToken };
+    const env = { ...buildChildEnv(this.o.cfg.envPassthrough), TMPDIR: childTmpDir(this.o.cwd),
+      HOUGE_BRIDGE_SOCK: this.o.bridgeSock, HOUGE_BRIDGE_TOKEN: this.o.bridgeToken };
     const child = spawn(file, args, { cwd: this.o.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
     this.child = child;
     const ready = new Promise<void>((resolve, reject) => {

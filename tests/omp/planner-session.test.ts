@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -31,6 +31,14 @@ describe("PlannerSession — one long-lived RPC child per chat (spec §4, §7)",
   it("starts, opens the session dir, and reports whether it resumed", async () => {
     const { s } = make();
     expect(await s.start()).toMatchObject({ resumed: false, sessionId: "s1" });
+  });
+
+  it("gives the child TMPDIR=<workspace>/.tmp, created by the daemon — never os.tmpdir(), which the profiles deny (B13)", async () => {
+    const { s, d } = make();
+    await s.start();
+    const first = JSON.parse(readFileSync(join(d, "argv.log"), "utf8").split("\n")[0] as string) as { tmpdir: string | null };
+    expect(first.tmpdir).toBe(join(d, ".tmp"));
+    expect(statSync(join(d, ".tmp")).isDirectory()).toBe(true);
   });
 
   it("emits the turn's frames after prompt, ending with agent_end", async () => {

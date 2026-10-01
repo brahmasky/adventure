@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { LlmAuditSink } from "../audit.js";
 import type { LlmResult } from "../types.js";
 import { buildChildEnv } from "../../omp/child-env.js";
+import { daemonTmpRoot } from "../../run/daemon-tmp.js";
 import type { OmpConfig } from "../../omp/omp-config.js";
 import { checkOmpVersion } from "../../omp/omp-version.js";
 import { classifyOmpError, parseFrameLine, RETRYABLE_ERROR_KINDS, summarizeAssistantMessage, type AssistantSummary } from "../../omp/omp-frames.js";
@@ -54,7 +55,8 @@ function runLeg(cfg: OmpConfig, m: ModelString, input: OneShotInput): Promise<Le
   const started = Date.now();
   return new Promise((resolve) => {
     const child = spawn(cfg.bin, ompOneShotArgs(cfg, m, input.files ?? []), {
-      env: buildChildEnv(cfg.envPassthrough), stdio: ["pipe", "pipe", "pipe"], detached: true
+      // TMPDIR: the daemon-only temp root, never planner-writable /tmp or os.tmpdir() (B13)
+      env: { ...buildChildEnv(cfg.envPassthrough), TMPDIR: daemonTmpRoot() }, stdio: ["pipe", "pipe", "pipe"], detached: true
     });
     const st: LegState = { out: "", err: "", bytes: 0, timedOut: false, settled: false, code: undefined };
     let drain: ReturnType<typeof setTimeout> | undefined;

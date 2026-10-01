@@ -149,3 +149,15 @@ describe("bash tool adapter — process limit and escapees", () => {
     } finally { spy.mockRestore(); spawnSync("pkill", ["-f", tag]); }
   });
 });
+
+describe("bash tool — its TMPDIR (final review B13)", () => {
+  it("runs with TMPDIR=<workspace>/.tmp, created by the daemon (the profiles deny os.tmpdir())", async () => {
+    const { shellToolExecute } = await import("../../src/omp/shell-adapter.js");
+    const { resolveOmpConfig } = await import("../../src/omp/omp-config.js");
+    const { tmpOmpDist } = await import("../helpers/omp-env.js");
+    const ws = tmp("houge-shell-ws-"); const data = tmp("houge-shell-data-");
+    const run = shellToolExecute({ cfg: resolveOmpConfig({ HOUGE_OMP_SANDBOX: "0" }), ctx: { home: data, repo: data, data }, distDir: tmpOmpDist(data), cwd: ws, onIncident: () => undefined });
+    const r = await run({ command: 'printf %s "$TMPDIR"; test -d "$TMPDIR"' });
+    expect(r).toMatchObject({ ok: true, output: { exit_code: 0, output: join(ws, ".tmp") } });
+  });
+});

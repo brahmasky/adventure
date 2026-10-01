@@ -38,11 +38,12 @@ export function protectedRepoPaths(ctx: PathContext): string[] {
 }
 
 /**
- * Writes are denied everywhere except these roots (D5 read literally: yolo under $HOME). Outside $HOME only the
- * temp roots are writable; /dev is handled literally by the profile renderer.
+ * Writes are denied everywhere except these roots (D5 read literally: yolo under $HOME). Outside $HOME only
+ * /private/tmp is writable; /private/var/folders (os.tmpdir()) is not (B13: a symlink planted there redirected daemon
+ * reads), so children get TMPDIR=<workspace>/.tmp instead. /dev is handled literally by the profile renderer.
  */
 export function writeRoots(ctx: PathContext, kind: "planner" | "shell"): string[] {
-  return [ctx.home, "/private/tmp", "/private/var/folders", ...writableExceptions(ctx, kind)];
+  return [ctx.home, "/private/tmp", ...writableExceptions(ctx, kind)];
 }
 
 /** Binary install trees under $HOME: code here is run later by unsandboxed processes (the daemon, Paco's shell). */
@@ -59,8 +60,13 @@ export function writableExceptions(ctx: PathContext, kind: "planner" | "shell"):
   return kind === "planner" ? [ws, join(ctx.data, "omp", "sessions")] : [ws];
 }
 
+/** The daemon's own temp space and self-write worktrees (src/run/daemon-tmp.ts): never writable by a sandboxed child (B13). */
+export function daemonOnlyDirs(ctx: PathContext): string[] {
+  return [join(ctx.data, "tmp"), join(ctx.data, "selfwrite")];
+}
+
 export function operationalWriteDeny(ctx: PathContext): string[] {
-  return [ctx.repo, join(ctx.repo, "dist"), join(ctx.data, "omp", "bridge"), join(ctx.data, "omp", "planner.sb"),
+  return [ctx.repo, join(ctx.repo, "dist"), ...daemonOnlyDirs(ctx), join(ctx.data, "omp", "bridge"), join(ctx.data, "omp", "planner.sb"),
     join(ctx.data, "omp", "shell.sb"), join(ctx.data, "omp", "houge-config.yml"),
     join(ctx.home, "Library/LaunchAgents"), join(ctx.data, "houge.kill"), join(ctx.data, "houge.parked"),
     ...[...HOME_INSTALL_TREES, ...HOME_CODE_CONFIG].map((p) => join(ctx.home, p)), ...(ctx.binDirs ?? [])];

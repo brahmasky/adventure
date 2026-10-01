@@ -24,7 +24,7 @@ if (modeIdx >= 0 && argv[modeIdx + 1] === "rpc") await runRpc();
 
 async function runRpc() {
   const log = (o) => { if (process.env.FAKE_OMP_ARGV_LOG) appendFileSync(process.env.FAKE_OMP_ARGV_LOG, JSON.stringify(o) + "\n"); };
-  log({ argv, stdin: "", pid: process.pid });
+  log({ argv, stdin: "", pid: process.pid, tmpdir: process.env.TMPDIR ?? null });
   const scen = process.env.FAKE_OMP_SCENARIO ? JSON.parse(readFileSync(process.env.FAKE_OMP_SCENARIO, "utf8")) : {};
   const mIdx = argv.indexOf("--model");
   let model = mIdx >= 0 ? argv[mIdx + 1].split(":")[0] : "";
@@ -129,7 +129,7 @@ const stdin = await new Promise((resolve) => {
   if (process.stdin.isTTY) return resolve("");
   let s = ""; process.stdin.on("data", (d) => (s += d)); process.stdin.on("end", () => resolve(s));
 });
-if (process.env.FAKE_OMP_ARGV_LOG) appendFileSync(process.env.FAKE_OMP_ARGV_LOG, JSON.stringify({ argv, stdin }) + "\n");
+if (process.env.FAKE_OMP_ARGV_LOG) appendFileSync(process.env.FAKE_OMP_ARGV_LOG, JSON.stringify({ argv, stdin, tmpdir: process.env.TMPDIR ?? null }) + "\n");
 
 const scenario = process.env.FAKE_OMP_SCENARIO ? JSON.parse(readFileSync(process.env.FAKE_OMP_SCENARIO, "utf8")) : {};
 const mi = argv.indexOf("--model");
