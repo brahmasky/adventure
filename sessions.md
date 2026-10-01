@@ -1409,3 +1409,22 @@ Build + independent adversarial verification subagents; each live round found a 
   kickstart, the full live gate from Telegram. Paco fixed AGENTS.md (Claude in runtime via omp; daemon temp
   line). Still open for Paco: a verbatim message in unpushed spec/ADR file history, and `setup-new-host.sh`
   still checking for pi and docker.
+- **Live (2026-10-01).** Merged and kickstarted; two hotfixes during the gate: launchd's PATH lacked
+  `~/.bun/bin` (omp's launcher is `env bun`; `4e098e9`), and a stale `/approve` threw, never acked its offset
+  and wedged intake (`6a97039`). The live gate then found seven defects, fixed on `fix/live-gate-followups`
+  test-first, one commit each:
+  - approval cards get Approve / Deny buttons that go through the typed command's gateway path;
+  - an intraword `_` no longer becomes italics, so `appr_` ids survive the renderer;
+  - refused commands and refused approvals get a code-owned reply;
+  - a photo's reader digest is no longer stored as Paco's turn (it made lesson_write refuse as code-owned);
+  - failed notifications are actually retried (the retry and recovery functions had no caller);
+  - the planner runs the configured model after a session resume;
+  - `<repo>/omp/` is gitignored.
+  The headline finding: omp's `open_session` restores the session's last model over `--model`, so case 6
+  answered on Opus 5.5 and the D10 family check judged the wrong model. The supervisor now pins with
+  `set_model` before the first prompt and reads the actual model from frames (ADR 0028 residual).
+  Round 2 after review: crash recovery honours the 5-attempt cap, a tap is decided before its spinner is
+  answered (bounded at 5 s), the sweep ages out terminal rows by when they went terminal, replies more than
+  6 h late are abandoned rather than sent, and retries back off 30 s / 2 min / 8 min / 30 min.
+  Open: the live re-gate of these fixes and the real-omp smoke.
+

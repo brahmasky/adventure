@@ -668,7 +668,7 @@ no capability, no run creation, so it can never act on what it finds.
 
 Invariants: duplicate enabled schedules · stuck runs (active state, lease expired >10 min;
 `waiting_for_approval` is NEVER an incident — that run is parked on Paco, working as designed) ·
-undelivered notifications (>15 min, EXCLUDING the sweep's own `incident_*` alerts) · overdue
+undelivered notifications (>15 min, EXCLUDING the sweep's own `incident_*` alerts; a `failed_terminal` row stops counting 24 h or two sweep intervals, whichever is longer, after it went terminal) · overdue
 schedules (>15 min past cursor) · failed schedules · heartbeat gaps (>10 min; a gap that spans a deliberate `/kill` park is logged, not opened) · **failing LLM legs** (`llm_leg_failing`, slice 2: a provider with ≥3 `llm_attempt` rows and zero `ok` in the rolling 24 h — the shape in which the agy leg died silently for three months; subject = provider, detail = attempts/ok/latest error_kind; a leg that recovers but is not called again stays open until its failed rows age out, ≤24 h at the 12 h cadence).
 
 **Cadence buys detection latency, not quiet.** Alerts fire on incident *transitions*, so a

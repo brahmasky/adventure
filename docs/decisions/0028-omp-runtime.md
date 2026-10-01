@@ -260,6 +260,11 @@ change the architecture the spec describes:
   the reviewer's.
 - A `steer` merge means one reply answers two messages. The ledger records both runs; Paco sees one
   message.
+- **A resumed omp session overrides `--model`** (live gate, 2026-10-01): `open_session` restores the model the
+  session last used, so a spawn-time fallback or a `HOUGE_OMP_PLANNER` change never reached an existing chat.
+  Mitigation: the supervisor pins the spawn leg with `set_model` before the first prompt, and audits and
+  computes the D10 family from the model each `message_end` reports. A failed pin answers on the restored
+  model and raises `planner_model_reset_failed`.
 - **Voice on agy-cli** (decision 16) keeps one legacy provider and its env resolvers (`HOUGE_AGY_BIN`,
   `HOUGE_AGY_MODEL`, `HOUGE_AGY_ENV_PASSTHROUGH`, `HOUGE_LLM_MEDIA_PROVIDERS`,
   `HOUGE_LLM_TIMEOUT_MS_MEDIA`). Follow-up: omp audio support, or local whisper (installed, but only a

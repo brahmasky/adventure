@@ -286,3 +286,27 @@ Rules Claude writes for itself after corrections. Review at session start.
   `#!/usr/bin/env bun` and launchd's PATH had no `~/.bun/bin`. Rule: before a kickstart, run the spawned
   binaries once under the daemon's exact environment (`env -i` with the plist's PATH and HOME), or run the
   smoke with that PATH; an absolute binary path does not cover its interpreter.
+
+## omp live gate (2026-10-01)
+
+- **A resumed omp session silently overrides `--model`.** The live gate's case 6 answered on Opus 5.5
+  after a spawn-time fallback to Opus 4.6: `open_session` restored the model the chat's session last used,
+  and every spawn flag was ignored. The D10 family check read the configured model and recorded a collapse
+  that had not happened. Rule: after any session resume, pin the intended model explicitly (`set_model`),
+  and take "which model answered" from the frames, never from the spawn arguments.
+- **Code-owned scaffold text stored as a user turn poisons code-owned-phrase checks.** A photo's reader
+  digest (with its code-owned `[external source …]` header) was stored as Paco's chat turn, and
+  lesson_write's thread scan then refused every later lesson in the chat as `code-owned`, with no LLM call.
+  Rule: store only the user's own words as a user turn (caption, placeholder, transcript); scaffold and
+  untrusted-derived text go to the prompt, never to the thread record that checks scan.
+- **An unhandled intake error that never acks the offset wedges the whole queue.** One `/approve` of an
+  already-denied id threw, the update offset stayed put, Telegram redelivered it forever, and every later
+  message queued behind it. Rule: classify every refusal a user can trigger (a stale, mistyped, expired or
+  foreign id; a malformed command) as a handled denial that acks the offset and replies; only a genuine
+  store or process failure may stop the batch.
+- **Dead-code recovery paths look like features in review.** `requeueRetryWaitNotifications` and
+  `recoverStaleSendingNotifications` were tested and reviewed, but nothing in the daemon called them, so one
+  transient Telegram error lost a reply for good (rows stuck two weeks). Rule: for every recovery, retry or
+  cleanup function, find its production caller during review; a recovery path with only test callers is a
+  missing feature, not a safety net.
+
