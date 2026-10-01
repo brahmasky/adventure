@@ -91,6 +91,17 @@ describe("omp one-shot seat — every non-planner LLM call in Houge", () => {
     expect(argvLog()[0].tmpdir).toBe(daemonTmpRoot());
   });
 
+  it("never hands a one-shot seat a daemon secret: its env is the allowlist, not process.env (ADR 0015, testing I-1)", async () => {
+    const cfg = setup({ "*": { text: "ok" } });
+    process.env.HOUGE_TEST_CANARY_SECRET = "canary-oneshot";
+    try {
+      await spawnOneShot({ seat: "ticks", chain: cfg.ticks, prompt: "x", correlationId: "c" }, { cfg, audit: recordingSink(), versionCheck: () => ({ ok: true, version: "18.4.4" }) });
+    } finally { delete process.env.HOUGE_TEST_CANARY_SECRET; }
+    const [call] = argvLog();
+    expect(call.envKeys).toContain("FAKE_OMP_SCENARIO"); // the passthrough reached it: the log really lists the child's env
+    expect(call.envKeys).not.toContain("HOUGE_TEST_CANARY_SECRET");
+  });
+
   it("delivers the prompt on stdin, never argv, and disables every tool and extension", async () => {
     const cfg = setup({ "*": { text: "ok" } });
     await spawnOneShot({ seat: "ticks", chain: cfg.ticks, prompt: "--help me", correlationId: "c" }, { cfg, audit: recordingSink(), versionCheck: () => ({ ok: true, version: "18.4.4" }) });

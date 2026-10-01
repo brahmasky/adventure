@@ -160,4 +160,20 @@ describe("bash tool — its TMPDIR (final review B13)", () => {
     const r = await run({ command: 'printf %s "$TMPDIR"; test -d "$TMPDIR"' });
     expect(r).toMatchObject({ ok: true, output: { exit_code: 0, output: join(ws, ".tmp") } });
   });
+
+  it("never hands bash a daemon secret: `env` inside the tool shows only the allowlist (ADR 0015, testing I-1)", async () => {
+    const { shellToolExecute } = await import("../../src/omp/shell-adapter.js");
+    const { resolveOmpConfig } = await import("../../src/omp/omp-config.js");
+    const { tmpOmpDist } = await import("../helpers/omp-env.js");
+    const ws = tmp("houge-shell-ws-"); const data = tmp("houge-shell-data-");
+    const run = shellToolExecute({ cfg: resolveOmpConfig({ HOUGE_OMP_SANDBOX: "0" }), ctx: { home: data, repo: data, data }, distDir: tmpOmpDist(data), cwd: ws, onIncident: () => undefined });
+    process.env.HOUGE_TEST_CANARY_SECRET = "canary-bash-7f3";
+    let r: Awaited<ReturnType<typeof run>>;
+    try { r = await run({ command: "env" }); } finally { delete process.env.HOUGE_TEST_CANARY_SECRET; }
+    expect(r).toMatchObject({ ok: true });
+    const out = (r as unknown as { output: { output: string } }).output.output;
+    expect(out).toMatch(/^PATH=/m); // env really ran and printed the child's environment
+    expect(out).not.toContain("HOUGE_TEST_CANARY_SECRET");
+    expect(out).not.toContain("canary-bash-7f3");
+  });
 });

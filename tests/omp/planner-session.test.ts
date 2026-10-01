@@ -41,6 +41,17 @@ describe("PlannerSession — one long-lived RPC child per chat (spec §4, §7)",
     expect(statSync(join(d, ".tmp")).isDirectory()).toBe(true);
   });
 
+  it("never hands the planner child a daemon secret: its env is the allowlist, not process.env (ADR 0015, testing I-1)", async () => {
+    process.env.HOUGE_TEST_CANARY_SECRET = "canary-planner";
+    try {
+      const { s, d } = make();
+      await s.start();
+      const first = JSON.parse(readFileSync(join(d, "argv.log"), "utf8").split("\n")[0] as string) as { envKeys: string[] };
+      expect(first.envKeys).toContain("FAKE_OMP_SCENARIO"); // the passthrough reached it: the log really lists the child's env
+      expect(first.envKeys).not.toContain("HOUGE_TEST_CANARY_SECRET");
+    } finally { delete process.env.HOUGE_TEST_CANARY_SECRET; }
+  });
+
   it("emits the turn's frames after prompt, ending with agent_end", async () => {
     const { s } = make();
     await s.start(); const types: string[] = []; s.onFrame((f) => types.push(f.type));

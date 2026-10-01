@@ -12,7 +12,8 @@
 // Top-level `rpcStderrAtStart: "<text>"` (rpc): writes that text to stderr and exits 1 before `ready` (a crash at start).
 // In rpc mode the fake plays the omp extension's load-time side of the bridge (hello + manifest over
 // HOUGE_BRIDGE_SOCK with HOUGE_BRIDGE_TOKEN, src/omp/bridge-protocol.ts) so the supervisor's start check passes.
-// FAKE_OMP_ARGV_LOG = path; each invocation appends one JSON line with argv and stdin.
+// FAKE_OMP_ARGV_LOG = path; each invocation appends one JSON line with argv, stdin, TMPDIR and the env var NAMES it got
+//   (envKeys: names only, so a child-env canary test can prove a daemon secret never reached the child).
 import { appendFileSync, readFileSync } from "node:fs";
 import { connect } from "node:net";
 
@@ -24,7 +25,7 @@ if (modeIdx >= 0 && argv[modeIdx + 1] === "rpc") await runRpc();
 
 async function runRpc() {
   const log = (o) => { if (process.env.FAKE_OMP_ARGV_LOG) appendFileSync(process.env.FAKE_OMP_ARGV_LOG, JSON.stringify(o) + "\n"); };
-  log({ argv, stdin: "", pid: process.pid, tmpdir: process.env.TMPDIR ?? null });
+  log({ argv, stdin: "", pid: process.pid, tmpdir: process.env.TMPDIR ?? null, envKeys: Object.keys(process.env) });
   const scen = process.env.FAKE_OMP_SCENARIO ? JSON.parse(readFileSync(process.env.FAKE_OMP_SCENARIO, "utf8")) : {};
   const mIdx = argv.indexOf("--model");
   let model = mIdx >= 0 ? argv[mIdx + 1].split(":")[0] : "";
@@ -129,7 +130,7 @@ const stdin = await new Promise((resolve) => {
   if (process.stdin.isTTY) return resolve("");
   let s = ""; process.stdin.on("data", (d) => (s += d)); process.stdin.on("end", () => resolve(s));
 });
-if (process.env.FAKE_OMP_ARGV_LOG) appendFileSync(process.env.FAKE_OMP_ARGV_LOG, JSON.stringify({ argv, stdin, tmpdir: process.env.TMPDIR ?? null }) + "\n");
+if (process.env.FAKE_OMP_ARGV_LOG) appendFileSync(process.env.FAKE_OMP_ARGV_LOG, JSON.stringify({ argv, stdin, tmpdir: process.env.TMPDIR ?? null, envKeys: Object.keys(process.env) }) + "\n");
 
 const scenario = process.env.FAKE_OMP_SCENARIO ? JSON.parse(readFileSync(process.env.FAKE_OMP_SCENARIO, "utf8")) : {};
 const mi = argv.indexOf("--model");
