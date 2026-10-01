@@ -62,6 +62,19 @@ describe("TelegramNotificationAdapter", () => {
     ]);
   });
 
+  it("the plain-text fallback drops inline-code backticks, so an approval id reads (and copies) clean", async () => {
+    const sent: TelegramSendMessageInput[] = [];
+    const adapter = new TelegramNotificationAdapter({
+      sendMessage: async (input) => {
+        sent.push(input);
+        if (input.parse_mode === "HTML") throw new Error("Telegram sendMessage failed: HTTP 400");
+        return { message_id: 7 };
+      }
+    });
+    await adapter.send(dispatch("Reply /approve `appr_1-a` to continue or /deny `appr_1-a` to stop."));
+    expect(sent[1]).toEqual({ chat_id: "222", text: "Reply /approve appr_1-a to continue or /deny appr_1-a to stop." });
+  });
+
   it("renders an inline_keyboard reply_markup when buttons are present (Phase 3.3)", async () => {
     const sent: TelegramSendMessageInput[] = [];
     const adapter = new TelegramNotificationAdapter({

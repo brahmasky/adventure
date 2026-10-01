@@ -1,6 +1,6 @@
 // tests/triggers/telegram-invalid-command-reply.test.ts
 import { describe, expect, it } from "vitest";
-import { normalizeTelegramUpdate, type TelegramUpdate } from "../../src/triggers/telegram-trigger-adapter.js";
+import { invalidCommandReply, normalizeTelegramUpdate, type TelegramUpdate } from "../../src/triggers/telegram-trigger-adapter.js";
 
 // Live gate 2026-10-01: `/deny` with no id was recorded in skipped_telegram_updates and nothing came back, so the
 // operator could not tell a malformed command from a lost one. An allowlisted sender's invalid command gets one
@@ -39,5 +39,12 @@ describe("an invalid command is answered, not ghosted", () => {
     const r = normalizeTelegramUpdate({ update_id: 8, callback_query: { id: "c", from: { id: 111 }, message: { message_id: 1, chat: { id: 222 } }, data: "junk" } }, ALLOWLIST);
     if (r.ok) throw new Error("expected a refusal");
     expect(r.acknowledgement).toBeUndefined();
+  });
+
+  it("never doubles the full stop when the parser message already ends with punctuation", () => {
+    expect(invalidCommandReply("/deny requires an approval id")).toBe("That command was not accepted: /deny requires an approval id. Send /help for the list.");
+    expect(invalidCommandReply("Unterminated quote.")).toBe("That command was not accepted: Unterminated quote. Send /help for the list.");
+    expect(invalidCommandReply("用法不对。")).toBe("That command was not accepted: 用法不对。 Send /help for the list.");
+    expect(invalidCommandReply("really?")).toBe("That command was not accepted: really? Send /help for the list.");
   });
 });

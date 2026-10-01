@@ -127,9 +127,10 @@ export class TelegramNotificationAdapter implements NotificationAdapter {
       });
       return { provider_message_id: `telegram:${sent.message_id}` };
     } catch {
+      // Plain text shows markup literally: drop inline-code backticks so an approval id reads and copies clean.
       const sent = await this.client.sendMessage({
         chat_id,
-        text: raw,
+        text: raw.replace(/`([^`\n]+)`/g, "$1"),
         ...(reply_markup ? { reply_markup } : {})
       });
       return { provider_message_id: `telegram:${sent.message_id}` };

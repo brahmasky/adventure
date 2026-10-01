@@ -184,6 +184,12 @@ function unsupportedMediaResult(update: TelegramUpdate, message: TelegramMessage
   };
 }
 
+/** The reply to an invalid command: the parser's code-owned message, ending in exactly one sentence mark. */
+export function invalidCommandReply(parserMessage: string): string {
+  const reason = /[.!?。！？]$/u.test(parserMessage) ? parserMessage : `${parserMessage}.`;
+  return `That command was not accepted: ${reason} Send /help for the list.`;
+}
+
 /**
  * An allowlisted sender's malformed command (live gate 2026-10-01: `/deny` with no id was silently skipped). The skip
  * bookkeeping is unchanged; the reply is the parser's own code-owned message, never the sender's text, keyed on the
@@ -197,7 +203,7 @@ function invalidCommandResult(
     error,
     acknowledgement: {
       chat_id: String(message.chat.id),
-      text: `That command was not accepted: ${error.message}. Send /help for the list.`,
+      text: invalidCommandReply(error.message),
       idempotency_key: `telegram:${update.update_id}:invalid_command`
     }
   };
