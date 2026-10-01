@@ -6,7 +6,7 @@ import { clipText } from "../status/houge-status.js";
 import type { GatewayIntakeResult } from "./gateway.js";
 
 /**
- * Paco's memory control plane (2026-10-02): /memories, /forget-memory and the Undo button on a memory change card. Control commands, no run, no
+ * Paco's memory control plane (2026-10-02): /memories, /forget_memory and the Undo button on a memory change card. Control commands, no run, no
  * budget; idempotent on the trigger key; every reply code-owned (never stored text beyond the row ids).
  */
 
@@ -91,13 +91,13 @@ export function handleMemories(store: RunStore, event: TypedTaskEvent): GatewayI
     const head = query ? `🧠 **Memories** matching your query (${rows.length})` : `🧠 **Memories** most used (${rows.length})`;
     const text = rows.length === 0
       ? (query ? "🧠 No active memories match." : "🧠 No active memories yet.")
-      : [head, ...rows.map(memoryLine), "· /forget-memory <id> retires one (with Undo)"].join("\n");
+      : [head, ...rows.map(memoryLine), "· /forget_memory <id> retires one (with Undo)"].join("\n");
     replyTo(store, event, "memories", text);
     return { ok: true, status: "memories_returned", run_id: "" };
   });
 }
 
-/** `/forget-memory <id>`: Paco's direct command, so no turn or taint rule; only an active fact of this chat. */
+/** `/forget_memory <id>`: Paco's direct command, so no turn or taint rule; only an active fact of this chat. */
 export function handleForgetMemory(store: RunStore, event: TypedTaskEvent): GatewayIntakeResult {
   return oncePerTrigger(store, event, () => {
     const id = Number(event.program);

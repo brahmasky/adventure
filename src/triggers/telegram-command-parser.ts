@@ -63,7 +63,8 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
   if (command === "/approvals") return parseNoArgs("approvals", rest);
   // Paco's own memory (2026-10-02): view what Houge remembers, retire one fact (with an Undo card).
   if (command === "/memories") return parseMemories(rest);
-  if (command === "/forget-memory") return parseForgetMemory(rest);
+  // L2: /forget_memory is the name (a Telegram command allows no hyphen); /forget-memory stays a typed alias.
+  if (command === "/forget_memory" || command === "/forget-memory") return parseForgetMemory(rest);
   // Kill switch + disarm posture (ADR 0018). These MUST be explicit branches: unknown
   // slash text falls through to a natural-language turn below, and a stop command must
   // never be re-interpreted by a model — unforgeable = slash-only + the allowlist auth.
@@ -198,10 +199,10 @@ function parseMemories(words: string[]): TelegramCommandParseResult {
   return { ok: true, command: { type: "memories", ...(query ? { query } : {}) } };
 }
 
-/** `/forget-memory <id>` — exactly one positive fact id. */
+/** `/forget_memory <id>` (alias `/forget-memory`) — exactly one positive fact id. */
 function parseForgetMemory(words: string[]): TelegramCommandParseResult {
   const [id] = words;
-  if (words.length !== 1 || !id || !/^[1-9][0-9]{0,15}$/.test(id)) return invalid("/forget-memory requires exactly one fact id");
+  if (words.length !== 1 || !id || !/^[1-9][0-9]{0,15}$/.test(id)) return invalid("/forget_memory requires exactly one fact id");
   return { ok: true, command: { type: "forget_memory", id: Number(id) } };
 }
 

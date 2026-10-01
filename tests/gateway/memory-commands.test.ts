@@ -33,8 +33,10 @@ describe("parsing", () => {
   it("/memories takes an optional query; /forget-memory exactly one positive id", () => {
     expect(parseTelegramCommand("/memories")).toEqual({ ok: true, command: { type: "memories" } });
     expect(parseTelegramCommand("/memories ASML brief")).toEqual({ ok: true, command: { type: "memories", query: "ASML brief" } });
+    // L2: /forget_memory is the name (Telegram command names allow no hyphen); /forget-memory stays a typed alias.
+    expect(parseTelegramCommand("/forget_memory 108")).toEqual({ ok: true, command: { type: "forget_memory", id: 108 } });
     expect(parseTelegramCommand("/forget-memory 108")).toEqual({ ok: true, command: { type: "forget_memory", id: 108 } });
-    for (const bad of ["/forget-memory", "/forget-memory abc", "/forget-memory 1 2", "/forget-memory 0"]) {
+    for (const bad of ["/forget_memory", "/forget_memory abc", "/forget-memory 1 2", "/forget-memory 0"]) {
       expect(parseTelegramCommand(bad).ok, bad).toBe(false);
     }
   });
@@ -42,7 +44,7 @@ describe("parsing", () => {
   it("a malformed /forget-memory gets the code-owned invalid-command reply; a stranger's command never becomes an event", () => {
     const r = normalizeTelegramUpdate({ update_id: 900, message: { message_id: 1, text: "/forget-memory abc", from: { id: 111 }, chat: { id: 222 } } }, ALLOWLIST);
     if (r.ok) throw new Error("expected invalid");
-    expect(r.acknowledgement?.text).toBe("That command was not accepted: /forget-memory requires exactly one fact id. Send /help for the list.");
+    expect(r.acknowledgement?.text).toBe("That command was not accepted: /forget_memory requires exactly one fact id. Send /help for the list.");
     expect(normalizeTelegramUpdate({ update_id: 901, message: { message_id: 2, text: "/forget-memory 1", from: { id: 999 }, chat: { id: 222 } } }, ALLOWLIST).ok).toBe(false);
   });
 });
@@ -58,6 +60,7 @@ describe("/memories", () => {
     expect(text).toContain(`#${hit} · Paco's daily brief needs ASML earnings · 2026-09-30`);
     expect(text).not.toContain(`#${gone} `);
     expect(text).not.toContain("other chat");
+    expect(text).toContain("/forget_memory <id>");
     for (let i = 0; i < 11; i++) fact(`ASML long ${i} ${"y".repeat(200)}`);
     new Gateway(store).intake(command("/memories ASML"));
     const lines = String(replies()[0]?.text).split("\n").filter((l) => l.startsWith("#"));
@@ -82,7 +85,7 @@ describe("/memories", () => {
 describe("/forget-memory", () => {
   it("retires the fact and replies with the same Undo card the tool sends", () => {
     const id = fact("Paco's daily brief needs ASML earnings");
-    expect(new Gateway(store).intake(command(`/forget-memory ${id}`))).toMatchObject({ ok: true, status: "memory_forgotten" });
+    expect(new Gateway(store).intake(command(`/forget_memory ${id}`))).toMatchObject({ ok: true, status: "memory_forgotten" });
     expect(store.getEpisodicFact(id)?.status).toBe("pruned");
     const card = replies()[0]!;
     expect(card.text).toBe(`🧠 Retired #${id}: "Paco's daily brief needs ASML earnings"`);
@@ -118,6 +121,7 @@ describe("/forget-memory", () => {
 describe("/help", () => {
   it("lists both commands", () => {
     expect(HELP_TEXT).toContain("/memories [query]");
-    expect(HELP_TEXT).toContain("/forget-memory <id>");
+    expect(HELP_TEXT).toContain("/forget_memory <id>");
+    expect(HELP_TEXT).not.toContain("/forget-memory");
   });
 });

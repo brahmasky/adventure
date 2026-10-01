@@ -854,7 +854,7 @@ export interface SelfWriteMergeRecord {
 /** Boot rows kept (one per daemon start). */
 export const DAEMON_BOOTS_KEPT = 50;
 
-/** Self-service memory correction (2026-10-02): which store a memory_correct / /forget-memory change touched. */
+/** Self-service memory correction (2026-10-02): which store a memory_correct / /forget_memory change touched. */
 export type MemoryKind = "fact" | "wiki";
 
 /** One reversible memory change (memory_changes row): the ids it flipped, never any text. */
@@ -865,7 +865,7 @@ export interface MemoryChange {
   old_ids: number[];
   /** The correction's new fact (correct only). */
   new_id: number | null;
-  /** The turn that made it; null for Paco's own /forget-memory. */
+  /** The turn that made it; null for Paco's own /forget_memory. */
   run_id: string | null;
   chat_id: string;
   created_at: string;

@@ -1451,7 +1451,7 @@ export const HELP_TEXT = [
   "/skills — 可用技能（/skills <scope> · retire/restore <name> · retired · pending）",
   "/forget <scope|id> — 清除某条经验",
   "/memories [query] — 查看记住的事实（最多 10 条）",
-  "/forget-memory <id> — 忘掉一条记忆（附撤销按钮）",
+  "/forget_memory <id> — 忘掉一条记忆（附撤销按钮）",
   "/approve <id> — 批准待处理操作",
   "/deny <id> — 拒绝待处理操作",
   "/approvals — 列出待批准的操作",
