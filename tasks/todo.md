@@ -1,4 +1,75 @@
-# 🧭 CURRENT SYSTEM STATE — 2026-08-02 (read this first)
+# 🧭 CURRENT SYSTEM STATE — 2026-10-01 (read this first)
+
+**SP1 omp runtime: BUILT + REVIEWED + SMOKE PASS on `feat/omp-runtime` — awaiting merge, kickstart and
+the full live gate. NOT live: the mini's daemon still runs `main`'s pre-omp engine (pi/agy CLI chains, the
+inner loop, voice + photos on agy).**
+- Worktree `.worktrees/omp-runtime`, branch from `main@cf148e0`. ADR 0028 + amendments to 0002, 0010, 0013,
+  0014, 0015, 0019, 0022, 0023, 0027; spec `docs/superpowers/specs/2026-09-30-omp-runtime-design.md` (Rev 15);
+  plan `docs/superpowers/plans/2026-09-30-omp-runtime.md`; SDD ledger `.superpowers/sdd/2026-09-30-omp-runtime/`
+  (gitignored; holds the live-gate commands, keep until ship).
+- What changed: every chat turn runs on a per-chat omp 18.4.4 RPC planner (profile `houge`; Opus 5.5 → Opus
+  4.6 via Antigravity → Kimi k3, subscription OAuth) under Seatbelt, with Houge's tools over a Unix-socket
+  bridge, a policy hook, `bash` through a sandboxed wrapper and `/approve` for external writes and destructive
+  deletes. Detached turns under a `PlannerSupervisor`. One-shot omp seats for reader, photo, ticks, judges,
+  chair and reviewer. Voice stays on agy-cli (omp cannot carry audio). Codex stays the self-write writer. The
+  inner loop, classifier, JSON action protocol, pi/kimi-api/gemini-api/openai-compat providers and the money
+  track are deleted.
+- Verified: per-task reviews on all 16 tasks (T0–T15); final five-reviewer wave (security, correctness,
+  testing, adversarial, Codex) → 4 Criticals + Importants, one fix wave (A floors/matcher, B runtime, B2 temp
+  root + process group, C tests/gate) + scoped re-reviews → CLEAN. At `90c87a7`: typecheck 0, build 0,
+  208 files / 2871 tests green (also with the mini's real `.env` vars). Real-omp smoke (`live-gate-omp.mjs
+  --smoke`: cases 1, 3, 6, 13, 22 + silent-degradation) PASS.
+
+**Ship checklist (Paco's hand where marked):**
+- [ ] Merge `feat/omp-runtime` → `main` (PR). Before any push: spec commit `3cad8b4` carries one of Paco's
+  Telegram messages verbatim; it is unpushed, so scrubbing it from history is still possible (Paco's call).
+- [ ] `tar` the current `dist/` to `backups/dist-pre-omp.tgz` (rollback = `git revert` the merge + build +
+  kickstart).
+- [ ] `.env` on the mini: `HOUGE_OMP_BIN` as an absolute path (launchd PATH); breaker `tool_calls` ceiling
+  re-tuned to 3× (3000, ADR 0028 decision 17); dead pre-omp vars may be deleted (list in configuration.md
+  "Removed 2026-10").
+- [ ] omp 18.4.4 installed and the four `omp --profile houge login` grants present (anthropic,
+  google-antigravity, kimi-code, openai-codex).
+- [ ] `npm run build` on `main`, then the pre-restart smoke: `HOUGE_ENV_FILE=… node scripts/live-gate-omp.mjs --smoke`.
+- [ ] **Paco:** check no turn is in flight, then `launchctl kickstart -k gui/$(id -u)/com.houge.daemon`.
+- [ ] Full live gate from Telegram: `node scripts/live-gate-omp.mjs` (cases 1–24; case 8 = the S12/D12 probes
+  by hand). Case 3 refused twice = INCONCLUSIVE (exit 4), rerun, never PASS.
+- [ ] Ship docs: `sessions.md` ship line, this block, ROADMAP §2′.
+
+**Watch after the kickstart (first week of real turns):** `model_refusal` and `error` frames mid-turn (the
+N6-partial residual: a non-fatal in-turn error frame would fail the turn); Anthropic blocking Max OAuth in
+third-party clients (planner falls to Opus 4.6, incident); the Antigravity weekly ceiling; `wall_collapsed`,
+`omp_version_mismatch`, `planner_crash_loop`, `sandbox_unavailable`, `disk_free_low` incidents; turn latency and
+how often floor B asks.
+
+**Flags for Paco (not docs-fixable by an agent):**
+- `AGENTS.md` (protected) still says `scripts/live-gate-media.mjs` snapshots `houge-media-*` tmp dirs; media
+  temp now lives under the daemon temp root `~/Library/Caches/houge-daemon`.
+- A hermetic-test leak before the T14 fix spawned the real `omp` under profile `houge` (at least `omp
+  --version`, possibly one lessons-merge call on test data): small subscription use, now pinned shut.
+- `deploy/launchd/setup-new-host.sh` still checks for `pi` and `docker` and names `HOUGE_KIMI_CLI_BIN`; it
+  needs omp and the four logins instead (script change, not made in the docs sync).
+
+**Live config:** the mini's `.env` is the arming truth — read it, don't assume. Seat chains and every omp
+variable: `docs/reference/configuration.md` § "LLM runtime — omp (ADR 0028)". Flags carried over unchanged:
+scheduler, episodic, wiki, backup, invariant sweep, Google identity (now armed by `HOUGE_GOOGLE_ENABLED`
+alone), lesson consolidation, radar + panel, media ingest, self-write + Codex. `HOUGE_JEV_SHADOW_ENABLED` is
+inert under omp; the money-track and dual-LLM flags are no longer read.
+
+**Next, after SP1 is live (each its own spec → review → plan → build → live gate):**
+- **SP2 Paco's personal tools** — his Gmail (`account: paco`, send gated), Calendar, reminders, files.
+- **SP3 hardening** — `omp auth-broker` under launchd, a dedicated macOS user for the planner (closes D11
+  and the dotfile-denylist gap), flat-rate quota invariant, optional egress allowlist.
+- **SP4 self-evolution v2** — weakness mining over the ledger, `scripts/eval-replay.mjs` in the self-write
+  gate, native omp skills, prompt-section A/B. After a week of SP1 data.
+- Follow-ups from ADR 0028: voice on omp or local whisper; a `tool_started` bridge row; known matcher misses.
+
+**Still open from before SP1:** skill-retirement live gate (Paco, below); `/idea pick` from a weekly
+shortlist; Earn P3 parked behind SP1 (money-track code deleted; returns as a bridge tool if resumed).
+
+---
+
+# 🗄 PREVIOUS STATE BLOCK — 2026-08-02 → 2026-09-30 (pre-omp; historical, kept as written)
 
 **Build in design: omp runtime (SP1). Spec written 2026-09-30, Rev 15, awaiting Paco's read → writing-plans.**
 `docs/superpowers/specs/2026-09-30-omp-runtime-design.md`. Review of the repo (2026-09-30) found the gap is tools,
