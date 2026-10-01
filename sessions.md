@@ -1388,11 +1388,12 @@ Build + independent adversarial verification subagents; each live round found a 
   canary became an existing directory; Opus refused the sandbox-probe prompt (2 of 3 smoke runs) → case 3 is
   an operator self-test, and two refusals make the gate INCONCLUSIVE (exit 4), never PASS.
 - Final wave: four parallel Opus reviewers (security, correctness, testing, adversarial) plus a Codex
-  whole-diff pass, every finding verified first-hand. Four Criticals in the composition, none visible to a
-  per-task review: binary install trees and code-running dotfiles were writable from the sandbox and later run
+  whole-diff pass, every finding verified first-hand. Three Criticals and one key Important in the
+  composition, none visible to a per-task review: binary install trees and code-running dotfiles were writable from the sandbox and later run
   unsandboxed (probed with canaries); omp path forms (`@~/`, `:~/`, edit rename and hashline targets) slipped
   past the gate to `~/.omp`; a `bash` command could swap the chat workspace for a symlink and make the daemon
-  upload a denied file (canary uploaded); lease recovery had no caller, so a crashed turn stayed `running`.
+  upload a denied file (canary uploaded); and (Important) lease recovery had no caller, so a crashed turn
+  stayed `running`.
   Codex added four runtime Importants (ignored error frames, aborted turns completing, schema errors skipping
   `tool_finished`, one-shots falling through on refusal); testing found 15 surviving mutants.
 - Fix wave in four sequential dispatches: A floors (write-default-deny Seatbelt, install trees, dotfiles,

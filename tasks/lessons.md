@@ -260,10 +260,10 @@ Rules Claude writes for itself after corrections. Review at session start.
   file, refused prompt), record its exact output as a fixture, and make the fake reproduce it.
 - **The parallel whole-branch wave is not optional, even after every per-task review passed.** Sixteen
   tasks each passed a spec and a quality review; the final wave (security, correctness, testing,
-  adversarial in parallel, plus Codex) then found four Criticals that lived only in the composition:
+  adversarial in parallel, plus Codex) then found three Criticals and one key Important that lived only in the composition:
   writable binary trees and dotfiles run later outside the sandbox, omp path forms that slipped past the
-  gate, a workspace symlink swap that turned the daemon into a confused deputy, and a lease-recovery
-  function nobody called. Codex alone found none of the four; the security, adversarial and correctness
+  gate, a workspace symlink swap that turned the daemon into a confused deputy (Criticals), and a
+  lease-recovery function nobody called (Important). Codex alone found none of them; the security, adversarial and correctness
   reviewers found them, mostly by probing. Rule: a build that adds a sandbox or a trust boundary closes on the full parallel wave
   with security and adversarial reviewers who probe, not only on a whole-diff read (extends the slice-2
   rule above).
