@@ -247,7 +247,7 @@ path sets as built (default-deny writes, credential denies, workspace pins) are 
 
 ### 5.5 Floor B: the approval matcher
 
-External effects have two doors: `bash` commands the **code-owned matcher** (`src/omp/external-write-matcher.ts`,
+External effects have two doors: `bash` commands the **code-owned matcher** (`src/omp/command-matcher.ts` — the authority for the full pattern list, which has grown past the examples below;
 protected) classifies as external writes — mapped to registry entry `shell_external` (side-effect
 `external_write`, in `approval_gates`) — and any future bridge tool registered `external_write` (none of the
 twelve ported tools). Both go through the runner's approval gate → `tool_approvals` row (§7.2) → approval card
