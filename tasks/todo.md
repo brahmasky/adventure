@@ -13,7 +13,7 @@ awaits merge, rebuild, kickstart and a live re-gate.**
   - backoff of 30 s, 2 min, 8 min, 30 min;
   - a 5-attempt cap, also enforced on crash recovery;
   - replies more than 6 h late are abandoned, never sent;
-  - the sweep ages a terminal row out 24 h after it went terminal.
+  - the sweep ages a terminal row out max(24 h, 2 × the sweep interval) after it went terminal.
 - The planner pins its model with `set_model` after a session resume, and the D10 family comes from the
   frames' actual model.
 - `/omp/` and `houge.sqlite-wal`/`-shm` are gitignored.
@@ -25,8 +25,8 @@ awaits merge, rebuild, kickstart and a live re-gate.**
   - **Paco:** kickstart;
   - live re-gate from Telegram: tap Approve/Deny, `/deny` with no id, a stale `/approve`, a photo then "save
     that as a lesson", a resumed chat answering on the configured planner (check `llm_attempt.model`), and
-    the two stuck outbox rows going `failed_terminal` (stale) with their `undelivered_notification`
-    incident resolving at the next sweep.
+    the two stuck outbox rows going `failed_terminal` with `stale_retry_abandoned` ledger lines; their
+    `undelivered_notification` incident resolves at the first sweep after the terminal window (≥ 24 h).
 - Worktree `.worktrees/omp-runtime`, branch from `main@cf148e0`. ADR 0028 + amendments to 0002, 0010, 0013,
   0014, 0015, 0019, 0022, 0023, 0027; spec `docs/superpowers/specs/2026-09-30-omp-runtime-design.md` (Rev 15);
   plan `docs/superpowers/plans/2026-09-30-omp-runtime.md`; SDD ledger `.superpowers/sdd/2026-09-30-omp-runtime/`
@@ -45,17 +45,17 @@ awaits merge, rebuild, kickstart and a live re-gate.**
   --smoke`: cases 1, 3, 6, 13, 22 + silent-degradation) PASS.
 
 **Ship checklist (Paco's hand where marked):**
-- [x] Merge `feat/omp-runtime` → `main` (PR). Before any push: spec commit `3cad8b4` carries one of Paco's
-  Telegram messages verbatim; it is unpushed, so scrubbing it from history is still possible (Paco's call).
-- [ ] `tar` the current `dist/` to `backups/dist-pre-omp.tgz` (rollback = `git revert` the merge + build +
+- [x] Merge `feat/omp-runtime` → `main` (local fast-forward, unpushed). The verbatim Telegram quote was scrubbed
+  from the unpushed history on 2026-10-01 (filter-branch; backups `backup/*-pre-quote-rewrite` until Paco deletes them).
+- [x] `tar` the current `dist/` to `backups/dist-pre-omp.tgz` (+ DB copy `backups/houge-pre-omp-2026-10-01.sqlite`) (rollback = `git revert` the merge + build +
   kickstart).
 - [x] `.env`: breaker `HOUGE_GLOBAL_MAX_TOOL_CALLS_24H=3000` (Paco, 2026-10-01; ADR 0028 decision 17).
-- [ ] `.env` on the mini: `HOUGE_OMP_BIN=/Users/xiaochuan/.bun/bin/omp` (launchd PATH is the node dir plus
+- [x] `.env` on the mini: `HOUGE_OMP_BIN=/Users/xiaochuan/.bun/bin/omp`; launchd plist PATH gained `~/.bun/bin` (omp's launcher is `env bun`) (launchd PATH is the node dir plus
   system dirs only, so a bare `omp` is not found); dead pre-omp vars may be deleted (list in configuration.md
   "Removed 2026-10").
-- [ ] omp 18.4.4 installed and the four `omp --profile houge login` grants present (anthropic,
+- [x] omp 18.4.4 installed and the four `omp --profile houge login` grants present (anthropic,
   google-antigravity, kimi-code, openai-codex).
-- [ ] `npm run build` on `main`, then the pre-restart smoke: `HOUGE_ENV_FILE=… node scripts/live-gate-omp.mjs --smoke`.
+- [x] `npm run build` on `main`, then the pre-restart smoke (5/5 PASS on the real omp): `HOUGE_ENV_FILE=… node scripts/live-gate-omp.mjs --smoke`.
 - [x] **Paco:** check no turn is in flight, then `launchctl kickstart -k gui/$(id -u)/com.houge.daemon`.
 - [x] Full live gate from Telegram (2026-10-01; findings → the gate fixes above): `node scripts/live-gate-omp.mjs` (cases 1–24; case 8 = the S12/D12 probes
   by hand). Case 3 refused twice = INCONCLUSIVE (exit 4), rerun, never PASS.

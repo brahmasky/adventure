@@ -291,7 +291,7 @@ Rules Claude writes for itself after corrections. Review at session start.
 
 - **A resumed omp session silently overrides `--model`.** The live gate's case 6 answered on Opus 5.5
   after a spawn-time fallback to Opus 4.6: `open_session` restored the model the chat's session last used,
-  and every spawn flag was ignored. The D10 family check read the configured model and recorded a collapse
+  and the spawn's `--model` was ignored (the other spawn flags still applied). The D10 family check read the configured model and recorded a collapse
   that had not happened. Rule: after any session resume, pin the intended model explicitly (`set_model`),
   and take "which model answered" from the frames, never from the spawn arguments.
 - **Code-owned scaffold text stored as a user turn poisons code-owned-phrase checks.** A photo's reader
