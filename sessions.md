@@ -1428,3 +1428,8 @@ Build + independent adversarial verification subagents; each live round found a 
   6 h late are abandoned rather than sent, and retries back off 30 s / 2 min / 8 min / 30 min.
   Open: the live re-gate of these fixes and the real-omp smoke.
 
+- 2026-10-02: first end-to-end self-evolution on omp. A blanket "no shell commands" line in the writer task
+  had made Codex refuse to read the code (empty diffs); reworded in `b50e435`. Houge then diagnosed the
+  `lesson_write` false "code-owned" (substring `grep -rqF`: "regate" inside "aggregate") in the code,
+  Paco said 点头, Codex wrote `grep -rqFw` for Latin phrases plus a test, the omp reviewer passed it, Paco
+  tapped Merge, and the daemon rebuilt, passed its test gate and restarted itself (`4431d13`).
