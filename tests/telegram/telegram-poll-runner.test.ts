@@ -228,3 +228,32 @@ describe("ompOptionsWithOperator (final review B2)", () => {
     expect(ompOptionsWithOperator(undefined, { users: [], chats: [] })).toEqual({});
   });
 });
+
+describe("telegram --once and send-outbox deliver attachments (final review B12, correctness M6)", () => {
+  it("a queued reply's workspace attachment is sent as a document, not refused outside_workspace", async () => {
+    const { chatWorkspace } = await import("../../src/omp/workspace.js");
+    const { createQueuedTurnRun } = await import("../helpers/runs.js");
+    const { mkdirSync } = await import("node:fs");
+    const root = mkdtempSync(join(tmpdir(), "houge-poll-att-"));
+    const store = RunStore.openInMemory();
+    const docs: string[] = []; const sent: string[] = [];
+    try {
+      const run = createQueuedTurnRun(store);
+      const ws = chatWorkspace(root, "555"); mkdirSync(ws, { recursive: true });
+      writeFileSync(join(ws, "chart.csv"), "a,b\n");
+      store.enqueueFinalReportNotification(run, { text: "here", report_path: "r", attachments: [join(ws, "chart.csv")] });
+      await runTelegramPollOnce({
+        store, projectRoot: root, omp: { dataDir: root, distDir: tmpOmpDist(root) },
+        allowlist: { users: [{ telegram_user_id: 111, identity_id: "paco" }], chats: [{ telegram_chat_id: 222, label: "p", allowed_identity_ids: ["paco"] }] },
+        telegramClient: {
+          getUpdates: async () => [],
+          sendMessage: async ({ text }) => { sent.push(text); return { message_id: sent.length }; },
+          sendDocument: async (input) => { docs.push(input.filename); }
+        }
+      });
+      expect(docs).toEqual(["chart.csv"]);
+    } finally {
+      store.close();
+    }
+  });
+});

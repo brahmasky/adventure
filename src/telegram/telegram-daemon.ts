@@ -12,7 +12,6 @@ import { tickCorrelationId, tickSeat } from "../llm/registry.js";
 import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
 import { CoreWorker, type OmpWorkerOptions } from "../core/core-worker.js";
-import { chatWorkspace } from "../omp/workspace.js";
 import { resolveOmpConfig } from "../omp/omp-config.js";
 import { errorCode } from "../domain/error-code.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
@@ -23,7 +22,6 @@ import { resolveMediaIngestEnabled } from "../media/media-config.js";
 import { LocalNotificationAdapter } from "../notifications/local-notification-adapter.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import { NotificationOutbox } from "../notifications/notification-outbox.js";
-import { TelegramNotificationAdapter } from "../notifications/telegram-notification-adapter.js";
 import { resolveBackupEnabled, runDbBackupTick } from "../run/db-backup.js";
 import type { LlmCallRole, RunStore } from "../run/run-store.js";
 import { maybeFireScheduledTasks } from "../run/schedule-tick.js";
@@ -38,7 +36,7 @@ import {
   isSelfWriteActionEvent
 } from "../triggers/telegram-trigger-adapter.js";
 import { handleSelfWriteAction } from "./self-write-action-handler.js";
-import { isHandledIntakeDenial, ompOptionsWithOperator, type TelegramPollClient } from "./telegram-poll-runner.js";
+import { isHandledIntakeDenial, ompOptionsWithOperator, workspaceTelegramAdapter, type TelegramPollClient } from "./telegram-poll-runner.js";
 
 export const DEFAULT_LONGPOLL_TIMEOUT_SECONDS = 30;
 export const DEFAULT_BACKOFF_BASE_MS = 1_000;
@@ -201,9 +199,7 @@ export async function runTelegramDaemon(
   });
   const dispatcher = new NotificationDispatcher(new NotificationOutbox(options.store), {
     local: new LocalNotificationAdapter(),
-    telegram: new TelegramNotificationAdapter(options.telegramClient, {
-      workspaceFor: (chat_id) => chatWorkspace(options.omp?.dataDir ?? options.projectRoot, chat_id)
-    })
+    telegram: workspaceTelegramAdapter(options.telegramClient, options.omp?.dataDir ?? options.projectRoot)
   });
   // Turns run detached: their approval cards and replies land in the outbox between polls, so a
   // serialized flush runs on a short pump as well as after each poll cycle (a reply never waits

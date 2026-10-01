@@ -1,5 +1,6 @@
 import { CoreWorker, type OmpWorkerOptions } from "../core/core-worker.js";
 import { resolveOmpConfig } from "../omp/omp-config.js";
+import { chatWorkspace } from "../omp/workspace.js";
 import type { PlannerSupervisor } from "../omp/planner-supervisor.js";
 import { evolutionLaneSettled } from "../core/evolution-lane.js";
 import type { TelegramAllowlist } from "../domain/types.js";
@@ -75,6 +76,11 @@ export interface RunTelegramPollOnceResult {
  *   3. Expire stale approvals/prompts.
  *   4. Dispatch the notification outbox until idle.
  */
+/** The Telegram sender every outbox path uses: attachments resolve inside the chat's omp workspace under `dataDir` (M6). */
+export function workspaceTelegramAdapter(client: ConstructorParameters<typeof TelegramNotificationAdapter>[0], dataDir: string): TelegramNotificationAdapter {
+  return new TelegramNotificationAdapter(client, { workspaceFor: (chat_id) => chatWorkspace(dataDir, chat_id) });
+}
+
 /** The worker's omp options plus the operator — the allowlist's Telegram user — who answers schedule-born approvals (B2). */
 export function ompOptionsWithOperator(omp: OmpWorkerOptions | undefined, allowlist: TelegramAllowlist): OmpWorkerOptions {
   const user = allowlist.users[0];
@@ -185,7 +191,7 @@ export async function runTelegramPollOnce(
 
   const dispatcher = new NotificationDispatcher(new NotificationOutbox(options.store), {
     local: new LocalNotificationAdapter(),
-    telegram: new TelegramNotificationAdapter(options.telegramClient)
+    telegram: workspaceTelegramAdapter(options.telegramClient, options.omp?.dataDir ?? options.projectRoot)
   });
 
   const dispatch_results: DispatchResult[] = [];
