@@ -139,19 +139,19 @@ guardrails: [ADR 0006](../decisions/0006-web-read-capability.md).
 | `HOUGE_TAVILY_BASE_URL` | `https://api.tavily.com` | Tavily API base. |
 | `HOUGE_FIRECRAWL_BASE_URL` | `https://api.firecrawl.dev` | Firecrawl API base. |
 
-A **research** intent runs the `web-research` program: search the live web (`web_search`,
-`external_read`) → 猴哥 synthesizes an answer treating results as **untrusted data** and
-**citing source URLs** → a **STORM-style self-critique pass** re-reads the draft (figures
-internally consistent? weakest claims? any single source over-weighted?) and returns a
-corrected final answer ([ADR 0006](../decisions/0006-web-read-capability.md) amendment).
-Both the synthesis and critique prompts come from the composer (below), so the `research`
-scope's lessons steer both. Telegram link previews are disabled to cut the outbound
+In a chat turn the omp planner calls `web_search` itself, as often as the turn's budget allows,
+and reads each result as a reader digest (the wall, below). The `web-research` program (`/run`)
+keeps the fixed pipeline: search the live web (`web_search`, `external_read`) → 猴哥 synthesizes
+an answer treating results as **untrusted data** and **citing source URLs** → a **STORM-style
+self-critique pass** re-reads the draft and returns a corrected final answer
+([ADR 0006](../decisions/0006-web-read-capability.md) amendment). Its synthesis and critique
+prompts come from the composer (below), so the `research` scope's lessons steer both. Telegram link previews are disabled to cut the outbound
 exfil leg; the URLs read are recorded in the ledger (`web_search_performed`).
 
 ## Direct URL read (`http_fetch`, loop tool — Phase 3.6 step ③)
 
-`http_fetch` fetches ONE public http(s) URL as a plain inner-loop tool (like
-`web_search`, but armed): GET/HEAD only, redirects never followed — a 3xx reports its
+`http_fetch` fetches ONE public http(s) URL as a bridge tool (like `web_search`, but
+armed): GET/HEAD only, redirects never followed — a 3xx reports its
 target so the next fetch revalidates from scratch. The SSRF floor is **code-owned and
 not configurable**: private/reserved/special-range IPs are always refused
 (resolve-and-pin, one DNS resolution per fetch), credentials-in-URL refused, and the
@@ -329,7 +329,7 @@ table) — an escape hatch to override the composed **answer**-path prompt whole
 
 ## Self-evolution (Phase 1) — code self-diagnose
 
-Houge can read his **own source** to diagnose a bug. A `selfcode`-classified message runs a
+Houge can read his **own source** to diagnose a bug. The planner's `self_diagnose` tool runs a
 **read-only Codex consult in a fresh git worktree** of committed `HEAD`, then relays the root
 cause in his voice. The worktree holds only *tracked* files, so gitignored secrets are absent
 by construction and the daemon's tree is untouched; the consult is `external_read` (no
@@ -341,7 +341,7 @@ spec: [Phase 1 spec](../superpowers/specs/2026-06-20-phase1-code-self-diagnose.m
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `HOUGE_CODEX_ENABLED` | `off` | Master switch for the read-only Codex consult. When not truthy (`1`/`true`/`yes`/`on`), the `selfcode` branch **degrades gracefully** to a normal answer that notes the capability is off — so the feature ships dark and is opt-in. |
+| `HOUGE_CODEX_ENABLED` | `off` | Master switch for the read-only Codex consult. When not truthy (`1`/`true`/`yes`/`on`), `self_diagnose` is unarmed: a call is refused `not_armed` and the planner answers without it — so the feature ships dark and is opt-in. |
 | `HOUGE_CODEX_MODEL` | unset → codex's own configured model | Model override passed to `codex exec -m <model>`. Unset → Codex uses its own default. |
 | `HOUGE_CODEX_TIMEOUT_MS` | `240000` | Wall-clock timeout (ms) for one Codex consult — Codex is slow (minutes). The CapabilityRunner's enforced cap is **derived** as this value + 15000 buffer, so a legitimately-long consult is not killed early. |
 | `HOUGE_CODEX_BIN` | `codex` | The Codex CLI binary name/path. A missing binary maps to a clean error (the consult fails, the run reports it) rather than crashing. |
@@ -420,8 +420,9 @@ back to an advisory write with a noted error (only a real **low score** blocks, 
 
 ## Self-evolution (Phase 3) — code self-write
 
-Houge can write a **diff to his own source** to fix a bug. A `selfcode` message with **write
-intent** (*"fix it so you stop asking which 猴哥"*) routes to `runSelfWrite`: Houge frames the task,
+Houge can write a **diff to his own source** to fix a bug. When the planner decides the fix belongs in
+code (*"fix it so you stop asking which 猴哥"*) it calls `self_write_propose`, which runs `runSelfWrite`
+in the background and ends the turn: Houge frames the task,
 has **Codex write a diff in a fresh git worktree** under `<data>/selfwrite` (`codex exec --sandbox workspace-write`), then runs
 it **autonomously** through three checkers — (1) a deterministic **protected-path check** (HARD DENY on
 any gate/identity/dep/existing-test path; **not** overridable by `/approve`), (2) the **test gate**
@@ -437,7 +438,7 @@ spec: [Phase 3 spec](../superpowers/specs/2026-06-25-phase3-code-self-write.md).
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `HOUGE_SELFWRITE_ENABLED` | `false` | Master switch for the **entire** code-self-write surface. Off until Paco flips it. When not truthy, a write-intent `selfcode` message **falls back to read-only diagnose** (Phase 1) — the safe direction (read before write) — so the feature ships dark and is opt-in. |
+| `HOUGE_SELFWRITE_ENABLED` | `false` | Master switch for the **entire** code-self-write surface. Off until Paco flips it. When not truthy, `self_write_propose` is unarmed (a call is refused `not_armed`; `self_diagnose` stays available if Codex is on) — so the feature ships dark and is opt-in. |
 | `HOUGE_SELFWRITE_REVIEWER` | `omp` | Which agent runs **checker 3** (the independent reviewer). `omp` (**default**) is a one-shot on the `HOUGE_OMP_REVIEWER` chain, which is model-diverse from the Codex writer. `codex` is an independent Codex session with a fresh session and the adversarial prompt. Any other value, including a stale `kimi` or `claude`, falls back to `omp`. writer≠checker holds either way; a gpt-family reviewer string logs a warning. |
 | `HOUGE_TESTGATE_TIMEOUT_MS` | `300000` | Wall-clock timeout (ms) for the whole **test gate** (typecheck + test + build) run in the worktree. A gate that exceeds it is treated as red (no publish), not a crash. |
 
@@ -498,8 +499,8 @@ absent, not null. Payload fields:
 | `outcome` | yes | `ok` \| `error` \| `unavailable`. *Unavailable* = the provider was not constructively callable (binary absent, not authenticated, model retired, key unset); timeout, non-zero exit, over-cap and parse failures are `error`. Both fall through the chain identically. |
 | `model` | on `ok` | The model that answered (`unknown` + a warning if a provider ever omits it). |
 | `latency_ms` | optional | Wall-clock for this leg. |
-| `attempt_group` · `leg_index` | optional | One 12-hex id per chain invocation and the leg's 0-based position, so "agy failed, then pi served" is reconstructable, not inferred from timestamps. |
-| `input_tokens` · `output_tokens` · `cached_input_tokens` | on `ok` | `output_tokens` is the total billable output for every engine: Codex reports `reasoning_output_tokens` disjointly and it is added; agy nests thinking inside `output_tokens` (measured `total == input + output`) and it is never re-added; the OpenAI-compat legs derive `max(completion, total − prompt)`. |
+| `attempt_group` · `leg_index` | optional | One 12-hex id per chain invocation and the leg's 0-based position, so "Opus 5.5 failed, then Opus 4.6 served" is reconstructable, not inferred from timestamps. |
+| `input_tokens` · `output_tokens` · `cached_input_tokens` | on `ok` | `output_tokens` is the total billable output for every engine: Codex reports `reasoning_output_tokens` disjointly and it is added; agy nests thinking inside `output_tokens` (measured `total == input + output`) and it is never re-added; omp rows take omp's own usage figures. (The deleted OpenAI-compat legs derived `max(completion, total − prompt)` on older rows.) |
 | `thinking_tokens` | optional | Informational — already inside `output_tokens`, never priced, never summed. Reported by agy and Codex. |
 | `cost_usd` | metered only | Priced **in the sink** (`computeCostUsd`, the one seam every path shares) for metered providers only. No metered leg exists since the omp cutover, so OAuth rows carry none; the live gate fails on any `cost_usd > 0` from an OAuth provider. |
 | `error_kind` | on failure | Bounded: `auth` \| `model_missing` \| `timeout` \| `spawn` \| `transport` \| `parse` \| `quota` \| `model_refusal` \| `aborted` \| `other`. It is classified per leg from our own provider strings or omp's error frames, never from the joined aggregate or vendor prose. |
@@ -513,11 +514,11 @@ reach the sink; `tests/run/llm-audit-sink.test.ts` pins the payload's key set an
 field can appear. Recording is best-effort: a sink failure logs a warning and never fails an answer.
 A provider that *throws* is recorded as an error and falls through like any other failure.
 
-The spawn seats outside the chain record at their spawn site: the codex judge (now `--json`, so its
-row carries usage; the answer still comes from the outfile), the claude chair (json envelope usage),
-the no-broker chair fallback (an `unavailable`/`auth` row, so "chair off" is never invisible), and
-the self-write writer and each **reviewer leg** — the reviewer's internal retry/fallback chain
+Since the omp cutover the panel judges and chair are omp one-shots and record through
+`spawnOneShot` like every other seat. The seats outside omp record at their spawn site: the
+self-write writer (codex) and each **reviewer leg** — the reviewer's internal retry/fallback chain
 records every leg it tries, so a dead configured reviewer cannot hide behind a fallback that passed.
+(Before the cutover the codex judge and the claude-CLI chair recorded here too.)
 
 `houge usage` / `/usage` (`usageByModel`) and the metered ceiling (`meteredSpendUsd`) read
 `llm_attempt` rows with `outcome = 'ok'` unioned with the pre-cutover `llm_call` history (whose
@@ -562,16 +563,20 @@ The buttons (handled by `src/telegram/self-write-action-handler.ts` over the mer
 
 ## Telegram command reference
 
-Natural language first: just type, and Houge classifies intent (**answer** / **research** /
-**feedback** / **clarify**) — there are no `/ask`, `/research`, or `/teach` commands. Slash
-commands survive only for the control/safety plane (idempotent, no run, no budget unless
-noted), and `/approve` · `/deny` are **unforgeable** — never inferred from prose.
+Natural language first: just type, and the chat's omp planner decides what to do — there are
+no `/ask`, `/research`, or `/teach` commands. Slash commands survive only for the
+control/safety plane (idempotent, no run, no budget unless noted), and `/approve` · `/deny`
+are **unforgeable** — never inferred from prose. They are handled by the poll loop even while
+a turn runs (detached turns).
 
 | Command | Plane | Purpose |
 |---------|-------|---------|
 | `/status` | control | Per-cap breaker headroom, run counts by state, last error. |
 | `/run <program> [args]` | control | Escape hatch to launch a named program directly (consumes budget). |
-| `/approve <id>` · `/deny <id>` | safety | Resolve a pending approval gate. Unforgeable — slash-only, never inferred. |
+| `/approve <id>` · `/deny <id>` | safety | Resolve a pending approval: a run-level gate or an in-turn tool approval (floor B, ADR 0028). Unforgeable — slash-only, never inferred. |
+| `/approvals` | safety | List the answerable pending approvals (run-level and in-turn tool approvals alike), each with the command to answer it. |
+| `/usage` | control | Token use per provider and model from the ledger; omp rows show "sub", never dollars. |
+| `/help` | control | The command list; an unknown `/command` returns it instead of starting a turn. |
 | `/lessons [scope]` | control | View the active lesson rows: each with its id, reuse/applied counters, `AVOID` line, and `supersedes #n` lineage. No scope → lists all scopes. |
 | `/forget <scope\|id>` | control | Prune that scope's lessons, or one lesson by numeric id (a reversible status flip — rows are never deleted) and ack. |
 | `/skills [scope]` | control | Read-only **viewer** of the ambient skills (name · scope · `when:` · version); regenerates `skills/REGISTRY.md`. Never invokes a skill. No scope → lists all scopes. |
@@ -580,7 +585,7 @@ noted), and `/approve` · `/deny` are **unforgeable** — never inferred from pr
 | `/idea [pick <n>]` | control | Latest weekly panel shortlist snapshot (ADR 0027): rank · title · mean score · chair rationale, with the picked marker. `/idea pick <n>` resolves rank n IN the frozen snapshot and maintains the global pick singleton (at most one `picked` card, ever — re-pick reverts the prior). |
 | `/schedule` | control | List this chat's scheduled tasks (id · spec · next fire · goal; `⚠ failed` rows shown so they can be cleared). |
 | `/schedule cancel <id>` | control | Cancel a schedule (reversible state flip, never deleted; failed rows cancellable too). Chat-scoped — other chats' ids read as not-found. |
-| `/kill [reason]` | safety | **Durable kill switch** (ADR 0018): writes the `houge.kill` tombstone, acks with the revival steps, stops the daemon. launchd relaunches into a PARKED process (no polling, no runs) until the file is manually deleted. Unforgeable — slash-only + allowlist + no-forwards; exempt from the command rate limit. |
+| `/kill [reason]` | safety | **Durable kill switch** (ADR 0018): aborts every chat's omp planner, writes the `houge.kill` tombstone, acks with the revival steps, stops the daemon. launchd relaunches into a PARKED process (no polling, no runs) until the file is manually deleted. Unforgeable — slash-only + allowlist + no-forwards; exempt from the command rate limit. |
 | `/disarm` | safety | One-command posture: forces `HOUGE_SELFWRITE_ENABLED` / `HOUGE_CODEX_ENABLED` / `HOUGE_SKILLS_ENABLED` / `HOUGE_SCHEDULER_ENABLED` to `false` — live AND across restarts (`houge.disarm` posture file outranks `.env`). Conversation + episodic memory stay on. |
 | `/rearm` | safety | Delete the disarm posture; flags re-apply from `.env` on the **next restart** (the ack says how). |
 
@@ -757,13 +762,12 @@ per-cap headroom (used/limit/remaining), run counts by state, and the last error
 > variables stay for a future metered leg ([ADR 0019 amendment](../decisions/0019-metered-ceiling.md)).
 
 The count caps above bound volume; this bounds **dollars** on the pay-per-token legs
-(`kimi-api`/`gemini-api`, and TypeSafe `jev` since 2026-09-26 — priced input-only, see "Jev
-intent shadow" below). Every metered `llm_attempt` is priced in the audit sink — the one
+(today only TypeSafe `jev`, used by the Jev replay below and priced input-only; the
+`kimi-api`/`gemini-api` legs the ceiling was built for were deleted with the omp cutover). Every metered `llm_attempt` is priced in the audit sink — the one
 seam every path shares since slice 2 (`RunStore.llmAuditSink` → `src/llm/metered-pricing.ts`) —
 into the ledger's `cost_usd`; spend is derived by summing the ledger (unioned with the
 pre-cutover `llm_call` history). Every adapter, including the three CLI commands, honors a
-latched fuse. On breach the metered legs are **dropped from every chain** (flat-rate `pi`/
-`agy-cli` keep working; an all-metered chain falls back to `pi` — never zero legs) and ONE
+latched fuse. On breach the metered legs are **dropped** (subscription legs keep working) and ONE
 deduped Telegram alert fires per episode. `/status` shows
 `Metered: $d.dd/$D.DD 24h, $m.mm/$M.MM month`.
 
