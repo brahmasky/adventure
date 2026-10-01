@@ -41,7 +41,13 @@ export interface TelegramPollClient extends TelegramGetUpdatesClient, SelfWriteA
  */
 export const HANDLED_INTAKE_DENIAL_CODES: ReadonlySet<string> = new Set([
   "TELEGRAM_RATE_LIMITED",
+  // Every refusal /approve and /deny can earn from processApprovalTrigger. Each is a user-side
+  // mistake (a stale, mistyped or expired id), never a poll failure: an unhandled one used to
+  // throw, leave the update offset unacknowledged and wedge intake behind it (live gate 2026-10-01).
   "APPROVAL_NOT_FOUND",
+  "APPROVAL_NOT_PENDING",
+  "APPROVAL_REQUESTER_MISMATCH",
+  "APPROVAL_EXPIRED",
   "TRIGGER_IDEMPOTENCY_CONFLICT",
   "GLOBAL_BUDGET_FUSE"
 ]);
