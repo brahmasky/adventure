@@ -127,11 +127,12 @@ export function collectHougeStatus(d: {
 }): HougeStatusInput {
   const now = (d.now ?? new Date()).toISOString();
   const tops = chainTops(d.env);
-  const answered = d.supervisor?.answeredModel() ?? d.store.lastPlannerModel(d.chatId) ?? undefined;
+  const live = d.supervisor?.answeredModel();
+  const recorded = live ? null : d.store.lastPlannerModel(d.chatId);
   return {
     now, tz: resolveLocalTimeZone(d.env), pid: d.pid, boot: d.store.getLatestDaemonBoot(), lastMerge: d.store.getLastSelfWriteMerge(),
     omp: d.supervisor?.ompVersion() ?? null, plannerTop: tops.planner, readerTop: tops.reader,
-    answeredBy: answered ? `${answered.provider}/${answered.model}` : null,
+    answeredBy: live ? `${live.provider}/${live.model}` : recorded ? `${recorded.provider}/${recorded.model} (last recorded)` : null,
     incidentKinds: d.store.listOpenIncidents().map((i) => i.kind),
     budget: d.store.globalBudgetUsage(resolveGlobalBudgetCaps(d.env), now),
     posture: postureOf(d.env), lastPoll: d.store.getPollHeartbeat()?.last_success_at ?? null

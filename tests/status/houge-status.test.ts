@@ -65,7 +65,7 @@ describe("houge_status rendering", () => {
     expect(out).toContain("Last self-write merge: houge/selfwrite/run_79faefea 4431d13 at 2026-10-02 17:33");
     expect(out).toContain("omp 18.4.4");
     expect(out).toContain("planner top anthropic/claude-opus-5-5:medium");
-    expect(out).toContain("last answered by anthropic/claude-opus-5-5");
+    expect(out).toContain("last answered by anthropic/claude-opus-5-5;"); // live from the supervisor: no "(last recorded)"
     expect(out).toContain("reader top google-antigravity/gemini-3.8-flash:low");
     expect(out).toContain("incidents 2 open (heartbeat_gap, planner_crash_loop)");
     expect(out).toContain("breaker runs 1/200, tool_calls 0/1000, gated 0/100");
@@ -103,7 +103,7 @@ describe("houge_status rendering", () => {
     const run = createQueuedTurnRun(store, "x");
     store.recordChatTurn({ chat_id: "555", run_id: run, role: "user", text: "x" });
     store.llmAuditSink({ run_id: run, role: "compose" }).record({ provider: "kimi-code", role: "", outcome: "ok", model: "k3", request_key: `${run}:1` });
-    expect(status(store, { ompVersion: () => null, answeredModel: () => undefined })).toContain("last answered by kimi-code/k3");
+    expect(status(store, { ompVersion: () => null, answeredModel: () => undefined })).toContain("last answered by kimi-code/k3 (last recorded);");
     expect(status(store, null)).toContain("omp unknown");
     store.close();
   });
