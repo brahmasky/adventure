@@ -106,3 +106,40 @@ describe("the daemon retries a notification whose send failed once", () => {
     }
   });
 });
+
+describe("the daemon never sends a reply that went stale while it was down", () => {
+  it("a queued reply older than the resend window at boot is abandoned before the boot flush can send it", async () => {
+    const { RunStore } = await import("../../src/run/run-store.js");
+    const { runTelegramDaemon } = await import("../../src/telegram/telegram-daemon.js");
+    const { pinOmpEnv, tmpOmpDist, useFakeOmp } = await import("../helpers/omp-env.js");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    pinOmpEnv();
+    const store = RunStore.openInMemory();
+    const root = mkdtempSync(join(tmpdir(), "houge-stale-"));
+    const controller = new AbortController();
+    const sent: string[] = [];
+    try {
+      useFakeOmp({ "*": { rpcText: "x" } }, root);
+      const row = store.enqueueNotification({ target: { kind: "telegram", chat_id: "222" }, intent_type: "progress",
+        idempotency_key: "reply:stale", correlation_id: "c", payload: { text: "the stale reply" } });
+      if (row.status !== "queued") throw new Error("expected queued");
+      (store as unknown as { db: { prepare(sql: string): { run(...a: unknown[]): unknown } } }).db
+        .prepare("UPDATE notification_outbox SET created_at = ? WHERE notification_id = ?")
+        .run(new Date(Date.now() - 7 * 3_600_000).toISOString(), row.record.notification_id);
+      await runTelegramDaemon({ store, projectRoot: root, omp: { dataDir: root, distDir: tmpOmpDist(root) },
+        allowlist: { users: [{ telegram_user_id: 111, identity_id: "paco" }], chats: [{ telegram_chat_id: 222, label: "p", allowed_identity_ids: ["paco"] }] },
+        stopSignal: controller.signal, longPollTimeoutSeconds: 0,
+        telegramClient: {
+          getUpdates: async () => { controller.abort(); return []; },
+          sendMessage: async ({ text }) => { sent.push(text); return { message_id: sent.length }; }
+        } });
+      expect(sent).not.toContain("the stale reply");
+      expect(store.getNotification(row.record.notification_id)?.state).toBe("failed_terminal");
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

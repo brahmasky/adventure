@@ -5276,16 +5276,16 @@ export class RunStore {
   }
 
   /**
-   * A retry_wait row, or a `sending` row whose lease expired, created more than NOTIFICATION_RETRY_MAX_AGE_MS ago is
-   * moved to failed_terminal and never sent: a day-old reply arriving out of context is worse than none. Each one
+   * A queued or retry_wait row, or a `sending` row whose lease expired, created more than NOTIFICATION_RESEND_MAX_AGE_MS
+   * ago is moved to failed_terminal and never sent: a reply hours late, out of context, is worse than none. Each one
    * leaves a `notification_failed` ledger line (error_ref `stale_retry_abandoned`).
    */
   abandonStaleNotifications(now: string): string[] {
-    const cutoff = new Date(Date.parse(now) - NOTIFICATION_RETRY_MAX_AGE_MS).toISOString();
+    const cutoff = new Date(Date.parse(now) - NOTIFICATION_RESEND_MAX_AGE_MS).toISOString();
     const rows = this.db.prepare(`
       SELECT notification_id FROM notification_outbox
       WHERE created_at < ?
-        AND (state = 'retry_wait'
+        AND (state IN ('queued', 'retry_wait')
           OR (state = 'sending' AND lease_expires_at IS NOT NULL AND (lease_expires_at <= ? OR lease_expires_at <= updated_at)))
       ORDER BY created_at ASC
     `).all<{ notification_id: string }>(cutoff, now);
@@ -5300,7 +5300,7 @@ export class RunStore {
       const updated = this.db.prepare(`
         UPDATE notification_outbox
         SET state = 'failed_terminal', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
-        WHERE notification_id = ? AND state IN ('retry_wait', 'sending')
+        WHERE notification_id = ? AND state IN ('queued', 'retry_wait', 'sending')
       `).run(now, notification_id);
       if (updated.changes === 1) {
         this.appendNotificationLedgerEvent(record, "notification_failed", {
@@ -7583,8 +7583,11 @@ export function resolveLessonRepeatDays(env: NodeJS.ProcessEnv): number {
 /** How long a failed_terminal notification keeps counting as undelivered for the sweep, by when it went terminal. */
 export const TERMINAL_NOTIFICATION_REPORT_MS = 24 * 60 * 60_000;
 
-/** A notification retry older than this (by created_at) is abandoned, not sent (live gate 2026-10-01). */
-export const NOTIFICATION_RETRY_MAX_AGE_MS = 24 * 60 * 60_000;
+/**
+ * A chat reply more than this late (by created_at) is stale: the retry step abandons it instead of sending it (live gate
+ * 2026-10-01, controller ruling: 6 h). Code-owned, not an env var.
+ */
+export const NOTIFICATION_RESEND_MAX_AGE_MS = 6 * 60 * 60_000;
 
 const TELEGRAM_COMMAND_WINDOW_SECONDS = 60;
 const TELEGRAM_MAX_COMMANDS_PER_WINDOW = 5;

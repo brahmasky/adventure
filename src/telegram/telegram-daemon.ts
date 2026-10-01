@@ -218,7 +218,8 @@ export async function runTelegramDaemon(
   // the boot confirmation, then flush the outbox so it AND the pre-restart "merged, reloading…"
   // beacon arrive at boot instead of after the first long-poll times out.
   notifyReloadOnBoot(options);
-  await flushLogged(); // best-effort: the poll loop re-dispatches queued notifications anyway
+  // the retry step first: a reply that went stale while the daemon was down is abandoned before this flush can send it
+  await flushLogged({ retry: true }); // best-effort: the poll loop re-dispatches queued notifications anyway
 
   let cycles = 0;
   let failures = 0;

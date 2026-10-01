@@ -4,7 +4,7 @@ import { NotificationDispatcher } from "../../src/notifications/notification-dis
 import { NotificationOutbox } from "../../src/notifications/notification-outbox.js";
 import { NOTIFICATION_MAX_ATTEMPTS } from "../../src/notifications/notification-types.js";
 import { detectViolations } from "../../src/run/invariant-sweep.js";
-import { NOTIFICATION_RETRY_MAX_AGE_MS, RunStore } from "../../src/run/run-store.js";
+import { NOTIFICATION_RESEND_MAX_AGE_MS, RunStore } from "../../src/run/run-store.js";
 
 // Live gate 2026-10-01: requeueRetryWaitNotifications / recoverStaleSendingNotifications had no caller outside tests,
 // so one transient Telegram error lost the reply for good (two rows stuck since 2026-09-18 and 2026-10-01). The
@@ -37,17 +37,41 @@ describe("RunStore.retryUndeliveredNotifications", () => {
     expect(outbox.claimNext("s", 30)?.notification_id).toBe(row.notification_id);
   });
 
-  it("a retry_wait row older than 24 h is failed_terminal with a ledger line, never sent", () => {
+  it("a retry_wait row older than the resend window is failed_terminal with a ledger line, never sent", () => {
     const { store, outbox, enqueue, backdate, failOnce } = setup();
     const row = enqueue("reply:old");
     failOnce(row.notification_id);
-    backdate(row.notification_id, NOTIFICATION_RETRY_MAX_AGE_MS + HOUR);
+    backdate(row.notification_id, NOTIFICATION_RESEND_MAX_AGE_MS + HOUR);
     const r = store.retryUndeliveredNotifications(new Date().toISOString());
     expect(r).toEqual({ abandoned: [row.notification_id], recovered: [], requeued: [] });
     expect(outbox.get(row.notification_id)?.state).toBe("failed_terminal");
     expect(outbox.claimNext("s", 30)).toBeNull();
     expect(store.getLedgerEvents().filter((e) => e.event_type === "notification_failed").at(-1)?.payload)
       .toMatchObject({ notification_id: row.notification_id, error_ref: "stale_retry_abandoned", retryable: false });
+  });
+
+  it("the resend window is 6 h: a reply 5 h 59 late is still sent, one 6 h 01 late is abandoned (controller ruling)", () => {
+    expect(NOTIFICATION_RESEND_MAX_AGE_MS).toBe(6 * HOUR);
+    const { store, outbox, enqueue, backdate, failOnce } = setup();
+    const young = enqueue("reply:5h59");
+    const old = enqueue("reply:6h01");
+    failOnce(young.notification_id);
+    failOnce(old.notification_id);
+    backdate(young.notification_id, 6 * HOUR - 60_000);
+    backdate(old.notification_id, 6 * HOUR + 60_000);
+    const r = store.retryUndeliveredNotifications(new Date().toISOString());
+    expect(r.abandoned).toEqual([old.notification_id]);
+    expect(r.requeued).toEqual([young.notification_id]);
+    expect(outbox.get(old.notification_id)?.state).toBe("failed_terminal");
+  });
+
+  it("a QUEUED row past the resend window is abandoned too: a reply that never left is as stale as one that failed", () => {
+    const { store, outbox, enqueue, backdate } = setup();
+    const row = enqueue("reply:queued-old");
+    backdate(row.notification_id, 6 * HOUR + 60_000);
+    expect(store.retryUndeliveredNotifications(new Date().toISOString()).abandoned).toEqual([row.notification_id]);
+    expect(outbox.get(row.notification_id)?.state).toBe("failed_terminal");
+    expect(outbox.claimNext("s", 30)).toBeNull();
   });
 
   it("a `sending` row whose lease expired (a crash mid-send) is recovered to the queue", () => {
@@ -77,11 +101,11 @@ describe("RunStore.retryUndeliveredNotifications", () => {
       .toMatchObject({ notification_id: row.notification_id, error_ref: "attempt_cap_after_crash", retryable: false });
   });
 
-  it("a stuck `sending` row older than 24 h is abandoned, not recovered", () => {
+  it("a stuck `sending` row older than the resend window is abandoned, not recovered", () => {
     const { store, outbox, enqueue, backdate } = setup();
     const row = enqueue("reply:stuck-old");
     outbox.claimNext("s", 1);
-    backdate(row.notification_id, NOTIFICATION_RETRY_MAX_AGE_MS + HOUR);
+    backdate(row.notification_id, NOTIFICATION_RESEND_MAX_AGE_MS + HOUR);
     const r = store.retryUndeliveredNotifications(new Date(Date.now() + 60_000).toISOString());
     expect(r.abandoned).toEqual([row.notification_id]);
     expect(outbox.get(row.notification_id)?.state).toBe("failed_terminal");
