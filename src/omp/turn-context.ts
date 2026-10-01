@@ -3,7 +3,9 @@ import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chatContextSince, countTrailingClarifyTurns, resolveChatContextTurns, resolveMaxConsecutiveClarify } from "../capabilities/intent.js";
 import { composeSystemPrompt } from "../prompt/composer.js";
-import { resolveLessonCapPerScope, type RunStore } from "../run/run-store.js";
+import { resolveLocalTimeZone } from "../prompt/tz-convert.js";
+import { resolveLessonCapPerScope, type DaemonBoot, type RunStore } from "../run/run-store.js";
+import { clipText, localStamp } from "../status/houge-status.js";
 
 export interface TurnContextDeps {
   store: RunStore;
@@ -18,6 +20,8 @@ export interface TurnContextDeps {
   ) => Promise<{ facts: Array<{ id: number; block: string }>; pages: Array<{ id: number; block: string }> }>;
   env: NodeJS.ProcessEnv;
   now?: () => Date;
+  /** This process's pid: the restart note is written only when the newest boot record is this daemon's (default process.pid). */
+  pid?: number;
 }
 
 export interface TurnPromptInput {
@@ -37,6 +41,33 @@ export const SCHEDULED_PREFIX = (goal: string): string => `[scheduled: ${goal}]\
  */
 export const CLARIFY_CAP_NOTICE =
   "[You have already asked a clarifying question. Do not ask another one: act on your best reading of the request and say what you assumed.]\n";
+
+/** Opens the restart note: code-owned, planner prompt only, never stored as Paco's chat turn. */
+export const RESTART_NOTE_PREFIX = "[runtime] ";
+
+const BOOT_REASON_TEXT: Record<string, string> = {
+  kickstart: "kickstart", revive_after_kill: "revived after /kill", crash_recovery: "after a crash", restart: "restart", unknown: "reason unknown"
+};
+
+/** `[runtime] Houge restarted 07:34 (self-write reload 4431d13 "<subject>"); now running 4431d13.` (houge_status, 2026-10-02) */
+export function restartNoteLine(boot: DaemonBoot, tz: string, now: Date): string {
+  const at = localStamp(boot.started_at, tz);
+  const when = at.slice(0, 10) === localStamp(now.toISOString(), tz).slice(0, 10) ? at.slice(11) : at;
+  const why = boot.reason === "self_write_reload"
+    ? `self-write reload ${(boot.reload_sha ?? "unknown").slice(0, 7)} "${clipText(boot.reload_subject ?? "", 60)}"`
+    : (BOOT_REASON_TEXT[boot.reason] ?? "restart");
+  const stale = boot.head_committed_at && boot.dist_built_at && Date.parse(boot.head_committed_at) > Date.parse(boot.dist_built_at)
+    ? " (stale build: HEAD is newer than dist)" : "";
+  return `${RESTART_NOTE_PREFIX}Houge restarted ${when} (${why}); now running ${(boot.head_sha ?? "unknown").slice(0, 7)}${stale}.\n`;
+}
+
+/** The note for this chat's first prompt since this daemon booted; "" on every later prompt, or outside the daemon. */
+function restartNote(d: TurnContextDeps, chatId: string): string {
+  const boot = d.store.getLatestDaemonBoot();
+  if (!boot || boot.pid !== (d.pid ?? process.pid) || boot.stopped_at !== null) return "";
+  if (!d.store.claimRestartNote(boot.boot_id, chatId)) return "";
+  return restartNoteLine(boot, resolveLocalTimeZone(d.env), d.now?.() ?? new Date());
+}
 
 /** True when this chat's trailing clarify turns have reached the cap. */
 export function clarifyCapReached(d: TurnContextDeps, chatId: string): boolean {
@@ -110,7 +141,7 @@ export async function buildTurnPrompt(d: TurnContextDeps, i: TurnPromptInput): P
   const context = blocks.length > 0 ? `[context]\n${blocks.join("\n\n")}\n[/context]\n\n` : "";
   const prefix = i.source === "schedule" ? SCHEDULED_PREFIX(i.goal ?? i.message) : "";
   const cap = clarifyCapReached(d, i.chat_id) ? CLARIFY_CAP_NOTICE : "";
-  return `${prefix}${cap}${context}${i.message}`;
+  return `${restartNote(d, i.chat_id)}${prefix}${cap}${context}${i.message}`;
 }
 
 /** A tool-less reply ending in a short question is a clarify turn (feeds the consecutive-clarify cap). */

@@ -1117,3 +1117,22 @@ describe("PlannerSupervisor — what houge_status reads from it", () => {
     expect(sup.answeredModel()).toEqual({ provider: "kimi-code", model: "k3" });
   });
 });
+
+// houge_status item 2: the restart note is code-owned text for the planner only. Stored as Paco's turn it would trip
+// lesson_write's code-owned check on later turns (the 7099a02 photo-header class), so the chat turn never holds it.
+describe("PlannerSupervisor — the restart note reaches the prompt, never the stored user turn", () => {
+  it("the first prompt after a boot carries the note, the second does not, and no user turn contains it", async () => {
+    const session = fakeSession();
+    const { store, sup } = harness(session);
+    store.recordDaemonBoot({
+      boot_id: "boot_1", started_at: new Date().toISOString(), pid: process.pid, reason: "kickstart", reload_sha: null, reload_subject: null,
+      reload_branch: null, reload_merged_at: null, head_sha: "4431d13aaaa", head_subject: "s", head_committed_at: null, dist_built_at: null
+    });
+    sup.submit(req(createQueuedTurnRun(store), "first")); await sup.whenIdle();
+    sup.submit(req(createQueuedTurnRun(store), "second")); await sup.whenIdle();
+    expect(session.prompts[0]).toMatch(/^\[runtime\] Houge restarted .* \(kickstart\); now running 4431d13\.\nfirst$/);
+    expect(session.prompts[1]).toBe("second");
+    const userTurns = store.getRecentChatTurns("42", 10).filter((t) => t.role === "user").map((t) => t.text);
+    expect(userTurns).toEqual(["first", "second"]);
+  });
+});

@@ -9,6 +9,7 @@ import {
   assistantIntentFor,
   CLARIFY_CAP_NOTICE,
   buildTurnPrompt,
+  RESTART_NOTE_PREFIX,
   SCHEDULED_PREFIX,
   systemPromptFingerprint,
   writeSystemPromptFile,
@@ -192,5 +193,53 @@ describe("turn context — what the planner knows and how ratings attribute (spe
       seedClarify(store);
       expect(await prompt(store, { HOUGE_MAX_CONSECUTIVE_CLARIFY: "2" })).toBe("the pdf one");
     });
+  });
+});
+
+// houge_status item 2 (2026-10-02): the first prompt each chat's planner gets after a daemon boot carries one
+// code-owned line saying it restarted and which code is live, so it never asks Paco to check (live 2026-10-02).
+describe("the restart note on the first turn after a boot", () => {
+  const SHA = "4431d13aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const SUBJECT = "houge self-write: Retry; prior attempt never landed (main still greps -rqF)";
+  const seedBoot = (store: RunStore, over: Record<string, unknown> = {}) => store.recordDaemonBoot({
+    boot_id: "boot_1", started_at: "2026-09-30T04:34:00.000Z", pid: process.pid, reason: "self_write_reload",
+    reload_sha: SHA, reload_subject: SUBJECT, reload_branch: "houge/selfwrite/run_a", reload_merged_at: "2026-09-30T04:33:00.000Z",
+    head_sha: SHA, head_subject: SUBJECT, head_committed_at: "2026-09-30T04:33:00.000Z", dist_built_at: "2026-09-30T04:33:30.000Z", ...over
+  });
+  const sydney = (store: RunStore) => ({ ...deps(store), env: { HOUGE_TIMEZONE: "Australia/Sydney" } });
+  const prompt = (store: RunStore, chat: string, o: { source?: "telegram" | "schedule"; goal?: string } = {}) =>
+    buildTurnPrompt(sydney(store), { run_id: createQueuedTurnRun(store), chat_id: chat, message: "hello", source: o.source ?? "telegram", ...(o.goal ? { goal: o.goal } : {}) });
+
+  it("a self-write reload boot names the merged sha and subject, and the code now running", async () => {
+    const store = RunStore.openInMemory();
+    seedBoot(store);
+    const out = await prompt(store, "1");
+    expect(out).toBe(`[runtime] Houge restarted 14:34 (self-write reload 4431d13 "houge self-write: Retry; prior attempt never landed (main s…"); now running 4431d13.\nhello`);
+    expect(out.split("\n")[0]).toBe(RESTART_NOTE_PREFIX + out.split("\n")[0]!.slice(RESTART_NOTE_PREFIX.length));
+  });
+
+  it("only the first turn of a chat carries it; another chat's first turn also gets it once", async () => {
+    const store = RunStore.openInMemory();
+    seedBoot(store, { reason: "kickstart", reload_sha: null, reload_subject: null, reload_branch: null, reload_merged_at: null });
+    expect((await prompt(store, "1")).startsWith(`${RESTART_NOTE_PREFIX}Houge restarted 14:34 (kickstart); now running 4431d13.\n`)).toBe(true);
+    expect(await prompt(store, "1")).toBe("hello");
+    expect((await prompt(store, "2")).startsWith(RESTART_NOTE_PREFIX)).toBe(true);
+    expect(await prompt(store, "2")).toBe("hello");
+  });
+
+  it("a new boot notes again; a stale build says so; it sits before the schedule prefix", async () => {
+    const store = RunStore.openInMemory();
+    seedBoot(store);
+    await prompt(store, "1");
+    seedBoot(store, { boot_id: "boot_2", reason: "crash_recovery", head_committed_at: "2026-09-30T05:00:00.000Z" });
+    const out = await prompt(store, "1", { source: "schedule", goal: "AI日报" });
+    expect(out.startsWith(`${RESTART_NOTE_PREFIX}Houge restarted 14:34 (after a crash); now running 4431d13 (stale build: HEAD is newer than dist).\n${SCHEDULED_PREFIX("AI日报")}`)).toBe(true);
+  });
+
+  it("no note when the newest boot record is not this process (a one-shot CLI turn) or there is none", async () => {
+    const store = RunStore.openInMemory();
+    expect(await prompt(store, "1")).toBe("hello");
+    seedBoot(store, { pid: process.pid + 1 });
+    expect(await prompt(store, "1")).toBe("hello");
   });
 });

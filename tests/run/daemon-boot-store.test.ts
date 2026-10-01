@@ -72,3 +72,16 @@ describe("RunStore last planner model for a chat (houge_status fallback when the
     store.close();
   });
 });
+
+describe("RunStore restart-note claim (once per chat per boot)", () => {
+  it("the first claim for a (boot, chat) wins, later ones do not; a new boot claims again", () => {
+    const store = RunStore.openInMemory();
+    store.recordDaemonBoot(boot());
+    expect(store.claimRestartNote("boot_1", "555")).toBe(true);
+    expect(store.claimRestartNote("boot_1", "555")).toBe(false);
+    expect(store.claimRestartNote("boot_1", "777")).toBe(true);
+    store.recordDaemonBoot(boot({ boot_id: "boot_2", started_at: "2026-10-02T08:00:00.000Z" }));
+    expect(store.claimRestartNote("boot_2", "555")).toBe(true);
+    store.close();
+  });
+});

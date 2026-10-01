@@ -27,6 +27,10 @@ afterEach(() => {
 });
 
 describe("the `omp` composer surface (ADR 0002 V2: the planner acts through real tools)", () => {
+  it("names houge_status for questions about its own runtime, restarts and live code (live 2026-10-02: it asked Paco to kickstart)", () => {
+    expect(OMP_LOOP_DISCIPLINE).toMatch(/houge_status for your own runtime: restarts, which code is live/);
+  });
+
   it("a short go-ahead to Houge's own concrete proposal means carry it out, restated in full in any task/focus input (run_79faefea)", () => {
     // Live: Paco answered a proposal with `好，修复一下`; downstream seats saw only those five
     // characters. The rule is part of the planner discipline, not a self-write special case.

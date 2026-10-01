@@ -105,7 +105,8 @@ export function collectHougeStatus(d: {
   };
 }
 
-const clip = (s: string, n: number): string => {
+/** One line, at most `n` chars (an ellipsis marks a cut). */
+export const clipText = (s: string, n: number): string => {
   const flat = s.replace(/\s+/g, " ").trim();
   return flat.length <= n ? flat : `${flat.slice(0, n - 1)}…`;
 };
@@ -135,7 +136,7 @@ function daemonLine(i: HougeStatusInput): string {
 function codeLine(i: HougeStatusInput): string {
   const b = i.boot;
   if (!b) return "Code: unknown (no boot record)";
-  const subject = b.head_subject !== null ? ` "${clip(b.head_subject, SUBJECT_CHARS)}"` : "";
+  const subject = b.head_subject !== null ? ` "${clipText(b.head_subject, SUBJECT_CHARS)}"` : "";
   const stale = b.head_committed_at && b.dist_built_at && Date.parse(b.head_committed_at) > Date.parse(b.dist_built_at)
     ? "; STALE: HEAD is newer than dist (built code is old)" : "";
   return `Code: HEAD ${short(b.head_sha)}${subject}; dist built ${localStamp(b.dist_built_at, i.tz)}${stale}`;
@@ -145,12 +146,12 @@ function mergeLine(i: HougeStatusInput): string {
   const m = i.lastMerge;
   if (!m) return "Last self-write merge: none recorded";
   const pending = m.pending ? " (merged, not live until restart)" : "";
-  return `Last self-write merge: ${clip(m.branch, SUBJECT_CHARS)} ${short(m.sha)} at ${localStamp(m.merged_at, i.tz)}${pending}`;
+  return `Last self-write merge: ${clipText(m.branch, SUBJECT_CHARS)} ${short(m.sha)} at ${localStamp(m.merged_at, i.tz)}${pending}`;
 }
 
 function healthLine(i: HougeStatusInput): string {
   const kinds = [...new Set(i.incidentKinds)].sort();
-  const listed = kinds.slice(0, 4).map((k) => clip(k, 40)).join(", ") + (kinds.length > 4 ? `, +${kinds.length - 4} more` : "");
+  const listed = kinds.slice(0, 4).map((k) => clipText(k, 40)).join(", ") + (kinds.length > 4 ? `, +${kinds.length - 4} more` : "");
   const incidents = i.incidentKinds.length > 0 ? `incidents ${i.incidentKinds.length} open (${listed})` : "incidents none open";
   const label = (k: string) => (k === "gated_attempts" ? "gated" : k);
   const breaker = i.budget.map((b) => `${label(b.kind)} ${b.used}/${b.limit}`).join(", ");

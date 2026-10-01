@@ -2383,6 +2383,15 @@ export class RunStore {
     this.db.prepare(`
       DELETE FROM daemon_boots WHERE seq NOT IN (SELECT seq FROM daemon_boots ORDER BY seq DESC LIMIT ?)
     `).run(DAEMON_BOOTS_KEPT);
+    this.db.prepare(`DELETE FROM boot_chat_notes WHERE boot_id NOT IN (SELECT boot_id FROM daemon_boots)`).run();
+  }
+
+  /** The restart note goes to a chat once per boot: true only for the first claim of (boot, chat). */
+  claimRestartNote(boot_id: string, chat_id: string, now: string = new Date().toISOString()): boolean {
+    const r = this.db.prepare(`
+      INSERT OR IGNORE INTO boot_chat_notes (boot_id, chat_id, noted_at) VALUES (?, ?, ?)
+    `).run(boot_id, chat_id, now);
+    return r.changes === 1;
   }
 
   /** The newest boot (the live one, once the daemon recorded it), or null if none was ever recorded. */
@@ -6093,7 +6102,10 @@ export class RunStore {
     this.applyDaemonBootsMigration();
   }
 
-  /** houge_status (2026-10-02): one row per daemon boot; `seq` orders them (same-millisecond boots in tests). */
+  /**
+   * houge_status (2026-10-02): one row per daemon boot (`seq` orders them: same-millisecond boots in tests), and
+   * which chats already got this boot's restart note.
+   */
   private applyDaemonBootsMigration(): void {
     const version = "2026-10-02-daemon-boots";
     let activeTransaction = false;
@@ -6113,6 +6125,12 @@ export class RunStore {
           reload_sha TEXT, reload_subject TEXT, reload_branch TEXT, reload_merged_at TEXT,
           head_sha TEXT, head_subject TEXT, head_committed_at TEXT, dist_built_at TEXT,
           stopped_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS boot_chat_notes (
+          boot_id TEXT NOT NULL,
+          chat_id TEXT NOT NULL,
+          noted_at TEXT NOT NULL,
+          PRIMARY KEY (boot_id, chat_id)
         );
       `);
       if (!applied) {
