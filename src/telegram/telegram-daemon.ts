@@ -36,7 +36,7 @@ import {
   isSelfWriteActionEvent
 } from "../triggers/telegram-trigger-adapter.js";
 import { handleSelfWriteAction } from "./self-write-action-handler.js";
-import { isHandledIntakeDenial, ompOptionsWithOperator, workspaceTelegramAdapter, type TelegramPollClient } from "./telegram-poll-runner.js";
+import { answerApprovalTap, isHandledIntakeDenial, ompOptionsWithOperator, workspaceTelegramAdapter, type TelegramPollClient } from "./telegram-poll-runner.js";
 
 export const DEFAULT_LONGPOLL_TIMEOUT_SECONDS = 30;
 export const DEFAULT_BACKOFF_BASE_MS = 1_000;
@@ -235,6 +235,7 @@ export async function runTelegramDaemon(
           });
           return;
         }
+        await answerApprovalTap(event, options.telegramClient);
         const intake = gateway.intake(event);
         if (!intake.ok) {
           if (isHandledIntakeDenial(intake.error.code)) return;

@@ -4568,7 +4568,8 @@ export class RunStore {
         correlation_id: input.run_id,
         payload: {
           text: buildApprovalPromptText(approval_id, input, this.redact),
-          action_summary: input.action_summary
+          action_summary: input.action_summary,
+          buttons: approvalButtons(approval_id)
         }
       }));
 
@@ -4714,6 +4715,7 @@ export class RunStore {
         payload: {
           text: buildToolApprovalPromptText(approval_id, input, this.redact),
           action_summary: input.summary,
+          buttons: approvalButtons(approval_id),
           ...(input.card_detail !== undefined ? { card_detail: this.redact(input.card_detail) } : {})
         }
       }));
@@ -7527,6 +7529,14 @@ function truncateForChat(text: string, redact: (s: string) => string = (s) => s)
   const trimmed = redact(text).trim();
   if (trimmed.length <= CHAT_TEXT_MAX) return trimmed;
   return `${trimmed.slice(0, CHAT_TEXT_MAX)}\n\n… (truncated)`;
+}
+
+/** The card's Approve / Deny buttons; a tap is the typed /approve or /deny (src/triggers parseApprovalCallback). */
+function approvalButtons(approval_id: string): NotificationButton[] {
+  return [
+    { text: "✅ Approve", data: `approval:approve:${approval_id}` },
+    { text: "❌ Deny", data: `approval:deny:${approval_id}` }
+  ];
 }
 
 function buildApprovalPromptText(

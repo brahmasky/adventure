@@ -241,6 +241,24 @@ export function parseSelfWriteCallback(data: unknown): SelfWriteCallback | null 
   return { action: action as SelfWriteCallbackAction, runId };
 }
 
+/**
+ * Approval-card inline buttons (live gate 2026-10-01): `approval:<approve|deny>:<approval-id>`. A tap is the
+ * typed `/approve <id>` or `/deny <id>` command; anything not well-formed returns null and is ignored.
+ */
+export interface ApprovalCallback {
+  type: "approve" | "deny";
+  approval_id: string;
+}
+
+export function parseApprovalCallback(data: unknown): ApprovalCallback | null {
+  if (typeof data !== "string") return null;
+  const parts = data.split(":");
+  if (parts.length !== 3) return null;
+  const [prefix, type, approval_id] = parts;
+  if (prefix !== "approval" || (type !== "approve" && type !== "deny") || !approval_id) return null;
+  return { type, approval_id };
+}
+
 type SplitShellWordsResult = { ok: true; words: string[] } | { ok: false; error: { code: "TELEGRAM_COMMAND_INVALID"; message: string } };
 
 function splitShellWords(input: string): SplitShellWordsResult {

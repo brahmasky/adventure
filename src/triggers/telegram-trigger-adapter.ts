@@ -2,8 +2,8 @@ import type { Identity, TelegramAllowlist, TypedTaskEvent } from "../domain/type
 import { buildTypedTaskEvent } from "../domain/types.js";
 import { MEDIA_MIME, MEDIA_PLACEHOLDER, type TelegramMediaRef } from "../media/media-config.js";
 import { authorizeTelegramUpdate } from "./telegram-auth.js";
-import type { SelfWriteCallbackAction, TelegramCommand } from "./telegram-command-parser.js";
-import { parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
+import type { ApprovalCallback, SelfWriteCallbackAction, TelegramCommand } from "./telegram-command-parser.js";
+import { parseApprovalCallback, parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
 
 export interface TelegramUpdate {
   update_id: number;
@@ -240,6 +240,9 @@ function normalizeCallbackQuery(
   );
   if (!auth.ok) return auth;
 
+  const approval = parseApprovalCallback(callback.data);
+  if (approval) return { ok: true, event: buildApprovalTapEvent(update, callback, message.chat.id, auth.identity, approval) };
+
   const parsed = parseSelfWriteCallback(callback.data);
   if (!parsed) {
     return { ok: false, error: { code: "TELEGRAM_COMMAND_INVALID", message: "Unrecognized callback data" } };
@@ -259,6 +262,26 @@ function normalizeCallbackQuery(
       idempotency_key: `telegram:${update.update_id}:callback:${callback.id}`
     }
   };
+}
+
+/**
+ * An approval-card button tap IS the typed `/approve <id>` / `/deny <id>`: the same event type, id, requester
+ * identity (allowlist-checked above) and chat, so it goes through the same gateway intake. Keyed on the callback's
+ * update so a redelivered tap dedupes; the callback id rides metadata so the poll loop can stop the spinner.
+ */
+function buildApprovalTapEvent(
+  update: TelegramUpdate, callback: TelegramCallbackQuery, chat_id: number, identity: Identity, approval: ApprovalCallback
+): TypedTaskEvent {
+  return buildTypedTaskEvent({
+    source: "telegram",
+    type: approval.type,
+    approval_id: approval.approval_id,
+    requested_by: identity,
+    notify: { kind: "telegram", chat_id: String(chat_id) },
+    idempotency_key: `telegram:${update.update_id}:callback:${callback.id}`,
+    source_reference: `telegram:update:${update.update_id}:callback:${callback.id}`,
+    metadata: { telegram_update_id: update.update_id, telegram_callback_id: callback.id }
+  });
 }
 
 type TelegramMessage = NonNullable<TelegramUpdate["message"]>;

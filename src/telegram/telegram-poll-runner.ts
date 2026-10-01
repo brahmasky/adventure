@@ -3,7 +3,7 @@ import { resolveOmpConfig } from "../omp/omp-config.js";
 import { chatWorkspace } from "../omp/workspace.js";
 import type { PlannerSupervisor } from "../omp/planner-supervisor.js";
 import { evolutionLaneSettled } from "../core/evolution-lane.js";
-import type { TelegramAllowlist } from "../domain/types.js";
+import type { TelegramAllowlist, TypedTaskEvent } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
 import { resolveMediaIngestEnabled } from "../media/media-config.js";
 import { LocalNotificationAdapter } from "../notifications/local-notification-adapter.js";
@@ -54,6 +54,24 @@ export const HANDLED_INTAKE_DENIAL_CODES: ReadonlySet<string> = new Set([
 
 export function isHandledIntakeDenial(code: string): boolean {
   return HANDLED_INTAKE_DENIAL_CODES.has(code);
+}
+
+/**
+ * An approval-card button tap (an approve/deny event carrying `telegram_callback_id`): stop the Telegram spinner
+ * before the intake. Best-effort like the self-write handler's ack: a failed answer is cosmetic and never blocks
+ * the decision, which then goes through the ordinary gateway intake exactly as the typed command does.
+ */
+export async function answerApprovalTap(
+  event: TypedTaskEvent,
+  client: Pick<SelfWriteActionTelegramClient, "answerCallbackQuery">
+): Promise<void> {
+  const callback_query_id = event.metadata?.telegram_callback_id;
+  if (typeof callback_query_id !== "string") return;
+  try {
+    await client.answerCallbackQuery?.({ callback_query_id });
+  } catch {
+    // The spinner not stopping is cosmetic; the tap still resolves the approval.
+  }
 }
 
 export interface RunTelegramPollOnceOptions {
@@ -160,6 +178,7 @@ export async function runTelegramPollOnce(
       });
       return;
     }
+    await answerApprovalTap(event, options.telegramClient);
     const intake = gateway.intake(event);
 
     if (!intake.ok) {
