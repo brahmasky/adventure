@@ -207,7 +207,8 @@ export class PlannerSupervisor {
   async shutdown(): Promise<void> {
     this.failQueued("planner_exit", "daemon shutdown");
     const t = this.turn;
-    if (t) { t.failure ??= { type: "planner_exit", ref: "daemon shutdown" }; this.clearTimers(t); t.live = false; t.done("abort"); }
+    // the turn's signal wakes approval waiters and in-flight adapters: nothing holds the process after SIGTERM (M4)
+    if (t) { t.failure ??= { type: "planner_exit", ref: "daemon shutdown" }; this.clearTimers(t); t.abort.abort(); t.live = false; t.done("abort"); }
     await bounded(this.draining ?? Promise.resolve(), ABORT_GRACE_MS);
     await this.stopSession();
   }

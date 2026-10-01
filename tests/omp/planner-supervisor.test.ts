@@ -880,3 +880,16 @@ describe("PlannerSupervisor — a throw after the claim never strands the run (f
     expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "planner_exit", error_ref: "turn_setup_failed: SQLITE_BUSY" });
   });
 });
+
+describe("PlannerSupervisor — shutdown wakes in-turn waiters (final review B12, correctness M4)", () => {
+  it("shutdown aborts the live turn's signal, so an approval waiter or adapter stops instead of holding the process", async () => {
+    const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "turn_start" }); } }); // never ends on its own
+    const { store, sup } = harness(session);
+    sup.submit(req(createQueuedTurnRun(store)));
+    await vi.waitFor(() => { expect(session.prompts).toHaveLength(1); });
+    const signal = (sup as never as { turn: { abort: AbortController } }).turn.abort.signal;
+    expect(signal.aborted).toBe(false);
+    await sup.shutdown();
+    expect(signal.aborted).toBe(true);
+  });
+});
