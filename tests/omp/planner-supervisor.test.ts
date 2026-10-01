@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
-import { PlannerSupervisor, parseAttachments, type PlannerSessionLike, type SupervisorDeps, type SupervisorState, type TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
+import { PlannerSupervisor, RETRY_NOTE, parseAttachments, type PlannerSessionLike, type SupervisorDeps, type SupervisorState, type TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
 import type { OmpFrame } from "../../src/omp/omp-frames.js";
 import { PlannerRpcError, type ExitInfo, type PlannerSessionOptions } from "../../src/omp/planner-session.js";
 import { ToolRegistry } from "../../src/tools/tool-registry.js";
@@ -109,12 +109,17 @@ function harness(session = fakeSession(), env: Record<string, string> = {}, extr
 }
 const req = (run_id: string, text = "hi", source: "telegram" | "schedule" = "telegram") => ({ run_id, text, source, requester: { kind: "user" as const, id: "paco" } });
 
-/** Under fake timers: yield to real I/O (the bridge socket) and advance fake time until the state is reached. */
+/** Fake every timer and the clock; setImmediate stays real so the real bridge socket's I/O can complete (ruling 3). */
+const FAKE_CLOCK: Parameters<typeof vi.useFakeTimers>[0] = { toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] };
+
+/**
+ * Under fake timers: yield to real I/O (the bridge socket) until the state is reached. Fake time does NOT move, so a
+ * test's own advances are the whole timeline; the bound is real time (a loaded machine needs more turns, not more ms).
+ */
 async function untilState(sup: PlannerSupervisor, want: SupervisorState): Promise<void> {
-  for (let i = 0; i < 500 && sup.state() !== want; i++) {
-    await new Promise((r) => setImmediate(r));
-    await vi.advanceTimersByTimeAsync(1);
-  }
+  const end = performance.now() + 10_000;
+  while (sup.state() !== want && performance.now() < end) await new Promise((r) => setImmediate(r));
+  expect(sup.state()).toBe(want);
 }
 
 describe("PlannerSupervisor — detached turns (spec §7)", () => {
@@ -196,6 +201,7 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
     const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
     sup.submit(req(run_id)); await sup.whenIdle();
     expect(session.models).toEqual(["google-antigravity/claude-opus-4-6"]);
+    expect(session.prompts).toEqual(["hi", RETRY_NOTE]); // the next model is told to continue, never sent a blank prompt
     expect(outcome.done[0]).toMatchObject({ text: "from 4.6" });
     const kinds = store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_attempt").map((e) => (e.payload as { error_kind?: string }).error_kind);
     expect(kinds).toEqual(["quota", undefined]);
@@ -224,15 +230,16 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
   it("pauses the turn deadline while a tool waits for Paco's approval, and resumes it with the time left", async () => {
     const session = fakeSession({ onPrompt: () => undefined });
     const { store, sup, outcome } = harness(session, { HOUGE_OMP_TURN_TIMEOUT_MS: "1000" }); const run_id = createQueuedTurnRun(store);
-    // setImmediate stays real so the real bridge socket's I/O can complete (ruling 3)
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    vi.useFakeTimers(FAKE_CLOCK);
     try {
-      sup.submit(req(run_id)); await untilState(sup, "RUNNING"); await vi.advanceTimersByTimeAsync(10);
+      sup.submit(req(run_id)); await untilState(sup, "RUNNING"); await vi.advanceTimersByTimeAsync(700); // 300 ms of the deadline left
       sup.setAwaitingApprovalForTest(true); await vi.advanceTimersByTimeAsync(5_000);
       expect(sup.state()).toBe("AWAITING_APPROVAL");
       expect(outcome.failed).toEqual([]);
-      sup.setAwaitingApprovalForTest(false); await vi.advanceTimersByTimeAsync(1_100);
-      expect(outcome.failed[0]).toMatchObject({ error_type: "turn_timeout" });
+      sup.setAwaitingApprovalForTest(false); await vi.advanceTimersByTimeAsync(200);
+      expect(outcome.failed).toEqual([]); // resumed with the 300 ms left …
+      await vi.advanceTimersByTimeAsync(150);
+      expect(outcome.failed[0]).toMatchObject({ error_type: "turn_timeout" }); // … not a fresh 1000 ms (M-1)
     } finally { vi.useRealTimers(); }
   });
 
@@ -891,5 +898,96 @@ describe("PlannerSupervisor — shutdown wakes in-turn waiters (final review B12
     expect(signal.aborted).toBe(false);
     await sup.shutdown();
     expect(signal.aborted).toBe(true);
+  });
+});
+
+describe("PlannerSupervisor — frame watchdog, parent lease, stale children (final review C3)", () => {
+  type Emit = (f: OmpFrame) => void;
+  /** A child whose turn streams only what the test emits; `emit` is set once the prompt arrived. */
+  function streaming() {
+    const h = { emit: undefined as Emit | undefined };
+    const session = fakeSession({ onPrompt: (_t, e) => { h.emit = e; e({ type: "turn_start" }); } });
+    return { h, session };
+  }
+
+  it("re-arms the frame watchdog on every frame: a turn that keeps streaming past frameIdleMs is never aborted (testing I-3)", async () => {
+    const { h, session } = streaming();
+    const { store, sup, outcome } = harness(session, { HOUGE_OMP_FRAME_IDLE_MS: "1000" }); const run_id = createQueuedTurnRun(store);
+    vi.useFakeTimers(FAKE_CLOCK);
+    try {
+      sup.submit(req(run_id)); await untilState(sup, "RUNNING"); await vi.advanceTimersByTimeAsync(10);
+      for (let i = 0; i < 6; i++) { await vi.advanceTimersByTimeAsync(500); h.emit?.({ type: "message_update" }); } // 3 s, a frame every 500 ms
+      expect(outcome.failed).toEqual([]);
+      expect(sup.state()).toBe("RUNNING");
+      session.assistant("done"); h.emit?.({ type: "agent_end" });
+    } finally { vi.useRealTimers(); }
+    await sup.whenIdle();
+    expect(outcome.done[0]).toMatchObject({ run_id, text: "done" });
+  });
+
+  it("aborts a silent child frame_idle after frameIdleMs and records the halt reason (testing I-3)", async () => {
+    const { session } = streaming();
+    const { store, sup, outcome } = harness(session, { HOUGE_OMP_FRAME_IDLE_MS: "1000" }); const run_id = createQueuedTurnRun(store);
+    vi.useFakeTimers(FAKE_CLOCK);
+    try {
+      sup.submit(req(run_id)); await untilState(sup, "RUNNING"); await vi.advanceTimersByTimeAsync(10); // last frame at +5
+      await vi.advanceTimersByTimeAsync(900);
+      expect(outcome.failed).toEqual([]);
+      await vi.advanceTimersByTimeAsync(200);
+    } finally { vi.useRealTimers(); }
+    await sup.whenIdle();
+    expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "frame_idle" });
+    expect(store.getLedgerEvents(run_id).find((e) => e.event_type === "loop_halted")?.payload).toEqual({ reason: "frame_idle", steps: 1 });
+  });
+
+  it("pauses the frame watchdog while Paco is asked, and re-arms it in full on release (testing I-3)", async () => {
+    const { session } = streaming();
+    const { store, sup, outcome } = harness(session, { HOUGE_OMP_FRAME_IDLE_MS: "1000" }); const run_id = createQueuedTurnRun(store);
+    vi.useFakeTimers(FAKE_CLOCK);
+    try {
+      sup.submit(req(run_id)); await untilState(sup, "RUNNING"); await vi.advanceTimersByTimeAsync(10);
+      sup.setAwaitingApprovalForTest(true); await vi.advanceTimersByTimeAsync(5_000); // silent, but waiting on Paco
+      expect(outcome.failed).toEqual([]);
+      sup.setAwaitingApprovalForTest(false); await vi.advanceTimersByTimeAsync(900);
+      expect(outcome.failed).toEqual([]);
+      await vi.advanceTimersByTimeAsync(200);
+    } finally { vi.useRealTimers(); }
+    await sup.whenIdle();
+    expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "frame_idle" });
+  });
+
+  it("a refused renewal of the PARENT's lease aborts the live turn lease_lost; it never completes (spec §7.1, testing I-4)", async () => {
+    const { h, session } = streaming();
+    const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
+    vi.useFakeTimers(FAKE_CLOCK);
+    try {
+      sup.submit(req(run_id)); await untilState(sup, "RUNNING"); await vi.advanceTimersByTimeAsync(10);
+      const beat = vi.spyOn(store, "heartbeat").mockReturnValue(false);
+      await vi.advanceTimersByTimeAsync(30_010); // one renewal, refused: another owner holds the run now
+      beat.mockRestore();
+      session.assistant("late"); h.emit?.({ type: "agent_end" }); // a child that answers anyway must not complete it
+    } finally { vi.useRealTimers(); }
+    await sup.whenIdle();
+    expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "lease_lost" });
+    expect(outcome.done).toEqual([]);
+  });
+
+  it("frames from a replaced child are ignored: child 1's late agent_end never ends turn 2 on child 2 (testing I-5)", async () => {
+    let emit1: Emit = () => undefined; let prompted2 = false; let end2: () => void = () => undefined;
+    const c1: Fake = fakeSession({ onPrompt: (_t, e) => { emit1 = e; e({ type: "turn_start" }); c1.assistant("one"); e({ type: "agent_end" }); } });
+    const c2: Fake = fakeSession({ onPrompt: (_t, e) => { prompted2 = true; e({ type: "turn_start" }); end2 = () => { c2.assistant("two"); e({ type: "agent_end" }); }; } });
+    const children = [c1, c2];
+    const { store, sup, outcome } = harness(c1);
+    (sup as never as Mutable).d.sessionFactory = (o) => (children.shift() as Fake).bind(o);
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    (sup as never as { d: { turnContext: { lessonsReader: () => string } } }).d.turnContext.lessonsReader = () => "- new lesson"; // child 1 is replaced
+    const b = createQueuedTurnRun(store);
+    sup.submit(req(b)); await vi.waitFor(() => { expect(prompted2).toBe(true); }, { timeout: 10_000 });
+    emit1({ type: "turn_start" }); c1.assistant("stale"); emit1({ type: "agent_end" });
+    await new Promise((r) => setImmediate(r));
+    expect(sup.state()).toBe("RUNNING");
+    expect(outcome.done).toHaveLength(1);
+    end2(); await sup.whenIdle();
+    expect(outcome.done[1]).toMatchObject({ run_id: b, text: "two" });
   });
 });
