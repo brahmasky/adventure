@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { markdownToTelegramHtml } from "../../src/telegram/markdown-to-telegram-html.js";
 import { formatIdeaText, formatRadarDetailText } from "../../src/gateway/gateway.js";
 import type { IdeaRow, ShortlistRow } from "../../src/run/run-store.js";
+import { buildToolApprovalPromptText } from "../../src/run/run-store.js";
 
 describe("markdownToTelegramHtml", () => {
   it("converts **bold** and __bold__ to <b>", () => {
@@ -12,6 +13,35 @@ describe("markdownToTelegramHtml", () => {
   it("converts *italic* and _italic_ to <i>", () => {
     expect(markdownToTelegramHtml("a *it* b")).toBe("a <i>it</i> b");
     expect(markdownToTelegramHtml("a _it_ b")).toBe("a <i>it</i> b");
+  });
+
+  it("never treats an intraword _ as emphasis, so ids and snake_case survive (CommonMark; live gate item 2)", () => {
+    const id = "appr_1dc4e2a0-7b1f-4c55-9d1e-3f0a8b2c6d10";
+    // the exact line the pre-fix card sent: the operator copied `appr<i>…</i>` and lost the underscore
+    expect(markdownToTelegramHtml(`Reply /approve ${id} to continue or /deny ${id} to stop.`))
+      .toBe(`Reply /approve ${id} to continue or /deny ${id} to stop.`);
+    expect(markdownToTelegramHtml("snake_case_word")).toBe("snake_case_word");
+    expect(markdownToTelegramHtml("Requester: telegram_user:1 and write_local")).toBe("Requester: telegram_user:1 and write_local");
+    expect(markdownToTelegramHtml("a __dunder__init__ b")).toBe("a <b>dunder__init</b> b");
+  });
+
+  it("still italicises a real _italic_ and *italic* at word boundaries", () => {
+    expect(markdownToTelegramHtml("this is _really_ it")).toBe("this is <i>really</i> it");
+    expect(markdownToTelegramHtml("(_aside_)")).toBe("(<i>aside</i>)");
+    expect(markdownToTelegramHtml("a*b*c")).toBe("a<i>b</i>c");
+  });
+
+  it("renders the tool-approval card's id as tap-to-copy inline code, underscore intact", () => {
+    const id = "appr_1dc4e2a0-7b1f-4c55-9d1e-3f0a8b2c6d10";
+    const card = buildToolApprovalPromptText(id, {
+      run_id: "run_1", worker_id: "w", tool_call_id: "t", capability: "omp.bash", input_hash: "h", action_fingerprint: "f",
+      requester: { kind: "user", id: "telegram_user:1" }, summary: "run a command", side_effect_level: "local_write",
+      expires_at: "2026-10-01T02:00:00.000Z"
+    });
+    const html = markdownToTelegramHtml(card);
+    expect(html).toContain(`Approval required: <code>${id}</code>`);
+    expect(html).toContain(`Reply /approve <code>${id}</code> to continue or /deny <code>${id}</code> to stop.`);
+    expect(html).not.toContain("<i>");
   });
 
   it("does not treat the inner * of bold as italic", () => {

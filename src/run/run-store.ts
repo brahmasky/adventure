@@ -7535,7 +7535,7 @@ function buildApprovalPromptText(
   redact: (s: string) => string = (s) => s
 ): string {
   return redact([
-    `Approval required: ${approval_id}`,
+    `Approval required: \`${approval_id}\``,
     `Action: ${input.action_summary}`,
     `Side effect: ${input.side_effect_level}`,
     `Risk: ${input.risk_level}`,
@@ -7547,24 +7547,25 @@ function buildApprovalPromptText(
     "Expected run state: waiting_for_approval",
     "Consequence if approved: the exact fingerprinted action may execute once after policy revalidation.",
     "Consequence if denied or expired: the run is cancelled and reports the blocked action.",
-    `Reply /approve ${approval_id} to continue or /deny ${approval_id} to stop.`
+    `Reply /approve \`${approval_id}\` to continue or /deny \`${approval_id}\` to stop.`
   ].join("\n"));
 }
 
-function buildToolApprovalPromptText(
+/** The tool-approval card. The id is inline code: Telegram shows it as tap-to-copy monospace. Exported for tests. */
+export function buildToolApprovalPromptText(
   approval_id: string,
   input: ToolApprovalInput,
   redact: (s: string) => string = (s) => s
 ): string {
   return redact([
-    `Approval required: ${approval_id}`,
+    `Approval required: \`${approval_id}\``,
     `Action: ${input.summary}`,
     ...(input.card_detail !== undefined ? [`Command: ${input.card_detail}`] : []),
     `Side effect: ${input.side_effect_level}`,
     `Capability: ${input.capability}`,
     `Requester: ${input.requester.kind}:${input.requester.id}`,
     `Expires: ${input.expires_at}`,
-    `Reply /approve ${approval_id} to continue or /deny ${approval_id} to stop.`
+    `Reply /approve \`${approval_id}\` to continue or /deny \`${approval_id}\` to stop.`
   ].join("\n"));
 }
 

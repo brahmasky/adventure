@@ -53,12 +53,14 @@ export function markdownToTelegramHtml(md: string): string {
   text = escapeHtml(text);
 
   // 5) Bold **x** / __x__ → <b>x</b> (run before single-char italic).
+  // CommonMark: an intraword `_` (letter/digit on the side it would bind) never opens or closes emphasis, so
+  // `appr_1dc4…` ids and snake_case survive; `*` may still be intraword.
   text = text.replace(/\*\*([^\n]+?)\*\*/g, "<b>$1</b>");
-  text = text.replace(/__([^\n]+?)__/g, "<b>$1</b>");
+  text = text.replace(/(?<![\p{L}\p{N}])__([^\n]+?)__(?![\p{L}\p{N}])/gu, "<b>$1</b>");
 
   // 6) Italic *x* / _x_ → <i>x</i>.
   text = text.replace(/\*([^*\n]+?)\*/g, "<i>$1</i>");
-  text = text.replace(/_([^_\n]+?)_/g, "<i>$1</i>");
+  text = text.replace(/(?<![\p{L}\p{N}_])_([^_\n]+?)_(?![\p{L}\p{N}_])/gu, "<i>$1</i>");
 
   // 7) Restore stashed code/link HTML.
   text = text.replace(
