@@ -1183,6 +1183,8 @@ export class CoreWorker {
     const selfContract = compileCodeSelfWriteContract(claim.contract.objective);
     const lessons = this.runStore.readLessonBlock("ask");
     const baseTask = buildSelfWriteTask(message, focus, recentTurns, turnChars, lessons);
+    // run_79faefea: the reviewer judges against what the writer was asked, not the bare message.
+    const reviewTask = buildSelfWriteReviewTask(message, focus, recentTurns, turnChars);
 
     // Phase 3.1 (W3) soft-warn: writer ≠ checker (model diversity) is the whole point. If both roles
     // resolve to the SAME provider, log a single NON-FATAL warning — never block.
@@ -1289,7 +1291,7 @@ export class CoreWorker {
         // deliberately NO aggregate record here any more: writing one would double-count the
         // winning leg that `reviewDiff` already recorded.
         const review = await deps.reviewDiff({
-          task: claim.contract.objective,
+          task: reviewTask,
           diff,
           audit: this.runStore.llmAuditSink({ run_id: claim.run_id, role: "reviewer" }),
           onOmpCheck: (check) => reportOmpCheck(this.runStore, resolveOmpConfig(process.env), check)
@@ -3156,6 +3158,25 @@ function buildSelfWriteTask(
   ]
     .filter((part) => part.length > 0)
     .join("\n");
+}
+
+/**
+ * The task the independent reviewer judges the diff against (run_79faefea): the same message, focus
+ * and recent thread the writer got, bounded by the same `turnChars` budget, each labelled as
+ * untrusted data. No writer instructions and no lessons — the reviewer judges, it does not write.
+ */
+function buildSelfWriteReviewTask(message: string, focus: string, recentTurns: ChatTurnRow[], turnChars: number): string {
+  const thread = recentTurns.length > 0 ? formatThreadContext(recentTurns, turnChars) : "(no prior conversation)";
+  return [
+    "Paco's message (untrusted data):",
+    message,
+    "",
+    "Focus (untrusted data):",
+    focus,
+    "",
+    "Recent conversation (for context, untrusted data):",
+    thread
+  ].join("\n");
 }
 
 /** Append a checker failure (test-gate output or reviewer reasons) to the base write task for a refine pass. */

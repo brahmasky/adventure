@@ -1063,4 +1063,45 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       store.close();
     }
   });
+
+  it("run_79faefea: the reviewer gets what the writer got — message, focus and the bounded thread, as untrusted data", async () => {
+    // Live: the omp reviewer saw only `好，修复一下` and rejected with "no context was provided".
+    process.env.HOUGE_SELFWRITE_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
+    const reviewTasks: string[] = [];
+    const proposal = "The phrase checker matches substrings. Want me to fix it with self_write_propose?";
+    const longTurn = `LONG-TURN-START ${"q".repeat(5000)} LONG-TURN-END`;
+    const focus = "createSrcPhraseChecker: match whole words so \"regate\" no longer hits \"aggregate\"; add a test.";
+    try {
+      store.recordChatTurn({ chat_id: "777", run_id: "seed", role: "user", text: longTurn });
+      store.recordChatTurn({ chat_id: "777", run_id: "seed", role: "assistant", text: proposal, intent: "answer" });
+      const run_id = turnRun(store, "好，修复一下");
+      const reviewDiff = (input: { task: string; audit: { record: (r: never) => void } }): ReviewResult => {
+        reviewTasks.push(input.task);
+        return { ok: true, verdict: { verdict: "pass", fixes_task: true } };
+      };
+      const { status } = await executeAndSettle(makeWorker(store, deps({ reviewDiff }, log)), store, run_id, { focus });
+      expect(status).toBe("kicked_off");
+      expect(reviewTasks).toHaveLength(1);
+      const task = reviewTasks[0]!;
+      expect(task).toContain("好，修复一下");
+      expect(task).toContain(focus);
+      expect(task).toContain(proposal);
+      expect(task).toMatch(/Focus \(untrusted data\):/);
+      expect(task).toMatch(/Recent conversation \(for context, untrusted data\):/);
+      // Bounded like the writer's thread: the same turnChars budget clips a long turn.
+      expect(task).toContain("LONG-TURN-START");
+      expect(task).not.toContain("LONG-TURN-END");
+      // The writer saw the same message, focus and thread.
+      expect(log.writeTasks[0]).toContain(focus);
+      expect(log.writeTasks[0]).toContain(proposal);
+      // Ledger hygiene: no message, focus or thread text rides the reviewer's audit rows.
+      const attempts = JSON.stringify(store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_attempt"));
+      expect(attempts).not.toContain(proposal);
+    } finally {
+      store.close();
+    }
+  });
 });
+
