@@ -27,7 +27,7 @@ node scripts/live-gate-<name>.mjs                 # live gate; every shipped sli
 ```
 - Definition of done = tests green **and** a live run shown (`CONTRIBUTING.md`). A wiring bug once survived 225 green tests.
 - Worktrees under `.worktrees/` have no `.env`: run `HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-<name>.mjs`. Gate scripts import `../dist/`, so build the branch first.
-- `scripts/live-gate-media.mjs` snapshots `houge-media-*` tmp dirs: never run vitest alongside it.
+- Daemon temp files (media downloads, agy workdirs, codex out-files) live under `~/Library/Caches/houge-daemon` (`HOUGE_DAEMON_TMP_DIR`), never `os.tmpdir()`. `scripts/live-gate-media.mjs` points that at its own temp dir, so it can run alongside vitest.
 - Daemon runs the built JS: `launchctl kickstart -k gui/$(id -u)/com.houge.daemon` (`deploy/launchd/README.md`). Restart, revive, `/rearm` are Paco's actions: say plainly whether a kickstart is needed and whether a run is in flight. A silent daemon may be parked on purpose: check `houge.parked` / `houge.kill` first.
 - Codex: `codex exec … < /dev/null -o <file>` (a non-TTY hangs on stdin otherwise). `-s read-only` cannot run vitest; use `-s workspace-write` when the pass must run tests. `codex review` rejects a prompt together with `--base`: use `codex exec` and "run git diff <base>".
 
