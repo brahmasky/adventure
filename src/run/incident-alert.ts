@@ -50,6 +50,14 @@ function alertOpened(store: RunStore, chat: string, incident_id: string, input: 
 /** The omp-check conditions a later PASSING version check clears (silently: the next refusal alerts again). */
 export const OMP_CHECK_INCIDENT_KINDS: ReadonlySet<string> = new Set(["omp_version_mismatch", "omp_unavailable"]);
 
+/**
+ * The one subject of an omp version condition, whoever saw it (a planner start or a one-shot seat): `omp:<version>` for
+ * a mismatch, `omp:<check kind>` when omp could not be asked. One fingerprint, so one condition pages once (N5).
+ */
+export function ompCheckSubject(check: { kind: string; version?: string | null }): string {
+  return check.kind === "version_mismatch" ? `omp:${check.version ?? "unknown"}` : `omp:${check.kind}`;
+}
+
 /** Resolve every open omp_version_mismatch / omp_unavailable row. Returns how many were resolved. */
 export function resolveOmpCheckIncidents(store: RunStore, now = new Date().toISOString()): number {
   return resolveOpenIncidents(store, OMP_CHECK_INCIDENT_KINDS, undefined, now);

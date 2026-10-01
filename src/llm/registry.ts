@@ -9,7 +9,7 @@ import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { isAllowedMediaFile } from "../media/media-config.js";
 import { ASK_DISCIPLINE, FALLBACK_IDENTITY, GUARDRAILS } from "../prompt/composer.js";
 import { classifyLlmError, type LlmAuditSink } from "./audit.js";
-import { openAlertedIncident, resolveOmpCheckIncidents } from "../run/incident-alert.js";
+import { ompCheckSubject, openAlertedIncident, resolveOmpCheckIncidents } from "../run/incident-alert.js";
 
 /**
  * The LLM seam after the omp cutover (spec §8, Task 14). Every non-planner call is an omp one-shot
@@ -223,7 +223,7 @@ export function reportOmpCheck(store: RunStore, cfg: OmpConfig, check: OmpCheckR
   try {
     openAlertedIncident(store, {
       kind: mismatch ? "omp_version_mismatch" : "omp_unavailable",
-      subject: mismatch ? `omp:${check.version ?? "unknown"}` : `omp:${check.kind}`,
+      subject: ompCheckSubject(check),
       detail: { check: check.kind, version: check.version, expected: cfg.version },
       chat_id: null
     });

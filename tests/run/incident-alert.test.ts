@@ -132,3 +132,17 @@ describe("a guard stop is not a /kill (final review B12, correctness M8)", () =>
     expect(plannerFailureText("killed", "killed")).toBe(KILLED_TEXT);
   });
 });
+
+describe("one omp version condition, one alert (round 2 N5)", () => {
+  it("a mismatch seen by a planner start and by a one-shot seat is one row, subject omp:<version>, and one alert", async () => {
+    const { reportOmpCheck } = await import("../../src/llm/registry.js");
+    const { resolveOmpConfig } = await import("../../src/omp/omp-config.js");
+    const worker = new CoreWorker(store, "/nonexistent/project", async () => ({ ok: true, output: { answer: "x" } })) as unknown as { ompOutcomeSink(chat: string): TurnOutcomeSink };
+    worker.ompOutcomeSink("555").incident("omp_version_mismatch", { chat_id: "555", check: "version_mismatch", version: "18.5.0", expected: "18.4.4" });
+    reportOmpCheck(store, resolveOmpConfig({}), { ok: false, kind: "version_mismatch", version: "18.5.0", reason: "omp 18.5.0 is not the pinned 18.4.4" });
+    worker.ompOutcomeSink("556").incident("omp_unavailable", { chat_id: "556", check: "not_runnable", version: null, expected: "18.4.4" });
+    reportOmpCheck(store, resolveOmpConfig({}), { ok: false, kind: "not_runnable", version: null, reason: "omp not runnable" });
+    expect(store.listOpenIncidents().map((i) => [i.kind, i.subject])).toEqual([["omp_version_mismatch", "omp:18.5.0"], ["omp_unavailable", "omp:not_runnable"]]);
+    expect(notes()).toHaveLength(2);
+  });
+});
