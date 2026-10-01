@@ -1,0 +1,9 @@
+{
+  "name": "houge_status",
+  "description": "Houge's own runtime, read-only: daemon pid, start time and uptime, why it last booted (self-write reload, kickstart, revive, crash recovery), the git HEAD and dist build it is running (and whether the build is stale), the last merged self-write, the omp version and planner/reader models, open incidents, breaker headroom and kill/park/disarm state. Call it before answering any question about whether you restarted, which code is live, or your own health; never ask Paco to check these for you.",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  }
+}

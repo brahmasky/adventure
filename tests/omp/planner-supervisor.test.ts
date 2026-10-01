@@ -1103,3 +1103,17 @@ describe("PlannerSupervisor — the planner runs the configured model after a se
     expect(session.models).toEqual(["kimi-code/k3", "kimi-code/k3"]); // the next turn tries the pin again
   });
 });
+
+// houge_status (2026-10-02): the tool reports the omp version the spawn check read (never a new spawn)
+// and the model that really answered, both from the supervisor.
+describe("PlannerSupervisor — what houge_status reads from it", () => {
+  it("knows nothing before a child started, then the checked omp version and the model that answered", async () => {
+    const session = fakeSession({ resumeModel: "anthropic/claude-opus-5-5" });
+    const { store, sup } = harness(session, { HOUGE_OMP_PLANNER: "kimi-code/k3" });
+    expect(sup.ompVersion()).toBeNull();
+    expect(sup.answeredModel()).toBeUndefined();
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(sup.ompVersion()).toBe("18.4.4");
+    expect(sup.answeredModel()).toEqual({ provider: "kimi-code", model: "k3" });
+  });
+});

@@ -6,11 +6,11 @@ import { loadToolDeclarations, TOOL_DECLS_DIR, validateInput } from "../../src/o
 import { isToolArmed } from "../../src/omp/tool-arming.js";
 
 describe("tool declarations — data the daemon validates; nothing self-writable runs in the planner (spec §5.1)", () => {
-  it("loads all 13 shipped declarations", () => {
+  it("loads all 14 shipped declarations", () => {
     const r = loadToolDeclarations(TOOL_DECLS_DIR);
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.decls.map((d) => d.name).sort()).toEqual([
-      "bash", "gmail_read", "google_api", "http_fetch", "lesson_write", "schedule_task", "self_diagnose",
+      "bash", "gmail_read", "google_api", "houge_status", "http_fetch", "lesson_write", "schedule_task", "self_diagnose",
       "self_write_propose", "skill_author", "to_local_time", "web_search", "wiki_build", "wiki_refine"
     ]);
   });
@@ -48,6 +48,16 @@ describe("tool declarations — data the daemon validates; nothing self-writable
     expect(isToolArmed("schedule_task", {})).toBe(false);
     expect(isToolArmed("schedule_task", { HOUGE_SCHEDULER_ENABLED: "1" })).toBe(true);
     expect(isToolArmed("bash", {})).toBe(true);
+  });
+
+  it("houge_status is armed with no flag and takes no parameters (Houge must always be able to see its own runtime)", () => {
+    expect(isToolArmed("houge_status", {})).toBe(true);
+    const r = loadToolDeclarations(TOOL_DECLS_DIR);
+    if (!r.ok) throw new Error(r.error);
+    const decl = r.decls.find((d) => d.name === "houge_status")!;
+    expect(decl.parameters).toEqual({ type: "object", properties: {}, additionalProperties: false });
+    expect(validateInput(decl.parameters, {})).toEqual([]);
+    expect(validateInput(decl.parameters, { verbose: true })).not.toEqual([]);
   });
 
   it("self_write_propose asks for a VERIFIED cause before the call and leaves room for it (run_79faefea)", () => {

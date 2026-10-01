@@ -1165,3 +1165,87 @@ describe("the daemon's sweep wiring (M9)", () => {
     }
   });
 });
+
+describe("runTelegramDaemon — boot record (houge_status, 2026-10-02)", () => {
+  // Live 2026-10-02: after a self-write reload Houge could not tell it had restarted. The daemon now
+  // records each boot once, with a reason derived only from what it already knows at boot.
+  const SHA = "4431d13aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const CODE = { head_sha: SHA, head_subject: "fix(x): y", head_committed_at: "2026-10-02T07:00:00.000Z", dist_built_at: "2026-10-02T07:30:00.000Z" };
+  const HOST_UP = () => "2026-01-01T00:00:00.000Z";
+  let markerDir: string;
+  let savedPark: string | undefined;
+  beforeEach(() => {
+    markerDir = mkdtempSync(join(tmpdir(), "houge-daemon-boot-"));
+    savedPark = process.env.HOUGE_PARK_MARKER_PATH;
+    process.env.HOUGE_PARK_MARKER_PATH = join(markerDir, "houge.parked");
+  });
+  afterEach(() => {
+    if (savedPark === undefined) delete process.env.HOUGE_PARK_MARKER_PATH;
+    else process.env.HOUGE_PARK_MARKER_PATH = savedPark;
+    rmSync(markerDir, { recursive: true, force: true });
+  });
+
+  async function boot(store: RunStore, now = "2026-10-02T07:34:00.000Z"): Promise<void> {
+    const controller = new AbortController();
+    await runTelegramDaemon({
+      store, projectRoot: projectRoot(), allowlist: ALLOWLIST, stopSignal: controller.signal, longPollTimeoutSeconds: 0,
+      now: () => now, resolveHead: () => SHA, resolveDistStale: () => false, resolveBootCode: () => CODE, hostBootedAt: HOST_UP,
+      llmAdapter: async (input) => okAnswer(input),
+      telegramClient: { getUpdates: async () => { controller.abort(); return []; }, sendMessage: async () => ({ message_id: 1 }) }
+    });
+  }
+
+  it("a self-write reload boot records the merged sha, the code facts and this pid", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      store.writeReloadMarker({ sha: SHA, subject: "fix clock skill", branch: "houge/selfwrite/run_9", merged_at: "2026-10-02T07:33:00.000Z" });
+      await boot(store);
+      expect(store.getLatestDaemonBoot()).toMatchObject({
+        started_at: "2026-10-02T07:34:00.000Z", pid: process.pid, reason: "self_write_reload", reload_sha: SHA,
+        reload_subject: "fix clock skill", reload_branch: "houge/selfwrite/run_9", ...CODE
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a clean stop is recorded, so the next boot is a kickstart; a boot after an unrecorded stop is a crash recovery", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      await boot(store, "2026-10-02T07:34:00.000Z");
+      expect(store.getLatestDaemonBoot()?.stopped_at).not.toBeNull();
+      await boot(store, "2026-10-02T08:00:00.000Z");
+      expect(store.getLatestDaemonBoot()).toMatchObject({ started_at: "2026-10-02T08:00:00.000Z", reason: "kickstart" });
+      store.recordDaemonBoot({ ...CODE, boot_id: "crashed", started_at: "2026-10-02T08:30:00.000Z", pid: 1, reason: "kickstart",
+        reload_sha: null, reload_subject: null, reload_branch: null, reload_merged_at: null });
+      await boot(store, "2026-10-02T09:00:00.000Z");
+      expect(store.getLatestDaemonBoot()).toMatchObject({ started_at: "2026-10-02T09:00:00.000Z", reason: "crash_recovery" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a park marker at boot is a revive after /kill", async () => {
+    const { writeParkMarker } = await import("../../src/run/tombstone.js");
+    const store = RunStore.openInMemory();
+    try {
+      await boot(store);
+      writeParkMarker({ parked_at: "2026-10-02T07:40:00.000Z" });
+      await boot(store, "2026-10-02T08:00:00.000Z");
+      expect(store.getLatestDaemonBoot()?.reason).toBe("revive_after_kill");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("the very first boot on this DB is unknown, and a marker store error never stops the boot record", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      (store as unknown as { consumeReloadMarker: () => never }).consumeReloadMarker = () => { throw new Error("db locked"); };
+      await boot(store);
+      expect(store.getLatestDaemonBoot()?.reason).toBe("unknown");
+    } finally {
+      store.close();
+    }
+  });
+});

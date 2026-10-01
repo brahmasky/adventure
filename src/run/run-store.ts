@@ -815,6 +815,39 @@ export interface ReloadMarker {
   merged_at: string;
 }
 
+/** One daemon boot (houge_status, 2026-10-02): when, why, and which code it booted on. Code-owned values only. */
+export interface DaemonBootInput {
+  boot_id: string;
+  started_at: string;
+  pid: number;
+  /** self_write_reload | kickstart | revive_after_kill | crash_recovery | restart | unknown */
+  reason: string;
+  reload_sha: string | null;
+  reload_subject: string | null;
+  reload_branch: string | null;
+  reload_merged_at: string | null;
+  head_sha: string | null;
+  head_subject: string | null;
+  head_committed_at: string | null;
+  dist_built_at: string | null;
+}
+
+export interface DaemonBoot extends DaemonBootInput {
+  /** Set when the daemon loop exited cleanly; null on the live boot and on one that crashed. */
+  stopped_at: string | null;
+}
+
+/** The newest green self-write merge; `pending` = its reload marker is not consumed yet (not live until restart). */
+export interface SelfWriteMergeRecord {
+  branch: string;
+  sha: string;
+  merged_at: string;
+  pending: boolean;
+}
+
+/** Boot rows kept (one per daemon start). */
+export const DAEMON_BOOTS_KEPT = 50;
+
 export class RunStore {
   /**
    * Secrets-firewall redactor (ADR 0015): masks known secret VALUES at RunStore's own write seams —
@@ -2335,6 +2368,64 @@ export class RunStore {
       }
       throw error;
     }
+  }
+
+  // --- Daemon boot record (houge_status, 2026-10-02) ------------------------
+
+  /** Record this daemon boot and keep only the newest {@link DAEMON_BOOTS_KEPT}. */
+  recordDaemonBoot(b: DaemonBootInput): void {
+    this.db.prepare(`
+      INSERT INTO daemon_boots (boot_id, started_at, pid, reason, reload_sha, reload_subject, reload_branch, reload_merged_at,
+        head_sha, head_subject, head_committed_at, dist_built_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(b.boot_id, b.started_at, b.pid, b.reason, b.reload_sha, b.reload_subject, b.reload_branch, b.reload_merged_at,
+      b.head_sha, b.head_subject, b.head_committed_at, b.dist_built_at);
+    this.db.prepare(`
+      DELETE FROM daemon_boots WHERE seq NOT IN (SELECT seq FROM daemon_boots ORDER BY seq DESC LIMIT ?)
+    `).run(DAEMON_BOOTS_KEPT);
+  }
+
+  /** The newest boot (the live one, once the daemon recorded it), or null if none was ever recorded. */
+  getLatestDaemonBoot(): DaemonBoot | null {
+    return this.db.prepare(`
+      SELECT boot_id, started_at, pid, reason, reload_sha, reload_subject, reload_branch, reload_merged_at,
+        head_sha, head_subject, head_committed_at, dist_built_at, stopped_at
+      FROM daemon_boots ORDER BY seq DESC LIMIT 1
+    `).get<DaemonBoot>() ?? null;
+  }
+
+  countDaemonBoots(): number {
+    return this.db.prepare(`SELECT COUNT(*) AS count FROM daemon_boots`).get<{ count: number }>()?.count ?? 0;
+  }
+
+  /** The daemon loop exited cleanly: the next boot reads this to tell a clean stop from a crash. */
+  markDaemonBootStopped(boot_id: string, at: string): void {
+    this.db.prepare(`UPDATE daemon_boots SET stopped_at = ? WHERE boot_id = ?`).run(at, boot_id);
+  }
+
+  /** The unconsumed reload marker (a merge waiting for its restart) else the newest boot that consumed one. */
+  getLastSelfWriteMerge(): SelfWriteMergeRecord | null {
+    const pending = this.db.prepare(`SELECT sha, branch, merged_at FROM reload_marker WHERE id = 1`)
+      .get<{ sha: string; branch: string; merged_at: string }>();
+    if (pending) return { branch: pending.branch, sha: pending.sha, merged_at: pending.merged_at, pending: true };
+    const row = this.db.prepare(`
+      SELECT reload_sha AS sha, reload_branch AS branch, reload_merged_at AS merged_at FROM daemon_boots
+      WHERE reload_sha IS NOT NULL ORDER BY seq DESC LIMIT 1
+    `).get<{ sha: string; branch: string | null; merged_at: string | null }>();
+    return row ? { branch: row.branch ?? "unknown", sha: row.sha, merged_at: row.merged_at ?? "unknown", pending: false } : null;
+  }
+
+  /** The provider/model of the newest ok planner (`compose`) attempt in a run of this chat; null when none. */
+  lastPlannerModel(chat_id: string): { provider: string; model: string } | null {
+    const row = this.db.prepare(`
+      SELECT json_extract(payload_json, '$.provider') AS provider, json_extract(payload_json, '$.model') AS model
+      FROM ledger_events
+      WHERE event_type = 'llm_attempt' AND json_extract(payload_json, '$.role') = 'compose'
+        AND json_extract(payload_json, '$.outcome') = 'ok'
+        AND run_id IN (SELECT run_id FROM chat_turns WHERE chat_id = ?)
+      ORDER BY occurred_at DESC, sequence DESC LIMIT 1
+    `).get<{ provider: unknown; model: unknown }>(chat_id);
+    return row && typeof row.provider === "string" && typeof row.model === "string" ? { provider: row.provider, model: row.model } : null;
   }
 
   // --- Session ratings + lesson signal path (⓪·3 S2, ADR 0012 §1/§3) ---------
@@ -5999,6 +6090,42 @@ export class RunStore {
     this.applyIdeaPanelMigration();
     this.applySkillReverifyMigration();
     this.applyOmpRuntimeMigration();
+    this.applyDaemonBootsMigration();
+  }
+
+  /** houge_status (2026-10-02): one row per daemon boot; `seq` orders them (same-millisecond boots in tests). */
+  private applyDaemonBootsMigration(): void {
+    const version = "2026-10-02-daemon-boots";
+    let activeTransaction = false;
+    this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = true;
+    try {
+      const applied = this.db.prepare(`
+        SELECT version FROM schema_migrations WHERE version = ?
+      `).get<{ version: string }>(version);
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS daemon_boots (
+          seq INTEGER PRIMARY KEY AUTOINCREMENT,
+          boot_id TEXT NOT NULL UNIQUE,
+          started_at TEXT NOT NULL,
+          pid INTEGER NOT NULL,
+          reason TEXT NOT NULL,
+          reload_sha TEXT, reload_subject TEXT, reload_branch TEXT, reload_merged_at TEXT,
+          head_sha TEXT, head_subject TEXT, head_committed_at TEXT, dist_built_at TEXT,
+          stopped_at TEXT
+        );
+      `);
+      if (!applied) {
+        this.db.prepare(`
+          INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+        `).run(version, new Date().toISOString());
+      }
+      this.db.exec("COMMIT");
+      activeTransaction = false;
+    } catch (error) {
+      if (activeTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   /**

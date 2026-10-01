@@ -220,6 +220,9 @@ async function awaitApproval(turn: ActiveTurn, approval_id: string, timeoutMs: n
 
 interface Rendered { content: string; digest: string; failed?: string }
 
+/** Tools whose code-rendered `answer` reaches the planner as text, not a JSON envelope (houge_status). */
+const PLAIN_TEXT_ENTRIES: ReadonlySet<RegistryEntry> = new Set<RegistryEntry>(["houge_status"]);
+
 /** Read tools cross the wall ALWAYS (D3); bash is raw (D12); a ledger digest carries counts and hashes only. */
 async function render(turn: ActiveTurn, entry: RegistryEntry, r: CapabilityResult): Promise<Rendered> {
   const isRead = UNTRUSTED_READ_ENTRIES.has(entry);
@@ -229,6 +232,10 @@ async function render(turn: ActiveTurn, entry: RegistryEntry, r: CapabilityResul
     const out = typeof r.output.output === "string" ? r.output.output : "";
     const code = String(r.output.exit_code ?? "none");
     return { content: `${cap(out)}\n[exit ${code}]`, digest: `exit ${code}, ${bytes(out)} bytes` };
+  }
+  if (PLAIN_TEXT_ENTRIES.has(entry) && typeof r.output.answer === "string") {
+    const text = r.output.answer;
+    return { content: cap(text), digest: `${bytes(text)} bytes` };
   }
   const json = JSON.stringify(r.output);
   return { content: cap(json), digest: `${bytes(json)} bytes` };

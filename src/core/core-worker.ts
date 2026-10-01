@@ -126,6 +126,7 @@ import { resolveEpisodicEnabled } from "../capabilities/episodic-extract.js";
 import { embedText, resolveEmbedConfig } from "../llm/embeddings.js";
 import { ToolRegistry } from "../tools/tool-registry.js";
 import { TURN_ACTIONS } from "../contracts/task-contract.js";
+import { collectHougeStatus, renderHougeStatus } from "../status/houge-status.js";
 import type { ActiveTurn } from "../omp/bridge-handler.js";
 import type { ExternalReadResult } from "../omp/external-read.js";
 import { ompConfigProblems, resolveOmpConfig } from "../omp/omp-config.js";
@@ -2538,8 +2539,20 @@ export class CoreWorker {
           }, now)
       });
     }
-    // Only the twelve bridge tools reach here (OMP_LOOP_TOOL_META); `llm_answer` left the tool set (D8).
+    if (name === "houge_status") {
+      // Read-only, Houge's own state (2026-10-02): code-rendered, no LLM call, never quarantined.
+      return async () => ({ ok: true, output: { answer: this.hougeStatusText(this.chatOf(claim.run_id)) } });
+    }
+    // Only the thirteen bridge tools reach here (OMP_LOOP_TOOL_META); `llm_answer` left the tool set (D8).
     return async () => ({ ok: false, error: `unknown loop tool: ${name}` });
+  }
+
+  /** houge_status: the chat's supervisor (omp version, answering model) plus the store's boot record and health. */
+  private hougeStatusText(chatId: string): string {
+    const supervisor = this.supervisors.get(chatId);
+    return renderHougeStatus(collectHougeStatus({
+      store: this.runStore, env: process.env, chatId, pid: process.pid, ...(supervisor ? { supervisor } : {})
+    }));
   }
 
   /**
@@ -3297,6 +3310,7 @@ function loopToolTimeoutMs(name: string, seat: (role: LlmCallRole) => number): n
       // The fetch enforces its own wall clock; the runner's outer race bound adds headroom.
       return resolveHttpFetchTimeoutMs(process.env) + 5_000;
     case "to_local_time":
+    case "houge_status":
       // Pure in-process compute — no LLM call; the runner buffer is ample headroom.
       return RUNNER_TIMEOUT_BUFFER_MS;
     case "lesson_write":

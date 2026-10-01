@@ -5,7 +5,7 @@ import type { PlannerFailure } from "../run/run-store.js";
 export interface OmpToolMeta { side_effect_level: SideEffectLevel; risk_level: RiskLevel; output_limit_bytes: number }
 
 /**
- * The twelve Houge loop tools the planner reaches over the bridge, with the registration metadata
+ * The thirteen Houge loop tools the planner reaches over the bridge, with the registration metadata
  * the deleted src/core/tool-manifest.ts gave them (copied here before Task 14 deleted it). The
  * timeout per tool stays `loopToolTimeoutMs` in core-worker.ts.
  */
@@ -21,7 +21,9 @@ export const OMP_LOOP_TOOL_META: Readonly<Record<string, OmpToolMeta>> = Object.
   self_write_propose: { side_effect_level: "external_read", risk_level: "medium", output_limit_bytes: 200_000 },
   skill_author: { side_effect_level: "none", risk_level: "low", output_limit_bytes: 100_000 },
   gmail_read: { side_effect_level: "external_read", risk_level: "medium", output_limit_bytes: 200_000 },
-  google_api: { side_effect_level: "external_read", risk_level: "medium", output_limit_bytes: 200_000 }
+  google_api: { side_effect_level: "external_read", risk_level: "medium", output_limit_bytes: 200_000 },
+  // Read-only, Houge's own state only (never external content): not quarantined, never gated.
+  houge_status: { side_effect_level: "none", risk_level: "low", output_limit_bytes: 8_000 }
 });
 
 /** bash, split by the command matcher: plain runs yolo (D5), the other two are approval-gated by the turn contract. */

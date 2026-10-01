@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { checkMeteredCeiling } from "../budget/metered-ceiling.js";
 import { runEpisodicConsolidateTick } from "../capabilities/episodic-consolidate.js";
@@ -23,11 +24,12 @@ import { LocalNotificationAdapter } from "../notifications/local-notification-ad
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import { NotificationOutbox } from "../notifications/notification-outbox.js";
 import { resolveBackupEnabled, runDbBackupTick } from "../run/db-backup.js";
-import type { LlmCallRole, RunStore } from "../run/run-store.js";
+import type { LlmCallRole, ReloadMarker, RunStore } from "../run/run-store.js";
 import { maybeFireScheduledTasks } from "../run/schedule-tick.js";
 import { SkillStore } from "../skills/skill-store.js";
 import { runInvariantSweep, type InvariantSweepInput, type InvariantSweepResult } from "../run/invariant-sweep.js";
-import { clearParkMarker } from "../run/tombstone.js";
+import { clearParkMarker, readParkMarker } from "../run/tombstone.js";
+import { classifyBoot, hostBootedAt, readBootCode, type BootCode } from "../status/houge-status.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import { hardenedGitSync } from "../run/git-hardened.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
@@ -77,6 +79,10 @@ export interface RunTelegramDaemonOptions {
    * boot reload confirmation to warn instead of silently confirming a possibly-stale reload.
    */
   resolveDistStale?: () => boolean;
+  /** Injectable for tests: HEAD sha/subject/commit time and the dist build time read at boot (default: git + stat). */
+  resolveBootCode?: () => BootCode;
+  /** Injectable for tests: when the host last booted (default: os uptime), to tell a kickstart from a host restart. */
+  hostBootedAt?: () => string;
   /**
    * Injectable for tests ONLY: the radar tick's source fetch (Idea Radar R1). Prod never
    * sets it — the tick defaults to the real `fetchUrl` (SSRF floor + pinned request).
@@ -136,6 +142,7 @@ export async function runTelegramDaemon(
   options: RunTelegramDaemonOptions
 ): Promise<RunTelegramDaemonResult> {
   const now = options.now ?? (() => new Date().toISOString());
+  const startedAt = now(); // the boot time, recorded once (houge_status)
   const sleep = options.sleep ?? interruptibleSleep;
   const timeout_seconds = options.longPollTimeoutSeconds ?? DEFAULT_LONGPOLL_TIMEOUT_SECONDS;
   const baseMs = options.backoff?.baseMs ?? DEFAULT_BACKOFF_BASE_MS;
@@ -217,7 +224,9 @@ export async function runTelegramDaemon(
   // ⓪·2c U2: consume the reload marker (exactly once — consumption deletes it) and enqueue
   // the boot confirmation, then flush the outbox so it AND the pre-restart "merged, reloading…"
   // beacon arrive at boot instead of after the first long-poll times out.
-  notifyReloadOnBoot(options);
+  const marker = consumeReloadMarkerAtBoot(options.store);
+  notifyReloadOnBoot(options, marker);
+  const bootId = recordBoot(options, marker, startedAt);
   // the retry step first: a reply that went stale while the daemon was down is abandoned before this flush can send it
   await flushLogged({ retry: true }); // best-effort: the poll loop re-dispatches queued notifications anyway
 
@@ -322,6 +331,7 @@ export async function runTelegramDaemon(
     await evolutionLaneSettled();
     await flushLogged(); // best-effort: the durable notification delivers on the next boot anyway
   }
+  markCleanStop(options.store, bootId, now());
 
   return { cycles, consecutive_failures: failures };
 }
@@ -591,15 +601,14 @@ function buildPanelSeatBindings(options: RunTelegramDaemonOptions): PanelSeatBin
 }
 
 /**
- * Consume the self-write reload marker (⓪·2c U2, stage 1 of ADR 0012 D4) and enqueue the
+ * Given the self-write reload marker consumed at boot (⓪·2c U2, stage 1 of ADR 0012 D4), enqueue the
  * boot confirmation `✅ 重启成功 — 现在运行 <shortSha>「<subject>」` through the durable outbox.
  * Exactly-once by construction: consumption deletes the marker, so the next restart stays
  * silent. A HEAD that no longer matches the marker (e.g. a reset after the merge) still
  * notifies, with a mismatch note. NEVER throws — a marker error must not stop the daemon.
  */
-function notifyReloadOnBoot(options: RunTelegramDaemonOptions): void {
+function notifyReloadOnBoot(options: RunTelegramDaemonOptions, marker: ReloadMarker | null): void {
   try {
-    const marker = options.store.consumeReloadMarker();
     if (!marker) return;
     const chat = options.allowlist.chats[0];
     if (!chat) return;
@@ -635,6 +644,52 @@ function notifyReloadOnBoot(options: RunTelegramDaemonOptions): void {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[telegram-daemon] reload-marker boot check failed: ${message}`);
+  }
+}
+
+/** Consume the reload marker once at boot: the confirmation and the boot record both read it. NEVER throws. */
+function consumeReloadMarkerAtBoot(store: RunStore): ReloadMarker | null {
+  try {
+    return store.consumeReloadMarker();
+  } catch (error) {
+    console.error(`[telegram-daemon] reload-marker boot check failed: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+/**
+ * Record this boot (houge_status, 2026-10-02): when, why and which code. The reason comes only from
+ * what the daemon knows here: the consumed reload marker, the park marker (cleared after the first
+ * good cycle, so read before it), and whether the previous boot recorded a clean stop. NEVER throws.
+ */
+function recordBoot(options: RunTelegramDaemonOptions, marker: ReloadMarker | null, startedAt: string): string | null {
+  try {
+    const reason = classifyBoot({
+      marker: marker !== null, parked: readParkMarker() !== null, previous: options.store.getLatestDaemonBoot(),
+      hostBootedAt: options.hostBootedAt ? options.hostBootedAt() : hostBootedAt()
+    });
+    const code = options.resolveBootCode
+      ? options.resolveBootCode()
+      : readBootCode(options.projectRoot, options.omp?.distDir ?? join(options.projectRoot, "dist"));
+    const boot_id = `boot_${randomUUID()}`;
+    options.store.recordDaemonBoot({
+      boot_id, started_at: startedAt, pid: process.pid, reason, reload_sha: marker?.sha ?? null, reload_subject: marker?.subject ?? null,
+      reload_branch: marker?.branch ?? null, reload_merged_at: marker?.merged_at ?? null, ...code
+    });
+    return boot_id;
+  } catch (error) {
+    console.error(`[telegram-daemon] boot record failed: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+/** The loop exited cleanly: the next boot reads this to tell a restart from a crash. NEVER throws. */
+function markCleanStop(store: RunStore, bootId: string | null, at: string): void {
+  if (!bootId) return;
+  try {
+    store.markDaemonBootStopped(bootId, at);
+  } catch (error) {
+    console.error(`[telegram-daemon] clean-stop record failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

@@ -3,11 +3,11 @@ import { classifyCommand } from "./command-matcher.js";
 export type RegistryEntry =
   | "shell" | "shell_external" | "shell_destructive" | "fs_read" | "fs_write"
   | "web_search" | "http_fetch" | "to_local_time" | "lesson_write" | "schedule_task" | "wiki_build" | "wiki_refine"
-  | "self_diagnose" | "self_write_propose" | "skill_author" | "gmail_read" | "google_api";
+  | "self_diagnose" | "self_write_propose" | "skill_author" | "gmail_read" | "google_api" | "houge_status";
 
 const same = (e: RegistryEntry) => () => e;
 const ONE_TO_ONE: RegistryEntry[] = ["web_search", "http_fetch", "to_local_time", "lesson_write", "schedule_task",
-  "wiki_build", "wiki_refine", "self_diagnose", "self_write_propose", "skill_author", "gmail_read", "google_api"];
+  "wiki_build", "wiki_refine", "self_diagnose", "self_write_propose", "skill_author", "gmail_read", "google_api", "houge_status"];
 
 export const CAPABILITY_MAP: ReadonlyMap<string, (input: Record<string, unknown>) => RegistryEntry> = new Map([
   ["bash", (input: Record<string, unknown>): RegistryEntry => {

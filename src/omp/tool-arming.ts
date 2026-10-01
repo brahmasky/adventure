@@ -14,7 +14,7 @@ const ARMED: Record<string, (env: NodeJS.ProcessEnv) => boolean> = {
   gmail_read: resolveGoogleEnabled, google_api: resolveGoogleEnabled
 };
 
-/** Unlisted names (bash, web_search, lesson_write) are always armed. The dual-LLM couple for Google
+/** Unlisted names (bash, web_search, lesson_write, houge_status) are always armed. The dual-LLM couple for Google
  *  (ADR 0025) is satisfied by construction: the wall is always on for read tools under omp (D3). */
 export function isToolArmed(name: string, env: NodeJS.ProcessEnv): boolean {
   return ARMED[name]?.(env) ?? true;

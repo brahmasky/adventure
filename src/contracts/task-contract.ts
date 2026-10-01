@@ -148,7 +148,7 @@ export function compileCodeSelfWriteContract(objective: string): CompiledTaskCon
 /** The omp turn envelope (spec §9): the planner's Houge tools plus the omp built-ins and bash. */
 export const TURN_ACTIONS: readonly string[] = [
   "web_search", "http_fetch", "to_local_time", "lesson_write", "schedule_task", "wiki_build", "wiki_refine",
-  "self_diagnose", "self_write_propose", "skill_author", "gmail_read", "google_api",
+  "self_diagnose", "self_write_propose", "skill_author", "gmail_read", "google_api", "houge_status",
   "fs_read", "fs_write", "shell", "shell_external", "shell_destructive", "write_report"
 ];
 

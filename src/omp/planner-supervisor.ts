@@ -175,11 +175,17 @@ export class PlannerSupervisor {
   private model: ModelString;
   /** The model omp last reported in an assistant message_end: what really answered (live gate 2026-10-01). */
   private actual: { provider: string; model: string } | undefined;
+  /** The omp version the last spawn's preflight read (houge_status reports it; never a new spawn). */
+  private checkedVersion: string | null = null;
 
   constructor(private readonly d: SupervisorDeps) { this.model = this.top(); }
 
   /** The planner's CURRENT family — the model it actually ran on when known, else the intended one (D10 reader check). */
   plannerFamily(): ModelFamily { return familyOf(this.actual ?? this.model); }
+  /** The omp version the last spawn check read; null before any child started. */
+  ompVersion(): string | null { return this.checkedVersion; }
+  /** The provider/model omp last reported answering with; undefined until a message_end since the last spawn. */
+  answeredModel(): { provider: string; model: string } | undefined { return this.actual ? { ...this.actual } : undefined; }
   state(): SupervisorState { return this.st; }
   markStale(): void { this.stale = true; }
   resetCrashGuard(): void { this.crashLatched = false; this.exits = []; }
@@ -548,6 +554,7 @@ export class PlannerSupervisor {
       this.incident(kind, { check: v.kind, version: v.version, expected: cfg.version });
       return `${kind}: ${v.reason}`;
     }
+    this.checkedVersion = v.version;
     this.d.outcome.versionOk?.();
     if (this.d.skipPreflightForTest) return null;
     const w = verifyInstalledWrapper(distDir);
