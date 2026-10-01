@@ -13,6 +13,7 @@ import type { GatewayIntakeResult } from "./gateway.js";
 export const MEMORY_CHANGE_NOT_FOUND = "MEMORY_CHANGE_NOT_FOUND";
 export const MEMORY_CHANGE_NOT_FOUND_TEXT = "That memory change does not exist here, so nothing was undone.";
 export const MEMORY_ALREADY_UNDONE_TEXT = "↩️ Already undone.";
+export const MEMORY_CHANGED_SINCE_TEXT = "↩️ Not undone: this memory has changed since; use /memories.";
 
 /** Run `fn` once per trigger: a redelivered update replays the recorded result (and its reply key dedupes). */
 export function oncePerTrigger(store: RunStore, event: TypedTaskEvent, fn: () => GatewayIntakeResult): GatewayIntakeResult {
@@ -37,10 +38,14 @@ export function replyTo(store: RunStore, event: TypedTaskEvent, suffix: string, 
 const chatOf = (event: TypedTaskEvent): string => (event.notify.kind === "telegram" ? event.notify.chat_id : "");
 const tags = (change: MemoryChange, ids: number[]): string => ids.map((id) => `${change.kind === "wiki" ? "wiki " : ""}#${id}`).join(", ");
 
-export function undoneText(change: MemoryChange): string {
-  const verb = change.old_ids.length === 1 ? "is" : "are";
-  const restored = `↩️ Undone: ${tags(change, change.old_ids)} ${verb} active again`;
-  return change.new_id !== null ? `${restored}; #${change.new_id} is retired.` : `${restored}.`;
+/** L1 (review round 2): the reply states exactly what the undo restored and retired, and what it left alone. */
+export function undoneText(change: MemoryChange, restored: number[], retired: number | null): string {
+  if (restored.length === 0 && retired === null) return MEMORY_CHANGED_SINCE_TEXT;
+  const parts = [`↩️ Undone: ${restored.length > 0 ? `${tags(change, restored)} ${restored.length === 1 ? "is" : "are"} active again` : "nothing restored"}`];
+  if (retired !== null) parts.push(`#${retired} is retired`);
+  const left = change.old_ids.filter((id) => !restored.includes(id));
+  const tail = left.length > 0 ? ` ${tags(change, left)} had changed since and ${left.length === 1 ? "was" : "were"} left as is.` : "";
+  return `${parts.join("; ")}.${tail}`;
 }
 
 /** The Undo tap: only this chat's change; a second tap changes nothing and says so. */
@@ -53,7 +58,9 @@ export function handleMemoryUndo(store: RunStore, event: TypedTaskEvent): Gatewa
       return { ok: false, error: { code: MEMORY_CHANGE_NOT_FOUND, message: "No such memory change in this chat" } };
     }
     const r = store.undoMemoryChange(change_id);
-    replyTo(store, event, "memory_undo", r.status === "undone" ? undoneText(change) : MEMORY_ALREADY_UNDONE_TEXT);
+    const text = r.status === "undone" ? undoneText(change, r.restored, r.retired)
+      : r.status === "changed_since" ? MEMORY_CHANGED_SINCE_TEXT : MEMORY_ALREADY_UNDONE_TEXT;
+    replyTo(store, event, "memory_undo", text);
     return { ok: true, status: "memory_undone", run_id: "" };
   });
 }

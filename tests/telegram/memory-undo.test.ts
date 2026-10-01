@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { TypedTaskEvent } from "../../src/domain/types.js";
 import { memoryUndoButton } from "../../src/capabilities/memory-correct.js";
 import { Gateway } from "../../src/gateway/gateway.js";
+import { MEMORY_CHANGED_SINCE_TEXT, undoneText } from "../../src/gateway/memory-commands.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { isHandledIntakeDenial, runTelegramPollOnce } from "../../src/telegram/telegram-poll-runner.js";
 import { parseMemoryUndoCallback } from "../../src/triggers/telegram-command-parser.js";
@@ -89,6 +90,23 @@ describe("the gateway undoes the change", () => {
     const change = store.correctEpisodicFacts({ ids: [id], correction: "new", chat_id: CHAT, run_id: null })!;
     new Gateway(store).intake(tapEvent(12, `memory:undo:${change.change_id}`));
     expect(texts()).toEqual([`↩️ Undone: #${id} is active again; #${change.new_id} is retired.`]);
+  });
+
+  it("L1: a correct that consolidation moved on gets the code-owned 'changed since' reply and changes nothing", () => {
+    const one = store.addEpisodicFact({ chat_id: CHAT, fact: "one" });
+    const change = store.correctEpisodicFacts({ ids: [one], correction: "two", chat_id: CHAT, run_id: null })!;
+    const three = store.addEpisodicFact({ chat_id: CHAT, fact: "three" });
+    store.supersedeEpisodicFact(change.new_id!, three, new Date().toISOString());
+    new Gateway(store).intake(tapEvent(14, `memory:undo:${change.change_id}`));
+    expect(texts()).toEqual([MEMORY_CHANGED_SINCE_TEXT]);
+    expect(MEMORY_CHANGED_SINCE_TEXT).toContain("this memory has changed since; use /memories");
+    expect(store.getEpisodicFact(one)?.status).toBe("superseded");
+  });
+
+  it("the reply states only what was actually restored", () => {
+    const change = { change_id: "mc_x", kind: "fact" as const, action: "correct" as const, old_ids: [1, 2], new_id: 9, run_id: null, chat_id: CHAT, created_at: "", undone_at: null };
+    expect(undoneText(change, [1], 9)).toBe("↩️ Undone: #1 is active again; #9 is retired. #2 had changed since and was left as is.");
+    expect(undoneText({ ...change, action: "retire", new_id: null }, [], null)).toBe(MEMORY_CHANGED_SINCE_TEXT);
   });
 
   it("an unknown change, or another chat's, gets a code-owned refusal reply and is a handled denial", () => {

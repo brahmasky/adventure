@@ -872,7 +872,10 @@ export interface MemoryChange {
   undone_at: string | null;
 }
 
-export type MemoryUndoResult = { status: "undone" | "already_undone"; change: MemoryChange } | { status: "not_found" };
+export type MemoryUndoResult =
+  | { status: "undone"; change: MemoryChange; restored: number[]; retired: number | null }
+  | { status: "already_undone" | "changed_since"; change: MemoryChange }
+  | { status: "not_found" };
 
 /** The two memory tables a change may flip; never interpolated from input. */
 const MEMORY_TABLE: Readonly<Record<MemoryKind, "episodic_facts" | "wiki_pages">> = { fact: "episodic_facts", wiki: "wiki_pages" };
@@ -3938,32 +3941,34 @@ export class RunStore {
 
   /**
    * Undo a change (the Undo button): the old rows it flipped go back to active with no successor, the correction's new
-   * row is pruned. Only rows still in the state this change left are touched. Idempotent: a second undo changes nothing.
+   * row is pruned. Only rows still in the state this change left are touched, and the result names exactly those. A
+   * correct whose new row is no longer active (consolidation moved on) is not undone at all: changed_since, no write.
+   * Idempotent: a second undo changes nothing.
    */
   undoMemoryChange(change_id: string, now: string = new Date().toISOString()): MemoryUndoResult {
     return this.inTransaction(() => {
       const change = this.getMemoryChange(change_id);
       if (!change) return { status: "not_found" };
       if (change.undone_at !== null) return { status: "already_undone", change };
+      if (change.action === "correct" && this.getEpisodicFact(change.new_id ?? -1)?.status !== "active") return { status: "changed_since", change };
       this.db.prepare(`UPDATE memory_changes SET undone_at = ? WHERE change_id = ?`).run(now, change_id);
-      this.restoreMemoryRows(change);
-      return { status: "undone", change: { ...change, undone_at: now } };
+      const { restored, retired } = this.restoreMemoryRows(change);
+      return { status: "undone", change: { ...change, undone_at: now }, restored, retired };
     });
   }
 
-  private restoreMemoryRows(change: MemoryChange): void {
+  /** Flip back what is still as the change left it; returns the ids it really restored and the new row it retired. */
+  private restoreMemoryRows(change: MemoryChange): { restored: number[]; retired: number | null } {
     const table = MEMORY_TABLE[change.kind];
-    if (change.action === "retire") {
-      for (const id of change.old_ids) this.db.prepare(`UPDATE ${table} SET status = 'active' WHERE id = ? AND status = 'pruned'`).run(id);
-      return;
-    }
-    for (const id of change.old_ids) {
-      this.db.prepare(`
-        UPDATE episodic_facts SET status = 'active', superseded_by = NULL, valid_until = NULL
-        WHERE id = ? AND status = 'superseded' AND superseded_by = ?
-      `).run(id, change.new_id);
-    }
-    this.db.prepare(`UPDATE episodic_facts SET status = 'pruned' WHERE id = ? AND status = 'active'`).run(change.new_id);
+    const restored = change.old_ids.filter((id) => (change.action === "retire"
+      ? this.db.prepare(`UPDATE ${table} SET status = 'active' WHERE id = ? AND status = 'pruned'`).run(id)
+      : this.db.prepare(`
+          UPDATE episodic_facts SET status = 'active', superseded_by = NULL, valid_until = NULL
+          WHERE id = ? AND status = 'superseded' AND superseded_by = ?
+        `).run(id, change.new_id)).changes === 1);
+    if (change.action === "retire") return { restored, retired: null };
+    const pruned = this.db.prepare(`UPDATE episodic_facts SET status = 'pruned' WHERE id = ? AND status = 'active'`).run(change.new_id).changes;
+    return { restored, retired: pruned === 1 ? change.new_id : null };
   }
 
   // --- DB backup (backlog #3, ADR 0021) ---------------------------------------

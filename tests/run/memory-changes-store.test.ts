@@ -102,6 +102,28 @@ describe("memory_changes: undo", () => {
     expect(store.undoMemoryChange("mc_nope").status).toBe("not_found");
   });
 
+  it("L1: a correct whose new row has moved on (consolidation superseded it) is NOT undone, and nothing changes", () => {
+    const one = fact("one");
+    const change = store.correctEpisodicFacts({ ids: [one], correction: "two", chat_id: CHAT, run_id: null, now: NOW })!;
+    const two = change.new_id!;
+    const three = fact("three");
+    store.supersedeEpisodicFact(two, three, NOW);
+    expect(store.undoMemoryChange(change.change_id)).toEqual({ status: "changed_since", change });
+    expect(store.getEpisodicFact(one)).toMatchObject({ status: "superseded", superseded_by: two });
+    expect(store.getEpisodicFact(two)).toMatchObject({ status: "superseded", superseded_by: three });
+    expect(store.getEpisodicFact(three)?.status).toBe("active");
+    expect(store.getMemoryChange(change.change_id)?.undone_at).toBeNull();
+  });
+
+  it("an undo reports exactly the rows it restored and retired", () => {
+    const a = fact("a");
+    const b = fact("b");
+    const c1 = store.retireMemoryRows({ kind: "fact", ids: [a, b], chat_id: CHAT, run_id: null, now: NOW })!;
+    expect(store.undoMemoryChange(c1.change_id)).toMatchObject({ status: "undone", restored: [a, b], retired: null });
+    const c2 = store.correctEpisodicFacts({ ids: [a], correction: "a2", chat_id: CHAT, run_id: null, now: NOW })!;
+    expect(store.undoMemoryChange(c2.change_id)).toMatchObject({ status: "undone", restored: [a], retired: c2.new_id });
+  });
+
   it("a change id fits a Telegram callback: memory:undo:<id> is at most 64 bytes", () => {
     const change = store.retireMemoryRows({ kind: "fact", ids: [fact("x")], chat_id: CHAT, run_id: null, now: NOW })!;
     expect(Buffer.byteLength(`memory:undo:${change.change_id}`, "utf8")).toBeLessThanOrEqual(64);
