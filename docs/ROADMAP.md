@@ -393,7 +393,7 @@ Flip [Merge & reload] from human-tapped to autonomous (notify-after) ONLY when A
   `tasks/lessons.md` (process rules — binding), `sessions.md` (narrative), `docs/decisions/`
   (ADRs 0001–0028; 0028 is the runtime and its threat model, 0012/0013/0014/0015 are the
   load-bearing spine ones as amended by 0028, and 0024 adds the behavioral **sense** stage),
-  `docs/superpowers/specs/` (spine + inner-loop locked designs), `docs/reference/configuration.md`
+  `docs/superpowers/specs/` (spine and omp runtime designs; the inner-loop design is historical), `docs/reference/configuration.md`
   (flag reference). The production `.env` (gitignored) is the arming truth — read it, don't
   assume defaults.
 - **Debugging live behavior:** `houge.sqlite` — `runs`, `ledger_events` (per-run steps,
