@@ -1362,3 +1362,48 @@ Build + independent adversarial verification subagents; each live round found a 
   stop after 3513 cycles), flag already in the mini `.env`. Paco's first real turns: photo `ok` agy-cli 41.4 s
   (12:01Z), voice `ok` agy-cli 16.4 s (12:03Z). Open: the `search_web` egress observation; watch for the
   residual `run_command` flake in `media_ingested`.
+
+## 2026-09-30→10-01 — omp runtime, SP1 (BUILT; reviewed; real-omp smoke PASS; awaiting merge + kickstart)
+
+- Why: a repo review found the harness had one real tool (`web_search` was 78% of tool steps) and human
+  messages had fallen from 193 (July) to 14 (August). Paco chose to keep Houge and give it a real agent loop
+  rather than adopt Hermes or Muse: omp 18.4.4 under its own profile `houge`, every seat on subscription OAuth
+  (Anthropic Max, Google Antigravity, Kimi Code, OpenAI Codex), Opus 5.5 inside omp with the terms risk
+  accepted. Four sub-projects: SP1 runtime, SP2 personal tools, SP3 hardening, SP4 self-evolution v2.
+- Spec through 15 revisions, 13 Codex design passes and a whole-document self-review; Paco ruled D10 (family
+  collapse proceeds, audited), D11 (planner reads its own OAuth store until SP3) and D12 (`bash` as a bridge
+  tool in Claude Code posture: network on, raw output, a matcher sends external writes and destructive deletes
+  to `/approve`). ADR 0028 plus nine amendments.
+- Build: 16 tasks (T0–T15), subagent-driven with TDD and a spec + quality review per task, 2573 → 2871 tests.
+  Rulings that shaped it: ONE extension entry (omp cache-busts every `-e` import, so two entries got two copies
+  of the registered-tool set and the policy blocked every tool); a planner counts as started only after the
+  bridge serves it a manifest (omp treats an extension load failure as a warning); `ulimit -u` relative to the
+  user's process count; the matcher's safety pass never skips heredoc bodies. A CLI test resolved `omp` from
+  PATH and spawned the real binary under `houge`; fixed with PATH stubs and pins.
+- Live probes against the real binary found what hermetic tests could not: omp rejects an unknown `--model`
+  at process start, before `ready`, so the spec's live `set_model` fallback could never rescue a bad top
+  string (every turn would fail, then latch) → spawn-time fallback (`96448cd`) plus two bridge-loss fixes;
+  omp inlines Ogg audio as text and the model invents a transcript → voice stays on agy-cli and one-shots
+  refuse audio; Seatbelt answers ENOENT, not EPERM, for a missing leaf under a denied subpath → the case 3
+  canary became an existing directory; Opus refused the sandbox-probe prompt (2 of 3 smoke runs) → case 3 is
+  an operator self-test, and two refusals make the gate INCONCLUSIVE (exit 4), never PASS.
+- Final wave: four parallel Opus reviewers (security, correctness, testing, adversarial) plus a Codex
+  whole-diff pass, every finding verified first-hand. Four Criticals in the composition, none visible to a
+  per-task review: binary install trees and code-running dotfiles were writable from the sandbox and later run
+  unsandboxed (probed with canaries); omp path forms (`@~/`, `:~/`, edit rename and hashline targets) slipped
+  past the gate to `~/.omp`; a `bash` command could swap the chat workspace for a symlink and make the daemon
+  upload a denied file (canary uploaded); lease recovery had no caller, so a crashed turn stayed `running`.
+  Codex added four runtime Importants (ignored error frames, aborted turns completing, schema errors skipping
+  `tool_finished`, one-shots falling through on refusal); testing found 15 surviving mutants.
+- Fix wave in four sequential dispatches: A floors (write-default-deny Seatbelt, install trees, dotfiles,
+  credential stores, an omp-faithful path canonicaliser, pinned workspace, a wider matcher), B runtime (lease
+  recovery wired, schedule-born approvals, crash latch and sweep, seat chains validated at boot), B2 (daemon
+  temp root moved to `~/Library/Caches/houge-daemon` after re-review found agy's workdir inside the git repo;
+  the planner in its own process group after a probe showed Seatbelt's signal deny is per group), C tests
+  (15/15 mutants killed, load-tolerant bounds). Scoped re-reviews of each: CLEAN.
+- First-hand at `90c87a7`: typecheck 0, build 0, 208 files / 2871 tests (also with the mini's real `.env`
+  variables); real-omp smoke, cases 1, 3, 6, 13, 22 + silent-degradation: PASS. Paco updated the AGENTS.md
+  runtime invariant by hand (D7). Docs synced to the new engine.
+- Open: merge, `dist/` backup, `.env` (absolute omp path, breaker `tool_calls` re-tune), Paco's kickstart,
+  the full live gate from Telegram. For Paco: the stale `houge-media-*` line in AGENTS.md, a verbatim message
+  in the unpushed spec commit, and `setup-new-host.sh` still checking for pi and docker.
