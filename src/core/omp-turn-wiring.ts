@@ -44,6 +44,8 @@ export const TURN_OUTSIDE_PLANNER_ERROR = "turns run only on the planner runtime
 export const TURN_UNAVAILABLE_TEXT = "⚠ I can't run turns right now: my runtime failed its startup check. Paco has been alerted.";
 /** The chat's planner crashed repeatedly and is latched (spec §7): it stays down until the next sweep or /rearm. */
 export const PLANNER_CRASH_LOOP_TEXT = "⚠ My runtime keeps crashing, so I stopped restarting it. Send /rearm to try again (the next sweep also re-arms it).";
+/** abortAll("guard"): the telegram --once runner's bound ran out (there is no /guard command); not Paco's /kill. */
+export const GUARD_STOPPED_TEXT = "⏹ Stopped: this one-shot poll ran out of time before the turn finished.";
 /** Supervisor preflight refs: a startup check failed, the runtime did not crash. */
 const STARTUP_CHECK_REF = /^(omp_version_mismatch|omp_unavailable|wrapper_mismatch|sandbox_unavailable)\b/;
 
@@ -58,7 +60,7 @@ export function plannerFailureText(type: PlannerFailure, ref: string, partial?: 
     case "merged_parent_failed":
       return null;
     case "killed":
-      return KILLED_TEXT;
+      return ref === "guard" ? GUARD_STOPPED_TEXT : KILLED_TEXT;
     case "turn_timeout":
     case "frame_idle":
       return partial ? `${TIMEOUT_TEXT}\n\n${partial}` : TIMEOUT_TEXT;

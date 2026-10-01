@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CoreWorker } from "../../src/core/core-worker.js";
 import type { TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
 import { ALERT_REOPEN_QUIET_MS, openAlertedIncident, resolveOmpCheckIncidents } from "../../src/run/incident-alert.js";
-import { PLANNER_CRASH_LOOP_TEXT, plannerFailureText, TURN_UNAVAILABLE_TEXT } from "../../src/core/omp-turn-wiring.js";
-import { PLANNER_EXIT_TEXT } from "../../src/omp/planner-supervisor.js";
+import { GUARD_STOPPED_TEXT, PLANNER_CRASH_LOOP_TEXT, plannerFailureText, TURN_UNAVAILABLE_TEXT } from "../../src/core/omp-turn-wiring.js";
+import { KILLED_TEXT, PLANNER_EXIT_TEXT } from "../../src/omp/planner-supervisor.js";
 import { buildIncidentOpenedText, runInvariantSweep } from "../../src/run/invariant-sweep.js";
 import { RunStore } from "../../src/run/run-store.js";
 
@@ -123,5 +123,12 @@ describe("supervisor incidents page once and resolve on the next good start (fin
       expect(plannerFailureText("planner_exit", ref)).toBe(TURN_UNAVAILABLE_TEXT);
     }
     expect(plannerFailureText("planner_exit", "exit 1")).toBe(PLANNER_EXIT_TEXT);
+  });
+});
+
+describe("a guard stop is not a /kill (final review B12, correctness M8)", () => {
+  it("abortAll('guard') — the telegram --once bound — replies GUARD_STOPPED_TEXT, never 'Stopped by /kill'", () => {
+    expect(plannerFailureText("killed", "guard")).toBe(GUARD_STOPPED_TEXT);
+    expect(plannerFailureText("killed", "killed")).toBe(KILLED_TEXT);
   });
 });
