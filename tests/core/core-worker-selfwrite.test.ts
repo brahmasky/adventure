@@ -1170,5 +1170,20 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       store.close();
     }
   });
+
+  it("focus_chars counts code points, the same unit as the summary cap", async () => {
+    process.env.HOUGE_SELFWRITE_ENABLED = "1";
+    const store = RunStore.openInMemory();
+    const log = { teardowns: [] as string[], writeTasks: [] as string[], published: [] as string[] };
+    const focus = `修复${"😀".repeat(10)}`; // 12 code points, 22 UTF-16 units
+    try {
+      const run_id = turnRun(store, "好，修复一下");
+      await executeAndSettle(makeWorker(store, deps({}, log)), store, run_id, { focus });
+      const published = store.getLedgerEvents(run_id).find((e) => e.event_type === "self_write_published")!;
+      expect(published.payload.focus_chars).toBe(12);
+    } finally {
+      store.close();
+    }
+  });
 });
 

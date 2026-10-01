@@ -119,6 +119,17 @@ describe("summarizeFocus — the code-owned one-line label for a focus of up to 
     expect(summarizeFocus(`${at}b`)).toBe(`${at}…`);
   });
 
+  it("counts code points, not UTF-16 units: an emoji straddling the 120 cut is kept whole, never split", () => {
+    // "😀" is one code point but two UTF-16 units; a split("")-based cut would count 121 units here
+    // and either cut a 120-code-point label or leave a lone surrogate.
+    const exact = `${"a".repeat(119)}😀`;
+    expect(summarizeFocus(exact)).toBe(exact);
+    const over = `${"a".repeat(119)}😀bbb`;
+    expect(summarizeFocus(over)).toBe(`${"a".repeat(119)}😀…`);
+    expect(summarizeFocus(`${"a".repeat(120)}😀`)).toBe(`${"a".repeat(120)}…`);
+    expect(summarizeFocus(over)).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
   it("a 2000-char focus becomes at most 121 chars ending in an ellipsis", () => {
     const out = summarizeFocus("x".repeat(2000));
     expect(out.length).toBe(121);

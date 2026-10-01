@@ -1189,7 +1189,7 @@ export class CoreWorker {
     // A focus runs up to 2000 chars: Paco's notifications quote a one-line label, and the ledger
     // keeps a 200-char summary plus the full length — never the whole brief.
     const label = summarizeFocus(focus);
-    const ledgerFocus = { text: summarizeFocus(focus, LEDGER_FOCUS_CHARS - 1), chars: focus.length };
+    const ledgerFocus = { text: summarizeFocus(focus, LEDGER_FOCUS_CHARS - 1), chars: Array.from(focus).length };
 
     // Phase 3.1 (W3) soft-warn: writer ≠ checker (model diversity) is the whole point. If both roles
     // resolve to the SAME provider, log a single NON-FATAL warning — never block.
@@ -3199,7 +3199,7 @@ function buildSelfWriteRefineTask(baseTask: string, failure: string): string {
   ].join("\n");
 }
 
-/** The ledger's cap on a self-write focus summary (the full focus is never recorded). */
+/** The ledger's cap, in code points, on a self-write focus summary (the full focus is never recorded). */
 const LEDGER_FOCUS_CHARS = 200;
 
 /** The hard-deny notification (spec § surfacing): a fix that wants a protected file is Paco's to make. */

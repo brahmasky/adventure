@@ -1532,9 +1532,9 @@ export class RunStore {
     run_id: string,
     payload: {
       branch: string;
-      /** At most 200 chars (the focus summary); the full focus never lands in the ledger. */
+      /** At most 200 code points (the focus summary); the full focus never lands in the ledger. */
       summary: string;
-      /** The full focus's length in chars. */
+      /** The full focus's length in code points (the summary's unit). */
       focus_chars: number;
       verdict: Record<string, unknown>;
       gate_results: Record<string, unknown>;
