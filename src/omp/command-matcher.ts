@@ -4,8 +4,11 @@ type Hit = { kind: "external_write" | "destructive"; label: string } | null;
 const ext = (label: string): Hit => ({ kind: "external_write", label });
 const dst = (label: string): Hit => ({ kind: "destructive", label });
 
-/** `unterminated`: a heredoc whose terminator line never came; its "body" may be code, so the command asks. */
-interface Parsed { segments: string[][]; subs: string[]; unterminated: boolean }
+/**
+ * `unterminated`: a heredoc whose terminator line never came; its "body" may be code, so the command asks.
+ * `piped[k]`: segment k reads the previous segment's output (`|` or `|&`, never `||`).
+ */
+interface Parsed { segments: string[][]; piped: boolean[]; subs: string[]; unterminated: boolean }
 
 const SEPARATORS = new Set([";", "&", "|", "(", ")", "`", "\n"]);
 
@@ -44,14 +47,15 @@ function codeLines(text: string): string[] {
 /** Quote-aware split: separators only count unquoted; quoted text is inert but kept as token values. */
 function parse(input: string): Parsed {
   const text = joinContinuations(input);
-  const segments: string[][] = []; const subs: string[] = []; let unterminated = false;
-  let seg: string[] = []; let tok = ""; let has = false;
+  const segments: string[][] = []; const piped: boolean[] = []; const subs: string[] = []; let unterminated = false;
+  let seg: string[] = []; let tok = ""; let has = false; let pipeIn = false;
   const endTok = () => { if (has) seg.push(tok); tok = ""; has = false; };
-  const endSeg = () => { endTok(); if (seg.length) segments.push(seg); seg = []; };
+  const endSeg = () => { endTok(); if (seg.length) { segments.push(seg); piped.push(pipeIn); pipeIn = false; } seg = []; };
   const pending: Heredoc[] = [];
   for (let i = 0; i < text.length; i++) {
     const c = text[i] as string;
     if (c === "#" && !has) { const nl = text.indexOf("\n", i); i = nl < 0 ? text.length : nl - 1; }
+    else if (text.startsWith("<<<", i)) { endTok(); seg.push("<<<"); i += 2; } // a here-string: its own token, even glued (`bash<<<'…'`)
     else if (c === "<" && !has && text[i + 1] === "<" && text[i + 2] !== "<" && text[i - 1] !== "<") {
       const h = readHeredocStart(text, i);
       if (h) { pending.push(h.doc); endTok(); i = h.end - 1; } else { tok += c; has = true; }
@@ -67,12 +71,16 @@ function parse(input: string): Parsed {
       for (const m of body.matchAll(/\$\(([^)]*)\)|`([^`]*)`/g)) subs.push(m[1] ?? m[2] ?? "");
       tok += body; has = true; i = j;
     } else if (c === "\\" && i + 1 < text.length) { tok += text[++i]; has = true; }
-    else if (SEPARATORS.has(c)) endSeg();
+    else if (SEPARATORS.has(c)) {
+      endSeg();
+      if (c === "|" && text[i + 1] === "|") i++; // `||` runs the next command, it does not feed it
+      else if (c === "|") { pipeIn = true; if (text[i + 1] === "&") i++; }
+    }
     else if (/\s/.test(c)) endTok();
     else { tok += c; has = true; }
   }
   endSeg();
-  return { segments, subs, unterminated: unterminated || pending.length > 0 };
+  return { segments, piped, subs, unterminated: unterminated || pending.length > 0 };
 }
 
 const WRAPPERS_WITH_ARG = new Set(["-n", "-I", "-P", "-L", "-d", "-s", "-u", "-g"]);
@@ -185,17 +193,52 @@ function shellPayload(args: string[]): string | undefined {
   return ci >= 0 ? args.slice(ci + 1).find((x) => !x.startsWith("-")) : undefined;
 }
 
-function segmentHit(tokens: string[], depth: number): Hit[] {
+const SHELLS = new Set(["bash", "sh", "zsh"]);
+/** The approval-card label for a shell fed a script the matcher cannot read. */
+export const UNSEEN_SCRIPT_LABEL = "unseen shell script";
+
+/**
+ * What a shell runs: its -c string or a literal here-string is classified as a command line; a script it reads from a
+ * pipe, a `<` redirect, a process substitution or an expanded here-string cannot be seen, so it asks (security N4).
+ * `bash file.sh` stays plain: best effort (D12), and the file was written where floor A already applied.
+ */
+function shellHit(args: string[], depth: number, piped: boolean): Hit {
+  const payload = shellPayload(args);
+  if (payload !== undefined) return toHit(classify(payload, depth + 1));
+  const hs = args.indexOf("<<<");
+  if (hs >= 0) { const body = args[hs + 1] ?? ""; return /[$`]/.test(body) ? ext(UNSEEN_SCRIPT_LABEL) : toHit(classify(body, depth + 1)); }
+  const fromStdin = args.some((x) => /^-[A-Za-z]*s[A-Za-z]*$/.test(x)) || !args.some((x) => !x.startsWith("-"));
+  return args.some((x) => x.startsWith("<")) || (piped && fromStdin) ? ext(UNSEEN_SCRIPT_LABEL) : null;
+}
+
+const ENV_OPTS_WITH_ARG = new Set(["-u", "--unset", "-C", "--chdir", "-P"]);
+
+/** `env -S 'cmd args'` (`-S<str>`, `--split-string[=]<str>`) runs its string as a command line (security N4). */
+function envSplitString(tokens: string[]): string | undefined {
+  const at = tokens.findIndex((t) => t.split("/").pop() === "env");
+  for (let j = at + 1; at >= 0 && j < tokens.length && (tokens[j] as string).startsWith("-"); j++) {
+    const t = tokens[j] as string; const tail = tokens.slice(j + 1);
+    if (t === "--split-string") return tail.join(" ");
+    if (t.startsWith("--split-string=")) return [t.slice("--split-string=".length), ...tail].join(" ");
+    const m = /^-[A-Za-z]*S(.*)$/.exec(t);
+    if (m) return [m[1] ?? "", ...tail].filter((x) => x.length > 0).join(" ");
+    if (ENV_OPTS_WITH_ARG.has(t)) j++;
+  }
+  return undefined;
+}
+
+function segmentHit(tokens: string[], depth: number, piped = false): Hit[] {
   const { rest, sudo } = stripPrefixes(tokens);
   const out: Hit[] = [];
   if (rest.length) {
     const cmd = (rest[0] as string).split("/").pop() as string; const args = rest.slice(1);
     out.push(commandHit(cmd, args));
-    const payload = ["bash", "sh", "zsh"].includes(cmd) ? shellPayload(args) : undefined;
-    if (payload !== undefined) out.push(toHit(classify(payload, depth + 1)));
+    if (SHELLS.has(cmd)) out.push(shellHit(args, depth, piped));
     if (cmd === "find") out.push(...findExecs(args).flatMap((sub) => segmentHit(sub, depth + 1)));
     if (cmd === "eval") out.push(toHit(classify(args.join(" "), depth + 1)));
   }
+  const split = envSplitString(tokens);
+  if (split !== undefined) out.push(toHit(classify(split, depth + 1)));
   if (sudo) out.push(ext("sudo"));
   return out;
 }
@@ -208,8 +251,8 @@ type Found = NonNullable<Hit>;
 
 /** `whole`: the full input (not one line of it), where an unterminated heredoc means the rest may be code. */
 function hitsOf(text: string, depth: number, whole: boolean): Found[] {
-  const { segments, subs, unterminated } = parse(text);
-  const hits = [...segments.flatMap((sg) => segmentHit(sg, depth)), ...subs.map((sub) => toHit(classify(sub, depth + 1)))];
+  const { segments, piped, subs, unterminated } = parse(text);
+  const hits = [...segments.flatMap((sg, k) => segmentHit(sg, depth, piped[k] === true)), ...subs.map((sub) => toHit(classify(sub, depth + 1)))];
   if (whole && unterminated) hits.push(dst("unterminated heredoc"));
   return hits.filter((h): h is Found => h !== null);
 }
