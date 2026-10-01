@@ -4,6 +4,7 @@ import { TURN_ACTIONS } from "../../src/contracts/task-contract.js";
 import { OMP_LOOP_TOOL_META } from "../../src/core/omp-turn-wiring.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
+import { APPROVAL_DENIED_TEXT } from "../../src/omp/bridge-handler.js";
 import { capabilityFor } from "../../src/omp/capability-map.js";
 import { isToolArmed } from "../../src/omp/tool-arming.js";
 import { retrieveEpisodicFacts } from "../../src/run/episodic-retrieval.js";
@@ -57,6 +58,33 @@ function turn(message: string, o: { source?: "telegram" | "schedule"; http?: Htt
 
 const fact = (text: string, chat = CHAT) => store.addEpisodicFact({ chat_id: chat, fact: text, created_at: NOW });
 
+/** The newest still-pending tool approval of this run (the card the write is waiting on). */
+function pendingApproval(run_id: string): string | undefined {
+  const asked = store.getLedgerEvents(run_id).filter((e) => e.event_type === "approval_requested").map((e) => String(e.payload.approval_id));
+  return asked.reverse().find((id) => store.getToolApproval(id)?.state === "pending");
+}
+
+/** Paco's tap, through the same gateway intake as the card's buttons. */
+function tapApproval(approval_id: string, decision: "approve" | "deny"): void {
+  const r = new Gateway(store).intake(buildTypedTaskEvent({
+    source: "telegram", type: decision, approval_id, requested_by: { kind: "user", id: "paco" },
+    notify: { kind: "telegram", chat_id: CHAT }, idempotency_key: `tap:${++seq}`, source_reference: `telegram:update:${seq}:callback:cb${seq}`
+  }));
+  if (!r.ok) throw new Error(`tap failed: ${JSON.stringify(r)}`);
+}
+
+type Turn = ReturnType<typeof turn>;
+/** A retire/correct call: answers its approval card with `decision` if one appears; a refusal returns without a card. */
+async function write(t: Turn, input: Record<string, unknown>, decision: "approve" | "deny" = "approve") {
+  const p = t.call("memory_correct", input);
+  let settled = false;
+  void p.then(() => { settled = true; }, () => { settled = true; });
+  await until(() => settled || pendingApproval(t.run_id) !== undefined);
+  const id = pendingApproval(t.run_id);
+  if (!settled && id) tapApproval(id, decision);
+  return p;
+}
+
 describe("memory_correct: search", () => {
   it("returns only this chat's ACTIVE facts, code-rendered #id · text · since <date>, with no side effect", async () => {
     const live = fact(ASML);
@@ -93,7 +121,7 @@ describe("memory_correct: retire and correct take only ids a search offered in t
   it("retire of an id never offered is refused not_offered and changes nothing", async () => {
     const id = fact(ASML);
     const t = turn("忘掉 ASML 那条");
-    const r = await t.call("memory_correct", { action: "retire", ids: [id] });
+    const r = await write(t, { action: "retire", ids: [id] });
     expect(r.isError).toBe(true);
     expect(r.content).toContain("not_offered");
     expect(store.getEpisodicFact(id)?.status).toBe("active");
@@ -102,7 +130,7 @@ describe("memory_correct: retire and correct take only ids a search offered in t
   it("an id offered in an EARLIER turn is not offered in this one", async () => {
     const id = fact(ASML);
     await turn("search").call("memory_correct", { action: "search", query: "ASML" });
-    const r = await turn("now retire it").call("memory_correct", { action: "correct", ids: [id], correction: "No ASML" });
+    const r = await write(turn("now retire it"), { action: "correct", ids: [id], correction: "No ASML" });
     expect(r.content).toContain("not_offered");
   });
 
@@ -110,7 +138,7 @@ describe("memory_correct: retire and correct take only ids a search offered in t
     const id = fact(ASML);
     const t = turn("忘掉 ASML 那条");
     await t.call("memory_correct", { action: "search", query: "ASML" });
-    const r = await t.call("memory_correct", { action: "retire", ids: [id] });
+    const r = await write(t, { action: "retire", ids: [id] });
     expect(r.isError).toBe(false);
     expect(store.getEpisodicFact(id)?.status).toBe("pruned");
     const cards = [...drainOutbox(store).values()].filter((p) => String(p.text).startsWith("🧠"));
@@ -126,7 +154,7 @@ describe("memory_correct: retire and correct take only ids a search offered in t
     const id = fact(ASML);
     const t = turn("那条不对，日报只要 AI 新闻");
     await t.call("memory_correct", { action: "search", query: "ASML daily report" });
-    const r = await t.call("memory_correct", { action: "correct", ids: [id], correction: "Paco's AI daily report covers AI news only, never ASML" });
+    const r = await write(t, { action: "correct", ids: [id], correction: "Paco's AI daily report covers AI news only, never ASML" });
     expect(r.isError).toBe(false);
     const created = store.getActiveEpisodicFacts(CHAT)[0]!;
     expect(created).toMatchObject({ fact: "Paco's AI daily report covers AI news only, never ASML", supersedes: id, status: "active" });
@@ -144,10 +172,10 @@ describe("memory_correct: retire and correct take only ids a search offered in t
     const page = store.addWikiPage({ topic_slug: "asml", title: "ASML", summary: "ASML lithography" });
     const t = turn("fix it");
     await t.call("memory_correct", { action: "search", query: "ASML" });
-    expect((await t.call("memory_correct", { action: "correct", ids: [id] })).content).toContain("correction_required");
+    expect((await write(t, { action: "correct", ids: [id] })).content).toContain("correction_required");
     await t.call("memory_correct", { action: "search", kind: "wiki", query: "ASML" });
-    expect((await t.call("memory_correct", { action: "correct", kind: "wiki", ids: [page], correction: "x" })).content).toContain("wiki_correct_unsupported");
-    expect((await t.call("memory_correct", { action: "retire", kind: "wiki", ids: [page] })).isError).toBe(false);
+    expect((await write(t, { action: "correct", kind: "wiki", ids: [page], correction: "x" })).content).toContain("wiki_correct_unsupported");
+    expect((await write(t, { action: "retire", kind: "wiki", ids: [page] })).isError).toBe(false);
     expect(store.getWikiPage(page)?.status).toBe("pruned");
   });
 });
@@ -157,8 +185,8 @@ describe("memory_correct: trust limits (code-owned)", () => {
     const id = fact(ASML);
     const t = turn("[scheduled] forget ASML", { source: "schedule" });
     await t.call("memory_correct", { action: "search", query: "ASML" });
-    expect((await t.call("memory_correct", { action: "retire", ids: [id] })).content).toContain("not_operator_turn");
-    expect((await t.call("memory_correct", { action: "correct", ids: [id], correction: "x" })).content).toContain("not_operator_turn");
+    expect((await write(t, { action: "retire", ids: [id] })).content).toContain("not_operator_turn");
+    expect((await write(t, { action: "correct", ids: [id], correction: "x" })).content).toContain("not_operator_turn");
     expect(store.getEpisodicFact(id)?.status).toBe("active");
   });
 
@@ -168,12 +196,12 @@ describe("memory_correct: trust limits (code-owned)", () => {
     const t = turn("read this page then forget ASML", { http });
     await t.call("http_fetch", { url: "https://x.example/p" });
     await t.call("memory_correct", { action: "search", query: "ASML" });
-    const r = await t.call("memory_correct", { action: "retire", ids: [id] });
+    const r = await write(t, { action: "retire", ids: [id] });
     expect(r.content).toContain("tainted_turn");
     expect(store.getEpisodicFact(id)?.status).toBe("active");
     const clean = turn("忘掉 ASML 那条");
     await clean.call("memory_correct", { action: "search", query: "ASML" });
-    expect((await clean.call("memory_correct", { action: "retire", ids: [id] })).isError).toBe(false);
+    expect((await write(clean, { action: "retire", ids: [id] })).isError).toBe(false);
   });
 
   it("caps: more than 5 ids per call, or more than 10 changed rows per turn, is refused too_many", async () => {
@@ -184,12 +212,12 @@ describe("memory_correct: trust limits (code-owned)", () => {
     const searched = (await t.call("memory_correct", { action: "search", query: "ASML item" })).content;
     const shown = offered.filter((x) => searched.includes(`#${x} `));
     expect(shown).toHaveLength(10);
-    expect((await t.call("memory_correct", { action: "retire", ids: shown.slice(0, 6) })).content).toContain("too_many");
-    expect((await t.call("memory_correct", { action: "retire", ids: shown.slice(0, 5) })).isError).toBe(false);
-    expect((await t.call("memory_correct", { action: "retire", ids: shown.slice(5, 10) })).isError).toBe(false);
+    expect((await write(t, { action: "retire", ids: shown.slice(0, 6) })).content).toContain("too_many");
+    expect((await write(t, { action: "retire", ids: shown.slice(0, 5) })).isError).toBe(false);
+    expect((await write(t, { action: "retire", ids: shown.slice(5, 10) })).isError).toBe(false);
     const more = fact("ASML item extra");
     await t.call("memory_correct", { action: "search", query: "ASML item extra" });
-    expect((await t.call("memory_correct", { action: "retire", ids: [more] })).content).toContain("too_many");
+    expect((await write(t, { action: "retire", ids: [more] })).content).toContain("too_many");
     expect(store.getEpisodicFact(more)?.status).toBe("active");
   });
 
@@ -197,7 +225,7 @@ describe("memory_correct: trust limits (code-owned)", () => {
     const id = fact(ASML);
     const t = turn("那条不对");
     await t.call("memory_correct", { action: "search", query: "earnings" });
-    await t.call("memory_correct", { action: "correct", ids: [id], correction: "CORRECTION-CANARY-91" });
+    await write(t, { action: "correct", ids: [id], correction: "CORRECTION-CANARY-91" });
     const events = store.getLedgerEvents(t.run_id);
     const corrected = events.filter((e) => e.event_type === "memory_corrected");
     expect(corrected).toHaveLength(1);
@@ -208,15 +236,75 @@ describe("memory_correct: trust limits (code-owned)", () => {
 });
 
 describe("memory_correct: registration", () => {
-  it("is a local_write bridge tool in the turn envelope, always armed, never approval-gated", async () => {
-    expect(OMP_LOOP_TOOL_META.memory_correct?.side_effect_level).toBe("local_write");
-    expect(TURN_ACTIONS).toContain("memory_correct");
+  it("search is its own ungated capability; retire and correct map to memory_correct_write, which the turn contract gates", () => {
     expect(capabilityFor("memory_correct", { action: "search" })).toBe("memory_correct");
+    expect(capabilityFor("memory_correct", { action: "retire" })).toBe("memory_correct_write");
+    expect(capabilityFor("memory_correct", { action: "correct" })).toBe("memory_correct_write");
+    expect(OMP_LOOP_TOOL_META.memory_correct?.side_effect_level).toBe("none");
+    expect(TURN_ACTIONS).toEqual(expect.arrayContaining(["memory_correct", "memory_correct_write"]));
     expect(isToolArmed("memory_correct", {})).toBe(true);
+    const gated = turn("x").turn.contract.approval_gates;
+    expect(gated).toContain(OMP_LOOP_TOOL_META.memory_correct_write?.side_effect_level);
+    expect(gated).not.toContain(OMP_LOOP_TOOL_META.memory_correct?.side_effect_level);
+  });
+});
+
+describe("memory_correct: every retire and correct waits for Paco's tap (the omp session outlives a turn)", () => {
+  it("search is never gated", async () => {
+    fact(ASML);
+    const t = turn("ASML?");
+    await t.call("memory_correct", { action: "search", query: "ASML" });
+    expect(store.getLedgerEvents(t.run_id).filter((e) => e.event_type === "approval_requested")).toEqual([]);
+  });
+
+  it("retire changes nothing until Approve; then it executes and sends the Undo card", async () => {
     const id = fact(ASML);
     const t = turn("忘掉 ASML 那条");
     await t.call("memory_correct", { action: "search", query: "ASML" });
-    await t.call("memory_correct", { action: "retire", ids: [id] });
+    const p = t.call("memory_correct", { action: "retire", ids: [id] });
+    await until(() => pendingApproval(t.run_id) !== undefined);
+    expect(store.getEpisodicFact(id)?.status).toBe("active");
+    expect([...drainOutbox(store).values()].some((x) => String(x.text).startsWith("🧠"))).toBe(false);
+    tapApproval(pendingApproval(t.run_id)!, "approve");
+    expect((await p).isError).toBe(false);
+    expect(store.getEpisodicFact(id)?.status).toBe("pruned");
+    expect([...drainOutbox(store).values()].filter((x) => String(x.text).startsWith("🧠 Retired"))).toHaveLength(1);
+  });
+
+  it("Deny returns the denied text and changes nothing: no row, no change record, no Undo card", async () => {
+    const id = fact(ASML);
+    const t = turn("忘掉 ASML 那条");
+    await t.call("memory_correct", { action: "search", query: "ASML" });
+    const r = await write(t, { action: "correct", ids: [id], correction: "No ASML in the brief" }, "deny");
+    expect(r).toEqual({ content: APPROVAL_DENIED_TEXT, isError: true });
+    expect(store.getEpisodicFact(id)?.status).toBe("active");
+    expect(store.getActiveEpisodicFacts(CHAT)).toHaveLength(1);
+    expect([...drainOutbox(store).values()].some((x) => String(x.text).startsWith("🧠"))).toBe(false);
+  });
+
+  it("the approval card shows the action, every old id with its text, and the FULL correction", async () => {
+    const a = fact(ASML);
+    const b = fact("The daily brief covers ASML analyst opinions");
+    const correction = `The AI daily report covers AI news only. ${"z".repeat(150)}`;
+    const t = turn("那两条不对");
+    await t.call("memory_correct", { action: "search", query: "ASML" });
+    const p = t.call("memory_correct", { action: "correct", ids: [a, b], correction });
+    await until(() => pendingApproval(t.run_id) !== undefined);
+    const card = [...drainOutbox(store).values()].find((x) => String(x.text).startsWith("Approval required"));
+    const text = String(card?.text);
+    expect(text).toContain("correct");
+    expect(text).toContain(`#${a}: "${ASML}"`);
+    expect(text).toContain(`#${b}: "The daily brief covers ASML analyst opinions"`);
+    expect(text).toContain(`"${correction}"`);
+    tapApproval(pendingApproval(t.run_id)!, "deny");
+    await p;
+  });
+
+  it("a write the trust limits refuse never shows a card", async () => {
+    const id = fact(ASML);
+    const t = turn("忘掉 ASML 那条");
+    const r = await t.call("memory_correct", { action: "retire", ids: [id] });
+    expect(r.content).toContain("not_offered");
     expect(store.getLedgerEvents(t.run_id).filter((e) => e.event_type === "approval_requested")).toEqual([]);
   });
 });
@@ -232,6 +320,8 @@ describe("memory_correct end to end: the fake omp child calls search, then corre
     try {
       const run = createQueuedTurnRun(store, "那条 ASML 记错了，日报不要 ASML");
       worker.submitTurn(run);
+      await until(() => pendingApproval(run) !== undefined);
+      tapApproval(pendingApproval(run)!, "approve");
       await until(() => store.getRunState(run) === "completed");
       const outbox = drainOutbox(store);
       const reply = String(outbox.get(`${run}:final_report`)?.text);

@@ -127,7 +127,9 @@ import { embedText, resolveEmbedConfig } from "../llm/embeddings.js";
 import { ToolRegistry } from "../tools/tool-registry.js";
 import { TURN_ACTIONS } from "../contracts/task-contract.js";
 import { collectHougeStatus, renderHougeStatus } from "../status/houge-status.js";
-import { executeMemoryCorrect, newMemoryTurnState, type MemoryTurnState } from "../capabilities/memory-correct.js";
+import {
+  executeMemoryCorrect, memoryWritePreflight, newMemoryTurnState, type MemoryToolDeps, type MemoryTurnState
+} from "../capabilities/memory-correct.js";
 import type { ActiveTurn } from "../omp/bridge-handler.js";
 import type { ExternalReadResult } from "../omp/external-read.js";
 import { ompConfigProblems, resolveOmpConfig } from "../omp/omp-config.js";
@@ -2163,7 +2165,9 @@ export class CoreWorker {
    * loop tools bound to the unchanged `loopToolExecute` pipelines. Read tools cross the wall
    * through `quarantine`, always (D3).
    */
-  buildOmpTools(claim: ClaimedRun, chatId = this.chatOf(claim.run_id)): { registry: ToolRegistry; quarantine: ActiveTurn["quarantine"] } {
+  buildOmpTools(claim: ClaimedRun, chatId = this.chatOf(claim.run_id)): {
+    registry: ToolRegistry; quarantine: ActiveTurn["quarantine"]; preflight: NonNullable<ActiveTurn["preflight"]>;
+  } {
     const state = this.ompTurnState(claim, chatId);
     const registry = new ToolRegistry();
     const cfg = resolveOmpConfig(process.env);
@@ -2180,7 +2184,11 @@ export class CoreWorker {
     for (const [name, meta] of Object.entries(OMP_LOOP_TOOL_META)) {
       registry.register({ name, category: "tool", ...meta, timeout_ms: loopToolTimeoutMs(name, seat), execute: this.ompLoopExecute(name, claim, state) });
     }
-    return { registry, quarantine: (tool, output) => this.ompQuarantine(claim, state, tool, output) };
+    return {
+      registry, quarantine: (tool, output) => this.ompQuarantine(claim, state, tool, output),
+      // memory_correct writes: the trust limits refuse before any card, else the card shows exactly what changes
+      preflight: (entry, input) => (entry === "memory_correct_write" ? memoryWritePreflight(this.memoryDeps(claim, state.turnCtx), input) : null)
+    };
   }
 
   /** A loop tool on the omp path; the claim's objective is read at call time (a voice turn's transcript lands after the claim). */
@@ -2546,13 +2554,17 @@ export class CoreWorker {
       // Read-only, Houge's own state (2026-10-02): code-rendered, no LLM call, never quarantined.
       return async () => ({ ok: true, output: { answer: this.hougeStatusText(this.chatOf(claim.run_id)) } });
     }
-    if (name === "memory_correct") {
-      // Paco's memory (2026-10-02): every trust limit is code-owned in the adapter; no LLM call.
-      return (input) => executeMemoryCorrect({ store: this.runStore, run_id: claim.run_id, chat_id: this.chatOf(claim.run_id),
-        state: turnCtx.memory, embed: (query) => this.embedQueryForTurn(query) }, input);
+    if (name === "memory_correct" || name === "memory_correct_write") {
+      // Paco's memory (2026-10-02): every trust limit is code-owned in the adapter (re-checked after his tap); no LLM call.
+      return (input) => executeMemoryCorrect({ ...this.memoryDeps(claim, turnCtx), gated: name === "memory_correct_write" }, input);
     }
-    // Only the fourteen bridge tools reach here (OMP_LOOP_TOOL_META); `llm_answer` left the tool set (D8).
+    // Only the fifteen bridge entries reach here (OMP_LOOP_TOOL_META); `llm_answer` left the tool set (D8).
     return async () => ({ ok: false, error: `unknown loop tool: ${name}` });
+  }
+
+  private memoryDeps(claim: ClaimedRun, turnCtx: LoopTurnContext): Omit<MemoryToolDeps, "gated"> {
+    return { store: this.runStore, run_id: claim.run_id, chat_id: this.chatOf(claim.run_id), state: turnCtx.memory,
+      embed: (query) => this.embedQueryForTurn(query) };
   }
 
   /** houge_status: the chat's supervisor (omp version, answering model) plus the store's boot record and health. */
@@ -3318,6 +3330,7 @@ function loopToolTimeoutMs(name: string, seat: (role: LlmCallRole) => number): n
       // The fetch enforces its own wall clock; the runner's outer race bound adds headroom.
       return resolveHttpFetchTimeoutMs(process.env) + 5_000;
     case "memory_correct":
+    case "memory_correct_write":
       // Store work plus at most one query embedding (search), which carries its own timeout.
       return resolveEmbedConfig(process.env).timeoutMs + RUNNER_TIMEOUT_BUFFER_MS;
     case "to_local_time":

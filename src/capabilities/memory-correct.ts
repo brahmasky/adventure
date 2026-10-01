@@ -48,7 +48,8 @@ export type MemoryRequest =
   | { action: "retire"; kind: MemoryKind; ids: number[] }
   | { action: "correct"; kind: MemoryKind; ids: number[]; correction: string };
 
-const refusal = (reason: string): ToolAdapterResult => ({ ok: false, error: `${reason}: ${MEMORY_REFUSAL_TEXT[reason] ?? reason}` });
+const refusalText = (reason: string): string => `${reason}: ${MEMORY_REFUSAL_TEXT[reason] ?? reason}`;
+const refusal = (reason: string): ToolAdapterResult => ({ ok: false, error: refusalText(reason) });
 
 function parseIds(v: unknown): number[] | null {
   if (!Array.isArray(v) || v.length === 0) return null;
@@ -122,6 +123,8 @@ export function memoryUndoButton(change_id: string): NotificationButton {
 }
 
 const quoted = (text: string) => `"${clipText(escapeForTelegram(text), MEMORY_CARD_TEXT_CHARS)}"`;
+/** An old row's text on the approval card: markdown-inert, at most MEMORY_SEARCH_TEXT_CHARS. */
+const quotedFull = (text: string) => `"${clipText(escapeForTelegram(text), MEMORY_SEARCH_TEXT_CHARS)}"`;
 
 /** The current text of a memory row (status flips never change it); "" when the row is gone. */
 export function memoryRowText(store: RunStore, kind: MemoryKind, id: number): string {
@@ -156,6 +159,25 @@ export function enqueueMemoryChangeCard(
 export interface MemoryToolDeps {
   store: RunStore; run_id: string; chat_id: string; state: MemoryTurnState;
   embed: (query: string) => Promise<Float32Array | null>;
+  /** True only on the approval-gated memory_correct_write entry: a write never runs through the ungated search entry. */
+  gated: boolean;
+}
+
+/**
+ * Before the approval card (bridge preflight): every trust limit refuses here, so Paco never sees a card for a write
+ * code would refuse; otherwise the card's detail says exactly what changes — each id with its current text, and for
+ * correct the full new text.
+ */
+export function memoryWritePreflight(
+  d: Omit<MemoryToolDeps, "embed" | "gated">, input: Record<string, unknown>
+): { refused: { reason: string; text: string } } | { card_detail: string } {
+  const req = parseMemoryRequest(input);
+  const reason = "refusal" in req ? req.refusal : req.action === "search" ? "bad_input" : writeRefusal(d, req);
+  if (reason !== null) return { refused: { reason, text: refusalText(reason) } };
+  const w = req as Exclude<MemoryRequest, { action: "search" }>;
+  const olds = w.ids.map((id) => `${w.kind === "wiki" ? "wiki " : ""}#${id}: ${quotedFull(memoryRowText(d.store, w.kind, id))}`);
+  const head = w.action === "retire" ? `retire ${w.ids.length} ${w.kind === "wiki" ? "wiki page(s)" : "fact(s)"}:` : `correct ${w.ids.length} fact(s) into one new fact:`;
+  return { card_detail: [head, ...olds, ...(w.action === "correct" ? [`New text: "${w.correction}"`] : [])].join("\n") };
 }
 
 /** The memory_correct adapter: search offers ids; retire/correct pass every code-owned limit or change nothing. */
@@ -163,6 +185,7 @@ export async function executeMemoryCorrect(d: MemoryToolDeps, input: Record<stri
   const req = parseMemoryRequest(input);
   if ("refusal" in req) return refusal(req.refusal);
   if (req.action === "search") return memorySearch(d, req);
+  if (!d.gated) return refusal("bad_input");
   const refused = writeRefusal(d, req);
   if (refused) return refusal(refused);
   const change = applyChange(d, req);
@@ -185,7 +208,7 @@ async function memorySearch(d: MemoryToolDeps, req: Extract<MemoryRequest, { act
 }
 
 /** The trust limits, in order: Paco's own turn, no untrusted read earlier in it, caps, ids offered by this turn. */
-function writeRefusal(d: MemoryToolDeps, req: Exclude<MemoryRequest, { action: "search" }>): string | null {
+function writeRefusal(d: Pick<MemoryToolDeps, "store" | "run_id" | "state">, req: Exclude<MemoryRequest, { action: "search" }>): string | null {
   if (d.store.runSource(d.run_id) !== "telegram") return "not_operator_turn";
   if (d.store.runLoopCapabilities(d.run_id).some((c) => MEMORY_TAINT_ENTRIES.has(c))) return "tainted_turn";
   if (req.ids.length > MEMORY_IDS_PER_CALL_MAX) return "too_many";

@@ -3,17 +3,20 @@ import { classifyCommand } from "./command-matcher.js";
 export type RegistryEntry =
   | "shell" | "shell_external" | "shell_destructive" | "fs_read" | "fs_write"
   | "web_search" | "http_fetch" | "to_local_time" | "lesson_write" | "schedule_task" | "wiki_build" | "wiki_refine"
-  | "self_diagnose" | "self_write_propose" | "skill_author" | "gmail_read" | "google_api" | "houge_status" | "memory_correct";
+  | "self_diagnose" | "self_write_propose" | "skill_author" | "gmail_read" | "google_api" | "houge_status"
+  | "memory_correct" | "memory_correct_write";
 
 const same = (e: RegistryEntry) => () => e;
 const ONE_TO_ONE: RegistryEntry[] = ["web_search", "http_fetch", "to_local_time", "lesson_write", "schedule_task",
-  "wiki_build", "wiki_refine", "self_diagnose", "self_write_propose", "skill_author", "gmail_read", "google_api", "houge_status", "memory_correct"];
+  "wiki_build", "wiki_refine", "self_diagnose", "self_write_propose", "skill_author", "gmail_read", "google_api", "houge_status"];
 
 export const CAPABILITY_MAP: ReadonlyMap<string, (input: Record<string, unknown>) => RegistryEntry> = new Map([
   ["bash", (input: Record<string, unknown>): RegistryEntry => {
     const c = classifyCommand(typeof input.command === "string" ? input.command : "");
     return c.kind === "destructive" ? "shell_destructive" : c.kind === "external_write" ? "shell_external" : "shell";
   }],
+  // Search reads; retire and correct write Paco's memory, a separate capability the turn contract gates (2026-10-02).
+  ["memory_correct", (input: Record<string, unknown>): RegistryEntry => (input.action === "search" ? "memory_correct" : "memory_correct_write")],
   ...ONE_TO_ONE.map((e): [string, () => RegistryEntry] => [e, same(e)])
 ]);
 

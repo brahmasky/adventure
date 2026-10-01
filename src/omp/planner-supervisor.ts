@@ -46,7 +46,7 @@ export interface TurnOutcomeSink {
 export interface SupervisorDeps {
   chatId: string; store: RunStore; cfg: OmpConfig; ctx: PathContext; distDir: string; decls: ToolDeclaration[];
   env: NodeJS.ProcessEnv; turnEnvelopeActions: string[]; turnContext: TurnContextDeps;
-  buildTools: (claim: ClaimedRun) => { registry: ToolRegistry; quarantine: ActiveTurn["quarantine"] };
+  buildTools: (claim: ClaimedRun) => { registry: ToolRegistry; quarantine: ActiveTurn["quarantine"]; preflight?: ActiveTurn["preflight"] };
   posture: () => string | null; outcome: TurnOutcomeSink;
   /**
    * Runs after the claim, before the child starts or is prompted (voice/photo ingest). A failure fails the run `media_failed`.
@@ -319,7 +319,7 @@ export class PlannerSupervisor {
       budget: new BudgetLedger(claim.contract.budget), registry: tools.registry, signal: abort.signal, cwd: this.workspace(),
       step: { n: 0 }, cache: new Map(), unreported: new Map(), quarantine: tools.quarantine,
       setAwaitingApproval: (on) => this.setAwaitingApproval(turn, on), postureOk: this.d.posture,
-      ...(req.approver ? { approver: req.approver } : {})
+      ...(req.approver ? { approver: req.approver } : {}), ...(tools.preflight ? { preflight: tools.preflight } : {})
     };
     const heartbeat = setInterval(() => this.renewLeases(), PLANNER_HEARTBEAT_MS);
     const turn: Turn = {

@@ -73,7 +73,8 @@ export function bridgeTurn(store: RunStore, worker: CoreWorker, run_id: string, 
     run_id, worker_id, chat_id, requester: store.getRunRequester(run_id), contract: claim.contract,
     budget: new BudgetLedger(claim.contract.budget), registry: tools.registry, signal: new AbortController().signal,
     cwd: chatWorkspace(dataDir, chat_id), step: { n: 0 }, cache: new Map(), unreported: new Map(),
-    quarantine: tools.quarantine, setAwaitingApproval: () => undefined, postureOk: () => null
+    quarantine: tools.quarantine, setAwaitingApproval: () => undefined, postureOk: () => null,
+    ...(tools.preflight ? { preflight: tools.preflight } : {})
   };
   const decls = loadToolDeclarations(TOOL_DECLS_DIR);
   if (!decls.ok) throw new Error(decls.error);

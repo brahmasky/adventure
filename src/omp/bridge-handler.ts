@@ -28,7 +28,12 @@ export interface ActiveTurn {
   approver?: Identity;
   /** Per-turn call queue: at most one call (and so one approval) in flight per turn. */
   serial?: Promise<unknown>;
+  /** Code checks before any approval card (memory_correct writes): a refusal never shows a card; else the card's detail. */
+  preflight?: (entry: RegistryEntry, input: Record<string, unknown>) => Preflight | null;
 }
+
+/** A preflight verdict: refuse with a code-owned reason, or go on with the card detail Paco approves. */
+export type Preflight = { refused: { reason: string; text: string } } | { card_detail: string };
 
 export interface BridgeHandlerDeps {
   store: RunStore; cfg: OmpConfig; ctx: PathContext; decls: ToolDeclaration[]; env: NodeJS.ProcessEnv;
@@ -171,7 +176,9 @@ async function handleCall(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallRe
     recordInvalid(deps, turn, { toolCallId: req.toolCallId, tool: req.tool, capability: entry, reason: "schema_invalid", started, content });
     return { content, isError: true };
   }
-  const executed = await executeWithApproval(deps, turn, req, entry);
+  const pre = turn.preflight?.(entry, req.input) ?? null;
+  if (pre && "refused" in pre) return refuse(deps, turn, req, entry, pre.refused.reason, pre.refused.text, started);
+  const executed = await executeWithApproval(deps, turn, req, entry, pre?.card_detail);
   if ("refusal" in executed) return refuse(deps, turn, req, entry, executed.refusal.reason, executed.refusal.text, started);
   const r = executed.result;
   const rendered = await render(turn, entry, r);
@@ -190,10 +197,13 @@ function statusOf(r: CapabilityResult): "succeeded" | "failed" | "denied" {
 type Executed = { result: CapabilityResult } | { refusal: { reason: string; text: string } };
 
 /** First execute; on requires_approval wait in-turn, then re-execute on the reserved budget unit. */
-async function executeWithApproval(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallReq, entry: RegistryEntry): Promise<Executed> {
+async function executeWithApproval(
+  deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallReq, entry: RegistryEntry, preDetail?: string
+): Promise<Executed> {
   const command = req.tool === "bash" && typeof req.input.command === "string" ? req.input.command : undefined;
+  const detail = command !== undefined ? cardDetail(command) : preDetail;
   const sink = createToolApprovalSink({ store: deps.store, worker_id: turn.worker_id, tool_call_id: req.toolCallId,
-    approvalTimeoutMs: deps.cfg.approvalTimeoutMs, ...(command !== undefined ? { card_detail: cardDetail(command) } : {}),
+    approvalTimeoutMs: deps.cfg.approvalTimeoutMs, ...(detail !== undefined ? { card_detail: detail } : {}),
     ...(turn.approver ? { approver: turn.approver } : {}) });
   const runner = new CapabilityRunner(turn.registry, sink);
   const base: CapabilityExecutionInput = { run_id: turn.run_id, requester: turn.requester, contract: turn.contract, capability: entry,
@@ -221,7 +231,7 @@ async function awaitApproval(turn: ActiveTurn, approval_id: string, timeoutMs: n
 interface Rendered { content: string; digest: string; failed?: string }
 
 /** Tools whose code-rendered `answer` reaches the planner as text, not a JSON envelope. */
-const PLAIN_TEXT_ENTRIES: ReadonlySet<RegistryEntry> = new Set<RegistryEntry>(["houge_status", "memory_correct"]);
+const PLAIN_TEXT_ENTRIES: ReadonlySet<RegistryEntry> = new Set<RegistryEntry>(["houge_status", "memory_correct", "memory_correct_write"]);
 
 /** Read tools cross the wall ALWAYS (D3); bash is raw (D12); a ledger digest carries counts and hashes only. */
 async function render(turn: ActiveTurn, entry: RegistryEntry, r: CapabilityResult): Promise<Rendered> {
