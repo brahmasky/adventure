@@ -49,6 +49,9 @@ const CHAIN_KEYS: readonly Key[] = [
   "HOUGE_OMP_PLANNER", "HOUGE_OMP_READER", "HOUGE_OMP_MEDIA", "HOUGE_OMP_TICKS", "HOUGE_OMP_JUDGES", "HOUGE_OMP_CHAIR", "HOUGE_OMP_REVIEWER"
 ];
 
+/** HOUGE_OMP_APPROVAL_TIMEOUT_MS alone (never throws on an unrelated malformed chain): the sweep needs only this. */
+export function resolveApprovalTimeoutMs(env: NodeJS.ProcessEnv): number { return num(env, "HOUGE_OMP_APPROVAL_TIMEOUT_MS"); }
+
 /** The supervisor renews a planner lease this often (spec §7.1). */
 export const PLANNER_HEARTBEAT_MS = 30_000;
 /** A lease shorter than three renewals lets the recovery timer fail a live turn between two heartbeats (N2). */

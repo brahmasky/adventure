@@ -63,8 +63,10 @@ describe("store changes for detached planner turns (spec §7.1, §7.2, §8)", ()
   it("stuck_run sees a turn queued and never claimed for 10 min (a queued run has no lease to expire) (B1)", () => {
     const store = RunStore.openInMemory();
     const run_id = createQueuedTurnRun(store);
-    expect(store.findStuckRuns(new Date(Date.now() - 60_000).toISOString())).toEqual([]);
-    expect(store.findStuckRuns(new Date(Date.now() + 60_000).toISOString())).toEqual([expect.objectContaining({ subject: run_id, state: "queued" })]);
+    const past = new Date(Date.now() - 60_000).toISOString(); const future = new Date(Date.now() + 60_000).toISOString();
+    expect(store.findStuckRuns(past)).toEqual([]);
+    expect(store.findStuckRuns(future)).toEqual([expect.objectContaining({ subject: run_id, state: "queued" })]);
+    expect(store.findStuckRuns(future, past)).toEqual([]); // the queued-turn cutoff is its own (N3)
   });
 
   it("a tool approval authorises exactly one execution, only while the same owner holds the lease", () => {

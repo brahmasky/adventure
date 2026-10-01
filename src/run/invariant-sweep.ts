@@ -1,4 +1,5 @@
 import { statfsSync } from "node:fs";
+import { resolveApprovalTimeoutMs } from "../omp/omp-config.js";
 import type { RunStore } from "./run-store.js";
 import { readParkMarker } from "./tombstone.js";
 
@@ -33,6 +34,14 @@ export function resolveInvariantSweepIntervalMs(env: NodeJS.ProcessEnv): number 
 }
 /** A run whose lease expired this long ago is stuck, not slow. */
 export const STUCK_RUN_GRACE_MS = 10 * 60 * 1000;
+/**
+ * A queued turn may wait behind a turn paused for Paco's approval (up to HOUGE_OMP_APPROVAL_TIMEOUT_MS): it is stuck
+ * only past that wait plus this margin (round 2 N3).
+ */
+export const QUEUED_TURN_STUCK_MARGIN_MS = 15 * 60 * 1000;
+export function queuedTurnStuckMs(env: NodeJS.ProcessEnv): number {
+  return resolveApprovalTimeoutMs(env) + QUEUED_TURN_STUCK_MARGIN_MS;
+}
 /** An undelivered notification older than this is a delivery failure, not a queue delay. */
 export const UNDELIVERED_NOTIFICATION_GRACE_MS = 15 * 60 * 1000;
 /** A schedule this far past its cursor did not fire when it should have. */
@@ -161,7 +170,8 @@ export function detectViolations(
       detail: { duplicate_count: row.duplicate_count, schedule_ids: row.schedule_ids }
     });
   }
-  for (const row of store.findStuckRuns(new Date(Date.parse(now) - STUCK_RUN_GRACE_MS).toISOString())) {
+  const queuedTurnBefore = new Date(Date.parse(now) - queuedTurnStuckMs(env)).toISOString();
+  for (const row of store.findStuckRuns(new Date(Date.parse(now) - STUCK_RUN_GRACE_MS).toISOString(), queuedTurnBefore)) {
     violations.push({ kind: "stuck_run", subject: row.subject, detail: { state: row.state } });
   }
   for (const row of store.findUndeliveredNotifications(now, UNDELIVERED_NOTIFICATION_GRACE_MS)) {

@@ -4107,12 +4107,12 @@ export class RunStore {
 
   /**
    * Runs stuck mid-flight: an ACTIVE state whose lease expired before `leaseExpiredBefore`, or a turn
-   * queued (never claimed) since before it.
+   * queued (never claimed) since before `queuedTurnBefore` (it may legitimately wait out an approval, N3).
    * `waiting_for_approval` is EXCLUDED by design — a run parked on Paco's /approve is the
    * system working, and alerting on it would make the sweep noisiest exactly when Paco is
    * slowest to answer.
    */
-  findStuckRuns(leaseExpiredBefore: string): Array<{
+  findStuckRuns(leaseExpiredBefore: string, queuedTurnBefore: string = leaseExpiredBefore): Array<{
     subject: string;
     state: string;
     lease_expires_at: string | null;
@@ -4126,7 +4126,7 @@ export class RunStore {
         -- a turn queued and never claimed has no lease to expire (B1)
         OR (state = 'queued' AND type = 'turn' AND lease_expires_at IS NULL AND created_at < ?)
       ORDER BY updated_at ASC
-    `).all<{ subject: string; state: string; lease_expires_at: string | null }>(leaseExpiredBefore, leaseExpiredBefore);
+    `).all<{ subject: string; state: string; lease_expires_at: string | null }>(leaseExpiredBefore, queuedTurnBefore);
   }
 
   /**

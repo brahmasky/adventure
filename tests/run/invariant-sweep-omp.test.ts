@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
+import { createQueuedTurnRun } from "../helpers/runs.js";
 import { DISK_FREE_LOW_BYTES, runInvariantSweep } from "../../src/run/invariant-sweep.js";
 
 // The omp-runtime sweep invariants (spec §8): each opens an incident on the transition into
@@ -56,5 +57,21 @@ describe("wall_collapsed — any wall_collapse row since the previous sweep (D10
     collapse(3);
     runInvariantSweep({ store, now: at(0), env: ARMED });
     expect(open("wall_collapsed")).toHaveLength(1);
+  });
+});
+
+describe("stuck_run for a queued turn waits out an approval (round 2 N3)", () => {
+  it("a turn queued behind a 30 min approval wait is not stuck at 40 min; past approval timeout + 15 min it is", () => {
+    const run = createQueuedTurnRun(store);
+    runInvariantSweep({ store, now: at(40), env: ARMED });
+    expect(open("stuck_run")).toEqual([]);
+    runInvariantSweep({ store, now: at(46), env: ARMED });
+    expect(open("stuck_run")).toEqual([expect.objectContaining({ subject: run })]);
+  });
+
+  it("follows HOUGE_OMP_APPROVAL_TIMEOUT_MS", () => {
+    const run = createQueuedTurnRun(store);
+    runInvariantSweep({ store, now: at(20), env: { ...ARMED, HOUGE_OMP_APPROVAL_TIMEOUT_MS: "60000" } });
+    expect(open("stuck_run")).toEqual([expect.objectContaining({ subject: run })]);
   });
 });
