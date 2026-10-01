@@ -84,7 +84,12 @@ reach a real omp. The defaults below are copied from `src/omp/omp-config.ts`.
 | `HOUGE_OMP_LEASE_TTL_S` | `120` | The planner's run lease, renewed every 30 s (also while awaiting approval). An expired `planner:*` lease is failed, never requeued. | yes |
 
 Set by the daemon, not operator config: `HOUGE_BRIDGE_SOCK` and `HOUGE_BRIDGE_TOKEN` are minted per
-planner child, and `HOUGE_SHELL_SANDBOX` is the shell wrapper's copy of `HOUGE_OMP_SANDBOX`.
+planner child, and `HOUGE_SHELL_SANDBOX` is the shell wrapper's copy of `HOUGE_OMP_SANDBOX`. `TMPDIR` is
+set for every child: `<workspace>/.tmp` for the planner and each `bash` command, `<data>/tmp` for one-shots,
+codex and agy. The Seatbelt profiles deny `os.tmpdir()` (`/private/var/folders`), so a child never writes where
+the daemon later reads. The daemon's own temp space is `<data>/tmp` (media downloads, codex out-files, agy
+workdirs) and self-write worktrees live in `<data>/selfwrite`; `<data>` is the directory holding
+`houge.sqlite`. Both are 0700, gitignored and write-denied to every sandboxed child (ADR 0028, decision 18).
 `HOUGE_CONFIG_YML` is not an environment variable: it is the name of the code constant
 (`src/omp/planner-supervisor.ts`) holding the profile config the daemon writes to
 `<data>/omp/houge-config.yml` (`tools.xdev: false`, `startup.checkUpdate: false`,
@@ -416,7 +421,7 @@ back to an advisory write with a noted error (only a real **low score** blocks, 
 
 Houge can write a **diff to his own source** to fix a bug. A `selfcode` message with **write
 intent** (*"fix it so you stop asking which 猴哥"*) routes to `runSelfWrite`: Houge frames the task,
-has **Codex write a diff in a fresh git worktree** (`codex exec --sandbox workspace-write`), then runs
+has **Codex write a diff in a fresh git worktree** under `<data>/selfwrite` (`codex exec --sandbox workspace-write`), then runs
 it **autonomously** through three checkers — (1) a deterministic **protected-path check** (HARD DENY on
 any gate/identity/dep/existing-test path; **not** overridable by `/approve`), (2) the **test gate**
 (typecheck + test + build in the worktree), (3) an **independent reviewer** (model diversity:

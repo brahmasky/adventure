@@ -73,9 +73,10 @@ protected code, never self-written). A same-user local process on the mini: **ou
 already read `.env` today).
 
 **Assets, ordered.** (1) Secrets: `.env`, `houge.sqlite`, `~/.ssh`, `~/.gnupg`, `~/.pi`, `~/.claude`, `~/.codex`,
-`~/.kimi*`, `~/.config/gcloud`, Keychains, `~/.omp/profiles/houge` (OAuth store). (2) Houge's own operation: repo
-protected paths + `dist/`, daemon process, launchd, DB, sockets, profiles. (3) Paco's files under `$HOME`.
-(4) External side effects in Paco's name.
+`~/.kimi*`, `~/.config/gcloud`, Keychains, `~/.omp/profiles/houge` (OAuth store); the full list as built is
+`HOME_SECRETS` (below). (2) Houge's own operation: repo protected paths + `dist/`, daemon process, launchd, DB,
+sockets, profiles, the daemon's temp space and self-write worktrees, and the binaries and config the daemon or Paco's
+shell later run unsandboxed. (3) Paco's files under `$HOME`. (4) External side effects in Paco's name.
 
 | Layer | Mechanism | Protects | Bypassable by a steered planner? |
 |---|---|---|---|
@@ -128,10 +129,18 @@ change the architecture the spec describes:
    the command.
 8. **Matcher posture.** Patterns are anchored to command position, which removes false positives
    like `ls ~/.ssh` and `grep mail`. The line-wise safety pass never skips heredoc bodies. A parse
-   error or eval-depth overflow classifies the command as destructive (ask), never as plain.
-9. **Approval card vs ledger.** The Telegram card shows the matcher label and the command, capped at
-   300 chars and passed through egress redaction, because Paco cannot approve what he cannot see.
-   The ledger's `approval_requested.action_summary` carries the label only. Command text lives in the
+   error or eval-depth overflow classifies the command as destructive (ask), never as plain. The
+   final review widened it: the matcher recurses into `bash|sh|zsh -<flags>c`, here-strings,
+   `env -S` and `find -exec`; a shell fed its script through a pipe, a `<` redirect, a process
+   substitution or an expanded here-string asks as an "unseen shell script"; git aliases,
+   `git branch -D`, `git stash drop|clear`, `curl --json|--request|--form|--upload-file`, `gh api`
+   writes and `gh pr|issue|release|repo create|edit|merge|delete` ask; a backslash-newline inside a
+   word is deleted as bash does; an unterminated heredoc asks.
+9. **Approval card vs ledger.** The Telegram card shows the matcher label and the command, up to
+   3000 chars with an explicit `…[truncated N chars]` marker beyond that, passed through egress
+   redaction, because Paco cannot approve what he cannot see. The label lists **every** matched
+   class, strictest first, so a decoy cannot hide a push behind a delete. The ledger's
+   `approval_requested.action_summary` carries the labels only. Command text lives in the
    notification outbox, never in the audit ledger.
 10. **One approval in flight.** The bridge serialises every `call` request per turn, whether or not
     omp honours a per-tool sequential attribute.
@@ -163,6 +172,28 @@ change the architecture the spec describes:
     re-tuned in `.env` to 3× its old value
     ([configuration.md](../reference/configuration.md#global-autonomy-circuit-breaker)). The operator
     sets it before the cutover kickstart; the code default is unchanged.
+18. **Floor A as built (final review fix wave, 2026-10-01; spec §3 "Floor A as built").**
+    - **Writes are denied by default.** D5 is read literally: writes are allowed under `$HOME`,
+      `/private/tmp` and the omp workspace only, and then denied again for the repo, `dist/`, the
+      `$HOME` binary install trees, the directories of the omp, codex, agy and node binaries, and the
+      dotfiles that make git, a shell, a terminal or an editor run code. `os.tmpdir()`
+      (`/private/var/folders`) is not writable.
+    - **Credential stores are read- and write-denied** (`HOME_SECRETS`: AI-tool, bot, cloud,
+      container and key/token stores, `~/Library/Keychains`, top-level `~/.<name>.env`), and
+      `/usr/bin/security` cannot exec. The planner keeps `~/.omp` (D11).
+    - **The gate canonicalises every path the way omp 18.4.4 resolves it** (`@`, `:`, `~` forms,
+      `file://`, selectors, edit rename/hashline/apply_patch targets), denies if any resolution is
+      denied, and refuses `bad_path` on a form it does not model.
+    - **The workspace is pinned.** Its root, the sessions root and every `chat-<id>` dir cannot be
+      moved or replaced by a symlink, and the attachment adapter lstat-checks the chain and the
+      realpath before it reads a file.
+    - **Daemon temp space moved to `<data>/tmp`, worktrees to `<data>/selfwrite`.** Both are
+      write-denied to every child. A self-write diff is re-hashed before publish.
+    - **Children get a private `TMPDIR`**: `<workspace>/.tmp` for the planner and `bash`, and
+      `<data>/tmp` for one-shots, codex and agy.
+    - **Daemon-side git runs without user or system config**, hooks or fsmonitor (push keeps the
+      credential helper).
+    - **`sandbox-exec` and every wrapper helper run by absolute path.**
 
 ## Consequences
 
@@ -184,7 +215,8 @@ change the architecture the spec describes:
   setting the pin in `.env` (`HOUGE_OMP_VERSION`, or `HOUGE_OMP_VERSION_ALLOW`).
 - **Verification:** `scripts/live-gate-omp.mjs` (cases 1–24 plus silent-degradation checks;
   `--smoke` = cases 1, 3, 6, 13, 22 against a temp DB copy) and `scripts/eval-replay.mjs` (the answer-only
-  replay eval, spec §13 seam 3).
+  replay eval, spec §13 seam 3). Case 3 is an explicit operator self-test that must show a `bash` row; a
+  planner that refuses it twice (`model_refusal`) makes the gate INCONCLUSIVE (exit 4), never PASS.
 
 ### Residuals (spec §14 plus the build)
 
@@ -192,11 +224,27 @@ change the architecture the spec describes:
   can read its own OAuth store through a hook bug. Mitigations: the wall, L1, and the SP3 OS user.
 - Local irreversibility (D5): destructive deletes are matched and ask. An overwrite through
   `edit`/`write`, or a delete the matcher misses, is not gated.
-- **D12 residuals:** raw web bytes reach the planner through `bash`, and any command the matcher
-  misses can egress without a tap. Both were recommended against and accepted by Paco on 2026-09-30.
-  Known matcher misses are parked for the final review: spaced arithmetic `$(( a << 1 ))` combined
-  with a multi-line quoted message; an apostrophe inside nested double quotes in a `$()`; a
-  backslash-newline inside a word; and ANSI-C `$'…'` quoting.
+- **D12 residuals:** raw web bytes reach the planner through `bash`, and **egress stays open**
+  (network is allowed in both profiles), so any command the matcher misses can send non-secret data
+  out without a tap. Both were recommended against and accepted by Paco on 2026-09-30.
+- **Matcher misses (D12, best effort).** Known at ship: `dd`, `unlink`, `python3 -c` / `node -e` /
+  `perl -e` deletes or uploads, ANSI-C `$'…'` quoting, spaced arithmetic `$(( a << 1 ))` next to a
+  multi-line quoted message, an apostrophe inside nested double quotes in a `$()`, and `bash file.sh`
+  (the script body is not read). Floor A and the sandbox hold regardless.
+- **D11 symlink race on `~/.omp`.** The gate canonicalises the path string but does not open the
+  file, so a symlink swapped between the check and omp's read is not seen. The exposure is what the
+  planner process can already read: its own OAuth store. SP3 closes it.
+- **The dotfile denylist is incomplete by nature.** Tool configs under `$HOME` that run code and are
+  not listed (for example under `~/Library/Application Support`) stay writable; they fire only in
+  Paco's interactive tools. The structural fix is an allowlist of writable `$HOME` subtrees, or SP3.
+- **Signal deny is per process group** (probed 2026-10-01): `(deny signal (target others))` covers
+  processes outside the sender's group. `bash` commands run in their own group and cannot signal the
+  daemon; the planner child shares the daemon's group, so only omp's own code could, and omp gives
+  the model no signal tool.
+- **Binary dirs are resolved once per supervisor**: a relocated reinstall is covered after a restart.
+- **No step or repeated-denial cap.** The old inner loop's step and denial caps have no omp
+  equivalent. Tool calls are bounded by the contract budget; model requests and repeated denials
+  only by the turn deadline and the frame watchdog.
 - Anthropic may block Max OAuth in third-party clients. The planner then falls to Opus 4.6
   automatically, and an incident tells Paco.
 - Antigravity's weekly ceiling covers a shared Claude/GPT bucket; reader volume rides Gemini's bucket.

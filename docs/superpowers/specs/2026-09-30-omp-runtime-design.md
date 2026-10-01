@@ -9,7 +9,8 @@ marked *probed* was exercised on this binary and this host on 2026-09-30; anythi
 ## 0. Why
 
 Four months produced a safety harness with one real tool: `web_search` is 78% of all tool steps in the ledger;
-human messages fell from 193 (July) to 14 (August). On 2026-09-09 Paco observed that the tool limits in the backend were holding Houge back. Houge picked
+human messages fell from 193 (July) to 14 (August). On 2026-09-09 Paco observed that the tool limits in the
+backend were holding Houge back. Houge picked
 pi (the core of OpenClaw) as its agent and then ran it with `--no-tools` (ADR 0002 "inference mode"), rebuilding a
 weaker loop on top. This spec finishes ADR 0002 V2: the agent runs with tools, inside containment Houge owns, on
 the strongest subscription model per seat. Sub-project 1 of 4 (2 = Paco's personal tools; 3 = auth broker + OS
@@ -51,9 +52,10 @@ protected code, never self-written). A same-user local process on the mini: **ou
 already read `.env` today).
 
 **Assets, ordered.** (1) Secrets: `.env`, `houge.sqlite`, `~/.ssh`, `~/.gnupg`, `~/.pi`, `~/.claude`, `~/.codex`,
-`~/.kimi*`, `~/.config/gcloud`, Keychains, `~/.omp/profiles/houge` (OAuth store). (2) Houge's own operation: repo
-protected paths + `dist/`, daemon process, launchd, DB, sockets, profiles. (3) Paco's files under `$HOME`.
-(4) External side effects in Paco's name.
+`~/.kimi*`, `~/.config/gcloud`, Keychains, `~/.omp/profiles/houge` (OAuth store); the full list as built is
+`HOME_SECRETS` (below). (2) Houge's own operation: repo protected paths + `dist/`, daemon process, launchd, DB,
+sockets, profiles, the daemon's temp space and self-write worktrees, and the binaries and config the daemon or Paco's
+shell later run unsandboxed. (3) Paco's files under `$HOME`. (4) External side effects in Paco's name.
 
 | Layer | Mechanism | Protects | Bypassable by a steered planner? |
 |---|---|---|---|
@@ -72,6 +74,47 @@ shell command (§5.6), and the self-write pipeline for repo changes. **Accepted 
 across many commands (detected by a new `disk_free_low` sweep invariant on the 12 h cadence, not limited); CPU
 contention inside the `nice` band; a command that calls `setsid` outlives its call (CPU-bounded, not wall-clock
 bounded); local overwrites and unmatched destructive commands (D5). Upgrade path (SP3): a dedicated macOS user for the planner.
+
+**Floor A as built (final review fix wave, 2026-10-01).** The layers above are implemented as follows; the code is
+`src/omp/protected-paths.ts`, `seatbelt.ts`, `gate-path.ts` and `workspace.ts`, and the gate mirrors the profiles.
+
+- **Writes are denied by default** (D5 read literally: yolo *under `$HOME`*). Both profiles render, in order and with
+  SBPL's last-match-wins: `(deny file-write*)`; allow `$HOME`, `/private/tmp` and the omp workspace (plus the sessions
+  dir for the planner); allow only `/dev/null`, `/dev/tty` and `/dev/fd`; deny the whole repo, `dist/`, the daemon's
+  operational files, the `$HOME` binary install trees (`~/.bun`, `~/.local`, `~/.npm`, `~/.nvm`, `~/.cargo`,
+  `~/.rustup`, `~/.pyenv`, `~/.volta`, `~/.deno`, `~/go`, `~/.homebrew`, `~/.oh-my-zsh`), the directories (PATH
+  lookup and realpath) of the omp, codex, agy and node binaries, and the dotfiles that make git, a shell, a terminal
+  or an editor run code (`HOME_CODE_CONFIG`: git config, every zsh/bash/fish/tcsh startup and logout file and
+  ZDOTDIR, `~/.p10k.zsh`, terminal configs, `~/.vimrc`/`~/.vim`/`~/.config/nvim`, tmux config, `~/.envrc`);
+  re-allow the workspace; pin roots and every `chat-<id>` dir; secrets last. `/private/var/folders`
+  (`os.tmpdir()`) is **not** writable.
+- **Credential stores are read- and write-denied** in both profiles (`HOME_SECRETS`): `~/.ssh`, `~/.omp` (shell
+  only; D11 for the planner), AI and dev tools (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.gemini`, `~/.kimi`,
+  `~/.kimi-code`, `~/.copilot`, `~/.grok`, `~/.hermes`, `~/.antigravity`, `~/.antigravity-ide`, `~/.pi`,
+  `~/.agentmemory`, `~/.agents`), bots (`~/.houge`, `~/.dsh`, `~/.whatsapp-bot`), cloud and containers
+  (`~/.docker`, `~/.config/gh`, `~/.config/gcloud`, `~/.aws`, `~/.azure`, `~/.kube`), keys and tokens (`~/.npmrc`,
+  `~/.cargo/credentials*`, `~/.gnupg`, `~/.netrc`, `~/.git-credentials`), `~/Library/Keychains`, and by regex every
+  top-level `~/.env` / `~/.<name>.env`. `/usr/bin/security` cannot exec (the Keychain is reached over Mach IPC).
+  Secrets render after every write allow, so `$HOME`'s allow cannot re-open one.
+- **The gate canonicalises paths as omp does.** `gateTargets` mirrors omp 18.4.4's own resolver (`expandPath`,
+  `expandTilde`, `resolveToCwd`): the `@` and `:` prefixes, `~`, `~/x`, `~x`, `file://`, unicode spaces, `:selector`
+  and list forms. The gate denies when *any* resolution is denied, and refuses `bad_path` on any form it does not
+  model (control characters, backslashes, other `@`/`:` prefixes, double prefixes, more than 256 candidates).
+  `edit` rename, hashline `[path#HASH]` / `MV` and apply_patch targets are gated too; an edit body with no target the
+  hook can see is refused.
+- **The workspace cannot be swapped.** The profiles pin the workspace and sessions roots and every `chat-<id>` dir
+  under them with literal/regex write denies (the daemon creates them), so the sandbox cannot move, remove or
+  symlink-replace one. Before an attachment is read, `verifiedWorkspace` lstat-checks each component from
+  `<data>/omp` down to `chat-<id>` and requires `realpath(ws)` to equal the expected path.
+- **Daemon temp space is off `os.tmpdir()`.** Media downloads, codex out-files and agy workdirs live in
+  `<data>/tmp`; self-write worktrees in `<data>/selfwrite` (both 0700, write-denied in both profiles). Before
+  publish the unified diff is re-hashed and compared with the reviewed one; a change refuses the publish.
+- **Children get a private `TMPDIR`.** The planner and every `bash` command run with `TMPDIR=<workspace>/.tmp`;
+  one-shots, codex and agy with `TMPDIR=<data>/tmp`. Nothing a child writes lands where the daemon later reads.
+- **Daemon-side git ignores user and system config** (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, no
+  fsmonitor, no hooks), except `push`, which keeps the credential helper; `~/.gitconfig` is write-denied.
+- **Absolute binaries.** `/usr/bin/sandbox-exec` and every wrapper helper are called by absolute path under a fixed
+  `PATH`; the command alone gets the caller's `PATH`.
 
 ## 4. Process topology
 
@@ -196,7 +239,8 @@ directories → `(subpath …)`, files → `(literal …)`; Seatbelt escaping of
 (`/private/…`) added by realpath'ing `$HOME`; all three profiles carry `(deny signal (target others))`,
 `(deny process-exec (literal "/bin/launchctl"))`, `(deny mach-lookup (global-name "com.apple.launchd"))`
 (*probed*: `kill`/`pkill` of the daemon → `Operation not permitted`, `launchctl` cannot exec, self-signals work).
-Profiles are written atomically (tmp + rename, 0600) at boot and before every planner start.
+Profiles are written atomically (tmp + rename, 0600) at boot and before every planner start. The rule order and
+path sets as built (default-deny writes, credential denies, workspace pins) are in §3, "Floor A as built".
 
 ### 5.5 Floor B: the approval matcher
 
@@ -242,7 +286,7 @@ has a test in §11):
   `failed{wrapper_unknown}` + incident. **The model never sees success from an uncertain cleanup.**
 - R6 The adapter owns the deadline (`HOUGE_OMP_SHELL_TIMEOUT_MS`, default 120 000; the runner's timeout for this
   capability is that + 5 s so the adapter fires first) and cancellation: on deadline, output cap, or any abort
-  (runner race, turn deadline, frame watchdog, `/kill`, `/guard`, bridge disconnect) it `killpg(SIGKILL)`s the
+  (runner race, turn deadline, frame watchdog, `/kill`, the `--once` bound, bridge disconnect) it `killpg(SIGKILL)`s the
   group and keeps doing so every second until the child's `exit` fires, then returns `failed{timeout|output_cap|
   aborted}`. Cleanup never leaves the adapter's lifetime: the daemon holds the child handle so the pid is
   reserved until reaped; a 5 s cleanup miss opens `cleanup_timeout` as **evidence only** — no later kill by pgid.
@@ -289,14 +333,14 @@ external_work publish path. Tables stay. ADR 0022/0023 amended "dormant; code re
 ## 7. Turn state machine and supervision
 
 **Detached turns.** The poll loop no longer awaits `executeRun` for `turn` runs: it hands the run to the chat's
-`PlannerSupervisor` and returns to polling. That is what lets `/approve`, `/kill`, `/guard`, a second message
+`PlannerSupervisor` and returns to polling. That is what lets `/approve`, `/kill`, a second message
 and outbox flushes happen during a turn. Non-turn runs keep the synchronous path.
 
 ```
 STOPPED ──start──▶ STARTING ──ready + open_session──▶ IDLE
 IDLE ──prompt──▶ RUNNING ──agent_end──▶ IDLE
 RUNNING ──bridge creates tool_approvals row──▶ AWAITING_APPROVAL ──approved|denied|expired|abort──▶ RUNNING
-RUNNING|AWAITING_APPROVAL ──turn deadline | frame watchdog | /kill | /guard | child exit──▶ ABORTING ──ack|5 s──▶ STOPPING ──▶ STOPPED
+RUNNING|AWAITING_APPROVAL ──turn deadline | frame watchdog | /kill | --once bound | child exit──▶ ABORTING ──ack|5 s──▶ STOPPING ──▶ STOPPED
 IDLE ──stale prompt | idle > HOUGE_OMP_IDLE_EXIT_MS──▶ STOPPING
 ```
 
@@ -348,7 +392,9 @@ Every Telegram message is still its own run (idempotency, contract, ledger uncha
   (`error_type: merged_parent_failed`); its `chat_turns` user row is written at steer time;
 - a **schedule fire** is never steered (provenance): it waits for IDLE and then runs as its own turn with the
   code-owned preamble `[scheduled: <goal>]`;
-- `/kill`, `/guard pause` → ABORTING; other commands are handled by the poll loop as today.
+- `/kill` → ABORTING; other commands are handled by the poll loop as today. (There is no `/guard` command: the
+  `telegram --once` runner's own time bound calls `abortAll("guard")`, which fails the turn `killed` with ref
+  `guard` and replies `GUARD_STOPPED_TEXT`, never the `/kill` text.)
 
 ## 8. Provider seam, models, audit
 
@@ -402,8 +448,8 @@ HOUGE_OMP_LEASE_TTL_S=120
   `schedule_task` (unchanged). **Per-run budget:** `tool_calls` cap raised from 14 to 40 and counts bridge calls
   + `fs_write` (not `fs_read`); the global 24 h breaker counts `tool_finished` rows as today, with its ceiling
   re-tuned in `.env` for the new volume (documented in `configuration.md`).
-- **Kill/park/guard.** `/kill` → tombstone + ABORTING every supervisor; boot with tombstone → no child.
-  `/guard pause` → ABORTING; resume → lazy restart. `houge.parked` unchanged.
+- **Kill/park.** `/kill` → tombstone + ABORTING every supervisor; boot with tombstone → no child. The
+  `telegram --once` bound aborts as `guard` (see §7.3); the next turn restarts lazily. `houge.parked` unchanged.
 - **Secrets (ADR 0015 amendment).** L0 + L1. New secret location `~/.omp/profiles/houge/agent/agent.db` in
   `SECRET_PATHS` and in the S12 probe (D11 residual recorded).
 - **Self-write.** `PINNED_ENV` pins for every `HOUGE_OMP_*`; protected set gains **every file the planner
@@ -437,7 +483,7 @@ of the new contract test that replaces it. Target `src/` ≤ 25 k lines (from 37
   marker; **shell R1–R9**: limits fail closed (unsatisfiable `ulimit`), status channel (`limits_failed`,
   `cleanup_failed` via a fake `pgrep` on `PATH`, missing status, a command exiting 97 itself reads `ok`), forged
   `>&3` from the command fails, normal completion with backgrounded children leaves an empty group, every abort
-  source during a running command (abort before spawn, runner timeout, turn deadline, `/kill`, `/guard`, bridge
+  source during a running command (abort before spawn, runner timeout, turn deadline, `/kill`, the `--once` bound, bridge
   disconnect during the command and during cleanup) asserts group gone, one `tool_finished{failed}`, no second
   reservation, retry timer cleared at `exit`, no signal afterwards; `cleanup_timeout` via an injected no-op kill
   (child alive past 5 s, incident asserted, then reaped); PINNED_ENV; hermeticity (`HOME` at an empty temp dir,
@@ -490,8 +536,32 @@ Deferred to SP4: weakness-mining tick over the ledger → ranked proposals with 
   own OAuth store through a hook bug. Mitigations: wall, L1, SP3 OS user.
 - Local irreversibility (D5): destructive deletes are matched and ask; an overwrite through `edit`/`write`, or a
   delete the matcher misses, is not gated.
-- **D12 residuals:** raw web bytes reach the planner through `bash`; egress without a tap by any command the
-  matcher misses. Both were recommended against and accepted by Paco on 2026-09-30.
+- **D12 residuals:** raw web bytes reach the planner through `bash`; **egress stays open** (network is allowed in
+  both profiles), so any command the matcher misses can send non-secret data out without a tap. Both were
+  recommended against and accepted by Paco on 2026-09-30.
+- **Matcher misses (D12).** Floor B for `bash` is best effort. Known misses at ship: `dd`, `unlink`, `python3 -c` /
+  `node -e` / `perl -e` deletes or uploads, ANSI-C `$'…'` quoting, spaced arithmetic `$(( a << 1 ))` next to a
+  multi-line quoted message, an apostrophe inside nested double quotes in a `$()`, and `bash file.sh` (the script's
+  body is not read). Covered since the final review: `bash|sh|zsh -<flags>c`, here-strings, `env -S`, a shell fed
+  through a pipe, `<` redirect or process substitution (asks as an unseen script), `find -exec rm` / `-delete`,
+  `git branch -D`, `git stash drop|clear`, git aliases, `curl --json|--request|--form|--upload-file`, `gh api`
+  writes, `gh pr|issue|release|repo create|edit|merge|delete`, backslash-newline inside a word, and unterminated
+  heredocs (ask).
+- **D11 symlink race on `~/.omp`.** The gate canonicalises the path *string*; it does not open the file. A planner
+  that swaps a symlink between the gate's check and omp's read could reach a file the check did not see. The
+  exposure is limited to what the planner process can already read: its own `~/.omp` store (D11). SP3 closes it.
+- **The dotfile denylist is incomplete by nature.** `HOME_CODE_CONFIG` lists the shell, terminal, git, editor, tmux
+  and direnv files that run code; any other tool config under `$HOME` that executes code (for example under
+  `~/Library/Application Support`) stays writable and fires only in Paco's own interactive tools. The structural fix
+  is an allowlist of writable `$HOME` subtrees, or the SP3 OS user.
+- **Signal deny is per process group.** Probed on macOS 15.7 (2026-10-01): `(deny signal (target others))` denies
+  signals to processes outside the sender's process group. Every `bash` command runs in its own group (the wrapper is
+  a detached group leader), so it cannot signal the daemon. The planner child is spawned in the daemon's group, so
+  code inside the omp process itself could; omp exposes no signal tool to the model (its `bash` is the bridged one).
+- **Binary dirs are resolved once** per supervisor; a relocated reinstall of omp or codex is covered after a
+  daemon restart.
+- **No step or repeated-denial cap.** The old inner loop's caps have no omp equivalent: tool calls are bounded by
+  the contract budget, model requests and repeated denials only by the turn deadline and the frame watchdog.
 - Anthropic may block Max OAuth in third-party clients → automatic fall to Opus 4.6; incident tells Paco.
 - Antigravity's weekly ceiling on the shared Claude/GPT bucket; reader volume rides Gemini's bucket.
 - omp moves fast: version pin + update checks off; frames re-captured on upgrade. Sequential-tool attribute name
