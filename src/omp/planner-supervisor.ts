@@ -701,6 +701,9 @@ export class PlannerSupervisor {
     const t = this.turn;
     if (gen !== this.gen || !t) return;
     if (this.st === "RUNNING") this.armFrameIdle(t);
+    // only a prompt in flight owns frames: one arriving after its agent_end (or once the turn finished, or between a
+    // failed leg and the retry's prompt) is ignored and can never fail or end a completed turn (round 2 N6)
+    if (!t.live || t.finished) return;
     if (f.type === "turn_start") t.n++;
     else if (f.type === "tool_execution_start") t.usedTool = true;
     else if (f.type === "message_end") this.onAssistant(t, summarizeAssistantMessage(f));

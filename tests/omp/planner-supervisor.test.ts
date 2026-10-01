@@ -37,6 +37,8 @@ type Fake = PlannerSessionLike & {
   exit: (c: number) => void; assistant: (text: string, extra?: object) => void; bind: (o: PlannerSessionOptions) => Fake;
   /** The child stays up but its bridge socket closes (its extension never reconnects). */
   dropBridge: () => void;
+  /** Emit a frame now, outside any prompt (a late or stray frame). */
+  emitForTest: (f: OmpFrame) => void;
 };
 
 /** In-memory omp child. Its start() plays the extension against the REAL bridge socket (ruling 3). */
@@ -75,6 +77,7 @@ function fakeSession(script: Script = {}): Fake {
     onFrame: (cb: (f: OmpFrame) => void) => { frameCbs.push(cb); }, onExit: (cb: (i: ExitInfo) => void) => { exitCbs.push(cb); },
     stop: async () => { drop(); },
     dropBridge: () => drop(),
+    emitForTest: (f) => emit(f),
     exit: (c: number) => { drop(); exitCbs.forEach((cb) => cb({ code: c, signal: null, stopped: false })); },
     assistant
   };
@@ -1018,5 +1021,33 @@ describe("PlannerSupervisor — frame watchdog, parent lease, stale children (fi
     expect(outcome.done).toHaveLength(1);
     end2(); await sup.whenIdle();
     expect(outcome.done[1]).toMatchObject({ run_id: b, text: "two" });
+  });
+});
+
+describe("PlannerSupervisor — frames after a turn's agent_end are ignored (round 2 N6)", () => {
+  it("a late error frame after a successful agent_end never fails the completed turn", async () => {
+    const session = fakeSession({ onPrompt: (_t, e) => {
+      e({ type: "turn_start" }); session.assistant("the answer"); e({ type: "agent_end" });
+      e({ type: "error", error: "extension hiccup" }); // same tick: before settle() runs
+    } });
+    const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(outcome.failed).toEqual([]);
+    expect(outcome.done[0]).toMatchObject({ run_id, text: "the answer" });
+  });
+
+  it("a stray agent_end from the failed leg never ends the retry leg before its prompt (no success with the old text)", async () => {
+    let calls = 0;
+    const session = fakeSession({
+      onPrompt: (_t, e) => {
+        e({ type: "turn_start" });
+        if (calls++ === 0) { session.assistant("", { stopReason: "error", errorMessage: "429 usage limit reached" }); e({ type: "agent_end" }); return; }
+        session.assistant("from the next leg"); e({ type: "agent_end" });
+      },
+      setModel: async () => { session.emitForTest({ type: "agent_end" }); session.emitForTest({ type: "error", error: "late" }); }
+    });
+    const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(outcome.done[0]).toMatchObject({ run_id, text: "from the next leg" });
   });
 });
