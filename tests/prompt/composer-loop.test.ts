@@ -31,6 +31,10 @@ describe("the `omp` composer surface (ADR 0002 V2: the planner acts through real
     expect(OMP_LOOP_DISCIPLINE).toMatch(/houge_status for your own runtime: restarts, which code is live/);
   });
 
+  it("names memory_correct, search first, when Paco asks to fix or forget a memory (live 2026-10-02: 'no tool to change it')", () => {
+    expect(OMP_LOOP_DISCIPLINE).toContain("memory_correct when Paco asks you to fix or forget something you remember (search first)");
+  });
+
   it("a short go-ahead to Houge's own concrete proposal means carry it out, restated in full in any task/focus input (run_79faefea)", () => {
     // Live: Paco answered a proposal with `好，修复一下`; downstream seats saw only those five
     // characters. The rule is part of the planner discipline, not a self-write special case.
