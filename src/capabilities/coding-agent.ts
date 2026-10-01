@@ -1,5 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
+import { daemonMkdtempSync, daemonTmpRoot } from "../run/daemon-tmp.js";
 import { join } from "node:path";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { execFileAsync } from "../run/exec-file-async.js";
@@ -33,7 +33,7 @@ const DEFAULT_CODEX_TIMEOUT_MS = 240_000;
  * flag. `HOUGE_CODEX_ENV_PASSTHROUGH` is an opt-in escape hatch (mirrors the pi/agy passthrough).
  */
 function codexChildEnv(): Record<string, string> {
-  return buildChildEnv(process.env.HOUGE_CODEX_ENV_PASSTHROUGH);
+  return { ...buildChildEnv(process.env.HOUGE_CODEX_ENV_PASSTHROUGH), TMPDIR: daemonTmpRoot() };
 }
 /** Cap for codex `--json` JSONL stdout (agentic file-reading can emit a large event stream). */
 const CODEX_WRITE_MAX_BUFFER = 32 * 1024 * 1024;
@@ -149,7 +149,8 @@ export function createCodingAgentAdapter(
     try {
       // The `-o` outfile lives outside the worktree so the read-only sandbox can't be
       // asked to write into its own root; codex writes the final message to it.
-      outDir = mkdtempSync(join(tmpdir(), "houge-codex-out-"));
+      // and outside os.tmpdir(): the daemon reads this file back as self_diagnose output (B13)
+      outDir = daemonMkdtempSync("houge-codex-out-");
       const outfile = join(outDir, "last-message.txt");
 
       try {

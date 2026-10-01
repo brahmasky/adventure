@@ -21,6 +21,7 @@ import { normalizeCodexUsage, type LlmUsage } from "../run/llm-usage.js";
 import type { LlmAuditScope, LlmCallRole } from "../run/run-store.js";
 import { publishBranch, selfWriteBranchName } from "../run/branch-publish.js";
 import { createWorktree, removeWorktree } from "../run/worktree.js";
+import { setDaemonDataDir } from "../run/daemon-tmp.js";
 import { buildGateAQuestion, GATE_A_DISCIPLINE, parseGateAVerdict } from "../capabilities/skill-router.js";
 import type { GateAResult } from "../capabilities/skill-router.js";
 import { buildGuidedRefineQuestion, buildSkillAuthorQuestion, parseAuthoredSkill } from "../capabilities/skill-author.js";
@@ -360,6 +361,8 @@ export class CoreWorker {
   ) {
     // Tool declarations load once; a bad file fails every turn loudly (incident per refused turn).
     this.ompDecls = loadToolDeclarations(TOOL_DECLS_DIR);
+    // Daemon temp space and self-write worktrees live under the data dir (B13); unset, it is the cwd (houge.sqlite's dir).
+    if (ompOptions.dataDir) setDaemonDataDir(ompOptions.dataDir);
     // When the DEFAULT llm adapter is in use (production), `llmAdapterFor` builds a run-scoped,
     // audited adapter per role. A test-INJECTED adapter is used as-is (it brings its own fakes).
     this.llmAdapterIsDefault = llmAdapter === undefined;

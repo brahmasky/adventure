@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { selfWriteRoot } from "../../src/run/daemon-tmp.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorktree, removeWorktree } from "../../src/run/worktree.js";
 
@@ -50,6 +51,17 @@ describe("worktree harness (ADR 0011)", () => {
     await expect(removeWorktree(wt.path)).resolves.toBeUndefined();
     // Removing a never-created path must not throw.
     await expect(removeWorktree(join(tmpdir(), "houge-wt-does-not-exist"))).resolves.toBeUndefined();
+  });
+
+  it("puts the worktree, .git pointer file included, under <data>/selfwrite — never os.tmpdir(), which the sandbox could write (B13)", async () => {
+    const repo = gitRepo();
+    const wt = await createWorktree(repo);
+    try {
+      expect(dirname(wt.path)).toBe(selfWriteRoot());
+      expect(readFileSync(join(wt.path, ".git"), "utf8")).toContain(join(realpathSync(repo), ".git", "worktrees")); // gitdir stays in the repo
+    } finally {
+      await removeWorktree(wt.path);
+    }
   });
 
   it("throws when the project root is not a git repository", async () => {

@@ -1,5 +1,5 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { daemonTmpRoot, registerDaemonTmpRoot } from "../run/daemon-tmp.js";
 import path from "node:path";
 import { buildReaderQuestion, parseReaderExtraction, renderExtractionDigest } from "../core/quarantine.js";
 import { classifyLlmError } from "../llm/audit.js";
@@ -44,7 +44,7 @@ export interface MediaIngestDeps {
   stageDeadlineMs?: number;
   /** Default MEDIA_DOWNLOAD_TIMEOUT_MS; tests shrink it. */
   downloadTimeoutMs?: number;
-  /** Default os.tmpdir(); tests use a per-file root so dir assertions never see other suites' dirs. */
+  /** Default `<data>/tmp` (never os.tmpdir(), B13); tests use a per-file root so dir assertions never see other suites' dirs. */
   tmpRoot?: string;
 }
 
@@ -75,7 +75,7 @@ export async function ingestMedia(deps: MediaIngestDeps, ref: TelegramMediaRef, 
   // a known dir to remove, and nothing created later can leak.
   let dir: string;
   try {
-    dir = await mkdtemp(path.join(deps.tmpRoot ?? os.tmpdir(), "houge-media-"));
+    dir = await mkdtemp(path.join(mediaTmpRoot(deps.tmpRoot), "houge-media-"));
   } catch {
     return fail(ref.kind, "leg_failed", { ...base, detail: "mkdtemp" });
   }
@@ -107,6 +107,13 @@ export async function ingestMedia(deps: MediaIngestDeps, ref: TelegramMediaRef, 
       ? transcribe(deps, media, caption, withBytes, t0, now)
       : describePhoto(deps, media, caption, withBytes, t0, now);
   }
+}
+
+/** The daemon-owned root a media dir is made in; a caller's root is registered so the seat gate accepts its files. */
+function mediaTmpRoot(root: string | undefined): string {
+  if (root === undefined) return daemonTmpRoot();
+  registerDaemonTmpRoot(root);
+  return root;
 }
 
 /** Declared counts for the ledger row: never ids, names or paths. */

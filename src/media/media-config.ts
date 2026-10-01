@@ -1,5 +1,5 @@
-import os from "node:os";
 import path from "node:path";
+import { isDaemonTmpDir } from "../run/daemon-tmp.js";
 
 /**
  * Multimodal ingest (spec 2026-09-29): the pure facts every other media module shares — the flag,
@@ -83,12 +83,13 @@ export function resolveMediaLegTimeoutMs(env: NodeJS.ProcessEnv): number {
 
 /**
  * The answer adapter's gate: an absolute, normalised path (no `..`) to a code-owned basename inside a
- * `houge-media-*` directory that sits DIRECTLY under `tmpdir()`, carrying that basename's one mime.
+ * `houge-media-*` directory that sits DIRECTLY under a daemon temp root (`<data>/tmp`, never os.tmpdir(): B13),
+ * carrying that basename's one mime.
  */
 export function isAllowedMediaFile(input: { path: string; mime: string }): boolean {
   if (!path.isAbsolute(input.path) || path.normalize(input.path) !== input.path) return false;
   const dir = path.dirname(input.path);
-  if (path.dirname(dir) !== os.tmpdir() || !path.basename(dir).startsWith("houge-media-")) return false;
+  if (!isDaemonTmpDir(dir) || !path.basename(dir).startsWith("houge-media-")) return false;
   return BASENAME_MIME.get(path.basename(input.path)) === input.mime;
 }
 

@@ -11,7 +11,7 @@
 // houge-media-* dir left. Never opens houge.sqlite. Makes ~8 subscription/flat-rate calls; the long clip
 // takes a minute or two. Needs ffmpeg, say, agy and omp (logged in under profile houge). Build first.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,8 +64,8 @@ const worker = new CoreWorker(store, repo, undefined, undefined, undefined, unde
   downloadFile: async ({ file_id }) => ({ bytes: new Uint8Array(media[file_id]) })
 }, { dataDir: data, distDir: DIST });
 const TERMINAL = new Set(["completed", "failed", "cancelled", "expired"]);
-// The armed daemon on the mini may create houge-media-* dirs concurrently: compare against a snapshot.
-const dirsBefore = new Set(readdirSync(tmpdir()).filter((n) => n.startsWith("houge-media-")));
+// Media dirs live in the gate's own data dir (<data>/tmp, B13), never os.tmpdir(): no snapshot of a shared dir needed.
+const mediaTmp = join(data, "tmp");
 const mediaRows = (run) => store.getLedgerEvents(run).filter((e) => e.event_type === "media_ingested").map((e) => e.payload);
 const attempts = (run, role) => store.getLedgerEvents(run).filter((e) => e.event_type === "llm_attempt" && e.payload.role === role).map((e) => e.payload);
 
@@ -126,10 +126,10 @@ try {
 } finally {
   await worker.shutdownPlanners();
   store.close();
+  const leaked = existsSync(mediaTmp) ? readdirSync(mediaTmp).filter((n) => n.startsWith("houge-media-")) : [];
+  if (leaked.length > 0) failures.push(`temp dirs left behind: ${leaked.join(", ")}`);
   rmSync(work, { recursive: true, force: true });
   rmSync(data, { recursive: true, force: true });
 }
-const leaked = readdirSync(tmpdir()).filter((n) => n.startsWith("houge-media-") && !dirsBefore.has(n));
-if (leaked.length > 0) failures.push(`temp dirs left behind: ${leaked.join(", ")}`);
 console.log(failures.length === 0 ? "\nLIVE GATE: PASS" : `\nLIVE GATE: FAIL\n  - ${failures.join("\n  - ")}`);
 process.exit(failures.length === 0 ? 0 : 1);

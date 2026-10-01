@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { daemonTmpRoot } from "../../src/run/daemon-tmp.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildMediaCall, voiceChain } from "../../src/media/media-ingest.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -18,7 +19,7 @@ let store: RunStore;
 beforeEach(() => {
   for (const k of PINNED) { saved[k] = process.env[k]; delete process.env[k]; }
   work = mkdtempSync(path.join(os.tmpdir(), "houge-mcall-"));
-  mediaDir = mkdtempSync(path.join(os.tmpdir(), "houge-media-"));
+  mediaDir = mkdtempSync(path.join(daemonTmpRoot(), "houge-media-"));
   store = RunStore.openInMemory();
   writeFileSync(path.join(work, "s.json"), JSON.stringify({ "*": { frames: "oneshot-image.jsonl" } }));
   process.env.HOUGE_OMP_BIN = FAKE_OMP_BIN;

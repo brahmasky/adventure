@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { daemonTmpRoot } from "../../src/run/daemon-tmp.js";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MEDIA_PROVIDERS,
@@ -48,12 +49,12 @@ describe("resolveMediaProviders / resolveMediaLegTimeoutMs", () => {
 });
 
 describe("isAllowedMediaFile — the only files a leg may ever be handed", () => {
-  const dir = path.join(os.tmpdir(), "houge-media-abc123");
-  it("accepts the code-owned basename/mime PAIRS in a houge-media-* dir directly under tmpdir", () => {
+  const dir = path.join(daemonTmpRoot(), "houge-media-abc123");
+  it("accepts the code-owned basename/mime PAIRS in a houge-media-* dir directly under the daemon temp root", () => {
     expect(isAllowedMediaFile({ path: path.join(dir, MEDIA_BASENAME.voice), mime: MEDIA_MIME.voice })).toBe(true);
     expect(isAllowedMediaFile({ path: path.join(dir, MEDIA_BASENAME.photo), mime: MEDIA_MIME.photo })).toBe(true);
   });
-  it("rejects a foreign basename, a foreign mime, a MISMATCHED pair, a relative path, a non-media dir, a nested dir, `..` traversal, and a path outside tmpdir", () => {
+  it("rejects a foreign basename, a foreign mime, a MISMATCHED pair, a relative path, a non-media dir, a nested dir, `..` traversal, a path outside the daemon temp root, and os.tmpdir() itself (B13: the sandbox could write there)", () => {
     expect(isAllowedMediaFile({ path: path.join(dir, "voice_1234.ogg"), mime: "audio/ogg" })).toBe(false);
     // agy attaches by extension: `.ogg` is not attached, `.opus` is (probe 2026-09-29) — the old name must not pass.
     expect(isAllowedMediaFile({ path: path.join(dir, "media.ogg"), mime: "audio/ogg" })).toBe(false);
@@ -66,6 +67,7 @@ describe("isAllowedMediaFile — the only files a leg may ever be handed", () =>
     expect(isAllowedMediaFile({ path: path.join(dir, "sub", "media.opus"), mime: "audio/ogg" })).toBe(false);
     expect(isAllowedMediaFile({ path: `${dir}/../houge-media-other/media.opus`, mime: "audio/ogg" })).toBe(false);
     expect(isAllowedMediaFile({ path: "/etc/media.opus", mime: "audio/ogg" })).toBe(false);
+    expect(isAllowedMediaFile({ path: path.join(os.tmpdir(), "houge-media-abc123", MEDIA_BASENAME.voice), mime: MEDIA_MIME.voice })).toBe(false);
   });
 });
 

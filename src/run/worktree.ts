@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { selfWriteRoot } from "./daemon-tmp.js";
 import { hardenedGit } from "./git-hardened.js";
 
 /**
@@ -22,14 +22,16 @@ export interface Worktree {
 }
 
 /**
- * Create a fresh git worktree of committed HEAD under the OS tmp dir (detached HEAD).
+ * Create a fresh git worktree of committed HEAD under `<data>/selfwrite` (detached HEAD). Never the OS tmp dir:
+ * the sandbox could write /private/var/folders, so a steered planner could rewrite a worktree (or repoint its `.git`
+ * file at a planted gitdir) between review and publish (B13). `<data>/selfwrite` is write-denied to every profile.
  * Throws if `git` is unavailable or `projectRoot` is not a git repository.
  */
-export async function createWorktree(projectRoot: string): Promise<Worktree> {
+export async function createWorktree(projectRoot: string, root: string = selfWriteRoot()): Promise<Worktree> {
   // Let git CREATE the directory (don't pre-make it) so `git worktree remove` fully
   // deletes it — git refuses to delete a worktree dir it didn't create. The path is a
-  // unique, not-yet-existing dir under the OS tmp.
-  const path = join(tmpdir(), `houge-worktree-${randomUUID()}`);
+  // unique, not-yet-existing dir under the daemon-only root.
+  const path = join(root, `houge-worktree-${randomUUID()}`);
   // `--detach` checks out HEAD without creating a branch.
   await hardenedGit(["-C", projectRoot, "worktree", "add", "--detach", path, "HEAD"]);
   return { path };

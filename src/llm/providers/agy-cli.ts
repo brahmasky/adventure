@@ -15,8 +15,8 @@
 //     permission model and are auto-denied unless the operator has an explicit allow-rule.
 // Tool use is deliberately permitted where the operator has allowed it; denied attempts are
 // surfaced in the failure text so an injection attempt is visible rather than silent.
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
+import { rm } from "node:fs/promises";
+import { daemonMkdtemp, daemonTmpRoot } from "../../run/daemon-tmp.js";
 import path from "node:path";
 import type { LlmProvider, LlmRequest, LlmResult } from "../types.js";
 import { normalizeAgyUsage } from "../../run/llm-usage.js";
@@ -168,12 +168,12 @@ export function createAgyCliProvider(config: AgyCliProviderConfig = {}): LlmProv
 
       // Minimal env (no secrets); agy reads its own auth from $HOME. Opt extra vars in via
       // HOUGE_AGY_ENV_PASSTHROUGH if a deployment stores agy auth in an env var.
-      const env = buildChildEnv(process.env.HOUGE_AGY_ENV_PASSTHROUGH);
+      const env = { ...buildChildEnv(process.env.HOUGE_AGY_ENV_PASSTHROUGH), TMPDIR: daemonTmpRoot() };
 
-      // A FRESH, EMPTY directory per text call — never `os.tmpdir()` itself. agy is agentic and
-      // roots its workspace at the cwd (`--add-dir` extends it), and the shared temp dir is where
-      // Houge keeps its own live state: approval-park/approval-resume trees, coding-agent capability
-      // dirs, and `houge-worktree-*` repo checkouts (see src/run/worktree.ts). Handing an agent
+      // A FRESH, EMPTY directory per text call — never the daemon temp root itself. agy is agentic and
+      // roots its workspace at the cwd (`--add-dir` extends it), and the shared temp root is where
+      // Houge keeps its own live state: coding-agent out dirs and media dirs (src/run/daemon-tmp.ts;
+      // worktrees live beside it in <data>/selfwrite). Handing an agent
       // driven by attacker-controlled content a workspace rooted over Houge's own run state is a
       // read AND plant primitive; a per-call dir also means nothing survives between calls.
       // A media call instead runs in the media temp dir the ingest step created, so the relative
@@ -183,7 +183,7 @@ export function createAgyCliProvider(config: AgyCliProviderConfig = {}): LlmProv
         workdir = path.dirname(media.path);
       } else {
         try {
-          workdir = await mkdtemp(path.join(os.tmpdir(), "houge-agy-"));
+          workdir = await daemonMkdtemp("houge-agy-"); // <data>/tmp, never os.tmpdir() (B13)
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           return { ok: false, provider: "agy-cli", error: `agy workdir setup failed: ${message}` };

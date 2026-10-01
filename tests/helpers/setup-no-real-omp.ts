@@ -2,6 +2,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterAll } from "vitest";
+import { setDaemonDataDir } from "../../src/run/daemon-tmp.js";
 import { NO_OMP_BIN, STUB_MARKER } from "./omp-env.js";
 
 // Every test file starts unable to reach a real omp or agy (both may be on the developer's PATH).
@@ -11,6 +12,9 @@ import { NO_OMP_BIN, STUB_MARKER } from "./omp-env.js";
 //    starts with a dir of stubs that print a marker to stderr and exit 1. A spawned CLI inherits both.
 
 process.env.HOUGE_OMP_BIN = NO_OMP_BIN;
+// Daemon temp space (<data>/tmp, <data>/selfwrite: B13) defaults to the cwd, i.e. the repo: tests get a tmp data dir.
+const dataDir = mkdtempSync(join(tmpdir(), "houge-test-data-"));
+setDaemonDataDir(dataDir);
 const stubDir = mkdtempSync(join(tmpdir(), "houge-stub-bin-"));
 for (const name of ["omp", "agy"]) {
   const file = join(stubDir, name);
@@ -23,4 +27,5 @@ afterAll(() => {
   // Threads reuse process.env across files: restore PATH so stub dirs never pile up.
   if (pathBefore === undefined) delete process.env.PATH; else process.env.PATH = pathBefore;
   rmSync(stubDir, { recursive: true, force: true });
+  rmSync(dataDir, { recursive: true, force: true });
 });

@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { daemonTmpRoot } from "../../src/run/daemon-tmp.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_ASK_SYSTEM_PROMPT, llmToolAdapter } from "../../src/llm/registry.js";
 import type { LlmRequest, LlmResult } from "../../src/llm/types.js";
@@ -10,7 +10,7 @@ import type { LlmRequest, LlmResult } from "../../src/llm/types.js";
 // fixed precedence; a failed chain maps to the runner's failure shape.
 const saved = process.env.HOUGE_ASK_SYSTEM_PROMPT;
 let mediaDir: string;
-beforeEach(() => { delete process.env.HOUGE_ASK_SYSTEM_PROMPT; mediaDir = mkdtempSync(path.join(os.tmpdir(), "houge-media-")); });
+beforeEach(() => { delete process.env.HOUGE_ASK_SYSTEM_PROMPT; mediaDir = mkdtempSync(path.join(daemonTmpRoot(), "houge-media-")); });
 afterEach(() => {
   if (saved === undefined) delete process.env.HOUGE_ASK_SYSTEM_PROMPT; else process.env.HOUGE_ASK_SYSTEM_PROMPT = saved;
   rmSync(mediaDir, { recursive: true, force: true });
@@ -23,7 +23,7 @@ function fakeSeat(result: LlmResult = { ok: true, provider: "p", model: "m", ans
 
 describe("llmToolAdapter — media is validated before any leg runs", () => {
   const cases: Array<[string, () => unknown]> = [
-    ["a path outside tmpdir", () => ({ path: "/etc/media.jpg", mime: "image/jpeg" })],
+    ["a path outside the daemon temp root", () => ({ path: "/etc/media.jpg", mime: "image/jpeg" })],
     ["a foreign basename", () => { const p = path.join(mediaDir, "secret.jpg"); writeFileSync(p, "x"); return { path: p, mime: "image/jpeg" }; }],
     ["a basename with the wrong mime", () => ({ path: path.join(mediaDir, "media.jpg"), mime: "audio/ogg" })],
     ["a malformed field (not an object)", () => "media.jpg"],

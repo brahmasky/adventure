@@ -37,3 +37,7 @@ memory/briefs/
 
 # Jev shadow replay output (labels/numbers only, no message text) — local runtime state
 .houge/
+
+# Daemon temp space and self-write worktrees (<data>/tmp, <data>/selfwrite; B13) — runtime state
+/tmp/
+/selfwrite/
