@@ -187,16 +187,21 @@ describe("boot reason — derived from what the daemon already knows at boot, ne
     expect(classifyBoot({ marker: true, parked: true, previous: null, hostBootedAt: hostUp })).toBe("self_write_reload");
   });
   it("a park marker at boot is a revive after /kill", () => {
-    expect(classifyBoot({ marker: false, parked: true, previous: { stopped_at: null }, hostBootedAt: hostUp })).toBe("revive_after_kill");
+    expect(classifyBoot({ marker: false, parked: true, previous: { started_at: "2026-10-02T06:00:00.000Z", stopped_at: null }, hostBootedAt: hostUp })).toBe("revive_after_kill");
   });
   it("a previous boot that never recorded a clean stop is a crash recovery", () => {
-    expect(classifyBoot({ marker: false, parked: false, previous: { stopped_at: null }, hostBootedAt: hostUp })).toBe("crash_recovery");
+    expect(classifyBoot({ marker: false, parked: false, previous: { started_at: "2026-10-02T06:00:00.000Z", stopped_at: null }, hostBootedAt: hostUp })).toBe("crash_recovery");
   });
   it("a clean stop with the host up throughout is a kickstart", () => {
-    expect(classifyBoot({ marker: false, parked: false, previous: { stopped_at: "2026-10-02T07:00:00.000Z" }, hostBootedAt: hostUp })).toBe("kickstart");
+    expect(classifyBoot({ marker: false, parked: false, previous: { started_at: "2026-10-02T06:00:00.000Z", stopped_at: "2026-10-02T07:00:00.000Z" }, hostBootedAt: hostUp })).toBe("kickstart");
   });
   it("a clean stop followed by a host reboot is only a restart (cannot tell why)", () => {
-    expect(classifyBoot({ marker: false, parked: false, previous: { stopped_at: "2026-10-02T07:00:00.000Z" }, hostBootedAt: "2026-10-02T07:05:00.000Z" })).toBe("restart");
+    expect(classifyBoot({ marker: false, parked: false, previous: { started_at: "2026-10-02T06:00:00.000Z", stopped_at: "2026-10-02T07:00:00.000Z" }, hostBootedAt: "2026-10-02T07:05:00.000Z" })).toBe("restart");
+  });
+  it("no clean stop but the host booted after the previous daemon started is a restart (power loss), not a crash", () => {
+    expect(classifyBoot({
+      marker: false, parked: false, previous: { started_at: "2026-10-02T06:00:00.000Z", stopped_at: null }, hostBootedAt: "2026-10-02T07:05:00.000Z"
+    })).toBe("restart");
   });
   it("no previous boot record is unknown", () => {
     expect(classifyBoot({ marker: false, parked: false, previous: null, hostBootedAt: hostUp })).toBe("unknown");

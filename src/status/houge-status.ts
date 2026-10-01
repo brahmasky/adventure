@@ -30,15 +30,18 @@ const SUBJECT_CHARS = 60;
  * The boot reason from what the daemon knows at boot: a consumed reload marker, the park marker
  * (left by a /kill park), and whether the previous boot recorded a clean stop. A clean stop with
  * the host up throughout is an operator restart (kickstart); after a host reboot it is only `restart`.
+ * No clean stop is a crash, unless the host rebooted after that daemon started (power loss): `restart`.
  */
 export function classifyBoot(i: {
-  marker: boolean; parked: boolean; previous: { stopped_at: string | null } | null; hostBootedAt: string;
+  marker: boolean; parked: boolean; previous: { started_at: string; stopped_at: string | null } | null; hostBootedAt: string;
 }): BootReason {
   if (i.marker) return "self_write_reload";
   if (i.parked) return "revive_after_kill";
   if (!i.previous) return "unknown";
-  if (i.previous.stopped_at === null) return "crash_recovery";
-  return Date.parse(i.hostBootedAt) > Date.parse(i.previous.stopped_at) ? "restart" : "kickstart";
+  const host = Date.parse(i.hostBootedAt);
+  // no clean stop, but the host itself rebooted while that daemon ran (power loss): not a daemon crash
+  if (i.previous.stopped_at === null) return host > Date.parse(i.previous.started_at) ? "restart" : "crash_recovery";
+  return host > Date.parse(i.previous.stopped_at) ? "restart" : "kickstart";
 }
 
 /** When the host last booted (os uptime): a clean stop before it means the host restarted in between. */
