@@ -24,6 +24,8 @@ type Script = {
   badModels?: string[];
   /** The child answers its manifest, then loses its bridge socket but stays up (a genuine bridge loss during start). */
   dropBridge?: boolean;
+  /** With dropBridge: resolves once the supervisor saw the drop (start() returns only then). */
+  afterDrop?: () => Promise<void>;
   /** The child exits during start and start rejects with this PlannerRpcError code. */
   exitCode?: string;
   /** Runs after the model is recorded: may throw or never resolve. */
@@ -54,7 +56,8 @@ function fakeSession(script: Script = {}): Fake {
       if (script.exitCode) { s.exit(1); throw new PlannerRpcError(script.exitCode); }
       if (script.dropBridge) {
         const k = await openManifestClient(o.bridgeSock, o.bridgeToken);
-        await new Promise((r) => setTimeout(r, 20)); k.destroy(); await new Promise((r) => setTimeout(r, 20));
+        await new Promise((r) => k.once("data", r)); // the manifest was answered
+        k.destroy(); await script.afterDrop?.();
         return { resumed: false, sessionId: "s" };
       }
       if (script.badModels?.includes(`${o.model.provider}/${o.model.model}`)) {
@@ -122,6 +125,25 @@ async function untilState(sup: PlannerSupervisor, want: SupervisorState): Promis
   expect(sup.state()).toBe(want);
 }
 
+/** Event-based wait (real time, polled every 5 ms): never a fixed sleep that assumes the machine is idle (final review C4). */
+async function until(ok: () => boolean): Promise<void> {
+  await vi.waitFor(() => { expect(ok()).toBe(true); }, { timeout: 10_000, interval: 5 });
+}
+
+/** A child whose turns stay live until the test ends them: `live(n)` waits for the n-th prompt's frames, `end()` ends the oldest live turn. */
+function heldSession(script: Script = {}) {
+  const ends: Array<(text: string) => void> = []; let prompted = 0;
+  const session: Fake = fakeSession({ ...script, onPrompt: (_t, e) => {
+    prompted++; e({ type: "turn_start" });
+    ends.push((text) => { session.assistant(text); e({ type: "agent_end" }); });
+  } });
+  return {
+    session,
+    live: (n = 1) => until(() => prompted >= n),
+    end: (text = "ok") => { (ends.shift() as (t: string) => void)(text); }
+  };
+}
+
 describe("PlannerSupervisor — detached turns (spec §7)", () => {
   it("runs a turn: claims with a unique planner owner, prompts, completes once, returns to IDLE", async () => {
     const { store, sup, outcome, session } = harness();
@@ -153,37 +175,37 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
   });
 
   it("steers a second Telegram message into the live turn and completes both runs with one reply", async () => {
-    const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "turn_start" }); setTimeout(() => { session.assistant("both answered"); e({ type: "agent_end" }); }, 60); } });
+    const h = heldSession(); const session = h.session;
     const { store, sup, outcome } = harness(session);
     const a = createQueuedTurnRun(store); const b = createQueuedTurnRun(store);
-    sup.submit(req(a, "first")); await new Promise((r) => setTimeout(r, 20)); sup.submit(req(b, "second"));
-    await sup.whenIdle();
+    sup.submit(req(a, "first")); await h.live(); sup.submit(req(b, "second"));
+    h.end("both answered"); await sup.whenIdle();
     expect(session.steers).toEqual(["second"]);
     expect(outcome.done.map((d) => (d as { run_id: string }).run_id).sort()).toEqual([a, b].sort());
     expect(outcome.done.find((d) => (d as { run_id: string }).run_id === b)).toMatchObject({ merged_into: a });
   });
 
   it("never steers a schedule fire into a user turn — it waits and runs as its own turn", async () => {
-    const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "turn_start" }); setTimeout(() => { session.assistant("ok"); e({ type: "agent_end" }); }, 40); } });
+    const h = heldSession(); const session = h.session;
     const { store, sup } = harness(session);
     const a = createQueuedTurnRun(store); const s = createQueuedTurnRun(store);
-    sup.submit(req(a, "user")); await new Promise((r) => setTimeout(r, 10)); sup.submit({ ...req(s, "brief", "schedule"), goal: "AI日报" });
-    await sup.whenIdle(); await sup.whenIdle();
+    sup.submit(req(a, "user")); await h.live(); sup.submit({ ...req(s, "brief", "schedule"), goal: "AI日报" });
+    h.end(); await h.live(2); h.end(); await sup.whenIdle();
     expect(session.steers).toEqual([]);
     expect(session.prompts).toHaveLength(2);
     expect(session.prompts[1]).toContain("[scheduled: AI日报]");
   });
 
   it("never steers a voice/photo message into a live turn: it queues as its own turn and is ingested first (fix round 1, I-1)", async () => {
-    const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "turn_start" }); setTimeout(() => { session.assistant("ok"); e({ type: "agent_end" }); }, 40); } });
+    const h = heldSession(); const session = h.session;
     const ingested: string[] = [];
     const { store, sup, outcome } = harness(session, {}, {
       resolveMessage: async (claim) => (claim.run_id === voice ? (ingested.push(claim.run_id), { ok: true, text: "transcript" }) : { ok: true, text: "user" })
     });
     const a = createQueuedTurnRun(store); const voice = createQueuedTurnRun(store, "[voice message]");
-    sup.submit(req(a, "user")); await new Promise((r) => setTimeout(r, 10));
+    sup.submit(req(a, "user")); await h.live();
     sup.submit({ ...req(voice, "[voice message]"), needsIngest: true });
-    await sup.whenIdle(); await sup.whenIdle();
+    h.end(); await h.live(2); h.end(); await sup.whenIdle();
     expect(session.steers).toEqual([]);
     expect(ingested).toEqual([voice]);
     expect(session.prompts).toEqual(["user", "transcript"]);
@@ -244,10 +266,10 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
   });
 
   it("fails the turn and every steered run when the child exits mid-turn, then restarts lazily", async () => {
-    const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "turn_start" }); setTimeout(() => session.exit(3), 40); } });
+    const h = heldSession(); const session = h.session;
     const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store); const steered = createQueuedTurnRun(store);
-    sup.submit(req(run_id)); await new Promise((r) => setTimeout(r, 20)); sup.submit(req(steered, "also"));
-    await sup.whenIdle();
+    sup.submit(req(run_id)); await h.live(); sup.submit(req(steered, "also"));
+    session.exit(3); await sup.whenIdle();
     expect(session.steers).toEqual(["also"]);
     expect(outcome.failed.find((f) => (f as { run_id: string }).run_id === run_id)).toMatchObject({ error_type: "planner_exit", error_ref: "exit 3" });
     expect(outcome.failed.find((f) => (f as { run_id: string }).run_id === steered)).toMatchObject({ error_type: "merged_parent_failed" });
@@ -258,7 +280,7 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
   it("abortAll('killed') stops the turn within 5 s and records killed", async () => {
     const session = fakeSession({ onPrompt: () => undefined });
     const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
-    sup.submit(req(run_id)); await new Promise((r) => setTimeout(r, 20));
+    sup.submit(req(run_id)); await until(() => session.prompts.length === 1); // dispatched, no frame yet
     const t0 = Date.now(); await sup.abortAll("killed");
     expect(Date.now() - t0).toBeLessThan(5_500);
     expect(outcome.failed[0]).toMatchObject({ error_type: "killed" });
@@ -351,11 +373,15 @@ describe("PlannerSupervisor — aborts are per turn and bounded (fix round 1)", 
       return { facts: [], pages: [] };
     };
     const a = createQueuedTurnRun(store); const b = createQueuedTurnRun(store);
-    sup.submit(req(a)); sup.submit({ ...req(b, "brief", "schedule"), goal: "g" });
-    await new Promise((r) => setTimeout(r, 220)); // a timed out and aborted; b is building its prompt
-    expect(failedOf(outcome, a)).toMatchObject({ error_type: "turn_timeout" });
-    const t0 = Date.now(); await sup.abortAll("killed");
-    expect(Date.now() - t0).toBeLessThan(5_500);
+    vi.useFakeTimers(FAKE_CLOCK);
+    try {
+      sup.submit(req(a)); sup.submit({ ...req(b, "brief", "schedule"), goal: "g" });
+      await untilState(sup, "RUNNING"); await vi.advanceTimersByTimeAsync(160); // a's deadline fires and its abort lands
+      await until(() => failedOf(outcome, a) !== undefined && calls === 2); // a timed out; b is building its prompt (fake time stands still)
+      expect(failedOf(outcome, a)).toMatchObject({ error_type: "turn_timeout" });
+      const t0 = performance.now(); await sup.abortAll("killed");
+      expect(performance.now() - t0).toBeLessThan(5_500);
+    } finally { vi.useRealTimers(); }
     expect(failedOf(outcome, b)).toMatchObject({ error_type: "killed" });
     expect(session.prompts).toHaveLength(1);
     release();
@@ -367,8 +393,7 @@ describe("PlannerSupervisor — aborts are per turn and bounded (fix round 1)", 
       setModel: () => never()
     });
     const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
-    sup.submit(req(run_id)); await new Promise((r) => setTimeout(r, 40));
-    expect(session.models).toHaveLength(1);
+    sup.submit(req(run_id)); await until(() => session.models.length === 1);
     const t0 = Date.now(); await sup.abortAll("killed");
     expect(Date.now() - t0).toBeLessThan(5_500);
     expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "killed" });
@@ -377,7 +402,7 @@ describe("PlannerSupervisor — aborts are per turn and bounded (fix round 1)", 
   it("/kill during a start that never becomes ready resolves within 5 s and records killed", async () => {
     const session = fakeSession({ start: never });
     const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
-    sup.submit(req(run_id)); await new Promise((r) => setTimeout(r, 30));
+    sup.submit(req(run_id)); await until(() => session.options.length === 1); // the child is starting
     const t0 = Date.now(); await sup.abortAll("killed");
     expect(Date.now() - t0).toBeLessThan(5_500);
     expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "killed" });
@@ -404,7 +429,7 @@ describe("PlannerSupervisor — aborts are per turn and bounded (fix round 1)", 
     const { store, sup, outcome } = harness(session);
     const a = createQueuedTurnRun(store); const q = createQueuedTurnRun(store);
     sup.submit(req(a)); sup.submit({ ...req(q, "later", "schedule"), goal: "g" });
-    await new Promise((r) => setTimeout(r, 30));
+    await until(() => session.prompts.length === 1);
     await sup.abortAll("guard");
     expect(failedOf(outcome, q)).toMatchObject({ error_type: "killed", error_ref: "guard" });
     expect(store.getRunState(q)).toBe("failed");
@@ -429,7 +454,7 @@ describe("PlannerSupervisor — shutdown never orphans a queued turn (Task 13 fi
     const { store, sup, outcome } = harness(session);
     const a = createQueuedTurnRun(store); const q1 = createQueuedTurnRun(store); const q2 = createQueuedTurnRun(store);
     sup.submit(req(a)); sup.submit(req(q1)); sup.submit(req(q2));
-    await new Promise((r) => setTimeout(r, 30));
+    await until(() => session.prompts.length === 1);
     await sup.shutdown();
     for (const q of [q1, q2]) {
       expect(failedOf(outcome, q)).toMatchObject({ error_type: "planner_exit", error_ref: "daemon shutdown" });
@@ -513,8 +538,7 @@ describe("PlannerSupervisor — approvals and merged leases (fix round 1)", () =
   it("two concurrent approval waits keep the deadline paused until both resolve", async () => {
     const session = fakeSession({ onPrompt: () => undefined });
     const { store, sup } = harness(session);
-    sup.submit(req(createQueuedTurnRun(store))); await new Promise((r) => setTimeout(r, 30));
-    expect(sup.state()).toBe("RUNNING");
+    sup.submit(req(createQueuedTurnRun(store))); await until(() => sup.state() === "RUNNING");
     sup.setAwaitingApprovalForTest(true); sup.setAwaitingApprovalForTest(true);
     sup.setAwaitingApprovalForTest(false);
     expect(sup.state()).toBe("AWAITING_APPROVAL");
@@ -528,8 +552,8 @@ describe("PlannerSupervisor — approvals and merged leases (fix round 1)", () =
     const a = createQueuedTurnRun(store); const b = createQueuedTurnRun(store);
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
-      sup.submit(req(a)); await new Promise((r) => setTimeout(r, 30)); sup.submit(req(b, "more"));
-      await new Promise((r) => setTimeout(r, 10));
+      sup.submit(req(a)); await until(() => session.prompts.length === 1); sup.submit(req(b, "more"));
+      expect(session.steers).toEqual(["more"]);
       const beat = store.heartbeat.bind(store);
       vi.spyOn(store, "heartbeat").mockImplementation((id, w, ttl) => (id === b ? false : beat(id, w, ttl)));
       await vi.advanceTimersByTimeAsync(30_000);
@@ -651,8 +675,9 @@ describe("PlannerSupervisor — omp rejects the model at spawn (live fix, omp 18
 
 describe("PlannerSupervisor — start-phase edges (live-fix round 2)", () => {
   it("a bridge lost during start while the child stays up fails the start (counted, incident); the run is never prompted", async () => {
-    const session = fakeSession({ dropBridge: true });
-    const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
+    let sup: PlannerSupervisor | undefined;
+    const session = fakeSession({ dropBridge: true, afterDrop: () => until(() => (sup as never as { spawning?: { bridgeLost?: boolean } }).spawning?.bridgeLost === true) });
+    const h = harness(session); sup = h.sup; const { store, outcome } = h; const run_id = createQueuedTurnRun(store);
     const stop = vi.spyOn(session, "stop");
     sup.submit(req(run_id)); await sup.whenIdle();
     expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "planner_exit", error_ref: "start_failed: bridge_lost_during_start" });
@@ -665,8 +690,7 @@ describe("PlannerSupervisor — start-phase edges (live-fix round 2)", () => {
   it("a start refusal and an n = 0 dispatch in one turn keep two distinct audit rows (no request_key collision)", async () => {
     const session = fakeSession({ badModels: ["anthropic/claude-opus-5-5"], onPrompt: () => undefined });
     const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
-    sup.submit(req(run_id)); await new Promise((r) => setTimeout(r, 60));
-    expect(session.prompts).toHaveLength(1); // dispatched on the second string, no frame yet
+    sup.submit(req(run_id)); await until(() => session.prompts.length === 1); // dispatched on the second string, no frame yet
     await sup.abortAll("killed");
     expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "killed" });
     const rows = store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_attempt").map((e) => e.payload);
@@ -690,7 +714,8 @@ describe("PlannerSupervisor — start-phase edges (live-fix round 2)", () => {
 });
 
 describe("PlannerSupervisor — a lost bridge retires the child (live-fix round 3)", () => {
-  const settle = () => new Promise((r) => setTimeout(r, 30));
+  /** The supervisor saw the bridge drop (the child is marked stale for retirement). */
+  const sawDrop = (sup: PlannerSupervisor) => until(() => (sup as never as { stale: boolean }).stale);
 
   it("bridge dropped mid-turn with the child up: turn 1 fails planner_exit, turn 2 runs on a fresh child, child 1 is stopped", async () => {
     let calls = 0;
@@ -716,7 +741,7 @@ describe("PlannerSupervisor — a lost bridge retires the child (live-fix round 
     const { store, sup, outcome } = harness(session);
     const stop = vi.spyOn(session, "stop");
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
-    session.dropBridge(); await settle();
+    session.dropBridge(); await sawDrop(sup);
     expect(sup.state()).toBe("IDLE");
     const b = createQueuedTurnRun(store);
     sup.submit(req(b)); await sup.whenIdle();
@@ -737,8 +762,8 @@ describe("PlannerSupervisor — a lost bridge retires the child (live-fix round 
     };
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
     const b = createQueuedTurnRun(store);
-    sup.submit(req(b)); await settle(); // turn 2 is inside buildTurnPrompt on child 1
-    session.dropBridge(); await settle();
+    sup.submit(req(b)); await until(() => calls === 2); // turn 2 is inside buildTurnPrompt on child 1
+    session.dropBridge(); await sawDrop(sup);
     release(); await sup.whenIdle();
     expect(failedOf(outcome, b)).toBeUndefined();
     expect(outcome.done.map((d) => (d as { run_id: string }).run_id)).toContain(b);
@@ -808,6 +833,10 @@ describe("PlannerSupervisor — an abort that lands while the bridge listens (fi
     return { inside, release: () => release() };
   }
 
+  /** The superseded spawn closes its bridge after listen() returns: wait for it, bounded (the bug kept both registered forever). */
+  const unregistered = (h: ReturnType<typeof harness>) =>
+    until(() => (h.sup as never as Internals).session === undefined && (h.sup as never as Internals).bridge === undefined).catch(() => undefined);
+
   async function nextTurnRunsOnAFreshChild(h: ReturnType<typeof harness>, log: string[]) {
     const internals = h.sup as never as Internals;
     expect(internals.session).toBeUndefined(); // nothing left registered by the superseded spawn
@@ -824,8 +853,8 @@ describe("PlannerSupervisor — an abort that lands while the bridge listens (fi
     const gate = gateListen();
     const a = createQueuedTurnRun(h.store);
     h.sup.submit(req(a)); await gate.inside;
-    await new Promise((r) => setTimeout(r, 300)); // the deadline fires while the spawn waits in listen()
-    gate.release(); await h.sup.whenIdle(); await new Promise((r) => setTimeout(r, 50));
+    await until(() => (h.sup as never as { turn?: { failure?: unknown } }).turn?.failure !== undefined); // the deadline fired inside listen()
+    gate.release(); await h.sup.whenIdle(); await unregistered(h);
     expect(failedOf(h.outcome, a)).toMatchObject({ error_type: "turn_timeout" });
     (h.sup as never as { d: { cfg: { turnTimeoutMs: number } } }).d.cfg.turnTimeoutMs = 600_000;
     await nextTurnRunsOnAFreshChild(h, log);
@@ -842,7 +871,7 @@ describe("PlannerSupervisor — an abort that lands while the bridge listens (fi
     const beat = vi.spyOn(h.store, "heartbeat").mockReturnValue(false);
     vi.advanceTimersByTime(30_000); // the lease renewal is refused while the spawn waits in listen()
     beat.mockRestore(); vi.useRealTimers();
-    gate.release(); await h.sup.whenIdle(); await new Promise((r) => setTimeout(r, 50));
+    gate.release(); await h.sup.whenIdle(); await unregistered(h);
     expect(failedOf(h.outcome, a)).toMatchObject({ error_type: "lease_lost" });
     await nextTurnRunsOnAFreshChild(h, log);
   });
@@ -850,12 +879,12 @@ describe("PlannerSupervisor — an abort that lands while the bridge listens (fi
 
 describe("PlannerSupervisor — a schedule-born turn is never steered into (final review B2)", () => {
   it("Paco's message during a live schedule turn queues behind it and runs as its own turn under his own requester", async () => {
-    const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "turn_start" }); setTimeout(() => { session.assistant("ok"); e({ type: "agent_end" }); }, 60); } });
+    const h = heldSession(); const session = h.session;
     const { store, sup, outcome } = harness(session);
     const s = createQueuedTurnRun(store); const m = createQueuedTurnRun(store);
-    sup.submit({ ...req(s, "brief", "schedule"), goal: "AI日报" }); await new Promise((r) => setTimeout(r, 20));
+    sup.submit({ ...req(s, "brief", "schedule"), goal: "AI日报" }); await h.live();
     sup.submit(req(m, "hello"));
-    await sup.whenIdle(); await sup.whenIdle();
+    h.end(); await h.live(2); h.end(); await sup.whenIdle();
     expect(session.steers).toEqual([]);
     expect(session.prompts).toHaveLength(2);
     expect(outcome.done.find((d) => (d as { run_id: string }).run_id === m)).not.toHaveProperty("merged_into");
