@@ -36,6 +36,10 @@ describe("the `omp` composer surface (ADR 0002 V2: the planner acts through real
     expect(LOOP_GO_AHEAD_RULE).toMatch(/restate/i);
     expect(LOOP_GO_AHEAD_RULE).toMatch(/focus/i);
     for (const ack of ["go", "yes", "好", "可以"]) expect(LOOP_GO_AHEAD_RULE).toContain(`"${ack}"`);
+    // Guard: a chat go-ahead is never a gate's approval tap, and an "ok" to an answer is not
+    // approval of an earlier proposal.
+    expect(LOOP_GO_AHEAD_RULE).toMatch(/never stands in for an approval tap that Houge's gates ask for/);
+    expect(LOOP_GO_AHEAD_RULE).toMatch(/acknowledgement like 'ok' to an answer is not approval of an earlier proposal/);
     // The spirit stays: prefer doing over asking.
     expect(OMP_LOOP_DISCIPLINE).toMatch(/Prefer doing over asking/);
   });

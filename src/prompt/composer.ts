@@ -149,7 +149,9 @@ export const READER_DISCIPLINE =
 export const LOOP_GO_AHEAD_RULE =
   "When Paco answers a concrete proposal of yours with a short go-ahead (\"go\", \"proceed\", \"yes\", " +
   "\"ok\", \"好\", \"可以\", \"修吧\" or similar), carry out exactly that proposal without asking again, and " +
-  "restate it in full in any tool input that carries a task or focus.";
+  "restate it in full in any tool input that carries a task or focus. A chat go-ahead never stands in for an " +
+  "approval tap that Houge's gates ask for, and an acknowledgement like 'ok' to an answer is not approval of an " +
+  "earlier proposal.";
 
 /**
  * The omp planner's discipline (ADR 0002 V2): real tools instead of the old loop's JSON action
