@@ -248,3 +248,35 @@ Rules Claude writes for itself after corrections. Review at session start.
   hard-coded `output_tokens: 0` vs a test expecting 20; a budget fixture whose arithmetic tripped
   on call one). TDD from the plan caught both at RED. Rule: when an implementer reports code-vs-test
   contradiction in the plan, rule on it in the ledger — never bend the test to the code silently.
+
+## omp runtime build (SP1, 2026-09-30→10-01)
+
+- **A probe against the real binary finds what no amount of hermetic testing can.** 2600+ green tests
+  and a clean review on every task, then the first real-omp smoke failed case 6: omp 18.4.4 rejects an
+  unknown `--model` at process start, before `ready`, so the designed live `set_model` fallback could never
+  run and one retired planner string would have failed every turn. The tests' fake omp never rejected a model
+  at spawn, because it was written from the spec, not from the binary. Rule: before trusting a fallback, a
+  lifecycle or a sandbox answer, probe the real binary once with the failure injected (bad model, missing
+  file, refused prompt), record its exact output as a fixture, and make the fake reproduce it.
+- **The parallel whole-branch wave is not optional, even after every per-task review passed.** Sixteen
+  tasks each passed a spec and a quality review; the final wave (security, correctness, testing,
+  adversarial in parallel, plus Codex) then found four Criticals that lived only in the composition:
+  writable binary trees and dotfiles run later outside the sandbox, omp path forms that slipped past the
+  gate, a workspace symlink swap that turned the daemon into a confused deputy, and a lease-recovery
+  function nobody called. Codex alone found none of the four; the security, adversarial and correctness
+  reviewers found them, mostly by probing. Rule: a build that adds a sandbox or a trust boundary closes on the full parallel wave
+  with security and adversarial reviewers who probe, not only on a whole-diff read (extends the slice-2
+  rule above).
+- **A model can refuse a safety probe, and a refusal proves nothing.** Opus declined the sandbox
+  self-test prompt in two of three smoke runs: no tool call, so neither floor was exercised. A gate that
+  reads "no secret came back" would have scored that PASS. Rule: every live safety case first checks that
+  the probed action actually ran (the tool row exists); a refusal retries once, then reports INCONCLUSIVE
+  with a non-zero exit, never PASS.
+- **A test that resolves a binary from PATH can spend real quota.** A CLI test spawned `houge` with the
+  ambient PATH and reached the real `~/.bun/bin/omp` under profile `houge`, so test data may have gone to
+  a subscription model. Rule: pin every spawned binary in tests (env var to a non-executable path) and put
+  failing stub executables first on PATH in a global setup file, then prove a default-bin resolve hits the
+  stub.
+- **Check exit codes directly; a pipe eats them.** An implementer committed twice while the pre-commit
+  check was red, because `npm test | tail` reported `tail`'s exit status. Rule: run gates unpiped (or with
+  `pipefail`) and read `$?` (`$status` in fish) before committing; a report says "exit 0", not "looks green".
