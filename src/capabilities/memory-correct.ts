@@ -14,6 +14,10 @@ import { escapeForTelegram } from "./text-hygiene.js";
 
 export const MEMORY_SEARCH_MAX = 10;
 export const MEMORY_SEARCH_TEXT_CHARS = 200;
+/** An embedding-only search row must be at least this similar to the query (review round 2: no nearest-anything padding). */
+export const MEMORY_SEARCH_MIN_COSINE = 0.55;
+/** …and within this of the best embedding row. Keyword and substring hits are admitted unconditionally. */
+export const MEMORY_SEARCH_COSINE_BAND = 0.1;
 export const MEMORY_IDS_PER_CALL_MAX = 5;
 export const MEMORY_CHANGES_PER_TURN_MAX = 10;
 export const MEMORY_CARD_TEXT_CHARS = 200;
@@ -83,12 +87,18 @@ export interface MemoryCandidate { id: number; text: string; created_at: string 
 
 type Embedded = MemoryCandidate & { embedding: Uint8Array | null };
 
-/** Keyword hits first, then substring hits (CJK, which FTS cannot segment), then nearest by embedding; unique, capped. */
+/** Embedding rows above the cutoff: cosine >= MIN and within BAND of the best, most similar first. */
+function relevantByCosine(embedding: Float32Array | null, all: Embedded[]): Embedded[] {
+  if (!embedding) return [];
+  const scored = all.filter((r) => r.embedding).map((r) => ({ r, c: cosineSimilarity(embedding, blobToFloat32(r.embedding!)) }))
+    .filter((x) => Number.isFinite(x.c)).sort((a, b) => b.c - a.c);
+  const best = scored[0]?.c ?? 0;
+  return scored.filter((x) => x.c >= MEMORY_SEARCH_MIN_COSINE && x.c >= best - MEMORY_SEARCH_COSINE_BAND).map((x) => x.r);
+}
+
+/** Keyword hits first, then substring hits (CJK, which FTS cannot segment), then relevant embedding rows; unique, capped. */
 function merge(legs: Embedded[][], embedding: Float32Array | null, all: Embedded[]): MemoryCandidate[] {
-  const byCosine = embedding
-    ? all.filter((r) => r.embedding).map((r) => ({ r, c: cosineSimilarity(embedding, blobToFloat32(r.embedding!)) }))
-      .filter((x) => Number.isFinite(x.c)).sort((a, b) => b.c - a.c).map((x) => x.r)
-    : [];
+  const byCosine = relevantByCosine(embedding, all);
   const out = new Map<number, MemoryCandidate>();
   for (const r of [...legs.flat(), ...byCosine]) {
     if (out.size >= MEMORY_SEARCH_MAX) break;
