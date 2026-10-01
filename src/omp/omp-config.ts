@@ -49,11 +49,23 @@ const CHAIN_KEYS: readonly Key[] = [
   "HOUGE_OMP_PLANNER", "HOUGE_OMP_READER", "HOUGE_OMP_MEDIA", "HOUGE_OMP_TICKS", "HOUGE_OMP_JUDGES", "HOUGE_OMP_CHAIR", "HOUGE_OMP_REVIEWER"
 ];
 
-/** The seat-chain variables resolveOmpConfig would throw on (names only: safe for an incident). Empty = valid. */
+/** The supervisor renews a planner lease this often (spec §7.1). */
+export const PLANNER_HEARTBEAT_MS = 30_000;
+/** A lease shorter than three renewals lets the recovery timer fail a live turn between two heartbeats (N2). */
+export const MIN_LEASE_TTL_S = (3 * PLANNER_HEARTBEAT_MS) / 1000;
+
+/** The variables resolveOmpConfig would throw on (names only: safe for an incident). Empty = valid. */
 export function ompConfigProblems(env: NodeJS.ProcessEnv): string[] {
-  return CHAIN_KEYS.filter((k) => {
+  const chains = CHAIN_KEYS.filter((k) => {
     try { parseModelChain(read(env, k)); return false; } catch { return true; }
   });
+  return num(env, "HOUGE_OMP_LEASE_TTL_S") < MIN_LEASE_TTL_S ? [...chains, "HOUGE_OMP_LEASE_TTL_S"] : chains;
+}
+
+function leaseTtl(env: NodeJS.ProcessEnv): number {
+  const ttl = num(env, "HOUGE_OMP_LEASE_TTL_S");
+  if (ttl < MIN_LEASE_TTL_S) throw new Error(`HOUGE_OMP_LEASE_TTL_S must be at least ${MIN_LEASE_TTL_S} (3x the ${PLANNER_HEARTBEAT_MS / 1000} s heartbeat)`);
+  return ttl;
 }
 
 export function resolveOmpConfig(env: NodeJS.ProcessEnv): OmpConfig {
@@ -77,6 +89,6 @@ export function resolveOmpConfig(env: NodeJS.ProcessEnv): OmpConfig {
     oneshotTimeoutMs: num(env, "HOUGE_OMP_ONESHOT_TIMEOUT_MS"),
     idleExitMs: num(env, "HOUGE_OMP_IDLE_EXIT_MS"),
     shellTimeoutMs: num(env, "HOUGE_OMP_SHELL_TIMEOUT_MS"),
-    leaseTtlS: num(env, "HOUGE_OMP_LEASE_TTL_S")
+    leaseTtlS: leaseTtl(env)
   };
 }

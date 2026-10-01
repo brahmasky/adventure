@@ -82,7 +82,7 @@ reach a real omp. The defaults below are copied from `src/omp/omp-config.ts`.
 | `HOUGE_OMP_ONESHOT_TIMEOUT_MS` | `120000` | Per-leg wall clock for one-shot seats, enforced with SIGKILL. A seat's runner cap is legs × this + 15 s. | yes |
 | `HOUGE_OMP_IDLE_EXIT_MS` | `3600000` | An idle planner child exits after this long. The next message restarts it and resumes the session. | yes |
 | `HOUGE_OMP_SHELL_TIMEOUT_MS` | `120000` | Deadline for one `bash` command; the adapter kills the process group. The runner's cap is this + 5 s. | yes |
-| `HOUGE_OMP_LEASE_TTL_S` | `120` | The planner's run lease, renewed every 30 s (also while awaiting approval). An expired `planner:*` lease is failed, never requeued. | yes |
+| `HOUGE_OMP_LEASE_TTL_S` | `120` | The planner's run lease, renewed every 30 s (also while awaiting approval). An expired `planner:*` lease is failed, never requeued. Minimum 90 (3× the heartbeat): a lower value is rejected as `omp_config_invalid`, because the recovery timer would fail live turns between renewals. | yes |
 
 Set by the daemon, not operator config: `HOUGE_BRIDGE_SOCK` and `HOUGE_BRIDGE_TOKEN` are minted per
 planner child, and `HOUGE_SHELL_SANDBOX` is the shell wrapper's copy of `HOUGE_OMP_SANDBOX`. `TMPDIR` is

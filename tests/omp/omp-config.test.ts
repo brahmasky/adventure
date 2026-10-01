@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { OMP_ENV_VARS, resolveOmpConfig } from "../../src/omp/omp-config.js";
+import { MIN_LEASE_TTL_S, OMP_ENV_VARS, ompConfigProblems, PLANNER_HEARTBEAT_MS, resolveOmpConfig } from "../../src/omp/omp-config.js";
 
 const saved: Record<string, string | undefined> = {};
 beforeEach(() => { for (const k of OMP_ENV_VARS) { saved[k] = process.env[k]; delete process.env[k]; } });
@@ -34,4 +34,13 @@ describe("omp config — defaults are the decided seat chains (spec §8, D7, D10
   it("falls back to the default for a non-numeric timeout rather than NaN", () => {
     expect(resolveOmpConfig({ HOUGE_OMP_TURN_TIMEOUT_MS: "soon" }).turnTimeoutMs).toBe(600_000);
   });
+
+  it("rejects a lease TTL under 3x the heartbeat: the recovery timer would fail a live turn between renewals (round 2 N2)", () => {
+    expect(MIN_LEASE_TTL_S * 1000).toBe(3 * PLANNER_HEARTBEAT_MS);
+    expect(() => resolveOmpConfig({ HOUGE_OMP_LEASE_TTL_S: String(MIN_LEASE_TTL_S - 1) })).toThrow(/HOUGE_OMP_LEASE_TTL_S/);
+    expect(ompConfigProblems({ HOUGE_OMP_LEASE_TTL_S: "20" })).toEqual(["HOUGE_OMP_LEASE_TTL_S"]);
+    expect(resolveOmpConfig({ HOUGE_OMP_LEASE_TTL_S: String(MIN_LEASE_TTL_S) }).leaseTtlS).toBe(MIN_LEASE_TTL_S);
+    expect(ompConfigProblems({})).toEqual([]);
+  });
 });
+

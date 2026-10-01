@@ -11,7 +11,7 @@ import type { BridgeRequest } from "./bridge-protocol.js";
 import { BridgeServer } from "./bridge-server.js";
 import { createBridgeHandler, flushUnreported, type ActiveTurn } from "./bridge-handler.js";
 import { familyOf, type ModelFamily, type ModelString } from "./model-string.js";
-import type { OmpConfig } from "./omp-config.js";
+import { PLANNER_HEARTBEAT_MS, type OmpConfig } from "./omp-config.js";
 import { classifyOmpError, frameErrorText, RETRYABLE_ERROR_KINDS, summarizeAssistantMessage, type AssistantSummary, type OmpFrame } from "./omp-frames.js";
 import { checkOmpVersion } from "./omp-version.js";
 import { PlannerRpcError, PlannerSession, type ExitInfo, type PlannerSessionOptions } from "./planner-session.js";
@@ -63,7 +63,6 @@ export const TIMEOUT_TEXT = "⏱ I ran out of time on this one. Here is what I h
 export const PLANNER_EXIT_TEXT = "⚠ My runtime stopped unexpectedly. Nothing was retried; the ledger shows what ran.";
 export const MANIFEST_WAIT_MS = 15_000;
 export const START_WAIT_MS = 30_000;
-const HEARTBEAT_MS = 30_000;
 const ABORT_GRACE_MS = 5_000;
 const CRASH_WINDOW_MS = 10 * 60_000;
 const CRASH_LIMIT = 3;
@@ -306,7 +305,7 @@ export class PlannerSupervisor {
       setAwaitingApproval: (on) => this.setAwaitingApproval(turn, on), postureOk: this.d.posture,
       ...(req.approver ? { approver: req.approver } : {})
     };
-    const heartbeat = setInterval(() => this.renewLeases(), HEARTBEAT_MS);
+    const heartbeat = setInterval(() => this.renewLeases(), PLANNER_HEARTBEAT_MS);
     const turn: Turn = {
       req, claim, worker, startedAt: Date.now(), merged: [], active, abort, heartbeat, n: 0, recorded: 0, lastText: "", lastError: undefined, deadline: undefined, idle: undefined,
       usedTool: false, legIndex: 0, live: false, finished: false, aborting: false, dispatched: false, childGen: -1, approvals: 0, ...newDeferred(),
