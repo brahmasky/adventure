@@ -128,7 +128,9 @@ function extractBalancedObjects(text: string): string[] {
       else if (c === '"') inStr = false;
       continue;
     }
-    if (c === '"') inStr = true;
+    // String state only matters INSIDE a candidate object: a reviewer's prose quotes Paco's go-ahead
+    // ("好", "go") freely, and one unbalanced straight quote there must not swallow the verdict.
+    if (c === '"' && depth > 0) inStr = true;
     else if (c === "{") { if (depth === 0) start = i; depth++; }
     else if (c === "}" && depth > 0 && --depth === 0 && start >= 0) {
       out.push(text.slice(start, i + 1));
