@@ -37,6 +37,8 @@ type Script = {
   logSetModel?: boolean;
   /** Replaces newSession(): e.g. a refusal or a cancelled reset. */
   newSession?: () => Promise<{ cancelled: boolean }>;
+  /** The prompt RPC rejects with this PlannerRpcError code (omp refused the prompt). */
+  promptError?: string;
 };
 const never = () => new Promise<never>(() => undefined);
 type Fake = PlannerSessionLike & {
@@ -84,7 +86,7 @@ function fakeSession(script: Script = {}): Fake {
       if (!script.noManifest) { sockets.push(await openManifestClient(o.bridgeSock, o.bridgeToken)); script.log?.push(`manifest:${child}`); }
       return { resumed: false, sessionId: "s" };
     },
-    prompt: async (t: string) => { s.prompts.push(t); script.log?.push(`prompt:${s.options.length}`); setTimeout(() => (script.onPrompt ?? ((_t, e) => { e({ type: "turn_start" }); assistant("answer"); e({ type: "agent_end" }); }))(t, emit), 5); },
+    prompt: async (t: string) => { if (script.promptError) throw new PlannerRpcError(script.promptError); s.prompts.push(t); script.log?.push(`prompt:${s.options.length}`); setTimeout(() => (script.onPrompt ?? ((_t, e) => { e({ type: "turn_start" }); assistant("answer"); e({ type: "agent_end" }); }))(t, emit), 5); },
     steer: async (t: string) => { s.steers.push(t); },
     abort: async () => { setTimeout(() => emit({ type: "agent_end", aborted: true }), 5); },
     setModel: async (m: { provider: string; model: string }) => {
@@ -1383,5 +1385,47 @@ describe("PlannerSupervisor — a lesson change starts a fresh omp session (memo
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
     expect(outcome.resetOks).toBe(1);
     expect(store.getPlannerSessionState("42")!.lesson_fingerprint).toBe(lessonSetFingerprint(store));
+  });
+
+  describe("a pending reset is committed only by a dispatch to the child that made it (follow-up)", () => {
+    const flip = (sup: PlannerSupervisor, days: number) => {
+      (sup as never as { d: { turnContext: { now: () => Date } } }).d.turnContext.now = () => new Date(Date.now() + days * 86_400_000);
+    };
+
+    it("reset OK → respawn → 3 failures → degraded dispatch on the OLD transcript: nothing committed, next spawn resets again, incident open", async () => {
+      const stall = stalledReset();
+      let calls = 0;
+      const session = fakeSession({ newSession: () => (++calls === 1 ? stall.newSession() : Promise.reject(new PlannerRpcError("command_failed:new_session"))) });
+      const { store, sup, outcome } = harness(session, {}, {}, { sessionState: "none" });
+      store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
+      sup.submit(req(createQueuedTurnRun(store)));
+      await untilReset(session);
+      await sup.abortAll("killed"); // the reset landed (pending), the child died before any prompt: its transcript is empty
+      stall.settle().ok();
+      await sup.whenIdle(); await new Promise((r) => setTimeout(r, 30));
+      for (let i = 0; i < 3; i++) { sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle(); }
+      expect(session.prompts).toHaveLength(1); // the 3rd failure degraded: omp resumed the OLD transcript and served it
+      expect(store.getPlannerSessionState("42")).toMatchObject({ lesson_fingerprint: "", pending_fingerprint: lessonSetFingerprint(store) });
+      flip(sup, 1);
+      sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+      expect(session.resets).toBe(5); // new_session attempted again
+      expect(outcome.resetOks).toBe(0); // planner_session_reset_failed never cleared
+      expect(store.getPlannerSessionState("42")!.lesson_fingerprint).toBe("");
+    });
+
+    it("HOUGE_LESSON_SESSION_RESET off with a reset pending: the dispatch does not commit it", async () => {
+      const { store, sup } = harness(fakeSession(), {}, { env: { HOUGE_LESSON_SESSION_RESET: "off" } }, { sessionState: "none" });
+      store.recordPlannerSessionReset("42", "fp-pending", new Date().toISOString());
+      sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+      expect(store.getPlannerSessionState("42")).toMatchObject({ lesson_fingerprint: "", pending_fingerprint: "fp-pending" });
+    });
+
+    it("a prompt RPC that fails commits nothing: the new transcript may still be empty", async () => {
+      const { store, sup, outcome } = harness(fakeSession({ promptError: "command_failed:prompt" }), {}, {}, { sessionState: "none" });
+      store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
+      sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+      expect(outcome.failed).toHaveLength(1);
+      expect(store.getPlannerSessionState("42")).toMatchObject({ lesson_fingerprint: "", pending_fingerprint: lessonSetFingerprint(store) });
+    });
   });
 });

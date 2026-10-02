@@ -48,13 +48,13 @@ async function main() {
   if (needsPlan && !chat) throw new Error("HOUGE_TELEGRAM_CHAT_ID is not set (point HOUGE_ENV_FILE at the daemon's .env)");
   const plan = needsPlan ? mig.parseMigrationPlan(JSON.parse(readFileSync(resolve(args.plan ?? join(repo, ".superpowers", "memory-a1", "plan.json")), "utf8"))) : null;
   const embedCfg = resolveEmbedConfig(process.env);
-  const coreEmbedding = args.apply ? await mig.embedRestoredCore(plan, (t) => embedText(t, embedCfg), embedCfg.model) : undefined;
+  const embedCore = () => mig.embedRestoredCore(plan, (t) => embedText(t, embedCfg), embedCfg.model);
   const dry = !args.apply && !args.revert;
   const snap = dry ? mig.snapshotForDryRun(dbPath, resolveDaemonTmpDir()) : null;
   try {
     const store = RunStore.open(snap ? snap.path : dbPath);
     try {
-      return run(mig, store, plan, chat, { ...args, coreEmbedding });
+      return await run(mig, store, plan, chat, { ...args, embedCore });
     } finally {
       store.close();
     }
@@ -63,7 +63,7 @@ async function main() {
   }
 }
 
-function run(mig, store, plan, chat, args) {
+async function run(mig, store, plan, chat, args) {
   const now = new Date().toISOString();
   if (args.revert) {
     try {
@@ -90,10 +90,12 @@ function run(mig, store, plan, chat, args) {
     console.log("\ndry run (read from a copy): nothing written to the live DB (pass --apply)");
     return 0;
   }
+  // only after the "already applied" check, and outside the transaction (the embed is an await on local Ollama)
+  const coreEmbedding = await args.embedCore();
   try {
-    const ctx = { store, plan, chat_id: chat, now, ...(args.coreEmbedding ? { coreEmbedding: args.coreEmbedding } : {}) };
+    const ctx = { store, plan, chat_id: chat, now, ...(coreEmbedding ? { coreEmbedding } : {}) };
     for (const s of mig.applyMigration(ctx)) console.log(`applied ${s.step}: ${JSON.stringify({ old_ids: s.old_ids, new_ids: s.new_ids })}`);
-    if (plan.restore_core) console.log(`restored core row embedding: ${args.coreEmbedding ? "stored" : "unavailable (the daily backfill retries it)"}`);
+    if (plan.restore_core) console.log(`restored core row embedding: ${coreEmbedding ? "stored" : "unavailable (the daily backfill retries it)"}`);
     console.log("\nAPPLIED. Next: build and kickstart the new daemon. The first turn after the kickstart starts one fresh planner session.");
     console.log("--revert stays valid only until the first real lesson or fact write touches a migrated row.");
     return 0;

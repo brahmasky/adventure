@@ -469,13 +469,12 @@ describe("the seed after a lesson-change reset (memory A1 §6)", () => {
     expect(built.seed).toBe(`${SEED_OPEN}\n- this morning\n${SEED_CLOSE}\n\n`);
   });
 
-  it("the first dispatch after a reset (any source) commits the pending fingerprint; building alone does not", async () => {
+  it("neither building nor claiming commits a pending reset: only the supervisor does, after the prompt reached the child that made it", async () => {
     const store = RunStore.openInMemory();
     store.recordPlannerSessionReset(CHAT, "fp-new", t(6));
-    const fired = await current(store, "brief", "schedule");
+    const built = await current(store, "hi");
+    claimAtDispatch(store, CHAT, built);
     expect(store.getPlannerSessionState(CHAT)).toMatchObject({ lesson_fingerprint: "", pending_fingerprint: "fp-new" });
-    claimAtDispatch(store, CHAT, fired);
-    expect(store.getPlannerSessionState(CHAT)).toMatchObject({ lesson_fingerprint: "fp-new", pending_fingerprint: null });
   });
 
   it("a schedule fire neither shows nor claims the seed; with nothing pending there is no seed", async () => {

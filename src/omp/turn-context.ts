@@ -95,13 +95,12 @@ export function claimRestartNoteAtDispatch(store: RunStore, chatId: string, buil
 }
 
 /**
- * Just before the prompt goes to the child: commit a pending session reset (memory A1 §6: omp resumes a transcript only
- * once it holds a turn), claim the restart note (as before) and a pending session seed. A prompt
+ * Just before the prompt goes to the child: claim the restart note (as before) and a pending session seed. (A pending
+ * session reset is committed by the supervisor, only after the prompt reached the child that made it.) A prompt
  * whose seed another dispatch already claimed loses the seed (by its exact length, never by text); a turn that ends
  * before dispatch claims nothing, so the next turn gets it.
  */
 export function claimAtDispatch(store: RunStore, chatId: string, built: TurnPrompt, pid: number = process.pid): string {
-  store.promotePlannerSession(chatId); // this prompt makes a reset's new transcript non-empty: commit its fingerprint
   const afterNote = claimRestartNoteAtDispatch(store, chatId, built, pid);
   if (!built.seedPending || store.claimSessionSeed(chatId)) return afterNote;
   const note = afterNote.length === built.prompt.length ? built.restartNote : "";

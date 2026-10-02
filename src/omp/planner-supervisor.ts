@@ -168,6 +168,12 @@ export class PlannerSupervisor {
   private lessonFingerprint: string | undefined;
   /** Consecutive failed lesson-change resets for one fingerprint: the 3rd serves the resumed session (fail loud, not closed). */
   private resetFailures = { fingerprint: "", count: 0 };
+  /**
+   * The child generation whose own new_session succeeded (0: none). Only a dispatch to THAT child may commit the pending
+   * reset: a child that resumed (degraded, flag off, unreadable lessons) holds the OLD transcript, since omp skips the
+   * empty new one.
+   */
+  private resetGen = 0;
   private stale = false;
   private turn: Turn | undefined;
   private readonly queue: TurnRequest[] = [];
@@ -434,10 +440,17 @@ export class PlannerSupervisor {
       const sent = claimAtDispatch(this.d.store, this.d.chatId, prompt, this.d.turnContext.pid);
       turn.live = true;
       turn.dispatched = true;
-      await this.step(turn, s.prompt(sent));
+      if ((await this.step(turn, s.prompt(sent))) !== ENDED) this.commitReset(turn);
     } catch (e) {
       this.failTurn(turn, "planner_exit", `prompt_failed: ${rpcCode(e)}`);
     }
+  }
+
+  /** The prompt RPC succeeded on the child that made the pending reset: its transcript now holds a turn, so commit it. */
+  private commitReset(turn: Turn): void {
+    if (this.resetGen === 0 || this.resetGen !== turn.childGen || this.session === undefined) return;
+    this.d.store.promotePlannerSession(this.d.chatId);
+    this.resetGen = 0;
   }
 
   /** A failed reset is not fatal: log, raise an incident, answer on the current model; the next turn retries it. */
@@ -685,7 +698,9 @@ export class PlannerSupervisor {
     }
     // omp already made the new transcript: record it even when the start was superseded meanwhile (but never serve it)
     store.recordPlannerSessionReset(chatId, fingerprint, new Date().toISOString());
-    return gen !== this.gen || this.session !== s ? START_SUPERSEDED : this.resetOk();
+    if (gen !== this.gen || this.session !== s) return START_SUPERSEDED;
+    this.resetGen = gen;
+    return this.resetOk();
   }
 
   private resetOk(): null {
