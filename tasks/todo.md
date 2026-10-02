@@ -25,8 +25,9 @@ plan `docs/superpowers/plans/2026-09-30-omp-runtime.md`.
 **Distill dev-chatter fix (`fix/distill-dev-chatter`, 2026-10-02):** distill no longer stores talk about Houge
 itself as facts about Paco (drops runs that used `self_write_propose` / `self_diagnose` / `memory_correct_write`
 and turns steered into them; waits for a run to settle; prompt rule for the rest). Two reviewers (correctness,
-Codex) → round-2 fixes; live gate `scripts/live-gate-distill-dev-chatter.mjs` PASS ×2. Awaits merge, rebuild,
-**Paco's** kickstart. Residual: the prompt guard varies (one memory-criticism remark in two gate runs).
+Codex) → round-2 fixes → scoped re-review → round-3 span fix; live gate `scripts/live-gate-distill-dev-chatter.mjs`
+PASS ×3. Merged to `main` (`e3da77a`), `dist/` rebuilt; awaits **Paco's** kickstart, then the next real distill
+tick adds no Houge-talk facts. Residual: the prompt guard varies (one memory-criticism remark in two gate runs).
 - [ ] **Paco:** retire the chatter/probe facts in one chat message ("retire facts #153 #160 #161 #162 #167 #172
   #174") — one Approve card. Lesson #43 still carries the 齐天大圣 probe clauses (`memory_correct` cannot edit
   lessons).
