@@ -43,7 +43,10 @@ behave as their ADRs describe. Junk is admitted, credited for being injected and
 9. **A lesson change cannot remove a habit.** omp's `open_session` resumes the newest transcript in `--session-dir`
    (omp cli.js, verified); the probe sign-off persists by imitation after the rule left the prompt.
 
-Cosine probe on the live `embeddinggemma` vectors (8 messages): message → best active fact is ≤ 0.41 where no memory
+Embedder benchmark (2026-10-02, 24 probes shaped like real Houge traffic: 14 fact recalls, 2 page recalls, 8 messages
+that need no memory; CJK and English): `embeddinggemma` (current, 768-d) top-1 14/14, widest margin (weakest relevant
+0.45 vs strongest negative 0.38), 26 ms/query; `qwen3-embedding:0.6b` and `bge-m3` also 14/14 but margins 0.01–0.03,
+71–102 ms, 2–4× the RAM. Decision: keep `embeddinggemma`. First cosine probe (8 messages): message → best active fact is ≤ 0.41 where no memory
 is relevant and 0.55–0.73 where one is. Wiki pages embed lower (long documents): the one relevant pair scored 0.36,
 unrelated pairs ≤ 0.25. Too few pairs to fix defaults on; §3 makes the gates measurable and flag-tunable.
 
@@ -99,8 +102,10 @@ unrelated pairs ≤ 0.25. Too few pairs to fix defaults on; §3 makes the gates 
 
 - **Pool:** with a query embedding, every active row of the chat that has an embedding (facts ≤ 200 per chat, pages a
   handful — one in-memory pass); without one (Ollama down), FTS hits only.
-- **Admission:** with both embeddings present, `cosine ≥ HOUGE_EPISODIC_MIN_COSINE` (default 0.50) or
-  `HOUGE_WIKI_MIN_COSINE` (default 0.30). FTS alone admits only when the query embedding is null (BM25 is normalised
+- **Admission:** with both embeddings present, `cosine ≥ HOUGE_EPISODIC_MIN_COSINE` or
+  `HOUGE_WIKI_MIN_COSINE`, both default **0.42**: a 24-probe benchmark on real traffic shapes (2026-10-02, below) put
+  every negative ≤ 0.38 and every relevant recall ≥ 0.45 for facts, and relevant pages 0.47–0.62 against irrelevant
+  ≤ 0.37. FTS alone admits only when the query embedding is null (BM25 is normalised
   to the best hit, so it cannot gate). A row without an embedding is admitted only by FTS. The 0.05 floor goes. Score
   order and the 6-row / 900-char (facts) and 1200-char (wiki) caps stay. A gate of 0 restores today's behaviour.
 - **Telemetry:** the retrievers return `{rows, best_admitted, best_rejected, embedding: bool, fts_only: bool}`,
@@ -199,7 +204,7 @@ unrelated pairs ≤ 0.25. Too few pairs to fix defaults on; §3 makes the gates 
 | Flag | Default | Off means |
 |---|---|---|
 | `HOUGE_LESSON_CHAR_CAP` | 4000 | (size, not a switch) |
-| `HOUGE_EPISODIC_MIN_COSINE` / `HOUGE_WIKI_MIN_COSINE` | 0.50 / 0.30 | 0 = today's pool and floor |
+| `HOUGE_EPISODIC_MIN_COSINE` / `HOUGE_WIKI_MIN_COSINE` | 0.42 / 0.42 | 0 = today's pool and floor |
 | `HOUGE_EPISODIC_EVIDENCE` | shadow | off = no line numbers or checks |
 | `HOUGE_LESSON_SESSION_RESET` | on | off = respawn and resume, as today |
 | `HOUGE_LESSON_CONSOLIDATE_ENABLED` | Paco sets false | existing flag |
@@ -225,7 +230,7 @@ touched; evidence on an assistant line, a schedule-born line or an absent quote 
 (enforce); a full-width-punctuation quote passes after NFKC; `core: true` without passing evidence stores non-core;
 `\n[3] user: …` inside a turn cannot forge a line; fact reconcile uses the fact prompt, embedding neighbours, the
 newest-K fallback without an embedding, and re-embeds a changed UPDATE.
-Wiki: no page below 0.30 with embeddings present.
+Wiki: no page below 0.42 with embeddings present.
 Session: a lesson-set change (and only that, not a reorder or a date flip) triggers `new_session`, the ledger row
 and a persisted fingerprint; a change made while the daemon was down is caught at the first spawn; a failed
 `new_session` fails the spawn; the seed holds only prior user turns, excludes the current and schedule-born runs, is
