@@ -2805,6 +2805,15 @@ export class RunStore {
     `).all<EpisodicFactRow>(chat_id, limit);
   }
 
+  /** Chats whose ACTIVE core facts exceed `cap` (the `core_overflow` sweep invariant, memory A1 §4). */
+  listCoreOverflow(cap: number): Array<{ chat_id: string; core_count: number }> {
+    return this.db.prepare(`
+      SELECT chat_id, COUNT(*) AS core_count FROM episodic_facts
+      WHERE status = 'active' AND is_core = 1 AND chat_id IS NOT NULL
+      GROUP BY chat_id HAVING COUNT(*) > ? ORDER BY chat_id ASC
+    `).all<{ chat_id: string; core_count: number }>(cap);
+  }
+
   /**
    * A chat's ACTIVE core facts (is_core=1) — the always-known biography band folded above
    * the scored retrieval. Highest-salience first, then newest, capped by the core cap;
@@ -2872,15 +2881,21 @@ export class RunStore {
     return { verb, id, ...(target ? { supersededId: target.id } : {}), fact: merged, prunedIds };
   }
 
-  /** Prune (reversibly) the lowest-value active rows over the chat cap, sparing `keepId`. */
+  /**
+   * Prune (reversibly) the lowest-value active rows over the chat cap, sparing `keepId`. Core rows count toward the
+   * cap but are never pruned (memory A1 §4): core leaves only through memory_correct or a supersede.
+   */
   private pruneEpisodicOverflow(chat_id: string, cap: number, keepId: number): number[] {
     if (cap <= 0) return [];
-    const others = this.db.prepare(`
+    const total = this.db.prepare(`
+      SELECT COUNT(*) AS n FROM episodic_facts WHERE chat_id = ? AND status = 'active' AND id != ?
+    `).get<{ n: number }>(chat_id, keepId)?.n ?? 0;
+    const candidates = this.db.prepare(`
       SELECT id FROM episodic_facts
-      WHERE chat_id = ? AND status = 'active' AND id != ?
+      WHERE chat_id = ? AND status = 'active' AND id != ? AND is_core = 0
       ORDER BY reuse_value ASC, COALESCE(last_used, created_at) ASC, id ASC
     `).all<{ id: number }>(chat_id, keepId);
-    const toPrune = others.slice(0, Math.max(0, others.length + 1 - cap)).map((r) => r.id);
+    const toPrune = candidates.slice(0, Math.max(0, total + 1 - cap)).map((r) => r.id);
     for (const id of toPrune) {
       this.db.prepare(`UPDATE episodic_facts SET status = 'pruned' WHERE id = ?`).run(id);
     }
@@ -3017,7 +3032,7 @@ export class RunStore {
     // Scalar MAX over ISO strings orders correctly (fixed-width UTC timestamps).
     const stale = this.db.prepare(`
       SELECT id, reuse_value FROM episodic_facts
-      WHERE status = 'active' AND MAX(created_at, COALESCE(last_used, created_at)) < ?
+      WHERE status = 'active' AND is_core = 0 AND MAX(created_at, COALESCE(last_used, created_at)) < ?
       ORDER BY id ASC
     `).all<{ id: number; reuse_value: number }>(cutoff);
     const stmt = this.db.prepare(`UPDATE episodic_facts SET reuse_value = ? WHERE id = ?`);
@@ -3082,6 +3097,8 @@ export class RunStore {
       participants: [...participants],
       source_turn_ids: [...source_turn_ids],
       salience,
+      // Memory A1 §4: core only when EVERY source is core (an OR would promote a mixed merge to permanent).
+      is_core: sources.every((s) => s.is_core === 1),
       embedding: merged.embedding ?? null,
       ...(merged.embedding && merged.embedding_model ? { embedding_model: merged.embedding_model } : {}),
       created_at: now

@@ -134,7 +134,7 @@ export async function runEpisodicConsolidateTick(input: {
   const last = input.store.getEpisodicConsolidateLastRun();
   if (last && Date.parse(input.now) - Date.parse(last) < 86_400_000) return NO_TICK;
 
-  // (1) DECAY + reversible prune.
+  // (1) DECAY (reuse only; never prunes, never touches core).
   const decay = input.store.decayEpisodicFacts(input.now, {
     decayDays: resolveEpisodicDecayDays(env),
     pruneThreshold: resolveEpisodicPruneThreshold(env)

@@ -28,3 +28,16 @@ describe("lesson_dropped — an active ask/research lesson the omp prompt cannot
     expect(open("lesson_dropped")).toEqual([]);
   });
 });
+
+describe("core_overflow — more active core facts in a chat than HOUGE_EPISODIC_CORE_CAP (spec §4)", () => {
+  it("opens for the chat over the cap and resolves once it is back under", () => {
+    const env = { ...ARMED, HOUGE_EPISODIC_CORE_CAP: "2" };
+    const ids = ["a", "b", "c"].map((f) => store.addEpisodicFact({ chat_id: "77", fact: `core ${f}`, is_core: true }));
+    runInvariantSweep({ store, now: at(0), env });
+    expect(open("core_overflow")).toEqual([expect.objectContaining({ subject: "chat:77" })]);
+    expect(JSON.parse(open("core_overflow")[0]!.detail_json)).toEqual({ core_count: 3, cap: 2 });
+    store.retireMemoryRows({ kind: "fact", ids: [ids[0]!], chat_id: "77", run_id: null });
+    runInvariantSweep({ store, now: at(10), env });
+    expect(open("core_overflow")).toEqual([]);
+  });
+});
