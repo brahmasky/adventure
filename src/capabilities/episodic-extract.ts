@@ -309,6 +309,7 @@ async function planFacts(
     applyVerdict(planned, fact, cleanMergedText(verdict));
   }
   for (const p of planned) {
+    if (input.signal?.aborted) return null; // up to 8 embeds of up to 5 s each: never wait them all out
     if (!p) continue;
     try {
       p.embedding = await input.embed(p.text);

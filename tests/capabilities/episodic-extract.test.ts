@@ -542,6 +542,42 @@ describe("runEpisodicDistillPass — reconcile inside one window (pending facts 
     }
   });
 
+  it("a stop during the embeds starts no further embed (each may take 5 s) and commits nothing", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "user", text: "three bikes", created_at: minutesAgo(90) });
+      const controller = new AbortController();
+      const embedded: string[] = [];
+      const embed = async (text: string) => {
+        embedded.push(text);
+        controller.abort(); // SIGTERM while the first embed is in flight
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return null;
+      };
+      const llm = windowLlm(["Paco owns bike A", "Paco owns bike B", "Paco owns bike C"], () => '{"verdict":"ADD"}');
+      await runEpisodicDistillPass({ store, llm, embed, chatId: CHAT, userName: "paco", now: NOW, signal: controller.signal });
+      expect(embedded).toHaveLength(1);
+      expect(store.getActiveEpisodicFacts(CHAT)).toEqual([]);
+      expect(store.getEpisodicDistillWatermark(CHAT)).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a stop during the LAST embed commits nothing either (the check after the embeds)", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "user", text: "one bike", created_at: minutesAgo(90) });
+      const controller = new AbortController();
+      const embed = async () => { controller.abort(); return null; };
+      await runEpisodicDistillPass({ store, llm: windowLlm(["Paco owns bike A"], () => '{"verdict":"ADD"}'), embed, chatId: CHAT, userName: "paco", now: NOW, signal: controller.signal });
+      expect(store.getActiveEpisodicFacts(CHAT)).toEqual([]);
+      expect(store.getEpisodicDistillWatermark(CHAT)).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
   it("a write that fails mid-commit rolls the whole window back: no fact, no watermark", async () => {
     const store = RunStore.openInMemory();
     try {
