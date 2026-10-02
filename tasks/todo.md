@@ -29,8 +29,23 @@ Codex) → round-2 fixes → scoped re-review → round-3 span fix; live gate `s
 PASS ×3. Merged to `main` (`e3da77a`), `dist/` rebuilt; awaits **Paco's** kickstart, then the next real distill
 tick adds no Houge-talk facts. Residual: the prompt guard varies (one memory-criticism remark in two gate runs).
 - [ ] **Paco:** retire the chatter/probe facts in one chat message ("retire facts #153 #160 #161 #162 #167 #172
-  #174") — one Approve card. Lesson #43 still carries the 齐天大圣 probe clauses (`memory_correct` cannot edit
-  lessons).
+  #174") — one Approve card.
+
+**Memory A1 (`feat/memory-a1`, 2026-10-02, NOT yet merged):** lessons themed, capped (240/120) and all rendered for omp
+(`HOUGE_LESSON_CHAR_CAP`); credit follows the prompt; cosine-gated retrieval (0.42, embeddinggemma kept after a
+benchmark) with telemetry; core facts survive merge/decay/cap; evidence-checked extraction (`shadow`); a lesson change
+starts a fresh, seeded planner session (3-strike degrade, fail loud). Spec Rev 3
+`docs/superpowers/specs/2026-10-02-memory-a1-fixes-design.md`. Tests: 3277 / 234 files green.
+- Live gate (pre-merge, temp copy of the live DB): run 3 PASS exit 0. Check 1: 13/13 active ask+research lessons
+  rendered, 2059/4000 chars, none dropped. Check 2: Ollama up 14/14 positive probes hit, 8/8 negatives empty; Ollama
+  down (keyword-only) negatives empty. Check 3: three extraction runs on the window that minted #149 made no
+  possession claim; evidence rejected 0/14 on kimi-code/k3. Check 4: over-cap lesson UPDATE refused. Runs 1-2 failed
+  on gate semantics and one real defect (FTS stopwords), fixed.
+- [ ] **Paco:** sign off the ADR 0005 / ADR 0028 amendments and index rows (`docs/decisions/` is protected; text in
+  `.superpowers/sdd/2026-10-02-memory-a1/adr-draft.md`), then merge, run `node scripts/migrate-memory-a1.mjs --apply`
+  (daemon idle) BEFORE build + kickstart, then live-gate check 5 (post-kickstart, pending).
+- [ ] **Paco:** after a week of shadow counts, decide `HOUGE_EPISODIC_EVIDENCE=enforce` (rate per leg: see
+  `sessions.md` 2026-10-02 A1; pre-merge rejection 0/14 on kimi-code/k3).
 
 **Jev:** paused, not retired — the live shadow lost its comparator (`classifyIntent`) at the cutover. Next role:
 a pre-planner router, its own spec after a week of omp quota data; the API counts as free, and any 429/auth

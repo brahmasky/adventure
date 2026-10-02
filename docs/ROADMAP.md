@@ -76,6 +76,7 @@ Houge self-writes. The floor (§3) is never weakened by any agent.
   `/forget_memory`, plain-language self-write proposals, a robust reviewer verdict parser, schedule-born
   turns kept out of lessons and memory, shutdown-aware background ticks. First end-to-end self-write on
   omp merged (`4431d13`).
+- **Memory A1** (2026-10-02, branch `feat/memory-a1`, awaiting merge): lessons themed, capped and all rendered for omp; credit follows the prompt; cosine-gated retrieval with telemetry; core facts survive; evidence-checked extraction (shadow); a lesson change starts a fresh, seeded planner session. Next: A2 (Jev-first decision cascade).
 - **Remaining for SP1:** the live checks listed in `tasks/todo.md`, then a week of real turns before SP4.
 
 ## 2. State as of 2026-07-07 (historical; superseded by §2′)

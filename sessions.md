@@ -1450,3 +1450,26 @@ Build + independent adversarial verification subagents; each live round found a 
     toolchain.
   Live evidence so far: corrections applied via the tap, the two stuck outbox rows `failed_terminal`.
   Open: the Telegram live checks in `tasks/todo.md`.
+
+- 2026-10-02 (Memory A1, branch `feat/memory-a1`, not merged): one build, 11 plan tasks run sequentially test-first
+  with per-task review: lessons themed and capped and all rendered for omp under `HOUGE_LESSON_CHAR_CAP`; credit
+  follows the prompt; cosine-gated fact and wiki retrieval (0.42 after an embedder benchmark, embeddinggemma kept)
+  with telemetry; core facts survive merge, decay and cap; evidence-checked extraction in `shadow`; fact reconcile
+  with its own prompt and neighbours; a lesson-set change starts a fresh, seeded planner session; a one-off
+  migration with dry run, atomic apply and revert; a live gate on a temp DB copy.
+  Final review: five reviewers (correctness, security, testing, adversarial, Codex); every finding verified
+  first-hand, 21 confirmed and fixed, none rejected. Rulings that changed the spec (Rev 3): session reset degrades
+  after 3 failures instead of failing closed (hard line: no adverse impact to Houge's own operation); the reset
+  commits only after a prompt reached the child that ran `new_session` (omp skips an empty transcript on resume);
+  cross-scope lesson merges across ask/research; skipped lessons get `last_used` refreshed with no credit; a
+  `lesson_render_failed` incident; evidence-failing facts never touch core rows; an over-cap fact UPDATE becomes
+  an ADD; a daily embedding backfill (20 facts, 10 pages); retrieval excludes only rendered core ids; migration
+  dry run reads a VACUUM INTO copy; seed bounded to 48 h and neutralised case-insensitively. One more Important
+  finding appeared on re-review (pending reset promoted by a child that resumed the old transcript) and got one
+  targeted follow-up fix, then a clean re-review.
+  Live gate (temp copy of the live DB): runs 1-2 failed on gate semantics (any-of expects, a valid empty
+  extraction judged) and one real defect (FTS stopwords admitted English negatives while Ollama was down), all
+  fixed; run 3 PASS: 13/13 lessons rendered (2059/4000 chars), 14/14 positives and 8/8 negatives with Ollama up,
+  negatives empty with it down, three extraction runs on the #149 window made no possession claim, evidence
+  rejected 0/14 on kimi-code/k3, over-cap UPDATE refused. 3277 tests / 234 files green. Check 5 (post-kickstart)
+  pending Paco's merge, migration `--apply` and kickstart. ADR amendment text awaits Paco's sign-off.
