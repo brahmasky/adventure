@@ -512,7 +512,7 @@ describe("runTelegramDaemon — the signal path (⓪·3 S2)", () => {
     return new Date(Date.now() - minutes * 60_000).toISOString();
   }
 
-  /** One idle daemon pass (getUpdates aborts immediately); collect sent messages. */
+  /** One full idle cycle (the first poll returns nothing and the ticks run; the second poll stops); collect sent messages. */
   async function idleCycle(store: RunStore, llmAdapter = async (input: Record<string, unknown>) => okAnswer(input)): Promise<string[]> {
     const controller = new AbortController();
     const sent: string[] = [];
@@ -883,7 +883,7 @@ describe("runTelegramDaemon — the signal path (⓪·3 S2)", () => {
 });
 
 describe("runTelegramDaemon — scheduler tick (B10b, ADR 0017)", () => {
-  /** One idle daemon pass (getUpdates aborts immediately); collect sent messages. */
+  /** One full idle cycle whose tick may fire a schedule; the second poll stops the daemon (once the fired turn answered, when armed). */
   async function idleSchedulerCycle(store: RunStore): Promise<string[]> {
     const controller = new AbortController();
     const sent: string[] = [];
