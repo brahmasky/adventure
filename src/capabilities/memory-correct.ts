@@ -78,8 +78,8 @@ export function parseMemoryRequest(input: Record<string, unknown>): MemoryReques
   if (input.action === "retire") return { action: "retire", kind, ids };
   if (kind === "wiki") return { refusal: "wiki_correct_unsupported" };
   if (typeof input.correction === "string" && input.correction.length > MEMORY_CORRECTION_MAX_CHARS) return { refusal: "correction_too_long" };
-  // Stored exactly as both cards show it: one line, markdown-inert (the cards render through the rich renderer).
-  const correction = typeof input.correction === "string" ? escapeForTelegram(input.correction.replace(/\s+/g, " ").trim()) : "";
+  // Stored as Paco wrote it, on one line; only the cards escape it, at render time ({@link inertCode}).
+  const correction = typeof input.correction === "string" ? input.correction.replace(/\s+/g, " ").trim() : "";
   return correction ? { action: "correct", kind, ids, correction } : { refusal: "correction_required" };
 }
 
@@ -137,6 +137,11 @@ export function memoryUndoButton(change_id: string): NotificationButton {
   return { text: "↩️ Undo", data };
 }
 
+/**
+ * Paco's correction on a card: an inline code span, which the rich renderer never reads as a link or emphasis. A
+ * backtick inside would close the span, so it shows as U+02CB on the card only; the stored text keeps it.
+ */
+export const inertCode = (text: string): string => `\`${text.replace(/`/g, "\u02cb")}\``;
 const quoted = (text: string) => `"${clipText(escapeForTelegram(text), MEMORY_CARD_TEXT_CHARS)}"`;
 /** An old row's text on the approval card: markdown-inert, at most MEMORY_SEARCH_TEXT_CHARS. */
 const quotedFull = (text: string) => `"${clipText(escapeForTelegram(text), MEMORY_SEARCH_TEXT_CHARS)}"`;
@@ -148,13 +153,14 @@ export function memoryRowText(store: RunStore, kind: MemoryKind, id: number): st
   return p ? p.title : "";
 }
 
-/** `🧠 Retired #108: "<text>"` per row, or `🧠 Corrected #108 → #170: "<correction>"`. Code-rendered, text escaped. */
+/** `🧠 Retired #108: "<text>"` per row, or `🧠 Corrected #108 → #170: <correction as inline code>`. Code-rendered, text escaped. */
 export function memoryChangeCardText(store: RunStore, change: MemoryChange): string {
   const tag = change.kind === "wiki" ? "wiki #" : "#";
   if (change.action === "correct" && change.new_id !== null) {
     const olds = change.old_ids.map((id) => `#${id}`).join(", ");
     const was = change.old_ids.map((id) => `was #${id}: ${quoted(memoryRowText(store, "fact", id))}`);
-    return [`🧠 Corrected ${olds} → #${change.new_id}: ${quoted(memoryRowText(store, "fact", change.new_id))}`, ...was].join("\n");
+    const text = inertCode(clipText(memoryRowText(store, "fact", change.new_id), MEMORY_CARD_TEXT_CHARS));
+    return [`🧠 Corrected ${olds} → #${change.new_id}: ${text}`, ...was].join("\n");
   }
   return change.old_ids.map((id) => `🧠 Retired ${tag}${id}: ${quoted(memoryRowText(store, change.kind, id))}`).join("\n");
 }
@@ -193,7 +199,7 @@ export function memoryWritePreflight(
   const w = req as Exclude<MemoryRequest, { action: "search" }>;
   const olds = w.ids.map((id) => `${w.kind === "wiki" ? "wiki " : ""}#${id}: ${quotedFull(memoryRowText(d.store, w.kind, id))}`);
   const head = w.action === "retire" ? `retire ${w.ids.length} ${w.kind === "wiki" ? "wiki page(s)" : "fact(s)"}:` : `correct ${w.ids.length} fact(s) into one new fact:`;
-  return { card_detail: [head, ...olds, ...(w.action === "correct" ? [`New text: "${w.correction}"`] : [])].join("\n") };
+  return { card_detail: [head, ...olds, ...(w.action === "correct" ? [`New text: ${inertCode(w.correction)}`] : [])].join("\n") };
 }
 
 /** The memory_correct adapter: search offers ids; retire/correct pass every code-owned limit or change nothing. */

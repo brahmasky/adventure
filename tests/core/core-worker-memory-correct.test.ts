@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TURN_ACTIONS } from "../../src/contracts/task-contract.js";
 import { parseMemoryRequest } from "../../src/capabilities/memory-correct.js";
 import { OMP_LOOP_TOOL_META } from "../../src/core/omp-turn-wiring.js";
+import { stableHash } from "../../src/domain/canonical.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { APPROVAL_DENIED_TEXT } from "../../src/omp/bridge-handler.js";
@@ -10,6 +11,7 @@ import { capabilityFor } from "../../src/omp/capability-map.js";
 import { isToolArmed } from "../../src/omp/tool-arming.js";
 import { retrieveEpisodicFacts } from "../../src/run/episodic-retrieval.js";
 import { RunStore } from "../../src/run/run-store.js";
+import { markdownToTelegramHtml } from "../../src/telegram/markdown-to-telegram-html.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
 import { pinEnabledFlags, pinOmpEnv, shortTmp, useFakeOmp } from "../helpers/omp-env.js";
 import { bridgeTurn, drainOutbox, ompWorker, until } from "../helpers/omp-worker.js";
@@ -165,7 +167,7 @@ describe("memory_correct: retire and correct take only ids a search offered in t
     const texts = retrieveEpisodicFacts({ store, chat_id: CHAT, queryText: "daily report ASML", queryEmbedding: null, now: NOW }).map((f) => f.fact);
     expect(texts).not.toContain(ASML);
     const card = [...drainOutbox(store).values()].find((p) => String(p.text).startsWith("🧠"));
-    expect(card?.text).toBe(`🧠 Corrected #${id} → #${created.id}: "Paco's AI daily report covers AI news only, never ASML"\nwas #${id}: "${ASML}"`);
+    expect(card?.text).toBe(`🧠 Corrected #${id} → #${created.id}: \`Paco's AI daily report covers AI news only, never ASML\`\nwas #${id}: "${ASML}"`);
   });
 
   it("L3: in a steered run the correction's source turn is the steered message's own user turn", async () => {
@@ -224,7 +226,7 @@ describe("memory_correct: correction size (M-H1)", () => {
     await t.call("memory_correct", { action: "search", query: "ASML" });
     await write(t, { action: "correct", ids: [id], correction });
     const card = String([...drainOutbox(store).values()].find((x) => String(x.text).startsWith("🧠"))?.text);
-    expect(card).toContain(`"${correction}"`);
+    expect(card).toContain(`\`${correction}\``);
     expect(card).toContain(`was #${id}: "${old}"`);
   });
 
@@ -235,6 +237,47 @@ describe("memory_correct: correction size (M-H1)", () => {
     await t.call("memory_correct", { action: "search", query: "ASML" });
     await write(t, { action: "retire", ids: [id] });
     expect([...drainOutbox(store).values()].some((x) => x.text === `🧠 Retired #${id}: "${old}"`)).toBe(true);
+  });
+});
+
+describe("memory_correct: the correction is stored as Paco wrote it and rendered inert", () => {
+  // Live 2026-10-02: the old write-time strip stored `snake_case` as `snakecase`. Store Paco's text (one line,
+  // trimmed); escape only where Telegram markdown would read it: on the approval card and the Undo card.
+  const RAW = "snake_case [x](http://e)";
+
+  it("stores the correction verbatim; both cards show it literally (no link, no italic); the approval binds that exact text", async () => {
+    const id = fact(ASML);
+    const t = turn("fix it");
+    await t.call("memory_correct", { action: "search", query: "ASML" });
+    const input = { action: "correct", ids: [id], correction: `  ${RAW}\n ` };
+    const p = t.call("memory_correct", input);
+    await until(() => pendingApproval(t.run_id) !== undefined);
+    const approval_id = pendingApproval(t.run_id)!;
+    const outbox = drainOutbox(store);
+    const approvalHtml = markdownToTelegramHtml(String([...outbox.values()].find((x) => String(x.text).startsWith("Approval required"))?.text));
+    tapApproval(approval_id, "approve");
+    expect((await p).isError).toBe(false);
+
+    const created = store.getActiveEpisodicFacts(CHAT)[0]!;
+    expect(created.fact).toBe(RAW);
+    expect(store.getToolApproval(approval_id)?.input_hash).toBe(stableHash(input));
+    const undoHtml = markdownToTelegramHtml(String([...drainOutbox(store).values()].find((x) => String(x.text).startsWith("🧠"))?.text));
+    for (const html of [approvalHtml, undoHtml]) {
+      expect(html).toContain(RAW);
+      expect(html).not.toContain("<a ");
+      expect(html).not.toContain("<i>");
+    }
+  });
+
+  it("a backtick in the correction is stored, and cannot close the card's inert span", async () => {
+    const id = fact(ASML);
+    const t = turn("fix it");
+    await t.call("memory_correct", { action: "search", query: "ASML" });
+    await write(t, { action: "correct", ids: [id], correction: "use `npm ci` and *not* [x](http://e)" });
+    expect(store.getActiveEpisodicFacts(CHAT)[0]!.fact).toBe("use `npm ci` and *not* [x](http://e)");
+    const html = markdownToTelegramHtml(String([...drainOutbox(store).values()].find((x) => String(x.text).startsWith("🧠"))?.text));
+    expect(html).not.toContain("<a ");
+    expect(html).not.toContain("<i>");
   });
 });
 
@@ -388,7 +431,7 @@ describe("memory_correct: every retire and correct waits for Paco's tap (the omp
     expect(text).toContain("correct");
     expect(text).toContain(`#${a}: "${ASML}"`);
     expect(text).toContain(`#${b}: "The daily brief covers ASML analyst opinions"`);
-    expect(text).toContain(`"${correction}"`);
+    expect(text).toContain(`\`${correction}\``);
     tapApproval(pendingApproval(t.run_id)!, "deny");
     await p;
   });
@@ -425,7 +468,7 @@ describe("memory_correct end to end: the fake omp child calls search, then corre
       expect(store.getEpisodicFact(id)).toMatchObject({ status: "superseded", superseded_by: created.id });
       const userTurn = store.getRecentChatTurns(CHAT, 10).find((x) => x.run_id === run && x.role === "user")!;
       expect(JSON.parse(created.source_turn_ids)).toEqual([userTurn.turn_id]);
-      expect([...outbox.values()].some((p) => p.text === `🧠 Corrected #${id} → #${created.id}: "The AI daily report never includes ASML"\nwas #${id}: "${ASML}"`)).toBe(true);
+      expect([...outbox.values()].some((p) => p.text === `🧠 Corrected #${id} → #${created.id}: \`The AI daily report never includes ASML\`\nwas #${id}: "${ASML}"`)).toBe(true);
     } finally {
       await worker.shutdownPlanners();
     }
