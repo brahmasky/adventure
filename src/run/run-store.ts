@@ -3066,7 +3066,7 @@ export class RunStore {
     queryText: string,
     k: number
   ): Array<EpisodicFactRow & { rank: number }> {
-    const tokens = (queryText.match(/[\p{L}\p{N}]+/gu) ?? []).slice(0, 12);
+    const tokens = ftsQueryTokens(queryText);
     if (tokens.length === 0) return [];
     const match = tokens.map((t) => `"${t}"`).join(" OR ");
     try {
@@ -3857,7 +3857,7 @@ export class RunStore {
     k: number,
     mode: "any" | "all" = "any"
   ): Array<WikiPageRow & { rank: number }> {
-    const tokens = (queryText.match(/[\p{L}\p{N}]+/gu) ?? []).slice(0, 12);
+    const tokens = ftsQueryTokens(queryText);
     if (tokens.length === 0) return [];
     const match = tokens.map((t) => `"${t}"`).join(mode === "all" ? " AND " : " OR ");
     try {
@@ -8129,6 +8129,31 @@ export const DEFAULT_LESSON_PRUNE_THRESHOLD = 0.2;
 export function resolveLessonPruneThreshold(env: NodeJS.ProcessEnv): number {
   const n = Number(env.HOUGE_LESSON_PRUNE_THRESHOLD);
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_LESSON_PRUNE_THRESHOLD;
+}
+
+/**
+ * English function words the FTS keyword legs ignore (live gate 2026-10-02: with Ollama down, "Explain how attention
+ * works in transformers" admitted 4 facts and a wiki page on "how"/"in"). Genuine function words only: a content
+ * word, however common, stays a search term. Words of 2 characters or fewer are not listed: ftsQueryTokens drops them.
+ */
+export const FTS_STOPWORDS: ReadonlySet<string> = new Set([
+  "the", "you", "your", "him", "his", "she", "her", "its", "they", "them", "their", "this", "that", "these", "those",
+  "are", "was", "were", "been", "being", "does", "did", "have", "has", "had", "can", "could", "will", "would",
+  "shall", "should", "may", "might", "must", "for", "from", "with", "about", "into", "and", "but", "not", "what",
+  "which", "who", "whom", "whose", "when", "where", "why", "how", "there", "here", "than", "then", "our"
+]);
+
+/** A token with any CJK character: unicode61 cannot segment it, and a 2-character word is a real word. */
+const CJK_TOKEN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+/**
+ * The FTS keyword legs' query terms (facts and wiki pages): letter/number runs, minus English function words and
+ * non-CJK tokens of 2 characters or fewer, at most 12. Empty → the caller returns [] (no keyword leg).
+ */
+function ftsQueryTokens(queryText: string): string[] {
+  return (queryText.match(/[\p{L}\p{N}]+/gu) ?? [])
+    .filter((t) => CJK_TOKEN.test(t) || (t.length > 2 && !FTS_STOPWORDS.has(t.toLowerCase())))
+    .slice(0, 12);
 }
 
 /** SELECT list for EpisodicFactRow reads (one place, so every accessor returns the same shape). */

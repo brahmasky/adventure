@@ -409,6 +409,34 @@ describe("searchEpisodicFactsFts (M2 retrieval keyword leg)", () => {
   });
 });
 
+describe("FTS ignores English function words and short tokens (live gate: stopwords admitted 4 facts with Ollama down)", () => {
+  it("a stopword-only English query returns [] for facts and wiki pages; one content word still matches", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const f = store.addEpisodicFact({ chat_id: CHAT, fact: "Paco is in Sydney and he works on how to do it", created_at: NOW });
+      const p = store.addWikiPage({ topic_slug: "how-it-is", title: "How it is done", summary: "What we do in the morning.", created_at: NOW });
+      expect(store.searchEpisodicFactsFts(CHAT, "How is it in the, and what do we do?", 30)).toEqual([]);
+      expect(store.searchWikiPagesFts("How is it in the, and what do we do?", 30)).toEqual([]);
+      expect(store.searchWikiPagesFts("How is it in the", 30, "all")).toEqual([]);
+      expect(store.searchEpisodicFactsFts(CHAT, "how is it in Sydney", 30).map((h) => h.id)).toEqual([f]);
+      expect(store.searchWikiPagesFts("what is the morning", 30).map((h) => h.id)).toEqual([p]);
+      expect(store.searchEpisodicFactsFts(CHAT, "Pa ok", 30)).toEqual([]); // tokens of 2 chars or fewer are dropped
+    } finally {
+      store.close();
+    }
+  });
+
+  it("CJK tokens are unaffected, even 2 characters long", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const f = store.addEpisodicFact({ chat_id: CHAT, fact: "悉尼", created_at: NOW });
+      expect(store.searchEpisodicFactsFts(CHAT, "悉尼", 30).map((h) => h.id)).toEqual([f]);
+    } finally {
+      store.close();
+    }
+  });
+});
+
 describe("mergeEpisodicFacts (B4 consolidation write)", () => {
   it("ADDs the merged row and supersedes EVERY source bidirectionally (invalidate, never delete)", () => {
     const store = RunStore.openInMemory();
