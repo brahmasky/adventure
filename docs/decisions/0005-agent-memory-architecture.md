@@ -83,3 +83,28 @@ first concrete memory artifact, written now alongside naming Houge (猴哥).
   lifecycle. (We still use LLM judgment to *propose* writes.)
 - **Copy WuKong's LCM**: explicitly declined as a template — referenced only as one data
   point after this independent survey.
+
+## Amendment — memory A1 (2026-10-02)
+
+Spec `docs/superpowers/specs/2026-10-02-memory-a1-fixes-design.md` (Rev 3). The stores now behave as this ADR describes:
+- **Lessons** carry one closed-list theme (`format`, `time`, `honesty`, `hygiene`, `sources`, `tasks`, `self`;
+  `unthemed` by default); merging is same-theme only (a themed UPDATE onto an `unthemed` target adopts the theme).
+  Every write is capped (text 240, AVOID 120) and stored as one line: an over-cap write is refused, never stored.
+  An UPDATE keeps the target's standing. A SUPERSEDE or UPDATE may cross the `ask` / `research` scopes (both render
+  in one omp prompt); the new row takes the target's scope. The omp planner renders every active `ask` and
+  `research` lesson, theme then id, under `HOUGE_LESSON_CHAR_CAP`; a lesson that does not fit is a `lesson_dropped`
+  ledger row and incident, and its `last_used` is refreshed (seen, not credited) so decay cannot delete it. A render
+  failure opens `lesson_render_failed`. Consolidation's growth floor is gone (Paco keeps it off).
+- **Credit** follows the prompt: only the lessons and core facts the spawned session's prompt holds are touched and
+  rated.
+- **Retrieval** admits a fact or page only above a cosine gate over the whole chat pool (`HOUGE_EPISODIC_MIN_COSINE`
+  0.42, `HOUGE_WIKI_MIN_COSINE` 0.42; embeddinggemma kept after a benchmark); without a query embedding only FTS
+  hits enter, and the FTS legs drop English function words and short non-CJK tokens. Each turn's attribution row
+  carries the gate telemetry. Decay no longer prunes facts or pages (B redesigns the lifecycle). Rows with no
+  embedding are embedded on correction and by a bounded daily backfill; an embedding outage opens
+  `embeddings_unavailable`.
+- **Biography**: a merged fact is core only when every source is; core never decays and is never cap-pruned;
+  `core_overflow` opens above `HOUGE_EPISODIC_CORE_CAP`.
+- **Provenance**: each extracted fact cites a numbered user line and a quote that code checks
+  (`HOUGE_EPISODIC_EVIDENCE`, `shadow` by default); a passing fact points at that one turn, and `core` needs it. An
+  evidence-failing fact never touches a core row. Fact reconcile has its own prompt and embedding neighbours.
