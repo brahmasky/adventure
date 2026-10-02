@@ -44,6 +44,8 @@ export interface ScheduleTickInput {
   worker: ScheduleTickWorker;
   now: string;
   env?: NodeJS.ProcessEnv;
+  /** The daemon's stop: no further fire starts once it aborts (a fired turn is the planner's to stop). */
+  signal?: AbortSignal;
 }
 
 export interface ScheduleTickResult {
@@ -67,6 +69,7 @@ export async function maybeFireScheduledTasks(input: ScheduleTickInput): Promise
   if (!resolveSchedulerEnabled(env)) return result;
 
   for (const task of input.store.listDueScheduledTasks(input.now, SCHEDULE_TICK_MAX_FIRES_PER_TICK)) {
+    if (input.signal?.aborted) break; // an unfired task stays due: the next boot fires it (misfire policy)
     try {
       await fireScheduledTask(task, input, result);
     } catch (error) {

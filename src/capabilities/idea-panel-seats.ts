@@ -26,6 +26,8 @@ export interface OmpPanelSeatsInput {
   env: NodeJS.ProcessEnv;
   /** Tests only: bypass the `omp --version` spawn. */
   versionCheck?: OneShotAdapterOptions["versionCheck"];
+  /** The daemon's stop: aborts an in-flight seat call (absent for the CLI). */
+  signal?: AbortSignal;
 }
 
 /** The four panel seats on omp. A seat never throws into the tick: every failure is `{ok:false}`. */
@@ -37,7 +39,7 @@ export function buildOmpPanelSeats(input: OmpPanelSeatsInput): PanelSeatBindings
     return async (question: string, system: string): Promise<{ ok: true; answer: string } | { ok: false; unavailable?: boolean }> => {
       if (chain.length === 0) return { ok: false, unavailable: true };
       try {
-        const r = await one.answer({ question, system });
+        const r = await one.answer({ question, system, ...(input.signal ? { signal: input.signal } : {}) });
         return r.ok ? { ok: true, answer: r.answer } : { ok: false, ...(r.unavailable ? { unavailable: true } : {}) };
       } catch {
         return { ok: false };

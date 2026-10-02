@@ -322,12 +322,15 @@ export interface RadarSourcesResult {
 export async function fetchRadarSources(input: {
   fetch?: (i: HttpFetchInput, c?: HttpFetchConfig) => Promise<HttpFetchOutcome>;
   now: string;
+  /** The daemon's stop: no further source is fetched once it aborts (each fetch may take RADAR_FETCH_TIMEOUT_MS). */
+  signal?: AbortSignal;
 }): Promise<RadarSourcesResult> {
   const doFetch = input.fetch ?? fetchUrl;
   const ok: Array<{ key: string; items: RadarItem[] }> = [];
   const failed: string[] = [];
 
   for (const source of buildRadarSources(input.now)) {
+    if (input.signal?.aborted) break;
     if (source.dormant) continue;
     try {
       const outcome = await doFetch(

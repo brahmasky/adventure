@@ -287,7 +287,8 @@ export interface PanelTickResult {
   /** True iff the tick committed to running (armed mode: the latch was stamped) or dry-ran. */
   ran: boolean;
   status: "disabled" | "off" | "not_due" | "skipped" | "aborted" | "ok" | "error";
-  reason?: "thin_board" | "quorum";
+  /** `shutdown`: the daemon's stop cut the run short; nothing was written (the week's latch stays stamped). */
+  reason?: "thin_board" | "quorum" | "shutdown";
   weekKey?: string;
   /** Judge names that returned ≥1 valid score / that didn't (the ledger naming). */
   judgesOk?: string[];
@@ -318,7 +319,11 @@ export interface PanelTickInput {
    * statuses, no snapshot, no brief, no ledger, no push) and return the would-be shortlist.
    */
   dryRun?: boolean;
+  /** The daemon's stop: checked before the run and around every seat call. */
+  signal?: AbortSignal;
 }
+
+const SHUTDOWN: PanelTickResult = { ran: true, status: "aborted", reason: "shutdown" };
 
 /**
  * The weekly panel tick (order per spec §4): flag → weekly due-check (first-arm: `last ===
@@ -331,6 +336,7 @@ export interface PanelTickInput {
 export async function runIdeaPanelTick(input: PanelTickInput): Promise<PanelTickResult> {
   const dryRun = input.dryRun === true;
   try {
+    if (input.signal?.aborted) return { ...SHUTDOWN, ran: false };
     const tz = resolveRadarTz(input.env);
     if (!dryRun) {
       if (!resolvePanelEnabled(input.env)) return { ran: false, status: "disabled" };
@@ -378,6 +384,7 @@ export async function runIdeaPanelTick(input: PanelTickInput): Promise<PanelTick
       codex: null
     };
     for (const name of PANEL_JUDGE_NAMES) {
+      if (input.signal?.aborted) return SHUTDOWN; // a cut judge is not a failed one: no quorum verdict
       const system = buildJudgeDiscipline(PANEL_JUDGE_LENSES[name]);
       let answer: string | null = null;
       try {
@@ -394,6 +401,7 @@ export async function runIdeaPanelTick(input: PanelTickInput): Promise<PanelTick
         if (parsed.scores.size > 0) verdicts[name] = parsed.scores;
       }
     }
+    if (input.signal?.aborted) return SHUTDOWN;
     const judgesOk = PANEL_JUDGE_NAMES.filter((n) => verdicts[n] !== null);
     const judgesFailed = PANEL_JUDGE_NAMES.filter((n) => verdicts[n] === null);
 
@@ -465,6 +473,7 @@ export async function runIdeaPanelTick(input: PanelTickInput): Promise<PanelTick
       chairUsed = false;
       picks = [];
     }
+    if (input.signal?.aborted) return SHUTDOWN; // a cut chair would publish the fallback ranking as this week's
     if (!chairUsed) {
       picks = meanScoreFallback(scored).map((entry) => ({
         entry,

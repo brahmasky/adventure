@@ -149,10 +149,11 @@ export function tickCorrelationId(name: string): string {
 /**
  * A daemon tick's seat: each call is its own one-shot under a FRESH `tick:<name>:<uuid>`
  * correlation, so one tick run's legs group together and never mix with the next run's.
+ * `signal` (the daemon's stop) aborts the in-flight call.
  */
 export function tickSeat(
   store: RunStore, name: string, role: LlmCallRole, env: NodeJS.ProcessEnv = process.env
-): (input: { question: string; system: string }) => Promise<{ ok: true; answer: string } | { ok: false }> {
+): (input: { question: string; system: string; signal?: AbortSignal }) => Promise<{ ok: true; answer: string } | { ok: false }> {
   return async (input) => {
     const r = await oneShotAdapter(store, resolveOmpConfig(env), { correlation_id: tickCorrelationId(name), role }).answer(input);
     return r.ok ? { ok: true, answer: r.answer } : { ok: false };
@@ -195,7 +196,7 @@ export function oneShotAdapter(
         {
           seat: scope.role, chain, prompt: req.system ? `${req.system}\n\n${req.question}` : req.question,
           files: req.media ? [req.media.path] : [], correlationId: `${base}:${scope.role}:${randomUUID()}`,
-          ...(plannerFamily !== undefined ? { plannerFamily } : {})
+          ...(plannerFamily !== undefined ? { plannerFamily } : {}), ...(req.signal ? { signal: req.signal } : {})
         },
         {
           cfg, audit: store.llmAuditSink(scope), onVersionCheck: (check) => reportOmpCheck(store, cfg, check),

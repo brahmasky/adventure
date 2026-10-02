@@ -455,3 +455,41 @@ describe("resolvers (PINNED_ENV hermeticity)", () => {
     expect(resolveEpisodicMergeSim({ HOUGE_EPISODIC_MERGE_SIM: "junk" })).toBe(0.92);
   });
 });
+
+describe("runEpisodicConsolidateTick — the daemon's stop (live 2026-10-02)", () => {
+  it("a stop mid-merge asks no further cluster yet still ends the tick, so decay never runs twice in a day", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      for (let pair = 0; pair < 3; pair += 1) {
+        const vector = Float32Array.from(Array.from({ length: 3 }, (_, i) => (i === pair ? 1 : 0)));
+        store.addEpisodicFact({ chat_id: CHAT, fact: `pair ${pair} a`, embedding: vector, created_at: NOW });
+        store.addEpisodicFact({ chat_id: CHAT, fact: `pair ${pair} b`, embedding: vector, created_at: NOW });
+      }
+      const controller = new AbortController();
+      const calls: string[] = [];
+      const llm: EpisodicLlm = async (input) => {
+        calls.push(input.question);
+        controller.abort(); // SIGTERM while the first cluster's call is in flight
+        return { ok: true, answer: '{"fact":"merged pair"}' };
+      };
+      const result = await runEpisodicConsolidateTick({ store, llm, embed: noEmbed, now: NOW, env: ENABLED, signal: controller.signal });
+      expect(calls).toHaveLength(1);
+      expect(result).toMatchObject({ ran: true, clusters_merged: 1 });
+      expect(store.getActiveEpisodicFacts(CHAT)).toHaveLength(5);
+      expect(store.getEpisodicConsolidateLastRun()).toBe(NOW);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("an already-stopped daemon starts no tick: no decay, no marker", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const result = await runEpisodicConsolidateTick({ store, llm: noLlm, embed: noEmbed, now: NOW, env: ENABLED, signal: AbortSignal.abort() });
+      expect(result.ran).toBe(false);
+      expect(store.getEpisodicConsolidateLastRun()).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+});

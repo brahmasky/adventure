@@ -238,16 +238,13 @@ const NO_PASS: EpisodicDistillPassResult = { distilled: 0, superseded: 0, droppe
  * advances only after a SUCCESSFUL extract read (a transport failure retries next lull),
  * and advances even when nothing was durable — the model already judged this window, so
  * it is never re-distilled. One summary ledger event when there was work to reconcile.
+ *
+ * `signal` is the daemon's stop (live 2026-10-02: a kickstart mid-pass outlived launchd's
+ * ExitTimeOut). It is checked between model calls; a window the stop cuts short commits
+ * nothing (no fact, no watermark), so the next pass re-reads it whole. Every model call runs
+ * first and every write after, in one synchronous step.
  */
-export async function runEpisodicDistillPass(input: {
-  store: RunStore;
-  llm: EpisodicLlm;
-  embed: EpisodicEmbed;
-  chatId: string;
-  userName: string;
-  now: string;
-  env?: NodeJS.ProcessEnv;
-}): Promise<EpisodicDistillPassResult> {
+export async function runEpisodicDistillPass(input: DistillPassInput): Promise<EpisodicDistillPassResult> {
   const env = input.env ?? process.env;
   const watermark = input.store.getEpisodicDistillWatermark(input.chatId)?.last_turn_created_at ?? undefined;
   // OLDEST-first past the watermark: a burst longer than one window is caught up across
@@ -256,21 +253,47 @@ export async function runEpisodicDistillPass(input: {
   const window = input.store.getChatTurnsAfter(input.chatId, watermark, EPISODIC_EXTRACT_TURN_CAP);
   const turns = withoutScheduledTurns(input.store, window);
   if (!turns.some((t) => t.role === "user")) return skipWindow(input, window, turns.length);
+  if (input.signal?.aborted) return NO_PASS;
 
   const read = await input.llm({
     question: buildEpisodicExtractQuestion({ turns, userName: input.userName, now: input.now }),
     system: EPISODIC_EXTRACT_DISCIPLINE
   });
-  if (!read.ok) return NO_PASS;
+  if (!read.ok || input.signal?.aborted) return NO_PASS;
   const { facts } = parseEpisodicExtractResult(read.answer);
+  const planned = await planFacts(facts, input);
+  if (planned === null) return NO_PASS; // stopped mid-window: nothing of it is written
+  return commitWindow(input, env, window, turns, planned);
+}
 
-  let distilled = 0;
-  let superseded = 0;
-  let dropped = 0;
-  const sourceTurnIds = turns.map((t) => t.turn_id);
+interface DistillPassInput {
+  store: RunStore;
+  llm: EpisodicLlm;
+  embed: EpisodicEmbed;
+  chatId: string;
+  userName: string;
+  now: string;
+  env?: NodeJS.ProcessEnv;
+  /** The daemon's stop signal (absent outside the daemon). */
+  signal?: AbortSignal;
+}
+
+/** One extracted fact, judged and embedded, waiting for the window's write step (`null`: dropped by the backstop). */
+type PlannedFact = { fact: ExtractedFact; verdict: ReconcileVerdict; embedding: Float32Array | null } | null;
+
+/**
+ * Every model call of the window: per fact, backstop → reconcile against FTS neighbors → best-effort embed.
+ * `null` when the stop lands before the last call returns.
+ */
+async function planFacts(
+  facts: ExtractedFact[],
+  input: Pick<DistillPassInput, "store" | "llm" | "embed" | "chatId" | "signal">
+): Promise<PlannedFact[] | null> {
+  const planned: PlannedFact[] = [];
   for (const fact of facts) {
+    if (input.signal?.aborted) return null;
     if (shouldRejectFact(fact.fact)) {
-      dropped += 1;
+      planned.push(null);
       continue;
     }
     const neighbors = input.store.getEpisodicFactsForReconcile(input.chatId, fact.fact, RECONCILE_NEIGHBOR_K);
@@ -283,14 +306,35 @@ export async function runEpisodicDistillPass(input: {
         ? { verdict: "UPDATE", id: verdict.id }
         : { verdict: "UPDATE", id: verdict.id, text: merged };
     }
-
     let embedding: Float32Array | null = null;
     try {
       embedding = await input.embed(fact.fact);
     } catch {
       embedding = null; // fire-and-degrade — a sidecar failure never blocks the save
     }
+    planned.push({ fact, verdict, embedding });
+  }
+  return input.signal?.aborted ? null : planned;
+}
 
+/** The window's writes, synchronously: every planned fact, then the watermark, then the ledger summary. */
+function commitWindow(
+  input: DistillPassInput,
+  env: NodeJS.ProcessEnv,
+  window: ChatTurnRow[],
+  turns: ChatTurnRow[],
+  planned: PlannedFact[]
+): EpisodicDistillPassResult {
+  let distilled = 0;
+  let superseded = 0;
+  let dropped = 0;
+  const sourceTurnIds = turns.map((t) => t.turn_id);
+  for (const p of planned) {
+    if (p === null) {
+      dropped += 1;
+      continue;
+    }
+    const { fact, embedding } = p;
     const saved = input.store.saveReconciledFact(
       {
         chat_id: input.chatId,
@@ -303,7 +347,7 @@ export async function runEpisodicDistillPass(input: {
         embedding,
         ...(embedding ? { embedding_model: resolveEmbedConfig(env).model } : {})
       },
-      verdict,
+      p.verdict,
       input.now,
       resolveEpisodicFactCapPerChat(env)
     );
@@ -317,14 +361,8 @@ export async function runEpisodicDistillPass(input: {
     last_turn_created_at: window[window.length - 1]!.created_at,
     last_distilled_at: input.now
   });
-
-  if (facts.length > 0) {
-    input.store.recordEpisodicDistillPass(input.chatId, {
-      facts_added: distilled,
-      superseded,
-      dropped,
-      turns_read: turns.length
-    });
+  if (planned.length > 0) {
+    input.store.recordEpisodicDistillPass(input.chatId, { facts_added: distilled, superseded, dropped, turns_read: turns.length });
   }
   return { distilled, superseded, dropped, turns_read: turns.length };
 }
@@ -367,16 +405,11 @@ function skipWindow(
  * of a conversation) + undistilled user turns. Bounded: at most ONE chat per tick, the
  * one with the oldest undistilled turn (most starved first).
  */
-export async function maybeRunEpisodicDistill(input: {
-  store: RunStore;
-  llm: EpisodicLlm;
-  embed: EpisodicEmbed;
-  userName: string;
-  now: string;
-  env?: NodeJS.ProcessEnv;
-}): Promise<{ ran: boolean; chat_id?: string; result?: EpisodicDistillPassResult }> {
+export async function maybeRunEpisodicDistill(
+  input: Omit<DistillPassInput, "chatId">
+): Promise<{ ran: boolean; chat_id?: string; result?: EpisodicDistillPassResult }> {
   const env = input.env ?? process.env;
-  if (!resolveEpisodicEnabled(env)) return { ran: false };
+  if (!resolveEpisodicEnabled(env) || input.signal?.aborted) return { ran: false };
 
   const lullMs = resolveSessionLullMinutes(env) * 60_000;
   const nowMs = Date.parse(input.now);

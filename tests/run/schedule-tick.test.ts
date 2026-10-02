@@ -287,3 +287,21 @@ describe("maybeFireScheduledTasks (B10b, ADR 0017)", () => {
     expect(executed.length).toBe(SCHEDULE_TICK_MAX_FIRES_PER_TICK + 1);
   });
 });
+
+describe("maybeFireScheduledTasks — the daemon's stop (live 2026-10-02)", () => {
+  it("a stop during one fire starts no further fire; the unfired task stays due for the next boot", async () => {
+    const first = addWeekly();
+    const second = addWeekly({ goal: "second weekly digest" });
+    const controller = new AbortController();
+    const executed: string[] = [];
+    const worker: ScheduleTickWorker = {
+      executeRun: async (run_id) => { executed.push(run_id); controller.abort(); return { status: "completed" }; }
+    };
+    const result = await maybeFireScheduledTasks({ store, gateway: new Gateway(store), worker, now: NOW, env: ARMED, signal: controller.signal });
+    expect(result.fired).toBe(1);
+    expect(executed).toHaveLength(1);
+    const due = store.listDueScheduledTasks(NOW, 10).map((t) => t.schedule_id);
+    expect(due).toHaveLength(1);
+    expect([first.schedule_id, second.schedule_id]).toContain(due[0]);
+  });
+});

@@ -124,6 +124,15 @@ describe("oneShotAdapter — the audited one-shot call every seat makes", () => 
     expect(new Set(ids).size).toBe(2);
   });
 
+  it("a tick call under the daemon's stop spawns nothing and records no attempt (a shutdown is not a failing leg)", async () => {
+    fakeCfg({ "*": { text: "fine" } });
+    Object.assign(process.env, { HOUGE_OMP_BIN: FAKE_OMP_BIN, HOUGE_OMP_SANDBOX: "0", HOUGE_OMP_ENV_PASSTHROUGH: "FAKE_OMP_SCENARIO,FAKE_OMP_ARGV_LOG" });
+    const seat = tickSeat(store, "episodic_distill", "distill");
+    expect(await seat({ question: "q", system: "s", signal: AbortSignal.abort() })).toEqual({ ok: false });
+    expect(existsSync(join(dir, "argv.log"))).toBe(false);
+    expect(store.getLedgerEvents().filter((e) => e.event_type === "llm_attempt")).toEqual([]);
+  });
+
   it("M4: audio never reaches omp — an audio/* attachment is refused code-owned at the adapter, and an audio file at spawnOneShot", async () => {
     const cfg = fakeCfg({ "*": { text: "invented transcript" } });
     const seat = oneShotAdapter(store, cfg, { correlation_id: "tick:a", role: "reader" });

@@ -207,9 +207,12 @@ export async function runLessonConsolidateTick(input: {
   now: string;
   env?: NodeJS.ProcessEnv;
   dryRun?: boolean;
+  /** The daemon's stop: checked before each scope's model call; a stopped tick leaves the latch for the next boot. */
+  signal?: AbortSignal;
 }): Promise<LessonConsolidateResult> {
   const env = input.env ?? process.env;
   const dryRun = input.dryRun === true;
+  if (input.signal?.aborted) return NO_TICK;
 
   if (!dryRun) {
     if (!resolveLessonConsolidateEnabled(env)) return NO_TICK;
@@ -226,7 +229,7 @@ export async function runLessonConsolidateTick(input: {
   let applied = 0; // clusters applied this tick, total across scopes (the bound)
 
   for (const [scope, lessons] of groupActiveByScope(input.store)) {
-    if (applied >= LESSON_MERGE_MAX_CLUSTERS_PER_TICK) break;
+    if (applied >= LESSON_MERGE_MAX_CLUSTERS_PER_TICK || input.signal?.aborted) break;
     if (lessons.length < 2) continue;
     scopes_processed += 1;
 
@@ -302,7 +305,9 @@ export async function runLessonConsolidateTick(input: {
     };
   }
 
-  input.store.markLessonConsolidateRan(input.now);
+  // Stopped part-way: each applied merge is whole and stays, but the scopes not yet asked are
+  // asked on the next tick, so the latch is left unstamped.
+  if (!input.signal?.aborted) input.store.markLessonConsolidateRan(input.now);
   if (merges.length > 0) {
     input.store.recordLessonConsolidateTick({
       scopes_processed,

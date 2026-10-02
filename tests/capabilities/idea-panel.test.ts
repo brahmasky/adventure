@@ -780,3 +780,41 @@ describe("renderPanelProposals", () => {
     ).toContain("quorum failed");
   });
 });
+
+describe("runIdeaPanelTick — the daemon's stop (live 2026-10-02)", () => {
+  it("a stop during a judge call ends the run with no vote counted and nothing written", async () => {
+    const store = openStore();
+    seedBoard(store);
+    const controller = new AbortController();
+    const later: string[] = [];
+    const result = await tick(store, {
+      judges: {
+        kimi: async () => { controller.abort(); return { ok: false }; },
+        gemini: judgeLlm(scoresAnswer(3, () => 5), later)
+      },
+      codexJudge: seat(scoresAnswer(3, () => 5), later),
+      signal: controller.signal
+    });
+    expect(result).toMatchObject({ ran: true, status: "aborted", reason: "shutdown" });
+    expect(later).toEqual([]);
+    expect(panelEvents(store)).toEqual([]);
+    expect(store.listActiveIdeas(10).every((c) => c.scores_json === null)).toBe(true);
+  });
+
+  it("a stop during the chair call publishes no fallback ranking", async () => {
+    const store = openStore();
+    seedBoard(store);
+    const controller = new AbortController();
+    const result = await tick(store, { chair: async () => { controller.abort(); return { ok: false }; }, signal: controller.signal });
+    expect(result).toMatchObject({ status: "aborted", reason: "shutdown" });
+    expect(panelEvents(store)).toEqual([]);
+  });
+
+  it("an already-stopped daemon stamps no latch", async () => {
+    const store = openStore();
+    seedBoard(store);
+    const result = await tick(store, { signal: AbortSignal.abort() });
+    expect(result.ran).toBe(false);
+    expect(store.getPanelLastRun()).toBeNull();
+  });
+});

@@ -19,11 +19,13 @@ export interface LlmRequest {
   system?: string;
   /** Present only for media calls. The answer adapter validates it; legs that cannot take it are never asked. */
   media?: LlmMediaAttachment;
+  /** The daemon's stop signal for a tick's call: aborting ends the call without a model-error audit row. */
+  signal?: AbortSignal;
 }
 
 export type LlmResult =
   | { ok: true; provider: string; model: string; answer: string; usage?: LlmUsage }
-  | { ok: false; provider: string; error: string; unavailable?: boolean; omp_check?: OmpCheckFailure };
+  | { ok: false; provider: string; error: string; unavailable?: boolean; omp_check?: OmpCheckFailure; aborted?: true };
 
 export interface LlmProvider {
   name: string;

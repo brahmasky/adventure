@@ -283,9 +283,15 @@ export async function runIdeaRadarTick(input: {
   env: NodeJS.ProcessEnv;
   now: string;
   dryRun?: boolean;
+  /**
+   * The daemon's stop: no tick starts once it aborts. A stop after the latch is stamped ends the
+   * tick with no card and no ledger event (one lost interval, the M3 worst case).
+   */
+  signal?: AbortSignal;
 }): Promise<RadarTickResult> {
   const dryRun = input.dryRun === true;
   try {
+    if (input.signal?.aborted) return { ran: false };
     if (!dryRun) {
       if (!resolveRadarEnabled(input.env)) return { ran: false };
       const last = input.store.getRadarLastRun();
@@ -312,9 +318,11 @@ export async function runIdeaRadarTick(input: {
 
     const fetched = await fetchRadarSources({
       ...(input.fetch ? { fetch: input.fetch } : {}),
-      now: input.now
+      now: input.now,
+      ...(input.signal ? { signal: input.signal } : {})
     });
 
+    if (input.signal?.aborted) return { ran: true };
     if (fetched.ok.length === 0) {
       // Every source down: record the outage, spend NOTHING on the LLM.
       if (dryRun) return { ran: true, proposals: [] };
@@ -348,6 +356,7 @@ export async function runIdeaRadarTick(input: {
     } catch {
       answer = null;
     }
+    if (input.signal?.aborted) return { ran: true }; // a cut call is not "nothing new": record no tick
     const cards =
       answer === null
         ? []

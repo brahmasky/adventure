@@ -357,3 +357,36 @@ describe("runSkillReverifyTick", () => {
     expect(state.notifications).toHaveLength(0);
   });
 });
+
+describe("runSkillReverifyTick — the daemon's stop (live 2026-10-02)", () => {
+  it("a stop mid-ensemble neither stamps nor flags that skill, and verifies no later one", async () => {
+    const { store: skills, root } = tempSkillStore();
+    writeSkillFile(root, "research", "alpha", "2026-06-01");
+    writeSkillFile(root, "research", "beta", "2026-06-01");
+    const state = fakeStateStore();
+    const controller = new AbortController();
+    let calls = 0;
+    const out = await runSkillReverifyTick({
+      store: state, skills, env: ARMED, now: NOW, chatId: "222", signal: controller.signal,
+      anchorLlm: async () => { calls += 1; if (calls === 1) controller.abort(); return ALL_PASS; }
+    });
+    expect(out).toEqual({ ran: true });
+    for (const name of ["alpha", "beta"]) {
+      expect(readFileSync(join(root, "research", `${name}.md`), "utf8")).toContain("last_verified: 2026-06-01");
+    }
+    expect(calls).toBeLessThanOrEqual(3); // one skill's passes at most, never the second skill's
+    expect(state.ticks).toEqual([{ checked: 0, passed: 0, flagged: 0 }]);
+    expect(state.notifications).toEqual([]);
+  });
+
+  it("an already-stopped daemon stamps no latch and calls no model", async () => {
+    const { store: skills, root } = tempSkillStore();
+    writeSkillFile(root, "research", "alpha", "2026-06-01");
+    const state = fakeStateStore();
+    const out = await runSkillReverifyTick({
+      store: state, skills, anchorLlm: cannedGateB(ALL_PASS, state.events), env: ARMED, now: NOW, chatId: "222", signal: AbortSignal.abort()
+    });
+    expect(out).toEqual({ ran: false });
+    expect(state.events).toEqual([]);
+  });
+});

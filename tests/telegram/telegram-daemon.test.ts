@@ -97,6 +97,20 @@ function fakeOmp(root: string, scenario: Record<string, unknown> = { "*": { rpcT
   return { dataDir: root, distDir: tmpOmpDist(root) };
 }
 
+/**
+ * One full idle cycle, then stop: the first poll returns nothing and the cycle's ticks run; the second poll
+ * aborts. Aborting on the FIRST poll would hand every tick an already-stopped signal, and the ticks return
+ * early on a stop (live 2026-10-02: a slow tick must not outlive launchd's ExitTimeOut).
+ */
+function stopOnSecondPoll(controller: AbortController): () => Promise<never[]> {
+  let polls = 0;
+  return async () => {
+    polls += 1;
+    if (polls >= 2) controller.abort();
+    return [];
+  };
+}
+
 /** Turns are detached: stop the daemon only once `done` holds (a stuck turn fails the assertions, never hangs the suite). */
 async function stopWhen(controller: AbortController, done: () => boolean): Promise<never[]> {
   await until(done).catch(() => undefined);
@@ -510,10 +524,7 @@ describe("runTelegramDaemon — the signal path (⓪·3 S2)", () => {
       longPollTimeoutSeconds: 0,
       llmAdapter,
       telegramClient: {
-        getUpdates: async () => {
-          controller.abort();
-          return [];
-        },
+        getUpdates: stopOnSecondPoll(controller),
         sendMessage: async ({ text }) => {
           sent.push(text);
           return { message_id: sent.length };
@@ -650,10 +661,7 @@ describe("runTelegramDaemon — the signal path (⓪·3 S2)", () => {
           return okAnswer(input);
         },
         telegramClient: {
-          getUpdates: async () => {
-            controller.abort();
-            return [];
-          },
+          getUpdates: stopOnSecondPoll(controller),
           sendMessage: async () => ({ message_id: 1 })
         }
       });
@@ -711,10 +719,7 @@ describe("runTelegramDaemon — the signal path (⓪·3 S2)", () => {
         },
         llmAdapter: async (input) => okAnswer(input),
         telegramClient: {
-          getUpdates: async () => {
-            controller.abort();
-            return [];
-          },
+          getUpdates: stopOnSecondPoll(controller),
           sendMessage: async () => ({ message_id: 1 })
         }
       });
@@ -1247,6 +1252,46 @@ describe("runTelegramDaemon — boot record (houge_status, 2026-10-02)", () => {
       (store as unknown as { consumeReloadMarker: () => never }).consumeReloadMarker = () => { throw new Error("db locked"); };
       await boot(store);
       expect(store.getLatestDaemonBoot()?.reason).toBe("unknown");
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("runTelegramDaemon — shutdown during a slow tick (live 2026-10-02 01:06)", () => {
+  // A kickstart landed mid-distill (sequential 7–13 s model calls); the poll loop awaited the whole tick and
+  // launchd's 40 s ExitTimeOut SIGKILLed the daemon: no clean stop, the next boot read crash_recovery. The CLI
+  // turns SIGTERM into exactly this abort of the stop signal (cli.ts), so the test aborts it mid-tick.
+  let saved: string | undefined;
+  beforeEach(() => { saved = process.env.HOUGE_EPISODIC_ENABLED; process.env.HOUGE_EPISODIC_ENABLED = "1"; });
+  afterEach(() => { if (saved === undefined) delete process.env.HOUGE_EPISODIC_ENABLED; else process.env.HOUGE_EPISODIC_ENABLED = saved; });
+
+  it("a stop during a slow distill returns after the in-flight call, records a clean stop, and commits no part of the window", async () => {
+    const store = RunStore.openInMemory();
+    const controller = new AbortController();
+    const CALL_MS = 400;
+    const facts = Array.from({ length: 8 }, (_, i) => ({ fact: `Paco owns bike ${i}` }));
+    let abortedAt = 0;
+    try {
+      store.addEpisodicFact({ chat_id: "222", fact: "Paco owns a car", created_at: new Date(Date.now() - 3 * 86_400_000).toISOString() });
+      store.recordChatTurn({ chat_id: "222", run_id: "r1", role: "user", text: "I own eight bikes", created_at: new Date(Date.now() - 90 * 60_000).toISOString() });
+      await runTelegramDaemon({
+        store, projectRoot: projectRoot(), allowlist: ALLOWLIST, stopSignal: controller.signal, longPollTimeoutSeconds: 0,
+        llmAdapter: async (input) => {
+          await new Promise((resolve) => setTimeout(resolve, CALL_MS));
+          const system = String(input.system ?? "");
+          if (!system.includes("DURABLE episodic facts")) return { ok: true as const, output: { question: "", answer: '{"verdict":"ADD"}', model: "fake" } };
+          abortedAt = Date.now();
+          controller.abort(); // SIGTERM while the extract call is in flight; eight reconcile calls would follow
+          return { ok: true as const, output: { question: "", answer: JSON.stringify({ facts }), model: "fake" } };
+        },
+        telegramClient: { getUpdates: async () => [], sendMessage: async () => ({ message_id: 1 }) }
+      });
+      expect(abortedAt).toBeGreaterThan(0);
+      expect(Date.now() - abortedAt).toBeLessThan(CALL_MS * 2);
+      expect(store.getLatestDaemonBoot()?.stopped_at).not.toBeNull();
+      expect(store.getEpisodicDistillWatermark("222")).toBeNull();
+      expect(store.getActiveEpisodicFacts("222").map((f) => f.fact)).toEqual(["Paco owns a car"]);
     } finally {
       store.close();
     }

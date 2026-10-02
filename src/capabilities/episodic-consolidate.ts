@@ -126,9 +126,11 @@ export async function runEpisodicConsolidateTick(input: {
   embed: EpisodicEmbed;
   now: string;
   env?: NodeJS.ProcessEnv;
+  /** The daemon's stop: no tick starts once it aborts; mid-merge it skips the remaining clusters. */
+  signal?: AbortSignal;
 }): Promise<EpisodicConsolidateResult> {
   const env = input.env ?? process.env;
-  if (!resolveEpisodicEnabled(env)) return NO_TICK;
+  if (!resolveEpisodicEnabled(env) || input.signal?.aborted) return NO_TICK;
   const last = input.store.getEpisodicConsolidateLastRun();
   if (last && Date.parse(input.now) - Date.parse(last) < 86_400_000) return NO_TICK;
 
@@ -139,9 +141,12 @@ export async function runEpisodicConsolidateTick(input: {
   });
 
   // (2) MERGE near-duplicates (embeddings-only clustering; a fact without an
-  // embedding never clusters — backfill first, merge later).
+  // embedding never clusters — backfill first, merge later). A stop skips the clusters
+  // still to come (each merge is one atomic store write); the tick still ends and stamps,
+  // because decay already ran and must not run twice in a day.
   let clusters_merged = 0;
   for (const cluster of collectMergeClusters(input.store, resolveEpisodicMergeSim(env))) {
+    if (input.signal?.aborted) break;
     const merged = await mergeCluster(cluster, input, env);
     if (merged) clusters_merged += 1;
   }

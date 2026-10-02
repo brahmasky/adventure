@@ -685,3 +685,42 @@ describe("pinned wall-clock schedule (HOUGE_RADAR_AT)", () => {
     expect(notDue.ran).toBe(false);
   });
 });
+
+describe("runIdeaRadarTick — the daemon's stop (live 2026-10-02)", () => {
+  it("a stop during the extract call records no tick and no card: a cut call is not 'nothing new'", async () => {
+    const store = openStore();
+    const controller = new AbortController();
+    const result = await runIdeaRadarTick({
+      store,
+      llmAnswer: async () => { controller.abort(); return { ok: false }; },
+      fetch: hnOnlyFetch(), env: ENABLED, now: NOW, signal: controller.signal
+    });
+    expect(result.ran).toBe(true);
+    expect(store.listActiveIdeas(10)).toEqual([]);
+    expect(store.getLedgerEvents().filter((e) => e.event_type === "idea_radar_tick")).toEqual([]);
+  });
+
+  it("an already-stopped daemon fetches nothing and leaves the latch unstamped", async () => {
+    const store = openStore();
+    const calls: string[] = [];
+    const result = await runIdeaRadarTick({
+      store, llmAnswer: cannedLlm("{}"), fetch: hnOnlyFetch(calls), env: ENABLED, now: NOW, signal: AbortSignal.abort()
+    });
+    expect(result.ran).toBe(false);
+    expect(calls).toEqual([]);
+    expect(store.getRadarLastRun()).toBeNull();
+  });
+});
+
+describe("fetchRadarSources — the daemon's stop", () => {
+  it("a stop during one fetch starts no further fetch (each may take up to 8 s)", async () => {
+    const controller = new AbortController();
+    const calls: string[] = [];
+    const fetch = hnOnlyFetch(calls);
+    await runIdeaRadarTick({
+      store: openStore(), llmAnswer: cannedLlm("{}"), env: ENABLED, now: NOW, signal: controller.signal,
+      fetch: async (i, c) => { controller.abort(); return fetch(i, c); }
+    });
+    expect(calls).toHaveLength(1);
+  });
+});

@@ -435,11 +435,9 @@ function onPlannerControl(status: string, worker: CoreWorker, store: RunStore): 
  * ⓪·3 S2 — the signal path's per-cycle tick: the daily lesson decay+prune pass (the
  * store makes it idempotent per 24h), the daily wiki decay pass (W2 — flag-gated OFF,
  * same 24h idempotency), the session-rating ask trigger (substance +
- * lull + cooldown — cheap sqlite checks), the episodic fast-path distill (Phase M
- * B2 — flag-gated OFF by default, per-chat lull, at most one chat per tick), and the
- * scheduler fire tick (B10b — flag-gated OFF, capped fires, same gateway→worker path
- * as a message). NEVER throws (like notifyReloadOnBoot): a signal-path error must not
- * stop the daemon.
+ * lull + cooldown — cheap sqlite checks), the model-backed ticks ({@link runModelTicks}),
+ * the metered-$ ceiling check and the invariant sweep. NEVER throws (like
+ * notifyReloadOnBoot): a signal-path error must not stop the daemon.
  */
 async function runSignalPathTick(
   options: RunTelegramDaemonOptions,
@@ -462,107 +460,13 @@ async function runSignalPathTick(
       runDbBackupTick({ store: options.store, projectRoot: options.projectRoot, now });
     }
     const chat = options.allowlist.chats[0];
-    if (chat) {
-      maybeAskSessionRating({
-        store: options.store,
-        chatId: String(chat.telegram_chat_id),
-        now
-      });
-    }
-    // Slice 2 (review B2): ONE seat per tick, each with its own run-less audit scope, so every
-    // omp leg a tick tries lands in the ledger under `tick:<name>:<uuid>` (spec §8: one-shot seats). The
-    // role picks the chain (`seatChain`: memory ticks on HOUGE_OMP_TICKS). A test-injected
-    // `options.llmAdapter` is used verbatim (it brings its own fakes, no omp).
-    // Embeddings stay best-effort local Ollama (null on any failure — the store degrades).
-    const tickLlm = (name: string, role: LlmCallRole) => {
-      const injected = options.llmAdapter;
-      return async (input: { question: string; system: string }): Promise<{ ok: true; answer: string } | { ok: false }> => {
-        if (injected) {
-          const read = await injected({ question: input.question, system: input.system });
-          return read.ok && typeof read.output.answer === "string" ? { ok: true, answer: read.output.answer } : { ok: false };
-        }
-        return tickSeat(options.store, name, role)(input);
-      };
-    };
-    const episodicEmbed = (text: string) => embedText(text, resolveEmbedConfig(process.env));
-    await maybeRunEpisodicDistill({
-      store: options.store,
-      llm: tickLlm("episodic_distill", "distill"),
-      embed: episodicEmbed,
-      userName: options.allowlist.users[0]?.identity_id ?? "the user",
-      now
-    });
-    // Phase M B4: the daily consolidate tick (decay → merge → promote) — same master
-    // flag, idempotent per 24h via its single-row state marker, all steps bounded.
-    await runEpisodicConsolidateTick({
-      store: options.store,
-      llm: tickLlm("episodic_consolidate", "consolidate"),
-      embed: episodicEmbed,
-      now
-    });
-    // Lesson-consolidation design (2026-07-23): the daily preserve-all lesson-merge tick — same
-    // master signal path, flag-gated OFF (and in DISARM_FLAGS), idempotent per interval via its
-    // single-row state marker, bounded three ways. Rides the tick's local llmAnswer adapter (the
-    // same `{question,system} → {ok,answer}` wrapper episodic uses). Best-effort; never throws.
-    await runLessonConsolidateTick({
-      store: options.store,
-      llmAnswer: tickLlm("lesson_consolidate", "consolidate"),
-      env: process.env,
-      now
-    });
-    // Idea Radar R1 (spec 2026-07-24): the daily flag-gated sensing tick — fetch+slim the
-    // code-owned public sources, ONE extract LLM call on the same tick-local adapter, fold
-    // verdicts into the ideas store. Flag-gated OFF (and in DISARM_FLAGS), idempotent per
-    // interval via radar_state, per-source failure isolation. Best-effort; never throws.
-    await runIdeaRadarTick({
-      store: options.store,
-      llmAnswer: tickLlm("idea_radar", "extract"),
-      ...(options.radarFetch ? { fetch: options.radarFetch } : {}),
-      env: process.env,
-      now
-    });
-    // Idea Radar R2 (ADR 0027): the weekly judged review over the ideas store — flag-gated
-    // OFF (DISARM_FLAGS), weekly latch stamped before any seat call, quorum(2) else abort.
-    // Seats are pinned per provider, NEVER a chain (a healthy-leg fallback would silently
-    // void model diversity and the quorum semantics); the codex/claude seats are the
-    // contained panel-local spawns. Self-contained (never throws), but rides this try/catch
-    // posture like every tick above.
-    await runIdeaPanelTick({
-      store: options.store,
-      ...(options.panelSeats ?? buildPanelSeatBindings(options)),
-      env: process.env,
-      now,
-      chatId: chat ? String(chat.telegram_chat_id) : null,
-      projectRoot: options.projectRoot
-    });
-    // Skill retirement spec (2026-07-29): the weekly suggest-only re-verify advisor — stale
-    // skills get a fresh Gate B pass; failures are flagged to Paco, passers re-stamped. Flag-
-    // gated OFF (DISARM_FLAGS), weekly latch stamped before any LLM call, never throws.
-    const reverifyLlm = tickLlm("skill_reverify", "verify");
-    await runSkillReverifyTick({
-      store: options.store,
-      skills: new SkillStore({ root: join(options.projectRoot, "skills") }),
-      anchorLlm: async (system, question) => {
-        const read = await reverifyLlm({ question, system });
-        return read.ok ? read.answer : undefined;
-      },
-      env: process.env,
-      now,
-      chatId: chat ? String(chat.telegram_chat_id) : null
-    });
-    // B10b: fire due schedules through the normal gateway→worker path (breaker,
-    // contracts, and policy all apply). Flag-gated OFF; ≤3 fires per tick; the fired
-    // run's final report is enqueued during executeRun, so the outbox flush right
-    // after this tick delivers it the same cycle.
-    await maybeFireScheduledTasks({ store: options.store, gateway, worker, now });
+    const chatId = chat ? String(chat.telegram_chat_id) : null;
+    if (chatId) maybeAskSessionRating({ store: options.store, chatId, now });
+    await runModelTicks(options, gateway, worker, now, chatId);
     // ADR 0019: the metered-$ ceiling check — drives the alert-dedupe latch (the chain
     // builder's cheap enforcement read) once per cycle; the 0→1 transition enqueues ONE
     // alert, delivered by the outbox flush right after this tick.
-    checkMeteredCeiling({
-      store: options.store,
-      ...(chat ? { chatId: String(chat.telegram_chat_id) } : {}),
-      now
-    });
+    checkMeteredCeiling({ store: options.store, ...(chatId ? { chatId } : {}), now });
     // ADR 0024: the deterministic self-sensing sweep. Runs LAST among the state-changing
     // ticks so it observes this cycle's work, self-throttles to 5 min, and alerts at most
     // once per incident transition. Flag-gated OFF; pure reads + incident bookkeeping —
@@ -572,6 +476,97 @@ async function runSignalPathTick(
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[telegram-daemon] signal-path tick failed: ${message}`);
   }
+}
+
+/** A tick's model seat: `{question, system}` in, `{ok, answer}` out. */
+type TickLlm = (input: { question: string; system: string }) => Promise<{ ok: true; answer: string } | { ok: false }>;
+
+/**
+ * Slice 2 (review B2): ONE seat per tick, each with its own run-less audit scope, so every
+ * omp leg a tick tries lands in the ledger under `tick:<name>:<uuid>` (spec §8: one-shot seats). The
+ * role picks the chain (`seatChain`: memory ticks on HOUGE_OMP_TICKS). A test-injected
+ * `options.llmAdapter` is used verbatim (it brings its own fakes, no omp). The daemon's stop
+ * aborts the in-flight omp call, and every later call fails at once without spawning.
+ */
+function tickLlm(options: RunTelegramDaemonOptions, name: string, role: LlmCallRole): TickLlm {
+  const injected = options.llmAdapter;
+  const stop = options.stopSignal;
+  return async (input) => {
+    if (stop.aborted) return { ok: false };
+    if (injected) {
+      const read = await injected({ question: input.question, system: input.system });
+      return read.ok && typeof read.output.answer === "string" ? { ok: true, answer: read.output.answer } : { ok: false };
+    }
+    return tickSeat(options.store, name, role)({ ...input, signal: stop });
+  };
+}
+
+/**
+ * The ticks that call a model, in order. Each takes the daemon's stop signal and returns early
+ * once it aborts, checking between model calls and never committing half a unit of work (live
+ * 2026-10-02: the loop awaited a 7–13 s/call distill through a kickstart and launchd's 40 s
+ * ExitTimeOut SIGKILLed the daemon). Each is flag-gated and never throws into the daemon.
+ */
+async function runModelTicks(
+  options: RunTelegramDaemonOptions, gateway: Gateway, worker: CoreWorker, now: string, chatId: string | null
+): Promise<void> {
+  const signal = options.stopSignal;
+  await runMemoryTicks(options, now, signal);
+  if (signal.aborted) return;
+  await runIdeaTicks(options, now, chatId, signal);
+  if (signal.aborted) return;
+  // B10b: fire due schedules through the normal gateway→worker path (breaker,
+  // contracts, and policy all apply). Flag-gated OFF; ≤3 fires per tick; the fired
+  // run's final report is enqueued during executeRun, so the outbox flush right
+  // after this tick delivers it the same cycle.
+  await maybeFireScheduledTasks({ store: options.store, gateway, worker, now, signal });
+}
+
+/**
+ * Episodic distill (Phase M B2: per-chat lull, at most one chat per tick), the daily episodic
+ * consolidate (B4: decay → merge → promote), and the preserve-all lesson-merge tick (2026-07-23).
+ * Embeddings stay best-effort local Ollama (null on any failure — the store degrades).
+ */
+async function runMemoryTicks(options: RunTelegramDaemonOptions, now: string, signal: AbortSignal): Promise<void> {
+  const embed = (text: string) => embedText(text, resolveEmbedConfig(process.env));
+  await maybeRunEpisodicDistill({
+    store: options.store, llm: tickLlm(options, "episodic_distill", "distill"), embed,
+    userName: options.allowlist.users[0]?.identity_id ?? "the user", now, signal
+  });
+  if (signal.aborted) return;
+  await runEpisodicConsolidateTick({ store: options.store, llm: tickLlm(options, "episodic_consolidate", "consolidate"), embed, now, signal });
+  if (signal.aborted) return;
+  await runLessonConsolidateTick({
+    store: options.store, llmAnswer: tickLlm(options, "lesson_consolidate", "consolidate"), env: process.env, now, signal
+  });
+}
+
+/**
+ * Idea Radar R1 (daily sensing: fetch + ONE extract call), the R2 weekly panel (ADR 0027: seats
+ * pinned per provider, NEVER a chain — a healthy-leg fallback would void the quorum), and the
+ * weekly suggest-only skill re-verify. Each stamps its latch before its first model call.
+ */
+async function runIdeaTicks(options: RunTelegramDaemonOptions, now: string, chatId: string | null, signal: AbortSignal): Promise<void> {
+  await runIdeaRadarTick({
+    store: options.store, llmAnswer: tickLlm(options, "idea_radar", "extract"),
+    ...(options.radarFetch ? { fetch: options.radarFetch } : {}), env: process.env, now, signal
+  });
+  if (signal.aborted) return;
+  await runIdeaPanelTick({
+    store: options.store, ...(options.panelSeats ?? buildPanelSeatBindings(options)),
+    env: process.env, now, chatId, projectRoot: options.projectRoot, signal
+  });
+  if (signal.aborted) return;
+  const reverifyLlm = tickLlm(options, "skill_reverify", "verify");
+  await runSkillReverifyTick({
+    store: options.store,
+    skills: new SkillStore({ root: join(options.projectRoot, "skills") }),
+    anchorLlm: async (system, question) => {
+      const read = await reverifyLlm({ question, system });
+      return read.ok ? read.answer : undefined;
+    },
+    env: process.env, now, chatId, signal
+  });
 }
 
 /**
@@ -597,7 +592,7 @@ export function sweepAndRearm(input: InvariantSweepInput, worker: { plannerSuper
 
 /** The panel's real seats: the omp judge/chair seats (idea-panel-seats), audited under one `tick:idea_panel:<uuid>` per panel run. */
 function buildPanelSeatBindings(options: RunTelegramDaemonOptions): PanelSeatBindings {
-  return buildOmpPanelSeats({ store: options.store, correlation_id: tickCorrelationId("idea_panel"), env: process.env });
+  return buildOmpPanelSeats({ store: options.store, correlation_id: tickCorrelationId("idea_panel"), env: process.env, signal: options.stopSignal });
 }
 
 /**

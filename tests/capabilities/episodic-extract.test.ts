@@ -426,6 +426,60 @@ describe("runEpisodicDistillPass (fast path over a real in-memory store)", () =>
   });
 });
 
+describe("runEpisodicDistillPass — shutdown mid-pass (live 2026-10-02: a kickstart hit a 7–13 s/call distill, launchd SIGKILLed)", () => {
+  const slow = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("an abort between model calls returns promptly and leaves the watermark at the last COMPLETED window, with no fact of the cut one", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "user", text: "我住在悉尼", created_at: minutesAgo(120) });
+      await runEpisodicDistillPass({
+        store, llm: fakeLlm({ extract: extractAnswer([{ fact: "Paco 住在悉尼" }]) }), embed: noEmbed, chatId: CHAT, userName: "paco", now: NOW
+      });
+      const completed = store.getEpisodicDistillWatermark(CHAT)?.last_turn_created_at;
+      expect(completed).toBe(minutesAgo(120));
+
+      store.recordChatTurn({ chat_id: CHAT, run_id: "r2", role: "user", text: "I code in Rust and Go and drink tea", created_at: minutesAgo(90) });
+      const controller = new AbortController();
+      const calls: string[] = [];
+      const llm: EpisodicLlm = async (input) => {
+        calls.push(input.system === EPISODIC_EXTRACT_DISCIPLINE ? "extract" : "reconcile");
+        await slow(100);
+        if (calls.length === 2) controller.abort(); // the stop lands while the first reconcile is in flight
+        return input.system === EPISODIC_EXTRACT_DISCIPLINE
+          ? { ok: true, answer: extractAnswer([{ fact: "Paco codes in Rust" }, { fact: "Paco codes in Go" }, { fact: "Paco drinks tea" }]) }
+          : { ok: true, answer: '{"verdict":"ADD"}' };
+      };
+      const started = Date.now();
+      const result = await runEpisodicDistillPass({ store, llm, embed: noEmbed, chatId: CHAT, userName: "paco", now: NOW, signal: controller.signal });
+      expect(Date.now() - started).toBeLessThan(350); // two calls, never all four
+      expect(calls).toEqual(["extract", "reconcile"]);
+      expect(result.distilled).toBe(0);
+      expect(store.getEpisodicDistillWatermark(CHAT)?.last_turn_created_at).toBe(completed);
+      expect(store.getActiveEpisodicFacts(CHAT).map((f) => f.fact)).toEqual(["Paco 住在悉尼"]);
+      expect(store.getLedgerEvents().filter((e) => e.event_type === "episodic_distill_pass")).toHaveLength(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("an abort before the pass starts makes no model call and moves nothing", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "user", text: "我住在悉尼", created_at: minutesAgo(90) });
+      const llm = fakeLlm({ extract: extractAnswer([{ fact: "Paco 住在悉尼" }]) });
+      const result = await maybeRunEpisodicDistill({
+        store, llm, embed: noEmbed, userName: "paco", now: NOW, env: { HOUGE_EPISODIC_ENABLED: "1" }, signal: AbortSignal.abort()
+      });
+      expect(result.ran).toBe(false);
+      expect(llm.calls).toEqual([]);
+      expect(store.getEpisodicDistillWatermark(CHAT)).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+});
+
 /** A schedule-born run through the real gateway intake (the schedule tick's event shape). */
 function scheduledRun(store: RunStore, goal: string): string {
   const intake = new Gateway(store).intake(buildTypedTaskEvent({

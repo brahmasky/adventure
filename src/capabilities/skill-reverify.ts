@@ -121,9 +121,15 @@ export async function runSkillReverifyTick(input: {
   env: NodeJS.ProcessEnv;
   now: string;
   chatId: string | null;
+  /**
+   * The daemon's stop: no tick starts once it aborts; mid-tick it stops before the next skill, and a
+   * skill whose passes the stop cut short is neither stamped nor flagged (it stays stale for next week).
+   */
+  signal?: AbortSignal;
 }): Promise<{ ran: boolean }> {
   try {
     const env = input.env;
+    if (input.signal?.aborted) return { ran: false };
     if (!resolveSkillsEnabled(env) || !resolveSkillReverifyEnabled(env)) return { ran: false };
     const at = resolveSkillReverifyAt(env);
     if (at === null) return { ran: false };
@@ -152,15 +158,19 @@ export async function runSkillReverifyTick(input: {
 
     const opts = { passes: resolveGateBPasses(env), threshold: resolveGateBThreshold(env) };
     let passed = 0;
+    let checked = 0;
     const flags: FlaggedSkill[] = [];
     for (const meta of candidates) {
+      if (input.signal?.aborted) break;
       const skill = input.skills.readSkill(meta.scope, meta.name);
+      checked += 1;
       if (skill === null) continue;
       const verdict = await verifySkill(
         { when: skill.meta.when, body: skill.body },
         opts,
         input.anchorLlm
       );
+      if (input.signal?.aborted) { checked -= 1; break; } // a partial ensemble is no verdict
       if (verdict.unscored) continue; // an error is not a low score — skip, stay stale
       if (verdict.passed) {
         input.skills.stampVerification(meta.scope, meta.name, {
@@ -180,7 +190,7 @@ export async function runSkillReverifyTick(input: {
     }
 
     input.store.recordSkillReverifyTick({
-      checked: candidates.length,
+      checked,
       passed,
       flagged: flags.length
     });

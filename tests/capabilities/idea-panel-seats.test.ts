@@ -77,3 +77,13 @@ describe("buildOmpPanelSeats — the four panel seats on omp", () => {
     expect(formatModelString(resolveOmpConfig(env).judges[0]!)).toBe("kimi-code/k3");
   });
 });
+
+describe("buildOmpPanelSeats — the daemon's stop", () => {
+  it("a seat built with the stop signal spawns nothing once it has aborted", async () => {
+    const env = fake({ "*": { text: '{"scores":[]}' } });
+    const seats = buildOmpPanelSeats({ store, correlation_id: "tick:idea_panel", env, signal: AbortSignal.abort() });
+    expect(await seats.judges.kimi({ question: "D", system: "lens" })).toEqual({ ok: false });
+    expect(await seats.chair({ digest: "D", system: "chair" })).toEqual({ ok: false });
+    expect(spawns()).toEqual([]);
+  });
+});

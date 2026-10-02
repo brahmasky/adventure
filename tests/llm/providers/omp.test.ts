@@ -139,6 +139,34 @@ describe("omp one-shot seat — every non-planner LLM call in Houge", () => {
     expect(audit.attempts[0]).toMatchObject({ outcome: "error", error_kind: "timeout" });
   });
 
+  // Daemon shutdown (live 2026-10-02: a 7–13 s tick call outlived launchd's 40 s ExitTimeOut). The stop aborts the
+  // in-flight leg; a shutdown is not a model failure, so no error row may feed llm_leg_failing.
+  it("an abort kills the in-flight leg at once, tries no later leg and writes no audit row", { timeout: 20_000 }, async () => {
+    const cfg = setup({ "google-antigravity/gemini-3.8-flash": { sleepMs: 30_000, text: "late" }, "kimi-code/k3": { text: "next" } });
+    const audit = recordingSink();
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 300);
+    const t0 = Date.now();
+    const r = await spawnOneShot({ seat: "reader", chain: cfg.reader, prompt: "x", correlationId: "c", timeoutMs: 10_000, signal: controller.signal },
+      { cfg, audit, versionCheck: () => ({ ok: true, version: "18.4.4" }) });
+    expect(Date.now() - t0).toBeLessThan(300 + LEG_EXIT_GRACE_MS + 1_500);
+    expect(r).toMatchObject({ ok: false, aborted: true });
+    expect(audit.attempts).toEqual([]);
+    expect(argvLog()).toHaveLength(1);
+  });
+
+  it("an already-aborted call spawns nothing, not even the version check", async () => {
+    const cfg = setup({ "google-antigravity/gemini-3.8-flash": { text: "never" } });
+    const audit = recordingSink();
+    let checked = 0;
+    const r = await spawnOneShot({ seat: "reader", chain: cfg.reader, prompt: "x", correlationId: "c", signal: AbortSignal.abort() },
+      { cfg, audit, versionCheck: () => { checked += 1; return { ok: true, version: "18.4.4" }; } });
+    expect(r).toMatchObject({ ok: false, aborted: true });
+    expect(checked).toBe(0);
+    expect(audit.attempts).toEqual([]);
+    expect(existsSync(join(dir, "argv.log"))).toBe(false);
+  });
+
   /** A fake omp that leaves a grandchild holding its stdout (a lingering helper); the grandchild writes its pid. */
   function lingeringBin(body: string): { cfg: ReturnType<typeof resolveOmpConfig>; pidFile: string } {
     const bin = join(dir, "omp-linger.sh"); const pidFile = join(dir, "helper.pid");

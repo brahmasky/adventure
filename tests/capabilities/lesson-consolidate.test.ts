@@ -385,3 +385,37 @@ describe("runLessonConsolidateTick", () => {
     expect(store.getActiveLessons("ask")).toHaveLength(2);
   });
 });
+
+describe("runLessonConsolidateTick — the daemon's stop (live 2026-10-02)", () => {
+  it("a stop during a scope's call keeps that whole merge, asks no later scope, and leaves the latch for the next boot", async () => {
+    const store = openStore();
+    const [a, b] = seed(store, "ask", ["be concise", "keep it short"]);
+    seed(store, "code", ["run the tests", "always run tests"]);
+    const controller = new AbortController();
+    const asked: string[] = [];
+    const llm: LessonConsolidateLlm = async ({ question }) => {
+      asked.push(question);
+      controller.abort(); // SIGTERM while the first scope's call is in flight
+      return { ok: true, answer: JSON.stringify({ clusters: [{ ids: [a, b], text: "be concise; keep it short", avoid: null }] }) };
+    };
+    const result = await runLessonConsolidateTick({ store, llmAnswer: llm, env: ENABLED, now: NOW, signal: controller.signal });
+    expect(asked).toHaveLength(1);
+    expect(result.clusters_merged).toBe(1);
+    expect(store.getActiveLessons("ask")).toHaveLength(1);
+    expect(store.getActiveLessons("code")).toHaveLength(2);
+    expect(store.getLessonConsolidateLastRun()).toBeNull();
+    expect(store.getLedgerEvents().filter((e) => e.event_type === "lesson_consolidate_tick")).toHaveLength(1);
+  });
+
+  it("an already-stopped daemon starts no tick", async () => {
+    const store = openStore();
+    seed(store, "ask", ["be concise", "keep it short"]);
+    const asked: string[] = [];
+    const result = await runLessonConsolidateTick({
+      store, llmAnswer: async ({ question }) => { asked.push(question); return { ok: false }; }, env: ENABLED, now: NOW, signal: AbortSignal.abort()
+    });
+    expect(result.ran).toBe(false);
+    expect(asked).toEqual([]);
+    expect(store.getLessonConsolidateLastRun()).toBeNull();
+  });
+});

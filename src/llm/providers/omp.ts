@@ -11,6 +11,8 @@ import { familyOf, formatModelString, type ModelFamily, type ModelString } from 
 export interface OneShotInput {
   seat: string; chain: ModelString[]; prompt: string; files?: string[];
   correlationId: string; timeoutMs?: number; plannerFamily?: ModelFamily;
+  /** The daemon's stop: aborting kills the in-flight leg's process group and ends the call (no later leg, no audit row). */
+  signal?: AbortSignal;
 }
 export interface OneShotDeps {
   cfg: OmpConfig; audit: LlmAuditSink; versionCheck?: () => ReturnType<typeof checkOmpVersion>;
@@ -28,7 +30,7 @@ export function ompOneShotArgs(cfg: OmpConfig, m: ModelString, files: string[]):
   return args;
 }
 
-interface LegOutcome { summary: AssistantSummary | null; error?: string; timedOut: boolean; latencyMs: number }
+interface LegOutcome { summary: AssistantSummary | null; error?: string; timedOut: boolean; latencyMs: number; aborted?: boolean }
 
 /** After omp exits (or is killed), how long its stdout may still drain before the leg settles without it. */
 export const LEG_EXIT_GRACE_MS = 500;
@@ -62,12 +64,14 @@ function runLeg(cfg: OmpConfig, m: ModelString, input: OneShotInput): Promise<Le
     let drain: ReturnType<typeof setTimeout> | undefined;
     const settle = (o?: LegOutcome) => {
       if (st.settled) return;
-      st.settled = true; clearTimeout(timer); clearTimeout(drain);
+      st.settled = true; clearTimeout(timer); clearTimeout(drain); input.signal?.removeEventListener("abort", onAbort);
       child.stdout.destroy(); child.stderr.destroy();
       resolve(o ?? legOutcome(st, started));
     };
     const settleAfterGrace = () => { clearTimeout(drain); drain = setTimeout(() => { killGroup(child); settle(); }, LEG_EXIT_GRACE_MS); };
     const timer = setTimeout(() => { st.timedOut = true; killGroup(child); settleAfterGrace(); }, input.timeoutMs ?? cfg.oneshotTimeoutMs);
+    const onAbort = () => { killGroup(child); settle({ summary: null, timedOut: false, latencyMs: Date.now() - started, aborted: true }); };
+    input.signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout.on("data", (d: Buffer) => { st.bytes += d.length; if (st.bytes <= STDOUT_CAP_BYTES) st.out += d.toString("utf8"); else killGroup(child); });
     child.stderr.on("data", (d: Buffer) => { if (st.err.length < 4096) st.err += d.toString("utf8"); });
     child.stdin.on("error", () => { /* child exited before reading stdin; exit/close settles */ });
@@ -93,15 +97,21 @@ function legFailure(o: LegOutcome): string | null {
 export const OMP_AUDIO_REFUSED = "omp one-shot refuses audio (voice runs on the agy-cli leg)";
 const AUDIO_FILE = /\.(opus|ogg|oga|mp3|wav|m4a|aac|flac|amr|weba)$/i;
 
+/** A call the daemon's stop cut short: not a model failure, so it leaves no audit row for the leg-health sweep. */
+const ABORTED: LlmResult = { ok: false, provider: "omp", error: "aborted: the daemon is stopping", aborted: true };
+
 export async function spawnOneShot(input: OneShotInput, deps: OneShotDeps): Promise<LlmResult> {
   if ((input.files ?? []).some((f) => AUDIO_FILE.test(f))) return { ok: false, provider: "omp", error: OMP_AUDIO_REFUSED };
+  if (input.signal?.aborted) return ABORTED;
   const version = (deps.versionCheck ?? (() => checkOmpVersion(deps.cfg)))();
   deps.onVersionCheck?.(version);
   // No leg ran, so no audit row: the structured check rides out for the caller's incident (ruling 6).
   if (!version.ok) return { ok: false, provider: "omp", error: version.reason, unavailable: true, omp_check: version };
   const errors: string[] = [];
   for (const [i, m] of input.chain.entries()) {
+    if (input.signal?.aborted) return ABORTED;
     const o = await runLeg(deps.cfg, m, input);
+    if (o.aborted) return ABORTED;
     const failure = legFailure(o);
     const family = familyOf(m);
     const base = {
