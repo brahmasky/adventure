@@ -5,6 +5,7 @@ import {
   createLessonWriteAdapter,
   extractLiteralPhrases,
   extractThreadPhrases,
+  LESSON_CAPPED_HINT,
   LESSON_ESCALATE_HINT,
   THREAD_TEXT_CHAR_CAP,
   THREAD_USER_TURN_CAP
@@ -497,5 +498,27 @@ describe("extractThreadPhrases (the F1 thread-scoped union)", () => {
     expect(extractThreadPhrases("换掉它", pastBudget)).toEqual([]);
     expect(THREAD_USER_TURN_CAP).toBe(6);
     expect(THREAD_TEXT_CHAR_CAP).toBe(1500);
+  });
+});
+
+describe("lesson_write — an over-cap merge is reported, never silently dropped (memory A1 §2)", () => {
+  it("returns the code-owned too-large result so the planner can tell Paco or save a narrower rule", async () => {
+    const adapter = createLessonWriteAdapter(config({
+      llm: llmReturning('{"durable":true,"lesson":"be more concise"}'),
+      saveLesson: async (candidate) => ({ verb: "capped", lesson: candidate.text, prunedIds: [], cappedTargetId: 7 })
+    }));
+    const r = await adapter({});
+    expect(r).toEqual({ ok: true, output: { saved: false, scope: "ask", reason: "too-large", hint: LESSON_CAPPED_HINT } });
+  });
+
+  it("an AVOID over 120 chars is dropped and the rule is still saved (like a lifted AVOID)", async () => {
+    const saved: Array<{ scope: string; text: string; avoid?: string; now: string }> = [];
+    const adapter = createLessonWriteAdapter(config({
+      llm: llmReturning(JSON.stringify({ durable: true, lesson: "be more concise", avoid: "a".repeat(121) })),
+      saveLesson: savingTo(saved)
+    }));
+    const r = await adapter({});
+    expect(saved.map((c) => c.avoid)).toEqual([undefined]);
+    expect(r).toMatchObject({ ok: true, output: { saved: true, lesson: "be more concise" } });
   });
 });

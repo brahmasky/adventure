@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import type { LessonSaveResult } from "../run/run-store.js";
-import { buildDistillQuestion, DISTILL_DISCIPLINE, parseDistillResult, shouldRejectLesson } from "./distill.js";
+import { buildDistillQuestion, DISTILL_DISCIPLINE, LESSON_AVOID_MAX_CHARS, LESSON_MAX_CHARS, parseDistillResult, shouldRejectLesson } from "./distill.js";
 import { RATING_ACK_COMMENT_TEXT, RATING_ACK_TEXT, RATING_ASK_TEXT } from "./session-rating.js";
 
 /**
@@ -141,9 +141,11 @@ export function createLessonWriteAdapter(
         output: { saved: false, scope, reason: "rejected by the lesson backstop", ...(note ? { note } : {}) }
       };
     }
-    // The AVOID line rides the same backstop: a lifted avoid is dropped, not the lesson.
+    // The AVOID line rides the same backstop: a lifted or over-cap (> LESSON_AVOID_MAX_CHARS) avoid is dropped, not the lesson.
     const avoid =
-      verdict.avoid && !shouldRejectLesson(verdict.avoid, feedback, priorAnswer) ? verdict.avoid : undefined;
+      verdict.avoid && verdict.avoid.length <= LESSON_AVOID_MAX_CHARS && !shouldRejectLesson(verdict.avoid, feedback, priorAnswer)
+        ? verdict.avoid
+        : undefined;
 
     const now = (config.now?.() ?? new Date()).toISOString();
     const saved = await config.saveLesson({ scope, text: verdict.lesson, ...(avoid ? { avoid } : {}) }, now);
@@ -152,6 +154,9 @@ export function createLessonWriteAdapter(
         ok: true,
         output: { saved: false, scope, reason: "already covered by an existing lesson", ...(note ? { note } : {}) }
       };
+    }
+    if (saved.verb === "capped") {
+      return { ok: true, output: { saved: false, scope, reason: "too-large", hint: LESSON_CAPPED_HINT, ...(note ? { note } : {}) } };
     }
     return {
       ok: true,
@@ -170,6 +175,11 @@ export function createLessonWriteAdapter(
     };
   };
 }
+
+/** Memory A1 §2: the merge would exceed the size cap, so nothing was saved (the existing lesson is unchanged). */
+export const LESSON_CAPPED_HINT =
+  `not saved: merging this into the existing lesson would exceed the size cap (${LESSON_MAX_CHARS} chars, AVOID ${LESSON_AVOID_MAX_CHARS}). ` +
+  "Tell Paco it was not saved, or save one narrower rule.";
 
 /** The escalation hint (⓪·3 S2b iii): the memory layer keeps getting corrected — pivot. */
 export const LESSON_ESCALATE_HINT =

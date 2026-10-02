@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   buildReconcileQuestion,
+  parseReconcileTheme,
   parseReconcileVerdict,
   RECONCILE_DISCIPLINE,
   reconcileLesson
 } from "../../src/capabilities/reconcile.js";
+import { LESSON_THEMES } from "../../src/run/lesson-themes.js";
 import { RunStore } from "../../src/run/run-store.js";
 
 const NOW = "2026-07-03T00:00:00.000Z";
@@ -59,7 +61,7 @@ describe("buildReconcileQuestion (the DATA channel)", () => {
         { id: 7, text: "be concise", avoid: null }
       ]
     );
-    expect(q).toContain("Scope: ask");
+    expect(q).toContain("Scope of the NEW preference: ask");
     expect(q).toContain("#3: use the Sydney timezone");
     expect(q).toContain("AVOID: quoting UTC times");
     expect(q).toContain("#7: be concise");
@@ -70,18 +72,15 @@ describe("buildReconcileQuestion (the DATA channel)", () => {
 });
 
 describe("reconcileLesson (the one LLM compare)", () => {
-  it("an empty scope short-circuits to ADD without calling the chain", async () => {
+  it("an empty scope still asks once (for the theme), but the verdict is always ADD", async () => {
     let called = 0;
-    const verdict = await reconcileLesson({
+    const r = await reconcileLesson({
       candidate: { scope: "ask", text: "be concise" },
       existing: [],
-      llm: async () => {
-        called += 1;
-        return { ok: true, answer: '{"verdict":"DROP"}' };
-      }
+      llm: async () => { called += 1; return { ok: true, answer: '{"verdict":"DROP","theme":"format"}' }; }
     });
-    expect(verdict).toEqual({ verdict: "ADD" });
-    expect(called).toBe(0);
+    expect(r).toEqual({ verdict: { verdict: "ADD" }, theme: "format", themeKnown: true });
+    expect(called).toBe(1);
   });
 
   it("runs under RECONCILE_DISCIPLINE and returns the parsed verdict", async () => {
@@ -94,7 +93,7 @@ describe("reconcileLesson (the one LLM compare)", () => {
         return { ok: true, answer: '{"verdict":"SUPERSEDE","id":3}' };
       }
     });
-    expect(verdict).toEqual({ verdict: "SUPERSEDE", id: 3 });
+    expect(verdict.verdict).toEqual({ verdict: "SUPERSEDE", id: 3 });
     expect(calls[0]!.system).toBe(RECONCILE_DISCIPLINE);
     expect(calls[0]!.question).toContain("#3: use the Sydney timezone");
   });
@@ -105,7 +104,7 @@ describe("reconcileLesson (the one LLM compare)", () => {
       existing: [{ id: 1, text: "y" }],
       llm: async () => ({ ok: false })
     });
-    expect(failed).toEqual({ verdict: "ADD" });
+    expect(failed).toEqual({ verdict: { verdict: "ADD" }, theme: "unthemed", themeKnown: false });
 
     const threw = await reconcileLesson({
       candidate: { scope: "ask", text: "x" },
@@ -114,7 +113,7 @@ describe("reconcileLesson (the one LLM compare)", () => {
         throw new Error("chain down");
       }
     });
-    expect(threw).toEqual({ verdict: "ADD" });
+    expect(threw).toEqual({ verdict: { verdict: "ADD" }, theme: "unthemed", themeKnown: false });
   });
 
   it("duplicate-timezone-shaped case: the second timezone lesson SUPERSEDES the first (store applied)", async () => {
@@ -134,7 +133,7 @@ describe("reconcileLesson (the one LLM compare)", () => {
         existing: store.getActiveLessons("ask"),
         llm: async () => ({ ok: true, answer: `{"verdict":"SUPERSEDE","id":${first}}` })
       });
-      const saved = store.saveReconciledLesson(candidate, verdict, "user_feedback", NOW);
+      const saved = store.saveReconciledLesson(candidate, verdict.verdict, "user_feedback", NOW);
 
       expect(saved).toMatchObject({ verb: "supersede", supersededId: first });
       expect(store.getActiveLessons("ask")).toHaveLength(1);
@@ -143,5 +142,19 @@ describe("reconcileLesson (the one LLM compare)", () => {
     } finally {
       store.close();
     }
+  });
+});
+
+describe("parseReconcileTheme (closed list; anything else is unthemed)", () => {
+  it("reads a listed theme, case-insensitively", () => {
+    expect(parseReconcileTheme('{"verdict":"ADD","theme":"Format"}')).toEqual({ theme: "format", known: true });
+  });
+  it("an unknown, missing or garbled theme is unthemed and not known", () => {
+    expect(parseReconcileTheme('{"verdict":"ADD","theme":"poetry"}')).toEqual({ theme: "unthemed", known: false });
+    expect(parseReconcileTheme('{"verdict":"ADD"}')).toEqual({ theme: "unthemed", known: false });
+    expect(parseReconcileTheme("no json")).toEqual({ theme: "unthemed", known: false });
+  });
+  it("the discipline names every theme so the model can choose", () => {
+    for (const t of LESSON_THEMES) expect(RECONCILE_DISCIPLINE).toContain(t);
   });
 });

@@ -6,7 +6,7 @@ import {
   LESSON_MERGE_MAX_CLUSTER_SIZE,
   LESSON_MERGE_MAX_CLUSTERS_PER_TICK,
   mergeDropsAvoid,
-  mergeDropsContent,
+  mergeExceedsCap,
   parseLessonConsolidation,
   resolveLessonConsolidateEnabled,
   resolveLessonConsolidateIntervalMs,
@@ -94,14 +94,14 @@ describe("parseLessonConsolidation", () => {
   });
 });
 
-// --- gross-collapse floor ----------------------------------------------------
-
-describe("mergeDropsContent (gross-collapse floor)", () => {
-  it("rejects a merge shorter than its longest member", () => {
-    expect(mergeDropsContent("short", ["a much longer member lesson"])).toBe(true);
+// --- size cap (memory A1 §2: the growth floor is gone; an over-cap merge is rejected) -----------
+describe("mergeExceedsCap", () => {
+  it("rejects merged text over 240 or a merged AVOID over 120", () => {
+    expect(mergeExceedsCap("t".repeat(241), null)).toBe(true);
+    expect(mergeExceedsCap("short", "a".repeat(121))).toBe(true);
   });
-  it("accepts a merge at least as long as its longest member", () => {
-    expect(mergeDropsContent("a; b; c combined and preserved", ["a", "b", "c combined"])).toBe(false);
+  it("accepts a merge shorter than its longest member (no growth floor any more)", () => {
+    expect(mergeExceedsCap("short", null)).toBe(false);
   });
 });
 
@@ -370,12 +370,12 @@ describe("runLessonConsolidateTick", () => {
   it("dryRun surfaces a floor-rejected cluster with a `rejected` reason; a non-dry run applies nothing", async () => {
     const store = openStore();
     const [a, b] = seed(store, "ask", ["a fairly long lesson about staying concise", "b2"]);
-    // Merged text SHORTER than the longest member → gross-collapse floor.
-    const llm = cannedLlm(JSON.stringify({ clusters: [{ ids: [a, b], text: "short", avoid: null }] }));
+    // Merged text over 240 → the size cap rejects it.
+    const llm = cannedLlm(JSON.stringify({ clusters: [{ ids: [a, b], text: "t".repeat(241), avoid: null }] }));
 
     const dry = await runLessonConsolidateTick({ store, llmAnswer: llm, env: {}, now: NOW, dryRun: true });
     expect(dry.proposals).toHaveLength(1);
-    expect(dry.proposals![0]!.rejected).toContain("gross-collapse");
+    expect(dry.proposals![0]!.rejected).toContain("over-cap");
     // The aggregate does not count a rejected cluster as merged.
     expect(dry.clusters_merged).toBe(0);
 

@@ -1,6 +1,6 @@
 import type { LessonRow, RunStore } from "../run/run-store.js";
 import { LESSON_MERGE_REUSE_CAP } from "../run/run-store.js";
-import { extractFirstJsonObject } from "./distill.js";
+import { extractFirstJsonObject, LESSON_AVOID_MAX_CHARS, LESSON_MAX_CHARS } from "./distill.js";
 
 /**
  * Daily preserve-all lesson consolidation (design 2026-07-23; twin of
@@ -127,20 +127,18 @@ export function parseLessonConsolidation(text: string, validIds: Set<number>): L
 }
 
 /**
- * Gross-collapse floor (design step 4): reject a cluster whose merged text is SHORTER than its
- * longest member — a strong signal the preserve-all merge dropped directives. Daily ticks have no
- * dry-run guard, so this is the last-line defense before a write.
+ * Size floor (memory A1 §2): reject a merge whose text is over LESSON_MAX_CHARS or whose AVOID is over
+ * LESSON_AVOID_MAX_CHARS. Replaces the old "not shorter than the longest member" floor, which rewarded growth.
  */
-export function mergeDropsContent(mergedText: string, memberTexts: readonly string[]): boolean {
-  const longest = memberTexts.reduce((max, t) => Math.max(max, t.length), 0);
-  return mergedText.length < longest;
+export function mergeExceedsCap(text: string, avoid: string | null): boolean {
+  return text.length > LESSON_MAX_CHARS || (avoid?.length ?? 0) > LESSON_AVOID_MAX_CHARS;
 }
 
 /**
- * AVOID-drop floor (design step 4, twin of {@link mergeDropsContent}): reject a cluster if ANY
+ * AVOID-drop floor (design step 4, twin of {@link mergeExceedsCap}): reject a cluster if ANY
  * member carries a non-empty `avoid` but the merged `avoid` is null/empty — a preserve-all merge
- * that silently dropped every AVOID clause. `mergeDropsContent` only inspects text length and is
- * blind to AVOID, so this is a separate deterministic guard.
+ * that silently dropped every AVOID clause. `mergeExceedsCap` only inspects sizes and is
+ * blind to dropped AVOIDs, so this is a separate deterministic guard.
  */
 export function mergeDropsAvoid(
   mergedAvoid: string | null,
@@ -256,8 +254,8 @@ export async function runLessonConsolidateTick(input: {
       // SKIPs a floor-rejected cluster; a dry run SURFACES it (tagged) so the pre-arm eyeball sees
       // exactly what the LLM proposed and why the floor blocked it.
       let rejected: string | null = null;
-      if (mergeDropsContent(cluster.text, memberTexts)) {
-        rejected = "gross-collapse: merged shorter than longest member";
+      if (mergeExceedsCap(cluster.text, cluster.avoid)) {
+        rejected = "over-cap: merged text over 240 or AVOID over 120";
       } else if (mergeDropsAvoid(cluster.avoid, memberAvoids)) {
         rejected = "avoid-drop: members carry AVOID clauses the merge dropped";
       }

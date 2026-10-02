@@ -154,6 +154,28 @@ describe("lesson_write over the bridge — trust anchors and layer routing", () 
     expect(r.content).toContain('"verb":"supersede"');
   });
 
+  it("reconcile sees the active lessons of BOTH scopes and saves the theme it names (memory A1 §5)", async () => {
+    const research = store.addLesson({ scope: "research", text: "prefer primary sources", source: "user_feedback" });
+    const calls: Array<Record<string, unknown>> = [];
+    const t = turn("too long, keep answers short from now on", {
+      llm: seatLlm(calls, { distill: '{"durable":true,"lesson":"keep answers short"}', reconcile: '{"verdict":"ADD","theme":"format"}' })
+    });
+    await t.call("lesson_write", {});
+    const reconcile = calls.find((c) => c.system === RECONCILE_DISCIPLINE);
+    expect(String(reconcile?.question)).toContain(`#${research}`);
+    expect(store.getActiveLessons("ask")[0]!.theme).toBe("format");
+  });
+
+  it("an unknown theme saves the lesson as unthemed and ledgers the id", async () => {
+    const t = turn("too long, keep answers short from now on", {
+      llm: seatLlm([], { distill: '{"durable":true,"lesson":"keep answers short"}', reconcile: '{"verdict":"ADD","theme":"poetry"}' })
+    });
+    await t.call("lesson_write", {});
+    const saved = store.getActiveLessons("ask")[0]!;
+    expect(saved.theme).toBe("unthemed");
+    expect(store.getLedgerEvents().filter((e) => e.event_type === "lesson_theme_unknown").map((e) => e.payload)).toEqual([{ lesson_id: saved.id }]);
+  });
+
   it("REFUSES code-owned feedback (a phrase verbatim in src/) before distilling, pivoting to self_write_propose", async () => {
     // replaces: executeTurn — the inner loop › "lesson_write REFUSES code-owned feedback (⓪·3 S1c): a phrase verbatim in src/ pivots to self_write_propose"
     seedSrc("🐒 自我修改状态");

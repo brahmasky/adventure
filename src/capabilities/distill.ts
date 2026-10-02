@@ -93,6 +93,9 @@ export function parseDistillResult(text: string): DistillResult {
  */
 export const LESSON_MAX_CHARS = 240;
 
+/** Per-lesson AVOID cap (memory A1 §2): an AVOID is one short anti-pattern, never a second rule. */
+export const LESSON_AVOID_MAX_CHARS = 120;
+
 /** Lowercase + collapse all runs of whitespace to a single space, then trim. */
 function normalizeForGuard(text: string): string {
   return text.toLowerCase().replace(/\s+/g, " ").trim();

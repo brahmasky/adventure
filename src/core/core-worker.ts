@@ -45,7 +45,8 @@ import type { GoogleAuthClient } from "../capabilities/google-auth.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import { resolveHttpFetchTimeoutMs } from "../web/http-fetch.js";
 import { chatContextSince, feedTurnText, resolveChatContextTurnChars, resolveChatContextTurns } from "../capabilities/intent.js";
-import { createLessonWriteAdapter, createSrcPhraseChecker } from "../capabilities/lesson-write.js";
+import { createLessonWriteAdapter, createSrcPhraseChecker, LESSON_CAPPED_HINT } from "../capabilities/lesson-write.js";
+import { OMP_LESSON_SCOPES } from "../run/lesson-render.js";
 import { reconcileLesson } from "../capabilities/reconcile.js";
 import {
   ATTRIBUTION_TURN_CAP,
@@ -979,8 +980,8 @@ export class CoreWorker {
   /**
    * ⓪·3 S1b — the shared lesson write for EVERY path that saves a lesson (the
    * lesson_write loop tool, the Gate A down-routes): reconcile the
-   * candidate against the scope's active lessons (one cheap-chain compare; skipped when
-   * the scope is empty; any parse/chain failure defaults to ADD), then apply the verdict
+   * candidate against the active lessons of both scopes (one cheap-chain compare, which also
+   * names the theme; any parse/chain failure defaults to ADD), then apply the verdict
    * to the store — SUPERSEDE/UPDATE write a NEW row linked via bidirectional pointers,
    * never a delete. Replaces the old char-cap consolidation REWRITE (the per-scope row
    * cap prunes lowest reuse_value on overflow instead).
@@ -991,15 +992,13 @@ export class CoreWorker {
     llm: (input: { question: string; system: string }) => Promise<{ ok: true; answer: string } | { ok: false }>,
     now: string = new Date().toISOString()
   ): Promise<LessonSaveResult> {
-    const existing = this.runStore.getActiveLessons(candidate.scope);
-    const verdict = await reconcileLesson({ candidate, existing, llm });
-    return this.runStore.saveReconciledLesson(
-      candidate,
-      verdict,
-      source,
-      now,
-      resolveLessonCapPerScope(process.env)
-    );
+    // Memory A1 §5: reconcile sees every active lesson of both scopes, so a mis-themed duplicate still meets its twin.
+    const scopes = [...new Set([candidate.scope, ...OMP_LESSON_SCOPES])];
+    const existing = scopes.flatMap((scope) => this.runStore.getActiveLessons(scope));
+    const r = await reconcileLesson({ candidate, existing, llm });
+    const saved = this.runStore.saveReconciledLesson({ ...candidate, theme: r.theme }, r.verdict, source, now, resolveLessonCapPerScope(process.env));
+    if (!r.themeKnown && saved.id !== undefined) this.runStore.recordMemoryEvent("lesson_theme_unknown", { lesson_id: saved.id });
+    return saved;
   }
 
   /** The reconcile compare on the turn's shared, budget-charged chain (legacy paths). */
@@ -1787,7 +1786,7 @@ export class CoreWorker {
     // Lightest-form lesson capture — nothing learned is wasted even when the skill is blocked.
     const scope = this.safeLessonScope(parsed.scope);
     const lesson = (verdict.lesson?.trim() || `when ${parsed.meta.when}, follow a verified procedure`).slice(0, 200);
-    await this.reconcileAndSaveLesson({ scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget));
+    const saved = await this.reconcileAndSaveLesson({ scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget));
     const failing = gate.failing.length > 0 ? gate.failing.slice(0, 3).map((f) => `   • ${f}`).join("\n") : "   • (no specific criteria captured)";
     const parkLine = parked.ok
       ? `→ Parked at skills/_pending/${parsed.scope}/${parsed.name}.md (inert — not applied).`
@@ -1799,7 +1798,7 @@ export class CoreWorker {
       "Failed criteria:",
       failing,
       parkLine,
-      `→ Saved a LESSON (${scope}): "${lesson}".`,
+      savedLessonLine(saved, `→ Saved a LESSON (${scope}): "${lesson}".`, "→ No durable lesson to save."),
       '→ Handles: /skills pending to inspect · reply "show me the draft" · reply "write a skill for X" to retry.'
     ]);
   }
@@ -1822,14 +1821,12 @@ export class CoreWorker {
   private async downRouteLesson(claim: ClaimedRun, verdict: GateAResult, now: string, budget: BudgetLedger): Promise<HelperResult> {
     const scope = this.safeLessonScope(verdict.scope);
     const lesson = verdict.lesson?.trim();
-    if (lesson) {
-      await this.reconcileAndSaveLesson({ scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget), now);
-    }
+    const saved = lesson ? await this.reconcileAndSaveLesson({ scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget), now) : undefined;
     return this.skillReport("down-routed to a LESSON (a tweak, not a procedure)", [
       "Origin: you asked",
       `Gate A qualify: → LESSON (${verdict.reason})`,
       "Gate B anchors: n/a (not authored)",
-      lesson ? `→ Saved a LESSON (${scope}): "${lesson}". /lessons to view.` : "→ No durable lesson to save."
+      savedLessonLine(saved, `→ Saved a LESSON (${scope}): "${lesson}". /lessons to view.`, "→ No durable lesson to save.")
     ]);
   }
 
@@ -1837,14 +1834,12 @@ export class CoreWorker {
   private async downRouteUnsure(claim: ClaimedRun, verdict: GateAResult, now: string, budget: BudgetLedger): Promise<HelperResult> {
     const scope = this.safeLessonScope(verdict.scope);
     const lesson = verdict.lesson?.trim();
-    if (lesson) {
-      await this.reconcileAndSaveLesson({ scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget), now);
-    }
+    const saved = lesson ? await this.reconcileAndSaveLesson({ scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget), now) : undefined;
     return this.skillReport("unsure — saved a lesson and asking whether to promote", [
       "Origin: you asked",
       `Gate A qualify: ? unsure between a lesson and a skill (${verdict.reason})`,
       "Gate B anchors: n/a (not authored)",
-      lesson ? `→ Saved a LESSON (${scope}) for now: "${lesson}".` : "→ Nothing durable to save yet.",
+      savedLessonLine(saved, `→ Saved a LESSON (${scope}) for now: "${lesson}".`, "→ Nothing durable to save yet."),
       '→ Want me to promote this to a skill? Reply "yes, write a skill for it" and I will.'
     ]);
   }
@@ -3368,6 +3363,12 @@ function loopToolTimeoutMs(name: string, seat: (role: LlmCallRole) => number): n
  * The routing lives here so the runner cap (loopToolTimeoutMs) matches it.
  */
 const LESSON_WRITE_ROLES = { distill: "distill", reconcile: "consolidate" } as const satisfies Record<string, LlmCallRole>;
+
+/** Memory A1 §2: a lesson the size cap refused is reported as refused, never as saved. */
+function savedLessonLine(saved: LessonSaveResult | undefined, savedLine: string, nothingLine: string): string {
+  if (!saved) return nothingLine;
+  return saved.verb === "capped" ? `→ Lesson NOT saved: ${LESSON_CAPPED_HINT}` : savedLine;
+}
 
 /**
  * ⓪·3g: the kickoff digest the evolution tool adapter returns IMMEDIATELY after

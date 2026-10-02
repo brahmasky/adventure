@@ -277,6 +277,14 @@ describe("skill_author down-route and budget isolation over the bridge (fix roun
     expect(report).toContain("LESSON");
   });
 
+  it("a down-routed lesson the size cap refuses is reported as not saved, never as saved (memory A1 §2)", async () => {
+    const tooLong = "c".repeat(241);
+    const report = await authorSkill("from now on lead with the conclusion", skillLlm(`{"verdict":"lesson","scope":"ask","lesson":"${tooLong}","reason":"a tweak"}`));
+    expect(store.readLessonBlock("ask")).toBeUndefined();
+    expect(report).not.toContain("Saved a LESSON");
+    expect(report).toContain("Lesson NOT saved");
+  });
+
   it("BUDGET ISOLATION: Gate A runs on the tool's own sub-ledger when the turn ledger has one unit left", async () => {
     // replaces: executeTurn — the inner loop › "BUDGET ISOLATION: skill_author's Gate A internals run on their own sub-ledger under a drained turn ledger"
     const t = turn("以后回答要先给结论再给理由", skillLlm(DOWN_ROUTE));

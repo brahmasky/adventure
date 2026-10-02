@@ -14,6 +14,7 @@ import type {
 } from "../domain/types.js";
 import { stableHash } from "../domain/canonical.js";
 import { UNTHEMED } from "./lesson-themes.js";
+import { LESSON_AVOID_MAX_CHARS, LESSON_MAX_CHARS } from "../capabilities/distill.js";
 import {
   computeBreaches,
   computeHeadroom,
@@ -392,10 +393,13 @@ export type LessonReconcileVerdict =
 export type LessonWriteVerb = "add" | "supersede" | "update" | "drop";
 
 export interface LessonSaveResult {
-  verb: LessonWriteVerb;
-  /** The new active row's id (absent on drop). */
+  /** `capped`: nothing saved — the text or AVOID would exceed its cap (memory A1 §2). */
+  verb: LessonWriteVerb | "capped";
+  /** The new active row's id (absent on drop and capped). */
   id?: number;
   supersededId?: number;
+  /** The lesson a capped UPDATE/SUPERSEDE left untouched. */
+  cappedTargetId?: number;
   /** The text actually stored (the merged text on update; the candidate's on drop). */
   lesson: string;
   /** Rows pruned by the per-scope cap (lowest reuse_value first; never the new row). */
@@ -1414,16 +1418,15 @@ export class RunStore {
   }
 
   /**
-   * Apply a reconcile verdict (⓪·3 S1b, ADR 0012 §2): ADD inserts; SUPERSEDE/UPDATE
-   * insert a NEW row linked to the prior via bidirectional pointers (auditable — never
-   * an in-place rewrite, never a delete); DROP writes nothing. A SUPERSEDE/UPDATE whose
-   * target is missing, no longer active, or in a DIFFERENT scope (⓪·3f P1 defense-in-
-   * depth — reconcile only ever compares within one scope, but a verdict must never
-   * retire another scope's lesson) degrades to ADD. Overflow beyond the per-scope cap
-   * prunes the lowest reuse_value rows (never the row just written).
+   * Apply a reconcile verdict (⓪·3 S1b, ADR 0012 §2; memory A1 §2/§5). ADD inserts; SUPERSEDE/UPDATE insert a NEW row
+   * linked to the prior (never an in-place rewrite, never a delete); DROP writes nothing. A target that is missing,
+   * inactive or in another scope degrades to ADD (⓪·3f P1). An UPDATE whose target has another theme is not merged:
+   * the candidate is saved as an ADD under its own theme. A result whose text is over LESSON_MAX_CHARS or whose AVOID
+   * is over LESSON_AVOID_MAX_CHARS is not saved (`capped`; the prior stays). An UPDATE inherits the target's
+   * reuse_value, applied_count and theme. Overflow beyond the per-scope cap prunes the lowest reuse_value rows.
    */
   saveReconciledLesson(
-    candidate: { scope: string; text: string; avoid?: string },
+    candidate: { scope: string; text: string; avoid?: string; theme?: string },
     verdict: LessonReconcileVerdict,
     source: LessonSource,
     now: string,
@@ -1431,46 +1434,74 @@ export class RunStore {
     repeatDays: number = resolveLessonRepeatDays(process.env)
   ): LessonSaveResult {
     const text = candidate.text.trim();
-    if (verdict.verdict === "DROP") {
-      return { verb: "drop", lesson: text, prunedIds: [] };
-    }
-
+    if (verdict.verdict === "DROP") return { verb: "drop", lesson: text, prunedIds: [] };
     const prior = verdict.verdict === "ADD" ? undefined : this.getLesson(verdict.id);
     const target = prior?.status === "active" && prior.scope === candidate.scope ? prior : undefined;
-    const merged =
-      verdict.verdict === "UPDATE" && target && verdict.text?.trim() ? verdict.text.trim() : text;
-    // UPDATE supplements: the revised row inherits the prior AVOID unless the candidate brings one.
-    const avoid =
-      candidate.avoid?.trim() ||
-      (verdict.verdict === "UPDATE" && target?.avoid ? target.avoid : undefined);
-
-    const id = this.addLesson({ scope: candidate.scope, text: merged, ...(avoid ? { avoid } : {}), source, created_at: now });
-    if (target) this.supersedeLesson(target.id, id);
-    // ⓪·3 S2b correction wiring: a SUPERSEDE is a correction against the target — it
-    // pays the reuse penalty. And when the target's chain ALREADY holds a recent
-    // supersede (a superseding row created within `repeatDays`) or the target has been
-    // corrected repeatedly, the memory layer looks ineffective → escalate the digest
-    // (layer-routing iii) so the model can pivot to the code layer in-turn.
-    let escalate = false;
-    if (verdict.verdict === "SUPERSEDE" && target) {
-      this.recordCorrection(target.id);
-      this.db.prepare(`UPDATE lessons SET reuse_value = reuse_value - 0.5 WHERE id = ?`).run(target.id);
-      const cutoff = new Date(Date.parse(now) - repeatDays * 86_400_000).toISOString();
-      const repeatInLineage = this.lessonLineage(target.id).some(
-        (row) => row.id !== id && row.supersedes !== null && row.created_at >= cutoff
-      );
-      escalate = repeatInLineage || target.corrected_count + 1 >= 2;
+    const known = candidate.theme !== undefined && candidate.theme !== UNTHEMED ? candidate.theme : undefined;
+    // Spec §5: only a candidate with a KNOWN theme other than the target's is refused a merge; an unthemed one takes the target's.
+    if (target && verdict.verdict === "UPDATE" && known !== undefined && known !== target.theme) {
+      return this.saveCrossThemeAsAdd({ ...candidate, text, theme: known }, target.id, source, now, cap);
     }
+    const update = verdict.verdict === "UPDATE" && target !== undefined;
+    const theme = update ? target.theme : known ?? UNTHEMED;
+    const merged = update && verdict.text?.trim() ? verdict.text.trim() : text;
+    // UPDATE supplements: the revised row inherits the prior AVOID unless the candidate brings one.
+    const avoid = candidate.avoid?.trim() || (update && target.avoid ? target.avoid : undefined);
+    const capped = this.lessonOverCap(merged, avoid, verdict.verdict, target?.id ?? null);
+    if (capped) return capped;
+    const id = this.addLesson({ scope: candidate.scope, text: merged, ...(avoid ? { avoid } : {}), theme, source, created_at: now });
+    if (target) this.supersedeLesson(target.id, id);
+    if (update) this.inheritLessonStanding(target, id);
+    const escalate = verdict.verdict === "SUPERSEDE" && target ? this.payForSupersede(target, id, now, repeatDays) : false;
     const prunedIds = this.pruneScopeOverflow(candidate.scope, cap, id);
-    const verb: LessonWriteVerb = !target ? "add" : verdict.verdict === "UPDATE" ? "update" : "supersede";
-    return {
-      verb,
-      id,
-      ...(target ? { supersededId: target.id } : {}),
-      lesson: merged,
-      prunedIds,
-      ...(escalate ? { escalate: true } : {})
-    };
+    const verb: LessonWriteVerb = !target ? "add" : update ? "update" : "supersede";
+    return { verb, id, ...(target ? { supersededId: target.id } : {}), lesson: merged, prunedIds, ...(escalate ? { escalate: true } : {}) };
+  }
+
+  /** Spec §2: a write over either cap is refused, ledgered, and reported as `capped` (the prior row is untouched). */
+  private lessonOverCap(
+    text: string, avoid: string | undefined, verdict: LessonReconcileVerdict["verdict"], target_id: number | null
+  ): LessonSaveResult | undefined {
+    const avoidChars = avoid?.length ?? 0;
+    if (text.length <= LESSON_MAX_CHARS && avoidChars <= LESSON_AVOID_MAX_CHARS) return undefined;
+    this.recordMemoryEvent("lesson_write_capped", { verdict, target_id, chars: text.length, avoid_chars: avoidChars });
+    return { verb: "capped", lesson: text, prunedIds: [], ...(target_id !== null ? { cappedTargetId: target_id } : {}) };
+  }
+
+  /** Spec §5: merging is same-theme only — the candidate lands as its own lesson, the target stays. */
+  private saveCrossThemeAsAdd(
+    candidate: { scope: string; text: string; avoid?: string; theme: string },
+    targetId: number,
+    source: LessonSource,
+    now: string,
+    cap: number
+  ): LessonSaveResult {
+    const avoid = candidate.avoid?.trim() || undefined;
+    const capped = this.lessonOverCap(candidate.text, avoid, "ADD", null);
+    if (capped) return capped;
+    const id = this.addLesson({ scope: candidate.scope, text: candidate.text, ...(avoid ? { avoid } : {}), theme: candidate.theme, source, created_at: now });
+    this.recordMemoryEvent("lesson_cross_theme", { candidate: id, target: targetId });
+    return { verb: "add", id, lesson: candidate.text, prunedIds: this.pruneScopeOverflow(candidate.scope, cap, id) };
+  }
+
+  /** Spec §2: an UPDATE keeps the target's earned standing (a rewrite must not drop in rank). */
+  private inheritLessonStanding(target: LessonRow, id: number): void {
+    this.db.prepare(`UPDATE lessons SET reuse_value = ?, applied_count = ? WHERE id = ?`)
+      .run(target.reuse_value, target.applied_count, id);
+  }
+
+  /**
+   * ⓪·3 S2b: a SUPERSEDE is a correction against the target (reuse −0.5). A recent supersede already in the chain,
+   * or a target corrected repeatedly, marks the memory layer ineffective → escalate (layer-routing iii).
+   */
+  private payForSupersede(target: LessonRow, id: number, now: string, repeatDays: number): boolean {
+    this.recordCorrection(target.id);
+    this.db.prepare(`UPDATE lessons SET reuse_value = reuse_value - 0.5 WHERE id = ?`).run(target.id);
+    const cutoff = new Date(Date.parse(now) - repeatDays * 86_400_000).toISOString();
+    const repeatInLineage = this.lessonLineage(target.id).some(
+      (row) => row.id !== id && row.supersedes !== null && row.created_at >= cutoff
+    );
+    return repeatInLineage || target.corrected_count + 1 >= 2;
   }
 
   /** Prune (reversibly) the lowest-value active rows over the scope cap, sparing `keepId`. */
@@ -3127,6 +3158,17 @@ export class RunStore {
     this.db.prepare(`UPDATE lesson_consolidate_state SET last_consolidated_at = ? WHERE id = 1`).run(now);
   }
 
+  /** The merge's members re-read under the write lock: all active, same scope, same theme (memory A1 §5) — else undefined. */
+  private lockedMergeMembers(memberIds: number[], scope: string): LessonRow[] | undefined {
+    const members: LessonRow[] = [];
+    for (const id of memberIds) {
+      const row = this.getLesson(id);
+      if (!row || row.status !== "active" || row.scope !== scope) return undefined;
+      members.push(row);
+    }
+    return new Set(members.map((m) => m.theme)).size === 1 ? members : undefined;
+  }
+
   /**
    * Preserve-all lesson merge (ADD-then-supersede-all — mirrors {@link RunStore.mergeEpisodicFacts}):
    * store the merged text/avoid as a NEW active lesson and supersede EVERY member (bidirectional
@@ -3160,15 +3202,11 @@ export class RunStore {
       // status+scope now that we hold BEGIN IMMEDIATE, so check-and-supersede is serialized against
       // a concurrent writer (daemon tick vs. a manual `houge lessons-consolidate`). Any member no
       // longer active or drifted to another scope → ROLLBACK and refuse (non-destructive contract).
-      const members: LessonRow[] = [];
-      for (const id of input.memberIds) {
-        const row = this.getLesson(id);
-        if (!row || row.status !== "active" || row.scope !== input.scope) {
-          this.db.exec("ROLLBACK");
-          activeTransaction = false;
-          return undefined;
-        }
-        members.push(row);
+      const members = this.lockedMergeMembers(input.memberIds, input.scope);
+      if (!members) {
+        this.db.exec("ROLLBACK");
+        activeTransaction = false;
+        return undefined;
       }
       const applied_count = members.reduce((sum, m) => sum + m.applied_count, 0);
       const reuse_value = Math.min(
@@ -3180,6 +3218,7 @@ export class RunStore {
         scope: input.scope,
         text,
         ...(avoid ? { avoid } : {}),
+        theme: members[0]!.theme,
         source: "consolidation",
         created_at: now
       });

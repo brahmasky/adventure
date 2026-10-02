@@ -54,6 +54,9 @@ export type LedgerEventType =
   | "loop_halted"
   | "lesson_decay_tick"
   | "lesson_consolidate_tick"
+  | "lesson_write_capped"
+  | "lesson_cross_theme"
+  | "lesson_theme_unknown"
   | "episodic_distill_pass"
   | "episodic_consolidate_tick"
   | "wiki_page_saved"
@@ -204,6 +207,10 @@ const requiredPayloadFields = {
   // tick that did work. `merges` is id-only ([{new_id, superseded_ids}]) — traceable for undo,
   // but no lesson text (the bodies-out-of-the-ledger invariant holds).
   lesson_consolidate_tick: ["scopes_processed", "clusters_merged", "lessons_superseded", "merges"],
+  // Memory A1 §2/§5: a lesson write refused for size, an UPDATE across themes saved as an ADD, an unlisted theme. Ids/counts only.
+  lesson_write_capped: ["verdict", "target_id", "chars", "avoid_chars"],
+  lesson_cross_theme: ["candidate", "target"],
+  lesson_theme_unknown: ["lesson_id"],
   // Phase M B2: one summary per executed episodic fast-path distill pass (run-less).
   episodic_distill_pass: ["facts_added", "superseded", "dropped", "turns_read"],
   // Phase M B4: one summary per daily episodic consolidate tick that did work (run-less).
