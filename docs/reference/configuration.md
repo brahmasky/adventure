@@ -308,8 +308,10 @@ drops any member's `AVOID`). Preview merges without writing via `houge lessons-c
 
 | Env var | Default | Purpose |
 |---------|---------|---------|
-| `HOUGE_LESSON_CONSOLIDATE_ENABLED` | off | Arms the daily consolidation tick. Accepts 1/true/yes/on. In `DISARM_FLAGS` — it rewrites Houge's own behavioral guidance, so `/disarm` halts it. Off = no tick, no writes. |
+| `HOUGE_LESSON_CONSOLIDATE_ENABLED` | off | Arms the daily consolidation tick. Accepts 1/true/yes/on. In `DISARM_FLAGS` — it rewrites Houge's own behavioral guidance, so `/disarm` halts it. Off = no tick, no writes. Memory A1: keep it off; an over-cap merge (text over 240, AVOID over 120) is rejected, and the old "not shorter than the longest member" floor is gone. Merging is same-theme only. |
 | `HOUGE_LESSON_CONSOLIDATE_INTERVAL_HOURS` | `24` | Min hours between consolidation ticks (END-stamped latch). |
+| `HOUGE_LESSON_CHAR_CAP` | `4000` | Char cap on the omp planner's lesson section (every active `ask` + `research` lesson, theme then id). A lesson that does not fit is skipped and the next is tried; each skip is a `lesson_dropped` ledger row and incident, and the skipped lesson's `last_used` is refreshed (seen, not credited) so decay cannot delete it. Non-positive or garbage gives the default. Write-side caps are code constants: text 240 (`LESSON_MAX_CHARS`), AVOID 120 (`LESSON_AVOID_MAX_CHARS`); an over-cap write is refused (`lesson_write_capped`). Lesson text is flattened to one line at write and render. |
+| `HOUGE_LESSON_SESSION_RESET` | on | Operator escape hatch. A change in the active lesson set (id, text, avoid, theme) starts a fresh omp session at the next spawn (`new_session`), seeded with Paco's own messages from his last 3 Telegram runs within 48 h. The reset commits at the first dispatched prompt. `0`/`false`/`no`/`off` = respawn and resume the old transcript, as before A1. After 3 consecutive reset failures for one fingerprint the supervisor serves the resumed session anyway and keeps `planner_session_reset_failed` open (ledger `planner_session_reset_degraded`); set this to `off` to stop the retries. |
 
 Lesson lifecycle and the clarify cap:
 
@@ -685,6 +687,23 @@ Incident rows and ledger events are always complete — only the human channel i
 
 Inspect: `sqlite3 houge.sqlite "SELECT kind, subject, state, seen_count, first_seen_at FROM incidents ORDER BY first_seen_at DESC"`
 
+### Memory A1 ledger events and incident kinds (2026-10-02)
+
+Ids and counts only, never text. Ledger: `lesson_dropped`, `lesson_write_capped`, `lesson_cross_theme`,
+`lesson_cross_scope`, `lesson_theme_unknown`, `lesson_render_failed`, `planner_session_reset`,
+`planner_session_reset_degraded`, `evidence_rejected`, `embedding_backfill` (daily tick: up to 20 facts and 10 wiki
+pages with a NULL embedding, stop signal checked before each), `memory_migration`.
+
+| Incident kind | Opens when | Resolves |
+|---|---|---|
+| `lesson_dropped` | an active ask/research lesson did not fit `HOUGE_LESSON_CHAR_CAP` (sweep) | the next sweep that finds none dropped |
+| `lesson_render_failed` | the lesson read or render threw, so the spawn prompt carries no lessons (alerted once) | the next successful render |
+| `core_overflow` | active core facts exceed `HOUGE_EPISODIC_CORE_CAP` (sweep) | the sweep that finds it back under |
+| `embeddings_unavailable` | embedding outage (Ollama down): retrieval is keyword-only (sweep) | embeddings succeed again |
+| `planner_session_reset_failed` | `new_session` failed; the spawn fails. After 3 consecutive failures it degrades to the resumed session and STAYS open | a later successful reset |
+
+The consolidation tick (`HOUGE_LESSON_CONSOLIDATE_ENABLED`) stays off after A1.
+
 ## Episodic memory (Phase M, ADR 0016)
 
 | Variable | Default | Meaning |
@@ -697,9 +716,11 @@ Inspect: `sqlite3 houge.sqlite "SELECT kind, subject, state, seen_count, first_s
 | `HOUGE_EPISODIC_RETRIEVE_CAP` | `6` | Facts folded into a turn's prompt (≈900-char guard). |
 | `HOUGE_EPISODIC_RECENCY_HALFLIFE_DAYS` | `14` | Recency decay half-life in retrieval scoring. |
 | `HOUGE_EPISODIC_DECAY_DAYS` | `30` | Idle age before a fact starts losing reuse_value in the daily tick. |
-| `HOUGE_EPISODIC_PRUNE_THRESHOLD` | `0.2` | reuse_value floor below which an idle fact is reversibly pruned. |
+| `HOUGE_EPISODIC_PRUNE_THRESHOLD` | `0.2` | reuse_value floor below which an idle fact was pruned; **not applied in A1** (decay lowers reuse but never prunes; the per-chat cap still bounds the count) |
 | `HOUGE_EPISODIC_MERGE_SIM` | `0.92` | Cosine threshold for the nightly duplicate-merge clustering. |
-| `HOUGE_EPISODIC_CORE_CAP` | `8` | Cap on core facts folded into the always-known band of every turn's context. Min 1; garbage → default. |
+| `HOUGE_EPISODIC_CORE_CAP` | `8` | Cap on core facts folded into the always-known band of every turn's context. Min 1; garbage → default. Above it a `core_overflow` incident opens (sweep). Core facts never decay and are never cap-pruned. |
+| `HOUGE_EPISODIC_MIN_COSINE` | `0.42` | Relevance gate: with a query embedding a fact enters a turn only at cosine at least this over the chat's whole active pool; a fact without an embedding only by an FTS hit; without a query embedding (Ollama down) only FTS hits. The FTS keyword legs drop English function words and non-CJK tokens of 2 chars or fewer. Retrieval excludes only the core ids the always-known band rendered. `0` = the pre-A1 pool (FTS plus newest 50) and 0.05 floor. Outside [0,1] or garbage gives the default. Benchmarked 2026-10-02 on `embeddinggemma`. |
+| `HOUGE_EPISODIC_EVIDENCE` | `shadow` | Extracted facts cite a numbered user line and a quote that code checks (a user turn, not schedule-born, quote found after NFKC and whitespace normalisation). `shadow`: a failing fact is kept, never core, and counted (`evidence_rejected`); `enforce`: dropped; `off`: no per-fact check and `core` is not gated on evidence, but turn text is still flattened (the transcript the extractor reads is built the same way in every mode). An evidence-failing fact never touches a core row: a verdict targeting core becomes a non-core ADD. Over-cap merged text becomes an ADD. |
 
 ## Session rating (ADR 0012, spine Slice A)
 
@@ -728,8 +749,9 @@ SQLite is truth; `memory/wiki/<slug>.md` is the render.
 | `HOUGE_WIKI_VERIFY_PASSES` | `2` | Verify ensemble size (mean of independent passes). |
 | `HOUGE_WIKI_MAX_PAGES` | `200` | Global active-page cap; overflow prunes the lowest `reuse_value` rows reversibly. |
 | `HOUGE_WIKI_RETRIEVE_CAP` | `1` | Max pages folded into one turn's context. |
+| `HOUGE_WIKI_MIN_COSINE` | `0.42` | Relevance gate for pages: with a query embedding a page enters only at cosine at least this; without one only FTS hits (the topic-identity "all" mode drops stopwords only, short tokens kept). `0` = the pre-A1 pool and floor. |
 | `HOUGE_WIKI_RECENCY_HALFLIFE_DAYS` | `30` | Retrieval recency half-life. |
-| `HOUGE_WIKI_DECAY_DAYS` | `45` | Days unused before a page decays; the prune line is `HOUGE_LESSON_PRUNE_THRESHOLD`. |
+| `HOUGE_WIKI_DECAY_DAYS` | `45` | Days unused before a page's reuse decays (A1: decay never prunes a page); the prune line is `HOUGE_LESSON_PRUNE_THRESHOLD` for the lessons |
 
 ## Global autonomy circuit-breaker
 
