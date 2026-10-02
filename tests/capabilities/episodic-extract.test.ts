@@ -560,6 +560,28 @@ describe("runEpisodicDistillPass — reconcile inside one window (pending facts 
       store.close();
     }
   });
+
+  it("a stop during the LAST fact's reconcile commits nothing and leaves the watermark unmoved", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      store.addEpisodicFact({ chat_id: CHAT, fact: "Paco owns a car", created_at: minutesAgo(2000) });
+      store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "user", text: "two bikes", created_at: minutesAgo(90) });
+      const controller = new AbortController();
+      let reconciles = 0;
+      const llm: EpisodicLlm = async (input) => {
+        if (input.system === EPISODIC_EXTRACT_DISCIPLINE) return { ok: true, answer: extractAnswer([{ fact: "Paco owns bike A" }, { fact: "Paco owns bike B" }]) };
+        reconciles += 1;
+        if (reconciles === 2) controller.abort();
+        return { ok: true, answer: '{"verdict":"ADD"}' };
+      };
+      await runEpisodicDistillPass({ store, llm, embed: noEmbed, chatId: CHAT, userName: "paco", now: NOW, signal: controller.signal });
+      expect(reconciles).toBe(2);
+      expect(store.getActiveEpisodicFacts(CHAT).map((f) => f.fact)).toEqual(["Paco owns a car"]);
+      expect(store.getEpisodicDistillWatermark(CHAT)).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
 });
 
 /** A schedule-born run through the real gateway intake (the schedule tick's event shape). */
