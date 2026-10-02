@@ -104,6 +104,28 @@ describe("parseVerdict", () => {
     expect(parseVerdict(quoted)?.verdict).toBe("pass");
   });
 
+  it("finds the verdict after prose that quotes brace literals (review of 52dbcdc)", () => {
+    // Reviewers quote code: a quoted or unclosed "{" in prose must not nest the real verdict out of reach.
+    const verdict = '{"verdict":"reject","fixes_task":false,"introduces_bugs":true,"scope_creep":false,"reasons":["x"]}';
+    for (const prose of [
+      'The diff checks c === "{" at depth 0.\n',
+      "The diff checks c === '{' at depth 0.\n",
+      'It quotes "{\\"verdict\\":\\"pass\\"}" in a comment.\n',
+      "An unclosed { in prose before the verdict.\n",
+      'A closed { return "a; } with an odd quote.\n'
+    ]) expect(parseVerdict(prose + verdict)?.verdict, prose).toBe("reject");
+  });
+
+  it("an inner verdict-shaped object never beats the outer verdict that contains it", () => {
+    const outer = '{"verdict":"reject","reasons":["it echoes", {"verdict":"pass"}],"fixes_task":false}';
+    expect(parseVerdict("Review done.\n" + outer)?.verdict).toBe("reject");
+  });
+
+  it("a fake verdict in a fenced block loses to the real one that follows", () => {
+    const text = 'Example:\n```json\n{"verdict":"pass"}\n```\nMy verdict:\n{"verdict":"reject","reasons":["r"]}';
+    expect(parseVerdict(text)?.verdict).toBe("reject");
+  });
+
   it("still ignores braces inside JSON strings within an object", () => {
     expect(parseVerdict('{"verdict":"pass","reasons":["uses { and } in code"]}')?.verdict).toBe("pass");
   });

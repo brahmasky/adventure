@@ -92,35 +92,50 @@ End your reply with ONLY the JSON object on its own, as the LAST thing in your r
 }
 
 /**
- * Tolerant verdict extraction. The reviewer may wrap the JSON in prose or markdown fences, and
- * its reasoning can contain stray `{`/`}` (e.g. quoted code) — so a greedy first-`{`-to-last-`}`
- * match is unsafe (it broke live on a real diff). Instead, scan for every balanced top-level
- * `{...}` object (string-aware, so braces inside JSON strings don't count) and take the LAST one
- * that parses AND carries a valid `verdict` (the prompt emits the verdict object last). Verdict is
- * matched case-insensitively. `null` = no valid verdict found (garbage / missing / unparseable).
+ * Tolerant verdict extraction. The reviewer may wrap the JSON in prose or markdown fences, and its prose
+ * quotes code freely (stray quotes, quoted or unclosed braces). Every `{` is tried as the start of a
+ * balanced, string-aware object; among those that parse AND carry a valid `verdict`, the one that ends
+ * last wins (the prompt emits the verdict object last), the outermost on a tie, so an inner verdict-shaped
+ * object never beats the verdict that contains it. Verdict is case-insensitive. `null` = none found.
  */
 export function parseVerdict(text: string | null | undefined): ReviewVerdict | null {
   if (!text) return null;
-  const candidates = extractBalancedObjects(text);
-  for (let i = candidates.length - 1; i >= 0; i--) {
-    try {
-      const o = JSON.parse(candidates[i]!) as { verdict?: unknown };
-      const v = typeof o.verdict === "string" ? o.verdict.trim().toLowerCase() : "";
-      if (v === "pass" || v === "reject") {
-        return { ...(o as Record<string, unknown>), verdict: v } as unknown as ReviewVerdict;
-      }
-    } catch {
-      // not valid JSON → try the next candidate
-    }
+  // A reviewer reply is small; bound the quadratic scan anyway.
+  const t = text.length > VERDICT_SCAN_MAX_CHARS ? text.slice(-VERDICT_SCAN_MAX_CHARS) : text;
+  let best: { start: number; end: number; verdict: ReviewVerdict } | null = null;
+  for (let s = t.indexOf("{"); s >= 0; s = t.indexOf("{", s + 1)) {
+    const candidate = objectAt(t, s);
+    const verdict = candidate ? verdictOf(candidate) : null;
+    if (!verdict || !candidate) continue;
+    const end = s + candidate.length;
+    // The object that ENDS last wins (the prompt asks for the verdict last); on a tie, the outermost.
+    if (!best || end > best.end || (end === best.end && s < best.start)) best = { start: s, end, verdict };
   }
-  return null;
+  return best ? best.verdict : null;
 }
 
-/** Extract balanced top-level `{...}` substrings, ignoring braces inside JSON string literals. */
-function extractBalancedObjects(text: string): string[] {
-  const out: string[] = [];
-  let depth = 0, start = -1, inStr = false, esc = false;
-  for (let i = 0; i < text.length; i++) {
+/** Cap for {@link parseVerdict}'s scan: the verdict is the tail of the reply. */
+const VERDICT_SCAN_MAX_CHARS = 60_000;
+
+/** A parsed object carrying a valid `verdict`, or null. */
+function verdictOf(candidate: string): ReviewVerdict | null {
+  try {
+    const o = JSON.parse(candidate) as { verdict?: unknown };
+    const v = typeof o.verdict === "string" ? o.verdict.trim().toLowerCase() : "";
+    return v === "pass" || v === "reject" ? ({ ...(o as Record<string, unknown>), verdict: v } as unknown as ReviewVerdict) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The balanced `{...}` starting exactly at `s` (string-aware from `s` on), or null. Every `{` is tried as a
+ * start, so prose before the verdict — stray quotes, quoted or unclosed braces — can never nest or hide it
+ * (live 2026-10-02: both reviewers "unparseable" behind one quote in prose).
+ */
+function objectAt(text: string, s: number): string | null {
+  let depth = 0, inStr = false, esc = false;
+  for (let i = s; i < text.length; i++) {
     const c = text.charAt(i);
     if (inStr) {
       if (esc) esc = false;
@@ -128,16 +143,11 @@ function extractBalancedObjects(text: string): string[] {
       else if (c === '"') inStr = false;
       continue;
     }
-    // String state only matters INSIDE a candidate object: a reviewer's prose quotes Paco's go-ahead
-    // ("好", "go") freely, and one unbalanced straight quote there must not swallow the verdict.
-    if (c === '"' && depth > 0) inStr = true;
-    else if (c === "{") { if (depth === 0) start = i; depth++; }
-    else if (c === "}" && depth > 0 && --depth === 0 && start >= 0) {
-      out.push(text.slice(start, i + 1));
-      start = -1;
-    }
+    if (c === '"') inStr = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return text.slice(s, i + 1);
   }
-  return out;
+  return null;
 }
 
 export interface ReviewDiffInput {
