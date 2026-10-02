@@ -362,7 +362,7 @@ function applyVerdict(planned: PlannedFact[], fact: ExtractedFact, v: ReconcileV
     target.text = v.text ?? fact.fact;
     target.fact = { ...target.fact, core: target.fact.core || fact.core };
   } else {
-    target.fact = fact;
+    target.fact = { ...fact, core: fact.core || target.fact.core }; // never demote biography (the store's supersede rule)
     target.text = fact.fact;
   }
 }

@@ -597,6 +597,21 @@ describe("runEpisodicDistillPass — reconcile inside one window (pending facts 
     }
   });
 
+  it("a SUPERSEDE of a core pending fact by a non-core one keeps the stored row core (biography is never demoted)", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "user", text: "Born in Chengdu. Actually Chengdu city.", created_at: minutesAgo(90) });
+      const llm: EpisodicLlm = async (input) => input.system === EPISODIC_EXTRACT_DISCIPLINE
+        ? { ok: true, answer: extractAnswer([{ fact: "Paco was born in Chengdu", core: true }, { fact: "Paco was born in Chengdu city", core: false }]) }
+        : { ok: true, answer: '{"verdict":"SUPERSEDE","id":-1}' };
+      await pass(store, llm);
+      const active = store.getActiveEpisodicFacts(CHAT);
+      expect(active.map((f) => [f.fact, f.is_core])).toEqual([["Paco was born in Chengdu city", 1]]);
+    } finally {
+      store.close();
+    }
+  });
+
   it("a stop during the LAST fact's reconcile commits nothing and leaves the watermark unmoved", async () => {
     const store = RunStore.openInMemory();
     try {
