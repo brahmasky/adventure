@@ -3058,7 +3058,7 @@ export class RunStore {
    * not out-rank everything forever), earliest valid_from (the fact has been true
    * since the FIRST source), and the union of participants + source_turn_ids
    * (provenance survives the merge). Non-destructive refusal (`undefined`) unless
-   * ALL sources are ≥2 ACTIVE rows of the SAME chat — a bad cluster can never retire
+   * ALL sources are ≥2 ACTIVE rows of the SAME chat and ALL core or ALL non-core — a bad cluster can never retire
    * another chat's facts or half-merge.
    */
   mergeEpisodicFacts(
@@ -3075,6 +3075,8 @@ export class RunStore {
     }
     const chat_id = sources[0]!.chat_id!;
     if (!sources.every((s) => s.chat_id === chat_id)) return undefined;
+    // Memory A1 §4: a mixed core/non-core cluster would demote core into a prunable row — refuse it.
+    if (new Set(sources.map((s) => s.is_core)).size > 1) return undefined;
 
     const participants = new Set<string>();
     const source_turn_ids = new Set<string>();
@@ -3097,8 +3099,7 @@ export class RunStore {
       participants: [...participants],
       source_turn_ids: [...source_turn_ids],
       salience,
-      // Memory A1 §4: core only when EVERY source is core (an OR would promote a mixed merge to permanent).
-      is_core: sources.every((s) => s.is_core === 1),
+      is_core: sources.every((s) => s.is_core === 1), // uniform here: mixed clusters were refused above
       embedding: merged.embedding ?? null,
       ...(merged.embedding && merged.embedding_model ? { embedding_model: merged.embedding_model } : {}),
       created_at: now

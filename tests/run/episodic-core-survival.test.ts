@@ -15,8 +15,17 @@ describe("core through merges (spec §4)", () => {
     expect(store.getEpisodicFact(merged!.id)!.is_core).toBe(1);
   });
 
-  it("a core + non-core merge is not core (an OR would mint permanent biography)", () => {
-    const merged = store.mergeEpisodicFacts([add("lives in city A", true), add("likes the harbour in city A", false)], { fact: "lives in city A, likes its harbour" }, NOW);
+  it("a mixed core + non-core cluster is refused: no new row, both sources stay active, core stays core", () => {
+    const core = add("lives in city A", true);
+    const plain = add("likes the harbour in city A", false);
+    const merged = store.mergeEpisodicFacts([core, plain], { fact: "lives in city A, likes its harbour" }, NOW);
+    expect(merged).toBeUndefined();
+    expect([core, plain].map((id) => store.getEpisodicFact(id)!.status)).toEqual(["active", "active"]);
+    expect(store.getEpisodicFact(core)!.is_core).toBe(1);
+  });
+
+  it("a non-core + non-core merge is non-core", () => {
+    const merged = store.mergeEpisodicFacts([add("likes the harbour", false), add("likes the harbour at dusk", false)], { fact: "likes the harbour at dusk" }, NOW);
     expect(store.getEpisodicFact(merged!.id)!.is_core).toBe(0);
   });
 });
@@ -44,5 +53,14 @@ describe("core never decays and is never cap-pruned (spec §4)", () => {
     add("works as an engineer", true, ago(20));
     const saved = store.saveReconciledFact({ chat_id: CHAT, fact: "owns a bicycle" }, { verdict: "ADD" }, NOW, 2);
     expect(saved.prunedIds).toEqual([]);
+  });
+
+  it("core at or over the cap: every other non-core row is pruned, core untouched, and it terminates", () => {
+    const cores = [add("born in city B", true, ago(30)), add("works as an engineer", true, ago(20))];
+    const plains = [add("tried a new cafe", false, ago(10)), add("bought a hat", false, ago(5))];
+    const saved = store.saveReconciledFact({ chat_id: CHAT, fact: "owns a bicycle" }, { verdict: "ADD" }, NOW, 2);
+    expect([...saved.prunedIds].sort()).toEqual([...plains].sort());
+    expect(cores.map((id) => store.getEpisodicFact(id)!.status)).toEqual(["active", "active"]);
+    expect(store.getEpisodicFact(saved.id!)!.status).toBe("active");
   });
 });
