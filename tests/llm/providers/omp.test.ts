@@ -201,4 +201,17 @@ describe("omp one-shot seat — every non-planner LLM call in Houge", () => {
     await new Promise((res) => setTimeout(res, 100));
     expect(alive(Number(readFileSync(pidFile, "utf8")))).toBe(false);
   });
+
+  it("an abort kills the leg's whole process group: a helper holding its stdout dies with it", async () => {
+    const { cfg, pidFile } = lingeringBin("sleep 30");
+    const controller = new AbortController();
+    const until = Date.now() + 3_000;
+    const started = (async () => { while (!existsSync(pidFile) && Date.now() < until) await new Promise((res) => setTimeout(res, 20)); controller.abort(); })();
+    const r = await spawnOneShot({ seat: "ticks", chain: parseModelChain("kimi-code/k3"), prompt: "x", correlationId: "c", timeoutMs: 10_000, signal: controller.signal },
+      { cfg, audit: recordingSink(), versionCheck: () => ({ ok: true, version: "18.4.4" }) });
+    await started;
+    expect(r).toMatchObject({ ok: false, aborted: true });
+    await new Promise((res) => setTimeout(res, 100));
+    expect(alive(Number(readFileSync(pidFile, "utf8")))).toBe(false);
+  });
 });
