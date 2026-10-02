@@ -3399,6 +3399,11 @@ export class RunStore {
     this.db.prepare(`UPDATE radar_panel_state SET last_run_at = ? WHERE id = 1`).run(now);
   }
 
+  /** Put the weekly latch back to its value before this run stamped it (null on a first arm): the run was cut by shutdown. */
+  restorePanelLastRun(previous: string | null): void {
+    this.db.prepare(`UPDATE radar_panel_state SET last_run_at = ? WHERE id = 1`).run(previous);
+  }
+
   // --- Skill re-verify advisor (skill retirement spec, 2026-07-29) -------------
 
   /** Last executed re-verify tick (single-row weekly latch, like radar_panel_state). */

@@ -810,6 +810,30 @@ describe("runIdeaPanelTick — the daemon's stop (live 2026-10-02)", () => {
     expect(panelEvents(store)).toEqual([]);
   });
 
+  it("a stop after the weekly latch is stamped restores the previous latch, so the week re-runs instead of being lost", async () => {
+    const store = openStore();
+    seedBoard(store);
+    store.markPanelRan("2026-07-10T00:00:00.000Z"); // last week's run: this week is due at NOW
+    const controller = new AbortController();
+    const result = await tick(store, {
+      judges: { kimi: async () => { controller.abort(); return { ok: false }; }, gemini: judgeLlm(scoresAnswer(3, () => 5)) },
+      signal: controller.signal
+    });
+    expect(result).toMatchObject({ status: "aborted", reason: "shutdown" });
+    expect(store.getPanelLastRun()).toBe("2026-07-10T00:00:00.000Z");
+    // the next boot's tick runs this week's panel in full
+    expect(await tick(store)).toMatchObject({ ran: true, status: "ok" });
+    expect(store.getPanelLastRun()).toBe(NOW);
+  });
+
+  it("a first-arm run stopped mid-way restores the empty latch", async () => {
+    const store = openStore();
+    seedBoard(store);
+    const controller = new AbortController();
+    await tick(store, { chair: async () => { controller.abort(); return { ok: false }; }, signal: controller.signal });
+    expect(store.getPanelLastRun()).toBeNull();
+  });
+
   it("an already-stopped daemon stamps no latch", async () => {
     const store = openStore();
     seedBoard(store);

@@ -287,7 +287,7 @@ export interface PanelTickResult {
   /** True iff the tick committed to running (armed mode: the latch was stamped) or dry-ran. */
   ran: boolean;
   status: "disabled" | "off" | "not_due" | "skipped" | "aborted" | "ok" | "error";
-  /** `shutdown`: the daemon's stop cut the run short; nothing was written (the week's latch stays stamped). */
+  /** `shutdown`: the daemon's stop cut the run short; nothing was written and the weekly latch was restored. */
   reason?: "thin_board" | "quorum" | "shutdown";
   weekKey?: string;
   /** Judge names that returned ≥1 valid score / that didn't (the ledger naming). */
@@ -335,6 +335,12 @@ const SHUTDOWN: PanelTickResult = { ran: true, status: "aborted", reason: "shutd
  */
 export async function runIdeaPanelTick(input: PanelTickInput): Promise<PanelTickResult> {
   const dryRun = input.dryRun === true;
+  let previous: string | null = null;
+  // A stop after the latch is stamped puts it back, so the next boot re-runs this week instead of losing it.
+  const stopped = (): PanelTickResult => {
+    if (!dryRun) input.store.restorePanelLastRun(previous);
+    return SHUTDOWN;
+  };
   try {
     if (input.signal?.aborted) return { ...SHUTDOWN, ran: false };
     const tz = resolveRadarTz(input.env);
@@ -352,6 +358,7 @@ export async function runIdeaPanelTick(input: PanelTickInput): Promise<PanelTick
       // last === null (first arm): fire immediately so arming produces a shortlist today.
       // M3: stamp the weekly latch BEFORE any seat call — a bad week costs one week, never
       // a judge/chair retry storm.
+      previous = last;
       input.store.markPanelRan(input.now);
     }
 
@@ -384,7 +391,7 @@ export async function runIdeaPanelTick(input: PanelTickInput): Promise<PanelTick
       codex: null
     };
     for (const name of PANEL_JUDGE_NAMES) {
-      if (input.signal?.aborted) return SHUTDOWN; // a cut judge is not a failed one: no quorum verdict
+      if (input.signal?.aborted) return stopped(); // a cut judge is not a failed one: no quorum verdict
       const system = buildJudgeDiscipline(PANEL_JUDGE_LENSES[name]);
       let answer: string | null = null;
       try {
@@ -401,7 +408,7 @@ export async function runIdeaPanelTick(input: PanelTickInput): Promise<PanelTick
         if (parsed.scores.size > 0) verdicts[name] = parsed.scores;
       }
     }
-    if (input.signal?.aborted) return SHUTDOWN;
+    if (input.signal?.aborted) return stopped();
     const judgesOk = PANEL_JUDGE_NAMES.filter((n) => verdicts[n] !== null);
     const judgesFailed = PANEL_JUDGE_NAMES.filter((n) => verdicts[n] === null);
 
@@ -473,7 +480,7 @@ export async function runIdeaPanelTick(input: PanelTickInput): Promise<PanelTick
       chairUsed = false;
       picks = [];
     }
-    if (input.signal?.aborted) return SHUTDOWN; // a cut chair would publish the fallback ranking as this week's
+    if (input.signal?.aborted) return stopped(); // a cut chair would publish the fallback ranking as this week's
     if (!chairUsed) {
       picks = meanScoreFallback(scored).map((entry) => ({
         entry,
