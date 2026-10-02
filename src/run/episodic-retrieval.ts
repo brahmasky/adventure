@@ -140,12 +140,14 @@ export const CORE_FACTS_CHAR_GUARD = 600;
  * Render the always-known core facts as the core band's body, one `- <fact>` per line
  * (the {@link renderEpisodicFactsBlock} shape). Facts are sanitized at write time; the
  * whitespace flatten here is defense-in-depth against a stored line break forging a
- * section line. The char guard walks input order and stops at the first overflow. NEVER
- * throws — a render hiccup degrades to whatever fit, never costs the turn.
+ * section line. The char guard walks input order and stops at the first overflow. Returns the ids that
+ * rendered (memory A1 §4: the core band is touched with them). NEVER throws — a render hiccup degrades to
+ * whatever fit, never costs the turn.
  */
-export function renderCoreFactsBlock(facts: ReadonlyArray<Pick<EpisodicFactRow, "fact">>): string {
+export function renderCoreFactsBlock(facts: ReadonlyArray<Pick<EpisodicFactRow, "id" | "fact">>): { block: string; ids: number[] } {
+  const lines: string[] = [];
+  const ids: number[] = [];
   try {
-    const lines: string[] = [];
     let chars = 0;
     for (const f of facts) {
       const fact = f.fact.replace(/\s+/g, " ").trim();
@@ -153,11 +155,12 @@ export function renderCoreFactsBlock(facts: ReadonlyArray<Pick<EpisodicFactRow, 
       if (chars + fact.length > CORE_FACTS_CHAR_GUARD) break;
       chars += fact.length;
       lines.push(`- ${fact}`);
+      ids.push(f.id);
     }
-    return lines.join("\n");
   } catch {
-    return "";
+    // whatever fit so far stands
   }
+  return { block: lines.join("\n"), ids };
 }
 
 function clamp01(value: number): number {

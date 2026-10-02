@@ -5,44 +5,35 @@ import { CORE_FACTS_CHAR_GUARD, renderCoreFactsBlock } from "../../src/run/episo
 // Pure function, no env, hermetic by construction.
 
 describe("renderCoreFactsBlock", () => {
-  it("flattens each fact to one '- <fact>' line", () => {
-    const block = renderCoreFactsBlock([
-      { fact: "Paco lives in Sydney" },
-      { fact: "Paco is a software engineer" }
-    ]);
-    expect(block).toBe("- Paco lives in Sydney\n- Paco is a software engineer");
+  it("flattens each fact to one '- <fact>' line and returns the rendered ids", () => {
+    const out = renderCoreFactsBlock([{ id: 1, fact: "lives in a coastal city" }, { id: 2, fact: "works as an engineer" }]);
+    expect(out.block).toBe("- lives in a coastal city\n- works as an engineer");
+    expect(out.ids).toEqual([1, 2]);
   });
 
   it("collapses internal whitespace (defense-in-depth against a forged section line)", () => {
-    const block = renderCoreFactsBlock([{ fact: "Paco   lives\tin  Sydney" }]);
-    expect(block).toBe("- Paco lives in Sydney");
-    expect(block).not.toContain("\n- "); // one line only
+    expect(renderCoreFactsBlock([{ id: 1, fact: "lives   in\ta  city" }]).block).toBe("- lives in a city");
   });
 
-  it("drops empty / whitespace-only facts", () => {
-    const block = renderCoreFactsBlock([{ fact: "   " }, { fact: "Paco lives in Sydney" }, { fact: "" }]);
-    expect(block).toBe("- Paco lives in Sydney");
+  it("drops empty / whitespace-only facts and does not return their ids", () => {
+    const out = renderCoreFactsBlock([{ id: 1, fact: "   " }, { id: 2, fact: "lives in a city" }, { id: 3, fact: "" }]);
+    expect(out).toEqual({ block: "- lives in a city", ids: [2] });
   });
 
-  it("returns '' for an empty list", () => {
-    expect(renderCoreFactsBlock([])).toBe("");
+  it("returns an empty block and no ids for an empty list", () => {
+    expect(renderCoreFactsBlock([])).toEqual({ block: "", ids: [] });
   });
 
-  it("stops at the first char-guard overflow (input order, best-effort)", () => {
-    const long = "x".repeat(CORE_FACTS_CHAR_GUARD - 5);
-    const block = renderCoreFactsBlock([{ fact: long }, { fact: "this second fact overflows the guard" }]);
-    expect(block).toBe(`- ${long}`);
-    expect(block).not.toContain("overflows");
+  it("stops at the first char-guard overflow; the overflowed fact's id is not returned", () => {
+    const long = "a".repeat(CORE_FACTS_CHAR_GUARD - 10);
+    const out = renderCoreFactsBlock([{ id: 1, fact: long }, { id: 2, fact: "this second fact overflows the guard" }]);
+    expect(out.ids).toEqual([1]);
+    expect(out.block).toBe(`- ${long}`);
   });
 
   it("never throws on a hostile input shape (returns whatever fit)", () => {
-    // A row whose `fact` getter throws must degrade, not blow up the turn.
-    const hostile = {
-      get fact(): string {
-        throw new Error("boom");
-      }
-    };
-    expect(() => renderCoreFactsBlock([hostile as unknown as { fact: string }])).not.toThrow();
-    expect(renderCoreFactsBlock([hostile as unknown as { fact: string }])).toBe("");
+    const hostile = { id: 9, get fact(): string { throw new Error("boom"); } };
+    expect(() => renderCoreFactsBlock([hostile as unknown as { id: number; fact: string }])).not.toThrow();
+    expect(renderCoreFactsBlock([hostile as unknown as { id: number; fact: string }])).toEqual({ block: "", ids: [] });
   });
 });

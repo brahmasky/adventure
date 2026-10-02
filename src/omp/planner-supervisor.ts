@@ -21,7 +21,8 @@ import { verifyInstalledWrapper } from "./shell-wrapper.js";
 import { chatWorkspace } from "./workspace.js";
 import type { ToolDeclaration } from "./tool-decls.js";
 import {
-  assistantIntentFor, buildTurnPrompt, claimRestartNoteAtDispatch, systemPromptFingerprint, writeSystemPromptFile, type TurnContextDeps,
+  assistantIntentFor, appliedOf, buildTurnPrompt, claimRestartNoteAtDispatch, promptTextFingerprint, systemPromptFingerprint, writeSystemPromptFile,
+  type AppliedSnapshot, type TurnContextDeps,
   type TurnPrompt
 } from "./turn-context.js";
 
@@ -156,6 +157,8 @@ export class PlannerSupervisor {
   /** Bumped whenever the child is replaced: frames, exits and disconnects of an older child are ignored. */
   private gen = 0;
   private fingerprint = "";
+  /** What the live child's system prompt holds (spawn-time): each turn's attribution credits exactly these ids. */
+  private applied: AppliedSnapshot = { lessonIds: [], lessonScopes: [], skillScopes: [], coreFactIds: [] };
   private stale = false;
   private turn: Turn | undefined;
   private readonly queue: TurnRequest[] = [];
@@ -368,7 +371,7 @@ export class PlannerSupervisor {
       if (!(await this.ensureReady(turn))) return;
       store.recordChatTurn({ chat_id: chatId, run_id: turn.req.run_id, role: "user", text: userText });
       const prompt = await this.step(turn, buildTurnPrompt(turnContext, {
-        run_id: turn.req.run_id, chat_id: chatId, message: text, source: turn.req.source,
+        run_id: turn.req.run_id, chat_id: chatId, message: text, source: turn.req.source, applied: this.applied,
         ...(turn.req.goal !== undefined ? { goal: turn.req.goal } : {})
       }));
       if (prompt === ENDED || turn.failure) return;
@@ -583,8 +586,9 @@ export class PlannerSupervisor {
     const tmp = `${configFile}.tmp-${process.pid}`;
     writeFileSync(tmp, HOUGE_CONFIG_YML, { mode: 0o600 });
     renameSync(tmp, configFile);
-    const { path: systemPromptFile } = writeSystemPromptFile(turnContext, chatId);
-    this.fingerprint = systemPromptFingerprint(turnContext, chatId);
+    const { path: systemPromptFile, snapshot } = writeSystemPromptFile(turnContext, chatId);
+    this.fingerprint = promptTextFingerprint(snapshot.text);
+    this.applied = appliedOf(snapshot);
     this.stale = false;
     return { sessionDir, systemPromptFile, configFile, bridgeDir };
   }

@@ -172,6 +172,19 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
     expect(sup.state()).toBe("IDLE");
   });
 
+  it("attributes the spawned prompt's lessons: one the char cap skipped is never credited (memory A1 §1-2)", async () => {
+    const { store, sup } = harness();
+    (sup as never as { d: { turnContext: { env: NodeJS.ProcessEnv } } }).d.turnContext.env = { HOUGE_LESSON_CHAR_CAP: "40" };
+    const shown = store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
+    const skipped = store.addLesson({ scope: "ask", text: "z".repeat(60), source: "user_feedback" });
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    const started = store.getLedgerEvents(run_id).find((e) => e.event_type === "loop_started");
+    expect(started?.payload).toMatchObject({ applied_artifacts: { lesson_ids: [shown] } });
+    expect(store.getLesson(shown)!.applied_count).toBe(1);
+    expect(store.getLesson(skipped)!.applied_count).toBe(0);
+  });
+
   it("spawns with the single houge.js extension entry, a minted token and a bridge socket that fits sun_path", async () => {
     const { store, sup, session, data } = harness();
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();

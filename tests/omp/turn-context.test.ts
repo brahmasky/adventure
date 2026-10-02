@@ -164,7 +164,7 @@ describe("turn context — what the planner knows and how ratings attribute (spe
     await buildTurnPrompt(d, { run_id, chat_id: "42", message: "hi", source: "telegram" });
     const ev = store.getLedgerEvents(run_id).find((e) => e.event_type === "loop_started");
     expect(ev?.payload).toMatchObject({
-      applied_artifacts: { lesson_ids: [lessonId], lesson_scopes: ["ask"], skill_scopes: ["ask"] }
+      applied_artifacts: { lesson_ids: [lessonId], lesson_scopes: ["ask"], skill_scopes: ["ask", "research"] }
     });
     expect(store.getActiveLessons("ask").find((l) => l.id === lessonId)?.applied_count).toBe(1);
     expect(store.getEpisodicFact(factId)?.applied_count).toBe(1);
@@ -173,6 +173,44 @@ describe("turn context — what the planner knows and how ratings attribute (spe
     expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(readdirSync(join(d.dataDir, "omp")).filter((f) => f.includes(".tmp-"))).toEqual([]);
     expect(systemPromptFingerprint(d, "42")).toBe(createHash("sha256").update(readFileSync(path)).digest("hex"));
+  });
+
+  it("credits only the rendered lessons: the touch, loop_started, and the rating that follows (spec §1-2)", async () => {
+    const store = RunStore.openInMemory();
+    const shown = store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
+    const hidden = store.addLesson({ scope: "ask", text: "never in the prompt", source: "user_feedback" });
+    const run_id = createQueuedTurnRun(store);
+    store.recordChatTurn({ chat_id: "42", run_id, role: "user", text: "hi", created_at: "2026-09-30T04:59:00.000Z" });
+    await buildTurnPrompt(deps(store), {
+      run_id, chat_id: "42", message: "hi", source: "telegram",
+      applied: { lessonIds: [shown], lessonScopes: ["ask"], skillScopes: [], coreFactIds: [] }
+    });
+    expect(store.getLesson(shown)!.applied_count).toBe(1);
+    expect(store.getLesson(hidden)!.applied_count).toBe(0);
+    const ids = store.appliedLessonIdsForChat("42", "2026-09-30T00:00:00.000Z");
+    expect(ids).toEqual([shown]);
+    store.applyRatingToLessons(ids, 3, "2026-09-30T06:00:00.000Z");
+    expect(store.getLesson(shown)!.reuse_value).toBeCloseTo(1.25);
+    expect(store.getLesson(hidden)!.reuse_value).toBeCloseTo(1.0);
+  });
+
+  it("without a snapshot it credits what the prompt renders now: a lesson the cap skips is not credited", async () => {
+    const store = RunStore.openInMemory();
+    const shown = store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
+    const skipped = store.addLesson({ scope: "ask", text: "w".repeat(60), source: "user_feedback" });
+    const run_id = createQueuedTurnRun(store);
+    await buildTurnPrompt({ ...deps(store), env: { HOUGE_LESSON_CHAR_CAP: "40" } }, { run_id, chat_id: "42", message: "hi", source: "telegram" });
+    const ev = store.getLedgerEvents(run_id).find((e) => e.event_type === "loop_started");
+    expect(ev?.payload).toMatchObject({ applied_artifacts: { lesson_ids: [shown] } });
+    expect(store.getLesson(skipped)!.applied_count).toBe(0);
+  });
+
+  it("touches the core band with its rendered ids (spec §4: the core band is touched)", async () => {
+    const store = RunStore.openInMemory();
+    const core = store.addEpisodicFact({ chat_id: "42", fact: "core fact", is_core: true });
+    const d = { ...deps(store), coreBlock: () => ({ block: "- core fact", ids: [core] }) };
+    await buildTurnPrompt(d, { run_id: createQueuedTurnRun(store), chat_id: "42", message: "hi", source: "telegram" });
+    expect(store.getEpisodicFact(core)!.applied_count).toBe(1);
   });
 
   it("neutralises a literal [/context] inside a retrieved block so it cannot close the block early", async () => {

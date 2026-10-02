@@ -2121,8 +2121,8 @@ export class CoreWorker {
       skillsReader: this.skillsReader(),
       coreBlock: (chatId) => {
         if (!resolveEpisodicEnabled(process.env)) return undefined;
-        const facts = this.runStore.getCoreEpisodicFacts(chatId, resolveEpisodicCoreCap(process.env));
-        return facts.length > 0 ? renderCoreFactsBlock(facts) : undefined;
+        const core = renderCoreFactsBlock(this.runStore.getCoreEpisodicFacts(chatId, resolveEpisodicCoreCap(process.env)));
+        return core.ids.length > 0 ? core : undefined;
       },
       retrieve: (chatId, message) => this.retrieveForOmpTurn(chatId, message),
       env: process.env

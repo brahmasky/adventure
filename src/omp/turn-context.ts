@@ -6,7 +6,7 @@ import { composeSystemPrompt } from "../prompt/composer.js";
 import { resolveLocalTimeZone } from "../prompt/tz-convert.js";
 import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
 import { OMP_LESSON_SCOPES, renderLessonSection, type LessonSection, type LessonSkip } from "../run/lesson-render.js";
-import { resolveLessonCapPerScope, type DaemonBoot, type RunStore } from "../run/run-store.js";
+import { type DaemonBoot, type RunStore } from "../run/run-store.js";
 import { clipText, isBuildStale, localStamp } from "../status/houge-status.js";
 
 export interface TurnContextDeps {
@@ -14,7 +14,7 @@ export interface TurnContextDeps {
   memoryRoot: string;
   dataDir: string;
   skillsReader: (scope: string) => string | undefined;
-  coreBlock: (chatId: string) => string | undefined;
+  coreBlock: (chatId: string) => { block: string; ids: number[] } | undefined;
   retrieve: (
     chatId: string,
     message: string
@@ -31,6 +31,8 @@ export interface TurnPromptInput {
   message: string;
   source: "telegram" | "schedule";
   goal?: string;
+  /** The spawn-time snapshot (the supervisor's); absent → what the prompt would render now (one-shot callers, tests). */
+  applied?: AppliedSnapshot;
 }
 
 export const SCHEDULED_PREFIX = (goal: string): string => `[scheduled: ${goal}]\n`;
@@ -91,7 +93,6 @@ export function clarifyCapReached(d: TurnContextDeps, chatId: string): boolean {
   const turns = d.store.getRecentChatTurns(chatId, resolveChatContextTurns(d.env), chatContextSince(d.env, d.now?.() ?? new Date()));
   return countTrailingClarifyTurns(turns) >= resolveMaxConsecutiveClarify(d.env);
 }
-const SCOPE = "ask";
 
 /** Telegram chat ids are numeric; anything else could escape <data>/omp through join(). */
 function assertChatId(chatId: string): void {
@@ -104,7 +105,19 @@ export interface PromptSnapshot {
   lessonIds: number[];
   lessonScopes: string[];
   skillScopes: string[];
+  coreFactIds: number[];
   skipped: LessonSkip[];
+}
+
+/** The ids a turn credits: what the spawned session's prompt holds (spec §1-2). */
+export type AppliedSnapshot = Pick<PromptSnapshot, "lessonIds" | "lessonScopes" | "skillScopes" | "coreFactIds">;
+
+export function appliedOf(s: PromptSnapshot): AppliedSnapshot {
+  return { lessonIds: s.lessonIds, lessonScopes: s.lessonScopes, skillScopes: s.skillScopes, coreFactIds: s.coreFactIds };
+}
+
+export function promptTextFingerprint(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
 }
 
 const NO_LESSONS: LessonSection = { block: undefined, ids: [], scopes: [], skipped: [] };
@@ -132,19 +145,23 @@ export function buildSystemPrompt(d: TurnContextDeps, chatId: string): PromptSna
   assertChatId(chatId);
   const lessons = safeLessonSection(d);
   const skills = ompSkills(d);
+  const core = d.coreBlock(chatId);
   // The date line makes the fingerprint flip daily (UTC midnight): intended, it restarts the child at the next turn so the date stays true.
   const text = composeSystemPrompt(d.memoryRoot, "omp", {
     ...(d.now ? { now: d.now() } : {}),
     lessonsReader: () => lessons.block,
     skillsReader: () => skills.block,
-    coreReader: () => d.coreBlock(chatId)
+    coreReader: () => core?.block
   });
-  return { text, lessonIds: lessons.ids, lessonScopes: lessons.scopes, skillScopes: skills.scopes, skipped: lessons.skipped };
+  return {
+    text, lessonIds: lessons.ids, lessonScopes: lessons.scopes, skillScopes: skills.scopes,
+    coreFactIds: core?.ids ?? [], skipped: lessons.skipped
+  };
 }
 
 /** sha256 of what writeSystemPromptFile would write; a change means the live session is stale. */
 export function systemPromptFingerprint(d: TurnContextDeps, chatId: string): string {
-  return createHash("sha256").update(buildSystemPrompt(d, chatId).text).digest("hex");
+  return promptTextFingerprint(buildSystemPrompt(d, chatId).text);
 }
 
 const LESSON_DROPPED: ReadonlySet<string> = new Set(["lesson_dropped"]);
@@ -178,28 +195,25 @@ export function writeSystemPromptFile(d: TurnContextDeps, chatId: string): { pat
   return { path, snapshot };
 }
 
-/** Record the attribution seed (field names identical to the old inner loop) and touch what applied. */
-function recordAttribution(
-  d: TurnContextDeps,
-  runId: string,
-  facts: Array<{ id: number }>,
-  pages: Array<{ id: number }>
-): void {
-  const lessons = d.store.getActiveLessons(SCOPE, resolveLessonCapPerScope(d.env));
+type Hits = { facts: Array<{ id: number }>; pages: Array<{ id: number }> };
+
+/** Record the attribution seed (field names unchanged) and touch only what the prompt holds (spec §1-2). */
+function recordAttribution(d: TurnContextDeps, runId: string, applied: AppliedSnapshot, hits: Hits): void {
   d.store.recordLoopStarted(runId, {
     manifest: [],
     hint: "loop",
     applied_artifacts: {
-      lesson_scopes: lessons.length > 0 ? [SCOPE] : [],
-      lesson_ids: lessons.map((l) => l.id),
-      skill_scopes: d.skillsReader(SCOPE) ? [SCOPE] : [],
-      episodic_fact_ids: facts.map((f) => f.id),
-      wiki_page_ids: pages.map((p) => p.id)
+      lesson_scopes: applied.lessonScopes,
+      lesson_ids: applied.lessonIds,
+      skill_scopes: applied.skillScopes,
+      episodic_fact_ids: hits.facts.map((f) => f.id),
+      wiki_page_ids: hits.pages.map((p) => p.id)
     }
   });
-  if (lessons.length > 0) d.store.touchApplied(lessons.map((l) => l.id));
-  if (facts.length > 0) d.store.touchEpisodicApplied(facts.map((f) => f.id));
-  if (pages.length > 0) d.store.touchWikiApplied(pages.map((p) => p.id));
+  if (applied.lessonIds.length > 0) d.store.touchApplied(applied.lessonIds);
+  const factIds = [...applied.coreFactIds, ...hits.facts.map((f) => f.id)];
+  if (factIds.length > 0) d.store.touchEpisodicApplied(factIds);
+  if (hits.pages.length > 0) d.store.touchWikiApplied(hits.pages.map((p) => p.id));
 }
 
 /** The planner prompt, and the exact restart note it opens with ("" when none) for the claim at dispatch. */
@@ -207,7 +221,7 @@ export interface TurnPrompt { prompt: string; restartNote: string }
 
 export async function buildTurnPrompt(d: TurnContextDeps, i: TurnPromptInput): Promise<TurnPrompt> {
   const { facts, pages } = await d.retrieve(i.chat_id, i.message);
-  recordAttribution(d, i.run_id, facts, pages);
+  recordAttribution(d, i.run_id, i.applied ?? appliedOf(buildSystemPrompt(d, i.chat_id)), { facts, pages });
   const blocks = [...facts, ...pages].map((x) => x.block.replaceAll("[/context]", "[ /context]"));
   const context = blocks.length > 0 ? `[context]\n${blocks.join("\n\n")}\n[/context]\n\n` : "";
   const prefix = i.source === "schedule" ? SCHEDULED_PREFIX(i.goal ?? i.message) : "";
