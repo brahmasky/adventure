@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { executeMemoryCorrect, newMemoryTurnState } from "../../src/capabilities/memory-correct.js";
+import { executeMemoryCorrect, inertCode, newMemoryTurnState } from "../../src/capabilities/memory-correct.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
+import { markdownToTelegramHtml } from "../../src/telegram/markdown-to-telegram-html.js";
 
 const CHAT = "555";
 
@@ -38,5 +39,15 @@ describe("executeMemoryCorrect: the search entry never writes", () => {
     } finally {
       store.close();
     }
+  });
+});
+
+describe("inertCode: a correction on a card is never markup", () => {
+  // A backtick in Paco's text would close the code span early and let the rest render as markup.
+  it("swaps a backtick for U+02CB so `a` *b* [x](http://e) renders with no italic and no link", () => {
+    const html = markdownToTelegramHtml(`New text: ${inertCode("`a` *b* [x](http://e)")}`);
+    expect(html).toBe("New text: <code>ˋaˋ *b* [x](http://e)</code>");
+    expect(html).not.toContain("<i>");
+    expect(html).not.toContain("<a ");
   });
 });
