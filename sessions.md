@@ -1451,7 +1451,7 @@ Build + independent adversarial verification subagents; each live round found a 
   Live evidence so far: corrections applied via the tap, the two stuck outbox rows `failed_terminal`.
   Open: the Telegram live checks in `tasks/todo.md`.
 
-- 2026-10-02 (Memory A1, branch `feat/memory-a1`, not merged): one build, 11 plan tasks run sequentially test-first
+- 2026-10-02/03 (Memory A1, merged `main@65dc16d`, live since boot 7): one build, 11 plan tasks run sequentially test-first
   with per-task review: lessons themed and capped and all rendered for omp under `HOUGE_LESSON_CHAR_CAP`; credit
   follows the prompt; cosine-gated fact and wiki retrieval (0.42 after an embedder benchmark, embeddinggemma kept)
   with telemetry; core facts survive merge, decay and cap; evidence-checked extraction in `shadow`; fact reconcile
@@ -1473,3 +1473,6 @@ Build + independent adversarial verification subagents; each live round found a 
   negatives empty with it down, three extraction runs on the #149 window made no possession claim, evidence
   rejected 0/14 on kimi-code/k3, over-cap UPDATE refused. 3277 tests / 234 files green. Check 5 (post-kickstart)
   pending Paco's merge, migration `--apply` and kickstart. ADR amendment text awaits Paco's sign-off.
+  Shipped 2026-10-03: Paco signed off the ADR text; ff-merge, build, `--apply` with the daemon idle, Paco's kickstart.
+  Live-gate check 5 PASS: one `planner_session_reset`, fingerprint committed on the first prompt, 13/13 themed lessons
+  in the live prompt, the first reply free of the probe sign-off.

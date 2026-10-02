@@ -1,4 +1,4 @@
-# 🧭 CURRENT SYSTEM STATE — 2026-10-02 (read this first)
+# 🧭 CURRENT SYSTEM STATE — 2026-10-03 (read this first)
 
 **SP1 omp runtime: LIVE on the mini since 2026-10-01. Every 2026-10-01/02 slice is merged, pushed
 (`origin/main` = `main@f4930da`), built and running (boot 5, `kickstart`, 2026-10-02 02:13 UTC).**
@@ -26,12 +26,10 @@ plan `docs/superpowers/plans/2026-09-30-omp-runtime.md`.
 itself as facts about Paco (drops runs that used `self_write_propose` / `self_diagnose` / `memory_correct_write`
 and turns steered into them; waits for a run to settle; prompt rule for the rest). Two reviewers (correctness,
 Codex) → round-2 fixes → scoped re-review → round-3 span fix; live gate `scripts/live-gate-distill-dev-chatter.mjs`
-PASS ×3. Merged to `main` (`e3da77a`), `dist/` rebuilt; awaits **Paco's** kickstart, then the next real distill
-tick adds no Houge-talk facts. Residual: the prompt guard varies (one memory-criticism remark in two gate runs).
-- [ ] **Paco:** retire the chatter/probe facts in one chat message ("retire facts #153 #160 #161 #162 #167 #172
-  #174") — one Approve card.
+PASS ×3. Merged to `main` (`e3da77a`), live since boot 6. Residual: the prompt guard varies (one memory-criticism remark in two gate runs).
+- [x] Chatter/probe facts #153 #160 #161 #162 #167 #172 #174 retired by Paco.
 
-**Memory A1 (`feat/memory-a1`, 2026-10-02, NOT yet merged):** lessons themed, capped (240/120) and all rendered for omp
+**Memory A1 (LIVE since 2026-10-03, `main@65dc16d`, boot 7):** lessons themed, capped (240/120) and all rendered for omp
 (`HOUGE_LESSON_CHAR_CAP`); credit follows the prompt; cosine-gated retrieval (0.42, embeddinggemma kept after a
 benchmark) with telemetry; core facts survive merge/decay/cap; evidence-checked extraction (`shadow`); a lesson change
 starts a fresh, seeded planner session (3-strike degrade, fail loud). Spec Rev 3
@@ -41,9 +39,11 @@ starts a fresh, seeded planner session (3-strike degrade, fail loud). Spec Rev 3
   down (keyword-only) negatives empty. Check 3: three extraction runs on the window that minted #149 made no
   possession claim; evidence rejected 0/14 on kimi-code/k3. Check 4: over-cap lesson UPDATE refused. Runs 1-2 failed
   on gate semantics and one real defect (FTS stopwords), fixed.
-- [ ] **Paco:** sign off the ADR 0005 / ADR 0028 amendments and index rows (`docs/decisions/` is protected; text in
-  `.superpowers/sdd/2026-10-02-memory-a1/adr-draft.md`), then merge, run `node scripts/migrate-memory-a1.mjs --apply`
-  (daemon idle) BEFORE build + kickstart, then live-gate check 5 (post-kickstart, pending).
+- [x] ADR 0005 / 0028 amendments signed off by Paco and committed; merged (ff) and built; migration `--apply`
+  (#43 → #45–#49, #42 → #50–#52, themes on #1/#2/#7/#21/#44, #149 retired, core #175 restored); Paco's kickstart;
+  live-gate check 5 PASS (one `planner_session_reset`, fingerprint committed, 13/13 themed lessons in the live
+  prompt, reply free of the probe sign-off). `--revert` valid until the first real write touches a migrated row.
+- [ ] **Paco:** consider retiring #124/#125 (old self-diagnose chatter; Houge itself suggested it after the reset).
 - [ ] **Paco:** after a week of shadow counts, decide `HOUGE_EPISODIC_EVIDENCE=enforce` (rate per leg: see
   `sessions.md` 2026-10-02 A1; pre-merge rejection 0/14 on kimi-code/k3).
 
