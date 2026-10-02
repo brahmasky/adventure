@@ -4,7 +4,7 @@
 (Opus 4.8, GPT, Gemini, Kimi, …) can pick up the build and continue without verbal context
 transfer. It records where the project is, the rules that must not be broken, the sequenced
 plan (Paco's decisions of 2026-07-07), and the design briefs for each next step. **Updated
-2026-10-01 for the omp runtime (ADR 0028):** §1, §2′, §3, §4′ and §5 are current; §2 and §4 are the
+2026-10-02 for the omp runtime (ADR 0028):** §1, §2′, §3, §4′ and §5 are current; §2 and §4 are the
 dated record they replaced.
 
 **How to use this file (successor model):** read the onboarding set first —
@@ -68,19 +68,15 @@ Houge self-writes. The floor (§3) is never weakened by any agent.
 
 ---
 
-## 2′. State as of 2026-10-01
+## 2′. State as of 2026-10-02
 
-- **SP1 omp runtime: BUILT on `feat/omp-runtime`, NOT yet live.** 16 tasks (T0–T15) built
-  subagent-driven with per-task reviews; a five-reviewer final wave (security, correctness, testing,
-  adversarial, Codex) found 4 Criticals, all closed in one fix wave and scoped re-reviews; 208 files /
-  2871 tests green; the real-omp smoke (`live-gate-omp.mjs --smoke`, cases 1, 3, 6, 13, 22 +
-  silent-degradation) PASSED. **Remaining:** merge to `main`, build, Paco's kickstart, the full live
-  gate driven from Telegram, then a week of real turns.
-- **`main` still runs the pre-omp engine** (pi/agy CLI chains, the inner loop, multimodal ingest on
-  agy) until that merge and kickstart.
-- Operator steps before the cutover kickstart: the four `omp --profile houge login` grants; the global
-  breaker's `tool_calls` ceiling re-tuned in `.env` (ADR 0028 decision 17); `dist/` tarred to
-  `backups/dist-pre-omp.tgz` for rollback.
+- **SP1 omp runtime: LIVE on the mini since 2026-10-01** (`main@f4930da`, pushed). The full live gate
+  ran from Telegram on 2026-10-01; its seven findings and the round-2 review fixes are merged.
+- Shipped on top, 2026-10-02: `houge_status` + boot record, `memory_correct` with `/memories` and
+  `/forget_memory`, plain-language self-write proposals, a robust reviewer verdict parser, schedule-born
+  turns kept out of lessons and memory, shutdown-aware background ticks. First end-to-end self-write on
+  omp merged (`4431d13`).
+- **Remaining for SP1:** the live checks listed in `tasks/todo.md`, then a week of real turns before SP4.
 
 ## 2. State as of 2026-07-07 (historical; superseded by §2′)
 

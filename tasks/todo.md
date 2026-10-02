@@ -1,79 +1,42 @@
-# 🧭 CURRENT SYSTEM STATE — 2026-10-01 (read this first)
+# 🧭 CURRENT SYSTEM STATE — 2026-10-02 (read this first)
 
-**SP1 omp runtime: LIVE on the mini since 2026-10-01. The full live gate is done; its findings are fixed on
-`fix/live-gate-followups` (worktree `.worktrees/gate-fixes`, 7 fixes + 6 round-2 fixes after review), which
-awaits merge, rebuild, kickstart and a live re-gate.**
+**SP1 omp runtime: LIVE on the mini since 2026-10-01. Every 2026-10-01/02 slice is merged, pushed
+(`origin/main` = `main@f4930da`), built and running (boot 5, `kickstart`, 2026-10-02 02:13 UTC).**
+At `f4930da`: typecheck 0, 224 files / 3111 tests green. No branch is ahead of `main`; the `backup/*-pre-quote-rewrite` refs are gone.
 
-**memory_correct (`feat/memory-correct`, 2026-10-02):** self-service memory correction — `memory_correct` bridge tool (ungated search; every retire/correct waits for Paco's Approve tap, after code-owned trust limits; Undo card) + `/memories` + `/forget_memory <id>`; awaits review, merge, rebuild, kickstart and a live check (retire fact #108, tap Undo, retire again).
+**Live on `main@f4930da` (details: ADR 0028 + `sessions.md` 2026-10-02):**
+- Gate fixes (`fix/live-gate-followups`): Approve / Deny buttons on approval cards, code-owned refusal
+  replies, photo turns store the caption, notification retries (30 s / 2 min / 8 min / 30 min, 5-attempt
+  cap, 6 h staleness, terminal age-out), planner pinned with `set_model` after a session resume.
+- `houge_status` bridge tool, `daemon_boots` boot record, `[runtime]` restart note on a chat's first turn
+  after a boot.
+- `memory_correct` bridge tool (every retire/correct waits for Paco's Approve tap; Undo card),
+  `/memories`, `/forget_memory <id>`.
+- Self-write proposals reach Paco in plain language; the reviewer verdict parser tries every brace (16k cap).
+- Schedule-born turns are not Paco: `lesson_write` refused in a scheduled run, the code-owned thread scan
+  and episodic distill skip them.
+- Follow-ups (`chore/followups`): shutdown-aware background ticks (`error{shutdown}` audit kind), atomic
+  distill windows, panel latch restore, `live-gate-omp.mjs` case 3 INCONCLUSIVE rules,
+  `setup-new-host.sh` checks the omp toolchain.
 
-**Schedule-born turns (`fix/schedule-turns-not-paco`, 2026-10-02):** a scheduled run's goal is no longer read as Paco speaking — `lesson_write` in a scheduled run is refused in code, its code-owned thread scan skips schedule-born turns, and episodic distill drops both turns of a scheduled run (by `runs.source`); awaits review, merge, rebuild, kickstart and a live check (after the AI日报 fires, save a real lesson that it no longer refuses as code-owned; the next distill pass adds no schedule-goal facts). Facts #108/#122/#129 already in the DB are not touched by this fix: retire them by hand.
+SP1 design trail: ADR 0028 + amendments, spec `docs/superpowers/specs/2026-09-30-omp-runtime-design.md` (Rev 15),
+plan `docs/superpowers/plans/2026-09-30-omp-runtime.md`.
 
-**Follow-ups (`chore/followups`, 2026-10-02):** awaits review, merge, rebuild, kickstart and a live check (kickstart while a tick runs: the boot after it reads `kickstart` with `stopped_at` set, never `crash_recovery`).
-- [x] Background ticks stop on shutdown: every model-backed tick takes the stop signal, the one-shot seat aborts its in-flight leg (audited error{shutdown}, the only kind the failing-leg sweep ignores; `aborted` counts), a distill window reconciles against its own pending facts and commits in one transaction, a stopped panel restores its weekly latch (ADR 0028 line).
-- [x] `live-gate-omp.mjs`: case 3 with no tool call and no canary error is INCONCLUSIVE after one retry (a canary error with no tool rows is FAIL), `--cases` keeps its order, no-TTY operator steps are SKIPPED, a throwing case is a FAIL and the table still prints.
-- [x] Test gaps: the ungated memory_correct entry refuses a write; the distill watermark lands on the window's last turn.
-- [x] memory corrections are stored as Paco wrote them, minus invisible bidi/zero-width controls, and shown as inline code on the approval and Undo cards (rows written before this keep their stripped text).
-- [x] `deploy/launchd/setup-new-host.sh` checks git, node, npm, bun, omp (= the pin) and codex; agy and ollama optional; plist PATH carries bun, deduped; paths escaped for XML and sed; `--check-only` lints and deletes its temp plist.
-- [ ] **Paco:** push `main` and delete the `backup/*-pre-quote-rewrite` refs.
+**Live evidence already in the DB:**
+- [x] memory_correct retire via the Approve tap: facts #25, #116, #122, #129 retired (`memory_changes`);
+  #108 is `superseded`.
+- [x] The two stuck outbox rows are `failed_terminal`, with two `stale_retry_abandoned` ledger lines.
 
-**houge_status (`feat/houge-status`, 2026-10-02):** read-only `houge_status` bridge tool + `daemon_boots` boot record + `[runtime]` restart note on each chat's first turn after a boot; awaits merge, rebuild, kickstart and a live check (ask Houge "did you restart / which code is live?").
-
-**Gate fixes (`fix/live-gate-followups`, on `main@6a97039`):**
-- Approval cards get Approve / Deny buttons (same gateway path as the typed command). Ids render as inline code,
-  and an intraword `_` is never emphasis.
-- Refused commands and refused approvals get one code-owned reply.
-- A photo turn stores its caption or `[photo]`, never the reader digest.
-- Failed notifications are retried, with these limits:
-  - backoff of 30 s, 2 min, 8 min, 30 min;
-  - a 5-attempt cap, also enforced on crash recovery;
-  - replies more than 6 h late are abandoned, never sent;
-  - the sweep ages a terminal row out max(24 h, 2 × the sweep interval) after it went terminal.
-- The planner pins its model with `set_model` after a session resume, and the D10 family comes from the
-  frames' actual model.
-- `/omp/` and `houge.sqlite-wal`/`-shm` are gitignored.
-- Hotfixes already on `main`: the launchd PATH needs bun (`4e098e9`); a stale `/approve` no longer wedges
-  intake (`6a97039`).
-- **Still open:**
-  - merge the branch;
-  - `npm run build` on `main` + `live-gate-omp.mjs --smoke`;
-  - **Paco:** kickstart;
-  - live re-gate from Telegram: tap Approve/Deny, `/deny` with no id, a stale `/approve`, a photo then "save
-    that as a lesson", a resumed chat answering on the configured planner (check `llm_attempt.model`), and
-    the two stuck outbox rows going `failed_terminal` with `stale_retry_abandoned` ledger lines; their
-    `undelivered_notification` incident resolves at the first sweep after the terminal window (≥ 24 h).
-- Worktree `.worktrees/omp-runtime`, branch from `main@cf148e0`. ADR 0028 + amendments to 0002, 0010, 0013,
-  0014, 0015, 0019, 0022, 0023, 0027; spec `docs/superpowers/specs/2026-09-30-omp-runtime-design.md` (Rev 15);
-  plan `docs/superpowers/plans/2026-09-30-omp-runtime.md`; SDD ledger `.superpowers/sdd/2026-09-30-omp-runtime/`
-  (gitignored; holds the live-gate commands, keep until ship).
-- What changed: every chat turn runs on a per-chat omp 18.4.4 RPC planner (profile `houge`; Opus 5.5 → Opus
-  4.6 via Antigravity → Kimi k3, subscription OAuth) under Seatbelt, with Houge's tools over a Unix-socket
-  bridge, a policy hook, `bash` through a sandboxed wrapper and `/approve` for external writes and destructive
-  deletes. Detached turns under a `PlannerSupervisor`. One-shot omp seats for reader, photo, ticks, judges,
-  chair and reviewer. Voice stays on agy-cli (omp cannot carry audio). Codex stays the self-write writer. The
-  inner loop, classifier, JSON action protocol, pi/kimi-api/gemini-api/openai-compat providers and the money
-  track are deleted.
-- Verified: per-task reviews on all 16 tasks (T0–T15); final five-reviewer wave (security, correctness,
-  testing, adversarial, Codex) → 4 Criticals + Importants, one fix wave (A floors/matcher, B runtime, B2 temp
-  root + process group, C tests/gate) + scoped re-reviews → CLEAN. At `90c87a7`: typecheck 0, build 0,
-  208 files / 2871 tests green (also with the mini's real `.env` vars). Real-omp smoke (`live-gate-omp.mjs
-  --smoke`: cases 1, 3, 6, 13, 22 + silent-degradation) PASS.
-
-**Ship checklist (Paco's hand where marked):**
-- [x] Merge `feat/omp-runtime` → `main` (local fast-forward, unpushed). The verbatim Telegram quote was scrubbed
-  from the unpushed history on 2026-10-01 (filter-branch; backups `backup/*-pre-quote-rewrite` until Paco deletes them).
-- [x] `tar` the current `dist/` to `backups/dist-pre-omp.tgz` (+ DB copy `backups/houge-pre-omp-2026-10-01.sqlite`) (rollback = `git revert` the merge + build +
-  kickstart).
-- [x] `.env`: breaker `HOUGE_GLOBAL_MAX_TOOL_CALLS_24H=3000` (Paco, 2026-10-01; ADR 0028 decision 17).
-- [x] `.env` on the mini: `HOUGE_OMP_BIN=/Users/xiaochuan/.bun/bin/omp`; launchd plist PATH gained `~/.bun/bin` (omp's launcher is `env bun`) (launchd PATH is the node dir plus
-  system dirs only, so a bare `omp` is not found); dead pre-omp vars may be deleted (list in configuration.md
-  "Removed 2026-10").
-- [x] omp 18.4.4 installed and the four `omp --profile houge login` grants present (anthropic,
-  google-antigravity, kimi-code, openai-codex).
-- [x] `npm run build` on `main`, then the pre-restart smoke (5/5 PASS on the real omp): `HOUGE_ENV_FILE=… node scripts/live-gate-omp.mjs --smoke`.
-- [x] **Paco:** check no turn is in flight, then `launchctl kickstart -k gui/$(id -u)/com.houge.daemon`.
-- [x] Full live gate from Telegram (2026-10-01; findings → the gate fixes above): `node scripts/live-gate-omp.mjs` (cases 1–24; case 8 = the S12/D12 probes
-  by hand). Case 3 refused twice = INCONCLUSIVE (exit 4), rerun, never PASS.
-- [ ] Ship docs: `sessions.md` ship line, this block, ROADMAP §2′.
+**Live checks still owed (Paco, from Telegram):**
+- [ ] Tap Undo on a memory change card; retire again.
+- [ ] After the next AI日报 (23:00 UTC), save a real lesson: it is not refused as code-owned; the next
+  distill pass adds no schedule-goal facts.
+- [ ] Ask Houge "did you restart / which code is live?" (`houge_status` + restart note).
+- [ ] Kickstart while a tick runs: the next boot reads `kickstart` with `stopped_at` set, never
+  `crash_recovery`.
+- [ ] Gate-fix re-gate: Approve/Deny tap on an external write, `/deny` with no id, a stale `/approve`, a
+  photo then "save that as a lesson", a resumed chat answering on the configured planner (check
+  `llm_attempt.model`); the `undelivered_notification` incident resolves ≥ 24 h after the terminal rows.
 
 **Watch after the kickstart (first week of real turns):** `model_refusal` and `error` frames mid-turn (the
 N6-partial residual: a non-fatal in-turn error frame would fail the turn); Anthropic blocking Max OAuth in

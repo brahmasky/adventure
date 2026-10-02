@@ -1433,3 +1433,20 @@ Build + independent adversarial verification subagents; each live round found a 
   `lesson_write` false "code-owned" (substring `grep -rqF`: "regate" inside "aggregate") in the code,
   Paco said 点头, Codex wrote `grep -rqFw` for Latin phrases plus a test, the omp reviewer passed it, Paco
   tapped Merge, and the daemon rebuilt, passed its test gate and restarted itself (`4431d13`).
+
+- 2026-10-02 (rest of day): five slices on the live omp runtime, each test-first with review, merged,
+  pushed and kickstarted (boot 5, `main@f4930da`):
+  - `houge_status` bridge tool + `daemon_boots` boot record + a `[runtime]` restart note on each chat's first
+    turn after a boot (a host reboot during an unstopped boot is a restart, not a crash);
+  - `memory_correct`: Houge retires or corrects its own facts only after Paco's Approve tap, with code-owned
+    trust limits and an Undo card; `/memories`, `/forget_memory <id>`. Used live the same morning to retire
+    facts #25, #116, #122, #129;
+  - self-write proposals reach Paco in plain language; the reviewer verdict parser tries every brace
+    (a quoted-prose verdict had hidden the real one), capped at 16k;
+  - schedule-born turns are not Paco: a scheduled run's goal had become "Paco said" facts and made
+    `lesson_write` refuse; the fix landed after Houge's own first attempt was rejected by its reviewer;
+  - follow-ups: background ticks stop on shutdown (`error{shutdown}` audit kind), distill windows reconcile
+    and commit atomically, panel latch restored, live-gate case 3 rules, `setup-new-host.sh` on the omp
+    toolchain.
+  Live evidence so far: corrections applied via the tap, the two stuck outbox rows `failed_terminal`.
+  Open: the Telegram live checks in `tasks/todo.md`.
