@@ -6,6 +6,8 @@ awaits merge, rebuild, kickstart and a live re-gate.**
 
 **memory_correct (`feat/memory-correct`, 2026-10-02):** self-service memory correction — `memory_correct` bridge tool (ungated search; every retire/correct waits for Paco's Approve tap, after code-owned trust limits; Undo card) + `/memories` + `/forget_memory <id>`; awaits review, merge, rebuild, kickstart and a live check (retire fact #108, tap Undo, retire again).
 
+**Schedule-born turns (`fix/schedule-turns-not-paco`, 2026-10-02):** a scheduled run's goal is no longer read as Paco speaking — `lesson_write` in a scheduled run is refused in code, its code-owned thread scan skips schedule-born turns, and episodic distill drops both turns of a scheduled run (by `runs.source`); awaits review, merge, rebuild, kickstart and a live check (after the AI日报 fires, save a real lesson that it no longer refuses as code-owned; the next distill pass adds no schedule-goal facts). Facts #108/#122/#129 already in the DB are not touched by this fix: retire them by hand.
+
 **houge_status (`feat/houge-status`, 2026-10-02):** read-only `houge_status` bridge tool + `daemon_boots` boot record + `[runtime]` restart note on each chat's first turn after a boot; awaits merge, rebuild, kickstart and a live check (ask Houge "did you restart / which code is live?").
 
 **Gate fixes (`fix/live-gate-followups`, on `main@6a97039`):**
