@@ -1,6 +1,13 @@
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
+import { join } from "node:path";
 import { LESSON_AVOID_MAX_CHARS, LESSON_MAX_CHARS } from "../capabilities/distill.js";
 import { isLessonTheme, type LessonTheme } from "./lesson-themes.js";
 import type { RunStore } from "./run-store.js";
+
+const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as {
+  DatabaseSync: new (path: string, options?: { readOnly?: boolean }) => { exec(sql: string): void; close(): void };
+};
 
 /**
  * The one-off memory A1 migration (spec §8). The plan file (untracked) carries the approved texts; this module only
@@ -93,7 +100,45 @@ export function describeMigration(store: RunStore, plan: MigrationPlan): string[
   return out;
 }
 
-type Ctx = { store: RunStore; plan: MigrationPlan; chat_id: string; now: string };
+/** The restored core row's embedding, computed BEFORE the (synchronous) apply transaction (final-review C3). */
+export interface CoreEmbedding { vector: Float32Array; model: string }
+
+type Ctx = { store: RunStore; plan: MigrationPlan; chat_id: string; now: string; coreEmbedding?: CoreEmbedding };
+
+/**
+ * Final-review C3: a core row stored with no embedding is reachable under the relevance gate only by FTS, which cannot
+ * segment CJK. Best-effort: undefined when there is no core step or the embed fails (the daily backfill retries it).
+ */
+export async function embedRestoredCore(
+  plan: MigrationPlan, embed: (text: string) => Promise<Float32Array | null>, model: string
+): Promise<CoreEmbedding | undefined> {
+  if (!plan.restore_core) return undefined;
+  try {
+    const vector = await embed(plan.restore_core.fact);
+    return vector ? { vector, model } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Final-review E1: RunStore.open migrates the schema, so a dry run must never open the live DB. This copies it with
+ * VACUUM INTO (from a read-only connection) to `<tmpRoot>/memory-a1/<random>/houge.sqlite`; describe from the copy,
+ * then call cleanup. --apply and --revert open the real DB: they are writes by design.
+ */
+export function snapshotForDryRun(dbPath: string, tmpRoot: string): { path: string; cleanup: () => void } {
+  const parent = join(tmpRoot, "memory-a1");
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const dir = mkdtempSync(join(parent, "dry-"));
+  const path = join(dir, "houge.sqlite");
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    db.exec(`VACUUM INTO '${path.replaceAll("'", "''")}'`);
+  } finally {
+    db.close();
+  }
+  return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
 
 function step(ctx: Pick<Ctx, "store">, payload: MigrationStepPayload): MigrationStepPayload {
   ctx.store.recordMemoryEvent("memory_migration", { ...payload }, MIGRATION_CORRELATION);
@@ -129,7 +174,11 @@ function restoreCore(ctx: Ctx, core: NonNullable<MigrationPlan["restore_core"]>)
   const sources = core.evidence_from_fact_ids.map((f) => ctx.store.getEpisodicFact(f));
   if (sources.some((f) => !f || f.chat_id !== ctx.chat_id || f.is_core !== 1)) throw new Error("restore_core: evidence must be this chat's core rows");
   const turns = [...new Set(sources.flatMap((f) => turnIds(f!.source_turn_ids)))];
-  const newId = ctx.store.addEpisodicFact({ chat_id: ctx.chat_id, fact: core.fact, is_core: true, source_turn_ids: turns, created_at: ctx.now });
+  const e = ctx.coreEmbedding;
+  const newId = ctx.store.addEpisodicFact({
+    chat_id: ctx.chat_id, fact: core.fact, is_core: true, source_turn_ids: turns, created_at: ctx.now,
+    ...(e ? { embedding: e.vector, embedding_model: e.model } : {})
+  });
   return step(ctx, { step: "restore_core", old_ids: [...core.evidence_from_fact_ids], new_ids: [newId] });
 }
 

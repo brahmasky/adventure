@@ -2,11 +2,18 @@
 //
 //   HOUGE_ENV_FILE=/abs/.env node scripts/migrate-memory-a1.mjs [--apply | --revert] [--db <path>] [--plan <path>]
 //
-// Dry run by default: prints every before/after row and writes nothing. --apply runs every step in ONE
-// transaction; --revert undoes the last applied migration in ONE transaction. Re-running --apply after success is a
-// no-op. Reads the untracked plan file (.superpowers/memory-a1/plan.json): the approved texts never enter the repo.
+// Dry run by default: prints every before/after row and writes nothing to the live DB — it describes from a
+// VACUUM INTO copy under $HOUGE_DAEMON_TMP_DIR/memory-a1 (removed after), because opening a store migrates its schema.
+// --apply runs every step in ONE transaction; --revert undoes the last applied migration in ONE transaction (both open
+// the real DB: they are writes). Re-running --apply after success is a no-op. Reads the untracked plan file
+// (.superpowers/memory-a1/plan.json): the approved texts never enter the repo. The restored core row is embedded
+// best-effort (local Ollama, computed before the transaction; NULL on failure, the daily backfill retries it).
 // SQLite's default busy timeout applies: a concurrent daemon write fails loud (exit 1, rolled back), never silently.
-// A successful --apply changes the lesson set, so the next turn starts a fresh planner session (no kickstart needed).
+//
+// Operator order: (1) --apply with the daemon idle (no turn in flight); (2) build and kickstart the new daemon. The
+// first turn after the kickstart starts one fresh planner session (the lesson set changed).
+// --revert is valid only until the first real lesson or fact write touches a migrated row (a lesson reconcile, a
+// fact distill or a memory_correct against one): it then refuses, and nothing is written.
 // Build first (imports ../dist). Exit: 0 done/no-op · 1 apply or revert failed (rolled back) · 2 setup error.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -26,8 +33,9 @@ function parseArgs(argv) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const [{ loadHougeEnv }, mig, { RunStore }] = await Promise.all([
-    import("../dist/config/load-env.js"), import("../dist/run/memory-a1-migration.js"), import("../dist/run/run-store.js")
+  const [{ loadHougeEnv }, mig, { RunStore }, { resolveDaemonTmpDir }, { embedText, resolveEmbedConfig }] = await Promise.all([
+    import("../dist/config/load-env.js"), import("../dist/run/memory-a1-migration.js"), import("../dist/run/run-store.js"),
+    import("../dist/run/daemon-tmp.js"), import("../dist/llm/embeddings.js")
   ]);
   loadHougeEnv();
   if (!process.env.HOUGE_ENV_FILE && !args.db) throw new Error("set HOUGE_ENV_FILE (the daemon's .env) or pass --db <path>");
@@ -39,11 +47,19 @@ async function main() {
   const chat = process.env.HOUGE_TELEGRAM_CHAT_ID?.trim();
   if (needsPlan && !chat) throw new Error("HOUGE_TELEGRAM_CHAT_ID is not set (point HOUGE_ENV_FILE at the daemon's .env)");
   const plan = needsPlan ? mig.parseMigrationPlan(JSON.parse(readFileSync(resolve(args.plan ?? join(repo, ".superpowers", "memory-a1", "plan.json")), "utf8"))) : null;
-  const store = RunStore.open(dbPath);
+  const embedCfg = resolveEmbedConfig(process.env);
+  const coreEmbedding = args.apply ? await mig.embedRestoredCore(plan, (t) => embedText(t, embedCfg), embedCfg.model) : undefined;
+  const dry = !args.apply && !args.revert;
+  const snap = dry ? mig.snapshotForDryRun(dbPath, resolveDaemonTmpDir()) : null;
   try {
-    return run(mig, store, plan, chat, args);
+    const store = RunStore.open(snap ? snap.path : dbPath);
+    try {
+      return run(mig, store, plan, chat, { ...args, coreEmbedding });
+    } finally {
+      store.close();
+    }
   } finally {
-    store.close();
+    snap?.cleanup();
   }
 }
 
@@ -71,12 +87,15 @@ function run(mig, store, plan, chat, args) {
   }
   for (const line of mig.describeMigration(store, plan)) console.log(line);
   if (!args.apply) {
-    console.log("\ndry run: nothing written (pass --apply)");
+    console.log("\ndry run (read from a copy): nothing written to the live DB (pass --apply)");
     return 0;
   }
   try {
-    for (const s of mig.applyMigration({ store, plan, chat_id: chat, now })) console.log(`applied ${s.step}: ${JSON.stringify({ old_ids: s.old_ids, new_ids: s.new_ids })}`);
-    console.log("\nAPPLIED. The lesson set changed: the next turn starts a fresh planner session (no kickstart needed for that).");
+    const ctx = { store, plan, chat_id: chat, now, ...(args.coreEmbedding ? { coreEmbedding: args.coreEmbedding } : {}) };
+    for (const s of mig.applyMigration(ctx)) console.log(`applied ${s.step}: ${JSON.stringify({ old_ids: s.old_ids, new_ids: s.new_ids })}`);
+    if (plan.restore_core) console.log(`restored core row embedding: ${args.coreEmbedding ? "stored" : "unavailable (the daily backfill retries it)"}`);
+    console.log("\nAPPLIED. Next: build and kickstart the new daemon. The first turn after the kickstart starts one fresh planner session.");
+    console.log("--revert stays valid only until the first real lesson or fact write touches a migrated row.");
     return 0;
   } catch (err) {
     console.error(`apply failed, rolled back, nothing written: ${err instanceof Error ? err.message : String(err)}`);

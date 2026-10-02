@@ -1,7 +1,13 @@
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   applyMigration,
   describeMigration,
+  embedRestoredCore,
+  snapshotForDryRun,
   MIGRATION_CORRELATION,
   migrationStatus,
   parseMigrationPlan,
@@ -156,3 +162,48 @@ describe("the migration (spec §8)", () => {
     expect(() => revertMigration({ store, now: NOW })).toThrow("nothing to revert");
   });
 });
+
+describe("the restored core row is embedded (final-review C3)", () => {
+  it("apply stores the pre-computed embedding on the restored core row", () => {
+    applyMigration({ store, plan: plan(), chat_id: CHAT, now: NOW, coreEmbedding: { vector: Float32Array.from([0.6, 0.8]), model: "m1" } });
+    const restored = store.getCoreEpisodicFacts(CHAT).find((f) => f.fact === "lives in city A")!;
+    expect(restored.embedding).not.toBeNull();
+    expect(restored.embedding_model).toBe("m1");
+  });
+
+  it("embedRestoredCore is best-effort: the fact's own text, and undefined (never a throw) when the embed fails or there is no core step", async () => {
+    const seen: string[] = [];
+    expect(await embedRestoredCore(plan(), async (t) => { seen.push(t); return Float32Array.from([1, 0]); }, "m1")).toMatchObject({ model: "m1" });
+    expect(seen).toEqual(["lives in city A"]);
+    expect(await embedRestoredCore(plan(), async () => { throw new Error("ollama down"); }, "m1")).toBeUndefined();
+    expect(await embedRestoredCore(plan(), async () => null, "m1")).toBeUndefined();
+    expect(await embedRestoredCore(plan({ restore_core: undefined }), async () => Float32Array.from([1, 0]), "m1")).toBeUndefined();
+  });
+});
+
+describe("the dry run reads a copy, never the live DB (final-review E1)", () => {
+  const sqlite = createRequire(import.meta.url)("node:sqlite") as { DatabaseSync: new (p: string) => { exec(sql: string): void; prepare(sql: string): { get(...a: unknown[]): unknown }; close(): void } };
+  it("RunStore.open would migrate the live file; the snapshot leaves it byte-for-byte unmigrated and is removed after", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hmig-"));
+    try {
+      const live = join(dir, "houge.sqlite");
+      RunStore.open(live).close();
+      const raw = new sqlite.DatabaseSync(live); // an older DB: one migration not yet applied
+      raw.exec("DROP TABLE planner_session_state; DELETE FROM schema_migrations WHERE version = '2026-10-02-planner-session-state'");
+      raw.close();
+      const tmpRoot = join(dir, "tmp");
+      const snap = snapshotForDryRun(live, tmpRoot);
+      expect(snap.path.startsWith(join(tmpRoot, "memory-a1"))).toBe(true);
+      const copy = RunStore.open(snap.path); // describe runs here: migrate() touches only the copy
+      copy.close();
+      snap.cleanup();
+      expect(existsSync(snap.path)).toBe(false);
+      const check = new sqlite.DatabaseSync(live);
+      expect(check.prepare("SELECT name FROM sqlite_master WHERE name = 'planner_session_state'").get()).toBeUndefined();
+      check.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
