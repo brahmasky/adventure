@@ -17,6 +17,8 @@ import {
 } from "../../src/capabilities/episodic-extract.js";
 import { RECONCILE_DISCIPLINE } from "../../src/capabilities/reconcile.js";
 import { DEFAULT_SESSION_LULL_MINUTES } from "../../src/capabilities/session-rating.js";
+import { buildTypedTaskEvent } from "../../src/domain/types.js";
+import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
 
 // Hermetic (self-write test-gate rule): every new episodic/embed env var these tests
@@ -418,6 +420,65 @@ describe("runEpisodicDistillPass (fast path over a real in-memory store)", () =>
       const fact = store.getActiveEpisodicFacts(CHAT)[0]!;
       expect(fact.embedding).toBeNull();
       expect(fact.embedding_model).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+});
+
+/** A schedule-born run through the real gateway intake (the schedule tick's event shape). */
+function scheduledRun(store: RunStore, goal: string): string {
+  const intake = new Gateway(store).intake(buildTypedTaskEvent({
+    source: "schedule", type: "turn", program: "turn", goal, requested_by: { kind: "schedule", id: "sch_t" },
+    notify: { kind: "telegram", chat_id: CHAT }, idempotency_key: `schedule:sch_t:${goal}`, source_reference: "scheduled_tasks.sch_t"
+  }));
+  if (!intake.ok) throw new Error(`intake failed: ${JSON.stringify(intake)}`);
+  return intake.run_id;
+}
+
+describe("runEpisodicDistillPass — schedule-born turns are not Paco speaking (live 2026-10-02)", () => {
+  // A scheduled run's goal is stored as a user turn and its reply is a news digest: read as
+  // Paco's words they minted facts like "Paco instructed that no new scheduled task be created".
+  it("the extract input drops BOTH turns of a scheduled run and keeps Paco's; provenance names only his", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const fired = scheduledRun(store, "AI日报（绝不要再创建新的定时任务）");
+      store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "user", text: "我住在悉尼", created_at: minutesAgo(95) });
+      store.recordChatTurn({ chat_id: CHAT, run_id: fired, role: "user", text: "AI日报（绝不要再创建新的定时任务）", created_at: minutesAgo(94) });
+      store.recordChatTurn({ chat_id: CHAT, run_id: fired, role: "assistant", text: "今日要闻：ASML财报超预期", created_at: minutesAgo(93) });
+      store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "assistant", text: "记住了", created_at: minutesAgo(92) });
+      const questions: string[] = [];
+      const llm: EpisodicLlm = async (input) => {
+        questions.push(input.question);
+        return { ok: true, answer: extractAnswer(input.system === EPISODIC_EXTRACT_DISCIPLINE ? [{ fact: "Paco 住在悉尼" }] : []) };
+      };
+      const result = await runEpisodicDistillPass({ store, llm, embed: noEmbed, chatId: CHAT, userName: "paco", now: NOW });
+      expect(questions[0]).toContain("user: 我住在悉尼");
+      expect(questions[0]).toContain("assistant: 记住了");
+      expect(questions[0]).not.toContain("定时任务");
+      expect(questions[0]).not.toContain("ASML");
+      expect(result.turns_read).toBe(2);
+      const ids = store.getChatTurnsAfter(CHAT, undefined, 10).filter((t) => t.run_id === "r1").map((t) => t.turn_id);
+      expect(JSON.parse(store.getActiveEpisodicFacts(CHAT)[0]!.source_turn_ids)).toEqual(ids);
+      expect(store.getEpisodicDistillWatermark(CHAT)?.last_turn_created_at).toBe(minutesAgo(92));
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a window holding only scheduled turns makes no LLM call yet advances the watermark past them", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const fired = scheduledRun(store, "AI日报");
+      store.recordChatTurn({ chat_id: CHAT, run_id: fired, role: "user", text: "AI日报", created_at: minutesAgo(90) });
+      store.recordChatTurn({ chat_id: CHAT, run_id: fired, role: "assistant", text: "今日要闻", created_at: minutesAgo(89) });
+      const llm = fakeLlm({});
+      const result = await runEpisodicDistillPass({ store, llm, embed: noEmbed, chatId: CHAT, userName: "paco", now: NOW });
+      expect(llm.calls).toEqual([]);
+      expect(result.distilled).toBe(0);
+      // Never re-read every tick: the chat drops off the undistilled list.
+      expect(store.getEpisodicDistillWatermark(CHAT)?.last_turn_created_at).toBe(minutesAgo(89));
+      expect(store.listChatsWithUndistilledTurns().map((c) => c.chat_id)).not.toContain(CHAT);
     } finally {
       store.close();
     }

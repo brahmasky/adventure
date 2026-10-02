@@ -253,8 +253,9 @@ export async function runEpisodicDistillPass(input: {
   // OLDEST-first past the watermark: a burst longer than one window is caught up across
   // successive passes (the watermark lands on the last turn READ, and the chat stays listed
   // as undistilled) — a newest-first read would skip the early turns forever.
-  const turns = input.store.getChatTurnsAfter(input.chatId, watermark, EPISODIC_EXTRACT_TURN_CAP);
-  if (!turns.some((t) => t.role === "user")) return NO_PASS;
+  const window = input.store.getChatTurnsAfter(input.chatId, watermark, EPISODIC_EXTRACT_TURN_CAP);
+  const turns = withoutScheduledTurns(input.store, window);
+  if (!turns.some((t) => t.role === "user")) return skipWindow(input, window, turns.length);
 
   const read = await input.llm({
     question: buildEpisodicExtractQuestion({ turns, userName: input.userName, now: input.now }),
@@ -313,7 +314,7 @@ export async function runEpisodicDistillPass(input: {
 
   input.store.setEpisodicDistillWatermark({
     chat_id: input.chatId,
-    last_turn_created_at: turns[turns.length - 1]!.created_at,
+    last_turn_created_at: window[window.length - 1]!.created_at,
     last_distilled_at: input.now
   });
 
@@ -326,6 +327,38 @@ export async function runEpisodicDistillPass(input: {
     });
   }
   return { distilled, superseded, dropped, turns_read: turns.length };
+}
+
+/**
+ * Drop BOTH turns of every schedule-born run (2026-10-02): the user turn is the stored
+ * schedule goal and the reply a digest about the world — neither is Paco speaking. Judged
+ * by the run's source, never by text.
+ */
+function withoutScheduledTurns(store: Pick<RunStore, "runSource">, turns: ChatTurnRow[]): ChatTurnRow[] {
+  const scheduled = new Map<string, boolean>();
+  return turns.filter((t) => {
+    if (!scheduled.has(t.run_id)) scheduled.set(t.run_id, store.runSource(t.run_id) === "schedule");
+    return !scheduled.get(t.run_id);
+  });
+}
+
+/**
+ * No user turn of Paco's in the window ⇒ no extract call. When scheduled turns were dropped
+ * the watermark still moves past them, so a schedule-only window is never re-read each tick.
+ */
+function skipWindow(
+  input: { store: RunStore; chatId: string; now: string },
+  read: ChatTurnRow[],
+  kept: number
+): EpisodicDistillPassResult {
+  if (kept < read.length) {
+    input.store.setEpisodicDistillWatermark({
+      chat_id: input.chatId,
+      last_turn_created_at: read[read.length - 1]!.created_at,
+      last_distilled_at: input.now
+    });
+  }
+  return NO_PASS;
 }
 
 /**
