@@ -68,10 +68,15 @@ export const SUPERVISOR_ALERT_KINDS: ReadonlySet<string> = new Set([
   "planner_crash_loop", "planner_start_failed", "wrapper_mismatch", "sandbox_unavailable", "omp_version_mismatch", "omp_unavailable",
   "planner_session_reset_failed"
 ]);
-/** The supervisor conditions a successful planner start in the same chat clears (the omp-check kinds clear on versionOk). */
+/**
+ * The supervisor conditions a successful planner start in the same chat clears (the omp-check kinds clear on versionOk).
+ * planner_session_reset_failed is not one: a degraded start serves the resumed session with the reset still failing, so
+ * only sessionResetOk (a transcript on the current lesson set) clears it.
+ */
 export const START_CONDITION_KINDS: ReadonlySet<string> = new Set([
-  "planner_crash_loop", "planner_start_failed", "wrapper_mismatch", "sandbox_unavailable", "planner_session_reset_failed"
+  "planner_crash_loop", "planner_start_failed", "wrapper_mismatch", "sandbox_unavailable"
 ]);
+export const SESSION_RESET_KINDS: ReadonlySet<string> = new Set(["planner_session_reset_failed"]);
 
 /** Resolve the open incidents of `kinds` (only `subject`'s, when given). Returns how many were resolved. */
 export function resolveOpenIncidents(store: RunStore, kinds: ReadonlySet<string>, subject?: string, now = new Date().toISOString()): number {

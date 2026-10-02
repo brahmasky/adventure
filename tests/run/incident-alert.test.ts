@@ -117,6 +117,15 @@ describe("supervisor incidents page once and resolve on the next good start (fin
     expect(store.listOpenIncidents().map((r) => [r.kind, r.subject])).toEqual([["planner_crash_loop", "chat:556"]]);
   });
 
+  it("a degraded start (startOk) leaves planner_session_reset_failed open; only sessionResetOk clears it (ruling A4)", () => {
+    const sink = sinkFor("555").ompOutcomeSink("555");
+    sink.incident("planner_session_reset_failed", { reason: "command_failed:new_session" });
+    sink.startOk?.();
+    expect(store.listOpenIncidents().map((r) => r.kind)).toEqual(["planner_session_reset_failed"]);
+    sink.sessionResetOk?.();
+    expect(store.listOpenIncidents()).toEqual([]);
+  });
+
   it("a latched chat tells Paco to /rearm; a failed startup check says the runtime is unavailable, not that it crashed", () => {
     expect(plannerFailureText("planner_exit", "crash_loop")).toBe(PLANNER_CRASH_LOOP_TEXT);
     for (const ref of ["omp_version_mismatch: x", "omp_unavailable: y", "wrapper_mismatch", "sandbox_unavailable"]) {

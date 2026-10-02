@@ -52,6 +52,14 @@ describe("PlannerSession — one long-lived RPC child per chat (spec §4, §7)",
     await expect(b.s.newSession()).rejects.toMatchObject({ code: "command_failed:new_session" });
   });
 
+  it("a new_session reply without a boolean `cancelled: false` is a failure, never a silent success", async () => {
+    for (const data of [{}, { cancelled: "no" }, null]) {
+      const { s } = make({ rpcNewSessionReply: data });
+      await s.start();
+      await expect(s.newSession()).rejects.toMatchObject({ code: "new_session_malformed" });
+    }
+  });
+
   it("gives the child TMPDIR=<workspace>/.tmp, created by the daemon — never os.tmpdir(), which the profiles deny (B13)", async () => {
     const { s, d } = make();
     await s.start();

@@ -109,10 +109,11 @@ function fakeSession(script: Script = {}): Fake {
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => { for (const c of cleanups.splice(0)) await c(); });
 
-type Outcome = TurnOutcomeSink & { done: unknown[]; failed: unknown[]; incidents: unknown[] };
+type Outcome = TurnOutcomeSink & { done: unknown[]; failed: unknown[]; incidents: unknown[]; resetOks: number };
 function sink(store: RunStore): Outcome {
   const outcome: Outcome = {
-    done: [], failed: [], incidents: [],
+    done: [], failed: [], incidents: [], resetOks: 0,
+    sessionResetOk: () => { outcome.resetOks++; },
     complete: (i) => { outcome.done.push(i); store.finishRun({ run_id: i.run_id, expected_worker_id: i.worker_id, next: "completed", report_ref: "r", duration_ms: i.duration_ms, tool_calls: i.tool_calls }); },
     fail: (i) => { outcome.failed.push(i); store.finishRun({ run_id: i.run_id, expected_worker_id: i.worker_id, next: "failed", error_type: i.error_type, error_ref: i.error_ref }); },
     incident: (k, d) => { outcome.incidents.push({ k, d }); }
@@ -125,6 +126,7 @@ function harness(session = fakeSession(), env: Record<string, string> = {}, extr
   if ((o.sessionState ?? "current") === "current") {
     store.recordPlannerSessionReset("42", lessonSetFingerprint(store), new Date().toISOString());
     store.claimSessionSeed("42");
+    store.promotePlannerSession("42");
   }
   const data = mkdtempSync(join(tmpdir(), "hsv-")); // short: the bridge socket path must fit sun_path (104 bytes)
   const outcome = sink(store);
@@ -1244,15 +1246,17 @@ describe("PlannerSupervisor — a lesson change starts a fresh omp session (memo
   it("a change made while the daemon was down is caught at the first spawn; a matching stored fingerprint resumes", async () => {
     const down = harness();
     down.store.recordPlannerSessionReset("42", "fingerprint-before-the-edit", new Date().toISOString());
+    down.store.promotePlannerSession("42");
     down.sup.submit(req(createQueuedTurnRun(down.store))); await down.sup.whenIdle();
     expect(down.session.resets).toBe(1);
     const same = harness();
     same.store.recordPlannerSessionReset("42", lessonSetFingerprint(same.store), new Date().toISOString());
+    same.store.promotePlannerSession("42");
     same.sup.submit(req(createQueuedTurnRun(same.store))); await same.sup.whenIdle();
     expect(same.session.resets).toBe(0);
   });
 
-  it("a failed new_session fails the spawn with an incident and never prompts the resumed session", async () => {
+  it("a failed new_session (1st of 3) fails the spawn with an incident and never prompts the resumed session", async () => {
     const { store, sup, session, outcome } = harness(fakeSession({ newSession: async () => { throw new PlannerRpcError("command_failed:new_session"); } }), {}, {}, { sessionState: "none" });
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
     expect(outcome.failed).toEqual([expect.objectContaining({ error_type: "planner_exit", error_ref: "session_reset_failed: command_failed:new_session" })]);
@@ -1309,5 +1313,60 @@ describe("PlannerSupervisor — a lesson change starts a fresh omp session (memo
     store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
     expect(session.resets).toBe(0);
+  });
+
+  it("a respawn between a reset and the first dispatch resets again (omp resumes the OLD transcript until the new one holds a turn)", async () => {
+    const stall = stalledReset();
+    let calls = 0;
+    const session = fakeSession({ newSession: () => (++calls === 1 ? stall.newSession() : Promise.resolve({ cancelled: false })) });
+    const { store, sup } = harness(session, {}, {}, { sessionState: "none" });
+    store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
+    sup.submit(req(createQueuedTurnRun(store)));
+    await untilReset(session);
+    await sup.abortAll("killed"); // the reset lands, then the child dies before any prompt reached it
+    stall.settle().ok();
+    await sup.whenIdle(); await new Promise((r) => setTimeout(r, 30));
+    expect(store.getPlannerSessionState("42")!.lesson_fingerprint).toBe(""); // nothing committed: no turn reached omp
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(session.resets).toBe(2);
+    expect(session.prompts).toHaveLength(1);
+    expect(store.getPlannerSessionState("42")).toMatchObject({ lesson_fingerprint: lessonSetFingerprint(store), pending_fingerprint: null });
+    (sup as never as { d: { turnContext: { now: () => Date } } }).d.turnContext.now = () => new Date(Date.now() + 86_400_000);
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(session.resets).toBe(2); // dispatched, then respawned on the date flip: the committed set matches, resume
+  });
+
+  it("the reset compares the lesson set the spawned prompt RENDERED, not one read after the spawn awaits", async () => {
+    const session = fakeSession();
+    const { store, sup } = harness(session, {}, {}, { sessionState: "none" });
+    store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
+    const rendered = lessonSetFingerprint(store);
+    let first = true;
+    swap(sup, session, () => { if (first) store.addLesson({ scope: "ask", text: "written mid-spawn", source: "user_feedback" }); first = false; });
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(store.getPlannerSessionState("42")!.lesson_fingerprint).toBe(rendered);
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(session.resets).toBe(2); // the mid-spawn lesson is not in the transcript's prompt: the next spawn resets for it
+  });
+
+  it("3 consecutive reset failures serve the resumed session, keep the incident open and ledger the degradation; a later success clears it", async () => {
+    let fail = true;
+    const session = fakeSession({ newSession: async () => { if (fail) throw new PlannerRpcError("command_failed:new_session"); return { cancelled: false }; } });
+    const { store, sup, outcome } = harness(session, {}, {}, { sessionState: "none" });
+    store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
+    for (let i = 0; i < 3; i++) { sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle(); }
+    expect(outcome.failed).toHaveLength(2); // failures 1-2 fail the turn
+    expect(outcome.done).toHaveLength(1); // failure 3 answers on the resumed transcript
+    expect(session.prompts).toHaveLength(1);
+    expect(outcome.incidents.filter((i) => (i as { k: string }).k === "planner_session_reset_failed")).toHaveLength(3);
+    expect(outcome.resetOks).toBe(0);
+    expect(store.getLedgerEvents().filter((e) => e.event_type === "planner_session_reset_degraded").map((e) => e.payload))
+      .toEqual([{ chat_id: "42", failures: 3 }]);
+    expect(store.getPlannerSessionState("42")).toBeUndefined(); // nothing committed: the next spawn tries the reset again
+    fail = false;
+    (sup as never as { d: { turnContext: { now: () => Date } } }).d.turnContext.now = () => new Date(Date.now() + 86_400_000);
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(outcome.resetOks).toBe(1);
+    expect(store.getPlannerSessionState("42")!.lesson_fingerprint).toBe(lessonSetFingerprint(store));
   });
 });

@@ -82,7 +82,7 @@ import type { Identity } from "../domain/types.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import { createLedgerEvent } from "../run/run-ledger.js";
 import {
-  OMP_CHECK_INCIDENT_KINDS, ompCheckSubject, openAlertedIncident, resolveOmpCheckIncidents, resolveOpenIncidents, START_CONDITION_KINDS,
+  OMP_CHECK_INCIDENT_KINDS, ompCheckSubject, openAlertedIncident, resolveOmpCheckIncidents, resolveOpenIncidents, SESSION_RESET_KINDS, START_CONDITION_KINDS,
   SUPERVISOR_ALERT_KINDS
 } from "../run/incident-alert.js";
 import {
@@ -2239,7 +2239,8 @@ export class CoreWorker {
       fail: (i) => this.ompFail(i),
       incident: (kind, detail) => this.supervisorIncident(chatId, kind, detail),
       versionOk: () => { resolveOmpCheckIncidents(this.runStore); },
-      startOk: () => { resolveOpenIncidents(this.runStore, START_CONDITION_KINDS, `chat:${chatId}`); }
+      startOk: () => { resolveOpenIncidents(this.runStore, START_CONDITION_KINDS, `chat:${chatId}`); },
+      sessionResetOk: () => { resolveOpenIncidents(this.runStore, SESSION_RESET_KINDS, `chat:${chatId}`); }
     };
   }
 

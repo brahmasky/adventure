@@ -24,10 +24,11 @@ export function resolveLessonCharCap(env: NodeJS.ProcessEnv): number {
  * cannot trigger a reset.
  */
 export function lessonSetFingerprint(store: Pick<RunStore, "getActiveLessons">, scopes: readonly string[] = OMP_LESSON_SCOPES): string {
-  const rows = scopes
-    .flatMap((scope) => store.getActiveLessons(scope))
-    .map((l) => [l.id, l.text, l.avoid, l.theme] as const)
-    .sort((a, b) => a[0] - b[0]);
+  return fingerprintOf(scopes.flatMap((scope) => store.getActiveLessons(scope)));
+}
+
+function fingerprintOf(lessons: readonly LessonRow[]): string {
+  const rows = lessons.map((l) => [l.id, l.text, l.avoid, l.theme] as const).sort((a, b) => a[0] - b[0]);
   return createHash("sha256").update(JSON.stringify(rows)).digest("hex");
 }
 
@@ -41,6 +42,8 @@ export interface LessonSection {
   /** Scopes with at least one rendered lesson, in `scopes` order. */
   scopes: string[];
   skipped: LessonSkip[];
+  /** lessonSetFingerprint of the SAME read the section rendered from; undefined when nothing was read (a failed render). */
+  fingerprint?: string;
 }
 
 export function lessonBullet(row: Pick<LessonRow, "text" | "avoid" | "theme">): string {
@@ -48,12 +51,17 @@ export function lessonBullet(row: Pick<LessonRow, "text" | "avoid" | "theme">): 
   return row.avoid ? `${head}\n  AVOID: ${row.avoid}` : head;
 }
 
-/** The scopes' active lessons (each row-capped per scope, as today), theme then id. */
-function orderedLessons(store: Pick<RunStore, "getActiveLessons">, scopes: readonly string[], env: NodeJS.ProcessEnv): LessonRow[] {
+/**
+ * One read of the scopes' active lessons: the whole set (what the fingerprint covers) and the renderable rows (each
+ * row-capped per scope, as today: the store's order, so a slice equals the capped query), theme then id.
+ */
+function readLessons(store: Pick<RunStore, "getActiveLessons">, scopes: readonly string[], env: NodeJS.ProcessEnv): { all: LessonRow[]; ordered: LessonRow[] } {
   const cap = resolveLessonCapPerScope(env);
-  return scopes
-    .flatMap((scope) => store.getActiveLessons(scope, cap))
+  const perScope = scopes.map((scope) => store.getActiveLessons(scope));
+  const ordered = perScope
+    .flatMap((rows) => rows.slice(0, cap))
     .sort((a, b) => themeRank(a.theme) - themeRank(b.theme) || a.theme.localeCompare(b.theme) || a.id - b.id);
+  return { all: perScope.flat(), ordered };
 }
 
 export function renderLessonSection(
@@ -67,7 +75,8 @@ export function renderLessonSection(
   const rendered = new Set<string>();
   const skipped: LessonSkip[] = [];
   let length = 0;
-  for (const row of orderedLessons(store, scopes, env)) {
+  const read = readLessons(store, scopes, env);
+  for (const row of read.ordered) {
     const bullet = lessonBullet(row);
     const next = length + (bullets.length > 0 ? 1 : 0) + bullet.length;
     if (next > cap) {
@@ -79,5 +88,8 @@ export function renderLessonSection(
     rendered.add(row.scope);
     length = next;
   }
-  return { block: bullets.length > 0 ? bullets.join("\n") : undefined, ids, scopes: scopes.filter((s) => rendered.has(s)), skipped };
+  return {
+    block: bullets.length > 0 ? bullets.join("\n") : undefined, ids, scopes: scopes.filter((s) => rendered.has(s)), skipped,
+    fingerprint: fingerprintOf(read.all)
+  };
 }

@@ -17,7 +17,6 @@ import { checkOmpVersion } from "./omp-version.js";
 import { PlannerRpcError, PlannerSession, type ExitInfo, type PlannerSessionOptions } from "./planner-session.js";
 import { realpathOrSelf, type PathContext } from "./protected-paths.js";
 import { writeSeatbeltProfiles } from "./seatbelt.js";
-import { lessonSetFingerprint } from "../run/lesson-render.js";
 import { resolveLessonSessionReset } from "./session-seed.js";
 import { verifyInstalledWrapper } from "./shell-wrapper.js";
 import { chatWorkspace } from "./workspace.js";
@@ -45,6 +44,8 @@ export interface TurnOutcomeSink {
   versionOk?(): void;
   /** A child started and is ready: clear this chat's start-condition incidents (crash loop, start failure, wrapper, sandbox). */
   startOk?(): void;
+  /** The spawned child holds a transcript started on the current lesson set: clear this chat's planner_session_reset_failed. */
+  sessionResetOk?(): void;
 }
 export interface SupervisorDeps {
   chatId: string; store: RunStore; cfg: OmpConfig; ctx: PathContext; distDir: string; decls: ToolDeclaration[];
@@ -85,6 +86,8 @@ const TIMED_OUT = Symbol("timed_out");
 const ENDED = Symbol("ended");
 /** A start we stopped ourselves (abort, shutdown, replacement): no crash count, no incident. */
 const START_SUPERSEDED = "start_failed: superseded";
+/** Memory A1 §6 (final-review ruling A4): the consecutive failed lesson-change resets after which a spawn serves resumed. */
+export const RESET_DEGRADE_AFTER = 3;
 /** A start whose child omp rejected for its --model (live, 18.4.4: exits before ready): the next planner string is tried. */
 const START_MODEL_MISSING = "exited:model_missing";
 /** null = a ready child; string = the start failure ref; missingLeg = omp rejected planner[missingLeg] at spawn. */
@@ -161,6 +164,10 @@ export class PlannerSupervisor {
   private fingerprint = "";
   /** What the live child's system prompt holds (spawn-time): each turn's attribution credits exactly these ids. */
   private applied: AppliedSnapshot = { lessonIds: [], lessonScopes: [], skillScopes: [], coreFactIds: [] };
+  /** The lesson set the spawned prompt rendered (memory A1 §6): what a reset compares and records. */
+  private lessonFingerprint: string | undefined;
+  /** Consecutive failed lesson-change resets for one fingerprint: the 3rd serves the resumed session (fail loud, not closed). */
+  private resetFailures = { fingerprint: "", count: 0 };
   private stale = false;
   private turn: Turn | undefined;
   private readonly queue: TurnRequest[] = [];
@@ -591,6 +598,7 @@ export class PlannerSupervisor {
     const { path: systemPromptFile, snapshot } = writeSystemPromptFile(turnContext, chatId);
     this.fingerprint = promptTextFingerprint(snapshot.text);
     this.applied = appliedOf(snapshot);
+    this.lessonFingerprint = snapshot.lessonFingerprint;
     this.stale = false;
     return { sessionDir, systemPromptFile, configFile, bridgeDir };
   }
@@ -653,27 +661,53 @@ export class PlannerSupervisor {
   }
 
   /**
-   * Memory A1 §6: the child resumed the newest transcript (open_session). When the active lesson set differs from the
-   * one this chat's session started on (persisted, so a change made while the daemon was down is caught), start a
-   * fresh session instead of keeping a transcript that carries the old habit. A failed or cancelled new_session fails
-   * the spawn with an incident, never a silent resume. Flag-gated (HOUGE_LESSON_SESSION_RESET, default on).
+   * Memory A1 §6: the child resumed the newest transcript (open_session). When the lesson set the spawned prompt rendered
+   * differs from the one this chat's transcript was COMMITTED on (persisted, so a change made while the daemon was down
+   * is caught; committed only at the first dispatch, since omp resumes the old transcript until the new one holds a
+   * turn), start a fresh session instead of keeping a transcript that carries the old habit. A failed or cancelled
+   * new_session fails the spawn with an incident (degrading on the 3rd, see resetFailed). Flag-gated
+   * (HOUGE_LESSON_SESSION_RESET, default on).
    */
   private async resetForLessonChange(s: PlannerSessionLike, gen: number): Promise<string | null> {
     const { store, chatId, env } = this.d;
-    if (!resolveLessonSessionReset(env)) return null;
-    const fingerprint = lessonSetFingerprint(store);
-    if (store.getPlannerSessionState(chatId)?.lesson_fingerprint === fingerprint) return null;
+    const fingerprint = this.lessonFingerprint;
+    if (!resolveLessonSessionReset(env) || fingerprint === undefined) return null; // no read, no reset decision
+    if (store.getPlannerSessionState(chatId)?.lesson_fingerprint === fingerprint) {
+      store.dropPendingPlannerSession(chatId); // resuming the committed transcript: an unprompted reset no longer applies
+      return this.resetOk();
+    }
     try {
       if ((await s.newSession()).cancelled) throw new PlannerRpcError("new_session_cancelled");
     } catch (e) {
       // a /kill or abort stopped the child mid-reset: its pending new_session rejects, which is not a failed reset
       if (gen !== this.gen || this.session !== s) return START_SUPERSEDED;
-      this.incident("planner_session_reset_failed", { reason: rpcCode(e) });
-      return `session_reset_failed: ${rpcCode(e)}`;
+      return this.resetFailed(fingerprint, e);
     }
     // omp already made the new transcript: record it even when the start was superseded meanwhile (but never serve it)
     store.recordPlannerSessionReset(chatId, fingerprint, new Date().toISOString());
-    return gen !== this.gen || this.session !== s ? START_SUPERSEDED : null;
+    return gen !== this.gen || this.session !== s ? START_SUPERSEDED : this.resetOk();
+  }
+
+  private resetOk(): null {
+    this.resetFailures = { fingerprint: "", count: 0 };
+    this.d.outcome.sessionResetOk?.();
+    return null;
+  }
+
+  /**
+   * Failures 1-2 for one lesson set fail the spawn. The 3rd (and later) serves the resumed session, as with the flag off:
+   * AGENTS.md's "no adverse impact to Houge's own operation" outranks a fail-closed reset. The incident stays open
+   * (sessionResetOk is not called) and the degradation is ledgered; a later successful reset clears both.
+   */
+  private resetFailed(fingerprint: string, e: unknown): string | null {
+    const prior = this.resetFailures.fingerprint === fingerprint ? this.resetFailures.count : 0;
+    this.resetFailures = { fingerprint, count: prior + 1 };
+    this.incident("planner_session_reset_failed", { reason: rpcCode(e) });
+    if (this.resetFailures.count < RESET_DEGRADE_AFTER) return `session_reset_failed: ${rpcCode(e)}`;
+    this.d.store.recordMemoryEvent(
+      "planner_session_reset_degraded", { chat_id: this.d.chatId, failures: this.resetFailures.count }, `planner:${this.d.chatId}`
+    );
+    return null;
   }
 
   /** Bounded start wait that also ends (throws) the moment this child is stopped or replaced. */

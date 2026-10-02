@@ -8,7 +8,7 @@ import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert
 import { OMP_LESSON_SCOPES, renderLessonSection, type LessonSection, type LessonSkip } from "../run/lesson-render.js";
 import { type RetrievalTelemetry } from "../run/relevance-gate.js";
 import { type DaemonBoot, type RunStore } from "../run/run-store.js";
-import { buildSessionSeed, SEED_RUNS } from "./session-seed.js";
+import { buildSessionSeed, SEED_MAX_AGE_HOURS, SEED_RUNS } from "./session-seed.js";
 import { clipText, isBuildStale, localStamp } from "../status/houge-status.js";
 
 /** One turn's retrieval: one block per row, and the gate telemetry the attribution row carries (spec §3). */
@@ -95,11 +95,13 @@ export function claimRestartNoteAtDispatch(store: RunStore, chatId: string, buil
 }
 
 /**
- * Just before the prompt goes to the child: claim the restart note (as before) and a pending session seed. A prompt
+ * Just before the prompt goes to the child: commit a pending session reset (memory A1 §6: omp resumes a transcript only
+ * once it holds a turn), claim the restart note (as before) and a pending session seed. A prompt
  * whose seed another dispatch already claimed loses the seed (by its exact length, never by text); a turn that ends
  * before dispatch claims nothing, so the next turn gets it.
  */
 export function claimAtDispatch(store: RunStore, chatId: string, built: TurnPrompt, pid: number = process.pid): string {
+  store.promotePlannerSession(chatId); // this prompt makes a reset's new transcript non-empty: commit its fingerprint
   const afterNote = claimRestartNoteAtDispatch(store, chatId, built, pid);
   if (!built.seedPending || store.claimSessionSeed(chatId)) return afterNote;
   const note = afterNote.length === built.prompt.length ? built.restartNote : "";
@@ -125,6 +127,8 @@ export interface PromptSnapshot {
   skillScopes: string[];
   coreFactIds: number[];
   skipped: LessonSkip[];
+  /** The lesson SET this prompt rendered from (same read): what a lesson-change reset commits; undefined if the read failed. */
+  lessonFingerprint?: string;
 }
 
 /** The ids a turn credits: what the spawned session's prompt holds (spec §1-2). */
@@ -173,7 +177,8 @@ export function buildSystemPrompt(d: TurnContextDeps, chatId: string): PromptSna
   });
   return {
     text, lessonIds: lessons.ids, lessonScopes: lessons.scopes, skillScopes: skills.scopes,
-    coreFactIds: core?.ids ?? [], skipped: lessons.skipped
+    coreFactIds: core?.ids ?? [], skipped: lessons.skipped,
+    ...(lessons.fingerprint !== undefined ? { lessonFingerprint: lessons.fingerprint } : {})
   };
 }
 
@@ -243,7 +248,8 @@ function sessionSeed(d: TurnContextDeps, i: TurnPromptInput): { seed: string; pe
   if (i.source !== "telegram") return { seed: "", pending: false };
   try {
     if (d.store.getPlannerSessionState(i.chat_id)?.seed_pending !== 1) return { seed: "", pending: false };
-    return { seed: buildSessionSeed(d.store.recentTelegramUserTurns(i.chat_id, i.run_id, SEED_RUNS)), pending: true };
+    const since = new Date((d.now?.() ?? new Date()).getTime() - SEED_MAX_AGE_HOURS * 3_600_000).toISOString();
+    return { seed: buildSessionSeed(d.store.recentTelegramUserTurns(i.chat_id, i.run_id, SEED_RUNS, since)), pending: true };
   } catch (e) {
     console.error(`[turn-context] seed read failed: ${e instanceof Error ? e.message : String(e)}`);
     return { seed: "", pending: false }; // seeding never throws into a turn

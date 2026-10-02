@@ -96,11 +96,14 @@ export class PlannerSession {
 
   /**
    * omp's `new_session` (memory A1 §6): a fresh transcript in the same session dir; the old file stays and the next
-   * `open_session` resumes the newest (this one). `cancelled: true` means omp kept the old session.
+   * `open_session` resumes the newest (this one). `cancelled: true` means omp kept the old session; any reply without a
+   * boolean `cancelled` is not proof of a fresh transcript and rejects (`new_session_malformed`).
    */
   async newSession(): Promise<{ cancelled: boolean }> {
-    const data = (await this.send({ type: "new_session" })) as { cancelled?: unknown } | undefined;
-    return { cancelled: data?.cancelled === true };
+    const data = (await this.send({ type: "new_session" })) as { cancelled?: unknown } | null | undefined;
+    const cancelled = data?.cancelled;
+    if (typeof cancelled !== "boolean") throw new PlannerRpcError("new_session_malformed");
+    return { cancelled };
   }
 
   private send(cmd: Record<string, unknown>): Promise<unknown> {

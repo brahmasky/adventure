@@ -335,7 +335,13 @@ export type ChatTurnRole = "user" | "assistant";
 /** One chat's planner-session bookkeeping (memory A1 §6): the lesson set its omp session was started on. */
 export interface PlannerSessionState {
   chat_id: string;
+  /** The lesson set the chat's live transcript was started on: committed at the first dispatch after a reset ("" before any). */
   lesson_fingerprint: string;
+  /**
+   * A reset whose new transcript has not been prompted yet. omp treats a transcript with no turns as empty, so a respawn
+   * before the first dispatch resumes the OLD one: only promotePlannerSession (at dispatch) commits it.
+   */
+  pending_fingerprint: string | null;
   /** 1 after a reset until a dispatch claims the seed (claimSessionSeed). */
   seed_pending: number;
   updated_at: string;
@@ -2505,16 +2511,16 @@ export class RunStore {
 
   getPlannerSessionState(chat_id: string): PlannerSessionState | undefined {
     return this.db.prepare(`
-      SELECT chat_id, lesson_fingerprint, seed_pending, updated_at FROM planner_session_state WHERE chat_id = ?
+      SELECT chat_id, lesson_fingerprint, pending_fingerprint, seed_pending, updated_at FROM planner_session_state WHERE chat_id = ?
     `).get<PlannerSessionState>(chat_id);
   }
 
-  /** A fresh omp session was started for this lesson set: store it, mark the seed pending, ledger the reset. */
+  /** A fresh omp session was started for this lesson set: store it as PENDING, mark the seed pending, ledger the reset. */
   recordPlannerSessionReset(chat_id: string, lesson_fingerprint: string, now: string): void {
     this.inTransaction(() => {
       this.db.prepare(`
-        INSERT INTO planner_session_state (chat_id, lesson_fingerprint, seed_pending, updated_at) VALUES (?, ?, 1, ?)
-        ON CONFLICT(chat_id) DO UPDATE SET lesson_fingerprint = excluded.lesson_fingerprint, seed_pending = 1, updated_at = excluded.updated_at
+        INSERT INTO planner_session_state (chat_id, lesson_fingerprint, pending_fingerprint, seed_pending, updated_at) VALUES (?, '', ?, 1, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET pending_fingerprint = excluded.pending_fingerprint, seed_pending = 1, updated_at = excluded.updated_at
       `).run(chat_id, lesson_fingerprint, now);
       this.recordMemoryEvent("planner_session_reset", { reason: "lesson_change", chat_id }, `planner:${chat_id}`);
     });
@@ -2523,6 +2529,21 @@ export class RunStore {
   /** Set an ACTIVE lesson's theme (memory A1: the migration's theme step, and fingerprint tests); false when missing or not active. */
   setLessonTheme(id: number, theme: string): boolean {
     return this.db.prepare(`UPDATE lessons SET theme = ? WHERE id = ? AND status = 'active'`).run(theme, id).changes === 1;
+  }
+
+  /** The first dispatch after a reset made the new transcript non-empty: commit its fingerprint. True when one was pending. */
+  promotePlannerSession(chat_id: string): boolean {
+    return this.db.prepare(`
+      UPDATE planner_session_state SET lesson_fingerprint = pending_fingerprint, pending_fingerprint = NULL
+      WHERE chat_id = ? AND pending_fingerprint IS NOT NULL
+    `).run(chat_id).changes === 1;
+  }
+
+  /** A spawn resumed the committed transcript (no reset needed): an unprompted reset and its seed no longer apply. */
+  dropPendingPlannerSession(chat_id: string): void {
+    this.db.prepare(`
+      UPDATE planner_session_state SET pending_fingerprint = NULL, seed_pending = 0 WHERE chat_id = ? AND pending_fingerprint IS NOT NULL
+    `).run(chat_id);
   }
 
   /** The seed goes to one dispatch: true only for the first claim after a reset. */
@@ -2535,14 +2556,15 @@ export class RunStore {
   /**
    * The seed's source (memory A1 §6): pick the last `runLimit` qualifying RUNS (completed, Telegram — so never
    * schedule-born — and not `excludeRunId`), then return every user turn of those runs, oldest first. A run that holds
-   * two user turns contributes both; LIMIT applies to runs, never to turns.
+   * two user turns contributes both; LIMIT applies to runs, never to turns. Only turns at/after `since` qualify.
    */
-  recentTelegramUserTurns(chat_id: string, excludeRunId: string, runLimit: number): ChatTurnRow[] {
+  recentTelegramUserTurns(chat_id: string, excludeRunId: string, runLimit: number, since: string): ChatTurnRow[] {
     return this.db.prepare(`
       WITH picked AS (
         SELECT u.run_id, MAX(u.created_at) AS last_at
         FROM chat_turns u JOIN runs r ON r.run_id = u.run_id
         WHERE u.chat_id = ? AND u.role = 'user' AND r.source = 'telegram' AND r.state = 'completed' AND u.run_id <> ?
+          AND u.created_at >= ?
         GROUP BY u.run_id
         ORDER BY last_at DESC
         LIMIT ?
@@ -2551,7 +2573,7 @@ export class RunStore {
       FROM chat_turns u
       WHERE u.chat_id = ? AND u.role = 'user' AND u.run_id IN (SELECT run_id FROM picked)
       ORDER BY u.created_at ASC, u.rowid ASC
-    `).all<ChatTurnRow>(chat_id, excludeRunId, runLimit, chat_id);
+    `).all<ChatTurnRow>(chat_id, excludeRunId, since, runLimit, chat_id);
   }
 
   /** The newest boot (the live one, once the daemon recorded it), or null if none was ever recorded. */
@@ -6454,6 +6476,9 @@ export class RunStore {
           updated_at TEXT NOT NULL
         );
       `);
+      if (!this.tableColumns("planner_session_state").has("pending_fingerprint")) {
+        this.db.exec(`ALTER TABLE planner_session_state ADD COLUMN pending_fingerprint TEXT`);
+      }
       if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
     });
   }

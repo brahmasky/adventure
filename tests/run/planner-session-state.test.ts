@@ -36,15 +36,28 @@ const said = (run_id: string, text: string, at: string) => {
 };
 
 describe("planner_session_state (memory A1 §6)", () => {
-  it("records a reset: fingerprint, a pending seed and one ledger row; the seed is claimed once", () => {
+  it("records a reset as PENDING (a pending seed, one ledger row); only a dispatch promotes it to the committed fingerprint", () => {
     expect(store.getPlannerSessionState(CHAT)).toBeUndefined();
     store.recordPlannerSessionReset(CHAT, "fp1", t(1));
-    expect(store.getPlannerSessionState(CHAT)).toEqual({ chat_id: CHAT, lesson_fingerprint: "fp1", seed_pending: 1, updated_at: t(1) });
+    // omp treats the new transcript as empty until the first prompt: a respawn before then resumes the OLD one
+    expect(store.getPlannerSessionState(CHAT)).toEqual({ chat_id: CHAT, lesson_fingerprint: "", pending_fingerprint: "fp1", seed_pending: 1, updated_at: t(1) });
     expect(store.getLedgerEvents().filter((e) => e.event_type === "planner_session_reset").map((e) => e.payload)).toEqual([{ reason: "lesson_change", chat_id: CHAT }]);
     expect(store.claimSessionSeed(CHAT)).toBe(true);
     expect(store.claimSessionSeed(CHAT)).toBe(false);
+    expect(store.promotePlannerSession(CHAT)).toBe(true);
+    expect(store.getPlannerSessionState(CHAT)).toMatchObject({ lesson_fingerprint: "fp1", pending_fingerprint: null });
+    expect(store.promotePlannerSession(CHAT)).toBe(false);
     store.recordPlannerSessionReset(CHAT, "fp2", t(2));
-    expect(store.getPlannerSessionState(CHAT)).toMatchObject({ lesson_fingerprint: "fp2", seed_pending: 1 });
+    expect(store.getPlannerSessionState(CHAT)).toMatchObject({ lesson_fingerprint: "fp1", pending_fingerprint: "fp2", seed_pending: 1 });
+    store.dropPendingPlannerSession(CHAT);
+    expect(store.getPlannerSessionState(CHAT)).toMatchObject({ lesson_fingerprint: "fp1", pending_fingerprint: null, seed_pending: 0 });
+  });
+
+  it("the seed source ignores runs older than 48 h (a stale conversation is not 'recent')", () => {
+    said(finish(telegramRun("old")), "old", "2026-09-28T00:00:00.000Z");
+    said(finish(telegramRun("fresh")), "fresh", t(1));
+    const current = telegramRun("now");
+    expect(store.recentTelegramUserTurns(CHAT, current, 3, "2026-09-29T09:00:00.000Z").map((r) => r.text)).toEqual(["fresh"]);
   });
 
   it("the seed source: every user turn of the last 3 qualifying RUNS — schedule-born, unfinished and current runs excluded", () => {
@@ -59,7 +72,7 @@ describe("planner_session_state (memory A1 §6)", () => {
     const current = telegramRun("now");
     said(current, "now", t(7));
     // a LIMIT on turns would return m3, m4a, m4b and lose m2
-    expect(store.recentTelegramUserTurns(CHAT, current, 3).map((r) => r.text)).toEqual(["m2", "m3", "m4a", "m4b"]);
+    expect(store.recentTelegramUserTurns(CHAT, current, 3, "2026-09-29T00:00:00.000Z").map((r) => r.text)).toEqual(["m2", "m3", "m4a", "m4b"]);
   });
 });
 
