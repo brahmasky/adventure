@@ -94,6 +94,15 @@ export class PlannerSession {
     if (m.effort) await this.send({ type: "set_thinking_level", level: m.effort });
   }
 
+  /**
+   * omp's `new_session` (memory A1 §6): a fresh transcript in the same session dir; the old file stays and the next
+   * `open_session` resumes the newest (this one). `cancelled: true` means omp kept the old session.
+   */
+  async newSession(): Promise<{ cancelled: boolean }> {
+    const data = (await this.send({ type: "new_session" })) as { cancelled?: unknown } | undefined;
+    return { cancelled: data?.cancelled === true };
+  }
+
   private send(cmd: Record<string, unknown>): Promise<unknown> {
     const id = `c${++this.n}`;
     if (this.closed || !this.child?.stdin?.writable) return Promise.reject(new PlannerRpcError("not_running"));

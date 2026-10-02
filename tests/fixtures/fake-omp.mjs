@@ -6,6 +6,7 @@
 //   rpc mode also reads: rpcText, rpcEcho (reply carries the prompt), rpcNoManifest (skip the bridge
 //   manifest at startup), rpcSteerError (answer a steer success:false with this text), rpcIgnoreAbort (ack an abort but never end the turn), rpcFinishOnSteer (hold the reply until a steer arrives), rpcCall: { tool, args } (one bridge `call` after the prompt; its content is
 //   appended to the reply as " CALL:<content>"), rpcCalls: [{ tool, args }, …] (the same, in order, toolCallIds tc1…tcN), rpcHangAfterPrompt, rpcNoReply, rpcExitAfterPrompt, …
+// Top-level rpcNewSessionCancelled: true answers new_session {cancelled:true}; rpcNewSessionError: "<text>" answers it success:false (memory A1 §6).
 // Top-level `rpcBadModelAtStart: ["<provider/model>", …]` (rpc AND -p modes): when --model matches, the fake does what
 // omp 18.4.4 does live — writes `Model "<provider/model>" not found` plus a hint line to stderr and exits 1 before
 // `ready` (in rpc mode after the extension's bridge hello/manifest, as the real extension loads first).
@@ -55,6 +56,8 @@ async function runRpc() {
     }
     if (cmd.type === "set_model" && scen.rpcSetModelError) return out({ id: cmd.id, type: "response", command: "set_model", success: false, error: scen.rpcSetModelError });
     if (cmd.type === "set_model") { model = `${cmd.provider}/${cmd.modelId}`; return reply({ id: cmd.modelId, provider: cmd.provider }); }
+    if (cmd.type === "new_session" && scen.rpcNewSessionError) return out({ id: cmd.id, type: "response", command: "new_session", success: false, error: scen.rpcNewSessionError });
+    if (cmd.type === "new_session") return reply({ cancelled: Boolean(scen.rpcNewSessionCancelled) });
     if (cmd.type === "steer" && b.rpcSteerError) {
       return out({ id: cmd.id, type: "response", command: "steer", success: false, error: b.rpcSteerError });
     }

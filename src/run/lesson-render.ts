@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { themeRank } from "./lesson-themes.js";
 import { resolveLessonCapPerScope, type LessonRow, type RunStore } from "./run-store.js";
 
@@ -15,6 +16,19 @@ export const DEFAULT_LESSON_CHAR_CAP = 4000;
 export function resolveLessonCharCap(env: NodeJS.ProcessEnv): number {
   const n = Number(env.HOUGE_LESSON_CHAR_CAP);
   return Number.isInteger(n) && n > 0 ? n : DEFAULT_LESSON_CHAR_CAP;
+}
+
+/**
+ * The lesson SET a planner session was started on (memory A1 §6): sha256 over (id, text, avoid, theme) of every
+ * active ask + research lesson, sorted by id. Never the rendered bytes, so a reorder, a rating or a date flip
+ * cannot trigger a reset.
+ */
+export function lessonSetFingerprint(store: Pick<RunStore, "getActiveLessons">, scopes: readonly string[] = OMP_LESSON_SCOPES): string {
+  const rows = scopes
+    .flatMap((scope) => store.getActiveLessons(scope))
+    .map((l) => [l.id, l.text, l.avoid, l.theme] as const)
+    .sort((a, b) => a[0] - b[0]);
+  return createHash("sha256").update(JSON.stringify(rows)).digest("hex");
 }
 
 export interface LessonSkip { lesson_id: number; chars: number; cap: number }

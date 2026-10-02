@@ -17,17 +17,19 @@ import { checkOmpVersion } from "./omp-version.js";
 import { PlannerRpcError, PlannerSession, type ExitInfo, type PlannerSessionOptions } from "./planner-session.js";
 import { realpathOrSelf, type PathContext } from "./protected-paths.js";
 import { writeSeatbeltProfiles } from "./seatbelt.js";
+import { lessonSetFingerprint } from "../run/lesson-render.js";
+import { resolveLessonSessionReset } from "./session-seed.js";
 import { verifyInstalledWrapper } from "./shell-wrapper.js";
 import { chatWorkspace } from "./workspace.js";
 import type { ToolDeclaration } from "./tool-decls.js";
 import {
-  assistantIntentFor, appliedOf, buildTurnPrompt, claimRestartNoteAtDispatch, promptTextFingerprint, systemPromptFingerprint, writeSystemPromptFile,
+  assistantIntentFor, appliedOf, buildTurnPrompt, claimAtDispatch, promptTextFingerprint, systemPromptFingerprint, writeSystemPromptFile,
   type AppliedSnapshot, type TurnContextDeps,
   type TurnPrompt
 } from "./turn-context.js";
 
 export type SupervisorState = "STOPPED" | "STARTING" | "IDLE" | "RUNNING" | "AWAITING_APPROVAL" | "ABORTING";
-export type PlannerSessionLike = Pick<PlannerSession, "start" | "prompt" | "steer" | "abort" | "setModel" | "onFrame" | "onExit" | "stop">;
+export type PlannerSessionLike = Pick<PlannerSession, "start" | "prompt" | "steer" | "abort" | "setModel" | "newSession" | "onFrame" | "onExit" | "stop">;
 export interface TurnRequest {
   run_id: string; text: string; source: "telegram" | "schedule"; goal?: string; requester: Identity;
   /** A voice/photo turn: its text is a placeholder until resolveMessage ingests it, so it never steers (it queues as its own turn). */
@@ -422,7 +424,7 @@ export class PlannerSupervisor {
     if (reset && (await this.resetTop(turn, s, target)) === ENDED) return;
     if (turn.failure) return;
     try {
-      const sent = claimRestartNoteAtDispatch(this.d.store, this.d.chatId, prompt, this.d.turnContext.pid);
+      const sent = claimAtDispatch(this.d.store, this.d.chatId, prompt, this.d.turnContext.pid);
       turn.live = true;
       turn.dispatched = true;
       await this.step(turn, s.prompt(sent));
@@ -630,9 +632,43 @@ export class PlannerSupervisor {
     } catch (e) {
       return this.spawnFailed(rec, e);
     } finally { if (this.spawning === rec) this.spawning = undefined; }
+    const refused = await this.resetOrRefuse(gen);
+    if (refused) return refused;
     this.sessionLeg = leg;
     if (!this.turn?.live) this.st = "IDLE";
     this.d.outcome.startOk?.();
+    return null;
+  }
+
+  /** Null when the child is ready to serve; otherwise why this spawn must not (superseded, or a failed lesson reset). */
+  private async resetOrRefuse(gen: number): Promise<string | null> {
+    const live = this.session;
+    if (!live || gen !== this.gen) return START_SUPERSEDED;
+    const failure = await this.resetForLessonChange(live);
+    if (!failure) return null;
+    await this.stopSession();
+    this.st = "STOPPED";
+    return failure;
+  }
+
+  /**
+   * Memory A1 §6: the child resumed the newest transcript (open_session). When the active lesson set differs from the
+   * one this chat's session started on (persisted, so a change made while the daemon was down is caught), start a
+   * fresh session instead of keeping a transcript that carries the old habit. A failed or cancelled new_session fails
+   * the spawn with an incident, never a silent resume. Flag-gated (HOUGE_LESSON_SESSION_RESET, default on).
+   */
+  private async resetForLessonChange(s: PlannerSessionLike): Promise<string | null> {
+    const { store, chatId, env } = this.d;
+    if (!resolveLessonSessionReset(env)) return null;
+    const fingerprint = lessonSetFingerprint(store);
+    if (store.getPlannerSessionState(chatId)?.lesson_fingerprint === fingerprint) return null;
+    try {
+      if ((await s.newSession()).cancelled) throw new PlannerRpcError("new_session_cancelled");
+    } catch (e) {
+      this.incident("planner_session_reset_failed", { reason: rpcCode(e) });
+      return `session_reset_failed: ${rpcCode(e)}`;
+    }
+    store.recordPlannerSessionReset(chatId, fingerprint, new Date().toISOString());
     return null;
   }
 

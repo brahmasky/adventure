@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
+import { lessonSetFingerprint } from "../../src/run/lesson-render.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { PlannerSupervisor, RETRY_NOTE, parseAttachments, type PlannerSessionLike, type SupervisorDeps, type SupervisorState, type TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
 import type { OmpFrame } from "../../src/omp/omp-frames.js";
@@ -34,6 +35,8 @@ type Script = {
   resumeModel?: string;
   /** Also log each set_model into `log` (`setModel:<provider/model>`), to assert its order against the prompt. */
   logSetModel?: boolean;
+  /** Replaces newSession(): e.g. a refusal or a cancelled reset. */
+  newSession?: () => Promise<{ cancelled: boolean }>;
 };
 const never = () => new Promise<never>(() => undefined);
 type Fake = PlannerSessionLike & {
@@ -43,6 +46,7 @@ type Fake = PlannerSessionLike & {
   dropBridge: () => void;
   /** Emit a frame now, outside any prompt (a late or stray frame). */
   emitForTest: (f: OmpFrame) => void;
+  resets: number;
 };
 
 /** In-memory omp child. Its start() plays the extension against the REAL bridge socket (ruling 3). */
@@ -58,7 +62,7 @@ function fakeSession(script: Script = {}): Fake {
   };
   const drop = () => { for (const k of sockets.splice(0)) k.destroy(); };
   const s: Fake = {
-    prompts: [], steers: [], models: [], options: [],
+    prompts: [], steers: [], models: [], options: [], resets: 0,
     bind: (o) => { s.options.push(o); return s; },
     start: async () => {
       const child = s.options.length; const o = s.options[child - 1] as PlannerSessionOptions;
@@ -88,6 +92,10 @@ function fakeSession(script: Script = {}): Fake {
       await script.setModel?.(s.models.length);
       current = `${m.provider}/${m.model}`;
     },
+    newSession: async () => {
+      s.resets += 1; script.log?.push(`newSession:${s.options.length}`);
+      return script.newSession ? script.newSession() : { cancelled: false };
+    },
     onFrame: (cb: (f: OmpFrame) => void) => { frameCbs.push(cb); }, onExit: (cb: (i: ExitInfo) => void) => { exitCbs.push(cb); },
     stop: async () => { drop(); },
     dropBridge: () => drop(),
@@ -112,8 +120,12 @@ function sink(store: RunStore): Outcome {
   return outcome;
 }
 
-function harness(session = fakeSession(), env: Record<string, string> = {}, extra: Partial<SupervisorDeps> = {}) {
+function harness(session = fakeSession(), env: Record<string, string> = {}, extra: Partial<SupervisorDeps> = {}, o: { sessionState?: "current" | "none" } = {}) {
   const store = RunStore.openInMemory();
+  if ((o.sessionState ?? "current") === "current") {
+    store.recordPlannerSessionReset("42", lessonSetFingerprint(store), new Date().toISOString());
+    store.claimSessionSeed("42");
+  }
   const data = mkdtempSync(join(tmpdir(), "hsv-")); // short: the bridge socket path must fit sun_path (104 bytes)
   const outcome = sink(store);
   const sup = new PlannerSupervisor({
@@ -1193,5 +1205,72 @@ describe("PlannerSupervisor — a message starting with [runtime] reaches the ch
     expect(session.prompts[1]!.endsWith(`\n${message}`)).toBe(true);
     sup.submit(req(createQueuedTurnRun(store), message)); await sup.whenIdle();
     expect(session.prompts[2]).toBe(message);
+  });
+});
+
+describe("PlannerSupervisor — a lesson change starts a fresh omp session (memory A1 §6)", () => {
+  const swap = (sup: PlannerSupervisor, session: Fake, onStart: () => void) => {
+    (sup as never as { d: { sessionFactory: (o: PlannerSessionOptions) => unknown } }).d.sessionFactory = (o) => { onStart(); return session.bind(o); };
+  };
+
+  it("first spawn with no stored fingerprint: new_session, the ledger row and the persisted fingerprint; the seed is claimed at dispatch", async () => {
+    const { store, sup, session } = harness(fakeSession(), {}, {}, { sessionState: "none" });
+    store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(session.resets).toBe(1);
+    expect(store.getPlannerSessionState("42")).toMatchObject({ lesson_fingerprint: lessonSetFingerprint(store), seed_pending: 0 });
+    expect(store.getLedgerEvents().filter((e) => e.event_type === "planner_session_reset").map((e) => e.payload))
+      .toEqual([{ reason: "lesson_change", chat_id: "42" }]);
+  });
+
+  it("a rating or a date flip respawns (or not) without new_session; a lesson edit respawns with it", async () => {
+    let starts = 0;
+    const session = fakeSession();
+    const { store, sup } = harness(session, {}, {}, { sessionState: "none" });
+    swap(sup, session, () => { starts++; });
+    const a = store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    store.applyRatingToLessons([a], 3, new Date().toISOString());
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect([starts, session.resets]).toEqual([1, 1]); // a rating does not reorder the prompt nor change the set
+    (sup as never as { d: { turnContext: { now: () => Date } } }).d.turnContext.now = () => new Date(Date.now() + 86_400_000);
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect([starts, session.resets]).toEqual([2, 1]); // the date line respawned the child; the set is the same: resume
+    store.addLesson({ scope: "research", text: "cite sources", source: "user_feedback" });
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect([starts, session.resets]).toEqual([3, 2]);
+  });
+
+  it("a change made while the daemon was down is caught at the first spawn; a matching stored fingerprint resumes", async () => {
+    const down = harness();
+    down.store.recordPlannerSessionReset("42", "fingerprint-before-the-edit", new Date().toISOString());
+    down.sup.submit(req(createQueuedTurnRun(down.store))); await down.sup.whenIdle();
+    expect(down.session.resets).toBe(1);
+    const same = harness();
+    same.store.recordPlannerSessionReset("42", lessonSetFingerprint(same.store), new Date().toISOString());
+    same.sup.submit(req(createQueuedTurnRun(same.store))); await same.sup.whenIdle();
+    expect(same.session.resets).toBe(0);
+  });
+
+  it("a failed new_session fails the spawn with an incident and never prompts the resumed session", async () => {
+    const { store, sup, session, outcome } = harness(fakeSession({ newSession: async () => { throw new PlannerRpcError("command_failed:new_session"); } }), {}, {}, { sessionState: "none" });
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(outcome.failed).toEqual([expect.objectContaining({ error_type: "planner_exit", error_ref: "session_reset_failed: command_failed:new_session" })]);
+    expect(outcome.incidents).toEqual(expect.arrayContaining([expect.objectContaining({ k: "planner_session_reset_failed" })]));
+    expect(session.prompts).toEqual([]);
+    expect(store.getPlannerSessionState("42")).toBeUndefined();
+  });
+
+  it("a cancelled new_session is a failure too", async () => {
+    const { store, sup, outcome } = harness(fakeSession({ newSession: async () => ({ cancelled: true }) }), {}, {}, { sessionState: "none" });
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(outcome.failed).toEqual([expect.objectContaining({ error_ref: "session_reset_failed: new_session_cancelled" })]);
+  });
+
+  it("HOUGE_LESSON_SESSION_RESET=off respawns and resumes as before", async () => {
+    const { store, sup, session } = harness(fakeSession(), {}, { env: { HOUGE_LESSON_SESSION_RESET: "off" } }, { sessionState: "none" });
+    store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(session.resets).toBe(0);
   });
 });

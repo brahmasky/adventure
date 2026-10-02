@@ -332,6 +332,15 @@ export interface RunStatusRow {
 
 export type ChatTurnRole = "user" | "assistant";
 
+/** One chat's planner-session bookkeeping (memory A1 §6): the lesson set its omp session was started on. */
+export interface PlannerSessionState {
+  chat_id: string;
+  lesson_fingerprint: string;
+  /** 1 after a reset until a dispatch claims the seed (claimSessionSeed). */
+  seed_pending: number;
+  updated_at: string;
+}
+
 export interface ChatTurnRow {
   turn_id: string;
   chat_id: string;
@@ -2485,6 +2494,57 @@ export class RunStore {
       INSERT OR IGNORE INTO boot_chat_notes (boot_id, chat_id, noted_at) VALUES (?, ?, ?)
     `).run(boot_id, chat_id, now);
     return r.changes === 1;
+  }
+
+  getPlannerSessionState(chat_id: string): PlannerSessionState | undefined {
+    return this.db.prepare(`
+      SELECT chat_id, lesson_fingerprint, seed_pending, updated_at FROM planner_session_state WHERE chat_id = ?
+    `).get<PlannerSessionState>(chat_id);
+  }
+
+  /** A fresh omp session was started for this lesson set: store it, mark the seed pending, ledger the reset. */
+  recordPlannerSessionReset(chat_id: string, lesson_fingerprint: string, now: string): void {
+    this.inTransaction(() => {
+      this.db.prepare(`
+        INSERT INTO planner_session_state (chat_id, lesson_fingerprint, seed_pending, updated_at) VALUES (?, ?, 1, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET lesson_fingerprint = excluded.lesson_fingerprint, seed_pending = 1, updated_at = excluded.updated_at
+      `).run(chat_id, lesson_fingerprint, now);
+      this.recordMemoryEvent("planner_session_reset", { reason: "lesson_change", chat_id }, `planner:${chat_id}`);
+    });
+  }
+
+  /** Set an ACTIVE lesson's theme (memory A1: the migration's theme step, and fingerprint tests); false when missing or not active. */
+  setLessonTheme(id: number, theme: string): boolean {
+    return this.db.prepare(`UPDATE lessons SET theme = ? WHERE id = ? AND status = 'active'`).run(theme, id).changes === 1;
+  }
+
+  /** The seed goes to one dispatch: true only for the first claim after a reset. */
+  claimSessionSeed(chat_id: string): boolean {
+    return this.db.prepare(`
+      UPDATE planner_session_state SET seed_pending = 0 WHERE chat_id = ? AND seed_pending = 1
+    `).run(chat_id).changes === 1;
+  }
+
+  /**
+   * The seed's source (memory A1 §6): pick the last `runLimit` qualifying RUNS (completed, Telegram — so never
+   * schedule-born — and not `excludeRunId`), then return every user turn of those runs, oldest first. A run that holds
+   * two user turns contributes both; LIMIT applies to runs, never to turns.
+   */
+  recentTelegramUserTurns(chat_id: string, excludeRunId: string, runLimit: number): ChatTurnRow[] {
+    return this.db.prepare(`
+      WITH picked AS (
+        SELECT u.run_id, MAX(u.created_at) AS last_at
+        FROM chat_turns u JOIN runs r ON r.run_id = u.run_id
+        WHERE u.chat_id = ? AND u.role = 'user' AND r.source = 'telegram' AND r.state = 'completed' AND u.run_id <> ?
+        GROUP BY u.run_id
+        ORDER BY last_at DESC
+        LIMIT ?
+      )
+      SELECT u.turn_id, u.chat_id, u.run_id, u.role, u.text, u.intent, u.created_at
+      FROM chat_turns u
+      WHERE u.chat_id = ? AND u.role = 'user' AND u.run_id IN (SELECT run_id FROM picked)
+      ORDER BY u.created_at ASC, u.rowid ASC
+    `).all<ChatTurnRow>(chat_id, excludeRunId, runLimit, chat_id);
   }
 
   /** The newest boot (the live one, once the daemon recorded it), or null if none was ever recorded. */
@@ -6360,6 +6420,24 @@ export class RunStore {
     this.applyDaemonBootsMigration();
     this.applyMemoryChangesMigration();
     this.applyLessonThemeMigration();
+    this.applyPlannerSessionStateMigration();
+  }
+
+  /** Memory A1 §6: the lesson-set fingerprint each chat's omp session started on, persisted so a restart still compares. */
+  private applyPlannerSessionStateMigration(): void {
+    const version = "2026-10-02-planner-session-state";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS planner_session_state (
+          chat_id TEXT PRIMARY KEY,
+          lesson_fingerprint TEXT NOT NULL,
+          seed_pending INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL
+        );
+      `);
+      if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
   }
 
   /** Memory A1 §5: one closed-list theme per lesson; existing rows read 'unthemed'. Guarded by table_info (idempotent). */

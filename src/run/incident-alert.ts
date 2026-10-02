@@ -65,10 +65,13 @@ export function resolveOmpCheckIncidents(store: RunStore, now = new Date().toISO
 
 /** The planner-supervisor conditions that page Paco once while open (B3). */
 export const SUPERVISOR_ALERT_KINDS: ReadonlySet<string> = new Set([
-  "planner_crash_loop", "planner_start_failed", "wrapper_mismatch", "sandbox_unavailable", "omp_version_mismatch", "omp_unavailable"
+  "planner_crash_loop", "planner_start_failed", "wrapper_mismatch", "sandbox_unavailable", "omp_version_mismatch", "omp_unavailable",
+  "planner_session_reset_failed"
 ]);
 /** The supervisor conditions a successful planner start in the same chat clears (the omp-check kinds clear on versionOk). */
-export const START_CONDITION_KINDS: ReadonlySet<string> = new Set(["planner_crash_loop", "planner_start_failed", "wrapper_mismatch", "sandbox_unavailable"]);
+export const START_CONDITION_KINDS: ReadonlySet<string> = new Set([
+  "planner_crash_loop", "planner_start_failed", "wrapper_mismatch", "sandbox_unavailable", "planner_session_reset_failed"
+]);
 
 /** Resolve the open incidents of `kinds` (only `subject`'s, when given). Returns how many were resolved. */
 export function resolveOpenIncidents(store: RunStore, kinds: ReadonlySet<string>, subject?: string, now = new Date().toISOString()): number {

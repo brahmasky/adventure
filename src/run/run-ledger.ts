@@ -57,6 +57,7 @@ export type LedgerEventType =
   | "lesson_write_capped"
   | "lesson_cross_theme"
   | "lesson_theme_unknown"
+  | "planner_session_reset"
   | "episodic_distill_pass"
   | "episodic_consolidate_tick"
   | "wiki_page_saved"
@@ -212,6 +213,8 @@ const requiredPayloadFields = {
   lesson_write_capped: ["verdict", "target_id", "chars", "avoid_chars"],
   lesson_cross_theme: ["candidate", "target"],
   lesson_theme_unknown: ["lesson_id"],
+  // Memory A1 §6: a lesson change started a fresh omp session for a chat (reason + chat id only).
+  planner_session_reset: ["reason"],
   // Phase M B2: one summary per executed episodic fast-path distill pass (run-less).
   episodic_distill_pass: ["facts_added", "superseded", "dropped", "turns_read"],
   // Phase M B4: one summary per daily episodic consolidate tick that did work (run-less).

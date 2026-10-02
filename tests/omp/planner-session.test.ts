@@ -34,6 +34,24 @@ describe("PlannerSession — one long-lived RPC child per chat (spec §4, §7)",
     expect(await s.start()).toMatchObject({ resumed: false, sessionId: "s1" });
   });
 
+  it("new_session asks omp for a fresh transcript and reports whether omp cancelled it (memory A1 §6)", async () => {
+    const { s, d } = make();
+    await s.start();
+    expect(await s.newSession()).toEqual({ cancelled: false });
+    const cmds = readFileSync(join(d, "argv.log"), "utf8").trim().split("\n")
+      .map((l) => (JSON.parse(l) as { cmd?: { type?: string } }).cmd?.type).filter((x): x is string => x !== undefined);
+    expect(cmds).toEqual(["open_session", "new_session"]);
+  });
+
+  it("a cancelled new_session reads as cancelled; a refused one rejects with a fixed code", async () => {
+    const a = make({ rpcNewSessionCancelled: true });
+    await a.s.start();
+    expect(await a.s.newSession()).toEqual({ cancelled: true });
+    const b = make({ rpcNewSessionError: "no" });
+    await b.s.start();
+    await expect(b.s.newSession()).rejects.toMatchObject({ code: "command_failed:new_session" });
+  });
+
   it("gives the child TMPDIR=<workspace>/.tmp, created by the daemon — never os.tmpdir(), which the profiles deny (B13)", async () => {
     const { s, d } = make();
     await s.start();

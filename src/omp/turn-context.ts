@@ -8,6 +8,7 @@ import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert
 import { OMP_LESSON_SCOPES, renderLessonSection, type LessonSection, type LessonSkip } from "../run/lesson-render.js";
 import { type RetrievalTelemetry } from "../run/relevance-gate.js";
 import { type DaemonBoot, type RunStore } from "../run/run-store.js";
+import { buildSessionSeed, SEED_RUNS } from "./session-seed.js";
 import { clipText, isBuildStale, localStamp } from "../status/houge-status.js";
 
 /** One turn's retrieval: one block per row, and the gate telemetry the attribution row carries (spec §3). */
@@ -91,6 +92,18 @@ export function claimRestartNoteAtDispatch(store: RunStore, chatId: string, buil
   const boot = liveBoot(store, pid);
   if (boot && store.claimRestartNote(boot.boot_id, chatId)) return built.prompt;
   return built.prompt.slice(built.restartNote.length);
+}
+
+/**
+ * Just before the prompt goes to the child: claim the restart note (as before) and a pending session seed. A prompt
+ * whose seed another dispatch already claimed loses the seed (by its exact length, never by text); a turn that ends
+ * before dispatch claims nothing, so the next turn gets it.
+ */
+export function claimAtDispatch(store: RunStore, chatId: string, built: TurnPrompt, pid: number = process.pid): string {
+  const afterNote = claimRestartNoteAtDispatch(store, chatId, built, pid);
+  if (!built.seedPending || store.claimSessionSeed(chatId)) return afterNote;
+  const note = afterNote.length === built.prompt.length ? built.restartNote : "";
+  return note + built.prompt.slice(built.restartNote.length + (built.seed ?? "").length);
 }
 
 /** True when this chat's trailing clarify turns have reached the cap. */
@@ -222,8 +235,20 @@ function recordAttribution(d: TurnContextDeps, runId: string, applied: AppliedSn
   if (hits.pages.length > 0) d.store.touchWikiApplied(hits.pages.map((p) => p.id));
 }
 
-/** The planner prompt, and the exact restart note it opens with ("" when none) for the claim at dispatch. */
-export interface TurnPrompt { prompt: string; restartNote: string }
+/** The planner prompt, the exact restart note it opens with ("" when none), and the session seed after it (memory A1 §6). */
+export interface TurnPrompt { prompt: string; restartNote: string; seed?: string; seedPending?: boolean }
+
+/** A pending seed is peeked here and claimed at dispatch. A schedule fire is not Paco: it neither shows nor claims it. */
+function sessionSeed(d: TurnContextDeps, i: TurnPromptInput): { seed: string; pending: boolean } {
+  if (i.source !== "telegram") return { seed: "", pending: false };
+  try {
+    if (d.store.getPlannerSessionState(i.chat_id)?.seed_pending !== 1) return { seed: "", pending: false };
+    return { seed: buildSessionSeed(d.store.recentTelegramUserTurns(i.chat_id, i.run_id, SEED_RUNS)), pending: true };
+  } catch (e) {
+    console.error(`[turn-context] seed read failed: ${e instanceof Error ? e.message : String(e)}`);
+    return { seed: "", pending: false }; // seeding never throws into a turn
+  }
+}
 
 export async function buildTurnPrompt(d: TurnContextDeps, i: TurnPromptInput): Promise<TurnPrompt> {
   const { facts, pages, telemetry } = await d.retrieve(i.chat_id, i.message);
@@ -234,7 +259,12 @@ export async function buildTurnPrompt(d: TurnContextDeps, i: TurnPromptInput): P
   const cap = clarifyCapReached(d, i.chat_id) ? CLARIFY_CAP_NOTICE : "";
   // a schedule fire is not Paco talking: it neither shows nor uses the note, so his first real turn gets it
   const note = i.source === "schedule" ? "" : restartNote(d, i.chat_id);
-  return { prompt: `${note}${prefix}${cap}${context}${i.message}`, restartNote: note };
+  const s = sessionSeed(d, i);
+  return {
+    prompt: `${note}${s.seed}${prefix}${cap}${context}${i.message}`,
+    restartNote: note,
+    ...(s.pending ? { seed: s.seed, seedPending: true } : {})
+  };
 }
 
 /** A tool-less reply ending in a short question is a clarify turn (feeds the consecutive-clarify cap). */
