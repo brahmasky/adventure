@@ -1363,6 +1363,13 @@ export class RunStore {
     this.db.prepare(`UPDATE lessons SET text = ? WHERE id = ?`).run(text.trim(), id);
   }
 
+  /** Undo a supersede of this lesson (memory A1 migration --revert): active again, no successor. */
+  reactivateLesson(id: number): boolean {
+    return this.db.prepare(`
+      UPDATE lessons SET status = 'active', superseded_by = NULL WHERE id = ? AND status = 'superseded'
+    `).run(id).changes === 1;
+  }
+
   /** Attribution (S1→S2 hookup): these lessons were applied to a turn's prompt. */
   touchApplied(ids: number[], now: string = new Date().toISOString()): void {
     const stmt = this.db.prepare(`
@@ -3022,6 +3029,11 @@ export class RunStore {
     for (const id of ids) stmt.run(now, id);
   }
 
+  /** Prune one active fact by id (memory A1 migration --revert retires the restored core row). */
+  retireEpisodicFactById(id: number): boolean {
+    return this.db.prepare(`UPDATE episodic_facts SET status = 'pruned' WHERE id = ? AND status = 'active'`).run(id).changes === 1;
+  }
+
   getEpisodicDistillWatermark(chat_id: string): EpisodicDistillWatermark | null {
     const row = this.db.prepare(`
       SELECT chat_id, last_turn_created_at, last_distilled_at
@@ -4045,11 +4057,14 @@ export class RunStore {
 
   /** Retire (prune, reversibly) active rows; null and no write when any id is not active (or, for a fact, not this chat's). */
   retireMemoryRows(input: { kind: MemoryKind; ids: number[]; chat_id: string; run_id: string | null; now?: string }): MemoryChange | null {
-    return this.memoryChange(() => {
-      for (const id of input.ids) this.flipActiveMemoryRow(input.kind, id, input.chat_id, "pruned");
-      return this.insertMemoryChange({ kind: input.kind, action: "retire", old_ids: [...input.ids], new_id: null,
-        run_id: input.run_id, chat_id: input.chat_id, created_at: input.now ?? new Date().toISOString() });
-    });
+    return this.memoryChange(() => this.retireMemoryRowsTx(input));
+  }
+
+  /** {@link retireMemoryRows}'s body for a caller already in a transaction (memory A1 migration): a refusal throws. */
+  retireMemoryRowsTx(input: { kind: MemoryKind; ids: number[]; chat_id: string; run_id: string | null; now?: string }): MemoryChange {
+    for (const id of input.ids) this.flipActiveMemoryRow(input.kind, id, input.chat_id, "pruned");
+    return this.insertMemoryChange({ kind: input.kind, action: "retire", old_ids: [...input.ids], new_id: null,
+      run_id: input.run_id, chat_id: input.chat_id, created_at: input.now ?? new Date().toISOString() });
   }
 
   /**
@@ -4087,15 +4102,18 @@ export class RunStore {
    * Idempotent: a second undo changes nothing.
    */
   undoMemoryChange(change_id: string, now: string = new Date().toISOString()): MemoryUndoResult {
-    return this.inTransaction(() => {
-      const change = this.getMemoryChange(change_id);
-      if (!change) return { status: "not_found" };
-      if (change.undone_at !== null) return { status: "already_undone", change };
-      if (change.action === "correct" && this.getEpisodicFact(change.new_id ?? -1)?.status !== "active") return { status: "changed_since", change };
-      this.db.prepare(`UPDATE memory_changes SET undone_at = ? WHERE change_id = ?`).run(now, change_id);
-      const { restored, retired } = this.restoreMemoryRows(change);
-      return { status: "undone", change: { ...change, undone_at: now }, restored, retired };
-    });
+    return this.inTransaction(() => this.undoMemoryChangeTx(change_id, now));
+  }
+
+  /** {@link undoMemoryChange}'s body for a caller already in a transaction (memory A1 migration --revert). */
+  undoMemoryChangeTx(change_id: string, now: string = new Date().toISOString()): MemoryUndoResult {
+    const change = this.getMemoryChange(change_id);
+    if (!change) return { status: "not_found" };
+    if (change.undone_at !== null) return { status: "already_undone", change };
+    if (change.action === "correct" && this.getEpisodicFact(change.new_id ?? -1)?.status !== "active") return { status: "changed_since", change };
+    this.db.prepare(`UPDATE memory_changes SET undone_at = ? WHERE change_id = ?`).run(now, change_id);
+    const { restored, retired } = this.restoreMemoryRows(change);
+    return { status: "undone", change: { ...change, undone_at: now }, restored, retired };
   }
 
   /** Flip back what is still as the change left it; returns the ids it really restored and the new row it retired. */

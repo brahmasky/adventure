@@ -76,7 +76,8 @@ export type LedgerEventType =
   | "wall_collapse"
   | "memory_corrected"
   | "lesson_dropped"
-  | "evidence_rejected";
+  | "evidence_rejected"
+  | "memory_migration";
 
 export interface LedgerEvent {
   event_id: string;
@@ -270,7 +271,9 @@ const requiredPayloadFields = {
   // Memory A1 (2026-10-02): a lesson the omp prompt could not fit. Ids and counts only.
   lesson_dropped: ["lesson_id", "chars", "cap"],
   // Memory A1 §4: a fact whose evidence failed (reason + chat id only, never the fact).
-  evidence_rejected: ["reason"]
+  evidence_rejected: ["reason"],
+  // Memory A1 §8: one row per migration step (ids only).
+  memory_migration: ["step", "old_ids", "new_ids"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(
