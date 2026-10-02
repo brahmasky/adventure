@@ -11,7 +11,7 @@ import { familyOf, formatModelString, type ModelFamily, type ModelString } from 
 export interface OneShotInput {
   seat: string; chain: ModelString[]; prompt: string; files?: string[];
   correlationId: string; timeoutMs?: number; plannerFamily?: ModelFamily;
-  /** The daemon's stop: aborting kills the in-flight leg's process group and ends the call (no later leg; the leg is audited error{aborted}). */
+  /** The daemon's stop: aborting kills the in-flight leg's process group and ends the call (no later leg; the leg is audited error{shutdown}). */
   signal?: AbortSignal;
 }
 export interface OneShotDeps {
@@ -98,7 +98,7 @@ function legFailure(o: LegOutcome): string | null {
 export const OMP_AUDIO_REFUSED = "omp one-shot refuses audio (voice runs on the agy-cli leg)";
 const AUDIO_FILE = /\.(opus|ogg|oga|mp3|wav|m4a|aac|flac|amr|weba)$/i;
 
-/** A call the daemon's stop cut short: not a model failure (its leg, if one ran, is audited error{aborted}). */
+/** A call the daemon's stop cut short: not a model failure (its leg, if one ran, is audited error{shutdown}). */
 const ABORTED: LlmResult = { ok: false, provider: "omp", error: "aborted: the daemon is stopping", aborted: true };
 
 export async function spawnOneShot(input: OneShotInput, deps: OneShotDeps): Promise<LlmResult> {
@@ -119,8 +119,8 @@ export async function spawnOneShot(input: OneShotInput, deps: OneShotDeps): Prom
       ...(input.plannerFamily !== undefined && input.plannerFamily === family ? { family_collapse: true } : {})
     };
     if (o.aborted) {
-      // The leg ran, so it is audited — as error{aborted}, which the llm_leg_failing sweep ignores.
-      deps.audit.record({ ...base, outcome: "error", model: m.model, error_kind: "aborted" });
+      // The leg ran, so it is audited — as error{shutdown}, the one kind the llm_leg_failing sweep ignores.
+      deps.audit.record({ ...base, outcome: "error", model: m.model, error_kind: "shutdown" });
       return ABORTED;
     }
     const failure = legFailure(o);

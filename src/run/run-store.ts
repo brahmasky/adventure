@@ -4469,7 +4469,8 @@ export class RunStore {
    * differs by model is the residual this grouping does not catch.
    *
    * Replay roles (`classify_replay*`) are operator CLI runs, not daemon health, and are excluded. So are
-   * `error_kind: "aborted"` rows: a daemon shutdown or a planner turn's end cut the request, not the provider.
+   * `error_kind: "shutdown"` rows: the daemon's own stop cut the request, not the provider. `aborted` rows count:
+   * that label also covers a hung planner turn (frame_idle, turn_timeout) and a provider's own "aborted" error.
    */
   findFailingLlmLegs(now: string, windowMs: number, minAttempts: number): Array<{ subject: string; attempts: number; ok: number; last_error_kind: string | null }> {
     const since = new Date(Date.parse(now) - windowMs).toISOString();
@@ -4485,14 +4486,14 @@ export class RunStore {
             AND e2.occurred_at > ?
             AND json_extract(e2.payload_json, '$.provider') = json_extract(ledger_events.payload_json, '$.provider')
             AND json_extract(e2.payload_json, '$.outcome') <> 'ok'
-            AND COALESCE(json_extract(e2.payload_json, '$.error_kind'), '') <> 'aborted'
+            AND COALESCE(json_extract(e2.payload_json, '$.error_kind'), '') <> 'shutdown'
             AND COALESCE(json_extract(e2.payload_json, '$.role'), '') NOT LIKE 'classify_replay%'
           ORDER BY e2.occurred_at DESC, e2.sequence DESC
           LIMIT 1
         ) AS last_error_kind
       FROM ledger_events
       WHERE event_type = 'llm_attempt' AND occurred_at > ?
-        AND COALESCE(json_extract(payload_json, '$.error_kind'), '') <> 'aborted'
+        AND COALESCE(json_extract(payload_json, '$.error_kind'), '') <> 'shutdown'
         AND COALESCE(json_extract(payload_json, '$.role'), '') NOT LIKE 'classify_replay%'
       GROUP BY subject
       HAVING ok = 0 AND (attempts >= ? OR last_error_kind = 'auth')

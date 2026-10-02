@@ -307,6 +307,15 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
     expect(rows).toEqual([expect.objectContaining({ outcome: "error", error_kind: "aborted", request_key: `${run_id}:0` })]);
   });
 
+  it("a daemon shutdown mid-request audits it error{shutdown}, never aborted: the failing-leg sweep ignores only shutdown", async () => {
+    const session = fakeSession({ onPrompt: () => undefined });
+    const { store, sup } = harness(session); const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await until(() => session.prompts.length === 1); // dispatched, no frame yet
+    await sup.shutdown();
+    const rows = store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_attempt").map((e) => e.payload);
+    expect(rows).toEqual([expect.objectContaining({ outcome: "error", error_kind: "shutdown", request_key: `${run_id}:0` })]);
+  });
+
   it("restarts the child at the next turn when the system prompt fingerprint changed (a new lesson must reach a live session)", async () => {
     let starts = 0;
     const session = fakeSession();

@@ -140,9 +140,9 @@ describe("omp one-shot seat — every non-planner LLM call in Houge", () => {
   });
 
   // Daemon shutdown (live 2026-10-02: a 7–13 s tick call outlived launchd's 40 s ExitTimeOut). The stop aborts the
-  // in-flight leg. The leg ran, so it is audited, as error{aborted} (the planner's precedent), which the
-  // llm_leg_failing sweep ignores: a shutdown is not a model failure.
-  it("an abort kills the in-flight leg at once, tries no later leg and audits it as aborted", { timeout: 20_000 }, async () => {
+  // in-flight leg. The leg ran, so it is audited, as error{shutdown}: the one kind the llm_leg_failing sweep
+  // ignores (a provider's own "aborted" error still counts).
+  it("an abort kills the in-flight leg at once, tries no later leg and audits it as shutdown", { timeout: 20_000 }, async () => {
     const cfg = setup({ "google-antigravity/gemini-3.8-flash": { sleepMs: 30_000, text: "late" }, "kimi-code/k3": { text: "next" } });
     const audit = recordingSink();
     const controller = new AbortController();
@@ -153,7 +153,7 @@ describe("omp one-shot seat — every non-planner LLM call in Houge", () => {
     expect(Date.now() - t0).toBeLessThan(300 + LEG_EXIT_GRACE_MS + 1_500);
     expect(r).toMatchObject({ ok: false, aborted: true });
     expect(audit.attempts).toHaveLength(1);
-    expect(audit.attempts[0]).toMatchObject({ outcome: "error", error_kind: "aborted", model: "gemini-3.8-flash", leg_index: 0 });
+    expect(audit.attempts[0]).toMatchObject({ outcome: "error", error_kind: "shutdown", model: "gemini-3.8-flash", leg_index: 0 });
     expect(argvLog()).toHaveLength(1);
   });
 

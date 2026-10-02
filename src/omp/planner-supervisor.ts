@@ -71,6 +71,8 @@ export const PLANNER_EXIT_TEXT = "⚠ My runtime stopped unexpectedly. Nothing w
 export const MANIFEST_WAIT_MS = 15_000;
 export const START_WAIT_MS = 30_000;
 const ABORT_GRACE_MS = 5_000;
+/** The failure ref of a turn the daemon's own stop cut short: its open request is audited error{shutdown}. */
+const DAEMON_SHUTDOWN = "daemon shutdown";
 const CRASH_WINDOW_MS = 10 * 60_000;
 const CRASH_LIMIT = 3;
 /** macOS sun_path is 104 bytes including the terminating NUL. */
@@ -220,10 +222,10 @@ export class PlannerSupervisor {
 
   /** Daemon exit: nothing dispatches queued runs at boot, so every unstarted request fails planner_exit now (never orphaned). */
   async shutdown(): Promise<void> {
-    this.failQueued("planner_exit", "daemon shutdown");
+    this.failQueued("planner_exit", DAEMON_SHUTDOWN);
     const t = this.turn;
     // the turn's signal wakes approval waiters and in-flight adapters: nothing holds the process after SIGTERM (M4)
-    if (t) { t.failure ??= { type: "planner_exit", ref: "daemon shutdown" }; this.clearTimers(t); t.abort.abort(); t.live = false; t.done("abort"); }
+    if (t) { t.failure ??= { type: "planner_exit", ref: DAEMON_SHUTDOWN }; this.clearTimers(t); t.abort.abort(); t.live = false; t.done("abort"); }
     await bounded(this.draining ?? Promise.resolve(), ABORT_GRACE_MS);
     await this.stopSession();
   }
@@ -860,19 +862,22 @@ export class PlannerSupervisor {
     const { store, outcome } = this.d;
     t.finished = true;
     flushUnreported(store, t.active);
-    if (t.n > t.recorded || (t.dispatched && t.n === 0)) this.recordAborted(t);
+    if (t.n > t.recorded || (t.dispatched && t.n === 0)) this.recordAborted(t, f.ref === DAEMON_SHUTDOWN ? "shutdown" : "aborted");
     if (f.type === "turn_timeout" || f.type === "frame_idle") store.recordLoopHalted(t.req.run_id, { reason: f.type, steps: t.n });
     const base = { worker_id: t.worker, error_ref: f.ref, ...(t.lastText ? { partial: t.lastText } : {}) };
     outcome.fail({ ...base, run_id: t.req.run_id, error_type: f.type });
     for (const m of t.merged) outcome.fail({ ...base, run_id: m, error_type: "merged_parent_failed" });
   }
 
-  /** A model request that never reached message_end is audited at turn end as error{aborted} (spec §8). */
-  private recordAborted(t: Turn): void {
+  /**
+   * A model request that never reached message_end is audited at turn end (spec §8): error{shutdown} when the
+   * daemon's own stop cut it (ignored by the failing-leg sweep), else error{aborted} (a hung or killed turn counts).
+   */
+  private recordAborted(t: Turn, kind: "aborted" | "shutdown"): void {
     const model = this.model.model;
     this.d.store.llmAuditSink({ run_id: t.req.run_id, role: "compose" }).record({
       provider: this.model.provider, role: "", outcome: "error", model, family: familyOf({ model }),
-      request_key: `${t.req.run_id}:${t.n}`, error_kind: "aborted"
+      request_key: `${t.req.run_id}:${t.n}`, error_kind: kind
     });
     t.recorded = t.n;
   }

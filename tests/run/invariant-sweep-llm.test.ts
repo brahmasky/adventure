@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { detectViolations, LLM_LEG_FAILING_MIN_ATTEMPTS } from "../../src/run/invariant-sweep.js";
+import { classifyOmpError } from "../../src/omp/omp-frames.js";
 import { RunStore } from "../../src/run/run-store.js";
 
 const NOW = "2026-09-07T00:30:00.000Z";
@@ -18,17 +19,31 @@ describe("llm_leg_failing invariant", () => {
     }
   });
 
-  it("an aborted attempt (daemon shutdown, planner turn end) is not a failure: it neither opens nor tips the count", () => {
+  it("a daemon shutdown is not a failure: shutdown rows neither open nor tip the count", () => {
     const store = RunStore.openInMemory();
     try {
       const sink = store.llmAuditSink({ correlation_id: "tick:x", role: "distill" });
-      for (let i = 0; i < LLM_LEG_FAILING_MIN_ATTEMPTS; i++) sink.record({ provider: "kimi-code", role: "", outcome: "error", latency_ms: 1, error_kind: "aborted" });
+      for (let i = 0; i < LLM_LEG_FAILING_MIN_ATTEMPTS; i++) sink.record({ provider: "kimi-code", role: "", outcome: "error", latency_ms: 1, error_kind: "shutdown" });
       expect(legs(store)).toEqual([]);
       for (let i = 0; i < LLM_LEG_FAILING_MIN_ATTEMPTS - 1; i++) sink.record({ provider: "kimi-code", role: "", outcome: "error", latency_ms: 1, error_kind: "timeout" });
       expect(legs(store)).toEqual([]);
       sink.record({ provider: "kimi-code", role: "", outcome: "error", latency_ms: 1, error_kind: "timeout" });
-      sink.record({ provider: "kimi-code", role: "", outcome: "error", latency_ms: 1, error_kind: "aborted" });
+      sink.record({ provider: "kimi-code", role: "", outcome: "error", latency_ms: 1, error_kind: "shutdown" });
       expect(legs(store)).toEqual([{ kind: "llm_leg_failing", subject: "kimi-code", detail: { attempts: LLM_LEG_FAILING_MIN_ATTEMPTS, ok: 0, last_error_kind: "timeout" } }]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("an aborted row still counts: a hung planner (frame_idle, turn_timeout) or a provider's 'Request was aborted' is a real failure", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const sink = store.llmAuditSink({ correlation_id: "tick:x", role: "compose" });
+      const kind = classifyOmpError("Request was aborted");
+      expect(kind).toBe("aborted");
+      for (let i = 0; i < LLM_LEG_FAILING_MIN_ATTEMPTS - 1; i++) sink.record({ provider: "anthropic", role: "", outcome: "error", latency_ms: 1, error_kind: "aborted" });
+      sink.record({ provider: "anthropic", role: "", outcome: "error", latency_ms: 1, error_kind: kind });
+      expect(legs(store)).toEqual([{ kind: "llm_leg_failing", subject: "anthropic", detail: { attempts: LLM_LEG_FAILING_MIN_ATTEMPTS, ok: 0, last_error_kind: "aborted" } }]);
     } finally {
       store.close();
     }
