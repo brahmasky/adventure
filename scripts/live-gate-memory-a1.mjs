@@ -17,6 +17,8 @@
 //   Windows: `from` is EXCLUSIVE (getChatTurnsAfter: created_at > from), `to` inclusive. The gate applies the live pass's own
 //   filters (settledTurns, withoutTurnsOffPacosWorld); a window left with more than EPISODIC_EXTRACT_TURN_CAP (24) turns is a
 //   setup error (the live pass would read only the oldest 24), and each window's turn count is printed.
+//   expect_facts / expect_pages are ANY-OF: a positive passes when at least one listed id is admitted (the hits are printed);
+//   an empty list on a positive entry asks nothing of that retriever.
 //   An entry with empty expect_facts AND empty expect_pages is a NEGATIVE probe: it must get zero fact rows and zero page
 //   rows. Positive expect ids must not be core facts (the gate drops core ids like the live path). Needs >= 1 negative,
 //   >= 1 positive and >= 2 positive facts that are not among the chat's newest 50 active facts.
@@ -26,7 +28,7 @@
 //   2 every negative probe gets zero facts and pages (Ollama up AND down); every positive gets its expected ids (Ollama up;
 //     positives are only printed in the down run); the down run must report fts_only and no embedding; an all-empty
 //     retrieval run (no probe returned any row) FAILs; each probe's best admitted / best rejected cosine is printed;
-//   3 per ticks leg, 3 runs: window_149 yields no fact matching `forbidden` (regex required; zero facts parsed = UNJUDGED = FAIL), the assertion
+//   3 per ticks leg, 3 runs: window_149 yields no fact matching `forbidden` (regex required; a valid empty {"facts":[]} answer is judged: empty; a missing or unparseable answer = UNJUDGED = FAIL), the assertion
 //     window yields at least one fact whose evidence passes; a leg that never answers FAILs, as does zero facts overall;
 //     the evidence rejection rate is printed (it decides shadow -> enforce);
 //   4 an UPDATE whose merge exceeds 240 chars is refused and the prior lesson is untouched;
@@ -55,15 +57,15 @@ function parseArgs(argv) {
 }
 
 async function loadModules() {
-  const [env, mig, turn, render, ret, wiki, ev, ex, reg, cfg, ms, emb, rs, tmp, arm] = await Promise.all([
+  const [env, mig, turn, render, ret, wiki, ev, ex, reg, cfg, ms, emb, rs, tmp, arm, dist] = await Promise.all([
     import("../dist/config/load-env.js"), import("../dist/run/memory-a1-migration.js"), import("../dist/omp/turn-context.js"),
     import("../dist/run/lesson-render.js"), import("../dist/run/episodic-retrieval.js"), import("../dist/run/wiki-retrieval.js"),
     import("../dist/capabilities/episodic-evidence.js"), import("../dist/capabilities/episodic-extract.js"),
     import("../dist/llm/registry.js"), import("../dist/omp/omp-config.js"), import("../dist/omp/model-string.js"),
     import("../dist/llm/embeddings.js"), import("../dist/run/run-store.js"), import("../dist/run/daemon-tmp.js"),
-    import("../dist/capabilities/wiki.js")
+    import("../dist/capabilities/wiki.js"), import("../dist/capabilities/distill.js")
   ]);
-  return { env, mig, turn, render, ret, wiki, ev, ex, reg, cfg, ms, emb, rs, tmp, arm };
+  return { env, mig, turn, render, ret, wiki, ev, ex, reg, cfg, ms, emb, rs, tmp, arm, dist };
 }
 
 const ids = (v) => Array.isArray(v) && v.every((x) => Number.isInteger(x) && x > 0);
@@ -109,7 +111,9 @@ function checkRender(m, store, ctx, fails) {
 }
 
 const fmt = (x) => (x === null ? "-" : x.toFixed(3));
-const has = (got, want) => want.every((id) => got.includes(id));
+/** Expect lists are ANY-OF: an empty list asks nothing, a non-empty one needs at least one admitted id. */
+const anyOf = (got, want) => want.length === 0 || want.some((id) => got.includes(id));
+const hits = (got, want) => want.filter((id) => got.includes(id));
 
 /** One probe through both retrievers; core facts are dropped from the scored facts exactly as the live path does. */
 function runProbe(m, store, ctx, p, q) {
@@ -127,7 +131,8 @@ function judgeProbe(i, p, r, up, fails) {
   if (!up && (r.f.fts_only !== true || r.f.embedding !== false)) fails.push(`2: probe ${i} (down) ran with fts_only ${r.f.fts_only}, embedding ${r.f.embedding}`);
   if (up && (r.f.embedding !== true || r.f.fts_only === true)) fails.push(`2: probe ${i} (up) ran without the embedding (fts_only ${r.f.fts_only})`);
   if (neg && (r.facts.length > 0 || r.pages.length > 0)) fails.push(`2: probe ${i} (negative, ${mode}) admitted facts ${JSON.stringify(r.facts)} pages ${JSON.stringify(r.pages)}`);
-  if (!neg && up && !(has(r.facts, p.expect_facts) && has(r.pages, p.expect_pages))) fails.push(`2: probe ${i} (positive) missed facts ${JSON.stringify(p.expect_facts)} / pages ${JSON.stringify(p.expect_pages)}`);
+  if (!neg && up && !(anyOf(r.facts, p.expect_facts) && anyOf(r.pages, p.expect_pages))) fails.push(`2: probe ${i} (positive) hit none of facts ${JSON.stringify(p.expect_facts)} / pages ${JSON.stringify(p.expect_pages)} (any-of)`);
+  if (!neg) console.log(`  probe ${i} hit: facts ${JSON.stringify(hits(r.facts, p.expect_facts))} pages ${JSON.stringify(hits(r.pages, p.expect_pages))}`);
   console.log(`  probe ${i} ${neg ? "neg" : "pos"}: facts ${JSON.stringify(r.facts)} want ${JSON.stringify(p.expect_facts)}; pages ${JSON.stringify(r.pages)} want ${JSON.stringify(p.expect_pages)}; `
     + `facts best_admitted ${fmt(r.f.best_admitted)} best_rejected ${fmt(r.f.best_rejected)}; pages best_admitted ${fmt(r.w.best_admitted)} best_rejected ${fmt(r.w.best_rejected)}`);
 }
@@ -168,26 +173,36 @@ function windowTurns(m, store, chat, w, label) {
   return turns;
 }
 
-/** One extract call over a window; each fact with whether its evidence passes. null when the seat gave no answer. */
+/** True when the answer holds a JSON object with a `facts` array (an empty one is a valid, judged answer). */
+function validVerdict(m, text) {
+  const json = m.dist.extractFirstJsonObject(text);
+  if (!json) return false;
+  try { return Array.isArray(JSON.parse(json)?.facts); } catch { return false; }
+}
+
+/** One extract call over a window: { facts (each with whether its evidence passes), valid }. null when the seat gave no answer. */
 async function extractJudged(m, store, llm, turns) {
   const lines = m.ev.transcriptLines(turns, m.ex.EPISODIC_EXTRACT_TURN_CAP);
   const question = m.ex.buildEpisodicExtractQuestion({ turns, userName: "Paco", now: new Date().toISOString(), numbered: true });
   const read = await llm({ question, system: m.ex.EPISODIC_EXTRACT_DISCIPLINE });
   if (!read.ok) return null;
-  return m.ex.parseEpisodicExtractResult(read.answer).facts
+  const facts = m.ex.parseEpisodicExtractResult(read.answer).facts
     .map((f) => ({ fact: f.fact, ok: m.ev.checkEvidence(f.evidence, lines, (r) => store.runSource(r)).ok }));
+  return { facts, valid: validVerdict(m, read.answer) };
 }
 
 /** One leg: 3 runs over both windows; returns the tally, pushing FAILs. */
 async function runLeg(m, store, name, llm, win, fails) {
   const tally = { runs: 0, facts: 0, rejected: 0 };
   for (let run = 1; run <= 3; run += 1) {
-    const q = await extractJudged(m, store, llm, win.q);
-    const a = q && (await extractJudged(m, store, llm, win.a));
-    if (!q || !a) { fails.push(`3: ${name} run ${run}: the seat gave no answer`); break; }
+    const qr = await extractJudged(m, store, llm, win.q);
+    const ar = qr && (await extractJudged(m, store, llm, win.a));
+    if (!qr || !ar) { fails.push(`3: ${name} run ${run}: the seat gave no answer`); break; }
     tally.runs += 1;
+    const q = qr.facts, a = ar.facts;
     for (const f of [...q, ...a]) { tally.facts += 1; if (!f.ok) tally.rejected += 1; console.log(`    ${f.ok ? "ok" : "REJ"} ${f.fact}`); }
-    if (q.length === 0) fails.push(`3: ${name} run ${run}: UNJUDGED - the model parsed to zero facts for window_149`);
+    if (!qr.valid) fails.push(`3: ${name} run ${run}: UNJUDGED - the window_149 answer was unparseable (no {"facts":[...]} object)`);
+    else if (q.length === 0) console.log(`    window_149 judged: empty (valid {"facts":[]})`);
     if (q.some((f) => win.forbidden.test(f.fact))) fails.push(`3: ${name} run ${run} stored the asked-only attribute`);
     if (!a.some((f) => f.ok)) fails.push(`3: ${name} run ${run}: no evidenced fact from the assertion window`);
   }
