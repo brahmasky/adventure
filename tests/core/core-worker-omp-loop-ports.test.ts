@@ -119,11 +119,12 @@ describe("read-tool provenance on the omp path (parity with the loop)", () => {
   });
 });
 
+const seedSrc = (literal: string) => {
+  mkdirSync(join(project(), "src"), { recursive: true });
+  writeFileSync(join(project(), "src", "notice.ts"), `export const HEADER = "${literal}";\n`, "utf8");
+};
+
 describe("lesson_write over the bridge — trust anchors and layer routing", () => {
-  const seedSrc = (literal: string) => {
-    mkdirSync(join(project(), "src"), { recursive: true });
-    writeFileSync(join(project(), "src", "notice.ts"), `export const HEADER = "${literal}";\n`, "utf8");
-  };
 
   it("distils the REAL user message (never model text); model-supplied feedback or an off-whitelist scope never executes", async () => {
     // replaces: executeTurn — the inner loop › "mixed intent: lesson_write AND a final answer land in ONE turn (impossible on the enum path)"
@@ -207,6 +208,24 @@ describe("lesson_write and schedule-born turns — a scheduled task is not Paco 
     expect(r.content).toContain("not Paco speaking");
     expect(calls).toEqual([]);
     expect(store.getActiveLessons("ask")).toEqual([]);
+  });
+
+  it("the thread scan skips a scheduled run's goal: Paco's next lesson saves; his own quoted phrase still refuses", async () => {
+    // The live phrase sits in a src COMMENT (schedule-spec.ts); the checker greps comments too.
+    mkdirSync(join(project(), "src"), { recursive: true });
+    writeFileSync(join(project(), "src", "schedule-spec.ts"), "// 绝不要再创建新的定时任务\n", "utf8");
+    const fired = run("AI日报（此定时任务已存在，绝不要再创建新的定时任务）", "s:digest", "schedule");
+    store.recordChatTurn({ chat_id: "555", run_id: fired, role: "user", text: "AI日报（此定时任务已存在，绝不要再创建新的定时任务）" });
+    store.recordChatTurn({ chat_id: "555", run_id: fired, role: "assistant", text: "今日AI要闻……", intent: "answer" });
+    const calls: Array<Record<string, unknown>> = [];
+    const r = await turn("以后日报里别放股票", { llm: seatLlm(calls, { distill: '{"durable":true,"lesson":"日报里不放股票"}' }) }).call("lesson_write", { scope: "ask" });
+    expect(output(r.content)).toMatchObject({ saved: true });
+    expect(store.readLessonBlock("ask")).toContain("日报里不放股票");
+    // Paco quoting the same phrase himself is still scanned and still refuses.
+    const paco = run("把「绝不要再创建新的定时任务」这句删掉", "t:paco-quote");
+    store.recordChatTurn({ chat_id: "555", run_id: paco, role: "user", text: "把「绝不要再创建新的定时任务」这句删掉" });
+    const again = await turn("对，删掉它", { llm: seatLlm([]) }).call("lesson_write", { scope: "ask" });
+    expect(again.content).toContain('"reason":"code-owned"');
   });
 });
 

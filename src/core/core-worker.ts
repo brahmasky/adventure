@@ -2536,10 +2536,11 @@ export class CoreWorker {
         // code-owned phrase is often quoted a turn or two back ("换掉它" carries nothing).
         // Assistant turns are EXCLUDED: Houge's own replies legitimately contain
         // code-owned strings (the evolution-notice header, option lists), and including
-        // them would false-refuse every lesson_write that follows one.
+        // them would false-refuse every lesson_write that follows one. A schedule-born user
+        // turn is the stored schedule goal, not Paco speaking: excluded by its run's source.
         threadUserTexts: [...turnCtx.recentTurns]
           .reverse()
-          .filter((turn) => turn.role === "user")
+          .filter((turn) => turn.role === "user" && this.runStore.runSource(turn.run_id) !== "schedule")
           .map((turn) => turn.text),
         // Reconcile-and-save (⓪·3 S1b). The compare rides the same UNRESERVED adapter as
         // the tool's internal distill (never the turn ledger, which may be drained here).
