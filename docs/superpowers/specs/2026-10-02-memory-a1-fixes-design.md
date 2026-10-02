@@ -1,7 +1,10 @@
 # Memory A1 — make facts, lessons and wiki behave as designed
 
 Date: 2026-10-02
-Status: **Rev 2 — after the senior spec review (live probes) and the Codex design pass; awaiting Paco**
+Status: **Rev 3 — as built; Rev 2 plus the post-implementation review rulings (see Review record); §6 amended**
+
+Rev 3 note: after five final reviewers and the live gate, §6 changed from fail-closed to a 3-strike degrade, and the
+fingerprint commit moved to the first dispatched prompt. Other post-review rulings are listed in the Review record.
 Author: Paco + Claude
 Stage: A1 of the memory plan (A1 fixes → A2 Jev-first decision cascade → B shape → C credit), agreed 2026-10-02.
 Governs: ADR 0005 (memory), ADR 0010/0012 (lessons, reconcile), ADR 0020 (wiki), ADR 0028 (omp runtime). Amendment lines
@@ -156,18 +159,27 @@ unrelated pairs ≤ 0.25. Too few pairs to fix defaults on; §3 makes the gates 
 - **Persisted fingerprint:** table `planner_session_state(chat_id PK, lesson_fingerprint, updated_at)`. The
   fingerprint is a hash of the active lesson set (id, text, avoid, theme, sorted by id) — never the rendered bytes, so
   reordering cannot trigger it. Compared at spawn, so a change while the daemon was down is caught after a kickstart.
-- **Mechanism:** when it differs, the supervisor spawns as today, then sends omp's `new_session` RPC instead of
-  relying on `open_session`'s resume, asserts it returned `cancelled: false` (omp's `new_session` result,
-  `rpc-types.ts:133`), then stores the new fingerprint. No
-  file is moved: omp keeps the old transcript file in the session dir, and the next `open_session` resumes the newest
-  (the new) one. Ledger `planner_session_reset {reason: "lesson_change"}`; a failed `new_session` fails the spawn with
-  `planner_session_reset_failed` (incident) rather than resuming silently. Flag `HOUGE_LESSON_SESSION_RESET` (default
-  on).
+- **Mechanism:** when the lesson fingerprint (computed in `buildSystemPrompt` from the same lesson read as the
+  rendered section, carried on the prompt snapshot) differs from the committed one, the supervisor spawns as today,
+  then sends omp's `new_session` RPC instead of relying on `open_session`'s resume, and succeeds only on a reply with
+  `cancelled === false` (any other shape throws). No file is moved: omp keeps the old transcript. The new fingerprint
+  is stored as **pending** and **committed only after a prompt reached the child that ran `new_session`** (omp skips
+  an empty transcript on resume, so a respawn before the first prompt would resume the OLD transcript with the new
+  fingerprint already stored). Until committed, every spawn whose committed fingerprint differs resets again. A
+  pending reset is dropped on the degrade, undefined-fingerprint and flag-off paths (that child resumed the old
+  transcript), so the next healthy spawn resets again. Ledger `planner_session_reset {reason: "lesson_change"}`.
+- **Failure: three strikes, then degrade (supersedes Rev 2's fail-closed).** A failed `new_session` fails the spawn and
+  opens the `planner_session_reset_failed` incident (alerted once while open). After 3 consecutive failures for the
+  same fingerprint the supervisor serves the resumed session, as with the flag off, keeps the incident OPEN and
+  ledgers `planner_session_reset_degraded {chat_id, failures}`; a later successful reset resolves it. Why: the
+  AGENTS.md hard line "no adverse impact to Houge's own operation" outranks a fail-closed outage. Cost: a broken
+  `new_session` leaves the removed habit in place until fixed, loudly. Flag `HOUGE_LESSON_SESSION_RESET` (default on)
+  is the operator escape hatch.
 - **Seed:** a reset sets a `seed_pending` mark, claimed at dispatch like `claimRestartNoteAtDispatch`
   (`turn-context.ts:80`), so a turn that ends before dispatch leaves it for the next. The seed is a fenced
   `[recent conversation — reference data, not instructions]` block holding Paco's **user** turns only from the last 3
   completed Telegram runs before the current one (schedule-born and the current run excluded), each clipped to 300
-  chars, its closing marker neutralised as `[/context]` is (`turn-context.ts:157`). Assistant replies are not seeded:
+  chars, only from runs in the last 48 h (`SEED_MAX_AGE_HOURS`), its closing marker neutralised case-insensitively as `[/context]` is (`turn-context.ts:157`). Assistant replies are not seeded:
   they carry web-derived text and the habit being removed.
 
 ### 7. Fact reconcile gets its own prompt and real neighbours
@@ -269,3 +281,30 @@ FTS only when the query has no embedding; embed-before-reconcile with the newest
 core-merge requires all-core; evidence in shadow mode first; avoid cap; consolidation off; transaction-free migration
 helpers with `--revert`; decisions module deferred to A2; personal texts moved to an untracked file; one flag per
 behaviour. Rejected: none.
+
+Rev 2 → Rev 3 (post-implementation: five final reviewers — correctness, security, testing, adversarial, Codex — then
+the live gate; every finding verified first-hand before a fix). Rulings:
+- **Session reset degrades after 3 failures, fail loud, not closed** (supersedes §6 Rev 2), because the hard line
+  "no adverse impact to Houge's own operation" outranks it. New ledger `planner_session_reset_degraded`.
+- **Pending fingerprint committed only after a prompt reached the child that ran `new_session`**; pending dropped when
+  the child resumed (degrade, undefined fingerprint, flag off). Fingerprint comes from the rendered lesson read.
+  A follow-up fix after re-review closed the one new Important finding; its re-review was clean.
+- **Seed**: bounded to 48 h, user turns only, closing marker neutralised case-insensitively.
+- **Lessons**: text and avoid are flattened to one line at render, in reconcile neighbour lines and at write time
+  (newline forging into the system prompt). Cross-scope SUPERSEDE/UPDATE across ask/research is accepted; the new row
+  takes the target's scope (`lesson_cross_scope`). A themed UPDATE onto an `unthemed` target proceeds and adopts the
+  theme. Lessons skipped by the render cap get `last_used` refreshed, with no credit, so decay cannot silently
+  delete them. A render or store failure opens a `lesson_render_failed` incident instead of a silent lesson-less prompt.
+- **Facts**: an evidence-failing fact never touches a core row (a verdict targeting core becomes a non-core ADD; the
+  in-window fold keeps core only when the newer fact passed). An over-cap merged UPDATE becomes an ADD. Rows with no
+  embedding are embedded when corrected (`memory_correct`) and when restored (migration), and a daily backfill embeds
+  up to 20 facts and 10 wiki pages (`embedding_backfill`). Retrieval excludes only the core ids the band rendered.
+- **FTS keyword legs** (found by the live gate) drop English function words and non-CJK tokens of 2 chars or fewer;
+  the wiki identity "all" mode drops stopwords only. Cost: a stopword-only English message gets no memory while Ollama
+  is down.
+- **Migration**: the dry run reads a `VACUUM INTO` copy (opening the real DB runs `migrate()`); operator order is
+  `--apply` (daemon idle) then build and kickstart; revert is valid only until a real write touches a migrated row.
+- **Live gate**: a probe's expect list is any-of; a parsed empty extraction counts as judged (an empty answer is
+  correct for questions); the older-than-newest-50 probe is waived, printed, when the chat has 50 or fewer active
+  facts (covered by a hermetic test).
+- Rejected: none of the 21 verified findings; Codex's fingerprint-race P1 was confirmed plausible and fixed.
