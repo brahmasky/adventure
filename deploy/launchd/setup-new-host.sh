@@ -7,9 +7,9 @@
 # It never reads or prints .env.
 #
 #   Usage:  bash deploy/launchd/setup-new-host.sh [--check-only]
-#     --check-only   tool checks + the plist rendered into a temp file; no npm ci, no build,
-#                    no ollama pull, nothing staged in the repo. Exit 1 if a required tool is
-#                    missing or omp is not the pinned version.
+#     --check-only   tool checks + the plist rendered into a temp file (linted, then deleted); no
+#                    npm ci, no build, no ollama pull, nothing staged in the repo. Exit 1 if a
+#                    required tool is missing or omp is not the pinned version.
 #   EXTRA_PATH=/a:/b  extra dirs to put on the daemon's PATH (optional).
 set -euo pipefail
 
@@ -68,24 +68,38 @@ fi
 
 # 2. The daemon's PATH: launchd's is minimal. node runs the daemon; bun runs omp's launcher; codex and
 #    agy are spawned too (their absolute paths still belong in .env). Order kept, duplicates dropped.
+#    The template already ends the PATH with the system dirs, so those are left out here (no duplicates).
+SYSTEM_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 for t in node bun omp codex agy git; do
   p="$(tool_path "$t")"
   [ -n "$p" ] && BIN_DIRS="$BIN_DIRS$(dirname "$p")"$'\n'
 done
 DAEMON_PATH="$(printf '%s%s\n' "$BIN_DIRS" "$(printf '%s' "${EXTRA_PATH:-}" | tr ':' '\n')" \
-  | awk 'NF && !seen[$0]++' | tr '\n' ':' | sed 's/:$//')"
+  | awk -v sys="$SYSTEM_PATH" 'BEGIN { n = split(sys, s, ":"); for (i = 1; i <= n; i++) seen[s[i]] = 1 } NF && !seen[$0]++' \
+  | tr '\n' ':' | sed 's/:$//')"
+
+# A path goes into XML text (&, < and > escaped), through a sed replacement (\, & and the # delimiter
+# escaped). A project dir may contain any of them.
+xml_escape() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+sed_escape() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
+plist_value() { sed_escape "$(xml_escape "$1")"; }
 
 render_plist() { # out
-  sed -e "s#__PROJECT_DIR__#$PROJECT_DIR#g" \
-      -e "s#__NODE_BIN_DIR__#$DAEMON_PATH#g" \
+  sed -e "s#__PROJECT_DIR__#$(plist_value "$PROJECT_DIR")#g" \
+      -e "s#__NODE_BIN_DIR__:#$(plist_value "${DAEMON_PATH:+$DAEMON_PATH:}")#g" \
       "$PROJECT_DIR/deploy/launchd/com.houge.daemon.plist.template" > "$1"
 }
 
 if [ "$CHECK_ONLY" = 1 ]; then
   PLIST_OUT="$(mktemp -t com.houge.daemon.plist)"
+  trap 'rm -f "$PLIST_OUT"' EXIT
   render_plist "$PLIST_OUT"
-  echo; echo "-- rendered $PLIST_OUT (not installed) --"
-  echo "  PATH=$DAEMON_PATH:/usr/bin:/bin:/usr/sbin:/sbin"
+  echo; echo "-- rendered the plist to a temp file (deleted on exit, not installed) --"
+  if command -v plutil >/dev/null 2>&1; then
+    if plutil -lint "$PLIST_OUT" >/dev/null; then echo "  plist lints OK"; else echo "  BAD  the rendered plist does not lint"; missing=1; fi
+  fi
+  echo "  PATH=$(plutil -extract EnvironmentVariables.PATH raw -o - "$PLIST_OUT" 2>/dev/null || echo '?')"
+  echo "  WorkingDirectory=$(plutil -extract WorkingDirectory raw -o - "$PLIST_OUT" 2>/dev/null || echo '?')"
   exit "$missing"
 fi
 [ "$missing" = 1 ] && exit 1
@@ -105,7 +119,7 @@ fi
 PLIST_OUT="$PROJECT_DIR/deploy/launchd/com.houge.daemon.plist"
 render_plist "$PLIST_OUT"
 mkdir -p "$PROJECT_DIR/logs"
-echo; echo "-- generated $PLIST_OUT (PATH=$DAEMON_PATH:...) --"
+echo; echo "-- generated $PLIST_OUT (PATH=${DAEMON_PATH:+$DAEMON_PATH:}$SYSTEM_PATH) --"
 
 cat <<EOF
 
