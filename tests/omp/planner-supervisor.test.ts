@@ -1261,6 +1261,43 @@ describe("PlannerSupervisor — a lesson change starts a fresh omp session (memo
     expect(store.getPlannerSessionState("42")).toBeUndefined();
   });
 
+  const stalledReset = () => {
+    let settle: { ok: () => void; fail: (e: unknown) => void } = { ok: () => undefined, fail: () => undefined };
+    const newSession = () => new Promise<{ cancelled: boolean }>((resolve, reject) => { settle = { ok: () => resolve({ cancelled: false }), fail: reject }; });
+    return { newSession, settle: () => settle };
+  };
+  const untilReset = async (session: Fake) => { for (let i = 0; i < 200 && session.resets === 0; i++) await new Promise((r) => setTimeout(r, 10)); };
+
+  it("a /kill during new_session is a superseded start: no reset incident, no startOk, no stored fingerprint", async () => {
+    const stall = stalledReset();
+    const session = fakeSession({ newSession: stall.newSession });
+    const { store, sup, outcome } = harness(session, {}, {}, { sessionState: "none" });
+    let startOk = 0; outcome.startOk = () => { startOk++; };
+    sup.submit(req(createQueuedTurnRun(store)));
+    await untilReset(session);
+    await sup.abortAll("killed");
+    stall.settle().fail(new PlannerRpcError("not_running")); // the killed child's pending new_session rejects
+    await sup.whenIdle(); await new Promise((r) => setTimeout(r, 30));
+    expect(outcome.incidents).toEqual([]);
+    expect(startOk).toBe(0);
+    expect(store.getPlannerSessionState("42")).toBeUndefined();
+  });
+
+  it("a /kill that lands just before new_session answers: the reset is recorded (omp made the transcript) but the start stays superseded", async () => {
+    const stall = stalledReset();
+    const session = fakeSession({ newSession: stall.newSession });
+    const { store, sup, outcome } = harness(session, {}, {}, { sessionState: "none" });
+    let startOk = 0; outcome.startOk = () => { startOk++; };
+    sup.submit(req(createQueuedTurnRun(store)));
+    await untilReset(session);
+    await sup.abortAll("killed");
+    stall.settle().ok();
+    await sup.whenIdle(); await new Promise((r) => setTimeout(r, 30));
+    expect(startOk).toBe(0);
+    expect(sup.state()).toBe("STOPPED");
+    expect(store.getPlannerSessionState("42")).toMatchObject({ seed_pending: 1 });
+  });
+
   it("a cancelled new_session is a failure too", async () => {
     const { store, sup, outcome } = harness(fakeSession({ newSession: async () => ({ cancelled: true }) }), {}, {}, { sessionState: "none" });
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();

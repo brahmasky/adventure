@@ -644,8 +644,9 @@ export class PlannerSupervisor {
   private async resetOrRefuse(gen: number): Promise<string | null> {
     const live = this.session;
     if (!live || gen !== this.gen) return START_SUPERSEDED;
-    const failure = await this.resetForLessonChange(live);
+    const failure = await this.resetForLessonChange(live, gen);
     if (!failure) return null;
+    if (failure === START_SUPERSEDED) return failure; // whoever superseded this start already stopped the child
     await this.stopSession();
     this.st = "STOPPED";
     return failure;
@@ -657,7 +658,7 @@ export class PlannerSupervisor {
    * fresh session instead of keeping a transcript that carries the old habit. A failed or cancelled new_session fails
    * the spawn with an incident, never a silent resume. Flag-gated (HOUGE_LESSON_SESSION_RESET, default on).
    */
-  private async resetForLessonChange(s: PlannerSessionLike): Promise<string | null> {
+  private async resetForLessonChange(s: PlannerSessionLike, gen: number): Promise<string | null> {
     const { store, chatId, env } = this.d;
     if (!resolveLessonSessionReset(env)) return null;
     const fingerprint = lessonSetFingerprint(store);
@@ -665,11 +666,14 @@ export class PlannerSupervisor {
     try {
       if ((await s.newSession()).cancelled) throw new PlannerRpcError("new_session_cancelled");
     } catch (e) {
+      // a /kill or abort stopped the child mid-reset: its pending new_session rejects, which is not a failed reset
+      if (gen !== this.gen || this.session !== s) return START_SUPERSEDED;
       this.incident("planner_session_reset_failed", { reason: rpcCode(e) });
       return `session_reset_failed: ${rpcCode(e)}`;
     }
+    // omp already made the new transcript: record it even when the start was superseded meanwhile (but never serve it)
     store.recordPlannerSessionReset(chatId, fingerprint, new Date().toISOString());
-    return null;
+    return gen !== this.gen || this.session !== s ? START_SUPERSEDED : null;
   }
 
   /** Bounded start wait that also ends (throws) the moment this child is stopped or replaced. */
