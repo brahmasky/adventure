@@ -9,11 +9,11 @@ awaits merge, rebuild, kickstart and a live re-gate.**
 **Schedule-born turns (`fix/schedule-turns-not-paco`, 2026-10-02):** a scheduled run's goal is no longer read as Paco speaking — `lesson_write` in a scheduled run is refused in code, its code-owned thread scan skips schedule-born turns, and episodic distill drops both turns of a scheduled run (by `runs.source`); awaits review, merge, rebuild, kickstart and a live check (after the AI日报 fires, save a real lesson that it no longer refuses as code-owned; the next distill pass adds no schedule-goal facts). Facts #108/#122/#129 already in the DB are not touched by this fix: retire them by hand.
 
 **Follow-ups (`chore/followups`, 2026-10-02):** awaits review, merge, rebuild, kickstart and a live check (kickstart while a tick runs: the boot after it reads `kickstart` with `stopped_at` set, never `crash_recovery`).
-- [x] Background ticks stop on shutdown: every model-backed tick takes the stop signal, the one-shot seat aborts its in-flight leg with no audit row, a distill window commits whole or not at all (ADR 0028 line).
-- [x] `live-gate-omp.mjs`: case 3 with no tool call is INCONCLUSIVE after one retry, `--cases` keeps its order, no-TTY operator steps are SKIPPED, a throwing case is a FAIL and the table still prints.
+- [x] Background ticks stop on shutdown: every model-backed tick takes the stop signal, the one-shot seat aborts its in-flight leg (audited error{aborted}, ignored by the failing-leg sweep), a distill window reconciles against its own pending facts and commits in one transaction, a stopped panel restores its weekly latch (ADR 0028 line).
+- [x] `live-gate-omp.mjs`: case 3 with no tool call and no canary error is INCONCLUSIVE after one retry (a canary error with no tool rows is FAIL), `--cases` keeps its order, no-TTY operator steps are SKIPPED, a throwing case is a FAIL and the table still prints.
 - [x] Test gaps: the ungated memory_correct entry refuses a write; the distill watermark lands on the window's last turn.
-- [x] memory corrections are stored as Paco wrote them and shown as inline code on the approval and Undo cards (rows written before this keep their stripped text).
-- [x] `deploy/launchd/setup-new-host.sh` checks git, node, npm, bun, omp (= the pin) and codex; agy and ollama optional; plist PATH carries bun; `--check-only`.
+- [x] memory corrections are stored as Paco wrote them, minus invisible bidi/zero-width controls, and shown as inline code on the approval and Undo cards (rows written before this keep their stripped text).
+- [x] `deploy/launchd/setup-new-host.sh` checks git, node, npm, bun, omp (= the pin) and codex; agy and ollama optional; plist PATH carries bun, deduped; paths escaped for XML and sed; `--check-only` lints and deletes its temp plist.
 - [ ] **Paco:** push `main` and delete the `backup/*-pre-quote-rewrite` refs.
 
 **houge_status (`feat/houge-status`, 2026-10-02):** read-only `houge_status` bridge tool + `daemon_boots` boot record + `[runtime]` restart note on each chat's first turn after a boot; awaits merge, rebuild, kickstart and a live check (ask Houge "did you restart / which code is live?").
