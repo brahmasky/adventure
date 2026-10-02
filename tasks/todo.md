@@ -22,6 +22,19 @@ At `f4930da`: typecheck 0, 224 files / 3111 tests green. No branch is ahead of `
 SP1 design trail: ADR 0028 + amendments, spec `docs/superpowers/specs/2026-09-30-omp-runtime-design.md` (Rev 15),
 plan `docs/superpowers/plans/2026-09-30-omp-runtime.md`.
 
+**Distill dev-chatter fix (`fix/distill-dev-chatter`, 2026-10-02):** distill no longer stores talk about Houge
+itself as facts about Paco (drops runs that used `self_write_propose` / `self_diagnose` / `memory_correct_write`
+and turns steered into them; waits for a run to settle; prompt rule for the rest). Two reviewers (correctness,
+Codex) → round-2 fixes; live gate `scripts/live-gate-distill-dev-chatter.mjs` PASS ×2. Awaits merge, rebuild,
+**Paco's** kickstart. Residual: the prompt guard varies (one memory-criticism remark in two gate runs).
+- [ ] **Paco:** retire the chatter/probe facts in one chat message ("retire facts #153 #160 #161 #162 #167 #172
+  #174") — one Approve card. Lesson #43 still carries the 齐天大圣 probe clauses (`memory_correct` cannot edit
+  lessons).
+
+**Jev:** paused, not retired — the live shadow lost its comparator (`classifyIntent`) at the cutover. Next role:
+a pre-planner router, its own spec after a week of omp quota data; the API counts as free, and any 429/auth
+error must reach Paco (today's client folds 429 into a silent retry).
+
 **Live evidence already in the DB:**
 - [x] memory_correct retire via the Approve tap: facts #25, #116, #122, #129 retired (`memory_changes`);
   #108 is `superseded`.

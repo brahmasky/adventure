@@ -356,8 +356,10 @@ Flip [Merge & reload] from human-tapped to autonomous (notify-after) ONLY when A
    57% coverage; 94.2% all-sources incl. schedule fires; $0.035).
    Live shadow built 2026-09-28 (`feat/jev-live-shadow`, stacked PR; live gate PASS): flag-gated,
    advisory, never waits; `houge jev-shadow report` gives PROMOTE / HOLD / KILL per language.
-   Next: merge, arm on the mini, read the report after ≥ 60 matched live turns and ≥ 4 weeks;
-   promotion is a separate spec. Queued behind it (Paco, 2026-09-25):
+   Merged and armed 2026-09-28; **paused 2026-10-01** when the omp cutover deleted `classifyIntent`, its
+   comparator (14 turns shadowed, verdict HOLD). Not retired (Paco, 2026-10-02): next role is a pre-planner
+   router (cheap leg vs Opus, one-shot vs planner), its own spec after a week of omp quota data; the API
+   counts as free and any 429/auth error must reach Paco. Queued behind it (Paco, 2026-09-25):
    multimodal ingest (voice/photo/video → text at the Telegram adapter) and reading Paco's own
    inbox through the existing quarantined `gmail_read` path.
 
