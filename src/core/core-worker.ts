@@ -953,7 +953,7 @@ export class CoreWorker {
     message: string,
     queryEmbedding: Float32Array | null
   ): GatedRetrieval<EpisodicFactRow> {
-    if (!resolveEpisodicEnabled(process.env)) return noRetrieval(false, false);
+    if (!resolveEpisodicEnabled(process.env)) return noRetrieval(queryEmbedding !== null, false);
     return retrieveEpisodicFacts({
       store: this.runStore,
       chat_id,
@@ -969,7 +969,7 @@ export class CoreWorker {
    * all — and sharing the turn's one query embedding. Never throws; empty on any failure.
    */
   private wikiPagesForTurn(message: string, queryEmbedding: Float32Array | null): GatedRetrieval<WikiPageRow> {
-    if (!resolveWikiEnabled(process.env)) return noRetrieval(false, false);
+    if (!resolveWikiEnabled(process.env)) return noRetrieval(queryEmbedding !== null, false);
     return retrieveWikiPages({
       store: this.runStore,
       queryText: message,
@@ -2127,7 +2127,8 @@ export class CoreWorker {
 
   /** The turn's episodic facts (core band excluded) and wiki pages, one shared query embedding, plus the gate telemetry. */
   private async retrieveForOmpTurn(chatId: string, message: string): Promise<TurnRetrieval> {
-    const embedding = resolveEpisodicEnabled(process.env) || resolveWikiEnabled(process.env) ? await this.embedQueryForTurn(message) : null;
+    const attempted = resolveEpisodicEnabled(process.env) || resolveWikiEnabled(process.env);
+    const embedding = attempted ? await this.embedQueryForTurn(message) : null;
     const coreIds = new Set(
       resolveEpisodicEnabled(process.env) ? this.runStore.getCoreEpisodicFacts(chatId, resolveEpisodicCoreCap(process.env)).map((f) => f.id) : []
     );
@@ -2137,7 +2138,8 @@ export class CoreWorker {
     return {
       facts: rows.map((f) => ({ id: f.id, block: renderEpisodicFactsBlock([f]) })),
       pages: pages.rows.map((p) => ({ id: p.id, block: renderWikiBlock([p]) })),
-      telemetry: { facts: telemetryOf(facts, rows.length), pages: telemetryOf(pages, pages.rows.length) }
+      // No telemetry when no embedding was attempted (both memory flags off): `embedding:false` then means a FAILED embed.
+      ...(attempted ? { telemetry: { facts: telemetryOf(facts, rows.length), pages: telemetryOf(pages, pages.rows.length) } } : {})
     };
   }
 

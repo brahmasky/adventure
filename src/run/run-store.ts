@@ -4498,6 +4498,17 @@ export class RunStore {
     `).all<{ subject: string; consecutive_failures: number }>();
   }
 
+  /** `loop_started` turns in (since, until] that carry retrieval telemetry, and how many of them got no query embedding. */
+  countEmbeddingTurns(since: string, until: string): { turns: number; without: number } {
+    return this.db.prepare(`
+      SELECT COUNT(*) AS turns,
+        COALESCE(SUM(CASE WHEN json_extract(payload_json, '$.retrieval.facts.embedding') = 0 THEN 1 ELSE 0 END), 0) AS without
+      FROM ledger_events
+      WHERE event_type = 'loop_started' AND occurred_at > ? AND occurred_at <= ?
+        AND json_extract(payload_json, '$.retrieval.facts.embedding') IS NOT NULL
+    `).get<{ turns: number; without: number }>(since, until) ?? { turns: 0, without: 0 };
+  }
+
   /**
    * Slice 2 (review W4): a provider tried at least `minAttempts` times in the window with ZERO
    * `ok` is a dead leg — the D1 shape (agy failed every call for ~3 months while `pi` answered),

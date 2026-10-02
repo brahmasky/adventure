@@ -80,7 +80,7 @@ export const DISK_FREE_LOW_BYTES = 2 * 1024 ** 3;
 /** The kinds the sweep detects — and therefore the ONLY kinds it may resolve. */
 export const SWEEP_INCIDENT_KINDS = [
   "duplicate_schedule", "stuck_run", "undelivered_notification", "overdue_schedule", "failed_schedule",
-  "heartbeat_gap", "llm_leg_failing", "disk_free_low", "wall_collapsed", "lesson_dropped"
+  "heartbeat_gap", "llm_leg_failing", "disk_free_low", "wall_collapsed", "lesson_dropped", "embeddings_unavailable"
 ] as const;
 export type IncidentKind = (typeof SWEEP_INCIDENT_KINDS)[number];
 const SWEEP_KINDS: ReadonlySet<string> = new Set(SWEEP_INCIDENT_KINDS);
@@ -172,6 +172,29 @@ function memoryViolations(store: RunStore, env: NodeJS.ProcessEnv): InvariantVio
   }));
 }
 
+/** Window and floor for `embeddings_unavailable`: turns that attempted an embedding, in the last 12 h. */
+export const EMBEDDINGS_WINDOW_MS = 12 * 60 * 60 * 1000;
+export const EMBEDDINGS_MIN_TURNS = 3;
+
+/**
+ * Embedding outage over the window. Evidence = a `loop_started` row carrying `retrieval` telemetry (written only when
+ * a query embedding was attempted: a memory flag was on); rows without it are ignored. Open when at least
+ * {@link EMBEDDINGS_MIN_TURNS} such turns exist and none obtained an embedding (`facts.embedding` is false only for
+ * "no query embedding obtained"); any success resolves it.
+ */
+export function checkEmbeddingsAvailable(
+  store: RunStore, now: string, windowMs = EMBEDDINGS_WINDOW_MS
+): { open: boolean; turns: number; without: number } {
+  const since = new Date(Date.parse(now) - windowMs).toISOString();
+  const row = store.countEmbeddingTurns(since, now);
+  return { open: row.turns >= EMBEDDINGS_MIN_TURNS && row.without === row.turns, turns: row.turns, without: row.without };
+}
+
+function embeddingsViolations(store: RunStore, now: string): InvariantViolation[] {
+  const r = checkEmbeddingsAvailable(store, now);
+  return r.open ? [{ kind: "embeddings_unavailable", subject: "embeddings", detail: { turns: r.turns, without: r.without } }] : [];
+}
+
 /** Pure detection: compose the store's seven invariant queries into a flat violation list. */
 export function detectViolations(
   store: RunStore,
@@ -179,7 +202,9 @@ export function detectViolations(
   env: NodeJS.ProcessEnv = process.env,
   probe: OmpSweepProbe = {}
 ): InvariantViolation[] {
-  const violations: InvariantViolation[] = [...detectOmpViolations(store, probe), ...memoryViolations(store, env)];
+  const violations: InvariantViolation[] = [
+    ...detectOmpViolations(store, probe), ...memoryViolations(store, env), ...embeddingsViolations(store, now)
+  ];
 
   for (const row of store.findDuplicateEnabledSchedules()) {
     violations.push({

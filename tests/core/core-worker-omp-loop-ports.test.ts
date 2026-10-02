@@ -329,6 +329,20 @@ describe("episodic memory in the omp turn context (Phase M B3: retrieval + attri
     expect(started(run_id)).toMatchObject({ episodic_fact_ids: [id] });
   });
 
+  it("telemetry is truthful about the embedding: wiki-only obtains one (facts.embedding true); a failed embed is false; no flags records none (the embeddings_unavailable evidence)", async () => {
+    process.env.HOUGE_WIKI_ENABLED = "1";
+    const a = run("q one");
+    await buildTurnPrompt(contextFor(async () => Float32Array.from([1, 0])), { run_id: a, chat_id: "555", message: "q one", source: "telegram" });
+    expect(events(a, "loop_started")[0]?.payload.retrieval).toMatchObject({ facts: { embedding: true }, pages: { embedding: true } });
+    const b = run("q two");
+    await buildTurnPrompt(contextFor(async () => null), { run_id: b, chat_id: "555", message: "q two", source: "telegram" });
+    expect(events(b, "loop_started")[0]?.payload.retrieval).toMatchObject({ facts: { embedding: false } });
+    delete process.env.HOUGE_WIKI_ENABLED;
+    const c = run("q three");
+    await buildTurnPrompt(contextFor(async () => null), { run_id: c, chat_id: "555", message: "q three", source: "telegram" });
+    expect(events(c, "loop_started")[0]?.payload).not.toHaveProperty("retrieval");
+  });
+
   it("flag OFF (default): no block, empty ids, the fact untouched, embed never called", async () => {
     // replaces: episodic memory on the loop › "flag OFF (default): NO section, empty ids, facts untouched, embed never called"
     const id = store.addEpisodicFact({ chat_id: "555", fact: "Paco lives in Sydney", created_at: "2026-07-14T00:00:00.000Z" });
