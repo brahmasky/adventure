@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_WIKI_DECAY_DAYS, resolveWikiDecayDays } from "../../src/capabilities/wiki.js";
 import {
-  DEFAULT_LESSON_PRUNE_THRESHOLD,
   parseRatingHistory,
   RunStore
 } from "../../src/run/run-store.js";
@@ -182,21 +181,16 @@ describe("runWikiDecayTick — the daily forgetting pass (runLessonDecayTick twi
     }
   });
 
-  it("prunes REVERSIBLY below the lessons prune line — the row survives, status only", () => {
+  it("decay never prunes a page in A1: reuse walks down, the page stays active (spec §3 Decay)", () => {
     const store = RunStore.openInMemory();
     try {
       const id = addPage(store, { created_at: daysAgo(90) });
-      // Walk reuse under the line: 0.2 × 0.8 = 0.16 < 0.2 (the lessons threshold).
       // @ts-expect-error — reach the private db handle to shape reuse_value.
       store.db.prepare("UPDATE wiki_pages SET reuse_value = ? WHERE id = ?").run(0.2, id);
-
       const result = store.runWikiDecayTick(NOW);
-      expect(result.pruned_ids).toEqual([id]);
-      const row = store.getWikiPage(id)!;
-      expect(row.status).toBe("pruned"); // reversible, never a DELETE
-      expect(row.title).toBe("ASML Q2 2026 earnings"); // the row still reads back whole
-      expect(row.reuse_value).toBeCloseTo(0.16);
-      expect(DEFAULT_LESSON_PRUNE_THRESHOLD).toBe(0.2); // the shared prune line
+      expect(result.pruned_ids).toEqual([]);
+      expect(store.getWikiPage(id)!.status).toBe("active");
+      expect(store.getWikiPage(id)!.reuse_value).toBeCloseTo(0.16);
     } finally {
       store.close();
     }

@@ -83,6 +83,19 @@ describe("turn context — what the planner knows and how ratings attribute (spe
     expect(store.listOpenIncidents().filter((i) => i.kind === "lesson_dropped")).toEqual([]);
   });
 
+  it("records the retrieval telemetry beside applied_artifacts, whose field names stay fixed (spec §3)", async () => {
+    const store = RunStore.openInMemory();
+    const run_id = createQueuedTurnRun(store);
+    const telemetry = {
+      facts: { admitted: 0, best_admitted: null, best_rejected: 0.41, embedding: true, fts_only: false },
+      pages: { admitted: 0, best_admitted: null, best_rejected: null, embedding: true, fts_only: false }
+    };
+    const d = { ...deps(store), retrieve: async () => ({ facts: [], pages: [], telemetry }) };
+    await buildTurnPrompt(d, { run_id, chat_id: "42", message: "hi", source: "telegram" });
+    const ev = store.getLedgerEvents(run_id).find((e) => e.event_type === "loop_started");
+    expect(ev?.payload.retrieval).toEqual(telemetry);
+  });
+
   it("records loop_started with today's exact applied_artifacts field names so rating attribution still works", async () => {
     const store = RunStore.openInMemory();
     const run_id = createQueuedTurnRun(store);

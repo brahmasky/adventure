@@ -137,7 +137,8 @@ import { ompConfigProblems, resolveOmpConfig } from "../omp/omp-config.js";
 import { PlannerSupervisor, type SupervisorDeps, type TurnOutcomeSink } from "../omp/planner-supervisor.js";
 import { shellToolExecute } from "../omp/shell-adapter.js";
 import { loadToolDeclarations, TOOL_DECLS_DIR, type ToolDeclaration } from "../omp/tool-decls.js";
-import type { TurnContextDeps } from "../omp/turn-context.js";
+import type { TurnContextDeps, TurnRetrieval } from "../omp/turn-context.js";
+import { noRetrieval, telemetryOf, type GatedRetrieval } from "../run/relevance-gate.js";
 import { readTombstone } from "../run/tombstone.js";
 import { chatWorkspace } from "../omp/workspace.js";
 import { installedBinaryDirs, type PathContext } from "../omp/protected-paths.js";
@@ -951,8 +952,8 @@ export class CoreWorker {
     chat_id: string,
     message: string,
     queryEmbedding: Float32Array | null
-  ): EpisodicFactRow[] {
-    if (!resolveEpisodicEnabled(process.env)) return [];
+  ): GatedRetrieval<EpisodicFactRow> {
+    if (!resolveEpisodicEnabled(process.env)) return noRetrieval(false, false);
     return retrieveEpisodicFacts({
       store: this.runStore,
       chat_id,
@@ -967,8 +968,8 @@ export class CoreWorker {
    * pages carry no chat_id): gated on the master flag — disarmed means no store read at
    * all — and sharing the turn's one query embedding. Never throws; empty on any failure.
    */
-  private wikiPagesForTurn(message: string, queryEmbedding: Float32Array | null): WikiPageRow[] {
-    if (!resolveWikiEnabled(process.env)) return [];
+  private wikiPagesForTurn(message: string, queryEmbedding: Float32Array | null): GatedRetrieval<WikiPageRow> {
+    if (!resolveWikiEnabled(process.env)) return noRetrieval(false, false);
     return retrieveWikiPages({
       store: this.runStore,
       queryText: message,
@@ -2124,19 +2125,19 @@ export class CoreWorker {
     };
   }
 
-  /** The turn's episodic facts (core band excluded) and wiki pages, one shared query embedding, one block per row. */
-  private async retrieveForOmpTurn(chatId: string, message: string): Promise<{
-    facts: Array<{ id: number; block: string }>; pages: Array<{ id: number; block: string }>;
-  }> {
+  /** The turn's episodic facts (core band excluded) and wiki pages, one shared query embedding, plus the gate telemetry. */
+  private async retrieveForOmpTurn(chatId: string, message: string): Promise<TurnRetrieval> {
     const embedding = resolveEpisodicEnabled(process.env) || resolveWikiEnabled(process.env) ? await this.embedQueryForTurn(message) : null;
     const coreIds = new Set(
       resolveEpisodicEnabled(process.env) ? this.runStore.getCoreEpisodicFacts(chatId, resolveEpisodicCoreCap(process.env)).map((f) => f.id) : []
     );
-    const facts = this.episodicFactsForTurn(chatId, message, embedding).filter((f) => !coreIds.has(f.id));
+    const facts = this.episodicFactsForTurn(chatId, message, embedding);
     const pages = this.wikiPagesForTurn(message, embedding);
+    const rows = facts.rows.filter((f) => !coreIds.has(f.id));
     return {
-      facts: facts.map((f) => ({ id: f.id, block: renderEpisodicFactsBlock([f]) })),
-      pages: pages.map((p) => ({ id: p.id, block: renderWikiBlock([p]) }))
+      facts: rows.map((f) => ({ id: f.id, block: renderEpisodicFactsBlock([f]) })),
+      pages: pages.rows.map((p) => ({ id: p.id, block: renderWikiBlock([p]) })),
+      telemetry: { facts: telemetryOf(facts, rows.length), pages: telemetryOf(pages, pages.rows.length) }
     };
   }
 

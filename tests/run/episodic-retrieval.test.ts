@@ -15,7 +15,8 @@ import { RunStore, type EpisodicFactRow } from "../../src/run/run-store.js";
 // defaults (delete) so a daemon .env override can never flip these assertions red.
 const EPISODIC_ENV_VARS = [
   "HOUGE_EPISODIC_RETRIEVE_CAP",
-  "HOUGE_EPISODIC_RECENCY_HALFLIFE_DAYS"
+  "HOUGE_EPISODIC_RECENCY_HALFLIFE_DAYS",
+  "HOUGE_EPISODIC_MIN_COSINE"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
@@ -24,6 +25,7 @@ beforeEach(() => {
     savedEnv[key] = process.env[key];
     delete process.env[key];
   }
+  process.env.HOUGE_EPISODIC_MIN_COSINE = "0"; // these are the pre-A1 scoring tests: gate 0 = that behaviour
 });
 afterEach(() => {
   for (const key of EPISODIC_ENV_VARS) {
@@ -98,7 +100,7 @@ describe("retrieveEpisodicFacts — scoring properties", () => {
       queryText: "where does Paco live?",
       queryEmbedding: query,
       now: NOW
-    });
+    }).rows;
     expect(result.map((f) => f.id)).toEqual([2, 1]);
   });
 
@@ -112,7 +114,7 @@ describe("retrieveEpisodicFacts — scoring properties", () => {
       queryText: "q",
       queryEmbedding: query,
       now: NOW
-    });
+    }).rows;
     expect(result.map((f) => f.id)).toEqual([2, 1]); // higher reuse first…
   });
 
@@ -126,7 +128,7 @@ describe("retrieveEpisodicFacts — scoring properties", () => {
       queryText: "q",
       queryEmbedding: query,
       now: NOW
-    });
+    }).rows;
     expect(result.map((f) => f.id)).toEqual([1, 2]);
   });
 
@@ -138,7 +140,7 @@ describe("retrieveEpisodicFacts — scoring properties", () => {
       queryText: "q",
       queryEmbedding: null,
       now: NOW
-    });
+    }).rows;
     expect(result.map((f) => f.id)).toEqual([1, 2, 3]);
   });
 
@@ -150,7 +152,7 @@ describe("retrieveEpisodicFacts — scoring properties", () => {
       queryText: "q",
       queryEmbedding: null,
       now: NOW
-    });
+    }).rows;
     expect(result.length).toBe(DEFAULT_EPISODIC_RETRIEVE_CAP);
   });
 
@@ -165,7 +167,7 @@ describe("retrieveEpisodicFacts — scoring properties", () => {
       queryText: "q",
       queryEmbedding: null,
       now: NOW
-    });
+    }).rows;
     expect(result.map((f) => f.id)).toEqual([1, 2]);
     expect(result.reduce((sum, f) => sum + f.fact.length, 0)).toBeLessThanOrEqual(EPISODIC_RETRIEVE_CHAR_GUARD);
   });
@@ -179,7 +181,7 @@ describe("retrieveEpisodicFacts — scoring properties", () => {
         throw new Error("unreachable");
       }
     };
-    expect(retrieveEpisodicFacts({ store, chat_id: CHAT, queryText: "q", queryEmbedding: null, now: NOW })).toEqual([]);
+    expect(retrieveEpisodicFacts({ store, chat_id: CHAT, queryText: "q", queryEmbedding: null, now: NOW }).rows).toEqual([]);
   });
 });
 
@@ -211,7 +213,7 @@ describe("retrieveEpisodicFacts — CJK + degradation (the KNOWN unicode61 const
         queryText: query,
         queryEmbedding: Float32Array.from([1, 0, 0]), // "semantically about cycling"
         now: NOW
-      });
+      }).rows;
       expect(result[0]!.id).toBe(cycling);
     } finally {
       store.close();
@@ -236,7 +238,7 @@ describe("retrieveEpisodicFacts — CJK + degradation (the KNOWN unicode61 const
         queryText: "is the Sydney harbour walk nice?",
         queryEmbedding: null,
         now: NOW
-      });
+      }).rows;
       // The keyword hit outranks the newer-but-irrelevant fact despite 5 days of decay.
       expect(result[0]!.id).toBe(sydney);
     } finally {

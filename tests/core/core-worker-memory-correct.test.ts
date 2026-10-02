@@ -164,7 +164,7 @@ describe("memory_correct: retire and correct take only ids a search offered in t
     const userTurn = store.getRecentChatTurns(CHAT, 10).find((x) => x.run_id === t.run_id && x.role === "user")!;
     expect(JSON.parse(created.source_turn_ids)).toEqual([userTurn.turn_id]);
     expect(store.getEpisodicFact(id)).toMatchObject({ status: "superseded", superseded_by: created.id });
-    const texts = retrieveEpisodicFacts({ store, chat_id: CHAT, queryText: "daily report ASML", queryEmbedding: null, now: NOW }).map((f) => f.fact);
+    const texts = retrieveEpisodicFacts({ store, chat_id: CHAT, queryText: "daily report ASML", queryEmbedding: null, now: NOW }).rows.map((f) => f.fact);
     expect(texts).not.toContain(ASML);
     const card = [...drainOutbox(store).values()].find((p) => String(p.text).startsWith("🧠"));
     expect(card?.text).toBe(`🧠 Corrected #${id} → #${created.id}: \`Paco's AI daily report covers AI news only, never ASML\`\nwas #${id}: "${ASML}"`);

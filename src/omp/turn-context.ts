@@ -6,8 +6,16 @@ import { composeSystemPrompt } from "../prompt/composer.js";
 import { resolveLocalTimeZone } from "../prompt/tz-convert.js";
 import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
 import { OMP_LESSON_SCOPES, renderLessonSection, type LessonSection, type LessonSkip } from "../run/lesson-render.js";
+import { type RetrievalTelemetry } from "../run/relevance-gate.js";
 import { type DaemonBoot, type RunStore } from "../run/run-store.js";
 import { clipText, isBuildStale, localStamp } from "../status/houge-status.js";
+
+/** One turn's retrieval: one block per row, and the gate telemetry the attribution row carries (spec §3). */
+export interface TurnRetrieval {
+  facts: Array<{ id: number; block: string }>;
+  pages: Array<{ id: number; block: string }>;
+  telemetry?: { facts: RetrievalTelemetry; pages: RetrievalTelemetry };
+}
 
 export interface TurnContextDeps {
   store: RunStore;
@@ -15,10 +23,7 @@ export interface TurnContextDeps {
   dataDir: string;
   skillsReader: (scope: string) => string | undefined;
   coreBlock: (chatId: string) => { block: string; ids: number[] } | undefined;
-  retrieve: (
-    chatId: string,
-    message: string
-  ) => Promise<{ facts: Array<{ id: number; block: string }>; pages: Array<{ id: number; block: string }> }>;
+  retrieve: (chatId: string, message: string) => Promise<TurnRetrieval>;
   env: NodeJS.ProcessEnv;
   now?: () => Date;
   /** This process's pid: the restart note is written only when the newest boot record is this daemon's (default process.pid). */
@@ -195,7 +200,7 @@ export function writeSystemPromptFile(d: TurnContextDeps, chatId: string): { pat
   return { path, snapshot };
 }
 
-type Hits = { facts: Array<{ id: number }>; pages: Array<{ id: number }> };
+type Hits = Pick<TurnRetrieval, "telemetry"> & { facts: Array<{ id: number }>; pages: Array<{ id: number }> };
 
 /** Record the attribution seed (field names unchanged) and touch only what the prompt holds (spec §1-2). */
 function recordAttribution(d: TurnContextDeps, runId: string, applied: AppliedSnapshot, hits: Hits): void {
@@ -208,7 +213,8 @@ function recordAttribution(d: TurnContextDeps, runId: string, applied: AppliedSn
       skill_scopes: applied.skillScopes,
       episodic_fact_ids: hits.facts.map((f) => f.id),
       wiki_page_ids: hits.pages.map((p) => p.id)
-    }
+    },
+    ...(hits.telemetry ? { retrieval: hits.telemetry } : {})
   });
   if (applied.lessonIds.length > 0) d.store.touchApplied(applied.lessonIds);
   const factIds = [...applied.coreFactIds, ...hits.facts.map((f) => f.id)];
@@ -220,8 +226,8 @@ function recordAttribution(d: TurnContextDeps, runId: string, applied: AppliedSn
 export interface TurnPrompt { prompt: string; restartNote: string }
 
 export async function buildTurnPrompt(d: TurnContextDeps, i: TurnPromptInput): Promise<TurnPrompt> {
-  const { facts, pages } = await d.retrieve(i.chat_id, i.message);
-  recordAttribution(d, i.run_id, i.applied ?? appliedOf(buildSystemPrompt(d, i.chat_id)), { facts, pages });
+  const { facts, pages, telemetry } = await d.retrieve(i.chat_id, i.message);
+  recordAttribution(d, i.run_id, i.applied ?? appliedOf(buildSystemPrompt(d, i.chat_id)), { facts, pages, ...(telemetry ? { telemetry } : {}) });
   const blocks = [...facts, ...pages].map((x) => x.block.replaceAll("[/context]", "[ /context]"));
   const context = blocks.length > 0 ? `[context]\n${blocks.join("\n\n")}\n[/context]\n\n` : "";
   const prefix = i.source === "schedule" ? SCHEDULED_PREFIX(i.goal ?? i.message) : "";

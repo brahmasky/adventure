@@ -1705,7 +1705,7 @@ export class RunStore {
    */
   recordLoopStarted(
     run_id: string,
-    payload: { manifest: string[]; hint: string; applied_artifacts: Record<string, unknown> }
+    payload: { manifest: string[]; hint: string; applied_artifacts: Record<string, unknown>; retrieval?: Record<string, unknown> }
   ): void {
     this.appendRunLedgerEvent(run_id, "loop_started", "core", payload);
   }
@@ -3004,11 +3004,10 @@ export class RunStore {
   }
 
   /**
-   * B4 step 1 — DECAY (the lessons `runLessonDecayTick` twin, but a primitive: the
-   * async consolidate tick owns the 24h idempotency): active facts untouched for
-   * `decayDays` (from max(created_at, last_used) — a retrieval-applied fact is not
-   * stale) lose 20% reuse_value; below `pruneThreshold` they demote to 'pruned'
-   * (reversible — NEVER a delete).
+   * B4 step 1 — DECAY: active non-core facts untouched for `decayDays` (from max(created_at, last_used) — a
+   * retrieval-applied fact is not stale) lose 20% reuse_value. Memory A1 §3: decay no longer PRUNES (the gate
+   * touches fewer rows, so valid rarely-matched facts would age out); the per-chat cap-prune still bounds the
+   * count, and B redesigns the lifecycle. `pruneThreshold` is kept for B and ignored here.
    */
   decayEpisodicFacts(
     now: string,
@@ -3021,17 +3020,9 @@ export class RunStore {
       WHERE status = 'active' AND MAX(created_at, COALESCE(last_used, created_at)) < ?
       ORDER BY id ASC
     `).all<{ id: number; reuse_value: number }>(cutoff);
-
-    const pruned_ids: number[] = [];
-    for (const row of stale) {
-      const decayed = row.reuse_value * 0.8;
-      const prune = decayed < options.pruneThreshold;
-      this.db.prepare(`
-        UPDATE episodic_facts SET reuse_value = ?${prune ? ", status = 'pruned'" : ""} WHERE id = ?
-      `).run(decayed, row.id);
-      if (prune) pruned_ids.push(row.id);
-    }
-    return { facts_decayed: stale.length, pruned_ids };
+    const stmt = this.db.prepare(`UPDATE episodic_facts SET reuse_value = ? WHERE id = ?`);
+    for (const row of stale) stmt.run(row.reuse_value * 0.8, row.id);
+    return { facts_decayed: stale.length, pruned_ids: [] };
   }
 
   /** Chats that hold at least one ACTIVE fact (the merge pass walks per chat). */
@@ -3873,11 +3864,11 @@ export class RunStore {
   }
 
   /**
-   * The daily wiki decay+prune pass (W2, the runLessonDecayTick twin): at most once per
+   * The daily wiki decay pass (W2, the runLessonDecayTick twin): at most once per
    * 24h (the `wiki_decay_state` row makes it idempotent across poll cycles). ACTIVE
    * pages unused for `decayDays` (never-used rows date from created_at) lose 20%
-   * reuse_value; below `pruneThreshold` (the lessons prune line) they demote to
-   * 'pruned' — reversible, never a DELETE. Superseded rows are exempt by construction
+   * reuse_value. It no longer prunes in A1 (memory A1 §3; `pruneThreshold` is ignored,
+   * the global cap still bounds the count). Superseded rows are exempt by construction
    * (they are already inactive lineage, not candidates). One summary ledger event per
    * executed tick.
    */
@@ -3893,21 +3884,16 @@ export class RunStore {
     }
 
     const decayDays = options.decayDays ?? resolveWikiDecayDays(process.env);
-    const threshold = options.pruneThreshold ?? resolveLessonPruneThreshold(process.env);
     const cutoff = new Date(Date.parse(now) - decayDays * 86_400_000).toISOString();
     const stale = this.db.prepare(`
       SELECT id, reuse_value FROM wiki_pages
       WHERE status = 'active' AND COALESCE(last_used, created_at) < ?
     `).all<{ id: number; reuse_value: number }>(cutoff);
 
+    // Memory A1 §3: decay no longer prunes pages (reuse still decays; the global cap still bounds the count).
     const pruned_ids: number[] = [];
     for (const row of stale) {
-      const decayed = row.reuse_value * 0.8;
-      const prune = decayed < threshold;
-      this.db.prepare(`
-        UPDATE wiki_pages SET reuse_value = ?${prune ? ", status = 'pruned'" : ""} WHERE id = ?
-      `).run(decayed, row.id);
-      if (prune) pruned_ids.push(row.id);
+      this.db.prepare(`UPDATE wiki_pages SET reuse_value = ? WHERE id = ?`).run(row.reuse_value * 0.8, row.id);
     }
 
     this.db.prepare(`UPDATE wiki_decay_state SET last_decay_at = ? WHERE id = 1`).run(now);

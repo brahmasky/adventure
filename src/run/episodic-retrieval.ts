@@ -1,4 +1,4 @@
-import { blobToFloat32, cosineSimilarity } from "../llm/embeddings.js";
+import { admit, bestOf, noRetrieval, resolveCosineGate, rowCosine, type GatedRetrieval } from "./relevance-gate.js";
 import type { EpisodicFactRow, RunStore } from "./run-store.js";
 
 /**
@@ -8,7 +8,7 @@ import type { EpisodicFactRow, RunStore } from "./run-store.js";
  *
  *   score = relevance × recency × reuse × salience
  *
- * - relevance = max(normalized BM25, cosine, floor). TWO legs on purpose: FTS5's
+ * - relevance = max(normalized BM25, cosine), behind the A1 relevance gate (the floor applies only at gate 0). TWO legs on purpose: FTS5's
  *   unicode61 tokenizer does NOT segment CJK, so for Chinese the keyword leg is
  *   near-useless and the cosine leg (local Ollama embeddings) carries relevance;
  *   with no embeddings (Ollama down / not yet backfilled) BM25 still ranks English.
@@ -40,11 +40,18 @@ export function resolveEpisodicRecencyHalflifeDays(env: NodeJS.ProcessEnv): numb
 /** Total char budget across the returned facts — overflow drops the LOWEST-scored. */
 export const EPISODIC_RETRIEVE_CHAR_GUARD = 900;
 
-/** Relevance floor for a candidate with neither an FTS hit nor a comparable embedding. */
+/** Relevance floor for a candidate with neither an FTS hit nor a comparable embedding. Used only when the gate is 0 (pre-A1 behaviour). */
 export const EPISODIC_RELEVANCE_FLOOR = 0.05;
 
 /** Reuse weight: log-compressed and small so reuse tie-breaks rather than dominates. */
 export const EPISODIC_REUSE_WEIGHT = 0.15;
+
+/** Memory A1 §3: with both embeddings present a fact enters only at cosine ≥ this. 0 = the pre-A1 pool and floor. */
+export const DEFAULT_EPISODIC_MIN_COSINE = 0.42;
+
+export function resolveEpisodicMinCosine(env: NodeJS.ProcessEnv): number {
+  return resolveCosineGate(env.HOUGE_EPISODIC_MIN_COSINE, DEFAULT_EPISODIC_MIN_COSINE);
+}
 
 /** Candidate pool sizes: FTS top-K ∪ most-recent active (active cap is 200 — cheap). */
 const FTS_POOL = 30;
@@ -61,62 +68,71 @@ export interface EpisodicRetrievalInput {
   env?: NodeJS.ProcessEnv;
 }
 
-export function retrieveEpisodicFacts(input: EpisodicRetrievalInput): EpisodicFactRow[] {
+export function retrieveEpisodicFacts(input: EpisodicRetrievalInput): GatedRetrieval<EpisodicFactRow> {
+  const env = input.env ?? process.env;
+  const gate = resolveEpisodicMinCosine(env);
+  const none = noRetrieval<EpisodicFactRow>(input.queryEmbedding !== null, gate > 0 && input.queryEmbedding === null);
   try {
-    const env = input.env ?? process.env;
-    const cap = input.cap ?? resolveEpisodicRetrieveCap(env);
-    const halflifeDays = resolveEpisodicRecencyHalflifeDays(env);
-    const nowMs = Date.parse(input.now);
-
-    // Candidate pool: FTS keyword hits ∪ the chat's most recent active facts.
     const ftsHits = input.store.searchEpisodicFactsFts(input.chat_id, input.queryText, FTS_POOL);
-    const rankById = new Map<number, number>(ftsHits.map((row) => [row.id, row.rank]));
-    const pool = new Map<number, EpisodicFactRow>(ftsHits.map((row) => [row.id, row]));
-    for (const row of input.store.getActiveEpisodicFacts(input.chat_id, RECENT_POOL)) {
-      if (!pool.has(row.id)) pool.set(row.id, row);
-    }
-    if (pool.size === 0) return [];
-
-    // BM25 normalization is RELATIVE to the best hit (bm25 ranks are negative,
-    // more negative = better): best hit → 1, weaker hits → rank/bestRank ∈ (0,1].
-    const bestRank = Math.min(...(ftsHits.length > 0 ? ftsHits.map((r) => r.rank) : [0]));
-
-    const scored = [...pool.values()].map((row) => {
-      const rank = rankById.get(row.id);
-      const bm25 =
-        rank !== undefined && bestRank < 0 ? clamp01(rank / bestRank) : 0;
-      // Number.isFinite guards a NaN/±Infinity cosine (possible only from out-of-band
-      // blob writes — zero vectors, corrupt bytes): NaN survives clamp01/Math.max and
-      // makes the sort comparator lie, floating the poisoned row to the top.
-      const rawCosine =
-        input.queryEmbedding && row.embedding
-          ? cosineSimilarity(input.queryEmbedding, blobToFloat32(row.embedding))
-          : 0;
-      const cosine = Number.isFinite(rawCosine) ? clamp01(rawCosine) : 0;
-      const relevance = Math.max(bm25, cosine, EPISODIC_RELEVANCE_FLOOR);
-      const lastAlive = Date.parse(maxIso(row.created_at, row.last_used));
-      const ageDays = Math.max(0, nowMs - lastAlive) / 86_400_000;
-      const recency = 2 ** (-ageDays / halflifeDays);
-      const reuse = 1 + EPISODIC_REUSE_WEIGHT * Math.log1p(Math.max(0, row.reuse_value));
-      const salience = clamp01(row.salience);
-      return { row, score: relevance * recency * reuse * salience };
-    });
-
-    scored.sort((a, b) => (b.score !== a.score ? b.score - a.score : a.row.id - b.row.id));
-
-    // Top-cap, then the char guard: walk best-first and stop at the first overflow —
-    // everything dropped is by construction lower-scored than everything kept.
-    const selected: EpisodicFactRow[] = [];
-    let chars = 0;
-    for (const { row } of scored.slice(0, cap)) {
-      if (chars + row.fact.length > EPISODIC_RETRIEVE_CHAR_GUARD) break;
-      chars += row.fact.length;
-      selected.push(row);
-    }
-    return selected;
+    const pool = factPool(input, ftsHits, gate);
+    if (pool.length === 0) return none;
+    const judged = judgeFacts(input, pool, ftsHits, gate, env);
+    judged.admitted.sort((a, b) => (b.score !== a.score ? b.score - a.score : a.row.id - b.row.id));
+    const rows = withinGuard(judged.admitted.slice(0, input.cap ?? resolveEpisodicRetrieveCap(env)).map((s) => s.row));
+    return { ...none, rows, best_admitted: bestOf(judged.admittedCos), best_rejected: bestOf(judged.rejectedCos) };
   } catch {
-    return []; // retrieval is best-effort — a store/scoring failure never costs the turn
+    return none; // retrieval is best-effort — a store/scoring failure never costs the turn
   }
+}
+
+/** FTS hits ∪ (gated: the chat's whole active set | gate 0: the newest 50); FTS hits only without a query embedding. */
+function factPool(
+  input: EpisodicRetrievalInput, ftsHits: EpisodicFactRow[], gate: number
+): EpisodicFactRow[] {
+  const pool = new Map<number, EpisodicFactRow>(ftsHits.map((row) => [row.id, row]));
+  if (gate > 0 && input.queryEmbedding === null) return [...pool.values()];
+  const rest = gate > 0 ? input.store.getActiveEpisodicFacts(input.chat_id) : input.store.getActiveEpisodicFacts(input.chat_id, RECENT_POOL);
+  for (const row of rest) if (!pool.has(row.id)) pool.set(row.id, row);
+  return [...pool.values()];
+}
+
+type Scored = { row: EpisodicFactRow; score: number };
+
+/** Admit each pooled row under the gate and score the admitted (relevance × recency × reuse × salience). */
+function judgeFacts(
+  input: EpisodicRetrievalInput, pool: EpisodicFactRow[], ftsHits: Array<EpisodicFactRow & { rank: number }>, gate: number, env: NodeJS.ProcessEnv
+): { admitted: Scored[]; admittedCos: number[]; rejectedCos: number[] } {
+  const rankById = new Map<number, number>(ftsHits.map((row) => [row.id, row.rank]));
+  // BM25 is RELATIVE to the best hit (ranks are negative, more negative = better): best → 1.
+  const bestRank = Math.min(...(ftsHits.length > 0 ? ftsHits.map((r) => r.rank) : [0]));
+  const halflifeDays = resolveEpisodicRecencyHalflifeDays(env);
+  const nowMs = Date.parse(input.now);
+  const out = { admitted: [] as Scored[], admittedCos: [] as number[], rejectedCos: [] as number[] };
+  for (const row of pool) {
+    const rank = rankById.get(row.id);
+    const cosine = rowCosine(input.queryEmbedding, row.embedding);
+    const ok = admit({ gate, queryEmbedding: input.queryEmbedding !== null, cosine, ftsHit: rank !== undefined });
+    if (cosine !== null) (ok ? out.admittedCos : out.rejectedCos).push(cosine);
+    if (!ok) continue;
+    const bm25 = rank !== undefined && bestRank < 0 ? clamp01(rank / bestRank) : 0;
+    const relevance = Math.max(bm25, cosine ?? 0, gate > 0 ? 0 : EPISODIC_RELEVANCE_FLOOR);
+    const ageDays = Math.max(0, nowMs - Date.parse(maxIso(row.created_at, row.last_used))) / 86_400_000;
+    const reuse = 1 + EPISODIC_REUSE_WEIGHT * Math.log1p(Math.max(0, row.reuse_value));
+    out.admitted.push({ row, score: relevance * 2 ** (-ageDays / halflifeDays) * reuse * clamp01(row.salience) });
+  }
+  return out;
+}
+
+/** The char guard: walk best-first and stop at the first overflow (everything dropped scored lower). */
+function withinGuard(rows: EpisodicFactRow[]): EpisodicFactRow[] {
+  const selected: EpisodicFactRow[] = [];
+  let chars = 0;
+  for (const row of rows) {
+    if (chars + row.fact.length > EPISODIC_RETRIEVE_CHAR_GUARD) break;
+    chars += row.fact.length;
+    selected.push(row);
+  }
+  return selected;
 }
 
 /**

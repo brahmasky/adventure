@@ -307,6 +307,18 @@ describe("episodic memory in the omp turn context (Phase M B3: retrieval + attri
     expect(store.getEpisodicFact(id)).toMatchObject({ applied_count: 1 });
   });
 
+  it("flag ON: loop_started carries the retrieval telemetry, and a fact below the gate is not folded in (memory A1 §3)", async () => {
+    process.env.HOUGE_EPISODIC_ENABLED = "1";
+    const near = store.addEpisodicFact({ chat_id: "555", fact: "near fact", embedding: Float32Array.from([1, 0]), created_at: "2026-07-14T00:00:00.000Z" });
+    store.addEpisodicFact({ chat_id: "555", fact: "far fact", embedding: Float32Array.from([0, 1]), created_at: "2026-07-14T00:00:00.000Z" });
+    const run_id = run("a question");
+    const { prompt } = await buildTurnPrompt(contextFor(async () => Float32Array.from([1, 0])), { run_id, chat_id: "555", message: "a question", source: "telegram" });
+    expect(prompt).toContain("near fact");
+    expect(prompt).not.toContain("far fact");
+    expect(started(run_id)).toMatchObject({ episodic_fact_ids: [near] });
+    expect(events(run_id, "loop_started")[0]?.payload.retrieval).toMatchObject({ facts: { admitted: 1, embedding: true, fts_only: false } });
+  });
+
   it("flag ON but embed unavailable (null): retrieval degrades to keyword/recency and still injects", async () => {
     // replaces: episodic memory on the loop › "flag ON but embed unavailable (null): retrieval degrades to keyword/recency and still injects"
     process.env.HOUGE_EPISODIC_ENABLED = "1";

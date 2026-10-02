@@ -20,7 +20,8 @@ import {
 // defaults (delete) so a daemon .env override can never flip these assertions red.
 const WIKI_ENV_VARS = [
   "HOUGE_WIKI_RETRIEVE_CAP",
-  "HOUGE_WIKI_RECENCY_HALFLIFE_DAYS"
+  "HOUGE_WIKI_RECENCY_HALFLIFE_DAYS",
+  "HOUGE_WIKI_MIN_COSINE"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
@@ -29,6 +30,7 @@ beforeEach(() => {
     savedEnv[key] = process.env[key];
     delete process.env[key];
   }
+  process.env.HOUGE_WIKI_MIN_COSINE = "0"; // pre-A1 scoring tests: gate 0 = that behaviour
 });
 afterEach(() => {
   for (const key of WIKI_ENV_VARS) {
@@ -102,7 +104,7 @@ describe("retrieveWikiPages — the relevance triple (BM25 / cosine / floor)", (
         queryEmbedding: null,
         now: NOW,
         cap: 2
-      });
+      }).rows;
       // The keyword hit outranks the newer-but-irrelevant page despite 5 days of decay.
       expect(result[0]!.id).toBe(asml);
     } finally {
@@ -136,7 +138,7 @@ describe("retrieveWikiPages — the relevance triple (BM25 / cosine / floor)", (
         queryEmbedding: Float32Array.from([1, 0, 0]),
         now: NOW,
         cap: 2
-      });
+      }).rows;
       expect(result[0]!.id).toBe(asml);
     } finally {
       store.close();
@@ -152,7 +154,7 @@ describe("retrieveWikiPages — the relevance triple (BM25 / cosine / floor)", (
       queryEmbedding: null,
       now: NOW,
       cap: 5
-    });
+    }).rows;
     expect(result.map((p) => p.id)).toEqual([2, 1]); // both surfaced, fresh first
   });
 
@@ -168,7 +170,7 @@ describe("retrieveWikiPages — the relevance triple (BM25 / cosine / floor)", (
       queryEmbedding: null,
       now: NOW,
       cap: 5
-    });
+    }).rows;
     expect(result.map((p) => p.id)).toEqual([1, 2]);
   });
 });
@@ -183,7 +185,7 @@ describe("retrieveWikiPages — recency + reuse", () => {
       queryEmbedding: null,
       now: NOW,
       cap: 5
-    });
+    }).rows;
     expect(result.map((p) => p.id)).toEqual([1, 2]);
   });
 
@@ -206,7 +208,7 @@ describe("retrieveWikiPages — recency + reuse", () => {
       queryEmbedding: query,
       now: NOW,
       cap: 5
-    });
+    }).rows;
     expect(result.map((p) => p.id)).toEqual([2, 1]);
   });
 
@@ -219,7 +221,7 @@ describe("retrieveWikiPages — recency + reuse", () => {
       queryEmbedding: null,
       now: NOW,
       cap: 5
-    });
+    }).rows;
     expect(result.map((p) => p.id)).toEqual([2, 1]);
   });
 });
@@ -232,7 +234,7 @@ describe("retrieveWikiPages — cap, char guard, never-throws", () => {
       queryText: "q",
       queryEmbedding: null,
       now: NOW
-    });
+    }).rows;
     expect(result.length).toBe(DEFAULT_WIKI_RETRIEVE_CAP);
     expect(result.length).toBe(1);
   });
@@ -248,7 +250,7 @@ describe("retrieveWikiPages — cap, char guard, never-throws", () => {
       queryEmbedding: null,
       now: NOW,
       cap: 3
-    });
+    }).rows;
     expect(result.map((p) => p.id)).toEqual([1, 2]);
     expect(renderWikiBlock(result).length).toBeLessThanOrEqual(WIKI_RETRIEVE_CHAR_GUARD);
   });
@@ -262,7 +264,7 @@ describe("retrieveWikiPages — cap, char guard, never-throws", () => {
         throw new Error("unreachable");
       }
     };
-    expect(retrieveWikiPages({ store, queryText: "q", queryEmbedding: null, now: NOW })).toEqual([]);
+    expect(retrieveWikiPages({ store, queryText: "q", queryEmbedding: null, now: NOW }).rows).toEqual([]);
   });
 });
 

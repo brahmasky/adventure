@@ -154,18 +154,15 @@ describe("decay + prune boundaries", () => {
     }
   });
 
-  it("decay below the prune threshold demotes to 'pruned' (reversible status, NEVER a delete)", async () => {
+  it("decay never prunes in A1: reuse walks down, the fact stays active (spec §3 Decay)", async () => {
     const { store, path } = fileStore();
     try {
-      const doomed = store.addEpisodicFact({ chat_id: CHAT, fact: "doomed", created_at: daysAgo(31) });
-      const spared = store.addEpisodicFact({ chat_id: CHAT, fact: "spared", created_at: daysAgo(31) });
-      setReuseValue(path, doomed, 0.24); // 0.24 × 0.8 = 0.192 < 0.2 → pruned
-      setReuseValue(path, spared, 0.26); // 0.26 × 0.8 = 0.208 ≥ 0.2 → stays active
-
+      const low = store.addEpisodicFact({ chat_id: CHAT, fact: "rarely matched", created_at: daysAgo(31) });
+      setReuseValue(path, low, 0.24); // 0.24 × 0.8 = 0.192 < 0.2 — pruned before A1
       const result = await runEpisodicConsolidateTick({ store, llm: noLlm, embed: noEmbed, now: NOW, env: ENABLED });
-      expect(result.pruned_ids).toEqual([doomed]);
-      expect(store.getEpisodicFact(doomed)!.status).toBe("pruned"); // the row survives
-      expect(store.getEpisodicFact(spared)!.status).toBe("active");
+      expect(result.pruned_ids).toEqual([]);
+      expect(store.getEpisodicFact(low)!.status).toBe("active");
+      expect(store.getEpisodicFact(low)!.reuse_value).toBeCloseTo(0.192);
     } finally {
       store.close();
     }

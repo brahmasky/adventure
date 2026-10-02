@@ -61,7 +61,7 @@ describe("memory_changes: correct", () => {
   it("retrieval no longer returns the old text, and does return the correction", () => {
     const a = fact("Paco's daily brief needs ASML earnings");
     store.correctEpisodicFacts({ ids: [a], correction: "The daily brief never includes ASML", chat_id: CHAT, run_id: null, now: NOW });
-    const got = retrieveEpisodicFacts({ store, chat_id: CHAT, queryText: "daily brief ASML", queryEmbedding: null, now: NOW }).map((f) => f.fact);
+    const got = retrieveEpisodicFacts({ store, chat_id: CHAT, queryText: "daily brief ASML", queryEmbedding: null, now: NOW }).rows.map((f) => f.fact);
     expect(got).toEqual(["The daily brief never includes ASML"]);
   });
 
