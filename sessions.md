@@ -1451,7 +1451,7 @@ Build + independent adversarial verification subagents; each live round found a 
   Live evidence so far: corrections applied via the tap, the two stuck outbox rows `failed_terminal`.
   Open: the Telegram live checks in `tasks/todo.md`.
 
-- 2026-10-02/03 (Memory A1, merged `main@65dc16d`, live since boot 7): one build, 11 plan tasks run sequentially test-first
+- 2026-10-02/03 (Memory A1, merged `main@0c5e147`, live since boot 7): one build, 11 plan tasks run sequentially test-first
   with per-task review: lessons themed and capped and all rendered for omp under `HOUGE_LESSON_CHAR_CAP`; credit
   follows the prompt; cosine-gated fact and wiki retrieval (0.42 after an embedder benchmark, embeddinggemma kept)
   with telemetry; core facts survive merge, decay and cap; evidence-checked extraction in `shadow`; fact reconcile

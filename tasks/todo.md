@@ -26,10 +26,10 @@ plan `docs/superpowers/plans/2026-09-30-omp-runtime.md`.
 itself as facts about Paco (drops runs that used `self_write_propose` / `self_diagnose` / `memory_correct_write`
 and turns steered into them; waits for a run to settle; prompt rule for the rest). Two reviewers (correctness,
 Codex) → round-2 fixes → scoped re-review → round-3 span fix; live gate `scripts/live-gate-distill-dev-chatter.mjs`
-PASS ×3. Merged to `main` (`e3da77a`), live since boot 6. Residual: the prompt guard varies (one memory-criticism remark in two gate runs).
+PASS ×3. Merged to `main` (`d51999e`), live since boot 6. Residual: the prompt guard varies (one memory-criticism remark in two gate runs).
 - [x] Chatter/probe facts #153 #160 #161 #162 #167 #172 #174 retired by Paco.
 
-**Memory A1 (LIVE since 2026-10-03, `main@65dc16d`, boot 7):** lessons themed, capped (240/120) and all rendered for omp
+**Memory A1 (LIVE since 2026-10-03, `main@0c5e147`, boot 7; history SHAs re-written before the first push 2026-10-03 to scrub a private address — the running build reports the pre-rewrite SHA until the next rebuild):** lessons themed, capped (240/120) and all rendered for omp
 (`HOUGE_LESSON_CHAR_CAP`); credit follows the prompt; cosine-gated retrieval (0.42, embeddinggemma kept after a
 benchmark) with telemetry; core facts survive merge/decay/cap; evidence-checked extraction (`shadow`); a lesson change
 starts a fresh, seeded planner session (3-strike degrade, fail loud). Spec Rev 3
