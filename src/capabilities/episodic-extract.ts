@@ -59,7 +59,11 @@ export const EPISODIC_EXTRACT_DISCIPLINE =
   `transient states. Keep each fact under ${EPISODIC_FACT_MAX_CHARS} characters and return at ` +
   `most ${EPISODIC_MAX_FACTS_PER_PASS} facts, written in the conversation's language. Do NOT ` +
   "record smalltalk, transient states (moods, what's for lunch), or things the assistant " +
-  'itself said unless the user confirmed them. Return {"facts":[]} when nothing durable was said.';
+  "itself said unless the user confirmed them. Do NOT record anything about the assistant itself: " +
+  "its code, bugs, fixes, tests, reviews or deploys; the user approving, rejecting or asking for " +
+  "changes to it; edits to its memory or lessons; or the status or progress of a task (pending, " +
+  "interrupted, done). Facts are about the user's world, never the assistant's own build. " +
+  'Return {"facts":[]} when nothing durable was said.';
 
 /**
  * Build the extract *question* (the DATA channel): the user's name and the current time
@@ -251,7 +255,7 @@ export async function runEpisodicDistillPass(input: DistillPassInput): Promise<E
   // successive passes (the watermark lands on the last turn READ, and the chat stays listed
   // as undistilled) — a newest-first read would skip the early turns forever.
   const window = input.store.getChatTurnsAfter(input.chatId, watermark, EPISODIC_EXTRACT_TURN_CAP);
-  const turns = withoutScheduledTurns(input.store, window);
+  const turns = withoutTurnsOffPacosWorld(input.store, window);
   if (!turns.some((t) => t.role === "user")) return skipWindow(input, window, turns.length);
   if (input.signal?.aborted) return NO_PASS;
 
@@ -431,15 +435,30 @@ function writeWindow(
 }
 
 /**
- * Drop BOTH turns of every schedule-born run (2026-10-02): the user turn is the stored
- * schedule goal and the reply a digest about the world — neither is Paco speaking. Judged
- * by the run's source, never by text.
+ * Loop capabilities that mark a run as talk about Houge itself (2026-10-02): proposing a change
+ * to its code or correcting its memory. Those turns minted facts like "Paco approved the
+ * assistant's lesson_write fix plan" — Houge's build history, which git and the ledger keep.
  */
-function withoutScheduledTurns(store: Pick<RunStore, "runSource">, turns: ChatTurnRow[]): ChatTurnRow[] {
-  const scheduled = new Map<string, boolean>();
+const DEV_SESSION_CAPABILITIES: ReadonlySet<string> = new Set(["self_write_propose", "memory_correct", "memory_correct_write"]);
+
+/**
+ * Drop BOTH turns of every run that is not Paco talking about his world, judged by the run's
+ * source and the capabilities its loop used, never by text:
+ * - schedule-born (2026-10-02): the user turn is the stored schedule goal, the reply a digest;
+ * - a dev-session run ({@link DEV_SESSION_CAPABILITIES}). Talk about Houge with no such call is
+ *   left to the extract prompt.
+ */
+function withoutTurnsOffPacosWorld(
+  store: Pick<RunStore, "runSource" | "runLoopCapabilities">,
+  turns: ChatTurnRow[]
+): ChatTurnRow[] {
+  const dropped = new Map<string, boolean>();
   return turns.filter((t) => {
-    if (!scheduled.has(t.run_id)) scheduled.set(t.run_id, store.runSource(t.run_id) === "schedule");
-    return !scheduled.get(t.run_id);
+    if (!dropped.has(t.run_id)) {
+      dropped.set(t.run_id, store.runSource(t.run_id) === "schedule" ||
+        store.runLoopCapabilities(t.run_id).some((c) => DEV_SESSION_CAPABILITIES.has(c)));
+    }
+    return !dropped.get(t.run_id);
   });
 }
 

@@ -712,6 +712,88 @@ describe("runEpisodicDistillPass — schedule-born turns are not Paco speaking (
   });
 });
 
+/** A Paco turn through the real gateway intake whose loop used the given capabilities (as the bridge records them). */
+function pacoRunUsing(store: RunStore, goal: string, capabilities: string[]): string {
+  const intake = new Gateway(store).intake(buildTypedTaskEvent({
+    source: "telegram", type: "turn", program: "turn", goal, requested_by: { kind: "user", id: "paco" },
+    notify: { kind: "telegram", chat_id: CHAT }, idempotency_key: `telegram:t:${goal}`, source_reference: `telegram:update:${goal}`
+  }));
+  if (!intake.ok) throw new Error(`intake failed: ${JSON.stringify(intake)}`);
+  for (const capability of capabilities) {
+    store.recordLoopStep(intake.run_id, { step: 1, action: capability, capability, ok: true, result_digest: "" });
+  }
+  return intake.run_id;
+}
+
+describe("runEpisodicDistillPass — talk about Houge itself is not a fact about Paco (live 2026-10-02)", () => {
+  // Turns that proposed a self-write or corrected Houge's memory minted facts like "Paco approved the
+  // assistant's three-part lesson_write fix plan" — Houge's build history, not Paco's world.
+  it.each([
+    ["self_write_propose", "修复一下上面的lesson bug"],
+    ["memory_correct", "116 也删掉吧"],
+    ["memory_correct_write", "#122 和 #129 帮我去掉"]
+  ])("the extract input drops BOTH turns of a run whose loop used %s, and keeps Paco's other turns", async (capability, said) => {
+    const store = RunStore.openInMemory();
+    try {
+      const dev = pacoRunUsing(store, said, ["shell", capability]);
+      const life = pacoRunUsing(store, "我住在悉尼", ["web_search"]);
+      store.recordChatTurn({ chat_id: CHAT, run_id: life, role: "user", text: "我住在悉尼", created_at: minutesAgo(95) });
+      store.recordChatTurn({ chat_id: CHAT, run_id: dev, role: "user", text: said, created_at: minutesAgo(94) });
+      store.recordChatTurn({ chat_id: CHAT, run_id: dev, role: "assistant", text: "提案已提交，等你点头", created_at: minutesAgo(93) });
+      store.recordChatTurn({ chat_id: CHAT, run_id: life, role: "assistant", text: "记住了", created_at: minutesAgo(92) });
+      const questions: string[] = [];
+      const llm: EpisodicLlm = async (input) => {
+        questions.push(input.question);
+        return { ok: true, answer: extractAnswer(input.system === EPISODIC_EXTRACT_DISCIPLINE ? [{ fact: "Paco 住在悉尼" }] : []) };
+      };
+      const result = await runEpisodicDistillPass({ store, llm, embed: noEmbed, chatId: CHAT, userName: "paco", now: NOW });
+      expect(questions[0]).toContain("user: 我住在悉尼");
+      expect(questions[0]).not.toContain(said);
+      expect(questions[0]).not.toContain("提案已提交");
+      expect(result.turns_read).toBe(2);
+      expect(store.getEpisodicDistillWatermark(CHAT)?.last_turn_created_at).toBe(minutesAgo(92));
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a turn whose loop only searched or ran a shell command is still read (the prompt judges it)", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const run = pacoRunUsing(store, "悉尼周末天气适合骑车吗", ["web_search", "shell"]);
+      store.recordChatTurn({ chat_id: CHAT, run_id: run, role: "user", text: "悉尼周末天气适合骑车吗", created_at: minutesAgo(90) });
+      const llm = fakeLlm({ extract: extractAnswer([]) });
+      const result = await runEpisodicDistillPass({ store, llm, embed: noEmbed, chatId: CHAT, userName: "paco", now: NOW });
+      expect(result.turns_read).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a window holding only self-write turns makes no LLM call yet advances the watermark past them", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const dev = pacoRunUsing(store, "好", ["self_write_propose"]);
+      store.recordChatTurn({ chat_id: CHAT, run_id: dev, role: "user", text: "好", created_at: minutesAgo(90) });
+      store.recordChatTurn({ chat_id: CHAT, run_id: dev, role: "assistant", text: "提案已提交", created_at: minutesAgo(89) });
+      const llm = fakeLlm({});
+      await runEpisodicDistillPass({ store, llm, embed: noEmbed, chatId: CHAT, userName: "paco", now: NOW });
+      expect(llm.calls).toEqual([]);
+      expect(store.getEpisodicDistillWatermark(CHAT)?.last_turn_created_at).toBe(minutesAgo(89));
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("EPISODIC_EXTRACT_DISCIPLINE — facts are about Paco's world, not the assistant's build", () => {
+  it("tells the extractor to skip the assistant's own code, fixes, memory edits and task progress", () => {
+    for (const phrase of ["the assistant itself", "code", "fixes", "memory", "progress"]) {
+      expect(EPISODIC_EXTRACT_DISCIPLINE).toContain(phrase);
+    }
+  });
+});
+
 describe("maybeRunEpisodicDistill (idle-loop trigger gating)", () => {
   function seededStore(): RunStore {
     const store = RunStore.openInMemory();
