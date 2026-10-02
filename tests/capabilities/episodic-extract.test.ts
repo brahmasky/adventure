@@ -6,6 +6,7 @@ import {
   EPISODIC_EXTRACT_TURN_CAP,
   EPISODIC_FACT_MAX_CHARS,
   EPISODIC_MAX_FACTS_PER_PASS,
+  FACT_RECONCILE_DISCIPLINE,
   maybeRunEpisodicDistill,
   parseEpisodicExtractResult,
   reconcileFact,
@@ -15,7 +16,6 @@ import {
   shouldRejectFact,
   type EpisodicLlm
 } from "../../src/capabilities/episodic-extract.js";
-import { RECONCILE_DISCIPLINE } from "../../src/capabilities/reconcile.js";
 import { DEFAULT_SESSION_LULL_MINUTES } from "../../src/capabilities/session-rating.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
@@ -66,7 +66,7 @@ function fakeLlm(answers: { extract?: string; reconcile?: string }): EpisodicLlm
       calls.push("extract");
       return answers.extract === undefined ? ({ ok: false } as const) : ({ ok: true, answer: answers.extract } as const);
     }
-    if (input.system === RECONCILE_DISCIPLINE) {
+    if (input.system === FACT_RECONCILE_DISCIPLINE) {
       calls.push("reconcile");
       return answers.reconcile === undefined ? ({ ok: false } as const) : ({ ok: true, answer: answers.reconcile } as const);
     }

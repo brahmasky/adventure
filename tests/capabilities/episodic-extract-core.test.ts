@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   EPISODIC_EXTRACT_DISCIPLINE,
+  FACT_RECONCILE_DISCIPLINE,
   parseEpisodicExtractResult
 } from "../../src/capabilities/episodic-extract.js";
 import { RECONCILE_DISCIPLINE } from "../../src/capabilities/reconcile.js";
@@ -45,6 +46,14 @@ describe("RECONCILE_DISCIPLINE — orthogonality / no-drop rule (Part B)", () =>
 
   it("explicitly forbids dropping information by superseding", () => {
     expect(RECONCILE_DISCIPLINE).toContain("NEVER drop information by superseding");
+  });
+});
+
+describe("FACT_RECONCILE_DISCIPLINE — the same no-drop rule for facts (memory A1 §7)", () => {
+  it("never supersedes away orthogonal information", () => {
+    expect(FACT_RECONCILE_DISCIPLINE).toContain("SUPERSEDE ONLY when the new item covers EVERYTHING");
+    expect(FACT_RECONCILE_DISCIPLINE).toContain("orthogonal information");
+    expect(FACT_RECONCILE_DISCIPLINE).toContain("preserving BOTH");
   });
 });
 

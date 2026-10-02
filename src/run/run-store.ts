@@ -2903,18 +2903,26 @@ export class RunStore {
   }
 
   /**
-   * Top-k neighbors for the reconcile compare (Phase M B2): FTS5 MATCH over the
-   * candidate's sanitized tokens, best rank first. FTS candidates SUFFICE here —
-   * reconcile is an LLM verdict over the neighbor texts, so recall (not semantic
-   * ranking) is all this must provide, and the pass must work with Ollama down —
-   * embeddings are deliberately not used (M2 retrieval is where they earn their keep).
-   * No FTS hits (e.g. CJK text, which unicode61 doesn't word-segment) falls back to
-   * the chat's most recent active facts; a hostile MATCH string never throws.
+   * Neighbours for the fact-reconcile compare (memory A1 §7). With the candidate's embedding: FTS hits union the active
+   * facts at cosine >= {@link RECONCILE_NEIGHBOR_MIN_COSINE} (best first), deduplicated, at most `k`, with up to
+   * {@link RECONCILE_COSINE_SLOTS} slots reserved for cosine-only hits (CJK and paraphrases have no FTS hit). Without one
+   * (Ollama down): FTS hits, else the chat's newest `k` — CJK has no FTS hit, and dropping the fallback would
+   * turn every such fact into an ADD. A hostile MATCH string never throws.
    */
-  getEpisodicFactsForReconcile(chat_id: string, candidateText: string, k: number): EpisodicFactRow[] {
+  getEpisodicFactsForReconcile(chat_id: string, candidateText: string, k: number, embedding: Float32Array | null = null): EpisodicFactRow[] {
     const hits = this.searchEpisodicFactsFts(chat_id, candidateText, k);
-    if (hits.length > 0) return hits;
-    return this.getActiveEpisodicFacts(chat_id, k);
+    if (!embedding) return hits.length > 0 ? hits : this.getActiveEpisodicFacts(chat_id, k);
+    const close = this.getActiveEpisodicFacts(chat_id)
+      .flatMap((row) => {
+        const c = row.embedding ? cosineSimilarity(embedding, blobToFloat32(row.embedding)) : Number.NaN;
+        return Number.isFinite(c) && c >= RECONCILE_NEIGHBOR_MIN_COSINE ? [{ row, c }] : [];
+      })
+      .sort((a, b) => b.c - a.c || a.row.id - b.row.id)
+      .map((x) => x.row);
+    const fromFts = new Set(hits.map((h) => h.id));
+    const cosineOnly = close.filter((row) => !fromFts.has(row.id));
+    const reserved = Math.min(RECONCILE_COSINE_SLOTS, cosineOnly.length, k);
+    return [...hits.slice(0, k - reserved), ...cosineOnly].slice(0, k);
   }
 
   /**
@@ -7973,6 +7981,12 @@ const WIKI_PAGE_COLUMNS_QUALIFIED = WIKI_PAGE_COLUMNS.split(", ")
 
 /** Cosine floor for the topic-identity embedding leg (ADR 0020 decision 4). */
 export const WIKI_TOPIC_COSINE_THRESHOLD = 0.75;
+
+/** Memory A1 §7: a stored fact is a reconcile neighbour of a candidate at cosine >= this. */
+export const RECONCILE_NEIGHBOR_MIN_COSINE = 0.5;
+
+/** Up to this many of the k neighbour slots are reserved for cosine-only hits, so FTS hits cannot crowd them out. */
+export const RECONCILE_COSINE_SLOTS = 4;
 
 /** Per-chat active-fact cap (Phase M B1): overflow prunes the lowest reuse_value rows. */
 export const DEFAULT_EPISODIC_FACT_CAP_PER_CHAT = 200;
