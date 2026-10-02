@@ -61,6 +61,11 @@ export interface LessonWriteAdapterConfig {
    * scan (last {@link THREAD_USER_TURN_CAP} texts, ≤{@link THREAD_TEXT_CHAR_CAP} chars).
    */
   threadUserTexts?: readonly string[];
+  /**
+   * The run was born of a scheduled task (`runs.source = 'schedule'`): its objective is the
+   * schedule's stored goal, not Paco speaking, so the call is refused before any LLM call.
+   */
+  scheduledRun?: boolean;
   /** Injectable clock for deterministic tests. */
   now?: () => Date;
 }
@@ -69,6 +74,10 @@ export function createLessonWriteAdapter(
   config: LessonWriteAdapterConfig
 ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
   return async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
+    // A scheduled run's "user message" is the stored schedule goal: never a lesson source.
+    if (config.scheduledRun) {
+      return { ok: true, output: { saved: false, reason: "scheduled-run", hint: SCHEDULED_RUN_HINT } };
+    }
     // Anchored, never model-supplied (any feedback/prior_answer in `input` is ignored).
     const feedback = config.feedback;
     if (typeof feedback !== "string" || feedback.trim().length === 0) {
@@ -165,6 +174,10 @@ export function createLessonWriteAdapter(
 /** The escalation hint (⓪·3 S2b iii): the memory layer keeps getting corrected — pivot. */
 export const LESSON_ESCALATE_HINT =
   "这个问题反复出现，光改记忆可能没用 — 建议 self_diagnose 或 self_write_propose 查代码层";
+
+/** The scheduled-run refusal hint (2026-10-02): a schedule goal is not Paco's words. */
+export const SCHEDULED_RUN_HINT =
+  "a scheduled task is not Paco speaking; lessons are saved only from Paco's own messages";
 
 /** The code-owned refusal hint (⓪·3 S1c digest). */
 export const CODE_OWNED_HINT = "这段文字写死在代码里 — 需要 self_write_propose";

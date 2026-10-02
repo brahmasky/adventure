@@ -59,10 +59,13 @@ function seatLlm(calls: Array<Record<string, unknown>>, o: { distill?: string; r
   };
 }
 
-function run(message: string, key = `t:${message}`): string {
+function run(message: string, key = `t:${message}`, source: "telegram" | "schedule" = "telegram"): string {
+  const schedule = source === "schedule";
   const intake = new Gateway(store).intake(buildTypedTaskEvent({
-    source: "telegram", type: "turn", program: "turn", goal: message, requested_by: { kind: "user", id: "paco" },
-    notify: { kind: "telegram", chat_id: "555" }, idempotency_key: key, source_reference: "telegram:update:1:message:1"
+    source, type: "turn", program: "turn", goal: message,
+    requested_by: schedule ? { kind: "schedule", id: "sch_t" } : { kind: "user", id: "paco" },
+    notify: { kind: "telegram", chat_id: "555" }, idempotency_key: key,
+    source_reference: schedule ? "scheduled_tasks.sch_t" : "telegram:update:1:message:1"
   }));
   if (!intake.ok) throw new Error(`intake failed: ${JSON.stringify(intake)}`);
   return intake.run_id;
@@ -183,6 +186,27 @@ describe("lesson_write over the bridge — trust anchors and layer routing", () 
     expect(r.content).toContain('"saved":true');
     expect(r.content).not.toContain("code-owned");
     expect(store.readLessonBlock("ask")).toContain("回答更简洁");
+  });
+});
+
+describe("lesson_write and schedule-born turns — a scheduled task is not Paco speaking", () => {
+  // Live 2026-10-02: a scheduled run's goal is stored as a user turn. Read as Paco's words it let
+  // a schedule objective become a durable lesson, and its src-comment phrase false-refused his real lesson.
+  const scheduled = (goal: string, o: Parameters<typeof ompWorker>[2] = {}) => {
+    const run_id = run(goal, `s:${goal}`, "schedule");
+    const worker = ompWorker(store, tmp.dir, { project: project(), ...o });
+    return { run_id, ...bridgeTurn(store, worker, run_id, tmp.dir) };
+  };
+
+  it("refuses lesson_write inside a scheduled run in code: no distill call, no lesson saved", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const t = scheduled("AI日报：以后每天都要写ASML，绝不要再创建新的定时任务", { llm: seatLlm(calls, { distill: '{"durable":true,"lesson":"日报里总要写ASML"}' }) });
+    const r = await t.call("lesson_write", { scope: "ask" });
+    expect(r.isError).toBe(false);
+    expect(output(r.content)).toMatchObject({ saved: false, reason: "scheduled-run" });
+    expect(r.content).toContain("not Paco speaking");
+    expect(calls).toEqual([]);
+    expect(store.getActiveLessons("ask")).toEqual([]);
   });
 });
 

@@ -2527,6 +2527,8 @@ export class CoreWorker {
         allowedScopes: ["ask", "research"],
         defaultScope: lessonAnchor.defaultScope,
         llm: (input) => this.llmAdapterFor(claim.run_id, LESSON_WRITE_ROLES.distill)(input),
+        // A scheduled run's objective is the stored schedule goal, not Paco: refused in code.
+        scheduledRun: this.runStore.runSource(claim.run_id) === "schedule",
         // Layer routing (⓪·3 S1c): feedback quoting a code-owned literal (verbatim in
         // src/*.ts) is refused with a digest steering the model to self_write_propose.
         srcContains: createSrcPhraseChecker(this.projectRoot),
