@@ -42,6 +42,38 @@ describe("executeMemoryCorrect: the search entry never writes", () => {
   });
 });
 
+describe("executeMemoryCorrect: a corrected fact is embedded (final-review C3)", () => {
+  // Under the relevance gate a row with no embedding is reachable only by FTS, and FTS cannot segment CJK.
+  it("the new row carries the embedding of its corrected text; an embed failure leaves it NULL and still corrects", async () => {
+    const cases: Array<{ embed: () => Promise<Float32Array | null>; embedded: boolean }> = [
+      { embed: async () => Float32Array.from([0.6, 0.8]), embedded: true },
+      { embed: async () => { throw new Error("ollama down"); }, embedded: false }
+    ];
+    for (const { embed, embedded: expectVector } of cases) {
+      const store = RunStore.openInMemory();
+      try {
+        const id = store.addEpisodicFact({ chat_id: CHAT, fact: "Paco 住在悉尼", created_at: "2026-10-01T00:00:00.000Z" });
+        const run_id = telegramRun(store);
+        const state = newMemoryTurnState();
+        state.offered.fact.add(id);
+        const embedded: string[] = [];
+        const r = await executeMemoryCorrect(
+          { store, run_id, chat_id: CHAT, state, embed: async (t) => { embedded.push(t); return embed(); }, gated: true },
+          { action: "correct", ids: [id], correction: "Paco 住在墨尔本" }
+        );
+        expect(r.ok).toBe(true);
+        const [row] = store.getActiveEpisodicFacts(CHAT);
+        expect(row!.fact).toBe("Paco 住在墨尔本");
+        expect(embedded).toEqual(["Paco 住在墨尔本"]);
+        expect(row!.embedding !== null).toBe(expectVector);
+        expect(row!.embedding_model !== null).toBe(expectVector);
+      } finally {
+        store.close();
+      }
+    }
+  });
+});
+
 describe("inertCode: a correction on a card is never markup", () => {
   // A backtick in Paco's text would close the code span early and let the rest render as markup.
   it("swaps a backtick for U+02CB so `a` *b* [x](http://e) renders with no italic and no link", () => {

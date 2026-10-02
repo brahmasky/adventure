@@ -1,4 +1,4 @@
-import { blobToFloat32, cosineSimilarity } from "../llm/embeddings.js";
+import { blobToFloat32, cosineSimilarity, resolveEmbedConfig } from "../llm/embeddings.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import type { MemoryChange, MemoryKind, RunStore } from "../run/run-store.js";
 import { clipText } from "../status/houge-status.js";
@@ -216,6 +216,7 @@ export async function executeMemoryCorrect(d: MemoryToolDeps, input: Record<stri
   d.state.changed += change.old_ids.length;
   for (const id of req.ids) d.state.offered[req.kind].delete(id);
   recordChange(d, change);
+  if (change.new_id !== null) await embedCorrected(d, change.new_id);
   const what = change.new_id !== null ? `Corrected ${change.old_ids.map((i) => `#${i}`).join(", ")} → #${change.new_id}.`
     : `Retired ${change.old_ids.map((i) => `#${i}`).join(", ")}.`;
   return { ok: true, output: { answer: `${what} Paco got an Undo button for this change.` } };
@@ -228,6 +229,21 @@ async function memorySearch(d: MemoryToolDeps, req: Extract<MemoryRequest, { act
   if (rows.length === 0) return { ok: true, output: { answer: `No active ${noun} match. Try other words.` } };
   const lines = renderMemoryCandidates(rows, MEMORY_SEARCH_TEXT_CHARS);
   return { ok: true, output: { answer: [`Active ${noun} (retire or correct takes ids from this list only):`, ...lines].join("\n") } };
+}
+
+/**
+ * Final-review C3: the corrected row is stored with no embedding (the write is one synchronous store step); embed it
+ * after, best-effort. Without a vector it is reachable under the relevance gate only by FTS, which cannot segment CJK.
+ */
+async function embedCorrected(d: Pick<MemoryToolDeps, "store" | "embed">, id: number): Promise<void> {
+  const row = d.store.getEpisodicFact(id);
+  if (!row) return;
+  try {
+    const vector = await d.embed(row.fact);
+    if (vector) d.store.setEpisodicFactEmbedding(id, vector, resolveEmbedConfig(process.env).model);
+  } catch {
+    // best-effort: the correction stands; the daily backfill embeds the row later
+  }
 }
 
 /** The trust limits, in order: Paco's own turn, no untrusted read earlier in it, caps, ids offered by this turn. */

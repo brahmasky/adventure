@@ -48,6 +48,10 @@ export function resolveEpisodicMergeSim(env: NodeJS.ProcessEnv): number {
 /** Merge is bounded: at most this many clusters (= LLM calls) per daily tick. */
 export const EPISODIC_MERGE_MAX_CLUSTERS_PER_TICK = 5;
 
+/** Final-review C3: rows embedded per daily tick (each embed is one local Ollama call of up to a few seconds). */
+export const BACKFILL_FACTS_PER_TICK = 20;
+export const BACKFILL_PAGES_PER_TICK = 10;
+
 /** Promotion gate: applied at least this often… */
 export const EPISODIC_PROMOTE_MIN_APPLIED = 3;
 /** …and at least this old (a week of surviving decay = durably useful). */
@@ -140,10 +144,10 @@ export async function runEpisodicConsolidateTick(input: {
     pruneThreshold: resolveEpisodicPruneThreshold(env)
   });
 
-  // (2) MERGE near-duplicates (embeddings-only clustering; a fact without an
-  // embedding never clusters — backfill first, merge later). A stop skips the clusters
-  // still to come (each merge is one atomic store write); the tick still ends and stamps,
-  // because decay already ran and must not run twice in a day.
+  await backfillEmbeddings(input, env); // (1b) rows stored with no embedding (memory_correct, migration, Ollama down)
+
+  // (2) MERGE near-duplicates (embeddings-only clustering: backfill first, merge later). A stop skips the clusters
+  // still to come (each merge is one atomic store write); the tick still ends and stamps, because decay already ran.
   let clusters_merged = 0;
   for (const cluster of collectMergeClusters(input.store, resolveEpisodicMergeSim(env))) {
     if (input.signal?.aborted) break;
@@ -168,6 +172,34 @@ export async function runEpisodicConsolidateTick(input: {
     });
   }
   return { ran: true, facts_decayed: decay.facts_decayed, pruned_ids: decay.pruned_ids, clusters_merged, promoted_ids };
+}
+
+type BackfillJob = { text: string; save: (v: Float32Array) => boolean; kind: "facts_embedded" | "pages_embedded" };
+
+/**
+ * Final-review C3: under the relevance gate a row with no embedding is reachable only by FTS, which cannot segment
+ * CJK. Embed a bounded batch of active facts (core first) and wiki pages (title + summary, as at save); the stop is
+ * checked before each embed; a failed embed leaves the row NULL for the next tick. One ledger row of counts.
+ */
+async function backfillEmbeddings(
+  input: { store: RunStore; embed: EpisodicEmbed; signal?: AbortSignal }, env: NodeJS.ProcessEnv
+): Promise<void> {
+  const { store } = input;
+  const model = resolveEmbedConfig(env).model;
+  const jobs: BackfillJob[] = [
+    ...store.listUnembeddedEpisodicFacts(BACKFILL_FACTS_PER_TICK)
+      .map((f): BackfillJob => ({ text: f.fact, save: (v) => store.setEpisodicFactEmbedding(f.id, v, model), kind: "facts_embedded" })),
+    ...store.listUnembeddedWikiPages(BACKFILL_PAGES_PER_TICK)
+      .map((p): BackfillJob => ({ text: `${p.title}\n${p.summary}`, save: (v) => store.setWikiPageEmbedding(p.id, v, model), kind: "pages_embedded" }))
+  ];
+  const counts = { facts_embedded: 0, pages_embedded: 0, failed: 0 };
+  for (const job of jobs) {
+    if (input.signal?.aborted) break;
+    const vector = await input.embed(job.text).catch(() => null);
+    if (vector && job.save(vector)) counts[job.kind] += 1;
+    else counts.failed += 1;
+  }
+  if (jobs.length > 0) store.recordMemoryEvent("embedding_backfill", counts);
 }
 
 /**

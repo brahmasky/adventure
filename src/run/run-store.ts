@@ -2903,6 +2903,26 @@ export class RunStore {
     `).get<EpisodicFactRow>(id);
   }
 
+  /**
+   * Final-review C3: store an embedding on a row written without one (memory_correct, the migration's restored core
+   * row, the daily backfill). Only a row still NULL is changed, so a concurrent write never loses its own vector.
+   */
+  setEpisodicFactEmbedding(id: number, embedding: Float32Array, model: string): boolean {
+    return this.db.prepare(`
+      UPDATE episodic_facts SET embedding = ?, embedding_model = ? WHERE id = ? AND embedding IS NULL
+    `).run(float32ToBlob(embedding), model, id).changes === 1;
+  }
+
+  /** Active facts with no embedding, core first then newest (the backfill's batch; unreachable for CJK under the gate). */
+  listUnembeddedEpisodicFacts(limit: number): EpisodicFactRow[] {
+    return this.db.prepare(`
+      SELECT ${EPISODIC_FACT_COLUMNS} FROM episodic_facts
+      WHERE status = 'active' AND embedding IS NULL
+      ORDER BY is_core DESC, id DESC
+      LIMIT ?
+    `).all<EpisodicFactRow>(limit);
+  }
+
   /** A chat's ACTIVE facts, newest first (M2 retrieval/consolidation + tests read through this). */
   getActiveEpisodicFacts(chat_id: string, cap?: number): EpisodicFactRow[] {
     const limit = cap ?? -1; // SQLite: LIMIT -1 = unbounded
@@ -3791,6 +3811,20 @@ export class RunStore {
       created
     );
     return Number(result.lastInsertRowid);
+  }
+
+  /** Final-review C3: the wiki twin of setEpisodicFactEmbedding (only a row still NULL changes). */
+  setWikiPageEmbedding(id: number, embedding: Float32Array, model: string): boolean {
+    return this.db.prepare(`
+      UPDATE wiki_pages SET embedding = ?, embedding_model = ? WHERE id = ? AND embedding IS NULL
+    `).run(float32ToBlob(embedding), model, id).changes === 1;
+  }
+
+  /** Active wiki pages with no embedding, newest first (the backfill's batch). */
+  listUnembeddedWikiPages(limit: number): WikiPageRow[] {
+    return this.db.prepare(`
+      SELECT ${WIKI_PAGE_COLUMNS} FROM wiki_pages WHERE status = 'active' AND embedding IS NULL ORDER BY id DESC LIMIT ?
+    `).all<WikiPageRow>(limit);
   }
 
   getWikiPage(id: number): WikiPageRow | undefined {

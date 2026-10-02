@@ -2116,8 +2116,7 @@ export class CoreWorker {
       store: this.runStore, memoryRoot: memoryRootFor(this.projectRoot), dataDir,
       skillsReader: this.skillsReader(),
       coreBlock: (chatId) => {
-        if (!resolveEpisodicEnabled(process.env)) return undefined;
-        const core = renderCoreFactsBlock(this.runStore.getCoreEpisodicFacts(chatId, resolveEpisodicCoreCap(process.env)));
+        const core = this.renderedCore(chatId);
         return core.ids.length > 0 ? core : undefined;
       },
       retrieve: (chatId, message) => this.retrieveForOmpTurn(chatId, message),
@@ -2125,13 +2124,20 @@ export class CoreWorker {
     };
   }
 
-  /** The turn's episodic facts (core band excluded) and wiki pages, one shared query embedding, plus the gate telemetry. */
+  /** The core band as the prompt renders it: only these ids are in the prompt (the 600-char guard may hold back more). */
+  private renderedCore(chatId: string): { block: string; ids: number[] } {
+    if (!resolveEpisodicEnabled(process.env)) return { block: "", ids: [] };
+    return renderCoreFactsBlock(this.runStore.getCoreEpisodicFacts(chatId, resolveEpisodicCoreCap(process.env)));
+  }
+
+  /**
+   * The turn's episodic facts and wiki pages, one shared query embedding, plus the gate telemetry. Only the core facts
+   * the band RENDERED are excluded (final-review C4): one past the band's char guard is otherwise invisible.
+   */
   private async retrieveForOmpTurn(chatId: string, message: string): Promise<TurnRetrieval> {
     const attempted = resolveEpisodicEnabled(process.env) || resolveWikiEnabled(process.env);
     const embedding = attempted ? await this.embedQueryForTurn(message) : null;
-    const coreIds = new Set(
-      resolveEpisodicEnabled(process.env) ? this.runStore.getCoreEpisodicFacts(chatId, resolveEpisodicCoreCap(process.env)).map((f) => f.id) : []
-    );
+    const coreIds = new Set(this.renderedCore(chatId).ids);
     const facts = this.episodicFactsForTurn(chatId, message, embedding);
     const pages = this.wikiPagesForTurn(message, embedding);
     const rows = facts.rows.filter((f) => !coreIds.has(f.id));

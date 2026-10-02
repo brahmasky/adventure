@@ -39,6 +39,13 @@ describe("the fact gate (spec §3)", () => {
     expect(r).toMatchObject({ embedding: true, fts_only: false });
   });
 
+  it("a fact at EXACTLY the gate is admitted: the gate is >=, not > (D1)", () => {
+    // 21/50 = 0.42 exactly: |(21,45,5,3)| = 50, so the cosine to (1,0,0,0) is the double 0.42 itself
+    const at = facts([fact(1, { embedding: vec(21, 45, 5, 3) })], Float32Array.from([1, 0, 0, 0]));
+    expect(at.best_admitted).toBe(0.42);
+    expect(at.rows.map((f) => f.id)).toEqual([1]);
+  });
+
   it("an older relevant fact outside the newest 50 is admitted (the pool is the whole chat)", () => {
     const rows = [fact(1, { embedding: vec(1, 0), created_at: ago(90) })];
     for (let i = 2; i <= 60; i++) rows.push(fact(i, { embedding: vec(0, 1), created_at: ago(1) }));

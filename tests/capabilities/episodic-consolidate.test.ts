@@ -16,7 +16,9 @@ import {
   resolveEpisodicDecayDays,
   resolveEpisodicMergeSim,
   resolveEpisodicPruneThreshold,
-  runEpisodicConsolidateTick
+  runEpisodicConsolidateTick,
+  BACKFILL_FACTS_PER_TICK,
+  BACKFILL_PAGES_PER_TICK
 } from "../../src/capabilities/episodic-consolidate.js";
 import { EPISODIC_FACT_MAX_CHARS, type EpisodicLlm } from "../../src/capabilities/episodic-extract.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -490,3 +492,51 @@ describe("runEpisodicConsolidateTick — the daemon's stop (live 2026-10-02)", (
     }
   });
 });
+
+describe("the daily tick backfills missing embeddings (final-review C3)", () => {
+  const noLlm: EpisodicLlm = async () => { throw new Error("no LLM call expected"); };
+  const page = (store: RunStore, slug: string) => store.addWikiPage({ topic_slug: slug, title: `T ${slug}`, summary: "S", created_at: NOW });
+
+  it("embeds up to 20 NULL facts (core first) and 10 NULL wiki pages, and ledgers the counts only", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const core = store.addEpisodicFact({ chat_id: CHAT, fact: "Paco 生于河镇", is_core: true, created_at: daysAgo(1) });
+      for (let i = 0; i < 24; i++) store.addEpisodicFact({ chat_id: CHAT, fact: `fact ${i}`, created_at: daysAgo(1) });
+      const has = store.addEpisodicFact({ chat_id: CHAT, fact: "already embedded", embedding: Float32Array.from([0, 1]), created_at: daysAgo(1) });
+      for (let i = 0; i < 12; i++) page(store, `p${i}`);
+      const embedded: string[] = [];
+      await runEpisodicConsolidateTick({ store, llm: noLlm, embed: async (t) => { embedded.push(t); return Float32Array.from([1, 0]); }, now: NOW, env: ENABLED });
+      expect(BACKFILL_FACTS_PER_TICK).toBe(20);
+      expect(BACKFILL_PAGES_PER_TICK).toBe(10);
+      expect(embedded).not.toContain("already embedded");
+      expect(store.getEpisodicFact(core)!.embedding).not.toBeNull();
+      expect(store.getActiveEpisodicFacts(CHAT).filter((f) => f.embedding === null)).toHaveLength(25 - 20);
+      expect(store.getActiveWikiPages().filter((p) => p.embedding === null)).toHaveLength(2);
+      expect(store.getEpisodicFact(has)!.embedding).not.toBeNull();
+      expect(store.getLedgerEvents().filter((e) => e.event_type === "embedding_backfill").map((e) => e.payload))
+        .toEqual([{ facts_embedded: 20, pages_embedded: 10, failed: 0 }]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("checks the stop before each embed, and an embed that fails leaves the row NULL (counted, never thrown)", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      for (let i = 0; i < 5; i++) store.addEpisodicFact({ chat_id: CHAT, fact: `fact ${i}`, created_at: daysAgo(1) });
+      const stop = new AbortController();
+      let calls = 0;
+      await runEpisodicConsolidateTick({
+        store, llm: noLlm, now: NOW, env: ENABLED, signal: stop.signal,
+        embed: async () => { calls += 1; if (calls === 2) { stop.abort(); throw new Error("ollama down"); } return Float32Array.from([1, 0]); }
+      });
+      expect(calls).toBe(2);
+      expect(store.getActiveEpisodicFacts(CHAT).filter((f) => f.embedding !== null)).toHaveLength(1);
+      expect(store.getLedgerEvents().filter((e) => e.event_type === "embedding_backfill").map((e) => e.payload))
+        .toEqual([{ facts_embedded: 1, pages_embedded: 0, failed: 1 }]);
+    } finally {
+      store.close();
+    }
+  });
+});
+

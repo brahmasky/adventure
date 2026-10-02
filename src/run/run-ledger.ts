@@ -80,6 +80,7 @@ export type LedgerEventType =
   | "lesson_dropped"
   | "lesson_render_failed"
   | "evidence_rejected"
+  | "embedding_backfill"
   | "memory_migration";
 
 export interface LedgerEvent {
@@ -281,6 +282,8 @@ const requiredPayloadFields = {
   lesson_render_failed: ["reason"],
   // Memory A1 §4: a fact whose evidence failed (reason + chat id only, never the fact).
   evidence_rejected: ["reason"],
+  // Final-review C3: the daily tick's embedding backfill (counts only).
+  embedding_backfill: ["facts_embedded", "pages_embedded", "failed"],
   // Memory A1 §8: one row per migration step (ids only).
   memory_migration: ["step", "old_ids", "new_ids"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;

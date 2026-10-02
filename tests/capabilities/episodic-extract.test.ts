@@ -599,11 +599,12 @@ describe("runEpisodicDistillPass — reconcile inside one window (pending facts 
   });
 
   it("a SUPERSEDE of a core pending fact by a non-core one keeps the stored row core (biography is never demoted)", async () => {
+    // both facts pass evidence; a FAILING newer fact is never core (final-review C1, episodic-evidence.test.ts)
     const store = RunStore.openInMemory();
     try {
       store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "user", text: "Born in Riverton. Actually Riverton town.", created_at: minutesAgo(90) });
       const llm: EpisodicLlm = async (input) => input.system === EPISODIC_EXTRACT_DISCIPLINE
-        ? { ok: true, answer: extractAnswer([{ fact: "The user was born in Riverton", core: true, evidence: { line: 1, quote: "Born in Riverton" } }, { fact: "The user was born in Riverton town", core: false }]) }
+        ? { ok: true, answer: extractAnswer([{ fact: "The user was born in Riverton", core: true, evidence: { line: 1, quote: "Born in Riverton" } }, { fact: "The user was born in Riverton town", core: false, evidence: { line: 1, quote: "Riverton town" } }]) }
         : { ok: true, answer: '{"verdict":"SUPERSEDE","id":-1}' };
       await pass(store, llm);
       const active = store.getActiveEpisodicFacts(CHAT);

@@ -125,6 +125,8 @@ export interface ExtractedFact {
   evidence: { line: number; quote: string } | null;
   /** The cited user turn, set only when the evidence passed. */
   source_turn_id?: string;
+  /** Set only when the evidence check ran and failed (shadow keeps the fact): it may never write or keep a core row. */
+  evidence_failed?: true;
 }
 
 export interface EpisodicExtractResult {
@@ -329,7 +331,7 @@ function judgeEvidence(
       continue;
     }
     rejections.push(verdict.reason);
-    if (mode === "shadow") kept.push({ ...fact, core: false });
+    if (mode === "shadow") kept.push({ ...fact, core: false, evidence_failed: true });
   }
   return { kept, rejections };
 }
@@ -416,12 +418,13 @@ function overlayNeighbors(
 
 /**
  * An UPDATE's merged text is LLM output too — same write-time flatten/cap; a merge that fails the backstop
- * degrades to the candidate's own (already-safe) text.
+ * degrades to an ADD of the candidate's own (already-safe) text.
  */
 function cleanMergedText(verdict: ReconcileVerdict): ReconcileVerdict {
   if (verdict.verdict !== "UPDATE" || !verdict.text) return verdict;
   const merged = sanitizeFactText(verdict.text);
-  return shouldRejectFact(merged) ? { verdict: "UPDATE", id: verdict.id } : { verdict: "UPDATE", id: verdict.id, text: merged };
+  // C2: a rejected merge is an ADD of the candidate — an UPDATE without text would replace the target with the candidate
+  return shouldRejectFact(merged) ? { verdict: "ADD" } : { verdict: "UPDATE", id: verdict.id, text: merged };
 }
 
 /**
@@ -441,11 +444,15 @@ function applyVerdict(planned: PlannedFact[], fact: ExtractedFact, v: ReconcileV
     planned.push({ fact, text, verdict, embedding, embeddedText: fact.fact });
     return;
   }
+  // C1: a fact whose evidence failed carries unverified text, so the fold is never core (its own core is already false)
   if (v.verdict === "UPDATE") {
     target.text = v.text ?? fact.fact;
-    target.fact = { ...target.fact, core: target.fact.core || fact.core };
+    target.fact = fact.evidence_failed
+      ? { ...target.fact, core: false, evidence_failed: true }
+      : { ...target.fact, core: target.fact.core || fact.core };
   } else {
-    target.fact = { ...fact, core: fact.core || target.fact.core }; // never demote biography (the store's supersede rule)
+    // never demote biography (the store's supersede rule) — unless the newer fact's evidence failed
+    target.fact = { ...fact, core: fact.evidence_failed ? false : fact.core || target.fact.core };
     target.text = fact.fact;
     target.embedding = embedding;
     target.embeddedText = fact.fact;
@@ -487,12 +494,16 @@ function writeWindow(input: DistillPassInput, env: NodeJS.ProcessEnv, window: Ch
 
 /**
  * One planned fact to the store. With evidence on, core only on an ADD (the evidence check already cleared core on a
- * failing fact); with evidence `off`, today's behaviour (the extractor's core flag as is).
+ * failing fact); with evidence `off`, today's behaviour (the extractor's core flag as is). C1: a failing fact whose
+ * verdict targets a CORE row is downgraded to a non-core ADD — the store's supersede would otherwise make its
+ * unverified text core; the core row stays active and untouched.
  */
 function savePlanned(
   input: DistillPassInput, env: NodeJS.ProcessEnv, p: NonNullable<PlannedFact>, windowTurnIds: string[], mode: EvidenceMode
 ): EpisodicFactSaveResult {
   const { fact, embedding } = p;
+  const ontoCore = p.verdict.verdict !== "ADD" && input.store.getEpisodicFact(p.verdict.id)?.is_core === 1;
+  const verdict: StoreVerdict = mode !== "off" && fact.evidence_failed && ontoCore ? { verdict: "ADD" } : p.verdict;
   return input.store.saveReconciledFact(
     {
       chat_id: input.chatId,
@@ -501,11 +512,11 @@ function savePlanned(
       source_turn_ids: fact.source_turn_id ? [fact.source_turn_id] : windowTurnIds,
       ...(fact.occurred_at ? { occurred_at: fact.occurred_at } : {}),
       salience: fact.salience,
-      is_core: mode === "off" ? fact.core : fact.core && p.verdict.verdict === "ADD",
+      is_core: mode === "off" ? fact.core : fact.core && verdict.verdict === "ADD",
       embedding,
       ...(embedding ? { embedding_model: resolveEmbedConfig(env).model } : {})
     },
-    p.verdict,
+    verdict,
     input.now,
     resolveEpisodicFactCapPerChat(env)
   );

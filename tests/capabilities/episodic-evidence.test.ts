@@ -165,3 +165,48 @@ describe("the distill pass under each evidence mode (spec §4)", () => {
     expect(checkEvidence({ line: 1, quote: "digest" }, lines, (r) => store.runSource(r))).toEqual({ ok: false, reason: "schedule_born" });
   });
 });
+
+describe("a fact whose evidence failed never reaches the core band (final-review C1)", () => {
+  const core = () => store.addEpisodicFact({ chat_id: CHAT, fact: "The user lives in Melbourne", is_core: true, created_at: minutesAgo(5000) });
+  for (const verdict of ["SUPERSEDE", "UPDATE"] as const) {
+    it(`an assistant-line fact that ${verdict}s a core row is saved as a non-core ADD; the core row stays active and untouched`, async () => {
+      const target = core();
+      seedWindow();
+      const answer = verdict === "SUPERSEDE" ? `{"verdict":"SUPERSEDE","id":${target}}` : `{"verdict":"UPDATE","id":${target},"text":"The user lives in Sydney"}`;
+      await pass(extractOnly([{ fact: "The user lives in Sydney", core: false, evidence: { line: 2, quote: "two bicycles" } }], answer));
+      expect(store.getEpisodicFact(target)).toMatchObject({ status: "active", is_core: 1, fact: "The user lives in Melbourne", superseded_by: null });
+      const added = store.getActiveEpisodicFacts(CHAT).find((f) => f.id !== target)!;
+      expect(added).toMatchObject({ fact: "The user lives in Sydney", is_core: 0, supersedes: null });
+      expect(rejections()).toEqual([{ reason: "not_user", chat_id: CHAT }]);
+    });
+  }
+
+  it("a passing fact still supersedes a core row and inherits core (biography is never demoted)", async () => {
+    const target = core();
+    seedWindow();
+    await pass(extractOnly([{ fact: "The user lives in Sydney", evidence: { line: 1, quote: "two bicycles" } }], `{"verdict":"SUPERSEDE","id":${target}}`));
+    expect(store.getEpisodicFact(target)!.status).toBe("superseded");
+    expect(store.getActiveEpisodicFacts(CHAT).map((f) => [f.fact, f.is_core])).toEqual([["The user lives in Sydney", 1]]);
+  });
+
+  for (const verdict of ["SUPERSEDE", "UPDATE"] as const) {
+    it(`in-window: a failing fact that ${verdict}s a passing core fact of the same window is stored non-core`, async () => {
+      seedWindow();
+      const answer = (q: string) => (q.includes("#-1:")
+        ? (verdict === "SUPERSEDE" ? '{"verdict":"SUPERSEDE","id":-1}' : '{"verdict":"UPDATE","id":-1,"text":"The user keeps two red bicycles"}')
+        : '{"verdict":"ADD"}');
+      const llm: EpisodicLlm = async (input) => ({
+        ok: true,
+        answer: input.system === EPISODIC_EXTRACT_DISCIPLINE
+          ? JSON.stringify({ facts: [
+            { fact: "The user keeps two bicycles", core: true, evidence: { line: 1, quote: "two bicycles" } },
+            { fact: "The user keeps two red bicycles", core: true, evidence: { line: 2, quote: "two bicycles" } }
+          ] })
+          : answer(input.question)
+      });
+      await pass(llm);
+      expect(store.getActiveEpisodicFacts(CHAT).map((f) => [f.fact, f.is_core])).toEqual([["The user keeps two red bicycles", 0]]);
+    });
+  }
+});
+

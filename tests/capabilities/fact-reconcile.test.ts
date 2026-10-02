@@ -29,8 +29,8 @@ function llm(facts: string[], verdict: (q: string) => string, log: Array<{ syste
 function window(text = "new detail about the thing"): void {
   store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "user", text, created_at: minutesAgo(90) });
 }
-const pass = (l: EpisodicLlm, embed: (t: string) => Promise<Float32Array | null>) =>
-  runEpisodicDistillPass({ store, llm: l, embed, chatId: CHAT, userName: "user", now: NOW });
+const pass = (l: EpisodicLlm, embed: (t: string) => Promise<Float32Array | null>, signal?: AbortSignal) =>
+  runEpisodicDistillPass({ store, llm: l, embed, chatId: CHAT, userName: "user", now: NOW, ...(signal ? { signal } : {}) });
 
 describe("FACT_RECONCILE_DISCIPLINE (spec §7)", () => {
   it("is a fact prompt, not the lesson prompt: statements, never instructions, one atomic fact under the cap", () => {
@@ -84,6 +84,53 @@ describe("embed before reconcile; neighbours by cosine (spec §7)", () => {
       async (t) => { embedded.push(t); return vectors[t] ?? null; }
     );
     expect(embedded).toEqual(["owns two bikes", "owns two bikes, both red"]);
+    const [row] = store.getActiveEpisodicFacts(CHAT);
+    expect(row!.fact).toBe("owns two bikes, both red");
+    expect([...blobToFloat32(row!.embedding!)]).toEqual([...Float32Array.from([0.6, 0.8])]);
+  });
+});
+
+describe("fact reconcile error paths (C2, D3)", () => {
+  it("an UPDATE whose merged text is over the cap is an ADD of the candidate: the target is never replaced by it (C2)", async () => {
+    const old = store.addEpisodicFact({ chat_id: CHAT, fact: "owns a bike", created_at: minutesAgo(500) });
+    window();
+    await pass(llm(["owns two bikes"], () => `{"verdict":"UPDATE","id":${old},"text":"${"x".repeat(EPISODIC_FACT_MAX_CHARS + 1)}"}`, []), async () => null);
+    expect(store.getEpisodicFact(old)).toMatchObject({ status: "active", superseded_by: null });
+    expect(store.getActiveEpisodicFacts(CHAT).map((f) => f.fact).sort()).toEqual(["owns a bike", "owns two bikes"]);
+  });
+
+  it("an embed that throws degrades to no embedding: the newest-K neighbours, and the fact is still saved (D3)", async () => {
+    const newest = store.addEpisodicFact({ chat_id: CHAT, fact: "最近的事实", created_at: minutesAgo(100) });
+    window("新的细节");
+    const log: Array<{ system: string; question: string }> = [];
+    const r = await pass(llm(["新的事实"], () => '{"verdict":"ADD"}', log), async () => { throw new Error("ollama down"); });
+    expect(log.find((c) => c.system === FACT_RECONCILE_DISCIPLINE)!.question).toContain(`#${newest}:`);
+    expect(r.distilled).toBe(1);
+    expect(store.getActiveEpisodicFacts(CHAT).find((f) => f.fact === "新的事实")!.embedding).toBeNull();
+  });
+
+  it("a stop that lands during the re-embed loop writes nothing: no fact, no watermark (D3)", async () => {
+    const old = store.addEpisodicFact({ chat_id: CHAT, fact: "owns a bike", created_at: minutesAgo(500) });
+    window();
+    const stop = new AbortController();
+    await pass(
+      llm(["owns two bikes", "likes tea"], (q) => (q.includes("owns a bike") ? `{"verdict":"UPDATE","id":${old},"text":"owns two bikes, both red"}` : '{"verdict":"ADD"}'), []),
+      async (t) => { if (t === "owns two bikes, both red") stop.abort(); return NEAR; },
+      stop.signal
+    );
+    expect(store.getActiveEpisodicFacts(CHAT).map((f) => f.id)).toEqual([old]);
+    expect(store.getEpisodicDistillWatermark(CHAT)?.last_turn_created_at ?? null).toBeNull();
+  });
+
+  it("an in-window fold that changes a planned text re-embeds it before saving (D3)", async () => {
+    window();
+    const embedded: string[] = [];
+    const vectors: Record<string, Float32Array> = { "owns two bikes, both red": Float32Array.from([0.6, 0.8]) };
+    await pass(
+      llm(["owns two bikes", "both bikes are red"], (q) => (q.includes("#-1:") ? '{"verdict":"UPDATE","id":-1,"text":"owns two bikes, both red"}' : '{"verdict":"ADD"}'), []),
+      async (t) => { embedded.push(t); return vectors[t] ?? NEAR; }
+    );
+    expect(embedded).toContain("owns two bikes, both red");
     const [row] = store.getActiveEpisodicFacts(CHAT);
     expect(row!.fact).toBe("owns two bikes, both red");
     expect([...blobToFloat32(row!.embedding!)]).toEqual([...Float32Array.from([0.6, 0.8])]);

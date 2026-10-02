@@ -329,8 +329,22 @@ describe("episodic memory in the omp turn context (Phase M B3: retrieval + attri
     expect(started(run_id)).toMatchObject({ episodic_fact_ids: [id] });
   });
 
+  it("a core fact past the core band's 600-char guard is not in the prompt, so retrieval may still bring it (C4)", async () => {
+    process.env.HOUGE_EPISODIC_ENABLED = "1";
+    const far = Float32Array.from([0, 1]);
+    const at = "2026-07-14T00:00:00.000Z";
+    const shown = [0.9, 0.8].map((salience, i) => store.addEpisodicFact({ chat_id: "555", fact: `${i}${"b".repeat(239)}`, is_core: true, salience, embedding: far, created_at: at }));
+    const hidden = store.addEpisodicFact({ chat_id: "555", fact: `Paco was born in Riverton ${"c".repeat(130)}`, is_core: true, salience: 0.5, embedding: Float32Array.from([1, 0]), created_at: at });
+    const ctx = contextFor(async () => Float32Array.from([1, 0]));
+    expect(ctx.coreBlock("555")!.ids).toEqual(shown); // the third does not fit the band
+    const r = await ctx.retrieve("555", "where was Paco born?");
+    expect(r.facts.map((f) => f.id)).toEqual([hidden]);
+  });
+
   it("telemetry is truthful about the embedding: wiki-only obtains one (facts.embedding true); a failed embed is false; no flags records none (the embeddings_unavailable evidence)", async () => {
+    const prior = process.env.HOUGE_WIKI_ENABLED;
     process.env.HOUGE_WIKI_ENABLED = "1";
+    try {
     const a = run("q one");
     await buildTurnPrompt(contextFor(async () => Float32Array.from([1, 0])), { run_id: a, chat_id: "555", message: "q one", source: "telegram" });
     expect(events(a, "loop_started")[0]?.payload.retrieval).toMatchObject({ facts: { embedding: true }, pages: { embedding: true } });
@@ -341,6 +355,9 @@ describe("episodic memory in the omp turn context (Phase M B3: retrieval + attri
     const c = run("q three");
     await buildTurnPrompt(contextFor(async () => null), { run_id: c, chat_id: "555", message: "q three", source: "telegram" });
     expect(events(c, "loop_started")[0]?.payload).not.toHaveProperty("retrieval");
+    } finally {
+      if (prior === undefined) delete process.env.HOUGE_WIKI_ENABLED; else process.env.HOUGE_WIKI_ENABLED = prior; // D4
+    }
   });
 
   it("flag OFF (default): no block, empty ids, the fact untouched, embed never called", async () => {
