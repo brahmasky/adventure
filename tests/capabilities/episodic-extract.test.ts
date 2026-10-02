@@ -466,6 +466,24 @@ describe("runEpisodicDistillPass — schedule-born turns are not Paco speaking (
     }
   });
 
+  it("scheduled turns AFTER Paco's last turn: the watermark lands on the window's last turn, never re-read", async () => {
+    // The extract input ends at Paco's turn, but the window read ends at the digest. A watermark on the last
+    // KEPT turn would leave the scheduled turns undistilled and re-read them every tick.
+    const store = RunStore.openInMemory();
+    try {
+      const fired = scheduledRun(store, "AI日报");
+      store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "user", text: "我住在悉尼", created_at: minutesAgo(95) });
+      store.recordChatTurn({ chat_id: CHAT, run_id: fired, role: "user", text: "AI日报", created_at: minutesAgo(94) });
+      store.recordChatTurn({ chat_id: CHAT, run_id: fired, role: "assistant", text: "今日要闻", created_at: minutesAgo(93) });
+      const llm = fakeLlm({ extract: extractAnswer([{ fact: "Paco 住在悉尼" }]) });
+      const result = await runEpisodicDistillPass({ store, llm, embed: noEmbed, chatId: CHAT, userName: "paco", now: NOW });
+      expect(result.turns_read).toBe(1);
+      expect(store.getEpisodicDistillWatermark(CHAT)?.last_turn_created_at).toBe(minutesAgo(93));
+    } finally {
+      store.close();
+    }
+  });
+
   it("a window holding only scheduled turns makes no LLM call yet advances the watermark past them", async () => {
     const store = RunStore.openInMemory();
     try {
