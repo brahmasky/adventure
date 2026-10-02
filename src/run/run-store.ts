@@ -3857,7 +3857,8 @@ export class RunStore {
     k: number,
     mode: "any" | "all" = "any"
   ): Array<WikiPageRow & { rank: number }> {
-    const tokens = ftsQueryTokens(queryText);
+    // "all" is the topic-identity leg (the false-merge floor): a short token (q2, v3, ai) discriminates, so keep it
+    const tokens = ftsQueryTokens(queryText, mode === "any");
     if (tokens.length === 0) return [];
     const match = tokens.map((t) => `"${t}"`).join(mode === "all" ? " AND " : " OR ");
     try {
@@ -8134,9 +8135,10 @@ export function resolveLessonPruneThreshold(env: NodeJS.ProcessEnv): number {
 /**
  * English function words the FTS keyword legs ignore (live gate 2026-10-02: with Ollama down, "Explain how attention
  * works in transformers" admitted 4 facts and a wiki page on "how"/"in"). Genuine function words only: a content
- * word, however common, stays a search term. Words of 2 characters or fewer are not listed: ftsQueryTokens drops them.
+ * word, however common, stays a search term. Words of 2 characters or fewer are not listed: the OR legs drop every
+ * such token, and the wiki identity leg (AND) keeps them on purpose.
  */
-export const FTS_STOPWORDS: ReadonlySet<string> = new Set([
+const FTS_STOPWORDS: ReadonlySet<string> = new Set([
   "the", "you", "your", "him", "his", "she", "her", "its", "they", "them", "their", "this", "that", "these", "those",
   "are", "was", "were", "been", "being", "does", "did", "have", "has", "had", "can", "could", "will", "would",
   "shall", "should", "may", "might", "must", "for", "from", "with", "about", "into", "and", "but", "not", "what",
@@ -8147,12 +8149,12 @@ export const FTS_STOPWORDS: ReadonlySet<string> = new Set([
 const CJK_TOKEN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 
 /**
- * The FTS keyword legs' query terms (facts and wiki pages): letter/number runs, minus English function words and
- * non-CJK tokens of 2 characters or fewer, at most 12. Empty → the caller returns [] (no keyword leg).
+ * The FTS keyword legs' query terms (facts and wiki pages): letter/number runs minus English function words and, when
+ * `dropShort` (the OR legs), non-CJK tokens of 2 characters or fewer; at most 12. Empty → the caller returns [].
  */
-function ftsQueryTokens(queryText: string): string[] {
+function ftsQueryTokens(queryText: string, dropShort = true): string[] {
   return (queryText.match(/[\p{L}\p{N}]+/gu) ?? [])
-    .filter((t) => CJK_TOKEN.test(t) || (t.length > 2 && !FTS_STOPWORDS.has(t.toLowerCase())))
+    .filter((t) => CJK_TOKEN.test(t) || (!(dropShort && t.length <= 2) && !FTS_STOPWORDS.has(t.toLowerCase())))
     .slice(0, 12);
 }
 

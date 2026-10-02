@@ -417,10 +417,23 @@ describe("FTS ignores English function words and short tokens (live gate: stopwo
       const p = store.addWikiPage({ topic_slug: "how-it-is", title: "How it is done", summary: "What we do in the morning.", created_at: NOW });
       expect(store.searchEpisodicFactsFts(CHAT, "How is it in the, and what do we do?", 30)).toEqual([]);
       expect(store.searchWikiPagesFts("How is it in the, and what do we do?", 30)).toEqual([]);
-      expect(store.searchWikiPagesFts("How is it in the", 30, "all")).toEqual([]);
+      expect(store.searchWikiPagesFts("What are those, and where?", 30, "all")).toEqual([]); // all mode: stopwords only
       expect(store.searchEpisodicFactsFts(CHAT, "how is it in Sydney", 30).map((h) => h.id)).toEqual([f]);
       expect(store.searchWikiPagesFts("what is the morning", 30).map((h) => h.id)).toEqual([p]);
-      expect(store.searchEpisodicFactsFts(CHAT, "Pa ok", 30)).toEqual([]); // tokens of 2 chars or fewer are dropped
+      store.addEpisodicFact({ chat_id: CHAT, fact: "Paco said ok to the plan", created_at: NOW });
+      expect(store.searchEpisodicFactsFts(CHAT, "ok", 30)).toEqual([]); // tokens of 2 chars or fewer are dropped
+      expect(store.searchWikiPagesFts("ok", 30)).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("the wiki identity leg (all mode) keeps short tokens: a Q2 topic never matches a Q3 page (no false merge)", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const q3 = store.addWikiPage({ topic_slug: "asml-q3-earnings", title: "ASML Q3 earnings", summary: "Results.", created_at: NOW });
+      expect(store.searchWikiPagesFts("ASML Q2 earnings", 30, "all")).toEqual([]);
+      expect(store.searchWikiPagesFts("the ASML Q3 earnings", 30, "all").map((h) => h.id)).toEqual([q3]); // stopwords still dropped
     } finally {
       store.close();
     }
