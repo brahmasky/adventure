@@ -74,7 +74,8 @@ export type LedgerEventType =
   | "google_api_call_completed"
   | "wall_collapse"
   | "memory_corrected"
-  | "lesson_dropped";
+  | "lesson_dropped"
+  | "evidence_rejected";
 
 export interface LedgerEvent {
   event_id: string;
@@ -264,7 +265,9 @@ const requiredPayloadFields = {
   // Self-service memory correction (2026-10-02): ids, kind, action and counts ONLY — never fact, query or correction text.
   memory_corrected: ["action", "kind", "old_ids", "count"],
   // Memory A1 (2026-10-02): a lesson the omp prompt could not fit. Ids and counts only.
-  lesson_dropped: ["lesson_id", "chars", "cap"]
+  lesson_dropped: ["lesson_id", "chars", "cap"],
+  // Memory A1 §4: a fact whose evidence failed (reason + chat id only, never the fact).
+  evidence_rejected: ["reason"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(

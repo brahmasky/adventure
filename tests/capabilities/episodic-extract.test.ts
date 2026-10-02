@@ -167,7 +167,8 @@ describe("parseEpisodicExtractResult (tolerant — ANY failure ⇒ no facts)", (
       participants: ["Paco"],
       occurred_at: "2026-07-15",
       salience: 0.9,
-      core: false
+      core: false,
+      evidence: null
     });
     expect(facts[1]!.salience).toBe(1); // clamped to [0,1]
     expect(facts[2]).toMatchObject({ participants: [], occurred_at: null, salience: 0.5 });
@@ -600,13 +601,13 @@ describe("runEpisodicDistillPass — reconcile inside one window (pending facts 
   it("a SUPERSEDE of a core pending fact by a non-core one keeps the stored row core (biography is never demoted)", async () => {
     const store = RunStore.openInMemory();
     try {
-      store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "user", text: "Born in Chengdu. Actually Chengdu city.", created_at: minutesAgo(90) });
+      store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "user", text: "Born in Riverton. Actually Riverton town.", created_at: minutesAgo(90) });
       const llm: EpisodicLlm = async (input) => input.system === EPISODIC_EXTRACT_DISCIPLINE
-        ? { ok: true, answer: extractAnswer([{ fact: "Paco was born in Chengdu", core: true }, { fact: "Paco was born in Chengdu city", core: false }]) }
+        ? { ok: true, answer: extractAnswer([{ fact: "The user was born in Riverton", core: true, evidence: { line: 1, quote: "Born in Riverton" } }, { fact: "The user was born in Riverton town", core: false }]) }
         : { ok: true, answer: '{"verdict":"SUPERSEDE","id":-1}' };
       await pass(store, llm);
       const active = store.getActiveEpisodicFacts(CHAT);
-      expect(active.map((f) => [f.fact, f.is_core])).toEqual([["Paco was born in Chengdu city", 1]]);
+      expect(active.map((f) => [f.fact, f.is_core])).toEqual([["The user was born in Riverton town", 1]]);
     } finally {
       store.close();
     }
