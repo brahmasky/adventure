@@ -114,8 +114,8 @@ export function parseVerdict(text: string | null | undefined): ReviewVerdict | n
   return best ? best.verdict : null;
 }
 
-/** Cap for {@link parseVerdict}'s scan: the verdict is the tail of the reply. */
-const VERDICT_SCAN_MAX_CHARS = 60_000;
+/** Cap for {@link parseVerdict}'s scan: the verdict is the tail of the reply; 16k also bounds the quadratic worst case to well under a second on the daemon loop. */
+const VERDICT_SCAN_MAX_CHARS = 16_000;
 
 /** A parsed object carrying a valid `verdict`, or null. */
 function verdictOf(candidate: string): ReviewVerdict | null {
