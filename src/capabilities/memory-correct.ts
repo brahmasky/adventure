@@ -3,7 +3,7 @@ import type { NotificationButton } from "../notifications/notification-types.js"
 import type { MemoryChange, MemoryKind, RunStore } from "../run/run-store.js";
 import { clipText } from "../status/houge-status.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
-import { escapeForTelegram } from "./text-hygiene.js";
+import { escapeForTelegram, stripHostileChars } from "./text-hygiene.js";
 
 /**
  * Self-service memory correction (2026-10-02). Live: episodic fact #108 put ASML in Paco's daily brief and Houge said
@@ -78,8 +78,9 @@ export function parseMemoryRequest(input: Record<string, unknown>): MemoryReques
   if (input.action === "retire") return { action: "retire", kind, ids };
   if (kind === "wiki") return { refusal: "wiki_correct_unsupported" };
   if (typeof input.correction === "string" && input.correction.length > MEMORY_CORRECTION_MAX_CHARS) return { refusal: "correction_too_long" };
-  // Stored as Paco wrote it, on one line; only the cards escape it, at render time ({@link inertCode}).
-  const correction = typeof input.correction === "string" ? input.correction.replace(/\s+/g, " ").trim() : "";
+  // Stored as Paco wrote it, on one line, minus invisible controls (bidi overrides, zero-width): a reversed or
+  // hidden span would make the stored fact read differently than the card showed. Only the cards escape it ({@link inertCode}).
+  const correction = typeof input.correction === "string" ? stripHostileChars(input.correction.replace(/\s+/g, " ")).trim() : "";
   return correction ? { action: "correct", kind, ids, correction } : { refusal: "correction_required" };
 }
 

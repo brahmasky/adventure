@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { executeMemoryCorrect, inertCode, newMemoryTurnState } from "../../src/capabilities/memory-correct.js";
+import { executeMemoryCorrect, inertCode, newMemoryTurnState, parseMemoryRequest } from "../../src/capabilities/memory-correct.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -49,5 +49,15 @@ describe("inertCode: a correction on a card is never markup", () => {
     expect(html).toBe("New text: <code>ˋaˋ *b* [x](http://e)</code>");
     expect(html).not.toContain("<i>");
     expect(html).not.toContain("<a ");
+  });
+});
+
+describe("parseMemoryRequest: a correction carries no invisible control characters", () => {
+  // A bidi override (U+202E) makes a stored fact display reversed text; zero-width characters hide inside words.
+  it("strips bidi controls and zero-width characters, keeps every visible character, and still flattens lines", () => {
+    const req = parseMemoryRequest({
+      action: "correct", ids: [1], correction: "snake_‮case‬ [x]​(http://e)⁦﻿\nnext line‍"
+    });
+    expect(req).toEqual({ action: "correct", kind: "fact", ids: [1], correction: "snake_case [x](http://e) next line" });
   });
 });
