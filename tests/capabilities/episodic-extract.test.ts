@@ -927,6 +927,57 @@ describe("runEpisodicDistillPass — a message steered into a dev-talk turn goes
   });
 });
 
+describe("runEpisodicDistillPass — a dev run's span is its own activity, not its finish stamp (re-review 2026-10-02)", () => {
+  it("a dev run failed by lease recovery after a restart keeps Paco's later, unsteered turns", async () => {
+    // A SIGKILLed turn stays `running` until the lease timer fails it minutes later; runs.updated_at is that
+    // recovery time, and Paco's messages after the restart are their own runs, not steered.
+    const store = RunStore.openInMemory();
+    try {
+      const dev = inFlightPacoRun(store, "lesson_write 为什么又拒了", ["self_diagnose"]);
+      store.claimRun(dev, `w:${dev}`, 60);
+      await settle(store, dev, [["user", "lesson_write 为什么又拒了"]]);
+      await settle(store, pacoRunUsing(store, "我下周去墨尔本出差", []), [["user", "我下周去墨尔本出差"], ["assistant", "好的"]]);
+      store.finishRun({ run_id: dev, expected_worker_id: `w:${dev}`, next: "failed", error_type: "lease_expired", error_ref: "lease_expired" });
+      const questions: string[] = [];
+      const llm: EpisodicLlm = async (input) => {
+        questions.push(input.question);
+        return { ok: true, answer: extractAnswer([]) };
+      };
+      await runEpisodicDistillPass({ store, llm, embed: noEmbed, chatId: CHAT, userName: "paco", now: NOW });
+      expect(questions[0]).toContain("我下周去墨尔本出差");
+      expect(questions[0]).not.toContain("为什么又拒了");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a window that starts after the parent's user turn still drops the message steered into it", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const parent = inFlightPacoRun(store, "#122 帮我去掉", ["memory_correct_write"]);
+      const steered = inFlightPacoRun(store, "116 也删掉吧", []);
+      await settle(store, null, [[parent, "user", "#122 帮我去掉"], [steered, "user", "116 也删掉吧"], [parent, "assistant", "已删除"]]);
+      finished(store, steered);
+      finished(store, parent);
+      await tick();
+      await settle(store, pacoRunUsing(store, "我住在悉尼", []), [["user", "我住在悉尼"]]);
+      // The previous window ended on the parent's user turn (the 24-turn cap).
+      const first = store.getChatTurnsAfter(CHAT, undefined, 1)[0]!.created_at;
+      store.setEpisodicDistillWatermark({ chat_id: CHAT, last_turn_created_at: first, last_distilled_at: NOW });
+      const questions: string[] = [];
+      const llm: EpisodicLlm = async (input) => {
+        questions.push(input.question);
+        return { ok: true, answer: extractAnswer([]) };
+      };
+      await runEpisodicDistillPass({ store, llm, embed: noEmbed, chatId: CHAT, userName: "paco", now: NOW });
+      expect(questions[0]).toContain("我住在悉尼");
+      expect(questions[0]).not.toContain("116");
+    } finally {
+      store.close();
+    }
+  });
+});
+
 describe("EPISODIC_EXTRACT_DISCIPLINE — facts are about Paco's world, not the assistant's build", () => {
   it("tells the extractor to skip the assistant's own code, fixes, memory edits and task progress", () => {
     for (const phrase of ["the assistant itself", "its code", "fixes", "edits to its memory", "how far the assistant has got"]) {

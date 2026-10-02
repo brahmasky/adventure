@@ -452,10 +452,10 @@ const DEV_SESSION_CAPABILITIES: ReadonlySet<string> = new Set(["self_write_propo
  * unsettled run cannot be judged yet. The watermark never passes it. A turn with no run row counts
  * as settled.
  */
-function settledTurns(store: Pick<RunStore, "runLifecycle">, turns: ChatTurnRow[]): ChatTurnRow[] {
+function settledTurns(store: Pick<RunStore, "findRunState">, turns: ChatTurnRow[]): ChatTurnRow[] {
   const cut = turns.findIndex((t) => {
-    const run = store.runLifecycle(t.run_id);
-    return run !== undefined && !isTerminalRunState(run.state);
+    const state = store.findRunState(t.run_id);
+    return state !== undefined && !isTerminalRunState(state);
   });
   return cut === -1 ? turns : turns.slice(0, cut);
 }
@@ -465,11 +465,12 @@ function settledTurns(store: Pick<RunStore, "runLifecycle">, turns: ChatTurnRow[
  * capabilities its loop used, never by text:
  * - both turns of a schedule-born run (2026-10-02): the stored schedule goal and its digest;
  * - both turns of a dev-session run ({@link DEV_SESSION_CAPABILITIES}), and any turn recorded while
- *   it ran: a message steered into it has its own run, but the parent's planner made the calls.
+ *   it was active ({@link RunStore.runActivitySpan}): a message steered into it has its own run, but
+ *   the parent's planner made the calls.
  * Talk about Houge with no such call is left to the extract prompt.
  */
 function withoutTurnsOffPacosWorld(
-  store: Pick<RunStore, "runSource" | "runLoopCapabilities" | "runLifecycle">,
+  store: Pick<RunStore, "runSource" | "runLoopCapabilities" | "runActivitySpan">,
   turns: ChatTurnRow[]
 ): ChatTurnRow[] {
   const dropped = new Set<string>();
@@ -478,11 +479,12 @@ function withoutTurnsOffPacosWorld(
     if (store.runSource(runId) === "schedule") dropped.add(runId);
     else if (store.runLoopCapabilities(runId).some((c) => DEV_SESSION_CAPABILITIES.has(c))) {
       dropped.add(runId);
-      const first = turns.find((t) => t.run_id === runId)!.created_at;
-      spans.push({ from: first, to: store.runLifecycle(runId)?.updated_at ?? first });
+      const span = store.runActivitySpan(runId);
+      if (span) spans.push(span);
     }
   }
-  return turns.filter((t) => !dropped.has(t.run_id) && !spans.some((s) => t.created_at >= s.from && t.created_at <= s.to));
+  // Exclusive end: a turn queued behind the run can be stamped in the millisecond its reply was.
+  return turns.filter((t) => !dropped.has(t.run_id) && !spans.some((s) => t.created_at > s.from && t.created_at < s.to));
 }
 
 /**

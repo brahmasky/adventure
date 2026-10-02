@@ -1171,9 +1171,24 @@ export class RunStore {
     return this.db.prepare(`SELECT source FROM runs WHERE run_id = ?`).get<{ source: string }>(run_id)?.source;
   }
 
-  /** A run's state and when it last changed (its finish time once terminal) — undefined if the run does not exist. */
-  runLifecycle(run_id: string): { state: RunState; updated_at: string } | undefined {
-    return this.db.prepare(`SELECT state, updated_at FROM runs WHERE run_id = ?`).get<{ state: RunState; updated_at: string }>(run_id);
+  /** A run's state — undefined if the run does not exist (unlike {@link getRunState}, which throws). */
+  findRunState(run_id: string): RunState | undefined {
+    return this.db.prepare(`SELECT state FROM runs WHERE run_id = ?`).get<{ state: RunState }>(run_id)?.state;
+  }
+
+  /**
+   * When a run was active in its chat: its first chat turn anywhere, to the later of its last chat turn and
+   * its last loop_step. Never `runs.updated_at`, which lease recovery stamps minutes after a crashed turn.
+   * Undefined when the run has no chat turn.
+   */
+  runActivitySpan(run_id: string): { from: string; to: string } | undefined {
+    const row = this.db.prepare(`
+      SELECT MIN(created_at) AS first_turn, MAX(created_at) AS last_turn,
+        (SELECT MAX(occurred_at) FROM ledger_events WHERE run_id = ? AND event_type = 'loop_step') AS last_step
+      FROM chat_turns WHERE run_id = ?
+    `).get<{ first_turn: string | null; last_turn: string | null; last_step: string | null }>(run_id, run_id);
+    if (!row?.first_turn || !row.last_turn) return undefined;
+    return { from: row.first_turn, to: row.last_step && row.last_step > row.last_turn ? row.last_step : row.last_turn };
   }
 
   /** `intent_shadow` rows, oldest first — the input of `houge jev-shadow report`. */
