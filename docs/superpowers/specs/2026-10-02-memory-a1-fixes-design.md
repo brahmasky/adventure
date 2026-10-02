@@ -87,7 +87,7 @@ unrelated pairs ≤ 0.25. Too few pairs to fix defaults on; §3 makes the gates 
 
 - `LESSON_MAX_CHARS` (240) for text and new `LESSON_AVOID_MAX_CHARS` (120) for avoid, checked in `saveReconciledLesson`
   for every verdict. An **UPDATE whose merged text or avoid exceeds a cap is not saved**: the prior lesson stays,
-  `lesson_update_capped {target_id, chars}` is ledgered, and `lesson_write` returns a code-owned result telling the
+  `lesson_write_capped {verdict, target_id, chars, avoid_chars}` is ledgered (every verdict is capped), and `lesson_write` returns a code-owned result telling the
   planner the rule was not saved because the merge was too large, so it can tell Paco or save a separate narrower rule.
   (Falling back to ADD would store a near-duplicate — the reconciler just said it overlaps.)
 - UPDATE inherits the target's `reuse_value`, `applied_count` and `theme`.
@@ -136,7 +136,7 @@ unrelated pairs ≤ 0.25. Too few pairs to fix defaults on; §3 makes the gates 
 ### 5. Lesson themes: closed labels that bound merging, not learning
 
 - New column `lessons.theme TEXT NOT NULL DEFAULT 'unthemed'`. Closed list in code: `format`, `time`, `honesty`,
-  `hygiene`, `research`, `tasks`, `self` (definitions in the code next to the list). A new theme is a code change.
+  `hygiene`, `sources`, `tasks`, `self` (definitions in the code next to the list; agreed with Paco 2026-10-02). A new theme is a code change.
 - `lesson_write` asks the reconcile call for the theme too (one call: verdict + theme from the closed list; an
   unknown value → `unthemed`, ledgered).
 - **Reconcile sees every active lesson of both scopes** (≈ 11 rows), so a mis-themed lesson still meets its duplicate.
@@ -152,7 +152,8 @@ unrelated pairs ≤ 0.25. Too few pairs to fix defaults on; §3 makes the gates 
   fingerprint is a hash of the active lesson set (id, text, avoid, theme, sorted by id) — never the rendered bytes, so
   reordering cannot trigger it. Compared at spawn, so a change while the daemon was down is caught after a kickstart.
 - **Mechanism:** when it differs, the supervisor spawns as today, then sends omp's `new_session` RPC instead of
-  relying on `open_session`'s resume, asserts the result is not a resumed session, then stores the new fingerprint. No
+  relying on `open_session`'s resume, asserts it returned `cancelled: false` (omp's `new_session` result,
+  `rpc-types.ts:133`), then stores the new fingerprint. No
   file is moved: omp keeps the old transcript file in the session dir, and the next `open_session` resumes the newest
   (the new) one. Ledger `planner_session_reset {reason: "lesson_change"}`; a failed `new_session` fails the spawn with
   `planner_session_reset_failed` (incident) rather than resuming silently. Flag `HOUGE_LESSON_SESSION_RESET` (default
