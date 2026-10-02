@@ -24,7 +24,10 @@ steps work on any macOS machine (e.g. this laptop, for verification).
   omp's absolute path in `.env` ([LLM runtime — omp](../../docs/reference/configuration.md#llm-runtime--omp-adr-0028)).
   An absolute path is not enough on its own: omp's launcher is a `#!/usr/bin/env bun` script, so the
   plist's `PATH` must also contain the directory holding `bun` (`~/.bun/bin`). Without it every spawn
-  fails `omp not runnable` (seen on the 2026-10-01 cutover). Pass it via `EXTRA_PATH` to the setup script.
+  fails `omp not runnable` (seen on the 2026-10-01 cutover). `setup-new-host.sh` puts the dirs of node,
+  bun, omp, codex and agy on the plist's `PATH` (add more with `EXTRA_PATH=/a:/b`), and checks omp against
+  the pin; `bash deploy/launchd/setup-new-host.sh --check-only` runs only the checks and renders the plist
+  to a temp file.
   Every spawn checks the version pin; a different omp is refused with an incident.
 - `agy` (voice notes) and `codex` (self-diagnose, self-write), also by absolute path in `.env`.
 
