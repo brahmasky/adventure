@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { chatContextSince, countTrailingClarifyTurns, resolveChatContextTurns, resolveMaxConsecutiveClarify } from "../capabilities/intent.js";
 import { composeSystemPrompt } from "../prompt/composer.js";
 import { resolveLocalTimeZone } from "../prompt/tz-convert.js";
+import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
+import { OMP_LESSON_SCOPES, renderLessonSection, type LessonSection, type LessonSkip } from "../run/lesson-render.js";
 import { resolveLessonCapPerScope, type DaemonBoot, type RunStore } from "../run/run-store.js";
 import { clipText, isBuildStale, localStamp } from "../status/houge-status.js";
 
@@ -11,7 +13,6 @@ export interface TurnContextDeps {
   store: RunStore;
   memoryRoot: string;
   dataDir: string;
-  lessonsReader: (scope: string) => string | undefined;
   skillsReader: (scope: string) => string | undefined;
   coreBlock: (chatId: string) => string | undefined;
   retrieve: (
@@ -97,33 +98,84 @@ function assertChatId(chatId: string): void {
   if (!/^-?\d+$/.test(chatId)) throw new Error("invalid chat id");
 }
 
-function renderSystemPrompt(d: TurnContextDeps, chatId: string): string {
+/** What the spawned session's prompt holds (memory A1 §1): the text and the ids attribution may credit. */
+export interface PromptSnapshot {
+  text: string;
+  lessonIds: number[];
+  lessonScopes: string[];
+  skillScopes: string[];
+  skipped: LessonSkip[];
+}
+
+const NO_LESSONS: LessonSection = { block: undefined, ids: [], scopes: [], skipped: [] };
+
+/** Rendering never throws into a turn: a store failure renders no lessons and is logged. */
+function safeLessonSection(d: TurnContextDeps): LessonSection {
+  try {
+    return renderLessonSection(d.store, OMP_LESSON_SCOPES, d.env);
+  } catch (e) {
+    console.error(`[turn-context] lesson render failed: ${e instanceof Error ? e.message : String(e)}`);
+    return NO_LESSONS;
+  }
+}
+
+/** Both scopes' skills, concatenated (the composer's skillsScope is a single string, composer.ts:320). */
+function ompSkills(d: TurnContextDeps): { block: string | undefined; scopes: string[] } {
+  const parts = OMP_LESSON_SCOPES.flatMap((scope) => {
+    const block = d.skillsReader(scope);
+    return block ? [{ scope, block }] : [];
+  });
+  return { block: parts.length > 0 ? parts.map((p) => p.block).join("\n") : undefined, scopes: parts.map((p) => p.scope) };
+}
+
+export function buildSystemPrompt(d: TurnContextDeps, chatId: string): PromptSnapshot {
   assertChatId(chatId);
+  const lessons = safeLessonSection(d);
+  const skills = ompSkills(d);
   // The date line makes the fingerprint flip daily (UTC midnight): intended, it restarts the child at the next turn so the date stays true.
-  return composeSystemPrompt(d.memoryRoot, "omp", {
+  const text = composeSystemPrompt(d.memoryRoot, "omp", {
     ...(d.now ? { now: d.now() } : {}),
-    lessonsReader: d.lessonsReader,
-    lessonsScope: SCOPE,
-    skillsReader: d.skillsReader,
-    skillsScope: SCOPE,
+    lessonsReader: () => lessons.block,
+    skillsReader: () => skills.block,
     coreReader: () => d.coreBlock(chatId)
   });
+  return { text, lessonIds: lessons.ids, lessonScopes: lessons.scopes, skillScopes: skills.scopes, skipped: lessons.skipped };
 }
 
 /** sha256 of what writeSystemPromptFile would write; a change means the live session is stale. */
 export function systemPromptFingerprint(d: TurnContextDeps, chatId: string): string {
-  return createHash("sha256").update(renderSystemPrompt(d, chatId)).digest("hex");
+  return createHash("sha256").update(buildSystemPrompt(d, chatId).text).digest("hex");
 }
 
-/** Atomically write the chat's system prompt file; the path is stable per chat. */
-export function writeSystemPromptFile(d: TurnContextDeps, chatId: string): string {
+const LESSON_DROPPED: ReadonlySet<string> = new Set(["lesson_dropped"]);
+
+/**
+ * Spec §1: each skipped lesson is a `lesson_dropped` row and an alerted incident (once while open); a lesson that
+ * rendered closes its own. Raised here (the prompt the child will hold) and by the sweep. Never throws.
+ */
+function raiseLessonDrops(d: TurnContextDeps, s: PromptSnapshot): void {
+  try {
+    for (const skip of s.skipped) {
+      d.store.recordMemoryEvent("lesson_dropped", { ...skip });
+      openAlertedIncident(d.store, { kind: "lesson_dropped", subject: `lesson:${skip.lesson_id}`, detail: { ...skip }, env: d.env });
+    }
+    for (const id of s.lessonIds) resolveOpenIncidents(d.store, LESSON_DROPPED, `lesson:${id}`);
+  } catch (e) {
+    console.error(`[turn-context] lesson_dropped bookkeeping failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** Atomically write the chat's system prompt file (stable path per chat); returns the path and what it holds. */
+export function writeSystemPromptFile(d: TurnContextDeps, chatId: string): { path: string; snapshot: PromptSnapshot } {
+  const snapshot = buildSystemPrompt(d, chatId);
   const dir = join(d.dataDir, "omp");
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `system-chat-${chatId}.md`);
   const tmp = `${path}.tmp-${process.pid}`;
-  writeFileSync(tmp, renderSystemPrompt(d, chatId), { mode: 0o600 });
+  writeFileSync(tmp, snapshot.text, { mode: 0o600 });
   renameSync(tmp, path);
-  return path;
+  raiseLessonDrops(d, snapshot);
+  return { path, snapshot };
 }
 
 /** Record the attribution seed (field names identical to the old inner loop) and touch what applied. */

@@ -2118,7 +2118,7 @@ export class CoreWorker {
   private ompTurnContext(dataDir: string): TurnContextDeps {
     return {
       store: this.runStore, memoryRoot: memoryRootFor(this.projectRoot), dataDir,
-      lessonsReader: this.lessonsReader(), skillsReader: this.skillsReader(),
+      skillsReader: this.skillsReader(),
       coreBlock: (chatId) => {
         if (!resolveEpisodicEnabled(process.env)) return undefined;
         const facts = this.runStore.getCoreEpisodicFacts(chatId, resolveEpisodicCoreCap(process.env));

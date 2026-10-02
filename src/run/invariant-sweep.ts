@@ -1,5 +1,6 @@
 import { statfsSync } from "node:fs";
 import { resolveApprovalTimeoutMs } from "../omp/omp-config.js";
+import { OMP_LESSON_SCOPES, renderLessonSection } from "./lesson-render.js";
 import { TERMINAL_NOTIFICATION_REPORT_MS, type RunStore } from "./run-store.js";
 import { readParkMarker } from "./tombstone.js";
 
@@ -79,7 +80,7 @@ export const DISK_FREE_LOW_BYTES = 2 * 1024 ** 3;
 /** The kinds the sweep detects — and therefore the ONLY kinds it may resolve. */
 export const SWEEP_INCIDENT_KINDS = [
   "duplicate_schedule", "stuck_run", "undelivered_notification", "overdue_schedule", "failed_schedule",
-  "heartbeat_gap", "llm_leg_failing", "disk_free_low", "wall_collapsed"
+  "heartbeat_gap", "llm_leg_failing", "disk_free_low", "wall_collapsed", "lesson_dropped"
 ] as const;
 export type IncidentKind = (typeof SWEEP_INCIDENT_KINDS)[number];
 const SWEEP_KINDS: ReadonlySet<string> = new Set(SWEEP_INCIDENT_KINDS);
@@ -164,6 +165,13 @@ function undeliveredViolations(store: RunStore, now: string, env: NodeJS.Process
   }));
 }
 
+/** Memory A1 invariants: `lesson_dropped` (an active ask/research lesson the omp prompt cannot fit under its char cap). */
+function memoryViolations(store: RunStore, env: NodeJS.ProcessEnv): InvariantViolation[] {
+  return renderLessonSection(store, OMP_LESSON_SCOPES, env).skipped.map((s): InvariantViolation => ({
+    kind: "lesson_dropped", subject: `lesson:${s.lesson_id}`, detail: { ...s }
+  }));
+}
+
 /** Pure detection: compose the store's seven invariant queries into a flat violation list. */
 export function detectViolations(
   store: RunStore,
@@ -171,7 +179,7 @@ export function detectViolations(
   env: NodeJS.ProcessEnv = process.env,
   probe: OmpSweepProbe = {}
 ): InvariantViolation[] {
-  const violations: InvariantViolation[] = [...detectOmpViolations(store, probe)];
+  const violations: InvariantViolation[] = [...detectOmpViolations(store, probe), ...memoryViolations(store, env)];
 
   for (const row of store.findDuplicateEnabledSchedules()) {
     violations.push({

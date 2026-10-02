@@ -13,6 +13,7 @@ import type {
   TypedTaskEvent
 } from "../domain/types.js";
 import { stableHash } from "../domain/canonical.js";
+import { UNTHEMED } from "./lesson-themes.js";
 import {
   computeBreaches,
   computeHeadroom,
@@ -377,6 +378,8 @@ export interface LessonRow {
   created_at: string;
   last_used: string | null;
   source: LessonSource;
+  /** Closed-list theme (memory A1 §5; src/run/lesson-themes.ts), 'unthemed' by default. */
+  theme: string;
 }
 
 /** The reconcile verdict {@link RunStore.saveReconciledLesson} applies (structurally matches capabilities/reconcile.ts). */
@@ -1308,23 +1311,25 @@ export class RunStore {
     return this.db.prepare(`SELECT ${LESSON_COLUMNS} FROM lessons WHERE id = ?`).get<LessonRow>(id);
   }
 
-  /** Insert one active lesson row; returns its id. */
+  /** Insert one active lesson row; returns its id. `theme` defaults to the column default ('unthemed'). */
   addLesson(input: {
     scope: string;
     text: string;
     avoid?: string;
+    theme?: string;
     source: LessonSource;
     created_at?: string;
   }): number {
     const result = this.db.prepare(`
-      INSERT INTO lessons (scope, text, avoid, created_at, source)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO lessons (scope, text, avoid, created_at, source, theme)
+      VALUES (?, ?, ?, ?, ?, ?)
     `).run(
       input.scope,
       input.text.trim(),
       input.avoid?.trim() || null,
       input.created_at ?? new Date().toISOString(),
-      input.source
+      input.source,
+      input.theme ?? UNTHEMED
     );
     return Number(result.lastInsertRowid);
   }
@@ -6204,6 +6209,13 @@ export class RunStore {
     );
   }
 
+  /** A run-less memory ledger row (memory A1): ids and counts only, never text. */
+  recordMemoryEvent(event_type: LedgerEventType, payload: Record<string, unknown>, correlation_id = "memory"): void {
+    this.appendLedgerEvent(
+      createLedgerEvent({ correlation_id, event_type, actor: "system", sequence: this.nextLedgerSequence(), payload })
+    );
+  }
+
   private nextLedgerSequence(run_id?: string): number {
     const row = run_id
       ? this.db.prepare(`
@@ -6285,6 +6297,19 @@ export class RunStore {
     this.applyOmpRuntimeMigration();
     this.applyDaemonBootsMigration();
     this.applyMemoryChangesMigration();
+    this.applyLessonThemeMigration();
+  }
+
+  /** Memory A1 §5: one closed-list theme per lesson; existing rows read 'unthemed'. Guarded by table_info (idempotent). */
+  private applyLessonThemeMigration(): void {
+    const version = "2026-10-02-lesson-theme";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      if (!this.tableColumns("lessons").has("theme")) {
+        this.db.exec(`ALTER TABLE lessons ADD COLUMN theme TEXT NOT NULL DEFAULT 'unthemed'`);
+      }
+      if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
   }
 
   /** Self-service memory correction (2026-10-02): one row per retire/correct, ids only, so Undo can reverse it. */
@@ -7835,7 +7860,7 @@ const DEFAULT_LESSON_CHAR_CAP = 1200;
 /** SELECT list for LessonRow reads (one place, so every accessor returns the same shape). */
 const LESSON_COLUMNS =
   "id, scope, text, avoid, status, supersedes, superseded_by, applied_count, " +
-  "corrected_count, reuse_value, rating_history, created_at, last_used, source";
+  "corrected_count, reuse_value, rating_history, created_at, last_used, source, theme";
 
 /** Per-scope active-row cap (⓪·3 S1): overflow prunes the lowest reuse_value rows. */
 export const DEFAULT_LESSON_CAP_PER_SCOPE = 20;

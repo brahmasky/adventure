@@ -34,7 +34,6 @@ function deps(store: RunStore, hits: Hits = { facts: [], pages: [] }): TurnConte
     store,
     memoryRoot: new URL("../../memory", import.meta.url).pathname,
     dataDir,
-    lessonsReader: () => undefined,
     skillsReader: () => undefined,
     coreBlock: () => undefined,
     retrieve: async () => hits,
@@ -46,17 +45,42 @@ function deps(store: RunStore, hits: Hits = { facts: [], pages: [] }): TurnConte
 describe("turn context — what the planner knows and how ratings attribute (spec §6, plan deviation 1)", () => {
   it("writes the system prompt file with the omp loop discipline and a stable path per chat", () => {
     const d = deps(RunStore.openInMemory());
-    const p1 = writeSystemPromptFile(d, "42");
-    const p2 = writeSystemPromptFile(d, "42");
+    const p1 = writeSystemPromptFile(d, "42").path;
+    const p2 = writeSystemPromptFile(d, "42").path;
     expect(p1).toBe(p2);
     expect(readFileSync(p1, "utf8")).toContain(OMP_LOOP_DISCIPLINE);
   });
 
   it("changes the fingerprint when an active lesson changes — that is how a live session learns (probed resume)", () => {
-    const d = deps(RunStore.openInMemory());
+    const store = RunStore.openInMemory();
+    const d = deps(store);
     const before = systemPromptFingerprint(d, "42");
-    const d2 = { ...d, lessonsReader: () => "- always answer in two paragraphs" };
-    expect(systemPromptFingerprint(d2, "42")).not.toBe(before);
+    store.addLesson({ scope: "ask", text: "always answer in two paragraphs", source: "user_feedback" });
+    expect(systemPromptFingerprint(d, "42")).not.toBe(before);
+  });
+
+  it("renders research lessons and research skills into the omp prompt (spec §1: both scopes)", () => {
+    const store = RunStore.openInMemory();
+    store.addLesson({ scope: "research", text: "prefer primary sources", source: "user_feedback" });
+    const d = { ...deps(store), skillsReader: (scope: string) => (scope === "research" ? "research skill body" : undefined) };
+    const text = readFileSync(writeSystemPromptFile(d, "42").path, "utf8");
+    expect(text).toContain("- [unthemed] prefer primary sources");
+    expect(text).toContain("research skill body");
+  });
+
+  it("a skipped lesson writes a lesson_dropped row and opens its incident; rendering again resolves it (spec §1)", () => {
+    const store = RunStore.openInMemory();
+    store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
+    const big = store.addLesson({ scope: "ask", text: "q".repeat(80), source: "user_feedback" });
+    const env: NodeJS.ProcessEnv = { HOUGE_LESSON_CHAR_CAP: "40" };
+    const d = { ...deps(store), env };
+    writeSystemPromptFile(d, "42");
+    const rows = store.getLedgerEvents().filter((e) => e.event_type === "lesson_dropped");
+    expect(rows.map((e) => e.payload)).toEqual([{ lesson_id: big, chars: 4 + "unthemed".length + 80 + 1, cap: 40 }]);
+    expect(store.listOpenIncidents().filter((i) => i.kind === "lesson_dropped").map((i) => i.subject)).toEqual([`lesson:${big}`]);
+    env.HOUGE_LESSON_CHAR_CAP = "4000";
+    writeSystemPromptFile(d, "42");
+    expect(store.listOpenIncidents().filter((i) => i.kind === "lesson_dropped")).toEqual([]);
   });
 
   it("records loop_started with today's exact applied_artifacts field names so rating attribution still works", async () => {
@@ -145,7 +169,7 @@ describe("turn context — what the planner knows and how ratings attribute (spe
     expect(store.getActiveLessons("ask").find((l) => l.id === lessonId)?.applied_count).toBe(1);
     expect(store.getEpisodicFact(factId)?.applied_count).toBe(1);
     expect(store.getWikiPage(pageId)?.applied_count).toBe(1);
-    const path = writeSystemPromptFile(d, "42");
+    const path = writeSystemPromptFile(d, "42").path;
     expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(readdirSync(join(d.dataDir, "omp")).filter((f) => f.includes(".tmp-"))).toEqual([]);
     expect(systemPromptFingerprint(d, "42")).toBe(createHash("sha256").update(readFileSync(path)).digest("hex"));

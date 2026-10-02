@@ -583,7 +583,7 @@ export class PlannerSupervisor {
     const tmp = `${configFile}.tmp-${process.pid}`;
     writeFileSync(tmp, HOUGE_CONFIG_YML, { mode: 0o600 });
     renameSync(tmp, configFile);
-    const systemPromptFile = writeSystemPromptFile(turnContext, chatId);
+    const { path: systemPromptFile } = writeSystemPromptFile(turnContext, chatId);
     this.fingerprint = systemPromptFingerprint(turnContext, chatId);
     this.stale = false;
     return { sessionDir, systemPromptFile, configFile, bridgeDir };

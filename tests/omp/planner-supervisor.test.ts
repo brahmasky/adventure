@@ -119,7 +119,7 @@ function harness(session = fakeSession(), env: Record<string, string> = {}, extr
   const sup = new PlannerSupervisor({
     chatId: "42", store, cfg: resolveOmpConfig({ HOUGE_OMP_SANDBOX: "0", ...env }), ctx: { home: data, repo: data, data }, distDir: data,
     decls: [], env: {}, turnEnvelopeActions: ["shell"],
-    turnContext: { store, memoryRoot: new URL("../../memory", import.meta.url).pathname, dataDir: data, lessonsReader: () => undefined, skillsReader: () => undefined, coreBlock: () => undefined, retrieve: async () => ({ facts: [], pages: [] }), env: {} },
+    turnContext: { store, memoryRoot: new URL("../../memory", import.meta.url).pathname, dataDir: data, skillsReader: () => undefined, coreBlock: () => undefined, retrieve: async () => ({ facts: [], pages: [] }), env: {} },
     buildTools: () => ({ registry: new ToolRegistry(), quarantine: async () => ({ digest: "", contains_instructions: false, source_meta: { tool: "x", bytes: 0 } }) }),
     posture: () => null, outcome, sessionFactory: (o) => session.bind(o), versionCheck: () => ({ ok: true, version: "18.4.4" }),
     skipPreflightForTest: true, manifestWaitMs: 5_000, ...extra
@@ -322,7 +322,7 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
     const { store, sup } = harness(session);
     (sup as never as { d: { sessionFactory: (o: PlannerSessionOptions) => unknown } }).d.sessionFactory = (o) => { starts++; return session.bind(o); };
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
-    (sup as never as { d: { turnContext: { lessonsReader: () => string } } }).d.turnContext.lessonsReader = () => "- new lesson";
+    store.addLesson({ scope: "ask", text: "new lesson", source: "user_feedback" });
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
     expect(starts).toBe(2);
   });
@@ -1036,7 +1036,7 @@ describe("PlannerSupervisor — frame watchdog, parent lease, stale children (fi
     const { store, sup, outcome } = harness(c1);
     (sup as never as Mutable).d.sessionFactory = (o) => (children.shift() as Fake).bind(o);
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
-    (sup as never as { d: { turnContext: { lessonsReader: () => string } } }).d.turnContext.lessonsReader = () => "- new lesson"; // child 1 is replaced
+    store.addLesson({ scope: "ask", text: "new lesson", source: "user_feedback" }); // child 1 is replaced
     const b = createQueuedTurnRun(store);
     sup.submit(req(b)); await vi.waitFor(() => { expect(prompted2).toBe(true); }, { timeout: 10_000 });
     emit1({ type: "turn_start" }); c1.assistant("stale"); emit1({ type: "agent_end" });
