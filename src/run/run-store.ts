@@ -13,7 +13,7 @@ import type {
   TypedTaskEvent
 } from "../domain/types.js";
 import { stableHash } from "../domain/canonical.js";
-import { UNTHEMED } from "./lesson-themes.js";
+import { flattenLessonText, OMP_LESSON_SCOPES, UNTHEMED } from "./lesson-themes.js";
 import { LESSON_AVOID_MAX_CHARS, LESSON_MAX_CHARS } from "../capabilities/distill.js";
 import {
   computeBreaches,
@@ -1344,8 +1344,8 @@ export class RunStore {
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(
       input.scope,
-      input.text.trim(),
-      input.avoid?.trim() || null,
+      flattenLessonText(input.text),
+      (input.avoid !== undefined ? flattenLessonText(input.avoid) : "") || null,
       input.created_at ?? new Date().toISOString(),
       input.source,
       input.theme ?? UNTHEMED
@@ -1366,7 +1366,7 @@ export class RunStore {
 
   /** Rewrite a lesson's text in place (trivial merges only — supersede is the audited path). */
   updateLessonText(id: number, text: string): void {
-    this.db.prepare(`UPDATE lessons SET text = ? WHERE id = ?`).run(text.trim(), id);
+    this.db.prepare(`UPDATE lessons SET text = ? WHERE id = ?`).run(flattenLessonText(text), id);
   }
 
   /** Undo a supersede of this lesson (memory A1 migration --revert): active again, no successor. */
@@ -1381,6 +1381,15 @@ export class RunStore {
     const stmt = this.db.prepare(`
       UPDATE lessons SET applied_count = applied_count + 1, last_used = ? WHERE id = ?
     `);
+    for (const id of ids) stmt.run(now, id);
+  }
+
+  /**
+   * Final-review B4: active lessons the omp render cap skipped this turn. Only last_used moves (never applied_count, never
+   * credit): decay must not prune a lesson that the cap alone kept out of the prompt.
+   */
+  touchLessonsSeen(ids: number[], now: string = new Date().toISOString()): void {
+    const stmt = this.db.prepare(`UPDATE lessons SET last_used = ? WHERE id = ? AND status = 'active'`);
     for (const id of ids) stmt.run(now, id);
   }
 
@@ -1442,8 +1451,10 @@ export class RunStore {
   /**
    * Apply a reconcile verdict (⓪·3 S1b, ADR 0012 §2; memory A1 §2/§5). ADD inserts; SUPERSEDE/UPDATE insert a NEW row
    * linked to the prior (never an in-place rewrite, never a delete); DROP writes nothing. A target that is missing,
-   * inactive or in another scope degrades to ADD (⓪·3f P1). An UPDATE whose target has another theme is not merged:
-   * the candidate is saved as an ADD under its own theme. A result whose text is over LESSON_MAX_CHARS or whose AVOID
+   * inactive or in another scope degrades to ADD (⓪·3f P1) — except across the omp scopes (ask ↔ research, rendered as
+   * one set): there the new row takes the TARGET's scope, ledgered `lesson_cross_scope` (final-review B2). An UPDATE
+   * whose target has another KNOWN theme is not merged: the candidate is saved as an ADD under its own theme; onto an
+   * `unthemed` target it merges and takes the candidate's theme (B3). A result whose text is over LESSON_MAX_CHARS or whose AVOID
    * is over LESSON_AVOID_MAX_CHARS is not saved (`capped`; the prior stays). An UPDATE inherits the target's
    * reuse_value, applied_count and theme. Overflow beyond the per-scope cap prunes the lowest reuse_value rows.
    */
@@ -1457,27 +1468,36 @@ export class RunStore {
   ): LessonSaveResult {
     const text = candidate.text.trim();
     if (verdict.verdict === "DROP") return { verb: "drop", lesson: text, prunedIds: [] };
-    const prior = verdict.verdict === "ADD" ? undefined : this.getLesson(verdict.id);
-    const target = prior?.status === "active" && prior.scope === candidate.scope ? prior : undefined;
+    const target = verdict.verdict === "ADD" ? undefined : this.reconcileTarget(verdict.id, candidate.scope);
     const known = candidate.theme !== undefined && candidate.theme !== UNTHEMED ? candidate.theme : undefined;
-    // Spec §5: only a candidate with a KNOWN theme other than the target's is refused a merge; an unthemed one takes the target's.
-    if (target && verdict.verdict === "UPDATE" && known !== undefined && known !== target.theme) {
+    // Spec §5: only a candidate with a KNOWN theme other than the target's KNOWN theme is refused a merge.
+    if (target && verdict.verdict === "UPDATE" && known !== undefined && target.theme !== UNTHEMED && known !== target.theme) {
       return this.saveCrossThemeAsAdd({ ...candidate, text, theme: known }, target.id, source, now, cap);
     }
     const update = verdict.verdict === "UPDATE" && target !== undefined;
-    const theme = update ? target.theme : known ?? UNTHEMED;
+    const theme = update && target.theme !== UNTHEMED ? target.theme : known ?? UNTHEMED;
+    const scope = target?.scope ?? candidate.scope;
     const merged = update && verdict.text?.trim() ? verdict.text.trim() : text;
     // UPDATE supplements: the revised row inherits the prior AVOID unless the candidate brings one.
     const avoid = candidate.avoid?.trim() || (update && target.avoid ? target.avoid : undefined);
     const capped = this.lessonOverCap(merged, avoid, verdict.verdict, target?.id ?? null);
     if (capped) return capped;
-    const id = this.addLesson({ scope: candidate.scope, text: merged, ...(avoid ? { avoid } : {}), theme, source, created_at: now });
+    const id = this.addLesson({ scope, text: merged, ...(avoid ? { avoid } : {}), theme, source, created_at: now });
     if (target) this.supersedeLesson(target.id, id);
+    if (target && target.scope !== candidate.scope) this.recordMemoryEvent("lesson_cross_scope", { verdict: verdict.verdict, target_id: target.id });
     if (update) this.inheritLessonStanding(target, id);
     const escalate = verdict.verdict === "SUPERSEDE" && target ? this.payForSupersede(target, id, now, repeatDays) : false;
-    const prunedIds = this.pruneScopeOverflow(candidate.scope, cap, id);
+    const prunedIds = this.pruneScopeOverflow(scope, cap, id);
     const verb: LessonWriteVerb = !target ? "add" : update ? "update" : "supersede";
     return { verb, id, ...(target ? { supersededId: target.id } : {}), lesson: merged, prunedIds, ...(escalate ? { escalate: true } : {}) };
+  }
+
+  /** An active target in the candidate's scope, or in the other omp scope (B2); otherwise none (the verdict becomes ADD). */
+  private reconcileTarget(id: number, scope: string): LessonRow | undefined {
+    const prior = this.getLesson(id);
+    if (prior?.status !== "active") return undefined;
+    const omp = (OMP_LESSON_SCOPES as readonly string[]);
+    return prior.scope === scope || (omp.includes(prior.scope) && omp.includes(scope)) ? prior : undefined;
   }
 
   /** Spec §2: a write over either cap is refused, ledgered, and reported as `capped` (the prior row is untouched). */

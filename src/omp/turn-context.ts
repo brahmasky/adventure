@@ -129,13 +129,21 @@ export interface PromptSnapshot {
   skipped: LessonSkip[];
   /** The lesson SET this prompt rendered from (same read): what a lesson-change reset commits; undefined if the read failed. */
   lessonFingerprint?: string;
+  /** The lesson read threw: the prompt holds no lessons (final-review B5: an alerted incident, never stderr only). */
+  lessonRenderFailed?: true;
 }
 
-/** The ids a turn credits: what the spawned session's prompt holds (spec §1-2). */
-export type AppliedSnapshot = Pick<PromptSnapshot, "lessonIds" | "lessonScopes" | "skillScopes" | "coreFactIds">;
+/**
+ * The ids a turn credits: what the spawned session's prompt holds (spec §1-2). `skippedLessonIds` are the active lessons
+ * the char cap hid: never credited, only marked seen, so decay cannot quietly prune a lesson the cap alone hid (B4).
+ */
+export type AppliedSnapshot = Pick<PromptSnapshot, "lessonIds" | "lessonScopes" | "skillScopes" | "coreFactIds"> & { skippedLessonIds: number[] };
 
 export function appliedOf(s: PromptSnapshot): AppliedSnapshot {
-  return { lessonIds: s.lessonIds, lessonScopes: s.lessonScopes, skillScopes: s.skillScopes, coreFactIds: s.coreFactIds };
+  return {
+    lessonIds: s.lessonIds, lessonScopes: s.lessonScopes, skillScopes: s.skillScopes, coreFactIds: s.coreFactIds,
+    skippedLessonIds: s.skipped.map((k) => k.lesson_id)
+  };
 }
 
 export function promptTextFingerprint(text: string): string {
@@ -144,13 +152,13 @@ export function promptTextFingerprint(text: string): string {
 
 const NO_LESSONS: LessonSection = { block: undefined, ids: [], scopes: [], skipped: [] };
 
-/** Rendering never throws into a turn: a store failure renders no lessons and is logged. */
-function safeLessonSection(d: TurnContextDeps): LessonSection {
+/** Rendering never throws into a turn: a store failure renders no lessons, is logged, and is flagged for the incident. */
+function safeLessonSection(d: TurnContextDeps): LessonSection & { failed?: true } {
   try {
     return renderLessonSection(d.store, OMP_LESSON_SCOPES, d.env);
   } catch (e) {
     console.error(`[turn-context] lesson render failed: ${e instanceof Error ? e.message : String(e)}`);
-    return NO_LESSONS;
+    return { ...NO_LESSONS, failed: true };
   }
 }
 
@@ -178,7 +186,8 @@ export function buildSystemPrompt(d: TurnContextDeps, chatId: string): PromptSna
   return {
     text, lessonIds: lessons.ids, lessonScopes: lessons.scopes, skillScopes: skills.scopes,
     coreFactIds: core?.ids ?? [], skipped: lessons.skipped,
-    ...(lessons.fingerprint !== undefined ? { lessonFingerprint: lessons.fingerprint } : {})
+    ...(lessons.fingerprint !== undefined ? { lessonFingerprint: lessons.fingerprint } : {}),
+    ...(lessons.failed ? { lessonRenderFailed: true as const } : {})
   };
 }
 
@@ -188,6 +197,7 @@ export function systemPromptFingerprint(d: TurnContextDeps, chatId: string): str
 }
 
 const LESSON_DROPPED: ReadonlySet<string> = new Set(["lesson_dropped"]);
+const LESSON_RENDER_FAILED: ReadonlySet<string> = new Set(["lesson_render_failed"]);
 
 /**
  * Spec §1: each skipped lesson is a `lesson_dropped` row and an alerted incident (once while open); a lesson that
@@ -200,9 +210,23 @@ function raiseLessonDrops(d: TurnContextDeps, s: PromptSnapshot): void {
       openAlertedIncident(d.store, { kind: "lesson_dropped", subject: `lesson:${skip.lesson_id}`, detail: { ...skip }, env: d.env });
     }
     for (const id of s.lessonIds) resolveOpenIncidents(d.store, LESSON_DROPPED, `lesson:${id}`);
+    raiseRenderFailure(d, s);
   } catch (e) {
     console.error(`[turn-context] lesson_dropped bookkeeping failed: ${e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+/**
+ * Final-review B5: a prompt spawned with NO lessons because the read threw is a ledgered, alerted `lesson_render_failed`
+ * (once while open; not a sweep kind, so only this path resolves it) — the next successful render resolves it.
+ */
+function raiseRenderFailure(d: TurnContextDeps, s: PromptSnapshot): void {
+  if (!s.lessonRenderFailed) {
+    resolveOpenIncidents(d.store, LESSON_RENDER_FAILED, "lessons");
+    return;
+  }
+  d.store.recordMemoryEvent("lesson_render_failed", { reason: "render_error" });
+  openAlertedIncident(d.store, { kind: "lesson_render_failed", subject: "lessons", detail: { reason: "render_error" }, env: d.env });
 }
 
 /** Atomically write the chat's system prompt file (stable path per chat); returns the path and what it holds. */
@@ -235,6 +259,7 @@ function recordAttribution(d: TurnContextDeps, runId: string, applied: AppliedSn
     ...(hits.telemetry ? { retrieval: hits.telemetry } : {})
   });
   if (applied.lessonIds.length > 0) d.store.touchApplied(applied.lessonIds);
+  if (applied.skippedLessonIds.length > 0) d.store.touchLessonsSeen(applied.skippedLessonIds);
   const factIds = [...applied.coreFactIds, ...hits.facts.map((f) => f.id)];
   if (factIds.length > 0) d.store.touchEpisodicApplied(factIds);
   if (hits.pages.length > 0) d.store.touchWikiApplied(hits.pages.map((p) => p.id));

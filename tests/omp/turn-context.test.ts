@@ -87,6 +87,38 @@ describe("turn context — what the planner knows and how ratings attribute (spe
     expect(store.listOpenIncidents().filter((i) => i.kind === "lesson_dropped")).toEqual([]);
   });
 
+  it("a failed lesson render is never silent: an alerted lesson_render_failed incident and a ledger row; the next render resolves it (B5)", () => {
+    const store = RunStore.openInMemory();
+    store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
+    const d = { ...deps(store), env: { HOUGE_TELEGRAM_CHAT_ID: "555" } };
+    const real = store.getActiveLessons.bind(store);
+    store.getActiveLessons = () => { throw new Error("database is locked"); };
+    const failed = writeSystemPromptFile(d, "42");
+    expect(failed.snapshot.lessonIds).toEqual([]);
+    expect(store.listOpenIncidents().map((i) => [i.kind, i.subject])).toEqual([["lesson_render_failed", "lessons"]]);
+    expect(store.getLedgerEvents().filter((e) => e.event_type === "lesson_render_failed").map((e) => e.payload)).toEqual([{ reason: "render_error" }]);
+    expect(store.claimNextNotification("t", 30)).not.toBeNull(); // paged once
+    writeSystemPromptFile(d, "42");
+    expect(store.claimNextNotification("t2", 30)).toBeNull(); // not again while open
+    store.getActiveLessons = real;
+    writeSystemPromptFile(d, "42");
+    expect(store.listOpenIncidents()).toEqual([]);
+  });
+
+  it("a lesson the char cap skipped still counts as seen: last_used advances, applied_count and credit do not (B4)", async () => {
+    const store = RunStore.openInMemory();
+    const shown = store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback", created_at: "2026-01-01T00:00:00.000Z" });
+    const skipped = store.addLesson({ scope: "ask", text: "z".repeat(60), source: "user_feedback", created_at: "2026-01-01T00:00:00.000Z" });
+    const d = { ...deps(store), env: { HOUGE_LESSON_CHAR_CAP: "40" } };
+    const run_id = createQueuedTurnRun(store);
+    await buildTurnPrompt(d, { run_id, chat_id: "42", message: "hi", source: "telegram" });
+    expect(store.getLesson(skipped)!.last_used).not.toBeNull(); // decay must not prune a lesson only the cap hid
+    expect(store.getLesson(skipped)!.applied_count).toBe(0);
+    expect(store.getLesson(shown)!.applied_count).toBe(1);
+    const started = store.getLedgerEvents(run_id).find((e) => e.event_type === "loop_started");
+    expect(started?.payload).toMatchObject({ applied_artifacts: { lesson_ids: [shown] } });
+  });
+
   it("records the retrieval telemetry beside applied_artifacts, whose field names stay fixed (spec §3)", async () => {
     const store = RunStore.openInMemory();
     const run_id = createQueuedTurnRun(store);
@@ -200,7 +232,7 @@ describe("turn context — what the planner knows and how ratings attribute (spe
     store.recordChatTurn({ chat_id: "42", run_id, role: "user", text: "hi", created_at: "2026-09-30T04:59:00.000Z" });
     await buildTurnPrompt(deps(store), {
       run_id, chat_id: "42", message: "hi", source: "telegram",
-      applied: { lessonIds: [shown], lessonScopes: ["ask"], skillScopes: [], coreFactIds: [] }
+      applied: { lessonIds: [shown], lessonScopes: ["ask"], skillScopes: [], coreFactIds: [], skippedLessonIds: [] }
     });
     expect(store.getLesson(shown)!.applied_count).toBe(1);
     expect(store.getLesson(hidden)!.applied_count).toBe(0);

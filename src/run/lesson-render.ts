@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { themeRank } from "./lesson-themes.js";
+import { flattenLessonText, OMP_LESSON_SCOPES, themeRank } from "./lesson-themes.js";
 import { resolveLessonCapPerScope, type LessonRow, type RunStore } from "./run-store.js";
 
 /**
@@ -8,7 +8,7 @@ import { resolveLessonCapPerScope, type LessonRow, type RunStore } from "./run-s
  * it), skip-and-continue under a char cap. Pure: raising a skip is the caller's job (turn-context at spawn, the
  * invariant sweep twice a day).
  */
-export const OMP_LESSON_SCOPES = ["ask", "research"] as const;
+export { OMP_LESSON_SCOPES };
 
 /** Char cap on the rendered section (HOUGE_LESSON_CHAR_CAP). */
 export const DEFAULT_LESSON_CHAR_CAP = 4000;
@@ -46,9 +46,10 @@ export interface LessonSection {
   fingerprint?: string;
 }
 
+/** One bullet per lesson: text and avoid are flattened here too (a row stored before B1 may hold a line break). */
 export function lessonBullet(row: Pick<LessonRow, "text" | "avoid" | "theme">): string {
-  const head = `- [${row.theme}] ${row.text}`;
-  return row.avoid ? `${head}\n  AVOID: ${row.avoid}` : head;
+  const head = `- [${row.theme}] ${flattenLessonText(row.text)}`;
+  return row.avoid ? `${head}\n  AVOID: ${flattenLessonText(row.avoid)}` : head;
 }
 
 /**

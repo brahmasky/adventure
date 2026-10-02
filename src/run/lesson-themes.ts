@@ -6,6 +6,20 @@
 export const LESSON_THEMES = ["format", "time", "honesty", "hygiene", "sources", "tasks", "self"] as const;
 export type LessonTheme = (typeof LESSON_THEMES)[number];
 
+/**
+ * The scopes the omp planner renders together (memory A1 §1): one lesson set, so a reconcile verdict may target either.
+ * Lives here (not lesson-render.ts) so run-store can use it without an import cycle.
+ */
+export const OMP_LESSON_SCOPES = ["ask", "research"] as const;
+
+/**
+ * A lesson is one line wherever it is shown (final-review B1): every whitespace run, including CR/LF, NEL (U+0085),
+ * VT, FF and the Unicode line/paragraph separators, collapses to one space. Escapes only, never a raw separator.
+ */
+export function flattenLessonText(text: string): string {
+  return text.replace(/[\s\u0085\u2028\u2029]+/g, " ").trim();
+}
+
 /** The column default and the label for a theme the reconcile call did not name from the list. */
 export const UNTHEMED = "unthemed";
 

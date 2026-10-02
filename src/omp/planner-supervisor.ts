@@ -163,7 +163,7 @@ export class PlannerSupervisor {
   private gen = 0;
   private fingerprint = "";
   /** What the live child's system prompt holds (spawn-time): each turn's attribution credits exactly these ids. */
-  private applied: AppliedSnapshot = { lessonIds: [], lessonScopes: [], skillScopes: [], coreFactIds: [] };
+  private applied: AppliedSnapshot = { lessonIds: [], lessonScopes: [], skillScopes: [], coreFactIds: [], skippedLessonIds: [] };
   /** The lesson set the spawned prompt rendered (memory A1 §6): what a reset compares and records. */
   private lessonFingerprint: string | undefined;
   /** Consecutive failed lesson-change resets for one fingerprint: the 3rd serves the resumed session (fail loud, not closed). */

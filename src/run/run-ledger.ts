@@ -56,6 +56,7 @@ export type LedgerEventType =
   | "lesson_consolidate_tick"
   | "lesson_write_capped"
   | "lesson_cross_theme"
+  | "lesson_cross_scope"
   | "lesson_theme_unknown"
   | "planner_session_reset"
   | "planner_session_reset_degraded"
@@ -77,6 +78,7 @@ export type LedgerEventType =
   | "wall_collapse"
   | "memory_corrected"
   | "lesson_dropped"
+  | "lesson_render_failed"
   | "evidence_rejected"
   | "memory_migration";
 
@@ -214,6 +216,8 @@ const requiredPayloadFields = {
   // Memory A1 §2/§5: a lesson write refused for size, an UPDATE across themes saved as an ADD, an unlisted theme. Ids/counts only.
   lesson_write_capped: ["verdict", "target_id", "chars", "avoid_chars"],
   lesson_cross_theme: ["candidate", "target"],
+  // Final-review B2: a SUPERSEDE/UPDATE across ask ↔ research (the new row takes the target's scope). Verdict + id only.
+  lesson_cross_scope: ["verdict", "target_id"],
   lesson_theme_unknown: ["lesson_id"],
   // Memory A1 §6: a lesson change started a fresh omp session for a chat (reason + chat id only).
   planner_session_reset: ["reason"],
@@ -273,6 +277,8 @@ const requiredPayloadFields = {
   memory_corrected: ["action", "kind", "old_ids", "count"],
   // Memory A1 (2026-10-02): a lesson the omp prompt could not fit. Ids and counts only.
   lesson_dropped: ["lesson_id", "chars", "cap"],
+  // Final-review B5: the omp prompt was built with no lessons because the lesson read threw (a fixed code, never the message).
+  lesson_render_failed: ["reason"],
   // Memory A1 §4: a fact whose evidence failed (reason + chat id only, never the fact).
   evidence_rejected: ["reason"],
   // Memory A1 §8: one row per migration step (ids only).

@@ -199,6 +199,21 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
     expect(store.getLesson(skipped)!.applied_count).toBe(0);
   });
 
+  it("credits the SPAWN-time snapshot: a lesson added after the child spawned is not credited by the turn it missed (D2)", async () => {
+    const { store, sup } = harness();
+    const shown = store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
+    let late = 0;
+    (sup as never as { d: { turnContext: { retrieve: () => Promise<unknown> } } }).d.turnContext.retrieve = async () => {
+      late = store.addLesson({ scope: "ask", text: "added after the spawn", source: "user_feedback" }); // after ensureReady
+      return { facts: [], pages: [] };
+    };
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    const started = store.getLedgerEvents(run_id).find((e) => e.event_type === "loop_started");
+    expect(started?.payload).toMatchObject({ applied_artifacts: { lesson_ids: [shown] } });
+    expect(store.getLesson(late)!.applied_count).toBe(0);
+  });
+
   it("spawns with the single houge.js extension entry, a minted token and a bridge socket that fits sun_path", async () => {
     const { store, sup, session, data } = harness();
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();

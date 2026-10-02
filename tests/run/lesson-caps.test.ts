@@ -52,6 +52,37 @@ describe("size caps on every lesson write (spec §2)", () => {
   });
 });
 
+describe("ask and research are one rendered set: a merge may cross them (final-review B2/B3)", () => {
+  it("an ask candidate that SUPERSEDEs a research lesson supersedes it in place: the new row takes the research scope", () => {
+    const target = store.addLesson({ scope: "research", text: "cite two sources", theme: "sources", source: "loop", created_at: NOW });
+    const r = store.saveReconciledLesson({ scope: "ask", text: "cite three sources", theme: "sources" }, { verdict: "SUPERSEDE", id: target }, "loop", NOW);
+    expect(r).toMatchObject({ verb: "supersede", supersededId: target });
+    expect(store.getLesson(target)).toMatchObject({ status: "superseded", superseded_by: r.id });
+    expect(store.getLesson(r.id!)).toMatchObject({ scope: "research", text: "cite three sources" });
+    expect(store.listLessons().map((l) => l.text)).toEqual(["cite three sources"]); // one active rule, not two
+    expect(ledger("lesson_cross_scope")).toEqual([{ verdict: "SUPERSEDE", target_id: target }]);
+  });
+
+  it("a cross-scope UPDATE merges too; a scope outside the omp set still degrades to ADD", () => {
+    const target = store.addLesson({ scope: "ask", text: "be concise", theme: "format", source: "loop", created_at: NOW });
+    const r = store.saveReconciledLesson({ scope: "research", text: "short summaries" }, { verdict: "UPDATE", id: target, text: "be concise; short summaries" }, "loop", NOW);
+    expect(store.getLesson(r.id!)).toMatchObject({ scope: "ask", text: "be concise; short summaries", supersedes: target });
+    const other = store.addLesson({ scope: "code", text: "use tabs", source: "loop", created_at: NOW });
+    const o = store.saveReconciledLesson({ scope: "ask", text: "use spaces" }, { verdict: "SUPERSEDE", id: other }, "loop", NOW);
+    expect(o.verb).toBe("add");
+    expect(store.getLesson(other)!.status).toBe("active");
+  });
+
+  it("a themed UPDATE onto an unthemed target is a merge, not a cross-theme refusal: the new row takes the candidate's theme", () => {
+    const target = store.addLesson({ scope: "ask", text: "be concise", source: "migration", created_at: NOW });
+    const r = store.saveReconciledLesson({ scope: "ask", text: "short answers", theme: "format" }, { verdict: "UPDATE", id: target, text: "be concise, short answers" }, "loop", NOW);
+    expect(r.verb).toBe("update");
+    expect(store.getLesson(r.id!)).toMatchObject({ theme: "format", supersedes: target });
+    expect(store.getLesson(target)!.status).toBe("superseded");
+    expect(ledger("lesson_cross_theme")).toEqual([]);
+  });
+});
+
 describe("consolidation merges stay within one theme (spec §5)", () => {
   it("applyLessonMerge refuses members of different themes and keeps the theme on a same-theme merge", () => {
     const a = store.addLesson({ scope: "ask", text: "be brief", theme: "format", source: "loop" });

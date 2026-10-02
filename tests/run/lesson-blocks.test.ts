@@ -273,9 +273,9 @@ describe("lessons store (⓪·3 S1 — per-lesson rows)", () => {
     it("a SUPERSEDE/UPDATE whose target sits in a DIFFERENT scope degrades to ADD (⓪·3f P1 scope guard)", () => {
       const store = RunStore.openInMemory();
       try {
-        // Unreachable via the shipped wiring (reconcile filters by scope) — the guard is
-        // defense-in-depth against a direct or future caller crossing scopes.
-        const other = store.addLesson({ scope: "research", text: "prefer primary sources", source: "loop", created_at: NOW });
+        // Defense-in-depth against a caller crossing scopes. ask ↔ research is NOT crossing (one rendered omp
+        // set, final-review B2: lesson-caps.test.ts); any other scope pair still degrades to ADD.
+        const other = store.addLesson({ scope: "code", text: "prefer primary sources", source: "loop", created_at: NOW });
         const result = store.saveReconciledLesson(
           { scope: "ask", text: "be concise" },
           { verdict: "SUPERSEDE", id: other },
@@ -286,7 +286,7 @@ describe("lessons store (⓪·3 S1 — per-lesson rows)", () => {
         expect(result.supersededId).toBeUndefined();
         // The cross-scope target is untouched — still active, no pointers written.
         expect(store.getLesson(other)!).toMatchObject({ status: "active", superseded_by: null });
-        expect(store.getActiveLessons("research").map((l) => l.id)).toEqual([other]);
+        expect(store.getActiveLessons("code").map((l) => l.id)).toEqual([other]);
 
         const update = store.saveReconciledLesson(
           { scope: "ask", text: "keep it short" },
