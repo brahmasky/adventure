@@ -141,7 +141,9 @@ async function checkRetrieval(m, store, ctx, probes, fails) {
   const core = wanted.filter((id) => ctx.core.has(id));
   if (core.length > 0) throw new Error(`probes: expected fact ids ${JSON.stringify(core)} are core facts (the live path drops them from retrieval)`);
   const older = probes.probes.filter((p) => p.expect_facts.some((id) => !newest.has(id))).length;
-  if (older < 2) throw new Error(`probes: need >= 2 positives whose fact is older than the newest 50 (have ${older})`);
+  const total = store.getActiveEpisodicFacts(ctx.chat).length;
+  if (total <= 50) console.log(`older-than-newest-50: waived (chat has ${total} active facts; covered by the hermetic retrieval-gate test)`);
+  else if (older < 2) throw new Error(`probes: need >= 2 positives whose fact is older than the newest 50 (have ${older})`);
   const embedCfg = m.emb.resolveEmbedConfig(process.env);
   for (const up of [true, false]) {
     console.log(`\n2  retrieval - ${up ? "Ollama up" : "Ollama down (FTS only)"}`);
