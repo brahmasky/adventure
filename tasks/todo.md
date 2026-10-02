@@ -8,6 +8,14 @@ awaits merge, rebuild, kickstart and a live re-gate.**
 
 **Schedule-born turns (`fix/schedule-turns-not-paco`, 2026-10-02):** a scheduled run's goal is no longer read as Paco speaking — `lesson_write` in a scheduled run is refused in code, its code-owned thread scan skips schedule-born turns, and episodic distill drops both turns of a scheduled run (by `runs.source`); awaits review, merge, rebuild, kickstart and a live check (after the AI日报 fires, save a real lesson that it no longer refuses as code-owned; the next distill pass adds no schedule-goal facts). Facts #108/#122/#129 already in the DB are not touched by this fix: retire them by hand.
 
+**Follow-ups (`chore/followups`, 2026-10-02):** awaits review, merge, rebuild, kickstart and a live check (kickstart while a tick runs: the boot after it reads `kickstart` with `stopped_at` set, never `crash_recovery`).
+- [x] Background ticks stop on shutdown: every model-backed tick takes the stop signal, the one-shot seat aborts its in-flight leg with no audit row, a distill window commits whole or not at all (ADR 0028 line).
+- [x] `live-gate-omp.mjs`: case 3 with no tool call is INCONCLUSIVE after one retry, `--cases` keeps its order, no-TTY operator steps are SKIPPED, a throwing case is a FAIL and the table still prints.
+- [x] Test gaps: the ungated memory_correct entry refuses a write; the distill watermark lands on the window's last turn.
+- [x] memory corrections are stored as Paco wrote them and shown as inline code on the approval and Undo cards (rows written before this keep their stripped text).
+- [x] `deploy/launchd/setup-new-host.sh` checks git, node, npm, bun, omp (= the pin) and codex; agy and ollama optional; plist PATH carries bun; `--check-only`.
+- [ ] **Paco:** push `main` and delete the `backup/*-pre-quote-rewrite` refs.
+
 **houge_status (`feat/houge-status`, 2026-10-02):** read-only `houge_status` bridge tool + `daemon_boots` boot record + `[runtime]` restart note on each chat's first turn after a boot; awaits merge, rebuild, kickstart and a live check (ask Houge "did you restart / which code is live?").
 
 **Gate fixes (`fix/live-gate-followups`, on `main@6a97039`):**
@@ -76,8 +84,8 @@ how often floor B asks.
 **Flags for Paco (not docs-fixable by an agent):**
 - A hermetic-test leak before the T14 fix spawned the real `omp` under profile `houge` (at least `omp
   --version`, possibly one lessons-merge call on test data): small subscription use, now pinned shut.
-- `deploy/launchd/setup-new-host.sh` still checks for `pi` and `docker` and names `HOUGE_KIMI_CLI_BIN`; it
-  needs omp and the four logins instead (script change, not made in the docs sync).
+- ~~`deploy/launchd/setup-new-host.sh` still checks for `pi` and `docker`~~: fixed on `chore/followups` (the
+  four `omp --profile houge login` grants stay a manual step the script prints).
 
 **Live config:** the mini's `.env` is the arming truth — read it, don't assume. Seat chains and every omp
 variable: `docs/reference/configuration.md` § "LLM runtime — omp (ADR 0028)". Flags carried over unchanged:

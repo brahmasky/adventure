@@ -326,3 +326,10 @@ Rules Claude writes for itself after corrections. Review at session start.
   before any restart, also check for an in-flight self_write_propose / skill_author pipeline (a recent
   `self_write_propose` tool_finished with no `self_write_published|failed|blocked` after it, or the
   daemon log's "waiting for in-flight self-write"), and wait or ask.
+
+- **A long synchronous tick in the poll loop must observe shutdown; launchd's ExitTimeOut turns it into a
+  SIGKILL.** 2026-10-02 01:06: a kickstart landed mid episodic distill (7–13 s per model call); the loop
+  awaited the whole tick, launchd SIGKILLed the daemon at 40 s, and the next boot read `crash_recovery`.
+  Rule: every background tick takes the daemon's stop signal, checks it between model calls and between
+  units of work, and never commits half a unit; an in-flight model call is aborted, and the abort is not
+  recorded as a model error.
