@@ -525,7 +525,7 @@ const DEV_SESSION_CAPABILITIES: ReadonlySet<string> = new Set(["self_write_propo
  * unsettled run cannot be judged yet. The watermark never passes it. A turn with no run row counts
  * as settled.
  */
-function settledTurns(store: Pick<RunStore, "findRunState">, turns: ChatTurnRow[]): ChatTurnRow[] {
+export function settledTurns(store: Pick<RunStore, "findRunState">, turns: ChatTurnRow[]): ChatTurnRow[] {
   const cut = turns.findIndex((t) => {
     const state = store.findRunState(t.run_id);
     return state !== undefined && !isTerminalRunState(state);
@@ -542,7 +542,7 @@ function settledTurns(store: Pick<RunStore, "findRunState">, turns: ChatTurnRow[
  *   the parent's planner made the calls.
  * Talk about Houge with no such call is left to the extract prompt.
  */
-function withoutTurnsOffPacosWorld(
+export function withoutTurnsOffPacosWorld(
   store: Pick<RunStore, "runSource" | "runLoopCapabilities" | "runActivitySpan">,
   turns: ChatTurnRow[]
 ): ChatTurnRow[] {

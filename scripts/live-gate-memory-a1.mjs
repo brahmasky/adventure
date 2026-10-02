@@ -11,9 +11,12 @@
 //   probes default <dir of HOUGE_ENV_FILE>/.superpowers/memory-a1/probes.json
 // probes.json schema:
 //   { "probes": [ { "message": string, "expect_facts": number[], "expect_pages": number[] }, ... ],   // >= 12 entries
-//     "window_149":       { "from": ISO, "to": ISO, "forbidden"?: string },  // window that minted fact #149 (user only ASKED);
-//                                                                            // `forbidden` = regex source of the asked-only attribute
+//     "window_149":       { "from": ISO, "to": ISO, "forbidden": string },   // window that minted fact #149 (user only ASKED);
+//                                                                            // `forbidden` (REQUIRED) = regex source of the asked-only attribute
 //     "assertion_window": { "from": ISO, "to": ISO } }                       // window holding a real first-person assertion
+//   Windows: `from` is EXCLUSIVE (getChatTurnsAfter: created_at > from), `to` inclusive. The gate applies the live pass's own
+//   filters (settledTurns, withoutTurnsOffPacosWorld); a window left with more than EPISODIC_EXTRACT_TURN_CAP (24) turns is a
+//   setup error (the live pass would read only the oldest 24), and each window's turn count is printed.
 //   An entry with empty expect_facts AND empty expect_pages is a NEGATIVE probe: it must get zero fact rows and zero page
 //   rows. Positive expect ids must not be core facts (the gate drops core ids like the live path). Needs >= 1 negative,
 //   >= 1 positive and >= 2 positive facts that are not among the chat's newest 50 active facts.
@@ -23,15 +26,15 @@
 //   2 every negative probe gets zero facts and pages (Ollama up AND down); every positive gets its expected ids (Ollama up;
 //     positives are only printed in the down run); the down run must report fts_only and no embedding; an all-empty
 //     retrieval run (no probe returned any row) FAILs; each probe's best admitted / best rejected cosine is printed;
-//   3 per ticks leg, 3 runs: window_149 yields no fact matching `forbidden` (no regex: printed for the eye), the assertion
+//   3 per ticks leg, 3 runs: window_149 yields no fact matching `forbidden` (regex required; zero facts parsed = UNJUDGED = FAIL), the assertion
 //     window yields at least one fact whose evidence passes; a leg that never answers FAILs, as does zero facts overall;
 //     the evidence rejection rate is printed (it decides shadow -> enforce);
 //   4 an UPDATE whose merge exceeds 240 chars is refused and the prior lesson is untouched;
 //   5 (--post) a planner_session_reset row since the kickstart, the chat's system prompt lists the themed lessons, and the
-//     last reply does not end with the old sign-off (--forbidden-ending; absent: printed for the eye). Whether the reply
-//     carries the thread is printed and judged by eye.
+//     last reply (posted after that reset row) does not end with the old sign-off (--forbidden-ending; absent: UNJUDGED, exit 3).
+//     Whether the reply carries the thread is printed and judged by eye.
 // Prompts and facts are printed to this console only (they are personal): never paste them into a committed file.
-// Exit: 0 PASS · 1 FAIL · 2 setup error. Build first (imports ../dist).
+// Exit: 0 PASS · 1 FAIL · 2 setup error · 3 UNJUDGED (a check could not be judged; not a pass). Build first (imports ../dist).
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -76,7 +79,8 @@ function validateProbes(raw) {
   const neg = (x) => x.expect_facts.length === 0 && x.expect_pages.length === 0;
   if (!r.some(neg) || !r.some((x) => !neg(x))) throw new Error("probes: need at least one negative and one positive");
   if (!isoWindow(raw.window_149) || !isoWindow(raw.assertion_window)) throw new Error("window_149 / assertion_window: { from, to } ISO strings");
-  if (raw.window_149.forbidden !== undefined) new RegExp(raw.window_149.forbidden, "i"); // throws on a bad regex
+  if (typeof raw.window_149.forbidden !== "string" || raw.window_149.forbidden === "") throw new Error("window_149.forbidden: a regex source is required");
+  new RegExp(raw.window_149.forbidden, "i"); // throws on a bad regex
   return raw;
 }
 
@@ -118,6 +122,8 @@ function runProbe(m, store, ctx, p, q) {
 function judgeProbe(i, p, r, up, fails) {
   const neg = p.expect_facts.length === 0 && p.expect_pages.length === 0;
   const mode = up ? "up" : "down";
+  if (!up && (r.w.fts_only !== true || r.w.embedding !== false)) fails.push(`2: probe ${i} (down) wiki ran with fts_only ${r.w.fts_only}, embedding ${r.w.embedding}`);
+  if (up && (r.w.embedding !== true || r.w.fts_only === true)) fails.push(`2: probe ${i} (up) wiki ran without the embedding (fts_only ${r.w.fts_only})`);
   if (!up && (r.f.fts_only !== true || r.f.embedding !== false)) fails.push(`2: probe ${i} (down) ran with fts_only ${r.f.fts_only}, embedding ${r.f.embedding}`);
   if (up && (r.f.embedding !== true || r.f.fts_only === true)) fails.push(`2: probe ${i} (up) ran without the embedding (fts_only ${r.f.fts_only})`);
   if (neg && (r.facts.length > 0 || r.pages.length > 0)) fails.push(`2: probe ${i} (negative, ${mode}) admitted facts ${JSON.stringify(r.facts)} pages ${JSON.stringify(r.pages)}`);
@@ -151,8 +157,13 @@ async function checkRetrieval(m, store, ctx, probes, fails) {
   }
 }
 
-function windowTurns(store, chat, w) {
-  return store.getChatTurnsAfter(chat, w.from, 500).filter((t) => t.created_at <= w.to && store.runSource(t.run_id) !== "schedule");
+/** The turns the live pass would feed the extractor for this window: same settled + off-world filters, same 24-turn cap. */
+function windowTurns(m, store, chat, w, label) {
+  const raw = store.getChatTurnsAfter(chat, w.from, 500).filter((t) => t.created_at <= w.to);
+  const turns = m.ex.withoutTurnsOffPacosWorld(store, m.ex.settledTurns(store, raw));
+  console.log(`3  ${label}: ${raw.length} raw turn(s), ${turns.length} after the live pass's filters`);
+  if (turns.length > m.ex.EPISODIC_EXTRACT_TURN_CAP) throw new Error(`${label} holds ${turns.length} turns after filtering, over the ${m.ex.EPISODIC_EXTRACT_TURN_CAP}-turn window the live pass reads: narrow it`);
+  return turns;
 }
 
 /** One extract call over a window; each fact with whether its evidence passes. null when the seat gave no answer. */
@@ -174,7 +185,8 @@ async function runLeg(m, store, name, llm, win, fails) {
     if (!q || !a) { fails.push(`3: ${name} run ${run}: the seat gave no answer`); break; }
     tally.runs += 1;
     for (const f of [...q, ...a]) { tally.facts += 1; if (!f.ok) tally.rejected += 1; console.log(`    ${f.ok ? "ok" : "REJ"} ${f.fact}`); }
-    if (win.forbidden && q.some((f) => win.forbidden.test(f.fact))) fails.push(`3: ${name} run ${run} stored the asked-only attribute`);
+    if (q.length === 0) fails.push(`3: ${name} run ${run}: UNJUDGED - the model parsed to zero facts for window_149`);
+    if (q.some((f) => win.forbidden.test(f.fact))) fails.push(`3: ${name} run ${run} stored the asked-only attribute`);
     if (!a.some((f) => f.ok)) fails.push(`3: ${name} run ${run}: no evidenced fact from the assertion window`);
   }
   console.log(`3  ${name}: ${tally.runs}/3 run(s), evidence rejected ${tally.rejected}/${tally.facts}`);
@@ -183,10 +195,9 @@ async function runLeg(m, store, name, llm, win, fails) {
 
 /** 3 — per ticks leg, 3 runs over both windows. */
 async function checkExtract(m, store, ctx, probes, fails) {
-  const win = { q: windowTurns(store, ctx.chat, probes.window_149), a: windowTurns(store, ctx.chat, probes.assertion_window),
-    forbidden: probes.window_149.forbidden ? new RegExp(probes.window_149.forbidden, "i") : null };
+  const win = { q: windowTurns(m, store, ctx.chat, probes.window_149, "window_149"), a: windowTurns(m, store, ctx.chat, probes.assertion_window, "assertion_window"),
+    forbidden: new RegExp(probes.window_149.forbidden, "i") };
   if (win.q.length === 0 || win.a.length === 0) throw new Error(`windows empty (window_149 ${win.q.length}, assertion ${win.a.length} turns)`);
-  if (!win.forbidden) console.log("3  window_149 has no `forbidden` regex: judge its facts by eye (printed below)");
   const legs = m.cfg.resolveOmpConfig(process.env).ticks;
   if (legs.length === 0) throw new Error("no ticks legs configured (HOUGE_OMP_TICKS)");
   let facts = 0;
@@ -217,18 +228,19 @@ function checkPost(ctx, args, fails) {
   const db = new DatabaseSync(resolve(args.db ?? join(ctx.repo, "houge.sqlite")), { readOnly: true });
   try {
     const since = args.since;
-    const resets = db.prepare(`SELECT COUNT(*) AS n FROM ledger_events WHERE event_type = 'planner_session_reset' AND correlation_id = ? AND occurred_at >= ?`).get(`planner:${ctx.chat}`, since).n;
-    const reply = db.prepare(`SELECT run_id, text FROM chat_turns WHERE chat_id = ? AND role = 'assistant' AND created_at >= ? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(ctx.chat, since);
+    const resets = db.prepare(`SELECT COUNT(*) AS n, MAX(occurred_at) AS last FROM ledger_events WHERE event_type = 'planner_session_reset' AND correlation_id = ? AND occurred_at >= ?`).get(`planner:${ctx.chat}`, since);
+    const reply = db.prepare(`SELECT run_id, text, created_at FROM chat_turns WHERE chat_id = ? AND role = 'assistant' AND created_at >= ? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(ctx.chat, since);
     const active = db.prepare(`SELECT COUNT(*) AS n FROM lessons WHERE status = 'active' AND scope IN ('ask', 'research')`).get().n;
     const prompt = readFileSync(join(args.dataDir ?? ctx.repo, "omp", `system-chat-${ctx.chat}.md`), "utf8");
     const themed = (prompt.match(/^- \[(format|time|honesty|hygiene|sources|tasks|self)\] /gm) ?? []).length;
-    console.log(`5  planner_session_reset since ${since}: ${resets}; themed lessons in the prompt ${themed}/${active}`);
-    if (resets < 1) fails.push("5: no planner_session_reset row since the kickstart");
+    console.log(`5  planner_session_reset since ${since}: ${resets.n}; themed lessons in the prompt ${themed}/${active}`);
+    if (resets.n < 1) fails.push("5: no planner_session_reset row since the kickstart");
     if (active === 0 || themed !== active) fails.push(`5: the prompt lists ${themed} themed lessons, ${active} are active`);
     if (!reply) { fails.push("5: no assistant reply since the kickstart (send one real turn first)"); return; }
+    if (resets.last && reply.created_at <= resets.last) fails.push(`5: the newest reply (${reply.created_at}) does not post-date the planner_session_reset row (${resets.last}): send a turn after the reset`);
     const tail = reply.text.trim().split("\n").slice(-2).join("\n");
     if (ending?.test(tail)) fails.push("5: the reply still ends with the old sign-off");
-    if (!ending) console.log("5  no --forbidden-ending given: judge the reply ending by eye");
+    if (!ending) { ctx.unjudged = true; console.log("5  UNJUDGED (no --forbidden-ending): the old sign-off was not checked"); }
     const prev = db.prepare(`SELECT text FROM chat_turns WHERE chat_id = ? AND role = 'user' AND run_id <> ? AND created_at < (SELECT MIN(created_at) FROM chat_turns WHERE run_id = ?) ORDER BY created_at DESC LIMIT 1`).get(ctx.chat, reply.run_id, reply.run_id);
     console.log(`\nMANUAL - does the reply carry the thread (refer to the previous message)?\n  previous user message: ${prev?.text ?? "(none)"}\n  reply: ${reply.text}`);
   } finally { db.close(); }
@@ -268,7 +280,7 @@ async function main() {
   if (!chat) throw new Error("HOUGE_TELEGRAM_CHAT_ID is not set (point HOUGE_ENV_FILE at the daemon's .env)");
   const repo = dirname(resolve(process.env.HOUGE_ENV_FILE ?? join(process.cwd(), ".env")));
   const local = join(repo, ".superpowers", "memory-a1");
-  const ctx = { chat, repo, root: "", core: new Set() };
+  const ctx = { chat, repo, root: "", core: new Set(), unjudged: false };
   const fails = [];
   if (args.post) checkPost(ctx, args, fails);
   else {
@@ -277,6 +289,7 @@ async function main() {
     fails.push(...(await runCopy(m, ctx, args, probes, planRaw)));
   }
   console.log(fails.length === 0 ? "\nPASS" : `\nFAIL\n  ${fails.join("\n  ")}`);
+  if (fails.length === 0 && ctx.unjudged) { console.log("exit 3: a check was UNJUDGED, so this is not a pass"); return 3; }
   return fails.length === 0 ? 0 : 1;
 }
 
