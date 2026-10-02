@@ -5,8 +5,10 @@
 // Dry run by default: prints every before/after row and writes nothing. --apply runs every step in ONE
 // transaction; --revert undoes the last applied migration in ONE transaction. Re-running --apply after success is a
 // no-op. Reads the untracked plan file (.superpowers/memory-a1/plan.json): the approved texts never enter the repo.
+// SQLite's default busy timeout applies: a concurrent daemon write fails loud (exit 1, rolled back), never silently.
+// A successful --apply changes the lesson set, so the next turn starts a fresh planner session (no kickstart needed).
 // Build first (imports ../dist). Exit: 0 done/no-op · 1 apply or revert failed (rolled back) · 2 setup error.
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 function parseArgs(argv) {
@@ -28,11 +30,16 @@ async function main() {
     import("../dist/config/load-env.js"), import("../dist/run/memory-a1-migration.js"), import("../dist/run/run-store.js")
   ]);
   loadHougeEnv();
-  const chat = process.env.HOUGE_TELEGRAM_CHAT_ID?.trim();
-  if (!chat) throw new Error("HOUGE_TELEGRAM_CHAT_ID is not set (point HOUGE_ENV_FILE at the daemon's .env)");
+  if (!process.env.HOUGE_ENV_FILE && !args.db) throw new Error("set HOUGE_ENV_FILE (the daemon's .env) or pass --db <path>");
   const repo = dirname(resolve(process.env.HOUGE_ENV_FILE ?? join(process.cwd(), ".env")));
-  const plan = mig.parseMigrationPlan(JSON.parse(readFileSync(resolve(args.plan ?? join(repo, ".superpowers", "memory-a1", "plan.json")), "utf8")));
-  const store = RunStore.open(resolve(args.db ?? join(repo, "houge.sqlite")));
+  const dbPath = resolve(args.db ?? join(repo, "houge.sqlite"));
+  if (!existsSync(dbPath)) throw new Error(`database not found: ${dbPath} (refusing to create one)`);
+  // Revert needs neither the plan nor the chat id, so a bad plan can never block a rollback.
+  const needsPlan = !args.revert;
+  const chat = process.env.HOUGE_TELEGRAM_CHAT_ID?.trim();
+  if (needsPlan && !chat) throw new Error("HOUGE_TELEGRAM_CHAT_ID is not set (point HOUGE_ENV_FILE at the daemon's .env)");
+  const plan = needsPlan ? mig.parseMigrationPlan(JSON.parse(readFileSync(resolve(args.plan ?? join(repo, ".superpowers", "memory-a1", "plan.json")), "utf8"))) : null;
+  const store = RunStore.open(dbPath);
   try {
     return run(mig, store, plan, chat, args);
   } finally {
@@ -51,7 +58,14 @@ function run(mig, store, plan, chat, args) {
       return 1;
     }
   }
-  if (mig.migrationStatus(store, plan) === "applied") {
+  let status;
+  try {
+    status = mig.migrationStatus(store, plan, chat);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    return 1;
+  }
+  if (status === "applied") {
     console.log("already applied — nothing to do");
     return 0;
   }

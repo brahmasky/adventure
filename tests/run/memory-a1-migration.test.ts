@@ -54,6 +54,23 @@ describe("parseMigrationPlan — refuses a plan it cannot apply whole", () => {
   });
 });
 
+describe("parseMigrationPlan — strict shape", () => {
+  const ok = { scope: "ask", theme: "format", text: "x", avoid: null };
+  it("refuses an unknown top-level key (a typo would silently skip a step)", () => {
+    expect(() => parseMigrationPlan({ replace_9: [ok], retire_fact: [1] })).toThrow("plan: unknown key retire_fact");
+  });
+  it("refuses an avoid that is neither string nor null", () => {
+    expect(() => parseMigrationPlan({ replace_9: [{ ...ok, avoid: 5 }] })).toThrow("plan: replace_9[0].avoid");
+    expect(() => parseMigrationPlan({ replace_9: [{ scope: "ask", theme: "format", text: "x" }] })).toThrow("plan: replace_9[0].avoid");
+  });
+  it("refuses an empty replacement list", () => {
+    expect(() => parseMigrationPlan({ replace_9: [] })).toThrow("plan: replace_9 is empty");
+  });
+  it("refuses an empty restore_core evidence list", () => {
+    expect(() => parseMigrationPlan({ replace_9: [ok], restore_core: { fact: "f", evidence_from_fact_ids: [] } })).toThrow("evidence_from_fact_ids is empty");
+  });
+});
+
 describe("the migration (spec §8)", () => {
   it("dry run writes nothing", () => {
     const before = { lessons: store.listLessons().length, ledger: store.getLedgerEvents().length };
@@ -103,5 +120,39 @@ describe("the migration (spec §8)", () => {
     expect(store.getEpisodicFact(ids.wrongFact)!.status).toBe("active");
     expect(store.getCoreEpisodicFacts(CHAT).map((f) => f.id)).toEqual([ids.wrongFact]);
     expect(migrationStatus(store, plan())).toBe("pending");
+  });
+
+  it("refuses a partial prior state (a target changed by hand, no migration recorded) and writes nothing", () => {
+    store.forgetLesson(ids.bigA);
+    const events = store.getLedgerEvents().length;
+    expect(() => migrationStatus(store, plan(), CHAT)).toThrow("partial state, refusing");
+    expect(store.getLedgerEvents()).toHaveLength(events);
+    expect(store.getLesson(ids.bigB)!.status).toBe("active");
+  });
+
+  it("revert restores the previous themes and marks the retire change undone", () => {
+    store.setLessonTheme(ids.other, "honesty");
+    applyMigration({ store, plan: plan(), chat_id: CHAT, now: NOW });
+    const change = store.getLedgerEventsByCorrelation(MIGRATION_CORRELATION).find((e) => e.payload.step === "retire_facts")!.payload.change_id as string;
+    revertMigration({ store, now: NOW });
+    expect(store.getLesson(ids.other)!.theme).toBe("honesty");
+    expect(store.getMemoryChange(change)!.undone_at).not.toBeNull();
+  });
+
+  it("revert is refused, writing nothing, when a new row was changed after apply", () => {
+    applyMigration({ store, plan: plan(), chat_id: CHAT, now: NOW });
+    const newB = store.listLessons().find((l) => l.supersedes === ids.bigB)!.id;
+    store.forgetLesson(newB);
+    const events = store.getLedgerEvents().length;
+    expect(() => revertMigration({ store, now: NOW })).toThrow("revert refused");
+    expect(store.getLesson(ids.bigA)!.status).toBe("superseded");
+    expect(store.getEpisodicFact(ids.wrongFact)!.status).toBe("pruned");
+    expect(store.getLedgerEvents()).toHaveLength(events);
+  });
+
+  it("a second revert has nothing to revert", () => {
+    applyMigration({ store, plan: plan(), chat_id: CHAT, now: NOW });
+    revertMigration({ store, now: NOW });
+    expect(() => revertMigration({ store, now: NOW })).toThrow("nothing to revert");
   });
 });
