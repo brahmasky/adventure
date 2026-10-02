@@ -68,7 +68,8 @@ function runLeg(cfg: OmpConfig, m: ModelString, input: OneShotInput): Promise<Le
       child.stdout.destroy(); child.stderr.destroy();
       resolve(o ?? legOutcome(st, started));
     };
-    const settleAfterGrace = () => { clearTimeout(drain); drain = setTimeout(() => { killGroup(child); settle(); }, LEG_EXIT_GRACE_MS); };
+    // A settled leg (an abort) arms nothing more: a kill after it could hit a reused pid.
+    const settleAfterGrace = () => { if (st.settled) return; clearTimeout(drain); drain = setTimeout(() => { killGroup(child); settle(); }, LEG_EXIT_GRACE_MS); };
     const timer = setTimeout(() => { st.timedOut = true; killGroup(child); settleAfterGrace(); }, input.timeoutMs ?? cfg.oneshotTimeoutMs);
     const onAbort = () => { killGroup(child); settle({ summary: null, timedOut: false, latencyMs: Date.now() - started, aborted: true }); };
     input.signal?.addEventListener("abort", onAbort, { once: true });

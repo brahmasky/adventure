@@ -2,7 +2,7 @@
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OMP_ENV_VARS, resolveOmpConfig } from "../../../src/omp/omp-config.js";
 import { parseModelChain } from "../../../src/omp/model-string.js";
 import { LEG_EXIT_GRACE_MS, spawnOneShot } from "../../../src/llm/providers/omp.js";
@@ -153,6 +153,22 @@ describe("omp one-shot seat — every non-planner LLM call in Houge", () => {
     expect(r).toMatchObject({ ok: false, aborted: true });
     expect(audit.attempts).toEqual([]);
     expect(argvLog()).toHaveLength(1);
+  });
+
+  it("after an abort, the child's later exit arms no second group kill (its pid may be reused by then)", { timeout: 20_000 }, async () => {
+    const cfg = setup({ "google-antigravity/gemini-3.8-flash": { sleepMs: 30_000, text: "late" } });
+    const kill = vi.spyOn(process, "kill");
+    try {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 300);
+      await spawnOneShot({ seat: "reader", chain: cfg.reader.slice(0, 1), prompt: "x", correlationId: "c", timeoutMs: 10_000, signal: controller.signal },
+        { cfg, audit: recordingSink(), versionCheck: () => ({ ok: true, version: "18.4.4" }) });
+      await new Promise((res) => setTimeout(res, LEG_EXIT_GRACE_MS + 500));
+      const groupKills = kill.mock.calls.filter(([pid]) => typeof pid === "number" && pid < 0);
+      expect(groupKills).toHaveLength(1);
+    } finally {
+      kill.mockRestore();
+    }
   });
 
   it("an already-aborted call spawns nothing, not even the version check", async () => {
