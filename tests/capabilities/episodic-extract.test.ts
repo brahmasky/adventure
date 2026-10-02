@@ -480,6 +480,88 @@ describe("runEpisodicDistillPass — shutdown mid-pass (live 2026-10-02: a kicks
   });
 });
 
+describe("runEpisodicDistillPass — reconcile inside one window (pending facts overlay)", () => {
+  /** Extract returns `facts`; each reconcile answers by `route(question)`. */
+  function windowLlm(facts: string[], route: (question: string) => string, questions: string[] = []): EpisodicLlm {
+    return async (input) => {
+      if (input.system === EPISODIC_EXTRACT_DISCIPLINE) return { ok: true, answer: extractAnswer(facts.map((fact) => ({ fact }))) };
+      questions.push(input.question);
+      return { ok: true, answer: route(input.question) };
+    };
+  }
+  const pass = (store: RunStore, llm: EpisodicLlm) =>
+    runEpisodicDistillPass({ store, llm, embed: noEmbed, chatId: CHAT, userName: "paco", now: NOW });
+
+  it("two facts that both UPDATE #X: one combined row supersedes #X, and no stray ADD", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const x = store.addEpisodicFact({ chat_id: CHAT, fact: "Paco lives in Sydney", created_at: minutesAgo(2000) });
+      store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "user", text: "Surry Hills, since 2024", created_at: minutesAgo(90) });
+      const questions: string[] = [];
+      const llm = windowLlm(["Paco lives in Surry Hills", "Paco has lived in Surry Hills since 2024"], (q) =>
+        q.includes("#-1:")
+          ? '{"verdict":"UPDATE","id":-1,"text":"Paco lives in Surry Hills, Sydney, since 2024"}'
+          : `{"verdict":"UPDATE","id":${x},"text":"Paco lives in Surry Hills, Sydney"}`, questions);
+      await pass(store, llm);
+      expect(questions[1]).not.toContain(`#${x}:`); // #X is already claimed by the pending fact
+      const active = store.getActiveEpisodicFacts(CHAT);
+      expect(active.map((f) => f.fact)).toEqual(["Paco lives in Surry Hills, Sydney, since 2024"]);
+      expect(store.getEpisodicFact(x)).toMatchObject({ status: "superseded", superseded_by: active[0]!.id });
+      expect(active[0]!.supersedes).toBe(x);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a later fact that duplicates an earlier one of the same window is dropped", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "user", text: "I drink tea. Tea, always.", created_at: minutesAgo(90) });
+      const llm = windowLlm(["Paco drinks tea", "Paco always drinks tea"], (q) => (q.includes("#-1: Paco drinks tea") ? '{"verdict":"DROP"}' : '{"verdict":"ADD"}'));
+      const result = await pass(store, llm);
+      expect(store.getActiveEpisodicFacts(CHAT).map((f) => f.fact)).toEqual(["Paco drinks tea"]);
+      expect(result).toMatchObject({ distilled: 1, dropped: 1 });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a SUPERSEDE chain inside the window: #X is superseded once, by the last word", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const x = store.addEpisodicFact({ chat_id: CHAT, fact: "Paco lives in Sydney", created_at: minutesAgo(2000) });
+      store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "user", text: "Melbourne. No wait, Perth.", created_at: minutesAgo(90) });
+      const llm = windowLlm(["Paco lives in Melbourne", "Paco lives in Perth"], (q) =>
+        q.includes("#-1:") ? '{"verdict":"SUPERSEDE","id":-1}' : `{"verdict":"SUPERSEDE","id":${x}}`);
+      await pass(store, llm);
+      const active = store.getActiveEpisodicFacts(CHAT);
+      expect(active.map((f) => f.fact)).toEqual(["Paco lives in Perth"]);
+      expect(store.getEpisodicFact(x)).toMatchObject({ status: "superseded", superseded_by: active[0]!.id });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a write that fails mid-commit rolls the whole window back: no fact, no watermark", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "user", text: "two bikes", created_at: minutesAgo(90) });
+      const real = store.saveReconciledFact.bind(store);
+      let saves = 0;
+      store.saveReconciledFact = (...args: Parameters<RunStore["saveReconciledFact"]>) => {
+        if (++saves === 2) throw new Error("disk full");
+        return real(...args);
+      };
+      const llm = windowLlm(["Paco owns bike A", "Paco owns bike B"], () => '{"verdict":"ADD"}');
+      await expect(pass(store, llm)).rejects.toThrow("disk full");
+      expect(store.getActiveEpisodicFacts(CHAT)).toEqual([]);
+      expect(store.getEpisodicDistillWatermark(CHAT)).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+});
+
 /** A schedule-born run through the real gateway intake (the schedule tick's event shape). */
 function scheduledRun(store: RunStore, goal: string): string {
   const intake = new Gateway(store).intake(buildTypedTaskEvent({

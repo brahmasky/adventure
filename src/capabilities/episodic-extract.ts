@@ -278,12 +278,21 @@ interface DistillPassInput {
   signal?: AbortSignal;
 }
 
-/** One extracted fact, judged and embedded, waiting for the window's write step (`null`: dropped by the backstop). */
-type PlannedFact = { fact: ExtractedFact; verdict: ReconcileVerdict; embedding: Float32Array | null } | null;
+/** Where a planned fact lands in the store: a new row, or one row superseded / updated by it. */
+type StoreVerdict = { verdict: "ADD" } | { verdict: "SUPERSEDE" | "UPDATE"; id: number };
 
 /**
- * Every model call of the window: per fact, backstop → reconcile against FTS neighbors → best-effort embed.
- * `null` when the stop lands before the last call returns.
+ * One extracted fact, judged and embedded, waiting for the window's write step (`null`: dropped). `text` is
+ * what is stored: the candidate, a merged UPDATE text, or what a later fact of the same window made of it.
+ */
+type PlannedFact = { fact: ExtractedFact; text: string; verdict: StoreVerdict; embedding: Float32Array | null } | null;
+
+/**
+ * Every model call of the window: per fact, backstop → reconcile against its neighbors → then a best-effort
+ * embed of each final text. The neighbors are the store's, plus the window's earlier facts under negative ids
+ * (`-(index+1)`), minus any store row an earlier fact already supersedes or updates: nothing is written until
+ * the window commits, so without this overlay two facts naming the same row would each plan against it and
+ * the second would land as an unlinked ADD. `null` when the stop lands before the last call returns.
  */
 async function planFacts(
   facts: ExtractedFact[],
@@ -296,29 +305,82 @@ async function planFacts(
       planned.push(null);
       continue;
     }
-    const neighbors = input.store.getEpisodicFactsForReconcile(input.chatId, fact.fact, RECONCILE_NEIGHBOR_K);
-    let verdict = await reconcileFact(fact.fact, neighbors, input.llm);
-    // An UPDATE's merged text is LLM output too — same write-time flatten/cap; a merge
-    // that fails the backstop degrades to the candidate's own (already-safe) text.
-    if (verdict.verdict === "UPDATE" && verdict.text) {
-      const merged = sanitizeFactText(verdict.text);
-      verdict = shouldRejectFact(merged)
-        ? { verdict: "UPDATE", id: verdict.id }
-        : { verdict: "UPDATE", id: verdict.id, text: merged };
-    }
-    let embedding: Float32Array | null = null;
+    const verdict = await reconcileFact(fact.fact, overlayNeighbors(input, fact.fact, planned), input.llm);
+    applyVerdict(planned, fact, cleanMergedText(verdict));
+  }
+  for (const p of planned) {
+    if (!p) continue;
     try {
-      embedding = await input.embed(fact.fact);
+      p.embedding = await input.embed(p.text);
     } catch {
-      embedding = null; // fire-and-degrade — a sidecar failure never blocks the save
+      p.embedding = null; // fire-and-degrade — a sidecar failure never blocks the save
     }
-    planned.push({ fact, verdict, embedding });
   }
   return input.signal?.aborted ? null : planned;
 }
 
-/** The window's writes, synchronously: every planned fact, then the watermark, then the ledger summary. */
+/** The store's neighbors not yet claimed by an earlier fact of the window, then the window's live facts. */
+function overlayNeighbors(
+  input: Pick<DistillPassInput, "store" | "chatId">, candidate: string, planned: PlannedFact[]
+): Array<Pick<EpisodicFactRow, "id" | "fact">> {
+  const live = planned.flatMap((p, i) => (p ? [{ id: -(i + 1), p }] : []));
+  const claimed = new Set(live.flatMap(({ p }) => (p.verdict.verdict === "ADD" ? [] : [p.verdict.id])));
+  const stored = input.store.getEpisodicFactsForReconcile(input.chatId, candidate, RECONCILE_NEIGHBOR_K)
+    .filter((n) => !claimed.has(n.id)).map((n) => ({ id: n.id, fact: n.fact }));
+  return [...stored, ...live.map(({ id, p }) => ({ id, fact: p.text }))];
+}
+
+/**
+ * An UPDATE's merged text is LLM output too — same write-time flatten/cap; a merge that fails the backstop
+ * degrades to the candidate's own (already-safe) text.
+ */
+function cleanMergedText(verdict: ReconcileVerdict): ReconcileVerdict {
+  if (verdict.verdict !== "UPDATE" || !verdict.text) return verdict;
+  const merged = sanitizeFactText(verdict.text);
+  return shouldRejectFact(merged) ? { verdict: "UPDATE", id: verdict.id } : { verdict: "UPDATE", id: verdict.id, text: merged };
+}
+
+/**
+ * Fold one verdict into the plan. Against a store row it is planned as is. Against an earlier fact of the
+ * window (a negative id) that fact absorbs it and keeps its own store target, so a row is replaced once:
+ * UPDATE takes the merged text, SUPERSEDE takes the newer candidate, DROP discards the newer one.
+ */
+function applyVerdict(planned: PlannedFact[], fact: ExtractedFact, v: ReconcileVerdict): void {
+  if (v.verdict === "DROP") {
+    planned.push(null);
+    return;
+  }
+  const target = v.verdict !== "ADD" && v.id < 0 ? planned[-v.id - 1] : undefined;
+  if (!target) {
+    const text = v.verdict === "UPDATE" && v.text ? v.text : fact.fact;
+    const verdict: StoreVerdict = v.verdict === "ADD" || v.id < 0 ? { verdict: "ADD" } : { verdict: v.verdict, id: v.id };
+    planned.push({ fact, text, verdict, embedding: null });
+    return;
+  }
+  if (v.verdict === "UPDATE") {
+    target.text = v.text ?? fact.fact;
+    target.fact = { ...target.fact, core: target.fact.core || fact.core };
+  } else {
+    target.fact = fact;
+    target.text = fact.fact;
+  }
+}
+
+/**
+ * The window's writes in one SQLite transaction (never held across an await): every planned fact, then the
+ * watermark, then the ledger summary. A crash mid-commit leaves none of them.
+ */
 function commitWindow(
+  input: DistillPassInput,
+  env: NodeJS.ProcessEnv,
+  window: ChatTurnRow[],
+  turns: ChatTurnRow[],
+  planned: PlannedFact[]
+): EpisodicDistillPassResult {
+  return input.store.inTransaction(() => writeWindow(input, env, window, turns, planned));
+}
+
+function writeWindow(
   input: DistillPassInput,
   env: NodeJS.ProcessEnv,
   window: ChatTurnRow[],
@@ -338,7 +400,7 @@ function commitWindow(
     const saved = input.store.saveReconciledFact(
       {
         chat_id: input.chatId,
-        fact: fact.fact,
+        fact: p.text,
         participants: fact.participants,
         source_turn_ids: sourceTurnIds,
         ...(fact.occurred_at ? { occurred_at: fact.occurred_at } : {}),

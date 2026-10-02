@@ -3856,8 +3856,8 @@ export class RunStore {
 
   // --- Self-service memory correction (2026-10-02) -----------------------------
 
-  /** Run `fn` in one IMMEDIATE transaction; a throw rolls everything back. */
-  private inTransaction<T>(fn: () => T): T {
+  /** Run `fn` in one IMMEDIATE transaction; a throw rolls everything back. `fn` must be synchronous (never span an await). */
+  inTransaction<T>(fn: () => T): T {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const out = fn();
