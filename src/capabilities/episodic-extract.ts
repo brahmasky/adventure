@@ -1,5 +1,5 @@
 import type { ChatTurnRow, EpisodicFactRow, RunStore } from "../run/run-store.js";
-import { resolveEpisodicFactCapPerChat } from "../run/run-store.js";
+import { isTerminalRunState, resolveEpisodicFactCapPerChat } from "../run/run-store.js";
 import { resolveEmbedConfig } from "../llm/embeddings.js";
 import { extractFirstJsonObject } from "./distill.js";
 import { parseReconcileVerdict, RECONCILE_DISCIPLINE, type ReconcileVerdict } from "./reconcile.js";
@@ -61,8 +61,11 @@ export const EPISODIC_EXTRACT_DISCIPLINE =
   "record smalltalk, transient states (moods, what's for lunch), or things the assistant " +
   "itself said unless the user confirmed them. Do NOT record anything about the assistant itself: " +
   "its code, bugs, fixes, tests, reviews or deploys; the user approving, rejecting or asking for " +
-  "changes to it; edits to its memory or lessons; or the status or progress of a task (pending, " +
-  "interrupted, done). Facts are about the user's world, never the assistant's own build. " +
+  "changes to it; edits to its memory or lessons; or how far the assistant has got with a task it " +
+  "is doing (pending, interrupted, done). That includes the user's instructions about how the " +
+  "assistant's code, checks, memory or lessons should work, and the user asking to " +
+  "remove or fix a stored memory: those change the assistant, they are not facts about the user. " +
+  "Facts are about the user's world, never the assistant's own build. " +
   'Return {"facts":[]} when nothing durable was said.';
 
 /**
@@ -254,7 +257,8 @@ export async function runEpisodicDistillPass(input: DistillPassInput): Promise<E
   // OLDEST-first past the watermark: a burst longer than one window is caught up across
   // successive passes (the watermark lands on the last turn READ, and the chat stays listed
   // as undistilled) — a newest-first read would skip the early turns forever.
-  const window = input.store.getChatTurnsAfter(input.chatId, watermark, EPISODIC_EXTRACT_TURN_CAP);
+  const window = settledTurns(input.store, input.store.getChatTurnsAfter(input.chatId, watermark, EPISODIC_EXTRACT_TURN_CAP));
+  if (window.length === 0) return NO_PASS;
   const turns = withoutTurnsOffPacosWorld(input.store, window);
   if (!turns.some((t) => t.role === "user")) return skipWindow(input, window, turns.length);
   if (input.signal?.aborted) return NO_PASS;
@@ -436,30 +440,49 @@ function writeWindow(
 
 /**
  * Loop capabilities that mark a run as talk about Houge itself (2026-10-02): proposing a change
- * to its code or correcting its memory. Those turns minted facts like "Paco approved the
- * assistant's lesson_write fix plan" — Houge's build history, which git and the ledger keep.
+ * to its code, diagnosing it, or rewriting its memory. Those turns minted facts like "Paco approved
+ * the assistant's lesson_write fix plan" — Houge's build history, which git and the ledger keep.
+ * A memory_correct search alone is not here: it writes nothing, and Paco may say a real fact with it.
  */
-const DEV_SESSION_CAPABILITIES: ReadonlySet<string> = new Set(["self_write_propose", "memory_correct", "memory_correct_write"]);
+const DEV_SESSION_CAPABILITIES: ReadonlySet<string> = new Set(["self_write_propose", "self_diagnose", "memory_correct_write"]);
 
 /**
- * Drop BOTH turns of every run that is not Paco talking about his world, judged by the run's
- * source and the capabilities its loop used, never by text:
- * - schedule-born (2026-10-02): the user turn is the stored schedule goal, the reply a digest;
- * - a dev-session run ({@link DEV_SESSION_CAPABILITIES}). Talk about Houge with no such call is
- *   left to the extract prompt.
+ * The window up to the first turn of a run that has not settled (review 2026-10-02): the bridge
+ * writes loop_step only when a call finishes, and an approval can wait past the session lull, so an
+ * unsettled run cannot be judged yet. The watermark never passes it. A turn with no run row counts
+ * as settled.
+ */
+function settledTurns(store: Pick<RunStore, "runLifecycle">, turns: ChatTurnRow[]): ChatTurnRow[] {
+  const cut = turns.findIndex((t) => {
+    const run = store.runLifecycle(t.run_id);
+    return run !== undefined && !isTerminalRunState(run.state);
+  });
+  return cut === -1 ? turns : turns.slice(0, cut);
+}
+
+/**
+ * Drop every turn that is not Paco talking about his world, judged by the run's source and the
+ * capabilities its loop used, never by text:
+ * - both turns of a schedule-born run (2026-10-02): the stored schedule goal and its digest;
+ * - both turns of a dev-session run ({@link DEV_SESSION_CAPABILITIES}), and any turn recorded while
+ *   it ran: a message steered into it has its own run, but the parent's planner made the calls.
+ * Talk about Houge with no such call is left to the extract prompt.
  */
 function withoutTurnsOffPacosWorld(
-  store: Pick<RunStore, "runSource" | "runLoopCapabilities">,
+  store: Pick<RunStore, "runSource" | "runLoopCapabilities" | "runLifecycle">,
   turns: ChatTurnRow[]
 ): ChatTurnRow[] {
-  const dropped = new Map<string, boolean>();
-  return turns.filter((t) => {
-    if (!dropped.has(t.run_id)) {
-      dropped.set(t.run_id, store.runSource(t.run_id) === "schedule" ||
-        store.runLoopCapabilities(t.run_id).some((c) => DEV_SESSION_CAPABILITIES.has(c)));
+  const dropped = new Set<string>();
+  const spans: Array<{ from: string; to: string }> = [];
+  for (const runId of new Set(turns.map((t) => t.run_id))) {
+    if (store.runSource(runId) === "schedule") dropped.add(runId);
+    else if (store.runLoopCapabilities(runId).some((c) => DEV_SESSION_CAPABILITIES.has(c))) {
+      dropped.add(runId);
+      const first = turns.find((t) => t.run_id === runId)!.created_at;
+      spans.push({ from: first, to: store.runLifecycle(runId)?.updated_at ?? first });
     }
-    return !dropped.get(t.run_id);
-  });
+  }
+  return turns.filter((t) => !dropped.has(t.run_id) && !spans.some((s) => t.created_at >= s.from && t.created_at <= s.to));
 }
 
 /**

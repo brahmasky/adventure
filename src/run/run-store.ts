@@ -1171,6 +1171,11 @@ export class RunStore {
     return this.db.prepare(`SELECT source FROM runs WHERE run_id = ?`).get<{ source: string }>(run_id)?.source;
   }
 
+  /** A run's state and when it last changed (its finish time once terminal) — undefined if the run does not exist. */
+  runLifecycle(run_id: string): { state: RunState; updated_at: string } | undefined {
+    return this.db.prepare(`SELECT state, updated_at FROM runs WHERE run_id = ?`).get<{ state: RunState; updated_at: string }>(run_id);
+  }
+
   /** `intent_shadow` rows, oldest first — the input of `houge jev-shadow report`. */
   listIntentShadows(sinceIso?: string): Array<{ run_id: string; occurred_at: string; payload: Record<string, unknown> }> {
     return this.db.prepare(`
@@ -8010,7 +8015,7 @@ function telegramRateLimited(reason: TelegramRateLimitReason): TelegramRateLimit
   };
 }
 
-function isTerminalRunState(state: RunState): boolean {
+export function isTerminalRunState(state: RunState): boolean {
   return state === "completed" || state === "failed" || state === "cancelled" || state === "expired";
 }
 
