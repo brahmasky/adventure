@@ -36,10 +36,11 @@ describe("audit chokepoint coverage (structural, not by convention)", () => {
     expect(files.filter((f) => read(f).includes("helpers/llm-audit"))).toEqual([]);
   });
 
-  it("the omp one-shot seat audits EVERY leg through a REQUIRED sink (ok and error both recorded)", () => {
+  it("the omp one-shot seat audits EVERY leg through a REQUIRED sink (ok, error and aborted all recorded)", () => {
     const omp = read(join(process.cwd(), "src", "llm", "providers", "omp.ts"));
     expect(omp).toMatch(/audit: LlmAuditSink;/); // required, never `audit?:`
-    expect(omp.match(/deps\.audit\.record\(/g) ?? []).toHaveLength(2);
+    expect(omp.match(/deps\.audit\.record\(/g) ?? []).toHaveLength(3);
+    expect(omp).toMatch(/deps\.audit\.record\(\{ \.\.\.base, outcome: "error", model: m\.model, error_kind: "aborted" \}\)/);
   });
 
   it("every spawnOneShot( call site builds its sink inline from the store, or forwards the caller's REQUIRED sink explicitly", () => {

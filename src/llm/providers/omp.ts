@@ -11,7 +11,7 @@ import { familyOf, formatModelString, type ModelFamily, type ModelString } from 
 export interface OneShotInput {
   seat: string; chain: ModelString[]; prompt: string; files?: string[];
   correlationId: string; timeoutMs?: number; plannerFamily?: ModelFamily;
-  /** The daemon's stop: aborting kills the in-flight leg's process group and ends the call (no later leg, no audit row). */
+  /** The daemon's stop: aborting kills the in-flight leg's process group and ends the call (no later leg; the leg is audited error{aborted}). */
   signal?: AbortSignal;
 }
 export interface OneShotDeps {
@@ -98,7 +98,7 @@ function legFailure(o: LegOutcome): string | null {
 export const OMP_AUDIO_REFUSED = "omp one-shot refuses audio (voice runs on the agy-cli leg)";
 const AUDIO_FILE = /\.(opus|ogg|oga|mp3|wav|m4a|aac|flac|amr|weba)$/i;
 
-/** A call the daemon's stop cut short: not a model failure, so it leaves no audit row for the leg-health sweep. */
+/** A call the daemon's stop cut short: not a model failure (its leg, if one ran, is audited error{aborted}). */
 const ABORTED: LlmResult = { ok: false, provider: "omp", error: "aborted: the daemon is stopping", aborted: true };
 
 export async function spawnOneShot(input: OneShotInput, deps: OneShotDeps): Promise<LlmResult> {
@@ -112,14 +112,18 @@ export async function spawnOneShot(input: OneShotInput, deps: OneShotDeps): Prom
   for (const [i, m] of input.chain.entries()) {
     if (input.signal?.aborted) return ABORTED;
     const o = await runLeg(deps.cfg, m, input);
-    if (o.aborted) return ABORTED;
-    const failure = legFailure(o);
     const family = familyOf(m);
     const base = {
       provider: m.provider, role: "", latency_ms: o.latencyMs, family, leg_index: i,
       attempt_group: input.correlationId, request_key: `${input.correlationId}:${i}`,
       ...(input.plannerFamily !== undefined && input.plannerFamily === family ? { family_collapse: true } : {})
     };
+    if (o.aborted) {
+      // The leg ran, so it is audited — as error{aborted}, which the llm_leg_failing sweep ignores.
+      deps.audit.record({ ...base, outcome: "error", model: m.model, error_kind: "aborted" });
+      return ABORTED;
+    }
+    const failure = legFailure(o);
     if (failure === null && o.summary) {
       deps.audit.record({ ...base, outcome: "ok", model: o.summary.model ?? m.model,
         ...(o.summary.usage ? { usage: o.summary.usage } : {}),

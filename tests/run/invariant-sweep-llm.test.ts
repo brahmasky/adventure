@@ -18,6 +18,22 @@ describe("llm_leg_failing invariant", () => {
     }
   });
 
+  it("an aborted attempt (daemon shutdown, planner turn end) is not a failure: it neither opens nor tips the count", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const sink = store.llmAuditSink({ correlation_id: "tick:x", role: "distill" });
+      for (let i = 0; i < LLM_LEG_FAILING_MIN_ATTEMPTS; i++) sink.record({ provider: "kimi-code", role: "", outcome: "error", latency_ms: 1, error_kind: "aborted" });
+      expect(legs(store)).toEqual([]);
+      for (let i = 0; i < LLM_LEG_FAILING_MIN_ATTEMPTS - 1; i++) sink.record({ provider: "kimi-code", role: "", outcome: "error", latency_ms: 1, error_kind: "timeout" });
+      expect(legs(store)).toEqual([]);
+      sink.record({ provider: "kimi-code", role: "", outcome: "error", latency_ms: 1, error_kind: "timeout" });
+      sink.record({ provider: "kimi-code", role: "", outcome: "error", latency_ms: 1, error_kind: "aborted" });
+      expect(legs(store)).toEqual([{ kind: "llm_leg_failing", subject: "kimi-code", detail: { attempts: LLM_LEG_FAILING_MIN_ATTEMPTS, ok: 0, last_error_kind: "timeout" } }]);
+    } finally {
+      store.close();
+    }
+  });
+
   it("stays quiet below the attempt floor, and once any ok lands", () => {
     const store = RunStore.openInMemory();
     try {
