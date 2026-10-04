@@ -1,7 +1,7 @@
 # Jev as System One — a typed decision layer in front of Houge's models
 
 Date: 2026-10-04
-Status: **Rev 5 — scoped Codex re-pass on Rev 4 (5 closed, 2 partial, spawn blocker open) folded in with Codex's exact sentences; awaiting the confirmation pass before the lane 1 plan**
+Status: **Rev 5 (final for lane 1 planning) — Codex confirmation pass: READY WITH FIXES, the one fix (status verdicts in the label set, §5.9 step 2) applied. Every blocker from both reviews is closed. Next: `writing-plans` for lane 1 slice 1 (§5.0).**
 
 Rev 5 changes: §5.1 spawn ownership (retained promise with a rejection handler, stop-or-supersede on a bounded-wait
 expiry, generation-guarded state writes); §5.9 label coverage (all 36 action-proxy runs labelled regardless of Jev's
@@ -463,8 +463,9 @@ the bars below are stated per class.
    `created_at ≥ 2026-07-02`): Jev over the 288 turns; the first comparator is the planner's observed `lesson_write`
    call (an action, not a purity label).
 2. **Human labels** (one sitting, ≈ 80–100 items, shared with lane 4's sitting): Paco labels every turn Jev called
-   `memory` at any confidence, **all 36 observed `lesson_write` runs regardless of Jev's verdict**, and a 40-turn random
-   sample of the remaining `none` verdicts, for `memory? pure? scope?`; overlaps are deduplicated before n is reported.
+   `memory` at any confidence, **every turn Jev called `status` at any confidence**, **all 36 observed `lesson_write`
+   runs regardless of Jev's verdict**, and a 40-turn random sample of the remaining `none` verdicts, for `memory?
+   status? pure? scope?`; overlaps are deduplicated before n is reported.
    These, not the action proxy, decide the costly cells.
 3. **GO bar, per language (zh / en; `mixed` inherits zh).** Two positive sets, both reported: the 36 observed
    `lesson_write` runs (an action proxy) and the human-labelled positives from step 2 (which also labels all 36 runs for
@@ -699,4 +700,6 @@ The amendment paragraphs are written into the prior ADRs on ship of lane 1 (docs
   Undo per state, turn-owned chain rules; no new blocker), 2 partial (label coverage, denominator timing + fuse alert
   shape), spawn ownership still open (a voided `ensureSession` rejects through the join loop; a bounded `settleStart`
   does not cancel a spawn). Rev 5 applies Codex's exact replacement sentences verbatim.
-- Rev 5 goes back to Codex for a confirmation pass on those four edits only.
+- **Codex confirmation pass on Rev 5 (2026-10-04): READY WITH FIXES** — spawn ownership CLOSED, denominator and fuse
+  CLOSED, one OPEN consistency item (step 3 needs `status` labels step 2 did not collect) — fixed in place. The spec is
+  cleared for the lane 1 slice 1 plan.
