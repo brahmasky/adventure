@@ -1,5 +1,7 @@
 # Jev System One — Lane 1 (triage → memory + status) Implementation Plan
 
+**Rev 3 (2026-10-04)** — Codex's scoped re-pass on Rev 2 (7 remaining items, exact sentences) applied: §7/§9 committed flag and one outer finaliser, §8 `finishLane` ordering with `finally`, §9 cancellation checks before every write, §10 atomic override creation, §2 sanitiser shapes + CJK negatives, §3/§11/§13 arming sequence, §13 forced second `lesson_write` probe.
+
 **Rev 2 (2026-10-04)** — both plan reviews folded in (Codex: 11 blockers / 7 risks / 2 nits; senior live-probe: 3 blockers / 11 warnings / 8 suggestions; see the Review record at the end). Tasks 2, 3, 5, 7–14 were rewritten; where a Rev 2 task says "as Rev 1", the Rev 1 text is retained beneath it for the code blocks it points at.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -307,9 +309,19 @@ describe("sanitizeJevText", () => {
     expect(sanitizeJevText("key ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 and sk-abcdefghijklmnopqrstuvwxyz0123 and AKIAIOSFODNN7EXAMPLE")).toBe("key <token> and <token> and <token>");
     expect(sanitizeJevText("hash 0123456789abcdef0123456789abcdef0123")).toBe("hash <token>");
   });
-  it("replaces URLs, home paths and chat-id-like negatives; keeps ordinary text, dates and short numbers", () => {
-    expect(sanitizeJevText("see https://example.com/a?b=c and /Users/paco/x and -1001234567890")).toBe("see <url> and ~/x and <chat>");
-    expect(sanitizeJevText("明天 9am，预算 3500，电话 0412 不要存")).toBe("明天 9am，预算 3500，电话 0412 不要存");
+  it("replaces URLs, home paths, heredocs, long quoted literals, OTP-shaped codes and every chat/user id form", () => {
+    expect(sanitizeJevText("see https://example.com/a?b=c and /Users/paco/x and -1001234567890 and 987654321")).toBe("see <url> and ~/x and <id> and <id>");
+    expect(sanitizeJevText("run cat <<'EOF'\nsecret stuff\nEOF\nthen")).toBe("run cat <heredoc>\nthen");
+    expect(sanitizeJevText(`echo "${"a".repeat(45)}"`)).toBe("echo <literal>");
+    expect(sanitizeJevText("your code is 482913 ok")).toBe("your code is <code> ok");
+  });
+  it("leaves ordinary Chinese and English prose, punctuation, dates, years and short numbers alone", () => {
+    const zh = "明天 9am，预算 3500，电话 0412 不要存。以后回复请短一点，不要用敬语；如果我没说清楚就先问我一句，不要猜。2026 年 10 月 4 日。";
+    expect(sanitizeJevText(zh)).toBe(zh);
+    const en = "From now on keep replies under three sentences unless I ask for detail; it's 2026-10-04 and the budget is 3,500.";
+    expect(sanitizeJevText(en)).toBe(en);
+    // the 40+ opaque-token rule must not eat a long plain word; if it does, require at least one digit or symbol in the token class
+    expect(sanitizeJevText("Pneumonoultramicroscopicsilicovolcanoconiosis is a long word")).toBe("Pneumonoultramicroscopicsilicovolcanoconiosis is a long word");
   });
   it("applies the broker redactor first, then the shapes", () => {
     expect(sanitizeJevText("secret VALUE123 and ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345", (s) => s.replace("VALUE123", "<redacted>"))).toBe("secret <redacted> and <token>");
@@ -383,6 +395,9 @@ Expected: FAIL — modules not found.
  * replay and the live path hash the same state. Ordinary words, dates and short numbers pass through.
  */
 const SHAPES: Array<[RegExp, string]> = [
+  // shell/heredoc bodies and long quoted literals: the material a steered command would hide (spec §4.5)
+  [/<<-?\s*['"]?(\w+)['"]?[\s\S]*?\n\1\b/g, "<heredoc>"],
+  [/(["'`])[^"'`\n]{40,}\1/g, "<literal>"],
   [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g, "Bearer <token>"],
   [/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b/g, "<token>"],
   [/\bsk-[A-Za-z0-9_-]{16,}\b/g, "<token>"],
@@ -391,7 +406,9 @@ const SHAPES: Array<[RegExp, string]> = [
   [/\b[A-Za-z0-9+/_-]{40,}={0,2}\b/g, "<token>"],
   [/\bhttps?:\/\/[^\s<>"']+/g, "<url>"],
   [/\/Users\/[^/\s]+/g, "~"],
-  [/(?<![\d.])-100\d{10,}\b/g, "<chat>"]
+  // OTP-shaped codes (6–8 digits standing alone) and every Telegram id form (9+ digit ids, negative supergroup ids)
+  [/(?<![\d.,])\d{6,8}(?![\d.,])/g, "<code>"],
+  [/(?<![\d.])-?\d{9,}\b/g, "<id>"]
 ];
 
 export function sanitizeJevText(text: string, brokerRedact?: (s: string) => string): string {
@@ -766,13 +783,32 @@ export interface CalibrationRow { question_id: string; criteria_hash: string; mo
 
 export const CALIBRATED_ROWS: readonly CalibrationRow[] = [];
 
+/**
+ * Arming sequence (spec §5.9; Codex plan review): production rows come ONLY from this constant, added by Paco's commit.
+ * `HOUGE_JEV_CALIBRATION_FILE` (a JSON array of CalibrationRow) exists for the live gate and a labelled shadow copy
+ * of the DB — it is never set in the daemon's .env (configuration.md says so) and `resolveJevTriageMode` caps `arm`
+ * at shadow while it is set outside a gate (`HOUGE_JEV_GATE=1`).
+ */
+export function calibrationRows(env: NodeJS.ProcessEnv): readonly CalibrationRow[] {
+  const file = env.HOUGE_JEV_CALIBRATION_FILE?.trim();
+  if (!file) return CALIBRATED_ROWS;
+  try { return JSON.parse(readFileSync(file, "utf8")) as CalibrationRow[]; } catch { return []; } // unreadable = uncalibrated
+}
+
 export function calibratedLang(questionId: string, hash: string, model: string, lang: Lang, rows: readonly CalibrationRow[] = CALIBRATED_ROWS): "zh" | "en" | undefined {
   const effective = lang === "mixed" ? "zh" : lang; // mixed inherits zh until it has ≥ 20 labelled rows (spec §3.4)
   return rows.some((r) => r.question_id === questionId && r.criteria_hash === hash && r.model === model && r.lang === effective) ? effective : undefined;
 }
 ```
 
-- [ ] **Step 4: Create `src/jev/thresholds.ts`** — as Rev 1, with `calibratedLang` imported from `./calibration.js`, `criteriaHash(q)` (no model argument), and `triageVerdict(answers, bars, lang, model, rows = CALIBRATED_ROWS)` passing `rows` through. The `armed` check: `[TRIAGE_LANE, TRIAGE_COMPLETE, TRIAGE_SCOPE].every((q) => calibratedLang(q.id, criteriaHash(q), model, lang, rows) !== undefined)`.
+- [ ] **Step 4: Create `src/jev/thresholds.ts`** — as Rev 1, with `calibratedLang` imported from `./calibration.js`, `criteriaHash(q)` (no model argument), and `triageVerdict(answers, bars, lang, model, rows = CALIBRATED_ROWS)` passing `rows` through; `triageTurn` (Task 9) passes `calibrationRows(process.env)`.
+
+**Arming sequence, end to end (binding for Tasks 3, 11, 12, 13, 14):**
+1. Ship with `CALIBRATED_ROWS = []`: the lane cannot act anywhere, in any mode.
+2. The first live gate (Task 13) runs with `HOUGE_JEV_GATE=1` and `HOUGE_JEV_CALIBRATION_FILE=<tmp rows for zh/en>`; production stays unarmable.
+3. Full replay over the universe + the permuted run + Paco's labelling sitting (every required set non-empty) + the live shadow (`shadow` mode ≥ 14 days with ≥ 5 matched planner `lesson_write` calls, read from the `triage` rows by `houge jev report triage`).
+4. The report prints the **eligible** rows separately for memory and for status (status only with precision 1.0 on n ≥ 5; otherwise status stays shadow), per language.
+5. Paco approves and commits only those rows into `CALIBRATED_ROWS` (his hand, like an ADR amendment), the daemon is rebuilt, and the armed live gate is re-run against the committed calibration (no file override) before `HOUGE_JEV_TRIAGE_ENABLED=arm` is set. The `armed` check: `[TRIAGE_LANE, TRIAGE_COMPLETE, TRIAGE_SCOPE].every((q) => calibratedLang(q.id, criteriaHash(q), model, lang, rows) !== undefined)`.
 
 - [ ] **Step 5: Run, commit**
 
@@ -1651,7 +1687,9 @@ export function resolveJevTriageMode(env: NodeJS.ProcessEnv, dataDir: string): J
   const raw = env.HOUGE_JEV_TRIAGE_ENABLED?.trim().toLowerCase();
   const mode: JevTriageMode = raw === "shadow" || raw === "arm" ? raw : "off";
   // The auto-disable marker (spec §5.8 triage_overrides, §3.7 drift) caps an armed lane at shadow; only Paco deletes it.
-  return mode === "arm" && readJevDisarmMarker(jevDisarmMarkerPath(env, dataDir)) ? "shadow" : mode;
+  // A calibration FILE is for gates only: outside HOUGE_JEV_GATE=1 it caps the lane at shadow too (arming sequence, Task 3).
+  const fileOutsideGate = Boolean(env.HOUGE_JEV_CALIBRATION_FILE?.trim()) && env.HOUGE_JEV_GATE !== "1";
+  return mode === "arm" && (fileOutsideGate || readJevDisarmMarker(jevDisarmMarkerPath(env, dataDir))) ? "shadow" : mode;
 }
 
 export function jevDisarmMarkerPath(env: NodeJS.ProcessEnv, dataDir: string): string {
@@ -1737,7 +1775,7 @@ it("inTx runs inside the save transaction; a throwing hook rolls the lesson back
     durable: JSON.stringify({ durable: true, lesson: "Keep replies short." }), reconcile: JSON.stringify({ verdict: "ADD", theme: "format" }) }) });
   const run_id = createQueuedTurnRun(store, "以后回复短一点"); const claim = store.claimRun(run_id, "w", 120)!; worker.buildOmpTools(claim, "555");
   const out = await worker.runLessonWrite(claim, "555", { scope: "ask" }, { source: "lane", inTx: () => { throw new Error("boom"); } });
-  expect(out.result.ok).toBe(false);
+  expect(out.result.ok).toBe(false); expect(out.committed).toBe(false);
   expect(store.getActiveLessons("ask")).toHaveLength(0);
   expect(store.getLedgerEvents().filter((e) => e.event_type === "lesson_saved")).toHaveLength(0);
   const again = await worker.runLessonWrite(claim, "555", { scope: "ask" }, { source: "loop" });
@@ -1764,7 +1802,7 @@ it("no save after the turn is gone: an aborted signal or a replaced turn state y
 `OmpTurnState` gains `lessonSavedThisTurn?: { id: number; theme: string; change_id: string }`. The reconcile/save split is Rev 1's (`reconcileLessonVerdict`, `saveLessonVerdict`, `reconcileAndSaveLesson` composition for the `user_feedback` callers). The service:
 
 ```ts
-export interface LessonWriteOutcome { result: ToolAdapterResult; saved?: LessonSaveResult & { id: number }; change_id?: string; theme?: string }
+export interface LessonWriteOutcome { result: ToolAdapterResult; saved?: LessonSaveResult & { id: number }; change_id?: string; theme?: string; committed: boolean }
 export interface LessonWriteOptions { source: "loop" | "lane"; signal?: AbortSignal; inTx?: (saved: LessonSaveResult, change_id: string) => void }
 
   /**
@@ -1776,8 +1814,8 @@ export interface LessonWriteOptions { source: "loop" | "lane"; signal?: AbortSig
    */
   async runLessonWrite(claim: ClaimedRun, chatId: string, input: Record<string, unknown>, o: LessonWriteOptions): Promise<LessonWriteOutcome> {
     const state = this.ompTurns.get(claim.run_id);
-    if (!state) return { result: { ok: false, error: "no turn state for this run" } };
-    const outcome: LessonWriteOutcome = { result: { ok: false, error: "lesson write did not run" } };
+    if (!state) return { result: { ok: false, error: "no turn state for this run" }, committed: false };
+    const outcome: LessonWriteOutcome = { result: { ok: false, error: "lesson write did not run" }, committed: false };
     const adapter = createLessonWriteAdapter({
       feedback: state.objective ?? claim.contract.objective,
       priorAnswer: state.anchor.priorAnswer, allowedScopes: ["ask", "research"], defaultScope: state.anchor.defaultScope,
@@ -1810,9 +1848,11 @@ export interface LessonWriteOptions { source: "loop" | "lane"; signal?: AbortSig
       o.inTx?.(s, change.change_id);
       return s;
     });
+    // `inTransaction` returned: only now is anything committed. `inTx` must not mutate in-memory state — a rolled-back
+    // hook is a failed save and `outcome.committed` stays false.
     if (saved.id !== undefined && change_id) {
       state.lessonSavedThisTurn = { id: saved.id, theme: r.theme, change_id };
-      Object.assign(outcome, { saved: saved as LessonSaveResult & { id: number }, change_id, theme: r.theme });
+      Object.assign(outcome, { saved: saved as LessonSaveResult & { id: number }, change_id, theme: r.theme, committed: true });
     }
     return saved;
   }
@@ -2186,6 +2226,19 @@ describe("ADR 0029 lane 1 slots", () => {
     await until(() => h.outcome.done.length === 1); // completes after ABORT_GRACE_MS (5 s) through stopSession; within vitest's 10 s
     expect(h.outcome.failed).toHaveLength(0);
   });
+  it("recordChatTurn throwing in finishLane fails the turn (before laneEnded); a throwing stopSession after a hung start still ends the turn", async () => {
+    const { sup, store, outcome } = harness(fakeSession(), {}, { triage: async () => ({ kind: "lane_reply", text: "x", buttons: [] }) });
+    const spy = vi.spyOn(store, "recordChatTurn").mockImplementationOnce(() => { throw new Error("disk"); });
+    sup.submit(req(createQueuedTurnRun(store, "hi"), "hi"));
+    await until(() => outcome.failed.length === 1);
+    spy.mockRestore();
+    const hanging = fakeSession({ start: () => new Promise(() => undefined) });
+    const h2 = harness(hanging, {}, { triage: async () => ({ kind: "lane_reply", text: "x", buttons: [] }) });
+    const stop = vi.spyOn(h2.sup as unknown as { stopSession: () => Promise<void> }, "stopSession").mockRejectedValueOnce(new Error("stop failed"));
+    h2.sup.submit(req(createQueuedTurnRun(h2.store, "hi"), "hi"));
+    await until(() => h2.outcome.done.length + h2.outcome.failed.length === 1); // the turn ends either way; settle() owns completion
+    stop.mockRestore();
+  });
   it("a sessionFactory that throws synchronously is caught by the warm promise, not the turn", async () => {
     const { sup, store, outcome } = harness(fakeSession(), {}, { sessionFactory: () => { throw new Error("factory"); }, triage: async () => ({ kind: "lane_reply", text: "x", buttons: [] }) });
     sup.submit(req(createQueuedTurnRun(store, "hi"), "hi"));
@@ -2255,13 +2308,15 @@ Types as in **Interfaces** (`TriageInput` gains `posture` and `signal`; `Turn` g
    * the assistant turn and completes the run once, with tool_calls 0 from the untouched budget.
    */
   private async finishLane(turn: Turn, userText: string, v: Extract<TriageOutcome, { kind: "lane_reply" }>, warm: Promise<StartResult>): Promise<void> {
+    // Order matters (Codex plan review): everything that can throw runs BEFORE laneEnded; after it, completion is
+    // guaranteed by the finally. A throw before laneEnded reaches startTurn's catch → failTurn (the lane's save, if any,
+    // is named by ompFail from state.lessonSavedThisTurn).
     this.d.store.recordChatTurn({ chat_id: this.d.chatId, run_id: turn.req.run_id, role: "user", text: userText });
+    if ((await bounded(warm, ABORT_GRACE_MS)) === TIMED_OUT) { await this.stopSession(); await this.settleStart(); } // supersede a start that will not settle (gen bump)
     turn.lastText = v.text;
     turn.laneButtons = v.buttons;
     turn.laneEnded = true; // from here a late start result may not fail or re-enter this turn
-    if ((await bounded(warm, ABORT_GRACE_MS)) === TIMED_OUT) { await this.stopSession(); await this.settleStart(); } // supersede a start that will not settle (gen bump)
-    turn.live = false;
-    turn.done("end");
+    try { turn.live = false; } finally { turn.done("end"); }
   }
 ```
 
@@ -2619,6 +2674,24 @@ it("a throw after the save (card builder) yields inform, decisions 'act', one tr
   expect(store.listJevDecisions(t.run_id).every((r) => r.decision === "act")).toBe(true);
   store.close();
 });
+it("a rolled-back inTx hook leaves no lesson, no guard, and exactly one fallback triage row", async () => {
+  const { store, worker, turn } = setup(jevSays(MEMORY));
+  const t = turn("以后回复短一点");
+  worker.breakLaneFinalizeOnceForTest(); // @internal: makes the inTx finalize throw once (simulates the event write failing)
+  expect(await worker.triageTurn(t.input)).toEqual({ kind: "fallthrough" });
+  expect(store.getActiveLessons("ask")).toHaveLength(0);
+  expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", decision: "fallback" }]);
+  expect(store.listJevDecisions(t.run_id).filter((r) => r.decision === "fallback")).toHaveLength(3);
+  store.close();
+});
+it("an aborted turn writes nothing after Jev: no rows, no event, no lesson", async () => {
+  const { store, worker, turn } = setup(jevSays(MEMORY));
+  const t = turn("以后回复短一点"); const ac = new AbortController();
+  const p = worker.triageTurn({ ...t.input, signal: ac.signal }); ac.abort();
+  expect(await p).toEqual({ kind: "fallthrough" });
+  expect(triageRows(store, t.run_id)).toHaveLength(0); expect(store.listJevDecisions(t.run_id)).toHaveLength(0);
+  store.close();
+});
 it("the decision rows and the triage event land in the SAME transaction as the lesson (a failing event write rolls the lesson back)", async () => {
   const { store, worker, turn } = setup(jevSays(MEMORY));
   const t = turn("以后回复短一点");
@@ -2677,8 +2750,9 @@ Imports: `decide, persistDecisionRows, recordSkip, marginOf, type Decision, type
     if (!built.ok) return this.triageSkip(run_id, lang, built.skip);
     const d = await decide({ point: "triage", run_id, state: built.state, questions: TRIAGE_QUESTIONS, lang, client: this.jevClient(run_id),
       store: this.runStore, thresholdVersion: THRESHOLD_VERSION, ...(this.ompOptions.jevNow ? { now: this.ompOptions.jevNow } : {}) });
+    if (this.laneLost(i, state)) return { kind: "fallthrough" }; // ended while Jev ran: step() already returned ENDED upstream; write nothing late
     if (d.status === "skipped") { this.triageEvent(run_id, { status: "skipped", lang, decision: "fallback", skip_reason: d.reason }); return { kind: "fallthrough" }; }
-    const verdict = triageVerdict(d.answers, resolveTriageBars(process.env), lang, d.model);
+    const verdict = triageVerdict(d.answers, resolveTriageBars(process.env), lang, d.model, calibrationRows(process.env));
     const lane = d.answers.lane!;
     const numbers = { lane: lane.choice, complete: d.answers.complete?.choice, scope: d.answers.scope?.choice, confidence: lane.confidence, top_prob: Math.max(...Object.values(lane.probabilities)), margin: marginOf(lane) };
     const finalize = (decision: "act" | "fallback" | "shadow") => { // the ONE place rows + event are written for an answered call
@@ -2689,15 +2763,21 @@ Imports: `decide, persistDecisionRows, recordSkip, marginOf, type Decision, type
     return this.runTriageLane(i, state, verdict, finalize);
   }
 
+  /** True once the turn is gone: aborted signal, or its state replaced/deleted (ompComplete/ompFail delete it). */
+  private laneLost(i: TriageInput, state: OmpTurnState): boolean {
+    return i.signal.aborted || this.ompTurns.get(i.claim.run_id) !== state;
+  }
+
   /** The lane: status is code; memory is the shared service; `finalize` runs inside the save transaction or, with no save, in its own. */
   private async runTriageLane(i: TriageInput, state: OmpTurnState, v: TriageDecision, finalize: (d: "act" | "fallback") => void): Promise<TriageOutcome> {
     const chatId = this.chatOf(i.claim.run_id);
     if (v.kind === "status") { this.runStore.inTransaction(() => finalize("act")); return { kind: "lane_reply", text: this.hougeStatusText(chatId), buttons: [] }; }
     if (v.kind !== "memory") { this.runStore.inTransaction(() => finalize("fallback")); return { kind: "fallthrough" }; }
-    let committed = false;
-    const w = await this.runLessonWrite(i.claim, chatId, { scope: v.scope }, { source: "lane", signal: i.signal, inTx: () => { finalize("act"); committed = true; } });
-    if (!w.saved || !w.change_id || !w.theme) {
-      if (!committed) this.runStore.inTransaction(() => finalize("fallback")); // nothing durable / refused / dropped: planner as today, no card
+    const w = await this.runLessonWrite(i.claim, chatId, { scope: v.scope }, { source: "lane", signal: i.signal, inTx: () => finalize("act") });
+    if (this.laneLost(i, state)) return { kind: "fallthrough" }; // the turn ended during Kimi: no late write of rows or event
+    if (!w.committed || !w.saved || !w.change_id || !w.theme) {
+      // nothing durable / refused / dropped / hook rolled back: the ONE outer finaliser writes fallback rows + event
+      this.runStore.inTransaction(() => finalize("fallback"));
       return { kind: "fallthrough" };
     }
     if (v.complete === "mixed") return { kind: "inform", note: memoryInformNote(w.saved.id, w.theme) };
@@ -2713,7 +2793,7 @@ Imports: `decide, persistDecisionRows, recordSkip, marginOf, type Decision, type
   }
 ```
 
-`this.memoryLaneCard` is a one-line indirection (`private memoryLaneCard = memoryLaneCard`) so `breakMemoryLaneCardForTest()` can swap it once; mark both `@internal`. A `mixed` verdict whose save returned nothing durable runs the planner with no note and no guard — it may spend a second distill/reconcile pair; accepted and documented in Task 14.
+`breakLaneFinalizeOnceForTest()` arms a one-shot throw inside `finalize` (test-only). `this.memoryLaneCard` is a one-line indirection (`private memoryLaneCard = memoryLaneCard`) so `breakMemoryLaneCardForTest()` can swap it once; mark both `@internal`. A `mixed` verdict whose save returned nothing durable runs the planner with no note and no guard — it may spend a second distill/reconcile pair; accepted and documented in Task 14.
 
 - [ ] **Step 5: Run, typecheck**
 
@@ -2854,7 +2934,7 @@ function setup(fetchImpl: unknown, env: Record<string, string> = { HOUGE_JEV_ENA
     const run_id = createQueuedTurnRun(store, text);
     const claim = store.claimRun(run_id, "w", 120)!;
     worker.buildOmpTools(claim, "555");
-    return { run_id, claim, input: { claim, text, userText: text, modality: "text" as const } };
+    return { run_id, claim, input: { claim, text, userText: text, modality: "text" as const, posture: null, signal: new AbortController().signal } };
   };
   return { store, worker, turn };
 }
@@ -3246,7 +3326,7 @@ export function recordTriageOverride(store: RunStore, original_run_id: string, n
     if (event.type === "memlane_undo") return this.accepted(event, now, handleMemLaneUndo(this.runStore, event));
 ```
 
-and in the `turn` branch, where the `created` result is produced, when `memLaneAsk` is set call `recordTriageOverride(this.runStore, memLaneAsk.original_run_id, result.run_id, process.env, this.options.dataDir ?? process.cwd(), this.telegramChatId(event))` inside the same `inTransaction` as the run creation if the branch already uses one; otherwise immediately after creation, before returning. (`event` must be a `let` for the rewrite, or shadow it with a local; keep the original for the trigger audit if the branch records it.) Thread `{ dataDir }` from `telegram-daemon.ts:151` and `telegram-poll-runner.ts:123` (the same `dataDir` the worker's `ompOptions` receives).
+and in the `turn` branch: when `memLaneAsk` is set, wrap the run creation and the override writes in **one** `this.runStore.inTransaction(() => { const r = this.handleTaskIntake(event, now); if (r.ok && r.status === "created") recordTriageOverride(…, r.run_id, …); return r; })` — `handleTaskIntake` (`gateway.ts:1021-1068`) is synchronous and opens no transaction of its own (verify with `rg inTransaction src/gateway`; if it does, hoist that one). `created` is returned only after the commit; on a duplicate (`beginTriggerProcessing` replays the stored result) nothing is written again. `getRunNotifyTarget` **throws** for an unknown run (`run-store.ts:6181`): `memLaneAskTurnEvent` wraps it in try/catch and maps a throw to the chat-bound refusal. (`event` must be a `let` for the rewrite, or shadow it with a local; keep the original for the trigger audit if the branch records it.) Tests: a label-write failure (spy `recordMemoryEvent` to throw once) leaves no new run; a redelivered callback returns the same run without a second `triage_override` row. Thread `{ dataDir }` from `telegram-daemon.ts:151` and `telegram-poll-runner.ts:123` (the same `dataDir` the worker's `ompOptions` receives).
 
 - [ ] **Step 5: Run, typecheck**
 
@@ -3548,6 +3628,10 @@ git commit -m "feat(gateway): memory lane Undo and Ask-Houge-anyway taps; overri
 - [ ] **Step 3: triage replay test** — Rev 1's `tests/jev/triage-replay.test.ts` with the seed corrected: each seeded run gets an assistant turn with a non-null `intent` (`listReplayTurns` requires it, `run-store.ts:1152-1176`) and `loop_step` rows with the real payload (`step, action, capability, ok, result_digest`, `run-ledger.ts:209`). Add: the row's `state_hash` equals `stateHash(buildTriageState({...same inputs...}).state)` computed in the test from `lastHougeTurnOf(recent, Date.parse(anchor))` — proving the replay builds the live state; and a `permute: true` run writes to the permuted path with reversed `lane` options.
 
 - [ ] **Step 4: Implement `triage-replay.ts`** — Rev 1 with: imports `resolveChatContextTurns, chatContextSince, resolveChatContextTurnChars` **from `../capabilities/intent.js`** (as `replay.ts:3-6`); `chatContextSince(d.env, new Date(anchor))`; state via `buildTriageState({ userText: t.text, recentTurns: recent, turnChars, modality: "text", lastHougeTurn: lastHougeTurnOf(recent, Date.parse(anchor)) })` (no broker in the CLI: the sanitiser's shape pass still runs); `state_hash: stateHash(built.state)` on every row; `permute` builds the lane question with `criteria: [...TRIAGE_LANE.criteria].reverse()` and a distinct `key` suffix `:perm`.
+
+State parity note: the replay runs without a broker, so a historical turn that contained one of the nine broker secrets hashes differently from its live row (the shape pass is identical). Accepted: such turns are rare and the report lists the count of live rows whose `state_hash` found no replay match.
+
+The report produces the "ROWS TO ADD" block **only** when all of: the run is complete over the full universe (no `stopped`, zero `jev_failed`), every required label set is non-empty (all `observed_lesson_write` rows, all `memory`/`status` verdicts labelled), the permuted run exists and its agreement with the canonical run is reported, and the live shadow check passes (`triage` rows in the DB: ≥ 14 days of `shadow`, ≥ 5 matched planner `lesson_write` calls, zero `memory_pure` on other-tool or no-tool turns) — the CLI passes those shadow numbers in from the store.
 
 - [ ] **Step 5: Implement `triage-report.ts`** per the interface; test `tests/jev/triage-report.test.ts` — Rev 1's cases plus: the threshold-sweep lines exist for 0.5…0.9; the no-tool costly cell is counted separately; `INCOMPLETE` when `labels` has no entry for any `observed_lesson_write` row; the "ROWS TO ADD" block appears only when all bars hold (construct a passing fixture for `zh` with n ≥ 5 status labels and ≥ 36 proxy rows is unnecessary — assert the block is absent on the small fixture and present on a synthetic 40-row all-correct fixture).
 
@@ -4145,10 +4229,11 @@ Changes from Rev 1 (all review findings):
 - **`envFilePath` is not exported** from `dist/config/load-env.js`; copy the helper from `scripts/live-gate-omp.mjs:648` into this script (or `const repo = dirname(resolve(process.env.HOUGE_ENV_FILE ?? ".env"))`).
 - **Planner-attempt count** counts only `llm_attempt` rows with `role === "compose"` (the memory lane's distill/reconcile legs are `distill`/`consolidate` on Kimi and must not fail case 1).
 - **Case 1b Undo goes through the real callback path**: build a `memlane_undo` `TypedTaskEvent` (as the adapter would) and `new Gateway(store, …, { dataDir: root }).intake(it)`; assert the lesson rows and the `lesson_change_undone` event.
-- **Case 2** asserts the planner's reply notification carries the saved prefix behaviour indirectly: exactly one `lesson_saved`, and if the ledger shows a second `lesson_write` `tool_finished` for the run, its digest reason is `already_saved_this_turn` (cannot be forced live; report "not exercised" when the planner did not call it).
+- **Case 2b — forced second `lesson_write`, live-style probe:** a fresh run on the copied DB: `worker.buildOmpTools(claim)`, `await worker.triageTurn({...})` with the real Jev and real Kimi (expect `lane_reply`), then `await worker.runLessonWrite(claim, chat, { scope: "ask" }, { source: "loop" })` on the same claim before the run completes; assert the already-saved digest and that the `llm_attempt` count for the run did not grow (zero additional distill/reconcile legs).
+- **Calibration for the gate:** the gate writes a temp JSON of calibration rows for zh/en (hashes computed from `dist/jev/questions/triage.js`) and sets `HOUGE_JEV_CALIBRATION_FILE` + `HOUGE_JEV_GATE=1`; without them `act` is impossible by design (Task 3 arming sequence). The armed re-run after Paco's commit uses no file.
 - **Case 6** restores the key with `delete process.env.TYPESAFE_API_KEY` / re-assign only when it was set; the gate's worker has no broker, so this proves the env-key path only — say so in the header and in Task 14's docs (the broker path is covered by `jevClient` reading `broker.typesafeKey()` first, tested hermetically in Task 9 with a fake broker).
 - Remove the unused `finalText` helper.
-- Header lists what the gate cannot exercise: the slot-A steered ack (hermetic in Task 8) and a forced second `lesson_write`.
+- Header lists what the gate cannot exercise: the slot-A steered ack (hermetic in Task 8) and the broker-supplied key path (hermetic in Task 9 with a fake broker: add that test there — `ompWorker(..., { broker: fakeBrokerWith("test-key") })` and assert the `fetchImpl` saw `Authorization: Bearer test-key`).
 
 Everything else (cases 1–5, `VACUUM INTO` copy, disarm flags, tombstone case 4 with the triage row asserted before the planner answers, exit codes 0/1/2) as Rev 1.
 
@@ -4323,3 +4408,4 @@ git commit -m "docs: lane 1 state block, roadmap delta, lessons and session entr
 - **Codex plan pass on Rev 1 (2026-10-04): NOT READY** — 11 BLOCKERs, 7 RISKs, 2 NITs. **Senior live-probe review on Rev 1 (2026-10-04): NOT READY** — 3 BLOCKERs, 11 WARNINGs, 8 SUGGESTIONs (baseline typecheck 0; supervisor suite 90/90 in 24 s; 285-turn replay universe measured). Every finding verified against the code; all folded into Rev 2: calibration not pre-seeded (`calibration.ts` empty), hash without model, rows + event + save in one transaction (`inTx`), warm spawn never rejects + `laneEnded` guard + stop-and-join on timeout, posture from the supervisor dep, abort-aware save and state-identity check, voice anchor parity, guard set after commit, post-save failure → inform + `ompFail` note, closed-reason incident, egress sanitiser seam (new `egress-redact.ts`), `pending`/`last_turn_tools` cut so `state_hash` joins, `lastHougeTurnOf` shared, chat-bound `ask` with one admission and the outcome label, Undo event inside the transaction, replay imports/`Date`/seed/latest-row-wins/dry-run accounting/permutation/§5.9 report, `--sample=N`, live gate `envFilePath`/`compose`-only count/callback Undo/key restore, test-helper shapes (`heldSession`, `Script.start`, `done` casts, `vi.stubEnv`), `findFailingLlmLegs` arity, `loop_step` payload. Not taken: none rejected; two spec deviations recorded in T14 (client per call; `jev_no_key` on first armed turn).
 
 ---
+- **Codex scoped re-pass on Rev 2 (2026-10-04): NOT READY** — 9 CLOSED, 11 PARTIAL, 7 exact fix sentences. Rev 3 applies them: `LessonWriteOutcome.committed` set only after `inTransaction` returns and no in-memory mutation inside `inTx`; one outer finaliser in `triageTurn` writing fallback rows + event for every non-acting exit (incl. hook rollback), `laneLost` checks before every write after an await; `finishLane` records the user turn and stops/joins the warm start before `laneEnded`, then completes in a `finally`; override creation in one `inTransaction` around `handleTaskIntake`, unknown run → refusal, duplicate → same run; sanitiser gains heredoc/long-literal/OTP/id shapes with long CJK + English negatives; `calibration.ts` gains `calibrationRows(env)` with a gate-only file and `resolveJevTriageMode` caps `arm` at shadow when the file is set outside a gate; the arming sequence is written in Task 3 and bound to Tasks 11–13; the live gate gains the forced second `lesson_write` probe and the broker-key hermetic test moves to Task 9. Rev 3 goes back to Codex for a confirmation pass on exactly these edits.
