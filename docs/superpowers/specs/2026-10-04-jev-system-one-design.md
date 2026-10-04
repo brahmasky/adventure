@@ -1,7 +1,11 @@
 # Jev as System One — a typed decision layer in front of Houge's models
 
 Date: 2026-10-04
-Status: **Rev 1 — design approved in brainstorming (Paco + Claude); awaiting spec review (senior + Codex) before any code**
+Status: **Rev 2 — Paco's rulings on the open questions folded in (2026-10-04); under spec review (senior + Codex) before any code**
+
+Rev 2 changes: §1.2 decision-flow diagram; §6.1 routing table rewritten to Paco's direction (trivial/routine → Kimi →
+Gemini, hard → Opus; Codex stays the self-write writer only) with the D10 reader-family resolver and the Antigravity
+ceiling watch; the six open questions closed with the defaults (see Rulings).
 Author: Paco + Claude
 Supersedes the scope of memory stage A2 ("Jev-first decision cascade", `docs/superpowers/specs/2026-10-02-memory-a1-fixes-design.md` §Non-goals): the memory lane is now lane 1 of a general layer, not a memory-only cascade.
 Governs: ADR 0029 (new), amendments to ADR 0013, 0014, 0019; the AGENTS.md flat-rate line (Paco's hand).
@@ -82,6 +86,51 @@ default path is always reachable: `none`, low confidence, or any Jev failure mea
   enterprise-only. Houge's egress caps stay and tighten (§4).
 - Thin labels: at n≈60 a 90% point estimate proves only ~80% (Wilson 95% lower bound). Lane targets must match the
   sample the lane can collect.
+
+### 1.2 Decision flow (lanes 1 + 2 share one call at turn start)
+
+```mermaid
+flowchart TD
+  M[Telegram message from Paco<br/>voice/photo already → text] --> AP{approval card<br/>pending for this chat?}
+  AP -- "yes, bare ack" --> NUDGE[code nudge:<br/>tap Approve or /approve id<br/><i>Jev never asked</i>]
+  AP -- no --> JEV[Jev, one call ~0.3 s, concurrent with child spawn<br/>lane · complete · scope · complexity]
+  JEV --> FAIL{Jev failed / no key /<br/>429 / timeout / disabled?}
+  FAIL -- yes --> TODAY[ledger row + incident<br/><b>today's path</b>: planner on default chain]
+  FAIL -- no --> MEM{lane = memory ∧ conf ≥ .70<br/>∧ p(memory) ≥ .85 ∧ gap ≥ .50?}
+  MEM -- "yes, p(pure) ≥ .80" --> LANE[memory lane on ticks seat:<br/>distill → reconcile → save]
+  LANE -- saved --> CARD[📒 card · Undo · Ask Houge anyway<br/><b>no planner turn</b>]
+  LANE -- nothing durable --> ROUTE
+  MEM -- "yes, mixed" --> LANE2[memory lane saves] --> NOTE["planner turn with<br/>[memory] lesson #N saved; do not save again"] --> ROUTE
+  MEM -- no --> ROUTE{planner seat by<br/>complexity answer}
+  ROUTE -- "hard ≥ .70" --> OPUS[anthropic/claude-opus-5-5:medium<br/>→ antigravity/claude-opus-4-6 → kimi]
+  ROUTE -- "routine ≥ .70" --> KIMIM[kimi-code/k3:medium<br/>→ antigravity/gemini-3.1-pro:medium]
+  ROUTE -- "trivial ≥ .80" --> KIMIL[kimi-code/k3:low<br/>→ antigravity/gemini-3.1-pro:low]
+  ROUTE -- abstain --> DEF[default: Opus chain in month one;<br/>flips to the routine chain once hard-recall ≥ 97%]
+  KIMIM -. "think harder / 认真想 / ultrathink,<br/>model error or refusal" .-> OPUS
+  KIMIL -. same escalation .-> OPUS
+```
+
+The generic layer under every lane:
+
+```mermaid
+flowchart LR
+  IN[input] --> ENV[code envelope<br/>redact · cap · code-observed fields only]
+  ENV --> J[Jev: one call,<br/>all questions for this point]
+  J --> CODE[code: thresholds per question/hash/model/lang<br/>decision row · floors · tap budget]
+  CODE --> ACT[ACT in a lane<br/>cheap seat · card · digest · store]
+  CODE --> ASK[ASK / FLAG, monotone<br/>+1 tap · ⚑ line · incident · never allow]
+  CODE --> FT[FALL THROUGH = today<br/>planner · default gate · default delivery]
+```
+
+| Lane | input | act | ask / flag | fall through |
+|---|---|---|---|---|
+| 1 memory | Paco's message | save lesson, card | — | planner |
+| 2 routing | Paco's message | pin the seat chain for this turn | — | default chain |
+| 3 security | wall output / plain shell command | — | ⚑ taint line / extra tap | today's gate |
+| 4 inbound | report / incident / mail | digest, store | ping now | today's delivery |
+| 5 context | Paco's message | shadow: credit only | — | credit all, as today |
+
+On ship of lane 1 this section is copied to `docs/reference/jev-decision-layer.md` and linked from the README.
 
 ## 2. Lanes: what the research supports
 
@@ -226,10 +275,11 @@ bool }`, `last_turn_tools: string[]`.
 
 ### 5.3 Questions (criteria drafts; final wording fixed in the lane plan, hashed)
 
-- `lane` (choice, options in order `none`, `memory`):
+- `lane` (choice, options in order `none`, `status`, `memory`):
   `memory` — "`latest_message` tells Houge how to behave from now on, states something about Paco to remember, or
   corrects something Houge believes. Signals: 以后 / 从现在起 / 记住 / 不要再 / 别再 / always / never / from now on /
   remember / prefer, or a correction of Houge's previous reply in `recent_turns` that applies to future replies too."
+  `status` — "`latest_message` asks whether Houge restarted, which build or code is live, or whether it is running normally; nothing else."
   `none` — "Everything else: a question, a task, a lookup, small talk, a bare acknowledgement such as 好 / 嗯 / ok / 👍 /
   是的 even right after Houge saved or proposed something, an answer to Houge's question, or a message about Houge's
   code or schedules."
@@ -249,7 +299,7 @@ Write-then-inform: the same without the `pure` bar. Else fall through. Env: `HOU
 
 ### 5.5 The memory lane — `src/core/memory-lane.ts`
 
-Phase 1 = lesson writes only. The lane calls `createLessonWriteAdapter` with `feedback = message`, `priorAnswer = last
+Phase 1 = lesson writes plus the `status` lane (ruling 1: `lane: status` answers "did you restart / which code is live" with the code-rendered `houge_status` text, zero LLM; the `lane` question gains the option `status`, listed after `none`). For memory, the lane calls `createLessonWriteAdapter` with `feedback = message`, `priorAnswer = last
 assistant turn`, `scope` from Jev, then `reconcileAndSaveLesson` (`core-worker.ts:983-1004`) — the identical pipeline the
 planner's `lesson_write` triggers, on the ticks seat (`HOUGE_OMP_TICKS`). All existing gates apply unchanged: the
 code-owned phrase scan, the distill "durable?" verdict, reconcile, the 240/120 caps, `lesson_cross_theme`,
@@ -311,23 +361,38 @@ Flag `HOUGE_JEV_TRIAGE_ENABLED=off|shadow|arm`, default off.
 
 ### 6.1 Lane 2 — model routing
 
-- One `choice` question `complexity` (`trivial | routine | hard`, `hard` listed first) **in the same startTurn call as
+- One `choice` question `complexity` (`hard | routine | trivial`, `hard` listed first) **in the same startTurn call as
   lane 1**. The instructions judge the task a short reply commits Houge to, not the reply ("好" after a proposal is the
   proposal's difficulty). State adds two code-owned booleans: previous turn used tools; previous Houge turn asked or
   proposed.
-- Routing changes only the planner chain's **first string**; the failure chain behind it stays. Table: `trivial` ≥ 0.80
-  → cheap leg; `routine` ≥ 0.70 → `anthropic/claude-opus-5-5:medium` (today); `hard` ≥ 0.70 → the same (`:high` is not
-  worth its thinking tokens until measured); else default. Applied in `promptTop` through the existing `set_model` path.
-- Self-escalation: a `trivial` turn that emits any tool call is re-pinned to the default string before its next model
-  request (the `retryNextLeg` frame). `think harder` / `认真想` / `ultrathink` force `hard` by regex before Jev.
-- Code refuses a route whose family equals `reader[0]`'s family (ADR 0028 D10 family collapse).
-- Cheap leg: `anthropic/claude-opus-5-5:low` until Kimi's TTFT is measured on real turns (29.5 s observed once); Kimi
-  moves load off the Opus weekly cap and is the goal.
+- **Paco's direction (2026-10-04):** Claude is reserved for hard and ad-hoc work; routine and trivial turns run on the
+  other subscription seats. Routing replaces the planner chain **for that turn** through the existing `set_model` path
+  in `promptTop`; the per-turn chain keeps its own failure fallback:
+
+  | Jev `complexity` | planner chain for the turn |
+  |---|---|
+  | `hard` ≥ 0.70 | `anthropic/claude-opus-5-5:medium` → `google-antigravity/claude-opus-4-6:medium` → `kimi-code/k3:low` (today's chain) |
+  | `routine` ≥ 0.70 | `kimi-code/k3:medium` → `google-antigravity/gemini-3.1-pro:medium` |
+  | `trivial` ≥ 0.80 | `kimi-code/k3:low` → `google-antigravity/gemini-3.1-pro:low` |
+  | abstain / Jev failure | the hard chain in month one; flips to the routine chain once the replay and a week of live rows show hard-recall ≥ 97% at the bar (`HOUGE_JEV_ROUTE_ABSTAIN=hard|routine`) |
+
+  Codex is unchanged: `codex exec` is the self-write writer only; no chat turn is ever routed to it
+  (`openai-codex/gpt-5.5` stays a reader and judge seat).
+- Escalation to the hard chain mid-turn (the `retryNextLeg` frame, one ~50K cache write): `think harder` / `认真想` /
+  `ultrathink` by regex before Jev; a model error or refusal on the cheap chain; the planner asking for it through a
+  code-owned marker. A rating ≤ 1 on a routed turn is an override label.
+- **D10 resolver (amends ADR 0028 D10).** `reader[0]` is `gemini-3.8-flash`; a routine turn that falls to Gemini and
+  then reads the web would collapse planner and reader onto one family on most fallback turns. Code picks, at read
+  time, the first reader leg whose family differs from the planner's current family (Kimi or GPT-5.5) before falling
+  back to "proceed, audited". `wall_collapse` stays for the case where no cross-family reader is left.
+- **Antigravity ceiling.** Gemini, Opus 4.6 fallback, the reader and media all draw on the Antigravity weekly quota
+  (a watch item in the state block). The live gate records per-provider request counts for a week; the abstain flip
+  waits for that week.
 - Replay label (proxy, code-owned): `hard` if ≥ 3 loop steps or any `self_write_* | lesson_write | memory_correct_write`
-  or output > 1,500 tokens; `trivial` if 0 steps, output < 400, one request; else `routine`. Arm bar: hard→trivial
-  ≤ 3% of confident calls, coverage ≥ 50%. Expected effect: ~15–20% of Opus planner input moved off Opus; not more.
-- v2 (SP3's quota invariant): a daily tick stores Anthropic 7-day utilisation (`omp --profile houge usage --json`,
-  never the profile DB); at ≥ 0.8 the `routine` row flips to the cheap leg.
+  or output > 1,500 tokens; `trivial` if 0 steps, output < 400, one request; else `routine`. Arm bar: hard→trivial or
+  hard→routine ≤ 3% of confident calls, coverage ≥ 50%, Kimi TTFT p90 recorded on real turns (29.5 s seen once).
+- v2 (SP3's quota invariant): a daily tick stores Anthropic and Antigravity 7-day utilisation (`omp --profile houge
+  usage --json`, never the profile DB); at ≥ 0.8 on Anthropic the abstain default is forced to the routine chain.
 
 ### 6.2 Lane 3 — security: injection flag, then plain-command risk
 
@@ -416,17 +481,17 @@ The amendment paragraphs are written into the prior ADRs on ship of lane 1 (docs
 - A `pure` false positive swallows a question for one turn: strict bar, override tap, auto-disable, catch-up line.
 - Thin labels: bars are set at what the sample can prove; a lane that cannot reach its sample stays shadow.
 
-## Open questions for Paco (defaults in bold apply if unanswered)
+## Rulings (Paco, 2026-10-04)
 
-1. Lane 1 phase 1 scope: **lessons only**; facts and `memory_correct` in phase 2. Add the zero-LLM `status` lane
-   ("重启了吗" → `houge_status` text) to phase 1? (~50 lines; **yes** unless you object.)
-2. Lane 2 cheap leg in month one: **Opus `:low`** (no quota saving, latency win) or Kimi `:low` (quota relief, TTFT
-   risk, D10 check)?
-3. Lane 3/4 egress: raw web excerpts to TypeSafe (lane 3) and your mail subject + snippet (lane 4/SP2) — **not approved
-   until you say so**; those questions stay shadow-only on code-side state until then.
-4. Added-tap budget: **3/day**.
-5. Lane 4 digest: **one morning card at 08:00 Sydney next to the 日报**; quiet hours 23:00–07:00 → digest unless a floor.
-6. One ~80-item labelling sitting for lane 4's replay: yes?
+1. Lane 1 phase 1 = lesson writes plus the zero-LLM `status` lane (`lane: status` → code-rendered `houge_status` text);
+   facts and `memory_correct` in phase 2.
+2. Routing: trivial and routine → Kimi → Gemini (Antigravity); hard → Opus; Codex stays the self-write writer only
+   (§6.1).
+3. Egress: web excerpts (lane 3) and mail subject + snippet (lane 4) are **not approved yet**; those questions run
+   shadow-only on code-side state until Paco approves per lane, after reading the TypeSafe DPA for mail.
+4. Added-tap budget 3/day.
+5. Lane 4 digest: one card at 08:00 Sydney next to the 日报; quiet hours 23:00–07:00 Sydney → digest unless a floor.
+6. One ~80-item labelling sitting before lane 4's shadow.
 
 ## Review record
 

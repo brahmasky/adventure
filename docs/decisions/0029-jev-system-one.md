@@ -3,12 +3,12 @@
 - **Status:** proposed (design approved by Paco 2026-10-04; accepted when lane 1 ships its live gate)
 - **Date:** 2026-10-04
 - **Deciders:** Paco
-- **Amends:** [0013](0013-llm-inner-composition.md) (composition gains a System One stage; monotone rule),
+- **Amends:** [0028](0028-omp-runtime.md) (D10 reader-family resolver; per-turn planner chain), [0013](0013-llm-inner-composition.md) (composition gains a System One stage; monotone rule),
   [0014](0014-dual-llm-privilege-separation.md) (Jev as a closed-enum component beside the wall),
   [0019](0019-metered-ceiling.md) (Jev is the one metered leg; ceiling active for it),
   [0005](0005-agent-memory-architecture.md) (credit definition, with lane 5)
 - **Spec:** [2026-10-04-jev-system-one-design.md](../superpowers/specs/2026-10-04-jev-system-one-design.md)
-  (Rev 1; six research reports under `docs/superpowers/research/2026-10-04-jev-lanes/`)
+  (Rev 2; six research reports under `docs/superpowers/research/2026-10-04-jev-lanes/`)
 
 ## Context
 
@@ -65,7 +65,9 @@ fall-through; **System Two (omp seats)** composes inside the lane code picked. C
    treated as free by Paco until he says otherwise.
 7. **Lane order**, each its own spec → review → plan → build → live gate: (1) pre-planner triage with the memory lane —
    a pure memory instruction is saved on the ticks seat and answered with an undoable code-owned card, no planner turn;
-   (2) model routing by judged task complexity, changing only the planner chain's first string; (3) `injection_suspected`
+   (2) model routing by judged task complexity — trivial and routine turns on Kimi → Gemini, hard turns on Opus, Codex
+   untouched as the self-write writer — swapping the planner chain for that turn through the existing `set_model` path
+   and resolving the reader cross-family at read time (amends ADR 0028 D10); (3) `injection_suspected`
    on reader-wall output, then a `risk` score on plain shell commands, both monotone; (4) inbound triage envelope,
    digest tick and `wrong urgency` label, before SP2; (5) context relevance in shadow, driving lesson credit.
 
