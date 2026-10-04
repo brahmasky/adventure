@@ -1,5 +1,7 @@
 # Jev System One — Lane 1 (triage → memory + status) Implementation Plan
 
+**Rev 4 (2026-10-04)** — Codex's confirmation pass on Rev 3 (8 sentences) applied: one `settleTriage` finaliser in Task 9 with per-stage failure tests; skipped rows persisted by the caller after the cancellation check (Task 5); Task 8 tests assert one exact terminal outcome per injected failure; Task 10 labels only a genuinely new run and catches the unknown-run lookup; the quoted-literal rule is opaque-only with a prose negative and the nine-digit rule documented (Task 2); `readFileSync` import, lane-specific arming (`status` needs only the `lane` row), CLI passes permuted rows + measured shadow stats into the report (Tasks 3/11/12); Task 13 replaces the retained script lines explicitly and forces the second call through the real `lesson_write` tool path; Task 9 gains the fake-broker test via an `ompWorker` `broker` option.
+
 **Rev 3 (2026-10-04)** — Codex's scoped re-pass on Rev 2 (7 remaining items, exact sentences) applied: §7/§9 committed flag and one outer finaliser, §8 `finishLane` ordering with `finally`, §9 cancellation checks before every write, §10 atomic override creation, §2 sanitiser shapes + CJK negatives, §3/§11/§13 arming sequence, §13 forced second `lesson_write` probe.
 
 **Rev 2 (2026-10-04)** — both plan reviews folded in (Codex: 11 blockers / 7 risks / 2 nits; senior live-probe: 3 blockers / 11 warnings / 8 suggestions; see the Review record at the end). Tasks 2, 3, 5, 7–14 were rewritten; where a Rev 2 task says "as Rev 1", the Rev 1 text is retained beneath it for the code blocks it points at.
@@ -322,6 +324,11 @@ describe("sanitizeJevText", () => {
     expect(sanitizeJevText(en)).toBe(en);
     // the 40+ opaque-token rule must not eat a long plain word; if it does, require at least one digit or symbol in the token class
     expect(sanitizeJevText("Pneumonoultramicroscopicsilicovolcanoconiosis is a long word")).toBe("Pneumonoultramicroscopicsilicovolcanoconiosis is a long word");
+    const quoted = 'he said "from now on please keep every answer short and skip the greeting" and left';
+    expect(sanitizeJevText(quoted)).toBe(quoted); // long quoted PROSE stays; only opaque 40+ char quoted tokens are literals
+  });
+  it("documents the accepted false positive: a standalone 9+ digit number (a phone, an order number) is treated as an id", () => {
+    expect(sanitizeJevText("order 123456789 shipped")).toBe("order <id> shipped");
   });
   it("applies the broker redactor first, then the shapes", () => {
     expect(sanitizeJevText("secret VALUE123 and ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345", (s) => s.replace("VALUE123", "<redacted>"))).toBe("secret <redacted> and <token>");
@@ -397,7 +404,7 @@ Expected: FAIL — modules not found.
 const SHAPES: Array<[RegExp, string]> = [
   // shell/heredoc bodies and long quoted literals: the material a steered command would hide (spec §4.5)
   [/<<-?\s*['"]?(\w+)['"]?[\s\S]*?\n\1\b/g, "<heredoc>"],
-  [/(["'`])[^"'`\n]{40,}\1/g, "<literal>"],
+  [/(["'`])[^"'`\s]{40,}\1/g, "<literal>"], // opaque only (no whitespace): a quoted sentence is prose, not a secret
   [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g, "Bearer <token>"],
   [/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b/g, "<token>"],
   [/\bsk-[A-Za-z0-9_-]{16,}\b/g, "<token>"],
@@ -779,6 +786,8 @@ import type { Lang } from "./intent-question.js";
  * and the reported model. Slice 1 ships NONE: the lane cannot act until the lane 1 replay + Paco's labels clear the
  * §5.9 bars, the report prints the rows, and Paco commits them here (his hand, like an ADR amendment).
  */
+import { readFileSync } from "node:fs";
+
 export interface CalibrationRow { question_id: string; criteria_hash: string; model: string; lang: "zh" | "en"; approved: string; evidence: string }
 
 export const CALIBRATED_ROWS: readonly CalibrationRow[] = [];
@@ -801,7 +810,7 @@ export function calibratedLang(questionId: string, hash: string, model: string, 
 }
 ```
 
-- [ ] **Step 4: Create `src/jev/thresholds.ts`** — as Rev 1, with `calibratedLang` imported from `./calibration.js`, `criteriaHash(q)` (no model argument), and `triageVerdict(answers, bars, lang, model, rows = CALIBRATED_ROWS)` passing `rows` through; `triageTurn` (Task 9) passes `calibrationRows(process.env)`.
+- [ ] **Step 4: Create `src/jev/thresholds.ts`** — as Rev 1, with `calibratedLang` imported from `./calibration.js`, `criteriaHash(q)` (no model argument), and `triageVerdict(answers, bars, lang, model, rows = CALIBRATED_ROWS)` passing `rows` through; `triageTurn` (Task 9) passes `calibrationRows(process.env)`. **Lane-specific arming:** the `status` decision needs only the `lane` row for the language; the `memory` decision needs all three (`lane`, `complete`, `scope`). `triageVerdict` evaluates `status` first with the `lane`-only check, then `memory` with the three-row check; an uncalibrated `complete`/`scope` with a calibrated `lane` therefore arms status alone. Add a test for that split.
 
 **Arming sequence, end to end (binding for Tasks 3, 11, 12, 13, 14):**
 1. Ship with `CALIBRATED_ROWS = []`: the lane cannot act anywhere, in any mode.
@@ -1363,7 +1372,7 @@ git commit -m "feat(store): jev_decisions and lesson_changes with compare-and-se
   export type Decision =
     | { status: "answered"; answers: Record<string, JevChoiceAnswer>; model: string; latency_ms: number; input_tokens: number; stateHash: string;
         rows: JevDecisionInsert[] }                 // NOT yet written: the caller persists them in ITS transaction (spec §3.4)
-    | { status: "skipped"; reason: SkipReason };    // the skipped row IS written here (nothing else to be atomic with)
+    | { status: "skipped"; reason: SkipReason };    // NOT written here either: the caller checks cancellation first, then calls recordSkip (Task 9 settleTriage)
   export async function decide(i: DecideInput): Promise<Decision>;
   export function persistDecisionRows(store: RunStore, rows: JevDecisionInsert[], decision: "act" | "fallback" | "shadow", threshold_used: string | null): string[]; // returns decision_ids; call inside inTransaction
   export function recordSkip(store: RunStore, point: DecisionPoint, run_id: string | null, lang: Lang, reason: SkipReason, now?: string): void;
@@ -1460,15 +1469,17 @@ describe("decide", () => {
     expect(rows[0]!.answers_json).not.toContain("latest_message"); // numbers only
     store.close();
   });
-  it("writes a single skipped row and opens the matching incident on a 429", async () => {
+  it("returns skipped without writing a row (the caller persists after its cancellation check) and opens the incident on a 429", async () => {
     const { store, input } = setup(vi.fn(async () => json(429, {})) as unknown as typeof fetch);
     const d = await decide(input);
     expect(d).toEqual({ status: "skipped", reason: "rate_limited" });
-    expect(store.listJevDecisions("run_1")).toMatchObject([{ status: "skipped", skip_reason: "rate_limited", question_id: null }]);
+    expect(store.listJevDecisions("run_1")).toHaveLength(0);
     expect(store.listOpenIncidents().some((i) => i.kind === "jev_rate_limited")).toBe(true);
+    recordSkip(store, "triage", "run_1", "zh", "rate_limited");
+    expect(store.listJevDecisions("run_1")).toMatchObject([{ status: "skipped", skip_reason: "rate_limited", question_id: null }]);
     store.close();
   });
-  it("no key is a skipped row with reason no_key and the jev_no_key incident, never a fetch", async () => {
+  it("no key is skipped{no_key} with the jev_no_key incident, never a fetch", async () => {
     const fetchImpl = vi.fn();
     const { store, input } = setup(fetchImpl as unknown as typeof fetch, undefined);
     expect(await decide(input)).toEqual({ status: "skipped", reason: "no_key" });
@@ -1564,10 +1575,10 @@ export async function decide(i: DecideInput): Promise<Decision> {
   const r = await i.client({ state: i.state, questions });
   const now = i.now?.().toISOString();
   if (!r.ok) {
-    const reason = skipReasonOf(r);
-    recordSkip(i.store, i.point, i.run_id, i.lang, reason, now);
+    // No row here: the caller persists the skip after its cancellation check (a lost turn writes nothing late).
+    // The incident is not a row and may open regardless: an outage is an outage even if this turn ended.
     openJevIncident(i.store, r, { point: i.point, run_id: i.run_id });
-    return { status: "skipped", reason };
+    return { status: "skipped", reason: skipReasonOf(r) };
   }
   const sh = stateHash(i.state);
   const decisionIds: Record<string, string> = {};
@@ -2226,18 +2237,19 @@ describe("ADR 0029 lane 1 slots", () => {
     await until(() => h.outcome.done.length === 1); // completes after ABORT_GRACE_MS (5 s) through stopSession; within vitest's 10 s
     expect(h.outcome.failed).toHaveLength(0);
   });
-  it("recordChatTurn throwing in finishLane fails the turn (before laneEnded); a throwing stopSession after a hung start still ends the turn", async () => {
-    const { sup, store, outcome } = harness(fakeSession(), {}, { triage: async () => ({ kind: "lane_reply", text: "x", buttons: [] }) });
-    const spy = vi.spyOn(store, "recordChatTurn").mockImplementationOnce(() => { throw new Error("disk"); });
-    sup.submit(req(createQueuedTurnRun(store, "hi"), "hi"));
-    await until(() => outcome.failed.length === 1);
+  it.each([
+    ["recordChatTurn", (h: ReturnType<typeof harness>) => vi.spyOn(h.store, "recordChatTurn").mockImplementationOnce(() => { throw new Error("disk"); }), false],
+    ["stopSession", (h: ReturnType<typeof harness>) => vi.spyOn(h.sup as unknown as { stopSession: () => Promise<void> }, "stopSession").mockRejectedValueOnce(new Error("stop")), true],
+    ["settleStart", (h: ReturnType<typeof harness>) => vi.spyOn(h.sup as unknown as { settleStart: () => Promise<void> }, "settleStart").mockRejectedValueOnce(new Error("settle")), true]
+  ])("a %s failure before laneEnded reaches settle() as exactly one FAILED outcome (start_failed), never a stranded turn", async (_name, inject, hang) => {
+    const session = hang ? fakeSession({ start: () => new Promise(() => undefined) }) : fakeSession();
+    const h = harness(session, {}, { triage: async () => ({ kind: "lane_reply", text: "x", buttons: [] }) });
+    const spy = inject(h);
+    h.sup.submit(req(createQueuedTurnRun(h.store, "hi"), "hi"));
+    await until(() => h.outcome.done.length + h.outcome.failed.length === 1);
+    expect(h.outcome.done).toHaveLength(0);
+    expect((h.outcome.failed[0] as { error_ref: string }).error_ref).toMatch(/^start_failed/);
     spy.mockRestore();
-    const hanging = fakeSession({ start: () => new Promise(() => undefined) });
-    const h2 = harness(hanging, {}, { triage: async () => ({ kind: "lane_reply", text: "x", buttons: [] }) });
-    const stop = vi.spyOn(h2.sup as unknown as { stopSession: () => Promise<void> }, "stopSession").mockRejectedValueOnce(new Error("stop failed"));
-    h2.sup.submit(req(createQueuedTurnRun(h2.store, "hi"), "hi"));
-    await until(() => h2.outcome.done.length + h2.outcome.failed.length === 1); // the turn ends either way; settle() owns completion
-    stop.mockRestore();
   });
   it("a sessionFactory that throws synchronously is caught by the warm promise, not the turn", async () => {
     const { sup, store, outcome } = harness(fakeSession(), {}, { sessionFactory: () => { throw new Error("factory"); }, triage: async () => ({ kind: "lane_reply", text: "x", buttons: [] }) });
@@ -2707,11 +2719,28 @@ it("the decision rows and the triage event land in the SAME transaction as the l
 
 Replace Rev 1's `rating_ask`/`last_turn_tools` expectations: the state has four keys (Task 2).
 
+Add the broker test (the live gate cannot prove it): `tests/helpers/omp-worker.ts` gains `broker?: SecretBroker` threaded to the 8th constructor argument; a fake `{ typesafeKey: () => "test-key", redact: (s: string) => s } as unknown as SecretBroker` and a `fetchImpl` that records `init.headers`:
+
+```ts
+it("the broker's key wins over the environment and reaches the Authorization header", async () => {
+  const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => { seenAuth = String((init.headers as Record<string, string>).authorization); return json(200, okBody()); });
+  let seenAuth = "";
+  const store = RunStore.openInMemory();
+  const worker = ompWorker(store, mkdtempSync(join(tmpdir(), "htri-")), { llm: distillThenReconcile, jevFetch: fetchImpl as unknown as typeof fetch,
+    broker: { typesafeKey: () => "test-key", redact: (s: string) => s } as unknown as SecretBroker });
+  vi.stubEnv("HOUGE_JEV_ENABLED", "1"); vi.stubEnv("HOUGE_JEV_TRIAGE_ENABLED", "shadow"); vi.stubEnv("TYPESAFE_API_KEY", "env-key");
+  const run_id = createQueuedTurnRun(store, "以后回复短一点"); const claim = store.claimRun(run_id, "w", 120)!; worker.buildOmpTools(claim, "555");
+  await worker.triageTurn({ claim, text: "以后回复短一点", userText: "以后回复短一点", modality: "text", posture: null, signal: new AbortController().signal });
+  expect(seenAuth).toBe("Bearer test-key");
+  store.close();
+});
+```
+
 - [ ] **Step 3: Run to verify they fail.**
 
 - [ ] **Step 4: Implement in `core-worker.ts`**
 
-Imports: `decide, persistDecisionRows, recordSkip, marginOf, type Decision, type SkipReason` from `../jev/decide.js`; `createJevClient, type JevRequest, type JevResult` from `../jev/jev-client.js`; `langOf, type Lang` from `../jev/intent-question.js`; `buildTriageState, lastHougeTurnOf, TRIAGE_QUESTIONS` from `../jev/questions/triage.js`; `THRESHOLD_VERSION, resolveTriageBars, triageVerdict, type TriageDecision` from `../jev/thresholds.js`; `resolveJevTriageMode` from `../jev/jev-flags.js`; `memoryInformNote, memoryLaneCard` from `./memory-lane-card.js`; `type TriageInput, type TriageOutcome` from `../omp/planner-supervisor.js`.
+Imports: `decide, persistDecisionRows, recordSkip, marginOf, type Decision, type SkipReason, type JevDecisionInsert` from `../jev/decide.js`; `createJevClient, type JevRequest, type JevResult` from `../jev/jev-client.js`; `langOf, type Lang` from `../jev/intent-question.js`; `buildTriageState, lastHougeTurnOf, TRIAGE_QUESTIONS` from `../jev/questions/triage.js`; `THRESHOLD_VERSION, resolveTriageBars, triageVerdict, type TriageDecision` from `../jev/thresholds.js`; `resolveJevTriageMode` from `../jev/jev-flags.js`; `memoryInformNote, memoryLaneCard` from `./memory-lane-card.js`; `type TriageInput, type TriageOutcome` from `../omp/planner-supervisor.js`.
 
 `OmpWorkerOptions` + `jevFetch?`, `jevNow?`. `supervisorDeps`: `triage: (i) => this.triageTurn(i)`. `resolveOmpMessage`: return `modality: r.modality`. `ompComplete`: pass `buttons`. `ompFail`: before `plannerFailureText`, read `const state = this.ompTurns.get(i.run_id)` (currently deleted at the top — move the delete after reading) and, when `state?.lessonSavedThisTurn`, append `\n\n📒 Lesson #${id} was saved before the failure.` to a non-null text.
 
@@ -2731,36 +2760,63 @@ Imports: `decide, persistDecisionRows, recordSkip, marginOf, type Decision, type
     });
   }
 
-  private triageSkip(run_id: string, lang: Lang, reason: SkipReason): TriageOutcome {
-    this.runStore.inTransaction(() => { recordSkip(this.runStore, "triage", run_id, lang, reason); this.triageEvent(run_id, { status: "skipped", lang, decision: "fallback", skip_reason: reason }); });
+  /**
+   * THE finaliser (Codex plan review): every eligible, still-active exit of triageTurn passes through here exactly once.
+   * `rows` are the answered decision rows (empty for a skip); a lost turn (signal / state identity) writes nothing.
+   * Guarded by a per-turn `finalized` flag on the state so the act path (finalised inside the save transaction via
+   * `inTx`) and the fallback path can never both write.
+   */
+  private settleTriage(i: TriageInput, state: OmpTurnState | undefined, lang: Lang, f:
+    | { kind: "skipped"; reason: SkipReason }
+    | { kind: "answered"; rows: JevDecisionInsert[]; decision: "act" | "fallback" | "shadow"; threshold_used: string; numbers: Record<string, unknown> }): void {
+    if (state?.triageFinalized) return;
+    if (state && this.laneLost(i, state)) return;
+    const run_id = i.claim.run_id;
+    this.runStore.inTransaction(() => {
+      if (f.kind === "skipped") { recordSkip(this.runStore, "triage", run_id, lang, f.reason); this.triageEvent(run_id, { status: "skipped", lang, decision: "fallback", skip_reason: f.reason }); }
+      else { persistDecisionRows(this.runStore, f.rows, f.decision, f.threshold_used); this.triageEvent(run_id, { status: "answered", lang, decision: f.decision, ...f.numbers }); }
+    });
+    if (state) state.triageFinalized = true;
+  }
+
+  private triageSkip(i: TriageInput, state: OmpTurnState | undefined, lang: Lang, reason: SkipReason): TriageOutcome {
+    this.settleTriage(i, state, lang, { kind: "skipped", reason });
     return { kind: "fallthrough" };
   }
 
   async triageTurn(i: TriageInput): Promise<TriageOutcome> {
     const run_id = i.claim.run_id; const lang = langOf(i.userText);
-    const mode = resolveJevTriageMode(process.env, this.ompDataDir());
-    if (mode === "off") return this.triageSkip(run_id, lang, "disabled");
-    if (this.runStore.triageOverrideFor(run_id)) return this.triageSkip(run_id, lang, "override");
-    if (i.posture !== null) return this.triageSkip(run_id, lang, "posture");
-    if (i.modality !== "text") return this.triageSkip(run_id, lang, "modality");
     const state = this.ompTurns.get(run_id);
-    if (!state) return this.triageSkip(run_id, lang, "error");
+    try {
+      return await this.triageTurnInner(i, state, lang);
+    } catch (e) {
+      // Any non-acting throw (Jev client, distill/reconcile, store, card) still produces exactly one finalisation.
+      console.error(`triage: threw: ${e instanceof Error ? e.message : String(e)}`);
+      this.settleTriage(i, state, lang, { kind: "skipped", reason: "error" });
+      return state?.lessonSavedThisTurn ? { kind: "inform", note: memoryInformNote(state.lessonSavedThisTurn.id, state.lessonSavedThisTurn.theme) } : { kind: "fallthrough" };
+    }
+  }
+
+  private async triageTurnInner(i: TriageInput, state: OmpTurnState | undefined, lang: Lang): Promise<TriageOutcome> {
+    const run_id = i.claim.run_id;
+    const mode = resolveJevTriageMode(process.env, this.ompDataDir());
+    if (mode === "off") return this.triageSkip(i, state, lang, "disabled");
+    if (this.runStore.triageOverrideFor(run_id)) return this.triageSkip(i, state, lang, "override");
+    if (i.posture !== null) return this.triageSkip(i, state, lang, "posture");
+    if (i.modality !== "text") return this.triageSkip(i, state, lang, "modality");
+    if (!state) return this.triageSkip(i, state, lang, "error");
     const built = buildTriageState({ userText: i.userText, recentTurns: state.turnCtx.recentTurns, turnChars: state.turnCtx.turnChars, modality: i.modality,
       lastHougeTurn: lastHougeTurnOf(state.turnCtx.recentTurns, (this.ompOptions.jevNow?.() ?? new Date()).getTime()) }, this.broker ? (s) => this.broker!.redact(s) : undefined);
-    if (!built.ok) return this.triageSkip(run_id, lang, built.skip);
+    if (!built.ok) return this.triageSkip(i, state, lang, built.skip);
     const d = await decide({ point: "triage", run_id, state: built.state, questions: TRIAGE_QUESTIONS, lang, client: this.jevClient(run_id),
       store: this.runStore, thresholdVersion: THRESHOLD_VERSION, ...(this.ompOptions.jevNow ? { now: this.ompOptions.jevNow } : {}) });
-    if (this.laneLost(i, state)) return { kind: "fallthrough" }; // ended while Jev ran: step() already returned ENDED upstream; write nothing late
-    if (d.status === "skipped") { this.triageEvent(run_id, { status: "skipped", lang, decision: "fallback", skip_reason: d.reason }); return { kind: "fallthrough" }; }
+    if (d.status === "skipped") return this.triageSkip(i, state, lang, d.reason); // settleTriage checks laneLost before writing
     const verdict = triageVerdict(d.answers, resolveTriageBars(process.env), lang, d.model, calibrationRows(process.env));
     const lane = d.answers.lane!;
     const numbers = { lane: lane.choice, complete: d.answers.complete?.choice, scope: d.answers.scope?.choice, confidence: lane.confidence, top_prob: Math.max(...Object.values(lane.probabilities)), margin: marginOf(lane) };
-    const finalize = (decision: "act" | "fallback" | "shadow") => { // the ONE place rows + event are written for an answered call
-      persistDecisionRows(this.runStore, d.rows, decision, `${THRESHOLD_VERSION}:${verdict.kind}`);
-      this.triageEvent(run_id, { status: "answered", lang, decision, ...numbers });
-    };
-    if (mode === "shadow" || verdict.kind === "fallthrough") { this.runStore.inTransaction(() => finalize(mode === "shadow" ? "shadow" : "fallback")); return { kind: "fallthrough" }; }
-    return this.runTriageLane(i, state, verdict, finalize);
+    const answered = (decision: "act" | "fallback" | "shadow") => ({ kind: "answered" as const, rows: d.rows, decision, threshold_used: `${THRESHOLD_VERSION}:${verdict.kind}`, numbers });
+    if (mode === "shadow" || verdict.kind === "fallthrough") { this.settleTriage(i, state, lang, answered(mode === "shadow" ? "shadow" : "fallback")); return { kind: "fallthrough" }; }
+    return this.runTriageLane(i, state, lang, verdict, answered);
   }
 
   /** True once the turn is gone: aborted signal, or its state replaced/deleted (ompComplete/ompFail delete it). */
@@ -2769,15 +2825,20 @@ Imports: `decide, persistDecisionRows, recordSkip, marginOf, type Decision, type
   }
 
   /** The lane: status is code; memory is the shared service; `finalize` runs inside the save transaction or, with no save, in its own. */
-  private async runTriageLane(i: TriageInput, state: OmpTurnState, v: TriageDecision, finalize: (d: "act" | "fallback") => void): Promise<TriageOutcome> {
+  private async runTriageLane(i: TriageInput, state: OmpTurnState, lang: Lang, v: TriageDecision,
+    answered: (d: "act" | "fallback") => Parameters<CoreWorker["settleTriage"]>[3]): Promise<TriageOutcome> {
     const chatId = this.chatOf(i.claim.run_id);
-    if (v.kind === "status") { this.runStore.inTransaction(() => finalize("act")); return { kind: "lane_reply", text: this.hougeStatusText(chatId), buttons: [] }; }
-    if (v.kind !== "memory") { this.runStore.inTransaction(() => finalize("fallback")); return { kind: "fallthrough" }; }
-    const w = await this.runLessonWrite(i.claim, chatId, { scope: v.scope }, { source: "lane", signal: i.signal, inTx: () => finalize("act") });
-    if (this.laneLost(i, state)) return { kind: "fallthrough" }; // the turn ended during Kimi: no late write of rows or event
+    if (v.kind === "status") { this.settleTriage(i, state, lang, answered("act")); return { kind: "lane_reply", text: this.hougeStatusText(chatId), buttons: [] }; }
+    if (v.kind !== "memory") { this.settleTriage(i, state, lang, answered("fallback")); return { kind: "fallthrough" }; }
+    // inside the save transaction: rows + event with decision "act"; the flag is set only after that transaction commits
+    const act = answered("act");
+    const w = await this.runLessonWrite(i.claim, chatId, { scope: v.scope }, { source: "lane", signal: i.signal, inTx: () => {
+      persistDecisionRows(this.runStore, act.rows, "act", act.threshold_used); this.triageEvent(i.claim.run_id, { status: "answered", lang, decision: "act", ...act.numbers });
+    } });
+    if (w.committed) state.triageFinalized = true;
     if (!w.committed || !w.saved || !w.change_id || !w.theme) {
-      // nothing durable / refused / dropped / hook rolled back: the ONE outer finaliser writes fallback rows + event
-      this.runStore.inTransaction(() => finalize("fallback"));
+      // nothing durable / refused / dropped / hook rolled back / turn lost: the finaliser decides (it writes nothing for a lost turn)
+      this.settleTriage(i, state, lang, answered("fallback"));
       return { kind: "fallthrough" };
     }
     if (v.complete === "mixed") return { kind: "inform", note: memoryInformNote(w.saved.id, w.theme) };
@@ -2793,7 +2854,7 @@ Imports: `decide, persistDecisionRows, recordSkip, marginOf, type Decision, type
   }
 ```
 
-`breakLaneFinalizeOnceForTest()` arms a one-shot throw inside `finalize` (test-only). `this.memoryLaneCard` is a one-line indirection (`private memoryLaneCard = memoryLaneCard`) so `breakMemoryLaneCardForTest()` can swap it once; mark both `@internal`. A `mixed` verdict whose save returned nothing durable runs the planner with no note and no guard — it may spend a second distill/reconcile pair; accepted and documented in Task 14.
+`OmpTurnState` gains `triageFinalized?: boolean`. `breakLaneFinalizeOnceForTest()` arms a one-shot throw inside the `inTx` writes (test-only). **Per-stage failure tests** (one each, all asserting exactly one `triage` row and the right `decision`): Jev client throws (`fetchImpl` rejects) → skipped `error`; distill LLM throws → answered `fallback`; reconcile throws → answered `fallback`; `inTx` throws → answered `fallback`, no lesson; card throws after commit → `act` already written, `inform`; a lost turn at each of those points → zero rows. `this.memoryLaneCard` is a one-line indirection (`private memoryLaneCard = memoryLaneCard`) so `breakMemoryLaneCardForTest()` can swap it once; mark both `@internal`. A `mixed` verdict whose save returned nothing durable runs the planner with no note and no guard — it may spend a second distill/reconcile pair; accepted and documented in Task 14.
 
 - [ ] **Step 5: Run, typecheck**
 
@@ -3287,7 +3348,8 @@ export function handleMemLaneUndo(store: RunStore, event: TypedTaskEvent): Gatew
 /** Chat-bound: the original run must notify THIS chat. Builds the turn event the gateway then admits as an ordinary turn. */
 export function memLaneAskTurnEvent(store: RunStore, event: TypedTaskEvent): { ok: true; turnEvent: TypedTaskEvent; original_run_id: string } | { ok: false; result: GatewayIntakeResult } {
   const run_id = typeof event.metadata?.run_id === "string" ? event.metadata.run_id : "";
-  const target = run_id ? store.getRunNotifyTarget(run_id) : null;
+  let target: ReturnType<RunStore["getRunNotifyTarget"]> | null = null;
+  try { target = run_id ? store.getRunNotifyTarget(run_id) : null; } catch { target = null; } // unknown run: getRunNotifyTarget throws (run-store.ts:6181) → refusal
   const text = run_id ? store.userTurnTextForRun(run_id) : undefined;
   if (!text || !target || target.kind !== "telegram" || target.chat_id !== chatOf(event)) {
     replyTo(store, event, "memlane_ask_refused", MEMLANE_ASK_NOT_FOUND_TEXT);
@@ -3326,7 +3388,7 @@ export function recordTriageOverride(store: RunStore, original_run_id: string, n
     if (event.type === "memlane_undo") return this.accepted(event, now, handleMemLaneUndo(this.runStore, event));
 ```
 
-and in the `turn` branch: when `memLaneAsk` is set, wrap the run creation and the override writes in **one** `this.runStore.inTransaction(() => { const r = this.handleTaskIntake(event, now); if (r.ok && r.status === "created") recordTriageOverride(…, r.run_id, …); return r; })` — `handleTaskIntake` (`gateway.ts:1021-1068`) is synchronous and opens no transaction of its own (verify with `rg inTransaction src/gateway`; if it does, hoist that one). `created` is returned only after the commit; on a duplicate (`beginTriggerProcessing` replays the stored result) nothing is written again. `getRunNotifyTarget` **throws** for an unknown run (`run-store.ts:6181`): `memLaneAskTurnEvent` wraps it in try/catch and maps a throw to the chat-bound refusal. (`event` must be a `let` for the rewrite, or shadow it with a local; keep the original for the trigger audit if the branch records it.) Tests: a label-write failure (spy `recordMemoryEvent` to throw once) leaves no new run; a redelivered callback returns the same run without a second `triage_override` row. Thread `{ dataDir }` from `telegram-daemon.ts:151` and `telegram-poll-runner.ts:123` (the same `dataDir` the worker's `ompOptions` receives).
+and in the `turn` branch: when `memLaneAsk` is set, wrap the run creation and the override writes in **one** `this.runStore.inTransaction(() => { const r = this.handleTaskIntake(event, now); if (r.ok && r.status === "created") recordTriageOverride(…, r.run_id, …); return r; })` — `handleTaskIntake` (`gateway.ts:1021-1068`) is synchronous and opens no transaction of its own (verify with `rg inTransaction src/gateway`; if it does, hoist that one). `created` is returned only after the commit. **A resumed duplicate can also report `status: "created"`** (`resumeDuplicate`, `gateway.ts:1080`): write the override label only when the branch reports a genuinely new run — read the duplicate marker that path sets (or compare `getRunState`/created_at before and after) and skip the label and the override event otherwise; a redelivered callback must return the same run with no second `triage_override` row (test). `getRunNotifyTarget` **throws** for an unknown run (`run-store.ts:6181`): `memLaneAskTurnEvent` wraps it in try/catch and maps a throw to the chat-bound refusal. (`event` must be a `let` for the rewrite, or shadow it with a local; keep the original for the trigger audit if the branch records it.) Tests: a label-write failure (spy `recordMemoryEvent` to throw once) leaves no new run; a redelivered callback returns the same run without a second `triage_override` row. Thread `{ dataDir }` from `telegram-daemon.ts:151` and `telegram-poll-runner.ts:123` (the same `dataDir` the worker's `ompOptions` receives).
 
 - [ ] **Step 5: Run, typecheck**
 
@@ -3611,7 +3673,8 @@ git commit -m "feat(gateway): memory lane Undo and Ask-Houge-anyway taps; overri
   //   permute: asks TRIAGE_LANE with its options REVERSED (memory, status, none) and writes to TRIAGE_PERMUTED_OUT — the order-bias measurement spec §3.6 requires before arming
   export function loadLabels(path: string): Map<string, TriageLabel>;
   // triage-report.ts
-  export function formatTriageReport(rows, labels, outcome, bars, permuted?: TriageReplayRow[]): string;
+  export interface TriageShadowStats { days: number; matched_lesson_write: number; pure_on_tool_turns: number; pure_on_no_tool_turns: number }
+  export function formatTriageReport(rows, labels, outcome, bars, permuted?: TriageReplayRow[], shadow?: TriageShadowStats): string;  // no shadow stats → the ROWS TO ADD block is impossible
   //   per language: recall (proxy) / recall (human) / precision (human) / coverage / status precision, each with n and Wilson LB;
   //   threshold sweep 0.5–0.9 over p(memory) and p(pure): coverage and the two costly cells at each;
   //   confusion matrix verdict × observed action (lesson_write-only / other tools / no tools);
@@ -4044,7 +4107,7 @@ git commit -m "feat(jev): generic replay core, lane 1 replay with observed-actio
 
 - [ ] **Step 1: Tests** — Rev 1 unchanged, plus a tiny `parseJevCliFlags(argv)` unit test: `["--sample=40","--dry-run"]` → `{ sample: 40, permute: false, rest: ["--dry-run"] }`; `["--sample","40"]` → error.
 
-- [ ] **Step 2: Implement** — Rev 1's `triage-label.ts` unchanged; in `cli.ts` the branch from Rev 1 with `const flags = parseJevCliFlags(rest.slice(2))` feeding `parseReplayArgs(flags.rest)`, `permute: flags.permute` into `runTriageReplay` (out path `TRIAGE_PERMUTED_OUT` when permuting), and the `report` subcommand loading both files and passing the permuted rows to `formatTriageReport`. The replay client's audit role is `triage`.
+- [ ] **Step 2: Implement** — Rev 1's `triage-label.ts` unchanged; in `cli.ts` the branch from Rev 1 with `const flags = parseJevCliFlags(rest.slice(2))` feeding `parseReplayArgs(flags.rest)`, `permute: flags.permute` into `runTriageReplay` (out path `TRIAGE_PERMUTED_OUT` when permuting). **Both `replay` and `report` call `formatTriageReport(rows, labels, outcome, bars, permutedRows, shadow)`** where `permutedRows = readDone(TRIAGE_PERMUTED_OUT, …)` and `shadow = store.triageShadowStats(sinceIso)` — a new store reader over the `triage` ledger rows: `{ days: number /* distinct UTC days with decision "shadow" */, matched_lesson_write: number /* shadow rows whose run has a loop_step lesson_write */, pure_on_tool_turns: number /* shadow rows with complete "pure" ∧ lane "memory" ∧ conf ≥ bar whose run used any tool other than lesson_write */, pure_on_no_tool_turns: number }` (test it on a seeded store in Task 11's report test). The report's "ROWS TO ADD" gate reads exactly these numbers. The replay client's audit role is `triage`.
 
 - [ ] **Step 3: Run, typecheck, build, dry run**
 
@@ -4229,7 +4292,8 @@ Changes from Rev 1 (all review findings):
 - **`envFilePath` is not exported** from `dist/config/load-env.js`; copy the helper from `scripts/live-gate-omp.mjs:648` into this script (or `const repo = dirname(resolve(process.env.HOUGE_ENV_FILE ?? ".env"))`).
 - **Planner-attempt count** counts only `llm_attempt` rows with `role === "compose"` (the memory lane's distill/reconcile legs are `distill`/`consolidate` on Kimi and must not fail case 1).
 - **Case 1b Undo goes through the real callback path**: build a `memlane_undo` `TypedTaskEvent` (as the adapter would) and `new Gateway(store, …, { dataDir: root }).intake(it)`; assert the lesson rows and the `lesson_change_undone` event.
-- **Case 2b — forced second `lesson_write`, live-style probe:** a fresh run on the copied DB: `worker.buildOmpTools(claim)`, `await worker.triageTurn({...})` with the real Jev and real Kimi (expect `lane_reply`), then `await worker.runLessonWrite(claim, chat, { scope: "ask" }, { source: "loop" })` on the same claim before the run completes; assert the already-saved digest and that the `llm_attempt` count for the run did not grow (zero additional distill/reconcile legs).
+- **Case 2b — forced second `lesson_write` through the real tool path, live-style probe:** a fresh run on the copied DB: `const tools = worker.buildOmpTools(claim)`; `await worker.triageTurn({...})` with the real Jev and real Kimi (expect `lane_reply`); then execute the planner's own tool entry — `tools.registry` → the `lesson_write` adapter — with `{ scope: "ask" }` on the same claim before the run completes (look at how `tests/core/core-worker-omp-tools.test.ts` invokes a loop tool through the registry and do the same); assert the already-saved digest and that the run's `llm_attempt` count did not grow (zero additional distill/reconcile legs).
+- **The retained Rev 1 script below is superseded line by line by these bullets:** its `{ loadHougeEnv, envFilePath }` import, its `plannerAttempts` filter, its direct `store.undoLessonChange` call, its `finalText` helper and its key restore are all replaced; it installs the test calibration file before constructing the worker.
 - **Calibration for the gate:** the gate writes a temp JSON of calibration rows for zh/en (hashes computed from `dist/jev/questions/triage.js`) and sets `HOUGE_JEV_CALIBRATION_FILE` + `HOUGE_JEV_GATE=1`; without them `act` is impossible by design (Task 3 arming sequence). The armed re-run after Paco's commit uses no file.
 - **Case 6** restores the key with `delete process.env.TYPESAFE_API_KEY` / re-assign only when it was set; the gate's worker has no broker, so this proves the env-key path only — say so in the header and in Task 14's docs (the broker path is covered by `jevClient` reading `broker.typesafeKey()` first, tested hermetically in Task 9 with a fake broker).
 - Remove the unused `finalText` helper.
@@ -4409,3 +4473,4 @@ git commit -m "docs: lane 1 state block, roadmap delta, lessons and session entr
 
 ---
 - **Codex scoped re-pass on Rev 2 (2026-10-04): NOT READY** — 9 CLOSED, 11 PARTIAL, 7 exact fix sentences. Rev 3 applies them: `LessonWriteOutcome.committed` set only after `inTransaction` returns and no in-memory mutation inside `inTx`; one outer finaliser in `triageTurn` writing fallback rows + event for every non-acting exit (incl. hook rollback), `laneLost` checks before every write after an await; `finishLane` records the user turn and stops/joins the warm start before `laneEnded`, then completes in a `finally`; override creation in one `inTransaction` around `handleTaskIntake`, unknown run → refusal, duplicate → same run; sanitiser gains heredoc/long-literal/OTP/id shapes with long CJK + English negatives; `calibration.ts` gains `calibrationRows(env)` with a gate-only file and `resolveJevTriageMode` caps `arm` at shadow when the file is set outside a gate; the arming sequence is written in Task 3 and bound to Tasks 11–13; the live gate gains the forced second `lesson_write` probe and the broker-key hermetic test moves to Task 9. Rev 3 goes back to Codex for a confirmation pass on exactly these edits.
+- **Codex confirmation pass on Rev 3 (2026-10-04): NOT READY** — 2 closed (committed save; replay completeness), 9 open with 8 exact sentences. Rev 4 applies all eight: `settleTriage` is the one finaliser (per-turn `triageFinalized` flag, lost-turn no-write, outer try/catch, per-stage failure tests); `decide()` no longer persists the skipped row (the caller does, after the cancellation check); Task 8's injected failures each assert exactly one FAILED `start_failed` outcome (incl. `settleStart`); Task 10 labels only a genuinely new run (resumed duplicates excluded) and catches the unknown-run lookup; the quoted-literal rule is opaque-only with a prose negative and the nine-digit id false positive documented; `readFileSync` imported, `status` armable on the `lane` row alone, the CLI passes permuted rows and a new `triageShadowStats` reader into the report; Task 13 states which retained lines it supersedes and forces the second call through the registry's `lesson_write` entry; Task 9 gains the fake-broker Authorization test via an `ompWorker` `broker` option. **Plan review gate closed by the author after four rounds (Codex ×3 + senior ×1); the remaining assurance is per-task TDD with two-stage review and the live gate.**
