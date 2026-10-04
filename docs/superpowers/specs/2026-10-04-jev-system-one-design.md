@@ -1,7 +1,13 @@
 # Jev as System One — a typed decision layer in front of Houge's models
 
 Date: 2026-10-04
-Status: **Rev 3 — both spec reviews folded in (Codex design pass: 9 blockers; senior live-system review: 4 blockers, 8 warnings; every finding verified against the code first-hand, none rejected); awaiting the Codex re-pass before any code**
+Status: **Rev 4 — Codex re-pass on Rev 3 (7 closed, 6 partial, 2 new blockers) folded in; every item re-verified against the code; awaiting the scoped Codex re-pass before the lane 1 plan**
+
+Rev 4 changes: §5.1 one terminal owner (`finishSuccess`), spawn ownership and the `turn.finished` guard, button
+propagation through `ompComplete`; §5.5 the already-saved guard and steered messages; §5.6 Undo restores each row to
+its recorded prior state; §5.9 recall against both the observed actions and the human labels, a status bar; §3.2/3.4
+denominator vs per-question rows; §3.3 `fused` rides the metered-ceiling incident; §6.1 cold-spawn, failed-pin and
+refusal rules for the turn-owned chain.
 
 Rev 3 changes: §3.1 hash of the exact ordered question; §3.2 a denominator row for every turn; §3.3 error kinds and
 first-failure incidents; §3.4 table `jev_decisions`; §3.7 golden set deferred to the replay slice; §4.1 monotone rule
@@ -182,9 +188,10 @@ Decision = { status: "answered" | "skipped", reason?, answers: Record<id, Answer
   awaited. The metered fuse is checked before each attempt as today (ADR 0019 ceiling covers Jev).
 - Every `skipped` reason (`no_key | fused | auth | rate_limited | overloaded | malformed_question | timeout | parse |
   state_too_large | disabled | posture | modality`) is a ledger row; the caller treats it as "no answer" = today's path.
-- **One denominator row per decision point per turn**, written before the call is attempted: the `jev_decisions` row
-  carries `status: answered | skipped` and the reason, so coverage is computable even when the flag is off or the state
-  was never built. Stored answer and outcome fields are whitelisted to enums, numbers and ids at the write seam
+- **Denominator.** The per-point ledger event (`triage` for lane 1) is written once per turn before the call is
+  attempted, with `status: answered | skipped` and the reason, so coverage is computable even when the flag is off or
+  the state was never built. `jev_decisions` holds **one row per question** for an answered call, and a single row
+  with `question_id = NULL, status = skipped, skip_reason` for a skipped one. Stored answer and outcome fields are whitelisted to enums, numbers and ids at the write seam
   (`appendLedgerEvent`, `run-store.ts:1028`): no message text, no provider text, no `detail` strings.
 
 ### 3.3 Client additions — `src/jev/jev-client.ts`
@@ -196,8 +203,10 @@ values `rate_limited` (429), `overloaded` (529), `malformed_question` (422) — 
 
 Incidents (alerted, transition-only, flap-damped like every incident; **first failure opens, not a count**):
 `jev_auth` (401/403), `jev_rate_limited` (429), `jev_overloaded` (529), `jev_question_invalid` (422, names the
-question id), `jev_no_key` (key missing at boot while a lane is armed). `no_key` and `fused` are configuration states,
-not outages: they open their incident once and the lane runs `skipped` until fixed. The `llm_leg_failing` sweep
+question id), `jev_no_key` (key missing at boot while a lane is armed). `no_key` is a configuration state: it opens its
+incident once and the lane runs `skipped{no_key}` until fixed. `fused` is ADR 0019's own condition: the metered-ceiling
+incident already pages Paco when the fuse latches; the lane writes `skipped{fused}` and resumes when the fuse resets
+(no second incident). The `llm_leg_failing` sweep
 ignores `provider = 'jev'` (Jev has its own incidents; no double paging). The daemon builds one Jev client at boot
 from the broker key (`TYPESAFE_API_KEY`, broker secret #9); today only the CLI builds one (`cli.ts:343-356`).
 
@@ -319,11 +328,21 @@ startTurn
   └─ else → await spawn → planner as today
 ```
 
-**`finishLane(turn, text, buttons)`** is a supervisor-owned terminal path: records the user and assistant chat turns,
-calls `TurnOutcomeSink.complete` with `tool_calls: 0` and the card's `buttons` (the sink gains an optional `buttons`
-field; `enqueueFinalReportNotification` already accepts them, `run-store.ts:5417`), resolves `turn.done("complete")`
-so `runTurn`'s `settle` returns, and leaves the spawned child idle for the next turn. Failure inside the lane after Jev
-answered (Kimi error, store error) → `ompFail` with a code-owned text that names any lesson already saved.
+**One terminal owner.** `finishSuccess` (`planner-supervisor.ts:943`) stays the only completion path. A lane turn
+sets `turn.lastText = <card text>`, `turn.laneButtons = <buttons>`, records the user chat turn (as `startTurn` does
+after `ensureReady` today), awaits `settleStart()` (below), and resolves `turn.done("end")`; `settle()` then runs
+`finishSuccess` as for any turn: `tool_calls` reads 0 from the untouched budget, the assistant chat turn is recorded,
+`outcome.complete` is called once. `TurnOutcomeSink.complete` gains an optional `buttons` field; `ompComplete`
+(`core-worker.ts:2285-2304`) passes it to `enqueueFinalReportNotification`, which already accepts `buttons`
+(`run-store.ts:5417-5434`) — today that call passes only text, path and attachments. Failure inside the lane after Jev
+answered (Kimi error, store error) → `failTurn` with a code-owned text that names any lesson already saved.
+
+**Spawn ownership.** `startTurn` starts the child with `void this.ensureSession(0)` — the promise is owned by
+`startInFlight` as every spawn is (`:518-527`) and its errors land in the spawn's own incidents, never on the turn.
+Before a lane turn ends it awaits `settleStart()` (`:421`, bounded by `ABORT_GRACE_MS`), the same rule a turn that
+ended mid-start follows today, so no spawn settles after the turn is gone. A spawn failure observed after the lane
+decided cannot mutate the turn: `failTurn` and `ensureReady` return early when `turn.finished` (the guard `steer`
+already uses, `:297`). Planner paths await `ensureReady(turn)` as today, which joins the in-flight start.
 
 ### 5.2 State (metadata beyond the approved egress; no new text)
 
@@ -373,6 +392,11 @@ The service records `turnState.lessonSavedThisTurn = { id, theme, change_id }`. 
 `alreadySaved?: { id }` and, when set, returns the code-owned digest `{ saved: false, reason: "already_saved_this_turn",
 lesson_id }` before any LLM call. A mixed-path planner that calls `lesson_write` anyway spends nothing and cannot mint a
 second row or an UPDATE that supersedes the card's lesson. The `[memory] saved …` prompt line stays as advice only.
+**Steered messages:** a Telegram message steered into a live turn is a merged run under the parent's claim
+(`steer`, `:290-296`); `lesson_write` in that turn anchors on the parent's objective today, so a second preference
+arriving by steer cannot become a correctly anchored lesson with or without the lane. The guard is per turn; in a
+mixed lane turn a steered second preference is therefore answered by the planner without a save, and the next turn
+can save it. Documented, accepted (steers are rare and this is today's anchoring).
 
 A `saved: false` result from the lane (nothing durable, phrase refusal, cap) produces **no card**: the turn falls through
 to the planner as if Jev had said `none`, with the reason in the `triage` row.
@@ -393,9 +417,12 @@ AVOID: <avoid text>
   `run-store.ts:1490`). The lane records `lesson_changes { change_id, run_id, chat_id, new_id, superseded_id?,
   pruned_ids[], created_at, undone_at }` (new table; `memory_changes.kind` has `CHECK (kind IN ('fact','wiki'))`,
   `run-store.ts:6561`, and SQLite cannot alter a CHECK in place — a separate table is the smaller migration).
-- **Undo** = one transaction, compare-and-set: valid only while `new_id` is still active; retires `new_id`, reactivates
-  `superseded_id` and every `pruned_ids` row (`reactivateLesson`, `run-store.ts:1373`), sets `undone_at`, ledgers
-  `lesson_change_undone`. If `new_id` was changed since (a later planner write superseded it) the tap gets a code-owned
+- **Undo** = one transaction, compare-and-set: valid only while `new_id` is still active; retires `new_id` and restores
+  each affected row to its **recorded prior state**: `superseded_id` from `superseded` → `active`
+  (`reactivateLesson`, `run-store.ts:1373`, which accepts only `superseded`), each of `pruned_ids` from `pruned` →
+  `active` through a new conditional `unpruneLesson(id)` (`WHERE status = 'pruned'`); a row whose status moved since
+  (changed by a later write) is left alone and named in the reply. The restore may exceed the scope cap by the pruned
+  count until the next write re-prunes; accepted and stated. Sets `undone_at`, ledgers `lesson_change_undone`. If `new_id` was changed since (a later planner write superseded it) the tap gets a code-owned
   "already changed since" reply and nothing moves.
 - **Callbacks** use a new prefix `memlane:undo:<change_id>` / `memlane:ask:<run_id>`, authorised like `selfwrite:*`
   (Paco only), idempotent on redelivery. "Ask Houge anyway" re-submits the same text as a planner turn with triage off
@@ -431,12 +458,17 @@ the bars below are stated per class.
 2. **Human labels** (one sitting, ≈ 80 items, shared with lane 4's sitting): Paco labels every turn Jev called `memory`
    at any confidence, plus a 40-turn random sample of `none`, for `memory? pure? scope?`. These, not the action proxy,
    decide the costly cells.
-3. **GO bar, per language (zh / en; `mixed` inherits zh):**
-   - recall of `memory` over the 36 `lesson_write` runs ≥ 0.80 (n = 36 → Wilson 95% lower bound ≈ 0.65; reported, not
-     hidden);
-   - precision of `memory` verdicts ≥ bar against the human labels ≥ 0.85 with its lower bound and n;
-   - **zero** `pure` verdicts ≥ bar on the 14 mixed-tool runs and on the human-labelled `none` sample (the costly cell);
-   - coverage of confident verdicts ≥ 0.50 of the positive class.
+3. **GO bar, per language (zh / en; `mixed` inherits zh).** Two positive sets, both reported: the 36 observed
+   `lesson_write` runs (an action proxy) and the human-labelled positives from step 2 (which also labels all 36 runs for
+   `memory? pure? scope?`, so a run where the planner saved but Paco says "not a memory instruction" counts against
+   the proxy, not against Jev):
+   - recall of `memory` ≥ 0.80 on each positive set, with n and the Wilson 95% lower bound (n = 36 → ≈ 0.65) shown;
+   - precision of `memory` verdicts ≥ bar ≥ 0.85 against the human labels, with its lower bound and n;
+   - **zero** `pure` verdicts ≥ bar on the 14 mixed-tool runs and on the human-labelled `none` sample (the costly
+     cell); the `none` sample is a random 40, not the whole class — the shadow (step 4) watches the rest;
+   - coverage of confident verdicts ≥ 0.50 of the human-labelled positive class;
+   - **status lane:** Paco labels every `status` verdict at any confidence (historically `houge_status` ran twice, so
+     expect a handful); arm only with precision 1.0 on n ≥ 5, else status stays shadow while memory arms.
    Cost ≈ $0.04. INCOMPLETE on an early stop; a dry run has its own headline.
 4. **Live shadow** (`shadow`): rows only; **the replay is the primary evidence, the shadow is a false-positive watch**:
    ≥ 14 days with zero `pure` ≥ bar on any turn whose planner used a tool other than `lesson_write`, and ≥ 5 planner
@@ -475,7 +507,13 @@ the bars below are stated per class.
   spawn leg (`planner-supervisor.ts:435, 486-496, 544`), and `setModel` takes one model (`planner-session.ts:92-95`).
   Lane 2 introduces `Turn.chain: ModelString[]` chosen in `startTurn` (default `cfg.planner`); `promptTop` pins
   `chain[0]`, `retryNextLeg` walks `chain`, `legIndex` indexes `chain`, `noteActualModel` audits against it, and the
-  next turn's reset to `cfg.planner[sessionLeg]` is unchanged. The per-turn chains:
+  next turn's reset to `cfg.planner[sessionLeg]` is unchanged. Three exact rules: (i) **cold spawn** — the child always
+  spawns on `cfg.planner` (omp rejects an unknown `--model` at start; `startSession`, `:539-560`), and the routed
+  chain is applied by the first `set_model` in `promptTop`, the same frame the top-string reset uses; (ii) **failed
+  pin** — `planner_model_reset_failed` keeps today's behaviour (answer on the restored model, incident) and marks the
+  decision row `pin_failed`; no escalation is attempted on a child that just refused a pin; (iii) **refusal** — only
+  omp's classified `model_refusal` frame counts (`classifyOmpError`), never a text heuristic over a normal answer.
+  The per-turn chains:
 
   | Jev `complexity` | planner chain for the turn |
   |---|---|
@@ -639,4 +677,12 @@ The amendment paragraphs are written into the prior ADRs on ship of lane 1 (docs
   failing-leg sweep, replay universe filter, warm-turn latency. Suggestions taken: `jev_decisions` name, same-transaction
   rows, `mixed`-first order and `mixed` language rule, persisted disarm marker, monthly re-replay, hermetic seams named.
   Not taken: dropping the `status` lane (ruling 1 stands; it has its own threshold and the replay reports it separately).
-- Rev 3 goes back to Codex for a re-pass before the lane 1 plan.
+- **Codex re-pass on Rev 3 (2026-10-04): NOT READY** — 7 closed, 6 partial, 2 new blockers; all re-verified:
+  `newDeferred` accepts only `"end" | "abort"` and `settle()` → `finishSuccess` is the terminal owner (§5.1 now resolves
+  `done("end")` and lets `finishSuccess` complete); `ompComplete` drops `buttons` although `enqueueFinalReportNotification`
+  accepts them (§5.1 propagation); an un-awaited spawn is owned by `startInFlight` but could settle after the turn
+  (§5.1 `settleStart()` + `turn.finished` guard); steered merged runs vs the per-turn guard (§5.5 documented);
+  `pruneScopeOverflow` sets `pruned` while `reactivateLesson` restores only `superseded` (§5.6 per-state restore);
+  recall measured on the action proxy only and no status bar (§5.9); `fused` unnamed and denominator vs per-question
+  rows (§3.3, §3.2); cold-spawn / failed-pin / refusal rules for the turn-owned chain (§6.1).
+- Rev 4 goes back to Codex for a scoped re-pass on exactly these items before the lane 1 plan.
