@@ -1,7 +1,12 @@
 # Jev as System One — a typed decision layer in front of Houge's models
 
 Date: 2026-10-04
-Status: **Rev 4 — Codex re-pass on Rev 3 (7 closed, 6 partial, 2 new blockers) folded in; every item re-verified against the code; awaiting the scoped Codex re-pass before the lane 1 plan**
+Status: **Rev 5 — scoped Codex re-pass on Rev 4 (5 closed, 2 partial, spawn blocker open) folded in with Codex's exact sentences; awaiting the confirmation pass before the lane 1 plan**
+
+Rev 5 changes: §5.1 spawn ownership (retained promise with a rejection handler, stop-or-supersede on a bounded-wait
+expiry, generation-guarded state writes); §5.9 label coverage (all 36 action-proxy runs labelled regardless of Jev's
+verdict; shadow reports `pure` for other-tool and no-tool turns separately); §3.2 the `triage` event is written after
+the outcome is known; §3.3 `fused` rides the metered-fuse Telegram alert, not an incident.
 
 Rev 4 changes: §5.1 one terminal owner (`finishSuccess`), spawn ownership and the `turn.finished` guard, button
 propagation through `ompComplete`; §5.5 the already-saved guard and steered messages; §5.6 Undo restores each row to
@@ -188,9 +193,9 @@ Decision = { status: "answered" | "skipped", reason?, answers: Record<id, Answer
   awaited. The metered fuse is checked before each attempt as today (ADR 0019 ceiling covers Jev).
 - Every `skipped` reason (`no_key | fused | auth | rate_limited | overloaded | malformed_question | timeout | parse |
   state_too_large | disabled | posture | modality`) is a ledger row; the caller treats it as "no answer" = today's path.
-- **Denominator.** The per-point ledger event (`triage` for lane 1) is written once per turn before the call is
-  attempted, with `status: answered | skipped` and the reason, so coverage is computable even when the flag is off or
-  the state was never built. `jev_decisions` holds **one row per question** for an answered call, and a single row
+- **Denominator.** The per-point `triage` event is written exactly once per eligible turn **after the attempt or skip
+  outcome is known**, including flag-off and state-build skips, with final `status: answered | skipped` and
+  `skip_reason`, so coverage is computable even when the flag is off or the state was never built. `jev_decisions` holds **one row per question** for an answered call, and a single row
   with `question_id = NULL, status = skipped, skip_reason` for a skipped one. Stored answer and outcome fields are whitelisted to enums, numbers and ids at the write seam
   (`appendLedgerEvent`, `run-store.ts:1028`): no message text, no provider text, no `detail` strings.
 
@@ -204,9 +209,9 @@ values `rate_limited` (429), `overloaded` (529), `malformed_question` (422) — 
 Incidents (alerted, transition-only, flap-damped like every incident; **first failure opens, not a count**):
 `jev_auth` (401/403), `jev_rate_limited` (429), `jev_overloaded` (529), `jev_question_invalid` (422, names the
 question id), `jev_no_key` (key missing at boot while a lane is armed). `no_key` is a configuration state: it opens its
-incident once and the lane runs `skipped{no_key}` until fixed. `fused` is ADR 0019's own condition: the metered-ceiling
-incident already pages Paco when the fuse latches; the lane writes `skipped{fused}` and resumes when the fuse resets
-(no second incident). The `llm_leg_failing` sweep
+incident once and the lane runs `skipped{no_key}` until fixed. `fused` uses ADR 0019's metered-fuse latch and its
+existing one-per-episode Telegram alert (`metered-ceiling.ts:35`, a direct notification, not an incident); the lane
+writes `skipped{fused}` and resumes when the latch disarms, without opening a second incident. The `llm_leg_failing` sweep
 ignores `provider = 'jev'` (Jev has its own incidents; no double paging). The daemon builds one Jev client at boot
 from the broker key (`TYPESAFE_API_KEY`, broker secret #9); today only the CLI builds one (`cli.ts:343-356`).
 
@@ -337,12 +342,14 @@ after `ensureReady` today), awaits `settleStart()` (below), and resolves `turn.d
 (`run-store.ts:5417-5434`) — today that call passes only text, path and attachments. Failure inside the lane after Jev
 answered (Kimi error, store error) → `failTurn` with a code-owned text that names any lesson already saved.
 
-**Spawn ownership.** `startTurn` starts the child with `void this.ensureSession(0)` — the promise is owned by
-`startInFlight` as every spawn is (`:518-527`) and its errors land in the spawn's own incidents, never on the turn.
-Before a lane turn ends it awaits `settleStart()` (`:421`, bounded by `ABORT_GRACE_MS`), the same rule a turn that
-ended mid-start follows today, so no spawn settles after the turn is gone. A spawn failure observed after the lane
-decided cannot mutate the turn: `failTurn` and `ensureReady` return early when `turn.finished` (the guard `steer`
-already uses, `:297`). Planner paths await `ensureReady(turn)` as today, which joins the in-flight start.
+**Spawn ownership.** `startTurn` retains the promise returned by `ensureSession(0)` and attaches a rejection handler
+immediately (the join loop in `ensureSession`, `:518-520`, re-awaits `startInFlight`, so a rejected spawn would
+otherwise reject an un-awaited outer promise; `startInFlight` owns only the inner `spawn().finally(...)`). A lane
+completion waits for that promise to settle; if its bounded wait (`ABORT_GRACE_MS`) expires, it stops or supersedes the
+start (`stopSession` / generation bump) and waits for the cleanup before resolving `done("end")`. Spawn results may
+update supervisor state only while their generation remains current (`this.gen`, the guard every child frame already
+passes); `failTurn` and `ensureReady` ignore a finished turn (`turn.finished`, the guard `steer` uses, `:297`).
+Planner paths await `ensureReady(turn)` as today, which joins the in-flight start.
 
 ### 5.2 State (metadata beyond the approved egress; no new text)
 
@@ -455,9 +462,10 @@ the bars below are stated per class.
 1. **Offline replay** (`houge jev replay triage`, `replay-core` filtering `runs.source = 'telegram'` and
    `created_at ≥ 2026-07-02`): Jev over the 288 turns; the first comparator is the planner's observed `lesson_write`
    call (an action, not a purity label).
-2. **Human labels** (one sitting, ≈ 80 items, shared with lane 4's sitting): Paco labels every turn Jev called `memory`
-   at any confidence, plus a 40-turn random sample of `none`, for `memory? pure? scope?`. These, not the action proxy,
-   decide the costly cells.
+2. **Human labels** (one sitting, ≈ 80–100 items, shared with lane 4's sitting): Paco labels every turn Jev called
+   `memory` at any confidence, **all 36 observed `lesson_write` runs regardless of Jev's verdict**, and a 40-turn random
+   sample of the remaining `none` verdicts, for `memory? pure? scope?`; overlaps are deduplicated before n is reported.
+   These, not the action proxy, decide the costly cells.
 3. **GO bar, per language (zh / en; `mixed` inherits zh).** Two positive sets, both reported: the 36 observed
    `lesson_write` runs (an action proxy) and the human-labelled positives from step 2 (which also labels all 36 runs for
    `memory? pure? scope?`, so a run where the planner saved but Paco says "not a memory instruction" counts against
@@ -471,8 +479,10 @@ the bars below are stated per class.
      expect a handful); arm only with precision 1.0 on n ≥ 5, else status stays shadow while memory arms.
    Cost ≈ $0.04. INCOMPLETE on an early stop; a dry run has its own headline.
 4. **Live shadow** (`shadow`): rows only; **the replay is the primary evidence, the shadow is a false-positive watch**:
-   ≥ 14 days with zero `pure` ≥ bar on any turn whose planner used a tool other than `lesson_write`, and ≥ 5 planner
-   `lesson_write` calls observed with a Jev row (≈ 25 days at 13 / 60 d). "Matched" = a turn with both a `triage` row
+   ≥ 14 days with zero `pure` ≥ bar on any turn whose planner used a tool other than `lesson_write`; the shadow
+   report lists `pure` verdicts separately for other-tool and no-tool planner turns, and both groups stay under watch
+   (a no-tool turn can still be a question the planner answered from context); and ≥ 5 planner `lesson_write` calls
+   observed with a Jev row (≈ 25 days at 13 / 60 d). "Matched" = a turn with both a `triage` row
    and a completed planner run.
 5. **Arm**, per language. Live gate `scripts/live-gate-jev-triage.mjs`: a pure memory instruction → saved card, no
    planner request (`llm_attempt` has none for the run), `lesson_changes` row; Undo tap → rows restored, `undone_at`
@@ -685,4 +695,8 @@ The amendment paragraphs are written into the prior ADRs on ship of lane 1 (docs
   `pruneScopeOverflow` sets `pruned` while `reactivateLesson` restores only `superseded` (§5.6 per-state restore);
   recall measured on the action proxy only and no status bar (§5.9); `fused` unnamed and denominator vs per-question
   rows (§3.3, §3.2); cold-spawn / failed-pin / refusal rules for the turn-owned chain (§6.1).
-- Rev 4 goes back to Codex for a scoped re-pass on exactly these items before the lane 1 plan.
+- **Scoped Codex re-pass on Rev 4 (2026-10-04): NOT READY** — 5 closed (terminal owner + buttons, steered message,
+  Undo per state, turn-owned chain rules; no new blocker), 2 partial (label coverage, denominator timing + fuse alert
+  shape), spawn ownership still open (a voided `ensureSession` rejects through the join loop; a bounded `settleStart`
+  does not cancel a spawn). Rev 5 applies Codex's exact replacement sentences verbatim.
+- Rev 5 goes back to Codex for a confirmation pass on those four edits only.
