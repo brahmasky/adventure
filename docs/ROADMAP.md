@@ -187,14 +187,36 @@ OS user for the planner, quota invariant) → **SP4 self-evolution v2** (weaknes
 Phase R below is subsumed by SP1 (a real agent loop replaces the step-cap fallback work); episodic/wiki stay as
 knowledge Houge owns; Earn is parked behind SP1.
 
-**Next, in order:** ship SP1 (merge → build → kickstart → full live gate) → a week of real turns on the
-planner → **SP2** (Paco's own Gmail with `account: paco` and sends gated, Calendar, reminders, files) →
-**SP3** (`omp auth-broker` under launchd so no tokens sit on disk, a dedicated macOS user for the
-planner — closes D11 and the dotfile denylist gap — a flat-rate quota invariant, optional egress
-allowlist) → **SP4** (weakness mining over the ledger, `scripts/eval-replay.mjs` as a self-write gate,
-native omp skills, prompt-section A/B). Follow-ups recorded in ADR 0028: voice on omp or local whisper
-(voice stays on agy-cli until then), a `tool_started` row so a dropped bridge call is visible, and the
-matcher misses listed there.
+**Next, in order (re-sequenced 2026-10-04, [ADR 0029](decisions/0029-jev-system-one.md)):** SP1 is live (boot 7,
+memory A1 shipped) → **Jev System One, lane 1** (pre-planner triage → memory + status lanes; the shared decision
+layer: question library, `decide()`, decision rows, replay harness; spec
+`docs/superpowers/specs/2026-10-04-jev-system-one-design.md`, under review) → **Jev lane 2** (model routing:
+trivial/routine → Kimi → Gemini, hard → Opus; Paco's quota ruling) → **Jev lane 4** (inbound triage envelope, digest
+tick, `wrong urgency` label — the gate SP2 plugs into) → **SP2** (Paco's own Gmail with `account: paco` and sends
+gated, Calendar, reminders, files) → **Jev lane 3** (injection flag on wall output, plain-command risk; shadow
+first, egress needs Paco's approval) → **SP3** (`omp auth-broker` under launchd so no tokens sit on disk, a
+dedicated macOS user for the planner — closes D11 and the dotfile denylist gap — a flat-rate quota invariant that
+lane 2 v2 reads, optional egress allowlist) → **SP4 self-evolution v2, scope widened 2026-10-04** (see below) →
+Jev lane 5 (context relevance → credit, shadow) rides with memory stage C.
+
+**SP4 scope change (2026-10-04).** The lifecycle-gap research
+(`docs/superpowers/research/2026-10-04-lifecycle-gap/00-synthesis.md`) found five lifecycle stages forbidden only
+because no safe version was designed (decide, spec, spec review, plan, live gate), most of the needed harness already
+inside omp 18.4.4 but switched off by `--tools read,edit,write`, and no notion of earned trust. SP4 now covers, in
+order, each its own spec: (1) **goal record + decision card** — a `goals` table (plan file, phase, pending question)
+that outlives a Telegram turn; omp `ask` routed to an option card; (2) **verifier + outcome memory** — the original
+SP4 (`scripts/eval-replay.mjs` in the self-write gate, the S-3 post-restart probe with auto-rollback, weakness mining
+over the ledger) plus every self-write outcome written as a row the next proposal reads; (3) **proposal artefact as
+the approvable unit** — a docs-only self-write profile writes `docs/superpowers/proposals/<run>.md`; Paco taps the
+proposal, not the diff (amends ADR 0011 §7, 0028 decision 3); (4) **trust ledger + per-class autonomy levels**
+(0 forbidden · 1 propose · 2 branch, Paco merges · 3 auto-merge in a window with auto-rollback · 4 + push),
+promotion by code on consecutive clean outcomes, demotion on one revert or incident; code-computed blast radius sets
+eligibility; Jev may demote, never promote; (5) **omp organs under the policy hook** — `todo`/plan files, native
+skills, `task` subagents only after probing that children inherit the single extension; (6) **planner-owned scratch
+worktree** for Houge's own code, test-runnable, code-owned gate kept (new ADR; touches hard line a). Stays with
+Claude Code + Paco: multi-task slices, the protected surface, ADR decisions, deploy until S-3, and publishing to the
+public repo permanently. Follow-ups recorded in ADR 0028: voice on omp or local whisper (voice stays on agy-cli
+until then), a `tool_started` row so a dropped bridge call is visible, and the matcher misses listed there.
 
 ## 4. The sequenced roadmap (Paco's decisions, 2026-07-07; historical record)
 

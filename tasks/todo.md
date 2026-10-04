@@ -47,9 +47,9 @@ starts a fresh, seeded planner session (3-strike degrade, fail loud). Spec Rev 3
 - [ ] **Paco:** after a week of shadow counts, decide `HOUGE_EPISODIC_EVIDENCE=enforce` (rate per leg: see
   `sessions.md` 2026-10-02 A1; pre-merge rejection 0/14 on kimi-code/k3).
 
-**Jev:** paused, not retired — the live shadow lost its comparator (`classifyIntent`) at the cutover. Next role:
-a pre-planner router, its own spec after a week of omp quota data; the API counts as free, and any 429/auth
-error must reach Paco (today's client folds 429 into a silent retry).
+**Jev:** becomes Houge's System One (ADR 0029, proposed 2026-10-04; spec
+`docs/superpowers/specs/2026-10-04-jev-system-one-design.md`). The old intent shadow stays dormant; the API counts
+as free; every 429/auth/422/529 must reach Paco (today's client folds 429 into a silent retry — fixed in lane 1).
 
 **Live evidence already in the DB:**
 - [x] memory_correct retire via the Approve tap: facts #25, #116, #122, #129 retired (`memory_changes`);
@@ -85,12 +85,23 @@ scheduler, episodic, wiki, backup, invariant sweep, Google identity (now armed b
 alone), lesson consolidation, radar + panel, media ingest, self-write + Codex. `HOUGE_JEV_SHADOW_ENABLED` is
 inert under omp; the money-track and dual-LLM flags are no longer read.
 
-**Next, after SP1 is live (each its own spec → review → plan → build → live gate):**
+**Next (re-sequenced 2026-10-04; each its own spec → review → plan → build → live gate):**
+- **Jev System One — lane 1** (A2 proper): pre-planner triage → memory + status lanes on the shared decision layer.
+  ADR 0029 proposed; spec Rev 2 under senior + Codex review (Codex Rev 2: NOT READY, 9 blockers verified → Rev 3).
+  Rulings: route-and-skip for pure; lessons + status in phase 1; facts/`memory_correct` phase 2.
+- **Jev lane 2** model routing: trivial/routine → Kimi → Gemini, hard → Opus, Codex self-write only; needs a
+  turn-owned planner chain (today `promptTop`/`retryNextLeg` walk the global chain) and a D10 reader resolver.
+- **Jev lane 4** inbound triage envelope + digest tick + `wrong urgency` label → the gate for SP2.
 - **SP2 Paco's personal tools** — his Gmail (`account: paco`, send gated), Calendar, reminders, files.
+- **Jev lane 3** injection flag on wall output, then plain-command risk; shadow first; web/mail egress to TypeSafe
+  not approved yet (ruling 3).
 - **SP3 hardening** — `omp auth-broker` under launchd, a dedicated macOS user for the planner (closes D11
-  and the dotfile-denylist gap), flat-rate quota invariant, optional egress allowlist.
-- **SP4 self-evolution v2** — weakness mining over the ledger, `scripts/eval-replay.mjs` in the self-write
-  gate, native omp skills, prompt-section A/B. After a week of SP1 data.
+  and the dotfile-denylist gap), flat-rate quota invariant (lane 2 v2 reads it), optional egress allowlist.
+- **SP4 self-evolution v2 — scope widened 2026-10-04** (ROADMAP §3 "SP4 scope change";
+  `docs/superpowers/research/2026-10-04-lifecycle-gap/`): goal record + decision card → verifier + outcome memory
+  (original SP4) → proposal artefact as the approvable unit → trust ledger + autonomy levels → omp organs under the
+  policy hook → planner scratch worktree (new ADR).
+- Jev lane 5 (context relevance → credit, shadow) with memory stage C.
 - Follow-ups from ADR 0028: voice on omp or local whisper; a `tool_started` bridge row; known matcher misses.
 
 **Still open from before SP1:** skill-retirement live gate (Paco, below); `/idea pick` from a weekly
