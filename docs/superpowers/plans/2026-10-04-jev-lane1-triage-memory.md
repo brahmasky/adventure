@@ -1,5 +1,7 @@
 # Jev System One — Lane 1 (triage → memory + status) Implementation Plan
 
+**Rev 5 (2026-10-04, final)** — Codex's confirmation on Rev 4 (5 closed, 3 exact sentences) applied: `settleTriage` owns the act writes too (called from inside `inTx`); the retained answered rows settle distill/reconcile/rollback failures as answered `fallback`; Task 3's armed check is lane-specific; Task 9's broker test uses its local `jevSays` body. Plan review gate closed.
+
 **Rev 4 (2026-10-04)** — Codex's confirmation pass on Rev 3 (8 sentences) applied: one `settleTriage` finaliser in Task 9 with per-stage failure tests; skipped rows persisted by the caller after the cancellation check (Task 5); Task 8 tests assert one exact terminal outcome per injected failure; Task 10 labels only a genuinely new run and catches the unknown-run lookup; the quoted-literal rule is opaque-only with a prose negative and the nine-digit rule documented (Task 2); `readFileSync` import, lane-specific arming (`status` needs only the `lane` row), CLI passes permuted rows + measured shadow stats into the report (Tasks 3/11/12); Task 13 replaces the retained script lines explicitly and forces the second call through the real `lesson_write` tool path; Task 9 gains the fake-broker test via an `ompWorker` `broker` option.
 
 **Rev 3 (2026-10-04)** — Codex's scoped re-pass on Rev 2 (7 remaining items, exact sentences) applied: §7/§9 committed flag and one outer finaliser, §8 `finishLane` ordering with `finally`, §9 cancellation checks before every write, §10 atomic override creation, §2 sanitiser shapes + CJK negatives, §3/§11/§13 arming sequence, §13 forced second `lesson_write` probe.
@@ -817,7 +819,7 @@ export function calibratedLang(questionId: string, hash: string, model: string, 
 2. The first live gate (Task 13) runs with `HOUGE_JEV_GATE=1` and `HOUGE_JEV_CALIBRATION_FILE=<tmp rows for zh/en>`; production stays unarmable.
 3. Full replay over the universe + the permuted run + Paco's labelling sitting (every required set non-empty) + the live shadow (`shadow` mode ≥ 14 days with ≥ 5 matched planner `lesson_write` calls, read from the `triage` rows by `houge jev report triage`).
 4. The report prints the **eligible** rows separately for memory and for status (status only with precision 1.0 on n ≥ 5; otherwise status stays shadow), per language.
-5. Paco approves and commits only those rows into `CALIBRATED_ROWS` (his hand, like an ADR amendment), the daemon is rebuilt, and the armed live gate is re-run against the committed calibration (no file override) before `HOUGE_JEV_TRIAGE_ENABLED=arm` is set. The `armed` check: `[TRIAGE_LANE, TRIAGE_COMPLETE, TRIAGE_SCOPE].every((q) => calibratedLang(q.id, criteriaHash(q), model, lang, rows) !== undefined)`.
+5. Paco approves and commits only those rows into `CALIBRATED_ROWS` (his hand, like an ADR amendment), the daemon is rebuilt, and the armed live gate is re-run against the committed calibration (no file override) before `HOUGE_JEV_TRIAGE_ENABLED=arm` is set. The armed checks are lane-specific: `status` requires only the calibrated `lane` row (`calibratedLang(TRIAGE_LANE.id, criteriaHash(TRIAGE_LANE), model, lang, rows) !== undefined`); `memory` requires calibrated `lane`, `complete` and `scope` rows (`[TRIAGE_LANE, TRIAGE_COMPLETE, TRIAGE_SCOPE].every(...)`). `triageVerdict` evaluates status first under its own check, then memory under the three-row check, else `fallthrough: uncalibrated`.
 
 - [ ] **Step 5: Run, commit**
 
@@ -2723,7 +2725,8 @@ Add the broker test (the live gate cannot prove it): `tests/helpers/omp-worker.t
 
 ```ts
 it("the broker's key wins over the environment and reaches the Authorization header", async () => {
-  const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => { seenAuth = String((init.headers as Record<string, string>).authorization); return json(200, okBody()); });
+  const body = jevSays(MEMORY); // the file's own response factory (a vi.fn returning a 200 Response)
+  const fetchImpl = vi.fn(async (url: string, init: RequestInit) => { seenAuth = String((init.headers as Record<string, string>).authorization); return body(url, init); });
   let seenAuth = "";
   const store = RunStore.openInMemory();
   const worker = ompWorker(store, mkdtempSync(join(tmpdir(), "htri-")), { llm: distillThenReconcile, jevFetch: fetchImpl as unknown as typeof fetch,
@@ -2768,14 +2771,17 @@ Imports: `decide, persistDecisionRows, recordSkip, marginOf, type Decision, type
    */
   private settleTriage(i: TriageInput, state: OmpTurnState | undefined, lang: Lang, f:
     | { kind: "skipped"; reason: SkipReason }
-    | { kind: "answered"; rows: JevDecisionInsert[]; decision: "act" | "fallback" | "shadow"; threshold_used: string; numbers: Record<string, unknown> }): void {
+    | { kind: "answered"; rows: JevDecisionInsert[]; decision: "act" | "fallback" | "shadow"; threshold_used: string; numbers: Record<string, unknown> },
+    o: { inTx?: boolean } = {}): void {
     if (state?.triageFinalized) return;
     if (state && this.laneLost(i, state)) return;
     const run_id = i.claim.run_id;
-    this.runStore.inTransaction(() => {
+    const write = () => {
       if (f.kind === "skipped") { recordSkip(this.runStore, "triage", run_id, lang, f.reason); this.triageEvent(run_id, { status: "skipped", lang, decision: "fallback", skip_reason: f.reason }); }
       else { persistDecisionRows(this.runStore, f.rows, f.decision, f.threshold_used); this.triageEvent(run_id, { status: "answered", lang, decision: f.decision, ...f.numbers }); }
-    });
+    };
+    if (o.inTx) { write(); return; } // already inside the save transaction; the caller flips the flag after commit
+    this.runStore.inTransaction(write);
     if (state) state.triageFinalized = true;
   }
 
@@ -2787,17 +2793,19 @@ Imports: `decide, persistDecisionRows, recordSkip, marginOf, type Decision, type
   async triageTurn(i: TriageInput): Promise<TriageOutcome> {
     const run_id = i.claim.run_id; const lang = langOf(i.userText);
     const state = this.ompTurns.get(run_id);
+    const held: { answered?: Parameters<CoreWorker["settleTriage"]>[3] } = {}; // the answered rows, retained once Jev succeeded
     try {
-      return await this.triageTurnInner(i, state, lang);
+      return await this.triageTurnInner(i, state, lang, held);
     } catch (e) {
-      // Any non-acting throw (Jev client, distill/reconcile, store, card) still produces exactly one finalisation.
+      // Any non-acting throw still produces exactly one finalisation: answered `fallback` when Jev had answered
+      // (distill / reconcile / rolled-back inTx / card), skipped `error` when it had not (client threw).
       console.error(`triage: threw: ${e instanceof Error ? e.message : String(e)}`);
-      this.settleTriage(i, state, lang, { kind: "skipped", reason: "error" });
+      this.settleTriage(i, state, lang, held.answered ? { ...held.answered, decision: held.answered.kind === "answered" ? "fallback" : held.answered.decision } : { kind: "skipped", reason: "error" });
       return state?.lessonSavedThisTurn ? { kind: "inform", note: memoryInformNote(state.lessonSavedThisTurn.id, state.lessonSavedThisTurn.theme) } : { kind: "fallthrough" };
     }
   }
 
-  private async triageTurnInner(i: TriageInput, state: OmpTurnState | undefined, lang: Lang): Promise<TriageOutcome> {
+  private async triageTurnInner(i: TriageInput, state: OmpTurnState | undefined, lang: Lang, held: { answered?: Parameters<CoreWorker["settleTriage"]>[3] }): Promise<TriageOutcome> {
     const run_id = i.claim.run_id;
     const mode = resolveJevTriageMode(process.env, this.ompDataDir());
     if (mode === "off") return this.triageSkip(i, state, lang, "disabled");
@@ -2815,6 +2823,7 @@ Imports: `decide, persistDecisionRows, recordSkip, marginOf, type Decision, type
     const lane = d.answers.lane!;
     const numbers = { lane: lane.choice, complete: d.answers.complete?.choice, scope: d.answers.scope?.choice, confidence: lane.confidence, top_prob: Math.max(...Object.values(lane.probabilities)), margin: marginOf(lane) };
     const answered = (decision: "act" | "fallback" | "shadow") => ({ kind: "answered" as const, rows: d.rows, decision, threshold_used: `${THRESHOLD_VERSION}:${verdict.kind}`, numbers });
+    held.answered = answered("fallback"); // from here a throw settles as answered fallback (outer catch)
     if (mode === "shadow" || verdict.kind === "fallthrough") { this.settleTriage(i, state, lang, answered(mode === "shadow" ? "shadow" : "fallback")); return { kind: "fallthrough" }; }
     return this.runTriageLane(i, state, lang, verdict, answered);
   }
@@ -2830,14 +2839,13 @@ Imports: `decide, persistDecisionRows, recordSkip, marginOf, type Decision, type
     const chatId = this.chatOf(i.claim.run_id);
     if (v.kind === "status") { this.settleTriage(i, state, lang, answered("act")); return { kind: "lane_reply", text: this.hougeStatusText(chatId), buttons: [] }; }
     if (v.kind !== "memory") { this.settleTriage(i, state, lang, answered("fallback")); return { kind: "fallthrough" }; }
-    // inside the save transaction: rows + event with decision "act"; the flag is set only after that transaction commits
-    const act = answered("act");
-    const w = await this.runLessonWrite(i.claim, chatId, { scope: v.scope }, { source: "lane", signal: i.signal, inTx: () => {
-      persistDecisionRows(this.runStore, act.rows, "act", act.threshold_used); this.triageEvent(i.claim.run_id, { status: "answered", lang, decision: "act", ...act.numbers });
-    } });
+    // inside the save transaction: settleTriage writes the act rows + event (its `finalized` flag flips only when the
+    // transaction commits — settleTriage takes `{ inTx: true }` to defer the flag to the caller, which sets it after commit)
+    const w = await this.runLessonWrite(i.claim, chatId, { scope: v.scope }, { source: "lane", signal: i.signal,
+      inTx: () => this.settleTriage(i, state, lang, answered("act"), { inTx: true }) });
     if (w.committed) state.triageFinalized = true;
     if (!w.committed || !w.saved || !w.change_id || !w.theme) {
-      // nothing durable / refused / dropped / hook rolled back / turn lost: the finaliser decides (it writes nothing for a lost turn)
+      // nothing durable / refused / dropped / hook rolled back / turn lost: the same finaliser writes answered fallback (nothing for a lost turn)
       this.settleTriage(i, state, lang, answered("fallback"));
       return { kind: "fallthrough" };
     }
@@ -2854,7 +2862,7 @@ Imports: `decide, persistDecisionRows, recordSkip, marginOf, type Decision, type
   }
 ```
 
-`OmpTurnState` gains `triageFinalized?: boolean`. `breakLaneFinalizeOnceForTest()` arms a one-shot throw inside the `inTx` writes (test-only). **Per-stage failure tests** (one each, all asserting exactly one `triage` row and the right `decision`): Jev client throws (`fetchImpl` rejects) → skipped `error`; distill LLM throws → answered `fallback`; reconcile throws → answered `fallback`; `inTx` throws → answered `fallback`, no lesson; card throws after commit → `act` already written, `inform`; a lost turn at each of those points → zero rows. `this.memoryLaneCard` is a one-line indirection (`private memoryLaneCard = memoryLaneCard`) so `breakMemoryLaneCardForTest()` can swap it once; mark both `@internal`. A `mixed` verdict whose save returned nothing durable runs the planner with no note and no guard — it may spend a second distill/reconcile pair; accepted and documented in Task 14.
+`OmpTurnState` gains `triageFinalized?: boolean`. `breakLaneFinalizeOnceForTest()` arms a one-shot throw inside the `inTx` writes (test-only). **Per-stage failure tests** (one each, all asserting exactly one `triage` row and the right `decision`): Jev client throws (`fetchImpl` rejects) → skipped `error`; distill LLM throws → answered `fallback` (3 rows `fallback`); reconcile throws → answered `fallback`; `inTx` throws → answered `fallback`, no lesson, guard unset; card throws after commit → `act` already written, `inform`; a lost turn at each of those points → zero rows and zero events. `this.memoryLaneCard` is a one-line indirection (`private memoryLaneCard = memoryLaneCard`) so `breakMemoryLaneCardForTest()` can swap it once; mark both `@internal`. A `mixed` verdict whose save returned nothing durable runs the planner with no note and no guard — it may spend a second distill/reconcile pair; accepted and documented in Task 14.
 
 - [ ] **Step 5: Run, typecheck**
 
@@ -4474,3 +4482,4 @@ git commit -m "docs: lane 1 state block, roadmap delta, lessons and session entr
 ---
 - **Codex scoped re-pass on Rev 2 (2026-10-04): NOT READY** — 9 CLOSED, 11 PARTIAL, 7 exact fix sentences. Rev 3 applies them: `LessonWriteOutcome.committed` set only after `inTransaction` returns and no in-memory mutation inside `inTx`; one outer finaliser in `triageTurn` writing fallback rows + event for every non-acting exit (incl. hook rollback), `laneLost` checks before every write after an await; `finishLane` records the user turn and stops/joins the warm start before `laneEnded`, then completes in a `finally`; override creation in one `inTransaction` around `handleTaskIntake`, unknown run → refusal, duplicate → same run; sanitiser gains heredoc/long-literal/OTP/id shapes with long CJK + English negatives; `calibration.ts` gains `calibrationRows(env)` with a gate-only file and `resolveJevTriageMode` caps `arm` at shadow when the file is set outside a gate; the arming sequence is written in Task 3 and bound to Tasks 11–13; the live gate gains the forced second `lesson_write` probe and the broker-key hermetic test moves to Task 9. Rev 3 goes back to Codex for a confirmation pass on exactly these edits.
 - **Codex confirmation pass on Rev 3 (2026-10-04): NOT READY** — 2 closed (committed save; replay completeness), 9 open with 8 exact sentences. Rev 4 applies all eight: `settleTriage` is the one finaliser (per-turn `triageFinalized` flag, lost-turn no-write, outer try/catch, per-stage failure tests); `decide()` no longer persists the skipped row (the caller does, after the cancellation check); Task 8's injected failures each assert exactly one FAILED `start_failed` outcome (incl. `settleStart`); Task 10 labels only a genuinely new run (resumed duplicates excluded) and catches the unknown-run lookup; the quoted-literal rule is opaque-only with a prose negative and the nine-digit id false positive documented; `readFileSync` imported, `status` armable on the `lane` row alone, the CLI passes permuted rows and a new `triageShadowStats` reader into the report; Task 13 states which retained lines it supersedes and forces the second call through the registry's `lesson_write` entry; Task 9 gains the fake-broker Authorization test via an `ompWorker` `broker` option. **Plan review gate closed by the author after four rounds (Codex ×3 + senior ×1); the remaining assurance is per-task TDD with two-stage review and the live gate.**
+- **Codex confirmation on Rev 4 (2026-10-04): 5 CLOSED, 3 OPEN with exact sentences** — applied verbatim in Rev 5: `settleTriage` owns the act writes (called from inside `inTx` with `{ inTx: true }`, flag flipped after commit); the answered rows are retained once Jev succeeded so distill / reconcile / rolled-back `inTx` throws settle as answered `fallback` and only a client throw settles as skipped `error`; the Task 3 armed check is lane-specific; the broker test uses its local response factory. **Gate closed:** every reviewer finding across five rounds is either applied verbatim or recorded as an accepted deviation (Task 14). Remaining assurance: per-task red → green with two-stage review, then the live gate.
