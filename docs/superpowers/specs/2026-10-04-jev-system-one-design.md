@@ -1,8 +1,15 @@
 # Jev as System One — a typed decision layer in front of Houge's models
 
 Date: 2026-10-04
-Status: **Rev 2 — Paco's rulings on the open questions folded in (2026-10-04); under spec review (senior + Codex) before any code**
+Status: **Rev 3 — both spec reviews folded in (Codex design pass: 9 blockers; senior live-system review: 4 blockers, 8 warnings; every finding verified against the code first-hand, none rejected); awaiting the Codex re-pass before any code**
 
+Rev 3 changes: §3.1 hash of the exact ordered question; §3.2 a denominator row for every turn; §3.3 error kinds and
+first-failure incidents; §3.4 table `jev_decisions`; §3.7 golden set deferred to the replay slice; §4.1 monotone rule
+scoped to security-bearing decisions; §5 rewritten (ack nudge moves to `submit()`, Jev awaited before `ensureReady`,
+posture check, extracted lesson-write service with an adapter-level already-saved guard, photo turns fall through,
+Undo as a recorded change set, catch-up line cut, bars sized on the positive class, slice 1 scope); §6.1 turn-owned
+chain and escalating error kinds, D10 resolver named as new code; §6.2 enforced metadata-only request shape; §6.3 lane 4
+demotion stays shadow until a notification-policy amendment.
 Rev 2 changes: §1.2 decision-flow diagram; §6.1 routing table rewritten to Paco's direction (trivial/routine → Kimi →
 Gemini, hard → Opus; Codex stays the self-write writer only) with the D10 reader-family resolver and the Antigravity
 ceiling watch; the six open questions closed with the defaults (see Rulings).
@@ -87,21 +94,24 @@ default path is always reachable: `none`, low confidence, or any Jev failure mea
 - Thin labels: at n≈60 a 90% point estimate proves only ~80% (Wilson 95% lower bound). Lane targets must match the
   sample the lane can collect.
 
-### 1.2 Decision flow (lanes 1 + 2 share one call at turn start)
+### 1.2 Decision flow (lane 1 as specified; lane 2's `complexity` joins the same call under its own spec)
 
 ```mermaid
 flowchart TD
-  M[Telegram message from Paco<br/>voice/photo already → text] --> AP{approval card<br/>pending for this chat?}
-  AP -- "yes, bare ack" --> NUDGE[code nudge:<br/>tap Approve or /approve id<br/><i>Jev never asked</i>]
-  AP -- no --> JEV[Jev, one call ~0.3 s, concurrent with child spawn<br/>lane · complete · scope · complexity]
-  JEV --> FAIL{Jev failed / no key /<br/>429 / timeout / disabled?}
-  FAIL -- yes --> TODAY[ledger row + incident<br/><b>today's path</b>: planner on default chain]
+  M[Telegram message from Paco] --> AP{"submit(): turn AWAITING_APPROVAL<br/>∧ bare ack (code list)?"}
+  AP -- yes --> NUDGE[code nudge card:<br/>tap Approve or /approve id<br/><i>not steered, not queued, Jev never asked</i>]
+  AP -- "no (queued turn → startTurn)" --> PRE{posture non-null<br/>or photo turn?}
+  PRE -- yes --> TODAY
+  PRE -- no --> JEV[Jev, one call ≤ 1.5 s, awaited;<br/>child spawn started, not awaited<br/>lane · complete · scope]
+  JEV --> FAIL{Jev skipped: no key / 429 /<br/>timeout / disabled …?}
+  FAIL -- yes --> TODAY[ledger row + incident<br/><b>today's path</b>: await spawn, planner on default chain]
+  FAIL -- "lane = status ≥ .80" --> STATUS[code-rendered houge_status text<br/><b>no planner turn</b>]
   FAIL -- no --> MEM{lane = memory ∧ conf ≥ .70<br/>∧ p(memory) ≥ .85 ∧ gap ≥ .50?}
   MEM -- "yes, p(pure) ≥ .80" --> LANE[memory lane on ticks seat:<br/>distill → reconcile → save]
   LANE -- saved --> CARD[📒 card · Undo · Ask Houge anyway<br/><b>no planner turn</b>]
   LANE -- nothing durable --> ROUTE
-  MEM -- "yes, mixed" --> LANE2[memory lane saves] --> NOTE["planner turn with<br/>[memory] lesson #N saved; do not save again"] --> ROUTE
-  MEM -- no --> ROUTE{planner seat by<br/>complexity answer}
+  MEM -- "yes, mixed" --> LANE2[memory lane saves;<br/>already-saved guard armed] --> NOTE["planner turn with<br/>[memory] lesson #N saved; do not save again"] --> ROUTE
+  MEM -- no --> ROUTE{"planner seat by complexity<br/>(lane 2: turn-owned chain)"}
   ROUTE -- "hard ≥ .70" --> OPUS[anthropic/claude-opus-5-5:medium<br/>→ antigravity/claude-opus-4-6 → kimi]
   ROUTE -- "routine ≥ .70" --> KIMIM[kimi-code/k3:medium<br/>→ antigravity/gemini-3.1-pro:medium]
   ROUTE -- "trivial ≥ .80" --> KIMIL[kimi-code/k3:low<br/>→ antigravity/gemini-3.1-pro:low]
@@ -137,7 +147,7 @@ On ship of lane 1 this section is copied to `docs/reference/jev-decision-layer.m
 | Lane | Promise | What Houge's numbers say | Verdict |
 |---|---|---|---|
 | 1 Triage → memory | skip the heavy LLM for memory instructions | `lesson_write` is code + two Kimi one-shots; the planner only supplies `scope`. Comparator exists: `loop_step.capability = lesson_write` (44 steps, 13 runs / 60 d). Lane is not faster (k3 distill + reconcile 15–25 s vs planner p50 12 s); the win is an Opus turn saved and a deterministic card | **build first** |
-| 2 Model routing | cheap model for simple turns | `set_model` mid-session already runs live for failure fallback; routing is one function changing the chain's first string. Zero-tool turns are 28% of Telegram turns but 16% of uncached Opus input; thinking-level routing saves ~0 (100–900 output tokens/turn). Short ≠ trivial: "好" once cost 189K tokens | build second, in the same call as lane 1 |
+| 2 Model routing | cheap model for simple turns | `set_model` mid-session already runs live for failure fallback; routing needs a **turn-owned chain** (today `promptTop` and `retryNextLeg` index the global `cfg.planner`, and Kimi's live error class `other` is terminal) — see §6.1. Zero-tool turns are 28% of Telegram turns but 16% of uncached Opus input; thinking-level routing saves ~0 (100–900 output tokens/turn). Short ≠ trivial: "好" once cost 189K tokens | build second, in the same call as lane 1 |
 | 3 Security | pre-execution guardrail | Monotone rule survives: `ask := code_ask ∨ (jev_flag ∧ conf ≥ τ)`. The matcher is not over-asking (12 cards in the omp era; the needless ones are a re-ask bug and a `launchctl list` false positive — code fixes). First real use: `injection_suspected` on reader-wall output, today a planner note that is never ledgered or gated | build third, shadow first |
 | 4 Inbound triage | score urgency of the firehose | 2.2 non-Paco items/day today; schedule reports (1.1/day) cost a full planner turn each and reach Telegram with no routing; incidents already have the best urgency model in the system. No digest path exists. SP2 multiplies the volume | build before SP2 |
 | 5 Context selection | load only relevant chunks | Session-level blocks; <1% token saving; `needs_memory` loses on latency (embed 26 ms vs Jev 300 ms); 11 ratings all 2–3, no culprit label. Value is credit precision and readiness for stage B | shadow only; feeds stage C |
@@ -150,8 +160,10 @@ invariants (§4), lane 1 in full (§5), and the decisions that bind lanes 2–5 
 ### 3.1 Question library — `src/jev/questions/`
 
 One frozen object per question: `{ id, type, instructions, criteria, options_in_order }`. `criteria_hash =
-sha256(canonicalJSON({ model, type, instructions, criteria }))`. Any wording edit changes the hash and invalidates the
-thresholds keyed to it (the decision falls back to today's path until re-calibrated). Rules for writing a question:
+sha256(exact request JSON of the question as sent: type, instructions, and the criteria as an ordered list of
+[option, text] pairs)` — the ordered list, not a key-sorted object, because option order is itself a calibration
+variable (order bias, §1.1). A threshold row is used only when its `criteria_hash`, `model_reported` and `lang` all
+match; otherwise the decision is `fallback`. Any wording or order edit therefore re-enters shadow. Rules for writing a question:
 literal conditions, boundary cases named in the criteria, a `none`/`other` option wherever the set may not cover the
 input, the cautious option **first** (order bias then errs toward caution), no negations, no arithmetic or date
 comparison (code extracts parts; Jev classifies them).
@@ -169,24 +181,35 @@ Decision = { status: "answered" | "skipped", reason?, answers: Record<id, Answer
 - `retries: 0` on every live path; timeout 1,500 ms for turn-blocking decisions, 5,000 ms for shadow calls that are not
   awaited. The metered fuse is checked before each attempt as today (ADR 0019 ceiling covers Jev).
 - Every `skipped` reason (`no_key | fused | auth | rate_limited | overloaded | malformed_question | timeout | parse |
-  state_too_large | disabled`) is a ledger row; the caller treats it as "no answer" = today's path.
+  state_too_large | disabled | posture | modality`) is a ledger row; the caller treats it as "no answer" = today's path.
+- **One denominator row per decision point per turn**, written before the call is attempted: the `jev_decisions` row
+  carries `status: answered | skipped` and the reason, so coverage is computable even when the flag is off or the state
+  was never built. Stored answer and outcome fields are whitelisted to enums, numbers and ids at the write seam
+  (`appendLedgerEvent`, `run-store.ts:1028`): no message text, no provider text, no `detail` strings.
 
 ### 3.3 Client additions — `src/jev/jev-client.ts`
 
-`score` and `noul` question types with validation (score: ordered 2–10 levels, `legend`, probabilities over levels;
-noul: `noul ∈ [0,1]`, no confidence). Error mapping: 422 → `malformed_question`, never retried, opens incident
-`jev_question_invalid` (a code bug, not an outage); 429 → `rate_limited`; 529 → `overloaded`; 401/403 → `auth` as today.
-Incidents (alerted, transition-only, flap-damped as every incident): `jev_auth` on the first 401/403,
-`jev_rate_limited` on the first 429, `jev_overloaded` at ≥ 3 × 529 in an hour. The daemon builds one Jev client at boot
-from the broker key (`TYPESAFE_API_KEY`, broker secret #9); today only the CLI builds one.
+`score` and `noul` question types land with lane 2 (slice 1 is `choice` only). Slice 1 changes: new `LlmErrorKind`
+values `rate_limited` (429), `overloaded` (529), `malformed_question` (422) — today 429 and every 5xx are folded into
+`transport`; 422 is never retried and is a code bug, not an outage. Jev audit rows carry `role = <decision point>`
+(`triage`, later `route`, `injection`, `inbound`, `context`) so the per-point rate is readable in `llm_attempt`.
 
-### 3.4 Decision rows — table `decisions`
+Incidents (alerted, transition-only, flap-damped like every incident; **first failure opens, not a count**):
+`jev_auth` (401/403), `jev_rate_limited` (429), `jev_overloaded` (529), `jev_question_invalid` (422, names the
+question id), `jev_no_key` (key missing at boot while a lane is armed). `no_key` and `fused` are configuration states,
+not outages: they open their incident once and the lane runs `skipped` until fixed. The `llm_leg_failing` sweep
+ignores `provider = 'jev'` (Jev has its own incidents; no double paging). The daemon builds one Jev client at boot
+from the broker key (`TYPESAFE_API_KEY`, broker secret #9); today only the CLI builds one (`cli.ts:343-356`).
 
-`decision_id, run_id?, point, question_id, criteria_hash, model_reported, state_hash, lang, answers_json
+### 3.4 Decision rows — table `jev_decisions`
+
+`decision_id, run_id?, point, question_id, criteria_hash, model_reported, state_hash, lang (zh | en | mixed), answers_json
 (probabilities / score / noul), confidence, top_prob, margin (p1 − p2), threshold_version, threshold_used, decision
 (act | ask | fallback | shadow), outcome_source (llm_label | paco_correction | observed_action | none), outcome_value,
-latency_ms, input_tokens, status, created_at`. No message text (ledger invariant); `state_hash` joins replays to live
-rows. `outcome_*` is filled later by the lane's comparator (e.g. the planner's `lesson_write` call, Paco's override tap).
+latency_ms, input_tokens, status, skip_reason, created_at`. No message text (ledger invariant); `state_hash` joins replays to
+live rows. A lane's write (lesson save) and its decision row land in **one transaction** with the ledger event, so a
+crash between save and `finishRun` leaves a readable trail; `ompFail` after a lane save says the lesson was saved.
+`mixed`-language rows inherit the `zh` thresholds until they have ≥ 20 labelled rows of their own. `outcome_*` is filled later by the lane's comparator (e.g. the planner's `lesson_write` call, Paco's override tap).
 
 ### 3.5 Thresholds — `src/jev/thresholds.ts` + env
 
@@ -204,11 +227,13 @@ the **Wilson 95% lower bound** on agreement, per language. GO/STOP has an INCOMP
 distinct dry-run headline (`tasks/lessons.md`, Jev replay lessons). A permuted-option replay runs on each question
 before arming to measure order bias.
 
-### 3.7 Golden set and drift
+### 3.7 Golden set and drift (lands with the replay harness, after labelled states exist)
 
-~30 fixed `(state, question, expected)` pairs per armed question, run by the invariant sweep. Agreement below the set's
-floor, or a reported model id ≠ `jev-1.13.0`, opens `jev_drift` and **auto-disarms every Jev-added behaviour** (returns
-to today's path; disarming an add-on is monotone-safe). A `jev_skip_rate` invariant makes a silently dead layer loud.
+~30 fixed `(state, question, expected)` pairs per armed question, drawn from the labelled replay set, run by the
+invariant sweep at its cadence (≈ $0.10/day at hourly). Agreement below the set's floor, or a reported model id ≠
+`jev-1.13.0`, opens `jev_drift` and **auto-disarms every Jev-added behaviour** through a persisted marker (like
+`houge.parked`), not an env edit; re-arm is Paco's hand. A `jev_skip_rate` invariant makes a silently dead layer loud.
+Not in slice 1: there are no labelled states yet.
 
 ### 3.8 Flags
 
@@ -219,7 +244,12 @@ in the same change. All documented in `configuration.md`, one section.
 
 ## 4. Invariants: what Jev may and may not do (→ ADR 0029)
 
-1. **Monotone safety.** Jev output enters a security-bearing decision only as `ask := code_ask ∨ (jev_flag ∧ conf ≥ τ)`.
+1. **Monotone safety** (scope: every decision that gates an action, a credential, a write, or an approval — lane 3,
+   the Approve-tap paths, and any future gate). Jev output enters such a decision only as
+   `ask := code_ask ∨ (jev_flag ∧ conf ≥ τ)`. Decisions that are *not* gates (which seat answers, which lane saves a
+   lesson, when a notification is shown) are routing decisions: they fail toward today's path (§4.8), and any change
+   that can **delay or suppress** something Paco receives today (lane 4 `digest` / `never`) is a notification-policy
+   change that stays in shadow until an explicit amendment authorises it.
    It never produces `allow` or `deny`, never shortens an approval TTL, never clears a taint, never touches self-write,
    the reader wall's existence, the invariant sweep, the kill switch, or `/approve` consumption. Any Jev failure = no
    flag = today's gate.
@@ -247,69 +277,110 @@ in the same change. All documented in `configuration.md`, one section.
 8. **Fail toward today.** Routing decisions fail to the default lane; security decisions fail to today's gate; triage
    decisions fail to today's delivery. No Jev failure changes behaviour.
 
-## 5. Lane 1 — pre-planner triage, memory lane (A2 proper)
+## 5. Lane 1 — pre-planner triage, memory + status lanes (A2 proper)
 
-### 5.1 Slot and data flow
+### 5.0 Slice 1 scope
 
-`PlannerSupervisor.startTurn`, after `resolveText` (voice/photo already transcribed), before `ensureReady`
-(`src/omp/planner-supervisor.ts:381-395`), wired as a dependency like `resolveMessage`. `ensureReady` (child spawn) runs
-**concurrently** with the Jev call, so a `none` verdict adds no wall time. Steered (mid-turn) messages never reach
-`startTurn` and are never triaged; schedule-born runs skip triage (`lesson_write` already refuses them).
+Builds: `decide()` (choice only), the new error kinds and incidents, `jev_decisions`, the `triage` question set, the
+memory lane on an extracted lesson-write service, the status lane, the saved card with Undo and "Ask Houge anyway",
+the `triage` ledger event, flags, `replay-core` with the lane 1 replay and its labelling command, the live gate.
+Deferred to their lanes: `score`/`noul`, the `complexity` question (lane 2; shadow rows for it may ride once lane 2's
+spec fixes their shape), the golden set (§3.7), the catch-up line (§5.7), facts and `memory_correct` (phase 2).
+
+### 5.1 Two slots, not one
+
+**Slot A — the ack with an approval pending, in `submit()`.** `PlannerSupervisor.submit` steers any Telegram text into
+the live turn while the state is `RUNNING` or `AWAITING_APPROVAL` (`planner-supervisor.ts:219-228`); such a message
+never reaches `startTurn`. So the check sits **before the steer branch**: state `AWAITING_APPROVAL` and the text is a
+bare ack from a code-owned list (≤ 4 chars: 好 / 嗯 / ok / 是的 / 对 / 👍 / yes …) → the message is neither steered nor
+queued; a code-owned nudge card replies ("Tap Approve or send `/approve <id>`"); ledger `ack_nudged {run_id}`. Jev is
+never asked; nothing is approved. Any other text in that state is steered as today.
+
+**Slot B — triage, in `startTurn`.** After `resolveText`, the supervisor starts the child spawn (`ensureReady`)
+**without awaiting it**, awaits the Jev decision (timeout 1,500 ms), and only the planner paths then await the spawn:
+a pure memory save or a status answer needs no child and must not fail because omp is down (`omp_unavailable` has
+fired live). Posture is checked first: a non-null `SupervisorDeps.posture()` (disarm / park / kill) means `skipped:
+posture` and today's path — the lane must honour the gate the bridge applies to every tool (`bridge-handler.ts:170`).
+Steered messages never reach `startTurn` and are never triaged; schedule-born runs skip triage.
 
 ```
 startTurn
-  ├─ approval pending for this chat (tool_approvals.pending | AWAITING_APPROVAL)?
-  │     → bare ack: code-owned nudge card ("Tap Approve or /approve <id>"); Jev not asked; never approves
-  ├─ Jev ‖ ensureReady   questions: lane, complete, scope (one call)
-  ├─ lane=memory ∧ pure ≥ bar   → memory lane → saved card → TurnOutcomeSink.complete (tool_calls 0); child idle
-  ├─ lane=memory ∧ mixed ≥ bar  → memory lane → planner prompt with "[memory] Lesson #N (theme) was just saved from
-  │                                this message; do not save it again." + pre-seeded ranOnce
-  └─ else                       → planner prompt as today
+  ├─ posture non-null → skipped{posture} → today's path
+  ├─ photo turn (modality ≠ text) → skipped{modality} → today's path        (phase 1; the planner text is an image digest)
+  ├─ spawn child (not awaited)  ‖  Jev: lane · complete · scope   (one call, ≤ 1.5 s; concurrent)
+  ├─ Jev skipped (any reason) → ledger + incident → await spawn → planner as today
+  ├─ lane=status ∧ conf ≥ .80 → code-rendered houge_status text → finishLane            ■ no planner
+  ├─ lane=memory ∧ conf ≥ .70 ∧ p(memory) ≥ .85 ∧ gap ≥ .50
+  │     ├─ p(pure) ≥ .80 → memory lane (ticks seat)
+  │     │     ├─ saved → 📒 card [Undo] [Ask Houge anyway] → finishLane                   ■ no planner
+  │     │     └─ nothing durable → await spawn → planner as today (no card)
+  │     └─ mixed → memory lane saves → await spawn → planner prompt with
+  │           "[memory] Lesson #N (theme) was just saved from this message; do not save it again."
+  └─ else → await spawn → planner as today
 ```
+
+**`finishLane(turn, text, buttons)`** is a supervisor-owned terminal path: records the user and assistant chat turns,
+calls `TurnOutcomeSink.complete` with `tool_calls: 0` and the card's `buttons` (the sink gains an optional `buttons`
+field; `enqueueFinalReportNotification` already accepts them, `run-store.ts:5417`), resolves `turn.done("complete")`
+so `runTurn`'s `settle` returns, and leaves the spawned child idle for the next turn. Failure inside the lane after Jev
+answered (Kimi error, store error) → `ompFail` with a code-owned text that names any lesson already saved.
 
 ### 5.2 State (metadata beyond the approved egress; no new text)
 
-`latest_message`, `recent_turns` (as `buildJevIntentRequest`), `modality`, `last_houge_turn: { kind: clarify | answer |
-lesson_saved | memory_card | approval_card, age_s }`, `pending: { approval: bool, memory_change_id?: string, rating_ask:
-bool }`, `last_turn_tools: string[]`.
+`latest_message` = `userText` (Paco's words; for a photo turn the caption, but phase 1 skips photo turns),
+`recent_turns` (as `buildJevIntentRequest`, same 8k / 24k caps, broker-redacted), `modality`,
+`last_houge_turn: { kind: clarify | answer | lesson_saved | memory_card | approval_card, age_s }`,
+`pending: { memory_change_id?: string, rating_ask: bool }`, `last_turn_tools: string[]`.
 
-### 5.3 Questions (criteria drafts; final wording fixed in the lane plan, hashed)
+### 5.3 Questions (criteria drafts; final wording and order frozen in the lane plan and hashed)
 
-- `lane` (choice, options in order `none`, `status`, `memory`):
-  `memory` — "`latest_message` tells Houge how to behave from now on, states something about Paco to remember, or
-  corrects something Houge believes. Signals: 以后 / 从现在起 / 记住 / 不要再 / 别再 / always / never / from now on /
-  remember / prefer, or a correction of Houge's previous reply in `recent_turns` that applies to future replies too."
-  `status` — "`latest_message` asks whether Houge restarted, which build or code is live, or whether it is running normally; nothing else."
+- `lane` (choice; options **in this order**: `none`, `status`, `memory` — the fall-through option first):
   `none` — "Everything else: a question, a task, a lookup, small talk, a bare acknowledgement such as 好 / 嗯 / ok / 👍 /
   是的 even right after Houge saved or proposed something, an answer to Houge's question, or a message about Houge's
   code or schedules."
-- `complete` (choice, `mixed` first): `pure` — "`latest_message` contains only the preference, fact or correction;
-  nothing asks a question, requests work, or expects more than a confirmation." `mixed` — "It also asks something,
-  requests work, or continues a task."
+  `status` — "`latest_message` asks whether Houge restarted, which build or code is live, or whether it is running
+  normally; nothing else."
+  `memory` — "`latest_message` tells Houge how to behave from now on, states something about Paco to remember, or
+  corrects something Houge believes. Signals: 以后 / 从现在起 / 记住 / 不要再 / 别再 / always / never / from now on /
+  remember / prefer, or a correction of Houge's previous reply in `recent_turns` that applies to future replies too."
+- `complete` (choice; **`mixed` first**): `mixed` — "`latest_message` also asks something, requests work, or continues
+  a task." `pure` — "It contains only the preference, fact or correction; nothing asks a question, requests work, or
+  expects more than a confirmation."
 - `scope` (choice): `ask` — "about how Houge replies in conversation." `research` — "about how Houge searches, which
   sources it trusts, or how it cites."
 
-Theme is **not** asked: `reconcileLesson` already names it from the closed list and the store enforces it.
+Theme is **not** asked: `reconcileLesson` names it from the closed list and the store enforces it.
 
-### 5.4 Thresholds (start values; replay-verified before arm)
+### 5.4 Thresholds (start values; replay-verified before arm; env-tunable)
 
-Route-and-skip: `confidence ≥ 0.7 ∧ p(memory) ≥ 0.85 ∧ p(memory) − p(none) ≥ 0.5 ∧ p(pure) ≥ 0.8`.
-Write-then-inform: the same without the `pure` bar. Else fall through. Env: `HOUGE_JEV_TRIAGE_MIN_CONF`,
-`HOUGE_JEV_TRIAGE_MIN_PURE`.
+Route-and-skip (memory): `confidence ≥ 0.7 ∧ p(memory) ≥ 0.85 ∧ p(memory) − p(none) ≥ 0.5 ∧ p(pure) ≥ 0.8`.
+Write-then-inform: the same without the `pure` bar. Status: `p(status) ≥ 0.8`. Else fall through.
+Env: `HOUGE_JEV_TRIAGE_MIN_CONF`, `HOUGE_JEV_TRIAGE_MIN_PURE`, `HOUGE_JEV_TRIAGE_MIN_STATUS`.
 
-### 5.5 The memory lane — `src/core/memory-lane.ts`
+### 5.5 The memory lane — an extracted lesson-write service
 
-Phase 1 = lesson writes plus the `status` lane (ruling 1: `lane: status` answers "did you restart / which code is live" with the code-rendered `houge_status` text, zero LLM; the `lane` question gains the option `status`, listed after `none`). For memory, the lane calls `createLessonWriteAdapter` with `feedback = message`, `priorAnswer = last
-assistant turn`, `scope` from Jev, then `reconcileAndSaveLesson` (`core-worker.ts:983-1004`) — the identical pipeline the
-planner's `lesson_write` triggers, on the ticks seat (`HOUGE_OMP_TICKS`). All existing gates apply unchanged: the
-code-owned phrase scan, the distill "durable?" verdict, reconcile, the 240/120 caps, `lesson_cross_theme`,
-`lesson_theme_unknown`. A `saved: false` result (nothing durable) produces **no card**: the turn falls through to the
-planner as if Jev had said `none`.
+`reconcileAndSaveLesson` is private and the `lesson_write` adapter is assembled inside the loop tool with the claim
+objective, the prior-answer anchor, the recent user turns and the phrase checker (`core-worker.ts:2524-2561`). Slice 1
+**extracts one run-scoped service**, `CoreWorker.runLessonWrite(claim, { scope, source })`, that builds exactly that
+adapter (`feedback = claim.contract.objective`, never the planner text; `priorAnswer` from the lesson anchor;
+`threadUserTexts`; `srcContains`; `scheduledRun`; the ticks-seat one-shots for distill and reconcile) and calls
+`reconcileAndSaveLesson`. The loop tool and the lane are its two callers; `source` is `loop` or `lane`. Every existing
+gate therefore applies: the code-owned phrase refusal, the distill "durable?" verdict, reconcile, the 240/120 caps,
+`lesson_cross_theme`, `lesson_theme_unknown`, plus the posture check of §5.1.
 
-Phase 2 (own slice, after lane 1 is live): fact writes ("记住我…") and `memory_correct` ("忘掉那个": code search for
-candidates, Jev `choice` over ≤ 5 ids, the Approve card unchanged — `memory_correct_write` stays `destructive`).
+**Already-saved guard (replaces the `ranOnce` idea, which guards only `EVOLUTION_TOOLS`, `core-worker.ts:231, 2355`).**
+The service records `turnState.lessonSavedThisTurn = { id, theme, change_id }`. The adapter takes
+`alreadySaved?: { id }` and, when set, returns the code-owned digest `{ saved: false, reason: "already_saved_this_turn",
+lesson_id }` before any LLM call. A mixed-path planner that calls `lesson_write` anyway spends nothing and cannot mint a
+second row or an UPDATE that supersedes the card's lesson. The `[memory] saved …` prompt line stays as advice only.
 
-### 5.6 Reply: code-owned card through the rich renderer
+A `saved: false` result from the lane (nothing durable, phrase refusal, cap) produces **no card**: the turn falls through
+to the planner as if Jev had said `none`, with the reason in the `triage` row.
+
+Phase 2 (own slice): fact writes ("记住我…") and `memory_correct` ("忘掉那个": code search for candidates, Jev
+`choice` over ≤ 5 ids, the Approve card unchanged — `memory_correct_write` stays `destructive`).
+
+### 5.6 Reply: code-owned card through the rich renderer; Undo as a recorded change set
 
 ```
 📒 Saved lesson #51 · hygiene (updated #44)
@@ -318,44 +389,77 @@ AVOID: <avoid text>
 [↩️ Undo]  [↪ Ask Houge anyway]
 ```
 
-Undo retires #51 and reactivates the superseded row (lessons are never deleted). "Ask Houge anyway" re-submits the same
-text as a planner turn with triage off (idempotency key suffixed) and is **the override label** for calibration.
-Fallback (`none`, or nothing durable): no card, planner answers as today.
+- **Change set.** `saveReconciledLesson` can supersede a target and prune at the scope cap (`pruneScopeOverflow`,
+  `run-store.ts:1490`). The lane records `lesson_changes { change_id, run_id, chat_id, new_id, superseded_id?,
+  pruned_ids[], created_at, undone_at }` (new table; `memory_changes.kind` has `CHECK (kind IN ('fact','wiki'))`,
+  `run-store.ts:6561`, and SQLite cannot alter a CHECK in place — a separate table is the smaller migration).
+- **Undo** = one transaction, compare-and-set: valid only while `new_id` is still active; retires `new_id`, reactivates
+  `superseded_id` and every `pruned_ids` row (`reactivateLesson`, `run-store.ts:1373`), sets `undone_at`, ledgers
+  `lesson_change_undone`. If `new_id` was changed since (a later planner write superseded it) the tap gets a code-owned
+  "already changed since" reply and nothing moves.
+- **Callbacks** use a new prefix `memlane:undo:<change_id>` / `memlane:ask:<run_id>`, authorised like `selfwrite:*`
+  (Paco only), idempotent on redelivery. "Ask Houge anyway" re-submits the same text as a planner turn with triage off
+  (idempotency key suffixed) and is **the override label** for calibration.
 
-### 5.7 Transcript gap
+### 5.7 Transcript: the session seed already covers the gap; no catch-up line in slice 1
 
-A skipped turn never enters the omp session (ADR 0028 D4 keeps one transcript per chat). The next turn's prompt carries a
-code-owned catch-up line, claimed at dispatch like the restart note (`turn-context.ts:89-95`): `[memory] Since your last
-turn Paco sent a memory instruction and lesson #51 was saved.` No message text is repeated into the transcript.
+A saved lesson changes the system-prompt fingerprint, so the next turn triggers A1's lesson-change reset
+(`planner-supervisor.ts:523, 684-704`), whose session seed is built from the recent Telegram user turns, ≤ 300 chars
+each (`session-seed.ts:21-28`) — including the skipped turn, because the lane records both chat turns (§5.1). The
+transcript therefore sees the exchange without a second mechanism, and the spec no longer claims that no message text
+is repeated: A1's seed repeats it by design. The status lane changes no fingerprint and leaves no gap worth closing
+(read-only answer). A catch-up line returns only if a later lane skips the planner without a reset.
 
 ### 5.8 Ledger, incidents, flags
 
-Ledger `triage {status, lane, complete, scope, confidence, top_prob, margin, lang, decision}` on every Telegram turn
-start (coverage needs a denominator; never text). Incidents: `jev_auth`, `jev_rate_limited`, `jev_question_invalid`,
-`triage_overrides` (≥ 3 "Ask Houge anyway" taps in 7 days → incident and **auto-disable** the lane to shadow).
-Flag `HOUGE_JEV_TRIAGE_ENABLED=off|shadow|arm`, default off.
+Ledger event `triage` (new `LedgerEventType`; required `status, lane, complete, scope, confidence, top_prob, margin,
+lang, decision, skip_reason?`; never text) on every Telegram turn start, written with the `jev_decisions` row; `ack_nudged`,
+`lesson_saved {lesson_id, change_id, source}`, `lesson_change_undone`. Incidents: §3.3's five, plus `triage_overrides`
+(≥ 3 "Ask Houge anyway" taps in 7 days → incident and **auto-disable the lane to shadow** through the persisted
+marker). Flag `HOUGE_JEV_TRIAGE_ENABLED=off|shadow|arm` (default off) under the master `HOUGE_JEV_ENABLED`.
 
-### 5.9 Calibration and rollout
+### 5.9 Calibration and rollout (bars sized on the measured volume)
 
-1. **Offline replay** over the 455 historical user turns (365 Telegram) with the label "did this run's loop call
-   `lesson_write`" (`loop_step.capability`, available since 2026-07-02). GO bar: agreement ≥ 85% at confidence ≥ 0.7,
-   coverage ≥ 50%, Wilson lower bound reported, per language; **zero** cases where a `pure` verdict ≥ bar lands on a
-   turn whose run used any tool other than `lesson_write`. Cost ≈ $0.04.
-2. **Live shadow** (`shadow`): `triage` rows only, compared with the planner's actual `lesson_write` calls. Bar: ≥ 30
-   matched turns or 14 days, whichever is later, no `pure` false positive.
-3. **Arm.** Live gate `scripts/live-gate-jev-triage.mjs`: a pure memory instruction → saved card, no planner request
-   (`llm_attempt` shows none for the run); a mixed one → saved + planner reply with the prefix and no second save; a
-   bare ack with an approval pending → nudge; Jev key removed → planner as today with a `triage{status:skipped}` row;
-   a 429 stub → `jev_rate_limited` incident. PASS fails on silent degradation: every case asserts the ledger row, not
-   only the reply.
+**Universe.** The comparator label `loop_step.capability` exists since 2026-07-02: **288 Telegram runs**, of which
+**36 called `lesson_write`** (22 lesson-only, 14 with other tools; 16 saved a lesson), 13 in the last 60 days, 6 since
+the omp cutover. Agreement over all 288 is dominated by ~250 `none` turns and proves nothing about the positive class;
+the bars below are stated per class.
+
+1. **Offline replay** (`houge jev replay triage`, `replay-core` filtering `runs.source = 'telegram'` and
+   `created_at ≥ 2026-07-02`): Jev over the 288 turns; the first comparator is the planner's observed `lesson_write`
+   call (an action, not a purity label).
+2. **Human labels** (one sitting, ≈ 80 items, shared with lane 4's sitting): Paco labels every turn Jev called `memory`
+   at any confidence, plus a 40-turn random sample of `none`, for `memory? pure? scope?`. These, not the action proxy,
+   decide the costly cells.
+3. **GO bar, per language (zh / en; `mixed` inherits zh):**
+   - recall of `memory` over the 36 `lesson_write` runs ≥ 0.80 (n = 36 → Wilson 95% lower bound ≈ 0.65; reported, not
+     hidden);
+   - precision of `memory` verdicts ≥ bar against the human labels ≥ 0.85 with its lower bound and n;
+   - **zero** `pure` verdicts ≥ bar on the 14 mixed-tool runs and on the human-labelled `none` sample (the costly cell);
+   - coverage of confident verdicts ≥ 0.50 of the positive class.
+   Cost ≈ $0.04. INCOMPLETE on an early stop; a dry run has its own headline.
+4. **Live shadow** (`shadow`): rows only; **the replay is the primary evidence, the shadow is a false-positive watch**:
+   ≥ 14 days with zero `pure` ≥ bar on any turn whose planner used a tool other than `lesson_write`, and ≥ 5 planner
+   `lesson_write` calls observed with a Jev row (≈ 25 days at 13 / 60 d). "Matched" = a turn with both a `triage` row
+   and a completed planner run.
+5. **Arm**, per language. Live gate `scripts/live-gate-jev-triage.mjs`: a pure memory instruction → saved card, no
+   planner request (`llm_attempt` has none for the run), `lesson_changes` row; Undo tap → rows restored, `undone_at`
+   set; a mixed one → saved + planner reply carrying the prefix, a forced second `lesson_write` returns the
+   already-saved digest with no Kimi call; a bare ack **steered** into an `AWAITING_APPROVAL` turn → nudge card, no
+   steer, nothing approved; status question → code text, no planner request; posture parked → `skipped{posture}` and
+   the planner answers; Jev key removed → `skipped{no_key}`, incident, planner as today; a 429 stub → `jev_rate_limited`
+   on the first failure. Every case asserts the ledger row, not only the reply.
+6. **After arming** the only live positive label is the override tap; the replay re-runs monthly against the growing
+   `lesson_write` history, and `triage_overrides` is the drift signal.
 
 ### 5.10 Honesty notes
 
-- The lane is not faster: Kimi k3 distill + reconcile ≈ 15–25 s vs planner p50 12 s. The win is an Opus turn saved
-  (quota) and a deterministic, undoable card. If Paco wants the card faster, the lane can ride a faster ticks leg; that
-  is a config choice, not a design one.
-- Volume is ~1.7 Telegram turns/day; memory instructions are a fraction of that. Lane 1's value is the proven layer as
-  much as the saved turns.
+- Latency: +0.3 s typical, +1.5 s worst case on every warm Telegram turn (the child idles up to 1 h, so the spawn is
+  rarely the long pole); on a cold spawn the Jev call is hidden behind it. The memory lane itself is not faster than
+  the planner (Kimi distill + reconcile ≈ 15–25 s vs planner p50 12 s): the win is an Opus turn saved and a
+  deterministic, undoable card. A faster ticks leg is a config choice.
+- Volume: ~1.7 Telegram turns/day, 13 lesson writes per 60 days. Lane 1's value is the proven layer and the labelled
+  history it starts, as much as the saved turns.
 
 ## 6. Decisions binding lanes 2–5 (each still gets its own spec)
 
@@ -366,8 +470,12 @@ Flag `HOUGE_JEV_TRIAGE_ENABLED=off|shadow|arm`, default off.
   proposal's difficulty). State adds two code-owned booleans: previous turn used tools; previous Houge turn asked or
   proposed.
 - **Paco's direction (2026-10-04):** Claude is reserved for hard and ad-hoc work; routine and trivial turns run on the
-  other subscription seats. Routing replaces the planner chain **for that turn** through the existing `set_model` path
-  in `promptTop`; the per-turn chain keeps its own failure fallback:
+  other subscription seats. **This needs a turn-owned chain, which does not exist today**: `promptTop` pins
+  `cfg.planner[sessionLeg]`, `retryNextLeg` walks `cfg.planner[turn.legIndex]`, `startSession` sets `legIndex` from the
+  spawn leg (`planner-supervisor.ts:435, 486-496, 544`), and `setModel` takes one model (`planner-session.ts:92-95`).
+  Lane 2 introduces `Turn.chain: ModelString[]` chosen in `startTurn` (default `cfg.planner`); `promptTop` pins
+  `chain[0]`, `retryNextLeg` walks `chain`, `legIndex` indexes `chain`, `noteActualModel` audits against it, and the
+  next turn's reset to `cfg.planner[sessionLeg]` is unchanged. The per-turn chains:
 
   | Jev `complexity` | planner chain for the turn |
   |---|---|
@@ -379,12 +487,17 @@ Flag `HOUGE_JEV_TRIAGE_ENABLED=off|shadow|arm`, default off.
   Codex is unchanged: `codex exec` is the self-write writer only; no chat turn is ever routed to it
   (`openai-codex/gpt-5.5` stays a reader and judge seat).
 - Escalation to the hard chain mid-turn (the `retryNextLeg` frame, one ~50K cache write): `think harder` / `认真想` /
-  `ultrathink` by regex before Jev; a model error or refusal on the cheap chain; the planner asking for it through a
-  code-owned marker. A rating ≤ 1 on a routed turn is an override label.
-- **D10 resolver (amends ADR 0028 D10).** `reader[0]` is `gemini-3.8-flash`; a routine turn that falls to Gemini and
-  then reads the web would collapse planner and reader onto one family on most fallback turns. Code picks, at read
-  time, the first reader leg whose family differs from the planner's current family (Kimi or GPT-5.5) before falling
-  back to "proceed, audited". `wall_collapse` stays for the case where no cross-family reader is left.
+  `ultrathink` by regex before Jev; the planner asking for it through a code-owned marker; and **on a routed turn, an
+  error of kind `other` or a refusal from the cheap chain** — today `RETRYABLE_ERROR_KINDS` is `{quota, auth,
+  transport, timeout, model_missing}` (`omp-frames.ts:66`) and Kimi's three live errors are `other`, so without this
+  rule a routed turn would end instead of falling back; the escalation is audited (`routed_escalation {from, to,
+  kind}`) and counts against the route's calibration. A rating ≤ 1 on a routed turn is an override label.
+- **D10 resolver (amends ADR 0028 D10; new code).** `reader[0]` is `gemini-3.8-flash`; a routine turn that falls to
+  Gemini and then reads the web would collapse planner and reader onto one family on most fallback turns. Today the
+  planner family only *marks* `family_collapse` on the audit row (`omp.ts:115`, `registry.ts:194`); nothing reorders.
+  Lane 2 adds the reorder in `oneShotAdapter` (`opts.chain` rotated so the first leg whose family differs from the
+  planner's **current** family — Kimi or GPT-5.5 — runs first); `wall_collapse` stays for the case where no
+  cross-family leg succeeds.
 - **Antigravity ceiling.** Gemini, Opus 4.6 fallback, the reader and media all draw on the Antigravity weekly quota
   (a watch item in the state block). The live gate records per-provider request counts for a week; the abstain flip
   waits for that week.
@@ -405,11 +518,15 @@ Flag `HOUGE_JEV_TRIAGE_ENABLED=off|shadow|arm`, default off.
   heredoc bodies and long literals replaced by `<opaque:N>`, hostnames kept, broker-redacted, plus `matcher_label` and
   the run's prior tool sequence. Never the planner's justification. At τ: a tap labelled `⚑ flagged: <class>`. Evidence
   bar: ≥ 1 true D12-list miss caught per month at ≤ 1 added tap/day.
+- **Until Paco approves the new egress class (ruling 3), lane 3 runs on an enforced `code_metadata_only` request
+  shape** — `{tool, source_host, bytes, reader_flag, link_count, code_count}` and no excerpt — built by a separate
+  function whose output is asserted in tests against the actual outbound body; "shadow" alone does not stop a request.
 - Not with Jev: `exfil_shape` (code), `blast_radius` on self-write (code can compute it from the diff).
 - Arm bar (ADR amendment text, §7): ≥ 4 weeks shadow, ≥ 200 scored events per language, added-tap rate ≤ 1/day with ≥ 1
   confirmed true catch, per-language precision reported, golden set in the sweep.
-- Code fixes found on the way, independent of Jev: suppress the repeated-fingerprint re-ask (4 × `git push` in 3 h);
-  whitelist read-only `launchctl list|print`.
+- Code fixes found on the way, independent of Jev and each its own exact, tested rule: suppress the
+  repeated-fingerprint re-ask (4 × `git push` in 3 h); a read-only `launchctl list|print` whitelist — this one
+  *removes* an existing tap, so it ships only with a matcher test that pins the exact argv shapes it admits.
 
 ### 6.3 Lane 4 — inbound triage (gate for SP2)
 
@@ -420,7 +537,10 @@ Flag `HOUGE_JEV_TRIAGE_ENABLED=off|shadow|arm`, default off.
   `needs_llm` (yes/no). Lanes: now (rich card with `wrong urgency` and `open` taps), digest, store (`/inbox`), llm
   (untrusted → reader seat only). Nothing is discarded; calibration needs the row.
 - Asymmetric thresholds: interrupt at ≥ 0.6, **downgrade only at ≥ 0.85** (Gmail Priority Inbox tuned false negatives
-  3–4× rarer than false positives).
+  3–4× rarer than false positives). **Demotion (`digest` / `never`) is a notification-policy change, not a monotone
+  one** (§4.1): it stays in shadow — rows and a labelled morning list, nothing suppressed — until an explicit
+  amendment to the notification rules (ADR 0017 / 0024) authorises it per class. Mandatory-now floors outrank the
+  storm cap: an item a floor marks `now` is sent even when the 6-per-hour fold is active.
 - Seven code floors Jev cannot cross: kill/park/disarm; approval cards never triaged; supervisor-class incidents
   (`SUPERVISOR_ALERT_KINDS`, `stuck_run`, `heartbeat_gap`, `disk_free_low`, auth `llm_leg_failing`) always now;
   untrusted origin picks a lane, never an action; `deadline_min` before the next digest → now; > 6 `now` sends in 60 min
@@ -461,13 +581,18 @@ The amendment paragraphs are written into the prior ADRs on ship of lane 1 (docs
 
 ## 8. Testing
 
-- Unit: question hashing and canonicalisation; `decide()` skip reasons and row writing; client `score`/`noul`
-  validation and 422/429/529 mapping; threshold lookup by `(question, hash, model, lang)` with `fallback` on a missing
-  language; lane 1 verdict function over probability vectors (each bar tested at its edge); memory lane: `saved:false`
-  → no card, mixed → prefix + `ranOnce` seeded, ack with approval pending → nudge; Undo semantics; catch-up line
-  claimed once.
-- Integration (hermetic, stubbed Jev + stubbed omp): `startTurn` fall-through on every skip reason; concurrency with
-  `ensureReady`; no planner request on route-and-skip; auto-disable after three overrides; golden-set drift disarms.
+- Unit: question hashing over the ordered request (reordering options changes the hash); `decide()` skip reasons and
+  the denominator row; client 422/429/529 → `malformed_question | rate_limited | overloaded` and first-failure
+  incidents; threshold lookup by `(question, hash, model, lang)` with `fallback` on a missing language and `mixed`
+  inheriting `zh`; the lane 1 verdict function over probability vectors (each bar at its edge); the extracted
+  lesson-write service used by the tool and the lane with identical anchors; the already-saved guard returns the digest
+  with zero LLM calls; `saved:false` → no card; photo turn → `skipped{modality}`; posture → `skipped{posture}`; Undo
+  compare-and-set (active → restored incl. pruned rows; superseded since → "already changed", nothing moves);
+  `submit()` ack nudge in `AWAITING_APPROVAL` (not steered, not queued, nothing approved) and a non-ack still steered.
+- Integration (hermetic, stubbed Jev via `fetchImpl` + stubbed omp session): Jev awaited before the spawn is awaited;
+  a pure save completes with the child never prompted and the spawn left idle; `finishLane` settles `runTurn`; fall-through
+  on every skip reason; auto-disable to shadow after three overrides through the persisted marker; the `triage` row is
+  written when the flag is off.
 - Replay: deterministic over a fixture DB; INCOMPLETE on early stop; dry run headline distinct from a verdict.
 - Each test encodes why the behaviour matters (a `pure` false positive swallows a question; a skipped Jev call must
   cost nothing; a card must never show a score).
@@ -478,7 +603,8 @@ The amendment paragraphs are written into the prior ADRs on ship of lane 1 (docs
   degrades quality, never safety.
 - US-hosted retention of Paco's chat text under a self-serve account (already accepted 2026-09-25 for the same
   envelope); new egress classes wait for explicit approval.
-- A `pure` false positive swallows a question for one turn: strict bar, override tap, auto-disable, catch-up line.
+- A `pure` false positive swallows a question for one turn: strict bar, override tap, auto-disable, and the A1 session
+  seed carrying the exchange into the next transcript.
 - Thin labels: bars are set at what the sample can prove; a lane that cannot reach its sample stays shadow.
 
 ## Rulings (Paco, 2026-10-04)
@@ -495,4 +621,22 @@ The amendment paragraphs are written into the prior ADRs on ship of lane 1 (docs
 
 ## Review record
 
-(Appended as reviews land: senior spec review against the live system, Codex design pass, Paco's rulings.)
+- **Codex design pass on Rev 2 (2026-10-04, `codex exec -s read-only`): NOT READY** — 9 BLOCKERs, 3 RISKs, 1 NIT. All
+  verified first-hand and accepted: turn completion path (§5.1 `finishLane`), private `reconcileAndSaveLesson` and the
+  adapter's anchors (§5.5 service), `ranOnce` guards only `EVOLUTION_TOOLS` (§5.5 already-saved guard), seed/catch-up
+  duplication and claim-before-dispatch (§5.7 cut), no per-turn chain (§6.1 `Turn.chain`), D10 marks but never
+  reorders (§6.1 new code), lane 4 demotion vs the monotone rule (§4.1 scope, §6.3 shadow), `criteria_hash` without
+  option order (§3.1), bars not label-backed (§5.9 human labels, per-class bars); outage contract and `triage` event
+  type (§3.3, §5.8), Undo partial reversal (§5.6 change set), lane 3 shadow egress (§6.2 enforced shape), slice scope
+  (§5.0). Nothing rejected. Codex's "44 vs 13" is lifetime vs 60-day (44 steps / 36 runs; 19 / 13 in 60 d), not a
+  contradiction.
+- **Senior review against the live system on Rev 2 (2026-10-04, subagent; probed `main@8f55045`, `houge.sqlite`, `.env`
+  names, omp 18.4.4 source): NOT READY** — 4 BLOCKERs, 8 WARNINGs, 7 SUGGESTIONs, 14 claims verified correct. All
+  accepted: the ack nudge is unreachable in `startTurn` because `submit()` steers during `AWAITING_APPROVAL` (§5.1
+  slot A); `ranOnce` (as above); per-turn chain and Kimi's `other` error class (§6.1); bars unsized against 288 / 36 /
+  13 per 60 d (§5.9). Warnings folded: photo turns (`userText`, phase 1 skips them), posture bypass, Undo schema and
+  `complete()` buttons, Jev before `ensureReady`, catch-up line redundant with A1's seed, error kinds and the
+  failing-leg sweep, replay universe filter, warm-turn latency. Suggestions taken: `jev_decisions` name, same-transaction
+  rows, `mixed`-first order and `mixed` language rule, persisted disarm marker, monthly re-replay, hermetic seams named.
+  Not taken: dropping the `status` lane (ruling 1 stands; it has its own threshold and the replay reports it separately).
+- Rev 3 goes back to Codex for a re-pass before the lane 1 plan.
