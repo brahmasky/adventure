@@ -912,6 +912,8 @@ export interface JevDecisionRow {
   margin: number | null; threshold_version: string | null; threshold_used: string | null; decision: JevDecisionOutcome | null;
   outcome_source: "llm_label" | "paco_correction" | "observed_action" | "none"; outcome_value: string | null; latency_ms: number | null;
   input_tokens: number | null; status: JevDecisionStatus; skip_reason: string | null; created_at: string;
+  /** Answered rows only: when live cut the thread (claim) and built the state; null on skipped and pre-2026-10-06 rows. */
+  thread_cut_at: string | null; state_built_at: string | null;
 }
 
 /** One undoable memory-lane save (ADR 0029 §5.6): the new lesson, the one it superseded, the cap victims it pruned. */
@@ -4273,15 +4275,16 @@ export class RunStore {
 
   // ── Jev decisions (ADR 0029 §3.4) ─────────────────────────────────────────
 
-  insertJevDecision(row: Omit<JevDecisionRow, "decision_id" | "created_at" | "outcome_source" | "outcome_value"> & { created_at?: string }): string {
+  insertJevDecision(row: Omit<JevDecisionRow, "decision_id" | "created_at" | "outcome_source" | "outcome_value" | "thread_cut_at" | "state_built_at">
+    & { created_at?: string; thread_cut_at?: string | null; state_built_at?: string | null }): string {
     const decision_id = `jd_${randomUUID()}`;
     this.db.prepare(`
       INSERT INTO jev_decisions (decision_id, run_id, point, question_id, criteria_hash, model_reported, state_hash, lang, answers_json, confidence,
-        top_prob, margin, threshold_version, threshold_used, decision, latency_ms, input_tokens, status, skip_reason, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        top_prob, margin, threshold_version, threshold_used, decision, latency_ms, input_tokens, status, skip_reason, created_at, thread_cut_at, state_built_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(decision_id, row.run_id, row.point, row.question_id, row.criteria_hash, row.model_reported, row.state_hash, row.lang, row.answers_json,
       row.confidence, row.top_prob, row.margin, row.threshold_version, row.threshold_used, row.decision, row.latency_ms, row.input_tokens,
-      row.status, row.skip_reason, row.created_at ?? new Date().toISOString());
+      row.status, row.skip_reason, row.created_at ?? new Date().toISOString(), row.thread_cut_at ?? null, row.state_built_at ?? null);
     return decision_id;
   }
 
@@ -6703,6 +6706,7 @@ export class RunStore {
     this.applyPlannerSessionStateMigration();
     this.applyJevDecisionsMigration();
     this.applyLessonChangesMigration();
+    this.applyJevDecisionInstantsMigration();
   }
 
   /** Memory A1 §6: the lesson-set fingerprint each chat's omp session started on, persisted so a restart still compares. */
@@ -6770,6 +6774,21 @@ export class RunStore {
         CREATE INDEX IF NOT EXISTS jev_decisions_run_idx ON jev_decisions(run_id, created_at);
         CREATE INDEX IF NOT EXISTS jev_decisions_point_idx ON jev_decisions(point, created_at);
       `);
+      if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
+  }
+
+  /**
+   * The two instants a live triage state was built at (ADR 0029 §3.6 parity): the thread cut at claim and the state build
+   * that fixed `last_houge_turn.age_s`. The replay rebuilds from these, so a state_hash mismatch is a real difference.
+   */
+  private applyJevDecisionInstantsMigration(): void {
+    const version = "2026-10-06-jev-decision-instants";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      const cols = this.tableColumns("jev_decisions");
+      if (!cols.has("thread_cut_at")) this.db.exec(`ALTER TABLE jev_decisions ADD COLUMN thread_cut_at TEXT`);
+      if (!cols.has("state_built_at")) this.db.exec(`ALTER TABLE jev_decisions ADD COLUMN state_built_at TEXT`);
       if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
     });
   }

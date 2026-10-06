@@ -27,6 +27,8 @@ export interface DecideInput {
   store: RunStore;
   thresholdVersion: string;
   now?: () => Date;
+  /** When the caller cut the thread and built `state`: stamped on every answered row so the replay can rebuild it exactly. */
+  instants?: { thread_cut_at: string; state_built_at: string };
 }
 export type Decision =
   | { status: "answered"; answers: Record<string, JevChoiceAnswer>; model: string; latency_ms: number; input_tokens: number; stateHash: string; rows: JevDecisionInsert[] }
@@ -83,7 +85,7 @@ export async function decide(i: DecideInput): Promise<Decision> {
       run_id: i.run_id, point: i.point, question_id: q.id, criteria_hash: criteriaHash(q), model_reported: r.model, state_hash: sh, lang: i.lang,
       answers_json: JSON.stringify(a.probabilities), confidence: a.confidence, top_prob: Math.max(...Object.values(a.probabilities)), margin: marginOf(a),
       threshold_version: i.thresholdVersion, threshold_used: null, decision: null, latency_ms: r.latency_ms, input_tokens: r.input_tokens,
-      status: "answered", skip_reason: null, ...(now ? { created_at: now } : {}),
+      status: "answered", skip_reason: null, ...(now ? { created_at: now } : {}), ...(i.instants ?? {}),
     });
   }
   return { status: "answered", answers: r.answers, model: r.model, latency_ms: r.latency_ms, input_tokens: r.input_tokens, stateHash: sh, rows };

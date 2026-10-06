@@ -215,6 +215,8 @@ interface LoopTurnContext {
 
 /** Per-run state of an omp turn's loop tools, held from buildOmpTools until the outcome sink finishes the run. */
 interface OmpTurnState {
+  /** When `turnCtx.recentTurns` was read (the claim): triage records it so the replay cuts the same thread. */
+  threadCutAt: string;
   turnCtx: LoopTurnContext;
   anchor: { priorAnswer: string; defaultScope: string };
   /** A voice turn's transcript: the tools' objective (the claim still carries the placeholder). */
@@ -2213,8 +2215,10 @@ export class CoreWorker {
 
   /** Per-turn state for the loop tools, kept until the outcome sink finishes the run. */
   private ompTurnState(claim: ClaimedRun, chatId: string): OmpTurnState {
-    const recentTurns = this.runStore.getRecentChatTurns(chatId, resolveChatContextTurns(process.env), chatContextSince(process.env));
+    const threadCutAt = new Date();
+    const recentTurns = this.runStore.getRecentChatTurns(chatId, resolveChatContextTurns(process.env), chatContextSince(process.env, threadCutAt));
     const state: OmpTurnState = {
+      threadCutAt: threadCutAt.toISOString(),
       turnCtx: {
         recentTurns, turnChars: resolveChatContextTurnChars(process.env), ranOnce: new Set<string>(), evolutionNotices: [],
         externalReads: [], sourceUrls: [], memory: newMemoryTurnState()
@@ -2572,11 +2576,12 @@ export class CoreWorker {
     if (i.modality !== "text") return this.triageSkip(i, state, lang, "modality");
     if (!state) return this.triageSkip(i, state, lang, "error");
     const now = this.ompOptions.jevNow ?? (() => new Date());
+    const builtAt = now();
     const built = buildTriageState({ userText: i.userText, recentTurns: state.turnCtx.recentTurns, turnChars: state.turnCtx.turnChars,
-      modality: i.modality, lastHougeTurn: lastHougeTurnOf(state.turnCtx.recentTurns, now().getTime()) }, this.broker ? (s) => this.broker!.redact(s) : undefined);
+      modality: i.modality, lastHougeTurn: lastHougeTurnOf(state.turnCtx.recentTurns, builtAt.getTime()) }, this.broker ? (s) => this.broker!.redact(s) : undefined);
     if (!built.ok) return this.triageSkip(i, state, lang, built.skip);
     const d = await decide({ point: "triage", run_id, state: built.state, questions: TRIAGE_QUESTIONS, lang, client: this.jevClient(run_id),
-      store: this.runStore, thresholdVersion: THRESHOLD_VERSION, now });
+      store: this.runStore, thresholdVersion: THRESHOLD_VERSION, now, instants: { thread_cut_at: state.threadCutAt, state_built_at: builtAt.toISOString() } });
     if (d.status === "skipped") return this.triageSkip(i, state, lang, d.reason); // settleTriage checks laneLost first
     const verdict = triageVerdict(d.answers, resolveTriageBars(process.env), lang, d.model, calibrationRows(process.env));
     const lane = d.answers.lane!;

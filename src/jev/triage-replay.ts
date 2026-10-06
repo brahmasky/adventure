@@ -18,11 +18,11 @@ import { resolveTriageBars, TRIAGE_STATUS_ARM_ID, triageVerdict, type TriageBars
  * buildTriageState, same lastHougeTurnOf, same sanitiser — only the broker pass is absent in the CLI), so `state_hash`
  * joins to `jev_decisions.state_hash`. Rows carry ids, enums and numbers only — never message text.
  *
- * State parity: the thread cut and `last_houge_turn.age_s` use the live decision instant when the run has one (its
- * answered triage `jev_decisions` row, else its `triage` event), and the anchor otherwise. Known gaps: no broker in the
- * CLI (a turn carrying one of the broker secrets hashes differently); live cut the thread at claim and built the state
- * just before the Jev call, while the recorded instant is just after it, so an age on a half-second boundary can differ
- * by one; a pre-shadow turn has only its anchor. The report blocks rows on any comparable live mismatch.
+ * State parity: the thread cut and `last_houge_turn.age_s` use the two instants the live path recorded on its answered
+ * triage row (`thread_cut_at`, the claim; `state_built_at`, just before the Jev call). A row without them (written before
+ * 2026-10-06) falls back to its write time, else the `triage` event, else the anchor. Known gaps: no broker in the CLI (a
+ * turn carrying one of the broker secrets hashes differently); a pre-shadow turn has only its anchor. The report blocks
+ * rows on any comparable live mismatch.
  */
 export const TRIAGE_REPLAY_OUT = ".houge/jev-triage/replay.jsonl";
 export const TRIAGE_PERMUTED_OUT = ".houge/jev-triage/replay-permuted.jsonl";
@@ -118,18 +118,24 @@ function guardOutPath(d: TriageReplayDeps): void {
   if (!d.permute && out === resolve(TRIAGE_PERMUTED_OUT)) throw new Error(`a canonical run must not write to the permuted ${TRIAGE_PERMUTED_OUT}`);
 }
 
-/** When the live path decided this turn: its answered triage decision row, else its `triage` event; undefined pre-shadow. */
-function liveInstantOf(store: RunStore, run_id: string): string | undefined {
-  return store.listJevDecisions(run_id).find((r) => r.point === "triage" && r.status === "answered")?.created_at
-    ?? store.getLedgerEvents(run_id).find((e) => e.event_type === "triage")?.occurred_at;
+/** When the live path cut the thread and built the state: the recorded instants, else the row's write time, else its `triage` event. */
+function liveInstantsOf(store: RunStore, run_id: string): { cut: string; before: string; built: string } | undefined {
+  const row = store.listJevDecisions(run_id).find((r) => r.point === "triage" && r.status === "answered");
+  // Live read with no upper bound right at the cut, so a turn stamped in the cut's own millisecond is in its thread.
+  if (row?.thread_cut_at && row.state_built_at) {
+    return { cut: row.thread_cut_at, before: new Date(Date.parse(row.thread_cut_at) + 1).toISOString(), built: row.state_built_at };
+  }
+  const at = row?.created_at ?? store.getLedgerEvents(run_id).find((e) => e.event_type === "triage")?.occurred_at;
+  return at ? { cut: at, before: at, built: at } : undefined;
 }
 
 function prepareTurn(d: TriageReplayDeps, key: string, t: ReplayTurnRow): Prepared | { skip: TriageReplayRow } {
   const caps = d.store.runLoopCapabilities(t.run_id);
-  const at = liveInstantOf(d.store, t.run_id) ?? t.anchor ?? t.created_at;
-  const recent = d.store.getChatTurnsBefore(t.chat_id, resolveChatContextTurns(d.env), chatContextSince(d.env, new Date(at)), at, t.run_id);
+  const anchor = t.anchor ?? t.created_at;
+  const { cut, before, built: builtAt } = liveInstantsOf(d.store, t.run_id) ?? { cut: anchor, before: anchor, built: anchor };
+  const recent = d.store.getChatTurnsBefore(t.chat_id, resolveChatContextTurns(d.env), chatContextSince(d.env, new Date(cut)), before, t.run_id);
   const built = buildTriageState({ userText: t.text, recentTurns: recent, turnChars: resolveChatContextTurnChars(d.env), modality: "text",
-    lastHougeTurn: lastHougeTurnOf(recent, Date.parse(at)) });
+    lastHougeTurn: lastHougeTurnOf(recent, Date.parse(builtAt)) });
   const base: TriageReplayRow = { key, turn_id: t.turn_id, run_id: t.run_id, lang: langOf(t.text), status: "ok", est_usd: 0,
     observed_lesson_write: caps.includes("lesson_write"), observed_other_tools: caps.some((c) => c !== "lesson_write"),
     state_hash: built.ok ? stateHash(built.state) : "" };
