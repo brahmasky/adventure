@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseTelegramCommand } from "../../src/triggers/telegram-command-parser.js";
+import { parseMemLaneCallback, parseTelegramCommand } from "../../src/triggers/telegram-command-parser.js";
 
 describe("parseTelegramCommand", () => {
   it("parses run, status, approve, and deny control commands", () => {
@@ -348,5 +348,17 @@ describe("parseTelegramCommand", () => {
       ok: true,
       command: { type: "status" }
     });
+  });
+});
+
+describe("parseMemLaneCallback (spec §5.6)", () => {
+  const lc = "lc_12345678-1234-1234-1234-123456789abc"; const run = "run_12345678-1234-1234-1234-123456789abc";
+  it("parses undo and ask, stays inside Telegram's 64-byte limit, and rejects anything else", () => {
+    expect(parseMemLaneCallback(`memlane:undo:${lc}`)).toEqual({ action: "undo", change_id: lc });
+    expect(parseMemLaneCallback(`memlane:ask:${run}`)).toEqual({ action: "ask", run_id: run });
+    expect(Buffer.byteLength(`memlane:undo:${lc}`)).toBeLessThanOrEqual(64);
+    expect(parseMemLaneCallback("memlane:undo:evil")).toBeNull();
+    expect(parseMemLaneCallback(`memlane:merge:${run}`)).toBeNull();
+    expect(parseMemLaneCallback(42)).toBeNull();
   });
 });

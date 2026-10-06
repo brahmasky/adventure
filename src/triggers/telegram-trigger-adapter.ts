@@ -3,7 +3,7 @@ import { buildTypedTaskEvent } from "../domain/types.js";
 import { MEDIA_MIME, MEDIA_PLACEHOLDER, type TelegramMediaRef } from "../media/media-config.js";
 import { authorizeTelegramUpdate } from "./telegram-auth.js";
 import type { ApprovalCallback, SelfWriteCallbackAction, TelegramCommand } from "./telegram-command-parser.js";
-import { parseApprovalCallback, parseMemoryUndoCallback, parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
+import { parseApprovalCallback, parseMemLaneCallback, parseMemoryUndoCallback, parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
 
 export interface TelegramUpdate {
   update_id: number;
@@ -269,6 +269,8 @@ function normalizeCallbackQuery(
   if (approval) return { ok: true, event: buildApprovalTapEvent(update, callback, message.chat.id, auth.identity, approval) };
   const undo = parseMemoryUndoCallback(callback.data);
   if (undo) return { ok: true, event: buildMemoryUndoTapEvent(update, callback, message.chat.id, auth.identity, undo.change_id) };
+  const memlane = parseMemLaneCallback(callback.data);
+  if (memlane) return { ok: true, event: buildMemLaneTapEvent(update, callback, message.chat.id, auth.identity, memlane) };
 
   const parsed = parseSelfWriteCallback(callback.data);
   if (!parsed) {
@@ -323,6 +325,23 @@ function buildMemoryUndoTapEvent(
     idempotency_key: `telegram:${update.update_id}:callback:${callback.id}`,
     source_reference: `telegram:update:${update.update_id}:callback:${callback.id}`,
     metadata: { telegram_update_id: update.update_id, telegram_callback_id: callback.id, change_id }
+  });
+}
+
+/** A memory lane card tap (ADR 0029 §5.6): Undo carries the change id, "Ask Houge anyway" the original run id. */
+function buildMemLaneTapEvent(
+  update: TelegramUpdate, callback: TelegramCallbackQuery, chat_id: number, identity: Identity,
+  tap: { action: "undo"; change_id: string } | { action: "ask"; run_id: string }
+): TypedTaskEvent {
+  return buildTypedTaskEvent({
+    source: "telegram",
+    type: tap.action === "undo" ? "memlane_undo" : "memlane_ask",
+    requested_by: identity,
+    notify: { kind: "telegram", chat_id: String(chat_id) },
+    idempotency_key: `telegram:${update.update_id}:callback:${callback.id}`,
+    source_reference: `telegram:update:${update.update_id}:callback:${callback.id}`,
+    metadata: { telegram_update_id: update.update_id, telegram_callback_id: callback.id,
+      ...(tap.action === "undo" ? { change_id: tap.change_id } : { run_id: tap.run_id }) }
   });
 }
 

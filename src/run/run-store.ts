@@ -4114,6 +4114,7 @@ export class RunStore {
   /** Run `fn` in one IMMEDIATE transaction; a throw rolls everything back. `fn` must be synchronous (never span an await). */
   inTransaction<T>(fn: () => T): T {
     this.db.exec("BEGIN IMMEDIATE");
+    this.outerTxDepth += 1;
     try {
       const out = fn();
       this.db.exec("COMMIT");
@@ -4121,8 +4122,13 @@ export class RunStore {
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
+    } finally {
+      this.outerTxDepth -= 1;
     }
   }
+
+  /** >0 while an `inTransaction` callback runs: `insertRun` then joins it instead of opening its own (a nested BEGIN throws). */
+  private outerTxDepth = 0;
 
   /** Thrown inside a memory transaction when an id is not an active row of this chat: rolls the whole change back. */
   private static readonly MEMORY_REFUSED = new Error("memory_change_refused");
@@ -4271,6 +4277,17 @@ export class RunStore {
   getLessonChange(change_id: string): LessonChange | undefined {
     const r = this.db.prepare(`SELECT * FROM lesson_changes WHERE change_id = ?`).get<Omit<LessonChange, "pruned_ids"> & { pruned_ids: string }>(change_id);
     return r ? { ...r, pruned_ids: JSON.parse(r.pruned_ids) as number[] } : undefined;
+  }
+
+  /** The latest change the memory lane made for a run (the override label points at it). */
+  getLessonChangeByRun(run_id: string): LessonChange | undefined {
+    const r = this.db.prepare(`SELECT * FROM lesson_changes WHERE run_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get<Omit<LessonChange, "pruned_ids"> & { pruned_ids: string }>(run_id);
+    return r ? { ...r, pruned_ids: JSON.parse(r.pruned_ids) as number[] } : undefined;
+  }
+
+  /** The run an event already created (source + idempotency key), if any: lets a caller tell a new run from a redelivery. */
+  runIdForIdempotencyKey(source: string, idempotency_key: string): string | undefined {
+    return this.db.prepare(`SELECT run_id FROM runs WHERE source = ? AND idempotency_key = ?`).get<{ run_id: string }>(source, idempotency_key)?.run_id;
   }
 
   /** Only a pruned row comes back; a row that moved since (active or superseded) is left alone. */
@@ -6196,8 +6213,10 @@ export class RunStore {
   private insertRun(event: TypedTaskEvent): CreateOrGetResult {
     const run_id = `run_${randomUUID()}`;
     let activeTransaction = false;
-    this.db.exec("BEGIN IMMEDIATE");
-    activeTransaction = true;
+    // Inside an outer `inTransaction` (the memory lane's "Ask anyway" admission) the run joins it: commit/rollback are the outer's.
+    const owned = this.outerTxDepth === 0;
+    if (owned) this.db.exec("BEGIN IMMEDIATE");
+    activeTransaction = owned;
 
     try {
       try {
@@ -6205,7 +6224,7 @@ export class RunStore {
       } catch (error) {
         const race = isUniqueConstraintError(error) ? this.getCreateOrGetExisting(event) : null;
         if (race) {
-          this.db.exec("COMMIT");
+          if (owned) this.db.exec("COMMIT");
           activeTransaction = false;
           return race;
         }
@@ -6221,7 +6240,7 @@ export class RunStore {
         requester: event.requested_by
       });
 
-      this.db.exec("COMMIT");
+      if (owned) this.db.exec("COMMIT");
       activeTransaction = false;
       return { status: "created", run_id };
     } catch (error) {

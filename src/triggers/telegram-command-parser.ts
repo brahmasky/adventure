@@ -285,6 +285,19 @@ export function parseMemoryUndoCallback(data: unknown): { change_id: string } | 
   return m ? { change_id: m[1]! } : null;
 }
 
+const LC_UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const MEMLANE_UNDO = new RegExp(`^memlane:undo:(lc_${LC_UUID})$`);
+const MEMLANE_ASK = new RegExp(`^memlane:ask:(run_${LC_UUID})$`);
+
+/** Memory lane card taps (ADR 0029 §5.6). Exact shapes only (each is 52 bytes, under Telegram's 64); anything else is TELEGRAM_COMMAND_INVALID downstream. */
+export function parseMemLaneCallback(data: unknown): { action: "undo"; change_id: string } | { action: "ask"; run_id: string } | null {
+  if (typeof data !== "string") return null;
+  const undo = MEMLANE_UNDO.exec(data);
+  if (undo) return { action: "undo", change_id: undo[1]! };
+  const ask = MEMLANE_ASK.exec(data);
+  return ask ? { action: "ask", run_id: ask[1]! } : null;
+}
+
 type SplitShellWordsResult = { ok: true; words: string[] } | { ok: false; error: { code: "TELEGRAM_COMMAND_INVALID"; message: string } };
 
 function splitShellWords(input: string): SplitShellWordsResult {

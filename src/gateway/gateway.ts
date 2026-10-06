@@ -43,6 +43,7 @@ import { resolveSkillReverifyAt, resolveSkillReverifyEnabled } from "../capabili
 import { resolvePanelAt } from "../capabilities/week-key.js";
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import { toolApprovalWaiters } from "../omp/tool-approval-sink.js";
+import { handleMemLaneUndo, memLaneAskTurnEvent, recordTriageOverride } from "./memlane-commands.js";
 import { handleForgetMemory, handleMemories, handleMemoryUndo } from "./memory-commands.js";
 import type { IdeaRow, ShortlistRow } from "../run/run-store.js";
 
@@ -66,6 +67,7 @@ export type GatewayIntakeResult =
   | { ok: true; status: "skills_returned"; run_id: string }
   | { ok: true; status: "forgotten"; run_id: string }
   | { ok: true; status: "memory_undone"; run_id: string }
+  | { ok: true; status: "lesson_change_undone"; run_id: string }
   | { ok: true; status: "memories_returned"; run_id: string }
   | { ok: true; status: "memory_forgotten"; run_id: string }
   | { ok: true; status: "schedule_admin_returned"; run_id: string }
@@ -128,7 +130,8 @@ export class Gateway {
     caps?: GlobalBudgetCaps,
     projectRoot?: string,
     skillStore?: SkillStore,
-    hooks?: GatewayHooks
+    hooks?: GatewayHooks,
+    private readonly options: { dataDir?: string } = {}
   ) {
     this.caps = caps ?? resolveGlobalBudgetCaps(process.env);
     this.projectRoot = projectRoot ?? process.cwd();
@@ -138,10 +141,11 @@ export class Gateway {
     this.hooks = hooks ?? {};
   }
 
-  intake(event: TypedTaskEvent, now: string = new Date().toISOString()): GatewayIntakeResult {
+  intake(inbound: TypedTaskEvent, now: string = new Date().toISOString()): GatewayIntakeResult {
     // ADR 0018: the kill switch is the operator's emergency stop — the per-chat command
     // rate limit (5 accepted/min) must never delay it. Auth (allowlist, no forwards) was
     // already enforced upstream in the trigger adapter; nothing here weakens it.
+    let event = inbound;
     if (event.source === "telegram" && event.type !== "kill") {
       const limit = this.runStore.checkTelegramRateLimit({
         actor_id: event.requested_by.id,
@@ -165,6 +169,17 @@ export class Gateway {
         };
       }
     }
+
+    // Memory lane "Ask Houge anyway" (ADR 0029 §5.6): one admission (the limiter above), then an ordinary turn
+    // whose triage is skipped by its override row. The undo tap is a plain control command.
+    let memLaneAsk: { original_run_id: string } | undefined;
+    if (event.type === "memlane_ask") {
+      const prep = memLaneAskTurnEvent(this.runStore, event);
+      if (!prep.ok) return prep.result;
+      memLaneAsk = { original_run_id: prep.original_run_id };
+      event = prep.turnEvent;
+    }
+    if (event.type === "memlane_undo") return this.accepted(event, now, handleMemLaneUndo(this.runStore, event));
 
     if (event.type === "status") {
       return this.handleStatus(event, now);
@@ -233,6 +248,8 @@ export class Gateway {
     if (event.type === "rearm") {
       return this.handleRearm(event, now);
     }
+
+    if (memLaneAsk) return this.admitMemLaneAsk(event, memLaneAsk.original_run_id, now);
 
     if (event.type === "turn") {
       // ⓪·3 S2a: an active rating ask intercepts a rating reply BEFORE the turn compiles;
@@ -1109,6 +1126,21 @@ export class Gateway {
       this.recordTelegramAccepted(event, now);
     }
     return queued;
+  }
+
+  /**
+   * The re-submitted turn and its override label commit together (a label failure leaves no run). The label goes only on a
+   * genuinely NEW run: a redelivered tap resolves to the run it already made, and a resumed duplicate also reports "created".
+   */
+  private admitMemLaneAsk(event: TypedTaskEvent, original_run_id: string, now: string): GatewayIntakeResult {
+    const existed = this.runStore.runIdForIdempotencyKey(event.source, event.idempotency_key) !== undefined;
+    return this.runStore.inTransaction(() => {
+      const result = this.handleTaskIntake(event, now);
+      if (result.ok && result.status === "created" && !existed) {
+        recordTriageOverride(this.runStore, original_run_id, result.run_id, process.env, this.options.dataDir ?? this.projectRoot, this.telegramChatId(event));
+      }
+      return result;
+    });
   }
 
   /** Audit an accepted control command (memory commands, 2026-10-02) and pass its result through. */

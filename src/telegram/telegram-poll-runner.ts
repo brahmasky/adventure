@@ -120,7 +120,7 @@ export function ompOptionsWithOperator(omp: OmpWorkerOptions | undefined, allowl
 export async function runTelegramPollOnce(
   options: RunTelegramPollOnceOptions
 ): Promise<RunTelegramPollOnceResult> {
-  const gateway = new Gateway(options.store, undefined, options.projectRoot);
+  const gateway = new Gateway(options.store, undefined, options.projectRoot, undefined, undefined, { dataDir: options.omp?.dataDir ?? options.projectRoot });
   const worker = new CoreWorker(
     options.store,
     options.projectRoot,

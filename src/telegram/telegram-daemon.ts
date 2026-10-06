@@ -153,7 +153,8 @@ export async function runTelegramDaemon(
     undefined,
     options.projectRoot,
     undefined,
-    options.requestShutdown ? { requestShutdown: options.requestShutdown } : {}
+    options.requestShutdown ? { requestShutdown: options.requestShutdown } : {},
+    { dataDir: options.omp?.dataDir ?? options.projectRoot }
   );
   const worker = new CoreWorker(
     options.store,
