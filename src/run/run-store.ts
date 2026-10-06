@@ -930,6 +930,11 @@ export type LessonUndoResult =
 /** The two memory tables a change may flip; never interpolated from input. */
 const MEMORY_TABLE: Readonly<Record<MemoryKind, "episodic_facts" | "wiki_pages">> = { fact: "episodic_facts", wiki: "wiki_pages" };
 
+/** Whether a lesson text or avoid is over its size cap (memory A1 §2). */
+function overLessonCap(text: string, avoid: string | undefined): boolean {
+  return text.length > LESSON_MAX_CHARS || (avoid?.length ?? 0) > LESSON_AVOID_MAX_CHARS;
+}
+
 export class RunStore {
   /**
    * Secrets-firewall redactor (ADR 0015): masks known secret VALUES at RunStore's own write seams —
@@ -1515,7 +1520,9 @@ export class RunStore {
    * one set): there the new row takes the TARGET's scope, ledgered `lesson_cross_scope` (final-review B2). An UPDATE
    * whose target has another KNOWN theme is not merged: the candidate is saved as an ADD under its own theme; onto an
    * `unthemed` target it merges and takes the candidate's theme (B3). A result whose text is over LESSON_MAX_CHARS or whose AVOID
-   * is over LESSON_AVOID_MAX_CHARS is not saved (`capped`; the prior stays). An UPDATE inherits the target's
+   * is over LESSON_AVOID_MAX_CHARS is not saved (`capped`; the prior stays), except an UPDATE whose MERGE is over while the
+   * candidate fits: the candidate is saved alone as an ADD in its own scope, the target untouched and never pruned for it
+   * (`lesson_update_overflow`, ADR 0005 amendment 2026-10-06). An UPDATE inherits the target's
    * reuse_value, applied_count and theme. Overflow beyond the per-scope cap prunes the lowest reuse_value rows.
    */
   saveReconciledLesson(
@@ -1532,7 +1539,7 @@ export class RunStore {
     const known = candidate.theme !== undefined && candidate.theme !== UNTHEMED ? candidate.theme : undefined;
     // Spec §5: only a candidate with a KNOWN theme other than the target's KNOWN theme is refused a merge.
     if (target && verdict.verdict === "UPDATE" && known !== undefined && target.theme !== UNTHEMED && known !== target.theme) {
-      return this.saveCrossThemeAsAdd({ ...candidate, text, theme: known }, target.id, source, now, cap);
+      return this.saveAsAdd({ ...candidate, text, theme: known }, target.id, source, now, cap, { event: "lesson_cross_theme" });
     }
     const update = verdict.verdict === "UPDATE" && target !== undefined;
     const theme = update && target.theme !== UNTHEMED ? target.theme : known ?? UNTHEMED;
@@ -1540,6 +1547,11 @@ export class RunStore {
     const merged = update && verdict.text?.trim() ? verdict.text.trim() : text;
     // UPDATE supplements: the revised row inherits the prior AVOID unless the candidate brings one.
     const avoid = candidate.avoid?.trim() || (update && target.avoid ? target.avoid : undefined);
+    if (update && overLessonCap(merged, avoid) && !overLessonCap(text, candidate.avoid?.trim())) {
+      // The merge outgrew the cap but the new rule fits: save it alone (ADR 0005 amendment 2026-10-06). The target keeps
+      // what it said; a near-duplicate is the accepted cost of never losing an instruction.
+      return this.saveAsAdd({ ...candidate, text, theme }, target.id, source, now, cap, { event: "lesson_update_overflow", merged_chars: merged.length });
+    }
     const capped = this.lessonOverCap(merged, avoid, verdict.verdict, target?.id ?? null);
     if (capped) return capped;
     const id = this.addLesson({ scope, text: merged, ...(avoid ? { avoid } : {}), theme, source, created_at: now });
@@ -1547,7 +1559,7 @@ export class RunStore {
     if (target && target.scope !== candidate.scope) this.recordMemoryEvent("lesson_cross_scope", { verdict: verdict.verdict, target_id: target.id });
     if (update) this.inheritLessonStanding(target, id);
     const escalate = verdict.verdict === "SUPERSEDE" && target ? this.payForSupersede(target, id, now, repeatDays) : false;
-    const prunedIds = this.pruneScopeOverflow(scope, cap, id);
+    const prunedIds = this.pruneScopeOverflow(scope, cap, [id]);
     const verb: LessonWriteVerb = !target ? "add" : update ? "update" : "supersede";
     return { verb, id, ...(target ? { supersededId: target.id } : {}), lesson: merged, prunedIds, ...(escalate ? { escalate: true } : {}) };
   }
@@ -1565,25 +1577,32 @@ export class RunStore {
     text: string, avoid: string | undefined, verdict: LessonReconcileVerdict["verdict"], target_id: number | null
   ): LessonSaveResult | undefined {
     const avoidChars = avoid?.length ?? 0;
-    if (text.length <= LESSON_MAX_CHARS && avoidChars <= LESSON_AVOID_MAX_CHARS) return undefined;
+    if (!overLessonCap(text, avoid)) return undefined;
     this.recordMemoryEvent("lesson_write_capped", { verdict, target_id, chars: text.length, avoid_chars: avoidChars });
     return { verb: "capped", lesson: text, prunedIds: [], ...(target_id !== null ? { cappedTargetId: target_id } : {}) };
   }
 
-  /** Spec §5: merging is same-theme only — the candidate lands as its own lesson, the target stays. */
-  private saveCrossThemeAsAdd(
+  /**
+   * The candidate lands as its own lesson and the target stays: a cross-theme UPDATE (spec §5: merging is same-theme
+   * only) or a merge that outgrew the cap (`lesson_update_overflow`).
+   */
+  private saveAsAdd(
     candidate: { scope: string; text: string; avoid?: string; theme: string },
     targetId: number,
     source: LessonSource,
     now: string,
-    cap: number
+    cap: number,
+    why: { event: "lesson_cross_theme" } | { event: "lesson_update_overflow"; merged_chars: number }
   ): LessonSaveResult {
     const avoid = candidate.avoid?.trim() || undefined;
     const capped = this.lessonOverCap(candidate.text, avoid, "ADD", null);
     if (capped) return capped;
     const id = this.addLesson({ scope: candidate.scope, text: candidate.text, ...(avoid ? { avoid } : {}), theme: candidate.theme, source, created_at: now });
-    this.recordMemoryEvent("lesson_cross_theme", { candidate: id, target: targetId });
-    return { verb: "add", id, lesson: candidate.text, prunedIds: this.pruneScopeOverflow(candidate.scope, cap, id) };
+    const { event, ...extra } = why;
+    this.recordMemoryEvent(event, { candidate: id, target: targetId, ...extra });
+    // The overflow ADD promised the target stays: it is never the row the scope cap prunes to make room.
+    const keep = why.event === "lesson_update_overflow" ? [id, targetId] : [id];
+    return { verb: "add", id, lesson: candidate.text, prunedIds: this.pruneScopeOverflow(candidate.scope, cap, keep) };
   }
 
   /** Spec §2: an UPDATE keeps the target's earned standing (a rewrite must not drop in rank). */
@@ -1607,14 +1626,17 @@ export class RunStore {
   }
 
   /** Prune (reversibly) the lowest-value active rows over the scope cap, sparing `keepId`. */
-  private pruneScopeOverflow(scope: string, cap: number, keepId: number): number[] {
+  private pruneScopeOverflow(scope: string, cap: number, keepIds: readonly number[]): number[] {
     if (cap <= 0) return [];
-    const others = this.db.prepare(`
+    const keep = new Set(keepIds);
+    const active = this.db.prepare(`
       SELECT id FROM lessons
-      WHERE scope = ? AND status = 'active' AND id != ?
+      WHERE scope = ? AND status = 'active'
       ORDER BY reuse_value ASC, COALESCE(last_used, created_at) ASC, id ASC
-    `).all<{ id: number }>(scope, keepId);
-    const toPrune = others.slice(0, Math.max(0, others.length + 1 - cap)).map((r) => r.id);
+    `).all<{ id: number }>(scope);
+    const others = active.filter((r) => !keep.has(r.id));
+    const kept = active.length - others.length;
+    const toPrune = others.slice(0, Math.max(0, others.length + kept - cap)).map((r) => r.id);
     for (const id of toPrune) {
       this.db.prepare(`UPDATE lessons SET status = 'pruned' WHERE id = ?`).run(id);
     }

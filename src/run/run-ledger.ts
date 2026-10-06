@@ -61,6 +61,7 @@ export type LedgerEventType =
   | "lesson_consolidate_tick"
   | "lesson_write_capped"
   | "lesson_cross_theme"
+  | "lesson_update_overflow"
   | "lesson_cross_scope"
   | "lesson_theme_unknown"
   | "planner_session_reset"
@@ -222,6 +223,8 @@ const requiredPayloadFields = {
   // Memory A1 §2/§5: a lesson write refused for size, an UPDATE across themes saved as an ADD, an unlisted theme. Ids/counts only.
   lesson_write_capped: ["verdict", "target_id", "chars", "avoid_chars"],
   lesson_cross_theme: ["candidate", "target"],
+  // 2026-10-06: an UPDATE whose merge outgrew the cap saved the candidate alone (ids and the merged length only).
+  lesson_update_overflow: ["candidate", "target", "merged_chars"],
   // Final-review B2: a SUPERSEDE/UPDATE across ask ↔ research (the new row takes the target's scope). Verdict + id only.
   lesson_cross_scope: ["verdict", "target_id"],
   lesson_theme_unknown: ["lesson_id"],

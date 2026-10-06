@@ -6,6 +6,7 @@ import {
   RECONCILE_DISCIPLINE,
   reconcileLesson
 } from "../../src/capabilities/reconcile.js";
+import { LESSON_MAX_CHARS } from "../../src/capabilities/distill.js";
 import { LESSON_THEMES } from "../../src/run/lesson-themes.js";
 import { RunStore } from "../../src/run/run-store.js";
 
@@ -109,6 +110,46 @@ describe("reconcileLesson (the one LLM compare)", () => {
     expect(verdict.verdict).toEqual({ verdict: "SUPERSEDE", id: 3 });
     expect(calls[0]!.system).toBe(RECONCILE_DISCIPLINE);
     expect(calls[0]!.question).toContain("#3: use the Sydney timezone");
+  });
+
+  // A merge that grew past the lesson cap used to be refused and the instruction lost (2026-10-06): the model is asked
+  // once to fit both rules into the cap; only if it cannot does the store fall back to saving the new rule alone.
+  describe("an UPDATE whose merged text is over the cap gets one shortening retry", () => {
+    const long = "m".repeat(LESSON_MAX_CHARS + 1);
+    const run = (second: () => Promise<{ ok: true; answer: string } | { ok: false }>) => {
+      const calls: Array<{ question: string; system: string }> = [];
+      const answers = [async () => ({ ok: true as const, answer: JSON.stringify({ verdict: "UPDATE", id: 3, text: long, theme: "format" }) }), second];
+      return { calls, done: reconcileLesson({ candidate: { scope: "ask", text: "three sentences max" }, existing: [{ id: 3, text: "be concise, lead with the result" }],
+        llm: async (input) => { calls.push(input); return answers[calls.length - 1]!(); } }) };
+    };
+    it("a fitting rewrite replaces the merged text; the retry sees both rules and the limit", async () => {
+      const { calls, done } = run(async () => ({ ok: true, answer: '{"text":"Be concise: lead with the result, at most three sentences."}' }));
+      expect((await done).verdict).toEqual({ verdict: "UPDATE", id: 3, text: "Be concise: lead with the result, at most three sentences." });
+      expect(calls).toHaveLength(2);
+      expect(calls[1]!.system).toContain(String(LESSON_MAX_CHARS));
+      expect(calls[1]!.question).toContain("be concise, lead with the result");
+      expect(calls[1]!.question).toContain("three sentences max");
+    });
+    it("a rewrite still over the cap, unparseable, or a failed call keeps the long merge (the store then saves the rule alone)", async () => {
+      for (const second of [async () => ({ ok: true as const, answer: JSON.stringify({ text: long }) }), async () => ({ ok: true as const, answer: "no json" }),
+        async () => ({ ok: false as const }), async () => { throw new Error("down"); }]) {
+        expect((await run(second).done).verdict).toEqual({ verdict: "UPDATE", id: 3, text: long });
+      }
+    });
+    it("a rewrite that is just the new rule dropped the old one: the long merge is kept", async () => {
+      const { done } = run(async () => ({ ok: true, answer: '{"text":"Three sentences max"}' }));
+      expect((await done).verdict).toEqual({ verdict: "UPDATE", id: 3, text: long });
+    });
+    it("a merge within the cap makes no second call", async () => {
+      const calls: unknown[] = [];
+      await reconcileLesson({ candidate: { scope: "ask", text: "x" }, existing: [{ id: 3, text: "y" }],
+        llm: async (i) => { calls.push(i); return { ok: true, answer: '{"verdict":"UPDATE","id":3,"text":"x and y"}' }; } });
+      expect(calls).toHaveLength(1);
+    });
+  });
+
+  it("the discipline states the merged-text limit", () => {
+    expect(RECONCILE_DISCIPLINE).toContain(`${LESSON_MAX_CHARS} characters`);
   });
 
   it("a chain failure or a throw defaults to ADD (never blocks a lesson)", async () => {

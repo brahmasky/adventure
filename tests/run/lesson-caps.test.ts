@@ -14,22 +14,59 @@ describe("size caps on every lesson write (spec §2)", () => {
     expect(LESSON_AVOID_MAX_CHARS).toBe(120);
   });
 
-  it("an UPDATE whose merged text is over 240 is not saved: the prior lesson stays, the refusal is ledgered", () => {
+  // Paco's instruction must never be lost to a merge that grew too long (2026-10-06, ADR 0005 amendment): the merge is
+  // dropped, the new rule is saved on its own, and the old lesson keeps everything it said. A near-duplicate is the
+  // accepted cost; a silently unsaved instruction is not.
+  it("an UPDATE whose merged text is over 240 saves the new rule as its own lesson; the prior one stays untouched", () => {
     const target = store.addLesson({ scope: "ask", text: "be concise", theme: "format", source: "loop", created_at: NOW });
     const merged = "m".repeat(LESSON_MAX_CHARS + 1);
     const r = store.saveReconciledLesson({ scope: "ask", text: "short answers", theme: "format" }, { verdict: "UPDATE", id: target, text: merged }, "user_feedback", NOW);
-    expect(r).toMatchObject({ verb: "capped", cappedTargetId: target, prunedIds: [] });
-    expect(r.id).toBeUndefined();
+    expect(r).toMatchObject({ verb: "add", lesson: "short answers" });
+    expect(store.getLesson(r.id!)).toMatchObject({ status: "active", text: "short answers", theme: "format", supersedes: null });
     expect(store.getLesson(target)).toMatchObject({ status: "active", text: "be concise", superseded_by: null });
-    expect(store.listLessons()).toHaveLength(1);
-    expect(ledger("lesson_write_capped")).toEqual([{ verdict: "UPDATE", target_id: target, chars: LESSON_MAX_CHARS + 1, avoid_chars: 0 }]);
+    expect(ledger("lesson_update_overflow")).toEqual([{ candidate: r.id, target, merged_chars: LESSON_MAX_CHARS + 1 }]);
+    expect(ledger("lesson_write_capped")).toEqual([]);
   });
 
-  it("an avoid over 120 is refused the same way (the inherited avoid counts too)", () => {
+  it("an unthemed candidate saved this way takes the target's theme (it overlaps that rule)", () => {
+    const target = store.addLesson({ scope: "ask", text: "be concise", theme: "format", source: "loop", created_at: NOW });
+    const r = store.saveReconciledLesson({ scope: "ask", text: "short answers" }, { verdict: "UPDATE", id: target, text: "m".repeat(LESSON_MAX_CHARS + 1) }, "loop", NOW);
+    expect(store.getLesson(r.id!)).toMatchObject({ theme: "format" });
+  });
+
+  it("an unthemed target keeps nothing it does not have: the candidate saved this way keeps its own theme", () => {
+    const target = store.addLesson({ scope: "ask", text: "be concise", source: "migration", created_at: NOW });
+    const r = store.saveReconciledLesson({ scope: "ask", text: "short answers", theme: "format" }, { verdict: "UPDATE", id: target, text: "m".repeat(LESSON_MAX_CHARS + 1) }, "loop", NOW);
+    expect(store.getLesson(r.id!)).toMatchObject({ theme: "format", scope: "ask" });
+  });
+
+  it("the scope cap never prunes the target this fallback promised to keep, even when it ranks lowest", () => {
+    const target = store.addLesson({ scope: "ask", text: "be concise", theme: "format", source: "loop", created_at: NOW });
+    const other = store.addLesson({ scope: "ask", text: "cite sources", theme: "sources", source: "loop", created_at: NOW });
+    store.applyRatingToLessons([other], 3, NOW); // the target now has the lowest reuse value
+    const r = store.saveReconciledLesson({ scope: "ask", text: "short answers", theme: "format" }, { verdict: "UPDATE", id: target, text: "m".repeat(LESSON_MAX_CHARS + 1) }, "loop", NOW, 2);
+    expect(r.prunedIds).toEqual([other]);
+    expect(store.getLesson(target)!.status).toBe("active");
+    expect(store.getLesson(r.id!)!.status).toBe("active");
+  });
+
+  it("a merge over cap only because of the inherited avoid saves the candidate without that avoid", () => {
     const target = store.addLesson({ scope: "ask", text: "be concise", avoid: "a".repeat(LESSON_AVOID_MAX_CHARS + 1), source: "migration", created_at: NOW });
     const r = store.saveReconciledLesson({ scope: "ask", text: "short answers" }, { verdict: "UPDATE", id: target, text: "be concise; short answers" }, "loop", NOW);
-    expect(r.verb).toBe("capped");
+    expect(r.verb).toBe("add");
+    expect(store.getLesson(r.id!)).toMatchObject({ text: "short answers", avoid: null });
     expect(store.getLesson(target)!.status).toBe("active");
+  });
+
+  it("a candidate that is itself over a cap is still refused and ledgered (nothing fits to save)", () => {
+    const target = store.addLesson({ scope: "ask", text: "be concise", theme: "format", source: "loop", created_at: NOW });
+    const long = "c".repeat(LESSON_MAX_CHARS + 1);
+    const r = store.saveReconciledLesson({ scope: "ask", text: long, theme: "format" }, { verdict: "UPDATE", id: target, text: long }, "loop", NOW);
+    expect(r).toMatchObject({ verb: "capped", cappedTargetId: target, prunedIds: [] });
+    expect(store.listLessons()).toHaveLength(1);
+    expect(ledger("lesson_write_capped")).toEqual([{ verdict: "UPDATE", target_id: target, chars: LESSON_MAX_CHARS + 1, avoid_chars: 0 }]);
+    const a = store.saveReconciledLesson({ scope: "ask", text: "short", avoid: "a".repeat(LESSON_AVOID_MAX_CHARS + 1) }, { verdict: "UPDATE", id: target, text: "be concise, short" }, "loop", NOW);
+    expect(a.verb).toBe("capped");
   });
 
   it("an UPDATE inherits reuse_value and applied_count, and a candidate with no theme takes the target's (not a cross-theme refusal)", () => {
