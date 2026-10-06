@@ -105,18 +105,39 @@ fall-through; **System Two (omp seats)** composes inside the lane code picked. C
 
 ---
 
-## Amendments to prior ADRs (to be appended on ship of lane 1)
+## Amendments to prior ADRs (appended 2026-10-06 to 0013, 0014 and 0019; the AGENTS.md line awaits Paco)
 
-**ADR 0013 §Decision — System One stage (2026-10-xx).** "Code owns the gates, the model composes between them" becomes:
+**ADR 0013 §Decision — System One stage (2026-10-06).** "Code owns the gates, the model composes between them" becomes:
 code owns the gates and the thresholds; Jev (a non-generative typed decider) answers typed judgment calls under those
 thresholds; the model composes between them. Jev may make Houge more cautious, never less (ADR 0029 §2).
 
-**ADR 0014 — Jev beside the wall (2026-10-xx).** `contains_instructions` on reader-wall output becomes
+**ADR 0014 — Jev beside the wall (2026-10-06).** `contains_instructions` on reader-wall output becomes
 `reader_flag ∨ jev_flag` and is ledgered; a flag taints later external-write cards in the run with one line. Jev is a
 closed-enum component from a third model family; it never decides whether the wall applies.
 
-**ADR 0019 — the metered leg is Jev (2026-10-xx).** The ceiling is no longer dormant: Jev is its one leg, checked before
+**ADR 0019 — the metered leg is Jev (2026-10-06).** The ceiling is no longer dormant: Jev is its one leg, checked before
 every attempt, treated as free by Paco. 401/403, 422, 429 and 529 are alerted incidents.
 
 **AGENTS.md invariant (Paco's hand).** Append to the flat-rate line: "Jev (TypeSafe System One), a non-generative typed
 decider, sits in front of the chains under ADR 0029; it never gates an action and every outage reaches Paco."
+
+## Build notes (2026-10-06, lane 1 built on `feat/jev-lane1`, not merged)
+
+**§3.5 calibration wording.** `CALIBRATED_ROWS` in `src/jev/calibration.ts` ships empty, so lane 1 cannot act until
+Paco commits rows after the replay report prints them. The memory lane arms on the three rows `lane`, `complete` and
+`scope`. The status lane arms independently on a distinct pseudo-row `question_id: "lane:status"` whose criteria hash
+is the `lane` question's: a `lane` row alone never arms status, and a `lane:status` row alone never arms memory.
+`HOUGE_JEV_CALIBRATION_FILE` is for the live gate only; outside `HOUGE_JEV_GATE=1` a set file caps `arm` at `shadow`.
+An auto-disable marker (`HOUGE_JEV_DISARM_PATH`, written when `triage_overrides` fires) also caps `arm` at `shadow`
+until Paco deletes it.
+
+**Deviations from the spec, both accepted.** (1) The daemon builds the Jev client per call rather than once at boot
+(cheap; the broker key is read each time). (2) `jev_no_key` therefore opens on the first armed turn, not at boot.
+
+**Evidence.** 14 tasks by subagent TDD with per-task review (fix rounds on tasks 2, 8, 10 and 11); full suite 253
+files / 3438 tests green; live gate `scripts/live-gate-jev-triage.mjs` PASS on its first run (27 checks, real Jev and
+Kimi, four planner turns, on a copy of the live DB). Replay universe on a live-DB copy: 293 Telegram turns since
+2026-07-02 (the spec estimated 288), estimated cost $0.033.
+
+**Status stays `proposed`.** It becomes accepted only after Paco's merge, kickstart and the live gate on the running
+build. Operator reference: [jev-decision-layer.md](../reference/jev-decision-layer.md).

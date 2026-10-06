@@ -1,6 +1,6 @@
 # ADR 0019: Metered-API $ ceiling — ledger-derived spend, latch-driven enforcement
 
-- **Status:** accepted; **dormant since 2026-09-30** ([ADR 0028](0028-omp-runtime.md): no metered leg exists — see end)
+- **Status:** accepted; **dormant since 2026-09-30** ([ADR 0028](0028-omp-runtime.md): no metered leg exists); **amended 2026-10-06 by [ADR 0029](0029-jev-system-one.md)** (Jev is the one metered leg; ceiling active for it — see end)
 - **Date:** 2026-07-15
 - **Deciders:** Paco
 - **Relates to:** extends the breaker pattern of [ADR 0003](0003-global-budget-breaker.md)
@@ -116,3 +116,11 @@ Kimi Code, OpenAI Codex), and voice runs on the flat-rate `agy-cli` leg. The `ki
 `cost_usd: 0` (shown as "sub" in `/usage`). The ceiling code, its env vars and its `/status` line
 stay, dormant, for any future metered leg. The live gate checks that no `llm_attempt` on an OAuth
 provider has `cost_usd > 0`.
+
+## Amendment (2026-10-06): the metered leg is Jev (ADR 0029)
+
+The ceiling is no longer dormant: Jev is its one leg, checked before every attempt and treated as free by Paco.
+401/403, 422, 429 and 529 are alerted incidents (`jev_auth`, `jev_question_invalid`, `jev_rate_limited`,
+`jev_overloaded`), and a missing key opens `jev_no_key` on the first armed turn. The daemon builds the Jev client per
+call (the broker key is read each time), so a key added later takes effect without a restart. Jev is excluded from
+`llm_leg_failing`; these incidents replace it.

@@ -1,6 +1,6 @@
 # ADR 0013: LLM inner composition — code owns the gates, the model composes between them
 
-- **Status:** accepted (direction; flag-gated migration per surface); **amended 2026-09-30 by [ADR 0028](0028-omp-runtime.md)** (composition is omp's loop — see end)
+- **Status:** accepted (direction; flag-gated migration per surface); **amended 2026-09-30 by [ADR 0028](0028-omp-runtime.md)** (composition is omp's loop); **amended 2026-10-06 by [ADR 0029](0029-jev-system-one.md)** (System One stage — see end)
 - **Date:** 2026-07-02
 - **Deciders:** Paco
 - **Relates to:** completes the [ADR 0001](0001-deterministic-harness-governs-everything.md)
@@ -206,3 +206,11 @@ tool call runs daemon-side through `CapabilityRunner` (contract, budget, approva
 code-owned capability map (`src/omp/capability-map.ts`) decides each tool's policy class, never
 the declaration. The turn envelope drops `intent_router` and `llm_answer`, gains `fs_read`,
 `fs_write`, `shell` and `shell_external`, and the per-run `tool_calls` cap goes from 14 to 40.
+
+## Amendment (2026-10-06): a System One stage (ADR 0029)
+
+"Code owns the gates, the model composes between them" becomes: code owns the gates and the thresholds; Jev (a
+non-generative typed decider) answers typed judgment calls under those thresholds; the model composes between them.
+Jev may make Houge more cautious, never less ([ADR 0029](0029-jev-system-one.md) §2). Lane 1 puts the stage in front
+of the planner: a calibrated memory or status verdict is handled in code and skips the planner turn, and any doubt
+falls through to today's path.
