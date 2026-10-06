@@ -4846,6 +4846,30 @@ export class RunStore {
   }
 
   /**
+   * Jev calls at one decision point in (since, until]: an answered call counts once (its question rows share the run), a
+   * skipped call is one row. Skips whose reason is in `notAttempts` are not calls; `failed` counts those in `silent`.
+   */
+  countJevCalls(point: string, since: string, until: string, notAttempts: readonly string[], silent: readonly string[]): { attempts: number; failed: number } {
+    // An empty list must mean "none": `IN (NULL)` matches nothing, but `NOT IN (NULL)` would also match nothing.
+    const inList = (xs: readonly string[]) => (xs.length ? `skip_reason IN (${xs.map(() => "?").join(", ")})` : "0");
+    const row = this.db.prepare(`
+      SELECT
+        COUNT(DISTINCT CASE WHEN status = 'answered' THEN COALESCE(run_id, decision_id) END)
+          + COALESCE(SUM(CASE WHEN status = 'skipped' AND NOT (${inList(notAttempts)}) THEN 1 ELSE 0 END), 0) AS attempts,
+        COALESCE(SUM(CASE WHEN status = 'skipped' AND ${inList(silent)} THEN 1 ELSE 0 END), 0) AS failed
+      FROM jev_decisions
+      WHERE point = ? AND created_at > ? AND created_at <= ?
+    `).get<{ attempts: number; failed: number }>(...notAttempts, ...silent, point, since, until);
+    return row ?? { attempts: 0, failed: 0 };
+  }
+
+  /** Whether any Jev call at `point` was answered after `since` (what resolves a sticky `jev_skip_rate`). */
+  hasAnsweredJevCallSince(point: string, since: string): boolean {
+    return this.db.prepare(`SELECT 1 AS hit FROM jev_decisions WHERE point = ? AND status = 'answered' AND created_at > ? LIMIT 1`)
+      .get<{ hit: number }>(point, since) !== undefined;
+  }
+
+  /**
    * Slice 2 (review W4): a provider tried at least `minAttempts` times in the window with ZERO
    * `ok` is a dead leg — the D1 shape (agy failed every call for ~3 months while `pi` answered),
    * now detectable instead of silent. Reads `llm_attempt` only (history has no failures to

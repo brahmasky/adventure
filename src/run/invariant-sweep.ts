@@ -1,4 +1,6 @@
 import { statfsSync } from "node:fs";
+import type { SkipReason } from "../jev/decide.js";
+import { JEV_INCIDENT_SUBJECT } from "../jev/jev-incidents.js";
 import { resolveApprovalTimeoutMs } from "../omp/omp-config.js";
 import { OMP_LESSON_SCOPES, renderLessonSection } from "./lesson-render.js";
 import { resolveEpisodicCoreCap, TERMINAL_NOTIFICATION_REPORT_MS, type RunStore } from "./run-store.js";
@@ -80,7 +82,8 @@ export const DISK_FREE_LOW_BYTES = 2 * 1024 ** 3;
 /** The kinds the sweep detects — and therefore the ONLY kinds it may resolve. */
 export const SWEEP_INCIDENT_KINDS = [
   "duplicate_schedule", "stuck_run", "undelivered_notification", "overdue_schedule", "failed_schedule",
-  "heartbeat_gap", "llm_leg_failing", "disk_free_low", "wall_collapsed", "lesson_dropped", "embeddings_unavailable", "core_overflow"
+  "heartbeat_gap", "llm_leg_failing", "disk_free_low", "wall_collapsed", "lesson_dropped", "embeddings_unavailable", "core_overflow",
+  "jev_skip_rate"
 ] as const;
 export type IncidentKind = (typeof SWEEP_INCIDENT_KINDS)[number];
 const SWEEP_KINDS: ReadonlySet<string> = new Set(SWEEP_INCIDENT_KINDS);
@@ -203,6 +206,35 @@ function embeddingsViolations(store: RunStore, now: string): InvariantViolation[
   return r.open ? [{ kind: "embeddings_unavailable", subject: "embeddings", detail: { turns: r.turns, without: r.without } }] : [];
 }
 
+/** Window, floor and rate for `jev_skip_rate` (ADR 0029 §3.7): triage calls in the last 24 h. Paco sends a few text turns a day. */
+export const JEV_SKIP_RATE_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const JEV_SKIP_RATE_MIN_ATTEMPTS = 3;
+export const JEV_SKIP_RATE_MAX = 0.5;
+/** Skips that are not a Jev call at all: the flag is off, the turn is gated out, Paco overrode it, or the state was too big to send. */
+export const JEV_NOT_ATTEMPT_REASONS: readonly SkipReason[] = ["disabled", "posture", "modality", "override", "state_too_large"];
+/** Failures that open no incident per call (jev-incidents.ts); auth/429/529/bad question/no key/fuse already page on their own. */
+export const JEV_SILENT_SKIP_REASONS: readonly SkipReason[] = ["timeout", "parse", "transport", "error"];
+
+/**
+ * A silently dead Jev layer: at least {@link JEV_SKIP_RATE_MIN_ATTEMPTS} triage calls in the window and at least half of
+ * them failed silently. Triage then falls through to the planner every turn and Houge looks normal; this makes it loud.
+ * Once open it stays open until an answered call lands: failed rows ageing out of the window prove nothing.
+ */
+export function checkJevSkipRate(
+  store: RunStore, now: string, windowMs = JEV_SKIP_RATE_WINDOW_MS
+): { open: boolean; attempts: number; failed: number } {
+  const since = new Date(Date.parse(now) - windowMs).toISOString();
+  const r = store.countJevCalls("triage", since, now, JEV_NOT_ATTEMPT_REASONS, JEV_SILENT_SKIP_REASONS);
+  if (r.attempts >= JEV_SKIP_RATE_MIN_ATTEMPTS && r.failed / r.attempts >= JEV_SKIP_RATE_MAX) return { open: true, ...r };
+  const open = store.findOpenIncident(store.incidentFingerprint("jev_skip_rate", JEV_INCIDENT_SUBJECT));
+  return { open: open !== undefined && !store.hasAnsweredJevCallSince("triage", open.first_seen_at), ...r };
+}
+
+function jevViolations(store: RunStore, now: string): InvariantViolation[] {
+  const r = checkJevSkipRate(store, now);
+  return r.open ? [{ kind: "jev_skip_rate", subject: JEV_INCIDENT_SUBJECT, detail: { point: "triage", attempts: r.attempts, failed: r.failed } }] : [];
+}
+
 /** Pure detection: compose the store's seven invariant queries into a flat violation list. */
 export function detectViolations(
   store: RunStore,
@@ -211,7 +243,7 @@ export function detectViolations(
   probe: OmpSweepProbe = {}
 ): InvariantViolation[] {
   const violations: InvariantViolation[] = [
-    ...detectOmpViolations(store, probe), ...memoryViolations(store, env), ...embeddingsViolations(store, now)
+    ...detectOmpViolations(store, probe), ...memoryViolations(store, env), ...embeddingsViolations(store, now), ...jevViolations(store, now)
   ];
 
   for (const row of store.findDuplicateEnabledSchedules()) {
