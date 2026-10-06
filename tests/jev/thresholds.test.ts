@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CALIBRATED_ROWS, calibratedLang, calibrationRows, type CalibrationRow } from "../../src/jev/calibration.js";
 import { JEV_MODEL, type JevChoiceAnswer } from "../../src/jev/jev-client.js";
 import { TRIAGE_COMPLETE, TRIAGE_LANE, TRIAGE_QUESTIONS, TRIAGE_SCOPE } from "../../src/jev/questions/triage.js";
@@ -87,6 +87,30 @@ describe("calibrationRows", () => {
     writeFileSync(f, JSON.stringify(rows));
     expect(calibrationRows({ HOUGE_JEV_CALIBRATION_FILE: f })).toHaveLength(rows.length);
     expect(calibrationRows({ HOUGE_JEV_CALIBRATION_FILE: join(dir, "missing.json") })).toEqual([]);
+  });
+  afterEach(() => vi.restoreAllMocks());
+  // Final review (T3 minor): an arming file of the wrong shape must not arm anything, and must not fail silently. The
+  // stderr line names the path only: the file's contents never reach a log.
+  it.each([
+    ["not an array", { rows: [] }],
+    ["a row with a non-string field", [{ question_id: "lane", criteria_hash: 7, model: "m", lang: "zh", approved: "a", evidence: "e" }]],
+    ["a row with a lang outside zh|en", [{ question_id: "lane", criteria_hash: "h", model: "m", lang: "mixed", approved: "a", evidence: "e" }]],
+    ["a null row", [null]]
+  ])("a file that is %s → [] and one stderr line naming the path, never the contents", (_label, body) => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const f = join(mkdtempSync(join(tmpdir(), "jev-cal-")), "bad-SECRETMARK.json");
+    writeFileSync(f, JSON.stringify(body));
+    expect(calibrationRows({ HOUGE_JEV_CALIBRATION_FILE: f })).toEqual([]);
+    expect(err).toHaveBeenCalledTimes(1);
+    expect(String(err.mock.calls[0]![0])).toContain(f);
+    expect(String(err.mock.calls[0]![0])).not.toContain("question_id");
+  });
+  it("an unreadable file is surfaced too (one stderr line naming the path)", () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const f = join(mkdtempSync(join(tmpdir(), "jev-cal-")), "missing.json");
+    expect(calibrationRows({ HOUGE_JEV_CALIBRATION_FILE: f })).toEqual([]);
+    expect(err).toHaveBeenCalledTimes(1);
+    expect(String(err.mock.calls[0]![0])).toContain(f);
   });
 });
 

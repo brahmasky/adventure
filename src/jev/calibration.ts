@@ -24,7 +24,19 @@ export const CALIBRATED_ROWS: readonly CalibrationRow[] = [];
 export function calibrationRows(env: NodeJS.ProcessEnv): readonly CalibrationRow[] {
   const file = env.HOUGE_JEV_CALIBRATION_FILE?.trim();
   if (!file) return CALIBRATED_ROWS;
-  try { return JSON.parse(readFileSync(file, "utf8")) as CalibrationRow[]; } catch { return []; } // unreadable = uncalibrated
+  let parsed: unknown;
+  try { parsed = JSON.parse(readFileSync(file, "utf8")); } catch { parsed = undefined; }
+  if (Array.isArray(parsed) && parsed.every(isCalibrationRow)) return parsed;
+  // Unreadable or malformed = uncalibrated, never silent. The path only: the file's contents never reach a log.
+  console.error(`jev: HOUGE_JEV_CALIBRATION_FILE ${file} is unreadable or not an array of calibration rows; no row armed`);
+  return [];
+}
+
+const ROW_STRINGS = ["question_id", "criteria_hash", "model", "approved", "evidence"] as const;
+function isCalibrationRow(v: unknown): v is CalibrationRow {
+  if (typeof v !== "object" || v === null) return false;
+  const r = v as Record<string, unknown>;
+  return ROW_STRINGS.every((k) => typeof r[k] === "string") && (r.lang === "zh" || r.lang === "en");
 }
 
 export function calibratedLang(questionId: string, hash: string, model: string, lang: Lang, rows: readonly CalibrationRow[] = CALIBRATED_ROWS): "zh" | "en" | undefined {
