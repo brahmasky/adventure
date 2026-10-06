@@ -138,7 +138,8 @@ import { PlannerSupervisor, type SupervisorDeps, type TriageInput, type TriageOu
 import { calibrationRows } from "../jev/calibration.js";
 import { decide, marginOf, persistDecisionRows, recordSkip, type JevDecisionInsert, type SkipReason } from "../jev/decide.js";
 import { createJevClient, type JevRequest, type JevResult } from "../jev/jev-client.js";
-import { resolveJevTriageMode } from "../jev/jev-flags.js";
+import { jevDisarmMarkerPath, resolveJevTriageMode } from "../jev/jev-flags.js";
+import { resolveTriageOverridesIfRearmed } from "../jev/jev-incidents.js";
 import { langOf, type Lang } from "../jev/intent-question.js";
 import { buildTriageState, lastHougeTurnOf, TRIAGE_QUESTIONS } from "../jev/questions/triage.js";
 import { resolveTriageBars, THRESHOLD_VERSION, triageVerdict, type TriageDecision } from "../jev/thresholds.js";
@@ -2555,6 +2556,7 @@ export class CoreWorker {
   private async triageTurnInner(i: TriageInput, state: OmpTurnState | undefined, lang: Lang,
     held: { answered?: Extract<TriageSettle, { kind: "answered" }> }): Promise<TriageOutcome> {
     const run_id = i.claim.run_id;
+    resolveTriageOverridesIfRearmed(this.runStore, jevDisarmMarkerPath(process.env, this.ompDataDir()));
     const mode = resolveJevTriageMode(process.env, this.ompDataDir());
     if (mode === "off") return this.triageSkip(i, state, lang, "disabled");
     if (this.runStore.triageOverrideFor(run_id)) return this.triageSkip(i, state, lang, "override");

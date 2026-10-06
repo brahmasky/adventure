@@ -1,8 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { JEV_MODEL, createJevClient } from "../../src/jev/jev-client.js";
 import { decide, marginOf, persistDecisionRows, recordSkip, stateHash } from "../../src/jev/decide.js";
 import { TRIAGE_QUESTIONS } from "../../src/jev/questions/triage.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
+import { JEV_INCIDENT_SUBJECT } from "../../src/jev/jev-incidents.js";
+import { ALERT_REOPEN_QUIET_MS } from "../../src/run/incident-alert.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { recordingSink } from "../helpers/llm-audit.js";
 
@@ -18,6 +20,8 @@ function setup(fetchImpl: typeof fetch, apiKey: string | null = "k") {
   const client = createJevClient({ apiKey: apiKey ?? undefined, audit: recordingSink(), meteredBreached: () => false, retries: 0, timeoutMs: 1000, fetchImpl });
   return { store, client, input: { point: "triage" as const, run_id: "run_1", state: { latest_message: "x" }, questions: TRIAGE_QUESTIONS, lang: "zh" as const, client, store, thresholdVersion: "v1" } };
 }
+
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 
 // Spec §3.2/§3.4: decide() never applies a threshold and never writes; the caller persists rows in its own transaction.
 describe("decide", () => {
@@ -61,6 +65,36 @@ describe("decide", () => {
     const { store, input } = setup(vi.fn(async () => json(200, { model: JEV_MODEL, answers: {}, usage: { input_tokens: 1 } })) as unknown as typeof fetch);
     expect(await decide(input)).toEqual({ status: "skipped", reason: "parse" });
     expect(store.listOpenIncidents()).toHaveLength(0);
+    store.close();
+  });
+  // Final review I1: openAlertedIncident dedupes on the OPEN fingerprint, so an incident nothing resolves swallows every
+  // later outage of its kind. An answered call proves Jev is reachable, authorised and the questions valid: it resolves
+  // the open Jev outage incidents so the next 429 pages again (the standing direction: 429 / auth must reach Paco).
+  it("429 → answered → 429 (past the flap quiet window) opens and pages twice", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.stubEnv("HOUGE_TELEGRAM_CHAT_ID", "555");
+    const replies = [json(429, {}), json(200, okBody()), json(429, {})];
+    const { store, input } = setup(vi.fn(async () => replies.shift()!) as unknown as typeof fetch);
+    vi.setSystemTime(new Date("2026-10-01T00:00:00.000Z"));
+    expect(await decide(input)).toEqual({ status: "skipped", reason: "rate_limited" });
+    vi.setSystemTime(new Date("2026-10-01T00:01:00.000Z"));
+    expect((await decide(input)).status).toBe("answered");
+    expect(store.listOpenIncidents()).toHaveLength(0);
+    vi.setSystemTime(new Date(Date.parse("2026-10-01T00:01:00.000Z") + ALERT_REOPEN_QUIET_MS + 1000));
+    expect(await decide(input)).toEqual({ status: "skipped", reason: "rate_limited" });
+    const alerts: unknown[] = [];
+    for (let n = store.claimNextNotification("t", 30); n; n = store.claimNextNotification("t", 30)) alerts.push(n.payload);
+    expect(alerts).toHaveLength(2);
+    expect(store.listOpenIncidents().map((i) => i.kind)).toEqual(["jev_rate_limited"]);
+    store.close();
+  });
+  it("an answered call resolves every open Jev outage kind on the jev subject, and nothing else", async () => {
+    const { store, input } = setup(vi.fn(async () => json(200, okBody())) as unknown as typeof fetch);
+    for (const kind of ["jev_auth", "jev_rate_limited", "jev_overloaded", "jev_no_key", "jev_question_invalid", "triage_overrides"]) {
+      store.openIncident({ kind, subject: JEV_INCIDENT_SUBJECT, detail: {} });
+    }
+    store.openIncident({ kind: "jev_auth", subject: "elsewhere", detail: {} });
+    expect((await decide(input)).status).toBe("answered");
+    expect(store.listOpenIncidents().map((i) => `${i.kind}:${i.subject}`).sort()).toEqual([`triage_overrides:${JEV_INCIDENT_SUBJECT}`, "jev_auth:elsewhere"].sort());
     store.close();
   });
   it("recordSkip writes the pre-call skipped row for disabled/posture/modality", () => {

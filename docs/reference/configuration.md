@@ -914,7 +914,9 @@ the denominator), `ack_nudged`, `lesson_saved`, `lesson_change_undone`, `triage_
 
 **Incidents** (the first failure opens one and alerts Paco): `jev_auth`, `jev_rate_limited`, `jev_overloaded`,
 `jev_question_invalid`, `jev_no_key`, `triage_overrides` (the override rate crossed the auto-disable bar),
-`triage_threw`. Jev is excluded from `llm_leg_failing`; its failures surface as these instead. `LlmErrorKind` gains
+`triage_threw`. The next answered Jev call resolves any open `jev_*` incident, and `triage_overrides` resolves on the
+next turn once the disarm marker is gone, so a later episode opens and pages again (flap-damped). Jev is excluded from
+`llm_leg_failing`; its failures surface as these instead. `LlmErrorKind` gains
 `rate_limited`, `overloaded`, `malformed_question`.
 
 **Tables:** `jev_decisions` (one row per answered or skipped question: ids, probabilities, thresholds, outcome) and

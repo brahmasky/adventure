@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { RunStore } from "../run/run-store.js";
 import type { Lang } from "./intent-question.js";
 import type { JevChoiceAnswer, JevRequest, JevResult } from "./jev-client.js";
-import { openJevIncident } from "./jev-incidents.js";
+import { openJevIncident, resolveJevIncidentsOnAnswer } from "./jev-incidents.js";
 import { criteriaHash, toJevQuestion, type Question } from "./questions/types.js";
 
 /**
@@ -72,6 +72,7 @@ export async function decide(i: DecideInput): Promise<Decision> {
     openJevIncident(i.store, r, { point: i.point, run_id: i.run_id });
     return { status: "skipped", reason: skipReasonOf(r) };
   }
+  resolveJevIncidentsOnAnswer(i.store); // like the open, independent of whether this turn is still live
   const now = i.now?.().toISOString();
   const sh = stateHash(i.state);
   const rows: JevDecisionInsert[] = [];

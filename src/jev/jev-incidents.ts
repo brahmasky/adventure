@@ -1,5 +1,6 @@
+import { existsSync } from "node:fs";
 import { JEV_PROVIDER } from "../llm/metered-pricing.js";
-import { openAlertedIncident } from "../run/incident-alert.js";
+import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
 import type { RunStore } from "../run/run-store.js";
 import type { JevResult } from "./jev-client.js";
 
@@ -26,4 +27,23 @@ export function openJevIncident(store: RunStore, r: JevFailure, detail: Record<s
   const kind = jevIncidentKind(r);
   if (!kind) return;
   openAlertedIncident(store, { kind, subject: JEV_INCIDENT_SUBJECT, detail: { ...detail, error_kind: r.error_kind ?? null, reason: r.reason } });
+}
+
+/** The conditions an ANSWERED call disproves: Jev is reachable, authorised, keyed, under its limits, and the questions valid. */
+export const JEV_ANSWERED_RESOLVES: ReadonlySet<string> = new Set<JevIncidentKind>(["jev_auth", "jev_rate_limited", "jev_overloaded", "jev_no_key", "jev_question_invalid"]);
+
+/** Resolve them so the next outage opens (and pages) again: openAlertedIncident dedupes on the OPEN fingerprint. */
+export function resolveJevIncidentsOnAnswer(store: RunStore): number {
+  return resolveOpenIncidents(store, JEV_ANSWERED_RESOLVES, JEV_INCIDENT_SUBJECT);
+}
+
+export const TRIAGE_OVERRIDE_KINDS: ReadonlySet<string> = new Set(["triage_overrides"]);
+
+/**
+ * `triage_overrides` is a condition whose durable state is the disarm marker (spec §5.8): it resolves once Paco has deleted
+ * the marker, so a later drift episode opens and pages again. While the marker exists it stays open (one page per episode).
+ */
+export function resolveTriageOverridesIfRearmed(store: RunStore, markerPath: string): number {
+  if (existsSync(markerPath)) return 0;
+  return resolveOpenIncidents(store, TRIAGE_OVERRIDE_KINDS, JEV_INCIDENT_SUBJECT);
 }

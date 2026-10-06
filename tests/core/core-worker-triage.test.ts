@@ -1,9 +1,10 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SecretBroker } from "../../src/config/secret-broker.js";
 import { JEV_MODEL } from "../../src/jev/jev-client.js";
+import { JEV_INCIDENT_SUBJECT } from "../../src/jev/jev-incidents.js";
 import { TRIAGE_LANE, TRIAGE_QUESTIONS } from "../../src/jev/questions/triage.js";
 import { TRIAGE_STATUS_ARM_ID } from "../../src/jev/thresholds.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
@@ -147,6 +148,21 @@ describe("CoreWorker.triageTurn (spec §5.1 flow; every exit leaves exactly one 
     expect(await worker.triageTurn(t.input)).toEqual({ kind: "fallthrough" });
     expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", lane: "status", decision: "fallback" }]);
     expect(decisions(store, t.run_id).every((r) => r.decision === "fallback")).toBe(true);
+    store.close();
+  });
+  // Final review I1: triage_overrides is a condition whose durable state is the disarm marker. It resolves once Paco has
+  // deleted the marker, so a later drift episode opens (and pages) again; while the marker exists it stays open.
+  it("triage_overrides resolves on the next turn once the disarm marker is gone, and stays open while it exists", async () => {
+    const { store, worker, turn } = setup(jevSays({ none: 0.9, status: 0.05, memory: 0.05 }));
+    const marker = join(mkdtempSync(join(tmpdir(), "htri-mk-")), "houge.jev-disarmed");
+    vi.stubEnv("HOUGE_JEV_DISARM_PATH", marker);
+    writeFileSync(marker, JSON.stringify({ reason: "triage_overrides", at: "x" }));
+    store.openIncident({ kind: "triage_overrides", subject: JEV_INCIDENT_SUBJECT, detail: {} });
+    await worker.triageTurn(turn("hello").input);
+    expect(store.listOpenIncidents().map((i) => i.kind)).toEqual(["triage_overrides"]);
+    rmSync(marker);
+    await worker.triageTurn(turn("hello again").input);
+    expect(store.listOpenIncidents()).toHaveLength(0);
     store.close();
   });
   it("shadow mode: rows written with decision 'shadow', behaviour unchanged", async () => {
