@@ -823,11 +823,11 @@ fails the turn with a one-line reply and a `media_ingested` row; resend to retry
 node scripts/live-gate-media.mjs   # opt-in: four real turns in memory on the omp planner; voice on agy, photos on omp
 ```
 
-## Jev intent shadow — replay and live shadow (spec 2026-09-25)
+## Jev intent shadow — offline replay (spec 2026-09-25)
 
-> **Dormant since the omp cutover (2026-10).** The classifier call is gone, so the live shadow has
-> nothing to shadow. `HOUGE_JEV_SHADOW_ENABLED` has left `DISARM_FLAGS`, and no caller reads its
-> resolver. The replay still reads historical rows.
+> **Live shadow removed 2026-10-06** (superseded by [ADR 0029](../decisions/0029-jev-system-one.md)): its code,
+> its report and `HOUGE_JEV_SHADOW_ENABLED` are gone; historical `intent_shadow` rows stay in the ledger. The offline
+> `houge jev-shadow replay` below still runs.
 
 [Jev](https://docs.typesafe.ai/llms.txt) (TypeSafe's "System One" model) answers typed questions
 with calibrated probabilities; it does not generate text. The question under test: can Jev take
@@ -861,27 +861,6 @@ node scripts/live-gate-jev.mjs             # opt-in real-API gate (3 fixed messa
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `TYPESAFE_API_KEY` | — | Broker secret #9. Held by the secrets broker when the firewall is armed (stripped from `process.env` like every `*_API_KEY`); sent only as the `Authorization` header to `api.typesafe.ai`; never logged. Unset → every Jev call is audited `unavailable`/`auth` and the replay stops. |
-| `HOUGE_JEV_SHADOW_ENABLED` | off | **Dormant, superseded by [ADR 0029](../decisions/0029-jev-system-one.md).** Arms the live intent shadow. Accepts 1/true/yes/on; read per turn; not in `DISARM_FLAGS` (no caller reads it). On without `TYPESAFE_API_KEY` → one boot warning and the shadow stays off. |
-
-**Live shadow** (flag-gated, default OFF). With `HOUGE_JEV_SHADOW_ENABLED` on, every real
-`classifyIntent` also asks Jev the same question, **concurrently and never awaited**: the turn uses
-the classifier's label exactly as before, and Jev's answer is written to the ledger only (one
-`intent_shadow` row per classified turn: `status`, the classifier's raw `llm_intent`, `llm_parsed`,
-`lang`, Jev's label/confidence/model/latency or a code-owned `jev_error` — never message text). The
-Jev call is audited as `llm_attempt` role `classify_shadow` (5 s timeout, no retries, metered fuse);
-a rejected key opens an `llm_leg_failing` incident for subject `jev` at the next invariant sweep
-(12 h cadence). `/disarm` turns it off (the flag
-is in `DISARM_FLAGS` and read per turn).
-
-```bash
-houge jev-shadow report                    # PROMOTE / HOLD / KILL per language
-houge jev-shadow report --since 2026-10-01T00:00:00Z   # narrows the evaluated rows; tenure still counts from the first shadow row
-```
-
-The verdict per language is HOLD until ≥ 60 matched turns and ≥ 28 days since the first shadow row,
-then PROMOTE only if Jev agrees with the classifier ≥ 90% at confidence ≥ 0.7 on ≥ 60% of that
-language's turns (else KILL). The report also prints the costly direction (Jev overruling a
-`research` call) and clarify agreement, which never gate. Promotion itself is a separate spec.
 
 ## Jev System One (ADR 0029)
 
@@ -990,8 +969,7 @@ the cutover deletions) and not at the head of `feat/omp-runtime`, checked by gre
 | `HOUGE_BOUNTY_ENABLED` · `HOUGE_BOUNTY_MAX_CANDIDATES` | Money track, `bounty_scan` | Deleted ([ADR 0022 amendment](../decisions/0022-money-fork-reopened.md)) |
 | `HOUGE_EXTWORK_ENABLED` · `HOUGE_EXTWORK_IMAGE` · `HOUGE_EXTWORK_MEMORY` · `HOUGE_EXTWORK_CPUS` · `HOUGE_EXTWORK_PIDS` · `HOUGE_EXTWORK_SIZE_CAP_MB` · `HOUGE_EXTWORK_SCRATCH_DIR` · `HOUGE_EXTWORK_CLONE_TIMEOUT_MS` · `HOUGE_EXTWORK_STAGE_TIMEOUT_MS` | External workspace | Deleted ([ADR 0023 amendment](../decisions/0023-external-workspace.md)) |
 
-Still parsed but inert: `HOUGE_JEV_SHADOW_ENABLED` (superseded by ADR 0029). Its resolver in `src/jev/shadow.ts` survives, but
-nothing calls it. Secrets with no consumer: `KIMI_API_KEY`, `GEMINI_API_KEY`,
+`HOUGE_JEV_SHADOW_ENABLED` was removed with the live intent shadow (2026-10-06; ADR 0029). Secrets with no consumer: `KIMI_API_KEY`, `GEMINI_API_KEY`,
 `CLAUDE_CODE_OAUTH_TOKEN` (see [Secrets firewall](#secrets-firewall-adr-0015-phase-1)).
 
 These were documented here but unread even before the cutover, and their rows are gone too:

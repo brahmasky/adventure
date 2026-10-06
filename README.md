@@ -308,8 +308,8 @@ calibrated confidence in a few hundred milliseconds. Before the omp cutover ever
 over. First run, 2026-09-26: **GO**, 91.7% agreement at confidence ≥ 0.7 on Paco's own 294 messages
 (57% coverage), $0.035.
 
-The classifier call is gone under omp, so the live shadow is **dormant**: its flag has no effect.
-`houge jev-shadow report` still reads the historical shadow rows. Design:
+The classifier call is gone under omp, and the live shadow was removed on 2026-10-06; Jev now runs as System One
+([ADR 0029](docs/decisions/0029-jev-system-one.md)). Design of the original trial:
 `docs/superpowers/specs/2026-09-25-jev-intent-shadow-design.md`.
 
 **Jev System One (ADR 0029, lane 1 built, flags default off).** Jev now sits in front of the planner as a typed

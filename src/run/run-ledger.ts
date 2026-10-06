@@ -201,6 +201,7 @@ const requiredPayloadFields = {
   // Jev intent shadow (spec 2026-09-25 §"Live shadow" + 2026-09-26 amendments): ONE row per classified
   // turn while the shadow is armed — every status, so the report has a denominator. Labels, numbers,
   // a lang tag and a code-owned error string ONLY — never message text (bodies stay out of the ledger).
+  // Historical only since 2026-10-06: the live intent shadow was removed (superseded by ADR 0029); rows stay readable.
   intent_shadow: ["status", "llm_intent", "llm_parsed", "lang"],
   // Multimodal ingest (spec 2026-09-29): ONE row per media turn, whatever happened. Kind, status,
   // counts and tags ONLY — never a transcript, caption, file id, file name or path.
