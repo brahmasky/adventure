@@ -14,8 +14,8 @@ import { wilsonLower } from "./wilson.js";
  */
 export interface TriageShadowStats {
   days: number; matched_lesson_write: number; pure_on_tool_turns: number; pure_on_no_tool_turns: number;
-  /** `jev_decisions.state_hash` of the live shadow `lane` rows: the state-parity check against the replay. */
-  live_state_hashes?: string[];
+  /** The live shadow `lane` rows' run and `jev_decisions.state_hash`: the state-parity check against the replay. */
+  live_state_rows?: Array<{ run_id: string; state_hash: string }>;
 }
 export interface TriageReportOutcome {
   spentUsd: number; estimatedUsd: number; stopped?: string;
@@ -158,12 +158,24 @@ function shadowLines(shadow: TriageShadowStats | undefined, rows: TriageReplayRo
   if (shadow.pure_on_tool_turns > 0 || shadow.pure_on_no_tool_turns > 0) failures.push("shadow pure verdicts on tool / no-tool turns");
   const lines = [`live shadow: ${shadow.days} days (≥ ${TRIAGE_GO.shadowDays}); matched lesson_write ${shadow.matched_lesson_write} (≥ ${TRIAGE_GO.shadowMatched}); ` +
     `pure on other-tool turns ${shadow.pure_on_tool_turns} (= 0); pure on no-tool turns ${shadow.pure_on_no_tool_turns} (= 0)`];
-  if (shadow.live_state_hashes) {
-    const replayed = new Set(rows.map((r) => r.state_hash));
-    const miss = shadow.live_state_hashes.filter((h) => !replayed.has(h)).length;
-    lines.push(`live rows with no replay state match: ${miss} of ${shadow.live_state_hashes.length} (a broker-redacted turn hashes differently; spec state-parity note)`);
-  }
+  if (shadow.live_state_rows) parityCheck(shadow.live_state_rows, rows, lines, failures);
   return { lines, failures };
+}
+
+/**
+ * State parity: a live row is comparable when its run was replayed with a state (the live instant is its own row). Any
+ * comparable mismatch blocks the rows. Neither side records whether a broker redacted the live state, so a broker-explained
+ * mismatch cannot be told apart from a parity bug: every mismatch blocks, and the line says so.
+ */
+function parityCheck(live: Array<{ run_id: string; state_hash: string }>, rows: TriageReplayRow[], lines: string[], failures: string[]): void {
+  const byRun = new Map<string, Set<string>>();
+  for (const r of rows) if (r.state_hash) byRun.set(r.run_id, (byRun.get(r.run_id) ?? new Set()).add(r.state_hash));
+  const comparable = live.filter((l) => byRun.has(l.run_id));
+  const miss = comparable.filter((l) => !byRun.get(l.run_id)!.has(l.state_hash)).length;
+  const summary = `state parity: ${miss} of ${comparable.length} comparable live row(s) mismatch`;
+  lines.push(`${summary}; ${live.length - comparable.length} live row(s) not comparable (run not replayed)` +
+    (miss > 0 ? " — broker redaction cannot be told apart from a parity bug in the data, so every mismatch blocks" : ""));
+  if (miss > 0) failures.push(summary);
 }
 
 /** Memory rows (lane, complete, scope) when the memory bars hold; the `lane:status` row only when the status bar holds. */

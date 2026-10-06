@@ -141,10 +141,21 @@ describe("formatTriageReport", () => {
       expect(formatTriageReport(lowish, labels, outcome, { ...TRIAGE_BAR_DEFAULTS, minStatus: 0.4 }, perm, SHADOW_OK)).toMatch(/^INCOMPLETE.*1 required turn\(s\) unlabelled/m);
     });
 
-    it("counts live shadow rows whose state found no replay match (the broker-redaction parity gap)", () => {
+    // Codex whole-diff RISK: the replay is only evidence for the live gate if it asked Jev about the same state. A comparable
+    // live row (its run was replayed) whose state_hash differs blocks the rows; the data cannot tell a broker-redacted
+    // turn from a real parity bug, so every mismatch blocks and the text says so. A live row whose run was not replayed is
+    // listed, not compared.
+    it("blocks ROWS TO ADD on any state-parity mismatch for a comparable live row, and lists non-comparable rows visibly", () => {
       const { rows, labels, perm } = passing();
-      const text = formatTriageReport(rows, labels, outcome, TRIAGE_BAR_DEFAULTS, perm, { ...SHADOW_OK, live_state_hashes: ["h", "zz"] });
-      expect(text).toMatch(/live rows with no replay state match: 1 of 2/);
+      const parity = (live: Array<{ run_id: string; state_hash: string }>) =>
+        formatTriageReport(rows, labels, outcome, TRIAGE_BAR_DEFAULTS, perm, { ...SHADOW_OK, live_state_rows: live });
+      const match = parity([{ run_id: "r", state_hash: "h" }, { run_id: "not-replayed", state_hash: "zz" }]);
+      expect(match).toMatch(/ROWS TO ADD/);
+      expect(match).toMatch(/state parity: 0 of 1 comparable live row\(s\) mismatch; 1 live row\(s\) not comparable/);
+      const mismatch = parity([{ run_id: "r", state_hash: "h" }, { run_id: "r", state_hash: "zz" }]);
+      expect(mismatch).not.toMatch(/ROWS TO ADD/);
+      expect(mismatch).toMatch(/STOP \/ NO-GO.*state parity: 1 of 2 comparable live row\(s\) mismatch/);
+      expect(mismatch).toMatch(/broker redaction cannot be told apart/);
     });
   });
 });

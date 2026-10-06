@@ -1273,11 +1273,11 @@ export class RunStore {
       else if (caps.length === 0) stats.pure_on_no_tool_turns += 1;
     }
     stats.days = new Set(rows.map((r) => r.occurred_at.slice(0, 10))).size; // distinct UTC days with a shadow row
-    stats.live_state_hashes = this.db.prepare(`
-      SELECT state_hash FROM jev_decisions
+    stats.live_state_rows = this.db.prepare(`
+      SELECT run_id, state_hash FROM jev_decisions
       WHERE point = 'triage' AND question_id = 'lane' AND decision = 'shadow' AND state_hash IS NOT NULL AND created_at >= ?
       ORDER BY created_at ASC, rowid ASC
-    `).all<{ state_hash: string }>(sinceIso).map((r) => r.state_hash);
+    `).all<{ run_id: string | null; state_hash: string }>(sinceIso).map((r) => ({ run_id: r.run_id ?? "", state_hash: r.state_hash }));
     return stats;
   }
 

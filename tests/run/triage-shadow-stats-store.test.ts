@@ -45,7 +45,7 @@ describe("RunStore.triageShadowStats", () => {
       laneDecision(store, r1, "s1", "shadow", "complete"); // one hash per turn: the lane row only
       laneDecision(store, r1, "s9", "fallback");
       expect(store.triageShadowStats("2026-09-25T00:00:00.000Z")).toEqual({
-        days: 5, matched_lesson_write: 3, pure_on_tool_turns: 1, pure_on_no_tool_turns: 1, live_state_hashes: ["s1"]
+        days: 5, matched_lesson_write: 3, pure_on_tool_turns: 1, pure_on_no_tool_turns: 1, live_state_rows: [{ run_id: r1, state_hash: "s1" }]
       });
     } finally {
       store.close();
@@ -70,7 +70,7 @@ describe("RunStore.triageShadowStats", () => {
   it("an empty shadow is zero days, never a pass", () => {
     const store = RunStore.openInMemory();
     try {
-      expect(store.triageShadowStats("2026-09-25T00:00:00.000Z")).toEqual({ days: 0, matched_lesson_write: 0, pure_on_tool_turns: 0, pure_on_no_tool_turns: 0, live_state_hashes: [] });
+      expect(store.triageShadowStats("2026-09-25T00:00:00.000Z")).toEqual({ days: 0, matched_lesson_write: 0, pure_on_tool_turns: 0, pure_on_no_tool_turns: 0, live_state_rows: [] });
     } finally {
       store.close();
     }

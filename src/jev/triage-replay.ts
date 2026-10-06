@@ -22,7 +22,7 @@ import { resolveTriageBars, TRIAGE_STATUS_ARM_ID, triageVerdict, type TriageBars
  * answered triage `jev_decisions` row, else its `triage` event), and the anchor otherwise. Known gaps: no broker in the
  * CLI (a turn carrying one of the broker secrets hashes differently); live cut the thread at claim and built the state
  * just before the Jev call, while the recorded instant is just after it, so an age on a half-second boundary can differ
- * by one; a pre-shadow turn has only its anchor. The report counts live rows with no replay match.
+ * by one; a pre-shadow turn has only its anchor. The report blocks rows on any comparable live mismatch.
  */
 export const TRIAGE_REPLAY_OUT = ".houge/jev-triage/replay.jsonl";
 export const TRIAGE_PERMUTED_OUT = ".houge/jev-triage/replay-permuted.jsonl";
