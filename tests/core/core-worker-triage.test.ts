@@ -138,6 +138,17 @@ describe("CoreWorker.triageTurn (spec §5.1 flow; every exit leaves exactly one 
     expect(llm).not.toHaveBeenCalled();
     store.close();
   });
+  // Final review (T9 deferred minor): an `act` row on a turn the planner then answered corrupts the status precision evidence
+  // the arm decision reads. The status text renders first; a render throw settles exactly one answered `fallback` row.
+  it("status: a render throw settles one answered fallback row (never act) and falls through to the planner", async () => {
+    const { store, worker, turn } = setup(jevSays({ none: 0.1, status: 0.85, memory: 0.05 }));
+    vi.spyOn(worker as unknown as { hougeStatusText: () => string }, "hougeStatusText").mockImplementation(() => { throw new Error("render"); });
+    const t = turn("did you restart?");
+    expect(await worker.triageTurn(t.input)).toEqual({ kind: "fallthrough" });
+    expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", lane: "status", decision: "fallback" }]);
+    expect(decisions(store, t.run_id).every((r) => r.decision === "fallback")).toBe(true);
+    store.close();
+  });
   it("shadow mode: rows written with decision 'shadow', behaviour unchanged", async () => {
     const { store, worker, turn } = setup(jevSays(MEMORY), { HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "shadow" });
     const t = turn("以后回复短一点");

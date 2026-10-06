@@ -2587,8 +2587,10 @@ export class CoreWorker {
     answered: (d: "act" | "fallback") => TriageSettle): Promise<TriageOutcome> {
     const chatId = this.chatOf(i.claim.run_id);
     if (v.kind === "status") {
+      // Render first: a render throw reaches triageTurn's catch, which settles one answered `fallback` row (never `act`).
+      const text = this.hougeStatusText(chatId);
       this.settleTriage(i, state, lang, answered("act"));
-      return { kind: "lane_reply", text: this.hougeStatusText(chatId), buttons: [] };
+      return { kind: "lane_reply", text, buttons: [] };
     }
     const w = await this.runLessonWrite(i.claim, chatId, { scope: v.scope }, { source: "lane", signal: i.signal,
       inTx: () => this.settleTriage(i, state, lang, answered("act"), { inTx: true }) });
