@@ -72,13 +72,13 @@ export async function decide(i: DecideInput): Promise<Decision> {
     openJevIncident(i.store, r, { point: i.point, run_id: i.run_id });
     return { status: "skipped", reason: skipReasonOf(r) };
   }
+  if (i.questions.some((q) => !r.answers[q.id])) return { status: "skipped", reason: "parse" }; // fail loud, never partial
   resolveJevIncidentsOnAnswer(i.store); // like the open, independent of whether this turn is still live
   const now = i.now?.().toISOString();
   const sh = stateHash(i.state);
   const rows: JevDecisionInsert[] = [];
   for (const q of i.questions) {
-    const a = r.answers[q.id];
-    if (!a) continue; // validated by the client: every requested id is present
+    const a = r.answers[q.id]!; // checked above: every requested id is present
     rows.push({
       run_id: i.run_id, point: i.point, question_id: q.id, criteria_hash: criteriaHash(q), model_reported: r.model, state_hash: sh, lang: i.lang,
       answers_json: JSON.stringify(a.probabilities), confidence: a.confidence, top_prob: Math.max(...Object.values(a.probabilities)), margin: marginOf(a),

@@ -97,6 +97,15 @@ describe("decide", () => {
     expect(store.listOpenIncidents().map((i) => `${i.kind}:${i.subject}`).sort()).toEqual([`triage_overrides:${JEV_INCIDENT_SUBJECT}`, "jev_auth:elsewhere"].sort());
     store.close();
   });
+  // Final review (T5 minor): a requested question with no answer must fail loud, never return a partial answer set that
+  // a gate would read as "no row for that question". A client that skipped its own validation is the realistic case.
+  it("a requested question with no answer is skipped{parse} (fail loud), never a partial answer set", async () => {
+    const { store, input } = setup(vi.fn() as unknown as typeof fetch);
+    const answers = okBody().answers as Record<string, unknown>; delete answers.scope;
+    const client = vi.fn(async () => ({ ok: true as const, model: JEV_MODEL, answers, latency_ms: 5, input_tokens: 9, output_tokens: 0 }));
+    expect(await decide({ ...input, client: client as unknown as typeof input.client })).toEqual({ status: "skipped", reason: "parse" });
+    store.close();
+  });
   it("recordSkip writes the pre-call skipped row for disabled/posture/modality", () => {
     const store = RunStore.openInMemory();
     recordSkip(store, "triage", "run_9", "en", "posture");
