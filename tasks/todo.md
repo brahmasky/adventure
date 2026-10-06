@@ -11,7 +11,7 @@ off; `CALIBRATED_ROWS` ships empty, so the lane cannot act even when armed.
 - [ ] **Paco:** run the replay (`houge jev replay triage --max-usd 0.5`; 293 turns, about $0.033).
 - [ ] **Paco:** the labelling sitting (`houge jev label triage --sample=40`).
 - [ ] **Paco:** read `houge jev report triage`; commit calibration rows per language from its "ROWS TO ADD" block (memory arms on `lane`+`complete`+`scope`; status on its own `lane:status` row). `arm` waits for the spec §5.9 bars and 14 shadow days.
-- [ ] **Paco (his hand):** the AGENTS.md invariant sentence, appended to the flat-rate line: "Jev (TypeSafe System One), a non-generative typed decider, sits in front of the chains under ADR 0029; it never gates an action and every outage reaches Paco."
+- [x] **Paco (his hand, applied 2026-10-06 at his instruction):** the AGENTS.md invariant sentence, appended to the flat-rate line: "Jev (TypeSafe System One), a non-generative typed decider, sits in front of the chains under ADR 0029; it never gates an action and every outage reaches Paco."
 - [x] 2026-10-06 arming preconditions built: `jev_skip_rate` sweep invariant and the recorded state instants
   (`thread_cut_at`, `state_built_at`) for exact replay parity. 255 files / 3468 tests green; live gate PASS (35 checks,
   cases 7 parity and 8 skip rate added).

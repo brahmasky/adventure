@@ -13,7 +13,7 @@ Houge (猴哥) is an autonomous self-evolving, Telegram-first daemon on Paco's M
 
 ## Invariants (locked; change only by a new ADR and Paco's hand)
 - `dependencies: {}` stays empty (ADR 0001, 0016). Node stdlib plus devDeps only.
-- Claude may run in the runtime only as a subscription model through omp (ADR 0028, D7), never through a metered API or the Claude Code CLI. Default LLM chains are flat-rate subscription legs only: omp under profile `houge`, agy-cli for voice, codex for the self-write writer. Metered APIs are the capped escape hatch (ADR 0019).
+- Claude may run in the runtime only as a subscription model through omp (ADR 0028, D7), never through a metered API or the Claude Code CLI. Default LLM chains are flat-rate subscription legs only: omp under profile `houge`, agy-cli for voice, codex for the self-write writer. Metered APIs are the capped escape hatch (ADR 0019). Jev (TypeSafe System One), a non-generative typed decider, sits in front of the chains under ADR 0029; it never gates an action and every outage reaches Paco.
 - Two hard lines: no adverse impact to Houge's own operation; no secret leak. The main process holds no ambient credentials (ADR 0015).
 - Code owns the gates, the model composes between them (ADR 0013). Routing, retries, status codes, deterministic transforms: plain code. Judgment calls only: LLM.
 - Protected surface (`src/capabilities/self-write-guard.ts`, `PROTECTED_DIRS` / `PROTECTED_FILES`): `AGENTS.md`, `docs/decisions/`, `src/policy/`, gate machinery, kill switch. Paco's hand only, never a self-write.

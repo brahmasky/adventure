@@ -105,7 +105,7 @@ fall-through; **System Two (omp seats)** composes inside the lane code picked. C
 
 ---
 
-## Amendments to prior ADRs (appended 2026-10-06 to 0013, 0014 and 0019; the AGENTS.md line awaits Paco)
+## Amendments to prior ADRs (appended 2026-10-06 to 0013, 0014, 0019 and AGENTS.md)
 
 **ADR 0013 §Decision — System One stage (2026-10-06).** "Code owns the gates, the model composes between them" becomes:
 code owns the gates and the thresholds; Jev (a non-generative typed decider) answers typed judgment calls under those
@@ -118,7 +118,7 @@ closed-enum component from a third model family; it never decides whether the wa
 **ADR 0019 — the metered leg is Jev (2026-10-06).** The ceiling is no longer dormant: Jev is its one leg, checked before
 every attempt, treated as free by Paco. 401/403, 422, 429 and 529 are alerted incidents.
 
-**AGENTS.md invariant (Paco's hand).** Append to the flat-rate line: "Jev (TypeSafe System One), a non-generative typed
+**AGENTS.md invariant (Paco's instruction, applied 2026-10-06).** Appended to the flat-rate line: "Jev (TypeSafe System One), a non-generative typed
 decider, sits in front of the chains under ADR 0029; it never gates an action and every outage reaches Paco."
 
 ## Build notes (2026-10-06, lane 1 built on `feat/jev-lane1`, not merged)

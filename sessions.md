@@ -1495,5 +1495,5 @@ Build + independent adversarial verification subagents; each live round found a 
   and the 5-call floor at Paco's volume (sticky + floor 3), an empty `NOT IN` list, weak boundary tests, gate case 8
   depending on the copy's rows and hitting the per-chat rate limit. 255 files / 3468 tests green; live gate run 2 PASS
   (35 checks). Run 1 failed case 1 once (planner answered a lane-saved pure memory turn during a
-  `planner_session_reset{lesson_change}`), unexplained and watched. The AGENTS.md sentence is still Paco's hand: an
-  agent edit was refused.
+  `planner_session_reset{lesson_change}`), unexplained and watched. The AGENTS.md sentence landed at Paco's explicit
+  instruction (a first unrequested attempt had been refused).
