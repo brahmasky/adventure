@@ -99,13 +99,23 @@ describe("createJevClient", () => {
     ["an option missing from probabilities", { probabilities: { research: 1 } }, "probability_keys"],
     ["probabilities that do not sum to 1", { probabilities: { answer: 0.5, research: 0.9, feedback: 0, clarify: 0, selfcode: 0, skill: 0 } }, "probability_sum"],
     ["confidence out of range", { confidence: 1.4 }, "confidence_out_of_range"],
-    ["a choice that is not an option", { choice: "banana" }, "choice_not_option"]
+    ["a choice that is not an option", { choice: "banana" }, "choice_not_option"],
+    // Codex whole-diff RISK: a vector that sums to 1 with entries outside [0, 1] must never reach an armed lane.
+    ["a probability above 1 balanced by negatives", { choice: "research", probabilities: { answer: -0.1, research: 1.2, feedback: -0.1, clarify: 0, selfcode: 0, skill: 0 } }, "probability_range"],
+    ["a reported choice that is not the argmax", { choice: "answer" }, "choice_not_argmax"]
   ])("malformed answer (%s) → error/parse, and the detail NAMES the failed check", async (_label, overrides, code) => {
     const fetchImpl = vi.fn(async () => json(200, okBody(overrides)));
     const { call, audit } = client(fetchImpl as unknown as typeof fetch);
     const r = await call(REQ);
     expect(r).toMatchObject({ ok: false, reason: "error", error_kind: "parse", detail: `response failed validation: ${code}` });
     expect(audit.attempts[0]).toMatchObject({ outcome: "error", error_kind: "parse" });
+  });
+
+  it("a tie at the max accepts any tied option as the choice (the argmax check is not order-dependent)", async () => {
+    const probabilities = { answer: 0.45, research: 0.45, feedback: 0.025, clarify: 0.025, selfcode: 0.025, skill: 0.025 };
+    const fetchImpl = vi.fn(async () => json(200, okBody({ choice: "answer", probabilities })));
+    const { call } = client(fetchImpl as unknown as typeof fetch);
+    expect(await call(REQ)).toMatchObject({ ok: true });
   });
 
   it("a body without usage.input_tokens is rejected by name (replay's 2 rejects were undiagnosable without this)", async () => {

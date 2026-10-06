@@ -175,7 +175,11 @@ function validateChoice(raw: unknown, options: string[]): Validated<JevChoiceAns
   if (Object.keys(probs).length !== options.length || !options.every((o) => typeof probs[o] === "number")) {
     return { ok: false, code: "probability_keys" };
   }
-  const sum = options.reduce((s, o) => s + (probs[o] as number), 0);
+  const p = probs as Record<string, number>;
+  if (!options.every((o) => Number.isFinite(p[o]) && p[o]! >= 0 && p[o]! <= 1)) return { ok: false, code: "probability_range" };
+  const sum = options.reduce((s, o) => s + p[o]!, 0);
   if (Math.abs(sum - 1) > PROBABILITY_SUM_TOLERANCE) return { ok: false, code: "probability_sum" };
-  return { ok: true, value: { choice: a.choice, probabilities: probs as Record<string, number>, confidence: a.confidence } };
+  // The reported choice must be an argmax of its own vector (any tied option is accepted): a mismatch is a malformed answer.
+  if (p[a.choice] !== Math.max(...options.map((o) => p[o]!))) return { ok: false, code: "choice_not_argmax" };
+  return { ok: true, value: { choice: a.choice, probabilities: p, confidence: a.confidence } };
 }
