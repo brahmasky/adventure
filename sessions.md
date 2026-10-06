@@ -1512,3 +1512,6 @@ Build + independent adversarial verification subagents; each live round found a 
   names the saved row's theme. Reviewers (correctness, Codex): 3 confirmed and fixed (target prune, rewrite dropping
   the target, card theme), stale docstring fixed; residual: a shortened merge can still omit a clause (same as any
   model merge; Undo on the lane). 3479 tests green; armed live gate (`--real-calibration`) PASS 34/34 twice.
+- 2026-10-06 (live): after Paco's kickstart (boot 9, `372f2ed`) his first real memory instruction was triaged
+  `memory/pure/act` (0.91), the lane updated lesson #47 → #53 with zero planner calls, and the card was delivered
+  in 18 s. ADR 0029 accepted.

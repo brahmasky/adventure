@@ -1,6 +1,6 @@
 # ADR 0029: Jev as System One — a typed decision layer in front of the models
 
-- **Status:** proposed (design approved by Paco 2026-10-04; accepted when lane 1 ships its live gate)
+- **Status:** accepted 2026-10-06 (design approved by Paco 2026-10-04; lane 1 armed and confirmed on the running daemon, boot 9)
 - **Date:** 2026-10-04
 - **Deciders:** Paco
 - **Amends:** [0028](0028-omp-runtime.md) (D10 reader-family resolver; per-turn planner chain), [0013](0013-llm-inner-composition.md) (composition gains a System One stage; monotone rule),
@@ -165,5 +165,6 @@ Option-order bias: verdicts agree on 291 of 293 turns with the options reversed.
 `complete`, `scope` and `lane:status` for zh and en on `jev-1.13.0`; a criteria or model change still disarms. The
 §5.9 report and labelling stay available for tuning the bars, not as an arming gate.
 
-**Status stays `proposed`.** It becomes accepted only after Paco's kickstart with `HOUGE_JEV_TRIAGE_ENABLED=arm` and
-the live gate on the running build. Operator reference: [jev-decision-layer.md](../reference/jev-decision-layer.md).
+**Accepted 2026-10-06.** On the running daemon (boot 9, `372f2ed`) Paco's first real memory instruction was triaged
+`memory/pure/act` (confidence 0.91), saved by the lane as an UPDATE of lesson #47 with no planner turn, and the card
+with Undo was delivered; no incident open. Operator reference: [jev-decision-layer.md](../reference/jev-decision-layer.md).

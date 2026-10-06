@@ -1,13 +1,13 @@
 # 🧭 CURRENT SYSTEM STATE — 2026-10-06 (read this first)
 
-**Jev lane 1 (pre-planner triage: memory + status lanes): MERGED and pushed; ARMED in code on Paco's instruction
-(2026-10-06, ADR 0029 amendment). Live once Paco sets the flags and kickstarts.** `CALIBRATED_ROWS` arms both lanes in
+**Jev lane 1 (pre-planner triage: memory + status lanes): MERGED and pushed; ARMED and LIVE on the daemon since
+2026-10-06 (boot 9; ADR 0029 accepted).** `CALIBRATED_ROWS` arms both lanes in
 zh and en on `jev-1.13.0` after a replay sanity check (293 turns, $0.066: 10 confident pure, 1 miss; status 1/1;
 permutation 291/293). Per-turn confidence bars still send every unsure turn to the planner. Reference:
 `docs/reference/jev-decision-layer.md`; flags: `docs/reference/configuration.md` § Jev System One.
 - [ ] **Paco:** in `.env` set `HOUGE_JEV_ENABLED=1` and `HOUGE_JEV_TRIAGE_ENABLED=arm` (never `HOUGE_JEV_CALIBRATION_FILE` / `HOUGE_JEV_GATE`); `HOUGE_JEV_SHADOW_ENABLED` is inert and can go.
 - [x] **Paco:** kickstart done 2026-10-06 (boot 8 on `4b134b9`); another needed for the over-cap fix: `launchctl kickstart -k gui/$(id -u)/com.houge.daemon` (check `houge.parked` / `houge.kill` and that no run is in flight). The boot applies the jev_decisions, lesson_changes and instants migrations.
-- [ ] After the kickstart: live gate on the running build, then ADR 0029 → accepted.
+- [x] Live on the running daemon (boot 9, `372f2ed`): Paco's memory instruction → `memory/pure/act`, lesson #47 → #53 via the lane, card delivered, zero planner calls. ADR 0029 accepted.
 - [x] AGENTS.md invariant sentence (2026-10-06, at Paco's instruction).
 - [x] 2026-10-06 arming preconditions built: `jev_skip_rate` sweep invariant and the recorded state instants
   (`thread_cut_at`, `state_built_at`) for exact replay parity.
