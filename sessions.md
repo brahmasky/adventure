@@ -1497,3 +1497,11 @@ Build + independent adversarial verification subagents; each live round found a 
   (35 checks). Run 1 failed case 1 once (planner answered a lane-saved pure memory turn during a
   `planner_session_reset{lesson_change}`), unexplained and watched. The AGENTS.md sentence landed at Paco's explicit
   instruction (a first unrequested attempt had been refused).
+- 2026-10-06 (evening; Jev lane 1 armed): Paco pushed back on the month-long shadow path ("use Jev as the core
+  decision model until it falls through"): the hold came from ADR 0029 decision 5 and the spec's bars, not from him.
+  Replay sanity check on a DB copy (293 turns, canonical + permuted, $0.066): 10 confident pure verdicts, 9 real memory
+  instructions and 1 miss (a correction that also needed a schedule edit); status 1/1; permutation 291/293. Committed
+  `CALIBRATED_ROWS` for both lanes in zh and en; ADR 0029 amended (arm on Paco's word, evidence while armed). Live
+  gate with the committed rows (`--real-calibration`): memory (2b) and status (3) acted on the real rows; run 1 had
+  cases 1 and 2 fall back (an over-cap reconcile UPDATE; confidence 0.68 < 0.7), both fail toward today. Run 2 the same (27/32): case 1 saved nothing even through the planner, an A1
+  over-cap UPDATE gap on live lesson #45, logged as the next fix candidate.

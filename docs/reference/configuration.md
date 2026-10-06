@@ -902,8 +902,9 @@ opens a `jev_no_key` incident and the planner runs as today.
 | `HOUGE_JEV_CALIBRATION_FILE` | unset | **Gate only.** A JSON array of calibration rows for the live gate or a labelled DB copy. Outside `HOUGE_JEV_GATE=1` a set file caps `arm` at `shadow`. Never set it in the daemon's `.env`. |
 | `HOUGE_JEV_GATE` | unset | Set to `1` by `scripts/live-gate-jev-triage.mjs` only; lifts the file cap above for that process. Never set in the daemon's `.env`. |
 
-**Calibration rows are code, not env.** `CALIBRATED_ROWS` in `src/jev/calibration.ts` ships **empty**, so the lane
-cannot act until Paco commits rows after the replay report prints its "ROWS TO ADD" block. A row is keyed by
+**Calibration rows are code, not env.** `CALIBRATED_ROWS` in `src/jev/calibration.ts` holds the arming rows. Since
+2026-10-06 it arms both lanes in zh and en on `jev-1.13.0` (Paco's instruction after the replay check; ADR 0029
+amendment), so `HOUGE_JEV_TRIAGE_ENABLED=arm` acts on every turn that clears the confidence bars. A row is keyed by
 `(question_id, criteria_hash, model, lang)`. The memory lane arms on the three rows `lane`, `complete` and `scope`.
 The status lane arms **independently** on a distinct pseudo-row `question_id: "lane:status"` (its criteria hash is the
 `lane` question's): the two lanes clear different bars, so one row never arms both. A criteria or model change

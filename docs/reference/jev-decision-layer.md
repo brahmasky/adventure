@@ -74,7 +74,8 @@ denominator for any rate. Payload fields (ids, enums and numbers only; never mes
 | `lang` | `zh`, `en` or `mixed` (mixed uses the zh calibration). |
 | `decision` | What code did: `act` (the lane ran), `shadow` (rows only), or `fallback` (today's path; always the value for a skip). |
 
-Arming is per lane: the status lane arms only on its own `lane:status` calibration row, and the memory lane only on
+Both lanes are armed in `CALIBRATED_ROWS` since 2026-10-06 (zh and en, on Paco's instruction after a replay check;
+ADR 0029 amendment), so `HOUGE_JEV_TRIAGE_ENABLED=arm` acts. Arming is per lane: the status lane arms only on its own `lane:status` calibration row, and the memory lane only on
 the `lane`, `complete` and `scope` rows together, so neither implies the other
 ([ADR 0029 build notes](../decisions/0029-jev-system-one.md#build-notes-2026-10-06-lane-1-built-on-featjev-lane1-not-merged)).
 

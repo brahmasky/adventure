@@ -153,5 +153,17 @@ files / 3438 tests green; live gate `scripts/live-gate-jev-triage.mjs` PASS on i
 Kimi, four planner turns, on a copy of the live DB). Replay universe on a live-DB copy: 293 Telegram turns since
 2026-07-02 (the spec estimated 288), estimated cost $0.033.
 
-**Status stays `proposed`.** It becomes accepted only after Paco's merge, kickstart and the live gate on the running
-build. Operator reference: [jev-decision-layer.md](../reference/jev-decision-layer.md).
+## Amendment (2026-10-06): lane 1 armed on Paco's instruction
+
+Decision 5 ("shadow before arm") is amended for lane 1: Paco arms on his word, and evidence accrues while armed. The
+per-turn bars still send every low-confidence or failed call to the planner (decision 3), and Undo, "Ask Houge anyway",
+the `triage_overrides` auto-disable and the Jev incidents stay as built. Before arming, a replay sanity check ran over
+the 293 Telegram turns since 2026-07-02 ($0.066 with the permuted run): 10 confident `pure` verdicts, 9 real memory
+instructions and 1 miss (a correction that also needed a schedule edit, which the lane cannot do; "Ask Houge anyway"
+covers it); 1 `status` verdict, correct; 12 `mixed` (save, then the planner answers); everything else fell through.
+Option-order bias: verdicts agree on 291 of 293 turns with the options reversed. `CALIBRATED_ROWS` now names `lane`,
+`complete`, `scope` and `lane:status` for zh and en on `jev-1.13.0`; a criteria or model change still disarms. The
+§5.9 report and labelling stay available for tuning the bars, not as an arming gate.
+
+**Status stays `proposed`.** It becomes accepted only after Paco's kickstart with `HOUGE_JEV_TRIAGE_ENABLED=arm` and
+the live gate on the running build. Operator reference: [jev-decision-layer.md](../reference/jev-decision-layer.md).

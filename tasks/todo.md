@@ -1,20 +1,23 @@
 # 🧭 CURRENT SYSTEM STATE — 2026-10-06 (read this first)
 
-**Jev lane 1 (pre-planner triage: memory + status lanes): BUILT on `feat/jev-lane1`, NOT merged, NOT pushed, NOT live.**
-14 plan tasks by subagent TDD with per-task review (fix rounds on tasks 2, 8, 10, 11). Full suite 253 files / 3438 tests
-green; live gate `scripts/live-gate-jev-triage.mjs` PASS on its first run (27 checks; real Jev + Kimi + 4 planner turns
-on a DB copy). ADR 0029 stays `proposed` until Paco's kickstart and the gate on the running build. Reference:
-`docs/reference/jev-decision-layer.md`; flags: `docs/reference/configuration.md` § Jev System One. All flags default
-off; `CALIBRATED_ROWS` ships empty, so the lane cannot act even when armed.
-- [ ] **Paco:** merge decision for `feat/jev-lane1`, then rebuild `dist/` and `launchctl kickstart -k gui/$(id -u)/com.houge.daemon` (check `houge.parked` / `houge.kill` first, and that no run or self-write is in flight).
-- [ ] **Paco:** set `HOUGE_JEV_ENABLED=1` and `HOUGE_JEV_TRIAGE_ENABLED=shadow` in `.env` (never `HOUGE_JEV_CALIBRATION_FILE` / `HOUGE_JEV_GATE`).
-- [ ] **Paco:** run the replay (`houge jev replay triage --max-usd 0.5`; 293 turns, about $0.033).
-- [ ] **Paco:** the labelling sitting (`houge jev label triage --sample=40`).
-- [ ] **Paco:** read `houge jev report triage`; commit calibration rows per language from its "ROWS TO ADD" block (memory arms on `lane`+`complete`+`scope`; status on its own `lane:status` row). `arm` waits for the spec §5.9 bars and 14 shadow days.
-- [x] **Paco (his hand, applied 2026-10-06 at his instruction):** the AGENTS.md invariant sentence, appended to the flat-rate line: "Jev (TypeSafe System One), a non-generative typed decider, sits in front of the chains under ADR 0029; it never gates an action and every outage reaches Paco."
+**Jev lane 1 (pre-planner triage: memory + status lanes): MERGED and pushed; ARMED in code on Paco's instruction
+(2026-10-06, ADR 0029 amendment). Live once Paco sets the flags and kickstarts.** `CALIBRATED_ROWS` arms both lanes in
+zh and en on `jev-1.13.0` after a replay sanity check (293 turns, $0.066: 10 confident pure, 1 miss; status 1/1;
+permutation 291/293). Per-turn confidence bars still send every unsure turn to the planner. Reference:
+`docs/reference/jev-decision-layer.md`; flags: `docs/reference/configuration.md` § Jev System One.
+- [ ] **Paco:** in `.env` set `HOUGE_JEV_ENABLED=1` and `HOUGE_JEV_TRIAGE_ENABLED=arm` (never `HOUGE_JEV_CALIBRATION_FILE` / `HOUGE_JEV_GATE`); `HOUGE_JEV_SHADOW_ENABLED` is inert and can go.
+- [ ] **Paco:** `launchctl kickstart -k gui/$(id -u)/com.houge.daemon` (check `houge.parked` / `houge.kill` and that no run is in flight). The boot applies the jev_decisions, lesson_changes and instants migrations.
+- [ ] After the kickstart: live gate on the running build, then ADR 0029 → accepted.
+- [x] AGENTS.md invariant sentence (2026-10-06, at Paco's instruction).
 - [x] 2026-10-06 arming preconditions built: `jev_skip_rate` sweep invariant and the recorded state instants
-  (`thread_cut_at`, `state_built_at`) for exact replay parity. 255 files / 3468 tests green; live gate PASS (35 checks,
-  cases 7 parity and 8 skip rate added).
+  (`thread_cut_at`, `state_built_at`) for exact replay parity.
+- [ ] Optional: labelling sitting (`houge jev label triage --sample=40`) to tune the bars from evidence.
+- [ ] Armed live gate (`--real-calibration`, two runs): 27 PASS / 5 FAIL each; memory (2b) and status (3) act on the
+  committed rows. Cases 1 and 2 fall back to the planner (fail toward today): case 2 under the bars (conf 0.68 / p(memory)
+  0.81 < 0.85); case 1's sentence overlaps live lesson #45, reconcile chooses UPDATE, the merge exceeds the lesson char
+  cap and A1 refuses it (`lesson_write_capped`), in the lane and then in the planner (run 2 saved nothing at all).
+- [ ] **Next fix candidate (A1, pre-existing):** an over-cap reconcile UPDATE drops a real instruction; it should
+  supersede or add instead of saving nothing.
 - [ ] Watch: live gate run 1 that day failed case 1 once (a pure memory turn saved its lesson with `act`, but the
   planner answered instead of the card) while a `planner_session_reset{lesson_change}` fired mid-triage; run 2 passed.
   Not caused by the 2a/2b diff (no supervisor change); root cause not yet found.
