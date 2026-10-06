@@ -1484,5 +1484,6 @@ Build + independent adversarial verification subagents; each live round found a 
   report triage`. Spec deviations recorded in ADR 0029: client built per call, `jev_no_key` on the first armed turn.
   Evidence: 253 files / 3438 tests green; live gate `scripts/live-gate-jev-triage.mjs` PASS on its first run (27 checks,
   real Jev + Kimi + 4 planner turns on a DB copy); replay universe 293 turns, est. $0.033. ADR 0013, 0014, 0019
-  amended; ADR 0029 stays `proposed`. Owed by Paco: merge, kickstart, `HOUGE_JEV_ENABLED=1` +
+  amended; ADR 0029 stays `proposed`. Behaviour change: a planner-only turn is now capped at one saved lesson per
+  turn (already-saved guard). Owed by Paco: merge, kickstart, `HOUGE_JEV_ENABLED=1` +
   `HOUGE_JEV_TRIAGE_ENABLED=shadow`, replay, the labelling sitting, calibration rows, the AGENTS.md sentence.

@@ -134,6 +134,15 @@ until Paco deletes it.
 **Deviations from the spec, both accepted.** (1) The daemon builds the Jev client per call rather than once at boot
 (cheap; the broker key is read each time). (2) `jev_no_key` therefore opens on the first armed turn, not at boot.
 
+**Before any calibration row is committed.** `jev_skip_rate` (spec §3.7) must land first: timeout, parse and
+transport failures open no incident, so without it a silently dead layer looks like a quiet one.
+
+**Transactions.** `RunStore.inTransaction` is not re-entrant. Only `insertRun` joins an outer transaction (the "Ask
+Houge anyway" admission); a nested `inTransaction` still issues `BEGIN` and throws.
+
+**Planner-only turns.** The already-saved guard caps a planner-only turn at one saved lesson (a second `lesson_write`
+gets `already_saved_this_turn`); see [jev-decision-layer.md](../reference/jev-decision-layer.md).
+
 **Evidence.** 14 tasks by subagent TDD with per-task review (fix rounds on tasks 2, 8, 10 and 11); full suite 253
 files / 3438 tests green; live gate `scripts/live-gate-jev-triage.mjs` PASS on its first run (27 checks, real Jev and
 Kimi, four planner turns, on a copy of the live DB). Replay universe on a live-DB copy: 293 Telegram turns since

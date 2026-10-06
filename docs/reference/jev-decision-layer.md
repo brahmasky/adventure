@@ -74,6 +74,10 @@ denominator for any rate. Payload fields (ids, enums and numbers only; never mes
 | `lang` | `zh`, `en` or `mixed` (mixed uses the zh calibration). |
 | `decision` | What code did: `act` (the lane ran), `shadow` (rows only), or `fallback` (today's path; always the value for a skip). |
 
+Arming is per lane: the status lane arms only on its own `lane:status` calibration row, and the memory lane only on
+the `lane`, `complete` and `scope` rows together, so neither implies the other
+([ADR 0029 build notes](../decisions/0029-jev-system-one.md#build-notes-2026-10-06-lane-1-built-on-featjev-lane1-not-merged)).
+
 Read order: `status` first (a skipped row means Jev played no part), then `decision` (did anything act), then the
 numbers (how close was it). Per-question probabilities, thresholds and the criteria hash are in the `jev_decisions`
 rows for the same run. A memory save adds `lesson_saved` (with its `change_id`), an Undo adds `lesson_change_undone`,
@@ -87,6 +91,13 @@ and "Ask Houge anyway" adds `triage_override`.
   runs with no `[memory]` note, and it may spend a second distill and reconcile pair on the same message.
 - **A fast lane can stop a starting planner child.** The planner child starts in parallel with the Jev call. If a lane
   finishes while it is still starting, the child is stopped after 5 s, and the next turn pays a cold start.
+
+## Behaviour changes outside the lanes
+
+- **One saved lesson per turn, planner-only turns included.** The already-saved guard is set by any committed save,
+  the planner's own `lesson_write` included. A second `lesson_write` in the same turn now gets
+  `already_saved_this_turn` and spends nothing, where before lane 1 it ran the pipeline again. The guard is re-checked
+  just before the save transaction, so two parallel calls cannot both save.
 
 ## Deviations from the spec
 

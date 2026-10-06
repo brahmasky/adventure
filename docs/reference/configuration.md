@@ -861,7 +861,7 @@ node scripts/live-gate-jev.mjs             # opt-in real-API gate (3 fixed messa
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `TYPESAFE_API_KEY` | — | Broker secret #9. Held by the secrets broker when the firewall is armed (stripped from `process.env` like every `*_API_KEY`); sent only as the `Authorization` header to `api.typesafe.ai`; never logged. Unset → every Jev call is audited `unavailable`/`auth` and the replay stops. |
-| `HOUGE_JEV_SHADOW_ENABLED` | off | **Dormant, superseded by [ADR 0029](../decisions/0029-jev-system-one.md).** Arms the live intent shadow. Accepts 1/true/yes/on; read per turn; in `DISARM_FLAGS`. On without `TYPESAFE_API_KEY` → one boot warning and the shadow stays off. |
+| `HOUGE_JEV_SHADOW_ENABLED` | off | **Dormant, superseded by [ADR 0029](../decisions/0029-jev-system-one.md).** Arms the live intent shadow. Accepts 1/true/yes/on; read per turn; not in `DISARM_FLAGS` (no caller reads it). On without `TYPESAFE_API_KEY` → one boot warning and the shadow stays off. |
 
 **Live shadow** (flag-gated, default OFF). With `HOUGE_JEV_SHADOW_ENABLED` on, every real
 `classifyIntent` also asks Jev the same question, **concurrently and never awaited**: the turn uses
