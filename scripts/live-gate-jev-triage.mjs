@@ -15,9 +15,10 @@
 //   2  mixed (memory + question) → triage mixed/act, exactly one lesson_saved, the planner answered (compose attempts > 0)
 //   2b forced second lesson_write on a lane-saved turn through the planner's registry entry → already-saved digest, zero
 //      additional llm_attempt rows (no second distill/reconcile)
-//   3  status question → triage lane=status/act, code-owned reply, zero planner requests
+//   3  status question → triage lane=status/act, code-owned reply in the outbox, zero planner requests
 //   4  tombstone posture → triage skipped{posture} (asserted before the planner answers)
-//   5  Jev 429 (stubbed fetch) → skipped{rate_limited} + jev_rate_limited incident; the planner still answers
+//   5  Jev 429 (stubbed fetch) → skipped{rate_limited} + jev_rate_limited incident; the planner still answers. Any jev_*
+//      incident already open in the COPY is resolved first (and must then be closed), so cases 5/6 cannot pass vacuously
 //   6  TYPESAFE_API_KEY removed → skipped{no_key} + jev_no_key incident (the ENV-key path only: this gate's worker has no
 //      broker; the broker-supplied key is covered hermetically in tests/core/core-worker-triage.test.ts with a fake broker)
 //
@@ -53,15 +54,16 @@ function parseArgs(argv) {
 }
 
 async function loadModules() {
-  const [env, disarm, core, types, gw, rs, jc, tq, qt, th] = await Promise.all([
+  const [env, disarm, core, types, gw, rs, jc, tq, qt, th, ji, ia] = await Promise.all([
     import("../dist/config/load-env.js"), import("../dist/config/disarm-posture.js"), import("../dist/core/core-worker.js"),
     import("../dist/domain/types.js"), import("../dist/gateway/gateway.js"), import("../dist/run/run-store.js"),
     import("../dist/jev/jev-client.js"), import("../dist/jev/questions/triage.js"), import("../dist/jev/questions/types.js"),
-    import("../dist/jev/thresholds.js")
+    import("../dist/jev/thresholds.js"), import("../dist/jev/jev-incidents.js"), import("../dist/run/incident-alert.js")
   ]);
   return { loadHougeEnv: env.loadHougeEnv, DISARM_FLAGS: disarm.DISARM_FLAGS, CoreWorker: core.CoreWorker, buildTypedTaskEvent: types.buildTypedTaskEvent,
     Gateway: gw.Gateway, RunStore: rs.RunStore, JEV_MODEL: jc.JEV_MODEL, TRIAGE_QUESTIONS: tq.TRIAGE_QUESTIONS, TRIAGE_LANE: tq.TRIAGE_LANE,
-    criteriaHash: qt.criteriaHash, TRIAGE_STATUS_ARM_ID: th.TRIAGE_STATUS_ARM_ID };
+    criteriaHash: qt.criteriaHash, TRIAGE_STATUS_ARM_ID: th.TRIAGE_STATUS_ARM_ID, JEV_ANSWERED_RESOLVES: ji.JEV_ANSWERED_RESOLVES,
+    JEV_INCIDENT_SUBJECT: ji.JEV_INCIDENT_SUBJECT, resolveOpenIncidents: ia.resolveOpenIncidents };
 }
 
 /** The gate-only calibration file: every lane-1 row kind for zh and en, hashes from the BUILT questions. */
@@ -190,12 +192,14 @@ async function caseSecondWrite(g) {
 
 /** 3: status — code-owned reply, no planner. */
 async function caseStatus(g) {
-  const { h, worker, chat, store } = g;
+  const { h, worker, chat, store, dbPath } = g;
   const run_id = h.intake(chat, MSG.status); worker.submitTurn(run_id);
   check("3 status: run completed", (await h.settle(run_id)) === "completed", store.getRunState(run_id));
   const row = h.triageRow(run_id); show("3 status", row);
   check("3 status: triage lane=status/act", row?.status === "answered" && row.lane === "status" && row.decision === "act");
   check("3 status: zero planner requests (compose)", h.attempts(run_id, "compose") === 0, `compose=${h.attempts(run_id, "compose")}`);
+  const out = replies(dbPath, run_id).map((p) => JSON.stringify(p));
+  check("3 status: the code-owned status reply is in the outbox", out.some((t) => t.includes("Boot reason:")), `replies=${out.length}`);
 }
 
 /** 4: the tombstone posture skips triage; the row is asserted before the planner answers, then the marker is removed. */
@@ -214,27 +218,33 @@ async function casePosture(g) {
   } finally { rmSync(process.env.HOUGE_TOMBSTONE_PATH, { force: true }); }
 }
 
-/** An open incident of `kind`, and whether one was already open before the case (then the case proves less). */
 const incidentOpen = (store, kind) => store.listOpenIncidents().some((i) => i.kind === kind);
+
+/** Resolve every open jev_* incident in the COPY, then require none open: a case's "incident open" must be its own. */
+function clearJevIncidents(g, label) {
+  const n = g.m.resolveOpenIncidents(g.store, g.m.JEV_ANSWERED_RESOLVES, g.m.JEV_INCIDENT_SUBJECT);
+  const still = g.store.listOpenIncidents().filter((i) => g.m.JEV_ANSWERED_RESOLVES.has(i.kind)).map((i) => i.kind);
+  check(`${label}: no jev_* incident open in the copy before the case`, still.length === 0, `resolved ${n}; still open: ${still.join(",") || "none"}`);
+}
 
 /** 5: a 429 from Jev (stubbed fetch) → skipped{rate_limited} + incident; the planner answers. */
 async function caseRateLimited(g) {
   const { h, chat, store } = g;
-  const pre = incidentOpen(store, "jev_rate_limited");
+  clearJevIncidents(g, "5 429");
   const worker = h.makeWorker(async () => new Response("{}", { status: 429, headers: { "content-type": "application/json" } }));
   try {
     const run_id = h.intake(chat, MSG.posture); worker.submitTurn(run_id);
     check("5 429: run completed via the planner", (await h.settle(run_id)) === "completed", store.getRunState(run_id));
     const row = h.triageRow(run_id); show("5 429", row);
     check("5 429: skipped{rate_limited}", row?.status === "skipped" && row.skip_reason === "rate_limited");
-    check("5 429: jev_rate_limited incident open", incidentOpen(store, "jev_rate_limited"), pre ? "WARNING: already open in the live copy" : "opened by this case");
+    check("5 429: jev_rate_limited incident opened by this case", incidentOpen(store, "jev_rate_limited"));
   } finally { await worker.shutdownPlanners(); }
 }
 
 /** 6: no TYPESAFE_API_KEY (env path; no broker in this gate) → skipped{no_key} + incident. */
 async function caseNoKey(g) {
   const { h, chat, store } = g;
-  const pre = incidentOpen(store, "jev_no_key");
+  clearJevIncidents(g, "6 no key");
   const had = Object.prototype.hasOwnProperty.call(process.env, "TYPESAFE_API_KEY"); const key = process.env.TYPESAFE_API_KEY;
   delete process.env.TYPESAFE_API_KEY;
   const worker = h.makeWorker();
@@ -243,7 +253,7 @@ async function caseNoKey(g) {
     const s = await h.settle(run_id);
     const row = h.triageRow(run_id); show("6 no key", row);
     check("6 no key: skipped{no_key}, the turn ended", row?.status === "skipped" && row.skip_reason === "no_key" && (s === "completed" || s === "failed"), s);
-    check("6 no key: jev_no_key incident open", incidentOpen(store, "jev_no_key"), pre ? "WARNING: already open in the live copy" : "opened by this case");
+    check("6 no key: jev_no_key incident opened by this case", incidentOpen(store, "jev_no_key"));
   } finally {
     await worker.shutdownPlanners();
     if (had) process.env.TYPESAFE_API_KEY = key; else delete process.env.TYPESAFE_API_KEY;
