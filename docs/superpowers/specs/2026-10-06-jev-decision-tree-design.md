@@ -1,6 +1,6 @@
 # Jev decision tree — categories, lanes and model roles (ADR 0029 lane 2, widened)
 
-- **Date:** 2026-10-06 · **Rev 2** (both design reviews folded in; see §12) · **Status:** awaiting Paco's read
+- **Date:** 2026-10-06 · **Rev 3** (two reviews and their confirmation passes folded in; see §12) · **Status:** awaiting Paco's read
 - **Amends:** [ADR 0029](../../decisions/0029-jev-system-one.md) (the lane-1-first shape becomes one decision tree; lanes
   are the leaf type), [ADR 0028](../../decisions/0028-omp-runtime.md) (model roles replace the `HOUGE_OMP_*` chains;
   D10 reader family becomes a skip rule at read time)
@@ -97,6 +97,9 @@ runs (today's `p_memory / p_status / p_none` columns become per-question records
   `memory_correct_write` path holds the approval card (ADR 0028, 2026-10-02): the lane saves rules only.
 - **Gear** = the highest of the three scores: ≤ 1.2 light, < 2.5 standard, else heavy → Fast / Default / Thinking.
   `reasoning` sets the effort level (low / medium / high) on that role.
+- **Unsure is no:** a `sets_rule` in the unsure zone saves nothing and routes by category alone (`memory` + unsure →
+  the planner, like a correction). A category under its bar with no cascade candidate left (the top two were `memory`
+  and `status`) → planner, Default.
 - **Lane limits:** a lane-shaped category whose scores exceed its lane's limits (§3) goes to the planner.
 - **Cascade below the bar (mu idea 6):** when `category`'s top answer is under 0.6, one Kimi one-shot on the Tiny role
   picks between Jev's top two categories **after removing `memory` and `status`** (a model guess can never route into
@@ -143,17 +146,18 @@ sources, how many, when to stop) and whose results Paco judges most. Houge's old
 | planner / compose, light gear | Fast | from `reasoning` | chat set |
 | planner / compose, standard gear | Default | from `reasoning` | chat set |
 | planner / compose, heavy gear | Thinking | from `reasoning` | chat set |
-| reader (web and mail reads) | Reader: Fast's list, chosen **cross-family** at read time | low | chat set + Codex |
+| reader (web and mail reads) | Reader: its own list (today's reader chain), chosen **cross-family** at read time | low | chat set + Codex |
 | media | Vision | low | chat set |
 | ticks (distill, reconcile, digests, the cascade) | Tiny | low | chat set |
-| self-write council (judges, chair, reviewer) | Council | unchanged | chat set + Codex |
+| self-write council | Judges (an indexed list, today's judges chain, one seat per judge), Chair, Reviewer: three roles | unchanged | chat set + Codex |
 
 **Resolution is Houge's, in code.** omp's own resolver is internal (`resolveRoleChain` is not reachable over RPC;
 `get_available_models` returns models, not roles), omp has no preference list for Default or Vision, and its Fast and
-Thinking lists include Codex models. So each role has a **code-owned ordered pattern list** in `src/omp/model-roles.ts`
+Thinking lists include Codex models. So each role has a **code-owned ordered list of exact selectors** (`provider/id[:effort]`, no fuzzy matching) in
+`src/omp/model-roles.ts`
 (today's `DEFAULTS` chains in `omp-config.ts` become these lists: Default = today's planner chain, Tiny = `kimi-code/k3`
-first so the armed memory lane keeps its model, Reader = today's reader chain, Vision = today's media chain, Council =
-today's judges / chair / reviewer). omp's `priority.json` is reference for maintaining the lists, never read at run
+first so the armed memory lane keeps its model, Reader = today's reader chain, Vision = today's media chain; Judges, Chair and
+Reviewer = today's three council chains, kept separate so judge diversity and the reviewer's head do not change). omp's `priority.json` is reference for maintaining the lists, never read at run
 time. Resolution, in order:
 
 1. the **provider allow-list** `{anthropic, google-antigravity, kimi-code, openai-codex}` is applied to the available
@@ -161,7 +165,10 @@ time. Resolution, in order:
    metered or absent; a pattern like `gemini-3.8-flash` must never match `google/…`), then the seat's eligibility
    (chat seats exclude `openai-codex`: no chat turn is ever routed to Codex, which stays the self-write writer);
 2. Paco's override for the role, if any (§4.2), as a pattern through the same filters;
-3. the role's pattern list, first match per pattern, duplicates dropped.
+3. the role's selector list, each kept only when the catalog lists it, duplicates dropped.
+
+Only a `/models` override is a *pattern* (a substring such as `opus` or `gemini-3.1-pro`), matched against the filtered
+catalog at `/models set` time and again at each resolution.
 
 The result is an ordered candidate list. The available list comes from `omp --profile houge models --json`
 (session-less, verified: `{models: [{provider, id, selector, thinking, …}]}`), read at boot and by the daily tick, and
@@ -172,8 +179,10 @@ list walks on, as it does today.
 A failure walks the list; an exhausted role steps up (Fast → Default → Thinking); Thinking exhausted → `no_planner_leg`
 and its incident, as today. Step-up on a routed turn happens on the retryable kinds (`quota`, `auth`, `transport`,
 `timeout`, `model_missing`) plus **`other` once, only while no bridge tool has executed in the turn** (a deterministic
-failure after a side effect must not be re-spent on a bigger model); the Kimi case is exactly this. Ledgered
-`routed_escalation {from, to, kind}`.
+failure after a side effect must not be re-spent on a bigger model); the Kimi case is exactly this. Retries on the
+retryable kinds keep today's semantics unchanged: the omp transcript already holds every executed tool's result, and
+the retry re-prompts the next model with `RETRY_NOTE` to continue, not to replay; this spec adds no new retry after a
+side effect. Ledgered `routed_escalation {from, to, kind}`.
 
 ### 4.1 Change notice and incidents
 
@@ -187,14 +196,17 @@ Changed → one Telegram line ("Thinking now resolves to X, was Y"). A role with
 validates the pattern against the filtered available list before saving; a pattern that matches nothing, or only a
 provider outside the allow-list, is refused with the reason. `/models reset <role>`. Overrides are append-only
 `model_role_override` ledger rows (latest per role wins), read at each resolution — no restart, no settings table.
-Operator chat only, like `/memories`. The seven `HOUGE_OMP_*` chain variables are removed from `configuration.md`
+Gated where `/memories` is gated: the Telegram command parser and the gateway's allowlisted-chat branch, not the
+command module itself. The seven `HOUGE_OMP_*` chain variables are removed from `configuration.md`
 (`.env` sets none of them today; only `HOUGE_OMP_BIN` and the profile stay).
 
 ### 4.3 Rollback switch
 
-`HOUGE_MODEL_ROLES=static|resolved` (default `resolved`). `static`: the code lists only, no override, no tick, no RPC
-list — the pre-stage-A model path. Together with `HOUGE_JEV_TRIAGE_ENABLED=off` (category → planner, as before) this
-is stage A's rollback, both in `.env`, both read live.
+`HOUGE_MODEL_ROLES=static|resolved` (default `resolved`). `static`: each role is its code list of exact selectors in
+order, no catalog check, no override, no tick — exactly today's chain semantics (a retired selector is walked past on
+`model_missing` at spawn or pin), so the pre-stage-A model path is reproduced seat for seat. Together with `HOUGE_JEV_TRIAGE_ENABLED=off` (category → planner, as before) this
+is stage A's rollback. Both are read from `process.env` per call, and `.env` is parsed once at boot, so a change needs
+a kickstart (as for the lane 1 flag today); the disarm marker file stays the live kill for the Jev side.
 
 ## 5. The planner lane: a turn-owned chain
 
@@ -209,8 +221,14 @@ Today the supervisor indexes one global chain for spawning, pinning and retries 
   the same place `promptTop` re-pins after a resume today. `legIndex` indexes the turn's list; `retryNextLeg` walks
   it, then steps up a role; `noteActualModel` audits against the turn's list. The next turn re-pins to its own first
   candidate, never to the spawn leg.
-- **Failed pin** (`planner_model_reset_failed`): answer on the model the child holds, incident as today, decision row
-  marked `pin_failed`; no escalation on a child that just refused a pin.
+- **A pin that omp answers `Model not found`** is `model_missing`, a retryable kind. Today the session wrapper
+  rejects every refused RPC as `command_failed:<type>` and drops omp's text (planner-session.ts:150); it keeps the
+  text on the `PlannerRpcError` and the supervisor classifies it with `classifyOmpError` (`Model not found:
+  provider/id` → `model_missing`). One `model_missing` attempt row, then the turn's list walks on (so a Default[0] that was refused at spawn never becomes a per-turn failure). Only a
+  transport or RPC failure of the pin is a **failed pin** (`planner_model_reset_failed`): answer on the model the
+  child holds, incident as today, row marked `pin_failed`, no escalation on a child that just refused a pin. The
+  respawn rule `leg === 0 && sessionLeg > 0` (planner-supervisor.ts:587) is removed: `set_model` moves the child to
+  any available model, so a refused spawn leg no longer forces a restart.
 - **No mid-prompt escalation.** `set_model` only runs between prompts (today's retry boundary); a Fast planner turn
   that emits a tool call is not interrupted — it finishes on Fast and the row is marked `fast_used_tool`, a
   calibration signal (and the reason `actions` = none is the Fast condition). Escalation happens at the retry
@@ -223,8 +241,9 @@ Today the supervisor indexes one global chain for spawning, pinning and retries 
 - **One per-turn row** (new table `jev_verdicts`, keyed `verdict_id`, one per decision point call): `run_id`, `category`,
   `breadth`, `reasoning`, `actions`, `sets_rule`, `rule_scope`, `lane`, `role`, `effort`, `model`, `cascade`,
   `save_outcome` (`saved | not_durable | capped | none`), `route_outcome` (`act | fallback | pin_failed`),
-  `handler_outcome` (`lane_reply | fallthrough:<reason> | planner_done | planner_failed`), `created_at`. The triage
-  finaliser writes the row with `handler_outcome` pending (inside the lesson transaction when a rule was saved, as
+  `handler_outcome` (`lane_reply | fallthrough:<reason> | planner_done | planner_failed`), `created_at`. A Jev-skipped
+  or failed call writes the row too, with `category` null, `route_outcome = fallback` and the skip reason, so the §9
+  join holds through an outage. The triage finaliser writes the row with `handler_outcome` pending (inside the lesson transaction when a rule was saved, as
   today); the handler's end updates `handler_outcome` in its own transaction. The `triage` event carries `category`,
   `lane`, `role`, `verdict`. The first `llm_attempt` of a routed turn carries `routed_by = verdict_id`.
 - **Corrections** ledgered on the turn row as `paco_correction`: an Ask Houge anyway tap, `think harder` on the next
@@ -298,7 +317,7 @@ ADR 0029 amendment (tree, lanes as the leaf type, roles) and ADR 0028 amendment 
 `jev-decision-layer.md` rewritten around the tree; CONTEXT.md terms *category*, *lane*, *role*; README;
 `tasks/todo.md`, `sessions.md`.
 
-## 12. Review log (Rev 1 → Rev 2)
+## 12. Review log (Rev 1 → Rev 3)
 
 Two reviews of Rev 1 on 2026-10-06, both NOT READY: a senior review against the live omp, DB and code, and a Codex
 design pass. Every finding was verified first-hand before being folded in; none changed §1.
@@ -321,6 +340,8 @@ design pass. Every finding was verified first-hand before being folded in; none 
 | D10 "fix" is new behaviour (senior) | §8 skip rule, stated |
 | Proposal detection must not widen the stored intent enum (senior) | §2.2 read-time regex |
 | `scheduled_tasks` has no fuzzy match (senior) | §3 schedule lane: id, else one-shot pick ≥ 0.8, else planner |
+| Re-pass on Rev 2 (Codex, NOT READY): pin `model_missing` vs `pin_failed` needs a classified path (the wrapper drops omp's text); `static` undefined for patterns; Reader named twice, Council one role; `sets_rule` unsure zone and a zero-candidate cascade unspecified; retries after a side effect | §5 error text kept and classified; §4 lists are exact selectors, only overrides are patterns, `static` = today's chain semantics; §4 three council roles; §2.4 unsure is no; §4 retry semantics unchanged |
+| Re-pass on Rev 2 (senior, READY): a spawn-refused Default[0] would become a per-turn `pin_failed`; `.env` is not read live; Reader list named twice; skipped turns need a verdict row; where `/models` is gated | §5 `model_missing` on pin walks the list, respawn rule removed; §4.3 wording; §4 table; §6; §4.2 |
 
 ## Appendix A. Parked from mu for later lanes
 
