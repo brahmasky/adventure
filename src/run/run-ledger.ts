@@ -297,7 +297,7 @@ const requiredPayloadFields = {
   // Jev System One, lane 1 (ADR 0029 §5.8). Enums, numbers and ids only — NEVER message text or provider detail.
   // `triage` is the per-turn denominator: written once per eligible Telegram turn after the outcome is known;
   // a skipped call carries nulls for the answer fields and a skip_reason.
-  triage: ["status", "lane", "complete", "scope", "confidence", "top_prob", "margin", "lang", "decision"],
+  triage: ["status", "lane", "complete", "scope", "confidence", "top_prob", "margin", "lang", "decision", "verdict"],
   ack_nudged: ["approval_run_id"],
   lesson_saved: ["lesson_id", "change_id", "source"],
   lesson_change_undone: ["change_id", "restored", "skipped"],

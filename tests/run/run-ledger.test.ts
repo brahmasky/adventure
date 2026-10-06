@@ -200,7 +200,7 @@ describe("Run Ledger events", () => {
 
   it("ADR 0029 events require their enum/number fields and accept null for a skipped triage (never text)", () => {
     const ok = validateLedgerEvent(createLedgerEvent({ correlation_id: "r", event_type: "triage", actor: "core", sequence: 1,
-      payload: { status: "skipped", lane: null, complete: null, scope: null, confidence: null, top_prob: null, margin: null, lang: "zh", decision: "fallback", skip_reason: "no_key" } }));
+      payload: { status: "skipped", lane: null, complete: null, scope: null, confidence: null, top_prob: null, margin: null, lang: "zh", decision: "fallback", verdict: null, skip_reason: "no_key" } }));
     expect(ok.ok).toBe(true);
     const missing = validateLedgerEvent(createLedgerEvent({ correlation_id: "r", event_type: "lesson_saved", actor: "core", sequence: 2, payload: { lesson_id: 51 } }));
     expect(missing.ok).toBe(false);

@@ -233,7 +233,9 @@ interface OmpTurnState {
 type TriageSettle =
   | { kind: "skipped"; reason: SkipReason }
   | { kind: "answered"; rows: JevDecisionInsert[]; decision: "act" | "fallback" | "shadow"; threshold_used: string; numbers: TriageNumbers };
-type TriageNumbers = { lane: string; complete?: string | undefined; scope?: string | undefined; confidence: number; top_prob: number; margin: number };
+/** `verdict` is what CODE decided (thresholds.ts), which can differ from Jev's raw choices (e.g. "pure" under the pure bar acts as mixed). */
+type TriageNumbers = { lane: string; complete?: string | undefined; scope?: string | undefined; confidence: number; top_prob: number; margin: number; verdict: string };
+const verdictLabel = (v: TriageDecision): string => (v.kind === "memory" ? `memory_${v.complete}` : v.kind);
 
 /** What one `runLessonWrite` did: the tool result, and — only when the save transaction committed — what landed. */
 export interface LessonWriteOutcome {
@@ -2514,7 +2516,7 @@ export class CoreWorker {
     const n: Partial<TriageNumbers> = f.kind === "answered" ? f.numbers : {};
     this.runStore.appendRunLedgerEvent(run_id, "triage", "core", {
       status: f.kind, lane: n.lane ?? null, complete: n.complete ?? null, scope: n.scope ?? null, confidence: n.confidence ?? null,
-      top_prob: n.top_prob ?? null, margin: n.margin ?? null, lang, decision: f.kind === "answered" ? f.decision : "fallback",
+      top_prob: n.top_prob ?? null, margin: n.margin ?? null, lang, decision: f.kind === "answered" ? f.decision : "fallback", verdict: n.verdict ?? null,
       ...(f.kind === "skipped" ? { skip_reason: f.reason } : {})
     });
   }
@@ -2587,9 +2589,9 @@ export class CoreWorker {
     const verdict = triageVerdict(d.answers, resolveTriageBars(process.env), lang, d.model, calibrationRows(process.env));
     const lane = d.answers.lane!;
     const numbers: TriageNumbers = { lane: lane.choice, complete: d.answers.complete?.choice, scope: d.answers.scope?.choice,
-      confidence: lane.confidence, top_prob: Math.max(...Object.values(lane.probabilities)), margin: marginOf(lane) };
+      confidence: lane.confidence, top_prob: Math.max(...Object.values(lane.probabilities)), margin: marginOf(lane), verdict: verdictLabel(verdict) };
     const answered = (decision: "act" | "fallback" | "shadow"): Extract<TriageSettle, { kind: "answered" }> =>
-      ({ kind: "answered", rows: d.rows, decision, threshold_used: `${THRESHOLD_VERSION}:${verdict.kind}`, numbers });
+      ({ kind: "answered", rows: d.rows, decision, threshold_used: `${THRESHOLD_VERSION}:${numbers.verdict}`, numbers });
     held.answered = answered("fallback"); // from here a throw settles as answered fallback (the outer catch)
     if (mode === "shadow" || verdict.kind === "fallthrough") {
       this.settleTriage(i, state, lang, answered(mode === "shadow" ? "shadow" : "fallback"));

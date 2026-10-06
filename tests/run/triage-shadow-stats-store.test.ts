@@ -11,7 +11,7 @@ function turn(store: RunStore, at: string, t: Triage, caps: string[], end: "comp
   const run = createQueuedTurnRun(store, "x");
   caps.forEach((c, i) => store.appendRunLedgerEvent(run, "loop_step", "core", step(i + 1, c)));
   store.appendRunLedgerEvent(run, "triage", "core", { status: "answered", lane: t.lane, complete: t.complete, scope: "ask", confidence: 0.9,
-    top_prob: 0.93, margin: 0.88, lang: "zh", decision: t.decision });
+    top_prob: 0.93, margin: 0.88, lang: "zh", decision: t.decision, verdict: `memory_${t.complete}` });
   store.transition(run, "queued", "running", "test");
   if (end === "failed") store.transition(run, "running", "failed", "test");
   else { store.transition(run, "running", "reporting", "test"); store.transition(run, "reporting", "completed", "test"); }

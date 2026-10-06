@@ -122,6 +122,35 @@ describe("CoreWorker.triageTurn (spec §5.1 flow; every exit leaves exactly one 
     if (out.kind === "lane_reply") expect(out.text).toMatch(/· format/);
     store.close();
   });
+  // Live gate 2026-10-06: Jev chose "pure" at 0.79, under the 0.80 pure bar, so the lane acted as MIXED (save + planner);
+  // the row said only complete:"pure" + act, so the run read as an unexplained failure. The row must say what code did.
+  it("records the lane's own verdict: a 'pure' choice under the pure bar is acted on as memory_mixed, and says so", async () => {
+    const { store, worker, turn } = setup(jevSays(MEMORY, { pure: 0.79, mixed: 0.21 }));
+    const t = turn("从现在起，回复请控制在三句话以内。");
+    expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "inform" });
+    expect(triageRows(store, t.run_id)).toMatchObject([{ complete: "pure", decision: "act", verdict: "memory_mixed" }]);
+    expect(decisions(store, t.run_id).every((r) => r.threshold_used?.endsWith(":memory_mixed"))).toBe(true);
+    store.close();
+  });
+  it("every triage row carries a verdict: memory_pure on the card path, status, fallthrough, and null when skipped", async () => {
+    const pure = setup(jevSays(MEMORY));
+    const a = pure.turn("以后回复短一点");
+    await pure.worker.triageTurn(a.input);
+    expect(triageRows(pure.store, a.run_id)).toMatchObject([{ verdict: "memory_pure" }]);
+    const b = pure.turn("caption");
+    await pure.worker.triageTurn({ ...b.input, modality: "photo" });
+    expect(triageRows(pure.store, b.run_id)).toMatchObject([{ verdict: null }]);
+    pure.store.close();
+    const st = setup(jevSays({ none: 0.1, status: 0.85, memory: 0.05 }));
+    const c = st.turn("did you restart?");
+    await st.worker.triageTurn(c.input);
+    expect(triageRows(st.store, c.run_id)).toMatchObject([{ verdict: "status" }]);
+    const d = st.turn("what's the weather");
+    vi.stubEnv("HOUGE_JEV_TRIAGE_MIN_STATUS", "0.9");
+    await st.worker.triageTurn(d.input);
+    expect(triageRows(st.store, d.run_id)).toMatchObject([{ verdict: "fallthrough" }]);
+    st.store.close();
+  });
   it("mixed memory: saves, returns the inform note, planner path continues", async () => {
     const { store, worker, turn } = setup(jevSays(MEMORY, { mixed: 0.7, pure: 0.3 }));
     const t = turn("以后短一点，另外今天天气？");
