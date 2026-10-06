@@ -5,8 +5,11 @@ import { BudgetLedger } from "../budget/budget-ledger.js";
 import { errorCode, safeReason } from "../domain/error-code.js";
 import type { Identity } from "../domain/types.js";
 import type { LlmAttempt } from "../llm/audit.js";
+import type { TurnModality } from "../media/media-config.js";
+import type { NotificationButton } from "../notifications/notification-types.js";
 import type { ClaimedRun, PlannerFailure, RunStore } from "../run/run-store.js";
 import type { ToolRegistry } from "../tools/tool-registry.js";
+import { ACK_NUDGE_TEXT, isBareAck } from "./bare-ack.js";
 import type { BridgeRequest } from "./bridge-protocol.js";
 import { BridgeServer } from "./bridge-server.js";
 import { createBridgeHandler, flushUnreported, type ActiveTurn } from "./bridge-handler.js";
@@ -37,7 +40,7 @@ export interface TurnRequest {
   approver?: Identity;
 }
 export interface TurnOutcomeSink {
-  complete(i: { run_id: string; worker_id: string; text: string; attachments: string[]; duration_ms: number; tool_calls: number; merged_into?: string }): void;
+  complete(i: { run_id: string; worker_id: string; text: string; attachments: string[]; duration_ms: number; tool_calls: number; merged_into?: string; buttons?: NotificationButton[] }): void;
   fail(i: { run_id: string; worker_id: string; error_type: PlannerFailure; error_ref: string; partial?: string }): void;
   incident(kind: string, detail: Record<string, unknown>): void;
   /** The version check passed: clear any open omp_version_mismatch / omp_unavailable condition. */
@@ -47,6 +50,10 @@ export interface TurnOutcomeSink {
   /** The spawned child holds a transcript started on the current lesson set: clear this chat's planner_session_reset_failed. */
   sessionResetOk?(): void;
 }
+/** Lane 1 (ADR 0029 §5.1): what the daemon decided before the planner. Anything but lane_reply/inform is today's path. */
+export type TriageOutcome = { kind: "fallthrough" } | { kind: "inform"; note: string } | { kind: "lane_reply"; text: string; buttons: NotificationButton[] };
+/** The lane gets the supervisor's own posture reading and the turn's abort signal; it never looks posture up itself. */
+export interface TriageInput { claim: ClaimedRun; text: string; userText: string; modality: TurnModality; posture: string | null; signal: AbortSignal }
 export interface SupervisorDeps {
   chatId: string; store: RunStore; cfg: OmpConfig; ctx: PathContext; distDir: string; decls: ToolDeclaration[];
   env: NodeJS.ProcessEnv; turnEnvelopeActions: string[]; turnContext: TurnContextDeps;
@@ -57,7 +64,9 @@ export interface SupervisorDeps {
    * `text` is what the planner is prompted with; `userText`, when present, is what is stored as Paco's chat turn (a photo's
    * caption or placeholder: the image-derived digest is untrusted and never his words).
    */
-  resolveMessage?: (claim: ClaimedRun) => Promise<{ ok: true; text: string; userText?: string } | { ok: false; error_ref: string }>;
+  resolveMessage?: (claim: ClaimedRun) => Promise<{ ok: true; text: string; userText?: string; modality?: TurnModality } | { ok: false; error_ref: string }>;
+  /** Lane 1 (ADR 0029 §5.1, slot B): awaited after resolveMessage, before the planner. Absent or throwing → today's path. */
+  triage?: (i: TriageInput) => Promise<TriageOutcome>;
   sessionFactory?: (o: PlannerSessionOptions) => PlannerSessionLike;
   versionCheck?: () => ReturnType<typeof checkOmpVersion>;
   /** Unit tests only: skips the wrapper hash check and the Seatbelt render (the bridge socket stays real). */
@@ -116,6 +125,10 @@ interface Turn {
   done: (r: "end" | "abort") => void; ended: Promise<"end" | "abort">;
   deadlineLeft: number; deadlineAt: number; deadline: ReturnType<typeof setTimeout> | undefined; idle: ReturnType<typeof setTimeout> | undefined;
   failure?: { type: PlannerFailure; ref: string };
+  /** A lane reply's card buttons, handed to finishSuccess (ADR 0029 §5.1). */
+  laneButtons?: NotificationButton[];
+  /** The lane owns this turn's terminal: a late start result may no longer fail or re-enter it. */
+  laneEnded: boolean;
 }
 
 /** Error text for error_refs, incidents and logs: a code or a short path-free reason, never an fs message (M-6). */
@@ -219,12 +232,26 @@ export class PlannerSupervisor {
   submit(req: TurnRequest): void {
     const t = this.turn;
     // a message steers only into a Telegram turn: never into a schedule-born one (provenance, B2) — it queues behind it
-    if (t?.live && t.req.source === "telegram" && req.source === "telegram" && !req.needsIngest && (this.st === "RUNNING" || this.st === "AWAITING_APPROVAL")) {
+    const live = t?.live && t.req.source === "telegram" && req.source === "telegram" && !req.needsIngest;
+    // Slot A (ADR 0029 §5.1): a bare ack while an approval card waits is consent to nothing — nudge, never steer or queue.
+    if (live && this.st === "AWAITING_APPROVAL" && isBareAck(req.text)) { this.nudgeAck(t, req); return; }
+    if (live && (this.st === "RUNNING" || this.st === "AWAITING_APPROVAL")) {
       void this.steer(t, req).catch((e) => this.incident("planner_steer_failed", { run_id: req.run_id, reason: rpcCode(e) }));
       return;
     }
     this.queue.push(req);
     if (!this.busy) this.draining = this.drain();
+  }
+
+  /** The nudged run completes on its own, code-owned, with zero tool calls; the waiting turn is untouched. */
+  private nudgeAck(waiting: Turn, req: TurnRequest): void {
+    const { store, chatId, cfg, outcome } = this.d;
+    const worker = `planner:${chatId}:nudge:${randomUUID()}`;
+    if (!store.claimRun(req.run_id, worker, cfg.leaseTtlS)) return;
+    store.recordChatTurn({ chat_id: chatId, run_id: req.run_id, role: "user", text: req.text });
+    store.appendRunLedgerEvent(req.run_id, "ack_nudged", "core", { approval_run_id: waiting.req.run_id });
+    store.recordChatTurn({ chat_id: chatId, run_id: req.run_id, role: "assistant", text: ACK_NUDGE_TEXT, intent: "loop" });
+    outcome.complete({ run_id: req.run_id, worker_id: worker, text: ACK_NUDGE_TEXT, attachments: [], duration_ms: 0, tool_calls: 0 });
   }
 
   /** @internal Tests only: the same entry point the bridge receives through ActiveTurn.setAwaitingApproval. */
@@ -344,7 +371,7 @@ export class PlannerSupervisor {
     const heartbeat = setInterval(() => this.renewLeases(), PLANNER_HEARTBEAT_MS);
     const turn: Turn = {
       req, claim, worker, startedAt: Date.now(), merged: [], active, abort, heartbeat, n: 0, recorded: 0, lastText: "", lastError: undefined, deadline: undefined, idle: undefined,
-      usedTool: false, legIndex: 0, live: false, finished: false, aborting: false, dispatched: false, childGen: -1, approvals: 0, ...newDeferred(),
+      usedTool: false, legIndex: 0, live: false, finished: false, laneEnded: false, aborting: false, dispatched: false, childGen: -1, approvals: 0, ...newDeferred(),
       deadlineLeft: cfg.turnTimeoutMs, deadlineAt: Date.now()
     };
     this.armDeadline(turn); // the deadline covers child start and prompt build too
@@ -372,6 +399,7 @@ export class PlannerSupervisor {
   }
 
   private failTurn(turn: Turn, type: PlannerFailure, ref: string): void {
+    if (turn.finished || turn.laneEnded) return; // ADR 0029 §5.1: a late spawn result never mutates a lane-ended turn
     turn.failure ??= { type, ref };
     turn.live = false;
     turn.done("abort");
@@ -382,11 +410,18 @@ export class PlannerSupervisor {
     try {
       const resolved = await this.resolveText(turn);
       if (resolved === ENDED || turn.failure) return;
-      const { text, userText } = resolved;
-      if (!(await this.ensureReady(turn))) return;
+      const { text, userText, modality } = resolved;
+      // Slot B (ADR 0029 §5.1): the child starts now; only planner paths await it. `warm` never rejects: a start failure
+      // is the spawn's own incident (or a string result), never this turn's.
+      const warm: Promise<StartResult> = this.ensureSession(0).catch((e): StartResult => `spawn_failed: ${message(e)}`);
+      const verdict = await this.triage(turn, { claim: turn.claim, text, userText, modality, posture: this.d.posture(), signal: turn.abort.signal });
+      if (verdict === ENDED || turn.failure) return;
+      if (verdict.kind === "lane_reply") { await this.finishLane(turn, userText, verdict, warm); return; }
+      const promptMessage = verdict.kind === "inform" ? `${verdict.note}\n\n${text}` : text;
+      if (!(await this.ensureReady(turn, warm))) return;
       store.recordChatTurn({ chat_id: chatId, run_id: turn.req.run_id, role: "user", text: userText });
       const prompt = await this.step(turn, buildTurnPrompt(turnContext, {
-        run_id: turn.req.run_id, chat_id: chatId, message: text, source: turn.req.source, applied: this.applied,
+        run_id: turn.req.run_id, chat_id: chatId, message: promptMessage, source: turn.req.source, applied: this.applied,
         ...(turn.req.goal !== undefined ? { goal: turn.req.goal } : {})
       }));
       if (prompt === ENDED || turn.failure) return;
@@ -397,9 +432,38 @@ export class PlannerSupervisor {
     }
   }
 
+  /** Any triage error is today's path; the reason is a closed enum (an Error message may carry bound values). */
+  private async triage(turn: Turn, i: TriageInput): Promise<TriageOutcome | typeof ENDED> {
+    if (!this.d.triage || turn.req.source !== "telegram") return { kind: "fallthrough" };
+    try {
+      return await this.step(turn, this.d.triage(i));
+    } catch (e) {
+      console.error(`planner supervisor: triage threw: ${message(e)}`);
+      this.incident("triage_threw", { run_id: turn.req.run_id, reason: "triage_threw" });
+      return { kind: "fallthrough" };
+    }
+  }
+
+  /**
+   * Lane terminal (spec §5.1 "one terminal owner"): record the user turn, hand the card to finishSuccess through
+   * lastText/laneButtons, make sure no start can still touch this turn, then end it. settle() → finishSuccess records
+   * the assistant turn and completes the run once, with tool_calls 0 from the untouched budget.
+   */
+  private async finishLane(turn: Turn, userText: string, v: Extract<TriageOutcome, { kind: "lane_reply" }>, warm: Promise<StartResult>): Promise<void> {
+    // Order matters (Codex plan review): everything that can throw runs BEFORE laneEnded; after it, completion is
+    // guaranteed by the finally. A throw before laneEnded reaches startTurn's catch → failTurn.
+    this.d.store.recordChatTurn({ chat_id: this.d.chatId, run_id: turn.req.run_id, role: "user", text: userText });
+    if ((await bounded(warm, ABORT_GRACE_MS)) === TIMED_OUT) { await this.stopSession(); await this.settleStart(); } // supersede a start that will not settle (gen bump)
+    turn.lastText = v.text;
+    turn.laneButtons = v.buttons;
+    turn.laneEnded = true; // from here a late start result may not fail or re-enter this turn
+    try { turn.live = false; } finally { turn.done("end"); }
+  }
+
   /** A ready child for the turn, or false with the turn already failed/ended. */
-  private async ensureReady(turn: Turn): Promise<boolean> {
-    const fail = await this.startSession(turn);
+  private async ensureReady(turn: Turn, warm?: Promise<StartResult>): Promise<boolean> {
+    if (turn.finished || turn.laneEnded) return false;
+    const fail = await this.startSession(turn, warm);
     if (fail === ENDED) { await this.settleStart(); return false; } // ended while the child was starting
     if (turn.failure) return false;
     if (fail) { this.failTurn(turn, "planner_exit", fail); return false; }
@@ -410,12 +474,12 @@ export class PlannerSupervisor {
    * The message the planner sees (the ingest hook's text; a failed ingest fails the turn `media_failed`, else the request
    * text) and the text stored as the user's turn (the hook's userText when it gives one, else the same text).
    */
-  private async resolveText(turn: Turn): Promise<{ text: string; userText: string } | typeof ENDED> {
-    if (!this.d.resolveMessage) return { text: turn.req.text, userText: turn.req.text };
+  private async resolveText(turn: Turn): Promise<{ text: string; userText: string; modality: TurnModality } | typeof ENDED> {
+    if (!this.d.resolveMessage) return { text: turn.req.text, userText: turn.req.text, modality: "text" };
     const r = await this.step(turn, this.d.resolveMessage(turn.claim));
     if (r === ENDED) return ENDED;
     if (!r.ok) { this.failTurn(turn, "media_failed", r.error_ref); return ENDED; }
-    return { text: r.text, userText: r.userText ?? r.text };
+    return { text: r.text, userText: r.userText ?? r.text, modality: r.modality ?? "text" };
   }
 
   /** A turn that ended mid-start finishes only after its start settled (stopped or failed): no late incident, no orphan child. */
@@ -536,10 +600,10 @@ export class PlannerSupervisor {
    * rescue a bad planner[0]. Each rejected string gets one error{model_missing} row and the next string is spawned;
    * all rejected → no_planner_leg + incident. Not a crash-latch count.
    */
-  private async startSession(turn: Turn): Promise<string | null | typeof ENDED> {
+  private async startSession(turn: Turn, warm?: Promise<StartResult>): Promise<string | null | typeof ENDED> {
     const planner = this.d.cfg.planner;
-    for (let leg = 0; ; leg++) {
-      const r = await this.step(turn, this.ensureSession(leg));
+    for (let leg = 0; ; leg++, warm = undefined) {
+      const r = await this.step(turn, warm ? this.afterWarm(warm) : this.ensureSession(leg));
       if (r === ENDED || r === null || typeof r === "string") {
         if (r === null) turn.legIndex = this.sessionLeg;
         return r;
@@ -552,6 +616,17 @@ export class PlannerSupervisor {
         return ENDED;
       }
     }
+  }
+
+  /**
+   * Leg 0 after slot B's warm start: its failure (a start_failed ref, or omp refusing planner[0]) IS this turn's leg-0
+   * result, never a second spawn (one start, one incident, one crash count, as before the lane). The warm call was this
+   * turn's start-time fingerprint compare; a ready child is replaced only if it exited or went stale while the lane ran.
+   */
+  private async afterWarm(warm: Promise<StartResult>): Promise<StartResult> {
+    const r = await warm;
+    if (r !== null) return r;
+    return this.session && !this.stale ? null : this.ensureSession(0);
   }
 
   /** One llm_attempt per string omp refused at spawn, keyed `<run>:0:<leg>` (never `<run>:0`, the n = 0 dispatch row's key). */
@@ -946,7 +1021,7 @@ export class PlannerSupervisor {
     flushUnreported(store, t.active);
     const { text, attachments } = parseAttachments(t.lastText, this.workspace());
     const base = { worker_id: t.worker, text, duration_ms: Date.now() - t.startedAt, tool_calls: t.active.budget.usage().tool_calls };
-    outcome.complete({ ...base, run_id: t.req.run_id, attachments });
+    outcome.complete({ ...base, run_id: t.req.run_id, attachments, ...(t.laneButtons ? { buttons: t.laneButtons } : {}) });
     for (const m of t.merged) outcome.complete({ ...base, run_id: m, merged_into: t.req.run_id, attachments: [] });
     store.recordChatTurn({ chat_id: chatId, run_id: t.req.run_id, role: "assistant", text, intent: assistantIntentFor(text, t.usedTool) });
   }

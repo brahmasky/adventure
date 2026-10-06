@@ -1429,3 +1429,103 @@ describe("PlannerSupervisor — a lesson change starts a fresh omp session (memo
     });
   });
 });
+
+type Done = { run_id: string; text: string; tool_calls: number; buttons?: unknown[] };
+const dones = (o: { done: unknown[] }) => o.done as Done[];
+
+describe("ADR 0029 lane 1 slots", () => {
+  it("slot A: a bare ack during AWAITING_APPROVAL is nudged, not steered, not queued, approves nothing", async () => {
+    const held = heldSession();
+    const { sup, store, outcome } = harness(held.session);
+    const r1 = createQueuedTurnRun(store, "push it");
+    sup.submit(req(r1, "push it")); await held.live(1);
+    sup.setAwaitingApprovalForTest(true);
+    const r2 = createQueuedTurnRun(store, "好");
+    sup.submit(req(r2, "好"));
+    await until(() => dones(outcome).some((d) => d.run_id === r2));
+    expect(held.session.steers).toHaveLength(0);
+    expect(dones(outcome).find((d) => d.run_id === r2)?.text).toContain("waiting for your tap");
+    expect(store.getLedgerEvents().some((e) => e.event_type === "ack_nudged" && e.payload.approval_run_id === r1)).toBe(true);
+    expect(store.getRunState(r2)).toBe("completed");
+    sup.setAwaitingApprovalForTest(false); held.end(); await untilState(sup, "IDLE");
+  });
+  it("slot A does not fire for a non-ack: it is steered as today", async () => {
+    const held = heldSession();
+    const { sup, store } = harness(held.session);
+    sup.submit(req(createQueuedTurnRun(store, "push it"), "push it")); await held.live(1);
+    sup.setAwaitingApprovalForTest(true);
+    sup.submit(req(createQueuedTurnRun(store, "好，再查一次"), "好，再查一次"));
+    await until(() => held.session.steers.length === 1);
+    sup.setAwaitingApprovalForTest(false); held.end(); await untilState(sup, "IDLE");
+  });
+  it("slot B lane_reply: completes with tool_calls 0 and buttons, never prompts the child, leaves it idle", async () => {
+    const session = fakeSession();
+    const buttons = [{ text: "↩️ Undo", data: "memlane:undo:lc_x" }];
+    const { sup, store, outcome } = harness(session, {}, { triage: async () => ({ kind: "lane_reply", text: "📒 Saved lesson #51", buttons }) });
+    const r = createQueuedTurnRun(store, "以后回复短一点");
+    sup.submit(req(r, "以后回复短一点"));
+    await until(() => outcome.done.length === 1);
+    expect(session.prompts).toHaveLength(0);
+    expect(dones(outcome)[0]).toMatchObject({ run_id: r, tool_calls: 0, text: "📒 Saved lesson #51", buttons });
+    expect(store.getRecentChatTurns("42", 10).map((t) => t.role)).toEqual(["user", "assistant"]);
+    await untilState(sup, "IDLE");
+  });
+  it("slot B passes the posture reading and the abort signal to the lane", async () => {
+    const seen: Array<{ posture: string | null; aborted: boolean }> = [];
+    const session = fakeSession();
+    const { sup, store, outcome } = harness(session, {}, { posture: () => "killed", triage: async (i) => { seen.push({ posture: i.posture, aborted: i.signal.aborted }); return { kind: "fallthrough" }; } });
+    sup.submit(req(createQueuedTurnRun(store, "hi"), "hi"));
+    await until(() => outcome.done.length + outcome.failed.length === 1);
+    expect(seen).toEqual([{ posture: "killed", aborted: false }]);
+  });
+  it("slot B inform: the note precedes the message in the prompt and the planner runs", async () => {
+    const session = fakeSession();
+    const { sup, store, outcome } = harness(session, {}, { triage: async () => ({ kind: "inform", note: "[memory] Lesson #51 (format) was just saved from this message; do not save it again." }) });
+    sup.submit(req(createQueuedTurnRun(store, "以后短一点，另外今天天气？"), "以后短一点，另外今天天气？"));
+    await until(() => outcome.done.length === 1);
+    expect(session.prompts[0]).toMatch(/^\[memory\] Lesson #51[\s\S]*另外今天天气？$/);
+  });
+  it("slot B: a triage that throws falls through to today's path with a closed-reason incident", async () => {
+    const session = fakeSession();
+    const { sup, store, outcome } = harness(session, {}, { triage: async () => { throw new Error("boom with a bound value"); } });
+    sup.submit(req(createQueuedTurnRun(store, "hi"), "hi"));
+    await until(() => outcome.done.length === 1);
+    expect(session.prompts).toHaveLength(1); expect(outcome.failed).toHaveLength(0);
+    expect((outcome.incidents as Array<{ k: string; d: Record<string, unknown> }>).find((i) => i.k === "triage_threw")?.d.reason).toBe("triage_threw");
+  });
+  it("slot B lane_reply when the spawn rejects or hangs: the lane still completes; the spawn failure never fails the turn", async () => {
+    const rejecting = fakeSession({ start: async () => { throw new PlannerRpcError("exited:1"); } });
+    let h = harness(rejecting, {}, { triage: async () => ({ kind: "lane_reply", text: "status: ok", buttons: [] }) });
+    let r = createQueuedTurnRun(h.store, "did you restart?");
+    h.sup.submit(req(r, "did you restart?"));
+    await until(() => h.outcome.done.length + h.outcome.failed.length === 1);
+    expect(dones(h.outcome).map((d) => d.run_id)).toEqual([r]); expect(h.outcome.failed).toHaveLength(0);
+    const hanging = fakeSession({ start: () => new Promise(() => undefined) });
+    h = harness(hanging, {}, { triage: async () => ({ kind: "lane_reply", text: "status: ok", buttons: [] }) });
+    r = createQueuedTurnRun(h.store, "did you restart?");
+    h.sup.submit(req(r, "did you restart?"));
+    await until(() => h.outcome.done.length === 1); // completes after ABORT_GRACE_MS (5 s) through stopSession; within vitest's 10 s
+    expect(h.outcome.failed).toHaveLength(0);
+  });
+  it.each([
+    ["recordChatTurn", (h: ReturnType<typeof harness>) => vi.spyOn(h.store, "recordChatTurn").mockImplementationOnce(() => { throw new Error("disk"); }), false],
+    ["stopSession", (h: ReturnType<typeof harness>) => vi.spyOn(h.sup as unknown as { stopSession: () => Promise<void> }, "stopSession").mockRejectedValueOnce(new Error("stop")), true],
+    ["settleStart", (h: ReturnType<typeof harness>) => vi.spyOn(h.sup as unknown as { settleStart: () => Promise<void> }, "settleStart").mockRejectedValueOnce(new Error("settle")), true]
+  ])("a %s failure before laneEnded reaches settle() as exactly one FAILED outcome (start_failed), never a stranded turn", async (_name, inject, hang) => {
+    const session = hang ? fakeSession({ start: () => new Promise(() => undefined) }) : fakeSession();
+    const h = harness(session, {}, { triage: async () => ({ kind: "lane_reply", text: "x", buttons: [] }) });
+    const spy = inject(h);
+    h.sup.submit(req(createQueuedTurnRun(h.store, "hi"), "hi"));
+    await until(() => h.outcome.done.length + h.outcome.failed.length === 1);
+    expect(h.outcome.done).toHaveLength(0);
+    expect((h.outcome.failed[0] as { error_ref: string }).error_ref).toMatch(/^start_failed/);
+    expect(spy).toHaveBeenCalled(); // the injection really reached the lane's pre-laneEnded path
+    spy.mockRestore();
+  });
+  it("a sessionFactory that throws synchronously is caught by the warm promise, not the turn", async () => {
+    const { sup, store, outcome } = harness(fakeSession(), {}, { sessionFactory: () => { throw new Error("factory"); }, triage: async () => ({ kind: "lane_reply", text: "x", buttons: [] }) });
+    sup.submit(req(createQueuedTurnRun(store, "hi"), "hi"));
+    await until(() => outcome.done.length === 1);
+    expect(outcome.failed).toHaveLength(0);
+  });
+});
