@@ -81,6 +81,32 @@ describe("runTriageReplay", () => {
     store.close();
   });
 
+  // Review fix 1/2: live built the state at its decision instant, not at the anchor; a replay cut at the anchor would
+  // never join jev_decisions for a shadowed turn.
+  it("a turn the live path decided is rebuilt at the live instant: thread cut and last_houge_turn age both", async () => {
+    const store = RunStore.openInMemory(); const { a, b } = seed(store);
+    const live = "2026-08-01T00:10:03.000Z";
+    store.recordChatTurn({ chat_id: "555", run_id: a, role: "assistant", text: "补充一句", intent: "answer", created_at: "2026-08-01T00:10:01.000Z" });
+    store.insertJevDecision({ run_id: b, point: "triage", question_id: "lane", criteria_hash: "c", model_reported: JEV_MODEL, state_hash: "s", lang: "zh",
+      answers_json: "{}", confidence: 0.9, top_prob: 0.9, margin: 0.8, threshold_version: "v", threshold_used: null, decision: "shadow", latency_ms: 1,
+      input_tokens: 1, status: "answered", skip_reason: null, created_at: live });
+    const r = await runTriageReplay({ store, env: {}, jev: fakeJev, outPath: tmp("r.jsonl"), maxUsd: 1, dryRun: false });
+    const build = (at: string) => {
+      const recent = store.getChatTurnsBefore("555", resolveChatContextTurns({}), chatContextSince({}, new Date(at)), at, b);
+      const built = buildTriageState({ userText: "今天天气？", recentTurns: recent, turnChars: resolveChatContextTurnChars({}), modality: "text",
+        lastHougeTurn: lastHougeTurnOf(recent, Date.parse(at)) });
+      if (!built.ok) throw new Error("state");
+      return built.state;
+    };
+    const liveState = build(live);
+    expect((liveState.recent_turns as unknown[]).length).toBe(3); // the turn written after the anchor is in the live thread
+    expect((liveState.last_houge_turn as { age_s: number }).age_s).toBe(2);
+    const row = r.rows.find((x) => x.run_id === b)!;
+    expect(row.state_hash).toBe(stateHash(liveState));
+    expect(row.state_hash).not.toBe(stateHash(build("2026-08-01T00:10:00.000Z")));
+    store.close();
+  });
+
   it("resumes: a second run over the same file dispatches nothing new", async () => {
     const store = RunStore.openInMemory(); seed(store);
     const out = tmp("replay.jsonl");
@@ -98,6 +124,8 @@ describe("runTriageReplay", () => {
     const dry = await runTriageReplay({ store, env: {}, jev: fakeJev, outPath: out, maxUsd: 1, dryRun: true });
     expect(dry.rows.every((x) => x.status === "dry_run")).toBe(true); expect(dry.spentUsd).toBe(0);
     expect(dry).toMatchObject({ universe: 2, wouldDispatch: 2 });
+    expect(JSON.stringify(dry.rows)).not.toContain("以后回复短一点"); // the prepared state never reaches the outcome
+    expect(dry.rows.every((x) => !("state" in x) && !("chars" in x))).toBe(true);
     expect(() => readFileSync(out)).toThrow();
     const auth = async (): Promise<JevResult> => ({ ok: false, reason: "auth", detail: "HTTP 401", error_kind: "auth" });
     const r = await runTriageReplay({ store, env: {}, jev: auth, outPath: tmp("r.jsonl"), maxUsd: 1, dryRun: false });

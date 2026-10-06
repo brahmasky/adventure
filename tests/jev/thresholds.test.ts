@@ -6,7 +6,7 @@ import { CALIBRATED_ROWS, calibratedLang, calibrationRows, type CalibrationRow }
 import { JEV_MODEL, type JevChoiceAnswer } from "../../src/jev/jev-client.js";
 import { TRIAGE_COMPLETE, TRIAGE_LANE, TRIAGE_QUESTIONS, TRIAGE_SCOPE } from "../../src/jev/questions/triage.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
-import { TRIAGE_BAR_DEFAULTS, resolveTriageBars, triageVerdict } from "../../src/jev/thresholds.js";
+import { TRIAGE_BAR_DEFAULTS, TRIAGE_STATUS_ARM_ID, resolveTriageBars, triageVerdict } from "../../src/jev/thresholds.js";
 
 const ans = (choice: string, probabilities: Record<string, number>): JevChoiceAnswer => {
   const n = Object.keys(probabilities).length;
@@ -21,7 +21,8 @@ const answers = (lane: Record<string, number>, complete: Record<string, number>,
 });
 const bars = TRIAGE_BAR_DEFAULTS;
 const rowFor = (q: { id: string }, hash: string, lang: "zh" | "en"): CalibrationRow => ({ question_id: q.id, criteria_hash: hash, model: JEV_MODEL, lang, approved: "test", evidence: "test" });
-const rows: CalibrationRow[] = TRIAGE_QUESTIONS.flatMap((q) => (["zh", "en"] as const).map((lang) => rowFor(q, criteriaHash(q), lang)));
+const statusRow = (lang: "zh" | "en"): CalibrationRow => rowFor({ id: TRIAGE_STATUS_ARM_ID }, criteriaHash(TRIAGE_LANE), lang);
+const rows: CalibrationRow[] = [...TRIAGE_QUESTIONS.flatMap((q) => (["zh", "en"] as const).map((lang) => rowFor(q, criteriaHash(q), lang))), statusRow("zh"), statusRow("en")];
 const memoryAnswers = () => answers({ none: 0.05, status: 0.05, memory: 0.9 }, { mixed: 0.1, pure: 0.9 }, { ask: 0.8, research: 0.2 });
 const statusAnswers = () => answers({ none: 0.15, status: 0.8, memory: 0.05 }, { mixed: 0.5, pure: 0.5 }, { ask: 0.5, research: 0.5 });
 
@@ -49,16 +50,23 @@ describe("triageVerdict", () => {
     expect(CALIBRATED_ROWS).toHaveLength(0);
     expect(triageVerdict(memoryAnswers(), bars, "zh", JEV_MODEL)).toEqual({ kind: "fallthrough", reason: "uncalibrated" });
   });
-  it("lane-specific arming: a calibrated lane alone arms status; memory still falls through uncalibrated", () => {
-    const laneOnly = [rowFor(TRIAGE_LANE, criteriaHash(TRIAGE_LANE), "zh")];
-    expect(triageVerdict(statusAnswers(), bars, "zh", JEV_MODEL, laneOnly)).toEqual({ kind: "status" });
-    expect(triageVerdict(memoryAnswers(), bars, "zh", JEV_MODEL, laneOnly)).toEqual({ kind: "fallthrough", reason: "uncalibrated" });
+  // Spec §5.9: memory may arm while status stays shadow (status needs precision 1.0 on n ≥ 5, which history may never give).
+  it("lane-specific arming: the `lane:status` row alone arms status; memory still falls through uncalibrated", () => {
+    expect(triageVerdict(statusAnswers(), bars, "zh", JEV_MODEL, [statusRow("zh")])).toEqual({ kind: "status" });
+    expect(triageVerdict(memoryAnswers(), bars, "zh", JEV_MODEL, [statusRow("zh")])).toEqual({ kind: "fallthrough", reason: "uncalibrated" });
     const noScope = [TRIAGE_LANE, TRIAGE_COMPLETE].map((q) => rowFor(q, criteriaHash(q), "zh"));
     expect(triageVerdict(memoryAnswers(), bars, "zh", JEV_MODEL, noScope)).toEqual({ kind: "fallthrough", reason: "uncalibrated" });
     expect(triageVerdict(statusAnswers(), bars, "zh", JEV_MODEL, [TRIAGE_COMPLETE, TRIAGE_SCOPE].map((q) => rowFor(q, criteriaHash(q), "zh")))).toEqual({ kind: "fallthrough", reason: "uncalibrated" });
   });
+  it("memory armed without the status row: a status question is NOT answered by code (status stays shadow)", () => {
+    const memoryOnly = TRIAGE_QUESTIONS.map((q) => rowFor(q, criteriaHash(q), "zh"));
+    expect(triageVerdict(memoryAnswers(), bars, "zh", JEV_MODEL, memoryOnly)).toEqual({ kind: "memory", complete: "pure", scope: "ask" });
+    expect(triageVerdict(statusAnswers(), bars, "zh", JEV_MODEL, memoryOnly).kind).toBe("fallthrough"); // the planner answers it
+    const staleStatus = [rowFor({ id: TRIAGE_STATUS_ARM_ID }, "deadbeef", "zh")]; // the status row is bound to the lane wording too
+    expect(triageVerdict(statusAnswers(), bars, "zh", JEV_MODEL, staleStatus)).toEqual({ kind: "fallthrough", reason: "uncalibrated" });
+  });
   it("a calibrated lane for zh does not arm en", () => {
-    const zhOnly = [rowFor(TRIAGE_LANE, criteriaHash(TRIAGE_LANE), "zh")];
+    const zhOnly = [statusRow("zh")];
     expect(triageVerdict(statusAnswers(), bars, "en", JEV_MODEL, zhOnly)).toEqual({ kind: "fallthrough", reason: "uncalibrated" });
   });
 });

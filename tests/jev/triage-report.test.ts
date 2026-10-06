@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { JEV_MODEL } from "../../src/jev/jev-client.js";
 import { TRIAGE_LANE, TRIAGE_QUESTIONS } from "../../src/jev/questions/triage.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
-import { TRIAGE_BAR_DEFAULTS } from "../../src/jev/thresholds.js";
+import { TRIAGE_BAR_DEFAULTS, TRIAGE_STATUS_ARM_ID } from "../../src/jev/thresholds.js";
 import { TRIAGE_LANE_PERMUTED, type TriageLabel, type TriageReplayRow } from "../../src/jev/triage-replay.js";
 import { formatTriageReport, type TriageShadowStats } from "../../src/jev/triage-report.js";
 
@@ -94,6 +94,7 @@ describe("formatTriageReport", () => {
       for (const q of TRIAGE_QUESTIONS) {
         expect(text).toContain(JSON.stringify({ question_id: q.id, criteria_hash: criteriaHash(q), model: JEV_MODEL, lang: "zh" }).slice(0, -1));
       }
+      expect(text).toContain(`{"question_id":"${TRIAGE_STATUS_ARM_ID}","criteria_hash":"${criteriaHash(TRIAGE_LANE)}","model":"${JEV_MODEL}","lang":"zh"`);
       expect(text).not.toMatch(/"lang":"en"/); // no en evidence → no en rows
     });
 
@@ -113,11 +114,31 @@ describe("formatTriageReport", () => {
       expect(formatTriageReport(failed, labels, outcome, TRIAGE_BAR_DEFAULTS, perm, SHADOW_OK)).not.toMatch(/ROWS TO ADD/);
       const costly = rows.map((r) => (r.turn_id === "t10" ? { ...r, p_pure: 0.9 } : r)); // pure on a turn with other tools
       expect(formatTriageReport(costly, labels, outcome, TRIAGE_BAR_DEFAULTS, perm, SHADOW_OK)).toMatch(/NO-GO.*costly/);
-      const fourStatus = rows.map((r) => (r.turn_id === "t15" ? row({ turn_id: "t15" }) : r));
-      expect(formatTriageReport(fourStatus, labels, outcome, TRIAGE_BAR_DEFAULTS, perm, SHADOW_OK)).not.toMatch(/ROWS TO ADD/);
       const stale = rows.map((r) => ({ ...r, criteria_hash_lane: "old" }));
       expect(formatTriageReport(stale, labels, outcome, TRIAGE_BAR_DEFAULTS, perm, SHADOW_OK)).toMatch(/^INCOMPLETE.*criteria/m);
       expect(formatTriageReport(rows, labels, outcome, TRIAGE_BAR_DEFAULTS, rows.map((r) => ({ ...r, key: `${r.turn_id}:perm` })), SHADOW_OK)).toMatch(/^INCOMPLETE.*criteria/m); // a "permuted" file asked in canonical order
+    });
+
+    // Spec §5.9: "else status stays shadow while memory arms" — the two lanes arm on separate rows (review ruling R1).
+    it("arms memory and status independently: a status bar short of n = 5 withholds only the `lane:status` row", () => {
+      const { rows, labels, perm } = passing();
+      const fourStatus = rows.map((r) => (r.turn_id === "t15" ? row({ turn_id: "t15" }) : r));
+      const text = formatTriageReport(fourStatus, labels, outcome, TRIAGE_BAR_DEFAULTS, perm, SHADOW_OK);
+      expect(text).toMatch(/zh status: NO-GO \(stays shadow\)/);
+      expect(text).toMatch(/"question_id":"lane","criteria_hash"/);
+      expect(text).toMatch(/"question_id":"scope"/);
+      expect(text).not.toContain(TRIAGE_STATUS_ARM_ID + '"');
+      const costly = rows.map((r) => (r.turn_id === "t10" ? { ...r, p_pure: 0.9 } : r)); // memory fails, status still holds
+      const statusOnly = formatTriageReport(costly, labels, outcome, TRIAGE_BAR_DEFAULTS, perm, SHADOW_OK);
+      expect(statusOnly).toContain(`"question_id":"${TRIAGE_STATUS_ARM_ID}"`);
+      expect(statusOnly).not.toMatch(/"question_id":"(lane|complete|scope)"/);
+    });
+
+    it("an unlabelled status verdict at a lowered status bar is a required label (review fix 3)", () => {
+      const { rows, labels, perm } = passing();
+      const lowish = [...rows.slice(0, 39), row({ turn_id: "t39", p_status: 0.5, p_none: 0.48 })]; // Jev chose none; p(status) 0.5
+      expect(formatTriageReport(lowish, labels, outcome, TRIAGE_BAR_DEFAULTS, perm, SHADOW_OK)).not.toMatch(/INCOMPLETE/);
+      expect(formatTriageReport(lowish, labels, outcome, { ...TRIAGE_BAR_DEFAULTS, minStatus: 0.4 }, perm, SHADOW_OK)).toMatch(/^INCOMPLETE.*1 required turn\(s\) unlabelled/m);
     });
 
     it("counts live shadow rows whose state found no replay match (the broker-redaction parity gap)", () => {

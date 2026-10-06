@@ -2,7 +2,7 @@ import type { CalibrationRow } from "./calibration.js";
 import { JEV_MODEL } from "./jev-client.js";
 import { TRIAGE_LANE, TRIAGE_QUESTIONS } from "./questions/triage.js";
 import { criteriaHash } from "./questions/types.js";
-import type { TriageBars } from "./thresholds.js";
+import { TRIAGE_STATUS_ARM_ID, type TriageBars } from "./thresholds.js";
 import { replayVerdict, TRIAGE_LANE_PERMUTED, type TriageLabel, type TriageReplayRow, type TriageReplayVerdict } from "./triage-replay.js";
 import { wilsonLower } from "./wilson.js";
 
@@ -43,7 +43,10 @@ function verdictAt(r: TriageReplayRow, bars: TriageBars): TriageReplayVerdict {
   }, bars, r.lang, r.model ?? JEV_MODEL);
 }
 const isMemory = (v: TriageReplayVerdict): boolean => v === "memory_pure" || v === "memory_mixed";
-const required = (r: TriageReplayRow): boolean => r.observed_lesson_write || r.jev_lane === "memory" || r.jev_lane === "status";
+/** Must carry Paco's label: every observed lesson_write, every memory/status choice at any confidence, and every memory/status
+ *  verdict at `bars` (a low HOUGE_JEV_TRIAGE_MIN_STATUS must not let an unlabelled status verdict act). */
+const required = (r: TriageReplayRow, bars: TriageBars): boolean =>
+  r.observed_lesson_write || r.jev_lane === "memory" || r.jev_lane === "status" || verdictAt(r, bars) !== "fallthrough";
 
 interface Costly { tool: number; noTool: number; noToolConfirmed: number; human: number }
 function costlyCells(rows: TriageReplayRow[], labels: Map<string, TriageLabel>, bars: TriageBars): Costly {
@@ -55,7 +58,8 @@ function costlyCells(rows: TriageReplayRow[], labels: Map<string, TriageLabel>, 
 }
 const costlyOk = (c: Costly): boolean => c.tool === 0 && c.human === 0 && c.noTool === c.noToolConfirmed;
 
-interface LangEvidence { lines: string[]; failures: string[]; summary: string }
+/** Memory and status arm on separate rows (thresholds.ts TRIAGE_STATUS_ARM_ID), so their bars are judged separately. */
+interface LangEvidence { lines: string[]; failures: string[]; statusFailures: string[]; summary: string }
 
 /** One calibration language: the per-class lines with n and Wilson bounds, and every §5.9 step 3 bar it fails. */
 function langEvidence(lang: CalLang, L: TriageReplayRow[], labels: Map<string, TriageLabel>, bars: TriageBars): LangEvidence {
@@ -65,14 +69,14 @@ function langEvidence(lang: CalLang, L: TriageReplayRow[], labels: Map<string, T
   const proxy = L.filter((r) => r.observed_lesson_write); const human = L.filter((r) => labels.get(r.turn_id)?.memory === true);
   const memV = L.filter((r) => confident(r) && labels.has(r.turn_id)); const memOk = memV.filter((r) => labels.get(r.turn_id)!.memory);
   const stV = L.filter((r) => v.get(r.turn_id) === "status" && labels.has(r.turn_id)); const stOk = stV.filter((r) => labels.get(r.turn_id)!.status);
-  const noneSample = L.filter((r) => !required(r) && labels.has(r.turn_id)).length;
+  const noneSample = L.filter((r) => !required(r, bars) && labels.has(r.turn_id)).length;
   const c = costlyCells(L, labels, bars);
   const counts = { rp: proxy.filter(chose).length, rh: human.filter(chose).length, cov: human.filter(confident).length };
   const failures: string[] = [];
   const bar = (name: string, a: number, n: number, min: number) => { if (n === 0) failures.push(`${name} n = 0`); else if (a / n < min) failures.push(`${name} ${pct(a, n)} < ${min}`); };
   bar("recall (action proxy)", counts.rp, proxy.length, TRIAGE_GO.recall); bar("recall (human)", counts.rh, human.length, TRIAGE_GO.recall);
   bar("precision (human)", memOk.length, memV.length, TRIAGE_GO.precision); bar("coverage", counts.cov, human.length, TRIAGE_GO.coverage);
-  if (stV.length < TRIAGE_GO.statusMinN || stOk.length < stV.length) failures.push(`status precision ${stOk.length}/${stV.length} (needs 1.0 on n ≥ ${TRIAGE_GO.statusMinN})`);
+  const statusFailures = stV.length < TRIAGE_GO.statusMinN || stOk.length < stV.length ? [`status precision ${stOk.length}/${stV.length} (needs 1.0 on n ≥ ${TRIAGE_GO.statusMinN})`] : [];
   if (noneSample === 0) failures.push("labelled `none` sample n = 0");
   if (!costlyOk(c)) failures.push("costly cells non-zero");
   const lines = [`${lang}${lang === "zh" ? " (incl. mixed)" : ""}: ${L.length} turns`,
@@ -84,7 +88,7 @@ function langEvidence(lang: CalLang, L: TriageReplayRow[], labels: Map<string, T
     `  labelled none sample: n = ${noneSample}`,
     `  COSTLY: pure on tool-using turns: ${c.tool}; pure on NO-tool turns: ${c.noTool} (${c.noToolConfirmed} human-confirmed memory+pure); pure on human-labelled not-pure: ${c.human}`];
   const summary = `n=${L.length} recall proxy ${counts.rp}/${proxy.length} human ${counts.rh}/${human.length} precision ${memOk.length}/${memV.length} status ${stOk.length}/${stV.length}`;
-  return { lines, failures, summary };
+  return { lines, failures, statusFailures, summary };
 }
 
 /** Coverage and the two costly cells as one bar moves 0.5…0.9 with the others held (spec §3.6). */
@@ -124,7 +128,7 @@ function permutationLine(ok: TriageReplayRow[], permuted: TriageReplayRow[] | un
 }
 
 /** Everything that makes the evidence partial: any one → INCOMPLETE, no rows. */
-function blockersOf(rows: TriageReplayRow[], ok: TriageReplayRow[], labels: Map<string, TriageLabel>, o: TriageReportOutcome, permuted?: TriageReplayRow[]): string[] {
+function blockersOf(rows: TriageReplayRow[], ok: TriageReplayRow[], labels: Map<string, TriageLabel>, o: TriageReportOutcome, bars: TriageBars, permuted?: TriageReplayRow[]): string[] {
   const b: string[] = [];
   if (o.stopped) b.push(`stopped: ${o.stopped}`);
   if (o.limited) b.push("--limit set: not the full universe");
@@ -133,7 +137,7 @@ function blockersOf(rows: TriageReplayRow[], ok: TriageReplayRow[], labels: Map<
   else if (finished < o.universe) b.push(`${finished} of ${o.universe} turns finished`);
   const failed = rows.filter((r) => r.status === "jev_failed").length;
   if (failed > 0) b.push(`${failed} jev_failed row(s): re-run to retry them`);
-  const unlabelled = ok.filter((r) => required(r) && !labels.has(r.turn_id)).length;
+  const unlabelled = ok.filter((r) => required(r, bars) && !labels.has(r.turn_id)).length;
   if (unlabelled > 0) b.push(`${unlabelled} required turn(s) unlabelled (every observed lesson_write, every memory/status verdict)`);
   if (ok.some((r) => r.model !== JEV_MODEL)) b.push(`rows from a model other than ${JEV_MODEL}`);
   const stale = ok.some((r) => r.criteria_hash_lane !== criteriaHash(TRIAGE_LANE))
@@ -162,15 +166,18 @@ function shadowLines(shadow: TriageShadowStats | undefined, rows: TriageReplayRo
   return { lines, failures };
 }
 
-function rowsToAdd(langs: CalLang[], evidence: Map<CalLang, LangEvidence>): string[] {
-  const out = ["ROWS TO ADD — Paco's commit into CALIBRATED_ROWS (src/jev/calibration.ts); `approved` is his date:"];
-  for (const lang of langs) {
-    for (const q of TRIAGE_QUESTIONS) {
-      const r: CalibrationRow = { question_id: q.id, criteria_hash: criteriaHash(q), model: JEV_MODEL, lang, approved: "", evidence: `lane 1 replay ${evidence.get(lang)!.summary}` };
+/** Memory rows (lane, complete, scope) when the memory bars hold; the `lane:status` row only when the status bar holds. */
+function rowsToAdd(evidence: Map<CalLang, LangEvidence>): string[] {
+  const out: string[] = [];
+  for (const [lang, e] of evidence) {
+    const ids: Array<readonly [string, string]> = e.failures.length === 0 ? TRIAGE_QUESTIONS.map((q) => [q.id, criteriaHash(q)] as const) : [];
+    if (e.statusFailures.length === 0) ids.push([TRIAGE_STATUS_ARM_ID, criteriaHash(TRIAGE_LANE)]);
+    for (const [question_id, criteria_hash] of ids) {
+      const r: CalibrationRow = { question_id, criteria_hash, model: JEV_MODEL, lang, approved: "", evidence: `lane 1 replay ${e.summary}` };
       out.push(JSON.stringify(r));
     }
   }
-  return out;
+  return out.length === 0 ? [] : ["ROWS TO ADD — Paco's commit into CALIBRATED_ROWS (src/jev/calibration.ts); `approved` is his date:", ...out];
 }
 
 export function formatTriageReport(rows: TriageReplayRow[], labels: Map<string, TriageLabel>, outcome: TriageReportOutcome, bars: TriageBars,
@@ -180,7 +187,7 @@ export function formatTriageReport(rows: TriageReplayRow[], labels: Map<string, 
       `skipped ${outcome.skipped ?? "?"}; est. $${outcome.estimatedUsd.toFixed(3)}; nothing dispatched, no verdict.`;
   }
   const ok = rows.filter((r) => r.status === "ok");
-  const blockers = blockersOf(rows, ok, labels, outcome, permuted);
+  const blockers = blockersOf(rows, ok, labels, outcome, bars, permuted);
   const sh = shadowLines(shadow, rows);
   const out: string[] = blockers.length > 0 ? [`INCOMPLETE — ${blockers.join("; ")}. The numbers below are NOT a verdict.`] : [];
   const evidence = new Map<CalLang, LangEvidence>();
@@ -188,13 +195,14 @@ export function formatTriageReport(rows: TriageReplayRow[], labels: Map<string, 
     const L = ok.filter((r) => calLang(r) === lang); if (L.length === 0) continue;
     const e = langEvidence(lang, L, labels, bars); evidence.set(lang, e);
     out.push(...e.lines, ...sweepLines(L, labels, bars), ...confusionLines(L, bars));
-    out.push(e.failures.length === 0 ? `  ${lang}: every §5.9 replay bar holds` : `  ${lang}: NO-GO — ${e.failures.join("; ")}`);
+    out.push(e.failures.length === 0 ? `  ${lang} memory: every §5.9 replay bar holds` : `  ${lang} memory: NO-GO — ${e.failures.join("; ")}`);
+    out.push(e.statusFailures.length === 0 ? `  ${lang} status: bar holds` : `  ${lang} status: NO-GO (stays shadow) — ${e.statusFailures.join("; ")}`);
   }
   out.push(permutationLine(ok, permuted, bars), ...sh.lines);
   out.push(`bars: conf ≥ ${bars.minConf}, p(memory) ≥ ${bars.minMemory}, gap ≥ ${bars.minGap}, p(pure) ≥ ${bars.minPure}, p(status) ≥ ${bars.minStatus}`);
   out.push(`spent $${outcome.spentUsd.toFixed(3)} of est. $${outcome.estimatedUsd.toFixed(3)}`);
-  const go = [...evidence].filter(([, e]) => e.failures.length === 0).map(([lang]) => lang);
-  if (blockers.length === 0 && sh.failures.length === 0 && go.length > 0) out.push(...rowsToAdd(go, evidence));
-  else out.push(`STOP / NO-GO — no rows: ${[...blockers, ...sh.failures, ...(go.length === 0 ? ["no language clears every replay bar"] : [])].join("; ")}`);
+  const add = blockers.length === 0 && sh.failures.length === 0 ? rowsToAdd(evidence) : [];
+  if (add.length > 0) out.push(...add);
+  else out.push(`STOP / NO-GO — no rows: ${[...blockers, ...sh.failures, ...(blockers.length + sh.failures.length === 0 ? ["no language clears the memory or the status bars"] : [])].join("; ")}`);
   return out.join("\n");
 }

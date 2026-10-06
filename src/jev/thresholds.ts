@@ -32,7 +32,17 @@ export type TriageDecision =
 
 const p = (a: JevChoiceAnswer, option: string): number => a.probabilities[option] ?? 0;
 
-/** Lane-specific arming: status needs only `lane`; memory needs `lane`, `complete` and `scope`. */
+/**
+ * The status lane's own arming key (spec §5.9: memory may arm while status stays shadow). Same criteria hash as
+ * TRIAGE_LANE — status reads that one answer — but a distinct `question_id`, so a `lane` row arms memory only.
+ */
+export const TRIAGE_STATUS_ARM_ID = "lane:status";
+
+/** Lane-specific arming: status needs the `lane:status` row; memory needs `lane`, `complete` and `scope`. */
+function statusArmed(lang: Lang, model: string, rows: readonly CalibrationRow[]): boolean {
+  return calibratedLang(TRIAGE_STATUS_ARM_ID, criteriaHash(TRIAGE_LANE), model, lang, rows) !== undefined;
+}
+
 function armedFor(qs: Question[], lang: Lang, model: string, rows: readonly CalibrationRow[]): boolean {
   return qs.every((q) => calibratedLang(q.id, criteriaHash(q), model, lang, rows) !== undefined);
 }
@@ -41,7 +51,7 @@ function armedFor(qs: Question[], lang: Lang, model: string, rows: readonly Cali
 export function triageVerdict(answers: Record<string, JevChoiceAnswer>, bars: TriageBars, lang: Lang, model: string, rows: readonly CalibrationRow[] = CALIBRATED_ROWS): TriageDecision {
   const lane = answers.lane; const complete = answers.complete; const scope = answers.scope;
   if (!lane) return { kind: "fallthrough", reason: "uncalibrated" };
-  if (p(lane, "status") >= bars.minStatus && armedFor([TRIAGE_LANE], lang, model, rows)) return { kind: "status" };
+  if (p(lane, "status") >= bars.minStatus && statusArmed(lang, model, rows)) return { kind: "status" };
   if (!complete || !scope || !armedFor([TRIAGE_LANE, TRIAGE_COMPLETE, TRIAGE_SCOPE], lang, model, rows)) return { kind: "fallthrough", reason: "uncalibrated" };
   const memory = p(lane, "memory");
   if (memory < bars.minMemory || lane.confidence < bars.minConf || memory - p(lane, "none") < bars.minGap) {

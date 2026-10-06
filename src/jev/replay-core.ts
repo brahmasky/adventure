@@ -16,6 +16,8 @@ export interface ReplayCoreDeps<Row extends ReplayRowBase> {
   maxUsd: number;
   dryRun: boolean;
   doneStatuses: ReadonlySet<string>;
+  /** Strips working fields (e.g. the Jev state, which holds message text) from a prepared row before it reaches `rows`. */
+  publicRow?: (row: Row) => Row;
   log?: (line: string) => void;
 }
 export interface ReplayCoreOutcome<Row> {
@@ -66,7 +68,7 @@ export async function runReplayCore<Row extends ReplayRowBase>(d: ReplayCoreDeps
     }
     const est = d.estimateUsd(prepared);
     o.estimatedUsd += est; o.wouldDispatch += 1;
-    if (d.dryRun) { o.rows.push({ ...prepared, status: "dry_run", est_usd: est }); continue; }
+    if (d.dryRun) { o.rows.push({ ...(d.publicRow ? d.publicRow(prepared) : prepared), status: "dry_run", est_usd: est }); continue; }
     if (o.spentUsd + est > d.maxUsd) { o.wouldDispatch -= 1; o.stopped = "budget"; d.log?.(`stopping: next request would exceed --max-usd ${d.maxUsd}`); break; }
     const out = await d.dispatch({ ...prepared, est_usd: est, attempt: (attempts.get(src.key) ?? 0) + 1 });
     emit(d.outPath, out); o.rows.push(out);

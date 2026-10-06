@@ -6,6 +6,11 @@
 import { readFileSync } from "node:fs";
 import type { Lang } from "./intent-question.js";
 
+/**
+ * One arming row. `question_id` is a question id (`lane`, `complete`, `scope` arm the memory lane together) or the
+ * pseudo-id `lane:status` (thresholds.ts TRIAGE_STATUS_ARM_ID, criteria hash = TRIAGE_LANE's), which arms the status lane
+ * on its own: the two lanes clear different §5.9 bars, so neither row implies the other.
+ */
 export interface CalibrationRow { question_id: string; criteria_hash: string; model: string; lang: "zh" | "en"; approved: string; evidence: string }
 
 export const CALIBRATED_ROWS: readonly CalibrationRow[] = [];

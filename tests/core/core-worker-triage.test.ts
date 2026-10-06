@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SecretBroker } from "../../src/config/secret-broker.js";
 import { JEV_MODEL } from "../../src/jev/jev-client.js";
-import { TRIAGE_QUESTIONS } from "../../src/jev/questions/triage.js";
+import { TRIAGE_LANE, TRIAGE_QUESTIONS } from "../../src/jev/questions/triage.js";
+import { TRIAGE_STATUS_ARM_ID } from "../../src/jev/thresholds.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
 import type { CoreWorker } from "../../src/core/core-worker.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -35,11 +36,12 @@ const lessonLlm = (h: { distill?: () => void; reconcile?: () => void } = {}): Ll
   return { ok: true, output: { answer: JSON.stringify({ verdict: "ADD", theme: "format" }) } };
 };
 
-/** Arming needs calibration rows (none ship): the gate-only file names every triage question for this model and both langs. */
+/** Arming needs calibration rows (none ship): the gate-only file names every triage question plus the status arm row, both langs. */
 function calibrationFile(): string {
   const f = join(mkdtempSync(join(tmpdir(), "htri-cal-")), "rows.json");
-  writeFileSync(f, JSON.stringify(TRIAGE_QUESTIONS.flatMap((q) => (["zh", "en"] as const).map((lang) =>
-    ({ question_id: q.id, criteria_hash: criteriaHash(q), model: JEV_MODEL, lang, approved: "test", evidence: "test" })))));
+  const ids = [...TRIAGE_QUESTIONS.map((q) => [q.id, criteriaHash(q)] as const), [TRIAGE_STATUS_ARM_ID, criteriaHash(TRIAGE_LANE)] as const];
+  writeFileSync(f, JSON.stringify(ids.flatMap(([question_id, criteria_hash]) => (["zh", "en"] as const).map((lang) =>
+    ({ question_id, criteria_hash, model: JEV_MODEL, lang, approved: "test", evidence: "test" })))));
   return f;
 }
 const ARM = { HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "arm" };
