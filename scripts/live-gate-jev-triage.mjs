@@ -3,7 +3,9 @@
 // the real memory-lane distill/reconcile legs (ticks chain on omp) and, where a turn falls through, the real omp planner,
 // all against a TEMP COPY of the live DB (VACUUM INTO under /tmp). The live DB is only read; the daemon is never touched.
 //
-//   npm run build && HOUGE_ENV_FILE=/abs/.env node scripts/live-gate-jev-triage.mjs [--db <path>] [--keep]
+//   npm run build && HOUGE_ENV_FILE=/abs/.env node scripts/live-gate-jev-triage.mjs [--db <path>] [--keep] [--real-calibration]
+//
+// --real-calibration: no temp file and no HOUGE_JEV_GATE; the lane arms on the committed CALIBRATED_ROWS, as the daemon will.
 //
 // Arming: no calibration rows ship (calibration.ts), so the gate writes a temp calibration file (every lane-1 row kind:
 // lane, complete, scope and the status arm row `lane:status`, zh + en, model JEV_MODEL, hashes from dist/) and sets
@@ -48,9 +50,10 @@ function envFilePath() {
 }
 
 function parseArgs(argv) {
-  const a = { db: null, keep: false };
+  const a = { db: null, keep: false, realCalibration: false };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--keep") a.keep = true;
+    else if (argv[i] === "--real-calibration") a.realCalibration = true;
     else if (argv[i] === "--db") a.db = argv[++i];
     else throw new Error(`unknown argument ${argv[i]}`);
   }
@@ -83,14 +86,16 @@ function writeCalibration(m, root) {
 }
 
 /** No Telegram, every disarm flag off, every marker path inside the temp root; the lane armed for the gate only. */
-function gateEnv(m, root) {
+function gateEnv(m, root, realCalibration) {
   for (const k of ["HOUGE_TELEGRAM_BOT_TOKEN", "HOUGE_TELEGRAM_CHAT_ID", "HOUGE_TELEGRAM_USER_ID"]) delete process.env[k];
   for (const f of m.DISARM_FLAGS) process.env[f] = "false";
   Object.assign(process.env, {
     HOUGE_EPISODIC_ENABLED: "false", HOUGE_TOMBSTONE_PATH: join(root, "houge.kill"), HOUGE_PARK_MARKER_PATH: join(root, "houge.parked"),
-    HOUGE_DISARM_PATH: join(root, "houge.disarm"), HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "arm", HOUGE_JEV_GATE: "1",
-    HOUGE_JEV_DISARM_PATH: join(root, "houge.jev-disarmed"), HOUGE_JEV_CALIBRATION_FILE: writeCalibration(m, root)
+    HOUGE_DISARM_PATH: join(root, "houge.disarm"), HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "arm",
+    HOUGE_JEV_DISARM_PATH: join(root, "houge.jev-disarmed")
   });
+  if (realCalibration) { delete process.env.HOUGE_JEV_GATE; delete process.env.HOUGE_JEV_CALIBRATION_FILE; }
+  else Object.assign(process.env, { HOUGE_JEV_GATE: "1", HOUGE_JEV_CALIBRATION_FILE: writeCalibration(m, root) });
 }
 
 /** A consistent snapshot of the live DB through a read-only connection (WAL-safe; the daemon keeps running). */
@@ -313,14 +318,14 @@ async function main() {
   const live = resolve(args.db ?? join(repo, "houge.sqlite"));
   if (!existsSync(live)) throw new Error(`no DB at ${live} (pass --db)`);
   const root = mkdtempSync("/tmp/hg-jev-"); // short: bridge sockets must fit sun_path (104 bytes)
-  gateEnv(m, root);
+  gateEnv(m, root, args.realCalibration);
   const dbPath = join(root, "houge.sqlite");
   copyDb(live, dbPath);
   const store = m.RunStore.open(dbPath);
   const h = harness(m, store, repo, root);
   const g = { m, store, h, root, dbPath, chat: `-1000${Date.now() % 100000}`, worker: h.makeWorker(), runIds: [] };
   const intake = h.intake; h.intake = (chat, text) => { const id = intake(chat, text); g.runIds.push(id); return id; };
-  console.log(`jev triage live gate — copy ${dbPath}, model ${m.JEV_MODEL}\n`);
+  console.log(`jev triage live gate — copy ${dbPath}, model ${m.JEV_MODEL}, calibration ${args.realCalibration ? "committed CALIBRATED_ROWS" : "temp file"}\n`);
   try {
     for (const c of [casePure, caseMixed, caseSecondWrite, caseStatus, casePosture]) await c(g);
     await g.worker.shutdownPlanners();
