@@ -20,9 +20,10 @@ permutation 291/293). Per-turn confidence bars still send every unsure turn to t
   an over-cap merge gets one shortening retry, and if it still does not fit the new rule is saved alone
   (`lesson_update_overflow`), the target kept and never pruned for it. Armed live gate PASS 34/34 after the fix.
   Needs a kickstart to reach the daemon.
-- [ ] Watch: live gate run 1 that day failed case 1 once (a pure memory turn saved its lesson with `act`, but the
-  planner answered instead of the card) while a `planner_session_reset{lesson_change}` fired mid-triage; run 2 passed.
-  Not caused by the 2a/2b diff (no supervisor change); root cause not yet found.
+- [x] Gate case 1 "unexplained" failure EXPLAINED 2026-10-06: Jev chose pure at 0.79 (< the 0.80 pure bar), so the lane
+  correctly acted as mixed (save + planner); the triage row recorded only Jev's raw choice. Rows now carry `verdict`
+  (`memory_pure` / `memory_mixed` / `status` / `fallthrough`); the gate judges by it (INCONCLUSIVE when Jev's call
+  takes another path). Old live intent shadow removed (`HOUGE_JEV_SHADOW_ENABLED` gone).
 - Known gaps (documented): nothing shows during the memory lane's 15 to 25 s and new messages queue; a `mixed` verdict whose save finds nothing durable runs the planner with no note; a fast lane may stop a still-starting planner child after 5 s.
 
 ---

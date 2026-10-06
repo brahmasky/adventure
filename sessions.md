@@ -1515,3 +1515,9 @@ Build + independent adversarial verification subagents; each live round found a 
 - 2026-10-06 (live): after Paco's kickstart (boot 9, `372f2ed`) his first real memory instruction was triaged
   `memory/pure/act` (0.91), the lane updated lesson #47 → #53 with zero planner calls, and the card was delivered
   in 18 s. ADR 0029 accepted.
+- 2026-10-06 (late): the gate's "unexplained" case 1 traced from the kept DB copy: Jev chose `pure` at 0.79, under
+  the 0.80 pure bar, so the lane acted as `mixed` exactly as designed; the triage row held only Jev's raw choice, so
+  "pure + act + planner answered" looked like a fault. Rows now carry the lane's `verdict` (also in the decision rows'
+  `threshold_used`); the gate checks the path the verdict names and lists INCONCLUSIVE instead of a false FAIL; case 8
+  now outweighs the copy's real 24 h of calls. Removed the dormant live intent shadow (code, report, store methods,
+  flag). 3429 tests green; armed live gate PASS 34/34.
