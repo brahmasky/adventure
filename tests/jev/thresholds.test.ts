@@ -46,9 +46,16 @@ describe("triageVerdict", () => {
   it("falls through as uncalibrated for a model other than the pinned one", () => {
     expect(triageVerdict(memoryAnswers(), bars, "zh", "jev-1.14.0", rows)).toEqual({ kind: "fallthrough", reason: "uncalibrated" });
   });
-  it("ships uncalibrated: with the real CALIBRATED_ROWS a perfect answer still falls through (spec §5.9: no arming before the replay)", () => {
-    expect(CALIBRATED_ROWS).toHaveLength(0);
-    expect(triageVerdict(memoryAnswers(), bars, "zh", JEV_MODEL)).toEqual({ kind: "fallthrough", reason: "uncalibrated" });
+  // Armed on Paco's instruction (ADR 0029 amendment 2026-10-06): both lanes, both languages, on today's hashes and the
+  // pinned model. A criteria edit or a model bump must disarm, so the rows can never silently cover changed questions.
+  it("the committed rows arm memory and status in zh and en on the current hashes, and only for the pinned model", () => {
+    for (const lang of ["zh", "en", "mixed"] as const) {
+      expect(triageVerdict(memoryAnswers(), bars, lang, JEV_MODEL)).toMatchObject({ kind: "memory" });
+      expect(triageVerdict(statusAnswers(), bars, lang, JEV_MODEL)).toEqual({ kind: "status" });
+    }
+    expect(triageVerdict(memoryAnswers(), bars, "zh", "jev-1.14.0")).toEqual({ kind: "fallthrough", reason: "uncalibrated" });
+    const edited = { ...TRIAGE_LANE, criteria: TRIAGE_LANE.criteria.map(([o, t]) => [o, `${t} (edited)`] as const) };
+    expect(CALIBRATED_ROWS.some((r) => r.criteria_hash === criteriaHash(edited))).toBe(false);
   });
   // Spec §5.9: memory may arm while status stays shadow (status needs precision 1.0 on n ≥ 5, which history may never give).
   it("lane-specific arming: the `lane:status` row alone arms status; memory still falls through uncalibrated", () => {

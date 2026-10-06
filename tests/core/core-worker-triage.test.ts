@@ -174,8 +174,18 @@ describe("CoreWorker.triageTurn (spec §5.1 flow; every exit leaves exactly one 
     expect(store.getLedgerEvents().filter((e) => e.event_type === "lesson_saved")).toHaveLength(0);
     store.close();
   });
-  it("armed but uncalibrated (no rows ship): answered, decision 'fallback', no lesson", async () => {
+  it("armed on the committed rows alone (no gate file): a pure memory instruction acts", async () => {
     const { store, worker, turn } = setup(jevSays(MEMORY));
+    vi.stubEnv("HOUGE_JEV_CALIBRATION_FILE", ""); vi.stubEnv("HOUGE_JEV_GATE", "");
+    const t = turn("以后回复短一点");
+    expect((await worker.triageTurn(t.input)).kind).toBe("lane_reply");
+    expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", lane: "memory", decision: "act" }]);
+    store.close();
+  });
+  it("armed but uncalibrated (a model the rows do not name): answered, decision 'fallback', no lesson", async () => {
+    const other = vi.fn(async () => json(200, { model: "jev-1.14.0", usage: { input_tokens: 800, output_tokens: 0 }, answers: {
+      lane: choice("memory", MEMORY), complete: choice("pure", { mixed: 0.1, pure: 0.9 }), scope: choice("ask", { ask: 0.9, research: 0.1 }) } }));
+    const { store, worker, turn } = setup(other);
     vi.stubEnv("HOUGE_JEV_CALIBRATION_FILE", ""); vi.stubEnv("HOUGE_JEV_GATE", "");
     const t = turn("以后回复短一点");
     expect(await worker.triageTurn(t.input)).toEqual({ kind: "fallthrough" });

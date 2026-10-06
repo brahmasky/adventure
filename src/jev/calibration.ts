@@ -1,7 +1,8 @@
 /**
  * Calibration rows (ADR 0029 §3.5). A question is armed for a language ONLY when a row names its exact criteria hash
- * and the reported model. Slice 1 ships NONE: the lane cannot act until the lane 1 replay + Paco's labels clear the
- * §5.9 bars, the report prints the rows, and Paco commits them here (his hand, like an ADR amendment).
+ * and the reported model, so a criteria or model change disarms it. Lane 1 was armed on Paco's instruction
+ * (2026-10-06, ADR 0029 amendment) after the replay sanity check, not after the §5.9 shadow bars: evidence now
+ * accrues while armed, and the per-turn confidence bars (thresholds.ts) still send every unsure turn to the planner.
  */
 import { readFileSync } from "node:fs";
 import type { Lang } from "./intent-question.js";
@@ -13,7 +14,17 @@ import type { Lang } from "./intent-question.js";
  */
 export interface CalibrationRow { question_id: string; criteria_hash: string; model: string; lang: "zh" | "en"; approved: string; evidence: string }
 
-export const CALIBRATED_ROWS: readonly CalibrationRow[] = [];
+const EVIDENCE = "replay 2026-10-06: 293 turns; confident pure 10 (1 missed a schedule edit), status 1/1; permutation 291/293";
+export const CALIBRATED_ROWS: readonly CalibrationRow[] = [
+  { question_id: "lane", criteria_hash: "828d0f935ce54a65c4a62dd78ca9a83ffbacd3c66dcc7095b05744422fc8e57a", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-06", evidence: EVIDENCE },
+  { question_id: "lane", criteria_hash: "828d0f935ce54a65c4a62dd78ca9a83ffbacd3c66dcc7095b05744422fc8e57a", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-06", evidence: EVIDENCE },
+  { question_id: "complete", criteria_hash: "7beab74332c0641a800ea8c80085eebb56f98d2503ef53edd39c1890b5bfc316", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-06", evidence: EVIDENCE },
+  { question_id: "complete", criteria_hash: "7beab74332c0641a800ea8c80085eebb56f98d2503ef53edd39c1890b5bfc316", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-06", evidence: EVIDENCE },
+  { question_id: "scope", criteria_hash: "d3f6c9008b3eaf1e7a4556dd443e422703f8c306932c88de2abf46ff3763e7a4", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-06", evidence: EVIDENCE },
+  { question_id: "scope", criteria_hash: "d3f6c9008b3eaf1e7a4556dd443e422703f8c306932c88de2abf46ff3763e7a4", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-06", evidence: EVIDENCE },
+  { question_id: "lane:status", criteria_hash: "828d0f935ce54a65c4a62dd78ca9a83ffbacd3c66dcc7095b05744422fc8e57a", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-06", evidence: EVIDENCE },
+  { question_id: "lane:status", criteria_hash: "828d0f935ce54a65c4a62dd78ca9a83ffbacd3c66dcc7095b05744422fc8e57a", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-06", evidence: EVIDENCE },
+];
 
 /**
  * Arming sequence (spec §5.9; Codex plan review): production rows come ONLY from this constant, added by Paco's commit.
