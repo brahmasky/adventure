@@ -9,6 +9,11 @@ export type LedgerActor =
   | "system";
 
 export type LedgerEventType =
+  | "triage"
+  | "ack_nudged"
+  | "lesson_saved"
+  | "lesson_change_undone"
+  | "triage_override"
   | "trigger_received"
   | "idempotency_conflict"
   | "schedule_fired"
@@ -285,7 +290,16 @@ const requiredPayloadFields = {
   // Final-review C3: the daily tick's embedding backfill (counts only).
   embedding_backfill: ["facts_embedded", "pages_embedded", "failed"],
   // Memory A1 §8: one row per migration step (ids only).
-  memory_migration: ["step", "old_ids", "new_ids"]
+  memory_migration: ["step", "old_ids", "new_ids"],
+  // Jev System One, lane 1 (ADR 0029 §5.8). Enums, numbers and ids only — NEVER message text or provider detail.
+  // `triage` is the per-turn denominator: written once per eligible Telegram turn after the outcome is known;
+  // a skipped call carries nulls for the answer fields and a skip_reason.
+  triage: ["status", "lane", "complete", "scope", "confidence", "top_prob", "margin", "lang", "decision"],
+  ack_nudged: ["approval_run_id"],
+  lesson_saved: ["lesson_id", "change_id", "source"],
+  lesson_change_undone: ["change_id", "restored", "skipped"],
+  // "Ask Houge anyway": the override label for calibration; new_run_id is the re-submitted planner turn.
+  triage_override: ["run_id", "new_run_id", "change_id"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(

@@ -373,7 +373,7 @@ export interface ReplayTurnRow {
 }
 
 export type LessonStatus = "active" | "superseded" | "pruned";
-export type LessonSource = "user_feedback" | "loop" | "migration" | "consolidation";
+export type LessonSource = "user_feedback" | "loop" | "migration" | "consolidation" | "lane";
 
 /**
  * One durable lesson (⓪·3 S1, ADR 0012 §2/§3): a per-lesson row with eval metadata
@@ -899,6 +899,29 @@ export interface MemoryChange {
 export type MemoryUndoResult =
   | { status: "undone"; change: MemoryChange; restored: number[]; retired: number | null }
   | { status: "already_undone" | "changed_since"; change: MemoryChange }
+  | { status: "not_found" };
+
+export type JevDecisionStatus = "answered" | "skipped";
+export type JevDecisionOutcome = "act" | "ask" | "fallback" | "shadow";
+
+/** One Jev decision row (ADR 0029 §3.4): ids, enums and numbers only, never message text. */
+export interface JevDecisionRow {
+  decision_id: string; run_id: string | null; point: string; question_id: string | null; criteria_hash: string | null;
+  model_reported: string | null; state_hash: string | null; lang: string; answers_json: string | null; confidence: number | null; top_prob: number | null;
+  margin: number | null; threshold_version: string | null; threshold_used: string | null; decision: JevDecisionOutcome | null;
+  outcome_source: "llm_label" | "paco_correction" | "observed_action" | "none"; outcome_value: string | null; latency_ms: number | null;
+  input_tokens: number | null; status: JevDecisionStatus; skip_reason: string | null; created_at: string;
+}
+
+/** One undoable memory-lane save (ADR 0029 §5.6): the new lesson, the one it superseded, the cap victims it pruned. */
+export interface LessonChange {
+  change_id: string; run_id: string | null; chat_id: string; new_id: number; superseded_id: number | null; pruned_ids: number[];
+  created_at: string; undone_at: string | null;
+}
+
+export type LessonUndoResult =
+  | { status: "undone"; change: LessonChange; restored: number[]; skipped: number[] }
+  | { status: "already_undone" | "changed_since"; change: LessonChange }
   | { status: "not_found" };
 
 /** The two memory tables a change may flip; never interpolated from input. */
@@ -4209,6 +4232,86 @@ export class RunStore {
     return { restored, retired: pruned === 1 ? change.new_id : null };
   }
 
+  // ── Jev decisions (ADR 0029 §3.4) ─────────────────────────────────────────
+
+  insertJevDecision(row: Omit<JevDecisionRow, "decision_id" | "created_at" | "outcome_source" | "outcome_value"> & { created_at?: string }): string {
+    const decision_id = `jd_${randomUUID()}`;
+    this.db.prepare(`
+      INSERT INTO jev_decisions (decision_id, run_id, point, question_id, criteria_hash, model_reported, state_hash, lang, answers_json, confidence,
+        top_prob, margin, threshold_version, threshold_used, decision, latency_ms, input_tokens, status, skip_reason, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(decision_id, row.run_id, row.point, row.question_id, row.criteria_hash, row.model_reported, row.state_hash, row.lang, row.answers_json,
+      row.confidence, row.top_prob, row.margin, row.threshold_version, row.threshold_used, row.decision, row.latency_ms, row.input_tokens,
+      row.status, row.skip_reason, row.created_at ?? new Date().toISOString());
+    return decision_id;
+  }
+
+  markJevDecision(decision_id: string, decision: JevDecisionOutcome, threshold_used: string | null): void {
+    this.db.prepare(`UPDATE jev_decisions SET decision = ?, threshold_used = ? WHERE decision_id = ?`).run(decision, threshold_used, decision_id);
+  }
+
+  recordJevOutcome(decision_id: string, source: JevDecisionRow["outcome_source"], value: string): void {
+    this.db.prepare(`UPDATE jev_decisions SET outcome_source = ?, outcome_value = ? WHERE decision_id = ?`).run(source, value, decision_id);
+  }
+
+  listJevDecisions(run_id: string): JevDecisionRow[] {
+    return this.db.prepare(`SELECT * FROM jev_decisions WHERE run_id = ? ORDER BY rowid ASC`).all<JevDecisionRow>(run_id);
+  }
+
+  // ── Lesson changes: the memory lane's undoable change set (ADR 0029 §5.6) ──
+
+  insertLessonChange(c: Omit<LessonChange, "change_id" | "created_at" | "undone_at"> & { created_at?: string }): LessonChange {
+    const change: LessonChange = { change_id: `lc_${randomUUID()}`, run_id: c.run_id, chat_id: c.chat_id, new_id: c.new_id, superseded_id: c.superseded_id,
+      pruned_ids: [...c.pruned_ids], created_at: c.created_at ?? new Date().toISOString(), undone_at: null };
+    this.db.prepare(`INSERT INTO lesson_changes (change_id, run_id, chat_id, new_id, superseded_id, pruned_ids, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(change.change_id, change.run_id, change.chat_id, change.new_id, change.superseded_id, JSON.stringify(change.pruned_ids), change.created_at);
+    return change;
+  }
+
+  getLessonChange(change_id: string): LessonChange | undefined {
+    const r = this.db.prepare(`SELECT * FROM lesson_changes WHERE change_id = ?`).get<Omit<LessonChange, "pruned_ids"> & { pruned_ids: string }>(change_id);
+    return r ? { ...r, pruned_ids: JSON.parse(r.pruned_ids) as number[] } : undefined;
+  }
+
+  /** Only a pruned row comes back; a row that moved since (active or superseded) is left alone. */
+  unpruneLesson(id: number): boolean {
+    return this.db.prepare(`UPDATE lessons SET status = 'active' WHERE id = ? AND status = 'pruned'`).run(id).changes === 1;
+  }
+
+  /** Compare-and-set in one transaction: valid only while the new row is still active (spec §5.6). */
+  undoLessonChange(change_id: string, now: string = new Date().toISOString()): LessonUndoResult {
+    return this.inTransaction((): LessonUndoResult => {
+      const change = this.getLessonChange(change_id);
+      if (!change) return { status: "not_found" };
+      if (change.undone_at !== null) return { status: "already_undone", change };
+      if (this.getLesson(change.new_id)?.status !== "active") return { status: "changed_since", change };
+      this.db.prepare(`UPDATE lesson_changes SET undone_at = ? WHERE change_id = ?`).run(now, change_id);
+      this.db.prepare(`UPDATE lessons SET status = 'pruned' WHERE id = ? AND status = 'active'`).run(change.new_id);
+      const restored: number[] = []; const skipped: number[] = [];
+      if (change.superseded_id !== null) (this.reactivateLesson(change.superseded_id) ? restored : skipped).push(change.superseded_id);
+      for (const id of change.pruned_ids) (this.unpruneLesson(id) ? restored : skipped).push(id);
+      // the event rides the same transaction as the restore (spec §5.6); recordMemoryEvent opens no transaction of its own
+      this.recordMemoryEvent("lesson_change_undone", { change_id, restored, skipped });
+      return { status: "undone", change: { ...change, undone_at: now }, restored, skipped };
+    });
+  }
+
+  // ── small readers for lane 1 ───────────────────────────────────────────────
+
+  /** True when an "Ask Houge anyway" tap re-submitted this run: triage is skipped for it (the tap is the override label). */
+  triageOverrideFor(run_id: string): boolean {
+    const r = this.db.prepare(`SELECT 1 AS one FROM ledger_events WHERE event_type = 'triage_override' AND json_extract(payload_json, '$.new_run_id') = ? LIMIT 1`).get<{ one: number }>(run_id);
+    return r !== undefined;
+  }
+
+  countRecentLedgerEvents(event_type: LedgerEventType, sinceIso: string): number {
+    return this.db.prepare(`SELECT COUNT(*) AS n FROM ledger_events WHERE event_type = ? AND occurred_at >= ?`).get<{ n: number }>(event_type, sinceIso)?.n ?? 0;
+  }
+
+  userTurnTextForRun(run_id: string): string | undefined {
+    return this.db.prepare(`SELECT text FROM chat_turns WHERE run_id = ? AND role = 'user' ORDER BY created_at ASC LIMIT 1`).get<{ text: string }>(run_id)?.text;
+  }
+
   // --- DB backup (backlog #3, ADR 0021) ---------------------------------------
 
   /** The backup latch's last successful snapshot time (NULL = never — first tick fires). */
@@ -6522,6 +6625,8 @@ export class RunStore {
     this.applyMemoryChangesMigration();
     this.applyLessonThemeMigration();
     this.applyPlannerSessionStateMigration();
+    this.applyJevDecisionsMigration();
+    this.applyLessonChangesMigration();
   }
 
   /** Memory A1 §6: the lesson-set fingerprint each chat's omp session started on, persisted so a restart still compares. */
@@ -6552,6 +6657,64 @@ export class RunStore {
       if (!this.tableColumns("lessons").has("theme")) {
         this.db.exec(`ALTER TABLE lessons ADD COLUMN theme TEXT NOT NULL DEFAULT 'unthemed'`);
       }
+      if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
+  }
+
+  /** Jev System One (ADR 0029 §3.4): one row per answered question, one skipped row per skipped call. No text columns. */
+  private applyJevDecisionsMigration(): void {
+    const version = "2026-10-04-jev-decisions";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS jev_decisions (
+          decision_id TEXT PRIMARY KEY,
+          run_id TEXT,
+          point TEXT NOT NULL,
+          question_id TEXT,
+          criteria_hash TEXT,
+          model_reported TEXT,
+          state_hash TEXT,
+          lang TEXT NOT NULL,
+          answers_json TEXT,
+          confidence REAL,
+          top_prob REAL,
+          margin REAL,
+          threshold_version TEXT,
+          threshold_used TEXT,
+          decision TEXT CHECK (decision IN ('act', 'ask', 'fallback', 'shadow')),
+          outcome_source TEXT NOT NULL DEFAULT 'none' CHECK (outcome_source IN ('llm_label', 'paco_correction', 'observed_action', 'none')),
+          outcome_value TEXT,
+          latency_ms INTEGER,
+          input_tokens INTEGER,
+          status TEXT NOT NULL CHECK (status IN ('answered', 'skipped')),
+          skip_reason TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS jev_decisions_run_idx ON jev_decisions(run_id, created_at);
+        CREATE INDEX IF NOT EXISTS jev_decisions_point_idx ON jev_decisions(point, created_at);
+      `);
+      if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
+  }
+
+  /** Memory lane Undo (ADR 0029 §5.6): the change set a lane save produced. Separate from memory_changes (its kind CHECK excludes lessons). */
+  private applyLessonChangesMigration(): void {
+    const version = "2026-10-04-lesson-changes";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS lesson_changes (
+          change_id TEXT PRIMARY KEY,
+          run_id TEXT,
+          chat_id TEXT NOT NULL,
+          new_id INTEGER NOT NULL,
+          superseded_id INTEGER,
+          pruned_ids TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          undone_at TEXT
+        );
+      `);
       if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
     });
   }
