@@ -40,6 +40,7 @@ import { computeCostUsd, METERED_PROVIDERS } from "../llm/metered-pricing.js";
 import { blobToFloat32, cosineSimilarity, float32ToBlob } from "../llm/embeddings.js";
 import { resolveWikiDecayDays } from "../capabilities/wiki.js";
 import type { IntentShadowPayload } from "../jev/shadow.js";
+import type { TriageShadowStats } from "../jev/triage-report.js";
 import type { MediaIngestedPayload } from "../media/media-config.js";
 
 /**
@@ -1246,6 +1247,34 @@ export class RunStore {
       ORDER BY occurred_at ASC, sequence ASC
     `).all<{ run_id: string; occurred_at: string; payload_json: string }>(sinceIso ?? "")
       .map((r) => ({ run_id: r.run_id, occurred_at: r.occurred_at, payload: JSON.parse(r.payload_json) as Record<string, unknown> }));
+  }
+
+  /**
+   * The lane 1 live shadow as the §5.9 step 4 bar reads it: `triage` rows with decision `shadow` since `sinceIso`, each
+   * joined to its run's planner `loop_step` capabilities. A "pure verdict" is `lane = memory ∧ complete = pure` (the
+   * row's argmax choices — a superset of pure-at-bar, so the count errs toward NO-GO). `days` spans first → last row.
+   */
+  triageShadowStats(sinceIso: string): TriageShadowStats {
+    const rows = this.db.prepare(`
+      SELECT run_id, occurred_at, json_extract(payload_json, '$.lane') AS lane, json_extract(payload_json, '$.complete') AS complete
+      FROM ledger_events WHERE event_type = 'triage' AND json_extract(payload_json, '$.decision') = 'shadow' AND occurred_at >= ?
+      ORDER BY occurred_at ASC, sequence ASC
+    `).all<{ run_id: string; occurred_at: string; lane: string | null; complete: string | null }>(sinceIso);
+    const stats: TriageShadowStats = { days: 0, matched_lesson_write: 0, pure_on_tool_turns: 0, pure_on_no_tool_turns: 0 };
+    for (const r of rows) {
+      const caps = this.runLoopCapabilities(r.run_id);
+      if (caps.includes("lesson_write")) stats.matched_lesson_write += 1;
+      if (r.lane !== "memory" || r.complete !== "pure") continue;
+      if (caps.some((c) => c !== "lesson_write")) stats.pure_on_tool_turns += 1;
+      else if (caps.length === 0) stats.pure_on_no_tool_turns += 1;
+    }
+    if (rows.length > 0) stats.days = Math.floor((Date.parse(rows[rows.length - 1]!.occurred_at) - Date.parse(rows[0]!.occurred_at)) / 86_400_000);
+    stats.live_state_hashes = this.db.prepare(`
+      SELECT state_hash FROM jev_decisions
+      WHERE point = 'triage' AND question_id = 'lane' AND decision = 'shadow' AND state_hash IS NOT NULL AND created_at >= ?
+      ORDER BY created_at ASC, rowid ASC
+    `).all<{ state_hash: string }>(sinceIso).map((r) => r.state_hash);
+    return stats;
   }
 
   /** When the shadow campaign started: the oldest `intent_shadow` row. The report's 28-day tenure clock. */
