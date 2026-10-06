@@ -12,6 +12,12 @@ off; `CALIBRATED_ROWS` ships empty, so the lane cannot act even when armed.
 - [ ] **Paco:** the labelling sitting (`houge jev label triage --sample=40`).
 - [ ] **Paco:** read `houge jev report triage`; commit calibration rows per language from its "ROWS TO ADD" block (memory arms on `lane`+`complete`+`scope`; status on its own `lane:status` row). `arm` waits for the spec §5.9 bars and 14 shadow days.
 - [ ] **Paco (his hand):** the AGENTS.md invariant sentence, appended to the flat-rate line: "Jev (TypeSafe System One), a non-generative typed decider, sits in front of the chains under ADR 0029; it never gates an action and every outage reaches Paco."
+- [x] 2026-10-06 arming preconditions built: `jev_skip_rate` sweep invariant and the recorded state instants
+  (`thread_cut_at`, `state_built_at`) for exact replay parity. 255 files / 3468 tests green; live gate PASS (35 checks,
+  cases 7 parity and 8 skip rate added).
+- [ ] Watch: live gate run 1 that day failed case 1 once (a pure memory turn saved its lesson with `act`, but the
+  planner answered instead of the card) while a `planner_session_reset{lesson_change}` fired mid-triage; run 2 passed.
+  Not caused by the 2a/2b diff (no supervisor change); root cause not yet found.
 - Known gaps (documented): nothing shows during the memory lane's 15 to 25 s and new messages queue; a `mixed` verdict whose save finds nothing durable runs the planner with no note; a fast lane may stop a still-starting planner child after 5 s.
 
 ---

@@ -1487,3 +1487,13 @@ Build + independent adversarial verification subagents; each live round found a 
   amended; ADR 0029 stays `proposed`. Behaviour change: a planner-only turn is now capped at one saved lesson per
   turn (already-saved guard). Owed by Paco: merge, kickstart, `HOUGE_JEV_ENABLED=1` +
   `HOUGE_JEV_TRIAGE_ENABLED=shadow`, replay, the labelling sitting, calibration rows, the AGENTS.md sentence.
+- 2026-10-06 (later; Jev lane 1 arming preconditions, same branch): `jev_skip_rate` sweep invariant (at least 3 triage
+  calls in 24 h, half or more silent failures, held open until an answered call) and the two instants on answered
+  `jev_decisions` rows (`thread_cut_at`, `state_built_at`) so the replay rebuilds the live state exactly; the report's
+  block-on-any-mismatch no longer trips on timing. Reviewers (correctness, adversarial, Codex) all found the same
+  same-millisecond cut gap (replay now reads through the cut's millisecond); also fixed: daily open/resolve flapping
+  and the 5-call floor at Paco's volume (sticky + floor 3), an empty `NOT IN` list, weak boundary tests, gate case 8
+  depending on the copy's rows and hitting the per-chat rate limit. 255 files / 3468 tests green; live gate run 2 PASS
+  (35 checks). Run 1 failed case 1 once (planner answered a lane-saved pure memory turn during a
+  `planner_session_reset{lesson_change}`), unexplained and watched. The AGENTS.md sentence is still Paco's hand: an
+  agent edit was refused.

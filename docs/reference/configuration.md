@@ -915,11 +915,14 @@ the denominator), `ack_nudged`, `lesson_saved`, `lesson_change_undone`, `triage_
 **Incidents** (the first failure opens one and alerts Paco): `jev_auth`, `jev_rate_limited`, `jev_overloaded`,
 `jev_question_invalid`, `jev_no_key`, `triage_overrides` (the override rate crossed the auto-disable bar),
 `triage_threw`. The next answered Jev call resolves any open `jev_*` incident, and `triage_overrides` resolves on the
-next turn once the disarm marker is gone, so a later episode opens and pages again (flap-damped). Jev is excluded from
-`llm_leg_failing`; its failures surface as these instead. `LlmErrorKind` gains
+next turn once the disarm marker is gone, so a later episode opens and pages again (flap-damped). The invariant sweep
+adds `jev_skip_rate`: at least 3 triage calls in 24 h with half or more failing silently (`timeout`, `parse`,
+`transport`, `error`; skips for `disabled`, `posture`, `modality`, `override` and `state_too_large` are not calls). It
+stays open until an answered call lands. Jev is excluded from `llm_leg_failing`; its failures surface as these instead. `LlmErrorKind` gains
 `rate_limited`, `overloaded`, `malformed_question`.
 
-**Tables:** `jev_decisions` (one row per answered or skipped question: ids, probabilities, thresholds, outcome) and
+**Tables:** `jev_decisions` (one row per answered or skipped question: ids, probabilities, thresholds, outcome; an
+answered row also records `thread_cut_at` and `state_built_at`, the instants the replay rebuilds the state from) and
 `lesson_changes` (the change set behind a memory-lane save, which the Undo tap reverses).
 
 **CLI** (state under `.houge/jev-triage/`, git-ignored):

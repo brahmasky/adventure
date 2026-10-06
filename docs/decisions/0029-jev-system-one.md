@@ -134,8 +134,13 @@ until Paco deletes it.
 **Deviations from the spec, both accepted.** (1) The daemon builds the Jev client per call rather than once at boot
 (cheap; the broker key is read each time). (2) `jev_no_key` therefore opens on the first armed turn, not at boot.
 
-**Before any calibration row is committed.** `jev_skip_rate` (spec §3.7) must land first: timeout, parse and
-transport failures open no incident, so without it a silently dead layer looks like a quiet one.
+**Before any calibration row is committed (both landed 2026-10-06).** `jev_skip_rate` (spec §3.7): timeout, parse,
+transport and `error` skips open no incident per call, so the sweep opens one when they are at least half of 3 or more
+triage calls in 24 h, and holds it until an answered call lands (failed rows ageing out prove nothing). State parity:
+answered rows record `thread_cut_at` (the claim, when live read the thread) and `state_built_at` (when it computed
+`last_houge_turn.age_s`); the replay rebuilds from both, reading the thread through the cut's own millisecond, so the
+report's block on any mismatch no longer trips on timing. Rows written before the migration fall back to their write
+time. Live gate cases 7 (parity on real decisions) and 8 (skip rate) cover both.
 
 **Transactions.** `RunStore.inTransaction` is not re-entrant. Only `insertRun` joins an outer transaction (the "Ask
 Houge anyway" admission); a nested `inTransaction` still issues `BEGIN` and throws.

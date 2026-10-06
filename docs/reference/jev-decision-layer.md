@@ -78,6 +78,9 @@ Arming is per lane: the status lane arms only on its own `lane:status` calibrati
 the `lane`, `complete` and `scope` rows together, so neither implies the other
 ([ADR 0029 build notes](../decisions/0029-jev-system-one.md#build-notes-2026-10-06-lane-1-built-on-featjev-lane1-not-merged)).
 
+A run of silent failures (`timeout`, `parse`, `transport`, `error`) pages nobody per call; the sweep's `jev_skip_rate`
+incident opens when they are half or more of at least 3 triage calls in 24 h, and resolves only after an answered call.
+
 Read order: `status` first (a skipped row means Jev played no part), then `decision` (did anything act), then the
 numbers (how close was it). Per-question probabilities, thresholds and the criteria hash are in the `jev_decisions`
 rows for the same run. A memory save adds `lesson_saved` (with its `change_id`), an Undo adds `lesson_change_undone`,
