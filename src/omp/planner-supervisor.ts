@@ -887,7 +887,10 @@ export class PlannerSupervisor {
     clearTimeout(this.idleExit);
     this.st = "STOPPED";
     const t = this.turn;
-    if (t && !info.stopped && !rec) { // a start-phase exit is the start's result, not the turn's
+    // a start-phase exit is the start's result, not the turn's; a turn fails only if it committed to this child (as in
+    // onBridgeLost): a lane turn never awaits the warm child (ADR 0029 §5.1), and a planner turn still before promptTop
+    // gets a fresh child (afterWarm / ensureSession) or fails "planner not running" there
+    if (t && !info.stopped && !rec && t.childGen === gen) {
       this.clearTimers(t);
       this.failTurn(t, "planner_exit", exitRef(info));
     }

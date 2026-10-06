@@ -1522,6 +1522,32 @@ describe("ADR 0029 lane 1 slots", () => {
     expect(spy).toHaveBeenCalled(); // the injection really reached the lane's pre-laneEnded path
     spy.mockRestore();
   });
+  it("a warm child that exits after it was ready, while the lane runs, never fails the lane turn (spec §5.1)", async () => {
+    const session = fakeSession();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    let started = false;
+    const { sup, store, outcome } = harness(session, {}, { triage: async () => { started = true; await gate; return { kind: "lane_reply", text: "status: ok", buttons: [] }; } });
+    const r = createQueuedTurnRun(store, "did you restart?");
+    sup.submit(req(r, "did you restart?"));
+    await until(() => started && session.options.length === 1 && sup.state() === "IDLE"); // the warm child is ready
+    session.exit(1); // a crash exit of the ready child, mid-triage
+    release();
+    await until(() => outcome.done.length + outcome.failed.length === 1);
+    await sup.whenIdle();
+    expect(dones(outcome).map((d) => d.run_id)).toEqual([r]);
+    expect(outcome.failed).toHaveLength(0);
+  });
+  it("the same exit during a planner turn (after promptTop) still fails it as today", async () => {
+    const held = heldSession();
+    const { sup, store, outcome } = harness(held.session, {}, { triage: async () => ({ kind: "fallthrough" }) });
+    const r = createQueuedTurnRun(store, "hi");
+    sup.submit(req(r, "hi")); await held.live(1);
+    held.session.exit(1);
+    await until(() => outcome.failed.length === 1);
+    expect(outcome.done).toHaveLength(0);
+    expect(outcome.failed[0]).toMatchObject({ run_id: r, error_type: "planner_exit", error_ref: "exit 1" });
+  });
   it("a sessionFactory that throws synchronously is caught by the warm promise, not the turn", async () => {
     const { sup, store, outcome } = harness(fakeSession(), {}, { sessionFactory: () => { throw new Error("factory"); }, triage: async () => ({ kind: "lane_reply", text: "x", buttons: [] }) });
     sup.submit(req(createQueuedTurnRun(store, "hi"), "hi"));
