@@ -89,6 +89,11 @@ export interface TriageReplayDeps {
   limit?: number; log?: (l: string) => void; permute?: boolean;
 }
 
+/** The real replay universe: Telegram turns since the label epoch, ignoring `--limit` (the report's denominator, not rows.length). */
+export function triageUniverse(store: RunStore): number {
+  return store.listReplayTurns({ sinceIso: TRIAGE_LABEL_SINCE }).filter((t) => store.runSource(t.run_id) === "telegram").length;
+}
+
 export async function runTriageReplay(d: TriageReplayDeps): Promise<ReplayCoreOutcome<TriageReplayRow>> {
   guardOutPath(d);
   const lane = d.permute ? TRIAGE_LANE_PERMUTED : TRIAGE_LANE;

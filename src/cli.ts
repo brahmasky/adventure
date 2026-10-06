@@ -308,6 +308,70 @@ if (command === "run") {
   } finally {
     store.close();
   }
+} else if (command === `jev`) { // backticks: panel-judge-providers.test greps src for the double-quoted provider name; this is the subcommand, not a provider
+  // Lane 1 triage calibration (spec §5.9): replay the frozen questions over history, label by hand, report the verdict.
+  const sub = rest[0];
+  if (rest[1] !== "triage" || !["replay", "label", "report"].includes(sub ?? "")) {
+    console.error("Usage: houge jev replay triage [--dry-run] [--max-usd N] [--limit N] [--permute] | houge jev label triage [--sample=N] | houge jev report triage");
+    process.exit(1);
+  }
+  if (readTombstone()) {
+    console.error(formatTombstoneParkedMessage(resolveTombstonePath(process.env)));
+    process.exit(1);
+  }
+  const { parseJevCliFlags } = await import("./jev/triage-label.js");
+  const { parseReplayArgs } = await import("./jev/replay.js");
+  let flags: ReturnType<typeof parseJevCliFlags>;
+  try { flags = parseJevCliFlags(rest.slice(2)); } catch (e) { console.error(e instanceof Error ? e.message : String(e)); process.exit(1); }
+  const args = parseReplayArgs(flags.rest);
+  if (!args.ok) {
+    console.error(args.error);
+    process.exit(1);
+  }
+  const T = await import("./jev/triage-replay.js");
+  const { readDone } = await import("./jev/replay-core.js");
+  const store = RunStore.open("houge.sqlite", storeOptions);
+  try {
+    const DONE = new Set(["ok", "skipped_state_too_large"]);
+    const fileRows = (path: string) => [...readDone(path, DONE).values()] as unknown as import("./jev/triage-replay.js").TriageReplayRow[];
+    if (sub === "label") {
+      const { labelInteractively, selectForLabelling } = await import("./jev/triage-label.js");
+      const picked = selectForLabelling(fileRows(T.TRIAGE_REPLAY_OUT), T.loadLabels(T.TRIAGE_LABELS_PATH), flags.sample ?? 40);
+      const n = await labelInteractively({ rows: picked, store, labelsPath: T.TRIAGE_LABELS_PATH, input: process.stdin, output: process.stdout });
+      console.error(`labelled ${n} of ${picked.length}`);
+    } else {
+      const { formatTriageReport } = await import("./jev/triage-report.js");
+      const { resolveTriageBars } = await import("./jev/thresholds.js");
+      const universe = T.triageUniverse(store);
+      console.error(`replay universe: ${universe} Telegram turns since ${T.TRIAGE_LABEL_SINCE} (spec expected 288; a different number is information, not an error)`);
+      let outcome: import("./jev/triage-report.js").TriageReportOutcome = { spentUsd: 0, estimatedUsd: 0, universe, ...(args.limit !== undefined ? { limited: true } : {}) };
+      let rows: import("./jev/triage-replay.js").TriageReplayRow[];
+      if (sub === "replay") {
+        const { createJevClient } = await import("./jev/jev-client.js");
+        const jev = createJevClient({
+          apiKey: broker ? broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
+          audit: store.llmAuditSink({ correlation_id: "cli:jev-triage-replay", role: "triage" }),
+          meteredBreached: () => store.meteredFuseLatched(),
+          retries: 3,
+          timeoutMs: 15_000
+        });
+        const run = await T.runTriageReplay({ store, env: process.env, jev, outPath: flags.permute ? T.TRIAGE_PERMUTED_OUT : T.TRIAGE_REPLAY_OUT, maxUsd: args.maxUsd,
+          dryRun: args.dryRun, permute: flags.permute, ...(args.limit !== undefined ? { limit: args.limit } : {}), log: (l) => console.error(l) });
+        // One row per key, latest wins (the file), never this run's raw rows; a dry run writes nothing, so its own rows speak.
+        rows = args.dryRun ? run.rows : fileRows(T.TRIAGE_REPLAY_OUT);
+        outcome = { ...outcome, spentUsd: run.spentUsd, estimatedUsd: run.estimatedUsd, wouldDispatch: run.wouldDispatch, alreadyDone: run.alreadyDone, skipped: run.skipped,
+          ...(run.stopped ? { stopped: run.stopped } : {}) };
+        process.exitCode = run.stopped ? 1 : 0;
+      } else {
+        rows = fileRows(T.TRIAGE_REPLAY_OUT);
+      }
+      const permuted = fileRows(T.TRIAGE_PERMUTED_OUT); // no file = "NOT RUN", not "covers nothing"
+      console.log(formatTriageReport(rows, T.loadLabels(T.TRIAGE_LABELS_PATH), outcome, resolveTriageBars(process.env), permuted.length > 0 ? permuted : undefined,
+        store.triageShadowStats(T.TRIAGE_LABEL_SINCE)));
+    }
+  } finally {
+    store.close();
+  }
 } else if (command === "jev-shadow") {
   // Jev intent-shadow replay (spec 2026-09-25): both classifiers on each historical turn's rebuilt
   // thread → JSONL + GO/STOP report. Makes external calls, so the kill switch refuses it like `run`.
