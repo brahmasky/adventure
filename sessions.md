@@ -1505,3 +1505,10 @@ Build + independent adversarial verification subagents; each live round found a 
   gate with the committed rows (`--real-calibration`): memory (2b) and status (3) acted on the real rows; run 1 had
   cases 1 and 2 fall back (an over-cap reconcile UPDATE; confidence 0.68 < 0.7), both fail toward today. Run 2 the same (27/32): case 1 saved nothing even through the planner, an A1
   over-cap UPDATE gap on live lesson #45, logged as the next fix candidate.
+- 2026-10-06 (night; over-cap lesson UPDATE fix, Paco's ask after the kickstart): A1 refused a reconcile UPDATE whose
+  merge outgrew the 240-char cap, so the instruction was lost on both the lane and the planner path (live lesson #45).
+  Now the prompt states the limit, one retry asks for a fitting merge (a rewrite that is just the new rule is refused),
+  and otherwise the new rule is saved alone (`lesson_update_overflow`), the target never pruned for it; the lane card
+  names the saved row's theme. Reviewers (correctness, Codex): 3 confirmed and fixed (target prune, rewrite dropping
+  the target, card theme), stale docstring fixed; residual: a shortened merge can still omit a clause (same as any
+  model merge; Undo on the lane). 3479 tests green; armed live gate (`--real-calibration`) PASS 34/34 twice.

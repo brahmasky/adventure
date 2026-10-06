@@ -6,7 +6,7 @@ zh and en on `jev-1.13.0` after a replay sanity check (293 turns, $0.066: 10 con
 permutation 291/293). Per-turn confidence bars still send every unsure turn to the planner. Reference:
 `docs/reference/jev-decision-layer.md`; flags: `docs/reference/configuration.md` § Jev System One.
 - [ ] **Paco:** in `.env` set `HOUGE_JEV_ENABLED=1` and `HOUGE_JEV_TRIAGE_ENABLED=arm` (never `HOUGE_JEV_CALIBRATION_FILE` / `HOUGE_JEV_GATE`); `HOUGE_JEV_SHADOW_ENABLED` is inert and can go.
-- [ ] **Paco:** `launchctl kickstart -k gui/$(id -u)/com.houge.daemon` (check `houge.parked` / `houge.kill` and that no run is in flight). The boot applies the jev_decisions, lesson_changes and instants migrations.
+- [x] **Paco:** kickstart done 2026-10-06 (boot 8 on `4b134b9`); another needed for the over-cap fix: `launchctl kickstart -k gui/$(id -u)/com.houge.daemon` (check `houge.parked` / `houge.kill` and that no run is in flight). The boot applies the jev_decisions, lesson_changes and instants migrations.
 - [ ] After the kickstart: live gate on the running build, then ADR 0029 → accepted.
 - [x] AGENTS.md invariant sentence (2026-10-06, at Paco's instruction).
 - [x] 2026-10-06 arming preconditions built: `jev_skip_rate` sweep invariant and the recorded state instants
@@ -16,8 +16,10 @@ permutation 291/293). Per-turn confidence bars still send every unsure turn to t
   committed rows. Cases 1 and 2 fall back to the planner (fail toward today): case 2 under the bars (conf 0.68 / p(memory)
   0.81 < 0.85); case 1's sentence overlaps live lesson #45, reconcile chooses UPDATE, the merge exceeds the lesson char
   cap and A1 refuses it (`lesson_write_capped`), in the lane and then in the planner (run 2 saved nothing at all).
-- [ ] **Next fix candidate (A1, pre-existing):** an over-cap reconcile UPDATE drops a real instruction; it should
-  supersede or add instead of saving nothing.
+- [x] **Over-cap UPDATE gap FIXED 2026-10-06** (ADR 0005 amendment): the reconcile prompt states the 240-char limit,
+  an over-cap merge gets one shortening retry, and if it still does not fit the new rule is saved alone
+  (`lesson_update_overflow`), the target kept and never pruned for it. Armed live gate PASS 34/34 after the fix.
+  Needs a kickstart to reach the daemon.
 - [ ] Watch: live gate run 1 that day failed case 1 once (a pure memory turn saved its lesson with `act`, but the
   planner answered instead of the card) while a `planner_session_reset{lesson_change}` fired mid-triage; run 2 passed.
   Not caused by the 2a/2b diff (no supervisor change); root cause not yet found.

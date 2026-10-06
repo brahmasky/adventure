@@ -108,3 +108,14 @@ Spec `docs/superpowers/specs/2026-10-02-memory-a1-fixes-design.md` (Rev 3). The 
 - **Provenance**: each extracted fact cites a numbered user line and a quote that code checks
   (`HOUGE_EPISODIC_EVIDENCE`, `shadow` by default); a passing fact points at that one turn, and `core` needs it. An
   evidence-failing fact never touches a core row. Fact reconcile has its own prompt and embedding neighbours.
+
+## Amendment — an over-cap merge never loses the instruction (2026-10-06, Paco)
+
+A1 refused a reconcile UPDATE whose merged text or inherited AVOID exceeded the cap, so the planner could tell Paco
+or save a narrower rule. In practice the planner hit the same cap and the instruction was lost (live gate against
+lesson #45, both the Jev memory lane and the planner's `lesson_write`). Now: the reconcile prompt states the 240-char
+limit; an over-cap UPDATE gets one retry asking the model to fit both rules into the cap; if it still does not fit
+and the new rule fits on its own, the new rule is saved as its own lesson (ADD, the target's theme when themed) and the
+target stays untouched, ledgered `lesson_update_overflow {candidate, target, merged_chars}`. A near-duplicate is the
+accepted cost. A candidate that is itself over a cap is still refused (`lesson_write_capped`).
+

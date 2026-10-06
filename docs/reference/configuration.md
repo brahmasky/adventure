@@ -310,7 +310,7 @@ drops any member's `AVOID`). Preview merges without writing via `houge lessons-c
 |---------|---------|---------|
 | `HOUGE_LESSON_CONSOLIDATE_ENABLED` | off | Arms the daily consolidation tick. Accepts 1/true/yes/on. In `DISARM_FLAGS` — it rewrites Houge's own behavioral guidance, so `/disarm` halts it. Off = no tick, no writes. Memory A1: keep it off; an over-cap merge (text over 240, AVOID over 120) is rejected, and the old "not shorter than the longest member" floor is gone. Merging is same-theme only. |
 | `HOUGE_LESSON_CONSOLIDATE_INTERVAL_HOURS` | `24` | Min hours between consolidation ticks (END-stamped latch). |
-| `HOUGE_LESSON_CHAR_CAP` | `4000` | Char cap on the omp planner's lesson section (every active `ask` + `research` lesson, theme then id). A lesson that does not fit is skipped and the next is tried; each skip is a `lesson_dropped` ledger row and incident, and the skipped lesson's `last_used` is refreshed (seen, not credited) so decay cannot delete it. Non-positive or garbage gives the default. Write-side caps are code constants: text 240 (`LESSON_MAX_CHARS`), AVOID 120 (`LESSON_AVOID_MAX_CHARS`); an over-cap write is refused (`lesson_write_capped`). Lesson text is flattened to one line at write and render. |
+| `HOUGE_LESSON_CHAR_CAP` | `4000` | Char cap on the omp planner's lesson section (every active `ask` + `research` lesson, theme then id). A lesson that does not fit is skipped and the next is tried; each skip is a `lesson_dropped` ledger row and incident, and the skipped lesson's `last_used` is refreshed (seen, not credited) so decay cannot delete it. Non-positive or garbage gives the default. Write-side caps are code constants: text 240 (`LESSON_MAX_CHARS`), AVOID 120 (`LESSON_AVOID_MAX_CHARS`); an over-cap write is refused (`lesson_write_capped`), except an UPDATE whose merge outgrew the cap while the new rule fits: one shortening retry, then the new rule is saved alone (`lesson_update_overflow`). Lesson text is flattened to one line at write and render. |
 | `HOUGE_LESSON_SESSION_RESET` | on | Operator escape hatch. A change in the active lesson set (id, text, avoid, theme) starts a fresh omp session at the next spawn (`new_session`), seeded with Paco's own messages from his last 3 Telegram runs within 48 h. The reset commits at the first dispatched prompt. `0`/`false`/`no`/`off` = respawn and resume the old transcript, as before A1. After 3 consecutive reset failures for one fingerprint the supervisor serves the resumed session anyway and keeps `planner_session_reset_failed` open (ledger `planner_session_reset_degraded`); set this to `off` to stop the retries. |
 
 Lesson lifecycle and the clarify cap:
@@ -689,7 +689,7 @@ Inspect: `sqlite3 houge.sqlite "SELECT kind, subject, state, seen_count, first_s
 
 ### Memory A1 ledger events and incident kinds (2026-10-02)
 
-Ids and counts only, never text. Ledger: `lesson_dropped`, `lesson_write_capped`, `lesson_cross_theme`,
+Ids and counts only, never text. Ledger: `lesson_dropped`, `lesson_write_capped`, `lesson_update_overflow`, `lesson_cross_theme`,
 `lesson_cross_scope`, `lesson_theme_unknown`, `lesson_render_failed`, `planner_session_reset`,
 `planner_session_reset_degraded`, `evidence_rejected`, `embedding_backfill` (daily tick: up to 20 facts and 10 wiki
 pages with a NULL embedding, stop signal checked before each), `memory_migration`.
