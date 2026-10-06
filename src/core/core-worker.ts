@@ -47,7 +47,7 @@ import { resolveHttpFetchTimeoutMs } from "../web/http-fetch.js";
 import { chatContextSince, feedTurnText, resolveChatContextTurnChars, resolveChatContextTurns } from "../capabilities/intent.js";
 import { createLessonWriteAdapter, createSrcPhraseChecker, LESSON_CAPPED_HINT } from "../capabilities/lesson-write.js";
 import { OMP_LESSON_SCOPES } from "../run/lesson-render.js";
-import { reconcileLesson } from "../capabilities/reconcile.js";
+import { reconcileLesson, type LessonReconcileOutcome } from "../capabilities/reconcile.js";
 import {
   ATTRIBUTION_TURN_CAP,
   buildAttributionQuestion,
@@ -212,6 +212,27 @@ interface OmpTurnState {
   objective?: string;
   /** The voice echo line that opens the reply. */
   echo?: string;
+  /** Set only after a lesson save COMMITTED in this turn (ADR 0029 §5.5): a second lesson_write gets the digest. */
+  lessonSavedThisTurn?: { id: number; theme: string; change_id: string };
+}
+
+/** What one `runLessonWrite` did: the tool result, and — only when the save transaction committed — what landed. */
+export interface LessonWriteOutcome {
+  result: ToolAdapterResult;
+  saved?: LessonSaveResult & { id: number };
+  change_id?: string;
+  theme?: string;
+  /** True only after `inTransaction` returned with a saved row (a rolled-back `inTx` leaves it false). */
+  committed: boolean;
+}
+
+/** The caller of `runLessonWrite`: the planner's loop tool or the memory lane. */
+export interface LessonWriteOptions {
+  source: "loop" | "lane";
+  /** The turn's abort signal: once aborted, nothing is saved. */
+  signal?: AbortSignal;
+  /** Runs inside the save transaction after the lesson, lesson_changes row and lesson_saved event; must not touch in-memory state. */
+  inTx?: (saved: LessonSaveResult, change_id: string) => void;
 }
 
 /** omp planner seams: tests point these at tmp dirs (the real preflight runs against `distDir`). */
@@ -993,10 +1014,27 @@ export class CoreWorker {
     llm: (input: { question: string; system: string }) => Promise<{ ok: true; answer: string } | { ok: false }>,
     now: string = new Date().toISOString()
   ): Promise<LessonSaveResult> {
+    return this.saveLessonVerdict(candidate, await this.reconcileLessonVerdict(candidate, llm), source, now);
+  }
+
+  /** The async half: the reconcile compare (verdict + theme). No store write. */
+  private async reconcileLessonVerdict(
+    candidate: { scope: string; text: string; avoid?: string },
+    llm: (input: { question: string; system: string }) => Promise<{ ok: true; answer: string } | { ok: false }>
+  ): Promise<LessonReconcileOutcome> {
     // Memory A1 §5: reconcile sees every active lesson of both scopes, so a mis-themed duplicate still meets its twin.
     const scopes = [...new Set([candidate.scope, ...OMP_LESSON_SCOPES])];
     const existing = scopes.flatMap((scope) => this.runStore.getActiveLessons(scope));
-    const r = await reconcileLesson({ candidate, existing, llm });
+    return reconcileLesson({ candidate, existing, llm });
+  }
+
+  /** The sync half: apply the verdict. Callers that need the save atomic with their own rows wrap it in `runStore.inTransaction`. */
+  private saveLessonVerdict(
+    candidate: { scope: string; text: string; avoid?: string },
+    r: LessonReconcileOutcome,
+    source: LessonSource,
+    now: string
+  ): LessonSaveResult {
     const saved = this.runStore.saveReconciledLesson({ ...candidate, theme: r.theme }, r.verdict, source, now, resolveLessonCapPerScope(process.env));
     if (!r.themeKnown && saved.id !== undefined) this.runStore.recordMemoryEvent("lesson_theme_unknown", { lesson_id: saved.id });
     return saved;
@@ -2200,7 +2238,7 @@ export class CoreWorker {
     return async (input) => {
       const objective = state.objective;
       const effective = objective ? { ...claim, contract: { ...claim.contract, objective } } : claim;
-      const r = await this.loopToolExecute(name, effective, state.anchor, state.turnCtx)(input);
+      const r = await this.loopToolExecute(name, effective, state.turnCtx)(input);
       // Code-owned surfacing (⓪·2): a failed evolution step is appended to the reply, never model-mediated.
       if (!r.ok && EVOLUTION_TOOLS.has(name)) state.turnCtx.evolutionNotices.push(`${name} step failed: ${r.error}`);
       return r;
@@ -2333,11 +2371,87 @@ export class CoreWorker {
     }
   }
 
+  /**
+   * ONE lesson-write pipeline for both callers (ADR 0029 §5.5): the `lesson_write` loop tool (source "loop") and the
+   * memory lane ("lane"). TRUST ANCHORS: feedback = the effective objective (a voice transcript when there is one, else
+   * the claim objective — the turn's real user message); prior_answer = the real prior assistant turn. The model's or
+   * Jev's input can carry ONLY a scope, whitelisted and clamped by the adapter. The save, its lesson_changes row, the
+   * lesson_saved event and the caller's `inTx` writes land in one transaction; the in-memory guard is set only after
+   * that transaction committed. A turn that ended (abort signal, or its state replaced) can no longer save.
+   */
+  async runLessonWrite(claim: ClaimedRun, chatId: string, input: Record<string, unknown>, o: LessonWriteOptions): Promise<LessonWriteOutcome> {
+    const state = this.ompTurns.get(claim.run_id);
+    if (!state) return { result: { ok: false, error: "no turn state for this run" }, committed: false };
+    const outcome: LessonWriteOutcome = { result: { ok: false, error: "lesson write did not run" }, committed: false };
+    const adapter = createLessonWriteAdapter({
+      feedback: state.objective ?? claim.contract.objective,
+      priorAnswer: state.anchor.priorAnswer,
+      allowedScopes: ["ask", "research"],
+      defaultScope: state.anchor.defaultScope,
+      llm: (i) => this.llmAdapterFor(claim.run_id, LESSON_WRITE_ROLES.distill)(i),
+      // A scheduled run's objective is the stored schedule goal, not Paco: refused in code.
+      scheduledRun: this.runStore.runSource(claim.run_id) === "schedule",
+      // Layer routing (⓪·3 S1c): feedback quoting a code-owned literal (verbatim in src/*.ts) is refused with a digest.
+      srcContains: createSrcPhraseChecker(this.projectRoot),
+      // ⓪·3f F1: the recent USER turns too, most recent first. Assistant turns are EXCLUDED (Houge's replies carry
+      // code-owned strings legitimately); a schedule-born user turn is the stored goal, not Paco: excluded by source.
+      threadUserTexts: [...state.turnCtx.recentTurns].reverse()
+        .filter((t) => t.role === "user" && this.runStore.runSource(t.run_id) !== "schedule").map((t) => t.text),
+      ...(state.lessonSavedThisTurn ? { alreadySaved: { id: state.lessonSavedThisTurn.id } } : {}),
+      saveLesson: (candidate, now) => this.saveLessonForTurn(claim, chatId, state, candidate, now, o, outcome)
+    });
+    try {
+      outcome.result = await adapter(input);
+    } catch (error) {
+      // A thrown save (a rolled-back `inTx`, a store error) is a failed tool call, never a crash; nothing committed.
+      outcome.result = { ok: false, error: `lesson save failed: ${safeReason(error)}` };
+    }
+    return outcome;
+  }
+
+  /** runLessonWrite's save: reconcile (async, outside any transaction), then the atomic save; guard set after commit. */
+  private async saveLessonForTurn(
+    claim: ClaimedRun, chatId: string, state: OmpTurnState, candidate: { scope: string; text: string; avoid?: string }, now: string,
+    o: LessonWriteOptions, outcome: LessonWriteOutcome
+  ): Promise<LessonSaveResult> {
+    // The compare rides the same UNRESERVED adapter as the distill (never the turn ledger, which may be drained here).
+    const r = await this.reconcileLessonVerdict(candidate, async (i) => {
+      const a = await this.llmAdapterFor(claim.run_id, LESSON_WRITE_ROLES.reconcile)(i);
+      return a.ok && typeof a.output.answer === "string" ? { ok: true, answer: a.output.answer } : { ok: false };
+    });
+    // The turn ended while the reconcile ran: nothing durable may land on a finished run (spec §5.1).
+    if (o.signal?.aborted || this.ompTurns.get(claim.run_id) !== state) return { verb: "drop", lesson: candidate.text, prunedIds: [] };
+    let change_id: string | undefined;
+    const saved = this.runStore.inTransaction(() => {
+      const s = this.saveLessonVerdict(candidate, r, o.source, now);
+      if (s.id === undefined) return s;
+      const change = this.runStore.insertLessonChange({
+        run_id: claim.run_id, chat_id: chatId, new_id: s.id, superseded_id: s.supersededId ?? null, pruned_ids: s.prunedIds, created_at: now
+      });
+      this.runStore.appendRunLedgerEvent(claim.run_id, "lesson_saved", "core", { lesson_id: s.id, change_id: change.change_id, source: o.source });
+      o.inTx?.(s, change.change_id);
+      change_id = change.change_id;
+      return s;
+    });
+    // `inTransaction` returned: only now is anything committed (a throwing `inTx` rolled back and threw past here).
+    if (saved.id !== undefined && change_id) {
+      state.lessonSavedThisTurn = { id: saved.id, theme: r.theme, change_id };
+      Object.assign(outcome, { saved: { ...saved, id: saved.id }, change_id, theme: r.theme, committed: true });
+    }
+    return saved;
+  }
+
+  /** @internal Tests only: a voice turn's transcript as the tools' objective (the field resolveOmpMessage sets). */
+  setOmpObjectiveForTest(run_id: string, text: string): void {
+    const state = this.ompTurns.get(run_id);
+    if (!state) throw new Error(`no omp turn state for ${run_id}`);
+    state.objective = text;
+  }
+
   /** Bind a loop tool's adapter (ADR 0013): each rides an existing, unchanged pipeline. */
   private loopToolExecute(
     name: string,
     claim: ClaimedRun,
-    lessonAnchor: { priorAnswer: string; defaultScope: string },
     turnCtx: LoopTurnContext
   ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
     // The evolution layers as loop tools (step ⓪·2/⓪·3g): THIN boundaries around the
@@ -2522,41 +2636,8 @@ export class CoreWorker {
       return async (input) => this.executeWikiUpsert(turnCtx, name, input, claim);
     }
     if (name === "lesson_write") {
-      // TRUST ANCHORS: feedback = the turn's real user message (the contract objective);
-      // prior_answer = the real prior assistant turn. The model's step input can carry
-      // ONLY a scope, whitelisted to the turn surface's scopes and clamped otherwise —
-      // so the provenance backstop always judges against what the user actually said.
-      return createLessonWriteAdapter({
-        feedback: claim.contract.objective,
-        priorAnswer: lessonAnchor.priorAnswer,
-        allowedScopes: ["ask", "research"],
-        defaultScope: lessonAnchor.defaultScope,
-        llm: (input) => this.llmAdapterFor(claim.run_id, LESSON_WRITE_ROLES.distill)(input),
-        // A scheduled run's objective is the stored schedule goal, not Paco: refused in code.
-        scheduledRun: this.runStore.runSource(claim.run_id) === "schedule",
-        // Layer routing (⓪·3 S1c): feedback quoting a code-owned literal (verbatim in
-        // src/*.ts) is refused with a digest steering the model to self_write_propose.
-        srcContains: createSrcPhraseChecker(this.projectRoot),
-        // ⓪·3f F1: the check also scans the recent USER turns (most recent first) — the
-        // code-owned phrase is often quoted a turn or two back ("换掉它" carries nothing).
-        // Assistant turns are EXCLUDED: Houge's own replies legitimately contain
-        // code-owned strings (the evolution-notice header, option lists), and including
-        // them would false-refuse every lesson_write that follows one. A schedule-born user
-        // turn is the stored schedule goal, not Paco speaking: excluded by its run's source.
-        threadUserTexts: [...turnCtx.recentTurns]
-          .reverse()
-          .filter((turn) => turn.role === "user" && this.runStore.runSource(turn.run_id) !== "schedule")
-          .map((turn) => turn.text),
-        // Reconcile-and-save (⓪·3 S1b). The compare rides the same UNRESERVED adapter as
-        // the tool's internal distill (never the turn ledger, which may be drained here).
-        saveLesson: (candidate, now) =>
-          this.reconcileAndSaveLesson(candidate, "loop", async (input) => {
-            const r = await this.llmAdapterFor(claim.run_id, LESSON_WRITE_ROLES.reconcile)(input);
-            return r.ok && typeof r.output.answer === "string"
-              ? { ok: true, answer: r.output.answer }
-              : { ok: false };
-          }, now)
-      });
+      // One pipeline with the memory lane (ADR 0029 §5.5); the trust anchors live in runLessonWrite.
+      return async (input) => (await this.runLessonWrite(claim, this.chatOf(claim.run_id), input, { source: "loop" })).result;
     }
     if (name === "houge_status") {
       // Read-only, Houge's own state (2026-10-02): code-rendered, no LLM call, never quarantined.

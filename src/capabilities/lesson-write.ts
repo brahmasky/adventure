@@ -66,9 +66,17 @@ export interface LessonWriteAdapterConfig {
    * schedule's stored goal, not Paco speaking, so the call is refused before any LLM call.
    */
   scheduledRun?: boolean;
+  /**
+   * Memory lane (ADR 0029 §5.5): the lane already saved from this turn's message. A planner `lesson_write` in the same
+   * turn gets this digest and spends nothing — no second row, no UPDATE superseding the card's lesson.
+   */
+  alreadySaved?: { id: number };
   /** Injectable clock for deterministic tests. */
   now?: () => Date;
 }
+
+/** The digest reason when this turn already saved a lesson (ADR 0029 §5.5). */
+export const ALREADY_SAVED_REASON = "already_saved_this_turn";
 
 export function createLessonWriteAdapter(
   config: LessonWriteAdapterConfig
@@ -77,6 +85,10 @@ export function createLessonWriteAdapter(
     // A scheduled run's "user message" is the stored schedule goal: never a lesson source.
     if (config.scheduledRun) {
       return { ok: true, output: { saved: false, reason: "scheduled-run", hint: SCHEDULED_RUN_HINT } };
+    }
+    // One lesson per turn (ADR 0029 §5.5): checked before any LLM call.
+    if (config.alreadySaved) {
+      return { ok: true, output: { saved: false, reason: ALREADY_SAVED_REASON, lesson_id: config.alreadySaved.id } };
     }
     // Anchored, never model-supplied (any feedback/prior_answer in `input` is ignored).
     const feedback = config.feedback;

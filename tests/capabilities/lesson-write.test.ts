@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DISTILL_DISCIPLINE } from "../../src/capabilities/distill.js";
 import {
   CONVERSATIONAL_SRC_STRINGS,
@@ -520,5 +520,19 @@ describe("lesson_write — an over-cap merge is reported, never silently dropped
     const r = await adapter({});
     expect(saved.map((c) => c.avoid)).toEqual([undefined]);
     expect(r).toMatchObject({ ok: true, output: { saved: true, lesson: "be more concise" } });
+  });
+});
+
+describe("lesson_write — the turn already saved a lesson (Jev lane 1, spec §5.5)", () => {
+  it("returns the already-saved digest before any LLM call when the turn already saved a lesson (spec §5.5)", async () => {
+    // The memory lane saved from this message: a planner lesson_write must not add a second row or supersede the card's lesson.
+    const llm = vi.fn();
+    const saveLesson = vi.fn();
+    const adapter = createLessonWriteAdapter({ feedback: "以后回复短一点", priorAnswer: "…", allowedScopes: ["ask", "research"], defaultScope: "ask",
+      llm, saveLesson, alreadySaved: { id: 51 } });
+    const r = await adapter({ scope: "ask" });
+    expect(r).toEqual({ ok: true, output: { saved: false, reason: "already_saved_this_turn", lesson_id: 51 } });
+    expect(llm).not.toHaveBeenCalled();
+    expect(saveLesson).not.toHaveBeenCalled();
   });
 });
