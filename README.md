@@ -312,6 +312,11 @@ The classifier call is gone under omp, so the live shadow is **dormant**: its fl
 `houge jev-shadow report` still reads the historical shadow rows. Design:
 `docs/superpowers/specs/2026-09-25-jev-intent-shadow-design.md`.
 
+**Jev System One (ADR 0029, lane 1 built, flags default off).** Jev now sits in front of the planner as a typed
+decision layer: pure memory instructions and status questions can skip a planner turn once calibrated. Flow and lanes:
+[docs/reference/jev-decision-layer.md](docs/reference/jev-decision-layer.md); every flag and event:
+[configuration.md](docs/reference/configuration.md#jev-system-one-adr-0029).
+
 ## Google identity — gmail_read / google_api
 
 Houge has his own Google identity (`wukong.houge@gmail.com`,

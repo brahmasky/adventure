@@ -861,7 +861,7 @@ node scripts/live-gate-jev.mjs             # opt-in real-API gate (3 fixed messa
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `TYPESAFE_API_KEY` | — | Broker secret #9. Held by the secrets broker when the firewall is armed (stripped from `process.env` like every `*_API_KEY`); sent only as the `Authorization` header to `api.typesafe.ai`; never logged. Unset → every Jev call is audited `unavailable`/`auth` and the replay stops. |
-| `HOUGE_JEV_SHADOW_ENABLED` | off | Arms the live intent shadow. Accepts 1/true/yes/on; read per turn; in `DISARM_FLAGS`. On without `TYPESAFE_API_KEY` → one boot warning and the shadow stays off. |
+| `HOUGE_JEV_SHADOW_ENABLED` | off | **Dormant, superseded by [ADR 0029](../decisions/0029-jev-system-one.md).** Arms the live intent shadow. Accepts 1/true/yes/on; read per turn; in `DISARM_FLAGS`. On without `TYPESAFE_API_KEY` → one boot warning and the shadow stays off. |
 
 **Live shadow** (flag-gated, default OFF). With `HOUGE_JEV_SHADOW_ENABLED` on, every real
 `classifyIntent` also asks Jev the same question, **concurrently and never awaited**: the turn uses
@@ -882,6 +882,55 @@ The verdict per language is HOLD until ≥ 60 matched turns and ≥ 28 days sinc
 then PROMOTE only if Jev agrees with the classifier ≥ 90% at confidence ≥ 0.7 on ≥ 60% of that
 language's turns (else KILL). The report also prints the costly direction (Jev overruling a
 `research` call) and clarify agreement, which never gate. Promotion itself is a separate spec.
+
+## Jev System One (ADR 0029)
+
+Jev answers typed questions before the planner runs; code owns every threshold and the fall-through. Lane 1 is
+the pre-planner triage: a pure memory instruction is saved on the ticks seat and answered with an undoable card, and
+a status question is answered from code. Everything defaults **off**. The flow, lane table and how to read a `triage`
+row: [jev-decision-layer.md](jev-decision-layer.md). Needs `TYPESAFE_API_KEY` (above); without it the first armed turn
+opens a `jev_no_key` incident and the planner runs as today.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_JEV_ENABLED` | off | Master switch. Accepts 1/true/yes/on; read per turn; in `DISARM_FLAGS` (`/disarm` forces it off). Off overrides every lane flag. |
+| `HOUGE_JEV_TRIAGE_ENABLED` | `off` | `off` \| `shadow` \| `arm`. `shadow` asks Jev and writes rows only; the planner runs exactly as today. `arm` lets a calibrated verdict act. Any other value (including `/disarm`'s `false`) reads as `off`. |
+| `HOUGE_JEV_TRIAGE_MIN_CONF` | `0.7` | Confidence floor on the `lane` answer. Out-of-range or non-numeric falls back to the default. |
+| `HOUGE_JEV_TRIAGE_MIN_PURE` | `0.8` | Bar on `p(pure)` for the memory lane to skip the planner (below it, a `mixed` verdict saves and informs the planner). |
+| `HOUGE_JEV_TRIAGE_MIN_STATUS` | `0.8` | Bar on `p(status)` for the code-rendered status reply. |
+| `HOUGE_JEV_DISARM_PATH` | `<dataDir>/houge.jev-disarmed` | Auto-disable marker. Code writes it when `triage_overrides` fires and caps `arm` at `shadow` while it exists. **Re-arming is Paco deleting the file**; nothing else clears it. |
+| `HOUGE_JEV_CALIBRATION_FILE` | unset | **Gate only.** A JSON array of calibration rows for the live gate or a labelled DB copy. Outside `HOUGE_JEV_GATE=1` a set file caps `arm` at `shadow`. Never set it in the daemon's `.env`. |
+| `HOUGE_JEV_GATE` | unset | Set to `1` by `scripts/live-gate-jev-triage.mjs` only; lifts the file cap above for that process. Never set in the daemon's `.env`. |
+
+**Calibration rows are code, not env.** `CALIBRATED_ROWS` in `src/jev/calibration.ts` ships **empty**, so the lane
+cannot act until Paco commits rows after the replay report prints its "ROWS TO ADD" block. A row is keyed by
+`(question_id, criteria_hash, model, lang)`. The memory lane arms on the three rows `lane`, `complete` and `scope`.
+The status lane arms **independently** on a distinct pseudo-row `question_id: "lane:status"` (its criteria hash is the
+`lane` question's): the two lanes clear different bars, so one row never arms both. A criteria or model change
+invalidates the matching rows and the question re-enters shadow.
+
+**Ledger events** (run ledger; ids, enums and numbers only, never message text): `triage` (one per eligible turn,
+the denominator), `ack_nudged`, `lesson_saved`, `lesson_change_undone`, `triage_override`.
+
+**Incidents** (the first failure opens one and alerts Paco): `jev_auth`, `jev_rate_limited`, `jev_overloaded`,
+`jev_question_invalid`, `jev_no_key`, `triage_overrides` (the override rate crossed the auto-disable bar),
+`triage_threw`. Jev is excluded from `llm_leg_failing`; its failures surface as these instead. `LlmErrorKind` gains
+`rate_limited`, `overloaded`, `malformed_question`.
+
+**Tables:** `jev_decisions` (one row per answered or skipped question: ids, probabilities, thresholds, outcome) and
+`lesson_changes` (the change set behind a memory-lane save, which the Undo tap reverses).
+
+**CLI** (state under `.houge/jev-triage/`, git-ignored):
+
+```bash
+houge jev replay triage --dry-run               # pre-flight: counts and estimated cost, calls nothing
+houge jev replay triage [--max-usd N] [--limit N] [--permute]   # resumable; --permute re-asks with options reordered
+houge jev label triage --sample=40              # labelling sitting; the = form only ("--sample 40" is rejected)
+houge jev report triage                         # per-language verdict, Wilson bounds, ROWS TO ADD
+node scripts/live-gate-jev-triage.mjs           # opt-in: real Jev + Kimi on a copy of the live DB (27 checks)
+```
+
+Replay universe on a live-DB copy (2026-10-06): 293 Telegram turns since 2026-07-02, estimated $0.033.
 
 ## Kill switch + disarm posture (ADR 0018)
 
@@ -933,7 +982,7 @@ the cutover deletions) and not at the head of `feat/omp-runtime`, checked by gre
 | `HOUGE_BOUNTY_ENABLED` · `HOUGE_BOUNTY_MAX_CANDIDATES` | Money track, `bounty_scan` | Deleted ([ADR 0022 amendment](../decisions/0022-money-fork-reopened.md)) |
 | `HOUGE_EXTWORK_ENABLED` · `HOUGE_EXTWORK_IMAGE` · `HOUGE_EXTWORK_MEMORY` · `HOUGE_EXTWORK_CPUS` · `HOUGE_EXTWORK_PIDS` · `HOUGE_EXTWORK_SIZE_CAP_MB` · `HOUGE_EXTWORK_SCRATCH_DIR` · `HOUGE_EXTWORK_CLONE_TIMEOUT_MS` · `HOUGE_EXTWORK_STAGE_TIMEOUT_MS` | External workspace | Deleted ([ADR 0023 amendment](../decisions/0023-external-workspace.md)) |
 
-Still parsed but inert: `HOUGE_JEV_SHADOW_ENABLED`. Its resolver in `src/jev/shadow.ts` survives, but
+Still parsed but inert: `HOUGE_JEV_SHADOW_ENABLED` (superseded by ADR 0029). Its resolver in `src/jev/shadow.ts` survives, but
 nothing calls it. Secrets with no consumer: `KIMI_API_KEY`, `GEMINI_API_KEY`,
 `CLAUDE_CODE_OAUTH_TOKEN` (see [Secrets firewall](#secrets-firewall-adr-0015-phase-1)).
 
