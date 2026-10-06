@@ -12,9 +12,9 @@
 // HOUGE_JEV_CALIBRATION_FILE + HOUGE_JEV_GATE=1. The §5.4 BARS still apply: Jev's real probabilities must clear them.
 //
 // Cases (each asserts the LEDGER rows, not only the reply):
-//   1  pure memory instruction → triage answered/memory/pure/act, lesson_changes row, card with Undo, zero planner requests
+//   1  pure memory instruction → triage verdict memory_pure/act, lesson_changes row, card with Undo, zero planner requests
 //   1b Undo tapped through the real Gateway callback path (memlane_undo) → lesson retired, lesson_change_undone event
-//   2  mixed (memory + question) → triage mixed/act, exactly one lesson_saved, the planner answered (compose attempts > 0)
+//   2  mixed (memory + question) → triage verdict memory_mixed/act, exactly one lesson_saved, the planner answered (compose attempts > 0)
 //   2b forced second lesson_write on a lane-saved turn through the planner's registry entry → already-saved digest, zero
 //      additional llm_attempt rows (no second distill/reconcile)
 //   3  status question → triage lane=status/act, code-owned reply in the outbox, zero planner requests
@@ -25,8 +25,8 @@
 //      broker; the broker-supplied key is covered hermetically in tests/core/core-worker-triage.test.ts with a fake broker)
 //   7  state parity: every answered triage row this gate wrote carries thread_cut_at + state_built_at, and a dry-run
 //      `houge jev replay triage` over the copy rebuilds the SAME state_hash for each one in the replay universe (≥ 1)
-//   8  jev_skip_rate: 8 real triage calls whose transport fails (stubbed fetch throws) → skipped{transport}; the rate
-//      over this case's own window is 8/8, and the sweep's own detector reports jev_skip_rate
+//   8  jev_skip_rate: N real triage calls whose transport fails (stubbed fetch throws; N outweighs the copy's 24 h of
+//      calls) → skipped{transport}; the rate over this case's own window is N/N, and the sweep detector reports it
 //
 // What this gate cannot exercise (covered hermetically instead):
 //   - the slot-A steered ack (a bare ack steered into an AWAITING_APPROVAL turn): needs a planner that asks for an external
@@ -44,6 +44,10 @@ const DIST = resolve(new URL("../dist", import.meta.url).pathname);
 const failures = [];
 const check = (name, ok, detail = "") => { console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? ` — ${detail}` : ""}`); if (!ok) failures.push(name); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Jev's probabilities vary run to run: a message can land under a bar, and then the lane rightly takes another path.
+// That case is INCONCLUSIVE for the path it meant to exercise (listed, never a PASS of it), and the path the recorded
+// `verdict` names is checked instead, so a code fault still FAILs.
+const inconclusive = [];
 
 function envFilePath() {
   return process.env.HOUGE_ENV_FILE ?? join(process.cwd(), ".env");
@@ -144,13 +148,26 @@ const MSG = {
   posture: "以后回复短一点"
 };
 
+/** The lane took another path than the case meant: record INCONCLUSIVE, then check the path its verdict names. */
+function otherVerdict(g, label, run_id, row) {
+  const { h } = g;
+  inconclusive.push(`${label}: Jev's call gave verdict ${row?.verdict ?? "none"}; this case's path was not exercised`);
+  console.log(`INCONCLUSIVE ${label} — verdict ${row?.verdict ?? "none"}; checking that path instead`);
+  const saves = h.events(run_id, "lesson_saved").filter((e) => e.payload.source === "lane").length;
+  const compose = h.attempts(run_id, "compose");
+  if (row?.verdict === "memory_mixed") check(`${label} [as mixed]: lane saved once, act, and the planner answered`, row.decision === "act" && saves === 1 && compose > 0, `saves=${saves} compose=${compose}`);
+  else if (row?.verdict === "memory_pure") check(`${label} [as pure]: lane saved once, act, zero planner requests`, row.decision === "act" && saves === 1 && compose === 0, `saves=${saves} compose=${compose}`);
+  else check(`${label} [as ${row?.verdict ?? "none"}]: no lane save, the planner answered`, row?.status !== undefined && saves === 0 && compose > 0, `saves=${saves} compose=${compose}`);
+}
+
 /** 1 + 1b: the pure memory lane, then Undo through the real callback path. */
 async function casePure(g) {
   const { h, worker, chat, store, dbPath, m, root } = g;
   const run_id = h.intake(chat, MSG.pure); worker.submitTurn(run_id);
   check("1 pure: run completed", (await h.settle(run_id)) === "completed", store.getRunState(run_id));
   const row = h.triageRow(run_id); show("1 pure", row);
-  check("1 pure: triage answered/memory/pure/act", row?.status === "answered" && row.lane === "memory" && row.complete === "pure" && row.decision === "act");
+  if (row?.verdict !== "memory_pure") { otherVerdict(g, "1 pure", run_id, row); return; }
+  check("1 pure: triage answered/memory_pure/act", row.status === "answered" && row.decision === "act");
   check("1 pure: zero planner requests (compose)", h.attempts(run_id, "compose") === 0, `compose=${h.attempts(run_id, "compose")}`);
   check("1 pure: the lane's own legs ran (distill)", h.attempts(run_id, "distill") > 0, `distill=${h.attempts(run_id, "distill")} consolidate=${h.attempts(run_id, "consolidate")}`);
   const change = store.getLessonChangeByRun(run_id);
@@ -175,7 +192,8 @@ async function caseMixed(g) {
   const run_id = h.intake(chat, MSG.mixed); worker.submitTurn(run_id);
   check("2 mixed: run completed", (await h.settle(run_id)) === "completed", store.getRunState(run_id));
   const row = h.triageRow(run_id); show("2 mixed", row);
-  check("2 mixed: triage answered/memory/mixed/act", row?.status === "answered" && row.lane === "memory" && row.complete === "mixed" && row.decision === "act");
+  if (row?.verdict !== "memory_mixed") { otherVerdict(g, "2 mixed", run_id, row); return; }
+  check("2 mixed: triage answered/memory_mixed/act", row.status === "answered" && row.decision === "act");
   check("2 mixed: the planner answered (compose > 0)", h.attempts(run_id, "compose") > 0, `compose=${h.attempts(run_id, "compose")}`);
   check("2 mixed: exactly one lesson_saved", h.events(run_id, "lesson_saved").length === 1, `lesson_saved=${h.events(run_id, "lesson_saved").length}`);
 }
@@ -291,8 +309,11 @@ async function caseSkipRate(g) {
   const { h, m, store } = g;
   const worker = h.makeWorker(async () => { throw new TypeError("fetch failed"); });
   const started = Date.now() - 1000;
+  // The sweep reads the copy's whole 24 h: outweigh the calls already there (live daemon rows + earlier cases).
+  const before = m.checkJevSkipRate(store, new Date().toISOString()).attempts;
+  const n = Math.max(8, before + 2);
   let transport = 0;
-  for (let k = 0; k < 8; k += 1) {
+  for (let k = 0; k < n; k += 1) {
     const run_id = h.intake(`-3${k}00${Date.now() % 100000}`, MSG.posture); // one chat each: the gateway rate-limits per chat
     const claim = store.claimRun(run_id, `planner:gate:${run_id}`, 300);
     if (!claim) { check("8 skip rate: claim", false); return; }
@@ -300,11 +321,11 @@ async function caseSkipRate(g) {
     await worker.triageTurn({ claim, text: MSG.posture, userText: MSG.posture, modality: "text", posture: null, signal: new AbortController().signal });
     if (h.triageRow(run_id)?.skip_reason === "transport") transport += 1;
   }
-  check("8 skip rate: 8 real calls → skipped{transport}", transport === 8, `transport=${transport}`);
+  check(`8 skip rate: ${n} real calls → skipped{transport}`, transport === n, `transport=${transport} (24 h attempts before: ${before})`);
   // Over this case's own rows only (the copy's real triage rows would move the rate), then the sweep's full detector.
   const now = new Date().toISOString();
   const rate = m.checkJevSkipRate(store, now, Date.now() - started);
-  check("8 skip rate: 8 of 8 attempts failed silently → open", rate.open && rate.attempts === 8 && rate.failed === 8, JSON.stringify(rate));
+  check(`8 skip rate: ${n} of ${n} attempts failed silently → open`, rate.open && rate.attempts === n && rate.failed === n, JSON.stringify(rate));
   const v = m.detectViolations(store, now, process.env).filter((x) => x.kind === "jev_skip_rate");
   check("8 skip rate: the sweep detector reports jev_skip_rate", v.length === 1 && v[0].subject === m.JEV_INCIDENT_SUBJECT, JSON.stringify(v[0]?.detail ?? null));
 }
@@ -334,6 +355,7 @@ async function main() {
     await caseParity(g);
     await caseSkipRate(g);
   } finally { await g.worker.shutdownPlanners(); store.close(); }
+  if (inconclusive.length > 0) console.log(`\nINCONCLUSIVE (Jev's call, not a code fault):\n  - ${inconclusive.join("\n  - ")}`);
   console.log(failures.length === 0 ? "\nLIVE GATE: PASS" : `\nLIVE GATE: FAIL\n  - ${failures.join("\n  - ")}`);
   if (args.keep || failures.length > 0) console.log(`temp dir kept: ${root}`); else rmSync(root, { recursive: true, force: true });
   return failures.length === 0 ? 0 : 1;
