@@ -1252,7 +1252,8 @@ export class RunStore {
   /**
    * The lane 1 live shadow as the §5.9 step 4 bar reads it: `triage` rows with decision `shadow` since `sinceIso`, each
    * joined to its run's planner `loop_step` capabilities. A "pure verdict" is `lane = memory ∧ complete = pure` (the
-   * row's argmax choices — a superset of pure-at-bar, so the count errs toward NO-GO). `days` spans first → last row.
+   * row's argmax choices — a superset of pure-at-bar, so the count errs toward NO-GO). `days` = distinct UTC days with a
+   * shadow row (occurred_at is ISO UTC), so a parked daemon's silent weeks do not count toward the 14.
    */
   triageShadowStats(sinceIso: string): TriageShadowStats {
     const rows = this.db.prepare(`
@@ -1268,7 +1269,7 @@ export class RunStore {
       if (caps.some((c) => c !== "lesson_write")) stats.pure_on_tool_turns += 1;
       else if (caps.length === 0) stats.pure_on_no_tool_turns += 1;
     }
-    if (rows.length > 0) stats.days = Math.floor((Date.parse(rows[rows.length - 1]!.occurred_at) - Date.parse(rows[0]!.occurred_at)) / 86_400_000);
+    stats.days = new Set(rows.map((r) => r.occurred_at.slice(0, 10))).size; // distinct UTC days with a shadow row
     stats.live_state_hashes = this.db.prepare(`
       SELECT state_hash FROM jev_decisions
       WHERE point = 'triage' AND question_id = 'lane' AND decision = 'shadow' AND state_hash IS NOT NULL AND created_at >= ?

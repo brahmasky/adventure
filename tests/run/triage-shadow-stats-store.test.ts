@@ -25,7 +25,7 @@ afterEach(() => vi.useRealTimers());
 // Spec §5.9 step 4: the live shadow is the false-positive watch the arm decision reads; a wrong count here arms a lane
 // whose `pure` verdict would have skipped the planner on a turn that needed tools.
 describe("RunStore.triageShadowStats", () => {
-  it("counts days, matched lesson_write turns and pure verdicts on tool / no-tool turns over shadow rows only", () => {
+  it("counts distinct shadow days (not the first-to-last span), matched lesson_write turns and pure verdicts on tool / no-tool turns over shadow rows only", () => {
     const store = RunStore.openInMemory();
     try {
       vi.useFakeTimers({ toFake: ["Date"] });
@@ -36,12 +36,13 @@ describe("RunStore.triageShadowStats", () => {
       turn(store, "2026-10-04T00:00:00.000Z", { lane: "memory", complete: "mixed", decision: "shadow" }, ["lesson_write", "http_fetch"]);
       turn(store, "2026-10-05T00:00:00.000Z", { lane: "memory", complete: "pure", decision: "fallback" }, ["web_search"]); // not a shadow row
       turn(store, "2026-10-17T00:00:00.000Z", { lane: "none", complete: "mixed", decision: "shadow" }, []);
+      turn(store, "2026-10-17T23:59:59.000Z", { lane: "none", complete: "mixed", decision: "shadow" }, []); // same UTC day: still 5 days
       vi.useRealTimers();
       laneDecision(store, r1, "s1", "shadow");
       laneDecision(store, r1, "s1", "shadow", "complete"); // one hash per turn: the lane row only
       laneDecision(store, r1, "s9", "fallback");
       expect(store.triageShadowStats("2026-09-25T00:00:00.000Z")).toEqual({
-        days: 16, matched_lesson_write: 3, pure_on_tool_turns: 1, pure_on_no_tool_turns: 1, live_state_hashes: ["s1"]
+        days: 5, matched_lesson_write: 3, pure_on_tool_turns: 1, pure_on_no_tool_turns: 1, live_state_hashes: ["s1"]
       });
     } finally {
       store.close();
