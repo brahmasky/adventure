@@ -1,0 +1,75 @@
+import { describe, expect, it, vi } from "vitest";
+import { JEV_MODEL, createJevClient } from "../../src/jev/jev-client.js";
+import { decide, marginOf, persistDecisionRows, recordSkip, stateHash } from "../../src/jev/decide.js";
+import { TRIAGE_QUESTIONS } from "../../src/jev/questions/triage.js";
+import { criteriaHash } from "../../src/jev/questions/types.js";
+import { RunStore } from "../../src/run/run-store.js";
+import { recordingSink } from "../helpers/llm-audit.js";
+
+const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const choice = (choice: string, probabilities: Record<string, number>) => {
+  const n = Object.keys(probabilities).length; const pMax = Math.max(...Object.values(probabilities));
+  return { type: "choice", choice, probabilities, confidence: (pMax - 1 / n) / (1 - 1 / n) };
+};
+const okBody = () => ({ model: JEV_MODEL, usage: { input_tokens: 900, output_tokens: 0 }, answers: {
+  lane: choice("memory", { none: 0.05, status: 0.05, memory: 0.9 }), complete: choice("pure", { mixed: 0.1, pure: 0.9 }), scope: choice("ask", { ask: 0.8, research: 0.2 }) } });
+function setup(fetchImpl: typeof fetch, apiKey: string | null = "k") {
+  const store = RunStore.openInMemory();
+  const client = createJevClient({ apiKey: apiKey ?? undefined, audit: recordingSink(), meteredBreached: () => false, retries: 0, timeoutMs: 1000, fetchImpl });
+  return { store, client, input: { point: "triage" as const, run_id: "run_1", state: { latest_message: "x" }, questions: TRIAGE_QUESTIONS, lang: "zh" as const, client, store, thresholdVersion: "v1" } };
+}
+
+// Spec §3.2/§3.4: decide() never applies a threshold and never writes; the caller persists rows in its own transaction.
+describe("decide", () => {
+  it("answers with one row per question as data; nothing is written until persistDecisionRows", async () => {
+    const { store, input } = setup(vi.fn(async () => json(200, okBody())) as unknown as typeof fetch);
+    const d = await decide(input);
+    expect(d.status).toBe("answered");
+    if (d.status !== "answered") return;
+    expect(d.rows.map((r) => r.question_id)).toEqual(["lane", "complete", "scope"]);
+    expect(d.rows[0]).toMatchObject({ criteria_hash: criteriaHash(TRIAGE_QUESTIONS[0]!), model_reported: JEV_MODEL, state_hash: stateHash({ latest_message: "x" }),
+      top_prob: 0.9, status: "answered", threshold_version: "v1", decision: null, threshold_used: null, input_tokens: 900 });
+    expect(d.rows[0]!.margin).toBeCloseTo(0.85, 5);
+    expect(d.rows[0]!.answers_json).not.toContain("latest_message"); // numbers only
+    expect(store.listJevDecisions("run_1")).toHaveLength(0);
+    const ids = persistDecisionRows(store, d.rows, "act", "v1:memory");
+    expect(ids).toHaveLength(3);
+    const rows = store.listJevDecisions("run_1");
+    expect(rows.map((r) => r.decision_id)).toEqual(ids);
+    expect(rows.every((r) => r.decision === "act" && r.threshold_used === "v1:memory")).toBe(true);
+    store.close();
+  });
+  it("returns skipped without writing a row (the caller persists after its cancellation check) and opens the incident on a 429", async () => {
+    const { store, input } = setup(vi.fn(async () => json(429, {})) as unknown as typeof fetch);
+    const d = await decide(input);
+    expect(d).toEqual({ status: "skipped", reason: "rate_limited" });
+    expect(store.listJevDecisions("run_1")).toHaveLength(0);
+    expect(store.listOpenIncidents().some((i) => i.kind === "jev_rate_limited")).toBe(true);
+    recordSkip(store, "triage", "run_1", "zh", "rate_limited");
+    expect(store.listJevDecisions("run_1")).toMatchObject([{ status: "skipped", skip_reason: "rate_limited", question_id: null }]);
+    store.close();
+  });
+  it("no key is skipped{no_key} with the jev_no_key incident, never a fetch", async () => {
+    const fetchImpl = vi.fn();
+    const { store, input } = setup(fetchImpl as unknown as typeof fetch, null);
+    expect(await decide(input)).toEqual({ status: "skipped", reason: "no_key" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(store.listOpenIncidents().some((i) => i.kind === "jev_no_key")).toBe(true);
+    store.close();
+  });
+  it("a malformed response is skipped as parse with no incident (per-call noise, visible in rows)", async () => {
+    const { store, input } = setup(vi.fn(async () => json(200, { model: JEV_MODEL, answers: {}, usage: { input_tokens: 1 } })) as unknown as typeof fetch);
+    expect(await decide(input)).toEqual({ status: "skipped", reason: "parse" });
+    expect(store.listOpenIncidents()).toHaveLength(0);
+    store.close();
+  });
+  it("recordSkip writes the pre-call skipped row for disabled/posture/modality", () => {
+    const store = RunStore.openInMemory();
+    recordSkip(store, "triage", "run_9", "en", "posture");
+    expect(store.listJevDecisions("run_9")).toMatchObject([{ status: "skipped", skip_reason: "posture", lang: "en", point: "triage" }]);
+    store.close();
+  });
+  it("marginOf is p1 − p2 over the two largest probabilities", () => {
+    expect(marginOf({ choice: "a", probabilities: { a: 0.5, b: 0.3, c: 0.2 }, confidence: 0 })).toBeCloseTo(0.2, 9);
+  });
+});
