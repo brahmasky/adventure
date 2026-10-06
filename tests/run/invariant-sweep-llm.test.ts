@@ -120,8 +120,8 @@ describe("llm_leg_failing invariant", () => {
     const store = RunStore.openInMemory();
     try {
       const sink = store.llmAuditSink({ correlation_id: "tick:x", role: "classify_shadow" });
-      sink.record({ provider: "jev", role: "", outcome: "unavailable", latency_ms: 1, error_kind: "auth" });
-      expect(legs(store)).toEqual([{ kind: "llm_leg_failing", subject: "jev", detail: { attempts: 1, ok: 0, last_error_kind: "auth" } }]);
+      sink.record({ provider: "agy-cli", role: "", outcome: "unavailable", latency_ms: 1, error_kind: "auth" });
+      expect(legs(store)).toEqual([{ kind: "llm_leg_failing", subject: "agy-cli", detail: { attempts: 1, ok: 0, last_error_kind: "auth" } }]);
     } finally {
       store.close();
     }
@@ -131,9 +131,9 @@ describe("llm_leg_failing invariant", () => {
     const store = RunStore.openInMemory();
     try {
       const sink = store.llmAuditSink({ correlation_id: "tick:x", role: "classify_shadow" });
-      sink.record({ provider: "jev", role: "", outcome: "unavailable", latency_ms: 1, error_kind: "auth" });
+      sink.record({ provider: "agy-cli", role: "", outcome: "unavailable", latency_ms: 1, error_kind: "auth" });
       expect(legs(store)).toHaveLength(1);
-      sink.record({ provider: "jev", role: "", outcome: "ok", model: "jev-1.13.0", latency_ms: 1 });
+      sink.record({ provider: "agy-cli", role: "", outcome: "ok", model: "jev-1.13.0", latency_ms: 1 });
       expect(legs(store)).toEqual([]);
     } finally {
       store.close();
@@ -144,7 +144,7 @@ describe("llm_leg_failing invariant", () => {
     const store = RunStore.openInMemory();
     try {
       const sink = store.llmAuditSink({ correlation_id: "cli:jev-replay", role: "classify_replay" });
-      sink.record({ provider: "jev", role: "", outcome: "unavailable", latency_ms: 1, error_kind: "auth" });
+      sink.record({ provider: "agy-cli", role: "", outcome: "unavailable", latency_ms: 1, error_kind: "auth" });
       expect(legs(store)).toEqual([]);
     } finally {
       store.close();
@@ -155,11 +155,11 @@ describe("llm_leg_failing invariant", () => {
     const store = RunStore.openInMemory();
     try {
       const sink = store.llmAuditSink({ correlation_id: "cli:jev-replay", role: "classify_replay" });
-      for (let i = 0; i < LLM_LEG_FAILING_MIN_ATTEMPTS + 2; i++) sink.record({ provider: "jev", role: "", outcome: "unavailable", latency_ms: 1, error_kind: "auth" });
+      for (let i = 0; i < LLM_LEG_FAILING_MIN_ATTEMPTS + 2; i++) sink.record({ provider: "agy-cli", role: "", outcome: "unavailable", latency_ms: 1, error_kind: "auth" });
       expect(legs(store)).toEqual([]);
       const live = store.llmAuditSink({ correlation_id: "tick:x", role: "classify_shadow" });
-      for (let i = 0; i < LLM_LEG_FAILING_MIN_ATTEMPTS; i++) live.record({ provider: "jev", role: "", outcome: "unavailable", latency_ms: 1, error_kind: "auth" });
-      expect(legs(store)).toEqual([{ kind: "llm_leg_failing", subject: "jev", detail: { attempts: LLM_LEG_FAILING_MIN_ATTEMPTS, ok: 0, last_error_kind: "auth" } }]);
+      for (let i = 0; i < LLM_LEG_FAILING_MIN_ATTEMPTS; i++) live.record({ provider: "agy-cli", role: "", outcome: "unavailable", latency_ms: 1, error_kind: "auth" });
+      expect(legs(store)).toEqual([{ kind: "llm_leg_failing", subject: "agy-cli", detail: { attempts: LLM_LEG_FAILING_MIN_ATTEMPTS, ok: 0, last_error_kind: "auth" } }]);
     } finally {
       store.close();
     }
@@ -180,6 +180,19 @@ describe("llm_leg_failing invariant", () => {
       expect(legs(store)).toEqual([
         { kind: "llm_leg_failing", subject: "agy-cli", detail: { attempts: 3, ok: 0, last_error_kind: "transport" } }
       ]);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("llm_leg_failing: jev exclusion", () => {
+  it("ignores provider 'jev' rows: Jev outages page through their own incidents (ADR 0029 §3.3)", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const sink = store.llmAuditSink({ correlation_id: "t", role: "triage" });
+      for (let i = 0; i < 4; i++) sink.record({ provider: "jev", role: "", outcome: "error", error_kind: "rate_limited", latency_ms: 1 });
+      expect(store.findFailingLlmLegs(new Date().toISOString(), 24 * 3600_000, 3).map((l) => l.subject)).not.toContain("jev");
     } finally {
       store.close();
     }

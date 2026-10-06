@@ -26,7 +26,9 @@ export type LlmErrorKind =
   | "auth" | "model_missing" | "timeout" | "spawn" | "transport" | "parse" | "other"
   | "quota" | "model_refusal" | "aborted" | "wall_collapse"
   /** The daemon's own stop cut the request: never a provider failure, so the llm_leg_failing sweep ignores it. */
-  | "shutdown";
+  | "shutdown"
+  // Jev (ADR 0029 §3.3): outages are told apart so each opens its own incident; 422 is a question bug, never retried.
+  | "rate_limited" | "overloaded" | "malformed_question";
 
 /**
  * `unavailable` (review S1, codex #11) means the provider was NOT constructively callable: binary

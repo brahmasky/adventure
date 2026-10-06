@@ -65,7 +65,9 @@ export type LlmCallRole =
   | "classify_replay"
   | "classify_replay_llm"
   | "classify_shadow"
-  | "media_transcribe";
+  | "media_transcribe"
+  // Jev decision points (ADR 0029): one role per point so the per-point rate is readable in llm_attempt
+  | "triage";
 
 /** Where an audited attempt belongs: a run, or a run-less correlation (`tick:*`, `cli:*`, `rating:*`). */
 export type LlmAuditScope =
@@ -4730,6 +4732,8 @@ export class RunStore {
             AND json_extract(e2.payload_json, '$.outcome') <> 'ok'
             AND COALESCE(json_extract(e2.payload_json, '$.error_kind'), '') <> 'shutdown'
             AND COALESCE(json_extract(e2.payload_json, '$.role'), '') NOT LIKE 'classify_replay%'
+            -- Jev has its own incidents (jev_*); never double-page through llm_leg_failing (ADR 0029 §3.3)
+            AND json_extract(e2.payload_json, '$.provider') <> 'jev'
           ORDER BY e2.occurred_at DESC, e2.sequence DESC
           LIMIT 1
         ) AS last_error_kind
@@ -4737,6 +4741,8 @@ export class RunStore {
       WHERE event_type = 'llm_attempt' AND occurred_at > ?
         AND COALESCE(json_extract(payload_json, '$.error_kind'), '') <> 'shutdown'
         AND COALESCE(json_extract(payload_json, '$.role'), '') NOT LIKE 'classify_replay%'
+        -- Jev has its own incidents (jev_*); never double-page through llm_leg_failing (ADR 0029 §3.3)
+        AND json_extract(payload_json, '$.provider') <> 'jev'
       GROUP BY subject
       HAVING ok = 0 AND (attempts >= ? OR last_error_kind = 'auth')
       ORDER BY subject

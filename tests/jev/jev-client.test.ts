@@ -75,7 +75,7 @@ describe("createJevClient", () => {
     expect(sleep).toHaveBeenNthCalledWith(1, 2000);
     expect(sleep).toHaveBeenNthCalledWith(2, 1000); // backoff 500·2^1 for the 2nd retry
     expect(audit.attempts.map((a) => a.outcome)).toEqual(["error", "error", "ok"]);
-    expect(audit.attempts[0]).toMatchObject({ error_kind: "transport" });
+    expect(audit.attempts[0]).toMatchObject({ error_kind: "rate_limited" });
   });
 
   it("retries: 0 (live shadow) → a 429 is recorded and dropped, not retried", async () => {
@@ -189,5 +189,33 @@ describe("createJevClient", () => {
     expect(logged).not.toContain(KEY);
     if (!r.ok) expect(r.detail).not.toContain(KEY);
     spies.forEach((s) => s.mockRestore());
+  });
+});
+
+describe("status → error kind (spec §3.3: outages are distinguishable, 422 is a code bug)", () => {
+  const Q = { q: { type: "choice" as const, instructions: "x", criteria: { a: "a", b: "b" } } };
+  it("maps 429 to rate_limited and retries only when retries > 0", async () => {
+    const fetchImpl = vi.fn(async () => json(429, { error: "slow down" }, { "retry-after": "1" }));
+    const { call, audit } = client(fetchImpl as unknown as typeof fetch);
+    const r = await call({ state: {}, questions: Q });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error_kind).toBe("rate_limited");
+    expect(fetchImpl).toHaveBeenCalledTimes(1); // retries: 0 on live paths
+    expect(audit.attempts.at(-1)?.error_kind).toBe("rate_limited");
+  });
+  it("maps 529 to overloaded (retryable) and 500 to transport", async () => {
+    const r529 = await client(vi.fn(async () => json(529, {})) as unknown as typeof fetch).call({ state: {}, questions: Q });
+    const r500 = await client(vi.fn(async () => json(500, {})) as unknown as typeof fetch).call({ state: {}, questions: Q });
+    expect(!r529.ok && r529.error_kind).toBe("overloaded");
+    expect(!r500.ok && r500.error_kind).toBe("transport");
+  });
+  it("maps 422 to malformed_question and never retries it even with retries: 3", async () => {
+    const fetchImpl = vi.fn(async () => json(422, { error: { field: "questions.q.criteria" } }));
+    const { call } = client(fetchImpl as unknown as typeof fetch, { retries: 3 });
+    const r = await call({ state: {}, questions: Q });
+    expect(!r.ok && r.error_kind).toBe("malformed_question");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    // the body may echo our own question text or a provider message: never copied into detail
+    expect(!r.ok && r.detail).toBe("HTTP 422");
   });
 });

@@ -110,10 +110,15 @@ async function attemptOnce(fetchImpl: typeof fetch, apiKey: string, req: JevRequ
     if (res.status === 401 || res.status === 403) {
       return { kind: "fail", outcome: "unavailable", error_kind: "auth", retryable: false, detail: `HTTP ${res.status}` };
     }
-    if (res.status === 429 || res.status >= 500) {
+    // 422 names a malformed question: a code bug on our side, so it is never retried (spec §3.3).
+    if (res.status === 422) {
+      return { kind: "fail", outcome: "error", error_kind: "malformed_question", retryable: false, detail: "HTTP 422" };
+    }
+    if (res.status === 429 || res.status === 529 || res.status >= 500) {
       const after = Number(res.headers.get("retry-after"));
+      const error_kind: LlmErrorKind = res.status === 429 ? "rate_limited" : res.status === 529 ? "overloaded" : "transport";
       return {
-        kind: "fail", outcome: "error", error_kind: "transport", retryable: true, detail: `HTTP ${res.status}`,
+        kind: "fail", outcome: "error", error_kind, retryable: true, detail: `HTTP ${res.status}`,
         ...(Number.isFinite(after) && after > 0 ? { retryAfterMs: Math.min(after * 1000, RETRY_AFTER_CAP_MS) } : {})
       };
     }

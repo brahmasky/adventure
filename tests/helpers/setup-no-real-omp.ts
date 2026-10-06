@@ -12,6 +12,8 @@ import { NO_OMP_BIN, STUB_MARKER } from "./omp-env.js";
 //    starts with a dir of stubs that print a marker to stderr and exit 1. A spawned CLI inherits both.
 
 process.env.HOUGE_OMP_BIN = NO_OMP_BIN;
+// Jev (ADR 0029): no suite may reach api.typesafe.ai; an un-stubbed client must see no_key.
+delete process.env.TYPESAFE_API_KEY;
 // Daemon temp space (<data>/tmp, <data>/selfwrite: B13) defaults to the cwd, i.e. the repo: tests get a tmp data dir.
 const dataDir = mkdtempSync(join(tmpdir(), "houge-test-data-"));
 setDaemonDataDir(dataDir);
