@@ -134,7 +134,15 @@ import {
 import type { ActiveTurn } from "../omp/bridge-handler.js";
 import type { ExternalReadResult } from "../omp/external-read.js";
 import { ompConfigProblems, resolveOmpConfig } from "../omp/omp-config.js";
-import { PlannerSupervisor, type SupervisorDeps, type TurnOutcomeSink } from "../omp/planner-supervisor.js";
+import { PlannerSupervisor, type SupervisorDeps, type TriageInput, type TriageOutcome, type TurnOutcomeSink } from "../omp/planner-supervisor.js";
+import { calibrationRows } from "../jev/calibration.js";
+import { decide, marginOf, persistDecisionRows, recordSkip, type JevDecisionInsert, type SkipReason } from "../jev/decide.js";
+import { createJevClient, type JevRequest, type JevResult } from "../jev/jev-client.js";
+import { resolveJevTriageMode } from "../jev/jev-flags.js";
+import { langOf, type Lang } from "../jev/intent-question.js";
+import { buildTriageState, lastHougeTurnOf, TRIAGE_QUESTIONS } from "../jev/questions/triage.js";
+import { resolveTriageBars, THRESHOLD_VERSION, triageVerdict, type TriageDecision } from "../jev/thresholds.js";
+import { memoryInformNote, memoryLaneCard } from "./memory-lane-card.js";
 import { shellToolExecute } from "../omp/shell-adapter.js";
 import { loadToolDeclarations, TOOL_DECLS_DIR, type ToolDeclaration } from "../omp/tool-decls.js";
 import type { TurnContextDeps, TurnRetrieval } from "../omp/turn-context.js";
@@ -214,7 +222,15 @@ interface OmpTurnState {
   echo?: string;
   /** Set only after a lesson save COMMITTED in this turn (ADR 0029 §5.5): a second lesson_write gets the digest. */
   lessonSavedThisTurn?: { id: number; theme: string; change_id: string };
+  /** Set once this turn's one `triage` event (and its decision rows) committed (ADR 0029 §5.1): a second finalisation is a no-op. */
+  triageFinalized?: boolean;
 }
+
+/** The numbers and outcome of one triage finalisation (ADR 0029 §3.2): ids/enums/numbers only, never message text. */
+type TriageSettle =
+  | { kind: "skipped"; reason: SkipReason }
+  | { kind: "answered"; rows: JevDecisionInsert[]; decision: "act" | "fallback" | "shadow"; threshold_used: string; numbers: TriageNumbers };
+type TriageNumbers = { lane: string; complete?: string | undefined; scope?: string | undefined; confidence: number; top_prob: number; margin: number };
 
 /** What one `runLessonWrite` did: the tool result, and — only when the save transaction committed — what landed. */
 export interface LessonWriteOutcome {
@@ -243,6 +259,10 @@ export interface OmpWorkerOptions {
   distDir?: string;
   /** The operator (HOUGE_TELEGRAM_USER_ID's allowlist identity): answers a schedule-born turn's tool approvals (B2). */
   operator?: Identity;
+  /** Tests only: the Jev client's fetch (never the real endpoint in tests). */
+  jevFetch?: typeof fetch;
+  /** Tests only: the clock for triage state ages and decision rows. */
+  jevNow?: () => Date;
 }
 
 const OMP_CONFIG_INCIDENT: ReadonlySet<string> = new Set(["omp_config_invalid"]);
@@ -2145,7 +2165,8 @@ export class CoreWorker {
       // The tombstone is the kill posture; a parked daemon never polls, so it never reaches here.
       posture: () => (readTombstone() ? "killed" : null),
       outcome: this.ompOutcomeSink(chatId),
-      resolveMessage: (claim) => this.resolveOmpMessage(claim)
+      resolveMessage: (claim) => this.resolveOmpMessage(claim),
+      triage: (i) => this.triageTurn(i)
     };
   }
 
@@ -2266,7 +2287,7 @@ export class CoreWorker {
    * digest is image-derived and untrusted, so storing it as his words would let it pose as him, and its code-owned header
    * would trip lesson_write's thread scan (live gate 2026-10-01). A voice transcript IS his words; text is unchanged.
    */
-  private async resolveOmpMessage(claim: ClaimedRun): Promise<{ ok: true; text: string; userText: string } | { ok: false; error_ref: string }> {
+  private async resolveOmpMessage(claim: ClaimedRun): Promise<{ ok: true; text: string; userText: string; modality: TurnModality } | { ok: false; error_ref: string }> {
     const r = await this.resolveTurnMessage(claim);
     if (!r.ok) return { ok: false, error_ref: capabilityFailureDetail(r.failure) };
     const state = this.ompTurns.get(claim.run_id);
@@ -2274,7 +2295,7 @@ export class CoreWorker {
       if (r.modality === "voice") state.objective = r.text;
       if (r.echo) state.echo = r.echo;
     }
-    return { ok: true, text: r.text, userText: r.modality === "photo" ? claim.contract.objective : r.text };
+    return { ok: true, text: r.text, userText: r.modality === "photo" ? claim.contract.objective : r.text, modality: r.modality };
   }
 
   private ompOutcomeSink(chatId: string): TurnOutcomeSink {
@@ -2337,13 +2358,18 @@ export class CoreWorker {
     });
     if (!won) { report.discard(); return; }
     this.commitReport(i.run_id, report, false);
-    if (!merged) this.runStore.enqueueFinalReportNotification(i.run_id, { text, report_path: report.path, attachments: i.attachments });
+    if (!merged) {
+      this.runStore.enqueueFinalReportNotification(i.run_id, { text, report_path: report.path, attachments: i.attachments, ...(i.buttons ? { buttons: i.buttons } : {}) });
+    }
   }
 
   /** Terminal failure: one code-owned reply by failure type; a failed ingest also leaves a partial report (old media path). */
   private ompFail(i: Parameters<TurnOutcomeSink["fail"]>[0]): void {
+    const saved = this.ompTurns.get(i.run_id)?.lessonSavedThisTurn;
     this.ompTurns.delete(i.run_id);
-    const text = plannerFailureText(i.error_type, i.error_ref, i.partial);
+    const failure = plannerFailureText(i.error_type, i.error_ref, i.partial);
+    // A lesson the memory lane (or the loop tool) committed before the failure is durable: say so (spec §5.1).
+    const text = failure !== null && saved ? `${failure}\n\n📒 Lesson #${saved.id} was saved before the failure.` : failure;
     const partial = i.error_type === "media_failed" ? this.stagePartialOmpReport(i.run_id, i.error_ref) : undefined;
     if (!this.runStore.finishRun({ run_id: i.run_id, expected_worker_id: i.worker_id, next: "failed", error_type: i.error_type, error_ref: i.error_ref })) {
       partial?.discard();
@@ -2439,6 +2465,154 @@ export class CoreWorker {
       Object.assign(outcome, { saved: { ...saved, id: saved.id }, change_id, theme: r.theme, committed: true });
     }
     return saved;
+  }
+
+  // ── Jev System One, lane 1 (ADR 0029 §5): the decision before the planner ─────────────────
+
+  /** @internal The card builder behind one indirection so `breakMemoryLaneCardForTest` can fault it once. */
+  private memoryLaneCard = memoryLaneCard;
+  /** @internal Tests only: the next in-transaction finalisation throws (the event write failing). */
+  private laneFinalizeFault = false;
+
+  /** @internal Tests only: the next memory-lane card build throws (a failure after the committed save). */
+  breakMemoryLaneCardForTest(): void {
+    this.memoryLaneCard = () => { this.memoryLaneCard = memoryLaneCard; throw new Error("memory lane card fault (test)"); };
+  }
+
+  /** @internal Tests only: the next `inTx` finalisation throws, rolling the lane's save back. */
+  breakLaneFinalizeOnceForTest(): void {
+    this.laneFinalizeFault = true;
+  }
+
+  /** One turn-blocking Jev call: no retries, 1.5 s (spec §3.2); the broker's key when the firewall is armed (ADR 0015). */
+  private jevClient(run_id: string): (req: JevRequest) => Promise<JevResult> {
+    return createJevClient({
+      apiKey: this.broker ? this.broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
+      audit: this.runStore.llmAuditSink({ run_id, role: "triage" }),
+      meteredBreached: () => this.runStore.meteredFuseLatched(),
+      retries: 0, timeoutMs: 1_500,
+      ...(this.ompOptions.jevFetch ? { fetchImpl: this.ompOptions.jevFetch } : {})
+    });
+  }
+
+  /** The denominator (spec §3.2): one `triage` event per eligible turn, written once the outcome is known. */
+  private triageEvent(run_id: string, lang: Lang, f: TriageSettle): void {
+    const n: Partial<TriageNumbers> = f.kind === "answered" ? f.numbers : {};
+    this.runStore.appendRunLedgerEvent(run_id, "triage", "core", {
+      status: f.kind, lane: n.lane ?? null, complete: n.complete ?? null, scope: n.scope ?? null, confidence: n.confidence ?? null,
+      top_prob: n.top_prob ?? null, margin: n.margin ?? null, lang, decision: f.kind === "answered" ? f.decision : "fallback",
+      ...(f.kind === "skipped" ? { skip_reason: f.reason } : {})
+    });
+  }
+
+  /**
+   * THE finaliser (Codex plan review): every eligible, still-active exit of triageTurn passes through here exactly once.
+   * A lost turn (aborted, or its state replaced/deleted) writes nothing. `inTx`: already inside the lane's save
+   * transaction, so the caller flips `triageFinalized` after that transaction commits; otherwise this opens its own.
+   */
+  private settleTriage(i: TriageInput, state: OmpTurnState | undefined, lang: Lang, f: TriageSettle, o: { inTx?: boolean } = {}): void {
+    if (state?.triageFinalized || this.laneLost(i, state)) return;
+    const run_id = i.claim.run_id;
+    const write = (): void => {
+      if (f.kind === "skipped") recordSkip(this.runStore, "triage", run_id, lang, f.reason);
+      else persistDecisionRows(this.runStore, f.rows, f.decision, f.threshold_used);
+      if (o.inTx && this.laneFinalizeFault) { this.laneFinalizeFault = false; throw new Error("lane finalize fault (test)"); }
+      this.triageEvent(run_id, lang, f);
+    };
+    if (o.inTx) { write(); return; }
+    this.runStore.inTransaction(write);
+    if (state) state.triageFinalized = true;
+  }
+
+  /** True once the turn is gone: aborted signal, or its state replaced/deleted (ompComplete/ompFail delete it). */
+  private laneLost(i: TriageInput, state: OmpTurnState | undefined): boolean {
+    return i.signal.aborted || (state !== undefined && this.ompTurns.get(i.claim.run_id) !== state);
+  }
+
+  private triageSkip(i: TriageInput, state: OmpTurnState | undefined, lang: Lang, reason: SkipReason): TriageOutcome {
+    this.settleTriage(i, state, lang, { kind: "skipped", reason });
+    return { kind: "fallthrough" };
+  }
+
+  /**
+   * The decision before the planner (spec §5.1): flag → override → posture → modality → state → Jev → thresholds → lane.
+   * Any throw still finalises once: answered `fallback` once Jev had answered, skipped `error` before that.
+   */
+  async triageTurn(i: TriageInput): Promise<TriageOutcome> {
+    const lang = langOf(i.userText);
+    const state = this.ompTurns.get(i.claim.run_id);
+    const held: { answered?: Extract<TriageSettle, { kind: "answered" }> } = {};
+    try {
+      return await this.triageTurnInner(i, state, lang, held);
+    } catch (e) {
+      console.error(`triage: threw: ${safeReason(e)}`);
+      this.settleTriage(i, state, lang, held.answered ? { ...held.answered, decision: "fallback" } : { kind: "skipped", reason: "error" });
+      const saved = state?.lessonSavedThisTurn;
+      return saved ? { kind: "inform", note: memoryInformNote(saved.id, saved.theme) } : { kind: "fallthrough" };
+    }
+  }
+
+  private async triageTurnInner(i: TriageInput, state: OmpTurnState | undefined, lang: Lang,
+    held: { answered?: Extract<TriageSettle, { kind: "answered" }> }): Promise<TriageOutcome> {
+    const run_id = i.claim.run_id;
+    const mode = resolveJevTriageMode(process.env, this.ompDataDir());
+    if (mode === "off") return this.triageSkip(i, state, lang, "disabled");
+    if (this.runStore.triageOverrideFor(run_id)) return this.triageSkip(i, state, lang, "override");
+    if (i.posture !== null) return this.triageSkip(i, state, lang, "posture");
+    if (i.modality !== "text") return this.triageSkip(i, state, lang, "modality");
+    if (!state) return this.triageSkip(i, state, lang, "error");
+    const now = this.ompOptions.jevNow ?? (() => new Date());
+    const built = buildTriageState({ userText: i.userText, recentTurns: state.turnCtx.recentTurns, turnChars: state.turnCtx.turnChars,
+      modality: i.modality, lastHougeTurn: lastHougeTurnOf(state.turnCtx.recentTurns, now().getTime()) }, this.broker ? (s) => this.broker!.redact(s) : undefined);
+    if (!built.ok) return this.triageSkip(i, state, lang, built.skip);
+    const d = await decide({ point: "triage", run_id, state: built.state, questions: TRIAGE_QUESTIONS, lang, client: this.jevClient(run_id),
+      store: this.runStore, thresholdVersion: THRESHOLD_VERSION, now });
+    if (d.status === "skipped") return this.triageSkip(i, state, lang, d.reason); // settleTriage checks laneLost first
+    const verdict = triageVerdict(d.answers, resolveTriageBars(process.env), lang, d.model, calibrationRows(process.env));
+    const lane = d.answers.lane!;
+    const numbers: TriageNumbers = { lane: lane.choice, complete: d.answers.complete?.choice, scope: d.answers.scope?.choice,
+      confidence: lane.confidence, top_prob: Math.max(...Object.values(lane.probabilities)), margin: marginOf(lane) };
+    const answered = (decision: "act" | "fallback" | "shadow"): Extract<TriageSettle, { kind: "answered" }> =>
+      ({ kind: "answered", rows: d.rows, decision, threshold_used: `${THRESHOLD_VERSION}:${verdict.kind}`, numbers });
+    held.answered = answered("fallback"); // from here a throw settles as answered fallback (the outer catch)
+    if (mode === "shadow" || verdict.kind === "fallthrough") {
+      this.settleTriage(i, state, lang, answered(mode === "shadow" ? "shadow" : "fallback"));
+      return { kind: "fallthrough" };
+    }
+    return this.runTriageLane(i, state, lang, verdict, answered);
+  }
+
+  /** The lane: status is code; memory is the shared lesson-write service, its `act` rows + event inside the save transaction. */
+  private async runTriageLane(i: TriageInput, state: OmpTurnState, lang: Lang, v: Exclude<TriageDecision, { kind: "fallthrough" }>,
+    answered: (d: "act" | "fallback") => TriageSettle): Promise<TriageOutcome> {
+    const chatId = this.chatOf(i.claim.run_id);
+    if (v.kind === "status") {
+      this.settleTriage(i, state, lang, answered("act"));
+      return { kind: "lane_reply", text: this.hougeStatusText(chatId), buttons: [] };
+    }
+    const w = await this.runLessonWrite(i.claim, chatId, { scope: v.scope }, { source: "lane", signal: i.signal,
+      inTx: () => this.settleTriage(i, state, lang, answered("act"), { inTx: true }) });
+    if (w.committed) state.triageFinalized = true;
+    if (!w.committed || !w.saved || !w.change_id || !w.theme) {
+      // nothing durable / refused / dropped / hook rolled back: answered fallback (nothing at all for a lost turn)
+      this.settleTriage(i, state, lang, answered("fallback"));
+      return { kind: "fallthrough" };
+    }
+    if (v.complete === "mixed") return { kind: "inform", note: memoryInformNote(w.saved.id, w.theme) };
+    try {
+      return { kind: "lane_reply", ...this.memoryLaneCardFor(i.claim.run_id, w as Required<LessonWriteOutcome>) };
+    } catch (e) {
+      // The save is committed and finalised as "act"; the planner answers and the note names the lesson (spec §5.1).
+      console.error(`memory lane: card failed after save: ${safeReason(e)}`);
+      return { kind: "inform", note: memoryInformNote(w.saved.id, w.theme) };
+    }
+  }
+
+  private memoryLaneCardFor(run_id: string, w: Required<LessonWriteOutcome>): { text: string; buttons: NotificationButton[] } {
+    const row = this.runStore.getLesson(w.saved.id);
+    return this.memoryLaneCard({ lesson_id: w.saved.id, theme: w.theme, text: w.saved.lesson, ...(row?.avoid ? { avoid: row.avoid } : {}),
+      ...(w.saved.supersededId !== undefined ? { superseded_id: w.saved.supersededId } : {}),
+      verb: w.saved.verb as "add" | "update" | "supersede", change_id: w.change_id, run_id });
   }
 
   /** @internal Tests only: a voice turn's transcript as the tools' objective (the field resolveOmpMessage sets). */
