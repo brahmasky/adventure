@@ -45,7 +45,7 @@ import type { GoogleAuthClient } from "../capabilities/google-auth.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import { resolveHttpFetchTimeoutMs } from "../web/http-fetch.js";
 import { chatContextSince, feedTurnText, resolveChatContextTurnChars, resolveChatContextTurns } from "../capabilities/intent.js";
-import { createLessonWriteAdapter, createSrcPhraseChecker, LESSON_CAPPED_HINT } from "../capabilities/lesson-write.js";
+import { ALREADY_SAVED_REASON, createLessonWriteAdapter, createSrcPhraseChecker, LESSON_CAPPED_HINT } from "../capabilities/lesson-write.js";
 import { OMP_LESSON_SCOPES } from "../run/lesson-render.js";
 import { reconcileLesson, type LessonReconcileOutcome } from "../capabilities/reconcile.js";
 import {
@@ -241,6 +241,8 @@ export interface LessonWriteOutcome {
   theme?: string;
   /** True only after `inTransaction` returned with a saved row (a rolled-back `inTx` leaves it false). */
   committed: boolean;
+  /** Set when a parallel call in the same turn saved first (the pre-transaction re-check): the lesson it saved. */
+  racedBy?: number;
 }
 
 /** The caller of `runLessonWrite`: the planner's loop tool or the memory lane. */
@@ -2429,6 +2431,10 @@ export class CoreWorker {
     });
     try {
       outcome.result = await adapter(input);
+      // A parallel call saved first: the same digest the adapter-level guard gives, never "already covered".
+      if (outcome.racedBy !== undefined) {
+        outcome.result = { ok: true, output: { saved: false, reason: ALREADY_SAVED_REASON, lesson_id: outcome.racedBy } };
+      }
     } catch (error) {
       // A thrown save (a rolled-back `inTx`, a store error) is a failed tool call, never a crash; nothing committed.
       outcome.result = { ok: false, error: `lesson save failed: ${safeReason(error)}` };
@@ -2448,6 +2454,8 @@ export class CoreWorker {
     });
     // The turn ended while the reconcile ran: nothing durable may land on a finished run (spec §5.1).
     if (o.signal?.aborted || this.ompTurns.get(claim.run_id) !== state) return { verb: "drop", lesson: candidate.text, prunedIds: [] };
+    // One lesson per turn: the adapter read the guard before its LLM calls, so a parallel call may have saved since.
+    if (state.lessonSavedThisTurn) { outcome.racedBy = state.lessonSavedThisTurn.id; return { verb: "drop", lesson: candidate.text, prunedIds: [] }; }
     let change_id: string | undefined;
     const saved = this.runStore.inTransaction(() => {
       const s = this.saveLessonVerdict(candidate, r, o.source, now);

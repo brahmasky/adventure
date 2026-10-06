@@ -39,6 +39,25 @@ describe("CoreWorker.runLessonWrite", () => {
     store.close();
   });
 
+  // Final review (T7 minor): the guard was read once when the adapter was built, so two lesson_write calls in flight in
+  // one turn both passed it and both saved. It is re-checked right before the save transaction.
+  it("two parallel lesson_write calls in one turn save exactly once; the other gets the already-saved digest", async () => {
+    const store = RunStore.openInMemory();
+    const llm = async (input: Record<string, unknown>) => { await new Promise((r) => setTimeout(r, 5)); return distillThenReconcile(SAVING)(input); };
+    const worker = ompWorker(store, mkdtempSync(join(tmpdir(), "hls-")), { llm });
+    const run_id = createQueuedTurnRun(store, "以后回复短一点");
+    const claim = store.claimRun(run_id, "w", 120)!;
+    worker.buildOmpTools(claim, "555");
+    const [a, b] = await Promise.all([1, 2].map(() => worker.runLessonWrite(claim, "555", { scope: "ask" }, { source: "loop" })));
+    const won = [a!, b!].filter((o) => o.committed);
+    expect(won).toHaveLength(1);
+    expect(store.getLedgerEvents().filter((e) => e.event_type === "lesson_saved")).toHaveLength(1);
+    expect(store.getActiveLessons("ask")).toHaveLength(1);
+    const lost = [a!, b!].find((o) => !o.committed)!;
+    expect(lost.result).toEqual({ ok: true, output: { saved: false, reason: "already_saved_this_turn", lesson_id: won[0]!.saved!.id } });
+    store.close();
+  });
+
   it("the loop tool path is unchanged for the planner (source 'loop', same gates)", async () => {
     const store = RunStore.openInMemory();
     const worker = ompWorker(store, mkdtempSync(join(tmpdir(), "hls-")), { llm: distillThenReconcile({ durable: JSON.stringify({ durable: false }), reconcile: "{}" }) });
