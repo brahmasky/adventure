@@ -5,13 +5,16 @@ import { createQueuedTurnRun } from "../helpers/runs.js";
 const step = (n: number, capability: string) => ({ step: n, action: "tool", capability, ok: true, result_digest: "d" });
 type Triage = { lane: string; complete: string; decision: "shadow" | "fallback" | "act" };
 
-/** One turn with its live `triage` row written at `at` and the planner's loop steps. */
-function turn(store: RunStore, at: string, t: Triage, caps: string[]): string {
+/** One turn with its live `triage` row written at `at`, the planner's loop steps and the run's terminal state. */
+function turn(store: RunStore, at: string, t: Triage, caps: string[], end: "completed" | "failed" = "completed"): string {
   vi.setSystemTime(new Date(at));
   const run = createQueuedTurnRun(store, "x");
   caps.forEach((c, i) => store.appendRunLedgerEvent(run, "loop_step", "core", step(i + 1, c)));
   store.appendRunLedgerEvent(run, "triage", "core", { status: "answered", lane: t.lane, complete: t.complete, scope: "ask", confidence: 0.9,
     top_prob: 0.93, margin: 0.88, lang: "zh", decision: t.decision });
+  store.transition(run, "queued", "running", "test");
+  if (end === "failed") store.transition(run, "running", "failed", "test");
+  else { store.transition(run, "running", "reporting", "test"); store.transition(run, "reporting", "completed", "test"); }
   return run;
 }
 function laneDecision(store: RunStore, run_id: string, state_hash: string, decision: "shadow" | "fallback", question_id = "lane"): void {
@@ -44,6 +47,21 @@ describe("RunStore.triageShadowStats", () => {
       expect(store.triageShadowStats("2026-09-25T00:00:00.000Z")).toEqual({
         days: 5, matched_lesson_write: 3, pure_on_tool_turns: 1, pure_on_no_tool_turns: 1, live_state_hashes: ["s1"]
       });
+    } finally {
+      store.close();
+    }
+  });
+
+  // Spec §5.9 step 4: "matched" = a triage row AND a completed planner run. A failed run that tried lesson_write never
+  // saved a lesson, so counting it would let failed turns satisfy the report's minimum and issue calibration rows.
+  it("counts matched lesson_write only on turns whose planner run completed", () => {
+    const store = RunStore.openInMemory();
+    try {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      turn(store, "2026-10-01T00:00:00.000Z", { lane: "memory", complete: "pure", decision: "shadow" }, ["lesson_write"], "failed");
+      turn(store, "2026-10-02T00:00:00.000Z", { lane: "memory", complete: "pure", decision: "shadow" }, ["lesson_write"]);
+      vi.useRealTimers();
+      expect(store.triageShadowStats("2026-09-25T00:00:00.000Z").matched_lesson_write).toBe(1);
     } finally {
       store.close();
     }

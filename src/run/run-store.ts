@@ -1257,14 +1257,17 @@ export class RunStore {
    */
   triageShadowStats(sinceIso: string): TriageShadowStats {
     const rows = this.db.prepare(`
-      SELECT run_id, occurred_at, json_extract(payload_json, '$.lane') AS lane, json_extract(payload_json, '$.complete') AS complete
-      FROM ledger_events WHERE event_type = 'triage' AND json_extract(payload_json, '$.decision') = 'shadow' AND occurred_at >= ?
-      ORDER BY occurred_at ASC, sequence ASC
-    `).all<{ run_id: string; occurred_at: string; lane: string | null; complete: string | null }>(sinceIso);
+      SELECT e.run_id, e.occurred_at, json_extract(e.payload_json, '$.lane') AS lane,
+        json_extract(e.payload_json, '$.complete') AS complete, r.state AS run_state
+      FROM ledger_events e LEFT JOIN runs r ON r.run_id = e.run_id
+      WHERE e.event_type = 'triage' AND json_extract(e.payload_json, '$.decision') = 'shadow' AND e.occurred_at >= ?
+      ORDER BY e.occurred_at ASC, e.sequence ASC
+    `).all<{ run_id: string; occurred_at: string; lane: string | null; complete: string | null; run_state: string | null }>(sinceIso);
     const stats: TriageShadowStats = { days: 0, matched_lesson_write: 0, pure_on_tool_turns: 0, pure_on_no_tool_turns: 0 };
     for (const r of rows) {
       const caps = this.runLoopCapabilities(r.run_id);
-      if (caps.includes("lesson_write")) stats.matched_lesson_write += 1;
+      // "matched" = a triage row AND a completed planner run (§5.9 step 4): a failed run's lesson_write saved nothing.
+      if (r.run_state === "completed" && caps.includes("lesson_write")) stats.matched_lesson_write += 1;
       if (r.lane !== "memory" || r.complete !== "pure") continue;
       if (caps.some((c) => c !== "lesson_write")) stats.pure_on_tool_turns += 1;
       else if (caps.length === 0) stats.pure_on_no_tool_turns += 1;
