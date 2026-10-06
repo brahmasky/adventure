@@ -21,6 +21,10 @@
 //      incident already open in the COPY is resolved first (and must then be closed), so cases 5/6 cannot pass vacuously
 //   6  TYPESAFE_API_KEY removed → skipped{no_key} + jev_no_key incident (the ENV-key path only: this gate's worker has no
 //      broker; the broker-supplied key is covered hermetically in tests/core/core-worker-triage.test.ts with a fake broker)
+//   7  state parity: every answered triage row this gate wrote carries thread_cut_at + state_built_at, and a dry-run
+//      `houge jev replay triage` over the copy rebuilds the SAME state_hash for each one in the replay universe (≥ 1)
+//   8  jev_skip_rate: 8 real triage calls whose transport fails (stubbed fetch throws) → skipped{transport}; the rate
+//      over this case's own window is 8/8, and the sweep's own detector reports jev_skip_rate
 //
 // What this gate cannot exercise (covered hermetically instead):
 //   - the slot-A steered ack (a bare ack steered into an AWAITING_APPROVAL turn): needs a planner that asks for an external
@@ -54,16 +58,18 @@ function parseArgs(argv) {
 }
 
 async function loadModules() {
-  const [env, disarm, core, types, gw, rs, jc, tq, qt, th, ji, ia] = await Promise.all([
+  const [env, disarm, core, types, gw, rs, jc, tq, qt, th, ji, ia, tr, sw] = await Promise.all([
     import("../dist/config/load-env.js"), import("../dist/config/disarm-posture.js"), import("../dist/core/core-worker.js"),
     import("../dist/domain/types.js"), import("../dist/gateway/gateway.js"), import("../dist/run/run-store.js"),
     import("../dist/jev/jev-client.js"), import("../dist/jev/questions/triage.js"), import("../dist/jev/questions/types.js"),
-    import("../dist/jev/thresholds.js"), import("../dist/jev/jev-incidents.js"), import("../dist/run/incident-alert.js")
+    import("../dist/jev/thresholds.js"), import("../dist/jev/jev-incidents.js"), import("../dist/run/incident-alert.js"),
+    import("../dist/jev/triage-replay.js"), import("../dist/run/invariant-sweep.js")
   ]);
   return { loadHougeEnv: env.loadHougeEnv, DISARM_FLAGS: disarm.DISARM_FLAGS, CoreWorker: core.CoreWorker, buildTypedTaskEvent: types.buildTypedTaskEvent,
     Gateway: gw.Gateway, RunStore: rs.RunStore, JEV_MODEL: jc.JEV_MODEL, TRIAGE_QUESTIONS: tq.TRIAGE_QUESTIONS, TRIAGE_LANE: tq.TRIAGE_LANE,
     criteriaHash: qt.criteriaHash, TRIAGE_STATUS_ARM_ID: th.TRIAGE_STATUS_ARM_ID, JEV_ANSWERED_RESOLVES: ji.JEV_ANSWERED_RESOLVES,
-    JEV_INCIDENT_SUBJECT: ji.JEV_INCIDENT_SUBJECT, resolveOpenIncidents: ia.resolveOpenIncidents };
+    JEV_INCIDENT_SUBJECT: ji.JEV_INCIDENT_SUBJECT, resolveOpenIncidents: ia.resolveOpenIncidents, runTriageReplay: tr.runTriageReplay,
+    detectViolations: sw.detectViolations, checkJevSkipRate: sw.checkJevSkipRate };
 }
 
 /** The gate-only calibration file: every lane-1 row kind for zh and en, hashes from the BUILT questions. */
@@ -260,6 +266,44 @@ async function caseNoKey(g) {
   }
 }
 
+/** 7: the replay rebuilds each live decision's state exactly from the two recorded instants (no broker in this gate). */
+async function caseParity(g) {
+  const { m, store, root } = g;
+  const live = g.runIds.flatMap((run_id) => store.listJevDecisions(run_id).filter((r) => r.point === "triage" && r.status === "answered" && r.question_id === "lane"));
+  check("7 parity: answered rows carry thread_cut_at + state_built_at", live.length > 0 && live.every((r) => r.thread_cut_at && r.state_built_at),
+    `answered=${live.length} ${live.map((r) => `${r.thread_cut_at}/${r.state_built_at}`).join(" ")}`);
+  const r = await m.runTriageReplay({ store, env: process.env, jev: async () => ({ ok: false, reason: "error" }), outPath: join(root, "parity.jsonl"),
+    maxUsd: 1, dryRun: true, log: () => {} });
+  const byRun = new Map(r.rows.map((x) => [x.run_id, x.state_hash]));
+  const comparable = live.filter((l) => byRun.has(l.run_id));
+  const miss = comparable.filter((l) => byRun.get(l.run_id) !== l.state_hash);
+  check("7 parity: replay state_hash equals the live one for every comparable gate row (≥ 1)", comparable.length > 0 && miss.length === 0,
+    `comparable=${comparable.length} of ${live.length}; mismatched=${miss.map((l) => l.run_id).join(",") || "none"}`);
+}
+
+/** 8: Jev answering nothing (transport throws) is invisible per call; the sweep's detector must see it over the window. */
+async function caseSkipRate(g) {
+  const { h, m, store } = g;
+  const worker = h.makeWorker(async () => { throw new TypeError("fetch failed"); });
+  const started = Date.now() - 1000;
+  let transport = 0;
+  for (let k = 0; k < 8; k += 1) {
+    const run_id = h.intake(`-3${k}00${Date.now() % 100000}`, MSG.posture); // one chat each: the gateway rate-limits per chat
+    const claim = store.claimRun(run_id, `planner:gate:${run_id}`, 300);
+    if (!claim) { check("8 skip rate: claim", false); return; }
+    worker.buildOmpTools(claim);
+    await worker.triageTurn({ claim, text: MSG.posture, userText: MSG.posture, modality: "text", posture: null, signal: new AbortController().signal });
+    if (h.triageRow(run_id)?.skip_reason === "transport") transport += 1;
+  }
+  check("8 skip rate: 8 real calls → skipped{transport}", transport === 8, `transport=${transport}`);
+  // Over this case's own rows only (the copy's real triage rows would move the rate), then the sweep's full detector.
+  const now = new Date().toISOString();
+  const rate = m.checkJevSkipRate(store, now, Date.now() - started);
+  check("8 skip rate: 8 of 8 attempts failed silently → open", rate.open && rate.attempts === 8 && rate.failed === 8, JSON.stringify(rate));
+  const v = m.detectViolations(store, now, process.env).filter((x) => x.kind === "jev_skip_rate");
+  check("8 skip rate: the sweep detector reports jev_skip_rate", v.length === 1 && v[0].subject === m.JEV_INCIDENT_SUBJECT, JSON.stringify(v[0]?.detail ?? null));
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const m = await loadModules();
@@ -274,13 +318,16 @@ async function main() {
   copyDb(live, dbPath);
   const store = m.RunStore.open(dbPath);
   const h = harness(m, store, repo, root);
-  const g = { m, store, h, root, dbPath, chat: `-1000${Date.now() % 100000}`, worker: h.makeWorker() };
+  const g = { m, store, h, root, dbPath, chat: `-1000${Date.now() % 100000}`, worker: h.makeWorker(), runIds: [] };
+  const intake = h.intake; h.intake = (chat, text) => { const id = intake(chat, text); g.runIds.push(id); return id; };
   console.log(`jev triage live gate — copy ${dbPath}, model ${m.JEV_MODEL}\n`);
   try {
     for (const c of [casePure, caseMixed, caseSecondWrite, caseStatus, casePosture]) await c(g);
     await g.worker.shutdownPlanners();
     await caseRateLimited(g);
     await caseNoKey(g);
+    await caseParity(g);
+    await caseSkipRate(g);
   } finally { await g.worker.shutdownPlanners(); store.close(); }
   console.log(failures.length === 0 ? "\nLIVE GATE: PASS" : `\nLIVE GATE: FAIL\n  - ${failures.join("\n  - ")}`);
   if (args.keep || failures.length > 0) console.log(`temp dir kept: ${root}`); else rmSync(root, { recursive: true, force: true });
