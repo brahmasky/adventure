@@ -111,6 +111,17 @@ describe("CoreWorker.triageTurn (spec §5.1 flow; every exit leaves exactly one 
     expect(Object.keys(body.state).sort()).toEqual(["last_houge_turn", "latest_message", "modality", "recent_turns"]);
     store.close();
   });
+  it("the card names the saved row's theme: an UPDATE onto a themed lesson shows that theme, not the verdict's", async () => {
+    const llm: Llm = async (input) => isDistill(input)
+      ? { ok: true, output: { answer: JSON.stringify({ durable: true, lesson: "Keep replies short and lead with the result." }) } }
+      : { ok: true, output: { answer: JSON.stringify({ verdict: "UPDATE", id: 1, text: "Be concise; lead with the result.", theme: "nonsense" }) } };
+    const { store, worker, turn } = setup(jevSays(MEMORY), ARM, { llm });
+    store.addLesson({ scope: "ask", text: "Be concise.", theme: "format", source: "loop", created_at: new Date().toISOString() });
+    const out = await worker.triageTurn(turn("以后回复先说结论").input);
+    expect(out.kind).toBe("lane_reply");
+    if (out.kind === "lane_reply") expect(out.text).toMatch(/· format/);
+    store.close();
+  });
   it("mixed memory: saves, returns the inform note, planner path continues", async () => {
     const { store, worker, turn } = setup(jevSays(MEMORY, { mixed: 0.7, pure: 0.3 }));
     const t = turn("以后短一点，另外今天天气？");

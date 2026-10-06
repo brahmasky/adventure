@@ -2474,8 +2474,9 @@ export class CoreWorker {
     });
     // `inTransaction` returned: only now is anything committed (a throwing `inTx` rolled back and threw past here).
     if (saved.id !== undefined && change_id) {
-      state.lessonSavedThisTurn = { id: saved.id, theme: r.theme, change_id };
-      Object.assign(outcome, { saved: { ...saved, id: saved.id }, change_id, theme: r.theme, committed: true });
+      const theme = this.runStore.getLesson(saved.id)?.theme ?? r.theme; // the row's theme (an UPDATE takes the target's), not the verdict's
+      state.lessonSavedThisTurn = { id: saved.id, theme, change_id };
+      Object.assign(outcome, { saved: { ...saved, id: saved.id }, change_id, theme, committed: true });
     }
     return saved;
   }
