@@ -333,3 +333,34 @@ Rules Claude writes for itself after corrections. Review at session start.
   Rule: every background tick takes the daemon's stop signal, checks it between model calls and between
   units of work, and never commits half a unit; an in-flight model call is aborted, and the abort is not
   recorded as a model error.
+
+## Jev lane 1 build (2026-10-04→06)
+
+- **A terminal path needs one owner.** The triage turn could finish through the memory save, a fallback, a lost
+  turn, a thrown stage or a hook rollback, and early drafts wrote the `triage` event and decision rows from several of
+  those places, so some exits wrote twice and some not at all. The fix was one finaliser (`settleTriage`) that every
+  exit passes through exactly once, with a per-turn flag flipped after commit. Rule: when a unit of work has more than
+  one way to end, name the single function that records the end and make every path call it; test each exit asserts
+  exactly one row.
+- **`ranOnce` covered three tools, not all.** The once-per-turn guard (`turnCtx.ranOnce`) was wired into the three
+  evolution tools, so the first draft of the already-saved guard assumed "a tool runs once per turn" held for
+  `lesson_write` too. It did not: the set never named it. Rule: a guard that must hold for a class of tools is checked
+  against the registry of that class, not against the tools the author remembers; the live gate forces the second call
+  through the registry's own `lesson_write` entry.
+- **Size bars on the positive class.** Agreement over 293 turns is dominated by about 250 `none` turns and proves
+  nothing about memory instructions, of which there are 36. A bar of 0.90 on 36 items proves only about 0.80 at the
+  Wilson lower bound. Rule: state each bar per class with n and the lower bound, and pick targets the sample can
+  support.
+- **A plan written from a dossier drifts: two reviews found about 25 helper and signature mismatches before a line was
+  written.** The plan named helpers, argument orders and payload fields from a research summary rather than the code.
+  A senior live-probe review and a Codex pass caught them, four plan revisions later. Rule: probe the real code for
+  every name a plan cites before the plan is final, and let the implementer's brief say "trust the code" where they
+  differ.
+- **A refusal code the poll loop does not know wedges intake (memlane review).** A new refusal reason from the memory
+  lane was returned to a loop that only handled the old set, so the message stayed claimed and nothing else was read.
+  Rule: every new refusal or skip code is added to the consumer's exhaustive switch in the same commit, with a test
+  that feeds the new code through the real loop.
+- **One calibration row armed two lanes: arm each decision on its own key.** The status lane first read the `lane`
+  row, so arming memory silently armed status, though the two clear different bars. Status now arms on its own
+  `lane:status` pseudo-row. Rule: if two behaviours have different go/no-go evidence, they get different arming keys,
+  even when they read the same model answer.

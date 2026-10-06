@@ -495,6 +495,12 @@ the bars below are stated per class.
 6. **After arming** the only live positive label is the override tap; the replay re-runs monthly against the growing
    `lesson_write` history, and `triage_overrides` is the drift signal.
 
+**Build note (2026-10-06).** `CALIBRATED_ROWS` (`src/jev/calibration.ts`) ships empty, so the lane cannot act until
+Paco commits rows after the step 1 to 3 report. The memory lane arms on the rows `lane`, `complete` and `scope`; the
+status lane arms independently on a distinct pseudo-row `question_id: "lane:status"` (criteria hash = `lane`'s), so a
+row for one never arms the other. `HOUGE_JEV_CALIBRATION_FILE` is gate-only: outside `HOUGE_JEV_GATE=1` a set file caps
+`arm` at `shadow`. The replay universe measured 293 turns (not 288) on 2026-10-06.
+
 ### 5.10 Honesty notes
 
 - Latency: +0.3 s typical, +1.5 s worst case on every warm Telegram turn (the child idles up to 1 h, so the spawn is

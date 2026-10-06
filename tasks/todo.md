@@ -1,4 +1,22 @@
-# 🧭 CURRENT SYSTEM STATE — 2026-10-03 (read this first)
+# 🧭 CURRENT SYSTEM STATE — 2026-10-06 (read this first)
+
+**Jev lane 1 (pre-planner triage: memory + status lanes): BUILT on `feat/jev-lane1`, NOT merged, NOT pushed, NOT live.**
+14 plan tasks by subagent TDD with per-task review (fix rounds on tasks 2, 8, 10, 11). Full suite 253 files / 3438 tests
+green; live gate `scripts/live-gate-jev-triage.mjs` PASS on its first run (27 checks; real Jev + Kimi + 4 planner turns
+on a DB copy). ADR 0029 stays `proposed` until Paco's kickstart and the gate on the running build. Reference:
+`docs/reference/jev-decision-layer.md`; flags: `docs/reference/configuration.md` § Jev System One. All flags default
+off; `CALIBRATED_ROWS` ships empty, so the lane cannot act even when armed.
+- [ ] **Paco:** merge decision for `feat/jev-lane1`, then rebuild `dist/` and `launchctl kickstart -k gui/$(id -u)/com.houge.daemon` (check `houge.parked` / `houge.kill` first, and that no run or self-write is in flight).
+- [ ] **Paco:** set `HOUGE_JEV_ENABLED=1` and `HOUGE_JEV_TRIAGE_ENABLED=shadow` in `.env` (never `HOUGE_JEV_CALIBRATION_FILE` / `HOUGE_JEV_GATE`).
+- [ ] **Paco:** run the replay (`houge jev replay triage --max-usd 0.5`; 293 turns, about $0.033).
+- [ ] **Paco:** the labelling sitting (`houge jev label triage --sample=40`).
+- [ ] **Paco:** read `houge jev report triage`; commit calibration rows per language from its "ROWS TO ADD" block (memory arms on `lane`+`complete`+`scope`; status on its own `lane:status` row). `arm` waits for the spec §5.9 bars and 14 shadow days.
+- [ ] **Paco (his hand):** the AGENTS.md invariant sentence, appended to the flat-rate line: "Jev (TypeSafe System One), a non-generative typed decider, sits in front of the chains under ADR 0029; it never gates an action and every outage reaches Paco."
+- Known gaps (documented): nothing shows during the memory lane's 15 to 25 s and new messages queue; a `mixed` verdict whose save finds nothing durable runs the planner with no note; a fast lane may stop a still-starting planner child after 5 s.
+
+---
+
+# Earlier state block — 2026-10-03
 
 **SP1 omp runtime: LIVE on the mini since 2026-10-01. Every 2026-10-01/02 slice is merged, pushed
 (`origin/main` = `main@f4930da`), built and running (boot 5, `kickstart`, 2026-10-02 02:13 UTC).**

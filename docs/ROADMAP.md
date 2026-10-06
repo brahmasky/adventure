@@ -187,6 +187,8 @@ OS user for the planner, quota invariant) → **SP4 self-evolution v2** (weaknes
 Phase R below is subsumed by SP1 (a real agent loop replaces the step-cap fallback work); episodic/wiki stay as
 knowledge Houge owns; Earn is parked behind SP1.
 
+**Delta 2026-10-06: Jev lane 1 is built** (`feat/jev-lane1`, not merged; 3438 tests green, live gate PASS). It cannot act until Paco commits calibration rows after the replay, labelling sitting and shadow period; see `tasks/todo.md` for what he owes. Lane 2 starts after lane 1 is armed or Paco reorders.
+
 **Next, in order (re-sequenced 2026-10-04, [ADR 0029](decisions/0029-jev-system-one.md)):** SP1 is live (boot 7,
 memory A1 shipped) → **Jev System One, lane 1** (pre-planner triage → memory + status lanes; the shared decision
 layer: question library, `decide()`, decision rows, replay harness; spec

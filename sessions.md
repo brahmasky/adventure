@@ -1476,3 +1476,13 @@ Build + independent adversarial verification subagents; each live round found a 
   Shipped 2026-10-03: Paco signed off the ADR text; ff-merge, build, `--apply` with the daemon idle, Paco's kickstart.
   Live-gate check 5 PASS: one `planner_session_reset`, fingerprint committed on the first prompt, 13/13 themed lessons
   in the live prompt, the first reply free of the probe sign-off.
+- 2026-10-04/06 (Jev System One lane 1, branch `feat/jev-lane1`, not merged, not pushed): spec Rev 2 and a plan taken
+  through five review rounds (Codex x3, senior x1, author), then 14 tasks run test-first with per-task spec and quality
+  review (fix rounds on tasks 2, 8, 10, 11). Built: question library and `decide()`, `jev_decisions` rows, the
+  pre-planner triage with a memory lane (save on the ticks seat, undoable card, `lesson_changes`) and a status lane,
+  lane-specific calibration arming (empty at ship), an auto-disable marker, Jev incidents, `houge jev replay | label |
+  report triage`. Spec deviations recorded in ADR 0029: client built per call, `jev_no_key` on the first armed turn.
+  Evidence: 253 files / 3438 tests green; live gate `scripts/live-gate-jev-triage.mjs` PASS on its first run (27 checks,
+  real Jev + Kimi + 4 planner turns on a DB copy); replay universe 293 turns, est. $0.033. ADR 0013, 0014, 0019
+  amended; ADR 0029 stays `proposed`. Owed by Paco: merge, kickstart, `HOUGE_JEV_ENABLED=1` +
+  `HOUGE_JEV_TRIAGE_ENABLED=shadow`, replay, the labelling sitting, calibration rows, the AGENTS.md sentence.
