@@ -51,7 +51,9 @@ export const DISARM_FLAGS: readonly string[] = [
   "HOUGE_RADAR_PANEL_ENABLED",
   // Multimodal ingest (spec 2026-09-29): media bytes leave the mini per turn — the STOP
   // switch covers it like the radar's calls.
-  "HOUGE_MEDIA_INGEST_ENABLED"
+  "HOUGE_MEDIA_INGEST_ENABLED",
+  // Jev System One master (ADR 0029): /disarm switches every Jev lane off in one write.
+  "HOUGE_JEV_ENABLED"
   // omp runtime (spec 2026-09-30, D2): the money track (extwork, bounty) and the live Jev shadow
   // are deleted, so their flags left this set; omp itself has no arming flag (the cutover is hard).
 ];

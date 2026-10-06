@@ -66,7 +66,9 @@ describe("DISARM_FLAGS", () => {
       "HOUGE_RADAR_PANEL_ENABLED",
       // Multimodal ingest (spec 2026-09-29): media bytes leave the mini per turn — the STOP
       // switch covers it like the radar's and Jev's calls.
-      "HOUGE_MEDIA_INGEST_ENABLED"
+      "HOUGE_MEDIA_INGEST_ENABLED",
+      // Jev System One master (ADR 0029): /disarm switches every Jev lane off in one write.
+      "HOUGE_JEV_ENABLED"
     ]);
     expect(DISARM_FLAGS).not.toContain("HOUGE_EPISODIC_ENABLED");
   });
