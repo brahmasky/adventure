@@ -30,4 +30,14 @@ describe("sanitizeJevText", () => {
   it("applies the broker redactor first, then the shapes", () => {
     expect(sanitizeJevText("secret VALUE123 and ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345", (s) => s.replace("VALUE123", "<redacted>"))).toBe("secret <redacted> and <token>");
   });
+  it("keeps a long quoted Chinese sentence with no spaces; only opaque ASCII literals are stripped", () => {
+    const zh = `他说"${"以后回复请尽量简短不要用敬语".repeat(4)}"然后走了`;
+    expect(sanitizeJevText(zh)).toBe(zh);
+  });
+  it("strips an unterminated heredoc body to the end of the text", () => {
+    expect(sanitizeJevText("run cat <<EOF\nsecret body\nmore")).toBe("run cat <heredoc>");
+  });
+  it("documents the accepted false positive: a standalone 6-8 digit number is treated as an OTP code", () => {
+    expect(sanitizeJevText("预算 150000")).toBe("预算 <code>");
+  });
 });

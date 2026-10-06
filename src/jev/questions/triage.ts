@@ -61,7 +61,8 @@ export type LastHougeTurn = { kind: "clarify" | "answer"; age_s: number } | null
 export function lastHougeTurnOf(recent: ChatTurnRow[], nowMs: number): LastHougeTurn {
   const last = [...recent].reverse().find((t) => t.role === "assistant");
   if (!last) return null;
-  return { kind: last.intent === "clarify" ? "clarify" : "answer", age_s: Math.max(0, Math.round((nowMs - Date.parse(last.created_at)) / 1000)) };
+  const age = Math.round((nowMs - Date.parse(last.created_at)) / 1000);
+  return { kind: last.intent === "clarify" ? "clarify" : "answer", age_s: Number.isFinite(age) ? Math.max(0, age) : 0 };
 }
 
 export interface TriageStateInput { userText: string; recentTurns: ChatTurnRow[]; turnChars: number; modality: TurnModality; lastHougeTurn: LastHougeTurn }

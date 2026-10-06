@@ -5,8 +5,8 @@
  */
 const SHAPES: Array<[RegExp, string]> = [
   // shell/heredoc bodies and long quoted literals: the material a steered command would hide (spec §4.5)
-  [/<<-?\s*['"]?(\w+)['"]?[\s\S]*?\n\1\b/g, "<heredoc>"],
-  [/(["'`])[^"'`\s]{40,}\1/g, "<literal>"], // opaque only (no whitespace): a quoted sentence is prose, not a secret
+  [/<<-?\s*['"]?(\w+)['"]?[\s\S]*?(?:\n\1\b|$)/g, "<heredoc>"], // unterminated: strips to end of text
+  [/(["'`])[A-Za-z0-9+/_=.~-]{40,}\1/g, "<literal>"], // opaque only (no whitespace): a quoted sentence is prose, not a secret
   [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g, "Bearer <token>"],
   [/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b/g, "<token>"],
   [/\bsk-[A-Za-z0-9_-]{16,}\b/g, "<token>"],

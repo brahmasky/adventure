@@ -40,6 +40,13 @@ describe("buildTriageState (2026-09-25 egress envelope + metadata; sanitised; sk
     expect(r.state).toEqual({ modality: "text", latest_message: "以后回复短一点", recent_turns: [{ role: "houge", text: "long answer with <token>" }], last_houge_turn: { kind: "answer", age_s: 12 } });
     expect(Object.keys(r.state).sort()).toEqual(["last_houge_turn", "latest_message", "modality", "recent_turns"]);
   });
+  it("sanitises latest_message itself and applies the broker redactor passed in", () => {
+    const r = buildTriageState({ ...base, userText: "记住 token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 与 VALUE123" }, (t) => t.replace("VALUE123", "<redacted>"));
+    expect(r.ok && r.state.latest_message).toBe("记住 token <token> 与 <redacted>");
+  });
+  it("age_s is 0 when created_at is unparseable", () => {
+    expect(lastHougeTurnOf([turn("assistant", "a", "not-a-date")], 1000)).toEqual({ kind: "answer", age_s: 0 });
+  });
   it("skips when the message or the request exceeds the caps", () => {
     expect(buildTriageState({ ...base, userText: "x".repeat(MAX_LATEST_MESSAGE_CHARS + 1) })).toEqual({ ok: false, skip: "state_too_large" });
     expect(buildTriageState({ ...base, recentTurns: Array.from({ length: 200 }, () => turn("user", "y".repeat(300))) })).toEqual({ ok: false, skip: "state_too_large" });
