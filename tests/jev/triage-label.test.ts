@@ -36,4 +36,10 @@ describe("parseJevCliFlags", () => {
     expect(() => parseJevCliFlags(["--sample", "40"])).toThrow(/--sample=N/);
     expect(() => parseJevCliFlags(["--sample=abc"])).toThrow(/--sample=N/);
   });
+  // Final review (T12 deferred minor): the triage universe is fixed at TRIAGE_LABEL_SINCE; parseReplayArgs accepted --since
+  // and the triage branch ignored it — a silent no-op the operator would read as a narrowed replay.
+  it("rejects --since in both forms (the triage universe has a fixed epoch)", () => {
+    expect(() => parseJevCliFlags(["--since", "2026-10-01T00:00:00Z"])).toThrow(/--since is not supported/);
+    expect(() => parseJevCliFlags(["--since=2026-10-01T00:00:00Z"])).toThrow(/--since is not supported/);
+  });
 });

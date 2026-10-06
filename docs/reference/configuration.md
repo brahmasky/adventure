@@ -929,8 +929,10 @@ houge jev replay triage --dry-run               # pre-flight: counts and estimat
 houge jev replay triage [--max-usd N] [--limit N] [--permute]   # resumable; --permute re-asks with options reordered
 houge jev label triage --sample=40              # labelling sitting; the = form only ("--sample 40" is rejected)
 houge jev report triage                         # per-language verdict, Wilson bounds, ROWS TO ADD
-node scripts/live-gate-jev-triage.mjs           # opt-in: real Jev + Kimi on a copy of the live DB (27 checks)
+node scripts/live-gate-jev-triage.mjs           # opt-in: real Jev + Kimi on a copy of the live DB (30 checks)
 ```
+
+`--since` is rejected for `jev … triage`: the universe is fixed at every Telegram turn since 2026-07-02.
 
 Replay universe on a live-DB copy (2026-10-06): 293 Telegram turns since 2026-07-02, estimated $0.033.
 

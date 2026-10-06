@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import type { RunStore } from "../run/run-store.js";
-import type { TriageLabel, TriageReplayRow } from "./triage-replay.js";
+import { TRIAGE_LABEL_SINCE, type TriageLabel, type TriageReplayRow } from "./triage-replay.js";
 
 /** Paco's labelling sitting (spec §5.9 step 2): the human labels decide the costly cells, not the action proxy. */
 export function selectForLabelling(rows: TriageReplayRow[], existing: Map<string, TriageLabel>, sample: number, rng: () => number = Math.random): TriageReplayRow[] {
@@ -30,6 +30,9 @@ export function parseJevCliFlags(argv: string[]): { sample?: number; permute: bo
   let sample: number | undefined; let permute = false; const rest: string[] = [];
   for (const a of argv) {
     if (a === "--permute") { permute = true; continue; }
+    if (a === "--since" || a.startsWith("--since=")) {
+      throw new Error(`--since is not supported for jev … triage: the universe is every Telegram turn since ${TRIAGE_LABEL_SINCE}`);
+    }
     if (a === "--sample" || a.startsWith("--sample=")) {
       const v = a.slice("--sample=".length);
       if (!a.startsWith("--sample=") || !/^\d+$/.test(v)) throw new Error(`bad argument "${a}": use --sample=N (with "=", N a whole number)`);
