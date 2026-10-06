@@ -1,6 +1,6 @@
 # Jev decision tree — categories, lanes and model roles (ADR 0029 lane 2, widened)
 
-- **Date:** 2026-10-06 · **Rev 4** (two reviews and three confirmation passes folded in; see §12) · **Status:** awaiting Paco's read
+- **Date:** 2026-10-06 · **Rev 5** (two reviews and four confirmation passes folded in; see §12) · **Status:** awaiting Paco's read
 - **Amends:** [ADR 0029](../../decisions/0029-jev-system-one.md) (the lane-1-first shape becomes one decision tree; lanes
   are the leaf type), [ADR 0028](../../decisions/0028-omp-runtime.md) (model roles replace the `HOUGE_OMP_*` chains;
   D10 reader family becomes a skip rule at read time)
@@ -168,8 +168,9 @@ time. Resolution, in order:
 3. the role's selector list, each kept only when the catalog lists its `provider/id` (the `:effort` suffix is not
    part of the match; effort is applied with `set_thinking_level`), duplicates dropped;
 4. selectors the running child has **refused** (at spawn or at a pin, `model_missing`) are skipped for the rest of
-   that child's life; the set clears when the child restarts or the daily tick sees the selector catalogued again.
-   So a spawn-refused Default[0] is never pinned again by a later turn: one failure path, no repeat.
+   that child's life; the set clears only when the child restarts (a model can stay catalogued while refusing, so
+   the catalog is no evidence). So a spawn-refused Default[0] is never pinned again by a later turn: one failure
+   path, no repeat.
 
 Only a `/models` override is a *pattern* (a substring such as `opus` or `gemini-3.1-pro`), matched against the filtered
 catalog at `/models set` time and again at each resolution. Judges are overridden per seat (`/models set judges <n>
@@ -201,7 +202,9 @@ Changed → one Telegram line ("Thinking now resolves to X, was Y"). A role with
 `/models` lists role → model, effort, default or override, and the candidate list. `/models set <role> <pattern>`
 validates the pattern against the filtered available list before saving; a pattern that matches nothing, or only a
 provider outside the allow-list, is refused with the reason. `/models reset <role>`. Overrides are append-only
-`model_role_override` ledger rows (latest per role wins), read at each resolution — no restart, no settings table.
+`model_role_override` ledger rows keyed by `key` = `<role>` or `judges:<n>` (latest per key wins; a reset is a row with
+an empty pattern for that key), read at each resolution — no restart, no settings table. `/models reset judges`
+resets every judge seat; `/models reset judges <n>` one seat.
 Gated where `/memories` is gated: the Telegram command parser and the gateway's allowlisted-chat branch, not the
 command module itself. The seven `HOUGE_OMP_*` chain variables are removed from `configuration.md`
 (`.env` sets none of them today; only `HOUGE_OMP_BIN` and the profile stay).
@@ -323,7 +326,7 @@ ADR 0029 amendment (tree, lanes as the leaf type, roles) and ADR 0028 amendment 
 `jev-decision-layer.md` rewritten around the tree; CONTEXT.md terms *category*, *lane*, *role*; README;
 `tasks/todo.md`, `sessions.md`.
 
-## 12. Review log (Rev 1 → Rev 4)
+## 12. Review log (Rev 1 → Rev 5)
 
 Two reviews of Rev 1 on 2026-10-06, both NOT READY: a senior review against the live omp, DB and code, and a Codex
 design pass. Every finding was verified first-hand before being folded in; none changed §1.
@@ -348,6 +351,7 @@ design pass. Every finding was verified first-hand before being folded in; none 
 | `scheduled_tasks` has no fuzzy match (senior) | §3 schedule lane: id, else one-shot pick ≥ 0.8, else planner |
 | Re-pass on Rev 2 (Codex, NOT READY): pin `model_missing` vs `pin_failed` needs a classified path (the wrapper drops omp's text); `static` undefined for patterns; Reader named twice, Council one role; `sets_rule` unsure zone and a zero-candidate cascade unspecified; retries after a side effect | §5 error text kept and classified; §4 lists are exact selectors, only overrides are patterns, `static` = today's chain semantics; §4 three council roles; §2.4 unsure is no; §4 retry semantics unchanged |
 | Re-pass on Rev 3 (Codex, NOT READY): catalog match must ignore `:effort`; a spawn-refused selector could be pinned again by a later turn; a role-level override would collapse the judge seats; retry-after-side-effect residual | §4 match on `provider/id`, refused-selector set per child, per-seat judge overrides; §4 residual stated |
+| Re-pass on Rev 4 (Codex, NOT READY): the refused set must not clear on a catalog sighting; per-seat judge overrides need per-key storage and reset | §4 clears on child restart only; §4.2 keyed rows and per-key reset |
 | Re-pass on Rev 2 (senior, READY): a spawn-refused Default[0] would become a per-turn `pin_failed`; `.env` is not read live; Reader list named twice; skipped turns need a verdict row; where `/models` is gated | §5 `model_missing` on pin walks the list, respawn rule removed; §4.3 wording; §4 table; §6; §4.2 |
 
 ## Appendix A. Parked from mu for later lanes
