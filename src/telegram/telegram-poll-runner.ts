@@ -1,4 +1,5 @@
 import { CoreWorker, type OmpWorkerOptions } from "../core/core-worker.js";
+import { LESSON_CHANGE_NOT_FOUND, MEMLANE_ASK_NOT_FOUND } from "../gateway/memlane-commands.js";
 import { resolveOmpConfig } from "../omp/omp-config.js";
 import { chatWorkspace } from "../omp/workspace.js";
 import type { PlannerSupervisor } from "../omp/planner-supervisor.js";
@@ -51,6 +52,9 @@ export const HANDLED_INTAKE_DENIAL_CODES: ReadonlySet<string> = new Set([
   // A stale or foreign memory Undo tap (2026-10-02): replied to, never a poll failure.
   "MEMORY_CHANGE_NOT_FOUND",
   "MEMORY_NOT_FOUND",
+  // Memory lane card taps (stale/foreign Undo, unknown/foreign Ask): replied to, never a poll failure.
+  LESSON_CHANGE_NOT_FOUND,
+  MEMLANE_ASK_NOT_FOUND,
   "TRIGGER_IDEMPOTENCY_CONFLICT",
   "GLOBAL_BUDGET_FUSE"
 ]);

@@ -11,6 +11,8 @@ import type { RunStore } from "../run/run-store.js";
 /** Memory lane card taps (ADR 0029 §5.6). Undo is compare-and-set; "Ask Houge anyway" is the override label. */
 export const TRIAGE_OVERRIDE_LIMIT = 3;
 export const TRIAGE_OVERRIDE_WINDOW_DAYS = 7;
+export const LESSON_CHANGE_NOT_FOUND = "LESSON_CHANGE_NOT_FOUND";
+export const MEMLANE_ASK_NOT_FOUND = "MEMLANE_ASK_NOT_FOUND";
 export const LESSON_CHANGE_NOT_FOUND_TEXT = "That lesson change does not exist here, so nothing was undone.";
 export const LESSON_CHANGED_SINCE_TEXT = "↩️ Not undone: that lesson has changed since; use /lessons.";
 export const LESSON_ALREADY_UNDONE_TEXT = "↩️ Already undone.";
@@ -24,7 +26,7 @@ export function handleMemLaneUndo(store: RunStore, event: TypedTaskEvent): Gatew
     const change = store.getLessonChange(change_id);
     if (!change || change.chat_id !== chatOf(event)) {
       replyTo(store, event, "memlane_undo_refused", LESSON_CHANGE_NOT_FOUND_TEXT);
-      return { ok: false, error: { code: "LESSON_CHANGE_NOT_FOUND", message: "No such lesson change in this chat" } };
+      return { ok: false, error: { code: LESSON_CHANGE_NOT_FOUND, message: "No such lesson change in this chat" } };
     }
     const r = store.undoLessonChange(change_id); // writes lesson_change_undone inside its own transaction
     const text = r.status === "undone"
@@ -43,18 +45,18 @@ export function memLaneAskTurnEvent(store: RunStore, event: TypedTaskEvent): { o
   const text = run_id ? store.userTurnTextForRun(run_id) : undefined;
   if (!text || !target || target.kind !== "telegram" || target.chat_id !== chatOf(event)) {
     replyTo(store, event, "memlane_ask_refused", MEMLANE_ASK_NOT_FOUND_TEXT);
-    return { ok: false, result: { ok: false, error: { code: "MEMLANE_ASK_NOT_FOUND", message: "No such turn in this chat" } } };
+    return { ok: false, result: { ok: false, error: { code: MEMLANE_ASK_NOT_FOUND, message: "No such turn in this chat" } } };
   }
   return { ok: true, original_run_id: run_id, turnEvent: buildTypedTaskEvent({ source: "telegram", type: "turn", program: "turn", goal: text, requested_by: event.requested_by,
     notify: event.notify, idempotency_key: `${event.idempotency_key}:ask`, source_reference: `${event.source_reference}:ask` }) };
 }
 
 /** The override label (spec §5.9) and the drift signal: three in seven days cap the lane at shadow through the persisted marker. */
-export function recordTriageOverride(store: RunStore, original_run_id: string, new_run_id: string, env: NodeJS.ProcessEnv, dataDir: string, chat_id: string): void {
+export function recordTriageOverride(store: RunStore, original_run_id: string, new_run_id: string, env: NodeJS.ProcessEnv, dataDir: string, chat_id: string, now: string = new Date().toISOString()): void {
   const change_id = store.getLessonChangeByRun(original_run_id)?.change_id ?? null;
   store.recordMemoryEvent("triage_override", { run_id: original_run_id, new_run_id, change_id });
   for (const d of store.listJevDecisions(original_run_id)) store.recordJevOutcome(d.decision_id, "paco_correction", "override");
-  const since = new Date(Date.now() - TRIAGE_OVERRIDE_WINDOW_DAYS * 86_400_000).toISOString();
+  const since = new Date(Date.parse(now) - TRIAGE_OVERRIDE_WINDOW_DAYS * 86_400_000).toISOString();
   if (store.countRecentLedgerEvents("triage_override", since) >= TRIAGE_OVERRIDE_LIMIT) {
     const path = jevDisarmMarkerPath(env, dataDir);
     mkdirSync(dirname(path), { recursive: true }); // writeJevDisarmMarker does not create the directory

@@ -1133,11 +1133,12 @@ export class Gateway {
    * genuinely NEW run: a redelivered tap resolves to the run it already made, and a resumed duplicate also reports "created".
    */
   private admitMemLaneAsk(event: TypedTaskEvent, original_run_id: string, now: string): GatewayIntakeResult {
+    // Relies on the single-process daemon: nothing else can create this key between the check and the transaction.
     const existed = this.runStore.runIdForIdempotencyKey(event.source, event.idempotency_key) !== undefined;
     return this.runStore.inTransaction(() => {
       const result = this.handleTaskIntake(event, now);
       if (result.ok && result.status === "created" && !existed) {
-        recordTriageOverride(this.runStore, original_run_id, result.run_id, process.env, this.options.dataDir ?? this.projectRoot, this.telegramChatId(event));
+        recordTriageOverride(this.runStore, original_run_id, result.run_id, process.env, this.options.dataDir ?? this.projectRoot, this.telegramChatId(event), now);
       }
       return result;
     });

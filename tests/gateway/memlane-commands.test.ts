@@ -6,6 +6,7 @@ import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { handleMemLaneUndo, TRIAGE_OVERRIDE_LIMIT } from "../../src/gateway/memlane-commands.js";
 import { jevDisarmMarkerPath, readJevDisarmMarker } from "../../src/jev/jev-flags.js";
+import { isHandledIntakeDenial } from "../../src/telegram/telegram-poll-runner.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 
@@ -89,6 +90,29 @@ describe("memlane callbacks", () => {
     }
     expect(readJevDisarmMarker(jevDisarmMarkerPath({}, dir))?.reason).toBe("triage_overrides");
     expect(store.listOpenIncidents().some((i) => i.kind === "triage_overrides")).toBe(true);
+    store.close();
+  });
+  it("refusals are handled intake denials, so a stale tap never wedges the poll offset", () => {
+    const store = RunStore.openInMemory();
+    const gateway = new Gateway(store);
+    const undo = gateway.intake(tap("memlane_undo", { change_id: "lc_00000000-0000-0000-0000-000000000000" }));
+    const ask = gateway.intake(tap("memlane_ask", { run_id: "run_00000000-0000-0000-0000-000000000000" }));
+    for (const r of [undo, ask]) { expect(r.ok).toBe(false); if (!r.ok) expect(isHandledIntakeDenial(r.error.code)).toBe(true); }
+    store.close();
+  });
+  it("an override older than seven days (by the injected clock) does not count toward the limit", () => {
+    const store = RunStore.openInMemory(); const dir = mkdtempSync(join(tmpdir(), "mla-"));
+    const gateway = new Gateway(store, undefined, undefined, undefined, undefined, { dataDir: dir });
+    const t0 = "2026-10-01T00:00:00.000Z"; const later = "2026-10-09T00:00:00.000Z"; // 8 days
+    for (let i = 0; i < TRIAGE_OVERRIDE_LIMIT - 1; i++) {
+      const run = seedRun(store, `old ${i}`);
+      gateway.intake(tap("memlane_ask", { run_id: run }, "555", `old:${i}`, `a${i}`), t0);
+    }
+    // ledger rows are stamped by the store clock; age them so the window comparison is what is under test
+    (store as unknown as { db: { exec(s: string): void } }).db.exec(`UPDATE ledger_events SET occurred_at = '${t0}' WHERE event_type = 'triage_override'`);
+    const run = seedRun(store, "fresh");
+    gateway.intake(tap("memlane_ask", { run_id: run }, "555", "fresh", "af"), later);
+    expect(readJevDisarmMarker(jevDisarmMarkerPath({}, dir))).toBeNull();
     store.close();
   });
 });
