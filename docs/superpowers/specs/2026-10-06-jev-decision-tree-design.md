@@ -1,6 +1,6 @@
 # Jev decision tree — categories, lanes and model roles (ADR 0029 lane 2, widened)
 
-- **Date:** 2026-10-07 · **Rev 7** (Rev 5 + Paco's quote-anchor addition, §2.2.1, with its Codex pass; see §12) · **Status:** awaiting Paco's read
+- **Date:** 2026-10-07 · **Rev 8** (Rev 5 + Paco's quote-anchor addition, §2.2.1, with its Codex passes; see §12) · **Status:** awaiting Paco's read
 - **Amends:** [ADR 0029](../../decisions/0029-jev-system-one.md) (the lane-1-first shape becomes one decision tree; lanes
   are the leaf type), [ADR 0028](../../decisions/0028-omp-runtime.md) (model roles replace the `HOUGE_OMP_*` chains;
   D10 reader family becomes a skip rule at read time)
@@ -69,9 +69,11 @@ dropped and a quote of an older message is lost. Stage A resolves the quote to t
 code-observed fact:
 
 - **Resolution, code only.** A Houge reply: the outbox row whose `provider_message_id` is `telegram:<quoted id>` and
-  whose `run_id` is set and `intent_type` is `final_report` → that run's assistant `chat_turns` rows excluding
-  intent `evolution_report`; exactly one such row resolves, none or several → unresolved (a run can also deliver an
-  evolution report as a separate assistant turn, so "latest assistant row of the run" is not enough). A message of
+  whose `run_id` is set, `intent_type` is `final_report` and whose `idempotency_key` does not contain
+  `:evolution_report:` (an evolution report is queued as `final_report` too, `enqueueEvolutionReport`,
+  run-store.ts:5648) → that run's assistant `chat_turns` rows excluding intent `evolution_report`; exactly one such
+  row resolves, none or several → unresolved (so neither a quoted evolution report nor a run with two assistant rows
+  can resolve to the wrong turn). A message of
   Paco's: the run whose stored event has `source_reference = telegram:update:*:message:<quoted id>` in the same
   chat → its user `chat_turns` row (`chat_turns` holds no Telegram ids; the run's event does). Anything unresolved (a
   message from before the mapping, a deleted turn, another chat, a non-final notification) → no `quoted_turn`, one
@@ -360,7 +362,7 @@ ADR 0029 amendment (tree, lanes as the leaf type, roles) and ADR 0028 amendment 
 `jev-decision-layer.md` rewritten around the tree; CONTEXT.md terms *category*, *lane*, *role*; README;
 `tasks/todo.md`, `sessions.md`.
 
-## 12. Review log (Rev 1 → Rev 7)
+## 12. Review log (Rev 1 → Rev 8)
 
 Two reviews of Rev 1 on 2026-10-06, both NOT READY: a senior review against the live omp, DB and code, and a Codex
 design pass. Every finding was verified first-hand before being folded in; none changed §1.
@@ -388,6 +390,7 @@ design pass. Every finding was verified first-hand before being folded in; none 
 | Re-pass on Rev 4 (Codex, NOT READY): the refused set must not clear on a catalog sighting; per-seat judge overrides need per-key storage and reset | §4 clears on child restart only; §4.2 keyed rows and per-key reset |
 | Paco, 2026-10-07: a Telegram reply (quote) is dropped today; add it to stage A | §2.2.1 `quoted_turn` resolved from stored turns, in the state, prompts and replay; tests and gate case |
 | Scoped pass on §2.2.1 (Codex, NOT READY): the ack rule fired before Jev saw the quote; a run's latest assistant row can be an evolution report; user turns carry no Telegram id | §2.1 ack rule excludes quoted messages; §2.2.1 resolves through `final_report` notifications and exactly one non-report assistant row, and Paco's messages through the run event's `source_reference` |
+| Re-pass on §2.2.1 (Codex): an evolution-report notification is `final_report` too | §2.2.1 excludes outbox rows keyed `:evolution_report:` |
 | Re-pass on Rev 2 (senior, READY): a spawn-refused Default[0] would become a per-turn `pin_failed`; `.env` is not read live; Reader list named twice; skipped turns need a verdict row; where `/models` is gated | §5 `model_missing` on pin walks the list, respawn rule removed; §4.3 wording; §4 table; §6; §4.2 |
 
 ## Appendix A. Parked from mu for later lanes
