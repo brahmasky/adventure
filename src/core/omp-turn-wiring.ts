@@ -54,7 +54,7 @@ export const PLANNER_CRASH_LOOP_TEXT = "⚠ My runtime keeps crashing, so I stop
 /** abortAll("guard"): the telegram --once runner's bound ran out (there is no /guard command); not Paco's /kill. */
 export const GUARD_STOPPED_TEXT = "⏹ Stopped: this one-shot poll ran out of time before the turn finished.";
 /** Supervisor preflight refs: a startup check failed, the runtime did not crash. */
-const STARTUP_CHECK_REF = /^(omp_version_mismatch|omp_unavailable|wrapper_mismatch|sandbox_unavailable)\b/;
+const STARTUP_CHECK_REF = /^(omp_unavailable|wrapper_mismatch|sandbox_unavailable)\b/;
 
 /** The terminal failure notice for a failed run (the same text the old turn path sent). */
 export function failureNotifyText(detail: string): string {

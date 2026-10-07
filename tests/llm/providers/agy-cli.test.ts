@@ -4,9 +4,10 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs
 import { join } from "node:path";
 import {
   createAgyCliProvider, AGY_GIT_CWD_REFUSED,
-  AGY_DEFAULT_MODEL,
+  AGY_OWN_DEFAULT,
   ERROR_EXCERPT_MAX
 } from "../../../src/llm/providers/agy-cli.js";
+import { resetAgyModelCacheForTest } from "../../../src/llm/providers/agy-models.js";
 import type { SpawnImpl, SpawnResult } from "../../../src/omp/child-env.js";
 
 /** Build a SpawnResult with sane defaults so tests only set what they assert. */
@@ -85,16 +86,20 @@ describe("createAgyCliProvider", () => {
     // silently blocking ALL self-writes (this exact bug blocked the 猴哥 fix, 2026-06-26).
     delete process.env.HOUGE_AGY_MODEL;
     delete process.env.HOUGE_AGY_BIN;
-    const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout: envelope({ response: "ok" }) }));
+    resetAgyModelCacheForTest();
+    // No pinned model (2026-10-07): the first call lists `agy models`; the listing names the newest Flash low.
+    const spawnImpl = vi.fn<SpawnImpl>(async (_f, a) =>
+      spawnResult({ stdout: a[0] === "models" ? "gemini-9.9-flash-low\tGemini 9.9 Flash (Low)\n" : envelope({ response: "ok" }) }));
     const provider = createAgyCliProvider({ spawnImpl });
 
     await provider.answer({ question: "hello" });
 
-    const [file, args, opts] = spawnImpl.mock.calls[0]!;
+    expect(spawnImpl.mock.calls[0]![1]).toEqual(["models"]);
+    const [file, args, opts] = spawnImpl.mock.calls[1]!;
     expect(file).toBe("agy");
     expect(args).toEqual([
       "--model",
-      AGY_DEFAULT_MODEL,
+      "Gemini 9.9 Flash (Low)",
       "--output-format",
       "json",
       "--disable-slash-commands",
@@ -105,7 +110,63 @@ describe("createAgyCliProvider", () => {
     expect(opts.input).toBe("");
   });
 
-  it("lets HOUGE_AGY_MODEL override the code default", async () => {
+  // A failed catalog read must not fail the voice note: no --model, agy picks its own default, the audit says so.
+  it("passes no --model when the listing fails, and reports agy's own default", async () => {
+    delete process.env.HOUGE_AGY_MODEL;
+    resetAgyModelCacheForTest();
+    const spawnImpl = vi.fn<SpawnImpl>(async (_f, a) =>
+      a[0] === "models" ? spawnResult({ stdout: "", code: 1 }) : spawnResult({ stdout: envelope({ response: "ok" }) }));
+    const result = await createAgyCliProvider({ spawnImpl }).answer({ question: "hi" });
+    expect(spawnImpl.mock.calls[1]![1]).not.toContain("--model");
+    expect(result.ok && result.model).toBe(AGY_OWN_DEFAULT);
+  });
+
+  // A resolved model agy drops from its catalog would otherwise fail every voice note until the cache expires: the
+  // refusal drops the cache and the call is retried once on a fresh resolution.
+  it("a resolved model refused as retired is re-resolved and retried once", async () => {
+    delete process.env.HOUGE_AGY_MODEL;
+    resetAgyModelCacheForTest();
+    let listings = 0;
+    const spawnImpl = vi.fn<SpawnImpl>(async (_f, a) => {
+      if (a[0] === "models") {
+        listings += 1;
+        return spawnResult({ stdout: listings === 1 ? "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n" : "gemini-3.9-flash-low\tGemini 3.9 Flash (Low)\n" });
+      }
+      return a.includes("Gemini 3.8 Flash (Low)")
+        ? spawnResult({ stdout: envelope({ status: "ERROR", error: "invalid model selection", response: "" }) })
+        : spawnResult({ stdout: envelope({ response: "ok" }) });
+    });
+    const result = await createAgyCliProvider({ spawnImpl }).answer({ question: "hi" });
+    expect(result).toMatchObject({ ok: true, model: "Gemini 3.9 Flash (Low)" });
+    expect(listings).toBe(2);
+  });
+
+  // A stale catalog that still lists the refused model must not pin the voice leg to it: the retry runs with no --model
+  // (agy's own default), and the next voice note does not pick the refused name again.
+  it("a refused model the stale listing still shows is excluded: retry with agy's default, next note too", async () => {
+    delete process.env.HOUGE_AGY_MODEL;
+    resetAgyModelCacheForTest();
+    const spawnImpl = vi.fn<SpawnImpl>(async (_f, a) => {
+      if (a[0] === "models") return spawnResult({ stdout: "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n" });
+      return a.includes("--model")
+        ? spawnResult({ stdout: envelope({ status: "ERROR", error: "invalid model selection", response: "" }) })
+        : spawnResult({ stdout: envelope({ response: "ok" }) });
+    });
+    const provider = createAgyCliProvider({ spawnImpl });
+    expect(await provider.answer({ question: "a" })).toMatchObject({ ok: true, model: AGY_OWN_DEFAULT });
+    expect(await provider.answer({ question: "b" })).toMatchObject({ ok: true, model: AGY_OWN_DEFAULT });
+  });
+
+  // An operator-chosen model is not second-guessed: a refusal of HOUGE_AGY_MODEL is returned, never retried.
+  it("an env-pinned model refused as retired is not retried", async () => {
+    process.env.HOUGE_AGY_MODEL = "Gemini 1.0 Flash (Low)";
+    const spawnImpl = vi.fn<SpawnImpl>(async () => spawnResult({ stdout: envelope({ status: "ERROR", error: "invalid model selection", response: "" }) }));
+    const result = await createAgyCliProvider({ spawnImpl }).answer({ question: "hi" });
+    expect(result.ok).toBe(false);
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets HOUGE_AGY_MODEL override the catalog resolution", async () => {
     // The design's remedy for the next vendor retirement is "an env edit, not a redeploy" — which
     // is only true if the env actually wins. Asserting the default's literal value instead would
     // be a restatement of the constant that goes red exactly when someone correctly updates it.

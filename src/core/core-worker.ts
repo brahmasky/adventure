@@ -2320,10 +2320,8 @@ export class CoreWorker {
 
   /** A supervisor condition pages Paco once while its row is open (B3); a per-run event stays a plain row. */
   private supervisorIncident(chatId: string, kind: string, detail: Record<string, unknown>): void {
-    // an omp version condition has one subject on every path (N5): the one-shot seats see the same omp
-    const subject = OMP_CHECK_INCIDENT_KINDS.has(kind)
-      ? ompCheckSubject({ kind: String(detail.check ?? kind), version: typeof detail.version === "string" ? detail.version : null })
-      : `chat:${chatId}`;
+    // an omp check condition has one subject on every path (N5): the one-shot seats see the same omp
+    const subject = OMP_CHECK_INCIDENT_KINDS.has(kind) ? ompCheckSubject({ kind: String(detail.check ?? kind) }) : `chat:${chatId}`;
     if (!SUPERVISOR_ALERT_KINDS.has(kind)) { this.runStore.openIncident({ kind, subject, detail }); return; }
     openAlertedIncident(this.runStore, { kind, subject, detail, chat_id: chatId });
   }

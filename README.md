@@ -98,7 +98,7 @@ Telegram ──long-poll──▶ houge daemon (launchd; ledger, scheduler, swee
    the reader wall, and its digest joins the caption.
 2. The poll loop hands the run to the chat's `PlannerSupervisor` and goes back to polling. This
    **detached turn** is what lets `/approve`, `/kill` and a second message land while a turn runs.
-3. The supervisor makes sure a planner child is up: version pin checked, Seatbelt profiles
+3. The supervisor makes sure a planner child is up: omp answers with a version, Seatbelt profiles
    rendered, system prompt written (identity, discipline, the `ask` lessons, skills), bridge socket
    minted. A child counts as started only after the bridge has served it the tool manifest within
    15 s. `open_session` resumes the chat's transcript. A changed lesson, identity or skill restarts
@@ -381,9 +381,9 @@ node scripts/live-gate-omp.mjs            # full gate against the live daemon, d
 The smoke never touches the running daemon. A planner refusal of the sandbox self-test makes the
 gate INCONCLUSIVE (exit 4), never PASS.
 
-**Moving the omp version pin.** Every spawn checks `omp --version` against the pin and refuses on a
-mismatch (incident `omp_version_mismatch`). Install the new omp, run the smoke with the pin overridden
-for that one run, and only when it passes set the new pin in `.env` and restart
+**Upgrading omp.** There is no version pin (2026-10-07): any version `omp --version` reports runs, and only an
+omp that cannot run or prints no version refuses a spawn (incident `omp_unavailable`). After an upgrade, run the
+smoke to confirm the frames and refusal texts Houge parses still hold
 ([configuration](docs/reference/configuration.md#llm-runtime--omp-adr-0028)).
 
 **Rollback.** `git revert` the merge, `npm run build`, kickstart. Session and workspace dirs are

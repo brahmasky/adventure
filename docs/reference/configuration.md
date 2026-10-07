@@ -66,8 +66,6 @@ reach a real omp. The defaults below are copied from `src/omp/omp-config.ts`.
 | `HOUGE_OMP_BIN` | `omp` | The omp binary. Give the daemon an absolute path, because launchd runs it on a restricted PATH. | yes |
 | `HOUGE_OMP_PROFILE` | `houge` | `--profile` for every spawn; never the default profile. The OAuth store lives at `~/.omp/profiles/houge`, which is a secret path ([ADR 0015 amendment](../decisions/0015-secrets-firewall.md)). | yes |
 | `HOUGE_OMP_SANDBOX` | `1` | `0` runs the planner without `sandbox-exec` (tests only). With `1`, a missing `sandbox-exec` or a profile that fails to render stops the planner and opens incident `sandbox_unavailable`. | yes |
-| `HOUGE_OMP_VERSION` | `18.4.4` | `omp --version` must equal this at every planner and one-shot start, or the spawn is refused (incident `omp_version_mismatch`, resolved by the next passing check). | yes |
-| `HOUGE_OMP_VERSION_ALLOW` | *(empty)* | Comma-separated extra versions to accept. This is the operator's logged override, set only after `HOUGE_OMP_VERSION=<new> … scripts/live-gate-omp.mjs --smoke` passes on the new binary. | yes |
 | `HOUGE_OMP_PLANNER` | `anthropic/claude-opus-5-5:medium,google-antigravity/claude-opus-4-6:medium,kimi-code/k3:low` | The per-chat planner chain. When every string is exhausted on a retryable error, the turn fails `no_planner_leg` and an incident opens. `/ask`, `/research` and `skill_author` authoring also use this chain. | yes |
 | `HOUGE_OMP_READER` | `google-antigravity/gemini-3.8-flash:low,kimi-code/k3:low,openai-codex/gpt-5.5:low` | The quarantined reader for `web_search`, `http_fetch`, `gmail_read` and `google_api` ([ADR 0014](../decisions/0014-dual-llm-privilege-separation.md)). Keep it cross-family from the planner. A same-family read still proceeds, but it is audited: the row gets `family_collapse`, a `wall_collapse` event is written, and incident `wall_collapsed` opens (D10). | yes |
 | `HOUGE_OMP_MEDIA` | `google-antigravity/gemini-3.8-flash:low` | The photo seat: the image is passed as `@file` and the call is audited as `reader`. Voice never uses omp. | yes |
@@ -100,11 +98,11 @@ is the directory holding `houge.sqlite`, gitignored, write-denied to every sandb
 `omp --profile houge login <provider>`, for `anthropic` (Claude Max), `google-antigravity`, `kimi-code`
 and `openai-codex`. Every omp row has `cost_usd` 0 (shown as "sub" in `/usage`).
 
-**Moving the version pin.** Install the new omp, then smoke it with the pin overridden for that run
-only: `HOUGE_OMP_VERSION=<new> HOUGE_ENV_FILE=/abs/path/.env node scripts/live-gate-omp.mjs --smoke`.
-Only when it passes, set `HOUGE_OMP_VERSION=<new>` in `.env` (or list it in
-`HOUGE_OMP_VERSION_ALLOW`) and restart the daemon.
-omp's own update checks are off in the profile config.
+**No version pin (2026-10-07).** Any version `omp --version` reports runs; only an omp that cannot be run or prints no
+version refuses a spawn (incident `omp_unavailable`, resolved by the next passing check). `houge_status` reports the
+version in use. After an omp upgrade, `HOUGE_ENV_FILE=/abs/path/.env node scripts/live-gate-omp.mjs --smoke` is the
+check that the frames and refusal texts Houge parses still hold. `HOUGE_OMP_VERSION` and `HOUGE_OMP_VERSION_ALLOW` are
+no longer read. omp's own update checks are off in the profile config.
 
 ### Voice leg — agy-cli (voice only)
 
@@ -115,7 +113,7 @@ affect voice. The media chain and its timeout are in [Multimodal ingest](#multim
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `HOUGE_AGY_BIN` | `agy` (on PATH) | Voice only. Absolute path to the `agy` binary. Set it for the daemon, which runs on a restricted PATH. |
-| `HOUGE_AGY_MODEL` | `Gemini 3.8 Flash (Low)` | Voice only. The transcription model (`agy models` lists the choices). **Pin it in `.env`, not the code default.** A retired pin fails every call: agy reports it as `status:"ERROR"` with `invalid model selection` and still exits 0. |
+| `HOUGE_AGY_MODEL` | *(unset: resolved)* | Voice only. Unset (recommended), the voice leg uses the newest Gemini Flash at low effort that `agy models` lists (highest version wins; cached 6 h; a model agy then refuses as retired is re-resolved and retried once; a failed listing is remembered 10 min and passes no `--model`, so agy uses its own default and the audit row says `agy-default`). Set it only to force one model; a retired value fails every call (`status:"ERROR"`, `invalid model selection`, exit 0). |
 | `HOUGE_AGY_ENV_PASSTHROUGH` | — | Voice only. Extra env var **names** for the agy child, on top of the same minimal allowlist. agy reads its auth from `$HOME`, so this is rarely needed. |
 
 ### Answer-path prompt override
@@ -968,6 +966,7 @@ the cutover deletions) and not at the head of `feat/omp-runtime`, checked by gre
 | `HOUGE_CLAUDE_BIN` · `HOUGE_RADAR_CHAIR_TIMEOUT_MS` | claude-CLI panel chair | `HOUGE_OMP_CHAIR`, `HOUGE_OMP_ONESHOT_TIMEOUT_MS` |
 | `HOUGE_BOUNTY_ENABLED` · `HOUGE_BOUNTY_MAX_CANDIDATES` | Money track, `bounty_scan` | Deleted ([ADR 0022 amendment](../decisions/0022-money-fork-reopened.md)) |
 | `HOUGE_EXTWORK_ENABLED` · `HOUGE_EXTWORK_IMAGE` · `HOUGE_EXTWORK_MEMORY` · `HOUGE_EXTWORK_CPUS` · `HOUGE_EXTWORK_PIDS` · `HOUGE_EXTWORK_SIZE_CAP_MB` · `HOUGE_EXTWORK_SCRATCH_DIR` · `HOUGE_EXTWORK_CLONE_TIMEOUT_MS` · `HOUGE_EXTWORK_STAGE_TIMEOUT_MS` | External workspace | Deleted ([ADR 0023 amendment](../decisions/0023-external-workspace.md)) |
+| `HOUGE_OMP_VERSION` · `HOUGE_OMP_VERSION_ALLOW` | The omp version pin and its allow-list | Removed 2026-10-07 (no hard-coded runtime versions): any version omp reports runs; see LLM runtime above |
 
 `HOUGE_JEV_SHADOW_ENABLED` was removed with the live intent shadow (2026-10-06; ADR 0029). Secrets with no consumer: `KIMI_API_KEY`, `GEMINI_API_KEY`,
 `CLAUDE_CODE_OAUTH_TOKEN` (see [Secrets firewall](#secrets-firewall-adr-0015-phase-1)).

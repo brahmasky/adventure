@@ -94,7 +94,7 @@ describe("supervisor incidents page once and resolve on the next good start (fin
     expect(notes()).toHaveLength(1); // out of the window: pages again
   });
 
-  for (const kind of ["planner_crash_loop", "planner_start_failed", "wrapper_mismatch", "sandbox_unavailable", "omp_version_mismatch", "omp_unavailable"]) {
+  for (const kind of ["planner_crash_loop", "planner_start_failed", "wrapper_mismatch", "sandbox_unavailable", "omp_unavailable"]) {
     it(`${kind} from a supervisor opens one row and one alert while open, however many turns hit it`, () => {
       const sink = sinkFor("555").ompOutcomeSink("555");
       for (let i = 0; i < 3; i++) sink.incident(kind, { chat_id: "555", reason: `r${i}` });
@@ -128,7 +128,7 @@ describe("supervisor incidents page once and resolve on the next good start (fin
 
   it("a latched chat tells Paco to /rearm; a failed startup check says the runtime is unavailable, not that it crashed", () => {
     expect(plannerFailureText("planner_exit", "crash_loop")).toBe(PLANNER_CRASH_LOOP_TEXT);
-    for (const ref of ["omp_version_mismatch: x", "omp_unavailable: y", "wrapper_mismatch", "sandbox_unavailable"]) {
+    for (const ref of ["omp_unavailable: y", "wrapper_mismatch", "sandbox_unavailable"]) {
       expect(plannerFailureText("planner_exit", ref)).toBe(TURN_UNAVAILABLE_TEXT);
     }
     expect(plannerFailureText("planner_exit", "exit 1")).toBe(PLANNER_EXIT_TEXT);
@@ -142,16 +142,26 @@ describe("a guard stop is not a /kill (final review B12, correctness M8)", () =>
   });
 });
 
-describe("one omp version condition, one alert (round 2 N5)", () => {
-  it("a mismatch seen by a planner start and by a one-shot seat is one row, subject omp:<version>, and one alert", async () => {
+describe("one omp check condition, one alert (round 2 N5)", () => {
+  it("an unavailable omp seen by a planner start and by a one-shot seat is one row per check kind, and one alert each", async () => {
     const { reportOmpCheck } = await import("../../src/llm/registry.js");
     const { resolveOmpConfig } = await import("../../src/omp/omp-config.js");
     const worker = new CoreWorker(store, "/nonexistent/project", async () => ({ ok: true, output: { answer: "x" } })) as unknown as { ompOutcomeSink(chat: string): TurnOutcomeSink };
-    worker.ompOutcomeSink("555").incident("omp_version_mismatch", { chat_id: "555", check: "version_mismatch", version: "18.5.0", expected: "18.4.4" });
-    reportOmpCheck(store, resolveOmpConfig({}), { ok: false, kind: "version_mismatch", version: "18.5.0", reason: "omp 18.5.0 is not the pinned 18.4.4" });
-    worker.ompOutcomeSink("556").incident("omp_unavailable", { chat_id: "556", check: "not_runnable", version: null, expected: "18.4.4" });
+    worker.ompOutcomeSink("555").incident("omp_unavailable", { chat_id: "555", check: "no_version", version: null });
+    reportOmpCheck(store, resolveOmpConfig({}), { ok: false, kind: "no_version", version: null, reason: "omp --version printed no version" });
+    worker.ompOutcomeSink("556").incident("omp_unavailable", { chat_id: "556", check: "not_runnable", version: null });
     reportOmpCheck(store, resolveOmpConfig({}), { ok: false, kind: "not_runnable", version: null, reason: "omp not runnable" });
-    expect(store.listOpenIncidents().map((i) => [i.kind, i.subject])).toEqual([["omp_version_mismatch", "omp:18.5.0"], ["omp_unavailable", "omp:not_runnable"]]);
+    expect(store.listOpenIncidents().map((i) => [i.kind, i.subject])).toEqual([["omp_unavailable", "omp:no_version"], ["omp_unavailable", "omp:not_runnable"]]);
     expect(notes()).toHaveLength(2);
+  });
+
+  // A pre-unpin build may have opened omp_version_mismatch before the deploy (live, 2026-10-07: omp 18.7.0 vs pin
+  // 18.4.4): the first passing check on the new build must clear it, or Paco is left with a stale open incident.
+  it("a passing check resolves a legacy open omp_version_mismatch row", async () => {
+    const { reportOmpCheck } = await import("../../src/llm/registry.js");
+    const { resolveOmpConfig } = await import("../../src/omp/omp-config.js");
+    store.openIncident({ kind: "omp_version_mismatch", subject: "omp:18.7.0", detail: { version: "18.7.0" } });
+    reportOmpCheck(store, resolveOmpConfig({}), { ok: true, version: "18.7.0" });
+    expect(store.listOpenIncidents()).toEqual([]);
   });
 });

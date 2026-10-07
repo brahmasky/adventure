@@ -61,9 +61,9 @@ describe("buildOmpPanelSeats — the four panel seats on omp", () => {
     expect(rows("chair")).toEqual([expect.objectContaining({ outcome: "ok", family: "claude" })]);
   });
 
-  it("a refused omp version makes every seat unavailable (the tick's mean-score fallback), with no spawn", async () => {
+  it("an omp that cannot be asked makes every seat unavailable (the tick's mean-score fallback), with no spawn", async () => {
     const env = fake({ "*": { text: "never" } });
-    const refuse = () => ({ ok: false as const, kind: "version_mismatch" as const, version: "9.9.9", reason: "omp 9.9.9 is not the pinned 18.4.4" });
+    const refuse = () => ({ ok: false as const, kind: "not_runnable" as const, version: null, reason: "omp not runnable" });
     const seats = buildOmpPanelSeats({ store, correlation_id: "tick:idea_panel", env, versionCheck: refuse });
     expect(await seats.chair({ digest: "D", system: "S" })).toEqual({ ok: false, unavailable: true });
     expect(spawns()).toEqual([]);

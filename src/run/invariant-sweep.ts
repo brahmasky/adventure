@@ -395,7 +395,7 @@ export function runInvariantSweep(input: InvariantSweepInput): InvariantSweepRes
   }
 
   for (const open of input.store.listOpenIncidents()) {
-    // Only the sweep's own kinds: an incident opened elsewhere (omp_version_mismatch, …) is never
+    // Only the sweep's own kinds: an incident opened elsewhere (omp_unavailable, …) is never
     // re-detected here, so "not seen this sweep" says nothing about it being over.
     if (seen.has(open.fingerprint) || !SWEEP_KINDS.has(open.kind)) continue;
     // resolveIncident appends the incident_resolved ledger event itself.

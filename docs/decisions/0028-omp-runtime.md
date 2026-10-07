@@ -62,8 +62,8 @@ slice. Code keeps owning the gates. omp composes between them.
 - **Writer**: `codex exec --sandbox workspace-write`, unchanged.
 - **Model strings** are `provider/model[:effort]`, one env var per seat (`HOUGE_OMP_*`, see
   [configuration.md](../reference/configuration.md#llm-runtime--omp-adr-0028)). The version pin
-  (`HOUGE_OMP_VERSION`) is checked at every spawn. A mismatch refuses unless the version is listed in
-  `HOUGE_OMP_VERSION_ALLOW`.
+  (`HOUGE_OMP_VERSION`) was checked at every spawn until 2026-10-07; see the amendment under Decisions made during the
+  build.
 
 ### Threat model and boundaries (spec §3, verbatim)
 
@@ -196,6 +196,14 @@ change the architecture the spec describes:
     - **Daemon-side git runs without user or system config**, hooks or fsmonitor (push keeps the
       credential helper).
     - **`sandbox-exec` and every wrapper helper run by absolute path.**
+- **Amendment 2026-10-07 — no runtime version pins (Paco).** "Another hard-code version config issue that we should
+  avoid just like llm model version." The exact omp pin (`HOUGE_OMP_VERSION`, `HOUGE_OMP_VERSION_ALLOW`) is removed:
+  a routine upgrade to 18.7.0 would have refused every spawn. Any version `omp --version` reports runs; only an omp
+  that cannot run or prints no `x.y.z` version refuses (`omp_unavailable`). A legacy open `omp_version_mismatch` row
+  resolves at the first passing check. The voice leg's model is resolved from `agy models` (highest Gemini Flash at low
+  effort, cached, re-resolved once on a retired-model refusal) instead of a pinned `HOUGE_AGY_MODEL` default. What the
+  pin guarded (frames and refusal texts Houge parses) is checked by `live-gate-omp.mjs --smoke` after an upgrade; a
+  once-per-new-version contract probe that does this automatically is a follow-up slice.
 
 ## Consequences
 
@@ -211,10 +219,9 @@ change the architecture the spec describes:
   code (commit `3aabc04`). The tables stay, and the historical ledger rows stay readable.
 - **Operator surface:** four subscription logins under `omp --profile houge login <provider>`
   (Anthropic Max, Google Antigravity, Kimi Code, OpenAI Codex). The Kimi env pair
-  (`KIMI_CODE_OAUTH_HOST`, `KIMI_CODE_BASE_URL`) passes through `HOUGE_OMP_ENV_PASSTHROUGH`. Moving the
-  version pin means smoking the new binary first, with the pin overridden for that run only
-  (`HOUGE_OMP_VERSION=<new> HOUGE_ENV_FILE=… node scripts/live-gate-omp.mjs --smoke`), and then
-  setting the pin in `.env` (`HOUGE_OMP_VERSION`, or `HOUGE_OMP_VERSION_ALLOW`).
+  (`KIMI_CODE_OAUTH_HOST`, `KIMI_CODE_BASE_URL`) passes through `HOUGE_OMP_ENV_PASSTHROUGH`. After an omp
+  upgrade, smoke the new binary (`HOUGE_ENV_FILE=… node scripts/live-gate-omp.mjs --smoke`); there is no version pin
+  to move (amendment 2026-10-07).
 - **Verification:** `scripts/live-gate-omp.mjs` (cases 1–24 plus silent-degradation checks;
   `--smoke` = cases 1, 3, 6, 13, 22 against a temp DB copy) and `scripts/eval-replay.mjs` (the answer-only
   replay eval, spec §13 seam 3). Case 3 is an explicit operator self-test that must show a `bash` row; a

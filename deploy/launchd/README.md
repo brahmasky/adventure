@@ -16,7 +16,7 @@ steps work on any macOS machine (e.g. this laptop, for verification).
   [docs/reference/configuration.md](../../docs/reference/configuration.md)).
 - Node + npm installed. Find the bin dir: `dirname "$(which node)"`
   (e.g. `/opt/homebrew/bin` on Apple Silicon, `/usr/local/bin` on Intel).
-- **omp 18.4.4** (`@oh-my-pi/pi-coding-agent`) installed, and logged in four times under
+- **omp** (`@oh-my-pi/pi-coding-agent`, any current version; there is no pin) installed, and logged in four times under
   the `houge` profile, never the default one:
   `omp --profile houge login anthropic`, `… google-antigravity`, `… kimi-code`,
   `… openai-codex`. launchd runs the daemon on the restricted PATH below, which usually
@@ -25,8 +25,8 @@ steps work on any macOS machine (e.g. this laptop, for verification).
   An absolute path is not enough on its own: omp's launcher is a `#!/usr/bin/env bun` script, so the
   plist's `PATH` must also contain the directory holding `bun` (`~/.bun/bin`). Without it every spawn
   fails `omp not runnable` (seen on the 2026-10-01 cutover). `setup-new-host.sh` puts the dirs of node,
-  bun, omp, codex and agy on the plist's `PATH` (add more with `EXTRA_PATH=/a:/b`), and checks omp against
-  the pin; `bash deploy/launchd/setup-new-host.sh --check-only` runs only the checks and renders the plist
+  bun, omp, codex and agy on the plist's `PATH` (add more with `EXTRA_PATH=/a:/b`), and checks that omp runs
+  and reports an `x.y.z` version (there is no pin); `bash deploy/launchd/setup-new-host.sh --check-only` runs only the checks and renders the plist
   to a temp file.
   Every spawn checks the version pin; a different omp is refused with an incident.
 - `agy` (voice notes) and `codex` (self-diagnose, self-write), also by absolute path in `.env`.
@@ -60,7 +60,7 @@ tail -f logs/houge-daemon.err.log          # daemon logs to stderr
 Send the bot a message — the first turn starts the chat's omp planner and is answered
 with no manual poll. `npm run houge -- status` shows the daemon heartbeat (last poll,
 last error). If the first turn replies that the planner is unavailable, check
-`incidents` for `omp_version_mismatch`, `planner_start_failed` or `sandbox_unavailable`.
+`incidents` for `omp_unavailable`, `planner_start_failed` or `sandbox_unavailable`.
 
 Before kickstarting onto a new build that touches the runtime, run the real-omp smoke from
 the project root; it never touches the running daemon:

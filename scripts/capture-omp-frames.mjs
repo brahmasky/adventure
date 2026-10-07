@@ -1,4 +1,4 @@
-// scripts/capture-omp-frames.mjs — captures real omp 18.4.4 frames into tests/fixtures/omp-frames/.
+// scripts/capture-omp-frames.mjs — captures real omp frames (whatever version is installed) into tests/fixtures/omp-frames/.
 // Run manually on the mini (needs the `houge` profile logged in). Never run in CI.
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";

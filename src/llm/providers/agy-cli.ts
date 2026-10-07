@@ -21,11 +21,13 @@ import path from "node:path";
 import type { LlmProvider, LlmRequest, LlmResult } from "../types.js";
 import { normalizeAgyUsage } from "../../run/llm-usage.js";
 import { buildChildEnv, defaultSpawnImpl, type SpawnImpl, type SpawnResult } from "../../omp/child-env.js";
+import { invalidateAgyVoiceModel, resolveAgyVoiceModel } from "./agy-models.js";
 
 export const AGY_DEFAULT_TIMEOUT_MS = 60_000;
 export const AGY_DEFAULT_MAX_BYTES = 262_144; // 256 KB — a general model won't over-produce; ample for prose.
-export const AGY_DEFAULT_MODEL = "Gemini 3.8 Flash (Low)";
 export const AGY_BINARY = "agy";
+/** The audit label when no model was passed and agy chose its own default (the listing failed). */
+export const AGY_OWN_DEFAULT = "agy-default";
 
 /**
  * Error markers that mean "this leg cannot serve right now" rather than "this request failed":
@@ -126,176 +128,196 @@ function mediaReadLine(media: { path: string; mime: string }): string {
   return `The ${kind} is the file @${path.basename(media.path)} in the current directory. Open it with the view_file tool (the only tool you need); never run a shell command.`;
 }
 
+/** agy's answer to a model it no longer offers (status ERROR, exit 0). */
+const INVALID_MODEL = "invalid model selection";
+const isInvalidModel = (r: LlmResult): boolean => !r.ok && r.error.toLowerCase().includes(INVALID_MODEL);
+
 export function createAgyCliProvider(config: AgyCliProviderConfig = {}): LlmProvider {
   const spawnImpl = config.spawnImpl ?? defaultSpawnImpl;
 
   return {
     name: "agy-cli",
     supportsMedia: (mime) => AGY_MEDIA_MIMES.has(mime),
+    /**
+     * No pinned version (2026-10-07): an explicit model, else HOUGE_AGY_MODEL, else the newest Gemini Flash low in
+     * `agy models` (null: no --model, agy's own default). A RESOLVED model agy then refuses as retired is dropped from the
+     * cache, excluded from later picks, and the call is retried once on a fresh resolution (or agy's own default); an
+     * explicit or env model is the operator's and is not retried.
+     */
     async answer(req: LlmRequest): Promise<LlmResult> {
       const binary = process.env.HOUGE_AGY_BIN ?? AGY_BINARY;
-      const model = req.model ?? config.model ?? process.env.HOUGE_AGY_MODEL ?? AGY_DEFAULT_MODEL;
-
-      // The voice leg passes its own timeout (the media leg timeout); the old chain-wide
-      // timeout knobs left with the chain (Task 14).
-      const timeoutMs = config.timeoutMs ?? AGY_DEFAULT_TIMEOUT_MS;
-
-      const maxBytes = config.maxBytes ?? AGY_DEFAULT_MAX_BYTES;
-
-      // agy --print has no --system-prompt; the Houge-controlled persona is folded into the prompt
-      // text (system first, then the question). The whole thing is ONE argv element — even if the
-      // question looks like a flag, it is the literal value of `--print`, never re-parsed.
-      // Multimodal ingest (spec 2026-09-29): a media call appends a code-owned line holding the
-      // `@media.<ext>` reference and runs in the media dir (owned and removed by the caller) under
-      // `--sandbox`. agy's `@` is NOT a client-side attachment: the model reads the file with its
-      // auto-allowed, cwd-scoped `view_file` tool; `run_command` is auto-denied headless. Naming
-      // the tool is what makes the read deterministic (probe 2026-09-29).
-      const media = req.media;
-      const prompt = [req.system, req.question, media ? mediaReadLine(media) : undefined]
-        .filter((part): part is string => typeof part === "string" && part.length > 0)
-        .join("\n\n");
-      const args = [
-        "--model",
-        model,
-        // `--sandbox` is a boolean flag (agy --help, 2026-09-29): terminal restrictions for media
-        // calls. Placed before --output-format so no value-taking flag can ever swallow `--print`.
-        ...(media ? ["--sandbox"] : []),
-        "--output-format",
-        "json",
-        // Untrusted external content reaches this prompt on the reader path; it must never be
-        // able to expand a slash command or skill. Houge's own prompts use neither.
-        "--disable-slash-commands",
-        "--print",
-        prompt
-      ];
-
-      // Minimal env (no secrets); agy reads its own auth from $HOME. Opt extra vars in via
-      // HOUGE_AGY_ENV_PASSTHROUGH if a deployment stores agy auth in an env var.
-      const env = { ...buildChildEnv(process.env.HOUGE_AGY_ENV_PASSTHROUGH), TMPDIR: daemonTmpRoot() };
-
-      // A FRESH, EMPTY directory per text call — never the daemon temp root itself. agy is agentic and
-      // roots its workspace at the cwd (`--add-dir` extends it), and the shared temp root is where
-      // Houge keeps its own live state: coding-agent out dirs and media dirs (src/run/daemon-tmp.ts;
-      // worktrees live beside it in <data>/selfwrite). Handing an agent
-      // driven by attacker-controlled content a workspace rooted over Houge's own run state is a
-      // read AND plant primitive; a per-call dir also means nothing survives between calls.
-      // A media call instead runs in the media temp dir the ingest step created, so the relative
-      // `@media.<ext>` resolves and cannot escape it; that dir is the caller's to remove.
-      let workdir: string;
-      if (media) {
-        workdir = path.dirname(media.path);
-      } else {
-        try {
-          workdir = await daemonMkdtemp("houge-agy-"); // the daemon temp root, never os.tmpdir() (B13)
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          return { ok: false, provider: "agy-cli", error: `agy workdir setup failed: ${message}` };
-        }
-      }
-
-      // agy roots file access at its workspace; inside a git repo that may be the repo's top level, .env included (N1)
-      if (gitAncestor(workdir) !== null) {
-        if (!media) await rm(workdir, { recursive: true, force: true }).catch(() => {});
-        return { ok: false, provider: "agy-cli", error: AGY_GIT_CWD_REFUSED, unavailable: true };
-      }
-
-      let result: SpawnResult;
-      try {
-        result = await spawnImpl(binary, args, {
-          timeoutMs,
-          cwd: workdir,
-          env,
-          maxBytes,
-          input: "" // prompt is on argv, not stdin
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return { ok: false, provider: "agy-cli", error: `agy spawn failed: ${message}` };
-      } finally {
-        // Best-effort: a leaked temp dir must never fail an otherwise good answer. The media dir
-        // is not ours to remove.
-        if (!media) await rm(workdir, { recursive: true, force: true }).catch(() => {});
-      }
-
-      // Binary missing / spawn failure → unavailable (lets the chain fall through).
-      if (result.spawnError?.code === "ENOENT") {
-        return { ok: false, provider: "agy-cli", error: "agy binary not found (ENOENT)", unavailable: true };
-      }
-      if (result.spawnError) {
-        return {
-          ok: false,
-          provider: "agy-cli",
-          error: `agy spawn error: ${result.spawnError.code ?? "unknown"}`,
-          unavailable: true
-        };
-      }
-
-      // Our timeout is authoritative → normal failure (NOT unavailable).
-      if (result.timedOut) {
-        return { ok: false, provider: "agy-cli", error: `agy timed out after ${timeoutMs}ms` };
-      }
-
-      // Output bound: over-cap is an error, never a (possibly truncated) success.
-      if (byteLength(result.stdout) > maxBytes) {
-        return { ok: false, provider: "agy-cli", error: `agy output exceeded ${maxBytes} byte cap` };
-      }
-
-      const envelope = parseAgyEnvelope(result.stdout);
-
-      // No parseable envelope: an auth wall (agy prints the prompt to stderr and nothing to
-      // stdout), a renamed/removed flag, a binary predating --output-format json, or a crash mid-write.
-      // stderr carries the ONLY cause here — dropping it is what would make the next D1-class
-      // regression harder to diagnose than the last one, in the very change meant to make such
-      // regressions visible. So: report a bounded excerpt, and still classify an auth wall as
-      // unavailable even though no envelope reached us.
-      if (!envelope) {
-        const stderrExcerpt = errorExcerpt(stripAnsi(result.stderr));
-        const unavailable =
-          result.code !== 0 ||
-          UNAVAILABLE_MARKERS.some((marker) => stderrExcerpt.toLowerCase().includes(marker));
-        return {
-          ok: false,
-          provider: "agy-cli",
-          error: `agy produced no JSON envelope (exit ${result.code ?? "null"})${
-            stderrExcerpt ? `: ${stderrExcerpt}` : ""
-          }`,
-          ...(unavailable ? { unavailable: true } : {})
-        };
-      }
-
-      const status = typeof envelope.status === "string" ? envelope.status : "";
-
-      if (status !== "SUCCESS") {
-        const excerpt = errorExcerpt(envelope.error);
-        const unavailable = UNAVAILABLE_MARKERS.some((marker) => excerpt.toLowerCase().includes(marker));
-        return {
-          ok: false,
-          provider: "agy-cli",
-          error: `agy status ${status || "missing"}${excerpt ? `: ${excerpt}` : ""}`,
-          ...(unavailable ? { unavailable: true } : {})
-        };
-      }
-
-      // SUCCESS with an empty response is REAL — it is what agy returns when every tool call the
-      // model attempted was auto-denied in headless mode. An empty answer is never a success.
-      const answer = typeof envelope.response === "string" ? stripAnsi(envelope.response).trim() : "";
-      if (answer.length === 0) {
-        const denied = deniedActionNames(envelope.denied_actions);
-        return {
-          ok: false,
-          provider: "agy-cli",
-          error:
-            denied.length > 0
-              ? errorExcerpt(`agy produced no answer; tool actions denied: ${denied.join(", ")}`)
-              : "agy produced no answer (empty response)"
-        };
-      }
-
-      // Usage is normalized once and rides the result (slice 2); thinking stays inside output —
-      // the normalizer reports it separately and never re-adds it. A missing block is not an error.
-      const usage = normalizeAgyUsage(envelope.usage);
-
-      return { ok: true, provider: "agy-cli", model, answer, ...(usage ? { usage } : {}) };
+      const explicit = req.model ?? config.model ?? (process.env.HOUGE_AGY_MODEL?.trim() || undefined);
+      if (explicit !== undefined) return answerWith(req, explicit);
+      const resolved = await resolveAgyVoiceModel(binary, spawnImpl);
+      const first = await answerWith(req, resolved);
+      if (resolved === null || !isInvalidModel(first)) return first;
+      invalidateAgyVoiceModel(resolved);
+      // the refused name is excluded now: the retry runs on the next-best Flash low, or with no --model (agy's default)
+      return answerWith(req, await resolveAgyVoiceModel(binary, spawnImpl));
     }
   };
+
+  async function answerWith(req: LlmRequest, model: string | null): Promise<LlmResult> {
+    const binary = process.env.HOUGE_AGY_BIN ?? AGY_BINARY;
+
+    // The voice leg passes its own timeout (the media leg timeout); the old chain-wide
+    // timeout knobs left with the chain (Task 14).
+    const timeoutMs = config.timeoutMs ?? AGY_DEFAULT_TIMEOUT_MS;
+
+    const maxBytes = config.maxBytes ?? AGY_DEFAULT_MAX_BYTES;
+
+    // agy --print has no --system-prompt; the Houge-controlled persona is folded into the prompt
+    // text (system first, then the question). The whole thing is ONE argv element — even if the
+    // question looks like a flag, it is the literal value of `--print`, never re-parsed.
+    // Multimodal ingest (spec 2026-09-29): a media call appends a code-owned line holding the
+    // `@media.<ext>` reference and runs in the media dir (owned and removed by the caller) under
+    // `--sandbox`. agy's `@` is NOT a client-side attachment: the model reads the file with its
+    // auto-allowed, cwd-scoped `view_file` tool; `run_command` is auto-denied headless. Naming
+    // the tool is what makes the read deterministic (probe 2026-09-29).
+    const media = req.media;
+    const prompt = [req.system, req.question, media ? mediaReadLine(media) : undefined]
+      .filter((part): part is string => typeof part === "string" && part.length > 0)
+      .join("\n\n");
+    const args = [
+      ...(model ? ["--model", model] : []),
+      // `--sandbox` is a boolean flag (agy --help, 2026-09-29): terminal restrictions for media
+      // calls. Placed before --output-format so no value-taking flag can ever swallow `--print`.
+      ...(media ? ["--sandbox"] : []),
+      "--output-format",
+      "json",
+      // Untrusted external content reaches this prompt on the reader path; it must never be
+      // able to expand a slash command or skill. Houge's own prompts use neither.
+      "--disable-slash-commands",
+      "--print",
+      prompt
+    ];
+
+    // Minimal env (no secrets); agy reads its own auth from $HOME. Opt extra vars in via
+    // HOUGE_AGY_ENV_PASSTHROUGH if a deployment stores agy auth in an env var.
+    const env = { ...buildChildEnv(process.env.HOUGE_AGY_ENV_PASSTHROUGH), TMPDIR: daemonTmpRoot() };
+
+    // A FRESH, EMPTY directory per text call — never the daemon temp root itself. agy is agentic and
+    // roots its workspace at the cwd (`--add-dir` extends it), and the shared temp root is where
+    // Houge keeps its own live state: coding-agent out dirs and media dirs (src/run/daemon-tmp.ts;
+    // worktrees live beside it in <data>/selfwrite). Handing an agent
+    // driven by attacker-controlled content a workspace rooted over Houge's own run state is a
+    // read AND plant primitive; a per-call dir also means nothing survives between calls.
+    // A media call instead runs in the media temp dir the ingest step created, so the relative
+    // `@media.<ext>` resolves and cannot escape it; that dir is the caller's to remove.
+    let workdir: string;
+    if (media) {
+      workdir = path.dirname(media.path);
+    } else {
+      try {
+        workdir = await daemonMkdtemp("houge-agy-"); // the daemon temp root, never os.tmpdir() (B13)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { ok: false, provider: "agy-cli", error: `agy workdir setup failed: ${message}` };
+      }
+    }
+
+    // agy roots file access at its workspace; inside a git repo that may be the repo's top level, .env included (N1)
+    if (gitAncestor(workdir) !== null) {
+      if (!media) await rm(workdir, { recursive: true, force: true }).catch(() => {});
+      return { ok: false, provider: "agy-cli", error: AGY_GIT_CWD_REFUSED, unavailable: true };
+    }
+
+    let result: SpawnResult;
+    try {
+      result = await spawnImpl(binary, args, {
+        timeoutMs,
+        cwd: workdir,
+        env,
+        maxBytes,
+        input: "" // prompt is on argv, not stdin
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, provider: "agy-cli", error: `agy spawn failed: ${message}` };
+    } finally {
+      // Best-effort: a leaked temp dir must never fail an otherwise good answer. The media dir
+      // is not ours to remove.
+      if (!media) await rm(workdir, { recursive: true, force: true }).catch(() => {});
+    }
+
+    // Binary missing / spawn failure → unavailable (lets the chain fall through).
+    if (result.spawnError?.code === "ENOENT") {
+      return { ok: false, provider: "agy-cli", error: "agy binary not found (ENOENT)", unavailable: true };
+    }
+    if (result.spawnError) {
+      return {
+        ok: false,
+        provider: "agy-cli",
+        error: `agy spawn error: ${result.spawnError.code ?? "unknown"}`,
+        unavailable: true
+      };
+    }
+
+    // Our timeout is authoritative → normal failure (NOT unavailable).
+    if (result.timedOut) {
+      return { ok: false, provider: "agy-cli", error: `agy timed out after ${timeoutMs}ms` };
+    }
+
+    // Output bound: over-cap is an error, never a (possibly truncated) success.
+    if (byteLength(result.stdout) > maxBytes) {
+      return { ok: false, provider: "agy-cli", error: `agy output exceeded ${maxBytes} byte cap` };
+    }
+
+    const envelope = parseAgyEnvelope(result.stdout);
+
+    // No parseable envelope: an auth wall (agy prints the prompt to stderr and nothing to
+    // stdout), a renamed/removed flag, a binary predating --output-format json, or a crash mid-write.
+    // stderr carries the ONLY cause here — dropping it is what would make the next D1-class
+    // regression harder to diagnose than the last one, in the very change meant to make such
+    // regressions visible. So: report a bounded excerpt, and still classify an auth wall as
+    // unavailable even though no envelope reached us.
+    if (!envelope) {
+      const stderrExcerpt = errorExcerpt(stripAnsi(result.stderr));
+      const unavailable =
+        result.code !== 0 ||
+        UNAVAILABLE_MARKERS.some((marker) => stderrExcerpt.toLowerCase().includes(marker));
+      return {
+        ok: false,
+        provider: "agy-cli",
+        error: `agy produced no JSON envelope (exit ${result.code ?? "null"})${
+          stderrExcerpt ? `: ${stderrExcerpt}` : ""
+        }`,
+        ...(unavailable ? { unavailable: true } : {})
+      };
+    }
+
+    const status = typeof envelope.status === "string" ? envelope.status : "";
+
+    if (status !== "SUCCESS") {
+      const excerpt = errorExcerpt(envelope.error);
+      const unavailable = UNAVAILABLE_MARKERS.some((marker) => excerpt.toLowerCase().includes(marker));
+      return {
+        ok: false,
+        provider: "agy-cli",
+        error: `agy status ${status || "missing"}${excerpt ? `: ${excerpt}` : ""}`,
+        ...(unavailable ? { unavailable: true } : {})
+      };
+    }
+
+    // SUCCESS with an empty response is REAL — it is what agy returns when every tool call the
+    // model attempted was auto-denied in headless mode. An empty answer is never a success.
+    const answer = typeof envelope.response === "string" ? stripAnsi(envelope.response).trim() : "";
+    if (answer.length === 0) {
+      const denied = deniedActionNames(envelope.denied_actions);
+      return {
+        ok: false,
+        provider: "agy-cli",
+        error:
+          denied.length > 0
+            ? errorExcerpt(`agy produced no answer; tool actions denied: ${denied.join(", ")}`)
+            : "agy produced no answer (empty response)"
+      };
+    }
+
+    // Usage is normalized once and rides the result (slice 2); thinking stays inside output —
+    // the normalizer reports it separately and never re-adds it. A missing block is not an error.
+    const usage = normalizeAgyUsage(envelope.usage);
+
+    return { ok: true, provider: "agy-cli", model: model ?? AGY_OWN_DEFAULT, answer, ...(usage ? { usage } : {}) };
+  }
 }

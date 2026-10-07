@@ -43,7 +43,7 @@ export interface TurnOutcomeSink {
   complete(i: { run_id: string; worker_id: string; text: string; attachments: string[]; duration_ms: number; tool_calls: number; merged_into?: string; buttons?: NotificationButton[] }): void;
   fail(i: { run_id: string; worker_id: string; error_type: PlannerFailure; error_ref: string; partial?: string }): void;
   incident(kind: string, detail: Record<string, unknown>): void;
-  /** The version check passed: clear any open omp_version_mismatch / omp_unavailable condition. */
+  /** The version check passed: clear any open omp-check condition (omp_unavailable, a legacy omp_version_mismatch). */
   versionOk?(): void;
   /** A child started and is ready: clear this chat's start-condition incidents (crash loop, start failure, wrapper, sandbox). */
   startOk?(): void;
@@ -650,15 +650,14 @@ export class PlannerSupervisor {
     return true;
   }
 
-  /** Version pin at every spawn (tests included); wrapper hash and Seatbelt render unless skipped for unit tests. */
+  /** omp answers with a version at every spawn (tests included); wrapper hash and Seatbelt render unless skipped for unit tests. */
   private preflight(): string | null {
     const { cfg, distDir, ctx } = this.d;
     const v = (this.d.versionCheck ?? (() => checkOmpVersion(cfg)))();
     if (!v.ok) {
-      // Only a version that was read and differs is a mismatch; an unrunnable or silent omp is unavailable.
-      const kind = v.kind === "version_mismatch" ? "omp_version_mismatch" : "omp_unavailable";
-      this.incident(kind, { check: v.kind, version: v.version, expected: cfg.version });
-      return `${kind}: ${v.reason}`;
+      // No pinned version (2026-10-07): only an unrunnable or silent omp refuses a spawn.
+      this.incident("omp_unavailable", { check: v.kind, version: v.version });
+      return `omp_unavailable: ${v.reason}`;
     }
     this.checkedVersion = v.version;
     this.d.outcome.versionOk?.();

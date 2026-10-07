@@ -18,9 +18,8 @@ describe("omp config — defaults are the decided seat chains (spec §8, D7, D10
     expect(families.at(-1)).toBe("gpt-5.5");
   });
 
-  it("pins the omp version and runs sandboxed by default — production must not start unsandboxed by omission", () => {
+  it("runs sandboxed by default — production must not start unsandboxed by omission", () => {
     const c = resolveOmpConfig({});
-    expect(c.version).toBe("18.4.4");
     expect(c.sandbox).toBe(true);
     expect(c.profile).toBe("houge");
   });

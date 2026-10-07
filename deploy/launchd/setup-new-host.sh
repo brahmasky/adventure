@@ -26,10 +26,6 @@ echo "== Houge new-host setup$([ "$CHECK_ONLY" = 1 ] && echo " (check only)") ==
 echo "project: $PROJECT_DIR"
 echo "host:    $(scutil --get ComputerName 2>/dev/null || hostname)  user: $(whoami)"
 
-# The omp version the daemon refuses to run without (src/omp/omp-config.ts HOUGE_OMP_VERSION default).
-OMP_PIN="$(sed -n 's/^ *HOUGE_OMP_VERSION: "\([0-9][0-9.]*\)",.*/\1/p' "$PROJECT_DIR/src/omp/omp-config.ts")"
-[ -n "$OMP_PIN" ] || { echo "cannot read the omp version pin from src/omp/omp-config.ts" >&2; exit 2; }
-
 # 1. Toolchain. Required: the daemon cannot run its turns without them. Optional: one feature degrades.
 #    omp's launcher is `#!/usr/bin/env bun`, so bun is required even though omp is spawned by absolute path.
 echo; echo "-- prerequisites --"
@@ -50,18 +46,22 @@ check_tool git    1 "self-write branches and merges"
 check_tool node   1 "runs the daemon"
 check_tool npm    1 "build"
 check_tool bun    1 "omp's launcher is #!/usr/bin/env bun"
-check_tool omp    1 "the LLM runtime (planner and every one-shot seat), pinned $OMP_PIN"
+check_tool omp    1 "the LLM runtime (planner and every one-shot seat)"
 check_tool codex  1 "self-diagnose and self-write"
 check_tool agy    0 "voice notes; without it a voice message fails loudly"
 check_tool ollama 0 "episodic embeddings; without it retrieval degrades to keyword (BM25) search"
 
 OMP_PATH="$(tool_path omp)"
 if [ -n "$OMP_PATH" ]; then
-  omp_version="$("$OMP_PATH" --version 2>/dev/null | sed -n 's#.*omp/\([0-9][0-9.]*\).*#\1#p' | head -1 || true)"
-  if [ "$omp_version" = "$OMP_PIN" ]; then
-    echo "  ok   omp version $omp_version (pinned $OMP_PIN)"
+  # The runtime reads x.y.z only (src/omp/omp-version.ts): anything else refuses every spawn as no_version.
+  # A non-zero exit refuses too (the runtime's execFileSync throws → not_runnable), even if a version was printed.
+  omp_out="$("$OMP_PATH" --version 2>/dev/null)" || omp_out=""
+  omp_version="$(printf '%s\n' "$omp_out" | sed -n 's#.*omp/\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*#\1#p' | head -1)"
+  # No pinned version (2026-10-07): any version omp reports runs; an unreadable one would refuse every spawn.
+  if [ -n "$omp_version" ]; then
+    echo "  ok   omp version $omp_version"
   else
-    echo "  BAD  omp version '${omp_version:-unreadable}' is not the pinned $OMP_PIN: every spawn would be refused"; missing=1
+    echo "  BAD  omp --version printed no version: every spawn would be refused (omp_unavailable)"; missing=1
   fi
 fi
 [ "$missing" = 1 ] && echo "  !! fix the MISS/BAD lines before starting the daemon."

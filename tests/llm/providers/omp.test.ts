@@ -122,10 +122,10 @@ describe("omp one-shot seat — every non-planner LLM call in Houge", () => {
     expect(audit.attempts[0]).toMatchObject({ outcome: "ok", family_collapse: true });
   });
 
-  it("refuses every leg when the omp version is not the pinned one", async () => {
+  it("refuses every leg when omp cannot report a version", async () => {
     const cfg = setup({ "*": { text: "ok" } });
     const r = await spawnOneShot({ seat: "reader", chain: cfg.reader, prompt: "x", correlationId: "c" },
-      { cfg, audit: recordingSink(), versionCheck: () => ({ ok: false, kind: "version_mismatch" as const, version: "18.5.0", reason: "omp 18.5.0 is not the pinned 18.4.4" }) });
+      { cfg, audit: recordingSink(), versionCheck: () => ({ ok: false, kind: "no_version" as const, version: null, reason: "omp --version printed no version" }) });
     expect(r).toMatchObject({ ok: false, unavailable: true });
   });
 

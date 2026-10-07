@@ -65,33 +65,33 @@ describe("oneShotAdapter — the audited one-shot call every seat makes", () => 
     expect(rows.map((e) => e.payload)).toEqual([expect.objectContaining({ role: "distill", outcome: "ok", family: "kimi" })]);
   });
 
-  it("a version mismatch opens ONE omp_version_mismatch incident per version string and leaves no audit row", async () => {
+  it("an omp that cannot be asked opens ONE omp_unavailable incident per check kind and leaves no audit row", async () => {
     const cfg = fakeCfg({ "*": { text: "never" } });
-    const refuse = () => ({ ok: false as const, kind: "version_mismatch" as const, version: "18.5.0", reason: "omp 18.5.0 is not the pinned 18.4.4" });
+    const refuse = () => ({ ok: false as const, kind: "not_runnable" as const, version: null, reason: "omp not runnable" });
     const seat = oneShotAdapter(store, cfg, { correlation_id: "tick:v", role: "extract" }, undefined, { versionCheck: refuse });
     for (let i = 0; i < 3; i += 1) expect(await seat.answer({ question: "q" })).toMatchObject({ ok: false, unavailable: true });
-    const open = store.listOpenIncidents().filter((i) => i.kind === "omp_version_mismatch");
-    expect(open.map((i) => i.subject)).toEqual(["omp:18.5.0"]);
+    const open = store.listOpenIncidents().filter((i) => i.kind === "omp_unavailable");
+    expect(open.map((i) => i.subject)).toEqual(["omp:not_runnable"]);
     expect(store.getLedgerEventsByCorrelation("tick:v").filter((e) => e.event_type === "llm_attempt")).toEqual([]);
   });
 
-  it("fix round 2: a mismatch opens + alerts, a later good check clears it silently; a recurrence inside the quiet window is recorded, not re-paged (B3)", async () => {
+  it("fix round 2: an unavailable omp opens + alerts, a later good check clears it silently; a recurrence inside the quiet window is recorded, not re-paged (B3)", async () => {
     const cfg = fakeCfg({ "*": { text: "fine" } });
     process.env.HOUGE_TELEGRAM_CHAT_ID = "777";
     try {
-      const refuse = () => ({ ok: false as const, kind: "version_mismatch" as const, version: "18.5.0", reason: "omp 18.5.0 is not the pinned 18.4.4" });
-      const pass = () => ({ ok: true as const, version: "18.4.4" });
+      const refuse = () => ({ ok: false as const, kind: "not_runnable" as const, version: null, reason: "omp not runnable" });
+      const pass = () => ({ ok: true as const, version: "18.7.0" });
       const seat = (versionCheck: typeof refuse | typeof pass) => oneShotAdapter(store, cfg, { correlation_id: "tick:c", role: "extract" }, undefined, { versionCheck }).answer({ question: "q" });
       const alerts = () => { const out: string[] = []; for (let n = store.claimNextNotification("x", 30); n; n = store.claimNextNotification(`x${out.length}`, 30)) out.push(String(n.payload.text)); return out; };
       await seat(refuse);
       await seat(refuse);
-      expect(store.listOpenIncidents().map((i) => i.kind)).toEqual(["omp_version_mismatch"]);
+      expect(store.listOpenIncidents().map((i) => i.kind)).toEqual(["omp_unavailable"]);
       expect(alerts()).toHaveLength(1);
       await seat(pass);
       expect(store.listOpenIncidents()).toEqual([]);
       expect(alerts()).toEqual([]); // cleared silently
       await seat(refuse);
-      expect(store.listOpenIncidents().map((i) => i.kind)).toEqual(["omp_version_mismatch"]);
+      expect(store.listOpenIncidents().map((i) => i.kind)).toEqual(["omp_unavailable"]);
       expect(alerts()).toEqual([]); // flap damping (ALERT_REOPEN_QUIET_MS): a later recurrence pages again (tests/run/incident-alert.test.ts)
     } finally {
       delete process.env.HOUGE_TELEGRAM_CHAT_ID;
@@ -100,7 +100,7 @@ describe("oneShotAdapter — the audited one-shot call every seat makes", () => 
 
   it("I2: a check that never READ a version opens omp_unavailable — even when the reason text looks like a version", async () => {
     const cfg = fakeCfg({ "*": { text: "never" } });
-    const refuse = () => ({ ok: false as const, kind: "not_runnable" as const, version: null, reason: "omp not runnable: omp 1.2.3 is not the pinned 18.4.4" });
+    const refuse = () => ({ ok: false as const, kind: "not_runnable" as const, version: null, reason: "omp not runnable" });
     await oneShotAdapter(store, cfg, { correlation_id: "tick:u", role: "extract" }, undefined, { versionCheck: refuse }).answer({ question: "q" });
     expect(store.listOpenIncidents().map((i) => [i.kind, i.subject])).toEqual([["omp_unavailable", "omp:not_runnable"]]);
   });

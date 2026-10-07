@@ -182,7 +182,7 @@ export interface OneShotAdapterOptions {
  * The drop-in replacement for the old chain adapter: every non-planner call is ONE `spawnOneShot`
  * over the seat's subscription chain, audited per leg under `scope`. A media request (a photo) runs
  * on `cfg.media` with the file as an `@path` argument; voice never comes here (agy-cli, ruling 2).
- * A version mismatch leaves no audit row (no leg ran), so the caller opens `omp_version_mismatch`.
+ * A refused omp check leaves no audit row (no leg ran), so the caller opens `omp_unavailable`.
  */
 export function oneShotAdapter(
   store: RunStore, cfg: OmpConfig, scope: LlmAuditScope, plannerFamily?: ModelFamily, opts: OneShotAdapterOptions = {}
@@ -209,23 +209,21 @@ export function oneShotAdapter(
 }
 
 /**
- * The incident for an omp version check (ruling 6). A refusal opens one, alerted once: only a
- * version that was READ and differs is `omp_version_mismatch` (one per version string); omp not
- * runnable or silent about its version is `omp_unavailable`. The open incident is the throttle.
- * A PASSING check silently resolves every open omp_version_mismatch / omp_unavailable row, so the
- * next refusal opens (and alerts) again.
+ * The incident for an omp version check (ruling 6). A refusal (omp not runnable, or silent about its version) opens
+ * `omp_unavailable`, alerted once; the open incident is the throttle. There is no pinned version (2026-10-07). A PASSING
+ * check silently resolves every open omp-check row (a legacy `omp_version_mismatch` included), so the next refusal
+ * opens (and alerts) again.
  */
 export function reportOmpCheck(store: RunStore, cfg: OmpConfig, check: OmpCheckResult): void {
   if (check.ok) {
     resolveOmpCheckIncidents(store);
     return;
   }
-  const mismatch = check.kind === "version_mismatch";
   try {
     openAlertedIncident(store, {
-      kind: mismatch ? "omp_version_mismatch" : "omp_unavailable",
+      kind: "omp_unavailable",
       subject: ompCheckSubject(check),
-      detail: { check: check.kind, version: check.version, expected: cfg.version },
+      detail: { check: check.kind, version: check.version },
       chat_id: null
     });
   } catch (error) {

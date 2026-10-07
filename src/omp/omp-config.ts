@@ -1,7 +1,7 @@
 import { parseModelChain, type ModelString } from "./model-string.js";
 
 export interface OmpConfig {
-  bin: string; profile: string; sandbox: boolean; version: string; versionAllow: string[];
+  bin: string; profile: string; sandbox: boolean;
   planner: ModelString[]; reader: ModelString[]; media: ModelString[]; ticks: ModelString[];
   judges: ModelString[]; chair: ModelString[]; reviewer: ModelString[];
   envPassthrough: string[];
@@ -13,8 +13,6 @@ const DEFAULTS = {
   HOUGE_OMP_BIN: "omp",
   HOUGE_OMP_PROFILE: "houge",
   HOUGE_OMP_SANDBOX: "1",
-  HOUGE_OMP_VERSION: "18.4.4",
-  HOUGE_OMP_VERSION_ALLOW: "",
   HOUGE_OMP_PLANNER: "anthropic/claude-opus-5-5:medium,google-antigravity/claude-opus-4-6:medium,kimi-code/k3:low",
   HOUGE_OMP_READER: "google-antigravity/gemini-3.8-flash:low,kimi-code/k3:low,openai-codex/gpt-5.5:low",
   HOUGE_OMP_MEDIA: "google-antigravity/gemini-3.8-flash:low",
@@ -76,8 +74,6 @@ export function resolveOmpConfig(env: NodeJS.ProcessEnv): OmpConfig {
     bin: read(env, "HOUGE_OMP_BIN"),
     profile: read(env, "HOUGE_OMP_PROFILE"),
     sandbox: read(env, "HOUGE_OMP_SANDBOX") !== "0",
-    version: read(env, "HOUGE_OMP_VERSION"),
-    versionAllow: list(env.HOUGE_OMP_VERSION_ALLOW ?? ""),
     planner: parseModelChain(read(env, "HOUGE_OMP_PLANNER")),
     reader: parseModelChain(read(env, "HOUGE_OMP_READER")),
     media: parseModelChain(read(env, "HOUGE_OMP_MEDIA")),
