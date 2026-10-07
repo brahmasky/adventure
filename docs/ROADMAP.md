@@ -189,6 +189,18 @@ knowledge Houge owns; Earn is parked behind SP1.
 
 **Delta 2026-10-06: Jev lane 1 is built** (`feat/jev-lane1`, not merged; 3438 tests green, live gate PASS). It cannot act until Paco commits calibration rows after the replay, labelling sitting and shadow period; see `tasks/todo.md` for what he owes. Lane 2 starts after lane 1 is armed or Paco reorders.
 
+**Delta 2026-10-07: two small builds queued (Paco).**
+- **Standing approval for a scheduled command.** The Alishan room check needs one Approve tap a day: the hotel's
+  search only answers a POST, and the shell gate treats every `curl` POST as an HTTP write
+  (`src/omp/command-matcher.ts`, protected). The fix is an option on the approval card: "always allow this exact
+  command for this schedule". The standing approval is keyed by the schedule id plus the command's fingerprint, so
+  any other command, or this one from a non-scheduled turn, still asks. It can be revoked from `/schedule`.
+  Reported where scheduled runs use it. It touches the gate machinery, so it needs its own spec and Paco's sign-off.
+  It is preferred over an endpoint allowlist, which would also exempt a real booking POST to the same host.
+- **omp contract probe.** The version pin was removed on 2026-10-07. Replace it with a once-per-new-version
+  self-test that checks the catalog parses, the start and pin refusal texts still classify, and an RPC session opens.
+  A pass records the version as known-good; a failure opens an incident and sends a Telegram line.
+
 **Next, in order (re-sequenced 2026-10-04, [ADR 0029](decisions/0029-jev-system-one.md)):** SP1 is live (boot 7,
 memory A1 shipped) → **Jev System One, lane 1** (pre-planner triage → memory + status lanes; the shared decision
 layer: question library, `decide()`, decision rows, replay harness; spec
