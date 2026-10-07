@@ -1,6 +1,6 @@
 # Jev decision tree — categories, lanes and model roles (ADR 0029 lane 2, widened)
 
-- **Date:** 2026-10-07 · **Rev 6** (Rev 5 + Paco's quote-anchor addition, §2.2.1; see §12) · **Status:** awaiting Paco's read
+- **Date:** 2026-10-07 · **Rev 7** (Rev 5 + Paco's quote-anchor addition, §2.2.1, with its Codex pass; see §12) · **Status:** awaiting Paco's read
 - **Amends:** [ADR 0029](../../decisions/0029-jev-system-one.md) (the lane-1-first shape becomes one decision tree; lanes
   are the leaf type), [ADR 0028](../../decisions/0028-omp-runtime.md) (model roles replace the `HOUGE_OMP_*` chains;
   D10 reader family becomes a skip rule at read time)
@@ -48,8 +48,9 @@ for lane 1: the latest message ≤ 8K chars, the thread, ≤ 24K chars per reque
 ### 2.1 Code before the judge (no Jev call)
 
 - A turn that lands while an approval card is open keeps today's code-owned "tap Approve" nudge (`ack_nudged`).
-- A greeting or bare thanks/ack ("谢谢", "ok", "👍") **after a plain answer** → category `answer`, Fast role. The rule
-  reads the previous Houge turn: after a question or a proposal it does not apply; Jev classifies.
+- A greeting or bare thanks/ack ("谢谢", "ok", "👍") **after a plain answer, and not quoting anything** → category
+  `answer`, Fast role. The rule reads the previous Houge turn: after a question or a proposal it does not apply, and a
+  message that quotes a turn (§2.2.1) is never settled by this rule; Jev classifies with the quoted turn in the state.
 - `think harder` / `认真想` / `ultrathink` anywhere in the message → Thinking role for the turn; Jev still classifies.
 
 ### 2.2 State (code-observed facts only)
@@ -67,10 +68,14 @@ Today the adapter keeps only the quoted message's id (`reply_to_message_id`) and
 dropped and a quote of an older message is lost. Stage A resolves the quote to the stored turn and carries it as a
 code-observed fact:
 
-- **Resolution, code only:** a Houge reply is found through the outbox's `provider_message_id` (the Telegram message
-  id of every delivered reply → its notification → its run → the assistant `chat_turns` row); a message of Paco's
-  through the stored update id → its run → the user row. An id that resolves to nothing (a message from before the
-  mapping, a deleted turn, another chat) → no `quoted_turn`, one ledger note, the turn proceeds as a plain message.
+- **Resolution, code only.** A Houge reply: the outbox row whose `provider_message_id` is `telegram:<quoted id>` and
+  whose `run_id` is set and `intent_type` is `final_report` → that run's assistant `chat_turns` rows excluding
+  intent `evolution_report`; exactly one such row resolves, none or several → unresolved (a run can also deliver an
+  evolution report as a separate assistant turn, so "latest assistant row of the run" is not enough). A message of
+  Paco's: the run whose stored event has `source_reference = telegram:update:*:message:<quoted id>` in the same
+  chat → its user `chat_turns` row (`chat_turns` holds no Telegram ids; the run's event does). Anything unresolved (a
+  message from before the mapping, a deleted turn, another chat, a non-final notification) → no `quoted_turn`, one
+  ledger note, the turn proceeds as a plain message.
   The quoted text Telegram sends inside `reply_to_message` is never used: the stored turn is the record of what was
   said, and a quote of a message Houge never stored is not evidence.
 - **In the state:** `quoted_turn { role: houge | user, kind: answer | clarify | proposal, age_s, text }`, sanitised and
@@ -81,8 +86,9 @@ code-observed fact:
 - **In the handlers:** the planner's prompt and every lane's compose get the quoted turn as a marked line ("replying
   to: …") ahead of the thread; the thread itself is unchanged. The `chat_turns` row of the new message records
   `quoted_turn_id` (migration: one nullable column) so the replay rebuilds the same state.
-- **Guards unchanged:** a quoted turn never changes the bare-ack rule (an ack quoting a plain answer is still
-  `answer`), and the memory lane's thread scan treats it as one more user or Houge line.
+- **Precedence:** a quoted message is never settled by the §2.1 ack rule; Jev classifies it, and the category
+  question's offer clause reads the quoted turn first. The bare-ack guard on `memory` / `status` (§2.4) still applies.
+  The memory lane's thread scan treats the quoted turn as one more user or Houge line.
 
 ### 2.3 Questions (one request)
 
@@ -354,7 +360,7 @@ ADR 0029 amendment (tree, lanes as the leaf type, roles) and ADR 0028 amendment 
 `jev-decision-layer.md` rewritten around the tree; CONTEXT.md terms *category*, *lane*, *role*; README;
 `tasks/todo.md`, `sessions.md`.
 
-## 12. Review log (Rev 1 → Rev 6)
+## 12. Review log (Rev 1 → Rev 7)
 
 Two reviews of Rev 1 on 2026-10-06, both NOT READY: a senior review against the live omp, DB and code, and a Codex
 design pass. Every finding was verified first-hand before being folded in; none changed §1.
@@ -381,6 +387,7 @@ design pass. Every finding was verified first-hand before being folded in; none 
 | Re-pass on Rev 3 (Codex, NOT READY): catalog match must ignore `:effort`; a spawn-refused selector could be pinned again by a later turn; a role-level override would collapse the judge seats; retry-after-side-effect residual | §4 match on `provider/id`, refused-selector set per child, per-seat judge overrides; §4 residual stated |
 | Re-pass on Rev 4 (Codex, NOT READY): the refused set must not clear on a catalog sighting; per-seat judge overrides need per-key storage and reset | §4 clears on child restart only; §4.2 keyed rows and per-key reset |
 | Paco, 2026-10-07: a Telegram reply (quote) is dropped today; add it to stage A | §2.2.1 `quoted_turn` resolved from stored turns, in the state, prompts and replay; tests and gate case |
+| Scoped pass on §2.2.1 (Codex, NOT READY): the ack rule fired before Jev saw the quote; a run's latest assistant row can be an evolution report; user turns carry no Telegram id | §2.1 ack rule excludes quoted messages; §2.2.1 resolves through `final_report` notifications and exactly one non-report assistant row, and Paco's messages through the run event's `source_reference` |
 | Re-pass on Rev 2 (senior, READY): a spawn-refused Default[0] would become a per-turn `pin_failed`; `.env` is not read live; Reader list named twice; skipped turns need a verdict row; where `/models` is gated | §5 `model_missing` on pin walks the list, respawn rule removed; §4.3 wording; §4 table; §6; §4.2 |
 
 ## Appendix A. Parked from mu for later lanes
