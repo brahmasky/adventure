@@ -1,6 +1,6 @@
 # Jev decision tree — categories, lanes and model roles (ADR 0029 lane 2, widened)
 
-- **Date:** 2026-10-06 · **Rev 5** (two reviews and four confirmation passes folded in; see §12) · **Status:** awaiting Paco's read
+- **Date:** 2026-10-07 · **Rev 6** (Rev 5 + Paco's quote-anchor addition, §2.2.1; see §12) · **Status:** awaiting Paco's read
 - **Amends:** [ADR 0029](../../decisions/0029-jev-system-one.md) (the lane-1-first shape becomes one decision tree; lanes
   are the leaf type), [ADR 0028](../../decisions/0028-omp-runtime.md) (model roles replace the `HOUGE_OMP_*` chains;
   D10 reader family becomes a skip rule at read time)
@@ -55,10 +55,34 @@ for lane 1: the latest message ≤ 8K chars, the thread, ≤ 24K chars per reque
 ### 2.2 State (code-observed facts only)
 
 `latest_message`, `recent_turns` (the thread as the planner would see it, sanitised and broker-redacted),
-`modality`, `last_houge_turn { kind: answer | clarify | proposal, age_s }`. `kind` is computed **at read time** from the
+`modality`, `last_houge_turn { kind: answer | clarify | proposal, age_s }`, and `quoted_turn` when the message is a
+Telegram reply (§2.2.1). `kind` is computed **at read time** from the
 stored previous Houge reply: `clarify` is the stored intent; `proposal` is a code regex over the text (an offer such as
 要不要 / 我可以 / 需要我 / approve, or a trailing question after a tool run); the stored `chat_turns.intent` enum
 (`clarify | loop`) is not widened, since it feeds the clarify cap. Nothing model-authored.
+
+#### 2.2.1 A Telegram reply (quote) anchors the thread
+
+Today the adapter keeps only the quoted message's id (`reply_to_message_id`) and nothing reads it; the quoted text is
+dropped and a quote of an older message is lost. Stage A resolves the quote to the stored turn and carries it as a
+code-observed fact:
+
+- **Resolution, code only:** a Houge reply is found through the outbox's `provider_message_id` (the Telegram message
+  id of every delivered reply → its notification → its run → the assistant `chat_turns` row); a message of Paco's
+  through the stored update id → its run → the user row. An id that resolves to nothing (a message from before the
+  mapping, a deleted turn, another chat) → no `quoted_turn`, one ledger note, the turn proceeds as a plain message.
+  The quoted text Telegram sends inside `reply_to_message` is never used: the stored turn is the record of what was
+  said, and a quote of a message Houge never stored is not evidence.
+- **In the state:** `quoted_turn { role: houge | user, kind: answer | clarify | proposal, age_s, text }`, sanitised and
+  broker-redacted like `recent_turns`, under the same egress caps (it counts toward the 24K request cap; over cap →
+  `skipped{state_too_large}` as today). `last_houge_turn` stays the most recent Houge reply; the `category` question's
+  "something Houge offered in `recent_turns`" clause reads "in `quoted_turn` or `recent_turns`", so "好" quoting an
+  hour-old proposal is classified as that proposal's work.
+- **In the handlers:** the planner's prompt and every lane's compose get the quoted turn as a marked line ("replying
+  to: …") ahead of the thread; the thread itself is unchanged. The `chat_turns` row of the new message records
+  `quoted_turn_id` (migration: one nullable column) so the replay rebuilds the same state.
+- **Guards unchanged:** a quoted turn never changes the bare-ack rule (an ack quoting a plain answer is still
+  `answer`), and the memory lane's thread scan treats it as one more user or Houge line.
 
 ### 2.3 Questions (one request)
 
@@ -295,10 +319,13 @@ from the planner's current family runs first; when every candidate shares it, th
   role, the change notice, `static` mode.
 - **Supervisor:** cold spawn and start refusal on the Default axis, pin with two commands, retry walk on the turn axis,
   failed pin, `other` once with no tool executed, `other` final after a tool, audit against the turn's list.
-- **Migration** of `jev_verdicts`; the replay's proxy precedence; the cascade's category restriction.
+- **Migration** of `jev_verdicts` and `chat_turns.quoted_turn_id`; the replay's proxy precedence; the cascade's
+  category restriction.
+- **Quote resolution:** a quote of a delivered Houge reply, of Paco's own message, of an unknown id, and of a message
+  from another chat; the state carries `quoted_turn` only for the first two; the over-cap case.
 - **Live gate per stage** (`scripts/live-gate-jev-tree.mjs`, DB copy, real Jev, real one-shots): one turn per lane, one
-  that overflows its lane, a bare "好" after a proposal, a `sets_rule` turn on a lookup, a `memory` correction routed
-  to the planner, the parity and skip-rate cases, and role resolution against the real `omp --profile houge models`
+  that overflows its lane, a bare "好" after a proposal, "好" quoting an older proposal (resolved through the real outbox
+  ids in the copy), a `sets_rule` turn on a lookup, a `memory` correction routed to the planner, the parity and skip-rate cases, and role resolution against the real `omp --profile houge models`
   list. Cases judge by the recorded verdict (INCONCLUSIVE when Jev's call takes another path, never a false FAIL).
 - **Stage A PASS criterion:** every routed turn's first `llm_attempt` joins to a `jev_verdicts` row; `pin_failed` = 0;
   each role resolves to the expected head of its list for profile `houge`; the memory lane's distill and reconcile
@@ -308,8 +335,9 @@ from the planner's current family runs first; when every candidate shares it, th
 
 One spec; a plan, a build and a live gate per stage. Arm each stage on Paco's word after its replay.
 
-- **A** — the decision point (three question types), roles with the code lists, `/models`, the rollback switch, the
-  planner lane with the two-axis chain; memory and status re-attached to the tree. Every other category goes to the
+- **A** — the decision point (three question types), the Telegram quote as a thread anchor (§2.2.1), roles with the
+  code lists, `/models`, the rollback switch, the planner lane with the two-axis chain; memory and status re-attached
+  to the tree. Every other category goes to the
   planner on its role: the only visible change is which model answers a planner turn (memory stays on K3).
 - **B** — the `answer` and `lookup` lanes (58% of past turns).
 - **C** — the `schedule` and `wiki` lanes; the research-lane question, from stage A/B rows.
@@ -326,7 +354,7 @@ ADR 0029 amendment (tree, lanes as the leaf type, roles) and ADR 0028 amendment 
 `jev-decision-layer.md` rewritten around the tree; CONTEXT.md terms *category*, *lane*, *role*; README;
 `tasks/todo.md`, `sessions.md`.
 
-## 12. Review log (Rev 1 → Rev 5)
+## 12. Review log (Rev 1 → Rev 6)
 
 Two reviews of Rev 1 on 2026-10-06, both NOT READY: a senior review against the live omp, DB and code, and a Codex
 design pass. Every finding was verified first-hand before being folded in; none changed §1.
@@ -352,6 +380,7 @@ design pass. Every finding was verified first-hand before being folded in; none 
 | Re-pass on Rev 2 (Codex, NOT READY): pin `model_missing` vs `pin_failed` needs a classified path (the wrapper drops omp's text); `static` undefined for patterns; Reader named twice, Council one role; `sets_rule` unsure zone and a zero-candidate cascade unspecified; retries after a side effect | §5 error text kept and classified; §4 lists are exact selectors, only overrides are patterns, `static` = today's chain semantics; §4 three council roles; §2.4 unsure is no; §4 retry semantics unchanged |
 | Re-pass on Rev 3 (Codex, NOT READY): catalog match must ignore `:effort`; a spawn-refused selector could be pinned again by a later turn; a role-level override would collapse the judge seats; retry-after-side-effect residual | §4 match on `provider/id`, refused-selector set per child, per-seat judge overrides; §4 residual stated |
 | Re-pass on Rev 4 (Codex, NOT READY): the refused set must not clear on a catalog sighting; per-seat judge overrides need per-key storage and reset | §4 clears on child restart only; §4.2 keyed rows and per-key reset |
+| Paco, 2026-10-07: a Telegram reply (quote) is dropped today; add it to stage A | §2.2.1 `quoted_turn` resolved from stored turns, in the state, prompts and replay; tests and gate case |
 | Re-pass on Rev 2 (senior, READY): a spawn-refused Default[0] would become a per-turn `pin_failed`; `.env` is not read live; Reader list named twice; skipped turns need a verdict row; where `/models` is gated | §5 `model_missing` on pin walks the list, respawn rule removed; §4.3 wording; §4 table; §6; §4.2 |
 
 ## Appendix A. Parked from mu for later lanes
