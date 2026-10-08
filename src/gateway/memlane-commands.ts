@@ -56,6 +56,9 @@ export function recordTriageOverride(store: RunStore, original_run_id: string, n
   const change_id = store.getLessonChangeByRun(original_run_id)?.change_id ?? null;
   store.recordMemoryEvent("triage_override", { run_id: original_run_id, new_run_id, change_id });
   for (const d of store.listJevDecisions(original_run_id)) store.recordJevOutcome(d.decision_id, "paco_correction", "override");
+  // Spec §6: the tap is Paco's explicit correction, so it outranks any earlier label on the original turn's verdict.
+  const verdict = store.getJevVerdictForRun(original_run_id);
+  if (verdict) store.updateJevVerdict(verdict.verdict_id, { paco_correction: "ask_anyway" });
   const since = new Date(Date.parse(now) - TRIAGE_OVERRIDE_WINDOW_DAYS * 86_400_000).toISOString();
   if (store.countRecentLedgerEvents("triage_override", since) >= TRIAGE_OVERRIDE_LIMIT) {
     const path = jevDisarmMarkerPath(env, dataDir);

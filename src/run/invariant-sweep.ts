@@ -211,7 +211,7 @@ export const JEV_SKIP_RATE_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const JEV_SKIP_RATE_MIN_ATTEMPTS = 3;
 export const JEV_SKIP_RATE_MAX = 0.5;
 /** Skips that are not a Jev call at all: the flag is off, the turn is gated out, Paco overrode it, or the state was too big to send. */
-export const JEV_NOT_ATTEMPT_REASONS: readonly SkipReason[] = ["disabled", "posture", "modality", "override", "state_too_large"];
+export const JEV_NOT_ATTEMPT_REASONS: readonly SkipReason[] = ["disabled", "posture", "modality", "override", "state_too_large", "ack_rule"];
 /** Failures that open no incident per call (jev-incidents.ts); auth/429/529/bad question/no key/fuse already page on their own. */
 export const JEV_SILENT_SKIP_REASONS: readonly SkipReason[] = ["timeout", "parse", "transport", "error"];
 

@@ -13,8 +13,11 @@ function turn(store: RunStore, at: string, t: Triage, caps: string[], end: "comp
   vi.setSystemTime(new Date(at));
   const run = createQueuedTurnRun(store, "x");
   caps.forEach((c, i) => store.appendRunLedgerEvent(run, "loop_step", "core", step(i + 1, c)));
+  // A lane 1 row as the reader sees history (lane/complete), padded with the tree's required fields so today's validator
+  // accepts the write (Task 10 changed the required list; Task 12 rewrites this reader over the tree's rows).
   store.appendRunLedgerEvent(run, "triage", "core", { status: "answered", lane: t.lane, complete: t.complete, scope: "ask", confidence: 0.9,
-    top_prob: 0.93, margin: 0.88, lang: "zh", decision: t.decision, verdict: `memory_${t.complete}` });
+    top_prob: 0.93, margin: 0.88, lang: "zh", decision: t.decision, verdict: `memory_${t.complete}`,
+    category: null, route_lane: "planner", role: "default", verdict_id: "jv_lane1" });
   store.insertJevDecision({ run_id: run, point: "triage", question_id: "lane", criteria_hash: "c", model_reported: model, state_hash: null, lang: "zh",
     answers_json: "{}", confidence: 0.9, top_prob: 0.9, margin: 0.8, threshold_version: "v", threshold_used: null, decision: t.decision, latency_ms: 1,
     input_tokens: 1, status: "answered", skip_reason: null, created_at: at });

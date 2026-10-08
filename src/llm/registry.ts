@@ -138,7 +138,7 @@ export function seatChain(cfg: OmpConfig, role: LlmCallRole): ModelString[] {
     case "answer":
     case "compose": return cfg.planner;
     case "writer": throw new Error("the writer seat is codex, not an omp chain");
-    default: return cfg.ticks; // distill, consolidate, extract, attribution, frame, verify, classify*
+    default: return cfg.ticks; // distill, consolidate, extract, attribution, frame, verify, classify*, cascade (the Tiny role)
   }
 }
 
@@ -176,6 +176,8 @@ export function seatBudgetMs(cfg: OmpConfig, role: LlmCallRole): number {
 export interface OneShotAdapterOptions {
   /** A seat-specific chain (a judge's single string); default {@link seatChain} for the scope's role. */
   chain?: ModelString[];
+  /** A bound on the whole chain, from the call's start (the tree's cascade, Decision 14): no leg outlives it, none starts after it. */
+  deadlineMs?: number;
   /** Tests only: bypass the `omp --version` spawn. */
   versionCheck?: OneShotDeps["versionCheck"];
 }
@@ -198,7 +200,8 @@ export function oneShotAdapter(
         {
           seat: scope.role, chain, prompt: req.system ? `${req.system}\n\n${req.question}` : req.question,
           files: req.media ? [req.media.path] : [], correlationId: `${base}:${scope.role}:${randomUUID()}`,
-          ...(plannerFamily !== undefined ? { plannerFamily } : {}), ...(req.signal ? { signal: req.signal } : {})
+          ...(plannerFamily !== undefined ? { plannerFamily } : {}), ...(req.signal ? { signal: req.signal } : {}),
+          ...(opts.deadlineMs !== undefined ? { deadlineAt: Date.now() + opts.deadlineMs } : {})
         },
         {
           cfg, audit: store.llmAuditSink(scope), onVersionCheck: (check) => reportOmpCheck(store, cfg, check),

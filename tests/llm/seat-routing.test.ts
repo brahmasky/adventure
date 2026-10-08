@@ -8,7 +8,7 @@ import { familyOf, parseModelChain } from "../../src/omp/model-string.js";
 import { staticRoleChains } from "../../src/omp/model-roles.js";
 import { judgeSeat, oneShotAdapter, seatBudgetMs, seatChain, tickSeat } from "../../src/llm/registry.js";
 import { RunStore } from "../../src/run/run-store.js";
-import { OMP_AUDIO_REFUSED, spawnOneShot } from "../../src/llm/providers/omp.js";
+import { LEG_EXIT_GRACE_MS, OMP_AUDIO_REFUSED, spawnOneShot } from "../../src/llm/providers/omp.js";
 import { FAKE_OMP_BIN, pinOmpEnv } from "../helpers/omp-env.js";
 
 pinOmpEnv();
@@ -33,6 +33,10 @@ describe("seat routing — which subscription model serves each non-planner call
   it("puts the panel chair on cfg.chair and the photo reader on cfg.media", () => {
     expect(seatChain(cfg, "chair")).toEqual(cfg.chair);
     expect(seatChain(cfg, "media_transcribe")).toEqual(cfg.media);
+  });
+  // Decision 14 (Rev 4): the cascade runs on the Tiny role, the cheap chain, never the planner's
+  it("runs the cascade on the Tiny chain (cfg.ticks)", () => {
+    expect(seatChain(cfg, "cascade")).toEqual(cfg.ticks);
   });
   it("refuses to route the codex writer through omp", () => {
     expect(() => seatChain(cfg, "writer")).toThrow(/codex/);
@@ -64,6 +68,21 @@ describe("oneShotAdapter — the audited one-shot call every seat makes", () => 
     expect(argv()[0]?.argv).toContain("kimi-code/k3");
     const rows = store.getLedgerEventsByCorrelation("tick:t").filter((e) => e.event_type === "llm_attempt");
     expect(rows.map((e) => e.payload)).toEqual([expect.objectContaining({ role: "distill", outcome: "ok", family: "kimi" })]);
+  });
+  // Decision 14: the cascade's 20 s is a bound on the whole Tiny chain. A per-leg timeout alone would let a hung first
+  // leg hand the user a second full leg, and cutting the leg from outside would audit it as `shutdown`, which the
+  // llm_leg_failing sweep ignores. The chain deadline times the leg out honestly and starts no later leg.
+  it("deadlineMs bounds the whole chain: the hung leg is audited timeout at the deadline and no later leg starts", { timeout: 20_000 }, async () => {
+    const cfg = fakeCfg({ "kimi-code/k3": { sleepMs: 30_000, text: "late" }, "google-antigravity/gemini-3.8-flash": { text: "never asked" } });
+    const tiny = { ...cfg, oneshotTimeoutMs: 5_000, ticks: parseModelChain("kimi-code/k3:low,google-antigravity/gemini-3.8-flash:low") };
+    const t0 = Date.now();
+    const r = await oneShotAdapter(store, tiny, { correlation_id: "cli:cascade", role: "cascade" }, undefined, { deadlineMs: 1_500 })
+      .answer({ question: "Q", system: "S" });
+    expect(Date.now() - t0).toBeLessThan(1_500 + LEG_EXIT_GRACE_MS + 2_000);
+    expect(r.ok).toBe(false);
+    expect(argv()).toHaveLength(1);
+    const rows = store.getLedgerEventsByCorrelation("cli:cascade").filter((e) => e.event_type === "llm_attempt");
+    expect(rows.map((e) => e.payload)).toEqual([expect.objectContaining({ role: "cascade", outcome: "error", error_kind: "timeout", model: "k3" })]);
   });
 
   it("an omp that cannot be asked opens ONE omp_unavailable incident per check kind and leaves no audit row", async () => {

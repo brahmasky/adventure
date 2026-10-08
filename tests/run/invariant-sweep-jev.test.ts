@@ -52,7 +52,7 @@ describe("jev_skip_rate", () => {
 
   it("does not count non-failure skips: a disabled, posture-gated or overridden layer is not a dead one", () => {
     answered(60);
-    for (const r of ["disabled", "posture", "modality", "override", "state_too_large"] as const) skipped(30, r);
+    for (const r of ["disabled", "posture", "modality", "override", "state_too_large", "ack_rule"] as const) skipped(30, r);
     skipped(20, "timeout");
     expect(checkJevSkipRate(store, nowIso())).toMatchObject({ open: false, attempts: 2, failed: 1 });
   });

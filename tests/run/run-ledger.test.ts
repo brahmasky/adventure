@@ -200,9 +200,15 @@ describe("Run Ledger events", () => {
 
   it("ADR 0029 events require their enum/number fields and accept null for a skipped triage (never text)", () => {
     const ok = validateLedgerEvent(createLedgerEvent({ correlation_id: "r", event_type: "triage", actor: "core", sequence: 1,
-      payload: { status: "skipped", lane: null, complete: null, scope: null, confidence: null, top_prob: null, margin: null, lang: "zh", decision: "fallback", verdict: null, skip_reason: "no_key" } }));
+      payload: { status: "skipped", category: null, route_lane: "planner", role: "default", verdict_id: "jv_x", confidence: null, top_prob: null, margin: null,
+        lang: "zh", decision: "fallback", verdict: "jev_skipped", skip_reason: "no_key" } }));
     expect(ok.ok).toBe(true);
-    const missing = validateLedgerEvent(createLedgerEvent({ correlation_id: "r", event_type: "lesson_saved", actor: "core", sequence: 2, payload: { lesson_id: 51 } }));
+    // the tree's denominator row must name its verdict: the §9 join reads it
+    const noVerdict = validateLedgerEvent(createLedgerEvent({ correlation_id: "r", event_type: "triage", actor: "core", sequence: 2,
+      payload: { status: "skipped", category: null, route_lane: "planner", role: "default", confidence: null, top_prob: null, margin: null, lang: "zh",
+        decision: "fallback", verdict: "jev_skipped" } }));
+    expect(noVerdict.ok).toBe(false);
+    const missing = validateLedgerEvent(createLedgerEvent({ correlation_id: "r", event_type: "lesson_saved", actor: "core", sequence: 3, payload: { lesson_id: 51 } }));
     expect(missing.ok).toBe(false);
   });
 

@@ -118,6 +118,8 @@ const APPROVAL_REFUSAL_TEXT: Readonly<Record<string, string>> = {
 };
 /** An `appr_<uuid>` is 41 characters; anything longer is not an id and is not echoed in full. */
 const APPROVAL_ID_ECHO_MAX = 48;
+/** Spec §6: a session rated at or below this is a correction on the chat's latest routed turn. */
+const LOW_RATING_MAX = 1;
 
 export class Gateway {
   private readonly caps: GlobalBudgetCaps;
@@ -334,6 +336,7 @@ export class Gateway {
       applied_lesson_ids: applied
     });
     this.runStore.applyRatingToLessons(applied, parsed.rating, now);
+    if (parsed.rating <= LOW_RATING_MAX) this.markLowRating(chat_id, now);
     // Phase W W2: the wiki pages folded into the window's turns absorb the same signal
     // (+0.25 reuse on a good session). Attribution rides the ledger, so this is inert
     // ([] → no-op) unless wiki retrieval actually seeded wiki_page_ids.
@@ -1126,6 +1129,12 @@ export class Gateway {
       this.recordTelegramAccepted(event, now);
     }
     return queued;
+  }
+
+  /** Spec §6: a low session rating labels the chat's latest verdict (first correction wins: a tap or think-harder stays). */
+  private markLowRating(chat_id: string, now: string): void {
+    const v = this.runStore.latestJevVerdictForChat(chat_id, now);
+    if (v && v.paco_correction === null) this.runStore.updateJevVerdict(v.verdict_id, { paco_correction: "low_rating" });
   }
 
   /**

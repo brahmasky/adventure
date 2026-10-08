@@ -14,6 +14,8 @@ export interface OneShotInput {
   correlationId: string; timeoutMs?: number; plannerFamily?: ModelFamily;
   /** The daemon's stop: aborting kills the in-flight leg's process group and ends the call (no later leg; the leg is audited error{shutdown}). */
   signal?: AbortSignal;
+  /** Epoch ms bounding the whole chain: each leg's timeout is what it leaves (audited `timeout`), and no leg starts after it. */
+  deadlineAt?: number;
 }
 export interface OneShotDeps {
   cfg: OmpConfig; audit: LlmAuditSink; versionCheck?: () => ReturnType<typeof checkOmpVersion>;
@@ -92,6 +94,13 @@ function legFailure(o: LegOutcome): string | null {
   return null;
 }
 
+/** The leg's input under the chain's deadline: its timeout is what the deadline leaves; null once nothing is left. */
+function legUnderDeadline(input: OneShotInput, cfg: OmpConfig): OneShotInput | null {
+  if (input.deadlineAt === undefined) return input;
+  const left = input.deadlineAt - Date.now();
+  return left <= 0 ? null : { ...input, timeoutMs: Math.min(input.timeoutMs ?? cfg.oneshotTimeoutMs, left) };
+}
+
 /**
  * omp cannot hear audio: it inlines Ogg bytes as TEXT and the model invents a transcript (ruling 2,
  * live probe 2026-09-30). Code-owned refusal at the chokepoint — voice belongs to the agy-cli leg.
@@ -125,7 +134,9 @@ export async function spawnOneShot(input: OneShotInput, deps: OneShotDeps): Prom
   const errors: string[] = [];
   for (const [i, m] of readerOrder(input).entries()) {
     if (input.signal?.aborted) return ABORTED;
-    const o = await runLeg(deps.cfg, m, input);
+    const leg = legUnderDeadline(input, deps.cfg);
+    if (leg === null) { errors.push(`${formatModelString(m)}: deadline`); break; } // never ran, so never audited
+    const o = await runLeg(deps.cfg, m, leg);
     const family = familyOf(m);
     const base = {
       provider: m.provider, role: "", latency_ms: o.latencyMs, family, leg_index: i,

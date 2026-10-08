@@ -302,9 +302,11 @@ const requiredPayloadFields = {
   // Memory A1 §8: one row per migration step (ids only).
   memory_migration: ["step", "old_ids", "new_ids"],
   // Jev System One, lane 1 (ADR 0029 §5.8). Enums, numbers and ids only — NEVER message text or provider detail.
-  // `triage` is the per-turn denominator: written once per eligible Telegram turn after the outcome is known;
-  // a skipped call carries nulls for the answer fields and a skip_reason.
-  triage: ["status", "lane", "complete", "scope", "confidence", "top_prob", "margin", "lang", "decision", "verdict"],
+  // `triage` is the per-turn denominator: written once per eligible Telegram turn after the outcome is known, in the same
+  // transaction as the turn's jev_verdicts row (spec §6); a skipped call carries nulls for the answer numbers and a skip_reason.
+  // `verdict` is the route reason; `category` / `route_lane` / `role` are what the tree routed; a turn that made the
+  // cascade call adds `cascade_between` (two category enums, optional).
+  triage: ["status", "category", "route_lane", "role", "verdict_id", "confidence", "top_prob", "margin", "lang", "decision", "verdict"],
   ack_nudged: ["approval_run_id"],
   lesson_saved: ["lesson_id", "change_id", "source"],
   lesson_change_undone: ["change_id", "restored", "skipped"],

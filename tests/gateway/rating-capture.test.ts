@@ -62,6 +62,24 @@ function seedPendingWithAppliedLessons(store: RunStore, lessonIds: number[]): vo
 }
 
 describe("Gateway rating capture (⓪·3 S2a)", () => {
+  // Spec §6: a session rated 0–1 is a correction on the chat's latest routed turn; a fair rating is not.
+  it.each([[1, "low_rating"], [2, null]] as const)("a rating of %s marks the latest verdict %s", (rating, expected) => {
+    const store = RunStore.openInMemory();
+    try {
+      const gw = new Gateway(store);
+      const turn = gw.intake(turnEvent("今天天气怎么样", `lr${rating}`), minutesAgo(50));
+      if (!turn.ok) throw new Error("intake failed");
+      store.insertJevVerdict({ run_id: turn.run_id, category: "lookup", breadth: 1, reasoning: 1, actions: 1, sets_rule: 0.05, rule_scope: null, lane: "planner",
+        role: "fast", effort: "low", cascade: null, save_outcome: "none", route_outcome: "act", reason: "routed", skip_reason: null, quoted_turn_id: null,
+        created_at: minutesAgo(50) });
+      store.writePendingRating({ chat_id: CHAT, asked_at: minutesAgo(10), window_start: minutesAgo(120) });
+      expect(gw.intake(turnEvent(String(rating), `lr${rating}:r`), NOW)).toMatchObject({ ok: true, status: "rating_captured" });
+      expect(store.getJevVerdictForRun(turn.run_id)?.paco_correction).toBe(expected);
+    } finally {
+      store.close();
+    }
+  });
+
   it("a bare digit with an active pending is captured: stored, attributed, acked — no run", () => {
     const store = RunStore.openInMemory();
     try {

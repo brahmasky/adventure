@@ -13,7 +13,9 @@ import { criteriaHash, toJevQuestion, type Question } from "./questions/types.js
  */
 export type SkipReason =
   | "no_key" | "fused" | "auth" | "rate_limited" | "overloaded" | "malformed_question" | "timeout" | "parse" | "transport"
-  | "state_too_large" | "disabled" | "posture" | "modality" | "override" | "error";
+  | "state_too_large" | "disabled" | "posture" | "modality" | "override" | "error"
+  // the §2.1 ack rule settled the turn in code: no Jev call, but the turn still has its one triage row
+  | "ack_rule";
 export type DecisionPoint = "triage";
 export type JevDecisionInsert = Parameters<RunStore["insertJevDecision"]>[0];
 
