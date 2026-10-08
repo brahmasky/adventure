@@ -299,6 +299,40 @@ change the architecture the spec describes:
 - The spec's S12 and D12 probes (live-gate case 8) are not scripts in this repo. The operator runs
   them by hand and records the result.
 
+## Amendment (2026-10-07): model roles (draft for Paco's approval)
+
+Spec: [2026-10-06-jev-decision-tree-design.md](../superpowers/specs/2026-10-06-jev-decision-tree-design.md) §4 (Rev 9).
+A draft: `docs/decisions/` is Paco's hand.
+
+- **The seven `HOUGE_OMP_*` chains move into code.** `HOUGE_OMP_PLANNER`, `_READER`, `_MEDIA`, `_TICKS`, `_JUDGES`,
+  `_CHAIR` and `_REVIEWER` are retired: a set value is ignored and named once in a boot warning. Each seat now names a
+  role (Fast, Default, Thinking, Reader, Vision, Tiny, Judges, Chair, Reviewer), and each role is a code-owned ordered
+  list in `src/omp/model-roles.ts` (`ROLE_LISTS`).
+- **Resolution runs against the live catalog.** `omp --profile houge models --json` is read at boot, by a daily tick and
+  on `/models set`. The provider allow-list (`anthropic`, `google-antigravity`, `kimi-code`, `openai-codex`) is applied
+  before any matching, chat seats never take `openai-codex`, then Paco's override, then the list (kept only for
+  selectors the catalog lists), then the per-child refused set. The catalog is the authority over any doc (Paco,
+  2026-10-07): `openai-codex/gpt-5.5` is no longer listed, so the lists carry `openai-codex/gpt-6.1-sol`. Routed effort
+  is clamped to the model's catalogued thinking levels (nearest, ties up; a model with no thinking levels gets none).
+- **`/models` overrides are append-only ledger rows** (`model_role_override`), read at each resolution, so no restart.
+  Judges are overridden one seat at a time. The daily tick posts a one-line change notice when a role's head moved
+  and opens the alerted incident `role_unresolved` when a role has no candidate.
+- **`HOUGE_MODEL_ROLES=static|resolved`** (default `resolved`) is a **model-list rollback**: static runs today's seven
+  chains with no catalog, no override and no tick. It differs from the pre-amendment supervisor in three ways: the
+  per-child refused set applies, the respawn onto the planner head at the next turn is gone (`set_model` moves the
+  live child), and while Jev is on a routed turn may step up a role and retry `other` once.
+- **The planner has two axes.** The supervisor spawns on Default's candidates and pins each turn to its routed role's
+  candidates (`set_model` plus `set_thinking_level`), walks the list at the retry boundary, and steps up (Fast to
+  Default to Thinking) on `quota`, `auth`, `transport`, `timeout` and `model_missing`, plus `other` once while no bridge
+  tool has executed. Step-up skips selectors that already failed this turn with a non-`other` error. A pin refused
+  with `model_missing` disables step-up for that turn (`pin_failed`). The ledger row is `routed_escalation`.
+- **D10 becomes a skip rule, resolved mode only.** The reader's candidates are ordered cross-family first (a stable
+  partition), instead of discovering a collapse after the read.
+- **The omp version check is async.** `checkOmpVersion` (any `x.y.z`, no pin; refuses only an omp that will not run or
+  prints no version) is awaited on the spawn path, so a blocking `execFileSync` no longer starves a concurrent bounded
+  network call (a Jev request, 1.5 s). Refusal reasons carry codes only, never provider text, and a stop during the
+  check cancels the start.
+
 ## Alternatives considered
 
 - **pi upstream with tools on:** it lacks the extension-tool supersession and RPC session resume that

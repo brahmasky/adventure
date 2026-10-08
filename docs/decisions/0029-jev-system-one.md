@@ -199,3 +199,39 @@ with Undo was delivered; no incident open. Operator reference: [jev-decision-lay
   permuted) with more than one reported model. It suggests rows only with the model the rows reported. It reads the live
   shadow filtered to that same model, and refuses shadow stats for another model, so an old model's 14 days never stand
   as a new model's evidence.
+
+## Amendment (2026-10-07): one decision tree (draft for Paco's approval)
+
+Spec: [2026-10-06-jev-decision-tree-design.md](../superpowers/specs/2026-10-06-jev-decision-tree-design.md) (Rev 9).
+This amendment is a draft: `docs/decisions/` is Paco's hand, and it lands with the stage A merge only once he approves it.
+
+- **The front of Houge is one decision point.** Every Telegram text turn passes one Jev request of six questions in three
+  answer types (`choice`, `score`, `noul`): `category` (11 values), `sets_rule`, `rule_scope`, and the three gear scores
+  `breadth`, `reasoning` and `actions`. Lane 1's three questions (`lane`, `complete`, `scope`) leave the live path. Jev
+  still only answers; code owns every bar and the fall-through (ADR 0013).
+- **Lanes are the leaf type.** A lane is a handler whose control flow is code, with one one-shot compose, and it falls
+  through to the planner on any doubt. Memory and status are re-attached as categories (lane 1's behaviour, behind the
+  tree's `category` plus `rule` rows for memory and `category:status` plus `rule` for status). Every other category runs
+  the planner on its routed model role (Fast, Default or Thinking). The planner is the floor.
+- **`jev_verdicts` is the per-turn row.** One row per turn (category, the three scores, rule answers, lane, role, effort,
+  the cascade value, save / route / handler outcomes, reason, skip reason, quoted turn), written in the same transaction as
+  the `triage` event, joined to the turn's first model call through `routed_by`, and closed at the run's terminal so
+  none stays `pending`.
+- **A Telegram quote anchors the turn.** `chat_turns.quoted_turn_id` resolves a reply to its stored turn; the quoted turn is
+  in Jev's state and the planner prompt; an unresolved quote is a ledger note (`quote_unresolved`), never a failure.
+- **Arming follows new rows.** The six tree questions have new criteria hashes, so lane 1's `CALIBRATED_ROWS` no longer
+  arm anything. The tree arms per decision (`category`, `category:status`, `rule`, `gear`) on rows Paco commits after
+  `houge jev replay triage` on a DB copy, keyed on the reported model as before. Until then every turn routes
+  `uncalibrated` to the planner on Default, and the memory and status lanes do not act. The merge is gated on that
+  commit and on the armed live gate passing with both lanes acting.
+- **The routing policy stays under `src/jev/`** (`tree-policy.ts`), not `src/policy/`: it produces no allow or deny, so it
+  is not gate machinery and not on the protected surface.
+- **Below the choice bar, one cascade call, bounded at 20 s** (Paco, 2026-10-07). When `category` is under its bar, one
+  one-shot on the Tiny role picks between Jev's top two categories after `memory` and `status` are removed, so a model
+  guess can never route into a no-planner lane. Failure, timeout or an answer outside the two means planner on Default and
+  nothing saved. The verdict's `cascade` value is `tiny`. Flat-rate legs only (invariant unchanged).
+- **A lane that fails pages.** The sweep adds `lane_fallthrough_rate` (per lane, at least 3 settled turns in 24 h with half
+  or more falling through to the planner); `jev_skip_rate` is unchanged. Every Jev outage class still reaches Paco.
+- **Failure is Default as resolved.** Any Jev failure, skip, unarmed question or thrown stage runs the planner on the Default
+  role as resolved (a `/models` override included), with one verdict row.
+
