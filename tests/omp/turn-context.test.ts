@@ -12,6 +12,7 @@ import {
   RESTART_NOTE_PREFIX,
   claimAtDispatch,
   claimRestartNoteAtDispatch,
+  quotedLine,
   SCHEDULED_PREFIX,
   systemPromptFingerprint,
   writeSystemPromptFile,
@@ -486,5 +487,27 @@ describe("the seed after a lesson-change reset (memory A1 §6)", () => {
     expect(fired.prompt).not.toContain(SEED_OPEN);
     expect(claimAtDispatch(store, CHAT, fired)).toBe(fired.prompt);
     expect(store.getPlannerSessionState(CHAT)!.seed_pending).toBe(1);
+  });
+
+  it("a quote sits after the seed: a dispatch that lost the seed keeps the quote and the message intact (spec §2.2.1)", async () => {
+    // claimAtDispatch strips a lost seed by its exact length from the front; a quote before the seed would be cut
+    const store = RunStore.openInMemory();
+    completed(store, "earlier message", t(1));
+    store.recordPlannerSessionReset(CHAT, "fp", t(6));
+    const quoted = "[replying to houge, 3600 s ago: 要不要我查一下？]\n";
+    const a = await current(store, "first");
+    const run_id = createQueuedTurnRun(store, "好");
+    const b = await buildTurnPrompt(deps(store), { run_id, chat_id: CHAT, message: "好", source: "telegram", quoted });
+    expect(b.prompt).toBe(`${b.seed}${quoted}好`);
+    claimAtDispatch(store, CHAT, a); // the other dispatch claims the seed first
+    expect(claimAtDispatch(store, CHAT, b)).toBe(`${quoted}好`);
+  });
+});
+
+describe("quotedLine (spec §2.2.1)", () => {
+  it("names who said it and how long ago, on one line, clipped like a thread turn", () => {
+    // a newline inside the quote would let stored text open a second marker line in the planner prompt
+    expect(quotedLine({ role: "houge", kind: "proposal", age_s: 3600, text: "要不要\n我查一下？" }, 500)).toBe("[replying to houge, 3600 s ago: 要不要 我查一下？]\n");
+    expect(quotedLine({ role: "user", kind: "answer", age_s: 59.6, text: "x".repeat(20) }, 8)).toBe(`[replying to user, 60 s ago: ${"x".repeat(8)}…]\n`);
   });
 });

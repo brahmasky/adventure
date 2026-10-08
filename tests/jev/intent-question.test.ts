@@ -4,7 +4,7 @@ import { buildJevIntentRequest, JEV_INTENT_QUESTION, JEV_INTENTS, langOf, MAX_LA
 import type { ChatTurnRow } from "../../src/run/run-store.js";
 
 const turn = (role: "user" | "assistant", text: string, i: number): ChatTurnRow => ({
-  turn_id: `t${i}`, chat_id: "c", run_id: `r${i}`, role, text, intent: role === "assistant" ? "answer" : null, created_at: `2026-09-01T00:00:0${i}.000Z`
+  turn_id: `t${i}`, chat_id: "c", run_id: `r${i}`, role, text, intent: role === "assistant" ? "answer" : null, created_at: `2026-09-01T00:00:0${i}.000Z`, quoted_turn_id: null
 });
 
 describe("buildJevIntentRequest", () => {

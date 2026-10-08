@@ -10,7 +10,7 @@ import type { ChatTurnRow } from "../../src/run/run-store.js";
 
 /** The one ChatTurnRow builder in this file: a column added to the row type is added here once. */
 const turn = (role: "user" | "assistant", text: string, created_at = "2026-10-07T00:00:00.000Z", intent: string | null = null): ChatTurnRow =>
-  ({ turn_id: "t", chat_id: "c", run_id: "r", role, text, intent, created_at });
+  ({ turn_id: "t", chat_id: "c", run_id: "r", role, text, intent, created_at, quoted_turn_id: null });
 const NOW = Date.parse("2026-10-07T01:00:00.000Z");
 
 // Spec §2.3: the six questions ride one request, and the policy (tree-policy.ts) reads them by id and option name. A

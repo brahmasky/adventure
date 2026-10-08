@@ -23,7 +23,8 @@ function turn(role: "user" | "assistant", text: string, intent?: string): ChatTu
     role,
     text,
     intent: role === "assistant" ? intent ?? "answer" : null,
-    created_at: "2026-06-19T00:00:00.000Z"
+    created_at: "2026-06-19T00:00:00.000Z",
+    quoted_turn_id: null
   };
 }
 

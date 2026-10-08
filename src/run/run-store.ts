@@ -357,7 +357,14 @@ export interface ChatTurnRow {
   text: string;
   intent: string | null;
   created_at: string;
+  /** The stored turn this message quoted (a Telegram reply resolved by resolveQuotedTurn, spec §2.2.1); null otherwise. */
+  quoted_turn_id: string | null;
 }
+
+/** A Telegram quote resolved to the stored turn it replies to (spec §2.2.1), or why it could not be. */
+export type QuoteResolution =
+  | { ok: true; role: "houge" | "user"; turn: ChatTurnRow }
+  | { ok: false; reason: "no_mapping" | "ambiguous" | "not_final" };
 
 /** One historical user turn eligible for Jev replay (Jev spec 2026-09-25). */
 export interface ReplayTurnRow {
@@ -934,6 +941,13 @@ function overLessonCap(text: string, avoid: string | undefined): boolean {
   return text.length > LESSON_MAX_CHARS || (avoid?.length ?? 0) > LESSON_AVOID_MAX_CHARS;
 }
 
+/** Exactly one stored turn resolves a quote; none is no mapping, several is ambiguous (spec §2.2.1). */
+function oneTurn(turns: ChatTurnRow[], role: "houge" | "user"): QuoteResolution {
+  const [turn] = turns;
+  if (!turn) return { ok: false, reason: "no_mapping" };
+  return turns.length === 1 ? { ok: true, role, turn } : { ok: false, reason: "ambiguous" };
+}
+
 export class RunStore {
   /**
    * Secrets-firewall redactor (ADR 0015): masks known secret VALUES at RunStore's own write seams —
@@ -1119,10 +1133,12 @@ export class RunStore {
     text: string;
     intent?: string;
     created_at?: string;
+    /** The turn this message quoted (spec §2.2.1), so the replay rebuilds the same state. */
+    quoted_turn_id?: string;
   }): void {
     this.db.prepare(`
-      INSERT INTO chat_turns (turn_id, chat_id, run_id, role, text, intent, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO chat_turns (turn_id, chat_id, run_id, role, text, intent, created_at, quoted_turn_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       `turn_${randomUUID()}`,
       input.chat_id,
@@ -1130,7 +1146,8 @@ export class RunStore {
       input.role,
       input.text,
       input.intent ?? null,
-      input.created_at ?? new Date().toISOString()
+      input.created_at ?? new Date().toISOString(),
+      input.quoted_turn_id ?? null
     );
   }
 
@@ -1143,14 +1160,14 @@ export class RunStore {
   getRecentChatTurns(chat_id: string, limit: number, sinceIso?: string): ChatTurnRow[] {
     const rows = sinceIso
       ? this.db.prepare(`
-          SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+          SELECT turn_id, chat_id, run_id, role, text, intent, created_at, quoted_turn_id
           FROM chat_turns
           WHERE chat_id = ? AND created_at >= ?
           ORDER BY created_at DESC, rowid DESC
           LIMIT ?
         `).all<ChatTurnRow>(chat_id, sinceIso, limit)
       : this.db.prepare(`
-          SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+          SELECT turn_id, chat_id, run_id, role, text, intent, created_at, quoted_turn_id
           FROM chat_turns
           WHERE chat_id = ?
           ORDER BY created_at DESC, rowid DESC
@@ -1166,7 +1183,7 @@ export class RunStore {
    */
   getChatTurnsBefore(chat_id: string, limit: number, sinceIso: string, beforeIso: string, excludeRunId: string): ChatTurnRow[] {
     return this.db.prepare(`
-      SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+      SELECT turn_id, chat_id, run_id, role, text, intent, created_at, quoted_turn_id
       FROM chat_turns
       WHERE chat_id = ? AND created_at >= ? AND created_at < ? AND run_id <> ?
       ORDER BY created_at DESC, rowid DESC
@@ -1294,14 +1311,14 @@ export class RunStore {
   getChatTurnsAfter(chat_id: string, afterIso: string | undefined, limit: number): ChatTurnRow[] {
     return afterIso
       ? this.db.prepare(`
-          SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+          SELECT turn_id, chat_id, run_id, role, text, intent, created_at, quoted_turn_id
           FROM chat_turns
           WHERE chat_id = ? AND created_at > ?
           ORDER BY created_at ASC, rowid ASC
           LIMIT ?
         `).all<ChatTurnRow>(chat_id, afterIso, limit)
       : this.db.prepare(`
-          SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+          SELECT turn_id, chat_id, run_id, role, text, intent, created_at, quoted_turn_id
           FROM chat_turns
           WHERE chat_id = ?
           ORDER BY created_at ASC, rowid ASC
@@ -1609,33 +1626,58 @@ export class RunStore {
   }
 
   /**
-   * Correlate a delivered notification's provider_message_id (e.g. `telegram:<id>`)
-   * back to its originating run_id — the feedback path uses the reply-hint to find
-   * the prior answer's run and thus its chat turn + scope.
+   * A Telegram quote resolved to the stored turn it replies to (spec §2.2.1), code only; Telegram's own copy of the
+   * quoted text is never read. Houge's reply: this chat's outbox row whose provider id is `telegram:<id>` → that run's
+   * one assistant turn. Paco's message: the run born from `telegram:update:*:message:<id>` in this chat → its one user
+   * turn. Telegram message ids are per chat, so every lookup is scoped to `chat_id`.
    */
-  getRunIdByProviderMessageId(provider_message_id: string): string | undefined {
-    const row = this.db.prepare(`
-      SELECT run_id
-      FROM notification_outbox
-      WHERE provider_message_id = ? AND run_id IS NOT NULL
-      ORDER BY updated_at DESC
-      LIMIT 1
-    `).get<{ run_id: string | null }>(provider_message_id);
-    return row?.run_id ?? undefined;
+  resolveQuotedTurn(chat_id: string, reply_to_message_id: number): QuoteResolution {
+    if (!Number.isSafeInteger(reply_to_message_id) || reply_to_message_id <= 0) return { ok: false, reason: "no_mapping" };
+    const sent = this.db.prepare(`
+      SELECT run_id, intent_type, idempotency_key FROM notification_outbox
+      WHERE provider_message_id = ? AND target_key = ? AND run_id IS NOT NULL
+    `).all<{ run_id: string; intent_type: string; idempotency_key: string }>(`telegram:${reply_to_message_id}`, `telegram:${chat_id}`);
+    return sent.length > 0 ? this.quotedHougeTurn(chat_id, sent) : this.quotedUserTurn(chat_id, reply_to_message_id);
   }
 
   /**
-   * The assistant chat turn produced by a given run (the feedback reply-hint path
-   * correlates a replied-to message → its run → that run's answer + intent → scope).
+   * Only a run's `final_report` maps to its answer, and never an evolution report (queued as `final_report` too, under
+   * `<run>:evolution_report:<tool>`). The run must hold exactly one assistant turn outside `evolution_report` (`IS NOT`
+   * keeps a NULL-intent reply); none or several is unresolved, never a guess.
    */
-  getAssistantChatTurnForRun(run_id: string): ChatTurnRow | undefined {
-    return this.db.prepare(`
-      SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+  private quotedHougeTurn(chat_id: string, sent: Array<{ run_id: string; intent_type: string; idempotency_key: string }>): QuoteResolution {
+    const runs = [...new Set(sent.filter((r) => r.intent_type === "final_report" && !r.idempotency_key.includes(":evolution_report:")).map((r) => r.run_id))];
+    const [run] = runs;
+    if (run === undefined) return { ok: false, reason: "not_final" };
+    if (runs.length > 1) return { ok: false, reason: "ambiguous" };
+    const turns = this.db.prepare(`
+      SELECT turn_id, chat_id, run_id, role, text, intent, created_at, quoted_turn_id
       FROM chat_turns
-      WHERE run_id = ? AND role = 'assistant'
-      ORDER BY created_at DESC, rowid DESC
-      LIMIT 1
-    `).get<ChatTurnRow>(run_id);
+      WHERE run_id = ? AND chat_id = ? AND role = 'assistant' AND intent IS NOT 'evolution_report'
+      ORDER BY created_at ASC, rowid ASC
+      LIMIT 2
+    `).all<ChatTurnRow>(run, chat_id);
+    return oneTurn(turns, "houge");
+  }
+
+  /** LIKE anchors both ends: `…:message:12` never matches `…:message:123` (the id is digits, never a wildcard). */
+  private quotedUserTurn(chat_id: string, messageId: number): QuoteResolution {
+    const runs = this.db.prepare(`
+      SELECT run_id FROM runs
+      WHERE source = 'telegram' AND source_reference LIKE ?
+        AND json_extract(notify_json, '$.kind') = 'telegram' AND json_extract(notify_json, '$.chat_id') = ?
+    `).all<{ run_id: string }>(`telegram:update:%:message:${messageId}`, chat_id);
+    const [run] = runs;
+    if (run === undefined) return { ok: false, reason: "no_mapping" };
+    if (runs.length > 1) return { ok: false, reason: "ambiguous" };
+    const turns = this.db.prepare(`
+      SELECT turn_id, chat_id, run_id, role, text, intent, created_at, quoted_turn_id
+      FROM chat_turns
+      WHERE run_id = ? AND chat_id = ? AND role = 'user'
+      ORDER BY created_at ASC, rowid ASC
+      LIMIT 2
+    `).all<ChatTurnRow>(run.run_id, chat_id);
+    return oneTurn(turns, "user");
   }
 
   listRecentRunStatuses(limit: number): RunStatusRow[] {
@@ -2632,7 +2674,7 @@ export class RunStore {
         ORDER BY last_at DESC
         LIMIT ?
       )
-      SELECT u.turn_id, u.chat_id, u.run_id, u.role, u.text, u.intent, u.created_at
+      SELECT u.turn_id, u.chat_id, u.run_id, u.role, u.text, u.intent, u.created_at, u.quoted_turn_id
       FROM chat_turns u
       WHERE u.chat_id = ? AND u.role = 'user' AND u.run_id IN (SELECT run_id FROM picked)
       ORDER BY u.created_at ASC, u.rowid ASC
@@ -6690,6 +6732,7 @@ export class RunStore {
     this.applyJevDecisionsMigration();
     this.applyLessonChangesMigration();
     this.applyJevDecisionInstantsMigration();
+    this.applyChatTurnsQuotedMigration();
   }
 
   /** Memory A1 §6: the lesson-set fingerprint each chat's omp session started on, persisted so a restart still compares. */
@@ -6772,6 +6815,16 @@ export class RunStore {
       const cols = this.tableColumns("jev_decisions");
       if (!cols.has("thread_cut_at")) this.db.exec(`ALTER TABLE jev_decisions ADD COLUMN thread_cut_at TEXT`);
       if (!cols.has("state_built_at")) this.db.exec(`ALTER TABLE jev_decisions ADD COLUMN state_built_at TEXT`);
+      if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
+  }
+
+  /** Spec §2.2.1: the turn a Telegram quote resolved to, recorded on the new message's row. Guarded by table_info (idempotent). */
+  private applyChatTurnsQuotedMigration(): void {
+    const version = "2026-10-07-chat-turns-quoted";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      if (!this.tableColumns("chat_turns").has("quoted_turn_id")) this.db.exec(`ALTER TABLE chat_turns ADD COLUMN quoted_turn_id TEXT`);
       if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
     });
   }

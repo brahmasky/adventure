@@ -5,7 +5,7 @@ import { MAX_LATEST_MESSAGE_CHARS } from "../../src/jev/intent-question.js";
 
 const q = (criteria: ReadonlyArray<readonly [string, string]>): ChoiceQuestion => ({ id: "t", type: "choice", instructions: "pick", criteria });
 const turn = (role: "user" | "assistant", text: string, created_at = "2026-10-04T00:00:00.000Z", intent: string | null = null) =>
-  ({ turn_id: "t", chat_id: "c", run_id: "r", role, text, intent, created_at });
+  ({ turn_id: "t", chat_id: "c", run_id: "r", role, text, intent, created_at, quoted_turn_id: null });
 
 describe("criteriaHash (spec §3.1: option ORDER is a calibration variable; the model is a separate key)", () => {
   it("changes when options are reordered or a word changes; does not depend on the model", () => {
