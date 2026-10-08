@@ -14,6 +14,8 @@ import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
 import { CoreWorker, type OmpWorkerOptions } from "../core/core-worker.js";
 import { resolveOmpConfig, warnRetiredOmpChainVars } from "../omp/omp-config.js";
+import { runModelRolesTick } from "../omp/model-roles-tick.js";
+import { stableHash } from "../domain/canonical.js";
 import type { RoleResolver } from "../omp/role-resolver.js";
 import { errorCode } from "../domain/error-code.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
@@ -149,14 +151,6 @@ export async function runTelegramDaemon(
   const baseMs = options.backoff?.baseMs ?? DEFAULT_BACKOFF_BASE_MS;
   const maxMs = options.backoff?.maxMs ?? DEFAULT_BACKOFF_MAX_MS;
 
-  const gateway = new Gateway(
-    options.store,
-    undefined,
-    options.projectRoot,
-    undefined,
-    options.requestShutdown ? { requestShutdown: options.requestShutdown } : {},
-    { dataDir: options.omp?.dataDir ?? options.projectRoot }
-  );
   const worker = new CoreWorker(
     options.store,
     options.projectRoot,
@@ -180,6 +174,15 @@ export async function runTelegramDaemon(
       ? { downloadFile: options.telegramClient.downloadFile.bind(options.telegramClient) }
       : undefined,
     ompOptionsWithOperator(options.omp, options.allowlist)
+  );
+  // After the worker: the gateway's /models reads the worker's RoleResolver (one catalog cache per process).
+  const gateway = new Gateway(
+    options.store,
+    undefined,
+    options.projectRoot,
+    undefined,
+    options.requestShutdown ? { requestShutdown: options.requestShutdown } : {},
+    { dataDir: options.omp?.dataDir ?? options.projectRoot, roles: worker.modelRoles() }
   );
   // Model roles (spec 2026-10-06 §4): one catalog read before the first turn, bounded by CATALOG_TIMEOUT_MS. A failed
   // read leaves one ledger note and the roles on their lists (Decision 4); the poll loop retries it hourly (F14).
@@ -520,6 +523,9 @@ async function runModelTicks(
   options: RunTelegramDaemonOptions, gateway: Gateway, worker: CoreWorker, now: string, chatId: string | null
 ): Promise<void> {
   const signal = options.stopSignal;
+  // First: the memory and council ticks below then resolve their seats against today's catalog.
+  await runRolesTick(options, worker, now, chatId, signal);
+  if (signal.aborted) return;
   await runMemoryTicks(options, now, signal, worker.modelRoles());
   if (signal.aborted) return;
   await runIdeaTicks(options, now, chatId, signal, worker.modelRoles());
@@ -529,6 +535,28 @@ async function runModelTicks(
   // run's final report is enqueued during executeRun, so the outbox flush right
   // after this tick delivers it the same cycle.
   await maybeFireScheduledTasks({ store: options.store, gateway, worker, now, signal });
+}
+
+/**
+ * The daily model-roles tick (spec §4.1): change notices go to the operator chat (the rating ask's chat), through the outbox
+ * and the rich renderer; `role_unresolved` pages through openAlertedIncident. Its own catch: a failed tick never skips the
+ * memory, idea and schedule ticks after it.
+ */
+async function runRolesTick(
+  options: RunTelegramDaemonOptions, worker: CoreWorker, now: string, chatId: string | null, signal: AbortSignal
+): Promise<void> {
+  const notify = (text: string): void => {
+    if (!chatId) return;
+    options.store.enqueueNotification({
+      target: { kind: "telegram", chat_id: chatId }, intent_type: "progress",
+      idempotency_key: `model_roles:notice:${now}:${stableHash(text)}`, correlation_id: "model-roles", payload: { text }
+    });
+  };
+  try {
+    await runModelRolesTick({ store: options.store, roles: worker.modelRoles(), now, signal, notify });
+  } catch (error) {
+    console.error(`[telegram-daemon] model roles tick failed: ${errorCode(error)}`);
+  }
 }
 
 /**

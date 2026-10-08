@@ -356,6 +356,13 @@ export interface PlannerSessionState {
   updated_at: string;
 }
 
+/** One `model_roles_resolved` ledger row (spec §4.1): the daily tick's resolution of every role key. */
+export interface ModelRolesResolvedRow {
+  resolved_at: string;
+  catalog_ok: boolean;
+  roles: Array<{ key: string; head: string | null; candidates: string[]; source: "list" | "override" }>;
+}
+
 export interface ChatTurnRow {
   turn_id: string;
   chat_id: string;
@@ -4973,6 +4980,51 @@ export class RunStore {
   hasAnsweredJevCallSince(point: string, since: string): boolean {
     return this.db.prepare(`SELECT 1 AS hit FROM jev_decisions WHERE point = ? AND status = 'answered' AND created_at > ? LIMIT 1`)
       .get<{ hit: number }>(point, since) !== undefined;
+  }
+
+  /** The daily roles tick's record (spec §4.1). Run-less, like the decay ticks. */
+  recordModelRolesResolved(r: ModelRolesResolvedRow): void {
+    this.appendLedgerEvent(createLedgerEvent({
+      correlation_id: "model-roles", event_type: "model_roles_resolved", actor: "system", sequence: this.nextLedgerSequence(),
+      payload: { resolved_at: r.resolved_at, catalog_ok: r.catalog_ok, roles: r.roles }
+    }));
+  }
+
+  /** The latest tick record by its own instant; `catalogOk` keeps only reads that saw the catalog (the diff baseline). */
+  latestModelRolesResolved(o: { catalogOk?: boolean } = {}): ModelRolesResolvedRow | undefined {
+    const row = this.db.prepare(`
+      SELECT payload_json FROM ledger_events
+      WHERE event_type = 'model_roles_resolved' ${o.catalogOk ? "AND json_extract(payload_json, '$.catalog_ok') = 1" : ""}
+      ORDER BY json_extract(payload_json, '$.resolved_at') DESC, sequence DESC LIMIT 1
+    `).get<{ payload_json: string }>();
+    if (!row) return undefined;
+    const p = JSON.parse(row.payload_json) as Partial<ModelRolesResolvedRow>;
+    return typeof p.resolved_at === "string" && Array.isArray(p.roles)
+      ? { resolved_at: p.resolved_at, catalog_ok: p.catalog_ok === true, roles: p.roles }
+      : undefined;
+  }
+
+  /**
+   * `lane_fallthrough_rate` input (spec §8): per no-planner lane, the SETTLED lane turns created in (since, until] and how many
+   * fell through to the planner. A pending row (the handler has not finished) is neither a success nor a fall-through. A lane
+   * row closed by the planner's terminal (`planner_done` / `planner_failed`, e.g. a memory card that failed after its save)
+   * also ended on the planner, so it counts as a fall-through.
+   */
+  countLaneTurns(since: string, until: string): Array<{ lane: string; turns: number; fallthroughs: number }> {
+    return this.db.prepare(`
+      SELECT lane, COUNT(*) AS turns,
+        COALESCE(SUM(CASE WHEN handler_outcome LIKE 'fallthrough:%' OR handler_outcome IN ('planner_done', 'planner_failed')
+          THEN 1 ELSE 0 END), 0) AS fallthroughs
+      FROM jev_verdicts
+      WHERE lane <> 'planner' AND handler_outcome <> 'pending' AND created_at > ? AND created_at <= ?
+      GROUP BY lane ORDER BY lane
+    `).all<{ lane: string; turns: number; fallthroughs: number }>(since, until);
+  }
+
+  /** Whether a turn of `lane` was answered by the lane after `since` (what clears a sticky `lane_fallthrough_rate`). */
+  hasLaneReplySince(lane: string, since: string): boolean {
+    return this.db.prepare(`SELECT 1 AS hit FROM jev_verdicts WHERE lane = ? AND handler_outcome = 'lane_reply' AND created_at > ? LIMIT 1`)
+      .get<{ hit: number }>(lane, since) !== undefined;
   }
 
   /**
