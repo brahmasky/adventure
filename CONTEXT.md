@@ -56,6 +56,14 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Lesson**: A durable, scoped preference distilled from Paco's own feedback (the planner calls `lesson_write`), reconciled on write (ADD / SUPERSEDE / UPDATE) and folded into future prompts by the composer. Scope `ask` steers the planner; scope `research` steers the reader. Retired by status flip, never deleted.
 
+**Category**: What kind of work a turn asks for, as answered by Jev's `category` question: `answer`, `lookup`, `research`, `memory`, `self_change`, `machine_task`, `schedule`, `wiki`, `mail_calendar`, `status` or `other` (11 values). Three lists carry the word "research" with three meanings: the category `research` (a turn), the lesson scope `research` (which lessons steer research turns), and the lesson theme `sources` (what a lesson is about; formerly `research`).
+
+**Lane**: A handler whose control flow is code, with at most one one-shot compose; it falls through to the planner on any doubt. Stage A has two, memory and status; every other category runs the planner, which is the floor.
+
+**Role**: A named model seat (Fast, Default, Thinking, Reader, Vision, Tiny, Judges, Chair, Reviewer). Each role is a code-owned ordered list of `provider/model[:effort]` selectors resolved against omp's live catalog, with Paco's `/models` override on top. Fast, Default and Thinking are the planner's gears.
+
+**Quoted Turn**: The earlier message a Telegram reply points at, resolved to a stored chat turn (`chat_turns.quoted_turn_id`) and carried into Jev's state and the planner prompt. A quote that does not resolve is a ledger note, not a failure.
+
 **Learning Lifecycle**: The module that owns learning artifact states, provenance, approval, eval gates, activation, and rollback.
 
 **Environment Guidebook**: A typed wiki artifact that maps a repeated environment such as a website, repo, inbox, chat, or tool ecosystem.

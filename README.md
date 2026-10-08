@@ -141,19 +141,15 @@ amendments).
 ## Models and seats
 
 Every LLM call runs on **subscription OAuth**; no metered API sits on any default chain
-([ADR 0019](docs/decisions/0019-metered-ceiling.md) amendment: the $ ceiling is dormant). Each
-seat is an ordered chain of `provider/model[:effort]` strings:
+([ADR 0019](docs/decisions/0019-metered-ceiling.md) amendment: the $ ceiling is dormant). Each seat names a
+**model role** (Fast, Default and Thinking for the planner's gears; Reader, Vision, Tiny, Judges, Chair, Reviewer for the
+rest). A role is a code-owned list of `provider/model[:effort]` selectors resolved against omp's live catalog, and Paco
+can override one from Telegram with `/models`. The lists, the resolution order, the daily change notice and the
+`HOUGE_MODEL_ROLES` rollback switch live in the
+[configuration reference § Model roles](docs/reference/configuration.md#model-roles), not here.
 
-| Seat | Default chain | Used for |
-|------|---------------|----------|
-| Planner | Opus 5.5 → Opus 4.6 (Antigravity) → Kimi k3 | Every chat turn, the `/run` research programs and skill authoring |
-| Reader | Gemini Flash → Kimi k3 → GPT-5.5 | Digests of web, mail and Google API bytes (the wall) |
-| Photo | Gemini Flash | Photo digests, audited as a reader |
-| Ticks | Kimi k3 | Distill, consolidate, extract, attribution, verify, `lesson_write` |
-| Judges · chair | k3, GPT-5.5, Gemini Pro · Opus 5.5 | The weekly idea panel ([ADR 0027](docs/decisions/0027-idea-panel-claude-chair.md)) |
-| Reviewer | Kimi k3 → Opus 4.6 | Self-write checker 3 |
-| Voice | agy-cli (Gemini Flash) | Voice-note transcription, outside omp |
-| Writer | codex | Self-write diffs and the read-only self-diagnose consult |
+Two seats sit outside omp: **Voice** (agy-cli, Gemini Flash, voice-note transcription) and **Writer** (codex, self-write
+diffs and the read-only self-diagnose consult).
 
 Houge answers in its own voice, a projection of its Core Identity
 ([memory/core/houge.md](memory/core/houge.md)). The variables, defaults, fallback rules and what was
@@ -312,8 +308,9 @@ The classifier call is gone under omp, and the live shadow was removed on 2026-1
 ([ADR 0029](docs/decisions/0029-jev-system-one.md)). Design of the original trial:
 `docs/superpowers/specs/2026-09-25-jev-intent-shadow-design.md`.
 
-**Jev System One (ADR 0029, lane 1 built, flags default off).** Jev now sits in front of the planner as a typed
-decision layer: pure memory instructions and status questions can skip a planner turn once calibrated. Flow and lanes:
+**Jev System One (ADR 0029, stage A decision tree, flags default off).** Jev sits in front of the planner as
+one decision point: six typed questions pick a category, a lane (memory and status skip the planner) or a planner model
+role (Fast, Default or Thinking), once calibrated rows arm it. Flow, bars and rollback:
 [docs/reference/jev-decision-layer.md](docs/reference/jev-decision-layer.md); every flag and event:
 [configuration.md](docs/reference/configuration.md#jev-system-one-adr-0029).
 
