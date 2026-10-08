@@ -94,6 +94,15 @@ describe("formatTreeReport", () => {
     expect(text).toMatch(/1 carry Paco's label/);
   });
 
+  // F2: a correction Jev routes into the rule-saving memory lane would save the mistake as a rule: the swallowed-turn
+  // cell is the replay's safety check, so Paco labelling the turn `memory` must not hide it.
+  it("a labelled memory correction routed to the memory lane is still a swallowed turn", () => {
+    const rows = [...fixture(), row("g", { tools: { lesson_write: 1 }, proxy: "memory", proxy_rule: "memory_correct_write",
+      answers: treeAnswers({ category: "memory", setsRule: 0.95 }) })];
+    const text = formatTreeReport(rows, new Map([["g", label("memory")]]), complete(rows), TREE_BAR_DEFAULTS, perm(rows));
+    expect(text).toMatch(/COSTLY 1 — wrongly into memory\/status \(a swallowed turn\): 2 \[b, g\]/);
+  });
+
   it("prints permutation agreement over the category choice, with n and the Wilson bound", () => {
     const rows = fixture();
     const p = perm(rows); p[0] = { ...p[0]!, answers: treeAnswers({ category: "answer" }) };
@@ -113,6 +122,11 @@ describe("formatTreeReport", () => {
     blocked(formatTreeReport(stale, new Map(), complete(rows), TREE_BAR_DEFAULTS, perm(rows)));
     const other = rows.map((r, i) => (i === 0 ? { ...r, model: "jev-0.9" } : r));
     blocked(formatTreeReport(other, new Map(), complete(rows), TREE_BAR_DEFAULTS, perm(rows)));
+    // F4: rows that REPORT the alias would key candidate rows on `jev-latest`, which calibratedLang never arms
+    const alias = rows.map((r) => ({ ...r, model: "jev-latest" }));
+    const aliasText = formatTreeReport(alias, new Map(), complete(rows), TREE_BAR_DEFAULTS, perm(alias));
+    blocked(aliasText);
+    expect(aliasText).toMatch(/reported the request alias jev-latest/);
     // the alias moved between the canonical and the permuted run: two models' evidence never combine
     blocked(formatTreeReport(rows, new Map(), complete(rows), TREE_BAR_DEFAULTS, perm(rows).map((r) => ({ ...r, model: "jev-1.14.0" }))));
   });

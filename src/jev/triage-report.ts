@@ -1,5 +1,6 @@
 import type { CalibrationRow } from "./calibration.js";
 import { CATEGORIES, TREE_CATEGORY, TREE_QUESTIONS, type Category } from "./questions/tree.js";
+import { JEV_REQUEST_MODEL } from "./jev-client.js";
 import { criteriaHash } from "./questions/types.js";
 import { ACK_ROUTE, applyCascade, routeTree, TREE_STATUS_ARM_ID, type Armed, type Route, type TreeBars } from "./tree-policy.js";
 import { treeQuestions, type TreeLabel, type TreeReplayRow } from "./triage-replay.js";
@@ -28,8 +29,12 @@ const truthOf = (r: TreeReplayRow, labels: Map<string, TreeLabel>): Category | n
 const truthName = (t: Category | null): string => (t ?? "unlabelled").padEnd(13);
 const choiceOf = (r: TreeReplayRow): string | null => { const a = r.answers?.category; return a?.type === "choice" ? a.choice : null; };
 const scoreOf = (r: TreeReplayRow, id: string): number | null => { const a = r.answers?.[id]; return a?.type === "score" ? a.score : null; };
-/** The replay row is a correction only by its proxy (a human label says `memory`, not which kind). */
-const isCorrection = (r: TreeReplayRow, labels: Map<string, TreeLabel>): boolean => !labels.has(r.turn_id) && r.proxy_rule === "memory_correct_write";
+/** A correction by its proxy; a human label says `memory`, not which kind, so a `memory` label keeps it (F2) and any
+ *  other label overrides it. */
+const isCorrection = (r: TreeReplayRow, labels: Map<string, TreeLabel>): boolean => {
+  const label = labels.get(r.turn_id);
+  return r.proxy_rule === "memory_correct_write" && (label === undefined || label.category === "memory");
+};
 const tally = (m: Map<string, number>, k: string): void => { m.set(k, (m.get(k) ?? 0) + 1); };
 const fmt = (m: Map<string, number>): string => [...m].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(", ") || "none";
 
@@ -191,6 +196,7 @@ function blockersOf(rows: TreeReplayRow[], ok: TreeReplayRow[], o: TreeReportOut
   const permOk = (permuted ?? []).filter((r) => r.status === "ok");
   const models = reportedModels([...ok, ...permOk]);
   if (models.length > 1) b.push(`more than one reported model (${models.join(", ")}): re-run into a fresh file`);
+  if (models.includes(JEV_REQUEST_MODEL)) b.push(`rows reported the request alias ${JEV_REQUEST_MODEL}, not a versioned model: candidate rows would never arm`);
   if (ok.some((r) => stale(r, hashesOf(false))) || permOk.some((r) => stale(r, hashesOf(true)))) b.push("rows asked with stale criteria wording: re-run into a fresh file");
   const covered = new Set(permOk.map((r) => r.turn_id));
   if (!permuted) b.push("permuted run missing");
