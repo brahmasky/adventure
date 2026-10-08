@@ -113,6 +113,19 @@ describe("PlannerSession — one long-lived RPC child per chat (spec §4, §7)",
     expect(cmds).toEqual(["open_session", "set_model", "set_thinking_level"]);
   });
 
+  it("a refused set_model keeps omp's text as `detail` (≤ 200 chars) for the supervisor's classifier; `code` and `message` stay fixed", async () => {
+    // spec §5: a pin omp answers `Model not found` is model_missing (walk on), anything else a failed pin — only the text tells them apart
+    const { s } = make({ rpcSetModelError: "Model not found: anthropic/claude-sonnet-5-5" });
+    await s.start();
+    const err = await s.setModel(parseModelString("anthropic/claude-sonnet-5-5:low")).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PlannerRpcError);
+    expect(err).toMatchObject({ code: "command_failed:set_model", message: "command_failed:set_model", detail: "Model not found: anthropic/claude-sonnet-5-5" });
+    const long = make({ rpcSetModelError: "x".repeat(500) });
+    await long.s.start();
+    const capped = await long.s.setModel(parseModelString("kimi-code/k3")).catch((e: unknown) => e);
+    expect((capped as PlannerRpcError).detail).toHaveLength(200);
+  });
+
   it("a model omp refuses at spawn rejects start() with the fixed code exited:model_missing; omp's stderr text is never exposed", async () => {
     const { s } = make({ rpcBadModelAtStart: ["anthropic/claude-opus-5-5"] });
     let exited: ExitInfo | undefined; s.onExit((i) => { exited = i; });

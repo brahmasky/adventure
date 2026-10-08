@@ -6,14 +6,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
 import { lessonSetFingerprint } from "../../src/run/lesson-render.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
-import { staticRoleChains } from "../../src/omp/model-roles.js";
-import { parseModelChain } from "../../src/omp/model-string.js";
 import { PlannerSupervisor, RETRY_NOTE, parseAttachments, type PlannerSessionLike, type SupervisorDeps, type SupervisorState, type TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
 import type { OmpFrame } from "../../src/omp/omp-frames.js";
 import { PlannerRpcError, type ExitInfo, type PlannerSessionOptions } from "../../src/omp/planner-session.js";
 import { ToolRegistry } from "../../src/tools/tool-registry.js";
 import { BridgeServer } from "../../src/omp/bridge-server.js";
 import { chatWorkspace } from "../../src/omp/workspace.js";
+import { formatModelString, parseModelString, type ModelString } from "../../src/omp/model-string.js";
+import { selectorKey } from "../../src/omp/model-roles.js";
+import type { Effort, TurnRole } from "../../src/jev/tree-policy.js";
 import { openManifestClient } from "../helpers/bridge-manifest.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 
@@ -45,6 +46,8 @@ type Script = {
 const never = () => new Promise<never>(() => undefined);
 type Fake = PlannerSessionLike & {
   prompts: string[]; steers: string[]; models: string[]; options: PlannerSessionOptions[];
+  /** Every set_model with its effort (`provider/model[:effort]`): what set_thinking_level was asked for. */
+  pins: string[];
   exit: (c: number) => void; assistant: (text: string, extra?: object) => void; bind: (o: PlannerSessionOptions) => Fake;
   /** The child stays up but its bridge socket closes (its extension never reconnects). */
   dropBridge: () => void;
@@ -66,7 +69,7 @@ function fakeSession(script: Script = {}): Fake {
   };
   const drop = () => { for (const k of sockets.splice(0)) k.destroy(); };
   const s: Fake = {
-    prompts: [], steers: [], models: [], options: [], resets: 0,
+    prompts: [], steers: [], models: [], pins: [], options: [], resets: 0,
     bind: (o) => { s.options.push(o); return s; },
     start: async () => {
       const child = s.options.length; const o = s.options[child - 1] as PlannerSessionOptions;
@@ -91,8 +94,8 @@ function fakeSession(script: Script = {}): Fake {
     prompt: async (t: string) => { if (script.promptError) throw new PlannerRpcError(script.promptError); s.prompts.push(t); script.log?.push(`prompt:${s.options.length}`); setTimeout(() => (script.onPrompt ?? ((_t, e) => { e({ type: "turn_start" }); assistant("answer"); e({ type: "agent_end" }); }))(t, emit), 5); },
     steer: async (t: string) => { s.steers.push(t); },
     abort: async () => { setTimeout(() => emit({ type: "agent_end", aborted: true }), 5); },
-    setModel: async (m: { provider: string; model: string }) => {
-      s.models.push(`${m.provider}/${m.model}`); if (script.logSetModel) script.log?.push(`setModel:${m.provider}/${m.model}`);
+    setModel: async (m: ModelString) => {
+      s.models.push(`${m.provider}/${m.model}`); s.pins.push(formatModelString(m)); if (script.logSetModel) script.log?.push(`setModel:${m.provider}/${m.model}`);
       await script.setModel?.(s.models.length);
       current = `${m.provider}/${m.model}`;
     },
@@ -113,11 +116,12 @@ function fakeSession(script: Script = {}): Fake {
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => { for (const c of cleanups.splice(0)) await c(); });
 
-type Outcome = TurnOutcomeSink & { done: unknown[]; failed: unknown[]; incidents: unknown[]; resetOks: number };
+type Outcome = TurnOutcomeSink & { done: unknown[]; failed: unknown[]; incidents: unknown[]; resetOks: number; routeEnds: unknown[] };
 function sink(store: RunStore): Outcome {
   const outcome: Outcome = {
-    done: [], failed: [], incidents: [], resetOks: 0,
+    done: [], failed: [], incidents: [], resetOks: 0, routeEnds: [],
     sessionResetOk: () => { outcome.resetOks++; },
+    routeEnd: (i) => { outcome.routeEnds.push(i); },
     complete: (i) => { outcome.done.push(i); store.finishRun({ run_id: i.run_id, expected_worker_id: i.worker_id, next: "completed", report_ref: "r", duration_ms: i.duration_ms, tool_calls: i.tool_calls }); },
     fail: (i) => { outcome.failed.push(i); store.finishRun({ run_id: i.run_id, expected_worker_id: i.worker_id, next: "failed", error_type: i.error_type, error_ref: i.error_ref }); },
     incident: (k, d) => { outcome.incidents.push({ k, d }); }
@@ -125,8 +129,30 @@ function sink(store: RunStore): Outcome {
   return outcome;
 }
 
-/** `o.planner` replaces the planner chain (the retired HOUGE_OMP_PLANNER); default the static Default list, today's chain. */
-function harness(session = fakeSession(), env: Record<string, string> = {}, extra: Partial<SupervisorDeps> = {}, o: { sessionState?: "current" | "none"; planner?: string } = {}) {
+/** The role lists the supervisor tests run on: Default is today's planner chain (the pre-stage-A seat). */
+const TEST_ROLES: Record<TurnRole, string[]> = {
+  default: ["anthropic/claude-opus-5-5:medium", "google-antigravity/claude-opus-4-6:medium", "kimi-code/k3:low"],
+  fast: ["anthropic/claude-sonnet-5-5:low", "google-antigravity/gemini-3.8-flash:low"],
+  thinking: ["anthropic/claude-opus-5-5:high", "google-antigravity/claude-opus-4-6:high"]
+};
+type Roles = SupervisorDeps["roles"] & { calls: Array<{ role: string; effort: string | null; refused: string[] }>; refreshes: number };
+/** A resolver stand-in: the role's list minus the refused set; a routed effort replaces the list's (resolved mode, no clamp). */
+function fakeRoles(over: Partial<Record<TurnRole, string[]>> = {}): Roles {
+  const lists: Record<string, string[]> = { ...TEST_ROLES, ...over };
+  const roles: Roles = {
+    calls: [], refreshes: 0,
+    requestRefresh: () => { roles.refreshes++; },
+    candidates: (role, o = {}) => {
+      roles.calls.push({ role, effort: o.effort ?? null, refused: [...(o.refused ?? [])] });
+      return (lists[role] ?? []).map(parseModelString)
+        .filter((m) => !(o.refused?.has(selectorKey(m)) ?? false))
+        .map((m) => (o.effort ? { ...m, effort: o.effort } : m));
+    }
+  };
+  return roles;
+}
+
+function harness(session = fakeSession(), env: Record<string, string> = {}, extra: Partial<SupervisorDeps> = {}, o: { sessionState?: "current" | "none" } = {}) {
   const store = RunStore.openInMemory();
   if ((o.sessionState ?? "current") === "current") {
     store.recordPlannerSessionReset("42", lessonSetFingerprint(store), new Date().toISOString());
@@ -136,12 +162,12 @@ function harness(session = fakeSession(), env: Record<string, string> = {}, extr
   const data = mkdtempSync(join(tmpdir(), "hsv-")); // short: the bridge socket path must fit sun_path (104 bytes)
   const outcome = sink(store);
   const sup = new PlannerSupervisor({
-    chatId: "42", store, cfg: resolveOmpConfig({ HOUGE_OMP_SANDBOX: "0", ...env }, { ...staticRoleChains(), ...(o.planner ? { planner: parseModelChain(o.planner) } : {}) }), ctx: { home: data, repo: data, data }, distDir: data,
+    chatId: "42", store, cfg: resolveOmpConfig({ HOUGE_OMP_SANDBOX: "0", ...env }), ctx: { home: data, repo: data, data }, distDir: data,
     decls: [], env: {}, turnEnvelopeActions: ["shell"],
     turnContext: { store, memoryRoot: new URL("../../memory", import.meta.url).pathname, dataDir: data, skillsReader: () => undefined, coreBlock: () => undefined, retrieve: async () => ({ facts: [], pages: [] }), env: {} },
     buildTools: () => ({ registry: new ToolRegistry(), quarantine: async () => ({ digest: "", contains_instructions: false, source_meta: { tool: "x", bytes: 0 } }) }),
     posture: () => null, outcome, sessionFactory: (o) => session.bind(o), versionCheck: () => ({ ok: true, version: "18.4.4" }),
-    skipPreflightForTest: true, manifestWaitMs: 5_000, ...extra
+    skipPreflightForTest: true, manifestWaitMs: 5_000, roles: fakeRoles(), ...extra
   });
   cleanups.push(async () => { await sup.shutdown(); store.close(); rmSync(data, { recursive: true, force: true }); });
   return { store, sup, outcome, session, data };
@@ -300,6 +326,7 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
     sup.submit(req(run_id)); await sup.whenIdle();
     expect(outcome.failed[0]).toMatchObject({ error_type: "no_planner_leg" });
     expect(outcome.incidents).toContainEqual(expect.objectContaining({ k: "planner_no_leg" }));
+    expect(session.models).toHaveLength(3); // an unrouted turn never steps up past Default (today's chain semantics)
   });
 
   it("aborts on the turn deadline, reports turn_timeout with any partial text", async () => {
@@ -729,21 +756,24 @@ describe("PlannerSupervisor — omp rejects the model at spawn (live fix, omp 18
     expect(session.options).toHaveLength(12); // every turn really tried every string
   });
 
-  it("the next turn retries the top string once (a respawn), and returns to it when it is back", async () => {
+  it("a spawn-refused Default head is never respawned or pinned by a later turn on the same child; a restart clears it (spec §4-5)", async () => {
+    // the removed respawn rule cost a cold start per turn; set_model moves the live child, and a selector omp refused
+    // stays refused for the child's life (a model can stay catalogued while refusing)
     const bad = [TOP];
     const session = fakeSession({ badModels: bad });
     const { store, sup, outcome } = harness(session);
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
-    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle(); // still bad: one retry of TOP, then SECOND again
-    expect(spawnedModels(session)).toEqual([TOP, SECOND, TOP, SECOND]);
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(spawnedModels(session)).toEqual([TOP, SECOND]);
+    expect(session.models).toEqual([SECOND]); // the second turn kept the pinned SECOND: no respawn, no pin of TOP
     bad.length = 0;
+    store.addLesson({ scope: "ask", text: "new lesson", source: "user_feedback" }); // the prompt changed: a fresh child
     const third = createQueuedTurnRun(store);
     sup.submit(req(third)); await sup.whenIdle();
-    expect(spawnedModels(session)).toEqual([TOP, SECOND, TOP, SECOND, TOP]);
+    expect(spawnedModels(session)).toEqual([TOP, SECOND, TOP]);
+    expect(session.models).toEqual([SECOND, TOP]);
     expect(attempts(store, third).map((r) => r.error_kind)).toEqual([undefined]);
-    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle(); // on TOP now: the live child is kept
-    expect(session.options).toHaveLength(5);
-    expect(outcome.done).toHaveLength(4);
+    expect(outcome.done).toHaveLength(3);
   });
 });
 
@@ -874,7 +904,7 @@ describe("PlannerSupervisor — omp error frames and aborted ends (final review 
 
   it("a prompt that failed before reaching the agent (prompt_result error, no agent_end) ends the turn at once, classified", async () => {
     const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "prompt_result", agentInvoked: false, status: "error", error: { message: "fetch failed", retryable: false } }); } });
-    const { store, sup, outcome } = harness(session, {}, {}, { planner: "anthropic/claude-opus-5-5:medium" }); const run_id = createQueuedTurnRun(store);
+    const { store, sup, outcome } = harness(session, {}, { roles: fakeRoles({ default: ["anthropic/claude-opus-5-5:medium"] }) }); const run_id = createQueuedTurnRun(store);
     const t0 = Date.now();
     sup.submit(req(run_id)); await sup.whenIdle();
     expect(Date.now() - t0).toBeLessThan(2_000); // not the 180 s frame watchdog
@@ -1126,10 +1156,10 @@ describe("PlannerSupervisor — frames after a turn's agent_end are ignored (rou
 // Live gate 2026-10-01, item 6: omp's open_session restores the session's last model over --model, so a fallback
 // leg or a HOUGE_OMP_PLANNER change never reached a resumed chat, and the D10 family check used the configured model.
 describe("PlannerSupervisor — the planner runs the configured model after a session resume", () => {
-  it("a fresh child is pinned to the leg it spawned on with set_model before the first prompt", async () => {
+  it("a fresh child is pinned to the turn's first candidate with set_model before the first prompt", async () => {
     const log: string[] = [];
     const session = fakeSession({ log, logSetModel: true, resumeModel: "anthropic/claude-opus-5-5" });
-    const { store, sup, outcome } = harness(session, {}, {}, { planner: "kimi-code/k3" });
+    const { store, sup, outcome } = harness(session, {}, { roles: fakeRoles({ default: ["kimi-code/k3"] }) });
     const run_id = createQueuedTurnRun(store);
     sup.submit(req(run_id)); await sup.whenIdle();
     expect(log.filter((l) => !l.startsWith("manifest"))).toEqual(["start:1", "setModel:kimi-code/k3", "prompt:1"]);
@@ -1150,7 +1180,7 @@ describe("PlannerSupervisor — the planner runs the configured model after a se
 
   it("a failed pin follows the reset-failure path, and the family is the ACTUAL model's from message_end (D10)", async () => {
     const session = fakeSession({ resumeModel: "anthropic/claude-opus-5-5", setModel: async () => { throw new Error("set_model refused"); } });
-    const { store, sup, outcome } = harness(session, {}, {}, { planner: "kimi-code/k3" });
+    const { store, sup, outcome } = harness(session, {}, { roles: fakeRoles({ default: ["kimi-code/k3"] }) });
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
     expect(outcome.done).toHaveLength(1); // answered on the model it really has
     expect(incidentKinds(outcome)).toContain("planner_model_reset_failed");
@@ -1165,7 +1195,7 @@ describe("PlannerSupervisor — the planner runs the configured model after a se
 describe("PlannerSupervisor — what houge_status reads from it", () => {
   it("knows nothing before a child started, then the checked omp version and the model that answered", async () => {
     const session = fakeSession({ resumeModel: "anthropic/claude-opus-5-5" });
-    const { store, sup } = harness(session, {}, {}, { planner: "kimi-code/k3" });
+    const { store, sup } = harness(session, {}, { roles: fakeRoles({ default: ["kimi-code/k3"] }) });
     expect(sup.ompVersion()).toBeNull();
     expect(sup.answeredModel()).toBeUndefined();
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
@@ -1556,5 +1586,170 @@ describe("ADR 0029 lane 1 slots", () => {
     sup.submit(req(createQueuedTurnRun(store, "hi"), "hi"));
     await until(() => outcome.done.length === 1);
     expect(outcome.failed).toHaveLength(0);
+  });
+});
+
+describe("PlannerSupervisor — the turn-owned chain (Jev tree spec §4-5)", () => {
+  const attempts = (store: RunStore, run: string) =>
+    store.getLedgerEvents(run).filter((e) => e.event_type === "llm_attempt").map((e) => e.payload as Record<string, unknown>);
+  const escalations = (store: RunStore, run: string) =>
+    store.getLedgerEvents(run).filter((e) => e.event_type === "routed_escalation").map((e) => e.payload);
+  /** The decision point's verdict: the planner on `role` at `effort`, joined to verdict `verdict_id`. */
+  const routed = (role: TurnRole, effort: Effort | null = null, verdict_id: string | null = "jv_1"): Partial<SupervisorDeps> =>
+    ({ triage: async () => ({ kind: "fallthrough", route: { role, effort, verdict_id } }) });
+  /** Every prompt fails with `errors[i]` (as an assistant error) until they run out, then answers "ok". */
+  const failing = (errors: string[]) => {
+    let calls = 0;
+    const session: Fake = fakeSession({ onPrompt: (_t, e) => {
+      e({ type: "turn_start" });
+      const err = errors[calls++];
+      if (err) session.assistant("", { stopReason: "error", errorMessage: err }); else session.assistant("ok");
+      e({ type: "agent_end" });
+    } });
+    return session;
+  };
+
+  it("spawns on the Default role's head before triage and pins the routed role's head before the first prompt", async () => {
+    // two axes: the child warms on Default (slot B), the turn's own role is applied with set_model, never by a respawn
+    const log: string[] = [];
+    const session = fakeSession({ log, logSetModel: true });
+    const roles = fakeRoles();
+    const { store, sup, outcome } = harness(session, {}, { roles, ...routed("fast", "low") });
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(session.options.map((o) => formatModelString(o.model))).toEqual(["anthropic/claude-opus-5-5:medium"]);
+    expect(log.filter((l) => !l.startsWith("manifest"))).toEqual(["start:1", "setModel:anthropic/claude-sonnet-5-5", "prompt:1"]);
+    expect(roles.calls.filter((c) => c.role === "fast")).toEqual([{ role: "fast", effort: "low", refused: [] }]);
+    expect(outcome.routeEnds).toEqual([{
+      run_id, verdict_id: "jv_1", handler_outcome: "planner_done", model: "anthropic/claude-sonnet-5-5", fast_used_tool: false, pin_failed: false
+    }]);
+  });
+
+  it("the pin carries the routed effort, every row records it, and only the turn's FIRST llm_attempt carries routed_by", async () => {
+    // set_model + set_thinking_level are one setModel call (planner-session.ts:92); the jev_verdicts join needs exactly one
+    // row, and Default and Thinking share a head, so only the row's effort shows which role answered (plan F15, gate case 3)
+    const session = failing(["429 usage limit reached"]);
+    const { store, sup } = harness(session, {}, routed("default", "low"));
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(session.pins).toEqual(["anthropic/claude-opus-5-5:low", "google-antigravity/claude-opus-4-6:low"]);
+    const rows = attempts(store, run_id);
+    expect(rows.map((r) => [r.model, r.error_kind, r.routed_by, r.effort]))
+      .toEqual([["claude-opus-5-5", "quota", "jv_1", "low"], ["claude-opus-4-6", undefined, undefined, "low"]]);
+  });
+
+  it("a routed role with no candidate (the catalog emptied Fast) steps up before the first prompt, ledgered", async () => {
+    // plan F7 (b): RoleResolver returns [] for an emptied Fast; the turn must still answer, on Default, never fail
+    const session = fakeSession();
+    const { store, sup, outcome } = harness(session, {}, { roles: fakeRoles({ fast: [] }), ...routed("fast") });
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(session.pins).toEqual(["anthropic/claude-opus-5-5:medium"]);
+    expect(escalations(store, run_id)).toEqual([{ from: "fast", to: "default", kind: "model_missing" }]);
+    expect(outcome.routeEnds[0]).toMatchObject({ handler_outcome: "planner_done", model: "anthropic/claude-opus-5-5" });
+  });
+
+  it("every Default candidate refused at spawn: no_planner_leg, each row with its selector's effort, and one catalog refresh asked", async () => {
+    // plan F7 (d): the catalog may have moved since the last read; the resolver rate-limits the re-read
+    const session = fakeSession({ badModels: ["anthropic/claude-opus-5-5", "google-antigravity/claude-opus-4-6", "kimi-code/k3"] });
+    const roles = fakeRoles();
+    const { store, sup, outcome } = harness(session, {}, { roles });
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "no_planner_leg", error_ref: "model_missing" });
+    expect(attempts(store, run_id).map((r) => [r.model, r.effort])).toEqual([["claude-opus-5-5", "medium"], ["claude-opus-4-6", "medium"], ["k3", "low"]]);
+    expect(roles.refreshes).toBe(1);
+  });
+
+  it("a pin omp refuses (`Model not found`) is one model_missing row and walks on: never pin_failed, no incident, never pinned again", async () => {
+    // a Default[0] refused at spawn or pin must not become a per-turn failure; the refused set lasts the child's life
+    const session = fakeSession({ setModel: async (n) => { if (n === 1) throw new PlannerRpcError("command_failed:set_model", "Model not found: anthropic/claude-sonnet-5-5"); } });
+    const roles = fakeRoles();
+    const { store, sup, outcome } = harness(session, {}, { roles, ...routed("fast") });
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(session.models).toEqual(["anthropic/claude-sonnet-5-5", "google-antigravity/gemini-3.8-flash"]);
+    expect(attempts(store, run_id).map((r) => [r.model, r.error_kind, r.routed_by])).toEqual([
+      ["claude-sonnet-5-5", "model_missing", "jv_1"], ["gemini-3.8-flash", undefined, undefined]
+    ]);
+    expect(outcome.incidents).toEqual([]);
+    expect(outcome.routeEnds[0]).toMatchObject({ handler_outcome: "planner_done", pin_failed: false });
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle(); // same child, same route
+    expect(session.models).toHaveLength(2); // already on gemini; the refused sonnet is never tried again
+    expect(roles.calls.filter((c) => c.role === "fast").at(-1)?.refused).toEqual(["anthropic/claude-sonnet-5-5"]);
+  });
+
+  it("a pin that fails in transport answers on the held model: planner_model_reset_failed, pin_failed, no escalation", async () => {
+    const session = fakeSession({ setModel: async () => { throw new PlannerRpcError("timeout:set_model"); } });
+    const { store, sup, outcome } = harness(session, {}, routed("fast"));
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(outcome.done[0]).toMatchObject({ run_id, text: "answer" });
+    expect(incidentKinds(outcome)).toEqual(["planner_model_reset_failed"]);
+    expect(outcome.routeEnds[0]).toMatchObject({ model: "anthropic/claude-opus-5-5", pin_failed: true });
+    expect(escalations(store, run_id)).toEqual([]);
+  });
+
+  it("a spent role steps up at the retry boundary (Fast → Default), ledgered as routed_escalation; RETRY_NOTE continues", async () => {
+    const session = failing(["429 quota", "429 quota"]);
+    const { store, sup, outcome } = harness(session, {}, routed("fast"));
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(session.models).toEqual(["anthropic/claude-sonnet-5-5", "google-antigravity/gemini-3.8-flash", "anthropic/claude-opus-5-5"]);
+    expect(session.prompts).toEqual(["hi", RETRY_NOTE, RETRY_NOTE]);
+    expect(escalations(store, run_id)).toEqual([{ from: "fast", to: "default", kind: "quota" }]);
+    expect(outcome.done[0]).toMatchObject({ run_id, text: "ok" });
+  });
+
+  it("`other` is retried once on a routed turn while no tool ran; a second `other` is final", async () => {
+    // spec §4: a deterministic failure is re-spent once on the next model, never in a loop
+    const session = failing(["something odd", "something odd"]);
+    const { store, sup, outcome } = harness(session, {}, routed("default"));
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(session.models).toEqual(["anthropic/claude-opus-5-5", "google-antigravity/claude-opus-4-6"]);
+    expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "model_error", error_ref: "other" });
+    expect(outcome.routeEnds[0]).toMatchObject({ handler_outcome: "planner_failed" });
+  });
+
+  it("`other` after a tool ran is final at once: a failure after a side effect is never re-spent on another model", async () => {
+    const session: Fake = fakeSession({ onPrompt: (_t, e) => {
+      e({ type: "turn_start" }); e({ type: "tool_execution_start" });
+      session.assistant("", { stopReason: "error", errorMessage: "something odd" }); e({ type: "agent_end" });
+    } });
+    const { store, sup, outcome } = harness(session, {}, routed("fast"));
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(session.prompts).toEqual(["hi"]);
+    expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "model_error", error_ref: "other" });
+    expect(outcome.routeEnds[0]).toMatchObject({ handler_outcome: "planner_failed", fast_used_tool: true });
+  });
+
+  it("a Fast turn that ran a tool finishes on Fast, marked fast_used_tool; a route without a verdict id writes no routeEnd", async () => {
+    // no mid-prompt escalation (spec §5): the calibration signal is the mark, not a second model
+    const session: Fake = fakeSession({ onPrompt: (_t, e) => {
+      e({ type: "turn_start" }); e({ type: "tool_execution_start" }); session.assistant("done"); e({ type: "agent_end" });
+    } });
+    const h = harness(session, {}, routed("fast"));
+    h.sup.submit(req(createQueuedTurnRun(h.store))); await h.sup.whenIdle();
+    expect(session.models).toEqual(["anthropic/claude-sonnet-5-5"]);
+    expect(h.outcome.routeEnds[0]).toMatchObject({ handler_outcome: "planner_done", fast_used_tool: true });
+    const bare = harness(fakeSession(), {}, routed("fast", null, null));
+    const run_id = createQueuedTurnRun(bare.store);
+    bare.sup.submit(req(run_id)); await bare.sup.whenIdle();
+    expect(bare.outcome.routeEnds).toEqual([]);
+    expect(attempts(bare.store, run_id)[0]).not.toHaveProperty("routed_by");
+  });
+
+  it("a quote: the user turn records quoted_turn_id and the prompt carries the quoted line just before the message (spec §2.2.1)", async () => {
+    const quote = { turn_id: "turn_q", line: "[replying to houge, 3600 s ago: 要不要我查一下？]\n" };
+    const session = fakeSession();
+    const { store, sup } = harness(session, {}, { triage: async () => ({ kind: "fallthrough", quote }) });
+    sup.submit(req(createQueuedTurnRun(store, "好"), "好")); await sup.whenIdle();
+    expect(session.prompts).toEqual([`${quote.line}好`]);
+    expect(store.getRecentChatTurns("42", 10).find((t) => t.role === "user")?.quoted_turn_id).toBe("turn_q");
+    const lane = harness(fakeSession(), {}, { triage: async () => ({ kind: "lane_reply", text: "📒 Saved", buttons: [], quote }) });
+    lane.sup.submit(req(createQueuedTurnRun(lane.store, "好"), "好")); await lane.sup.whenIdle();
+    expect(lane.store.getRecentChatTurns("42", 10).find((t) => t.role === "user")?.quoted_turn_id).toBe("turn_q");
   });
 });

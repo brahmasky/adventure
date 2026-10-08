@@ -1951,6 +1951,8 @@ export class RunStore {
           if (attempt.family !== undefined) payload.family = attempt.family;
           if (attempt.family_collapse) payload.family_collapse = true;
           if (attempt.request_key !== undefined) payload.request_key = attempt.request_key;
+          if (attempt.routed_by !== undefined) payload.routed_by = attempt.routed_by;
+          if (attempt.effort !== undefined) payload.effort = attempt.effort;
           if ("run_id" in scope) {
             this.appendRunLedgerEvent(scope.run_id, "llm_attempt", "capability_runner", payload);
           } else {

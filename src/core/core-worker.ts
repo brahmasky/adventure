@@ -2189,7 +2189,8 @@ export class CoreWorker {
       posture: () => (readTombstone() ? "killed" : null),
       outcome: this.ompOutcomeSink(chatId),
       resolveMessage: (claim) => this.resolveOmpMessage(claim),
-      triage: (i) => this.triageTurn(i)
+      triage: (i) => this.triageTurn(i),
+      roles: this.roles
     };
   }
 
