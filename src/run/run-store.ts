@@ -36,6 +36,8 @@ import {
 } from "./run-ledger.js";
 import { canTransitionProject, canTransitionRun } from "./state-machines.js";
 import type { LlmAttempt, LlmAuditSink } from "../llm/audit.js";
+import { isOverrideKey } from "../omp/model-roles.js";
+import type { OverrideKey } from "../omp/role-resolver.js";
 import { computeCostUsd, METERED_PROVIDERS } from "../llm/metered-pricing.js";
 import { blobToFloat32, cosineSimilarity, float32ToBlob } from "../llm/embeddings.js";
 import { resolveWikiDecayDays } from "../capabilities/wiki.js";
@@ -6718,6 +6720,27 @@ export class RunStore {
     );
   }
 
+  /** Paco's `/models` overrides (spec §4.2): the latest `model_role_override` row per key; an empty pattern is a reset. */
+  latestModelRoleOverrides(): Map<OverrideKey, string> {
+    const rows = this.db.prepare(`
+      SELECT payload_json FROM ledger_events WHERE event_type = 'model_role_override'
+      ORDER BY sequence ASC, occurred_at ASC, event_id ASC
+    `).all<{ payload_json: string }>();
+    const out = new Map<OverrideKey, string>();
+    for (const row of rows) {
+      const p = parseOverridePayload(row.payload_json);
+      if (!p) continue;
+      if (p.pattern === "") out.delete(p.key);
+      else out.set(p.key, p.pattern);
+    }
+    return out;
+  }
+
+  /** One append-only override row (run-less, so its sequence is above every earlier row). The `/models` gateway command is the production writer. */
+  recordModelRoleOverride(i: { key: OverrideKey; pattern: string; actor: string }): void {
+    this.recordMemoryEvent("model_role_override", { key: i.key, pattern: i.pattern, actor: i.actor }, "model_roles");
+  }
+
   private nextLedgerSequence(run_id?: string): number {
     const row = run_id
       ? this.db.prepare(`
@@ -8510,6 +8533,15 @@ const DEFAULT_LESSON_CHAR_CAP = 1200;
 const LESSON_COLUMNS =
   "id, scope, text, avoid, status, supersedes, superseded_by, applied_count, " +
   "corrected_count, reuse_value, rating_history, created_at, last_used, source, theme";
+
+/** A stored override row, or null when it is not one: a hand-edited or future-shaped payload is skipped, never trusted. */
+function parseOverridePayload(json: string): { key: OverrideKey; pattern: string } | null {
+  let p: unknown;
+  try { p = JSON.parse(json); } catch { return null; }
+  if (typeof p !== "object" || p === null) return null;
+  const { key, pattern } = p as Record<string, unknown>;
+  return typeof key === "string" && typeof pattern === "string" && isOverrideKey(key) ? { key, pattern } : null;
+}
 
 /** Per-scope active-row cap (⓪·3 S1): overflow prunes the lowest reuse_value rows. */
 export const DEFAULT_LESSON_CAP_PER_SCOPE = 20;
