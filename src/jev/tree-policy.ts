@@ -65,7 +65,7 @@ export function treeArmed(lang: Lang, model: string, rows: readonly CalibrationR
 /**
  * The rows that can arm a tree decision today: a tree question, or the status pseudo-row, at its current criteria hash.
  * The alias-move page (`checkJevModelCalibrated`, jev-incidents.ts) reads only these, so a retired lane 1 row or a
- * stale-hash row neither raises nor clears it (it replaces lane 1's `armingRows`, which Task 12 deletes with thresholds.ts).
+ * stale-hash row neither raises nor clears it (it replaces lane 1's `armingRows`).
  */
 export function treeArmingRows(rows: readonly CalibrationRow[]): CalibrationRow[] {
   const live = new Set(TREE_QUESTIONS.map((q) => `${q.id}\u0000${criteriaHash(q)}`));

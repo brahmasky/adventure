@@ -145,16 +145,18 @@ The override's matches serve first, then the catalogued list, so a retired overr
 
 **Daily tick.** Once per 24 h (latched on the last `model_roles_resolved` row) the daemon re-reads the catalog and posts one
 line per role whose head moved ("Thinking now resolves to X, was Y"). A role with no candidate opens the alerted incident
-`role_unresolved` (subject = the role key; it resolves when the role resolves again). A failed catalog read is retried
+`role_unresolved` (subject = the role key). Only the daily tick opens and clears it, so after a fix it can stay open up
+to 24 h, until the next tick sees the role resolve; meanwhile a turn routed to that role steps up. A failed catalog read is retried
 hourly; two consecutive failures open the alerted incident `model_catalog_unavailable` (subject `omp`), and the next
 good read resolves it. A `no_planner_leg` asks for a re-read at most once per 10 minutes. With no catalog, roles run
 their lists whole (no catalog check, no clamp), so an outage never empties a role. The boot read is awaited before the
-first poll and bounded at 15 s.
+first poll and bounded at 15 s. With `HOUGE_MODEL_ROLES=static` there is no catalog: no boot read, no retry, no tick, and
+so no `model_catalog_unavailable`.
 
 **Ledger rows** (ids, enums and numbers only): `model_role_override` (`key`, `pattern`, `actor`; an empty pattern is a reset),
 `model_roles_resolved` (the tick's resolution of every role key), `model_catalog_unavailable` (one per failed read),
-`model_roles_fallback` (resolved mode: a role that resolved empty ran on its static list instead; Fast steps up a role;
-once per role per catalog read), `routed_escalation` (`from`, `to`, `kind`: a routed turn stepped up a role).
+`model_roles_fallback` (resolved mode: a role other than Fast resolved empty and ran on its static list instead,
+once per role per catalog read; an empty Fast never falls back, its turns step up a role), `routed_escalation` (`from`, `to`, `kind`: a routed turn stepped up a role).
 
 **The version check** is `checkOmpVersion`: omp must run and print an `x.y.z`, else incident `omp_unavailable`. It is
 async on the spawn path (a synchronous call starved concurrent bounded network calls such as the Jev request), and its
