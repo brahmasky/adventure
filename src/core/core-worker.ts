@@ -2760,9 +2760,10 @@ export class CoreWorker {
   }
 
   /**
-   * The status lane: code renders first. A render throw settles once on the STATUS route with handler
-   * `fallthrough:render_failed` (so `lane_fallthrough_rate` sees a broken renderer) and decision rows `fallback` (an `act`
-   * row on a turn the planner answered would corrupt the status precision evidence), then the planner answers on Default.
+   * The status lane: code renders first. A render throw settles once on the status lane with handler
+   * `fallthrough:render_failed` (so `lane_fallthrough_rate` sees a broken renderer), labelled `jev_skipped` like any other
+   * fallback: the route did not act, so route_outcome, the triage verdict and the decision rows all read fallback (an `act`
+   * row on a turn the planner answered would corrupt the status precision evidence). Then the planner answers on Default.
    */
   private statusLane(i: TriageInput, state: OmpTurnState, lang: Lang, route: Route, settleFor: SettleFor, held: TriageHeld): TriageOutcome {
     let text: string;
@@ -2770,7 +2771,7 @@ export class CoreWorker {
       text = this.hougeStatusText(this.chatOf(i.claim.run_id));
     } catch (e) {
       console.error(`status lane: render failed: ${safeReason(e)}`);
-      const id = this.settleTriage(i, state, lang, { ...settleFor(route, "none", "fallthrough:render_failed"), decision: "fallback" });
+      const id = this.settleTriage(i, state, lang, settleFor({ ...route, reason: "jev_skipped" }, "none", "fallthrough:render_failed"));
       return { kind: "fallthrough", route: turnRoute(fallbackRoute("jev_skipped", held.thinkHarder), id), ...quoteField(held.quote) };
     }
     this.settleTriage(i, state, lang, settleFor(route, "none", "lane_reply"));
