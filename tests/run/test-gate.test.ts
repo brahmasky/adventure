@@ -195,3 +195,29 @@ describe("runTestGateAsync", () => {
     }
   });
 });
+
+// The gate must judge a self-authored diff, not the daemon's live config. It used to inherit process.env, so the
+// daemon's .env (Jev armed since 2026-10-06: HOUGE_JEV_ENABLED=1 + HOUGE_JEV_TRIAGE_ENABLED=arm) turned an unrelated
+// daemon test red and failed EVERY self-write (live 2026-10-08), as HOUGE_AGY_BIN once did (2026-06-26).
+describe("the gate's npm children run on a minimal env, never the daemon's", () => {
+  const leaky = { HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "arm", TYPESAFE_API_KEY: "leak-check" };
+  // the script fails if any daemon variable reached it, and needs PATH/HOME to have survived (npm itself ran)
+  const probe = 'test -z "$HOUGE_JEV_ENABLED" && test -z "$HOUGE_JEV_TRIAGE_ENABLED" && test -z "$TYPESAFE_API_KEY" && test -n "$PATH" && test -n "$HOME"';
+  const withLeakyEnv = async <T>(fn: () => T | Promise<T>): Promise<T> => {
+    const saved = Object.fromEntries(Object.keys(leaky).map((k) => [k, process.env[k]]));
+    Object.assign(process.env, leaky);
+    try { return await fn(); } finally {
+      for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    }
+  };
+
+  it("sync gate: daemon flags and secrets do not reach the stages; PATH and HOME do", async () => {
+    const wt = fakeProject({ typecheck: probe, test: probe, build: probe });
+    expect(await withLeakyEnv(() => runTestGate(wt, { env: {} }))).toEqual({ green: true });
+  });
+
+  it("async gate (the self-write path): same minimal env", async () => {
+    const wt = fakeProject({ typecheck: probe, test: probe, build: probe });
+    expect(await withLeakyEnv(() => runTestGateAsync(wt, { env: {} }))).toEqual({ green: true });
+  });
+});

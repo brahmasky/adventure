@@ -20,6 +20,23 @@ import { execFileAsync } from "./exec-file-async.js";
  */
 
 const DEFAULT_TEST_GATE_TIMEOUT_MS = 300_000;
+
+/**
+ * The only variables the gate's npm children see: what npm, node and a shell need to run, never the daemon's config
+ * or secrets. Inheriting process.env let the daemon's live .env reach the suite (Jev armed since 2026-10-06 turned an
+ * unrelated daemon test red and failed every self-write, live 2026-10-08; HOUGE_AGY_BIN did the same on 2026-06-26).
+ */
+const GATE_ENV_ALLOWLIST = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TERM"] as const;
+
+/** The gate children's env, read from the real process env (`opts.env` stays config-only, as before). */
+export function testGateChildEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const name of GATE_ENV_ALLOWLIST) {
+    const value = source[name];
+    if (value !== undefined) env[name] = value;
+  }
+  return env;
+}
 /** Cap on captured output (last N bytes). A red `npm test` log can be enormous. */
 const OUTPUT_CAP_BYTES = 8 * 1024;
 
@@ -101,6 +118,7 @@ export function runTestGate(worktree: string, opts?: TestGateOptions): TestGateR
       execFileSync("npm", ["run", script], {
         cwd: worktree,
         timeout,
+        env: testGateChildEnv(),
         // Capture both streams so a red stage's log can be surfaced (and capped).
         stdio: ["ignore", "pipe", "pipe"]
       });
@@ -129,7 +147,7 @@ export async function runTestGateAsync(worktree: string, opts?: TestGateOptions)
 
   for (const { stage, script } of STAGES) {
     try {
-      await execFileAsync("npm", ["run", script], { cwd: worktree, timeout });
+      await execFileAsync("npm", ["run", script], { cwd: worktree, timeout, env: testGateChildEnv() });
     } catch (error) {
       const err = error as NodeError;
       if (err.code === "ENOENT") {

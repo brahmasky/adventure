@@ -14,6 +14,10 @@ import { NO_OMP_BIN, STUB_MARKER } from "./omp-env.js";
 process.env.HOUGE_OMP_BIN = NO_OMP_BIN;
 // Jev (ADR 0029): no suite may reach api.typesafe.ai; an un-stubbed client must see no_key.
 delete process.env.TYPESAFE_API_KEY;
+// The daemon's live Jev flags (armed since 2026-10-06) must not arm triage in suites that never asked for it: a suite
+// that wants it sets them itself. Inherited, they turned an unrelated daemon test red (2026-10-08).
+delete process.env.HOUGE_JEV_ENABLED;
+delete process.env.HOUGE_JEV_TRIAGE_ENABLED;
 // Daemon temp space (<data>/tmp, <data>/selfwrite: B13) defaults to the cwd, i.e. the repo: tests get a tmp data dir.
 const dataDir = mkdtempSync(join(tmpdir(), "houge-test-data-"));
 setDaemonDataDir(dataDir);
