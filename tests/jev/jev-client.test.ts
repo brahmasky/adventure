@@ -296,6 +296,20 @@ describe("createJevClient — three answer types (spec §2.3)", () => {
       expect((await call(REQ3)).ok).toBe(true);
     }
   });
+  // Jev rounds each probability to two decimals, so n entries can drift up to n × 0.005 off 1. The replay of 2026-10-09 lost
+  // 17 of 602 calls to drift like this (a captured breadth answer, below); each one sends a live turn to the fallback for nothing.
+  it("a two-decimal rounding drift is valid: the replay's {0.22, 0.56, 0.2, 0.01} = 0.99 on four levels", async () => {
+    const over = { actions: { type: "score", score: 1, probabilities: { "0": 0.22, "1": 0.56, "2": 0.2, "3": 0.01 }, confidence: 0.56 } };
+    const { call } = client(vi.fn(async () => json(200, body3(over))) as unknown as typeof fetch);
+    expect((await call(REQ3)).ok).toBe(true);
+  });
+
+  it("drift beyond the rounding bound is still probability_sum: 0.97 on four levels (bound 0.02)", async () => {
+    const over = { actions: { type: "score", score: 1, probabilities: { "0": 0.2, "1": 0.57, "2": 0.2, "3": 0 }, confidence: 0.57 } };
+    const { call } = client(vi.fn(async () => json(200, body3(over))) as unknown as typeof fetch);
+    expect(await call(REQ3)).toMatchObject({ ok: false, error_kind: "parse", detail: "response failed validation: probability_sum" });
+  });
+
   // Σ i·pᵢ can overshoot the top level by one rounding ulp; voiding the whole decision point for it would send every such
   // turn to the fallback. Within 1e-9 the score is clamped onto the endpoint; anything further is still out of range.
   it("a score a hair past an endpoint is clamped, not rejected", async () => {

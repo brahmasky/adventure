@@ -15,7 +15,10 @@ export const JEV_REQUEST_MODEL = "jev-latest";
 const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 const BACKOFF_BASE_MS = 500;
 const RETRY_AFTER_CAP_MS = 60_000;
-const PROBABILITY_SUM_TOLERANCE = 0.01;
+/** Jev rounds each probability to two decimals, so n entries may sum up to n × 0.005 off 1 (the 2026-10-09 replay lost
+ *  ~3% of calls to a four-level 0.99); the epsilon absorbs the float sum landing a hair past that bound. */
+const PROBABILITY_ROUNDING = 0.005;
+const PROBABILITY_SUM_EPSILON = 1e-9;
 /** A model id is a short token (Codex B2): anything else is a parse failure, so a response that echoes
  *  prose in `model` can never be written to the audit or the ledger. */
 const JEV_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
@@ -212,7 +215,7 @@ function validateAnswer(raw: unknown, q: JevQuestion): Validated<JevAnswer> {
   }
 }
 
-/** Every key present, nothing else, each in [0, 1], summing to 1 within tolerance. */
+/** Every key present, nothing else, each in [0, 1], summing to 1 within the rounding bound. */
 function validateDistribution(raw: unknown, keys: readonly string[]): Validated<Record<string, number>> {
   if (typeof raw !== "object" || raw === null) return { ok: false, code: "probabilities_missing" };
   const probs = raw as Record<string, unknown>;
@@ -222,7 +225,7 @@ function validateDistribution(raw: unknown, keys: readonly string[]): Validated<
   const p = probs as Record<string, number>;
   if (!keys.every((k) => Number.isFinite(p[k]) && p[k]! >= 0 && p[k]! <= 1)) return { ok: false, code: "probability_range" };
   const sum = keys.reduce((s, k) => s + p[k]!, 0);
-  if (Math.abs(sum - 1) > PROBABILITY_SUM_TOLERANCE) return { ok: false, code: "probability_sum" };
+  if (Math.abs(sum - 1) > keys.length * PROBABILITY_ROUNDING + PROBABILITY_SUM_EPSILON) return { ok: false, code: "probability_sum" };
   return { ok: true, value: p };
 }
 
