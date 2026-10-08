@@ -1,5 +1,6 @@
 import { CoreWorker, type OmpWorkerOptions } from "../core/core-worker.js";
 import { LESSON_CHANGE_NOT_FOUND, MEMLANE_ASK_NOT_FOUND } from "../gateway/memlane-commands.js";
+import { MODELS_REFUSED } from "../gateway/models-commands.js";
 import { resolveOmpConfig } from "../omp/omp-config.js";
 import { chatWorkspace } from "../omp/workspace.js";
 import type { PlannerSupervisor } from "../omp/planner-supervisor.js";
@@ -55,6 +56,8 @@ export const HANDLED_INTAKE_DENIAL_CODES: ReadonlySet<string> = new Set([
   // Memory lane card taps (stale/foreign Undo, unknown/foreign Ask): replied to, never a poll failure.
   LESSON_CHANGE_NOT_FOUND,
   MEMLANE_ASK_NOT_FOUND,
+  // /models refusals (no match, outside the allow-list, a role-level judges set, no catalog, no resolver): replied to, never a poll failure.
+  MODELS_REFUSED,
   "TRIGGER_IDEMPOTENCY_CONFLICT",
   "GLOBAL_BUDGET_FUSE"
 ]);
@@ -124,7 +127,6 @@ export function ompOptionsWithOperator(omp: OmpWorkerOptions | undefined, allowl
 export async function runTelegramPollOnce(
   options: RunTelegramPollOnceOptions
 ): Promise<RunTelegramPollOnceResult> {
-  const gateway = new Gateway(options.store, undefined, options.projectRoot, undefined, undefined, { dataDir: options.omp?.dataDir ?? options.projectRoot });
   const worker = new CoreWorker(
     options.store,
     options.projectRoot,
@@ -147,6 +149,9 @@ export async function runTelegramPollOnce(
       : undefined,
     ompOptionsWithOperator(options.omp, options.allowlist)
   );
+  const gateway = new Gateway(options.store, undefined, options.projectRoot, undefined, undefined, {
+    dataDir: options.omp?.dataDir ?? options.projectRoot, roles: worker.modelRoles()
+  });
   worker.validateOmpConfig(); // B4: a malformed HOUGE_OMP_* chain pages Paco before any turn
 
   const adapter = createTelegramLongPollingAdapter({
