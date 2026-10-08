@@ -3,14 +3,14 @@ import type { TurnModality } from "../../media/media-config.js";
 import type { ChatTurnRow } from "../../run/run-store.js";
 import { sanitizeJevText } from "../egress-redact.js";
 import { MAX_LATEST_MESSAGE_CHARS, MAX_REQUEST_CHARS } from "../intent-question.js";
-import { toJevQuestion, type Question } from "./types.js";
+import { toJevQuestion, type ChoiceQuestion, type Question } from "./types.js";
 
 /**
  * Lane 1 questions (spec §5.3), frozen: the fall-through option first on `lane`, the cautious option first on
  * `complete`. Wording is literal and names its boundary cases; Jev reads literally. Changing a word here changes
  * the criteria hash (types.ts) and un-arms the lane until re-calibrated.
  */
-export const TRIAGE_LANE: Question = {
+export const TRIAGE_LANE: ChoiceQuestion = {
   id: "lane",
   type: "choice",
   instructions:
@@ -32,7 +32,7 @@ export const TRIAGE_LANE: Question = {
   ]
 };
 
-export const TRIAGE_COMPLETE: Question = {
+export const TRIAGE_COMPLETE: ChoiceQuestion = {
   id: "complete",
   type: "choice",
   instructions: "Does `latest_message` contain anything besides a preference, fact or correction for Houge to keep?",
@@ -42,7 +42,7 @@ export const TRIAGE_COMPLETE: Question = {
   ]
 };
 
-export const TRIAGE_SCOPE: Question = {
+export const TRIAGE_SCOPE: ChoiceQuestion = {
   id: "scope",
   type: "choice",
   instructions: "If `latest_message` is a preference or correction, which part of Houge's behaviour is it about?",

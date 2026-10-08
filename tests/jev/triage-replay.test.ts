@@ -173,8 +173,8 @@ describe("runTriageReplay", () => {
     const sent: JevRequest[] = [];
     const out = tmp("replay-permuted.jsonl");
     const r = await runTriageReplay({ store, env: {}, jev: async (q) => { sent.push(q); return fakeJev(q); }, outPath: out, maxUsd: 1, dryRun: false, permute: true });
-    expect(Object.keys(sent[0]!.questions.lane!.criteria)).toEqual(["memory", "status", "none"]);
-    expect(Object.keys(sent[0]!.questions.complete!.criteria)).toEqual(["mixed", "pure"]); // only `lane` is permuted
+    expect(Object.keys(sent[0]!.questions.lane!.criteria ?? {})).toEqual(["memory", "status", "none"]);
+    expect(Object.keys(sent[0]!.questions.complete!.criteria ?? {})).toEqual(["mixed", "pure"]); // only `lane` is permuted
     expect(r.rows.every((x) => x.key.endsWith(":perm"))).toBe(true);
     expect(r.rows[0]!.criteria_hash_lane).not.toBe(criteriaHash(TRIAGE_LANE));
     expect(readFileSync(out, "utf8")).toContain(":perm");

@@ -36,7 +36,7 @@ describe("createJevClient", () => {
     const { call, audit } = client(fetchImpl as unknown as typeof fetch);
     const r = await call(REQ);
     expect(r).toMatchObject({ ok: true, model: REPORTED, input_tokens: 300 });
-    if (r.ok) expect(r.answers.intent!.choice).toBe("research");
+    if (r.ok) expect(r.answers.intent).toMatchObject({ type: "choice", choice: "research" });
     expect(audit.attempts).toHaveLength(1);
     expect(audit.attempts[0]).toMatchObject({ provider: "jev", outcome: "ok", model: REPORTED, usage: { input_tokens: 300, output_tokens: 20, cached_input_tokens: 0 } });
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
@@ -232,5 +232,76 @@ describe("status → error kind (spec §3.3: outages are distinguishable, 422 is
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     // the body may echo our own question text or a provider message: never copied into detail
     expect(!r.ok && r.detail).toBe("HTTP 422");
+  });
+});
+
+// Spec §2.3: the tree asks all three TypeSafe types in one request. One malformed answer of ANY type fails the whole call
+// as parse (skipped, never partial): a gate must never read a half-validated answer set as "this question said nothing".
+describe("createJevClient — three answer types (spec §2.3)", () => {
+  const LEVELS = ["none", "one or two reads", "several including changes", "many with checks"];
+  const REQ3: JevRequest = {
+    state: { latest_message: "明天天气怎么样" },
+    questions: {
+      category: { type: "choice", instructions: "pick", criteria: { other: "o", lookup: "l" } },
+      actions: { type: "score", instructions: "how many", criteria: LEVELS },
+      sets_rule: { type: "noul", instructions: "a rule?" }
+    }
+  };
+  const answers3 = (over: Record<string, unknown> = {}) => ({
+    category: { type: "choice", choice: "lookup", probabilities: { other: 0.2, lookup: 0.8 }, confidence: 0.6 },
+    actions: { type: "score", score: 1.1, legend: { "0": "none" }, probabilities: { "0": 0.1, "1": 0.7, "2": 0.2, "3": 0 }, confidence: 0.7 },
+    sets_rule: { type: "noul", noul: 0.05 },
+    ...over
+  });
+  const body3 = (over: Record<string, unknown> = {}) => ({ model: REPORTED, answers: answers3(over), usage: { input_tokens: 500, output_tokens: 0 } });
+
+  it("round-trips one answer of each type, typed by its discriminant; a noul carries no confidence", async () => {
+    const fetchImpl = vi.fn(async () => json(200, body3()));
+    const { call } = client(fetchImpl as unknown as typeof fetch);
+    const r = await call(REQ3);
+    expect(r.ok).toBe(true); if (!r.ok) return;
+    expect(r.answers.category).toEqual({ type: "choice", choice: "lookup", probabilities: { other: 0.2, lookup: 0.8 }, confidence: 0.6 });
+    expect(r.answers.actions).toEqual({ type: "score", score: 1.1, probabilities: { "0": 0.1, "1": 0.7, "2": 0.2, "3": 0 }, confidence: 0.7 });
+    expect(r.answers.sets_rule).toEqual({ type: "noul", noul: 0.05 });
+    // The request carries each type's wire shape untouched (score levels as an ordered array).
+    const sent = JSON.parse(String((fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].body)) as { questions: Record<string, unknown> };
+    expect(sent.questions.actions).toEqual({ type: "score", instructions: "how many", criteria: LEVELS });
+  });
+
+  it.each([
+    ["a noul above 1", { sets_rule: { type: "noul", noul: 1.2 } }, "noul_out_of_range"],
+    ["a negative noul", { sets_rule: { type: "noul", noul: -0.1 } }, "noul_out_of_range"],
+    ["a noul that is not a number", { sets_rule: { type: "noul", noul: "0.5" } }, "not_noul"],
+    ["a score above n − 1", { actions: { type: "score", score: 3.2, probabilities: { "0": 0, "1": 0, "2": 0, "3": 1 }, confidence: 1 } }, "score_out_of_range"],
+    ["a negative score", { actions: { type: "score", score: -0.5, probabilities: { "0": 1, "1": 0, "2": 0, "3": 0 }, confidence: 1 } }, "score_out_of_range"],
+    ["score probabilities keyed by level name, not index", { actions: { type: "score", score: 1, probabilities: { none: 0.1, "one or two reads": 0.9 }, confidence: 1 } }, "probability_keys"],
+    ["score probabilities missing a level", { actions: { type: "score", score: 1, probabilities: { "0": 0.2, "1": 0.8, "2": 0 }, confidence: 1 } }, "probability_keys"],
+    ["score probabilities that do not sum to 1", { actions: { type: "score", score: 1, probabilities: { "0": 0.5, "1": 0.5, "2": 0.5, "3": 0 }, confidence: 1 } }, "probability_sum"],
+    ["a score answer with confidence out of range", { actions: { type: "score", score: 1, probabilities: { "0": 0, "1": 1, "2": 0, "3": 0 }, confidence: 2 } }, "confidence_out_of_range"],
+    ["a choice that is not the argmax", { category: { type: "choice", choice: "other", probabilities: { other: 0.2, lookup: 0.8 }, confidence: 0.6 } }, "choice_not_argmax"],
+    ["an answer whose type is not the question's", { sets_rule: { type: "choice", choice: "true", probabilities: { true: 1 }, confidence: 1 } }, "not_noul"]
+  ])("%s → the whole call is error/parse naming the check (the valid answers beside it are dropped too)", async (_label, over, code) => {
+    const fetchImpl = vi.fn(async () => json(200, body3(over)));
+    const { call } = client(fetchImpl as unknown as typeof fetch);
+    expect(await call(REQ3)).toMatchObject({ ok: false, reason: "error", error_kind: "parse", detail: `response failed validation: ${code}` });
+  });
+
+  it("the edges are valid: noul 0 and 1, score 0 and n − 1", async () => {
+    const edges = [
+      { sets_rule: { type: "noul", noul: 0 }, actions: { type: "score", score: 0, probabilities: { "0": 1, "1": 0, "2": 0, "3": 0 }, confidence: 1 } },
+      { sets_rule: { type: "noul", noul: 1 }, actions: { type: "score", score: 3, probabilities: { "0": 0, "1": 0, "2": 0, "3": 1 }, confidence: 1 } }
+    ];
+    for (const over of edges) {
+      const { call } = client(vi.fn(async () => json(200, body3(over))) as unknown as typeof fetch);
+      expect((await call(REQ3)).ok).toBe(true);
+    }
+  });
+  // Σ i·pᵢ can overshoot the top level by one rounding ulp; voiding the whole decision point for it would send every such
+  // turn to the fallback. Within 1e-9 the score is clamped onto the endpoint; anything further is still out of range.
+  it("a score a hair past an endpoint is clamped, not rejected", async () => {
+    const over = { actions: { type: "score", score: 3 + 1e-12, probabilities: { "0": 0, "1": 0, "2": 0, "3": 1 }, confidence: 1 } };
+    const { call } = client(vi.fn(async () => json(200, body3(over))) as unknown as typeof fetch);
+    const r = await call(REQ3);
+    expect(r.ok && r.answers.actions).toMatchObject({ type: "score", score: 3 });
   });
 });

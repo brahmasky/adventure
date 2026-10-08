@@ -44,9 +44,9 @@ const calLang = (r: TriageReplayRow): CalLang => (r.lang === "en" ? "en" : "zh")
 function verdictAt(r: TriageReplayRow, bars: TriageBars): TriageReplayVerdict {
   const pPure = r.p_pure ?? 0; const scope = r.scope ?? "ask";
   return replayVerdict({
-    lane: { choice: r.jev_lane ?? "none", probabilities: { none: r.p_none ?? 0, status: r.p_status ?? 0, memory: r.p_memory ?? 0 }, confidence: r.conf_lane ?? 0 },
-    complete: { choice: pPure >= 0.5 ? "pure" : "mixed", probabilities: { mixed: 1 - pPure, pure: pPure }, confidence: Math.abs(2 * pPure - 1) },
-    scope: { choice: scope, probabilities: { [scope]: 1 }, confidence: 1 }
+    lane: { type: "choice", choice: r.jev_lane ?? "none", probabilities: { none: r.p_none ?? 0, status: r.p_status ?? 0, memory: r.p_memory ?? 0 }, confidence: r.conf_lane ?? 0 },
+    complete: { type: "choice", choice: pPure >= 0.5 ? "pure" : "mixed", probabilities: { mixed: 1 - pPure, pure: pPure }, confidence: Math.abs(2 * pPure - 1) },
+    scope: { type: "choice", choice: scope, probabilities: { [scope]: 1 }, confidence: 1 }
   }, bars, r.lang, r.model ?? "unreported"); // replayVerdict arms "as if" for whatever model it is given
 }
 const isMemory = (v: TriageReplayVerdict): boolean => v === "memory_pure" || v === "memory_mixed";

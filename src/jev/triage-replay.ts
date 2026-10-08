@@ -6,9 +6,9 @@ import type { ReplayTurnRow, RunStore } from "../run/run-store.js";
 import type { CalibrationRow } from "./calibration.js";
 import { marginOf, stateHash } from "./decide.js";
 import { langOf, type Lang } from "./intent-question.js";
-import { JEV_REQUEST_MODEL, type JevChoiceAnswer, type JevRequest, type JevResult } from "./jev-client.js";
+import { choiceAnswer, JEV_REQUEST_MODEL, type JevAnswer, type JevChoiceAnswer, type JevRequest, type JevResult } from "./jev-client.js";
 import { buildTriageState, lastHougeTurnOf, TRIAGE_LANE, TRIAGE_QUESTIONS } from "./questions/triage.js";
-import { criteriaHash, toJevQuestion, type Question } from "./questions/types.js";
+import { criteriaHash, toJevQuestion, type ChoiceQuestion } from "./questions/types.js";
 import { readDone, runReplayCore, type ReplayCoreOutcome } from "./replay-core.js";
 import { resolveTriageBars, TRIAGE_STATUS_ARM_ID, triageVerdict, type TriageBars } from "./thresholds.js";
 
@@ -45,7 +45,7 @@ export interface TriageReplayRow {
 type Prepared = TriageReplayRow & { state: Record<string, unknown>; chars: number };
 
 /** The lane question asked with its options reversed (memory, status, none): the order-bias probe (spec §3.6). */
-export const TRIAGE_LANE_PERMUTED: Question = { ...TRIAGE_LANE, criteria: [...TRIAGE_LANE.criteria].reverse() };
+export const TRIAGE_LANE_PERMUTED: ChoiceQuestion = { ...TRIAGE_LANE, criteria: [...TRIAGE_LANE.criteria].reverse() };
 
 /**
  * The replay judges every turn AS IF the lane were armed for its language and the reported model: with no calibration
@@ -58,7 +58,7 @@ function armedAsIf(model: string): CalibrationRow[] {
 }
 
 /** The verdict the live code would reach on these answers once armed (the one gate, `triageVerdict`, not a copy). */
-export function replayVerdict(answers: Record<string, JevChoiceAnswer>, bars: TriageBars, lang: Lang, model: string): TriageReplayVerdict {
+export function replayVerdict(answers: Record<string, JevAnswer>, bars: TriageBars, lang: Lang, model: string): TriageReplayVerdict {
   const v = triageVerdict(answers, bars, lang, model, armedAsIf(model));
   return v.kind === "memory" ? (v.complete === "pure" ? "memory_pure" : "memory_mixed") : v.kind;
 }
@@ -145,7 +145,7 @@ function prepareTurn(d: TriageReplayDeps, key: string, t: ReplayTurnRow): Prepar
   return { ...base, state: built.state, chars: built.chars };
 }
 
-async function dispatchTurn(d: TriageReplayDeps, row: Prepared, lane: Question, models: Set<string>): Promise<TriageReplayRow> {
+async function dispatchTurn(d: TriageReplayDeps, row: Prepared, lane: ChoiceQuestion, models: Set<string>): Promise<TriageReplayRow> {
   const { state, chars: _chars, ...rest } = row;
   const questions: JevRequest["questions"] = {};
   for (const q of TRIAGE_QUESTIONS) questions[q.id] = toJevQuestion(q.id === lane.id ? lane : q);
@@ -159,11 +159,13 @@ async function dispatchTurn(d: TriageReplayDeps, row: Prepared, lane: Question, 
     d.log?.(`warning: Jev reported model "${r.model}" mid-run, earlier rows reported ${[...models].join(", ")} — the report refuses mixed models`);
   }
   models.add(r.model);
-  const a = r.answers.lane!;
+  // The client validated each answer against its question's type, so these are choice answers; a miss is a parse failure.
+  const a = choiceAnswer(r.answers.lane); const complete = choiceAnswer(r.answers.complete); const scope = choiceAnswer(r.answers.scope);
+  if (!a) return { ...rest, status: "jev_failed", error: "error" };
   return { ...rest, status: "ok", usd: jevUsd(r.input_tokens, d.env), model: r.model, criteria_hash_lane: criteriaHash(lane), jev_lane: a.choice,
     p_memory: a.probabilities.memory ?? 0, p_status: a.probabilities.status ?? 0, p_none: a.probabilities.none ?? 0,
-    conf_lane: a.confidence, margin_lane: marginOf(a), p_pure: r.answers.complete?.probabilities.pure ?? 0,
-    ...(r.answers.scope ? { scope: r.answers.scope.choice } : {}),
+    conf_lane: a.confidence, margin_lane: marginOf(a), p_pure: complete?.probabilities.pure ?? 0,
+    ...(scope ? { scope: scope.choice } : {}),
     verdict: replayVerdict(r.answers, resolveTriageBars(d.env), rest.lang, r.model) };
 }
 

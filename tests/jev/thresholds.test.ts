@@ -14,7 +14,7 @@ const REPORTED = "jev-1.13.0";
 const ans = (choice: string, probabilities: Record<string, number>): JevChoiceAnswer => {
   const n = Object.keys(probabilities).length;
   const pMax = Math.max(...Object.values(probabilities));
-  return { choice, probabilities, confidence: (pMax - 1 / n) / (1 - 1 / n) }; // Jev's documented confidence formula
+  return { type: "choice", choice, probabilities, confidence: (pMax - 1 / n) / (1 - 1 / n) }; // Jev's documented confidence formula
 };
 const top = (o: Record<string, number>): string => Object.entries(o).sort((a, b) => b[1] - a[1])[0]![0];
 const answers = (lane: Record<string, number>, complete: Record<string, number>, scope: Record<string, number>) => ({

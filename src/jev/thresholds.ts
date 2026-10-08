@@ -1,6 +1,6 @@
 import { CALIBRATED_ROWS, calibratedLang, type CalibrationRow } from "./calibration.js";
 import type { Lang } from "./intent-question.js";
-import type { JevChoiceAnswer } from "./jev-client.js";
+import { choiceAnswer, type JevAnswer, type JevChoiceAnswer } from "./jev-client.js";
 import { TRIAGE_COMPLETE, TRIAGE_LANE, TRIAGE_SCOPE } from "./questions/triage.js";
 import { criteriaHash, type Question } from "./questions/types.js";
 
@@ -59,8 +59,8 @@ function armedFor(qs: Question[], lang: Lang, model: string, rows: readonly Cali
 }
 
 /** Pure: probabilities in, decision out. Thresholds are the caller's (code-owned); Jev never applies them. */
-export function triageVerdict(answers: Record<string, JevChoiceAnswer>, bars: TriageBars, lang: Lang, model: string, rows: readonly CalibrationRow[] = CALIBRATED_ROWS): TriageDecision {
-  const lane = answers.lane; const complete = answers.complete; const scope = answers.scope;
+export function triageVerdict(answers: Record<string, JevAnswer>, bars: TriageBars, lang: Lang, model: string, rows: readonly CalibrationRow[] = CALIBRATED_ROWS): TriageDecision {
+  const lane = choiceAnswer(answers.lane); const complete = choiceAnswer(answers.complete); const scope = choiceAnswer(answers.scope);
   if (!lane) return { kind: "fallthrough", reason: "uncalibrated" };
   if (p(lane, "status") >= bars.minStatus && statusArmed(lang, model, rows)) return { kind: "status" };
   if (!complete || !scope || !armedFor([TRIAGE_LANE, TRIAGE_COMPLETE, TRIAGE_SCOPE], lang, model, rows)) return { kind: "fallthrough", reason: "uncalibrated" };

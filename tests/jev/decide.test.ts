@@ -116,6 +116,6 @@ describe("decide", () => {
     store.close();
   });
   it("marginOf is p1 − p2 over the two largest probabilities", () => {
-    expect(marginOf({ choice: "a", probabilities: { a: 0.5, b: 0.3, c: 0.2 }, confidence: 0 })).toBeCloseTo(0.2, 9);
+    expect(marginOf({ type: "choice", choice: "a", probabilities: { a: 0.5, b: 0.3, c: 0.2 }, confidence: 0 })).toBeCloseTo(0.2, 9);
   });
 });

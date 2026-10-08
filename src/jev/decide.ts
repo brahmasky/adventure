@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { RunStore } from "../run/run-store.js";
 import type { Lang } from "./intent-question.js";
-import type { JevChoiceAnswer, JevRequest, JevResult } from "./jev-client.js";
+import { choiceAnswer, type JevChoiceAnswer, type JevRequest, type JevResult } from "./jev-client.js";
 import { openJevIncident, resolveJevIncidentsOnAnswer } from "./jev-incidents.js";
 import { criteriaHash, toJevQuestion, type Question } from "./questions/types.js";
 
@@ -74,13 +74,19 @@ export async function decide(i: DecideInput): Promise<Decision> {
     openJevIncident(i.store, r, { point: i.point, run_id: i.run_id });
     return { status: "skipped", reason: skipReasonOf(r) };
   }
-  if (i.questions.some((q) => !r.answers[q.id])) return { status: "skipped", reason: "parse" }; // fail loud, never partial
+  // Choice-only until the per-type rows land: a missing or non-choice answer fails loud, never a partial set.
+  const answers: Record<string, JevChoiceAnswer> = {};
+  for (const q of i.questions) {
+    const a = choiceAnswer(r.answers[q.id]);
+    if (!a) return { status: "skipped", reason: "parse" };
+    answers[q.id] = a;
+  }
   resolveJevIncidentsOnAnswer(i.store); // like the open, independent of whether this turn is still live
   const now = i.now?.().toISOString();
   const sh = stateHash(i.state);
   const rows: JevDecisionInsert[] = [];
   for (const q of i.questions) {
-    const a = r.answers[q.id]!; // checked above: every requested id is present
+    const a = answers[q.id]!; // checked above: every requested id is present
     rows.push({
       run_id: i.run_id, point: i.point, question_id: q.id, criteria_hash: criteriaHash(q), model_reported: r.model, state_hash: sh, lang: i.lang,
       answers_json: JSON.stringify(a.probabilities), confidence: a.confidence, top_prob: Math.max(...Object.values(a.probabilities)), margin: marginOf(a),
@@ -88,5 +94,5 @@ export async function decide(i: DecideInput): Promise<Decision> {
       status: "answered", skip_reason: null, ...(now ? { created_at: now } : {}), ...(i.instants ?? {}),
     });
   }
-  return { status: "answered", answers: r.answers, model: r.model, latency_ms: r.latency_ms, input_tokens: r.input_tokens, stateHash: sh, rows };
+  return { status: "answered", answers, model: r.model, latency_ms: r.latency_ms, input_tokens: r.input_tokens, stateHash: sh, rows };
 }
