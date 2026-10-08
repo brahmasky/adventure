@@ -1741,6 +1741,53 @@ describe("PlannerSupervisor — the turn-owned chain (Jev tree spec §4-5)", () 
     expect(attempts(bare.store, run_id)[0]).not.toHaveProperty("routed_by");
   });
 
+  it("a Default → Thinking step-up skips what failed this turn with quota, but re-tries a selector that failed with `other` at the higher effort", async () => {
+    // Default and Thinking share provider/model pairs: a quota-failed pair fails at any effort, an `other` one may not
+    const session = failing(["something odd", "429 quota", "429 quota"]);
+    const { store, sup, outcome } = harness(session, {}, routed("default"));
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(session.pins).toEqual([
+      "anthropic/claude-opus-5-5:medium", "google-antigravity/claude-opus-4-6:medium", "kimi-code/k3:low", "anthropic/claude-opus-5-5:high"
+    ]);
+    expect(escalations(store, run_id)).toEqual([{ from: "default", to: "thinking", kind: "quota" }]);
+    expect(outcome.done[0]).toMatchObject({ run_id, text: "ok" });
+    expect(outcome.routeEnds[0]).toMatchObject({ handler_outcome: "planner_done", model: "anthropic/claude-opus-5-5" });
+  });
+
+  it("quota on every Default candidate: the step-up re-spends none of them and ends no_planner_leg, with one catalog refresh asked", async () => {
+    // the real lists share all four pairs: without the per-turn set an outage costs four more failing requests + RETRY_NOTEs
+    const session = failing(["429 quota", "429 quota", "429 quota"]);
+    const roles = fakeRoles();
+    const { store, sup, outcome } = harness(session, {}, { roles, ...routed("default") });
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(session.models).toEqual(["anthropic/claude-opus-5-5", "google-antigravity/claude-opus-4-6", "kimi-code/k3"]); // the fresh child's first pin, then the walk
+    expect(session.prompts).toEqual(["hi", RETRY_NOTE, RETRY_NOTE]);
+    expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "no_planner_leg", error_ref: "quota" });
+    expect(incidentKinds(outcome)).toEqual(["planner_no_leg"]);
+    expect(roles.refreshes).toBe(1);
+  });
+
+  it("a routed turn that never dispatched reports model null, never the previous turn's answering model (spec §6)", async () => {
+    // `actual` persists across turns for houge_status; the verdict row must not credit a model with a turn it never ran
+    let n = 0;
+    const session = fakeSession({ setModel: async () => {
+      if (n === 2) throw new PlannerRpcError("command_failed:set_model", "Model not found: anthropic/claude-opus-5-5");
+    } });
+    const triage = async () => ({ kind: "fallthrough" as const, route: ++n === 1
+      ? { role: "default" as const, effort: null, verdict_id: "jv_1" } : { role: "thinking" as const, effort: null, verdict_id: "jv_2" } });
+    const { store, sup, outcome } = harness(session, {}, { triage });
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    const second = createQueuedTurnRun(store);
+    sup.submit(req(second)); await sup.whenIdle();
+    expect(failedOf(outcome, second)).toMatchObject({ error_type: "no_planner_leg", error_ref: "model_missing" });
+    expect(outcome.routeEnds).toEqual([
+      expect.objectContaining({ verdict_id: "jv_1", model: "anthropic/claude-opus-5-5" }),
+      expect.objectContaining({ verdict_id: "jv_2", handler_outcome: "planner_failed", model: null })
+    ]);
+  });
+
   it("a quote: the user turn records quoted_turn_id and the prompt carries the quoted line just before the message (spec §2.2.1)", async () => {
     const quote = { turn_id: "turn_q", line: "[replying to houge, 3600 s ago: 要不要我查一下？]\n" };
     const session = fakeSession();

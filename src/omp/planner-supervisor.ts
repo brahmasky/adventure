@@ -163,6 +163,8 @@ interface Turn {
   startMissing: number; legsTried: number;
   /** `other` was retried once (spec §4); the first pin failed in transport (pin_failed: no step-up on this child). */
   retriedOther: boolean; pinFailed: boolean;
+  /** Selectors (effort-agnostic) that failed THIS turn with a kind other than `other`: a step-up never re-spends them. */
+  failed: Set<string>;
   /** The lane owns this turn's terminal: a late start result may no longer fail or re-enter it. */
   laneEnded: boolean;
 }
@@ -417,7 +419,7 @@ export class PlannerSupervisor {
     const turn: Turn = {
       req, claim, worker, startedAt: Date.now(), merged: [], active, abort, heartbeat, n: 0, recorded: 0, lastText: "", lastError: undefined, deadline: undefined, idle: undefined,
       usedTool: false, legIndex: 0, live: false, finished: false, laneEnded: false, aborting: false, dispatched: false, childGen: -1, approvals: 0, ...newDeferred(),
-      route: null, role: "default", effort: null, chain: [], routedBy: undefined, startMissing: 0, legsTried: 0, retriedOther: false, pinFailed: false,
+      route: null, role: "default", effort: null, chain: [], routedBy: undefined, startMissing: 0, legsTried: 0, retriedOther: false, pinFailed: false, failed: new Set(),
       deadlineLeft: cfg.turnTimeoutMs, deadlineAt: Date.now()
     };
     this.armDeadline(turn); // the deadline covers child start and prompt build too
@@ -605,7 +607,8 @@ export class PlannerSupervisor {
     this.d.store.appendRunLedgerEvent(turn.req.run_id, "routed_escalation", "core", { from: turn.role, to, kind });
     turn.role = to;
     turn.legIndex = 0;
-    turn.chain = this.turnChain(to, turn.effort);
+    // Default and Thinking share provider/model pairs: one that failed this turn (quota, auth, …) fails at any effort
+    turn.chain = this.turnChain(to, turn.effort).filter((m) => !turn.failed.has(selectorKey(m)));
     return true;
   }
 
@@ -658,6 +661,7 @@ export class PlannerSupervisor {
    */
   private async retryNextLeg(turn: Turn, error: string): Promise<boolean> {
     const kind = classifyOmpError(error);
+    if (kind !== "other") turn.failed.add(selectorKey(this.model));
     if (!this.mayRetry(turn, kind)) { turn.failure = { type: "model_error", ref: kind }; return false; }
     const s = this.session;
     if (!s) { turn.failure = { type: "planner_exit", ref: "planner not running" }; return false; }
@@ -1183,7 +1187,8 @@ export class PlannerSupervisor {
   private routeEnd(t: Turn, handler_outcome: "planner_done" | "planner_failed"): void {
     const verdict_id = t.route?.verdict_id;
     if (!verdict_id || !this.d.outcome.routeEnd) return;
-    const model = this.actual ? `${this.actual.provider}/${this.actual.model}` : t.dispatched ? selectorKey(this.model) : null;
+    // no prompt went out → null: `actual` persists across turns (plannerFamily/answeredModel read it), so it is not this turn's
+    const model = !t.dispatched ? null : this.actual ? `${this.actual.provider}/${this.actual.model}` : selectorKey(this.model);
     this.d.outcome.routeEnd({
       run_id: t.req.run_id, verdict_id, handler_outcome, model, fast_used_tool: t.role === "fast" && t.usedTool, pin_failed: t.pinFailed
     });
