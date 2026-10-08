@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
-import { familyOf } from "../../src/omp/model-string.js";
+import { familyOf, parseModelChain } from "../../src/omp/model-string.js";
+import { staticRoleChains } from "../../src/omp/model-roles.js";
 import { judgeSeat, oneShotAdapter, seatBudgetMs, seatChain, tickSeat } from "../../src/llm/registry.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { OMP_AUDIO_REFUSED, spawnOneShot } from "../../src/llm/providers/omp.js";
@@ -124,6 +125,18 @@ describe("oneShotAdapter — the audited one-shot call every seat makes", () => 
     expect(new Set(ids).size).toBe(2);
   });
 
+  // A /models override must reach the daemon's ticks without a restart: tickSeat reads its chains at call time.
+  it("a tick seat runs on the chains its resolver hands it at call time", async () => {
+    fakeCfg({ "*": { text: "fine" } });
+    Object.assign(process.env, { HOUGE_OMP_BIN: FAKE_OMP_BIN, HOUGE_OMP_SANDBOX: "0", HOUGE_OMP_ENV_PASSTHROUGH: "FAKE_OMP_SCENARIO,FAKE_OMP_ARGV_LOG" });
+    let ticks = parseModelChain("kimi-code/k3:low");
+    const seat = tickSeat(store, "episodic_distill", "distill", process.env, () => ({ ...staticRoleChains(), ticks }));
+    await seat({ question: "q", system: "s" });
+    ticks = parseModelChain("google-antigravity/gemini-3.8-flash:low");
+    await seat({ question: "q", system: "s" });
+    expect(argv().map((c) => c.argv[c.argv.indexOf("--model") + 1])).toEqual(["kimi-code/k3", "google-antigravity/gemini-3.8-flash"]);
+  });
+
   it("a tick call under the daemon's stop spawns nothing and records no attempt (a shutdown is not a failing leg)", async () => {
     fakeCfg({ "*": { text: "fine" } });
     Object.assign(process.env, { HOUGE_OMP_BIN: FAKE_OMP_BIN, HOUGE_OMP_SANDBOX: "0", HOUGE_OMP_ENV_PASSTHROUGH: "FAKE_OMP_SCENARIO,FAKE_OMP_ARGV_LOG" });
@@ -143,8 +156,10 @@ describe("oneShotAdapter — the audited one-shot call every seat makes", () => 
     expect(store.getLedgerEventsByCorrelation("tick:a")).toEqual([]);
   });
 
-  it("a reader on the planner's family still answers and records family_collapse + a wall_collapse event (D10)", async () => {
-    const cfg = fakeCfg({ "*": { text: "digest" } });
+  // D10 skip rule (spec 2026-10-06 §8): a cross-family reader leg would run first, so the collapse needs a reader chain
+  // whose every candidate shares the planner's family.
+  it("a reader whose every candidate is on the planner's family still answers and records family_collapse + a wall_collapse event (D10)", async () => {
+    const cfg = { ...fakeCfg({ "*": { text: "digest" } }), reader: parseModelChain("google-antigravity/gemini-3.8-flash:low") };
     const r = await oneShotAdapter(store, cfg, { correlation_id: "tick:w", role: "reader" }, "gemini").answer({ question: "q" });
     expect(r.ok).toBe(true);
     const events = store.getLedgerEventsByCorrelation("tick:w");

@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RunStore, type DaemonBootInput } from "../../src/run/run-store.js";
+import { staticRoleChains } from "../../src/omp/model-roles.js";
+import { parseModelChain } from "../../src/omp/model-string.js";
 import { classifyBoot, collectHougeStatus, isBuildStale, readBootCode, renderHougeStatus, HOUGE_STATUS_MAX_CHARS, type StatusSupervisor } from "../../src/status/houge-status.js";
 
 // houge_status (2026-10-02): Houge could not tell whether the daemon restarted or which code was live
@@ -52,6 +54,15 @@ function status(store: RunStore, sup: StatusSupervisor | null = supervisor): str
 }
 
 describe("houge_status rendering", () => {
+  // houge_status answers "which model am I on": once roles resolve, the head it reports must be the resolved one.
+  it("reports the planner and reader heads the model roles resolve to, not a fixed chain", () => {
+    const store = seeded();
+    const chains = { ...staticRoleChains(), planner: parseModelChain("kimi-code/k3:low"), reader: parseModelChain("google-antigravity/gemini-3.8-flash:low") };
+    const s = collectHougeStatus({ store, env, chatId: "555", pid: 4242, now: NOW, chains });
+    expect([s.plannerTop, s.readerTop]).toEqual(["kimi-code/k3:low", "google-antigravity/gemini-3.8-flash:low"]);
+    store.close();
+  });
+
   it("renders every field from the seeded store and the boot record", () => {
     const store = seeded();
     const out = status(store);

@@ -18,6 +18,7 @@ import {
 import { RADAR_EXTRACT_DISCIPLINE } from "../../src/capabilities/idea-radar.js";
 import { LESSON_CONSOLIDATE_DISCIPLINE } from "../../src/capabilities/lesson-consolidate.js";
 import { PLANNER_EXIT_TEXT } from "../../src/omp/planner-supervisor.js";
+import { RoleResolver } from "../../src/omp/role-resolver.js";
 import { pinOmpEnv, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
 import { until } from "../helpers/omp-worker.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
@@ -1140,15 +1141,77 @@ describe("the daemon's sweep wiring (M9)", () => {
     }
   });
 
-  it("boot validates the omp seat chains: a malformed chain opens omp_config_invalid before the first poll (B4)", async () => {
+  it("boot validates the omp config: a malformed value opens omp_config_invalid before the first poll (B4)", async () => {
     const store = RunStore.openInMemory();
     const root = projectRoot();
-    process.env.HOUGE_OMP_TICKS = "kimi-code/k3:lo";
+    process.env.HOUGE_OMP_LEASE_TTL_S = "20";
     try {
       const controller = new AbortController(); controller.abort();
       await runTelegramDaemon({ store, projectRoot: root, omp: fakeOmp(root), allowlist: ALLOWLIST, stopSignal: controller.signal,
         telegramClient: { getUpdates: async () => [], sendMessage: async () => ({ message_id: 1 }) } as never });
-      expect(store.listOpenIncidents().map((i) => [i.kind, JSON.parse(i.detail_json).invalid])).toEqual([["omp_config_invalid", ["HOUGE_OMP_TICKS"]]]);
+      expect(store.listOpenIncidents().map((i) => [i.kind, JSON.parse(i.detail_json).invalid])).toEqual([["omp_config_invalid", ["HOUGE_OMP_LEASE_TTL_S"]]]);
+    } finally {
+      store.close();
+    }
+  });
+
+  // Decision 4 / spec §4: the daemon reads omp's catalog once before the first turn. An unreadable catalog must be
+  // visible (one ledger note) and must leave every role on its code list, never an empty chain.
+  it("boot reads omp's model catalog once before the first poll; an unreadable catalog leaves one note", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    try {
+      const controller = new AbortController(); controller.abort();
+      await runTelegramDaemon({ store, projectRoot: root, omp: fakeOmp(root, { modelsExit: 1 }), allowlist: ALLOWLIST, stopSignal: controller.signal,
+        telegramClient: { getUpdates: async () => [], sendMessage: async () => ({ message_id: 1 }) } as never });
+      expect(store.getLedgerEvents().filter((e) => e.event_type === "model_catalog_unavailable").map((e) => e.payload)).toEqual([{ reason: "read_failed" }]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("a readable catalog at boot leaves no unavailable note", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    try {
+      const controller = new AbortController(); controller.abort();
+      await runTelegramDaemon({ store, projectRoot: root, omp: fakeOmp(root), allowlist: ALLOWLIST, stopSignal: controller.signal,
+        telegramClient: { getUpdates: async () => [], sendMessage: async () => ({ message_id: 1 }) } as never });
+      expect(store.getLedgerEvents().filter((e) => e.event_type === "model_catalog_unavailable")).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("boot names a still-set retired HOUGE_OMP_* chain variable once (a stale .env is visible, never fatal)", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    process.env.HOUGE_OMP_PLANNER = "kimi-code/k3"; // restored by pinOmpEnv
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const controller = new AbortController(); controller.abort();
+      await runTelegramDaemon({ store, projectRoot: root, omp: fakeOmp(root), allowlist: ALLOWLIST, stopSignal: controller.signal,
+        telegramClient: { getUpdates: async () => [], sendMessage: async () => ({ message_id: 1 }) } as never });
+      expect(warn.mock.calls.flat().filter((l) => String(l).includes("HOUGE_OMP_PLANNER"))).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+      store.close();
+    }
+  });
+
+  // F14: one failed boot read must not leave the roles a day on stale lists. The poll loop offers the resolver its
+  // hourly retry each cycle; the resolver owns the window (tests/omp/role-resolver.test.ts).
+  it("each poll cycle offers the resolver its hourly retry of a failed catalog read", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    const roles = new RoleResolver({ store, env: () => ({}), readCatalog: async () => null });
+    let offered = 0;
+    roles.retryFailedRead = () => { offered += 1; return null; };
+    try {
+      const controller = new AbortController();
+      await runTelegramDaemon({ store, projectRoot: root, omp: { ...fakeOmp(root), roles }, allowlist: ALLOWLIST, stopSignal: controller.signal,
+        telegramClient: { getUpdates: stopOnSecondPoll(controller), sendMessage: async () => ({ message_id: 1 }) } as never });
+      expect(offered).toBeGreaterThanOrEqual(1);
     } finally {
       store.close();
     }

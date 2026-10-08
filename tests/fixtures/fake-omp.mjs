@@ -25,6 +25,14 @@ import { connect } from "node:net";
 
 const argv = process.argv.slice(2);
 if (argv.includes("--version")) { process.stdout.write("omp/18.4.4\n"); process.exit(0); }
+// `omp --profile <p> models --json` (the role resolver's catalog read, spec 2026-10-06 §4): the scenario's top-level
+// `models` (any JSON), else tests/fixtures/omp-models.json; top-level `modelsExit: <n>` exits n with nothing on stdout.
+if (argv.includes("models") && argv.includes("--json")) {
+  const sc = process.env.FAKE_OMP_SCENARIO ? JSON.parse(readFileSync(process.env.FAKE_OMP_SCENARIO, "utf8")) : {};
+  if (sc.modelsExit) process.exit(sc.modelsExit);
+  process.stdout.write(sc.models !== undefined ? JSON.stringify(sc.models) : readFileSync(new URL("./omp-models.json", import.meta.url), "utf8"));
+  process.exit(0);
+}
 
 const modeIdx = argv.indexOf("--mode");
 if (modeIdx >= 0 && argv[modeIdx + 1] === "rpc") await runRpc();

@@ -1,16 +1,17 @@
 // Idea Radar R2 panel seats (ADR 0027, spec §§1–2; omp runtime spec §8): the three judges and the
 // chair are omp one-shot seats — tool-less, session-less, subscription legs under the `houge`
-// profile. Each JUDGE is pinned to ONE model string by index (`HOUGE_OMP_JUDGES`), never a chain:
+// profile. Each JUDGE is pinned to ONE model string by index (the Judges role), never a chain:
 // a healthy-leg fallback would silently void model diversity and the quorum semantics. The CHAIR
-// rides `HOUGE_OMP_CHAIR`. Both the daemon tick and `houge radar-panel` build their seats HERE, so
+// rides the Chair role. Both the daemon tick and `houge radar-panel` build their seats HERE, so
 // the two sites cannot drift apart (the CLI site once kept firing metered APIs after the daemon moved).
 import { judgeSeat, oneShotAdapter, seatChain, type OneShotAdapterOptions } from "../llm/registry.js";
 import { resolveOmpConfig } from "../omp/omp-config.js";
+import type { RoleChains } from "../omp/model-roles.js";
 import type { RunStore } from "../run/run-store.js";
 import type { PanelSeat } from "./idea-panel.js";
 import type { RadarLlm } from "./idea-radar.js";
 
-/** Which `HOUGE_OMP_JUDGES` index serves which named judge (default kimi-code/k3, openai-codex/gpt-5.5, gemini-3.1-pro). */
+/** Which Judges-role seat serves which named judge (kimi-code/k3, the openai-codex seat, gemini-3.1-pro; src/omp/model-roles.ts). */
 export const PANEL_JUDGE_SEAT_INDEX = { kimi: 0, codex: 1, gemini: 2 } as const;
 
 export interface PanelSeatBindings {
@@ -24,6 +25,8 @@ export interface OmpPanelSeatsInput {
   /** The run-less audit scope (`tick:idea_panel`, `cli:radar-panel`). */
   correlation_id: string;
   env: NodeJS.ProcessEnv;
+  /** The daemon's resolved chains (`roles.chains()`); absent = the static role lists (the CLI). */
+  chains?: RoleChains;
   /** Tests only: bypass the `omp --version` spawn. */
   versionCheck?: OneShotAdapterOptions["versionCheck"];
   /** The daemon's stop: aborts an in-flight seat call (absent for the CLI). */
@@ -32,7 +35,7 @@ export interface OmpPanelSeatsInput {
 
 /** The four panel seats on omp. A seat never throws into the tick: every failure is `{ok:false}`. */
 export function buildOmpPanelSeats(input: OmpPanelSeatsInput): PanelSeatBindings {
-  const cfg = resolveOmpConfig(input.env);
+  const cfg = resolveOmpConfig(input.env, input.chains);
   const opts = input.versionCheck ? { versionCheck: input.versionCheck } : {};
   const seat = (role: "judge" | "chair", chain: ReturnType<typeof seatChain>) => {
     const one = oneShotAdapter(input.store, cfg, { correlation_id: input.correlation_id, role }, undefined, { ...opts, chain });

@@ -7,6 +7,7 @@ import type { OmpConfig } from "../../omp/omp-config.js";
 import { checkOmpVersion } from "../../omp/omp-version.js";
 import { classifyOmpError, parseFrameLine, RETRYABLE_ERROR_KINDS, summarizeAssistantMessage, type AssistantSummary } from "../../omp/omp-frames.js";
 import { familyOf, formatModelString, type ModelFamily, type ModelString } from "../../omp/model-string.js";
+import { resolveModelRolesMode } from "../../omp/model-roles.js";
 
 export interface OneShotInput {
   seat: string; chain: ModelString[]; prompt: string; files?: string[];
@@ -101,6 +102,19 @@ const AUDIO_FILE = /\.(opus|ogg|oga|mp3|wav|m4a|aac|flac|amr|weba)$/i;
 /** A call the daemon's stop cut short: not a model failure (its leg, if one ran, is audited error{shutdown}). */
 const ABORTED: LlmResult = { ok: false, provider: "omp", error: "aborted: the daemon is stopping", aborted: true };
 
+/**
+ * D10 as a skip rule (spec 2026-10-06 §8), resolved mode only. A reader call that knows the planner's family runs its
+ * candidates of another family first, then the rest, each group in list order. When every candidate shares the family
+ * the order stands, and every leg is flagged family_collapse below, as before. `HOUGE_MODEL_ROLES=static` (read per
+ * call) keeps the list order exactly, as before stage A (spec §4.3).
+ */
+function readerOrder(input: OneShotInput): ModelString[] {
+  if (input.seat !== "reader" || input.plannerFamily === undefined) return input.chain;
+  if (resolveModelRolesMode(process.env) === "static") return input.chain;
+  const cross = input.chain.filter((m) => familyOf(m) !== input.plannerFamily);
+  return [...cross, ...input.chain.filter((m) => familyOf(m) === input.plannerFamily)];
+}
+
 export async function spawnOneShot(input: OneShotInput, deps: OneShotDeps): Promise<LlmResult> {
   if ((input.files ?? []).some((f) => AUDIO_FILE.test(f))) return { ok: false, provider: "omp", error: OMP_AUDIO_REFUSED };
   if (input.signal?.aborted) return ABORTED;
@@ -109,7 +123,7 @@ export async function spawnOneShot(input: OneShotInput, deps: OneShotDeps): Prom
   // No leg ran, so no audit row: the structured check rides out for the caller's incident (ruling 6).
   if (!version.ok) return { ok: false, provider: "omp", error: version.reason, unavailable: true, omp_check: version };
   const errors: string[] = [];
-  for (const [i, m] of input.chain.entries()) {
+  for (const [i, m] of readerOrder(input).entries()) {
     if (input.signal?.aborted) return ABORTED;
     const o = await runLeg(deps.cfg, m, input);
     const family = familyOf(m);

@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
 import { lessonSetFingerprint } from "../../src/run/lesson-render.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
+import { staticRoleChains } from "../../src/omp/model-roles.js";
+import { parseModelChain } from "../../src/omp/model-string.js";
 import { PlannerSupervisor, RETRY_NOTE, parseAttachments, type PlannerSessionLike, type SupervisorDeps, type SupervisorState, type TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
 import type { OmpFrame } from "../../src/omp/omp-frames.js";
 import { PlannerRpcError, type ExitInfo, type PlannerSessionOptions } from "../../src/omp/planner-session.js";
@@ -123,7 +125,8 @@ function sink(store: RunStore): Outcome {
   return outcome;
 }
 
-function harness(session = fakeSession(), env: Record<string, string> = {}, extra: Partial<SupervisorDeps> = {}, o: { sessionState?: "current" | "none" } = {}) {
+/** `o.planner` replaces the planner chain (the retired HOUGE_OMP_PLANNER); default the static Default list, today's chain. */
+function harness(session = fakeSession(), env: Record<string, string> = {}, extra: Partial<SupervisorDeps> = {}, o: { sessionState?: "current" | "none"; planner?: string } = {}) {
   const store = RunStore.openInMemory();
   if ((o.sessionState ?? "current") === "current") {
     store.recordPlannerSessionReset("42", lessonSetFingerprint(store), new Date().toISOString());
@@ -133,7 +136,7 @@ function harness(session = fakeSession(), env: Record<string, string> = {}, extr
   const data = mkdtempSync(join(tmpdir(), "hsv-")); // short: the bridge socket path must fit sun_path (104 bytes)
   const outcome = sink(store);
   const sup = new PlannerSupervisor({
-    chatId: "42", store, cfg: resolveOmpConfig({ HOUGE_OMP_SANDBOX: "0", ...env }), ctx: { home: data, repo: data, data }, distDir: data,
+    chatId: "42", store, cfg: resolveOmpConfig({ HOUGE_OMP_SANDBOX: "0", ...env }, { ...staticRoleChains(), ...(o.planner ? { planner: parseModelChain(o.planner) } : {}) }), ctx: { home: data, repo: data, data }, distDir: data,
     decls: [], env: {}, turnEnvelopeActions: ["shell"],
     turnContext: { store, memoryRoot: new URL("../../memory", import.meta.url).pathname, dataDir: data, skillsReader: () => undefined, coreBlock: () => undefined, retrieve: async () => ({ facts: [], pages: [] }), env: {} },
     buildTools: () => ({ registry: new ToolRegistry(), quarantine: async () => ({ digest: "", contains_instructions: false, source_meta: { tool: "x", bytes: 0 } }) }),
@@ -871,7 +874,7 @@ describe("PlannerSupervisor — omp error frames and aborted ends (final review 
 
   it("a prompt that failed before reaching the agent (prompt_result error, no agent_end) ends the turn at once, classified", async () => {
     const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "prompt_result", agentInvoked: false, status: "error", error: { message: "fetch failed", retryable: false } }); } });
-    const { store, sup, outcome } = harness(session, { HOUGE_OMP_PLANNER: "anthropic/claude-opus-5-5:medium" }); const run_id = createQueuedTurnRun(store);
+    const { store, sup, outcome } = harness(session, {}, {}, { planner: "anthropic/claude-opus-5-5:medium" }); const run_id = createQueuedTurnRun(store);
     const t0 = Date.now();
     sup.submit(req(run_id)); await sup.whenIdle();
     expect(Date.now() - t0).toBeLessThan(2_000); // not the 180 s frame watchdog
@@ -1126,7 +1129,7 @@ describe("PlannerSupervisor — the planner runs the configured model after a se
   it("a fresh child is pinned to the leg it spawned on with set_model before the first prompt", async () => {
     const log: string[] = [];
     const session = fakeSession({ log, logSetModel: true, resumeModel: "anthropic/claude-opus-5-5" });
-    const { store, sup, outcome } = harness(session, { HOUGE_OMP_PLANNER: "kimi-code/k3" });
+    const { store, sup, outcome } = harness(session, {}, {}, { planner: "kimi-code/k3" });
     const run_id = createQueuedTurnRun(store);
     sup.submit(req(run_id)); await sup.whenIdle();
     expect(log.filter((l) => !l.startsWith("manifest"))).toEqual(["start:1", "setModel:kimi-code/k3", "prompt:1"]);
@@ -1147,7 +1150,7 @@ describe("PlannerSupervisor — the planner runs the configured model after a se
 
   it("a failed pin follows the reset-failure path, and the family is the ACTUAL model's from message_end (D10)", async () => {
     const session = fakeSession({ resumeModel: "anthropic/claude-opus-5-5", setModel: async () => { throw new Error("set_model refused"); } });
-    const { store, sup, outcome } = harness(session, { HOUGE_OMP_PLANNER: "kimi-code/k3" });
+    const { store, sup, outcome } = harness(session, {}, {}, { planner: "kimi-code/k3" });
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
     expect(outcome.done).toHaveLength(1); // answered on the model it really has
     expect(incidentKinds(outcome)).toContain("planner_model_reset_failed");
@@ -1162,7 +1165,7 @@ describe("PlannerSupervisor — the planner runs the configured model after a se
 describe("PlannerSupervisor — what houge_status reads from it", () => {
   it("knows nothing before a child started, then the checked omp version and the model that answered", async () => {
     const session = fakeSession({ resumeModel: "anthropic/claude-opus-5-5" });
-    const { store, sup } = harness(session, { HOUGE_OMP_PLANNER: "kimi-code/k3" });
+    const { store, sup } = harness(session, {}, {}, { planner: "kimi-code/k3" });
     expect(sup.ompVersion()).toBeNull();
     expect(sup.answeredModel()).toBeUndefined();
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();

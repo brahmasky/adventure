@@ -134,7 +134,9 @@ import {
 } from "../capabilities/memory-correct.js";
 import type { ActiveTurn } from "../omp/bridge-handler.js";
 import type { ExternalReadResult } from "../omp/external-read.js";
-import { ompConfigProblems, resolveOmpConfig } from "../omp/omp-config.js";
+import { ompConfigProblems, resolveOmpConfig, type OmpConfig } from "../omp/omp-config.js";
+import { readOmpCatalog } from "../omp/model-catalog.js";
+import { RoleResolver } from "../omp/role-resolver.js";
 import { PlannerSupervisor, type SupervisorDeps, type TriageInput, type TriageOutcome, type TurnOutcomeSink } from "../omp/planner-supervisor.js";
 import { calibrationRows, type CalibrationRow } from "../jev/calibration.js";
 import { decide, marginOf, persistDecisionRows, recordSkip, topProbOf, type JevDecisionInsert, type SkipReason } from "../jev/decide.js";
@@ -271,6 +273,8 @@ export interface OmpWorkerOptions {
   jevFetch?: typeof fetch;
   /** Tests only: the clock for triage state ages and decision rows. */
   jevNow?: () => Date;
+  /** The model-role service; default one over `omp models --json`. Tests inject a resolver over a fixture catalog. */
+  roles?: RoleResolver;
 }
 
 const OMP_CONFIG_INCIDENT: ReadonlySet<string> = new Set(["omp_config_invalid"]);
@@ -397,6 +401,8 @@ export class CoreWorker {
   private readonly timeConvertAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
   /** Query embedding for episodic retrieval (injected or the local-Ollama default). */
   private readonly embedAdapter: (text: string) => Promise<Float32Array | null>;
+  /** Model roles (spec 2026-10-06 §4): every seat's chain resolves here, per call. */
+  private readonly roles: RoleResolver;
 
   constructor(
     private readonly runStore: RunStore,
@@ -434,6 +440,8 @@ export class CoreWorker {
     this.ompDecls = loadToolDeclarations(TOOL_DECLS_DIR);
     // Daemon temp space and self-write worktrees live under the data dir (B13); unset, it is the cwd (houge.sqlite's dir).
     if (ompOptions.dataDir) setDaemonDataDir(ompOptions.dataDir);
+    // One resolver per worker; the daemon reads its catalog at boot (resolveOmpConfig may throw on a bad lease TTL: refreshCatalog catches it).
+    this.roles = ompOptions.roles ?? new RoleResolver({ store: runStore, readCatalog: () => readOmpCatalog(resolveOmpConfig(process.env)) });
     // When the DEFAULT llm adapter is in use (production), `llmAdapterFor` builds a run-scoped,
     // audited adapter per role. A test-INJECTED adapter is used as-is (it brings its own fakes).
     this.llmAdapterIsDefault = llmAdapter === undefined;
@@ -1267,7 +1275,7 @@ export class CoreWorker {
     // resolve to the SAME provider, log a single NON-FATAL warning — never block.
     const writerProvider = resolveSelfWriteWriter(process.env);
     const reviewerProvider = resolveSelfWriteReviewer(process.env);
-    const diversity = reviewerDiversityWarning(writerProvider, process.env);
+    const diversity = reviewerDiversityWarning(writerProvider, process.env, this.roles.chains());
     if (diversity) console.warn(diversity);
     // Captured across the loop so the published event can stamp the WINNING pass's usage (no bodies).
     let lastWriterUsage: LlmUsage | undefined;
@@ -1371,6 +1379,7 @@ export class CoreWorker {
           task: reviewTask,
           diff,
           audit: this.runStore.llmAuditSink({ run_id: claim.run_id, role: "reviewer" }),
+          chains: this.roles.chains(),
           onOmpCheck: (check) => reportOmpCheck(this.runStore, resolveOmpConfig(process.env), check)
         });
         // H1 attribution: the backend that actually verdicted (the fallback chain may have moved
@@ -1497,18 +1506,24 @@ export class CoreWorker {
   /**
    * THE seat chokepoint: an omp one-shot over the role's subscription chain, audited per leg under
    * `scope` (spec §8). Only the DEFAULT adapter is built this way; a test-injected adapter is
-   * returned as-is (it brings its own fakes). The omp config is read per call (`/disarm`-style env
-   * edits apply to the next call).
+   * returned as-is (it brings its own fakes). The config and the roles' chains are read per call
+   * (an env edit or a /models override applies to the next call).
    */
   private seatAdapter(scope: LlmAuditScope, plannerFamily?: ModelFamily): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
     if (!this.llmAdapterIsDefault) return this.llmAdapter;
-    return (input) => llmToolAdapter(oneShotAdapter(this.runStore, resolveOmpConfig(process.env), scope, plannerFamily))(input);
+    return (input) => llmToolAdapter(oneShotAdapter(this.runStore, this.ompConfig(), scope, plannerFamily))(input);
   }
 
   /** The runner's wall-clock cap for one seat call: every leg of the seat's chain may time out, plus headroom. */
   private llmTimeoutMs(role: LlmCallRole): number {
-    return seatBudgetMs(resolveOmpConfig(process.env), role) + RUNNER_TIMEOUT_BUFFER_MS;
+    return seatBudgetMs(this.ompConfig(), role) + RUNNER_TIMEOUT_BUFFER_MS;
   }
+
+  /** The worker's model-role service: the daemon's boot catalog read, ticks and (Task 11) `/models` use this one instance. */
+  modelRoles(): RoleResolver { return this.roles; }
+
+  /** The omp config with the seat chains as the roles resolve them now. */
+  private ompConfig(): OmpConfig { return resolveOmpConfig(process.env, this.roles.chains()); }
 
   /**
    * The media leg for one run (ruling 2): a photo is an omp one-shot on `cfg.media`, a voice note
@@ -1518,7 +1533,7 @@ export class CoreWorker {
   private mediaAdapterFor(run_id: string, kind: TelegramMediaRef["kind"]): MediaIngestDeps["mediaCall"] | null {
     if (this.mediaDeps?.mediaCall) return this.mediaDeps.mediaCall;
     if (!this.llmAdapterIsDefault) return null;
-    return buildMediaCall({ store: this.runStore, run_id, kind, env: process.env });
+    return buildMediaCall({ store: this.runStore, run_id, kind, env: process.env, chains: this.roles.chains() });
   }
 
   /**
@@ -2048,7 +2063,7 @@ export class CoreWorker {
   }
 
   /**
-   * Boot and per-turn check of the HOUGE_OMP_* seat chains (B4): a malformed chain pages Paco once
+   * Boot and per-turn check of the omp config (B4): a malformed value (today the lease TTL) pages Paco once
    * (omp_config_invalid, the variable names only) instead of every turn throwing; a valid config resolves it.
    */
   validateOmpConfig(): boolean {
@@ -2166,7 +2181,7 @@ export class CoreWorker {
   private supervisorDeps(chatId: string): SupervisorDeps {
     const data = this.ompDataDir();
     return {
-      chatId, store: this.runStore, cfg: resolveOmpConfig(process.env), ctx: this.ompPathContext(),
+      chatId, store: this.runStore, cfg: this.ompConfig(), ctx: this.ompPathContext(),
       distDir: this.ompOptions.distDir ?? join(this.projectRoot, "dist"), decls: this.ompDecls.ok ? this.ompDecls.decls : [],
       env: process.env, turnEnvelopeActions: [...TURN_ACTIONS], turnContext: this.ompTurnContext(data),
       buildTools: (claim) => this.buildOmpTools(claim, chatId),
@@ -2243,7 +2258,7 @@ export class CoreWorker {
   } {
     const state = this.ompTurnState(claim, chatId);
     const registry = new ToolRegistry();
-    const cfg = resolveOmpConfig(process.env);
+    const cfg = this.ompConfig();
     const shell = shellToolExecute({
       cfg, ctx: this.ompPathContext(),
       distDir: this.ompOptions.distDir ?? join(this.projectRoot, "dist"), cwd: chatWorkspace(this.ompDataDir(), chatId),
@@ -2861,7 +2876,7 @@ export class CoreWorker {
   private hougeStatusText(chatId: string): string {
     const supervisor = this.supervisors.get(chatId);
     return renderHougeStatus(collectHougeStatus({
-      store: this.runStore, env: process.env, chatId, pid: process.pid, ...(supervisor ? { supervisor } : {})
+      store: this.runStore, env: process.env, chatId, pid: process.pid, chains: this.roles.chains(), ...(supervisor ? { supervisor } : {})
     }));
   }
 

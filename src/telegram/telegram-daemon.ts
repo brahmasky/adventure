@@ -13,7 +13,8 @@ import { tickCorrelationId, tickSeat } from "../llm/registry.js";
 import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
 import { CoreWorker, type OmpWorkerOptions } from "../core/core-worker.js";
-import { resolveOmpConfig } from "../omp/omp-config.js";
+import { resolveOmpConfig, warnRetiredOmpChainVars } from "../omp/omp-config.js";
+import type { RoleResolver } from "../omp/role-resolver.js";
 import { errorCode } from "../domain/error-code.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import type { TelegramAllowlist } from "../domain/types.js";
@@ -180,6 +181,9 @@ export async function runTelegramDaemon(
       : undefined,
     ompOptionsWithOperator(options.omp, options.allowlist)
   );
+  // Model roles (spec 2026-10-06 §4): one catalog read before the first turn, bounded by CATALOG_TIMEOUT_MS. A failed
+  // read leaves one ledger note and the roles on their lists (Decision 4); the poll loop retries it hourly (F14).
+  await worker.modelRoles().refreshCatalog();
   const recovery = bootPlanners(worker, options, now);
   const adapter = createTelegramLongPollingAdapter({
     allowlist: options.allowlist,
@@ -284,6 +288,8 @@ export async function runTelegramDaemon(
       const t = now();
       options.store.expirePendingApprovals(t);
       options.store.expireUndeliveredApprovalPrompts(t);
+      // F14: a failed omp catalog read is retried hourly; the resolver owns the window and the incident. Never awaited.
+      void worker.modelRoles().retryFailedRead();
       // ⓪·3 S2: the signal path rides the poll loop (before the outbox flush, so a
       // rating ask enqueued this cycle is delivered this cycle). B10b threads the
       // gateway + worker in so the scheduler tick fires due tasks down the SAME path.
@@ -345,11 +351,13 @@ function leaseRecoveryIntervalMs(): number {
 }
 
 /**
- * Boot-time planner checks, before the first poll: a malformed HOUGE_OMP_* chain pages Paco (B4); what a crash
+ * Boot-time planner checks, before the first poll: a malformed omp config pages Paco (B4) and a still-set retired
+ * chain variable is named once; what a crash
  * stranded is failed now, its replies riding the boot flush (B1). Expired planner leases are then recovered on a timer
  * of at most half the lease TTL, independent of the poll loop (an inline run can block it). The caller clears it.
  */
 function bootPlanners(worker: CoreWorker, options: RunTelegramDaemonOptions, now: () => string): ReturnType<typeof setInterval> {
+  warnRetiredOmpChainVars(process.env);
   worker.validateOmpConfig();
   worker.checkDaemonTmp(); // N1: a temp root inside a git repo pages and disables voice ingest
   recoverPlannerRuns(worker, now(), true);
@@ -485,11 +493,11 @@ type TickLlm = (input: { question: string; system: string }) => Promise<{ ok: tr
 /**
  * Slice 2 (review B2): ONE seat per tick, each with its own run-less audit scope, so every
  * omp leg a tick tries lands in the ledger under `tick:<name>:<uuid>` (spec §8: one-shot seats). The
- * role picks the chain (`seatChain`: memory ticks on HOUGE_OMP_TICKS). A test-injected
- * `options.llmAdapter` is used verbatim (it brings its own fakes, no omp). The daemon's stop
+ * role picks the chain (`seatChain`: memory ticks on the Tiny role) from the worker's RoleResolver, read per call.
+ * A test-injected `options.llmAdapter` is used verbatim (it brings its own fakes, no omp). The daemon's stop
  * aborts the in-flight omp call, and every later call fails at once without spawning.
  */
-function tickLlm(options: RunTelegramDaemonOptions, name: string, role: LlmCallRole): TickLlm {
+function tickLlm(options: RunTelegramDaemonOptions, name: string, role: LlmCallRole, roles: Pick<RoleResolver, "chains">): TickLlm {
   const injected = options.llmAdapter;
   const stop = options.stopSignal;
   return async (input) => {
@@ -498,7 +506,7 @@ function tickLlm(options: RunTelegramDaemonOptions, name: string, role: LlmCallR
       const read = await injected({ question: input.question, system: input.system });
       return read.ok && typeof read.output.answer === "string" ? { ok: true, answer: read.output.answer } : { ok: false };
     }
-    return tickSeat(options.store, name, role)({ ...input, signal: stop });
+    return tickSeat(options.store, name, role, process.env, () => roles.chains())({ ...input, signal: stop });
   };
 }
 
@@ -512,9 +520,9 @@ async function runModelTicks(
   options: RunTelegramDaemonOptions, gateway: Gateway, worker: CoreWorker, now: string, chatId: string | null
 ): Promise<void> {
   const signal = options.stopSignal;
-  await runMemoryTicks(options, now, signal);
+  await runMemoryTicks(options, now, signal, worker.modelRoles());
   if (signal.aborted) return;
-  await runIdeaTicks(options, now, chatId, signal);
+  await runIdeaTicks(options, now, chatId, signal, worker.modelRoles());
   if (signal.aborted) return;
   // B10b: fire due schedules through the normal gateway→worker path (breaker,
   // contracts, and policy all apply). Flag-gated OFF; ≤3 fires per tick; the fired
@@ -528,17 +536,17 @@ async function runModelTicks(
  * consolidate (B4: decay → merge → promote), and the preserve-all lesson-merge tick (2026-07-23).
  * Embeddings stay best-effort local Ollama (null on any failure — the store degrades).
  */
-async function runMemoryTicks(options: RunTelegramDaemonOptions, now: string, signal: AbortSignal): Promise<void> {
+async function runMemoryTicks(options: RunTelegramDaemonOptions, now: string, signal: AbortSignal, roles: Pick<RoleResolver, "chains">): Promise<void> {
   const embed = (text: string) => embedText(text, resolveEmbedConfig(process.env));
   await maybeRunEpisodicDistill({
-    store: options.store, llm: tickLlm(options, "episodic_distill", "distill"), embed,
+    store: options.store, llm: tickLlm(options, "episodic_distill", "distill", roles), embed,
     userName: options.allowlist.users[0]?.identity_id ?? "the user", now, signal
   });
   if (signal.aborted) return;
-  await runEpisodicConsolidateTick({ store: options.store, llm: tickLlm(options, "episodic_consolidate", "consolidate"), embed, now, signal });
+  await runEpisodicConsolidateTick({ store: options.store, llm: tickLlm(options, "episodic_consolidate", "consolidate", roles), embed, now, signal });
   if (signal.aborted) return;
   await runLessonConsolidateTick({
-    store: options.store, llmAnswer: tickLlm(options, "lesson_consolidate", "consolidate"), env: process.env, now, signal
+    store: options.store, llmAnswer: tickLlm(options, "lesson_consolidate", "consolidate", roles), env: process.env, now, signal
   });
 }
 
@@ -547,18 +555,18 @@ async function runMemoryTicks(options: RunTelegramDaemonOptions, now: string, si
  * pinned per provider, NEVER a chain — a healthy-leg fallback would void the quorum), and the
  * weekly suggest-only skill re-verify. Each stamps its latch before its first model call.
  */
-async function runIdeaTicks(options: RunTelegramDaemonOptions, now: string, chatId: string | null, signal: AbortSignal): Promise<void> {
+async function runIdeaTicks(options: RunTelegramDaemonOptions, now: string, chatId: string | null, signal: AbortSignal, roles: Pick<RoleResolver, "chains">): Promise<void> {
   await runIdeaRadarTick({
-    store: options.store, llmAnswer: tickLlm(options, "idea_radar", "extract"),
+    store: options.store, llmAnswer: tickLlm(options, "idea_radar", "extract", roles),
     ...(options.radarFetch ? { fetch: options.radarFetch } : {}), env: process.env, now, signal
   });
   if (signal.aborted) return;
   await runIdeaPanelTick({
-    store: options.store, ...(options.panelSeats ?? buildPanelSeatBindings(options)),
+    store: options.store, ...(options.panelSeats ?? buildPanelSeatBindings(options, roles)),
     env: process.env, now, chatId, projectRoot: options.projectRoot, signal
   });
   if (signal.aborted) return;
-  const reverifyLlm = tickLlm(options, "skill_reverify", "verify");
+  const reverifyLlm = tickLlm(options, "skill_reverify", "verify", roles);
   await runSkillReverifyTick({
     store: options.store,
     skills: new SkillStore({ root: join(options.projectRoot, "skills") }),
@@ -591,9 +599,9 @@ export function sweepAndRearm(input: InvariantSweepInput, worker: { plannerSuper
   return result;
 }
 
-/** The panel's real seats: the omp judge/chair seats (idea-panel-seats), audited under one `tick:idea_panel:<uuid>` per panel run. */
-function buildPanelSeatBindings(options: RunTelegramDaemonOptions): PanelSeatBindings {
-  return buildOmpPanelSeats({ store: options.store, correlation_id: tickCorrelationId("idea_panel"), env: process.env, signal: options.stopSignal });
+/** The panel's real seats: the omp judge/chair seats (idea-panel-seats) on the roles' chains, audited under one `tick:idea_panel:<uuid>` per panel run. */
+function buildPanelSeatBindings(options: RunTelegramDaemonOptions, roles: Pick<RoleResolver, "chains">): PanelSeatBindings {
+  return buildOmpPanelSeats({ store: options.store, correlation_id: tickCorrelationId("idea_panel"), env: process.env, chains: roles.chains(), signal: options.stopSignal });
 }
 
 /**

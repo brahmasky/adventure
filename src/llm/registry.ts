@@ -3,6 +3,7 @@ import { OMP_AUDIO_REFUSED, spawnOneShot, type OneShotDeps } from "./providers/o
 import type { OmpCheckResult } from "../omp/omp-version.js";
 import { resolveOmpConfig, type OmpConfig } from "../omp/omp-config.js";
 import type { ModelFamily, ModelString } from "../omp/model-string.js";
+import { staticRoleChains, type RoleChains } from "../omp/model-roles.js";
 import type { LlmAuditScope, LlmCallRole, RunStore } from "../run/run-store.js";
 import type { LlmMediaAttachment, LlmProvider, LlmRequest, LlmResult } from "./types.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
@@ -149,13 +150,14 @@ export function tickCorrelationId(name: string): string {
 /**
  * A daemon tick's seat: each call is its own one-shot under a FRESH `tick:<name>:<uuid>`
  * correlation, so one tick run's legs group together and never mix with the next run's.
- * `signal` (the daemon's stop) aborts the in-flight call.
+ * `signal` (the daemon's stop) aborts the in-flight call. `chains` is read per call (the daemon passes its
+ * RoleResolver's, so a /models override reaches the next tick); default the static role lists.
  */
 export function tickSeat(
-  store: RunStore, name: string, role: LlmCallRole, env: NodeJS.ProcessEnv = process.env
+  store: RunStore, name: string, role: LlmCallRole, env: NodeJS.ProcessEnv = process.env, chains: () => RoleChains = staticRoleChains
 ): (input: { question: string; system: string; signal?: AbortSignal }) => Promise<{ ok: true; answer: string } | { ok: false }> {
   return async (input) => {
-    const r = await oneShotAdapter(store, resolveOmpConfig(env), { correlation_id: tickCorrelationId(name), role }).answer(input);
+    const r = await oneShotAdapter(store, resolveOmpConfig(env, chains()), { correlation_id: tickCorrelationId(name), role }).answer(input);
     return r.ok ? { ok: true, answer: r.answer } : { ok: false };
   };
 }

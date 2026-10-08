@@ -57,15 +57,15 @@ function parseArgs(argv) {
 }
 
 async function loadModules() {
-  const [env, mig, turn, render, ret, wiki, ev, ex, reg, cfg, ms, emb, rs, tmp, arm, dist] = await Promise.all([
+  const [env, mig, turn, render, ret, wiki, ev, ex, reg, cfg, ms, emb, rs, tmp, arm, dist, roles] = await Promise.all([
     import("../dist/config/load-env.js"), import("../dist/run/memory-a1-migration.js"), import("../dist/omp/turn-context.js"),
     import("../dist/run/lesson-render.js"), import("../dist/run/episodic-retrieval.js"), import("../dist/run/wiki-retrieval.js"),
     import("../dist/capabilities/episodic-evidence.js"), import("../dist/capabilities/episodic-extract.js"),
     import("../dist/llm/registry.js"), import("../dist/omp/omp-config.js"), import("../dist/omp/model-string.js"),
     import("../dist/llm/embeddings.js"), import("../dist/run/run-store.js"), import("../dist/run/daemon-tmp.js"),
-    import("../dist/capabilities/wiki.js"), import("../dist/capabilities/distill.js")
+    import("../dist/capabilities/wiki.js"), import("../dist/capabilities/distill.js"), import("../dist/omp/model-roles.js")
   ]);
-  return { env, mig, turn, render, ret, wiki, ev, ex, reg, cfg, ms, emb, rs, tmp, arm, dist };
+  return { env, mig, turn, render, ret, wiki, ev, ex, reg, cfg, ms, emb, rs, tmp, arm, dist, roles };
 }
 
 const ids = (v) => Array.isArray(v) && v.every((x) => Number.isInteger(x) && x > 0);
@@ -216,11 +216,11 @@ async function checkExtract(m, store, ctx, probes, fails) {
     forbidden: new RegExp(probes.window_149.forbidden, "i") };
   if (win.q.length === 0 || win.a.length === 0) throw new Error(`windows empty (window_149 ${win.q.length}, assertion ${win.a.length} turns)`);
   const legs = m.cfg.resolveOmpConfig(process.env).ticks;
-  if (legs.length === 0) throw new Error("no ticks legs configured (HOUGE_OMP_TICKS)");
+  if (legs.length === 0) throw new Error("no ticks legs configured (the Tiny role list)");
   let facts = 0;
   for (const leg of legs) {
     const name = m.ms.formatModelString(leg);
-    const llm = m.reg.tickSeat(store, "episodic_distill", "distill", { ...process.env, HOUGE_OMP_TICKS: name });
+    const llm = m.reg.tickSeat(store, "episodic_distill", "distill", process.env, () => ({ ...m.roles.staticRoleChains(), ticks: [leg] }));
     facts += (await runLeg(m, store, name, llm, win, fails)).facts;
   }
   if (facts === 0) fails.push("3: no leg produced any fact (seat failure or silent degradation)");

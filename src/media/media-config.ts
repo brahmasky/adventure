@@ -48,7 +48,7 @@ export const MEDIA_STAGE_DEADLINE_MS = 150_000;
 export const MEDIA_ECHO_MAX_CHARS = 200;
 /** A verbose reader must not bloat the message, the stored turn, or push Jev past its cap. */
 export const MEDIA_DIGEST_MAX_CHARS = 4_000;
-/** Voice only (ruling 2): agy-cli is the one leg that hears audio. Photos ride omp `HOUGE_OMP_MEDIA`. */
+/** Voice only (ruling 2): agy-cli is the one leg that hears audio. Photos ride omp's Vision role. */
 export const DEFAULT_MEDIA_PROVIDERS = "agy-cli";
 
 /**

@@ -7,6 +7,8 @@ import { buildMediaCall, voiceChain } from "../../src/media/media-ingest.js";
 import { RunStore } from "../../src/run/run-store.js";
 import type { LlmProvider } from "../../src/llm/types.js";
 import { FAKE_OMP_BIN, pinOmpEnv } from "../helpers/omp-env.js";
+import { staticRoleChains } from "../../src/omp/model-roles.js";
+import { parseModelChain } from "../../src/omp/model-string.js";
 
 // Ruling 2 (live probe 2026-09-30): omp reads a photo as an image block, but inlines an .opus voice
 // note as TEXT and the model hallucinated a transcript. So a photo must reach omp and a voice note never.
@@ -39,6 +41,15 @@ const ompSpawns = () => (existsSync(path.join(work, "argv.log")) ? readFileSync(
 const attempts = (run_id: string) => store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_attempt").map((e) => e.payload);
 
 describe("buildMediaCall — which leg reads a photo and which hears a voice note", () => {
+  // The photo seat is the Vision role: a /models vision override must change which model reads the image.
+  it("a photo runs on the Vision role the resolver hands it (chains.media)", async () => {
+    const file = path.join(mediaDir, "media.jpg");
+    writeFileSync(file, "jpeg");
+    const chains = { ...staticRoleChains(), media: parseModelChain("kimi-code/k3:low") };
+    await buildMediaCall({ store, run_id: "run_vis", kind: "photo", env: process.env, chains })({ question: "describe", system: "reader", media: { path: file, mime: "image/jpeg" } });
+    expect(ompSpawns()[0]?.argv).toContain("kimi-code/k3");
+  });
+
   it("a photo is ONE omp one-shot on cfg.media with the image as an @path argument, audited as reader", async () => {
     const file = path.join(mediaDir, "media.jpg");
     writeFileSync(file, "jpeg");

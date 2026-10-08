@@ -8,6 +8,7 @@ import { answerWithChain, llmToolAdapter, oneShotAdapter } from "../llm/registry
 import { createAgyCliProvider } from "../llm/providers/agy-cli.js";
 import type { LlmProvider } from "../llm/types.js";
 import { resolveOmpConfig } from "../omp/omp-config.js";
+import type { RoleChains } from "../omp/model-roles.js";
 import type { RunStore } from "../run/run-store.js";
 import {
   MEDIA_BASENAME,
@@ -256,6 +257,8 @@ export interface MediaCallDeps {
   run_id: string;
   kind: MediaKind;
   env: NodeJS.ProcessEnv;
+  /** The worker's resolved chains (`roles.chains()`); absent = the static role lists. */
+  chains?: RoleChains;
   /** Tests only: the voice leg (default: the agy-cli provider with the media timeout). */
   voiceLeg?: LlmProvider;
 }
@@ -269,7 +272,7 @@ export interface MediaCallDeps {
  */
 export function buildMediaCall(d: MediaCallDeps): MediaIngestDeps["mediaCall"] {
   if (d.kind === "photo") {
-    return llmToolAdapter(oneShotAdapter(d.store, resolveOmpConfig(d.env), { run_id: d.run_id, role: "reader" }));
+    return llmToolAdapter(oneShotAdapter(d.store, resolveOmpConfig(d.env, d.chains), { run_id: d.run_id, role: "reader" }));
   }
   const chain = d.voiceLeg ? [d.voiceLeg] : voiceChain(d.env);
   if (chain.length === 0) return async () => ({ ok: false, error: "no media-capable leg" });

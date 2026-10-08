@@ -11,6 +11,7 @@ import { RunStore } from "../../src/run/run-store.js";
 import { pinEnabledFlags, pinOmpEnv, shortTmp, useFakeOmp } from "../helpers/omp-env.js";
 import { drainOutbox, fakeLog, ompWorker, until } from "../helpers/omp-worker.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
+import { fixtureCatalog, pinnedRoles } from "../helpers/model-roles.js";
 
 pinOmpEnv();
 pinEnabledFlags();
@@ -101,10 +102,13 @@ describe("CoreWorker.submitTurn — turns run on the planner supervisor (Task 13
     worker.submitTurn(run);
     await until(() => state(run) === "completed");
     expect(drainOutbox(store).get(`${run}:final_report`)?.text).toBe("from the second string");
-    expect(events(run, "llm_attempt").map((e) => [e.payload.model, e.payload.error_kind])).toEqual([["claude-opus-5-5", "model_missing"], ["claude-opus-4-6", undefined]]);
+    // The worker's resolver has read no catalog here, so Default is its whole resolved list (Decision 4): the second leg
+    // is google-antigravity/claude-opus-5-5 (both legs are claude-opus-5-5, so the provider is asserted too).
+    expect(events(run, "llm_attempt").map((e) => [e.payload.provider, e.payload.model, e.payload.error_kind]))
+      .toEqual([["anthropic", "claude-opus-5-5", "model_missing"], ["google-antigravity", "claude-opus-5-5", undefined]]);
     expect(events(run, "run_failed")).toEqual([]);
     const spawned = fakeLog(join(tmp.dir, "argv.log")).filter((l) => Array.isArray(l.argv) && (l.argv as string[]).includes("rpc"));
-    expect(spawned.map((l) => (l.argv as string[])[(l.argv as string[]).indexOf("--model") + 1])).toEqual(["anthropic/claude-opus-5-5", "google-antigravity/claude-opus-4-6"]);
+    expect(spawned.map((l) => (l.argv as string[])[(l.argv as string[]).indexOf("--model") + 1])).toEqual(["anthropic/claude-opus-5-5", "google-antigravity/claude-opus-5-5"]);
   });
 
   // Live gate 2026-10-01, item 6: omp's open_session restores the model the session last used and overrides --model,
@@ -121,15 +125,15 @@ describe("CoreWorker.submitTurn — turns run on the planner supervisor (Task 13
     const pin = cmds.findIndex((c) => c.type === "set_model");
     expect(pin).toBeGreaterThan(-1);
     expect(pin).toBeLessThan(firstPrompt);
-    expect(cmds[pin]).toMatchObject({ provider: "google-antigravity", modelId: "claude-opus-4-6" });
+    expect(cmds[pin]).toMatchObject({ provider: "google-antigravity", modelId: "claude-opus-5-5" }); // same id, another provider: sameModel compares both
     expect(events(run, "llm_attempt").map((e) => [e.payload.provider, e.payload.model, e.payload.error_kind]))
-      .toEqual([["anthropic", "claude-opus-5-5", "model_missing"], ["google-antigravity", "claude-opus-4-6", undefined]]);
+      .toEqual([["anthropic", "claude-opus-5-5", "model_missing"], ["google-antigravity", "claude-opus-5-5", undefined]]);
   });
 
   it("a refused pin: the turn answers on the resumed model, and the planner family is that ACTUAL model's (D10)", async () => {
-    process.env.HOUGE_OMP_PLANNER = "kimi-code/k3"; // restored by pinOmpEnv
     useFakeOmp({ rpcResumeModel: "anthropic/claude-opus-5-5", rpcSetModelError: "no such model", "*": { rpcText: "answered" } }, tmp.dir);
-    worker = ompWorker(store, tmp.dir);
+    // Default resolves to k3 alone over a kimi-only catalog (the pre-roles HOUGE_OMP_PLANNER=kimi-code/k3).
+    worker = ompWorker(store, tmp.dir, { roles: await pinnedRoles(store, fixtureCatalog().filter((m) => m.provider === "kimi-code")) });
     const run = createQueuedTurnRun(store, "hello");
     worker.submitTurn(run);
     await until(() => state(run) === "completed");
@@ -174,8 +178,8 @@ describe("CoreWorker.submitTurn — turns run on the planner supervisor (Task 13
     expect(worker.plannerSupervisors()).toEqual([]);
   });
 
-  it("a malformed HOUGE_OMP_* chain never makes submitTurn throw: the run fails with the unavailable reply and one alerted incident (B4)", () => {
-    process.env.HOUGE_OMP_PLANNER = "anthropic/claude-opus-5-5:medium,kimi-code/k3:lo";
+  it("a malformed omp config never makes submitTurn throw: the run fails with the unavailable reply and one alerted incident (B4)", () => {
+    process.env.HOUGE_OMP_LEASE_TTL_S = "20"; // under 3x the heartbeat: the config value still validated (restored by pinOmpEnv)
     process.env.HOUGE_TELEGRAM_CHAT_ID = "555";
     try {
       worker = ompWorker(store, tmp.dir);
@@ -185,7 +189,7 @@ describe("CoreWorker.submitTurn — turns run on the planner supervisor (Task 13
       expect([state(a), state(b)]).toEqual(["failed", "failed"]);
       const out = drainOutbox(store);
       expect(out.get(`${a}:final_report`)?.text).toBe(TURN_UNAVAILABLE_TEXT);
-      expect(store.listOpenIncidents().map((i) => [i.kind, JSON.parse(i.detail_json ?? "{}").invalid])).toEqual([["omp_config_invalid", ["HOUGE_OMP_PLANNER"]]]);
+      expect(store.listOpenIncidents().map((i) => [i.kind, JSON.parse(i.detail_json ?? "{}").invalid])).toEqual([["omp_config_invalid", ["HOUGE_OMP_LEASE_TTL_S"]]]);
       expect([...out.keys()].filter((k) => k.startsWith("incident_opened:"))).toHaveLength(1); // paged once, not per message
     } finally {
       delete process.env.HOUGE_TELEGRAM_CHAT_ID;
@@ -211,12 +215,12 @@ describe("CoreWorker.submitTurn — turns run on the planner supervisor (Task 13
     }
   });
 
-  it("the boot check pages a malformed chain once, and a valid config resolves it (B4)", () => {
-    process.env.HOUGE_OMP_READER = "not a model string";
+  it("the boot check pages a malformed omp config once, and a valid config resolves it (B4)", () => {
+    process.env.HOUGE_OMP_LEASE_TTL_S = "20";
     worker = ompWorker(store, tmp.dir);
     expect(worker.validateOmpConfig()).toBe(false);
     expect(store.listOpenIncidents().map((i) => i.kind)).toEqual(["omp_config_invalid"]);
-    delete process.env.HOUGE_OMP_READER;
+    delete process.env.HOUGE_OMP_LEASE_TTL_S;
     expect(worker.validateOmpConfig()).toBe(true);
     expect(store.listOpenIncidents()).toEqual([]);
   });

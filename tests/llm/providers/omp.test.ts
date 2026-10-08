@@ -13,7 +13,7 @@ const FAKE = new URL("../../fixtures/fake-omp.mjs", import.meta.url).pathname;
 const saved: Record<string, string | undefined> = {};
 let dir: string;
 beforeEach(() => {
-  for (const k of [...OMP_ENV_VARS, "FAKE_OMP_SCENARIO", "FAKE_OMP_ARGV_LOG"]) { saved[k] = process.env[k]; delete process.env[k]; }
+  for (const k of [...OMP_ENV_VARS, "FAKE_OMP_SCENARIO", "FAKE_OMP_ARGV_LOG", "HOUGE_MODEL_ROLES"]) { saved[k] = process.env[k]; delete process.env[k]; }
   dir = mkdtempSync(join(tmpdir(), "houge-omp-oneshot-"));
 });
 afterEach(() => { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } });
@@ -120,6 +120,70 @@ describe("omp one-shot seat — every non-planner LLM call in Houge", () => {
       { cfg, audit, versionCheck: () => ({ ok: true, version: "18.4.4" }) }
     );
     expect(audit.attempts[0]).toMatchObject({ outcome: "ok", family_collapse: true });
+  });
+
+  // Spec 2026-10-06 §8: D10 becomes a skip rule in resolved mode (the default). The wall between planner and reader holds
+  // when the reader's model is from another family, so a reader chain that starts on the planner's family must run its
+  // cross-family candidates first.
+  it("D10 skip rule: a reader chain that starts on the planner's family runs its cross-family candidates first", async () => {
+    const cfg = setup({ "*": { text: "ok" } });
+    const audit = recordingSink();
+    await spawnOneShot(
+      { seat: "reader", chain: parseModelChain("anthropic/claude-opus-5-5:low,google-antigravity/gemini-3.8-flash:low,kimi-code/k3:low"),
+        prompt: "x", correlationId: "c", plannerFamily: "claude" },
+      { cfg, audit, versionCheck: () => ({ ok: true, version: "18.4.4" }) }
+    );
+    expect(argvLog().map((c: { argv: string[] }) => c.argv[c.argv.indexOf("--model") + 1])).toEqual(["google-antigravity/gemini-3.8-flash"]);
+    expect(audit.attempts[0]).toMatchObject({ outcome: "ok", family: "gemini" });
+    expect(audit.attempts[0]?.family_collapse).toBeUndefined();
+  });
+
+  it("D10 skip rule: once every cross-family leg has failed, the same-family leg still answers, flagged family_collapse", async () => {
+    const cfg = setup({
+      "google-antigravity/gemini-3.8-flash": { text: "", stopReason: "error", errorMessage: "429 usage limit reached" },
+      "kimi-code/k3": { text: "", stopReason: "error", errorMessage: "429 usage limit reached" },
+      "anthropic/claude-opus-5-5": { text: "from claude" }
+    });
+    const audit = recordingSink();
+    const r = await spawnOneShot(
+      { seat: "reader", chain: parseModelChain("anthropic/claude-opus-5-5:low,google-antigravity/gemini-3.8-flash:low,kimi-code/k3:low"),
+        prompt: "x", correlationId: "c", plannerFamily: "claude" },
+      { cfg, audit, versionCheck: () => ({ ok: true, version: "18.4.4" }) }
+    );
+    expect(r).toMatchObject({ ok: true, answer: "from claude" });
+    expect(audit.attempts.map((a) => [a.model, a.outcome, a.family_collapse]))
+      .toEqual([["gemini-3.8-flash", "error", undefined], ["k3", "error", undefined], ["claude-opus-5-5", "ok", true]]);
+  });
+
+  it("D10 skip rule: when every candidate shares the planner's family, the order stands and every leg is flagged", async () => {
+    const cfg = setup({ "kimi-code/k3": { text: "", stopReason: "error", errorMessage: "429 usage limit reached" }, "kimi-code/k3-256k": { text: "ok" } });
+    const audit = recordingSink();
+    await spawnOneShot(
+      { seat: "reader", chain: parseModelChain("kimi-code/k3:low,kimi-code/k3-256k:low"), prompt: "x", correlationId: "c", plannerFamily: "kimi" },
+      { cfg, audit, versionCheck: () => ({ ok: true, version: "18.4.4" }) }
+    );
+    expect(audit.attempts.map((a) => [a.model, a.family_collapse])).toEqual([["k3", true], ["k3-256k", true]]);
+  });
+
+  it("only the reader seat is reordered: any other seat runs its chain as listed", async () => {
+    const cfg = setup({ "*": { text: "ok" } });
+    await spawnOneShot(
+      { seat: "chair", chain: parseModelChain("anthropic/claude-opus-5-5:low,google-antigravity/gemini-3.8-flash:low"), prompt: "x", correlationId: "c", plannerFamily: "claude" },
+      { cfg, audit: recordingSink(), versionCheck: () => ({ ok: true, version: "18.4.4" }) }
+    );
+    expect(argvLog().map((c: { argv: string[] }) => c.argv[c.argv.indexOf("--model") + 1])).toEqual(["anthropic/claude-opus-5-5"]);
+  });
+
+  it("HOUGE_MODEL_ROLES=static keeps the reader chain's order exactly, flagging the same-family leg as before stage A (§4.3)", async () => {
+    process.env.HOUGE_MODEL_ROLES = "static"; // restored by this file's afterEach
+    const cfg = setup({ "*": { text: "ok" } });
+    const audit = recordingSink();
+    await spawnOneShot(
+      { seat: "reader", chain: parseModelChain("anthropic/claude-opus-5-5:low,google-antigravity/gemini-3.8-flash:low"), prompt: "x", correlationId: "c", plannerFamily: "claude" },
+      { cfg, audit, versionCheck: () => ({ ok: true, version: "18.4.4" }) }
+    );
+    expect(argvLog().map((c: { argv: string[] }) => c.argv[c.argv.indexOf("--model") + 1])).toEqual(["anthropic/claude-opus-5-5"]);
+    expect(audit.attempts[0]).toMatchObject({ outcome: "ok", family: "claude", family_collapse: true });
   });
 
   it("refuses every leg when omp cannot report a version", async () => {
