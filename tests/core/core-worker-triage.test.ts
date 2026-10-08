@@ -407,13 +407,20 @@ describe("triageTurn — the status lane", () => {
     expect(llm).not.toHaveBeenCalled();
     store.close();
   });
-  // An `act` row on a turn the planner then answered corrupts the status precision evidence the arm decision reads.
-  it("a render throw settles one answered fallback row (never act) and falls through to the planner on Default", async () => {
+  // A broken status renderer must stay visible: the verdict keeps lane=status with handler fallthrough:render_failed, so the
+  // lane_fallthrough_rate sweep counts it (a planner-lane re-settle would hide it). Its decision rows stay `fallback`: an `act`
+  // row on a turn the planner then answered corrupts the status precision evidence the arm decision reads. Settled once.
+  it("a render throw settles once on the status lane as fallthrough:render_failed (never act) and the planner answers on Default", async () => {
     const { store, worker, turn } = setup(treeSays({ category: cat({ status: 0.85 }) }));
     vi.spyOn(worker as unknown as { hougeStatusText: () => string }, "hougeStatusText").mockImplementation(() => { throw new Error("render"); });
     const t = turn("did you restart?");
-    expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough", route: { role: "default" } });
-    expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", decision: "fallback", verdict: "jev_skipped" }]);
+    const out = await worker.triageTurn(t.input);
+    expect(out).toMatchObject({ kind: "fallthrough", route: { role: "default", effort: null } });
+    const v = verdictOf(store, t.run_id);
+    expect(v).toMatchObject({ category: "status", lane: "status", handler_outcome: "fallthrough:render_failed" });
+    if (out.kind === "fallthrough") expect(out.route?.verdict_id).toBe(v!.verdict_id);
+    expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", route_lane: "status", decision: "fallback" }]);
+    expect(triageRows(store, t.run_id)).toHaveLength(1);
     expect(decisions(store, t.run_id).every((r) => r.decision === "fallback")).toBe(true);
     store.close();
   });

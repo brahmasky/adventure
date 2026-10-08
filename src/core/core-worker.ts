@@ -2759,9 +2759,20 @@ export class CoreWorker {
     try { checkJevModelCalibrated(this.runStore, model, treeArmingRows(rows)); } catch (e) { console.error(`jev: model calibration check failed: ${safeReason(e)}`); }
   }
 
-  /** The status lane: code renders first, so a render throw settles one answered fallback (triageTurn's catch), never act. */
+  /**
+   * The status lane: code renders first. A render throw settles once on the STATUS route with handler
+   * `fallthrough:render_failed` (so `lane_fallthrough_rate` sees a broken renderer) and decision rows `fallback` (an `act`
+   * row on a turn the planner answered would corrupt the status precision evidence), then the planner answers on Default.
+   */
   private statusLane(i: TriageInput, state: OmpTurnState, lang: Lang, route: Route, settleFor: SettleFor, held: TriageHeld): TriageOutcome {
-    const text = this.hougeStatusText(this.chatOf(i.claim.run_id));
+    let text: string;
+    try {
+      text = this.hougeStatusText(this.chatOf(i.claim.run_id));
+    } catch (e) {
+      console.error(`status lane: render failed: ${safeReason(e)}`);
+      const id = this.settleTriage(i, state, lang, { ...settleFor(route, "none", "fallthrough:render_failed"), decision: "fallback" });
+      return { kind: "fallthrough", route: turnRoute(fallbackRoute("jev_skipped", held.thinkHarder), id), ...quoteField(held.quote) };
+    }
     this.settleTriage(i, state, lang, settleFor(route, "none", "lane_reply"));
     return { kind: "lane_reply", text, buttons: [], ...quoteField(held.quote) };
   }
