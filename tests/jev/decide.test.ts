@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createJevClient } from "../../src/jev/jev-client.js";
-import { decide, marginOf, persistDecisionRows, recordSkip, stateHash } from "../../src/jev/decide.js";
+import { decide, marginOf, persistDecisionRows, recordSkip, stateHash, topProbOf } from "../../src/jev/decide.js";
 import { TRIAGE_QUESTIONS } from "../../src/jev/questions/triage.js";
-import { criteriaHash } from "../../src/jev/questions/types.js";
+import { criteriaHash, type Question } from "../../src/jev/questions/types.js";
 import { JEV_INCIDENT_SUBJECT } from "../../src/jev/jev-incidents.js";
 import { ALERT_REOPEN_QUIET_MS } from "../../src/run/incident-alert.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -117,5 +117,51 @@ describe("decide", () => {
   });
   it("marginOf is p1 − p2 over the two largest probabilities", () => {
     expect(marginOf({ type: "choice", choice: "a", probabilities: { a: 0.5, b: 0.3, c: 0.2 }, confidence: 0 })).toBeCloseTo(0.2, 9);
+  });
+});
+
+// Spec §2.3 / §9: decide() persists per type. The replay and the calibration report read these rows back, so a score row
+// must carry its level vector and confidence, and a noul row its {true, false} pair with a NULL confidence (TypeSafe sends
+// none; inventing one would put a number in the column the bars and the Wilson report read as Jev's own).
+describe("decide — per-type rows", () => {
+  const QS: readonly Question[] = [
+    { id: "category", type: "choice", instructions: "pick", criteria: [["other", "o"], ["lookup", "l"]] },
+    { id: "breadth", type: "score", instructions: "how much", levels: ["one known thing", "one topic", "several topics", "open-ended"] },
+    { id: "sets_rule", type: "noul", instructions: "a rule?" }
+  ];
+  const ANSWERS = {
+    category: { type: "choice", choice: "lookup", probabilities: { other: 0.3, lookup: 0.7 }, confidence: 0.4 },
+    breadth: { type: "score", score: 1.1, probabilities: { "0": 0.1, "1": 0.7, "2": 0.2, "3": 0 }, confidence: 0.65 },
+    sets_rule: { type: "noul", noul: 0.25 }
+  };
+  const body = () => ({ model: REPORTED, usage: { input_tokens: 700, output_tokens: 0 }, answers: ANSWERS });
+
+  it("writes a score row with its level vector and a noul row with {true, false}, a null confidence and |2p − 1|", async () => {
+    const { store, input } = setup(vi.fn(async () => json(200, body())) as unknown as typeof fetch);
+    const d = await decide({ ...input, questions: QS });
+    expect(d.status).toBe("answered"); if (d.status !== "answered") return;
+    expect(d.answers.sets_rule).toEqual({ type: "noul", noul: 0.25 });
+    persistDecisionRows(store, d.rows, "fallback", null);
+    const [cat, breadth, rule] = store.listJevDecisions("run_1");
+    expect(cat).toMatchObject({ question_id: "category", answers_json: JSON.stringify({ other: 0.3, lookup: 0.7 }), confidence: 0.4, top_prob: 0.7 });
+    expect(breadth).toMatchObject({ question_id: "breadth", criteria_hash: criteriaHash(QS[1]!), confidence: 0.65, top_prob: 0.7,
+      answers_json: JSON.stringify({ "0": 0.1, "1": 0.7, "2": 0.2, "3": 0 }) });
+    expect(breadth!.margin).toBeCloseTo(0.5, 9);
+    expect(rule).toMatchObject({ question_id: "sets_rule", answers_json: JSON.stringify({ true: 0.25, false: 0.75 }), confidence: null, top_prob: 0.75, margin: 0.5 });
+    store.close();
+  });
+  it("an answer whose type is not its question's is skipped{parse} even from a client that skipped validation", async () => {
+    const { store, input } = setup(vi.fn() as unknown as typeof fetch);
+    const answers = { ...ANSWERS, sets_rule: { type: "choice", choice: "true", probabilities: { true: 1 }, confidence: 1 } };
+    const client = vi.fn(async () => ({ ok: true as const, model: REPORTED, answers, latency_ms: 5, input_tokens: 9 }));
+    expect(await decide({ ...input, questions: QS, client: client as unknown as typeof input.client })).toEqual({ status: "skipped", reason: "parse" });
+    store.close();
+  });
+  it("marginOf and topProbOf read a noul as the pair (p, 1 − p) and a score as its level vector", () => {
+    expect(marginOf({ type: "noul", noul: 0.9 })).toBeCloseTo(0.8, 9);
+    expect(marginOf({ type: "noul", noul: 0.1 })).toBeCloseTo(0.8, 9); // symmetric: a confident no is as sure as a confident yes
+    expect(topProbOf({ type: "noul", noul: 0.1 })).toBeCloseTo(0.9, 9);
+    expect(marginOf({ type: "score", score: 2, probabilities: { "0": 0, "1": 0.2, "2": 0.8 }, confidence: 0.8 })).toBeCloseTo(0.6, 9);
+    expect(topProbOf({ type: "choice", choice: "a", probabilities: { a: 0.6, b: 0.4 }, confidence: 0.2 })).toBe(0.6);
   });
 });

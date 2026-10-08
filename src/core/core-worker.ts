@@ -137,8 +137,8 @@ import type { ExternalReadResult } from "../omp/external-read.js";
 import { ompConfigProblems, resolveOmpConfig } from "../omp/omp-config.js";
 import { PlannerSupervisor, type SupervisorDeps, type TriageInput, type TriageOutcome, type TurnOutcomeSink } from "../omp/planner-supervisor.js";
 import { calibrationRows, type CalibrationRow } from "../jev/calibration.js";
-import { decide, marginOf, persistDecisionRows, recordSkip, type JevDecisionInsert, type SkipReason } from "../jev/decide.js";
-import { createJevClient, type JevRequest, type JevResult } from "../jev/jev-client.js";
+import { decide, marginOf, persistDecisionRows, recordSkip, topProbOf, type JevDecisionInsert, type SkipReason } from "../jev/decide.js";
+import { choiceAnswer, createJevClient, type JevRequest, type JevResult } from "../jev/jev-client.js";
 import { jevDisarmMarkerPath, resolveJevTriageMode } from "../jev/jev-flags.js";
 import { checkJevModelCalibrated, resolveTriageOverridesIfRearmed } from "../jev/jev-incidents.js";
 import { langOf, type Lang } from "../jev/intent-question.js";
@@ -2587,9 +2587,10 @@ export class CoreWorker {
     if (d.status === "skipped") return this.triageSkip(i, state, lang, d.reason); // settleTriage checks laneLost first
     const rows = calibrationRows(process.env);
     const verdict = triageVerdict(d.answers, resolveTriageBars(process.env), lang, d.model, rows);
-    const lane = d.answers.lane!;
-    const numbers: TriageNumbers = { lane: lane.choice, complete: d.answers.complete?.choice, scope: d.answers.scope?.choice,
-      confidence: lane.confidence, top_prob: Math.max(...Object.values(lane.probabilities)), margin: marginOf(lane), verdict: verdictLabel(verdict) };
+    const lane = choiceAnswer(d.answers.lane);
+    if (!lane) return this.triageSkip(i, state, lang, "parse"); // unreachable: decide() checked every answer against its question's type
+    const numbers: TriageNumbers = { lane: lane.choice, complete: choiceAnswer(d.answers.complete)?.choice, scope: choiceAnswer(d.answers.scope)?.choice,
+      confidence: lane.confidence, top_prob: topProbOf(lane), margin: marginOf(lane), verdict: verdictLabel(verdict) };
     const answered = (decision: "act" | "fallback" | "shadow"): Extract<TriageSettle, { kind: "answered" }> =>
       ({ kind: "answered", rows: d.rows, decision, threshold_used: `${THRESHOLD_VERSION}:${numbers.verdict}`, numbers });
     held.answered = answered("fallback"); // from here a throw settles as answered fallback (the outer catch)
