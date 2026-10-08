@@ -40,6 +40,9 @@ import { computeCostUsd, METERED_PROVIDERS } from "../llm/metered-pricing.js";
 import { blobToFloat32, cosineSimilarity, float32ToBlob } from "../llm/embeddings.js";
 import { resolveWikiDecayDays } from "../capabilities/wiki.js";
 import type { TriageShadowStats } from "../jev/triage-report.js";
+import type { SkipReason } from "../jev/decide.js";
+import type { Category } from "../jev/questions/tree.js";
+import type { Effort, Lane, RouteReason, TurnRole } from "../jev/tree-policy.js";
 import type { MediaIngestedPayload } from "../media/media-config.js";
 
 /**
@@ -921,6 +924,26 @@ export interface JevDecisionRow {
   /** Answered rows only: when live cut the thread (claim) and built the state; null on skipped and pre-2026-10-06 rows. */
   thread_cut_at: string | null; state_built_at: string | null;
 }
+
+/** One decision point call (spec §6): what the tree routed, what saved, what the handler did, and Paco's correction. Never text. */
+export interface JevVerdictInsert { run_id: string; category: Category | null; breadth: number | null; reasoning: number | null;
+  actions: number | null; sets_rule: number | null; rule_scope: "ask" | "research" | null; lane: Lane; role: TurnRole;
+  effort: Effort | null; cascade: VerdictCascade; save_outcome: "saved" | "not_durable" | "capped" | "none";
+  route_outcome: "act" | "fallback"; reason: RouteReason; skip_reason: SkipReason | null; quoted_turn_id: string | null; created_at?: string }
+/** "tiny": the cascade call ran (plan Decision 14; Tiny role), whatever it returned — `reason` says cascade / cascade_failed. */
+export type VerdictCascade = "tiny" | null;
+export type VerdictCorrection = "ask_anyway" | "think_harder" | "escalation" | "low_rating";
+export interface JevVerdictRow {
+  verdict_id: string; run_id: string; category: Category | null; breadth: number | null; reasoning: number | null; actions: number | null;
+  sets_rule: number | null; rule_scope: "ask" | "research" | null; lane: Lane; role: TurnRole; effort: Effort | null; model: string | null;
+  cascade: VerdictCascade; save_outcome: JevVerdictInsert["save_outcome"]; route_outcome: "act" | "fallback" | "pin_failed";
+  /** 'pending' | 'lane_reply' | 'fallthrough:<reason>' | 'planner_done' | 'planner_failed' */
+  handler_outcome: string; reason: RouteReason; skip_reason: string | null; fast_used_tool: number; paco_correction: VerdictCorrection | null;
+  quoted_turn_id: string | null; created_at: string; updated_at: string;
+}
+type JevVerdictPatch = Partial<{ handler_outcome: string; model: string | null; route_outcome: "pin_failed"; fast_used_tool: boolean; paco_correction: VerdictCorrection }>;
+/** The only columns an update may set: a fixed list, so the SET clause never takes a name from input. */
+const VERDICT_PATCH_COLUMNS = ["handler_outcome", "model", "route_outcome", "fast_used_tool", "paco_correction"] as const;
 
 /** One undoable memory-lane save (ADR 0029 §5.6): the new lesson, the one it superseded, the cap victims it pruned. */
 export interface LessonChange {
@@ -4325,6 +4348,55 @@ export class RunStore {
     return this.db.prepare(`SELECT * FROM jev_decisions WHERE run_id = ? ORDER BY rowid ASC`).all<JevDecisionRow>(run_id);
   }
 
+  // ── Jev verdicts: one row per decision point call (spec §6) ──────────────
+
+  insertJevVerdict(i: JevVerdictInsert): string {
+    const verdict_id = `jv_${randomUUID()}`;
+    const at = i.created_at ?? new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO jev_verdicts (verdict_id, run_id, category, breadth, reasoning, actions, sets_rule, rule_scope, lane, role, effort, cascade,
+        save_outcome, route_outcome, handler_outcome, reason, skip_reason, quoted_turn_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+    `).run(verdict_id, i.run_id, i.category, i.breadth, i.reasoning, i.actions, i.sets_rule, i.rule_scope, i.lane, i.role, i.effort, i.cascade,
+      i.save_outcome, i.route_outcome, i.reason, i.skip_reason, i.quoted_turn_id, at, at);
+    return verdict_id;
+  }
+
+  updateJevVerdict(verdict_id: string, p: JevVerdictPatch): void {
+    const sets: string[] = []; const values: Array<string | number | null> = [];
+    for (const column of VERDICT_PATCH_COLUMNS) {
+      const v = p[column];
+      if (v === undefined) continue;
+      sets.push(`${column} = ?`);
+      values.push(typeof v === "boolean" ? (v ? 1 : 0) : v);
+    }
+    if (sets.length === 0) return;
+    this.db.prepare(`UPDATE jev_verdicts SET ${sets.join(", ")}, updated_at = ? WHERE verdict_id = ?`).run(...values, new Date().toISOString(), verdict_id);
+  }
+
+  /**
+   * The run's terminal closes a verdict still 'pending' (review F12: every terminal path, one guarded write). The guard
+   * means a lane reply, a lane fall-through or an earlier close is never overwritten. Returns the rows moved (0 or 1).
+   */
+  closePendingJevVerdict(run_id: string, handler_outcome: "planner_done" | "planner_failed"): number {
+    const r = this.db.prepare(`UPDATE jev_verdicts SET handler_outcome = ?, updated_at = ? WHERE run_id = ? AND handler_outcome = 'pending'`)
+      .run(handler_outcome, new Date().toISOString(), run_id);
+    return Number(r.changes);
+  }
+
+  getJevVerdictForRun(run_id: string): JevVerdictRow | undefined {
+    return this.db.prepare(`SELECT * FROM jev_verdicts WHERE run_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get<JevVerdictRow>(run_id);
+  }
+
+  /** The chat's latest verdict at or before `beforeIso` (same-millisecond turns must still see each other); the run's notify target is the chat. */
+  latestJevVerdictForChat(chat_id: string, beforeIso: string): JevVerdictRow | undefined {
+    return this.db.prepare(`
+      SELECT v.* FROM jev_verdicts v JOIN runs r ON r.run_id = v.run_id
+      WHERE json_extract(r.notify_json, '$.chat_id') = ? AND v.created_at <= ?
+      ORDER BY v.created_at DESC, v.rowid DESC LIMIT 1
+    `).get<JevVerdictRow>(chat_id, beforeIso);
+  }
+
   // ── Lesson changes: the memory lane's undoable change set (ADR 0029 §5.6) ──
 
   insertLessonChange(c: Omit<LessonChange, "change_id" | "created_at" | "undone_at"> & { created_at?: string }): LessonChange {
@@ -6733,6 +6805,7 @@ export class RunStore {
     this.applyLessonChangesMigration();
     this.applyJevDecisionInstantsMigration();
     this.applyChatTurnsQuotedMigration();
+    this.applyJevVerdictsMigration();
   }
 
   /** Memory A1 §6: the lesson-set fingerprint each chat's omp session started on, persisted so a restart still compares. */
@@ -6815,6 +6888,44 @@ export class RunStore {
       const cols = this.tableColumns("jev_decisions");
       if (!cols.has("thread_cut_at")) this.db.exec(`ALTER TABLE jev_decisions ADD COLUMN thread_cut_at TEXT`);
       if (!cols.has("state_built_at")) this.db.exec(`ALTER TABLE jev_decisions ADD COLUMN state_built_at TEXT`);
+      if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
+  }
+
+  /** Jev decision tree (spec §6): one row per decision point call, joined to its first model call. Ids, enums, numbers; no text. */
+  private applyJevVerdictsMigration(): void {
+    const version = "2026-10-07-jev-verdicts";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS jev_verdicts (
+          verdict_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          category TEXT,
+          breadth REAL,
+          reasoning REAL,
+          actions REAL,
+          sets_rule REAL,
+          rule_scope TEXT CHECK (rule_scope IS NULL OR rule_scope IN ('ask', 'research')),
+          lane TEXT NOT NULL CHECK (lane IN ('memory', 'status', 'planner')),
+          role TEXT NOT NULL CHECK (role IN ('fast', 'default', 'thinking')),
+          effort TEXT CHECK (effort IS NULL OR effort IN ('low', 'medium', 'high')),
+          model TEXT,
+          cascade TEXT CHECK (cascade IS NULL OR cascade = 'tiny'),
+          save_outcome TEXT NOT NULL CHECK (save_outcome IN ('saved', 'not_durable', 'capped', 'none')),
+          route_outcome TEXT NOT NULL CHECK (route_outcome IN ('act', 'fallback', 'pin_failed')),
+          handler_outcome TEXT NOT NULL CHECK (handler_outcome IN ('pending', 'lane_reply', 'planner_done', 'planner_failed') OR handler_outcome LIKE 'fallthrough:%'),
+          reason TEXT NOT NULL,
+          skip_reason TEXT,
+          fast_used_tool INTEGER NOT NULL DEFAULT 0,
+          paco_correction TEXT CHECK (paco_correction IS NULL OR paco_correction IN ('ask_anyway', 'think_harder', 'escalation', 'low_rating')),
+          quoted_turn_id TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS jev_verdicts_run_idx ON jev_verdicts(run_id);
+        CREATE INDEX IF NOT EXISTS jev_verdicts_created_idx ON jev_verdicts(created_at);
+      `);
       if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
     });
   }
