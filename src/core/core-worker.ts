@@ -2270,15 +2270,20 @@ export class CoreWorker {
 
   /**
    * Spec §2.2.1: the Telegram reply this turn quotes, resolved to the stored turn at claim (code only; the text Telegram
-   * sends inside reply_to_message is never used). Unresolved → one `quote_unresolved` note and a plain message.
+   * sends inside reply_to_message is never used). Unresolved → one `quote_unresolved` note and a plain message; a store
+   * throw is logged and the turn proceeds unquoted (F6).
    */
   private resolveClaimQuote(run_id: string, chatId: string): OmpTurnState["quote"] {
     let replyTo: unknown;
     try { replyTo = this.runStore.getRunMetadata(run_id).reply_to_message_id; } catch { return undefined; } // no run row: nothing to resolve
     if (typeof replyTo !== "number" || !Number.isInteger(replyTo)) return undefined;
-    const r = this.runStore.resolveQuotedTurn(chatId, replyTo);
-    if (r.ok) return { role: r.role, turn: r.turn };
-    this.runStore.appendRunLedgerEvent(run_id, "quote_unresolved", "core", { reason: r.reason });
+    try {
+      const r = this.runStore.resolveQuotedTurn(chatId, replyTo);
+      if (r.ok) return { role: r.role, turn: r.turn };
+      this.runStore.appendRunLedgerEvent(run_id, "quote_unresolved", "core", { reason: r.reason });
+    } catch (e) {
+      console.error(`triage: quote resolution failed: ${safeReason(e)}`); // fail-open (F6): the turn proceeds unquoted
+    }
     return undefined;
   }
 
@@ -2374,13 +2379,15 @@ export class CoreWorker {
    * The planner's end on a routed turn (spec §6): the answering model, fast_used_tool and a failed pin. handler_outcome
    * moves only from 'pending' (the guarded close), so a lane fall-through or an earlier terminal close keeps its value.
    * This is the ONE owner of the `escalation` correction: it copies a `routed_escalation` the supervisor ledgered for
-   * the run. Never fails the turn.
+   * the run, unless its kind is model_missing (F7). Never fails the turn.
    */
   private ompRouteEnd(i: Parameters<NonNullable<TurnOutcomeSink["routeEnd"]>>[0]): void {
     try {
       const v = this.runStore.getJevVerdictForRun(i.run_id);
       if (!v || v.verdict_id !== i.verdict_id) return;
-      const escalated = this.runStore.getLedgerEvents(i.run_id).some((e) => e.event_type === "routed_escalation");
+      // F7: a model_missing step-up (role resolved empty, pin refused) is not "routed too light"; only retry-boundary ones are
+      const escalated = this.runStore.getLedgerEvents(i.run_id)
+        .some((e) => e.event_type === "routed_escalation" && e.payload.kind !== "model_missing");
       this.runStore.inTransaction(() => {
         this.runStore.closePendingJevVerdict(i.run_id, i.handler_outcome);
         this.runStore.updateJevVerdict(i.verdict_id, {
@@ -2395,10 +2402,15 @@ export class CoreWorker {
     }
   }
 
-  /** F12: the run's terminal closes a verdict routeEnd has not (guarded on 'pending'). Never fails the terminal write. */
+  /**
+   * F12: the run's terminal closes a verdict routeEnd has not (guarded on 'pending'). F1: a failed run also turns a
+   * lane_reply into fallthrough:run_failed (the reply never reached Paco). Never fails the terminal write.
+   */
   private closeVerdict(run_id: string, outcome: "planner_done" | "planner_failed"): void {
     try {
+      // two guarded writes on disjoint old values ('pending' / 'lane_reply'): at most one moves, no transaction needed
       this.runStore.closePendingJevVerdict(run_id, outcome);
+      if (outcome === "planner_failed") this.runStore.failLaneReplyVerdict(run_id);
     } catch (e) {
       console.error(`triage: verdict close failed: ${safeReason(e)}`);
     }

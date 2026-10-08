@@ -82,6 +82,21 @@ describe("jev_verdicts", () => {
     expect(store.closePendingJevVerdict("run_without_verdict", "planner_done")).toBe(0);
     store.close();
   });
+  // F1: a lane reply on a run that later failed never reached Paco; only lane_reply moves, once, and nothing else.
+  it("failLaneReplyVerdict moves only a lane_reply row to fallthrough:run_failed", () => {
+    const store = RunStore.openInMemory();
+    const lane = runIn(store, "555");
+    const id = store.insertJevVerdict({ ...V, run_id: lane, lane: "status" });
+    store.updateJevVerdict(id, { handler_outcome: "lane_reply" });
+    expect(store.failLaneReplyVerdict(lane)).toBe(1);
+    expect(store.failLaneReplyVerdict(lane)).toBe(0);
+    expect(store.getJevVerdictForRun(lane)?.handler_outcome).toBe("fallthrough:run_failed");
+    const planner = runIn(store, "555");
+    store.insertJevVerdict({ ...V, run_id: planner });
+    expect(store.failLaneReplyVerdict(planner)).toBe(0);
+    expect(store.getJevVerdictForRun(planner)?.handler_outcome).toBe("pending");
+    store.close();
+  });
   it("latestJevVerdictForChat: this chat only, at or before the instant, newest first", () => {
     const store = RunStore.openInMemory();
     const a = runIn(store, "555"); const b = runIn(store, "555"); const other = runIn(store, "777");

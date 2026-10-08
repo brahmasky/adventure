@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -596,6 +596,36 @@ describe("triageTurn — a Telegram quote anchors the turn (spec §2.2.1)", () =
   });
 });
 
+// F6 / spec §2.2.1: an unresolved quote is a plain message. A store throw while resolving it (or while noting it) must
+// not fail the turn: Paco's message is answered unquoted, and the throw is logged, never silent.
+describe("quote resolution is fail-open (F6)", () => {
+  it("resolveQuotedTurn throws: the turn proceeds unquoted and the reason is logged", async () => {
+    const fetchImpl = treeSays();
+    const { store, worker, claimed } = setup(fetchImpl);
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(store, "resolveQuotedTurn").mockImplementation(() => { throw new Error("SQLITE_BUSY"); });
+    const t = claimed(quotingRun(store, "好的，就这样", 99), "好的，就这样");
+    const out = await worker.triageTurn(t.input);
+    expect(out).not.toHaveProperty("quote");
+    const body = JSON.parse(String((fetchImpl.mock.calls[0]![1] as RequestInit).body)) as { state: Record<string, unknown> };
+    expect(body.state.quoted_turn ?? null).toBeNull();
+    expect(err.mock.calls.some((c) => /quote resolution failed/.test(String(c[0])))).toBe(true);
+    store.close();
+  });
+  it("the quote_unresolved write throws: the turn still proceeds unquoted", async () => {
+    const { store, worker, claimed } = setup(treeSays());
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const original = store.appendRunLedgerEvent.bind(store);
+    vi.spyOn(store, "appendRunLedgerEvent").mockImplementation((run_id, type, actor, payload) => {
+      if (type === "quote_unresolved") throw new Error("disk");
+      return original(run_id, type, actor, payload);
+    });
+    const t = claimed(quotingRun(store, "好的，就这样", 99), "好的，就这样");
+    expect(await worker.triageTurn(t.input)).not.toHaveProperty("quote");
+    store.close();
+  });
+});
+
 describe("triageTurn — one finalisation per turn, atomic with the lane's save", () => {
   it("a throw after the save (card builder) yields inform, decisions act, one triage row, verdict still pending", async () => {
     const { store, worker, turn } = setup(treeSays(RULE));
@@ -772,6 +802,24 @@ describe("the outcome sink: buttons, the saved-lesson failure line, and routeEnd
     expect(verdictOf(store, t.run_id)).toMatchObject({ handler_outcome: "planner_failed", route_outcome: "pin_failed", paco_correction: "escalation" });
     store.close();
   });
+  // F7: a step-up because the routed role had no usable model (kind model_missing: the role resolved empty or omp refused
+  // the pin) says nothing about Jev routing too light. Labelling it would mark every Fast turn under a role_unresolved
+  // Fast as "routed too light" and poison the gear evidence; only a retry-boundary escalation is that correction.
+  it("routeEnd ignores a model_missing step-up: no escalation correction", async () => {
+    const { store, worker, t, verdict_id } = await routed();
+    store.appendRunLedgerEvent(t.run_id, "routed_escalation", "core", { from: "fast", to: "default", kind: "model_missing" });
+    sinkOf(worker).routeEnd!({ run_id: t.run_id, verdict_id, handler_outcome: "planner_done", model: "anthropic/claude-sonnet-5-5", fast_used_tool: false, pin_failed: false });
+    expect(verdictOf(store, t.run_id)).toMatchObject({ handler_outcome: "planner_done", paco_correction: null });
+    store.close();
+  });
+  it("routeEnd labels a retry-boundary escalation even after a model_missing step-up on the same turn", async () => {
+    const { store, worker, t, verdict_id } = await routed();
+    store.appendRunLedgerEvent(t.run_id, "routed_escalation", "core", { from: "fast", to: "default", kind: "model_missing" });
+    store.appendRunLedgerEvent(t.run_id, "routed_escalation", "core", { from: "default", to: "thinking", kind: "timeout" });
+    sinkOf(worker).routeEnd!({ run_id: t.run_id, verdict_id, handler_outcome: "planner_done", model: "anthropic/claude-opus-5-5", fast_used_tool: false, pin_failed: false });
+    expect(verdictOf(store, t.run_id)?.paco_correction).toBe("escalation");
+    store.close();
+  });
   // Task 8: a failed first pin leaves the child on whatever model it held, so the turn's tool use is not Fast's: crediting
   // it to Fast would skew the gear evidence the §7 calibration reads.
   it("routeEnd on a failed pin never credits a tool use to Fast", async () => {
@@ -816,6 +864,25 @@ describe("every terminal path closes a pending verdict (F12)", () => {
     expect((await worker.triageTurn(t.input)).kind).toBe("lane_reply");
     sinkOf(worker).complete({ run_id: t.run_id, worker_id: "w", text: "📒 Saved lesson #1 · format", attachments: [], duration_ms: 1, tool_calls: 0 });
     expect(verdictOf(store, t.run_id)?.handler_outcome).toBe("lane_reply");
+    store.close();
+  });
+  // F1: a lane writes lane_reply before the run ends. If the run then fails (here: the report cannot be staged, so
+  // ompComplete fails it), the lane did not answer Paco: the verdict must read as a fall-through or the
+  // lane_fallthrough_rate sweep counts a failed lane turn as a lane success.
+  it("a status lane reply whose run then fails: the verdict reads fallthrough:run_failed and the sweep counts a fall-through", async () => {
+    const { store, worker, turn } = setup(treeSays({ category: cat({ status: 0.85 }) }));
+    const t = turn("did you restart?");
+    const since = new Date(Date.now() - 60_000).toISOString();
+    expect((await worker.triageTurn(t.input)).kind).toBe("lane_reply");
+    const root = mkdtempSync(join(tmpdir(), "hrf-"));
+    mkdirSync(join(root, "runs"), { recursive: true });
+    writeFileSync(join(root, "runs", t.run_id), "a file where the run's directory should be");
+    (worker as unknown as { projectRoot: string }).projectRoot = root;
+    sinkOf(worker).complete({ run_id: t.run_id, worker_id: "w", text: "status text", attachments: [], duration_ms: 1, tool_calls: 0 });
+    expect(store.getLedgerEvents(t.run_id).some((e) => e.event_type === "run_failed")).toBe(true);
+    expect(verdictOf(store, t.run_id)?.handler_outcome).toBe("fallthrough:run_failed");
+    expect(store.countLaneTurns(since, new Date(Date.now() + 60_000).toISOString())).toEqual([{ lane: "status", turns: 1, fallthroughs: 1 }]);
+    rmSync(root, { recursive: true, force: true });
     store.close();
   });
   it("a run failed the way abortAll / shutdown fail a queued run (planner owner, outcome.fail killed) closes planner_failed", () => {

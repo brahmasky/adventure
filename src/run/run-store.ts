@@ -4382,6 +4382,16 @@ export class RunStore {
     return Number(r.changes);
   }
 
+  /**
+   * F1: a lane writes lane_reply before its run ends; a run that then fails never delivered that reply, so the lane
+   * fell through. Guarded on 'lane_reply' (one write, never rewrites another outcome). Returns the rows moved (0 or 1).
+   */
+  failLaneReplyVerdict(run_id: string): number {
+    const r = this.db.prepare(`UPDATE jev_verdicts SET handler_outcome = 'fallthrough:run_failed', updated_at = ? WHERE run_id = ? AND handler_outcome = 'lane_reply'`)
+      .run(new Date().toISOString(), run_id);
+    return Number(r.changes);
+  }
+
   getJevVerdictForRun(run_id: string): JevVerdictRow | undefined {
     return this.db.prepare(`SELECT * FROM jev_verdicts WHERE run_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get<JevVerdictRow>(run_id);
   }
