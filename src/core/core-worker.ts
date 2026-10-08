@@ -93,6 +93,7 @@ import {
   parseScheduleSpec,
   resolveSchedulerMaxPerChat,
   sanitizeScheduleGoal,
+  visibleSchedules,
   type ScheduleSpec
 } from "../run/schedule-spec.js";
 import { stageRunReport, writeRunReport, type StagedRunReport } from "../report/report-writer.js";
@@ -2863,6 +2864,15 @@ export class CoreWorker {
     }));
   }
 
+  private resolveScheduleId(chat_id: string, arg: string): string | undefined {
+    const trimmed = arg.trim();
+    if (/^#?[1-9][0-9]*$/.test(trimmed)) {
+      const n = Number(trimmed.replace(/^#/, ""));
+      return visibleSchedules(this.runStore.listScheduledTasks(chat_id))[n - 1]?.schedule_id;
+    }
+    return /^sch_[0-9a-fA-F-]{8,}$/.test(trimmed) ? trimmed : undefined;
+  }
+
   /**
    * The schedule_task adapter (B10b, ADR 0017). Everything untrusted is validated or
    * neutralized in code: the spec parses tolerantly, the tz must resolve (defaulting to
@@ -2891,9 +2901,9 @@ export class CoreWorker {
     }
 
     if (typeof input.cancel === "string" && input.cancel.trim().length > 0) {
-      const schedule_id = input.cancel.trim();
+      const schedule_id = this.resolveScheduleId(chat_id, input.cancel);
       // Shape-check before any lookup so a hostile id is never echoed into a digest.
-      if (!/^sch_[0-9a-fA-F-]{8,}$/.test(schedule_id)) {
+      if (!schedule_id) {
         return { ok: false, error: SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR };
       }
       const row = this.runStore.getScheduledTask(schedule_id);
@@ -2909,8 +2919,8 @@ export class CoreWorker {
     // next_run_at recomputes ONLY when spec/tz changed — a goal edit must not move a
     // pending fire. Updating a 'failed' row re-enables it (store semantics).
     if (typeof input.update === "string" && input.update.trim().length > 0) {
-      const schedule_id = input.update.trim();
-      if (!/^sch_[0-9a-fA-F-]{8,}$/.test(schedule_id)) {
+      const schedule_id = this.resolveScheduleId(chat_id, input.update);
+      if (!schedule_id) {
         return { ok: false, error: SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR };
       }
       const row = this.runStore.getScheduledTask(schedule_id);
