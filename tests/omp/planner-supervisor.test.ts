@@ -17,6 +17,7 @@ import { selectorKey } from "../../src/omp/model-roles.js";
 import type { Effort, TurnRole } from "../../src/jev/tree-policy.js";
 import { openManifestClient } from "../helpers/bridge-manifest.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
+import { maxLoopGap, slowVersionBin } from "../helpers/event-loop.js";
 
 type Script = {
   /** Event log shared with the test: start/ready/manifest/prompt, tagged with the child's index. */
@@ -436,6 +437,27 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
     (sup as never as { d: { versionCheck: () => unknown } }).d.versionCheck = () => ({ ok: false, kind: "not_runnable" as const, version: null, reason: "omp not runnable: ENOENT" });
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
     expect(outcome.incidents.map((i) => (i as { k: string }).k)).toEqual(["omp_unavailable"]);
+  });
+
+  // Stage A (Jev tree): triage's Jev call is in flight while the child starts. The default check once ran omp --version
+  // synchronously (0.7–0.8 s live), freezing the loop so Jev's 1.5 s budget expired: 5 of 9 gate calls timed out silently.
+  it("the default version check at spawn leaves the event loop free while omp answers", async () => {
+    const { store, sup, outcome } = harness(fakeSession(), { HOUGE_OMP_BIN: slowVersionBin(800) });
+    delete (sup as never as { d: { versionCheck?: unknown } }).d.versionCheck; // the production default, on the slow fake
+    const { gap } = await maxLoopGap(async () => { sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle(); });
+    expect(outcome.incidents.map((i) => (i as { k: string }).k)).not.toContain("omp_unavailable");
+    expect(sup.ompVersion()).toBe("18.7.0"); // the check really ran on the slow binary, not a stub
+    expect(gap).toBeLessThan(400);
+  });
+
+  // The awaited check opens a window before the spawn: a second start arriving in it must join the first, never spawn twice.
+  it("two starts during a pending version check spawn one child", async () => {
+    const session = fakeSession();
+    const slow = () => new Promise<{ ok: true; version: string }>((r) => setTimeout(() => r({ ok: true, version: "18.7.0" }), 30));
+    const { sup } = harness(session, {}, { versionCheck: slow });
+    const ensure = (sup as never as { ensureSession: (fresh: boolean) => Promise<unknown> }).ensureSession.bind(sup);
+    expect(await Promise.all([ensure(true), ensure(true)])).toEqual([null, null]);
+    expect(session.options).toHaveLength(1);
   });
 
   it("fails the run when the child never asks for its manifest (omp only warns on an extension load failure)", async () => {

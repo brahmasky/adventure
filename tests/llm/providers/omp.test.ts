@@ -8,6 +8,7 @@ import { parseModelChain } from "../../../src/omp/model-string.js";
 import { LEG_EXIT_GRACE_MS, spawnOneShot } from "../../../src/llm/providers/omp.js";
 import { daemonTmpRoot } from "../../../src/run/daemon-tmp.js";
 import { recordingSink } from "../../helpers/llm-audit.js";
+import { maxLoopGap, slowVersionBin } from "../../helpers/event-loop.js";
 
 const FAKE = new URL("../../fixtures/fake-omp.mjs", import.meta.url).pathname;
 const saved: Record<string, string | undefined> = {};
@@ -28,6 +29,17 @@ function setup(scenario: object) {
 const argvLog = () => readFileSync(join(dir, "argv.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
 
 describe("omp one-shot seat — every non-planner LLM call in Houge", () => {
+  // The cascade's Tiny call runs on the user's path while Jev and the child start: a synchronous omp --version
+  // (0.7–0.8 s live) froze the event loop for every concurrent turn and timer (live gate, 2026-10-09).
+  it("the default version check leaves the event loop free while omp answers", async () => {
+    const cfg = resolveOmpConfig({ HOUGE_OMP_BIN: slowVersionBin(800), HOUGE_OMP_SANDBOX: "0" });
+    const seen: unknown[] = [];
+    const { gap } = await maxLoopGap(() => spawnOneShot({ seat: "ticks", chain: [], prompt: "x", correlationId: "c" },
+      { cfg, audit: recordingSink(), onVersionCheck: (v) => seen.push(v) }));
+    expect(seen).toEqual([{ ok: true, version: "18.7.0" }]); // the default check really ran, on the slow binary
+    expect(gap).toBeLessThan(400);
+  });
+
   it("returns the first leg's answer and writes exactly one ok audit row with family and request_key", async () => {
     const cfg = setup({ "google-antigravity/gemini-3.8-flash": { text: "digest ok" } });
     const audit = recordingSink();

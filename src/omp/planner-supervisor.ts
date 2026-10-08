@@ -18,7 +18,7 @@ import { selectorKey, STEP_UP } from "./model-roles.js";
 import { familyOf, type ModelFamily, type ModelString } from "./model-string.js";
 import { PLANNER_HEARTBEAT_MS, type OmpConfig } from "./omp-config.js";
 import { classifyOmpError, frameErrorText, RETRYABLE_ERROR_KINDS, summarizeAssistantMessage, type AssistantSummary, type OmpFrame } from "./omp-frames.js";
-import { checkOmpVersion } from "./omp-version.js";
+import { checkOmpVersionAsync, type OmpCheckResult } from "./omp-version.js";
 import { PlannerRpcError, PlannerSession, type ExitInfo, type PlannerSessionOptions } from "./planner-session.js";
 import { realpathOrSelf, type PathContext } from "./protected-paths.js";
 import type { RoleResolver } from "./role-resolver.js";
@@ -88,7 +88,8 @@ export interface SupervisorDeps {
   /** Lane 1 (ADR 0029 §5.1, slot B): awaited after resolveMessage, before the planner. Absent or throwing → today's path. */
   triage?: (i: TriageInput) => Promise<TriageOutcome>;
   sessionFactory?: (o: PlannerSessionOptions) => PlannerSessionLike;
-  versionCheck?: () => ReturnType<typeof checkOmpVersion>;
+  /** Injected check (tests); the default awaits checkOmpVersionAsync, so the loop stays free while omp answers. */
+  versionCheck?: () => OmpCheckResult | Promise<OmpCheckResult>;
   /** Unit tests only: skips the wrapper hash check and the Seatbelt render (the bridge socket stays real). */
   skipPreflightForTest?: boolean;
   /** How long a started child has to ask for its manifest (default MANIFEST_WAIT_MS). */
@@ -713,14 +714,19 @@ export class PlannerSupervisor {
     if (this.session && refresh) await this.stopSession();
     if (this.session) return null;
     if (this.crashLooping()) return "crash_loop";
-    const pre = this.preflight();
+    // in flight from here: the preflight awaits omp --version, and a turn arriving meanwhile must join, not spawn twice
+    const p: Promise<StartResult> = this.preflightThenSpawn(fresh).finally(() => { if (this.startInFlight === p) this.startInFlight = undefined; });
+    this.startInFlight = p;
+    return p;
+  }
+
+  private async preflightThenSpawn(fresh: boolean): Promise<StartResult> {
+    const pre = await this.preflight();
     if (pre) return pre;
     if (fresh) this.refused.clear();
     const head = this.spawnChain()[0];
     if (!head) return NO_SPAWN_MODEL;
-    const p: Promise<StartResult> = this.spawn(head).finally(() => { if (this.startInFlight === p) this.startInFlight = undefined; });
-    this.startInFlight = p;
-    return p;
+    return this.spawn(head);
   }
 
   /**
@@ -794,9 +800,9 @@ export class PlannerSupervisor {
   }
 
   /** omp answers with a version at every spawn (tests included); wrapper hash and Seatbelt render unless skipped for unit tests. */
-  private preflight(): string | null {
+  private async preflight(): Promise<string | null> {
     const { cfg, distDir, ctx } = this.d;
-    const v = (this.d.versionCheck ?? (() => checkOmpVersion(cfg)))();
+    const v = await (this.d.versionCheck ?? (() => checkOmpVersionAsync(cfg)))();
     if (!v.ok) {
       // No pinned version (2026-10-07): only an unrunnable or silent omp refuses a spawn.
       this.incident("omp_unavailable", { check: v.kind, version: v.version });

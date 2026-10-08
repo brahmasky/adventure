@@ -4,7 +4,7 @@ import type { LlmResult } from "../types.js";
 import { buildChildEnv } from "../../omp/child-env.js";
 import { daemonTmpRoot } from "../../run/daemon-tmp.js";
 import type { OmpConfig } from "../../omp/omp-config.js";
-import { checkOmpVersion } from "../../omp/omp-version.js";
+import { checkOmpVersionAsync, type OmpCheckResult } from "../../omp/omp-version.js";
 import { classifyOmpError, parseFrameLine, RETRYABLE_ERROR_KINDS, summarizeAssistantMessage, type AssistantSummary } from "../../omp/omp-frames.js";
 import { familyOf, formatModelString, type ModelFamily, type ModelString } from "../../omp/model-string.js";
 import { resolveModelRolesMode } from "../../omp/model-roles.js";
@@ -18,9 +18,9 @@ export interface OneShotInput {
   deadlineAt?: number;
 }
 export interface OneShotDeps {
-  cfg: OmpConfig; audit: LlmAuditSink; versionCheck?: () => ReturnType<typeof checkOmpVersion>;
+  cfg: OmpConfig; audit: LlmAuditSink; versionCheck?: () => OmpCheckResult | Promise<OmpCheckResult>;
   /** Every version check's outcome, pass or refuse — the caller opens or clears its omp incidents. */
-  onVersionCheck?: (check: ReturnType<typeof checkOmpVersion>) => void;
+  onVersionCheck?: (check: OmpCheckResult) => void;
 }
 
 const STDOUT_CAP_BYTES = 8 * 1024 * 1024;
@@ -127,7 +127,7 @@ function readerOrder(input: OneShotInput): ModelString[] {
 export async function spawnOneShot(input: OneShotInput, deps: OneShotDeps): Promise<LlmResult> {
   if ((input.files ?? []).some((f) => AUDIO_FILE.test(f))) return { ok: false, provider: "omp", error: OMP_AUDIO_REFUSED };
   if (input.signal?.aborted) return ABORTED;
-  const version = (deps.versionCheck ?? (() => checkOmpVersion(deps.cfg)))();
+  const version = await (deps.versionCheck ?? (() => checkOmpVersionAsync(deps.cfg)))(); // never blocks the loop: Jev and turns run alongside
   deps.onVersionCheck?.(version);
   // No leg ran, so no audit row: the structured check rides out for the caller's incident (ruling 6).
   if (!version.ok) return { ok: false, provider: "omp", error: version.reason, unavailable: true, omp_check: version };
