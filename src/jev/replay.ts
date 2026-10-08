@@ -6,7 +6,7 @@ import {
 } from "../capabilities/intent.js";
 import { computeCostUsd, JEV_PROVIDER } from "../llm/metered-pricing.js";
 import type { ReplayTurnRow, RunStore } from "../run/run-store.js";
-import { JEV_MODEL, type JevRequest, type JevResult } from "./jev-client.js";
+import { JEV_REQUEST_MODEL, type JevRequest, type JevResult } from "./jev-client.js";
 import { buildJevIntentRequest, langOf, type Lang } from "./intent-question.js";
 import { llmLabel, observedAction, type ObservedAction } from "./labels.js";
 
@@ -91,7 +91,9 @@ export async function runReplay(deps: ReplayDeps): Promise<ReplayOutcome> {
   const rows: ReplayRow[] = [];
   let spentUsd = 0;
   let estimatedUsd = 0;
-  const offModelWarned = { warned: false };
+  // Seeded from the resumed rows: a move between two invocations over one file is still a move within the run's evidence.
+  const resumedModel = [...done.values()].find((r) => r.jev_model !== undefined)?.jev_model;
+  const offModelWarned: ModelWatch = { warned: false, ...(resumedModel ? { first: resumedModel } : {}) };
 
   for (const turn of turns) {
     const prior = done.get(turn.turn_id);
@@ -124,7 +126,7 @@ type PreparedOk = Extract<Prepared, { request: JevRequest }>;
  */
 async function dispatchTurn(
   deps: ReplayDeps, turn: ReplayTurnRow, prepared: PreparedOk, rows: ReplayRow[],
-  spentUsd: number, log: (line: string) => void, total: number, offModelWarned: { warned: boolean }
+  spentUsd: number, log: (line: string) => void, total: number, offModelWarned: ModelWatch
 ): Promise<{ spentUsd: number; estimatedUsd: number; stopped?: "budget" | "auth" | "fused" }> {
   const estUsd = jevUsd(prepared.base.est_tokens, deps.env);
   if (deps.dryRun) {
@@ -146,10 +148,7 @@ async function dispatchTurn(
       : undefined;
     return { spentUsd, estimatedUsd: estUsd, ...(stopped ? { stopped } : {}) };
   }
-  if (jev.model !== JEV_MODEL && !offModelWarned.warned) {
-    offModelWarned.warned = true;
-    log(`warning: Jev responded with model "${jev.model}", pinned model is ${JEV_MODEL} — report splits by jev_model`);
-  }
+  watchModel(offModelWarned, jev.model, log);
   const newSpent = spentUsd + jevUsd(jev.input_tokens, deps.env);
   const answer = jev.answers.intent!;
   const withJev: ReplayRow = {
@@ -191,8 +190,20 @@ function prepare(deps: ReplayDeps, turn: ReplayTurnRow): Prepared {
   };
 }
 
+/** The run's first reported model; later responses are compared to it (the request names an alias, so there is no pin). */
+interface ModelWatch { first?: string; warned: boolean }
+
+/** One warning per run when the reported model changes mid-run (the alias moved): the report splits by jev_model. */
+function watchModel(w: ModelWatch, model: string, log: (line: string) => void): void {
+  w.first ??= model;
+  if (model === w.first || w.warned) return;
+  w.warned = true;
+  log(`warning: Jev reported model "${model}" mid-run, the run started on ${w.first} — the report splits by jev_model`);
+}
+
+/** Priced by the "jev-" prefix row in metered-pricing, which matches the alias and every versioned id alike. */
 function jevUsd(tokens: number, env: NodeJS.ProcessEnv): number {
-  return computeCostUsd(JEV_PROVIDER, JEV_MODEL, { input_tokens: tokens, output_tokens: 0, cached_input_tokens: 0 }, env) ?? 0;
+  return computeCostUsd(JEV_PROVIDER, JEV_REQUEST_MODEL, { input_tokens: tokens, output_tokens: 0, cached_input_tokens: 0 }, env) ?? 0;
 }
 
 function emit(deps: ReplayDeps, rows: ReplayRow[], row: ReplayRow): void {

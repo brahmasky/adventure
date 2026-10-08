@@ -1,4 +1,3 @@
-import { JEV_MODEL } from "./jev-client.js";
 import type { ReplayRow } from "./replay.js";
 
 /** Replay GO/STOP screen (Jev spec 2026-09-25). Replay is a feasibility screen, not the promotion gate. */
@@ -21,21 +20,30 @@ export interface ReplaySummary {
   fallbackAnchors: number;
   thresholds: { t: number; slice: number; agreement: number | null; coverage: number | null }[];
   byLang: Record<string, { matched: number; agreementAt07: number | null; coverageAt07: number | null }>;
-  /** ok rows per Jev response model (spec: "the report splits by jev_model"). */
+  /** Jev-answered rows (ok or llm_failed) per Jev response model (spec: "the report splits by jev_model"). */
   byModel: Record<string, number>;
   verdict: "GO" | "STOP";
   verdictReason: string;
   disagreements: { turn_id: string; jev: string; llm: string; confidence: number; lang: string }[];
 }
 
+/** A row Jev answered (its LLM leg may still have failed): it carries the model Jev reported. */
+const jevAnswered = (r: ReplayRow): boolean => (r.status === "ok" || r.status === "llm_failed") && r.jev_model !== undefined;
+
 /**
- * A row only "matches" — and so only enters the GO/STOP gate, thresholds, byLang and disagreements —
- * when its Jev response came from the pinned model. A response from a different model is recorded
- * (`byModel`) but never gates: it wasn't the evaluation Jev spec 2026-09-25 asked for.
+ * The run's reference model: the first model Jev reported, whatever the LLM leg did. The request names the moving alias `jev-latest`, so
+ * there is no pin; a run is one model's evidence, and rows from another reported model (the alias moved mid-run) are
+ * recorded (`byModel`) but never blended into the gate.
  */
-const isMatched = (r: ReplayRow): boolean =>
-  r.status === "ok" && r.llm_parsed === true && r.jev_intent !== undefined && r.llm_intent !== undefined &&
-  r.jev_confidence !== undefined && r.jev_model === JEV_MODEL;
+export const referenceModel = (rows: ReplayRow[]): string | undefined => rows.find(jevAnswered)?.jev_model;
+
+/** A row only "matches" — and so only enters the GO/STOP gate, thresholds, byLang and disagreements — on the reference model. */
+const matcher = (rows: ReplayRow[]) => {
+  const ref = referenceModel(rows);
+  return (r: ReplayRow): boolean =>
+    r.status === "ok" && r.llm_parsed === true && r.jev_intent !== undefined && r.llm_intent !== undefined &&
+    r.jev_confidence !== undefined && r.jev_model === ref;
+};
 
 export function atThreshold<R extends AgreementRow>(matched: R[], t: number) {
   const slice = matched.filter((r) => (r.jev_confidence ?? 0) >= t);
@@ -50,7 +58,7 @@ export function atThreshold<R extends AgreementRow>(matched: R[], t: number) {
 
 export function summarizeReplay(rows: ReplayRow[]): ReplaySummary {
   const eligibleRows = rows.filter((r) => r.status !== "dry_run");
-  const matched = eligibleRows.filter(isMatched);
+  const matched = eligibleRows.filter(matcher(rows));
   const byStatus: Record<string, number> = {};
   for (const r of rows) byStatus[r.status] = (byStatus[r.status] ?? 0) + 1;
   const byLang: ReplaySummary["byLang"] = {};
@@ -76,7 +84,7 @@ export function summarizeReplay(rows: ReplayRow[]): ReplaySummary {
     .map((r) => ({ turn_id: r.turn_id, jev: r.jev_intent!, llm: r.llm_intent!, confidence: r.jev_confidence!, lang: r.lang }));
   const byModel: Record<string, number> = {};
   for (const r of eligibleRows) {
-    if (r.status === "ok" && r.jev_model !== undefined) byModel[r.jev_model] = (byModel[r.jev_model] ?? 0) + 1;
+    if (jevAnswered(r)) byModel[r.jev_model!] = (byModel[r.jev_model!] ?? 0) + 1;
   }
   return {
     eligible: eligibleRows.length,
@@ -121,8 +129,9 @@ function dryRunLine(rows: ReplayRow[], estimatedUsd: number): string {
 
 export function formatReplayReport(rows: ReplayRow[], outcome: { spentUsd: number; estimatedUsd: number; stopped?: string }): string {
   const s = summarizeReplay(rows);
-  const matched = rows.filter(isMatched);
-  const nonPinnedRows = Object.entries(s.byModel).reduce((sum, [model, n]) => sum + (model === JEV_MODEL ? 0 : n), 0);
+  const matched = rows.filter(matcher(rows));
+  const ref = referenceModel(rows);
+  const offModelRows = Object.entries(s.byModel).reduce((sum, [model, n]) => sum + (model === ref ? 0 : n), 0);
   const dispatched = rows.some((r) => r.status === "ok" || r.status === "jev_failed" || r.status === "llm_failed");
   const dryRunOnly = !dispatched && rows.some((r) => r.status === "dry_run");
   const headline = outcome.stopped
@@ -144,7 +153,7 @@ export function formatReplayReport(rows: ReplayRow[], outcome: { spentUsd: numbe
     "",
     "By Jev model:",
     ...Object.entries(s.byModel).map(([model, n]) => `  ${model}: ${n}`),
-    ...(nonPinnedRows > 0 ? [`${nonPinnedRows} row(s) from non-pinned models excluded from the verdict`] : []),
+    ...(offModelRows > 0 ? [`${offModelRows} row(s) from a model other than ${ref} (the run's first reported model) excluded from the verdict`] : []),
     "",
     ...confusion(matched, (r) => r.llm_intent, "replayed LLM (gates)"),
     ...confusion(matched, (r) => r.recorded_intent, "recorded intent (noisy proxy, reported only)"),

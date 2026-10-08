@@ -1250,17 +1250,21 @@ export class RunStore {
    * The lane 1 live shadow as the §5.9 step 4 bar reads it: `triage` rows with decision `shadow` since `sinceIso`, each
    * joined to its run's planner `loop_step` capabilities. A "pure verdict" is `lane = memory ∧ complete = pure` (the
    * row's argmax choices — a superset of pure-at-bar, so the count errs toward NO-GO). `days` = distinct UTC days with a
-   * shadow row (occurred_at is ISO UTC), so a parked daemon's silent weeks do not count toward the 14.
+   * shadow row (occurred_at is ISO UTC), so a parked daemon's silent weeks do not count toward the 14. Only turns whose
+   * `lane` shadow decision row reported `model` count: calibration keys on the reported model, so an alias move must not
+   * let the old model's shadow stand as the new model's evidence.
    */
-  triageShadowStats(sinceIso: string): TriageShadowStats {
+  triageShadowStats(sinceIso: string, model: string): TriageShadowStats {
     const rows = this.db.prepare(`
       SELECT e.run_id, e.occurred_at, json_extract(e.payload_json, '$.lane') AS lane,
         json_extract(e.payload_json, '$.complete') AS complete, r.state AS run_state
       FROM ledger_events e LEFT JOIN runs r ON r.run_id = e.run_id
       WHERE e.event_type = 'triage' AND json_extract(e.payload_json, '$.decision') = 'shadow' AND e.occurred_at >= ?
+        AND EXISTS (SELECT 1 FROM jev_decisions d WHERE d.run_id = e.run_id AND d.point = 'triage' AND d.question_id = 'lane'
+          AND d.decision = 'shadow' AND d.model_reported = ?)
       ORDER BY e.occurred_at ASC, e.sequence ASC
-    `).all<{ run_id: string; occurred_at: string; lane: string | null; complete: string | null; run_state: string | null }>(sinceIso);
-    const stats: TriageShadowStats = { days: 0, matched_lesson_write: 0, pure_on_tool_turns: 0, pure_on_no_tool_turns: 0 };
+    `).all<{ run_id: string; occurred_at: string; lane: string | null; complete: string | null; run_state: string | null }>(sinceIso, model);
+    const stats: TriageShadowStats = { model, days: 0, matched_lesson_write: 0, pure_on_tool_turns: 0, pure_on_no_tool_turns: 0 };
     for (const r of rows) {
       const caps = this.runLoopCapabilities(r.run_id);
       // "matched" = a triage row AND a completed planner run (§5.9 step 4): a failed run's lesson_write saved nothing.
@@ -1272,9 +1276,9 @@ export class RunStore {
     stats.days = new Set(rows.map((r) => r.occurred_at.slice(0, 10))).size; // distinct UTC days with a shadow row
     stats.live_state_rows = this.db.prepare(`
       SELECT run_id, state_hash FROM jev_decisions
-      WHERE point = 'triage' AND question_id = 'lane' AND decision = 'shadow' AND state_hash IS NOT NULL AND created_at >= ?
+      WHERE point = 'triage' AND question_id = 'lane' AND decision = 'shadow' AND state_hash IS NOT NULL AND created_at >= ? AND model_reported = ?
       ORDER BY created_at ASC, rowid ASC
-    `).all<{ run_id: string | null; state_hash: string }>(sinceIso).map((r) => ({ run_id: r.run_id ?? "", state_hash: r.state_hash }));
+    `).all<{ run_id: string | null; state_hash: string }>(sinceIso, model).map((r) => ({ run_id: r.run_id ?? "", state_hash: r.state_hash }));
     return stats;
   }
 

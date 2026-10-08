@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { createJevClient, JEV_MODEL, type JevRequest } from "../../src/jev/jev-client.js";
+import { createJevClient, JEV_REQUEST_MODEL, type JevRequest } from "../../src/jev/jev-client.js";
 import { recordingSink } from "../helpers/llm-audit.js";
+
+/** The versioned id Jev REPORTS (the request sends the moving alias `jev-latest`); calibration rows key on it. */
+const REPORTED = "jev-1.13.0";
 
 const OPTIONS = ["answer", "research", "feedback", "clarify", "selfcode", "skill"] as const;
 const REQ: JevRequest = {
@@ -12,7 +15,7 @@ const KEY = "ts-live-key-abcdefgh-123456";
 function okBody(overrides: Record<string, unknown> = {}) {
   const probabilities = { answer: 0.05, research: 0.85, feedback: 0.02, clarify: 0.03, selfcode: 0.03, skill: 0.02 };
   return {
-    model: JEV_MODEL,
+    model: REPORTED,
     answers: { intent: { type: "choice", choice: "research", probabilities, confidence: 0.82, ...overrides } },
     usage: { input_tokens: 300, output_tokens: 20 }
   };
@@ -32,13 +35,15 @@ describe("createJevClient", () => {
     const fetchImpl = vi.fn(async () => json(200, okBody()));
     const { call, audit } = client(fetchImpl as unknown as typeof fetch);
     const r = await call(REQ);
-    expect(r).toMatchObject({ ok: true, model: JEV_MODEL, input_tokens: 300 });
+    expect(r).toMatchObject({ ok: true, model: REPORTED, input_tokens: 300 });
     if (r.ok) expect(r.answers.intent!.choice).toBe("research");
     expect(audit.attempts).toHaveLength(1);
-    expect(audit.attempts[0]).toMatchObject({ provider: "jev", outcome: "ok", model: JEV_MODEL, usage: { input_tokens: 300, output_tokens: 20, cached_input_tokens: 0 } });
+    expect(audit.attempts[0]).toMatchObject({ provider: "jev", outcome: "ok", model: REPORTED, usage: { input_tokens: 300, output_tokens: 20, cached_input_tokens: 0 } });
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("https://api.typesafe.ai/v1/systemone");
-    expect(JSON.parse(String(init.body))).toMatchObject({ model: JEV_MODEL });
+    // The request sends the moving alias, never a pinned version; the RESPONSE reports the versioned id (calibration keys on it).
+    expect(JSON.parse(String(init.body))).toMatchObject({ model: "jev-latest" });
+    expect(JEV_REQUEST_MODEL).toBe("jev-latest");
     expect((init.headers as Record<string, string>).authorization).toBe(`Bearer ${KEY}`);
   });
 

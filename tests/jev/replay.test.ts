@@ -144,13 +144,35 @@ describe("runReplay", () => {
     expect(d.jev).toHaveBeenCalledTimes(1);
   });
 
-  it("F5: a response model off the pin logs exactly one warning for the whole run, however many turns hit it", async () => {
-    const offModel = { ...jevOk(), model: "jev-1.14.0" } as JevResult;
+  // The request sends the moving alias `jev-latest`: there is no pin to compare against. A run is one model's evidence,
+  // so a reported model that CHANGES mid-run (the alias moved) warns once; a run wholly on a newer model does not.
+  it("F5: a reported model that changes mid-run logs exactly one warning naming both models", async () => {
     const log = vi.fn();
-    const { d } = deps([T(1), T(2)], { jev: vi.fn(async () => offModel), log });
+    let n = 0;
+    const jev = vi.fn(async (): Promise<JevResult> => ({ ...jevOk(), model: n++ === 0 ? "jev-1.13.0" : "jev-1.14.0" } as JevResult));
+    const { d } = deps([T(1), T(2), T(3)], { jev, log });
     await runReplay(d);
     const warnings = log.mock.calls.filter(([line]) => typeof line === "string" && line.includes("jev-1.14.0"));
     expect(warnings).toHaveLength(1);
+    expect(warnings[0]![0]).toContain("jev-1.13.0");
+  });
+
+  it("F5: a model move across a resume warns: the resumed rows seed the run's first reported model", async () => {
+    const first = deps([T(1)]);
+    await runReplay(first.d); // u1 done on jev-1.13.0
+    const log = vi.fn();
+    await runReplay({ ...first.d, store: { ...first.d.store, listReplayTurns: () => [T(1), T(2)] }, log,
+      jev: vi.fn(async () => ({ ...jevOk(), model: "jev-1.14.0" } as JevResult)) });
+    const warnings = log.mock.calls.map(([l]) => String(l)).filter((l) => l.includes("warning"));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("jev-1.13.0"); expect(warnings[0]).toContain("jev-1.14.0");
+  });
+
+  it("F5: a run wholly on one (newer) reported model logs no model warning", async () => {
+    const log = vi.fn();
+    const { d } = deps([T(1), T(2)], { jev: vi.fn(async () => ({ ...jevOk(), model: "jev-1.14.0" } as JevResult)), log });
+    await runReplay(d);
+    expect(log.mock.calls.filter(([line]) => typeof line === "string" && line.includes("warning"))).toHaveLength(0);
   });
 });
 

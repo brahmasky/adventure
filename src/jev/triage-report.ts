@@ -1,5 +1,4 @@
 import type { CalibrationRow } from "./calibration.js";
-import { JEV_MODEL } from "./jev-client.js";
 import { TRIAGE_LANE, TRIAGE_QUESTIONS } from "./questions/triage.js";
 import { criteriaHash } from "./questions/types.js";
 import { TRIAGE_STATUS_ARM_ID, type TriageBars } from "./thresholds.js";
@@ -13,6 +12,8 @@ import { wilsonLower } from "./wilson.js";
  * Verdicts are recomputed from the row's numbers at `bars` through the live gate, so the bars printed are the bars used.
  */
 export interface TriageShadowStats {
+  /** The reported model the shadow was filtered by: evidence for one model is never evidence for another (alias move). */
+  model: string;
   days: number; matched_lesson_write: number; pure_on_tool_turns: number; pure_on_no_tool_turns: number;
   /** The live shadow `lane` rows' run and `jev_decisions.state_hash`: the state-parity check against the replay. */
   live_state_rows?: Array<{ run_id: string; state_hash: string }>;
@@ -31,6 +32,12 @@ type CalLang = (typeof CAL_LANGS)[number];
 const pct = (a: number, n: number): string => (n === 0 ? "n/a" : `${((100 * a) / n).toFixed(1)}%`);
 const lb = (a: number, n: number): string => { const w = wilsonLower(a, n); return w === null ? "LB n/a" : `LB ${(100 * w).toFixed(1)}%`; };
 const line = (label: string, a: number, n: number): string => `  ${label}: ${a}/${n} = ${pct(a, n)} (${lb(a, n)})`;
+/** Every model the ok rows (canonical and permuted) REPORTED, sorted. The request names the alias `jev-latest`, so the
+ *  rows, not a constant, say which model the evidence is for; more than one means the alias moved mid-replay. */
+const reportedModels = (rows: TriageReplayRow[]): string[] =>
+  [...new Set(rows.filter((r) => r.status === "ok" && r.model !== undefined).map((r) => r.model!))].sort();
+/** The one model the canonical rows reported, or undefined when none or more than one (the latter is a blocker). */
+export const replayReportedModel = (rows: TriageReplayRow[]): string | undefined => { const m = reportedModels(rows); return m.length === 1 ? m[0] : undefined; };
 const calLang = (r: TriageReplayRow): CalLang => (r.lang === "en" ? "en" : "zh"); // `mixed` inherits zh (spec §3.4)
 
 /** The live gate's verdict on the row's stored numbers at `bars`. */
@@ -40,7 +47,7 @@ function verdictAt(r: TriageReplayRow, bars: TriageBars): TriageReplayVerdict {
     lane: { choice: r.jev_lane ?? "none", probabilities: { none: r.p_none ?? 0, status: r.p_status ?? 0, memory: r.p_memory ?? 0 }, confidence: r.conf_lane ?? 0 },
     complete: { choice: pPure >= 0.5 ? "pure" : "mixed", probabilities: { mixed: 1 - pPure, pure: pPure }, confidence: Math.abs(2 * pPure - 1) },
     scope: { choice: scope, probabilities: { [scope]: 1 }, confidence: 1 }
-  }, bars, r.lang, r.model ?? JEV_MODEL);
+  }, bars, r.lang, r.model ?? "unreported"); // replayVerdict arms "as if" for whatever model it is given
 }
 const isMemory = (v: TriageReplayVerdict): boolean => v === "memory_pure" || v === "memory_mixed";
 /** Must carry Paco's label: every observed lesson_write, every memory/status choice at any confidence, and every memory/status
@@ -139,7 +146,8 @@ function blockersOf(rows: TriageReplayRow[], ok: TriageReplayRow[], labels: Map<
   if (failed > 0) b.push(`${failed} jev_failed row(s): re-run to retry them`);
   const unlabelled = ok.filter((r) => required(r, bars) && !labels.has(r.turn_id)).length;
   if (unlabelled > 0) b.push(`${unlabelled} required turn(s) unlabelled (every observed lesson_write, every memory/status verdict)`);
-  if (ok.some((r) => r.model !== JEV_MODEL)) b.push(`rows from a model other than ${JEV_MODEL}`);
+  const models = reportedModels([...ok, ...(permuted ?? [])]);
+  if (models.length > 1) b.push(`more than one reported model (${models.join(", ")}): re-run into a fresh file`);
   const stale = ok.some((r) => r.criteria_hash_lane !== criteriaHash(TRIAGE_LANE))
     || (permuted ?? []).some((r) => r.status === "ok" && r.criteria_hash_lane !== criteriaHash(TRIAGE_LANE_PERMUTED));
   if (stale) b.push("rows asked with stale criteria wording: re-run into a fresh file");
@@ -153,6 +161,8 @@ function blockersOf(rows: TriageReplayRow[], ok: TriageReplayRow[], labels: Map<
 function shadowLines(shadow: TriageShadowStats | undefined, rows: TriageReplayRow[]): { lines: string[]; failures: string[] } {
   if (!shadow) return { lines: ["live shadow: NOT SUPPLIED"], failures: ["live shadow stats not supplied"] };
   const failures: string[] = [];
+  const replayModel = replayReportedModel(rows);
+  if (replayModel !== undefined && shadow.model !== replayModel) failures.push(`live shadow is for ${shadow.model}, the replay for ${replayModel}`);
   if (shadow.days < TRIAGE_GO.shadowDays) failures.push(`shadow ${shadow.days} days < ${TRIAGE_GO.shadowDays}`);
   if (shadow.matched_lesson_write < TRIAGE_GO.shadowMatched) failures.push(`matched lesson_write ${shadow.matched_lesson_write} < ${TRIAGE_GO.shadowMatched}`);
   if (shadow.pure_on_tool_turns > 0 || shadow.pure_on_no_tool_turns > 0) failures.push("shadow pure verdicts on tool / no-tool turns");
@@ -178,14 +188,15 @@ function parityCheck(live: Array<{ run_id: string; state_hash: string }>, rows: 
   if (miss > 0) failures.push(summary);
 }
 
-/** Memory rows (lane, complete, scope) when the memory bars hold; the `lane:status` row only when the status bar holds. */
-function rowsToAdd(evidence: Map<CalLang, LangEvidence>): string[] {
+/** Memory rows (lane, complete, scope) when the memory bars hold; the `lane:status` row only when the status bar holds. Keyed by
+ *  `model`, the one model the replay rows reported (never a constant: the request names the alias). */
+function rowsToAdd(evidence: Map<CalLang, LangEvidence>, model: string): string[] {
   const out: string[] = [];
   for (const [lang, e] of evidence) {
     const ids: Array<readonly [string, string]> = e.failures.length === 0 ? TRIAGE_QUESTIONS.map((q) => [q.id, criteriaHash(q)] as const) : [];
     if (e.statusFailures.length === 0) ids.push([TRIAGE_STATUS_ARM_ID, criteriaHash(TRIAGE_LANE)]);
     for (const [question_id, criteria_hash] of ids) {
-      const r: CalibrationRow = { question_id, criteria_hash, model: JEV_MODEL, lang, approved: "", evidence: `lane 1 replay ${e.summary}` };
+      const r: CalibrationRow = { question_id, criteria_hash, model, lang, approved: "", evidence: `lane 1 replay ${e.summary}` };
       out.push(JSON.stringify(r));
     }
   }
@@ -213,7 +224,8 @@ export function formatTriageReport(rows: TriageReplayRow[], labels: Map<string, 
   out.push(permutationLine(ok, permuted, bars), ...sh.lines);
   out.push(`bars: conf ≥ ${bars.minConf}, p(memory) ≥ ${bars.minMemory}, gap ≥ ${bars.minGap}, p(pure) ≥ ${bars.minPure}, p(status) ≥ ${bars.minStatus}`);
   out.push(`spent $${outcome.spentUsd.toFixed(3)} of est. $${outcome.estimatedUsd.toFixed(3)}`);
-  const add = blockers.length === 0 && sh.failures.length === 0 ? rowsToAdd(evidence) : [];
+  const model = replayReportedModel(ok); // exactly one when there are no blockers (more than one is a blocker)
+  const add = blockers.length === 0 && sh.failures.length === 0 && model !== undefined ? rowsToAdd(evidence, model) : [];
   if (add.length > 0) out.push(...add);
   else out.push(`STOP / NO-GO — no rows: ${[...blockers, ...sh.failures, ...(blockers.length + sh.failures.length === 0 ? ["no language clears the memory or the status bars"] : [])].join("; ")}`);
   return out.join("\n");

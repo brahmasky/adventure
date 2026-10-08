@@ -340,7 +340,7 @@ if (command === "run") {
       const n = await labelInteractively({ rows: picked, store, labelsPath: T.TRIAGE_LABELS_PATH, input: process.stdin, output: process.stdout });
       console.error(`labelled ${n} of ${picked.length}`);
     } else {
-      const { formatTriageReport } = await import("./jev/triage-report.js");
+      const { formatTriageReport, replayReportedModel } = await import("./jev/triage-report.js");
       const { resolveTriageBars } = await import("./jev/thresholds.js");
       const universe = T.triageUniverse(store);
       console.error(`replay universe: ${universe} Telegram turns since ${T.TRIAGE_LABEL_SINCE} (spec expected 288; a different number is information, not an error)`);
@@ -366,8 +366,10 @@ if (command === "run") {
         rows = fileRows(T.TRIAGE_REPLAY_OUT);
       }
       const permuted = fileRows(T.TRIAGE_PERMUTED_OUT); // no file = "NOT RUN", not "covers nothing"
+      // The shadow is filtered by the model the replay rows reported (none or mixed → no stats; the report blocks either way).
+      const model = replayReportedModel(rows);
       console.log(formatTriageReport(rows, T.loadLabels(T.TRIAGE_LABELS_PATH), outcome, resolveTriageBars(process.env), permuted.length > 0 ? permuted : undefined,
-        store.triageShadowStats(T.TRIAGE_LABEL_SINCE)));
+        model ? store.triageShadowStats(T.TRIAGE_LABEL_SINCE, model) : undefined));
     }
   } finally {
     store.close();

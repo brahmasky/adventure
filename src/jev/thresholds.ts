@@ -38,6 +38,17 @@ const p = (a: JevChoiceAnswer, option: string): number => a.probabilities[option
  */
 export const TRIAGE_STATUS_ARM_ID = "lane:status";
 
+/**
+ * The rows that can arm a lane today: a current triage question (or the `lane:status` pseudo-row) at its current criteria
+ * hash. The alias-move page (jev-incidents.ts) reads only these, so a stale-hash or unrelated row neither clears nor
+ * raises it.
+ */
+export function armingRows(rows: readonly CalibrationRow[]): CalibrationRow[] {
+  const live = new Set([TRIAGE_LANE, TRIAGE_COMPLETE, TRIAGE_SCOPE].map((q) => `${q.id}\u0000${criteriaHash(q)}`));
+  live.add(`${TRIAGE_STATUS_ARM_ID}\u0000${criteriaHash(TRIAGE_LANE)}`);
+  return rows.filter((r) => live.has(`${r.question_id}\u0000${r.criteria_hash}`));
+}
+
 /** Lane-specific arming: status needs the `lane:status` row; memory needs `lane`, `complete` and `scope`. */
 function statusArmed(lang: Lang, model: string, rows: readonly CalibrationRow[]): boolean {
   return calibratedLang(TRIAGE_STATUS_ARM_ID, criteriaHash(TRIAGE_LANE), model, lang, rows) !== undefined;

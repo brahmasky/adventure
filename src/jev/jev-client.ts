@@ -6,7 +6,12 @@ import { JEV_PROVIDER } from "../llm/metered-pricing.js";
  * the SDK: the SDK retries internally, which would hide attempts from the `llm_attempt` audit — here
  * every HTTP attempt is exactly one audit row. Zero runtime deps, so responses are validated by hand.
  */
-export const JEV_MODEL = "jev-1.13.0";
+/**
+ * The model the request NAMES: TypeSafe's moving alias, never a pinned version (Paco 2026-10-07: no hard-coded model
+ * versions). The response's `model` field reports the versioned id behind it (validated by JEV_MODEL_ID); calibration rows
+ * (calibration.ts) key on that REPORTED id, so an alias move disarms every lane until Paco approves rows for the new id.
+ */
+export const JEV_REQUEST_MODEL = "jev-latest";
 const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 const BACKOFF_BASE_MS = 500;
 const RETRY_AFTER_CAP_MS = 60_000;
@@ -97,7 +102,7 @@ async function attemptOnce(fetchImpl: typeof fetch, apiKey: string, req: JevRequ
       res = await fetchImpl(JEV_ENDPOINT, {
         method: "POST",
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({ model: JEV_MODEL, state: req.state, questions: req.questions }),
+        body: JSON.stringify({ model: JEV_REQUEST_MODEL, state: req.state, questions: req.questions }),
         signal: controller.signal
       });
     } catch (error) {

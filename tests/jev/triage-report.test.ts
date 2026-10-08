@@ -1,21 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { JEV_MODEL } from "../../src/jev/jev-client.js";
 import { TRIAGE_LANE, TRIAGE_QUESTIONS } from "../../src/jev/questions/triage.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
 import { TRIAGE_BAR_DEFAULTS, TRIAGE_STATUS_ARM_ID } from "../../src/jev/thresholds.js";
 import { TRIAGE_LANE_PERMUTED, type TriageLabel, type TriageReplayRow } from "../../src/jev/triage-replay.js";
 import { formatTriageReport, type TriageShadowStats } from "../../src/jev/triage-report.js";
 
+/** The versioned id Jev REPORTS (the request sends the moving alias `jev-latest`); calibration rows key on it. */
+const REPORTED = "jev-1.13.0";
+
 const HASH = criteriaHash(TRIAGE_LANE);
 /** A `none` turn by default; the numbers drive the verdict (the report recomputes it at the given bars). */
 const row = (o: Partial<TriageReplayRow>): TriageReplayRow => ({ key: o.turn_id ?? "t", turn_id: "t", run_id: "r", lang: "zh", status: "ok", est_usd: 0,
   observed_lesson_write: false, observed_other_tools: false, state_hash: "h", jev_lane: "none", p_memory: 0.02, p_status: 0.01, p_none: 0.97,
-  conf_lane: 0.95, p_pure: 0.5, scope: "ask", model: JEV_MODEL, criteria_hash_lane: HASH, ...o });
+  conf_lane: 0.95, p_pure: 0.5, scope: "ask", model: REPORTED, criteria_hash_lane: HASH, ...o });
 const memPure = { jev_lane: "memory", p_memory: 0.9, p_status: 0.05, p_none: 0.05, conf_lane: 0.85, p_pure: 0.9 };
 const memMixed = { ...memPure, p_pure: 0.2 };
 const status = { jev_lane: "status", p_memory: 0.05, p_status: 0.9, p_none: 0.05, conf_lane: 0.85 };
 const L = (o: Partial<TriageLabel>): TriageLabel => ({ memory: false, status: false, pure: null, scope: null, by: "paco", at: "", ...o });
-const SHADOW_OK: TriageShadowStats = { days: 15, matched_lesson_write: 6, pure_on_tool_turns: 0, pure_on_no_tool_turns: 0 };
+const SHADOW_OK: TriageShadowStats = { model: REPORTED, days: 15, matched_lesson_write: 6, pure_on_tool_turns: 0, pure_on_no_tool_turns: 0 };
 
 // Spec §5.9: per-class bars, both positive sets, the costly cells, Wilson bounds and n; INCOMPLETE on a stop; dry run headline.
 describe("formatTriageReport", () => {
@@ -92,10 +94,36 @@ describe("formatTriageReport", () => {
       expect(text).toMatch(/ROWS TO ADD/);
       expect(text).not.toMatch(/INCOMPLETE/);
       for (const q of TRIAGE_QUESTIONS) {
-        expect(text).toContain(JSON.stringify({ question_id: q.id, criteria_hash: criteriaHash(q), model: JEV_MODEL, lang: "zh" }).slice(0, -1));
+        expect(text).toContain(JSON.stringify({ question_id: q.id, criteria_hash: criteriaHash(q), model: REPORTED, lang: "zh" }).slice(0, -1));
       }
-      expect(text).toContain(`{"question_id":"${TRIAGE_STATUS_ARM_ID}","criteria_hash":"${criteriaHash(TRIAGE_LANE)}","model":"${JEV_MODEL}","lang":"zh"`);
+      expect(text).toContain(`{"question_id":"${TRIAGE_STATUS_ARM_ID}","criteria_hash":"${criteriaHash(TRIAGE_LANE)}","model":"${REPORTED}","lang":"zh"`);
       expect(text).not.toMatch(/"lang":"en"/); // no en evidence → no en rows
+    });
+
+    // No pinned constant: the rows suggested carry the one model the replay rows REPORTED; a file mixing two reported
+    // models (the alias moved mid-run) is INCOMPLETE and suggests nothing.
+    it("suggests rows keyed by the reported model of the rows, and refuses a file with more than one reported model", () => {
+      const { rows, labels, perm } = passing();
+      const newer = (rs: TriageReplayRow[]) => rs.map((r) => ({ ...r, model: "jev-2.0.0" }));
+      const text = formatTriageReport(newer(rows), labels, outcome, TRIAGE_BAR_DEFAULTS, newer(perm), { ...SHADOW_OK, model: "jev-2.0.0" });
+      expect(text).toMatch(/ROWS TO ADD/);
+      expect(text).toContain('"model":"jev-2.0.0"');
+      expect(text).not.toContain(`"model":"${REPORTED}"`);
+      const mixed = rows.map((r, i) => (i === 39 ? { ...r, model: "jev-2.0.0" } : r));
+      const refused = formatTriageReport(mixed, labels, outcome, TRIAGE_BAR_DEFAULTS, perm, SHADOW_OK);
+      expect(refused).toMatch(/^INCOMPLETE.*more than one reported model \(jev-1\.13\.0, jev-2\.0\.0\)/m);
+      expect(refused).not.toMatch(/ROWS TO ADD/);
+      const permMixed = formatTriageReport(rows, labels, outcome, TRIAGE_BAR_DEFAULTS, newer(perm), SHADOW_OK);
+      expect(permMixed).toMatch(/^INCOMPLETE.*more than one reported model/m); // the permuted file counts too
+    });
+
+    // Codex BLOCKER: 14 days of shadow on the OLD model is no evidence for the NEW one. Stats for another model block the rows.
+    it("is withheld when the live shadow stats are for a different model than the replay rows reported", () => {
+      const { rows, labels, perm } = passing();
+      const newer = (rs: TriageReplayRow[]) => rs.map((r) => ({ ...r, model: "jev-2.0.0" }));
+      const text = formatTriageReport(newer(rows), labels, outcome, TRIAGE_BAR_DEFAULTS, newer(perm), SHADOW_OK); // shadow on REPORTED
+      expect(text).not.toMatch(/ROWS TO ADD/);
+      expect(text).toMatch(/live shadow is for jev-1\.13\.0, the replay for jev-2\.0\.0/);
     });
 
     it("is impossible without shadow stats, with a failing shadow, without the permuted run, or over a partial universe", () => {

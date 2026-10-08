@@ -6,6 +6,7 @@
  */
 import { readFileSync } from "node:fs";
 import type { Lang } from "./intent-question.js";
+import { JEV_REQUEST_MODEL } from "./jev-client.js";
 
 /**
  * One arming row. `question_id` is a question id (`lane`, `complete`, `scope` arm the memory lane together) or the
@@ -52,5 +53,7 @@ function isCalibrationRow(v: unknown): v is CalibrationRow {
 
 export function calibratedLang(questionId: string, hash: string, model: string, lang: Lang, rows: readonly CalibrationRow[] = CALIBRATED_ROWS): "zh" | "en" | undefined {
   const effective = lang === "mixed" ? "zh" : lang; // mixed inherits zh until it has ≥ 20 labelled rows (spec §3.4)
+  // A row naming the moving request alias never arms: it would stay armed across an alias move (rows key the versioned id).
+  if (model === JEV_REQUEST_MODEL) return undefined;
   return rows.some((r) => r.question_id === questionId && r.criteria_hash === hash && r.model === model && r.lang === effective) ? effective : undefined;
 }

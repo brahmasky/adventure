@@ -79,6 +79,15 @@ ADR 0029 amendment), so `HOUGE_JEV_TRIAGE_ENABLED=arm` acts. Arming is per lane:
 the `lane`, `complete` and `scope` rows together, so neither implies the other
 ([ADR 0029 build notes](../decisions/0029-jev-system-one.md#build-notes-2026-10-06-lane-1-built-on-featjev-lane1-not-merged)).
 
+Rows key on the model Jev **reports**, not the one requested: every request names the moving alias `jev-latest`.
+When TypeSafe moves the alias, the reported id has no row, so both lanes answer `fallback` (verdict `fallthrough`)
+until Paco commits rows for the new id (only rows for a current triage question at its current criteria hash count). In `arm` mode the first such answered call opens a `jev_model_uncalibrated`
+incident (subject = the new model, detail `{model, calibrated_models, note}`) and pages once per model: "Jev moved to
+<model>; the lanes fall back to the planner until new calibration rows are approved for it." It resolves only once rows
+name that model (a canary flipping between two ids does not re-page). With no rows at all (or only rows naming the alias,
+which never arm) nothing is armed: nothing pages and any open one resolves. Shadow mode never opens it. A row naming
+`jev-latest` itself never arms. `houge jev report triage` reads the live shadow filtered to the replay's reported model.
+
 A run of silent failures (`timeout`, `parse`, `transport`, `error`) pages nobody per call; the sweep's `jev_skip_rate`
 incident opens when they are half or more of at least 3 triage calls in 24 h, and resolves only after an answered call.
 

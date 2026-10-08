@@ -2,11 +2,14 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { JEV_MODEL, type JevRequest, type JevResult } from "../../src/jev/jev-client.js";
+import { type JevRequest, type JevResult } from "../../src/jev/jev-client.js";
 import { runTriageReplay } from "../../src/jev/triage-replay.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { ompWorker } from "../helpers/omp-worker.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
+
+/** The versioned id Jev REPORTS (the request sends the moving alias `jev-latest`); calibration rows key on it. */
+const REPORTED = "jev-1.13.0";
 
 // The calibration report blocks ROWS TO ADD on any state-parity mismatch between a live shadow decision and its replay
 // (triage-report parityCheck). That is only safe if a turn with no real difference replays to the SAME state_hash: live
@@ -16,8 +19,8 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const choice = (c: string, probabilities: Record<string, number>) => ({ type: "choice", choice: c, probabilities, confidence: 0.85 });
 const ANSWERS = { lane: choice("none", { none: 0.9, status: 0.05, memory: 0.05 }), complete: choice("pure", { mixed: 0.1, pure: 0.9 }),
   scope: choice("ask", { ask: 0.9, research: 0.1 }) };
-const liveFetch = vi.fn(async () => json(200, { model: JEV_MODEL, usage: { input_tokens: 800, output_tokens: 0 }, answers: ANSWERS }));
-const replayJev = async (_r: JevRequest): Promise<JevResult> => ({ ok: true, model: JEV_MODEL, input_tokens: 800, latency_ms: 300, answers: ANSWERS as never });
+const liveFetch = vi.fn(async () => json(200, { model: REPORTED, usage: { input_tokens: 800, output_tokens: 0 }, answers: ANSWERS }));
+const replayJev = async (_r: JevRequest): Promise<JevResult> => ({ ok: true, model: REPORTED, input_tokens: 800, latency_ms: 300, answers: ANSWERS as never });
 const ENV = { HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "shadow", HOUGE_CHAT_CONTEXT_WINDOW_MINUTES: "60" };
 const at = (iso: string) => new Date(iso);
 

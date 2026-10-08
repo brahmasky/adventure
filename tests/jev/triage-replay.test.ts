@@ -4,12 +4,15 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { chatContextSince, resolveChatContextTurnChars, resolveChatContextTurns } from "../../src/capabilities/intent.js";
 import { stateHash } from "../../src/jev/decide.js";
-import { JEV_MODEL, type JevRequest, type JevResult } from "../../src/jev/jev-client.js";
+import { type JevRequest, type JevResult } from "../../src/jev/jev-client.js";
 import { buildTriageState, lastHougeTurnOf, TRIAGE_LANE } from "../../src/jev/questions/triage.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
 import { loadLabels, runTriageReplay, TRIAGE_LABEL_SINCE, TRIAGE_REPLAY_OUT } from "../../src/jev/triage-replay.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
+
+/** The versioned id Jev REPORTS (the request sends the moving alias `jev-latest`); calibration rows key on it. */
+const REPORTED = "jev-1.13.0";
 
 const choice = (c: string, probabilities: Record<string, number>) => {
   const n = Object.keys(probabilities).length; const pMax = Math.max(...Object.values(probabilities));
@@ -18,7 +21,7 @@ const choice = (c: string, probabilities: Record<string, number>) => {
 const fakeJev = async (req: JevRequest): Promise<JevResult> => {
   const msg = String((req.state as { latest_message: string }).latest_message);
   const memory = /以后|记住/.test(msg);
-  return { ok: true, model: JEV_MODEL, input_tokens: 500, latency_ms: 200, answers: {
+  return { ok: true, model: REPORTED, input_tokens: 500, latency_ms: 200, answers: {
     lane: choice(memory ? "memory" : "none", memory ? { none: 0.05, status: 0.05, memory: 0.9 } : { none: 0.95, status: 0.03, memory: 0.02 }),
     complete: choice("pure", { mixed: 0.1, pure: 0.9 }), scope: choice("ask", { ask: 0.9, research: 0.1 }) } };
 };
@@ -87,7 +90,7 @@ describe("runTriageReplay", () => {
     const store = RunStore.openInMemory(); const { a, b } = seed(store);
     const live = "2026-08-01T00:10:03.000Z";
     store.recordChatTurn({ chat_id: "555", run_id: a, role: "assistant", text: "补充一句", intent: "answer", created_at: "2026-08-01T00:10:01.000Z" });
-    store.insertJevDecision({ run_id: b, point: "triage", question_id: "lane", criteria_hash: "c", model_reported: JEV_MODEL, state_hash: "s", lang: "zh",
+    store.insertJevDecision({ run_id: b, point: "triage", question_id: "lane", criteria_hash: "c", model_reported: REPORTED, state_hash: "s", lang: "zh",
       answers_json: "{}", confidence: 0.9, top_prob: 0.9, margin: 0.8, threshold_version: "v", threshold_used: null, decision: "shadow", latency_ms: 1,
       input_tokens: 1, status: "answered", skip_reason: null, created_at: live });
     const r = await runTriageReplay({ store, env: {}, jev: fakeJev, outPath: tmp("r.jsonl"), maxUsd: 1, dryRun: false });
@@ -104,6 +107,36 @@ describe("runTriageReplay", () => {
     const row = r.rows.find((x) => x.run_id === b)!;
     expect(row.state_hash).toBe(stateHash(liveState));
     expect(row.state_hash).not.toBe(stateHash(build("2026-08-01T00:10:00.000Z")));
+    store.close();
+  });
+
+  // The request sends `jev-latest`: a reported model that changes mid-run is the alias moving; warn once per new model
+  // (the report refuses the mixed file). A run on one model, whichever it is, warns nothing.
+  it("warns when the reported model changes mid-run, not when a run is wholly on one model", async () => {
+    const store = RunStore.openInMemory(); seed(store);
+    let n = 0; const log = vi.fn();
+    const moving = async (q: JevRequest): Promise<JevResult> => ({ ...(await fakeJev(q)), model: n++ === 0 ? REPORTED : "jev-1.14.0" } as JevResult);
+    await runTriageReplay({ store, env: {}, jev: moving, outPath: tmp("r.jsonl"), maxUsd: 1, dryRun: false, log });
+    const warned = log.mock.calls.map(([l]) => String(l)).filter((l) => l.includes("warning"));
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain(REPORTED); expect(warned[0]).toContain("jev-1.14.0");
+    const quiet = vi.fn();
+    const newer = async (q: JevRequest): Promise<JevResult> => ({ ...(await fakeJev(q)), model: "jev-1.14.0" } as JevResult);
+    await runTriageReplay({ store, env: {}, jev: newer, outPath: tmp("r2.jsonl"), maxUsd: 1, dryRun: false, log: quiet });
+    expect(quiet.mock.calls.map(([l]) => String(l)).filter((l) => l.includes("warning"))).toHaveLength(0);
+    store.close();
+  });
+
+  it("a model move across a resume warns: rows already in the file seed the models seen", async () => {
+    const store = RunStore.openInMemory(); seed(store);
+    const out = tmp("replay.jsonl");
+    await runTriageReplay({ store, env: {}, jev: fakeJev, outPath: out, maxUsd: 1, dryRun: false, limit: 1 }); // one turn on REPORTED
+    const log = vi.fn();
+    const newer = async (q: JevRequest): Promise<JevResult> => ({ ...(await fakeJev(q)), model: "jev-1.14.0" } as JevResult);
+    await runTriageReplay({ store, env: {}, jev: newer, outPath: out, maxUsd: 1, dryRun: false, log });
+    const warned = log.mock.calls.map(([l]) => String(l)).filter((l) => l.includes("warning"));
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain(REPORTED); expect(warned[0]).toContain("jev-1.14.0");
     store.close();
   });
 

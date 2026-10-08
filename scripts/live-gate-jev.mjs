@@ -1,10 +1,10 @@
 // Live gate for the Jev replay slice (spec 2026-09-25 §Testing). Three fixed messages go to the REAL
 // TypeSafe API through the real client into an IN-MEMORY store. PASS requires the right shape,
-// the pinned model, an llm_attempt row with cost_usd > 0 — AND the two unambiguous messages labelled
+// a reported versioned jev- model id (the request names the alias `jev-latest`), an llm_attempt row with cost_usd > 0 — AND the two unambiguous messages labelled
 // correctly at confidence ≥ 0.7, so a shape-only pass cannot hide a broken question.
 // Never opens houge.sqlite — safe beside the live daemon. Needs TYPESAFE_API_KEY in .env.
 import { loadHougeEnv } from "../dist/config/load-env.js";
-import { createJevClient, JEV_MODEL } from "../dist/jev/jev-client.js";
+import { createJevClient, JEV_REQUEST_MODEL } from "../dist/jev/jev-client.js";
 import { buildJevIntentRequest } from "../dist/jev/intent-question.js";
 import { RunStore } from "../dist/run/run-store.js";
 
@@ -32,7 +32,8 @@ for (const c of cases) {
   if (!r.ok) { failures.push(`${c.label}: ${r.reason} ${r.detail}`); continue; }
   const a = r.answers.intent;
   console.log(`${c.label}: ${a.choice} @ ${a.confidence.toFixed(2)} (${r.model}, ${r.latency_ms}ms, ${r.input_tokens} tok)`);
-  if (r.model !== JEV_MODEL) failures.push(`${c.label}: model ${r.model} ≠ pinned ${JEV_MODEL}`);
+  // The client already rejects a malformed id (JEV_MODEL_ID); here it must be a jev- id, and the versioned one, not the alias echoed.
+  if (!/^jev-[A-Za-z0-9._:-]+$/.test(r.model) || r.model === JEV_REQUEST_MODEL) failures.push(`${c.label}: reported model ${r.model} is not a versioned jev- id`);
   if (c.want && (a.choice !== c.want || a.confidence < 0.7)) failures.push(`${c.label}: got ${a.choice}@${a.confidence}, want ${c.want}@≥0.7`);
 }
 

@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SecretBroker } from "../../src/config/secret-broker.js";
-import { JEV_MODEL } from "../../src/jev/jev-client.js";
 import { JEV_INCIDENT_SUBJECT } from "../../src/jev/jev-incidents.js";
 import { TRIAGE_LANE, TRIAGE_QUESTIONS } from "../../src/jev/questions/triage.js";
 import { TRIAGE_STATUS_ARM_ID } from "../../src/jev/thresholds.js";
@@ -13,6 +12,9 @@ import { RunStore } from "../../src/run/run-store.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 import { drainOutbox, ompWorker } from "../helpers/omp-worker.js";
+
+/** The versioned id Jev REPORTS (the request sends the moving alias `jev-latest`); calibration rows key on it. */
+const REPORTED = "jev-1.13.0";
 
 // Spec §5.1: the decision before the planner. Every eligible, still-active exit writes exactly ONE `triage` event (the
 // denominator for the lane's numbers); an answered call's decision rows land in the same transaction as that event, and
@@ -24,7 +26,7 @@ const choice = (choice: string, probabilities: Record<string, number>) => {
 };
 const top = (p: Record<string, number>) => Object.entries(p).sort((a, b) => b[1] - a[1])[0]![0];
 const jevSays = (lane: Record<string, number>, complete: Record<string, number> = { mixed: 0.1, pure: 0.9 }, scope: Record<string, number> = { ask: 0.9, research: 0.1 }) =>
-  vi.fn(async (_url?: unknown, _init?: unknown) => json(200, { model: JEV_MODEL, usage: { input_tokens: 800, output_tokens: 0 }, answers: {
+  vi.fn(async (_url?: unknown, _init?: unknown) => json(200, { model: REPORTED, usage: { input_tokens: 800, output_tokens: 0 }, answers: {
     lane: choice(top(lane), lane), complete: choice(top(complete), complete), scope: choice(top(scope), scope) } }));
 const MEMORY = { none: 0.05, status: 0.05, memory: 0.9 };
 
@@ -42,7 +44,7 @@ function calibrationFile(): string {
   const f = join(mkdtempSync(join(tmpdir(), "htri-cal-")), "rows.json");
   const ids = [...TRIAGE_QUESTIONS.map((q) => [q.id, criteriaHash(q)] as const), [TRIAGE_STATUS_ARM_ID, criteriaHash(TRIAGE_LANE)] as const];
   writeFileSync(f, JSON.stringify(ids.flatMap(([question_id, criteria_hash]) => (["zh", "en"] as const).map((lang) =>
-    ({ question_id, criteria_hash, model: JEV_MODEL, lang, approved: "test", evidence: "test" })))));
+    ({ question_id, criteria_hash, model: REPORTED, lang, approved: "test", evidence: "test" })))));
   return f;
 }
 const ARM = { HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "arm" };
@@ -231,6 +233,44 @@ describe("CoreWorker.triageTurn (spec §5.1 flow; every exit leaves exactly one 
     expect(await worker.triageTurn(t.input)).toEqual({ kind: "fallthrough" });
     expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", lane: "memory", decision: "fallback" }]);
     expect(store.getActiveLessons("ask")).toHaveLength(0);
+    store.close();
+  });
+  // The request sends `jev-latest`; when TypeSafe moves the alias the reported model has no row and every lane falls
+  // through. That loses the armed lanes silently, so the answered call pages Paco once. The incident is per model: it
+  // resolves only once rows name that model, never because another (calibrated) id answered in between.
+  const answering = (m: { model: string }) => vi.fn(async () => json(200, { model: m.model, usage: { input_tokens: 800, output_tokens: 0 }, answers: {
+    lane: choice("memory", MEMORY), complete: choice("pure", { mixed: 0.1, pure: 0.9 }), scope: choice("ask", { ask: 0.9, research: 0.1 }) } }));
+  const uncalibrated = (store: RunStore) => store.listOpenIncidents().filter((i) => i.kind === "jev_model_uncalibrated");
+
+  it("an alias move (arm): the answered call opens one jev_model_uncalibrated incident; a calibrated id answering leaves it open", async () => {
+    const m = { model: "jev-1.14.0" };
+    const { store, worker, turn } = setup(answering(m));
+    expect(await worker.triageTurn(turn("以后回复短一点").input)).toEqual({ kind: "fallthrough" });
+    await worker.triageTurn(turn("以后回复再短一点").input);
+    expect(uncalibrated(store)).toMatchObject([{ subject: "jev-1.14.0" }]);
+    m.model = REPORTED;
+    expect((await worker.triageTurn(turn("以后回复短一点吧").input)).kind).toBe("lane_reply");
+    expect(uncalibrated(store)).toMatchObject([{ subject: "jev-1.14.0" }]);
+    store.close();
+  });
+
+  it("shadow mode never opens jev_model_uncalibrated: nothing is armed there, so an alias move loses nothing", async () => {
+    const { store, worker, turn } = setup(answering({ model: "jev-1.14.0" }), { ...ARM, HOUGE_JEV_TRIAGE_ENABLED: "shadow" });
+    const t = turn("以后回复短一点");
+    expect(await worker.triageTurn(t.input)).toEqual({ kind: "fallthrough" });
+    expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", decision: "shadow" }]);
+    expect(uncalibrated(store)).toHaveLength(0);
+    store.close();
+  });
+
+  it("a throwing model check never loses the answered decision: one answered fallback row, three decision rows", async () => {
+    const { store, worker, turn } = setup(answering({ model: "jev-1.14.0" }));
+    vi.spyOn(store, "incidentFingerprint").mockImplementation(() => { throw new Error("incident store down"); });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const t = turn("以后回复短一点");
+    expect(await worker.triageTurn(t.input)).toEqual({ kind: "fallthrough" });
+    expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", lane: "memory", decision: "fallback" }]);
+    expect(decisions(store, t.run_id).filter((r) => r.status === "answered")).toHaveLength(3);
     store.close();
   });
   it("Jev 429: skipped{rate_limited}, incident jev_rate_limited, fallthrough", async () => {

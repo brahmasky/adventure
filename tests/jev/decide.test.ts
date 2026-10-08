@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { JEV_MODEL, createJevClient } from "../../src/jev/jev-client.js";
+import { createJevClient } from "../../src/jev/jev-client.js";
 import { decide, marginOf, persistDecisionRows, recordSkip, stateHash } from "../../src/jev/decide.js";
 import { TRIAGE_QUESTIONS } from "../../src/jev/questions/triage.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
@@ -8,12 +8,15 @@ import { ALERT_REOPEN_QUIET_MS } from "../../src/run/incident-alert.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { recordingSink } from "../helpers/llm-audit.js";
 
+/** The versioned id Jev REPORTS (the request sends the moving alias `jev-latest`); calibration rows key on it. */
+const REPORTED = "jev-1.13.0";
+
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const choice = (choice: string, probabilities: Record<string, number>) => {
   const n = Object.keys(probabilities).length; const pMax = Math.max(...Object.values(probabilities));
   return { type: "choice", choice, probabilities, confidence: (pMax - 1 / n) / (1 - 1 / n) };
 };
-const okBody = () => ({ model: JEV_MODEL, usage: { input_tokens: 900, output_tokens: 0 }, answers: {
+const okBody = () => ({ model: REPORTED, usage: { input_tokens: 900, output_tokens: 0 }, answers: {
   lane: choice("memory", { none: 0.05, status: 0.05, memory: 0.9 }), complete: choice("pure", { mixed: 0.1, pure: 0.9 }), scope: choice("ask", { ask: 0.8, research: 0.2 }) } });
 function setup(fetchImpl: typeof fetch, apiKey: string | null = "k") {
   const store = RunStore.openInMemory();
@@ -31,7 +34,7 @@ describe("decide", () => {
     expect(d.status).toBe("answered");
     if (d.status !== "answered") return;
     expect(d.rows.map((r) => r.question_id)).toEqual(["lane", "complete", "scope"]);
-    expect(d.rows[0]).toMatchObject({ criteria_hash: criteriaHash(TRIAGE_QUESTIONS[0]!), model_reported: JEV_MODEL, state_hash: stateHash({ latest_message: "x" }),
+    expect(d.rows[0]).toMatchObject({ criteria_hash: criteriaHash(TRIAGE_QUESTIONS[0]!), model_reported: REPORTED, state_hash: stateHash({ latest_message: "x" }),
       top_prob: 0.9, status: "answered", threshold_version: "v1", decision: null, threshold_used: null, input_tokens: 900 });
     expect(d.rows[0]!.margin).toBeCloseTo(0.85, 5);
     expect(d.rows[0]!.answers_json).not.toContain("latest_message"); // numbers only
@@ -62,7 +65,7 @@ describe("decide", () => {
     store.close();
   });
   it("a malformed response is skipped as parse with no incident (per-call noise, visible in rows)", async () => {
-    const { store, input } = setup(vi.fn(async () => json(200, { model: JEV_MODEL, answers: {}, usage: { input_tokens: 1 } })) as unknown as typeof fetch);
+    const { store, input } = setup(vi.fn(async () => json(200, { model: REPORTED, answers: {}, usage: { input_tokens: 1 } })) as unknown as typeof fetch);
     expect(await decide(input)).toEqual({ status: "skipped", reason: "parse" });
     expect(store.listOpenIncidents()).toHaveLength(0);
     store.close();
@@ -102,7 +105,7 @@ describe("decide", () => {
   it("a requested question with no answer is skipped{parse} (fail loud), never a partial answer set", async () => {
     const { store, input } = setup(vi.fn() as unknown as typeof fetch);
     const answers = okBody().answers as Record<string, unknown>; delete answers.scope;
-    const client = vi.fn(async () => ({ ok: true as const, model: JEV_MODEL, answers, latency_ms: 5, input_tokens: 9, output_tokens: 0 }));
+    const client = vi.fn(async () => ({ ok: true as const, model: REPORTED, answers, latency_ms: 5, input_tokens: 9, output_tokens: 0 }));
     expect(await decide({ ...input, client: client as unknown as typeof input.client })).toEqual({ status: "skipped", reason: "parse" });
     store.close();
   });

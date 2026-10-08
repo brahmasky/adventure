@@ -5,20 +5,26 @@ import { createQueuedTurnRun } from "../helpers/runs.js";
 const step = (n: number, capability: string) => ({ step: n, action: "tool", capability, ok: true, result_digest: "d" });
 type Triage = { lane: string; complete: string; decision: "shadow" | "fallback" | "act" };
 
-/** One turn with its live `triage` row written at `at`, the planner's loop steps and the run's terminal state. */
-function turn(store: RunStore, at: string, t: Triage, caps: string[], end: "completed" | "failed" = "completed"): string {
+const M = "jev-1.13.0";
+
+/** One turn with its live `triage` row written at `at` (and its `lane` decision row on the model Jev reported), the
+ *  planner's loop steps and the run's terminal state. */
+function turn(store: RunStore, at: string, t: Triage, caps: string[], end: "completed" | "failed" = "completed", model = M): string {
   vi.setSystemTime(new Date(at));
   const run = createQueuedTurnRun(store, "x");
   caps.forEach((c, i) => store.appendRunLedgerEvent(run, "loop_step", "core", step(i + 1, c)));
   store.appendRunLedgerEvent(run, "triage", "core", { status: "answered", lane: t.lane, complete: t.complete, scope: "ask", confidence: 0.9,
     top_prob: 0.93, margin: 0.88, lang: "zh", decision: t.decision, verdict: `memory_${t.complete}` });
+  store.insertJevDecision({ run_id: run, point: "triage", question_id: "lane", criteria_hash: "c", model_reported: model, state_hash: null, lang: "zh",
+    answers_json: "{}", confidence: 0.9, top_prob: 0.9, margin: 0.8, threshold_version: "v", threshold_used: null, decision: t.decision, latency_ms: 1,
+    input_tokens: 1, status: "answered", skip_reason: null, created_at: at });
   store.transition(run, "queued", "running", "test");
   if (end === "failed") store.transition(run, "running", "failed", "test");
   else { store.transition(run, "running", "reporting", "test"); store.transition(run, "reporting", "completed", "test"); }
   return run;
 }
-function laneDecision(store: RunStore, run_id: string, state_hash: string, decision: "shadow" | "fallback", question_id = "lane"): void {
-  store.insertJevDecision({ run_id, point: "triage", question_id, criteria_hash: "c", model_reported: "jev-1.13.0", state_hash, lang: "zh", answers_json: "{}",
+function laneDecision(store: RunStore, run_id: string, state_hash: string, decision: "shadow" | "fallback", question_id = "lane", model = M): void {
+  store.insertJevDecision({ run_id, point: "triage", question_id, criteria_hash: "c", model_reported: model, state_hash, lang: "zh", answers_json: "{}",
     confidence: 0.9, top_prob: 0.9, margin: 0.8, threshold_version: "v", threshold_used: null, decision, latency_ms: 1, input_tokens: 1,
     status: "answered", skip_reason: null, created_at: "2026-10-02T00:00:00.000Z" });
 }
@@ -44,8 +50,8 @@ describe("RunStore.triageShadowStats", () => {
       laneDecision(store, r1, "s1", "shadow");
       laneDecision(store, r1, "s1", "shadow", "complete"); // one hash per turn: the lane row only
       laneDecision(store, r1, "s9", "fallback");
-      expect(store.triageShadowStats("2026-09-25T00:00:00.000Z")).toEqual({
-        days: 5, matched_lesson_write: 3, pure_on_tool_turns: 1, pure_on_no_tool_turns: 1, live_state_rows: [{ run_id: r1, state_hash: "s1" }]
+      expect(store.triageShadowStats("2026-09-25T00:00:00.000Z", M)).toEqual({
+        model: M, days: 5, matched_lesson_write: 3, pure_on_tool_turns: 1, pure_on_no_tool_turns: 1, live_state_rows: [{ run_id: r1, state_hash: "s1" }]
       });
     } finally {
       store.close();
@@ -61,7 +67,28 @@ describe("RunStore.triageShadowStats", () => {
       turn(store, "2026-10-01T00:00:00.000Z", { lane: "memory", complete: "pure", decision: "shadow" }, ["lesson_write"], "failed");
       turn(store, "2026-10-02T00:00:00.000Z", { lane: "memory", complete: "pure", decision: "shadow" }, ["lesson_write"]);
       vi.useRealTimers();
-      expect(store.triageShadowStats("2026-09-25T00:00:00.000Z").matched_lesson_write).toBe(1);
+      expect(store.triageShadowStats("2026-09-25T00:00:00.000Z", M).matched_lesson_write).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  // Codex BLOCKER: the arm decision for a NEW reported model (the alias moved) must not read the OLD model's 14 days of
+  // shadow as its evidence. Rows key on the reported model, so the shadow does too: an old-model-only history is empty.
+  it("filters the shadow by the reported model: an old-model-only history yields no evidence for the new model", () => {
+    const store = RunStore.openInMemory();
+    try {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const r1 = turn(store, "2026-10-01T00:00:00.000Z", { lane: "memory", complete: "pure", decision: "shadow" }, ["lesson_write"]);
+      turn(store, "2026-10-02T00:00:00.000Z", { lane: "memory", complete: "pure", decision: "shadow" }, ["web_search"]);
+      turn(store, "2026-10-03T00:00:00.000Z", { lane: "memory", complete: "pure", decision: "shadow" }, ["lesson_write"], "completed", "jev-2.0.0");
+      vi.useRealTimers();
+      laneDecision(store, r1, "s1", "shadow");
+      expect(store.triageShadowStats("2026-09-25T00:00:00.000Z", "jev-9.9.9")).toEqual({ model: "jev-9.9.9", days: 0, matched_lesson_write: 0,
+        pure_on_tool_turns: 0, pure_on_no_tool_turns: 0, live_state_rows: [] });
+      expect(store.triageShadowStats("2026-09-25T00:00:00.000Z", "jev-2.0.0")).toMatchObject({ days: 1, matched_lesson_write: 1, pure_on_tool_turns: 0, live_state_rows: [] });
+      expect(store.triageShadowStats("2026-09-25T00:00:00.000Z", M)).toMatchObject({ days: 2, matched_lesson_write: 1, pure_on_tool_turns: 1,
+        live_state_rows: [{ run_id: r1, state_hash: "s1" }] });
     } finally {
       store.close();
     }
@@ -70,7 +97,7 @@ describe("RunStore.triageShadowStats", () => {
   it("an empty shadow is zero days, never a pass", () => {
     const store = RunStore.openInMemory();
     try {
-      expect(store.triageShadowStats("2026-09-25T00:00:00.000Z")).toEqual({ days: 0, matched_lesson_write: 0, pure_on_tool_turns: 0, pure_on_no_tool_turns: 0, live_state_rows: [] });
+      expect(store.triageShadowStats("2026-09-25T00:00:00.000Z", M)).toEqual({ model: M, days: 0, matched_lesson_write: 0, pure_on_tool_turns: 0, pure_on_no_tool_turns: 0, live_state_rows: [] });
     } finally {
       store.close();
     }

@@ -67,7 +67,9 @@ describe("summarizeReplay — the GO/STOP screen", () => {
     expect(text).not.toMatch(/Verdict: GO/);
   });
 
-  it("F5: rows from a non-pinned jev_model are excluded from matched/gate and reported in byModel", () => {
+  // No pin since the request sends `jev-latest`: the run's FIRST reported model is its reference; rows from any other
+  // reported model (the alias moved mid-run) are recorded in byModel but never blended into the verdict.
+  it("F5: rows from a model other than the run's first reported model are excluded from matched/gate and reported in byModel", () => {
     const pinned = agreeing(10); // jev_model "jev-1.13.0" by default
     const offModel = [row(9000, "research", "research", 0.9, { jev_model: "jev-1.14.0" }), row(9001, "answer", "research", 0.9, { jev_model: "jev-1.14.0" })];
     const s = summarizeReplay([...pinned, ...offModel]);
@@ -80,7 +82,23 @@ describe("summarizeReplay — the GO/STOP screen", () => {
     const offModel = [row(9000, "research", "research", 0.9, { jev_model: "jev-1.14.0" })];
     const text = formatReplayReport([...pinned, ...offModel], { spentUsd: 0, estimatedUsd: 0 });
     expect(text).toMatch(/By Jev model:/);
-    expect(text).toMatch(/1 row\(s\) from non-pinned models excluded from the verdict/);
+    expect(text).toMatch(/1 row\(s\) from a model other than jev-1\.13\.0 \(the run's first reported model\) excluded from the verdict/);
+  });
+
+  // The reference is the first model Jev REPORTED, whatever the LLM leg did: an llm_failed row still carries Jev's answer.
+  it("F5: the reference model is the first Jev-reported model even when that row's LLM leg failed; byModel counts every Jev answer", () => {
+    const rows = [row(1, "research", "research", 0.9, { status: "llm_failed", jev_model: "jev-2.0.0" }), ...agreeing(10, 10)];
+    const s = summarizeReplay(rows);
+    expect(s.byModel).toEqual({ "jev-2.0.0": 1, "jev-1.13.0": 10 });
+    expect(s.matched).toBe(0); // the 1.13.0 rows came after the run started on 2.0.0
+    expect(formatReplayReport(rows, { spentUsd: 0, estimatedUsd: 0 })).toMatch(/10 row\(s\) from a model other than jev-2\.0\.0/);
+  });
+
+  it("F5: a run wholly on a newer reported model is matched in full — there is no pinned version to fall short of", () => {
+    const rows = agreeing(10).map((r) => ({ ...r, jev_model: "jev-2.0.0" }));
+    const s = summarizeReplay(rows);
+    expect(s.matched).toBe(10);
+    expect(formatReplayReport(rows, { spentUsd: 0, estimatedUsd: 0 })).not.toMatch(/excluded from the verdict/);
   });
 
   it("F4: all-dry-run rows print a DRY RUN pre-flight line, not a verdict", () => {

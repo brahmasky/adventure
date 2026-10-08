@@ -7,9 +7,12 @@
 //
 // --real-calibration: no temp file and no HOUGE_JEV_GATE; the lane arms on the committed CALIBRATED_ROWS, as the daemon will.
 //
-// Arming: no calibration rows ship (calibration.ts), so the gate writes a temp calibration file (every lane-1 row kind:
-// lane, complete, scope and the status arm row `lane:status`, zh + en, model JEV_MODEL, hashes from dist/) and sets
-// HOUGE_JEV_CALIBRATION_FILE + HOUGE_JEV_GATE=1. The §5.4 BARS still apply: Jev's real probabilities must clear them.
+// Model: the request names TypeSafe's moving alias `jev-latest`; calibration rows key on the model Jev REPORTS. So the
+// gate first sends ONE probe call (the real client, the triage questions, a trivial state) and uses the reported id.
+// Arming: the gate writes a temp calibration file (every lane-1 row kind: lane, complete, scope and the status arm row
+// `lane:status`, zh + en, model = the probe's reported id, hashes from dist/) and sets HOUGE_JEV_CALIBRATION_FILE +
+// HOUGE_JEV_GATE=1. With --real-calibration the probe's id must be one CALIBRATED_ROWS names (else the alias moved and
+// every lane would fall through: case 0 FAILs). The §5.4 BARS still apply: Jev's real probabilities must clear them.
 //
 // Cases (each asserts the LEDGER rows, not only the reply):
 //   1  pure memory instruction → triage verdict memory_pure/act, lesson_changes row, card with Undo, zero planner requests
@@ -65,25 +68,39 @@ function parseArgs(argv) {
 }
 
 async function loadModules() {
-  const [env, disarm, core, types, gw, rs, jc, tq, qt, th, ji, ia, tr, sw] = await Promise.all([
+  const [env, disarm, core, types, gw, rs, jc, tq, qt, th, ji, ia, tr, sw, cal] = await Promise.all([
     import("../dist/config/load-env.js"), import("../dist/config/disarm-posture.js"), import("../dist/core/core-worker.js"),
     import("../dist/domain/types.js"), import("../dist/gateway/gateway.js"), import("../dist/run/run-store.js"),
     import("../dist/jev/jev-client.js"), import("../dist/jev/questions/triage.js"), import("../dist/jev/questions/types.js"),
     import("../dist/jev/thresholds.js"), import("../dist/jev/jev-incidents.js"), import("../dist/run/incident-alert.js"),
-    import("../dist/jev/triage-replay.js"), import("../dist/run/invariant-sweep.js")
+    import("../dist/jev/triage-replay.js"), import("../dist/run/invariant-sweep.js"), import("../dist/jev/calibration.js")
   ]);
   return { loadHougeEnv: env.loadHougeEnv, DISARM_FLAGS: disarm.DISARM_FLAGS, CoreWorker: core.CoreWorker, buildTypedTaskEvent: types.buildTypedTaskEvent,
-    Gateway: gw.Gateway, RunStore: rs.RunStore, JEV_MODEL: jc.JEV_MODEL, TRIAGE_QUESTIONS: tq.TRIAGE_QUESTIONS, TRIAGE_LANE: tq.TRIAGE_LANE,
+    Gateway: gw.Gateway, RunStore: rs.RunStore, createJevClient: jc.createJevClient, toJevQuestion: qt.toJevQuestion,
+    CALIBRATED_ROWS: cal.CALIBRATED_ROWS, TRIAGE_QUESTIONS: tq.TRIAGE_QUESTIONS, TRIAGE_LANE: tq.TRIAGE_LANE,
     criteriaHash: qt.criteriaHash, TRIAGE_STATUS_ARM_ID: th.TRIAGE_STATUS_ARM_ID, JEV_ANSWERED_RESOLVES: ji.JEV_ANSWERED_RESOLVES,
     JEV_INCIDENT_SUBJECT: ji.JEV_INCIDENT_SUBJECT, resolveOpenIncidents: ia.resolveOpenIncidents, runTriageReplay: tr.runTriageReplay,
     detectViolations: sw.detectViolations, checkJevSkipRate: sw.checkJevSkipRate };
 }
 
-/** The gate-only calibration file: every lane-1 row kind for zh and en, hashes from the BUILT questions. */
+/** One real Jev call (the triage questions, a trivial state) for the model id the alias currently reports. Audit: in memory. */
+async function probeReportedModel(m) {
+  const mem = m.RunStore.openInMemory();
+  try {
+    const jev = m.createJevClient({ apiKey: process.env.TYPESAFE_API_KEY, audit: mem.llmAuditSink({ correlation_id: "gate:jev-probe", role: "" }),
+      meteredBreached: () => false, retries: 1, timeoutMs: 15_000 });
+    const questions = Object.fromEntries(m.TRIAGE_QUESTIONS.map((q) => [q.id, m.toJevQuestion(q)]));
+    const r = await jev({ state: { latest_message: "hello" }, questions });
+    if (!r.ok) throw new Error(`model probe failed: ${r.reason}`);
+    return r.model;
+  } finally { mem.close(); }
+}
+
+/** The gate-only calibration file: every lane-1 row kind for zh and en, hashes from the BUILT questions, model = m.model. */
 function writeCalibration(m, root) {
   const ids = [...m.TRIAGE_QUESTIONS.map((q) => [q.id, m.criteriaHash(q)]), [m.TRIAGE_STATUS_ARM_ID, m.criteriaHash(m.TRIAGE_LANE)]];
   const rows = ids.flatMap(([question_id, criteria_hash]) => ["zh", "en"].map((lang) =>
-    ({ question_id, criteria_hash, model: m.JEV_MODEL, lang, approved: "live-gate", evidence: "live-gate (temp file, never committed)" })));
+    ({ question_id, criteria_hash, model: m.model, lang, approved: "live-gate", evidence: "live-gate (temp file, never committed)" })));
   const file = join(root, "calibration.json");
   writeFileSync(file, JSON.stringify(rows));
   return file;
@@ -338,6 +355,7 @@ async function main() {
   const repo = dirname(resolve(envFilePath())); // the LIVE repo: read for lessons/src scans; its DB is only copied
   const live = resolve(args.db ?? join(repo, "houge.sqlite"));
   if (!existsSync(live)) throw new Error(`no DB at ${live} (pass --db)`);
+  m.model = await probeReportedModel(m); // before gateEnv: the temp calibration rows key on it
   const root = mkdtempSync("/tmp/hg-jev-"); // short: bridge sockets must fit sun_path (104 bytes)
   gateEnv(m, root, args.realCalibration);
   const dbPath = join(root, "houge.sqlite");
@@ -346,7 +364,8 @@ async function main() {
   const h = harness(m, store, repo, root);
   const g = { m, store, h, root, dbPath, chat: `-1000${Date.now() % 100000}`, worker: h.makeWorker(), runIds: [] };
   const intake = h.intake; h.intake = (chat, text) => { const id = intake(chat, text); g.runIds.push(id); return id; };
-  console.log(`jev triage live gate — copy ${dbPath}, model ${m.JEV_MODEL}, calibration ${args.realCalibration ? "committed CALIBRATED_ROWS" : "temp file"}\n`);
+  console.log(`jev triage live gate — copy ${dbPath}, reported model ${m.model}, calibration ${args.realCalibration ? "committed CALIBRATED_ROWS" : "temp file"}\n`);
+  if (args.realCalibration) check(`0 reported model ${m.model} has committed calibration rows`, m.CALIBRATED_ROWS.some((r) => r.model === m.model));
   try {
     for (const c of [casePure, caseMixed, caseSecondWrite, caseStatus, casePosture]) await c(g);
     await g.worker.shutdownPlanners();

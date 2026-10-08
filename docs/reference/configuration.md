@@ -846,8 +846,9 @@ node scripts/live-gate-jev.mjs             # opt-in real-API gate (3 fixed messa
   `jev_model`, a fixed error category; **never message text**. The report prints turn ids only.
 - **Verdict:** GO when Jev agrees with the replayed LLM label ≥ 75% at Jev confidence ≥ 0.7 and
   ≥ 60% of eligible turns reached a matched pair; `INCOMPLETE` if the run stopped early (budget,
-  auth, fuse); `DRY RUN — no verdict` for a dry run. Only answers from the pinned `jev-1.13.0`
-  count toward the verdict; the report splits by model and language.
+  auth, fuse); `DRY RUN — no verdict` for a dry run. The request names the moving alias
+  `jev-latest`; only answers from the run's first reported model count toward the verdict (a
+  model change mid-run logs one warning); the report splits by model and language.
 - **Egress:** the latest message (≤ 8,000 chars) plus the thread the classifier already sees,
   ≤ 24,000 chars per request; over-cap turns are skipped, never truncated.
 - **Audit:** every Jev HTTP attempt is one `llm_attempt` row (`provider: "jev"`, role
@@ -879,8 +880,15 @@ opens a `jev_no_key` incident and the planner runs as today.
 | `HOUGE_JEV_CALIBRATION_FILE` | unset | **Gate only.** A JSON array of calibration rows for the live gate or a labelled DB copy. Outside `HOUGE_JEV_GATE=1` a set file caps `arm` at `shadow`. Never set it in the daemon's `.env`. |
 | `HOUGE_JEV_GATE` | unset | Set to `1` by `scripts/live-gate-jev-triage.mjs` only; lifts the file cap above for that process. Never set in the daemon's `.env`. |
 
+**Model: the alias, not a pin.** Every Jev request names TypeSafe's moving alias `jev-latest` (no hard-coded version,
+2026-10-07); the response's `model` field reports the versioned id behind it, and that **reported** id is what
+calibration rows, `jev_decisions.model_reported` and the replay reports key on. When TypeSafe moves the alias, the new
+id has no row, so every lane falls through to the planner (safe) until Paco approves rows for it: the first answered call
+on the new id opens a `jev_model_uncalibrated` incident (below). The replay reports suggest rows with the model the rows
+reported and refuse a file that mixes two.
+
 **Calibration rows are code, not env.** `CALIBRATED_ROWS` in `src/jev/calibration.ts` holds the arming rows. Since
-2026-10-06 it arms both lanes in zh and en on `jev-1.13.0` (Paco's instruction after the replay check; ADR 0029
+2026-10-06 it arms both lanes in zh and en on the reported model `jev-1.13.0` (Paco's instruction after the replay check; ADR 0029
 amendment), so `HOUGE_JEV_TRIAGE_ENABLED=arm` acts on every turn that clears the confidence bars. A row is keyed by
 `(question_id, criteria_hash, model, lang)`. The memory lane arms on the three rows `lane`, `complete` and `scope`.
 The status lane arms **independently** on a distinct pseudo-row `question_id: "lane:status"` (its criteria hash is the
@@ -892,7 +900,10 @@ the denominator), `ack_nudged`, `lesson_saved`, `lesson_change_undone`, `triage_
 
 **Incidents** (the first failure opens one and alerts Paco): `jev_auth`, `jev_rate_limited`, `jev_overloaded`,
 `jev_question_invalid`, `jev_no_key`, `triage_overrides` (the override rate crossed the auto-disable bar),
-`triage_threw`. The next answered Jev call resolves any open `jev_*` incident, and `triage_overrides` resolves on the
+`triage_threw`, and `jev_model_uncalibrated` (subject = the reported model: Jev answered on a model no calibration row
+names while rows exist for another, i.e. the alias moved; the alert says the lanes fall back to the planner until new
+rows are approved; `arm` mode only; one page per model; resolved once rows name that model, or when no calibrated rows
+remain; the sweep never touches it). The next answered Jev call resolves any open outage `jev_*` incident, and `triage_overrides` resolves on the
 next turn once the disarm marker is gone, so a later episode opens and pages again (flap-damped). The invariant sweep
 adds `jev_skip_rate`: at least 3 triage calls in 24 h with half or more failing silently (`timeout`, `parse`,
 `transport`, `error`; skips for `disabled`, `posture`, `modality`, `override` and `state_too_large` are not calls). It

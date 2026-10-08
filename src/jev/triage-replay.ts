@@ -6,10 +6,10 @@ import type { ReplayTurnRow, RunStore } from "../run/run-store.js";
 import type { CalibrationRow } from "./calibration.js";
 import { marginOf, stateHash } from "./decide.js";
 import { langOf, type Lang } from "./intent-question.js";
-import { JEV_MODEL, type JevChoiceAnswer, type JevRequest, type JevResult } from "./jev-client.js";
+import { JEV_REQUEST_MODEL, type JevChoiceAnswer, type JevRequest, type JevResult } from "./jev-client.js";
 import { buildTriageState, lastHougeTurnOf, TRIAGE_LANE, TRIAGE_QUESTIONS } from "./questions/triage.js";
 import { criteriaHash, toJevQuestion, type Question } from "./questions/types.js";
-import { runReplayCore, type ReplayCoreOutcome } from "./replay-core.js";
+import { readDone, runReplayCore, type ReplayCoreOutcome } from "./replay-core.js";
 import { resolveTriageBars, TRIAGE_STATUS_ARM_ID, triageVerdict, type TriageBars } from "./thresholds.js";
 
 /**
@@ -101,13 +101,15 @@ export async function runTriageReplay(d: TriageReplayDeps): Promise<ReplayCoreOu
   const turns = d.store.listReplayTurns({ sinceIso: TRIAGE_LABEL_SINCE, ...(d.limit !== undefined ? { limit: d.limit } : {}) })
     .filter((t) => d.store.runSource(t.run_id) === "telegram");
   const byKey = new Map(turns.map((t) => [`${t.turn_id}${suffix}`, t]));
+  // Reported models seen in this run's evidence, seeded from rows already in the file (a move across a resume still warns).
+  const models = new Set<string>(d.dryRun ? [] : [...readDone(d.outPath, DONE).values()].flatMap((r) => (typeof r.model === "string" ? [r.model] : [])));
   return runReplayCore<TriageReplayRow>({
     source: () => [...byKey.keys()].map((key) => ({ key })),
     doneStatuses: DONE, outPath: d.outPath, maxUsd: d.maxUsd, dryRun: d.dryRun, ...(d.log ? { log: d.log } : {}),
     estimateUsd: (row) => jevUsd(Math.ceil(((row as Prepared).chars / 3) * CJK_UNDERCOUNT), d.env),
     prepare: async ({ key }) => prepareTurn(d, key, byKey.get(key)!),
     publicRow: (row) => { const { state: _s, chars: _c, ...rest } = row as Prepared; return rest; }, // no text in the outcome
-    dispatch: async (row) => dispatchTurn(d, row as Prepared, lane)
+    dispatch: async (row) => dispatchTurn(d, row as Prepared, lane, models)
   });
 }
 
@@ -143,7 +145,7 @@ function prepareTurn(d: TriageReplayDeps, key: string, t: ReplayTurnRow): Prepar
   return { ...base, state: built.state, chars: built.chars };
 }
 
-async function dispatchTurn(d: TriageReplayDeps, row: Prepared, lane: Question): Promise<TriageReplayRow> {
+async function dispatchTurn(d: TriageReplayDeps, row: Prepared, lane: Question, models: Set<string>): Promise<TriageReplayRow> {
   const { state, chars: _chars, ...rest } = row;
   const questions: JevRequest["questions"] = {};
   for (const q of TRIAGE_QUESTIONS) questions[q.id] = toJevQuestion(q.id === lane.id ? lane : q);
@@ -153,7 +155,10 @@ async function dispatchTurn(d: TriageReplayDeps, row: Prepared, lane: Question):
     const stop = r.reason === "fused" ? "fused" : r.reason === "auth" || r.reason === "no_key" ? "auth" : undefined;
     return { ...rest, status: "jev_failed", error: r.reason, ...(stop ? { stop } : {}) };
   }
-  if (r.model !== JEV_MODEL) d.log?.(`warning: Jev reported model "${r.model}", pinned ${JEV_MODEL} — the report refuses mixed models`);
+  if (models.size > 0 && !models.has(r.model)) {
+    d.log?.(`warning: Jev reported model "${r.model}" mid-run, earlier rows reported ${[...models].join(", ")} — the report refuses mixed models`);
+  }
+  models.add(r.model);
   const a = r.answers.lane!;
   return { ...rest, status: "ok", usd: jevUsd(r.input_tokens, d.env), model: r.model, criteria_hash_lane: criteriaHash(lane), jev_lane: a.choice,
     p_memory: a.probabilities.memory ?? 0, p_status: a.probabilities.status ?? 0, p_none: a.probabilities.none ?? 0,
@@ -162,6 +167,7 @@ async function dispatchTurn(d: TriageReplayDeps, row: Prepared, lane: Question):
     verdict: replayVerdict(r.answers, resolveTriageBars(d.env), rest.lang, r.model) };
 }
 
+/** Priced by the "jev-" prefix row in metered-pricing, which matches the alias and every versioned id alike. */
 function jevUsd(tokens: number, env: NodeJS.ProcessEnv): number {
-  return computeCostUsd(JEV_PROVIDER, JEV_MODEL, { input_tokens: tokens, output_tokens: 0, cached_input_tokens: 0 }, env) ?? 0;
+  return computeCostUsd(JEV_PROVIDER, JEV_REQUEST_MODEL, { input_tokens: tokens, output_tokens: 0, cached_input_tokens: 0 }, env) ?? 0;
 }
