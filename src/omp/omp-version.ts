@@ -7,7 +7,10 @@ const VERSION_OPTS = { encoding: "utf8" as const, timeout: 10_000, stdio: ["igno
 const execFileAsync = promisify(execFile);
 
 const defaultRun = (bin: string): string => execFileSync(bin, VERSION_ARGS, VERSION_OPTS);
-/** Same command, timeout and stdio as defaultRun, without blocking the event loop (Jev's call is in flight at spawn). */
+/**
+ * Same command, args and timeout as defaultRun, without blocking the event loop (Jev's call is in flight at spawn).
+ * execFile ignores `stdio` and always captures stderr (into the error's message): notRunnable never reads the message.
+ */
 const defaultRunAsync = async (bin: string): Promise<string> => (await execFileAsync(bin, VERSION_ARGS, VERSION_OPTS)).stdout;
 
 /**
@@ -18,8 +21,13 @@ export type OmpCheckKind = "not_runnable" | "no_version";
 export interface OmpCheckFailure { ok: false; kind: OmpCheckKind; version: string | null; reason: string }
 export type OmpCheckResult = { ok: true; version: string } | OmpCheckFailure;
 
-const notRunnable = (e: unknown): OmpCheckFailure =>
-  ({ ok: false, kind: "not_runnable", version: null, reason: `omp not runnable: ${(e as Error).message}` });
+/** The reason reaches the omp_unavailable error_ref: the exit code, errno code or signal only, never omp's own text (stderr). */
+function notRunnable(e: unknown): OmpCheckFailure {
+  // execFile reports an exit status as `code`, execFileSync as `status`; a spawn failure as an errno `code` (ENOENT)
+  const { code, status, signal } = (e ?? {}) as { code?: unknown; status?: unknown; signal?: unknown };
+  const why = [code, status, signal].find((v) => typeof v === "string" || typeof v === "number") ?? "error";
+  return { ok: false, kind: "not_runnable", version: null, reason: `omp not runnable: ${why}` };
+}
 
 function parseVersion(raw: string): OmpCheckResult {
   const m = /omp\/(\d+\.\d+\.\d+)/.exec(raw);

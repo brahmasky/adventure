@@ -721,7 +721,9 @@ export class PlannerSupervisor {
   }
 
   private async preflightThenSpawn(fresh: boolean): Promise<StartResult> {
+    const gen0 = this.gen; // a stop (abortAll, shutdown, finishLane) bumps gen during the awaited check: never spawn after it
     const pre = await this.preflight();
+    if (this.gen !== gen0) return START_SUPERSEDED;
     if (pre) return pre;
     if (fresh) this.refused.clear();
     const head = this.spawnChain()[0];

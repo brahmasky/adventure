@@ -460,6 +460,23 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
     expect(session.options).toHaveLength(1);
   });
 
+  // A start is cancelled by generation: /kill (abortAll) or shutdown during the awaited version check must not let the
+  // child start afterwards (a child after /kill or SIGTERM, with no idle-exit timer, would outlive the stop).
+  for (const [label, stop] of [["abortAll (/kill)", (sup: PlannerSupervisor) => sup.abortAll("killed")], ["shutdown", (sup: PlannerSupervisor) => sup.shutdown()]] as const) {
+    it(`a stop during the pending version check (${label}) spawns no child and the start resolves superseded`, async () => {
+      const session = fakeSession();
+      let answer: (v: { ok: true; version: string }) => void = () => undefined;
+      const pending = () => new Promise<{ ok: true; version: string }>((r) => { answer = r; });
+      const { sup } = harness(session, {}, { versionCheck: pending });
+      const start = (sup as never as { ensureSession: (fresh: boolean) => Promise<unknown> }).ensureSession.call(sup, true);
+      await new Promise((r) => setImmediate(r)); // the check is now pending
+      await stop(sup);
+      answer({ ok: true, version: "18.7.0" });
+      expect(await start).toBe("start_failed: superseded");
+      expect(session.options).toHaveLength(0);
+    });
+  }
+
   it("fails the run when the child never asks for its manifest (omp only warns on an extension load failure)", async () => {
     const session = fakeSession({ noManifest: true });
     const { store, sup, outcome } = harness(session, {}, { manifestWaitMs: 100 }); const run_id = createQueuedTurnRun(store);

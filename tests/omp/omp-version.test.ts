@@ -1,3 +1,6 @@
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { checkOmpVersion, checkOmpVersionAsync } from "../../src/omp/omp-version.js";
@@ -34,5 +37,18 @@ describe("omp version check — no pinned version (Paco, 2026-10-07: no hard-cod
     const { gap, result } = await maxLoopGap(() => checkOmpVersionAsync({ bin: slowVersionBin(600) }));
     expect(result).toEqual({ ok: true, version: "18.7.0" });
     expect(gap).toBeLessThan(300);
+  });
+  // The reason reaches the omp_unavailable error_ref and the incident: refs carry codes, never omp's own words (stderr).
+  it("a refusal's reason names the exit code or signal only, never omp's stderr", async () => {
+    const bin = join(mkdtempSync(join(tmpdir(), "houge-loud-omp-")), "omp");
+    writeFileSync(bin, "#!/bin/sh\necho 'provider said: token abc123 expired' >&2\nexit 3\n");
+    chmodSync(bin, 0o755);
+    const loud = await checkOmpVersionAsync({ bin });
+    expect(loud).toEqual({ ok: false, kind: "not_runnable", version: null, reason: "omp not runnable: 3" });
+    expect(checkOmpVersion({ bin })).toEqual({ ok: false, kind: "not_runnable", version: null, reason: "omp not runnable: 3" });
+    const missing = await checkOmpVersionAsync({ bin: join(tmpdir(), "houge-no-such-omp") });
+    expect(missing).toMatchObject({ kind: "not_runnable", reason: "omp not runnable: ENOENT" });
+    const thrown = await checkOmpVersionAsync(cfg, async () => { throw new Error("Command failed: omp --version\nprovider text"); });
+    expect(thrown).toMatchObject({ kind: "not_runnable", reason: "omp not runnable: error" });
   });
 });
