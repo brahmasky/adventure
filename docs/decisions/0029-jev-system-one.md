@@ -46,7 +46,8 @@ fall-through; **System Two (omp seats)** composes inside the lane code picked. C
 1. **One decision call per decision point**, carrying every question that point may need; code ignores answers it does
    not use. A frozen question library with `criteria_hash`; thresholds keyed by `(question, criteria_hash, model,
    language)`; a `decisions` row per answer (ids, probabilities, thresholds, outcome — never text); a generic replay
-   harness; a golden set in the invariant sweep. Model pinned to `jev-1.13.0`.
+   harness; a golden set in the invariant sweep. The request names the moving alias `jev-latest`; thresholds and
+   calibration rows key on the versioned model Jev reports (amended 2026-10-07; was pinned to `jev-1.13.0`).
 2. **Monotone safety.** Jev enters a security-bearing decision only as `ask := code_ask ∨ (jev_flag ∧ conf ≥ τ)`. It
    never produces `allow` or `deny`, never shortens an approval, never clears a taint, and never touches self-write,
    the reader wall's existence, the invariant sweep, the kill switch or `/approve` consumption. Cards show
@@ -168,3 +169,33 @@ Option-order bias: verdicts agree on 291 of 293 turns with the options reversed.
 **Accepted 2026-10-06.** On the running daemon (boot 9, `372f2ed`) Paco's first real memory instruction was triaged
 `memory/pure/act` (confidence 0.91), saved by the lane as an UPDATE of lesson #47 with no planner turn, and the card
 with Undo was delivered; no incident open. Operator reference: [jev-decision-layer.md](../reference/jev-decision-layer.md).
+
+## Amendment (2026-10-07): Jev model alias, calibration keyed by the reported model
+
+- **Amendment 2026-10-07 — Jev model alias** (approved by Paco: no hard-coded model versions). Jev requests name
+  TypeSafe's moving alias `jev-latest` instead of a pinned version. The response's `model` field reports the versioned
+  id behind the alias. It is validated by `JEV_MODEL_ID` and recorded as `jev_decisions.model_reported`. That reported id
+  is the key for calibration rows (§3.5), the replay reports and the live-shadow evidence. The safety argument is
+  unchanged: a row arms a question only for an exact `(question_id, criteria_hash, model, lang)`. When TypeSafe moves the
+  alias, the new reported id has no row, so every lane falls through to the planner until Paco approves rows for it. Jev
+  still never gates an action. A row naming the alias itself never arms (`calibratedLang`), because it would stay armed
+  across a move.
+- **The move pages Paco.** Losing the armed lanes would otherwise be silent. So, in `arm` mode only, an answered triage
+  call on a model that no row names, while rows exist for another model, opens an alerted incident
+  `jev_model_uncalibrated`: subject = the reported model, detail `{model, calibrated_models, note}`. The note reads
+  "Jev moved to <model>; the lanes fall back to the planner until new calibration rows are approved for it." The open
+  incident throttles it to one page per model. Shadow mode never opens it, since nothing is armed there.
+- **Which rows count.** Only rows that can arm a lane today: a current triage question (or the `lane:status` pseudo-row)
+  at its current criteria hash (`armingRows`). A stale-hash or unrelated row neither clears nor raises the page.
+- **Resolving it.** A model's incident resolves only once arming rows name that model, never because another calibrated id
+  answered in between: a canary serving two ids behind the alias must not re-page on every flip. When the calibrated set
+  is empty (no rows, or only alias rows), every open `jev_model_uncalibrated` resolves and nothing opens: nothing armed,
+  nothing lost. The invariant sweep never touches this kind.
+- **The check cannot cost the answer.** It runs after the answered decision is held, inside a try/catch, so a failing
+  check never loses the decision rows.
+- **Replay tools stop comparing against a pin.** A run's evidence is its own reported model, and a model change mid-run
+  warns, including across a resume. The intent replay's reference is the first model Jev reported, whatever the LLM leg
+  did; off-model rows are recorded but excluded from the verdict. The triage report refuses a file (canonical or
+  permuted) with more than one reported model. It suggests rows only with the model the rows reported. It reads the live
+  shadow filtered to that same model, and refuses shadow stats for another model, so an old model's 14 days never stand
+  as a new model's evidence.
