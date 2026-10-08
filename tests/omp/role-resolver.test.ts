@@ -108,12 +108,32 @@ describe("RoleResolver", () => {
     let env: NodeJS.ProcessEnv = { HOUGE_MODEL_ROLES: "static" };
     store.recordModelRoleOverride({ key: "default", pattern: "k3", actor: "paco" });
     const roles = new RoleResolver({ store, env: () => env, readCatalog: async () => fixtureCatalog().filter((m) => m.provider === "kimi-code") });
-    await roles.refreshCatalog();
+    expect(await roles.refreshCatalog()).toBe(false); // static has no catalog (F3): no read
     expect(roles.chains()).toEqual(staticRoleChains());
     expect(fmt(roles.candidates("fast", { effort: "low" }))).toEqual([...STATIC_ROLE_LISTS.default]); // routed effort not applied
     expect(notes(store, "model_roles_fallback")).toEqual([]); // static never "falls back": it is the static list
     env = {};
+    await roles.refreshCatalog();
     expect(fmt(roles.candidates("default"))).toEqual(["kimi-code/k3:low"]);
+    store.close();
+  });
+
+  // F3 / spec §4.3: static is the rollback and has no catalog. Reading omp's catalog anyway would page Paco with
+  // model_catalog_unavailable for a catalog nothing uses, and keep retrying it hourly.
+  it("HOUGE_MODEL_ROLES=static never reads the catalog: no boot read, no retry, no refresh, no note, no incident", async () => {
+    const store = RunStore.openInMemory();
+    let reads = 0; let t = 0;
+    const roles = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "static" }), now: () => t,
+      readCatalog: async () => { reads += 1; return null; } });
+    expect(await roles.refreshCatalog()).toBe(false);
+    expect(await roles.refreshCatalog()).toBe(false);
+    t += CATALOG_RETRY_MS + NO_LEG_REFRESH_MS;
+    expect(roles.retryFailedRead()).toBeNull();
+    roles.requestRefresh();
+    await Promise.resolve();
+    expect(reads).toBe(0);
+    expect(notes(store, "model_catalog_unavailable")).toEqual([]);
+    expect(openCatalogIncidents(store)).toEqual([]);
     store.close();
   });
 

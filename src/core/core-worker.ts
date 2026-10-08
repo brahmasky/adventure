@@ -134,7 +134,7 @@ import {
 } from "../capabilities/memory-correct.js";
 import type { ActiveTurn } from "../omp/bridge-handler.js";
 import type { ExternalReadResult } from "../omp/external-read.js";
-import { ompConfigProblems, resolveOmpConfig, type OmpConfig } from "../omp/omp-config.js";
+import { ompConfigProblems, resolveOmpCatalogConfig, resolveOmpConfig, type OmpConfig } from "../omp/omp-config.js";
 import { readOmpCatalog } from "../omp/model-catalog.js";
 import { RoleResolver } from "../omp/role-resolver.js";
 import { PlannerSupervisor, type QuoteRef, type SupervisorDeps, type TriageInput, type TriageOutcome, type TurnOutcomeSink, type TurnRoute } from "../omp/planner-supervisor.js";
@@ -457,8 +457,8 @@ export class CoreWorker {
     this.ompDecls = loadToolDeclarations(TOOL_DECLS_DIR);
     // Daemon temp space and self-write worktrees live under the data dir (B13); unset, it is the cwd (houge.sqlite's dir).
     if (ompOptions.dataDir) setDaemonDataDir(ompOptions.dataDir);
-    // One resolver per worker; the daemon reads its catalog at boot (resolveOmpConfig may throw on a bad lease TTL: refreshCatalog catches it).
-    this.roles = ompOptions.roles ?? new RoleResolver({ store: runStore, readCatalog: () => readOmpCatalog(resolveOmpConfig(process.env)) });
+    // One resolver per worker; the daemon reads its catalog at boot, on bin/profile/passthrough only (F5: never the lease TTL).
+    this.roles = ompOptions.roles ?? new RoleResolver({ store: runStore, readCatalog: () => readOmpCatalog(resolveOmpCatalogConfig(process.env)) });
     // When the DEFAULT llm adapter is in use (production), `llmAdapterFor` builds a run-scoped,
     // audited adapter per role. A test-INJECTED adapter is used as-is (it brings its own fakes).
     this.llmAdapterIsDefault = llmAdapter === undefined;

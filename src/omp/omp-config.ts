@@ -54,6 +54,14 @@ export function warnRetiredOmpChainVars(env: NodeJS.ProcessEnv, warn: (line: str
 /** HOUGE_OMP_APPROVAL_TIMEOUT_MS alone (never throws on an unrelated malformed chain): the sweep needs only this. */
 export function resolveApprovalTimeoutMs(env: NodeJS.ProcessEnv): number { return num(env, "HOUGE_OMP_APPROVAL_TIMEOUT_MS"); }
 
+/**
+ * The three fields the catalog read needs, alone (F5): none of them throws, so a malformed lease TTL never makes the
+ * RoleResolver's read fail and fake a model_catalog_unavailable page.
+ */
+export function resolveOmpCatalogConfig(env: NodeJS.ProcessEnv): Pick<OmpConfig, "bin" | "profile" | "envPassthrough"> {
+  return { bin: read(env, "HOUGE_OMP_BIN"), profile: read(env, "HOUGE_OMP_PROFILE"), envPassthrough: list(read(env, "HOUGE_OMP_ENV_PASSTHROUGH")) };
+}
+
 /** The supervisor renews a planner lease this often (spec §7.1). */
 export const PLANNER_HEARTBEAT_MS = 30_000;
 /** A lease shorter than three renewals lets the recovery timer fail a live turn between two heartbeats (N2). */

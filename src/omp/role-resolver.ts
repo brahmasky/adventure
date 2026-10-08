@@ -50,8 +50,13 @@ export class RoleResolver {
 
   constructor(private readonly d: ResolverDeps) {}
 
-  /** One catalog read (a read in flight is joined). A failed read keeps the last good catalog (none yet = Decision 4). Never throws. */
+  /**
+   * One catalog read (a read in flight is joined). A failed read keeps the last good catalog (none yet = Decision 4).
+   * Static mode has no catalog (spec §4.3, F3): no read, so no note and no page; every other read entry point
+   * (retryFailedRead, requestRefresh, the tick, `/models set`) goes through here. Never throws.
+   */
   refreshCatalog(): Promise<boolean> {
+    if (resolveModelRolesMode(this.env()) === "static") return Promise.resolve(false);
     if (!this.reading) this.reading = this.read().finally(() => { this.reading = undefined; });
     return this.reading;
   }

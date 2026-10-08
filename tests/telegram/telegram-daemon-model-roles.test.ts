@@ -64,12 +64,15 @@ describe("daemon: model roles", () => {
     } finally { store.close(); }
   });
 
-  it("static mode: no tick", async () => {
+  // F3: static has no catalog, so the boot read (which fails here: NO_OMP_BIN) never runs and nothing pages Paco.
+  it("static mode: no tick, no catalog read, no catalog note or incident", async () => {
     vi.stubEnv("HOUGE_MODEL_ROLES", "static");
     const store = RunStore.openInMemory();
     try {
       await cycle(store);
       expect(rows(store)).toHaveLength(0);
+      expect(store.getLedgerEvents().filter((e) => e.event_type === "model_catalog_unavailable")).toHaveLength(0);
+      expect(store.listOpenIncidents().filter((i) => i.kind === "model_catalog_unavailable")).toHaveLength(0);
     } finally { store.close(); }
   });
 });

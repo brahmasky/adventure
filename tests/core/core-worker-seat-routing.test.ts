@@ -56,3 +56,17 @@ describe("which chain each internal call rides", () => {
     expect(models()[0]).toBe("anthropic/claude-opus-5-5");
   });
 });
+
+// F5: the default catalog read needs only bin/profile/passthrough. A malformed HOUGE_OMP_LEASE_TTL_S (a planner-lease
+// concern with its own incident) must not make the read throw and page Paco a fake model_catalog_unavailable.
+describe("the worker's default catalog read", () => {
+  it("an invalid lease TTL: the catalog is still read from the (fake) omp and nothing pages", async () => {
+    process.env.HOUGE_OMP_LEASE_TTL_S = "1";
+    const roles = worker().modelRoles();
+    expect(await roles.refreshCatalog()).toBe(true);
+    expect(await roles.refreshCatalog()).toBe(true);
+    expect(roles.catalog()?.length).toBeGreaterThan(0);
+    expect(store.getLedgerEvents().filter((e) => e.event_type === "model_catalog_unavailable")).toHaveLength(0);
+    expect(store.listOpenIncidents().filter((i) => i.kind === "model_catalog_unavailable")).toHaveLength(0);
+  });
+});
