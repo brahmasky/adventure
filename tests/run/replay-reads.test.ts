@@ -113,4 +113,41 @@ describe("replay reads", () => {
       store.close();
     }
   });
+
+  // Spec §7: the proxy tells research (≥ 3 web steps or ≥ 2 fetches) from lookup (≤ 2) by COUNT; a distinct-name
+  // read would label a ten-search investigation as a one-search lookup.
+  it("runLoopCapabilityCounts counts loop_step rows per capability and drops unnamed steps", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const run = createRun(store, "k4");
+      for (const capability of ["web_search", "web_search", "web_search", "http_fetch", ""]) {
+        store.recordLoopStep(run, { step: 1, action: "tool", capability, ok: true, result_digest: "" });
+      }
+      expect(store.runLoopCapabilityCounts(run)).toEqual({ web_search: 3, http_fetch: 1 });
+      expect(store.runLoopCapabilityCounts("nope")).toEqual({});
+    } finally {
+      store.close();
+    }
+  });
+
+  // Spec §2.2.1 / §7: the replay rebuilds `quoted_turn` from the stored id, so the user row must carry it and the
+  // quoted row must be readable by id; without both the replay's state differs from live on every quoted turn.
+  it("listReplayTurns carries quoted_turn_id and getChatTurnById reads the quoted row", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const a = createRun(store, "k5"); const b = createRun(store, "k6");
+      store.recordChatTurn({ chat_id: "c", run_id: a, role: "user", text: "q1", created_at: "2026-09-10T00:00:00.000Z" });
+      store.recordChatTurn({ chat_id: "c", run_id: a, role: "assistant", text: "要不要我查一下？", intent: "answer", created_at: "2026-09-10T00:00:01.000Z" });
+      const offer = store.getRecentChatTurns("c", 10).find((t) => t.role === "assistant")!;
+      store.recordChatTurn({ chat_id: "c", run_id: b, role: "user", text: "好", created_at: "2026-09-10T01:00:00.000Z", quoted_turn_id: offer.turn_id });
+      store.recordChatTurn({ chat_id: "c", run_id: b, role: "assistant", text: "ok", intent: "answer", created_at: "2026-09-10T01:00:01.000Z" });
+      const rows = store.listReplayTurns({});
+      expect(rows.find((r) => r.run_id === b)?.quoted_turn_id).toBe(offer.turn_id);
+      expect(rows.find((r) => r.run_id === a)?.quoted_turn_id).toBeNull();
+      expect(store.getChatTurnById(offer.turn_id)).toMatchObject({ run_id: a, role: "assistant", text: "要不要我查一下？" });
+      expect(store.getChatTurnById("turn_missing")).toBeUndefined();
+    } finally {
+      store.close();
+    }
+  });
 });

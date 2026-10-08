@@ -41,7 +41,6 @@ import type { OverrideKey } from "../omp/role-resolver.js";
 import { computeCostUsd, METERED_PROVIDERS } from "../llm/metered-pricing.js";
 import { blobToFloat32, cosineSimilarity, float32ToBlob } from "../llm/embeddings.js";
 import { resolveWikiDecayDays } from "../capabilities/wiki.js";
-import type { TriageShadowStats } from "../jev/triage-report.js";
 import type { SkipReason } from "../jev/decide.js";
 import type { Category } from "../jev/questions/tree.js";
 import type { Effort, Lane, RouteReason, TurnRole } from "../jev/tree-policy.js";
@@ -388,6 +387,8 @@ export interface ReplayTurnRow {
   text: string;
   created_at: string;
   recorded_intent: string;
+  /** The stored turn this message quoted (Telegram reply, spec §2.2.1); absent on rows read before the column. */
+  quoted_turn_id?: string | null;
   /** When the classifier ran: its first `classify` llm_attempt, else the run's first ledger event. */
   anchor: string | null;
   anchor_kind: "classify" | "run_start" | null;
@@ -1240,7 +1241,7 @@ export class RunStore {
       ORDER BY a.rowid ASC LIMIT 1
     )`;
     const rows = this.db.prepare(`
-      SELECT u.turn_id, u.chat_id, u.run_id, u.text, u.created_at,
+      SELECT u.turn_id, u.chat_id, u.run_id, u.text, u.created_at, u.quoted_turn_id,
         ${earliestAssistantIntent} AS recorded_intent,
         (SELECT MIN(e.occurred_at) FROM ledger_events e
           WHERE e.run_id = u.run_id AND e.event_type = 'llm_attempt'
@@ -1271,6 +1272,29 @@ export class RunStore {
       .filter((c): c is string => typeof c === "string" && c.length > 0);
   }
 
+  /**
+   * `loop_step` rows per capability for a run (unnamed steps dropped). The tree replay's proxy (spec §7) separates
+   * research from lookup by how many web steps ran, which the distinct-name read above cannot tell.
+   */
+  runLoopCapabilityCounts(run_id: string): Record<string, number> {
+    const rows = this.db.prepare(`
+      SELECT json_extract(payload_json, '$.capability') AS capability, COUNT(*) AS n
+      FROM ledger_events WHERE run_id = ? AND event_type = 'loop_step'
+      GROUP BY capability
+    `).all<{ capability: string | null; n: number }>(run_id);
+    const out: Record<string, number> = {};
+    for (const r of rows) if (typeof r.capability === "string" && r.capability.length > 0) out[r.capability] = Number(r.n);
+    return out;
+  }
+
+  /** One chat turn by id (the replay rebuilds a quoted turn from `chat_turns.quoted_turn_id`); undefined if absent. */
+  getChatTurnById(turn_id: string): ChatTurnRow | undefined {
+    return this.db.prepare(`
+      SELECT turn_id, chat_id, run_id, role, text, intent, created_at, quoted_turn_id
+      FROM chat_turns WHERE turn_id = ?
+    `).get<ChatTurnRow>(turn_id);
+  }
+
   /** A run's trigger source (`telegram` | `schedule` | `cli` | `event`) — undefined if the run does not exist. */
   runSource(run_id: string): string | undefined {
     return this.db.prepare(`SELECT source FROM runs WHERE run_id = ?`).get<{ source: string }>(run_id)?.source;
@@ -1295,45 +1319,6 @@ export class RunStore {
     if (!row?.first_turn || !row.last_turn) return undefined;
     return { from: row.first_turn, to: row.last_step && row.last_step > row.last_turn ? row.last_step : row.last_turn };
   }
-
-
-  /**
-   * The lane 1 live shadow as the §5.9 step 4 bar reads it: `triage` rows with decision `shadow` since `sinceIso`, each
-   * joined to its run's planner `loop_step` capabilities. A "pure verdict" is `lane = memory ∧ complete = pure` (the
-   * row's argmax choices — a superset of pure-at-bar, so the count errs toward NO-GO). `days` = distinct UTC days with a
-   * shadow row (occurred_at is ISO UTC), so a parked daemon's silent weeks do not count toward the 14. Only turns whose
-   * `lane` shadow decision row reported `model` count: calibration keys on the reported model, so an alias move must not
-   * let the old model's shadow stand as the new model's evidence.
-   */
-  triageShadowStats(sinceIso: string, model: string): TriageShadowStats {
-    const rows = this.db.prepare(`
-      SELECT e.run_id, e.occurred_at, json_extract(e.payload_json, '$.lane') AS lane,
-        json_extract(e.payload_json, '$.complete') AS complete, r.state AS run_state
-      FROM ledger_events e LEFT JOIN runs r ON r.run_id = e.run_id
-      WHERE e.event_type = 'triage' AND json_extract(e.payload_json, '$.decision') = 'shadow' AND e.occurred_at >= ?
-        AND EXISTS (SELECT 1 FROM jev_decisions d WHERE d.run_id = e.run_id AND d.point = 'triage' AND d.question_id = 'lane'
-          AND d.decision = 'shadow' AND d.model_reported = ?)
-      ORDER BY e.occurred_at ASC, e.sequence ASC
-    `).all<{ run_id: string; occurred_at: string; lane: string | null; complete: string | null; run_state: string | null }>(sinceIso, model);
-    const stats: TriageShadowStats = { model, days: 0, matched_lesson_write: 0, pure_on_tool_turns: 0, pure_on_no_tool_turns: 0 };
-    for (const r of rows) {
-      const caps = this.runLoopCapabilities(r.run_id);
-      // "matched" = a triage row AND a completed planner run (§5.9 step 4): a failed run's lesson_write saved nothing.
-      if (r.run_state === "completed" && caps.includes("lesson_write")) stats.matched_lesson_write += 1;
-      if (r.lane !== "memory" || r.complete !== "pure") continue;
-      if (caps.some((c) => c !== "lesson_write")) stats.pure_on_tool_turns += 1;
-      else if (caps.length === 0) stats.pure_on_no_tool_turns += 1;
-    }
-    stats.days = new Set(rows.map((r) => r.occurred_at.slice(0, 10))).size; // distinct UTC days with a shadow row
-    stats.live_state_rows = this.db.prepare(`
-      SELECT run_id, state_hash FROM jev_decisions
-      WHERE point = 'triage' AND question_id = 'lane' AND decision = 'shadow' AND state_hash IS NOT NULL AND created_at >= ? AND model_reported = ?
-      ORDER BY created_at ASC, rowid ASC
-    `).all<{ run_id: string | null; state_hash: string }>(sinceIso, model).map((r) => ({ run_id: r.run_id ?? "", state_hash: r.state_hash }));
-    return stats;
-  }
-
-
 
   /**
    * The OLDEST `limit` turns strictly after `afterIso` (or from the beginning), in

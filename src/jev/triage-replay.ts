@@ -2,122 +2,148 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { chatContextSince, resolveChatContextTurnChars, resolveChatContextTurns } from "../capabilities/intent.js";
 import { computeCostUsd, JEV_PROVIDER } from "../llm/metered-pricing.js";
+import { isBareAck } from "../omp/bare-ack.js";
 import type { ReplayTurnRow, RunStore } from "../run/run-store.js";
-import type { CalibrationRow } from "./calibration.js";
-import { marginOf, stateHash } from "./decide.js";
+import { stateHash } from "./decide.js";
 import { langOf, type Lang } from "./intent-question.js";
-import { choiceAnswer, JEV_REQUEST_MODEL, type JevAnswer, type JevChoiceAnswer, type JevRequest, type JevResult } from "./jev-client.js";
-import { buildTriageState, lastHougeTurnOf, TRIAGE_LANE, TRIAGE_QUESTIONS } from "./questions/triage.js";
-import { criteriaHash, toJevQuestion, type ChoiceQuestion } from "./questions/types.js";
+import { JEV_REQUEST_MODEL, type JevAnswer, type JevRequest, type JevResult } from "./jev-client.js";
+import { buildTreeState, CATEGORIES, lastHougeTurnOf, quotedTurnFromRow, TREE_CATEGORY, TREE_QUESTIONS, type Category,
+  type HougeTurnKind } from "./questions/tree.js";
+import { criteriaHash, toJevQuestion, type ChoiceQuestion, type Question } from "./questions/types.js";
 import { readDone, runReplayCore, type ReplayCoreOutcome } from "./replay-core.js";
-import { resolveTriageBars, TRIAGE_STATUS_ARM_ID, triageVerdict, type TriageBars } from "./thresholds.js";
+import { preJudge } from "./tree-policy.js";
 
 /**
- * `houge jev replay triage` engine (spec §5.9 step 1). Every Telegram turn since the comparator epoch is replayed
- * against the frozen lane 1 questions on the state the LIVE path would have built at the turn's anchor (same
- * buildTriageState, same lastHougeTurnOf, same sanitiser — only the broker pass is absent in the CLI), so `state_hash`
- * joins to `jev_decisions.state_hash`. Rows carry ids, enums and numbers only — never message text.
+ * `houge jev replay triage` engine for the decision tree (spec 2026-10-06 §7). Every Telegram turn since the comparator
+ * epoch is replayed against the six frozen tree questions on the state the LIVE path would have built (same
+ * buildTreeState, lastHougeTurnOf and quoted-turn rebuild; only the broker pass is absent in the CLI), so `state_hash`
+ * joins to `jev_decisions.state_hash`. The proxy label comes from the tools the planner actually ran. Rows carry ids,
+ * enums and numbers only — never message text.
  *
- * State parity: the thread cut and `last_houge_turn.age_s` use the two instants the live path recorded on its answered
- * triage row (`thread_cut_at`, the claim; `state_built_at`, just before the Jev call). A row without them (written before
- * 2026-10-06) falls back to its write time, else the `triage` event, else the anchor. Known gaps: no broker in the CLI (a
- * turn carrying one of the broker secrets hashes differently); a pre-shadow turn has only its anchor. The report blocks
- * rows on any comparable live mismatch.
+ * State parity: the thread cut and every `age_s` use the instants the live path recorded on its answered row
+ * (`thread_cut_at`, the claim; `state_built_at`, just before the Jev call); a row without them falls back to its write
+ * time, else the `triage` event, else the anchor. Known gap: no broker in the CLI.
  */
-export const TRIAGE_REPLAY_OUT = ".houge/jev-triage/replay.jsonl";
-export const TRIAGE_PERMUTED_OUT = ".houge/jev-triage/replay-permuted.jsonl";
-export const TRIAGE_LABELS_PATH = ".houge/jev-triage/labels.jsonl";
-/** loop_step.capability exists since 2026-07-02: the comparator label's epoch (spec §5.9 universe = 288 Telegram runs). */
-export const TRIAGE_LABEL_SINCE = "2026-07-02T00:00:00.000Z";
-const DONE: ReadonlySet<string> = new Set(["ok", "skipped_state_too_large"]);
+export const TREE_REPLAY_OUT = ".houge/jev-tree/replay.jsonl";
+export const TREE_PERMUTED_OUT = ".houge/jev-tree/replay-permuted.jsonl";
+export const TREE_LABELS_PATH = ".houge/jev-tree/labels.jsonl";
+/** loop_step.capability exists since 2026-07-02: the proxy label's epoch. */
+export const TREE_LABEL_SINCE = "2026-07-02T00:00:00.000Z";
+export const TREE_DONE: ReadonlySet<string> = new Set(["ok", "skipped_state_too_large"]);
 /** CJK text tokenises ~1.8× worse than chars/3 suggests (2026-09-26 lesson): reserve high, never under. */
 const CJK_UNDERCOUNT = 1.8;
 
-export interface TriageLabel { memory: boolean; status: boolean; pure: boolean | null; scope: "ask" | "research" | null; by: "paco"; at: string }
-export type TriageReplayVerdict = "status" | "memory_pure" | "memory_mixed" | "fallthrough";
-export interface TriageReplayRow {
+export type ProxyRule = "houge_status" | "memory_correct_write" | "lesson_write" | "self_change" | "wiki" | "schedule_task"
+  | "mail_calendar" | "machine_task" | "research" | "lookup" | "no_tool" | "ack_after_proposal" | "unmatched_tools";
+export interface ProxyLabel { category: Category | null; rule: ProxyRule }
+export interface TreeLabel { category: Category; by: "paco"; at: string }
+export interface TreeReplayRow {
   key: string; turn_id: string; run_id: string; lang: Lang; status: "ok" | "dry_run" | "skipped_state_too_large" | "jev_failed"; est_usd: number;
-  attempt?: number; usd?: number; observed_lesson_write: boolean; observed_other_tools: boolean; state_hash: string;
-  jev_lane?: string; p_memory?: number; p_status?: number; p_none?: number; conf_lane?: number; margin_lane?: number; p_pure?: number; scope?: string;
-  verdict?: TriageReplayVerdict; model?: string; criteria_hash_lane?: string; error?: string; stop?: "auth" | "fused";
-  p_none_tools?: never;
+  attempt?: number; usd?: number; stop?: "auth" | "fused"; error?: string;
+  state_hash: string; tools: Record<string, number>; proxy: Category | null; proxy_rule: ProxyRule;
+  pre_judge: "ack_answer" | "judge"; think_harder: boolean; bare_ack: boolean; quoted: boolean;
+  model?: string; criteria_hashes?: Record<string, string>; answers?: Record<string, JevAnswer>;
 }
-type Prepared = TriageReplayRow & { state: Record<string, unknown>; chars: number };
+type Prepared = TreeReplayRow & { state: Record<string, unknown>; chars: number };
+type Tools = Readonly<Record<string, number>>;
 
-/** The lane question asked with its options reversed (memory, status, none): the order-bias probe (spec §3.6). */
-export const TRIAGE_LANE_PERMUTED: ChoiceQuestion = { ...TRIAGE_LANE, criteria: [...TRIAGE_LANE.criteria].reverse() };
+const count = (t: Tools, name: string): number => t[name] ?? 0;
+const anyTool = (t: Tools, re: RegExp): boolean => Object.keys(t).some((k) => re.test(k));
+const webSteps = (t: Tools): number => count(t, "web_search") + count(t, "http_fetch");
+
+/** Spec §7, first match wins: the order IS the precedence (a status check beats the lesson the same turn wrote). */
+const PROXY_RULES: ReadonlyArray<readonly [ProxyRule, Category, (t: Tools) => boolean]> = [
+  ["houge_status", "status", (t) => count(t, "houge_status") > 0],
+  ["memory_correct_write", "memory", (t) => count(t, "memory_correct_write") > 0],
+  ["lesson_write", "memory", (t) => count(t, "lesson_write") > 0],
+  ["self_change", "self_change", (t) => anyTool(t, /^(self_write_.+|self_diagnose|skill_author)$/)],
+  ["wiki", "wiki", (t) => anyTool(t, /^wiki_(build|refine)$/)],
+  ["schedule_task", "schedule", (t) => count(t, "schedule_task") > 0],
+  ["mail_calendar", "mail_calendar", (t) => anyTool(t, /^(gmail_.+|google_api)$/)],
+  ["machine_task", "machine_task", (t) => anyTool(t, /^(shell|shell_external|fs_.+)$/)],
+  ["research", "research", (t) => (count(t, "web_search") > 0 && webSteps(t) >= 3) || count(t, "http_fetch") >= 2],
+  ["lookup", "lookup", (t) => webSteps(t) > 0 && webSteps(t) <= 2]
+];
 
 /**
- * The replay judges every turn AS IF the lane were armed for its language and the reported model: with no calibration
- * row yet (slice 1 ships none) `triageVerdict` would answer `uncalibrated` for every turn and the report would be empty.
- * These rows never leave this module; production arming stays `CALIBRATED_ROWS` (Paco's commit).
+ * The tool proxy for one run. No rule and no tool → `answer`, unless the previous (or quoted) Houge turn was a proposal:
+ * a tool-less "好" there may be agreement whose work never ran, so it is unlabelled. Tools that match no rule are
+ * unlabelled too: the spec's `answer` means "no tool".
  */
-function armedAsIf(model: string): CalibrationRow[] {
-  const ids = [...TRIAGE_QUESTIONS.map((q) => [q.id, criteriaHash(q)] as const), [TRIAGE_STATUS_ARM_ID, criteriaHash(TRIAGE_LANE)] as const];
-  return ids.flatMap(([question_id, criteria_hash]) => (["zh", "en"] as const).map((lang) => ({ question_id, criteria_hash, model, lang, approved: "replay", evidence: "replay" })));
+export function proxyLabel(tools: Tools, prevKind: HougeTurnKind | null): ProxyLabel {
+  const hit = PROXY_RULES.find(([, , matches]) => matches(tools));
+  if (hit) return { category: hit[1], rule: hit[0] };
+  if (Object.keys(tools).length > 0) return { category: null, rule: "unmatched_tools" };
+  return prevKind === "proposal" ? { category: null, rule: "ack_after_proposal" } : { category: "answer", rule: "no_tool" };
 }
 
-/** The verdict the live code would reach on these answers once armed (the one gate, `triageVerdict`, not a copy). */
-export function replayVerdict(answers: Record<string, JevAnswer>, bars: TriageBars, lang: Lang, model: string): TriageReplayVerdict {
-  const v = triageVerdict(answers, bars, lang, model, armedAsIf(model));
-  return v.kind === "memory" ? (v.complete === "pure" ? "memory_pure" : "memory_mixed") : v.kind;
+/** `category` asked with its options reversed: the order-bias probe (spec §7 permutation agreement). */
+export const TREE_CATEGORY_PERMUTED: ChoiceQuestion = { ...TREE_CATEGORY, criteria: [...TREE_CATEGORY.criteria].reverse() };
+export function treeQuestions(permute: boolean): readonly Question[] {
+  return permute ? TREE_QUESTIONS.map((q) => (q.id === TREE_CATEGORY.id ? TREE_CATEGORY_PERMUTED : q)) : TREE_QUESTIONS;
 }
 
-const LABEL_SCOPES = new Set(["ask", "research", null]);
-function isLabel(r: Record<string, unknown>): r is Record<string, unknown> & TriageLabel & { turn_id: string } {
-  return typeof r.turn_id === "string" && typeof r.memory === "boolean" && typeof r.status === "boolean"
-    && (r.pure === null || typeof r.pure === "boolean") && LABEL_SCOPES.has(r.scope as string | null) && r.by === "paco" && typeof r.at === "string";
+const CATEGORY_SET: ReadonlySet<string> = new Set(CATEGORIES);
+function isLabel(r: Record<string, unknown>): r is Record<string, unknown> & TreeLabel & { turn_id: string } {
+  return typeof r.turn_id === "string" && typeof r.category === "string" && CATEGORY_SET.has(r.category) && r.by === "paco" && typeof r.at === "string";
 }
 
 /** Paco's labels, keyed by turn_id (a later line overrides an earlier one). A malformed line throws: a dropped label is a silent bias. */
-export function loadLabels(path: string): Map<string, TriageLabel> {
-  const m = new Map<string, TriageLabel>();
+export function loadLabels(path: string): Map<string, TreeLabel> {
+  const m = new Map<string, TreeLabel>();
   if (!existsSync(path)) return m;
   readFileSync(path, "utf8").split("\n").forEach((line, i) => {
     if (!line.trim()) return;
     let r: Record<string, unknown>;
     try { r = JSON.parse(line) as Record<string, unknown>; } catch { throw new Error(`labels: line ${i + 1} is not JSON`); }
-    if (!isLabel(r)) throw new Error(`labels: line ${i + 1} is not {turn_id, memory, status, pure, scope, by:"paco", at}`);
-    const { turn_id, memory, status, pure, scope, by, at } = r;
-    m.set(turn_id, { memory, status, pure, scope, by, at });
+    if (!isLabel(r)) throw new Error(`labels: line ${i + 1} is not {turn_id, category (one of the 11), by:"paco", at}`);
+    m.set(r.turn_id, { category: r.category, by: r.by, at: r.at });
   });
   return m;
 }
 
-export interface TriageReplayDeps {
+/** One row per key, latest wins: what the report and the labeller read. */
+export function readReplayFile(path: string): TreeReplayRow[] {
+  return [...readDone(path, TREE_DONE).values()] as unknown as TreeReplayRow[];
+}
+
+export interface TreeReplayDeps {
   store: RunStore; env: NodeJS.ProcessEnv; jev: (req: JevRequest) => Promise<JevResult>; outPath: string; maxUsd: number; dryRun: boolean;
   limit?: number; log?: (l: string) => void; permute?: boolean;
 }
 
-/** The real replay universe: Telegram turns since the label epoch, ignoring `--limit` (the report's denominator, not rows.length). */
-export function triageUniverse(store: RunStore): number {
-  return store.listReplayTurns({ sinceIso: TRIAGE_LABEL_SINCE }).filter((t) => store.runSource(t.run_id) === "telegram").length;
+function telegramTurns(store: RunStore, limit?: number): ReplayTurnRow[] {
+  return store.listReplayTurns({ sinceIso: TREE_LABEL_SINCE, ...(limit !== undefined ? { limit } : {}) })
+    .filter((t) => store.runSource(t.run_id) === "telegram");
 }
 
-export async function runTriageReplay(d: TriageReplayDeps): Promise<ReplayCoreOutcome<TriageReplayRow>> {
+/** The real replay universe, ignoring `--limit` (the report's denominator, not rows.length). */
+export function treeUniverse(store: RunStore): number {
+  return telegramTurns(store).length;
+}
+
+export async function runTreeReplay(d: TreeReplayDeps): Promise<ReplayCoreOutcome<TreeReplayRow>> {
   guardOutPath(d);
-  const lane = d.permute ? TRIAGE_LANE_PERMUTED : TRIAGE_LANE;
+  const questions = treeQuestions(d.permute === true);
   const suffix = d.permute ? ":perm" : "";
-  const turns = d.store.listReplayTurns({ sinceIso: TRIAGE_LABEL_SINCE, ...(d.limit !== undefined ? { limit: d.limit } : {}) })
-    .filter((t) => d.store.runSource(t.run_id) === "telegram");
-  const byKey = new Map(turns.map((t) => [`${t.turn_id}${suffix}`, t]));
+  const byKey = new Map(telegramTurns(d.store, d.limit).map((t) => [`${t.turn_id}${suffix}`, t]));
   // Reported models seen in this run's evidence, seeded from rows already in the file (a move across a resume still warns).
-  const models = new Set<string>(d.dryRun ? [] : [...readDone(d.outPath, DONE).values()].flatMap((r) => (typeof r.model === "string" ? [r.model] : [])));
-  return runReplayCore<TriageReplayRow>({
+  const models = new Set<string>(d.dryRun ? [] : [...readDone(d.outPath, TREE_DONE).values()].flatMap((r) => (typeof r.model === "string" ? [r.model] : [])));
+  return runReplayCore<TreeReplayRow>({
     source: () => [...byKey.keys()].map((key) => ({ key })),
-    doneStatuses: DONE, outPath: d.outPath, maxUsd: d.maxUsd, dryRun: d.dryRun, ...(d.log ? { log: d.log } : {}),
+    doneStatuses: TREE_DONE, outPath: d.outPath, maxUsd: d.maxUsd, dryRun: d.dryRun, ...(d.log ? { log: d.log } : {}),
     estimateUsd: (row) => jevUsd(Math.ceil(((row as Prepared).chars / 3) * CJK_UNDERCOUNT), d.env),
     prepare: async ({ key }) => prepareTurn(d, key, byKey.get(key)!),
     publicRow: (row) => { const { state: _s, chars: _c, ...rest } = row as Prepared; return rest; }, // no text in the outcome
-    dispatch: async (row) => dispatchTurn(d, row as Prepared, lane, models)
+    dispatch: async (row) => dispatchTurn(d, row as Prepared, questions, models)
   });
 }
 
 /** A wiring slip must not mix the permuted rows into the canonical file (or back): the report reads each file whole. */
-function guardOutPath(d: TriageReplayDeps): void {
+function guardOutPath(d: TreeReplayDeps): void {
   const out = resolve(d.outPath);
-  if (d.permute && out === resolve(TRIAGE_REPLAY_OUT)) throw new Error(`a permuted run must not write to the canonical ${TRIAGE_REPLAY_OUT}`);
-  if (!d.permute && out === resolve(TRIAGE_PERMUTED_OUT)) throw new Error(`a canonical run must not write to the permuted ${TRIAGE_PERMUTED_OUT}`);
+  if (d.permute && out === resolve(TREE_REPLAY_OUT)) throw new Error(`a permuted run must not write to the canonical ${TREE_REPLAY_OUT}`);
+  if (!d.permute && out === resolve(TREE_PERMUTED_OUT)) throw new Error(`a canonical run must not write to the permuted ${TREE_PERMUTED_OUT}`);
 }
 
 /** When the live path cut the thread and built the state: the recorded instants, else the row's write time, else its `triage` event. */
@@ -131,27 +157,34 @@ function liveInstantsOf(store: RunStore, run_id: string): { cut: string; before:
   return at ? { cut: at, before: at, built: at } : undefined;
 }
 
-function prepareTurn(d: TriageReplayDeps, key: string, t: ReplayTurnRow): Prepared | { skip: TriageReplayRow } {
-  const caps = d.store.runLoopCapabilities(t.run_id);
+function prepareTurn(d: TreeReplayDeps, key: string, t: ReplayTurnRow): Prepared | { skip: TreeReplayRow } {
   const anchor = t.anchor ?? t.created_at;
   const { cut, before, built: builtAt } = liveInstantsOf(d.store, t.run_id) ?? { cut: anchor, before: anchor, built: anchor };
   const recent = d.store.getChatTurnsBefore(t.chat_id, resolveChatContextTurns(d.env), chatContextSince(d.env, new Date(cut)), before, t.run_id);
-  const built = buildTriageState({ userText: t.text, recentTurns: recent, turnChars: resolveChatContextTurnChars(d.env), modality: "text",
-    lastHougeTurn: lastHougeTurnOf(recent, Date.parse(builtAt)) });
-  const base: TriageReplayRow = { key, turn_id: t.turn_id, run_id: t.run_id, lang: langOf(t.text), status: "ok", est_usd: 0,
-    observed_lesson_write: caps.includes("lesson_write"), observed_other_tools: caps.some((c) => c !== "lesson_write"),
-    state_hash: built.ok ? stateHash(built.state) : "" };
+  const nowMs = Date.parse(builtAt);
+  const lastHougeTurn = lastHougeTurnOf(recent, nowMs);
+  const quotedRow = t.quoted_turn_id ? d.store.getChatTurnById(t.quoted_turn_id) : undefined;
+  const quotedTurn = quotedRow ? quotedTurnFromRow(quotedRow, nowMs) : null;
+  const built = buildTreeState({ userText: t.text, recentTurns: recent, turnChars: resolveChatContextTurnChars(d.env), modality: "text",
+    lastHougeTurn, quotedTurn });
+  const tools = d.store.runLoopCapabilityCounts(t.run_id);
+  const proxy = proxyLabel(tools, quotedTurn?.kind === "proposal" ? "proposal" : lastHougeTurn?.kind ?? null);
+  const pre = preJudge({ text: t.text, lastHougeTurn, quoted: quotedTurn !== null });
+  const base: TreeReplayRow = { key, turn_id: t.turn_id, run_id: t.run_id, lang: langOf(t.text), status: "ok", est_usd: 0,
+    state_hash: built.ok ? stateHash(built.state) : "", tools, proxy: proxy.category, proxy_rule: proxy.rule, pre_judge: pre.kind,
+    think_harder: pre.kind === "judge" && pre.thinkHarder, bare_ack: isBareAck(t.text), quoted: quotedTurn !== null };
   if (!built.ok) return { skip: { ...base, status: "skipped_state_too_large" } };
   return { ...base, state: built.state, chars: built.chars };
 }
 
-async function dispatchTurn(d: TriageReplayDeps, row: Prepared, lane: ChoiceQuestion, models: Set<string>): Promise<TriageReplayRow> {
+/** One request with all six questions (spec §2.3); the answers are stored whole (numbers and option keys only). */
+async function dispatchTurn(d: TreeReplayDeps, row: Prepared, questions: readonly Question[], models: Set<string>): Promise<TreeReplayRow> {
   const { state, chars: _chars, ...rest } = row;
-  const questions: JevRequest["questions"] = {};
-  for (const q of TRIAGE_QUESTIONS) questions[q.id] = toJevQuestion(q.id === lane.id ? lane : q);
-  const r = await d.jev({ state, questions });
+  const wire: JevRequest["questions"] = {};
+  for (const q of questions) wire[q.id] = toJevQuestion(q);
+  const r = await d.jev({ state, questions: wire });
   if (!r.ok) {
-    // The reason enum only — never the client's detail string (spec: rows carry ids, enums, numbers).
+    // The reason enum only — never the client's detail string (rows carry ids, enums, numbers).
     const stop = r.reason === "fused" ? "fused" : r.reason === "auth" || r.reason === "no_key" ? "auth" : undefined;
     return { ...rest, status: "jev_failed", error: r.reason, ...(stop ? { stop } : {}) };
   }
@@ -159,14 +192,8 @@ async function dispatchTurn(d: TriageReplayDeps, row: Prepared, lane: ChoiceQues
     d.log?.(`warning: Jev reported model "${r.model}" mid-run, earlier rows reported ${[...models].join(", ")} — the report refuses mixed models`);
   }
   models.add(r.model);
-  // The client validated each answer against its question's type, so these are choice answers; a miss is a parse failure.
-  const a = choiceAnswer(r.answers.lane); const complete = choiceAnswer(r.answers.complete); const scope = choiceAnswer(r.answers.scope);
-  if (!a) return { ...rest, status: "jev_failed", error: "error" };
-  return { ...rest, status: "ok", usd: jevUsd(r.input_tokens, d.env), model: r.model, criteria_hash_lane: criteriaHash(lane), jev_lane: a.choice,
-    p_memory: a.probabilities.memory ?? 0, p_status: a.probabilities.status ?? 0, p_none: a.probabilities.none ?? 0,
-    conf_lane: a.confidence, margin_lane: marginOf(a), p_pure: complete?.probabilities.pure ?? 0,
-    ...(scope ? { scope: scope.choice } : {}),
-    verdict: replayVerdict(r.answers, resolveTriageBars(d.env), rest.lang, r.model) };
+  return { ...rest, status: "ok", usd: jevUsd(r.input_tokens, d.env), model: r.model,
+    criteria_hashes: Object.fromEntries(questions.map((q) => [q.id, criteriaHash(q)])), answers: r.answers };
 }
 
 /** Priced by the "jev-" prefix row in metered-pricing, which matches the alias and every versioned id alike. */

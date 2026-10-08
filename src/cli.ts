@@ -309,7 +309,7 @@ if (command === "run") {
     store.close();
   }
 } else if (command === `jev`) { // backticks: panel-judge-providers.test greps src for the double-quoted provider name; this is the subcommand, not a provider
-  // Lane 1 triage calibration (spec §5.9): replay the frozen questions over history, label by hand, report the verdict.
+  // Decision-tree calibration (spec 2026-10-06 §7): replay the six tree questions over history, label by hand, report the evidence.
   const sub = rest[0];
   if (rest[1] !== "triage" || !["replay", "label", "report"].includes(sub ?? "")) {
     console.error("Usage: houge jev replay triage [--dry-run] [--max-usd N] [--limit N] [--permute] | houge jev label triage [--sample=N] | houge jev report triage");
@@ -329,47 +329,41 @@ if (command === "run") {
     process.exit(1);
   }
   const T = await import("./jev/triage-replay.js");
-  const { readDone } = await import("./jev/replay-core.js");
   const store = RunStore.open("houge.sqlite", storeOptions);
   try {
-    const DONE = new Set(["ok", "skipped_state_too_large"]);
-    const fileRows = (path: string) => [...readDone(path, DONE).values()] as unknown as import("./jev/triage-replay.js").TriageReplayRow[];
     if (sub === "label") {
       const { labelInteractively, selectForLabelling } = await import("./jev/triage-label.js");
-      const picked = selectForLabelling(fileRows(T.TRIAGE_REPLAY_OUT), T.loadLabels(T.TRIAGE_LABELS_PATH), flags.sample ?? 40);
-      const n = await labelInteractively({ rows: picked, store, labelsPath: T.TRIAGE_LABELS_PATH, input: process.stdin, output: process.stdout });
+      const picked = selectForLabelling(T.readReplayFile(T.TREE_REPLAY_OUT), T.loadLabels(T.TREE_LABELS_PATH), flags.sample ?? 40);
+      const n = await labelInteractively({ rows: picked, store, labelsPath: T.TREE_LABELS_PATH, input: process.stdin, output: process.stdout });
       console.error(`labelled ${n} of ${picked.length}`);
     } else {
-      const { formatTriageReport, replayReportedModel } = await import("./jev/triage-report.js");
-      const { resolveTriageBars } = await import("./jev/thresholds.js");
-      const universe = T.triageUniverse(store);
-      console.error(`replay universe: ${universe} Telegram turns since ${T.TRIAGE_LABEL_SINCE} (spec expected 288; a different number is information, not an error)`);
-      let outcome: import("./jev/triage-report.js").TriageReportOutcome = { spentUsd: 0, estimatedUsd: 0, universe, ...(args.limit !== undefined ? { limited: true } : {}) };
-      let rows: import("./jev/triage-replay.js").TriageReplayRow[];
+      const { formatTreeReport } = await import("./jev/triage-report.js");
+      const { TREE_BAR_DEFAULTS } = await import("./jev/tree-policy.js");
+      const universe = T.treeUniverse(store);
+      console.error(`replay universe: ${universe} Telegram turns since ${T.TREE_LABEL_SINCE} (the spec counted 305 runs on 2026-10-06; a different number is information, not an error)`);
+      let outcome: import("./jev/triage-report.js").TreeReportOutcome = { spentUsd: 0, estimatedUsd: 0, universe, ...(args.limit !== undefined ? { limited: true } : {}) };
+      let rows: import("./jev/triage-replay.js").TreeReplayRow[];
       if (sub === "replay") {
         const { createJevClient } = await import("./jev/jev-client.js");
         const jev = createJevClient({
           apiKey: broker ? broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
-          audit: store.llmAuditSink({ correlation_id: "cli:jev-triage-replay", role: "triage" }),
+          audit: store.llmAuditSink({ correlation_id: "cli:jev-tree-replay", role: "triage" }),
           meteredBreached: () => store.meteredFuseLatched(),
           retries: 3,
           timeoutMs: 15_000
         });
-        const run = await T.runTriageReplay({ store, env: process.env, jev, outPath: flags.permute ? T.TRIAGE_PERMUTED_OUT : T.TRIAGE_REPLAY_OUT, maxUsd: args.maxUsd,
+        const run = await T.runTreeReplay({ store, env: process.env, jev, outPath: flags.permute ? T.TREE_PERMUTED_OUT : T.TREE_REPLAY_OUT, maxUsd: args.maxUsd,
           dryRun: args.dryRun, permute: flags.permute, ...(args.limit !== undefined ? { limit: args.limit } : {}), log: (l) => console.error(l) });
         // One row per key, latest wins (the file), never this run's raw rows; a dry run writes nothing, so its own rows speak.
-        rows = args.dryRun ? run.rows : fileRows(T.TRIAGE_REPLAY_OUT);
+        rows = args.dryRun ? run.rows : T.readReplayFile(T.TREE_REPLAY_OUT);
         outcome = { ...outcome, spentUsd: run.spentUsd, estimatedUsd: run.estimatedUsd, wouldDispatch: run.wouldDispatch, alreadyDone: run.alreadyDone, skipped: run.skipped,
           ...(run.stopped ? { stopped: run.stopped } : {}) };
         process.exitCode = run.stopped ? 1 : 0;
       } else {
-        rows = fileRows(T.TRIAGE_REPLAY_OUT);
+        rows = T.readReplayFile(T.TREE_REPLAY_OUT);
       }
-      const permuted = fileRows(T.TRIAGE_PERMUTED_OUT); // no file = "NOT RUN", not "covers nothing"
-      // The shadow is filtered by the model the replay rows reported (none or mixed → no stats; the report blocks either way).
-      const model = replayReportedModel(rows);
-      console.log(formatTriageReport(rows, T.loadLabels(T.TRIAGE_LABELS_PATH), outcome, resolveTriageBars(process.env), permuted.length > 0 ? permuted : undefined,
-        model ? store.triageShadowStats(T.TRIAGE_LABEL_SINCE, model) : undefined));
+      const permuted = T.readReplayFile(T.TREE_PERMUTED_OUT); // no file = "NOT RUN", not "covers nothing"
+      console.log(formatTreeReport(rows, T.loadLabels(T.TREE_LABELS_PATH), outcome, TREE_BAR_DEFAULTS, permuted.length > 0 ? permuted : undefined));
     }
   } finally {
     store.close();

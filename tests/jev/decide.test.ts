@@ -1,12 +1,55 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createJevClient } from "../../src/jev/jev-client.js";
 import { decide, marginOf, persistDecisionRows, recordSkip, stateHash, topProbOf } from "../../src/jev/decide.js";
-import { TRIAGE_QUESTIONS } from "../../src/jev/questions/triage.js";
-import { criteriaHash, type Question } from "../../src/jev/questions/types.js";
+import { criteriaHash, type ChoiceQuestion, type Question } from "../../src/jev/questions/types.js";
 import { JEV_INCIDENT_SUBJECT } from "../../src/jev/jev-incidents.js";
 import { ALERT_REOPEN_QUIET_MS } from "../../src/run/incident-alert.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { recordingSink } from "../helpers/llm-audit.js";
+
+// Lane 1's three questions, copied verbatim from lane 1's removed triage questions module: decide() is question-agnostic, so they are fixture data.
+const TRIAGE_LANE: ChoiceQuestion = {
+  id: "lane",
+  type: "choice",
+  instructions:
+    "What should Houge do with `latest_message`? Houge is the AI agent in this conversation; \"Houge\", \"猴哥\", " +
+    "\"you\" and \"your\" mean Houge. `recent_turns` is the conversation before `latest_message`, oldest first. " +
+    "`last_houge_turn.kind` says what Houge's previous message was.",
+  criteria: [
+    ["none",
+      "Everything else: a question, a task, a lookup, small talk, a bare acknowledgement such as 好 / 嗯 / ok / 👍 / 是的 " +
+      "even right after Houge saved or proposed something, an answer to a question Houge asked, or a message about " +
+      "Houge's code or schedules."],
+    ["status",
+      "`latest_message` asks whether Houge restarted, which build or code is live, or whether it is running normally; " +
+      "nothing else."],
+    ["memory",
+      "`latest_message` tells Houge how to behave from now on, states something about the user to remember, or corrects " +
+      "something Houge believes. Signals: 以后 / 从现在起 / 记住 / 不要再 / 别再 / always / never / from now on / remember / " +
+      "prefer, or a correction of Houge's previous reply in `recent_turns` that applies to future replies too."]
+  ]
+};
+
+const TRIAGE_COMPLETE: ChoiceQuestion = {
+  id: "complete",
+  type: "choice",
+  instructions: "Does `latest_message` contain anything besides a preference, fact or correction for Houge to keep?",
+  criteria: [
+    ["mixed", "`latest_message` also asks something, requests work, or continues a task."],
+    ["pure", "It contains only the preference, fact or correction; nothing asks a question, requests work, or expects more than a confirmation."]
+  ]
+};
+
+const TRIAGE_SCOPE: ChoiceQuestion = {
+  id: "scope",
+  type: "choice",
+  instructions: "If `latest_message` is a preference or correction, which part of Houge's behaviour is it about?",
+  criteria: [
+    ["ask", "How Houge replies in conversation: length, tone, language, format, what to include or leave out."],
+    ["research", "How Houge searches, which sources it trusts, or how it cites and reports what it found."]
+  ]
+};
+const TRIAGE_QUESTIONS: readonly Question[] = [TRIAGE_LANE, TRIAGE_COMPLETE, TRIAGE_SCOPE];
 
 /** The versioned id Jev REPORTS (the request sends the moving alias `jev-latest`); calibration rows key on it. */
 const REPORTED = "jev-1.13.0";
