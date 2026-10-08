@@ -1,4 +1,39 @@
-# 🧭 CURRENT SYSTEM STATE — 2026-10-06 (read this first)
+# 🧭 CURRENT SYSTEM STATE — 2026-10-09 (read this first)
+
+**Jev decision tree, stage A: BUILT on branch `feat/jev-tree-stage-a` (worktree `.worktrees/jev-tree-a`); NOT merged,
+NOT built into `dist/` on `main`, NOT live.** The daemon still runs lane 1 from `main`. Tasks 1 to 14 are done. The
+default live gate (`scripts/live-gate-jev-tree.mjs`, real Jev and omp on a DB copy) PASSED on runs 3, 4 and 5 after the
+event-loop fix (silent skips 0 of 9; the cascade case 12a answered in 14 s of the 20 s bound). Reference:
+`docs/reference/jev-decision-layer.md`; flags and model roles: `docs/reference/configuration.md` § Jev System One and
+§ Model roles; spec Rev 9; ADR 0029 / 0028 amendments are drafts awaiting Paco's approval (separate commit).
+
+Until Paco commits calibration rows, **every armed turn routes `uncalibrated` to the planner on Default**, and the memory
+and status lanes do **not** act (lane 1's rows name retired hashes). Do not merge and kickstart before the rows land.
+
+Pre-merge checklist (the order matters):
+- [x] omp startup check passes (`omp --version` reports `18.7.0`; no pin, `a49da40`).
+- [ ] **Paco:** run the replay on a DB copy, read the arming-combination lines, commit `CALIBRATED_ROWS` for the
+  questions he chooses (`houge jev replay triage --dry-run`, then the full run, then `houge jev report triage`).
+  Couplings: the memory lane needs `category` + `rule`; the status lane `category:status` + `rule`; `category` alone
+  already moves turns off Default.
+- [ ] `node scripts/live-gate-jev-tree.mjs --real-calibration` PASS with the memory and status lanes **acting** (an
+  INCONCLUSIVE on cases 1 or 2 is a FAIL there). Not run: it awaits the rows.
+- [x] `npm run typecheck && npm test && npm run build` green on the branch, none skipped (see the 2026-10-09 session entry).
+- [x] Cascade ruling recorded (Decision 14: live, 20 s, Tiny role); case 12a PASS.
+- [ ] Merge to `main`, `npm run build`, then **Paco kickstarts** (new migrations: `jev_verdicts`, `chat_turns.quoted_turn_id`;
+  the model-role resolver starts at boot). Check first: `houge.parked` / `houge.kill`, non-terminal runs and the evolution
+  lane. A kickstart is owed; nothing about this branch reaches the daemon without it.
+- [ ] Rollback if needed: `docs/reference/jev-decision-layer.md` § Rolling back.
+
+Decisions Paco still owns (from the plan reviews, none blocking the build): the offered-work clause on the three score
+questions (spec §2.3 puts it on `category` only); `shadow` is now a legacy flag value that arms nothing (consider
+retiring it); the status lane's stricter floors; `HOUGE_JEV_TRIAGE_MIN_*` env bars are gone (bars are code); CLI one-shots
+read the static role lists; Kimi exit (judge seat 0).
+
+---
+
+# Earlier state block — 2026-10-06
+
 
 **Jev lane 1 (pre-planner triage: memory + status lanes): MERGED and pushed; ARMED and LIVE on the daemon since
 2026-10-06 (boot 9; ADR 0029 accepted).** `CALIBRATED_ROWS` arms both lanes in

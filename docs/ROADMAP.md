@@ -189,6 +189,18 @@ knowledge Houge owns; Earn is parked behind SP1.
 
 **Delta 2026-10-06: Jev lane 1 is built** (`feat/jev-lane1`, not merged; 3438 tests green, live gate PASS). It cannot act until Paco commits calibration rows after the replay, labelling sitting and shadow period; see `tasks/todo.md` for what he owes. Lane 2 starts after lane 1 is armed or Paco reorders.
 
+**Delta 2026-10-09: Jev decision tree, stage A, is built** (`feat/jev-tree-stage-a`, not merged; default live gate PASS;
+spec Rev 9, plan Rev 5). It replaces the lane 1 shape: one decision point of six typed questions, lanes as the leaf type
+(memory and status re-attached), model roles (`src/omp/model-roles.ts`, `/models`, `HOUGE_MODEL_ROLES`) in place of the
+seven `HOUGE_OMP_*` chains, a two-axis planner chain, the Telegram quote anchor, `jev_verdicts`, and a live 20 s Tiny-role
+cascade. It cannot act until Paco commits `CALIBRATED_ROWS` from the replay; lane 1's rows armed nothing after it.
+Merge is gated on his rows and the armed `--real-calibration` gate (`tasks/todo.md`). **Next after it:** stage B (the
+`answer` and `lookup` lanes, 58% of past turns), then stage C (`schedule` and `wiki` lanes, the research-lane question);
+`mail_calendar` lands with SP2. Standing follow-ups from the build: the omp contract probe (below, now also the
+place to prove `omp models --json` under the allowlisted child env), CLI one-shots (`houge jev replay`,
+`lessons consolidate`, `radar-panel`) still read the static lists so `/models` does not reach them, and Kimi exits next
+year (every list keeps a non-Kimi leg; judge seat 0 needs a replacement selector then).
+
 **Delta 2026-10-07: two small builds queued (Paco).**
 - **Standing approval for a scheduled command.** The Alishan room check needs one Approve tap a day: the hotel's
   search only answers a POST, and the shell gate treats every `curl` POST as an HTTP write
@@ -201,7 +213,8 @@ knowledge Houge owns; Earn is parked behind SP1.
   self-test that checks the catalog parses, the start and pin refusal texts still classify, and an RPC session opens.
   A pass records the version as known-good; a failure opens an incident and sends a Telegram line.
 
-**Next, in order (re-sequenced 2026-10-04, [ADR 0029](decisions/0029-jev-system-one.md)):** SP1 is live (boot 7,
+**Next, in order (re-sequenced 2026-10-04, [ADR 0029](decisions/0029-jev-system-one.md); lane 1 and lane 2 became the
+stage A decision tree on 2026-10-09, see the delta above):** SP1 is live (boot 7,
 memory A1 shipped) → **Jev System One, lane 1** (pre-planner triage → memory + status lanes; the shared decision
 layer: question library, `decide()`, decision rows, replay harness; spec
 `docs/superpowers/specs/2026-10-04-jev-system-one-design.md`, under review) → **Jev lane 2** (model routing:
