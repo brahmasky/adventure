@@ -1582,3 +1582,20 @@ consequences), 0002, 0010, 0014, 0027 and 0029 name omp, Claude and the role lis
 its version (`fa7821d`). The 0028 model-roles and 0029 decision-tree amendments are approved; 0029 gains the arming
 amendment. Docs synced (README, CONTEXT, ROADMAP, configuration, jev-decision-layer, todo, lessons). Merged to `main`,
 pushed, `dist/` rebuilt. A Paco kickstart makes it live.
+
+## 2026-10-09 (late) — omp contract probe
+
+Paco asked why every turn called `omp --version`. It did not on chat turns (the planner child checks once per spawn), but
+every one-shot call (ticks, judges, chair, reader, reviewer) paid ~0.8 s for it, and since the 2026-10-07 unpin the check
+only caught an omp that would not run. With the pin gone, nothing noticed a quiet contract change either. Paco chose: a
+probe per new omp version that pages and keeps running, with one tiny real prompt; the version check folded in.
+
+Spec Rev 1 → 3: a senior review against the live omp (no prompt) and a codex pass found the probe's temp dir is denied
+by Seatbelt, `set_thinking_level` answers success to any level, and the RPC names the spec assumed did not exist; the
+plan review then found omp emits `thinking_level_changed` only on a change, so the effort check moves to another
+catalogued level and back. Seven SDD tasks (version cache; both spawn chokepoints read it; probe seams; the probe; the
+runner with one `omp_contract_probe` row and `omp_contract_drift`; boot wiring and `houge omp probe`; the live gate).
+Whole-branch review (correctness, security, testing, codex) drove one fix wave: a stalled `open_session` no longer
+pages as drift, aborts await their children, the catalog read is abortable, the CLI handles Ctrl-C and refuses outside
+the project root, and gate step 4 proves the daemon's automatic path live. 3871 tests, gate PASS 4/4 on omp 18.7.0.
+Not merged: Paco's call.

@@ -172,7 +172,7 @@ gate works; convergence under the evidence regime is now the top functional gap.
 9. **The real omp binary is the only proof of runtime wiring.** Hermetic tests stub omp; any change to
    the planner, bridge, extension, floors or seats closes on `scripts/live-gate-omp.mjs --smoke` (and
    the full gate when user-facing). A planner refusal of a safety probe is INCONCLUSIVE, never PASS.
-   Moving the omp version pin means smoking the new binary first.
+   An omp upgrade is probed by the daemon on its own (contract probe, 2026-10-09); smoke it too before relying on it.
 
 ---
 
@@ -198,8 +198,7 @@ cascade. Paco armed it on 14 `CALIBRATED_ROWS` (six questions plus `category:sta
 a client bug (two-decimal rounding rejected ~3% of Jev answers), fixed before arming. Known weakness: research read as
 lookup (26 of 59). Stage B also owes a guard for a two-request message that Jev confidently calls `memory`. **Next after it:** stage B (the
 `answer` and `lookup` lanes, 58% of past turns), then stage C (`schedule` and `wiki` lanes, the research-lane question);
-`mail_calendar` lands with SP2. Standing follow-ups from the build: the omp contract probe (below, now also the
-place to prove `omp models --json` under the allowlisted child env), CLI one-shots (`houge jev replay`,
+`mail_calendar` lands with SP2. Standing follow-ups from the build: CLI one-shots (`houge jev replay`,
 `lessons consolidate`, `radar-panel`) still read the static lists so `/models` does not reach them, and Kimi exits next
 year (every list keeps a non-Kimi leg; judge seat 0 needs a replacement selector then).
 
@@ -211,9 +210,8 @@ year (every list keeps a non-Kimi leg; judge seat 0 needs a replacement selector
   any other command, or this one from a non-scheduled turn, still asks. It can be revoked from `/schedule`.
   Reported where scheduled runs use it. It touches the gate machinery, so it needs its own spec and Paco's sign-off.
   It is preferred over an endpoint allowlist, which would also exempt a real booking POST to the same host.
-- **omp contract probe.** The version pin was removed on 2026-10-07. Replace it with a once-per-new-version
-  self-test that checks the catalog parses, the start and pin refusal texts still classify, and an RPC session opens.
-  A pass records the version as known-good; a failure opens an incident and sends a Telegram line.
+- **omp contract probe.** BUILT 2026-10-09 (ADR 0028 amendment): seven checks per omp version with no passing probe,
+  `omp_contract_drift` pages without blocking, `omp --version` once per binary, `houge omp probe`; live gate 4/4.
 
 **Next, in order (re-sequenced 2026-10-04, [ADR 0029](decisions/0029-jev-system-one.md); lane 1 and lane 2 became the
 stage A decision tree on 2026-10-09, see the delta above):** SP1 is live (boot 7,
