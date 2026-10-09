@@ -1539,6 +1539,9 @@ export class CoreWorker {
   /** The worker's model-role service: the daemon's boot catalog read, ticks and (Task 11) `/models` use this one instance. */
   modelRoles(): RoleResolver { return this.roles; }
 
+  /** The contract probe's config and path context (spec §3 Boot): the same ones every spawn uses. */
+  ompProbeContext(): { cfg: OmpConfig; ctx: PathContext } { return { cfg: this.ompConfig(), ctx: this.ompPathContext() }; }
+
   /** The omp config with the seat chains as the roles resolve them now. */
   private ompConfig(): OmpConfig { return resolveOmpConfig(process.env, this.roles.chains()); }
 

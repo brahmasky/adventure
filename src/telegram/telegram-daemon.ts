@@ -9,12 +9,14 @@ import { runIdeaRadarTick } from "../capabilities/idea-radar.js";
 import { runLessonConsolidateTick } from "../capabilities/lesson-consolidate.js";
 import { runSkillReverifyTick } from "../capabilities/skill-reverify.js";
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
-import { tickCorrelationId, tickSeat } from "../llm/registry.js";
+import { reportOmpCheck, tickCorrelationId, tickSeat } from "../llm/registry.js";
 import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
 import { CoreWorker, type OmpWorkerOptions } from "../core/core-worker.js";
 import { resolveOmpConfig, warnRetiredOmpChainVars } from "../omp/omp-config.js";
 import { runModelRolesTick } from "../omp/model-roles-tick.js";
+import { createOmpProbeRunner, type OmpProbeRunner } from "../omp/omp-probe-runner.js";
+import { sharedOmpVersionCache } from "../omp/omp-version-cache.js";
 import { stableHash } from "../domain/canonical.js";
 import type { RoleResolver } from "../omp/role-resolver.js";
 import { errorCode } from "../domain/error-code.js";
@@ -103,6 +105,8 @@ export interface RunTelegramDaemonOptions {
   outboxPumpMs?: number;
   /** How often expired planner leases are recovered (default half of HOUGE_OMP_LEASE_TTL_S; B1). Tests shorten it. */
   leaseRecoveryMs?: number;
+  /** Injectable for tests ONLY: the contract probe runner (spec §5). Prod omits it and gets the real runner. */
+  ompProbeRunner?: (d: Parameters<typeof createOmpProbeRunner>[0]) => Pick<OmpProbeRunner, "maybeProbe">;
 }
 
 export type { PanelSeatBindings } from "../capabilities/idea-panel-seats.js";
@@ -110,6 +114,20 @@ export type { PanelSeatBindings } from "../capabilities/idea-panel-seats.js";
 export interface RunTelegramDaemonResult {
   cycles: number;
   consecutive_failures: number;
+}
+
+/** Spec §3 Boot: one bounded version check, its incident as any check's, and the probe runner as the new-version listener. */
+async function startOmpProbe(options: RunTelegramDaemonOptions, worker: CoreWorker): Promise<void> {
+  try {
+    const { cfg, ctx } = worker.ompProbeContext();
+    const cache = sharedOmpVersionCache(cfg);
+    const runner = (options.ompProbeRunner ?? createOmpProbeRunner)({ store: options.store, cfg, ctx, roles: worker.modelRoles(),
+      currentVersion: () => cache.lastVersion(), signal: options.stopSignal });
+    cache.setNewVersionListener((v) => runner.maybeProbe(v));
+    reportOmpCheck(options.store, cfg, await cache.current());
+  } catch (error) {
+    console.error(`[telegram-daemon] omp probe start failed: ${errorCode(error)}`);
+  }
 }
 
 /** Sleep that resolves early when the signal aborts (so shutdown isn't delayed). */
@@ -187,6 +205,7 @@ export async function runTelegramDaemon(
   // Model roles (spec 2026-10-06 §4): one catalog read before the first turn, bounded by CATALOG_TIMEOUT_MS. A failed
   // read leaves one ledger note and the roles on their lists (Decision 4); the poll loop retries it hourly (F14).
   await worker.modelRoles().refreshCatalog();
+  await startOmpProbe(options, worker);
   const recovery = bootPlanners(worker, options, now);
   const adapter = createTelegramLongPollingAdapter({
     allowlist: options.allowlist,

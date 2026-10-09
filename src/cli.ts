@@ -308,6 +308,25 @@ if (command === "run") {
   } finally {
     store.close();
   }
+} else if (command === "omp") {
+  // Contract probe by hand (spec 2026-10-09 §5 Manual): exit 0 pass, 1 fail, 2 inconclusive, 3 omp unavailable.
+  if (rest[0] !== "probe") {
+    console.error("Usage: houge omp probe");
+    process.exit(1);
+  }
+  if (readTombstone()) {
+    console.error(formatTombstoneParkedMessage(resolveTombstonePath(process.env)));
+    process.exit(1);
+  }
+  const { runOmpProbeCli } = await import("./omp/omp-probe-cli.js");
+  const store = RunStore.open("houge.sqlite", storeOptions);
+  let code = 1;
+  try {
+    code = await runOmpProbeCli({ store, env: process.env, cwd: process.cwd(), out: (l) => console.log(l) });
+  } finally {
+    store.close(); // before exit: process.exit inside try would skip it
+  }
+  process.exit(code);
 } else if (command === `jev`) { // backticks: panel-judge-providers.test greps src for the double-quoted provider name; this is the subcommand, not a provider
   // Decision-tree calibration (spec 2026-10-06 §7): replay the six tree questions over history, label by hand, report the evidence.
   const sub = rest[0];
