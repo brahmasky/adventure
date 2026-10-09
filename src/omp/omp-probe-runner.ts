@@ -10,7 +10,8 @@ import type { RoleResolver } from "./role-resolver.js";
 /**
  * The contract probe's runner (spec §5): probes each omp version once per process, off every turn's path, one probe at a
  * time (latest version wins). A version with a PASS row is never probed again. A fail on the current binary pages
- * `omp_contract_drift` once; a pass clears it; a stale binary's answer only records its row. Never blocks a spawn (D2).
+ * `omp_contract_drift` once; a pass clears it; an inconclusive clears an older binary's; a stale binary's answer only
+ * records its row. Never blocks a spawn (D2).
  */
 export const OMP_CONTRACT_DRIFT = "omp_contract_drift";
 const DRIFT_KINDS: ReadonlySet<string> = new Set([OMP_CONTRACT_DRIFT]);
@@ -30,8 +31,17 @@ export function settleProbe(store: RunStore, r: ProbeResult, currentVersion: str
       openAlertedIncident(store, { kind: OMP_CONTRACT_DRIFT, subject: `omp:${r.version}`, detail: { version: r.version, failed }, chat_id: null, now });
     } else if (r.result === "pass") {
       resolveOpenIncidents(store, DRIFT_KINDS, undefined, now);
+    } else {
+      resolveOlderDrift(store, `omp:${r.version}`, now);
     }
   });
+}
+
+/** An inconclusive current binary leaves its own drift open but makes an older binary's drift moot. */
+function resolveOlderDrift(store: RunStore, currentSubject: string, now: string): void {
+  for (const open of store.listOpenIncidents()) {
+    if (open.kind === OMP_CONTRACT_DRIFT && open.subject !== currentSubject) store.resolveIncident(open.incident_id, now);
+  }
 }
 
 export interface OmpProbeRunner {

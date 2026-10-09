@@ -65,6 +65,29 @@ describe("omp probe runner", () => {
     expect(store.latestOmpProbe("18.7.0", { result: "pass" })).toBeDefined();
   });
 
+  // An old binary's drift is moot once the current binary is probed without drift: it must not page forever.
+  it("an inconclusive on the current version resolves an older binary's drift, never its own", () => {
+    settleProbe(store, result("18.7.0", "fail"), "18.7.0", NOW);
+    settleProbe(store, result("18.8.0", "fail"), "18.8.0", NOW);
+    settleProbe(store, result("18.8.0", "inconclusive"), "18.8.0", NOW);
+    expect(drift().map((i) => i.subject)).toEqual(["omp:18.8.0"]);
+  });
+
+  it("a pass on the current version resolves every open drift, older binaries' included", () => {
+    settleProbe(store, result("18.7.0", "fail"), "18.7.0", NOW);
+    settleProbe(store, result("18.8.0", "fail"), "18.8.0", NOW);
+    settleProbe(store, result("18.8.0", "pass"), "18.8.0", NOW);
+    expect(drift()).toHaveLength(0);
+  });
+
+  it("a late pass for a binary no longer current records its row but leaves the new binary's drift open", async () => {
+    settleProbe(store, result("18.8.0", "fail"), "18.8.0", NOW);
+    runner(answering("pass"), "18.8.0").maybeProbe("18.7.0");
+    await flush();
+    expect(store.latestOmpProbe("18.7.0", { result: "pass" })).toBeDefined();
+    expect(drift().map((i) => i.subject)).toEqual(["omp:18.8.0"]);
+  });
+
   it("a late fail for a binary no longer current records its row but opens no incident", async () => {
     runner(answering("fail"), "18.8.0").maybeProbe("18.7.0");
     await flush();
