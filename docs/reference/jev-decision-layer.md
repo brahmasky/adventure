@@ -125,10 +125,16 @@ once per model.
 
 ## Arming
 
-Until `CALIBRATED_ROWS` (`src/jev/calibration.ts`) holds rows for the six tree questions, **nothing is armed**: every turn
-routes `uncalibrated` to the planner on Default, and the memory and status lanes do not act. The sequence is build, then
-`houge jev replay triage` on a DB copy (a `--dry-run` first for the cost), then Paco reads the report's per-combination
-lines and commits rows for the decisions he chooses, then `node scripts/live-gate-jev-tree.mjs --real-calibration` must
+**Armed 2026-10-09.** `CALIBRATED_ROWS` (`src/jev/calibration.ts`) holds 14 rows: the six tree questions plus
+`category:status`, zh and en, on the model Jev reported. Evidence: 301 replayed turns, 111 labelled by Paco, no turn
+misrouted into a lane (memory 7/7, status 2/2), category agreement 181/301, option-order agreement 276/301; the known
+weakness is research read as lookup (26 of 59). Without rows for the reported model **nothing is armed**: every turn
+routes `uncalibrated` to the planner on Default, and the memory and status lanes do not act. The sequence (for a new
+model or a criteria change) is build, then
+`houge jev replay triage` on a DB copy (a `--dry-run` first for the cost; it must run on a copy, because opening the DB
+with a branch's code applies that branch's migrations), plus `--permute`, then `houge jev label triage` (one category per
+turn: every memory or status candidate plus a random sample), then Paco reads the report's per-combination lines and
+commits rows for the decisions he chooses, then `node scripts/live-gate-jev-tree.mjs --real-calibration` must
 PASS with both lanes acting, then merge and kickstart.
 
 Each decision arms on its own rows. Couplings to decide at commit time:

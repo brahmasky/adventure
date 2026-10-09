@@ -98,9 +98,9 @@ This file defines domain language for Houge architecture reviews and implementat
 
 ## Runtime terms (omp, ADR 0028)
 
-**omp**: The agent runtime (`@oh-my-pi/pi-coding-agent`, an oh-my-pi fork), pinned at 18.4.4 and always run under its own profile `houge`, on subscription OAuth only. A spawn on any other version is refused.
+**omp**: The agent runtime (`@oh-my-pi/pi-coding-agent`, an oh-my-pi fork), with no version pin and always run under its own profile `houge`, on subscription OAuth only. Any version `omp --version` reports runs; only an omp that will not run or prints no version is refused (`omp_unavailable`).
 
-**Planner**: The one supervised omp RPC process per Telegram chat that runs every chat turn. It has omp's `read`, `edit` and `write` built-ins plus Houge's tools, runs under `sandbox-exec`, and keeps the chat's transcript in its omp session. Its model chain is Opus 5.5, then Opus 4.6 via Antigravity, then Kimi k3.
+**Planner**: The one supervised omp RPC process per Telegram chat that runs every chat turn. It has omp's `read`, `edit` and `write` built-ins plus Houge's tools, runs under `sandbox-exec`, and keeps the chat's transcript in its omp session. It spawns on the Default role and each turn is pinned to its routed role (Fast, Default or Thinking); a role is a code-owned list resolved against omp's catalog, never a pinned model.
 
 **PlannerSupervisor**: The daemon-side owner of one chat's planner: it spawns and restarts the child, holds the run lease, queues and steers messages, enforces the turn deadline and frame watchdog, and finishes the run. A child counts as started only after the bridge has served it the tool manifest.
 

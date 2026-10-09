@@ -122,7 +122,7 @@ names it once at boot (`[omp-config] … no longer read`). Delete them from `.en
 Changing a list is a code edit. The catalog is the authority (Paco, 2026-10-07): a selector it does not list is dropped, so
 the lists keep both Antigravity Opus generations. Kimi is not renewed next year: every list keeps a non-Kimi leg, and
 judge seat 0 needs a replacement then. The `static` lists are the pre-stage-A chains string for string (`STATIC_ROLE_LISTS`,
-including `openai-codex/gpt-5.5`).
+including a selector the catalog has since dropped).
 
 **Resolution order** (`resolved` mode): the catalog (`omp --profile houge models --json`, read at boot, daily and on
 `/models set`) is filtered to the provider allow-list `anthropic`, `google-antigravity`, `kimi-code`, `openai-codex`
@@ -146,7 +146,8 @@ The override's matches serve first, then the catalogued list, so a retired overr
 **Daily tick.** Once per 24 h (latched on the last `model_roles_resolved` row) the daemon re-reads the catalog and posts one
 line per role whose head moved ("Thinking now resolves to X, was Y"). A role with no candidate opens the alerted incident
 `role_unresolved` (subject = the role key). Only the daily tick opens and clears it, so after a fix it can stay open up
-to 24 h, until the next tick sees the role resolve; meanwhile a turn routed to that role steps up. A failed catalog read is retried
+to 24 h, until the next tick sees the role resolve. Meanwhile a turn routed to an empty Fast steps up to Default; an empty Default
+leaves the planner no candidate to spawn on and an empty Thinking has nothing above it, so those turns end `no_planner_leg`. A failed catalog read is retried
 hourly; two consecutive failures open the alerted incident `model_catalog_unavailable` (subject `omp`), and the next
 good read resolves it. A `no_planner_leg` asks for a re-read at most once per 10 minutes. With no catalog, roles run
 their lists whole (no catalog check, no clamp), so an outage never empties a role. The boot read is awaited before the
@@ -557,7 +558,7 @@ absent, not null. Payload fields:
 | `outcome` | yes | `ok` \| `error` \| `unavailable`. *Unavailable* = the provider was not constructively callable (binary absent, not authenticated, model retired, key unset); timeout, non-zero exit, over-cap and parse failures are `error`. Both fall through the chain identically. |
 | `model` | on `ok` | The model that answered (`unknown` + a warning if a provider ever omits it). |
 | `latency_ms` | optional | Wall-clock for this leg. |
-| `attempt_group` · `leg_index` | optional | One 12-hex id per chain invocation and the leg's 0-based position, so "Opus 5.5 failed, then Opus 4.6 served" is reconstructable, not inferred from timestamps. |
+| `attempt_group` · `leg_index` | optional | One 12-hex id per chain invocation and the leg's 0-based position, so "the head failed, then the second candidate served" is reconstructable, not inferred from timestamps. |
 | `input_tokens` · `output_tokens` · `cached_input_tokens` | on `ok` | `output_tokens` is the total billable output for every engine: Codex reports `reasoning_output_tokens` disjointly and it is added; agy nests thinking inside `output_tokens` (measured `total == input + output`) and it is never re-added; omp rows take omp's own usage figures. (The deleted OpenAI-compat legs derived `max(completion, total − prompt)` on older rows.) |
 | `thinking_tokens` | optional | Informational — already inside `output_tokens`, never priced, never summed. Reported by agy and Codex. |
 | `cost_usd` | metered only | Priced **in the sink** (`computeCostUsd`, the one seam every path shares) for metered providers only. No metered leg exists since the omp cutover, so OAuth rows carry none; the live gate fails on any `cost_usd > 0` from an OAuth provider. |
@@ -952,8 +953,9 @@ on the new id opens a `jev_model_uncalibrated` incident (below).
 
 **Calibration rows are code, not env.** `CALIBRATED_ROWS` in `src/jev/calibration.ts` holds the arming rows, keyed
 `(question_id, criteria_hash, model, lang)`. The six tree questions have new criteria hashes, so **lane 1's rows armed
-nothing after the tree and were retired**. Until Paco commits rows from the replay, every armed turn routes
-`uncalibrated` to the planner on Default, and the memory and status lanes do not act. Each decision arms on its own
+nothing after the tree and were retired**. Paco committed the tree's 14 rows on 2026-10-09 (all six questions plus
+`category:status`, zh and en, on the model Jev reported) after the replay and his labels. Without a row for the reported
+model, every armed turn routes `uncalibrated` to the planner on Default, and the memory and status lanes do not act. Each decision arms on its own
 rows: `category` (the six categories' routing), the pseudo-row `category:status` (`TREE_STATUS_ARM_ID`, the status
 lane), `rule` (`sets_rule` and `rule_scope` together) and `gear` (the three scores). The memory lane needs `category`
 and `rule`; the status lane needs `category:status` and `rule`, so a stated rule is never swallowed by a code reply;

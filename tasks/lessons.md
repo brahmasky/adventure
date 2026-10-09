@@ -401,3 +401,17 @@ Rules Claude writes for itself after corrections. Review at session start.
 - **Preflight conflicts are cheap; find them before the first task.** A pre-build scan of the plan against the code found
   seven conflicts and nine defects, each with a ruling and its cost-if-wrong recorded in the ledger. Rule: for a plan of
   more than ten tasks, scan the briefs against each other (names, files, owners, order) before dispatching.
+- **A real replay finds what hermetic tests and a short gate cannot.** Jev rounds each probability to two decimals, and
+  the client's fixed 0.01 sum tolerance (plus float error) rejected a four-level 0.99 as `parse`: 18 of 602 calls in the
+  calibration replay, each a live turn silently sent to the Default fallback. Every test fixture summed to exactly 1, and
+  nine gate calls rarely hit it. The replay row kept only `error`; the cause showed up in the ledger's `error_kind` and a
+  captured response. Rule: validate vendor numbers against the precision the vendor actually emits (n × half an ulp of
+  its rounding), build a fixture from a captured real response, and run the paid replay before arming, not after.
+- **A tool-based proxy label is not truth.** Against the "which tools ran" proxy, Jev agreed 50%; against Paco's labels,
+  60%, and both flagged "wrong lane" turns were proxy errors (a rule the planner never saved read as `answer`). Rule: a
+  report that scores a classifier against a proxy says so in its headline, and arming waits for the operator's labels on
+  every lane candidate.
+- **Hand labels have to fit a one-answer schema.** Paco's labels named two requests in one message (a rule plus a lookup)
+  three times in 111 turns. Labelling those `memory` would have taught the report that the memory lane may take them,
+  and the lane would drop the other half. Rule: when a labeller says "both", label the routing-safe part (the one that
+  keeps the planner), and record the multi-intent case as a design gap.

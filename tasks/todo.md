@@ -1,34 +1,32 @@
 # 🧭 CURRENT SYSTEM STATE — 2026-10-09 (read this first)
 
-**Jev decision tree, stage A: BUILT on branch `feat/jev-tree-stage-a` (worktree `.worktrees/jev-tree-a`); NOT merged,
-NOT built into `dist/` on `main`, NOT live.** The daemon still runs lane 1 from `main`. Tasks 1 to 14 are done. The
-default live gate (`scripts/live-gate-jev-tree.mjs`, real Jev and omp on a DB copy) PASSED on runs 3, 4 and 5 after the
-event-loop fix (silent skips 0 of 9; the cascade case 12a answered in 14 s of the 20 s bound). Reference:
+**Jev decision tree, stage A: MERGED to `main`, pushed, `dist/` rebuilt; ARMED in code (14 `CALIBRATED_ROWS`, zh + en);
+NOT live until Paco kickstarts.** The running daemon still serves lane 1 from the previous build. Reference:
 `docs/reference/jev-decision-layer.md`; flags and model roles: `docs/reference/configuration.md` § Jev System One and
-§ Model roles; spec Rev 9; ADR 0029 / 0028 amendments are drafts awaiting Paco's approval (separate commit).
+§ Model roles; spec Rev 9; ADR 0029 / 0028 amendments approved 2026-10-09 (ADR text is now version-free).
 
-Until Paco commits calibration rows, **every armed turn routes `uncalibrated` to the planner on Default**, and the memory
-and status lanes do **not** act (lane 1's rows name retired hashes). Do not merge and kickstart before the rows land.
+Evidence (2026-10-09): replay over 301 Telegram turns on a DB copy, both option orders ($0.09); Paco labelled 111 turns;
+no turn misrouted into a lane (memory 7/7, status 2/2), category 181/301, permutation 276/301. The replay found a client
+bug (two-decimal rounding rejected ~3% of Jev answers as `parse`), fixed in `239bd0c`. `typecheck`, 3779 tests (none
+skipped) and `build` green; default live gate PASS; `--real-calibration` merge gate PASS (106 checks: both lanes acted
+with zero planner requests, 0/9 Jev calls failed silently, cascade 11.5 s of 20 s).
 
-Pre-merge checklist (the order matters):
-- [x] omp startup check passes (`omp --version` reports `18.7.0`; no pin, `a49da40`).
-- [ ] **Paco:** run the replay on a DB copy, read the arming-combination lines, commit `CALIBRATED_ROWS` for the
-  questions he chooses (`houge jev replay triage --dry-run`, then the full run, then `houge jev report triage`).
-  Couplings: the memory lane needs `category` + `rule`; the status lane `category:status` + `rule`; `category` alone
-  already moves turns off Default.
-- [ ] `node scripts/live-gate-jev-tree.mjs --real-calibration` PASS with the memory and status lanes **acting** (an
-  INCONCLUSIVE on cases 1 or 2 is a FAIL there). Not run: it awaits the rows.
-- [x] `npm run typecheck && npm test && npm run build` green on the branch, none skipped (see the 2026-10-09 session entry).
-- [x] Cascade ruling recorded (Decision 14: live, 20 s, Tiny role); case 12a PASS.
-- [ ] Merge to `main`, `npm run build`, then **Paco kickstarts** (new migrations: `jev_verdicts`, `chat_turns.quoted_turn_id`;
-  the model-role resolver starts at boot). Check first: `houge.parked` / `houge.kill`, non-terminal runs and the evolution
-  lane. A kickstart is owed; nothing about this branch reaches the daemon without it.
+- [ ] **Paco kickstarts** (`launchctl kickstart -k gui/$(id -u)/com.houge.daemon`). Check first: `houge.parked` /
+  `houge.kill`, non-terminal runs and the evolution lane. The boot applies migrations `chat_turns.quoted_turn_id` and
+  `jev_verdicts` and starts the model-role resolver. `.env` already has `HOUGE_JEV_ENABLED=1` and
+  `HOUGE_JEV_TRIAGE_ENABLED=arm`; the seven `HOUGE_OMP_*` chain vars are ignored (one boot warning if still set).
+- [ ] After the kickstart: first real memory and status turns act through the lanes (`jev_verdicts` rows), `/models`
+  shows every role resolved, no `role_unresolved` / `model_catalog_unavailable` / `jev_skip_rate` incident.
 - [ ] Rollback if needed: `docs/reference/jev-decision-layer.md` § Rolling back.
 
-Decisions Paco still owns (from the plan reviews, none blocking the build): the offered-work clause on the three score
-questions (spec §2.3 puts it on `category` only); `shadow` is now a legacy flag value that arms nothing (consider
-retiring it); the status lane's stricter floors; `HOUGE_JEV_TRIAGE_MIN_*` env bars are gone (bars are code); CLI one-shots
-read the static role lists; Kimi exit (judge seat 0).
+Watch after arming: the Tiny cascade fires on ~27% of turns (82/301 below the bar) at 6–14 s each; Jev's 1.5 s budget has
+0.3–1.1 s latency and no retry; research read as lookup routes research to Fast.
+
+Stage B owes: a guard (and a gate case) for a two-request message Jev confidently calls `memory` (the lane would drop
+the second request); a dedicated `lane_failed` route reason; the original cause kind on a refused-pin step-up (F7 edge).
+Decisions Paco still owns: the offered-work clause on the three score questions (spec §2.3 puts it on `category` only);
+retiring the legacy `shadow` flag value; the status lane's stricter floors; CLI one-shots read the static role lists;
+Kimi exit next year (judge seat 0 needs a replacement selector).
 
 ---
 

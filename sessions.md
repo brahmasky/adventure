@@ -1559,3 +1559,26 @@ skipped; `npm run build` ok. `omp --version` reports `18.7.0`.
 Then merge, `npm run build`, and a Paco kickstart (new migrations, the resolver at boot); check `houge.parked` /
 `houge.kill`, in-flight runs and the evolution lane first. The ADR 0029 / 0028 amendments are drafts in their own commit
 for Paco's approval (`docs/decisions/` is his hand).
+
+## 2026-10-09 (later) — stage A calibrated, armed and merged
+
+Paco asked what the paid replay and the `--real-calibration` gate were, then had them run. `houge jev replay triage`
+over the 301 Telegram turns since 2026-07-02, on a DB copy (opening the live DB with the branch's code would have applied
+its migrations), both option orders, $0.09 in all. 18 of 602 Jev calls failed as `parse`: Jev rounds probabilities to two
+decimals and the client's fixed 0.01 sum tolerance rejected a four-level 0.99. Fixed in `239bd0c` (the bound scales with
+the option count; the regression fixture is the captured response), and the gaps refilled.
+
+Claude drafted category labels for the 111 turns the selector picks (every memory or status candidate plus 40 random);
+Paco ruled on the 14 it was unsure of. His rulings: two-request messages (rule plus lookup, rule plus fix) are labelled
+by the planner-side part; praise is `answer`, a complaint `other`; questions about Houge's own behaviour or skills are
+`self_change`. With his labels: no lane misroute (memory 7/7, status 2/2), category 181/301, permutation 276/301; the
+weak spot is research read as lookup (26 of 59). Paco armed all 14 candidate rows (`81d81de`).
+`live-gate-jev-tree.mjs --real-calibration`: PASS, 106 checks, both lanes acting with zero planner requests, 0/9 silent
+Jev skips, cascade 11.5 s. Case 6 (rule plus lookup) saved and still routed to the planner, so the two-request gap is
+narrow: only a confident `memory` answer drops the second request (stage B).
+
+Paco then asked for version-free ADRs: the code carries no omp, model or Jev version pin, so ADR 0028 (D1, D7, context,
+consequences), 0002, 0010, 0014, 0027 and 0029 name omp, Claude and the role lists instead, with dated evidence keeping
+its version (`fa7821d`). The 0028 model-roles and 0029 decision-tree amendments are approved; 0029 gains the arming
+amendment. Docs synced (README, CONTEXT, ROADMAP, configuration, jev-decision-layer, todo, lessons). Merged to `main`,
+pushed, `dist/` rebuilt. A Paco kickstart makes it live.

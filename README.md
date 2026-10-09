@@ -16,8 +16,8 @@ and the **self-evolution spine** are complete. The core engine is now the **omp 
 ([ADR 0028](docs/decisions/0028-omp-runtime.md), sub-project 1 of 4): about 2,870 hermetic tests,
 zero runtime dependencies (Node 25, TypeScript, Vitest, the built-in `node:sqlite`).
 
-- **An agent with real tools.** Every chat gets one supervised omp planner (Opus 5.5 on subscription
-  OAuth). It reads, edits and writes files on the mini, runs shell commands, and calls Houge's own
+- **An agent with real tools.** Every chat gets one supervised omp planner (Claude on subscription
+  OAuth; the model per turn comes from code-owned role lists resolved against omp's catalog). It reads, edits and writes files on the mini, runs shell commands, and calls Houge's own
   tools through a daemon-side bridge. The old inner loop, the intent classifier and the JSON action
   protocol are gone.
 - **Code-owned floors around it.** A macOS Seatbelt sandbox and a policy hook keep secrets and
@@ -81,7 +81,7 @@ Telegram ──long-poll──▶ houge daemon (launchd; ledger, scheduler, swee
 - **The daemon** owns everything durable: the SQLite run ledger, contracts, budgets, approvals,
   the notification outbox, schedules, the invariant sweep and the kill switch. It holds no ambient
   credentials ([ADR 0015](docs/decisions/0015-secrets-firewall.md)).
-- **The planner** is omp (`@oh-my-pi/pi-coding-agent`), pinned at 18.4.4 and run under its own
+- **The planner** is omp (`@oh-my-pi/pi-coding-agent`), with no version pin, run under its own
   profile `houge`. It loads exactly one extension, `dist/omp/extension/houge.js`, which installs the
   policy hook and registers one stub per Houge tool. The stubs hold no logic: each call crosses the
   bridge, and the daemon runs it.
@@ -106,8 +106,8 @@ Telegram ──long-poll──▶ houge daemon (launchd; ledger, scheduler, swee
 4. The daemon prepends a `[context]` block (episodic facts and wiki pages) to the prompt and
    records what it applied, so rating attribution still works.
 5. omp runs its own agent loop. Built-in file calls are gated by the policy hook; Houge tool calls
-   cross the bridge. A model error falls back down the planner chain (Opus 5.5 → Opus 4.6 → Kimi
-   k3); an unknown model string fails at spawn and the next string is spawned instead.
+   cross the bridge. A model error walks the routed role's candidate list, then steps up a role (Fast → Default →
+   Thinking); an unknown model string fails at spawn and the next candidate is spawned instead.
 6. A message that arrives mid-turn is steered into the live turn, and Paco gets one reply. Media and
    schedule fires never steer: each queues as its own turn.
 7. At `agent_end` the reply goes out through the rich renderer. A reply ending in
@@ -308,9 +308,10 @@ The classifier call is gone under omp, and the live shadow was removed on 2026-1
 ([ADR 0029](docs/decisions/0029-jev-system-one.md)). Design of the original trial:
 `docs/superpowers/specs/2026-09-25-jev-intent-shadow-design.md`.
 
-**Jev System One (ADR 0029, stage A decision tree, flags default off).** Jev sits in front of the planner as
-one decision point: six typed questions pick a category, a lane (memory and status skip the planner) or a planner model
-role (Fast, Default or Thinking), once calibrated rows arm it. Flow, bars and rollback:
+**Jev System One (ADR 0029, stage A decision tree; flags default off, `arm` on the mini).** Jev sits in front of the
+planner as one decision point: six typed questions pick a category, a lane (memory and status skip the planner) or a
+planner model role (Fast, Default or Thinking). Armed 2026-10-09 on Paco's calibration rows (zh and en); every unsure
+turn still runs the planner on Default. Flow, bars and rollback:
 [docs/reference/jev-decision-layer.md](docs/reference/jev-decision-layer.md); every flag and event:
 [configuration.md](docs/reference/configuration.md#jev-system-one-adr-0029).
 
@@ -331,17 +332,20 @@ lines into the mini's `.env`.
 
 ## Operations
 
-**Prerequisites on the mini.** Node 25; omp **18.4.4** (`@oh-my-pi/pi-coding-agent`), with its
+**Prerequisites on the mini.** Node 25; omp (`@oh-my-pi/pi-coding-agent`, any version; `live-gate-omp.mjs --smoke`
+after an upgrade), with its
 absolute path given to the daemon, because launchd runs on a restricted PATH; `agy` for voice notes;
 `codex` for self-diagnose and self-write. Then log omp in four times under the `houge` profile, never
 the default one:
 
 ```bash
-omp --profile houge login anthropic            # Claude Max: Opus 5.5 planner and chair
-omp --profile houge login google-antigravity   # Gemini reader and photos; Opus 4.6 fallback
-omp --profile houge login kimi-code            # k3: ticks, judge, reviewer, last planner fallback
-omp --profile houge login openai-codex         # GPT-5.5 judge and reader fallback
+omp --profile houge login anthropic            # Claude Max: planner and chair
+omp --profile houge login google-antigravity   # Gemini reader and photos; Claude fallback
+omp --profile houge login kimi-code            # Kimi: Tiny role, judge, reviewer, last planner fallback
+omp --profile houge login openai-codex         # GPT judge and reader fallback
 ```
+
+`/models` in Telegram shows which model each role resolves to today, and `/models set` overrides one.
 
 The grants live in `~/.omp/profiles/houge`, a secret path the sandbox and the policy hook keep from
 the planner's tools.
