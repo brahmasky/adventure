@@ -72,10 +72,13 @@ export function createOmpProbeRunner(d: OmpProbeRunnerDeps): OmpProbeRunner {
       if (v === null || d.signal.aborted || attempted.has(v) || d.store.latestOmpProbe(v, { result: "pass" })) return;
       running = true;
       attempted.add(v);
-      // execute() is async, so a synchronous setup throw arrives here as a rejection too
-      void execute(v)
-        .catch((e: unknown) => { if (!d.signal.aborted) logFailure(e); })
-        .finally(() => { running = false; drain(); });
+      // Off the caller's stack (the cache listener fires inside a turn's version check). execute() is async, so a
+      // synchronous setup throw arrives here as a rejection too.
+      setImmediate(() => {
+        void execute(v)
+          .catch((e: unknown) => { if (!d.signal.aborted) logFailure(e); })
+          .finally(() => { running = false; drain(); });
+      });
     } catch (e) { logFailure(e); }
   };
 

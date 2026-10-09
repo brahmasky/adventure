@@ -110,6 +110,15 @@ describe("omp probe runner", () => {
     expect(calls.map((c) => c.version)).toEqual(["18.7.0", "18.9.0"]);
   });
 
+  // The cache listener fires inside a turn's version check: the probe's synchronous setup (mkdir, config writes, spawn)
+  // must never run on that caller's stack.
+  it("maybeProbe returns before the probe starts; the probe starts on the next tick", async () => {
+    runner(answering("pass")).maybeProbe("18.7.0");
+    expect(calls).toHaveLength(0);
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toHaveLength(1);
+  });
+
   it("one attempt per version per process", async () => {
     const r = runner(answering("inconclusive"));
     r.maybeProbe("18.7.0");

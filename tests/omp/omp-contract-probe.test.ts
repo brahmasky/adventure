@@ -172,10 +172,13 @@ describe("omp contract probe", () => {
   });
 
   // A refused prompt command carries omp's error detail: a provider condition is not drift (no page), anything else is.
-  it("a prompt refused with a provider error is inconclusive and its detail is not kept", async () => {
-    const r = await run({ prompt: () => Promise.reject(new PlannerRpcError("command_failed:prompt", "429 rate limit")) });
-    expect(r.checks.prompt).toBe("inconclusive:provider_quota");
-    expect(JSON.stringify(r)).not.toContain("rate limit");
+  it.each([
+    ["quota", "429 rate limit"], ["auth", "401 not logged in"], ["transport", "ECONNRESET socket hang up"],
+    ["timeout", "upstream timed out"], ["model_missing", "unknown model kimi-x"]
+  ])("a prompt refused with a provider %s error is inconclusive and its detail is not kept", async (kind, detail) => {
+    const r = await run({ prompt: () => Promise.reject(new PlannerRpcError("command_failed:prompt", detail)) });
+    expect(r.checks.prompt).toBe(`inconclusive:provider_${kind}`);
+    expect(JSON.stringify(r)).not.toContain(detail);
   });
 
   it("a prompt refused for any other reason is drift", async () => {

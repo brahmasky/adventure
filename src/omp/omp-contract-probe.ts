@@ -192,14 +192,15 @@ function judgePrompt(r: Run, end: OmpFrame, last: OmpFrame | undefined): ProbeCh
   return "pass";
 }
 
-const PROVIDER_REFUSAL_KINDS: ReadonlySet<string> = new Set(["quota", "auth", "transport"]);
+/** Kinds that say nothing about a provider: a refusal classified as one of these is omp rejecting the command itself. */
+const NON_PROVIDER_KINDS: ReadonlySet<string> = new Set(["other", "parse"]);
 
-/** A refused `prompt` command: a provider condition in its detail is not drift; anything else is. */
+/** A refused `prompt` command: a provider-like condition in its detail is not drift; an unclassified refusal is. */
 function promptRefused(e: unknown): ProbeCheckOutcome {
   if (isTimeoutErr(e)) return "inconclusive:timeout";
   if (errCode(e) !== "command_failed:prompt") return "fail:rejected";
   const kind = classifyOmpError((e as PlannerRpcError).detail ?? "");
-  return PROVIDER_REFUSAL_KINDS.has(kind) ? `inconclusive:provider_${kind}` : "fail:rejected";
+  return NON_PROVIDER_KINDS.has(kind) ? "fail:rejected" : `inconclusive:provider_${kind}`;
 }
 
 async function checkPrompt(r: Run, live: Live): Promise<ProbeCheckOutcome> {
