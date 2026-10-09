@@ -3,6 +3,7 @@ import { OMP_AUDIO_REFUSED, spawnOneShot, type OneShotDeps } from "./providers/o
 import type { OmpCheckResult } from "../omp/omp-version.js";
 import { resolveOmpConfig, type OmpConfig } from "../omp/omp-config.js";
 import type { ModelFamily, ModelString } from "../omp/model-string.js";
+import { staticRoleChains, type RoleChains } from "../omp/model-roles.js";
 import type { LlmAuditScope, LlmCallRole, RunStore } from "../run/run-store.js";
 import type { LlmMediaAttachment, LlmProvider, LlmRequest, LlmResult } from "./types.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
@@ -137,7 +138,7 @@ export function seatChain(cfg: OmpConfig, role: LlmCallRole): ModelString[] {
     case "answer":
     case "compose": return cfg.planner;
     case "writer": throw new Error("the writer seat is codex, not an omp chain");
-    default: return cfg.ticks; // distill, consolidate, extract, attribution, frame, verify, classify*
+    default: return cfg.ticks; // distill, consolidate, extract, attribution, frame, verify, classify*, cascade (the Tiny role)
   }
 }
 
@@ -149,13 +150,14 @@ export function tickCorrelationId(name: string): string {
 /**
  * A daemon tick's seat: each call is its own one-shot under a FRESH `tick:<name>:<uuid>`
  * correlation, so one tick run's legs group together and never mix with the next run's.
- * `signal` (the daemon's stop) aborts the in-flight call.
+ * `signal` (the daemon's stop) aborts the in-flight call. `chains` is read per call (the daemon passes its
+ * RoleResolver's, so a /models override reaches the next tick); default the static role lists.
  */
 export function tickSeat(
-  store: RunStore, name: string, role: LlmCallRole, env: NodeJS.ProcessEnv = process.env
+  store: RunStore, name: string, role: LlmCallRole, env: NodeJS.ProcessEnv = process.env, chains: () => RoleChains = staticRoleChains
 ): (input: { question: string; system: string; signal?: AbortSignal }) => Promise<{ ok: true; answer: string } | { ok: false }> {
   return async (input) => {
-    const r = await oneShotAdapter(store, resolveOmpConfig(env), { correlation_id: tickCorrelationId(name), role }).answer(input);
+    const r = await oneShotAdapter(store, resolveOmpConfig(env, chains()), { correlation_id: tickCorrelationId(name), role }).answer(input);
     return r.ok ? { ok: true, answer: r.answer } : { ok: false };
   };
 }
@@ -174,6 +176,8 @@ export function seatBudgetMs(cfg: OmpConfig, role: LlmCallRole): number {
 export interface OneShotAdapterOptions {
   /** A seat-specific chain (a judge's single string); default {@link seatChain} for the scope's role. */
   chain?: ModelString[];
+  /** A bound on the whole chain, from the call's start (the tree's cascade, Decision 14): no leg outlives it, none starts after it. */
+  deadlineMs?: number;
   /** Tests only: bypass the `omp --version` spawn. */
   versionCheck?: OneShotDeps["versionCheck"];
 }
@@ -196,7 +200,8 @@ export function oneShotAdapter(
         {
           seat: scope.role, chain, prompt: req.system ? `${req.system}\n\n${req.question}` : req.question,
           files: req.media ? [req.media.path] : [], correlationId: `${base}:${scope.role}:${randomUUID()}`,
-          ...(plannerFamily !== undefined ? { plannerFamily } : {}), ...(req.signal ? { signal: req.signal } : {})
+          ...(plannerFamily !== undefined ? { plannerFamily } : {}), ...(req.signal ? { signal: req.signal } : {}),
+          ...(opts.deadlineMs !== undefined ? { deadlineAt: Date.now() + opts.deadlineMs } : {})
         },
         {
           cfg, audit: store.llmAuditSink(scope), onVersionCheck: (check) => reportOmpCheck(store, cfg, check),

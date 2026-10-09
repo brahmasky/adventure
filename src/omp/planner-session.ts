@@ -26,10 +26,11 @@ type Waiter = { type: string; resolve: (d: unknown) => void; reject: (e: Error) 
  * `timeout:<type>`, `not_running`, `exited`, `exited:<kind>` (the child died before `ready`; <kind> is
  * classifyOmpError over its stderr tail; `exited:model_missing` only for omp's exact `Model "…" not found` line, a looser
  * model mention is `exited:model_unconfirmed`), `frame_too_large` — and is all that may reach an
- * error_ref or an incident. omp's own error text never rides it (it is logged to stderr, capped).
+ * error_ref or an incident. `detail` is omp's own text for a refused command (≤ 200 chars), kept only so the supervisor
+ * can classify a refused pin (`Model not found` → model_missing); it never reaches a ref, an incident or the ledger.
  */
 export class PlannerRpcError extends Error {
-  constructor(readonly code: string) { super(code); this.name = "PlannerRpcError"; }
+  constructor(readonly code: string, readonly detail?: string) { super(code); this.name = "PlannerRpcError"; }
 }
 const OMP_ERROR_LOG_CAP = 200;
 /** In-memory only: classified on an exit before ready, never logged, never written to the ledger or an incident. */
@@ -146,8 +147,9 @@ export class PlannerSession {
     if (f.type === "response" && typeof f.id === "string" && this.waiters.has(f.id)) {
       const w = this.waiters.get(f.id) as Waiter; this.waiters.delete(f.id); clearTimeout(w.timer);
       if (f.success !== false) { w.resolve(f.data); return; }
-      console.error(`planner ${w.type} failed: ${String(f.error ?? "").slice(0, OMP_ERROR_LOG_CAP)}`);
-      w.reject(new PlannerRpcError(`command_failed:${w.type}`));
+      const detail = String(f.error ?? "").slice(0, OMP_ERROR_LOG_CAP);
+      console.error(`planner ${w.type} failed: ${detail}`);
+      w.reject(new PlannerRpcError(`command_failed:${w.type}`, detail));
       return;
     }
     for (const cb of this.frameCbs) {

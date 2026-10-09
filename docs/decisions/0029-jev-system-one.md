@@ -14,11 +14,11 @@
 
 Houge makes many small typed judgment calls a day — what kind of message this is, which model should answer, whether a
 lesson should be saved, whether a read page carries instructions, whether a notification is worth an interruption. Each
-is either hard-coded or costs a full planner turn on Claude Opus 5.5, the only seat that sees the conversation. A bare
+is either hard-coded or costs a full planner turn on Claude, the only seat that sees the conversation. A bare
 "好" after a proposal once cost 189K tokens; a one-line preference is an Opus turn that may or may not call
 `lesson_write`; schedule reports reach Telegram with no urgency judgment.
 
-Jev (TypeSafe System One, `jev-1.13.0`) answers `choice` / `score` / `noul` questions over a JSON state with calibrated
+Jev (TypeSafe System One, requested by the alias `jev-latest`) answers `choice` / `score` / `noul` questions over a JSON state with calibrated
 probabilities in ~0.3 s for $0.042 per million input tokens. It cannot generate text. The 2026-09-26 replay agreed
 with the LLM intent classifier 94.2% of the time at confidence ≥ 0.7 (374 turns). Its live shadow lost its comparator
 at the omp cutover (ADR 0028), and Paco declined to retire it: "always use Jev for decision first, and subsequent LLM
@@ -199,3 +199,58 @@ with Undo was delivered; no incident open. Operator reference: [jev-decision-lay
   permuted) with more than one reported model. It suggests rows only with the model the rows reported. It reads the live
   shadow filtered to that same model, and refuses shadow stats for another model, so an old model's 14 days never stand
   as a new model's evidence.
+
+## Amendment (2026-10-07): one decision tree
+
+Spec: [2026-10-06-jev-decision-tree-design.md](../superpowers/specs/2026-10-06-jev-decision-tree-design.md) (Rev 9).
+Approved by Paco 2026-10-09 with the stage A merge.
+
+- **The front of Houge is one decision point.** Every Telegram text turn passes one Jev request of six questions in three
+  answer types (`choice`, `score`, `noul`): `category` (11 values), `sets_rule`, `rule_scope`, and the three gear scores
+  `breadth`, `reasoning` and `actions`. Lane 1's three questions (`lane`, `complete`, `scope`) leave the live path. Jev
+  still only answers; code owns every bar and the fall-through (ADR 0013).
+- **Lanes are the leaf type.** A lane is a handler whose control flow is code, with one one-shot compose, and it falls
+  through to the planner on any doubt. Memory and status are re-attached as categories (lane 1's behaviour, behind the
+  tree's `category` plus `rule` rows for memory and `category:status` plus `rule` for status). Every other category runs
+  the planner on its routed model role (Fast, Default or Thinking). The planner is the floor.
+- **`jev_verdicts` is the per-turn row.** One row per turn (category, the three scores, rule answers, lane, role, effort,
+  the cascade value, save / route / handler outcomes, reason, skip reason, quoted turn), written in the same transaction as
+  the `triage` event, joined to the turn's first model call through `routed_by`, and closed at the run's terminal so
+  none stays `pending`.
+- **A Telegram quote anchors the turn.** `chat_turns.quoted_turn_id` resolves a reply to its stored turn; the quoted turn is
+  in Jev's state and the planner prompt; an unresolved quote is a ledger note (`quote_unresolved`), never a failure.
+- **Arming follows new rows.** The six tree questions have new criteria hashes, so lane 1's `CALIBRATED_ROWS` no longer
+  arm anything. The tree arms per decision (`category`, `category:status`, `rule`, `gear`) on rows Paco commits after
+  `houge jev replay triage` on a DB copy, keyed on the reported model as before. Until then every turn routes
+  `uncalibrated` to the planner on Default, and the memory and status lanes do not act. The merge is gated on that
+  commit and on the armed live gate passing with both lanes acting.
+- **The routing policy stays under `src/jev/`** (`tree-policy.ts`), not `src/policy/`: it produces no allow or deny, so it
+  is not gate machinery and not on the protected surface.
+- **Below the choice bar, one cascade call, bounded at 20 s** (Paco, 2026-10-07). When `category` is under its bar, one
+  one-shot on the Tiny role picks between Jev's top two categories after `memory` and `status` are removed, so a model
+  guess can never route into a no-planner lane. Failure, timeout or an answer outside the two means planner on Default and
+  nothing saved. The verdict's `cascade` value is `tiny`. Flat-rate legs only (invariant unchanged).
+- **A lane that fails pages.** The sweep adds `lane_fallthrough_rate` (per lane, at least 3 settled turns in 24 h with half
+  or more falling through to the planner); `jev_skip_rate` is unchanged. Every Jev outage class still reaches Paco.
+- **Failure is Default as resolved.** Any Jev failure, skip, unarmed question or thrown stage runs the planner on the Default
+  role as resolved (a `/models` override included), with one verdict row.
+
+## Amendment (2026-10-09): the tree armed on Paco's word
+
+- **Replay and labels.** `houge jev replay triage` ran over the 301 Telegram turns since 2026-07-02 (zh 271, en 30) on
+  a DB copy, both option orders ($0.09 in all). Paco labelled the 111 turns the selector picks (every memory or status
+  candidate plus 40 at random). With his labels: no turn misrouted into a lane (memory 7/7, status 2/2), category
+  agreement 181/301, option-order agreement 276/301. The known weakness is research read as lookup (26 of 59), which
+  routes a research turn to Fast instead of Thinking.
+- **Rows.** `CALIBRATED_ROWS` names all six tree questions plus `category:status` for zh and en on the model Jev
+  reported (14 rows, approved "Paco 2026-10-09"). The per-turn bars are unchanged and still send every unsure turn to
+  the planner on Default; a criteria or model change disarms, and an alias move pages (`jev_model_uncalibrated`).
+- **Probability sums allow rounding.** Jev rounds each probability to two decimals, so n options may sum up to
+  n × 0.005 off 1. The client's fixed 0.01 tolerance (plus float error) had rejected a four-level 0.99 as `parse`,
+  voiding the whole decision point on about 3% of calls (18 of 602 in the replay). The bound now scales with the option
+  count; a sum past it is still `probability_sum`.
+- **Merge gate.** `live-gate-jev-tree.mjs --real-calibration` PASS on the committed rows: both lanes acted with zero
+  planner requests, 0 of 9 Jev calls failed silently, the Tiny cascade answered in 11.5 s of its 20 s.
+- **Open for stage B.** A message carrying two requests (a rule plus a lookup) is handled by save-then-route unless Jev
+  picks `memory` above its bar, in which case the memory lane replies and the second request is dropped; stage B adds a
+  guard and a gate case for it.

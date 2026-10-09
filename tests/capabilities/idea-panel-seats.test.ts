@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildOmpPanelSeats, PANEL_JUDGE_SEAT_INDEX } from "../../src/capabilities/idea-panel-seats.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
-import { formatModelString } from "../../src/omp/model-string.js";
+import { formatModelString, parseModelChain } from "../../src/omp/model-string.js";
+import { staticRoleChains } from "../../src/omp/model-roles.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { FAKE_OMP_BIN, pinOmpEnv } from "../helpers/omp-env.js";
 
@@ -69,12 +70,22 @@ describe("buildOmpPanelSeats — the four panel seats on omp", () => {
     expect(spawns()).toEqual([]);
   });
 
-  it("a judge index past the configured list is unavailable instead of borrowing another seat's model", async () => {
-    const env = { ...fake({ "*": { text: "x" } }), HOUGE_OMP_JUDGES: "kimi-code/k3" };
-    const seats = buildOmpPanelSeats({ store, correlation_id: "tick:idea_panel", env });
+  it("a judge index past the resolved seats is unavailable instead of borrowing another seat's model", async () => {
+    const env = fake({ "*": { text: "x" } });
+    const chains = { ...staticRoleChains(), judges: parseModelChain("kimi-code/k3") };
+    const seats = buildOmpPanelSeats({ store, correlation_id: "tick:idea_panel", env, chains });
     expect(await seats.codexJudge({ digest: "d", system: "s" })).toEqual({ ok: false, unavailable: true });
     expect(spawns()).toEqual([]);
-    expect(formatModelString(resolveOmpConfig(env).judges[0]!)).toBe("kimi-code/k3");
+    expect(formatModelString(resolveOmpConfig(env, chains).judges[0]!)).toBe("kimi-code/k3");
+  });
+
+  // A per-seat /models override (`judges:<n>`) must reach the weekly panel: the seats run on the resolver's chains.
+  it("each judge seat runs on its index of the chains the resolver hands it", async () => {
+    const env = fake({ "*": { text: '{"scores":[]}' } });
+    const chains = { ...staticRoleChains(), judges: parseModelChain("kimi-code/k3,google-antigravity/gemini-3.1-pro,google-antigravity/gemini-3.8-flash") };
+    const seats = buildOmpPanelSeats({ store, correlation_id: "tick:idea_panel", env, chains });
+    await seats.codexJudge({ digest: "D", system: "lens" });
+    expect(spawns().map((s) => modelOf(s.argv))).toEqual(["google-antigravity/gemini-3.1-pro"]);
   });
 });
 

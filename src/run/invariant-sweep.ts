@@ -83,7 +83,7 @@ export const DISK_FREE_LOW_BYTES = 2 * 1024 ** 3;
 export const SWEEP_INCIDENT_KINDS = [
   "duplicate_schedule", "stuck_run", "undelivered_notification", "overdue_schedule", "failed_schedule",
   "heartbeat_gap", "llm_leg_failing", "disk_free_low", "wall_collapsed", "lesson_dropped", "embeddings_unavailable", "core_overflow",
-  "jev_skip_rate"
+  "jev_skip_rate", "lane_fallthrough_rate"
 ] as const;
 export type IncidentKind = (typeof SWEEP_INCIDENT_KINDS)[number];
 const SWEEP_KINDS: ReadonlySet<string> = new Set(SWEEP_INCIDENT_KINDS);
@@ -211,7 +211,7 @@ export const JEV_SKIP_RATE_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const JEV_SKIP_RATE_MIN_ATTEMPTS = 3;
 export const JEV_SKIP_RATE_MAX = 0.5;
 /** Skips that are not a Jev call at all: the flag is off, the turn is gated out, Paco overrode it, or the state was too big to send. */
-export const JEV_NOT_ATTEMPT_REASONS: readonly SkipReason[] = ["disabled", "posture", "modality", "override", "state_too_large"];
+export const JEV_NOT_ATTEMPT_REASONS: readonly SkipReason[] = ["disabled", "posture", "modality", "override", "state_too_large", "ack_rule"];
 /** Failures that open no incident per call (jev-incidents.ts); auth/429/529/bad question/no key/fuse already page on their own. */
 export const JEV_SILENT_SKIP_REASONS: readonly SkipReason[] = ["timeout", "parse", "transport", "error"];
 
@@ -235,6 +235,35 @@ function jevViolations(store: RunStore, now: string): InvariantViolation[] {
   return r.open ? [{ kind: "jev_skip_rate", subject: JEV_INCIDENT_SUBJECT, detail: { point: "triage", attempts: r.attempts, failed: r.failed } }] : [];
 }
 
+/** Window, floor and rate for `lane_fallthrough_rate` (spec §8): settled lane turns in the last 24 h. */
+export const LANE_FALLTHROUGH_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const LANE_FALLTHROUGH_MIN_TURNS = 3;
+export const LANE_FALLTHROUGH_MAX = 0.5;
+
+/**
+ * A broken lane, not a quiet one: at least {@link LANE_FALLTHROUGH_MIN_TURNS} settled turns of one lane in the window, at
+ * least half of them fell through to the planner. Sticky like jev_skip_rate: an open lane stays open until that lane answers
+ * a turn itself after the incident opened. Lanes come from the rows and the open incidents, so stage B's lanes need no edit here.
+ */
+export function checkLaneFallthrough(
+  store: RunStore, now: string, windowMs = LANE_FALLTHROUGH_WINDOW_MS
+): Array<{ lane: string; open: boolean; turns: number; fallthroughs: number }> {
+  const since = new Date(Date.parse(now) - windowMs).toISOString();
+  const counts = new Map(store.countLaneTurns(since, now).map((r) => [r.lane, r] as const));
+  const sticky = store.listOpenIncidents().filter((i) => i.kind === "lane_fallthrough_rate").map((i) => i.subject);
+  return [...new Set([...counts.keys(), ...sticky])].sort().map((lane) => {
+    const { turns, fallthroughs } = counts.get(lane) ?? { turns: 0, fallthroughs: 0 };
+    if (turns >= LANE_FALLTHROUGH_MIN_TURNS && fallthroughs / turns >= LANE_FALLTHROUGH_MAX) return { lane, open: true, turns, fallthroughs };
+    const opened = store.findOpenIncident(store.incidentFingerprint("lane_fallthrough_rate", lane));
+    return { lane, open: opened !== undefined && !store.hasLaneReplySince(lane, opened.first_seen_at), turns, fallthroughs };
+  });
+}
+
+function laneViolations(store: RunStore, now: string): InvariantViolation[] {
+  return checkLaneFallthrough(store, now).filter((r) => r.open)
+    .map((r) => ({ kind: "lane_fallthrough_rate" as const, subject: r.lane, detail: { turns: r.turns, fallthroughs: r.fallthroughs } }));
+}
+
 /** Pure detection: compose the store's seven invariant queries into a flat violation list. */
 export function detectViolations(
   store: RunStore,
@@ -243,7 +272,8 @@ export function detectViolations(
   probe: OmpSweepProbe = {}
 ): InvariantViolation[] {
   const violations: InvariantViolation[] = [
-    ...detectOmpViolations(store, probe), ...memoryViolations(store, env), ...embeddingsViolations(store, now), ...jevViolations(store, now)
+    ...detectOmpViolations(store, probe), ...memoryViolations(store, env), ...embeddingsViolations(store, now), ...jevViolations(store, now),
+    ...laneViolations(store, now)
   ];
 
   for (const row of store.findDuplicateEnabledSchedules()) {

@@ -4,7 +4,8 @@ import { isAbsolute, join, relative, resolve as resolvePath, sep } from "node:pa
 import { BudgetLedger } from "../budget/budget-ledger.js";
 import { errorCode, safeReason } from "../domain/error-code.js";
 import type { Identity } from "../domain/types.js";
-import type { LlmAttempt } from "../llm/audit.js";
+import type { Effort, TurnRole } from "../jev/tree-policy.js";
+import type { LlmAttempt, LlmErrorKind } from "../llm/audit.js";
 import type { TurnModality } from "../media/media-config.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import type { ClaimedRun, PlannerFailure, RunStore } from "../run/run-store.js";
@@ -13,12 +14,14 @@ import { ACK_NUDGE_TEXT, isBareAck } from "./bare-ack.js";
 import type { BridgeRequest } from "./bridge-protocol.js";
 import { BridgeServer } from "./bridge-server.js";
 import { createBridgeHandler, flushUnreported, type ActiveTurn } from "./bridge-handler.js";
+import { selectorKey, STEP_UP } from "./model-roles.js";
 import { familyOf, type ModelFamily, type ModelString } from "./model-string.js";
 import { PLANNER_HEARTBEAT_MS, type OmpConfig } from "./omp-config.js";
 import { classifyOmpError, frameErrorText, RETRYABLE_ERROR_KINDS, summarizeAssistantMessage, type AssistantSummary, type OmpFrame } from "./omp-frames.js";
-import { checkOmpVersion } from "./omp-version.js";
+import { checkOmpVersionAsync, type OmpCheckResult } from "./omp-version.js";
 import { PlannerRpcError, PlannerSession, type ExitInfo, type PlannerSessionOptions } from "./planner-session.js";
 import { realpathOrSelf, type PathContext } from "./protected-paths.js";
+import type { RoleResolver } from "./role-resolver.js";
 import { writeSeatbeltProfiles } from "./seatbelt.js";
 import { resolveLessonSessionReset } from "./session-seed.js";
 import { verifyInstalledWrapper } from "./shell-wrapper.js";
@@ -49,9 +52,21 @@ export interface TurnOutcomeSink {
   startOk?(): void;
   /** The spawned child holds a transcript started on the current lesson set: clear this chat's planner_session_reset_failed. */
   sessionResetOk?(): void;
+  /** The tree's planner leaf ended (Jev tree spec §6): the verdict row's handler outcome, for a turn routed with a verdict id. */
+  routeEnd?(i: {
+    run_id: string; verdict_id: string; handler_outcome: "planner_done" | "planner_failed"; model: string | null;
+    fast_used_tool: boolean; pin_failed: boolean;
+  }): void;
 }
-/** Lane 1 (ADR 0029 §5.1): what the daemon decided before the planner. Anything but lane_reply/inform is today's path. */
-export type TriageOutcome = { kind: "fallthrough" } | { kind: "inform"; note: string } | { kind: "lane_reply"; text: string; buttons: NotificationButton[] };
+/** The tree's route for a planner turn (Jev tree spec §5): the role its own chain resolves from, the effort, the verdict row. */
+export interface TurnRoute { role: TurnRole; effort: Effort | null; verdict_id: string | null }
+/** A Telegram quote resolved to a stored turn (spec §2.2.1): its id for the new chat turn, its rendered prompt line. */
+export interface QuoteRef { turn_id: string; line: string }
+/** The decision point's outcome (ADR 0029 §5.1, Jev tree spec §2): a lane reply, or the planner with an optional route. */
+export type TriageOutcome =
+  | { kind: "fallthrough"; route?: TurnRoute; quote?: QuoteRef }
+  | { kind: "inform"; note: string; route?: TurnRoute; quote?: QuoteRef }
+  | { kind: "lane_reply"; text: string; buttons: NotificationButton[]; quote?: QuoteRef };
 /** The lane gets the supervisor's own posture reading and the turn's abort signal; it never looks posture up itself. */
 export interface TriageInput { claim: ClaimedRun; text: string; userText: string; modality: TurnModality; posture: string | null; signal: AbortSignal }
 export interface SupervisorDeps {
@@ -59,6 +74,11 @@ export interface SupervisorDeps {
   env: NodeJS.ProcessEnv; turnEnvelopeActions: string[]; turnContext: TurnContextDeps;
   buildTools: (claim: ClaimedRun) => { registry: ToolRegistry; quarantine: ActiveTurn["quarantine"]; preflight?: ActiveTurn["preflight"] };
   posture: () => string | null; outcome: TurnOutcomeSink;
+  /**
+   * Model roles (Jev tree spec §4-5): the child spawns on "default"'s candidates; each turn pins its own routed role's.
+   * `requestRefresh` re-reads omp's catalog after a no_planner_leg (the resolver rate-limits it, plan F7).
+   */
+  roles: Pick<RoleResolver, "candidates" | "requestRefresh">;
   /**
    * Runs after the claim, before the child starts or is prompted (voice/photo ingest). A failure fails the run `media_failed`.
    * `text` is what the planner is prompted with; `userText`, when present, is what is stored as Paco's chat turn (a photo's
@@ -68,7 +88,8 @@ export interface SupervisorDeps {
   /** Lane 1 (ADR 0029 §5.1, slot B): awaited after resolveMessage, before the planner. Absent or throwing → today's path. */
   triage?: (i: TriageInput) => Promise<TriageOutcome>;
   sessionFactory?: (o: PlannerSessionOptions) => PlannerSessionLike;
-  versionCheck?: () => ReturnType<typeof checkOmpVersion>;
+  /** Injected check (tests); the default awaits checkOmpVersionAsync, so the loop stays free while omp answers. */
+  versionCheck?: () => OmpCheckResult | Promise<OmpCheckResult>;
   /** Unit tests only: skips the wrapper hash check and the Seatbelt render (the bridge socket stays real). */
   skipPreflightForTest?: boolean;
   /** How long a started child has to ask for its manifest (default MANIFEST_WAIT_MS). */
@@ -97,15 +118,21 @@ const ENDED = Symbol("ended");
 const START_SUPERSEDED = "start_failed: superseded";
 /** Memory A1 §6 (final-review ruling A4): the consecutive failed lesson-change resets after which a spawn serves resumed. */
 export const RESET_DEGRADE_AFTER = 3;
-/** A start whose child omp rejected for its --model (live, 18.4.4: exits before ready): the next planner string is tried. */
+/** A start whose child omp rejected for its --model (live, 18.4.4: exits before ready): Default's next candidate is tried. */
 const START_MODEL_MISSING = "exited:model_missing";
-/** null = a ready child; string = the start failure ref; missingLeg = omp rejected planner[missingLeg] at spawn. */
-type StartResult = string | null | { missingLeg: number };
+/** The Default role has no candidate this child sequence has not refused: the spawn axis is spent (spec §4). */
+const NO_SPAWN_MODEL = "no_spawn_model";
+/** Before any child: the Default role resolved nothing, so the intended model is unknown (audit rows say so). */
+const UNRESOLVED_MODEL: ModelString = { provider: "unresolved", model: "unresolved" };
+/** null = a ready child; string = the start failure ref; missing = omp rejected that selector at spawn. */
+type StartResult = string | null | { missing: ModelString };
+/** One pin: done, refused by omp (walk on), the turn ended, or any other failure (transport, timeout, set_thinking_level). */
+type PinResult = "ok" | "refused" | typeof ENDED | { error: unknown };
 const exitRef = (i: ExitInfo) => (i.code !== null ? `exit ${i.code}` : `signal ${i.signal ?? "unknown"}`);
 /** omp profile config (spec §4): no xdev devices, no update checks, no telemetry. */
 const HOUGE_CONFIG_YML = "tools:\n  xdev: false\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: false\ntelemetry:\n  otlpExportEnabled: false\n";
 
-interface SpawnRec { gen: number; leg: number; exit?: string; started?: Promise<unknown>; bridgeLost?: boolean }
+interface SpawnRec { gen: number; model: ModelString; exit?: string; started?: Promise<unknown>; bridgeLost?: boolean }
 
 interface Turn {
   req: TurnRequest; claim: ClaimedRun; worker: string; startedAt: number; merged: string[];
@@ -127,6 +154,18 @@ interface Turn {
   failure?: { type: PlannerFailure; ref: string };
   /** A lane reply's card buttons, handed to finishSuccess (ADR 0029 §5.1). */
   laneButtons?: NotificationButton[];
+  /** Spec §5 turn axis: the tree's route (null = unrouted: no step-up, no `other` retry), the role and effort its chain resolves from. */
+  route: TurnRoute | null; role: TurnRole; effort: Effort | null;
+  /** The turn's candidates (legIndex indexes it), resolved after the child is ready so a spawn refusal is excluded. */
+  chain: ModelString[];
+  /** The verdict id the turn's FIRST llm_attempt carries as routed_by (spec §6); cleared once written. */
+  routedBy: string | undefined;
+  /** Spawn refusals (keys `<run>:0:<k>`) and candidates tried (planner_no_leg's legs_tried) in this turn. */
+  startMissing: number; legsTried: number;
+  /** `other` was retried once (spec §4); the first pin failed in transport (pin_failed: no step-up on this child). */
+  retriedOther: boolean; pinFailed: boolean;
+  /** Selectors (effort-agnostic) that failed THIS turn with a kind other than `other`: a step-up never re-spends them. */
+  failed: Set<string>;
   /** The lane owns this turn's terminal: a late start result may no longer fail or re-enter it. */
   laneEnded: boolean;
 }
@@ -135,6 +174,10 @@ interface Turn {
 const message = (e: unknown) => safeReason(e);
 /** A planner RPC failure as a fixed code (command_failed:<type>, timeout:<type>, …) or an errno code; never omp's text. */
 const rpcCode = (e: unknown) => (e instanceof PlannerRpcError ? e.code : errorCode(e));
+/** omp refused the pinned model (`Model not found: …`, spec §5): omp's text is read here, classified, and dropped. */
+const isModelRefusal = (e: unknown) =>
+  e instanceof PlannerRpcError && e.code === "command_failed:set_model" && classifyOmpError(e.detail ?? "") === "model_missing";
+const quotedId = (q: QuoteRef | undefined) => (q ? { quoted_turn_id: q.turn_id } : {});
 const sameModel = (a: ModelString, b: ModelString) => a.provider === b.provider && a.model === b.model && a.effort === b.effort;
 
 /** Race `p` against a timer that is always cleared (no timer outlives the wait). */
@@ -200,21 +243,21 @@ export class PlannerSupervisor {
   private startInFlight: Promise<StartResult> | undefined;
   /** The spawn in progress: onExit records a start-phase crash here (counted once, there). */
   private spawning: SpawnRec | undefined;
-  /** Planner-string index the live child was spawned on; > 0 means a start-time fallback, so the next turn respawns on planner[0] once. */
-  private sessionLeg = 0;
+  /** Selectors this child refused at spawn or at a pin (spec §4 step 4): skipped for its life; cleared when a fresh spawn starts. */
+  private refused = new Set<string>();
   /** Resolves the current child's pending start/manifest waits when that child is replaced or stopped. */
   private supersede: () => void = () => undefined;
-  /** A setModel failed or was cut off: the applied model is unknown, so the next turn resets to the top string. */
+  /** A setModel failed or was cut off: the applied model is unknown, so the next turn re-pins its own first candidate. */
   private modelUnknown = false;
   private idleExit: ReturnType<typeof setTimeout> | undefined;
-  /** The model the supervisor intends the child to run (the spawn leg, the top string, or a fallback leg). */
+  /** The model the supervisor intends the child to run (the spawn candidate, then each turn's pinned candidate). */
   private model: ModelString;
   /** The model omp last reported in an assistant message_end: what really answered (live gate 2026-10-01). */
   private actual: { provider: string; model: string } | undefined;
   /** The omp version the last spawn's preflight read (houge_status reports it; never a new spawn). */
   private checkedVersion: string | null = null;
 
-  constructor(private readonly d: SupervisorDeps) { this.model = this.top(); }
+  constructor(private readonly d: SupervisorDeps) { this.model = this.spawnChain()[0] ?? UNRESOLVED_MODEL; }
 
   /** The planner's CURRENT family — the model it actually ran on when known, else the intended one (D10 reader check). */
   plannerFamily(): ModelFamily { return familyOf(this.actual ?? this.model); }
@@ -284,7 +327,12 @@ export class PlannerSupervisor {
     }
   }
 
-  private top(): ModelString { return this.d.cfg.planner[0] as ModelString; }
+  /** The spawn axis (spec §5): the Default role's candidates, minus what this child sequence refused. */
+  private spawnChain(): ModelString[] { return this.d.roles.candidates("default", { refused: this.refused }); }
+  /** The turn axis (spec §5): the routed role's candidates at the routed effort, minus what this child refused. */
+  private turnChain(role: TurnRole, effort: Effort | null): ModelString[] {
+    return this.d.roles.candidates(role, { refused: this.refused, effort });
+  }
   private workspace(): string { return chatWorkspace(this.d.ctx.data, this.d.chatId); }
   private incident(kind: string, detail: Record<string, unknown>): void {
     this.d.outcome.incident(kind, { chat_id: this.d.chatId, ...detail });
@@ -372,6 +420,7 @@ export class PlannerSupervisor {
     const turn: Turn = {
       req, claim, worker, startedAt: Date.now(), merged: [], active, abort, heartbeat, n: 0, recorded: 0, lastText: "", lastError: undefined, deadline: undefined, idle: undefined,
       usedTool: false, legIndex: 0, live: false, finished: false, laneEnded: false, aborting: false, dispatched: false, childGen: -1, approvals: 0, ...newDeferred(),
+      route: null, role: "default", effort: null, chain: [], routedBy: undefined, startMissing: 0, legsTried: 0, retriedOther: false, pinFailed: false, failed: new Set(),
       deadlineLeft: cfg.turnTimeoutMs, deadlineAt: Date.now()
     };
     this.armDeadline(turn); // the deadline covers child start and prompt build too
@@ -413,16 +462,17 @@ export class PlannerSupervisor {
       const { text, userText, modality } = resolved;
       // Slot B (ADR 0029 §5.1): the child starts now; only planner paths await it. `warm` never rejects: a start failure
       // is the spawn's own incident (or a string result), never this turn's.
-      const warm: Promise<StartResult> = this.ensureSession(0).catch((e): StartResult => `spawn_failed: ${message(e)}`);
+      const warm: Promise<StartResult> = this.ensureSession(true).catch((e): StartResult => `spawn_failed: ${message(e)}`);
       const verdict = await this.triage(turn, { claim: turn.claim, text, userText, modality, posture: this.d.posture(), signal: turn.abort.signal });
       if (verdict === ENDED || turn.failure) return;
       if (verdict.kind === "lane_reply") { await this.finishLane(turn, userText, verdict, warm); return; }
+      this.routeTurn(turn, verdict.route);
       const promptMessage = verdict.kind === "inform" ? `${verdict.note}\n\n${text}` : text;
       if (!(await this.ensureReady(turn, warm))) return;
-      store.recordChatTurn({ chat_id: chatId, run_id: turn.req.run_id, role: "user", text: userText });
+      store.recordChatTurn({ chat_id: chatId, run_id: turn.req.run_id, role: "user", text: userText, ...quotedId(verdict.quote) });
       const prompt = await this.step(turn, buildTurnPrompt(turnContext, {
         run_id: turn.req.run_id, chat_id: chatId, message: promptMessage, source: turn.req.source, applied: this.applied,
-        ...(turn.req.goal !== undefined ? { goal: turn.req.goal } : {})
+        ...(turn.req.goal !== undefined ? { goal: turn.req.goal } : {}), ...(verdict.quote ? { quoted: verdict.quote.line } : {})
       }));
       if (prompt === ENDED || turn.failure) return;
       if (this.stale && !(await this.ensureReady(turn))) return; // the child lost its bridge during the prompt build
@@ -430,6 +480,14 @@ export class PlannerSupervisor {
     } catch (e) {
       this.failTurn(turn, "planner_exit", `start_failed: ${message(e)}`);
     }
+  }
+
+  /** The tree's route for this turn (spec §5); an unrouted turn (no triage, a schedule fire, a throw) runs on Default. */
+  private routeTurn(turn: Turn, route: TurnRoute | undefined): void {
+    turn.route = route ?? null;
+    turn.role = route?.role ?? "default";
+    turn.effort = route?.effort ?? null;
+    turn.routedBy = route?.verdict_id ?? undefined;
   }
 
   /** Any triage error is today's path; the reason is a closed enum (an Error message may carry bound values). */
@@ -452,7 +510,7 @@ export class PlannerSupervisor {
   private async finishLane(turn: Turn, userText: string, v: Extract<TriageOutcome, { kind: "lane_reply" }>, warm: Promise<StartResult>): Promise<void> {
     // Order matters (Codex plan review): everything that can throw runs BEFORE laneEnded; after it, completion is
     // guaranteed by the finally. A throw before laneEnded reaches startTurn's catch → failTurn.
-    this.d.store.recordChatTurn({ chat_id: this.d.chatId, run_id: turn.req.run_id, role: "user", text: userText });
+    this.d.store.recordChatTurn({ chat_id: this.d.chatId, run_id: turn.req.run_id, role: "user", text: userText, ...quotedId(v.quote) });
     if ((await bounded(warm, ABORT_GRACE_MS)) === TIMED_OUT) { await this.stopSession(); await this.settleStart(); } // supersede a start that will not settle (gen bump)
     turn.lastText = v.text;
     turn.laneButtons = v.buttons;
@@ -487,19 +545,16 @@ export class PlannerSupervisor {
     if (this.startInFlight) await bounded(this.startInFlight, ABORT_GRACE_MS);
   }
 
-  /** A later turn retries the top planner string once after a fallback (spec §8). */
+  /** Spec §5: before the first prompt the child is pinned to the turn's OWN first candidate, never to the spawn leg. */
   private async promptTop(turn: Turn, prompt: TurnPrompt): Promise<void> {
     const s = this.session;
     if (!s) { this.failTurn(turn, "planner_exit", "planner not running"); return; }
     turn.childGen = this.gen;
     this.st = "RUNNING";
     this.armFrameIdle(turn);
-    // pinned to the leg the child spawned on (the top string at leg 0): a child on a later string is moved back to the
-    // top by respawning at the next turn (ensureSession(0)), never by set_model to a string omp refused at spawn
-    const target = this.d.cfg.planner[this.sessionLeg] as ModelString;
-    const reset = this.modelUnknown || !sameModel(this.model, target);
-    if (reset && (await this.resetTop(turn, s, target)) === ENDED) return;
-    if (turn.failure) return;
+    turn.legIndex = 0;
+    turn.chain = this.turnChain(turn.role, turn.effort);
+    if ((await this.pinFirst(turn, s)) === ENDED || turn.failure) return;
     try {
       const sent = claimAtDispatch(this.d.store, this.d.chatId, prompt, this.d.turnContext.pid);
       turn.live = true;
@@ -510,25 +565,82 @@ export class PlannerSupervisor {
     }
   }
 
+  /**
+   * A refused pin already walked on inside pinWalk; no candidate left is no_planner_leg. Any other pin failure is not
+   * fatal: incident, answer on the model the child holds, row marked pin_failed, no step-up (spec §5).
+   */
+  private async pinFirst(turn: Turn, s: PlannerSessionLike): Promise<void | typeof ENDED> {
+    const r = await this.pinWalk(turn, s, "model_missing");
+    if (r === ENDED) return ENDED;
+    if (r === "exhausted") { this.noLeg(turn, "model_missing", turn.legsTried); this.failTurn(turn, "no_planner_leg", "model_missing"); return; }
+    if (r === "ok") return;
+    turn.pinFailed = true;
+    console.error(`planner supervisor: pinning the turn's model failed: ${rpcCode(r.error)}`);
+    this.incident("planner_model_reset_failed", { run_id: turn.req.run_id, reason: rpcCode(r.error) });
+  }
+
+  /** The turn's current candidate on the child; a pin omp refuses is one model_missing row and the walk moves on (spec §5). */
+  private async pinWalk(turn: Turn, s: PlannerSessionLike, kind: LlmErrorKind): Promise<Exclude<PinResult, "refused"> | "exhausted"> {
+    for (let why = kind; ; why = "model_missing") {
+      const target = this.currentCandidate(turn, why);
+      if (!target) return "exhausted";
+      turn.legsTried++;
+      if (!this.modelUnknown && sameModel(this.model, target)) return "ok";
+      const r = await this.pin(turn, s, target);
+      if (r !== "refused") return r;
+      turn.legIndex++;
+    }
+  }
+
+  /** chain[legIndex]; a spent chain steps a routed turn up a role (spec §4: Fast → Default → Thinking), ledgered. */
+  private currentCandidate(turn: Turn, kind: LlmErrorKind): ModelString | undefined {
+    for (;;) {
+      const m = turn.chain[turn.legIndex];
+      if (m) return m;
+      if (!this.stepUp(turn, kind)) return undefined;
+    }
+  }
+
+  /** Only a routed turn steps up, and never one whose first pin failed (the child's model is unknown). */
+  private stepUp(turn: Turn, kind: LlmErrorKind): boolean {
+    const to = turn.route && !turn.pinFailed ? STEP_UP[turn.role] : null;
+    if (!to) return false;
+    this.d.store.appendRunLedgerEvent(turn.req.run_id, "routed_escalation", "core", { from: turn.role, to, kind });
+    turn.role = to;
+    turn.legIndex = 0;
+    // Default and Thinking share provider/model pairs: one that failed this turn (quota, auth, …) fails at any effort
+    turn.chain = this.turnChain(to, turn.effort).filter((m) => !turn.failed.has(selectorKey(m)));
+    return true;
+  }
+
+  /** set_model then set_thinking_level (planner-session.ts setModel); `model` moves only when both succeeded. */
+  private async pin(turn: Turn, s: PlannerSessionLike, target: ModelString): Promise<PinResult> {
+    this.modelUnknown = true; // until set_model AND set_thinking_level both succeeded
+    try {
+      if ((await this.step(turn, s.setModel(target))) === ENDED) return ENDED;
+    } catch (e) {
+      if (!isModelRefusal(e)) return { error: e };
+      this.refused.add(selectorKey(target)); // a model can stay catalogued while refusing: never pinned again on this child
+      this.recordPinMissing(turn, target);
+      return "refused";
+    }
+    this.model = target;
+    this.modelUnknown = false;
+    this.actual = undefined; // the next message_end reports what the pin really produced
+    return "ok";
+  }
+
+  /** planner_no_leg (spec §4: Thinking spent, or an unrouted Default spent), as today. */
+  private noLeg(turn: Turn, kind: LlmErrorKind, tried: number): void {
+    this.incident("planner_no_leg", { run_id: turn.req.run_id, error_kind: kind, legs_tried: tried });
+    this.d.roles.requestRefresh(); // the catalog may have moved since the last read (plan F7 d; at most once per 10 min)
+  }
+
   /** The prompt RPC succeeded on the child that made the pending reset: its transcript now holds a turn, so commit it. */
   private commitReset(turn: Turn): void {
     if (this.resetGen === 0 || this.resetGen !== turn.childGen || this.session === undefined) return;
     this.d.store.promotePlannerSession(this.d.chatId);
     this.resetGen = 0;
-  }
-
-  /** A failed reset is not fatal: log, raise an incident, answer on the current model; the next turn retries it. */
-  private async resetTop(turn: Turn, s: PlannerSessionLike, target: ModelString): Promise<void | typeof ENDED> {
-    this.modelUnknown = true; // until set_model AND set_thinking_level both succeeded
-    try {
-      if ((await this.step(turn, s.setModel(target))) === ENDED) return ENDED;
-      this.model = target;
-      this.modelUnknown = false;
-      this.actual = undefined; // the next message_end reports what the pin really produced
-    } catch (e) {
-      console.error(`planner supervisor: reset to the top planner string failed: ${rpcCode(e)}`);
-      this.incident("planner_model_reset_failed", { run_id: turn.req.run_id, reason: rpcCode(e) });
-    }
   }
 
   private async settle(turn: Turn): Promise<void> {
@@ -544,28 +656,39 @@ export class PlannerSupervisor {
     else this.finishSuccess(turn);
   }
 
-  /** quota|auth|transport|timeout|model_missing → next planner string over live set_model; else final. */
+  /**
+   * Spec §4: a retryable kind — or `other` once, on a routed turn, while no tool has run (a failure after a side effect
+   * is never re-spent on another model) — walks the turn's chain, then steps a routed turn up; else final.
+   */
   private async retryNextLeg(turn: Turn, error: string): Promise<boolean> {
     const kind = classifyOmpError(error);
-    const planner = this.d.cfg.planner;
-    if (!RETRYABLE_ERROR_KINDS.has(kind)) { turn.failure = { type: "model_error", ref: kind }; return false; }
-    if (turn.legIndex + 1 >= planner.length) {
-      turn.failure = { type: "no_planner_leg", ref: kind };
-      this.incident("planner_no_leg", { run_id: turn.req.run_id, error_kind: kind, legs_tried: turn.legIndex + 1 });
-      return false;
-    }
+    if (kind !== "other") turn.failed.add(selectorKey(this.model));
+    if (!this.mayRetry(turn, kind)) { turn.failure = { type: "model_error", ref: kind }; return false; }
     const s = this.session;
     if (!s) { turn.failure = { type: "planner_exit", ref: "planner not running" }; return false; }
+    if (kind === "other") turn.retriedOther = true;
     turn.legIndex++;
-    const next = planner[turn.legIndex] as ModelString;
     turn.lastError = undefined;
     Object.assign(turn, newDeferred());
+    return this.promptRetry(turn, s, kind);
+  }
+
+  private mayRetry(turn: Turn, kind: LlmErrorKind): boolean {
+    if (RETRYABLE_ERROR_KINDS.has(kind)) return true;
+    return kind === "other" && turn.route !== null && !turn.usedTool && !turn.retriedOther;
+  }
+
+  /** Pin the next candidate and tell it to continue (RETRY_NOTE); the transcript already holds every executed tool's result. */
+  private async promptRetry(turn: Turn, s: PlannerSessionLike, kind: LlmErrorKind): Promise<boolean> {
     try {
-      this.modelUnknown = true;
-      if ((await this.step(turn, s.setModel(next))) === ENDED) return true;
-      this.model = next;
-      this.modelUnknown = false;
-      this.actual = undefined;
+      const r = await this.pinWalk(turn, s, kind);
+      if (r === ENDED) return true;
+      if (r === "exhausted") {
+        turn.failure = { type: "no_planner_leg", ref: kind };
+        this.noLeg(turn, kind, turn.legsTried);
+        return false;
+      }
+      if (r !== "ok") throw r.error;
       if (turn.failure) { turn.done("abort"); return true; }
       turn.live = true;
       await this.step(turn, s.prompt(RETRY_NOTE));
@@ -577,65 +700,93 @@ export class PlannerSupervisor {
 
   // ── child lifecycle ─────────────────────────────────────────────────────────
 
-  /** null when a live, current child is ready; else the failure ref for the run. */
-  /** `leg` = the planner string a spawn uses. At leg 0 a child running on a start-time fallback is replaced (the top string's one retry per turn). */
-  private async ensureSession(leg: number): Promise<StartResult> {
+  /**
+   * null when a live, current child is ready; else the failure ref for the run. `fresh` = a new spawn sequence: the last
+   * child's refused set is no evidence for this one (spec §4 step 4), so it clears; false after a start refusal.
+   */
+  private async ensureSession(fresh: boolean): Promise<StartResult> {
     const { turnContext, chatId } = this.d;
     // never two spawns: join the start in flight; if it did not produce a ready child, this turn makes its own attempt
     while (this.startInFlight) if ((await this.startInFlight) === null && this.session) return null;
-    // compared only at turn start: a new lesson, identity edit, skill change or UTC day restarts the child here
-    const refresh = this.stale || systemPromptFingerprint(turnContext, chatId) !== this.fingerprint || (leg === 0 && this.sessionLeg > 0);
+    // compared only at turn start: a new lesson, identity edit, skill change or UTC day restarts the child here.
+    // A child on a later Default candidate is kept (spec §5): set_model moves it to any turn's candidate.
+    const refresh = this.stale || systemPromptFingerprint(turnContext, chatId) !== this.fingerprint;
     if (this.session && refresh) await this.stopSession();
     if (this.session) return null;
     if (this.crashLooping()) return "crash_loop";
-    const pre = this.preflight();
-    if (pre) return pre;
-    const p: Promise<StartResult> = this.spawn(leg).finally(() => { if (this.startInFlight === p) this.startInFlight = undefined; });
+    // in flight from here: the preflight awaits omp --version, and a turn arriving meanwhile must join, not spawn twice
+    const p: Promise<StartResult> = this.preflightThenSpawn(fresh).finally(() => { if (this.startInFlight === p) this.startInFlight = undefined; });
     this.startInFlight = p;
     return p;
   }
 
+  private async preflightThenSpawn(fresh: boolean): Promise<StartResult> {
+    const gen0 = this.gen; // a stop (abortAll, shutdown, finishLane) bumps gen during the awaited check: never spawn after it
+    const pre = await this.preflight();
+    if (this.gen !== gen0) return START_SUPERSEDED;
+    if (pre) return pre;
+    if (fresh) this.refused.clear();
+    const head = this.spawnChain()[0];
+    if (!head) return NO_SPAWN_MODEL;
+    return this.spawn(head);
+  }
+
   /**
-   * The turn's child: omp rejects an unknown --model at process start (live, 18.4.4), so live set_model can never
-   * rescue a bad planner[0]. Each rejected string gets one error{model_missing} row and the next string is spawned;
-   * all rejected → no_planner_leg + incident. Not a crash-latch count.
+   * The turn's child on the spawn axis (spec §5): omp rejects an unknown --model at process start (live, 18.4.4), so
+   * live set_model can never rescue it. Each rejected selector gets one error{model_missing} row, joins the child's
+   * refused set, and Default's next candidate is spawned; none left → no_planner_leg + incident. Not a crash-latch count.
    */
   private async startSession(turn: Turn, warm?: Promise<StartResult>): Promise<string | null | typeof ENDED> {
-    const planner = this.d.cfg.planner;
-    for (let leg = 0; ; leg++, warm = undefined) {
-      const r = await this.step(turn, warm ? this.afterWarm(warm) : this.ensureSession(leg));
-      if (r === ENDED || r === null || typeof r === "string") {
-        if (r === null) turn.legIndex = this.sessionLeg;
-        return r;
-      }
-      this.recordStartMissing(turn, r.missingLeg);
-      leg = r.missingLeg;
-      if (leg + 1 >= planner.length) {
-        this.incident("planner_no_leg", { run_id: turn.req.run_id, error_kind: "model_missing", legs_tried: planner.length });
+    for (let fresh = true; ; fresh = false, warm = undefined) {
+      const r = await this.step(turn, warm ? this.afterWarm(warm) : this.ensureSession(fresh));
+      if (r === NO_SPAWN_MODEL) {
+        this.noLeg(turn, "model_missing", turn.startMissing);
         this.failTurn(turn, "no_planner_leg", "model_missing");
         return ENDED;
       }
+      if (r === ENDED || r === null || typeof r === "string") return r;
+      this.recordStartMissing(turn, r.missing);
     }
   }
 
   /**
-   * Leg 0 after slot B's warm start: its failure (a start_failed ref, or omp refusing planner[0]) IS this turn's leg-0
-   * result, never a second spawn (one start, one incident, one crash count, as before the lane). The warm call was this
-   * turn's start-time fingerprint compare; a ready child is replaced only if it exited or went stale while the lane ran.
+   * The first spawn after slot B's warm start: its failure (a start_failed ref, or omp refusing Default's head) IS this
+   * turn's result, never a second spawn (one start, one incident, one crash count, as before the lane). The warm call
+   * was this turn's start-time fingerprint compare; a ready child is replaced only if it exited or went stale meanwhile.
    */
   private async afterWarm(warm: Promise<StartResult>): Promise<StartResult> {
     const r = await warm;
     if (r !== null) return r;
-    return this.session && !this.stale ? null : this.ensureSession(0);
+    return this.session && !this.stale ? null : this.ensureSession(true);
   }
 
-  /** One llm_attempt per string omp refused at spawn, keyed `<run>:0:<leg>` (never `<run>:0`, the n = 0 dispatch row's key). */
-  private recordStartMissing(turn: Turn, leg: number): void {
-    const m = this.d.cfg.planner[leg] as ModelString;
-    const run = turn.req.run_id;
-    this.d.store.llmAuditSink({ run_id: run, role: "compose" }).record({
+  /** One llm_attempt per selector omp refused at spawn, keyed `<run>:0:<k>` (never `<run>:0`, the n = 0 dispatch row's key). */
+  private recordStartMissing(turn: Turn, m: ModelString): void {
+    this.refused.add(selectorKey(m));
+    this.audit(turn, {
       provider: m.provider, role: "", outcome: "error", model: m.model, family: familyOf(m),
-      request_key: `${run}:0:${leg}`, error_kind: "model_missing"
+      request_key: `${turn.req.run_id}:0:${turn.startMissing++}`, error_kind: "model_missing"
+    }, m);
+  }
+
+  /** One llm_attempt per pin omp refused, keyed `<run>:pin:<k>` (distinct from `<run>:<n>` and `<run>:0:<k>`). */
+  private recordPinMissing(turn: Turn, m: ModelString): void {
+    this.audit(turn, {
+      provider: m.provider, role: "", outcome: "error", model: m.model, family: familyOf(m),
+      request_key: `${turn.req.run_id}:pin:${turn.legsTried}`, error_kind: "model_missing"
+    }, m);
+  }
+
+  /**
+   * Every compose llm_attempt goes through here. Each carries the effort of the selector it was made on (`m`: the spawn
+   * or pin candidate, default the model the child was pinned to; plan F15), and the first one of a routed turn carries
+   * routed_by = its verdict id (spec §6).
+   */
+  private audit(t: Turn, a: LlmAttempt, m: ModelString = this.model): void {
+    const routedBy = t.routedBy;
+    t.routedBy = undefined;
+    this.d.store.llmAuditSink({ run_id: t.req.run_id, role: "compose" }).record({
+      ...a, ...(m.effort ? { effort: m.effort } : {}), ...(routedBy ? { routed_by: routedBy } : {})
     });
   }
 
@@ -651,9 +802,9 @@ export class PlannerSupervisor {
   }
 
   /** omp answers with a version at every spawn (tests included); wrapper hash and Seatbelt render unless skipped for unit tests. */
-  private preflight(): string | null {
+  private async preflight(): Promise<string | null> {
     const { cfg, distDir, ctx } = this.d;
-    const v = (this.d.versionCheck ?? (() => checkOmpVersion(cfg)))();
+    const v = await (this.d.versionCheck ?? (() => checkOmpVersionAsync(cfg)))();
     if (!v.ok) {
       // No pinned version (2026-10-07): only an unrunnable or silent omp refuses a spawn.
       this.incident("omp_unavailable", { check: v.kind, version: v.version });
@@ -690,7 +841,7 @@ export class PlannerSupervisor {
     return { sessionDir, systemPromptFile, configFile, bridgeDir };
   }
 
-  private async spawn(leg: number): Promise<StartResult> {
+  private async spawn(model: ModelString): Promise<StartResult> {
     const { ctx, chatId, distDir, cfg } = this.d;
     this.st = "STARTING";
     const p = this.preparePaths();
@@ -698,10 +849,10 @@ export class PlannerSupervisor {
     const sock = join(p.bridgeDir, `${chatId}-${randomUUID().slice(0, 8)}.sock`);
     if (Buffer.byteLength(sock) > MAX_SOCK_PATH) return this.startFailed(`bridge socket path over ${MAX_SOCK_PATH} bytes`);
     const gen = this.bumpGen();
-    const rec: SpawnRec = { gen, leg };
+    const rec: SpawnRec = { gen, model };
     this.spawning = rec;
     const superseded = new Promise<void>((r) => { this.supersede = r; });
-    this.model = this.d.cfg.planner[leg] as ModelString; // top string, or the next one after a start-time rejection
+    this.model = model; // Default's head, or its next candidate after a start-time rejection
     // omp's open_session restores the model a resumed session last used, over --model (live gate 2026-10-01): the
     // child's model is unknown until promptTop pins it with set_model before the first prompt
     this.modelUnknown = true;
@@ -729,7 +880,6 @@ export class PlannerSupervisor {
     } finally { if (this.spawning === rec) this.spawning = undefined; }
     const refused = await this.resetOrRefuse(gen);
     if (refused) return refused;
-    this.sessionLeg = leg;
     if (!this.turn?.live) this.st = "IDLE";
     this.d.outcome.startOk?.();
     return null;
@@ -814,7 +964,7 @@ export class PlannerSupervisor {
 
   /**
    * A child that exited during start (its start() rejection carries the classified code; omp refusing the model is
-   * model_missing → next string, no crash count, no incident), one we stopped (superseded), or any other failure.
+   * model_missing → Default's next candidate, no crash count, no incident), one we stopped (superseded), or any other failure.
    */
   private async spawnFailed(rec: SpawnRec, e: unknown): Promise<StartResult> {
     const exited = rec.exit !== undefined;
@@ -823,7 +973,7 @@ export class PlannerSupervisor {
     const err = exited && rec.started ? await bounded(rec.started.then(() => undefined, (x: unknown) => x), 1_000) : e;
     await this.stopSession();
     const code = err instanceof PlannerRpcError ? err.code : undefined;
-    if (code === START_MODEL_MISSING) return { missingLeg: rec.leg };
+    if (code === START_MODEL_MISSING) return { missing: rec.model };
     this.exits.push(Date.now()); // any other failed start (exit, timeout, no manifest, spawn error) is a crash exit
     return this.startFailed(code ?? (exited ? `child ${rec.exit} during start` : message(e)));
   }
@@ -921,7 +1071,7 @@ export class PlannerSupervisor {
     t.lastError = text;
     if (t.n > 0 && t.recorded === t.n) return;
     const model = this.model.model;
-    this.d.store.llmAuditSink({ run_id: t.req.run_id, role: "compose" }).record({
+    this.audit(t, {
       provider: this.model.provider, role: "", outcome: "error", model, family: familyOf({ model }),
       request_key: `${t.req.run_id}:${t.n}`, error_kind: classifyOmpError(text)
     });
@@ -957,7 +1107,7 @@ export class PlannerSupervisor {
       ...(s.ttftMs !== undefined ? { ttft_ms: s.ttftMs } : {}),
       ...(s.durationMs !== undefined ? { latency_ms: s.durationMs } : {})
     };
-    this.d.store.llmAuditSink({ run_id: t.req.run_id, role: "compose" }).record(attempt);
+    this.audit(t, attempt);
     t.recorded = t.n;
     if (s.text.trim().length > 0) t.lastText = s.text;
     t.lastError = error;
@@ -1026,6 +1176,7 @@ export class PlannerSupervisor {
     outcome.complete({ ...base, run_id: t.req.run_id, attachments, ...(t.laneButtons ? { buttons: t.laneButtons } : {}) });
     for (const m of t.merged) outcome.complete({ ...base, run_id: m, merged_into: t.req.run_id, attachments: [] });
     store.recordChatTurn({ chat_id: chatId, run_id: t.req.run_id, role: "assistant", text, intent: assistantIntentFor(text, t.usedTool) });
+    this.routeEnd(t, "planner_done");
   }
 
   private finishFailure(t: Turn, f: { type: PlannerFailure; ref: string }): void {
@@ -1037,6 +1188,18 @@ export class PlannerSupervisor {
     const base = { worker_id: t.worker, error_ref: f.ref, ...(t.lastText ? { partial: t.lastText } : {}) };
     outcome.fail({ ...base, run_id: t.req.run_id, error_type: f.type });
     for (const m of t.merged) outcome.fail({ ...base, run_id: m, error_type: "merged_parent_failed" });
+    this.routeEnd(t, "planner_failed");
+  }
+
+  /** The verdict row's handler outcome (spec §6) for a turn the tree routed with a verdict id; a lane turn has no route. */
+  private routeEnd(t: Turn, handler_outcome: "planner_done" | "planner_failed"): void {
+    const verdict_id = t.route?.verdict_id;
+    if (!verdict_id || !this.d.outcome.routeEnd) return;
+    // no prompt went out → null: `actual` persists across turns (plannerFamily/answeredModel read it), so it is not this turn's
+    const model = !t.dispatched ? null : this.actual ? `${this.actual.provider}/${this.actual.model}` : selectorKey(this.model);
+    this.d.outcome.routeEnd({
+      run_id: t.req.run_id, verdict_id, handler_outcome, model, fast_used_tool: t.role === "fast" && t.usedTool, pin_failed: t.pinFailed
+    });
   }
 
   /**
@@ -1045,7 +1208,7 @@ export class PlannerSupervisor {
    */
   private recordAborted(t: Turn, kind: "aborted" | "shutdown"): void {
     const model = this.model.model;
-    this.d.store.llmAuditSink({ run_id: t.req.run_id, role: "compose" }).record({
+    this.audit(t, {
       provider: this.model.provider, role: "", outcome: "error", model, family: familyOf({ model }),
       request_key: `${t.req.run_id}:${t.n}`, error_kind: kind
     });

@@ -6,7 +6,7 @@ import {
 } from "../capabilities/intent.js";
 import { computeCostUsd, JEV_PROVIDER } from "../llm/metered-pricing.js";
 import type { ReplayTurnRow, RunStore } from "../run/run-store.js";
-import { JEV_REQUEST_MODEL, type JevRequest, type JevResult } from "./jev-client.js";
+import { choiceAnswer, JEV_REQUEST_MODEL, type JevRequest, type JevResult } from "./jev-client.js";
 import { buildJevIntentRequest, langOf, type Lang } from "./intent-question.js";
 import { llmLabel, observedAction, type ObservedAction } from "./labels.js";
 
@@ -150,7 +150,8 @@ async function dispatchTurn(
   }
   watchModel(offModelWarned, jev.model, log);
   const newSpent = spentUsd + jevUsd(jev.input_tokens, deps.env);
-  const answer = jev.answers.intent!;
+  const answer = choiceAnswer(jev.answers.intent); // the client validated it against the choice question: a miss is a parse failure
+  if (!answer) { emit(deps, rows, { ...prepared.base, status: "jev_failed", error: "parse" }); return { spentUsd: newSpent, estimatedUsd: estUsd }; }
   const withJev: ReplayRow = {
     ...prepared.base, status: "ok", jev_intent: answer.choice, jev_confidence: answer.confidence,
     jev_probabilities: answer.probabilities, jev_model: jev.model

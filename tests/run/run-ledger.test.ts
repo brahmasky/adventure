@@ -200,9 +200,37 @@ describe("Run Ledger events", () => {
 
   it("ADR 0029 events require their enum/number fields and accept null for a skipped triage (never text)", () => {
     const ok = validateLedgerEvent(createLedgerEvent({ correlation_id: "r", event_type: "triage", actor: "core", sequence: 1,
-      payload: { status: "skipped", lane: null, complete: null, scope: null, confidence: null, top_prob: null, margin: null, lang: "zh", decision: "fallback", verdict: null, skip_reason: "no_key" } }));
+      payload: { status: "skipped", category: null, route_lane: "planner", role: "default", verdict_id: "jv_x", confidence: null, top_prob: null, margin: null,
+        lang: "zh", decision: "fallback", verdict: "jev_skipped", skip_reason: "no_key" } }));
     expect(ok.ok).toBe(true);
-    const missing = validateLedgerEvent(createLedgerEvent({ correlation_id: "r", event_type: "lesson_saved", actor: "core", sequence: 2, payload: { lesson_id: 51 } }));
+    // the tree's denominator row must name its verdict: the §9 join reads it
+    const noVerdict = validateLedgerEvent(createLedgerEvent({ correlation_id: "r", event_type: "triage", actor: "core", sequence: 2,
+      payload: { status: "skipped", category: null, route_lane: "planner", role: "default", confidence: null, top_prob: null, margin: null, lang: "zh",
+        decision: "fallback", verdict: "jev_skipped" } }));
+    expect(noVerdict.ok).toBe(false);
+    const missing = validateLedgerEvent(createLedgerEvent({ correlation_id: "r", event_type: "lesson_saved", actor: "core", sequence: 3, payload: { lesson_id: 51 } }));
     expect(missing.ok).toBe(false);
+  });
+
+  // Stage A ledger types (spec §4–§6): ids, enums and numbers only. A missing field must fail the write, or a later
+  // reader (the change notice, the sweep) silently miscounts.
+  it("stage A events require their fields", () => {
+    type StageA = "routed_escalation" | "model_roles_resolved" | "model_catalog_unavailable" | "model_role_override" | "quote_unresolved"
+      | "model_roles_fallback";
+    const ev = (event_type: StageA, payload: Record<string, unknown>) =>
+      validateLedgerEvent(createLedgerEvent({ correlation_id: "r", event_type, actor: "core", sequence: 1, payload }));
+    expect(ev("routed_escalation", { from: "fast", to: "default", kind: "quota" }).ok).toBe(true);
+    expect(ev("routed_escalation", { from: "fast", to: "default" }).ok).toBe(false);
+    expect(ev("model_roles_resolved", { resolved_at: "2026-10-07T00:00:00.000Z", catalog_ok: true, roles: [] }).ok).toBe(true);
+    // the tick's 24 h latch reads resolved_at, and an outage row must say so, or it becomes the diff baseline
+    expect(ev("model_roles_resolved", { roles: [] }).ok).toBe(false);
+    expect(ev("model_catalog_unavailable", { reason: "read_failed" }).ok).toBe(true);
+    expect(ev("model_catalog_unavailable", {}).ok).toBe(false);
+    expect(ev("model_role_override", { key: "thinking", pattern: "opus", actor: "paco" }).ok).toBe(true);
+    expect(ev("model_role_override", { key: "thinking", pattern: "opus" }).ok).toBe(false);
+    expect(ev("quote_unresolved", { reason: "no_mapping" }).ok).toBe(true);
+    expect(ev("quote_unresolved", {}).ok).toBe(false);
+    expect(ev("model_roles_fallback", { role: "default" }).ok).toBe(true);
+    expect(ev("model_roles_fallback", {}).ok).toBe(false);
   });
 });

@@ -8,6 +8,7 @@ import { createBridgeHandler, type ActiveTurn, type CallResult } from "../../src
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { loadToolDeclarations, TOOL_DECLS_DIR } from "../../src/omp/tool-decls.js";
 import { chatWorkspace } from "../../src/omp/workspace.js";
+import type { RoleResolver } from "../../src/omp/role-resolver.js";
 import type { SecretBroker } from "../../src/config/secret-broker.js";
 import type { Identity } from "../../src/domain/types.js";
 import type { RunStore } from "../../src/run/run-store.js";
@@ -23,7 +24,7 @@ export function ompWorker(
     llm?: Adapter; web?: Adapter; http?: Adapter; media?: MediaWorkerDeps; project?: string; google?: GoogleApiDeps;
     codex?: (input: Record<string, unknown>) => ToolAdapterResult | Promise<ToolAdapterResult>; time?: Adapter;
     embed?: (text: string) => Promise<Float32Array | null>; operator?: Identity;
-    jevFetch?: typeof fetch; jevNow?: () => Date; broker?: SecretBroker;
+    jevFetch?: typeof fetch; jevNow?: () => Date; broker?: SecretBroker; roles?: RoleResolver;
   } = {}
 ): CoreWorker {
   const llm: Adapter = o.llm ?? (async () => ({ ok: true, output: { answer: "stub" } }));
@@ -31,7 +32,7 @@ export function ompWorker(
     store, o.project ?? join(root, "project"), llm, o.web, o.codex, undefined, o.http, o.broker, o.time, o.embed ?? (async () => null),
     o.google, o.media, {
       dataDir: root, distDir: tmpOmpDist(root), ...(o.operator ? { operator: o.operator } : {}),
-      ...(o.jevFetch ? { jevFetch: o.jevFetch } : {}), ...(o.jevNow ? { jevNow: o.jevNow } : {})
+      ...(o.jevFetch ? { jevFetch: o.jevFetch } : {}), ...(o.jevNow ? { jevNow: o.jevNow } : {}), ...(o.roles ? { roles: o.roles } : {})
     }
   );
 }

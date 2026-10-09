@@ -1,7 +1,7 @@
 // Replay eval (spec 2026-09-30 §13 seam 3; live-gate case 12). Replays real user turns that Paco rated
-// ≥ 2 through each HOUGE_OMP_PLANNER string as an ANSWER-ONLY one-shot (no tools, no session, no system
-// prompt, no thread), then scores every answer 0–3 with the first HOUGE_OMP_JUDGES string. SP4 wires it
-// into the self-write test gate; today it is a manual comparison of the planner strings.
+// ≥ 2 through each string of the planner chain (resolveOmpConfig: the Default role's static list) as an
+// ANSWER-ONLY one-shot (no tools, no session, no system prompt, no thread), then scores every answer 0–3 with
+// judge seat 0 of the same static lists. SP4 wires it into the self-write test gate; today it is a manual comparison.
 //
 //   node scripts/eval-replay.mjs --dry              print the plan; touches nothing (no env, DB or omp)
 //   node scripts/eval-replay.mjs --make-set         write evals/replay-set.json from the live DB (READ-ONLY):
@@ -65,8 +65,8 @@ function printPlan(args) {
   console.log(`replay eval (${MODE}) — plan only, nothing is read or spawned`);
   console.log(`  set file   : ${SET_FILE} (${existsSync(SET_FILE) ? `${readSet().length} run ids` : "absent — run --make-set"})`);
   console.log(`  turns      : first ${args.turns} run ids of the set`);
-  console.log("  planners   : each HOUGE_OMP_PLANNER string alone, as a one-shot (no tools, no session, no system prompt)");
-  console.log("  judge      : the first HOUGE_OMP_JUDGES string, rubric below");
+  console.log("  planners   : each string of the Default role's static list alone, as a one-shot (no tools, no session, no system prompt)");
+  console.log("  judge      : judge seat 0 of the static lists, rubric below");
   console.log(`  make-set   : session_ratings with rating ≥ ${MIN_RATING} → the user turns of that chat in the ${WINDOW_HOURS} h before`);
   console.log("               the ask, turn runs only, newest first, distinct run ids (ids only in the file)");
   console.log(`  output     : ${join(EVALS, "replay-<YYYY-MM-DD>.json")} (run ids, labels, scores; never text)\n`);

@@ -46,7 +46,8 @@ const CANARY_READ = "~/.houge/houge-gate-canary";
 // inside a denied subpath (probed), so the canary must exist. cat of a directory never prints file content:
 // sandboxed → "Operation not permitted"; both floors failed → "Is a directory".
 const CANARY_SHELL = "~/.omp/profiles/houge";
-const BAD_PLANNER = "anthropic/no-such-model:medium,google-antigravity/claude-opus-4-6:medium,kimi-code/k3:low";
+/** Case 6: an uncatalogued model the smoke injects at the head of Default (stage A: a /models pattern must match the catalog). */
+const NO_SUCH_MODEL = { provider: "anthropic", id: "no-such-model", thinking: null };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── ledger view: plain SQL over a read-only connection (the live DB, or the smoke's temp copy) ──────────
@@ -67,7 +68,6 @@ function openView(dbPath) {
       chat, since),
     replies: (run) => all("SELECT payload_json FROM notification_outbox WHERE run_id = ? AND intent_type = 'final_report'", run).map((r) => JSON.parse(r.payload_json)),
     assistantText: (run) => get("SELECT text FROM chat_turns WHERE run_id = ? AND role = 'assistant' ORDER BY created_at DESC LIMIT 1", run)?.text ?? "",
-    incidentOpen: (kind) => get("SELECT incident_id FROM incidents WHERE kind = ? AND state = 'open' LIMIT 1", kind) !== undefined,
     approvals: (run) => all("SELECT approval_id, tool_call_id, state, created_at, resolved_at FROM tool_approvals WHERE run_id = ? ORDER BY created_at", run),
     heartbeat: () => get("SELECT last_success_at FROM daemon_heartbeat WHERE id = 1")?.last_success_at ?? null,
     correlated: (like, since, type) => all(
@@ -117,14 +117,13 @@ const CASES = [
     send: () => "My code word is ZEBRA  →  (restart)  →  What was my code word?",
     pass: "second reply contains ZEBRA",
     check: (v, [, b]) => [[/ZEBRA/i.test(replyText(v, b)), "second reply contains ZEBRA"]] },
-  { n: 6, title: "planner fallback: first string invalid", send: () => "What is 17×23?",
-    prep: [`Set in .env: HOUGE_OMP_PLANNER=${BAD_PLANNER}`, "Kickstart the daemon; restore .env and kickstart again after this case."],
-    pass: "llm_attempt{error_kind:model_missing}, then an ok compose row on a later planner string; reply arrives",
-    check: (v, [r]) => [
+  { n: 6, title: "planner fallback: Default head refused at spawn", send: () => "What is 17×23?",
+    pass: "llm_attempt{error_kind:model_missing} for anthropic/no-such-model, then an ok compose row on the next Default candidate; reply arrives",
+    check: (v, [r], c) => [
       [attempts(v, r, "compose").some((p) => p.error_kind === "model_missing"), "compose llm_attempt error_kind=model_missing"],
-      // which later string answers depends on today's catalog (google-antigravity/claude-opus-4-6 retired 2026-10-07): any
-      // later string passes, but its ok row must come AFTER the first model_missing (the fallback order, not any success)
-      [fallbackAfterMissing(attempts(v, r, "compose")), "ok compose row on a later planner string, after the model_missing"],
+      // f2f1627: the ok row must FOLLOW the first model_missing (the fallback order, not any success); `fallbackAfterMissing` stays
+      [fallbackAfterMissing(attempts(v, r, "compose")), "an ok compose row after the model_missing"],
+      [attempts(v, r, "compose").some((p) => p.outcome === "ok" && `${p.provider}/${p.model}` === c.case6Next), `ok compose row on ${c.case6Next}`],
       [replyText(v, r).length > 0, "a reply was queued"]
     ] },
   { n: 7, title: "photo on the omp media seat", send: () => "(send a photo with a caption: what is in this picture?)",
@@ -147,14 +146,14 @@ const CASES = [
       [pay(v, r, "run_failed").some((p) => p.error_type === "killed"), "run_failed error_type=killed"],
       [c.pidsGoneMs !== null && c.pidsGoneMs <= 5000, `planner pids gone within 5 s (${c.pidsGoneMs ?? "never"} ms)`]
     ] },
-  { n: 11, title: "D10: reader collapsed onto the planner family", drive: driveCollapse,
-    send: () => "What's the weather in Sydney tomorrow?",
-    prep: ["Set in .env: HOUGE_OMP_PLANNER=kimi-code/k3:low and HOUGE_OMP_READER=kimi-code/k3:low", "Kickstart; restore both and kickstart after this case."],
-    pass: "the read answers; wall_collapse event; incident wall_collapsed open after the next sweep",
-    check: (v, [r], c) => [
+  { n: 11, title: "D10: the reader skips the planner's family", send: () => "What's the weather in Sydney tomorrow?",
+    prep: ["From the operator chat: /models set fast k3 · /models set default k3 · /models set thinking k3 · /models set reader k3 (no kickstart: an override applies on the next turn).",
+      "After this case: /models reset fast · /models reset default · /models reset thinking · /models reset reader."],
+    pass: "the read answers; its first reader llm_attempt is off the planner's family (kimi) although the reader override heads k3; no wall_collapse event",
+    check: (v, [r]) => [
       [v.run(r)?.state === "completed", "run completed (the read proceeded)"],
-      [pay(v, r, "wall_collapse").length > 0, "wall_collapse event"],
-      [c.collapseIncident === true, "incident wall_collapsed open after the sweep"]
+      [(attempts(v, r, "reader")[0]?.family ?? "kimi") !== "kimi", `first reader attempt off the kimi family (${attempts(v, r, "reader").map((p) => p.family).join(",") || "no reader call"})`],
+      [pay(v, r, "wall_collapse").length === 0, "no wall_collapse event (a cross-family candidate existed)"]
     ] },
   { n: 12, title: "replay eval (answer-only)", drive: driveReplay,
     pass: "scripts/eval-replay.mjs --turns 20 exits 0 and writes scores for the three planner strings",
@@ -216,7 +215,7 @@ const CASES = [
     check: checkTeach },
   { n: 22, title: "episodic distill on the omp ticks chain", smoke: smokeDistill, drive: driveDistillObserve,
     send: () => "(no message: the smoke seeds a temp chat and calls runEpisodicDistillPass; the full gate reads the daemon's distill ticks of the last 48 h)",
-    pass: "an ok distill llm_attempt under tick:episodic_distill:* on the HOUGE_OMP_TICKS top provider; facts written",
+    pass: "an ok distill llm_attempt under tick:episodic_distill:* on the Tiny role's top provider; facts written",
     check: checkDistill },
   { n: 23, title: "self_write_propose: reviewer on the omp seat", send: () => SELF_WRITE_ASK,
     prep: ["Set in .env: HOUGE_SELFWRITE_ENABLED=true (leave HOUGE_SELFWRITE_REVIEWER unset, or omp); kickstart.",
@@ -521,14 +520,6 @@ async function driveKill(c) {
   return runs;
 }
 
-async function driveCollapse(c, cs) {
-  const runs = await sendAndWait(c, cs.send(c));
-  if (!runs) return null;
-  await ask("Wait for the next invariant sweep (or trigger one), then press Enter:");
-  c.collapseIncident = c.view.incidentOpen("wall_collapsed");
-  return runs;
-}
-
 async function driveReplay(c) {
   const r = spawnSync(process.execPath, [join(HERE, "eval-replay.mjs"), "--turns", "20", ...(c.dbArg ? ["--db", c.dbArg] : [])], { stdio: "inherit" });
   const file = join(HERE, "..", "evals", `replay-${new Date().toISOString().slice(0, 10)}.json`);
@@ -732,6 +723,8 @@ async function runLiveCase(c, cs, seen) {
     return verdict(cs, cs.manual.map((q, i) => [answers[i] === "y", q]));
   }
   if (cs.n === 14 && !c.d12Url) return { n: cs.n, title: cs.title, status: "SKIP", detail: "needs --d12-url" };
+  // Stage A: the daemon cannot be handed an uncatalogued Default head (a /models pattern must match the catalog).
+  if (cs.n === 6) return { n: cs.n, title: cs.title, status: "SKIP", detail: "smoke only since stage A: --smoke --cases 6" };
   for (const p of cs.prep ?? []) console.log(`  prep: ${p}`);
   if (cs.prep) await ask("Press Enter when the prep is done:");
   c.caseStart = new Date().toISOString();
@@ -780,7 +773,7 @@ async function runSmoke(args) {
   try {
     for (const cs of selectCases(args.cases, CASES.filter((x) => SMOKE_CASES.includes(x.n)))) {
       console.log(`\n[${cs.n}] ${cs.title}`);
-      results.push(await guardedCase(cs, () => runSmokeCase({ cs, store, worker, view, intake, seen, timeoutMs: args.timeoutS * 1000 })));
+      results.push(await guardedCase(cs, () => runSmokeCase({ cs, store, worker, view, intake, seen, timeoutMs: args.timeoutS * 1000, CoreWorker, repo, root })));
     }
   } finally {
     await worker.shutdownPlanners();
@@ -794,15 +787,39 @@ async function runSmoke(args) {
 async function runSmokeCase(d) {
   const { cs, store, view, seen } = d;
   if (cs.smoke) return verdict(cs, cs.check(view, [], await cs.smoke({ store })));
-  const saved = process.env.HOUGE_OMP_PLANNER;
-  if (cs.n === 6) process.env.HOUGE_OMP_PLANNER = BAD_PLANNER; // read when the chat's supervisor is created
+  const c6 = cs.n === 6 ? await case6Worker(d) : null; // its own worker: a Default role headed by an uncatalogued model
+  const run = c6 ? { ...d, worker: c6.worker } : d;
   try {
     // numeric chat ids (turn-context requires it); a fresh chat = a fresh supervisor, and a retry gets its own (no refusal in its history)
-    const got = await withRefusalRetry(cs, view, (attempt) => smokeTurn(d, `-1000${cs.n}${attempt > 0 ? attempt : ""}`));
-    return caseResult(cs, got, seen, (runs) => verdict(cs, cs.check(view, runs, {})));
+    const got = await withRefusalRetry(cs, view, (attempt) => smokeTurn(run, `-1000${cs.n}${attempt > 0 ? attempt : ""}`));
+    return caseResult(cs, got, seen, (runs) => verdict(cs, cs.check(view, runs, c6 ? { case6Next: c6.next } : {})));
   } finally {
-    if (saved === undefined) delete process.env.HOUGE_OMP_PLANNER; else process.env.HOUGE_OMP_PLANNER = saved;
+    if (c6) await c6.close();
   }
+}
+
+/**
+ * Case 6 on the TEMP copy: a RoleResolver over the real catalog plus one uncatalogued model, which a `default` override
+ * heads. omp refuses it at spawn (`Model "…" not found` → model_missing) and the spawn axis walks to the next Default
+ * candidate, the model the check expects. The override is reset afterwards (the copy is discarded anyway).
+ */
+async function case6Worker(d) {
+  const [{ RoleResolver }, { readOmpCatalog }, { resolveOmpConfig }] = await Promise.all([
+    import("../dist/omp/role-resolver.js"), import("../dist/omp/model-catalog.js"), import("../dist/omp/omp-config.js")
+  ]);
+  process.env.HOUGE_MODEL_ROLES = "resolved"; // overrides apply in resolved mode only (spec §4.3)
+  const cfg = resolveOmpConfig(process.env);
+  const roles = new RoleResolver({ store: d.store, readCatalog: async () => [...((await readOmpCatalog(cfg)) ?? []), NO_SUCH_MODEL] });
+  d.store.recordModelRoleOverride({ key: "default", pattern: NO_SUCH_MODEL.id, actor: "live-gate" });
+  if (!(await roles.refreshCatalog())) throw new Error("case 6: omp models --json returned no catalog");
+  const [head, next] = roles.candidates("default");
+  if (`${head?.provider}/${head?.model}` !== `${NO_SUCH_MODEL.provider}/${NO_SUCH_MODEL.id}` || !next) throw new Error("case 6: the override did not head Default");
+  const worker = new d.CoreWorker(d.store, d.repo, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    { dataDir: d.root, distDir: DIST, roles });
+  return {
+    worker, next: `${next.provider}/${next.model}`,
+    close: async () => { await worker.shutdownPlanners(); d.store.recordModelRoleOverride({ key: "default", pattern: "", actor: "live-gate" }); }
+  };
 }
 
 /** One smoke turn in `chat`, straight to worker.submitTurn: { runs: [run_id] } once terminal (or timed out), else { error }. */

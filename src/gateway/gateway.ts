@@ -45,6 +45,7 @@ import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import { toolApprovalWaiters } from "../omp/tool-approval-sink.js";
 import { handleMemLaneUndo, memLaneAskTurnEvent, recordTriageOverride } from "./memlane-commands.js";
 import { handleForgetMemory, handleMemories, handleMemoryUndo } from "./memory-commands.js";
+import { handleModels, modelsUnavailable, type ModelsRoles } from "./models-commands.js";
 import type { IdeaRow, ShortlistRow } from "../run/run-store.js";
 
 /** A freshly captured rating the daemon follows up on (the low-rating attribution pass). */
@@ -70,6 +71,7 @@ export type GatewayIntakeResult =
   | { ok: true; status: "lesson_change_undone"; run_id: string }
   | { ok: true; status: "memories_returned"; run_id: string }
   | { ok: true; status: "memory_forgotten"; run_id: string }
+  | { ok: true; status: "models_returned"; run_id: string }
   | { ok: true; status: "schedule_admin_returned"; run_id: string }
   | { ok: true; status: "killed"; run_id: string }
   | { ok: true; status: "disarmed"; run_id: string }
@@ -118,6 +120,8 @@ const APPROVAL_REFUSAL_TEXT: Readonly<Record<string, string>> = {
 };
 /** An `appr_<uuid>` is 41 characters; anything longer is not an id and is not echoed in full. */
 const APPROVAL_ID_ECHO_MAX = 48;
+/** Spec §6: a session rated at or below this is a correction on the chat's latest routed turn. */
+const LOW_RATING_MAX = 1;
 
 export class Gateway {
   private readonly caps: GlobalBudgetCaps;
@@ -131,7 +135,7 @@ export class Gateway {
     projectRoot?: string,
     skillStore?: SkillStore,
     hooks?: GatewayHooks,
-    private readonly options: { dataDir?: string } = {}
+    private readonly options: { dataDir?: string; roles?: ModelsRoles } = {}
   ) {
     this.caps = caps ?? resolveGlobalBudgetCaps(process.env);
     this.projectRoot = projectRoot ?? process.cwd();
@@ -237,6 +241,12 @@ export class Gateway {
       return this.accepted(event, now, handleForgetMemory(this.runStore, event));
     }
 
+    if (event.type === "models") {
+      // Gated like /memories: the allowlist in the adapter, then this branch. A gateway without a resolver declines.
+      const roles = this.options.roles;
+      return this.accepted(event, now, roles ? handleModels(this.runStore, roles, event) : modelsUnavailable(this.runStore, event));
+    }
+
     if (event.type === "kill") {
       return this.handleKill(event, now);
     }
@@ -334,6 +344,7 @@ export class Gateway {
       applied_lesson_ids: applied
     });
     this.runStore.applyRatingToLessons(applied, parsed.rating, now);
+    if (parsed.rating <= LOW_RATING_MAX) this.markLowRating(chat_id, now);
     // Phase W W2: the wiki pages folded into the window's turns absorb the same signal
     // (+0.25 reuse on a good session). Attribution rides the ledger, so this is inert
     // ([] → no-op) unless wiki retrieval actually seeded wiki_page_ids.
@@ -1128,6 +1139,12 @@ export class Gateway {
     return queued;
   }
 
+  /** Spec §6: a low session rating labels the chat's latest verdict (first correction wins: a tap or think-harder stays). */
+  private markLowRating(chat_id: string, now: string): void {
+    const v = this.runStore.latestJevVerdictForChat(chat_id, now);
+    if (v && v.paco_correction === null) this.runStore.updateJevVerdict(v.verdict_id, { paco_correction: "low_rating" });
+  }
+
   /**
    * The re-submitted turn and its override label commit together (a label failure leaves no run). The label goes only on a
    * genuinely NEW run: a redelivered tap resolves to the run it already made, and a resumed duplicate also reports "created".
@@ -1485,6 +1502,7 @@ export const HELP_TEXT = [
   "/forget <scope|id> — 清除某条经验",
   "/memories [query] — 查看记住的事实（最多 10 条）",
   "/forget_memory <id> — 忘掉一条记忆（附撤销按钮）",
+  "/models — 模型角色（/models set <role> <pattern> · /models set judges <n> <pattern> · /models reset <role>）",
   "/approve <id> — 批准待处理操作",
   "/deny <id> — 拒绝待处理操作",
   "/approvals — 列出待批准的操作",

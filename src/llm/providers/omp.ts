@@ -4,20 +4,23 @@ import type { LlmResult } from "../types.js";
 import { buildChildEnv } from "../../omp/child-env.js";
 import { daemonTmpRoot } from "../../run/daemon-tmp.js";
 import type { OmpConfig } from "../../omp/omp-config.js";
-import { checkOmpVersion } from "../../omp/omp-version.js";
+import { checkOmpVersionAsync, type OmpCheckResult } from "../../omp/omp-version.js";
 import { classifyOmpError, parseFrameLine, RETRYABLE_ERROR_KINDS, summarizeAssistantMessage, type AssistantSummary } from "../../omp/omp-frames.js";
 import { familyOf, formatModelString, type ModelFamily, type ModelString } from "../../omp/model-string.js";
+import { resolveModelRolesMode } from "../../omp/model-roles.js";
 
 export interface OneShotInput {
   seat: string; chain: ModelString[]; prompt: string; files?: string[];
   correlationId: string; timeoutMs?: number; plannerFamily?: ModelFamily;
   /** The daemon's stop: aborting kills the in-flight leg's process group and ends the call (no later leg; the leg is audited error{shutdown}). */
   signal?: AbortSignal;
+  /** Epoch ms bounding the whole chain: each leg's timeout is what it leaves (audited `timeout`), and no leg starts after it. */
+  deadlineAt?: number;
 }
 export interface OneShotDeps {
-  cfg: OmpConfig; audit: LlmAuditSink; versionCheck?: () => ReturnType<typeof checkOmpVersion>;
+  cfg: OmpConfig; audit: LlmAuditSink; versionCheck?: () => OmpCheckResult | Promise<OmpCheckResult>;
   /** Every version check's outcome, pass or refuse — the caller opens or clears its omp incidents. */
-  onVersionCheck?: (check: ReturnType<typeof checkOmpVersion>) => void;
+  onVersionCheck?: (check: OmpCheckResult) => void;
 }
 
 const STDOUT_CAP_BYTES = 8 * 1024 * 1024;
@@ -91,6 +94,13 @@ function legFailure(o: LegOutcome): string | null {
   return null;
 }
 
+/** The leg's input under the chain's deadline: its timeout is what the deadline leaves; null once nothing is left. */
+function legUnderDeadline(input: OneShotInput, cfg: OmpConfig): OneShotInput | null {
+  if (input.deadlineAt === undefined) return input;
+  const left = input.deadlineAt - Date.now();
+  return left <= 0 ? null : { ...input, timeoutMs: Math.min(input.timeoutMs ?? cfg.oneshotTimeoutMs, left) };
+}
+
 /**
  * omp cannot hear audio: it inlines Ogg bytes as TEXT and the model invents a transcript (ruling 2,
  * live probe 2026-09-30). Code-owned refusal at the chokepoint — voice belongs to the agy-cli leg.
@@ -101,17 +111,32 @@ const AUDIO_FILE = /\.(opus|ogg|oga|mp3|wav|m4a|aac|flac|amr|weba)$/i;
 /** A call the daemon's stop cut short: not a model failure (its leg, if one ran, is audited error{shutdown}). */
 const ABORTED: LlmResult = { ok: false, provider: "omp", error: "aborted: the daemon is stopping", aborted: true };
 
+/**
+ * D10 as a skip rule (spec 2026-10-06 §8), resolved mode only. A reader call that knows the planner's family runs its
+ * candidates of another family first, then the rest, each group in list order. When every candidate shares the family
+ * the order stands, and every leg is flagged family_collapse below, as before. `HOUGE_MODEL_ROLES=static` (read per
+ * call) keeps the list order exactly, as before stage A (spec §4.3).
+ */
+function readerOrder(input: OneShotInput): ModelString[] {
+  if (input.seat !== "reader" || input.plannerFamily === undefined) return input.chain;
+  if (resolveModelRolesMode(process.env) === "static") return input.chain;
+  const cross = input.chain.filter((m) => familyOf(m) !== input.plannerFamily);
+  return [...cross, ...input.chain.filter((m) => familyOf(m) === input.plannerFamily)];
+}
+
 export async function spawnOneShot(input: OneShotInput, deps: OneShotDeps): Promise<LlmResult> {
   if ((input.files ?? []).some((f) => AUDIO_FILE.test(f))) return { ok: false, provider: "omp", error: OMP_AUDIO_REFUSED };
   if (input.signal?.aborted) return ABORTED;
-  const version = (deps.versionCheck ?? (() => checkOmpVersion(deps.cfg)))();
+  const version = await (deps.versionCheck ?? (() => checkOmpVersionAsync(deps.cfg)))(); // never blocks the loop: Jev and turns run alongside
   deps.onVersionCheck?.(version);
   // No leg ran, so no audit row: the structured check rides out for the caller's incident (ruling 6).
   if (!version.ok) return { ok: false, provider: "omp", error: version.reason, unavailable: true, omp_check: version };
   const errors: string[] = [];
-  for (const [i, m] of input.chain.entries()) {
+  for (const [i, m] of readerOrder(input).entries()) {
     if (input.signal?.aborted) return ABORTED;
-    const o = await runLeg(deps.cfg, m, input);
+    const leg = legUnderDeadline(input, deps.cfg);
+    if (leg === null) { errors.push(`${formatModelString(m)}: deadline`); break; } // never ran, so never audited
+    const o = await runLeg(deps.cfg, m, leg);
     const family = familyOf(m);
     const base = {
       provider: m.provider, role: "", latency_ms: o.latencyMs, family, leg_index: i,

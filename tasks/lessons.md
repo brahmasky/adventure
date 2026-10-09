@@ -364,3 +364,54 @@ Rules Claude writes for itself after corrections. Review at session start.
   row, so arming memory silently armed status, though the two clear different bars. Status now arms on its own
   `lane:status` pseudo-row. Rule: if two behaviours have different go/no-go evidence, they get different arming keys,
   even when they read the same model answer.
+
+## Jev decision tree build (stage A, 2026-10-07→09)
+
+- **A synchronous child_process call on a spawn path starves every concurrent bounded network call.** The planner's
+  preflight ran `execFileSync omp --version` (about 0.8 s) on every spawn. Stage A starts Jev's 1.5 s, no-retry call in
+  parallel with the spawn, so the blocked event loop turned 5 of 9 live Jev calls into `skipped{timeout}`, while about
+  3,700 hermetic tests stayed green (a stubbed `fetch` has no clock to starve). The product defect was already on `main`
+  and invisible until something timed a call against it. Rule: when a bounded call races a spawn, the spawn path may not
+  block the loop; make the check async, and let the live gate assert the silent-skip rate (at most 1 in at least 8 real
+  calls) so starvation fails the gate instead of reading as a flaky vendor.
+- **Awaiting inside a start path needs a generation captured before the await.** Making the version check async opened a
+  window between "start requested" and `spawn()` capturing its generation, so `/kill`, shutdown or a lane's supersede
+  landing in it was lost and the child started anyway. The first fix round found it by review, not by a test. Rule: when a
+  synchronous start becomes async, capture the cancellation epoch before the first `await`, compare after it, and write the
+  test as "stop while the check is pending" for each stop path.
+- **A hand-off where each task assumes the other deletes the files leaves orphans.** Seven conflicts surfaced in preflight:
+  the seven retired `HOUGE_OMP_*` chain variables were read by the omp live gate and eval-replay (Task 6 retired the
+  variables, Task 13 owned the gate, Task 14 owned `.env.example`, and no step named the gate cases), lane 1's files and
+  `triageShadowStats` (Task 10 removed the writers, Task 12 the files), and a plan order line ("9 may run beside either")
+  that contradicted the import graph. Rule: every retirement gets one named owner step with a grep for its orphans in
+  `src`, `tests`, `scripts`, `.env.example` and the docs, and a plan's task order is derived from the type-import graph,
+  not asserted.
+- **Check every consumer of a payload before changing its required fields.** The brief said nothing reads `lane` or
+  `complete` from the `triage` payload; `RunStore.triageShadowStats` did, and its test fixture broke on the tree's new
+  required fields. Rule: before editing a ledger type's required fields, grep the store and CLI readers of that type, not
+  only its writers.
+- **Step-up must not re-spend what just failed.** The plan's step-up (Fast, then Default, then Thinking) re-tried a
+  selector that had failed this turn, and Default and Thinking share all four models. Spec §4 means a stronger answer, not
+  a second try at a provider that just returned `quota`. Fix: a per-turn set of selectors that failed with a non-`other`
+  error, excluded from the step-up chain. Rule: a retry ladder states what it excludes, and the test covers a ladder whose
+  rungs share legs.
+- **An evidence field that reads mutable per-child state needs a "this turn dispatched" guard.** `routeEnd` reported the
+  previous turn's model when no prompt went out, and the calibration rows are built from it. Rule: any field recorded at
+  turn end from state the child carries across turns is null unless this turn dispatched.
+- **Preflight conflicts are cheap; find them before the first task.** A pre-build scan of the plan against the code found
+  seven conflicts and nine defects, each with a ruling and its cost-if-wrong recorded in the ledger. Rule: for a plan of
+  more than ten tasks, scan the briefs against each other (names, files, owners, order) before dispatching.
+- **A real replay finds what hermetic tests and a short gate cannot.** Jev rounds each probability to two decimals, and
+  the client's fixed 0.01 sum tolerance (plus float error) rejected a four-level 0.99 as `parse`: 18 of 602 calls in the
+  calibration replay, each a live turn silently sent to the Default fallback. Every test fixture summed to exactly 1, and
+  nine gate calls rarely hit it. The replay row kept only `error`; the cause showed up in the ledger's `error_kind` and a
+  captured response. Rule: validate vendor numbers against the precision the vendor actually emits (n × half an ulp of
+  its rounding), build a fixture from a captured real response, and run the paid replay before arming, not after.
+- **A tool-based proxy label is not truth.** Against the "which tools ran" proxy, Jev agreed 50%; against Paco's labels,
+  60%, and both flagged "wrong lane" turns were proxy errors (a rule the planner never saved read as `answer`). Rule: a
+  report that scores a classifier against a proxy says so in its headline, and arming waits for the operator's labels on
+  every lane candidate.
+- **Hand labels have to fit a one-answer schema.** Paco's labels named two requests in one message (a rule plus a lookup)
+  three times in 111 turns. Labelling those `memory` would have taught the report that the memory lane may take them,
+  and the lane would drop the other half. Rule: when a labeller says "both", label the routing-safe part (the one that
+  keeps the planner), and record the multi-intent case as a design gap.

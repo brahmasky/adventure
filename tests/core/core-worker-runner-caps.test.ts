@@ -4,6 +4,7 @@ import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RUNNER_TIMEOUT_BUFFER_MS, seatBudgetMs } from "../../src/llm/registry.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
+import { RoleResolver } from "../../src/omp/role-resolver.js";
 import { RunStore, type LlmCallRole } from "../../src/run/run-store.js";
 import { pinEnabledFlags, pinOmpEnv, shortTmp } from "../helpers/omp-env.js";
 import { bridgeTurn, ompWorker } from "../helpers/omp-worker.js";
@@ -15,7 +16,12 @@ pinOmpEnv();
 pinEnabledFlags();
 let tmp: { dir: string; cleanup: () => void };
 let store: RunStore;
-beforeEach(() => { tmp = shortTmp("hrc-"); store = RunStore.openInMemory(); });
+/** The worker's seats run on its RoleResolver's chains (model roles), so the expected budgets read the same chains. */
+let roles: RoleResolver;
+beforeEach(() => {
+  tmp = shortTmp("hrc-"); store = RunStore.openInMemory();
+  roles = new RoleResolver({ store, env: () => ({}), readCatalog: async () => null });
+});
 afterEach(() => { store.close(); tmp.cleanup(); delete process.env.HOUGE_WIKI_VERIFY_PASSES; });
 
 function caps(): (tool: string) => number | undefined {
@@ -24,10 +30,10 @@ function caps(): (tool: string) => number | undefined {
     notify: { kind: "telegram", chat_id: "555" }, idempotency_key: "t:caps", source_reference: "telegram:update:1:message:1"
   }));
   if (!intake.ok) throw new Error("intake failed");
-  const t = bridgeTurn(store, ompWorker(store, tmp.dir, { project: join(tmp.dir, "project") }), intake.run_id, tmp.dir);
+  const t = bridgeTurn(store, ompWorker(store, tmp.dir, { project: join(tmp.dir, "project"), roles }), intake.run_id, tmp.dir);
   return (tool) => t.turn.registry.get(tool)?.timeout_ms;
 }
-const seat = (role: LlmCallRole) => seatBudgetMs(resolveOmpConfig(process.env), role) + RUNNER_TIMEOUT_BUFFER_MS;
+const seat = (role: LlmCallRole) => seatBudgetMs(resolveOmpConfig(process.env, roles.chains()), role) + RUNNER_TIMEOUT_BUFFER_MS;
 
 describe("runner caps follow the called seat's chain (M3)", () => {
   it("to_local_time (pure compute) gets the runner buffer, not an LLM chain budget", () => {

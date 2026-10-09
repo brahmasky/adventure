@@ -15,7 +15,10 @@ export const JEV_REQUEST_MODEL = "jev-latest";
 const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 const BACKOFF_BASE_MS = 500;
 const RETRY_AFTER_CAP_MS = 60_000;
-const PROBABILITY_SUM_TOLERANCE = 0.01;
+/** Jev rounds each probability to two decimals, so n entries may sum up to n × 0.005 off 1 (the 2026-10-09 replay lost
+ *  ~3% of calls to a four-level 0.99); the epsilon absorbs the float sum landing a hair past that bound. */
+const PROBABILITY_ROUNDING = 0.005;
+const PROBABILITY_SUM_EPSILON = 1e-9;
 /** A model id is a short token (Codex B2): anything else is a parse failure, so a response that echoes
  *  prose in `model` can never be written to the audit or the ledger. */
 const JEV_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
@@ -25,17 +28,49 @@ export interface JevChoiceQuestion {
   instructions: string;
   criteria: Record<string, string>;
 }
+/** Ordered levels, 2–10 (00-jev-capabilities.md §1); the answer's probabilities are keyed "0".."n-1". */
+export interface JevScoreQuestion {
+  type: "score";
+  instructions: string;
+  criteria: string[];
+}
+/** Yes/no; criteria optional. */
+export interface JevNoulQuestion {
+  type: "noul";
+  instructions: string;
+  criteria?: { true: string; false: string };
+}
+export type JevQuestion = JevChoiceQuestion | JevScoreQuestion | JevNoulQuestion;
 export interface JevRequest {
   state: unknown;
-  questions: Record<string, JevChoiceQuestion>;
+  questions: Record<string, JevQuestion>;
 }
 export interface JevChoiceAnswer {
+  type: "choice";
   choice: string;
   probabilities: Record<string, number>;
   confidence: number;
 }
+/** `score` is the expected level in [0, n−1]; `probabilities` are keyed "0".."n-1". */
+export interface JevScoreAnswer {
+  type: "score";
+  score: number;
+  probabilities: Record<string, number>;
+  confidence: number;
+}
+/** `noul` = p(yes). TypeSafe sends no confidence for this type. */
+export interface JevNoulAnswer {
+  type: "noul";
+  noul: number;
+}
+export type JevAnswer = JevChoiceAnswer | JevScoreAnswer | JevNoulAnswer;
+
+/** Narrows to a choice answer; undefined for a missing answer or another type. */
+export function choiceAnswer(a: JevAnswer | undefined): JevChoiceAnswer | undefined {
+  return a?.type === "choice" ? a : undefined;
+}
 export type JevResult =
-  | { ok: true; model: string; answers: Record<string, JevChoiceAnswer>; input_tokens: number; latency_ms: number }
+  | { ok: true; model: string; answers: Record<string, JevAnswer>; input_tokens: number; latency_ms: number }
   | { ok: false; reason: "no_key" | "fused" | "auth" | "error"; detail: string; error_kind?: LlmErrorKind };
 
 export interface JevClientConfig {
@@ -149,7 +184,7 @@ async function attemptOnce(fetchImpl: typeof fetch, apiKey: string, req: JevRequ
 function validateResponse(
   body: unknown,
   req: JevRequest
-): Validated<{ model: string; answers: Record<string, JevChoiceAnswer>; input_tokens: number; output_tokens: number }> {
+): Validated<{ model: string; answers: Record<string, JevAnswer>; input_tokens: number; output_tokens: number }> {
   if (typeof body !== "object" || body === null) return { ok: false, code: "body_not_object" };
   const b = body as Record<string, unknown>;
   if (typeof b.model !== "string") return { ok: false, code: "model_missing" };
@@ -158,33 +193,74 @@ function validateResponse(
   const usage = b.usage as Record<string, unknown> | undefined;
   if (typeof usage?.input_tokens !== "number") return { ok: false, code: "usage_input_tokens_missing" };
   const output_tokens = typeof usage.output_tokens === "number" ? usage.output_tokens : 0;
-  const answers: Record<string, JevChoiceAnswer> = {};
+  const answers: Record<string, JevAnswer> = {};
   for (const [id, question] of Object.entries(req.questions)) {
     const raw = (b.answers as Record<string, unknown>)[id];
     if (raw === undefined) return { ok: false, code: `answer_missing:${id}` };
-    const answer = validateChoice(raw, Object.keys(question.criteria));
-    if (!answer.ok) return answer;
+    const answer = validateAnswer(raw, question);
+    if (!answer.ok) return answer; // one malformed answer fails the whole call: never a partial answer set
     answers[id] = answer.value;
   }
   return { ok: true, value: { model: b.model, answers, input_tokens: usage.input_tokens, output_tokens } };
 }
 
-function validateChoice(raw: unknown, options: string[]): Validated<JevChoiceAnswer> {
+/** Per type, against the question that was asked: the answer's type must be the question's. */
+function validateAnswer(raw: unknown, q: JevQuestion): Validated<JevAnswer> {
   if (typeof raw !== "object" || raw === null) return { ok: false, code: "answer_not_object" };
   const a = raw as Record<string, unknown>;
-  if (a.type !== "choice" || typeof a.choice !== "string") return { ok: false, code: "not_choice" };
-  if (!options.includes(a.choice)) return { ok: false, code: "choice_not_option" };
-  if (typeof a.confidence !== "number" || a.confidence < 0 || a.confidence > 1) return { ok: false, code: "confidence_out_of_range" };
-  if (typeof a.probabilities !== "object" || a.probabilities === null) return { ok: false, code: "probabilities_missing" };
-  const probs = a.probabilities as Record<string, unknown>;
-  if (Object.keys(probs).length !== options.length || !options.every((o) => typeof probs[o] === "number")) {
+  switch (q.type) {
+    case "choice": return validateChoice(a, Object.keys(q.criteria));
+    case "score": return validateScore(a, q.criteria.length);
+    case "noul": return validateNoul(a);
+  }
+}
+
+/** Every key present, nothing else, each in [0, 1], summing to 1 within the rounding bound. */
+function validateDistribution(raw: unknown, keys: readonly string[]): Validated<Record<string, number>> {
+  if (typeof raw !== "object" || raw === null) return { ok: false, code: "probabilities_missing" };
+  const probs = raw as Record<string, unknown>;
+  if (Object.keys(probs).length !== keys.length || !keys.every((k) => typeof probs[k] === "number")) {
     return { ok: false, code: "probability_keys" };
   }
   const p = probs as Record<string, number>;
-  if (!options.every((o) => Number.isFinite(p[o]) && p[o]! >= 0 && p[o]! <= 1)) return { ok: false, code: "probability_range" };
-  const sum = options.reduce((s, o) => s + p[o]!, 0);
-  if (Math.abs(sum - 1) > PROBABILITY_SUM_TOLERANCE) return { ok: false, code: "probability_sum" };
+  if (!keys.every((k) => Number.isFinite(p[k]) && p[k]! >= 0 && p[k]! <= 1)) return { ok: false, code: "probability_range" };
+  const sum = keys.reduce((s, k) => s + p[k]!, 0);
+  if (Math.abs(sum - 1) > keys.length * PROBABILITY_ROUNDING + PROBABILITY_SUM_EPSILON) return { ok: false, code: "probability_sum" };
+  return { ok: true, value: p };
+}
+
+function validConfidence(c: unknown): c is number {
+  return typeof c === "number" && c >= 0 && c <= 1;
+}
+
+function validateChoice(a: Record<string, unknown>, options: string[]): Validated<JevChoiceAnswer> {
+  if (a.type !== "choice" || typeof a.choice !== "string") return { ok: false, code: "not_choice" };
+  if (!options.includes(a.choice)) return { ok: false, code: "choice_not_option" };
+  if (!validConfidence(a.confidence)) return { ok: false, code: "confidence_out_of_range" };
+  const p = validateDistribution(a.probabilities, options);
+  if (!p.ok) return p;
   // The reported choice must be an argmax of its own vector (any tied option is accepted): a mismatch is a malformed answer.
-  if (p[a.choice] !== Math.max(...options.map((o) => p[o]!))) return { ok: false, code: "choice_not_argmax" };
-  return { ok: true, value: { choice: a.choice, probabilities: p, confidence: a.confidence } };
+  if (p.value[a.choice] !== Math.max(...options.map((o) => p.value[o]!))) return { ok: false, code: "choice_not_argmax" };
+  return { ok: true, value: { type: "choice", choice: a.choice, probabilities: p.value, confidence: a.confidence } };
+}
+
+/** Float slack on the expected level: Σ i·pᵢ can land a hair past an endpoint; one rounding ulp must not void the whole call. */
+const SCORE_ENDPOINT_TOLERANCE = 1e-9;
+
+/** `score` is the expected level, so it lies in [0, n−1] (clamped within the tolerance); probabilities are keyed "0".."n-1". */
+function validateScore(a: Record<string, unknown>, levels: number): Validated<JevScoreAnswer> {
+  if (a.type !== "score" || typeof a.score !== "number" || !Number.isFinite(a.score)) return { ok: false, code: "not_score" };
+  if (a.score < -SCORE_ENDPOINT_TOLERANCE || a.score > levels - 1 + SCORE_ENDPOINT_TOLERANCE) return { ok: false, code: "score_out_of_range" };
+  const score = Math.min(levels - 1, Math.max(0, a.score));
+  if (!validConfidence(a.confidence)) return { ok: false, code: "confidence_out_of_range" };
+  const p = validateDistribution(a.probabilities, Array.from({ length: levels }, (_, i) => String(i)));
+  if (!p.ok) return p;
+  return { ok: true, value: { type: "score", score, probabilities: p.value, confidence: a.confidence } };
+}
+
+/** p(yes) in [0, 1]; no confidence on this type. */
+function validateNoul(a: Record<string, unknown>): Validated<JevNoulAnswer> {
+  if (a.type !== "noul" || typeof a.noul !== "number") return { ok: false, code: "not_noul" };
+  if (!Number.isFinite(a.noul) || a.noul < 0 || a.noul > 1) return { ok: false, code: "noul_out_of_range" };
+  return { ok: true, value: { type: "noul", noul: a.noul } };
 }

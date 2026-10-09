@@ -1521,3 +1521,64 @@ Build + independent adversarial verification subagents; each live round found a 
   `threshold_used`); the gate checks the path the verdict names and lists INCONCLUSIVE instead of a false FAIL; case 8
   now outweighs the copy's real 24 h of calls. Removed the dormant live intent shadow (code, report, store methods,
   flag). 3429 tests green; armed live gate PASS 34/34.
+
+## 2026-10-07→09 — Jev decision tree, stage A (BUILT on `feat/jev-tree-stage-a`; default live gate PASS; awaiting Paco's rows, merge, kickstart)
+
+Spec `docs/superpowers/specs/2026-10-06-jev-decision-tree-design.md` (Rev 9), plan Rev 5, 14 tasks by
+subagent-driven development with a per-task review and a preflight scan (7 conflicts, 9 defects, each ruled).
+Built: the three-type Jev client and six frozen questions; the pure routing policy (`tree-policy.ts`); the quote anchor
+(`chat_turns.quoted_turn_id`); `jev_verdicts` (one row per turn, joined to the first model call by `routed_by`); model
+roles (`ROLE_LISTS`, `RoleResolver` over `omp --profile houge models --json`, `/models`, the daily tick, incidents
+`role_unresolved` and `model_catalog_unavailable`, `HOUGE_MODEL_ROLES`); the two-axis planner chain with step-up; the live
+20 s Tiny-role cascade (Paco's ruling, verdict value `tiny`); the `lane_fallthrough_rate` sweep kind; the tree replay
+and report (`houge jev replay triage`); `scripts/live-gate-jev-tree.mjs` (replacing the lane 1 gate). The seven
+`HOUGE_OMP_*` chain variables are retired.
+
+Build-time rulings that differ from the plan: step-up skips selectors that failed this turn with a non-`other` error;
+a status render throw settles as `fallthrough:render_failed` (route outcome `fallback`) and `lane_fallthrough_rate`
+counts lane rows closed `planner_done` / `planner_failed`; `routeEnd` reports a null model when no prompt dispatched; the
+omp version check became async (see below); `tiny` replaces `kimi` as the cascade value; a rule stated inside a status
+question goes to the planner after the save.
+
+The live gate found a defect on `main`: the planner's `execFileSync omp --version` (about 0.8 s) blocked the event loop
+while Jev's 1.5 s call was in flight (5 of 9 timeouts on run 1). Fixed in `f101fd1` and `9ff9edc` (an async check, a
+generation captured across the await, refusal reasons carrying codes only). Default gate runs 3, 4 and 5 after the fix:
+PASS, 0 of 9 silent skips, parity comparable 7 of 9, cascade case 12a answered in 14.0 s of the 20 s bound.
+
+Verification on the branch at the docs commit: `npm run typecheck` clean; `npm test` 265 files, 3768 tests passed, none
+skipped; `npm run build` ok. `omp --version` reports `18.7.0`.
+
+**Open pre-merge items (Paco's side):**
+1. omp startup check: satisfied (above).
+2. Paco's replay on a DB copy and his committed `CALIBRATED_ROWS` for the questions he chooses: OPEN. Until then every
+   armed turn routes `uncalibrated` to Default and the memory and status lanes do not act.
+3. `node scripts/live-gate-jev-tree.mjs --real-calibration` PASS with the memory and status lanes acting: OPEN (not run;
+   it fails by design before the rows exist).
+4. typecheck, test and build green: satisfied (above).
+5. Cascade ruling recorded (live, 20 s, Tiny role; spec Rev 9; ADR 0029 amendment draft): satisfied.
+Then merge, `npm run build`, and a Paco kickstart (new migrations, the resolver at boot); check `houge.parked` /
+`houge.kill`, in-flight runs and the evolution lane first. The ADR 0029 / 0028 amendments are drafts in their own commit
+for Paco's approval (`docs/decisions/` is his hand).
+
+## 2026-10-09 (later) — stage A calibrated, armed and merged
+
+Paco asked what the paid replay and the `--real-calibration` gate were, then had them run. `houge jev replay triage`
+over the 301 Telegram turns since 2026-07-02, on a DB copy (opening the live DB with the branch's code would have applied
+its migrations), both option orders, $0.09 in all. 18 of 602 Jev calls failed as `parse`: Jev rounds probabilities to two
+decimals and the client's fixed 0.01 sum tolerance rejected a four-level 0.99. Fixed in `239bd0c` (the bound scales with
+the option count; the regression fixture is the captured response), and the gaps refilled.
+
+Claude drafted category labels for the 111 turns the selector picks (every memory or status candidate plus 40 random);
+Paco ruled on the 14 it was unsure of. His rulings: two-request messages (rule plus lookup, rule plus fix) are labelled
+by the planner-side part; praise is `answer`, a complaint `other`; questions about Houge's own behaviour or skills are
+`self_change`. With his labels: no lane misroute (memory 7/7, status 2/2), category 181/301, permutation 276/301; the
+weak spot is research read as lookup (26 of 59). Paco armed all 14 candidate rows (`81d81de`).
+`live-gate-jev-tree.mjs --real-calibration`: PASS, 106 checks, both lanes acting with zero planner requests, 0/9 silent
+Jev skips, cascade 11.5 s. Case 6 (rule plus lookup) saved and still routed to the planner, so the two-request gap is
+narrow: only a confident `memory` answer drops the second request (stage B).
+
+Paco then asked for version-free ADRs: the code carries no omp, model or Jev version pin, so ADR 0028 (D1, D7, context,
+consequences), 0002, 0010, 0014, 0027 and 0029 name omp, Claude and the role lists instead, with dated evidence keeping
+its version (`fa7821d`). The 0028 model-roles and 0029 decision-tree amendments are approved; 0029 gains the arming
+amendment. Docs synced (README, CONTEXT, ROADMAP, configuration, jev-decision-layer, todo, lessons). Merged to `main`,
+pushed, `dist/` rebuilt. A Paco kickstart makes it live.

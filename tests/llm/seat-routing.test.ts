@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
-import { familyOf } from "../../src/omp/model-string.js";
+import { familyOf, parseModelChain } from "../../src/omp/model-string.js";
+import { staticRoleChains } from "../../src/omp/model-roles.js";
 import { judgeSeat, oneShotAdapter, seatBudgetMs, seatChain, tickSeat } from "../../src/llm/registry.js";
 import { RunStore } from "../../src/run/run-store.js";
-import { OMP_AUDIO_REFUSED, spawnOneShot } from "../../src/llm/providers/omp.js";
+import { LEG_EXIT_GRACE_MS, OMP_AUDIO_REFUSED, spawnOneShot } from "../../src/llm/providers/omp.js";
 import { FAKE_OMP_BIN, pinOmpEnv } from "../helpers/omp-env.js";
 
 pinOmpEnv();
@@ -32,6 +33,10 @@ describe("seat routing — which subscription model serves each non-planner call
   it("puts the panel chair on cfg.chair and the photo reader on cfg.media", () => {
     expect(seatChain(cfg, "chair")).toEqual(cfg.chair);
     expect(seatChain(cfg, "media_transcribe")).toEqual(cfg.media);
+  });
+  // Decision 14 (Rev 4): the cascade runs on the Tiny role, the cheap chain, never the planner's
+  it("runs the cascade on the Tiny chain (cfg.ticks)", () => {
+    expect(seatChain(cfg, "cascade")).toEqual(cfg.ticks);
   });
   it("refuses to route the codex writer through omp", () => {
     expect(() => seatChain(cfg, "writer")).toThrow(/codex/);
@@ -63,6 +68,21 @@ describe("oneShotAdapter — the audited one-shot call every seat makes", () => 
     expect(argv()[0]?.argv).toContain("kimi-code/k3");
     const rows = store.getLedgerEventsByCorrelation("tick:t").filter((e) => e.event_type === "llm_attempt");
     expect(rows.map((e) => e.payload)).toEqual([expect.objectContaining({ role: "distill", outcome: "ok", family: "kimi" })]);
+  });
+  // Decision 14: the cascade's 20 s is a bound on the whole Tiny chain. A per-leg timeout alone would let a hung first
+  // leg hand the user a second full leg, and cutting the leg from outside would audit it as `shutdown`, which the
+  // llm_leg_failing sweep ignores. The chain deadline times the leg out honestly and starts no later leg.
+  it("deadlineMs bounds the whole chain: the hung leg is audited timeout at the deadline and no later leg starts", { timeout: 20_000 }, async () => {
+    const cfg = fakeCfg({ "kimi-code/k3": { sleepMs: 30_000, text: "late" }, "google-antigravity/gemini-3.8-flash": { text: "never asked" } });
+    const tiny = { ...cfg, oneshotTimeoutMs: 5_000, ticks: parseModelChain("kimi-code/k3:low,google-antigravity/gemini-3.8-flash:low") };
+    const t0 = Date.now();
+    const r = await oneShotAdapter(store, tiny, { correlation_id: "cli:cascade", role: "cascade" }, undefined, { deadlineMs: 1_500 })
+      .answer({ question: "Q", system: "S" });
+    expect(Date.now() - t0).toBeLessThan(1_500 + LEG_EXIT_GRACE_MS + 2_000);
+    expect(r.ok).toBe(false);
+    expect(argv()).toHaveLength(1);
+    const rows = store.getLedgerEventsByCorrelation("cli:cascade").filter((e) => e.event_type === "llm_attempt");
+    expect(rows.map((e) => e.payload)).toEqual([expect.objectContaining({ role: "cascade", outcome: "error", error_kind: "timeout", model: "k3" })]);
   });
 
   it("an omp that cannot be asked opens ONE omp_unavailable incident per check kind and leaves no audit row", async () => {
@@ -124,6 +144,18 @@ describe("oneShotAdapter — the audited one-shot call every seat makes", () => 
     expect(new Set(ids).size).toBe(2);
   });
 
+  // A /models override must reach the daemon's ticks without a restart: tickSeat reads its chains at call time.
+  it("a tick seat runs on the chains its resolver hands it at call time", async () => {
+    fakeCfg({ "*": { text: "fine" } });
+    Object.assign(process.env, { HOUGE_OMP_BIN: FAKE_OMP_BIN, HOUGE_OMP_SANDBOX: "0", HOUGE_OMP_ENV_PASSTHROUGH: "FAKE_OMP_SCENARIO,FAKE_OMP_ARGV_LOG" });
+    let ticks = parseModelChain("kimi-code/k3:low");
+    const seat = tickSeat(store, "episodic_distill", "distill", process.env, () => ({ ...staticRoleChains(), ticks }));
+    await seat({ question: "q", system: "s" });
+    ticks = parseModelChain("google-antigravity/gemini-3.8-flash:low");
+    await seat({ question: "q", system: "s" });
+    expect(argv().map((c) => c.argv[c.argv.indexOf("--model") + 1])).toEqual(["kimi-code/k3", "google-antigravity/gemini-3.8-flash"]);
+  });
+
   it("a tick call under the daemon's stop spawns nothing and records no attempt (a shutdown is not a failing leg)", async () => {
     fakeCfg({ "*": { text: "fine" } });
     Object.assign(process.env, { HOUGE_OMP_BIN: FAKE_OMP_BIN, HOUGE_OMP_SANDBOX: "0", HOUGE_OMP_ENV_PASSTHROUGH: "FAKE_OMP_SCENARIO,FAKE_OMP_ARGV_LOG" });
@@ -143,8 +175,10 @@ describe("oneShotAdapter — the audited one-shot call every seat makes", () => 
     expect(store.getLedgerEventsByCorrelation("tick:a")).toEqual([]);
   });
 
-  it("a reader on the planner's family still answers and records family_collapse + a wall_collapse event (D10)", async () => {
-    const cfg = fakeCfg({ "*": { text: "digest" } });
+  // D10 skip rule (spec 2026-10-06 §8): a cross-family reader leg would run first, so the collapse needs a reader chain
+  // whose every candidate shares the planner's family.
+  it("a reader whose every candidate is on the planner's family still answers and records family_collapse + a wall_collapse event (D10)", async () => {
+    const cfg = { ...fakeCfg({ "*": { text: "digest" } }), reader: parseModelChain("google-antigravity/gemini-3.8-flash:low") };
     const r = await oneShotAdapter(store, cfg, { correlation_id: "tick:w", role: "reader" }, "gemini").answer({ question: "q" });
     expect(r.ok).toBe(true);
     const events = store.getLedgerEventsByCorrelation("tick:w");

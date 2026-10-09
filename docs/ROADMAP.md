@@ -22,8 +22,8 @@ on an **omp agent loop** ([ADR 0028](decisions/0028-omp-runtime.md)): one superv
 chat with real tools, under code-owned floors, and one-shot omp seats for everything else. Every
 default LLM leg is **subscription OAuth** (omp under profile `houge`; agy-cli for voice; codex for the
 self-write writer); the metered APIs stay a capped escape hatch with no leg on any default chain
-(ADR 0019, dormant). Claude runs in the runtime **only** as a subscription model inside omp (Opus 5.5
-planner and chair, ADR 0028 D7, Paco 2026-09-30), never through a metered API or the Claude Code CLI;
+(ADR 0019, dormant). Claude runs in the runtime **only** as a subscription model inside omp (planner
+and chair, ADR 0028 D7, Paco 2026-09-30; the model comes from the role lists, never a pin), never through a metered API or the Claude Code CLI;
 this replaces the 2026-07-12 exclusion. Claude Code remains the build-orchestrator seat.
 
 **Thesis (LOCKED 2026-06-26):** Houge improves himself without asking permission; mechanical
@@ -50,12 +50,12 @@ framing; OK for Houge to fail; only core principles stay constant.
    model.
 
 **Locked runtime decisions (ADR 0028, D1–D12; change only by a new ADR and Paco's hand):**
-D1 omp 18.4.4 under profile `houge`, version pinned at every spawn · D2 hard cutover (inner loop,
+D1 omp under profile `houge`, no version pin (amended 2026-10-07) · D2 hard cutover (inner loop,
 classifier and pi/kimi/gemini providers deleted) · D3 the dual-LLM wall kept for the four read tools,
 enforced in the bridge, with `bash` output exempt · D4 the omp session owns the transcript, Houge owns
 knowledge · D5 yolo under `$HOME` except external writes and destructive deletes · D6 two floors: (A)
 secret and protected paths denied by Seatbelt plus the policy hook, (B) external effects wait for
-`/approve` · D7 subscription OAuth only, Opus 5.5 inside omp · D8 12 tools ported as bridge tools plus
+`/approve` · D7 subscription OAuth only, Claude inside omp from the role lists · D8 12 tools ported as bridge tools plus
 `bash`; `llm_answer` and the money track deleted · D9 Gmail ported with an `account` key · D10 a
 planner/reader family collapse proceeds, audited · D11 the planner can read its own OAuth store
 (accepted until SP3) · D12 `bash` is a bridge tool in Claude Code posture (network on, raw output,
@@ -189,6 +189,20 @@ knowledge Houge owns; Earn is parked behind SP1.
 
 **Delta 2026-10-06: Jev lane 1 is built** (`feat/jev-lane1`, not merged; 3438 tests green, live gate PASS). It cannot act until Paco commits calibration rows after the replay, labelling sitting and shadow period; see `tasks/todo.md` for what he owes. Lane 2 starts after lane 1 is armed or Paco reorders.
 
+**Delta 2026-10-09: Jev decision tree, stage A, is merged and armed** (`feat/jev-tree-stage-a` → main; spec Rev 9,
+plan Rev 5; live on the next kickstart). It replaces the lane 1 shape: one decision point of six typed questions, lanes as the leaf type
+(memory and status re-attached), model roles (`src/omp/model-roles.ts`, `/models`, `HOUGE_MODEL_ROLES`) in place of the
+seven `HOUGE_OMP_*` chains, a two-axis planner chain, the Telegram quote anchor, `jev_verdicts`, and a live 20 s Tiny-role
+cascade. Paco armed it on 14 `CALIBRATED_ROWS` (six questions plus `category:status`, zh and en) after the replay over
+301 turns and his 111 labels; the `--real-calibration` merge gate passed with both lanes acting. The replay also found
+a client bug (two-decimal rounding rejected ~3% of Jev answers), fixed before arming. Known weakness: research read as
+lookup (26 of 59). Stage B also owes a guard for a two-request message that Jev confidently calls `memory`. **Next after it:** stage B (the
+`answer` and `lookup` lanes, 58% of past turns), then stage C (`schedule` and `wiki` lanes, the research-lane question);
+`mail_calendar` lands with SP2. Standing follow-ups from the build: the omp contract probe (below, now also the
+place to prove `omp models --json` under the allowlisted child env), CLI one-shots (`houge jev replay`,
+`lessons consolidate`, `radar-panel`) still read the static lists so `/models` does not reach them, and Kimi exits next
+year (every list keeps a non-Kimi leg; judge seat 0 needs a replacement selector then).
+
 **Delta 2026-10-07: two small builds queued (Paco).**
 - **Standing approval for a scheduled command.** The Alishan room check needs one Approve tap a day: the hotel's
   search only answers a POST, and the shell gate treats every `curl` POST as an HTTP write
@@ -201,7 +215,8 @@ knowledge Houge owns; Earn is parked behind SP1.
   self-test that checks the catalog parses, the start and pin refusal texts still classify, and an RPC session opens.
   A pass records the version as known-good; a failure opens an incident and sends a Telegram line.
 
-**Next, in order (re-sequenced 2026-10-04, [ADR 0029](decisions/0029-jev-system-one.md)):** SP1 is live (boot 7,
+**Next, in order (re-sequenced 2026-10-04, [ADR 0029](decisions/0029-jev-system-one.md); lane 1 and lane 2 became the
+stage A decision tree on 2026-10-09, see the delta above):** SP1 is live (boot 7,
 memory A1 shipped) → **Jev System One, lane 1** (pre-planner triage → memory + status lanes; the shared decision
 layer: question library, `decide()`, decision rows, replay harness; spec
 `docs/superpowers/specs/2026-10-04-jev-system-one-design.md`, under review) → **Jev lane 2** (model routing:
@@ -216,7 +231,7 @@ Jev lane 5 (context relevance → credit, shadow) rides with memory stage C.
 **SP4 scope change (2026-10-04).** The lifecycle-gap research
 (`docs/superpowers/research/2026-10-04-lifecycle-gap/00-synthesis.md`) found five lifecycle stages forbidden only
 because no safe version was designed (decide, spec, spec review, plan, live gate), most of the needed harness already
-inside omp 18.4.4 but switched off by `--tools read,edit,write`, and no notion of earned trust. SP4 now covers, in
+inside omp (18.4.4 at the time) but switched off by `--tools read,edit,write`, and no notion of earned trust. SP4 now covers, in
 order, each its own spec: (1) **goal record + decision card** — a `goals` table (plan file, phase, pending question)
 that outlives a Telegram turn; omp `ask` routed to an option card; (2) **verifier + outcome memory** — the original
 SP4 (`scripts/eval-replay.mjs` in the self-write gate, the S-3 post-restart probe with auto-rollback, weakness mining
@@ -413,10 +428,11 @@ Flip [Merge & reload] from human-tapped to autonomous (notify-after) ONLY when A
   **lesson consolidation** (preserve-all daily merge, ARMED + first live merge tick 2026-07-24,
   flag `HOUGE_LESSON_CONSOLIDATE_ENABLED`, design spec
   `docs/superpowers/specs/2026-07-23-lesson-consolidation-design.md` — no ADR).
-  **ADR range is now 0001–0028** (0028 = the omp runtime, 2026-09-30).
-- **What the runtime depends on (since ADR 0028).** The planner and chair default to Opus 5.5 on
-  Anthropic Max OAuth inside omp; if Anthropic blocks that, the planner falls to Opus 4.6 (via
-  Antigravity) and then Kimi k3 automatically, and an incident tells Paco. Every other seat is a
+  **ADR range is now 0001–0029** (0028 = the omp runtime, 2026-09-30; 0029 = Jev as System One, 2026-10-06).
+- **What the runtime depends on (since ADR 0028).** The planner and chair default to Claude on
+  Anthropic Max OAuth inside omp; if Anthropic blocks that, the planner walks its role list (Claude via
+  Antigravity, then Kimi) automatically, and an incident tells Paco. The role lists live in `src/omp/model-roles.ts`
+  and resolve against omp's catalog. Every other seat is a
   non-Anthropic subscription (Antigravity, Kimi Code, OpenAI Codex), voice is agy-cli, the self-write
   writer is codex and the reviewer an omp seat. The 2026-07-12 removal of the claude-CLI writer,
   reviewer and `HOUGE_CLAUDE_BIN` stands; Claude reaches the runtime only through omp. The

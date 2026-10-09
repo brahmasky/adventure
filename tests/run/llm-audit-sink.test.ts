@@ -27,6 +27,19 @@ const attemptsOf = (store: RunStore) =>
   store.getLedgerEvents().filter((e) => e.event_type === "llm_attempt");
 
 describe("RunStore.llmAuditSink", () => {
+  it("carries routed_by and effort when set (the verdict join, Jev tree spec §6; the pinned level, plan F15) and omits them otherwise", () => {
+    const store = RunStore.openInMemory();
+    try {
+      const run_id = createRun(store);
+      const sink = store.llmAuditSink({ run_id, role: "compose" });
+      sink.record({ provider: "anthropic", role: "", outcome: "ok", model: "claude-sonnet-5-5", routed_by: "jv_1", effort: "high" });
+      sink.record({ provider: "anthropic", role: "", outcome: "ok", model: "claude-sonnet-5-5" });
+      expect(attemptsOf(store).map((e) => [e.payload.routed_by, e.payload.effort])).toEqual([["jv_1", "high"], [undefined, undefined]]);
+    } finally {
+      store.close();
+    }
+  });
+
   it("run-scoped: writes llm_attempt under the run, with the SCOPED role overriding the chain's", () => {
     const store = RunStore.openInMemory();
     try {

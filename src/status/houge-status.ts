@@ -5,6 +5,7 @@ import { resolveGlobalBudgetCaps, type GlobalBudgetHeadroom } from "../budget/gl
 import { disarmPosturePresent } from "../config/disarm-posture.js";
 import { formatModelString } from "../omp/model-string.js";
 import { resolveOmpConfig } from "../omp/omp-config.js";
+import type { RoleChains } from "../omp/model-roles.js";
 import { resolveLocalTimeZone } from "../prompt/tz-convert.js";
 import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { hardenedGitSync } from "../run/git-hardened.js";
@@ -110,9 +111,9 @@ export interface HougeStatusInput {
   incidentKinds: string[]; budget: GlobalBudgetHeadroom[]; posture: string[]; lastPoll: string | null;
 }
 
-function chainTops(env: NodeJS.ProcessEnv): { planner: string; reader: string } {
+function chainTops(env: NodeJS.ProcessEnv, chains?: RoleChains): { planner: string; reader: string } {
   try {
-    const cfg = resolveOmpConfig(env);
+    const cfg = resolveOmpConfig(env, chains);
     return { planner: formatModelString(cfg.planner[0]!), reader: formatModelString(cfg.reader[0]!) };
   } catch {
     return { planner: "unknown (config invalid)", reader: "unknown (config invalid)" };
@@ -126,10 +127,10 @@ function postureOf(env: NodeJS.ProcessEnv): string[] {
 }
 
 export function collectHougeStatus(d: {
-  store: RunStore; env: NodeJS.ProcessEnv; chatId: string; pid: number; now?: Date; supervisor?: StatusSupervisor;
+  store: RunStore; env: NodeJS.ProcessEnv; chatId: string; pid: number; now?: Date; supervisor?: StatusSupervisor; chains?: RoleChains;
 }): HougeStatusInput {
   const now = (d.now ?? new Date()).toISOString();
-  const tops = chainTops(d.env);
+  const tops = chainTops(d.env, d.chains);
   const live = d.supervisor?.answeredModel();
   const recorded = live ? null : d.store.lastPlannerModel(d.chatId);
   return {

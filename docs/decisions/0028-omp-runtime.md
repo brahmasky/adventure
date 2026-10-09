@@ -22,8 +22,8 @@ the tool limits in the backend were holding Houge back. Houge picked pi as its a
 
 ADR 0002 always named an agentic mode, gated on "V2 containment". This ADR is that mode. The agent
 runs with real tools, inside containment Houge owns, on the strongest subscription model per seat.
-The runtime is **omp** (`@oh-my-pi/pi-coding-agent`, an oh-my-pi fork), pinned at 18.4.4 and run
-under its own profile `houge`. This is sub-project 1 of 4. SP2 is Paco's personal tools, SP3 is the
+The runtime is **omp** (`@oh-my-pi/pi-coding-agent`, an oh-my-pi fork), unpinned (any version `omp --version` reports
+runs; amendment 2026-10-07) and run under its own profile `houge`. This is sub-project 1 of 4. SP2 is Paco's personal tools, SP3 is the
 auth broker plus OS-user isolation plus the quota invariant, and SP4 is self-evolution v2.
 
 ## Decision
@@ -37,13 +37,13 @@ slice. Code keeps owning the gates. omp composes between them.
 
 | # | Decision | Chosen | Rejected |
 |---|---|---|---|
-| D1 | Runtime binary | **omp 18.4.4** under profile `houge` | pi upstream; Hermes; Muse |
+| D1 | Runtime binary | **omp** under profile `houge`, no version pin (amended 2026-10-07) | pi upstream; Hermes; Muse |
 | D2 | Cutover | **hard**: old loop + pi/agy providers deleted in the same slice | flag-gated parallel path |
 | D3 | Dual-LLM wall | **kept for the read tools** (`web_search`, `http_fetch`, `gmail_read`, `google_api`), enforced in the bridge; **shell output is exempt** by D12 | drop; per-source trust |
 | D4 | Conversation memory | **omp session owns the transcript**; Houge owns knowledge | stateless recomposition |
 | D5 | Planner autonomy | **yolo under `$HOME`**: file read/write/edit and shell commands run without a prompt, **except external writes and destructive deletes** (matcher, spec §5.5) | workspace jail; approve-every-bash |
 | D6 | Floors | (A) secret/protected paths denied at the OS level + policy hook; (B) external effects wait for `/approve`. For `bash` this is a **best-effort, code-owned command matcher** (D12); for bridge tools it is the registry's `external_write` level | — |
-| D7 | Models | subscription OAuth only; Opus 5.5 via Anthropic Max OAuth **inside omp** (terms risk accepted; fallback is one env line) | `claude -p`; metered API |
+| D7 | Models | subscription OAuth only; Claude via Anthropic Max OAuth **inside omp**, the model named by the code-owned role lists resolved against omp's catalog (amended 2026-10-07) (terms risk accepted; fallback is one env line) | `claude -p`; metered API |
 | D8 | Tool set | port 12 as bridge tools; delete `llm_answer` + money track (5 tools) | port all 18 |
 | D9 | Gmail | port with an `account` key designed in | rewrite later |
 | D10 | Family collapse (planner and reader on one model family after fallback) | **accept the degradation, audited** (Paco, 2026-09-30): the read proceeds; every such read writes a `wall_collapse` ledger event and opens/keeps an incident so the frequency is visible; a fourth reader string on the GPT family (Codex Plus) makes collapse rare in practice | fail closed |
@@ -146,7 +146,7 @@ change the architecture the spec describes:
     omp honours a per-tool sequential attribute.
 11. **Clarify cap.** When `countTrailingClarifyTurns` reaches `HOUGE_MAX_CONSECUTIVE_CLARIFY`, the turn
     prompt gains a code-owned line telling the planner not to ask another clarifying question.
-12. **Seat routing.** `lesson_write` distill and reconcile run on `HOUGE_OMP_TICKS` (memory work).
+12. **Seat routing.** `lesson_write` distill and reconcile run on the Tiny role (memory work; `HOUGE_OMP_TICKS` until 2026-10-07).
     `/ask`, `/research` and `skill_author` authoring run on the planner chain, because they answer
     Paco directly.
 13. **Steered runs.** A message that arrives mid-turn is claimed under the parent's worker id and
@@ -156,7 +156,7 @@ change the architecture the spec describes:
 14. **Version drift is loud.** A one-shot on a mismatched binary returns `unavailable` without an
     audit row, because no leg ran. The caller opens `omp_version_mismatch`, and the next passing check
     resolves it.
-    **An unknown model fails at spawn.** omp 18.4.4 rejects an unknown `--model` at process start,
+    **An unknown model fails at spawn.** omp rejects an unknown `--model` at process start,
     before `ready`, so live `set_model` cannot rescue a bad top planner string. The supervisor instead
     falls back at spawn: one `error{model_missing}` row per rejected string, then a spawn on the next
     string (commit `96448cd`).
@@ -181,7 +181,7 @@ change the architecture the spec describes:
     - **Credential stores are read- and write-denied** (`HOME_SECRETS`: AI-tool, bot, cloud,
       container and key/token stores, `~/Library/Keychains`, top-level `~/.<name>.env`), and
       `/usr/bin/security` cannot exec. The planner keeps `~/.omp` (D11).
-    - **The gate canonicalises every path the way omp 18.4.4 resolves it** (`@`, `:`, `~` forms,
+    - **The gate canonicalises every path the way omp resolves it** (`@`, `:`, `~` forms,
       `file://`, selectors, edit rename/hashline/apply_patch targets), denies if any resolution is
       denied, and refuses `bad_path` on a form it does not model.
     - **The workspace is pinned.** Its root, the sessions root and every `chat-<id>` dir cannot be
@@ -211,8 +211,8 @@ change the architecture the spec describes:
   survives restarts. `src/` loses the inner loop, the classifier call, five providers, and the money
   track. A new capability is one JSON declaration plus one daemon-side adapter (spec §13).
 - **The AGENTS.md invariant "Claude is never in the runtime … (pi, agy, codex)" is changed by this
-  ADR.** Opus 5.5 is the default planner under D7, the panel chair is an omp seat on
-  `HOUGE_OMP_CHAIR`, and every seat is subscription OAuth. AGENTS.md is protected, so Paco updates
+  ADR.** Claude is the default planner under D7, the panel chair is an omp seat on
+  the Chair role, and every seat is subscription OAuth. AGENTS.md is protected, so Paco updates
   that line by hand.
 - **Deletions:** `src/core/inner-loop.ts`, `src/core/tool-manifest.ts`, the classifier call, the
   pi / kimi-api / gemini-api / openai-compat / cli-spawn providers, `llm-answer.ts`, and the money-track
@@ -254,17 +254,17 @@ change the architecture the spec describes:
 - **No step or repeated-denial cap.** The old inner loop's step and denial caps have no omp
   equivalent. Tool calls are bounded by the contract budget; model requests and repeated denials
   only by the turn deadline and the frame watchdog.
-- Anthropic may block Max OAuth in third-party clients. The planner then falls to Opus 4.6
-  automatically, and an incident tells Paco.
+- Anthropic may block Max OAuth in third-party clients. The planner then walks to the next
+  candidate in its role list automatically, and an incident tells Paco.
 - Antigravity's weekly ceiling covers a shared Claude/GPT bucket; reader volume rides Gemini's bucket.
-- omp moves fast: the version is pinned, update checks are off, and frames are re-captured on
-  upgrade. The sequential-tool attribute name and the omp config key semantics are verified at build.
+- omp moves fast: there is no version pin (amendment 2026-10-07), update checks are off, and the frames and refusal
+  texts Houge parses are re-checked by `live-gate-omp.mjs --smoke` after an upgrade. The sequential-tool attribute name and the omp config key semantics are verified at build.
 - **A bridge call dropped mid-flight is invisible.** The silent-degradation check proves that every
   gated built-in and every approval has a `tool_finished`. A bridge `call` that dies between request
   and finish (child exit, daemon crash) leaves no row to miss. Follow-up: `handleCall` writes a
   `tool_started` row, so a `tool_started` without a `tool_finished` is detectable.
-- k3's default thinking is verbose (525 tokens for "OK"), so every k3 string carries `:low` except
-  the reviewer's.
+- Kimi's default thinking is verbose (525 tokens for "OK"), so its role-list entries carry a low effort except on
+  the Thinking and Reviewer roles.
 - A `steer` merge means one reply answers two messages. The ledger records both runs; Paco sees one
   message.
 - **A resumed omp session overrides `--model`** (live gate, 2026-10-01): `open_session` restores the model the
@@ -299,10 +299,52 @@ change the architecture the spec describes:
 - The spec's S12 and D12 probes (live-gate case 8) are not scripts in this repo. The operator runs
   them by hand and records the result.
 
+## Amendment (2026-10-07): model roles
+
+Spec: [2026-10-06-jev-decision-tree-design.md](../superpowers/specs/2026-10-06-jev-decision-tree-design.md) §4 (Rev 9).
+Approved by Paco 2026-10-09 with the stage A merge.
+
+- **The seven `HOUGE_OMP_*` chains move into code.** `HOUGE_OMP_PLANNER`, `_READER`, `_MEDIA`, `_TICKS`, `_JUDGES`,
+  `_CHAIR` and `_REVIEWER` are retired: a set value is ignored and named once in a boot warning. Each seat now names a
+  role (Fast, Default, Thinking, Reader, Vision, Tiny, Judges, Chair, Reviewer), and each role is a code-owned ordered
+  list in `src/omp/model-roles.ts` (`ROLE_LISTS`).
+- **Resolution runs against the live catalog.** `omp --profile houge models --json` is read at boot, by a daily tick and
+  on `/models set`. The provider allow-list (`anthropic`, `google-antigravity`, `kimi-code`, `openai-codex`) is applied
+  before any matching, chat seats never take `openai-codex`, then Paco's override, then the list (kept only for
+  selectors the catalog lists), then the per-child refused set. The catalog is the authority over any doc (Paco,
+  2026-10-07): a selector the catalog no longer lists is skipped, and the code lists are updated to what it lists. Routed effort
+  is clamped to the model's catalogued thinking levels (nearest, ties up; a model with no thinking levels gets none).
+- **`/models` overrides are append-only ledger rows** (`model_role_override`), read at each resolution, so no restart.
+  Judges are overridden one seat at a time. The daily tick posts a one-line change notice when a role's head moved
+  and opens the alerted incident `role_unresolved` when a role has no candidate.
+- **`HOUGE_MODEL_ROLES=static|resolved`** (default `resolved`) is a **model-list rollback**: static runs today's seven
+  chains with no catalog, no override and no tick. It differs from the pre-amendment supervisor in three ways: the
+  per-child refused set applies, the respawn onto the planner head at the next turn is gone (`set_model` moves the
+  live child), and while Jev is on a routed turn may step up a role and retry `other` once.
+- **The planner has two axes.** The supervisor spawns on Default's candidates and pins each turn to its routed role's
+  candidates (`set_model` plus `set_thinking_level`), walks the list at the retry boundary, and steps up (Fast to
+  Default to Thinking) on `quota`, `auth`, `transport`, `timeout` and `model_missing`, plus `other` once while no bridge
+  tool has executed. Step-up skips selectors that already failed this turn with a non-`other` error. A pin refused
+  with `model_missing` disables step-up for that turn (`pin_failed`). The ledger row is `routed_escalation`.
+- **D10 becomes a skip rule, resolved mode only.** The reader's candidates are ordered cross-family first (a stable
+  partition), instead of discovering a collapse after the read.
+- **The omp version check is async.** `checkOmpVersion` (any `x.y.z`, no pin; refuses only an omp that will not run or
+  prints no version) is awaited on the spawn path, so a blocking `execFileSync` no longer starves a concurrent bounded
+  network call (a Jev request, 1.5 s). Refusal reasons carry codes only, never provider text, and a stop during the
+  check cancels the start.
+
+## Amendment (2026-10-09): no version strings in the decision (Paco)
+
+The code carries no runtime or model version pin (omp unpinned 2026-10-07; models resolved from the catalog; Jev
+requested by alias), so this ADR's decision text no longer names one: D1, D7, the context and the consequences name
+omp, Claude and the role lists, not a build or a model version. Dated evidence (a probe, a live gate, a past
+incident) keeps the version it ran on, because that is what was observed. The model names in a role list live in
+`src/omp/model-roles.ts` and change with the catalog, without an ADR amendment.
+
 ## Alternatives considered
 
 - **pi upstream with tools on:** it lacks the extension-tool supersession and RPC session resume that
-  omp 18.4.4 was probed to have.
+  omp was probed to have (2026-09-30).
 - **Hermes or Muse:** both would replace Houge's harness instead of running inside it.
 - **Flag-gated parallel path (old loop kept):** this doubles every contract and test for a loop being
   retired, and the old path would rot unexercised.

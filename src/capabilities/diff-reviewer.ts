@@ -7,6 +7,7 @@ import { spawnOneShot } from "../llm/providers/omp.js";
 import { resolveOmpConfig } from "../omp/omp-config.js";
 import type { OmpCheckResult } from "../omp/omp-version.js";
 import { familyOf, formatModelString } from "../omp/model-string.js";
+import type { RoleChains } from "../omp/model-roles.js";
 import { fenceRule, fenceUntrusted, newFenceNonce } from "../prompt/untrusted-fence.js";
 
 /**
@@ -16,7 +17,7 @@ import { fenceRule, fenceUntrusted, newFenceNonce } from "../prompt/untrusted-fe
  * The semantic / adversarial check tests can't give: "passes the test gate but wrong / hacky
  * / scope-creep / doesn't actually fix it." Writer ≠ checker by construction — the reviewer is
  * a DIFFERENT agent from the writer (Codex, the gpt family): by default the omp reviewer seat, a
- * tool-less one-shot (`--no-tools`) over `HOUGE_OMP_REVIEWER` (kimi, then claude via the
+ * tool-less one-shot (`--no-tools`) over the Reviewer role (kimi, then claude via the
  * subscription profile). The Codex-session path is the fallback (independent fresh session + the
  * same adversarial prompt → same verdict shape). `reviewerDiversityWarning` flags a gpt-family
  * reviewer string. The Claude Code CLI is never a runtime backend.
@@ -24,7 +25,7 @@ import { fenceRule, fenceUntrusted, newFenceNonce } from "../prompt/untrusted-fe
 
 const REVIEW_MAX_BUFFER = 8 * 1024 * 1024;
 
-/** `omp` = the omp reviewer seat (`HOUGE_OMP_REVIEWER`, a chain off the writer's family); `codex` = an independent Codex session. */
+/** `omp` = the omp reviewer seat (the Reviewer role, a chain off the writer's family); `codex` = an independent Codex session. */
 export type ReviewerKind = "codex" | "omp";
 
 export interface ReviewVerdict {
@@ -50,18 +51,18 @@ export function resolveSelfWriteReviewer(env: NodeJS.ProcessEnv): ReviewerKind {
 
 /**
  * Phase 3.1 (W3) writer ≠ checker: the writer is codex (the gpt family). A NON-FATAL warning when the
- * reviewer shares that family — the codex reviewer, or any HOUGE_OMP_REVIEWER string whose family is
+ * reviewer shares that family — the codex reviewer, or any Reviewer-role string whose family is
  * gpt (a fallback leg counts: it may be the one that verdicts). Null when diversity holds.
  */
-export function reviewerDiversityWarning(writer: string, env: NodeJS.ProcessEnv): string | null {
+export function reviewerDiversityWarning(writer: string, env: NodeJS.ProcessEnv, chains?: RoleChains): string | null {
   const reviewer = resolveSelfWriteReviewer(env);
   if (reviewer === "codex" && writer === "codex") {
     return `[self-write] writer and reviewer are BOTH "codex" — model diversity (writer ≠ checker) is lost. Set HOUGE_SELFWRITE_WRITER / HOUGE_SELFWRITE_REVIEWER to different providers.`;
   }
   if (reviewer !== "omp") return null;
-  const gpt = resolveOmpConfig(env).reviewer.filter((m) => familyOf(m) === "gpt").map(formatModelString);
+  const gpt = resolveOmpConfig(env, chains).reviewer.filter((m) => familyOf(m) === "gpt").map(formatModelString);
   return gpt.length === 0 ? null
-    : `[self-write] writer and reviewer are BOTH the gpt family (HOUGE_OMP_REVIEWER: ${gpt.join(", ")}) — model diversity (writer ≠ checker) is lost.`;
+    : `[self-write] writer and reviewer are BOTH the gpt family (Reviewer role: ${gpt.join(", ")}) — model diversity (writer ≠ checker) is lost.`;
 }
 
 /**
@@ -165,6 +166,8 @@ export interface ReviewDiffInput {
   audit: LlmAuditSink;
   /** A refused omp version check (no leg ran): the caller opens the incident (reportOmpCheck). */
   onOmpCheck?: (check: OmpCheckResult) => void;
+  /** The worker's resolved chains (`roles.chains()`); absent = the static role lists. */
+  chains?: RoleChains;
 }
 
 interface NodeError extends Error {
@@ -310,14 +313,14 @@ async function reviewViaCodex(
 }
 
 /**
- * The default reviewer backend: ONE omp one-shot over the reviewer seat's chain (`HOUGE_OMP_REVIEWER`,
+ * The default reviewer backend: ONE omp one-shot over the reviewer seat's chain (the Reviewer role,
  * kimi then claude — never the gpt family that writes). Tool-less by construction (`--no-tools`, no
  * extensions, no session): the diff is inline in the prompt, the reviewer needs no filesystem. Each
  * leg is audited by `spawnOneShot` itself; an unparseable verdict is not retried (the chain already
  * fell through dead legs), it fails over to the next backend.
  */
 async function reviewViaOmp(input: ReviewDiffInput, env: NodeJS.ProcessEnv): Promise<ReviewResult> {
-  const cfg = resolveOmpConfig(env);
+  const cfg = resolveOmpConfig(env, input.chains);
   const r = await spawnOneShot(
     { seat: "reviewer", chain: cfg.reviewer, prompt: buildReviewPrompt(input.task, input.diff), correlationId: `review:${randomUUID()}` },
     { cfg, audit: input.audit, ...(input.onOmpCheck ? { onVersionCheck: input.onOmpCheck } : {}) }

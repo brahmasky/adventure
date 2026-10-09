@@ -11,6 +11,8 @@ import {
 } from "../../src/capabilities/diff-reviewer.js";
 import { recordingSink, UNAUDITED_TEST_SINK } from "../helpers/llm-audit.js";
 import { FAKE_OMP_BIN, NO_OMP_BIN, pinOmpEnv } from "../helpers/omp-env.js";
+import { staticRoleChains } from "../../src/omp/model-roles.js";
+import { parseModelChain } from "../../src/omp/model-string.js";
 
 pinOmpEnv();
 
@@ -532,8 +534,9 @@ describe("reviewDiff — per-leg audit (Task 12 fix 2: the reviewer's own fallba
 });
 
 describe("reviewerDiversityWarning — writer (codex, the gpt family) ≠ checker (M2)", () => {
-  it("warns when any HOUGE_OMP_REVIEWER string is the gpt family, even a fallback leg", () => {
-    expect(reviewerDiversityWarning("codex", { HOUGE_OMP_REVIEWER: "kimi-code/k3:high,openai-codex/gpt-5.5" })).toContain("openai-codex/gpt-5.5");
+  it("warns when any Reviewer-role string is the gpt family, even a fallback leg", () => {
+    const chains = { ...staticRoleChains(), reviewer: parseModelChain("kimi-code/k3:high,openai-codex/gpt-6.1-sol") };
+    expect(reviewerDiversityWarning("codex", {}, chains)).toContain("openai-codex/gpt-6.1-sol");
   });
   it("is silent for the default omp reviewer chain (kimi, then claude)", () => {
     expect(reviewerDiversityWarning("codex", {})).toBeNull();

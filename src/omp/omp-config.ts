@@ -1,4 +1,5 @@
-import { parseModelChain, type ModelString } from "./model-string.js";
+import type { ModelString } from "./model-string.js";
+import { staticRoleChains, type RoleChains } from "./model-roles.js";
 
 export interface OmpConfig {
   bin: string; profile: string; sandbox: boolean;
@@ -13,13 +14,6 @@ const DEFAULTS = {
   HOUGE_OMP_BIN: "omp",
   HOUGE_OMP_PROFILE: "houge",
   HOUGE_OMP_SANDBOX: "1",
-  HOUGE_OMP_PLANNER: "anthropic/claude-opus-5-5:medium,google-antigravity/claude-opus-4-6:medium,kimi-code/k3:low",
-  HOUGE_OMP_READER: "google-antigravity/gemini-3.8-flash:low,kimi-code/k3:low,openai-codex/gpt-5.5:low",
-  HOUGE_OMP_MEDIA: "google-antigravity/gemini-3.8-flash:low",
-  HOUGE_OMP_TICKS: "kimi-code/k3:low",
-  HOUGE_OMP_JUDGES: "kimi-code/k3,openai-codex/gpt-5.5,google-antigravity/gemini-3.1-pro",
-  HOUGE_OMP_CHAIR: "anthropic/claude-opus-5-5:low",
-  HOUGE_OMP_REVIEWER: "kimi-code/k3:high,google-antigravity/claude-opus-4-6:medium",
   HOUGE_OMP_ENV_PASSTHROUGH: "KIMI_CODE_OAUTH_HOST,KIMI_CODE_BASE_URL",
   HOUGE_OMP_TURN_TIMEOUT_MS: "600000",
   HOUGE_OMP_FRAME_IDLE_MS: "180000",
@@ -43,12 +37,30 @@ const num = (env: NodeJS.ProcessEnv, k: Key): number => {
 };
 const list = (s: string): string[] => s.split(",").map((x) => x.trim()).filter(Boolean);
 
-const CHAIN_KEYS: readonly Key[] = [
+/** The seven seat-chain variables the model roles replaced (spec 2026-10-06 §4.2): a set one is ignored and named once at boot. */
+export const RETIRED_OMP_CHAIN_VARS: readonly string[] = [
   "HOUGE_OMP_PLANNER", "HOUGE_OMP_READER", "HOUGE_OMP_MEDIA", "HOUGE_OMP_TICKS", "HOUGE_OMP_JUDGES", "HOUGE_OMP_CHAIR", "HOUGE_OMP_REVIEWER"
 ];
+const warnedRetired = new Set<string>();
+
+/** Names every retired chain variable still set, once per process per name (a stale .env is visible, never fatal). Returns the names warned. */
+export function warnRetiredOmpChainVars(env: NodeJS.ProcessEnv, warn: (line: string) => void = console.warn): string[] {
+  const set = RETIRED_OMP_CHAIN_VARS.filter((k) => (env[k]?.trim() ?? "").length > 0 && !warnedRetired.has(k));
+  for (const k of set) warnedRetired.add(k);
+  if (set.length > 0) warn(`[omp-config] ${set.join(", ")} no longer read: model roles replace the seat chains (src/omp/model-roles.ts, /models to override)`);
+  return set;
+}
 
 /** HOUGE_OMP_APPROVAL_TIMEOUT_MS alone (never throws on an unrelated malformed chain): the sweep needs only this. */
 export function resolveApprovalTimeoutMs(env: NodeJS.ProcessEnv): number { return num(env, "HOUGE_OMP_APPROVAL_TIMEOUT_MS"); }
+
+/**
+ * The three fields the catalog read needs, alone (F5): none of them throws, so a malformed lease TTL never makes the
+ * RoleResolver's read fail and fake a model_catalog_unavailable page.
+ */
+export function resolveOmpCatalogConfig(env: NodeJS.ProcessEnv): Pick<OmpConfig, "bin" | "profile" | "envPassthrough"> {
+  return { bin: read(env, "HOUGE_OMP_BIN"), profile: read(env, "HOUGE_OMP_PROFILE"), envPassthrough: list(read(env, "HOUGE_OMP_ENV_PASSTHROUGH")) };
+}
 
 /** The supervisor renews a planner lease this often (spec §7.1). */
 export const PLANNER_HEARTBEAT_MS = 30_000;
@@ -57,10 +69,7 @@ export const MIN_LEASE_TTL_S = (3 * PLANNER_HEARTBEAT_MS) / 1000;
 
 /** The variables resolveOmpConfig would throw on (names only: safe for an incident). Empty = valid. */
 export function ompConfigProblems(env: NodeJS.ProcessEnv): string[] {
-  const chains = CHAIN_KEYS.filter((k) => {
-    try { parseModelChain(read(env, k)); return false; } catch { return true; }
-  });
-  return num(env, "HOUGE_OMP_LEASE_TTL_S") < MIN_LEASE_TTL_S ? [...chains, "HOUGE_OMP_LEASE_TTL_S"] : chains;
+  return num(env, "HOUGE_OMP_LEASE_TTL_S") < MIN_LEASE_TTL_S ? ["HOUGE_OMP_LEASE_TTL_S"] : [];
 }
 
 function leaseTtl(env: NodeJS.ProcessEnv): number {
@@ -69,18 +78,19 @@ function leaseTtl(env: NodeJS.ProcessEnv): number {
   return ttl;
 }
 
-export function resolveOmpConfig(env: NodeJS.ProcessEnv): OmpConfig {
+/** The omp config. Its seven seat chains come from the caller: a RoleResolver's `chains()`, else the static role lists (today's chains). */
+export function resolveOmpConfig(env: NodeJS.ProcessEnv, chains: RoleChains = staticRoleChains()): OmpConfig {
   return {
     bin: read(env, "HOUGE_OMP_BIN"),
     profile: read(env, "HOUGE_OMP_PROFILE"),
     sandbox: read(env, "HOUGE_OMP_SANDBOX") !== "0",
-    planner: parseModelChain(read(env, "HOUGE_OMP_PLANNER")),
-    reader: parseModelChain(read(env, "HOUGE_OMP_READER")),
-    media: parseModelChain(read(env, "HOUGE_OMP_MEDIA")),
-    ticks: parseModelChain(read(env, "HOUGE_OMP_TICKS")),
-    judges: parseModelChain(read(env, "HOUGE_OMP_JUDGES")),
-    chair: parseModelChain(read(env, "HOUGE_OMP_CHAIR")),
-    reviewer: parseModelChain(read(env, "HOUGE_OMP_REVIEWER")),
+    planner: chains.planner,
+    reader: chains.reader,
+    media: chains.media,
+    ticks: chains.ticks,
+    judges: chains.judges,
+    chair: chains.chair,
+    reviewer: chains.reviewer,
     envPassthrough: list(read(env, "HOUGE_OMP_ENV_PASSTHROUGH")),
     turnTimeoutMs: num(env, "HOUGE_OMP_TURN_TIMEOUT_MS"),
     frameIdleMs: num(env, "HOUGE_OMP_FRAME_IDLE_MS"),

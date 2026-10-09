@@ -1,30 +1,42 @@
 /**
  * Calibration rows (ADR 0029 §3.5). A question is armed for a language ONLY when a row names its exact criteria hash
- * and the reported model, so a criteria or model change disarms it. Lane 1 was armed on Paco's instruction
- * (2026-10-06, ADR 0029 amendment) after the replay sanity check, not after the §5.9 shadow bars: evidence now
- * accrues while armed, and the per-turn confidence bars (thresholds.ts) still send every unsure turn to the planner.
+ * and the reported model, so a criteria or model change disarms it. The decision tree's questions (spec 2026-10-06 §7)
+ * arm on Paco's word after the replay; evidence then accrues while armed, and the per-turn bars (tree-policy.ts) still
+ * send every unsure turn to the planner on the Default role.
  */
 import { readFileSync } from "node:fs";
 import type { Lang } from "./intent-question.js";
 import { JEV_REQUEST_MODEL } from "./jev-client.js";
 
 /**
- * One arming row. `question_id` is a question id (`lane`, `complete`, `scope` arm the memory lane together) or the
- * pseudo-id `lane:status` (thresholds.ts TRIAGE_STATUS_ARM_ID, criteria hash = TRIAGE_LANE's), which arms the status lane
- * on its own: the two lanes clear different §5.9 bars, so neither row implies the other.
+ * One arming row. `question_id` is a tree question id (`category`, `sets_rule`, `rule_scope`, `breadth`, `reasoning`,
+ * `actions`) or the pseudo-id `category:status` (tree-policy.ts TREE_STATUS_ARM_ID, criteria hash = TREE_CATEGORY's),
+ * which arms the status lane: memory and status clear different bars, so neither row implies the other. Both lanes
+ * also need the `sets_rule` + `rule_scope` rows (tree-policy.ts treeArmed `rule`), so a stated rule is never swallowed.
  */
 export interface CalibrationRow { question_id: string; criteria_hash: string; model: string; lang: "zh" | "en"; approved: string; evidence: string }
 
-const EVIDENCE = "replay 2026-10-06: 293 turns; confident pure 10 (1 missed a schedule edit), status 1/1; permutation 291/293";
+/**
+ * The tree's rows, armed on Paco's word (2026-10-09) after the replay (`houge jev replay triage`) and his labels: all
+ * six questions plus the status pseudo-row, zh and en, on jev-1.13.0. The per-turn bars (tree-policy.ts) still send
+ * every unsure turn to the planner on Default; a criteria or model change disarms.
+ */
+const EVIDENCE = "tree replay 2026-10-09: 301 turns (zh 271, en 30), 111 labelled by Paco; lane misroutes 0 (memory 7/7, status 2/2); category 181/301; permutation 276/301";
 export const CALIBRATED_ROWS: readonly CalibrationRow[] = [
-  { question_id: "lane", criteria_hash: "828d0f935ce54a65c4a62dd78ca9a83ffbacd3c66dcc7095b05744422fc8e57a", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-06", evidence: EVIDENCE },
-  { question_id: "lane", criteria_hash: "828d0f935ce54a65c4a62dd78ca9a83ffbacd3c66dcc7095b05744422fc8e57a", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-06", evidence: EVIDENCE },
-  { question_id: "complete", criteria_hash: "7beab74332c0641a800ea8c80085eebb56f98d2503ef53edd39c1890b5bfc316", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-06", evidence: EVIDENCE },
-  { question_id: "complete", criteria_hash: "7beab74332c0641a800ea8c80085eebb56f98d2503ef53edd39c1890b5bfc316", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-06", evidence: EVIDENCE },
-  { question_id: "scope", criteria_hash: "d3f6c9008b3eaf1e7a4556dd443e422703f8c306932c88de2abf46ff3763e7a4", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-06", evidence: EVIDENCE },
-  { question_id: "scope", criteria_hash: "d3f6c9008b3eaf1e7a4556dd443e422703f8c306932c88de2abf46ff3763e7a4", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-06", evidence: EVIDENCE },
-  { question_id: "lane:status", criteria_hash: "828d0f935ce54a65c4a62dd78ca9a83ffbacd3c66dcc7095b05744422fc8e57a", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-06", evidence: EVIDENCE },
-  { question_id: "lane:status", criteria_hash: "828d0f935ce54a65c4a62dd78ca9a83ffbacd3c66dcc7095b05744422fc8e57a", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-06", evidence: EVIDENCE },
+  { question_id: "category", criteria_hash: "5eb9baea76fdff263944be72c196da9d90c4ab46ec8bab093a52a99b48d72148", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "sets_rule", criteria_hash: "455d081d81ff7ae67c693a888019570572142aa854d3cb16bf81b7e745a159ae", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "rule_scope", criteria_hash: "02c6caacb4d5a277b13fc3aa1d196a271240a58e17151e2c3f764c81a319cb33", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "breadth", criteria_hash: "c70960d0d6cc4fe6b4019e606492d6738ba909ac6731d4830dd39eb0619ac005", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "reasoning", criteria_hash: "9b2eae10d8d782a999033ed1f25df2c785c128515e49bcfd3721174c8416207b", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "actions", criteria_hash: "37dc583de24e6dabb20f4c3112619788b9485917a9529cac0322866e388f3538", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "category:status", criteria_hash: "5eb9baea76fdff263944be72c196da9d90c4ab46ec8bab093a52a99b48d72148", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "category", criteria_hash: "5eb9baea76fdff263944be72c196da9d90c4ab46ec8bab093a52a99b48d72148", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "sets_rule", criteria_hash: "455d081d81ff7ae67c693a888019570572142aa854d3cb16bf81b7e745a159ae", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "rule_scope", criteria_hash: "02c6caacb4d5a277b13fc3aa1d196a271240a58e17151e2c3f764c81a319cb33", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "breadth", criteria_hash: "c70960d0d6cc4fe6b4019e606492d6738ba909ac6731d4830dd39eb0619ac005", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "reasoning", criteria_hash: "9b2eae10d8d782a999033ed1f25df2c785c128515e49bcfd3721174c8416207b", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "actions", criteria_hash: "37dc583de24e6dabb20f4c3112619788b9485917a9529cac0322866e388f3538", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "category:status", criteria_hash: "5eb9baea76fdff263944be72c196da9d90c4ab46ec8bab093a52a99b48d72148", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-09", evidence: EVIDENCE },
 ];
 
 /**

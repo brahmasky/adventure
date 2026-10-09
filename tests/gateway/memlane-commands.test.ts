@@ -21,6 +21,19 @@ const seedRun = (store: RunStore, text: string) => { const run = createQueuedTur
 
 // Spec §5.6: Undo is chat-bound compare-and-set; "Ask Houge anyway" is ONE admission, the override label, and three in seven days cap the lane.
 describe("memlane callbacks", () => {
+  // Spec §6: "Ask Houge anyway" is the strongest correction label; it lands on the original turn's verdict row.
+  it("ask: the tap marks the original turn's verdict ask_anyway", () => {
+    const store = RunStore.openInMemory(); const dir = mkdtempSync(join(tmpdir(), "mla-"));
+    const original = seedRun(store, "以后回复短一点");
+    const vid = store.insertJevVerdict({ run_id: original, category: "memory", breadth: 1, reasoning: 1, actions: 0, sets_rule: 0.95, rule_scope: "ask",
+      lane: "memory", role: "default", effort: null, cascade: null, save_outcome: "saved", route_outcome: "act", reason: "routed", skip_reason: null, quoted_turn_id: null });
+    store.updateJevVerdict(vid, { paco_correction: "think_harder" }); // an earlier, weaker label is overwritten by the tap
+    const gateway = new Gateway(store, undefined, undefined, undefined, undefined, { dataDir: dir });
+    expect(gateway.intake(tap("memlane_ask", { run_id: original })).ok).toBe(true);
+    expect(store.getJevVerdictForRun(original)).toMatchObject({ verdict_id: vid, paco_correction: "ask_anyway" });
+    store.close();
+  });
+
   it("undo: chat-bound, compare-and-set, event inside the transaction, second tap says already undone", () => {
     const store = RunStore.openInMemory();
     const id = store.addLesson({ scope: "ask", text: "rule", theme: "format", source: "lane", created_at: NOW });

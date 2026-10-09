@@ -58,8 +58,8 @@ regardless of which agent is underneath.
 
 ## Amendment (2026-09-30): superseded in part by ADR 0028, omp replaces pi as runtime
 
-[ADR 0028](0028-omp-runtime.md) builds the agentic mode this ADR reserved, on **omp 18.4.4**
-(profile `houge`), not pi. The "V2 containment" list became ADR 0028's layers L0–L4: the child env
+[ADR 0028](0028-omp-runtime.md) builds the agentic mode this ADR reserved, on **omp**
+(profile `houge`, no version pin), not pi. The "V2 containment" list became ADR 0028's layers L0–L4: the child env
 allowlist, Seatbelt profiles around the planner and every shell command, the policy hook, the
 bridge through `CapabilityRunner`, and `/approve` on matched external writes. The pi provider and
 its inference-mode chain are deleted (commit `3aabc04`). One-shot seats keep the inference-mode
@@ -67,5 +67,5 @@ posture on omp (`-p --no-tools --no-extensions --no-session`, prompt on stdin).
 
 Still standing: prompts are delivered on stdin, never argv; the env is an allowlist; and Houge
 governs the runtime's extension surface instead of replacing it. The rejected "Anthropic API
-provider" alternative is revisited by ADR 0028 D7: Opus 5.5 runs **inside omp** on Anthropic Max
+provider" alternative is revisited by ADR 0028 D7: Claude runs **inside omp** on Anthropic Max
 subscription OAuth, never on a metered API.

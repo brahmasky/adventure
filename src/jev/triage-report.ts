@@ -1,141 +1,190 @@
 import type { CalibrationRow } from "./calibration.js";
-import { TRIAGE_LANE, TRIAGE_QUESTIONS } from "./questions/triage.js";
+import { CATEGORIES, TREE_CATEGORY, TREE_QUESTIONS, type Category } from "./questions/tree.js";
+import { JEV_REQUEST_MODEL } from "./jev-client.js";
 import { criteriaHash } from "./questions/types.js";
-import { TRIAGE_STATUS_ARM_ID, type TriageBars } from "./thresholds.js";
-import { replayVerdict, TRIAGE_LANE_PERMUTED, type TriageLabel, type TriageReplayRow, type TriageReplayVerdict } from "./triage-replay.js";
+import { ACK_ROUTE, applyCascade, routeTree, TREE_STATUS_ARM_ID, type Armed, type Route, type TreeBars } from "./tree-policy.js";
+import { treeQuestions, type TreeLabel, type TreeReplayRow } from "./triage-replay.js";
 import { wilsonLower } from "./wilson.js";
 
 /**
- * The lane 1 calibration report (spec §5.9). Paco's arm decision is made from this text, so the verdict logic is strict:
- * evidence that is partial, unlabelled, stale or missing is INCOMPLETE, never a quiet pass; "ROWS TO ADD" appears only
- * when every bar holds. Agreement over all turns is never a headline: ~250 `none` turns would hide the positive class.
- * Verdicts are recomputed from the row's numbers at `bars` through the live gate, so the bars printed are the bars used.
+ * The decision-tree replay report (spec 2026-10-06 §7): evidence for Paco's arm decision, never a verdict. Truth per
+ * turn is Paco's label when he gave one, else the tool proxy; unlabelled acks and unmatched-tool turns have no truth and
+ * are counted apart. Routes are recomputed from the stored answers through the live policy (`routeTree`) as if every
+ * decision were armed, so the bars printed are the bars used. Partial evidence is INCOMPLETE and prints no rows.
  */
-export interface TriageShadowStats {
-  /** The reported model the shadow was filtered by: evidence for one model is never evidence for another (alias move). */
-  model: string;
-  days: number; matched_lesson_write: number; pure_on_tool_turns: number; pure_on_no_tool_turns: number;
-  /** The live shadow `lane` rows' run and `jev_decisions.state_hash`: the state-parity check against the replay. */
-  live_state_rows?: Array<{ run_id: string; state_hash: string }>;
-}
-export interface TriageReportOutcome {
+export interface TreeReportOutcome {
   spentUsd: number; estimatedUsd: number; stopped?: string;
   universe?: number; wouldDispatch?: number; alreadyDone?: number; skipped?: number; limited?: boolean;
 }
 
-/** §5.9 step 3 / step 4 bars. Recall and precision gate on the point estimate; the Wilson bound is printed beside it. */
-export const TRIAGE_GO = { recall: 0.8, precision: 0.85, coverage: 0.5, statusPrecision: 1, statusMinN: 5, shadowDays: 14, shadowMatched: 5 } as const;
-const SWEEP = [0.5, 0.6, 0.7, 0.8, 0.9] as const;
-const CAL_LANGS = ["zh", "en"] as const;
-type CalLang = (typeof CAL_LANGS)[number];
+const ALL_ARMED: Armed = { category: true, status: true, memory: true, gear: true, rule: true };
+const SCORE_IDS = ["breadth", "reasoning", "actions"] as const;
+/** Categories with a lane in the spec's end state (§3): sending them to the planner costs money, not a turn. */
+const LANE_SHAPED: ReadonlySet<Category> = new Set(["answer", "lookup", "memory", "schedule", "wiki", "status"]);
+const TRUTHS: ReadonlyArray<Category | null> = [...CATEGORIES, null];
 
 const pct = (a: number, n: number): string => (n === 0 ? "n/a" : `${((100 * a) / n).toFixed(1)}%`);
 const lb = (a: number, n: number): string => { const w = wilsonLower(a, n); return w === null ? "LB n/a" : `LB ${(100 * w).toFixed(1)}%`; };
-const line = (label: string, a: number, n: number): string => `  ${label}: ${a}/${n} = ${pct(a, n)} (${lb(a, n)})`;
-/** Every model the ok rows (canonical and permuted) REPORTED, sorted. The request names the alias `jev-latest`, so the
- *  rows, not a constant, say which model the evidence is for; more than one means the alias moved mid-replay. */
-const reportedModels = (rows: TriageReplayRow[]): string[] =>
-  [...new Set(rows.filter((r) => r.status === "ok" && r.model !== undefined).map((r) => r.model!))].sort();
-/** The one model the canonical rows reported, or undefined when none or more than one (the latter is a blocker). */
-export const replayReportedModel = (rows: TriageReplayRow[]): string | undefined => { const m = reportedModels(rows); return m.length === 1 ? m[0] : undefined; };
-const calLang = (r: TriageReplayRow): CalLang => (r.lang === "en" ? "en" : "zh"); // `mixed` inherits zh (spec §3.4)
+const truthOf = (r: TreeReplayRow, labels: Map<string, TreeLabel>): Category | null => labels.get(r.turn_id)?.category ?? r.proxy;
+const truthName = (t: Category | null): string => (t ?? "unlabelled").padEnd(13);
+const choiceOf = (r: TreeReplayRow): string | null => { const a = r.answers?.category; return a?.type === "choice" ? a.choice : null; };
+const scoreOf = (r: TreeReplayRow, id: string): number | null => { const a = r.answers?.[id]; return a?.type === "score" ? a.score : null; };
+/** A correction by its proxy; a human label says `memory`, not which kind, so a `memory` label keeps it (F2) and any
+ *  other label overrides it. */
+const isCorrection = (r: TreeReplayRow, labels: Map<string, TreeLabel>): boolean => {
+  const label = labels.get(r.turn_id);
+  return r.proxy_rule === "memory_correct_write" && (label === undefined || label.category === "memory");
+};
+const tally = (m: Map<string, number>, k: string): void => { m.set(k, (m.get(k) ?? 0) + 1); };
+const fmt = (m: Map<string, number>): string => [...m].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(", ") || "none";
 
-/** The live gate's verdict on the row's stored numbers at `bars`. */
-function verdictAt(r: TriageReplayRow, bars: TriageBars): TriageReplayVerdict {
-  const pPure = r.p_pure ?? 0; const scope = r.scope ?? "ask";
-  return replayVerdict({
-    lane: { choice: r.jev_lane ?? "none", probabilities: { none: r.p_none ?? 0, status: r.p_status ?? 0, memory: r.p_memory ?? 0 }, confidence: r.conf_lane ?? 0 },
-    complete: { choice: pPure >= 0.5 ? "pure" : "mixed", probabilities: { mixed: 1 - pPure, pure: pPure }, confidence: Math.abs(2 * pPure - 1) },
-    scope: { choice: scope, probabilities: { [scope]: 1 }, confidence: 1 }
-  }, bars, r.lang, r.model ?? "unreported"); // replayVerdict arms "as if" for whatever model it is given
-}
-const isMemory = (v: TriageReplayVerdict): boolean => v === "memory_pure" || v === "memory_mixed";
-/** Must carry Paco's label: every observed lesson_write, every memory/status choice at any confidence, and every memory/status
- *  verdict at `bars` (a low HOUGE_JEV_TRIAGE_MIN_STATUS must not let an unlabelled status verdict act). */
-const required = (r: TriageReplayRow, bars: TriageBars): boolean =>
-  r.observed_lesson_write || r.jev_lane === "memory" || r.jev_lane === "status" || verdictAt(r, bars) !== "fallthrough";
-
-interface Costly { tool: number; noTool: number; noToolConfirmed: number; human: number }
-function costlyCells(rows: TriageReplayRow[], labels: Map<string, TriageLabel>, bars: TriageBars): Costly {
-  const pure = rows.filter((r) => verdictAt(r, bars) === "memory_pure");
-  const confirmed = (r: TriageReplayRow) => { const l = labels.get(r.turn_id); return l?.memory === true && l.pure === true; };
-  const noTool = pure.filter((r) => !r.observed_lesson_write && !r.observed_other_tools);
-  return { tool: pure.filter((r) => r.observed_other_tools).length, noTool: noTool.length, noToolConfirmed: noTool.filter(confirmed).length,
-    human: pure.filter((r) => labels.has(r.turn_id) && !confirmed(r)).length };
-}
-const costlyOk = (c: Costly): boolean => c.tool === 0 && c.human === 0 && c.noTool === c.noToolConfirmed;
-
-/** Memory and status arm on separate rows (thresholds.ts TRIAGE_STATUS_ARM_ID), so their bars are judged separately. */
-interface LangEvidence { lines: string[]; failures: string[]; statusFailures: string[]; summary: string }
-
-/** One calibration language: the per-class lines with n and Wilson bounds, and every §5.9 step 3 bar it fails. */
-function langEvidence(lang: CalLang, L: TriageReplayRow[], labels: Map<string, TriageLabel>, bars: TriageBars): LangEvidence {
-  const v = new Map(L.map((r) => [r.turn_id, verdictAt(r, bars)]));
-  const chose = (r: TriageReplayRow) => r.jev_lane === "memory";
-  const confident = (r: TriageReplayRow) => isMemory(v.get(r.turn_id)!);
-  const proxy = L.filter((r) => r.observed_lesson_write); const human = L.filter((r) => labels.get(r.turn_id)?.memory === true);
-  const memV = L.filter((r) => confident(r) && labels.has(r.turn_id)); const memOk = memV.filter((r) => labels.get(r.turn_id)!.memory);
-  const stV = L.filter((r) => v.get(r.turn_id) === "status" && labels.has(r.turn_id)); const stOk = stV.filter((r) => labels.get(r.turn_id)!.status);
-  const noneSample = L.filter((r) => !required(r, bars) && labels.has(r.turn_id)).length;
-  const c = costlyCells(L, labels, bars);
-  const counts = { rp: proxy.filter(chose).length, rh: human.filter(chose).length, cov: human.filter(confident).length };
-  const failures: string[] = [];
-  const bar = (name: string, a: number, n: number, min: number) => { if (n === 0) failures.push(`${name} n = 0`); else if (a / n < min) failures.push(`${name} ${pct(a, n)} < ${min}`); };
-  bar("recall (action proxy)", counts.rp, proxy.length, TRIAGE_GO.recall); bar("recall (human)", counts.rh, human.length, TRIAGE_GO.recall);
-  bar("precision (human)", memOk.length, memV.length, TRIAGE_GO.precision); bar("coverage", counts.cov, human.length, TRIAGE_GO.coverage);
-  const statusFailures = stV.length < TRIAGE_GO.statusMinN || stOk.length < stV.length ? [`status precision ${stOk.length}/${stV.length} (needs 1.0 on n ≥ ${TRIAGE_GO.statusMinN})`] : [];
-  if (noneSample === 0) failures.push("labelled `none` sample n = 0");
-  if (!costlyOk(c)) failures.push("costly cells non-zero");
-  const lines = [`${lang}${lang === "zh" ? " (incl. mixed)" : ""}: ${L.length} turns`,
-    line("recall (action proxy, Jev chose memory at any confidence)", counts.rp, proxy.length),
-    line("recall (human, Jev chose memory at any confidence)", counts.rh, human.length),
-    line("precision (human, confident memory verdicts)", memOk.length, memV.length),
-    line("coverage of human positives (confident verdicts)", counts.cov, human.length),
-    line("status precision (human, status verdicts)", stOk.length, stV.length),
-    `  labelled none sample: n = ${noneSample}`,
-    `  COSTLY: pure on tool-using turns: ${c.tool}; pure on NO-tool turns: ${c.noTool} (${c.noToolConfirmed} human-confirmed memory+pure); pure on human-labelled not-pure: ${c.human}`];
-  const summary = `n=${L.length} recall proxy ${counts.rp}/${proxy.length} human ${counts.rh}/${human.length} precision ${memOk.length}/${memV.length} status ${stOk.length}/${stV.length}`;
-  return { lines, failures, statusFailures, summary };
+/** Gear from the highest of the three scores at the given bars (spec §2.4); null when a score is missing. */
+function gearOf(r: TreeReplayRow, bars: TreeBars): "light" | "standard" | "heavy" | null {
+  const s = SCORE_IDS.map((id) => scoreOf(r, id));
+  if (s.some((x) => x === null)) return null;
+  const m = Math.max(...(s as number[]));
+  return m <= bars.gearLight ? "light" : m < bars.gearHeavy ? "standard" : "heavy";
 }
 
-/** Coverage and the two costly cells as one bar moves 0.5…0.9 with the others held (spec §3.6). */
-function sweepLines(L: TriageReplayRow[], labels: Map<string, TriageLabel>, bars: TriageBars): string[] {
-  const human = L.filter((r) => labels.get(r.turn_id)?.memory === true);
-  const out: string[] = [];
-  for (const [name, key] of [["p(memory)", "minMemory"], ["p(pure)", "minPure"]] as const) {
-    for (const t of SWEEP) {
-      const b: TriageBars = { ...bars, [key]: t };
-      const cov = human.filter((r) => isMemory(verdictAt(r, b))).length; const c = costlyCells(L, labels, b);
-      out.push(`  sweep ${name} ≥ ${t.toFixed(1)}: coverage ${cov}/${human.length} = ${pct(cov, human.length)}; pure on tool-using ${c.tool}; pure on human-labelled not-pure ${c.human}`);
+/**
+ * The route the live policy would take on these answers once armed. The replay makes no model call, so a below-bar plan
+ * settles as a FAILED live cascade (Decision 14): `applyCascade(plan, null)`, Default, nothing saved, flagged `cascade`
+ * so the report counts the turns a live Tiny call would decide.
+ */
+export function replayRoute(r: TreeReplayRow, bars: TreeBars, armed: Armed = ALL_ARMED): { route: Route; cascade: boolean } | null {
+  if (!r.answers) return null;
+  if (r.pre_judge === "ack_answer") return { route: ACK_ROUTE, cascade: false };
+  const plan = routeTree(r.answers, { bars, armed, thinkHarder: r.think_harder, bareAck: r.bare_ack });
+  return plan.kind === "final" ? { route: plan.route, cascade: false } : { route: applyCascade(plan, null), cascade: true };
+}
+
+/** Truth → Jev's `category` choice, one line per truth, and the diagonal over turns that have a truth. */
+function confusionLines(ok: TreeReplayRow[], labels: Map<string, TreeLabel>): string[] {
+  const out = ["confusion (truth → Jev category; truth = Paco's label, else the tool proxy):"];
+  let agree = 0; let n = 0;
+  for (const truth of TRUTHS) {
+    const L = ok.filter((r) => truthOf(r, labels) === truth);
+    if (L.length === 0) continue;
+    const cells = new Map<string, number>();
+    for (const r of L) tally(cells, choiceOf(r) ?? "?");
+    if (truth !== null) { n += L.length; agree += cells.get(truth) ?? 0; }
+    out.push(`  ${truthName(truth)} (n=${L.length}): ${fmt(cells)}`);
+  }
+  out.push(`  agreement on labelled turns: ${agree}/${n} = ${pct(agree, n)} (${lb(agree, n)})`);
+  return out;
+}
+
+function scoreSummary(id: string, xs: number[]): string {
+  if (xs.length === 0) return `${id} n/a`;
+  const h = [0, 0, 0, 0];
+  for (const x of xs) h[Math.min(3, Math.max(0, Math.round(x)))]! += 1;
+  return `${id} ${(xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(2)} [${h.join("/")}]`;
+}
+
+/** Per truth: each score's mean and its level histogram, then the gear split it produces. */
+function scoreLines(ok: TreeReplayRow[], labels: Map<string, TreeLabel>, bars: TreeBars): string[] {
+  const out = ["scores per truth (mean [levels 0/1/2/3]; gear light/standard/heavy):"];
+  for (const truth of TRUTHS) {
+    const L = ok.filter((r) => truthOf(r, labels) === truth);
+    if (L.length === 0) continue;
+    const parts = SCORE_IDS.map((id) => scoreSummary(id, L.map((r) => scoreOf(r, id)).filter((x): x is number => x !== null)));
+    const g = { light: 0, standard: 0, heavy: 0 };
+    for (const r of L) { const k = gearOf(r, bars); if (k) g[k] += 1; }
+    out.push(`  ${truthName(truth)} (n=${L.length}): ${parts.join("; ")}; gear ${g.light}/${g.standard}/${g.heavy}`);
+  }
+  return out;
+}
+
+function routeLines(ok: TreeReplayRow[], bars: TreeBars): string[] {
+  const lanes = new Map<string, number>(); const reasons = new Map<string, number>(); let cascades = 0;
+  for (const r of ok) {
+    const x = replayRoute(r, bars);
+    if (!x) continue;
+    tally(lanes, `${x.route.lane}/${x.route.role}`); tally(reasons, x.route.reason);
+    if (x.cascade) cascades += 1;
+  }
+  return [`routes as if armed (lane/role): ${fmt(lanes)}`,
+    `route reasons: ${fmt(reasons)}; below-bar turns a live cascade would ask the Tiny role about (replayed as cascade_failed, no model call): ${cascades}`];
+}
+
+/**
+ * Arming is coupled (Decision: arming couplings): `memory` needs `category` + `rule`, and `category` alone already moves
+ * turns off Default. Paco commits rows per question, so the report shows what each partial commit would change.
+ */
+const NONE_ARMED: Armed = { category: false, status: false, memory: false, gear: false, rule: false };
+export const ARMING_COMBOS: ReadonlyArray<{ name: string; armed: Armed }> = [
+  { name: "category", armed: { ...NONE_ARMED, category: true } },
+  { name: "category+gear", armed: { ...NONE_ARMED, category: true, gear: true } },
+  { name: "category+rule", armed: { ...NONE_ARMED, category: true, rule: true, memory: true } },
+  { name: "category+rule+status", armed: { ...NONE_ARMED, category: true, rule: true, memory: true, status: true } },
+  { name: "all", armed: ALL_ARMED }
+];
+const ARMING_IDS_SHOWN = 10;
+
+/**
+ * Per combination: turns whose lane/role differs from that turn's own route with nothing armed (the path stage A runs
+ * until Paco commits rows: Default, except the ack rule and `think harder`), keyed `from→to`, with their turn ids.
+ */
+function armingLines(ok: TreeReplayRow[], bars: TreeBars): string[] {
+  const out = ["arming combinations (turns whose route changes from the nothing-armed path; from→to [first ids]):"];
+  const at = (x: { route: Route } | null): string => (x ? `${x.route.lane}/${x.route.role}` : "none");
+  for (const c of ARMING_COMBOS) {
+    const moved = new Map<string, string[]>();
+    for (const r of ok) {
+      const before = at(replayRoute(r, bars, NONE_ARMED)); const after = at(replayRoute(r, bars, c.armed));
+      if (before === after) continue;
+      const k = `${before}→${after}`;
+      moved.set(k, [...(moved.get(k) ?? []), r.turn_id]);
     }
+    const parts = [...moved].sort((a, b) => b[1].length - a[1].length)
+      .map(([k, ids]) => `${k} ${ids.length} [${ids.slice(0, ARMING_IDS_SHOWN).join(", ")}]`);
+    out.push(`  ${c.name}: ${parts.join("; ") || "none"}`);
   }
   return out;
 }
 
-/** Verdict × observed planner action (spec §3.6 confusion matrix). */
-function confusionLines(L: TriageReplayRow[], bars: TriageBars): string[] {
-  const col = (r: TriageReplayRow) => (r.observed_other_tools ? 1 : r.observed_lesson_write ? 0 : 2);
-  const out = ["  verdict        | lesson_write-only | other tools | no tools"];
-  for (const verdict of ["status", "memory_pure", "memory_mixed", "fallthrough"] as const) {
-    const n = [0, 0, 0];
-    for (const r of L) if (verdictAt(r, bars) === verdict) n[col(r)]! += 1;
-    out.push(`  ${verdict.padEnd(14)} | ${String(n[0]).padStart(17)} | ${String(n[1]).padStart(11)} | ${String(n[2]).padStart(8)}`);
+interface Costly { swallowed: string[]; underPowered: string[]; laneToPlanner: Map<string, number>; unjudged: number }
+/** Spec §7's three costly cells: a swallowed turn, an under-powered one, and a lane-shaped turn sent to the planner. */
+function costlyCells(ok: TreeReplayRow[], labels: Map<string, TreeLabel>, bars: TreeBars): Costly {
+  const c: Costly = { swallowed: [], underPowered: [], laneToPlanner: new Map(), unjudged: 0 };
+  for (const r of ok) {
+    const routed = replayRoute(r, bars); const truth = truthOf(r, labels);
+    if (!routed) continue;
+    const lane = routed.route.lane;
+    if (truth === null) { if (lane !== "planner") c.unjudged += 1; continue; }
+    const wrongMemory = lane === "memory" && (truth !== "memory" || isCorrection(r, labels));
+    if (wrongMemory || (lane === "status" && truth !== "status")) c.swallowed.push(r.turn_id);
+    if ((truth === "self_change" || truth === "machine_task") && gearOf(r, bars) === "light") c.underPowered.push(r.turn_id);
+    if (lane === "planner" && LANE_SHAPED.has(truth) && !isCorrection(r, labels)) tally(c.laneToPlanner, truth);
   }
-  return out;
+  return c;
 }
 
-/** Order bias (spec §3.6): the same turns asked with `lane` reversed; verdict equality at `bars`, and raw lane-choice equality. */
-function permutationLine(ok: TriageReplayRow[], permuted: TriageReplayRow[] | undefined, bars: TriageBars): string {
+function costlyLines(c: Costly): string[] {
+  const ids = (xs: string[]) => (xs.length === 0 ? "" : ` [${xs.slice(0, 20).join(", ")}${xs.length > 20 ? ", …" : ""}]`);
+  const toPlanner = [...c.laneToPlanner.values()].reduce((a, b) => a + b, 0);
+  return [
+    `COSTLY 1 — wrongly into memory/status (a swallowed turn): ${c.swallowed.length}${ids(c.swallowed)}`,
+    `COSTLY 2 — self_change / machine_task rated light (under-powered): ${c.underPowered.length}${ids(c.underPowered)}`,
+    `COSTLY 3 — lane-shaped turns sent to the planner (cost only): ${toPlanner} (${fmt(c.laneToPlanner)})`,
+    `  memory/status routes on unlabelled turns (cannot judge; label them): ${c.unjudged}`
+  ];
+}
+
+/** Order bias: the same turns with `category` reversed; agreement of the category choice. */
+function permutationLine(ok: TreeReplayRow[], permuted: TreeReplayRow[] | undefined): string {
   if (!permuted) return "permutation: NOT RUN (houge jev replay triage --permute)";
   const perm = new Map(permuted.filter((r) => r.status === "ok").map((r) => [r.turn_id, r]));
   const pairs = ok.filter((r) => perm.has(r.turn_id)).map((r) => [r, perm.get(r.turn_id)!] as const);
-  const same = pairs.filter(([a, b]) => verdictAt(a, bars) === verdictAt(b, bars)).length;
-  const lane = pairs.filter(([a, b]) => a.jev_lane === b.jev_lane).length;
-  return `permutation: verdict agreement ${same}/${pairs.length} = ${pct(same, pairs.length)} (${lb(same, pairs.length)}); lane-choice agreement ${lane}/${pairs.length}`;
+  const same = pairs.filter(([a, b]) => choiceOf(a) === choiceOf(b)).length;
+  return `permutation: category agreement ${same}/${pairs.length} = ${pct(same, pairs.length)} (${lb(same, pairs.length)})`;
 }
 
+const hashesOf = (permute: boolean): Record<string, string> => Object.fromEntries(treeQuestions(permute).map((q) => [q.id, criteriaHash(q)]));
+const stale = (r: TreeReplayRow, want: Record<string, string>): boolean => Object.entries(want).some(([id, h]) => r.criteria_hashes?.[id] !== h);
+
 /** Everything that makes the evidence partial: any one → INCOMPLETE, no rows. */
-function blockersOf(rows: TriageReplayRow[], ok: TriageReplayRow[], labels: Map<string, TriageLabel>, o: TriageReportOutcome, bars: TriageBars, permuted?: TriageReplayRow[]): string[] {
+function blockersOf(rows: TreeReplayRow[], ok: TreeReplayRow[], o: TreeReportOutcome, permuted?: TreeReplayRow[]): string[] {
   const b: string[] = [];
   if (o.stopped) b.push(`stopped: ${o.stopped}`);
   if (o.limited) b.push("--limit set: not the full universe");
@@ -144,89 +193,60 @@ function blockersOf(rows: TriageReplayRow[], ok: TriageReplayRow[], labels: Map<
   else if (finished < o.universe) b.push(`${finished} of ${o.universe} turns finished`);
   const failed = rows.filter((r) => r.status === "jev_failed").length;
   if (failed > 0) b.push(`${failed} jev_failed row(s): re-run to retry them`);
-  const unlabelled = ok.filter((r) => required(r, bars) && !labels.has(r.turn_id)).length;
-  if (unlabelled > 0) b.push(`${unlabelled} required turn(s) unlabelled (every observed lesson_write, every memory/status verdict)`);
-  const models = reportedModels([...ok, ...(permuted ?? [])]);
+  const permOk = (permuted ?? []).filter((r) => r.status === "ok");
+  const models = reportedModels([...ok, ...permOk]);
   if (models.length > 1) b.push(`more than one reported model (${models.join(", ")}): re-run into a fresh file`);
-  const stale = ok.some((r) => r.criteria_hash_lane !== criteriaHash(TRIAGE_LANE))
-    || (permuted ?? []).some((r) => r.status === "ok" && r.criteria_hash_lane !== criteriaHash(TRIAGE_LANE_PERMUTED));
-  if (stale) b.push("rows asked with stale criteria wording: re-run into a fresh file");
-  const permOk = new Set((permuted ?? []).filter((r) => r.status === "ok").map((r) => r.turn_id));
+  if (models.includes(JEV_REQUEST_MODEL)) b.push(`rows reported the request alias ${JEV_REQUEST_MODEL}, not a versioned model: candidate rows would never arm`);
+  if (ok.some((r) => stale(r, hashesOf(false))) || permOk.some((r) => stale(r, hashesOf(true)))) b.push("rows asked with stale criteria wording: re-run into a fresh file");
+  const covered = new Set(permOk.map((r) => r.turn_id));
   if (!permuted) b.push("permuted run missing");
-  else if (ok.some((r) => !permOk.has(r.turn_id))) b.push("permuted run does not cover every replayed turn");
+  else if (ok.some((r) => !covered.has(r.turn_id))) b.push("permuted run does not cover every replayed turn");
   return b;
 }
 
-/** §5.9 step 4: the live shadow is a false-positive watch; without its numbers there is no arm. */
-function shadowLines(shadow: TriageShadowStats | undefined, rows: TriageReplayRow[]): { lines: string[]; failures: string[] } {
-  if (!shadow) return { lines: ["live shadow: NOT SUPPLIED"], failures: ["live shadow stats not supplied"] };
-  const failures: string[] = [];
-  const replayModel = replayReportedModel(rows);
-  if (replayModel !== undefined && shadow.model !== replayModel) failures.push(`live shadow is for ${shadow.model}, the replay for ${replayModel}`);
-  if (shadow.days < TRIAGE_GO.shadowDays) failures.push(`shadow ${shadow.days} days < ${TRIAGE_GO.shadowDays}`);
-  if (shadow.matched_lesson_write < TRIAGE_GO.shadowMatched) failures.push(`matched lesson_write ${shadow.matched_lesson_write} < ${TRIAGE_GO.shadowMatched}`);
-  if (shadow.pure_on_tool_turns > 0 || shadow.pure_on_no_tool_turns > 0) failures.push("shadow pure verdicts on tool / no-tool turns");
-  const lines = [`live shadow: ${shadow.days} days (≥ ${TRIAGE_GO.shadowDays}); matched lesson_write ${shadow.matched_lesson_write} (≥ ${TRIAGE_GO.shadowMatched}); ` +
-    `pure on other-tool turns ${shadow.pure_on_tool_turns} (= 0); pure on no-tool turns ${shadow.pure_on_no_tool_turns} (= 0)`];
-  if (shadow.live_state_rows) parityCheck(shadow.live_state_rows, rows, lines, failures);
-  return { lines, failures };
-}
+/** Every model the ok rows REPORTED, sorted. The request names the alias `jev-latest`, so the rows, not a constant, say
+ *  which model the evidence is for; more than one means the alias moved mid-replay (a blocker). */
+const reportedModels = (rows: TreeReplayRow[]): string[] =>
+  [...new Set(rows.filter((r) => r.status === "ok" && r.model !== undefined).map((r) => r.model!))].sort();
 
-/**
- * State parity: a live row is comparable when its run was replayed with a state (the live instant is its own row). Any
- * comparable mismatch blocks the rows. Neither side records whether a broker redacted the live state, so a broker-explained
- * mismatch cannot be told apart from a parity bug: every mismatch blocks, and the line says so.
- */
-function parityCheck(live: Array<{ run_id: string; state_hash: string }>, rows: TriageReplayRow[], lines: string[], failures: string[]): void {
-  const byRun = new Map<string, Set<string>>();
-  for (const r of rows) if (r.state_hash) byRun.set(r.run_id, (byRun.get(r.run_id) ?? new Set()).add(r.state_hash));
-  const comparable = live.filter((l) => byRun.has(l.run_id));
-  const miss = comparable.filter((l) => !byRun.get(l.run_id)!.has(l.state_hash)).length;
-  const summary = `state parity: ${miss} of ${comparable.length} comparable live row(s) mismatch`;
-  lines.push(`${summary}; ${live.length - comparable.length} live row(s) not comparable (run not replayed)` +
-    (miss > 0 ? " — broker redaction cannot be told apart from a parity bug in the data, so every mismatch blocks" : ""));
-  if (miss > 0) failures.push(summary);
-}
-
-/** Memory rows (lane, complete, scope) when the memory bars hold; the `lane:status` row only when the status bar holds. Keyed by
- *  `model`, the one model the replay rows reported (never a constant: the request names the alias). */
-function rowsToAdd(evidence: Map<CalLang, LangEvidence>, model: string): string[] {
-  const out: string[] = [];
-  for (const [lang, e] of evidence) {
-    const ids: Array<readonly [string, string]> = e.failures.length === 0 ? TRIAGE_QUESTIONS.map((q) => [q.id, criteriaHash(q)] as const) : [];
-    if (e.statusFailures.length === 0) ids.push([TRIAGE_STATUS_ARM_ID, criteriaHash(TRIAGE_LANE)]);
+/** Candidate rows for the six questions and the status pseudo-row, per language present, keyed by the one reported model
+ *  (no blocker means exactly one); Paco fills `approved`. */
+function candidateRows(ok: TreeReplayRow[]): string[] {
+  const model = reportedModels(ok)[0]!;
+  const ids = [...TREE_QUESTIONS.map((q) => [q.id, criteriaHash(q)] as const), [TREE_STATUS_ARM_ID, criteriaHash(TREE_CATEGORY)] as const];
+  const out = ["CANDIDATE ROWS — evidence for Paco's decision, not a verdict; he fills `approved` and commits them into CALIBRATED_ROWS (src/jev/calibration.ts):"];
+  for (const lang of ["zh", "en"] as const) {
+    const n = ok.filter((r) => (r.lang === "en" ? "en" : "zh") === lang).length; // `mixed` inherits zh (calibratedLang)
+    if (n === 0) continue;
     for (const [question_id, criteria_hash] of ids) {
-      const r: CalibrationRow = { question_id, criteria_hash, model, lang, approved: "", evidence: `lane 1 replay ${e.summary}` };
-      out.push(JSON.stringify(r));
+      const row: CalibrationRow = { question_id, criteria_hash, model, lang, approved: "", evidence: `tree replay ${n} ${lang} turns` };
+      out.push(JSON.stringify(row));
     }
   }
-  return out.length === 0 ? [] : ["ROWS TO ADD — Paco's commit into CALIBRATED_ROWS (src/jev/calibration.ts); `approved` is his date:", ...out];
+  return out;
 }
 
-export function formatTriageReport(rows: TriageReplayRow[], labels: Map<string, TriageLabel>, outcome: TriageReportOutcome, bars: TriageBars,
-  permuted?: TriageReplayRow[], shadow?: TriageShadowStats): string {
+function headLine(ok: TreeReplayRow[], labels: Map<string, TreeLabel>): string {
+  const en = ok.filter((r) => r.lang === "en").length;
+  const human = ok.filter((r) => labels.has(r.turn_id)).length;
+  const none = ok.filter((r) => truthOf(r, labels) === null).length;
+  return `turns: ${ok.length} replayed (zh incl. mixed ${ok.length - en}, en ${en}); ${human} carry Paco's label; ${none} without a truth (ack after a proposal, unmatched tools)`;
+}
+
+export function formatTreeReport(rows: TreeReplayRow[], labels: Map<string, TreeLabel>, outcome: TreeReportOutcome, bars: TreeBars,
+  permuted?: TreeReplayRow[]): string {
   if (rows.some((r) => r.status === "dry_run")) {
     return `DRY RUN — universe ${outcome.universe ?? "?"}, would dispatch ${outcome.wouldDispatch ?? "?"}, already done ${outcome.alreadyDone ?? "?"}, ` +
-      `skipped ${outcome.skipped ?? "?"}; est. $${outcome.estimatedUsd.toFixed(3)}; nothing dispatched, no verdict.`;
+      `skipped ${outcome.skipped ?? "?"}; est. $${outcome.estimatedUsd.toFixed(3)}; nothing dispatched, no evidence.`;
   }
   const ok = rows.filter((r) => r.status === "ok");
-  const blockers = blockersOf(rows, ok, labels, outcome, bars, permuted);
-  const sh = shadowLines(shadow, rows);
-  const out: string[] = blockers.length > 0 ? [`INCOMPLETE — ${blockers.join("; ")}. The numbers below are NOT a verdict.`] : [];
-  const evidence = new Map<CalLang, LangEvidence>();
-  for (const lang of CAL_LANGS) {
-    const L = ok.filter((r) => calLang(r) === lang); if (L.length === 0) continue;
-    const e = langEvidence(lang, L, labels, bars); evidence.set(lang, e);
-    out.push(...e.lines, ...sweepLines(L, labels, bars), ...confusionLines(L, bars));
-    out.push(e.failures.length === 0 ? `  ${lang} memory: every §5.9 replay bar holds` : `  ${lang} memory: NO-GO — ${e.failures.join("; ")}`);
-    out.push(e.statusFailures.length === 0 ? `  ${lang} status: bar holds` : `  ${lang} status: NO-GO (stays shadow) — ${e.statusFailures.join("; ")}`);
-  }
-  out.push(permutationLine(ok, permuted, bars), ...sh.lines);
-  out.push(`bars: conf ≥ ${bars.minConf}, p(memory) ≥ ${bars.minMemory}, gap ≥ ${bars.minGap}, p(pure) ≥ ${bars.minPure}, p(status) ≥ ${bars.minStatus}`);
+  const blockers = blockersOf(rows, ok, outcome, permuted);
+  const out = blockers.length > 0 ? [`INCOMPLETE — ${blockers.join("; ")}. The numbers below are NOT evidence for arming.`] : [];
+  out.push(headLine(ok, labels), ...confusionLines(ok, labels), ...scoreLines(ok, labels, bars), ...routeLines(ok, bars), ...armingLines(ok, bars),
+    ...costlyLines(costlyCells(ok, labels, bars)), permutationLine(ok, permuted));
+  out.push(`bars: choice ≥ ${bars.choice}, memory ≥ ${bars.memory}, status ≥ ${bars.status}, conf ≥ ${bars.minConf}, gap ≥ ${bars.minGap}, ` +
+    `rule yes ≥ ${bars.nounYes} / no ≤ ${bars.nounNo}, rule_scope ≥ ${bars.ruleScope}, gear light ≤ ${bars.gearLight} / heavy ≥ ${bars.gearHeavy}`);
   out.push(`spent $${outcome.spentUsd.toFixed(3)} of est. $${outcome.estimatedUsd.toFixed(3)}`);
-  const model = replayReportedModel(ok); // exactly one when there are no blockers (more than one is a blocker)
-  const add = blockers.length === 0 && sh.failures.length === 0 && model !== undefined ? rowsToAdd(evidence, model) : [];
-  if (add.length > 0) out.push(...add);
-  else out.push(`STOP / NO-GO — no rows: ${[...blockers, ...sh.failures, ...(blockers.length + sh.failures.length === 0 ? ["no language clears the memory or the status bars"] : [])].join("; ")}`);
+  out.push(...(blockers.length === 0 ? candidateRows(ok) : [`NO ROWS — ${blockers.join("; ")}`]));
   return out.join("\n");
 }

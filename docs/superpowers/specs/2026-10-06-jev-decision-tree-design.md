@@ -1,6 +1,6 @@
 # Jev decision tree — categories, lanes and model roles (ADR 0029 lane 2, widened)
 
-- **Date:** 2026-10-07 · **Rev 8** (Rev 5 + Paco's quote-anchor addition, §2.2.1, with its Codex passes; see §12) · **Status:** awaiting Paco's read
+- **Date:** 2026-10-07 · **Rev 9** (Rev 8 + the plan-review and build rulings, 2026-10-07/08: §2.2, §2.4, §4, §4.3, §9, §10; see §12) · **Status:** awaiting Paco's read
 - **Amends:** [ADR 0029](../../decisions/0029-jev-system-one.md) (the lane-1-first shape becomes one decision tree; lanes
   are the leaf type), [ADR 0028](../../decisions/0028-omp-runtime.md) (model roles replace the `HOUGE_OMP_*` chains;
   D10 reader family becomes a skip rule at read time)
@@ -60,7 +60,7 @@ for lane 1: the latest message ≤ 8K chars, the thread, ≤ 24K chars per reque
 Telegram reply (§2.2.1). `kind` is computed **at read time** from the
 stored previous Houge reply: `clarify` is the stored intent; `proposal` is a code regex over the text (an offer such as
 要不要 / 我可以 / 需要我 / approve, or a trailing question after a tool run); the stored `chat_turns.intent` enum
-(`clarify | loop`) is not widened, since it feeds the clarify cap. Nothing model-authored.
+(`clarify | loop | evolution_report`) is not widened, since it feeds the clarify cap. Nothing model-authored.
 
 #### 2.2.1 A Telegram reply (quote) anchors the thread
 
@@ -133,10 +133,13 @@ runs (today's `p_memory / p_status / p_none` columns become per-question records
   the planner, like a correction). A category under its bar with no cascade candidate left (the top two were `memory`
   and `status`) → planner, Default.
 - **Lane limits:** a lane-shaped category whose scores exceed its lane's limits (§3) goes to the planner.
-- **Cascade below the bar (mu idea 6):** when `category`'s top answer is under 0.6, one Kimi one-shot on the Tiny role
-  picks between Jev's top two categories **after removing `memory` and `status`** (a model guess can never route into
-  a no-planner lane); if only one remains it is taken without a call. Kimi failing or unsure → planner, Default. The
-  verdict is ledgered on the turn row as `cascade: kimi`.
+- **Cascade below the bar (mu idea 6), live in stage A (Paco, 2026-10-07, plan Decision 14):** when `category`'s top
+  answer is under 0.6, one one-shot on the Tiny role (`LlmCallRole` `cascade`) picks between Jev's top two categories
+  **after removing `memory` and `status`** (a model guess can never route into a no-planner lane); if only one remains
+  it is taken without a call. The call is bounded at 20 s on the user's path. A failure, a timeout or an answer outside
+  the two → planner, Default, nothing saved. The verdict's `cascade` column reads `tiny` (the role, not a vendor: Kimi
+  is not renewed next year, Paco 2026-10-07; the Tiny leg that answered is on the `llm_attempt` row), and the `triage`
+  event carries `cascade_between: [a, b]`. This replaces the earlier `cascade: kimi`.
 - **Jev down, skipped, or any failure anywhere** → planner on the **Default role as resolved** (§4, Paco's override
   included). That is "today's behaviour" once stage A ships; the Default role's code list *is* today's planner chain.
   One ledger row; every outage class pages as now.
@@ -214,6 +217,16 @@ from `get_available_models` over RPC when a child is up. The catalog lists model
 models the account can use today: a retired or unavailable model surfaces as `model_missing` at spawn or pin and the
 list walks on, as it does today.
 
+**Lists as built (Rev 9; `ROLE_LISTS` in `src/omp/model-roles.ts`, the code is the authority).** Fast:
+`anthropic/claude-sonnet-5-5:low`, `google-antigravity/claude-sonnet-5-5:low`, `google-antigravity/gemini-3.8-flash:low`
+(no Kimi leg). Tiny: `kimi-code/k3:low`, then `google-antigravity/gemini-3.8-flash:low` (the memory ticks and the
+cascade). The other lists keep both Antigravity Opus generations behind Anthropic's, because the catalog moved within
+hours on 2026-10-07 and resolution drops what it does not list. **Kimi-exit rule:** Kimi is not renewed next year (Paco,
+2026-10-07), so every list keeps a non-Kimi leg and resolution can drop `kimi-code/k3` without emptying a role; judge
+seat 0 (`kimi-code/k3`, one selector, never falls back) needs a replacement then, which the daily change notice will
+prompt. The catalog is the authority over any doc: `openai-codex/gpt-5.5` is no longer listed, so the code lists carry
+`openai-codex/gpt-6.1-sol`.
+
 A failure walks the list; an exhausted role steps up (Fast → Default → Thinking); Thinking exhausted → `no_planner_leg`
 and its incident, as today. Step-up on a routed turn happens on the retryable kinds (`quota`, `auth`, `transport`,
 `timeout`, `model_missing`) plus **`other` once, only while no bridge tool has executed in the turn** (a deterministic
@@ -244,9 +257,14 @@ command module itself. The seven `HOUGE_OMP_*` chain variables are removed from 
 ### 4.3 Rollback switch
 
 `HOUGE_MODEL_ROLES=static|resolved` (default `resolved`). `static`: each role is its code list of exact selectors in
-order, no catalog check, no override, no tick — exactly today's chain semantics (a retired selector is walked past on
-`model_missing` at spawn or pin), so the pre-stage-A model path is reproduced seat for seat. Together with `HOUGE_JEV_TRIAGE_ENABLED=off` (category → planner, as before) this
-is stage A's rollback. Both are read from `process.env` per call, and `.env` is parsed once at boot, so a change needs
+order, no catalog check, no override, no tick (a retired selector is walked past on `model_missing` at spawn or pin).
+That is a **model-list rollback**: today's seven chains seat for seat, with three stated supervisor differences. (a) The
+per-child refused set applies in static mode too: a selector the running child refused is skipped for that child's
+life. (b) The respawn onto the planner chain's head at the next turn is removed: `set_model` moves the live child, in
+every mode. (c) While `HOUGE_JEV_TRIAGE_ENABLED` is not `off`, a routed turn may step up a role and retry `other` once
+(§4). Together with `HOUGE_JEV_TRIAGE_ENABLED=off` (category → planner, no route attached) it is stage A's rollback.
+It is not today's supervisor exactly, and it keeps the new tables. Restoring lane 1 itself is a code revert: `git revert`
+of the stage A merge, a rebuild and a kickstart (`jev-decision-layer.md` § Rolling back). Both are read from `process.env` per call, and `.env` is parsed once at boot, so a change needs
 a kickstart (as for the lane 1 flag today); the disarm marker file stays the live kill for the Jev side.
 
 ## 5. The planner lane: a turn-owned chain
@@ -337,13 +355,15 @@ from the planner's current family runs first; when every candidate shares it, th
   list. Cases judge by the recorded verdict (INCONCLUSIVE when Jev's call takes another path, never a false FAIL).
 - **Stage A PASS criterion:** every routed turn's first `llm_attempt` joins to a `jev_verdicts` row; `pin_failed` = 0;
   each role resolves to the expected head of its list for profile `houge`; the memory lane's distill and reconcile
-  still run on `kimi-code/k3`; `jev_skip_rate` unchanged against the 7-day baseline.
+  still run on `kimi-code/k3`; the `jev_skip_rate` criterion is an absolute bar, not a comparison with the 7-day
+  baseline (which held only 4 triage events): at most 1 silent skip in at least 8 real Jev calls during the gate, and the
+  sweep's incident closed (`scripts/live-gate-jev-tree.mjs`).
 
 ## 10. Staging
 
 One spec; a plan, a build and a live gate per stage. Arm each stage on Paco's word after its replay.
 
-- **A** — the decision point (three question types), the Telegram quote as a thread anchor (§2.2.1), roles with the
+- **A** — (cascade live on the Tiny role, bounded at 20 s: §2.4) the decision point (three question types), the Telegram quote as a thread anchor (§2.2.1), roles with the
   code lists, `/models`, the rollback switch, the planner lane with the two-axis chain; memory and status re-attached
   to the tree. Every other category goes to the
   planner on its role: the only visible change is which model answers a planner turn (memory stays on K3).
@@ -392,6 +412,8 @@ design pass. Every finding was verified first-hand before being folded in; none 
 | Scoped pass on §2.2.1 (Codex, NOT READY): the ack rule fired before Jev saw the quote; a run's latest assistant row can be an evolution report; user turns carry no Telegram id | §2.1 ack rule excludes quoted messages; §2.2.1 resolves through `final_report` notifications and exactly one non-report assistant row, and Paco's messages through the run event's `source_reference` |
 | Re-pass on §2.2.1 (Codex): an evolution-report notification is `final_report` too | §2.2.1 excludes outbox rows keyed `:evolution_report:` |
 | Re-pass on Rev 2 (senior, READY): a spawn-refused Default[0] would become a per-turn `pin_failed`; `.env` is not read live; Reader list named twice; skipped turns need a verdict row; where `/models` is gated | §5 `model_missing` on pin walks the list, respawn rule removed; §4.3 wording; §4 table; §6; §4.2 |
+
+| Rev 9 (plan reviews and build, 2026-10-07/08): the plan's four review rounds and the build rulings amend the spec | §2.2 stored intent enum reads `clarify \| loop \| evolution_report`; §2.4 / §10 cascade live on the Tiny role, 20 s, verdict value `tiny`, `cascade_between` on `triage` (Paco, Decision 14); §4 Tiny and Fast lists (Decision 3, Rev 4) and the Kimi-exit rule (every list keeps a non-Kimi leg); §4.3 `static` is a model-list rollback with three supervisor differences, lane 1 returns by code revert; §9 absolute `jev_skip_rate` bar |
 
 ## Appendix A. Parked from mu for later lanes
 

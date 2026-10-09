@@ -61,6 +61,10 @@ export interface LlmAttempt {
   family_collapse?: boolean;
   /** One per model request; durable dedupe key (spec §8 Audit). */
   request_key?: string;
+  /** Jev tree spec §6: the `jev_verdicts` id on the FIRST attempt of a routed planner turn (the verdict → model call join). */
+  routed_by?: string;
+  /** Planner compose rows: the thinking level of the selector the attempt ran on, after the clamp (plan F15). */
+  effort?: import("../omp/model-string.js").OmpEffort;
 }
 
 export interface LlmAuditSink {

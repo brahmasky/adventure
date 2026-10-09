@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chatContextSince, countTrailingClarifyTurns, resolveChatContextTurns, resolveMaxConsecutiveClarify } from "../capabilities/intent.js";
+import { chatContextSince, countTrailingClarifyTurns, feedTurnText, resolveChatContextTurns, resolveMaxConsecutiveClarify } from "../capabilities/intent.js";
+import type { QuotedTurn } from "../jev/questions/tree.js";
 import { composeSystemPrompt } from "../prompt/composer.js";
 import { resolveLocalTimeZone } from "../prompt/tz-convert.js";
 import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
@@ -39,9 +40,20 @@ export interface TurnPromptInput {
   goal?: string;
   /** The spawn-time snapshot (the supervisor's); absent → what the prompt would render now (one-shot callers, tests). */
   applied?: AppliedSnapshot;
+  /** The quoted turn's marked line (quotedLine, spec §2.2.1), placed just before the message. */
+  quoted?: string;
 }
 
 export const SCHEDULED_PREFIX = (goal: string): string => `[scheduled: ${goal}]\n`;
+
+/**
+ * A Telegram quote as one marked line ahead of the message (spec §2.2.1): who said it, how long ago, and the stored
+ * text clipped like a thread turn. Whitespace folds to single spaces so the quote can never fake a second line.
+ */
+export function quotedLine(q: QuotedTurn, turnChars: number): string {
+  const text = feedTurnText(q.text.replace(/\s+/g, " ").trim(), turnChars);
+  return `[replying to ${q.role}, ${Math.max(0, Math.round(q.age_s))} s ago: ${text}]\n`;
+}
 
 /**
  * The consecutive-clarify cap (ADR 0010, spec §6): once Houge has asked `HOUGE_MAX_CONSECUTIVE_CLARIFY`
@@ -291,7 +303,8 @@ export async function buildTurnPrompt(d: TurnContextDeps, i: TurnPromptInput): P
   const note = i.source === "schedule" ? "" : restartNote(d, i.chat_id);
   const s = sessionSeed(d, i);
   return {
-    prompt: `${note}${s.seed}${prefix}${cap}${context}${i.message}`,
+    // the quote sits after the seed: claimAtDispatch strips a lost seed by its exact length, from the front
+    prompt: `${note}${s.seed}${prefix}${cap}${context}${i.quoted ?? ""}${i.message}`,
     restartNote: note,
     ...(s.pending ? { seed: s.seed, seedPending: true } : {})
   };

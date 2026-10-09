@@ -14,6 +14,12 @@ export type LedgerEventType =
   | "lesson_saved"
   | "lesson_change_undone"
   | "triage_override"
+  | "routed_escalation"
+  | "model_roles_resolved"
+  | "model_catalog_unavailable"
+  | "model_role_override"
+  | "quote_unresolved"
+  | "model_roles_fallback"
   | "trigger_received"
   | "idempotency_conflict"
   | "schedule_fired"
@@ -296,14 +302,31 @@ const requiredPayloadFields = {
   // Memory A1 §8: one row per migration step (ids only).
   memory_migration: ["step", "old_ids", "new_ids"],
   // Jev System One, lane 1 (ADR 0029 §5.8). Enums, numbers and ids only — NEVER message text or provider detail.
-  // `triage` is the per-turn denominator: written once per eligible Telegram turn after the outcome is known;
-  // a skipped call carries nulls for the answer fields and a skip_reason.
-  triage: ["status", "lane", "complete", "scope", "confidence", "top_prob", "margin", "lang", "decision", "verdict"],
+  // `triage` is the per-turn denominator: written once per eligible Telegram turn after the outcome is known, in the same
+  // transaction as the turn's jev_verdicts row (spec §6); a skipped call carries nulls for the answer numbers and a skip_reason.
+  // `verdict` is the route reason; `category` / `route_lane` / `role` are what the tree routed; a turn that made the
+  // cascade call adds `cascade_between` (two category enums, optional).
+  triage: ["status", "category", "route_lane", "role", "verdict_id", "confidence", "top_prob", "margin", "lang", "decision", "verdict"],
   ack_nudged: ["approval_run_id"],
   lesson_saved: ["lesson_id", "change_id", "source"],
   lesson_change_undone: ["change_id", "restored", "skipped"],
   // "Ask Houge anyway": the override label for calibration; new_run_id is the re-submitted planner turn.
-  triage_override: ["run_id", "new_run_id", "change_id"]
+  triage_override: ["run_id", "new_run_id", "change_id"],
+  // Jev decision tree, stage A (spec §4–§6). Ids, enums and numbers only — never message text, never omp's error text.
+  // A routed turn stepped up a role at the retry boundary (written by the supervisor, Task 8).
+  routed_escalation: ["from", "to", "kind"],
+  // The daily tick's resolution of every role key (heads and candidate selectors), diffed for the change notice (Task 11).
+  // `resolved_at` is the tick's instant (the 24 h latch; occurred_at is the real clock); `catalog_ok` false marks an outage,
+  // which is never a diff baseline.
+  model_roles_resolved: ["resolved_at", "catalog_ok", "roles"],
+  // `omp --profile houge models --json` failed or returned no parseable list (a fixed reason code; Task 7).
+  model_catalog_unavailable: ["reason"],
+  // Paco's /models set or reset: an append-only override row ("" pattern = reset; Task 7 writes, Task 11 validates).
+  model_role_override: ["key", "pattern", "actor"],
+  // A Telegram reply whose quoted message did not resolve to one stored turn (QuoteResolution reason; Task 10).
+  quote_unresolved: ["reason"],
+  // Resolved mode: a role that resolved empty ran on its static list instead (review fix F7; once per role per catalog read).
+  model_roles_fallback: ["role"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(

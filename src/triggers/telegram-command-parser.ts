@@ -1,4 +1,5 @@
 import type { TaskEventType } from "../domain/types.js";
+import { ROLE_NAMES, type RoleName } from "../omp/model-roles.js";
 
 export type TelegramCommand =
   | { type: "turn"; goal: string }
@@ -22,7 +23,10 @@ export type TelegramCommand =
   | { type: "rearm" }
   | { type: "approvals" }
   | { type: "memories"; query?: string }
-  | { type: "forget_memory"; id: number };
+  | { type: "forget_memory"; id: number }
+  | { type: "models"; action: "list" }
+  | { type: "models"; action: "set"; role: RoleName; seat?: number; pattern: string }
+  | { type: "models"; action: "reset"; role: RoleName; seat?: number };
 
 export type TelegramCommandParseResult =
   | { ok: true; command: TelegramCommand }
@@ -65,6 +69,8 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
   if (command === "/memories") return parseMemories(rest);
   // L2: /forget_memory is the name (a Telegram command allows no hyphen); /forget-memory stays a typed alias.
   if (command === "/forget_memory" || command === "/forget-memory") return parseForgetMemory(rest);
+  // Model roles (spec §4.2): list, set one role's (or one judge seat's) override pattern, reset. Gated by the allowlist upstream.
+  if (command === "/models") return parseModels(rest);
   // Kill switch + disarm posture (ADR 0018). These MUST be explicit branches: unknown
   // slash text falls through to a natural-language turn below, and a stop command must
   // never be re-interpreted by a model — unforgeable = slash-only + the allowlist auth.
@@ -204,6 +210,30 @@ function parseForgetMemory(words: string[]): TelegramCommandParseResult {
   const [id] = words;
   if (words.length !== 1 || !id || !/^[1-9][0-9]{0,15}$/.test(id)) return invalid("/forget_memory requires exactly one fact id");
   return { ok: true, command: { type: "forget_memory", id: Number(id) } };
+}
+
+const MODELS_USAGE = "/models usage: /models · /models set <role> <pattern> · /models set judges <n> <pattern> · /models reset <role> [n]";
+const MODELS_PATTERN_MAX = 64;
+
+/**
+ * `/models` (spec §4.2). The role must be one of ROLE_NAMES; only judges take a seat (0-based, the ROLE_LISTS.judges index). A
+ * role-level `set judges <pattern>` parses so the handler can refuse it with its reason. The parser never echoes the words back.
+ */
+function parseModels(words: string[]): TelegramCommandParseResult {
+  if (words.length === 0) return { ok: true, command: { type: "models", action: "list" } };
+  const [verb, roleWord, ...rest] = words;
+  if ((verb !== "set" && verb !== "reset") || !roleWord) return invalid(MODELS_USAGE);
+  const role = ROLE_NAMES.find((r) => r === roleWord.toLowerCase());
+  if (!role) return invalid(`/models: unknown role; roles are ${ROLE_NAMES.join(", ")}`);
+  const seated = role === "judges" && /^[0-9]{1,2}$/.test(rest[0] ?? "") && (verb === "reset" || rest.length === 2);
+  const seat = seated ? Number(rest[0]) : undefined;
+  const args = seated ? rest.slice(1) : rest;
+  const at = seat !== undefined ? { seat } : {};
+  if (verb === "reset") return args.length === 0 ? { ok: true, command: { type: "models", action: "reset", role, ...at } } : invalid(MODELS_USAGE);
+  const [pattern] = args;
+  if (args.length !== 1 || !pattern) return invalid(MODELS_USAGE);
+  if (pattern.length > MODELS_PATTERN_MAX) return invalid(`/models set: a pattern is at most ${MODELS_PATTERN_MAX} characters`);
+  return { ok: true, command: { type: "models", action: "set", role, ...at, pattern } };
 }
 
 /** `/kill [reason…]` — everything after the command is an optional free-text reason. */

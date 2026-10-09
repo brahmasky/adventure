@@ -36,10 +36,14 @@ import {
 } from "./run-ledger.js";
 import { canTransitionProject, canTransitionRun } from "./state-machines.js";
 import type { LlmAttempt, LlmAuditSink } from "../llm/audit.js";
+import { isOverrideKey } from "../omp/model-roles.js";
+import type { OverrideKey } from "../omp/role-resolver.js";
 import { computeCostUsd, METERED_PROVIDERS } from "../llm/metered-pricing.js";
 import { blobToFloat32, cosineSimilarity, float32ToBlob } from "../llm/embeddings.js";
 import { resolveWikiDecayDays } from "../capabilities/wiki.js";
-import type { TriageShadowStats } from "../jev/triage-report.js";
+import type { SkipReason } from "../jev/decide.js";
+import type { Category } from "../jev/questions/tree.js";
+import type { Effort, Lane, RouteReason, TurnRole } from "../jev/tree-policy.js";
 import type { MediaIngestedPayload } from "../media/media-config.js";
 
 /**
@@ -67,7 +71,9 @@ export type LlmCallRole =
   | "classify_shadow"
   | "media_transcribe"
   // Jev decision points (ADR 0029): one role per point so the per-point rate is readable in llm_attempt
-  | "triage";
+  | "triage"
+  // the tree's cascade pick between two categories (plan 2026-10-07 Decision 14): a Tiny-role one-shot on the turn's run
+  | "cascade";
 
 /** Where an audited attempt belongs: a run, or a run-less correlation (`tick:*`, `cli:*`, `rating:*`). */
 export type LlmAuditScope =
@@ -349,6 +355,13 @@ export interface PlannerSessionState {
   updated_at: string;
 }
 
+/** One `model_roles_resolved` ledger row (spec §4.1): the daily tick's resolution of every role key. */
+export interface ModelRolesResolvedRow {
+  resolved_at: string;
+  catalog_ok: boolean;
+  roles: Array<{ key: string; head: string | null; candidates: string[]; source: "list" | "override" }>;
+}
+
 export interface ChatTurnRow {
   turn_id: string;
   chat_id: string;
@@ -357,7 +370,14 @@ export interface ChatTurnRow {
   text: string;
   intent: string | null;
   created_at: string;
+  /** The stored turn this message quoted (a Telegram reply resolved by resolveQuotedTurn, spec §2.2.1); null otherwise. */
+  quoted_turn_id: string | null;
 }
+
+/** A Telegram quote resolved to the stored turn it replies to (spec §2.2.1), or why it could not be. */
+export type QuoteResolution =
+  | { ok: true; role: "houge" | "user"; turn: ChatTurnRow }
+  | { ok: false; reason: "no_mapping" | "ambiguous" | "not_final" };
 
 /** One historical user turn eligible for Jev replay (Jev spec 2026-09-25). */
 export interface ReplayTurnRow {
@@ -367,6 +387,8 @@ export interface ReplayTurnRow {
   text: string;
   created_at: string;
   recorded_intent: string;
+  /** The stored turn this message quoted (Telegram reply, spec §2.2.1); absent on rows read before the column. */
+  quoted_turn_id?: string | null;
   /** When the classifier ran: its first `classify` llm_attempt, else the run's first ledger event. */
   anchor: string | null;
   anchor_kind: "classify" | "run_start" | null;
@@ -915,6 +937,26 @@ export interface JevDecisionRow {
   thread_cut_at: string | null; state_built_at: string | null;
 }
 
+/** One decision point call (spec §6): what the tree routed, what saved, what the handler did, and Paco's correction. Never text. */
+export interface JevVerdictInsert { run_id: string; category: Category | null; breadth: number | null; reasoning: number | null;
+  actions: number | null; sets_rule: number | null; rule_scope: "ask" | "research" | null; lane: Lane; role: TurnRole;
+  effort: Effort | null; cascade: VerdictCascade; save_outcome: "saved" | "not_durable" | "capped" | "none";
+  route_outcome: "act" | "fallback"; reason: RouteReason; skip_reason: SkipReason | null; quoted_turn_id: string | null; created_at?: string }
+/** "tiny": the cascade call ran (plan Decision 14; Tiny role), whatever it returned — `reason` says cascade / cascade_failed. */
+export type VerdictCascade = "tiny" | null;
+export type VerdictCorrection = "ask_anyway" | "think_harder" | "escalation" | "low_rating";
+export interface JevVerdictRow {
+  verdict_id: string; run_id: string; category: Category | null; breadth: number | null; reasoning: number | null; actions: number | null;
+  sets_rule: number | null; rule_scope: "ask" | "research" | null; lane: Lane; role: TurnRole; effort: Effort | null; model: string | null;
+  cascade: VerdictCascade; save_outcome: JevVerdictInsert["save_outcome"]; route_outcome: "act" | "fallback" | "pin_failed";
+  /** 'pending' | 'lane_reply' | 'fallthrough:<reason>' | 'planner_done' | 'planner_failed' */
+  handler_outcome: string; reason: RouteReason; skip_reason: string | null; fast_used_tool: number; paco_correction: VerdictCorrection | null;
+  quoted_turn_id: string | null; created_at: string; updated_at: string;
+}
+type JevVerdictPatch = Partial<{ handler_outcome: string; model: string | null; route_outcome: "pin_failed"; fast_used_tool: boolean; paco_correction: VerdictCorrection }>;
+/** The only columns an update may set: a fixed list, so the SET clause never takes a name from input. */
+const VERDICT_PATCH_COLUMNS = ["handler_outcome", "model", "route_outcome", "fast_used_tool", "paco_correction"] as const;
+
 /** One undoable memory-lane save (ADR 0029 §5.6): the new lesson, the one it superseded, the cap victims it pruned. */
 export interface LessonChange {
   change_id: string; run_id: string | null; chat_id: string; new_id: number; superseded_id: number | null; pruned_ids: number[];
@@ -932,6 +974,13 @@ const MEMORY_TABLE: Readonly<Record<MemoryKind, "episodic_facts" | "wiki_pages">
 /** Whether a lesson text or avoid is over its size cap (memory A1 §2). */
 function overLessonCap(text: string, avoid: string | undefined): boolean {
   return text.length > LESSON_MAX_CHARS || (avoid?.length ?? 0) > LESSON_AVOID_MAX_CHARS;
+}
+
+/** Exactly one stored turn resolves a quote; none is no mapping, several is ambiguous (spec §2.2.1). */
+function oneTurn(turns: ChatTurnRow[], role: "houge" | "user"): QuoteResolution {
+  const [turn] = turns;
+  if (!turn) return { ok: false, reason: "no_mapping" };
+  return turns.length === 1 ? { ok: true, role, turn } : { ok: false, reason: "ambiguous" };
 }
 
 export class RunStore {
@@ -1119,10 +1168,12 @@ export class RunStore {
     text: string;
     intent?: string;
     created_at?: string;
+    /** The turn this message quoted (spec §2.2.1), so the replay rebuilds the same state. */
+    quoted_turn_id?: string;
   }): void {
     this.db.prepare(`
-      INSERT INTO chat_turns (turn_id, chat_id, run_id, role, text, intent, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO chat_turns (turn_id, chat_id, run_id, role, text, intent, created_at, quoted_turn_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       `turn_${randomUUID()}`,
       input.chat_id,
@@ -1130,7 +1181,8 @@ export class RunStore {
       input.role,
       input.text,
       input.intent ?? null,
-      input.created_at ?? new Date().toISOString()
+      input.created_at ?? new Date().toISOString(),
+      input.quoted_turn_id ?? null
     );
   }
 
@@ -1143,14 +1195,14 @@ export class RunStore {
   getRecentChatTurns(chat_id: string, limit: number, sinceIso?: string): ChatTurnRow[] {
     const rows = sinceIso
       ? this.db.prepare(`
-          SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+          SELECT turn_id, chat_id, run_id, role, text, intent, created_at, quoted_turn_id
           FROM chat_turns
           WHERE chat_id = ? AND created_at >= ?
           ORDER BY created_at DESC, rowid DESC
           LIMIT ?
         `).all<ChatTurnRow>(chat_id, sinceIso, limit)
       : this.db.prepare(`
-          SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+          SELECT turn_id, chat_id, run_id, role, text, intent, created_at, quoted_turn_id
           FROM chat_turns
           WHERE chat_id = ?
           ORDER BY created_at DESC, rowid DESC
@@ -1166,7 +1218,7 @@ export class RunStore {
    */
   getChatTurnsBefore(chat_id: string, limit: number, sinceIso: string, beforeIso: string, excludeRunId: string): ChatTurnRow[] {
     return this.db.prepare(`
-      SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+      SELECT turn_id, chat_id, run_id, role, text, intent, created_at, quoted_turn_id
       FROM chat_turns
       WHERE chat_id = ? AND created_at >= ? AND created_at < ? AND run_id <> ?
       ORDER BY created_at DESC, rowid DESC
@@ -1189,7 +1241,7 @@ export class RunStore {
       ORDER BY a.rowid ASC LIMIT 1
     )`;
     const rows = this.db.prepare(`
-      SELECT u.turn_id, u.chat_id, u.run_id, u.text, u.created_at,
+      SELECT u.turn_id, u.chat_id, u.run_id, u.text, u.created_at, u.quoted_turn_id,
         ${earliestAssistantIntent} AS recorded_intent,
         (SELECT MIN(e.occurred_at) FROM ledger_events e
           WHERE e.run_id = u.run_id AND e.event_type = 'llm_attempt'
@@ -1220,6 +1272,29 @@ export class RunStore {
       .filter((c): c is string => typeof c === "string" && c.length > 0);
   }
 
+  /**
+   * `loop_step` rows per capability for a run (unnamed steps dropped). The tree replay's proxy (spec §7) separates
+   * research from lookup by how many web steps ran, which the distinct-name read above cannot tell.
+   */
+  runLoopCapabilityCounts(run_id: string): Record<string, number> {
+    const rows = this.db.prepare(`
+      SELECT json_extract(payload_json, '$.capability') AS capability, COUNT(*) AS n
+      FROM ledger_events WHERE run_id = ? AND event_type = 'loop_step'
+      GROUP BY capability
+    `).all<{ capability: string | null; n: number }>(run_id);
+    const out: Record<string, number> = {};
+    for (const r of rows) if (typeof r.capability === "string" && r.capability.length > 0) out[r.capability] = Number(r.n);
+    return out;
+  }
+
+  /** One chat turn by id (the replay rebuilds a quoted turn from `chat_turns.quoted_turn_id`); undefined if absent. */
+  getChatTurnById(turn_id: string): ChatTurnRow | undefined {
+    return this.db.prepare(`
+      SELECT turn_id, chat_id, run_id, role, text, intent, created_at, quoted_turn_id
+      FROM chat_turns WHERE turn_id = ?
+    `).get<ChatTurnRow>(turn_id);
+  }
+
   /** A run's trigger source (`telegram` | `schedule` | `cli` | `event`) — undefined if the run does not exist. */
   runSource(run_id: string): string | undefined {
     return this.db.prepare(`SELECT source FROM runs WHERE run_id = ?`).get<{ source: string }>(run_id)?.source;
@@ -1245,45 +1320,6 @@ export class RunStore {
     return { from: row.first_turn, to: row.last_step && row.last_step > row.last_turn ? row.last_step : row.last_turn };
   }
 
-
-  /**
-   * The lane 1 live shadow as the §5.9 step 4 bar reads it: `triage` rows with decision `shadow` since `sinceIso`, each
-   * joined to its run's planner `loop_step` capabilities. A "pure verdict" is `lane = memory ∧ complete = pure` (the
-   * row's argmax choices — a superset of pure-at-bar, so the count errs toward NO-GO). `days` = distinct UTC days with a
-   * shadow row (occurred_at is ISO UTC), so a parked daemon's silent weeks do not count toward the 14. Only turns whose
-   * `lane` shadow decision row reported `model` count: calibration keys on the reported model, so an alias move must not
-   * let the old model's shadow stand as the new model's evidence.
-   */
-  triageShadowStats(sinceIso: string, model: string): TriageShadowStats {
-    const rows = this.db.prepare(`
-      SELECT e.run_id, e.occurred_at, json_extract(e.payload_json, '$.lane') AS lane,
-        json_extract(e.payload_json, '$.complete') AS complete, r.state AS run_state
-      FROM ledger_events e LEFT JOIN runs r ON r.run_id = e.run_id
-      WHERE e.event_type = 'triage' AND json_extract(e.payload_json, '$.decision') = 'shadow' AND e.occurred_at >= ?
-        AND EXISTS (SELECT 1 FROM jev_decisions d WHERE d.run_id = e.run_id AND d.point = 'triage' AND d.question_id = 'lane'
-          AND d.decision = 'shadow' AND d.model_reported = ?)
-      ORDER BY e.occurred_at ASC, e.sequence ASC
-    `).all<{ run_id: string; occurred_at: string; lane: string | null; complete: string | null; run_state: string | null }>(sinceIso, model);
-    const stats: TriageShadowStats = { model, days: 0, matched_lesson_write: 0, pure_on_tool_turns: 0, pure_on_no_tool_turns: 0 };
-    for (const r of rows) {
-      const caps = this.runLoopCapabilities(r.run_id);
-      // "matched" = a triage row AND a completed planner run (§5.9 step 4): a failed run's lesson_write saved nothing.
-      if (r.run_state === "completed" && caps.includes("lesson_write")) stats.matched_lesson_write += 1;
-      if (r.lane !== "memory" || r.complete !== "pure") continue;
-      if (caps.some((c) => c !== "lesson_write")) stats.pure_on_tool_turns += 1;
-      else if (caps.length === 0) stats.pure_on_no_tool_turns += 1;
-    }
-    stats.days = new Set(rows.map((r) => r.occurred_at.slice(0, 10))).size; // distinct UTC days with a shadow row
-    stats.live_state_rows = this.db.prepare(`
-      SELECT run_id, state_hash FROM jev_decisions
-      WHERE point = 'triage' AND question_id = 'lane' AND decision = 'shadow' AND state_hash IS NOT NULL AND created_at >= ? AND model_reported = ?
-      ORDER BY created_at ASC, rowid ASC
-    `).all<{ run_id: string | null; state_hash: string }>(sinceIso, model).map((r) => ({ run_id: r.run_id ?? "", state_hash: r.state_hash }));
-    return stats;
-  }
-
-
-
   /**
    * The OLDEST `limit` turns strictly after `afterIso` (or from the beginning), in
    * chronological order. The episodic distill pass reads with this so a burst longer
@@ -1294,14 +1330,14 @@ export class RunStore {
   getChatTurnsAfter(chat_id: string, afterIso: string | undefined, limit: number): ChatTurnRow[] {
     return afterIso
       ? this.db.prepare(`
-          SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+          SELECT turn_id, chat_id, run_id, role, text, intent, created_at, quoted_turn_id
           FROM chat_turns
           WHERE chat_id = ? AND created_at > ?
           ORDER BY created_at ASC, rowid ASC
           LIMIT ?
         `).all<ChatTurnRow>(chat_id, afterIso, limit)
       : this.db.prepare(`
-          SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+          SELECT turn_id, chat_id, run_id, role, text, intent, created_at, quoted_turn_id
           FROM chat_turns
           WHERE chat_id = ?
           ORDER BY created_at ASC, rowid ASC
@@ -1609,33 +1645,58 @@ export class RunStore {
   }
 
   /**
-   * Correlate a delivered notification's provider_message_id (e.g. `telegram:<id>`)
-   * back to its originating run_id — the feedback path uses the reply-hint to find
-   * the prior answer's run and thus its chat turn + scope.
+   * A Telegram quote resolved to the stored turn it replies to (spec §2.2.1), code only; Telegram's own copy of the
+   * quoted text is never read. Houge's reply: this chat's outbox row whose provider id is `telegram:<id>` → that run's
+   * one assistant turn. Paco's message: the run born from `telegram:update:*:message:<id>` in this chat → its one user
+   * turn. Telegram message ids are per chat, so every lookup is scoped to `chat_id`.
    */
-  getRunIdByProviderMessageId(provider_message_id: string): string | undefined {
-    const row = this.db.prepare(`
-      SELECT run_id
-      FROM notification_outbox
-      WHERE provider_message_id = ? AND run_id IS NOT NULL
-      ORDER BY updated_at DESC
-      LIMIT 1
-    `).get<{ run_id: string | null }>(provider_message_id);
-    return row?.run_id ?? undefined;
+  resolveQuotedTurn(chat_id: string, reply_to_message_id: number): QuoteResolution {
+    if (!Number.isSafeInteger(reply_to_message_id) || reply_to_message_id <= 0) return { ok: false, reason: "no_mapping" };
+    const sent = this.db.prepare(`
+      SELECT run_id, intent_type, idempotency_key FROM notification_outbox
+      WHERE provider_message_id = ? AND target_key = ? AND run_id IS NOT NULL
+    `).all<{ run_id: string; intent_type: string; idempotency_key: string }>(`telegram:${reply_to_message_id}`, `telegram:${chat_id}`);
+    return sent.length > 0 ? this.quotedHougeTurn(chat_id, sent) : this.quotedUserTurn(chat_id, reply_to_message_id);
   }
 
   /**
-   * The assistant chat turn produced by a given run (the feedback reply-hint path
-   * correlates a replied-to message → its run → that run's answer + intent → scope).
+   * Only a run's `final_report` maps to its answer, and never an evolution report (queued as `final_report` too, under
+   * `<run>:evolution_report:<tool>`). The run must hold exactly one assistant turn outside `evolution_report` (`IS NOT`
+   * keeps a NULL-intent reply); none or several is unresolved, never a guess.
    */
-  getAssistantChatTurnForRun(run_id: string): ChatTurnRow | undefined {
-    return this.db.prepare(`
-      SELECT turn_id, chat_id, run_id, role, text, intent, created_at
+  private quotedHougeTurn(chat_id: string, sent: Array<{ run_id: string; intent_type: string; idempotency_key: string }>): QuoteResolution {
+    const runs = [...new Set(sent.filter((r) => r.intent_type === "final_report" && !r.idempotency_key.includes(":evolution_report:")).map((r) => r.run_id))];
+    const [run] = runs;
+    if (run === undefined) return { ok: false, reason: "not_final" };
+    if (runs.length > 1) return { ok: false, reason: "ambiguous" };
+    const turns = this.db.prepare(`
+      SELECT turn_id, chat_id, run_id, role, text, intent, created_at, quoted_turn_id
       FROM chat_turns
-      WHERE run_id = ? AND role = 'assistant'
-      ORDER BY created_at DESC, rowid DESC
-      LIMIT 1
-    `).get<ChatTurnRow>(run_id);
+      WHERE run_id = ? AND chat_id = ? AND role = 'assistant' AND intent IS NOT 'evolution_report'
+      ORDER BY created_at ASC, rowid ASC
+      LIMIT 2
+    `).all<ChatTurnRow>(run, chat_id);
+    return oneTurn(turns, "houge");
+  }
+
+  /** LIKE anchors both ends: `…:message:12` never matches `…:message:123` (the id is digits, never a wildcard). */
+  private quotedUserTurn(chat_id: string, messageId: number): QuoteResolution {
+    const runs = this.db.prepare(`
+      SELECT run_id FROM runs
+      WHERE source = 'telegram' AND source_reference LIKE ?
+        AND json_extract(notify_json, '$.kind') = 'telegram' AND json_extract(notify_json, '$.chat_id') = ?
+    `).all<{ run_id: string }>(`telegram:update:%:message:${messageId}`, chat_id);
+    const [run] = runs;
+    if (run === undefined) return { ok: false, reason: "no_mapping" };
+    if (runs.length > 1) return { ok: false, reason: "ambiguous" };
+    const turns = this.db.prepare(`
+      SELECT turn_id, chat_id, run_id, role, text, intent, created_at, quoted_turn_id
+      FROM chat_turns
+      WHERE run_id = ? AND chat_id = ? AND role = 'user'
+      ORDER BY created_at ASC, rowid ASC
+      LIMIT 2
+    `).all<ChatTurnRow>(run.run_id, chat_id);
+    return oneTurn(turns, "user");
   }
 
   listRecentRunStatuses(limit: number): RunStatusRow[] {
@@ -1884,6 +1945,8 @@ export class RunStore {
           if (attempt.family !== undefined) payload.family = attempt.family;
           if (attempt.family_collapse) payload.family_collapse = true;
           if (attempt.request_key !== undefined) payload.request_key = attempt.request_key;
+          if (attempt.routed_by !== undefined) payload.routed_by = attempt.routed_by;
+          if (attempt.effort !== undefined) payload.effort = attempt.effort;
           if ("run_id" in scope) {
             this.appendRunLedgerEvent(scope.run_id, "llm_attempt", "capability_runner", payload);
           } else {
@@ -2632,7 +2695,7 @@ export class RunStore {
         ORDER BY last_at DESC
         LIMIT ?
       )
-      SELECT u.turn_id, u.chat_id, u.run_id, u.role, u.text, u.intent, u.created_at
+      SELECT u.turn_id, u.chat_id, u.run_id, u.role, u.text, u.intent, u.created_at, u.quoted_turn_id
       FROM chat_turns u
       WHERE u.chat_id = ? AND u.role = 'user' AND u.run_id IN (SELECT run_id FROM picked)
       ORDER BY u.created_at ASC, u.rowid ASC
@@ -4283,6 +4346,65 @@ export class RunStore {
     return this.db.prepare(`SELECT * FROM jev_decisions WHERE run_id = ? ORDER BY rowid ASC`).all<JevDecisionRow>(run_id);
   }
 
+  // ── Jev verdicts: one row per decision point call (spec §6) ──────────────
+
+  insertJevVerdict(i: JevVerdictInsert): string {
+    const verdict_id = `jv_${randomUUID()}`;
+    const at = i.created_at ?? new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO jev_verdicts (verdict_id, run_id, category, breadth, reasoning, actions, sets_rule, rule_scope, lane, role, effort, cascade,
+        save_outcome, route_outcome, handler_outcome, reason, skip_reason, quoted_turn_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+    `).run(verdict_id, i.run_id, i.category, i.breadth, i.reasoning, i.actions, i.sets_rule, i.rule_scope, i.lane, i.role, i.effort, i.cascade,
+      i.save_outcome, i.route_outcome, i.reason, i.skip_reason, i.quoted_turn_id, at, at);
+    return verdict_id;
+  }
+
+  updateJevVerdict(verdict_id: string, p: JevVerdictPatch): void {
+    const sets: string[] = []; const values: Array<string | number | null> = [];
+    for (const column of VERDICT_PATCH_COLUMNS) {
+      const v = p[column];
+      if (v === undefined) continue;
+      sets.push(`${column} = ?`);
+      values.push(typeof v === "boolean" ? (v ? 1 : 0) : v);
+    }
+    if (sets.length === 0) return;
+    this.db.prepare(`UPDATE jev_verdicts SET ${sets.join(", ")}, updated_at = ? WHERE verdict_id = ?`).run(...values, new Date().toISOString(), verdict_id);
+  }
+
+  /**
+   * The run's terminal closes a verdict still 'pending' (review F12: every terminal path, one guarded write). The guard
+   * means a lane reply, a lane fall-through or an earlier close is never overwritten. Returns the rows moved (0 or 1).
+   */
+  closePendingJevVerdict(run_id: string, handler_outcome: "planner_done" | "planner_failed"): number {
+    const r = this.db.prepare(`UPDATE jev_verdicts SET handler_outcome = ?, updated_at = ? WHERE run_id = ? AND handler_outcome = 'pending'`)
+      .run(handler_outcome, new Date().toISOString(), run_id);
+    return Number(r.changes);
+  }
+
+  /**
+   * F1: a lane writes lane_reply before its run ends; a run that then fails never delivered that reply, so the lane
+   * fell through. Guarded on 'lane_reply' (one write, never rewrites another outcome). Returns the rows moved (0 or 1).
+   */
+  failLaneReplyVerdict(run_id: string): number {
+    const r = this.db.prepare(`UPDATE jev_verdicts SET handler_outcome = 'fallthrough:run_failed', updated_at = ? WHERE run_id = ? AND handler_outcome = 'lane_reply'`)
+      .run(new Date().toISOString(), run_id);
+    return Number(r.changes);
+  }
+
+  getJevVerdictForRun(run_id: string): JevVerdictRow | undefined {
+    return this.db.prepare(`SELECT * FROM jev_verdicts WHERE run_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get<JevVerdictRow>(run_id);
+  }
+
+  /** The chat's latest verdict at or before `beforeIso` (same-millisecond turns must still see each other); the run's notify target is the chat. */
+  latestJevVerdictForChat(chat_id: string, beforeIso: string): JevVerdictRow | undefined {
+    return this.db.prepare(`
+      SELECT v.* FROM jev_verdicts v JOIN runs r ON r.run_id = v.run_id
+      WHERE json_extract(r.notify_json, '$.chat_id') = ? AND v.created_at <= ?
+      ORDER BY v.created_at DESC, v.rowid DESC LIMIT 1
+    `).get<JevVerdictRow>(chat_id, beforeIso);
+  }
+
   // ── Lesson changes: the memory lane's undoable change set (ADR 0029 §5.6) ──
 
   insertLessonChange(c: Omit<LessonChange, "change_id" | "created_at" | "undone_at"> & { created_at?: string }): LessonChange {
@@ -4853,6 +4975,51 @@ export class RunStore {
   hasAnsweredJevCallSince(point: string, since: string): boolean {
     return this.db.prepare(`SELECT 1 AS hit FROM jev_decisions WHERE point = ? AND status = 'answered' AND created_at > ? LIMIT 1`)
       .get<{ hit: number }>(point, since) !== undefined;
+  }
+
+  /** The daily roles tick's record (spec §4.1). Run-less, like the decay ticks. */
+  recordModelRolesResolved(r: ModelRolesResolvedRow): void {
+    this.appendLedgerEvent(createLedgerEvent({
+      correlation_id: "model-roles", event_type: "model_roles_resolved", actor: "system", sequence: this.nextLedgerSequence(),
+      payload: { resolved_at: r.resolved_at, catalog_ok: r.catalog_ok, roles: r.roles }
+    }));
+  }
+
+  /** The latest tick record by its own instant; `catalogOk` keeps only reads that saw the catalog (the diff baseline). */
+  latestModelRolesResolved(o: { catalogOk?: boolean } = {}): ModelRolesResolvedRow | undefined {
+    const row = this.db.prepare(`
+      SELECT payload_json FROM ledger_events
+      WHERE event_type = 'model_roles_resolved' ${o.catalogOk ? "AND json_extract(payload_json, '$.catalog_ok') = 1" : ""}
+      ORDER BY json_extract(payload_json, '$.resolved_at') DESC, sequence DESC LIMIT 1
+    `).get<{ payload_json: string }>();
+    if (!row) return undefined;
+    const p = JSON.parse(row.payload_json) as Partial<ModelRolesResolvedRow>;
+    return typeof p.resolved_at === "string" && Array.isArray(p.roles)
+      ? { resolved_at: p.resolved_at, catalog_ok: p.catalog_ok === true, roles: p.roles }
+      : undefined;
+  }
+
+  /**
+   * `lane_fallthrough_rate` input (spec §8): per no-planner lane, the SETTLED lane turns created in (since, until] and how many
+   * fell through to the planner. A pending row (the handler has not finished) is neither a success nor a fall-through. A lane
+   * row closed by the planner's terminal (`planner_done` / `planner_failed`, e.g. a memory card that failed after its save)
+   * also ended on the planner, so it counts as a fall-through.
+   */
+  countLaneTurns(since: string, until: string): Array<{ lane: string; turns: number; fallthroughs: number }> {
+    return this.db.prepare(`
+      SELECT lane, COUNT(*) AS turns,
+        COALESCE(SUM(CASE WHEN handler_outcome LIKE 'fallthrough:%' OR handler_outcome IN ('planner_done', 'planner_failed')
+          THEN 1 ELSE 0 END), 0) AS fallthroughs
+      FROM jev_verdicts
+      WHERE lane <> 'planner' AND handler_outcome <> 'pending' AND created_at > ? AND created_at <= ?
+      GROUP BY lane ORDER BY lane
+    `).all<{ lane: string; turns: number; fallthroughs: number }>(since, until);
+  }
+
+  /** Whether a turn of `lane` was answered by the lane after `since` (what clears a sticky `lane_fallthrough_rate`). */
+  hasLaneReplySince(lane: string, since: string): boolean {
+    return this.db.prepare(`SELECT 1 AS hit FROM jev_verdicts WHERE lane = ? AND handler_outcome = 'lane_reply' AND created_at > ? LIMIT 1`)
+      .get<{ hit: number }>(lane, since) !== undefined;
   }
 
   /**
@@ -6604,6 +6771,27 @@ export class RunStore {
     );
   }
 
+  /** Paco's `/models` overrides (spec §4.2): the latest `model_role_override` row per key; an empty pattern is a reset. */
+  latestModelRoleOverrides(): Map<OverrideKey, string> {
+    const rows = this.db.prepare(`
+      SELECT payload_json FROM ledger_events WHERE event_type = 'model_role_override'
+      ORDER BY sequence ASC, occurred_at ASC, event_id ASC
+    `).all<{ payload_json: string }>();
+    const out = new Map<OverrideKey, string>();
+    for (const row of rows) {
+      const p = parseOverridePayload(row.payload_json);
+      if (!p) continue;
+      if (p.pattern === "") out.delete(p.key);
+      else out.set(p.key, p.pattern);
+    }
+    return out;
+  }
+
+  /** One append-only override row (run-less, so its sequence is above every earlier row). The `/models` gateway command is the production writer. */
+  recordModelRoleOverride(i: { key: OverrideKey; pattern: string; actor: string }): void {
+    this.recordMemoryEvent("model_role_override", { key: i.key, pattern: i.pattern, actor: i.actor }, "model_roles");
+  }
+
   private nextLedgerSequence(run_id?: string): number {
     const row = run_id
       ? this.db.prepare(`
@@ -6690,6 +6878,8 @@ export class RunStore {
     this.applyJevDecisionsMigration();
     this.applyLessonChangesMigration();
     this.applyJevDecisionInstantsMigration();
+    this.applyChatTurnsQuotedMigration();
+    this.applyJevVerdictsMigration();
   }
 
   /** Memory A1 §6: the lesson-set fingerprint each chat's omp session started on, persisted so a restart still compares. */
@@ -6772,6 +6962,54 @@ export class RunStore {
       const cols = this.tableColumns("jev_decisions");
       if (!cols.has("thread_cut_at")) this.db.exec(`ALTER TABLE jev_decisions ADD COLUMN thread_cut_at TEXT`);
       if (!cols.has("state_built_at")) this.db.exec(`ALTER TABLE jev_decisions ADD COLUMN state_built_at TEXT`);
+      if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
+  }
+
+  /** Jev decision tree (spec §6): one row per decision point call, joined to its first model call. Ids, enums, numbers; no text. */
+  private applyJevVerdictsMigration(): void {
+    const version = "2026-10-07-jev-verdicts";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS jev_verdicts (
+          verdict_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          category TEXT,
+          breadth REAL,
+          reasoning REAL,
+          actions REAL,
+          sets_rule REAL,
+          rule_scope TEXT CHECK (rule_scope IS NULL OR rule_scope IN ('ask', 'research')),
+          lane TEXT NOT NULL CHECK (lane IN ('memory', 'status', 'planner')),
+          role TEXT NOT NULL CHECK (role IN ('fast', 'default', 'thinking')),
+          effort TEXT CHECK (effort IS NULL OR effort IN ('low', 'medium', 'high')),
+          model TEXT,
+          cascade TEXT CHECK (cascade IS NULL OR cascade = 'tiny'),
+          save_outcome TEXT NOT NULL CHECK (save_outcome IN ('saved', 'not_durable', 'capped', 'none')),
+          route_outcome TEXT NOT NULL CHECK (route_outcome IN ('act', 'fallback', 'pin_failed')),
+          handler_outcome TEXT NOT NULL CHECK (handler_outcome IN ('pending', 'lane_reply', 'planner_done', 'planner_failed') OR handler_outcome LIKE 'fallthrough:%'),
+          reason TEXT NOT NULL,
+          skip_reason TEXT,
+          fast_used_tool INTEGER NOT NULL DEFAULT 0,
+          paco_correction TEXT CHECK (paco_correction IS NULL OR paco_correction IN ('ask_anyway', 'think_harder', 'escalation', 'low_rating')),
+          quoted_turn_id TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS jev_verdicts_run_idx ON jev_verdicts(run_id);
+        CREATE INDEX IF NOT EXISTS jev_verdicts_created_idx ON jev_verdicts(created_at);
+      `);
+      if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
+  }
+
+  /** Spec §2.2.1: the turn a Telegram quote resolved to, recorded on the new message's row. Guarded by table_info (idempotent). */
+  private applyChatTurnsQuotedMigration(): void {
+    const version = "2026-10-07-chat-turns-quoted";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      if (!this.tableColumns("chat_turns").has("quoted_turn_id")) this.db.exec(`ALTER TABLE chat_turns ADD COLUMN quoted_turn_id TEXT`);
       if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
     });
   }
@@ -8346,6 +8584,15 @@ const DEFAULT_LESSON_CHAR_CAP = 1200;
 const LESSON_COLUMNS =
   "id, scope, text, avoid, status, supersedes, superseded_by, applied_count, " +
   "corrected_count, reuse_value, rating_history, created_at, last_used, source, theme";
+
+/** A stored override row, or null when it is not one: a hand-edited or future-shaped payload is skipped, never trusted. */
+function parseOverridePayload(json: string): { key: OverrideKey; pattern: string } | null {
+  let p: unknown;
+  try { p = JSON.parse(json); } catch { return null; }
+  if (typeof p !== "object" || p === null) return null;
+  const { key, pattern } = p as Record<string, unknown>;
+  return typeof key === "string" && typeof pattern === "string" && isOverrideKey(key) ? { key, pattern } : null;
+}
 
 /** Per-scope active-row cap (⓪·3 S1): overflow prunes the lowest reuse_value rows. */
 export const DEFAULT_LESSON_CAP_PER_SCOPE = 20;

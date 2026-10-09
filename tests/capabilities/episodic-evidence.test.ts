@@ -23,7 +23,7 @@ beforeEach(() => { store = RunStore.openInMemory(); delete process.env.HOUGE_EPI
 afterEach(() => { store.close(); });
 
 const turn = (n: number, role: "user" | "assistant", text: string, run_id = "r1"): ChatTurnRow =>
-  ({ turn_id: `t${n}`, chat_id: CHAT, run_id, role, text, intent: null, created_at: NOW });
+  ({ turn_id: `t${n}`, chat_id: CHAT, run_id, role, text, intent: null, created_at: NOW, quoted_turn_id: null });
 const noSchedule = () => undefined;
 
 describe("checkEvidence — provenance, not truth (spec §4)", () => {

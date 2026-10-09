@@ -450,6 +450,12 @@ function buildTelegramEvent(command: TelegramCommand, base: TelegramEventBase): 
       return buildTypedTaskEvent({ ...base, type: "memories", ...(command.query ? { program: command.query } : {}) });
     case "forget_memory":
       return buildTypedTaskEvent({ ...base, type: "forget_memory", program: String(command.id) });
+    case "models":
+      // action rides `program` (the /schedule precedent); role, seat and pattern ride metadata.
+      return buildTypedTaskEvent({ ...base, type: "models", program: command.action, ...(command.action === "list" ? {} : {
+        metadata: { ...base.metadata, role: command.role, ...(command.seat !== undefined ? { seat: command.seat } : {}),
+          ...(command.action === "set" ? { pattern: command.pattern } : {}) }
+      }) });
   }
 }
 

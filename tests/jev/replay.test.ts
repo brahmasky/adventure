@@ -12,7 +12,7 @@ const T = (i: number, over: Partial<ReplayTurnRow> = {}): ReplayTurnRow => ({
 });
 const jevOk = (choice = "research", confidence = 0.9): JevResult => ({
   ok: true, model: "jev-1.13.0", input_tokens: 400, latency_ms: 5,
-  answers: { intent: { choice, confidence, probabilities: { answer: 0, research: 1, feedback: 0, clarify: 0, selfcode: 0, skill: 0 } } }
+  answers: { intent: { type: "choice", choice, confidence, probabilities: { answer: 0, research: 1, feedback: 0, clarify: 0, selfcode: 0, skill: 0 } } }
 });
 
 function deps(turns: ReplayTurnRow[], over: Partial<ReplayDeps> = {}) {

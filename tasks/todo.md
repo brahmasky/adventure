@@ -1,4 +1,37 @@
-# 🧭 CURRENT SYSTEM STATE — 2026-10-06 (read this first)
+# 🧭 CURRENT SYSTEM STATE — 2026-10-09 (read this first)
+
+**Jev decision tree, stage A: MERGED to `main`, pushed, `dist/` rebuilt; ARMED in code (14 `CALIBRATED_ROWS`, zh + en);
+NOT live until Paco kickstarts.** The running daemon still serves lane 1 from the previous build. Reference:
+`docs/reference/jev-decision-layer.md`; flags and model roles: `docs/reference/configuration.md` § Jev System One and
+§ Model roles; spec Rev 9; ADR 0029 / 0028 amendments approved 2026-10-09 (ADR text is now version-free).
+
+Evidence (2026-10-09): replay over 301 Telegram turns on a DB copy, both option orders ($0.09); Paco labelled 111 turns;
+no turn misrouted into a lane (memory 7/7, status 2/2), category 181/301, permutation 276/301. The replay found a client
+bug (two-decimal rounding rejected ~3% of Jev answers as `parse`), fixed in `239bd0c`. `typecheck`, 3779 tests (none
+skipped) and `build` green; default live gate PASS; `--real-calibration` merge gate PASS (106 checks: both lanes acted
+with zero planner requests, 0/9 Jev calls failed silently, cascade 11.5 s of 20 s).
+
+- [ ] **Paco kickstarts** (`launchctl kickstart -k gui/$(id -u)/com.houge.daemon`). Check first: `houge.parked` /
+  `houge.kill`, non-terminal runs and the evolution lane. The boot applies migrations `chat_turns.quoted_turn_id` and
+  `jev_verdicts` and starts the model-role resolver. `.env` already has `HOUGE_JEV_ENABLED=1` and
+  `HOUGE_JEV_TRIAGE_ENABLED=arm`; the seven `HOUGE_OMP_*` chain vars are ignored (one boot warning if still set).
+- [ ] After the kickstart: first real memory and status turns act through the lanes (`jev_verdicts` rows), `/models`
+  shows every role resolved, no `role_unresolved` / `model_catalog_unavailable` / `jev_skip_rate` incident.
+- [ ] Rollback if needed: `docs/reference/jev-decision-layer.md` § Rolling back.
+
+Watch after arming: the Tiny cascade fires on ~27% of turns (82/301 below the bar) at 6–14 s each; Jev's 1.5 s budget has
+0.3–1.1 s latency and no retry; research read as lookup routes research to Fast.
+
+Stage B owes: a guard (and a gate case) for a two-request message Jev confidently calls `memory` (the lane would drop
+the second request); a dedicated `lane_failed` route reason; the original cause kind on a refused-pin step-up (F7 edge).
+Decisions Paco still owns: the offered-work clause on the three score questions (spec §2.3 puts it on `category` only);
+retiring the legacy `shadow` flag value; the status lane's stricter floors; CLI one-shots read the static role lists;
+Kimi exit next year (judge seat 0 needs a replacement selector).
+
+---
+
+# Earlier state block — 2026-10-06
+
 
 **Jev lane 1 (pre-planner triage: memory + status lanes): MERGED and pushed; ARMED and LIVE on the daemon since
 2026-10-06 (boot 9; ADR 0029 accepted).** `CALIBRATED_ROWS` arms both lanes in

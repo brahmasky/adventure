@@ -138,6 +138,6 @@ the skill router and the historical Jev report read. The supervisor now writes
 and asks a question, else `loop`), so the consecutive-clarify cap keeps its input. At the cap, the turn prompt gains a code-owned line
 telling the planner not to ask again.
 
-ADR 0028 D7 also narrows the 2026-07-27 amendment below: Claude (Opus 5.5 inside omp, on
+ADR 0028 D7 also narrows the 2026-07-27 amendment below: Claude (inside omp, on
 subscription OAuth) is now the default **conversational** engine. The contained, tool-less chair
-seat is an omp one-shot on `HOUGE_OMP_CHAIR`.
+seat is an omp one-shot on the Chair role (ADR 0028 model-roles amendment, 2026-10-07).

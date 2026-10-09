@@ -1,0 +1,17 @@
+{
+  "models": [
+    { "provider": "anthropic", "kind": "chat", "id": "claude-3-haiku-20240307", "selector": "anthropic/claude-3-haiku-20240307", "thinking": null },
+    { "provider": "anthropic", "kind": "chat", "id": "claude-opus-5-5", "selector": "anthropic/claude-opus-5-5", "thinking": ["low", "medium", "high", "xhigh", "max"] },
+    { "provider": "anthropic", "kind": "chat", "id": "claude-sonnet-5-5", "selector": "anthropic/claude-sonnet-5-5", "thinking": ["low", "medium", "high", "xhigh", "max"] },
+    { "provider": "google", "kind": "chat", "id": "gemini-3.8-flash", "selector": "google/gemini-3.8-flash", "thinking": ["low", "medium", "high"] },
+    { "provider": "google-antigravity", "kind": "chat", "id": "claude-opus-4-6", "selector": "google-antigravity/claude-opus-4-6", "thinking": ["minimal", "low", "medium", "high"] },
+    { "provider": "google-antigravity", "kind": "chat", "id": "claude-opus-5-5", "selector": "google-antigravity/claude-opus-5-5", "thinking": ["low", "medium", "high"] },
+    { "provider": "google-antigravity", "kind": "chat", "id": "claude-sonnet-5-5", "selector": "google-antigravity/claude-sonnet-5-5", "thinking": ["low", "medium", "high"] },
+    { "provider": "google-antigravity", "kind": "chat", "id": "gemini-3.1-pro", "selector": "google-antigravity/gemini-3.1-pro", "thinking": ["low", "high"] },
+    { "provider": "google-antigravity", "kind": "chat", "id": "gemini-3.8-flash", "selector": "google-antigravity/gemini-3.8-flash", "thinking": ["minimal", "low", "medium", "high"] },
+    { "provider": "kimi-code", "kind": "chat", "id": "k3", "selector": "kimi-code/k3", "thinking": ["low", "high", "max"] },
+    { "provider": "moonshot", "kind": "chat", "id": "kimi-k3", "selector": "moonshot/kimi-k3", "thinking": ["low", "high", "max"] },
+    { "provider": "ollama", "kind": "chat", "id": "gemma4:latest", "selector": "ollama/gemma4:latest", "thinking": ["low", "medium", "high", "max"] },
+    { "provider": "openai-codex", "kind": "chat", "id": "gpt-6.1-sol", "selector": "openai-codex/gpt-6.1-sol", "thinking": ["low", "medium", "high", "xhigh", "max"] }
+  ]
+}
