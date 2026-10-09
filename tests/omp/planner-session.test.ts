@@ -126,6 +126,40 @@ describe("PlannerSession — one long-lived RPC child per chat (spec §4, §7)",
     expect((capped as PlannerRpcError).detail).toHaveLength(200);
   });
 
+  // Spec §4.3: the probe child must run with no tools at all; the planner keeps read,edit,write.
+  it("tools: none swaps --tools read,edit,write for --no-tools", () => {
+    const cfg = resolveOmpConfig({ HOUGE_OMP_BIN: "omp" });
+    const opts = { ...base, cfg, extensions: [], plannerProfile: "/p.sb", model: parseModelString("kimi-code/k3") };
+    const { args } = plannerArgs({ ...opts, tools: "none" });
+    expect(args).toContain("--no-tools");
+    expect(args).not.toContain("--tools");
+    expect(plannerArgs(opts).args).toEqual(expect.arrayContaining(["--tools", "read,edit,write"]));
+  });
+
+  // the probe's deliberate pin refusal must not put omp's text in the daemon log (spec §4.3)
+  it("quietRpcErrors keeps a refused command's text out of the log; the rejection still carries it", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const quiet = make({ rpcSetModelError: "Model not found: x" }, {}, { quietRpcErrors: true });
+      await quiet.s.start();
+      const err = await quiet.s.setModel(parseModelString("kimi-code/k3")).catch((e: unknown) => e);
+      expect(err).toMatchObject({ code: "command_failed:set_model", detail: "Model not found: x" });
+      expect(spy).not.toHaveBeenCalled();
+      const loud = make({ rpcSetModelError: "Model not found: x" });
+      await loud.s.start();
+      await loud.s.setModel(parseModelString("kimi-code/k3")).catch(() => undefined);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally { spy.mockRestore(); }
+  });
+
+  it("setThinkingLevel sends exactly one set_thinking_level command", async () => {
+    const { s, d } = make();
+    await s.start(); await s.setThinkingLevel("medium");
+    const cmds = readFileSync(join(d, "argv.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((x) => x.cmd).map((x) => x.cmd);
+    expect(cmds.map((c) => c.type)).toEqual(["open_session", "set_thinking_level"]);
+    expect(cmds[1]).toMatchObject({ type: "set_thinking_level", level: "medium" });
+  });
+
   it("a model omp refuses at spawn rejects start() with the fixed code exited:model_missing; omp's stderr text is never exposed", async () => {
     const { s } = make({ rpcBadModelAtStart: ["anthropic/claude-opus-5-5"] });
     let exited: ExitInfo | undefined; s.onExit((i) => { exited = i; });

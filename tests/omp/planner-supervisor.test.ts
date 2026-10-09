@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
 import { lessonSetFingerprint } from "../../src/run/lesson-render.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
-import { PlannerSupervisor, RETRY_NOTE, parseAttachments, type PlannerSessionLike, type SupervisorDeps, type SupervisorState, type TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
+import { PlannerSupervisor, RETRY_NOTE, isModelRefusal, parseAttachments, writeHougeConfigFile, type PlannerSessionLike, type SupervisorDeps, type SupervisorState, type TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
 import type { OmpFrame } from "../../src/omp/omp-frames.js";
 import { PlannerRpcError, type ExitInfo, type PlannerSessionOptions } from "../../src/omp/planner-session.js";
 import { ToolRegistry } from "../../src/tools/tool-registry.js";
@@ -1853,5 +1853,25 @@ describe("PlannerSupervisor — the turn-owned chain (Jev tree spec §4-5)", () 
     const lane = harness(fakeSession(), {}, { triage: async () => ({ kind: "lane_reply", text: "📒 Saved", buttons: [], quote }) });
     lane.sup.submit(req(createQueuedTurnRun(lane.store, "好"), "好")); await lane.sup.whenIdle();
     expect(lane.store.getRecentChatTurns("42", 10).find((t) => t.role === "user")?.quoted_turn_id).toBe("turn_q");
+  });
+});
+
+// The probe reuses the planner's own config file and refusal classifier, so the two can never drift apart.
+describe("probe seams shared with the planner", () => {
+  it("writeHougeConfigFile writes the planner's config at <data>/omp/houge-config.yml, 0600", () => {
+    const data = mkdtempSync(join(tmpdir(), "hcfg-"));
+    try {
+      mkdirSync(join(data, "omp"), { recursive: true });
+      const p = writeHougeConfigFile({ data });
+      expect(p).toBe(join(data, "omp", "houge-config.yml"));
+      expect(readFileSync(p, "utf8")).toContain("checkUpdate: false");
+      expect(statSync(p).mode & 0o777).toBe(0o600);
+    } finally { rmSync(data, { recursive: true, force: true }); }
+  });
+
+  it("isModelRefusal accepts only a classified set_model refusal", () => {
+    expect(isModelRefusal(new PlannerRpcError("command_failed:set_model", "Model not found: x/y"))).toBe(true);
+    expect(isModelRefusal(new PlannerRpcError("command_failed:set_model", "rate limit"))).toBe(false);
+    expect(isModelRefusal(new PlannerRpcError("command_failed:prompt", "Model not found: x/y"))).toBe(false);
   });
 });

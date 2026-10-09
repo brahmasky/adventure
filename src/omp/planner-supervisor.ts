@@ -132,6 +132,14 @@ type PinResult = "ok" | "refused" | typeof ENDED | { error: unknown };
 const exitRef = (i: ExitInfo) => (i.code !== null ? `exit ${i.code}` : `signal ${i.signal ?? "unknown"}`);
 /** omp profile config (spec §4): no xdev devices, no update checks, no telemetry. */
 const HOUGE_CONFIG_YML = "tools:\n  xdev: false\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: false\ntelemetry:\n  otlpExportEnabled: false\n";
+/** The planner's omp config file, written atomically (0600); the contract probe writes the same file (spec §4.3). */
+export function writeHougeConfigFile(ctx: Pick<PathContext, "data">): string {
+  const configFile = join(ctx.data, "omp", "houge-config.yml");
+  const tmp = `${configFile}.tmp-${process.pid}`;
+  writeFileSync(tmp, HOUGE_CONFIG_YML, { mode: 0o600 });
+  renameSync(tmp, configFile);
+  return configFile;
+}
 
 interface SpawnRec { gen: number; model: ModelString; exit?: string; started?: Promise<unknown>; bridgeLost?: boolean }
 
@@ -176,7 +184,7 @@ const message = (e: unknown) => safeReason(e);
 /** A planner RPC failure as a fixed code (command_failed:<type>, timeout:<type>, …) or an errno code; never omp's text. */
 const rpcCode = (e: unknown) => (e instanceof PlannerRpcError ? e.code : errorCode(e));
 /** omp refused the pinned model (`Model not found: …`, spec §5): omp's text is read here, classified, and dropped. */
-const isModelRefusal = (e: unknown) =>
+export const isModelRefusal = (e: unknown) =>
   e instanceof PlannerRpcError && e.code === "command_failed:set_model" && classifyOmpError(e.detail ?? "") === "model_missing";
 const quotedId = (q: QuoteRef | undefined) => (q ? { quoted_turn_id: q.turn_id } : {});
 const sameModel = (a: ModelString, b: ModelString) => a.provider === b.provider && a.model === b.model && a.effort === b.effort;
@@ -830,10 +838,7 @@ export class PlannerSupervisor {
     const sessionDir = join(omp, "sessions", `chat-${chatId}`);
     const bridgeDir = join(omp, "bridge");
     for (const dir of [this.workspace(), sessionDir, bridgeDir]) mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const configFile = join(omp, "houge-config.yml");
-    const tmp = `${configFile}.tmp-${process.pid}`;
-    writeFileSync(tmp, HOUGE_CONFIG_YML, { mode: 0o600 });
-    renameSync(tmp, configFile);
+    const configFile = writeHougeConfigFile(ctx);
     const { path: systemPromptFile, snapshot } = writeSystemPromptFile(turnContext, chatId);
     this.fingerprint = promptTextFingerprint(snapshot.text);
     this.applied = appliedOf(snapshot);

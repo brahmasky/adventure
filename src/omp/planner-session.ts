@@ -2,17 +2,21 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { buildChildEnv, childTmpDir } from "./child-env.js";
 import type { OmpConfig } from "./omp-config.js";
 import { classifyOmpError, parseFrameLine, type OmpFrame } from "./omp-frames.js";
-import type { ModelString } from "./model-string.js";
+import type { ModelString, OmpEffort } from "./model-string.js";
 
 export interface PlannerSessionOptions {
   cfg: OmpConfig; sessionDir: string; cwd: string; systemPromptFile: string; extensions: string[]; skills?: string;
   bridgeSock: string; bridgeToken: string; model: ModelString; configFile: string; plannerProfile: string;
   sendTimeoutMs?: number; maxFrameBufferBytes?: number;
+  /** "none": no built-in tools (the contract probe, spec §4.3); absent: the planner's read,edit,write. */
+  tools?: "none";
+  /** Do not log a refused command's detail (the probe's deliberate refusals); the rejection still carries it. */
+  quietRpcErrors?: boolean;
 }
 
 export function plannerArgs(o: PlannerSessionOptions): { file: string; args: string[] } {
   const omp = ["--profile", o.cfg.profile, "--mode", "rpc", "--config", o.configFile, "--session-dir", o.sessionDir,
-    "--cwd", o.cwd, "--tools", "read,edit,write", ...o.extensions.flatMap((e) => ["-e", e]), "--no-extensions",
+    "--cwd", o.cwd, ...(o.tools === "none" ? ["--no-tools"] : ["--tools", "read,edit,write"]), ...o.extensions.flatMap((e) => ["-e", e]), "--no-extensions",
     "--no-rules", "--approval-mode", "yolo", "--model", `${o.model.provider}/${o.model.model}`,
     ...(o.model.effort ? ["--thinking", o.model.effort] : []), "--append-system-prompt", o.systemPromptFile];
   return o.cfg.sandbox ? { file: "/usr/bin/sandbox-exec", args: ["-f", o.plannerProfile, o.cfg.bin, ...omp] } : { file: o.cfg.bin, args: omp };
@@ -92,8 +96,10 @@ export class PlannerSession {
   abort(): Promise<void> { return this.send({ type: "abort" }).then(() => undefined); }
   async setModel(m: ModelString): Promise<void> {
     await this.send({ type: "set_model", provider: m.provider, modelId: m.model });
-    if (m.effort) await this.send({ type: "set_thinking_level", level: m.effort });
+    if (m.effort) await this.setThinkingLevel(m.effort);
   }
+  /** One `set_thinking_level` (the contract probe's effort check, spec §4.1 check 5). */
+  setThinkingLevel(level: OmpEffort): Promise<void> { return this.send({ type: "set_thinking_level", level }).then(() => undefined); }
 
   /**
    * omp's `new_session` (memory A1 §6): a fresh transcript in the same session dir; the old file stays and the next
@@ -148,7 +154,7 @@ export class PlannerSession {
       const w = this.waiters.get(f.id) as Waiter; this.waiters.delete(f.id); clearTimeout(w.timer);
       if (f.success !== false) { w.resolve(f.data); return; }
       const detail = String(f.error ?? "").slice(0, OMP_ERROR_LOG_CAP);
-      console.error(`planner ${w.type} failed: ${detail}`);
+      if (!this.o.quietRpcErrors) console.error(`planner ${w.type} failed: ${detail}`);
       w.reject(new PlannerRpcError(`command_failed:${w.type}`, detail));
       return;
     }

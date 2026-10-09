@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { CATALOG_TIMEOUT_MS, parseOmpCatalog, readOmpCatalog, type ExecFileAsync } from "../../src/omp/model-catalog.js";
+import { CATALOG_TIMEOUT_MS, parseOmpCatalog, readOmpCatalog, readOmpCatalogResult, type ExecFileAsync } from "../../src/omp/model-catalog.js";
 import { CATALOG_FIXTURE } from "../helpers/model-roles.js";
 import { NO_OMP_BIN } from "../helpers/omp-env.js";
 
@@ -60,5 +60,17 @@ describe("readOmpCatalog — one bounded, session-less read that never throws", 
 
   it("returns null for a missing binary through the real exec helper", async () => {
     expect(await readOmpCatalog({ ...cfg, bin: NO_OMP_BIN })).toBeNull();
+  });
+});
+
+// Spec §4.1 check 1: an omp that answers but in a new shape is drift; an omp that cannot answer is not.
+describe("readOmpCatalogResult", () => {
+  it("splits ok, unparsed and unavailable", async () => {
+    const exec = (stdout: string) => (async () => ({ stdout, stderr: "" })) as unknown as ExecFileAsync;
+    expect(await readOmpCatalogResult(cfg, exec(JSON.stringify({ models: [{ provider: "p", id: "m" }] })))).toMatchObject({ kind: "ok", models: [{ provider: "p", id: "m" }] });
+    expect(await readOmpCatalogResult(cfg, exec(JSON.stringify({ items: [] })))).toEqual({ kind: "unparsed" });
+    const fail = (async () => { throw Object.assign(new Error("x"), { code: "ETIMEDOUT" }); }) as unknown as ExecFileAsync;
+    expect(await readOmpCatalogResult(cfg, fail)).toEqual({ kind: "unavailable", code: "ETIMEDOUT" });
+    expect(await readOmpCatalog(cfg, fail)).toBeNull();
   });
 });
