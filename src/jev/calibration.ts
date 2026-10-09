@@ -17,11 +17,27 @@ import { JEV_REQUEST_MODEL } from "./jev-client.js";
 export interface CalibrationRow { question_id: string; criteria_hash: string; model: string; lang: "zh" | "en"; approved: string; evidence: string }
 
 /**
- * Empty on purpose (plan 2026-10-07 Decision 6): the lane 1 rows named the retired lane 1 hashes. The tree's rows are
- * committed here on Paco's word after the Task 12 replay (`houge jev replay triage`); until then every turn routes
- * `uncalibrated` → the planner on Default, and the memory and status lanes do not act.
+ * The tree's rows, armed on Paco's word (2026-10-09) after the replay (`houge jev replay triage`) and his labels: all
+ * six questions plus the status pseudo-row, zh and en, on jev-1.13.0. The per-turn bars (tree-policy.ts) still send
+ * every unsure turn to the planner on Default; a criteria or model change disarms.
  */
-export const CALIBRATED_ROWS: readonly CalibrationRow[] = [];
+const EVIDENCE = "tree replay 2026-10-09: 301 turns (zh 271, en 30), 111 labelled by Paco; lane misroutes 0 (memory 7/7, status 2/2); category 181/301; permutation 276/301";
+export const CALIBRATED_ROWS: readonly CalibrationRow[] = [
+  { question_id: "category", criteria_hash: "5eb9baea76fdff263944be72c196da9d90c4ab46ec8bab093a52a99b48d72148", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "sets_rule", criteria_hash: "455d081d81ff7ae67c693a888019570572142aa854d3cb16bf81b7e745a159ae", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "rule_scope", criteria_hash: "02c6caacb4d5a277b13fc3aa1d196a271240a58e17151e2c3f764c81a319cb33", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "breadth", criteria_hash: "c70960d0d6cc4fe6b4019e606492d6738ba909ac6731d4830dd39eb0619ac005", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "reasoning", criteria_hash: "9b2eae10d8d782a999033ed1f25df2c785c128515e49bcfd3721174c8416207b", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "actions", criteria_hash: "37dc583de24e6dabb20f4c3112619788b9485917a9529cac0322866e388f3538", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "category:status", criteria_hash: "5eb9baea76fdff263944be72c196da9d90c4ab46ec8bab093a52a99b48d72148", model: "jev-1.13.0", lang: "zh", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "category", criteria_hash: "5eb9baea76fdff263944be72c196da9d90c4ab46ec8bab093a52a99b48d72148", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "sets_rule", criteria_hash: "455d081d81ff7ae67c693a888019570572142aa854d3cb16bf81b7e745a159ae", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "rule_scope", criteria_hash: "02c6caacb4d5a277b13fc3aa1d196a271240a58e17151e2c3f764c81a319cb33", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "breadth", criteria_hash: "c70960d0d6cc4fe6b4019e606492d6738ba909ac6731d4830dd39eb0619ac005", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "reasoning", criteria_hash: "9b2eae10d8d782a999033ed1f25df2c785c128515e49bcfd3721174c8416207b", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "actions", criteria_hash: "37dc583de24e6dabb20f4c3112619788b9485917a9529cac0322866e388f3538", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+  { question_id: "category:status", criteria_hash: "5eb9baea76fdff263944be72c196da9d90c4ab46ec8bab093a52a99b48d72148", model: "jev-1.13.0", lang: "en", approved: "Paco 2026-10-09", evidence: EVIDENCE },
+];
 
 /**
  * Arming sequence (spec §5.9; Codex plan review): production rows come ONLY from this constant, added by Paco's commit.

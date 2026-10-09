@@ -461,13 +461,15 @@ describe("triageTurn — arming, shadow and outages", () => {
     expect(store.getLedgerEvents().filter((e) => e.event_type === "lesson_saved")).toHaveLength(0);
     store.close();
   });
-  it("armed with no gate file: the committed rows are empty (Decision 6), so the turn is uncalibrated and nothing saves", async () => {
+  // The daemon reads no gate file: what arms it is CALIBRATED_ROWS alone (Paco's 2026-10-09 commit). If those rows ever
+  // stop naming the live hashes (a criteria edit) or the reported model, every turn silently routes uncalibrated.
+  it("armed with no gate file: the committed rows arm the tree on the reported model, so a stated rule takes the memory lane", async () => {
     const { store, worker, turn } = setup(treeSays(RULE));
     vi.stubEnv("HOUGE_JEV_CALIBRATION_FILE", ""); vi.stubEnv("HOUGE_JEV_GATE", "");
     const t = turn("以后回复短一点");
-    expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough", route: { role: "default" } });
-    expect(verdictOf(store, t.run_id)).toMatchObject({ reason: "uncalibrated", category: null });
-    expect(store.getActiveLessons("ask")).toHaveLength(0);
+    expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "lane_reply" });
+    expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "memory", route_outcome: "act", save_outcome: "saved" });
+    expect(store.getActiveLessons("ask")).toHaveLength(1);
     store.close();
   });
   it("a model the rows do not name: answered, uncalibrated, decision fallback", async () => {
