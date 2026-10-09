@@ -54,4 +54,15 @@ describe("houge omp probe", () => {
     expect(lines).toEqual(["omp unavailable: omp not runnable: ENOENT"]);
     expect(probed).toEqual([]);
   });
+
+  // An unexpected throw must not read as drift (exit 1): it is "could not probe", and omp's text never reaches the terminal.
+  it("a probe that throws exits 3 with its code only", async () => {
+    const code = await runOmpProbeCli({
+      store, env: process.env, cwd: "/nonexistent/houge-tests/repo", out: (l) => { lines.push(l); },
+      runner: { probeNow: () => Promise.reject(Object.assign(new Error("omp said /secret/path"), { code: "EACCES" })) },
+      versionCheck: async () => ({ ok: true, version: "18.7.0" })
+    });
+    expect(code).toBe(3);
+    expect(lines).toEqual(["omp probe failed: EACCES"]);
+  });
 });

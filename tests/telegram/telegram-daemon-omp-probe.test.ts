@@ -67,11 +67,12 @@ describe("daemon boot: omp version check and contract probe", () => {
     } finally { store.close(); }
   });
 
-  it("a probe start that throws never stops boot", async () => {
+  it("a probe runner that fails to start never stops boot nor skips the boot version check", async () => {
     const store = RunStore.openInMemory();
     try {
       const cycles = await boot(store, { ompProbeRunner: () => { throw new Error("runner exploded"); } });
       expect(cycles).toBeGreaterThan(0);
+      expect(openOmpUnavailable(store)).toHaveLength(1); // the stub omp still paged
     } finally { store.close(); }
   });
 });

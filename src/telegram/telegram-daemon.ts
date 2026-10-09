@@ -121,12 +121,16 @@ async function startOmpProbe(options: RunTelegramDaemonOptions, worker: CoreWork
   try {
     const { cfg, ctx } = worker.ompProbeContext();
     const cache = sharedOmpVersionCache(cfg);
-    const runner = (options.ompProbeRunner ?? createOmpProbeRunner)({ store: options.store, cfg, ctx, roles: worker.modelRoles(),
-      currentVersion: () => cache.lastVersion(), signal: options.stopSignal });
-    cache.setNewVersionListener((v) => runner.maybeProbe(v));
+    try { // its own try: a runner that fails to start must not skip the boot check (an outage still pages)
+      const runner = (options.ompProbeRunner ?? createOmpProbeRunner)({ store: options.store, cfg, ctx, roles: worker.modelRoles(),
+        currentVersion: () => cache.lastVersion(), signal: options.stopSignal });
+      cache.setNewVersionListener((v) => runner.maybeProbe(v));
+    } catch (error) {
+      console.error(`[telegram-daemon] omp probe runner start failed: ${errorCode(error)}`);
+    }
     reportOmpCheck(options.store, cfg, await cache.current());
   } catch (error) {
-    console.error(`[telegram-daemon] omp probe start failed: ${errorCode(error)}`);
+    console.error(`[telegram-daemon] omp boot check failed: ${errorCode(error)}`);
   }
 }
 
