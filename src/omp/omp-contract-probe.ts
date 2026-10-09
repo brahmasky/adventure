@@ -40,7 +40,7 @@ export const PROBE_BOGUS_MODEL: ModelString = { provider: "houge-probe", model: 
 export interface ProbeInput {
   cfg: OmpConfig; ctx: PathContext; version: string; model: ModelString | null; signal?: AbortSignal;
   session?: (o: PlannerSessionOptions) => ProbeSessionLike;
-  catalog?: () => Promise<CatalogRead>;
+  catalog?: (signal?: AbortSignal) => Promise<CatalogRead>;
   prepare?: (ctx: PathContext) => { configFile: string; plannerProfile: string };
   now?: () => string;
   timeouts?: { startMs?: number; commandMs?: number; frameMs?: number; promptMs?: number };
@@ -58,7 +58,8 @@ type FrameHub = Set<(f: OmpFrame) => void>;
 interface Live { s: ProbeSessionLike; hub: FrameHub }
 interface Run {
   input: ProbeInput; t: Timeouts;
-  open: (m: ModelString) => Live; aborted: Promise<typeof ABORTED>; isAborted: () => boolean;
+  open: (m: ModelString) => Live; stop: (s: ProbeSessionLike) => Promise<void>;
+  aborted: Promise<typeof ABORTED>; isAborted: () => boolean;
   catalog: CatalogRead | null; usage: ProbeResult["usage"];
 }
 
@@ -87,8 +88,8 @@ function checkCatalogRead(c: CatalogRead): ProbeCheckOutcome {
   return c.kind === "unparsed" ? "fail:unparsed" : "inconclusive:catalog_unavailable";
 }
 
-async function checkCatalog(r: Run, read: () => Promise<CatalogRead>): Promise<ProbeCheckOutcome> {
-  const c = await Promise.race([read(), r.aborted]);
+async function checkCatalog(r: Run, read: (signal?: AbortSignal) => Promise<CatalogRead>): Promise<ProbeCheckOutcome> {
+  const c = await Promise.race([read(r.input.signal), r.aborted]);
   if (c === ABORTED) return "skipped";
   r.catalog = c;
   return checkCatalogRead(c);
@@ -102,7 +103,7 @@ async function checkStartRefusal(r: Run): Promise<ProbeCheckOutcome> {
     if (v === TIMED_OUT) return "inconclusive:timeout";
     if (v === "started") return "fail:started";
     return v.code === "exited:model_missing" ? "pass" : "fail:unclassified";
-  } finally { await s.stop().catch(() => {}); }
+  } finally { await r.stop(s); }
 }
 
 async function checkSessionOpen(r: Run, s: ProbeSessionLike): Promise<ProbeCheckOutcome> {
@@ -110,6 +111,7 @@ async function checkSessionOpen(r: Run, s: ProbeSessionLike): Promise<ProbeCheck
   if (v === ABORTED) return "skipped";
   if (v === TIMED_OUT) return "inconclusive:timeout";
   if ("code" in v) {
+    if (v.code.startsWith("timeout:")) return "inconclusive:timeout"; // e.g. timeout:open_session after ready
     const m = START_INCONCLUSIVE.exec(v.code);
     return m ? `inconclusive:start_${m[1]}` : "fail:start";
   }
@@ -230,7 +232,7 @@ async function runModelChecks(r: Run, model: ModelString, checks: Record<ProbeCh
     checks.new_session = await guarded(r, () => checkNewSession(r, live.s));
     checks.prompt = await guarded(r, () => checkPrompt(r, live));
     if (checks.prompt !== "pass") r.usage = null; // usage only from a validated reply
-  } finally { await live.s.stop().catch(() => {}); }
+  } finally { await r.stop(live.s); }
 }
 
 /** A check cut by the stop signal, or started after it, is `skipped`. */
@@ -242,7 +244,7 @@ async function guarded(r: Run, fn: () => Promise<ProbeCheckOutcome>): Promise<Pr
 
 async function runChecks(r: Run): Promise<Record<ProbeCheckName, ProbeCheckOutcome>> {
   const checks = Object.fromEntries(CHECK_NAMES.map((n) => [n, "skipped"])) as Record<ProbeCheckName, ProbeCheckOutcome>;
-  const read = r.input.catalog ?? (() => readOmpCatalogResult(r.input.cfg));
+  const read = r.input.catalog ?? ((signal?: AbortSignal) => readOmpCatalogResult(r.input.cfg, undefined, signal));
   checks.catalog = await guarded(r, () => checkCatalog(r, read));
   checks.start_refusal = await guarded(r, () => checkStartRefusal(r));
   if (!r.input.model) { if (!r.isAborted()) checks.session_open = "inconclusive:no_model"; return checks; }
@@ -261,10 +263,21 @@ function defaultPrepare(ctx: PathContext): { configFile: string; plannerProfile:
   return { configFile: writeHougeConfigFile(ctx), plannerProfile: join(ctx.data, "omp", "planner.sb") };
 }
 
+/** One stop() per child, remembered: a repeat stop() of a real session returns at once while the first is still running. */
+function stopper(): { stop: (s: ProbeSessionLike) => Promise<void>; all: () => Promise<void> } {
+  const stopping = new Map<ProbeSessionLike, Promise<void>>();
+  const stop = (s: ProbeSessionLike): Promise<void> => {
+    let p = stopping.get(s);
+    if (!p) { p = Promise.resolve().then(() => s.stop()).catch(() => {}); stopping.set(s, p); }
+    return p;
+  };
+  return { stop, all: async () => { await Promise.all(stopping.values()); } };
+}
+
 /** Abort wiring: the stop signal stops the live child at once and settles `aborted`. */
-function abortWatch(signal: AbortSignal | undefined, liveChild: () => ProbeSessionLike | undefined) {
+function abortWatch(signal: AbortSignal | undefined, liveChild: () => ProbeSessionLike | undefined, stop: (s: ProbeSessionLike) => Promise<void>) {
   let fire: () => void = () => undefined;
-  const aborted = new Promise<typeof ABORTED>((resolve) => { fire = () => { void liveChild()?.stop().catch(() => {}); resolve(ABORTED); }; });
+  const aborted = new Promise<typeof ABORTED>((resolve) => { fire = () => { const c = liveChild(); if (c) void stop(c); resolve(ABORTED); }; });
   if (signal?.aborted) fire(); else signal?.addEventListener("abort", fire, { once: true });
   return { aborted, isAborted: () => signal?.aborted === true, detach: () => signal?.removeEventListener("abort", fire) };
 }
@@ -278,7 +291,8 @@ export async function runOmpContractProbe(input: ProbeInput): Promise<ProbeResul
   const cwd = join(input.ctx.data, "omp", "workspace", `probe-${id}`);
   const sessionDir = join(input.ctx.data, "omp", "sessions", `probe-${id}`);
   let current: ProbeSessionLike | undefined;
-  const watch = abortWatch(input.signal, () => current);
+  const stops = stopper();
+  const watch = abortWatch(input.signal, () => current, stops.stop);
   try {
     for (const d of [cwd, sessionDir]) mkdirSync(d, { recursive: true, mode: 0o700 });
     const systemPromptFile = join(cwd, "probe-system.md");
@@ -291,15 +305,16 @@ export async function runOmpContractProbe(input: ProbeInput): Promise<ProbeResul
       const hub: FrameHub = new Set();
       s.onFrame((f) => { for (const cb of [...hub]) cb(f); });
       current = s;
-      if (watch.isAborted()) void s.stop().catch(() => {});
+      if (watch.isAborted()) void stops.stop(s);
       return { s, hub };
     };
-    const r: Run = { input, t, open, aborted: watch.aborted, isAborted: watch.isAborted, catalog: null, usage: null };
+    const r: Run = { input, t, open, stop: stops.stop, aborted: watch.aborted, isAborted: watch.isAborted, catalog: null, usage: null };
     const checks = await runChecks(r);
     return { version: input.version, result: overall(checks), model: input.model ? formatModelString(input.model) : null,
       checks, usage: r.usage, started_at, finished_at: now() };
   } finally {
     watch.detach();
+    await stops.all(); // every child fully stopped before its cwd and session dir go
     for (const d of [cwd, sessionDir]) rmSync(d, { recursive: true, force: true });
   }
 }

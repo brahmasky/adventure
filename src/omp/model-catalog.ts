@@ -36,12 +36,17 @@ export function parseOmpCatalog(json: string): CatalogModel[] | null {
 
 export type CatalogRead = { kind: "ok"; models: CatalogModel[] } | { kind: "unparsed" } | { kind: "unavailable"; code: string };
 
-/** readOmpCatalog with the two failures apart: omp answered in a shape we cannot parse (drift) vs could not answer. Never throws. */
-export async function readOmpCatalogResult(cfg: Pick<OmpConfig, "bin" | "profile" | "envPassthrough">, exec: ExecFileAsync = execFileAsync): Promise<CatalogRead> {
+/**
+ * readOmpCatalog with the two failures apart: omp answered in a shape we cannot parse (drift) vs could not answer. Never
+ * throws. `signal` kills the child (the probe's stop signal); an abort is `unavailable` with code ABORT_ERR.
+ */
+export async function readOmpCatalogResult(cfg: Pick<OmpConfig, "bin" | "profile" | "envPassthrough">, exec: ExecFileAsync = execFileAsync,
+  signal?: AbortSignal): Promise<CatalogRead> {
   let stdout: string;
   try {
     const env = { ...buildChildEnv(cfg.envPassthrough), TMPDIR: daemonTmpRoot() };
-    ({ stdout } = await exec(cfg.bin, ["--profile", cfg.profile, "models", "--json"], { timeout: CATALOG_TIMEOUT_MS, maxBuffer: CATALOG_MAX_BYTES, env }));
+    ({ stdout } = await exec(cfg.bin, ["--profile", cfg.profile, "models", "--json"], { timeout: CATALOG_TIMEOUT_MS, maxBuffer: CATALOG_MAX_BYTES, env,
+      ...(signal ? { signal } : {}) }));
   } catch (error) {
     const e = error as { code?: unknown; signal?: unknown };
     return { kind: "unavailable", code: String(e.code ?? e.signal ?? "error") };

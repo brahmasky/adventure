@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -26,6 +26,9 @@ interface Script {
   prompt?: () => Promise<void>;
 }
 let data: string; let opened: PlannerSessionOptions[]; let stopped: number;
+// Generous defaults: a slow CI box must not turn a healthy step into a timeout. A test that needs a timeout to fire sets
+// its own small value (FAST_TIMEOUTS) explicitly.
+const FAST_TIMEOUTS = { startMs: 100, commandMs: 100, frameMs: 100, promptMs: 100 };
 
 function fakeSession(s: Script) {
   return (o: PlannerSessionOptions): ProbeSessionLike => {
@@ -59,7 +62,7 @@ const run = (s: Script, o: Partial<ProbeInput> = {}) => runOmpContractProbe({
   cfg: resolveOmpConfig({}), ctx: { home: data, repo: data, data }, version: "18.7.0", model: MODEL,
   session: fakeSession(s), catalog: async () => ({ kind: "ok", models: [{ provider: "kimi-code", id: "k3", thinking: ["low", "medium", "high"] }] }),
   prepare: () => ({ configFile: join(data, "c.yml"), plannerProfile: join(data, "p.sb") }),
-  timeouts: { startMs: 200, commandMs: 200, frameMs: 100, promptMs: 200 }, ...o
+  timeouts: { startMs: 2_000, commandMs: 2_000, frameMs: 2_000, promptMs: 2_000 }, ...o
 });
 
 beforeEach(() => { data = mkdtempSync(join(tmpdir(), "probe-")); opened = []; stopped = 0; });
@@ -117,7 +120,28 @@ describe("omp contract probe", () => {
   });
 
   it("a start that never reaches ready is inconclusive, not drift", async () => {
-    expect((await run({ start: () => new Promise(() => {}) })).checks.session_open).toBe("inconclusive:timeout");
+    expect((await run({ start: () => new Promise(() => {}) }, { timeouts: FAST_TIMEOUTS })).checks.session_open).toBe("inconclusive:timeout");
+  });
+
+  // Spec Rev 3: any step timeout is inconclusive. PlannerSession.start() itself rejects `timeout:open_session` when omp
+  // reaches ready but never answers open_session; mapping that to fail:start would page drift for a slow omp.
+  it("a start that rejects with a timeout code is inconclusive, not drift", async () => {
+    const r = await run({ start: () => Promise.reject(new PlannerRpcError("timeout:open_session")) });
+    expect(r.checks.session_open).toBe("inconclusive:timeout");
+    expect(r.result).toBe("inconclusive");
+  });
+
+  // A hung command is a timing hiccup, never drift: each of these must leave the probe inconclusive (no page).
+  it.each([
+    ["set_model (pin)", { pin: () => new Promise<void>(() => {}) }, "pin_refusal"],
+    ["set_thinking_level (effort)", { effort: () => new Promise<void>(() => {}) }, "effort"],
+    ["new_session", { newSession: () => new Promise<{ cancelled: boolean }>(() => {}) }, "new_session"]
+  ])("a %s that never answers is inconclusive:timeout, not drift", async (_n, script, check) => {
+    const r = await run(script as Script, { timeouts: FAST_TIMEOUTS });
+    expect(r.checks[check as "pin_refusal"]).toBe("inconclusive:timeout");
+    expect(r.result).toBe("inconclusive");
+    // later checks still run on the same child (a timeout does not end the probe)
+    expect(r.checks.prompt).toBe("pass");
   });
 
   it.each([
@@ -129,8 +153,8 @@ describe("omp contract probe", () => {
 
   it("effort passes only on the thinking_level_changed frames, since omp answers success to any level", async () => {
     expect((await run({})).checks.effort).toBe("pass");
-    expect((await run({ effortFrame: null })).checks.effort).toBe("fail:no_frame");
-    expect((await run({ effortFrame: { type: "thinking_level_changed", thinkingLevel: "xhigh" } })).checks.effort).toBe("fail:no_frame");
+    expect((await run({ effortFrame: null }, { timeouts: { ...FAST_TIMEOUTS, commandMs: 2_000, promptMs: 2_000 } })).checks.effort).toBe("fail:no_frame");
+    expect((await run({ effortFrame: { type: "thinking_level_changed", thinkingLevel: "xhigh" } }, { timeouts: { ...FAST_TIMEOUTS, commandMs: 2_000, promptMs: 2_000 } })).checks.effort).toBe("fail:no_frame");
     expect((await run({ effort: () => Promise.reject(new PlannerRpcError("command_failed:set_thinking_level", "x")) })).checks.effort).toBe("fail:rejected");
   });
 
@@ -202,5 +226,39 @@ describe("omp contract probe", () => {
     expect(Date.now() - t0).toBeLessThan(1_000); // the abort, not the 5 s start timeout, ended it
     expect(r.checks.prompt).toBe("skipped");
     expect(stopped).toBe(opened.length);
+  });
+
+  // A real PlannerSession.stop() takes up to seconds (abort, SIGTERM, SIGKILL) and a second stop() returns at once: the
+  // probe must wait for the FIRST stop (the abort's) before deleting the dirs the child may still be writing into.
+  it("an abort waits for the child's stop to finish before removing the probe dirs", async () => {
+    const ac = new AbortController();
+    const log: string[] = [];
+    const base = fakeSession({ start: () => { setTimeout(() => ac.abort(), 10); return new Promise(() => {}); } });
+    const slowStop = (o: PlannerSessionOptions): ProbeSessionLike => {
+      const s = base(o);
+      let first: Promise<void> | null = null;
+      return { ...s, stop: () => {
+        if (first) return Promise.resolve(); // like PlannerSession: a repeat stop() returns at once
+        first = new Promise<void>((res) => setTimeout(() => {
+          log.push(`stopped dirs=${existsSync(o.cwd) && existsSync(o.sessionDir)}`); void s.stop().then(res);
+        }, 50));
+        return first;
+      } };
+    };
+    await run({}, { signal: ac.signal, session: slowStop, timeouts: { startMs: 5_000, commandMs: 5_000, frameMs: 5_000, promptMs: 5_000 } });
+    // every child's stop finished before the probe returned, each while its dirs still existed
+    expect(log).toEqual(opened.map(() => "stopped dirs=true"));
+    expect(readdirSync(join(data, "omp", "workspace"))).toEqual([]);
+  });
+
+  // The catalog read is a child too: the stop signal must reach it, not just the RPC children.
+  it("an abort during the catalog check reaches the catalog read's signal", async () => {
+    const ac = new AbortController();
+    let seen: AbortSignal | undefined;
+    const r = await run({}, { signal: ac.signal, catalog: (signal) => {
+      seen = signal; setTimeout(() => ac.abort(), 10); return new Promise(() => {});
+    } });
+    expect(seen?.aborted).toBe(true);
+    expect(r.checks.catalog).toBe("skipped");
   });
 });
