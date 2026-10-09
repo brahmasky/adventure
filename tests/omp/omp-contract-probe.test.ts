@@ -23,6 +23,7 @@ interface Script {
   effortFrame?: OmpFrame | null;
   newSession?: () => Promise<{ cancelled: boolean }>;
   promptFrames?: OmpFrame[];
+  prompt?: () => Promise<void>;
 }
 let data: string; let opened: PlannerSessionOptions[]; let stopped: number;
 
@@ -48,7 +49,7 @@ function fakeSession(s: Script) {
         if (f) emit(f);
       },
       newSession: () => (s.newSession ?? (async () => ({ cancelled: false })))(),
-      prompt: async () => { setTimeout(() => { for (const f of s.promptFrames ?? [GOOD_END, { type: "agent_end" }]) emit(f); }, 0); },
+      prompt: async () => { if (s.prompt) return s.prompt(); setTimeout(() => { for (const f of s.promptFrames ?? [GOOD_END, { type: "agent_end" }]) emit(f); }, 0); },
       onFrame: (cb) => { cbs.push(cb); },
       stop: async () => { if (!wasStopped) { wasStopped = true; stopped += 1; } }
     };
@@ -168,6 +169,19 @@ describe("omp contract probe", () => {
     const r = await run({ promptFrames: [end as OmpFrame, { type: "agent_end" }] });
     expect(r.checks.prompt).toBe("inconclusive:provider_quota");
     expect(JSON.stringify(r)).not.toContain("resets in");
+  });
+
+  // A refused prompt command carries omp's error detail: a provider condition is not drift (no page), anything else is.
+  it("a prompt refused with a provider error is inconclusive and its detail is not kept", async () => {
+    const r = await run({ prompt: () => Promise.reject(new PlannerRpcError("command_failed:prompt", "429 rate limit")) });
+    expect(r.checks.prompt).toBe("inconclusive:provider_quota");
+    expect(JSON.stringify(r)).not.toContain("rate limit");
+  });
+
+  it("a prompt refused for any other reason is drift", async () => {
+    const r = await run({ prompt: () => Promise.reject(new PlannerRpcError("command_failed:prompt", "bad request shape")) });
+    expect(r.checks.prompt).toBe("fail:rejected");
+    expect(JSON.stringify(r)).not.toContain("bad request");
   });
 
   it("no model: start refusal still checked, the rest inconclusive or skipped", async () => {

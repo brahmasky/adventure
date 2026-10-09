@@ -192,6 +192,16 @@ function judgePrompt(r: Run, end: OmpFrame, last: OmpFrame | undefined): ProbeCh
   return "pass";
 }
 
+const PROVIDER_REFUSAL_KINDS: ReadonlySet<string> = new Set(["quota", "auth", "transport"]);
+
+/** A refused `prompt` command: a provider condition in its detail is not drift; anything else is. */
+function promptRefused(e: unknown): ProbeCheckOutcome {
+  if (isTimeoutErr(e)) return "inconclusive:timeout";
+  if (errCode(e) !== "command_failed:prompt") return "fail:rejected";
+  const kind = classifyOmpError((e as PlannerRpcError).detail ?? "");
+  return PROVIDER_REFUSAL_KINDS.has(kind) ? `inconclusive:provider_${kind}` : "fail:rejected";
+}
+
 async function checkPrompt(r: Run, live: Live): Promise<ProbeCheckOutcome> {
   let last: OmpFrame | undefined;
   const w = waitFrame(live.hub, (f) => {
@@ -203,7 +213,7 @@ async function checkPrompt(r: Run, live: Live): Promise<ProbeCheckOutcome> {
     const v = await step(r, Promise.race([w.seen, sent]), r.t.promptMs);
     if (v === ABORTED) return "skipped";
     if (v === TIMED_OUT) return "inconclusive:timeout";
-    if ("e" in v) return isTimeoutErr(v.e) ? "inconclusive:timeout" : "fail:rejected";
+    if ("e" in v) return promptRefused(v.e);
     return judgePrompt(r, v, last);
   } finally { w.cancel(); }
 }
