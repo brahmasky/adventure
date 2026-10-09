@@ -170,7 +170,8 @@ already provider-agnostic with echo-defense); the Q-LLM built on the `anchor-ver
   `http_fetch`, `gmail_read`, `google_api`). All four return through one function,
   `normalizeExternalRead()`: a digest, `contains_instructions`, and only the code-built
   `trusted_extract` may carry source bytes. The wall is **unconditional**:
-  `HOUGE_DUAL_LLM_ENABLED` is removed, and the reader chain is `HOUGE_OMP_READER`.
+  `HOUGE_DUAL_LLM_ENABLED` is removed, and the reader chain is the Reader role (`HOUGE_OMP_READER` until the ADR 0028
+  model-roles amendment, 2026-10-07).
 - **Exemption (ADR 0028 D12):** output of the `bash` tool is returned raw (capped at 32 KiB) and is
   **not** quarantined. A steered planner can fetch hostile bytes through `bash` around the wall.
   Paco accepted this residual on 2026-09-30.

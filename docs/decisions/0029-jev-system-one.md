@@ -14,11 +14,11 @@
 
 Houge makes many small typed judgment calls a day — what kind of message this is, which model should answer, whether a
 lesson should be saved, whether a read page carries instructions, whether a notification is worth an interruption. Each
-is either hard-coded or costs a full planner turn on Claude Opus 5.5, the only seat that sees the conversation. A bare
+is either hard-coded or costs a full planner turn on Claude, the only seat that sees the conversation. A bare
 "好" after a proposal once cost 189K tokens; a one-line preference is an Opus turn that may or may not call
 `lesson_write`; schedule reports reach Telegram with no urgency judgment.
 
-Jev (TypeSafe System One, `jev-1.13.0`) answers `choice` / `score` / `noul` questions over a JSON state with calibrated
+Jev (TypeSafe System One, requested by the alias `jev-latest`) answers `choice` / `score` / `noul` questions over a JSON state with calibrated
 probabilities in ~0.3 s for $0.042 per million input tokens. It cannot generate text. The 2026-09-26 replay agreed
 with the LLM intent classifier 94.2% of the time at confidence ≥ 0.7 (374 turns). Its live shadow lost its comparator
 at the omp cutover (ADR 0028), and Paco declined to retire it: "always use Jev for decision first, and subsequent LLM
@@ -200,10 +200,10 @@ with Undo was delivered; no incident open. Operator reference: [jev-decision-lay
   shadow filtered to that same model, and refuses shadow stats for another model, so an old model's 14 days never stand
   as a new model's evidence.
 
-## Amendment (2026-10-07): one decision tree (draft for Paco's approval)
+## Amendment (2026-10-07): one decision tree
 
 Spec: [2026-10-06-jev-decision-tree-design.md](../superpowers/specs/2026-10-06-jev-decision-tree-design.md) (Rev 9).
-This amendment is a draft: `docs/decisions/` is Paco's hand, and it lands with the stage A merge only once he approves it.
+Approved by Paco 2026-10-09 with the stage A merge.
 
 - **The front of Houge is one decision point.** Every Telegram text turn passes one Jev request of six questions in three
   answer types (`choice`, `score`, `noul`): `category` (11 values), `sets_rule`, `rule_scope`, and the three gear scores
@@ -235,3 +235,22 @@ This amendment is a draft: `docs/decisions/` is Paco's hand, and it lands with t
 - **Failure is Default as resolved.** Any Jev failure, skip, unarmed question or thrown stage runs the planner on the Default
   role as resolved (a `/models` override included), with one verdict row.
 
+## Amendment (2026-10-09): the tree armed on Paco's word
+
+- **Replay and labels.** `houge jev replay triage` ran over the 301 Telegram turns since 2026-07-02 (zh 271, en 30) on
+  a DB copy, both option orders ($0.09 in all). Paco labelled the 111 turns the selector picks (every memory or status
+  candidate plus 40 at random). With his labels: no turn misrouted into a lane (memory 7/7, status 2/2), category
+  agreement 181/301, option-order agreement 276/301. The known weakness is research read as lookup (26 of 59), which
+  routes a research turn to Fast instead of Thinking.
+- **Rows.** `CALIBRATED_ROWS` names all six tree questions plus `category:status` for zh and en on the model Jev
+  reported (14 rows, approved "Paco 2026-10-09"). The per-turn bars are unchanged and still send every unsure turn to
+  the planner on Default; a criteria or model change disarms, and an alias move pages (`jev_model_uncalibrated`).
+- **Probability sums allow rounding.** Jev rounds each probability to two decimals, so n options may sum up to
+  n × 0.005 off 1. The client's fixed 0.01 tolerance (plus float error) had rejected a four-level 0.99 as `parse`,
+  voiding the whole decision point on about 3% of calls (18 of 602 in the replay). The bound now scales with the option
+  count; a sum past it is still `probability_sum`.
+- **Merge gate.** `live-gate-jev-tree.mjs --real-calibration` PASS on the committed rows: both lanes acted with zero
+  planner requests, 0 of 9 Jev calls failed silently, the Tiny cascade answered in 11.5 s of its 20 s.
+- **Open for stage B.** A message carrying two requests (a rule plus a lookup) is handled by save-then-route unless Jev
+  picks `memory` above its bar, in which case the memory lane replies and the second request is dropped; stage B adds a
+  guard and a gate case for it.

@@ -229,8 +229,8 @@ Noted, not fixed:
 
 The contained `claude` CLI chair spawn (isolated config dir, `--tools ""`, broker-injected
 `CLAUDE_CODE_OAUTH_TOKEN`) is removed in commit `3aabc04`. The chair is now an omp one-shot on
-`HOUGE_OMP_CHAIR` (default `anthropic/claude-opus-5-5:low`): tool-less, sessionless,
+the Chair role (`HOUGE_OMP_CHAIR` until the ADR 0028 model-roles amendment, 2026-10-07): tool-less, sessionless,
 extension-less, and spawned with the child env allowlist. The judges are omp one-shots on
-`HOUGE_OMP_JUDGES`, one string per seat index, with no fallback, so quorum semantics are kept.
+the Judges role (`HOUGE_OMP_JUDGES` until 2026-10-07), one model per seat index, with no fallback, so quorum semantics are kept.
 `HOUGE_CLAUDE_BIN` and `HOUGE_RADAR_CHAIR_TIMEOUT_MS` are no longer read. The deterministic
 mean-score fallback, quorum 2 and the `memory/briefs/` projection are unchanged.
