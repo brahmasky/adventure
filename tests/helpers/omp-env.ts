@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach } from "vitest";
 import { OMP_ENV_VARS, RETIRED_OMP_CHAIN_VARS } from "../../src/omp/omp-config.js";
+import type { RunTelegramDaemonOptions } from "../../src/telegram/telegram-daemon.js";
 
 /** A path that is never an executable: a suite that forgets to point at the fake can never reach a real omp. */
 export const NO_OMP_BIN = "/nonexistent/houge-tests/omp";
@@ -28,6 +29,12 @@ export function pinOmpEnv(): void {
     saved.clear();
   });
 }
+
+/**
+ * Daemon options for a suite on the fake omp: its boot version check is ok, and the fake accepts any --model, so the real
+ * contract probe would record a fail row and open omp_contract_drift beside the turns under test. No probe, by construction.
+ */
+export const NO_OMP_PROBE: Pick<RunTelegramDaemonOptions, "ompProbeRunner"> = { ompProbeRunner: () => ({ maybeProbe: () => undefined }) };
 
 /** Point the process at tests/fixtures/fake-omp.mjs with `scenario` (ruling 4: the env allowlist must pass the fake's vars). */
 export function useFakeOmp(scenario: Record<string, unknown>, dir: string): void {

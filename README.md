@@ -332,8 +332,9 @@ lines into the mini's `.env`.
 
 ## Operations
 
-**Prerequisites on the mini.** Node 25; omp (`@oh-my-pi/pi-coding-agent`, any version; `live-gate-omp.mjs --smoke`
-after an upgrade), with its
+**Prerequisites on the mini.** Node 25; omp (`@oh-my-pi/pi-coding-agent`, any version; the daemon probes a new version's
+contract on its own and pages `omp_contract_drift` if it changed; `live-gate-omp.mjs --smoke` after an upgrade stays
+the deeper manual check), with its
 absolute path given to the daemon, because launchd runs on a restricted PATH; `agy` for voice notes;
 `codex` for self-diagnose and self-write. Then log omp in four times under the `houge` profile, never
 the default one:

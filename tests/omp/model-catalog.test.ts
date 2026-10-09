@@ -1,6 +1,8 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CATALOG_TIMEOUT_MS, parseOmpCatalog, readOmpCatalog, type ExecFileAsync } from "../../src/omp/model-catalog.js";
+import { CATALOG_TIMEOUT_MS, parseOmpCatalog, readOmpCatalog, readOmpCatalogResult, type ExecFileAsync } from "../../src/omp/model-catalog.js";
 import { CATALOG_FIXTURE } from "../helpers/model-roles.js";
 import { NO_OMP_BIN } from "../helpers/omp-env.js";
 
@@ -60,5 +62,42 @@ describe("readOmpCatalog — one bounded, session-less read that never throws", 
 
   it("returns null for a missing binary through the real exec helper", async () => {
     expect(await readOmpCatalog({ ...cfg, bin: NO_OMP_BIN })).toBeNull();
+  });
+});
+
+// Spec §4.1 check 1: an omp that answers but in a new shape is drift; an omp that cannot answer is not.
+describe("readOmpCatalogResult", () => {
+  it("splits ok, unparsed and unavailable", async () => {
+    const exec = (stdout: string) => (async () => ({ stdout, stderr: "" })) as unknown as ExecFileAsync;
+    expect(await readOmpCatalogResult(cfg, exec(JSON.stringify({ models: [{ provider: "p", id: "m" }] })))).toMatchObject({ kind: "ok", models: [{ provider: "p", id: "m" }] });
+    expect(await readOmpCatalogResult(cfg, exec(JSON.stringify({ items: [] })))).toEqual({ kind: "unparsed" });
+    const fail = (async () => { throw Object.assign(new Error("x"), { code: "ETIMEDOUT" }); }) as unknown as ExecFileAsync;
+    expect(await readOmpCatalogResult(cfg, fail)).toEqual({ kind: "unavailable", code: "ETIMEDOUT" });
+    expect(await readOmpCatalog(cfg, fail)).toBeNull();
+  });
+});
+
+// The probe's stop signal must reach the catalog child: a stuck `omp models` would otherwise outlive the probe and the
+// daemon shutdown by up to CATALOG_TIMEOUT_MS.
+describe("readOmpCatalogResult — the stop signal", () => {
+  it("hands the signal to exec", async () => {
+    const ac = new AbortController();
+    let seen: AbortSignal | undefined;
+    const exec = (async (_f: string, _a: string[], o?: { signal?: AbortSignal }) => { seen = o?.signal; return { stdout: "{}", stderr: "" }; }) as unknown as ExecFileAsync;
+    await readOmpCatalogResult(cfg, exec, ac.signal);
+    expect(seen).toBe(ac.signal);
+  });
+
+  it("an abort kills a hung child at once and reads as unavailable ABORT_ERR (real exec helper)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "catalog-abort-"));
+    const bin = join(dir, "omp");
+    writeFileSync(bin, "#!/bin/sh\nsleep 10\n", { mode: 0o755 });
+    const ac = new AbortController();
+    const t0 = Date.now();
+    setTimeout(() => ac.abort(), 50);
+    try {
+      expect(await readOmpCatalogResult({ ...cfg, bin }, undefined, ac.signal)).toEqual({ kind: "unavailable", code: "ABORT_ERR" });
+      expect(Date.now() - t0).toBeLessThan(2_000);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

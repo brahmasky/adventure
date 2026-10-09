@@ -341,6 +341,26 @@ omp, Claude and the role lists, not a build or a model version. Dated evidence (
 incident) keeps the version it ran on, because that is what was observed. The model names in a role list live in
 `src/omp/model-roles.ts` and change with the catalog, without an ADR amendment.
 
+## Amendment (2026-10-09): the contract probe replaces the pin's human look (Paco)
+
+Unpinning omp removed the one thing that forced a look at every upgrade. Houge reads omp through exact shapes (the
+catalog JSON, the start refusal line, the RPC frames), and an upgrade that rewords one of them breaks fallback,
+attribution or session reset without crashing anything. Decided:
+
+- **A contract probe runs whenever the omp version in use has no passing probe on record.** It starts throwaway
+  planner children (same argv and Seatbelt profile, no tools, no bridge, throwaway dirs) and checks the catalog, the
+  start refusal, the session open, the pin refusal, the effort change, `new_session`, and one tiny real prompt on the
+  Tiny role (flat-rate). Outcome codes are fixed strings; omp's text is never kept.
+- **Drift pages and Houge keeps running.** A failed check opens `omp_contract_drift` (one page while open); no spawn
+  is blocked or downgraded. A provider condition or a timeout is inconclusive, never drift. Only a pass is final for
+  a version: after a fail or an inconclusive run the next boot probes again.
+- **`omp --version` runs once per omp binary**, not before every call (it cost ~0.8 s per one-shot). A per-process
+  cache keyed on the binary's real path, mtime, size and inode answers every spawn; a changed binary is re-checked,
+  and the new version is what triggers the probe. A failed check is never cached.
+- `houge omp probe` runs the probe by hand. `scripts/live-gate-omp.mjs --smoke` stays the manual deeper check after
+  an upgrade (sandbox canaries, shell and tool paths). Spec:
+  [2026-10-09-omp-contract-probe-design.md](../superpowers/specs/2026-10-09-omp-contract-probe-design.md).
+
 ## Alternatives considered
 
 - **pi upstream with tools on:** it lacks the extension-tool supersession and RPC session resume that

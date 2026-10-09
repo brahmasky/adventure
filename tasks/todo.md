@@ -1,7 +1,21 @@
-# 🧭 CURRENT SYSTEM STATE — 2026-10-09 (read this first)
+# 🧭 CURRENT SYSTEM STATE — 2026-10-09, later (read this first)
 
-**Jev decision tree, stage A: MERGED to `main`, pushed, `dist/` rebuilt; ARMED in code (14 `CALIBRATED_ROWS`, zh + en);
-NOT live until Paco kickstarts.** The running daemon still serves lane 1 from the previous build. Reference:
+**omp contract probe + cached version check: built on `feat/omp-contract-probe` (worktree `.worktrees/omp-probe`), NOT
+merged, NOT pushed.** Spec `docs/superpowers/specs/2026-10-09-omp-contract-probe-design.md` Rev 3; ADR 0028 amendment
+(2026-10-09, contract probe). `omp --version` now runs once per omp binary (it cost ~0.8 s per one-shot); a new version
+with no passing probe gets seven checks in throwaway sandboxed children (one tiny Tiny-role prompt); a failed check opens
+`omp_contract_drift` (one page) and nothing is blocked; `houge omp probe` by hand. Evidence: typecheck, 3871 tests
+(none skipped), build green; `scripts/live-gate-omp-probe.mjs` PASS 4/4 on omp 18.7.0 (probe 7/7 under Seatbelt; a
+reworded refusal caught as drift; 3 one-shots → 1 `--version`; the daemon path probes once on a cold cache).
+- [ ] Paco: merge + push, then rebuild and kickstart. The first boot after it writes one `omp_contract_probe` row for the
+  installed omp without any CLI call (check: `SELECT payload_json FROM ledger_events WHERE event_type='omp_contract_probe'`).
+- [ ] Gate follow-up: step 4 refuses once the live DB holds a PASS row for the installed version (use `--db <older
+  snapshot>`, or teach step 4 to drop that version's rows in its throwaway copy).
+
+# Earlier block — 2026-10-09: Jev decision tree, stage A
+
+**Jev decision tree, stage A: MERGED to `main`, pushed, `dist/` rebuilt; ARMED (14 `CALIBRATED_ROWS`, zh + en); LIVE
+since Paco's kickstart on 2026-10-09; his first manual turns routed as expected.** Reference:
 `docs/reference/jev-decision-layer.md`; flags and model roles: `docs/reference/configuration.md` § Jev System One and
 § Model roles; spec Rev 9; ADR 0029 / 0028 amendments approved 2026-10-09 (ADR text is now version-free).
 
@@ -11,7 +25,7 @@ bug (two-decimal rounding rejected ~3% of Jev answers as `parse`), fixed in `239
 skipped) and `build` green; default live gate PASS; `--real-calibration` merge gate PASS (106 checks: both lanes acted
 with zero planner requests, 0/9 Jev calls failed silently, cascade 11.5 s of 20 s).
 
-- [ ] **Paco kickstarts** (`launchctl kickstart -k gui/$(id -u)/com.houge.daemon`). Check first: `houge.parked` /
+- [x] **Paco kickstarted** 2026-10-09 (`launchctl kickstart -k gui/$(id -u)/com.houge.daemon`). Check first: `houge.parked` /
   `houge.kill`, non-terminal runs and the evolution lane. The boot applies migrations `chat_turns.quoted_turn_id` and
   `jev_verdicts` and starts the model-role resolver. `.env` already has `HOUGE_JEV_ENABLED=1` and
   `HOUGE_JEV_TRIAGE_ENABLED=arm`; the seven `HOUGE_OMP_*` chain vars are ignored (one boot warning if still set).

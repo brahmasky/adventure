@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node 22 + TypeScript, `node:sqlite` via `RunStore`, vitest. Zero runtime dependencies.
 
-**Spec:** `docs/superpowers/specs/2026-10-09-omp-contract-probe-design.md` (Rev 2, `abf9f35`). The spec is the authority; read it before your task.
+**Spec:** `docs/superpowers/specs/2026-10-09-omp-contract-probe-design.md` (Rev 3). The spec is the authority; read it before your task.
 
 ## Global Constraints
 
@@ -123,10 +123,14 @@ describe("omp version cache", () => {
     expect(h.cache.lastVersion()).toBe("18.7.0");
   });
 
-  it("an unresolvable binary always checks", async () => {
+  it("an unresolvable binary always checks, yet still reports its version and triggers the probe", async () => {
     const h = harness([ok("18.7.0")], null);
+    const seen: string[] = [];
+    h.cache.setNewVersionListener((v) => seen.push(v));
     await h.cache.current(); await h.cache.current();
     expect(h.calls()).toBe(2);
+    expect(h.cache.lastVersion()).toBe("18.7.0");
+    expect(seen).toEqual(["18.7.0"]);
   });
 
   it("joins concurrent calls for one binary into one exec", async () => {
@@ -224,7 +228,7 @@ function resolveBin(cfg: BinCfg): string | null {
   for (const dir of (buildChildEnv(cfg.envPassthrough).PATH ?? "").split(delimiter)) {
     if (dir.length === 0) continue;
     const p = join(dir, cfg.bin);
-    try { accessSync(p, constants.X_OK); return p; } catch { /* next PATH entry */ }
+    try { accessSync(p, constants.X_OK); if (statSync(p).isFile()) return p; } catch { /* next PATH entry */ }
   }
   return null;
 }
@@ -255,8 +259,8 @@ export function createOmpVersionCache(cfg: BinCfg, deps: {
   let listener: ((v: string) => void) | null = null;
 
   const settle = (key: string, r: OmpCheckResult): void => {
-    if (!r.ok || key !== latestKey || key === "null") return; // a stale or failed answer is returned, never cached
-    cached = { key, result: r };
+    if (!r.ok || key !== latestKey) return; // a stale or failed answer is returned, never cached
+    if (key !== "null") cached = { key, result: r }; // an unstat-able binary is re-checked every call, but still reported
     last = r.version;
     if (seen.has(r.version)) return;
     seen.add(r.version);
@@ -280,14 +284,13 @@ export function createOmpVersionCache(cfg: BinCfg, deps: {
 }
 ```
 
-Note: an ok answer under a null fingerprint is returned but never cached, and does not move `lastVersion()` or fire the listener: an omp the cache cannot fingerprint is re-checked on every call (spec §3 Miss).
+Note: an ok answer under a null fingerprint is never cached (re-checked every call) but still sets `lastVersion()` and fires the listener (spec Rev 3 §3), so an omp the cache cannot stat is still probed.
 
 Shared instance, same file:
 
 ```ts
 const shared = new Map<string, OmpVersionCache>();
-const sharedKey = (cfg: BinCfg): string =>
-  `${cfg.bin}|${Array.isArray(cfg.envPassthrough) ? cfg.envPassthrough.join(",") : String(cfg.envPassthrough ?? "")}`;
+const sharedKey = (cfg: BinCfg): string => `${cfg.bin}|${cfg.envPassthrough.join(",")}`;
 
 /** The process-wide instance for (bin, envPassthrough): every production caller uses it (spec §3 Sharing). */
 export function sharedOmpVersionCache(cfg: BinCfg): OmpVersionCache {
@@ -303,8 +306,6 @@ export function setSharedOmpVersionCacheForTest(cfg: BinCfg | null, cache?: OmpV
   if (cache) shared.set(sharedKey(cfg), cache); else shared.delete(sharedKey(cfg));
 }
 ```
-
-Check `OmpConfig.envPassthrough`'s declared type in `src/omp/omp-config.ts` and make `sharedKey` match it exactly (it may be `string[]` only; then drop the String branch).
 
 - [ ] **Step 4: Run to verify it passes**
 
@@ -345,19 +346,19 @@ it("asks the shared cache when no versionCheck is injected", async () => {
     current: async () => { asked += 1; return { ok: false, kind: "not_runnable", version: null, reason: "omp not runnable: ENOENT" }; },
     lastVersion: () => null, setNewVersionListener: () => {}
   });
-  const r = await spawnOneShot(input, { cfg, audit: () => {} });
+  const r = await spawnOneShot(input, { cfg, audit: { record: () => {} } });
   expect(asked).toBe(1);
   expect(r).toMatchObject({ ok: false, unavailable: true, omp_check: { kind: "not_runnable" } });
 });
 it("an injected versionCheck still wins over the cache", async () => {
   let asked = 0;
   setSharedOmpVersionCacheForTest(cfg, { current: async () => { asked += 1; return { ok: true, version: "x" }; }, lastVersion: () => null, setNewVersionListener: () => {} });
-  await spawnOneShot(input, { cfg, audit: () => {}, versionCheck: () => ({ ok: false, kind: "no_version", version: null, reason: "r" }) });
+  await spawnOneShot(input, { cfg, audit: { record: () => {} }, versionCheck: () => ({ ok: false, kind: "no_version", version: null, reason: "r" }) });
   expect(asked).toBe(0);
 });
 ```
 
-Add `afterEach(() => setSharedOmpVersionCacheForTest(null))`. Match `audit`'s real type in `OneShotDeps`.
+Add `afterEach(() => setSharedOmpVersionCacheForTest(null))`. `audit` is an `LlmAuditSink` (`{ record(attempt) }`, `src/llm/audit.ts:70`).
 
 Supervisor (add to `tests/omp/planner-supervisor.test.ts`, reusing that file's deps builder): build a supervisor WITHOUT `versionCheck`, install a shared cache for its `cfg` that returns `{ok:false, kind:"not_runnable", …}` and counts calls, trigger a spawn the way neighbouring tests do, and assert the cache was asked once and the `omp_unavailable` incident path ran (the existing assertion style for `versionCheck` failures in that file). Comment: "the planner preflight reads the shared cache, so a spawn after boot costs no exec".
 
@@ -423,6 +424,8 @@ git commit -m "perf(omp): read the omp version from the shared cache at both spa
   ```ts
   // planner-session.ts
   export interface PlannerSessionOptions { /* existing fields */ tools?: "none"; quietRpcErrors?: boolean }
+  // PlannerSession gains:
+  setThinkingLevel(level: OmpEffort): Promise<void>;   // one set_thinking_level command
   // model-catalog.ts
   export type CatalogRead = { kind: "ok"; models: CatalogModel[] } | { kind: "unparsed" } | { kind: "unavailable"; code: string };
   export async function readOmpCatalogResult(cfg: Pick<OmpConfig, "bin" | "profile" | "envPassthrough">, exec?: ExecFileAsync): Promise<CatalogRead>;
@@ -483,6 +486,8 @@ it("isModelRefusal accepts only a classified set_model refusal", () => {
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `npx vitest run tests/omp/planner-session.test.ts tests/omp/model-catalog.test.ts tests/omp/planner-supervisor.test.ts`
+Also add: `setThinkingLevel("medium")` writes exactly one `{"type":"set_thinking_level","level":"medium","id":…}` line to the child's stdin (use the file's existing stdin-capture fake).
+
 Expected: new cases FAIL (missing exports, `--tools` still present).
 
 - [ ] **Step 3: Implement**
@@ -502,6 +507,9 @@ export interface PlannerSessionOptions {
     ...(o.tools === "none" ? ["--no-tools"] : ["--tools", "read,edit,write"]),
 // in dispatch:
       if (!this.o.quietRpcErrors) console.error(`planner ${w.type} failed: ${detail}`);
+// next to setModel:
+  /** One `set_thinking_level` (the contract probe's effort check, spec §4.1 check 5). */
+  setThinkingLevel(level: OmpEffort): Promise<void> { return this.send({ type: "set_thinking_level", level }).then(() => undefined); }
 ```
 
 `model-catalog.ts`:
@@ -564,7 +572,7 @@ git commit -m "refactor(omp): seams for the contract probe (no-tools argv, quiet
 - Test: `tests/omp/omp-contract-probe.test.ts`
 
 **Interfaces:**
-- Consumes: `PlannerSession`, `PlannerSessionOptions` (`tools`, `quietRpcErrors`), `PlannerRpcError`; `readOmpCatalogResult`, `CatalogRead`; `isModelRefusal`, `writeHougeConfigFile`; `writeSeatbeltProfiles` (`src/omp/seatbelt.ts`); `classifyOmpError`, `OmpFrame`; `PathContext`; `ModelString`; `OmpConfig`.
+- Consumes: `PlannerSession` (incl. `setThinkingLevel`), `PlannerSessionOptions` (`tools`, `quietRpcErrors`), `PlannerRpcError`; `readOmpCatalogResult`, `CatalogRead`; `isModelRefusal`, `writeHougeConfigFile`; `writeSeatbeltProfiles` (`src/omp/seatbelt.ts`); `classifyOmpError`, `frameErrorText`, `OmpFrame`; `OmpEffort`; `PathContext`; `ModelString`; `OmpConfig`.
 - Produces:
   ```ts
   export type ProbeCheckName = "catalog" | "start_refusal" | "session_open" | "pin_refusal" | "effort" | "new_session" | "prompt";
@@ -578,6 +586,7 @@ git commit -m "refactor(omp): seams for the contract probe (no-tools argv, quiet
   export interface ProbeSessionLike {
     start(): Promise<{ resumed: boolean; sessionId: string }>;
     setModel(m: ModelString): Promise<void>;
+    setThinkingLevel(level: OmpEffort): Promise<void>;
     newSession(): Promise<{ cancelled: boolean }>;
     prompt(text: string): Promise<void>;
     onFrame(cb: (f: OmpFrame) => void): void;
@@ -605,14 +614,14 @@ git commit -m "refactor(omp): seams for the contract probe (no-tools argv, quiet
   - Check 2: `start()` rejects with `PlannerRpcError` code `exited:model_missing` → pass; rejects with any other code → `fail:unclassified`; resolves → `fail:started`.
   - Check 3: `start()` rejects with code matching `/^exited:(model_missing|quota|auth|transport)$/` → `inconclusive:start_<kind>`; any other rejection → `fail:start`; resolves with `typeof resumed === "boolean"` and a non-empty string `sessionId` → pass; else `fail:shape`.
   - Check 4: `setModel(PROBE_BOGUS_MODEL)` resolves → `fail:accepted`; rejects with `isModelRefusal(e)` → pass; `PlannerRpcError` code starting `timeout:` → `inconclusive:timeout`; otherwise `fail:unclassified`.
-  - Check 5: the expected level is `model.effort`; when `model.effort` is undefined the check is `skipped`. Subscribe to frames first, then `setModel(model)`; a rejection → `fail:rejected` (`timeout:` code → `inconclusive:timeout`); then wait up to `frameMs` for a frame with `type === "thinking_level_changed"` and `thinkingLevel === model.effort` → pass, else `fail:no_frame`.
+  - Check 5 (spec Rev 3): omp emits `thinking_level_changed` only on a CHANGE, and the child already starts at `model.effort`. `alt` = the first level in the check-1 catalog entry for `model` (`provider`+`id`) whose `thinking` list holds a level ≠ `model.effort`. `skipped` when `model.effort` is undefined, the catalog read was not ok, or no `alt` exists. Subscribe to frames BEFORE sending (omp emits the frame before its reply). `setThinkingLevel(alt)` → wait up to `frameMs` for a frame `thinkingLevel === alt`; then `setThinkingLevel(model.effort)` → wait for `thinkingLevel === model.effort`. Both seen → pass. A rejection → `fail:rejected` (`timeout:` code → `inconclusive:timeout`); a missing frame → `fail:no_frame`.
   - Check 6: `newSession()` resolves → pass (its own code already rejects a non-boolean `cancelled` with `new_session_malformed`); rejects with code `new_session_malformed` → `fail:shape`; `timeout:` → `inconclusive:timeout`; other → `fail:shape`.
-  - Check 7: subscribe to frames, `prompt("Reply with exactly OK.")`, wait up to `promptMs` for `agent_end`. Take the last `message_end` whose `message.role === "assistant"`. If its `message.stopReason === "error"` or it has a string `errorMessage`: classify that text with `classifyOmpError` and return `inconclusive:provider_<kind>` (any kind: an errored reply is a provider condition, not drift; ruling over the spec's three-kind list). Otherwise pass only when `provider`, `model`, `stopReason` are strings, `usage` is an object whose `input` and `output` are finite numbers, and the joined `type: "text"` content is non-empty after trim; else `fail:shape`. No `message_end` before `agent_end` → `fail:shape`. Record `usage = { input_tokens: input, output_tokens: output }` on pass. Never keep the text.
-  - When check 3 is not `pass`, checks 4–7 are `skipped`. When `model` is null: check 1 runs, check 2 runs (it needs no real model), checks 3–7 are `inconclusive:no_model` for check 3 and `skipped` for 4–7.
+  - Check 7: subscribe to frames, `prompt("Reply with exactly OK.")`, wait up to `promptMs` for `agent_end`. A provider error is inconclusive, never drift (spec Rev 3): an `error` frame, or a `prompt_result` with `status === "error"` (these may end the prompt without `agent_end`: settle on them too), or the last assistant `message_end` with `stopReason === "error"` or a string `errorMessage` → classify the text (`frameErrorText(f)` for frames, `errorMessage` for the message) with `classifyOmpError` → `inconclusive:provider_<kind>`. Otherwise pass only when `provider`, `model`, `stopReason` are strings, `usage` is an object whose `input` and `output` are finite numbers, and the joined `type: "text"` content is non-empty after trim; else `fail:shape`. No `message_end` before `agent_end` → `fail:shape`. Record `usage = { input_tokens: input, output_tokens: output }` on pass. Never keep the text.
+  - When check 3 is not `pass`, checks 4–7 are `skipped`. When `model` is null: checks 1 and 2 run (2 needs no real model), check 3 is `inconclusive:no_model`, 4–7 `skipped` (spec Rev 3).
   - Check 1 → `{kind:"ok"}` pass, `{kind:"unparsed"}` `fail:unparsed`, `{kind:"unavailable"}` `inconclusive:catalog_unavailable`.
   - `result`: any `fail:` → `"fail"`; else any `inconclusive:` → `"inconclusive"`; else `"pass"`.
   - `model` in the result: `"provider/model:effort"` (use `formatModelString` from `src/omp/model-string.ts`) or null.
-- Structure: one function per check (each under 50 lines) plus `runOmpContractProbe` orchestrating; a check function returns its `ProbeCheckOutcome`.
+- Structure: one function per check (each under 50 lines), a separate `validateAssistantEnd(frame)` for check 7's shape rule, and `runOmpContractProbe` split into setup/teardown + a check sequence so no function passes 50 lines; a check function returns its `ProbeCheckOutcome`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -651,6 +660,7 @@ function fakeSession(s: Script) {
   return (o: PlannerSessionOptions): ProbeSessionLike => {
     opened.push(o);
     const cbs: Array<(f: OmpFrame) => void> = [];
+    let current = o.model.effort; let wasStopped = false;
     const emit = (f: OmpFrame) => { for (const cb of cbs) cb(f); };
     const bogus = o.model.provider === PROBE_BOGUS_MODEL.provider;
     return {
@@ -658,20 +668,25 @@ function fakeSession(s: Script) {
         : (s.start ?? (async () => ({ resumed: false, sessionId: "s1" })))()),
       setModel: async (m) => {
         if (m.provider === PROBE_BOGUS_MODEL.provider) return (s.pin ?? (() => Promise.reject(new PlannerRpcError("command_failed:set_model", "Model not found: houge-probe/no-such-model"))))();
+      },
+      // omp emits the frame BEFORE its reply, and only on a change: a probe that subscribes late, or re-sets the level the
+      // child already has, must fail here as it would live
+      setThinkingLevel: async (level) => {
         await (s.effort ?? (async () => {}))();
-        const f = s.effortFrame === undefined ? { type: "thinking_level_changed", thinkingLevel: m.effort } : s.effortFrame;
-        if (f) setTimeout(() => emit(f), 0);
+        const f = s.effortFrame === undefined ? (level !== current ? { type: "thinking_level_changed", thinkingLevel: level } : null) : s.effortFrame;
+        current = level;
+        if (f) emit(f);
       },
       newSession: () => (s.newSession ?? (async () => ({ cancelled: false })))(),
       prompt: async () => { setTimeout(() => { for (const f of s.promptFrames ?? [GOOD_END, { type: "agent_end" }]) emit(f); }, 0); },
       onFrame: (cb) => { cbs.push(cb); },
-      stop: async () => { stopped += 1; }
+      stop: async () => { if (!wasStopped) { wasStopped = true; stopped += 1; } }
     };
   };
 }
 const run = (s: Script, o: Partial<ProbeInput> = {}) => runOmpContractProbe({
   cfg: resolveOmpConfig({}), ctx: { home: data, repo: data, data }, version: "18.7.0", model: MODEL,
-  session: fakeSession(s), catalog: async () => ({ kind: "ok", models: [{ provider: "kimi-code", id: "k3", thinking: ["low"] }] }),
+  session: fakeSession(s), catalog: async () => ({ kind: "ok", models: [{ provider: "kimi-code", id: "k3", thinking: ["low", "medium", "high"] }] }),
   prepare: () => ({ configFile: join(data, "c.yml"), plannerProfile: join(data, "p.sb") }),
   timeouts: { startMs: 200, commandMs: 200, frameMs: 100, promptMs: 200 }, ...o
 });
@@ -741,10 +756,17 @@ describe("omp contract probe", () => {
     expect((await run({ pin })).checks.pin_refusal).toBe(want);
   });
 
-  it("effort passes only on the thinking_level_changed frame, since omp answers success to any level", async () => {
+  it("effort passes only on the thinking_level_changed frames, since omp answers success to any level", async () => {
+    expect((await run({})).checks.effort).toBe("pass");
     expect((await run({ effortFrame: null })).checks.effort).toBe("fail:no_frame");
-    expect((await run({ effortFrame: { type: "thinking_level_changed", thinkingLevel: "high" } })).checks.effort).toBe("fail:no_frame");
+    expect((await run({ effortFrame: { type: "thinking_level_changed", thinkingLevel: "xhigh" } })).checks.effort).toBe("fail:no_frame");
     expect((await run({ effort: () => Promise.reject(new PlannerRpcError("command_failed:set_thinking_level", "x")) })).checks.effort).toBe("fail:rejected");
+  });
+
+  it("effort is skipped when the model has no other catalogued level", async () => {
+    const r = await run({}, { catalog: async () => ({ kind: "ok", models: [{ provider: "kimi-code", id: "k3", thinking: ["low"] }] }) });
+    expect(r.checks.effort).toBe("skipped");
+    expect(r.result).toBe("pass");
   });
 
   it("new_session without a boolean cancelled is drift", async () => {
@@ -762,6 +784,15 @@ describe("omp contract probe", () => {
     expect(r.usage).toBeNull();
   });
 
+  it.each([
+    ["an error frame", { type: "error", error: "429 rate limit, resets in 3h" }],
+    ["a failed prompt_result", { type: "prompt_result", agentInvoked: false, status: "error", error: "429 rate limit, resets in 3h" }]
+  ])("%s is a provider condition, not drift", async (_n, f) => {
+    const r = await run({ promptFrames: [f as OmpFrame] });
+    expect(r.checks.prompt).toBe("inconclusive:provider_quota");
+    expect(JSON.stringify(r)).not.toContain("resets in");
+  });
+
   it("a rate-limited reply is inconclusive and its text is not kept", async () => {
     const end = { ...GOOD_END, message: { ...(GOOD_END.message as object), stopReason: "error", errorMessage: "429 rate limit, resets in 3h" } };
     const r = await run({ promptFrames: [end as OmpFrame, { type: "agent_end" }] });
@@ -776,9 +807,12 @@ describe("omp contract probe", () => {
     expect(r.result).toBe("inconclusive");
   });
 
-  it("an abort stops the live child and skips the rest", async () => {
+  it("an abort stops the live child at once and skips the rest", async () => {
     const ac = new AbortController();
-    const r = await run({ start: () => { ac.abort(); return new Promise(() => {}); } }, { signal: ac.signal });
+    const t0 = Date.now();
+    const r = await run({ start: () => { setTimeout(() => ac.abort(), 10); return new Promise(() => {}); } },
+      { signal: ac.signal, timeouts: { startMs: 5_000, commandMs: 5_000, frameMs: 5_000, promptMs: 5_000 } });
+    expect(Date.now() - t0).toBeLessThan(1_000); // the abort, not the 5 s start timeout, ended it
     expect(r.checks.prompt).toBe("skipped");
     expect(stopped).toBe(opened.length);
   });
@@ -810,6 +844,7 @@ git commit -m "feat(omp): contract probe over catalog, refusals, RPC frames and 
 
 **Files:**
 - Modify: `src/run/run-store.ts` (next to `recordModelRolesResolved`, ~line 4981)
+- Modify: `src/run/run-ledger.ts` (`LedgerEventType` union ~line 11; required-fields map ~line 321): add `omp_contract_probe` with required fields `["version", "result", "checks"]` and a comment "the contract probe's verdict per omp version (fixed outcome codes only, never omp's text)". Without it typecheck fails and the append throws (`run-ledger.ts:345`).
 - Create: `src/omp/omp-probe-runner.ts`
 - Test: `tests/run/omp-probe-store.test.ts`, `tests/omp/omp-probe-runner.test.ts`
 
@@ -840,7 +875,7 @@ git commit -m "feat(omp): contract probe over catalog, refusals, RPC frames and 
 - `settleProbe`: inside `store.inTransaction(() => { … })`: `recordOmpProbe(r)`; if `r.version !== currentVersion` stop there; `fail` → `openAlertedIncident(store, { kind: OMP_CONTRACT_DRIFT, subject: \`omp:${r.version}\`, detail: { version: r.version, failed: <object of the checks whose outcome starts with "fail:"> }, chat_id: null, now })`; `pass` → `resolveOpenIncidents(store, new Set([OMP_CONTRACT_DRIFT]), undefined, now)`; `inconclusive` → nothing. Before writing, check that neither `openAlertedIncident` nor anything it calls opens its own `BEGIN` (the model-roles tick already calls it inside `inTransaction`, `model-roles-tick.ts:39`, so it should be safe; confirm).
 - Runner state: `running: boolean`, `pending: string | null`, `attempted: Set<string>`.
   - `maybeProbe(v)`: `pending = v`; if not running, `drain()`. Never throws (wrap in try/catch → `console.error("[omp-probe] failed: <errorCode>")`, `errorCode` from wherever `telegram-daemon.ts` imports it).
-  - `drain()`: take `pending` (set it null); return if null, `signal.aborted`, `attempted.has(v)`, or `store.latestOmpProbe(v, { result: "pass" })` exists. Else `running = true`, `attempted.add(v)`, start `execute(v)` un-awaited; on settle (`finally`) `running = false` then `drain()` again (the pending version, latest wins). A rejection is logged as above unless the signal aborted.
+  - `drain()` (its whole body in try/catch → the same log line; it is called from a `finally`): take `pending` (set it null); return if null, `signal.aborted`, `attempted.has(v)`, or `store.latestOmpProbe(v, { result: "pass" })` exists. Else `running = true`, `attempted.add(v)`, start `execute(v)` un-awaited; on settle (`finally`) `running = false` then `drain()` again (the pending version, latest wins). A rejection is logged as above unless the signal aborted.
   - `execute(v)`: `model = pickProbeModel(roles)`; `r = await probe({ cfg, ctx, version: v, model, signal })`; if `signal.aborted` throw a private `ProbeAborted` (nothing recorded); else `settleProbe(store, r, currentVersion(), now())`; return r.
   - `probeNow(v)`: `execute(v)` directly (skip rule ignored, used by the CLI).
 
@@ -881,6 +916,7 @@ Cases (each its own `it`, with a fake `probe` that resolves a scripted `ProbeRes
 9. stop signal: abort while the probe is pending, resolve it → no row, no incident, and a later `maybeProbe` does nothing.
 10. a probe that throws → `console.error` called with `"[omp-probe] failed: <code>"`, no row, `maybeProbe` itself did not throw.
 11. `pickProbeModel`: Tiny's head when present; Fast's when Tiny is empty; null when both empty (fake `candidates`).
+12. atomicity: make `openAlertedIncident` fail (e.g. a store whose `openIncident` is spied to throw) on a `fail` result → `settleProbe` throws and NO `omp_contract_probe` row exists (row and incident commit together).
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -917,6 +953,8 @@ git commit -m "feat(omp): probe runner records each probe and pages omp_contract
   ```ts
   // core-worker.ts
   ompProbeContext(): { cfg: OmpConfig; ctx: PathContext };
+  // telegram-daemon.ts RunTelegramDaemonOptions gains (tests only; prod omits it):
+  ompProbeRunner?: (d: Parameters<typeof createOmpProbeRunner>[0]) => Pick<OmpProbeRunner, "maybeProbe">;
   // src/omp/omp-probe-cli.ts (new, so cli.ts stays a thin dispatcher)
   export async function runOmpProbeCli(d: { store: RunStore; env: NodeJS.ProcessEnv; cwd: string; out: (line: string) => void;
     runner?: Pick<OmpProbeRunner, "probeNow">; versionCheck?: () => Promise<OmpCheckResult> }): Promise<number>;
@@ -934,7 +972,7 @@ git commit -m "feat(omp): probe runner records each probe and pages omp_contract
     try {
       const { cfg, ctx } = worker.ompProbeContext();
       const cache = sharedOmpVersionCache(cfg);
-      const runner = createOmpProbeRunner({ store: options.store, cfg, ctx, roles: worker.modelRoles(),
+      const runner = (options.ompProbeRunner ?? createOmpProbeRunner)({ store: options.store, cfg, ctx, roles: worker.modelRoles(),
         currentVersion: () => cache.lastVersion(), signal: options.stopSignal });
       cache.setNewVersionListener((v) => runner.maybeProbe(v));
       reportOmpCheck(options.store, cfg, await cache.current());
@@ -945,10 +983,10 @@ git commit -m "feat(omp): probe runner records each probe and pages omp_contract
   ```
   A test-injected `options.llmAdapter` daemon (hermetic tests) must still not reach a real omp: the stub omp returns not_runnable, so the listener never fires; assert that in the test.
 - `houge omp probe` in `cli.ts`: `if (rest[0] !== "probe") { usage; exit 1 }`, tombstone check as the `jev` branch does, open `RunStore.open("houge.sqlite", storeOptions)`, `process.exit(await runOmpProbeCli({ store, env: process.env, cwd: process.cwd(), out: (l) => console.log(l) }))`, closing the store in `finally`.
-- `runOmpProbeCli`: build roles `new RoleResolver({ store, readCatalog: () => readOmpCatalog(resolveOmpCatalogConfig(env)) })` and `await roles.refreshCatalog()`; `cfg = resolveOmpConfig(env, roles.chains())`; `ctx = { home: homedir(), repo: cwd, data: env.HOUGE_OMP_DATA_DIR ?? cwd, binDirs: installedBinaryDirs(env, process.execPath) }` — first confirm how the daemon's `options.omp.dataDir` is set at launch (`grep -rn "dataDir" src/index.ts src/cli.ts src/omp/omp-config.ts src/telegram`) and use the same source; record it in the report. Version: `versionCheck ?? (() => sharedOmpVersionCache(cfg).current())`; not ok → print `omp unavailable: <reason>`, return 3. Else `r = await (runner ?? createOmpProbeRunner({…, currentVersion: () => version, signal: new AbortController().signal})).probeNow(version)`; print one line per check `  <check padded to 14>  <outcome>`, then `omp <version>: <result> (model <model>)`; return `{pass: 0, fail: 1, inconclusive: 2}[r.result]`.
+- `runOmpProbeCli`: build roles `new RoleResolver({ store, readCatalog: () => readOmpCatalog(resolveOmpCatalogConfig(env)) })` and `await roles.refreshCatalog()`; `cfg = resolveOmpConfig(env, roles.chains())`; `ctx = { home: homedir(), repo: cwd, data: cwd, binDirs: installedBinaryDirs(env, process.execPath) }` (the daemon's data dir is `process.cwd()`: `cli.ts:266`, `core-worker.ts:2191`; there is no data-dir env var). Version: `versionCheck ?? (() => sharedOmpVersionCache(cfg).current())`; not ok → print `omp unavailable: <reason>`, return 3. Else `r = await (runner ?? createOmpProbeRunner({…, currentVersion: () => version, signal: new AbortController().signal})).probeNow(version)`; print one line per check `  <check padded to 14>  <outcome>`, then `omp <version>: <result> (model <model>)`; return `{pass: 0, fail: 1, inconclusive: 2}[r.result]`.
 
 - [ ] **Step 1: Write the failing tests**
-  - Daemon: (a) with a shared cache installed for the worker's cfg that returns `ok 18.7.0` and a fake runner seam — inject by installing a cache whose `setNewVersionListener` records the callback and whose `current()` invokes it — assert boot registered the listener and called `current()` once, and `reportOmpCheck` resolved any open `omp_unavailable` (seed one; expect it resolved). (b) default hermetic boot (stub omp): `omp_unavailable` opened once, boot completed, no probe row. Comment: "an idle daemon must still learn its omp version at boot and start the probe; a broken omp must page as before and never stop boot".
+  - Daemon: (a) inject `options.ompProbeRunner` (a fake recording `maybeProbe` calls; it must never run a real probe: no spawns, no Seatbelt files in the project root) and install a shared cache for the worker's cfg whose `current()` returns `ok 18.7.0` and invokes the registered listener with `"18.7.0"`; assert `maybeProbe` got `"18.7.0"`, `current()` was called once at boot, and a seeded open `omp_unavailable` was resolved. (b) default hermetic boot (stub omp): `omp_unavailable` opened once, boot completed, no probe row. Comment: "an idle daemon must still learn its omp version at boot and start the probe; a broken omp must page as before and never stop boot".
   - CLI: `runOmpProbeCli` with a fake runner returning `pass` → exit 0 and the seven lines + summary printed; `fail` → 1; `inconclusive` → 2; `versionCheck` not ok → 3 and the runner never called.
 - [ ] **Step 2: Run to verify they fail** (`npx vitest run tests/telegram/telegram-daemon-omp-probe.test.ts tests/omp/omp-probe-cli.test.ts`)
 - [ ] **Step 3: Implement** to the behaviour block.
@@ -968,9 +1006,10 @@ git commit -m "feat(omp): boot version check starts the contract probe; houge om
 - Create: `scripts/live-gate-omp-probe.mjs`
 
 **Behaviour (spec §7, binding).** Model the script on an existing gate (`scripts/live-gate-jev-triage.mjs`: DB copy via `VACUUM INTO`, env loading, `../dist/` imports, PASS/FAIL tally, non-zero exit on any FAIL). No test seam: this is the live run. It must:
-1. Copy `houge.sqlite` with `VACUUM INTO` into a temp dir; run everything against the copy; `HOUGE_TELEGRAM_CHAT_ID` set so a page enqueues into the copy's outbox (never sent: no dispatcher runs).
-2. Use a data dir inside the temp dir for `ctx.data` (so Seatbelt profiles and probe dirs land there), sandbox on.
-3. Step 1: real omp, `probeNow(version)` → expect `result === "pass"`, all seven `pass`, `usage.output_tokens > 0`, one `omp_contract_probe` row, no open `omp_contract_drift`.
+0. The gate's temp root is `/private/tmp/houge-gate-omp-probe-<random>` (NOT `os.tmpdir()`: Seatbelt denies `/private/var/folders`, and the wrapper and its log must be reachable from inside the sandbox).
+1. Copy `houge.sqlite` with `VACUUM INTO` into the temp root; run everything against the copy; `HOUGE_TELEGRAM_CHAT_ID` set so a page enqueues into the copy's outbox (never sent: no dispatcher runs).
+2. Use a data dir inside the temp root for `ctx.data` (so Seatbelt profiles and probe dirs land there), sandbox on.
+3. Step 1: real omp, `probeNow(version)` → expect `result === "pass"`, every check `pass` (`effort` may be `skipped` only if the Tiny model has a single catalogued level; print which), `usage.output_tokens > 0`, exactly one more `omp_contract_probe` row than before, no open `omp_contract_drift`.
 4. Step 2: write a bash wrapper into the temp dir with the real omp path and the log path baked into its text (the child env allowlist would drop extra env vars), then `chmod 755`:
    ```bash
    #!/bin/bash
@@ -978,8 +1017,8 @@ git commit -m "feat(omp): boot version check starts the contract probe; houge om
    if [ "$1" = "--version" ] || [ '<REWRITE>' = 0 ]; then exec '<REAL_OMP>' "$@"; fi
    exec '<REAL_OMP>' "$@" 2> >(sed -u 's/not found/is unknown/' >&2)
    ```
-   `exec` keeps omp's exit status and stdout untouched; only stderr is rewritten. Point `HOUGE_OMP_BIN` at it (REWRITE=1), clear the shared caches (`setSharedOmpVersionCacheForTest(null)`), `probeNow` → expect `result === "fail"`, `checks.start_refusal === "fail:unclassified"`, one open `omp_contract_drift` with subject `omp:<version>`, one outbox row for it.
-5. Step 3: rewrite the wrapper with REWRITE=0 (it still logs each argv line). Fresh shared cache. Three `spawnOneShot` calls with chain `[houge-probe/no-such-model]` (no prompt is ever answered; each fails fast) through the real default (no `versionCheck`) → the log has exactly 1 `--version` line; `touch` the wrapper; one more call → exactly 2.
+   `exec` keeps omp's exit status and stdout untouched; only stderr is rewritten. Point `HOUGE_OMP_BIN` at it (REWRITE=1), clear the shared caches (`setSharedOmpVersionCacheForTest(null)`), `probeNow` → expect `result === "fail"`, `checks.start_refusal === "fail:unclassified"`, AND `session_open`, `pin_refusal`, `prompt` all `pass` (proves the wrapper itself works, so the fail is the rewording and nothing else), one open `omp_contract_drift` with subject `omp:<version>`, one more outbox row than before the step.
+5. Step 3: rewrite the wrapper with REWRITE=0 (it still logs each argv line) and truncate the log. Fresh shared cache. Three `spawnOneShot` calls with chain `[houge-probe/no-such-model]` (no prompt is ever answered; each fails fast) through the real default (no `versionCheck`) → the log has exactly 1 `--version` line; `touch` the wrapper; one more call → exactly 2.
 6. Print each step PASS/FAIL with the evidence, exit 1 on any FAIL. Clean the temp dir.
 
 - [ ] **Step 1:** Write the script. **Step 2:** `npm run build && node scripts/live-gate-omp-probe.mjs`; all three steps PASS. **Step 3:** Commit:
@@ -987,3 +1026,13 @@ git commit -m "feat(omp): boot version check starts the contract probe; houge om
 git add scripts/live-gate-omp-probe.mjs
 git commit -m "test(omp): live gate for the contract probe and the version cache"
 ```
+
+---
+
+### Task 8: Docs sync (controller, after the live gate and the whole-diff reviews)
+
+- ADR 0028: amendment "(2026-10-09): the contract probe replaces the pin's human look" + the index row in `docs/decisions/README.md`.
+- `docs/reference/configuration.md`: `houge omp probe` (exit codes 0/1/2/3), the `omp_contract_drift` incident, the version cache (no env var).
+- README prerequisites: probe automatic after an upgrade; `--smoke` still manual.
+- `docs/ROADMAP.md` delta (the omp contract probe item), `tasks/todo.md` state block, `tasks/lessons.md` if a lesson emerged, `sessions.md` entry.
+- Commit `docs: …` per concern.

@@ -20,6 +20,7 @@ export type LedgerEventType =
   | "model_role_override"
   | "quote_unresolved"
   | "model_roles_fallback"
+  | "omp_contract_probe"
   | "trigger_received"
   | "idempotency_conflict"
   | "schedule_fired"
@@ -326,7 +327,9 @@ const requiredPayloadFields = {
   // A Telegram reply whose quoted message did not resolve to one stored turn (QuoteResolution reason; Task 10).
   quote_unresolved: ["reason"],
   // Resolved mode: a role that resolved empty ran on its static list instead (review fix F7; once per role per catalog read).
-  model_roles_fallback: ["role"]
+  model_roles_fallback: ["role"],
+  // The contract probe's verdict per omp version (fixed outcome codes only, never omp's text).
+  omp_contract_probe: ["version", "result", "checks"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(

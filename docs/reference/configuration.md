@@ -96,8 +96,18 @@ and `openai-codex`. Every omp row has `cost_usd` 0 (shown as "sub" in `/usage`).
 
 **No version pin (2026-10-07).** Any version `omp --version` reports runs; only an omp that cannot be run or prints no
 version refuses a spawn (incident `omp_unavailable`, resolved by the next passing check). `houge_status` reports the
-version in use. After an omp upgrade, `HOUGE_ENV_FILE=/abs/path/.env node scripts/live-gate-omp.mjs --smoke` is the
-check that the frames and refusal texts Houge parses still hold. `HOUGE_OMP_VERSION` and `HOUGE_OMP_VERSION_ALLOW` are
+version in use (the daemon checks it once at boot).
+
+**Contract probe (2026-10-09, ADR 0028).** When the omp version in use has no passing probe, the daemon probes it in
+the background: the catalog, the start and pin refusals, a session open, an effort change, `new_session` and one tiny
+prompt on the Tiny role, in throwaway sandboxed children with no tools. Each run is one `omp_contract_probe` ledger
+row (`version`, `result` pass/fail/inconclusive, a fixed code per check, token usage). A failed check opens
+`omp_contract_drift` (subject `omp:<version>`, the failed checks in its detail; one page while open) and every spawn
+carries on; a pass resolves it. A timeout or a provider condition is inconclusive and pages nothing. Only a pass is
+final: after a fail or an inconclusive run, the next boot probes again. By hand, from the project root:
+`npm run houge -- omp probe` prints one line per check and exits 0 pass, 1 fail, 2 inconclusive or interrupted, 3 omp
+unavailable or an error. After an upgrade, `HOUGE_ENV_FILE=/abs/path/.env node scripts/live-gate-omp.mjs --smoke`
+stays the deeper manual check (sandbox canaries, shell and tool paths). `HOUGE_OMP_VERSION` and `HOUGE_OMP_VERSION_ALLOW` are
 no longer read. omp's own update checks are off in the profile config.
 
 ### Model roles
@@ -161,7 +171,9 @@ once per role per catalog read; an empty Fast never falls back, its turns step u
 
 **The version check** is `checkOmpVersion`: omp must run and print an `x.y.z`, else incident `omp_unavailable`. It is
 async on the spawn path (a synchronous call starved concurrent bounded network calls such as the Jev request), and its
-refusal reasons carry codes only, never omp's text.
+refusal reasons carry codes only, never omp's text. It runs once per omp binary: a per-process cache keyed on the
+binary's real path, mtime, size and inode answers every planner spawn and one-shot call (it used to cost ~0.8 s per
+one-shot), a changed binary is checked again, and a failed check is never cached. No env var.
 
 ### Voice leg — agy-cli (voice only)
 

@@ -18,7 +18,8 @@ import { selectorKey, STEP_UP } from "./model-roles.js";
 import { familyOf, type ModelFamily, type ModelString } from "./model-string.js";
 import { PLANNER_HEARTBEAT_MS, type OmpConfig } from "./omp-config.js";
 import { classifyOmpError, frameErrorText, RETRYABLE_ERROR_KINDS, summarizeAssistantMessage, type AssistantSummary, type OmpFrame } from "./omp-frames.js";
-import { checkOmpVersionAsync, type OmpCheckResult } from "./omp-version.js";
+import type { OmpCheckResult } from "./omp-version.js";
+import { sharedOmpVersionCache } from "./omp-version-cache.js";
 import { PlannerRpcError, PlannerSession, type ExitInfo, type PlannerSessionOptions } from "./planner-session.js";
 import { realpathOrSelf, type PathContext } from "./protected-paths.js";
 import type { RoleResolver } from "./role-resolver.js";
@@ -88,7 +89,7 @@ export interface SupervisorDeps {
   /** Lane 1 (ADR 0029 §5.1, slot B): awaited after resolveMessage, before the planner. Absent or throwing → today's path. */
   triage?: (i: TriageInput) => Promise<TriageOutcome>;
   sessionFactory?: (o: PlannerSessionOptions) => PlannerSessionLike;
-  /** Injected check (tests); the default awaits checkOmpVersionAsync, so the loop stays free while omp answers. */
+  /** Injected check (tests); the default reads the shared per-binary cache (one exec per binary), so the loop stays free while omp answers. */
   versionCheck?: () => OmpCheckResult | Promise<OmpCheckResult>;
   /** Unit tests only: skips the wrapper hash check and the Seatbelt render (the bridge socket stays real). */
   skipPreflightForTest?: boolean;
@@ -131,6 +132,14 @@ type PinResult = "ok" | "refused" | typeof ENDED | { error: unknown };
 const exitRef = (i: ExitInfo) => (i.code !== null ? `exit ${i.code}` : `signal ${i.signal ?? "unknown"}`);
 /** omp profile config (spec §4): no xdev devices, no update checks, no telemetry. */
 const HOUGE_CONFIG_YML = "tools:\n  xdev: false\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: false\ntelemetry:\n  otlpExportEnabled: false\n";
+/** The planner's omp config file, written atomically (0600); the contract probe writes the same file (spec §4.3). */
+export function writeHougeConfigFile(ctx: Pick<PathContext, "data">): string {
+  const configFile = join(ctx.data, "omp", "houge-config.yml");
+  const tmp = `${configFile}.tmp-${process.pid}`;
+  writeFileSync(tmp, HOUGE_CONFIG_YML, { mode: 0o600 });
+  renameSync(tmp, configFile);
+  return configFile;
+}
 
 interface SpawnRec { gen: number; model: ModelString; exit?: string; started?: Promise<unknown>; bridgeLost?: boolean }
 
@@ -175,7 +184,7 @@ const message = (e: unknown) => safeReason(e);
 /** A planner RPC failure as a fixed code (command_failed:<type>, timeout:<type>, …) or an errno code; never omp's text. */
 const rpcCode = (e: unknown) => (e instanceof PlannerRpcError ? e.code : errorCode(e));
 /** omp refused the pinned model (`Model not found: …`, spec §5): omp's text is read here, classified, and dropped. */
-const isModelRefusal = (e: unknown) =>
+export const isModelRefusal = (e: unknown) =>
   e instanceof PlannerRpcError && e.code === "command_failed:set_model" && classifyOmpError(e.detail ?? "") === "model_missing";
 const quotedId = (q: QuoteRef | undefined) => (q ? { quoted_turn_id: q.turn_id } : {});
 const sameModel = (a: ModelString, b: ModelString) => a.provider === b.provider && a.model === b.model && a.effort === b.effort;
@@ -801,10 +810,10 @@ export class PlannerSupervisor {
     return true;
   }
 
-  /** omp answers with a version at every spawn (tests included); wrapper hash and Seatbelt render unless skipped for unit tests. */
+  /** omp's version comes from the shared per-binary cache (one exec per binary); wrapper hash and Seatbelt render unless skipped for unit tests. */
   private async preflight(): Promise<string | null> {
     const { cfg, distDir, ctx } = this.d;
-    const v = await (this.d.versionCheck ?? (() => checkOmpVersionAsync(cfg)))();
+    const v = await (this.d.versionCheck ?? (() => sharedOmpVersionCache(cfg).current()))();
     if (!v.ok) {
       // No pinned version (2026-10-07): only an unrunnable or silent omp refuses a spawn.
       this.incident("omp_unavailable", { check: v.kind, version: v.version });
@@ -829,10 +838,7 @@ export class PlannerSupervisor {
     const sessionDir = join(omp, "sessions", `chat-${chatId}`);
     const bridgeDir = join(omp, "bridge");
     for (const dir of [this.workspace(), sessionDir, bridgeDir]) mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const configFile = join(omp, "houge-config.yml");
-    const tmp = `${configFile}.tmp-${process.pid}`;
-    writeFileSync(tmp, HOUGE_CONFIG_YML, { mode: 0o600 });
-    renameSync(tmp, configFile);
+    const configFile = writeHougeConfigFile(ctx);
     const { path: systemPromptFile, snapshot } = writeSystemPromptFile(turnContext, chatId);
     this.fingerprint = promptTextFingerprint(snapshot.text);
     this.applied = appliedOf(snapshot);

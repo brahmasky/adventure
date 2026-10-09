@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { resolveOmpConfig } from "../../src/omp/omp-config.js";
+import { setSharedOmpVersionCacheForTest } from "../../src/omp/omp-version-cache.js";
 import { RunStore, type DaemonBootInput } from "../../src/run/run-store.js";
 import { staticRoleChains } from "../../src/omp/model-roles.js";
 import { parseModelChain } from "../../src/omp/model-string.js";
@@ -27,7 +29,7 @@ beforeEach(() => {
     HOUGE_TIMEZONE: "Australia/Sydney", ...CANARIES
   };
 });
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+afterEach(() => { setSharedOmpVersionCacheForTest(null); rmSync(dir, { recursive: true, force: true }); });
 
 const bootRow = (over: Partial<DaemonBootInput> = {}): DaemonBootInput => ({
   boot_id: "boot_1", started_at: "2026-10-02T07:34:00.000Z", pid: 4242, reason: "self_write_reload",
@@ -54,6 +56,15 @@ function status(store: RunStore, sup: StatusSupervisor | null = supervisor): str
 }
 
 describe("houge_status rendering", () => {
+  const cacheWith = (v: string | null) => setSharedOmpVersionCacheForTest(resolveOmpConfig(env), { current: async () => ({ ok: true, version: v ?? "" }), lastVersion: () => v, setNewVersionListener: () => {} });
+  // houge_status shows the boot check's version before any planner started.
+  it("reports the shared cache's version with no supervisor, and falls back to the supervisor's", () => {
+    const store = seeded();
+    cacheWith("18.7.0");
+    expect(collectHougeStatus({ store, env, chatId: "555", pid: 4242, now: NOW }).omp).toBe("18.7.0");
+    cacheWith(null);
+    expect(collectHougeStatus({ store, env, chatId: "555", pid: 4242, now: NOW, supervisor: { ompVersion: () => "18.6.0", answeredModel: () => undefined } }).omp).toBe("18.6.0");
+  });
   // houge_status answers "which model am I on": once roles resolve, the head it reports must be the resolved one.
   it("reports the planner and reader heads the model roles resolve to, not a fixed chain", () => {
     const store = seeded();

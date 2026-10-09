@@ -8,7 +8,7 @@ import {
   tryStartEvolutionPipeline
 } from "../../src/core/evolution-lane.js";
 import { parseRatingHistory, RunStore } from "../../src/run/run-store.js";
-import { invariantSweepInput, runTelegramDaemon, sweepAndRearm } from "../../src/telegram/telegram-daemon.js";
+import { invariantSweepInput, runTelegramDaemon as runDaemon, sweepAndRearm } from "../../src/telegram/telegram-daemon.js";
 import {
   RATING_ACK_COMMENT_TEXT,
   RATING_ACK_TEXT,
@@ -19,9 +19,11 @@ import { RADAR_EXTRACT_DISCIPLINE } from "../../src/capabilities/idea-radar.js";
 import { LESSON_CONSOLIDATE_DISCIPLINE } from "../../src/capabilities/lesson-consolidate.js";
 import { PLANNER_EXIT_TEXT } from "../../src/omp/planner-supervisor.js";
 import { RoleResolver } from "../../src/omp/role-resolver.js";
-import { pinOmpEnv, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
+import { NO_OMP_PROBE, pinOmpEnv, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
 import { until } from "../helpers/omp-worker.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
+// The fake omp passes the boot version check: every daemon here runs without the contract probe (NO_OMP_PROBE).
+const runTelegramDaemon: typeof runDaemon = (o) => runDaemon({ ...NO_OMP_PROBE, ...o });
 
 // PINNED_ENV (ROADMAP §3.5): no omp variable from the real .env reaches this suite; turns never reach a real omp.
 pinOmpEnv();

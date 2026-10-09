@@ -25,6 +25,8 @@ export interface ExecFileAsyncOptions {
   maxBuffer?: number;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  /** Aborting kills the child (SIGTERM) and rejects with code ABORT_ERR. */
+  signal?: AbortSignal;
 }
 
 export interface ExecFileAsyncError extends Error {
@@ -51,6 +53,7 @@ export function execFileAsync(
         ...(options.maxBuffer !== undefined ? { maxBuffer: options.maxBuffer } : {}),
         ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
         ...(options.env !== undefined ? { env: options.env } : {}),
+        ...(options.signal !== undefined ? { signal: options.signal } : {}),
         killSignal: "SIGTERM"
       },
       (error, stdout, stderr) => {

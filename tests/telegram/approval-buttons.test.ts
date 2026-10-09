@@ -6,13 +6,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import { buildTypedTaskEvent, type TypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
-import { runTelegramDaemon } from "../../src/telegram/telegram-daemon.js";
+import { runTelegramDaemon as runDaemon } from "../../src/telegram/telegram-daemon.js";
 import { APPROVAL_TAP_ANSWER_TIMEOUT_MS, answerApprovalTap, runTelegramPollOnce } from "../../src/telegram/telegram-poll-runner.js";
 import { parseApprovalCallback } from "../../src/triggers/telegram-command-parser.js";
 import { normalizeTelegramUpdate, type TelegramUpdate } from "../../src/triggers/telegram-trigger-adapter.js";
-import { pinOmpEnv, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
+import { NO_OMP_PROBE, pinOmpEnv, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
 import { until } from "../helpers/omp-worker.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
+// The fake omp passes the boot version check: every daemon here runs without the contract probe (NO_OMP_PROBE).
+const runTelegramDaemon: typeof runDaemon = (o) => runDaemon({ ...NO_OMP_PROBE, ...o });
 
 pinOmpEnv();
 

@@ -1,7 +1,7 @@
 # omp contract probe and cached version check — design
 
-**Status:** Rev 2, proposed. Design approved in chat by Paco 2026-10-09; Rev 2 closes the spec-review and codex
-blockers (§9).
+**Status:** Rev 3, approved by Paco 2026-10-09 (build go-ahead). Rev 2 closed the spec-review and codex blockers; Rev 3
+the plan review's (§9).
 **Governs:** ADR 0028 D1 (omp under profile `houge`, no version pin). Amendment owed on ship.
 **Base:** `main@bd01859`, omp 18.7.0 on the mini.
 
@@ -58,7 +58,8 @@ export function sharedOmpVersionCache(cfg: Pick<OmpConfig, "bin" | "envPassthrou
   fingerprint differs from the in-flight one starts its own check; it never receives the old binary's result. Only a
   result whose fingerprint is still the latest seen becomes the cached entry.
 - **New version.** When an ok result's version differs from every version this process has seen, the listener is
-  called after the result is cached. A listener that throws is caught and logged by code.
+  called after the result is cached. An ok result under a `null` fingerprint is not cached but still sets
+  `lastVersion()` and calls the listener (otherwise an omp the cache cannot stat would never be probed). A listener that throws is caught and logged by code.
 - **Sharing.** `sharedOmpVersionCache` keeps one instance per `bin + envPassthrough` key in a module-level map. The
   defaults change at the two chokepoints, so the eight `oneShotAdapter` construction sites, `diff-reviewer.ts:324`,
   the ticks and the CLI one-shots all share it without new wiring:
@@ -102,12 +103,13 @@ reply) is never stored, logged or sent.
 | 2 | `start_refusal` | a child started on `houge-probe/no-such-model` exits before `ready` with code `exited:model_missing` | `fail:unclassified` (exited before ready, any other code); `fail:started` (reached `ready`) |
 | 3 | `session_open` | a child started on `model` sends `ready`, and `open_session` answers `{resumed: boolean, sessionId: non-empty string}` | `fail:shape` |
 | 4 | `pin_refusal` | `set_model` to `houge-probe/no-such-model` rejects with a `PlannerRpcError` that `isModelRefusal` (exported from `planner-supervisor.ts:178`) accepts | `fail:accepted` (succeeded); `fail:unclassified` (rejected otherwise) |
-| 5 | `effort` | `setModel(model)` (set_model then set_thinking_level `low`) succeeds **and** a `thinking_level_changed` frame arrives with `thinkingLevel === "low"` | `fail:rejected` (a command failed); `fail:no_frame` (no matching frame within 5 s) |
+| 5 | `effort` | with `alt` = a catalogued level of `model` other than its effort (catalog from check 1): `set_thinking_level alt` succeeds and a `thinking_level_changed` frame shows `alt`, then `set_thinking_level <effort>` succeeds and a frame shows the effort; `skipped` when the model has no other catalogued level or no effort | `fail:rejected` (a command failed); `fail:no_frame` (no matching frame within 5 s) |
 | 6 | `new_session` | `newSession()` answers with a boolean `cancelled` | `fail:shape` |
 | 7 | `prompt` | prompt "Reply with exactly OK." yields a raw `message_end` whose `message` has `role: "assistant"`, string `provider`, `model`, `stopReason`, a `usage` object with numeric `input` and `output`, and non-empty text content; then `agent_end`; within 60 s | `fail:shape` (the frame arrived, a field missing or mistyped) |
 
 Check 5 asserts the frame because live `set_thinking_level "bogus-level"` answers `success: true` (review): success
-alone proves nothing. Check 7 validates the raw frame, not `summarizeAssistantMessage`, because that helper turns a
+alone proves nothing. omp emits the frame only on a change (`model-controls.ts:551-565` in omp 18.7.0), and the child
+already starts at the effort, so the check moves to another level and back. Check 7 validates the raw frame, not `summarizeAssistantMessage`, because that helper turns a
 missing or mistyped usage field into zero counts (`omp-frames.ts:23`).
 
 **Inconclusive, not drift:**
@@ -115,8 +117,11 @@ missing or mistyped usage field into zero counts (`omp-frames.ts:23`).
 - catalog read that did not exit 0: `inconclusive:catalog_unavailable` (`{kind:"unavailable"}`);
 - check 3's child exits before `ready` with `exited:model_missing` or a stderr tail `classifyOmpError` reads as
   `quota`, `auth` or `transport`: `inconclusive:start_<kind>`; any other exit before ready: `fail:start` (drift);
-- `model` null (the Tiny and Fast candidate lists both empty): `inconclusive:no_model`, checks 2–7 skipped;
-- check 7 ends with an error the classifier reads as `quota`, `auth` or `transport`: `inconclusive:provider_<kind>`;
+- `model` null (the Tiny and Fast candidate lists both empty): check 3 `inconclusive:no_model`; check 2 (no real
+  model needed) still runs; checks 4–7 skipped;
+- check 7 ends in a provider error (an assistant `message_end` with `stopReason: "error"` or an `errorMessage`, an
+  `error` frame, or a failed `prompt_result`): `inconclusive:provider_<kind>` for whatever kind `classifyOmpError` reads.
+  An errored reply is a provider condition, never drift;
 - the stop signal: the run is discarded (§5).
 
 When check 3 does not pass, checks 4–7 are `skipped`. Result: `fail` if any check failed, else `inconclusive` if any
@@ -144,6 +149,7 @@ Each child is built by `plannerArgs` exactly as the planner's (same argv, profil
 - **Shared setup.** The probe calls the same helpers as the planner preflight before its first child:
   `writeSeatbeltProfiles(ctx)` and a new exported `writeHougeConfigFile(ctx)` extracted from
   `PlannerSupervisor.preparePaths()` (the `HOUGE_CONFIG_YML` write), so a probe run on a fresh boot has both.
+- `PlannerSession` gains `setThinkingLevel(level)` (one `set_thinking_level` command) for check 5.
 - `cwd` and `sessionDir` are removed in a `finally`; each child is stopped with `PlannerSession.stop()` in a `finally`.
   No chat id, no run, no lesson, no bridge.
 
@@ -262,3 +268,8 @@ bogus `set_model` → model_missing, `open_session`/`new_session` shapes, `setMo
 | `ompProbe` status field duplicates the incident | review | dropped |
 | subscriber API | review | single listener |
 | runner needs ctx and config file | review | `ctx` input; `writeHougeConfigFile` extracted |
+| **Rev 3 (plan review)** | | |
+| check 5 never fires: the child already sits at the effort, omp emits only on change | plan review (omp source) | move to another catalogued level and back |
+| check 7 ignored `error` / failed `prompt_result` frames | plan review | provider errors from any of the three → inconclusive |
+| null fingerprint never fired the listener | plan review | ok under null sets lastVersion + listener, not cached |
+| check 2 under a null model | plan review | runs (needs no real model) |

@@ -4,9 +4,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { KILLED_TEXT, PlannerSupervisor } from "../../src/omp/planner-supervisor.js";
 import { RunStore } from "../../src/run/run-store.js";
-import { runTelegramDaemon } from "../../src/telegram/telegram-daemon.js";
-import { pinEnabledFlags, pinOmpEnv, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
+import { runTelegramDaemon as runDaemon } from "../../src/telegram/telegram-daemon.js";
+import { NO_OMP_PROBE, pinEnabledFlags, pinOmpEnv, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
 import { until } from "../helpers/omp-worker.js";
+// The fake omp passes the boot version check: every daemon here runs without the contract probe (NO_OMP_PROBE).
+const runTelegramDaemon: typeof runDaemon = (o) => runDaemon({ ...NO_OMP_PROBE, ...o });
 
 pinOmpEnv();
 pinEnabledFlags();
