@@ -5,7 +5,7 @@
 //
 //   npm run build && HOUGE_ENV_FILE=/abs/.env node scripts/live-gate-omp-probe.mjs [--db <path>] [--keep]
 //
-// Steps (PASS needs all three; any other outcome FAILs):
+// Steps (PASS needs all four; any other outcome FAILs):
 //   1  probeNow on the real omp → pass, all 7 checks pass (effort skipped only for a single-level Tiny model),
 //      usage.output_tokens > 0, exactly one more omp_contract_probe row, no open omp_contract_drift.
 //   2  HOUGE_OMP_BIN → a bash wrapper that execs the real omp and rewrites "not found" to "is unknown" on stderr →
@@ -13,10 +13,15 @@
 //      so the fail is the rewording alone); one open omp_contract_drift omp:<version>; one more outbox row.
 //   3  The same wrapper without the rewrite logs each argv. Fresh shared cache; three spawnOneShot calls on the bogus
 //      chain through the real default (no versionCheck) → exactly 1 `--version`; touch the wrapper; one more → 2.
+//      Each call must fail on the bogus model itself: one audited leg, error_kind model_missing.
+//   4  The daemon path, on a SECOND fresh copy (no PASS row for the version): real omp, cleared shared caches, the real
+//      runner with currentVersion = cache.lastVersion() as the shared cache's new-version listener (as telegram-daemon
+//      wires it). One bogus spawnOneShot through the real default → exactly one new omp_contract_probe row, result pass
+//      (polled, bounded 120 s); a second bogus call → no further probe and no further row.
 //
 // Temp root under /private/tmp (Seatbelt denies os.tmpdir() = /private/var/folders). The wrapper sits in its own bin/
 // (binDirs are write-denied to the sandbox), its log at the root, the data dir at <root>/data.
-// Budget: steps 1 and 2 each send ONE tiny prompt on the Tiny role (flat-rate subscription); step 3 sends none.
+// Budget: steps 1, 2 and 4 each send ONE tiny prompt on the Tiny role (flat-rate subscription); step 3 sends none.
 // Exit: 0 PASS · 1 FAIL · 2 setup error.
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -42,11 +47,11 @@ function parseArgs(argv) {
 async function loadModules() {
   const mods = await Promise.all([
     "config/load-env.js", "run/run-store.js", "omp/omp-config.js", "omp/role-resolver.js", "omp/model-catalog.js",
-    "omp/protected-paths.js", "omp/omp-version-cache.js", "omp/omp-probe-runner.js", "llm/providers/omp.js"
+    "omp/protected-paths.js", "omp/omp-version-cache.js", "omp/omp-probe-runner.js", "omp/omp-contract-probe.js", "llm/providers/omp.js"
   ].map((p) => import(`../dist/${p}`)));
   const m = Object.assign({}, ...mods);
   const need = ["loadHougeEnv", "RunStore", "resolveOmpConfig", "resolveOmpCatalogConfig", "RoleResolver", "readOmpCatalog",
-    "installedBinaryDirs", "sharedOmpVersionCache", "setSharedOmpVersionCacheForTest", "createOmpProbeRunner", "OMP_CONTRACT_DRIFT", "spawnOneShot"];
+    "installedBinaryDirs", "sharedOmpVersionCache", "setSharedOmpVersionCacheForTest", "createOmpProbeRunner", "runOmpContractProbe", "OMP_CONTRACT_DRIFT", "spawnOneShot"];
   const missing = need.filter((n) => m[n] === undefined);
   if (missing.length > 0) throw new Error(`dist/ lacks ${missing.join(", ")} (build the branch first)`);
   return m;
@@ -75,16 +80,17 @@ function writeWrapper(g, rewrite) {
   chmodSync(g.wrapper, 0o755);
 }
 
-const count = (g, sql, ...p) => g.ro.prepare(sql).get(...p).n;
-const probeRows = (g) => count(g, "SELECT COUNT(*) AS n FROM ledger_events WHERE event_type = 'omp_contract_probe'");
-const outboxRows = (g) => count(g, "SELECT COUNT(*) AS n FROM notification_outbox");
+const count = (ro, sql, ...p) => ro.prepare(sql).get(...p).n;
+const probeRows = (g, ro = g.ro) => count(ro, "SELECT COUNT(*) AS n FROM ledger_events WHERE event_type = 'omp_contract_probe'");
+const outboxRows = (g) => count(g.ro, "SELECT COUNT(*) AS n FROM notification_outbox");
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const openDrift = (g) => g.store.listOpenIncidents().filter((i) => i.kind === g.m.OMP_CONTRACT_DRIFT);
 const versionLines = (g) => readFileSync(g.log, "utf8").split("\n").filter((l) => l === "--version").length;
 
 /** What the CLI composes (omp-probe-cli.ts), re-read from the current env: roles on the real catalog, cfg, ctx, version. */
-async function compose(g) {
+async function compose(g, store = g.store) {
   const env = process.env;
-  const roles = new g.m.RoleResolver({ store: g.store, readCatalog: () => g.m.readOmpCatalog(g.m.resolveOmpCatalogConfig(env)) });
+  const roles = new g.m.RoleResolver({ store, readCatalog: () => g.m.readOmpCatalog(g.m.resolveOmpCatalogConfig(env)) });
   if (!(await roles.refreshCatalog())) throw new Error("RoleResolver.refreshCatalog failed against the real omp");
   const cfg = g.m.resolveOmpConfig(env, roles.chains());
   if (!cfg.sandbox) throw new Error("HOUGE_OMP_SANDBOX is off: the gate must prove the probe under Seatbelt");
@@ -151,12 +157,18 @@ async function step2(g) {
   check("2 one more outbox row (the drift page)", outboxRows(g) - out0 === 1, `${out0} → ${outboxRows(g)}`);
 }
 
-async function oneShot(g, cfg, n) {
+/** One spawnOneShot on the bogus chain; PASS only when its one leg failed on the bogus model (code-built kind, not omp text). */
+async function oneShot(g, cfg, label) {
   const t0 = Date.now();
-  const r = await g.m.spawnOneShot({ seat: "gate", chain: [BOGUS], prompt: "Reply with exactly OK.", correlationId: `gate:omp-probe:${n}`,
-    timeoutMs: 60_000 }, { cfg, audit: { record() {} } });
+  const legs = [];
+  const r = await g.m.spawnOneShot({ seat: "gate", chain: [BOGUS], prompt: "Reply with exactly OK.", correlationId: `gate:omp-probe:${label}`,
+    timeoutMs: 60_000 }, { cfg, audit: { record(a) { legs.push(a); } } });
   const ms = Date.now() - t0;
-  check(`3 call ${n} refused on the bogus model, version check ok`, r.ok === false && !r.unavailable, `ok=${r.ok} unavailable=${!!r.unavailable} ${ms} ms`);
+  const kinds = legs.map((a) => `${a.outcome}/${a.error_kind ?? "-"}`);
+  const refused = r.ok === false && !r.unavailable && legs.length === 1 && legs[0].outcome === "error" && legs[0].error_kind === "model_missing"
+    && r.error === `all gate legs failed — ${BOGUS.provider}/${BOGUS.model}: model_missing`;
+  check(`${label} refused on the bogus model (model_missing), version check ok`, refused,
+    `ok=${r.ok} unavailable=${!!r.unavailable} legs=${JSON.stringify(kinds)} ${ms} ms`);
 }
 
 async function step3(g) {
@@ -165,12 +177,64 @@ async function step3(g) {
   writeFileSync(g.log, "");
   g.m.setSharedOmpVersionCacheForTest(null);
   const cfg = g.m.resolveOmpConfig(process.env);
-  for (const n of [1, 2, 3]) await oneShot(g, cfg, n);
+  for (const n of [1, 2, 3]) await oneShot(g, cfg, `3 call ${n}`);
   check("3 three calls → exactly 1 --version", versionLines(g) === 1, `${versionLines(g)}`);
   const later = new Date(Date.now() + 2000);
   utimesSync(g.wrapper, later, later);
-  await oneShot(g, cfg, 4);
+  await oneShot(g, cfg, "3 call 4");
   check("3 touch + one call → exactly 2 --version", versionLines(g) === 2, `${versionLines(g)}`);
+}
+
+/** The daemon's wiring (telegram-daemon startOmpProbe) on the step-4 copy; the real probe, its in-flight promise tracked. */
+async function daemonWiring(g) {
+  const c = await compose(g, g.store4);
+  g.m.setSharedOmpVersionCacheForTest(null); // compose() warmed a cache with no listener; the daemon's starts cold
+  const cache = g.m.sharedOmpVersionCache(c.cfg);
+  const ac = new AbortController();
+  const w = { c, cache, ac, calls: 0, inflight: null };
+  const runner = g.m.createOmpProbeRunner({ store: g.store4, cfg: c.cfg, ctx: c.ctx, roles: c.roles,
+    currentVersion: () => cache.lastVersion(), signal: ac.signal,
+    probe: (i) => { w.calls += 1; w.inflight = g.m.runOmpContractProbe(i); return w.inflight; } });
+  cache.setNewVersionListener((v) => runner.maybeProbe(v));
+  return w;
+}
+
+async function step4(g) {
+  console.log("\nstep 4 — daemon path: shared-cache listener → runner.maybeProbe, fired by spawnOneShot's real default");
+  delete process.env.HOUGE_OMP_BIN; // the real omp, no wrapper
+  g.m.setSharedOmpVersionCacheForTest(null);
+  openCopy(g, "4");
+  if (g.store4.latestOmpProbe(g.version, { result: "pass" })) throw new Error(`the live DB already holds a PASS row for omp ${g.version}: step 4 cannot fire`);
+  const rows0 = probeRows(g, g.ro4);
+  const w = await daemonWiring(g);
+  try {
+    check("4 shared cache starts cold", w.cache.lastVersion() === null, String(w.cache.lastVersion()));
+    await oneShot(g, w.c.cfg, "4 call 1");
+    const t0 = Date.now();
+    while (probeRows(g, g.ro4) === rows0 && Date.now() - t0 < 120_000) await sleep(500);
+    await w.inflight?.catch(() => undefined);
+    const row = g.store4.latestOmpProbe(g.version);
+    console.log(`  row after ${Date.now() - t0} ms: result ${row?.result} · checks ${JSON.stringify(row?.checks)}`);
+    check("4 exactly one new omp_contract_probe row, result pass", probeRows(g, g.ro4) - rows0 === 1 && row?.result === "pass",
+      `${rows0} → ${probeRows(g, g.ro4)}, result ${row?.result}`);
+    await oneShot(g, w.c.cfg, "4 call 2");
+    await sleep(3_000); // a probe would start on the next tick; give it room to show
+    check("4 second call: no further probe, no further row", w.calls === 1 && probeRows(g, g.ro4) - rows0 === 1,
+      `probe calls ${w.calls}, rows ${rows0} → ${probeRows(g, g.ro4)}`);
+  } finally {
+    w.cache.setNewVersionListener(null);
+    w.ac.abort(); // a probe still running (the 120 s bound hit) stops its children and removes its dirs
+    await w.inflight?.catch(() => undefined);
+  }
+}
+
+/** A fresh VACUUM copy of the live DB under the temp root, with a store and a read-only handle (suffix "" or "4"). */
+function openCopy(g, suffix = "") {
+  const path = join(g.root, `houge${suffix}.sqlite`);
+  copyDb(g.live, path);
+  g[`dbPath${suffix}`] = path;
+  g[`store${suffix}`] = g.m.RunStore.open(path);
+  g[`ro${suffix}`] = new DatabaseSync(path, { readOnly: true });
 }
 
 async function setup(args) {
@@ -183,28 +247,32 @@ async function setup(args) {
   const envRepo = dirname(resolve(process.env.HOUGE_ENV_FILE ?? join(REPO, ".env")));
   const live = resolve(args.db ?? join(envRepo, "houge.sqlite"));
   if (!existsSync(live)) throw new Error(`no DB at ${live} (pass --db)`);
+  const realOmp = realOmpPath();
+  // Nothing that can throw runs between mkdtemp and main's try: the root will hold full copies of the live DB.
   const root = mkdtempSync("/private/tmp/houge-gate-omp-probe-");
-  const g = { m, root, data: join(root, "data"), wrapper: join(root, "bin", "omp"), log: join(root, "wrapper.log"), realOmp: realOmpPath() };
-  mkdirSync(g.data); mkdirSync(join(root, "bin"));
-  g.dbPath = join(root, "houge.sqlite");
-  copyDb(live, g.dbPath);
-  g.store = m.RunStore.open(g.dbPath);
-  g.ro = new DatabaseSync(g.dbPath, { readOnly: true });
-  return g;
+  return { m, live, root, data: join(root, "data"), wrapper: join(root, "bin", "omp"), log: join(root, "wrapper.log"), realOmp };
+}
+
+function closeAll(g) {
+  for (const h of [g.ro, g.store, g.ro4, g.store4]) {
+    try { h?.close(); } catch (e) { console.error(`close failed: ${e instanceof Error ? e.message : String(e)}`); }
+  }
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const g = await setup(args);
-  console.log(`omp contract probe live gate — copy ${g.dbPath}, real omp ${g.realOmp}, sandbox on`);
   try {
-    for (const [name, fn] of [["step 1", step1], ["step 2", step2], ["step 3", step3]]) {
+    mkdirSync(g.data); mkdirSync(join(g.root, "bin"));
+    openCopy(g);
+    console.log(`omp contract probe live gate — copy ${g.dbPath}, real omp ${g.realOmp}, sandbox on`);
+    for (const [name, fn] of [["step 1", step1], ["step 2", step2], ["step 3", step3], ["step 4", step4]]) {
       const t0 = Date.now();
       await fn(g);
       console.log(`  ${name} took ${Date.now() - t0} ms`);
     }
   } finally {
-    g.ro.close(); g.store.close();
+    closeAll(g);
     if (args.keep) console.log(`temp dir kept: ${g.root}`); else rmSync(g.root, { recursive: true, force: true });
   }
   console.log(failures.length === 0 ? "\nLIVE GATE: PASS" : `\nLIVE GATE: FAIL\n  - ${failures.join("\n  - ")}`);
