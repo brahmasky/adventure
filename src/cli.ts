@@ -319,13 +319,12 @@ if (command === "run") {
     process.exit(1);
   }
   const { runOmpProbeCli } = await import("./omp/omp-probe-cli.js");
-  const store = RunStore.open("houge.sqlite", storeOptions);
-  let code = 1;
-  try {
-    code = await runOmpProbeCli({ store, env: process.env, cwd: process.cwd(), out: (l) => console.log(l) });
-  } finally {
-    store.close(); // before exit: process.exit inside try would skip it
-  }
+  // Ctrl-C stops the probe's omp children and removes its dirs (the runner's stop signal), then exits 2.
+  const interrupt = new AbortController();
+  process.once("SIGINT", () => interrupt.abort());
+  // The store opens inside, only after the houge.sqlite check, and closes there before this exit.
+  const code = await runOmpProbeCli({ openStore: () => RunStore.open("houge.sqlite", storeOptions), env: process.env,
+    cwd: process.cwd(), out: (l) => console.log(l), signal: interrupt.signal });
   process.exit(code);
 } else if (command === `jev`) { // backticks: panel-judge-providers.test greps src for the double-quoted provider name; this is the subcommand, not a provider
   // Decision-tree calibration (spec 2026-10-06 §7): replay the six tree questions over history, label by hand, report the evidence.
