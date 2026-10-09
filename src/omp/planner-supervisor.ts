@@ -18,7 +18,8 @@ import { selectorKey, STEP_UP } from "./model-roles.js";
 import { familyOf, type ModelFamily, type ModelString } from "./model-string.js";
 import { PLANNER_HEARTBEAT_MS, type OmpConfig } from "./omp-config.js";
 import { classifyOmpError, frameErrorText, RETRYABLE_ERROR_KINDS, summarizeAssistantMessage, type AssistantSummary, type OmpFrame } from "./omp-frames.js";
-import { checkOmpVersionAsync, type OmpCheckResult } from "./omp-version.js";
+import type { OmpCheckResult } from "./omp-version.js";
+import { sharedOmpVersionCache } from "./omp-version-cache.js";
 import { PlannerRpcError, PlannerSession, type ExitInfo, type PlannerSessionOptions } from "./planner-session.js";
 import { realpathOrSelf, type PathContext } from "./protected-paths.js";
 import type { RoleResolver } from "./role-resolver.js";
@@ -88,7 +89,7 @@ export interface SupervisorDeps {
   /** Lane 1 (ADR 0029 §5.1, slot B): awaited after resolveMessage, before the planner. Absent or throwing → today's path. */
   triage?: (i: TriageInput) => Promise<TriageOutcome>;
   sessionFactory?: (o: PlannerSessionOptions) => PlannerSessionLike;
-  /** Injected check (tests); the default awaits checkOmpVersionAsync, so the loop stays free while omp answers. */
+  /** Injected check (tests); the default reads the shared per-binary cache (one exec per binary), so the loop stays free while omp answers. */
   versionCheck?: () => OmpCheckResult | Promise<OmpCheckResult>;
   /** Unit tests only: skips the wrapper hash check and the Seatbelt render (the bridge socket stays real). */
   skipPreflightForTest?: boolean;
@@ -801,10 +802,10 @@ export class PlannerSupervisor {
     return true;
   }
 
-  /** omp answers with a version at every spawn (tests included); wrapper hash and Seatbelt render unless skipped for unit tests. */
+  /** omp's version comes from the shared per-binary cache (one exec per binary); wrapper hash and Seatbelt render unless skipped for unit tests. */
   private async preflight(): Promise<string | null> {
     const { cfg, distDir, ctx } = this.d;
-    const v = await (this.d.versionCheck ?? (() => checkOmpVersionAsync(cfg)))();
+    const v = await (this.d.versionCheck ?? (() => sharedOmpVersionCache(cfg).current()))();
     if (!v.ok) {
       // No pinned version (2026-10-07): only an unrunnable or silent omp refuses a spawn.
       this.incident("omp_unavailable", { check: v.kind, version: v.version });

@@ -18,6 +18,7 @@ import type { Effort, TurnRole } from "../../src/jev/tree-policy.js";
 import { openManifestClient } from "../helpers/bridge-manifest.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 import { maxLoopGap, slowVersionBin } from "../helpers/event-loop.js";
+import { setSharedOmpVersionCacheForTest } from "../../src/omp/omp-version-cache.js";
 
 type Script = {
   /** Event log shared with the test: start/ready/manifest/prompt, tagged with the child's index. */
@@ -115,7 +116,7 @@ function fakeSession(script: Script = {}): Fake {
 }
 
 const cleanups: Array<() => Promise<void> | void> = [];
-afterEach(async () => { for (const c of cleanups.splice(0)) await c(); });
+afterEach(async () => { setSharedOmpVersionCacheForTest(null); for (const c of cleanups.splice(0)) await c(); });
 
 type Outcome = TurnOutcomeSink & { done: unknown[]; failed: unknown[]; incidents: unknown[]; resetOks: number; routeEnds: unknown[] };
 function sink(store: RunStore): Outcome {
@@ -436,6 +437,21 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
     const { store, sup, outcome } = harness();
     (sup as never as { d: { versionCheck: () => unknown } }).d.versionCheck = () => ({ ok: false, kind: "not_runnable" as const, version: null, reason: "omp not runnable: ENOENT" });
     sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(outcome.incidents.map((i) => (i as { k: string }).k)).toEqual(["omp_unavailable"]);
+  });
+
+  // The planner preflight reads the shared cache, so a spawn after boot costs no exec.
+  it("with no injected check the preflight asks the shared cache and refuses on its failure", async () => {
+    const { store, sup, outcome } = harness();
+    let asked = 0;
+    const cfg = (sup as never as { d: { cfg: Parameters<typeof setSharedOmpVersionCacheForTest>[0] } }).d.cfg;
+    setSharedOmpVersionCacheForTest(cfg, {
+      current: async () => { asked += 1; return { ok: false, kind: "not_runnable", version: null, reason: "x" }; },
+      lastVersion: () => null, setNewVersionListener: () => {}
+    });
+    delete (sup as never as { d: { versionCheck?: unknown } }).d.versionCheck;
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(asked).toBe(1);
     expect(outcome.incidents.map((i) => (i as { k: string }).k)).toEqual(["omp_unavailable"]);
   });
 

@@ -4,7 +4,8 @@ import type { LlmResult } from "../types.js";
 import { buildChildEnv } from "../../omp/child-env.js";
 import { daemonTmpRoot } from "../../run/daemon-tmp.js";
 import type { OmpConfig } from "../../omp/omp-config.js";
-import { checkOmpVersionAsync, type OmpCheckResult } from "../../omp/omp-version.js";
+import type { OmpCheckResult } from "../../omp/omp-version.js";
+import { sharedOmpVersionCache } from "../../omp/omp-version-cache.js";
 import { classifyOmpError, parseFrameLine, RETRYABLE_ERROR_KINDS, summarizeAssistantMessage, type AssistantSummary } from "../../omp/omp-frames.js";
 import { familyOf, formatModelString, type ModelFamily, type ModelString } from "../../omp/model-string.js";
 import { resolveModelRolesMode } from "../../omp/model-roles.js";
@@ -127,7 +128,7 @@ function readerOrder(input: OneShotInput): ModelString[] {
 export async function spawnOneShot(input: OneShotInput, deps: OneShotDeps): Promise<LlmResult> {
   if ((input.files ?? []).some((f) => AUDIO_FILE.test(f))) return { ok: false, provider: "omp", error: OMP_AUDIO_REFUSED };
   if (input.signal?.aborted) return ABORTED;
-  const version = await (deps.versionCheck ?? (() => checkOmpVersionAsync(deps.cfg)))(); // never blocks the loop: Jev and turns run alongside
+  const version = await (deps.versionCheck ?? (() => sharedOmpVersionCache(deps.cfg).current()))(); // one exec per omp binary (spec §3); never blocks the loop
   deps.onVersionCheck?.(version);
   // No leg ran, so no audit row: the structured check rides out for the caller's incident (ruling 6).
   if (!version.ok) return { ok: false, provider: "omp", error: version.reason, unavailable: true, omp_check: version };

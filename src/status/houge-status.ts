@@ -5,6 +5,7 @@ import { resolveGlobalBudgetCaps, type GlobalBudgetHeadroom } from "../budget/gl
 import { disarmPosturePresent } from "../config/disarm-posture.js";
 import { formatModelString } from "../omp/model-string.js";
 import { resolveOmpConfig } from "../omp/omp-config.js";
+import { sharedOmpVersionCache } from "../omp/omp-version-cache.js";
 import type { RoleChains } from "../omp/model-roles.js";
 import { resolveLocalTimeZone } from "../prompt/tz-convert.js";
 import { newestMtimeMs } from "../capabilities/self-write-merge.js";
@@ -126,6 +127,11 @@ function postureOf(env: NodeJS.ProcessEnv): string[] {
   ];
 }
 
+/** The shared cache's last ok version (the daemon's boot check fills it); null when the config is invalid or nothing passed yet. */
+function cachedOmpVersion(env: NodeJS.ProcessEnv): string | null {
+  try { return sharedOmpVersionCache(resolveOmpConfig(env)).lastVersion(); } catch { return null; }
+}
+
 export function collectHougeStatus(d: {
   store: RunStore; env: NodeJS.ProcessEnv; chatId: string; pid: number; now?: Date; supervisor?: StatusSupervisor; chains?: RoleChains;
 }): HougeStatusInput {
@@ -135,7 +141,7 @@ export function collectHougeStatus(d: {
   const recorded = live ? null : d.store.lastPlannerModel(d.chatId);
   return {
     now, tz: resolveLocalTimeZone(d.env), pid: d.pid, boot: d.store.getLatestDaemonBoot(), lastMerge: d.store.getLastSelfWriteMerge(),
-    omp: d.supervisor?.ompVersion() ?? null, plannerTop: tops.planner, readerTop: tops.reader,
+    omp: cachedOmpVersion(d.env) ?? d.supervisor?.ompVersion() ?? null, plannerTop: tops.planner, readerTop: tops.reader,
     answeredBy: live ? `${live.provider}/${live.model}` : recorded ? `${recorded.provider}/${recorded.model} (last recorded)` : null,
     incidentKinds: d.store.listOpenIncidents().map((i) => i.kind),
     budget: d.store.globalBudgetUsage(resolveGlobalBudgetCaps(d.env), now),
