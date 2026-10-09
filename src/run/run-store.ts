@@ -45,6 +45,7 @@ import type { SkipReason } from "../jev/decide.js";
 import type { Category } from "../jev/questions/tree.js";
 import type { Effort, Lane, RouteReason, TurnRole } from "../jev/tree-policy.js";
 import type { MediaIngestedPayload } from "../media/media-config.js";
+import type { ProbeResult } from "../omp/omp-contract-probe.js";
 
 /**
  * The `role` recorded on every `llm_attempt` row (via `llmAuditSink`'s scope): chain calls, spawn
@@ -4997,6 +4998,30 @@ export class RunStore {
     return typeof p.resolved_at === "string" && Array.isArray(p.roles)
       ? { resolved_at: p.resolved_at, catalog_ok: p.catalog_ok === true, roles: p.roles }
       : undefined;
+  }
+
+  /** One contract probe's verdict (spec §5): fixed outcome codes only, never omp's text. */
+  recordOmpProbe(r: ProbeResult): void {
+    this.appendLedgerEvent(createLedgerEvent({
+      correlation_id: "omp-probe", event_type: "omp_contract_probe", actor: "system", sequence: this.nextLedgerSequence(),
+      payload: { ...r }
+    }));
+  }
+
+  /** The latest probe of `version` (only `result`'s, when given); a malformed row reads as none. */
+  latestOmpProbe(version: string, o: { result?: ProbeResult["result"] } = {}): ProbeResult | undefined {
+    const params: string[] = o.result ? [version, o.result] : [version];
+    const row = this.db.prepare(`
+      SELECT payload_json FROM ledger_events
+      WHERE event_type = 'omp_contract_probe' AND json_extract(payload_json, '$.version') = ?
+        ${o.result ? "AND json_extract(payload_json, '$.result') = ?" : ""}
+      ORDER BY sequence DESC LIMIT 1
+    `).get<{ payload_json: string }>(...params);
+    if (!row) return undefined;
+    const p = JSON.parse(row.payload_json) as Partial<ProbeResult>;
+    const okResult = p.result === "pass" || p.result === "fail" || p.result === "inconclusive";
+    return typeof p.version === "string" && okResult && typeof p.checks === "object" && p.checks !== null
+      ? p as ProbeResult : undefined;
   }
 
   /**
