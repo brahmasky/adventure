@@ -14,7 +14,8 @@
 //   3  The same wrapper without the rewrite logs each argv. Fresh shared cache; three spawnOneShot calls on the bogus
 //      chain through the real default (no versionCheck) → exactly 1 `--version`; touch the wrapper; one more → 2.
 //      Each call must fail on the bogus model itself: one audited leg, error_kind model_missing.
-//   4  The daemon path, on a SECOND fresh copy (no PASS row for the version): real omp, cleared shared caches, the real
+//   4  The daemon path, on a SECOND fresh copy with this version's probe rows deleted (only in the copy, so the
+//      gate re-runs after the live daemon has recorded a PASS for the installed omp): real omp, cleared shared caches, the real
 //      runner with currentVersion = cache.lastVersion() as the shared cache's new-version listener (as telegram-daemon
 //      wires it). One bogus spawnOneShot through the real default → exactly one new omp_contract_probe row, result pass
 //      (polled, bounded 120 s); a second bogus call → no further probe and no further row.
@@ -203,8 +204,11 @@ async function step4(g) {
   console.log("\nstep 4 — daemon path: shared-cache listener → runner.maybeProbe, fired by spawnOneShot's real default");
   delete process.env.HOUGE_OMP_BIN; // the real omp, no wrapper
   g.m.setSharedOmpVersionCacheForTest(null);
-  openCopy(g, "4");
-  if (g.store4.latestOmpProbe(g.version, { result: "pass" })) throw new Error(`the live DB already holds a PASS row for omp ${g.version}: step 4 cannot fire`);
+  openCopy(g, "4", (db) => {
+    const n = db.prepare("DELETE FROM ledger_events WHERE event_type = 'omp_contract_probe' AND json_extract(payload_json, '$.version') = ?").run(g.version).changes;
+    console.log(`  copy: deleted ${n} omp_contract_probe row(s) for ${g.version}`);
+  });
+  if (g.store4.latestOmpProbe(g.version)) throw new Error(`the step-4 copy still holds a probe row for omp ${g.version}: step 4 cannot fire`);
   const rows0 = probeRows(g, g.ro4);
   const w = await daemonWiring(g);
   try {
@@ -228,10 +232,16 @@ async function step4(g) {
   }
 }
 
-/** A fresh VACUUM copy of the live DB under the temp root, with a store and a read-only handle (suffix "" or "4"). */
-function openCopy(g, suffix = "") {
+/** A fresh VACUUM copy of the live DB under the temp root, with a store and a read-only handle (suffix "" or "4").
+ *  `prepare` edits the copy before the store opens it; it never sees the live DB. */
+function openCopy(g, suffix = "", prepare) {
   const path = join(g.root, `houge${suffix}.sqlite`);
   copyDb(g.live, path);
+  if (prepare) {
+    if (resolve(path) === resolve(g.live) || !resolve(path).startsWith(`${g.root}/`)) throw new Error(`refusing to edit ${path}: not a temp copy`);
+    const db = new DatabaseSync(path);
+    try { prepare(db); } finally { db.close(); }
+  }
   g[`dbPath${suffix}`] = path;
   g[`store${suffix}`] = g.m.RunStore.open(path);
   g[`ro${suffix}`] = new DatabaseSync(path, { readOnly: true });

@@ -7,10 +7,10 @@ with no passing probe gets seven checks in throwaway sandboxed children (one tin
 `omp_contract_drift` (one page) and nothing is blocked; `houge omp probe` by hand. Evidence: typecheck, 3871 tests
 (none skipped), build green; `scripts/live-gate-omp-probe.mjs` PASS 4/4 on omp 18.7.0 (probe 7/7 under Seatbelt; a
 reworded refusal caught as drift; 3 one-shots → 1 `--version`; the daemon path probes once on a cold cache).
-- [ ] Paco: merge + push, then rebuild and kickstart. The first boot after it writes one `omp_contract_probe` row for the
-  installed omp without any CLI call (check: `SELECT payload_json FROM ledger_events WHERE event_type='omp_contract_probe'`).
-- [ ] Gate follow-up: step 4 refuses once the live DB holds a PASS row for the installed version (use `--db <older
-  snapshot>`, or teach step 4 to drop that version's rows in its throwaway copy).
+- [x] Merged (02c3f4f), pushed, rebuilt, kickstarted 2026-10-09: first boot wrote one `omp_contract_probe` row, omp
+  18.7.0 pass, 7/7 checks, `kimi-code/k3:low`; no drift incident.
+- [x] Gate follow-up: step 4 deletes this version's probe rows in its throwaway copy, so the gate re-runs after the live
+  daemon has a PASS row (re-run 2026-10-10: PASS 4/4, live DB untouched).
 
 # Earlier block — 2026-10-09: Jev decision tree, stage A
 
