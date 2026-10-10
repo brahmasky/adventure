@@ -1,6 +1,6 @@
 # Jev decision tree — categories, lanes and model roles (ADR 0029 lane 2, widened)
 
-- **Date:** 2026-10-07 · **Rev 9** (Rev 8 + the plan-review and build rulings, 2026-10-07/08: §2.2, §2.4, §4, §4.3, §9, §10; see §12) · **Status:** awaiting Paco's read
+- **Date:** 2026-10-10 · **Rev 10** (Rev 9 + the stage B amendment to the lookup lane's query, §3; see §12) · **Status:** stage A built and armed; stage B specified in `2026-10-10-jev-tree-stage-b-design.md`
 - **Amends:** [ADR 0029](../../decisions/0029-jev-system-one.md) (the lane-1-first shape becomes one decision tree; lanes
   are the leaf type), [ADR 0028](../../decisions/0028-omp-runtime.md) (model roles replace the `HOUGE_OMP_*` chains;
   D10 reader family becomes a skip rule at read time)
@@ -155,7 +155,7 @@ anything; anything needing an approval is not a lane.
 | # | Category | Meaning | Lane | Lane limits (else planner) | Role floor |
 |---|---|---|---|---|---|
 | 1 | `answer` | chat, an explanation, an opinion, writing; nothing to fetch or do | **answer lane**: compose from the thread | `actions` = none | Fast |
-| 2 | `lookup` | one fact or item a search answers | **lookup lane**: code builds the query; `web_search`; fetch the top page through the reader wall when snippets will not do (a how/why question, or a dated page); compose with a source line | `breadth` ≤ one topic, `actions` ≤ a few reads | Fast |
+| 2 | `lookup` | one fact or item a search answers | **lookup lane**: code builds the query (Rev 10: for a suspected follow-up, a Tiny-role one-shot may rewrite the message into one standalone query, code-validated, bare message on any failure; stage B spec §5); `web_search` through the reader wall (ADR 0014); fetch the top page through the reader wall when the reader reports the sources did not answer; compose with a source line | `breadth` ≤ one topic, `actions` ≤ a few reads | Fast |
 | 3 | `research` | investigate a topic: several sources, compare, conclude, recommend | planner | — | Thinking |
 | 4 | `memory` | a rule or preference to follow from now on; or correct / retire a stored lesson or fact | **memory lane** for a rule (as built: distill → reconcile → save in one transaction; card with Undo); the planner for a correction or retirement (`sets_rule` = no), where the approval card lives | — | Tiny seat |
 | 5 | `self_change` | change or diagnose Houge itself | planner | — | Default |
@@ -382,7 +382,7 @@ ADR 0029 amendment (tree, lanes as the leaf type, roles) and ADR 0028 amendment 
 `jev-decision-layer.md` rewritten around the tree; CONTEXT.md terms *category*, *lane*, *role*; README;
 `tasks/todo.md`, `sessions.md`.
 
-## 12. Review log (Rev 1 → Rev 8)
+## 12. Review log (Rev 1 → Rev 10)
 
 Two reviews of Rev 1 on 2026-10-06, both NOT READY: a senior review against the live omp, DB and code, and a Codex
 design pass. Every finding was verified first-hand before being folded in; none changed §1.
@@ -413,6 +413,7 @@ design pass. Every finding was verified first-hand before being folded in; none 
 | Re-pass on §2.2.1 (Codex): an evolution-report notification is `final_report` too | §2.2.1 excludes outbox rows keyed `:evolution_report:` |
 | Re-pass on Rev 2 (senior, READY): a spawn-refused Default[0] would become a per-turn `pin_failed`; `.env` is not read live; Reader list named twice; skipped turns need a verdict row; where `/models` is gated | §5 `model_missing` on pin walks the list, respawn rule removed; §4.3 wording; §4 table; §6; §4.2 |
 
+| Rev 10 (stage B spec, 2026-10-10): the stage B spec's review rounds amend one parent row | §3 `lookup` lane: the search result set passes the reader wall before compose (ADR 0014; Rev 9 implied snippets could go straight to compose), "thin" is the reader's `answer_to_objective === null`, and a Tiny-role one-shot may rewrite a suspected follow-up into a standalone query behind a code pre-filter (the code rule measured on the replay prefixed unrelated topics onto 16 of 39 lookups). The lane still runs one composing one-shot; the rewrite is a bounded word-filling step like the memory lane's distill |
 | Rev 9 (plan reviews and build, 2026-10-07/08): the plan's four review rounds and the build rulings amend the spec | §2.2 stored intent enum reads `clarify \| loop \| evolution_report`; §2.4 / §10 cascade live on the Tiny role, 20 s, verdict value `tiny`, `cascade_between` on `triage` (Paco, Decision 14); §4 Tiny and Fast lists (Decision 3, Rev 4) and the Kimi-exit rule (every list keeps a non-Kimi leg); §4.3 `static` is a model-list rollback with three supervisor differences, lane 1 returns by code revert; §9 absolute `jev_skip_rate` bar |
 
 ## Appendix A. Parked from mu for later lanes

@@ -190,6 +190,8 @@ visible cost, so no step waits for a provider's full timeout:
      one. `validateQuery` accepts a single line ≤ 120 chars with no URL and no newline; anything else, `SAME`, a timeout or a
      failed leg → the bare message. The memory lane's distill is the precedent for a Tiny step inside a lane.
    - Then whitespace-collapsed and cut at 200 chars. The same string is the reader's `objective`.
+   The parent spec's lookup row ("code builds the query") is amended for this in its Rev 10 (§3 row 2, §12), so the
+   binding contract and this step agree.
    The code rule Rev 4 had (prepend the previous line) was re-scored by the senior review and dropped: it fired on 28 of 39
    takes and put an unrelated earlier topic ahead of 16 standalone questions (§13).
 3. **One search** through `createWebSearchAdapter` (the configured chain, Tavily then Firecrawl; `max_results` =
@@ -498,3 +500,4 @@ the `category` hash is unchanged.
   validation (§5 step 2); the same `loop_step` finding, plus `live-gate-omp.mjs` case 2 breaking once the lanes are armed →
   §11. Closure notes taken: `verdictInsert` takes the outcome (§4); the nudge does move the boundary (§7); the answer-lane
   "every input trusted" sentence corrected (§7); the `previousTelegramTurns` source excludes schedule rows (§3).
+  Codex round 5: the Tiny rewrite contradicted the parent's "code builds the query" → parent spec Rev 10 amends the row.
