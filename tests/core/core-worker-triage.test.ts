@@ -525,15 +525,14 @@ describe("triageTurn — arming, shadow and outages", () => {
     expect(store.listOpenIncidents().some((i) => i.kind === "jev_rate_limited")).toBe(true);
     store.close();
   });
-  it("triage_overrides resolves on the next turn once the disarm marker is gone, and stays open while it exists", async () => {
+  // Stage B §6: a lane's page resolves at the next triage once that lane's 7-day tap count is under three; no marker exists.
+  it("an open per-lane triage_overrides page resolves on the next turn once that lane's taps age out", async () => {
     const { store, worker, turn } = setup(treeSays());
-    const marker = join(mkdtempSync(join(tmpdir(), "htri-mk-")), "houge.jev-disarmed");
-    vi.stubEnv("HOUGE_JEV_DISARM_PATH", marker);
-    writeFileSync(marker, JSON.stringify({ reason: "triage_overrides", at: "x" }));
-    store.openIncident({ kind: "triage_overrides", subject: JEV_INCIDENT_SUBJECT, detail: {} });
+    store.openIncident({ kind: "triage_overrides", subject: `${JEV_INCIDENT_SUBJECT}:lane:answer`, detail: { lane: "answer" } });
+    for (let k = 0; k < 3; k++) store.recordMemoryEvent("triage_override", { run_id: `run_o${k}`, new_run_id: `run_n${k}`, change_id: null, lane: "answer" });
     await worker.triageTurn(turn("hello").input);
     expect(store.listOpenIncidents().map((i) => i.kind)).toEqual(["triage_overrides"]);
-    rmSync(marker);
+    (store as unknown as { db: { exec(s: string): void } }).db.exec(`UPDATE ledger_events SET occurred_at = '2026-01-01T00:00:00.000Z' WHERE event_type = 'triage_override'`);
     await worker.triageTurn(turn("hello again").input);
     expect(store.listOpenIncidents()).toHaveLength(0);
     store.close();

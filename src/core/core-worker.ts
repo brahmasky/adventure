@@ -142,8 +142,8 @@ import { PlannerSupervisor, type QuoteRef, type SupervisorDeps, type TriageInput
 import { calibrationRows, type CalibrationRow } from "../jev/calibration.js";
 import { decide, marginOf, persistDecisionRows, recordSkip, topProbOf, type Decision, type JevDecisionInsert, type SkipReason } from "../jev/decide.js";
 import { createJevClient, type JevAnswer, type JevRequest, type JevResult } from "../jev/jev-client.js";
-import { jevDisarmMarkerPath, resolveJevLanesOff, resolveJevTriageMode, type JevTriageMode } from "../jev/jev-flags.js";
-import { checkJevModelCalibrated, resolveTriageOverridesIfRearmed } from "../jev/jev-incidents.js";
+import { resolveJevLanesOff, resolveJevTriageMode, type JevTriageMode } from "../jev/jev-flags.js";
+import { checkJevModelCalibrated, resolveQuietTriageOverrides } from "../jev/jev-incidents.js";
 import { langOf, type Lang } from "../jev/intent-question.js";
 import { buildTreeState, lastHougeTurnOf, quotedTurnFromRow, TREE_CATEGORY, TREE_QUESTIONS, type Category } from "../jev/questions/tree.js";
 import {
@@ -2748,7 +2748,7 @@ export class CoreWorker {
 
   private async triageTurnInner(i: TriageInput, state: OmpTurnState | undefined, lang: Lang, held: TriageHeld): Promise<TriageOutcome> {
     const run_id = i.claim.run_id;
-    resolveTriageOverridesIfRearmed(this.runStore, jevDisarmMarkerPath(process.env, this.ompDataDir()));
+    resolveQuietTriageOverrides(this.runStore);
     const mode = resolveJevTriageMode(process.env, this.ompDataDir());
     if (mode === "off") return this.triageOff(i, state, lang, held);
     if (this.runStore.triageOverrideFor(run_id)) return this.triageSkip(i, state, lang, "override", held);

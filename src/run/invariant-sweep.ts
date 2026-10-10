@@ -1,6 +1,6 @@
 import { statfsSync } from "node:fs";
 import type { SkipReason } from "../jev/decide.js";
-import { JEV_INCIDENT_SUBJECT } from "../jev/jev-incidents.js";
+import { JEV_INCIDENT_SUBJECT, resolveQuietTriageOverrides } from "../jev/jev-incidents.js";
 import { resolveApprovalTimeoutMs } from "../omp/omp-config.js";
 import { OMP_LESSON_SCOPES, renderLessonSection } from "./lesson-render.js";
 import { resolveEpisodicCoreCap, TERMINAL_NOTIFICATION_REPORT_MS, type RunStore } from "./run-store.js";
@@ -443,5 +443,7 @@ export function runInvariantSweep(input: InvariantSweepInput): InvariantSweepRes
     result.resolved += 1;
   }
 
+  // Stage B §6: a lane's triage_overrides page is opened by the gateway, never detected here; close it once its taps age out.
+  result.resolved += resolveQuietTriageOverrides(input.store, input.now);
   return result;
 }

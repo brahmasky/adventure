@@ -1,5 +1,4 @@
 import { JEV_REQUEST_MODEL } from "./jev-client.js";
-import { existsSync } from "node:fs";
 import { JEV_PROVIDER } from "../llm/metered-pricing.js";
 import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
 import type { RunStore } from "../run/run-store.js";
@@ -39,15 +38,35 @@ export function resolveJevIncidentsOnAnswer(store: RunStore): number {
   return resolveOpenIncidents(store, JEV_ANSWERED_RESOLVES, JEV_INCIDENT_SUBJECT);
 }
 
-export const TRIAGE_OVERRIDE_KINDS: ReadonlySet<string> = new Set(["triage_overrides"]);
+/** Stage B §6: three Dig deeper taps on one lane in seven days page Paco (one open page per lane per episode). */
+export const TRIAGE_OVERRIDE_LIMIT = 3;
+export const TRIAGE_OVERRIDE_WINDOW_DAYS = 7;
+const TRIAGE_OVERRIDES = "triage_overrides";
+const LANE_SUBJECT = new RegExp(`^${JEV_INCIDENT_SUBJECT}:lane:([a-z_]+)$`);
+
+/** The per-lane page's subject; its open fingerprint is the throttle (one page per lane per episode). */
+export function triageOverrideSubject(lane: string): string {
+  return `${JEV_INCIDENT_SUBJECT}:lane:${lane}`;
+}
+
+/** The start of the tap window that ends at `now`. */
+export function triageOverrideSince(now: string): string {
+  return new Date(Date.parse(now) - TRIAGE_OVERRIDE_WINDOW_DAYS * 86_400_000).toISOString();
+}
 
 /**
- * `triage_overrides` is a condition whose durable state is the disarm marker (spec §5.8): it resolves once Paco has deleted
- * the marker, so a later drift episode opens and pages again. While the marker exists it stays open (one page per episode).
+ * Stage B §6: resolve each open per-lane `triage_overrides` page whose lane is now under the limit in the window, so the
+ * next episode pages again. A subject that names no lane is left alone. Called after each tap (gateway), at each triage
+ * (core-worker) and from the sweep's effect phase. Returns how many it resolved.
  */
-export function resolveTriageOverridesIfRearmed(store: RunStore, markerPath: string): number {
-  if (existsSync(markerPath)) return 0;
-  return resolveOpenIncidents(store, TRIAGE_OVERRIDE_KINDS, JEV_INCIDENT_SUBJECT);
+export function resolveQuietTriageOverrides(store: RunStore, now: string = new Date().toISOString()): number {
+  let resolved = 0;
+  for (const open of store.listOpenIncidents()) {
+    const lane = open.kind === TRIAGE_OVERRIDES ? LANE_SUBJECT.exec(open.subject)?.[1] : undefined;
+    if (lane === undefined || store.countRecentTriageOverrides(lane, triageOverrideSince(now)) >= TRIAGE_OVERRIDE_LIMIT) continue;
+    if (store.resolveIncident(open.incident_id, now)) resolved += 1;
+  }
+  return resolved;
 }
 
 export const JEV_MODEL_UNCALIBRATED = "jev_model_uncalibrated";
