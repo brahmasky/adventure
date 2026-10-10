@@ -1,6 +1,6 @@
 # Jev decision tree — Stage B Implementation Plan
 
-**Rev 1 (2026-10-10)** — first draft from the code at `main@a714e15` (spec Rev 5 committed). Line anchors are from that commit;
+**Rev 2 (2026-10-10)** — Rev 1 (first draft from the code at `main@a714e15`, spec Rev 5) plus the codex plan review's three blockers and two warnings: `finishLane` re-checks abort after the warm wait (Task 10); link flattening matches the renderer's link syntax, any scheme (Task 4); a card whose body is empty after stripping is `empty_reply`, never `act` (Tasks 4, 7); gate B2 allows an empty facts list (Task 12); the sweep test stamps its events inside the window (Task 8). Line anchors are from that commit;
 when the code and this plan disagree, read the code, fix the plan line, and say so in the task report.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -1242,6 +1242,14 @@ describe("laneCard", () => {
   it("flattens markdown links to label (url), or the bare url when the label is the url", () => {
     expect(flattenLinks("see [BOM](https://bom.gov.au/nsw) now")).toBe("see BOM (https://bom.gov.au/nsw) now");
     expect(flattenLinks("[https://a.example/x](https://a.example/x)")).toBe("https://a.example/x");
+    // the renderer links ANY scheme without whitespace (markdown-to-telegram-html.ts step 3), so a non-http link must flatten too
+    expect(flattenLinks("open [me](tg://resolve?domain=x)")).toBe("open me (tg://resolve?domain=x)");
+    expect(flattenLinks("[x](javascript:alert(1))")).toBe("x (javascript:alert(1))");
+  });
+
+  it("a reply that is only an attach marker leaves no card: the caller falls through as empty_reply", () => {
+    expect(laneCard({ text: "[[attach:/tmp/x.txt]]", run_id: "run_1" })).toBeNull();
+    expect(laneCard({ text: "  [[attach:a]]\n[[attach:b]]  ", run_id: "run_1" })).toBeNull();
     expect(laneCard({ text: "[here](https://evil.example/x)", run_id: RUN }).text).toBe("here (https://evil.example/x)");
   });
   it("strips [[attach:…]] markers (a lane reply never attaches a file)", () => {
@@ -1297,7 +1305,8 @@ import type { NotificationButton } from "../../notifications/notification-types.
 export const LANE_ASK_PREFIX = "lane:ask:";
 export const DIG_DEEPER_TEXT = "🔍 Dig deeper";
 const CALLBACK_DATA_MAX_BYTES = 64;
-const MARKDOWN_LINK = /\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)/g;
+/** The renderer's own link syntax (`markdown-to-telegram-html.ts` step 3): any scheme, no whitespace in the url. */
+const MARKDOWN_LINK = /\[([^\]]+)\]\(([^)\s]+)\)/g;
 const ATTACH_MARKER = /\[\[attach:[^\]\n]*\]\]/g;
 
 export function digDeeperButton(run_id: string): NotificationButton {
@@ -1314,9 +1323,13 @@ export function flattenLinks(text: string): string {
   });
 }
 
-/** A lane reply is text only: attach markers stripped, links flattened, the optional note line, then Dig deeper. */
-export function laneCard(i: { text: string; run_id: string; note?: string }): { text: string; buttons: NotificationButton[] } {
+/**
+ * A lane reply is text only: attach markers stripped, links flattened, the optional note line, then Dig deeper. `null` when
+ * nothing is left after stripping (a reply that was only an attach marker): the caller treats it as `empty_reply`.
+ */
+export function laneCard(i: { text: string; run_id: string; note?: string }): { text: string; buttons: NotificationButton[] } | null {
   const body = flattenLinks(i.text.replace(ATTACH_MARKER, "")).trim();
+  if (body.length === 0) return null;
   return { text: i.note ? `${body}\n\n${i.note}` : body, buttons: [digDeeperButton(i.run_id)] };
 }
 
@@ -2934,8 +2947,9 @@ Replace `saveThenRoute` and its doc comment (lines 2798-2826):
     const settle: SettleFor = (r, save, handler, outcome) => ({ ...settleFor(r, save, handler, outcome), verdict_id });
     const save = route.save ? await this.saveFirst(i, state, lang, route, settle) : null;
     const result = await this.runLane(i, state, route, verdict_id, save?.note ?? null);
-    const card = result.kind === "reply" ? this.laneCardFor(i.claim.run_id, result.text, save) : null;
-    const handler: VerdictHandler = card ? "lane_reply" : `fallthrough:${result.kind === "reply" ? "render_failed" : result.why}`;
+    const rendered = result.kind === "reply" ? this.laneCardFor(i.claim.run_id, result.text, save) : { why: result.why };
+    const card = "card" in rendered ? rendered.card : null;
+    const handler: VerdictHandler = card ? "lane_reply" : `fallthrough:${"why" in rendered ? rendered.why : "render_failed"}`;
     const outcome = card ? "act" : "fallback";
     const model = result.kind === "reply" ? result.model : undefined;
     const id = save?.settled
@@ -2963,12 +2977,15 @@ Replace `saveThenRoute` and its doc comment (lines 2798-2826):
   }
 
   /** The reply as a lane card (the saved-rule line when a save committed); a render throw is null → `render_failed`. */
-  private laneCardFor(run_id: string, text: string, save: SaveStep | null): { text: string; buttons: NotificationButton[] } | null {
+  /** The card, or why there is none: an empty body after stripping is `empty_reply` (never settled `act`), a throw is `render_failed`. */
+  private laneCardFor(run_id: string, text: string, save: SaveStep | null):
+    { card: { text: string; buttons: NotificationButton[] } } | { why: "empty_reply" | "render_failed" } {
     try {
-      return this.laneCard({ text, run_id, ...(save?.settled ? { note: laneSavedNote(save.lesson_id, save.theme) } : {}) });
+      const card = this.laneCard({ text, run_id, ...(save?.settled ? { note: laneSavedNote(save.lesson_id, save.theme) } : {}) });
+      return card ? { card } : { why: "empty_reply" };
     } catch (e) {
       console.error(`lane: card render failed: ${safeReason(e)}`);
-      return null;
+      return { why: "render_failed" };
     }
   }
 
@@ -3242,7 +3259,8 @@ the seeded runs become lane runs and the final expectation reads the incident, n
 
 Also update the describe comment (line 22) to: `// Spec §5.6 + stage B §6: Undo is chat-bound compare-and-set; "Dig deeper" is ONE admission and the override label; three on one lane in seven days page Paco.`
 
-`tests/run/invariant-sweep-lanes.test.ts` — append inside `describe("lane_fallthrough_rate", …)` (it is the lane sweep file):
+`tests/run/invariant-sweep-lanes.test.ts` — add `import { createLedgerEvent } from "../../src/run/run-ledger.js";` at the top, then
+append inside `describe("lane_fallthrough_rate", …)` (it is the lane sweep file; `iso()` is its clock helper):
 
 ```ts
   // Stage B §6: the gateway opens a lane's triage_overrides page; nothing re-detects it, so the sweep's effect phase must
@@ -3250,7 +3268,11 @@ Also update the describe comment (line 22) to: `// Spec §5.6 + stage B §6: Und
   it("the effect phase resolves a quiet lane's triage_overrides page and leaves a busy one open", () => {
     store.openIncident({ kind: "triage_overrides", subject: "jev:lane:answer", detail: { lane: "answer" } });
     store.openIncident({ kind: "triage_overrides", subject: "jev:lane:lookup", detail: { lane: "lookup" } });
-    for (let k = 0; k < 3; k++) store.recordMemoryEvent("triage_override", { run_id: `run_o${k}`, new_run_id: `run_n${k}`, change_id: null, lane: "lookup" });
+    // the events and the sweep share the test clock: recordMemoryEvent stamps the real clock, so build the rows by hand
+    for (let k = 0; k < 3; k++) {
+      store.appendLedgerEvent({ ...createLedgerEvent({ correlation_id: "memory", event_type: "triage_override", actor: "gateway",
+        payload: { run_id: `run_o${k}`, new_run_id: `run_n${k}`, change_id: null, lane: "lookup" } }), occurred_at: iso(-10 * (k + 1)) });
+    }
     sweep();
     expect(store.listOpenIncidents().filter((i) => i.kind === "triage_overrides").map((i) => i.subject)).toEqual(["jev:lane:lookup"]);
   });
@@ -3725,7 +3747,7 @@ EOF
 ### Task 10: The refused-pin step-up records the walk's original cause
 
 **Files:**
-- Modify: `src/omp/planner-supervisor.ts:590-602` (`pinWalk`)
+- Modify: `src/omp/planner-supervisor.ts:590-602` (`pinWalk`), `:519-528` (`finishLane`, the abort re-check)
 - Test: `tests/omp/planner-supervisor.test.ts` (append one case to `describe("PlannerSupervisor — the turn-owned chain …")`)
 
 **Interfaces:**
@@ -3803,6 +3825,52 @@ EOF
 ```
 
 ---
+
+- [ ] **Step 6: Write the failing test (a kill during the warm wait delivers no card)** — append inside the same `describe`:
+
+```ts
+  // Stage B §8: a lane reply that arrives while /kill has already ended the turn must not reach Paco. finishLane waits for the
+  // warming child first; without a re-check after that wait, the card would be assigned and the turn completed anyway.
+  it("a lane reply after an abort during the warm wait delivers no card and completes nothing", async () => {
+    const h = harness({ triage: async () => ({ kind: "lane_reply", text: "quick", buttons: [] }), warmHangsMs: 10_000 });
+    const turn = h.submit("你好");
+    await h.untilTriaged();
+    await h.supervisor.abortAll("killed");
+    await turn;
+    expect(h.completed).toEqual([]);          // no outcome.complete call
+    expect(h.store.listChatTurns(h.chatId).filter((t) => t.role === "assistant")).toEqual([]);
+  });
+```
+
+(`harness` is the file's supervisor test harness; `warmHangsMs` makes `ensureSession` resolve after the given delay, `untilTriaged`
+resolves when the triage promise has settled, `completed` collects `outcome.complete` calls. If the harness lacks one of these
+knobs, add it to the harness in this step, not to production code.)
+
+- [ ] **Step 7: Run the test to verify it fails**
+
+Run: `npx vitest run tests/omp/planner-supervisor.test.ts -t "warm wait"`
+Expected: FAIL — `completed` holds one entry (the card was delivered after the kill).
+
+- [ ] **Step 8: Implement** — in `finishLane` (`src/omp/planner-supervisor.ts:519-528`), after the `bounded(warm, ABORT_GRACE_MS)` line
+  and before `turn.lastText = v.text;`, add:
+
+```ts
+    if (turn.failure || turn.abort.signal.aborted) return; // killed while waiting on the warm child: abortTurn already ended the turn
+```
+
+- [ ] **Step 9: Run the tests to verify they pass**
+
+Run: `npx vitest run tests/omp/planner-supervisor.test.ts`
+Expected: PASS, the new case included.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add src/omp/planner-supervisor.ts tests/omp/planner-supervisor.test.ts
+git commit -m "fix(supervisor): a lane reply after an abort during the warm wait delivers nothing
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+```
 
 ### Task 11: Arming rows and the replay report
 
@@ -4178,7 +4246,8 @@ async function caseLookupLane(g) {
   check("B2 lookup: the strict reader ran, every attempt on the Reader list", readers.length > 0 && readers.every((a) => readerList.has(key(a.provider, a.model))),
     readers.map((a) => `${key(a.provider, a.model)}:${a.outcome}`).join(" ") || "none");
   const row = g.store.laneTurnsSince(g.chat, null).find((r) => r.run_id === run_id);
-  check("B2 lookup: a lane_replies row with hostnames and facts", /^Houge answered from \S+.* — facts: \S/.test(row?.catch_up ?? ""), row?.catch_up ?? "none");
+  check("B2 lookup: a lane_replies row with the lane and a hostname", row?.lane === "lookup" && /^Houge answered from [a-z0-9.-]+\.[a-z]{2,}/i.test(row?.catch_up ?? ""), row?.catch_up ?? "none");
+  check("B2 lookup: the row carries the facts label (the reader may return an empty facts list)", /— facts: /.test(row?.catch_up ?? ""), row?.catch_up ?? "none");
   check("B2 lookup: the reply carries a source line", /来源 \/ Sources: https?:\/\//.test(outboxReply(g, run_id)?.text ?? ""));
   const fetches = g.h.events(run_id, "http_fetch_performed").length;
   check("B2 lookup: at most one http_fetch_performed", fetches <= 1, String(fetches));
