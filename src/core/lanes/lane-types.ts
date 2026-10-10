@@ -1,3 +1,5 @@
+import type { ReaderExtraction } from "../quarantine.js";
+import type { ToolAdapterResult } from "../../tools/tool-registry.js";
 import type { Effort } from "../../jev/tree-policy.js";
 import type { QuotedTurn } from "../../jev/questions/tree.js";
 import type { LlmResult } from "../../llm/types.js";
@@ -34,3 +36,25 @@ export type LaneResult =
   | { kind: "fallthrough"; why: LaneWhy };
 export type LaneFall = Extract<LaneResult, { kind: "fallthrough" }>;
 export const fall = (why: LaneWhy): LaneFall => ({ kind: "fallthrough", why });
+
+/** The strict reader's result (stage B §5 step 4): the schema-only extraction and its digest, or a named failure. */
+export type StrictRead = { ok: true; extraction: ReaderExtraction; digest: string } | { ok: false; why: "unreadable" | "reserve" | "aborted" };
+/** `web_search_performed` exactly as the planner's wrapper writes it. */
+export interface SearchPerformed { query: string; provider: string; source_urls: string[]; result_count: number }
+/** `http_fetch_performed` exactly as the planner's wrapper writes it. */
+export interface FetchPerformed { url: string; status: number; bytes: number }
+
+export interface LookupLaneDeps extends AnswerLaneDeps {
+  /** `createWebSearchAdapter` (the configured chain); it takes no signal, so the lane races it. */
+  search(input: { query: string; max_results: number }): Promise<ToolAdapterResult>;
+  /** `createHttpFetchAdapter` (the SSRF floor, 15 s, 1 MB, 6 000-char cap); it takes no signal either. */
+  fetch(input: { url: string }): Promise<ToolAdapterResult>;
+  /** The strict reader on the Reader role; `attemptMs` is read as each attempt starts. */
+  read(output: Record<string, unknown>, objective: string, o: { attemptMs: () => number; signal: AbortSignal }): Promise<StrictRead>;
+  /** One Tiny-role one-shot, role `lane` (the query rewrite). */
+  rewrite(req: { prompt: string; deadlineMs: number; signal: AbortSignal }): Promise<LlmResult>;
+  /** The chat's last turns from Telegram runs (never schedule rows), oldest first. */
+  previousTelegramTurns(chatId: string): readonly ChatTurnRow[];
+  maxResults: number;
+  ledger: { searchPerformed(p: SearchPerformed): void; fetchPerformed(p: FetchPerformed): void };
+}
