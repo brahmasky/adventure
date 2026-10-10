@@ -48,6 +48,15 @@
 //
 // Budget: Jev calls are metered but tiny; cases 3-8 each run one real planner turn (case 8 may run several tools);
 // cases 1 and 6 run the distill + reconcile legs; case 12a runs one Tiny one-shot. Exit: 0 PASS · 1 FAIL · 2 setup error.
+//
+// Stage B (spec 2026-10-10 §11, plan 2026-10-10 Task 12): the calibration also names `category:answer` and `category:lookup`,
+// so both lanes arm. "Planner requests" = llm_attempt role `compose` (Jev is role `triage`; a lane's compose and rewrite are
+// role `lane`). New cases, full turns in g.chat: B1 answer lane · B2 lookup lane (prints whether the rewrite and the
+// thin-result fetch ran, and the query) · B6 a planner turn right after B2 (`认真想` forces it) whose loop_started carries
+// B2 in `catch_up_run_ids` · B5 a Dig deeper tap on B1's card, a memlane_ask event straight into Gateway.intake. Case 6 is
+// now the two-request case (two_request + the planner, or the lookup lane after the save; a card that answers only the rule
+// FAILs) and case 8 also passes as an over-limit lookup (lane_limits). The probes may take the lookup lane (counted, must
+// not throw). Stage B PASS adds: B1/B2 act with zero compose attempts, every fallthrough:* names a §8 why, B6's id present.
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
@@ -84,13 +93,14 @@ async function loadModules() {
     "config/load-env.js", "config/disarm-posture.js", "core/core-worker.js", "domain/types.js", "gateway/gateway.js",
     "run/run-store.js", "jev/jev-client.js", "jev/questions/tree.js", "jev/questions/types.js", "jev/jev-incidents.js",
     "jev/triage-replay.js", "run/invariant-sweep.js", "omp/model-roles.js", "omp/model-catalog.js", "omp/role-resolver.js",
-    "omp/omp-config.js", "omp/model-roles-tick.js", "jev/tree-policy.js", "jev/calibration.js", "omp/omp-version.js"
+    "omp/omp-config.js", "omp/model-roles-tick.js", "jev/tree-policy.js", "jev/calibration.js", "omp/omp-version.js", "core/lanes/lane-types.js"
   ].map((p) => import(`../dist/${p}`)));
   const m = Object.assign({}, ...mods);
   const need = ["loadHougeEnv", "DISARM_FLAGS", "CoreWorker", "buildTypedTaskEvent", "Gateway", "RunStore", "createJevClient", "toJevQuestion", "CALIBRATED_ROWS", "TREE_QUESTIONS",
     "isProposal", "criteriaHash", "JEV_INCIDENT_SUBJECT", "runTreeReplay", "detectViolations", "checkJevSkipRate", "JEV_NOT_ATTEMPT_REASONS",
     "JEV_SILENT_SKIP_REASONS", "ROLE_LISTS", "ALLOWED_PROVIDERS", "CHAT_ROLES", "matchOverride", "clampEffort", "STEP_UP", "readOmpCatalog",
-    "RoleResolver", "resolveOmpConfig", "runModelRolesTick", "treeArmed", "TREE_STATUS_ARM_ID", "calibrationRows", "checkOmpVersion", "CASCADE_TIMEOUT_MS", "CATEGORIES"];
+    "RoleResolver", "resolveOmpConfig", "runModelRolesTick", "treeArmed", "TREE_STATUS_ARM_ID", "calibrationRows", "checkOmpVersion", "CASCADE_TIMEOUT_MS", "CATEGORIES",
+    "TREE_ANSWER_ARM_ID", "TREE_LOOKUP_ARM_ID", "LANE_WHYS"];
   const missing = need.filter((n) => m[n] === undefined);
   if (missing.length > 0) throw new Error(`dist/ lacks ${missing.join(", ")} (build the branch first)`);
   return m;
@@ -109,10 +119,11 @@ async function probeReportedModel(m) {
   } finally { mem.close(); }
 }
 
-/** Gate-only calibration: the six tree questions and the status pseudo-row (treeArmed), zh + en, hashes from dist/, model = m.model. */
+/** Gate-only calibration: the six tree questions and the three lane pseudo-rows (status, answer, lookup), zh + en, hashes from dist/. */
 function writeCalibration(m, root) {
   const category = m.TREE_QUESTIONS.find((q) => q.id === "category");
-  const ids = [...m.TREE_QUESTIONS.map((q) => [q.id, m.criteriaHash(q)]), [m.TREE_STATUS_ARM_ID, m.criteriaHash(category)]];
+  const pseudo = [m.TREE_STATUS_ARM_ID, m.TREE_ANSWER_ARM_ID, m.TREE_LOOKUP_ARM_ID].map((id) => [id, m.criteriaHash(category)]);
+  const ids = [...m.TREE_QUESTIONS.map((q) => [q.id, m.criteriaHash(q)]), ...pseudo];
   const rows = ids.flatMap(([question_id, criteria_hash]) => ["zh", "en"].map((lang) =>
     ({ question_id, criteria_hash, model: m.model, lang, approved: "live-gate", evidence: "live-gate (temp file, never committed)" })));
   const file = join(root, "calibration.json");
@@ -185,6 +196,9 @@ const MSG = {
   ruleLookup: "以后温度都用摄氏度。明天悉尼天气怎么样？",
   correction: "我之前让你回复控制在三句话以内，那条规则不对，删掉它。",
   research: "帮我比较三款适合家用的 NAS，从价格、功耗和软件生态三方面给出推荐。",
+  answerLane: "你觉得 NAS 放在客厅还是书房更好？",
+  lookupLane: "明天悉尼天气怎么样？",
+  catchUp: "那后天呢？认真想",
   probes: ["明天悉尼天气怎么样？", "今天有什么值得关注的新闻？"]
 };
 
@@ -301,11 +315,21 @@ function userTurnOf(g, chat, run_id) {
   return g.store.getRecentChatTurns(chat, 20).find((t) => t.run_id === run_id && t.role === "user");
 }
 
-/** 6: a rule riding on a lookup is saved first, then the planner answers (spec §3 "sets_rule = yes with any category"). */
+/** 6 (stage B §11 case 4): a rule riding on a lookup saves first; then two_request + the planner, or the lookup lane after the save. */
 async function caseRuleOnLookup(g) {
   const { run_id, v } = await turn(g, "6 rule+lookup", g.chat, MSG.ruleLookup);
-  if (!(v?.save_outcome === "saved" && v.lane === "planner")) { otherPath(g, "6 rule+lookup", run_id, v); return; }
-  check("6 rule+lookup: exactly one lane save, then the planner answered", laneSaves(g, run_id) === 1 && g.h.attempts(run_id, "compose").length > 0);
+  if (v?.save_outcome !== "saved") { otherPath(g, "6 rule+lookup", run_id, v); return; }
+  check("6 rule+lookup: exactly one lane save", laneSaves(g, run_id) === 1, String(laneSaves(g, run_id)));
+  if (v.lane === "planner") {
+    console.log(`  6 rule+lookup: path = save, then the planner (${v.category}/${v.reason})`);
+    check("6 rule+lookup: the planner answered after the save", g.h.attempts(run_id, "compose").length > 0);
+  } else if (v.lane === "lookup") {
+    console.log("  6 rule+lookup: path = save, then the lookup lane");
+    check("6 rule+lookup: the lookup lane answered the question (one search, lane_reply)",
+      v.handler_outcome === "lane_reply" && g.h.events(run_id, "web_search_performed").length === 1, v.handler_outcome);
+  } else if (v.lane === "memory") {
+    check("6 rule+lookup: a lane card that answers only the rule is a FAIL (the two-request guard missed it)", false, `${v.category}/${v.lane}/${v.reason}`);
+  } else otherPath(g, "6 rule+lookup", run_id, v);
 }
 
 /** 7: a correction is not a rule: memory with sets_rule below yes goes to the planner and the lane saves nothing. */
@@ -316,11 +340,17 @@ async function caseCorrection(g) {
   } else otherPath(g, "7 correction", run_id, v);
 }
 
-/** 8: beyond a lookup's limits → the planner on the routed role; research floors at Thinking (ROLE_FLOOR). */
+/** 8 (stage B §11 case 3): beyond a lookup's limits → the planner: research on Thinking, or an over-limit lookup (lane_limits); the lanes idle. */
 async function caseOverflow(g) {
   const { run_id, v } = await turn(g, "8 overflow", g.chat, MSG.research);
+  const laneAttempts = g.h.attempts(run_id, "lane").length;
+  if (v?.category === "lookup" && v.reason === "lane_limits") {
+    check("8 overflow: an over-limit lookup → the planner (lane_limits), the lanes idle", v.lane === "planner" && laneAttempts === 0 && g.h.attempts(run_id, "compose").length > 0,
+      `${v.lane}/${v.role} lane attempts=${laneAttempts}`);
+    return;
+  }
   if (v?.category !== "research") { otherPath(g, "8 overflow", run_id, v); return; }
-  check("8 overflow: research → planner on Thinking", v.lane === "planner" && v.role === "thinking", `${v.lane}/${v.role}`);
+  check("8 overflow: research → planner on Thinking, the lanes idle", v.lane === "planner" && v.role === "thinking" && laneAttempts === 0, `${v.lane}/${v.role} lane attempts=${laneAttempts}`);
   // F15: Thinking shares Default's head; only the pinned effort shows the Thinking pin applied
   const ok = g.h.attempts(run_id, "compose").find((e) => e.payload.outcome === "ok");
   const want = ok && g.roles.candidates("thinking", { effort: v.effort }).find((c) => key(c.provider, c.model) === key(ok.payload.provider, ok.payload.model));
@@ -338,8 +368,107 @@ async function caseJevProbes(g) {
     g.worker.buildOmpTools(claim);
     const out = await g.worker.triageTurn({ claim, text, userText: text, modality: "text", posture: null, signal: new AbortController().signal });
     const v = g.h.verdict(run_id); show(`probe ${k}`, v);
-    check(`probe ${k}: one verdict row, and the route names it`, v !== undefined && out.route?.verdict_id === v.verdict_id);
+    const ok = v !== undefined && (out.kind === "lane_reply" ? v.handler_outcome === "lane_reply" : out.route?.verdict_id === v.verdict_id);
+    check(`probe ${k}: one verdict row; the route names it, or a lane replied`, ok, `kind=${out.kind} lane=${v?.lane} handler=${v?.handler_outcome}`);
   }
+}
+
+/** The run's final reply as the outbox holds it (text + buttons), through a read-only connection on the copy. */
+function outboxReply(g, run_id) {
+  const db = new DatabaseSync(g.dbPath, { readOnly: true });
+  try {
+    const r = db.prepare(`SELECT payload_json FROM notification_outbox WHERE run_id = ? AND intent_type = 'final_report' ORDER BY created_at DESC LIMIT 1`).get(run_id);
+    return r ? JSON.parse(r.payload_json) : null;
+  } finally { db.close(); }
+}
+
+/** B1 (stage B §11 case 1): a chat question → the answer lane on a Fast candidate, routed_by on every lane leg, Dig deeper. */
+async function caseAnswerLane(g) {
+  const { run_id, v } = await turn(g, "B1 answer", g.chat, MSG.answerLane);
+  g.answerRun = run_id;
+  if (v?.lane !== "answer") { otherPath(g, "B1 answer", run_id, v, { mustAct: true }); return; }
+  check("B1 answer: lane_reply, act", v.handler_outcome === "lane_reply" && v.route_outcome === "act", `${v.handler_outcome}/${v.route_outcome}`);
+  check("B1 answer: zero planner (compose) attempts", g.h.attempts(run_id, "compose").length === 0);
+  const lane = g.h.attempts(run_id, "lane").map((e) => e.payload);
+  const fast = new Set(g.roles.candidates("fast").map((c) => key(c.provider, c.model)));
+  check("B1 answer: ≥ 1 ok lane attempt, every one on a Fast candidate with routed_by = the verdict id",
+    lane.some((a) => a.outcome === "ok") && lane.every((a) => fast.has(key(a.provider, a.model)) && a.routed_by === v.verdict_id),
+    lane.map((a) => `${key(a.provider, a.model)}:${a.outcome}:${a.routed_by}`).join(" ") || "none");
+  check("B1 answer: verdict.model is the compose's answering model (provider/model)", lane.some((a) => a.outcome === "ok" && key(a.provider, a.model) === v.model), `verdict.model=${v.model}`);
+  const reply = outboxReply(g, run_id);
+  check("B1 answer: the card carries 🔍 Dig deeper", (reply?.buttons ?? []).some((b) => b.text === "🔍 Dig deeper" && b.data === `lane:ask:${run_id}`),
+    JSON.stringify(reply?.buttons ?? null));
+}
+
+/** B2 (stage B §11 case 2): a weather question → the lookup lane: one search, the reader wall, a source line, the catch-up row. */
+async function caseLookupLane(g) {
+  const { run_id, v } = await turn(g, "B2 lookup", g.chat, MSG.lookupLane);
+  g.lookupRun = run_id;
+  if (v?.lane !== "lookup") { otherPath(g, "B2 lookup", run_id, v, { mustAct: true }); return; }
+  check("B2 lookup: lane_reply, act, zero planner (compose) attempts",
+    v.handler_outcome === "lane_reply" && v.route_outcome === "act" && g.h.attempts(run_id, "compose").length === 0, `${v.handler_outcome}/${v.route_outcome}`);
+  const searches = g.h.events(run_id, "web_search_performed");
+  check("B2 lookup: exactly one web_search_performed", searches.length === 1, String(searches.length));
+  const readerList = new Set(g.roles.candidates("reader").map((c) => key(c.provider, c.model)));
+  const readers = g.h.attempts(run_id, "reader").map((e) => e.payload);
+  check("B2 lookup: the strict reader ran, every attempt on the Reader list", readers.length > 0 && readers.every((a) => readerList.has(key(a.provider, a.model))),
+    readers.map((a) => `${key(a.provider, a.model)}:${a.outcome}`).join(" ") || "none");
+  const row = g.store.laneTurnsSince(g.chat, null).find((r) => r.run_id === run_id);
+  check("B2 lookup: a lane_replies row with the lane and a hostname", row?.lane === "lookup" && /^Houge answered from [a-z0-9.-]+\.[a-z]{2,}/i.test(row?.catch_up ?? ""), row?.catch_up ?? "none");
+  check("B2 lookup: the row carries the facts label (the reader may return an empty facts list)", /— facts: /.test(row?.catch_up ?? ""), row?.catch_up ?? "none");
+  check("B2 lookup: the reply carries a source line", /来源 \/ Sources: https?:\/\//.test(outboxReply(g, run_id)?.text ?? ""));
+  const fetches = g.h.events(run_id, "http_fetch_performed").length;
+  check("B2 lookup: at most one http_fetch_performed", fetches <= 1, String(fetches));
+  const rewrite = g.h.attempts(run_id, "lane").filter((e) => e.payload.routed_by === undefined); // compose legs carry routed_by; the rewrite's do not
+  console.log(`  B2: thin-result fetch ${fetches === 1 ? "fired" : "did not fire"}; rewrite ${rewrite.length > 0 ? "ran" : "did not run"}; query "${searches[0]?.payload.query ?? "?"}"`);
+}
+
+/** B6 (stage B §11 case 6): a planner turn right after B2 in the same chat (`认真想` forces the planner) carries B2 in its catch-up. */
+async function caseCatchUp(g) {
+  if (!g.lookupRun || g.h.verdict(g.lookupRun)?.handler_outcome !== "lane_reply") {
+    inconclusive.push("B6 catch-up: B2 did not reply through the lookup lane, so there was nothing to catch up");
+    console.log("INCONCLUSIVE B6 catch-up — no lookup lane reply to catch up");
+    return;
+  }
+  const { run_id, v } = await turn(g, "B6 catch-up", g.chat, MSG.catchUp);
+  check("B6 catch-up: think harder → the planner on Thinking", v?.lane === "planner" && v.role === "thinking", `${v?.lane}/${v?.role}`);
+  const ids = g.h.events(run_id, "loop_started")[0]?.payload.applied_artifacts?.catch_up_run_ids ?? [];
+  check("B6 catch-up: loop_started.applied_artifacts.catch_up_run_ids holds B2's run", ids.includes(g.lookupRun), JSON.stringify(ids));
+}
+
+/** B5 (stage B §11 case 5): a Dig deeper tap on B1's card → a second run that skips triage, the planner on Default, the labels. */
+async function caseDigDeeper(g) {
+  const original = g.answerRun; const v0 = original ? g.h.verdict(original) : undefined;
+  if (!v0 || v0.lane !== "answer" || v0.handler_outcome !== "lane_reply") {
+    inconclusive.push("B5 dig deeper: B1 did not reply through the answer lane, so there was no card to tap");
+    console.log("INCONCLUSIVE B5 dig deeper — no answer lane card");
+    if (g.strict) check("B5 dig deeper: B1's card existed under --real-calibration", false);
+    return;
+  }
+  const tapKey = `telegram:gate-tap:${randomUUID()}`;
+  const r = new g.m.Gateway(g.store, undefined, undefined, undefined, undefined, { dataDir: g.root }).intake(g.m.buildTypedTaskEvent({
+    source: "telegram", type: "memlane_ask", requested_by: { kind: "user", id: "gate" }, notify: { kind: "telegram", chat_id: g.chat },
+    idempotency_key: tapKey, source_reference: tapKey, metadata: { telegram_update_id: 1, telegram_callback_id: tapKey, run_id: original } }));
+  check("B5 dig deeper: the tap re-admits the message as a new run", r.ok && r.status === "created" && Boolean(r.run_id), JSON.stringify(r));
+  if (!r.ok || !r.run_id) return;
+  g.runIds.push(r.run_id); g.worker.submitTurn(r.run_id);
+  check("B5 dig deeper: the re-run ended", ["completed", "failed", "waiting_for_approval"].includes(await g.h.settle(r.run_id)));
+  const v = g.h.verdict(r.run_id); show("B5 dig deeper", v);
+  check("B5 dig deeper: triage skipped (override), the planner on Default", v?.skip_reason === "override" && v.lane === "planner" && v.role === "default",
+    `${v?.skip_reason} ${v?.lane}/${v?.role}`);
+  check("B5 dig deeper: the planner answered the re-run", g.h.attempts(r.run_id, "compose").length > 0);
+  check("B5 dig deeper: B1's verdict now reads paco_correction = ask_anyway", g.h.verdict(original)?.paco_correction === "ask_anyway");
+  check("B5 dig deeper: B1 itself made zero compose attempts", g.h.attempts(original, "compose").length === 0);
+  const ov = g.store.getLedgerEvents().filter((e) => e.event_type === "triage_override" && e.payload.new_run_id === r.run_id);
+  check("B5 dig deeper: one triage_override with lane = answer", ov.length === 1 && ov[0].payload.lane === "answer", JSON.stringify(ov.map((e) => e.payload)));
+}
+
+/** Stage B PASS: every fall-through in the gate names a why from spec §8's table (or a memory-lane save spelling). */
+function checkFallthroughWhys(g) {
+  const allowed = new Set([...g.m.LANE_WHYS, "not_durable", "capped", "none", "run_failed"]);
+  const bad = g.runIds.map((id) => g.h.verdict(id)).filter((v) => v?.handler_outcome?.startsWith("fallthrough:")
+    && !allowed.has(v.handler_outcome.slice("fallthrough:".length)));
+  check("every fallthrough:* in the gate carries a why from spec §8", bad.length === 0, bad.map((v) => `${v.run_id}:${v.handler_outcome}`).join(",") || "none");
 }
 
 /** Every model id named by every role list, by role (judges per seat). */
@@ -558,7 +687,8 @@ function checkCommittedArming(g) {
     g.m.CALIBRATED_ROWS.some((r) => r.model === g.m.model));
   for (const lang of ["zh", "en"]) {
     const a = g.m.treeArmed(lang, g.m.model, rows);
-    check(`arming (${lang}): committed CALIBRATED_ROWS arm category, rule, status and memory`, a.category && a.rule && a.status && a.memory, JSON.stringify(a));
+    check(`arming (${lang}): committed CALIBRATED_ROWS arm category, rule, status, memory, answer and lookup`,
+      a.category && a.rule && a.status && a.memory && a.answer && a.lookup, JSON.stringify(a));
   }
 }
 
@@ -599,12 +729,14 @@ async function main() {
     if (g.strict) checkCommittedArming(g);
     caseRoleHeads(g, catalog); caseRoleRules(g, catalog); await caseRolesTick(g);
     const from = now();
-    for (const c of [caseMemory, caseStatus, caseAck, caseOkAfterProposal, caseQuote, caseRuleOnLookup, caseCorrection, caseOverflow, caseJevProbes]) await c(g);
+    for (const c of [caseMemory, caseStatus, caseAck, caseOkAfterProposal, caseQuote, caseRuleOnLookup, caseCorrection, caseOverflow,
+      caseAnswerLane, caseLookupLane, caseCatchUp, caseDigDeeper, caseJevProbes]) await c(g);
     await g.worker.shutdownPlanners();
     const to = now();
     checkRoutedJoins(g);
     checkNaturalCascades(g);
     checkNoPending(g);
+    checkFallthroughWhys(g);
     checkSkipAbsolute(g, from, to);
     await caseParity(g);
     await caseSkipRate(g);

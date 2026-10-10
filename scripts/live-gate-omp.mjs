@@ -25,6 +25,11 @@
 //       never ran). With stdin not a TTY, a case that needs the operator (a "Press Enter" step, a y/n probe) is SKIPPED.
 // The ledger holds counts and hashes only, so every PASS criterion reads rows, never message bodies,
 // except where a case names the reply text (read from the outbox / chat_turns of the chat under test).
+// Stage B: Jev's lookup lane answers a plain weather question without the planner, so cases 2, 11 and 18 append 认真想 to
+// force the planner. `think harder` also labels the chat's PREVIOUS verdict paco_correction = think_harder: in the full mode
+// (the live daemon) that label lands on the operator chat's previous turn in the live DB (--smoke does not run these cases).
+// Paco's ruling on this side effect: see the stage B plan, Task 12 "Open decision". Shipped as option (a): one such label per
+// full run is accepted. The suffix also sits on the chat-shaped messages of cases 1, 5, 19 and 21 (the answer lane would take them).
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -92,14 +97,14 @@ const fallbackAfterMissing = (rows) => {
 // ── the cases (spec §11 + task-15 rulings 3: cases 18–20; case 7 is photo only) ─────────────────────────
 
 const CASES = [
-  { n: 1, title: "plain question on Opus 5.5", send: () => "What is 17×23?",
+  { n: 1, title: "plain question on Opus 5.5", send: () => "What is 17×23? 认真想",
     pass: "llm_attempt provider=anthropic, model ~opus-5-5, family=claude; run completed",
     check: (v, [r]) => [
       [v.run(r)?.state === "completed", "run completed"],
       [attempts(v, r, "compose").some((p) => p.outcome === "ok" && p.provider === "anthropic" && /opus-5-5/.test(String(p.model)) && p.family === "claude"),
         "ok compose llm_attempt on anthropic / opus-5-5 / claude"]
     ] },
-  { n: 2, title: "web question: bridge web_search + gemini reader", send: () => "What's the weather in Sydney tomorrow?",
+  { n: 2, title: "web question: bridge web_search + gemini reader", send: () => "What's the weather in Sydney tomorrow? 认真想",
     pass: "tool_finished{web_search}; reader llm_attempt family=gemini; no loop_step.result_digest > 200 chars",
     check: (v, [r]) => [
       [toolRows(v, r, "web_search").length > 0, "tool_finished for web_search"],
@@ -114,7 +119,7 @@ const CASES = [
     pass: "run A: tool_approvals denied + bash tool_finished{denied}; run B: tool_approvals consumed + bash tool_finished{succeeded}",
     check: checkDenyApprove },
   { n: 5, title: "memory across a daemon restart", drive: driveRestart,
-    send: () => "My code word is ZEBRA  →  (restart)  →  What was my code word?",
+    send: () => "My code word is ZEBRA 认真想  →  (restart)  →  What was my code word? 认真想",
     pass: "second reply contains ZEBRA",
     check: (v, [, b]) => [[/ZEBRA/i.test(replyText(v, b)), "second reply contains ZEBRA"]] },
   { n: 6, title: "planner fallback: Default head refused at spawn", send: () => "What is 17×23?",
@@ -146,7 +151,7 @@ const CASES = [
       [pay(v, r, "run_failed").some((p) => p.error_type === "killed"), "run_failed error_type=killed"],
       [c.pidsGoneMs !== null && c.pidsGoneMs <= 5000, `planner pids gone within 5 s (${c.pidsGoneMs ?? "never"} ms)`]
     ] },
-  { n: 11, title: "D10: the reader skips the planner's family", send: () => "What's the weather in Sydney tomorrow?",
+  { n: 11, title: "D10: the reader skips the planner's family", send: () => "What's the weather in Sydney tomorrow? 认真想",
     prep: ["From the operator chat: /models set fast k3 · /models set default k3 · /models set thinking k3 · /models set reader k3 (no kickstart: an override applies on the next turn).",
       "After this case: /models reset fast · /models reset default · /models reset thinking · /models reset reader."],
     pass: "the read answers; its first reader llm_attempt is off the planner's family (kimi) although the reader override heads k3; no wall_collapse event",
@@ -192,14 +197,14 @@ const CASES = [
     send: () => "In 2 minutes, remind me to stretch  →  (then a long task so it overlaps the fire)",
     pass: "the schedule-born run starts after the user turn ends, as its own turn (no steer)",
     check: checkSchedule },
-  { n: 18, title: "single extension entry: a bridge tool works", send: () => "What's the weather in Melbourne tomorrow?",
+  { n: 18, title: "single extension entry: a bridge tool works", send: () => "What's the weather in Melbourne tomorrow? 认真想",
     pass: "a succeeded tool_finished for a bridge tool; every live planner argv has exactly one -e",
     check: (v, [r], c) => [
       [pay(v, r, "tool_finished").some((p) => (p.tool === "web_search" || p.tool === "bash") && p.status === "succeeded"), "bridge tool_finished succeeded"],
       [c.argvEs.length > 0 && c.argvEs.every((n) => n === 1), `planner argv -e counts: [${c.argvEs.join(", ")}]`]
     ] },
   { n: 19, title: "steer at end of turn", drive: driveSteerAtEnd,
-    send: () => "Write a 4-line poem about rain  →  (the moment it replies) One about snow too  →  Reply with the single word PAPAYA",
+    send: () => "Write a 4-line poem about rain 认真想  →  (the moment it replies) One about snow too 认真想  →  Reply with the single word PAPAYA 认真想",
     pass: "every run terminal; one reply per parent, none for a merged run; the next turn is not ended early",
     check: checkSteerAtEnd },
   { n: 20, title: "voice note stays on agy-cli", send: () => "(send a short voice note)",
@@ -210,7 +215,7 @@ const CASES = [
       [!attempts(v, r, "media_transcribe").some((p) => OAUTH_PROVIDERS.has(p.provider)), "no media_transcribe row on an omp provider"]
     ] },
   { n: 21, title: "taught lesson applies on the next turn", drive: driveTeach,
-    send: () => "From now on, end every reply with the word BANANA. Save that as a lesson.  →  What is 2+2?",
+    send: () => "From now on, end every reply with the word BANANA. Save that as a lesson. 认真想  →  What is 2+2? 认真想",
     pass: "run A: lesson_write tool_finished succeeded and a new lesson row; run B: loop_started.applied_artifacts.lesson_ids contains it",
     check: checkTeach },
   { n: 22, title: "episodic distill on the omp ticks chain", smoke: smokeDistill, drive: driveDistillObserve,
@@ -480,10 +485,10 @@ async function driveDenyApprove(c, cs) {
 }
 
 async function driveRestart(c) {
-  const a = await sendAndWait(c, "My code word is ZEBRA");
+  const a = await sendAndWait(c, "My code word is ZEBRA 认真想");
   if (!a) return null;
   await ask("Kickstart the daemon now (launchctl kickstart -k gui/$(id -u)/com.houge.daemon); press Enter when it is back:");
-  const b = await sendAndWait(c, "What was my code word?");
+  const b = await sendAndWait(c, "What was my code word? 认真想");
   return b ? [a[0], b[0]] : null;
 }
 
@@ -549,18 +554,18 @@ async function driveSchedule(c) {
 
 async function driveSteerAtEnd(c) {
   const since = new Date().toISOString();
-  console.log("  → send:  Write a 4-line poem about rain");
-  console.log("  → the moment the poem arrives, send:  One about snow too");
-  console.log("  → after that reply, send:  Reply with the single word PAPAYA");
+  console.log("  → send:  Write a 4-line poem about rain 认真想");
+  console.log("  → the moment the poem arrives, send:  One about snow too 认真想");
+  console.log("  → after that reply, send:  Reply with the single word PAPAYA 认真想");
   return waitRuns(c, since, 3);
 }
 
 async function driveTeach(c) {
   const since = new Date().toISOString();
-  const a = await sendAndWait(c, "From now on, end every reply with the word BANANA. Save that as a lesson.");
+  const a = await sendAndWait(c, "From now on, end every reply with the word BANANA. Save that as a lesson. 认真想");
   if (!a) return null;
   c.newLessons = c.view.lessonsSince(since);
-  const b = await sendAndWait(c, "What is 2+2?");
+  const b = await sendAndWait(c, "What is 2+2? 认真想");
   return b ? [a[0], b[0]] : null;
 }
 
