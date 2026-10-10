@@ -148,4 +148,22 @@ describe("formatTreeReport", () => {
     expect(formatTreeReport([row("a", { status: "dry_run" })], new Map(), { spentUsd: 0, estimatedUsd: 0.02, universe: 3, wouldDispatch: 1, alreadyDone: 2, skipped: 0 },
       TREE_BAR_DEFAULTS)).toMatch(/^DRY RUN — universe 3, would dispatch 1, already done 2, skipped 0/);
   });
+
+  // Stage B §10: before the rows ship, the report shows what arming the lanes changes: a lane taking a turn whose truth is
+  // another category (a weaker reply with Dig deeper under it), and how many turns move from Default to Fast.
+  it("stage B: lane routes on Fast, COSTLY 4 per lane, the Default→Fast count, the three lane combos, the lane candidate rows", () => {
+    const rows = [...fixture(),
+      row("h", { answers: treeAnswers({ category: "answer", actions: 0 }) }),                                          // right lane, Fast under stage A too
+      row("i", { proxy: "research", proxy_rule: "research", answers: treeAnswers({ category: "lookup", reasoning: 2 }) }) // wrong truth; Default under stage A
+    ];
+    const text = formatTreeReport(rows, new Map(), complete(rows), TREE_BAR_DEFAULTS, perm(rows));
+    expect(text).toMatch(/routes as if armed \(lane\/role\): .*answer\/fast 1/);
+    expect(text).toMatch(/routes as if armed \(lane\/role\): .*lookup\/fast 1/);
+    expect(text).toMatch(/COSTLY 4 — a lane took a turn whose truth is another category .*: answer 0; lookup 1 \[i\]/);
+    expect(text).toMatch(/lane turns that ran the planner on Default under stage A \(now Fast\): 1/);
+    expect(ARMING_COMBOS.map((c) => c.name).slice(-3)).toEqual(["+answer", "+lookup", "+both"]);
+    expect(text).toMatch(/^  \+both: .*planner\/\w+→lookup\/fast \d+ \[[^\]]*\bi\b/m);
+    expect(text).toContain(`"question_id":"category:answer","criteria_hash":"${HASHES.category}"`);
+    expect(text).toContain(`"question_id":"category:lookup","criteria_hash":"${HASHES.category}"`);
+  });
 });

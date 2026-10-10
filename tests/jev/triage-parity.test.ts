@@ -18,7 +18,10 @@ const ANSWERS = treeAnswers({ category: "lookup" });
 const REPORTED = "jev-1.13.0";
 const liveFetch = vi.fn(async () => json(200, { model: REPORTED, usage: { input_tokens: 800, output_tokens: 0 }, answers: ANSWERS }));
 const replayJev = async (_r: JevRequest): Promise<JevResult> => ({ ok: true, model: REPORTED, input_tokens: 800, latency_ms: 300, answers: ANSWERS });
-const ENV = { HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "arm", HOUGE_CHAT_CONTEXT_WINDOW_MINUTES: "60" };
+const ENV = {
+  HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "arm", HOUGE_CHAT_CONTEXT_WINDOW_MINUTES: "60",
+  HOUGE_JEV_LANES_OFF: "answer,lookup" // stage B: the parity run proves the planner path; the lanes have their own suites
+};
 const at = (iso: string) => new Date(iso);
 
 afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); });
