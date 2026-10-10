@@ -1,5 +1,6 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
@@ -51,7 +52,7 @@ describe("jev_verdicts", () => {
     const store = RunStore.openInMemory();
     const run_id = runIn(store, "555");
     expect(() => store.insertJevVerdict({ ...V, run_id, save_outcome: "maybe" as never })).toThrow();
-    expect(() => store.insertJevVerdict({ ...V, run_id, lane: "answer" as never })).toThrow();
+    expect(() => store.insertJevVerdict({ ...V, run_id, lane: "wiki" as never })).toThrow();
     const id = store.insertJevVerdict({ ...V, run_id });
     expect(() => store.updateJevVerdict(id, { handler_outcome: "done" })).toThrow();
     expect(() => store.updateJevVerdict(id, { paco_correction: "nope" as never })).toThrow();
@@ -117,5 +118,49 @@ describe("jev_verdicts", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations WHERE version = ?").get<{ n: number }>("2026-10-07-jev-verdicts")?.n).toBe(1);
     expect(db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'jev_verdicts_run_idx'").get<{ n: number }>()?.n).toBe(1);
     store.close();
+  });
+  // Stage B §9: SQLite cannot alter a CHECK, so the table is rebuilt. Stage A rows (the live DB holds hundreds) must survive
+  // with their indexes, the new lanes must insert, and a second open must not rebuild again.
+  it("2026-10-10-jev-verdicts-lanes rebuilds a stage A table: rows kept, indexes present, answer/lookup admitted, a reopen is a no-op", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "hjvl-")), "h.sqlite");
+    RunStore.open(path).close();
+    const raw = new DatabaseSync(path);
+    raw.exec(`
+      DROP TABLE jev_verdicts;
+      DELETE FROM schema_migrations WHERE version = '2026-10-10-jev-verdicts-lanes';
+      CREATE TABLE jev_verdicts (
+        verdict_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, category TEXT, breadth REAL, reasoning REAL, actions REAL, sets_rule REAL,
+        rule_scope TEXT CHECK (rule_scope IS NULL OR rule_scope IN ('ask', 'research')),
+        lane TEXT NOT NULL CHECK (lane IN ('memory', 'status', 'planner')),
+        role TEXT NOT NULL CHECK (role IN ('fast', 'default', 'thinking')),
+        effort TEXT CHECK (effort IS NULL OR effort IN ('low', 'medium', 'high')), model TEXT,
+        cascade TEXT CHECK (cascade IS NULL OR cascade = 'tiny'),
+        save_outcome TEXT NOT NULL CHECK (save_outcome IN ('saved', 'not_durable', 'capped', 'none')),
+        route_outcome TEXT NOT NULL CHECK (route_outcome IN ('act', 'fallback', 'pin_failed')),
+        handler_outcome TEXT NOT NULL CHECK (handler_outcome IN ('pending', 'lane_reply', 'planner_done', 'planner_failed') OR handler_outcome LIKE 'fallthrough:%'),
+        reason TEXT NOT NULL, skip_reason TEXT, fast_used_tool INTEGER NOT NULL DEFAULT 0,
+        paco_correction TEXT CHECK (paco_correction IS NULL OR paco_correction IN ('ask_anyway', 'think_harder', 'escalation', 'low_rating')),
+        quoted_turn_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX jev_verdicts_run_idx ON jev_verdicts(run_id);
+      CREATE INDEX jev_verdicts_created_idx ON jev_verdicts(created_at);
+      INSERT INTO jev_verdicts (verdict_id, run_id, lane, role, save_outcome, route_outcome, handler_outcome, reason, paco_correction, created_at, updated_at)
+      VALUES ('jv_old', 'run_old', 'memory', 'default', 'saved', 'act', 'lane_reply', 'routed', 'ask_anyway', '2026-10-09T00:00:00.000Z', '2026-10-09T00:00:00.000Z');
+    `);
+    raw.close();
+    const store = RunStore.open(path);
+    expect(store.getJevVerdictForRun("run_old")).toMatchObject({ verdict_id: "jv_old", lane: "memory", handler_outcome: "lane_reply", paco_correction: "ask_anyway" });
+    expect(() => store.insertJevVerdict({ ...V, run_id: "run_new", lane: "answer" })).not.toThrow();
+    expect(() => store.insertJevVerdict({ ...V, run_id: "run_new2", lane: "lookup" })).not.toThrow();
+    const db = (store as unknown as { db: { prepare(s: string): { get<T>(...v: unknown[]): T | undefined } } }).db;
+    const count = (sql: string): number => db.prepare(sql).get<{ n: number }>()?.n ?? -1;
+    expect(count("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND name IN ('jev_verdicts_run_idx', 'jev_verdicts_created_idx') AND tbl_name = 'jev_verdicts'")).toBe(2);
+    expect(count("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'jev_verdicts_old'")).toBe(0);
+    store.close();
+    const again = RunStore.open(path);
+    const db2 = (again as unknown as { db: { prepare(s: string): { get<T>(...v: unknown[]): T | undefined } } }).db;
+    expect(db2.prepare("SELECT COUNT(*) AS n FROM schema_migrations WHERE version = '2026-10-10-jev-verdicts-lanes'").get<{ n: number }>()?.n).toBe(1);
+    expect(db2.prepare("SELECT COUNT(*) AS n FROM jev_verdicts").get<{ n: number }>()?.n).toBe(3);
+    again.close();
   });
 });
