@@ -1637,10 +1637,14 @@ describe("runAnswerLane", () => {
   it.each([
     ["every leg failed", { ok: false, provider: "omp", error: "all lane legs failed — anthropic/claude-sonnet-5-5: quota" }, "compose_failed"],
     ["a leg timed out (the provider's own wording, omp.ts `st.timedOut ? "timed out"`)", { ok: false, provider: "omp", error: "all lane legs failed — anthropic/claude-sonnet-5-5: timed out" }, "compose_timeout"],
-    ["the chain spent its whole bound (the clock advances 45 s inside compose)", { ok: false, provider: "omp", error: "all lane legs failed — anthropic/claude-sonnet-5-5: exit 1: killed", advanceMs: 45_000 }, "compose_timeout"],
     ["empty text", ok("   "), "empty_reply"]
   ] as const)("%s → fallthrough:%s", async (_n, result, why) => {
     expect(await runAnswerLane(input(), deps(async () => result as LlmResult))).toEqual({ kind: "fallthrough", why });
+  });
+  it("a chain that spent its whole bound is compose_timeout even without the provider's wording (the deadline cut the last leg)", async () => {
+    let clock = T0; // deps(...).now reads this; the compose stub advances it by the full 45 s bound before failing
+    const d = deps(async () => { clock += 45_000; return { ok: false, provider: "omp", error: "all lane legs failed — anthropic/claude-sonnet-5-5: exit 1: killed" } as LlmResult; }, { now: () => clock });
+    expect(await runAnswerLane(input(), d)).toEqual({ kind: "fallthrough", why: "compose_timeout" });
   });
   it("no Fast candidate → no_fast_leg, and no compose call", async () => {
     const compose = vi.fn(async () => ok("x"));
