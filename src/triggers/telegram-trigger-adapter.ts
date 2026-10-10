@@ -328,7 +328,7 @@ function buildMemoryUndoTapEvent(
   });
 }
 
-/** A memory lane card tap (ADR 0029 §5.6): Undo carries the change id, "Ask Houge anyway" the original run id. */
+/** A lane card tap (ADR 0029 §5.6, stage B §6): Undo carries the change id, "Dig deeper" the original run id. */
 function buildMemLaneTapEvent(
   update: TelegramUpdate, callback: TelegramCallbackQuery, chat_id: number, identity: Identity,
   tap: { action: "undo"; change_id: string } | { action: "ask"; run_id: string }
