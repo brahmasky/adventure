@@ -33,9 +33,19 @@ export function flattenLinks(text: string): string {
   }
 }
 
-/** The text a lane may deliver or store: attach markers gone, links flattened, trimmed. Shared by the card and the catch-up line. */
+/**
+ * The text a lane may deliver or store: attach markers gone, links flattened, trimmed. Shared by the card and the catch-up
+ * line. Strip and flatten repeat together until the text stops changing: the supervisor parses `[[attach:…]]` from every
+ * final text, so a marker re-formed by the strip itself (`[[att[[attach:x]]ach:y]]`) or by a flatten
+ * (`[[attach:[x](y)]]` becomes `[[attach:x (y)]]`) must not survive. Each change removes at least one character, so it terminates.
+ */
 export function sanitizeLaneText(text: string): string {
-  return flattenLinks(text.replace(ATTACH_MARKER, "")).trim();
+  let out = text;
+  for (;;) {
+    const next = flattenLinks(out.replace(ATTACH_MARKER, ""));
+    if (next === out) return out.trim();
+    out = next;
+  }
 }
 
 /**

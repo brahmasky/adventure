@@ -32,6 +32,20 @@ describe("laneCard", () => {
   it("strips [[attach:…]] markers (a lane reply never attaches a file)", () => {
     expect(laneCard({ text: "done [[attach:report.pdf]]", run_id: RUN })!.text).toBe("done");
   });
+  // The supervisor parses [[attach:…]] from every final text (planner-supervisor finishSuccess), lane replies included: a marker
+  // re-formed by the strip or by link flattening would attach a workspace file.
+  it("leaves no attach marker behind when stripping or flattening re-forms one", () => {
+    const a = laneCard({ text: "x [[att[[attach:x]]ach:y]] z", run_id: RUN })!.text;
+    expect(a).not.toContain("[[attach:");
+    expect(a).toContain("x ");
+    expect(a).toContain(" z");
+    expect(laneCard({ text: "k [[attach:[f](u)]] m", run_id: RUN })!.text).not.toContain("[[attach:");
+  });
+  it("edge cases: whitespace-only and note-only leave no card; an empty-label link is its url", () => {
+    expect(laneCard({ text: " \n ", run_id: RUN })).toBeNull();
+    expect(laneCard({ text: "", run_id: RUN, note: laneSavedNote(1, "t") })).toBeNull();
+    expect(flattenLinks("[ ](https://a.example)")).toBe("https://a.example");
+  });
   it("appends the note line after a blank line when a rule saved this turn", () => {
     expect(laneCard({ text: "明天晴。", run_id: RUN, note: laneSavedNote(51, "format") })!.text).toBe("明天晴。\n\n📒 Saved lesson #51 · format");
   });
