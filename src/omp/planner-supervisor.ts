@@ -588,10 +588,14 @@ export class PlannerSupervisor {
     this.incident("planner_model_reset_failed", { run_id: turn.req.run_id, reason: rpcCode(r.error) });
   }
 
-  /** The turn's current candidate on the child; a pin omp refuses is one model_missing row and the walk moves on (spec §5). */
+  /**
+   * The turn's current candidate on the child; a pin omp refuses is one model_missing row (recordPinMissing) and the walk
+   * moves on (spec §5). A step-up the walk forces is ledgered with the kind that STARTED the walk (stage B §12), never the
+   * refusal that merely exhausted the chain.
+   */
   private async pinWalk(turn: Turn, s: PlannerSessionLike, kind: LlmErrorKind): Promise<Exclude<PinResult, "refused"> | "exhausted"> {
-    for (let why = kind; ; why = "model_missing") {
-      const target = this.currentCandidate(turn, why);
+    for (;;) {
+      const target = this.currentCandidate(turn, kind);
       if (!target) return "exhausted";
       turn.legsTried++;
       if (!this.modelUnknown && sameModel(this.model, target)) return "ok";
