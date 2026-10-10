@@ -292,11 +292,16 @@ function sessionSeed(d: TurnContextDeps, i: TurnPromptInput): { seed: string; pe
   }
 }
 
+/** The `[context]` block a prompt carries (a literal close marker inside a block is neutralised); "" when retrieval found nothing. */
+export function renderContextBlock(r: Pick<TurnRetrieval, "facts" | "pages">): string {
+  const blocks = [...r.facts, ...r.pages].map((x) => x.block.replaceAll("[/context]", "[ /context]"));
+  return blocks.length > 0 ? `[context]\n${blocks.join("\n\n")}\n[/context]\n\n` : "";
+}
+
 export async function buildTurnPrompt(d: TurnContextDeps, i: TurnPromptInput): Promise<TurnPrompt> {
   const { facts, pages, telemetry } = await d.retrieve(i.chat_id, i.message);
   recordAttribution(d, i.run_id, i.applied ?? appliedOf(buildSystemPrompt(d, i.chat_id)), { facts, pages, ...(telemetry ? { telemetry } : {}) });
-  const blocks = [...facts, ...pages].map((x) => x.block.replaceAll("[/context]", "[ /context]"));
-  const context = blocks.length > 0 ? `[context]\n${blocks.join("\n\n")}\n[/context]\n\n` : "";
+  const context = renderContextBlock({ facts, pages });
   const prefix = i.source === "schedule" ? SCHEDULED_PREFIX(i.goal ?? i.message) : "";
   const cap = clarifyCapReached(d, i.chat_id) ? CLARIFY_CAP_NOTICE : "";
   // a schedule fire is not Paco talking: it neither shows nor uses the note, so his first real turn gets it
