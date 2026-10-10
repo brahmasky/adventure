@@ -57,7 +57,7 @@ describe("lesson_changes + undo", () => {
   it("helpers: triageOverrideFor, countRecentLedgerEvents, userTurnTextForRun", () => {
     const store = RunStore.openInMemory();
     store.recordChatTurn({ chat_id: "555", run_id: "run_a", role: "user", text: "以后回复短一点" });
-    store.recordMemoryEvent("triage_override", { run_id: "run_a", new_run_id: "run_b", change_id: null });
+    store.recordMemoryEvent("triage_override", { run_id: "run_a", new_run_id: "run_b", change_id: null, lane: null });
     expect(store.triageOverrideFor("run_b")).toBe(true);
     expect(store.triageOverrideFor("run_a")).toBe(false);
     expect(store.countRecentLedgerEvents("triage_override", "2026-01-01T00:00:00.000Z")).toBe(1);

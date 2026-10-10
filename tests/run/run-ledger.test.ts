@@ -234,3 +234,20 @@ describe("Run Ledger events", () => {
     expect(ev("model_roles_fallback", {}).ok).toBe(false);
   });
 });
+
+describe("triage_override.lane (stage B §6)", () => {
+  // The per-lane tap count reads this field; null must stay legal, or a tap on a card from before Jev (no verdict row) would
+  // throw inside the admission and Paco's re-ask would be lost.
+  const ev = (payload: Record<string, unknown>) => createLedgerEvent({ correlation_id: "memory", event_type: "triage_override", actor: "system", sequence: 1, payload });
+  it("is required, and null is allowed", () => {
+    expect(validateLedgerEvent(ev({ run_id: "a", new_run_id: "b", change_id: null, lane: null }))).toEqual({ ok: true });
+    expect(validateLedgerEvent(ev({ run_id: "a", new_run_id: "b", change_id: null, lane: "answer" }))).toEqual({ ok: true });
+    expect(validateLedgerEvent(ev({ run_id: "a", new_run_id: "b", change_id: null }))).toEqual({ ok: false, error: "triage_override missing required payload field: lane" });
+  });
+  // loop_started.applied_artifacts is free-form; the lane catch-up ids must ride in it without tripping validation.
+  it("loop_started accepts catch_up_run_ids inside applied_artifacts", () => {
+    const e = createLedgerEvent({ correlation_id: "c", event_type: "loop_started", actor: "system", sequence: 1,
+      payload: { manifest: "m", hint: "h", applied_artifacts: { catch_up_run_ids: ["run_1"] } } });
+    expect(validateLedgerEvent(e)).toEqual({ ok: true });
+  });
+});

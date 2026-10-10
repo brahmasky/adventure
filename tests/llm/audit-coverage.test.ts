@@ -52,7 +52,7 @@ describe("audit chokepoint coverage (structural, not by convention)", () => {
       for (let i = text.indexOf("spawnOneShot("); i !== -1; i = text.indexOf("spawnOneShot(", i + 1)) {
         if (text.slice(Math.max(0, i - 40), i).includes("import")) continue;
         sites += 1;
-        if (!/audit:\s*(?:[A-Za-z_.]*llmAuditSink\(|input\.audit\b)/.test(text.slice(i, i + 600))) offenders.push(`${f}@${i}`);
+        if (!/audit:\s*(?:(?:stampRoutedBy\()?[A-Za-z_.]*llmAuditSink\(|input\.audit\b)/.test(text.slice(i, i + 600))) offenders.push(`${f}@${i}`);
       }
     }
     expect(offenders).toEqual([]);

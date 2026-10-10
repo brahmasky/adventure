@@ -138,6 +138,7 @@ export function seatChain(cfg: OmpConfig, role: LlmCallRole): ModelString[] {
     case "answer":
     case "compose": return cfg.planner;
     case "writer": throw new Error("the writer seat is codex, not an omp chain");
+    case "lane": throw new Error("the lane seat needs its chain (OneShotAdapterOptions.chain: the Fast or Tiny candidates); it has no default");
     default: return cfg.ticks; // distill, consolidate, extract, attribution, frame, verify, classify*, cascade (the Tiny role)
   }
 }
@@ -178,8 +179,15 @@ export interface OneShotAdapterOptions {
   chain?: ModelString[];
   /** A bound on the whole chain, from the call's start (the tree's cascade, Decision 14): no leg outlives it, none starts after it. */
   deadlineMs?: number;
+  /** Stage B §4: the verdict id stamped on EVERY leg's attempt row (a lane compose may answer on its second leg). */
+  routed_by?: string;
   /** Tests only: bypass the `omp --version` spawn. */
   versionCheck?: OneShotDeps["versionCheck"];
+}
+
+/** Every attempt the sink records carries `routed_by` when one is given (stage B §4); otherwise the sink is unchanged. */
+function stampRoutedBy(sink: LlmAuditSink, routed_by: string | undefined): LlmAuditSink {
+  return routed_by === undefined ? sink : { record: (a) => sink.record({ ...a, routed_by }) };
 }
 
 /**
@@ -204,7 +212,7 @@ export function oneShotAdapter(
           ...(opts.deadlineMs !== undefined ? { deadlineAt: Date.now() + opts.deadlineMs } : {})
         },
         {
-          cfg, audit: store.llmAuditSink(scope), onVersionCheck: (check) => reportOmpCheck(store, cfg, check),
+          cfg, audit: stampRoutedBy(store.llmAuditSink(scope), opts.routed_by), onVersionCheck: (check) => reportOmpCheck(store, cfg, check),
           ...(opts.versionCheck ? { versionCheck: opts.versionCheck } : {})
         }
       );

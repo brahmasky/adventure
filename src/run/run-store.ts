@@ -74,7 +74,9 @@ export type LlmCallRole =
   // Jev decision points (ADR 0029): one role per point so the per-point rate is readable in llm_attempt
   | "triage"
   // the tree's cascade pick between two categories (plan 2026-10-07 Decision 14): a Tiny-role one-shot on the turn's run
-  | "cascade";
+  | "cascade"
+  // stage B lanes (spec §4–§5): the compose (Fast candidates) and the lookup's query rewrite (Tiny candidates); the planner stays "compose"
+  | "lane";
 
 /** Where an audited attempt belongs: a run, or a run-less correlation (`tick:*`, `cli:*`, `rating:*`). */
 export type LlmAuditScope =

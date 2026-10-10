@@ -188,7 +188,7 @@ describe("triageTurn — the code-owned exits (one triage row, one verdict row, 
     const fetchImpl = treeSays(RULE);
     const { store, worker, turn } = setup(fetchImpl);
     const t = turn("以后回复短一点");
-    store.recordMemoryEvent("triage_override", { run_id: "run_old", new_run_id: t.run_id, change_id: null });
+    store.recordMemoryEvent("triage_override", { run_id: "run_old", new_run_id: t.run_id, change_id: null, lane: null });
     expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough" });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(triageRows(store, t.run_id)).toMatchObject([{ skip_reason: "override" }]);

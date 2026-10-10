@@ -128,4 +128,19 @@ describe("memlane callbacks", () => {
     expect(readJevDisarmMarker(jevDisarmMarkerPath({}, dir))).toBeNull();
     store.close();
   });
+  // Stage B §6: the override event names the lane the tap corrected (read from the verdict row); a run with no verdict
+  // writes null and is still re-admitted, so Paco's tap always gets an answer.
+  it("ask: triage_override.lane is the original verdict's lane, or null when the run has no verdict", () => {
+    const store = RunStore.openInMemory(); const dir = mkdtempSync(join(tmpdir(), "mla-"));
+    const gateway = new Gateway(store, undefined, undefined, undefined, undefined, { dataDir: dir });
+    const withVerdict = seedRun(store, "你觉得 NAS 放在客厅还是书房更好？");
+    store.insertJevVerdict({ run_id: withVerdict, category: "answer", breadth: 1, reasoning: 1, actions: 0, sets_rule: 0.05, rule_scope: null,
+      lane: "answer", role: "fast", effort: "low", cascade: null, save_outcome: "none", route_outcome: "act", reason: "routed", skip_reason: null, quoted_turn_id: null });
+    const bare = seedRun(store, "an old card");
+    expect(gateway.intake(tap("memlane_ask", { run_id: withVerdict })).ok).toBe(true);
+    expect(gateway.intake(tap("memlane_ask", { run_id: bare })).ok).toBe(true);
+    const lanes = store.getLedgerEvents().filter((e) => e.event_type === "triage_override").map((e) => [e.payload.run_id, e.payload.lane]);
+    expect(lanes).toEqual([[withVerdict, "answer"], [bare, null]]);
+    store.close();
+  });
 });

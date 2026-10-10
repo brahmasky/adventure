@@ -54,7 +54,7 @@ export function memLaneAskTurnEvent(store: RunStore, event: TypedTaskEvent): { o
 /** The override label (spec §5.9) and the drift signal: three in seven days cap the lane at shadow through the persisted marker. */
 export function recordTriageOverride(store: RunStore, original_run_id: string, new_run_id: string, env: NodeJS.ProcessEnv, dataDir: string, chat_id: string, now: string = new Date().toISOString()): void {
   const change_id = store.getLessonChangeByRun(original_run_id)?.change_id ?? null;
-  store.recordMemoryEvent("triage_override", { run_id: original_run_id, new_run_id, change_id });
+  store.recordMemoryEvent("triage_override", { run_id: original_run_id, new_run_id, change_id, lane: store.getJevVerdictForRun(original_run_id)?.lane ?? null });
   for (const d of store.listJevDecisions(original_run_id)) store.recordJevOutcome(d.decision_id, "paco_correction", "override");
   // Spec §6: the tap is Paco's explicit correction, so it outranks any earlier label on the original turn's verdict.
   const verdict = store.getJevVerdictForRun(original_run_id);
