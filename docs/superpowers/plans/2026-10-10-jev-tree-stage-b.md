@@ -1,6 +1,6 @@
 # Jev decision tree — Stage B Implementation Plan
 
-**Rev 2 (2026-10-10)** — Rev 1 (first draft from the code at `main@a714e15`, spec Rev 5) plus the codex plan review's three blockers and two warnings: `finishLane` re-checks abort after the warm wait (Task 10); link flattening matches the renderer's link syntax, any scheme (Task 4); a card whose body is empty after stripping is `empty_reply`, never `act` (Tasks 4, 7); gate B2 allows an empty facts list (Task 12); the sweep test stamps its events inside the window (Task 8). Line anchors are from that commit;
+**Rev 3 (2026-10-10)** — Rev 2 plus the senior plan review: nested masked links (flatten until stable, Task 4), the kill-during-warm-wait test rewritten on the file's real harness (Task 10), typecheck fixes (`laneCard` returns `| null` in the Interfaces block and the tests; the sweep test runs on one clock, Task 8), `compose_timeout` classified by the provider's real string or the spent bound (Task 5), verdict `model` as `provider/model` (Task 5), the catch-up line built from the sanitized body (Tasks 4–6), `laneTurnsSince` keeps only delivered replies (Task 2), the parity test runs with the lanes off (Task 11), omp gate cases 1, 5, 19 and 21 too (Task 12; the live-DB label is Paco's open decision), protected list completed. Rev 2 was Rev 1 plus the codex plan review's three blockers and two warnings: `finishLane` re-checks abort after the warm wait (Task 10); link flattening matches the renderer's link syntax, any scheme (Task 4); a card whose body is empty after stripping is `empty_reply`, never `act` (Tasks 4, 7); gate B2 allows an empty facts list (Task 12); the sweep test stamps its events inside the window (Task 8). Line anchors are from that commit;
 when the code and this plan disagree, read the code, fix the plan line, and say so in the task report.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -129,7 +129,8 @@ Signature deltas between the spec and the code (follow the code; reported here o
 - Functions under 50 lines. Match surrounding style and comment density. Tests in `tests/<area>/` mirroring `src/`; each
   test states why the behaviour matters. Telegram output leaves through the rich renderer (a lane reply is the run's final
   report through the outbox, like every lane today).
-- Protected files touched (`turn-context.ts`, `planner-supervisor.ts`, `run-store.ts`, `run-ledger.ts`): a Paco-hand build
+- Protected files touched (`turn-context.ts`, `planner-supervisor.ts`, `run-store.ts`, `run-ledger.ts`, `src/llm/registry.ts`,
+  `docs/decisions/`): a Paco-hand build
   and merge.
 - Repo is public: neutral fixture strings only ("明天悉尼天气怎么样？", "以后回复短一点", "did you restart?").
 - Commands: `npm run typecheck && npm test && npm run build`. Single file: `npx vitest run tests/<path>.test.ts`. Commit per
@@ -840,13 +841,19 @@ After `recentTelegramUserTurns` (ends line 2702), add:
       .run(r.run_id, r.chat_id, r.lane, r.verdict_id, r.catch_up, r.created_at ?? new Date().toISOString());
   }
 
-  /** The chat's lane replies after `since` (exclusive; null = all), oldest first, each with its run's first user turn. */
+  /**
+   * The chat's DELIVERED lane replies after `since` (exclusive; null = all), oldest first, each with its run's first user turn.
+   * A reply whose run later failed (`failLaneReplyVerdict` → `fallthrough:run_failed`) never reached Paco, so the planner
+   * must not be told it did: the join keeps rows whose verdict still reads `lane_reply` (or has no verdict: a status/memory
+   * row written by a path with none).
+   */
   laneTurnsSince(chat_id: string, since: string | null): LaneTurnRow[] {
     return this.db.prepare(`
       SELECT l.run_id, l.lane, l.verdict_id, l.catch_up, l.created_at,
         (SELECT u.text FROM chat_turns u WHERE u.run_id = l.run_id AND u.role = 'user' ORDER BY u.created_at ASC, u.rowid ASC LIMIT 1) AS user_text
       FROM lane_replies l
-      WHERE l.chat_id = ? AND (? IS NULL OR l.created_at > ?)
+      LEFT JOIN jev_verdicts v ON v.verdict_id = l.verdict_id
+      WHERE l.chat_id = ? AND (? IS NULL OR l.created_at > ?) AND (v.verdict_id IS NULL OR v.handler_outcome = 'lane_reply')
       ORDER BY l.created_at ASC, l.rowid ASC
     `).all<LaneTurnRow>(chat_id, since, since);
   }
@@ -1216,7 +1223,8 @@ EOF
   export const DIG_DEEPER_TEXT = "🔍 Dig deeper";
   export function digDeeperButton(run_id: string): NotificationButton;           // throws past 64 bytes
   export function flattenLinks(text: string): string;
-  export function laneCard(i: { text: string; run_id: string; note?: string }): { text: string; buttons: NotificationButton[] };
+  export function sanitizeLaneText(text: string): string;                      // attach markers stripped, links flattened until stable, trimmed
+  export function laneCard(i: { text: string; run_id: string; note?: string }): { text: string; buttons: NotificationButton[] } | null; // null = nothing left
   export function laneSavedNote(lesson_id: number, theme: string): string;       // "📒 Saved lesson #<id> · <theme>"
   ```
   `parseMemLaneCallback` keeps its name and return type; `lane:ask:<run_id>` and `memlane:ask:<run_id>` both return
@@ -1235,7 +1243,7 @@ import { DIG_DEEPER_TEXT, digDeeperButton, flattenLinks, laneCard, laneSavedNote
 const RUN = "run_12345678-1234-1234-1234-123456789abc";
 describe("laneCard", () => {
   it("ends with one Dig deeper button whose callback re-asks this run, inside Telegram's 64 bytes", () => {
-    const c = laneCard({ text: "放在书房更好。", run_id: RUN });
+    const c = laneCard({ text: "放在书房更好。", run_id: RUN })!;
     expect(c).toEqual({ text: "放在书房更好。", buttons: [{ text: DIG_DEEPER_TEXT, data: `lane:ask:${RUN}` }] });
     expect(Buffer.byteLength(c.buttons[0]!.data, "utf8")).toBeLessThanOrEqual(64);
   });
@@ -1245,18 +1253,21 @@ describe("laneCard", () => {
     // the renderer links ANY scheme without whitespace (markdown-to-telegram-html.ts step 3), so a non-http link must flatten too
     expect(flattenLinks("open [me](tg://resolve?domain=x)")).toBe("open me (tg://resolve?domain=x)");
     expect(flattenLinks("[x](javascript:alert(1))")).toBe("x (javascript:alert(1))");
+    // a nested link unwraps fully: one pass would leave `[BOM (https://bom.gov.au)](https://evil.example)`, a masked link
+    expect(flattenLinks("[[BOM](https://bom.gov.au)](https://evil.example)")).toBe("BOM (https://bom.gov.au) (https://evil.example)");
+    expect(flattenLinks("[[[a](x://1)](x://2)](x://3)")).toBe("a (x://1) (x://2) (x://3)");
   });
 
   it("a reply that is only an attach marker leaves no card: the caller falls through as empty_reply", () => {
     expect(laneCard({ text: "[[attach:/tmp/x.txt]]", run_id: "run_1" })).toBeNull();
     expect(laneCard({ text: "  [[attach:a]]\n[[attach:b]]  ", run_id: "run_1" })).toBeNull();
-    expect(laneCard({ text: "[here](https://evil.example/x)", run_id: RUN }).text).toBe("here (https://evil.example/x)");
+    expect(laneCard({ text: "[here](https://evil.example/x)", run_id: RUN })!.text).toBe("here (https://evil.example/x)");
   });
   it("strips [[attach:…]] markers (a lane reply never attaches a file)", () => {
-    expect(laneCard({ text: "done [[attach:report.pdf]]", run_id: RUN }).text).toBe("done");
+    expect(laneCard({ text: "done [[attach:report.pdf]]", run_id: RUN })!.text).toBe("done");
   });
   it("appends the note line after a blank line when a rule saved this turn", () => {
-    expect(laneCard({ text: "明天晴。", run_id: RUN, note: laneSavedNote(51, "format") }).text).toBe("明天晴。\n\n📒 Saved lesson #51 · format");
+    expect(laneCard({ text: "明天晴。", run_id: RUN, note: laneSavedNote(51, "format") })!.text).toBe("明天晴。\n\n📒 Saved lesson #51 · format");
   });
   it("refuses callback data past 64 bytes", () => {
     expect(() => digDeeperButton(`run_${"x".repeat(60)}`)).toThrow(/64 bytes/);
@@ -1315,12 +1326,29 @@ export function digDeeperButton(run_id: string): NotificationButton {
   return { text: DIG_DEEPER_TEXT, data };
 }
 
-/** No masked link survives: `[label](url)` → `label (url)`, or the bare url when the label is the url (or empty). */
+const FLATTEN_PASSES = 5;
+
+/**
+ * No masked link survives: `[label](url)` → `label (url)`, or the bare url when the label is the url (or empty). Nested
+ * links (`[[BOM](https://bom.gov.au)](https://evil.example)`) unwrap one layer per pass, so the pass repeats until the text
+ * stops changing (bounded; a lookup reply is composed over attacker-reachable pages).
+ */
 export function flattenLinks(text: string): string {
-  return text.replace(MARKDOWN_LINK, (_m, label: string, url: string) => {
-    const l = label.trim();
-    return l.length === 0 || l === url ? url : `${l} (${url})`;
-  });
+  let out = text;
+  for (let pass = 0; pass < FLATTEN_PASSES; pass++) {
+    const next = out.replace(MARKDOWN_LINK, (_m, label: string, url: string) => {
+      const l = label.trim();
+      return l.length === 0 || l === url ? url : `${l} (${url})`;
+    });
+    if (next === out) return out;
+    out = next;
+  }
+  return out;
+}
+
+/** The text a lane may deliver or store: attach markers gone, links flattened, trimmed. Shared by the card and the catch-up line. */
+export function sanitizeLaneText(text: string): string {
+  return flattenLinks(text.replace(ATTACH_MARKER, "")).trim();
 }
 
 /**
@@ -1328,7 +1356,7 @@ export function flattenLinks(text: string): string {
  * nothing is left after stripping (a reply that was only an attach marker): the caller treats it as `empty_reply`.
  */
 export function laneCard(i: { text: string; run_id: string; note?: string }): { text: string; buttons: NotificationButton[] } | null {
-  const body = flattenLinks(i.text.replace(ATTACH_MARKER, "")).trim();
+  const body = sanitizeLaneText(i.text);
   if (body.length === 0) return null;
   return { text: i.note ? `${body}\n\n${i.note}` : body, buttons: [digDeeperButton(i.run_id)] };
 }
@@ -1593,7 +1621,7 @@ describe("runAnswerLane", () => {
   it("one compose on the Fast chain with routed_by and 45 s: the reply, its model and the catch-up line", async () => {
     const compose = vi.fn(async (_r: ComposeRequest) => ok("  书房更好：安静，散热也好。  "));
     const r = await runAnswerLane(input(), deps(compose));
-    expect(r).toEqual({ kind: "reply", text: "书房更好：安静，散热也好。", model: "claude-sonnet-5-5", catch_up: "Houge replied: 书房更好：安静，散热也好。" });
+    expect(r).toEqual({ kind: "reply", text: "书房更好：安静，散热也好。", model: "anthropic/claude-sonnet-5-5", catch_up: "Houge replied: 书房更好：安静，散热也好。" });
     expect(compose).toHaveBeenCalledTimes(1);
     const req = compose.mock.calls[0]![0];
     expect(req).toMatchObject({ chain: FAST, deadlineMs: 45_000, routed_by: "jv_1" });
@@ -1608,8 +1636,8 @@ describe("runAnswerLane", () => {
   });
   it.each([
     ["every leg failed", { ok: false, provider: "omp", error: "all lane legs failed — anthropic/claude-sonnet-5-5: quota" }, "compose_failed"],
-    ["a leg timed out", { ok: false, provider: "omp", error: "all lane legs failed — anthropic/claude-sonnet-5-5: timeout" }, "compose_timeout"],
-    ["the chain deadline passed", { ok: false, provider: "omp", error: "all lane legs failed — anthropic/claude-sonnet-5-5: deadline" }, "compose_timeout"],
+    ["a leg timed out (the provider's own wording, omp.ts `st.timedOut ? "timed out"`)", { ok: false, provider: "omp", error: "all lane legs failed — anthropic/claude-sonnet-5-5: timed out" }, "compose_timeout"],
+    ["the chain spent its whole bound (the clock advances 45 s inside compose)", { ok: false, provider: "omp", error: "all lane legs failed — anthropic/claude-sonnet-5-5: exit 1: killed", advanceMs: 45_000 }, "compose_timeout"],
     ["empty text", ok("   "), "empty_reply"]
   ] as const)("%s → fallthrough:%s", async (_n, result, why) => {
     expect(await runAnswerLane(input(), deps(async () => result as LlmResult))).toEqual({ kind: "fallthrough", why });
@@ -1813,12 +1841,14 @@ function hostsOf(urls: readonly string[]): string[] {
 ```ts
 import { safeReason } from "../../domain/error-code.js";
 import type { ModelString } from "../../omp/model-string.js";
+import { sanitizeLaneText } from "./lane-card.js";
 import { catchUpLine, renderLanePrompt } from "./lane-compose.js";
 import { fall, type AnswerLaneDeps, type LaneFall, type LaneInput, type LaneResult } from "./lane-types.js";
 
 /** Stage B §4: the compose bound on the user's path (whatever is left of the lane's budget, at most this). */
 export const LANE_COMPOSE_MS = 45_000;
-const TIMED_OUT = /\b(timeout|deadline)\b/i;
+/** The omp provider's own wording for a leg that hit its timeout (`spawnOneShot`: `st.timedOut ? "timed out"`). */
+const TIMED_OUT = /timed out/i;
 
 /** The answer lane (stage B §4): render, one compose, done. Never throws: an unexpected exception is `lane_threw`. */
 export async function runAnswerLane(i: LaneInput, d: AnswerLaneDeps): Promise<LaneResult> {
@@ -1839,19 +1869,23 @@ async function answerSteps(i: LaneInput, d: AnswerLaneDeps): Promise<LaneResult>
     quoted: i.quoted, message: i.userText, note: i.note });
   const r = await composeReply(i, d, chain, prompt);
   if (r.kind === "fallthrough") return r;
-  return { kind: "reply", text: r.text, model: r.model, catch_up: catchUpLine({ lane: "answer", reply: r.text }) };
+  // the catch-up line carries the same sanitized text the card delivers (no attach marker, no masked link)
+  return { kind: "reply", text: r.text, model: r.model, catch_up: catchUpLine({ lane: "answer", reply: sanitizeLaneText(r.text) }) };
 }
 
 /** One compose call on the Fast chain, role `lane`, min(45 s, remaining), the turn's signal; shared by both lanes. */
 export async function composeReply(i: LaneInput, d: Pick<AnswerLaneDeps, "compose" | "now">, chain: readonly ModelString[], prompt: string):
   Promise<{ kind: "text"; text: string; model: string } | LaneFall> {
-  const remaining = i.deadlineAt - d.now();
+  const started = d.now();
+  const remaining = i.deadlineAt - started;
   if (remaining <= 0) return fall("lane_timeout");
-  const r = await d.compose({ prompt, chain, deadlineMs: Math.min(LANE_COMPOSE_MS, remaining), signal: i.signal, routed_by: i.verdict_id });
+  const bound = Math.min(LANE_COMPOSE_MS, remaining);
+  const r = await d.compose({ prompt, chain, deadlineMs: bound, signal: i.signal, routed_by: i.verdict_id });
   if (i.signal.aborted) return fall("aborted");
-  if (!r.ok) return fall(TIMED_OUT.test(r.error) ? "compose_timeout" : "compose_failed");
+  // a timeout is the provider's "timed out" leg, or a chain that spent its whole bound (the deadline cut the last leg)
+  if (!r.ok) return fall(TIMED_OUT.test(r.error) || d.now() - started >= bound ? "compose_timeout" : "compose_failed");
   const text = r.answer.trim();
-  return text.length === 0 ? fall("empty_reply") : { kind: "text", text, model: r.model };
+  return text.length === 0 ? fall("empty_reply") : { kind: "text", text, model: `${r.provider}/${r.model}` }; // provider/model, as every planner verdict
 }
 ```
 
@@ -3259,8 +3293,8 @@ the seeded runs become lane runs and the final expectation reads the incident, n
 
 Also update the describe comment (line 22) to: `// Spec §5.6 + stage B §6: Undo is chat-bound compare-and-set; "Dig deeper" is ONE admission and the override label; three on one lane in seven days page Paco.`
 
-`tests/run/invariant-sweep-lanes.test.ts` — add `import { createLedgerEvent } from "../../src/run/run-ledger.js";` at the top, then
-append inside `describe("lane_fallthrough_rate", …)` (it is the lane sweep file; `iso()` is its clock helper):
+`tests/run/invariant-sweep-lanes.test.ts` — append inside `describe("lane_fallthrough_rate", …)` (it is the lane sweep file).
+`recordMemoryEvent` stamps the real clock, so this test runs the sweep at the real clock too (one clock for events and sweep):
 
 ```ts
   // Stage B §6: the gateway opens a lane's triage_overrides page; nothing re-detects it, so the sweep's effect phase must
@@ -3268,12 +3302,9 @@ append inside `describe("lane_fallthrough_rate", …)` (it is the lane sweep fil
   it("the effect phase resolves a quiet lane's triage_overrides page and leaves a busy one open", () => {
     store.openIncident({ kind: "triage_overrides", subject: "jev:lane:answer", detail: { lane: "answer" } });
     store.openIncident({ kind: "triage_overrides", subject: "jev:lane:lookup", detail: { lane: "lookup" } });
-    // the events and the sweep share the test clock: recordMemoryEvent stamps the real clock, so build the rows by hand
-    for (let k = 0; k < 3; k++) {
-      store.appendLedgerEvent({ ...createLedgerEvent({ correlation_id: "memory", event_type: "triage_override", actor: "gateway",
-        payload: { run_id: `run_o${k}`, new_run_id: `run_n${k}`, change_id: null, lane: "lookup" } }), occurred_at: iso(-10 * (k + 1)) });
-    }
-    sweep();
+    for (let k = 0; k < 3; k++) store.recordMemoryEvent("triage_override", { run_id: `run_o${k}`, new_run_id: `run_n${k}`, change_id: null, lane: "lookup" });
+    // one clock: the events carry the real clock, so the sweep runs at the real clock too (not the file's fixed NOW)
+    runInvariantSweep({ store, now: new Date().toISOString(), env: ARMED, chat_id: "555" });
     expect(store.listOpenIncidents().filter((i) => i.kind === "triage_overrides").map((i) => i.subject)).toEqual(["jev:lane:lookup"]);
   });
 ```
@@ -3832,19 +3863,20 @@ EOF
   // Stage B §8: a lane reply that arrives while /kill has already ended the turn must not reach Paco. finishLane waits for the
   // warming child first; without a re-check after that wait, the card would be assigned and the turn completed anyway.
   it("a lane reply after an abort during the warm wait delivers no card and completes nothing", async () => {
-    const h = harness({ triage: async () => ({ kind: "lane_reply", text: "quick", buttons: [] }), warmHangsMs: 10_000 });
-    const turn = h.submit("你好");
-    await h.untilTriaged();
-    await h.supervisor.abortAll("killed");
-    await turn;
-    expect(h.completed).toEqual([]);          // no outcome.complete call
-    expect(h.store.listChatTurns(h.chatId).filter((t) => t.role === "assistant")).toEqual([]);
+    // the child never becomes ready, so finishLane sits in its bounded warm wait; the kill lands there
+    const session = fakeSession({ start: never });
+    const { store, sup, outcome } = harness(session, {}, { triage: async () => ({ kind: "lane_reply", text: "quick", buttons: [] }) });
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await until(() => session.options.length === 1); // the child is starting; triage has already replied
+    await sup.abortAll("killed");
+    await sup.whenIdle();
+    expect(outcome.done.map((d) => (d as { run_id: string }).run_id)).not.toContain(run_id); // no outcome.complete: no card delivered
+    expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "killed" });
   });
 ```
 
-(`harness` is the file's supervisor test harness; `warmHangsMs` makes `ensureSession` resolve after the given delay, `untilTriaged`
-resolves when the triage promise has settled, `completed` collects `outcome.complete` calls. If the harness lacks one of these
-knobs, add it to the harness in this step, not to production code.)
+(`fakeSession`, `never`, `harness`, `createQueuedTurnRun`, `req`, `until`, `failedOf` and `outcome.done` are the file's existing
+helpers: `harness(session, env, extra)` takes supervisor deps overrides, so `triage` is injected there.)
 
 - [ ] **Step 7: Run the test to verify it fails**
 
@@ -3928,7 +3960,12 @@ and append inside its first `describe`:
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `npx vitest run tests/jev/calibration.test.ts tests/jev/triage-report.test.ts`
+Run: `npx vitest run tests/jev/calibration.test.ts tests/jev/triage-report.test.ts tests/jev/triage-parity.test.ts`
+
+`tests/jev/triage-parity.test.ts` runs the real tree against `CALIBRATED_ROWS`; with the two new rows committed its lookup-shaped
+turns would reach the real lookup lane (and the real web adapter). In its `ENV` (line 21) add `HOUGE_JEV_LANES_OFF: "answer,lookup"`
+with the comment `// stage B: the parity run proves the planner path; the lanes have their own suites`, so the parity expectations
+stay those of the planner path.
 Expected: FAIL — the committed rows arm neither lane; the report has no `+answer` combo, no `COSTLY 4`, and routes
 lane-shaped turns to the planner.
 
@@ -4088,7 +4125,8 @@ EOF
 - Modify: `scripts/live-gate-jev-tree.mjs` (header comment; `loadModules`; `writeCalibration` `:117-126`; `MSG` `:178-189`;
   `caseRuleOnLookup` `:298-303`; `caseOverflow` `:313-324`; `caseJevProbes` `:327-339`; `checkCommittedArming` `:555-564`;
   new `outboxReply`, `caseAnswerLane`, `caseLookupLane`, `caseCatchUp`, `caseDigDeeper`, `checkFallthroughWhys`; `main` `:590-602`)
-- Modify: `scripts/live-gate-omp.mjs:102` (case 2), `:149` (case 11), `:195` (case 18), and the header comment
+- Modify: `scripts/live-gate-omp.mjs:102` (case 2), `:149` (case 11), `:195` (case 18), plus cases 1, 5, 19 and 21 (chat-shaped
+  messages that the answer lane would take), and the header comment
 - No unit tests: the gate is the test. The controller runs it after the build (Step 5).
 
 **Interfaces:**
@@ -4326,13 +4364,25 @@ runs, so the three weather cases append `认真想` (`think harder` forces the p
 ```
 
 Line 149: `send: () => "What's the weather in Sydney tomorrow? 认真想",` · Line 195: `send: () => "What's the weather in Melbourne tomorrow? 认真想",`
+and the same ` 认真想` suffix on the `send` text of cases 1, 5, 19 and 21 (plain chat messages the answer lane would take; the
+reviewer traced them). Every omp gate case must keep reaching the planner: it is the omp runtime's gate, and a lane bypasses omp.
+
+**Open decision (Paco), before the full omp gate is next run:** `think harder` labels the chat's PREVIOUS verdict
+`paco_correction = think_harder`. `--smoke` runs cases 1, 3, 6, 13 and 22 with Jev disarmed, so it is unaffected; the full mode
+drives the live daemon and the live DB, where the first `认真想` case labels Paco's last real turn. Options: (a) accept one
+`think_harder` label per full omp-gate run on the last real verdict (truthful: the gate did send `认真想`; it moves the
+`paco_correction` statistics by one per run); (b) give the omp gate a leading throwaway turn so the label lands on the gate's
+own turn (one more lane turn and Tiny prompt per full run); (c) run the full omp gate only with the live daemon started under
+`HOUGE_JEV_LANES_OFF=answer,lookup` (a restart before and after). The plan ships with (a) written in the gate header; Paco
+can switch to (b) or (c) by a one-line ruling.
 
 and add to the header comment, after line 23:
 
 ```js
 // Stage B: Jev's lookup lane answers a plain weather question without the planner, so cases 2, 11 and 18 append 认真想 to
 // force the planner. `think harder` also labels the chat's PREVIOUS verdict paco_correction = think_harder: in the full mode
-// (the live daemon) that label lands on the operator chat's previous turn in the live DB; prefer --smoke for these cases.
+// (the live daemon) that label lands on the operator chat's previous turn in the live DB (--smoke does not run these cases).
+// Paco's ruling on this side effect: see the stage B plan, Task 12 "Open decision".
 ```
 
 - [ ] **Step 5: Build and run the gates (controller)**
@@ -4611,7 +4661,7 @@ approved "Paco 2026-10-10"); not merged until Paco's hand.** Spec `docs/superpow
 Rev 5 (parent Rev 10); plan `docs/superpowers/plans/2026-10-10-jev-tree-stage-b.md`; ADR 0029 amendment 2026-10-10.
 Reference: `docs/reference/jev-decision-layer.md` (the lanes, Dig deeper, reading a lane row, one lane off).
 
-- [ ] Paco merges (protected files: `turn-context.ts`, `planner-supervisor.ts`, `run-store.ts`, `run-ledger.ts`), rebuilds
+- [ ] Paco merges (protected files: `turn-context.ts`, `planner-supervisor.ts`, `run-store.ts`, `run-ledger.ts`, `registry.ts`, `docs/decisions/`), rebuilds
   `dist/`, kickstarts. Check first: `houge.parked` / `houge.kill`, non-terminal runs, the evolution lane. The boot applies
   migrations `2026-10-10-jev-verdicts-lanes` (rebuilds `jev_verdicts`, rows kept) and `2026-10-10-lane-replies`.
 - [ ] If a `houge.jev-disarmed` marker exists in the data dir, Paco removes it by hand (nothing writes it any more).
