@@ -1256,6 +1256,9 @@ describe("laneCard", () => {
     // a nested link unwraps fully: one pass would leave `[BOM (https://bom.gov.au)](https://evil.example)`, a masked link
     expect(flattenLinks("[[BOM](https://bom.gov.au)](https://evil.example)")).toBe("BOM (https://bom.gov.au) (https://evil.example)");
     expect(flattenLinks("[[[a](x://1)](x://2)](x://3)")).toBe("a (x://1) (x://2) (x://3)");
+    // any depth: no pass cap, the loop runs until nothing changes (each pass strictly shortens the text)
+    const deep = Array.from({ length: 8 }, (_, k) => k).reduce((acc, k) => `[${acc}](x://${k})`, "a");
+    expect(flattenLinks(deep)).not.toMatch(/\]\(/);
   });
 
   it("a reply that is only an attach marker leaves no card: the caller falls through as empty_reply", () => {
@@ -1326,16 +1329,16 @@ export function digDeeperButton(run_id: string): NotificationButton {
   return { text: DIG_DEEPER_TEXT, data };
 }
 
-const FLATTEN_PASSES = 5;
-
 /**
  * No masked link survives: `[label](url)` → `label (url)`, or the bare url when the label is the url (or empty). Nested
  * links (`[[BOM](https://bom.gov.au)](https://evil.example)`) unwrap one layer per pass, so the pass repeats until the text
- * stops changing (bounded; a lookup reply is composed over attacker-reachable pages).
+ * stops changing. No cap is needed: every replacement drops at least one character (`[l](u)` → `l (u)`), so each pass that
+ * changes the text makes it strictly shorter and the loop terminates; a lookup reply is composed over attacker-reachable
+ * pages, so a bounded cap that could leave one `[label](url)` behind would be the exact hole.
  */
 export function flattenLinks(text: string): string {
   let out = text;
-  for (let pass = 0; pass < FLATTEN_PASSES; pass++) {
+  for (;;) {
     const next = out.replace(MARKDOWN_LINK, (_m, label: string, url: string) => {
       const l = label.trim();
       return l.length === 0 || l === url ? url : `${l} (${url})`;
@@ -1343,7 +1346,6 @@ export function flattenLinks(text: string): string {
     if (next === out) return out;
     out = next;
   }
-  return out;
 }
 
 /** The text a lane may deliver or store: attach markers gone, links flattened, trimmed. Shared by the card and the catch-up line. */
