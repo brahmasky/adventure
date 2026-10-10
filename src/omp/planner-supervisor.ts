@@ -521,6 +521,7 @@ export class PlannerSupervisor {
     // guaranteed by the finally. A throw before laneEnded reaches startTurn's catch → failTurn.
     this.d.store.recordChatTurn({ chat_id: this.d.chatId, run_id: turn.req.run_id, role: "user", text: userText, ...quotedId(v.quote) });
     if ((await bounded(warm, ABORT_GRACE_MS)) === TIMED_OUT) { await this.stopSession(); await this.settleStart(); } // supersede a start that will not settle (gen bump)
+    if (turn.failure || turn.abort.signal.aborted) return; // killed while waiting on the warm child: abortTurn already ended the turn
     turn.lastText = v.text;
     turn.laneButtons = v.buttons;
     turn.laneEnded = true; // from here a late start result may not fail or re-enter this turn

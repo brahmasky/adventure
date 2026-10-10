@@ -1875,6 +1875,23 @@ describe("PlannerSupervisor — the turn-owned chain (Jev tree spec §4-5)", () 
     expect(outcome.done[0]).toMatchObject({ run_id, text: "ok" });
   });
 
+  // Stage B §8: a lane reply that arrives while /kill has already ended the turn must not reach Paco. finishLane waits for the
+  // warming child first; without a re-check after that wait it assigns the card to the dead turn, and the failure then carries
+  // the lane text as `partial`, which the failure reply shows (omp-turn-wiring.ts:73 on a turn timeout). The run is `killed`
+  // either way (abortTurn's done("abort") wins the ended race); what the guard changes is that no lane text leaves with it.
+  it("a lane reply after an abort during the warm wait leaves no lane text on the killed run", async () => {
+    // the child never becomes ready, so finishLane sits in its bounded warm wait; the kill lands there
+    const session = fakeSession({ start: never });
+    const { store, sup, outcome } = harness(session, {}, { triage: async () => ({ kind: "lane_reply", text: "quick", buttons: [] }) });
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await until(() => session.options.length === 1); // the child is starting; triage has already replied
+    await sup.abortAll("killed");
+    await sup.whenIdle();
+    expect(outcome.done.map((d) => (d as { run_id: string }).run_id)).not.toContain(run_id); // no outcome.complete
+    const failed = failedOf(outcome, run_id) as { error_type: string; partial?: string } | undefined;
+    expect(failed).toMatchObject({ error_type: "killed" });
+    expect(failed).not.toHaveProperty("partial"); // the lane's "quick" never became the turn's text
+  });
 });
 
 // The probe reuses the planner's own config file and refusal classifier, so the two can never drift apart.
