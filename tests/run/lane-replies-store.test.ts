@@ -53,6 +53,26 @@ describe("lane_replies and the catch-up readers (stage B §7, §9)", () => {
     expect(store.laneTurnsSince("777", null)).toEqual([]);
     store.close();
   });
+  // The planner must never be told a reply reached Paco when it did not: a lane run that later failed leaves its verdict at
+  // fallthrough:run_failed, and its catch-up line would make the planner assume Paco saw an answer he never got.
+  it("laneTurnsSince excludes a lane reply whose run later failed (verdict fallthrough:run_failed)", () => {
+    const store = RunStore.openInMemory();
+    const ok = laneTurn(store, "delivered", "Houge replied: ok", t(1));
+    const failed = laneTurn(store, "undelivered", "Houge replied: lost", t(2));
+    store.updateJevVerdict(store.getJevVerdictForRun(failed)!.verdict_id, { handler_outcome: "fallthrough:run_failed" });
+    expect(store.laneTurnsSince(CHAT, null).map((r) => r.run_id)).toEqual([ok]);
+    store.close();
+  });
+  // A status/memory row written by a path with no verdict has nothing to say it failed, so it is still caught up. The row
+  // needs its own run_id: recordLaneReply is INSERT OR IGNORE, so reusing one would silently test nothing.
+  it("laneTurnsSince keeps a lane reply that has no verdict", () => {
+    const store = RunStore.openInMemory();
+    const run_id = createQueuedTurnRun(store, "status?");
+    store.recordChatTurn({ chat_id: CHAT, run_id, role: "user", text: "status?", created_at: t(1) });
+    store.recordLaneReply({ run_id, chat_id: CHAT, lane: "status", verdict_id: null, catch_up: "Houge reported its status", created_at: t(1) });
+    expect(store.laneTurnsSince(CHAT, null).map((r) => [r.run_id, r.verdict_id])).toEqual([[run_id, null]]);
+    store.close();
+  });
   it("plannerLastAnsweredAt: the planner's newest Telegram reply; lane replies, evolution reports and schedule replies never move it", () => {
     const store = RunStore.openInMemory();
     expect(store.plannerLastAnsweredAt(CHAT)).toBeNull();
