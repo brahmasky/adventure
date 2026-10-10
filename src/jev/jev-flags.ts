@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { LaneSwitch } from "./tree-policy.js";
 
 /** Jev System One flags (ADR 0029 §3.8). Master + one tri-state flag per lane; everything defaults OFF. */
 export type JevTriageMode = "off" | "shadow" | "arm";
@@ -38,4 +39,20 @@ export function readJevDisarmMarker(path: string): { reason: string; at: string 
   } catch {
     return { reason: "unreadable", at: "" }; // an unreadable marker still disarms: fail toward today
   }
+}
+
+const LANE_SWITCHES: ReadonlySet<string> = new Set<LaneSwitch>(["answer", "lookup"]);
+const laneNames = (env: NodeJS.ProcessEnv): string[] =>
+  (env.HOUGE_JEV_LANES_OFF ?? "").split(",").map((s) => s.trim().toLowerCase()).filter((s) => s.length > 0);
+
+/** Stage B spec §6: the lanes Paco switched off (comma list; `answer`, `lookup`); read per triage, unknown names ignored. */
+export function resolveJevLanesOff(env: NodeJS.ProcessEnv): ReadonlySet<LaneSwitch> {
+  return new Set(laneNames(env).filter((n): n is LaneSwitch => LANE_SWITCHES.has(n)));
+}
+
+/** Boot only: names every unknown HOUGE_JEV_LANES_OFF entry in one error line (fail loud, run on). Returns the names. */
+export function warnUnknownJevLanesOff(env: NodeJS.ProcessEnv, log: (line: string) => void = console.error): string[] {
+  const unknown = laneNames(env).filter((n) => !LANE_SWITCHES.has(n));
+  if (unknown.length > 0) log(`jev: HOUGE_JEV_LANES_OFF names unknown lane(s) ${unknown.join(", ")}; accepted: answer, lookup; ignored`);
+  return unknown;
 }

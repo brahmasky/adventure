@@ -208,7 +208,7 @@ describe("triageTurn — routed planner turns (the role the planner pins)", () =
     expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough", route });
     expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "planner", ...route, reason: "routed", route_outcome: "act", handler_outcome: "pending" });
     expect(decisions(store, t.run_id)).toHaveLength(6);
-    expect(decisions(store, t.run_id).every((r) => r.decision === "act" && r.threshold_used === "2026-10-07.1:routed")).toBe(true);
+    expect(decisions(store, t.run_id).every((r) => r.decision === "act" && r.threshold_used === "2026-10-10.1:routed")).toBe(true);
     expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", route_lane: "planner", role: route.role, decision: "act" }]);
     store.close();
   });
@@ -245,6 +245,16 @@ describe("triageTurn — routed planner turns (the role the planner pins)", () =
     const t = turn("好");
     expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough", route: { role: "default" } });
     expect(verdictOf(store, t.run_id)).toMatchObject({ category: "status", lane: "planner", reason: "bare_ack_guard" });
+    store.close();
+  });
+  // Stage B §2: a rule plus a second request (actions ≥ 1.5) saves the rule and lets the planner answer the rest; the
+  // route the tree chose ran, so the rows say act (ACTED), never fallback.
+  it("two_request: a confident rule with a second request saves, then the planner runs on the gear's role; decision act", async () => {
+    const { store, worker, turn } = setup(treeSays({ ...RULE, gear: HEAVY }));
+    const t = turn("以后回复短一点，另外帮我比较三家店的营业时间");
+    expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "inform", route: { role: "thinking", effort: "high" } });
+    expect(verdictOf(store, t.run_id)).toMatchObject({ category: "memory", lane: "planner", reason: "two_request", save_outcome: "saved", route_outcome: "act" });
+    expect(triageRows(store, t.run_id)).toMatchObject([{ decision: "act", verdict: "two_request" }]);
     store.close();
   });
 });

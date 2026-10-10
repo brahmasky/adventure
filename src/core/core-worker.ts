@@ -253,8 +253,8 @@ type SettleFor = (route: Route, save: SaveOutcome, handler?: VerdictHandler) => 
 /** What triageTurn's catch needs: the turn's think-harder reading, its quote, and the answered rows once Jev answered. */
 interface TriageHeld { thinkHarder: boolean; quote: QuoteRef | null; answered?: AnsweredSettle }
 /** Reasons whose route the tree took on Jev's (or the code's) word; every other reason is a fallback to Default. */
-const ACTED: ReadonlySet<RouteReason> = new Set(["routed", "cascade", "correction", "ack_rule"]);
-const UNARMED: Armed = { category: false, status: false, memory: false, gear: false, rule: false };
+const ACTED: ReadonlySet<RouteReason> = new Set(["routed", "cascade", "correction", "ack_rule", "lane_limits", "two_request"]);
+const UNARMED: Armed = { category: false, status: false, memory: false, gear: false, rule: false, answer: false, lookup: false };
 const NO_SCORES: VerdictScores = { breadth: null, reasoning: null, actions: null, sets_rule: null };
 
 /** What one `runLessonWrite` did: the tool result, and — only when the save transaction committed — what landed. */

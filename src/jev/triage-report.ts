@@ -17,7 +17,7 @@ export interface TreeReportOutcome {
   universe?: number; wouldDispatch?: number; alreadyDone?: number; skipped?: number; limited?: boolean;
 }
 
-const ALL_ARMED: Armed = { category: true, status: true, memory: true, gear: true, rule: true };
+const ALL_ARMED: Armed = { category: true, status: true, memory: true, gear: true, rule: true, answer: false, lookup: false };
 const SCORE_IDS = ["breadth", "reasoning", "actions"] as const;
 /** Categories with a lane in the spec's end state (§3): sending them to the planner costs money, not a turn. */
 const LANE_SHAPED: ReadonlySet<Category> = new Set(["answer", "lookup", "memory", "schedule", "wiki", "status"]);
@@ -111,7 +111,7 @@ function routeLines(ok: TreeReplayRow[], bars: TreeBars): string[] {
  * Arming is coupled (Decision: arming couplings): `memory` needs `category` + `rule`, and `category` alone already moves
  * turns off Default. Paco commits rows per question, so the report shows what each partial commit would change.
  */
-const NONE_ARMED: Armed = { category: false, status: false, memory: false, gear: false, rule: false };
+const NONE_ARMED: Armed = { category: false, status: false, memory: false, gear: false, rule: false, answer: false, lookup: false };
 export const ARMING_COMBOS: ReadonlyArray<{ name: string; armed: Armed }> = [
   { name: "category", armed: { ...NONE_ARMED, category: true } },
   { name: "category+gear", armed: { ...NONE_ARMED, category: true, gear: true } },

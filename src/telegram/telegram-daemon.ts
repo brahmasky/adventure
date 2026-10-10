@@ -23,6 +23,7 @@ import { errorCode } from "../domain/error-code.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
+import { warnUnknownJevLanesOff } from "../jev/jev-flags.js";
 import { embedText, resolveEmbedConfig } from "../llm/embeddings.js";
 import { resolveMediaIngestEnabled } from "../media/media-config.js";
 import { LocalNotificationAdapter } from "../notifications/local-notification-adapter.js";
@@ -384,6 +385,7 @@ function leaseRecoveryIntervalMs(): number {
  */
 function bootPlanners(worker: CoreWorker, options: RunTelegramDaemonOptions, now: () => string): ReturnType<typeof setInterval> {
   warnRetiredOmpChainVars(process.env);
+  warnUnknownJevLanesOff(process.env);
   worker.validateOmpConfig();
   worker.checkDaemonTmp(); // N1: a temp root inside a git repo pages and disables voice ingest
   recoverPlannerRuns(worker, now(), true);

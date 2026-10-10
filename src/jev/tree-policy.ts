@@ -14,11 +14,13 @@ import { criteriaHash, type Question } from "./questions/types.js";
  */
 export type TurnRole = "fast" | "default" | "thinking";
 export type Effort = "low" | "medium" | "high";
-export type Lane = "memory" | "status" | "planner";
+export type Lane = "answer" | "lookup" | "memory" | "status" | "planner";
+/** The two lanes Paco can switch off one by one (HOUGE_JEV_LANES_OFF, stage B spec §6). */
+export type LaneSwitch = "answer" | "lookup";
 export type PreJudge = { kind: "ack_answer" } | { kind: "judge"; thinkHarder: boolean };
 
 /** Bump when a bar or a routing rule changes; stamped on every decision row's threshold_used. */
-export const TREE_THRESHOLD_VERSION = "2026-10-07.1";
+export const TREE_THRESHOLD_VERSION = "2026-10-10.1";
 
 const GREETINGS: ReadonlySet<string> = new Set(["谢谢", "thanks", "thank you", "hi", "你好"]);
 const TRAILING = /[。！!.~～\s]+$/u;
@@ -41,41 +43,45 @@ export interface TreeBars { choice: number; nounYes: number; nounNo: number; mem
 export const TREE_BAR_DEFAULTS: TreeBars = { choice: 0.6, nounYes: 0.8, nounNo: 0.2, memory: 0.85, status: 0.8, minConf: 0.7, minGap: 0.5,
   ruleScope: 0.6, gearLight: 1.2, gearHeavy: 2.5 };
 
-export interface Armed { category: boolean; status: boolean; memory: boolean; gear: boolean; rule: boolean }
+export interface Armed { category: boolean; status: boolean; memory: boolean; gear: boolean; rule: boolean; answer: boolean; lookup: boolean }
 /** The status lane's own arming key: the category question's hash under a distinct id, so a `category` row never arms status. */
 export const TREE_STATUS_ARM_ID = "category:status";
+/** Stage B spec §2: the answer and lookup lanes' own keys, at the category hash; a `category` row alone never arms a lane. */
+export const TREE_ANSWER_ARM_ID = "category:answer";
+export const TREE_LOOKUP_ARM_ID = "category:lookup";
+const PSEUDO_ROW_IDS = [TREE_STATUS_ARM_ID, TREE_ANSWER_ARM_ID, TREE_LOOKUP_ARM_ID] as const;
+const NO_LANES_OFF: ReadonlySet<LaneSwitch> = new Set();
 
 /**
  * Each decision arms on its own rows (lessons.md 2026-10-06): `rule` on sets_rule + rule_scope, gear on its three
- * scores; the memory lane needs category AND rule. The status lane also needs `rule` at route time (statusBranch).
+ * scores; the memory lane needs category AND rule. The status lane also needs `rule` at route time (statusBranch). The
+ * answer and lookup lanes arm on their pseudo-rows and are unarmed while listed in `lanesOff` (HOUGE_JEV_LANES_OFF).
  */
-export function treeArmed(lang: Lang, model: string, rows: readonly CalibrationRow[]): Armed {
+export function treeArmed(lang: Lang, model: string, rows: readonly CalibrationRow[], lanesOff: ReadonlySet<LaneSwitch> = NO_LANES_OFF): Armed {
   const on = (qs: readonly Question[]): boolean => qs.every((q) => calibratedLang(q.id, criteriaHash(q), model, lang, rows) !== undefined);
+  const pseudo = (id: string): boolean => calibratedLang(id, criteriaHash(TREE_CATEGORY), model, lang, rows) !== undefined;
   const category = on([TREE_CATEGORY]);
   const rule = on([TREE_SETS_RULE, TREE_RULE_SCOPE]);
   return {
-    category,
-    status: calibratedLang(TREE_STATUS_ARM_ID, criteriaHash(TREE_CATEGORY), model, lang, rows) !== undefined,
-    memory: category && rule,
-    gear: on([TREE_BREADTH, TREE_REASONING, TREE_ACTIONS]),
-    rule
+    category, status: pseudo(TREE_STATUS_ARM_ID), memory: category && rule, gear: on([TREE_BREADTH, TREE_REASONING, TREE_ACTIONS]), rule,
+    answer: pseudo(TREE_ANSWER_ARM_ID) && !lanesOff.has("answer"), lookup: pseudo(TREE_LOOKUP_ARM_ID) && !lanesOff.has("lookup")
   };
 }
 
 /**
- * The rows that can arm a tree decision today: a tree question, or the status pseudo-row, at its current criteria hash.
- * The alias-move page (`checkJevModelCalibrated`, jev-incidents.ts) reads only these, so a retired lane 1 row or a
- * stale-hash row neither raises nor clears it (it replaces lane 1's `armingRows`).
+ * The rows that can arm a tree decision today: a tree question, or a pseudo-row (status, answer, lookup) at its current
+ * criteria hash. The alias-move page (`checkJevModelCalibrated`, jev-incidents.ts) reads only these, so a retired lane 1
+ * row or a stale-hash row neither raises nor clears it (it replaces lane 1's `armingRows`).
  */
 export function treeArmingRows(rows: readonly CalibrationRow[]): CalibrationRow[] {
   const live = new Set(TREE_QUESTIONS.map((q) => `${q.id}\u0000${criteriaHash(q)}`));
-  live.add(`${TREE_STATUS_ARM_ID}\u0000${criteriaHash(TREE_CATEGORY)}`);
+  for (const id of PSEUDO_ROW_IDS) live.add(`${id}\u0000${criteriaHash(TREE_CATEGORY)}`);
   return rows.filter((r) => live.has(`${r.question_id}\u0000${r.criteria_hash}`));
 }
 
-/** `lane_limits` has no writer in stage A (memory and status have no limits, spec §3); it is kept for stage B. */
+/** `lane_limits`: a lane-shaped turn over its limits (stage B); `two_request`: a rule with a second request (stage B). */
 export type RouteReason = "routed" | "uncalibrated" | "below_bar" | "bare_ack_guard" | "lane_limits" | "correction"
-  | "cascade" | "cascade_failed" | "ack_rule" | "jev_skipped";
+  | "cascade" | "cascade_failed" | "ack_rule" | "jev_skipped" | "two_request";
 export type RuleScope = "ask" | "research";
 export interface Route { category: Category | null; lane: Lane; role: TurnRole; effort: Effort | null;
   save: { scope: RuleScope } | null; reason: RouteReason; cascade: "tiny" | null; thinkHarder: boolean }
@@ -115,19 +121,33 @@ const NO_OPTION: [string, number] = ["", 0];
 type Gear = { role: TurnRole; effort: Effort | null };
 type Zone = "yes" | "no" | "unsure";
 type RouteOpts = { bars: TreeBars; armed: Armed; thinkHarder: boolean; bareAck: boolean };
-interface Ctx { cat: JevChoiceAnswer; p: number; gear: Gear; zone: Zone; scope: RuleScope | null; o: RouteOpts }
+/** The three expected levels, or null when gear is unarmed or a score is missing (the lane limits and the guard need them). */
+type Scores = { breadth: number; reasoning: number; actions: number };
+interface Ctx { cat: JevChoiceAnswer; p: number; gear: Gear; zone: Zone; scope: RuleScope | null; scores: Scores | null; o: RouteOpts }
 const DEFAULT_GEAR: Gear = { role: "default", effort: null };
+
+/** Stage B spec §2: a lane's turn stays inside these expected levels, else the planner (`lane_limits`). */
+export const LANE_LIMITS: Readonly<Record<LaneSwitch, { actions: number; breadth: number }>> = {
+  answer: { actions: 0.5, breadth: 1.5 }, lookup: { actions: 1.5, breadth: 1.5 }
+};
+/** Stage B spec §2: a confident memory route whose `actions` level reaches this carries a second request (`two_request`). */
+export const TWO_REQUEST_ACTIONS = 1.5;
 
 function levelOf<T>(x: number, bars: TreeBars, light: T, standard: T, heavy: T): T {
   return atMost(x, bars.gearLight) ? light : atLeast(x, bars.gearHeavy) ? heavy : standard;
 }
 
-/** Gear = the highest of the three expected levels; effort from `reasoning` on the same edges (spec §2.4). */
-function gearOf(answers: Record<string, JevAnswer>, bars: TreeBars, armed: boolean): Gear {
+function scoresOf(answers: Record<string, JevAnswer>, armed: boolean): Scores | null {
   const [breadth, reasoning, actions] = [answers.breadth, answers.reasoning, answers.actions].map(scoreOf);
-  if (!armed || breadth == null || reasoning == null || actions == null) return DEFAULT_GEAR;
-  return { role: levelOf<TurnRole>(Math.max(breadth, reasoning, actions), bars, "fast", "default", "thinking"),
-    effort: levelOf<Effort>(reasoning, bars, "low", "medium", "high") };
+  if (!armed || breadth == null || reasoning == null || actions == null) return null;
+  return { breadth, reasoning, actions };
+}
+
+/** Gear = the highest of the three expected levels; effort from `reasoning` on the same edges (spec §2.4). */
+function gearOf(s: Scores | null, bars: TreeBars): Gear {
+  if (s === null) return DEFAULT_GEAR;
+  return { role: levelOf<TurnRole>(Math.max(s.breadth, s.reasoning, s.actions), bars, "fast", "default", "thinking"),
+    effort: levelOf<Effort>(s.reasoning, bars, "low", "medium", "high") };
 }
 
 function zoneOf(p: number | null, bars: TreeBars): Zone {
@@ -193,19 +213,38 @@ function memoryBranch(t: Ctx): Route {
   if (!clearsLane(t, o.bars.memory)) return plannerRoute("memory", DEFAULT_GEAR, saveFor(t, "memory"), "below_bar", o.thinkHarder);
   if (o.bareAck) return plannerRoute("memory", DEFAULT_GEAR, null, "bare_ack_guard", o.thinkHarder);
   if (t.zone !== "yes") return plannerRoute("memory", DEFAULT_GEAR, null, "correction", o.thinkHarder);
+  // stage B §2: a second request rides on the rule; save it, then the planner answers the rest with the [memory] note
+  if (t.scores !== null && atLeast(t.scores.actions, TWO_REQUEST_ACTIONS)) return plannerRoute("memory", t.gear, saveFor(t, "memory"), "two_request", o.thinkHarder);
   return { category: "memory", lane: "memory", role: "default", effort: null, save: saveFor(t, "memory"), reason: "routed", cascade: null, thinkHarder: o.thinkHarder };
+}
+
+/**
+ * Stage B spec §2: the answer and lookup lanes. Armed (own row, rule, gear), no bare ack, no `think harder`, inside the
+ * limits → the lane on Fast with the reasoning effort. Otherwise the planner as stage A built it, the reason naming why.
+ */
+function laneBranch(t: Ctx, lane: LaneSwitch): Route {
+  const { o } = t;
+  const planner = (reason: RouteReason): Route => plannerRoute(lane, t.gear, saveFor(t, lane), reason, o.thinkHarder);
+  if (!o.armed[lane] || !o.armed.rule || t.scores === null) return planner("routed");
+  if (o.bareAck) return planner("bare_ack_guard");
+  if (o.thinkHarder) return planner("routed");
+  const limit = LANE_LIMITS[lane];
+  if (!atMost(t.scores.actions, limit.actions) || !atMost(t.scores.breadth, limit.breadth)) return planner("lane_limits");
+  return { category: lane, lane, role: "fast", effort: t.gear.effort, save: saveFor(t, lane), reason: "routed", cascade: null, thinkHarder: false };
 }
 
 export function routeTree(answers: Record<string, JevAnswer>, o: RouteOpts): RoutePlan {
   const cat = choiceOf(answers.category);
   const [top, p] = (cat ? ranked(cat)[0] : undefined) ?? NO_OPTION;
   if (!cat || !isCategory(top) || (!o.armed.category && !o.armed.status)) return final(fallbackRoute("uncalibrated", o.thinkHarder));
-  const t: Ctx = { cat, p, gear: gearOf(answers, o.bars, o.armed.gear), scope: confidentScope(choiceOf(answers.rule_scope), o.bars),
+  const scores = scoresOf(answers, o.armed.gear);
+  const t: Ctx = { cat, p, gear: gearOf(scores, o.bars), scores, scope: confidentScope(choiceOf(answers.rule_scope), o.bars),
     zone: o.armed.rule && !o.bareAck ? zoneOf(noulOf(answers.sets_rule), o.bars) : "no", o };
   if (top === "status") return statusBranch(t);
   if (!o.armed.category) return final(fallbackRoute("uncalibrated", o.thinkHarder));
   if (!atLeast(p, o.bars.choice)) return cascadePlan(t);
   if (top === "memory") return final(memoryBranch(t));
+  if (top === "answer" || top === "lookup") return final(laneBranch(t, top));
   return final(plannerRoute(top, t.gear, saveFor(t, top), "routed", o.thinkHarder));
 }
 
