@@ -165,7 +165,8 @@ as `buildTurnPrompt` renders the retrieved facts and wiki pages (`retrieve(chatI
 rule was saved this turn. The one-shot sends system and user text as one prompt, as every one-shot does.
 
 **Records:** the compose `llm_attempt` rows have `role = lane` (new `LlmCallRole`, as stage A added `cascade`; the planner
-stays `compose`, so "zero planner requests" is readable) and `routed_by = verdict_id`; `finishLane` records the user and
+stays `compose`, so "zero planner requests" is readable) and `routed_by = verdict_id`; the verdict's `model` is taken from
+the compose call's result, never from a role-`lane` ledger lookup (the lookup lane's rewrite writes role-`lane` rows too); `finishLane` records the user and
 assistant chat turns as for the memory lane; `triage.route_lane = answer`.
 
 ## 5. The lookup lane
@@ -181,12 +182,13 @@ visible cost, so no step waits for a provider's full timeout:
    follow-up is a judgment call, so it goes to a model, behind a cheap code pre-filter (AGENTS.md: code owns the gates, the
    model composes between them):
    - **Pre-filter** (`needsRewrite`): the message is ≤ 40 chars or quotes a turn, **and** Paco's previous Telegram line in
-     this chat is ≤ 30 minutes old. Replay: fires on 15 of 38 takes, covering 7 of the 12 follow-ups (the 5 missed: 3 are
-     "again" requests 54–287 minutes after the previous line, 2 refer to Houge's own earlier report, which no rewrite can
-     recover) and 8 standalone messages (which the rewrite should leave alone).
+     this chat is ≤ 30 minutes old. Replay: fires on 15 of 38 takes, covering 7 of the 12 follow-ups (the 5 missed: 2 are
+     "again" requests 54–287 minutes after the previous line, 3 refer to Houge's own earlier report or digest, which no
+     rewrite can recover) and 8 standalone messages (which the rewrite should leave alone).
    - **Rewrite** (`rewrite`): one one-shot on the **Tiny** role (role `lane`, chain = Tiny candidates, bounded at
-     min(10 s, remaining − 15 s)), given the last two Paco lines and the last Houge line (each clipped to 200 chars) and the
-     message, asked for **one standalone web-search query** on a single line, or the token `SAME` when the message already is
+     min(12 s, remaining − 15 s): live K3 answers small prompts in a median ~7 s, 53 of 70 within 10 s, and the bound covers
+     the whole chain, so a cut leg never reaches the Gemini candidate), given the last two Paco lines, the last Houge line
+     and the quoted turn if any (each clipped to 200 chars) and the message, asked for **one standalone web-search query** on a single line, or the token `SAME` when the message already is
      one. `validateQuery` accepts a single line ≤ 120 chars with no URL and no newline; anything else, `SAME`, a timeout or a
      failed leg → the bare message. The memory lane's distill is the precedent for a Tiny step inside a lane.
    - Then whitespace-collapsed and cut at 200 chars. The same string is the reader's `objective`.
@@ -223,7 +225,7 @@ visible cost, so no step waits for a provider's full timeout:
    lane reply).
 
 The lane never asks Paco anything and never writes memory beyond step 1 (parent §3). Latency, expected: rewrite 0 or
-2–5 s, search 2–5 s, reader 5–12 s, compose 3–8 s; a thin result adds fetch 2–10 s and a second reader call. Still no
+~7 s (K3 median; 12 s at the bound, then the bare message), search 2–5 s, reader 5–12 s, compose 3–8 s; a thin result adds fetch 2–10 s and a second reader call. Still no
 planner session. **Known bad cells** (ruling 1): a question a search cannot answer (the Mac's public IP; a detail from
 Houge's own earlier report or digest) gets a one-search reply that says the sources do not answer; Dig deeper is the path.
 About 5 of the 38 replayed takes.
@@ -401,7 +403,8 @@ the `category` hash is unchanged.
      has the button;
   2. "明天悉尼天气怎么样？" → `lane = lookup`, one `web_search_performed`, every `reader` attempt on the Reader list, a
      `lane_replies` row with hostnames and facts, a source line in the text, at most one `http_fetch_performed`; the case
-     prints whether the thin-result fetch fired and whether the rewrite ran (it should not: no previous line);
+     prints whether the thin-result fetch fired and whether the rewrite ran (it will: `g.chat` holds this run's earlier
+     turns within 30 minutes) and what query it produced;
   3. `MSG.research` → the planner; PASS as `research` on Thinking (existing case) or as an over-limit `lookup` with reason
      `lane_limits` on the gear's role; the lanes idle;
   4. `MSG.ruleLookup` → `save_outcome = saved` and either `two_request` + a planner reply, or the lookup lane's card after
@@ -415,6 +418,8 @@ the `category` hash is unchanged.
   another path, FAIL under `--real-calibration` for cases 1 and 2. **`scripts/live-gate-omp.mjs` case 2** sends a weather
   message through the daemon and asserts a bridge `tool_finished` and short `result_digest`s; once the lanes are armed that
   message takes the lookup lane, so the case appends `认真想` (`think harder` forces the planner) and keeps its assertions.
+  `think harder` also marks the previous verdict in that chat `paco_correction = think_harder`, so the omp gate must run on
+  its DB copy only (as it does today) and never on the live DB.
 - **PASS criterion:** cases 1, 2, 5 acted with zero `compose` attempts on the lane turns; every `fallthrough:*` in the gate
   carries a `why` from §8's table; at most 1 silent Jev skip in ≥ 8 real calls; `pin_failed` = 0; case 6's run id present.
 
@@ -501,3 +506,6 @@ the `category` hash is unchanged.
   §11. Closure notes taken: `verdictInsert` takes the outcome (§4); the nudge does move the boundary (§7); the answer-lane
   "every input trusted" sentence corrected (§7); the `previousTelegramTurns` source excludes schedule rows (§3).
   Codex round 5: the Tiny rewrite contradicted the parent's "code builds the query" → parent spec Rev 10 amends the row.
+  Senior round 5: no blockers; its notes taken as text fixes: rewrite bound 12 s and K3 latency figures, the quoted
+  turn passed to the rewrite, verdict `model` from the compose result, gate case 2's rewrite expectation, the omp gate's
+  `think_harder` side effect confined to its DB copy, the misses wording.
