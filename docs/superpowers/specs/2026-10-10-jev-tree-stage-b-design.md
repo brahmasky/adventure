@@ -1,6 +1,6 @@
 # Jev decision tree, stage B — the `answer` and `lookup` lanes
 
-**Rev 4, 2026-10-10.** Parent: `2026-10-06-jev-decision-tree-design.md` (Rev 9), whose §3 table defines the two lanes and
+**Rev 5, 2026-10-10.** Parent: `2026-10-06-jev-decision-tree-design.md` (Rev 9), whose §3 table defines the two lanes and
 whose §10 names this stage. Everything the parent fixes (questions, bars, roles, the planner lane, ledger shape, safety
 nets) stays as built in stage A; this spec adds only what the two lanes and the three stage A leftovers need. ADR 0029
 governs; ADR 0014 (the reader wall) and ADR 0028 (omp) bind. §15 is the review log.
@@ -29,7 +29,7 @@ governs; ADR 0014 (the reader wall) and ADR 0028 (omp) bind. §15 is the review 
    stage A rows name, approved "Paco 2026-10-10", in the same build. Offered alternative (ship dark, arm after a
    lane-simulation report) declined. Evidence shown before the choice: §10. Not shown then, shown now: under §2's rules
    **26 of the 78 lane takes ran the planner on Default under stage A** (gear above light) and move to Fast under stage B;
-   and **about 5 of the 39 lookup takes** are questions a web search cannot answer (two ask for the Mac's public IP, three
+   and **about 5 of the 38 lookup takes** are questions a web search cannot answer (two ask for the Mac's public IP, three
    refer to Houge's own earlier report), which the lane will answer badly and Dig deeper will recover (§5, §10).
 2. **Lookup evidence = the search result set, and the top page only when it is thin** (option 2 of three). Rev 1 sent raw
    snippets to the composing model; ADR 0014 says only the quarantined reader ingests raw `web_search` output, so the
@@ -95,8 +95,9 @@ governs; ADR 0014 (the reader wall) and ADR 0028 (omp) bind. §15 is the review 
 
 New directory `src/core/lanes/`, hermetic (no store, no process env; everything through deps):
 
-- `lane-compose.ts`: `renderLanePrompt(i: LanePromptInput): string` (§4), `renderSourcesBlock(urls, digests)` (§5) and
-  `lookupQuery(message, previousPacoLine, ageMs): string` (§5 step 2).
+- `lane-compose.ts`: `renderLanePrompt(i: LanePromptInput): string` (§4), `renderSourcesBlock(urls, digests)` (§5),
+  `needsRewrite(message, quoted, previousTelegramLineAgeMs): boolean` and `validateQuery(raw, message): string` (§5 step 2),
+  `catchUpLine(lane, …): string` (§7).
 - `lane-card.ts`: `laneCard({text, run_id, note?}): {text, buttons}` — the reply with markdown links flattened to plain
   URLs and `[[attach:…]]` markers stripped (a lane reply is text only), the optional `[memory]` note line, and the
   **🔍 Dig deeper** button (`callback_data` `lane:ask:<run_id>`, under Telegram's 64-byte cap). `memoryLaneCard` keeps Undo
@@ -107,8 +108,11 @@ New directory `src/core/lanes/`, hermetic (no store, no process env; everything 
   budget are local to this file.
 - Types (`lane-types.ts`): `LaneInput { run_id, chat_id, userText, recentTurns, turnChars, quoted: QuotedTurn | null,
   effort, verdict_id, note: string | null, signal, deadlineAt }`; `AnswerLaneDeps { compose, systemPrompt, retrieve, now }`;
-  `LookupLaneDeps extends AnswerLaneDeps { search, fetch, read, maxResults, ledger: { searchPerformed, fetchPerformed,
-  readerStep } }` where `read` is the strict reader (§5 step 4); `compose: (req: { prompt, chain, deadlineMs, signal,
+  `LookupLaneDeps extends AnswerLaneDeps { search, fetch, read, rewrite, previousTelegramTurns, maxResults, ledger: {
+  searchPerformed, fetchPerformed } }` where `read` is the strict reader (§5 step 4), `rewrite` the Tiny one-shot (§5 step 2)
+  and `previousTelegramTurns` the last two Paco lines and the last Houge line from Telegram runs in this chat with their
+  ages (a store query joining `chat_turns` to `runs.source = 'telegram'`: schedule-fired rows never count as "Paco's
+  previous line"); `compose: (req: { prompt, chain, deadlineMs, signal,
   routed_by }) => Promise<LlmResult>` (an adapter over `oneShotAdapter` with `opts.chain` = the Fast candidates at `effort`,
   role `lane`, and `routed_by` threaded through a new `OneShotAdapterOptions.routed_by` onto **every** leg's attempt row;
   `seatChain` gets an explicit `lane` case that throws when no chain is supplied, so a missed option can never fall to the
@@ -133,8 +137,9 @@ reference it, and the finaliser's rules stay (a lost turn writes nothing; one fi
   after the lane**, as the status lane does today. `settleFor` gains an explicit outcome argument,
   `settleFor(route, save, handler, outcome?)`: the lane's result sets `outcome` (`act` on a reply, `fallback` on a
   fall-through), `handler_outcome` (`lane_reply` or `fallthrough:<why>`) and `model`; the verdict's `reason` stays the
-  route's reason (`routed`); the `triage` event's `decision` and the decision rows (`jev_decisions`) take the same outcome.
-  One write, no patch. `save_outcome` carries the attempted save's result (`not_durable` / `capped` / `none`).
+  route's reason (`routed`); `verdictInsert` takes `route_outcome` from that outcome (today it derives it from
+  `ACTED.has(reason)`, which must not be the source on a lane settle), and the `triage` event's `decision` and the decision
+  rows (`jev_decisions`) take the same outcome. One write, no patch. `save_outcome` carries the attempted save's result (`not_durable` / `capped` / `none`).
 - **A rule committed: settle inside the save transaction** with `handler_outcome = pending` (as `saveThenRoute` does today,
   so the save and its verdict stay atomic), then the lane runs and **patches** `handler_outcome`, `model` and, on a
   fall-through, `route_outcome = fallback` (`JevVerdictPatch.route_outcome` widens to `"pin_failed" | "fallback"`). On
@@ -171,13 +176,22 @@ visible cost, so no step waits for a provider's full timeout:
 
 1. (core-worker) save a rule if any; mint the id (settle when a save committed). A message containing a URL never reaches
    the lane (§2's code rule).
-2. **Query, code-built** (`lookupQuery`): the message text (quoted turn excluded), whitespace-collapsed. Jev sorted the
-   message with the thread in view, so a follow-up ("再查一次", "melbourne呢？", "具体时间？") can be a confident `lookup`
-   while meaning nothing on its own: **when the message is ≤ 20 chars, or quotes a turn, or Paco's previous line in this
-   chat is under 10 minutes old and the message is ≤ 40 chars**, the previous Paco line (clipped to 80 chars) is prepended:
-   `<previous line> — <message>`. Then cut at 200 chars. Replay: 9 of the 39 lookup takes are ≤ 12 chars and 3 more are
-   "again" requests of 15–17 chars sent within a minute of the previous turn; the rule covers all 12. Search engines
-   tolerate the extra words on a standalone message. The same string is the reader's `objective`.
+2. **Query.** Jev sorted the message with the thread in view, so a confident `lookup` can be a follow-up that means
+   nothing as a search ("再查一次", "melbourne呢？", "具体时间？": 12 of the 38 replayed takes). Whether a short message is a
+   follow-up is a judgment call, so it goes to a model, behind a cheap code pre-filter (AGENTS.md: code owns the gates, the
+   model composes between them):
+   - **Pre-filter** (`needsRewrite`): the message is ≤ 40 chars or quotes a turn, **and** Paco's previous Telegram line in
+     this chat is ≤ 30 minutes old. Replay: fires on 15 of 38 takes, covering 7 of the 12 follow-ups (the 5 missed: 3 are
+     "again" requests 54–287 minutes after the previous line, 2 refer to Houge's own earlier report, which no rewrite can
+     recover) and 8 standalone messages (which the rewrite should leave alone).
+   - **Rewrite** (`rewrite`): one one-shot on the **Tiny** role (role `lane`, chain = Tiny candidates, bounded at
+     min(10 s, remaining − 15 s)), given the last two Paco lines and the last Houge line (each clipped to 200 chars) and the
+     message, asked for **one standalone web-search query** on a single line, or the token `SAME` when the message already is
+     one. `validateQuery` accepts a single line ≤ 120 chars with no URL and no newline; anything else, `SAME`, a timeout or a
+     failed leg → the bare message. The memory lane's distill is the precedent for a Tiny step inside a lane.
+   - Then whitespace-collapsed and cut at 200 chars. The same string is the reader's `objective`.
+   The code rule Rev 4 had (prepend the previous line) was re-scored by the senior review and dropped: it fired on 28 of 39
+   takes and put an unrelated earlier topic ahead of 16 standalone questions (§13).
 3. **One search** through `createWebSearchAdapter` (the configured chain, Tavily then Firecrawl; `max_results` =
    `resolveWebMaxResults(env)`), raced against min(25 s, remaining − 15 s); the adapter takes no signal, so a late result
    is **discarded** (`signal.aborted` or past the bound → drop, never use). `ok: false` of any cause → `search_failed`;
@@ -189,15 +203,15 @@ visible cost, so no step waits for a provider's full timeout:
    `parseReaderExtraction`, but returning `{ok: false}` on a parse miss instead of the planner's fail-safe `unreadableDigest`
    string (the fail-safe stays for the planner). Each attempt is raced against min(20 s, remaining − 15 s). Output: the
    structured extraction (`summary`, `facts[]`, `answer_to_objective`, `contains_instructions`) and its rendered digest.
-   `{ok: false}` → `reader_failed`. After each reader success the lane appends the bridge's own `loop_step` event with
-   `result_digest` = the digest and `reader_applied: true` (the shape `bridge-handler.ts` writes for a planner tool call),
-   so the digest is **durable** for §7. Code keeps **titles and URLs out of the model's hands as free text**: the
+   `{ok: false}` → `reader_failed`. The reader's `facts[]` are kept for the lane's `lane_replies` row (§7); **the ledger
+   never holds read text** (bridge-handler: `result_digest` is `sha256:… bytes:…` for a read tool, Paco's `fdeb3b8`), so
+   the lane writes no `loop_step`. Code keeps **titles and URLs out of the model's hands as free text**: the
    `[sources]` list the composer sees is code-built as `[n] <url>` only (URL validated: `http(s)`, ≤ 200 chars, no
    whitespace; a result whose URL fails validation is dropped from the list), the digest under it.
 5. **Thin → read the top page.** Thin is the reader's verdict: `answer_to_objective === null` (the sources did not answer
    the objective). Then `createHttpFetchAdapter` fetches the first listed result (existing SSRF floor, 15 s, 1 MB,
    6 000-char cap), raced against min(15 s, remaining − 15 s), and the strict reader reads it (second reader call; ledger
-   `http_fetch_performed {url, status}` and a second `loop_step`). A fetch or reader failure here is **not** a
+   `http_fetch_performed {url, status}`). A fetch or reader failure here is **not** a
    fall-through: compose from the first digest. Never more than one fetch. Case 2 of the gate prints whether it fired.
 6. **Compose** on the Fast chain, role `lane`, min(45 s, remaining): the §4 prompt with the `[sources]` block (code-built
    URL list, then the digest(s); `INSTRUCTIONS_NOTE` appended when the reader flagged instructions) ahead of the thread, and
@@ -206,11 +220,11 @@ visible cost, so no step waits for a provider's full timeout:
    listed result only. `laneCard` flattens any markdown link in the body to its plain URL (no masked links anywhere in a
    lane reply).
 
-The lane never asks Paco anything and never writes memory beyond step 1 (parent §3). Latency, expected: search 2–5 s,
-reader 5–12 s, compose 3–8 s; a thin result adds fetch 2–10 s and a second reader call. Still no planner session.
-**Known bad cells** (ruling 1): a question a search cannot answer (the Mac's public IP; a detail from Houge's own earlier
-report or digest) gets a one-search reply that says the sources do not answer; Dig deeper is the path. About 5 of the 39
-replayed takes.
+The lane never asks Paco anything and never writes memory beyond step 1 (parent §3). Latency, expected: rewrite 0 or
+2–5 s, search 2–5 s, reader 5–12 s, compose 3–8 s; a thin result adds fetch 2–10 s and a second reader call. Still no
+planner session. **Known bad cells** (ruling 1): a question a search cannot answer (the Mac's public IP; a detail from
+Houge's own earlier report or digest) gets a one-search reply that says the sources do not answer; Dig deeper is the path.
+About 5 of the 38 replayed takes.
 
 ## 6. The card, the correction, the off switch
 
@@ -251,21 +265,23 @@ turn is answered outside the session, so the session never sees it.
   lane-handled turn in this chat since the planner last answered here, oldest first, at most 6:
   - `Paco: <user text>` clipped by `feedTurnText(…, resolveChatContextTurnChars(env))`, whitespace folded, the close
     marker neutralised as the seed does;
-  - the Houge line per lane: memory → `Houge saved a rule: <lesson text>` (Paco-derived); status → `Houge reported its
-    status`; lookup → `Houge answered from <hostnames> — facts: <the reader's facts, clipped to 300 chars>`, read from the
-    lane's `loop_step.result_digest` (§5 step 4; the reader's schema-constrained extraction is what the planner is allowed
-    to see today; hostnames, not URLs, because the planner never sees raw search URLs today); answer → `Houge replied: <the
-    reply clipped to 300 chars>`. **Ruling on the answer lane's text (ADR 0014 holds):** every input to the answer lane's
-    composer is trusted (system prompt, facts, thread, Paco's message; no web, no tool), so its prose carries no untrusted
-    bytes and the reader-wall rule is not crossed; the seed rule's other reason (a habit a lesson change is removing)
-    is accepted as a residual of one clipped, fenced line, because without the text the planner cannot understand a
-    follow-up such as "能再展开一下吗". The lookup lane's prose is **never** carried (it was composed over web-derived text).
+  - the Houge line per lane, **built by code at lane end and stored in `lane_replies`** (§9; one row per lane turn:
+    `run_id`, `chat_id`, `lane`, `verdict_id`, `catch_up` text, `created_at`), never recomputed from the ledger: memory →
+    `Houge saved a rule: <lesson text>` (Paco-derived); status → `Houge reported its status`; lookup → `Houge answered from
+    <hostnames> — facts: <the reader's facts[], clipped to 300 chars>` (the reader's schema-constrained extraction is what the
+    planner is allowed to see today; hostnames, not URLs, because the planner never sees raw search URLs today); answer →
+    `Houge replied: <the reply clipped to 300 chars>`. **Ruling on the answer lane's text (ADR 0014 holds):** the answer
+    lane's composer receives nothing raw: the same system prompt, facts, thread and message the planner receives (the thread
+    may hold earlier lane replies, themselves built over reader digests, never over raw bytes), so its prose crosses no
+    wall; the seed rule's other reason (a habit a lesson change is removing) is accepted as a residual of one clipped,
+    fenced line, because without the text the planner cannot understand a follow-up such as "能再展开一下吗". The lookup
+    lane's prose is **never** carried (it was composed over web-derived text).
 - **Boundary, code only:** "since the planner last answered in this chat" = the newest `chat_turns` assistant row in this
   chat whose run is a Telegram turn (`runs.source = 'telegram'`), whose intent is not `evolution_report`, and whose run has
   no `lane_reply` verdict (join `chat_turns.run_id = jev_verdicts.run_id`; both carry `run_id`, no FK needed). So an
-  evolution report, a schedule-fired reply or a nudge never moves the boundary. `RunStore.laneTurnsSince(chat_id, since)`
-  returns the lane runs after it with their user text, lane, and the lane's `loop_step` digests and `web_search_performed`
-  URLs. The seed is **ignored for the boundary**; when a seed is pending in the same prompt, the block omits the `Paco:`
+  evolution report or a schedule-fired reply never moves the boundary (the approval nudge is an assistant row of a
+  Telegram run and does move it: harmless, since no lane can run while a planner turn is live).
+  `RunStore.laneTurnsSince(chat_id, since)` returns the `lane_replies` rows after it joined to their user text. The seed is **ignored for the boundary**; when a seed is pending in the same prompt, the block omits the `Paco:`
   lines of runs the seed already shows (dedupe by `run_id`; the seed query returns `run_id`) and keeps the Houge lines.
 - **Where and caps:** computed inside `buildTurnPrompt` next to `sessionSeed`, Telegram source only (a schedule fire gets
   none); whole block ≤ 2 000 chars (oldest entries dropped first); empty when nothing was missed (most planner turns, no
@@ -304,9 +320,13 @@ abort. The warming planner child: unchanged from stage A (`finishLane` supersede
   `INSERT INTO jev_verdicts (<all 23>) SELECT <all 23> FROM jev_verdicts_old`; assert equal row counts; `DROP TABLE
   jev_verdicts_old`; then recreate `jev_verdicts_run_idx` and `jev_verdicts_created_idx`; record in `schema_migrations`. It
   runs at `RunStore.open`, so the gate's VACUUM copy migrates too.
+- **Migration `2026-10-10-lane-replies`**: `CREATE TABLE IF NOT EXISTS lane_replies (run_id TEXT PRIMARY KEY, chat_id
+  TEXT NOT NULL, lane TEXT NOT NULL, verdict_id TEXT, catch_up TEXT NOT NULL, created_at TEXT NOT NULL)` with an index on
+  `(chat_id, created_at)`; written once per lane reply (memory and status included, so their gap closes too); read by §7.
+  No ledger text: the catch-up text is a store row, like `chat_turns`.
 - `run-ledger.ts`: `triage_override` required fields gain `lane` (null allowed); `llm_attempt.role` admits `lane`;
-  `loop_started.applied_artifacts` gains `catch_up_run_ids`; the lane writes the existing `loop_step` (with
-  `result_digest`, `reader_applied`) and `web_search_performed` / `http_fetch_performed`; **no new event types**.
+  `loop_started.applied_artifacts` gains `catch_up_run_ids`; the lane writes `web_search_performed` /
+  `http_fetch_performed` only; **no new event types, no read text in the ledger**.
 - `JevVerdictRow.lane` widens; `JevVerdictPatch.route_outcome` admits `fallback`; `insertJevVerdict` takes an optional id;
   `settleFor` takes an outcome; `LlmCallRole` gains `lane`; `OneShotAdapterOptions.routed_by`; `TREE_THRESHOLD_VERSION`
   bumped.
@@ -320,8 +340,9 @@ on the planner. Against Paco's 111 labels: lookup 7/7 right; answer 6/9 (misses:
 Houge's own behaviour — and `lookup` ×1). Against the tool proxy the large cell is **24 proxy-`research` turns the lookup
 lane would take** with one search (the known "research read as lookup" weakness); Paco's labels rated 0 of 7 lookup picks
 wrong, so the proxy overstates it. **Role change:** 26 of the 78 (answer 14, lookup 12) ran the planner on Default under
-stage A and move to Fast. **Lookup text review** (the 39 takes joined to their messages): 12 are follow-ups the §5 query
-rule covers; 1 carries a URL (→ planner); about 5 cannot be answered by a search (ruling 1). The parent's "58% of past
+stage A and move to Fast. **Lookup text review** (the 39 takes joined to their messages, 38 after the URL message goes
+to the planner): 12 are follow-ups; the §5 pre-filter reaches 7 of them for the Tiny rewrite; about 5 cannot be answered by
+a search (ruling 1). The parent's "58% of past
 turns" was the proxy share of the two categories, not the lanes' take at the bar. The two-request guard's figures are in
 §2.
 
@@ -338,10 +359,11 @@ the `category` hash is unchanged.
   guard at 1.49 (lane) and 1.5 (planner, `two_request`) and inert with gear unarmed; `decisionFor` on the new reasons;
   `treeArmingRows` with the two keys; the threshold version stamp.
 - **Each lane hermetic** (`tests/core/lanes/*.test.ts`, stubbed compose, search, fetch, strict reader, clock): reply; each
-  `why` in §8 including `lane_threw` from a throwing dep; `lookupQuery` on each clause (short, quoted, recent + ≤ 40,
-  standalone long, no previous line) and the 200-char cut; the thin trigger on `answer_to_objective` null vs set; one fetch
+  `why` in §8 including `lane_threw` from a throwing dep; `needsRewrite` on each clause (≤ 40, quoted, > 30 min old, no previous
+  Telegram line) and `validateQuery` (SAME, two lines, a URL, > 120 chars, a clean query), the rewrite's timeout and failed
+  leg falling back to the bare message, the 200-char cut; the thin trigger on `answer_to_objective` null vs set; one fetch
   at most; fetch failure still composes; the code-built `[sources]` URL list (an invalid URL dropped) and the digest under
-  it; the `loop_step` written per reader success with `result_digest`; `INSTRUCTIONS_NOTE` on a flagged read; the source
+  it; the `lane_replies` row's text per lane kind; `INSTRUCTIONS_NOTE` on a flagged read; the source
   line from `[n]` citations and the none-cited default; markdown links flattened in the body; the `[memory]` note; prompt
   contents (preface first, system prompt identity with the planner's, thread order, quoted line, context block);
   `[[attach:]]` stripped; a late search result after abort is dropped; the budget (a 20 s search leaves compose 45 s; a
@@ -357,9 +379,9 @@ the `category` hash is unchanged.
   deduped, Houge lines kept), one entry per lane kind (memory, status, lookup with hostnames and facts, answer with clipped
   text), an evolution report or schedule reply does not move the boundary, a schedule-fired turn gets none; the dispatched
   prompt text contains the block; `catch_up_run_ids` in `loop_started`.
-- **Store**: the migration on a DB holding stage A rows (rows kept, counts equal, indexes present, a second run a no-op),
-  on a fresh DB, and the widened CHECK; `triage_override.lane` incl. null; `countRecentTriageOverrides`;
-  `insertJevVerdict` with a supplied id.
+- **Store**: the verdicts migration on a DB holding stage A rows (rows kept, counts equal, indexes present, a second run
+  a no-op), on a fresh DB, and the widened CHECK; the `lane_replies` table and `laneTurnsSince`; `triage_override.lane`
+  incl. null; `countRecentTriageOverrides`; `insertJevVerdict` with a supplied id.
 - **Gateway**: `lane:ask:` and legacy `memlane:ask:` both parse; a tap on a run with no verdict writes `lane: null` and
   re-admits; three overrides on `answer` in 7 days open `triage_overrides` with the lane subject and no marker; two on
   `answer` plus one on `lookup` open nothing; the quiet resolver closes the incident when the count drops; the memory
@@ -375,9 +397,9 @@ the `category` hash is unchanged.
   1. a chat turn ("你觉得 NAS 放在客厅还是书房更好？") → `lane = answer`, `lane_reply`, `route_outcome = act`, zero `compose`
      attempts, ≥ 1 ok `lane` attempt and every `lane` attempt on a Fast candidate with `routed_by` = the verdict id, the card
      has the button;
-  2. "明天悉尼天气怎么样？" → `lane = lookup`, one `web_search_performed`, ≥ 1 `loop_step` with `reader_applied`, every
-     `reader` attempt on the Reader list, a source line in the text, at most one `http_fetch_performed`; the case prints
-     whether the thin-result fetch fired;
+  2. "明天悉尼天气怎么样？" → `lane = lookup`, one `web_search_performed`, every `reader` attempt on the Reader list, a
+     `lane_replies` row with hostnames and facts, a source line in the text, at most one `http_fetch_performed`; the case
+     prints whether the thin-result fetch fired and whether the rewrite ran (it should not: no previous line);
   3. `MSG.research` → the planner; PASS as `research` on Thinking (existing case) or as an over-limit `lookup` with reason
      `lane_limits` on the gear's role; the lanes idle;
   4. `MSG.ruleLookup` → `save_outcome = saved` and either `two_request` + a planner reply, or the lookup lane's card after
@@ -388,7 +410,9 @@ the `category` hash is unchanged.
   6. a planner turn right after case 2 in the same chat ("那后天呢？认真想": `think harder` forces the planner, so the case is
      never INCONCLUSIVE) → its `loop_started.applied_artifacts.catch_up_run_ids` contains case 2's run id.
   `caseAck` is unchanged (the ack stays on the planner). Cases judge by the recorded verdict; INCONCLUSIVE when Jev takes
-  another path, FAIL under `--real-calibration` for cases 1 and 2.
+  another path, FAIL under `--real-calibration` for cases 1 and 2. **`scripts/live-gate-omp.mjs` case 2** sends a weather
+  message through the daemon and asserts a bridge `tool_finished` and short `result_digest`s; once the lanes are armed that
+  message takes the lookup lane, so the case appends `认真想` (`think harder` forces the planner) and keeps its assertions.
 - **PASS criterion:** cases 1, 2, 5 acted with zero `compose` attempts on the lane turns; every `fallthrough:*` in the gate
   carries a `why` from §8's table; at most 1 silent Jev skip in ≥ 8 real calls; `pin_failed` = 0; case 6's run id present.
 
@@ -417,6 +441,11 @@ the `category` hash is unchanged.
 - **The lookup lane's prose in the catch-up block** (Rev 2): web-derived model text in the planner's prompt.
 - **A `fallthrough:aborted` verdict on the no-save path** (Rev 3): the finaliser's lost-turn guard forbids it, and today's
   lanes behave the same.
+- **The code-built follow-up prefix** (Rev 4): re-scored on the 39 takes, it fired on 28 and put an unrelated topic ahead of
+  16 standalone questions; a 30-minute, Telegram-only pre-filter still prefixed 8 standalone questions. Replaced by the
+  pre-filter plus a Tiny rewrite (§5).
+- **Reader text in `loop_step.result_digest`** (Rev 4): the ledger never holds read text (`fdeb3b8`); `lane_replies` holds
+  the code-built line instead.
 
 ## 14. Parked
 
@@ -426,8 +455,7 @@ the `category` hash is unchanged.
 - Per-lane bars above 0.6 if the first weeks' `ask_anyway` rate says so (a bars change, no code).
 - Runtime lane toggling (`/lanes`), if the env switch proves too slow in practice.
 - Lane turns touching the lessons they render (`recordAttribution` from a lane).
-- A Tiny-role query rewrite for follow-ups, if the §5 code rule's junk-search rate (visible as Dig deeper taps on lookup)
-  stays high.
+- Widening the rewrite pre-filter (older follow-ups, longer messages) if Dig deeper taps on lookup show misses.
 
 ## 15. Review log
 
@@ -463,3 +491,10 @@ the `category` hash is unchanged.
   URL goes to the planner (§2); hostnames, not URLs, in the catch-up; a status line; the boundary ignores evolution reports,
   schedule replies and nudges; a lane never throws (`lane_threw`); the probe check accepts a lane reply; case 6 forces the
   planner with `think harder`; `ompRouteEnd`'s later `model` write stated (§4). Not taken: a Tiny query rewrite (parked, §14).
+- **Rev 5 (2026-10-10):** fourth round on Rev 4, blockers only. Codex: the reader text in `loop_step.result_digest`
+  conflicts with "the ledger never holds read text" → the `lane_replies` table (§7, §9). Senior review: the Rev 4 follow-up
+  prefix did more harm than good (28 of 39 fired, 16 unrelated prefixes; a 30-minute Telegram-only pre-filter re-scored by
+  the author still prefixed 8 standalone questions, catching 7 of 12 follow-ups) → pre-filter plus a Tiny rewrite with code
+  validation (§5 step 2); the same `loop_step` finding, plus `live-gate-omp.mjs` case 2 breaking once the lanes are armed →
+  §11. Closure notes taken: `verdictInsert` takes the outcome (§4); the nudge does move the boundary (§7); the answer-lane
+  "every input trusted" sentence corrected (§7); the `previousTelegramTurns` source excludes schedule rows (§3).
