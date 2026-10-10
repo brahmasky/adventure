@@ -1,6 +1,6 @@
 # Jev decision tree — Stage B Implementation Plan
 
-**Rev 3 (2026-10-10)** — Rev 2 plus the senior plan review: nested masked links (flatten until stable, Task 4), the kill-during-warm-wait test rewritten on the file's real harness (Task 10), typecheck fixes (`laneCard` returns `| null` in the Interfaces block and the tests; the sweep test runs on one clock, Task 8), `compose_timeout` classified by the provider's real string or the spent bound (Task 5), verdict `model` as `provider/model` (Task 5), the catch-up line built from the sanitized body (Tasks 4–6), `laneTurnsSince` keeps only delivered replies (Task 2), the parity test runs with the lanes off (Task 11), omp gate cases 1, 5, 19 and 21 too (Task 12; the live-DB label is Paco's open decision), protected list completed. Rev 2 was Rev 1 plus the codex plan review's three blockers and two warnings: `finishLane` re-checks abort after the warm wait (Task 10); link flattening matches the renderer's link syntax, any scheme (Task 4); a card whose body is empty after stripping is `empty_reply`, never `act` (Tasks 4, 7); gate B2 allows an empty facts list (Task 12); the sweep test stamps its events inside the window (Task 8). Line anchors are from that commit;
+**Rev 4 (2026-10-10)** — Rev 3 plus the second review round: `provider/model` carried into the Task 6 and 7 expectations and the B1 gate check; the Task 10 warm-wait test asserts what the guard changes (no `partial` lane text on the failure); the timeout regex covers every wording the one-shot chain emits; omp gate cases 5, 19 and 21 are edited where their messages really live (the drive functions); the omp gate's live-DB label is a todo item for Paco's ruling and the full omp gate is run after it. Rev 3 was Rev 2 plus the senior plan review: nested masked links (flatten until stable, Task 4), the kill-during-warm-wait test rewritten on the file's real harness (Task 10), typecheck fixes (`laneCard` returns `| null` in the Interfaces block and the tests; the sweep test runs on one clock, Task 8), `compose_timeout` classified by the provider's real string or the spent bound (Task 5), verdict `model` as `provider/model` (Task 5), the catch-up line built from the sanitized body (Tasks 4–6), `laneTurnsSince` keeps only delivered replies (Task 2), the parity test runs with the lanes off (Task 11), omp gate cases 1, 5, 19 and 21 too (Task 12; the live-DB label is Paco's open decision), protected list completed. Rev 2 was Rev 1 plus the codex plan review's three blockers and two warnings: `finishLane` re-checks abort after the warm wait (Task 10); link flattening matches the renderer's link syntax, any scheme (Task 4); a card whose body is empty after stripping is `empty_reply`, never `act` (Tasks 4, 7); gate B2 allows an empty facts list (Task 12); the sweep test stamps its events inside the window (Task 8). Line anchors are from that commit;
 when the code and this plan disagree, read the code, fix the plan line, and say so in the task report.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -1853,8 +1853,8 @@ import { fall, type AnswerLaneDeps, type LaneFall, type LaneInput, type LaneResu
 
 /** Stage B §4: the compose bound on the user's path (whatever is left of the lane's budget, at most this). */
 export const LANE_COMPOSE_MS = 45_000;
-/** The omp provider's own wording for a leg that hit its timeout (`spawnOneShot`: `st.timedOut ? "timed out"`). */
-const TIMED_OUT = /timed out/i;
+/** Every wording the one-shot path emits for a cut leg: `spawnOneShot` writes "timed out"; the chain's aggregate names the audited kind, `timeout`, or `deadline`. */
+const TIMED_OUT = /\b(timed out|timeout|deadline)\b/i;
 
 /** The answer lane (stage B §4): render, one compose, done. Never throws: an unexpected exception is `lane_threw`. */
 export async function runAnswerLane(i: LaneInput, d: AnswerLaneDeps): Promise<LaneResult> {
@@ -2082,7 +2082,7 @@ describe("runLookupLane — the happy path and the reader wall", () => {
   it("one search, the strict read of {query, provider, results}, the code-built [sources], a source line, the catch-up line", async () => {
     const s = setup();
     const r = await runLookupLane(s.input(), s.d);
-    expect(r).toEqual({ kind: "reply", text: `明天晴，最高 22 度 [1]。\n\n${SOURCE_LINE_LABEL} https://www.bom.gov.au/nsw/sydney`, model: "claude-sonnet-5-5",
+    expect(r).toEqual({ kind: "reply", text: `明天晴，最高 22 度 [1]。\n\n${SOURCE_LINE_LABEL} https://www.bom.gov.au/nsw/sydney`, model: "anthropic/claude-sonnet-5-5",
       sources: ["https://www.bom.gov.au/nsw/sydney"], catch_up: "Houge answered from www.bom.gov.au — facts: Sunny, max 22°C" });
     expect(s.d.search).toHaveBeenCalledWith({ query: "明天悉尼天气怎么样？", max_results: 5 });
     expect(s.searchPerformed).toHaveBeenCalledWith({ query: "明天悉尼天气怎么样？", provider: "tavily", source_urls: [HIT.url], result_count: 1 });
@@ -2602,7 +2602,7 @@ describe("the answer lane through the worker (stage B §4)", () => {
     expect(atCompose).toEqual([undefined]); // nothing was settled before the lane ran (Decision 5)
     const v = verdictOf(store, t.run_id)!;
     expect(v).toMatchObject({ category: "answer", lane: "answer", role: "fast", effort: "low", reason: "routed", route_outcome: "act",
-      handler_outcome: "lane_reply", model: "claude-sonnet-5-5", save_outcome: "none" });
+      handler_outcome: "lane_reply", model: "test/claude-sonnet-5-5", save_outcome: "none" }); // provider/model: the injected seat's provider is "test"
     expect(triageRows(store, t.run_id)).toMatchObject([{ route_lane: "answer", decision: "act", verdict: "routed", verdict_id: v.verdict_id }]);
     expect(decisions(store, t.run_id).every((r) => r.decision === "act" && r.threshold_used === "2026-10-10.1:routed")).toBe(true);
     expect(store.laneTurnsSince("555", null)).toMatchObject([{ run_id: t.run_id, lane: "answer", verdict_id: v.verdict_id, catch_up: "Houge replied: 放在书房更好。" }]);
@@ -2670,7 +2670,7 @@ describe("a stated rule with a lane (stage B §4: save first, then settle-after 
     expect(atCompose).toBe("pending");
     expect(out.kind).toBe("lane_reply");
     if (out.kind === "lane_reply") expect(out.text).toMatch(/^书房。\n\n📒 Saved lesson #\d+ · format$/);
-    expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "answer", save_outcome: "saved", handler_outcome: "lane_reply", route_outcome: "act", model: "claude-sonnet-5-5" });
+    expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "answer", save_outcome: "saved", handler_outcome: "lane_reply", route_outcome: "act", model: "test/claude-sonnet-5-5" });
     expect(String(seen.find((i) => String(i.question).startsWith(LANE_PREFACE))?.question)).toMatch(/\[memory\] Lesson #\d+ \(format\) was just saved/);
     expect(triageRows(store, t.run_id)).toMatchObject([{ decision: "act" }]);
     store.close();
@@ -3867,8 +3867,10 @@ EOF
 
 ```ts
   // Stage B §8: a lane reply that arrives while /kill has already ended the turn must not reach Paco. finishLane waits for the
-  // warming child first; without a re-check after that wait, the card would be assigned and the turn completed anyway.
-  it("a lane reply after an abort during the warm wait delivers no card and completes nothing", async () => {
+  // warming child first; without a re-check after that wait it assigns the card to the dead turn, and the failure then carries
+  // the lane text as `partial`, which the failure reply shows (omp-turn-wiring.ts:73 on a turn timeout). The run is `killed`
+  // either way (abortTurn's done("abort") wins the ended race); what the guard changes is that no lane text leaves with it.
+  it("a lane reply after an abort during the warm wait leaves no lane text on the killed run", async () => {
     // the child never becomes ready, so finishLane sits in its bounded warm wait; the kill lands there
     const session = fakeSession({ start: never });
     const { store, sup, outcome } = harness(session, {}, { triage: async () => ({ kind: "lane_reply", text: "quick", buttons: [] }) });
@@ -3876,8 +3878,10 @@ EOF
     sup.submit(req(run_id)); await until(() => session.options.length === 1); // the child is starting; triage has already replied
     await sup.abortAll("killed");
     await sup.whenIdle();
-    expect(outcome.done.map((d) => (d as { run_id: string }).run_id)).not.toContain(run_id); // no outcome.complete: no card delivered
-    expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "killed" });
+    expect(outcome.done.map((d) => (d as { run_id: string }).run_id)).not.toContain(run_id); // no outcome.complete
+    const failed = failedOf(outcome, run_id) as { error_type: string; partial?: string } | undefined;
+    expect(failed).toMatchObject({ error_type: "killed" });
+    expect(failed).not.toHaveProperty("partial"); // the lane's "quick" never became the turn's text
   });
 ```
 
@@ -3887,7 +3891,7 @@ helpers: `harness(session, env, extra)` takes supervisor deps overrides, so `tri
 - [ ] **Step 7: Run the test to verify it fails**
 
 Run: `npx vitest run tests/omp/planner-supervisor.test.ts -t "warm wait"`
-Expected: FAIL — `completed` holds one entry (the card was delivered after the kill).
+Expected: FAIL — the failure carries `partial: "quick"` (finishLane assigned the lane text to the already-killed turn).
 
 - [ ] **Step 8: Implement** — in `finishLane` (`src/omp/planner-supervisor.ts:519-528`), after the `bounded(warm, ABORT_GRACE_MS)` line
   and before `turn.lastText = v.text;`, add:
@@ -4270,7 +4274,7 @@ async function caseAnswerLane(g) {
   check("B1 answer: ≥ 1 ok lane attempt, every one on a Fast candidate with routed_by = the verdict id",
     lane.some((a) => a.outcome === "ok") && lane.every((a) => fast.has(key(a.provider, a.model)) && a.routed_by === v.verdict_id),
     lane.map((a) => `${key(a.provider, a.model)}:${a.outcome}:${a.routed_by}`).join(" ") || "none");
-  check("B1 answer: verdict.model is the compose's answering model", lane.some((a) => a.outcome === "ok" && a.model === v.model), `verdict.model=${v.model}`);
+  check("B1 answer: verdict.model is the compose's answering model (provider/model)", lane.some((a) => a.outcome === "ok" && key(a.provider, a.model) === v.model), `verdict.model=${v.model}`);
   const reply = outboxReply(g, run_id);
   check("B1 answer: the card carries 🔍 Dig deeper", (reply?.buttons ?? []).some((b) => b.text === "🔍 Dig deeper" && b.data === `lane:ask:${run_id}`),
     JSON.stringify(reply?.buttons ?? null));
@@ -4370,8 +4374,12 @@ runs, so the three weather cases append `认真想` (`think harder` forces the p
 ```
 
 Line 149: `send: () => "What's the weather in Sydney tomorrow? 认真想",` · Line 195: `send: () => "What's the weather in Melbourne tomorrow? 认真想",`
-and the same ` 认真想` suffix on the `send` text of cases 1, 5, 19 and 21 (plain chat messages the answer lane would take; the
-reviewer traced them). Every omp gate case must keep reaching the planner: it is the omp runtime's gate, and a lane bypasses omp.
+and the same ` 认真想` suffix on the messages of cases 1, 5, 19 and 21 (plain chat messages the answer lane would take). For
+cases 5, 19 and 21 the `send:` field is display only: the messages really sent live in their drive functions, so edit those
+strings: `:483` `"My code word is ZEBRA 认真想"` and `:486` `"What was my code word? 认真想"` (case 5); `:552-554` the three
+`console.log` prompts Paco types by hand gain ` 认真想` each (case 19); `:560` `"From now on, end every reply with the word
+BANANA. Save that as a lesson. 认真想"` and `:563` `"What is 2+2? 认真想"` (case 21). Every omp gate case must keep reaching
+the planner: it is the omp runtime's gate, and a lane bypasses omp.
 
 **Open decision (Paco), before the full omp gate is next run:** `think harder` labels the chat's PREVIOUS verdict
 `paco_correction = think_harder`. `--smoke` runs cases 1, 3, 6, 13 and 22 with Jev disarmed, so it is unaffected; the full mode
@@ -4667,6 +4675,9 @@ approved "Paco 2026-10-10"); not merged until Paco's hand.** Spec `docs/superpow
 Rev 5 (parent Rev 10); plan `docs/superpowers/plans/2026-10-10-jev-tree-stage-b.md`; ADR 0029 amendment 2026-10-10.
 Reference: `docs/reference/jev-decision-layer.md` (the lanes, Dig deeper, reading a lane row, one lane off).
 
+- [ ] Paco: rule on the omp gate's `think_harder` label (plan Task 12 "Open decision": (a) accept one label per full run,
+  (b) a leading throwaway turn, (c) a lanes-off daemon for the run); then, once the daemon runs the stage B build, run the
+  full `node scripts/live-gate-omp.mjs` once and record its result here (the stage B gate does not cover omp's bridge path).
 - [ ] Paco merges (protected files: `turn-context.ts`, `planner-supervisor.ts`, `run-store.ts`, `run-ledger.ts`, `registry.ts`, `docs/decisions/`), rebuilds
   `dist/`, kickstarts. Check first: `houge.parked` / `houge.kill`, non-terminal runs, the evolution lane. The boot applies
   migrations `2026-10-10-jev-verdicts-lanes` (rebuilds `jev_verdicts`, rows kept) and `2026-10-10-lane-replies`.
@@ -4757,7 +4768,8 @@ EOF
 
 - The spec's §11 claims the omp gate "runs on its DB copy only (as it does today)"; `live-gate-omp.mjs` case 2 runs in the
   full mode against the live daemon (it is not a smoke case), so the `think harder` label lands on the operator chat's
-  previous verdict in the live DB. Task 12 says so in the script header and recommends `--smoke`; Paco decides whether that
+  previous verdict in the live DB. Task 12 says so in the script header and lists three options; Task 13's todo carries the
+  item, and the full omp gate runs only after Paco's ruling (`--smoke` does not exercise those cases). Paco decides whether that
   label on one live verdict is acceptable before running the full omp gate.
 - Before dispatching, scan the tasks' anchors against the branch head (`git log -1`): line numbers here are from
   `main@a714e15`, and Tasks 7 and 8 edit the same core-worker regions in sequence.
