@@ -68,7 +68,8 @@ import { resolveSkillMaxPerScope, resolveSkillName, resolveSkillRefinePasses, re
 import { resolveWebMaxResults } from "../web/registry.js";
 import type { WebResult } from "../web/types.js";
 import { llmToolAdapter, oneShotAdapter, reportOmpCheck, RUNNER_TIMEOUT_BUFFER_MS, seatBudgetMs } from "../llm/registry.js";
-import type { ModelFamily } from "../omp/model-string.js";
+import type { ModelFamily, ModelString } from "../omp/model-string.js";
+import type { LlmResult } from "../llm/types.js";
 import { createLocalProjectWriteAdapter } from "../capabilities/local-project-write-adapter.js";
 import { buildMediaCall, ingestMedia, type MediaIngestDeps } from "../media/media-ingest.js";
 import {
@@ -141,19 +142,25 @@ import { PlannerSupervisor, type QuoteRef, type SupervisorDeps, type TriageInput
 import { calibrationRows, type CalibrationRow } from "../jev/calibration.js";
 import { decide, marginOf, persistDecisionRows, recordSkip, topProbOf, type Decision, type JevDecisionInsert, type SkipReason } from "../jev/decide.js";
 import { createJevClient, type JevAnswer, type JevRequest, type JevResult } from "../jev/jev-client.js";
-import { jevDisarmMarkerPath, resolveJevTriageMode, type JevTriageMode } from "../jev/jev-flags.js";
+import { jevDisarmMarkerPath, resolveJevLanesOff, resolveJevTriageMode, type JevTriageMode } from "../jev/jev-flags.js";
 import { checkJevModelCalibrated, resolveTriageOverridesIfRearmed } from "../jev/jev-incidents.js";
 import { langOf, type Lang } from "../jev/intent-question.js";
 import { buildTreeState, lastHougeTurnOf, quotedTurnFromRow, TREE_CATEGORY, TREE_QUESTIONS, type Category } from "../jev/questions/tree.js";
 import {
   ACK_ROUTE, applyCascade, fallbackRoute, preJudge, routeTree, thinkHarderIn, TREE_BAR_DEFAULTS, TREE_THRESHOLD_VERSION, treeArmed,
-  treeArmingRows, type Armed, type Route, type RoutePlan, type RouteReason
+  treeArmingRows, type Armed, type Lane, type Route, type RoutePlan, type RouteReason
 } from "../jev/tree-policy.js";
 import { isBareAck } from "../omp/bare-ack.js";
 import { memoryInformNote, memoryLaneCard } from "./memory-lane-card.js";
+import { LANE_COMPOSE_MS, runAnswerLane } from "./lanes/answer-lane.js";
+import { digDeeperButton, laneCard, laneSavedNote } from "./lanes/lane-card.js";
+import { catchUpLine } from "./lanes/lane-compose.js";
+import type { AnswerLaneDeps, FetchPerformed, LaneInput, LaneResult, LookupLaneDeps, SearchPerformed } from "./lanes/lane-types.js";
+import { LOOKUP_BUDGET_MS, runLookupLane } from "./lanes/lookup-lane.js";
+import { quarantineExtractStrict } from "./lanes/strict-reader.js";
 import { shellToolExecute } from "../omp/shell-adapter.js";
 import { loadToolDeclarations, TOOL_DECLS_DIR, type ToolDeclaration } from "../omp/tool-decls.js";
-import { quotedLine, type TurnContextDeps, type TurnRetrieval } from "../omp/turn-context.js";
+import { buildSystemPrompt, quotedLine, type TurnContextDeps, type TurnRetrieval } from "../omp/turn-context.js";
 import { noRetrieval, telemetryOf, type GatedRetrieval } from "../run/relevance-gate.js";
 import { readTombstone } from "../run/tombstone.js";
 import { chatWorkspace } from "../omp/workspace.js";
@@ -247,9 +254,15 @@ type TriageNumbers = { confidence: number | null; top_prob: number; margin: numb
 type TriageSettle =
   | { kind: "skipped"; reason: SkipReason; route: Route; handler?: VerdictHandler }
   | { kind: "answered"; rows: JevDecisionInsert[]; decision: "act" | "fallback" | "shadow"; numbers: TriageNumbers; scores: VerdictScores;
-      route: Route; save: SaveOutcome; handler?: VerdictHandler; between?: readonly [Category, Category] };
+      route: Route; save: SaveOutcome; handler?: VerdictHandler; between?: readonly [Category, Category];
+      /** Stage B §4: a lane's settle names its own outcome (never derived from the reason), its pre-minted id and its model. */
+      outcome?: "act" | "fallback"; verdict_id?: string; model?: string };
 type AnsweredSettle = Extract<TriageSettle, { kind: "answered" }>;
-type SettleFor = (route: Route, save: SaveOutcome, handler?: VerdictHandler) => AnsweredSettle;
+type SettleFor = (route: Route, save: SaveOutcome, handler?: VerdictHandler, outcome?: "act" | "fallback") => AnsweredSettle;
+/** What `saveFirst` did (stage B §4): `settled` = the verdict was written inside the committed save transaction. */
+type SaveStep =
+  | { settled: true; save_outcome: "saved"; note: string; verdict_id: string | null; lesson_id: number; theme: string; w: LessonWriteOutcome }
+  | { settled: false; save_outcome: SaveOutcome; note: null; verdict_id: null; w: LessonWriteOutcome };
 /** What triageTurn's catch needs: the turn's think-harder reading, its quote, and the answered rows once Jev answered. */
 interface TriageHeld { thinkHarder: boolean; quote: QuoteRef | null; answered?: AnsweredSettle }
 /** Reasons whose route the tree took on Jev's (or the code's) word; every other reason is a fallback to Default. */
@@ -2598,6 +2611,14 @@ export class CoreWorker {
 
   /** @internal The card builder behind one indirection so `breakMemoryLaneCardForTest` can fault it once. */
   private memoryLaneCard = memoryLaneCard;
+  /** @internal The lane card builder behind one indirection so `breakLaneCardForTest` can fault it once. */
+  private laneCard = laneCard;
+
+  /** @internal Tests only: the next lane card build throws (stage B §8 `render_failed`). */
+  breakLaneCardForTest(): void {
+    this.laneCard = () => { this.laneCard = laneCard; throw new Error("lane card fault (test)"); };
+  }
+
   /** @internal Tests only: the next in-transaction finalisation throws (the event write failing). */
   private laneFinalizeFault = false;
 
@@ -2640,7 +2661,7 @@ export class CoreWorker {
       run_id, category: r.category, ...(f.kind === "answered" ? f.scores : NO_SCORES), rule_scope: r.save?.scope ?? null, lane: r.lane, role: r.role,
       // `tiny` whenever the cascade call was made (Decision 14), even when a later throw settled the turn as a fallback
       effort: r.effort, cascade: f.kind === "answered" && f.between ? "tiny" : r.cascade, save_outcome: f.kind === "answered" ? f.save : "none",
-      route_outcome: ACTED.has(r.reason) ? "act" : "fallback",
+      route_outcome: f.kind === "answered" && f.outcome ? f.outcome : ACTED.has(r.reason) ? "act" : "fallback",
       reason: r.reason, skip_reason: f.kind === "skipped" ? f.reason : null, quoted_turn_id: state?.quote?.turn.turn_id ?? null
     };
   }
@@ -2666,8 +2687,8 @@ export class CoreWorker {
       else persistDecisionRows(this.runStore, f.rows, f.decision, `${TREE_THRESHOLD_VERSION}:${f.route.reason}`);
       if (o.inTx && this.laneFinalizeFault) { this.laneFinalizeFault = false; throw new Error("lane finalize fault (test)"); }
       if (f.route.thinkHarder) this.markThinkHarder(run_id);
-      const id = this.runStore.insertJevVerdict(this.verdictInsert(run_id, f, state));
-      if (f.handler) this.runStore.updateJevVerdict(id, { handler_outcome: f.handler });
+      const id = this.runStore.insertJevVerdict(this.verdictInsert(run_id, f, state), f.kind === "answered" ? f.verdict_id : undefined);
+      this.runStore.updateJevVerdict(id, { ...(f.handler ? { handler_outcome: f.handler } : {}), ...(f.kind === "answered" && f.model ? { model: f.model } : {}) });
       this.triageEvent(run_id, lang, f, id);
       verdict_id = id;
     };
@@ -2755,15 +2776,17 @@ export class CoreWorker {
   private async routeAnswered(i: TriageInput, state: OmpTurnState, lang: Lang, d: Extract<Decision, { status: "answered" }>, mode: JevTriageMode,
     held: TriageHeld): Promise<TriageOutcome> {
     const rows = calibrationRows(process.env);
-    const armed = mode === "arm" ? treeArmed(lang, d.model, rows) : UNARMED; // d.model: the REPORTED id, never the alias
-    const plan = routeTree(d.answers, { bars: TREE_BAR_DEFAULTS, armed, thinkHarder: held.thinkHarder, bareAck: isBareAck(i.userText) });
-    const settleFor: SettleFor = (route, save, handler) => ({ kind: "answered", rows: d.rows, decision: decisionFor(mode, route, save),
-      numbers: numbersOf(d.answers.category!), scores: scoresOf(d.answers), route, save, ...(handler ? { handler } : {}) });
+    const armed = mode === "arm" ? treeArmed(lang, d.model, rows, resolveJevLanesOff(process.env)) : UNARMED; // d.model: the REPORTED id
+    const opts = { bars: TREE_BAR_DEFAULTS, thinkHarder: held.thinkHarder, bareAck: isBareAck(i.userText) };
+    const plan = routeTree(d.answers, { ...opts, armed });
+    const settleFor: SettleFor = (route, save, handler, outcome) => ({ kind: "answered", rows: d.rows, decision: decisionFor(mode, route, save, outcome),
+      numbers: numbersOf(d.answers.category!), scores: scoresOf(d.answers), route, save, ...(handler ? { handler } : {}), ...(outcome ? { outcome } : {}) });
     held.answered = settleFor(fallbackRoute("jev_skipped", held.thinkHarder), "none"); // from here a throw settles as answered fallback
     if (mode === "arm") this.checkJevModel(d.model, rows); // shadow arms nothing, so an alias move loses nothing there
     if (plan.kind === "cascade") return this.cascadeRoute(i, state, lang, plan, settleFor, held);
-    const route = plan.route;
+    const route = urlRule(plan.route, i.userText, () => routeTree(d.answers, { ...opts, armed: { ...armed, lookup: false } }));
     if (route.lane === "status") return this.statusLane(i, state, lang, route, settleFor, held);
+    if (route.lane === "answer" || route.lane === "lookup") return this.laneRoute(i, state, lang, route, settleFor, held);
     if (route.save) return this.saveThenRoute(i, state, lang, route, settleFor, held);
     const id = this.settleTriage(i, state, lang, settleFor(route, "none"));
     return { kind: "fallthrough", route: turnRoute(route, id), ...quoteField(held.quote) };
@@ -2775,10 +2798,9 @@ export class CoreWorker {
   }
 
   /**
-   * The status lane: code renders first. A render throw settles once on the status lane with handler
-   * `fallthrough:render_failed` (so `lane_fallthrough_rate` sees a broken renderer), labelled `jev_skipped` like any other
-   * fallback: the route did not act, so route_outcome, the triage verdict and the decision rows all read fallback (an `act`
-   * row on a turn the planner answered would corrupt the status precision evidence). Then the planner answers on Default.
+   * The status lane: code renders first, then one settle. A render throw keeps lane=status with `fallthrough:render_failed`
+   * and the route's reason, route_outcome `fallback` (stage B §2: no `jev_skipped` re-label), so `lane_fallthrough_rate`
+   * sees it and the precision evidence never reads `act` for a turn the planner answered. The card ends with Dig deeper.
    */
   private statusLane(i: TriageInput, state: OmpTurnState, lang: Lang, route: Route, settleFor: SettleFor, held: TriageHeld): TriageOutcome {
     let text: string;
@@ -2786,39 +2808,56 @@ export class CoreWorker {
       text = this.hougeStatusText(this.chatOf(i.claim.run_id));
     } catch (e) {
       console.error(`status lane: render failed: ${safeReason(e)}`);
-      const id = this.settleTriage(i, state, lang, settleFor({ ...route, reason: "jev_skipped" }, "none", "fallthrough:render_failed"));
+      const id = this.settleTriage(i, state, lang, settleFor(route, "none", "fallthrough:render_failed", "fallback"));
       return { kind: "fallthrough", route: turnRoute(fallbackRoute("jev_skipped", held.thinkHarder), id), ...quoteField(held.quote) };
     }
-    this.settleTriage(i, state, lang, settleFor(route, "none", "lane_reply"));
-    return { kind: "lane_reply", text, buttons: [], ...quoteField(held.quote) };
+    const id = this.settleTriage(i, state, lang, settleFor(route, "none", "lane_reply"));
+    if (id) this.recordLaneReplyRow(i.claim.run_id, "status", id, catchUpLine({ lane: "status" }));
+    return { kind: "lane_reply", text, buttons: [digDeeperButton(i.claim.run_id)], ...quoteField(held.quote) };
   }
 
   /**
-   * Spec §3: a rule saves first (the shared lesson-write service, its rows + verdict + event inside the save transaction),
-   * then the route's handler runs. Memory + rule ends at the card; any other category is the planner with the [memory]
-   * note. Nothing durable / capped / rolled back: the turn proceeds as if sets_rule were no (a memory turn falls through).
+   * Spec §3 / stage B §4: the shared lesson-write service saves first; its decision rows, verdict and event land inside the
+   * save transaction (handler `pending`). Nothing durable / capped / rolled back → `settled: false`, nothing written yet.
    */
-  private async saveThenRoute(i: TriageInput, state: OmpTurnState, lang: Lang, route: Route, settleFor: SettleFor, held: TriageHeld): Promise<TriageOutcome> {
+  private async saveFirst(i: TriageInput, state: OmpTurnState, lang: Lang, route: Route, settleFor: SettleFor): Promise<SaveStep> {
     const v: { id: string | null } = { id: null };
     const w = await this.runLessonWrite(i.claim, this.chatOf(i.claim.run_id), { scope: route.save?.scope ?? "ask" }, { source: "lane", signal: i.signal,
       inTx: () => { v.id = this.settleTriage(i, state, lang, settleFor(route, "saved"), { inTx: true }); } });
     if (w.committed) state.triageFinalized = true;
+    if (!w.committed || !w.saved || !w.change_id || !w.theme) return { settled: false, save_outcome: saveOutcomeOf(w), note: null, verdict_id: null, w };
+    return { settled: true, save_outcome: "saved", note: memoryInformNote(w.saved.id, w.theme), verdict_id: v.id, lesson_id: w.saved.id, theme: w.theme, w };
+  }
+
+  /**
+   * A rule on a planner or memory route: save first, then the route's handler. Memory + rule ends at the card; any other
+   * category is the planner with the [memory] note. Not saved: the turn proceeds as if sets_rule were no (a memory turn
+   * falls through, `fallback`, with the attempted save's outcome).
+   */
+  private async saveThenRoute(i: TriageInput, state: OmpTurnState, lang: Lang, route: Route, settleFor: SettleFor, held: TriageHeld): Promise<TriageOutcome> {
+    const s = await this.saveFirst(i, state, lang, route, settleFor);
     const q = quoteField(held.quote);
-    if (!w.committed || !w.saved || !w.change_id || !w.theme) {
-      const save = saveOutcomeOf(w);
-      const id = this.settleTriage(i, state, lang, settleFor(route, save, route.lane === "memory" ? `fallthrough:${save}` : undefined));
+    if (!s.settled) {
+      const memory = route.lane === "memory";
+      const id = this.settleTriage(i, state, lang, settleFor(route, s.save_outcome, memory ? `fallthrough:${s.save_outcome}` : undefined, memory ? "fallback" : undefined));
       return { kind: "fallthrough", route: turnRoute(route, id), ...q };
     }
-    const note = memoryInformNote(w.saved.id, w.theme);
-    if (route.lane !== "memory") return { kind: "inform", note, route: turnRoute(route, v.id), ...q };
+    if (route.lane !== "memory") return { kind: "inform", note: s.note, route: turnRoute(route, s.verdict_id), ...q };
+    return this.memoryLaneEnd(i, route, s, q);
+  }
+
+  /** The memory lane's card after a committed save, its verdict moved to lane_reply, and its catch-up line (stage B §7). */
+  private memoryLaneEnd(i: TriageInput, route: Route, s: Extract<SaveStep, { settled: true }>, q: { quote?: QuoteRef }): TriageOutcome {
+    const w = s.w as Required<LessonWriteOutcome>;
     try {
-      const card = this.memoryLaneCardFor(i.claim.run_id, w as Required<LessonWriteOutcome>);
-      if (v.id) this.runStore.updateJevVerdict(v.id, { handler_outcome: "lane_reply" });
+      const card = this.memoryLaneCardFor(i.claim.run_id, w);
+      if (s.verdict_id) this.runStore.updateJevVerdict(s.verdict_id, { handler_outcome: "lane_reply" });
+      this.recordLaneReplyRow(i.claim.run_id, "memory", s.verdict_id, catchUpLine({ lane: "memory", lesson: w.saved.lesson }));
       return { kind: "lane_reply", ...card, ...q };
     } catch (e) {
       // The save is committed and finalised as "act"; the planner answers and the note names the lesson (spec §5.1).
       console.error(`memory lane: card failed after save: ${safeReason(e)}`);
-      return { kind: "inform", note, route: turnRoute(route, v.id), ...q };
+      return { kind: "inform", note: s.note, route: turnRoute(route, s.verdict_id), ...q };
     }
   }
 
@@ -2831,7 +2870,7 @@ export class CoreWorker {
   private async cascadeRoute(i: TriageInput, state: OmpTurnState, lang: Lang, plan: Extract<RoutePlan, { kind: "cascade" }>, settleFor: SettleFor,
     held: TriageHeld): Promise<TriageOutcome> {
     const route = applyCascade(plan, await this.cascadePick(i, plan.between, held.quote));
-    const withPair: SettleFor = (r, save, handler) => ({ ...settleFor(r, save, handler), between: plan.between });
+    const withPair: SettleFor = (r, save, handler, outcome) => ({ ...settleFor(r, save, handler, outcome), between: plan.between });
     held.answered = withPair(fallbackRoute("jev_skipped", held.thinkHarder), "none"); // a throw from here still names the pair
     if (route.save) return this.saveThenRoute(i, state, lang, route, withPair, held);
     const id = this.settleTriage(i, state, lang, withPair(route, "none"));
@@ -2872,6 +2911,134 @@ export class CoreWorker {
       ...(w.saved.supersededId !== undefined ? { superseded_id: w.saved.supersededId } : {}),
       verb: w.saved.verb as "add" | "update" | "supersede", change_id: w.change_id, run_id });
   }
+  /**
+   * Stage B §4–§5: the answer and lookup lanes. The verdict id is minted first (the compose legs carry it as routed_by). A
+   * stated rule saves first and, when it commits, settles `pending` inside the save; otherwise nothing is written until the
+   * lane returns, then ONE settle with the lane's outcome. A committed save is patched instead (Decision 5).
+   */
+  private async laneRoute(i: TriageInput, state: OmpTurnState, lang: Lang, route: Route, settleFor: SettleFor, held: TriageHeld): Promise<TriageOutcome> {
+    const verdict_id = `jv_${randomUUID()}`;
+    const settle: SettleFor = (r, save, handler, outcome) => ({ ...settleFor(r, save, handler, outcome), verdict_id });
+    const save = route.save ? await this.saveFirst(i, state, lang, route, settle) : null;
+    const result = await this.runLane(i, state, route, verdict_id, save?.note ?? null);
+    const rendered = result.kind === "reply" ? this.laneCardFor(i.claim.run_id, result.text, save) : { why: result.why };
+    const card = "card" in rendered ? rendered.card : null;
+    const handler: VerdictHandler = card ? "lane_reply" : `fallthrough:${"why" in rendered ? rendered.why : "render_failed"}`;
+    const outcome = card ? "act" : "fallback";
+    const model = result.kind === "reply" ? result.model : undefined;
+    const id = save?.settled
+      ? this.patchLaneVerdict(verdict_id, handler, model, outcome)
+      : this.settleTriage(i, state, lang, { ...settle(route, save?.save_outcome ?? "none", handler, outcome), ...(model ? { model } : {}) });
+    if (card && result.kind === "reply" && id) this.recordLaneReplyRow(i.claim.run_id, route.lane, id, result.catch_up);
+    if (card) return { kind: "lane_reply", ...card, ...quoteField(held.quote) };
+    const fallback = { route: turnRoute(fallbackRoute("jev_skipped", held.thinkHarder), id), ...quoteField(held.quote) };
+    return save?.note ? { kind: "inform", note: save.note, ...fallback } : { kind: "fallthrough", ...fallback };
+  }
+
+  /** Builds the lane's input and deps and runs it; a throw while building them is `lane_threw` too (the lane contract, §3). */
+  private async runLane(i: TriageInput, state: OmpTurnState, route: Route, verdict_id: string, note: string | null): Promise<LaneResult> {
+    try {
+      const chatId = this.chatOf(i.claim.run_id);
+      const lookup = route.lane === "lookup";
+      const input: LaneInput = { run_id: i.claim.run_id, chat_id: chatId, userText: i.userText, recentTurns: state.turnCtx.recentTurns,
+        turnChars: state.turnCtx.turnChars, quoted: state.quote ? quotedTurnFromRow(state.quote.turn, Date.now()) : null, effort: route.effort,
+        verdict_id, note, signal: i.signal, deadlineAt: Date.now() + (lookup ? LOOKUP_BUDGET_MS : LANE_COMPOSE_MS) };
+      return lookup ? await runLookupLane(input, this.lookupLaneDeps(i.claim.run_id, chatId, state)) : await runAnswerLane(input, this.answerLaneDeps(i.claim.run_id));
+    } catch (e) {
+      console.error(`lane: setup threw on ${i.claim.run_id}: ${safeReason(e)}`);
+      return { kind: "fallthrough", why: "lane_threw" };
+    }
+  }
+
+  /** The card, or why there is none: an empty body after stripping is `empty_reply` (never settled `act`), a throw is `render_failed`. */
+  private laneCardFor(run_id: string, text: string, save: SaveStep | null):
+    { card: { text: string; buttons: NotificationButton[] } } | { why: "empty_reply" | "render_failed" } {
+    try {
+      const card = this.laneCard({ text, run_id, ...(save?.settled ? { note: laneSavedNote(save.lesson_id, save.theme) } : {}) });
+      return card ? { card } : { why: "empty_reply" };
+    } catch (e) {
+      console.error(`lane: card render failed: ${safeReason(e)}`);
+      return { why: "render_failed" };
+    }
+  }
+
+  /** Stage B §4: the committed-save path's one patch after the lane; unconditional, so it also overwrites a planner_failed close. */
+  private patchLaneVerdict(verdict_id: string, handler: VerdictHandler, model: string | undefined, outcome: "act" | "fallback"): string {
+    try {
+      this.runStore.updateJevVerdict(verdict_id, { handler_outcome: handler, ...(model ? { model } : {}),
+        ...(outcome === "fallback" ? { route_outcome: "fallback" as const } : {}) });
+    } catch (e) {
+      console.error(`triage: lane verdict patch failed: ${safeReason(e)}`); // the reply is decided; the ledger gap is logged
+    }
+    return verdict_id;
+  }
+
+  /** Stage B §7/§9: the catch-up line a later planner turn reads. A store failure is logged and never fails the reply. */
+  private recordLaneReplyRow(run_id: string, lane: Lane, verdict_id: string | null, catch_up: string): void {
+    try {
+      this.runStore.recordLaneReply({ run_id, chat_id: this.chatOf(run_id), lane, verdict_id, catch_up });
+    } catch (e) {
+      console.error(`lane: lane_replies write failed: ${safeReason(e)}`);
+    }
+  }
+
+  /**
+   * A one-shot for a lane step (stage B §3): the production omp seat (its chain, the step's deadline, routed_by on every leg),
+   * or the test-injected adapter mapped to an LlmResult (it brings its own fakes; no chain applies there).
+   */
+  private laneSeat(run_id: string, role: LlmCallRole, o: { chain?: readonly ModelString[]; routed_by?: string; family?: ModelFamily } = {}):
+    (req: { question: string; system?: string; deadlineMs: number; signal: AbortSignal }) => Promise<LlmResult> {
+    return async (req) => {
+      if (!this.llmAdapterIsDefault) return injectedResult(await this.llmAdapter({ question: req.question, ...(req.system ? { system: req.system } : {}) }));
+      const seat = oneShotAdapter(this.runStore, this.ompConfig(), { run_id, role }, o.family, { deadlineMs: req.deadlineMs,
+        ...(o.chain ? { chain: [...o.chain] } : {}), ...(o.routed_by ? { routed_by: o.routed_by } : {}) });
+      return seat.answer({ question: req.question, ...(req.system ? { system: req.system } : {}), signal: req.signal });
+    };
+  }
+
+  /** Stage B §3/§4: the Fast candidates at the route's effort, the planner's own system prompt, the planner's retrieval. */
+  private answerLaneDeps(run_id: string): AnswerLaneDeps {
+    return {
+      compose: (r) => this.laneSeat(run_id, "lane", { chain: r.chain, routed_by: r.routed_by })({ question: r.prompt, deadlineMs: r.deadlineMs, signal: r.signal }),
+      fastChain: (effort) => this.roles.candidates("fast", { effort }),
+      systemPrompt: (chatId) => buildSystemPrompt(this.ompTurnContext(this.ompDataDir()), chatId).text,
+      retrieve: (chatId, message) => this.retrieveForOmpTurn(chatId, message),
+      now: () => Date.now()
+    };
+  }
+
+  /** Stage B §5: search, fetch, the strict reader (the planner family's D10 order), the Tiny rewrite, the provenance rows. */
+  private lookupLaneDeps(run_id: string, chatId: string, state: OmpTurnState): LookupLaneDeps {
+    const family = this.supervisors.get(chatId)?.plannerFamily();
+    const reader = this.laneSeat(run_id, "reader", family !== undefined ? { family } : {});
+    const tiny = this.roles.candidates("tiny");
+    return {
+      ...this.answerLaneDeps(run_id),
+      search: (input) => this.webSearchAdapter(input),
+      fetch: (input) => this.httpFetchAdapter(input),
+      read: (output, objective, o) => quarantineExtractStrict({ reader, system: composeSystemPrompt(memoryRootFor(this.projectRoot), "reader") }, output, objective, o),
+      rewrite: (r) => this.laneSeat(run_id, "lane", { chain: tiny })({ question: r.prompt, deadlineMs: r.deadlineMs, signal: r.signal }),
+      // before = the turn's own instant (the user turn is recorded after triage), so the current message is never Paco's "previous line"
+      previousTelegramTurns: (c) => this.runStore.previousTelegramTurns(c, state.threadCutAt, LANE_PREVIOUS_TURNS),
+      maxResults: resolveWebMaxResults(process.env),
+      ledger: { searchPerformed: (p) => this.recordWebSearch(run_id, state.turnCtx, p), fetchPerformed: (p) => this.recordHttpFetch(run_id, state.turnCtx, p) }
+    };
+  }
+
+  /** Provenance audit (parity with runResearch): the URLs a search read hit the ledger and the wiki's min-sources floor (Phase W). */
+  private recordWebSearch(run_id: string, turnCtx: LoopTurnContext, p: SearchPerformed): void {
+    turnCtx.sourceUrls.push(...p.source_urls);
+    this.runStore.appendLedgerEvent(createLedgerEvent({ run_id, correlation_id: run_id, event_type: "web_search_performed", actor: "core",
+      sequence: this.nextSequence(run_id), payload: { query: p.query, provider: p.provider, source_urls: p.source_urls, result_count: p.result_count } }));
+  }
+
+  /** Provenance audit (parity with web_search): the URL a fetch read hits the ledger and the wiki's min-sources floor. */
+  private recordHttpFetch(run_id: string, turnCtx: LoopTurnContext, p: FetchPerformed): void {
+    if (p.url.length > 0) turnCtx.sourceUrls.push(p.url);
+    this.runStore.appendLedgerEvent(createLedgerEvent({ run_id, correlation_id: run_id, event_type: "http_fetch_performed", actor: "core",
+      sequence: this.nextSequence(run_id), payload: { url: p.url, status: p.status, bytes: p.bytes } }));
+  }
+
 
   /** @internal Tests only: a voice turn's transcript as the tools' objective (the field resolveOmpMessage sets). */
   setOmpObjectiveForTest(run_id: string, text: string): void {
@@ -2963,29 +3130,11 @@ export class CoreWorker {
       return async (input) => {
         const query = typeof input.query === "string" ? input.query : "";
         const result = await this.webSearchAdapter({ query, max_results: resolveWebMaxResults(process.env) });
-        // Provenance audit (parity with runResearch): the URLs Houge read hit the ledger.
         if (result.ok) {
           const rawResults = Array.isArray(result.output.results) ? result.output.results : [];
-          const sourceUrls = rawResults
-            .map((r) => (typeof (r as WebResult).url === "string" ? (r as WebResult).url : ""))
-            .filter((u) => u.length > 0);
-          // Phase W (ADR 0020): the same provenance URLs feed the wiki's min-sources floor.
-          turnCtx.sourceUrls.push(...sourceUrls);
-          this.runStore.appendLedgerEvent(
-            createLedgerEvent({
-              run_id: claim.run_id,
-              correlation_id: claim.run_id,
-              event_type: "web_search_performed",
-              actor: "core",
-              sequence: this.nextSequence(claim.run_id),
-              payload: {
-                query,
-                provider: typeof result.output.provider === "string" ? result.output.provider : "unknown",
-                source_urls: sourceUrls,
-                result_count: rawResults.length
-              }
-            })
-          );
+          const source_urls = rawResults.map((r) => (typeof (r as WebResult).url === "string" ? (r as WebResult).url : "")).filter((u) => u.length > 0);
+          this.recordWebSearch(claim.run_id, turnCtx, { query, provider: typeof result.output.provider === "string" ? result.output.provider : "unknown",
+            source_urls, result_count: rawResults.length });
         }
         return result;
       };
@@ -2993,26 +3142,9 @@ export class CoreWorker {
     if (name === "http_fetch") {
       return async (input) => {
         const result = await this.httpFetchAdapter(input);
-        // Provenance audit (parity with web_search): the URL Houge read hits the ledger.
         if (result.ok) {
-          // Phase W (ADR 0020): the fetched URL feeds the wiki's min-sources floor too.
-          if (typeof result.output.url === "string" && result.output.url.length > 0) {
-            turnCtx.sourceUrls.push(result.output.url);
-          }
-          this.runStore.appendLedgerEvent(
-            createLedgerEvent({
-              run_id: claim.run_id,
-              correlation_id: claim.run_id,
-              event_type: "http_fetch_performed",
-              actor: "core",
-              sequence: this.nextSequence(claim.run_id),
-              payload: {
-                url: typeof result.output.url === "string" ? result.output.url : "",
-                status: typeof result.output.status === "number" ? result.output.status : 0,
-                bytes: typeof result.output.bytes === "number" ? result.output.bytes : 0
-              }
-            })
-          );
+          this.recordHttpFetch(claim.run_id, turnCtx, { url: typeof result.output.url === "string" ? result.output.url : "",
+            status: typeof result.output.status === "number" ? result.output.status : 0, bytes: typeof result.output.bytes === "number" ? result.output.bytes : 0 });
         }
         return result;
       };
@@ -3855,9 +3987,10 @@ function quoteField(q: QuoteRef | null): { quote?: QuoteRef } {
   return q ? { quote: q } : {};
 }
 
-/** Lane 1's rule kept: rows say `act` only when the route the tree chose ran; a memory lane that saved nothing is a fallback. */
-function decisionFor(mode: JevTriageMode, r: Route, save: SaveOutcome): "act" | "fallback" | "shadow" {
+/** Lane 1's rule kept: rows say `act` only when the route the tree chose ran; a lane's settle names its outcome (stage B §4). */
+function decisionFor(mode: JevTriageMode, r: Route, save: SaveOutcome, outcome?: "act" | "fallback"): "act" | "fallback" | "shadow" {
   if (mode === "shadow") return "shadow";
+  if (outcome) return outcome;
   return ACTED.has(r.reason) && !(r.lane === "memory" && save !== "saved") ? "act" : "fallback";
 }
 
@@ -3903,6 +4036,27 @@ function withinMs<T>(ms: number, run: () => Promise<T>, onExpire: () => void): P
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<null>((resolve) => { timer = setTimeout(() => { onExpire(); resolve(null); }, ms); });
   return Promise.race([run(), expired]).finally(() => clearTimeout(timer));
+}
+
+/** Stage B §5 step 2: rows read for the rewrite (it uses the last two Paco lines and the last Houge line among them). */
+const LANE_PREVIOUS_TURNS = 6;
+const URL_IN_TEXT = /https?:\/\//i;
+
+/**
+ * Stage B §2's one code rule: a lookup naming a URL is the planner's (its http_fetch path can read a named page; the lane
+ * cannot from a one-line query). The route is the policy's own with the lookup lane unarmed (the gear's role), relabelled.
+ */
+function urlRule(route: Route, text: string, unlaned: () => RoutePlan): Route {
+  if (route.lane !== "lookup" || !URL_IN_TEXT.test(text)) return route;
+  const p = unlaned();
+  return p.kind === "final" ? { ...p.route, reason: "lane_limits" } : { ...route, lane: "planner", reason: "lane_limits" };
+}
+
+/** A test-injected seat's answer as an LlmResult (the lanes read `answer` and `model`). */
+function injectedResult(r: ToolAdapterResult): LlmResult {
+  if (!r.ok) return { ok: false, provider: "test", error: r.error };
+  return { ok: true, provider: "test", model: typeof r.output.model === "string" ? r.output.model : "test",
+    answer: typeof r.output.answer === "string" ? r.output.answer : "" };
 }
 
 /**

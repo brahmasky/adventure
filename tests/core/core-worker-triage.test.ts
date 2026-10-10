@@ -411,7 +411,7 @@ describe("triageTurn — the status lane", () => {
     const t = turn("did you restart?");
     const out = await worker.triageTurn(t.input);
     expect(out.kind).toBe("lane_reply");
-    if (out.kind === "lane_reply") { expect(out.buttons).toEqual([]); expect(out.text.length).toBeGreaterThan(10); }
+    if (out.kind === "lane_reply") { expect(out.buttons).toEqual([{ text: "🔍 Dig deeper", data: `lane:ask:${t.run_id}` }]); expect(out.text.length).toBeGreaterThan(10); }
     expect(triageRows(store, t.run_id)).toMatchObject([{ route_lane: "status", decision: "act", lang: "en" }]);
     expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "status", handler_outcome: "lane_reply" });
     expect(llm).not.toHaveBeenCalled();
@@ -427,11 +427,11 @@ describe("triageTurn — the status lane", () => {
     const out = await worker.triageTurn(t.input);
     expect(out).toMatchObject({ kind: "fallthrough", route: { role: "default", effort: null } });
     const v = verdictOf(store, t.run_id);
-    // the status route did not act (the planner answered): route_outcome and the triage verdict read as any other fallback
+    // stage B §2: the fall-through keeps the route's reason; route_outcome, the triage decision and the rows read fallback
     expect(v).toMatchObject({ category: "status", lane: "status", handler_outcome: "fallthrough:render_failed", route_outcome: "fallback",
-      reason: "jev_skipped" });
+      reason: "routed" });
     if (out.kind === "fallthrough") expect(out.route?.verdict_id).toBe(v!.verdict_id);
-    expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", route_lane: "status", decision: "fallback", verdict: "jev_skipped" }]);
+    expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", route_lane: "status", decision: "fallback", verdict: "routed" }]);
     expect(triageRows(store, t.run_id)).toHaveLength(1);
     expect(decisions(store, t.run_id).every((r) => r.decision === "fallback")).toBe(true);
     store.close();
