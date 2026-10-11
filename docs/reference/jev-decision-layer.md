@@ -196,9 +196,8 @@ ack rule is the only path that acts without a Jev call, and only in `arm` mode.
 
 Three levels, from the mildest:
 
-0. **One lane off** (`.env`, then kickstart): `HOUGE_JEV_LANES_OFF=answer`, `lookup` or `answer,lookup`. That lane's turns run
-   the planner on the gear's role (reason `routed`), as if its rows were absent; every other decision stays armed. An unknown
-   name logs one error at boot and is ignored. The memory and status lanes keep their stage A remedies (their rows, `/disarm`).
+0. **One lane off** (`.env`, then kickstart): `HOUGE_JEV_LANES_OFF` switches the answer or lookup lane off while every other
+   decision stays armed; details in [configuration.md](configuration.md) (`HOUGE_JEV_LANES_OFF`).
 
 1. **Model-list rollback** (`.env`, then `launchctl kickstart -k gui/$(id -u)/com.houge.daemon`): set
    `HOUGE_JEV_TRIAGE_ENABLED=off` and `HOUGE_MODEL_ROLES=static`. `off` writes one verdict row per turn and attaches no
