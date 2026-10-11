@@ -29,7 +29,10 @@
 // force the planner. `think harder` also labels the chat's PREVIOUS verdict paco_correction = think_harder: in the full mode
 // (the live daemon) that label lands on the operator chat's previous turn in the live DB (--smoke does not run these cases).
 // Paco's ruling on this side effect: see the stage B plan, Task 12 "Open decision". Shipped as option (a): one such label per
-// full run is accepted. The suffix also sits on the chat-shaped messages of cases 1, 5, 6, 19 and 21 (the answer lane would take them).
+// full run is accepted. The suffix also sits on the chat-shaped messages of cases 5, 19 and 21 (the answer lane would take them)
+// and, in the FULL mode only, on case 1. --smoke runs with Jev OFF (smokeEnv sets every DISARM_FLAGS entry, HOUGE_JEV_ENABLED
+// included, to false), so no lane can take a smoke turn: cases 1 and 6 carry NO suffix there (the suffix would route case 6 to
+// Thinking and bypass the pinned Default head it asserts). Case 6 is smoke-only.
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -97,7 +100,7 @@ const fallbackAfterMissing = (rows) => {
 // ── the cases (spec §11 + task-15 rulings 3: cases 18–20; case 7 is photo only) ─────────────────────────
 
 const CASES = [
-  { n: 1, title: "plain question on Opus 5.5", send: () => "What is 17×23? 认真想",
+  { n: 1, title: "plain question on Opus 5.5", send: (c) => (c?.smoke ? "What is 17×23?" : "What is 17×23? 认真想"),
     pass: "llm_attempt provider=anthropic, model ~opus-5-5, family=claude; run completed",
     check: (v, [r]) => [
       [v.run(r)?.state === "completed", "run completed"],
@@ -122,7 +125,7 @@ const CASES = [
     send: () => "My code word is ZEBRA 认真想  →  (restart)  →  What was my code word? 认真想",
     pass: "second reply contains ZEBRA",
     check: (v, [, b]) => [[/ZEBRA/i.test(replyText(v, b)), "second reply contains ZEBRA"]] },
-  { n: 6, title: "planner fallback: Default head refused at spawn", send: () => "What is 17×23? 认真想",
+  { n: 6, title: "planner fallback: Default head refused at spawn", send: () => "What is 17×23?", // smoke only, Jev off: no suffix (it would route to Thinking and bypass the pinned Default head)
     pass: "llm_attempt{error_kind:model_missing} for anthropic/no-such-model, then an ok compose row on the next Default candidate; reply arrives",
     check: (v, [r], c) => [
       [attempts(v, r, "compose").some((p) => p.error_kind === "model_missing"), "compose llm_attempt error_kind=model_missing"],
@@ -829,7 +832,7 @@ async function case6Worker(d) {
 
 /** One smoke turn in `chat`, straight to worker.submitTurn: { runs: [run_id] } once terminal (or timed out), else { error }. */
 async function smokeTurn({ cs, store, worker, intake, timeoutMs }, chat) {
-  const got = intake(chat, cs.send({}));
+  const got = intake(chat, cs.send({ smoke: true }));
   if (!got.ok) return { error: `intake failed: ${JSON.stringify(got.error ?? got)}` };
   if (!worker.submitTurn(got.run_id)) return { error: "submitTurn refused the run" };
   const end = Date.now() + timeoutMs;
