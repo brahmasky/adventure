@@ -130,7 +130,7 @@ Paco commits rows after the replay report prints them. The memory lane arms on t
 is the `lane` question's: a `lane` row alone never arms status, and a `lane:status` row alone never arms memory.
 `HOUGE_JEV_CALIBRATION_FILE` is for the live gate only; outside `HOUGE_JEV_GATE=1` a set file caps `arm` at `shadow`.
 An auto-disable marker (`HOUGE_JEV_DISARM_PATH`, written when `triage_overrides` fires) also caps `arm` at `shadow`
-until Paco deletes it.
+until Paco deletes it (superseded 2026-10-10: taps page per lane and never disarm — see the stage B amendment).
 
 **Deviations from the spec, both accepted.** (1) The daemon builds the Jev client per call rather than once at boot
 (cheap; the broker key is read each time). (2) `jev_no_key` therefore opens on the first armed turn, not at boot.
@@ -158,7 +158,7 @@ Kimi, four planner turns, on a copy of the live DB). Replay universe on a live-D
 
 Decision 5 ("shadow before arm") is amended for lane 1: Paco arms on his word, and evidence accrues while armed. The
 per-turn bars still send every low-confidence or failed call to the planner (decision 3), and Undo, "Ask Houge anyway",
-the `triage_overrides` auto-disable and the Jev incidents stay as built. Before arming, a replay sanity check ran over
+the `triage_overrides` auto-disable (superseded 2026-10-10: taps page per lane and never disarm — see the stage B amendment) and the Jev incidents stay as built. Before arming, a replay sanity check ran over
 the 293 Telegram turns since 2026-07-02 ($0.066 with the permuted run): 10 confident `pure` verdicts, 9 real memory
 instructions and 1 miss (a correction that also needed a schedule edit, which the lane cannot do; "Ask Houge anyway"
 covers it); 1 `status` verdict, correct; 12 `mixed` (save, then the planner answers); everything else fell through.
