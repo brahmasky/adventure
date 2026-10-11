@@ -44,6 +44,7 @@ import { resolvePanelAt } from "../capabilities/week-key.js";
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import { toolApprovalWaiters } from "../omp/tool-approval-sink.js";
 import { handleMemLaneUndo, memLaneAskTurnEvent, recordTriageOverride } from "./memlane-commands.js";
+import { resolveQuietTriageOverrides } from "../jev/jev-incidents.js";
 import { handleForgetMemory, handleMemories, handleMemoryUndo } from "./memory-commands.js";
 import { handleModels, modelsUnavailable, type ModelsRoles } from "./models-commands.js";
 import type { IdeaRow, ShortlistRow } from "../run/run-store.js";
@@ -174,7 +175,7 @@ export class Gateway {
       }
     }
 
-    // Memory lane "Ask Houge anyway" (ADR 0029 §5.6): one admission (the limiter above), then an ordinary turn
+    // Memory lane "Dig deeper" (ADR 0029 §5.6): one admission (the limiter above), then an ordinary turn
     // whose triage is skipped by its override row. The undo tap is a plain control command.
     let memLaneAsk: { original_run_id: string } | undefined;
     if (event.type === "memlane_ask") {
@@ -1152,13 +1153,22 @@ export class Gateway {
   private admitMemLaneAsk(event: TypedTaskEvent, original_run_id: string, now: string): GatewayIntakeResult {
     // Relies on the single-process daemon: nothing else can create this key between the check and the transaction.
     const existed = this.runStore.runIdForIdempotencyKey(event.source, event.idempotency_key) !== undefined;
-    return this.runStore.inTransaction(() => {
-      const result = this.handleTaskIntake(event, now);
-      if (result.ok && result.status === "created" && !existed) {
-        recordTriageOverride(this.runStore, original_run_id, result.run_id, process.env, this.options.dataDir ?? this.projectRoot, this.telegramChatId(event), now);
-      }
-      return result;
+    const result = this.runStore.inTransaction(() => {
+      const r = this.handleTaskIntake(event, now);
+      if (r.ok && r.status === "created" && !existed) recordTriageOverride(this.runStore, original_run_id, r.run_id, this.telegramChatId(event), now);
+      return r;
     });
+    this.resolveQuietOverrides(now);
+    return result;
+  }
+
+  /** Stage B §6: a lane's page closes once its taps age under the limit; checked after every tap. Never fails the tap. */
+  private resolveQuietOverrides(now: string): void {
+    try {
+      resolveQuietTriageOverrides(this.runStore, now);
+    } catch (e) {
+      console.error(`gateway: triage_overrides resolve failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   /** Audit an accepted control command (memory commands, 2026-10-02) and pass its result through. */

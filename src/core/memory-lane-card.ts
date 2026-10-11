@@ -1,10 +1,10 @@
 import { inertCode } from "../capabilities/memory-correct.js";
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
+import { digDeeperButton } from "./lanes/lane-card.js";
 
 /** Memory lane reply (ADR 0029 §5.6): code-owned, through the rich renderer, never a score or a "safe" word. */
 export const MEMLANE_UNDO_PREFIX = "memlane:undo:";
-export const MEMLANE_ASK_PREFIX = "memlane:ask:";
 const CALLBACK_DATA_MAX_BYTES = 64;
 
 function button(text: string, data: string): NotificationButton {
@@ -19,10 +19,7 @@ export function memoryLaneCard(i: {
   const tail = i.superseded_id !== undefined ? ` (${i.verb === "update" ? "updated" : "replaced"} #${i.superseded_id})` : "";
   const lines = [`📒 Saved lesson #${i.lesson_id} · ${i.theme}${tail}`, inertCode(escapeForTelegram(i.text))];
   if (i.avoid) lines.push(`AVOID: ${inertCode(escapeForTelegram(i.avoid))}`);
-  return {
-    text: lines.join("\n"),
-    buttons: [button("↩️ Undo", `${MEMLANE_UNDO_PREFIX}${i.change_id}`), button("↪ Ask Houge anyway", `${MEMLANE_ASK_PREFIX}${i.run_id}`)]
-  };
+  return { text: lines.join("\n"), buttons: [button("↩️ Undo", `${MEMLANE_UNDO_PREFIX}${i.change_id}`), digDeeperButton(i.run_id)] };
 }
 
 export function memoryInformNote(lesson_id: number, theme: string): string {

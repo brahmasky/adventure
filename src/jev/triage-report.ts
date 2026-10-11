@@ -2,7 +2,7 @@ import type { CalibrationRow } from "./calibration.js";
 import { CATEGORIES, TREE_CATEGORY, TREE_QUESTIONS, type Category } from "./questions/tree.js";
 import { JEV_REQUEST_MODEL } from "./jev-client.js";
 import { criteriaHash } from "./questions/types.js";
-import { ACK_ROUTE, applyCascade, routeTree, TREE_STATUS_ARM_ID, type Armed, type Route, type TreeBars } from "./tree-policy.js";
+import { ACK_ROUTE, applyCascade, routeTree, TREE_ANSWER_ARM_ID, TREE_LOOKUP_ARM_ID, TREE_STATUS_ARM_ID, type Armed, type Route, type TreeBars } from "./tree-policy.js";
 import { treeQuestions, type TreeLabel, type TreeReplayRow } from "./triage-replay.js";
 import { wilsonLower } from "./wilson.js";
 
@@ -17,7 +17,9 @@ export interface TreeReportOutcome {
   universe?: number; wouldDispatch?: number; alreadyDone?: number; skipped?: number; limited?: boolean;
 }
 
-const ALL_ARMED: Armed = { category: true, status: true, memory: true, gear: true, rule: true };
+/** Stage A's arming (every decision, neither stage B lane): the baseline the stage B lanes are compared against (§10). */
+const STAGE_A_ARMED: Armed = { category: true, status: true, memory: true, gear: true, rule: true, answer: false, lookup: false };
+const ALL_ARMED: Armed = { ...STAGE_A_ARMED, answer: true, lookup: true };
 const SCORE_IDS = ["breadth", "reasoning", "actions"] as const;
 /** Categories with a lane in the spec's end state (§3): sending them to the planner costs money, not a turn. */
 const LANE_SHAPED: ReadonlySet<Category> = new Set(["answer", "lookup", "memory", "schedule", "wiki", "status"]);
@@ -111,13 +113,17 @@ function routeLines(ok: TreeReplayRow[], bars: TreeBars): string[] {
  * Arming is coupled (Decision: arming couplings): `memory` needs `category` + `rule`, and `category` alone already moves
  * turns off Default. Paco commits rows per question, so the report shows what each partial commit would change.
  */
-const NONE_ARMED: Armed = { category: false, status: false, memory: false, gear: false, rule: false };
+const NONE_ARMED: Armed = { category: false, status: false, memory: false, gear: false, rule: false, answer: false, lookup: false };
 export const ARMING_COMBOS: ReadonlyArray<{ name: string; armed: Armed }> = [
   { name: "category", armed: { ...NONE_ARMED, category: true } },
   { name: "category+gear", armed: { ...NONE_ARMED, category: true, gear: true } },
   { name: "category+rule", armed: { ...NONE_ARMED, category: true, rule: true, memory: true } },
   { name: "category+rule+status", armed: { ...NONE_ARMED, category: true, rule: true, memory: true, status: true } },
-  { name: "all", armed: ALL_ARMED }
+  { name: "all", armed: STAGE_A_ARMED },
+  // stage B §10: each lane on top of every stage A decision, then both
+  { name: "+answer", armed: { ...STAGE_A_ARMED, answer: true } },
+  { name: "+lookup", armed: { ...STAGE_A_ARMED, lookup: true } },
+  { name: "+both", armed: ALL_ARMED }
 ];
 const ARMING_IDS_SHOWN = 10;
 
@@ -143,21 +149,30 @@ function armingLines(ok: TreeReplayRow[], bars: TreeBars): string[] {
   return out;
 }
 
-interface Costly { swallowed: string[]; underPowered: string[]; laneToPlanner: Map<string, number>; unjudged: number }
-/** Spec §7's three costly cells: a swallowed turn, an under-powered one, and a lane-shaped turn sent to the planner. */
+type LaneName = "answer" | "lookup";
+interface Costly { swallowed: string[]; underPowered: string[]; laneToPlanner: Map<string, number>; unjudged: number;
+  laneWrong: Record<LaneName, string[]>; defaultToFast: number }
+/** Spec §7's three costly cells, plus stage B §10's: a lane taking another category's turn, and the Default→Fast count. */
 function costlyCells(ok: TreeReplayRow[], labels: Map<string, TreeLabel>, bars: TreeBars): Costly {
-  const c: Costly = { swallowed: [], underPowered: [], laneToPlanner: new Map(), unjudged: 0 };
+  const c: Costly = { swallowed: [], underPowered: [], laneToPlanner: new Map(), unjudged: 0, laneWrong: { answer: [], lookup: [] }, defaultToFast: 0 };
   for (const r of ok) {
     const routed = replayRoute(r, bars); const truth = truthOf(r, labels);
     if (!routed) continue;
     const lane = routed.route.lane;
-    if (truth === null) { if (lane !== "planner") c.unjudged += 1; continue; }
+    if (lane === "answer" || lane === "lookup") laneCells(c, r, lane, truth, bars);
+    if (truth === null) { if (lane === "memory" || lane === "status") c.unjudged += 1; continue; }
     const wrongMemory = lane === "memory" && (truth !== "memory" || isCorrection(r, labels));
     if (wrongMemory || (lane === "status" && truth !== "status")) c.swallowed.push(r.turn_id);
     if ((truth === "self_change" || truth === "machine_task") && gearOf(r, bars) === "light") c.underPowered.push(r.turn_id);
     if (lane === "planner" && LANE_SHAPED.has(truth) && !isCorrection(r, labels)) tally(c.laneToPlanner, truth);
   }
   return c;
+}
+
+/** Stage B §10: a lane that took a turn whose truth is another category, and the lane turns stage A ran on the Default role. */
+function laneCells(c: Costly, r: TreeReplayRow, lane: LaneName, truth: Category | null, bars: TreeBars): void {
+  if (truth !== null && truth !== lane) c.laneWrong[lane].push(r.turn_id);
+  if (replayRoute(r, bars, STAGE_A_ARMED)?.route.role === "default") c.defaultToFast += 1;
 }
 
 function costlyLines(c: Costly): string[] {
@@ -167,7 +182,10 @@ function costlyLines(c: Costly): string[] {
     `COSTLY 1 — wrongly into memory/status (a swallowed turn): ${c.swallowed.length}${ids(c.swallowed)}`,
     `COSTLY 2 — self_change / machine_task rated light (under-powered): ${c.underPowered.length}${ids(c.underPowered)}`,
     `COSTLY 3 — lane-shaped turns sent to the planner (cost only): ${toPlanner} (${fmt(c.laneToPlanner)})`,
-    `  memory/status routes on unlabelled turns (cannot judge; label them): ${c.unjudged}`
+    `  memory/status routes on unlabelled turns (cannot judge; label them): ${c.unjudged}`,
+    `COSTLY 4 — a lane took a turn whose truth is another category (a weaker reply; Dig deeper recovers): answer ${c.laneWrong.answer.length}${ids(c.laneWrong.answer)}; ` +
+      `lookup ${c.laneWrong.lookup.length}${ids(c.laneWrong.lookup)}`,
+    `  lane turns that ran the planner on Default under stage A (now Fast): ${c.defaultToFast}`
   ];
 }
 
@@ -209,11 +227,12 @@ function blockersOf(rows: TreeReplayRow[], ok: TreeReplayRow[], o: TreeReportOut
 const reportedModels = (rows: TreeReplayRow[]): string[] =>
   [...new Set(rows.filter((r) => r.status === "ok" && r.model !== undefined).map((r) => r.model!))].sort();
 
-/** Candidate rows for the six questions and the status pseudo-row, per language present, keyed by the one reported model
- *  (no blocker means exactly one); Paco fills `approved`. */
+/** Candidate rows for the six questions and the three lane pseudo-rows (status, answer, lookup), per language present,
+ *  keyed by the one reported model (no blocker means exactly one); Paco fills `approved`. */
 function candidateRows(ok: TreeReplayRow[]): string[] {
   const model = reportedModels(ok)[0]!;
-  const ids = [...TREE_QUESTIONS.map((q) => [q.id, criteriaHash(q)] as const), [TREE_STATUS_ARM_ID, criteriaHash(TREE_CATEGORY)] as const];
+  const pseudo = [TREE_STATUS_ARM_ID, TREE_ANSWER_ARM_ID, TREE_LOOKUP_ARM_ID].map((id) => [id, criteriaHash(TREE_CATEGORY)] as const);
+  const ids = [...TREE_QUESTIONS.map((q) => [q.id, criteriaHash(q)] as const), ...pseudo];
   const out = ["CANDIDATE ROWS — evidence for Paco's decision, not a verdict; he fills `approved` and commits them into CALIBRATED_ROWS (src/jev/calibration.ts):"];
   for (const lang of ["zh", "en"] as const) {
     const n = ok.filter((r) => (r.lang === "en" ? "en" : "zh") === lang).length; // `mixed` inherits zh (calibratedLang)

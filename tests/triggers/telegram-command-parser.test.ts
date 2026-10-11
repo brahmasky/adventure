@@ -353,11 +353,14 @@ describe("parseTelegramCommand", () => {
 
 describe("parseMemLaneCallback (spec §5.6)", () => {
   const lc = "lc_12345678-1234-1234-1234-123456789abc"; const run = "run_12345678-1234-1234-1234-123456789abc";
-  it("parses undo and ask, stays inside Telegram's 64-byte limit, and rejects anything else", () => {
+  // Stage B §3: new cards send lane:ask:; cards already in chats send memlane:ask: and must keep working.
+  it("parses undo, the lane ask and the legacy memlane ask, stays inside 64 bytes, and rejects anything else", () => {
     expect(parseMemLaneCallback(`memlane:undo:${lc}`)).toEqual({ action: "undo", change_id: lc });
+    expect(parseMemLaneCallback(`lane:ask:${run}`)).toEqual({ action: "ask", run_id: run });
     expect(parseMemLaneCallback(`memlane:ask:${run}`)).toEqual({ action: "ask", run_id: run });
     expect(Buffer.byteLength(`memlane:undo:${lc}`)).toBeLessThanOrEqual(64);
     expect(parseMemLaneCallback("memlane:undo:evil")).toBeNull();
+    expect(parseMemLaneCallback(`lane:undo:${lc}`)).toBeNull();
     expect(parseMemLaneCallback(`memlane:merge:${run}`)).toBeNull();
     expect(parseMemLaneCallback(42)).toBeNull();
   });

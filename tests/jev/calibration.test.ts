@@ -6,6 +6,7 @@ import { CALIBRATED_ROWS, calibratedLang, calibrationRows, type CalibrationRow }
 import { JEV_REQUEST_MODEL } from "../../src/jev/jev-client.js";
 import { TREE_CATEGORY } from "../../src/jev/questions/tree.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
+import { TREE_ANSWER_ARM_ID, TREE_LOOKUP_ARM_ID, treeArmed } from "../../src/jev/tree-policy.js";
 
 /** The versioned id Jev REPORTS (the request sends the moving alias `jev-latest`); calibration rows key on it. */
 const REPORTED = "jev-1.13.0";
@@ -26,6 +27,21 @@ describe("calibratedLang", () => {
   // A row naming the moving alias would keep arming after TypeSafe moves it: exactly the silent change rows must catch.
   it("never arms on the request alias, even when a row names it and Jev reports it", () => {
     expect(calibratedLang("category", H, JEV_REQUEST_MODEL, "zh", [row({ model: JEV_REQUEST_MODEL })])).toBeUndefined();
+  });
+  // Stage B §1 ruling 1: the build ships armed. A lane row on the wrong hash or model would leave a lane silently dark.
+  it("the committed rows arm every tree decision and both stage B lanes in zh and en (Paco 2026-10-10)", () => {
+    for (const lang of ["zh", "en"] as const) {
+      expect(treeArmed(lang, REPORTED, CALIBRATED_ROWS)).toEqual({ category: true, status: true, memory: true, gear: true, rule: true, answer: true, lookup: true });
+    }
+    const lanes = CALIBRATED_ROWS.filter((r) => r.question_id === TREE_ANSWER_ARM_ID || r.question_id === TREE_LOOKUP_ARM_ID);
+    expect(lanes).toHaveLength(4);
+    for (const r of lanes) expect(r).toMatchObject({ criteria_hash: criteriaHash(TREE_CATEGORY), model: REPORTED, approved: "Paco 2026-10-10" });
+  });
+  // A reworded category question disarms the lanes with the rest; a stale lane row must not keep a lane live.
+  it("a stale criteria hash or another model arms neither lane", () => {
+    const stale = CALIBRATED_ROWS.map((r) => (r.question_id.startsWith("category:") ? { ...r, criteria_hash: "deadbeef" } : r));
+    expect(treeArmed("zh", REPORTED, stale)).toMatchObject({ answer: false, lookup: false });
+    expect(treeArmed("zh", "jev-9.9.9", CALIBRATED_ROWS)).toMatchObject({ answer: false, lookup: false });
   });
 });
 

@@ -1854,6 +1854,44 @@ describe("PlannerSupervisor — the turn-owned chain (Jev tree spec §4-5)", () 
     lane.sup.submit(req(createQueuedTurnRun(lane.store, "好"), "好")); await lane.sup.whenIdle();
     expect(lane.store.getRecentChatTurns("42", 10).find((t) => t.role === "user")?.quoted_turn_id).toBe("turn_q");
   });
+
+  // Stage B §12: the walk began with quota; the refusal on the next candidate is only how the chain ran out. Ledgering
+  // model_missing would hide a real escalation from ompRouteEnd (which skips model_missing step-ups, F7).
+  it("a refused pin that exhausts the chain after a quota failure ledgers the step-up with the walk's cause, not model_missing", async () => {
+    let calls = 0;
+    const session: Fake = fakeSession({
+      setModel: async (n) => { if (n === 2) throw new PlannerRpcError("command_failed:set_model", "Model not found: google-antigravity/gemini-3.8-flash"); },
+      onPrompt: (_t, e) => {
+        e({ type: "turn_start" });
+        if (calls++ === 0) session.assistant("", { stopReason: "error", errorMessage: "429 quota" }); else session.assistant("ok");
+        e({ type: "agent_end" });
+      }
+    });
+    const { store, sup, outcome } = harness(session, {}, routed("fast"));
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(session.models).toEqual(["anthropic/claude-sonnet-5-5", "google-antigravity/gemini-3.8-flash", "anthropic/claude-opus-5-5"]);
+    expect(escalations(store, run_id)).toEqual([{ from: "fast", to: "default", kind: "quota" }]);
+    expect(outcome.done[0]).toMatchObject({ run_id, text: "ok" });
+  });
+
+  // Stage B §8: a lane reply that arrives while /kill has already ended the turn must not reach Paco. finishLane waits for the
+  // warming child first; without a re-check after that wait it assigns the card to the dead turn, and the failure then carries
+  // the lane text as `partial`, which the failure reply shows (omp-turn-wiring.ts:73 on a turn timeout). The run is `killed`
+  // either way (abortTurn's done("abort") wins the ended race); what the guard changes is that no lane text leaves with it.
+  it("a lane reply after an abort during the warm wait leaves no lane text on the killed run", async () => {
+    // the child never becomes ready, so finishLane sits in its bounded warm wait; the kill lands there
+    const session = fakeSession({ start: never });
+    const { store, sup, outcome } = harness(session, {}, { triage: async () => ({ kind: "lane_reply", text: "quick", buttons: [] }) });
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await until(() => session.options.length === 1); // the child is starting; triage has already replied
+    await sup.abortAll("killed");
+    await sup.whenIdle();
+    expect(outcome.done.map((d) => (d as { run_id: string }).run_id)).not.toContain(run_id); // no outcome.complete
+    const failed = failedOf(outcome, run_id) as { error_type: string; partial?: string } | undefined;
+    expect(failed).toMatchObject({ error_type: "killed" });
+    expect(failed).not.toHaveProperty("partial"); // the lane's "quick" never became the turn's text
+  });
 });
 
 // The probe reuses the planner's own config file and refusal classifier, so the two can never drift apart.

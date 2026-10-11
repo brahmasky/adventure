@@ -216,6 +216,9 @@ self-critique pass** re-reads the draft and returns a corrected final answer
 ([ADR 0006](../decisions/0006-web-read-capability.md) amendment). Its synthesis and critique
 prompts come from the composer (below), so the `research` scope's lessons steer both. Telegram link previews are disabled to cut the outbound
 exfil leg; the URLs read are recorded in the ledger (`web_search_performed`).
+The lookup lane (stage B, [jev-decision-layer.md](jev-decision-layer.md)) is the second caller: one search per lane turn
+through the same chain and `HOUGE_WEB_MAX_RESULTS`, its results read by the quarantined reader before any compose, and
+at most one `http_fetch` of the top result; each leaves the same `web_search_performed` / `http_fetch_performed` row.
 
 ## Direct URL read (`http_fetch`, loop tool — Phase 3.6 step ③)
 
@@ -948,9 +951,10 @@ Default role.
 | `HOUGE_JEV_ENABLED` | off | Master switch. Accepts 1/true/yes/on; read per turn; in `DISARM_FLAGS` (`/disarm` forces it off). Off overrides the tree flag. |
 | `HOUGE_JEV_TRIAGE_ENABLED` | `off` | `off` \| `shadow` \| `arm` (the flag keeps its lane 1 name). `off` asks nothing: one verdict row (`jev_skipped`, skip `disabled`), no route, so the supervisor pins nothing and `think harder` is ignored. `shadow` asks Jev and records rows with every question unarmed, so each verdict reads `uncalibrated` and the planner runs on Default exactly as without Jev. `arm` lets a calibrated verdict route, act and run the ack rule. Any other value (including `/disarm`'s `false`) reads as `off`. |
 | `HOUGE_MODEL_ROLES` | `resolved` | See [Model roles](#model-roles). `off` + `static`, after a kickstart, is the model-list rollback. |
-| `HOUGE_JEV_DISARM_PATH` | `<dataDir>/houge.jev-disarmed` | Auto-disable marker. Code writes it when `triage_overrides` fires and caps `arm` at `shadow` (nothing armed, Default route) while it exists. **Re-arming is Paco deleting the file**; nothing else clears it. |
+| `HOUGE_JEV_DISARM_PATH` | `<dataDir>/houge.jev-disarmed` | Legacy disarm marker. Nothing writes it since stage B (Dig deeper taps page per lane and never disarm). A marker an older build left caps `arm` at `shadow` (nothing armed, Default route) while it exists; **re-arming is Paco deleting the file**. |
 | `HOUGE_JEV_CALIBRATION_FILE` | unset | **Gate only.** A JSON array of calibration rows for the live gate or a labelled DB copy. Outside `HOUGE_JEV_GATE=1` a set file caps `arm` at `shadow`. Never set it in the daemon's `.env`. |
 | `HOUGE_JEV_GATE` | unset | Set to `1` by `scripts/live-gate-jev-tree.mjs` only; lifts the file cap above for that process. Never set in the daemon's `.env`. |
+| `HOUGE_JEV_LANES_OFF` | empty | Stage B. Comma list of lanes to switch off: `answer`, `lookup`. A listed lane is unarmed and its turns run the planner on the gear's role (reason `routed`), as if its calibration rows were absent. Read per turn from the process environment; the daemon loads `.env` only at boot, so a `.env` edit needs a kickstart. An unknown name logs one error at boot and is ignored. The memory and status lanes are not listed here: their remedies are their rows and `/disarm`. |
 
 `HOUGE_JEV_TRIAGE_MIN_CONF`, `_MIN_PURE` and `_MIN_STATUS` are **retired**: nothing reads them. The tree's bars are the
 code constants `TREE_BAR_DEFAULTS` (`src/jev/tree-policy.ts`; choice 0.6, `noul` yes 0.8 / no 0.2, memory 0.85, status 0.8,
@@ -966,7 +970,8 @@ on the new id opens a `jev_model_uncalibrated` incident (below).
 **Calibration rows are code, not env.** `CALIBRATED_ROWS` in `src/jev/calibration.ts` holds the arming rows, keyed
 `(question_id, criteria_hash, model, lang)`. The six tree questions have new criteria hashes, so **lane 1's rows armed
 nothing after the tree and were retired**. Paco committed the tree's 14 rows on 2026-10-09 (all six questions plus
-`category:status`, zh and en, on the model Jev reported) after the replay and his labels. Without a row for the reported
+`category:status`, zh and en, on the model Jev reported) after the replay and his labels. On 2026-10-10 he added `category:answer` and `category:lookup` (zh and en): 18 rows; each lane arms on
+its own row. Without a row for the reported
 model, every armed turn routes `uncalibrated` to the planner on Default, and the memory and status lanes do not act. Each decision arms on its own
 rows: `category` (the six categories' routing), the pseudo-row `category:status` (`TREE_STATUS_ARM_ID`, the status
 lane), `rule` (`sets_rule` and `rule_scope` together) and `gear` (the three scores). The memory lane needs `category`
@@ -983,23 +988,23 @@ as a plain message.
 **Ledger events** (run ledger; ids, enums and numbers only, never message text): `triage` (one per eligible turn, the
 denominator; carries `category`, `route_lane`, `role`, `verdict_id`, `decision`, `verdict` = the route reason, and
 `cascade_between` when the cascade ran), `ack_nudged`, `lesson_saved`, `lesson_change_undone`, `triage_override`,
-`quote_unresolved`, `routed_escalation`, and the model-role rows listed under [Model roles](#model-roles).
+`quote_unresolved`, `routed_escalation`, and the model-role rows listed under [Model roles](#model-roles). `triage_override` carries `lane` (null for a run with no verdict); `loop_started.applied_artifacts` carries `catch_up_run_ids` when the catch-up block was non-empty. The answer and lookup lanes' model calls are `llm_attempt` rows with `role` `lane` (the compose carries `routed_by` on every leg; the lookup's query rewrite runs on the Tiny role without it).
 
 **Incidents** (the first failure opens one and alerts Paco): `jev_auth`, `jev_rate_limited`, `jev_overloaded`,
-`jev_question_invalid`, `jev_no_key`, `triage_overrides` (the override rate crossed the auto-disable bar),
+`jev_question_invalid`, `jev_no_key`, `triage_overrides` (three 🔍 Dig deeper taps on one lane in seven days; subject `jev:lane:<lane>`; it pages and disarms nothing),
 `triage_threw`, and `jev_model_uncalibrated` (subject = the reported model: Jev answered on a model no calibration row
 names while rows exist for another, i.e. the alias moved; `arm` mode only; one page per model; resolved once rows name
 that model, or when no calibrated rows remain; the sweep never touches it). The next answered Jev call resolves any open
-outage `jev_*` incident, and `triage_overrides` resolves on the next turn once the disarm marker is gone. The invariant
+outage `jev_*` incident, and a lane's `triage_overrides` resolves once that lane's 7-day tap count is under three (checked after each tap, at each triage and by the sweep). The invariant
 sweep adds two rate kinds:
 
 - `jev_skip_rate`: at least 3 triage calls in 24 h with half or more failing silently (`timeout`, `parse`, `transport`,
   `error`; skips for `disabled`, `posture`, `modality`, `override`, `state_too_large` and `ack_rule` are not calls). It
   stays open until an answered call lands.
-- `lane_fallthrough_rate` (subject = the lane): at least 3 **settled** turns of one no-planner lane (memory or status) in
+- `lane_fallthrough_rate` (subject = the lane): at least 3 **settled** turns of one no-planner lane (memory, status, answer or lookup) in
   24 h with half or more falling through to the planner. A fall-through is a verdict whose handler outcome is
   `fallthrough:*` or a lane turn closed `planner_done` / `planner_failed`; a status render that throws settles as
-  `fallthrough:render_failed` (route outcome `fallback`) so a broken renderer is counted. It stays open until that lane
+  `fallthrough:render_failed` (route outcome `fallback`) so a broken renderer is counted. A killed turn (`fallthrough:aborted`) counts in neither number. It stays open until that lane
   answers a turn itself after the incident opened.
 
 Jev is excluded from `llm_leg_failing`; its failures surface as these instead. `LlmErrorKind` gains `rate_limited`,
@@ -1013,8 +1018,8 @@ answered row also records `thread_cut_at` and `state_built_at`, the instants the
 (`act` \| `fallback`, or `pin_failed` once a pin was refused), `model` (the model that answered), `fast_used_tool`, `handler_outcome` (`pending` until the run's terminal closes it as `planner_done` /
 `planner_failed`; `lane_reply` or `fallthrough:*` for lanes), `reason`, `skip_reason`, `quoted_turn_id`,
 `paco_correction`; the first model call of the turn carries `routed_by` = `verdict_id`), `chat_turns.quoted_turn_id`
-(the quote anchor), and `lesson_changes` (the change set behind a memory-lane save, which the Undo tap reverses).
-`paco_correction` keeps the first correction (`think_harder`, `escalation`, `low_rating`, `ask_anyway`), except "Ask Houge anyway", which
+(the quote anchor), and `lesson_changes` (the change set behind a memory-lane save, which the Undo tap reverses), `lane_replies` (stage B: one row per lane reply, `run_id`, `chat_id`, `lane`, `verdict_id`, the code-built `catch_up` line, `created_at`; read by the next planner turn's catch-up block).
+`paco_correction` keeps the first correction (`think_harder`, `escalation`, `low_rating`, `ask_anyway`), except the 🔍 Dig deeper tap (formerly "Ask Houge anyway"), which
 overwrites.
 
 **CLI** (state under `.houge/jev-triage/`, git-ignored):

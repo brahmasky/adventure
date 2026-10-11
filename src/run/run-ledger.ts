@@ -218,7 +218,8 @@ const requiredPayloadFields = {
   // records each composed step (result_digest is the truncated transcript entry — never
   // full payloads); `loop_halted.reason` ∈ final|clarify|step_cap|denial|parse_cap|
   // clarify_cap|failed. `loop_step` also carries an OPTIONAL `reader_applied:true` when the
-  // step's output passed through the Dual-LLM quarantined reader (ADR 0014) — not required.
+  // step's output passed through the Dual-LLM quarantined reader (ADR 0014) — not required. Stage B: applied_artifacts may
+  // carry `catch_up_run_ids` (the lane runs whose catch-up lines the prompt held; written only when non-empty).
   loop_started: ["manifest", "hint", "applied_artifacts"],
   loop_step: ["step", "action", "capability", "ok", "result_digest"],
   loop_halted: ["reason", "steps"],
@@ -311,8 +312,9 @@ const requiredPayloadFields = {
   ack_nudged: ["approval_run_id"],
   lesson_saved: ["lesson_id", "change_id", "source"],
   lesson_change_undone: ["change_id", "restored", "skipped"],
-  // "Ask Houge anyway": the override label for calibration; new_run_id is the re-submitted planner turn.
-  triage_override: ["run_id", "new_run_id", "change_id"],
+  // "Dig deeper" (stage B; formerly "Ask Houge anyway"): the override label; new_run_id is the re-submitted planner turn,
+  // `lane` the corrected verdict's lane (null when the run had no verdict row).
+  triage_override: ["run_id", "new_run_id", "change_id", "lane"],
   // Jev decision tree, stage A (spec §4–§6). Ids, enums and numbers only — never message text, never omp's error text.
   // A routed turn stepped up a role at the retry boundary (written by the supervisor, Task 8).
   routed_escalation: ["from", "to", "kind"],

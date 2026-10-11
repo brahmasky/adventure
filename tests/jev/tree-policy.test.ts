@@ -4,8 +4,8 @@ import { JEV_REQUEST_MODEL, type JevAnswer, type JevChoiceAnswer } from "../../s
 import { CATEGORIES, TREE_CATEGORY, TREE_QUESTIONS, type Category, type LastHougeTurn } from "../../src/jev/questions/tree.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
 import {
-  ACK_ROUTE, applyCascade, fallbackRoute, preJudge, routeTree, thinkHarderIn, TREE_BAR_DEFAULTS, TREE_STATUS_ARM_ID, treeArmed,
-  treeArmingRows, type Armed, type Route, type RoutePlan
+  ACK_ROUTE, applyCascade, fallbackRoute, preJudge, routeTree, thinkHarderIn, TREE_ANSWER_ARM_ID, TREE_BAR_DEFAULTS, TREE_LOOKUP_ARM_ID,
+  TREE_STATUS_ARM_ID, TREE_THRESHOLD_VERSION, treeArmed, treeArmingRows, type Armed, type Route, type RoutePlan
 } from "../../src/jev/tree-policy.js";
 
 /** The versioned id a Jev response reports. Calibration keys on it; the request names the moving alias (JEV_REQUEST_MODEL). */
@@ -34,7 +34,9 @@ const answers = (a: A): Record<string, JevAnswer> => ({
   category: a.category, sets_rule: noul(a.sets_rule ?? 0.05), rule_scope: scope(a.ask ?? 0.9),
   breadth: score(a.breadth ?? 1), reasoning: score(a.reasoning ?? 1), actions: score(a.actions ?? 0)
 });
-const ALL: Armed = { category: true, status: true, memory: true, gear: true, rule: true };
+const ALL: Armed = { category: true, status: true, memory: true, gear: true, rule: true, answer: false, lookup: false };
+/** Stage B's two lanes armed on top of ALL. */
+const LANES: Partial<Armed> = { answer: true, lookup: true };
 type Opts = Partial<{ armed: Partial<Armed>; thinkHarder: boolean; bareAck: boolean }>;
 const plan = (a: A, o: Opts = {}): RoutePlan =>
   routeTree(answers(a), { bars: TREE_BAR_DEFAULTS, armed: { ...ALL, ...o.armed }, thinkHarder: o.thinkHarder ?? false, bareAck: o.bareAck ?? false });
@@ -278,10 +280,11 @@ describe("treeArmed (each decision arms on its own evidence)", () => {
   const row = (question_id: string, criteria_hash: string, lang: "zh" | "en" = "zh", model = REPORTED): CalibrationRow =>
     ({ question_id, criteria_hash, model, lang, approved: "test", evidence: "test" });
   const all = [...TREE_QUESTIONS.map((q) => row(q.id, criteriaHash(q))), row(TREE_STATUS_ARM_ID, criteriaHash(TREE_CATEGORY))];
-  const NONE: Armed = { category: false, status: false, memory: false, gear: false, rule: false };
+  const NONE: Armed = { category: false, status: false, memory: false, gear: false, rule: false, answer: false, lookup: false };
   it("every row → all armed; mixed inherits zh", () => {
-    expect(treeArmed("zh", REPORTED, all)).toEqual({ category: true, status: true, memory: true, gear: true, rule: true });
-    expect(treeArmed("mixed", REPORTED, all)).toEqual({ category: true, status: true, memory: true, gear: true, rule: true });
+    const stageA = { category: true, status: true, memory: true, gear: true, rule: true, answer: false, lookup: false };
+    expect(treeArmed("zh", REPORTED, all)).toEqual(stageA);
+    expect(treeArmed("mixed", REPORTED, all)).toEqual(stageA);
   });
   it("the status pseudo-row arms status only; the category row never arms status", () => {
     expect(treeArmed("zh", REPORTED, [row(TREE_STATUS_ARM_ID, criteriaHash(TREE_CATEGORY))])).toEqual({ ...NONE, status: true });
@@ -310,4 +313,90 @@ describe("treeArmed (each decision arms on its own evidence)", () => {
     expect(treeArmingRows([...retired, ...all])).toEqual(all);
     expect(treeArmingRows(retired)).toEqual([]);
   });
+  // Stage B spec §2: a lane arms on its own pseudo-row at the category hash, so a `category` row alone never arms a lane, a hash or
+  // model change disarms both with the rest, and HOUGE_JEV_LANES_OFF unarms one lane without touching the others.
+  it("the lane pseudo-rows arm their lane only; a lane listed as off stays unarmed; a stale hash arms nothing", () => {
+    const laneRows = [row(TREE_ANSWER_ARM_ID, criteriaHash(TREE_CATEGORY)), row(TREE_LOOKUP_ARM_ID, criteriaHash(TREE_CATEGORY))];
+    expect(treeArmed("zh", REPORTED, laneRows)).toEqual({ ...NONE, answer: true, lookup: true });
+    expect(treeArmed("zh", REPORTED, all).answer).toBe(false);
+    expect(treeArmed("zh", REPORTED, [...all, ...laneRows], new Set(["answer"]))).toMatchObject({ answer: false, lookup: true });
+    expect(treeArmed("zh", REPORTED, [row(TREE_ANSWER_ARM_ID, "deadbeef")]).answer).toBe(false);
+  });
+  it("treeArmingRows keeps both lane pseudo-rows at the current category hash (the alias-move page counts them)", () => {
+    const laneRows = [row(TREE_ANSWER_ARM_ID, criteriaHash(TREE_CATEGORY)), row(TREE_LOOKUP_ARM_ID, criteriaHash(TREE_CATEGORY))];
+    expect(treeArmingRows([...laneRows, row(TREE_LOOKUP_ARM_ID, "deadbeef")])).toEqual(laneRows);
+  });
+});
+
+describe("TREE_THRESHOLD_VERSION (stage B)", () => {
+  // Every decision row is stamped with it: rows before and after the stage B ship must stay distinguishable in the evidence.
+  it("is bumped for stage B", () => expect(TREE_THRESHOLD_VERSION).toBe("2026-10-10.1"));
+});
+
+describe("routeTree — the answer and lookup lanes (stage B spec §2)", () => {
+  // A wrong lane pick costs a weaker reply with a Dig deeper button, so the bar is the choice bar alone; the limits keep a
+  // turn that needs a tool or a second topic on the planner. Each limit is tested on both sides of its edge, EPS included.
+  const lane = (a: A, o: Opts = {}): Route => route(a, { ...o, armed: { ...LANES, ...o.armed } });
+  it("answer at the choice bar inside its limits: the answer lane on Fast, effort from reasoning, reason routed", () => {
+    expect(lane({ category: cat({ answer: 0.6 }), breadth: 1.5, reasoning: 1, actions: 0.5 }))
+      .toEqual({ category: "answer", lane: "answer", role: "fast", effort: "low", save: null, reason: "routed", cascade: null, thinkHarder: false });
+  });
+  it("lookup at the choice bar inside its limits: the lookup lane", () => {
+    expect(lane({ category: cat({ lookup: 0.6 }), breadth: 1.5, reasoning: 1, actions: 1.5 })).toMatchObject({ lane: "lookup", role: "fast", reason: "routed" });
+  });
+  it("under the choice bar a lane category cascades (a lane never takes a below-bar turn)", () => {
+    expect(plan({ category: cat({ answer: 0.59, lookup: 0.3 }) }, { armed: LANES }).kind).toBe("cascade");
+  });
+  it.each([
+    ["answer actions 0.5 plus float error stays in", "answer", { actions: 0.5 + 1e-12 }, "answer", "routed"],
+    ["answer actions 0.51 is over", "answer", { actions: 0.51 }, "planner", "lane_limits"],
+    ["answer breadth 1.51 is over", "answer", { breadth: 1.51 }, "planner", "lane_limits"],
+    ["lookup actions 1.5 stays in", "lookup", { actions: 1.5 }, "lookup", "routed"],
+    ["lookup actions 1.51 is over", "lookup", { actions: 1.51 }, "planner", "lane_limits"],
+    ["lookup breadth 1.51 is over", "lookup", { breadth: 1.51 }, "planner", "lane_limits"]
+  ] as const)("limits: %s", (_n, category, scores, laneName, reason) => {
+    const c = category === "answer" ? cat({ answer: 0.9 }) : cat({ lookup: 0.9 });
+    expect(lane({ category: c, breadth: 1, reasoning: 1, actions: 0, ...scores })).toMatchObject({ category, lane: laneName, reason });
+  });
+  it("over a limit the planner runs on the gear's role: breadth 1.51 is a standard gear → Default", () => {
+    expect(lane({ category: cat({ answer: 0.9 }), breadth: 1.51, reasoning: 1, actions: 0 })).toMatchObject({ lane: "planner", role: "default", reason: "lane_limits" });
+  });
+  it("heavy reasoning inside the limits raises the Fast model's effort, never the role", () => {
+    expect(lane({ category: cat({ answer: 0.9 }), breadth: 1, reasoning: 2.6, actions: 0 })).toMatchObject({ lane: "answer", role: "fast", effort: "high" });
+  });
+  it.each([
+    ["the lane's own row unarmed or switched off", { answer: false }],
+    ["the rule rows unarmed (F6: a stated rule could go unseen)", { rule: false }]
+  ] as const)("%s → the stage A planner route, reason routed", (_n, armed) => {
+    expect(lane({ category: cat({ answer: 0.9 }), breadth: 1, reasoning: 1, actions: 0 }, { armed }))
+      .toMatchObject({ category: "answer", lane: "planner", role: "fast", effort: "low", reason: "routed" });
+  });
+  it("gear unarmed → the planner on Default with no effort (the limits need the scores)", () => {
+    expect(lane({ category: cat({ lookup: 0.9 }), actions: 0 }, { armed: { gear: false } })).toMatchObject({ lane: "planner", role: "default", effort: null, reason: "routed" });
+  });
+  it("think harder → the planner on Thinking", () => {
+    expect(lane({ category: cat({ answer: 0.9 }), actions: 0 }, { thinkHarder: true })).toMatchObject({ lane: "planner", role: "thinking", reason: "routed", thinkHarder: true });
+  });
+  it("a bare ack (好 after a proposal is consent) → bare_ack_guard, never a lane, nothing saved", () => {
+    expect(lane({ category: cat({ answer: 0.9 }), sets_rule: 0.95, actions: 0 }, { bareAck: true })).toMatchObject({ lane: "planner", reason: "bare_ack_guard", save: null });
+  });
+  it("sets_rule yes with a lane category keeps the save on the lane route (core-worker saves first)", () => {
+    expect(lane({ category: cat({ answer: 0.9 }), sets_rule: 0.95, actions: 0 })).toMatchObject({ lane: "answer", save: { scope: "ask" } });
+  });
+  it("a cascade pick of answer is never a lane", () => {
+    const p = plan({ category: cat({ answer: 0.5, lookup: 0.3 }) }, { armed: LANES });
+    if (p.kind !== "cascade") throw new Error("expected a cascade");
+    expect(applyCascade(p, "answer")).toMatchObject({ category: "answer", lane: "planner", role: "fast", reason: "cascade" });
+  });
+});
+
+describe("routeTree — the two-request guard (stage B spec §2)", () => {
+  // A rule plus a second request must not end at the memory card alone: the second request would be dropped silently.
+  // Replay: 0 of the 7 confident memory takes had actions ≥ 1.5, and 3 sat in [0.78, 1.34], so the edge is 1.5, not 0.5.
+  const memory = (actions: number, o: Opts = {}): Route => route({ category: cat({ memory: 0.95 }), sets_rule: 0.95, breadth: 1, reasoning: 1, actions }, o);
+  it("actions 1.49 stays the memory lane", () => expect(memory(1.49)).toMatchObject({ lane: "memory", reason: "routed" }));
+  it("actions 1.5 → the planner, reason two_request, the rule still saved, on the gear's role", () => {
+    expect(memory(1.5)).toMatchObject({ category: "memory", lane: "planner", role: "default", reason: "two_request", save: { scope: "ask" } });
+  });
+  it("inert while gear is unarmed (actions is not read)", () => expect(memory(3, { armed: { gear: false } })).toMatchObject({ lane: "memory" }));
 });

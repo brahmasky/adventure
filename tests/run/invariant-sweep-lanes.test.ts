@@ -103,4 +103,14 @@ describe("lane_fallthrough_rate", () => {
     sweep(25 * 60);
     expect(open()).toHaveLength(1);
   });
+  // Stage B §6: the gateway opens a lane's triage_overrides page; nothing re-detects it, so the sweep's effect phase must
+  // close it once the lane's taps have aged out, or a quiet lane would stay paged forever and never page again.
+  it("the effect phase resolves a quiet lane's triage_overrides page and leaves a busy one open", () => {
+    store.openIncident({ kind: "triage_overrides", subject: "jev:lane:answer", detail: { lane: "answer" } });
+    store.openIncident({ kind: "triage_overrides", subject: "jev:lane:lookup", detail: { lane: "lookup" } });
+    for (let k = 0; k < 3; k++) store.recordMemoryEvent("triage_override", { run_id: `run_o${k}`, new_run_id: `run_n${k}`, change_id: null, lane: "lookup" });
+    // one clock: the events carry the real clock, so the sweep runs at the real clock too (not the file's fixed NOW)
+    runInvariantSweep({ store, now: new Date().toISOString(), env: ARMED, chat_id: "555" });
+    expect(store.listOpenIncidents().filter((i) => i.kind === "triage_overrides").map((i) => i.subject)).toEqual(["jev:lane:lookup"]);
+  });
 });

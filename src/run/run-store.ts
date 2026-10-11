@@ -74,7 +74,9 @@ export type LlmCallRole =
   // Jev decision points (ADR 0029): one role per point so the per-point rate is readable in llm_attempt
   | "triage"
   // the tree's cascade pick between two categories (plan 2026-10-07 Decision 14): a Tiny-role one-shot on the turn's run
-  | "cascade";
+  | "cascade"
+  // stage B lanes (spec §4–§5): the compose (Fast candidates) and the lookup's query rewrite (Tiny candidates); the planner stays "compose"
+  | "lane";
 
 /** Where an audited attempt belongs: a run, or a run-less correlation (`tick:*`, `cli:*`, `rating:*`). */
 export type LlmAuditScope =
@@ -954,9 +956,41 @@ export interface JevVerdictRow {
   handler_outcome: string; reason: RouteReason; skip_reason: string | null; fast_used_tool: number; paco_correction: VerdictCorrection | null;
   quoted_turn_id: string | null; created_at: string; updated_at: string;
 }
-type JevVerdictPatch = Partial<{ handler_outcome: string; model: string | null; route_outcome: "pin_failed"; fast_used_tool: boolean; paco_correction: VerdictCorrection }>;
+/** One lane reply joined to its user text (stage B §7): what the catch-up block shows the planner. Never ledger text. */
+export interface LaneTurnRow { run_id: string; lane: string; verdict_id: string | null; catch_up: string; created_at: string; user_text: string | null }
+
+type JevVerdictPatch = Partial<{ handler_outcome: string; model: string | null; route_outcome: "pin_failed" | "fallback"; fast_used_tool: boolean; paco_correction: VerdictCorrection }>;
+
 /** The only columns an update may set: a fixed list, so the SET clause never takes a name from input. */
 const VERDICT_PATCH_COLUMNS = ["handler_outcome", "model", "route_outcome", "fast_used_tool", "paco_correction"] as const;
+
+/** Stage B §9: `jev_verdicts` with the lane CHECK widened to the stage B lanes; every other column exactly as stage A built it. */
+const JEV_VERDICTS_LANES_DDL = `
+  CREATE TABLE jev_verdicts (
+    verdict_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    category TEXT,
+    breadth REAL,
+    reasoning REAL,
+    actions REAL,
+    sets_rule REAL,
+    rule_scope TEXT CHECK (rule_scope IS NULL OR rule_scope IN ('ask', 'research')),
+    lane TEXT NOT NULL CHECK (lane IN ('answer', 'lookup', 'memory', 'status', 'planner')),
+    role TEXT NOT NULL CHECK (role IN ('fast', 'default', 'thinking')),
+    effort TEXT CHECK (effort IS NULL OR effort IN ('low', 'medium', 'high')),
+    model TEXT,
+    cascade TEXT CHECK (cascade IS NULL OR cascade = 'tiny'),
+    save_outcome TEXT NOT NULL CHECK (save_outcome IN ('saved', 'not_durable', 'capped', 'none')),
+    route_outcome TEXT NOT NULL CHECK (route_outcome IN ('act', 'fallback', 'pin_failed')),
+    handler_outcome TEXT NOT NULL CHECK (handler_outcome IN ('pending', 'lane_reply', 'planner_done', 'planner_failed') OR handler_outcome LIKE 'fallthrough:%'),
+    reason TEXT NOT NULL,
+    skip_reason TEXT,
+    fast_used_tool INTEGER NOT NULL DEFAULT 0,
+    paco_correction TEXT CHECK (paco_correction IS NULL OR paco_correction IN ('ask_anyway', 'think_harder', 'escalation', 'low_rating')),
+    quoted_turn_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );`;
 
 /** One undoable memory-lane save (ADR 0029 §5.6): the new lesson, the one it superseded, the cap victims it pruned. */
 export interface LessonChange {
@@ -2703,6 +2737,52 @@ export class RunStore {
     `).all<ChatTurnRow>(chat_id, excludeRunId, since, runLimit, chat_id);
   }
 
+  /**
+   * Stage B §7's boundary: the newest assistant turn the planner wrote in this chat — a Telegram run, not an evolution
+   * report, and no `lane_reply` verdict on the run (a lane run's assistant row is not the planner's). Null when none.
+   */
+  plannerLastAnsweredAt(chat_id: string): string | null {
+    return this.db.prepare(`
+      SELECT MAX(a.created_at) AS at FROM chat_turns a JOIN runs r ON r.run_id = a.run_id
+      WHERE a.chat_id = ? AND a.role = 'assistant' AND r.source = 'telegram' AND a.intent IS NOT 'evolution_report'
+        AND NOT EXISTS (SELECT 1 FROM jev_verdicts v WHERE v.run_id = a.run_id AND v.handler_outcome = 'lane_reply')
+    `).get<{ at: string | null }>(chat_id)?.at ?? null;
+  }
+
+  /** Stage B §5 step 2: the last `n` turns of Telegram runs in this chat before `before`, oldest first (schedule rows never count). */
+  previousTelegramTurns(chat_id: string, before: string, n: number): ChatTurnRow[] {
+    return this.db.prepare(`
+      SELECT t.turn_id, t.chat_id, t.run_id, t.role, t.text, t.intent, t.created_at, t.quoted_turn_id
+      FROM chat_turns t JOIN runs r ON r.run_id = t.run_id
+      WHERE t.chat_id = ? AND r.source = 'telegram' AND t.created_at < ?
+      ORDER BY t.created_at DESC, t.rowid DESC
+      LIMIT ?
+    `).all<ChatTurnRow>(chat_id, before, n).reverse();
+  }
+
+  /** Stage B §7/§9: one row per lane reply, the code-built catch-up line; a second write for the same run is ignored. */
+  recordLaneReply(r: { run_id: string; chat_id: string; lane: Lane; verdict_id: string | null; catch_up: string; created_at?: string }): void {
+    this.db.prepare(`INSERT OR IGNORE INTO lane_replies (run_id, chat_id, lane, verdict_id, catch_up, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(r.run_id, r.chat_id, r.lane, r.verdict_id, r.catch_up, r.created_at ?? new Date().toISOString());
+  }
+
+  /**
+   * The chat's DELIVERED lane replies after `since` (exclusive; null = all), oldest first, each with its run's first user turn.
+   * A reply whose run later failed (`failLaneReplyVerdict` → `fallthrough:run_failed`) never reached Paco, so the planner
+   * must not be told it did: the join keeps rows whose verdict still reads `lane_reply` (or has no verdict: a status/memory
+   * row written by a path with none).
+   */
+  laneTurnsSince(chat_id: string, since: string | null): LaneTurnRow[] {
+    return this.db.prepare(`
+      SELECT l.run_id, l.lane, l.verdict_id, l.catch_up, l.created_at,
+        (SELECT u.text FROM chat_turns u WHERE u.run_id = l.run_id AND u.role = 'user' ORDER BY u.created_at ASC, u.rowid ASC LIMIT 1) AS user_text
+      FROM lane_replies l
+      LEFT JOIN jev_verdicts v ON v.verdict_id = l.verdict_id
+      WHERE l.chat_id = ? AND (? IS NULL OR l.created_at > ?) AND (v.verdict_id IS NULL OR v.handler_outcome = 'lane_reply')
+      ORDER BY l.created_at ASC, l.rowid ASC
+    `).all<LaneTurnRow>(chat_id, since, since);
+  }
+
   /** The newest boot (the live one, once the daemon recorded it), or null if none was ever recorded. */
   getLatestDaemonBoot(): DaemonBoot | null {
     const row = this.db.prepare(`
@@ -4349,8 +4429,8 @@ export class RunStore {
 
   // ── Jev verdicts: one row per decision point call (spec §6) ──────────────
 
-  insertJevVerdict(i: JevVerdictInsert): string {
-    const verdict_id = `jv_${randomUUID()}`;
+  /** `verdict_id`: a caller-minted id (stage B §4: the lane's compose attempts carry it as routed_by before the row exists). */
+  insertJevVerdict(i: JevVerdictInsert, verdict_id: string = `jv_${randomUUID()}`): string {
     const at = i.created_at ?? new Date().toISOString();
     this.db.prepare(`
       INSERT INTO jev_verdicts (verdict_id, run_id, category, breadth, reasoning, actions, sets_rule, rule_scope, lane, role, effort, cascade,
@@ -4457,7 +4537,7 @@ export class RunStore {
 
   // ── small readers for lane 1 ───────────────────────────────────────────────
 
-  /** True when an "Ask Houge anyway" tap re-submitted this run: triage is skipped for it (the tap is the override label). */
+  /** True when a "Dig deeper" tap re-submitted this run: triage is skipped for it (the tap is the override label). */
   triageOverrideFor(run_id: string): boolean {
     const r = this.db.prepare(`SELECT 1 AS one FROM ledger_events WHERE event_type = 'triage_override' AND json_extract(payload_json, '$.new_run_id') = ? LIMIT 1`).get<{ one: number }>(run_id);
     return r !== undefined;
@@ -4465,6 +4545,14 @@ export class RunStore {
 
   countRecentLedgerEvents(event_type: LedgerEventType, sinceIso: string): number {
     return this.db.prepare(`SELECT COUNT(*) AS n FROM ledger_events WHERE event_type = ? AND occurred_at >= ?`).get<{ n: number }>(event_type, sinceIso)?.n ?? 0;
+  }
+
+  /** Stage B §6: Dig deeper taps on one lane since `sinceIso` (the payload's `lane`; the event-type index narrows the scan). */
+  countRecentTriageOverrides(lane: string, sinceIso: string): number {
+    return this.db.prepare(`
+      SELECT COUNT(*) AS n FROM ledger_events
+      WHERE event_type = 'triage_override' AND occurred_at >= ? AND json_extract(payload_json, '$.lane') = ?
+    `).get<{ n: number }>(sinceIso, lane)?.n ?? 0;
   }
 
   userTurnTextForRun(run_id: string): string | undefined {
@@ -5028,7 +5116,8 @@ export class RunStore {
    * `lane_fallthrough_rate` input (spec §8): per no-planner lane, the SETTLED lane turns created in (since, until] and how many
    * fell through to the planner. A pending row (the handler has not finished) is neither a success nor a fall-through. A lane
    * row closed by the planner's terminal (`planner_done` / `planner_failed`, e.g. a memory card that failed after its save)
-   * also ended on the planner, so it counts as a fall-through.
+   * also ended on the planner, so it counts as a fall-through. A killed turn (`fallthrough:aborted`, stage B §8) is not a
+   * lane failure: it leaves both counts.
    */
   countLaneTurns(since: string, until: string): Array<{ lane: string; turns: number; fallthroughs: number }> {
     return this.db.prepare(`
@@ -5036,7 +5125,7 @@ export class RunStore {
         COALESCE(SUM(CASE WHEN handler_outcome LIKE 'fallthrough:%' OR handler_outcome IN ('planner_done', 'planner_failed')
           THEN 1 ELSE 0 END), 0) AS fallthroughs
       FROM jev_verdicts
-      WHERE lane <> 'planner' AND handler_outcome <> 'pending' AND created_at > ? AND created_at <= ?
+      WHERE lane <> 'planner' AND handler_outcome NOT IN ('pending', 'fallthrough:aborted') AND created_at > ? AND created_at <= ?
       GROUP BY lane ORDER BY lane
     `).all<{ lane: string; turns: number; fallthroughs: number }>(since, until);
   }
@@ -6905,6 +6994,8 @@ export class RunStore {
     this.applyJevDecisionInstantsMigration();
     this.applyChatTurnsQuotedMigration();
     this.applyJevVerdictsMigration();
+    this.applyJevVerdictsLanesMigration();
+    this.applyLaneRepliesMigration();
   }
 
   /** Memory A1 §6: the lesson-set fingerprint each chat's omp session started on, persisted so a restart still compares. */
@@ -7024,6 +7115,50 @@ export class RunStore {
         );
         CREATE INDEX IF NOT EXISTS jev_verdicts_run_idx ON jev_verdicts(run_id);
         CREATE INDEX IF NOT EXISTS jev_verdicts_created_idx ON jev_verdicts(created_at);
+      `);
+      if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
+  }
+
+  /**
+   * Stage B §9: `jev_verdicts.lane` admits `answer` and `lookup`. SQLite cannot alter a CHECK, so the table is rebuilt in
+   * one transaction (no trigger or view names it): rename, create, copy all 23 columns, assert the counts, drop the old
+   * table (its indexes go with it), recreate the two indexes. Runs at open, so a gate's VACUUM copy migrates too.
+   */
+  private applyJevVerdictsLanesMigration(): void {
+    const version = "2026-10-10-jev-verdicts-lanes";
+    const cols = "verdict_id, run_id, category, breadth, reasoning, actions, sets_rule, rule_scope, lane, role, effort, model, cascade, " +
+      "save_outcome, route_outcome, handler_outcome, reason, skip_reason, fast_used_tool, paco_correction, quoted_turn_id, created_at, updated_at";
+    this.inTransaction(() => {
+      if (this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version)) return;
+      const before = this.db.prepare(`SELECT COUNT(*) AS n FROM jev_verdicts`).get<{ n: number }>()?.n ?? 0;
+      this.db.exec(`ALTER TABLE jev_verdicts RENAME TO jev_verdicts_old;\n${JEV_VERDICTS_LANES_DDL}\nINSERT INTO jev_verdicts (${cols}) SELECT ${cols} FROM jev_verdicts_old;`);
+      const after = this.db.prepare(`SELECT COUNT(*) AS n FROM jev_verdicts`).get<{ n: number }>()?.n ?? -1;
+      if (after !== before) throw new Error(`jev_verdicts lanes migration: ${before} rows before, ${after} after`);
+      this.db.exec(`
+        DROP TABLE jev_verdicts_old;
+        CREATE INDEX IF NOT EXISTS jev_verdicts_run_idx ON jev_verdicts(run_id);
+        CREATE INDEX IF NOT EXISTS jev_verdicts_created_idx ON jev_verdicts(created_at);
+      `);
+      this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
+  }
+
+  /** Stage B §9: one row per lane reply, the catch-up line a later planner turn reads (§7). A store row, never ledger text. */
+  private applyLaneRepliesMigration(): void {
+    const version = "2026-10-10-lane-replies";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS lane_replies (
+          run_id TEXT PRIMARY KEY,
+          chat_id TEXT NOT NULL,
+          lane TEXT NOT NULL,
+          verdict_id TEXT,
+          catch_up TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS lane_replies_chat_idx ON lane_replies(chat_id, created_at);
       `);
       if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
     });

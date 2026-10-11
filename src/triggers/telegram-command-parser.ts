@@ -317,14 +317,15 @@ export function parseMemoryUndoCallback(data: unknown): { change_id: string } | 
 
 const LC_UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const MEMLANE_UNDO = new RegExp(`^memlane:undo:(lc_${LC_UUID})$`);
-const MEMLANE_ASK = new RegExp(`^memlane:ask:(run_${LC_UUID})$`);
+/** Dig deeper (stage B): `lane:ask:` on new cards, `memlane:ask:` on cards already in chats. */
+const LANE_ASK = new RegExp(`^(?:lane|memlane):ask:(run_${LC_UUID})$`);
 
-/** Memory lane card taps (ADR 0029 §5.6). Exact shapes only (each is 52 bytes, under Telegram's 64); anything else is TELEGRAM_COMMAND_INVALID downstream. */
+/** Lane card taps (ADR 0029 §5.6, stage B §6). Exact shapes only (each ≤ 52 bytes, under Telegram's 64); anything else is TELEGRAM_COMMAND_INVALID downstream. */
 export function parseMemLaneCallback(data: unknown): { action: "undo"; change_id: string } | { action: "ask"; run_id: string } | null {
   if (typeof data !== "string") return null;
   const undo = MEMLANE_UNDO.exec(data);
   if (undo) return { action: "undo", change_id: undo[1]! };
-  const ask = MEMLANE_ASK.exec(data);
+  const ask = LANE_ASK.exec(data);
   return ask ? { action: "ask", run_id: ask[1]! } : null;
 }
 

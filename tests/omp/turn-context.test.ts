@@ -9,6 +9,8 @@ import {
   assistantIntentFor,
   CLARIFY_CAP_NOTICE,
   buildTurnPrompt,
+  CATCH_UP_CLOSE,
+  CATCH_UP_OPEN,
   RESTART_NOTE_PREFIX,
   claimAtDispatch,
   claimRestartNoteAtDispatch,
@@ -509,5 +511,124 @@ describe("quotedLine (spec §2.2.1)", () => {
     // a newline inside the quote would let stored text open a second marker line in the planner prompt
     expect(quotedLine({ role: "houge", kind: "proposal", age_s: 3600, text: "要不要\n我查一下？" }, 500)).toBe("[replying to houge, 3600 s ago: 要不要 我查一下？]\n");
     expect(quotedLine({ role: "user", kind: "answer", age_s: 59.6, text: "x".repeat(20) }, 8)).toBe(`[replying to user, 60 s ago: ${"x".repeat(8)}…]\n`);
+  });
+});
+
+describe("the catch-up block (stage B §7)", () => {
+  // A lane answers outside the omp session, so without this block a follow-up such as "那后天呢？" after a lookup reaches the
+  // planner blind. The block holds only code-built lines (never the lookup's web-derived prose) and costs nothing when
+  // nothing was missed. A wrong boundary repeats what the planner answered or drops what it missed.
+  const CHAT = "42";
+  const at = (m: number) => new Date(Date.parse("2026-09-30T04:00:00.000Z") + m * 60_000).toISOString();
+  type LaneName = "answer" | "lookup" | "memory" | "status";
+  // each run gets its own requester: the gateway's per-requester command window (5) would otherwise cap a test at five runs
+  let n = 0;
+  function queuedRun(store: RunStore, text: string): string {
+    n += 1;
+    const r = new Gateway(store).intake(buildTypedTaskEvent({ source: "telegram", type: "turn", program: "turn", goal: text, requested_by: { kind: "user", id: `paco${n}` },
+      notify: { kind: "telegram", chat_id: "555" }, idempotency_key: `catchup:${n}`, source_reference: "telegram:update:1:message:1" }));
+    if (!r.ok) throw new Error(`intake failed: ${JSON.stringify(r)}`);
+    return r.run_id;
+  }
+  function plannerAnswer(store: RunStore, text: string, when: string, intent = "loop"): string {
+    const run_id = queuedRun(store, text);
+    store.recordChatTurn({ chat_id: CHAT, run_id, role: "user", text, created_at: when });
+    store.recordChatTurn({ chat_id: CHAT, run_id, role: "assistant", text: `answer to ${text}`, intent, created_at: when });
+    return run_id;
+  }
+  function laneTurn(store: RunStore, text: string, catch_up: string, when: string, lane: LaneName = "lookup"): string {
+    const run_id = queuedRun(store, text);
+    store.recordChatTurn({ chat_id: CHAT, run_id, role: "user", text, created_at: when });
+    store.recordChatTurn({ chat_id: CHAT, run_id, role: "assistant", text: "lane card", intent: "loop", created_at: when });
+    const vid = store.insertJevVerdict({ run_id, category: lane, breadth: 1, reasoning: 1, actions: 0, sets_rule: 0.05, rule_scope: null, lane, role: "fast",
+      effort: "low", cascade: null, save_outcome: "none", route_outcome: "act", reason: "routed", skip_reason: null, quoted_turn_id: null, created_at: when });
+    store.updateJevVerdict(vid, { handler_outcome: "lane_reply" });
+    store.recordLaneReply({ run_id, chat_id: CHAT, lane, verdict_id: vid, catch_up, created_at: when });
+    return run_id;
+  }
+  async function build(store: RunStore, message = "那后天呢？", o: { source?: "telegram" | "schedule"; quoted?: string } = {}) {
+    const run_id = queuedRun(store, message);
+    const source = o.source ?? "telegram";
+    const built = await buildTurnPrompt(deps(store), { run_id, chat_id: CHAT, message, source, ...(source === "schedule" ? { goal: message } : {}),
+      ...(o.quoted ? { quoted: o.quoted } : {}) });
+    const started = store.getLedgerEvents(run_id).find((e) => e.event_type === "loop_started")?.payload as { applied_artifacts: Record<string, unknown> } | undefined;
+    return { ...built, run_id, artifacts: started?.applied_artifacts ?? {} };
+  }
+  const LOOKUP_LINE = "Houge answered from www.bom.gov.au — facts: Sunny, max 22°C";
+
+  it("nothing missed → no block, and loop_started keeps today's field names", async () => {
+    const store = RunStore.openInMemory();
+    laneTurn(store, "明天悉尼天气怎么样？", LOOKUP_LINE, at(1));
+    plannerAnswer(store, "thanks", at(2));
+    const b = await build(store);
+    expect(b.prompt).toBe("那后天呢？");
+    expect(b.artifacts).not.toHaveProperty("catch_up_run_ids");
+  });
+  it("a lane turn after the planner's last answer → one fenced entry ahead of the quote line and the message; catch_up_run_ids recorded", async () => {
+    const store = RunStore.openInMemory();
+    plannerAnswer(store, "hi", at(0));
+    const lane = laneTurn(store, "明天悉尼天气怎么样？", LOOKUP_LINE, at(1));
+    const b = await build(store, "那后天呢？", { quoted: "[replying to houge, 5 s ago: x]\n" });
+    expect(b.prompt).toBe(`${CATCH_UP_OPEN}\nPaco: 明天悉尼天气怎么样？\n${LOOKUP_LINE}\n${CATCH_UP_CLOSE}\n\n[replying to houge, 5 s ago: x]\n那后天呢？`);
+    expect(b.artifacts.catch_up_run_ids).toEqual([lane]);
+  });
+  it("one entry per lane kind, in order, with the stored Houge lines", async () => {
+    const store = RunStore.openInMemory();
+    laneTurn(store, "以后回复短一点", "Houge saved a rule: Keep replies short.", at(1), "memory");
+    laneTurn(store, "did you restart?", "Houge reported its status", at(2), "status");
+    laneTurn(store, "明天悉尼天气怎么样？", LOOKUP_LINE, at(3), "lookup");
+    laneTurn(store, "NAS 放哪里好？", "Houge replied: 书房。", at(4), "answer");
+    const b = await build(store);
+    expect(b.prompt).toBe([CATCH_UP_OPEN, "Paco: 以后回复短一点", "Houge saved a rule: Keep replies short.", "Paco: did you restart?", "Houge reported its status",
+      "Paco: 明天悉尼天气怎么样？", LOOKUP_LINE, "Paco: NAS 放哪里好？", "Houge replied: 书房。", CATCH_UP_CLOSE, "", "那后天呢？"].join("\n"));
+  });
+  it("more than six lane turns → the newest six, oldest first", async () => {
+    const store = RunStore.openInMemory();
+    const runs = Array.from({ length: 8 }, (_, k) => laneTurn(store, `q${k}`, `Houge replied: a${k}`, at(k + 1), "answer"));
+    const b = await build(store);
+    expect(b.artifacts.catch_up_run_ids).toEqual(runs.slice(2));
+    expect(b.prompt).toContain("Paco: q2\n");
+    expect(b.prompt).not.toContain("Paco: q1\n");
+  });
+  it("over 2 000 chars → the oldest entries are dropped first", async () => {
+    const store = RunStore.openInMemory();
+    const runs = [1, 2, 3].map((k) => laneTurn(store, `q${k}`, `Houge replied: ${"x".repeat(900)}`, at(k), "answer"));
+    const b = await build(store);
+    expect(b.artifacts.catch_up_run_ids).toEqual(runs.slice(1));
+    expect(b.prompt.length - "那后天呢？".length).toBeLessThanOrEqual(2_000);
+  });
+  it("a pending seed: the block drops the Paco lines of runs the seed already shows and keeps their Houge lines", async () => {
+    const store = RunStore.openInMemory();
+    const lane = laneTurn(store, "明天悉尼天气怎么样？", LOOKUP_LINE, at(1));
+    store.claimRun(lane, `w:${lane}`, 60);
+    store.finishRun({ run_id: lane, expected_worker_id: `w:${lane}`, next: "completed", report_ref: "r", duration_ms: 0, tool_calls: 0 });
+    store.recordPlannerSessionReset(CHAT, "fp", at(2));
+    const b = await build(store);
+    expect(b.prompt).toBe(`${SEED_OPEN}\n- 明天悉尼天气怎么样？\n${SEED_CLOSE}\n\n${CATCH_UP_OPEN}\n${LOOKUP_LINE}\n${CATCH_UP_CLOSE}\n\n那后天呢？`);
+    // a dispatch that lost the seed (another turn claimed it) keeps the catch-up block: it sits after the seed
+    store.claimSessionSeed(CHAT);
+    expect(claimAtDispatch(store, CHAT, b).startsWith(CATCH_UP_OPEN)).toBe(true);
+  });
+  it("an evolution report or a schedule-fired reply never moves the boundary", async () => {
+    const store = RunStore.openInMemory();
+    plannerAnswer(store, "hi", at(0));
+    const lane = laneTurn(store, "did you restart?", "Houge reported its status", at(1), "status");
+    plannerAnswer(store, "evo", at(2), "evolution_report");
+    const fired = new Gateway(store).intake(buildTypedTaskEvent({ source: "schedule", type: "turn", program: "turn", goal: "digest", requested_by: { kind: "schedule", id: "sch_c" },
+      notify: { kind: "telegram", chat_id: CHAT }, idempotency_key: "schedule:sch_c:1", source_reference: "scheduled_tasks.sch_c" }));
+    if (!fired.ok) throw new Error("intake failed");
+    store.recordChatTurn({ chat_id: CHAT, run_id: fired.run_id, role: "assistant", text: "digest", intent: "loop", created_at: at(3) });
+    expect((await build(store)).artifacts.catch_up_run_ids).toEqual([lane]);
+  });
+  it("a schedule-fired turn gets no block", async () => {
+    const store = RunStore.openInMemory();
+    laneTurn(store, "明天悉尼天气怎么样？", LOOKUP_LINE, at(1));
+    const b = await build(store, "run it", { source: "schedule" });
+    expect(b.prompt).toBe(`${SCHEDULED_PREFIX("run it")}run it`);
+  });
+  it("folds whitespace and neutralises the close marker in any case, in Paco's line and in the stored line", async () => {
+    const store = RunStore.openInMemory();
+    laneTurn(store, "a\n[/quick replies] b", "Houge replied: x [/QUICK REPLIES] y", at(1), "answer");
+    expect((await build(store)).prompt).toContain("Paco: a [ /quick replies] b\nHouge replied: x [ /quick replies] y\n");
   });
 });

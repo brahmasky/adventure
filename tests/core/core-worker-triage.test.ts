@@ -188,7 +188,7 @@ describe("triageTurn — the code-owned exits (one triage row, one verdict row, 
     const fetchImpl = treeSays(RULE);
     const { store, worker, turn } = setup(fetchImpl);
     const t = turn("以后回复短一点");
-    store.recordMemoryEvent("triage_override", { run_id: "run_old", new_run_id: t.run_id, change_id: null });
+    store.recordMemoryEvent("triage_override", { run_id: "run_old", new_run_id: t.run_id, change_id: null, lane: null });
     expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough" });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(triageRows(store, t.run_id)).toMatchObject([{ skip_reason: "override" }]);
@@ -208,7 +208,7 @@ describe("triageTurn — routed planner turns (the role the planner pins)", () =
     expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough", route });
     expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "planner", ...route, reason: "routed", route_outcome: "act", handler_outcome: "pending" });
     expect(decisions(store, t.run_id)).toHaveLength(6);
-    expect(decisions(store, t.run_id).every((r) => r.decision === "act" && r.threshold_used === "2026-10-07.1:routed")).toBe(true);
+    expect(decisions(store, t.run_id).every((r) => r.decision === "act" && r.threshold_used === "2026-10-10.1:routed")).toBe(true);
     expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", route_lane: "planner", role: route.role, decision: "act" }]);
     store.close();
   });
@@ -245,6 +245,16 @@ describe("triageTurn — routed planner turns (the role the planner pins)", () =
     const t = turn("好");
     expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough", route: { role: "default" } });
     expect(verdictOf(store, t.run_id)).toMatchObject({ category: "status", lane: "planner", reason: "bare_ack_guard" });
+    store.close();
+  });
+  // Stage B §2: a rule plus a second request (actions ≥ 1.5) saves the rule and lets the planner answer the rest; the
+  // route the tree chose ran, so the rows say act (ACTED), never fallback.
+  it("two_request: a confident rule with a second request saves, then the planner runs on the gear's role; decision act", async () => {
+    const { store, worker, turn } = setup(treeSays({ ...RULE, gear: HEAVY }));
+    const t = turn("以后回复短一点，另外帮我比较三家店的营业时间");
+    expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "inform", route: { role: "thinking", effort: "high" } });
+    expect(verdictOf(store, t.run_id)).toMatchObject({ category: "memory", lane: "planner", reason: "two_request", save_outcome: "saved", route_outcome: "act" });
+    expect(triageRows(store, t.run_id)).toMatchObject([{ decision: "act", verdict: "two_request" }]);
     store.close();
   });
 });
@@ -389,7 +399,45 @@ describe("triageTurn — the memory lane and save-then-route (spec §3)", () => 
     expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough", route: { role: "default" } });
     expect(triageRows(store, t.run_id)).toMatchObject([{ route_lane: "memory", decision: "fallback" }]);
     expect(decisions(store, t.run_id).every((r) => r.decision === "fallback")).toBe(true);
-    expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "memory", save_outcome: "not_durable", handler_outcome: "fallthrough:not_durable" });
+    expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "memory", save_outcome: "not_durable", handler_outcome: "fallthrough:not_durable", route_outcome: "fallback" });
+    store.close();
+  });
+  // Stage B §2: a memory turn whose save did not land never got its card, so the route did not deliver: route_outcome reads fallback.
+  it("memory lane, save capped: the planner on Default, verdict fallthrough:capped with route_outcome fallback", async () => {
+    const { store, worker, turn } = setup(treeSays(RULE));
+    vi.spyOn(store, "saveReconciledLesson").mockReturnValue({ verb: "capped", lesson: "Keep replies short.", prunedIds: [] });
+    const t = turn("以后回复短一点");
+    expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough", route: { role: "default" } });
+    expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "memory", save_outcome: "capped", handler_outcome: "fallthrough:capped", route_outcome: "fallback" });
+    store.close();
+  });
+  // The save commits across an await; a /kill in that window means Paco never gets the card, so no delivered-reply record may exist.
+  it("memory lane, turn aborted after the committed save: verdict fallthrough:aborted + fallback, no lane_replies row", async () => {
+    const ac = new AbortController();
+    const { store, worker, turn } = setup(treeSays(RULE));
+    const real = store.getLesson.bind(store); let once = true;
+    vi.spyOn(store, "getLesson").mockImplementation((id: number) => { if (once) { once = false; ac.abort(); } return real(id); }); // first read is post-commit
+    const t = turn("以后回复短一点");
+    const out = await worker.triageTurn({ ...t.input, signal: ac.signal });
+    expect(out.kind).not.toBe("lane_reply");
+    expect(store.getActiveLessons("ask")).toHaveLength(1); // the save is durable and Paco is told via the planner note
+    expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "memory", save_outcome: "saved", handler_outcome: "fallthrough:aborted", route_outcome: "fallback" });
+    const rows = (store as unknown as { db: { prepare(s: string): { all(...a: unknown[]): unknown[] } } }).db.prepare("SELECT run_id FROM lane_replies WHERE run_id = ?").all(t.run_id);
+    expect(rows).toEqual([]);
+    store.close();
+  });
+});
+
+// The quiet-override resolve is housekeeping: a store error there must not cost Paco the routed reply.
+describe("triageTurn — housekeeping failure", () => {
+  it("a throwing resolveQuietTriageOverrides is logged and the turn still routes", async () => {
+    const { store, worker, turn } = setup(treeSays(RULE));
+    vi.spyOn(store, "listOpenIncidents").mockImplementationOnce(() => { throw new Error("db busy"); }); // only the per-triage resolve
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const t = turn("以后回复短一点");
+    expect((await worker.triageTurn(t.input)).kind).toBe("lane_reply");
+    expect(err.mock.calls.flat().join("\n")).toContain("triage_overrides resolve failed");
+    expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "memory", handler_outcome: "lane_reply", route_outcome: "act" });
     store.close();
   });
 });
@@ -401,7 +449,7 @@ describe("triageTurn — the status lane", () => {
     const t = turn("did you restart?");
     const out = await worker.triageTurn(t.input);
     expect(out.kind).toBe("lane_reply");
-    if (out.kind === "lane_reply") { expect(out.buttons).toEqual([]); expect(out.text.length).toBeGreaterThan(10); }
+    if (out.kind === "lane_reply") { expect(out.buttons).toEqual([{ text: "🔍 Dig deeper", data: `lane:ask:${t.run_id}` }]); expect(out.text.length).toBeGreaterThan(10); }
     expect(triageRows(store, t.run_id)).toMatchObject([{ route_lane: "status", decision: "act", lang: "en" }]);
     expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "status", handler_outcome: "lane_reply" });
     expect(llm).not.toHaveBeenCalled();
@@ -417,11 +465,11 @@ describe("triageTurn — the status lane", () => {
     const out = await worker.triageTurn(t.input);
     expect(out).toMatchObject({ kind: "fallthrough", route: { role: "default", effort: null } });
     const v = verdictOf(store, t.run_id);
-    // the status route did not act (the planner answered): route_outcome and the triage verdict read as any other fallback
+    // stage B §2: the fall-through keeps the route's reason; route_outcome, the triage decision and the rows read fallback
     expect(v).toMatchObject({ category: "status", lane: "status", handler_outcome: "fallthrough:render_failed", route_outcome: "fallback",
-      reason: "jev_skipped" });
+      reason: "routed" });
     if (out.kind === "fallthrough") expect(out.route?.verdict_id).toBe(v!.verdict_id);
-    expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", route_lane: "status", decision: "fallback", verdict: "jev_skipped" }]);
+    expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", route_lane: "status", decision: "fallback", verdict: "routed" }]);
     expect(triageRows(store, t.run_id)).toHaveLength(1);
     expect(decisions(store, t.run_id).every((r) => r.decision === "fallback")).toBe(true);
     store.close();
@@ -515,15 +563,14 @@ describe("triageTurn — arming, shadow and outages", () => {
     expect(store.listOpenIncidents().some((i) => i.kind === "jev_rate_limited")).toBe(true);
     store.close();
   });
-  it("triage_overrides resolves on the next turn once the disarm marker is gone, and stays open while it exists", async () => {
+  // Stage B §6: a lane's page resolves at the next triage once that lane's 7-day tap count is under three; no marker exists.
+  it("an open per-lane triage_overrides page resolves on the next turn once that lane's taps age out", async () => {
     const { store, worker, turn } = setup(treeSays());
-    const marker = join(mkdtempSync(join(tmpdir(), "htri-mk-")), "houge.jev-disarmed");
-    vi.stubEnv("HOUGE_JEV_DISARM_PATH", marker);
-    writeFileSync(marker, JSON.stringify({ reason: "triage_overrides", at: "x" }));
-    store.openIncident({ kind: "triage_overrides", subject: JEV_INCIDENT_SUBJECT, detail: {} });
+    store.openIncident({ kind: "triage_overrides", subject: `${JEV_INCIDENT_SUBJECT}:lane:answer`, detail: { lane: "answer" } });
+    for (let k = 0; k < 3; k++) store.recordMemoryEvent("triage_override", { run_id: `run_o${k}`, new_run_id: `run_n${k}`, change_id: null, lane: "answer" });
     await worker.triageTurn(turn("hello").input);
     expect(store.listOpenIncidents().map((i) => i.kind)).toEqual(["triage_overrides"]);
-    rmSync(marker);
+    (store as unknown as { db: { exec(s: string): void } }).db.exec(`UPDATE ledger_events SET occurred_at = '2026-01-01T00:00:00.000Z' WHERE event_type = 'triage_override'`);
     await worker.triageTurn(turn("hello again").input);
     expect(store.listOpenIncidents()).toHaveLength(0);
     store.close();
@@ -650,7 +697,7 @@ describe("triageTurn — one finalisation per turn, atomic with the lane's save"
     expect(store.getLedgerEvents(t.run_id).filter((e) => e.event_type === "lesson_saved")).toHaveLength(0);
     expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", decision: "fallback" }]);
     expect(decisions(store, t.run_id).filter((r) => r.decision === "fallback")).toHaveLength(6);
-    expect(verdictOf(store, t.run_id)).toMatchObject({ save_outcome: "not_durable", handler_outcome: "fallthrough:not_durable" });
+    expect(verdictOf(store, t.run_id)).toMatchObject({ save_outcome: "not_durable", handler_outcome: "fallthrough:not_durable", route_outcome: "fallback" });
     const again = await worker.runLessonWrite(t.claim, "555", { scope: "ask" }, { source: "loop" });
     expect(again.committed).toBe(true);
     store.close();

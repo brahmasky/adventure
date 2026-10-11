@@ -1,16 +1,12 @@
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
 import { buildTypedTaskEvent, type TypedTaskEvent } from "../domain/types.js";
 import type { GatewayIntakeResult } from "./gateway.js";
 import { oncePerTrigger, replyTo } from "./memory-commands.js";
-import { JEV_INCIDENT_SUBJECT } from "../jev/jev-incidents.js";
-import { jevDisarmMarkerPath, writeJevDisarmMarker } from "../jev/jev-flags.js";
+import { TRIAGE_OVERRIDE_LIMIT, TRIAGE_OVERRIDE_WINDOW_DAYS, triageOverrideSince, triageOverrideSubject } from "../jev/jev-incidents.js";
 import { openAlertedIncident } from "../run/incident-alert.js";
 import type { RunStore } from "../run/run-store.js";
 
-/** Memory lane card taps (ADR 0029 §5.6). Undo is compare-and-set; "Ask Houge anyway" is the override label. */
-export const TRIAGE_OVERRIDE_LIMIT = 3;
-export const TRIAGE_OVERRIDE_WINDOW_DAYS = 7;
+/** Lane card taps (ADR 0029 §5.6, stage B §6). Undo is compare-and-set; "Dig deeper" is the override label. */
+export { TRIAGE_OVERRIDE_LIMIT, TRIAGE_OVERRIDE_WINDOW_DAYS };
 export const LESSON_CHANGE_NOT_FOUND = "LESSON_CHANGE_NOT_FOUND";
 export const MEMLANE_ASK_NOT_FOUND = "MEMLANE_ASK_NOT_FOUND";
 export const LESSON_CHANGE_NOT_FOUND_TEXT = "That lesson change does not exist here, so nothing was undone.";
@@ -51,19 +47,20 @@ export function memLaneAskTurnEvent(store: RunStore, event: TypedTaskEvent): { o
     notify: event.notify, idempotency_key: `${event.idempotency_key}:ask`, source_reference: `${event.source_reference}:ask` }) };
 }
 
-/** The override label (spec §5.9) and the drift signal: three in seven days cap the lane at shadow through the persisted marker. */
-export function recordTriageOverride(store: RunStore, original_run_id: string, new_run_id: string, env: NodeJS.ProcessEnv, dataDir: string, chat_id: string, now: string = new Date().toISOString()): void {
+/**
+ * The override label (spec §5.9) and the per-lane correction signal (stage B §6): the tap marks the original verdict
+ * `ask_anyway`, and the third tap on ONE lane in seven days opens that lane's `triage_overrides` page. Nothing is disarmed:
+ * Paco raises a bar or switches the lane off (HOUGE_JEV_LANES_OFF). A run with no verdict writes `lane: null` and counts nowhere.
+ */
+export function recordTriageOverride(store: RunStore, original_run_id: string, new_run_id: string, chat_id: string, now: string = new Date().toISOString()): void {
   const change_id = store.getLessonChangeByRun(original_run_id)?.change_id ?? null;
-  store.recordMemoryEvent("triage_override", { run_id: original_run_id, new_run_id, change_id });
+  const verdict = store.getJevVerdictForRun(original_run_id);
+  const lane = verdict?.lane ?? null;
+  store.recordMemoryEvent("triage_override", { run_id: original_run_id, new_run_id, change_id, lane });
   for (const d of store.listJevDecisions(original_run_id)) store.recordJevOutcome(d.decision_id, "paco_correction", "override");
   // Spec §6: the tap is Paco's explicit correction, so it outranks any earlier label on the original turn's verdict.
-  const verdict = store.getJevVerdictForRun(original_run_id);
   if (verdict) store.updateJevVerdict(verdict.verdict_id, { paco_correction: "ask_anyway" });
-  const since = new Date(Date.parse(now) - TRIAGE_OVERRIDE_WINDOW_DAYS * 86_400_000).toISOString();
-  if (store.countRecentLedgerEvents("triage_override", since) >= TRIAGE_OVERRIDE_LIMIT) {
-    const path = jevDisarmMarkerPath(env, dataDir);
-    mkdirSync(dirname(path), { recursive: true }); // writeJevDisarmMarker does not create the directory
-    writeJevDisarmMarker(path, "triage_overrides");
-    openAlertedIncident(store, { kind: "triage_overrides", subject: JEV_INCIDENT_SUBJECT, detail: { window_days: TRIAGE_OVERRIDE_WINDOW_DAYS, limit: TRIAGE_OVERRIDE_LIMIT }, chat_id });
-  }
+  if (lane === null || store.countRecentTriageOverrides(lane, triageOverrideSince(now)) < TRIAGE_OVERRIDE_LIMIT) return;
+  openAlertedIncident(store, { kind: "triage_overrides", subject: triageOverrideSubject(lane), chat_id,
+    detail: { lane, window_days: TRIAGE_OVERRIDE_WINDOW_DAYS, limit: TRIAGE_OVERRIDE_LIMIT } });
 }

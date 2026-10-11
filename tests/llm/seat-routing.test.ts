@@ -38,6 +38,11 @@ describe("seat routing — which subscription model serves each non-planner call
   it("runs the cascade on the Tiny chain (cfg.ticks)", () => {
     expect(seatChain(cfg, "cascade")).toEqual(cfg.ticks);
   });
+  // Stage B §3: the lane seat has no default chain. A caller that forgot `opts.chain` must fail loudly, never fall to the
+  // Tiny chain (cfg.ticks) and answer Paco on the wrong model.
+  it("refuses a lane call without its chain", () => {
+    expect(() => seatChain(cfg, "lane")).toThrow(/lane seat needs its chain/);
+  });
   it("refuses to route the codex writer through omp", () => {
     expect(() => seatChain(cfg, "writer")).toThrow(/codex/);
   });
@@ -83,6 +88,23 @@ describe("oneShotAdapter — the audited one-shot call every seat makes", () => 
     expect(argv()).toHaveLength(1);
     const rows = store.getLedgerEventsByCorrelation("cli:cascade").filter((e) => e.event_type === "llm_attempt");
     expect(rows.map((e) => e.payload)).toEqual([expect.objectContaining({ role: "cascade", outcome: "error", error_kind: "timeout", model: "k3" })]);
+  });
+
+  // Stage B §4: the verdict → model-call join must hold on whichever leg answered, so every leg's attempt carries routed_by
+  // (the planner's supervisor stamps only the first; a lane's compose may fall through to its second Fast candidate).
+  it("routed_by rides on every leg's attempt row", async () => {
+    const cfg = fakeCfg({ "anthropic/claude-sonnet-5-5": { text: "", stopReason: "error", errorMessage: "429 usage limit reached" },
+      "google-antigravity/gemini-3.8-flash": { text: "ok" } });
+    const chain = parseModelChain("anthropic/claude-sonnet-5-5:low,google-antigravity/gemini-3.8-flash:low");
+    const r = await oneShotAdapter(store, cfg, { correlation_id: "cli:lane", role: "lane" }, undefined, { chain, routed_by: "jv_1" }).answer({ question: "Q" });
+    expect(r).toMatchObject({ ok: true, answer: "ok" });
+    const rows = store.getLedgerEventsByCorrelation("cli:lane").filter((e) => e.event_type === "llm_attempt").map((e) => e.payload);
+    expect(rows.map((p) => [p.role, p.model, p.outcome, p.routed_by])).toEqual([["lane", "claude-sonnet-5-5", "error", "jv_1"], ["lane", "gemini-3.8-flash", "ok", "jv_1"]]);
+  });
+  it("a lane call with no chain option rejects before any leg runs", async () => {
+    const cfg = fakeCfg({ "*": { text: "never" } });
+    await expect(oneShotAdapter(store, cfg, { correlation_id: "cli:lane2", role: "lane" }).answer({ question: "Q" })).rejects.toThrow(/lane seat/);
+    expect(existsSync(join(dir, "argv.log"))).toBe(false);
   });
 
   it("an omp that cannot be asked opens ONE omp_unavailable incident per check kind and leaves no audit row", async () => {
