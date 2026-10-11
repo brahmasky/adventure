@@ -202,6 +202,13 @@ lookup (26 of 59). Stage B also owes a guard for a two-request message that Jev 
 `lessons consolidate`, `radar-panel`) still read the static lists so `/models` does not reach them, and Kimi exits next
 year (every list keeps a non-Kimi leg; judge seat 0 needs a replacement selector then).
 
+**Delta 2026-10-10: Jev decision tree, stage B, is built** (spec 2026-10-10 Rev 5; plan 2026-10-10). The `answer` and
+`lookup` lanes ship armed on Paco's rows (78 of 301 replayed turns; lookup 7/7 and answer 6/9 on his labels); the lookup
+lane reads the web through the reader wall; every lane card carries 🔍 Dig deeper, whose taps page per lane and never
+disarm; a confident memory turn with a second request runs the planner (`two_request`); a planner turn after lane turns gets
+a catch-up block; `HOUGE_JEV_LANES_OFF` switches one lane off. **Next:** stage C (`schedule` and `wiki` lanes, the research
+lane question), then Jev judges inside the planner loop (the next spec).
+
 **Delta 2026-10-07: two small builds queued (Paco).**
 - **Standing approval for a scheduled command.** The Alishan room check needs one Approve tap a day: the hotel's
   search only answers a POST, and the shell gate treats every `curl` POST as an HTTP write

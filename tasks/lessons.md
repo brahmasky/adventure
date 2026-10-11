@@ -415,3 +415,18 @@ Rules Claude writes for itself after corrections. Review at session start.
   three times in 111 turns. Labelling those `memory` would have taught the report that the memory lane may take them,
   and the lane would drop the other half. Rule: when a labeller says "both", label the routing-safe part (the one that
   keeps the planner), and record the multi-intent case as a design gap.
+
+## Jev decision tree, stage B (2026-10-10)
+
+- **Measure a code heuristic on the replay before specifying it.** Rev 4's follow-up rule (prepend Paco's previous line to
+  a short lookup) read well and was wrong: joined to the 39 replayed lookup takes it fired on 28 and put an unrelated topic
+  ahead of 16 standalone questions; even the 30-minute Telegram-only variant prefixed 8. Rule: a text heuristic in a spec
+  carries its fire count and its false positives on the replay rows, or it does not ship; a judgment call goes to a model
+  behind a cheap code gate, and code validates what the model returns.
+- **The ledger never holds read text.** Rev 4 put the reader's digest into `loop_step.result_digest` so the catch-up block
+  could read it back; Paco's `fdeb3b8` had made read tools' digests `sha256:… bytes:…` for exactly that reason. Rule: text a
+  later prompt needs lives in a store row written for that purpose (`lane_replies`), never in the audit trail.
+- **Settle after the handler.** Settling the verdict before the lane ran recorded every fall-through as `act` and corrupted
+  the precision evidence the arming decision reads; three review rounds converged on one order (mint the id, settle once
+  after the lane, patch only when a save already committed inside its transaction). Rule: a record of "what ran" is
+  written after it ran, or patched by the same code path that knows the outcome.

@@ -254,3 +254,38 @@ Approved by Paco 2026-10-09 with the stage A merge.
 - **Open for stage B.** A message carrying two requests (a rule plus a lookup) is handled by save-then-route unless Jev
   picks `memory` above its bar, in which case the memory lane replies and the second request is dropped; stage B adds a
   guard and a gate case for it.
+
+## Amendment (2026-10-10): stage B — the answer and lookup lanes
+
+- **Lanes armed on Paco's word.** `answer` and `lookup` become lanes: code owns the steps, one Fast-role one-shot
+  composes, no planner session and no tool in the model's hands. The build ships armed: `CALIBRATED_ROWS` gains
+  `category:answer` and `category:lookup` (zh and en, the category question's hash, the reported model), approved
+  "Paco 2026-10-10". Evidence, from the 2026-10-09 replay re-scored under the lane rules (no new Jev call): the lanes take
+  78 of 301 turns (answer 39, lookup 39); against Paco's labels lookup 7/7, answer 6/9; 26 of the 78 move from the planner
+  on Default to the Fast role; about 5 of the 38 lookup takes are questions a search cannot answer, which the lane answers
+  badly and Dig deeper recovers.
+- **When a lane fires.** Its row is armed (and it is not in `HOUGE_JEV_LANES_OFF`), the rule and gear rows are armed,
+  `category` picks it at p ≥ 0.6, the message is no bare ack and no `think harder`, and the scores sit inside its limits
+  (answer: `actions` ≤ 0.5 and `breadth` ≤ 1.5; lookup: both ≤ 1.5). Otherwise the planner, the reason naming why (`routed`,
+  `lane_limits`, `bare_ack_guard`). A lookup that names a URL is the planner's (`lane_limits`).
+- **🔍 Dig deeper.** Every lane card (answer, lookup, memory, status) ends with it (`lane:ask:<run_id>`; the legacy
+  `memlane:ask:` still parses). The tap re-runs the message on the planner and labels the lane's verdict `ask_anyway`.
+- **Taps page, never disarm.** A tap is a correction label, not a lane fault (a broken lane is `lane_fallthrough_rate`'s
+  job). Three taps on one lane in seven days open `triage_overrides` for that lane (subject `jev:lane:<lane>`), which
+  resolves once that lane's count is under three. No code writes `houge.jev-disarmed` any more; a marker an older build
+  left still caps the tree at shadow until removed by hand.
+- **Two-request guard.** A confident memory route whose `actions` level is ≥ 1.5 saves the rule and runs the planner
+  (`two_request`) instead of ending at the card. Evidence: of the 7 replayed turns the memory lane took confidently, none had
+  `actions` ≥ 1.5 and 3 sat in [0.78, 1.34], so the edge is 1.5. If the gate shows `actions` blind to a second request, the
+  next step is a seventh `noul` question (parked).
+- **The reader wall on lookups (ADR 0014).** The search result set passes a strict quarantined reader before anything
+  composes; the composer sees a code-built `[n] <url>` list and the reader digests, never titles or snippets. A thin read
+  (`answer_to_objective` null) fetches the top page once and reads it again. The ledger holds no read text.
+- **The catch-up block.** A planner turn after lane turns gets a fenced block of what it missed (at most 6 entries and 2 000
+  chars) built from code-written `lane_replies` lines; the lookup lane's prose is never carried.
+- **Records.** No `lane_failed` reason: a fall-through is the verdict's `lane` + `reason` + `route_outcome = fallback` +
+  `handler_outcome = fallthrough:<why>`; the status and memory lanes no longer re-label `jev_skipped`. New `LlmCallRole`
+  `lane`; `triage_override` carries `lane`; `TREE_THRESHOLD_VERSION` is `2026-10-10.1`. A refused-pin step-up now records the
+  cause that started the walk, so such a verdict reads `escalation`.
+- Spec: [2026-10-10-jev-tree-stage-b-design.md](../superpowers/specs/2026-10-10-jev-tree-stage-b-design.md) (Rev 5); the
+  parent's Rev 10 amends the lookup row for the reader wall and the query rewrite.

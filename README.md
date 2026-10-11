@@ -309,8 +309,8 @@ The classifier call is gone under omp, and the live shadow was removed on 2026-1
 `docs/superpowers/specs/2026-09-25-jev-intent-shadow-design.md`.
 
 **Jev System One (ADR 0029, stage A decision tree; flags default off, `arm` on the mini).** Jev sits in front of the
-planner as one decision point: six typed questions pick a category, a lane (memory and status skip the planner) or a
-planner model role (Fast, Default or Thinking). Armed 2026-10-09 on Paco's calibration rows (zh and en); every unsure
+planner as one decision point: six typed questions pick a category, a lane (memory, status, answer and lookup skip the planner) or a
+planner model role (Fast, Default or Thinking). Armed 2026-10-09 on Paco's calibration rows (zh and en), the answer and lookup lanes 2026-10-10; every unsure
 turn still runs the planner on Default. Flow, bars and rollback:
 [docs/reference/jev-decision-layer.md](docs/reference/jev-decision-layer.md); every flag and event:
 [configuration.md](docs/reference/configuration.md#jev-system-one-adr-0029).

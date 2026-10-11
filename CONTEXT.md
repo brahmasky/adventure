@@ -58,11 +58,15 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Category**: What kind of work a turn asks for, as answered by Jev's `category` question: `answer`, `lookup`, `research`, `memory`, `self_change`, `machine_task`, `schedule`, `wiki`, `mail_calendar`, `status` or `other` (11 values). Three lists carry the word "research" with three meanings: the category `research` (a turn), the lesson scope `research` (which lessons steer research turns), and the lesson theme `sources` (what a lesson is about; formerly `research`).
 
-**Lane**: A handler whose control flow is code, with at most one one-shot compose; it falls through to the planner on any doubt. Stage A has two, memory and status; every other category runs the planner, which is the floor.
+**Lane**: A handler whose control flow is code, with at most one composing one-shot; it falls through to the planner on any doubt. Stage B has four: memory, status, answer and lookup; every other category runs the planner, which is the floor.
 
 **Role**: A named model seat (Fast, Default, Thinking, Reader, Vision, Tiny, Judges, Chair, Reviewer). Each role is a code-owned ordered list of `provider/model[:effort]` selectors resolved against omp's live catalog, with Paco's `/models` override on top. Fast, Default and Thinking are the planner's gears.
 
 **Quoted Turn**: The earlier message a Telegram reply points at, resolved to a stored chat turn (`chat_turns.quoted_turn_id`) and carried into Jev's state and the planner prompt. A quote that does not resolve is a ledger note, not a failure.
+
+**Dig deeper**: The button that ends every lane card (callback `lane:ask:<run_id>`; formerly "Ask Houge anyway"). A tap re-runs the message on the planner, skipping triage, and labels the lane's verdict `ask_anyway`. It is a correction signal, not a lane fault: three on one lane in seven days page Paco, and nothing is disarmed.
+
+**Lane reply**: A turn a lane answered outside the planner's omp session. Its code-built one-line summary (`lane_replies.catch_up`) is what the next planner turn in that chat is told in the catch-up block; the lookup lane's prose is never carried.
 
 **Learning Lifecycle**: The module that owns learning artifact states, provenance, approval, eval gates, activation, and rollback.
 

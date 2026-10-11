@@ -1599,3 +1599,15 @@ Whole-branch review (correctness, security, testing, codex) drove one fix wave: 
 pages as drift, aborts await their children, the catalog read is abortable, the CLI handles Ctrl-C and refuses outside
 the project root, and gate step 4 proves the daemon's automatic path live. 3871 tests, gate PASS 4/4 on omp 18.7.0.
 Not merged: Paco's call.
+
+## 2026-10-10 — Jev decision tree, stage B (BUILT on its branch; gates PASS; awaiting Paco's merge and kickstart)
+
+Paco's rulings opened the session: ship armed (offered alternative, shadow then a lane-simulation report, declined), lookup
+evidence = the result set through the reader wall plus the top page only when thin, "🔍 Dig deeper" everywhere, and taps
+as a correction signal that pages and never disarms. Five review rounds on the spec (codex and the senior review against
+the live tree) moved it from Rev 1 to Rev 5: one verdict order (settle after the lane, patch a committed save), a strict
+reader, the catch-up block over code-built `lane_replies` lines, a Tiny query rewrite behind a measured pre-filter, a URL
+rule, no `lane_failed` reason. The plan ran as 13 SDD tasks (policy, store, ledger/registry, card, answer lane, lookup lane,
+core-worker wiring, the correction path, the catch-up block, the supervisor's refused-pin cause, the rows and the report,
+the gates, these docs). Evidence: typecheck clean, 280 test files, 4 024 tests (none skipped), build clean; the default
+live gate and the `--real-calibration` merge gate: every stage B case passed on both runs so far (B2: Tiny rewrite "Sydney weather forecast 11 October 2026", one search, the reader wall on Gemini Flash, the thin-result fetch, a source line, zero planner requests). [GATE RESULT: run 3 pending]. Not merged: Paco's hand (protected files).

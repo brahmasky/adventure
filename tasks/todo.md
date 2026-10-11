@@ -1,4 +1,35 @@
-# 🧭 CURRENT SYSTEM STATE — 2026-10-09, later (read this first)
+# 🧭 CURRENT SYSTEM STATE — 2026-10-10 (read this first)
+
+**Jev decision tree, stage B: built on its branch; ARMED in code (18 `CALIBRATED_ROWS`, the answer and lookup lanes
+approved "Paco 2026-10-10"); not merged until Paco's hand.** Spec `docs/superpowers/specs/2026-10-10-jev-tree-stage-b-design.md`
+Rev 5 (parent Rev 10); plan `docs/superpowers/plans/2026-10-10-jev-tree-stage-b.md`; ADR 0029 amendment 2026-10-10.
+Reference: `docs/reference/jev-decision-layer.md` (the lanes, Dig deeper, reading a lane row, one lane off).
+
+- [ ] Paco: rule on the omp gate's `认真想` label on the previous live verdict (plan Task 12 "Open decision": (a) accept one label per full run,
+  (b) a leading throwaway turn, (c) a lanes-off daemon for the run); then, once the daemon runs the stage B build, run the
+  full `node scripts/live-gate-omp.mjs` once and record its result here (the stage B gate does not cover omp's bridge path).
+- [ ] Paco merges (protected files: `turn-context.ts`, `planner-supervisor.ts`, `run-store.ts`, `run-ledger.ts`, `registry.ts`, `docs/decisions/`), rebuilds
+  `dist/`, kickstarts. Check first: `houge.parked` / `houge.kill`, non-terminal runs, the evolution lane. The boot applies
+  migrations `2026-10-10-jev-verdicts-lanes` (rebuilds `jev_verdicts`, rows kept) and `2026-10-10-lane-replies`.
+- [ ] If a `houge.jev-disarmed` marker exists in the data dir, Paco removes it by hand (nothing writes it any more).
+- [ ] After the kickstart: the first answer and lookup turns reply with 🔍 Dig deeper (`jev_verdicts.lane` answer/lookup,
+  `handler_outcome` `lane_reply`), and a planner turn after them carries `catch_up_run_ids` in `loop_started`.
+- [ ] Rollback for one lane: `HOUGE_JEV_LANES_OFF=answer|lookup` + kickstart; whole tree: § Rolling back.
+
+- Overall gate line: [GATE RESULT: run 3 pending]. Both runs so far passed every stage B case (B1 answer lane on
+  `anthropic/claude-sonnet-5-5`, zero planner requests; B2 lookup lane: Tiny rewrite, one search, the reader wall on Gemini
+  Flash, the thin-result fetch, a source line, zero planner requests; B5 Dig deeper re-ran the message on the planner and
+  recorded `triage_override.lane = answer`; B6 the planner's next turn carried `catch_up_run_ids`). Suite: 280 files, 4 024
+  tests, none skipped; typecheck and build clean.
+
+Watch: Kimi K3 (the Tiny head) timed out once at 18 s against the cascade's 20 s bound in the gate (its other calls took 6–12 s; the fallback behaved); lookup latency (75 s budget; a thin result adds a fetch); `triage_overrides` pages per lane; research read as lookup
+(24 proxy-research turns would take one search; Paco's labels rated 0 of 7 lookup picks wrong); the gate's `ruleLookup`
+path (two_request or the lookup lane after the save) shows whether `actions` sees a second request.
+
+Parked (spec §14): a seventh `noul` question for two requests; a typing indicator during a lane; a research lane; per-lane
+bars above 0.6; runtime lane toggling; lanes touching the lessons they render; a wider rewrite pre-filter.
+
+# Earlier block — 2026-10-09, later: omp contract probe
 
 **omp contract probe + cached version check: built on `feat/omp-contract-probe` (worktree `.worktrees/omp-probe`), NOT
 merged, NOT pushed.** Spec `docs/superpowers/specs/2026-10-09-omp-contract-probe-design.md` Rev 3; ADR 0028 amendment
