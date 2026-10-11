@@ -2843,12 +2843,20 @@ export class CoreWorker {
       return { kind: "fallthrough", route: turnRoute(route, id), ...q };
     }
     if (route.lane !== "memory") return { kind: "inform", note: s.note, route: turnRoute(route, s.verdict_id), ...q };
-    return this.memoryLaneEnd(i, route, s, q);
+    return this.memoryLaneEnd(i, state, route, s, q);
   }
 
-  /** The memory lane's card after a committed save, its verdict moved to lane_reply, and its catch-up line (stage B §7). */
-  private memoryLaneEnd(i: TriageInput, route: Route, s: Extract<SaveStep, { settled: true }>, q: { quote?: QuoteRef }): TriageOutcome {
+  /**
+   * The memory lane's card after a committed save, its verdict moved to lane_reply, and its catch-up line (stage B §7). The
+   * save was awaited, so the turn may be gone by now (/kill): then no reply was delivered, the verdict reads
+   * fallthrough:aborted + fallback (as the answer/lookup lanes patch it), no lane_replies row is written, and the save's note stands.
+   */
+  private memoryLaneEnd(i: TriageInput, state: OmpTurnState, route: Route, s: Extract<SaveStep, { settled: true }>, q: { quote?: QuoteRef }): TriageOutcome {
     const w = s.w as Required<LessonWriteOutcome>;
+    if (this.laneLost(i, state)) {
+      if (s.verdict_id) this.patchLaneVerdict(s.verdict_id, "fallthrough:aborted", undefined, "fallback");
+      return { kind: "inform", note: s.note, route: turnRoute(route, s.verdict_id), ...q };
+    }
     try {
       const card = this.memoryLaneCardFor(i.claim.run_id, w);
       if (s.verdict_id) this.runStore.updateJevVerdict(s.verdict_id, { handler_outcome: "lane_reply" });

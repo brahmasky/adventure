@@ -399,7 +399,31 @@ describe("triageTurn — the memory lane and save-then-route (spec §3)", () => 
     expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough", route: { role: "default" } });
     expect(triageRows(store, t.run_id)).toMatchObject([{ route_lane: "memory", decision: "fallback" }]);
     expect(decisions(store, t.run_id).every((r) => r.decision === "fallback")).toBe(true);
-    expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "memory", save_outcome: "not_durable", handler_outcome: "fallthrough:not_durable" });
+    expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "memory", save_outcome: "not_durable", handler_outcome: "fallthrough:not_durable", route_outcome: "fallback" });
+    store.close();
+  });
+  // Stage B §2: a memory turn whose save did not land never got its card, so the route did not deliver: route_outcome reads fallback.
+  it("memory lane, save capped: the planner on Default, verdict fallthrough:capped with route_outcome fallback", async () => {
+    const { store, worker, turn } = setup(treeSays(RULE));
+    vi.spyOn(store, "saveReconciledLesson").mockReturnValue({ verb: "capped", lesson: "Keep replies short.", prunedIds: [] });
+    const t = turn("以后回复短一点");
+    expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough", route: { role: "default" } });
+    expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "memory", save_outcome: "capped", handler_outcome: "fallthrough:capped", route_outcome: "fallback" });
+    store.close();
+  });
+  // The save commits across an await; a /kill in that window means Paco never gets the card, so no delivered-reply record may exist.
+  it("memory lane, turn aborted after the committed save: verdict fallthrough:aborted + fallback, no lane_replies row", async () => {
+    const ac = new AbortController();
+    const { store, worker, turn } = setup(treeSays(RULE));
+    const real = store.getLesson.bind(store); let once = true;
+    vi.spyOn(store, "getLesson").mockImplementation((id: number) => { if (once) { once = false; ac.abort(); } return real(id); }); // first read is post-commit
+    const t = turn("以后回复短一点");
+    const out = await worker.triageTurn({ ...t.input, signal: ac.signal });
+    expect(out.kind).not.toBe("lane_reply");
+    expect(store.getActiveLessons("ask")).toHaveLength(1); // the save is durable and Paco is told via the planner note
+    expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "memory", save_outcome: "saved", handler_outcome: "fallthrough:aborted", route_outcome: "fallback" });
+    const rows = (store as unknown as { db: { prepare(s: string): { all(...a: unknown[]): unknown[] } } }).db.prepare("SELECT run_id FROM lane_replies WHERE run_id = ?").all(t.run_id);
+    expect(rows).toEqual([]);
     store.close();
   });
 });
@@ -659,7 +683,7 @@ describe("triageTurn — one finalisation per turn, atomic with the lane's save"
     expect(store.getLedgerEvents(t.run_id).filter((e) => e.event_type === "lesson_saved")).toHaveLength(0);
     expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", decision: "fallback" }]);
     expect(decisions(store, t.run_id).filter((r) => r.decision === "fallback")).toHaveLength(6);
-    expect(verdictOf(store, t.run_id)).toMatchObject({ save_outcome: "not_durable", handler_outcome: "fallthrough:not_durable" });
+    expect(verdictOf(store, t.run_id)).toMatchObject({ save_outcome: "not_durable", handler_outcome: "fallthrough:not_durable", route_outcome: "fallback" });
     const again = await worker.runLessonWrite(t.claim, "555", { scope: "ask" }, { source: "loop" });
     expect(again.committed).toBe(true);
     store.close();
