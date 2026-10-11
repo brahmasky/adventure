@@ -432,7 +432,7 @@ describe("triageTurn — the memory lane and save-then-route (spec §3)", () => 
 describe("triageTurn — housekeeping failure", () => {
   it("a throwing resolveQuietTriageOverrides is logged and the turn still routes", async () => {
     const { store, worker, turn } = setup(treeSays(RULE));
-    vi.spyOn(store, "listOpenIncidents").mockImplementation(() => { throw new Error("db busy"); });
+    vi.spyOn(store, "listOpenIncidents").mockImplementationOnce(() => { throw new Error("db busy"); }); // only the per-triage resolve
     const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const t = turn("以后回复短一点");
     expect((await worker.triageTurn(t.input)).kind).toBe("lane_reply");
