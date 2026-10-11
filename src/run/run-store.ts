@@ -4537,7 +4537,7 @@ export class RunStore {
 
   // ── small readers for lane 1 ───────────────────────────────────────────────
 
-  /** True when an "Ask Houge anyway" tap re-submitted this run: triage is skipped for it (the tap is the override label). */
+  /** True when a "Dig deeper" tap re-submitted this run: triage is skipped for it (the tap is the override label). */
   triageOverrideFor(run_id: string): boolean {
     const r = this.db.prepare(`SELECT 1 AS one FROM ledger_events WHERE event_type = 'triage_override' AND json_extract(payload_json, '$.new_run_id') = ? LIMIT 1`).get<{ one: number }>(run_id);
     return r !== undefined;

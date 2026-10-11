@@ -175,7 +175,7 @@ export class Gateway {
       }
     }
 
-    // Memory lane "Ask Houge anyway" (ADR 0029 §5.6): one admission (the limiter above), then an ordinary turn
+    // Memory lane "Dig deeper" (ADR 0029 §5.6): one admission (the limiter above), then an ordinary turn
     // whose triage is skipped by its override row. The undo tap is a plain control command.
     let memLaneAsk: { original_run_id: string } | undefined;
     if (event.type === "memlane_ask") {

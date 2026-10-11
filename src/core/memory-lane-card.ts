@@ -5,8 +5,6 @@ import { digDeeperButton } from "./lanes/lane-card.js";
 
 /** Memory lane reply (ADR 0029 §5.6): code-owned, through the rich renderer, never a score or a "safe" word. */
 export const MEMLANE_UNDO_PREFIX = "memlane:undo:";
-/** The legacy ask prefix: cards sent before stage B carry it, and the parser still accepts it (stage B §3). */
-export const MEMLANE_ASK_PREFIX = "memlane:ask:";
 const CALLBACK_DATA_MAX_BYTES = 64;
 
 function button(text: string, data: string): NotificationButton {
