@@ -1,5 +1,6 @@
 import { feedTurnText } from "../../capabilities/intent.js";
 import type { QuotedTurn } from "../../jev/questions/tree.js";
+import { sanitizeLaneText } from "./lane-card.js";
 import { INSTRUCTIONS_NOTE } from "../../omp/external-read.js";
 import { quotedLine, renderContextBlock, type TurnRetrieval } from "../../omp/turn-context.js";
 import type { ChatTurnRow } from "../../run/run-store.js";
@@ -73,10 +74,10 @@ export function rewritePrompt(prev: readonly Pick<ChatTurnRow, "role" | "text">[
   return [REWRITE_INSTRUCTION, "", ...paco, ...houge, ...quote, `Message: ${message}`].join("\n");
 }
 
-/** Code validates the model's query: one line, at most 120 chars, no URL, not SAME; anything else → the bare message. */
+/** Code validates the model's query: one line, at most 120 chars, no URL, not SAME (any case, optional trailing . ! 。); anything else → the bare message. */
 export function validateQuery(raw: string, message: string): string {
   const q = raw.trim().replace(/^["'`“”「]+|["'`“”」]+$/g, "").trim();
-  if (q.length === 0 || q === "SAME" || q.includes("\n") || q.length > QUERY_MAX_CHARS || /https?:\/\/|www\./i.test(q)) return message;
+  if (q.length === 0 || /^same[.!。]?$/i.test(q) || q.includes("\n") || q.length > QUERY_MAX_CHARS || /https?:\/\/|www\./i.test(q)) return message;
   return q;
 }
 
@@ -87,14 +88,17 @@ export function finalQuery(q: string): string {
 
 export type CatchUp =
   | { lane: "memory"; lesson: string } | { lane: "status" }
-  | { lane: "lookup"; urls: readonly string[]; facts: readonly string[] } | { lane: "answer"; reply: string };
+  | { lane: "lookup"; urls: readonly string[]; facts: readonly string[]; flagged?: boolean } | { lane: "answer"; reply: string };
 
 /** Stage B §7: the code-built Houge line stored in `lane_replies` (hostnames, never URLs; never the lookup's prose). */
 export function catchUpLine(c: CatchUp): string {
   switch (c.lane) {
     case "memory": return `Houge saved a rule: ${fold(c.lesson)}`;
     case "status": return "Houge reported its status";
-    case "lookup": return `Houge answered from ${hostsOf(c.urls).join(", ")} — facts: ${feedTurnText(fold(c.facts.join("; ")), CATCH_UP_TEXT_CHARS)}`;
+    case "lookup": {
+      const facts = feedTurnText(fold(c.facts.map(sanitizeLaneText).join("; ")), CATCH_UP_TEXT_CHARS);
+      return `Houge answered from ${hostsOf(c.urls).join(", ")} — facts: ${facts}${c.flagged ? ` ${INSTRUCTIONS_NOTE}` : ""}`;
+    }
     case "answer": return `Houge replied: ${feedTurnText(fold(c.reply), CATCH_UP_TEXT_CHARS)}`;
   }
 }

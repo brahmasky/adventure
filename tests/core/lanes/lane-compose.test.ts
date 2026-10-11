@@ -76,6 +76,9 @@ describe("needsRewrite / rewritePrompt / validateQuery / finalQuery", () => {
     ["a URL", "weather https://bom.gov.au", "melbourne呢？"],
     ["over 120 chars", "q".repeat(121), "melbourne呢？"],
     ["empty", "  ", "melbourne呢？"],
+    ["SAME in other casing", "Same", "melbourne呢？"],
+    ["SAME with a full stop", "SAME.", "melbourne呢？"],
+    ["lowercase same with a CJK full stop", " same。", "melbourne呢？"],
     ["a clean query, quotes trimmed", "\"Melbourne weather tomorrow\"\n", "Melbourne weather tomorrow"]
   ] as const)("validateQuery: %s", (_n, raw, want) => expect(validateQuery(raw, "melbourne呢？")).toBe(want));
   it("finalQuery folds whitespace and cuts at 200 chars", () => {
@@ -93,6 +96,17 @@ describe("catchUpLine", () => {
     expect(catchUpLine({ lane: "lookup", urls: ["https://www.bom.gov.au/a", "https://www.bom.gov.au/b", "https://weather.example/x"], facts: ["Sunny", "Max 22°C"] }))
       .toBe("Houge answered from www.bom.gov.au, weather.example — facts: Sunny; Max 22°C");
     expect(catchUpLine({ lane: "answer", reply: "r".repeat(400) })).toBe(`Houge replied: ${"r".repeat(300)}…`);
+  });
+  it("sanitizes lookup facts: no attach marker or masked link reaches the planner's catch-up", () => {
+    const line = catchUpLine({ lane: "lookup", urls: ["https://a.example"], facts: ["[[attach:x]y]] ok", "[bom](https://evil.example)"] });
+    expect(line).not.toContain("[[attach");
+    expect(line).not.toContain("](");
+    expect(line).toContain("bom (https://evil.example)");
+  });
+  it("marks a flagged read so the planner treats the facts as data", () => {
+    const line = catchUpLine({ lane: "lookup", urls: ["https://a.example"], facts: ["f"], flagged: true });
+    expect(line).toContain(INSTRUCTIONS_NOTE);
+    expect(catchUpLine({ lane: "lookup", urls: ["https://a.example"], facts: ["f"] })).not.toContain(INSTRUCTIONS_NOTE);
   });
   it("clips lookup facts at 300 chars", () => {
     expect(catchUpLine({ lane: "lookup", urls: ["https://a.example"], facts: ["f".repeat(400)] })).toBe(`Houge answered from a.example — facts: ${"f".repeat(300)}…`);

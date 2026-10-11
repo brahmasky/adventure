@@ -115,5 +115,5 @@ async function composeLookup(i: LaneInput, d: LookupLaneDeps, chain: readonly Mo
   const r = await composeReply(i, d, chain, prompt);
   if (r.kind === "fallthrough") return r;
   return { kind: "reply", text: withSourceLine(r.text, read.urls), model: r.model, sources: read.urls,
-    catch_up: catchUpLine({ lane: "lookup", urls: read.urls, facts: read.facts }) };
+    catch_up: catchUpLine({ lane: "lookup", urls: read.urls, facts: read.facts, flagged: read.flagged }) };
 }
