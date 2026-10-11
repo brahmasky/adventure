@@ -98,7 +98,7 @@ describe("catchUpLine", () => {
     expect(catchUpLine({ lane: "answer", reply: "r".repeat(400) })).toBe(`Houge replied: ${"r".repeat(300)}…`);
   });
   it("sanitizes lookup facts: no attach marker or masked link reaches the planner's catch-up", () => {
-    const line = catchUpLine({ lane: "lookup", urls: ["https://a.example"], facts: ["[[attach:x]y]] ok", "[bom](https://evil.example)"] });
+    const line = catchUpLine({ lane: "lookup", urls: ["https://a.example"], facts: ["[[attach:x]y]]", "[[attach:z]] ok", "[bom](https://evil.example)"] });
     expect(line).not.toContain("[[attach");
     expect(line).not.toContain("](");
     expect(line).toContain("bom (https://evil.example)");
