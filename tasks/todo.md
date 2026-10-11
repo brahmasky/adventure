@@ -16,11 +16,11 @@ Reference: `docs/reference/jev-decision-layer.md` (the lanes, Dig deeper, readin
   `handler_outcome` `lane_reply`), and a planner turn after them carries `catch_up_run_ids` in `loop_started`.
 - [ ] Rollback for one lane: `HOUGE_JEV_LANES_OFF=answer|lookup` + kickstart; whole tree: § Rolling back.
 
-- Overall gate line: [GATE RESULT: run 3 pending]. Both runs so far passed every stage B case (B1 answer lane on
+- Overall gate line: live gate --real-calibration run 3: LIVE GATE: PASS, 144 checks, 0 FAIL, 0 INCONCLUSIVE (runs 1–2: every stage B case passed; the only FAILs were stage A cases with outside causes — the daemon's 24 h tick latch, fixed in 1fa1fcb, and one Kimi K3 timeout at 18 s in the cascade). Both earlier runs passed every stage B case (B1 answer lane on
   `anthropic/claude-sonnet-5-5`, zero planner requests; B2 lookup lane: Tiny rewrite, one search, the reader wall on Gemini
   Flash, the thin-result fetch, a source line, zero planner requests; B5 Dig deeper re-ran the message on the planner and
   recorded `triage_override.lane = answer`; B6 the planner's next turn carried `catch_up_run_ids`). Suite: 280 files, 4 024
-  tests, none skipped; typecheck and build clean.
+  tests, none skipped; typecheck and build clean. The final fix wave (whole-branch review findings F1–F12) landed after run 3 and is re-verified by a gate run after it (the controller runs it).
 
 Watch: Kimi K3 (the Tiny head) timed out once at 18 s against the cascade's 20 s bound in the gate (its other calls took 6–12 s; the fallback behaved); lookup latency (75 s budget; a thin result adds a fetch); `triage_overrides` pages per lane; research read as lookup
 (24 proxy-research turns would take one search; Paco's labels rated 0 of 7 lookup picks wrong); the gate's `ruleLookup`
