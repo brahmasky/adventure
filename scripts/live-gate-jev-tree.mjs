@@ -517,7 +517,18 @@ function caseRoleRules(g, catalog) {
 }
 
 /** 9c: the daily tick on the copy: resolves, reports no unresolved role, then latches for 24 h. */
+/** The daemon's own 24 h latch rides along in the VACUUM copy; clear it from the COPY only (never the live DB). */
+function clearTickLatch(g) {
+  if (resolve(g.dbPath) === g.livePath || !resolve(g.dbPath).startsWith(`${resolve(g.root)}/`)) throw new Error(`refusing to clear the tick latch outside the gate's temp copy: ${g.dbPath}`);
+  const db = new DatabaseSync(g.dbPath);
+  try {
+    const n = db.prepare(`DELETE FROM ledger_events WHERE event_type = 'model_roles_resolved'`).run().changes;
+    console.log(`  9 tick: cleared ${n} model_roles_resolved row(s) from the gate's copy (the daemon's 24 h latch)`);
+  } finally { db.close(); }
+}
+
 async function caseRolesTick(g) {
+  clearTickLatch(g);
   const notes = []; const now = new Date().toISOString();
   const first = await g.m.runModelRolesTick({ store: g.store, roles: g.roles, now, notify: (t) => notes.push(t) });
   check("9 tick: ran, no role unresolved", first.ran && first.unresolved.length === 0, JSON.stringify({ ...first, notes }));
@@ -714,7 +725,7 @@ async function setup(args) {
   const roles = new m.RoleResolver({ store, readCatalog: () => m.readOmpCatalog(cfg) });
   if (!(await roles.refreshCatalog())) throw new Error("RoleResolver.refreshCatalog failed against the real omp");
   const h = harness(m, store, repo, root, roles);
-  const g = { m, store, h, root, dbPath, roles, chat: `-1000${Date.now() % 100000}`, worker: h.makeWorker(), runIds: [], triageOnly: new Set(),
+  const g = { m, store, h, root, dbPath, livePath: live, roles, chat: `-1000${Date.now() % 100000}`, worker: h.makeWorker(), runIds: [], triageOnly: new Set(),
     strict: args.realCalibration };
   const intake = h.intake; h.intake = (chat, text, replyTo) => { const id = intake(chat, text, replyTo); g.runIds.push(id); return id; };
   return { g, catalog };
