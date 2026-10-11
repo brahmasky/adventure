@@ -2748,7 +2748,11 @@ export class CoreWorker {
 
   private async triageTurnInner(i: TriageInput, state: OmpTurnState | undefined, lang: Lang, held: TriageHeld): Promise<TriageOutcome> {
     const run_id = i.claim.run_id;
-    resolveQuietTriageOverrides(this.runStore);
+    try {
+      resolveQuietTriageOverrides(this.runStore);
+    } catch (e) {
+      console.error(`triage: triage_overrides resolve failed: ${safeReason(e)}`); // housekeeping only: never costs the turn its route
+    }
     const mode = resolveJevTriageMode(process.env, this.ompDataDir());
     if (mode === "off") return this.triageOff(i, state, lang, held);
     if (this.runStore.triageOverrideFor(run_id)) return this.triageSkip(i, state, lang, "override", held);

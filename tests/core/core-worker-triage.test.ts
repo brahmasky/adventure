@@ -428,6 +428,20 @@ describe("triageTurn — the memory lane and save-then-route (spec §3)", () => 
   });
 });
 
+// The quiet-override resolve is housekeeping: a store error there must not cost Paco the routed reply.
+describe("triageTurn — housekeeping failure", () => {
+  it("a throwing resolveQuietTriageOverrides is logged and the turn still routes", async () => {
+    const { store, worker, turn } = setup(treeSays(RULE));
+    vi.spyOn(store, "listOpenIncidents").mockImplementation(() => { throw new Error("db busy"); });
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const t = turn("以后回复短一点");
+    expect((await worker.triageTurn(t.input)).kind).toBe("lane_reply");
+    expect(err.mock.calls.flat().join("\n")).toContain("triage_overrides resolve failed");
+    expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "memory", handler_outcome: "lane_reply", route_outcome: "act" });
+    store.close();
+  });
+});
+
 describe("triageTurn — the status lane", () => {
   it("code-rendered houge_status text, no planner, no LLM; verdict lane_reply", async () => {
     const llm = vi.fn(lessonLlm());
