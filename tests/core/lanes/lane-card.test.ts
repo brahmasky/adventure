@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DIG_DEEPER_TEXT, digDeeperButton, flattenLinks, laneCard, laneSavedNote } from "../../../src/core/lanes/lane-card.js";
+import { DIG_DEEPER_TEXT, digDeeperButton, flattenLinks, laneCard, laneSavedNote, sanitizeLaneText } from "../../../src/core/lanes/lane-card.js";
+import { parseAttachments } from "../../../src/omp/planner-supervisor.js";
 
 // Stage B §3 and §6: a lane reply is text only, ends with Dig deeper (Paco's way to the planner), and never carries a masked
 // link: a label that hides its URL is how a web-derived reply could point Paco somewhere else.
@@ -51,5 +52,19 @@ describe("laneCard", () => {
   });
   it("refuses callback data past 64 bytes", () => {
     expect(() => digDeeperButton(`run_${"x".repeat(60)}`)).toThrow(/64 bytes/);
+  });
+});
+
+// The supervisor attaches any workspace file named by a line its own parser accepts; a lane reply (composed over web pages)
+// must carry none, including a path with `]` in it that a naive marker regex misses.
+describe("sanitizeLaneText vs the supervisor's attach parser", () => {
+  it.each([
+    ["alone on a line", "hello\n[[attach:report]final.txt]]\nbye"],
+    ["inline", "see [[attach:report]final.txt]] here"],
+    ["indented with spaces", "  [[attach:  a]b.txt  ]]  "],
+    ["re-formed by the strip", "[[attach:a]b.txt[[attach:x]]]]"]
+  ])("leaves nothing parseAttachments would attach: %s", (_n, text) => {
+    expect(parseAttachments(sanitizeLaneText(text), "/ws").attachments).toEqual([]);
+    expect(parseAttachments(sanitizeLaneText(text), "/ws").text).toBe(sanitizeLaneText(text));
   });
 });

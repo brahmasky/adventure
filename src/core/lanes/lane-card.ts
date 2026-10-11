@@ -7,6 +7,8 @@ const CALLBACK_DATA_MAX_BYTES = 64;
 /** The renderer's own link syntax (`markdown-to-telegram-html.ts` step 3): any scheme, no whitespace in the url. */
 const MARKDOWN_LINK = /\[([^\]]+)\]\(([^)\s]+)\)/g;
 const ATTACH_MARKER = /\[\[attach:[^\]\n]*\]\]/g;
+/** MIRRORS the line regex in `parseAttachments` (src/omp/planner-supervisor.ts): a path may contain `]`, so ATTACH_MARKER alone misses it. Keep the two identical. */
+const ATTACH_LINE = /^\s*\[\[attach:\s*(.+?)\s*\]\]\s*$/;
 
 export function digDeeperButton(run_id: string): NotificationButton {
   const data = `${LANE_ASK_PREFIX}${run_id}`;
@@ -34,7 +36,7 @@ export function flattenLinks(text: string): string {
 }
 
 /**
- * The text a lane may deliver or store: attach markers gone, links flattened, trimmed. Shared by the card and the catch-up
+ * The text a lane may deliver or store: attach markers gone (every line the supervisor's parser would accept, plus inline markers), links flattened, trimmed. Shared by the card and the catch-up
  * line. Strip and flatten repeat together until the text stops changing: the supervisor parses `[[attach:…]]` from every
  * final text, so a marker re-formed by the strip itself (`[[att[[attach:x]]ach:y]]`) or by a flatten
  * (`[[attach:[x](y)]]` becomes `[[attach:x (y)]]`) must not survive. Each change removes at least one character, so it terminates.
@@ -42,7 +44,8 @@ export function flattenLinks(text: string): string {
 export function sanitizeLaneText(text: string): string {
   let out = text;
   for (;;) {
-    const next = flattenLinks(out.replace(ATTACH_MARKER, ""));
+    const kept = out.split("\n").filter((line) => !ATTACH_LINE.test(line)).join("\n");
+    const next = flattenLinks(kept.replace(ATTACH_MARKER, ""));
     if (next === out) return out.trim();
     out = next;
   }
