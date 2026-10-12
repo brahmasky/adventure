@@ -1,0 +1,78 @@
+{
+  "earlier": [],
+  "run": {
+    "outcome": {
+      "kind": "fallthrough",
+      "route": {
+        "role": "default",
+        "effort": null,
+        "verdict_id": "<jv#1>"
+      }
+    },
+    "jev_decisions": [
+      {
+        "point": "triage",
+        "question_id": null,
+        "criteria_hash": null,
+        "model_reported": null,
+        "state_hash": null,
+        "lang": "zh",
+        "answers_json": null,
+        "confidence": null,
+        "top_prob": null,
+        "margin": null,
+        "threshold_version": null,
+        "threshold_used": null,
+        "decision": null,
+        "outcome_source": "none",
+        "outcome_value": null,
+        "input_tokens": null,
+        "status": "skipped",
+        "skip_reason": "modality"
+      }
+    ],
+    "verdict": {
+      "id": "<jv#1>",
+      "category": null,
+      "breadth": null,
+      "reasoning": null,
+      "actions": null,
+      "sets_rule": null,
+      "rule_scope": null,
+      "lane": "planner",
+      "role": "default",
+      "effort": null,
+      "model": null,
+      "cascade": null,
+      "save_outcome": "none",
+      "route_outcome": "fallback",
+      "handler_outcome": "pending",
+      "reason": "jev_skipped",
+      "skip_reason": "modality",
+      "fast_used_tool": 0,
+      "paco_correction": null,
+      "quoted_turn_id": null
+    },
+    "route_links_verdict": true,
+    "llm_attempts": [],
+    "triage": [
+      {
+        "status": "skipped",
+        "category": null,
+        "route_lane": "planner",
+        "role": "default",
+        "verdict_id": "<jv#1>",
+        "confidence": null,
+        "top_prob": null,
+        "margin": null,
+        "lang": "zh",
+        "decision": "fallback",
+        "verdict": "jev_skipped",
+        "skip_reason": "modality"
+      }
+    ],
+    "lessons_saved": 0
+  },
+  "catch_up": [],
+  "planner_last_answered": null
+}

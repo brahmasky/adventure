@@ -1,0 +1,21 @@
+{
+  "outcome": {
+    "kind": "fallthrough",
+    "route": {
+      "role": "default",
+      "effort": null,
+      "verdict_id": null
+    }
+  },
+  "jev_decisions": [],
+  "verdict": null,
+  "route_links_verdict": true,
+  "llm_attempts": [
+    [
+      "triage",
+      null
+    ]
+  ],
+  "triage": [],
+  "lessons_saved": 0
+}
