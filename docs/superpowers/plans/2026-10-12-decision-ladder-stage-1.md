@@ -1,29 +1,104 @@
-# Decision ladder, stage 1 "Engine + door" — Implementation Plan
+# Decision ladder, stage 1 "Engine + door" — Implementation Plan (Rev 2)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Every decision gets one shape (a registry entry with a ladder of deciders, recorded after it decides), proved on the front door: `turn.handler` and `turn.gear` run through the new runner with byte-identical behaviour, a daily digest surfaces unsure verdicts for Paco's ✅/❌, and ADR 0030 lands first.
 
-**Architecture:** A new protected `src/decisions/` holds the types, the runner (`decideSync` / `decide`), the recorder, the registry with its two entries, the off switch and the digest. The store gains `decisions`, `decision_outcomes`, `ladder_moves` and a digest latch, plus two link columns. `CoreWorker.triageTurn` keeps every handler (lanes, save-first, settle) and only moves the *decision* (gate rule → Jev tree → Tiny cascade, planner as `fail`) behind the runner; a pinned characterisation snapshot written on the pre-ladder code proves nothing persisted changed, and the P6 dual run proves it on Paco's last 200 texts.
+**Architecture:** A new protected `src/decisions/` holds the types, the runner (`decideSync` / `decide`), the recorder, the registry with its two entries and the digest. The store gains `decisions`, `decision_outcomes`, `ladder_moves` and a digest latch, plus two link columns. `CoreWorker.triageTurn` keeps every handler (lanes, save-first, settle) and only moves the *decision* (gate rule → Jev tree → Tiny cascade, planner as `fail`) behind the runner. The front door's ledger rows are queued at decide time and written inside `settleTriage`'s transaction, so a lost turn writes nothing and a rolled-back save takes its row with it. A pinned characterisation snapshot written on the pre-ladder code proves nothing persisted changed, and the P6 dual run proves it on Paco's last 200 texts. There is no off switch (ruling R13): a fundamentally wrong build is reverted, rebuilt and kickstarted, and the final task proves the previous build runs on the migrated DB.
 
 **Tech Stack:** Node + TypeScript (ES2024, NodeNext, `strict`, `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`), `node:sqlite`, vitest 4. Zero runtime dependencies.
 
-**Spec:** [docs/superpowers/specs/2026-10-12-decision-ladder-design.md](../specs/2026-10-12-decision-ladder-design.md) (Rev 7, approved by Paco 2026-10-12). This plan covers spec §13 row 1 only.
+**Spec:** [docs/superpowers/specs/2026-10-12-decision-ladder-design.md](../specs/2026-10-12-decision-ladder-design.md) (Rev 8: approved by Paco 2026-10-12 at Rev 7, amended with rulings R12 and R13). This plan covers spec §13 row 1 only.
+
+## Changelog
+
+### Rev 2 (2026-10-12): Paco's rulings R12 and R13, and the two Rev 1 reviews
+
+Inputs: spec Rev 8 (commit 1b65de4); the senior review of Rev 1 (2 BLOCKER · 13 WARNING · 11 SUGGESTION) and the codex
+review of Rev 1 (5 BLOCKER · 1 WARNING · 1 SUGGESTION). Every finding has a disposition in the appendix "Review
+dispositions". What changed, and why:
+
+- **R12 (spec §4.1) replaces "Jev never causes an effect".** Entries declare `input: "paco" | "tool" | "mixed"` (`mixed`
+  is treated as `tool`), and every verdict's effect declares `kind`, `reversible` and `announced`. `entryProblems` (Task 6)
+  fails a Jev or model rung that can cause an unannounced or irreversible effect, and any non-tightening effect over tool
+  input. `turn.handler` now declares its real effects: `memory` (the instant lesson save, card with Undo) and `planner`
+  (save-first on a confident `sets_rule`, announced through the `[memory]` note) are `effect`. Rev 1's ruling 5 (the A19
+  save as a grandfathered exception until stage 3) and ADR 0030's grandfather paragraph are gone; ADR 0030 (Task 1) states
+  R12 and R13. This also closes codex B5.
+- **R13 (spec §5.4) removes the off switch and every designed shadow state.** `HOUGE_DECISIONS_OFF`, `off-switch.ts`, the
+  boot warning, `effectiveTriageMode`, `gearOff`, their tests and their docs are deleted. `armed: "shadow"` survives only as
+  the runner's input that reproduces today's configured `HOUGE_JEV_TRIAGE_ENABLED=shadow`; the registry test fails any
+  registered entry armed other than `on`. `HOUGE_JEV_LANES_OFF` is untouched (no "alias" wording). The final task (13)
+  boots the 3bff437 build against a DB copy the new build migrated and asserts it runs.
+- **Front-door rows are written atomically with the verdict** (codex B1, senior W4). The triage call site uses a deferred
+  recorder; `settleTriage` writes the `turn.handler` and `turn.gear` rows inside its own transaction, after its
+  lost-turn check. A killed turn writes no `decisions` row; a rolled-back lane save rolls its row back. The digest also
+  ignores a front-door row its verdict does not link.
+- **The pin cannot be weakened silently** (senior W1). `state_hash` stays in the projection; the pin runs with `CI=1`;
+  Tasks 8b and 13 check `git diff --exit-code <task-2 sha>` over the snapshots, the pin tests and the harness. New pin
+  cases: no turn state, a Jev parse failure, a rolled-back lane finalisation, and a policy throw after Jev answered.
+- **`routed_by` is now really pinned** (codex B4): the projection carries every `llm_attempt.routed_by` of the run, and a
+  new end-to-end test (Task 2, kept green in 8b) drives a routed turn through the real supervisor and asserts the first
+  planner attempt's `routed_by` is the verdict row's id.
+- **"Prove the pin bites" can fail now** (senior B1): the mutation is `choice: 0.6 → 0.4`, and the three cases that must
+  flip are named.
+- **Task 8 is split** (senior W13) into 8a (the pure glue module and its tests, no `core-worker.ts` edit) and 8b (the
+  `core-worker.ts` rewrite, the pin, the consumer suites). 8b keeps today's skipped-`error` settle for a throw in
+  `treeArmed`/`routeTree` (senior W2) and for a throwing ack check.
+- **`decision_fallback` paging fixed** (senior W3): only a Jev or model answer clears it; the card is damped by the same
+  10-minute reopen window as every alerted incident (`ALERT_REOPEN_QUIET_MS`, E12); `budget` never counts; for
+  `turn.handler` and `turn.gear` a Jev-rung failure does not count (the Jev incidents already page it: one call, one page).
+- **`decisions.fallback_rung`** (codex W6, senior S2): the rung kind of the first failure, so "Jev skips" counts Jev
+  failures only.
+- **No closed-enum CHECK on sets that later stages extend** (senior W7): `stage`, `fallback_reason` and outcome `signal`
+  are validated in code at insert (`DecisionRejected`, `OutcomeRejected`); CHECKs stay only on sets the spec fixes (rung
+  kinds, armed mode, source, granted_by, move state). Stage B's lane widening needed a full table rebuild
+  (`run-store.ts:7124`); this avoids repeating it.
+- **Review taps are exempt from the 5-a-minute command limit and do not count toward it** (senior W8).
+- **The live gate** (Task 12) builds only in the feature worktree, never in the main checkout (senior W11); classifies
+  structure before Jev failures (codex B2); retries a pair once and paces calls (senior W10); has a coverage floor
+  (senior W9); seeds an offered decision into copy B so the ❌ tap can fail, and prints `LIVE GATE: INCONCLUSIVE` with exit
+  3 instead of PASS when a required check could not run (codex B3, senior B2); renders the digest through
+  `TelegramNotificationAdapter` with a stub transport (codex S7).
+- **Protected-files table** gains `telegram-notification-adapter.ts` (Task 10) and `run-store.ts` for Task 11 (senior W6).
+- Smaller: `snippetOf` splits on code points; a digest whose enqueue conflicts latches `sent: 0`; the gate clears copy B's
+  `decision_digest:%` outbox rows; `ladder_moves.paco_callback_id` is unique; a monotone judge held by the floor is
+  recorded as the floor's rung with reason `floor_held`; pre-flight line drifts fixed; ADR 0030 notes that the `turn.handler`
+  Jev policy glue lives in unprotected `src/core/turn-handler-ladder.ts`.
+
+### Open question for Paco (does not block coding; the plan keeps today's behaviour)
+
+**Q1. The planner route's lesson save is announced in the reply, not on a card.** On a confident `sets_rule` that is not
+a memory-lane turn (`two_request`, `rule-on-lookup`, a cascade pick with a rule), today's code saves the lesson first and
+prepends the `[memory]` note to the planner's prompt (`planner-supervisor.ts:479`); Paco learns of it from the planner's
+reply, with no code-built Undo card. R12 says "announced (Undo on the card)". Stage 1 moves without improving, so the
+registry declares this effect `announced: "reply"`, which `entryProblems` accepts, and pins the whole effect table in a
+test so any change is a visible, reviewed edit. If Paco rules that only a card counts, a follow-up slice adds the memory
+card to the inform path and the registry test then drops `"reply"`.
 
 ## Global Constraints
 
 - `dependencies: {}` stays empty (ADR 0001, 0016). Node stdlib plus devDeps only.
 - Functions under 50 lines (reviewers enforce it). Match surrounding style. Every changed line traces to this plan.
 - Tests live in `tests/<area>/` mirroring `src/`; each test says in a comment why the behaviour matters.
+- **Every task runs in one feature worktree**: `git worktree add .worktrees/decision-ladder-stage-1 -b feat/decision-ladder-stage-1 main`.
+  Never run `npm run build` (or anything else that writes `dist/`) in the main checkout
+  (`/Users/xiaochuan/Projects/adventure`): the daemon executes that `dist/`, so a KeepAlive relaunch or a kickstart would run
+  unreviewed code and apply its migration to the live DB. The main checkout's `dist/` is rebuilt only after Paco's merge
+  (AGENTS.md "Rebuild `dist/` after merge"). Gates run from the worktree with `HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env`.
 - Never open `houge.sqlite` from code under test or from a gate: gates work on a `VACUUM INTO` copy under a temp root and refuse to write outside it.
 - No hard-coded model or tool versions in ADR decision text (ADR 0028 amendment 2026-10-09).
 - Telegram output goes through the outbox and the rich renderer (`TelegramNotificationAdapter` → `markdownToTelegramHtml`), never `sendMessage` directly.
 - The ledger never holds read text or state (spec §5.2: no state column; `reason_code` is a code-owned enum per entry, never model or tool text).
 - Recording never changes a decision (spec §4.1): the runner decides, then records; a failed write opens `decision_record_failed` and the verdict stands.
-- Stage 1 changes no routing behaviour with `HOUGE_DECISIONS_OFF` unset: the Task 2 pin and the Task 12 P6 dual run must show zero difference on every persisted `jev_decisions`, `jev_verdicts` and `triage` column.
-- `HOUGE_DECISIONS_OFF` is read at boot only (spec §5.4); locked entries ignore it and boot logs a warning that names them; `HOUGE_JEV_LANES_OFF` keeps its meaning and is documented as the alias for `turn.handler` lane verdicts.
+- Stage 1 changes no routing behaviour: the Task 2 pin and the Task 12 P6 dual run must show zero difference on every persisted `jev_decisions`, `jev_verdicts` and `triage` column.
+- **R12** (spec §4.1): what a Jev or model verdict may do depends on what it read. Over tool input it only tightens or
+  proposes; over Paco's own message it may cause an effect that is reversible and announced. The registry test enforces it.
+- **R13** (spec §4.1, §5.4): no off switch (`HOUGE_DECISIONS_OFF` does not exist) and no designed shadow state. Every
+  migration is additive (new tables, nullable link columns), so rollback is revert, rebuild, kickstart. `HOUGE_JEV_LANES_OFF`
+  keeps exactly its stage B meaning.
 - Commits: Conventional Commits, one concern per commit, stage files by name (never `git add -A`). Commit only when the controller says so; the commit steps below are the intended boundaries.
-- Definition of done (CONTRIBUTING.md): `npm run typecheck && npm test && npm run build` green **and** the Task 12 live gate shown.
+- Definition of done (CONTRIBUTING.md): `npm run typecheck && npm test && npm run build` green in the worktree **and** the Task 12 live gate shown **and** the Task 13 rollback check shown.
 
 ### Protected files this plan touches (Paco's hand-merge)
 
@@ -32,88 +107,100 @@
 | 1 | `docs/decisions/0030-decision-ladder.md` (new), `docs/decisions/0011-…`, `0014-…`, `0028-…`, `0029-…`, `docs/decisions/README.md` | `PROTECTED_DIRS` `docs/decisions` |
 | 1 | `AGENTS.md` | `PROTECTED_FILES` |
 | 3, 5, 6, 10 | everything under `src/decisions/` (new) | joins `PROTECTED_DIRS` in Task 7 (spec §6.3) |
-| 4 | `src/run/run-store.ts` | `PROTECTED_FILES` |
+| 4, 11 | `src/run/run-store.ts` | `PROTECTED_FILES` |
 | 7 | `src/capabilities/self-write-guard.ts` | `PROTECTED_FILES` (self-protection) |
-| 8 | `src/core/core-worker.ts` | not in `PROTECTED_FILES`, but listed for Paco's merge in spec §13 row 1 |
+| 8b | `src/core/core-worker.ts` | not in `PROTECTED_FILES`, but listed for Paco's merge in spec §13 row 1 |
+| 10 | `src/notifications/telegram-notification-adapter.ts` | `PROTECTED_FILES` (`self-write-guard.ts:120`, the attachment check, C2) |
 
 Not touched: `turn-context.ts`, `planner-supervisor.ts`, `run-ledger.ts`, `src/llm/registry.ts`, `src/policy/`, any `src/omp/*` file. If a task finds it needs one, stop and report.
 
-## Pre-flight: every existing symbol this plan relies on (verified at main @ 3bff437)
+## Pre-flight: every existing symbol this plan relies on (code verified at main @ 3bff437; 3bff437..1b65de4 changes docs only)
 
 | Symbol | Where | Used by |
 |---|---|---|
-| `OmpTurnState` (`threadCutAt`, `turnCtx.recentTurns`, `turnCtx.turnChars`, `quote`, `triageFinalized`, `lessonSavedThisTurn`) | `src/core/core-worker.ts:230-245` | 8 |
-| `TriageSettle`, `AnsweredSettle`, `SettleFor`, `SaveStep` | `src/core/core-worker.ts:254-264` | 8 |
-| `interface TriageHeld { thinkHarder; quote; answered? }` | `src/core/core-worker.ts:267` | 8 |
-| `ACTED`, `UNARMED`, `NO_SCORES` | `src/core/core-worker.ts:269-271` | 8 (`UNARMED` moves) |
-| `CoreWorker` constructor (13 params; `broker` 8th, `ompOptions` 13th) | `src/core/core-worker.ts:437-467` | 8, 12 |
-| `private readonly ompTurns` | `src/core/core-worker.ts:496` | 8 |
+| `OmpTurnState` (`threadCutAt`, `turnCtx.recentTurns`, `turnCtx.turnChars`, `quote`, `triageFinalized`, `lessonSavedThisTurn`) | `src/core/core-worker.ts:230-245` | 8b |
+| `TriageSettle`, `AnsweredSettle`, `SettleFor`, `SaveStep` | `src/core/core-worker.ts:254-264` | 8b |
+| `interface TriageHeld { thinkHarder; quote; answered? }` | `src/core/core-worker.ts:267` | 8b |
+| `ACTED`, `UNARMED`, `NO_SCORES` | `src/core/core-worker.ts:269-271` | 8a, 8b (`UNARMED` moves) |
+| `CoreWorker` constructor (13 params; `broker` 8th, `ompOptions` 13th) | `src/core/core-worker.ts:437-467` | 8b, 12, 13 |
+| `private readonly ompTurns` | `src/core/core-worker.ts:496` | 8b |
+| `submitTurn(run_id)`, `shutdownPlanners()` | `src/core/core-worker.ts:2086, 2172` | 2 |
 | `supervisorDeps(...).triage: (i) => this.triageTurn(i)` | `src/core/core-worker.ts:2226` | unchanged |
 | `ompRouteEnd` (consumer: `getJevVerdictForRun`, `closePendingJevVerdict`, `updateJevVerdict`) | `src/core/core-worker.ts:2400-2419` | consumer list |
 | `closeVerdict` (consumer: `closePendingJevVerdict`, `failLaneReplyVerdict`) | `src/core/core-worker.ts:2425-2433` | consumer list |
-| `jevClient(run_id)` | `src/core/core-worker.ts:2636-2645` | 8 |
-| `triageEvent`, `verdictInsert`, `markThinkHarder` | `src/core/core-worker.ts:2647-2673` | 8 |
-| `settleTriage(i, state, lang, f, o)` | `src/core/core-worker.ts:2681-2700` | 8 |
-| `laneLost`, `triageOff`, `triageSkip`, `quoteRef` | `src/core/core-worker.ts:2702-2727` | 8 |
-| `triageTurn`, `triageTurnInner`, `routeAnswered`, `checkJevModel` | `src/core/core-worker.ts:2733-2803` | 8 (rewritten) |
-| `statusLane`, `saveFirst`, `saveThenRoute`, `memoryLaneEnd` | `src/core/core-worker.ts:2809-2875` | 8 (unchanged) |
-| `cascadeRoute`, `cascadePick`, `cascadeCall` | `src/core/core-worker.ts:2882-2919` | 8 |
-| `laneRoute`, `runLane`, `patchLaneVerdict`, `recordLaneReplyRow` | `src/core/core-worker.ts:2931-2996` | 8 (unchanged) |
-| `turnRoute`, `quoteField`, `decisionFor`, `numbersOf`, `scoresOf` | `src/core/core-worker.ts:3994-4016` | 8 |
-| `CASCADE_TIMEOUT_MS = 20_000`, `parseCascadePick`, `withinMs` | `src/core/core-worker.ts:4024-4051` | 6, 8 |
-| `URL_IN_TEXT`, `urlRule` | `src/core/core-worker.ts:4055-4065` | 8 (moved verbatim) |
-| `TurnRoute`, `QuoteRef`, `TriageOutcome`, `TriageInput` | `src/omp/planner-supervisor.ts:63-72` | 8 (read only) |
+| `breakLaneCardForTest`, `breakMemoryLaneCardForTest`, `breakLaneFinalizeOnceForTest` | `src/core/core-worker.ts:2618, 2626, 2631` | 2 |
+| `jevClient(run_id)` | `src/core/core-worker.ts:2636-2645` | 8b |
+| `triageEvent`, `verdictInsert`, `markThinkHarder` | `src/core/core-worker.ts:2647-2673` | 8b |
+| `settleTriage(i, state, lang, f, o)` (lost-turn check first, then one transaction) | `src/core/core-worker.ts:2681-2700` | 8b |
+| `laneLost`, `triageOff`, `triageSkip`, `quoteRef` | `src/core/core-worker.ts:2702-2727` | 8b |
+| `triageTurn`, `triageTurnInner`, `routeAnswered`, `checkJevModel` | `src/core/core-worker.ts:2733-2803` | 8b (rewritten) |
+| `statusLane`, `saveFirst`, `saveThenRoute`, `memoryLaneEnd` | `src/core/core-worker.ts:2809-2875` | 8b (unchanged) |
+| `cascadeRoute`, `cascadePick`, `cascadeCall` | `src/core/core-worker.ts:2882-2919` | 8b |
+| `laneRoute`, `runLane`, `patchLaneVerdict`, `recordLaneReplyRow`, `laneSeat` | `src/core/core-worker.ts:2931-3010` | 8b (unchanged) |
+| `turnRoute`, `quoteField`, `decisionFor`, `numbersOf`, `scoresOf` | `src/core/core-worker.ts:3994-4016` | 8b |
+| `CASCADE_TIMEOUT_MS = 20_000`, `parseCascadePick`, `withinMs` | `src/core/core-worker.ts:4024-4051` | 6, 8b |
+| `URL_IN_TEXT`, `urlRule` | `src/core/core-worker.ts:4055-4065` | 8a (moved verbatim) |
+| `TurnRoute`, `QuoteRef`, `TriageOutcome`, `TriageInput` | `src/omp/planner-supervisor.ts:63-72` | 8b (read only) |
 | `routeEnd?` input type | `src/omp/planner-supervisor.ts:57-60` | 2 |
-| `TurnRole`, `Lane`, `LaneSwitch`, `TREE_THRESHOLD_VERSION` | `src/jev/tree-policy.ts:15-23` | 6, 8 |
-| `preJudge` | `src/jev/tree-policy.ts:35-39` | 8 |
-| `TREE_BAR_DEFAULTS` (`choice: 0.6`) | `src/jev/tree-policy.ts:43` | 6, 8 |
-| `Armed`, `treeArmed` | `src/jev/tree-policy.ts:46, 60-69` | 8 |
-| `RouteReason`, `Route`, `RoutePlan` | `src/jev/tree-policy.ts:83-91` | 6, 8 |
-| `fallbackRoute`, `ACK_ROUTE` | `src/jev/tree-policy.ts:99-104` | 8 |
-| `routeTree`, `applyCascade` | `src/jev/tree-policy.ts:236, 255` | 8 |
-| `SkipReason` (16 values), `Decision`, `topProbOf`, `recordSkip`, `persistDecisionRows`, `decide` (Jev) | `src/jev/decide.ts:14-106` | 4, 6, 8 |
-| `JevTriageMode`, `resolveJevTriageMode`, `resolveJevLanesOff`, `warnUnknownJevLanesOff` | `src/jev/jev-flags.ts:6-54` | 6, 8 |
-| `calibrationRows` | `src/jev/calibration.ts:54` | 8 |
-| `CATEGORIES`, `TREE_BREADTH`, `TREE_REASONING`, `TREE_ACTIONS`, `TREE_QUESTIONS`, `LastHougeTurn`, `lastHougeTurnOf`, `quotedTurnFromRow`, `QuotedTurn`, `buildTreeState` | `src/jev/questions/tree.ts:15-145` | 6, 8 |
+| inform note prepended to the planner prompt | `src/omp/planner-supervisor.ts:479` | 6 (R12 effect table, Q1) |
+| `routeTurn` (`turn.routedBy = route?.verdict_id`), `audit` (first compose attempt carries `routed_by`) | `src/omp/planner-supervisor.ts:494-499, 797-803` | 2 |
+| `TurnRole`, `Lane`, `LaneSwitch`, `TREE_THRESHOLD_VERSION` | `src/jev/tree-policy.ts:15-23` | 6, 8a |
+| `preJudge` | `src/jev/tree-policy.ts:35-39` | 8b |
+| `TREE_BAR_DEFAULTS` (`choice: 0.6`) | `src/jev/tree-policy.ts:43` | 2, 6, 8a |
+| `Armed`, `treeArmed` | `src/jev/tree-policy.ts:46, 60-69` | 8a |
+| `RouteReason`, `Route`, `RoutePlan` | `src/jev/tree-policy.ts:83-91` | 6, 8a |
+| `fallbackRoute`, `ACK_ROUTE` | `src/jev/tree-policy.ts:99-104` | 8b |
+| `routeTree`, `applyCascade` | `src/jev/tree-policy.ts:236, 255` | 2 (mocked), 8a, 8b |
+| `SkipReason` (16 values), `Decision`, `topProbOf`, `recordSkip`, `persistDecisionRows`, `decide` (Jev) | `src/jev/decide.ts:14-106` | 4, 6, 8a, 8b |
+| `JevTriageMode`, `resolveJevTriageMode`, `resolveJevLanesOff` | `src/jev/jev-flags.ts:6-54` | 6, 8a, 8b |
+| `calibrationRows`, `CALIBRATED_ROWS` | `src/jev/calibration.ts:54, 27` | 8b, 12 |
+| `CATEGORIES`, `TREE_BREADTH`, `TREE_REASONING`, `TREE_ACTIONS`, `TREE_QUESTIONS`, `LastHougeTurn`, `lastHougeTurnOf`, `quotedTurnFromRow`, `QuotedTurn`, `buildTreeState` | `src/jev/questions/tree.ts:15-145` | 6, 8b |
 | `Question` | `src/jev/questions/types.ts:28` | 3 |
-| `isBareAck` | `src/omp/bare-ack.ts:11` | 8 |
+| `isBareAck` | `src/omp/bare-ack.ts:11` | 8a |
 | `TurnModality` | `src/media/media-config.ts:9` | 6 |
 | `JevDecisionRow`, `JevVerdictInsert`, `JevVerdictRow`, `JevVerdictPatch` | `src/run/run-store.ts:932-962` | 4 |
-| `JEV_VERDICTS_LANES_DDL` | `src/run/run-store.ts:968-993` | 4 (read only) |
+| `VERDICT_PATCH_COLUMNS` | `src/run/run-store.ts:965` | 4 (new types go after it) |
+| `JEV_VERDICTS_LANES_DDL`; the stage B rebuild that widened `lane` | `src/run/run-store.ts:968-993, 7124` | 4 (read only; why growing enums are validated in code) |
 | `RunStore.getLedgerEvents`, `recordChatTurn`, `getRecentChatTurns`, `claimRun` | `src/run/run-store.ts:1167, 1199, 1230, 2071` | 2, 12 |
+| `llm_attempt` ledger payload carries `routed_by` | `src/run/run-store.ts:1983` | 2 |
+| `checkTelegramRateLimit` (window query: accepted commands in 60 s) | `src/run/run-store.ts:2237-2249` | 11 |
 | `plannerLastAnsweredAt`, `laneTurnsSince` (consumers of `jev_verdicts`) | `src/run/run-store.ts:2744-2786` | 2 |
-| `inTransaction` | `src/run/run-store.ts:4277-4291` | 4, 10 |
+| `inTransaction` (no nesting) | `src/run/run-store.ts:4277-4291` | 4, 8b, 10 |
 | `insertJevDecision`, `listJevDecisions` | `src/run/run-store.ts:4405-4431` | 4 |
 | `insertJevVerdict`, `updateJevVerdict`, `closePendingJevVerdict`, `failLaneReplyVerdict`, `getJevVerdictForRun`, `latestJevVerdictForChat` | `src/run/run-store.ts:4433-4487` | 4, consumer list |
-| `triageOverrideFor`, `userTurnTextForRun` | `src/run/run-store.ts:4541, 4558` | 8, 10 |
+| `triageOverrideFor`, `userTurnTextForRun` | `src/run/run-store.ts:4541, 4558` | 8b, 10 |
 | `incidentFingerprint`, `openIncident`, `findOpenIncident`, `findRecentlyResolvedIncident`, `resolveIncident`, `listOpenIncidents` | `src/run/run-store.ts:4779-4885` | 5, 9 |
 | `countJevCalls`, `hasAnsweredJevCallSince` | `src/run/run-store.ts:5049-5067` | 9 (unchanged) |
 | `countLaneTurns`, `hasLaneReplySince` (consumers of `jev_verdicts`) | `src/run/run-store.ts:5122-5137` | consumer list |
-| `enqueueNotification` (idempotent per target + key) | `src/run/run-store.ts:5991` | 5, 10 |
+| `enqueueNotification` (idempotent per target + key; returns `status: "conflict"` on a different payload) | `src/run/run-store.ts:5991-6013` | 5, 10 |
+| `claimNextNotification` | `src/run/run-store.ts:6085` | 12 |
 | `migrate()` list, last entry `applyLaneRepliesMigration()` | `src/run/run-store.ts:6928-6998` | 4 |
 | `applyLaneRepliesMigration` (pattern) | `src/run/run-store.ts:7148-7166` | 4 |
 | `tableColumns` | `src/run/run-store.ts:8728` | 4 |
+| `TELEGRAM_COMMAND_WINDOW_SECONDS = 60`, `TELEGRAM_MAX_COMMANDS_PER_WINDOW = 5` | `src/run/run-store.ts:8908-8909` | 11 |
 | migration count test (`toBe(33)`, two places) | `tests/run/run-store-approvals.test.ts:586-591` | 4 |
-| `openAlertedIncident`, `resolveOpenIncidents` | `src/run/incident-alert.ts:27-41, 86-93` | 5 |
-| `checkJevSkipRate`, `jevViolations`, `checkLaneFallthrough`, `detectViolations`, `SWEEP_INCIDENT_KINDS` (has `jev_skip_rate`), `JEV_SKIP_RATE_*` | `src/run/invariant-sweep.ts:83-275` | 9 |
+| `ALERT_REOPEN_QUIET_MS` (10 min), `openAlertedIncident`, `resolveOpenIncidents` | `src/run/incident-alert.ts:25, 28-41, 86-93` | 5 |
+| `checkJevSkipRate`, `jevViolations`, `checkLaneFallthrough`, `detectViolations`, `SWEEP_INCIDENT_KINDS` (has `jev_skip_rate`), `JEV_SKIP_RATE_*` | `src/run/invariant-sweep.ts:83-275` | 9, 13 |
 | `formatInstantInZone`, `resolveDisplayZone` | `src/run/schedule-spec.ts:132-149` | 10 |
-| `NotificationButton`, `NotificationPayload` | `src/notifications/notification-types.ts:8-18` | 10 |
-| `toReplyMarkup(buttons)` (one row only) and its call in `sendText` | `src/notifications/telegram-notification-adapter.ts:112, 146-151` | 10 |
+| `NotificationButton`, `NotificationPayload`, `NotificationDispatchRecord` | `src/notifications/notification-types.ts:8-18, 50-59` | 10, 12 |
+| `TelegramNotificationAdapter.send`; `toReplyMarkup(buttons)` (one row only) and its call in `sendText` | `src/notifications/telegram-notification-adapter.ts:46, 115, 146-151` | 10, 12 |
 | `LC_UUID`, `parseMemLaneCallback` | `src/triggers/telegram-command-parser.ts:317-331` | 11 |
 | `normalizeCallbackQuery` (allowlist check, then parsers) | `src/triggers/telegram-trigger-adapter.ts:244-280` | 11 |
 | `buildMemLaneTapEvent` (pattern) | `src/triggers/telegram-trigger-adapter.ts:332-346` | 11 |
 | `TaskEventType` union and its type test | `src/domain/types.ts:4`, `tests/domain/types.test.ts:29-32` | 11 |
+| `Gateway.intake` rate-limit block (`event.type !== "kill"`) | `src/gateway/gateway.ts:154-175` | 11 |
 | `GatewayIntakeResult`, `memlane_undo` dispatch, `accepted` | `src/gateway/gateway.ts:59-92, 187, 1175` | 11 |
 | `oncePerTrigger`, `replyTo` | `src/gateway/memory-commands.ts:19-36` | 11 |
 | `recordTriageOverride` (consumer of `jev_verdicts`) | `src/gateway/memlane-commands.ts:56-69` | 2, consumer list |
-| `bootPlanners` (calls `warnUnknownJevLanesOff`), `runSignalPathTick`, `errorCode` | `src/telegram/telegram-daemon.ts:386-395, 479-516` | 6, 10 |
-| `PROTECTED_DIRS` and its test table | `src/capabilities/self-write-guard.ts:67-73`, `tests/capabilities/self-write-guard.test.ts:108-148` | 7 |
-| `ompWorker`, `drainOutbox` test helpers | `tests/helpers/omp-worker.ts:21-55` | 2, 5, 8, 10 |
-| `createQueuedTurnRun` | `tests/helpers/runs.ts:8-23` | 2, 8 |
+| `runSignalPathTick` (`checkMeteredCeiling` call), `errorCode` | `src/telegram/telegram-daemon.ts:479-516, 506` | 10 |
+| `PROTECTED_DIRS`, `PROTECTED_FILES` and the test table | `src/capabilities/self-write-guard.ts:67-73, 75-127`, `tests/capabilities/self-write-guard.test.ts:108-148` | 7 |
+| `ompWorker`, `until`, `drainOutbox` test helpers | `tests/helpers/omp-worker.ts:21-55` | 2, 5, 8b, 10 |
+| `pinOmpEnv`, `useFakeOmp`, `shortTmp`, `pinEnabledFlags` | `tests/helpers/omp-env.ts:21, 40, 58, 68` | 2 |
+| `createQueuedTurnRun` (telegram source) | `tests/helpers/runs.ts:8-23` | 2, 8b |
 | `LANE_PREFACE`, `REWRITE_INSTRUCTION` | `src/core/lanes/lane-compose.ts` (exported; used by `tests/core/core-worker-lanes.test.ts:5`) | 2 |
-| `scripts/live-gate-jev-tree.mjs` `copyDb` (read-only `VACUUM INTO`) and `clearTickLatch` (path guard) | `scripts/live-gate-jev-tree.mjs:154-158, 521-528` | 12 (pattern) |
+| `scripts/live-gate-jev-tree.mjs` `copyDb` (read-only `VACUUM INTO`) and `clearTickLatch` (path guard) | `scripts/live-gate-jev-tree.mjs:148-151, 521-528` | 12 (pattern) |
 
-### The `jev_verdicts` consumers (spec §5.3: every one keeps working; Task 8 runs each one's tests)
+### The `jev_verdicts` consumers (spec §5.3: every one keeps working; Task 8b runs each one's tests)
 
 | # | Consumer | Reads / writes | Test that must stay green |
 |---|---|---|---|
@@ -125,32 +212,39 @@ Not touched: `turn-context.ts`, `planner-supervisor.ts`, `run-ledger.ts`, `src/l
 | 6 | `recordTriageOverride` (`src/gateway/memlane-commands.ts:56-69`) | `ask_anyway`, per-lane `triage_overrides` page | `tests/gateway/memlane-commands.test.ts`, pin case `dig-deeper` |
 | 7 | `Gateway` low-rating label (`src/gateway/gateway.ts:1145-1146`) | `latestJevVerdictForChat` → `low_rating` | `tests/gateway/rating-capture.test.ts` |
 | 8 | `checkLaneFallthrough` (`src/run/invariant-sweep.ts:248-260`) via `countLaneTurns` / `hasLaneReplySince` (`run-store.ts:5122-5137`) | the sweep's lane fall-through rate (correctness path) | `tests/run/invariant-sweep*.test.ts` |
-| 9 | `RunStore.plannerLastAnsweredAt` (`run-store.ts:2744-2750`) | the catch-up boundary (correctness path) | `tests/run/*lane*`, pin `catch_up` field |
-| 10 | `RunStore.laneTurnsSince` (`run-store.ts:2777-2786`) | the catch-up block | `tests/core/core-worker-lanes.test.ts`, pin `catch_up` field |
-| 11 | `llm_attempt.routed_by` = verdict id (`planner-supervisor.ts:499, 797-803`; lanes `answer-lane.ts:42`) | the verdict → model-call join | `tests/omp/*supervisor*` routed_by cases; pin `outcome.route.verdict_id` |
+| 9 | `RunStore.plannerLastAnsweredAt` (`run-store.ts:2744-2750`), called from `src/omp/turn-context.ts:329` | the catch-up boundary (correctness path) | `tests/run/*lane*`, `tests/omp/`, pin `catch_up` field |
+| 10 | `RunStore.laneTurnsSince` (`run-store.ts:2777-2786`), called from `src/omp/turn-context.ts:329` | the catch-up block | `tests/core/core-worker-lanes.test.ts`, `tests/omp/`, pin `catch_up` field |
+| 11 | `llm_attempt.routed_by` = verdict id (`planner-supervisor.ts:499, 797-803`; lanes `answer-lane.ts:42`) | the verdict → model-call join | `tests/omp/planner-supervisor.test.ts` routed_by cases; Task 2 `turn-handler-routed-by.test.ts` (real supervisor over `triageTurn`); pin `routed_by` field |
 | 12 | `scripts/live-gate-jev-tree.mjs:181, 220, 655` | one verdict per gate turn | not run in this stage (its own gate) |
 
 The triage event (`run-ledger.ts:311` required fields) keeps its payload exactly; stage 1 adds no field to it.
 
 ### Inventory re-walk (spec §6.1 "first task re-walks the inventory")
 
-Stage 1 migrates only rows A12–A18. Re-walked at 3bff437: A12 flag/mode (`core-worker.ts:2756-2757`), A13 override/posture/modality/state (`:2758-2761`), A14 ack rule (`:2767-2769`, `tree-policy.ts:35-39`), A15 tree state + Jev (`:2771-2776`), A16 gear (`tree-policy.ts:151-155` inside `routeTree`), A17 lanes/route (`routeTree`, `urlRule` `:4061`), A18 cascade (`:2882-2908`). No row moves columns. The full re-walk of A1–E12 belongs to the stage 3 and stage 4 plans, whose tasks migrate those rows.
+Stage 1 migrates only rows A12–A18. Re-walked at 3bff437: A12 flag/mode (`core-worker.ts:2756-2757`), A13 override/posture/modality/state (`:2758-2761`), A14 ack rule (`:2767-2769`, `tree-policy.ts:35-39`), A15 tree state + Jev (`:2771-2776`), A16 gear (`tree-policy.ts:151-155` inside `routeTree`), A17 lanes/route (`routeTree`, `urlRule` `:4061`), A18 cascade (`:2882-2908`). No row moves columns. **Ruling 18 (for Paco to accept):** the full re-walk of A1–E12 is deferred to the stage 3 and stage 4 plans, whose tasks migrate those rows; re-walking them now would go stale before they move.
 
 ### Spec ambiguities resolved in this plan (rulings)
 
 1. **Rung shape.** Spec §4.1's `jev` rung names one `question`. `turn.handler` asks six questions in one call and `turn.settle` (stage 2b) four, so the rung carries `questions: readonly Question[]` plus `recordedP` (which question's p is recorded, spec §5.2). Rungs that need I/O get an executor from the call site (`DecideCtx.exec`); the runner itself does no I/O beyond the recorder (spec §5.1). Rung results may carry a typed `detail` (Jev's rows, the plan) so the handlers keep today's settle exactly.
 2. **`turn.handler` records every decision** (`alwaysRecord`), so every new `jev_verdicts` row links to a `decisions` row (spec §5.3). About 5 rows a day.
-3. **`turn.gear` is recorded, not driving.** Its verdict is the role on the route the tree produced (the same Jev call, spec §4.4); the planner keeps pinning `route.role`. A Task 8 test asserts the two are equal on every path.
-4. **Off switch for the two front-door entries.** `HOUGE_DECISIONS_OFF=turn.handler` caps an armed tree at `shadow` (Jev asked and recorded, never applied; the ack rule, whose effect is a role, also stops, as in today's shadow). `turn.gear` off forces the gear questions unarmed (`Armed.gear = false`, the same input as missing gear rows), which also keeps the answer and lookup lanes off, as today's unarmed gear does.
-5. **The lesson save on Jev's `sets_rule` answer.** Spec §4.1 says Jev never causes an effect, yet today a confident `sets_rule` saves a lesson (ADR 0029 §5.5, with Undo). That save is decision A19 `memory.rule_save` (spec §6.1, stage 3), not `turn.handler`'s verdict; `turn.handler`'s verdicts are all reply-only, so the registry test passes honestly. ADR 0030 (Task 1) names the A19 save as a grandfathered exception until stage 3 migrates it.
+3. **`turn.gear` is recorded, not driving.** Its verdict is the role on the route the tree produced (the same Jev call, spec §4.4); the planner keeps pinning `route.role`. A Task 8b test asserts the two are equal on every path.
+4. **No off switch (R13).** Today's configured triage shadow (`HOUGE_JEV_TRIAGE_ENABLED=shadow`) reaches the runner as `DecideCtx.armed = { jev: "shadow", model: "shadow" }`, and the gate rule skips the ack rule in shadow exactly as today. Registered entries declare `armed` all `on`; `entryProblems` fails anything else.
+5. **The effect table (R12).** `turn.handler` reads Paco's own message (`input: "paco"`). Its verdicts' effects: `answer`, `lookup`, `status` are `reply` (lane card with Dig deeper: reversible, announced on the card); `memory` is `effect` (the instant lesson save, memory-lane card with Undo); `planner` is `effect` (save-first on a confident `sets_rule`, announced through the `[memory]` note in the planner's reply, Q1). `turn.gear`'s verdicts cause nothing beyond which model answers (`none`). A registry test pins `turn.handler`'s whole effect table.
 6. **Foreign keys** are declared (`REFERENCES decisions(decision_id)`) but not enforced: the store never enables `PRAGMA foreign_keys` (no table does today), and turning it on is a behaviour change for every table.
-7. **`decision_outcomes` value sets.** Signals with a stage 1 producer or an obvious closed set validate now (`review_*` → a registered entry id, `correction` → a category, `dig_deeper` → a lane, `rating` 0–3, `recurrence` ≥ 1). The rest reject every value until the stage that adds their producer defines the set (a protected edit). `review_ok` is added to the signal enum: ✅ is a label calibration needs.
-8. **Per-entry `jev_skip_rate`.** Computed from `decisions.fallback_reason` for every entry with a Jev rung (digest health line and sweep). `turn.handler` and `turn.gear` keep today's `jev_decisions`-based incident and subject for stage 1 (one call, one page); the per-entry incident (subject `decision:<entry>`) pages from stage 2 entries on.
-9. **`decision_fallback`** counts only `fail` rows with a `fallback_reason` (timeout, outage, parse, threw, stale_bar, budget). A shadowed or abstained walk that ends on `fail` is not a fallback, or every shadow-mode turn would page.
-10. **Unsure line text.** For entries decided over Paco's own message (`intake`, `pre_model` stages) the line shows the first 40 characters of his text from `chat_turns`, markdown-stripped; later stages show no text (spec §8.1 "no tool text").
+7. **`decision_outcomes` value sets.** Signals with a stage 1 producer or an obvious closed set validate now (`review_*` → a registered entry id, `correction` → a category, `dig_deeper` → a lane, `rating` 0–3, `recurrence` ≥ 1). The rest reject every value until the stage that adds their producer defines the set (a protected edit). `review_ok` is added to the signal enum: ✅ is a label calibration needs. The signal itself is validated in code, not by a CHECK (ruling 15).
+8. **Per-entry `jev_skip_rate`.** Computed from `decisions` rows whose `fallback_rung` is `jev` for every entry with a Jev rung (digest health line and sweep). `turn.handler` and `turn.gear` keep today's `jev_decisions`-based incident and subject for stage 1 (one call, one page); the per-entry incident (subject `decision:<entry>`) pages from stage 2 entries on.
+9. **`decision_fallback`** counts only `fail` rows with a named failure other than `budget` (an oversized state is not a failure). For `turn.handler` and `turn.gear`, a failure on the Jev rung does not count: `openJevIncident` and the triage `jev_skip_rate` already page it (one call, one page), so only a cascade (model rung) failure counts there. Only a Jev or model rung's answer clears it; a rule answer (a photo, an ack) proves nothing about the judge. A reopen within `ALERT_REOPEN_QUIET_MS` (10 minutes, E12) records the row but sends no card. A shadowed or abstained walk that ends on `fail` is not a fallback.
+10. **Unsure line text.** For entries decided over Paco's own message (`intake`, `pre_model` stages) the line shows the first 40 code points of his text from `chat_turns`, markdown-stripped; later stages show no text (spec §8.1 "no tool text").
 11. **Digest buttons.** One message with up to 8 ✅/❌ pairs needs more than Telegram's 8 buttons per row, so the payload gains `button_rows` and the adapter renders rows.
 12. **Stale review taps.** A tap counts only for a decision offered in a digest in the last 7 days, once; anything else answers "Already handled." and writes nothing.
 13. **Urgent cards in stage 1** are a skeleton (`enqueueUrgentCard`) used by `decision_fallback:<entry>`; the other §8.2 cards arrive with their stages.
+14. **Front-door rows are written with the verdict.** The triage call site passes a deferred recorder: the runner's `record` call queues the row, and `settleTriage` writes it inside its transaction after the lost-turn check. A killed turn writes no row; a lane save that rolls back takes its row with it, and the fallback settle that follows writes it once. The digest still ignores a front-door row its verdict does not link (defence in depth for a future path).
+15. **Growing enums are validated in code.** `decisions.stage`, `decisions.fallback_reason` and `decision_outcomes.signal` have no CHECK; `insertDecision` throws `DecisionRejected` and `insertDecisionOutcome` throws `OutcomeRejected` on a value outside the TS constant. A later stage extends a set by editing the constant (a protected edit) with no table rebuild. Sets the spec fixes keep their CHECK.
+16. **Review taps and the command limit.** `decision_review` is exempt from `checkTelegramRateLimit` (like `kill`) and its audit rows do not count toward the 5-a-minute window: a digest offers up to 8 pairs, and a dropped tap would look labelled when it is not. A tap is allowlisted, one-shot and writes one closed-enum label.
+17. **A monotone judge held by the floor.** When a judge's verdict is less cautious than the floor, the floor stands and the row names `rung: "rule"`, `reason: "floor_held"`, without the judge's p, so stage 2a calibration never credits Jev with the rule's verdict.
+18. **Inventory re-walk** of A1–E12 is deferred to the stage 3 and 4 plans (see above).
+19. **A throw keeps today's settle.** A throw in `calibrationRows`, `treeArmed` or `routeTree` (before today's `held.answered`) settles skipped `error` with Jev's rows dropped, as today; only a throw in `urlRule` (after it) settles the answered fallback. A throw in the ack check settles skipped `error`, as today.
+20. **`decisions.fallback_rung`** (a rung kind, nullable) records which rung failed first, so a cascade failure is never counted as a Jev skip.
 
 ## File Structure
 
@@ -159,31 +253,32 @@ Stage 1 migrates only rows A12–A18. Re-walked at 3bff437: A12 flag/mode (`core
 | `docs/decisions/0030-decision-ladder.md` | new | ADR 0030 (Task 1) |
 | `docs/decisions/0011-…`, `0014-…`, `0028-…`, `0029-…`, `README.md`; `AGENTS.md` | mod | amendments, index row, Jev invariant sentence (Task 1) |
 | `tests/helpers/triage-harness.ts` | new | shared triage fakes and harness (Task 2) |
-| `tests/core/turn-handler-pin.test.ts`, `tests/core/__pins__/turn-handler/*.json` | new | characterisation pin (Task 2) |
-| `src/decisions/types.ts` | new | Entry, Rung, bars, results, signals, recorder/ctx types |
+| `tests/core/turn-handler-pin.test.ts`, `tests/core/turn-handler-pin-throws.test.ts`, `tests/core/__pins__/turn-handler/*.json` | new | characterisation pin (Task 2) |
+| `tests/core/turn-handler-routed-by.test.ts` | new | the verdict → planner `routed_by` join, end to end (Task 2) |
+| `src/decisions/types.ts` | new | Entry, Rung, bars, effects, results, signals, recorder/ctx types |
 | `src/decisions/entry-ids.ts` | new | `ENTRY_IDS`, `LOCKED_ENTRY_IDS` (leaf; the store imports it) |
 | `src/decisions/decide.ts` | new | `decideSync`, `decide` |
 | `src/decisions/outcomes.ts` | new | outcome value sets, `checkOutcomeValue` |
 | `src/decisions/record.ts` | new | `shouldRecord`, `storeRecorder`, record-failure and fallback incidents |
 | `src/decisions/urgent.ts` | new | `enqueueUrgentCard` |
-| `src/decisions/entries/turn-handler.ts`, `entries/turn-gear.ts` | new | the two entries, their rules, reason lists |
-| `src/decisions/registry.ts` | new | `REGISTRY`, `entryById`, `entryProblems` |
-| `src/decisions/off-switch.ts` | new | `resolveDecisionsOff`, `warnDecisionsOff`, `armedOverride` |
+| `src/decisions/entries/turn-handler.ts`, `entries/turn-gear.ts` | new | the two entries, their rules, reason lists, effect tables |
+| `src/decisions/registry.ts` | new | `REGISTRY`, `entryById`, `entryProblems` (R12, R13 as data) |
 | `src/decisions/digest.ts` | new | digest build + daily tick |
 | `src/core/turn-handler-ladder.ts` | new | pure glue: `planTree`, `treeDetailOf`, `jevSkipReason`, `fallbackOfSkip`, `urlRule` (moved), `UNARMED` (moved) |
-| `src/run/run-store.ts` | mod | migration, decision/outcome/move/digest methods, link columns |
+| `src/run/run-store.ts` | mod | migration, decision/outcome/move/digest methods, link columns (Task 4); review taps outside the command window (Task 11) |
 | `src/jev/decide.ts` | mod | `recordSkip` / `persistDecisionRows` carry `ladder_decision_id` |
-| `src/core/core-worker.ts` | mod | triage decision through the runner |
+| `src/core/core-worker.ts` | mod | triage decision through the runner; deferred front-door rows |
 | `src/capabilities/self-write-guard.ts` | mod | `src/decisions` protected |
 | `src/run/invariant-sweep.ts` | mod | per-entry skip rate |
 | `src/notifications/notification-types.ts`, `telegram-notification-adapter.ts` | mod | `button_rows` |
 | `src/triggers/telegram-command-parser.ts`, `telegram-trigger-adapter.ts`, `src/domain/types.ts` | mod | `dec:rv:` tap → `decision_review` event |
-| `src/gateway/decision-commands.ts` (new), `src/gateway/gateway.ts` | new/mod | the review tap handler |
-| `src/telegram/telegram-daemon.ts` | mod | boot warning, digest tick |
+| `src/gateway/decision-commands.ts` (new), `src/gateway/gateway.ts` | new/mod | the review tap handler; rate-limit exemption |
+| `src/telegram/telegram-daemon.ts` | mod | digest tick |
 | `scripts/live-gate-decisions-parity.mjs` | new | P6 dual run + digest + tap gate |
+| `scripts/check-decisions-rollback.mjs` | new | R13 rollback check: the previous build on a migrated DB copy (Task 13) |
 | `docs/reference/configuration.md`, `docs/reference/jev-decision-layer.md`, `CONTEXT.md` | mod | docs sync (Task 13) |
 
-**Task order (from the import graph):** 1 (docs only) · 2 (pin, before any `core-worker.ts` change) · 3 → 4 → 5 → 6 · 7 (independent) · 8 (needs 2–6) · 9 (needs 4, 6) · 10 (needs 4, 5, 6) · 11 (needs 4, 10) · 12 (needs all) · 13. No task imports anything Task 1 writes.
+**Task order (from the import graph):** 1 (docs only) · 2 (pin, before any `core-worker.ts` or `src/jev/` change) · 3 → 4 → 5 → 6 · 7 (independent) · 8a (needs 2, 3, 6) · 8b (needs 2, 4, 5, 8a) · 9 (needs 4, 6) · 10 (needs 4, 5, 6) · 11 (needs 4, 10) · 12 (needs all) · 13 (needs 12's worktrees). No task imports anything Task 1 writes.
 
 ---
 
@@ -207,14 +302,14 @@ Stage 1 migrates only rows A12–A18. Re-walked at 3bff437: A12 flag/mode (`core
 ```markdown
 # ADR 0030: Decision ladder — every decision on one list, a ladder of deciders, improved from outcomes
 
-- **Status:** proposed 2026-10-12 (design approved by Paco section by section, 2026-10-12)
+- **Status:** proposed 2026-10-12 (design approved by Paco section by section, 2026-10-12; rulings R12 and R13 the same day)
 - **Date:** 2026-10-12
 - **Deciders:** Paco
 - **Amends:** [0029](0029-jev-system-one.md) (the front door becomes the `turn.handler` entry; decision 2 applications;
-  one named exception to "no Jev in any deny path"; decision 4 egress; decision 5 provisional bars),
+  one named exception to "no Jev in any deny path"; decision 4 egress; decision 5 shadow and provisional bars),
   [0028](0028-omp-runtime.md) (D5, D12), [0014](0014-dual-llm-privilege-separation.md) (an injection judge before the
   reader), [0011](0011-self-evolution-architecture.md) (`src/decisions/` joins the protected surface)
-- **Spec:** [2026-10-12-decision-ladder-design.md](../superpowers/specs/2026-10-12-decision-ladder-design.md) (Rev 7);
+- **Spec:** [2026-10-12-decision-ladder-design.md](../superpowers/specs/2026-10-12-decision-ladder-design.md) (Rev 8);
   research [2026-10-12-in-loop-decisions](../superpowers/research/2026-10-12-in-loop-decisions/00-synthesis.md)
 
 ## Context
@@ -232,29 +327,39 @@ trigger, and nothing measured whether an improvement worked.
 We will hold every decision that changes a turn's path, and whose answer an outcome could show wrong, as one entry in a
 code-owned registry under `src/decisions/`. Everything else stays plain code (mechanics).
 
-1. **Entry.** An entry has a stable id, a version bumped on any wording, rung or bar change, a stage, a closed verdict set
-   that always includes an escape value, a `fail` verdict used when no rung answers, a default verdict, the outcome
-   signals that can show it wrong, and an arming mode per rung (`on`, `shadow`, `off`). Each verdict declares what it may
-   cause (`none`, `reply`, `proposal`, `effect`).
+1. **Entry.** An entry has a stable id, a version bumped on any wording, rung or bar change, a stage, the input source it
+   reads (`paco`, `tool` or `mixed`; `mixed` is treated as `tool`), a closed verdict set that always includes an escape
+   value, a `fail` verdict used when no rung answers, a default verdict, the outcome signals that can show it wrong, and,
+   for each verdict, what it causes (`none`, `reply`, `tighten`, `proposal`, `effect`) and whether that is reversible and
+   how it is announced.
 2. **Ladder.** Deciders are tried in order: code rule, then Jev, then a model, then Paco. Code goes first, and a rule
    answer ends the walk. A rule that wants a judge consulted abstains; "eligible for judging" is an abstention, never a
    pass. A thrown rule, a timeout or an outage is an abstention, so `fail` decides, never an accident.
 3. **Monotone rule, restated.** On an entry declared monotone, a Jev or model rung can only tighten: its verdict applies
    only when it is at least as cautious as the verdict so far, which starts at the abstaining rule's floor. A Jev or
-   model rung never opens a gate.
-4. **Jev never causes an effect on its own.** On a non-monotone entry a Jev or model verdict may only choose a handler
-   whose only effect is a reply, or produce a proposal Paco accepts. Automatic effects come only from code rungs. A
-   registry test enforces this for every entry.
+   model rung never opens a gate, and never allows or denies an action (ADR 0029 decision 2), with the one exception
+   named under the 0029 amendment below.
+4. **What a Jev or model verdict may do depends on what it read (R12).** ADR 0029's accepted risk stands: Jev is
+   steerable by injected text, so its labels stay advisory or monotone and steering degrades quality, never safety.
+   - Over **tool-derived input** (web, mail, calendar, shell output, files, tool results) a verdict may only tighten:
+     withhold a passage, add a tap, or send the planner back once. Any lasting change it suggests (a lesson, fact, skill
+     or wiki page) is a proposal for Paco's tap.
+   - Over **Paco's own message** a verdict may cause an effect directly, if the effect is reversible and announced.
+     Examples: a `turn.handler` lane reply (Dig deeper), and the memory shortcut's instant lesson save (stage A,
+     unchanged and permanent; Undo on its card).
+   - A registry test fails any entry whose Jev or model rung can cause an unannounced or irreversible effect, or any
+     effect other than tightening or a proposal from tool input.
 5. **Ledger.** The runner decides, then records; recording never changes a decision. A failed write opens incident
    `decision_record_failed` and the verdict stands. A `decisions` row is written when the verdict differs from the
    default, a rung beyond the first rule answered or was asked in shadow, Paco was involved, or the entry always
-   records. Rows hold ids, closed enums and numbers only: no state column, never read text. `decision_outcomes` holds
+   records. Rows hold ids, closed enums and numbers only: no state column, never read text. A row whose decision belongs
+   to a turn is written with that turn's own records, so a turn that is lost writes no row. `decision_outcomes` holds
    closed-enum outcome signals per decision, validated at insert. Domain detail stays in the entry's own table
    (`turn.handler` keeps `jev_verdicts`, which gains `decision_id`; `jev_decisions` gains `ladder_decision_id`).
 6. **Locked entries.** Gates whose logic must never be judged (sender, budget fuse, bare-ack consent, kill posture,
    approval binding, path floor, SSRF, self-write guard, the reader wall, attachment path, secret redaction, turn trust)
-   are locked: no rung added, no ladder move, no off switch, refused in code by a registry test and at run time by the
-   ladder-move store.
+   are locked: no rung added and no ladder move, refused in code by a registry test and at run time by the ladder-move
+   store.
 7. **Ladder moves.** A move changes who decides, recorded in `ladder_moves`. Houge may move on its own, from code rungs
    only: standing approvals (after three consecutive approvals of one action and one proven sealed run), skill authoring
    after a recurrence pattern (into the inert pending area; active only on Paco's tap), and lessons through the existing
@@ -265,11 +370,17 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
    routes each to what it points at (fact, lesson, skill, ladder move, schedule, wiki page, tool gap) and is itself
    measured by whether its signal recurs. A pattern is needed before behaviour changes, except an explicit stated rule.
 9. **Bars.** A Jev rung arms on calibrated rows as ADR 0029 decision 5 requires, or on a **provisional bar** taken from
-   an external measurement, kept in the entry's registry code, allowed only on monotone or fail-open entries, covered by
-   golden-set items in the invariant sweep, sent to shadow with incident `decision_bar_stale:<entry>` on a model or
-   wording change, and replaced by a calibrated row when Paco commits one.
-10. **Off switch.** `HOUGE_DECISIONS_OFF` names entries whose non-rule rungs run in shadow. It is read at boot; locked
-    entries ignore it and boot names them.
+   an external measurement, kept in the entry's registry code, allowed only on monotone or fail-open entries, and covered
+   by golden-set items in the invariant sweep. Golden-set drift pages (`decision_golden_drift:<entry>`) and does not
+   disarm. On a model or wording change a provisional rung stays armed on its bar, incident `decision_bar_stale:<entry>`
+   pages once naming the new model, and the digest flags the entry until Paco commits a calibrated row. The migrated
+   front door keeps ADR 0029 decision 5's existing disarm-on-model-move for its calibrated tree rows, unchanged.
+10. **No off switch, no shadow by design (R13).** Once built, the decision system is not switched off and no entry is
+    designed to run in shadow: a new entry ships armed and stays armed. The runner's `shadow` mode exists only so the
+    migrated front door keeps today's configured triage shadow mode exactly. If a build is fundamentally wrong, the
+    remedy is revert, rebuild `dist/`, kickstart. Every stage's migrations are additive (new tables, nullable link
+    columns), so the previous build runs on the migrated DB, and every stage plan's final task proves it by booting the
+    previous build against a migrated DB copy.
 11. **Review.** A daily digest lists unsure verdicts (probability within 0.15 of the bar) with ✅/❌ taps that write
     outcome labels, counts per entry and rung, and per-entry health; urgent cards go out at once for events that cannot
     wait. Silence writes nothing.
@@ -284,18 +395,23 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
 - Easier: a new judgment call is an entry plus a rung, not a branch; every decision has one record, one failure
   direction and one outcome trail; Paco reviews uncertain verdicts in one daily message.
 - Harder: every migrated decision needs characterisation tests and a behavioural differential before its call site
-  moves; the registry is protected surface, so every rung or bar change is Paco's merge.
+  moves; the registry is protected surface, so every rung or bar change is Paco's merge. Without an off switch, a bad
+  build is a revert and a kickstart, so each stage's live gate carries more weight.
+- The `turn.handler` Jev policy glue (arming, bars and the URL rule, `src/core/turn-handler-ladder.ts`) stays outside the
+  protected directory, as `src/jev/tree-policy.ts` already is; the entry itself is protected. Acceptable for a non-gate
+  entry; a gate entry's glue must live under `src/decisions/entries/`.
 - Accepted residuals: a secret with no recognisable name, shape or content, in output the planner read, can reach
   TypeSafe (Paco approved the class, R11); the planner itself can still send what it reads to its own model provider, as
-  today.
-- **Grandfathered exception to decision 4:** the save-first lesson write that ADR 0029 §5.5 authorises on Jev's
-  `sets_rule` answer (undoable, shown on a card) stays as built until decision A19 `memory.rule_save` migrates in
-  stage 3, where it must either move to a code rung or become a proposal.
+  today. On a planner route, the lesson save on a confident `sets_rule` is announced through the planner's reply (the
+  `[memory]` note), not a code card (open question Q1 of the stage 1 plan).
 
 ## Alternatives considered
 
 - **Judges on top of the existing tree:** rejected by Paco as a patch on "if not System One, then the planner".
 - **Judge approval (a model opens a gate):** rejected; approval stays Paco's or a Paco-authorised standing rule.
+- **"Jev never causes an effect on its own"** (spec Rev 2–7): replaced by R12. It stretched AGENTS.md's "never gates an
+  action" without a decision, and contradicted the memory shortcut Paco armed.
+- **An off switch (`HOUGE_DECISIONS_OFF`) and shadow-before-arm for new entries** (spec Rev 1–7): dropped by R13.
 - **omp's built-in TypeSafe judges:** rejected because their verdicts cannot be ledgered, calibrated or reviewed; not
   because of where the Jev key lives (ADR 0015's reason no longer holds: the child already holds subscription logins).
 - **Migrating every branch:** rejected; mechanics stay code. Clean means every decision, not every branch.
@@ -312,14 +428,18 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
 - The decisions ledger stays small: about 10–15 rows per turn at about 5 turns a day (DB copy, 30 days to 2026-10-12).
 - The front-door migration changes no persisted row: the stage 1 pin and the P6 dual run over the last 200 texts show
   zero mismatches.
+- Each stage's migrations are additive, so the previous build runs on a migrated DB: checked by each stage plan's final
+  task.
 
 ## Revisit when
 
 - omp emits judge verdict events (its built-in judges could then be ledgered).
 - TypeSafe ships adversarial hardening or a retention commitment.
 - The `decisions` table passes 1 million rows.
-- A provisional bar's golden-set drift disarms it twice in 30 days.
+- A provisional bar's golden-set drift pages twice in 30 days.
 - A locked entry needs a judgment the code cannot make.
+- A stage needs a migration that is not additive (then rollback is no longer revert, rebuild, kickstart, and R13 needs
+  Paco again).
 - Any assumption above is shown false by its check.
 
 ## Amendments to prior ADRs (appended 2026-10-12 to 0029, 0028, 0014, 0011)
@@ -331,10 +451,13 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
   send-back the normal gates apply; the built-in `edit`/`write` redirect in a hostile turn is the ask form of a gate that
   cannot wait. **"No Jev in any deny path, ever"** gains one named exception: the code-owned redirect of a built-in
   `edit`/`write` to its asking equivalent (`bash`, which asks Paco) in a turn the injection judge marked hostile. Every
-  other Jev verdict stays out of deny paths. The added-tap budget (3 a day) also counts trust asks. **Decision 4:**
+  other Jev verdict stays out of deny paths. What a Jev verdict may cause follows decision 4 above (R12): the memory
+  shortcut's instant save stays, permanently. The added-tap budget (3 a day) also counts trust asks. **Decision 4:**
   Paco's R11 approval (decision 12 above) is recorded as the approval of web, mail and calendar content, shell output,
-  files and replies, with the judge redactor and the residual above. **Decision 5:** provisional bars (decision 9 above)
-  are an explicit exception, under Paco's R6, for monotone or fail-open entries only.
+  files and replies, with the judge redactor and the residual above. **Decision 5** (shadow before arm): new entries
+  never shadow (R13); a stale bar or golden drift pages instead of disarming; provisional bars (decision 9 above) are an
+  explicit exception, under Paco's R6, for monotone or fail-open entries only. The front door's calibrated tree rows keep
+  decision 5's disarm on a model move, unchanged.
 - **0028.** D5's tap-free local writes become conditional on the turn's trust level (`turn.trust`); D12's network shell
   output gets the `tool.injection` judge.
 - **0014.** An injection judge (`tool.injection`) runs on wall-tool output before the quarantined reader; it withholds
@@ -358,7 +481,7 @@ Amended by [ADR 0030](0030-decision-ladder.md). <the matching bullet from ADR 00
 ```
 
 Status-line edits (append to the existing line, keep everything already there):
-- `0029-jev-system-one.md:3`: append `; amended 2026-10-12 by [ADR 0030](0030-decision-ladder.md) (front door as the turn.handler entry; one named exception to "no Jev in any deny path"; R11 egress; provisional bars — see end)`
+- `0029-jev-system-one.md:3`: append `; amended 2026-10-12 by [ADR 0030](0030-decision-ladder.md) (front door as the turn.handler entry; one named exception to "no Jev in any deny path"; Jev effects by input source (R12); R11 egress; no shadow for new entries, provisional bars — see end)`
 - `0028-omp-runtime.md:3`: replace `accepted` with `accepted; amended 2026-10-12 by [ADR 0030](0030-decision-ladder.md) (D5 conditional on turn trust; D12 output judged — see end)`
 - `0014-dual-llm-privilege-separation.md:3`: append `; **amended 2026-10-12 by [ADR 0030](0030-decision-ladder.md)** (injection judge before the reader — see end)`
 - `0011-self-evolution-architecture.md:3`: append ` · **amended 2026-10-12 by [ADR 0030](0030-decision-ladder.md)** (src/decisions/ protected — see end)`
@@ -369,7 +492,7 @@ Append `; amended 2026-10-12 by [0030](0030-decision-ladder.md)` to the Status c
 and add after the 0029 row:
 
 ```markdown
-| [0030](0030-decision-ladder.md) | Decision ladder — every decision on one registry with a ladder of deciders (code rule → Jev → model → Paco), recorded after it decides, judged inside the loop at checkpoints Houge owns, improved from outcomes (monotone rule restated; Jev never causes an effect on its own; locked entries; ladder moves; provisional bars; R11 egress; amends [0029](0029-jev-system-one.md), [0028](0028-omp-runtime.md), [0014](0014-dual-llm-privilege-separation.md), [0011](0011-self-evolution-architecture.md)) | proposed 2026-10-12 |
+| [0030](0030-decision-ladder.md) | Decision ladder — every decision on one registry with a ladder of deciders (code rule → Jev → model → Paco), recorded after it decides, judged inside the loop at checkpoints Houge owns, improved from outcomes (monotone rule restated; what Jev may cause depends on what it read (R12); no off switch or designed shadow (R13), rollback is revert + rebuild; locked entries; ladder moves; provisional bars; R11 egress; amends [0029](0029-jev-system-one.md), [0028](0028-omp-runtime.md), [0014](0014-dual-llm-privilege-separation.md), [0011](0011-self-evolution-architecture.md)) | proposed 2026-10-12 |
 ```
 
 - [ ] **Step 4: Edit `AGENTS.md:16`**
@@ -377,7 +500,7 @@ and add after the 0029 row:
 Replace the last sentence of the line, `Jev (TypeSafe System One), a non-generative typed decider, sits in front of the chains under ADR 0029; it never gates an action and every outage reaches Paco.`, with:
 
 ```markdown
-Jev (TypeSafe System One), a non-generative typed decider, is one rung of the decision ladder (ADR 0029, ADR 0030): it may tighten a monotone decision or pick a reply-only handler, never opens a gate, never causes an effect on its own, and every outage reaches Paco.
+Jev (TypeSafe System One), a non-generative typed decider, is one rung of the decision ladder (ADR 0029, ADR 0030): what it may cause depends on what it read — over tool output it only tightens or proposes, over Paco's own message it may cause a reversible, announced effect (a lane reply, the memory shortcut's lesson save) — it never gates an action, and every outage reaches Paco.
 ```
 
 - [ ] **Step 5: Check**
@@ -386,6 +509,8 @@ Run: `grep -n "18\.7\|jev-1\.13\|1\.13\.0" docs/decisions/0030-decision-ladder.m
 Expected: no output (no hard-coded versions in the ADR).
 Run: `grep -c "0030-decision-ladder" docs/decisions/README.md docs/decisions/0011-*.md docs/decisions/0014-*.md docs/decisions/0028-*.md docs/decisions/0029-*.md`
 Expected: README ≥ 5, each ADR ≥ 2.
+Run: `grep -n "HOUGE_DECISIONS_OFF\|never causes an effect\|grandfather" docs/decisions/0030-decision-ladder.md AGENTS.md`
+Expected: hits only on the two "Alternatives considered" bullets that name what R12 and R13 replaced; none in `AGENTS.md`, and no "grandfather" anywhere.
 
 - [ ] **Step 6: Commit (protected: on its own branch for Paco's hand-merge)**
 
@@ -396,17 +521,20 @@ git commit -m "docs(adr): ADR 0030 decision ladder; amend 0029, 0028, 0014, 0011
 
 ## Task 2: Pin today's `turn.handler` behaviour (characterisation snapshot, written on the pre-ladder code)
 
-Spec §6.2 step 1. This task must run before any change to `src/core/core-worker.ts`; Task 8 must keep every snapshot
-byte-identical without `-u`. It adds tests only.
+Spec §6.2 step 1. This task must run before any change to `src/core/core-worker.ts` or `src/jev/`; Task 8b must keep
+every snapshot byte-identical without `-u`, and must not touch any file this task writes. It adds tests only.
 
 **Files:**
 - Create: `tests/helpers/triage-harness.ts`
 - Create: `tests/core/turn-handler-pin.test.ts`
+- Create: `tests/core/turn-handler-pin-throws.test.ts`
+- Create: `tests/core/turn-handler-routed-by.test.ts`
 - Create (generated by the test run): `tests/core/__pins__/turn-handler/*.json`
 
 **Interfaces:**
-- Consumes: `ompWorker` (`tests/helpers/omp-worker.ts:21`), `createQueuedTurnRun` (`tests/helpers/runs.ts:8`), `CoreWorker.triageTurn`, `recordTriageOverride`.
-- Produces (used by Tasks 8 and 12's reasoning): `triageHarness(fetch, o)`, `treeSays(o)`, `cat`, `only`, `scope`, `level`, `LIGHT`, `NONE`, `HEAVY`, `scriptedLlm(s)`, `webOk()`, `ARM`, `SHADOW`, `sinkOf(worker)`, `projectRun(store, run_id, outcome, ids)`, `IdMap`.
+- Consumes: `ompWorker`, `until` (`tests/helpers/omp-worker.ts:21, 41`), `pinOmpEnv`, `pinEnabledFlags`, `shortTmp`, `useFakeOmp` (`tests/helpers/omp-env.ts`), `createQueuedTurnRun` (`tests/helpers/runs.ts:8`), `CoreWorker.triageTurn`, `submitTurn`, `shutdownPlanners`, `breakLaneFinalizeOnceForTest`, `recordTriageOverride`.
+- Produces (used by Tasks 8a, 8b and 12's reasoning): `triageHarness(fetch, o)`, `treeSays(o)`, `cat`, `only`, `scope`, `level`, `LIGHT`, `NONE`, `HEAVY`, `jevDown`, `jevStatus`, `jevNotJson`, `scriptedLlm(s)`, `picks`, `webOk()`, `calibrationFile()`, `ARM`, `SHADOW`, `sinkOf(worker)`, `projectRun(store, run_id, outcome, ids)`, `IdMap`.
+- The frozen set (Tasks 8b and 13 check it with `git diff --exit-code <task-2 sha>`): `tests/helpers/triage-harness.ts`, `tests/core/turn-handler-pin.test.ts`, `tests/core/turn-handler-pin-throws.test.ts`, `tests/core/turn-handler-routed-by.test.ts`, `tests/core/__pins__/`.
 
 - [ ] **Step 1: Write `tests/helpers/triage-harness.ts`**
 
@@ -428,8 +556,9 @@ import { ompWorker } from "./omp-worker.js";
 import { createQueuedTurnRun } from "./runs.js";
 
 /**
- * One triage harness for the pin (Task 2) and the ladder tests (Task 8): a fake Jev answer, the test-injected seat told
- * apart by its prompt, and every arming row in a gate-only calibration file. Tests only.
+ * One triage harness for the pin (Task 2) and the ladder tests (Task 8b): a fake Jev answer, the test-injected seat told
+ * apart by its prompt, and every arming row in a gate-only calibration file. Tests only. Frozen after Task 2: a change
+ * here could hide a behaviour change from the pin.
  */
 export const REPORTED = "jev-1.13.0";
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -457,6 +586,8 @@ export const treeSays = (o: Says = {}) => vi.fn(async (_url?: unknown, _init?: u
     breadth: level(o.breadth ?? LIGHT), reasoning: level(o.reasoning ?? LIGHT), actions: level(o.actions ?? NONE) } }));
 export const jevDown = () => vi.fn(async () => { throw new TypeError("fetch failed"); });
 export const jevStatus = (status: number) => vi.fn(async () => new Response("{}", { status }));
+/** A 200 whose body is not JSON: the client's `parse` skip (jev-client.ts:173). */
+export const jevNotJson = () => vi.fn(async () => new Response("not json", { status: 200 }));
 
 export type Llm = (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
 export interface LlmScript { compose?: Llm; cascade?: Llm; distill?: Llm }
@@ -488,7 +619,8 @@ export const ARM: Record<string, string> = { HOUGE_JEV_ENABLED: "1", HOUGE_JEV_T
 export const SHADOW: Record<string, string> = { HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "shadow" };
 
 export interface HarnessOptions { env?: Record<string, string>; llm?: Llm; web?: Llm; jevNow?: () => Date }
-export interface TurnOptions { signal?: AbortSignal; modality?: TurnModality; posture?: string | null }
+/** `noState`: skip buildOmpTools, so the turn has no OmpTurnState (today's `!state` exit, skip reason `error`). */
+export interface TurnOptions { signal?: AbortSignal; modality?: TurnModality; posture?: string | null; noState?: boolean }
 /** Env first (the worker reads boot-time switches in its constructor), then the store and the worker. */
 export function triageHarness(fetchImpl: unknown, o: HarnessOptions = {}) {
   vi.stubEnv("HOUGE_JEV_CALIBRATION_FILE", calibrationFile()); vi.stubEnv("HOUGE_JEV_GATE", "1"); vi.stubEnv("TYPESAFE_API_KEY", "test-key");
@@ -499,7 +631,7 @@ export function triageHarness(fetchImpl: unknown, o: HarnessOptions = {}) {
   const turn = (text: string, t: TurnOptions = {}) => {
     const run_id = createQueuedTurnRun(store, text);
     const claim = store.claimRun(run_id, "w", 120)!;
-    worker.buildOmpTools(claim, "555");
+    if (!t.noState) worker.buildOmpTools(claim, "555");
     return { run_id, input: { claim, text, userText: text, modality: t.modality ?? "text", posture: t.posture ?? null, signal: t.signal ?? new AbortController().signal } };
   };
   return { store, worker, turn };
@@ -525,23 +657,38 @@ export class IdMap {
   deep<T>(x: T): T { return x === undefined ? x : JSON.parse(this.map(JSON.stringify(x))) as T; }
 }
 
-/** Columns that are ids, clocks or (for the pin) state built from wall-clock ages: dropped from the projection. */
+/**
+ * Columns that are ids or clocks: dropped from the projection. `state_hash` is KEPT (senior W1): with no prior Houge turn
+ * and no quote the tree state carries no clock, so its hash pins the Jev request content that Task 8b moves.
+ */
 const DROP: ReadonlySet<string> = new Set(["decision_id", "ladder_decision_id", "run_id", "verdict_id", "created_at", "updated_at", "latency_ms",
-  "thread_cut_at", "state_built_at", "state_hash"]);
+  "thread_cut_at", "state_built_at"]);
 function clean(row: object, ids: IdMap): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(row)) if (!DROP.has(k)) out[k] = typeof v === "string" ? ids.map(v) : v;
   return out;
 }
 
-/** Everything triage persists for one run, ids mapped: decision rows, the verdict (with its id, so links show), the triage event(s), saves. */
+/** The verdict → model-call join (consumer 11): each llm_attempt's role and routed_by, ids mapped. */
+function attemptsOf(events: ReturnType<RunStore["getLedgerEvents"]>, ids: IdMap): Array<[unknown, string | null]> {
+  return events.filter((e) => e.event_type === "llm_attempt").map((e) => {
+    const p = e.payload as { role?: unknown; routed_by?: string };
+    return [p.role ?? null, p.routed_by === undefined ? null : ids.map(p.routed_by)];
+  });
+}
+
+/** Everything triage persists for one run, ids mapped: decision rows, the verdict (with its id, so links show), the route's link, model calls, the triage event(s), saves. */
 export function projectRun(store: RunStore, run_id: string, outcome: unknown, ids: IdMap): Record<string, unknown> {
   const v = store.getJevVerdictForRun(run_id);
   const events = store.getLedgerEvents(run_id);
+  const routeVerdict = (outcome as { route?: { verdict_id?: string | null } } | null)?.route?.verdict_id;
   return {
     outcome: ids.deep(outcome),
     jev_decisions: store.listJevDecisions(run_id).map((r) => clean(r, ids)),
     verdict: v ? { id: ids.map(v.verdict_id), ...clean(v, ids) } : null,
+    // the supervisor sets routed_by from route.verdict_id (planner-supervisor.ts:499): it must name this run's verdict row
+    route_links_verdict: routeVerdict === undefined ? null : routeVerdict === (v?.verdict_id ?? null),
+    llm_attempts: attemptsOf(events, ids),
     triage: events.filter((e) => e.event_type === "triage").map((e) => ids.deep(e.payload)),
     lessons_saved: events.filter((e) => e.event_type === "lesson_saved").length
   };
@@ -555,15 +702,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { recordTriageOverride } from "../../src/gateway/memlane-commands.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 import {
-  ARM, cat, HEAVY, IdMap, jevDown, jevStatus, LIGHT, only, picks, projectRun, scriptedLlm, SHADOW, sinkOf, treeSays, triageHarness, webOk,
+  ARM, cat, HEAVY, IdMap, jevDown, jevNotJson, jevStatus, LIGHT, only, picks, projectRun, scriptedLlm, SHADOW, sinkOf, treeSays, triageHarness, webOk,
   type Harness, type HarnessOptions, type Says, type TurnOptions
 } from "../helpers/triage-harness.js";
 
 // Spec §6.2 step 1 ("pin"): today's turn.handler behaviour over a corpus covering every exit and every later mutation a
-// consumer makes, projected as what triage persists — jev_decisions, the jev_verdicts row, the triage event, the outcome,
-// lane_replies and the catch-up boundary — with ids mapped and clocks dropped. The files were written on the pre-ladder
-// code (main @ 3bff437); the migration (Task 8) must leave every one byte-identical. A projection that still matches after
-// a behaviour change would be a hole, so it keeps every column a consumer reads (see the consumer table in the plan).
+// consumer makes, projected as what triage persists — jev_decisions (state_hash included), the jev_verdicts row, the
+// route's link to it, the run's llm_attempt routed_by values, the triage event, the outcome, lane_replies and the catch-up
+// boundary — with ids mapped and clocks dropped. The files were written on the pre-ladder code (main @ 3bff437); the
+// migration (Task 8b) must leave every one byte-identical. A projection that still matches after a behaviour change would
+// be a hole, so it keeps every column a consumer reads (see the consumer table in the plan).
 
 const RULE: Says = { category: cat({ memory: 0.9 }), sets_rule: 0.95 };
 const notDurable = scriptedLlm({ distill: async () => ({ ok: true, output: { answer: JSON.stringify({ durable: false }) } }) });
@@ -572,8 +720,19 @@ interface PinCase {
   name: string; text: string; fetch: () => unknown; opts?: HarnessOptions; turn?: TurnOptions;
   before?: (h: Harness) => Promise<string[]> | string[]; // earlier runs to project too (in order)
   prepare?: (h: Harness, run_id: string) => void;        // after the run exists, before triage
-  breakCard?: "memory" | "lane";
+  breakCard?: "memory" | "lane" | "finalize";
   after?: (h: Harness, run_id: string, outcome: unknown) => void;
+}
+
+/**
+ * Cases whose Jev state carries a wall-clock age (a prior Houge turn's "minutes ago"): only their state_hash is masked.
+ * Expected empty; Step 4 adds a case here only if its state_hash flips between runs, and only a prior-turn case may be added.
+ */
+const CLOCK_CASES: ReadonlySet<string> = new Set<string>([]);
+const PRIOR_TURN_CASES: ReadonlySet<string> = new Set(["ack-rule", "think-harder-correction"]);
+
+function maskStateHash(projection: Record<string, unknown>): void {
+  for (const r of projection.jev_decisions as Array<Record<string, unknown>>) if (r.state_hash !== null) r.state_hash = "<clock>";
 }
 
 async function runCase(c: PinCase): Promise<Record<string, unknown>> {
@@ -584,6 +743,7 @@ async function runCase(c: PinCase): Promise<Record<string, unknown>> {
   c.prepare?.(h, t.run_id);
   if (c.breakCard === "memory") h.worker.breakMemoryLaneCardForTest();
   if (c.breakCard === "lane") h.worker.breakLaneCardForTest();
+  if (c.breakCard === "finalize") h.worker.breakLaneFinalizeOnceForTest();
   const outcome = await h.worker.triageTurn(t.input);
   c.after?.(h, t.run_id, outcome);
   const isStatus = h.store.getJevVerdictForRun(t.run_id)?.lane === "status" && (outcome as { kind?: string }).kind === "lane_reply";
@@ -594,6 +754,7 @@ async function runCase(c: PinCase): Promise<Record<string, unknown>> {
     catch_up: h.store.laneTurnsSince("555", null).map((l) => ({ run_id: ids.map(l.run_id), lane: l.lane, verdict_id: l.verdict_id ? ids.map(l.verdict_id) : null, catch_up: l.catch_up })),
     planner_last_answered: h.store.plannerLastAnsweredAt("555") === null ? null : "set"
   };
+  if (CLOCK_CASES.has(c.name)) for (const p of [...result.earlier, result.run]) maskStateHash(p);
   h.store.close();
   return result;
 }
@@ -619,10 +780,12 @@ const CASES: PinCase[] = [
   { name: "modality-photo", text: "这是什么？", fetch: () => vi.fn(), turn: { modality: "photo" } },
   { name: "override", text: "明天悉尼天气怎么样？", fetch: () => treeSays(),
     prepare: (h, run_id) => recordTriageOverride(h.store, createQueuedTurnRun(h.store, "原来的消息"), run_id, "555") },
+  { name: "no-turn-state", text: "以后回复短一点", fetch: () => treeSays(RULE), turn: { noState: true } },
   { name: "ack-rule", text: "谢谢", fetch: () => treeSays(), before: seedPlainAnswer },
   { name: "state-too-large", text: "长".repeat(8_001), fetch: () => treeSays() },
   { name: "jev-transport", text: "以后回复短一点", fetch: jevDown },
   { name: "jev-429", text: "以后回复短一点", fetch: () => jevStatus(429) },
+  { name: "jev-parse", text: "以后回复短一点", fetch: jevNotJson },
   { name: "jev-transport-think-harder", text: "认真想：这个怎么办", fetch: jevDown },
   { name: "shadow", text: "以后回复短一点", fetch: () => treeSays(RULE), opts: { env: SHADOW } },
   { name: "uncalibrated-model", text: "明天悉尼天气怎么样？", fetch: () => treeSays({ model: "jev-9.9.9" }) },
@@ -639,6 +802,7 @@ const CASES: PinCase[] = [
   { name: "memory-lane-saved", text: "从现在起，回复请控制在三句话以内。", fetch: () => treeSays(RULE) },
   { name: "memory-lane-not-durable", text: "从现在起，回复请控制在三句话以内。", fetch: () => treeSays(RULE), opts: { llm: notDurable } },
   { name: "memory-card-throws-after-save", text: "从现在起，回复请控制在三句话以内。", fetch: () => treeSays(RULE), breakCard: "memory" },
+  { name: "memory-lane-finalize-rolled-back", text: "从现在起，回复请控制在三句话以内。", fetch: () => treeSays(RULE), breakCard: "finalize" },
   { name: "two-request", text: "以后用摄氏度。顺便帮我订明天的会议室", fetch: () => treeSays({ ...RULE, actions: HEAVY }) },
   { name: "rule-on-lookup", text: "以后温度都用摄氏度。明天悉尼天气怎么样？", fetch: () => treeSays({ category: cat({ lookup: 0.9 }), sets_rule: 0.95, actions: LIGHT }), opts: { web: webOk() } },
   { name: "answer-lane", text: "你觉得 NAS 放在客厅还是书房更好？", fetch: () => treeSays({ category: cat({ answer: 0.9 }) }) },
@@ -681,37 +845,143 @@ describe("turn.handler pin (spec §6.2: behaviour, not only verdicts)", () => {
     await expect(`${JSON.stringify(projectRun(h.store, t.run_id, outcome, ids), null, 2)}\n`).toMatchFileSnapshot("./__pins__/turn-handler/aborted-during-jev.json");
     h.store.close();
   });
+
+  // The clock mask may only ever cover a case with a prior turn: anything else would hide the Jev request content.
+  it("masks state_hash only for prior-turn cases", () => {
+    for (const name of CLOCK_CASES) expect(PRIOR_TURN_CASES.has(name)).toBe(true);
+  });
 });
 ```
 
-- [ ] **Step 3: Generate the snapshots on the untouched code**
+- [ ] **Step 3: Write `tests/core/turn-handler-pin-throws.test.ts`**
+
+```ts
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { IdMap, projectRun, treeSays, triageHarness } from "../helpers/triage-harness.js";
+
+// Plan ruling 19 / spec §6.2 step 4 (failure behaviour matches): a throw in the tree policy after Jev answered but before
+// today's `held.answered` (core-worker.ts:2782-2786 at 3bff437) settles skipped `error` and drops Jev's answered rows.
+// Task 8b moves that call into turn-handler-ladder.ts; this snapshot holds it to today's settle. Its own file because
+// vi.mock replaces the module for the whole file.
+const fault = vi.hoisted(() => ({ next: false }));
+vi.mock("../../src/jev/tree-policy.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../src/jev/tree-policy.js")>();
+  return {
+    ...real,
+    routeTree: (...a: Parameters<typeof real.routeTree>) => {
+      if (fault.next) { fault.next = false; throw new Error("policy fault (test)"); }
+      return real.routeTree(...a);
+    }
+  };
+});
+
+afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); fault.next = false; });
+
+describe("turn.handler pin: a policy throw after Jev answered", () => {
+  it("routeTree-throws-after-answer", async () => {
+    const h = triageHarness(treeSays());
+    const t = h.turn("帮我整理一下这周的待办");
+    fault.next = true;
+    const outcome = await h.worker.triageTurn(t.input);
+    expect(fault.next).toBe(false); // the fault fired: the snapshot is the throw path, not a normal route
+    await expect(`${JSON.stringify(projectRun(h.store, t.run_id, outcome, new IdMap()), null, 2)}\n`)
+      .toMatchFileSnapshot("./__pins__/turn-handler/routeTree-throws-after-answer.json");
+    h.store.close();
+  });
+});
+```
+
+- [ ] **Step 4: Write `tests/core/turn-handler-routed-by.test.ts`**
+
+```ts
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CoreWorker } from "../../src/core/core-worker.js";
+import { RunStore } from "../../src/run/run-store.js";
+import { pinEnabledFlags, pinOmpEnv, shortTmp, useFakeOmp } from "../helpers/omp-env.js";
+import { ompWorker, until } from "../helpers/omp-worker.js";
+import { createQueuedTurnRun } from "../helpers/runs.js";
+import { ARM, calibrationFile, cat, treeSays } from "../helpers/triage-harness.js";
+
+// Consumer 11 (spec §5.3): a routed turn's first planner llm_attempt carries routed_by = its jev_verdicts row id — the join
+// every precision report reads. The pin sees the route's verdict id; this drives the real supervisor over triageTurn
+// (core-worker.ts:2226) so the join itself is checked, before (Task 2) and after (Task 8b) the ladder moves the decision.
+pinOmpEnv();
+pinEnabledFlags();
+let worker: CoreWorker | undefined;
+let store: RunStore | undefined;
+let cleanup: (() => void) | undefined;
+afterEach(async () => {
+  await worker?.shutdownPlanners();
+  store?.close();
+  cleanup?.();
+  worker = undefined; store = undefined; cleanup = undefined;
+  vi.unstubAllEnvs();
+});
+
+describe("routed_by joins the planner's first model call to the verdict row", () => {
+  it("a routed planner turn: the first compose attempt's routed_by is the verdict id; later attempts carry none", async () => {
+    const tmp = shortTmp("hrb-");
+    cleanup = tmp.cleanup;
+    vi.stubEnv("HOUGE_TOMBSTONE_PATH", join(tmp.dir, "houge.kill"));
+    vi.stubEnv("HOUGE_JEV_CALIBRATION_FILE", calibrationFile()); vi.stubEnv("HOUGE_JEV_GATE", "1"); vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    for (const [k, v] of Object.entries(ARM)) vi.stubEnv(k, v);
+    useFakeOmp({ "*": { rpcText: "好的，已整理。" } }, tmp.dir);
+    store = RunStore.openInMemory();
+    const s = store;
+    worker = ompWorker(s, tmp.dir, { jevFetch: treeSays({ category: cat({ other: 0.9 }) }) as unknown as typeof fetch });
+    const run = createQueuedTurnRun(s, "帮我整理一下这周的待办");
+    worker.submitTurn(run);
+    await until(() => s.getRunState(run) === "completed");
+    const v = s.getJevVerdictForRun(run);
+    expect(v).toMatchObject({ lane: "planner", reason: "routed" });
+    const compose = s.getLedgerEvents(run).filter((e) => e.event_type === "llm_attempt" && (e.payload as { role?: string }).role === "compose")
+      .map((e) => (e.payload as { routed_by?: string }).routed_by ?? null);
+    expect(compose.length).toBeGreaterThan(0);
+    expect(compose[0]).toBe(v!.verdict_id);
+    expect(compose.slice(1).every((r) => r === null)).toBe(true);
+  });
+});
+```
+
+- [ ] **Step 5: Generate the snapshots on the untouched code**
 
 Run: `git diff --quiet main -- src/core/core-worker.ts src/jev/ && echo CLEAN`
 Expected: `CLEAN` (the pin must be written by today's code).
-Run: `npx vitest run tests/core/turn-handler-pin.test.ts -u`
-Expected: PASS, 36 tests, 36 files written under `tests/core/__pins__/turn-handler/`.
+Run: `npx vitest run tests/core/turn-handler-pin.test.ts tests/core/turn-handler-pin-throws.test.ts -u`
+Expected: PASS, 41 tests (38 cases, `aborted-during-jev`, the clock-mask check, the throw case), 40 files written under
+`tests/core/__pins__/turn-handler/`.
+Run: `npx vitest run tests/core/turn-handler-routed-by.test.ts`
+Expected: PASS on today's code. If it fails, the fixture is wrong (not the code): fix the test until it passes here,
+before any code changes, and say what was fixed in the commit body.
 
-- [ ] **Step 4: Prove the snapshots are deterministic**
+- [ ] **Step 6: Prove the snapshots are deterministic**
 
-Run three times: `npx vitest run tests/core/turn-handler-pin.test.ts`
-Expected: PASS each time with no snapshot written. If a case flips between runs, find the field (it will be a clock or
-live status text), normalise it in `runCase` the way `<status text>` is, regenerate with `-u`, and name the field in the
-commit body. Then open three files and check by eye: `status-lane.json` shows `lane: "status"`, `handler_outcome:
-"lane_reply"`; `cascade-pick.json` shows `cascade: "tiny"`, `reason: "cascade"`, `cascade_between`; `aborted-during-jev.json`
-shows no decision rows and `verdict: null`.
+Run three times: `CI=1 npx vitest run tests/core/turn-handler-pin.test.ts tests/core/turn-handler-pin-throws.test.ts`
+Expected: PASS each time with no snapshot written (`CI=1` makes vitest refuse to write a missing snapshot). If a case
+flips between runs, find the field. A live status text is normalised in `runCase` the way `<status text>` is; a
+`state_hash` that flips is allowed only for a case in `PRIOR_TURN_CASES` and is added to `CLOCK_CASES`; anything else is
+a determinism bug in the harness to fix. Regenerate with `-u`, and name the field and case in the commit body. Then open
+four files and check by eye: `status-lane.json` shows `lane: "status"`, `handler_outcome: "lane_reply"`;
+`cascade-pick.json` shows `cascade: "tiny"`, `reason: "cascade"`, `cascade_between`; `aborted-during-jev.json` shows no
+decision rows and `verdict: null`; `routeTree-throws-after-answer.json` shows one skipped row with `skip_reason: "error"`.
 
-- [ ] **Step 5: Prove the pin bites**
+- [ ] **Step 7: Prove the pin bites**
 
-Temporarily change `TREE_BAR_DEFAULTS.choice` in `src/jev/tree-policy.ts:43` from `0.6` to `0.5`, run
-`npx vitest run tests/core/turn-handler-pin.test.ts`, expect at least `cascade-pick` and `cascade-failed` to FAIL, then
-revert with `git checkout src/jev/tree-policy.ts`.
+Temporarily change `TREE_BAR_DEFAULTS.choice` in `src/jev/tree-policy.ts:43` from `0.6` to `0.4`, run
+`CI=1 npx vitest run tests/core/turn-handler-pin.test.ts`, and expect at least `cascade-pick`, `cascade-failed` and
+`cascade-pick-with-rule` to FAIL: their top probability 0.45 now clears the bar, so `routeTree` routes `answer` as a final
+route (the answer lane: `reason`, `cascade`, `cascade_between` and the lane change) instead of the cascade. Revert with
+`git checkout src/jev/tree-policy.ts` and confirm `git diff --quiet main -- src/jev/ && echo CLEAN`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add tests/helpers/triage-harness.ts tests/core/turn-handler-pin.test.ts tests/core/__pins__/turn-handler
+git add tests/helpers/triage-harness.ts tests/core/turn-handler-pin.test.ts tests/core/turn-handler-pin-throws.test.ts tests/core/turn-handler-routed-by.test.ts tests/core/__pins__/turn-handler
 git commit -m "test(core): pin turn.handler behaviour before the decision ladder"
 ```
+
+Record this commit's sha in the task report as `<task-2 sha>`: Tasks 8b and 13 diff the frozen set against it.
 
 ## Task 3: Decision types and the runner (`decideSync`, `decide`)
 
@@ -724,7 +994,7 @@ git commit -m "test(core): pin turn.handler behaviour before the decision ladder
 **Interfaces:**
 - Consumes: `Question` (`src/jev/questions/types.ts:28`, type only).
 - Produces (exact names later tasks import):
-  - `types.ts`: `DECISION_STAGES`, `DecisionStage`, `RUNG_KINDS`, `RungKind`, `DecidedBy`, `ArmedMode`, `RecordedArmedMode`, `FALLBACK_REASONS`, `FallbackReason`, `DECISION_SIGNALS`, `DecisionSignal`, `VerdictEffect`, `ProvisionalBar`, `CalibratedBar`, `BarRef`, `PromptRef`, `RungAnswer<V, D>`, `RungAbstain<V, D>`, `RungFailed<D>`, `RungResult<V, D>`, `RuleRung<S, V, D>`, `JevRung`, `ModelRung`, `PacoRung`, `Rung<S, V, D>`, `Entry<S, V, D>`, `AnyEntry`, `RungOutcome<V, D>`, `DecideResult<V, D>`, `AnyDecideResult`, `DecisionRecorder`, `RungExecutors<S, V, D>`, `DecideCtx<S, V, D>`.
+  - `types.ts`: `DECISION_STAGES`, `DecisionStage`, `RUNG_KINDS`, `RungKind`, `DecidedBy`, `ArmedMode`, `RecordedArmedMode`, `FALLBACK_REASONS`, `FallbackReason`, `DECISION_SIGNALS`, `DecisionSignal`, `RUNNER_REASON_CODES`, `InputSource`, `EffectKind`, `Announce`, `VerdictEffect`, `ProvisionalBar`, `CalibratedBar`, `BarRef`, `PromptRef`, `RungAnswer<V, D>`, `RungAbstain<V, D>`, `RungFailed<D>`, `RungResult<V, D>`, `RuleRung<S, V, D>`, `JevRung`, `ModelRung`, `PacoRung`, `Rung<S, V, D>`, `Entry<S, V, D>`, `AnyEntry`, `RungOutcome<V, D>`, `DecideResult<V, D>`, `AnyDecideResult`, `DecisionRecorder`, `RungExecutors<S, V, D>`, `DecideCtx<S, V, D>`.
   - `entry-ids.ts`: `ENTRY_IDS`, `LOCKED_ENTRY_IDS`.
   - `decide.ts`: `decideSync<S, V extends string, D = never>(entry: Entry<S, V, D>, s: S, ctx: DecideCtx<S, V, D>): DecideResult<V, D>` and `decide<S, V extends string, D = never>(entry: Entry<S, V, D>, s: S, ctx: DecideCtx<S, V, D>): Promise<DecideResult<V, D>>`. Neither throws for a rung failure; `decideSync` throws only on a non-rule rung (a programming error the registry test prevents).
 
@@ -743,6 +1013,7 @@ export const RUNG_KINDS = ["rule", "jev", "model", "paco"] as const;
 export type RungKind = (typeof RUNG_KINDS)[number];
 /** The rung a decision names: one of the four, or `fail` when no rung answered and the entry's `fail` verdict stands. */
 export type DecidedBy = RungKind | "fail";
+/** `shadow` and `off` exist for the runner's input only: R13 forbids them on a registered entry (registry.ts). */
 export type ArmedMode = "on" | "shadow" | "off";
 /** How a recorded row's non-rule rungs ran; `late` is a verdict that arrived after its caller stopped waiting (stage 2b). */
 export type RecordedArmedMode = "on" | "shadow" | "late";
@@ -752,8 +1023,20 @@ export type FallbackReason = (typeof FALLBACK_REASONS)[number];
 export const DECISION_SIGNALS = ["correction", "dig_deeper", "review_ok", "review_bad", "review_unsure", "approval_denied", "approval_expired", "rating",
   "settle_sent_back", "planner_failed", "recurrence", "abandoned", "lesson_unfollowed"] as const;
 export type DecisionSignal = (typeof DECISION_SIGNALS)[number];
-/** What a verdict may cause when a Jev or model rung chose it (spec §4.1: Jev never causes an effect on its own). */
-export type VerdictEffect = "none" | "reply" | "proposal" | "effect";
+/** Reason codes the runner itself produces; recordable for every entry (record.ts). */
+export const RUNNER_REASON_CODES = ["no_executor", "floor_held"] as const;
+
+/** Spec §4.1 (R12): what the entry's judges read. `mixed` is treated as `tool`. */
+export type InputSource = "paco" | "tool" | "mixed";
+/** What a verdict causes: nothing, a reply, a tightening (withhold, add a tap, send back once), a proposal for Paco's tap, or an effect. */
+export type EffectKind = "none" | "reply" | "tighten" | "proposal" | "effect";
+/** How Paco learns of it: a code-built card (with its Undo / Dig deeper), the turn's reply, or not at all. */
+export type Announce = "card" | "reply" | "none";
+/**
+ * Spec §4.1 (R12): each verdict's effect, declared. registry.ts `entryProblems` fails a Jev or model rung that can cause an
+ * effect that is not reversible or not announced, and anything but `none` / `tighten` / `proposal` over tool input.
+ */
+export interface VerdictEffect { kind: EffectKind; reversible: boolean; announced: Announce; what?: string }
 
 /** Spec §4.2: a bar from an external measurement, kept in registry code; monotone or fail-open entries only. */
 export interface ProvisionalBar { kind: "provisional"; question: string; criteriaHash: string; model: string; p: number; source: string }
@@ -782,6 +1065,8 @@ export interface Entry<S, V extends string, D = never> {
   /** Bumped on any wording, rung or bar change. */
   version: number;
   stage: DecisionStage;
+  /** What the judges read (R12): Paco's own message, tool-derived input, or both (treated as tool). */
+  input: InputSource;
   question: string;
   /** Closed, always including an escape value. */
   verdicts: readonly V[];
@@ -795,9 +1080,10 @@ export interface Entry<S, V extends string, D = never> {
   defaultVerdict: V;
   alwaysRecord?: true;
   outcomes: readonly DecisionSignal[];
+  /** Every registered entry is armed `on` (R13); the type keeps the runner's modes for tests and for ctx.armed. */
   armed: Partial<Record<RungKind, ArmedMode>>;
   effects: Readonly<Record<V, VerdictEffect>>;
-  /** The code-owned reason codes a row may carry; anything else is recorded as null. */
+  /** The code-owned reason codes a row may carry (plus RUNNER_REASON_CODES); anything else is recorded as null. */
   reasonCodes: readonly string[];
 }
 /** Any entry, for the registry and the recorder (a rule's state parameter is contravariant, so `never` accepts all). */
@@ -810,8 +1096,9 @@ export interface DecideResult<V, D = never> {
   rung: DecidedBy;
   p?: number;
   reason: string | null;
-  /** The first failure in the walk (null when none failed). */
+  /** The first failure in the walk (null when none failed), and the kind of rung that failed (codex W6). */
   fallbackReason: FallbackReason | null;
+  fallbackRung: RungKind | null;
   armedMode: RecordedArmedMode;
   /** The `decisions` row, or null when none was written (routine, or the write failed). */
   decisionId: string | null;
@@ -834,7 +1121,10 @@ export interface DecideCtx<S, V, D> {
   run_id: string | null;
   tool_call_id?: string | null | undefined;
   recorder: DecisionRecorder;
-  /** The off switch (off-switch.ts `armedOverride`); ignored for locked entries. */
+  /**
+   * Overrides the entry's arming for this call. Only the migrated front door passes it, to keep today's configured
+   * `HOUGE_JEV_TRIAGE_ENABLED=shadow` (R13: no off switch, no designed shadow). Ignored for locked entries.
+   */
   armed?: Partial<Record<RungKind, ArmedMode>> | undefined;
   exec?: RungExecutors<S, V, D> | undefined;
   clock?: (() => number) | undefined;
@@ -867,8 +1157,10 @@ import { decide, decideSync } from "../../src/decisions/decide.js";
 import type { AnyDecideResult, DecisionRecorder, Entry, RungResult } from "../../src/decisions/types.js";
 
 // Spec §4.1 / §5.1: code goes first; a thrown rule, a timeout or an outage is an abstention, so `fail` decides, never an
-// accident; a monotone judge can only tighten; a shadow rung is asked and never applied; recording never changes a decision.
+// accident; a monotone judge can only tighten; a shadow rung (the front door's configured shadow, R13) is asked and never
+// applied; recording never changes a decision.
 type V = "pass" | "ask" | "deny";
+const NO_FX = { kind: "none", reversible: true, announced: "none" } as const;
 type S = { rule: V | "abstain" | "throw"; floor?: V };
 const recorded: AnyDecideResult[] = [];
 const recorder: DecisionRecorder = { record: (_e, r) => { recorded.push(r); return "dec_test"; } };
@@ -879,11 +1171,11 @@ const rule = (s: S) => {
 };
 function entry(o: Partial<Entry<S, V>> = {}): Entry<S, V> {
   return {
-    id: "test.entry", version: 1, stage: "pre_tool", question: "q", verdicts: ["pass", "ask", "deny"],
+    id: "test.entry", version: 1, stage: "pre_tool", input: "paco", question: "q", verdicts: ["pass", "ask", "deny"],
     ladder: [{ kind: "rule", name: "r", decide: rule }, { kind: "jev", name: "j", questions: [], bars: { kind: "calibrated", questionIds: [], p: 0.5 }, timeoutMs: 50 },
       { kind: "model", name: "m", role: "tiny", prompt: { id: "p", version: 1 }, timeoutMs: 50 }],
     fail: "ask", defaultVerdict: "pass", outcomes: [], armed: { rule: "on", jev: "on", model: "on" },
-    effects: { pass: "none", ask: "none", deny: "none" }, reasonCodes: ["code", "judge"], ...o
+    effects: { pass: NO_FX, ask: NO_FX, deny: NO_FX }, reasonCodes: ["code", "judge"], ...o
   };
 }
 const answers = (v: V, p = 0.9) => vi.fn(async (): Promise<RungResult<V>> => ({ verdict: v, p, reason: "judge" }));
@@ -902,11 +1194,11 @@ describe("decide: the walk", () => {
     const jev = answers("deny", 0.8);
     const r = await decide(entry(), { rule: "abstain" }, { run_id: null, recorder, exec: { jev } });
     expect(jev).toHaveBeenCalledOnce();
-    expect(r).toMatchObject({ verdict: "deny", rung: "jev", p: 0.8, fallbackReason: null });
+    expect(r).toMatchObject({ verdict: "deny", rung: "jev", p: 0.8, fallbackReason: null, fallbackRung: null });
   });
-  it("a failing Jev rung passes to the model; the first failure is the recorded fallback reason", async () => {
+  it("a failing Jev rung passes to the model; the first failure and its rung kind are recorded (a model answer is not a Jev skip)", async () => {
     const r = await decide(entry(), { rule: "abstain" }, { run_id: null, recorder, exec: { jev: fails("outage"), model: answers("pass") } });
-    expect(r).toMatchObject({ verdict: "pass", rung: "model", fallbackReason: "outage" });
+    expect(r).toMatchObject({ verdict: "pass", rung: "model", fallbackReason: "outage", fallbackRung: "jev" });
   });
   it("every rung failing: the entry's fail verdict stands, rung fail", async () => {
     const r = await decide(entry(), { rule: "abstain" }, { run_id: null, recorder, exec: { jev: fails("outage"), model: fails("parse") } });
@@ -915,7 +1207,7 @@ describe("decide: the walk", () => {
   it("a thrown rule is an abstention (threw), never a crash; the walk goes on", async () => {
     const log = vi.fn();
     const r = await decide(entry(), { rule: "throw" }, { run_id: null, recorder, log, exec: { jev: answers("deny") } });
-    expect(r).toMatchObject({ verdict: "deny", rung: "jev", fallbackReason: "threw" });
+    expect(r).toMatchObject({ verdict: "deny", rung: "jev", fallbackReason: "threw", fallbackRung: "rule" });
     expect(log.mock.calls[0]?.[0]).toMatch(/test\.entry rung r threw/);
   });
   it("a hung rung is cut at its timeout (timeout)", async () => {
@@ -940,11 +1232,13 @@ describe("decide: the walk", () => {
   });
 });
 
-describe("decide: monotone, shadow, off, locked", () => {
+describe("decide: monotone, shadow, locked", () => {
   const mono = (o: Partial<Entry<S, V>> = {}) => entry({ monotone: { order: ["pass", "ask", "deny"] }, ...o });
-  it("a judge less cautious than the rule's floor cannot loosen it", async () => {
+  // Ruling 17: the floor's verdict is the rule's, so the row must not credit Jev with it (stage 2a calibrates on these rows).
+  it("a judge less cautious than the rule's floor cannot loosen it; the floor's rung is named, floor_held, no judge p", async () => {
     const r = await decide(mono(), { rule: "abstain", floor: "ask" }, { run_id: null, recorder, exec: { jev: answers("pass") } });
-    expect(r).toMatchObject({ verdict: "ask", rung: "jev" });
+    expect(r).toMatchObject({ verdict: "ask", rung: "rule", reason: "floor_held" });
+    expect(r.p).toBeUndefined();
   });
   it("a judge more cautious than the floor tightens", async () => {
     const r = await decide(mono(), { rule: "abstain", floor: "ask" }, { run_id: null, recorder, exec: { jev: answers("deny") } });
@@ -961,11 +1255,11 @@ describe("decide: monotone, shadow, off, locked", () => {
     expect(r).toMatchObject({ verdict: "ask", rung: "fail", armedMode: "shadow" });
     expect(r.walk.map((o) => [o.kind, o.mode, o.result === null])).toEqual([["rule", "on", false], ["jev", "shadow", false], ["model", "off", true]]);
   });
-  it("the off switch (ctx.armed) shadows a non-locked entry's judges", async () => {
+  it("ctx.armed (the front door's configured shadow) shadows a non-locked entry's judges", async () => {
     const r = await decide(entry(), { rule: "abstain" }, { run_id: null, recorder, armed: { jev: "shadow", model: "shadow" }, exec: { jev: answers("deny"), model: answers("deny") } });
     expect(r).toMatchObject({ verdict: "ask", rung: "fail", armedMode: "shadow" });
   });
-  it("a locked entry ignores the off switch", () => {
+  it("a locked entry ignores ctx.armed (no caller can shadow or switch off a locked gate)", () => {
     const locked = entry({ locked: true, ladder: [{ kind: "rule", name: "r", decide: rule }], armed: { rule: "on" } });
     const r = decideSync(locked, { rule: "deny" }, { run_id: null, recorder, armed: { rule: "off" } });
     expect(r).toMatchObject({ verdict: "deny", rung: "rule" });
@@ -1013,9 +1307,11 @@ import type {
  * The runner (spec §5.1). Walks the ladder, applies the monotone rule, then records — in that order, so a ledger failure
  * can never change a decision. A thrown rule, a timeout or a missing executor is an abstention that names why.
  */
-interface Walk<V, D> { outcomes: RungOutcome<V, D>[]; floor: V | undefined; fallback: FallbackReason | null; fallbackCode: string | null; shadowed: boolean }
+interface Walk<V, D> {
+  outcomes: RungOutcome<V, D>[]; floor: V | undefined; fallback: FallbackReason | null; fallbackCode: string | null; fallbackRung: RungKind | null; shadowed: boolean;
+}
 type Decided<V, D> = { rung: RungKind; answer: RungAnswer<V, D> } | null;
-const newWalk = <V, D>(): Walk<V, D> => ({ outcomes: [], floor: undefined, fallback: null, fallbackCode: null, shadowed: false });
+const newWalk = <V, D>(): Walk<V, D> => ({ outcomes: [], floor: undefined, fallback: null, fallbackCode: null, fallbackRung: null, shadowed: false });
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 export function decideSync<S, V extends string, D = never>(entry: Entry<S, V, D>, s: S, ctx: DecideCtx<S, V, D>): DecideResult<V, D> {
@@ -1046,7 +1342,7 @@ export async function decide<S, V extends string, D = never>(entry: Entry<S, V, 
   return record(entry, finish(entry, w, null, clock() - started), ctx);
 }
 
-/** A locked entry never reads the off switch (spec §4.1); otherwise the switch overrides the entry's own arming. */
+/** A locked entry never reads ctx.armed (spec §4.1); otherwise ctx.armed (the front door's configured shadow) overrides the entry's arming. */
 function modeOf<S, V extends string, D>(entry: Entry<S, V, D>, kind: RungKind, ctx: DecideCtx<S, V, D>): ArmedMode {
   if (entry.locked) return entry.armed[kind] ?? "on";
   return ctx.armed?.[kind] ?? entry.armed[kind] ?? "on";
@@ -1095,7 +1391,7 @@ function apply<S, V extends string, D>(entry: Entry<S, V, D>, w: Walk<V, D>, kin
   w.outcomes.push({ kind, name, mode, result });
   if (mode === "shadow") { w.shadowed = true; return null; }
   if ("failed" in result) {
-    if (w.fallback === null) { w.fallback = result.failed; w.fallbackCode = result.reason ?? null; }
+    if (w.fallback === null) { w.fallback = result.failed; w.fallbackCode = result.reason ?? null; w.fallbackRung = kind; }
     return null;
   }
   if ("abstain" in result) {
@@ -1119,13 +1415,15 @@ function cautious<S, V extends string, D>(entry: Entry<S, V, D>, a: V | undefine
 }
 
 function finish<S, V extends string, D>(entry: Entry<S, V, D>, w: Walk<V, D>, d: Decided<V, D>, elapsed: number): DecideResult<V, D> {
-  const base = { fallbackReason: w.fallback, armedMode: w.shadowed ? ("shadow" as const) : ("on" as const), decisionId: null, walk: w.outcomes,
-    latencyMs: Math.max(0, Math.round(elapsed)) };
+  const base = { fallbackReason: w.fallback, fallbackRung: w.fallbackRung, armedMode: w.shadowed ? ("shadow" as const) : ("on" as const), decisionId: null,
+    walk: w.outcomes, latencyMs: Math.max(0, Math.round(elapsed)) };
   if (d === null) {
     const verdict = entry.monotone ? cautious(entry, w.floor, entry.fail) : entry.fail;
     return { ...base, verdict, rung: "fail", reason: w.fallbackCode };
   }
   const verdict = entry.monotone ? cautious(entry, w.floor, d.answer.verdict) : d.answer.verdict;
+  // ruling 17: the floor held against a looser judge — the verdict is the rule's, so the row names the rule, not the judge
+  if (verdict !== d.answer.verdict) return { ...base, verdict, rung: "rule", reason: "floor_held" };
   return { ...base, verdict, rung: d.rung, reason: d.answer.reason ?? null, ...(d.answer.p !== undefined ? { p: d.answer.p } : {}),
     ...(d.answer.detail !== undefined ? { detail: d.answer.detail } : {}) };
 }
@@ -1157,7 +1455,7 @@ git commit -m "feat(decisions): entry types and the ladder runner (decide, decid
 
 **Files:**
 - Create: `src/decisions/outcomes.ts`
-- Modify: `src/run/run-store.ts` — imports (top of file); types after `JevVerdictPatch` (`:962`); `JevDecisionRow` (`:932-940`), `JevVerdictInsert` (`:944-947`), `JevVerdictRow` (`:951-958`); `insertJevDecision` (`:4405-4416`), `insertJevVerdict` (`:4433-4442`); new methods after `latestJevVerdictForChat` (`:4487`); `migrate()` (`:6998`, append one call); new migration after `applyLaneRepliesMigration` (`:7166`)
+- Modify: `src/run/run-store.ts` — imports (top of file); types and DDL after `VERDICT_PATCH_COLUMNS` (`:965`); `JevDecisionRow` (`:932-940`), `JevVerdictInsert` (`:944-947`), `JevVerdictRow` (`:951-958`); `insertJevDecision` (`:4405-4416`), `insertJevVerdict` (`:4433-4442`); new methods after `latestJevVerdictForChat` (`:4487`); `migrate()` (`:6998`, append one call); new migration after `applyLaneRepliesMigration` (`:7166`)
 - Modify: `src/jev/decide.ts:69-78` (`recordSkip`, `persistDecisionRows`)
 - Modify: `tests/run/run-store-approvals.test.ts:585-591` (33 → 34)
 - Test: `tests/run/decisions-store.test.ts`, `tests/decisions/outcomes.test.ts`
@@ -1166,8 +1464,8 @@ git commit -m "feat(decisions): entry types and the ladder runner (decide, decid
 - Consumes: `DECISION_STAGES`, `DECISION_SIGNALS`, `FALLBACK_REASONS`, `RUNG_KINDS`, `DecisionStage`, `DecidedBy`, `DecisionSignal`, `FallbackReason`, `RecordedArmedMode`, `RungKind` (Task 3 `types.ts`); `ENTRY_IDS`, `LOCKED_ENTRY_IDS` (Task 3 `entry-ids.ts`).
 - Produces:
   - `outcomes.ts`: `CORRECTION_VALUES`, `DIG_DEEPER_VALUES`, `class OutcomeRejected extends Error`, `checkOutcomeValue(signal: string, value: string | number): string`.
-  - `run-store.ts` types: `DecisionInsert`, `DecisionRow`, `DecisionOutcomeRow`, `LadderMoveInsert`, `class LadderMoveRefused extends Error { code }`, `DecisionDigestRow`.
-  - `RunStore` methods: `insertDecision(d: DecisionInsert): string` (`dec_<uuid>`), `getDecision(id): DecisionRow | undefined`, `listDecisionsForRun(run_id): DecisionRow[]`, `listDecisionsBetween(since, until): DecisionRow[]`, `countDecisionFallbacks(entry_id, since): number`, `countDecisionJevSkips(entry_id, since, until): { attempts: number; failed: number }`, `hasJevAnsweredDecisionSince(entry_id, since): boolean`, `insertDecisionOutcome(o): { inserted: boolean; outcome_id: string | null }`, `listDecisionOutcomes(decision_id): DecisionOutcomeRow[]`, `insertLadderMove(m: LadderMoveInsert): string`, `recordDecisionDigest(d): boolean`, `getDecisionDigest(local_date): DecisionDigestRow | undefined`, `wasDecisionOffered(decision_id, sinceIso): boolean`.
+  - `run-store.ts` types: `DecisionInsert` (with `fallback_rung: RungKind | null`), `DecisionRow`, `DecisionOutcomeRow`, `LadderMoveInsert`, `class LadderMoveRefused extends Error { code }`, `class DecisionRejected extends Error { column }`, `DecisionDigestRow`.
+  - `RunStore` methods: `insertDecision(d: DecisionInsert): string` (`dec_<uuid>`; throws `DecisionRejected` on a stage or fallback reason outside the TS constant), `getDecision(id): DecisionRow | undefined`, `listDecisionsForRun(run_id): DecisionRow[]`, `listDecisionsBetween(since, until): DecisionRow[]`, `countDecisionFallbacks(entry_id, since, excludeJevRung?): number`, `countDecisionJevSkips(entry_id, since, until): { attempts: number; failed: number }`, `hasJevAnsweredDecisionSince(entry_id, since): boolean`, `insertDecisionOutcome(o): { inserted: boolean; outcome_id: string | null }`, `listDecisionOutcomes(decision_id): DecisionOutcomeRow[]`, `insertLadderMove(m: LadderMoveInsert): string`, `recordDecisionDigest(d): boolean`, `getDecisionDigest(local_date): DecisionDigestRow | undefined`, `wasDecisionOffered(decision_id, sinceIso): boolean`.
   - `insertJevDecision` row accepts `ladder_decision_id?: string | null`; `JevVerdictInsert` gains `decision_id?: string | null`; both row types gain the column.
   - `jev/decide.ts`: `recordSkip(store, point, run_id, lang, reason, now?, ladder_decision_id: string | null = null)`; `persistDecisionRows(store, rows, decision, threshold_used, ladder_decision_id: string | null = null)`.
 - Protected: `run-store.ts` (Paco's merge).
@@ -1218,13 +1516,14 @@ import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { OutcomeRejected } from "../../src/decisions/outcomes.js";
-import { LadderMoveRefused, RunStore, type DecisionInsert, type LadderMoveInsert } from "../../src/run/run-store.js";
+import { DecisionRejected, LadderMoveRefused, RunStore, type DecisionInsert, type LadderMoveInsert } from "../../src/run/run-store.js";
 
 // Spec §5.2 / §4.3: the decision ledger holds ids, enums and numbers only (no state column), outcomes are closed values,
 // a review label is one-shot per decision, and only approval.standing's code may write an automatic ladder move — for
 // tool.policy only — while every other loosening row needs Paco's callback id and a locked entry refuses every move.
 const D: DecisionInsert = { entry_id: "turn.handler", entry_version: 1, run_id: "run_1", tool_call_id: null, stage: "pre_model", rung: "jev",
-  verdict: "planner", p: 0.62, reason_code: "routed", fallback_reason: null, armed_mode: "on", latency_ms: 12, created_at: "2026-10-12T10:00:00.000Z" };
+  verdict: "planner", p: 0.62, reason_code: "routed", fallback_reason: null, fallback_rung: null, armed_mode: "on", latency_ms: 12,
+  created_at: "2026-10-12T10:00:00.000Z" };
 const raw = (store: RunStore) => (store as unknown as { db: DatabaseSync }).db;
 const MOVE: LadderMoveInsert = { entry_id: "tool.policy", scope: "fp:a0362e7ddf", from_rung: "paco", to_rung: "rule", evidence: ["dec_1", "dec_2", "dec_3"],
   granted_by: "auto", granted_via: "approval.standing", paco_callback_id: null, revocable: true };
@@ -1237,27 +1536,39 @@ describe("decisions", () => {
     expect(store.getDecision(id)).toMatchObject({ ...D, decision_id: id });
     const cols = raw(store).prepare("PRAGMA table_info(decisions)").all<{ name: string }>().map((c) => c.name);
     expect(cols).toEqual(["decision_id", "entry_id", "entry_version", "run_id", "tool_call_id", "stage", "rung", "verdict", "p", "reason_code",
-      "fallback_reason", "armed_mode", "latency_ms", "created_at"]);
+      "fallback_reason", "fallback_rung", "armed_mode", "latency_ms", "created_at"]);
     store.close();
   });
-  it("the schema refuses an unknown rung, stage, fallback reason or armed mode", () => {
+  // Plan ruling 15 (senior W7): sets a later stage extends are checked in code, so extending one is a constant edit, not
+  // the table rebuild stage B's lane widening needed (run-store.ts:7124); sets the spec fixes keep their CHECK.
+  it("growing enums are refused in code (DecisionRejected), fixed ones by the schema; no CHECK freezes a growing set", () => {
     const store = RunStore.openInMemory();
-    for (const bad of [{ rung: "oracle" }, { stage: "lunch" }, { fallback_reason: "vibes" }, { armed_mode: "maybe" }]) {
+    for (const bad of [{ stage: "lunch" }, { fallback_reason: "vibes" }]) {
+      expect(() => store.insertDecision({ ...D, ...bad } as DecisionInsert)).toThrow(DecisionRejected);
+    }
+    for (const bad of [{ rung: "oracle" }, { armed_mode: "maybe" }, { fallback_rung: "oracle" }]) {
       expect(() => store.insertDecision({ ...D, ...bad } as DecisionInsert)).toThrow(/CHECK constraint failed/);
     }
+    const sql = Object.fromEntries(raw(store).prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN ('decisions', 'decision_outcomes')")
+      .all<{ name: string; sql: string }>().map((t) => [t.name, t.sql]));
+    expect(sql.decisions).not.toMatch(/stage TEXT NOT NULL CHECK|fallback_reason TEXT CHECK/);
+    expect(sql.decision_outcomes).not.toMatch(/signal TEXT NOT NULL CHECK/);
     store.close();
   });
-  it("fallback and skip counts read fallback_reason, per entry, in the window", () => {
+  it("fallback and skip counts read fallback_reason and fallback_rung, per entry, in the window", () => {
     const store = RunStore.openInMemory();
-    store.insertDecision({ ...D, rung: "fail", fallback_reason: "timeout", created_at: "2026-10-12T10:01:00.000Z" });
-    store.insertDecision({ ...D, rung: "fail", fallback_reason: "outage", created_at: "2026-10-12T10:02:00.000Z" });
+    store.insertDecision({ ...D, rung: "fail", fallback_reason: "timeout", fallback_rung: "jev", created_at: "2026-10-12T10:01:00.000Z" });
+    store.insertDecision({ ...D, rung: "fail", fallback_reason: "outage", fallback_rung: "jev", created_at: "2026-10-12T10:02:00.000Z" });
     store.insertDecision({ ...D, rung: "fail", fallback_reason: null, armed_mode: "shadow", created_at: "2026-10-12T10:03:00.000Z" });
     store.insertDecision({ ...D, rung: "rule", reason_code: "posture", created_at: "2026-10-12T10:04:00.000Z" });
-    store.insertDecision({ ...D, rung: "fail", fallback_reason: "budget", created_at: "2026-10-12T10:05:00.000Z" });
-    store.insertDecision({ ...D, entry_id: "turn.gear", rung: "fail", fallback_reason: "timeout", created_at: "2026-10-12T10:06:00.000Z" });
+    store.insertDecision({ ...D, rung: "fail", fallback_reason: "budget", fallback_rung: "jev", created_at: "2026-10-12T10:05:00.000Z" });
+    store.insertDecision({ ...D, rung: "fail", fallback_reason: "outage", fallback_rung: "model", reason_code: "cascade_failed", created_at: "2026-10-12T10:05:30.000Z" });
+    store.insertDecision({ ...D, entry_id: "turn.gear", rung: "fail", fallback_reason: "timeout", fallback_rung: "jev", created_at: "2026-10-12T10:06:00.000Z" });
+    // named, non-budget fails: two on the Jev rung and one cascade failure; with the Jev rung paged elsewhere (ruling 9) only the cascade's
     expect(store.countDecisionFallbacks("turn.handler", "2026-10-12T09:59:00.000Z")).toBe(3);
-    // attempts: every non-rule row except a budget skip (state too large is not a Jev call); failed: the silent four
-    expect(store.countDecisionJevSkips("turn.handler", "2026-10-12T09:00:00.000Z", "2026-10-12T11:00:00.000Z")).toEqual({ attempts: 3, failed: 2 });
+    expect(store.countDecisionFallbacks("turn.handler", "2026-10-12T09:59:00.000Z", true)).toBe(1);
+    // attempts: every non-rule row except a budget skip (state too large is not a Jev call); failed: the silent four, on the Jev rung only
+    expect(store.countDecisionJevSkips("turn.handler", "2026-10-12T09:00:00.000Z", "2026-10-12T11:00:00.000Z")).toEqual({ attempts: 4, failed: 2 });
     expect(store.hasJevAnsweredDecisionSince("turn.handler", "2026-10-12T09:00:00.000Z")).toBe(false);
     store.insertDecision({ ...D, created_at: "2026-10-12T10:07:00.000Z" });
     expect(store.hasJevAnsweredDecisionSince("turn.handler", "2026-10-12T10:06:30.000Z")).toBe(true);
@@ -1298,6 +1609,13 @@ describe("ladder_moves (spec §4.3)", () => {
     expect(refused({ ...MOVE, granted_by: "paco", granted_via: null, paco_callback_id: null, entry_id: "tool.injection" })).toBe("paco_needs_callback");
     expect(refused({ ...MOVE, granted_by: "paco", granted_via: null, paco_callback_id: "cb_1", entry_id: "tool.path" })).toBe("locked_entry");
     expect(refused({ ...MOVE, granted_by: "paco", granted_via: null, paco_callback_id: "cb_1", entry_id: "tool.injection" })).toBe("inserted");
+    store.close();
+  });
+  it("one Paco callback authorises one move only (spec §4.3 one-shot, in the schema)", () => {
+    const store = RunStore.openInMemory();
+    const m: LadderMoveInsert = { ...MOVE, granted_by: "paco", granted_via: null, paco_callback_id: "cb_7", entry_id: "tool.injection" };
+    store.insertLadderMove(m);
+    expect(() => store.insertLadderMove({ ...m, scope: "fp:other" })).toThrow(/UNIQUE constraint failed/);
     store.close();
   });
 });
@@ -1405,7 +1723,7 @@ export function checkOutcomeValue(signal: string, value: string | number): strin
 5a. Imports (beside the existing imports at the top):
 
 ```ts
-import { DECISION_SIGNALS, DECISION_STAGES, FALLBACK_REASONS, RUNG_KINDS } from "../decisions/types.js";
+import { DECISION_STAGES, FALLBACK_REASONS, RUNG_KINDS } from "../decisions/types.js";
 import type { DecidedBy, DecisionSignal, DecisionStage, FallbackReason, RecordedArmedMode, RungKind } from "../decisions/types.js";
 import { checkOutcomeValue } from "../decisions/outcomes.js";
 import { LOCKED_ENTRY_IDS } from "../decisions/entry-ids.js";
@@ -1415,13 +1733,15 @@ import { LOCKED_ENTRY_IDS } from "../decisions/entry-ids.js";
 (`:944-947`): add `decision_id?: string | null;` before `created_at?`. `JevVerdictRow` (`:951-958`): add
 `decision_id: string | null;` after `quoted_turn_id`.
 
-5c. After `VERDICT_PATCH_COLUMNS` (`:965`), add the decision-ladder types and DDL:
+5c. After `VERDICT_PATCH_COLUMNS` (`:965`), add the decision-ladder types and DDL. Growing enums (`stage`,
+`fallback_reason`, outcome `signal`) carry no CHECK and are validated in code (ruling 15); fixed ones keep a CHECK:
 
 ```ts
 /** One recorded decision (ADR 0030, spec §5.2): ids, closed enums and numbers. No state column, never text. */
 export interface DecisionInsert {
   entry_id: string; entry_version: number; run_id: string | null; tool_call_id: string | null; stage: DecisionStage; rung: DecidedBy; verdict: string;
-  p: number | null; reason_code: string | null; fallback_reason: FallbackReason | null; armed_mode: RecordedArmedMode; latency_ms: number; created_at?: string;
+  p: number | null; reason_code: string | null; fallback_reason: FallbackReason | null; fallback_rung: RungKind | null; armed_mode: RecordedArmedMode;
+  latency_ms: number; created_at?: string;
 }
 export type DecisionRow = Omit<DecisionInsert, "created_at"> & { decision_id: string; created_at: string };
 export interface DecisionOutcomeRow { outcome_id: string; decision_id: string; signal: DecisionSignal; value: string; source: "paco" | "code"; created_at: string }
@@ -1434,6 +1754,10 @@ export class LadderMoveRefused extends Error {
   constructor(readonly code: "locked_entry" | "auto_not_standing" | "paco_needs_callback") { super(`ladder move refused: ${code}`); }
 }
 export interface DecisionDigestRow { local_date: string; sent: number; offered: string[]; created_at: string }
+/** A decision row value outside its code-owned set (ruling 15). The message names the column, never the value. */
+export class DecisionRejected extends Error {
+  constructor(readonly column: "stage" | "fallback_reason") { super(`decision rejected: ${column} not allowed`); }
+}
 
 const sqlList = (xs: readonly string[]): string => xs.map((x) => `'${x}'`).join(", ");
 /** The only automatic ladder move the store accepts (spec §4.3): standing approvals, on tool.policy, granted by approval.standing. */
@@ -1447,12 +1771,13 @@ const DECISION_LADDER_DDL = `
     entry_version INTEGER NOT NULL,
     run_id TEXT,
     tool_call_id TEXT,
-    stage TEXT NOT NULL CHECK (stage IN (${sqlList(DECISION_STAGES)})),
+    stage TEXT NOT NULL,
     rung TEXT NOT NULL CHECK (rung IN (${sqlList([...RUNG_KINDS, "fail"])})),
     verdict TEXT NOT NULL,
     p REAL,
     reason_code TEXT,
-    fallback_reason TEXT CHECK (fallback_reason IS NULL OR fallback_reason IN (${sqlList(FALLBACK_REASONS)})),
+    fallback_reason TEXT,
+    fallback_rung TEXT CHECK (fallback_rung IS NULL OR fallback_rung IN (${sqlList(RUNG_KINDS)})),
     armed_mode TEXT NOT NULL CHECK (armed_mode IN ('on', 'shadow', 'late')),
     latency_ms INTEGER NOT NULL,
     created_at TEXT NOT NULL
@@ -1463,7 +1788,7 @@ const DECISION_LADDER_DDL = `
   CREATE TABLE IF NOT EXISTS decision_outcomes (
     outcome_id TEXT PRIMARY KEY,
     decision_id TEXT NOT NULL REFERENCES decisions(decision_id),
-    signal TEXT NOT NULL CHECK (signal IN (${sqlList(DECISION_SIGNALS)})),
+    signal TEXT NOT NULL,
     value TEXT NOT NULL,
     source TEXT NOT NULL CHECK (source IN ('paco', 'code')),
     created_at TEXT NOT NULL
@@ -1488,6 +1813,7 @@ const DECISION_LADDER_DDL = `
     CHECK (granted_by = 'auto' OR paco_callback_id IS NOT NULL)
   );
   CREATE INDEX IF NOT EXISTS ladder_moves_entry_idx ON ladder_moves(entry_id, state);
+  CREATE UNIQUE INDEX IF NOT EXISTS ladder_moves_callback_once ON ladder_moves(paco_callback_id) WHERE paco_callback_id IS NOT NULL;
   CREATE TABLE IF NOT EXISTS decision_digests (
     local_date TEXT PRIMARY KEY,
     sent INTEGER NOT NULL,
@@ -1525,13 +1851,15 @@ after `i.quoted_turn_id`.
   // ── Decision ladder (ADR 0030, spec §4.3, §5.2) ───────────────────────────
 
   insertDecision(d: DecisionInsert): string {
+    if (!(DECISION_STAGES as readonly string[]).includes(d.stage)) throw new DecisionRejected("stage");
+    if (d.fallback_reason !== null && !(FALLBACK_REASONS as readonly string[]).includes(d.fallback_reason)) throw new DecisionRejected("fallback_reason");
     const decision_id = `dec_${randomUUID()}`;
     this.db.prepare(`
       INSERT INTO decisions (decision_id, entry_id, entry_version, run_id, tool_call_id, stage, rung, verdict, p, reason_code, fallback_reason,
-        armed_mode, latency_ms, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        fallback_rung, armed_mode, latency_ms, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(decision_id, d.entry_id, d.entry_version, d.run_id, d.tool_call_id, d.stage, d.rung, d.verdict, d.p, d.reason_code, d.fallback_reason,
-      d.armed_mode, d.latency_ms, d.created_at ?? new Date().toISOString());
+      d.fallback_rung, d.armed_mode, d.latency_ms, d.created_at ?? new Date().toISOString());
     return decision_id;
   }
 
@@ -1548,21 +1876,28 @@ after `i.quoted_turn_id`.
     return this.db.prepare(`SELECT * FROM decisions WHERE created_at > ? AND created_at <= ? ORDER BY created_at ASC, rowid ASC`).all<DecisionRow>(since, until);
   }
 
-  /** `decision_fallback` input (spec §8.2): `fail` rows of one entry with a named failure, after `since`. */
-  countDecisionFallbacks(entry_id: string, since: string): number {
-    return this.db.prepare(`SELECT COUNT(*) AS n FROM decisions WHERE entry_id = ? AND rung = 'fail' AND fallback_reason IS NOT NULL AND created_at > ?`)
-      .get<{ n: number }>(entry_id, since)?.n ?? 0;
+  /**
+   * `decision_fallback` input (spec §8.2, plan ruling 9): `fail` rows of one entry with a named failure other than `budget`,
+   * after `since`. `excludeJevRung`: an entry whose Jev failures already page elsewhere counts only its other rungs' failures.
+   */
+  countDecisionFallbacks(entry_id: string, since: string, excludeJevRung = false): number {
+    return this.db.prepare(`
+      SELECT COUNT(*) AS n FROM decisions
+      WHERE entry_id = ? AND rung = 'fail' AND fallback_reason IS NOT NULL AND fallback_reason <> 'budget' AND created_at > ?
+        AND (? = 0 OR fallback_rung IS NULL OR fallback_rung <> 'jev')
+    `).get<{ n: number }>(entry_id, since, excludeJevRung ? 1 : 0)?.n ?? 0;
   }
 
   /**
    * Per-entry `jev_skip_rate` input (spec §5.2, from `fallback_reason`, not jev_decisions): attempts = rows past the rule
-   * rungs except a budget skip (an oversized state is not a Jev call); failed = timeout, outage, parse or threw.
+   * rungs except a budget skip (an oversized state is not a Jev call); failed = timeout, outage, parse or threw ON THE JEV
+   * RUNG (`fallback_rung`, codex W6: a cascade failure is not a Jev skip).
    */
   countDecisionJevSkips(entry_id: string, since: string, until: string): { attempts: number; failed: number } {
     const row = this.db.prepare(`
       SELECT
         COALESCE(SUM(CASE WHEN rung <> 'rule' AND (fallback_reason IS NULL OR fallback_reason <> 'budget') THEN 1 ELSE 0 END), 0) AS attempts,
-        COALESCE(SUM(CASE WHEN fallback_reason IN ('timeout', 'outage', 'parse', 'threw') THEN 1 ELSE 0 END), 0) AS failed
+        COALESCE(SUM(CASE WHEN fallback_rung = 'jev' AND fallback_reason IN ('timeout', 'outage', 'parse', 'threw') THEN 1 ELSE 0 END), 0) AS failed
       FROM decisions WHERE entry_id = ? AND created_at > ? AND created_at <= ?
     `).get<{ attempts: number; failed: number }>(entry_id, since, until);
     return row ?? { attempts: 0, failed: 0 };
@@ -1698,10 +2033,11 @@ git commit -m "feat(store): decisions, decision_outcomes, ladder_moves and the d
 - Test: `tests/decisions/record.test.ts`
 
 **Interfaces:**
-- Consumes: `AnyEntry`, `AnyDecideResult`, `DecisionRecorder` (Task 3); `RunStore.insertDecision`, `countDecisionFallbacks`, `findOpenIncident`, `incidentFingerprint`, `resolveIncident`, `enqueueNotification`, `DecisionInsert` (Task 4); `openAlertedIncident`, `resolveOpenIncidents` (`src/run/incident-alert.ts:27, 86`).
+- Consumes: `AnyEntry`, `AnyDecideResult`, `DecisionRecorder`, `RUNNER_REASON_CODES` (Task 3); `RunStore.insertDecision`, `countDecisionFallbacks`, `findOpenIncident`, `findRecentlyResolvedIncident`, `incidentFingerprint`, `resolveIncident`, `enqueueNotification`, `DecisionInsert` (Task 4); `ALERT_REOPEN_QUIET_MS`, `openAlertedIncident`, `resolveOpenIncidents` (`src/run/incident-alert.ts:25, 28, 86`).
 - Produces:
   - `urgent.ts`: `interface UrgentCard { chat_id: string; key: string; text: string; buttons?: NotificationButton[] }`, `enqueueUrgentCard(store: RunStore, c: UrgentCard): void`.
-  - `record.ts`: `DECISION_FALLBACK_LIMIT = 3`, `DECISION_FALLBACK_WINDOW_MS = 3_600_000`, `shouldRecord(entry: AnyEntry, r: AnyDecideResult): boolean`, `interface RecorderOptions { env?: NodeJS.ProcessEnv; now?: () => string }`, `storeRecorder(store: RunStore, o?: RecorderOptions): DecisionRecorder`, `fallbackCardText(entry_id: string, n: number): string`.
+  - `record.ts`: `DECISION_FALLBACK_LIMIT = 3`, `DECISION_FALLBACK_WINDOW_MS = 3_600_000`, `JEV_PAGED_ELSEWHERE` (`turn.handler`, `turn.gear`), `shouldRecord(entry: AnyEntry, r: AnyDecideResult): boolean`, `interface RecorderOptions { env?: NodeJS.ProcessEnv; now?: () => string }`, `storeRecorder(store: RunStore, o?: RecorderOptions): DecisionRecorder`, `fallbackCardText(entry_id: string, n: number): string`.
+- `storeRecorder(...).record` never throws and opens no transaction, so Task 8b can call it inside `settleTriage`'s transaction.
 
 - [ ] **Step 1: Write the failing tests `tests/decisions/record.test.ts`**
 
@@ -1715,19 +2051,30 @@ import { drainOutbox } from "../helpers/omp-worker.js";
 
 // Spec §5.2: a row only when it matters (non-default, beyond the first rule, shadow, Paco, or alwaysRecord), so the ledger
 // stays at ~10–15 rows a turn. Spec §4.1: a failed write never changes the decision and opens decision_record_failed.
-// Spec §8.2: three named fallbacks of one entry in an hour page once (decision_fallback:<entry>) and the next answered call clears it.
+// Spec §8.2 + plan ruling 9: three named fallbacks of one entry in an hour page once (decision_fallback:<entry>); only a
+// judge's answer clears it; a reopen inside the 10-minute quiet window sends no second card; a failure another incident
+// already pages (the front door's Jev rung) never pages twice; `budget` is not a failure.
 type V = "pass" | "ask";
-const E: Entry<{ v: V | "abstain" }, V> = {
-  id: "turn.handler", version: 3, stage: "pre_model", question: "q", verdicts: ["pass", "ask"],
+type S = { v: V | "abstain" };
+const FX = { kind: "reply", reversible: true, announced: "card" } as const;
+const E: Entry<S, V> = {
+  id: "test.judge", version: 3, stage: "pre_model", input: "paco", question: "q", verdicts: ["pass", "ask"],
   ladder: [{ kind: "rule", name: "r", decide: (s) => (s.v === "abstain" ? { abstain: true } : { verdict: s.v, reason: "routed" }) },
     { kind: "jev", name: "j", questions: [], bars: { kind: "calibrated", questionIds: [], p: 0.6 }, timeoutMs: 50 }],
-  fail: "pass", defaultVerdict: "pass", outcomes: [], armed: { rule: "on", jev: "on" }, effects: { pass: "reply", ask: "reply" }, reasonCodes: ["routed", "transport"]
+  fail: "pass", defaultVerdict: "pass", outcomes: [], armed: { rule: "on", jev: "on" }, effects: { pass: FX, ask: FX }, reasonCodes: ["routed", "transport"]
 };
 const any = E as unknown as AnyEntry;
-const result = (o: Partial<AnyDecideResult>): AnyDecideResult => ({ verdict: "pass", rung: "rule", reason: null, fallbackReason: null, armedMode: "on",
-  decisionId: null, walk: [{ kind: "rule", name: "r", mode: "on", result: { verdict: "pass" } }], latencyMs: 1, ...o });
+const HANDLER: Entry<S, V> = { ...E, id: "turn.handler",
+  ladder: [...E.ladder, { kind: "model", name: "m", role: "tiny", prompt: { id: "p", version: 1 }, timeoutMs: 50 }], armed: { rule: "on", jev: "on", model: "on" } };
+const result = (o: Partial<AnyDecideResult>): AnyDecideResult => ({ verdict: "pass", rung: "rule", reason: null, fallbackReason: null, fallbackRung: null,
+  armedMode: "on", decisionId: null, walk: [{ kind: "rule", name: "r", mode: "on", result: { verdict: "pass" } }], latencyMs: 1, ...o });
 const ENV = { HOUGE_TELEGRAM_CHAT_ID: "555" };
 const jevDown = vi.fn(async (): Promise<RungResult<V>> => ({ failed: "outage", reason: "transport" }));
+const jevAnswers = vi.fn(async (): Promise<RungResult<V>> => ({ verdict: "pass", reason: "routed" }));
+const jevAbstains = vi.fn(async (): Promise<RungResult<V>> => ({ abstain: true }));
+const modelDown = vi.fn(async (): Promise<RungResult<V>> => ({ failed: "outage", reason: "transport" }));
+const open = (store: RunStore) => store.listOpenIncidents().map((i) => [i.kind, i.subject]);
+const cards = (store: RunStore) => [...drainOutbox(store).values()].map((p) => p.text);
 
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -1745,14 +2092,18 @@ describe("shouldRecord", () => {
   });
 });
 
-describe("storeRecorder", () => {
-  it("writes the row: entry version and stage from the entry, a reason only if the entry lists it, never state", async () => {
+describe("storeRecorder: the row", () => {
+  it("writes entry version and stage from the entry, a reason only if the entry or the runner lists it, the failing rung, never state", async () => {
     const store = RunStore.openInMemory();
     const r = await decide(E, { v: "ask" }, { run_id: "run_1", recorder: storeRecorder(store) });
-    expect(store.getDecision(r.decisionId!)).toMatchObject({ entry_id: "turn.handler", entry_version: 3, stage: "pre_model", rung: "rule", verdict: "ask",
-      reason_code: "routed", run_id: "run_1", armed_mode: "on" });
+    expect(store.getDecision(r.decisionId!)).toMatchObject({ entry_id: "test.judge", entry_version: 3, stage: "pre_model", rung: "rule", verdict: "ask",
+      reason_code: "routed", run_id: "run_1", armed_mode: "on", fallback_rung: null });
     const odd = storeRecorder(store).record(any, result({ verdict: "ask", reason: "free text from somewhere" }), { run_id: null, tool_call_id: null });
     expect(store.getDecision(odd!)?.reason_code).toBeNull();
+    const held = storeRecorder(store).record(any, result({ verdict: "ask", reason: "floor_held" }), { run_id: null, tool_call_id: null });
+    expect(store.getDecision(held!)?.reason_code).toBe("floor_held");
+    const failed = await decide(E, { v: "abstain" }, { run_id: null, recorder: storeRecorder(store), exec: { jev: jevDown } });
+    expect(store.getDecision(failed.decisionId!)).toMatchObject({ rung: "fail", fallback_reason: "outage", fallback_rung: "jev" });
     store.close();
   });
   it("a failed write returns null, keeps the verdict, opens decision_record_failed once; the next good write resolves it", async () => {
@@ -1760,32 +2111,59 @@ describe("storeRecorder", () => {
     const spy = vi.spyOn(store, "insertDecision").mockImplementation(() => { throw new Error("SQLITE_FULL"); });
     const r = await decide(E, { v: "ask" }, { run_id: null, recorder: storeRecorder(store, { env: ENV }), log: () => {} });
     expect(r).toMatchObject({ verdict: "ask", decisionId: null });
-    expect(store.listOpenIncidents().map((i) => [i.kind, i.subject])).toEqual([["decision_record_failed", "turn.handler"]]);
+    expect(open(store)).toEqual([["decision_record_failed", "test.judge"]]);
     spy.mockRestore();
     await decide(E, { v: "ask" }, { run_id: null, recorder: storeRecorder(store, { env: ENV }) });
     expect(store.listOpenIncidents()).toEqual([]);
     store.close();
   });
+});
+
+describe("storeRecorder: decision_fallback (ruling 9)", () => {
   it("three named fallbacks in an hour open decision_fallback:<entry> and send ONE urgent card; a fourth sends nothing more", async () => {
     const store = RunStore.openInMemory();
     const rec = storeRecorder(store, { env: ENV });
     for (let k = 0; k < 4; k += 1) await decide(E, { v: "abstain" }, { run_id: null, recorder: rec, exec: { jev: jevDown } });
-    expect(store.listOpenIncidents().map((i) => [i.kind, i.subject])).toEqual([["decision_fallback", "turn.handler"]]);
-    const cards = [...drainOutbox(store).values()].map((p) => p.text);
-    expect(cards).toEqual([fallbackCardText("turn.handler", 3)]);
+    expect(open(store)).toEqual([["decision_fallback", "test.judge"]]);
+    expect(cards(store)).toEqual([fallbackCardText("test.judge", 3)]);
     store.close();
   });
-  it("the next answered call resolves decision_fallback", async () => {
+  it("a rule answer (a photo, an ack) does not clear it; the next Jev or model answer does", async () => {
     const store = RunStore.openInMemory();
     const rec = storeRecorder(store, { env: ENV });
     for (let k = 0; k < 3; k += 1) await decide(E, { v: "abstain" }, { run_id: null, recorder: rec, exec: { jev: jevDown } });
-    await decide(E, { v: "pass" }, { run_id: null, recorder: rec }); // routine: no row, yet it answered
+    await decide(E, { v: "ask" }, { run_id: null, recorder: rec }); // a rule answered: proves nothing about the judge
+    expect(open(store)).toEqual([["decision_fallback", "test.judge"]]);
+    await decide(E, { v: "abstain" }, { run_id: null, recorder: rec, exec: { jev: jevAnswers } });
     expect(store.listOpenIncidents()).toEqual([]);
     store.close();
   });
-  it("a fail with no named failure (every judge shadowed or abstained) is not a fallback and never pages", async () => {
+  it("a reopen within 10 minutes of resolving records the incident but sends no second card (E12 damping)", async () => {
+    const store = RunStore.openInMemory();
+    let t = Date.parse("2026-10-12T10:00:00.000Z");
+    const rec = storeRecorder(store, { env: ENV, now: () => new Date(t).toISOString() });
+    const step = async (jev: () => Promise<RungResult<V>>) => { t += 60_000; await decide(E, { v: "abstain" }, { run_id: null, recorder: rec, exec: { jev } }); };
+    for (let k = 0; k < 3; k += 1) await step(jevDown); // pages at 10:03
+    await step(jevAnswers);                            // resolved at 10:04
+    await step(jevDown);                               // 10:05: four fails in the hour, reopened inside the quiet window
+    expect(open(store)).toEqual([["decision_fallback", "test.judge"]]);
+    expect(cards(store)).toHaveLength(1);
+    store.close();
+  });
+  it("turn.handler: Jev-rung failures never page here (the Jev incidents do); three cascade failures do", async () => {
     const store = RunStore.openInMemory();
     const rec = storeRecorder(store, { env: ENV });
+    for (let k = 0; k < 4; k += 1) await decide(HANDLER, { v: "abstain" }, { run_id: null, recorder: rec, exec: { jev: jevDown, model: jevAbstains } });
+    expect(store.listOpenIncidents()).toEqual([]);
+    for (let k = 0; k < 3; k += 1) await decide(HANDLER, { v: "abstain" }, { run_id: null, recorder: rec, exec: { jev: jevAbstains, model: modelDown } });
+    expect(open(store)).toEqual([["decision_fallback", "turn.handler"]]);
+    store.close();
+  });
+  it("budget (an oversized state) and a fail with no named failure (shadowed or abstained) are not fallbacks and never page", async () => {
+    const store = RunStore.openInMemory();
+    const rec = storeRecorder(store, { env: ENV });
+    const budget = vi.fn(async (): Promise<RungResult<V>> => ({ failed: "budget", reason: "state_too_large" }));
+    for (let k = 0; k < 4; k += 1) await decide(E, { v: "abstain" }, { run_id: null, recorder: rec, exec: { jev: budget } });
     const shadow = { ...E, armed: { rule: "on" as const, jev: "shadow" as const } };
     for (let k = 0; k < 4; k += 1) await decide(shadow, { v: "abstain" }, { run_id: null, recorder: rec, exec: { jev: jevDown } });
     expect(store.listOpenIncidents()).toEqual([]);
@@ -1823,15 +2201,21 @@ export function enqueueUrgentCard(store: RunStore, c: UrgentCard): void {
 - [ ] **Step 4: Write `src/decisions/record.ts`**
 
 ```ts
-import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
+import { ALERT_REOPEN_QUIET_MS, openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
 import type { DecisionInsert, RunStore } from "../run/run-store.js";
-import type { AnyDecideResult, AnyEntry, DecisionRecorder } from "./types.js";
+import { RUNNER_REASON_CODES, type AnyDecideResult, type AnyEntry, type DecisionRecorder } from "./types.js";
 import { enqueueUrgentCard } from "./urgent.js";
 
 /** Spec §8.2: an entry falling back to `fail` this many times in this window pages once. */
 export const DECISION_FALLBACK_LIMIT = 3;
 export const DECISION_FALLBACK_WINDOW_MS = 60 * 60 * 1000;
+/**
+ * Plan ruling 9: entries whose Jev-rung failures already page through the Jev incidents (openJevIncident and the triage
+ * jev_skip_rate). Their Jev failures do not count toward decision_fallback: one call, one page.
+ */
+export const JEV_PAGED_ELSEWHERE: ReadonlySet<string> = new Set(["turn.handler", "turn.gear"]);
 const RECORD_FAILED: ReadonlySet<string> = new Set(["decision_record_failed"]);
+const RUNNER_CODES: ReadonlySet<string> = new Set(RUNNER_REASON_CODES);
 
 /** Spec §5.2: a row when the verdict is not the default, a rung past the first rule decided or ran in shadow, Paco took part, or the entry always records. */
 export function shouldRecord(entry: AnyEntry, r: AnyDecideResult): boolean {
@@ -1842,12 +2226,15 @@ export function shouldRecord(entry: AnyEntry, r: AnyDecideResult): boolean {
 
 export interface RecorderOptions { env?: NodeJS.ProcessEnv; now?: () => string }
 
-/** The store-backed recorder the runner calls after it decided. Never throws: every failure is logged and becomes an incident. */
+/**
+ * The store-backed recorder. Never throws (every failure is logged and becomes an incident) and opens no transaction, so a
+ * caller may run it inside its own (Task 8b writes the front door's rows inside settleTriage's).
+ */
 export function storeRecorder(store: RunStore, o: RecorderOptions = {}): DecisionRecorder {
   return {
     record: (entry, r, ctx) => {
       const now = (o.now ?? (() => new Date().toISOString()))();
-      if (r.rung !== "fail") clearFallback(store, entry.id, now);
+      if (r.rung === "jev" || r.rung === "model") clearFallback(store, entry.id, now); // only a judge's answer shows the judge is back
       if (!shouldRecord(entry, r)) return null;
       let id: string;
       try {
@@ -1863,9 +2250,10 @@ export function storeRecorder(store: RunStore, o: RecorderOptions = {}): Decisio
 }
 
 function rowOf(entry: AnyEntry, r: AnyDecideResult, ctx: { run_id: string | null; tool_call_id: string | null }, now: string): DecisionInsert {
+  const known = r.reason !== null && (entry.reasonCodes.includes(r.reason) || RUNNER_CODES.has(r.reason));
   return {
     entry_id: entry.id, entry_version: entry.version, run_id: ctx.run_id, tool_call_id: ctx.tool_call_id, stage: entry.stage, rung: r.rung, verdict: r.verdict,
-    p: r.p ?? null, reason_code: r.reason !== null && entry.reasonCodes.includes(r.reason) ? r.reason : null, fallback_reason: r.fallbackReason,
+    p: r.p ?? null, reason_code: known ? r.reason : null, fallback_reason: r.fallbackReason, fallback_rung: r.fallbackRung,
     armed_mode: r.armedMode, latency_ms: r.latencyMs, created_at: now
   };
 }
@@ -1881,28 +2269,40 @@ function recordFailed(store: RunStore, entry_id: string, e: unknown, o: Recorder
   }
 }
 
+/** A named failure that counts toward decision_fallback (ruling 9): not budget, and not a Jev failure another incident pages. */
+function countsAsFallback(entry_id: string, r: AnyDecideResult): boolean {
+  if (r.rung !== "fail" || r.fallbackReason === null || r.fallbackReason === "budget") return false;
+  return !(JEV_PAGED_ELSEWHERE.has(entry_id) && r.fallbackRung === "jev");
+}
+
 function afterRecord(store: RunStore, entry_id: string, r: AnyDecideResult, o: RecorderOptions, now: string): void {
   try {
     resolveOpenIncidents(store, RECORD_FAILED, entry_id, now);
-    if (r.rung !== "fail" || r.fallbackReason === null) return;
+    if (!countsAsFallback(entry_id, r)) return;
     const since = new Date(Date.parse(now) - DECISION_FALLBACK_WINDOW_MS).toISOString();
-    const n = store.countDecisionFallbacks(entry_id, since);
+    const n = store.countDecisionFallbacks(entry_id, since, JEV_PAGED_ELSEWHERE.has(entry_id));
     if (n >= DECISION_FALLBACK_LIMIT) pageFallback(store, entry_id, n, o, now);
   } catch (e) {
     console.error(`decisions: ${entry_id} incident bookkeeping failed: ${message(e)}`);
   }
 }
 
-/** Opens the row with no generic alert (env {}), then sends the code-built urgent card once per open incident. */
+/**
+ * Opens the row with no generic alert (env {}), then sends the code-built urgent card once per open incident. A reopen
+ * within ALERT_REOPEN_QUIET_MS of the last resolve records its row and sends nothing (E12's flap damping, as
+ * openAlertedIncident does for its own alert).
+ */
 function pageFallback(store: RunStore, entry_id: string, n: number, o: RecorderOptions, now: string): void {
+  const fingerprint = store.incidentFingerprint("decision_fallback", entry_id);
+  const flapping = store.findRecentlyResolvedIncident(fingerprint, new Date(Date.parse(now) - ALERT_REOPEN_QUIET_MS).toISOString()) !== undefined;
   const opened = openAlertedIncident(store, { kind: "decision_fallback", subject: entry_id, detail: { entry: entry_id, limit: DECISION_FALLBACK_LIMIT, window_min: 60 }, env: {}, now });
-  if (!opened) return;
+  if (!opened || flapping) return;
   const chat = (o.env ?? process.env).HOUGE_TELEGRAM_CHAT_ID?.trim();
-  const incident = store.findOpenIncident(store.incidentFingerprint("decision_fallback", entry_id));
+  const incident = store.findOpenIncident(fingerprint);
   if (chat && incident) enqueueUrgentCard(store, { chat_id: chat, key: `decision_fallback:${incident.incident_id}`, text: fallbackCardText(entry_id, n) });
 }
 
-/** Resolves an open decision_fallback on any answered call, recorded or not (spec §8.2). */
+/** Resolves an open decision_fallback when a Jev or model rung answered, recorded or not (spec §8.2 "the next answered call"). */
 function clearFallback(store: RunStore, entry_id: string, now: string): void {
   try {
     const open = store.findOpenIncident(store.incidentFingerprint("decision_fallback", entry_id));
@@ -1913,7 +2313,7 @@ function clearFallback(store: RunStore, entry_id: string, now: string): void {
 }
 
 export function fallbackCardText(entry_id: string, n: number): string {
-  return `⚠️ *${entry_id}* fell back to its fail answer ${n} times in the last hour (no rung answered). Houge keeps working on the fail path; the next answered call clears this.`;
+  return `⚠️ *${entry_id}* fell back to its fail answer ${n} times in the last hour (no rung answered). Houge keeps working on the fail path; the next judged answer clears this.`;
 }
 ```
 
@@ -1929,23 +2329,21 @@ git add src/decisions/urgent.ts src/decisions/record.ts tests/decisions/record.t
 git commit -m "feat(decisions): the store recorder, decision_record_failed and the decision_fallback card"
 ```
 
-## Task 6: The registry, the `turn.handler` and `turn.gear` entries, the off switch and its boot warning
+## Task 6: The registry and the `turn.handler` and `turn.gear` entries (R12 effect tables, R13 arming)
 
 **Files:**
 - Create: `src/decisions/entries/turn-handler.ts`
 - Create: `src/decisions/entries/turn-gear.ts`
 - Create: `src/decisions/registry.ts`
-- Create: `src/decisions/off-switch.ts`
-- Modify: `src/telegram/telegram-daemon.ts:26` (import) and `:388` (`bootPlanners`, one line after `warnUnknownJevLanesOff`)
-- Test: `tests/decisions/registry.test.ts`, `tests/decisions/off-switch.test.ts`, `tests/decisions/turn-handler-entry.test.ts`
+- Test: `tests/decisions/registry.test.ts`, `tests/decisions/turn-handler-entry.test.ts`
 
 **Interfaces:**
-- Consumes: Task 3 types, `ENTRY_IDS`, `LOCKED_ENTRY_IDS`; `TREE_QUESTIONS`, `TREE_BREADTH`, `TREE_REASONING`, `TREE_ACTIONS` (`src/jev/questions/tree.ts`); `TREE_BAR_DEFAULTS`, `Lane`, `TurnRole`, `RouteReason` (`src/jev/tree-policy.ts`); `SkipReason` (`src/jev/decide.ts`); `JevTriageMode` (`src/jev/jev-flags.ts`); `TurnModality`.
+- Consumes: Task 3 types (`Entry`, `AnyEntry`, `VerdictEffect`, `EffectKind`), `ENTRY_IDS`, `LOCKED_ENTRY_IDS`; `TREE_QUESTIONS`, `TREE_BREADTH`, `TREE_REASONING`, `TREE_ACTIONS` (`src/jev/questions/tree.ts`); `TREE_BAR_DEFAULTS`, `Lane`, `TurnRole`, `RouteReason` (`src/jev/tree-policy.ts`); `SkipReason` (`src/jev/decide.ts`); `JevTriageMode` (`src/jev/jev-flags.ts`); `TurnModality`.
 - Produces:
-  - `entries/turn-handler.ts`: `TURN_HANDLER_ID = "turn.handler"`, `type TurnHandlerVerdict = Lane`, `TURN_HANDLER_VERDICTS`, `ROUTE_REASONS`, `SKIP_REASONS`, `isSkipReason(x: unknown): x is SkipReason`, `interface TurnHandlerState { mode: JevTriageMode; overridden: boolean; posture: string | null; modality: TurnModality; hasTurnState: boolean; isAck: () => boolean }`, `turnHandlerGate(s)`, `effectiveTriageMode(mode, off): JevTriageMode`, `TURN_HANDLER: Entry<TurnHandlerState, TurnHandlerVerdict>`.
+  - `entries/turn-handler.ts`: `TURN_HANDLER_ID = "turn.handler"`, `type TurnHandlerVerdict = Lane`, `TURN_HANDLER_VERDICTS`, `TURN_HANDLER_EFFECTS`, `ROUTE_REASONS`, `SKIP_REASONS`, `isSkipReason(x: unknown): x is SkipReason`, `interface TurnHandlerState { mode: JevTriageMode; overridden: boolean; posture: string | null; modality: TurnModality; hasTurnState: boolean; isAck: () => boolean }`, `turnHandlerGate(s)`, `TURN_HANDLER: Entry<TurnHandlerState, TurnHandlerVerdict>`.
   - `entries/turn-gear.ts`: `TURN_GEAR_ID = "turn.gear"`, `type TurnGearVerdict = TurnRole`, `interface TurnGearState { role: TurnRole; reason: RouteReason; applied: boolean }`, `turnGearRule(s)`, `TURN_GEAR: Entry<TurnGearState, TurnGearVerdict>`.
   - `registry.ts`: `REGISTRY: readonly AnyEntry[]`, `entryById(id): AnyEntry | undefined`, `entryProblems(e: AnyEntry): string[]`.
-  - `off-switch.ts`: `resolveDecisionsOff(env, registry?): ReadonlySet<string>`, `warnDecisionsOff(env, registry?, log?): { unknown: string[]; locked: string[] }`, `armedOverride(entry: AnyEntry, off: ReadonlySet<string>): Partial<Record<RungKind, ArmedMode>> | undefined`.
+- Deleted from Rev 1 by R13: `off-switch.ts`, `effectiveTriageMode`, the boot warning and their tests. No `src/telegram/telegram-daemon.ts` change in this task.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1955,12 +2353,16 @@ git commit -m "feat(decisions): the store recorder, decision_record_failed and t
 import { describe, expect, it } from "vitest";
 import { ENTRY_IDS, LOCKED_ENTRY_IDS } from "../../src/decisions/entry-ids.js";
 import { entryById, entryProblems, REGISTRY } from "../../src/decisions/registry.js";
-import type { AnyEntry } from "../../src/decisions/types.js";
+import type { AnyEntry, EffectKind, VerdictEffect } from "../../src/decisions/types.js";
 
-// Spec §4.1 / §6.3: the registry is a gate. Every entry must be internally sound, the Jev-never-causes-an-effect rule is a
-// test (a non-monotone entry whose judge can choose an effect fails), locked entries carry rule rungs only, and a
-// provisional bar sits only on a monotone or fail-open entry.
-const base = (o: Partial<AnyEntry>): AnyEntry => ({ ...(REGISTRY[0] as AnyEntry), ...o });
+// Spec §4.1 (R12, R13) / §6.3: the registry is a gate. Every entry must be internally sound; what a Jev or model rung may
+// cause depends on what it read (over Paco's message: reversible and announced; over tool input: only tighten or propose);
+// no entry ships in shadow or off; locked entries carry rule rungs only; a provisional bar sits only on a monotone or
+// fail-open entry. A misdeclared entry must FAIL here — that is the whole point of declaring effects as data.
+const HANDLER = REGISTRY[0] as AnyEntry;
+const base = (o: Partial<AnyEntry>): AnyEntry => ({ ...HANDLER, ...o });
+const fx = (kind: EffectKind, reversible = true, announced: VerdictEffect["announced"] = "card"): VerdictEffect => ({ kind, reversible, announced });
+const shape = (e: AnyEntry) => Object.fromEntries(Object.entries(e.effects).map(([v, f]) => [v, [f.kind, f.reversible, f.announced]]));
 
 describe("the registry", () => {
   it("holds exactly ENTRY_IDS, once each, and every entry is sound", () => {
@@ -1975,63 +2377,49 @@ describe("the registry", () => {
     expect(entryById("turn.gear")?.fail).toBe("default");
     expect(entryById("nope")).toBeUndefined();
   });
+  it("every registered entry is armed on (R13: no designed shadow or off state)", () => {
+    for (const e of REGISTRY) expect([e.id, Object.values(e.armed).every((m) => m === "on")]).toEqual([e.id, true]);
+  });
+  // R12 + plan Q1: the front door's real effects, pinned, so relabelling one away is a visible, reviewed edit.
+  it("turn.handler reads Paco's message and its effect table is exactly today's behaviour", () => {
+    expect(HANDLER.input).toBe("paco");
+    expect(shape(HANDLER)).toEqual({ answer: ["reply", true, "card"], lookup: ["reply", true, "card"], memory: ["effect", true, "card"],
+      status: ["reply", true, "card"], planner: ["effect", true, "reply"] });
+    expect(entryById("turn.gear")?.input).toBe("paco");
+    expect(Object.values(shape(entryById("turn.gear")!)).map((f) => f[0])).toEqual(["none", "none", "none"]);
+  });
 });
 
-describe("entryProblems (the rule as data)", () => {
-  it("fails a non-monotone entry whose Jev rung can choose a verdict with an effect", () => {
-    const bad = base({ effects: { answer: "reply", lookup: "reply", memory: "effect", status: "reply", planner: "reply" } });
-    expect(entryProblems(bad)).toContain("a jev/model rung can choose memory, which causes an effect");
+describe("entryProblems (R12 and R13 as data)", () => {
+  it("fails a judged entry over Paco's message whose verdict causes an irreversible or unannounced effect", () => {
+    expect(entryProblems(base({ effects: { ...HANDLER.effects, memory: fx("effect", false) } })))
+      .toContain("a jev/model rung can choose memory, an unannounced or irreversible effect");
+    expect(entryProblems(base({ effects: { ...HANDLER.effects, planner: fx("effect", true, "none") } })))
+      .toContain("a jev/model rung can choose planner, an unannounced or irreversible effect");
   });
-  it("allows an effect verdict on a monotone entry (a judge can only tighten)", () => {
-    const mono = base({ monotone: { order: ["planner", "answer", "lookup", "status", "memory"] },
-      effects: { answer: "reply", lookup: "reply", memory: "effect", status: "reply", planner: "reply" } });
-    expect(entryProblems(mono)).toEqual([]);
+  it("over tool or mixed input anything but none / tighten / proposal fails, even a reversible announced reply", () => {
+    expect(entryProblems(base({ input: "tool" }))).toContain("a jev/model rung over tool input can choose answer, which is not tightening");
+    expect(entryProblems(base({ input: "mixed" }))).toContain("a jev/model rung over mixed input can choose memory, which is not tightening");
+    const kinds: EffectKind[] = ["none", "tighten", "proposal"];
+    const passive = Object.fromEntries(HANDLER.verdicts.map((v, k) => [v, fx(kinds[k % 3]!)]));
+    expect(entryProblems(base({ input: "tool", effects: passive }))).toEqual([]);
   });
-  it("fails a locked entry with a judge, and one whose fail or default is not a verdict", () => {
+  it("a code-only entry may cause an effect (R12 binds the judges, not code rules)", () => {
+    const codeOnly = base({ ladder: [HANDLER.ladder[0]!], armed: { rule: "on" }, effects: { ...HANDLER.effects, memory: fx("effect", false, "none") } });
+    expect(entryProblems(codeOnly)).toEqual([]);
+  });
+  it("fails a missing effect, a shadow or off arming (R13), a locked entry with a judge, and a fail or default outside the verdicts", () => {
+    const noMemory = Object.fromEntries(Object.entries(HANDLER.effects).filter(([v]) => v !== "memory"));
+    expect(entryProblems(base({ effects: noMemory }))).toContain("no effect declared for memory");
+    expect(entryProblems(base({ armed: { rule: "on", jev: "shadow", model: "on" } }))).toContain("entry armed other than on (R13: no designed shadow or off state)");
     expect(entryProblems(base({ locked: true }))).toContain("locked entry with a non-rule rung");
     expect(entryProblems(base({ fail: "nope" }))).toContain("fail not in verdicts");
     expect(entryProblems(base({ defaultVerdict: "nope" }))).toContain("defaultVerdict not in verdicts");
   });
   it("fails a provisional bar on an entry that is neither monotone nor fail-open", () => {
-    const e = REGISTRY[0] as AnyEntry;
-    const ladder = e.ladder.map((r) => (r.kind === "jev" ? { ...r, bars: { kind: "provisional" as const, question: "q", criteriaHash: "h", model: "m", p: 0.5, source: "mu" } } : r));
+    const ladder = HANDLER.ladder.map((r) => (r.kind === "jev" ? { ...r, bars: { kind: "provisional" as const, question: "q", criteriaHash: "h", model: "m", p: 0.5, source: "mu" } } : r));
     expect(entryProblems(base({ ladder, fail: "answer" }))).toContain("provisional bar on an entry that is neither monotone nor fail-open");
     expect(entryProblems(base({ ladder }))).toEqual([]); // turn.handler is fail-open: fail = default = planner
-  });
-});
-```
-
-`tests/decisions/off-switch.test.ts`:
-
-```ts
-import { describe, expect, it, vi } from "vitest";
-import { armedOverride, resolveDecisionsOff, warnDecisionsOff } from "../../src/decisions/off-switch.js";
-import { REGISTRY } from "../../src/decisions/registry.js";
-import type { AnyEntry } from "../../src/decisions/types.js";
-
-// Spec §5.4: HOUGE_DECISIONS_OFF shadows the named entries' non-rule rungs; locked entries ignore it and boot names them;
-// an unknown id is named too (fail loud, run on).
-const locked: AnyEntry = { ...(REGISTRY[0] as AnyEntry), id: "posture.kill", locked: true, ladder: [(REGISTRY[0] as AnyEntry).ladder[0]!], armed: { rule: "on" } };
-const reg = [...REGISTRY, locked];
-
-describe("the off switch", () => {
-  it("keeps known, unlocked ids only", () => {
-    expect([...resolveDecisionsOff({ HOUGE_DECISIONS_OFF: " turn.handler , posture.kill, tool.nope" }, reg)]).toEqual(["turn.handler"]);
-    expect(resolveDecisionsOff({}, reg).size).toBe(0);
-  });
-  it("boot names the locked and the unknown ids in one line each", () => {
-    const log = vi.fn();
-    expect(warnDecisionsOff({ HOUGE_DECISIONS_OFF: "posture.kill,tool.nope,turn.gear" }, reg, log)).toEqual({ unknown: ["tool.nope"], locked: ["posture.kill"] });
-    expect(log.mock.calls.map((c) => c[0])).toEqual([
-      "decisions: HOUGE_DECISIONS_OFF names locked entr(ies) posture.kill; locked entries ignore the off switch",
-      "decisions: HOUGE_DECISIONS_OFF names unknown entr(ies) tool.nope; ignored"
-    ]);
-  });
-  it("armedOverride shadows every armed non-rule rung of a listed entry, and nothing for a locked or unlisted one", () => {
-    const handler = REGISTRY[0] as AnyEntry;
-    expect(armedOverride(handler, new Set(["turn.handler"]))).toEqual({ jev: "shadow", model: "shadow" });
-    expect(armedOverride(handler, new Set())).toBeUndefined();
-    expect(armedOverride(locked, new Set(["posture.kill"]))).toBeUndefined();
   });
 });
 ```
@@ -2041,7 +2429,7 @@ describe("the off switch", () => {
 ```ts
 import { describe, expect, it, vi } from "vitest";
 import { decide } from "../../src/decisions/decide.js";
-import { effectiveTriageMode, TURN_HANDLER, turnHandlerGate, type TurnHandlerState } from "../../src/decisions/entries/turn-handler.js";
+import { TURN_HANDLER, turnHandlerGate, type TurnHandlerState } from "../../src/decisions/entries/turn-handler.js";
 import { TURN_GEAR, turnGearRule } from "../../src/decisions/entries/turn-gear.js";
 import type { DecisionRecorder } from "../../src/decisions/types.js";
 
@@ -2066,16 +2454,21 @@ describe("turnHandlerGate", () => {
     turnHandlerGate({ ...S, posture: "killed", isAck });
     expect(isAck).not.toHaveBeenCalled();
   });
+  // Plan ruling 19: at 3bff437 a throw while computing the ack check settled skipped `error`; a thrown rule would
+  // otherwise be an abstention and hand the turn to Jev — a behaviour change.
+  it("a throwing ack check answers planner / error, never the Jev rung's turn", async () => {
+    const jev = vi.fn(async () => ({ verdict: "planner" as const, reason: "routed" }));
+    const boom = { ...S, isAck: () => { throw new Error("clock"); } };
+    expect(turnHandlerGate(boom)).toEqual({ verdict: "planner", reason: "error" });
+    const r = await decide(TURN_HANDLER, boom, { run_id: null, recorder, exec: { jev } });
+    expect(r).toMatchObject({ rung: "rule", reason: "error" });
+    expect(jev).not.toHaveBeenCalled();
+  });
   it("an eligible, clean-looking text reaches the Jev rung", async () => {
     const jev = vi.fn(async () => ({ verdict: "planner" as const, reason: "routed" }));
     const r = await decide(TURN_HANDLER, S, { run_id: null, recorder, exec: { jev } });
     expect(jev).toHaveBeenCalledOnce();
     expect(r.rung).toBe("jev");
-  });
-  it("HOUGE_DECISIONS_OFF=turn.handler caps an armed tree at shadow and leaves shadow and off alone", () => {
-    const off = new Set(["turn.handler"]);
-    expect([effectiveTriageMode("arm", off), effectiveTriageMode("shadow", off), effectiveTriageMode("off", off), effectiveTriageMode("arm", new Set())])
-      .toEqual(["shadow", "shadow", "off", "arm"]);
   });
 });
 
@@ -2091,7 +2484,7 @@ describe("turn.gear", () => {
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `npx vitest run tests/decisions/registry.test.ts tests/decisions/off-switch.test.ts tests/decisions/turn-handler-entry.test.ts`
+Run: `npx vitest run tests/decisions/registry.test.ts tests/decisions/turn-handler-entry.test.ts`
 Expected: FAIL (modules missing).
 
 - [ ] **Step 3: Write `src/decisions/entries/turn-handler.ts`**
@@ -2102,13 +2495,13 @@ import type { JevTriageMode } from "../../jev/jev-flags.js";
 import { TREE_QUESTIONS } from "../../jev/questions/tree.js";
 import { TREE_BAR_DEFAULTS, type Lane, type RouteReason } from "../../jev/tree-policy.js";
 import type { TurnModality } from "../../media/media-config.js";
-import type { Entry, RungAbstain, RungAnswer } from "../types.js";
+import type { Entry, RungAbstain, RungAnswer, VerdictEffect } from "../types.js";
 
 /**
  * `turn.handler` (spec §4.4): which handler takes a Telegram text turn. Ladder: today's code exits and the ack rule →
- * the Jev tree (six questions, one call) → the Tiny cascade below the choice bar; the planner is `fail`. Every verdict's
- * only effect is a reply. The lesson save on a confident `sets_rule` is decision A19 `memory.rule_save` (stage 3), not this
- * entry's verdict; ADR 0030 grandfathers it until then.
+ * the Jev tree (six questions, one call) → the Tiny cascade below the choice bar; the planner is `fail`. Its judges read
+ * Paco's own message, so under R12 a verdict may cause an effect that is reversible and announced: the effect table below
+ * declares today's behaviour exactly (move, don't improve; plan Q1 for the planner route's announcement).
  */
 export const TURN_HANDLER_ID = "turn.handler";
 export type TurnHandlerVerdict = Lane;
@@ -2121,6 +2514,16 @@ export const SKIP_REASONS = ["no_key", "fused", "auth", "rate_limited", "overloa
 const ROUTE_COMPLETE: [Exclude<RouteReason, (typeof ROUTE_REASONS)[number]>] extends [never] ? true : false = true;
 const SKIP_COMPLETE: [Exclude<SkipReason, (typeof SKIP_REASONS)[number]>] extends [never] ? true : false = true;
 void ROUTE_COMPLETE; void SKIP_COMPLETE;
+
+/** Spec §4.1 (R12): what each verdict causes today. tests/decisions/registry.test.ts pins this table. */
+export const TURN_HANDLER_EFFECTS: Readonly<Record<TurnHandlerVerdict, VerdictEffect>> = {
+  answer: { kind: "reply", reversible: true, announced: "card", what: "answer-lane reply; Dig deeper hands the turn to the planner" },
+  lookup: { kind: "reply", reversible: true, announced: "card", what: "lookup-lane reply; Dig deeper hands the turn to the planner" },
+  status: { kind: "reply", reversible: true, announced: "card", what: "status card rendered by code; Dig deeper" },
+  memory: { kind: "effect", reversible: true, announced: "card", what: "instant lesson save on a confident sets_rule; memory-lane card with Undo (ADR 0029 §5.5, R12)" },
+  planner: { kind: "effect", reversible: true, announced: "reply",
+    what: "the planner answers; on a confident sets_rule the lesson saves first and the [memory] note names it in the planner's prompt (planner-supervisor.ts:479; plan Q1)" }
+};
 
 export function isSkipReason(x: unknown): x is SkipReason {
   return typeof x === "string" && (SKIP_REASONS as readonly string[]).includes(x);
@@ -2137,17 +2540,21 @@ export function turnHandlerGate(s: TurnHandlerState): RungAnswer<TurnHandlerVerd
   if (s.modality !== "text") return { verdict: "planner", reason: "modality" };
   if (!s.hasTurnState) return { verdict: "planner", reason: "error" };
   // shadow never changes behaviour, so the ack rule (which changes the role) acts only when armed
-  if (s.mode === "arm" && s.isAck()) return { verdict: "planner", reason: "ack_rule" };
-  return { abstain: true };
+  return s.mode === "arm" ? ackRule(s) : { abstain: true };
 }
 
-/** Spec §5.4: `HOUGE_DECISIONS_OFF=turn.handler` — the tree is asked and recorded, never applied (an armed tree reads as shadow). */
-export function effectiveTriageMode(mode: JevTriageMode, off: ReadonlySet<string>): JevTriageMode {
-  return mode === "arm" && off.has(TURN_HANDLER_ID) ? "shadow" : mode;
+/** The ack rule. A throw settles skipped `error`, as a throw at that point did at 3bff437 (plan ruling 19), never a judge's turn. */
+function ackRule(s: TurnHandlerState): RungAnswer<TurnHandlerVerdict> | RungAbstain<TurnHandlerVerdict> {
+  try {
+    return s.isAck() ? { verdict: "planner", reason: "ack_rule" } : { abstain: true };
+  } catch {
+    console.error("triage: ack check threw; settling skipped error");
+    return { verdict: "planner", reason: "error" };
+  }
 }
 
 export const TURN_HANDLER: Entry<TurnHandlerState, TurnHandlerVerdict> = {
-  id: TURN_HANDLER_ID, version: 1, stage: "pre_model",
+  id: TURN_HANDLER_ID, version: 1, stage: "pre_model", input: "paco",
   question: "Which handler takes this Telegram text turn: a no-planner lane, or the planner?",
   verdicts: TURN_HANDLER_VERDICTS,
   ladder: [
@@ -2161,8 +2568,8 @@ export const TURN_HANDLER: Entry<TurnHandlerState, TurnHandlerVerdict> = {
   fail: "planner", defaultVerdict: "planner", alwaysRecord: true,
   outcomes: ["dig_deeper", "correction", "rating", "review_ok", "review_bad", "review_unsure"],
   armed: { rule: "on", jev: "on", model: "on" },
-  effects: { answer: "reply", lookup: "reply", memory: "reply", status: "reply", planner: "reply" },
-  reasonCodes: [...ROUTE_REASONS, ...SKIP_REASONS, "no_executor"]
+  effects: TURN_HANDLER_EFFECTS,
+  reasonCodes: [...ROUTE_REASONS, ...SKIP_REASONS]
 };
 ```
 
@@ -2171,24 +2578,26 @@ export const TURN_HANDLER: Entry<TurnHandlerState, TurnHandlerVerdict> = {
 ```ts
 import { TREE_ACTIONS, TREE_BREADTH, TREE_REASONING } from "../../jev/questions/tree.js";
 import type { RouteReason, TurnRole } from "../../jev/tree-policy.js";
-import type { Entry, RungAbstain, RungAnswer } from "../types.js";
+import type { Entry, RungAbstain, RungAnswer, VerdictEffect } from "../types.js";
 import { ROUTE_REASONS } from "./turn-handler.js";
 
 /**
  * `turn.gear` (spec §4.4): the planner role this turn runs on, from the same Jev call as `turn.handler`. Stage 1 records it;
  * the planner still pins the route's role, and the two are equal by construction (tests/core/turn-handler-ladder.test.ts).
- * `applied` is true only when the gear questions were armed and the tree (or the cascade) decided the handler.
+ * `applied` is true only when the gear questions were armed and the tree (or the cascade) decided the handler. A role
+ * causes nothing beyond which model answers (R12 kind `none`).
  */
 export const TURN_GEAR_ID = "turn.gear";
 export type TurnGearVerdict = TurnRole;
 export interface TurnGearState { role: TurnRole; reason: RouteReason; applied: boolean }
+const NONE: VerdictEffect = { kind: "none", reversible: true, announced: "none", what: "which planner role answers" };
 
 export function turnGearRule(s: TurnGearState): RungAnswer<TurnGearVerdict> | RungAbstain<TurnGearVerdict> {
   return s.applied ? { abstain: true } : { verdict: s.role, reason: "gear_not_applied" };
 }
 
 export const TURN_GEAR: Entry<TurnGearState, TurnGearVerdict> = {
-  id: TURN_GEAR_ID, version: 1, stage: "pre_model",
+  id: TURN_GEAR_ID, version: 1, stage: "pre_model", input: "paco",
   question: "Which planner role (Fast, Default, Thinking) does this turn run on?",
   verdicts: ["fast", "default", "thinking"],
   ladder: [
@@ -2199,8 +2608,8 @@ export const TURN_GEAR: Entry<TurnGearState, TurnGearVerdict> = {
   fail: "default", defaultVerdict: "default",
   outcomes: ["correction", "rating", "review_ok", "review_bad", "review_unsure"],
   armed: { rule: "on", jev: "on" },
-  effects: { fast: "reply", default: "reply", thinking: "reply" },
-  reasonCodes: [...ROUTE_REASONS, "gear_not_applied", "no_executor"]
+  effects: { fast: NONE, default: NONE, thinking: NONE },
+  reasonCodes: [...ROUTE_REASONS, "gear_not_applied"]
 };
 ```
 
@@ -2209,10 +2618,12 @@ export const TURN_GEAR: Entry<TurnGearState, TurnGearVerdict> = {
 ```ts
 import { TURN_GEAR } from "./entries/turn-gear.js";
 import { TURN_HANDLER } from "./entries/turn-handler.js";
-import type { AnyEntry } from "./types.js";
+import type { AnyEntry, EffectKind } from "./types.js";
 
 /** Every decision on one list (spec §6). Stage 1 registers the front door; later stages add their families. Protected surface (spec §6.3). */
 export const REGISTRY: readonly AnyEntry[] = [TURN_HANDLER as unknown as AnyEntry, TURN_GEAR as unknown as AnyEntry];
+/** Effects a judge may choose over any input (R12): nothing, a tightening, or a proposal for Paco's tap. */
+const PASSIVE: ReadonlySet<EffectKind> = new Set(["none", "tighten", "proposal"]);
 
 export function entryById(id: string): AnyEntry | undefined {
   return REGISTRY.find((e) => e.id === id);
@@ -2220,74 +2631,53 @@ export function entryById(id: string): AnyEntry | undefined {
 
 /** Spec §4.1 as data: what is wrong with an entry (empty = sound). tests/decisions/registry.test.ts asserts it for every entry. */
 export function entryProblems(e: AnyEntry): string[] {
+  return [...shapeProblems(e), ...effectProblems(e)];
+}
+
+function shapeProblems(e: AnyEntry): string[] {
   const p: string[] = [];
   const has = (v: string): boolean => e.verdicts.includes(v);
   if (!has(e.fail)) p.push("fail not in verdicts");
   if (!has(e.defaultVerdict)) p.push("defaultVerdict not in verdicts");
   if (e.ladder.length === 0) p.push("empty ladder");
-  for (const v of e.verdicts) if (e.effects[v] === undefined) p.push(`no effect declared for ${v}`);
-  const judged = e.ladder.some((r) => r.kind === "jev" || r.kind === "model");
-  if (judged && !e.monotone) for (const v of e.verdicts) if (e.effects[v] === "effect") p.push(`a jev/model rung can choose ${v}, which causes an effect`);
   if (e.monotone && [...e.monotone.order].sort().join() !== [...e.verdicts].sort().join()) p.push("monotone order is not the verdict set");
+  if (Object.values(e.armed).some((m) => m !== "on")) p.push("entry armed other than on (R13: no designed shadow or off state)");
   if (e.locked && e.ladder.some((r) => r.kind !== "rule")) p.push("locked entry with a non-rule rung");
-  if (e.locked && Object.values(e.armed).some((m) => m !== "on")) p.push("locked entry not armed on");
   const provisional = e.ladder.some((r) => r.kind === "jev" && r.bars.kind === "provisional");
   if (provisional && !e.monotone && e.fail !== e.defaultVerdict) p.push("provisional bar on an entry that is neither monotone nor fail-open");
   return p;
 }
-```
 
-- [ ] **Step 6: Write `src/decisions/off-switch.ts`**
-
-```ts
-import { REGISTRY } from "./registry.js";
-import type { AnyEntry, ArmedMode, RungKind } from "./types.js";
-
-/** Spec §5.4: `HOUGE_DECISIONS_OFF=<entry id,…>`, read at boot only (`/rearm` does not reload `.env`). */
-const names = (env: NodeJS.ProcessEnv): string[] =>
-  (env.HOUGE_DECISIONS_OFF ?? "").split(",").map((s) => s.trim()).filter((s) => s.length > 0);
-
-/** The entries switched off: known and unlocked only (warnDecisionsOff names the rest at boot). */
-export function resolveDecisionsOff(env: NodeJS.ProcessEnv, registry: readonly AnyEntry[] = REGISTRY): ReadonlySet<string> {
-  const byId = new Map(registry.map((e) => [e.id, e] as const));
-  return new Set(names(env).filter((n) => { const e = byId.get(n); return e !== undefined && !e.locked; }));
-}
-
-/** Boot only: one line naming locked entries (they ignore the switch) and one naming unknown ids. Fail loud, run on. */
-export function warnDecisionsOff(env: NodeJS.ProcessEnv, registry: readonly AnyEntry[] = REGISTRY, log: (line: string) => void = console.error): { unknown: string[]; locked: string[] } {
-  const byId = new Map(registry.map((e) => [e.id, e] as const));
-  const listed = names(env);
-  const locked = listed.filter((n) => byId.get(n)?.locked === true);
-  const unknown = listed.filter((n) => !byId.has(n));
-  if (locked.length > 0) log(`decisions: HOUGE_DECISIONS_OFF names locked entr(ies) ${locked.join(", ")}; locked entries ignore the off switch`);
-  if (unknown.length > 0) log(`decisions: HOUGE_DECISIONS_OFF names unknown entr(ies) ${unknown.join(", ")}; ignored`);
-  return { unknown, locked };
-}
-
-/** The switch as the runner reads it (DecideCtx.armed): every armed non-rule rung of a listed entry runs in shadow. */
-export function armedOverride(entry: AnyEntry, off: ReadonlySet<string>): Partial<Record<RungKind, ArmedMode>> | undefined {
-  if (entry.locked || !off.has(entry.id)) return undefined;
-  const out: Partial<Record<RungKind, ArmedMode>> = {};
-  for (const r of entry.ladder) if (r.kind !== "rule" && (entry.armed[r.kind] ?? "on") === "on") out[r.kind] = "shadow";
-  return out;
+/**
+ * R12: a verdict a Jev or model rung can choose may, over tool (or mixed) input, only tighten or propose; over Paco's own
+ * message it may cause a reply or an effect only when reversible and announced. Code-only entries are not bound.
+ */
+function effectProblems(e: AnyEntry): string[] {
+  const p: string[] = [];
+  const judged = e.ladder.some((r) => r.kind === "jev" || r.kind === "model");
+  for (const v of e.verdicts) {
+    const fx = e.effects[v];
+    if (fx === undefined) { p.push(`no effect declared for ${v}`); continue; }
+    if (!judged || PASSIVE.has(fx.kind)) continue;
+    if (e.input !== "paco") p.push(`a jev/model rung over ${e.input} input can choose ${v}, which is not tightening`);
+    else if (!fx.reversible || fx.announced === "none") p.push(`a jev/model rung can choose ${v}, an unannounced or irreversible effect`);
+  }
+  return p;
 }
 ```
 
-- [ ] **Step 7: Wire the boot warning (`src/telegram/telegram-daemon.ts`)**
-
-Add `import { warnDecisionsOff } from "../decisions/off-switch.js";` beside the `warnUnknownJevLanesOff` import (`:26`), and in
-`bootPlanners` (`:388`) add `warnDecisionsOff(process.env);` on the line after `warnUnknownJevLanesOff(process.env);`.
-
-- [ ] **Step 8: Run**
+- [ ] **Step 6: Run**
 
 Run: `npx vitest run tests/decisions/ && npm run typecheck`
 Expected: PASS; typecheck clean (the two `*_COMPLETE` constants compile only while the lists cover their unions).
+Run: `grep -rn "HOUGE_DECISIONS_OFF\|off-switch" src/ tests/`
+Expected: no output (R13).
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/decisions/entries/turn-handler.ts src/decisions/entries/turn-gear.ts src/decisions/registry.ts src/decisions/off-switch.ts src/telegram/telegram-daemon.ts tests/decisions/registry.test.ts tests/decisions/off-switch.test.ts tests/decisions/turn-handler-entry.test.ts
-git commit -m "feat(decisions): registry with turn.handler and turn.gear; HOUGE_DECISIONS_OFF and its boot warning"
+git add src/decisions/entries/turn-handler.ts src/decisions/entries/turn-gear.ts src/decisions/registry.ts tests/decisions/registry.test.ts tests/decisions/turn-handler-entry.test.ts
+git commit -m "feat(decisions): registry with turn.handler and turn.gear; R12 effect tables and R13 arming as data"
 ```
 
 ## Task 7: `src/decisions/` joins the protected surface
@@ -2346,35 +2736,217 @@ git add src/capabilities/self-write-guard.ts tests/capabilities/self-write-guard
 git commit -m "feat(guard): src/decisions joins the protected surface"
 ```
 
-## Task 8: Move `turn.handler` and `turn.gear` onto the registry (move, don't improve)
+## Task 8a: The pure glue for `turn.handler`'s rungs (`src/core/turn-handler-ladder.ts`, no `core-worker.ts` edit)
 
-The decision moves behind the runner; every handler (status lane, save-first, memory card, answer/lookup lanes, settle,
-`laneLost`, the catch's answered fallback) stays as it is. The Task 2 pin is the differential: it must pass with no
-snapshot written. Protected for Paco's merge (spec §13 row 1: core-worker).
+The pure half of the move (spec §6.2 "wrap"): today's policy calls, unchanged, shaped as rung results. This task touches
+no existing file except by adding the new module and its tests, so it can be reviewed on its own; 8b wires it in.
 
 **Files:**
 - Create: `src/core/turn-handler-ladder.ts`
-- Modify: `src/core/core-worker.ts` — imports (`:141-153`); `TriageHeld` (`:267`) unchanged, two module-level declarations after it; delete `UNARMED` (`:270`, moved); new fields after `ompTurns` (`:496`); `verdictInsert` (`:2658-2668`); `settleTriage` (`:2685-2688`); replace `triageTurn` … `checkJevModel` (`:2728-2803`); `cascadeRoute` and `cascadePick` (`:2876-2908`); delete `URL_IN_TEXT` and `urlRule` (`:4055-4065`, moved)
-- Test: `tests/core/turn-handler-ladder.test.ts`; re-run `tests/core/turn-handler-pin.test.ts` and every consumer suite
+- Test: `tests/core/turn-handler-ladder-glue.test.ts`
 
 **Interfaces:**
-- Consumes: `decide` as `decideLadder` (Task 3); `storeRecorder` (Task 5); `TURN_HANDLER`, `TurnHandlerState`, `TurnHandlerVerdict`, `effectiveTriageMode`, `isSkipReason`, `TURN_GEAR`, `TurnGearState`, `TurnGearVerdict`, `resolveDecisionsOff`, `armedOverride` (Task 6); `recordSkip` / `persistDecisionRows` with `ladder_decision_id`, `JevVerdictInsert.decision_id`, `listDecisionsForRun` (Task 4); the Task 2 harness.
-- Produces (`src/core/turn-handler-ladder.ts`): `type AnsweredDecision = Extract<Decision, { status: "answered" }>`; `interface TreeDetail { d: AnsweredDecision; armed: Armed; plan?: RoutePlan; route?: Route; error?: string }`; `UNARMED: Armed`; `urlRule(route, text, unlaned): Route` (moved verbatim); `fallbackOfSkip(reason: SkipReason): FallbackReason`; `interface PlanInput`; `planTree(d, i: PlanInput): RungResult<TurnHandlerVerdict, TreeDetail>`; `treeDetailOf(r: DecideResult<TurnHandlerVerdict, TreeDetail>): TreeDetail | undefined`; `jevSkipReason(r): SkipReason`.
+- Consumes: `RungResult`, `DecideResult`, `RungOutcome`, `FallbackReason` (Task 3); `isSkipReason`, `TurnHandlerVerdict` (Task 6); `routeTree`, `treeArmed`, `TREE_BAR_DEFAULTS`, `Armed`, `LaneSwitch`, `Route`, `RoutePlan` (`src/jev/tree-policy.ts`); `topProbOf`, `Decision`, `SkipReason` (`src/jev/decide.ts`); `isBareAck`; `CalibrationRow`; `Lang`; `JevTriageMode`; the Task 2 harness's `cat` (tests only).
+- Produces: `type AnsweredDecision = Extract<Decision, { status: "answered" }>`; `interface TreeDetail { d: AnsweredDecision; armed: Armed; plan?: RoutePlan; route?: Route; error?: string }`; `UNARMED: Armed`; `urlRule(route, text, unlaned): Route` (moved verbatim from `core-worker.ts:4055-4065`; 8b deletes the original); `fallbackOfSkip(reason: SkipReason): FallbackReason`; `interface PlanInput`; `planTree(d, i: PlanInput): RungResult<TurnHandlerVerdict, TreeDetail>`; `treeDetailOf(r): TreeDetail | undefined`; `jevSkipReason(r): SkipReason`.
+
+- [ ] **Step 1: Write the failing tests `tests/core/turn-handler-ladder-glue.test.ts`**
+
+```ts
+import { describe, expect, it } from "vitest";
+import { fallbackOfSkip, jevSkipReason, planTree, treeDetailOf, urlRule, type AnsweredDecision, type PlanInput } from "../../src/core/turn-handler-ladder.js";
+import type { DecideResult } from "../../src/decisions/types.js";
+import { fallbackRoute } from "../../src/jev/tree-policy.js";
+import { cat } from "../helpers/triage-harness.js";
+
+// Spec §6.2 "wrap": the pure half of turn.handler's rungs reproduces today's policy calls exactly, including where a
+// failure lands. Plan ruling 19: a throw before today's held.answered (arming, routeTree) fails with NO detail, so the turn
+// settles skipped `error` and Jev's rows are dropped, as at 3bff437; only a throw after it keeps the detail.
+const answered = (category = cat({ other: 0.9 })) => ({ status: "answered", model: "jev-1.13.0", answers: { category }, rows: [] }) as unknown as AnsweredDecision;
+const input = (o: Partial<PlanInput> = {}): PlanInput => ({ userText: "帮我整理一下这周的待办", mode: "shadow", lang: "zh", thinkHarder: false, rows: [], lanesOff: new Set(), ...o });
+
+describe("the pure glue", () => {
+  it("fallbackOfSkip maps every Jev skip to a closed fallback reason", () => {
+    expect([fallbackOfSkip("timeout"), fallbackOfSkip("parse"), fallbackOfSkip("malformed_question"), fallbackOfSkip("state_too_large"), fallbackOfSkip("transport"),
+      fallbackOfSkip("rate_limited"), fallbackOfSkip("no_key")]).toEqual(["timeout", "parse", "parse", "budget", "outage", "outage", "outage"]);
+  });
+  it("treeDetailOf prefers the cascade's detail; jevSkipReason reads the tree rung's reason, else error", () => {
+    const d = { status: "answered" } as never;
+    const r = { walk: [{ kind: "jev", name: "tree", mode: "on", result: { abstain: true, detail: { d, armed: {} } } },
+      { kind: "model", name: "cascade", mode: "on", result: { verdict: "planner", detail: { d, armed: {}, route: fallbackRoute("cascade", false) } } }] } as unknown as DecideResult<"planner", never>;
+    expect(treeDetailOf(r as never)?.route?.reason).toBe("cascade");
+    const skip = { walk: [{ kind: "jev", name: "tree", mode: "on", result: { failed: "outage", reason: "transport" } }] } as unknown as DecideResult<"planner", never>;
+    expect([jevSkipReason(skip as never), jevSkipReason({ walk: [] } as never)]).toEqual(["transport", "error"]);
+  });
+  it("urlRule moved verbatim: a lookup naming a URL becomes the planner (lane_limits)", () => {
+    const lookup = { ...fallbackRoute("routed", false), lane: "lookup" as const, category: "lookup" as const };
+    expect(urlRule(lookup, "see https://example.com", () => ({ kind: "final", route: fallbackRoute("routed", false) })).reason).toBe("lane_limits");
+    expect(urlRule(lookup, "no link here", () => { throw new Error("not called"); })).toBe(lookup);
+  });
+  it("planTree in shadow arms nothing: the planner, uncalibrated, p = the category's top probability (today's shadow route)", () => {
+    const r = planTree(answered(), input());
+    expect(r).toMatchObject({ verdict: "planner", reason: "uncalibrated", p: 0.9 });
+    expect("detail" in r && r.detail?.route?.reason).toBe("uncalibrated");
+  });
+  it("planTree: a throw while arming fails with no detail (skipped error, Jev's rows dropped, as at 3bff437)", () => {
+    const r = planTree(answered(), input({ mode: "arm", rows: null as never })); // treeArmed reads rows.some → TypeError
+    expect(r).toEqual({ failed: "threw", reason: "error" });
+  });
+});
+```
+
+- [ ] **Step 2: Run them to see them fail**
+
+Run: `npx vitest run tests/core/turn-handler-ladder-glue.test.ts`
+Expected: FAIL (`Cannot find module '../../src/core/turn-handler-ladder.js'`).
+
+- [ ] **Step 3: Write `src/core/turn-handler-ladder.ts`**
+
+```ts
+import type { CalibrationRow } from "../jev/calibration.js";
+import { topProbOf, type Decision, type SkipReason } from "../jev/decide.js";
+import type { JevTriageMode } from "../jev/jev-flags.js";
+import type { Lang } from "../jev/intent-question.js";
+import { routeTree, TREE_BAR_DEFAULTS, treeArmed, type Armed, type LaneSwitch, type Route, type RoutePlan } from "../jev/tree-policy.js";
+import { isBareAck } from "../omp/bare-ack.js";
+import { isSkipReason, type TurnHandlerVerdict } from "../decisions/entries/turn-handler.js";
+import type { DecideResult, FallbackReason, RungOutcome, RungResult } from "../decisions/types.js";
+
+/**
+ * The pure half of `turn.handler`'s rungs (spec §4.4, §6.2 "wrap"): today's policy calls, unchanged, shaped as rung
+ * results. `CoreWorker` owns the I/O half (the Jev call, the cascade call) and every handler after the decision. Not under
+ * the protected src/decisions/ (ADR 0030 consequences): the entry is protected, this glue is as self-writable as tree-policy.ts.
+ */
+export type AnsweredDecision = Extract<Decision, { status: "answered" }>;
+/** What the tree rung hands the cascade rung and the handlers: Jev's answer and rows, the arming, the plan, the route. */
+export interface TreeDetail { d: AnsweredDecision; armed: Armed; plan?: RoutePlan; route?: Route; error?: string }
+export const UNARMED: Armed = { category: false, status: false, memory: false, gear: false, rule: false, answer: false, lookup: false };
+const URL_IN_TEXT = /https?:\/\//i;
+type TreeOpts = Omit<Parameters<typeof routeTree>[1], "armed">;
+
+/**
+ * Stage B §2's one code rule: a lookup naming a URL is the planner's (its http_fetch path can read a named page; the lane
+ * cannot from a one-line query). The route is the policy's own with the lookup lane unarmed (the gear's role), relabelled.
+ */
+export function urlRule(route: Route, text: string, unlaned: () => RoutePlan): Route {
+  if (route.lane !== "lookup" || !URL_IN_TEXT.test(text)) return route;
+  const p = unlaned();
+  return p.kind === "final" ? { ...p.route, reason: "lane_limits" } : { ...route, lane: "planner", reason: "lane_limits" };
+}
+
+/** A Jev skip as the ledger's closed fallback reason; the skip reason itself stays the row's reason code. */
+export function fallbackOfSkip(reason: SkipReason): FallbackReason {
+  if (reason === "timeout") return "timeout";
+  if (reason === "parse" || reason === "malformed_question") return "parse";
+  if (reason === "state_too_large") return "budget";
+  return "outage";
+}
+
+export interface PlanInput { userText: string; mode: JevTriageMode; lang: Lang; thinkHarder: boolean; rows: readonly CalibrationRow[]; lanesOff: ReadonlySet<LaneSwitch> }
+
+/**
+ * Jev answered: arming, routeTree, urlRule — today's routeAnswered head (core-worker.ts:2782-2792 at 3bff437). Below the bar
+ * it abstains with the plan. Ruling 19: a throw in arming or routeTree happened BEFORE today's `held.answered`, so it fails
+ * with no detail (skipped `error`); a throw in urlRule happened after it, so it keeps the detail (the answered fallback).
+ */
+export function planTree(d: AnsweredDecision, i: PlanInput): RungResult<TurnHandlerVerdict, TreeDetail> {
+  let opts: TreeOpts;
+  let armed: Armed;
+  let plan: RoutePlan;
+  try {
+    opts = { bars: TREE_BAR_DEFAULTS, thinkHarder: i.thinkHarder, bareAck: isBareAck(i.userText) };
+    armed = i.mode === "arm" ? treeArmed(i.lang, d.model, i.rows, i.lanesOff) : UNARMED; // d.model: the REPORTED id
+    plan = routeTree(d.answers, { ...opts, armed });
+  } catch {
+    return { failed: "threw", reason: "error" };
+  }
+  if (plan.kind === "cascade") return { abstain: true, detail: { d, armed, plan } };
+  return routed(d, i.userText, armed, plan, opts);
+}
+
+/** A final plan through urlRule (today: after held.answered, so a throw keeps Jev's answer for the answered fallback). */
+function routed(d: AnsweredDecision, text: string, armed: Armed, plan: Extract<RoutePlan, { kind: "final" }>, opts: TreeOpts): RungResult<TurnHandlerVerdict, TreeDetail> {
+  let route: Route;
+  try {
+    route = urlRule(plan.route, text, () => routeTree(d.answers, { ...opts, armed: { ...armed, lookup: false } }));
+  } catch (e) {
+    return { failed: "threw", reason: "error", detail: { d, armed, plan, error: e instanceof Error ? e.message : String(e) } };
+  }
+  const category = d.answers.category;
+  return { verdict: route.lane, reason: route.reason, ...(category ? { p: topProbOf(category) } : {}), detail: { d, armed, plan, route } };
+}
+
+function detailOf(r: RungResult<TurnHandlerVerdict, TreeDetail> | null | undefined): TreeDetail | undefined {
+  return r && "detail" in r ? r.detail : undefined;
+}
+
+/** The detail the handlers need: the cascade's (it carries the picked route) when it ran, else the tree's. */
+export function treeDetailOf(r: DecideResult<TurnHandlerVerdict, TreeDetail>): TreeDetail | undefined {
+  const walk: readonly RungOutcome<TurnHandlerVerdict, TreeDetail>[] = r.walk;
+  return detailOf(walk.find((o) => o.kind === "model")?.result) ?? detailOf(walk.find((o) => o.kind === "jev")?.result);
+}
+
+/** Why the tree gave no answer, as today's skip reason (`error` when it threw or was never reached). */
+export function jevSkipReason(r: DecideResult<TurnHandlerVerdict, TreeDetail>): SkipReason {
+  const res = r.walk.find((o) => o.kind === "jev")?.result;
+  return res && "failed" in res && isSkipReason(res.reason) ? res.reason : "error";
+}
+```
+
+- [ ] **Step 4: Run**
+
+Run: `npx vitest run tests/core/turn-handler-ladder-glue.test.ts && npm run typecheck`
+Expected: PASS (5 tests); typecheck clean (`core-worker.ts` still has its own `urlRule`/`UNARMED` until 8b; nothing imports the new module yet).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/core/turn-handler-ladder.ts tests/core/turn-handler-ladder-glue.test.ts
+git commit -m "feat(core): turn.handler rung glue (policy calls as rung results)"
+```
+
+## Task 8b: Move `turn.handler` and `turn.gear` onto the registry (move, don't improve)
+
+The decision moves behind the runner; every handler (status lane, save-first, memory card, answer/lookup lanes, settle,
+`laneLost`, the catch's answered fallback) stays as it is. The front door's ledger rows are queued at decide time and
+written inside `settleTriage`'s transaction (plan ruling 14). The Task 2 pin is the differential: it must pass with no
+snapshot written and no change to the frozen set. Protected for Paco's merge (spec §13 row 1: core-worker).
+
+**Exit-by-exit trace (the reviewer checks each row against the code):**
+
+| Exit | 3bff437 settle | Ladder path in 8b |
+|---|---|---|
+| flag off | `triageOff` (skipped `disabled`, no route, no gear) | gate `disabled` → `gateExit` → `triageOff` |
+| override / posture / modality / no state | `triageSkip(<reason>)` | gate answers the reason → `gateExit` → gear by rule → `triageSkip` |
+| ack rule (arm) | `triageSkip("ack_rule", ACK_ROUTE)` | gate `ack_rule` → `gateExit` → `ACK_ROUTE` |
+| ack check throws | catch → skipped `error` | gate `error` (ruling 19) → `triageSkip("error")` |
+| state too large / any Jev skip | `triageSkip(<skip>)` | tree rung `failed` with the skip as reason → no detail → `triageSkip(jevSkipReason)` |
+| `calibrationRows` / arming / `routeTree` throws | catch → skipped `error`, Jev's rows dropped | `planTree` (or the rung) fails with no detail → `triageSkip("error")` |
+| `urlRule` throws | catch → answered `fallback` | `planTree` fails with detail → `routeAnswered` sets `held.answered`, rethrows → catch → answered `fallback` |
+| shadow (configured) | `routeAnswered` with `UNARMED` → `uncalibrated`, decision `shadow` | `TREE_SHADOWED`: tree asked, not applied; cascade rung abstains (no cascade plan when unarmed) → rung `fail` with the tree's detail → `routeAnswered` |
+| routed / status / answer / lookup / memory / save-first | `routeAnswered` handlers | `routeDecided` → `routeAnswered(det)` → the same handlers |
+| cascade pick / no pick | `cascadeRoute` after `cascadePick` | model rung picks (or fails with the `cascade_failed` route in its detail) → `cascadeRoute(det.route)` |
+| lost turn (abort, state replaced) | `settleTriage` returns null, nothing written | same; the queued ladder rows are never written (ruling 14) |
+
+**Files:**
+- Modify: `src/core/core-worker.ts` — imports (`:142-153`); `TriageHeld` (`:267`) unchanged, module-level declarations after it; delete `UNARMED` (`:270`, moved); new fields after `ompTurns` (`:496`); `settleTriage` (`:2681-2700`); replace `triageTurn` … `checkJevModel` (`:2728-2803`); `cascadeRoute` and `cascadePick` (`:2876-2908`); delete `URL_IN_TEXT` and `urlRule` (`:4055-4065`, moved in 8a)
+- Test: `tests/core/turn-handler-ladder.test.ts`; re-run the frozen Task 2 set and every consumer suite
+
+**Interfaces:**
+- Consumes: `decide` as `decideLadder` (Task 3); `AnyEntry`, `AnyDecideResult`, `DecisionRecorder` (Task 3); `storeRecorder` (Task 5); `TURN_HANDLER`, `TurnHandlerState`, `TurnHandlerVerdict`, `isSkipReason`, `TURN_GEAR`, `TurnGearState`, `TurnGearVerdict` (Task 6); the 8a glue; `recordSkip` / `persistDecisionRows` with `ladder_decision_id`, `JevVerdictInsert.decision_id`, `listDecisionsForRun` (Task 4); the Task 2 harness.
+- Produces: no new export. `CoreWorker` private: `pendingLadder`, `decisionRecorder`, `deferredRecorder(run_id)`, `flushLadder(run_id)`.
 
 - [ ] **Step 1: Write the failing tests `tests/core/turn-handler-ladder.test.ts`**
 
 ```ts
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fallbackOfSkip, jevSkipReason, treeDetailOf, urlRule } from "../../src/core/turn-handler-ladder.js";
-import type { DecideResult } from "../../src/decisions/types.js";
-import { fallbackRoute } from "../../src/jev/tree-policy.js";
 import type { RunStore } from "../../src/run/run-store.js";
-import { ARM, cat, HEAVY, jevDown, picks, scriptedLlm, SHADOW, treeSays, triageHarness, webOk, type Says } from "../helpers/triage-harness.js";
+import { cat, HEAVY, jevDown, picks, scriptedLlm, SHADOW, treeSays, triageHarness, webOk, type Says } from "../helpers/triage-harness.js";
 
 // ADR 0030 / spec §5.3: every turn.handler decision is one `decisions` row, and each jev_verdicts row and each jev_decisions
-// row of the turn links to it — the outcome trail a digest tap or a later correction follows. turn.gear records the role the
-// route carries and must equal it on every path (the planner pins route.role in stage 1). The off switch and a broken ledger
-// must not change what Paco gets.
+// row of the turn links to it — the outcome trail a digest tap or a later correction follows. Plan ruling 14 (codex B1):
+// the row is written with the verdict, so a lost turn writes none and a rolled-back save takes its row with it. turn.gear
+// records the role the route carries and must equal it on every path (the planner pins route.role in stage 1). A broken
+// ledger must not change what Paco gets.
 const RULE: Says = { category: cat({ memory: 0.9 }), sets_rule: 0.95 };
 const handlerRow = (store: RunStore, run_id: string) => store.listDecisionsForRun(run_id).filter((d) => d.entry_id === "turn.handler");
 const gearRow = (store: RunStore, run_id: string) => store.listDecisionsForRun(run_id).find((d) => d.entry_id === "turn.gear");
@@ -2405,8 +2977,7 @@ describe("turn.handler decisions link to what triage persisted", () => {
   });
   it("the ack rule: rung rule, reason ack_rule; the skipped row and the verdict linked; gear fast by rule", async () => {
     const h = triageHarness(treeSays());
-    const seed = "run_seed_ack";
-    h.store.recordChatTurn({ chat_id: "555", run_id: seed, role: "assistant", text: "明天悉尼晴，最高 22 度。", intent: "loop" });
+    h.store.recordChatTurn({ chat_id: "555", run_id: "run_seed_ack", role: "assistant", text: "明天悉尼晴，最高 22 度。", intent: "loop" });
     const t = h.turn("谢谢");
     await h.worker.triageTurn(t.input);
     expectLinked(h.store, t.run_id);
@@ -2414,12 +2985,12 @@ describe("turn.handler decisions link to what triage persisted", () => {
     expect(gearRow(h.store, t.run_id)).toMatchObject({ rung: "rule", verdict: "fast", reason_code: "gear_not_applied" });
     h.store.close();
   });
-  it("a Jev outage: rung fail, fallback_reason outage, reason transport", async () => {
+  it("a Jev outage: rung fail, fallback_reason outage on the jev rung, reason transport", async () => {
     const h = triageHarness(jevDown());
     const t = h.turn("以后回复短一点");
     await h.worker.triageTurn(t.input);
     expectLinked(h.store, t.run_id);
-    expect(handlerRow(h.store, t.run_id)[0]).toMatchObject({ rung: "fail", fallback_reason: "outage", reason_code: "transport" });
+    expect(handlerRow(h.store, t.run_id)[0]).toMatchObject({ rung: "fail", fallback_reason: "outage", fallback_rung: "jev", reason_code: "transport" });
     h.store.close();
   });
   it("a cascade pick: rung model, reason cascade", async () => {
@@ -2430,14 +3001,14 @@ describe("turn.handler decisions link to what triage persisted", () => {
     expect(handlerRow(h.store, t.run_id)[0]).toMatchObject({ rung: "model", reason_code: "cascade", verdict: "planner" });
     h.store.close();
   });
-  it("a cascade with no pick: rung fail, reason cascade_failed, fallback_reason outage", async () => {
+  it("a cascade with no pick: rung fail, reason cascade_failed, the model rung's outage (not a Jev skip)", async () => {
     const h = triageHarness(treeSays({ category: cat({ answer: 0.45, lookup: 0.4 }) }));
     const t = h.turn("这个周末去哪玩");
     await h.worker.triageTurn(t.input);
-    expect(handlerRow(h.store, t.run_id)[0]).toMatchObject({ rung: "fail", reason_code: "cascade_failed", fallback_reason: "outage" });
+    expect(handlerRow(h.store, t.run_id)[0]).toMatchObject({ rung: "fail", reason_code: "cascade_failed", fallback_reason: "outage", fallback_rung: "model" });
     h.store.close();
   });
-  it("shadow: armed_mode shadow, rung fail, the Jev rows say shadow", async () => {
+  it("configured shadow: armed_mode shadow, rung fail, the Jev rows say shadow", async () => {
     const h = triageHarness(treeSays(RULE), { env: SHADOW });
     const t = h.turn("以后回复短一点");
     await h.worker.triageTurn(t.input);
@@ -2451,6 +3022,37 @@ describe("turn.handler decisions link to what triage persisted", () => {
     const t = h.turn("从现在起，回复请控制在三句话以内。");
     expect((await h.worker.triageTurn(t.input)).kind).toBe("lane_reply");
     expectLinked(h.store, t.run_id);
+    h.store.close();
+  });
+});
+
+describe("a lost turn writes no decisions row (ruling 14, codex B1)", () => {
+  it("killed while Jev answers: no decisions row, no verdict, no Jev row", async () => {
+    const ctl = new AbortController();
+    const says = treeSays(RULE);
+    const h = triageHarness(vi.fn(async (u: unknown, i: unknown) => { ctl.abort(); return says(u, i); }));
+    const t = h.turn("从现在起，回复请控制在三句话以内。", { signal: ctl.signal });
+    await h.worker.triageTurn(t.input);
+    expect([h.store.listDecisionsForRun(t.run_id), h.store.getJevVerdictForRun(t.run_id), h.store.listJevDecisions(t.run_id)]).toEqual([[], undefined, []]);
+    h.store.close();
+  });
+  it("killed while the cascade answers: no decisions row, no verdict", async () => {
+    const ctl = new AbortController();
+    const cascade = async () => { ctl.abort(); return { ok: true as const, output: { answer: "lookup" } }; };
+    const h = triageHarness(treeSays({ category: cat({ answer: 0.45, lookup: 0.4 }) }), { llm: scriptedLlm({ cascade }) });
+    const t = h.turn("这个周末去哪玩", { signal: ctl.signal });
+    await h.worker.triageTurn(t.input);
+    expect([h.store.listDecisionsForRun(t.run_id), h.store.getJevVerdictForRun(t.run_id)]).toEqual([[], undefined]);
+    h.store.close();
+  });
+  it("a lane save that rolls back takes its row with it; the fallback settle writes exactly one, linked", async () => {
+    const h = triageHarness(treeSays(RULE));
+    const t = h.turn("从现在起，回复请控制在三句话以内。");
+    h.worker.breakLaneFinalizeOnceForTest();
+    await h.worker.triageTurn(t.input);
+    expectLinked(h.store, t.run_id);
+    expect(h.store.listDecisionsForRun(t.run_id).filter((d) => d.entry_id === "turn.gear").length).toBeLessThanOrEqual(1);
+    expect(h.store.getJevVerdictForRun(t.run_id)).toMatchObject({ route_outcome: "fallback" });
     h.store.close();
   });
 });
@@ -2475,32 +3077,6 @@ describe("turn.gear equals the role on the verdict row (the route's role) on eve
   }
 });
 
-describe("HOUGE_DECISIONS_OFF (boot-time, spec §5.4)", () => {
-  it("turn.handler off under arm: Jev asked and recorded, nothing applied (as shadow); the row says shadow", async () => {
-    const h = triageHarness(treeSays(RULE), { env: { ...ARM, HOUGE_DECISIONS_OFF: "turn.handler" } });
-    const t = h.turn("从现在起，回复请控制在三句话以内。");
-    expect((await h.worker.triageTurn(t.input)).kind).toBe("fallthrough");
-    expect(h.store.getJevVerdictForRun(t.run_id)).toMatchObject({ lane: "planner", reason: "uncalibrated", save_outcome: "none" });
-    expect(handlerRow(h.store, t.run_id)[0]).toMatchObject({ armed_mode: "shadow", rung: "fail" });
-    h.store.close();
-  });
-  it("turn.gear off: the gear questions are unarmed, so an answer-lane turn runs the planner (routed) and gear is decided by rule", async () => {
-    const h = triageHarness(treeSays({ category: cat({ answer: 0.9 }) }), { env: { ...ARM, HOUGE_DECISIONS_OFF: "turn.gear" } });
-    const t = h.turn("你觉得呢？");
-    expect((await h.worker.triageTurn(t.input)).kind).toBe("fallthrough");
-    expect(h.store.getJevVerdictForRun(t.run_id)).toMatchObject({ lane: "planner", reason: "routed", role: "default", effort: null });
-    expect(gearRow(h.store, t.run_id)).toBeUndefined(); // rule, default verdict: routine, no row
-    h.store.close();
-  });
-  it("is read once, at construction: a later env change does not move a running worker", async () => {
-    const h = triageHarness(treeSays(RULE));
-    vi.stubEnv("HOUGE_DECISIONS_OFF", "turn.handler");
-    const t = h.turn("从现在起，回复请控制在三句话以内。");
-    expect((await h.worker.triageTurn(t.input)).kind).toBe("lane_reply");
-    h.store.close();
-  });
-});
-
 describe("recording never changes a decision (spec §4.1)", () => {
   it("a failing decisions write: the same route and verdict row, decision_id null, decision_record_failed open", async () => {
     const h = triageHarness(treeSays({ category: cat({ research: 0.9 }) }));
@@ -2513,120 +3089,24 @@ describe("recording never changes a decision (spec §4.1)", () => {
     h.store.close();
   });
 });
-
-describe("the pure glue", () => {
-  it("fallbackOfSkip maps every Jev skip to a closed fallback reason", () => {
-    expect([fallbackOfSkip("timeout"), fallbackOfSkip("parse"), fallbackOfSkip("malformed_question"), fallbackOfSkip("state_too_large"), fallbackOfSkip("transport"),
-      fallbackOfSkip("rate_limited"), fallbackOfSkip("no_key")]).toEqual(["timeout", "parse", "parse", "budget", "outage", "outage", "outage"]);
-  });
-  it("treeDetailOf prefers the cascade's detail; jevSkipReason reads the tree rung's reason, else error", () => {
-    const d = { status: "answered" } as never;
-    const r = { walk: [{ kind: "jev", name: "tree", mode: "on", result: { abstain: true, detail: { d, armed: {} } } },
-      { kind: "model", name: "cascade", mode: "on", result: { verdict: "planner", detail: { d, armed: {}, route: fallbackRoute("cascade", false) } } }] } as unknown as DecideResult<"planner", never>;
-    expect(treeDetailOf(r as never)?.route?.reason).toBe("cascade");
-    const skip = { walk: [{ kind: "jev", name: "tree", mode: "on", result: { failed: "outage", reason: "transport" } }] } as unknown as DecideResult<"planner", never>;
-    expect([jevSkipReason(skip as never), jevSkipReason({ walk: [] } as never)]).toEqual(["transport", "error"]);
-  });
-  it("urlRule moved verbatim: a lookup naming a URL becomes the planner (lane_limits)", () => {
-    const lookup = { ...fallbackRoute("routed", false), lane: "lookup" as const, category: "lookup" as const };
-    expect(urlRule(lookup, "see https://example.com", () => ({ kind: "final", route: fallbackRoute("routed", false) })).reason).toBe("lane_limits");
-    expect(urlRule(lookup, "no link here", () => { throw new Error("not called"); })).toBe(lookup);
-  });
-});
 ```
 
 - [ ] **Step 2: Run them to see them fail**
 
 Run: `npx vitest run tests/core/turn-handler-ladder.test.ts`
-Expected: FAIL (`Cannot find module '../../src/core/turn-handler-ladder.js'`).
+Expected: FAIL (no `decisions` rows are written yet; `listDecisionsForRun` returns `[]`, so the link and row assertions fail).
 
-- [ ] **Step 3: Write `src/core/turn-handler-ladder.ts`**
+- [ ] **Step 3: Modify `src/core/core-worker.ts` — imports, module-level declarations and fields**
 
-```ts
-import type { CalibrationRow } from "../jev/calibration.js";
-import { topProbOf, type Decision, type SkipReason } from "../jev/decide.js";
-import type { JevTriageMode } from "../jev/jev-flags.js";
-import type { Lang } from "../jev/intent-question.js";
-import { routeTree, TREE_BAR_DEFAULTS, treeArmed, type Armed, type LaneSwitch, type Route, type RoutePlan } from "../jev/tree-policy.js";
-import { isBareAck } from "../omp/bare-ack.js";
-import { isSkipReason, type TurnHandlerVerdict } from "../decisions/entries/turn-handler.js";
-import type { DecideResult, FallbackReason, RungOutcome, RungResult } from "../decisions/types.js";
-
-/**
- * The pure half of `turn.handler`'s rungs (spec §4.4, §6.2 "wrap"): today's policy calls, unchanged, shaped as rung
- * results. `CoreWorker` owns the I/O half (the Jev call, the cascade call) and every handler after the decision.
- */
-export type AnsweredDecision = Extract<Decision, { status: "answered" }>;
-/** What the tree rung hands the cascade rung and the handlers: Jev's answer and rows, the arming, the plan, the route. */
-export interface TreeDetail { d: AnsweredDecision; armed: Armed; plan?: RoutePlan; route?: Route; error?: string }
-export const UNARMED: Armed = { category: false, status: false, memory: false, gear: false, rule: false, answer: false, lookup: false };
-const URL_IN_TEXT = /https?:\/\//i;
-
-/**
- * Stage B §2's one code rule: a lookup naming a URL is the planner's (its http_fetch path can read a named page; the lane
- * cannot from a one-line query). The route is the policy's own with the lookup lane unarmed (the gear's role), relabelled.
- */
-export function urlRule(route: Route, text: string, unlaned: () => RoutePlan): Route {
-  if (route.lane !== "lookup" || !URL_IN_TEXT.test(text)) return route;
-  const p = unlaned();
-  return p.kind === "final" ? { ...p.route, reason: "lane_limits" } : { ...route, lane: "planner", reason: "lane_limits" };
-}
-
-/** A Jev skip as the ledger's closed fallback reason; the skip reason itself stays the row's reason code. */
-export function fallbackOfSkip(reason: SkipReason): FallbackReason {
-  if (reason === "timeout") return "timeout";
-  if (reason === "parse" || reason === "malformed_question") return "parse";
-  if (reason === "state_too_large") return "budget";
-  return "outage";
-}
-
-export interface PlanInput {
-  userText: string; mode: JevTriageMode; lang: Lang; thinkHarder: boolean; rows: readonly CalibrationRow[]; lanesOff: ReadonlySet<LaneSwitch>;
-  /** HOUGE_DECISIONS_OFF=turn.gear: the gear questions count as unarmed (spec §5.4, plan ruling 4). */
-  gearOff: boolean;
-}
-
-/** Jev answered: arming, routeTree, urlRule — today's routeAnswered head (core-worker.ts:2782-2792 at 3bff437). Below the bar it abstains with the plan. */
-export function planTree(d: AnsweredDecision, i: PlanInput): RungResult<TurnHandlerVerdict, TreeDetail> {
-  const base = i.mode === "arm" ? treeArmed(i.lang, d.model, i.rows, i.lanesOff) : UNARMED; // d.model: the REPORTED id
-  const armed: Armed = i.gearOff ? { ...base, gear: false } : base;
-  const opts = { bars: TREE_BAR_DEFAULTS, thinkHarder: i.thinkHarder, bareAck: isBareAck(i.userText) };
-  const plan = routeTree(d.answers, { ...opts, armed });
-  if (plan.kind === "cascade") return { abstain: true, detail: { d, armed, plan } };
-  const route = urlRule(plan.route, i.userText, () => routeTree(d.answers, { ...opts, armed: { ...armed, lookup: false } }));
-  const category = d.answers.category;
-  return { verdict: route.lane, reason: route.reason, ...(category ? { p: topProbOf(category) } : {}), detail: { d, armed, plan, route } };
-}
-
-function detailOf(r: RungResult<TurnHandlerVerdict, TreeDetail> | null | undefined): TreeDetail | undefined {
-  return r && "detail" in r ? r.detail : undefined;
-}
-
-/** The detail the handlers need: the cascade's (it carries the picked route) when it ran, else the tree's. */
-export function treeDetailOf(r: DecideResult<TurnHandlerVerdict, TreeDetail>): TreeDetail | undefined {
-  const walk: readonly RungOutcome<TurnHandlerVerdict, TreeDetail>[] = r.walk;
-  return detailOf(walk.find((o) => o.kind === "model")?.result) ?? detailOf(walk.find((o) => o.kind === "jev")?.result);
-}
-
-/** Why the tree gave no answer, as today's skip reason (`error` when it threw or was never reached). */
-export function jevSkipReason(r: DecideResult<TurnHandlerVerdict, TreeDetail>): SkipReason {
-  const res = r.walk.find((o) => o.kind === "jev")?.result;
-  return res && "failed" in res && isSkipReason(res.reason) ? res.reason : "error";
-}
-```
-
-- [ ] **Step 4: Modify `src/core/core-worker.ts` — imports and fields**
-
-Imports (`:141-153`): add
+Imports (`:142-153`): add
 
 ```ts
 import { decide as decideLadder } from "../decisions/decide.js";
-import { effectiveTriageMode, isSkipReason, TURN_HANDLER, type TurnHandlerState, type TurnHandlerVerdict } from "../decisions/entries/turn-handler.js";
+import { isSkipReason, TURN_HANDLER, type TurnHandlerState, type TurnHandlerVerdict } from "../decisions/entries/turn-handler.js";
 import { TURN_GEAR, type TurnGearState, type TurnGearVerdict } from "../decisions/entries/turn-gear.js";
-import { armedOverride, resolveDecisionsOff } from "../decisions/off-switch.js";
 import { storeRecorder } from "../decisions/record.js";
-import type { DecideResult, DecisionRecorder, FallbackReason, RungOutcome, RungResult } from "../decisions/types.js";
-import { fallbackOfSkip, jevSkipReason, planTree, treeDetailOf, UNARMED, type AnsweredDecision, type TreeDetail } from "./turn-handler-ladder.js";
+import type { AnyDecideResult, AnyEntry, DecideResult, DecisionRecorder, FallbackReason, RungOutcome, RungResult } from "../decisions/types.js";
+import { fallbackOfSkip, jevSkipReason, planTree, treeDetailOf, type AnsweredDecision, type TreeDetail } from "./turn-handler-ladder.js";
 ```
 
 and import `type LastHougeTurn, type QuotedTurn` from `../jev/questions/tree.js` (`:148`). After Step 6 compiles, remove the
@@ -2634,43 +3114,92 @@ imports the change orphaned (`routeTree`, `treeArmed`, `TREE_BAR_DEFAULTS`, `typ
 `isBareAck`, `type Decision`) — check each with `grep -n "<name>" src/core/core-worker.ts` first; `preJudge`,
 `calibrationRows`, `resolveJevLanesOff` stay used.
 
-Delete `const UNARMED …` (`:270`; it now lives in `turn-handler-ladder.ts`). Delete `URL_IN_TEXT` (`:4055`) and `urlRule`
-with its doc comment (`:4057-4065`), both moved verbatim. Keep `LANE_PREVIOUS_TURNS` (`:4054`).
+Delete `const UNARMED …` (`:270`; it now lives in `turn-handler-ladder.ts`, and `core-worker.ts` no longer uses it). Delete `URL_IN_TEXT` (`:4055`) and `urlRule`
+with its doc comment (`:4057-4065`), both moved verbatim in 8a. Keep `LANE_PREVIOUS_TURNS` (`:4054`).
+
+Add, next to the other module-level types (after `TriageHeld`, `:267`):
+
+```ts
+/** Configured triage shadow as the runner's arming (the one shadow R13 keeps): the Jev and cascade rungs are asked and recorded, never applied. */
+const TREE_SHADOWED = { jev: "shadow", model: "shadow" } as const;
+/** The tree's instants (spec §2.2), read once per turn. */
+interface TreeContext { now: () => Date; builtAt: Date; lastHougeTurn: LastHougeTurn; quotedTurn: QuotedTurn | null }
+type HandlerResult = DecideResult<TurnHandlerVerdict, TreeDetail>;
+/** One queued front-door ladder row (plan ruling 14): written by settleTriage, inside its transaction. */
+interface PendingLadderRow { entry: AnyEntry; r: AnyDecideResult; ctx: { run_id: string | null; tool_call_id: string | null } }
+```
 
 After `private readonly ompTurns = new Map<string, OmpTurnState>();` (`:496`) add:
 
 ```ts
-  /** HOUGE_DECISIONS_OFF, read once at construction (= boot for the daemon; spec §5.4). */
-  private readonly decisionsOff: ReadonlySet<string> = resolveDecisionsOff(process.env);
-  /** The turn.handler decision each in-flight triage links its jev rows to (set after decide, cleared when triageTurn returns). */
-  private readonly triageDecisionIds = new Map<string, string | null>();
+  /** The front door's ladder rows, queued at decide time and written by settleTriage (ruling 14); cleared when triageTurn returns. */
+  private readonly pendingLadder = new Map<string, PendingLadderRow[]>();
   private recorderCache?: DecisionRecorder;
   /** Lazy: a field initializer cannot read the runStore parameter property (it is assigned after class fields). */
   private get decisionRecorder(): DecisionRecorder { return (this.recorderCache ??= storeRecorder(this.runStore)); }
 ```
 
-Add, next to the other module-level types (after `TriageHeld`, `:267`):
+- [ ] **Step 4: Replace `settleTriage` (`:2675-2700`, doc comment included) so the ladder rows ride its transaction**
 
 ```ts
-/** Triage shadow mode as the runner's arming: the Jev and cascade rungs are asked and recorded, never applied. */
-const TREE_SHADOWED = { jev: "shadow", model: "shadow" } as const;
-/** The tree's instants (spec §2.2), read once per turn. */
-interface TreeContext { now: () => Date; builtAt: Date; lastHougeTurn: LastHougeTurn; quotedTurn: QuotedTurn | null }
-type HandlerResult = DecideResult<TurnHandlerVerdict, TreeDetail>;
-```
-
-- [ ] **Step 5: Modify `verdictInsert` and `settleTriage` to carry the link**
-
-In `verdictInsert` (`:2661-2667`), add `decision_id: this.triageDecisionIds.get(run_id) ?? null,` after `quoted_turn_id: …`.
-In `settleTriage`, replace lines `:2686-2687` with:
-
-```ts
-      const ladder = this.triageDecisionIds.get(run_id) ?? null;
+  /**
+   * THE finaliser: every eligible, still-active exit of triageTurn passes through here exactly once and writes the
+   * turn's ladder rows, the decision rows (or the skipped row), the verdict row and the triage event together. A lost turn
+   * writes nothing — not even its `decisions` row (plan ruling 14). `inTx`: already inside the lane's save transaction, so
+   * the caller flips `triageFinalized` after that commit; a rollback there takes the ladder rows with it, and the
+   * fallback settle that follows writes them once.
+   * Returns the verdict id, or null when nothing was written.
+   */
+  private settleTriage(i: TriageInput, state: OmpTurnState | undefined, lang: Lang, f: TriageSettle, o: { inTx?: boolean } = {}): string | null {
+    if (state?.triageFinalized || this.laneLost(i, state)) return null;
+    const run_id = i.claim.run_id;
+    let verdict_id: string | null = null;
+    const write = (): void => {
+      const ladder = this.flushLadder(run_id);
       if (f.kind === "skipped") recordSkip(this.runStore, "triage", run_id, lang, f.reason, undefined, ladder);
       else persistDecisionRows(this.runStore, f.rows, f.decision, `${TREE_THRESHOLD_VERSION}:${f.route.reason}`, ladder);
+      if (o.inTx && this.laneFinalizeFault) { this.laneFinalizeFault = false; throw new Error("lane finalize fault (test)"); }
+      if (f.route.thinkHarder) this.markThinkHarder(run_id);
+      const id = this.runStore.insertJevVerdict({ ...this.verdictInsert(run_id, f, state), decision_id: ladder }, f.kind === "answered" ? f.verdict_id : undefined);
+      this.runStore.updateJevVerdict(id, { ...(f.handler ? { handler_outcome: f.handler } : {}), ...(f.kind === "answered" && f.model ? { model: f.model } : {}) });
+      this.triageEvent(run_id, lang, f, id);
+      verdict_id = id;
+    };
+    if (o.inTx) { write(); return verdict_id; }
+    this.runStore.inTransaction(write);
+    if (state) state.triageFinalized = true;
+    return verdict_id;
+  }
+
+  /** The front door's recorder (ruling 14): the runner's record call only queues the row for flushLadder. Never writes, never throws. */
+  private deferredRecorder(run_id: string): DecisionRecorder {
+    return {
+      record: (entry, r, ctx) => {
+        const list = this.pendingLadder.get(run_id) ?? [];
+        list.push({ entry, r, ctx });
+        this.pendingLadder.set(run_id, list);
+        return null;
+      }
+    };
+  }
+
+  /**
+   * Writes the turn's queued ladder rows (turn.handler, then turn.gear) inside settleTriage's transaction. storeRecorder
+   * never throws and opens no transaction; a failed insert leaves the link null and opens decision_record_failed, and the
+   * verdict stands. Rows stay queued until triageTurn returns, so a rolled-back write is redone by the next settle.
+   * Returns turn.handler's decision id.
+   */
+  private flushLadder(run_id: string): string | null {
+    let handler: string | null = null;
+    for (const p of this.pendingLadder.get(run_id) ?? []) {
+      const id = this.decisionRecorder.record(p.entry, p.r, p.ctx);
+      if (p.entry.id === TURN_HANDLER.id) handler = id;
+    }
+    return handler;
+  }
 ```
 
-- [ ] **Step 6: Replace `triageTurn` … `checkJevModel` (`:2728-2803`, doc comment included) with**
+- [ ] **Step 5: Replace `triageTurn` … `checkJevModel` (`:2728-2803`, doc comment included) with**
 
 ```ts
   /**
@@ -2692,20 +3221,19 @@ In `settleTriage`, replace lines `:2686-2687` with:
       const base = { route: turnRoute(route, id), ...quoteField(held.quote) };
       return saved ? { kind: "inform", note: memoryInformNote(saved.id, saved.theme), ...base } : { kind: "fallthrough", ...base };
     } finally {
-      this.triageDecisionIds.delete(i.claim.run_id);
+      this.pendingLadder.delete(i.claim.run_id);
     }
   }
 
   private async triageTurnInner(i: TriageInput, state: OmpTurnState | undefined, lang: Lang, held: TriageHeld): Promise<TriageOutcome> {
     this.resolveQuietOverrides();
-    const mode = effectiveTriageMode(resolveJevTriageMode(process.env, this.ompDataDir()), this.decisionsOff);
+    const mode = resolveJevTriageMode(process.env, this.ompDataDir());
     const tree = this.lazyTreeContext(state);
     const r = await decideLadder<TurnHandlerState, TurnHandlerVerdict, TreeDetail>(TURN_HANDLER, this.turnHandlerState(i, state, mode, tree), {
-      // The triage mode is the arming: shadow (configured, or HOUGE_DECISIONS_OFF through effectiveTriageMode) asks and records, never applies.
-      run_id: i.claim.run_id, recorder: this.decisionRecorder, armed: mode === "shadow" ? TREE_SHADOWED : undefined,
+      // configured shadow is the one shadow left (R13): the Jev and cascade rungs are asked and recorded, never applied
+      run_id: i.claim.run_id, recorder: this.deferredRecorder(i.claim.run_id), armed: mode === "shadow" ? TREE_SHADOWED : undefined,
       exec: { jev: () => this.treeRung(i, state, lang, mode, tree, held), model: (_rung, _s, prior) => this.cascadeRung(i, prior, held) }
     });
-    this.triageDecisionIds.set(i.claim.run_id, r.decisionId);
     return this.routeDecided(i, state, lang, mode, r, held);
   }
 
@@ -2758,17 +3286,16 @@ In `settleTriage`, replace lines `:2686-2687` with:
     return this.planAnswered(i, lang, mode, d, held);
   }
 
-  /** Jev answered: the pure policy, then (armed only) the alias-move page. A throw keeps Jev's rows so the catch settles the answered fallback. */
+  /**
+   * Jev answered: the pure policy, then (armed only, and only once the policy ran, as at 3bff437) the alias-move page.
+   * A throw in calibrationRows is the rung's throw (runAsync catches it): skipped `error`, as today (ruling 19).
+   */
   private planAnswered(i: TriageInput, lang: Lang, mode: JevTriageMode, d: AnsweredDecision, held: TriageHeld): RungResult<TurnHandlerVerdict, TreeDetail> {
     const rows = calibrationRows(process.env);
-    try {
-      const out = planTree(d, { userText: i.userText, mode, lang, thinkHarder: held.thinkHarder, rows, lanesOff: resolveJevLanesOff(process.env),
-        gearOff: this.decisionsOff.has(TURN_GEAR.id) });
-      if (mode === "arm") this.checkJevModel(d.model, rows); // shadow arms nothing, so an alias move loses nothing there
-      return out;
-    } catch (e) {
-      return { failed: "threw", reason: "error", detail: { d, armed: UNARMED, error: safeReason(e) } };
-    }
+    const out = planTree(d, { userText: i.userText, mode, lang, thinkHarder: held.thinkHarder, rows, lanesOff: resolveJevLanesOff(process.env) });
+    const reachedPolicy = !("failed" in out) || out.detail !== undefined;
+    if (mode === "arm" && reachedPolicy) this.checkJevModel(d.model, rows); // shadow arms nothing, so an alias move loses nothing there
+    return out;
   }
 
   /** The model rung (Decision 14): the Tiny pick between Jev's top two, only when the tree abstained below the choice bar. */
@@ -2803,11 +3330,11 @@ In `settleTriage`, replace lines `:2686-2687` with:
     return this.triageSkip(i, state, lang, reason, held, route);
   }
 
-  /** `turn.gear` (spec §4.4): the role this turn's route carries, recorded under its own entry from the same Jev call. Never throws. */
+  /** `turn.gear` (spec §4.4): the role this turn's route carries, recorded under its own entry from the same Jev call, queued with the handler's row. */
   private async recordGear(i: TriageInput, handler: HandlerResult, route: Route, gearArmed: boolean): Promise<void> {
     const applied = gearArmed && (handler.rung === "jev" || handler.rung === "model");
     await decideLadder<TurnGearState, TurnGearVerdict>(TURN_GEAR, { role: route.role, reason: route.reason, applied }, {
-      run_id: i.claim.run_id, recorder: this.decisionRecorder, armed: armedOverride(TURN_GEAR as never, this.decisionsOff),
+      run_id: i.claim.run_id, recorder: this.deferredRecorder(i.claim.run_id),
       exec: { jev: async () => ({ verdict: route.role, reason: route.reason }) }
     });
   }
@@ -2834,12 +3361,7 @@ In `settleTriage`, replace lines `:2686-2687` with:
   }
 ```
 
-Note `TURN_GEAR as never` in `armedOverride(...)`: `armedOverride` takes `AnyEntry`; the cast is the same widening the
-registry does (`as unknown as AnyEntry` also works — use whichever the typecheck accepts, and do not change the entry).
-`turn.handler` does not call `armedOverride`: `effectiveTriageMode` already turns its off switch into shadow, and shadow is
-passed as `TREE_SHADOWED`, so configured shadow and the off switch record the same way.
-
-- [ ] **Step 7: Replace `cascadeRoute` and `cascadePick` (`:2876-2908`)**
+- [ ] **Step 6: Replace `cascadeRoute` and `cascadePick` (`:2876-2908`)**
 
 ```ts
   /**
@@ -2878,23 +3400,25 @@ passed as `TREE_SHADOWED`, so configured shadow and the off switch record the sa
   }
 ```
 
-- [ ] **Step 8: Run the new tests, the pin and the typecheck**
+- [ ] **Step 7: Run the new tests, the frozen pin set and the typecheck**
 
-Run: `npx vitest run tests/core/turn-handler-ladder.test.ts tests/core/turn-handler-pin.test.ts && npm run typecheck`
-Expected: PASS; the pin writes no snapshot (`git status tests/core/__pins__` shows nothing). If a pin case fails, the diff
-names the column: fix the code until it passes. Never re-run the pin with `-u` in this task.
+Run: `npx vitest run tests/core/turn-handler-ladder.test.ts tests/core/turn-handler-ladder-glue.test.ts && CI=1 npx vitest run tests/core/turn-handler-pin.test.ts tests/core/turn-handler-pin-throws.test.ts tests/core/turn-handler-routed-by.test.ts && npm run typecheck`
+Expected: PASS; the pin writes no snapshot (`CI=1`). If a pin case fails, the diff names the column: fix the code until
+it passes. Never re-run the pin with `-u` in this task.
+Run: `git diff --exit-code <task-2 sha> -- tests/helpers/triage-harness.ts tests/core/turn-handler-pin.test.ts tests/core/turn-handler-pin-throws.test.ts tests/core/turn-handler-routed-by.test.ts tests/core/__pins__`
+Expected: exit 0, no output (the harness, the projection, the pin tests and the snapshots are exactly as Task 2 wrote them).
 
-- [ ] **Step 9: Run every consumer's suite (the consumer table above), then the whole suite**
+- [ ] **Step 8: Run every consumer's suite (the consumer table above), then the whole suite**
 
 Run: `npx vitest run tests/core/core-worker-triage.test.ts tests/core/core-worker-lanes.test.ts tests/gateway/memlane-commands.test.ts tests/gateway/rating-capture.test.ts tests/run/ tests/omp/ tests/jev/`
 Expected: PASS.
-Run: `npm run typecheck && npm test && npm run build`
-Expected: PASS with no skipped tests (`grep -c "skipped" ` on the vitest summary shows 0), build succeeds.
+Run (in the feature worktree only, never the main checkout): `npm run typecheck && npm test && npm run build`
+Expected: PASS with no skipped tests (`grep -c "skipped"` on the vitest summary shows 0), build succeeds.
 
-- [ ] **Step 10: Commit (protected for Paco's merge per spec §13: core-worker)**
+- [ ] **Step 9: Commit (protected for Paco's merge per spec §13: core-worker)**
 
 ```bash
-git add src/core/turn-handler-ladder.ts src/core/core-worker.ts tests/core/turn-handler-ladder.test.ts
+git add src/core/core-worker.ts tests/core/turn-handler-ladder.test.ts
 git commit -m "refactor(core): turn.handler and turn.gear decide through the ladder (behaviour pinned)"
 ```
 
@@ -2917,19 +3441,19 @@ import { REGISTRY } from "../../src/decisions/registry.js";
 import { checkDecisionSkipRates, DECISION_SKIP_RATE_EXCLUDED, detectViolations } from "../../src/run/invariant-sweep.js";
 import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
 
-// Spec §5.2: a silently dead judge on any entry must be loud. The rate comes from decisions.fallback_reason per entry (not
-// jev_decisions, which counts answers per run). turn.handler and turn.gear keep the pinned triage check for stage 1 (one
+// Spec §5.2: a silently dead judge on any entry must be loud. The rate comes from decisions rows whose first failure was on
+// the Jev rung (fallback_rung, codex W6), per entry (not jev_decisions, which counts answers per run). turn.handler and turn.gear keep the pinned triage check for stage 1 (one
 // Jev call, one page), so they are measured here but never paged twice.
 const NOW = "2026-10-12T12:00:00.000Z";
 const judged: AnyEntry = { ...(REGISTRY[0] as AnyEntry), id: "tool.injection" };
 const row = (entry_id: string, o: Partial<DecisionInsert>): DecisionInsert => ({ entry_id, entry_version: 1, run_id: null, tool_call_id: null, stage: "post_tool",
-  rung: "jev", verdict: "planner", p: 0.7, reason_code: null, fallback_reason: null, armed_mode: "on", latency_ms: 1, created_at: "2026-10-12T11:00:00.000Z", ...o });
+  rung: "jev", verdict: "planner", p: 0.7, reason_code: null, fallback_reason: null, fallback_rung: null, armed_mode: "on", latency_ms: 1, created_at: "2026-10-12T11:00:00.000Z", ...o });
 
 describe("per-entry jev_skip_rate", () => {
   it("opens for an entry whose Jev rung failed silently at least half the time (≥ 3 attempts)", () => {
     const store = RunStore.openInMemory();
-    store.insertDecision(row("tool.injection", { rung: "fail", fallback_reason: "timeout" }));
-    store.insertDecision(row("tool.injection", { rung: "fail", fallback_reason: "outage" }));
+    store.insertDecision(row("tool.injection", { rung: "fail", fallback_reason: "timeout", fallback_rung: "jev" }));
+    store.insertDecision(row("tool.injection", { rung: "fail", fallback_reason: "outage", fallback_rung: "jev" }));
     store.insertDecision(row("tool.injection", {}));
     expect(checkDecisionSkipRates(store, NOW, [judged])).toEqual([{ entry: "tool.injection", open: true, attempts: 3, failed: 2 }]);
     store.close();
@@ -2944,7 +3468,7 @@ describe("per-entry jev_skip_rate", () => {
   });
   it("never pages turn.handler or turn.gear (the pinned triage check owns that page in stage 1)", () => {
     const store = RunStore.openInMemory();
-    for (let k = 0; k < 4; k += 1) store.insertDecision(row("turn.handler", { rung: "fail", fallback_reason: "outage", stage: "pre_model" }));
+    for (let k = 0; k < 4; k += 1) store.insertDecision(row("turn.handler", { rung: "fail", fallback_reason: "outage", fallback_rung: "jev", stage: "pre_model" }));
     expect(DECISION_SKIP_RATE_EXCLUDED.has("turn.handler")).toBe(true);
     expect(checkDecisionSkipRates(store, NOW).find((r) => r.entry === "turn.handler")?.open).toBe(true);
     expect(detectViolations(store, NOW).filter((v) => v.subject.startsWith("decision:"))).toEqual([]);
@@ -2965,7 +3489,7 @@ imports, then after `jevViolations` (`:236`):
 
 ```ts
 /**
- * Spec §5.2: `jev_skip_rate` per entry, from `decisions.fallback_reason` (every entry with a Jev rung). Sticky like the
+ * Spec §5.2: `jev_skip_rate` per entry, from `decisions` rows that failed on the Jev rung (every entry with a Jev rung). Sticky like the
  * triage check: open until that entry's Jev or model rung answers after the incident opened. turn.handler and turn.gear
  * are measured (the digest shows them) but keep the jev_decisions-based page above in stage 1: one call, one page.
  */
@@ -3008,12 +3532,12 @@ git commit -m "feat(sweep): per-entry jev_skip_rate from decisions.fallback_reas
 **Files:**
 - Create: `src/decisions/digest.ts`
 - Modify: `src/notifications/notification-types.ts:14-18` (`NotificationPayload.button_rows?`)
-- Modify: `src/notifications/telegram-notification-adapter.ts:112` (call site) and `:146-151` (`toReplyMarkup`)
-- Modify: `src/telegram/telegram-daemon.ts` — import; `runSignalPathTick` (`:503`, one call after `checkMeteredCeiling`); one new function after it
+- Modify: `src/notifications/telegram-notification-adapter.ts:115` (call site) and `:146-151` (`toReplyMarkup`) — **protected** (`PROTECTED_FILES`, `self-write-guard.ts:120`): Paco's merge
+- Modify: `src/telegram/telegram-daemon.ts` — import; `runSignalPathTick` (`:506`, one call after `checkMeteredCeiling`); one new function after it
 - Test: `tests/decisions/digest.test.ts`; add one case to `tests/notifications/telegram-notification-adapter.test.ts`
 
 **Interfaces:**
-- Consumes: `REGISTRY`, `AnyEntry` (Task 6); `listDecisionsBetween`, `countDecisionJevSkips`, `recordDecisionDigest`, `getDecisionDigest`, `userTurnTextForRun`, `enqueueNotification`, `inTransaction`, `DecisionRow` (Task 4); `formatInstantInZone`, `resolveDisplayZone` (`src/run/schedule-spec.ts:132-149`).
+- Consumes: `REGISTRY`, `AnyEntry` (Task 6); `listDecisionsBetween`, `recordDecisionDigest`, `getDecisionDigest`, `userTurnTextForRun`, `getJevVerdictForRun`, `enqueueNotification`, `inTransaction`, `DecisionRow` (Task 4); `formatInstantInZone`, `resolveDisplayZone` (`src/run/schedule-spec.ts:132-149`).
 - Produces: `DEFAULT_DIGEST_AT = "21:00"`, `DIGEST_WINDOW_MS`, `UNSURE_BAND = 0.15`, `UNSURE_MAX = 8`, `REVIEW_PREFIX = "dec:rv:"`, `resolveDigestAt(env): string`, `barOf(entry): number | undefined`, `unsureOf(rows, registry?): DecisionRow[]`, `reviewButtons(decision_id, n): NotificationButton[]`, `interface Digest { text: string; button_rows: NotificationButton[][]; offered: string[] }`, `buildDecisionDigest(store, now, env?, registry?): Digest | null`, `runDecisionDigestTick(i: { store; chatId: string | null; now: string; env?: NodeJS.ProcessEnv }): { ran: false } | { ran: true; sent: boolean }`. `NotificationPayload.button_rows?: NotificationButton[][]`.
 
 - [ ] **Step 1: Write the failing tests `tests/decisions/digest.test.ts`**
@@ -3027,11 +3551,22 @@ import { drainOutbox } from "../helpers/omp-worker.js";
 
 // Spec §8.1: one message a day, rich-rendered, skipped when empty: up to 8 unsure verdicts (p within 0.15 of the entry's
 // bar) with ✅/❌ taps, counts per entry by rung, per-entry health. The line shows Paco's own words for front-door entries
-// and never tool text. The latch makes it one message per local date, whatever the poll cadence.
+// and never tool text. The latch makes it one message per local date, whatever the poll cadence. Plan ruling 14: a
+// front-door row whose verdict does not link it (a turn that never settled) is neither counted nor offered.
 const ENV = { HOUGE_DISPLAY_TZ: "Australia/Sydney" };
 const NOW = "2026-10-12T11:00:00.000Z"; // 22:00 in Sydney (AEDT, UTC+11)
 const D = (o: Partial<DecisionInsert>): DecisionInsert => ({ entry_id: "turn.handler", entry_version: 1, run_id: null, tool_call_id: null, stage: "pre_model",
-  rung: "jev", verdict: "planner", p: 0.9, reason_code: "routed", fallback_reason: null, armed_mode: "on", latency_ms: 1, created_at: "2026-10-12T05:00:00.000Z", ...o });
+  rung: "jev", verdict: "planner", p: 0.9, reason_code: "routed", fallback_reason: null, fallback_rung: null, armed_mode: "on", latency_ms: 1,
+  created_at: "2026-10-12T05:00:00.000Z", ...o });
+/** A turn.handler decision as settleTriage writes it: its run's verdict links it. */
+function settled(store: RunStore, o: Partial<DecisionInsert>, text = "x"): { id: string; run_id: string } {
+  const run_id = createQueuedTurnRun(store, text);
+  const id = store.insertDecision(D({ run_id, ...o }));
+  store.insertJevVerdict({ run_id, category: null, breadth: null, reasoning: null, actions: null, sets_rule: null, rule_scope: null, lane: "planner",
+    role: "default", effort: null, cascade: null, save_outcome: "none", route_outcome: "fallback", reason: "jev_skipped", skip_reason: null,
+    quoted_turn_id: null, decision_id: id });
+  return { id, run_id };
+}
 
 describe("unsureOf", () => {
   it("keeps applied Jev decisions within 0.15 of the entry's bar (turn.handler: 0.6), newest first, at most 8", () => {
@@ -3055,20 +3590,36 @@ describe("buildDecisionDigest", () => {
     expect(buildDecisionDigest(store, NOW, ENV)).toBeNull();
     store.close();
   });
-  it("renders unsure, counts and health; the line carries Paco's own words (markdown stripped, 40 chars), no tool text", () => {
+  it("renders unsure, counts and health; the line carries Paco's own words (markdown stripped, 40 code points), no tool text", () => {
     const store = RunStore.openInMemory();
-    const run = createQueuedTurnRun(store, "x");
-    store.recordChatTurn({ chat_id: "555", run_id: run, role: "user", text: "**明天** 悉尼 [天气] 怎么样？ 顺便 看看 后天 的 风 和 湿度 还有 紫外线 指数 多少" });
-    const id = store.insertDecision(D({ run_id: run, p: 0.58 }));
-    store.insertDecision(D({ rung: "fail", fallback_reason: "outage", reason_code: "transport", p: null }));
-    store.insertDecision(D({ rung: "rule", reason_code: "ack_rule", p: null }));
+    const { id, run_id } = settled(store, { p: 0.58 });
+    store.recordChatTurn({ chat_id: "555", run_id, role: "user", text: "**明天** 悉尼 [天气] 怎么样？ 顺便 看看 后天 的 风 和 湿度 还有 紫外线 指数 多少" });
+    settled(store, { rung: "fail", fallback_reason: "outage", fallback_rung: "jev", reason_code: "transport", p: null });
+    settled(store, { rung: "rule", reason_code: "ack_rule", p: null });
     const g = buildDecisionDigest(store, NOW, ENV)!;
     expect(g.text).toContain("🪜 *Decisions — 2026-10-12*");
     expect(g.text).toContain("1. turn.handler → planner · p 0.58 · 16:00 · «明天 悉尼 天气 怎么样？ 顺便 看看 后天 的 风 和 湿度 还有 紫外线 指»");
     expect(g.text).toContain("· turn.handler 3 — rule 1 · jev 1 · fail 1");
-    expect(g.text).toContain("· turn.handler: 1 Jev skip · 0 shadowed · 1 fallback");
+    expect(g.text).toContain("· turn.handler: 1 Jev skip · 1 fallback");
     expect(g.offered).toEqual([id]);
     expect(g.button_rows).toEqual([reviewButtons(id, 1)]);
+    store.close();
+  });
+  it("a front-door row no verdict links (a turn that never settled) is neither counted nor offered", () => {
+    const store = RunStore.openInMemory();
+    const orphan = store.insertDecision(D({ run_id: createQueuedTurnRun(store, "x"), p: 0.6 }));
+    const { id } = settled(store, { p: 0.62 });
+    const g = buildDecisionDigest(store, NOW, ENV)!;
+    expect(g.offered).toEqual([id]);
+    expect(g.offered).not.toContain(orphan);
+    expect(g.text).toContain("· turn.handler 1 — jev 1");
+    store.close();
+  });
+  it("a snippet never splits an emoji (code points, not UTF-16 units)", () => {
+    const store = RunStore.openInMemory();
+    const { run_id } = settled(store, { p: 0.6 });
+    store.recordChatTurn({ chat_id: "555", run_id, role: "user", text: `${"a".repeat(39)}😀tail` });
+    expect(buildDecisionDigest(store, NOW, ENV)!.text).toContain(`«${"a".repeat(39)}😀»`);
     store.close();
   });
   it("review buttons carry dec:rv:<id>:<ok|bad> within Telegram's 64-byte callback limit", () => {
@@ -3081,7 +3632,7 @@ describe("buildDecisionDigest", () => {
 describe("runDecisionDigestTick", () => {
   it("before HOUGE_DECISION_DIGEST_AT nothing runs; after it, one message per local date with the offered ids latched", () => {
     const store = RunStore.openInMemory();
-    const id = store.insertDecision(D({ p: 0.6 }));
+    const { id } = settled(store, { p: 0.6 });
     const env = { ...ENV, HOUGE_DECISION_DIGEST_AT: "22:30" };
     expect(runDecisionDigestTick({ store, chatId: "555", now: NOW, env })).toEqual({ ran: false });          // 22:00 < 22:30
     const later = "2026-10-12T11:40:00.000Z";                                                                 // 22:40
@@ -3098,6 +3649,15 @@ describe("runDecisionDigestTick", () => {
     expect(runDecisionDigestTick({ store, chatId: null, now: NOW, env: ENV })).toEqual({ ran: false });
     expect(runDecisionDigestTick({ store, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: true, sent: false });
     expect(drainOutbox(store).size).toBe(0);
+    expect(store.getDecisionDigest("2026-10-12")).toMatchObject({ sent: 0, offered: [] });
+    store.close();
+  });
+  it("an outbox conflict on today's key latches sent 0 with nothing offered (never a silent 'sent')", () => {
+    const store = RunStore.openInMemory();
+    settled(store, { p: 0.6 });
+    store.enqueueNotification({ target: { kind: "telegram", chat_id: "555" }, intent_type: "progress", idempotency_key: "decision_digest:2026-10-12",
+      correlation_id: "decision-digest", payload: { text: "an older digest" } });
+    expect(runDecisionDigestTick({ store, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: true, sent: false });
     expect(store.getDecisionDigest("2026-10-12")).toMatchObject({ sent: 0, offered: [] });
     store.close();
   });
@@ -3138,7 +3698,7 @@ Expected: FAIL (digest module missing; the adapter renders a single row from `bu
   button_rows?: NotificationButton[][];
 ```
 
-`src/notifications/telegram-notification-adapter.ts`: change the call at `:112` to `const reply_markup = toReplyMarkup(notification.payload);`
+`src/notifications/telegram-notification-adapter.ts` (protected): change the call at `:115` to `const reply_markup = toReplyMarkup(notification.payload);`
 and replace `toReplyMarkup` (`:146-151`) with:
 
 ```ts
@@ -3182,6 +3742,8 @@ const SNIPPET_CHARS = 40;
 const RUNG_ORDER = ["rule", "jev", "model", "paco", "fail"] as const;
 /** Entries decided over Paco's own message: their unsure line may quote his words (never tool text, plan ruling 10). */
 const PACO_TEXT_STAGES: ReadonlySet<string> = new Set(["intake", "pre_model"]);
+/** Entries whose rows settleTriage writes with the turn's verdict (plan ruling 14). */
+const FRONT_DOOR: ReadonlySet<string> = new Set(["turn.handler", "turn.gear"]);
 
 export function resolveDigestAt(env: NodeJS.ProcessEnv): string {
   const raw = env.HOUGE_DECISION_DIGEST_AT?.trim();
@@ -3210,7 +3772,20 @@ export function reviewButtons(decision_id: string, n: number): NotificationButto
   return [{ text: `✅ ${n}`, data: ok }, { text: `❌ ${n}`, data: bad }];
 }
 
-const snippetOf = (text: string): string => text.replace(/[*_`[\]<>]/g, " ").replace(/\s+/g, " ").trim().slice(0, SNIPPET_CHARS);
+/** Code points, not UTF-16 units: a split surrogate pair would make Telegram reject the HTML send. */
+const snippetOf = (text: string): string => Array.from(text.replace(/[*_`[\]<>]/g, " ").replace(/\s+/g, " ").trim()).slice(0, SNIPPET_CHARS).join("");
+
+/**
+ * Plan ruling 14: a front-door row counts only when its run's verdict links it. Stage 1 writes the two atomically, so this
+ * only guards a future path that leaves a row behind (a lost or killed turn must never be offered for review).
+ */
+function settledRows(store: RunStore, rows: readonly DecisionRow[]): DecisionRow[] {
+  return rows.filter((r) => {
+    if (!FRONT_DOOR.has(r.entry_id)) return true;
+    const linked = r.run_id ? store.getJevVerdictForRun(r.run_id)?.decision_id ?? null : null;
+    return linked !== null && (r.entry_id !== "turn.handler" || linked === r.decision_id);
+  });
+}
 
 function unsureLine(store: RunStore, r: DecisionRow, n: number, tz: string, registry: readonly AnyEntry[]): string {
   const entry = registry.find((e) => e.id === r.entry_id);
@@ -3232,23 +3807,28 @@ function countLines(rows: readonly DecisionRow[]): string[] {
   });
 }
 
-/** Per entry: Jev skips (any fallback reason), shadowed rows, named fallbacks; entries with all three at 0 are left out. */
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/**
+ * Per entry (spec §5.2): Jev skips (a failure on the Jev rung, budget excluded: codex W6), named fallbacks (budget
+ * excluded), and rows run in the configured triage shadow when there are any; entries with nothing to report are left out.
+ */
 function healthLines(rows: readonly DecisionRow[]): string[] {
   const ids = [...new Set(rows.map((r) => r.entry_id))].sort();
   return ids.flatMap((id) => {
     const mine = rows.filter((r) => r.entry_id === id);
-    const skips = mine.filter((r) => r.fallback_reason !== null).length;
+    const skips = mine.filter((r) => r.fallback_rung === "jev" && r.fallback_reason !== null && r.fallback_reason !== "budget").length;
+    const fallbacks = mine.filter((r) => r.rung === "fail" && r.fallback_reason !== null && r.fallback_reason !== "budget").length;
     const shadowed = mine.filter((r) => r.armed_mode === "shadow").length;
-    const fallbacks = mine.filter((r) => r.rung === "fail" && r.fallback_reason !== null).length;
-    if (skips + shadowed + fallbacks === 0) return [];
-    return [`· ${id}: ${skips} Jev skip${skips === 1 ? "" : "s"} · ${shadowed} shadowed · ${fallbacks} fallback${fallbacks === 1 ? "" : "s"}`];
+    if (skips + fallbacks + shadowed === 0) return [];
+    return [`· ${id}: ${plural(skips, "Jev skip")} · ${plural(fallbacks, "fallback")}${shadowed > 0 ? ` · ${shadowed} in configured shadow` : ""}`];
   });
 }
 
 export interface Digest { text: string; button_rows: NotificationButton[][]; offered: string[] }
 
 export function buildDecisionDigest(store: RunStore, now: string, env: NodeJS.ProcessEnv = process.env, registry: readonly AnyEntry[] = REGISTRY): Digest | null {
-  const rows = store.listDecisionsBetween(new Date(Date.parse(now) - DIGEST_WINDOW_MS).toISOString(), now);
+  const rows = settledRows(store, store.listDecisionsBetween(new Date(Date.parse(now) - DIGEST_WINDOW_MS).toISOString(), now));
   if (rows.length === 0) return null;
   const tz = resolveDisplayZone(env);
   const unsure = unsureOf(rows, registry);
@@ -3272,23 +3852,30 @@ export function runDecisionDigestTick(i: DigestTickInput): DigestTickResult {
   if (time < resolveDigestAt(env) || i.store.getDecisionDigest(date)) return { ran: false };
   const digest = buildDecisionDigest(i.store, i.now, env);
   return i.store.inTransaction((): DigestTickResult => {
-    if (!i.store.recordDecisionDigest({ local_date: date, sent: digest !== null, offered: digest?.offered ?? [], created_at: i.now })) return { ran: false };
-    if (digest) {
-      i.store.enqueueNotification({ target: { kind: "telegram", chat_id: chatId }, intent_type: "progress", idempotency_key: `decision_digest:${date}`,
-        correlation_id: "decision-digest", payload: { text: digest.text, ...(digest.button_rows.length > 0 ? { button_rows: digest.button_rows } : {}) } });
-    }
-    return { ran: true, sent: digest !== null };
+    if (i.store.getDecisionDigest(date)) return { ran: false };
+    const sent = digest !== null && enqueueDigest(i.store, chatId, date, digest);
+    i.store.recordDecisionDigest({ local_date: date, sent, offered: digest && sent ? digest.offered : [], created_at: i.now });
+    return { ran: true, sent };
   });
+}
+
+/** False on an idempotency conflict (another payload already holds today's key): the day latches sent 0, logged, never a silent "sent". */
+function enqueueDigest(store: RunStore, chatId: string, date: string, digest: Digest): boolean {
+  const r = store.enqueueNotification({ target: { kind: "telegram", chat_id: chatId }, intent_type: "progress", idempotency_key: `decision_digest:${date}`,
+    correlation_id: "decision-digest", payload: { text: digest.text, ...(digest.button_rows.length > 0 ? { button_rows: digest.button_rows } : {}) } });
+  if (r.status !== "conflict") return true;
+  console.error(`decisions: digest for ${date} not queued (${r.error})`);
+  return false;
 }
 ```
 
 Check against the test before running: the unsure line for `p 0.58` created at `05:00Z` renders `16:00` in Sydney (UTC+11
-on 2026-10-12); the snippet strips `*`, `[`, `]`, collapses spaces and keeps 40 characters.
+on 2026-10-12); the snippet strips `*`, `[`, `]`, collapses spaces and keeps 40 code points.
 
 - [ ] **Step 5: Wire the tick (`src/telegram/telegram-daemon.ts`)**
 
 Add `import { runDecisionDigestTick } from "../decisions/digest.js";` with the other imports. In `runSignalPathTick`, after
-`checkMeteredCeiling({ … });` (`:503`) add `runDigestTick(options.store, chatId, now);`, and after `runSignalPathTick` add:
+`checkMeteredCeiling({ … });` (`:506`) add `runDigestTick(options.store, chatId, now);`, and after `runSignalPathTick` add:
 
 ```ts
 /** Spec §8.1: the daily decision digest. Its own catch: a failed digest never skips the sweep after it. */
@@ -3306,7 +3893,7 @@ function runDigestTick(store: RunTelegramDaemonOptions["store"], chatId: string 
 Run: `npx vitest run tests/decisions/ tests/notifications/ tests/telegram/ && npm run typecheck`
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Commit (protected: `telegram-notification-adapter.ts` and `src/decisions/` — Paco's merge)**
 
 ```bash
 git add src/decisions/digest.ts src/notifications/notification-types.ts src/notifications/telegram-notification-adapter.ts src/telegram/telegram-daemon.ts tests/decisions/digest.test.ts tests/notifications/telegram-notification-adapter.test.ts
@@ -3320,11 +3907,12 @@ git commit -m "feat(decisions): the daily digest with unsure verdicts, counts an
 - Modify: `src/triggers/telegram-trigger-adapter.ts:6` (import), `:272-273` (one parser after `memlane`), new builder after `buildMemLaneTapEvent` (`:346`)
 - Modify: `src/domain/types.ts:4` (`TaskEventType` gains `"decision_review"`), `tests/domain/types.test.ts:31` (the union)
 - Create: `src/gateway/decision-commands.ts`
-- Modify: `src/gateway/gateway.ts` — import; `GatewayIntakeResult` (`:72`, one variant); dispatch beside `memlane_undo` (`:187`)
+- Modify: `src/gateway/gateway.ts` — import; the rate-limit exemption (`:154`); `GatewayIntakeResult` (`:72`, one variant); dispatch beside `memlane_undo` (`:187`)
+- Modify: `src/run/run-store.ts` — `checkTelegramRateLimit`'s window query (`:2239-2246`): review taps do not count — **protected** (Paco's merge)
 - Test: `tests/triggers/decision-review-callback.test.ts`, `tests/gateway/decision-commands.test.ts`
 
 **Interfaces:**
-- Consumes: `LC_UUID` (`telegram-command-parser.ts:317`); `authorizeTelegramUpdate` inside `normalizeCallbackQuery`; `oncePerTrigger`, `replyTo` (`src/gateway/memory-commands.ts:19-36`); `getDecision`, `wasDecisionOffered`, `insertDecisionOutcome`, `recordDecisionDigest` (Task 4); `OutcomeRejected` (Task 4).
+- Consumes: `LC_UUID` (`telegram-command-parser.ts:317`); `authorizeTelegramUpdate` inside `normalizeCallbackQuery`; `oncePerTrigger`, `replyTo` (`src/gateway/memory-commands.ts:19-36`); `getDecision`, `wasDecisionOffered`, `insertDecisionOutcome`, `recordDecisionDigest` (Task 4); `OutcomeRejected` (Task 4); `checkTelegramRateLimit`, `recordTelegramCommandAudit` (`run-store.ts:2237`).
 - Produces: `parseDecisionReviewCallback(data: unknown): { decision_id: string; label: "ok" | "bad" } | null`; event type `decision_review` with `metadata.decision_id`, `metadata.label`; `handleDecisionReview(store, event, now?): GatewayIntakeResult`; `REVIEW_STALE_MS`, `REVIEW_OK_TEXT`, `REVIEW_BAD_TEXT`, `REVIEW_HANDLED_TEXT`; `GatewayIntakeResult` variant `{ ok: true; status: "decision_reviewed"; run_id: string }`. Every review outcome is `ok: true`, so `HANDLED_INTAKE_DENIAL_CODES` needs no new code.
 
 - [ ] **Step 1: Write the failing tests**
@@ -3376,17 +3964,21 @@ import { drainOutbox } from "../helpers/omp-worker.js";
 
 // Spec §8.1: a tap writes one decision_outcomes label and replies; it is one-shot (a second tap, an unknown id or one no
 // digest offered in the last 7 days answers "Already handled." and writes nothing); a redelivered update replies once.
+// Plan ruling 16: the 5-a-minute command limit neither drops a tap nor counts taps against Paco's next real command.
 const NOW = "2026-10-12T11:00:00.000Z";
 let seq = 0;
 const tap = (decision_id: string, label: string, key = `k${++seq}`) => buildTypedTaskEvent({ source: "telegram", type: "decision_review",
   requested_by: { kind: "user", id: "paco" }, notify: { kind: "telegram", chat_id: "555" }, idempotency_key: key, source_reference: key,
   metadata: { telegram_update_id: seq, telegram_callback_id: key, decision_id, label } });
-function offered(store: RunStore, created_at = "2026-10-12T10:00:00.000Z"): string {
-  const id = store.insertDecision({ entry_id: "turn.handler", entry_version: 1, run_id: null, tool_call_id: null, stage: "pre_model", rung: "jev", verdict: "planner",
-    p: 0.6, reason_code: "routed", fallback_reason: null, armed_mode: "on", latency_ms: 1 });
-  store.recordDecisionDigest({ local_date: created_at.slice(0, 10), sent: true, offered: [id], created_at });
-  return id;
+const decision = (store: RunStore): string => store.insertDecision({ entry_id: "turn.handler", entry_version: 1, run_id: null, tool_call_id: null, stage: "pre_model",
+  rung: "jev", verdict: "planner", p: 0.6, reason_code: "routed", fallback_reason: null, fallback_rung: null, armed_mode: "on", latency_ms: 1 });
+/** `n` decisions offered by one digest dated by `created_at` (one latch row per local date). */
+function offeredMany(store: RunStore, n: number, created_at = "2026-10-12T10:00:00.000Z"): string[] {
+  const ids = Array.from({ length: n }, () => decision(store));
+  store.recordDecisionDigest({ local_date: created_at.slice(0, 10), sent: true, offered: ids, created_at });
+  return ids;
 }
+const offered = (store: RunStore, created_at?: string): string => offeredMany(store, 1, created_at)[0]!;
 const replies = (store: RunStore) => [...drainOutbox(store).values()].map((p) => p.text);
 
 describe("decision_review taps", () => {
@@ -3410,8 +4002,7 @@ describe("decision_review taps", () => {
   it("an unknown id, a decision no digest offered, and one offered 8 days ago: Already handled, nothing written", () => {
     const store = RunStore.openInMemory();
     const stale = offered(store, "2026-10-04T10:00:00.000Z");
-    const never = store.insertDecision({ entry_id: "turn.handler", entry_version: 1, run_id: null, tool_call_id: null, stage: "pre_model", rung: "jev",
-      verdict: "planner", p: 0.6, reason_code: null, fallback_reason: null, armed_mode: "on", latency_ms: 1 });
+    const never = decision(store);
     for (const id of ["dec_00000000-0000-0000-0000-000000000000", never, stale]) new Gateway(store).intake(tap(id, "bad"), NOW);
     expect([store.listDecisionOutcomes(never), store.listDecisionOutcomes(stale)]).toEqual([[], []]);
     expect(replies(store)).toEqual([REVIEW_HANDLED_TEXT, REVIEW_HANDLED_TEXT, REVIEW_HANDLED_TEXT]);
@@ -3423,6 +4014,19 @@ describe("decision_review taps", () => {
     new Gateway(store).intake(tap(id, "bad", "same"), NOW);
     new Gateway(store).intake(tap(id, "bad", "same"), NOW);
     expect(replies(store)).toEqual([REVIEW_BAD_TEXT]);
+    store.close();
+  });
+  it("8 taps in one minute all write labels and do not use up the command window; the limit still holds for other commands", () => {
+    const store = RunStore.openInMemory();
+    const ids = offeredMany(store, 8);
+    for (const id of ids) expect(new Gateway(store).intake(tap(id, "bad"), NOW)).toMatchObject({ ok: true, status: "decision_reviewed" });
+    expect(ids.every((id) => store.listDecisionOutcomes(id).length === 1)).toBe(true);
+    const limit = () => store.checkTelegramRateLimit({ actor_id: "paco", chat_id: "555", command: "turn", now: NOW }).ok;
+    expect(limit()).toBe(true);
+    for (let i = 0; i < 5; i += 1) {
+      store.recordTelegramCommandAudit({ actor_id: "paco", chat_id: "555", command: "turn", source_reference: `s${i}`, decision: "accepted", occurred_at: NOW });
+    }
+    expect(limit()).toBe(false);
     store.close();
   });
 });
@@ -3526,7 +4130,21 @@ function labelOnce(store: RunStore, decision_id: string, entry_id: string, label
 }
 ```
 
-- [ ] **Step 6: Gateway dispatch (`src/gateway/gateway.ts`)**
+- [ ] **Step 6: Gateway dispatch and the rate-limit exemption (`src/gateway/gateway.ts`, `src/run/run-store.ts`)**
+
+In `src/gateway/gateway.ts`, add at module level (beside the other constants):
+
+```ts
+/** ADR 0018 + decision ladder plan ruling 16: commands the per-chat rate limit never delays (kill; digest review taps). */
+const RATE_LIMIT_EXEMPT: ReadonlySet<string> = new Set(["kill", "decision_review"]);
+```
+
+and change the condition at `:154` from `event.source === "telegram" && event.type !== "kill"` to
+`event.source === "telegram" && !RATE_LIMIT_EXEMPT.has(event.type)` (extend the comment above it: "…and a digest review
+tap: allowlisted, one-shot, one closed-enum label; a dropped tap would look labelled").
+
+In `src/run/run-store.ts` `checkTelegramRateLimit` (`:2239-2246`), add `AND command <> 'decision_review'` after
+`AND decision = 'accepted'` in the window query, with the comment `-- review taps are exempt and never count (ruling 16)`.
 
 Add `import { handleDecisionReview } from "./decision-commands.js";` beside the memlane import (`:46`); add
 `| { ok: true; status: "decision_reviewed"; run_id: string }` to `GatewayIntakeResult` after `lesson_change_undone`
@@ -3538,35 +4156,41 @@ Add `import { handleDecisionReview } from "./decision-commands.js";` beside the 
 
 - [ ] **Step 7: Run**
 
-Run: `npx vitest run tests/triggers/ tests/gateway/ tests/domain/ && npm run typecheck`
+Run: `npx vitest run tests/triggers/ tests/gateway/ tests/domain/ tests/run/ && npm run typecheck`
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 8: Commit (protected: `run-store.ts` — Paco's merge)**
 
 ```bash
-git add src/triggers/telegram-command-parser.ts src/triggers/telegram-trigger-adapter.ts src/domain/types.ts tests/domain/types.test.ts src/gateway/decision-commands.ts src/gateway/gateway.ts tests/triggers/decision-review-callback.test.ts tests/gateway/decision-commands.test.ts
+git add src/triggers/telegram-command-parser.ts src/triggers/telegram-trigger-adapter.ts src/domain/types.ts tests/domain/types.test.ts src/gateway/decision-commands.ts src/gateway/gateway.ts src/run/run-store.ts tests/triggers/decision-review-callback.test.ts tests/gateway/decision-commands.test.ts
 git commit -m "feat(gateway): digest review taps write one decision_outcomes label"
 ```
 
 ## Task 12: Live gate `scripts/live-gate-decisions-parity.mjs` — the P6 dual run, the digest, the ❌ tap
 
-Spec §6.2 P6 and §13 row 1's PASS. Runs real Jev (about 400 calls), no planner, no lanes, no Telegram, no outbox
-delivery, against two `VACUUM INTO` copies of one frozen snapshot of the live DB. Gates import `dist/`, so both builds are
-built first.
+Spec §6.2 P6 and §13 row 1's PASS. Runs real Jev (about 400–460 calls with retries), no planner, no lanes, no Telegram,
+no outbox delivery, against two `VACUUM INTO` copies of one frozen snapshot of the live DB. Gates import `dist/`, so both
+builds are built first — each in its own worktree. **Nothing in this task runs `npm run build` in the main checkout**:
+the daemon executes `/Users/xiaochuan/Projects/adventure/dist`, and a relaunch would run unmerged code and migrate the
+live DB. The script refuses to run unless its own `dist/` is under `.worktrees/`.
 
 **Files:**
 - Create: `scripts/live-gate-decisions-parity.mjs`
 
 **Interfaces:**
-- Consumes (from each build's `dist/`): `CoreWorker` (`triageTurn`, `buildOmpTools`, 13-arg constructor, `ompOptions.jevNow`), `Gateway`, `RunStore` (`open`, `claimRun`, `recordChatTurn`, `listJevDecisions`, `getJevVerdictForRun`, `getLedgerEvents`), `buildTypedTaskEvent`, `loadHougeEnv`, `DISARM_FLAGS`, `resolveChatContextTurns`, `chatContextSince`; new build only: `listDecisionsForRun`, `listDecisionOutcomes`, `getDecisionDigest`, `claimNextNotification`, `buildDecisionDigest`, `runDecisionDigestTick`, `normalizeTelegramUpdate`.
-- Produces: exit 0 PASS · 1 FAIL · 2 setup error.
+- Consumes (from each build's `dist/`): `CoreWorker` (`triageTurn`, `buildOmpTools`, 13-arg constructor, `ompOptions.jevNow`), `Gateway`, `RunStore` (`open`, `claimRun`, `recordChatTurn`, `listJevDecisions`, `getJevVerdictForRun`, `getLedgerEvents`), `buildTypedTaskEvent`, `loadHougeEnv`, `DISARM_FLAGS`, `resolveChatContextTurns`, `chatContextSince`; new build only: `listDecisionsForRun`, `listDecisionOutcomes`, `getDecisionDigest`, `claimNextNotification`, `buildDecisionDigest`, `runDecisionDigestTick`, `normalizeTelegramUpdate`, `CALIBRATED_ROWS`, `TelegramNotificationAdapter`.
+- Produces: exit 0 PASS · 1 FAIL · 2 setup error · 3 INCONCLUSIVE (a required check could not run; never a PASS).
 
-- [ ] **Step 1: Build the pre-stage-1 dist in a worktree (once)**
+- [ ] **Step 1: Build both dists, each in its own worktree (once)**
 
 ```bash
+cd /Users/xiaochuan/Projects/adventure
 git worktree add .worktrees/p6-base 3bff437
 (cd .worktrees/p6-base && npm ci && npm run build)
+(cd .worktrees/decision-ladder-stage-1 && npm run build)
 ```
+
+3bff437 is the pre-stage-1 code (3bff437..1b65de4 is docs only). Task 13's rollback check reuses `.worktrees/p6-base/dist`.
 
 - [ ] **Step 2: Write `scripts/live-gate-decisions-parity.mjs`**
 
@@ -3574,22 +4198,29 @@ git worktree add .worktrees/p6-base 3bff437
 #!/usr/bin/env node
 // Live gate — decision ladder stage 1 (spec 2026-10-12 §6.2 P6, §13 row 1).
 //
-//   npm run build && HOUGE_ENV_FILE=/abs/.env node scripts/live-gate-decisions-parity.mjs --old-dist .worktrees/p6-base/dist [--db <path>] [--limit 200] [--keep]
+//   Run from the feature worktree, after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
+//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-decisions-parity.mjs \
+//     --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/p6-base/dist [--db <path>] [--limit 200] [--keep]
 //
-// P6 dual run: for each of the last N Telegram user texts in chat_turns, the same triage input — the text, its stored
+// P6 dual run: for each of the last Telegram user texts in chat_turns, the same triage input — the text, its stored
 // previous turns (within the context window, minus a 10-minute margin) seeded into a fresh chat at the same offsets, one
 // fixed clock for both builds — goes through CoreWorker.triageTurn in the pre-stage-1 dist (copy A) and in this build's
-// dist (copy B). Real Jev, one call per text per build. Lanes, planner, Telegram and the outbox are stubbed: the cascade
-// stub picks the first candidate, every other seat fails, search and fetch fail. Later jev_verdicts mutations are covered by
-// the Task 2 pin and Task 8 tests, not here.
+// dist (copy B). Real Jev, one call per text per build, paced. Lanes, planner, Telegram and the outbox are stubbed: the
+// cascade stub picks the first candidate, every other seat fails, search and fetch fail. Later jev_verdicts mutations are
+// covered by the Task 2 pin and Task 8b tests, not here.
 // Compared projection: every jev_decisions and jev_verdicts column the OLD schema has and the triage event payload, except
-// ids, timestamps and latency_ms; the triage event's verdict_id is compared as a link. Structural guard first (row count,
-// question order, status, skip reasons, links): any difference is a mismatch. Only an otherwise identical pair whose Jev
-// probabilities (or reported model) differ is "Jev nondeterminism", excluded. A pair where either side's Jev call failed
-// (timeout, transport, 429, …) is INCONCLUSIVE, never a pass.
-// PASS: ≥ 190 deterministic pairs (of 200), 0 mismatches; every stage-1 verdict and Jev row links its turn.handler decision;
-// the digest renders on copy B, the tick sends once, a ❌ tap writes one review_bad outcome, a second tap writes nothing,
-// a stranger's tap is refused. Exit: 0 PASS · 1 FAIL · 2 setup error. Never opens the live DB for writing.
+// ids, timestamps and latency_ms; the triage event's verdict_id is compared as a link.
+// Classification (codex B2): structure first — the outcome kind, question order, statuses, skip reasons, verdict presence
+// and the triage link. A structural difference is a mismatch, unless a side shows a transient Jev failure (timeout,
+// transport, 429, overloaded, auth): then the pair is retried once with a fresh chat and clock. Only a structurally
+// identical pair whose Jev probabilities (or reported model) differ is "Jev nondeterminism"; a pair whose sides failed the
+// same way, or that is still transient after its retry, is inconclusive. Neither ever passes.
+// PASS: ≥ 190 deterministic pairs before 200 decided (candidates over-fetched by 30), 0 mismatches; the coverage floor
+// (every answered row reports a calibrated model; ≥ 100 armed turn.handler verdicts; the cascade rung ran); every stage-1
+// verdict and Jev row links its turn.handler decision; the digest builds on copy B and renders through the Telegram adapter
+// with one ✅/❌ row per offered decision, the tick sends once, a ❌ tap writes one review_bad outcome, a second tap writes
+// nothing, a stranger's tap is refused. Exit: 0 PASS · 1 FAIL · 2 setup error · 3 INCONCLUSIVE. Never opens the live DB
+// for writing.
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
@@ -3598,9 +4229,17 @@ const NEW_DIST = resolve(new URL("../dist", import.meta.url).pathname);
 const failures = [];
 const inconclusive = [];
 const check = (name, ok, detail = "") => { console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? ` — ${detail}` : ""}`); if (!ok) failures.push(name); };
+/** A required check that could not run: never a PASS (exit 3 unless something failed). */
+const cannotRun = (name, why) => { console.log(`INCONCLUSIVE ${name} — ${why}`); inconclusive.push(`${name}: ${why}`); };
 const SILENT = new Set(["timeout", "transport", "parse", "error", "rate_limited", "overloaded", "auth", "no_key", "fused", "malformed_question"]);
+const TRANSIENT = new Set(["timeout", "transport", "rate_limited", "overloaded", "auth"]);
 const ID_COLS = new Set(["decision_id", "run_id", "verdict_id", "ladder_decision_id", "created_at", "updated_at", "latency_ms", "thread_cut_at", "state_built_at"]);
 const MARGIN_MS = 10 * 60_000;
+const PACE_MS = 250;
+const OVERFETCH = 30;
+const MIN_DETERMINISTIC = 190;
+const MIN_ARMED = 100;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function parseArgs(argv) {
   const a = { oldDist: null, db: null, limit: 200, keep: false };
@@ -3611,6 +4250,7 @@ function parseArgs(argv) {
     else if (argv[i] === "--keep") a.keep = true;
     else throw new Error(`unknown argument ${argv[i]}`);
   }
+  if (!NEW_DIST.includes("/.worktrees/")) throw new Error(`run from the feature worktree (this dist is ${NEW_DIST}); never build in the main checkout`);
   if (!a.oldDist || !existsSync(join(a.oldDist, "core/core-worker.js"))) throw new Error("--old-dist <pre-stage-1 dist> is required (see the header)");
   return a;
 }
@@ -3634,9 +4274,12 @@ function guardCopy(path, root, live) {
   if (resolve(path) === live || !resolve(path).startsWith(`${resolve(root)}/`)) throw new Error(`refusing to write outside the gate's temp copy: ${path}`);
 }
 
-/** No Telegram, every disarm flag off, markers in the temp root, the tree armed on the committed rows (no calibration file). */
+/**
+ * No Telegram, every disarm flag off, markers in the temp root, the tree armed on the committed rows (no calibration
+ * file), the answer and lookup lanes on for coverage (both builds see the same env; the live .env is untouched).
+ */
 function gateEnv(m, root) {
-  for (const k of ["HOUGE_TELEGRAM_BOT_TOKEN", "HOUGE_TELEGRAM_CHAT_ID", "HOUGE_TELEGRAM_USER_ID", "HOUGE_JEV_CALIBRATION_FILE", "HOUGE_JEV_GATE", "HOUGE_DECISIONS_OFF"]) delete process.env[k];
+  for (const k of ["HOUGE_TELEGRAM_BOT_TOKEN", "HOUGE_TELEGRAM_CHAT_ID", "HOUGE_TELEGRAM_USER_ID", "HOUGE_JEV_CALIBRATION_FILE", "HOUGE_JEV_GATE", "HOUGE_JEV_LANES_OFF"]) delete process.env[k];
   for (const f of m.DISARM_FLAGS) process.env[f] = "false";
   Object.assign(process.env, {
     HOUGE_EPISODIC_ENABLED: "false", HOUGE_WIKI_ENABLED: "false", HOUGE_TOMBSTONE_PATH: join(root, "houge.kill"), HOUGE_PARK_MARKER_PATH: join(root, "houge.parked"),
@@ -3644,18 +4287,18 @@ function gateEnv(m, root) {
   });
 }
 
-/** The last N Telegram user texts, oldest first, each with its stored previous turns inside the context window (gaps kept). */
-function pickTexts(m, basePath, limit) {
+/** The last N (+ over-fetch) Telegram user texts, oldest first, each with its stored previous turns inside the context window (gaps kept). */
+function pickTexts(m, basePath, n) {
   const db = new DatabaseSync(basePath, { readOnly: true });
   try {
     const texts = db.prepare(`SELECT t.chat_id, t.text, t.created_at FROM chat_turns t JOIN runs r ON r.run_id = t.run_id
-      WHERE t.role = 'user' AND r.source = 'telegram' ORDER BY t.created_at DESC, t.rowid DESC LIMIT ?`).all(limit).reverse();
-    const n = m.resolveChatContextTurns(process.env);
+      WHERE t.role = 'user' AND r.source = 'telegram' ORDER BY t.created_at DESC, t.rowid DESC LIMIT ?`).all(n).reverse();
+    const ctx = m.resolveChatContextTurns(process.env);
     const prior = db.prepare(`SELECT role, text, intent, created_at FROM chat_turns WHERE chat_id = ? AND created_at < ? ORDER BY created_at DESC, rowid DESC LIMIT ?`);
     return texts.map((t, k) => {
       const at = Date.parse(t.created_at);
       const windowMs = at - Date.parse(m.chatContextSince(process.env, new Date(at)));
-      const turns = prior.all(t.chat_id, t.created_at, n).reverse().map((p) => ({ role: p.role, text: p.text, intent: p.intent, gapMs: at - Date.parse(p.created_at) }))
+      const turns = prior.all(t.chat_id, t.created_at, ctx).reverse().map((p) => ({ role: p.role, text: p.text, intent: p.intent, gapMs: at - Date.parse(p.created_at) }))
         .filter((p) => p.gapMs < windowMs - MARGIN_MS);
       return { k, text: t.text, prior: turns };
     });
@@ -3676,14 +4319,14 @@ function makeSide(m, dbPath, dist, root, name, clock) {
   return { m, store, worker, name, dir };
 }
 
-/** Seeds the previous turns into a fresh chat at the same offsets from the shared clock, then admits and claims the turn. */
-function admit(side, item, clock) {
-  const chat = `p6c${item.k}`;
+/** Seeds the previous turns into a fresh chat (per attempt) at the same offsets from the shared clock, then admits and claims the turn. */
+function admit(side, item, clock, attempt) {
+  const chat = `p6c${item.k}a${attempt}`;
   for (const p of item.prior) {
-    side.store.recordChatTurn({ chat_id: chat, run_id: `run_p6seed_${item.k}`, role: p.role, text: p.text, ...(p.intent ? { intent: p.intent } : {}),
+    side.store.recordChatTurn({ chat_id: chat, run_id: `run_p6seed_${item.k}_${attempt}`, role: p.role, text: p.text, ...(p.intent ? { intent: p.intent } : {}),
       created_at: new Date(clock.t - p.gapMs).toISOString() });
   }
-  const upd = 900_000 + item.k;
+  const upd = 900_000 + item.k * 10 + attempt;
   const r = new side.m.Gateway(side.store, undefined, undefined, undefined, undefined, { dataDir: side.dir }).intake(side.m.buildTypedTaskEvent({
     source: "telegram", type: "turn", program: "turn", goal: item.text, requested_by: { kind: "user", id: "p6" }, notify: { kind: "telegram", chat_id: chat },
     idempotency_key: `telegram:${upd}:${item.k}`, source_reference: `telegram:update:${upd}:message:${item.k}`, metadata: { telegram_update_id: upd, telegram_message_id: item.k } }));
@@ -3711,8 +4354,9 @@ function columnsOf(dbPath) {
   } finally { db.close(); }
 }
 
-const shape = (p) => JSON.stringify({ jd: p.jd.map((r) => [r.question_id, r.status, r.skip_reason]), v: p.v !== null, triage: p.triage.map((t) => [t.status, t.verdict_id]) });
+const shape = (p) => JSON.stringify({ out: p.out, jd: p.jd.map((r) => [r.question_id, r.status, r.skip_reason]), v: p.v !== null, triage: p.triage.map((t) => [t.status, t.verdict_id]) });
 const failedJev = (p) => p.jd.some((r) => r.status === "skipped" && SILENT.has(r.skip_reason));
+const transient = (p) => p.jd.some((r) => r.status === "skipped" && TRANSIENT.has(r.skip_reason));
 function jevDiffers(a, b) {
   return a.jd.some((r, i) => {
     const o = b.jd[i];
@@ -3722,10 +4366,10 @@ function jevDiffers(a, b) {
   });
 }
 
-/** match · mismatch · nondeterministic · inconclusive, in that guard order (spec §6.2, codex round 4 W26). */
+/** match · mismatch · nondeterministic · inconclusive · retry — structure first (spec §6.2, codex B2). */
 function classify(a, b) {
-  if (failedJev(a) || failedJev(b)) return "inconclusive";
-  if (shape(a) !== shape(b)) return "mismatch";
+  if (shape(a) !== shape(b)) return transient(a) || transient(b) ? "retry" : "mismatch";
+  if (failedJev(a)) return "inconclusive"; // structures equal, so both sides failed the same way
   if (jevDiffers(a, b)) return "nondeterministic";
   return JSON.stringify(a) === JSON.stringify(b) ? "match" : "mismatch";
 }
@@ -3739,54 +4383,132 @@ function linkOk(side, run_id) {
   return v?.decision_id === d[0].decision_id && jd.length > 0 && jd.every((r) => r.ladder_decision_id === d[0].decision_id);
 }
 
-async function dualRun(g, items) {
-  const tally = { match: 0, mismatch: [], nondeterministic: 0, inconclusive: 0, skipped: 0, links: 0 };
-  for (const item of items) {
-    g.clock.t = Date.now();
-    const a = admit(g.oldSide, item, g.clock); const b = admit(g.newSide, item, g.clock);
-    if (!a || !b) { tally.skipped += 1; continue; }
-    const outA = await g.oldSide.worker.triageTurn(a.input);
-    const outB = await g.newSide.worker.triageTurn(b.input);
-    const pa = { ...project(g.oldSide, a.run_id, g.cols), out: outA.kind }; const pb = { ...project(g.newSide, b.run_id, g.cols), out: outB.kind };
-    const c = classify(pa, pb);
-    if (c === "mismatch") tally.mismatch.push({ k: item.k, old: pa, new: pb });
-    else tally[c] += 1;
-    if (!linkOk(g.newSide, b.run_id)) tally.links += 1;
-  }
-  return tally;
+/** One attempt: the same input through both builds, paced. Null when either side would not admit the turn. */
+async function triagePair(g, item, attempt) {
+  g.clock.t = Date.now();
+  const a = admit(g.oldSide, item, g.clock, attempt); const b = admit(g.newSide, item, g.clock, attempt);
+  if (!a || !b) return null;
+  const outA = await g.oldSide.worker.triageTurn(a.input);
+  await sleep(PACE_MS);
+  const outB = await g.newSide.worker.triageTurn(b.input);
+  await sleep(PACE_MS);
+  return { a: { ...project(g.oldSide, a.run_id, g.cols), out: outA.kind }, b: { ...project(g.newSide, b.run_id, g.cols), out: outB.kind }, runB: b.run_id };
 }
 
-function reportDualRun(t, n) {
+/** A transient or both-failed pair is retried once (senior W10); still transient after that, it is inconclusive, never a pass. */
+async function runPair(g, item) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const pair = await triagePair(g, item, attempt);
+    if (pair === null) return { c: "skipped" };
+    const c = classify(pair.a, pair.b);
+    if ((c === "retry" || c === "inconclusive") && attempt === 0) { g.retries += 1; continue; }
+    return { c: c === "retry" ? "inconclusive" : c, ...pair };
+  }
+  return { c: "skipped" };
+}
+
+async function dualRun(g, items, limit) {
+  const t = { match: 0, mismatch: [], nondeterministic: 0, inconclusive: 0, skipped: 0, links: 0, completed: 0, newRuns: [] };
+  const decided = () => t.match + t.mismatch.length + t.nondeterministic;
+  for (const item of items) {
+    if (decided() >= limit) break;
+    const r = await runPair(g, item);
+    if (r.c === "skipped") { t.skipped += 1; continue; }
+    t.completed += 1;
+    if (r.c === "mismatch") t.mismatch.push({ k: item.k, old: r.a, new: r.b }); else t[r.c] += 1;
+    t.newRuns.push(r.runB);
+    if (!linkOk(g.newSide, r.runB)) t.links += 1;
+  }
+  return t;
+}
+
+function reportDualRun(t, retries) {
   const det = t.match + t.mismatch.length;
-  console.log(`  pairs ${n}: match ${t.match} · mismatch ${t.mismatch.length} · Jev nondeterminism ${t.nondeterministic} · inconclusive ${t.inconclusive} · not admitted ${t.skipped}`);
+  console.log(`  pairs ${t.completed}: match ${t.match} · mismatch ${t.mismatch.length} · Jev nondeterminism ${t.nondeterministic} · inconclusive ${t.inconclusive} · retried ${retries} · not admitted ${t.skipped}`);
   for (const m of t.mismatch.slice(0, 5)) console.log(`  mismatch #${m.k}:\n    old ${JSON.stringify(m.old)}\n    new ${JSON.stringify(m.new)}`);
-  if (t.inconclusive > 0) inconclusive.push(`${t.inconclusive} pair(s): a Jev call failed on one side`);
-  check("P6: at least 190 deterministic pairs", det >= 190, `${det}`);
+  check(`P6: at least ${MIN_DETERMINISTIC} deterministic pairs`, det >= MIN_DETERMINISTIC, `${det}`);
   check("P6: 0 mismatches among them", t.mismatch.length === 0, `${t.mismatch.length}`);
   check("links: every stage-1 verdict and Jev row links its turn.handler decision", t.links === 0, `${t.links} unlinked`);
 }
 
-/** The digest latch rides along in the copy once the daemon runs stage 1: clear it from copy B only, before copy B is opened. */
+/** The new side's turn.handler rows, tallied (senior W9): a silently narrowed corpus (all uncalibrated, no cascade) must not pass. */
+function coverage(g, runs) {
+  const rows = runs.flatMap((r) => g.newSide.store.listDecisionsForRun(r).filter((d) => d.entry_id === "turn.handler"));
+  const tally = {};
+  for (const d of rows) tally[`${d.rung}:${d.reason_code}`] = (tally[`${d.rung}:${d.reason_code}`] ?? 0) + 1;
+  const calibrated = new Set(g.newMods.CALIBRATED_ROWS.map((r) => r.model));
+  const reported = [...new Set(runs.flatMap((r) => g.newSide.store.listJevDecisions(r).filter((x) => x.status === "answered").map((x) => x.model_reported)))];
+  return {
+    tally, reported, uncalibrated: reported.filter((m) => !calibrated.has(m)),
+    armed: rows.filter((d) => (d.rung === "jev" || d.rung === "model") && d.reason_code !== "uncalibrated").length,
+    model: rows.filter((d) => d.rung === "model" || d.fallback_rung === "model").length
+  };
+}
+
+function reportCoverage(c) {
+  console.log(`  turn.handler rows by rung:reason — ${Object.entries(c.tally).map(([k, n]) => `${k} ${n}`).join(" · ")}`);
+  check("coverage: every answered Jev row reports a model the committed rows arm", c.reported.length > 0 && c.uncalibrated.length === 0, `reported ${c.reported.join(", ") || "none"}`);
+  check(`coverage: at least ${MIN_ARMED} turn.handler verdicts from an armed tree`, c.armed >= MIN_ARMED, `${c.armed}`);
+  if (c.model === 0) cannotRun("coverage: the cascade (model) rung ran", "no text fell below the choice bar");
+  else check("coverage: the cascade (model) rung ran", true, `${c.model}`);
+}
+
+/** Copy B only, before it is opened: the digest latch and the day's digest outbox row ride along once the daemon runs stage 1. */
 function clearDigestLatch(pathB, root, live) {
   guardCopy(pathB, root, live);
   const db = new DatabaseSync(pathB);
   try {
     const has = db.prepare(`SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = 'decision_digests'`).get();
     if (has) console.log(`  cleared ${db.prepare(`DELETE FROM decision_digests`).run().changes} digest latch row(s) from copy B`);
+    console.log(`  cleared ${db.prepare(`DELETE FROM notification_outbox WHERE idempotency_key LIKE 'decision_digest:%'`).run().changes} digest outbox row(s) from copy B`);
   } finally { db.close(); }
 }
 
-function checkDigest(g) {
+/**
+ * The ❌ tap is under test, not Jev's p distribution (senior B2, codex B3): when the dual run left no unsure verdict, the
+ * newest applied jev-rung turn.handler decision of this run is set to p 0.6 on copy B only, and the output says so.
+ */
+function ensureUnsure(g, runs) {
+  const digest = g.newMods.buildDecisionDigest(g.newSide.store, new Date().toISOString(), process.env);
+  if (digest && digest.offered.length > 0) return;
+  const target = runs.flatMap((r) => g.newSide.store.listDecisionsForRun(r))
+    .filter((d) => d.entry_id === "turn.handler" && d.rung === "jev" && d.armed_mode === "on").at(-1);
+  if (!target) return;
+  guardCopy(g.pathB, g.root, g.live);
+  const db = new DatabaseSync(g.pathB);
+  try { db.prepare(`UPDATE decisions SET p = 0.6 WHERE decision_id = ?`).run(target.decision_id); } finally { db.close(); }
+  console.log(`  seeded: ${target.decision_id} set to p 0.6 on copy B so the digest offers one decision`);
+}
+
+function claimDigest(store) {
+  let note = null;
+  for (let n = store.claimNextNotification("p6", 30); n; n = store.claimNextNotification("p6", 30)) if (n.idempotency_key.startsWith("decision_digest:")) note = n;
+  return note;
+}
+
+/** Spec §13 row 1 "the digest renders": the queued payload through TelegramNotificationAdapter with a stub transport (codex S7). */
+async function checkRender(g, note, digest) {
+  if (!note || !digest) { cannotRun("digest render", "no digest message was queued"); return; }
+  const sent = [];
+  const adapter = new g.newMods.TelegramNotificationAdapter({ sendMessage: async (input) => { sent.push(input); return { message_id: 1 }; } });
+  await adapter.send(note);
+  const rows = sent[0]?.reply_markup?.inline_keyboard ?? [];
+  check("digest render: HTML through the rich renderer", sent.length === 1 && sent[0].parse_mode === "HTML" && sent[0].text.includes("Decisions"), sent[0]?.text.split("\n")[0] ?? "nothing sent");
+  check("digest render: one ✅/❌ row per offered decision", rows.length === digest.offered.length
+    && rows.every((r) => r.length === 2 && r.every((b) => b.callback_data.startsWith("dec:rv:"))), `${rows.length} row(s), ${digest.offered.length} offered`);
+}
+
+async function checkDigest(g) {
   const now = new Date().toISOString();
   const digest = g.newMods.buildDecisionDigest(g.newSide.store, now, process.env);
-  check("digest: renders on copy B with turn.handler counts", digest !== null && digest.text.includes("· turn.handler "), digest ? digest.text.split("\n")[0] : "null");
+  check("digest: builds on copy B with turn.handler counts", digest !== null && digest.text.includes("· turn.handler "), digest ? digest.text.split("\n")[0] : "null");
   const env = { ...process.env, HOUGE_DECISION_DIGEST_AT: "00:00" };
   const first = g.newMods.runDecisionDigestTick({ store: g.newSide.store, chatId: "p6op", now, env });
   const again = g.newMods.runDecisionDigestTick({ store: g.newSide.store, chatId: "p6op", now, env });
-  check("digest tick: sends once per local date", first.ran === true && again.ran === false, JSON.stringify({ first, again }));
-  let note = null;
-  for (let n = g.newSide.store.claimNextNotification("p6", 30); n; n = g.newSide.store.claimNextNotification("p6", 30)) if (n.idempotency_key.startsWith("decision_digest:")) note = n;
+  check("digest tick: sends once per local date", first.ran === true && first.sent === true && again.ran === false, JSON.stringify({ first, again }));
+  const note = claimDigest(g.newSide.store);
   check("digest tick: one outbox message to the operator chat", note !== null && note.payload.text === digest?.text, note ? note.idempotency_key : "none");
+  await checkRender(g, note, digest);
   return digest;
 }
 
@@ -3797,7 +4519,7 @@ function tapUpdate(m, from, data, id) {
 
 function checkTap(g, digest) {
   const offered = digest?.offered ?? [];
-  if (offered.length === 0) { inconclusive.push("❌ tap: no unsure verdict in the copy's last 24 h, so nothing was offered"); console.log("INCONCLUSIVE ❌ tap — nothing offered"); return; }
+  if (offered.length === 0) { cannotRun("❌ tap", "nothing was offered even after seeding (copy B has no applied jev-rung turn.handler row)"); return; }
   const id = offered[0];
   const gw = new g.newMods.Gateway(g.newSide.store);
   const first = tapUpdate(g.newMods, 111, `dec:rv:${id}:bad`, 1);
@@ -3805,12 +4527,13 @@ function checkTap(g, digest) {
   const second = tapUpdate(g.newMods, 111, `dec:rv:${id}:ok`, 2);
   if (second.ok) gw.intake(second.event);
   const outcomes = g.newSide.store.listDecisionOutcomes(id).map((o) => `${o.signal}:${o.value}:${o.source}`);
-  check("❌ tap: writes exactly one review_bad outcome; the second tap writes nothing", outcomes.length === 1 && outcomes[0] === "review_bad:turn.handler:paco", outcomes.join(","));
+  check("❌ tap: writes exactly one review_bad outcome; the second tap writes nothing", outcomes.length === 1 && outcomes[0] === "review_bad:turn.handler:paco", outcomes.join(",") || "none");
   check("❌ tap: a stranger's tap is refused by the allowlist", tapUpdate(g.newMods, 999, `dec:rv:${id}:bad`, 3).ok === false);
 }
 
 async function setup(args) {
-  const newMods = await loadBuild(NEW_DIST, ["config/load-env.js", "config/disarm-posture.js", "decisions/digest.js", "triggers/telegram-trigger-adapter.js"]);
+  const newMods = await loadBuild(NEW_DIST, ["config/load-env.js", "config/disarm-posture.js", "decisions/digest.js", "triggers/telegram-trigger-adapter.js",
+    "jev/calibration.js", "notifications/telegram-notification-adapter.js"]);
   newMods.loadHougeEnv();
   if (!process.env.TYPESAFE_API_KEY) throw new Error("TYPESAFE_API_KEY is not set (HOUGE_ENV_FILE?)");
   const repo = dirname(resolve(process.env.HOUGE_ENV_FILE ?? join(process.cwd(), ".env")));
@@ -3825,22 +4548,31 @@ async function setup(args) {
   const oldMods = await loadBuild(args.oldDist);
   const clock = { t: Date.now() };
   const cols = columnsOf(pathA); // the OLD schema: stage 1's new columns are checked as links, not compared
-  const g = { root, live, pathB, clock, cols, newMods, oldSide: makeSide(oldMods, pathA, args.oldDist, root, "old", clock), newSide: makeSide(newMods, pathB, NEW_DIST, root, "new", clock) };
-  return { g, items: pickTexts(newMods, base, args.limit) };
+  const g = { root, live, pathB, clock, cols, newMods, retries: 0,
+    oldSide: makeSide(oldMods, pathA, args.oldDist, root, "old", clock), newSide: makeSide(newMods, pathB, NEW_DIST, root, "new", clock) };
+  return { g, items: pickTexts(newMods, base, args.limit + OVERFETCH) };
+}
+
+function verdict(args, g) {
+  if (inconclusive.length > 0) console.log(`\nINCONCLUSIVE:\n  - ${inconclusive.join("\n  - ")}`);
+  const status = failures.length > 0 ? "FAIL" : inconclusive.length > 0 ? "INCONCLUSIVE" : "PASS";
+  console.log(status === "FAIL" ? `\nLIVE GATE: FAIL\n  - ${failures.join("\n  - ")}` : `\nLIVE GATE: ${status}`);
+  if (args.keep || status !== "PASS") console.log(`temp dir kept: ${g.root}`); else rmSync(g.root, { recursive: true, force: true });
+  return status === "PASS" ? 0 : status === "FAIL" ? 1 : 3;
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const { g, items } = await setup(args);
-  console.log(`decision ladder parity gate — ${items.length} texts, copies under ${g.root}\n`);
+  console.log(`decision ladder parity gate — ${items.length} candidate texts for ${args.limit} decided pairs, copies under ${g.root}\n`);
   try {
-    reportDualRun(await dualRun(g, items), items.length);
-    checkTap(g, checkDigest(g));
+    const t = await dualRun(g, items, args.limit);
+    reportDualRun(t, g.retries);
+    reportCoverage(coverage(g, t.newRuns));
+    ensureUnsure(g, t.newRuns);
+    checkTap(g, await checkDigest(g));
   } finally { g.oldSide.store.close(); g.newSide.store.close(); }
-  if (inconclusive.length > 0) console.log(`\nINCONCLUSIVE:\n  - ${inconclusive.join("\n  - ")}`);
-  console.log(failures.length === 0 ? "\nLIVE GATE: PASS" : `\nLIVE GATE: FAIL\n  - ${failures.join("\n  - ")}`);
-  if (args.keep || failures.length > 0) console.log(`temp dir kept: ${g.root}`); else rmSync(g.root, { recursive: true, force: true });
-  return failures.length === 0 ? 0 : 1;
+  return verdict(args, g);
 }
 
 main().then((c) => process.exit(c), (e) => { console.error(`live gate setup error: ${e instanceof Error ? e.stack ?? e.message : String(e)}`); process.exit(2); });
@@ -3853,30 +4585,47 @@ Expected: no output.
 
 - [ ] **Step 4: Run the gate (the live run that counts as "done")**
 
-Run: `npm run build && HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-decisions-parity.mjs --old-dist .worktrees/p6-base/dist`
-(from a worktree: `HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env`, and `--old-dist` with the absolute path).
-Expected: `LIVE GATE: PASS` with `P6: at least 190 deterministic pairs` and `P6: 0 mismatches`. Paste the full output into
-the task report. A mismatch is a code fault: read the printed pair, fix the code, rebuild, rerun. INCONCLUSIVE ❌ tap means
-the copy had no unsure verdict; rerun the next day or report it (it is never a PASS of that check).
+Run, from the feature worktree only:
+
+```bash
+cd /Users/xiaochuan/Projects/adventure/.worktrees/decision-ladder-stage-1
+HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-decisions-parity.mjs --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/p6-base/dist
+```
+
+Expected: `LIVE GATE: PASS` (exit 0) with `P6: at least 190 deterministic pairs`, `P6: 0 mismatches`, the three coverage
+checks, the two render checks and both tap checks PASS. Paste the full output into the task report. A mismatch is a code
+fault: read the printed pair, fix the code, rebuild in the worktree, rerun. `LIVE GATE: INCONCLUSIVE` (exit 3) is never a
+PASS: report which required check could not run and rerun (or ask Paco). Record
+`stat -f %m /Users/xiaochuan/Projects/adventure/dist/core/core-worker.js` before and after the run and show it unchanged
+(the main checkout's `dist/` was not rebuilt).
+
+Report for Paco (egress, senior S8): the gate builds `CoreWorker` without a broker, so the last 200 Telegram texts and
+their stored context reach TypeSafe redacted by shape only (`sanitizeJevText`), not by known secret values — the same
+class as the jev-tree gate and the replay, approved under R11, but more text than any earlier gate.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add scripts/live-gate-decisions-parity.mjs
-git commit -m "test(gate): decision ladder parity gate (P6 dual run, digest, review tap)"
+git commit -m "test(gate): decision ladder parity gate (P6 dual run, coverage floor, digest render, review tap)"
 ```
 
-## Task 13: Docs sync (configuration, the Jev reference, CONTEXT terms)
+## Task 13 (final): Docs sync and the R13 rollback check
 
 The ADR, its index row and AGENTS.md are Task 1. `sessions.md`, `tasks/todo.md` and `tasks/lessons.md` are written by the
-controller at ship. `README.md` needs no change: it lists no env vars (`README.md:59` links configuration.md).
+controller at ship. `README.md` needs no change: it lists no env vars (`README.md:59` links configuration.md). This task
+also proves R13's remedy on real data (spec §5.4: "every stage plan's final task verifies that by booting the previous
+`dist/` against a migrated DB copy").
 
 **Files:**
-- Modify: `docs/reference/configuration.md` — a new section after "Jev System One (ADR 0029)" (before `## Kill switch + disarm posture`, `:1041`); one sentence in the `HOUGE_JEV_LANES_OFF` row (`:957`); the sweep paragraph (`:737`)
+- Modify: `docs/reference/configuration.md` — a new section after "Jev System One (ADR 0029)" (before `## Kill switch + disarm posture`, `:1041`); the sweep paragraph (`:736`). The `HOUGE_JEV_LANES_OFF` row (`:957`) is not touched (R13).
 - Modify: `docs/reference/jev-decision-layer.md` — header paragraph (`:3-7`), a new section after "Decision flow" (before `## State and questions`, `:48`), "Rolling back" (`:195`), "Failure and the sweep" (`:216`)
-- Modify: `CONTEXT.md` — five terms after **Quoted Turn** (`:59`)
+- Modify: `CONTEXT.md` — five terms after **Quoted Turn** (`:65`)
+- Create: `scripts/check-decisions-rollback.mjs`
 
-**Interfaces:** none (docs only).
+**Interfaces:** none (docs and a check script). The script consumes, from the new `dist/`: `RunStore`, `loadHougeEnv`,
+`DISARM_FLAGS`; from the previous `dist/` (`.worktrees/p6-base/dist`, built in Task 12): `CoreWorker`, `Gateway`,
+`RunStore`, `buildTypedTaskEvent`, `detectViolations` (`src/run/invariant-sweep.ts:268` at 3bff437).
 
 - [ ] **Step 1: `docs/reference/configuration.md` — new section**
 
@@ -3890,39 +4639,48 @@ and `turn.gear` (the role on the route, recorded from the same Jev call). Refere
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `HOUGE_DECISIONS_OFF` | empty | Comma list of entry ids whose non-rule rungs run in **shadow** (asked and recorded, never applied). Read **once at boot**: `/rearm` does not reload `.env`, so a change needs a kickstart. Locked entries ignore it and boot logs one line naming them; an unknown id is named and ignored. `turn.handler`: an armed tree behaves as `HOUGE_JEV_TRIAGE_ENABLED=shadow` (Jev asked, every verdict `uncalibrated`, Default route, no ack rule). `turn.gear`: the three gear questions count as unarmed, so the planner gets the category's role floor and no effort, and the answer and lookup lanes stay off (they need the gear scores). |
 | `HOUGE_DECISION_DIGEST_AT` | `21:00` | Local time (`HH:MM`, in `HOUGE_DISPLAY_TZ`) of the daily decision digest to the operator chat. Malformed → the default. Sent once per local date on the first poll at or after the time; a day with no decisions sends nothing (the latch row still records the date). |
+
+**No off switch (ruling R13).** There is no variable that turns the decision system off or into shadow. The only shadow
+left is the front door's existing `HOUGE_JEV_TRIAGE_ENABLED=shadow`, unchanged. If a build is fundamentally wrong, revert
+its commit, rebuild `dist/`, kickstart: every stage's migrations are additive, and `scripts/check-decisions-rollback.mjs`
+proves the previous build runs on a migrated DB (run by each stage's final task).
 
 **The digest** (one Telegram message, rich-rendered): up to 8 **unsure** verdicts (an applied Jev decision whose
 probability is within 0.15 of its entry's bar; `turn.handler`'s bar is the choice bar 0.6), each with ✅ / ❌ buttons
-(`dec:rv:<decision_id>:<ok|bad>`); **counts** per entry by deciding rung in the last 24 h; **health** per entry (Jev skips,
-shadowed rows, fallbacks). For front-door entries a line quotes the first 40 characters of Paco's own message; no tool text
-ever. A tap passes the sender allowlist, writes one `decision_outcomes` row (`review_ok` / `review_bad`, value = the entry
-id) and replies; a second tap, an unknown id, or one no digest offered in the last 7 days answers "Already handled." and
-writes nothing.
+(`dec:rv:<decision_id>:<ok|bad>`); **counts** per entry by deciding rung in the last 24 h; **health** per entry (Jev skips —
+failures on the Jev rung, budget excluded — fallbacks, and rows in the configured triage shadow when there are any). A
+front-door row counts only when its turn's verdict links it. For front-door entries a line quotes the first 40
+characters of Paco's own message; no tool text ever. A tap passes the sender allowlist, writes one `decision_outcomes`
+row (`review_ok` / `review_bad`, value = the entry id) and replies; a second tap, an unknown id, or one no digest offered in
+the last 7 days answers "Already handled." and writes nothing. Review taps are exempt from the 5-commands-a-minute limit
+and do not count toward it.
 
-**Tables** (migration `2026-10-12-decision-ladder`): `decisions` (one row per decision that matters: `decision_id`,
-`entry_id`, `entry_version`, `run_id`, `tool_call_id`, `stage`, `rung` (`rule` \| `jev` \| `model` \| `paco` \| `fail`),
-`verdict`, `p`, `reason_code` (a code-owned enum per entry), `fallback_reason` (`timeout` \| `outage` \| `parse` \| `threw`
-\| `stale_bar` \| `budget`), `armed_mode`, `latency_ms`, `created_at`; no state column), `decision_outcomes` (closed
-signal and value per row; one review label per decision), `ladder_moves` (who decides, moved; only `approval.standing`
-may write an automatic row, for `tool.policy`; every Paco row carries its callback id; locked entries refuse every move),
-`decision_digests` (the daily latch and the ids each digest offered). `jev_decisions.ladder_decision_id` and
-`jev_verdicts.decision_id` link the Jev rows and the verdict to their `turn.handler` decision.
+**Tables** (migration `2026-10-12-decision-ladder`, additive): `decisions` (one row per decision that matters:
+`decision_id`, `entry_id`, `entry_version`, `run_id`, `tool_call_id`, `stage`, `rung` (`rule` \| `jev` \| `model` \|
+`paco` \| `fail`), `verdict`, `p`, `reason_code` (a code-owned enum per entry), `fallback_reason` (`timeout` \| `outage` \|
+`parse` \| `threw` \| `stale_bar` \| `budget`), `fallback_rung` (which rung failed first), `armed_mode`, `latency_ms`,
+`created_at`; no state column; `stage` and `fallback_reason` are validated in code so a later stage can extend them),
+`decision_outcomes` (closed signal and value per row, validated in code; one review label per decision), `ladder_moves`
+(who decides, moved; only `approval.standing` may write an automatic row, for `tool.policy`; every Paco row carries its
+callback id, used once; locked entries refuse every move), `decision_digests` (the daily latch and the ids each digest
+offered). `jev_decisions.ladder_decision_id` and `jev_verdicts.decision_id` link the Jev rows and the verdict to their
+`turn.handler` decision; the front door writes its decision row in the same transaction as the verdict, so a lost turn
+writes none.
 
 **Incidents:** `decision_record_failed` (subject = the entry; a decisions write failed, the verdict stood; the next good
-write resolves it), `decision_fallback` (subject = the entry; three named fallbacks to the entry's fail answer in one
-hour; one urgent card per open incident; the next answered call resolves it), and `jev_skip_rate` with subject
-`decision:<entry>` (the sweep's per-entry rate from `decisions.fallback_reason`; `turn.handler` and `turn.gear` keep the
-triage-wide `jev_skip_rate` above in stage 1).
+write resolves it), `decision_fallback` (subject = the entry; three named fallbacks to the entry's fail answer in one hour,
+`budget` excluded; for `turn.handler` and `turn.gear` only cascade failures count, because the Jev incidents already page a
+Jev outage; one urgent card per open incident, none for a reopen within 10 minutes of the last resolve; the next Jev or
+model answer resolves it, a rule answer does not), and `jev_skip_rate` with subject `decision:<entry>` (the sweep's
+per-entry rate from Jev-rung failures; `turn.handler` and `turn.gear` keep the triage-wide `jev_skip_rate` above in stage 1).
 
-**Live gate:** `HOUGE_ENV_FILE=/abs/.env node scripts/live-gate-decisions-parity.mjs --old-dist <pre-stage-1 dist>`
-(P6: the last 200 Telegram texts through the old and new triage on two copies of the DB; the digest; a ❌ tap).
+**Live gate:** from the feature worktree, `HOUGE_ENV_FILE=/abs/.env node scripts/live-gate-decisions-parity.mjs --old-dist <pre-stage-1 dist>`
+(P6: the last 200 Telegram texts through the old and new triage on two copies of the DB; coverage floor; the digest
+rendered through the Telegram adapter; a ❌ tap). Exit 3 = INCONCLUSIVE, never a pass.
 ```
 
-In the `HOUGE_JEV_LANES_OFF` row (`:957`) append: ` It is also the decision ladder's alias for switching off `turn.handler`'s answer and lookup verdicts one by one; `HOUGE_DECISIONS_OFF=turn.handler` shadows the whole tree.`
-
-In the sweep paragraph (`:737`), change `(plus the Jev rate kinds `jev_skip_rate` and `lane_fallthrough_rate`, below)` to
+In the sweep paragraph (`:736`), change `(plus the Jev rate kinds `jev_skip_rate` and `lane_fallthrough_rate`, below)` to
 `(plus the Jev rate kinds `jev_skip_rate`, also per decision entry, and `lane_fallthrough_rate`, below)`.
 
 - [ ] **Step 2: `docs/reference/jev-decision-layer.md`**
@@ -3943,89 +4701,300 @@ walked by the ladder runner (`src/decisions/decide.ts`):
 | rule `gate` | flag off, override, posture, non-text, no turn state, then the ack rule (arm mode only) | one of those holds | `rung rule`, `reason_code` = the skip reason (`disabled`, `override`, …, `ack_rule`) |
 | jev `tree` | the six-question call and the pure policy above | the policy routes (any lane or the planner) | `rung jev`, `p` = the category's top probability, `reason_code` = the route reason |
 | model `cascade` | the Tiny pick between Jev's top two | the tree went below the choice bar and the pick is one of the two | `rung model`, `reason_code` `cascade` |
-| fail | the planner | nothing answered (Jev skipped, cascade failed) | `rung fail`, `fallback_reason` = `timeout` / `outage` / `parse` / `threw` / `budget` |
+| fail | the planner | nothing answered (Jev skipped, cascade failed) | `rung fail`, `fallback_reason` = `timeout` / `outage` / `parse` / `threw` / `budget`, `fallback_rung` = the rung that failed |
 
-Every `turn.handler` decision is recorded (`decisions` row), and the turn's `jev_verdicts` row (`decision_id`) and every
-`jev_decisions` row (`ladder_decision_id`) link to it. `turn.gear` records the route's role from the same call (rung `jev`
-when the gear questions were armed and applied, else `rule`). Shadow mode — `HOUGE_JEV_TRIAGE_ENABLED=shadow`, or
-`HOUGE_DECISIONS_OFF=turn.handler` — runs the Jev and cascade rungs in shadow: asked and recorded (`armed_mode shadow`),
-never applied. Stage 1 changed no routing: the pinned characterisation tests (`tests/core/turn-handler-pin.test.ts`) and the
-P6 dual run (`scripts/live-gate-decisions-parity.mjs`) compare every persisted column with the pre-ladder build.
+Every `turn.handler` decision is recorded (`decisions` row) in the same transaction as the turn's `jev_verdicts` row
+(`decision_id`) and its `jev_decisions` rows (`ladder_decision_id`), all linked; a turn lost before it settles writes none.
+`turn.gear` records the route's role from the same call (rung `jev` when the gear questions were armed and applied, else
+`rule`). The entry declares what each verdict causes (ADR 0030 decision 4, R12): the lane replies and the status card are
+reversible replies announced on their cards; `memory` is the instant lesson save with Undo; `planner` may save first on a
+confident `sets_rule`, announced through the `[memory]` note. `HOUGE_JEV_TRIAGE_ENABLED=shadow` runs the Jev and cascade
+rungs in shadow: asked and recorded (`armed_mode shadow`), never applied. Stage 1 changed no routing: the pinned
+characterisation tests (`tests/core/turn-handler-pin.test.ts`) and the P6 dual run (`scripts/live-gate-decisions-parity.mjs`)
+compare every persisted column with the pre-ladder build.
 ```
 
 "Rolling back" (`:195`): add before item 0:
 
 ```markdown
-00. **Shadow the whole tree without touching the triage flag** (`.env`, then kickstart): `HOUGE_DECISIONS_OFF=turn.handler`.
-    Jev is still asked and recorded; nothing it says is applied.
+00. **The decision ladder itself has no off switch** (ruling R13, ADR 0030 decision 10). If a ladder build is
+    fundamentally wrong: revert its commit, rebuild `dist/`, kickstart. Its migrations are additive, so the previous build
+    runs on the migrated DB (`scripts/check-decisions-rollback.mjs`). The items below still roll back the tree's behaviour.
 ```
 
 "Failure and the sweep" (`:216`): add two bullets:
 
 ```markdown
-- `decision_fallback` (subject `turn.handler`): three fallbacks to the planner with a named failure in one hour; one urgent
-  card; the next answered call clears it.
+- `decision_fallback` (subject `turn.handler`): three cascade failures in one hour (a Jev outage pages through the Jev
+  incidents instead); one urgent card, none for a reopen within 10 minutes; the next Jev or cascade answer clears it.
 - `decision_record_failed`: a `decisions` write failed; the routing stood (the verdict row then has `decision_id` null).
 ```
 
-- [ ] **Step 3: `CONTEXT.md` — after **Quoted Turn** (`:59`)**
+- [ ] **Step 3: `CONTEXT.md` — after **Quoted Turn** (`:65`)**
 
 ```markdown
 **Decision**: A choice that changes a turn's path and whose answer an outcome could show wrong (ADR 0030). Mechanics — validation, timeouts, retries — are not decisions and stay plain code.
 
-**Entry**: One decision in the code-owned registry (`src/decisions/`, protected): its id, version, stage, closed verdicts, ladder, `fail` and default verdicts, what each verdict may cause, and the outcome signals that can show it wrong. `turn.handler` and `turn.gear` are the first two.
+**Entry**: One decision in the code-owned registry (`src/decisions/`, protected): its id, version, stage, the input its judges read (`paco`, `tool`, `mixed`), closed verdicts, ladder, `fail` and default verdicts, what each verdict causes (and whether that is reversible and announced), and the outcome signals that can show it wrong. `turn.handler` and `turn.gear` are the first two.
 
-**Rung**: One decider on an entry's ladder: a code `rule`, `jev`, a `model` one-shot, or `paco`. A rung answers, abstains (optionally with a monotone floor) or fails (`timeout`, `outage`, `parse`, `threw`, `stale_bar`, `budget`); each runs `on`, in `shadow` (asked and recorded, never applied) or `off`.
+**Rung**: One decider on an entry's ladder: a code `rule`, `jev`, a `model` one-shot, or `paco`. A rung answers, abstains (optionally with a monotone floor) or fails (`timeout`, `outage`, `parse`, `threw`, `stale_bar`, `budget`). Every entry ships armed; the only shadow is the front door's configured triage shadow (asked and recorded, never applied).
 
-**Ladder**: An entry's rungs in order, code first; the first rung that answers decides, and the entry's `fail` verdict stands when none does. On a monotone entry a later rung can only tighten. The runner decides, then records (`decisions`); recording never changes a decision.
+**Ladder**: An entry's rungs in order, code first; the first rung that answers decides, and the entry's `fail` verdict stands when none does. On a monotone entry a later rung can only tighten. What a Jev or model verdict may cause depends on what it read: over tool output only a tightening or a proposal, over Paco's own message a reversible, announced effect. The runner decides, then records (`decisions`); recording never changes a decision.
 
 **Ladder move**: A recorded change of who decides an entry (`ladder_moves`), such as a standing approval moving a fingerprint from Paco's tap to a code rule. Only code may make one on its own (standing approvals, skill authoring after recurrence, stated-rule lessons); every loosening is a proposal for Paco's tap; locked entries never move.
 ```
 
-- [ ] **Step 4: Check**
+- [ ] **Step 4: Write `scripts/check-decisions-rollback.mjs`**
 
-Run: `grep -n "HOUGE_DECISIONS_OFF\|HOUGE_DECISION_DIGEST_AT" docs/reference/configuration.md docs/reference/jev-decision-layer.md`
-Expected: both variables documented in configuration.md; no `HOUGE_TRUST_ASK_TTL_MS` anywhere (stage 2a).
+```js
+#!/usr/bin/env node
+// R13 rollback check — decision ladder stage 1 (spec 2026-10-12 §5.4; plan Task 13).
+//
+//   From the feature worktree, after `npm run build` there (never in the main checkout):
+//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/check-decisions-rollback.mjs \
+//     --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/p6-base/dist [--db <path>] [--keep]
+//
+// Rollback is "revert, rebuild, kickstart" only while every migration is additive. This proves it on real data: a VACUUM
+// copy of the live DB is migrated by the new build; then the previous build (3bff437) opens it — its migrations run, a
+// triage turn settles (Jev unreachable: a skipped row and a verdict, no network, no egress), its invariant sweep runs —
+// and the new build reopens it afterwards. Exit: 0 PASS · 1 FAIL · 2 setup error. Never opens the live DB for writing.
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { dirname, join, resolve } from "node:path";
 
-- [ ] **Step 5: Commit**
+const NEW_DIST = resolve(new URL("../dist", import.meta.url).pathname);
+const failures = [];
+const check = (name, ok, detail = "") => { console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? ` — ${detail}` : ""}`); if (!ok) failures.push(name); };
+const load = async (dist, paths) => Object.assign({}, ...(await Promise.all(paths.map((p) => import(join(dist, p))))));
+const LADDER_TABLES = ["decisions", "decision_outcomes", "ladder_moves", "decision_digests"];
+
+function parseArgs(argv) {
+  const a = { oldDist: null, db: null, keep: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] === "--old-dist") a.oldDist = resolve(argv[++i]);
+    else if (argv[i] === "--db") a.db = resolve(argv[++i]);
+    else if (argv[i] === "--keep") a.keep = true;
+    else throw new Error(`unknown argument ${argv[i]}`);
+  }
+  if (!NEW_DIST.includes("/.worktrees/")) throw new Error(`run from the feature worktree (this dist is ${NEW_DIST}); never build in the main checkout`);
+  if (!a.oldDist || !existsSync(join(a.oldDist, "core/core-worker.js"))) throw new Error("--old-dist <previous build's dist> is required");
+  return a;
+}
+
+function copyDb(from, to) {
+  const src = new DatabaseSync(from, { readOnly: true });
+  try { src.exec(`VACUUM INTO '${to.replace(/'/g, "''")}'`); } finally { src.close(); }
+}
+
+/** The ladder's additive schema: its four tables and both link columns. */
+function hasLadder(path) {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    const tables = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all().map((t) => t.name);
+    const cols = (t) => db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
+    return LADDER_TABLES.every((t) => tables.includes(t)) && cols("jev_verdicts").includes("decision_id") && cols("jev_decisions").includes("ladder_decision_id");
+  } finally { db.close(); }
+}
+
+/** No Telegram, disarm flags off, markers in the temp root, Jev armed but unreachable (a dummy key; jevFetch throws). */
+function isolate(root, disarmFlags) {
+  for (const k of ["HOUGE_TELEGRAM_BOT_TOKEN", "HOUGE_TELEGRAM_CHAT_ID", "HOUGE_TELEGRAM_USER_ID", "HOUGE_JEV_CALIBRATION_FILE", "HOUGE_JEV_GATE"]) delete process.env[k];
+  for (const f of disarmFlags) process.env[f] = "false";
+  Object.assign(process.env, {
+    HOUGE_TOMBSTONE_PATH: join(root, "houge.kill"), HOUGE_PARK_MARKER_PATH: join(root, "houge.parked"), HOUGE_DISARM_PATH: join(root, "houge.disarm"),
+    HOUGE_JEV_DISARM_PATH: join(root, "houge.jev-disarmed"), HOUGE_EPISODIC_ENABLED: "false", HOUGE_WIKI_ENABLED: "false",
+    HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "arm", TYPESAFE_API_KEY: "rollback-check"
+  });
+}
+
+/** The previous build on the migrated copy: its migrations (on open), one triage turn through its CoreWorker, its sweep. */
+async function bootOld(m, path, dist, root) {
+  const store = m.RunStore.open(path);
+  try {
+    const dir = join(root, "old"); mkdirSync(join(dir, "project"), { recursive: true });
+    const stub = async () => ({ ok: false, error: "rollback check" });
+    const worker = new m.CoreWorker(store, join(dir, "project"), stub, stub, undefined, undefined, stub, undefined, undefined, async () => null, undefined, undefined,
+      { dataDir: dir, distDir: dist, jevFetch: async () => { throw new TypeError("rollback check: no network"); } });
+    const r = new m.Gateway(store, undefined, undefined, undefined, undefined, { dataDir: dir }).intake(m.buildTypedTaskEvent({
+      source: "telegram", type: "turn", program: "turn", goal: "rollback check", requested_by: { kind: "user", id: "rb" }, notify: { kind: "telegram", chat_id: "rb" },
+      idempotency_key: "telegram:rollback-check:1", source_reference: "telegram:update:rollback-check:message:1", metadata: { telegram_update_id: 1, telegram_message_id: 1 } }));
+    if (!r.ok || r.status !== "created") throw new Error(`the previous build refused the turn: ${JSON.stringify(r)}`);
+    const claim = store.claimRun(r.run_id, "rb", 120);
+    worker.buildOmpTools(claim, "rb");
+    await worker.triageTurn({ claim, text: "rollback check", userText: "rollback check", modality: "text", posture: null, signal: new AbortController().signal });
+    return { verdict: store.getJevVerdictForRun(r.run_id), violations: m.detectViolations(store, new Date().toISOString()).length };
+  } finally { store.close(); }
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const newMods = await load(NEW_DIST, ["run/run-store.js", "config/load-env.js", "config/disarm-posture.js"]);
+  newMods.loadHougeEnv();
+  const live = resolve(args.db ?? join(dirname(resolve(process.env.HOUGE_ENV_FILE ?? join(process.cwd(), ".env"))), "houge.sqlite"));
+  if (!existsSync(live)) throw new Error(`no DB at ${live} (pass --db)`);
+  const root = mkdtempSync("/tmp/hg-rb-");
+  isolate(root, newMods.DISARM_FLAGS);
+  const path = join(root, "copy.sqlite");
+  copyDb(live, path);
+  newMods.RunStore.open(path).close();
+  check("the new build migrated the copy (four ladder tables, two link columns)", hasLadder(path));
+  const oldMods = await load(args.oldDist, ["core/core-worker.js", "gateway/gateway.js", "run/run-store.js", "domain/types.js", "run/invariant-sweep.js"]);
+  try {
+    const old = await bootOld(oldMods, path, args.oldDist, root);
+    check("the previous build boots on the migrated copy and settles a triage turn", old.verdict !== undefined,
+      `verdict ${old.verdict ? `${old.verdict.lane}/${old.verdict.skip_reason ?? old.verdict.reason}` : "none"}; sweep ran (${old.violations} violation(s))`);
+  } catch (e) {
+    check("the previous build boots on the migrated copy and settles a triage turn", false, e instanceof Error ? e.message : String(e));
+  }
+  check("the previous build left the ladder's tables and link columns in place", hasLadder(path));
+  try { newMods.RunStore.open(path).close(); check("the new build reopens the copy afterwards", true); }
+  catch (e) { check("the new build reopens the copy afterwards", false, e instanceof Error ? e.message : String(e)); }
+  console.log(failures.length === 0 ? "\nROLLBACK CHECK: PASS" : `\nROLLBACK CHECK: FAIL\n  - ${failures.join("\n  - ")}`);
+  if (args.keep || failures.length > 0) console.log(`temp dir kept: ${root}`); else rmSync(root, { recursive: true, force: true });
+  return failures.length === 0 ? 0 : 1;
+}
+
+main().then((c) => process.exit(c), (e) => { console.error(`rollback check setup error: ${e instanceof Error ? e.stack ?? e.message : String(e)}`); process.exit(2); });
+```
+
+- [ ] **Step 5: Run the rollback check (R13's proof)**
 
 ```bash
+cd /Users/xiaochuan/Projects/adventure/.worktrees/decision-ladder-stage-1
+node --check scripts/check-decisions-rollback.mjs
+HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/check-decisions-rollback.mjs --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/p6-base/dist
+```
+
+Expected: `ROLLBACK CHECK: PASS` (exit 0) with all four checks PASS; paste the output into the task report. A FAIL means a
+migration is not additive: stop and report to Paco before anything merges (R13's remedy would not hold).
+
+- [ ] **Step 6: Final checks**
+
+Run: `grep -rn "HOUGE_DECISIONS_OFF" src/ tests/ scripts/ docs/reference/ CONTEXT.md AGENTS.md`
+Expected: no output (R13).
+Run: `grep -n "HOUGE_DECISION_DIGEST_AT" docs/reference/configuration.md && ! grep -rn "HOUGE_TRUST_ASK_TTL_MS" docs/reference/`
+Expected: the digest variable documented; no `HOUGE_TRUST_ASK_TTL_MS` (stage 2a).
+Run: `git diff --exit-code <task-2 sha> -- tests/helpers/triage-harness.ts tests/core/turn-handler-pin.test.ts tests/core/turn-handler-pin-throws.test.ts tests/core/turn-handler-routed-by.test.ts tests/core/__pins__`
+Expected: exit 0 (the frozen pin set is unchanged at the end of the stage).
+Run (worktree): `npm run typecheck && npm test && npm run build`
+Expected: PASS, no skipped tests.
+
+- [ ] **Step 7: Commit (two concerns, two commits)**
+
+```bash
+git add scripts/check-decisions-rollback.mjs
+git commit -m "test(gate): R13 rollback check — the previous build on a DB the ladder migrated"
 git add docs/reference/configuration.md docs/reference/jev-decision-layer.md CONTEXT.md
 git commit -m "docs: decision ladder stage 1 — configuration, the Jev reference, CONTEXT terms"
 ```
 
 ---
 
-## Self-review (run by the plan author against spec §13 row 1)
+
+## Self-review (run by the plan author against spec §13 row 1, Rev 8)
 
 **Spec coverage.**
 - ADR 0030 with Assumptions and Revisit-when, amendments to 0029 / 0028 / 0014 / 0011 clause by clause, the one named
-  deny-path exception, R11, provisional bars, index row, AGENTS.md sentence → Task 1 (no code depends on it).
-- Registry types with `{abstain, floor}`, runner `decideSync` / `decide`, code first, monotone floor, shadow, locked,
-  record after decide with `decision_record_failed`, bar types → Tasks 3, 5, 6.
-- Jev-never-causes-effect registry test → Task 6 `entryProblems` + `registry.test.ts`; eligible input reaches the Jev rung → Task 6 `turn-handler-entry.test.ts`.
-- `decisions`, `decision_outcomes`, `ladder_moves` (store-level auto check), `jev_decisions.ladder_decision_id` (FK,
-  indexed), `jev_verdicts.decision_id`, closed enums, no state column, migration count → Task 4.
-- `turn.handler` + `turn.gear` migrated, move-don't-improve, differential on behaviour incl. persisted rows, triage event,
-  `routed_by` (via the pinned `route.verdict_id`), catch-up, corrections, terminal transitions → Tasks 2 and 8; the
-  consumer table lists every `jev_verdicts` consumer and the suite that keeps it green.
+  deny-path exception, R11, R12 (effects by input source), R13 (no off switch, no designed shadow, rollback by revert),
+  provisional bars that page instead of disarming, index row, AGENTS.md sentence → Task 1 (no code depends on it).
+- Registry types with `{abstain, floor}`, `input`, effect declarations; runner `decideSync` / `decide`, code first,
+  monotone floor (with `floor_held`), configured shadow only, locked, record after decide with `decision_record_failed`,
+  bar types → Tasks 3, 5, 6.
+- R12 registry test (unannounced or irreversible judge effect fails; any non-tightening effect over tool input fails;
+  `turn.handler`'s real effect table pinned) and R13 (every registered entry armed `on`) → Task 6 `entryProblems` +
+  `registry.test.ts`; eligible input reaches the Jev rung → Task 6 `turn-handler-entry.test.ts`.
+- `decisions` (with `fallback_rung`), `decision_outcomes`, `ladder_moves` (store-level auto check; one-shot callback),
+  `jev_decisions.ladder_decision_id` (FK, indexed), `jev_verdicts.decision_id`, growing enums validated in code, no state
+  column, migration count → Task 4.
+- `turn.handler` + `turn.gear` migrated, move-don't-improve, differential on behaviour incl. persisted rows (`state_hash`
+  kept), triage event, `routed_by` (pinned projection plus the real-supervisor end-to-end test), catch-up, corrections,
+  terminal transitions, the throw paths → Tasks 2, 8a, 8b; rows written atomically with the verdict (no orphan for a lost
+  turn) → Task 8b; the consumer table lists every `jev_verdicts` consumer and the suite that keeps it green.
 - `src/decisions/` protected with its test → Task 7.
-- `HOUGE_DECISIONS_OFF` (boot-only, locked ignore it with a boot warning, `HOUGE_JEV_LANES_OFF` kept as alias),
-  `HOUGE_DECISION_DIGEST_AT` documented, `HOUGE_TRUST_ASK_TTL_MS` not added → Tasks 6, 8, 13.
-- Digest (counts, unsure list with ✅/❌ `dec:rv:` callbacks, sender allowlist, one-shot, per-entry health, rich renderer,
-  skipped when empty, scheduled), `decision_fallback:<entry>` urgent card, per-entry `jev_skip_rate` in the sweep → Tasks 5, 9, 10, 11.
-- P6 dual run (200 texts, two VACUUM copies of one snapshot, stubs, projection, id mapping as links, structural guard before
-  the nondeterminism exclusion, ≥ 190 deterministic and 0 mismatches), digest renders, ❌ tap writes an outcome → Task 12.
-- Docs sync → Task 13.
+- No `HOUGE_DECISIONS_OFF` anywhere; `HOUGE_JEV_LANES_OFF` untouched; `HOUGE_DECISION_DIGEST_AT` documented;
+  `HOUGE_TRUST_ASK_TTL_MS` not added → Tasks 6, 13.
+- Digest (counts, unsure list with ✅/❌ `dec:rv:` callbacks, sender allowlist, one-shot, exempt from the command limit,
+  per-entry health with Jev-rung skips, settled front-door rows only, rich renderer, skipped when empty, scheduled,
+  conflict-safe latch), `decision_fallback:<entry>` urgent card (judge answers clear it, damped, no double page), per-entry
+  `jev_skip_rate` in the sweep → Tasks 5, 9, 10, 11.
+- P6 dual run (200 decided pairs from 230 candidates, two VACUUM copies of one snapshot, stubs, projection, id mapping as
+  links, structure before Jev failures, one retry, pacing, coverage floor, ≥ 190 deterministic and 0 mismatches), the
+  digest rendered through the adapter, a ❌ tap that can fail (seeded offer), INCONCLUSIVE never PASS, worktree-only
+  builds → Task 12.
+- Docs sync and the R13 rollback check (the 3bff437 build boots on a DB the new build migrated) → Task 13.
 
-**Placeholder scan.** Every code step carries the code. Two deliberate edges are named, not deferred: outcome signals with
-no stage 1 producer reject every value until their stage defines the set (ruling 7), and the ❌-tap gate check is
-INCONCLUSIVE, never PASS, when the copy offered nothing (spec gate rule).
+**Placeholder scan.** Every code step carries the code. Deliberate edges, named: outcome signals with no stage 1
+producer reject every value until their stage defines the set (ruling 7); a required gate check that cannot run is
+INCONCLUSIVE (exit 3), never PASS; `CLOCK_CASES` starts empty and may only ever hold a prior-turn case; Q1 is open for
+Paco and the plan keeps today's behaviour meanwhile.
 
-**Type consistency.** `RungResult` / `RungAnswer` / `RungAbstain` / `RungFailed`, `DecideResult`, `DecideCtx`,
-`DecisionRecorder`, `AnyEntry` (Task 3) are used with the same names in Tasks 5, 6, 8, 9, 10. Store names
-(`insertDecision`, `listDecisionsForRun`, `listDecisionsBetween`, `countDecisionFallbacks`, `countDecisionJevSkips`,
-`hasJevAnsweredDecisionSince`, `insertDecisionOutcome`, `listDecisionOutcomes`, `insertLadderMove`, `recordDecisionDigest`,
-`getDecisionDigest`, `wasDecisionOffered`) match between Task 4 and their callers. `recordSkip(…, now?, ladder_decision_id)`
-and `persistDecisionRows(…, threshold_used, ladder_decision_id)` match Task 8's calls. Entry ids `turn.handler` /
-`turn.gear` match `ENTRY_IDS`. The callback prefix `dec:rv:` matches between Tasks 10, 11 and 12.
+**Type consistency.** `RungResult` / `RungAnswer` / `RungAbstain` / `RungFailed`, `DecideResult` (with `fallbackRung`),
+`DecideCtx`, `DecisionRecorder`, `AnyEntry`, `VerdictEffect`, `InputSource`, `RUNNER_REASON_CODES` (Task 3) are used with
+the same names in Tasks 5, 6, 8a, 8b, 9, 10. Store names (`insertDecision`, `listDecisionsForRun`, `listDecisionsBetween`,
+`countDecisionFallbacks(…, excludeJevRung)`, `countDecisionJevSkips`, `hasJevAnsweredDecisionSince`,
+`insertDecisionOutcome`, `listDecisionOutcomes`, `insertLadderMove`, `recordDecisionDigest`, `getDecisionDigest`,
+`wasDecisionOffered`, `DecisionRejected`) match between Task 4 and their callers; every `DecisionInsert` literal carries
+`fallback_rung`. `recordSkip(…, now?, ladder_decision_id)` and `persistDecisionRows(…, threshold_used, ladder_decision_id)`
+match Task 8b's calls. Entry ids `turn.handler` / `turn.gear` match `ENTRY_IDS`, `JEV_PAGED_ELSEWHERE` and the digest's
+`FRONT_DOOR`. The callback prefix `dec:rv:` matches between Tasks 10, 11 and 12.
+
+## Appendix: Review dispositions (Rev 1 reviews)
+
+Senior review: `scratchpad/review-ladder/plan1-senior-review.md`. Codex review: `…/plan1-codex-review.md`. Each line: the
+finding, then what Rev 2 did.
+
+### BLOCKERs (all fixed)
+
+- **Senior B1 — the "pin bites" mutation could not fail.** Fixed: mutate `choice` to 0.4; `cascade-pick`,
+  `cascade-failed` and `cascade-pick-with-rule` are named as the cases that must flip (Task 2 Step 7).
+- **Senior B2 — INCONCLUSIVE ❌ tap printed PASS / exit 0.** Fixed: required checks that cannot run go through
+  `cannotRun`, and `verdict()` prints `LIVE GATE: INCONCLUSIVE` with exit 3; `ensureUnsure` seeds an offered decision on
+  copy B so the tap check runs (Task 12).
+- **Codex B1 — an aborted turn could leave an orphan `decisions` row.** Fixed: the front door's rows are queued at decide
+  time and written inside `settleTriage`'s transaction after its lost-turn check (ruling 14); tests for Jev-time and
+  cascade-time aborts and for a rolled-back save (Task 8b).
+- **Codex B2 — P6 classified a structural regression as inconclusive.** Fixed: `classify` compares structure (outcome kind,
+  question order, statuses, skip reasons, verdict presence, links) first; a structural difference is a mismatch unless a
+  side shows a transient Jev failure, which is retried once and otherwise inconclusive (Task 12).
+- **Codex B3 — the gate could PASS without exercising the ❌ tap.** Fixed with Senior B2 (seeded offer; exit 3 when it
+  still cannot run).
+- **Codex B4 — the `routed_by` differential could not fail.** Fixed: the projection carries every `llm_attempt`'s role and
+  `routed_by` plus `route_links_verdict`; `turn-handler-routed-by.test.ts` drives a routed turn through the real
+  supervisor (fake omp) and asserts the first compose attempt's `routed_by` is the verdict id, before and after the move
+  (Tasks 2, 8b).
+- **Codex B5 — the registry certified a false "reply only" effect.** Fixed by Paco's R12: `memory` and `planner` are
+  declared `effect` (reversible, announced), the grandfather ruling and ADR paragraph are gone, and `entryProblems` fails a
+  misdeclared entry (tests for each failure mode); the effect table is pinned (Task 6). The planner route's in-reply
+  announcement is raised as Q1.
+
+### WARNINGs (14: 14 applied, 0 rejected)
+
+- Senior W1 (pin harness not frozen; `state_hash` dropped) — applied: `state_hash` kept, `CI=1`, `git diff --exit-code <task-2 sha>` over the frozen set in Tasks 8b and 13, `CLOCK_CASES` guard.
+- Senior W2 (throw in `treeArmed`/`routeTree` would settle answered fallback) — applied: `planTree` fails without detail for those, keeps detail only for `urlRule`; pin case `routeTree-throws-after-answer`; the ack-check throw also keeps skipped `error` (ruling 19).
+- Senior W3 (`decision_fallback` cleared by rule answers, no damping, double page) — applied: only Jev/model answers clear; `ALERT_REOPEN_QUIET_MS` damping; `budget` excluded; Jev-rung failures of `turn.handler`/`turn.gear` excluded (`JEV_PAGED_ELSEWHERE`); tests rewritten (Task 5).
+- Senior W4 (rows for lost/killed turns and rolled-back saves) — applied: atomic write (ruling 14) plus the digest's `settledRows` guard and an orphan test (Tasks 8b, 10).
+- Senior W5 (the carve-out was a label) — applied via R12: effects are data with `reversible`/`announced`, checked by `entryProblems`, table pinned.
+- Senior W6 (adapter missing from the protected table) — applied: row added for Task 10, commit marked protected; Task 11's `run-store.ts` edit added too.
+- Senior W7 (CHECK lists frozen at creation) — applied in the form the brief prefers: growing enums validated in code (`DecisionRejected`, `OutcomeRejected`), CHECKs kept only for fixed sets, with a test that no CHECK freezes a growing set (ruling 15). The senior's literal-list-plus-test variant is not used: it still needs a rebuild migration per extension.
+- Senior W8 (5/min limit drops digest taps) — applied: `decision_review` exempt and excluded from the window; test with 8 taps (Task 11).
+- Senior W9 (no P6 coverage floor) — applied: calibrated-model check, ≥ 100 armed verdicts, cascade rung ran (INCONCLUSIVE if not), tally printed (Task 12).
+- Senior W10 (≥ 190 floor without retries) — applied: one retry, 250 ms pacing, 30 over-fetched candidates, retries reported.
+- Senior W11 (build in the main checkout) — applied: Global Constraints worktree rule; Task 12 builds only in worktrees; both scripts refuse to run outside `.worktrees/`; main `dist/` mtime shown unchanged.
+- Senior W12 (off-switch semantics decided in the plan) — applied by removal: R13 deletes the off switch; nothing left to rule.
+- Senior W13 (Task 8 too large) — applied: split into 8a (glue + pure tests) and 8b (core-worker + pin + consumers), with the exit-by-exit trace table for the 8b reviewer.
+- Codex W6 (digest "Jev skips" counted non-Jev failures) — applied: `decisions.fallback_rung`; skips and the sweep count Jev-rung failures only (Tasks 3, 4, 9, 10).
+
+### SUGGESTIONs (12: 10 applied, 2 rejected)
+
+- Senior S1 (locked id classified "unknown" by the off-switch warning) — rejected: moot, R13 removed the off switch and its warning.
+- Senior S2 (skip count includes cascade failures and `budget`) — applied with Codex W6 (`fallback_rung`; budget excluded).
+- Senior S3 (`snippetOf` splits surrogate pairs) — applied: `Array.from`; emoji test (Task 10).
+- Senior S4 (digest ignores enqueue conflict; gate leaves outbox row) — applied: conflict latches `sent: 0`, test; gate clears copy B's `decision_digest:%` outbox rows.
+- Senior S5 (`paco_callback_id` not unique) — applied: partial unique index and test (Task 4).
+- Senior S6 (floor-held verdict attributed to Jev) — applied: `rung: "rule"`, `reason: "floor_held"`, no judge p (ruling 17, Task 3).
+- Senior S7 (pin lacks restructured paths) — applied: `no-turn-state`, `jev-parse`, `memory-lane-finalize-rolled-back`, `routeTree-throws-after-answer`; a quoted-turn case is not added because its fixture helpers are local to `core-worker-triage.test.ts`, whose quote tests (`quoted_turn_id`) run in Task 8b Step 8.
+- Senior S8 (gate builds `CoreWorker` without a broker) — rejected as code (constructing the broker needs the firewall env and is a gate-precedent change); applied as the explicit egress note for Paco in Task 12 Step 4.
+- Senior S9 (`planTree` glue in an unprotected file) — applied: ADR 0030 consequences note (Task 1) and the module comment (Task 8a).
+- Senior S10 (inventory re-walk only A12–A18) — applied as ruling 18: the full re-walk is deferred to the stage 3/4 plans, for Paco to accept.
+- Senior S11 (plan hygiene) — applied: pre-flight header (code at 3bff437, docs-only to 1b65de4), adapter `:115`, `copyDb` `:148-151`, Task 4 placement fixed to after `VERDICT_PATCH_COLUMNS` (`:965`), `checkMeteredCeiling` `:506`, `CONTEXT.md` `:65`, sweep paragraph `:736`.
+- Codex S7 (render the digest in the gate) — applied: `checkRender` sends the queued notification through `TelegramNotificationAdapter` with a stub transport and checks HTML and one ✅/❌ row per offered decision.
