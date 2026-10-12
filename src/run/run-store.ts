@@ -2332,6 +2332,7 @@ export class RunStore {
       WHERE actor_id = ?
         AND chat_id = ?
         AND decision = 'accepted'
+        AND command <> 'decision_review' -- review taps are exempt and never count (ruling 16)
         AND occurred_at > ?
     `).get<{ count: number }>(input.actor_id, input.chat_id, windowStart);
     if ((windowRow?.count ?? 0) >= TELEGRAM_MAX_COMMANDS_PER_WINDOW) {

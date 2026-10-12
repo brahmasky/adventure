@@ -1,4 +1,5 @@
 import type { TaskEventType } from "../domain/types.js";
+import { REVIEW_PREFIX } from "../decisions/digest.js";
 import { ROLE_NAMES, type RoleName } from "../omp/model-roles.js";
 
 export type TelegramCommand =
@@ -327,6 +328,15 @@ export function parseMemLaneCallback(data: unknown): { action: "undo"; change_id
   if (undo) return { action: "undo", change_id: undo[1]! };
   const ask = LANE_ASK.exec(data);
   return ask ? { action: "ask", run_id: ask[1]! } : null;
+}
+
+const DEC_REVIEW = new RegExp(`^${REVIEW_PREFIX}(dec_${LC_UUID}):(ok|bad)$`);
+
+/** Decision digest taps (decision ladder spec §8.1): `dec:rv:<decision_id>:<ok|bad>`, at most 51 bytes; anything else returns null. */
+export function parseDecisionReviewCallback(data: unknown): { decision_id: string; label: "ok" | "bad" } | null {
+  if (typeof data !== "string") return null;
+  const m = DEC_REVIEW.exec(data);
+  return m ? { decision_id: m[1]!, label: m[2] as "ok" | "bad" } : null;
 }
 
 type SplitShellWordsResult = { ok: true; words: string[] } | { ok: false; error: { code: "TELEGRAM_COMMAND_INVALID"; message: string } };
