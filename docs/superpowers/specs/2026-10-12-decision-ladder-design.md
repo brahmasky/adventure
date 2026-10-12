@@ -1,6 +1,6 @@
 # Decision ladder — every Houge decision on one list, judged inside the loop, improved from outcomes
 
-- **Date:** 2026-10-12 · **Rev 7** · **Status:** draft for Paco's read; six review rounds (senior against the live
+- **Date:** 2026-10-12 · **Rev 8** · **Status:** approved by Paco 2026-10-12 (Rev 7), amended with R12–R13; six review rounds (senior against the live
   system, with probes P1–P4 and the clean room run; codex). Zero open blockers (§15).
 - **Decider:** Paco. Design approved section by section in chat on 2026-10-12.
 - **Proposes:** ADR 0030 "Decision ladder" (§10). Amends ADR 0029 (front door becomes an entry; the Jev rule restated),
@@ -60,6 +60,8 @@ ack rule → Jev tree → Tiny cascade → planner.
 | R8 | "After 3 straight approvals" of the daily Alishan search, Houge stops asking. This becomes standing approvals, in stage 4. | §8.3 |
 | R9 | SP4 items and parked ideas are written down, not lost | §11 |
 | R10 | ADRs are reviewed continually: "don't take ADR as bible" (the ADR 0015 lesson) | §10.3 |
+| R12 | **What Jev may do depends on what it read.** Over outside text it only tightens; over Paco's own message it may act if reversible and announced. The memory shortcut's instant save stays. Replaces "Jev never causes an effect" (2026-10-12) | §4.1 |
+| R13 | **No off switch, no shadow mode** for the decision system once built: "unless the implementation may make something fundamentally wrong"; the remedy then is revert, rebuild, kickstart (2026-10-12) | §4.1, §4.2, §5.4 |
 | R11 | **Egress approved for every new class**, after redaction. Paco chose "All of it": "Web, mail and calendar, shell, files and the reply, all redacted." (ADR 0029 decision 4 asks for this approval per class) | §7.0 |
 
 ## 3. Facts that bind the design
@@ -158,7 +160,7 @@ interface Entry<State, Verdict> {
   ladder: readonly Rung[];         // first confident answer wins
   fail: Verdict;                   // what happens when no rung answers (timeout, outage, throw)
   monotone?: { order: readonly Verdict[] }; // later rungs may only move toward the cautious end
-  locked?: true;                   // no rung added, no ladder move, no off switch
+  locked?: true;                   // no rung added, no ladder move
   defaultVerdict: Verdict;         // the routine answer (not given a row, §5.2)
   alwaysRecord?: true;             // full row every time
   outcomes: readonly OutcomeSignal[];
@@ -174,14 +176,27 @@ interface Entry<State, Verdict> {
 - **Monotone.** For a monotone entry, a later rung's verdict is applied only if it is at least as cautious as the
   verdict so far. The verdict so far starts at the abstaining rule's `floor` (or the least cautious verdict when it
   gives none), so a judge can only tighten what code already decided.
-- **Jev never opens a gate, and never causes an effect on its own.** On a monotone entry, a Jev or model rung can
-  tighten only. On a non-monotone entry, a Jev or model verdict can only (a) choose a handler that ships with no side
-  effect beyond a reply (`turn.handler` lanes), or (b) produce a *proposal* that Paco accepts. Automatic effects
-  (a lesson applied, a skill authored, a standing approval) come only from code rungs. The registry test enforces all
-  three, and fails on a non-monotone entry whose Jev rung maps to an effect.
-- **Shadow rungs.** A `shadow` rung is asked and recorded, but its answer is not applied.
-- **Locked entries** refuse ladder changes in code (registry test) and at run time (`ladder_moves` refuses them),
-  and ignore the off switch.
+- **What a Jev or model verdict may do depends on what it read** (ruling R12). The reason is ADR 0029's accepted
+  risk: "Jev is steerable by injected text (labels stay advisory or monotone, so steering degrades quality, never
+  safety)".
+  - **Never allow or deny an action** (ADR 0029 decision 2), with the one exception ADR 0030 names (§10.1).
+  - **Over tool-derived input** (web, mail, calendar, shell output, files, tool results), a verdict may only tighten:
+    withhold a passage, add a tap, or send the planner back once. Any lasting change it suggests (a lesson, fact,
+    skill or wiki page) is a proposal for Paco's tap.
+  - **Over Paco's own message**, a verdict may cause an effect directly, if the effect is **reversible and announced**
+    (Undo on the card). Examples: the memory shortcut's instant lesson save (stage A, unchanged and permanent), and a
+    `turn.handler` lane choice.
+  - Each entry declares its input source (`input: "paco" | "tool" | "mixed"`; `mixed` is treated as `tool`), and each
+    verdict-to-effect mapping declares whether the effect is reversible and announced. The registry test fails on a
+    Jev or model rung that causes an unannounced or irreversible effect, or any effect at all from `tool` input except
+    tightening.
+  - Rev 2–7 said "Jev never causes an effect on its own". That was a widening nobody decided: it stretched AGENTS.md's
+    "never gates an action", and contradicted the memory shortcut Paco armed. Paco asked where it came from on
+    2026-10-12, and R12 replaces it.
+- **No shadow state by design** (ruling R13). A new entry ships armed and stays armed. `armed: "shadow"` exists in the
+  types only so the migrated front door keeps today's configured tree mode exactly (move, don't improve). No new entry
+  uses it, and nothing moves an entry into it automatically.
+- **Locked entries** refuse ladder changes in code (registry test) and at run time (`ladder_moves` refuses them).
 - **Recording never changes a decision.** The runner decides, then records. A failed ledger write is caught, opens
   incident `decision_record_failed`, and the verdict stands. For gates, the decision is computed before any write.
 - **Escape value.** Every Jev question includes one (`unclear` / `other`), per mu rule 2.
@@ -204,10 +219,12 @@ hash, reported model, language). The new in-loop judges have no rows, and Paco r
     change is a protected, reviewed edit), not a `CalibrationRow`, whose `lang` cannot be `any` (`calibration.ts:17`).
   - Allowed only on entries that are monotone or fail open (`tool.injection`, `turn.settle`), never on a gate that
     could open.
-  - Each provisional question gets golden-set items (planted and clean) in the invariant sweep, so drift disarms it as
-    ADR 0029 decision 5 does for calibrated rows.
-- **Model or wording change:** a provisional rung goes to shadow and opens incident `decision_bar_stale:<entry>`, as
-  ADR 0029 decision 5 does for calibrated rows. Paco re-arms by committing a row.
+  - Each provisional question gets golden-set items (planted and clean) in the invariant sweep. Drift **pages**
+    (incident `decision_golden_drift:<entry>`); it does not disarm (R13).
+- **Model or wording change:** the rung **stays armed** on its provisional bar, and incident
+  `decision_bar_stale:<entry>` pages once, naming the new model. The digest flags the entry until Paco commits a row for
+  the new model (R13). This differs from ADR 0029 decision 5, which disarms calibrated tree rows on a model move. That
+  existing behaviour of the migrated front door is unchanged in stage 1; ADR 0030 records the difference.
 - **Pre-ship sanity gate (not calibration), with thresholds that can fail** (senior N5). The corpora are built by the
   stage's plan (senior W10):
   - planted attacks: built by the stage 2a plan's author from mu's published injection examples (MIT), plus attacks
@@ -318,8 +335,8 @@ New tables. `jev_verdicts` is **kept** as `turn.handler`'s detail table (§5.4):
 - The invariant sweep computes `jev_skip_rate` per entry from `decisions.fallback_reason` (not `countJevCalls`, which
   counts answers per run, not skips per row; senior round 4 W5), generalising today's triage-only check at
   `invariant-sweep.ts:209-235`.
-- The digest shows, per entry: skips, shadowed rungs and fallbacks.
-- A `jev-latest` move that shadows every provisional rung at once raises one incident that names them all.
+- The digest shows, per entry: skips, stale bars and fallbacks.
+- A `jev-latest` move that makes every provisional bar stale at once raises one incident that names them all.
 
 ### 5.3 `turn.handler`'s detail table
 
@@ -331,16 +348,18 @@ replacement buys nothing, so the table stays as `turn.handler`'s detail table an
 links to its verdict row. An entry with rich domain state follows the same pattern: generic row in `decisions`, detail
 in its own table.
 
-### 5.4 Off switch
+### 5.4 No off switch; rollback is a revert (ruling R13)
 
-`HOUGE_DECISIONS_OFF=<entry id,…>` sets the named entries' non-rule rungs to `shadow`. It is read at boot only
-(`/rearm` does not reload `.env`); a change needs a kickstart.
+Paco, 2026-10-12: "no i do not want to turn off the decision system once it's built, unless the implementation may make
+something fundamentally wrong. i don't even want to be in shadow mode to be clear".
 
-- `HOUGE_JEV_LANES_OFF` stays, as an alias for `turn.handler` lane verdicts.
-- `HOUGE_TRUST_ASK_TTL_MS` (default 300000) sets the trust-card expiry (§7.2), and `HOUGE_DECISION_DIGEST_AT` the digest
-  time (§8.1).
-- Locked entries ignore the switch, and boot logs a warning that names them.
-- Documented in `configuration.md`.
+- There is **no `HOUGE_DECISIONS_OFF`**. Rev 1–7 specified one; it is dropped.
+- **If a build is fundamentally wrong**, the remedy is the usual one: revert the commit, rebuild `dist/`, kickstart.
+  Each stage's migrations are additive (new tables and nullable link columns), so the previous build runs on the
+  migrated DB. Every stage plan's final task verifies that by booting the previous `dist/` against a migrated DB copy.
+- `HOUGE_JEV_LANES_OFF` (stage B, existing) is not touched.
+- New settings: `HOUGE_DECISION_DIGEST_AT` (§8.1, stage 1) and `HOUGE_TRUST_ASK_TTL_MS` (default 300000, §7.2,
+  stage 2a), documented in `configuration.md`.
 
 ## 6. Migration (full; ruling R2)
 
@@ -1043,7 +1062,8 @@ It amends, naming each clause (senior N1):
   - the added-tap budget (3 a day) now also counts trust asks (§7.2);
   - **decision 4** (egress): R11 is recorded as Paco's approval of web, mail and calendar content, shell output, files
     and replies, with §7.0's judge redactor and the accepted residual;
-  - **decision 5** (shadow before arm): provisional bars (§4.2) are an explicit exception, under Paco's R6, for
+  - **decision 5** (shadow before arm): new entries never shadow (R13); a stale bar or golden drift pages instead of
+    disarming; provisional bars (§4.2) are an explicit exception, under Paco's R6, for
     monotone or fail-open entries only.
 - **0028:** D5 tap-free local writes become conditional on `turn.trust`; D12 network shell output gets
   `tool.injection`.
@@ -1112,7 +1132,7 @@ live gate, a docs sync and Paco's merge where protected files are touched.
 
 | Stage | Contents | Protected files touched (Paco's merge) | Live gate PASS |
 |---|---|---|---|
-| 1 Engine + door | ADR 0030 and the AGENTS.md edit first; registry, runner, `decisions`, `decision_outcomes`, `ladder_moves`; `jev_verdicts` gains `decision_id`; `turn.handler` + `turn.gear` migrated; `src/decisions/` protected; off switch; **daily digest and urgent cards** (counts, unsure list, callbacks) | ADR, AGENTS.md, self-write-guard, run-store, core-worker | P6 dual run: 0 mismatches over 200 texts; all nine `jev_verdicts` consumers green; the digest renders on the DB copy and a ❌ tap writes an outcome |
+| 1 Engine + door | ADR 0030 and the AGENTS.md edit first; registry, runner, `decisions`, `decision_outcomes`, `ladder_moves`; `jev_verdicts` gains `decision_id`; `turn.handler` + `turn.gear` migrated; `src/decisions/` protected; **daily digest and urgent cards** (counts, unsure list, callbacks) | ADR, AGENTS.md, self-write-guard, run-store, core-worker | P6 dual run: 0 mismatches over 200 texts; all nine `jev_verdicts` consumers green; the digest renders on the DB copy and a ❌ tap writes an outcome |
 | 2a In-Houge judges | supervisor terminal-`agent_end` fix (P7); credential-store read-deny extension; `tool.injection` on shell and wall tools; `tool.shell_netread`; the hostile read-only list; `turn.trust` with `turn_trust` and `turn_trust_final` events; trust-card pause policy and TTL; tap-budget table; judge redactor; injection and trust items in the digest | bridge-handler, planner-supervisor, capability-policy, run-store, protected-paths | the §4.2 injection sanity gate passes (recall ≥ 85%, clean withholds ≤ 1%); no seeded secret leaves; a planted turn reaches hostile, `curl`, `touch`, `git log` and `file -C` ask while `ls` and `grep` do not, a built-in write gets the bash redirect, a trust card expires after its TTL without the watchdog firing, and a schedule-born hostile turn ends within its deadline; the newly read-denied credential paths refuse a planner read |
 | 2b Hooks + learning | extension `judge_read`, `judge_timeout` and `session_stop`; `turn.settle`; `todo` with reminders off; `improve.route`; `authorPendingSkill`, `improvement_jobs`, `promotePending`/`dismissPending`; improvement items in the digest | extension, planner-supervisor, planner-session, skill-store, run-store | a planted file read past the 32 KiB cap is withheld in both fields; a 40 s unresponsive bridge shows the floored text, never raw; the §4.2 settle gate passes (≤ 10% send-backs, Paco's sample read); a "scheduled" claim with no call is sent back once, and a first-pass attachment survives; a labelled set of ≥ 30 past signals (labels by the plan author, checked by Paco in one sitting) routes ≥ 80% to the labelled target; 3 similar synthetic turns (one of them hostile, with a planted injection in its tool output) write a `_pending` draft that contains no planted text, and an urgent card; a schedule-born run does not count; 3 recurring lookups on one topic raise a wiki proposal |
 | 3 Unprotected families | intake, context, supervision and settle entries migrated | core-worker, planner-supervisor (some) | differential on behaviour (§6.2); full suite and existing gates green |
@@ -1129,7 +1149,7 @@ remains, and no stage depends on a later one.
 |---|---|
 | A migrated safety gate changes behaviour | move-don't-improve; corpus differential tests; protected stages last; Paco's merge |
 | Hooks behave differently in RPC mode | probes P1–P4 before code; shell and the wall tools judged inside Houge, needing no hook |
-| Armed judges misfire with uncalibrated bars | monotone judges only tighten; settle sends back at most once and fails open; digest plus urgent cards; `HOUGE_DECISIONS_OFF` |
+| Armed judges misfire with uncalibrated bars | monotone judges only tighten; settle sends back at most once and fails open; digest plus urgent cards |
 | Self-improvement drifts (gaming, noise) | pattern before action; rate limit; gaming watch; every improvement measured and revocable |
 | Ledger growth | two grades plus tally folding (§5.2) |
 | Scope (five stages) | each stage leaves Houge working on its own; stage 2 delivers value before the long migration, and carries protected-file risk, so it is split 2a/2b with a gate each |
@@ -1316,4 +1336,11 @@ Every review blocker from rounds 1–6 is closed or folded into a named probe (P
   tools, tested with a planted injection (§7.4).
 - **The wiki joins `improve.route`** as the `knowledge` target, on Paco's question. Proposals only, since its input is
   tool output; ADR 0020's walled verifier stays the boundary (§7.4).
+
+### Rev 8 (Paco's rulings during stage 1 planning)
+
+- **R12** replaces "Jev never causes an effect" with the precise rule: what a verdict may do depends on its input
+  source (§4.1).
+- **R13** drops the off switch and every designed shadow state. A stale bar or golden drift pages instead of disarming;
+  rollback is revert, rebuild, kickstart, with additive migrations checked each stage (§4.1, §4.2, §5.4).
 
