@@ -7,7 +7,7 @@ import type { AnyEntry, DecidedBy } from "./types.js";
 /**
  * The daily decision digest (spec §8.1), stage 1 content: unsure verdicts with ✅/❌ taps, counts per entry by rung, and
  * per-entry health. Improvements, proposals and the gaming watch join in stage 2b. One message per local date at
- * HOUGE_DECISION_DIGEST_AT, through the outbox and the rich renderer; skipped when the day has no decisions. No enable
+ * HOUGE_DECISION_DIGEST_AT, through the outbox and the rich renderer; skipped when the day has no decisions and no health failures (a day with only health failures sends a Health-only digest). No enable
  * flag (R13): the time is the only knob.
  */
 export const DEFAULT_DIGEST_AT = "21:00";

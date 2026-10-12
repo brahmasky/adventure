@@ -53,15 +53,15 @@ walked by the ladder runner (`src/decisions/decide.ts`):
 | Rung | What it is | When it decides | Recorded as |
 |---|---|---|---|
 | rule `gate` | flag off, override, posture, non-text, no turn state, then the ack rule (arm mode only) | one of those holds | `rung rule`, `reason_code` = the skip reason (`disabled`, `override`, …, `ack_rule`) |
-| jev `tree` | the six-question call and the pure policy above | the policy routes (any lane or the planner) | `rung jev`, `p` = the category's top probability, `reason_code` = the route reason |
+| Jev `tree` | the six-question call and the pure policy above | the policy routes (any lane or the planner) | `rung system_one`, `p` = the category's top probability, `reason_code` = the route reason |
 | model `cascade` | the Tiny pick between Jev's top two | the tree went below the choice bar and the pick is one of the two | `rung model`, `reason_code` `cascade` |
 | fail | the planner | nothing answered (Jev skipped, cascade failed) | `rung fail`, `fallback_reason` = `timeout` / `outage` / `parse` / `threw` / `budget`, `fallback_rung` = the rung that failed |
 
-(In code the Jev rung's kind is `system_one`; in prose it is Jev.)
+(The Jev rung is stored and queried as `system_one` in `decisions.rung`; in prose it is Jev.)
 
 Every `turn.handler` decision is recorded (`decisions` row) in the same transaction as the turn's `jev_verdicts` row
 (`decision_id`) and its `jev_decisions` rows (`ladder_decision_id`), all linked; a turn lost before it settles writes none.
-`turn.gear` records the route's role from the same call (rung `jev` when the gear questions were armed and applied, else
+`turn.gear` records the route's role from the same call (rung `system_one` when the gear questions were armed and applied, else
 `rule`). The entry declares what each verdict causes (ADR 0030 decision 4, R12): the status card is a reversible reply;
 `answer`, `lookup`, `memory` and `planner` may save a lesson first on a confident `sets_rule`, and every such automatic save
 is announced on the memory card with ↩️ Undo — on the lane card itself, as the memory lane's reply, or as a separate
@@ -70,6 +70,8 @@ with Undo. `HOUGE_JEV_TRIAGE_ENABLED=shadow` runs the Jev and cascade
 rungs in shadow: asked and recorded (`armed_mode shadow`), never applied. Stage 1 changed no routing: the pinned
 characterisation tests (`tests/core/turn-handler-pin.test.ts`) and the P6 dual run (`scripts/live-gate-decisions-parity.mjs`)
 compare every persisted column with the pre-ladder build.
+
+When a handler falls back after the ladder decided (a lane that falls through to the planner, a card that fails to render), the `decisions` row keeps the ladder's verdict: it records what the ladder decided, not what the handler then did. The `jev_verdicts` row (`handler`, e.g. `fallthrough:<why>`) carries the handler's outcome.
 
 The daily decision digest (`HOUGE_DECISION_DIGEST_AT`, default 21:00) arrives in the operator chat with ✅ / ❌ review taps
 on the unsure verdicts; a tap writes one `review_ok` / `review_bad` label and nothing else

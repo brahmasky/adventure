@@ -68,7 +68,7 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Entry**: One decision in the code-owned registry (`src/decisions/`, protected): its id, version, stage, the input its judges read (`paco`, `tool`, `mixed`), closed verdicts, ladder, `fail` and default verdicts, what each verdict causes (and whether that is reversible and announced), and the outcome signals that can show it wrong. `turn.handler` and `turn.gear` are the first two.
 
-**Rung**: One decider on an entry's ladder: a code `rule`, `jev`, a `model` one-shot, or `paco`. A rung answers, abstains (optionally with a monotone floor) or fails (`timeout`, `outage`, `parse`, `threw`, `stale_bar`, `budget`). Every entry ships armed; the only shadow is the front door's configured triage shadow (asked and recorded, never applied).
+**Rung**: One decider on an entry's ladder: a code `rule`, Jev (stored as `system_one`), a `model` one-shot, or `paco`. A rung answers, abstains (optionally with a monotone floor) or fails (`timeout`, `outage`, `parse`, `threw`, `stale_bar`, `budget`). Every entry ships armed; the only shadow is the front door's configured triage shadow (asked and recorded, never applied).
 
 **Ladder**: An entry's rungs in order, code first; the first rung that answers decides, and the entry's `fail` verdict stands when none does. On a monotone entry a later rung can only tighten. What a Jev or model verdict may cause depends on what it read: over tool output only a tightening or a proposal, over Paco's own message a reversible, announced effect. The runner decides, then records (`decisions`); recording never changes a decision.
 

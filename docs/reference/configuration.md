@@ -1047,7 +1047,7 @@ and `turn.gear` (the role on the route, recorded from the same Jev call). Refere
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `HOUGE_DECISION_DIGEST_AT` | `21:00` | Local time (`HH:MM`, in `HOUGE_DISPLAY_TZ`) of the daily decision digest to the operator chat. Malformed → the default. Sent once per local date on the first poll at or after the time; a day with no decisions sends nothing (the latch row still records the date). |
+| `HOUGE_DECISION_DIGEST_AT` | `21:00` | Local time (`HH:MM`, in `HOUGE_DISPLAY_TZ`) of the daily decision digest to the operator chat. Malformed → the default. Sent once per local date on the first poll at or after the time; a day with no decisions and no health failures sends nothing (the latch row still records the date); a day with only health failures sends a Health-only digest. |
 
 **No off switch (ruling R13).** There is no variable that turns the decision system off or into shadow. The only shadow
 left is the front door's existing `HOUGE_JEV_TRIAGE_ENABLED=shadow`, unchanged. If a build is fundamentally wrong, revert
@@ -1068,7 +1068,7 @@ the last 7 days answers "Already handled." and writes nothing. Review taps are e
 and do not count toward it.
 
 **Tables** (migration `2026-10-12-decision-ladder`, additive): `decisions` (one row per decision that matters:
-`decision_id`, `entry_id`, `entry_version`, `run_id`, `tool_call_id`, `stage`, `rung` (`rule` \| `jev` \| `model` \|
+`decision_id`, `entry_id`, `entry_version`, `run_id`, `tool_call_id`, `stage`, `rung` (`rule` \| `system_one` \| `model` \|
 `paco` \| `fail`), `verdict`, `p`, `reason_code` (a code-owned enum per entry), `fallback_reason` (`timeout` \| `outage` \|
 `parse` \| `threw` \| `stale_bar` \| `budget`), `fallback_rung` (which rung failed first), `armed_mode`, `latency_ms`,
 `created_at`; no state column; `stage` and `fallback_reason` are validated in code so a later stage can extend them),
