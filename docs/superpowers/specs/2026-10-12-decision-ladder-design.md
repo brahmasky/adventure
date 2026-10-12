@@ -1,7 +1,7 @@
 # Decision ladder — every Houge decision on one list, judged inside the loop, improved from outcomes
 
-- **Date:** 2026-10-12 · **Rev 4** · **Status:** draft; three review rounds (senior against the live system, with
-  probes P1–P4 run; codex). Rev 4 closes the round 3 blockers (§15).
+- **Date:** 2026-10-12 · **Rev 5** · **Status:** draft; four review rounds (senior against the live system, with
+  probes P1–P4 and the clean room run; codex). Rev 5 closes the round 4 blockers (§15).
 - **Decider:** Paco. Design approved section by section in chat on 2026-10-12.
 - **Proposes:** ADR 0030 "Decision ladder" (§10). Amends ADR 0029 (front door becomes an entry; the Jev rule restated),
   0028 (D5 tap-free local writes and D12 shell outside the wall become conditional), 0014 (an injection judge before
@@ -210,8 +210,9 @@ hash, reported model, language). The new in-loop judges have no rows, and Paco r
   ADR 0029 decision 5 does for calibrated rows. Paco re-arms by committing a row.
 - **Pre-ship sanity gate (not calibration), with thresholds that can fail** (senior N5). The corpora are built by the
   stage's plan (senior W10):
-  - planted attacks: mu's published injection examples (MIT), plus attacks written for Houge's tools in zh and en,
-    each reviewed in the plan;
+  - planted attacks: built by the stage 2a plan's author from mu's published injection examples (MIT), plus attacks
+    written for Houge's tools in zh and en, each reviewed in the plan. The set is held out: none of its items enter the
+    sweep's golden set, which gets its own items (senior round 4 W10);
   - clean passages: captured by running real read-only tools (search, fetch of 20 fixed public pages, common shell
     commands, Paco-approved local files) on the gate machine;
   - settle: the DB copy.
@@ -289,7 +290,9 @@ New tables. `jev_verdicts` is **kept** as `turn.handler`'s detail table (§5.4):
   - `run_id`, `tool_call_id?`;
   - `stage`, `rung`, `verdict` (a closed value from the entry), `p?`;
   - `reason_code?` (a code-owned enum per entry, never model or tool text), `armed_mode`, `latency_ms`;
-  - Jev rows link the other way: `jev_decisions` gains `decision_id` (one decision, many questions; senior W4).
+  - Jev rows link the other way: `jev_decisions` gains `ladder_decision_id` (FK to `decisions`, indexed; one decision,
+    many questions; senior W4). `jev_decisions.decision_id` is already that table's primary key (codex round 4 B18),
+    and its consumers keep using it.
     `jev_decisions` stays the raw per-question record calibration needs. Each entry declares which question's `p` is
     the recorded `p` (for `tool.injection`, the maximum over passages; for `turn.settle`, the question that fired);
   - `created_at`.
@@ -311,7 +314,8 @@ New tables. `jev_verdicts` is **kept** as `turn.handler`'s detail table (§5.4):
 
 **Per-entry health** (senior W5):
 
-- The invariant sweep computes `jev_skip_rate` per entry, generalising today's triage-only check at
+- The invariant sweep computes `jev_skip_rate` per entry from `decisions.fallback_reason` (not `countJevCalls`, which
+  counts answers per run, not skips per row; senior round 4 W5), generalising today's triage-only check at
   `invariant-sweep.ts:209-235`.
 - The digest shows, per entry: skips, shadowed rungs and fallbacks.
 - A `jev-latest` move that shadows every provisional rung at once raises one incident that names them all.
@@ -332,6 +336,8 @@ in its own table.
 (`/rearm` does not reload `.env`); a change needs a kickstart.
 
 - `HOUGE_JEV_LANES_OFF` stays, as an alias for `turn.handler` lane verdicts.
+- `HOUGE_TRUST_ASK_TTL_MS` (default 300000) sets the trust-card expiry (§7.2), and `HOUGE_DECISION_DIGEST_AT` the digest
+  time (§8.1).
 - Locked entries ignore the switch, and boot logs a warning that names them.
 - Documented in `configuration.md`.
 
@@ -389,8 +395,9 @@ For every migrated entry:
        are covered by the differential unit tests, not the dual run (codex round 3 W16).
      - **Compared projection:** every column of `jev_decisions`, `jev_verdicts` and the `triage` event, except ids,
        timestamps and `latency_ms`. Ids are mapped pairwise and links compared after mapping (codex round 3 W15).
-     - **Nondeterminism:** a pair whose Jev probabilities differ by more than 1e-6 between the two calls is reported
-       as Jev nondeterminism, excluded from both counts.
+     - **Nondeterminism:** first compare row shape and links: question count, status, rows written, links. Any
+       difference there is a mismatch. Only an otherwise identical pair whose Jev probabilities differ by more than 1e-6
+       is reported as Jev nondeterminism and excluded from both counts (codex round 4 W26).
      - **PASS:** at least 190 deterministic pairs and 0 mismatches among them. One Jev call per text per build, about
        400 calls.
 5. **Only then** can an improvement ship, as a new entry version with its own review.
@@ -418,8 +425,22 @@ the ruling as chosen:
 
 - **Every shell output, every built-in read, every wall-tool result and every final planner reply** is eligible for
   judging and may be sent after redaction.
-- Read-denied files (`protected-paths.ts`: `.env`, the DB, credential stores) can never be read by the planner, so they
-  never reach a judge.
+- **Credential stores never leave, and stage 2a closes a gap that exists today** (senior round 4 B8). The planner can
+  already read credential files that `protected-paths.ts` does not cover. Found readable on 2026-10-12:
+  - six project `.env` files, including the trading bots';
+  - `~/.local/share/opencode/auth.json`;
+  - `~/.ollama/id_ed25519`;
+  - shell histories and `fish_variables`;
+  - the agent-browser profile;
+  - `~/Library/Application Support/Claude`.
+
+  Stage 2a does two things:
+  1. extends the read-deny list with these paths and their patterns: every `.env` and `.env.*` at any depth,
+     `auth.json` and `credentials*` under `~/.local/share` and `~/.config`, `id_*` private keys anywhere under `$HOME`,
+     shell history files, `fish_variables`, browser profile and cookie stores, `~/Library/Application Support/Claude`.
+     The planner can no longer read them at all;
+  2. gives the judge a path deny-list of the same patterns. A result from such a path, if a new location ever slips
+     past the read-deny list, is judged by the code floor only and never sent.
 
 **The judge redactor, `src/decisions/egress.ts`**, is distinct from `jev/egress-redact.ts`. That one strips heredocs to
 the end of the text and replaces every URL (`egress-redact.ts:8,16`), which would blind an injection judge. The judge
@@ -428,11 +449,17 @@ redactor removes secrets and keeps instructions:
 1. the broker's known secret values, through a new `RunStore` method exposing the existing private redactor
    (`run-store.ts:1030`);
 2. credential shapes: bearer tokens, provider key prefixes, long hex and base64 tokens;
-3. `NAME=value` and `NAME: value` (anchored at line start or after whitespace), where NAME matches
-   `(?i)\w*(pass|secret|token|apikey|api_key|auth|cookie|session|pwd)\w*`.
-   - The value is masked only when it is a single run of 8 to 256 non-space characters.
-   - A value containing spaces is prose and survives, so `api_key: ignore previous instructions and …` keeps its
-     payload for the judge (senior round 3 B3).
+3. Named secrets in the forms `NAME=value`, `NAME: value`, `"NAME": "value"` (JSON) and `Name-With-Hyphens: value`
+   (headers):
+   - NAME matches `(?i)[\w-]*(pass|secret|token|key|auth|cookie|session|pwd|credential)[\w-]*`, so `*_KEY` and
+     `X-Api-Key` are covered;
+   - the value is the run of non-space characters after the separator, up to the line end, a quote or a comma. It is
+     masked when it is 8 to 256 characters long;
+   - a value containing spaces is prose and survives, so `api_key: ignore previous instructions and …` keeps its
+     payload for the judge (senior round 3 B3);
+   - Netscape cookie-jar lines (seven tab-separated fields) have their value field masked.
+   - **Order:** the complete canonical text is redacted **before** it is split into passages, so a secret spanning a
+     passage boundary is still caught (codex round 4 W25). The seeded test includes a boundary-split seed.
 4. **URLs** keep scheme, host and path. Userinfo, every query value and the fragment are masked (senior W1).
 5. **This turn's extracted one-time codes and links** (by value, from `trusted_extract`) are masked.
 
@@ -466,7 +493,13 @@ can reach TypeSafe. Paco approved that class (R11). The passage text is never wr
      `judge_timeout { toolCallId }` request **without awaiting it**, so reporting can never delay the result (codex
      round 3 B11).
      - Houge's handler for `judge_timeout` raises the turn to `untrusted` and records the `fail` verdict.
-     - A test holds the bridge unresponsive for 40 s and asserts the model saw the floored text, never the raw text.
+     - **A lost report cannot certify a turn clean** (codex round 4 B21). Houge keeps each built-in read pending from
+       its `gate` request (which Houge already receives) until a `judge_read` outcome arrives. A read still pending
+       at turn end finalizes the turn as at least `untrusted`.
+     - A verdict arriving after the extension's timer is recorded with `armed_mode: late` and not applied, since the
+       floor already reached the model.
+     - Tests: a bridge unresponsive for 40 s (the model saw the floored text, never raw), a lost `judge_timeout`
+       (the turn finalizes `untrusted`), and a late verdict.
 
 **What is judged:** only bytes that reach a model.
 
@@ -529,24 +562,38 @@ can reach TypeSafe. Paco approved that class (R11). The passage text is never wr
 - **untrusted:**
   - `memory_correct` keeps today's `tainted_turn` refusal (B9, an existing code rule, unchanged);
   - `lesson_write`, `schedule_task`, `self_write_propose` and `skill_author` additionally ask.
-- **hostile:** additionally ask for the actions an injection could turn into harm:
-  - shell commands `tool.shell_netread` flags (exfiltration over the network, today tap-free when it is a plain GET);
-  - every write outside the chat workspace.
-  - Read-only local commands (`ls`, `cat`, `grep`) do **not** ask. Making them ask would stall a turn behind serial
-    cards for no safety gain (senior round 3 B4).
+- **hostile:** a shell command runs without a tap **only if every segment is on a positive read-only list**
+  (senior round 4 B7). There is no "write outside the workspace" classifier to lean on.
+  - The list, code-owned and tested: `ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `jq`, `sort`, `uniq`, `cut`,
+    `diff`, `stat`, `file`, `pwd`, `echo`, `date`;
+    - `find` without `-exec`, `-execdir`, `-ok`, `-delete` or `-fprint*`;
+    - `sed` without `-i`;
+    - `awk` without `system(` or output redirection;
+    - `git log`, `git diff`, `git show` and `git status`.
+  - It rejects redirects, `$(…)`, backticks and any program not listed.
+  - Everything else asks, including every network command and every write. Then the built-in redirect ("make this
+    change through `bash`, which will ask Paco") is true.
 - **Built-in `edit` and `write` at hostile** return a model-visible redirect: "this turn read text aimed at the
   assistant; make this change through `bash`, which will ask Paco".
   - This is a block of one route, so ADR 0030 names it as an explicit exception to ADR 0029's "no Jev in any deny path"
     (senior W3), for Paco to sign.
   - The asking route stays open, and the hostile `bash` card shows target paths and byte counts when the command
     passes the 3000-char card cap (`bridge-handler.ts:55`).
-- **Asks added by trust never pause the turn deadline or the frame-idle watchdog.** Today an approval wait pauses both
-  (`planner-supervisor.ts:1144-1156`).
-  - So a schedule-born hostile turn ends within its normal 10 minutes, its cards expire, and Paco's messages are never
-    held behind it for hours (senior round 3 B4).
-  - Incident `hostile_schedule_turn` pages once.
-- **Tap budget:** stage 2a builds the counter ADR 0029 decision 2 describes but code never had (senior W13), counting
-  trust asks per day. At 3 a day, incident `trust_tap_budget` opens; the taps still ask.
+- **Trust cards have their own short expiry** (senior round 4 B9, codex round 4 B22). Today every approval wait calls
+  `setAwaitingApproval(true)`, which pauses the deadline and the 180 s frame watchdog for the full 30-minute approval
+  timeout (`planner-supervisor.ts:1143-1156`). Rev 4's "never pause" would let the watchdog abort the turn after
+  3 minutes.
+  - Each wait now passes an explicit pause policy: `{ pause: "full" }` for a code ask, as today, or
+    `{ pause: "bounded", ttlMs }` for a trust-only ask.
+  - A trust card's TTL is `HOUGE_TRUST_ASK_TTL_MS`, default 5 minutes. The timers pause for that TTL only. On expiry
+    the card expires, the call returns "Paco did not approve in time", and the timers resume.
+  - When a code ask and a trust ask fall on the same call, the code ask's full pause wins.
+  - Tests: deadline expiry during a trust wait, card expiry, and a late tap after an abort ("already handled").
+  - A schedule-born hostile turn therefore waits at most 5 minutes per card, bounded by its 10-minute deadline. Paco's
+    messages are never held for hours. Incident `hostile_schedule_turn` pages once.
+- **Tap budget:** stage 2a builds the counter ADR 0029 decision 2 describes but code never had (senior W13). It is one
+  row per local date (Sydney) in a `trust_tap_budget` table, incremented per trust ask, and a new date starts at zero.
+  At 3 a day, incident `trust_tap_budget` opens; the taps still ask.
 - Standing approvals do not apply at hostile (§8.3).
 - The approval card states the reason: "this turn read text aimed at the assistant".
 
@@ -648,7 +695,7 @@ returns nothing, so the turn settles), and returns `{continue: true, additionalC
 
 **What never counts as a signal** (lessons.md: a monitor must not observe its own output; senior B7):
 
-- work started by an improvement: background authoring jobs (below) are not turns and write no chat turns; the digest
+- work started by an improvement: authoring jobs live in `improvement_jobs`, never in runs or `chat_turns`; the digest
   and cards are notifications;
 - schedule-born runs;
 - turns without a `turn_trust_final { max_level: clean }` event (§7.2). Their text may carry injected content, and a
@@ -686,16 +733,32 @@ messages steer into. So auto-authoring is a **background job on the evolution la
   digest.
 - **`origin`:** the matched turns' run ids, plus **Paco's own request texts** (never tool output or replies) as the
   objective. Gate A (`skill-router.ts`) anchors to it as it anchors to a contract objective today.
-- **Auto mode is narrower than the tool:**
-  - the job may only write a skill draft;
-  - Gate A's other outcomes (save a lesson, retire or restore a skill) are not executed, only recorded in the urgent
-    card as suggestions;
-  - the draft is written to the inert `_pending` parking lot (`skill-store.ts:20-26`, excluded from every prompt).
+- **Auto mode is a separate function, `authorPendingSkill(origin)`,** not a flag on `authorAndWriteSkill`. Today that
+  function writes the skill active when Gate B passes or does not score, saves a lesson when it parks, and can retire a
+  predecessor (`core-worker.ts:1779-1904`; senior round 4 B5, codex round 4 B23).
+  - The new function reuses the writer and both gates.
+  - It writes **only** to the inert `_pending` parking lot (`skill-store.ts:20-26`, excluded from every prompt),
+    whatever the gates say.
+  - It never saves a lesson and never retires or restores a skill. Those Gate A outcomes are listed in the urgent card
+    as suggestions.
 - **The skill becomes active only when Paco taps Accept** on the urgent card. That is R4's own wording: "you review
-  the result through the normal skill flow". Dismiss retires the draft.
-- The job's ledger events go under a dedicated system run row with source `improvement`, added to `TriggerSource` in
-  `domain/types.ts`, which the dispatcher never claims (a test proves the dispatcher skips it).
-- A recurrence cluster that has already started authoring never starts another in 30 days.
+  the result through the normal skill flow".
+- **`SkillStore` gains `promotePending(scope, name)` and `dismissPending(scope, name)`:**
+  - **Promote** is an atomic move into the active tree. It fails on a name collision; the card then offers
+    "replace" (retiring the old one, retire-never-delete) or "keep both" (a `-2` suffix).
+  - **Dismiss** moves the draft to `_retired`. Nothing is deleted.
+  - Both are one-shot: a second tap answers "already handled".
+- **The urgent card's Accept and Dismiss** callbacks are `dec:sk:<job_id>:accept|dismiss`. They pass the sender
+  allowlist (A1), and the target is the operator chat.
+- **No runs row** (senior round 4 B5). Runs are claimed by state alone (`run-store.ts:2055`), and an expired lease
+  re-queues a non-planner run (`:2129-2150`), so any runs row would eventually be dispatched.
+  - The job lives in a new `improvement_jobs` table: `job_id`, `kind` (`skill_author`), `origin_json` (run ids and
+    request text hashes; the texts are re-read from `chat_turns` when the job starts, never stored twice), `state`,
+    `idempotency_key` (the recurrence cluster id), `created_at`, `finished_at`, `result_code`.
+  - Its decision rows reference it.
+  - `TriggerSource` is not changed.
+- A recurrence cluster that has already started authoring never starts another in 30 days (enforced by
+  `idempotency_key`).
 
 **Measuring each improvement.** Each improvement is itself a decision row whose outcome is checked:
 
@@ -773,11 +836,26 @@ So Rev 4 binds the *environment*, not the text. A standing-approved command runs
   after it;
 - `HOME`, `CURL_HOME` and `XDG_CONFIG_HOME` pointed at a second fresh, empty directory, so no `~/.curlrc`, `.netrc` or
   other config is read;
-- a dedicated Seatbelt profile (rendered by `seatbelt.ts` like the existing two) that:
-  - **denies file reads** outside the clean room and the system trees a process needs (`/usr`, `/bin`, `/System`,
-    `/Library`, `/private/etc` for TLS roots, `/dev/null`);
-  - denies writes outside the clean room;
-  - keeps the network open.
+- a dedicated Seatbelt profile, `cleanroom.sb`, rendered by `seatbelt.ts` like the existing two.
+  - **What was probed live on 2026-10-12** (senior round 4; the profile and results are in research
+    `13-cleanroom-probe.md`): `(allow default)` with **file reads and writes deny-default**:
+    - reads allowed only in the room, the fresh home, `/usr`, `/bin`, `/System`, `/Library`, `/private/etc` and
+      `/dev/null`, plus the root directory entry itself (without it every binary aborts at start);
+    - metadata allowed on the `/etc`, `/var` and `/tmp` symlinks and the room's ancestors (without it DNS fails
+      silently);
+    - writes allowed only in the room and `/dev/null`;
+    - the existing signal, `launchctl`, `security` and launchd denials.
+  - **Probe results** (a)–(e): HTTPS `curl` works (TLS roots come from `/System` keychains through trustd); a bash `for`
+    loop with `$(…)`, pipes and `-c`/`-b` works; `-H @/tmp/planted` is blocked; a symlink out of the room is blocked
+    for reads, writes, traversal and hardlinks; a planted `~/.curlrc` is ignored. `/usr/bin/python3`'s install shim
+    raises a GUI prompt, so the profile denies exec of it.
+  - **The home is read-only to the child**, since a `.curlrc` planted in the readable home *is* read.
+  - **Not yet probed, required before stage 4 code** (P8): a deny on loopback and the bridge socket (`localhost`,
+    `127.0.0.0/8`, `::1`), so no local service can be reached; and a `mach-lookup` allowlist limited to what DNS and
+    TLS need (mDNSResponder, trustd), replacing `(allow default)` for IPC. If either breaks the Alishan command, the
+    residual (a local service or IPC reachable from a sealed run) is recorded in ADR 0030 for Paco.
+- **a fixed environment:** `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, `LANG`, `HOME`, `CURL_HOME`, `XDG_CONFIG_HOME` and
+  `TMPDIR` (inside the room). Nothing is inherited from the daemon (codex round 4 B19).
 
 Then every file the command can read either was created by that same run, or does not exist. A planted header file, a
 stale cookie jar, a symlink or a config file cannot influence it. The effect depends only on the approved bytes, the
@@ -790,14 +868,31 @@ clock and the remote server's responses, which is what Paco approved three times
 - the same chat as the approvals;
 - the turn is not `hostile`.
 
-**A command that fails in the clean room counts as a deny for the streak**, and the next run asks again. So a command
-that needs local files never silently loses access; it falls back to asking.
+**How a standing run is executed** (codex round 4 B20). Today the bridge hands `CapabilityRunner` the original input,
+and the shell adapter always uses `shell.sb`, the turn workspace and `cfg.sandbox`, which can be disabled
+(`shell-adapter.ts:77-89`, `omp-config.ts:86`).
+
+- A standing match sets `executor: "cleanroom"` in the validated execution input. Re-validation (B14) checks it
+  together with the fingerprint.
+- The shell adapter selects `cleanroom.sb`, the clean room as working directory and the fixed environment from that
+  field alone.
+- If the sandbox is unavailable or disabled, the standing match is void and the call asks as normal (fail closed).
+- Teardown deletes both directories after the call, in a `finally`.
+- The stage 4 gate drives the fourth call through the real bridge and wrapper and asserts the selected profile.
+
+**A curl cookie jar that cannot be read or written fails silently, with exit 0** (probe (d)). So a clean-room run's
+success is judged by its report reaching Paco, not by its exit code.
 
 **Grant:**
 
-- 3 consecutive `consumed` approvals of one `action_fingerprint`, in one chat:
-  - `expired` neither counts nor resets the streak;
-  - `denied` resets the streak and blocks a grant for 30 days.
+- **Two steps, so the clean room is proven before any card is removed** (codex round 4 B24):
+  1. 3 consecutive `consumed` approvals of one `action_fingerprint`, in one chat, make the action a candidate.
+     - `expired` neither counts nor resets the streak;
+     - `denied` resets the streak and blocks a candidacy for 30 days.
+  2. A candidate's next run **still asks**, and once approved, runs in the clean room. If it succeeds (its report
+     reaches Paco), the grant is made. If it fails, the candidacy ends with a note in the digest ("this command needs
+     files outside a sealed folder; it will keep asking"), and normal asking continues.
+  - For the Alishan search that is four approvals, the fourth already sealed.
 - On grant:
   - a `ladder_moves` row (`granted_by: auto`, the only auto row the store accepts, §4.3);
   - an urgent card: "From now on I'll run *<action label>* without asking (in a sealed folder)", with a Revoke button
@@ -926,6 +1021,7 @@ When this spec lands, `tasks/todo.md` and `docs/ROADMAP.md` gain these entries, 
 | P5 | Jev volume: about 25–50 extra calls a day (about 4.5 shell results, 6 external reads, 5 settles, `improve.route`) | within TypeSafe limits at 10× |
 | P6 | Front-door parity: dual run of the last 200 Telegram texts through the old and new builds (§6.2) | 0 mismatches on every persisted row; Jev nondeterminism reported separately |
 | P7 | Frame sequences for non-terminal `agent_end` (late steer, omp retry, compaction, thinking-only retry) | captured in stage 2a task 1; each becomes a test (§7.3) |
+| P8 | Clean room: loopback and bridge-socket deny, `mach-lookup` allowlist, with the real Alishan command | stage 4 task 1; the command still produces its report, or the residual goes to ADR 0030 |
 
 ## 13. Build stages
 
@@ -935,10 +1031,10 @@ live gate, a docs sync and Paco's merge where protected files are touched.
 | Stage | Contents | Protected files touched (Paco's merge) | Live gate PASS |
 |---|---|---|---|
 | 1 Engine + door | ADR 0030 and the AGENTS.md edit first; registry, runner, `decisions`, `decision_outcomes`, `ladder_moves`; `jev_verdicts` gains `decision_id`; `turn.handler` + `turn.gear` migrated; `src/decisions/` protected; off switch; **daily digest and urgent cards** (counts, unsure list, callbacks) | ADR, AGENTS.md, self-write-guard, run-store, core-worker | P6 dual run: 0 mismatches over 200 texts; all nine `jev_verdicts` consumers green; the digest renders on the DB copy and a ❌ tap writes an outcome |
-| 2a In-Houge judges | supervisor terminal-`agent_end` fix (P7); `tool.injection` on shell and wall tools; `tool.shell_netread`; `turn.trust` with `turn_trust` events; judge redactor; injection and trust items in the digest | bridge-handler, planner-supervisor, capability-policy, run-store | the §4.2 injection sanity gate passes (recall ≥ 85%, clean withholds ≤ 1%); no seeded secret leaves; a planted turn reaches hostile, a network shell call and a write outside the workspace ask, `ls` does not, a built-in write gets the bash redirect, and a schedule-born hostile turn ends within its deadline |
-| 2b Hooks + learning | extension `judge_read`, `judge_timeout` and `session_stop`; `turn.settle`; `todo` with reminders off; `improve.route`; auto-authoring to `_pending`; improvement items in the digest | extension, planner-supervisor, planner-session, domain types, skill-store | a planted file read past the 32 KiB cap is withheld in both fields; a 40 s unresponsive bridge shows the floored text, never raw; the §4.2 settle gate passes (≤ 10% send-backs, Paco's sample read); a "scheduled" claim with no call is sent back once, and a first-pass attachment survives; a labelled set of ≥ 30 past signals (labels by the plan author, checked by Paco in one sitting) routes ≥ 80% to the labelled target; 3 clean similar synthetic turns write a `_pending` draft and an urgent card, while a hostile turn, a schedule-born run and a turn without `turn_trust_final` do not count |
+| 2a In-Houge judges | supervisor terminal-`agent_end` fix (P7); credential-store read-deny extension; `tool.injection` on shell and wall tools; `tool.shell_netread`; the hostile read-only list; `turn.trust` with `turn_trust` and `turn_trust_final` events; trust-card pause policy and TTL; tap-budget table; judge redactor; injection and trust items in the digest | bridge-handler, planner-supervisor, capability-policy, run-store, protected-paths | the §4.2 injection sanity gate passes (recall ≥ 85%, clean withholds ≤ 1%); no seeded secret leaves; a planted turn reaches hostile, `curl` and `touch` ask while `ls` and `git log` do not, a built-in write gets the bash redirect, a trust card expires after its TTL without the watchdog firing, and a schedule-born hostile turn ends within its deadline; the newly read-denied credential paths refuse a planner read |
+| 2b Hooks + learning | extension `judge_read`, `judge_timeout` and `session_stop`; `turn.settle`; `todo` with reminders off; `improve.route`; `authorPendingSkill`, `improvement_jobs`, `promotePending`/`dismissPending`; improvement items in the digest | extension, planner-supervisor, planner-session, skill-store, run-store | a planted file read past the 32 KiB cap is withheld in both fields; a 40 s unresponsive bridge shows the floored text, never raw; the §4.2 settle gate passes (≤ 10% send-backs, Paco's sample read); a "scheduled" claim with no call is sent back once, and a first-pass attachment survives; a labelled set of ≥ 30 past signals (labels by the plan author, checked by Paco in one sitting) routes ≥ 80% to the labelled target; 3 clean similar synthetic turns write a `_pending` draft and an urgent card, while a hostile turn, a schedule-born run and a turn without `turn_trust_final` do not count |
 | 3 Unprotected families | intake, context, supervision and settle entries migrated | core-worker, planner-supervisor (some) | differential on behaviour (§6.2); full suite and existing gates green |
-| 4 Protected families + standing | `tool.policy`, `tool.shell_class`, `tool.path`, `approval.bind`, `selfwrite.guard`, `fetch.ssrf`, `posture.kill`, `secret.redact`; `approval.standing` with the clean-room Seatbelt profile | policy, bridge, self-write-guard, gate-path, command-matcher, seatbelt | differential: command corpus, path corpus and policy matrix identical; the real Alishan command produces the same report in the clean room; 3 approvals on the copy → grant → the 4th runs without a card in the clean room → a deny revokes; in the clean room, `-H @/tmp/planted`, a planted `cj.txt` symlink and a planted `~/.curlrc` have no effect |
+| 4 Protected families + standing | `tool.policy`, `tool.shell_class`, `tool.path`, `approval.bind`, `selfwrite.guard`, `fetch.ssrf`, `posture.kill`, `secret.redact`; `approval.standing` with the clean-room Seatbelt profile | policy, bridge, self-write-guard, gate-path, command-matcher, seatbelt | differential: command corpus, path corpus and policy matrix identical; the real Alishan command produces the same report in the clean room; 3 approvals on the copy → candidate → the 4th asks and runs sealed → grant → the 5th runs without a card through the real bridge with `cleanroom.sb` selected → a deny revokes; with the sandbox disabled the 5th asks; in the clean room, `-H @/tmp/planted`, a planted `cj.txt` symlink and a planted `~/.curlrc` have no effect |
 
 Each stage keeps every existing consumer working at its own boundary (codex W15): no table is dropped while a reader
 remains, and no stage depends on a later one.
@@ -1064,4 +1160,31 @@ Warnings closed:
   Alishan fit (W11); the 2b labelled set (W12); the tap-budget counter (W13).
 - **Codex:** canonical judged text (#5); the P6 projection and isolation (W15, W16).
 - **Deferred to the stage 2b plan:** codex S17 (typed fields for the background job).
+
+### Round 4 (Rev 4 → Rev 5)
+
+Round 4 results:
+
+- **Senior:** 3 new blockers, 8 warnings, 3 suggestions. Of round 3: B1, B2 and B6 closed; B3, B4 and B5 partial. The
+  clean room was probed live and works with two added read allowances.
+- **Codex:** 7 new blockers, 2 warnings, 1 suggestion. Of round 3: 6 closed, 6 partial.
+
+| # | Blocker (source) | Resolution |
+|---|---|---|
+| 26 | Hostile asks rest on a write classifier that does not exist (senior B7) | a positive read-only list at hostile; everything else asks (§7.2) |
+| 27 | Readable credential stores would be sent; redactor misses JSON, header and `*_KEY` names (senior B8) | stage 2a read-denies the stores found plus their patterns; a judge path deny-list; named-secret rule widened; cookie-jar lines (§7.0) |
+| 28 | Trust asks not pausing the watchdog abort the turn at 180 s; no pause policy (senior B9, codex B22) | an explicit pause policy per wait; trust cards get a 5-minute TTL that pauses the timers for that TTL only (§7.2) |
+| 29 | `jev_decisions.decision_id` collides with its primary key (codex B18) | `ladder_decision_id` (§5.2) |
+| 30 | The clean-room boundary is unproved; environment, IPC and local network unbounded (codex B19) | file reads and writes deny-default, probed live; a fixed environment; loopback and IPC limits specified and made probe P8 before stage 4 code (§8.3) |
+| 31 | Standing approval is not bound to the clean-room executor (codex B20) | `executor: "cleanroom"` in the validated input; fail closed when the sandbox is off; teardown in `finally` (§8.3) |
+| 32 | A lost `judge_timeout` can certify a turn clean (codex B21) | reads stay pending until an outcome arrives; pending at turn end → `untrusted` (§7.1) |
+| 33 | No pending-only authoring path; no promote or dismiss (codex B23, senior B5) | `authorPendingSkill`, `promotePending`/`dismissPending`, one-shot callbacks, `improvement_jobs` instead of a runs row (§7.4) |
+| 34 | Three normal approvals do not prove the clean room (codex B24) | candidate after 3; the 4th still asks and runs sealed; success grants (§8.3) |
+
+Warnings closed:
+
+- **Codex:** redact before split (W25); a structural guard before nondeterminism exclusion (W26); wrapper probe in the
+  stage 4 gate (S27).
+- **Senior:** late verdicts (W8); corpus owner and holdout (W10); tap-budget storage (W13); skip-rate source (W5); the
+  probe-driven profile allowances.
 
