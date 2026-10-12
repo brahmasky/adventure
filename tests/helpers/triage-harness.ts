@@ -2,6 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { vi } from "vitest";
+import type { SecretBroker } from "../../src/config/secret-broker.js";
 import type { CoreWorker } from "../../src/core/core-worker.js";
 import { LANE_PREFACE, REWRITE_INSTRUCTION } from "../../src/core/lanes/lane-compose.js";
 import { CATEGORIES, TREE_CATEGORY, TREE_QUESTIONS, type Category } from "../../src/jev/questions/tree.js";
@@ -77,15 +78,16 @@ export function calibrationFile(): string {
 export const ARM: Record<string, string> = { HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "arm" };
 export const SHADOW: Record<string, string> = { HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "shadow" };
 
-export interface HarnessOptions { env?: Record<string, string>; llm?: Llm; web?: Llm; jevNow?: () => Date }
+export interface HarnessOptions { env?: Record<string, string>; llm?: Llm; web?: Llm; jevNow?: () => Date; broker?: SecretBroker }
 /** `noState`: skip buildOmpTools, so the turn has no OmpTurnState (today's `!state` exit, skip reason `error`). */
 export interface TurnOptions { signal?: AbortSignal; modality?: TurnModality; posture?: string | null; noState?: boolean }
 /** Env first (the worker reads boot-time switches in its constructor), then the store and the worker. */
 export function triageHarness(fetchImpl: unknown, o: HarnessOptions = {}) {
   vi.stubEnv("HOUGE_JEV_CALIBRATION_FILE", calibrationFile()); vi.stubEnv("HOUGE_JEV_GATE", "1"); vi.stubEnv("TYPESAFE_API_KEY", "test-key");
   for (const [k, v] of Object.entries(o.env ?? ARM)) vi.stubEnv(k, v);
-  const store = RunStore.openInMemory();
+  const store = o.broker ? RunStore.openInMemory({ redact: o.broker.redact }) : RunStore.openInMemory(); // boot wiring: the store and the worker share the broker's redactor
   const worker = ompWorker(store, mkdtempSync(join(tmpdir(), "hpin-")), { llm: o.llm ?? scriptedLlm(), jevFetch: fetchImpl as typeof fetch,
+    ...(o.broker ? { broker: o.broker } : {}),
     ...(o.web ? { web: o.web } : {}), ...(o.jevNow ? { jevNow: o.jevNow } : {}) });
   const turn = (text: string, t: TurnOptions = {}) => {
     const run_id = createQueuedTurnRun(store, text);

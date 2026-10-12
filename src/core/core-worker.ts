@@ -3097,18 +3097,24 @@ export class CoreWorker {
       const card = memoryLaneCard({ lesson_id: saved.id, theme: saved.theme, text: row?.text ?? "", ...(row?.avoid ? { avoid: row.avoid } : {}),
         ...(saved.supersededId !== undefined ? { superseded_id: saved.supersededId } : {}), verb, change_id: saved.change_id, run_id });
       const q = this.runStore.enqueueNotification({ target: { kind: "telegram", chat_id: this.chatOf(run_id) }, intent_type: "progress",
-        idempotency_key: `memcard:${saved.change_id}`, correlation_id: run_id, payload: { text: card.text, buttons: [memlaneUndoButton(saved.change_id)] } });
+        idempotency_key: `memcard:${saved.change_id}`, correlation_id: run_id, payload: { text: this.maskSecrets(card.text), buttons: [memlaneUndoButton(saved.change_id)] } });
       if (q.status === "conflict") console.error(`memory card: announce refused for change ${saved.change_id}: ${q.error}`);
     } catch (e) {
       console.error(`memory card: announce failed: ${safeReason(e)}`);
     }
   }
 
+  /** ADR 0015: the same value redactor the store applies to final reports (enqueueNotification stores text as given). Identity when the firewall is off. */
+  private maskSecrets(text: string): string {
+    return this.broker ? this.broker.redact(text) : text;
+  }
+
   private memoryLaneCardFor(run_id: string, w: Required<LessonWriteOutcome>): { text: string; buttons: NotificationButton[] } {
     const row = this.runStore.getLesson(w.saved.id);
-    return this.memoryLaneCard({ lesson_id: w.saved.id, theme: w.theme, text: w.saved.lesson, ...(row?.avoid ? { avoid: row.avoid } : {}),
+    const card = this.memoryLaneCard({ lesson_id: w.saved.id, theme: w.theme, text: w.saved.lesson, ...(row?.avoid ? { avoid: row.avoid } : {}),
       ...(w.saved.supersededId !== undefined ? { superseded_id: w.saved.supersededId } : {}),
       verb: w.saved.verb as "add" | "update" | "supersede", change_id: w.change_id, run_id });
+    return { ...card, text: this.maskSecrets(card.text) };
   }
   /**
    * Stage B §4–§5: the answer and lookup lanes. The verdict id is minted first (the compose legs carry it as routed_by). A
@@ -3158,7 +3164,7 @@ export class CoreWorker {
       if (!card) return { why: "empty_reply" };
       // Paco 2026-10-12: a saved lesson is announced with Undo on the card that names it
       const undo = save?.settled ? [memlaneUndoButton((save.w as Required<LessonWriteOutcome>).change_id)] : [];
-      return { card: { ...card, buttons: [...undo, ...card.buttons] } };
+      return { card: { text: this.maskSecrets(card.text), buttons: [...undo, ...card.buttons] } };
     } catch (e) {
       console.error(`lane: card render failed: ${safeReason(e)}`);
       return { why: "render_failed" };
