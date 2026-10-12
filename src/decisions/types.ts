@@ -122,7 +122,7 @@ export interface DecideCtx<S, V, D> {
    * Overrides the entry's arming for this call. Only the migrated front door passes it, to keep today's configured
    * `HOUGE_JEV_TRIAGE_ENABLED=shadow` (R13: no off switch, no designed shadow). Ignored for locked entries.
    */
-  armed?: Partial<Record<RungKind, ArmedMode>> | undefined;
+  armed?: Partial<Record<Exclude<RungKind, "rule">, ArmedMode>> | undefined;
   exec?: RungExecutors<S, V, D> | undefined;
   clock?: (() => number) | undefined;
   log?: ((line: string) => void) | undefined;

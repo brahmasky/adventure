@@ -2,6 +2,7 @@ import type {
   AnyDecideResult, AnyEntry, ArmedMode, DecideCtx, DecideResult, Entry, FallbackReason, JevRung, ModelRung, PacoRung, RuleRung, RungAnswer,
   RungKind, RungOutcome, RungResult
 } from "./types.js";
+import { FALLBACK_REASONS } from "./types.js";
 
 /**
  * The runner (spec §5.1). Walks the ladder, applies the monotone rule, then records — in that order, so a ledger failure
@@ -49,7 +50,8 @@ export async function decide<S, V extends string, D = never>(entry: Entry<S, V, 
 
 /** A locked entry never reads ctx.armed (spec §4.1); otherwise ctx.armed (the front door's configured shadow) overrides the entry's arming. */
 function modeOf<S, V extends string, D>(entry: Entry<S, V, D>, kind: RungKind, ctx: DecideCtx<S, V, D>): ArmedMode {
-  if (entry.locked) return entry.armed[kind] ?? "on";
+  // R13: code goes first; no caller can shadow or switch off a rule rung
+  if (entry.locked || kind === "rule") return entry.armed[kind] ?? "on";
   return ctx.armed?.[kind] ?? entry.armed[kind] ?? "on";
 }
 
@@ -110,11 +112,22 @@ function apply<S, V extends string, D>(entry: Entry<S, V, D>, w: Walk<V, D>, kin
   return result;
 }
 
-/** A verdict (or floor) outside the entry's closed set is a parse failure, never an answer. */
-function checked<S, V extends string, D>(entry: Entry<S, V, D>, r: RungResult<V, D>): RungResult<V, D> {
-  if ("verdict" in r && !entry.verdicts.includes(r.verdict)) return { failed: "parse" };
-  if ("abstain" in r && r.floor !== undefined && !entry.verdicts.includes(r.floor)) return { failed: "parse" };
-  return r;
+/**
+ * A rung's result is untrusted input: anything that is not a well-formed answer, abstention or failure (a non-object, `{}`, a
+ * verdict or floor outside the closed set, a `p` outside [0,1], an unknown failure reason) is a parse failure, never an answer.
+ */
+function checked<S, V extends string, D>(entry: Entry<S, V, D>, r: unknown): RungResult<V, D> {
+  const parse = { failed: "parse" } as const;
+  if (typeof r !== "object" || r === null) return parse;
+  const o = r as Record<string, unknown>;
+  const inSet = (v: unknown): boolean => typeof v === "string" && (entry.verdicts as readonly string[]).includes(v);
+  if ("verdict" in o) {
+    const pOk = o.p === undefined || (typeof o.p === "number" && o.p >= 0 && o.p <= 1);
+    return inSet(o.verdict) && pOk ? (r as RungResult<V, D>) : parse;
+  }
+  if (o.abstain === true) return o.floor === undefined || inSet(o.floor) ? (r as RungResult<V, D>) : parse;
+  if (typeof o.failed === "string" && (FALLBACK_REASONS as readonly string[]).includes(o.failed)) return r as RungResult<V, D>;
+  return parse;
 }
 
 function cautious<S, V extends string, D>(entry: Entry<S, V, D>, a: V | undefined, b: V): V {
@@ -128,6 +141,8 @@ function finish<S, V extends string, D>(entry: Entry<S, V, D>, w: Walk<V, D>, d:
     walk: w.outcomes, latencyMs: Math.max(0, Math.round(elapsed)) };
   if (d === null) {
     const verdict = entry.monotone ? cautious(entry, w.floor, entry.fail) : entry.fail;
+    // ruling 17: a floor that outranks `fail` decided this, so the row names the rung that set it
+    if (entry.monotone && w.floor !== undefined && verdict !== entry.fail) return { ...base, verdict, rung: w.floorRung ?? "rule", reason: "floor_held" };
     return { ...base, verdict, rung: "fail", reason: w.fallbackCode };
   }
   const verdict = entry.monotone ? cautious(entry, w.floor, d.answer.verdict) : d.answer.verdict;

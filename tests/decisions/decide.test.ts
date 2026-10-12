@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { decide, decideSync } from "../../src/decisions/decide.js";
+import { ENTRY_IDS, FRONT_DOOR_ENTRIES } from "../../src/decisions/entry-ids.js";
 import type { AnyDecideResult, DecisionRecorder, Entry, RungResult } from "../../src/decisions/types.js";
 
 // Spec §4.1 / §5.1: code goes first; a thrown rule, a timeout or an outage is an abstention, so `fail` decides, never an
@@ -92,7 +93,8 @@ describe("decide: monotone, shadow, locked", () => {
   });
   it("no rung answering on a monotone entry: the more cautious of floor and fail", async () => {
     const r = await decide(mono({ fail: "pass" }), { rule: "abstain", floor: "ask" }, { run_id: null, recorder, exec: { system_one: fails("outage"), model: fails("outage") } });
-    expect(r).toMatchObject({ verdict: "ask", rung: "fail" });
+    expect(r).toMatchObject({ verdict: "ask", rung: "rule", reason: "floor_held" });
+    expect(r.fallbackReason).toBe("outage"); // the failure stays on the row
   });
   it("a shadow rung is asked and recorded, never applied", async () => {
     const jev = answers("deny");
@@ -107,8 +109,69 @@ describe("decide: monotone, shadow, locked", () => {
   });
   it("a locked entry ignores ctx.armed (no caller can shadow or switch off a locked gate)", () => {
     const locked = entry({ locked: true, ladder: [{ kind: "rule", name: "r", decide: rule }], armed: { rule: "on" } });
-    const r = decideSync(locked, { rule: "deny" }, { run_id: null, recorder, armed: { rule: "off" } });
+    const r = decideSync(locked, { rule: "deny" }, { run_id: null, recorder, armed: { rule: "off" } as never });
     expect(r).toMatchObject({ verdict: "deny", rung: "rule" });
+  });
+  it("ctx.armed cannot switch off or shadow a rule rung on a non-locked entry either (R13: code goes first)", () => {
+    const sync = entry({ ladder: [{ kind: "rule", name: "r", decide: rule }] });
+    for (const mode of ["off", "shadow"] as const) {
+      const r = decideSync(sync, { rule: "deny" }, { run_id: null, recorder, armed: { rule: mode } as never });
+      expect(r).toMatchObject({ verdict: "deny", rung: "rule", armedMode: "on" });
+    }
+  });
+});
+
+describe("decide: untrusted rung results", () => {
+  // The runner is the gate every entry sits behind: a malformed rung result is a parse failure, never a throw or a made-up verdict.
+  it("a rule returning undefined settles on fail with parse (no throw)", async () => {
+    const bad = entry({ ladder: [{ kind: "rule", name: "r", decide: (() => undefined) as never }] });
+    expect(await decide(bad, { rule: "pass" }, { run_id: null, recorder })).toMatchObject({ verdict: "ask", rung: "fail", fallbackReason: "parse", fallbackRung: "rule" });
+    expect(decideSync(bad, { rule: "pass" }, { run_id: null, recorder })).toMatchObject({ rung: "fail", fallbackReason: "parse" });
+  });
+  it("an executor resolving {} or null settles on fail with parse", async () => {
+    for (const out of [{}, null, "deny"]) {
+      const r = await decide(entry(), { rule: "abstain" }, { run_id: null, recorder, exec: { system_one: (async () => out) as never } });
+      expect(r).toMatchObject({ verdict: "ask", rung: "fail", fallbackReason: "parse" });
+    }
+  });
+  it("an accidentally async rule (a Promise) is a parse failure, not a verdict", () => {
+    const bad = entry({ ladder: [{ kind: "rule", name: "r", decide: (async () => "pass") as never }] });
+    expect(decideSync(bad, { rule: "pass" }, { run_id: null, recorder })).toMatchObject({ rung: "fail", fallbackReason: "parse" });
+  });
+  it("a p outside [0,1], and an unknown failure reason, are parse failures", async () => {
+    for (const out of [{ verdict: "deny", p: 1.5 }, { verdict: "deny", p: Number.NaN }, { failed: "exploded" }]) {
+      const r = await decide(entry(), { rule: "abstain" }, { run_id: null, recorder, exec: { system_one: (async () => out) as never } });
+      expect(r).toMatchObject({ verdict: "ask", rung: "fail", fallbackReason: "parse" });
+    }
+  });
+  it("an abstention with a floor outside the closed set is a parse failure", () => {
+    const sync = entry({ monotone: { order: ["pass", "ask", "deny"] }, ladder: [{ kind: "rule", name: "r", decide: () => ({ abstain: true, floor: "maybe" as V }) }] });
+    expect(decideSync(sync, { rule: "pass" }, { run_id: null, recorder })).toMatchObject({ rung: "fail", fallbackReason: "parse" });
+  });
+});
+
+describe("decide: shadow floors and the paco rung", () => {
+  it("a shadowed rung's abstention floor does not bind (shadow is never applied)", async () => {
+    const shadowed = entry({ monotone: { order: ["pass", "ask", "deny"] }, fail: "pass", armed: { rule: "on", system_one: "shadow", model: "on" },
+      ladder: [{ kind: "rule", name: "r", decide: rule }, { kind: "system_one", name: "j", questions: [], bars: { kind: "calibrated", questionIds: [] }, timeoutMs: 50 }] });
+    const sysOne = vi.fn(async (): Promise<RungResult<V>> => ({ abstain: true, floor: "deny" }));
+    const r = await decide(shadowed, { rule: "abstain" }, { run_id: null, recorder, exec: { system_one: sysOne } });
+    expect(sysOne).toHaveBeenCalledOnce();
+    expect(r).toMatchObject({ verdict: "pass", rung: "fail", armedMode: "shadow" });
+  });
+  it("a paco rung has no timeout: a late tap still answers", async () => {
+    vi.useFakeTimers();
+    const withPaco = entry({ armed: { rule: "on", paco: "on" }, ladder: [{ kind: "rule", name: "r", decide: rule }, { kind: "paco", name: "p", surface: "card" }] });
+    const paco = () => new Promise<RungResult<V>>((resolve) => { setTimeout(() => resolve({ verdict: "deny" }), 3_600_000); });
+    const p = decide(withPaco, { rule: "abstain" }, { run_id: null, recorder, exec: { paco } });
+    await vi.advanceTimersByTimeAsync(3_600_001);
+    expect(await p).toMatchObject({ verdict: "deny", rung: "paco", fallbackReason: null });
+  });
+});
+
+describe("entry ids", () => {
+  it("every front-door entry is a registered entry id", () => {
+    for (const id of FRONT_DOOR_ENTRIES) expect((ENTRY_IDS as readonly string[]).includes(id)).toBe(true);
   });
 });
 
