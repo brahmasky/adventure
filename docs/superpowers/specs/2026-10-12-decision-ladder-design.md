@@ -1,7 +1,7 @@
 # Decision ladder — every Houge decision on one list, judged inside the loop, improved from outcomes
 
-- **Date:** 2026-10-12 · **Rev 6** · **Status:** draft; five review rounds (senior against the live system, with
-  probes P1–P4 and the clean room run; codex). Rev 6 closes the round 5 blockers (§15).
+- **Date:** 2026-10-12 · **Rev 6** · **Status:** draft for Paco's read; six review rounds (senior against the live
+  system, with probes P1–P4 and the clean room run; codex). Zero open blockers (§15).
 - **Decider:** Paco. Design approved section by section in chat on 2026-10-12.
 - **Proposes:** ADR 0030 "Decision ladder" (§10). Amends ADR 0029 (front door becomes an entry; the Jev rule restated),
   0028 (D5 tap-free local writes and D12 shell outside the wall become conditional), 0014 (an injection judge before
@@ -588,12 +588,14 @@ can reach TypeSafe. Paco approved that class (R11). The passage text is never wr
   (senior round 4 B7). There is no "write outside the workspace" classifier to lean on.
   - The list, code-owned and tested, admits a command only with its listed argument forms (codex round 5 B28: `sort -o`,
     `sed 'w file'`, `git diff --output` and `git log --output` all write without a shell redirect):
-    - `ls`, `cat`, `head`, `tail`, `wc`, `cut`, `stat`, `file`, `pwd`, `echo`, `date`: any options, path operands;
+    - `ls`, `cat`, `head`, `tail`, `wc`, `cut`, `stat`, `pwd`, `echo`: any options, path operands;
+    - `date`: no operand other than one `+<format>` (no clock setting);
     - `grep`: options except `-f`/`--file` from outside the workspace (reading, not writing, but kept narrow);
     - `jq`: a filter and path operands, no `--rawfile`/`--slurpfile` (they read, but keep it narrow);
     - `find`: only `-name`, `-iname`, `-path`, `-type`, `-maxdepth`, `-mindepth`, `-size`, `-mtime`, `-newer` and
       `-print`;
-  - Not on the list, so they ask: `sort`, `sed`, `awk`, `rg` (`--pre` runs a program), `diff`, **every `git`
+  - Not on the list, so they ask: `file` (`-C -m` writes a `.mgc` file; codex round 6), `sort`, `sed`, `awk`, `rg`
+    (`--pre` runs a program), `diff`, **every `git`
     command** (a repo's `.git/config` or `GIT_CONFIG_*` variables can run a program through `core.fsmonitor` or
     `textconv`; senior round 5 B10, probed), and every other program.
   - **Rejected outright:**
@@ -1085,7 +1087,7 @@ live gate, a docs sync and Paco's merge where protected files are touched.
 | Stage | Contents | Protected files touched (Paco's merge) | Live gate PASS |
 |---|---|---|---|
 | 1 Engine + door | ADR 0030 and the AGENTS.md edit first; registry, runner, `decisions`, `decision_outcomes`, `ladder_moves`; `jev_verdicts` gains `decision_id`; `turn.handler` + `turn.gear` migrated; `src/decisions/` protected; off switch; **daily digest and urgent cards** (counts, unsure list, callbacks) | ADR, AGENTS.md, self-write-guard, run-store, core-worker | P6 dual run: 0 mismatches over 200 texts; all nine `jev_verdicts` consumers green; the digest renders on the DB copy and a ❌ tap writes an outcome |
-| 2a In-Houge judges | supervisor terminal-`agent_end` fix (P7); credential-store read-deny extension; `tool.injection` on shell and wall tools; `tool.shell_netread`; the hostile read-only list; `turn.trust` with `turn_trust` and `turn_trust_final` events; trust-card pause policy and TTL; tap-budget table; judge redactor; injection and trust items in the digest | bridge-handler, planner-supervisor, capability-policy, run-store, protected-paths | the §4.2 injection sanity gate passes (recall ≥ 85%, clean withholds ≤ 1%); no seeded secret leaves; a planted turn reaches hostile, `curl` and `touch` ask while `ls` and `git log` do not, a built-in write gets the bash redirect, a trust card expires after its TTL without the watchdog firing, and a schedule-born hostile turn ends within its deadline; the newly read-denied credential paths refuse a planner read |
+| 2a In-Houge judges | supervisor terminal-`agent_end` fix (P7); credential-store read-deny extension; `tool.injection` on shell and wall tools; `tool.shell_netread`; the hostile read-only list; `turn.trust` with `turn_trust` and `turn_trust_final` events; trust-card pause policy and TTL; tap-budget table; judge redactor; injection and trust items in the digest | bridge-handler, planner-supervisor, capability-policy, run-store, protected-paths | the §4.2 injection sanity gate passes (recall ≥ 85%, clean withholds ≤ 1%); no seeded secret leaves; a planted turn reaches hostile, `curl`, `touch`, `git log` and `file -C` ask while `ls` and `grep` do not, a built-in write gets the bash redirect, a trust card expires after its TTL without the watchdog firing, and a schedule-born hostile turn ends within its deadline; the newly read-denied credential paths refuse a planner read |
 | 2b Hooks + learning | extension `judge_read`, `judge_timeout` and `session_stop`; `turn.settle`; `todo` with reminders off; `improve.route`; `authorPendingSkill`, `improvement_jobs`, `promotePending`/`dismissPending`; improvement items in the digest | extension, planner-supervisor, planner-session, skill-store, run-store | a planted file read past the 32 KiB cap is withheld in both fields; a 40 s unresponsive bridge shows the floored text, never raw; the §4.2 settle gate passes (≤ 10% send-backs, Paco's sample read); a "scheduled" claim with no call is sent back once, and a first-pass attachment survives; a labelled set of ≥ 30 past signals (labels by the plan author, checked by Paco in one sitting) routes ≥ 80% to the labelled target; 3 clean similar synthetic turns write a `_pending` draft and an urgent card, while a hostile turn, a schedule-born run and a turn without `turn_trust_final` do not count |
 | 3 Unprotected families | intake, context, supervision and settle entries migrated | core-worker, planner-supervisor (some) | differential on behaviour (§6.2); full suite and existing gates green |
 | 4 Protected families + standing | `tool.policy`, `tool.shell_class`, `tool.path`, `approval.bind`, `selfwrite.guard`, `fetch.ssrf`, `posture.kill`, `secret.redact`; `approval.standing` with the clean-room Seatbelt profile | policy, bridge, self-write-guard, gate-path, command-matcher, seatbelt | differential: command corpus, path corpus and policy matrix identical; the real Alishan command produces the same report in the clean room; 3 approvals on the copy → candidate → the 4th asks and runs sealed → grant → the 5th runs without a card through the real bridge with `cleanroom.sb` selected → a deny revokes; with the sandbox disabled the 5th asks; in the clean room, `-H @/tmp/planted`, a planted `cj.txt` symlink and a planted `~/.curlrc` have no effect |
@@ -1267,4 +1269,17 @@ Warnings closed:
 
 **Found outside the spec:** the planner can read Houge's own `.env.bak-2026-10-07` today, since only `<repo>/.env` is
 read-denied (`protected-paths.ts:29`). It was raised to Paco on 2026-10-12, not left for stage 2a.
+
+### Round 6 (scoped verification of Rev 6, codex)
+
+Round 6 checked only the Rev 6 diff. Of the 8 items it checked, 6 closed and 2 were partial; it raised 2 new blockers,
+both one-line fixes, applied in this revision:
+
+- `file -C` writes a file, so `file` comes off the read-only list;
+- the stage 2a gate still said `git log` runs without asking, which contradicted row 38. The gate now expects it to
+  ask.
+
+`date` is narrowed to a `+format` operand (codex warning).
+
+Every review blocker from rounds 1–6 is closed or folded into a named probe (P8) that runs before stage 4 code.
 
