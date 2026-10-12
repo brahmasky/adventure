@@ -430,3 +430,14 @@ Rules Claude writes for itself after corrections. Review at session start.
   the precision evidence the arming decision reads; three review rounds converged on one order (mint the id, settle once
   after the lane, patch only when a save already committed inside its transaction). Rule: a record of "what ran" is
   written after it ran, or patched by the same code path that knows the outcome.
+
+## Decision ladder design (2026-10-12)
+
+- **An ADR is a reason, not a rule.** I ruled out omp's in-child TypeSafe judges "because ADR 0015 keeps the Jev key out
+  of the sandboxed child". ADR 0015 predates Jev, and the child already holds the subscription logins (`~/.omp`, ADR
+  0028 D11), worth more than a Jev key; the real reasons against were that omp's verdicts cannot be ledgered or
+  calibrated. Rule: a spec or plan that rules an option out because of an ADR states the ADR's reason and why it still
+  holds today, or reopens the question; ADRs from 0030 on carry "Assumptions" and "Revisit when" fields.
+- **Check a quoted claim against its source before repeating it.** I told Paco mu "says plainly: no fast path bypass";
+  mu's docs never say it. Rule: a claim about an external system is quoted from its source with a pointer, or labelled
+  as my reading.
