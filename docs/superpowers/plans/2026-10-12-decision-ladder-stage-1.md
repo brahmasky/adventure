@@ -1,4 +1,4 @@
-# Decision ladder, stage 1 "Engine + door" — Implementation Plan (Rev 3)
+# Decision ladder, stage 1 "Engine + door" — Implementation Plan (Rev 4)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -11,6 +11,17 @@
 **Spec:** [docs/superpowers/specs/2026-10-12-decision-ladder-design.md](../specs/2026-10-12-decision-ladder-design.md) (Rev 8: approved by Paco 2026-10-12 at Rev 7, amended with rulings R12 and R13). This plan covers spec §13 row 1 only.
 
 ## Changelog
+
+### Rev 4 (2026-10-12): codex's verification of Rev 3 (`scratchpad/review-ladder/plan3-codex-review.md`, 2 blockers)
+
+- **Task 8c covers the planner's own `lesson_write` tool** (codex #5): a committed `source: "loop"` save
+  (`core-worker.ts:3214` → `saveLessonForTurn`, `:2590-2604`) also queues the Undo-only memory card. One card per save,
+  keyed `memcard:<change_id>`, matching `memoryLaneCard`'s single-change Undo callback; one lesson per turn is already
+  enforced (`lessonSavedThisTurn`), so a refused second write sends nothing. New test over the real bridge. No pin snapshot
+  changes for this (the pin drives `triageTurn` only).
+- **Gate keyboard checks label and callback together** (codex #8 partial): each rendered row must be exactly
+  `{ text: "✅ <n>", callback_data: "dec:rv:<id>:ok" }`, `{ text: "❌ <n>", callback_data: "dec:rv:<id>:bad" }` in offer
+  order; the tap check selects the ❌ button by its label, then the ✅ by its label.
 
 ### Rev 3 (2026-10-12): Paco's Q1 and egress rulings, and the two Rev 2 re-reviews
 
@@ -3502,36 +3513,46 @@ Today's announcement per route (3bff437):
 | planner (`two_request`, cascade pick with a rule, rule on a status/other route) | `saveThenRoute` → inform (`:2848`) | `[memory]` note to the planner (`planner-supervisor.ts:479`) | Undo-only memory card queued |
 | memory lane lost after the save (/kill) or its card throws | `memoryLaneEnd` (`:2858-2869`) | inform note only | Undo-only memory card queued |
 | a throw after a committed save | `triageTurn` catch (`:2743`) | inform note only | Undo-only memory card queued |
+| the planner's own `lesson_write` tool (`source: "loop"`) | tool adapter (`:3212-3215`) → `runLessonWrite` → `saveLessonForTurn` (`:2590-2604`) | the planner's reply, if it mentions it | Undo-only memory card queued |
 
-The queued card is keyed `memcard:<change_id>`, so two paths reaching it for one save send one card. It carries Undo
+The queued card is keyed `memcard:<change_id>`, so two paths reaching it for one save send one card; several saves would
+send one card each, matching `memoryLaneCard`'s one-change Undo callback (`memlane:undo:<change_id>`), but code already
+allows one lesson per turn (`lessonSavedThisTurn`, `:2588`), so a refused second write sends nothing. It carries Undo
 only (Dig deeper belongs to a lane reply, not to a planner turn). Undo works for every route: `saveFirst` writes the
 lesson change through `runLessonWrite` (`:2604`), and `handleMemLaneUndo` undoes any change id of this chat
 (`src/gateway/memlane-commands.ts:19-34`).
 
 **Files:**
 - Modify: `src/core/memory-lane-card.ts` — export `memlaneUndoButton(change_id)`; `memoryLaneCard` uses it
-- Modify: `src/core/core-worker.ts` — new `announceSave`; call sites in `saveThenRoute` (`:2841-2851`), `memoryLaneEnd` (`:2858-2869`), `laneRoute`'s fall-through return (`:2947`), `laneCardFor` (`:2965-2975`), `triageTurn`'s catch (8b's version)
+- Modify: `src/core/core-worker.ts` — new `announceSave`; call sites in `saveThenRoute` (`:2841-2851`), `memoryLaneEnd` (`:2858-2869`), `laneRoute`'s fall-through return (`:2947`), `laneCardFor` (`:2965-2975`), `triageTurn`'s catch (8b's version), the `lesson_write` tool adapter (`:3212-3215`)
 - Modify: `src/decisions/entries/turn-handler.ts` (`TURN_HANDLER_EFFECTS`), `src/decisions/registry.ts` (`effectProblems`), `tests/decisions/registry.test.ts`
 - Modify (deliberate, named): `tests/core/__pins__/turn-handler/rule-on-lookup.json` (regenerated), `tests/core/core-worker-triage.test.ts` ("ompFail after a committed save…")
 - Test: `tests/core/lesson-save-card.test.ts`
 
 **Interfaces:**
-- Consumes: `memoryLaneCard`, `MEMLANE_UNDO_PREFIX`; `OmpTurnState.lessonSavedThisTurn` (`{ id, theme, change_id }`, `core-worker.ts:241`); `RunStore.getLesson`, `enqueueNotification`; the Task 2 harness; `drainOutbox`.
+- Consumes: `memoryLaneCard`, `MEMLANE_UNDO_PREFIX`; `OmpTurnState.lessonSavedThisTurn` (`{ id, theme, change_id }`, `core-worker.ts:241`); `LessonWriteOutcome` (`committed`, `saved`, `change_id`, `theme`); `RunStore.getLesson`, `enqueueNotification`; the Task 2 harness; `drainOutbox`, `bridgeTurn` (`tests/helpers/omp-worker.ts:69`), `pinOmpEnv`, `pinEnabledFlags`.
 - Produces: `memlaneUndoButton(change_id: string): NotificationButton`; `CoreWorker` private `announceSave(run_id, saved)`.
 
 - [ ] **Step 1: Write the failing tests `tests/core/lesson-save-card.test.ts`**
 
 ```ts
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
-import type { RunStore } from "../../src/run/run-store.js";
-import { drainOutbox } from "../helpers/omp-worker.js";
+import { RunStore } from "../../src/run/run-store.js";
+import { pinEnabledFlags, pinOmpEnv } from "../helpers/omp-env.js";
+import { bridgeTurn, drainOutbox, ompWorker } from "../helpers/omp-worker.js";
+import { createQueuedTurnRun } from "../helpers/runs.js";
 import { cat, HEAVY, LIGHT, picks, scriptedLlm, treeSays, triageHarness, webOk, type Says } from "../helpers/triage-harness.js";
 
 // Paco 2026-10-12 (Q1 → "Add the card"): every automatic lesson save is announced on a card with ↩️ Undo, whatever route
 // the turn took, exactly once, and the Undo really retires the lesson. R12: an effect over Paco's message must be
 // reversible and announced; a save the planner may or may not mention is not announced.
+pinOmpEnv();
+pinEnabledFlags();
 const RULE: Says = { category: cat({ memory: 0.9 }), sets_rule: 0.95 };
 const UNDO = /^memlane:undo:(.+)$/;
 const memcards = (store: RunStore) => [...drainOutbox(store).entries()].filter(([k]) => k.startsWith("memcard:")).map(([, p]) => p);
@@ -3606,6 +3627,26 @@ describe("the lanes", () => {
     h.store.close();
   });
 });
+
+// Codex Rev 3 #5: "whatever route the turn took" includes the planner calling lesson_write itself (source "loop").
+describe("the planner's own lesson_write tool", () => {
+  it("a committed loop save queues one Undo-only card; the refused second write in the turn sends nothing more; Undo works", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hlsc-"));
+    vi.stubEnv("HOUGE_TOMBSTONE_PATH", join(dir, "houge.kill"));
+    const store = RunStore.openInMemory();
+    const worker = ompWorker(store, dir, { llm: scriptedLlm() }); // distill: durable "Keep replies short."; reconcile: ADD
+    const t = bridgeTurn(store, worker, createQueuedTurnRun(store, "以后回复短一点"), dir);
+    expect((await t.call("lesson_write", {})).isError).toBe(false);
+    await t.call("lesson_write", {}); // already_saved_this_turn: code allows one lesson per turn
+    const cards = memcards(store);
+    expect(cards).toHaveLength(1);
+    expect(String(cards[0]?.text)).toMatch(/^📒 Saved lesson #\d+ · /);
+    expect((cards[0]?.buttons as Array<{ data: string }>).map((b) => b.data)).toEqual([expect.stringMatching(UNDO)]);
+    expect(tapUndo(store, undoOf(cards[0]?.buttons)!)).toMatchObject({ ok: true, status: "lesson_change_undone" });
+    expect(store.getActiveLessons("ask")).toHaveLength(0);
+    store.close();
+  });
+});
 ```
 
 - [ ] **Step 2: Run them to see them fail**
@@ -3634,8 +3675,8 @@ Import `memlaneUndoButton` beside `memoryInformNote, memoryLaneCard` (`:154`). A
   /**
    * Paco 2026-10-12 (Q1, "add the card"): every automatic lesson save is announced on the memory card with Undo, whatever
    * route the turn took. The memory lane's reply IS that card and a lane reply carries Undo itself; every other path (the
-   * planner's inform note, a lane that fell through, a lost turn, a card that failed, a throw after the save) queues an
-   * Undo-only card here. Keyed by the change id, so two paths for one save send one card. Never throws: the save stands.
+   * planner's inform note, a lane that fell through, a lost turn, a card that failed, a throw after the save, the planner's
+   * own lesson_write tool) queues an Undo-only card here. Keyed by the change id, so two paths for one save send one card. Never throws: the save stands.
    */
   private announceSave(run_id: string, saved: { id: number; theme: string; change_id: string } | undefined): void {
     if (!saved) return;
@@ -3659,6 +3700,17 @@ Call sites (each passes `state.lessonSavedThisTurn`, which `runLessonWrite` set 
 - `memoryLaneEnd`: first line of the `laneLost` branch and first line of the `catch` add `this.announceSave(i.claim.run_id, state.lessonSavedThisTurn);`.
 - `laneRoute`: before its last line (`return save?.note ? …`) add `if (save?.settled) this.announceSave(i.claim.run_id, state.lessonSavedThisTurn);`.
 - `triageTurn` catch (8b's version): after `const saved = state?.lessonSavedThisTurn;` add `this.announceSave(i.claim.run_id, saved);` (a no-op when nothing was saved; deduplicated when an inform path already queued it).
+- The `lesson_write` tool adapter (`:3212-3215`, the planner's own save, `source: "loop"`): replace
+  `return async (input) => (await this.runLessonWrite(claim, this.chatOf(claim.run_id), input, { source: "loop" })).result;` with
+
+```ts
+      return async (input) => {
+        const w = await this.runLessonWrite(claim, this.chatOf(claim.run_id), input, { source: "loop" });
+        // Paco 2026-10-12: a committed save is announced on the Undo card whatever route the turn took, the planner's own tool included
+        if (w.committed && w.saved && w.change_id && w.theme) this.announceSave(claim.run_id, { id: w.saved.id, theme: w.theme, change_id: w.change_id });
+        return w.result;
+      };
+```
 - `laneCardFor`: give a saved lane reply the Undo button:
 
 ```ts
@@ -3722,8 +3774,12 @@ the save's card, so replace its two `texts` lines with
     const texts = [...sent.entries()].filter(([k]) => !k.startsWith("memcard:")).map(([, p]) => String(p.text));
 ```
 
-Run: `npx vitest run tests/core/ tests/gateway/ tests/omp/ tests/run/ && npm run typecheck && npm test`
-Expected: PASS. Any other existing test that breaks must be one that counts outbox rows or a saved lane card's buttons;
+The `lesson_write` call site changes no pin snapshot: the pin drives `triageTurn` only and never calls the tool.
+Run: `npx vitest run tests/core/ tests/gateway/ tests/omp/ tests/run/ tests/capabilities/ && npm run typecheck && npm test`
+Expected: PASS. Suites that call `lesson_write` over the bridge (`core-worker-omp-loop-ports`, `-runner-caps`,
+`-seat-routing`, `-media`) now also queue a `memcard:` row; none asserts the full outbox at 3bff437 except the
+`ROOT CAUSE` check (`core-worker-omp-loop-ports.test.ts:271`, a `some(...)`, unaffected). Any other existing test that
+breaks must be one that counts outbox rows or a saved lane card's buttons;
 update it the same way, name it in the commit body, and change nothing else.
 
 - [ ] **Step 7: Commit (protected: `src/decisions/` and core-worker — Paco's merge)**
@@ -4533,8 +4589,9 @@ git worktree add .worktrees/p6-base 3bff437
 // PASS: ≥ 190 deterministic pairs before 200 decided (candidates over-fetched by 30), 0 mismatches; the coverage floor
 // (every answered row reports a calibrated model; ≥ 100 armed turn.handler verdicts; the cascade rung ran); every stage-1
 // verdict and Jev row links its turn.handler decision; the digest builds on copy B and renders through the Telegram adapter
-// with exactly `dec:rv:<offered id>:ok` / `:bad` per row, the tick sends once, the RENDERED ❌ button's callback writes one
-// review_bad outcome, the rendered ✅ then writes nothing, a stranger's tap is refused. Exit: 0 PASS · 1 FAIL · 2 setup error · 3 INCONCLUSIVE. Never opens the live DB
+// with exactly `✅ <n>` ↔ `dec:rv:<offered id>:ok` and `❌ <n>` ↔ `:bad` per row (label and callback together), the tick
+// sends once, the button LABELLED ❌ writes one review_bad outcome, the one labelled ✅ then writes nothing, a stranger's
+// tap is refused. Exit: 0 PASS · 1 FAIL · 2 setup error · 3 INCONCLUSIVE. Never opens the live DB
 // for writing.
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -4808,8 +4865,8 @@ function claimDigest(store) {
 
 /**
  * Spec §13 row 1 "the digest renders": the queued payload through TelegramNotificationAdapter with a stub transport (codex
- * S7). Each rendered row must be exactly ✅ `dec:rv:<offered id>:ok`, ❌ `dec:rv:<offered id>:bad`, in offer order (codex
- * re-review #8). Returns the rendered keyboard, which the tap check uses.
+ * S7). Each rendered row must be exactly, label AND callback together, `✅ <n>` ↔ `dec:rv:<offered id>:ok` and `❌ <n>` ↔
+ * `dec:rv:<offered id>:bad`, in offer order (codex #8, Rev 3 verification): swapped labels fail. Returns the keyboard.
  */
 async function checkRender(g, note, digest) {
   if (!note || !digest) { cannotRun("digest render", "no digest message was queued"); return []; }
@@ -4818,9 +4875,9 @@ async function checkRender(g, note, digest) {
   await adapter.send(note);
   const rows = sent[0]?.reply_markup?.inline_keyboard ?? [];
   check("digest render: HTML through the rich renderer", sent.length === 1 && sent[0].parse_mode === "HTML" && sent[0].text.includes("Decisions"), sent[0]?.text.split("\n")[0] ?? "nothing sent");
-  const want = digest.offered.map((id) => [`dec:rv:${id}:ok`, `dec:rv:${id}:bad`]);
-  const got = rows.map((r) => r.map((b) => b.callback_data));
-  check("digest render: each row is exactly ✅ dec:rv:<offered id>:ok and ❌ dec:rv:<offered id>:bad", JSON.stringify(got) === JSON.stringify(want),
+  const want = digest.offered.map((id, k) => [{ text: `✅ ${k + 1}`, callback_data: `dec:rv:${id}:ok` }, { text: `❌ ${k + 1}`, callback_data: `dec:rv:${id}:bad` }]);
+  const got = rows.map((r) => r.map((b) => ({ text: b.text, callback_data: b.callback_data })));
+  check("digest render: each row is exactly ✅ <n> → dec:rv:<offered id>:ok and ❌ <n> → dec:rv:<offered id>:bad", JSON.stringify(got) === JSON.stringify(want),
     `${rows.length} row(s), ${digest.offered.length} offered`);
   return rows;
 }
@@ -4843,12 +4900,17 @@ function tapUpdate(m, from, data, id) {
   return m.normalizeTelegramUpdate({ update_id: 7_000_000 + id, callback_query: { id: `p6cb${id}`, from: { id: from }, message: { message_id: 1, chat: { id: 222 } }, data } }, allowlist);
 }
 
-/** The RENDERED buttons go into the gateway (codex re-review #8): a keyboard whose ❌ submits :ok or another id fails here. */
+/**
+ * The RENDERED buttons go into the gateway, picked by their visible label (codex #8): the button Paco sees as ❌ must
+ * write review_bad, the one he sees as ✅ must then write nothing.
+ */
 function checkTap(g, { digest, rows }) {
   const offered = digest?.offered ?? [];
   if (offered.length === 0) { cannotRun("❌ tap", "nothing was offered even after seeding (copy B has no applied jev-rung turn.handler row)"); return; }
-  const [ok, bad] = (rows[0] ?? []).map((b) => b.callback_data);
-  if (!ok || !bad) { cannotRun("❌ tap", "the digest rendered no keyboard to tap"); return; }
+  const row = rows[0] ?? [];
+  const bad = row.find((b) => b.text.startsWith("❌"))?.callback_data;
+  const ok = row.find((b) => b.text.startsWith("✅"))?.callback_data;
+  if (!ok || !bad) { cannotRun("❌ tap", "the digest rendered no ✅/❌ pair to tap"); return; }
   const id = offered[0];
   const gw = new g.newMods.Gateway(g.newSide.store);
   const first = tapUpdate(g.newMods, 111, bad, 1);
@@ -5213,8 +5275,9 @@ Expected: no output (R13).
 Run: `grep -n "HOUGE_DECISION_DIGEST_AT" docs/reference/configuration.md && ! grep -rn "HOUGE_TRUST_ASK_TTL_MS" docs/reference/`
 Expected: the digest variable documented; no `HOUGE_TRUST_ASK_TTL_MS` (stage 2a).
 Run: `git diff --name-only <task-2 sha> -- tests/helpers/triage-harness.ts tests/core/turn-handler-pin.test.ts tests/core/turn-handler-pin-throws.test.ts tests/core/turn-handler-routed-by.test.ts tests/core/__pins__`
-Expected: exactly the snapshot(s) Task 8c named (`tests/core/__pins__/turn-handler/rule-on-lookup.json`); nothing else in
-the frozen set changed during the stage.
+Expected: exactly the snapshot(s) Task 8c named (`tests/core/__pins__/turn-handler/rule-on-lookup.json`, the lane card's
+added Undo); nothing else in the frozen set changed during the stage. The planner-tool card changes no snapshot (the pin
+never calls `lesson_write`).
 Run (worktree): `npm run typecheck && npm test && npm run build`
 Expected: PASS, no skipped tests.
 
@@ -5376,3 +5439,8 @@ Codex re-review: `scratchpad/review-ladder/plan2-codex-review.md`. Senior re-rev
 
 - Q1 → "Add the card": Task 8c; the open question is removed and the ruling recorded at the top.
 - Gate egress → "Yes, 200 messages": recorded in Task 12's egress note; shape-only redaction kept.
+
+## Appendix: Review dispositions (codex verification of Rev 3)
+
+- **Codex #8 (partial) — labels not checked.** Fixed: `checkRender` compares `{text, callback_data}` per button (`✅ <n>` ↔ `:ok`, `❌ <n>` ↔ `:bad`, offer order); `checkTap` picks ❌ then ✅ by label.
+- **Codex #5 (new) — planner `lesson_write` saves had no card.** Fixed: Task 8c's `lesson_write` adapter call site queues the Undo-only card for a committed `source: "loop"` save; test over the bridge; no pin snapshot change.
