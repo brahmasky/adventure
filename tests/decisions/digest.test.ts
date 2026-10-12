@@ -9,7 +9,7 @@ import { drainOutbox } from "../helpers/omp-worker.js";
 // and never tool text. The latch makes it one message per local date, whatever the poll cadence. Plan ruling 14: a
 // front-door row whose verdict does not link it (a turn that never settled) is neither counted nor offered.
 // Ruling R1: only System One judgements are offered; an `uncalibrated` fallback carries an arbitrary p and is not one.
-// turn.handler's System One rung decides only at p >= 0.6 (below is the cascade), so fixtures use p in [0.6, 0.75].
+// An offer needs p in [bar, bar + 0.15) and a judgement route reason (allowlist); turn.handler's bar is 0.6.
 const ENV = { HOUGE_DISPLAY_TZ: "Australia/Sydney" };
 const NOW = "2026-10-12T11:00:00.000Z"; // 22:00 in Sydney (AEDT, UTC+11)
 const D = (o: Partial<DecisionInsert>): DecisionInsert => ({ entry_id: "turn.handler", entry_version: 1, run_id: null, tool_call_id: null, stage: "pre_model",
@@ -33,6 +33,10 @@ describe("unsureOf", () => {
     store.insertDecision(D({ p: 0.65, rung: "rule" }));                      // a rule decided
     store.insertDecision(D({ p: 0.65, rung: "model", reason_code: "cascade" })); // the cascade decided
     store.insertDecision(D({ p: 0.65, reason_code: "uncalibrated" }));       // a fallback route, not a judgement (R1)
+    store.insertDecision(D({ p: 0.5, reason_code: "below_bar" }));           // cascadePlan's planner fallback below the bar (R1)
+    store.insertDecision(D({ p: 0.55, reason_code: "cascade" }));            // cascadePlan's one-candidate route below the bar (R1)
+    store.insertDecision(D({ p: 0.55, reason_code: "routed" }));             // below the bar even with a judgement reason
+    store.insertDecision(D({ p: 0.75, reason_code: "routed" }));             // at bar + 0.15: outside the band
     store.insertDecision(D({ entry_id: "turn.gear", p: 0.65 }));             // turn.gear has no single bar
     for (let k = 0; k < 10; k += 1) store.insertDecision(D({ p: 0.6 + k * 0.01, created_at: `2026-10-12T06:0${k}:00.000Z` }));
     const rows = unsureOf(store.listDecisionsBetween("2026-10-11T11:00:00.000Z", NOW));
@@ -40,6 +44,22 @@ describe("unsureOf", () => {
     expect(rows[0]?.p).toBeCloseTo(0.69);
     expect(rows[UNSURE_MAX - 1]?.p).toBeCloseTo(0.62);
     expect(rows.every((r) => r.entry_id === "turn.handler" && r.rung === "system_one" && r.armed_mode === "on" && r.reason_code === "routed")).toBe(true);
+    store.close();
+  });
+});
+
+describe("unsureOf (R1)", () => {
+  it("offers only judgement routes at p in [bar, bar + 0.15): sub-bar below_bar / cascade fallbacks and unknown reasons are not offered", () => {
+    const store = RunStore.openInMemory();
+    store.insertDecision(D({ p: 0.5, reason_code: "below_bar" }));
+    store.insertDecision(D({ p: 0.55, reason_code: "cascade" }));
+    store.insertDecision(D({ p: 0.55, reason_code: "routed" }));
+    store.insertDecision(D({ p: 0.65, reason_code: "uncalibrated" }));
+    store.insertDecision(D({ p: 0.65, reason_code: "some_future_reason" }));
+    store.insertDecision(D({ p: 0.75, reason_code: "routed" }));
+    const ok = ["routed", "bare_ack_guard", "lane_limits", "correction", "two_request"].map((reason_code) => store.insertDecision(D({ p: 0.6, reason_code })));
+    const rows = unsureOf(store.listDecisionsBetween("2026-10-11T11:00:00.000Z", NOW));
+    expect(rows.map((r) => r.decision_id).sort()).toEqual([...ok].sort());
     store.close();
   });
 });
@@ -57,9 +77,9 @@ describe("buildDecisionDigest", () => {
     settled(store, { rung: "fail", fallback_reason: "outage", fallback_rung: "system_one", reason_code: "transport", p: null });
     settled(store, { rung: "rule", reason_code: "ack_rule", p: null });
     const g = buildDecisionDigest(store, NOW, ENV)!;
-    expect(g.text).toContain("🪜 *Decisions — 2026-10-12*");
+    expect(g.text).toContain("🪜 **Decisions — 2026-10-12**");
     expect(g.text).toContain("1. turn.handler → planner · p 0.62 · 16:00 · «明天 悉尼 天气 怎么样？ 顺便 看看 后天 的 风 和 湿度 还有 紫外线 指»");
-    expect(g.text).toContain("· turn.handler 3 — rule 1 · system_one 1 · fail 1");
+    expect(g.text).toContain("· turn.handler 3 — code 1 · Jev 1 · fallback 1");
     expect(g.text).toContain("· turn.handler: 1 Jev skip · 1 fallback");
     expect(g.offered).toEqual([id]);
     expect(g.button_rows).toEqual([reviewButtons(id, 1)]);
@@ -78,8 +98,24 @@ describe("buildDecisionDigest", () => {
     const store = RunStore.openInMemory();
     settled(store, { p: 0.95 });
     const g = buildDecisionDigest(store, NOW, ENV)!;
-    expect(g.text).not.toContain("*Health*");
+    expect(g.text).not.toContain("**Health**");
     expect(g.button_rows).toEqual([]);
+    store.close();
+  });
+  it("a day of only unsettled rows is still sent when they carry failures (orphans never hide an outage)", () => {
+    const store = RunStore.openInMemory();
+    store.insertDecision(D({ run_id: createQueuedTurnRun(store, "x"), rung: "fail", fallback_reason: "outage", fallback_rung: "system_one",
+      reason_code: "transport", p: null }));
+    const g = buildDecisionDigest(store, NOW, ENV)!;
+    expect(g.text).toContain("**Health**\n· turn.handler: 1 Jev skip · 1 fallback");
+    expect(g.text).not.toContain("**Counts");
+    expect(g.offered).toEqual([]);
+    store.close();
+  });
+  it("a day of only unsettled routine rows is skipped", () => {
+    const store = RunStore.openInMemory();
+    store.insertDecision(D({ run_id: createQueuedTurnRun(store, "x"), p: 0.62 }));
+    expect(buildDecisionDigest(store, NOW, ENV)).toBeNull();
     store.close();
   });
   it("a front-door row no verdict links (a turn that never settled) is neither counted nor offered", () => {
@@ -89,7 +125,7 @@ describe("buildDecisionDigest", () => {
     const g = buildDecisionDigest(store, NOW, ENV)!;
     expect(g.offered).toEqual([id]);
     expect(g.offered).not.toContain(orphan);
-    expect(g.text).toContain("· turn.handler 1 — system_one 1");
+    expect(g.text).toContain("· turn.handler 1 — Jev 1");
     store.close();
   });
   it("a snippet never splits an emoji (code points, not UTF-16 units)", () => {

@@ -22,8 +22,13 @@ const RUNG_ORDER: readonly DecidedBy[] = ["rule", "system_one", "model", "paco",
 const PACO_TEXT_STAGES: ReadonlySet<string> = new Set(["intake", "pre_model"]);
 /** Entries whose rows settleTriage writes with the turn's verdict (plan ruling 14). */
 const FRONT_DOOR: ReadonlySet<string> = new Set(["turn.handler", "turn.gear"]);
-/** Ruling R1: routes a System One row can carry that are fallbacks, not judgements (their p is arbitrary). */
-const NOT_A_JUDGEMENT: ReadonlySet<string> = new Set(["uncalibrated", "cascade_failed"]);
+/**
+ * Ruling R1: the routes a System One row carries when the tree judged at p >= the bar. An allowlist, so a new route reason
+ * (or a fallback like `uncalibrated` / `below_bar` / `cascade`, whose p is arbitrary or sub-bar) is never offered by default.
+ */
+const JUDGEMENT_REASONS: ReadonlySet<string> = new Set(["routed", "bare_ack_guard", "lane_limits", "correction", "two_request"]);
+/** What Paco reads for each rung in the counts line: display words, never the ledger tags. */
+const RUNG_LABEL: Readonly<Record<DecidedBy, string>> = { rule: "code", system_one: "Jev", model: "model", paco: "you", fail: "fallback" };
 
 export function resolveDigestAt(env: NodeJS.ProcessEnv): string {
   const raw = env.HOUGE_DECISION_DIGEST_AT?.trim();
@@ -36,13 +41,13 @@ export function barOf(entry: AnyEntry): number | undefined {
   return rung?.kind === "system_one" ? rung.bars.p : undefined;
 }
 
-/** Applied System One judgements within UNSURE_BAND of their entry's bar, newest first, at most UNSURE_MAX. */
+/** Applied System One judgements at or above their entry's bar and under bar + UNSURE_BAND, newest first, at most UNSURE_MAX. */
 export function unsureOf(rows: readonly DecisionRow[], registry: readonly AnyEntry[] = REGISTRY): DecisionRow[] {
   const bars = new Map(registry.map((e) => [e.id, barOf(e)] as const));
   return rows.filter((r) => {
     const bar = bars.get(r.entry_id);
-    return r.rung === "system_one" && r.armed_mode === "on" && !NOT_A_JUDGEMENT.has(r.reason_code ?? "") && r.p !== null && bar !== undefined
-      && Math.abs(r.p - bar) <= UNSURE_BAND + 1e-9;
+    return r.rung === "system_one" && r.armed_mode === "on" && JUDGEMENT_REASONS.has(r.reason_code ?? "") && r.p !== null && bar !== undefined
+      && r.p >= bar && r.p < bar + UNSURE_BAND;
   }).slice(-UNSURE_MAX).reverse();
 }
 
@@ -84,7 +89,7 @@ function countLines(rows: readonly DecisionRow[]): string[] {
   }
   return [...by.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([id, m]) => {
     const total = [...m.values()].reduce((a, b) => a + b, 0);
-    const known = RUNG_ORDER.filter((k) => m.has(k)).map((k) => `${k} ${m.get(k)}`);
+    const known = RUNG_ORDER.filter((k) => m.has(k)).map((k) => `${RUNG_LABEL[k]} ${m.get(k)}`);
     const other = [...m.keys()].filter((k) => !(RUNG_ORDER as readonly string[]).includes(k)).sort().map((k) => `${k} ${m.get(k)}`);
     return `· ${id} ${total} — ${[...known, ...other].join(" · ")}`;
   });
@@ -115,14 +120,15 @@ export function buildDecisionDigest(store: RunStore, now: string, env: NodeJS.Pr
   const since = new Date(Date.parse(now) - DIGEST_WINDOW_MS).toISOString();
   const all = store.listDecisionsBetween(since, now);
   const rows = settledRows(store, all);
-  if (rows.length === 0) return null;
+  // Health reads every row in the window, orphans included: a day of only unsettled rows still reports its failures.
+  const health = healthLines(store, all, since, now);
+  if (rows.length === 0 && health.length === 0) return null;
   const tz = resolveDisplayZone(env);
   const unsure = unsureOf(rows, registry);
-  const sections = [`🪜 *Decisions — ${formatInstantInZone(now, tz).slice(0, 10)}*`];
-  if (unsure.length > 0) sections.push(["*Unsure* (✅ right · ❌ wrong)", ...unsure.map((r, k) => unsureLine(store, r, k + 1, tz, registry))].join("\n"));
-  sections.push(["*Counts (24 h)*", ...countLines(rows)].join("\n"));
-  const health = healthLines(store, all, since, now);
-  if (health.length > 0) sections.push(["*Health*", ...health].join("\n"));
+  const sections = [`🪜 **Decisions — ${formatInstantInZone(now, tz).slice(0, 10)}**`];
+  if (unsure.length > 0) sections.push(["**Unsure** (✅ right · ❌ wrong)", ...unsure.map((r, k) => unsureLine(store, r, k + 1, tz, registry))].join("\n"));
+  if (rows.length > 0) sections.push(["**Counts (24 h)**", ...countLines(rows)].join("\n"));
+  if (health.length > 0) sections.push(["**Health**", ...health].join("\n"));
   return { text: sections.join("\n\n"), button_rows: unsure.map((r, k) => reviewButtons(r.decision_id, k + 1)), offered: unsure.map((r) => r.decision_id) };
 }
 
