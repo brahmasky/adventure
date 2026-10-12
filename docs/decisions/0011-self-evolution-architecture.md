@@ -265,5 +265,4 @@ containment posture and the broker-held auth.
 
 ## Amendment (2026-10-12): decision ladder
 
-Amended by [ADR 0030](0030-decision-ladder.md). **0011.** `src/decisions/` joins `PROTECTED_DIRS`: if the registry decides the gates, editing it can open a gate, so
-  it is Paco's hand only.
+Amended by [ADR 0030](0030-decision-ladder.md). `src/decisions/` joins `PROTECTED_DIRS`: if the registry decides the gates, editing it can open a gate, so it is Paco's hand only.

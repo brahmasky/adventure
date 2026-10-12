@@ -378,5 +378,4 @@ attribution or session reset without crashing anything. Decided:
 
 ## Amendment (2026-10-12): decision ladder
 
-Amended by [ADR 0030](0030-decision-ladder.md). **0028.** D5's tap-free local writes become conditional on the turn's trust level (`turn.trust`); D12's network shell
-  output gets the `tool.injection` judge.
+Amended by [ADR 0030](0030-decision-ladder.md). D5's tap-free local writes become conditional on the turn's trust level (`turn.trust`); D12's network shell output gets the `tool.injection` judge.

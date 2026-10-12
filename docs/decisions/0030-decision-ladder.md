@@ -1,13 +1,13 @@
 # ADR 0030: Decision ladder — every decision on one list, a ladder of deciders, improved from outcomes
 
-- **Status:** proposed 2026-10-12 (design approved by Paco section by section, 2026-10-12; rulings R12 and R13 the same day)
+- **Status:** proposed 2026-10-12 (design approved by Paco section by section, 2026-10-12; rulings R12 (what Jev may cause depends on what it read) and R13 (no off switch, no designed shadow) the same day; the numbered rulings are in spec §2)
 - **Date:** 2026-10-12
 - **Deciders:** Paco
 - **Amends:** [0029](0029-jev-system-one.md) (the front door becomes the `turn.handler` entry; decision 2 applications;
   one named exception to "no Jev in any deny path"; decision 4 egress; decision 5 shadow and provisional bars),
   [0028](0028-omp-runtime.md) (D5, D12), [0014](0014-dual-llm-privilege-separation.md) (an injection judge before the
   reader), [0011](0011-self-evolution-architecture.md) (`src/decisions/` joins the protected surface)
-- **Spec:** [2026-10-12-decision-ladder-design.md](../superpowers/specs/2026-10-12-decision-ladder-design.md) (Rev 8);
+- **Spec:** [2026-10-12-decision-ladder-design.md](../superpowers/specs/2026-10-12-decision-ladder-design.md) (Rev 8), §2 (rulings R1–R13);
   research [2026-10-12-in-loop-decisions](../superpowers/research/2026-10-12-in-loop-decisions/00-synthesis.md)
 
 ## Context
@@ -83,7 +83,7 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
 11. **Review.** A daily digest lists unsure verdicts (probability within 0.15 of the bar) with ✅/❌ taps that write
     outcome labels, counts per entry and rung, and per-entry health; urgent cards go out at once for events that cannot
     wait. Silence writes nothing.
-12. **Egress (R11).** Paco approved, on 2026-10-12, sending web, mail and calendar content, shell output, files and the
+12. **Egress (R11).** Paco's ruling R11 (2026-10-12): egress is approved for every new class, after redaction. Paco approved, on 2026-10-12, sending web, mail and calendar content, shell output, files and the
     final reply to TypeSafe for judging, after the judge redactor (`src/decisions/egress.ts`: known secret values,
     credential shapes, named secrets with single-run values, URL userinfo, query values and fragments, this turn's
     extracted codes and links; redacted before splitting). Credential stores are read-denied to the planner and never
@@ -154,7 +154,7 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
   Paco's R11 approval (decision 12 above) is recorded as the approval of web, mail and calendar content, shell output,
   files and replies, with the judge redactor and the residual above. **Decision 5** (shadow before arm): new entries
   never shadow (R13); a stale bar or golden drift pages instead of disarming; provisional bars (decision 9 above) are an
-  explicit exception, under Paco's R6, for monotone or fail-open entries only. The front door's calibrated tree rows keep
+  explicit exception, under Paco's ruling R6 (all new judges armed at ship, with a daily summary of anything unsure), for monotone or fail-open entries only. The front door's calibrated tree rows keep
   decision 5's disarm on a model move, unchanged.
 - **0028.** D5's tap-free local writes become conditional on the turn's trust level (`turn.trust`); D12's network shell
   output gets the `tool.injection` judge.

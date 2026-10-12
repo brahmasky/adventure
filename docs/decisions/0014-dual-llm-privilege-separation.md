@@ -195,5 +195,4 @@ decides whether the wall applies. This is the design for lane 3; lane 1 does not
 
 ## Amendment (2026-10-12): decision ladder
 
-Amended by [ADR 0030](0030-decision-ladder.md). **0014.** An injection judge (`tool.injection`) runs on wall-tool output before the quarantined reader; it withholds
-  passages, never decides whether the wall applies.
+Amended by [ADR 0030](0030-decision-ladder.md). An injection judge (`tool.injection`) runs on wall-tool output before the quarantined reader; it withholds passages, never decides whether the wall applies.
