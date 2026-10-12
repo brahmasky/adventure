@@ -1,3 +1,4 @@
+import { safeReason } from "../domain/error-code.js";
 import type { CalibrationRow } from "../jev/calibration.js";
 import { topProbOf, type Decision, type SkipReason } from "../jev/decide.js";
 import type { JevTriageMode } from "../jev/jev-flags.js";
@@ -52,7 +53,8 @@ export function planTree(d: AnsweredDecision, i: PlanInput): RungResult<TurnHand
     opts = { bars: TREE_BAR_DEFAULTS, thinkHarder: i.thinkHarder, bareAck: isBareAck(i.userText) };
     armed = i.mode === "arm" ? treeArmed(i.lang, d.model, i.rows, i.lanesOff) : UNARMED; // d.model: the REPORTED id
     plan = routeTree(d.answers, { ...opts, armed });
-  } catch {
+  } catch (e) {
+    console.error(`triage: threw: ${safeReason(e)}`); // today's line (the old triageTurn catch logged this throw); the ledger keeps only `threw`
     return { failed: "threw", reason: "error" };
   }
   if (plan.kind === "cascade") return { abstain: true, detail: { d, armed, plan } };
