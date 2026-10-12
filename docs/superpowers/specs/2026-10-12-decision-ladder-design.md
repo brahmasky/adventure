@@ -1,7 +1,7 @@
 # Decision ladder — every Houge decision on one list, judged inside the loop, improved from outcomes
 
-- **Date:** 2026-10-12 · **Rev 5** · **Status:** draft; four review rounds (senior against the live system, with
-  probes P1–P4 and the clean room run; codex). Rev 5 closes the round 4 blockers (§15).
+- **Date:** 2026-10-12 · **Rev 6** · **Status:** draft; five review rounds (senior against the live system, with
+  probes P1–P4 and the clean room run; codex). Rev 6 closes the round 5 blockers (§15).
 - **Decider:** Paco. Design approved section by section in chat on 2026-10-12.
 - **Proposes:** ADR 0030 "Decision ladder" (§10). Amends ADR 0029 (front door becomes an entry; the Jev rule restated),
   0028 (D5 tap-free local writes and D12 shell outside the wall become conditional), 0014 (an injection judge before
@@ -289,7 +289,8 @@ New tables. `jev_verdicts` is **kept** as `turn.handler`'s detail table (§5.4):
   - `decision_id`, `entry_id`, `entry_version`;
   - `run_id`, `tool_call_id?`;
   - `stage`, `rung`, `verdict` (a closed value from the entry), `p?`;
-  - `reason_code?` (a code-owned enum per entry, never model or tool text), `armed_mode`, `latency_ms`;
+  - `reason_code?` (a code-owned enum per entry, never model or tool text), `fallback_reason?` (closed enum: `timeout`,
+    `outage`, `parse`, `threw`, `stale_bar`, `budget`), `armed_mode`, `latency_ms`;
   - Jev rows link the other way: `jev_decisions` gains `ladder_decision_id` (FK to `decisions`, indexed; one decision,
     many questions; senior W4). `jev_decisions.decision_id` is already that table's primary key (codex round 4 B18),
     and its consumers keep using it.
@@ -439,8 +440,21 @@ the ruling as chosen:
      `auth.json` and `credentials*` under `~/.local/share` and `~/.config`, `id_*` private keys anywhere under `$HOME`,
      shell history files, `fish_variables`, browser profile and cookie stores, `~/Library/Application Support/Claude`.
      The planner can no longer read them at all;
+     Added after the round 5 name sweep (senior round 5 B11): `service_account*.json`, `client_secret*.json`,
+     `*credentials*.json`, `*token*.json` and `*.pem` / `*.key` / `*.p12` anywhere under `$HOME`; `.baileys_auth/`
+     and other `*auth*/` session folders under `~/Projects`; `.env.*` covers backups such as Houge's own
+     `.env.bak-2026-10-07`;
   2. gives the judge a path deny-list of the same patterns. A result from such a path, if a new location ever slips
-     past the read-deny list, is judged by the code floor only and never sent.
+     past the read-deny list, is judged by the code floor only and never sent;
+  3. adds a **content check before egress**, because a name list can never be complete. Text containing any of these
+     is judged by the floor only and never sent, and the digest notes the path:
+     - a PEM block (`-----BEGIN … PRIVATE KEY-----`);
+     - a JSON object with `private_key`, `client_secret`, `refresh_token` or `"type": "service_account"`;
+     - three or more named-secret matches (rule 3);
+     - a Netscape cookie-jar header.
+  - The residual (a credential file with no recognisable name or content) is stated in ADR 0030. Separately, the planner
+    itself can still read such a file and send it to its own model provider, as today; the read-deny extension narrows
+    that too.
 
 **The judge redactor, `src/decisions/egress.ts`**, is distinct from `jev/egress-redact.ts`. That one strips heredocs to
 the end of the text and replaces every URL (`egress-redact.ts:8,16`), which would blind an injection judge. The judge
@@ -448,7 +462,8 @@ redactor removes secrets and keeps instructions:
 
 1. the broker's known secret values, through a new `RunStore` method exposing the existing private redactor
    (`run-store.ts:1030`);
-2. credential shapes: bearer tokens, provider key prefixes, long hex and base64 tokens;
+2. credential shapes: bearer tokens, provider key prefixes, hex runs of 32+ characters, base64 and base64url runs of
+   32+ characters containing a digit or `+/_-`, and PEM blocks (masked whole, spaces and all);
 3. Named secrets in the forms `NAME=value`, `NAME: value`, `"NAME": "value"` (JSON) and `Name-With-Hyphens: value`
    (headers):
    - NAME matches `(?i)[\w-]*(pass|secret|token|key|auth|cookie|session|pwd|credential)[\w-]*`, so `*_KEY` and
@@ -494,8 +509,15 @@ can reach TypeSafe. Paco approved that class (R11). The passage text is never wr
      round 3 B11).
      - Houge's handler for `judge_timeout` raises the turn to `untrusted` and records the `fail` verdict.
      - **A lost report cannot certify a turn clean** (codex round 4 B21). Houge keeps each built-in read pending from
-       its `gate` request (which Houge already receives) until a `judge_read` outcome arrives. A read still pending
-       at turn end finalizes the turn as at least `untrusted`.
+       its `gate` request (which Houge already receives).
+       - It clears only when Houge's `judge_read` reply was delivered inside the extension's timer. The extension
+         confirms by including `applied: true` on its next report for that call.
+       - A read whose result the extension floored on its own (timeout path) finalizes the turn as at least
+         `untrusted`, whatever arrives later (codex round 5 W31).
+       - A read still pending at turn end does the same.
+       - A built-in read with no `applied: true` by the time the turn's next bridge request arrives raises the turn to
+         `untrusted` at that moment, not only at turn end (senior round 5 W24). So a lost report cannot leave later
+         tool calls in the same turn under `clean` gates.
      - A verdict arriving after the extension's timer is recorded with `armed_mode: late` and not applied, since the
        floor already reached the model.
      - Tests: a bridge unresponsive for 40 s (the model saw the floored text, never raw), a lost `judge_timeout`
@@ -564,13 +586,24 @@ can reach TypeSafe. Paco approved that class (R11). The passage text is never wr
   - `lesson_write`, `schedule_task`, `self_write_propose` and `skill_author` additionally ask.
 - **hostile:** a shell command runs without a tap **only if every segment is on a positive read-only list**
   (senior round 4 B7). There is no "write outside the workspace" classifier to lean on.
-  - The list, code-owned and tested: `ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `jq`, `sort`, `uniq`, `cut`,
-    `diff`, `stat`, `file`, `pwd`, `echo`, `date`;
-    - `find` without `-exec`, `-execdir`, `-ok`, `-delete` or `-fprint*`;
-    - `sed` without `-i`;
-    - `awk` without `system(` or output redirection;
-    - `git log`, `git diff`, `git show` and `git status`.
-  - It rejects redirects, `$(…)`, backticks and any program not listed.
+  - The list, code-owned and tested, admits a command only with its listed argument forms (codex round 5 B28: `sort -o`,
+    `sed 'w file'`, `git diff --output` and `git log --output` all write without a shell redirect):
+    - `ls`, `cat`, `head`, `tail`, `wc`, `cut`, `stat`, `file`, `pwd`, `echo`, `date`: any options, path operands;
+    - `grep`: options except `-f`/`--file` from outside the workspace (reading, not writing, but kept narrow);
+    - `jq`: a filter and path operands, no `--rawfile`/`--slurpfile` (they read, but keep it narrow);
+    - `find`: only `-name`, `-iname`, `-path`, `-type`, `-maxdepth`, `-mindepth`, `-size`, `-mtime`, `-newer` and
+      `-print`;
+  - Not on the list, so they ask: `sort`, `sed`, `awk`, `rg` (`--pre` runs a program), `diff`, **every `git`
+    command** (a repo's `.git/config` or `GIT_CONFIG_*` variables can run a program through `core.fsmonitor` or
+    `textconv`; senior round 5 B10, probed), and every other program.
+  - **Rejected outright:**
+    - any `NAME=value` prefix;
+    - any wrapper (`env`, `xargs`, `nice`, `timeout`, `command`, `exec`, `builtin`, `sudo`);
+    - redirects, `$(…)`, backticks and pipes into a non-listed program;
+    - any token it cannot classify.
+    - `command-matcher.ts` drops prefixes and wrappers, so this check uses its own strict lexer, which keeps them, and
+      fails closed on anything it cannot lex.
+  - The stage 2a gate asks for each counterexample above.
   - Everything else asks, including every network command and every write. Then the built-in redirect ("make this
     change through `bash`, which will ask Paco") is true.
 - **Built-in `edit` and `write` at hostile** return a model-visible redirect: "this turn read text aimed at the
@@ -587,6 +620,9 @@ can reach TypeSafe. Paco approved that class (R11). The passage text is never wr
     `{ pause: "bounded", ttlMs }` for a trust-only ask.
   - A trust card's TTL is `HOUGE_TRUST_ASK_TTL_MS`, default 5 minutes. The timers pause for that TTL only. On expiry
     the card expires, the call returns "Paco did not approve in time", and the timers resume.
+  - **The total trust pause per turn is capped at one TTL** (codex round 5 B29). Once a turn has spent it, further
+    trust cards still ask but no longer pause the timers, so a turn's wall-clock length is bounded by deadline + one
+    TTL. A test expires several trust cards in one turn and asserts that bound.
   - When a code ask and a trust ask fall on the same call, the code ask's full pause wins.
   - Tests: deadline expiry during a trust wait, card expiry, and a late tap after an abort ("already handled").
   - A schedule-born hostile turn therefore waits at most 5 minutes per card, bounded by its 10-minute deadline. Paco's
@@ -748,6 +784,9 @@ messages steer into. So auto-authoring is a **background job on the evolution la
     "replace" (retiring the old one, retire-never-delete) or "keep both" (a `-2` suffix).
   - **Dismiss** moves the draft to `_retired`. Nothing is deleted.
   - Both are one-shot: a second tap answers "already handled".
+  - **Order** (codex round 5 W33): write the active copy, regenerate the registry, then unlink the `_pending` copy, then
+    mark the job `promoted`. A crash between steps leaves a job in `promoting`, which the next digest retries
+    idempotently (an existing identical active copy counts as written).
 - **The urgent card's Accept and Dismiss** callbacks are `dec:sk:<job_id>:accept|dismiss`. They pass the sender
   allowlist (A1), and the target is the operator chat.
 - **No runs row** (senior round 4 B5). Runs are claimed by state alone (`run-store.ts:2055`), and an expired lease
@@ -849,6 +888,19 @@ So Rev 4 binds the *environment*, not the text. A standing-approved command runs
     loop with `$(…)`, pipes and `-c`/`-b` works; `-H @/tmp/planted` is blocked; a symlink out of the room is blocked
     for reads, writes, traversal and hardlinks; a planted `~/.curlrc` is ignored. `/usr/bin/python3`'s install shim
     raises a GUI prompt, so the profile denies exec of it.
+  - **The property that makes it sealed** (codex round 5 B30): the clean room's readable set and the set Houge's own
+    processes can write must not overlap. The planner and shell profiles write only under `$HOME` and `/private/tmp`
+    (`protected-paths.ts:43`). So:
+    - the room and the fresh home live under the daemon's cache directory (`HOUGE_DAEMON_TMP_DIR`), which the planner
+      and shell profiles already deny for reads and writes;
+    - the readable system trees (`/usr`, `/bin`, `/sbin`, `/System`, `/Library`, `/dev`) are outside both write roots.
+      Only root can change them, and that is outside Houge's threat model;
+    - `/private/etc` is narrowed to `/private/etc/ssl` (root-owned). The round 5 re-probe found curl fails at start
+      without `/private/etc/ssl/openssl.cnf`, while DNS needs nothing else under `/private/etc` (senior round 5);
+    - a test renders the three profiles and asserts the clean room's read set has no path in common with the planner
+      or shell write set;
+    - the stage 4 gate tries `-d @/private/etc/hosts`, `-d @$HOME/x` and `-d @/private/tmp/x` in a sealed run, and
+      asserts each fails to read.
   - **The home is read-only to the child**, since a `.curlrc` planted in the readable home *is* read.
   - **Not yet probed, required before stage 4 code** (P8): a deny on loopback and the bridge socket (`localhost`,
     `127.0.0.0/8`, `::1`), so no local service can be reached; and a `mach-lookup` allowlist limited to what DNS and
@@ -872,8 +924,10 @@ clock and the remote server's responses, which is what Paco approved three times
 and the shell adapter always uses `shell.sb`, the turn workspace and `cfg.sandbox`, which can be disabled
 (`shell-adapter.ts:77-89`, `omp-config.ts:86`).
 
-- A standing match sets `executor: "cleanroom"` in the validated execution input. Re-validation (B14) checks it
-  together with the fingerprint.
+- A standing match sets `executor: "cleanroom"` on the execution record, **outside** the adapter input that the
+  action fingerprint hashes (`capability-runner.ts:111`). So the fingerprint of the sealed 4th call equals the first
+  three (codex round 5 W32), and a test asserts that continuity. Re-validation (B14) checks the executor field together
+  with the fingerprint.
 - The shell adapter selects `cleanroom.sb`, the clean room as working directory and the fixed environment from that
   field alone.
 - If the sandbox is unavailable or disabled, the standing match is void and the call asks as normal (fail closed).
@@ -953,7 +1007,7 @@ It amends, naming each clause (senior N1):
   - **decision 2** (monotone safety) is kept word for word: Jev only adds a tap (`ask := code_ask ∨ …`) and never
     produces allow or deny. ADR 0030 records three applications under it:
     - withholding a passage is a data transform, not an action deny;
-    - `turn.settle`'s send-back is a reply-only continuation;
+    - `turn.settle`'s send-back is a bounded continuation: after a Jev-rung send-back every side effect asks, after a code-rung send-back the normal gates apply (§7.3);
     - the built-in `edit`/`write` redirect at hostile is the ask form for a gate that cannot wait;
   - "no Jev in any deny path, ever" gains **one named exception** (senior W3): the code-owned redirect of a built-in
     `edit`/`write` to its asking equivalent (`bash`, which asks) in a hostile turn. Every other Jev verdict stays out
@@ -1187,4 +1241,30 @@ Warnings closed:
   stage 4 gate (S27).
 - **Senior:** late verdicts (W8); corpus owner and holdout (W10); tap-budget storage (W13); skip-rate source (W5); the
   probe-driven profile allowances.
+
+### Round 5 (Rev 5 → Rev 6)
+
+Round 5 results:
+
+- **Codex:** 12 of its 16 earlier items closed, 4 partial (the clean-room proof, P8 by design); 3 new blockers, 3
+  plan-level warnings.
+- **Senior:** 2 new blockers, 11 warnings, 3 suggestions; stages 1, 2b, 3 and 4 plannable after the listed fixes.
+
+| # | Blocker (source) | Resolution |
+|---|---|---|
+| 35 | The read-only list writes via `sort -o`, `sed w`, `git … --output` (codex B28) | per-command argument forms; `sort`, `sed`, `awk`, `rg`, `diff` removed (§7.2) |
+| 36 | Trust pauses add up across cards (codex B29) | total trust pause per turn capped at one TTL (§7.2) |
+| 37 | The clean room reads `/private/etc` (codex B30) | the sealed property stated as "no overlap with Houge's write set", tested; `/private/etc` narrowed to `ssl/` after a re-probe (§8.3) |
+| 38 | The read-only list runs programs via env prefixes, wrappers and git config (senior B10, probed) | all git removed; prefixes and wrappers rejected; a strict lexer of its own (§7.2) |
+| 39 | Credential stores beyond the fixed list; PEM inside JSON passes the redactor (senior B11) | wider patterns; a content check before egress; PEM blocks masked whole; base64 length stated (§7.0) |
+
+Warnings closed:
+
+- **Codex:** late read outcome (W31); fingerprint continuity (W32); promotion order (W33).
+- **Senior:** lost report raises trust at the next bridge request (W24); "reply-only" wording (W18); the
+  `fallback_reason` column (W5).
+- The remaining senior warnings are plan-level and go to the stage plans.
+
+**Found outside the spec:** the planner can read Houge's own `.env.bak-2026-10-07` today, since only `<repo>/.env` is
+read-denied (`protected-paths.ts:29`). It was raised to Paco on 2026-10-12, not left for stage 2a.
 
