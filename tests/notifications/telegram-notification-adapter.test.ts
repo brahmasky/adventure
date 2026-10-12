@@ -104,6 +104,19 @@ describe("TelegramNotificationAdapter", () => {
     });
   });
 
+  // Decision digest (spec §8.1): up to 8 ✅/❌ pairs; Telegram allows 8 buttons per row, so rows are kept as given.
+  it("renders button_rows as one keyboard row each, and prefers them over buttons", async () => {
+    const sent: TelegramSendMessageInput[] = [];
+    const adapter = new TelegramNotificationAdapter({ sendMessage: async (input) => { sent.push(input); return { message_id: 6 }; } });
+    const d = dispatch("Digest");
+    d.payload = { text: "Digest", buttons: [{ text: "x", data: "x" }], button_rows: [[{ text: "✅ 1", data: "dec:rv:a:ok" }, { text: "❌ 1", data: "dec:rv:a:bad" }],
+      [{ text: "✅ 2", data: "dec:rv:b:ok" }, { text: "❌ 2", data: "dec:rv:b:bad" }]] };
+    await adapter.send(d);
+    expect(sent[0]?.reply_markup).toEqual({ inline_keyboard: [
+      [{ text: "✅ 1", callback_data: "dec:rv:a:ok" }, { text: "❌ 1", callback_data: "dec:rv:a:bad" }],
+      [{ text: "✅ 2", callback_data: "dec:rv:b:ok" }, { text: "❌ 2", callback_data: "dec:rv:b:bad" }]] });
+  });
+
   it("omits reply_markup entirely when no buttons (existing notifications unchanged)", async () => {
     const sent: TelegramSendMessageInput[] = [];
     const adapter = new TelegramNotificationAdapter({

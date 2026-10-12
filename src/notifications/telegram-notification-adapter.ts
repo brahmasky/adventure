@@ -10,6 +10,7 @@ import type {
   NotificationAdapter,
   NotificationButton,
   NotificationDispatchRecord,
+  NotificationPayload,
   NotificationSendResult
 } from "./notification-types.js";
 
@@ -112,7 +113,7 @@ export class TelegramNotificationAdapter implements NotificationAdapter {
     const raw = notification.payload.text;
     // Inline keyboard (Phase 3.3). Omitted entirely when no buttons → byte-identical
     // to a button-less send (no reply_markup field).
-    const reply_markup = toReplyMarkup(notification.payload.buttons);
+    const reply_markup = toReplyMarkup(notification.payload);
 
     // The model emits CommonMark; render it as Telegram HTML so `**bold**` etc. don't
     // show up literally (ADR 0010 fix). If Telegram rejects the HTML (entity parse
@@ -139,15 +140,22 @@ export class TelegramNotificationAdapter implements NotificationAdapter {
 }
 
 /**
- * Render notification buttons as a Telegram inline keyboard (one row). Returns
- * `undefined` when there are no buttons so the caller omits `reply_markup` and a
+ * Render notification buttons as a Telegram inline keyboard: `button_rows` as one row each when present and well formed,
+ * else `buttons` as one row. Returns `undefined` when there are no buttons so the caller omits `reply_markup` and a
  * button-less notification stays byte-identical to before.
  */
-function toReplyMarkup(buttons?: NotificationButton[]): TelegramInlineKeyboardMarkup | undefined {
-  if (!buttons || buttons.length === 0) return undefined;
-  return {
-    inline_keyboard: [buttons.map((button) => ({ text: button.text, callback_data: button.data }))]
-  };
+function toReplyMarkup(payload: NotificationPayload): TelegramInlineKeyboardMarkup | undefined {
+  const rows = buttonRowsOf(payload.button_rows) ?? (payload.buttons && payload.buttons.length > 0 ? [payload.buttons] : null);
+  if (!rows) return undefined;
+  return { inline_keyboard: rows.map((row) => row.map((button) => ({ text: button.text, callback_data: button.data }))) };
+}
+
+/** Rows only when every row is a non-empty list of {text, data}; anything else falls back to `buttons` (the payload is stored JSON). */
+function buttonRowsOf(v: unknown): NotificationButton[][] | null {
+  if (!Array.isArray(v) || v.length === 0) return null;
+  const ok = v.every((row) => Array.isArray(row) && row.length > 0
+    && row.every((b) => typeof (b as NotificationButton)?.text === "string" && typeof (b as NotificationButton)?.data === "string"));
+  return ok ? (v as NotificationButton[][]) : null;
 }
 
 /** Read exactly `size` bytes from the start of `fd` (a short read means the file changed: refuse). */

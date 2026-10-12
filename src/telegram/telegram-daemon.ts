@@ -9,6 +9,7 @@ import { runIdeaRadarTick } from "../capabilities/idea-radar.js";
 import { runLessonConsolidateTick } from "../capabilities/lesson-consolidate.js";
 import { runSkillReverifyTick } from "../capabilities/skill-reverify.js";
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
+import { runDecisionDigestTick } from "../decisions/digest.js";
 import { reportOmpCheck, tickCorrelationId, tickSeat } from "../llm/registry.js";
 import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
@@ -504,6 +505,7 @@ async function runSignalPathTick(
     // builder's cheap enforcement read) once per cycle; the 0→1 transition enqueues ONE
     // alert, delivered by the outbox flush right after this tick.
     checkMeteredCeiling({ store: options.store, ...(chatId ? { chatId } : {}), now });
+    runDigestTick(options.store, chatId, now);
     // ADR 0024: the deterministic self-sensing sweep. Runs LAST among the state-changing
     // ticks so it observes this cycle's work, self-throttles to 5 min, and alerts at most
     // once per incident transition. Flag-gated OFF; pure reads + incident bookkeeping —
@@ -512,6 +514,15 @@ async function runSignalPathTick(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[telegram-daemon] signal-path tick failed: ${message}`);
+  }
+}
+
+/** Spec §8.1: the daily decision digest. Its own catch: a failed digest never skips the sweep after it. */
+function runDigestTick(store: RunTelegramDaemonOptions["store"], chatId: string | null, now: string): void {
+  try {
+    runDecisionDigestTick({ store, chatId, now });
+  } catch (error) {
+    console.error(`[telegram-daemon] decision digest tick failed: ${errorCode(error)}`);
   }
 }
 

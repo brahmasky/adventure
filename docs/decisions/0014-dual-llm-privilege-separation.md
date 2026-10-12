@@ -1,6 +1,6 @@
 # ADR 0014: Dual-LLM privilege separation — the reader that touches untrusted bytes cannot act
 
-- **Status:** accepted (design; flag-gated build to follow, sequenced after the secrets firewall); **amended 2026-09-30 by [ADR 0028](0028-omp-runtime.md)** (wall in the bridge; shell output exempt; family resolver); **amended 2026-10-06 by [ADR 0029](0029-jev-system-one.md)** (Jev beside the wall, lane 3 design — see end)
+- **Status:** accepted (design; flag-gated build to follow, sequenced after the secrets firewall); **amended 2026-09-30 by [ADR 0028](0028-omp-runtime.md)** (wall in the bridge; shell output exempt; family resolver); **amended 2026-10-06 by [ADR 0029](0029-jev-system-one.md)** (Jev beside the wall, lane 3 design — see end); **amended 2026-10-12 by [ADR 0030](0030-decision-ladder.md)** (injection judge before the reader — see end)
 - **Date:** 2026-07-05
 - **Deciders:** Paco
 - **Relates to:** restores the reader/actor wall of [ADR 0006](0006-web-read-capability.md) inside the
@@ -190,3 +190,9 @@ already provider-agnostic with echo-defense); the Q-LLM built on the `anchor-ver
 `contains_instructions` on reader-wall output becomes `reader_flag ∨ jev_flag` and is ledgered; a flag taints later
 external-write cards in the run with one line. Jev is a closed-enum component from a third model family; it never
 decides whether the wall applies. This is the design for lane 3; lane 1 does not touch the wall.
+
+---
+
+## Amendment (2026-10-12): decision ladder
+
+Amended by [ADR 0030](0030-decision-ladder.md). An injection judge (`tool.injection`) runs on wall-tool output before the quarantined reader; it withholds passages, never decides whether the wall applies.

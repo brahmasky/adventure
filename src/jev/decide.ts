@@ -66,15 +66,17 @@ function skipReasonOf(r: Extract<JevResult, { ok: false }>): SkipReason {
 }
 
 /** Writes one skipped row (no question, no numbers). Called by the caller after its cancellation check. */
-export function recordSkip(store: RunStore, point: DecisionPoint, run_id: string | null, lang: Lang, reason: SkipReason, now?: string): void {
+export function recordSkip(store: RunStore, point: DecisionPoint, run_id: string | null, lang: Lang, reason: SkipReason, now?: string,
+  ladder_decision_id: string | null = null): void {
   store.insertJevDecision({ run_id, point, question_id: null, criteria_hash: null, model_reported: null, state_hash: null, lang, answers_json: null,
     confidence: null, top_prob: null, margin: null, threshold_version: null, threshold_used: null, decision: null, latency_ms: null, input_tokens: null,
-    status: "skipped", skip_reason: reason, ...(now ? { created_at: now } : {}) });
+    status: "skipped", skip_reason: reason, ladder_decision_id, ...(now ? { created_at: now } : {}) });
 }
 
-/** Inside the caller's transaction: the rows land with their final decision, next to the lane's own writes. */
-export function persistDecisionRows(store: RunStore, rows: JevDecisionInsert[], decision: "act" | "fallback" | "shadow", threshold_used: string | null): string[] {
-  return rows.map((r) => store.insertJevDecision({ ...r, decision, threshold_used }));
+/** Inside the caller's transaction: the rows land with their final decision (and the ladder decision they answered), next to the lane's own writes. */
+export function persistDecisionRows(store: RunStore, rows: JevDecisionInsert[], decision: "act" | "fallback" | "shadow", threshold_used: string | null,
+  ladder_decision_id: string | null = null): string[] {
+  return rows.map((r) => store.insertJevDecision({ ...r, decision, threshold_used, ladder_decision_id }));
 }
 
 export async function decide(i: DecideInput): Promise<Decision> {

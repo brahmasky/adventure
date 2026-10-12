@@ -140,18 +140,25 @@ import { readOmpCatalog } from "../omp/model-catalog.js";
 import { RoleResolver } from "../omp/role-resolver.js";
 import { PlannerSupervisor, type QuoteRef, type SupervisorDeps, type TriageInput, type TriageOutcome, type TurnOutcomeSink, type TurnRoute } from "../omp/planner-supervisor.js";
 import { calibrationRows, type CalibrationRow } from "../jev/calibration.js";
-import { decide, marginOf, persistDecisionRows, recordSkip, topProbOf, type Decision, type JevDecisionInsert, type SkipReason } from "../jev/decide.js";
+import { decide, marginOf, persistDecisionRows, recordSkip, topProbOf, type JevDecisionInsert, type SkipReason } from "../jev/decide.js";
 import { createJevClient, type JevAnswer, type JevRequest, type JevResult } from "../jev/jev-client.js";
 import { resolveJevLanesOff, resolveJevTriageMode, type JevTriageMode } from "../jev/jev-flags.js";
 import { checkJevModelCalibrated, resolveQuietTriageOverrides } from "../jev/jev-incidents.js";
 import { langOf, type Lang } from "../jev/intent-question.js";
-import { buildTreeState, lastHougeTurnOf, quotedTurnFromRow, TREE_CATEGORY, TREE_QUESTIONS, type Category } from "../jev/questions/tree.js";
 import {
-  ACK_ROUTE, applyCascade, fallbackRoute, preJudge, routeTree, thinkHarderIn, TREE_BAR_DEFAULTS, TREE_THRESHOLD_VERSION, treeArmed,
-  treeArmingRows, type Armed, type Lane, type Route, type RoutePlan, type RouteReason
+  buildTreeState, lastHougeTurnOf, quotedTurnFromRow, TREE_CATEGORY, TREE_QUESTIONS, type Category, type LastHougeTurn, type QuotedTurn
+} from "../jev/questions/tree.js";
+import {
+  ACK_ROUTE, applyCascade, fallbackRoute, preJudge, thinkHarderIn, TREE_THRESHOLD_VERSION, treeArmingRows, type Lane, type Route, type RoutePlan,
+  type RouteReason
 } from "../jev/tree-policy.js";
-import { isBareAck } from "../omp/bare-ack.js";
-import { memoryInformNote, memoryLaneCard } from "./memory-lane-card.js";
+import { decide as decideLadder } from "../decisions/decide.js";
+import { isSkipReason, TURN_HANDLER, type TurnHandlerState, type TurnHandlerVerdict } from "../decisions/entries/turn-handler.js";
+import { TURN_GEAR, type TurnGearState, type TurnGearVerdict } from "../decisions/entries/turn-gear.js";
+import { storeRecorder } from "../decisions/record.js";
+import type { AnyDecideResult, AnyEntry, DecideResult, DecisionRecorder, FallbackReason, RungOutcome, RungResult } from "../decisions/types.js";
+import { fallbackOfSkip, jevSkipReason, planTree, treeDetailOf, type AnsweredDecision, type TreeDetail } from "./turn-handler-ladder.js";
+import { memlaneUndoButton, memoryInformNote, memoryLaneCard } from "./memory-lane-card.js";
 import { LANE_COMPOSE_MS, runAnswerLane } from "./lanes/answer-lane.js";
 import { digDeeperButton, laneCard, laneSavedNote } from "./lanes/lane-card.js";
 import { catchUpLine } from "./lanes/lane-compose.js";
@@ -227,6 +234,9 @@ interface LoopTurnContext {
   memory: MemoryTurnState;
 }
 
+/** A committed lesson save, as its Undo card names it (Paco 2026-10-12: every automatic save gets the card). */
+interface SavedLesson { id: number; theme: string; change_id: string; verb?: LessonSaveResult["verb"]; supersededId?: number }
+
 /** Per-run state of an omp turn's loop tools, held from buildOmpTools until the outcome sink finishes the run. */
 interface OmpTurnState {
   /** When `turnCtx.recentTurns` was read (the claim): triage records it so the replay cuts the same thread. */
@@ -238,7 +248,7 @@ interface OmpTurnState {
   /** The voice echo line that opens the reply. */
   echo?: string;
   /** Set only after a lesson save COMMITTED in this turn (ADR 0029 §5.5): a second lesson_write gets the digest. */
-  lessonSavedThisTurn?: { id: number; theme: string; change_id: string };
+  lessonSavedThisTurn?: SavedLesson;
   /** Set once this turn's one `triage` event (and its decision rows) committed (ADR 0029 §5.1): a second finalisation is a no-op. */
   triageFinalized?: boolean;
   /** The stored turn this message quotes (spec §2.2.1), resolved at claim; absent when not a reply or unresolved. */
@@ -267,7 +277,13 @@ type SaveStep =
 interface TriageHeld { thinkHarder: boolean; quote: QuoteRef | null; answered?: AnsweredSettle }
 /** Reasons whose route the tree took on Jev's (or the code's) word; every other reason is a fallback to Default. */
 const ACTED: ReadonlySet<RouteReason> = new Set(["routed", "cascade", "correction", "ack_rule", "lane_limits", "two_request"]);
-const UNARMED: Armed = { category: false, status: false, memory: false, gear: false, rule: false, answer: false, lookup: false };
+/** Configured triage shadow as the runner's arming (the one shadow R13 keeps): the Jev and cascade rungs are asked and recorded, never applied. */
+const TREE_SHADOWED = { system_one: "shadow", model: "shadow" } as const;
+/** The tree's instants (spec §2.2), read once per turn. */
+interface TreeContext { now: () => Date; builtAt: Date; lastHougeTurn: LastHougeTurn; quotedTurn: QuotedTurn | null }
+type HandlerResult = DecideResult<TurnHandlerVerdict, TreeDetail>;
+/** One queued front-door ladder row (plan ruling 14): written by settleTriage, inside its transaction. */
+interface PendingLadderRow { entry: AnyEntry; r: AnyDecideResult; ctx: { run_id: string | null; tool_call_id: string | null } }
 const NO_SCORES: VerdictScores = { breadth: null, reasoning: null, actions: null, sets_rule: null };
 
 /** What one `runLessonWrite` did: the tool result, and — only when the save transaction committed — what landed. */
@@ -494,6 +510,11 @@ export class CoreWorker {
   private readonly supervisors = new Map<string, PlannerSupervisor>();
   /** Live omp turns' loop-tool state, by run id. */
   private readonly ompTurns = new Map<string, OmpTurnState>();
+  /** The front door's ladder rows, queued at decide time and written by settleTriage (ruling 14); cleared when triageTurn returns. */
+  private readonly pendingLadder = new Map<string, PendingLadderRow[]>();
+  private recorderCache?: DecisionRecorder;
+  /** Lazy: a field initializer cannot read the runStore parameter property (it is assigned after class fields). */
+  private get decisionRecorder(): DecisionRecorder { return (this.recorderCache ??= storeRecorder(this.runStore)); }
   private readonly ompDecls: { ok: true; decls: ToolDeclaration[] } | { ok: false; error: string };
 
   /** ADR 0025: the per-worker Google OAuth client, built lazily on first Google tool use.
@@ -1075,12 +1096,35 @@ export class CoreWorker {
    * cap prunes lowest reuse_value on overflow instead).
    */
   private async reconcileAndSaveLesson(
+    run_id: string,
     candidate: { scope: string; text: string; avoid?: string },
     source: LessonSource,
     llm: (input: { question: string; system: string }) => Promise<{ ok: true; answer: string } | { ok: false }>,
     now: string = new Date().toISOString()
   ): Promise<LessonSaveResult> {
-    return this.saveLessonVerdict(candidate, await this.reconcileLessonVerdict(candidate, llm), source, now);
+    const r = await this.reconcileLessonVerdict(candidate, llm);
+    let change_id: string | undefined;
+    // The save and its lesson_changes row commit together, so the Undo card always has a change to revert.
+    const saved = this.runStore.inTransaction(() => {
+      const s = this.saveLessonVerdict(candidate, r, source, now);
+      if (s.id !== undefined) change_id = this.recordLessonChange(run_id, this.chatOf(run_id), { ...s, id: s.id }, source, now);
+      return s;
+    });
+    // Paco 2026-10-12: an automatic save (here the skill_author down-routes and park) is announced on the Undo card.
+    if (saved.id !== undefined && change_id) {
+      const theme = this.runStore.getLesson(saved.id)?.theme ?? r.theme;
+      this.announceSave(run_id, { id: saved.id, theme, change_id, verb: saved.verb, ...(saved.supersededId !== undefined ? { supersededId: saved.supersededId } : {}) });
+    }
+    return saved;
+  }
+
+  /** What Undo reverts: the save's lesson_changes row and its lesson_saved ledger event, inside the caller's transaction. */
+  private recordLessonChange(run_id: string, chat_id: string, s: LessonSaveResult & { id: number }, source: LessonSource, now: string): string {
+    const change = this.runStore.insertLessonChange({
+      run_id, chat_id, new_id: s.id, superseded_id: s.supersededId ?? null, pruned_ids: s.prunedIds, created_at: now
+    });
+    this.runStore.appendRunLedgerEvent(run_id, "lesson_saved", "core", { lesson_id: s.id, change_id: change.change_id, source });
+    return change.change_id;
   }
 
   /** The async half: the reconcile compare (verdict + theme). No store write. */
@@ -1901,7 +1945,7 @@ export class CoreWorker {
     // Lightest-form lesson capture — nothing learned is wasted even when the skill is blocked.
     const scope = this.safeLessonScope(parsed.scope);
     const lesson = (verdict.lesson?.trim() || `when ${parsed.meta.when}, follow a verified procedure`).slice(0, 200);
-    const saved = await this.reconcileAndSaveLesson({ scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget));
+    const saved = await this.reconcileAndSaveLesson(claim.run_id, { scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget));
     const failing = gate.failing.length > 0 ? gate.failing.slice(0, 3).map((f) => `   • ${f}`).join("\n") : "   • (no specific criteria captured)";
     const parkLine = parked.ok
       ? `→ Parked at skills/_pending/${parsed.scope}/${parsed.name}.md (inert — not applied).`
@@ -1936,7 +1980,7 @@ export class CoreWorker {
   private async downRouteLesson(claim: ClaimedRun, verdict: GateAResult, now: string, budget: BudgetLedger): Promise<HelperResult> {
     const scope = this.safeLessonScope(verdict.scope);
     const lesson = verdict.lesson?.trim();
-    const saved = lesson ? await this.reconcileAndSaveLesson({ scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget), now) : undefined;
+    const saved = lesson ? await this.reconcileAndSaveLesson(claim.run_id, { scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget), now) : undefined;
     return this.skillReport("down-routed to a LESSON (a tweak, not a procedure)", [
       "Origin: you asked",
       `Gate A qualify: → LESSON (${verdict.reason})`,
@@ -1949,7 +1993,7 @@ export class CoreWorker {
   private async downRouteUnsure(claim: ClaimedRun, verdict: GateAResult, now: string, budget: BudgetLedger): Promise<HelperResult> {
     const scope = this.safeLessonScope(verdict.scope);
     const lesson = verdict.lesson?.trim();
-    const saved = lesson ? await this.reconcileAndSaveLesson({ scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget), now) : undefined;
+    const saved = lesson ? await this.reconcileAndSaveLesson(claim.run_id, { scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget), now) : undefined;
     return this.skillReport("unsure — saved a lesson and asking whether to promote", [
       "Origin: you asked",
       `Gate A qualify: ? unsure between a lesson and a skill (${verdict.reason})`,
@@ -2488,6 +2532,8 @@ export class CoreWorker {
   /** Terminal failure: one code-owned reply by failure type; a failed ingest also leaves a partial report (old media path). */
   private ompFail(i: Parameters<TurnOutcomeSink["fail"]>[0]): void {
     const saved = this.ompTurns.get(i.run_id)?.lessonSavedThisTurn;
+    // A saved lane reply that never reached Paco carried the save's only Undo: queue the card (one per change id).
+    this.announceSave(i.run_id, saved);
     this.ompTurns.delete(i.run_id);
     const failure = plannerFailureText(i.error_type, i.error_ref, i.partial);
     // A lesson the memory lane (or the loop tool) committed before the failure is durable: say so (spec §5.1).
@@ -2590,18 +2636,15 @@ export class CoreWorker {
     const saved = this.runStore.inTransaction(() => {
       const s = this.saveLessonVerdict(candidate, r, o.source, now);
       if (s.id === undefined) return s;
-      const change = this.runStore.insertLessonChange({
-        run_id: claim.run_id, chat_id: chatId, new_id: s.id, superseded_id: s.supersededId ?? null, pruned_ids: s.prunedIds, created_at: now
-      });
-      this.runStore.appendRunLedgerEvent(claim.run_id, "lesson_saved", "core", { lesson_id: s.id, change_id: change.change_id, source: o.source });
-      o.inTx?.(s, change.change_id);
-      change_id = change.change_id;
+      const id = this.recordLessonChange(claim.run_id, chatId, { ...s, id: s.id }, o.source, now);
+      o.inTx?.(s, id);
+      change_id = id;
       return s;
     });
     // `inTransaction` returned: only now is anything committed (a throwing `inTx` rolled back and threw past here).
     if (saved.id !== undefined && change_id) {
       const theme = this.runStore.getLesson(saved.id)?.theme ?? r.theme; // the row's theme (an UPDATE takes the target's), not the verdict's
-      state.lessonSavedThisTurn = { id: saved.id, theme, change_id };
+      state.lessonSavedThisTurn = { id: saved.id, theme, change_id, verb: saved.verb, ...(saved.supersededId !== undefined ? { supersededId: saved.supersededId } : {}) };
       Object.assign(outcome, { saved: { ...saved, id: saved.id }, change_id, theme, committed: true });
     }
     return saved;
@@ -2674,8 +2717,10 @@ export class CoreWorker {
 
   /**
    * THE finaliser: every eligible, still-active exit of triageTurn passes through here exactly once and writes the
-   * decision rows (or the skipped row), the verdict row and the triage event together. A lost turn writes nothing.
-   * `inTx`: already inside the lane's save transaction, so the caller flips `triageFinalized` after that commit.
+   * turn's ladder rows, the decision rows (or the skipped row), the verdict row and the triage event together. A lost turn
+   * writes nothing — not even its `decisions` row (plan ruling 14). `inTx`: already inside the lane's save transaction, so
+   * the caller flips `triageFinalized` after that commit; a rollback there takes the ladder rows with it, and the
+   * fallback settle that follows writes them once.
    * Returns the verdict id, or null when nothing was written.
    */
   private settleTriage(i: TriageInput, state: OmpTurnState | undefined, lang: Lang, f: TriageSettle, o: { inTx?: boolean } = {}): string | null {
@@ -2683,11 +2728,12 @@ export class CoreWorker {
     const run_id = i.claim.run_id;
     let verdict_id: string | null = null;
     const write = (): void => {
-      if (f.kind === "skipped") recordSkip(this.runStore, "triage", run_id, lang, f.reason);
-      else persistDecisionRows(this.runStore, f.rows, f.decision, `${TREE_THRESHOLD_VERSION}:${f.route.reason}`);
+      const ladder = this.flushLadder(run_id);
+      if (f.kind === "skipped") recordSkip(this.runStore, "triage", run_id, lang, f.reason, undefined, ladder);
+      else persistDecisionRows(this.runStore, f.rows, f.decision, `${TREE_THRESHOLD_VERSION}:${f.route.reason}`, ladder);
       if (o.inTx && this.laneFinalizeFault) { this.laneFinalizeFault = false; throw new Error("lane finalize fault (test)"); }
       if (f.route.thinkHarder) this.markThinkHarder(run_id);
-      const id = this.runStore.insertJevVerdict(this.verdictInsert(run_id, f, state), f.kind === "answered" ? f.verdict_id : undefined);
+      const id = this.runStore.insertJevVerdict({ ...this.verdictInsert(run_id, f, state), decision_id: ladder }, f.kind === "answered" ? f.verdict_id : undefined);
       this.runStore.updateJevVerdict(id, { ...(f.handler ? { handler_outcome: f.handler } : {}), ...(f.kind === "answered" && f.model ? { model: f.model } : {}) });
       this.triageEvent(run_id, lang, f, id);
       verdict_id = id;
@@ -2695,7 +2741,36 @@ export class CoreWorker {
     if (o.inTx) { write(); return verdict_id; }
     this.runStore.inTransaction(write);
     if (state) state.triageFinalized = true;
+    this.pendingLadder.delete(run_id); // committed: no later settle may write the rows again (senior re-review S5)
     return verdict_id;
+  }
+
+  /** The front door's recorder (ruling 14): the runner's record call only queues the row for flushLadder. Never writes, never throws. */
+  private deferredRecorder(run_id: string): DecisionRecorder {
+    return {
+      record: (entry, r, ctx) => {
+        const list = this.pendingLadder.get(run_id) ?? [];
+        list.push({ entry, r, ctx });
+        this.pendingLadder.set(run_id, list);
+        return null;
+      }
+    };
+  }
+
+  /**
+   * Writes the turn's queued ladder rows (turn.handler, then turn.gear) inside settleTriage's transaction. storeRecorder
+   * never throws and opens no transaction; a failed insert leaves the link null and opens decision_record_failed, and the
+   * verdict stands. Rows stay queued after an `inTx` write until its outer transaction is known (a rollback is redone by
+   * the next settle); a committed non-`inTx` settle clears them.
+   * Returns turn.handler's decision id.
+   */
+  private flushLadder(run_id: string): string | null {
+    let handler: string | null = null;
+    for (const p of this.pendingLadder.get(run_id) ?? []) {
+      const id = this.decisionRecorder.record(p.entry, p.r, p.ctx);
+      if (p.entry.id === TURN_HANDLER.id) handler = id;
+    }
+    return handler;
   }
 
   /** True once the turn is gone: aborted signal, or its state replaced/deleted (ompComplete/ompFail delete it). */
@@ -2726,9 +2801,9 @@ export class CoreWorker {
   }
 
   /**
-   * The decision point (spec §2): flag → override → posture → modality → state → ack rule → Jev → policy → (below the
-   * bar, the cascade's Tiny pick, Decision 14) → handler. Any throw still finalises once: answered `fallback` once Jev
-   * had answered, skipped `error` before that.
+   * The decision point (spec §2; ADR 0030 §4.4): the `turn.handler` ladder decides — the gate rule (flag → override →
+   * posture → modality → state → ack rule), the Jev tree, then below the bar the cascade's Tiny pick — and the handler runs
+   * and settles once. Any throw still finalises once: answered `fallback` once Jev had answered, skipped `error` before that.
    */
   async triageTurn(i: TriageInput): Promise<TriageOutcome> {
     const lang = langOf(i.userText);
@@ -2741,54 +2816,137 @@ export class CoreWorker {
       const route = fallbackRoute("jev_skipped", held.thinkHarder);
       const id = this.settleTriage(i, state, lang, held.answered ? { ...held.answered, route, decision: "fallback" } : { kind: "skipped", reason: "error", route });
       const saved = state?.lessonSavedThisTurn;
+      this.announceSave(i.claim.run_id, saved); // a no-op when nothing was saved; one card when an inform path already queued it
       const base = { route: turnRoute(route, id), ...quoteField(held.quote) };
       return saved ? { kind: "inform", note: memoryInformNote(saved.id, saved.theme), ...base } : { kind: "fallthrough", ...base };
+    } finally {
+      this.pendingLadder.delete(i.claim.run_id);
     }
   }
 
   private async triageTurnInner(i: TriageInput, state: OmpTurnState | undefined, lang: Lang, held: TriageHeld): Promise<TriageOutcome> {
-    const run_id = i.claim.run_id;
+    this.resolveQuietOverrides();
+    const mode = resolveJevTriageMode(process.env, this.ompDataDir());
+    const tree = this.lazyTreeContext(state);
+    const r = await decideLadder<TurnHandlerState, TurnHandlerVerdict, TreeDetail>(TURN_HANDLER, this.turnHandlerState(i, state, mode, tree), {
+      // configured shadow is the one shadow left (R13): the Jev and cascade rungs are asked and recorded, never applied
+      run_id: i.claim.run_id, recorder: this.deferredRecorder(i.claim.run_id), armed: mode === "shadow" ? TREE_SHADOWED : undefined,
+      exec: { system_one: () => this.treeRung(i, state, lang, mode, tree, held), model: (_rung, _s, prior) => this.cascadeRung(i, prior, held) }
+    });
+    return this.routeDecided(i, state, lang, mode, r, held);
+  }
+
+  /** Housekeeping before the ladder: a throw here never costs the turn its route. */
+  private resolveQuietOverrides(): void {
     try {
       resolveQuietTriageOverrides(this.runStore);
     } catch (e) {
-      console.error(`triage: triage_overrides resolve failed: ${safeReason(e)}`); // housekeeping only: never costs the turn its route
+      console.error(`triage: triage_overrides resolve failed: ${safeReason(e)}`);
     }
-    const mode = resolveJevTriageMode(process.env, this.ompDataDir());
-    if (mode === "off") return this.triageOff(i, state, lang, held);
-    if (this.runStore.triageOverrideFor(run_id)) return this.triageSkip(i, state, lang, "override", held);
-    if (i.posture !== null) return this.triageSkip(i, state, lang, "posture", held);
-    if (i.modality !== "text") return this.triageSkip(i, state, lang, "modality", held);
-    if (!state) return this.triageSkip(i, state, lang, "error", held);
-    const now = this.ompOptions.jevNow ?? (() => new Date());
-    const builtAt = now();
-    const lastHougeTurn = lastHougeTurnOf(state.turnCtx.recentTurns, builtAt.getTime());
-    const quotedTurn = state.quote ? quotedTurnFromRow(state.quote.turn, builtAt.getTime()) : null;
-    // shadow never changes behaviour, so the ack rule (which changes the role) acts only when armed
-    if (mode === "arm" && preJudge({ text: i.userText, lastHougeTurn, quoted: quotedTurn !== null }).kind === "ack_answer") {
-      return this.triageSkip(i, state, lang, "ack_rule", held, ACK_ROUTE);
-    }
-    const built = buildTreeState({ userText: i.userText, recentTurns: state.turnCtx.recentTurns, turnChars: state.turnCtx.turnChars, modality: i.modality,
-      lastHougeTurn, quotedTurn }, this.broker ? (s) => this.broker!.redact(s) : undefined);
-    if (!built.ok) return this.triageSkip(i, state, lang, built.skip, held);
-    const d = await decide({ point: "triage", run_id, state: built.state, questions: TREE_QUESTIONS, lang, client: this.jevClient(run_id),
-      store: this.runStore, thresholdVersion: TREE_THRESHOLD_VERSION, now, instants: { thread_cut_at: state.threadCutAt, state_built_at: builtAt.toISOString() } });
-    if (d.status === "skipped") return this.triageSkip(i, state, lang, d.reason, held); // settleTriage checks laneLost first
-    return this.routeAnswered(i, state, lang, d, mode, held);
   }
 
-  /** Jev answered: policy (shadow arms nothing), then the route's handler; below the bar, the cascade picks first. */
-  private async routeAnswered(i: TriageInput, state: OmpTurnState, lang: Lang, d: Extract<Decision, { status: "answered" }>, mode: JevTriageMode,
-    held: TriageHeld): Promise<TriageOutcome> {
+  /** Read on first use only, so the clock runs for a turn that passed the gate's earlier exits (as at 3bff437). */
+  private lazyTreeContext(state: OmpTurnState | undefined): () => TreeContext | null {
+    let ctx: TreeContext | null | undefined;
+    return () => {
+      if (ctx !== undefined) return ctx;
+      if (!state) return (ctx = null);
+      const now = this.ompOptions.jevNow ?? (() => new Date());
+      const builtAt = now();
+      ctx = { now, builtAt, lastHougeTurn: lastHougeTurnOf(state.turnCtx.recentTurns, builtAt.getTime()),
+        quotedTurn: state.quote ? quotedTurnFromRow(state.quote.turn, builtAt.getTime()) : null };
+      return ctx;
+    };
+  }
+
+  private turnHandlerState(i: TriageInput, state: OmpTurnState | undefined, mode: JevTriageMode, tree: () => TreeContext | null): TurnHandlerState {
+    return {
+      mode, overridden: mode !== "off" && this.runStore.triageOverrideFor(i.claim.run_id), posture: i.posture, modality: i.modality,
+      hasTurnState: state !== undefined,
+      isAck: () => {
+        const t = tree();
+        return t !== null && preJudge({ text: i.userText, lastHougeTurn: t.lastHougeTurn, quoted: t.quotedTurn !== null }).kind === "ack_answer";
+      }
+    };
+  }
+
+  /** The Jev rung: the tree state, one Jev call, then the pure policy. Every failure is a rung failure naming today's skip reason. */
+  private async treeRung(i: TriageInput, state: OmpTurnState | undefined, lang: Lang, mode: JevTriageMode, tree: () => TreeContext | null,
+    held: TriageHeld): Promise<RungResult<TurnHandlerVerdict, TreeDetail>> {
+    const t = tree();
+    if (!state || !t) return { failed: "threw", reason: "error" };
+    const run_id = i.claim.run_id;
+    const built = buildTreeState({ userText: i.userText, recentTurns: state.turnCtx.recentTurns, turnChars: state.turnCtx.turnChars, modality: i.modality,
+      lastHougeTurn: t.lastHougeTurn, quotedTurn: t.quotedTurn }, this.broker ? (s) => this.broker!.redact(s) : undefined);
+    if (!built.ok) return { failed: fallbackOfSkip(built.skip), reason: built.skip };
+    const d = await decide({ point: "triage", run_id, state: built.state, questions: TREE_QUESTIONS, lang, client: this.jevClient(run_id),
+      store: this.runStore, thresholdVersion: TREE_THRESHOLD_VERSION, now: t.now, instants: { thread_cut_at: state.threadCutAt, state_built_at: t.builtAt.toISOString() } });
+    if (d.status === "skipped") return { failed: fallbackOfSkip(d.reason), reason: d.reason };
+    return this.planAnswered(i, lang, mode, d, held);
+  }
+
+  /**
+   * Jev answered: the pure policy, then (armed only, and only once the policy ran, as at 3bff437) the alias-move page.
+   * A throw in calibrationRows is the rung's throw (runAsync catches it): skipped `error`, as today (ruling 19).
+   */
+  private planAnswered(i: TriageInput, lang: Lang, mode: JevTriageMode, d: AnsweredDecision, held: TriageHeld): RungResult<TurnHandlerVerdict, TreeDetail> {
     const rows = calibrationRows(process.env);
-    const armed = mode === "arm" ? treeArmed(lang, d.model, rows, resolveJevLanesOff(process.env)) : UNARMED; // d.model: the REPORTED id
-    const opts = { bars: TREE_BAR_DEFAULTS, thinkHarder: held.thinkHarder, bareAck: isBareAck(i.userText) };
-    const plan = routeTree(d.answers, { ...opts, armed });
+    const out = planTree(d, { userText: i.userText, mode, lang, thinkHarder: held.thinkHarder, rows, lanesOff: resolveJevLanesOff(process.env) });
+    const reachedPolicy = !("failed" in out) || out.detail !== undefined;
+    if (mode === "arm" && reachedPolicy) this.checkJevModel(d.model, rows); // shadow arms nothing, so an alias move loses nothing there
+    return out;
+  }
+
+  /** The model rung (Decision 14): the Tiny pick between Jev's top two, only when the tree abstained below the choice bar. */
+  private async cascadeRung(i: TriageInput, prior: readonly RungOutcome<TurnHandlerVerdict, TreeDetail>[], held: TriageHeld): Promise<RungResult<TurnHandlerVerdict, TreeDetail>> {
+    const jev = prior.find((o) => o.kind === "system_one")?.result;
+    const det = jev && "abstain" in jev ? jev.detail : undefined;
+    if (!det?.plan || det.plan.kind !== "cascade") return { abstain: true };
+    const pick = await this.cascadePick(i, det.plan.between, held.quote);
+    const route = applyCascade(det.plan, pick.pick);
+    const detail: TreeDetail = { ...det, route };
+    return pick.pick === null ? { failed: pick.why, reason: route.reason, detail } : { verdict: route.lane, reason: route.reason, detail };
+  }
+
+  /** The ladder's answer to a handler: a gate exit, a tree with no answer (today's skip), or Jev's plan through the handlers. */
+  private async routeDecided(i: TriageInput, state: OmpTurnState | undefined, lang: Lang, mode: JevTriageMode, r: HandlerResult, held: TriageHeld): Promise<TriageOutcome> {
+    if (r.rung === "rule") return this.gateExit(i, state, lang, r, held);
+    const det = treeDetailOf(r);
+    if (!det || !state) {
+      await this.recordGear(i, r, fallbackRoute("jev_skipped", held.thinkHarder), false);
+      return this.triageSkip(i, state, lang, jevSkipReason(r), held);
+    }
+    await this.recordGear(i, r, det.route ?? fallbackRoute("jev_skipped", held.thinkHarder), det.armed.gear);
+    return this.routeAnswered(i, state, lang, mode, det, held);
+  }
+
+  /** The gate rule answered: the flag-off rollback (no route, no gear), the ack route, or a skip with today's reason. */
+  private async gateExit(i: TriageInput, state: OmpTurnState | undefined, lang: Lang, r: HandlerResult, held: TriageHeld): Promise<TriageOutcome> {
+    const reason = isSkipReason(r.reason) ? r.reason : "error";
+    if (reason === "disabled") return this.triageOff(i, state, lang, held);
+    const route = reason === "ack_rule" ? ACK_ROUTE : fallbackRoute("jev_skipped", held.thinkHarder);
+    await this.recordGear(i, r, route, false);
+    return this.triageSkip(i, state, lang, reason, held, route);
+  }
+
+  /** `turn.gear` (spec §4.4): the role this turn's route carries, recorded under its own entry from the same Jev call, queued with the handler's row. */
+  private async recordGear(i: TriageInput, handler: HandlerResult, route: Route, gearArmed: boolean): Promise<void> {
+    const applied = gearArmed && (handler.rung === "system_one" || handler.rung === "model");
+    await decideLadder<TurnGearState, TurnGearVerdict>(TURN_GEAR, { role: route.role, reason: route.reason, applied }, {
+      run_id: i.claim.run_id, recorder: this.deferredRecorder(i.claim.run_id),
+      exec: { system_one: async () => ({ verdict: route.role, reason: route.reason }) }
+    });
+  }
+
+  /** Jev answered: the settle helpers over its rows, then the plan's handler (the cascade's pick already in `det.route`). */
+  private async routeAnswered(i: TriageInput, state: OmpTurnState, lang: Lang, mode: JevTriageMode, det: TreeDetail, held: TriageHeld): Promise<TriageOutcome> {
+    const d = det.d;
     const settleFor: SettleFor = (route, save, handler, outcome) => ({ kind: "answered", rows: d.rows, decision: decisionFor(mode, route, save, outcome),
       numbers: numbersOf(d.answers.category!), scores: scoresOf(d.answers), route, save, ...(handler ? { handler } : {}), ...(outcome ? { outcome } : {}) });
     held.answered = settleFor(fallbackRoute("jev_skipped", held.thinkHarder), "none"); // from here a throw settles as answered fallback
-    if (mode === "arm") this.checkJevModel(d.model, rows); // shadow arms nothing, so an alias move loses nothing there
-    if (plan.kind === "cascade") return this.cascadeRoute(i, state, lang, plan, settleFor, held);
-    const route = urlRule(plan.route, i.userText, () => routeTree(d.answers, { ...opts, armed: { ...armed, lookup: false } }));
+    if (det.error !== undefined || !det.plan) throw new Error(det.error ?? "tree plan missing"); // the catch settles the answered fallback, as before
+    if (det.plan.kind === "cascade") return this.cascadeRoute(i, state, lang, det.plan, det.route ?? applyCascade(det.plan, null), settleFor, held);
+    const route = det.route ?? det.plan.route;
     if (route.lane === "status") return this.statusLane(i, state, lang, route, settleFor, held);
     if (route.lane === "answer" || route.lane === "lookup") return this.laneRoute(i, state, lang, route, settleFor, held);
     if (route.save) return this.saveThenRoute(i, state, lang, route, settleFor, held);
@@ -2846,7 +3004,10 @@ export class CoreWorker {
       const id = this.settleTriage(i, state, lang, settleFor(route, s.save_outcome, memory ? `fallthrough:${s.save_outcome}` : undefined, memory ? "fallback" : undefined));
       return { kind: "fallthrough", route: turnRoute(route, id), ...q };
     }
-    if (route.lane !== "memory") return { kind: "inform", note: s.note, route: turnRoute(route, s.verdict_id), ...q };
+    if (route.lane !== "memory") {
+      this.announceSave(i.claim.run_id, state.lessonSavedThisTurn);
+      return { kind: "inform", note: s.note, route: turnRoute(route, s.verdict_id), ...q };
+    }
     return this.memoryLaneEnd(i, state, route, s, q);
   }
 
@@ -2858,6 +3019,7 @@ export class CoreWorker {
   private memoryLaneEnd(i: TriageInput, state: OmpTurnState, route: Route, s: Extract<SaveStep, { settled: true }>, q: { quote?: QuoteRef }): TriageOutcome {
     const w = s.w as Required<LessonWriteOutcome>;
     if (this.laneLost(i, state)) {
+      this.announceSave(i.claim.run_id, state.lessonSavedThisTurn);
       if (s.verdict_id) this.patchLaneVerdict(s.verdict_id, "fallthrough:aborted", undefined, "fallback");
       return { kind: "inform", note: s.note, route: turnRoute(route, s.verdict_id), ...q };
     }
@@ -2869,19 +3031,18 @@ export class CoreWorker {
     } catch (e) {
       // The save is committed and finalised as "act"; the planner answers and the note names the lesson (spec §5.1).
       console.error(`memory lane: card failed after save: ${safeReason(e)}`);
+      this.announceSave(i.claim.run_id, state.lessonSavedThisTurn);
       return { kind: "inform", note: s.note, route: turnRoute(route, s.verdict_id), ...q };
     }
   }
 
   /**
-   * Below the choice bar with two candidates (spec §2.4; plan Decision 14: live in stage A). One Tiny pick, then the
-   * pick's route through the same handlers as a confident answer: a rule saves first (`saveThenRoute`), else the planner
-   * on the pick's role. No pick (failure, timeout, an answer outside the two) is `applyCascade(plan, null)`: Default,
-   * nothing saved. Every settle of this turn carries the pair for its triage event.
+   * Below the choice bar with two candidates (spec §2.4; plan Decision 14). The model rung already made the one Tiny pick;
+   * `route` is the pick's route, or `applyCascade(plan, null)` (Default, nothing saved). A rule saves first
+   * (`saveThenRoute`), else the planner on the pick's role. Every settle of this turn carries the pair for its triage event.
    */
-  private async cascadeRoute(i: TriageInput, state: OmpTurnState, lang: Lang, plan: Extract<RoutePlan, { kind: "cascade" }>, settleFor: SettleFor,
+  private async cascadeRoute(i: TriageInput, state: OmpTurnState, lang: Lang, plan: Extract<RoutePlan, { kind: "cascade" }>, route: Route, settleFor: SettleFor,
     held: TriageHeld): Promise<TriageOutcome> {
-    const route = applyCascade(plan, await this.cascadePick(i, plan.between, held.quote));
     const withPair: SettleFor = (r, save, handler, outcome) => ({ ...settleFor(r, save, handler, outcome), between: plan.between });
     held.answered = withPair(fallbackRoute("jev_skipped", held.thinkHarder), "none"); // a throw from here still names the pair
     if (route.save) return this.saveThenRoute(i, state, lang, route, withPair, held);
@@ -2891,18 +3052,22 @@ export class CoreWorker {
 
   /**
    * The cascade's one call (Decision 14): the Tiny chain under LlmCallRole "cascade", audited per leg on the turn's run,
-   * bounded at CASCADE_TIMEOUT_MS and by the turn's own signal. Null on any failure, timeout or answer outside the two.
+   * bounded at CASCADE_TIMEOUT_MS and by the turn's own signal. No pick on any failure, timeout or answer outside the two;
+   * `why` is the ladder's fallback reason (no answer in time or a failed call is `outage`: withinMs folds the two).
    */
-  private async cascadePick(i: TriageInput, between: readonly [Category, Category], quote: QuoteRef | null): Promise<Category | null> {
+  private async cascadePick(i: TriageInput, between: readonly [Category, Category], quote: QuoteRef | null): Promise<{ pick: Category | null; why: FallbackReason }> {
     const ctl = new AbortController();
     const signal = AbortSignal.any([i.signal, ctl.signal]);
     try {
       const answer = await withinMs(CASCADE_TIMEOUT_MS, () => this.cascadeCall(i.claim.run_id, cascadePrompt(between, i.userText, quote), signal), () => ctl.abort());
-      if (answer === null) console.warn(`triage: cascade gave no answer within ${CASCADE_TIMEOUT_MS} ms or failed`);
-      return answer === null ? null : parseCascadePick(answer, between);
+      if (answer === null) {
+        console.warn(`triage: cascade gave no answer within ${CASCADE_TIMEOUT_MS} ms or failed`);
+        return { pick: null, why: "outage" };
+      }
+      return { pick: parseCascadePick(answer, between), why: "parse" };
     } catch (e) {
       console.error(`triage: cascade call threw: ${safeReason(e)}`);
-      return null;
+      return { pick: null, why: "threw" };
     }
   }
 
@@ -2917,11 +3082,39 @@ export class CoreWorker {
     return r.ok ? r.answer : null;
   }
 
+  /**
+   * Paco 2026-10-12 (Q1, "add the card"): every automatic lesson save is announced on the memory card with Undo, whatever
+   * route the turn took. The memory lane's reply IS that card and a lane reply carries Undo itself; every other path (the
+   * planner's inform note, a lane that fell through, a lost turn, a card that failed, a throw after the save, the planner's
+   * own lesson_write tool) queues an Undo-only card here. Keyed by the change id, so two paths for one save send one card.
+   * Never throws: the save stands. It uses the module's `memoryLaneCard`, not the test-faultable one, so a failed lane card is still announced.
+   */
+  private announceSave(run_id: string, saved: SavedLesson | undefined): void {
+    if (!saved) return;
+    try {
+      const row = this.runStore.getLesson(saved.id);
+      const verb = saved.verb === "update" || saved.verb === "supersede" ? saved.verb : "add";
+      const card = memoryLaneCard({ lesson_id: saved.id, theme: saved.theme, text: row?.text ?? "", ...(row?.avoid ? { avoid: row.avoid } : {}),
+        ...(saved.supersededId !== undefined ? { superseded_id: saved.supersededId } : {}), verb, change_id: saved.change_id, run_id });
+      const q = this.runStore.enqueueNotification({ target: { kind: "telegram", chat_id: this.chatOf(run_id) }, intent_type: "progress",
+        idempotency_key: `memcard:${saved.change_id}`, correlation_id: run_id, payload: { text: this.maskSecrets(card.text), buttons: [memlaneUndoButton(saved.change_id)] } });
+      if (q.status === "conflict") console.error(`memory card: announce refused for change ${saved.change_id}: ${q.error}`);
+    } catch (e) {
+      console.error(`memory card: announce failed: ${safeReason(e)}`);
+    }
+  }
+
+  /** ADR 0015: the same value redactor the store applies to final reports (enqueueNotification stores text as given). Identity when the firewall is off. */
+  private maskSecrets(text: string): string {
+    return this.broker ? this.broker.redact(text) : text;
+  }
+
   private memoryLaneCardFor(run_id: string, w: Required<LessonWriteOutcome>): { text: string; buttons: NotificationButton[] } {
     const row = this.runStore.getLesson(w.saved.id);
-    return this.memoryLaneCard({ lesson_id: w.saved.id, theme: w.theme, text: w.saved.lesson, ...(row?.avoid ? { avoid: row.avoid } : {}),
+    const card = this.memoryLaneCard({ lesson_id: w.saved.id, theme: w.theme, text: w.saved.lesson, ...(row?.avoid ? { avoid: row.avoid } : {}),
       ...(w.saved.supersededId !== undefined ? { superseded_id: w.saved.supersededId } : {}),
       verb: w.saved.verb as "add" | "update" | "supersede", change_id: w.change_id, run_id });
+    return { ...card, text: this.maskSecrets(card.text) };
   }
   /**
    * Stage B §4–§5: the answer and lookup lanes. The verdict id is minted first (the compose legs carry it as routed_by). A
@@ -2944,6 +3137,7 @@ export class CoreWorker {
     if (card && result.kind === "reply" && id) this.recordLaneReplyRow(i.claim.run_id, route.lane, id, result.catch_up);
     if (card) return { kind: "lane_reply", ...card, ...quoteField(held.quote) };
     const fallback = { route: turnRoute(fallbackRoute("jev_skipped", held.thinkHarder), id), ...quoteField(held.quote) };
+    if (save?.settled) this.announceSave(i.claim.run_id, state.lessonSavedThisTurn);
     return save?.note ? { kind: "inform", note: save.note, ...fallback } : { kind: "fallthrough", ...fallback };
   }
 
@@ -2967,7 +3161,10 @@ export class CoreWorker {
     { card: { text: string; buttons: NotificationButton[] } } | { why: "empty_reply" | "render_failed" } {
     try {
       const card = this.laneCard({ text, run_id, ...(save?.settled ? { note: laneSavedNote(save.lesson_id, save.theme) } : {}) });
-      return card ? { card } : { why: "empty_reply" };
+      if (!card) return { why: "empty_reply" };
+      // Paco 2026-10-12: a saved lesson is announced with Undo on the card that names it
+      const undo = save?.settled ? [memlaneUndoButton((save.w as Required<LessonWriteOutcome>).change_id)] : [];
+      return { card: { text: this.maskSecrets(card.text), buttons: [...undo, ...card.buttons] } };
     } catch (e) {
       console.error(`lane: card render failed: ${safeReason(e)}`);
       return { why: "render_failed" };
@@ -3213,7 +3410,15 @@ export class CoreWorker {
     }
     if (name === "lesson_write") {
       // One pipeline with the memory lane (ADR 0029 §5.5); the trust anchors live in runLessonWrite.
-      return async (input) => (await this.runLessonWrite(claim, this.chatOf(claim.run_id), input, { source: "loop" })).result;
+      return async (input) => {
+        const w = await this.runLessonWrite(claim, this.chatOf(claim.run_id), input, { source: "loop" });
+        // Paco 2026-10-12: a committed save is announced on the Undo card whatever route the turn took, the planner's own tool included
+        if (w.committed && w.saved && w.change_id && w.theme) {
+          this.announceSave(claim.run_id, { id: w.saved.id, theme: w.theme, change_id: w.change_id, verb: w.saved.verb,
+            ...(w.saved.supersededId !== undefined ? { supersededId: w.saved.supersededId } : {}) });
+        }
+        return w.result;
+      };
     }
     if (name === "houge_status") {
       // Read-only, Houge's own state (2026-10-02): code-rendered, no LLM call, never quarantined.
@@ -4052,17 +4257,6 @@ function withinMs<T>(ms: number, run: () => Promise<T>, onExpire: () => void): P
 
 /** Stage B §5 step 2: rows read for the rewrite (it uses the last two Paco lines and the last Houge line among them). */
 const LANE_PREVIOUS_TURNS = 6;
-const URL_IN_TEXT = /https?:\/\//i;
-
-/**
- * Stage B §2's one code rule: a lookup naming a URL is the planner's (its http_fetch path can read a named page; the lane
- * cannot from a one-line query). The route is the policy's own with the lookup lane unarmed (the gear's role), relabelled.
- */
-function urlRule(route: Route, text: string, unlaned: () => RoutePlan): Route {
-  if (route.lane !== "lookup" || !URL_IN_TEXT.test(text)) return route;
-  const p = unlaned();
-  return p.kind === "final" ? { ...p.route, reason: "lane_limits" } : { ...route, lane: "planner", reason: "lane_limits" };
-}
 
 /** A test-injected seat's answer as an LlmResult (the lanes read `answer` and `model`). */
 function injectedResult(r: ToolAdapterResult): LlmResult {

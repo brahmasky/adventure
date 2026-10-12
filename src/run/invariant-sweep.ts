@@ -1,4 +1,7 @@
 import { statfsSync } from "node:fs";
+import { FRONT_DOOR_ENTRIES } from "../decisions/entry-ids.js";
+import { REGISTRY } from "../decisions/registry.js";
+import type { AnyEntry } from "../decisions/types.js";
 import type { SkipReason } from "../jev/decide.js";
 import { JEV_INCIDENT_SUBJECT, resolveQuietTriageOverrides } from "../jev/jev-incidents.js";
 import { resolveApprovalTimeoutMs } from "../omp/omp-config.js";
@@ -235,6 +238,30 @@ function jevViolations(store: RunStore, now: string): InvariantViolation[] {
   return r.open ? [{ kind: "jev_skip_rate", subject: JEV_INCIDENT_SUBJECT, detail: { point: "triage", attempts: r.attempts, failed: r.failed } }] : [];
 }
 
+/**
+ * Spec §5.2: `jev_skip_rate` per entry, from `decisions` rows that failed on the Jev rung (every entry with a Jev rung). Sticky like the
+ * triage check: open until that entry's Jev or model rung answers after the incident opened. The front-door entries (turn.handler,
+ * turn.gear) are measured (the digest shows them) but keep the jev_decisions-based page above in stage 1: one call, one page.
+ */
+export const DECISION_SKIP_RATE_EXCLUDED: ReadonlySet<string> = FRONT_DOOR_ENTRIES;
+
+export function checkDecisionSkipRates(
+  store: RunStore, now: string, entries: readonly AnyEntry[] = REGISTRY, windowMs = JEV_SKIP_RATE_WINDOW_MS
+): Array<{ entry: string; open: boolean; attempts: number; failed: number }> {
+  const since = new Date(Date.parse(now) - windowMs).toISOString();
+  return entries.filter((e) => e.ladder.some((r) => r.kind === "system_one")).map((e) => {
+    const r = store.countDecisionJevSkips(e.id, since, now);
+    if (r.attempts >= JEV_SKIP_RATE_MIN_ATTEMPTS && r.failed / r.attempts >= JEV_SKIP_RATE_MAX) return { entry: e.id, open: true, ...r };
+    const opened = store.findOpenIncident(store.incidentFingerprint("jev_skip_rate", `decision:${e.id}`));
+    return { entry: e.id, open: opened !== undefined && !store.hasJevAnsweredDecisionSince(e.id, opened.first_seen_at), ...r };
+  });
+}
+
+function decisionSkipViolations(store: RunStore, now: string): InvariantViolation[] {
+  return checkDecisionSkipRates(store, now).filter((r) => r.open && !DECISION_SKIP_RATE_EXCLUDED.has(r.entry))
+    .map((r) => ({ kind: "jev_skip_rate" as const, subject: `decision:${r.entry}`, detail: { entry: r.entry, attempts: r.attempts, failed: r.failed } }));
+}
+
 /** Window, floor and rate for `lane_fallthrough_rate` (spec §8): settled lane turns in the last 24 h. */
 export const LANE_FALLTHROUGH_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const LANE_FALLTHROUGH_MIN_TURNS = 3;
@@ -273,6 +300,7 @@ export function detectViolations(
 ): InvariantViolation[] {
   const violations: InvariantViolation[] = [
     ...detectOmpViolations(store, probe), ...memoryViolations(store, env), ...embeddingsViolations(store, now), ...jevViolations(store, now),
+    ...decisionSkipViolations(store, now),
     ...laneViolations(store, now)
   ];
 

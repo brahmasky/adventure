@@ -3,7 +3,7 @@ import { buildTypedTaskEvent } from "../domain/types.js";
 import { MEDIA_MIME, MEDIA_PLACEHOLDER, type TelegramMediaRef } from "../media/media-config.js";
 import { authorizeTelegramUpdate } from "./telegram-auth.js";
 import type { ApprovalCallback, SelfWriteCallbackAction, TelegramCommand } from "./telegram-command-parser.js";
-import { parseApprovalCallback, parseMemLaneCallback, parseMemoryUndoCallback, parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
+import { parseApprovalCallback, parseDecisionReviewCallback, parseMemLaneCallback, parseMemoryUndoCallback, parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
 
 export interface TelegramUpdate {
   update_id: number;
@@ -271,6 +271,8 @@ function normalizeCallbackQuery(
   if (undo) return { ok: true, event: buildMemoryUndoTapEvent(update, callback, message.chat.id, auth.identity, undo.change_id) };
   const memlane = parseMemLaneCallback(callback.data);
   if (memlane) return { ok: true, event: buildMemLaneTapEvent(update, callback, message.chat.id, auth.identity, memlane) };
+  const review = parseDecisionReviewCallback(callback.data);
+  if (review) return { ok: true, event: buildDecisionReviewTapEvent(update, callback, message.chat.id, auth.identity, review) };
 
   const parsed = parseSelfWriteCallback(callback.data);
   if (!parsed) {
@@ -342,6 +344,21 @@ function buildMemLaneTapEvent(
     source_reference: `telegram:update:${update.update_id}:callback:${callback.id}`,
     metadata: { telegram_update_id: update.update_id, telegram_callback_id: callback.id,
       ...(tap.action === "undo" ? { change_id: tap.change_id } : { run_id: tap.run_id }) }
+  });
+}
+
+/** A decision digest tap (decision ladder §8.1): the approval tap's shape, with the decision id and label in metadata. */
+function buildDecisionReviewTapEvent(
+  update: TelegramUpdate, callback: TelegramCallbackQuery, chat_id: number, identity: Identity, review: { decision_id: string; label: "ok" | "bad" }
+): TypedTaskEvent {
+  return buildTypedTaskEvent({
+    source: "telegram",
+    type: "decision_review",
+    requested_by: identity,
+    notify: { kind: "telegram", chat_id: String(chat_id) },
+    idempotency_key: `telegram:${update.update_id}:callback:${callback.id}`,
+    source_reference: `telegram:update:${update.update_id}:callback:${callback.id}`,
+    metadata: { telegram_update_id: update.update_id, telegram_callback_id: callback.id, decision_id: review.decision_id, label: review.label }
   });
 }
 

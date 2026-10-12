@@ -69,6 +69,7 @@ export const PROTECTED_DIRS: readonly string[] = [
   "docs/decisions", // the ADRs — identity / rules
   ".github", // CI / supply-chain
   "src/omp", // omp runtime: floor A/B, the gate, the wall routing, the child env, the sandbox wrap (security I2)
+  "src/decisions", // decision ladder (ADR 0030, spec §6.3): the registry, runner and recorder decide the gates — Paco's hand only
   "dist" // the built JS the daemon runs: gitignored, so a diff should never carry it; refused if one does (security N5)
 ];
 

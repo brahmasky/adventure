@@ -45,6 +45,7 @@ import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import { toolApprovalWaiters } from "../omp/tool-approval-sink.js";
 import { handleMemLaneUndo, memLaneAskTurnEvent, recordTriageOverride } from "./memlane-commands.js";
 import { resolveQuietTriageOverrides } from "../jev/jev-incidents.js";
+import { handleDecisionReview } from "./decision-commands.js";
 import { handleForgetMemory, handleMemories, handleMemoryUndo } from "./memory-commands.js";
 import { handleModels, modelsUnavailable, type ModelsRoles } from "./models-commands.js";
 import type { IdeaRow, ShortlistRow } from "../run/run-store.js";
@@ -70,6 +71,7 @@ export type GatewayIntakeResult =
   | { ok: true; status: "forgotten"; run_id: string }
   | { ok: true; status: "memory_undone"; run_id: string }
   | { ok: true; status: "lesson_change_undone"; run_id: string }
+  | { ok: true; status: "decision_reviewed"; run_id: string }
   | { ok: true; status: "memories_returned"; run_id: string }
   | { ok: true; status: "memory_forgotten"; run_id: string }
   | { ok: true; status: "models_returned"; run_id: string }
@@ -124,6 +126,9 @@ const APPROVAL_ID_ECHO_MAX = 48;
 /** Spec §6: a session rated at or below this is a correction on the chat's latest routed turn. */
 const LOW_RATING_MAX = 1;
 
+/** ADR 0018 + decision ladder plan ruling 16: commands the per-chat rate limit never delays (kill; digest review taps). */
+const RATE_LIMIT_EXEMPT: ReadonlySet<string> = new Set(["kill", "decision_review"]);
+
 export class Gateway {
   private readonly caps: GlobalBudgetCaps;
   private readonly projectRoot: string;
@@ -149,9 +154,10 @@ export class Gateway {
   intake(inbound: TypedTaskEvent, now: string = new Date().toISOString()): GatewayIntakeResult {
     // ADR 0018: the kill switch is the operator's emergency stop — the per-chat command
     // rate limit (5 accepted/min) must never delay it. Auth (allowlist, no forwards) was
-    // already enforced upstream in the trigger adapter; nothing here weakens it.
+    // already enforced upstream in the trigger adapter; nothing here weakens it. Same for a digest
+    // review tap: allowlisted, one-shot, one closed-enum label; a dropped tap would look labelled.
     let event = inbound;
-    if (event.source === "telegram" && event.type !== "kill") {
+    if (event.source === "telegram" && !RATE_LIMIT_EXEMPT.has(event.type)) {
       const limit = this.runStore.checkTelegramRateLimit({
         actor_id: event.requested_by.id,
         chat_id: this.telegramChatId(event),
@@ -185,6 +191,7 @@ export class Gateway {
       event = prep.turnEvent;
     }
     if (event.type === "memlane_undo") return this.accepted(event, now, handleMemLaneUndo(this.runStore, event));
+    if (event.type === "decision_review") return this.accepted(event, now, handleDecisionReview(this.runStore, event, now));
 
     if (event.type === "status") {
       return this.handleStatus(event, now);

@@ -1,0 +1,204 @@
+{
+  "earlier": [],
+  "run": {
+    "outcome": {
+      "kind": "lane_reply",
+      "text": "📒 Saved lesson #1 · format\n`Keep replies short.`",
+      "buttons": [
+        {
+          "text": "↩️ Undo",
+          "data": "memlane:undo:<lc#1>"
+        },
+        {
+          "text": "🔍 Dig deeper",
+          "data": "lane:ask:<run#1>"
+        }
+      ]
+    },
+    "jev_decisions": [
+      {
+        "point": "triage",
+        "question_id": "category",
+        "criteria_hash": "5eb9baea76fdff263944be72c196da9d90c4ab46ec8bab093a52a99b48d72148",
+        "model_reported": "jev-1.13.0",
+        "state_hash": "ebe58efb64be9bcae4bd1a1a020b83bd0704549278a3f44bf7f2ab13836bdb29",
+        "lang": "zh",
+        "answers_json": "{\"answer\":0.009999999999999998,\"lookup\":0.009999999999999998,\"research\":0.009999999999999998,\"memory\":0.9,\"self_change\":0.009999999999999998,\"machine_task\":0.009999999999999998,\"schedule\":0.009999999999999998,\"wiki\":0.009999999999999998,\"mail_calendar\":0.009999999999999998,\"status\":0.009999999999999998,\"other\":0.009999999999999998}",
+        "confidence": 0.89,
+        "top_prob": 0.9,
+        "margin": 0.89,
+        "threshold_version": "2026-10-10.1",
+        "threshold_used": "2026-10-10.1:routed",
+        "decision": "act",
+        "outcome_source": "none",
+        "outcome_value": null,
+        "input_tokens": 900,
+        "status": "answered",
+        "skip_reason": null
+      },
+      {
+        "point": "triage",
+        "question_id": "sets_rule",
+        "criteria_hash": "455d081d81ff7ae67c693a888019570572142aa854d3cb16bf81b7e745a159ae",
+        "model_reported": "jev-1.13.0",
+        "state_hash": "ebe58efb64be9bcae4bd1a1a020b83bd0704549278a3f44bf7f2ab13836bdb29",
+        "lang": "zh",
+        "answers_json": "{\"true\":0.95,\"false\":0.050000000000000044}",
+        "confidence": null,
+        "top_prob": 0.95,
+        "margin": 0.8999999999999999,
+        "threshold_version": "2026-10-10.1",
+        "threshold_used": "2026-10-10.1:routed",
+        "decision": "act",
+        "outcome_source": "none",
+        "outcome_value": null,
+        "input_tokens": 900,
+        "status": "answered",
+        "skip_reason": null
+      },
+      {
+        "point": "triage",
+        "question_id": "rule_scope",
+        "criteria_hash": "02c6caacb4d5a277b13fc3aa1d196a271240a58e17151e2c3f764c81a319cb33",
+        "model_reported": "jev-1.13.0",
+        "state_hash": "ebe58efb64be9bcae4bd1a1a020b83bd0704549278a3f44bf7f2ab13836bdb29",
+        "lang": "zh",
+        "answers_json": "{\"ask\":0.9,\"research\":0.09999999999999998}",
+        "confidence": 0.8,
+        "top_prob": 0.9,
+        "margin": 0.8,
+        "threshold_version": "2026-10-10.1",
+        "threshold_used": "2026-10-10.1:routed",
+        "decision": "act",
+        "outcome_source": "none",
+        "outcome_value": null,
+        "input_tokens": 900,
+        "status": "answered",
+        "skip_reason": null
+      },
+      {
+        "point": "triage",
+        "question_id": "breadth",
+        "criteria_hash": "c70960d0d6cc4fe6b4019e606492d6738ba909ac6731d4830dd39eb0619ac005",
+        "model_reported": "jev-1.13.0",
+        "state_hash": "ebe58efb64be9bcae4bd1a1a020b83bd0704549278a3f44bf7f2ab13836bdb29",
+        "lang": "zh",
+        "answers_json": "{\"0\":0.1,\"1\":0.9,\"2\":0,\"3\":0}",
+        "confidence": 0.8,
+        "top_prob": 0.9,
+        "margin": 0.8,
+        "threshold_version": "2026-10-10.1",
+        "threshold_used": "2026-10-10.1:routed",
+        "decision": "act",
+        "outcome_source": "none",
+        "outcome_value": null,
+        "input_tokens": 900,
+        "status": "answered",
+        "skip_reason": null
+      },
+      {
+        "point": "triage",
+        "question_id": "reasoning",
+        "criteria_hash": "9b2eae10d8d782a999033ed1f25df2c785c128515e49bcfd3721174c8416207b",
+        "model_reported": "jev-1.13.0",
+        "state_hash": "ebe58efb64be9bcae4bd1a1a020b83bd0704549278a3f44bf7f2ab13836bdb29",
+        "lang": "zh",
+        "answers_json": "{\"0\":0.1,\"1\":0.9,\"2\":0,\"3\":0}",
+        "confidence": 0.8,
+        "top_prob": 0.9,
+        "margin": 0.8,
+        "threshold_version": "2026-10-10.1",
+        "threshold_used": "2026-10-10.1:routed",
+        "decision": "act",
+        "outcome_source": "none",
+        "outcome_value": null,
+        "input_tokens": 900,
+        "status": "answered",
+        "skip_reason": null
+      },
+      {
+        "point": "triage",
+        "question_id": "actions",
+        "criteria_hash": "37dc583de24e6dabb20f4c3112619788b9485917a9529cac0322866e388f3538",
+        "model_reported": "jev-1.13.0",
+        "state_hash": "ebe58efb64be9bcae4bd1a1a020b83bd0704549278a3f44bf7f2ab13836bdb29",
+        "lang": "zh",
+        "answers_json": "{\"0\":1,\"1\":0,\"2\":0,\"3\":0}",
+        "confidence": 0.8,
+        "top_prob": 1,
+        "margin": 1,
+        "threshold_version": "2026-10-10.1",
+        "threshold_used": "2026-10-10.1:routed",
+        "decision": "act",
+        "outcome_source": "none",
+        "outcome_value": null,
+        "input_tokens": 900,
+        "status": "answered",
+        "skip_reason": null
+      }
+    ],
+    "verdict": {
+      "id": "<jv#1>",
+      "category": "memory",
+      "breadth": 0.9,
+      "reasoning": 0.9,
+      "actions": 0,
+      "sets_rule": 0.95,
+      "rule_scope": "ask",
+      "lane": "memory",
+      "role": "default",
+      "effort": null,
+      "model": null,
+      "cascade": null,
+      "save_outcome": "saved",
+      "route_outcome": "act",
+      "handler_outcome": "lane_reply",
+      "reason": "routed",
+      "skip_reason": null,
+      "fast_used_tool": 0,
+      "paco_correction": null,
+      "quoted_turn_id": null
+    },
+    "route_links_verdict": null,
+    "llm_attempts": [
+      [
+        "triage",
+        null
+      ]
+    ],
+    "triage": [
+      {
+        "status": "answered",
+        "category": "memory",
+        "route_lane": "memory",
+        "role": "default",
+        "verdict_id": "<jv#1>",
+        "confidence": 0.89,
+        "top_prob": 0.9,
+        "margin": 0.89,
+        "lang": "zh",
+        "decision": "act",
+        "verdict": "routed"
+      }
+    ],
+    "lessons_saved": 1,
+    "lane_replies": [
+      {
+        "chat_id": "555",
+        "lane": "memory",
+        "catch_up": "Houge saved a rule: Keep replies short.",
+        "verdict_id": "<jv#1>"
+      }
+    ],
+    "lesson_changes": [
+      {
+        "chat_id": "555",
+        "new_id": 1,
+        "superseded_id": null,
+        "pruned_ids": "[]",
+        "undone_at": null
+      }
+    ]
+  },
+  "planner_last_answered": null
+}

@@ -1,6 +1,6 @@
 # ADR 0028: omp runtime — agentic mode under code-owned floors
 
-- **Status:** accepted
+- **Status:** accepted; amended 2026-10-12 by [ADR 0030](0030-decision-ladder.md) (D5 conditional on turn trust; D12 output judged — see end)
 - **Date:** 2026-09-30
 - **Deciders:** Paco
 - **Supersedes:** the agentic clause of [ADR 0002](0002-pi-as-agent-runtime.md) (the agentic mode is
@@ -373,3 +373,9 @@ attribution or session reset without crashing anything. Decided:
   quarantined): recommended by the review, and rejected by Paco as too restrictive (D12).
 - **`claude -p` or a metered API for Opus:** rejected in favour of subscription OAuth inside omp, with
   the terms risk accepted and a one-line env fallback (D7).
+
+---
+
+## Amendment (2026-10-12): decision ladder
+
+Amended by [ADR 0030](0030-decision-ladder.md). D5's tap-free local writes become conditional on the turn's trust level (`turn.trust`); D12's network shell output gets the `tool.injection` judge.
