@@ -1,7 +1,7 @@
 # Decision ladder — every Houge decision on one list, judged inside the loop, improved from outcomes
 
-- **Date:** 2026-10-12 · **Rev 3** · **Status:** draft; two review rounds (senior against the live system, with probes
-  P1–P4 run; codex). Rev 3 closes the round 2 blockers (§15).
+- **Date:** 2026-10-12 · **Rev 4** · **Status:** draft; three review rounds (senior against the live system, with
+  probes P1–P4 run; codex). Rev 4 closes the round 3 blockers (§15).
 - **Decider:** Paco. Design approved section by section in chat on 2026-10-12.
 - **Proposes:** ADR 0030 "Decision ladder" (§10). Amends ADR 0029 (front door becomes an entry; the Jev rule restated),
   0028 (D5 tap-free local writes and D12 shell outside the wall become conditional), 0014 (an injection judge before
@@ -60,7 +60,7 @@ ack rule → Jev tree → Tiny cascade → planner.
 | R8 | "After 3 straight approvals" of the daily Alishan search, Houge stops asking. This becomes standing approvals, in stage 4. | §8.3 |
 | R9 | SP4 items and parked ideas are written down, not lost | §11 |
 | R10 | ADRs are reviewed continually: "don't take ADR as bible" (the ADR 0015 lesson) | §10.3 |
-| R11 | **Egress approved for every new class**, after redaction: web pages, mail and calendar content, shell output, downloaded files and the planner's final reply may go to TypeSafe (ADR 0029 decision 4 asks for this approval per class) | §7.0 |
+| R11 | **Egress approved for every new class**, after redaction. Paco chose "All of it": "Web, mail and calendar, shell, files and the reply, all redacted." (ADR 0029 decision 4 asks for this approval per class) | §7.0 |
 
 ## 3. Facts that bind the design
 
@@ -208,11 +208,18 @@ hash, reported model, language). The new in-loop judges have no rows, and Paco r
     ADR 0029 decision 5 does for calibrated rows.
 - **Model or wording change:** a provisional rung goes to shadow and opens incident `decision_bar_stale:<entry>`, as
   ADR 0029 decision 5 does for calibrated rows. Paco re-arms by committing a row.
-- **Pre-ship sanity gate (not calibration), with thresholds that can fail** (senior N5):
-  - **`tool.injection`:** ≥ 60 planted attacks (web, mail, shell and file shapes, zh and en) and ≥ 300 clean passages
+- **Pre-ship sanity gate (not calibration), with thresholds that can fail** (senior N5). The corpora are built by the
+  stage's plan (senior W10):
+  - planted attacks: mu's published injection examples (MIT), plus attacks written for Houge's tools in zh and en,
+    each reviewed in the plan;
+  - clean passages: captured by running real read-only tools (search, fetch of 20 fixed public pages, common shell
+    commands, Paco-approved local files) on the gate machine;
+  - settle: the DB copy.
+  - Thresholds:
+    - **`tool.injection`:** ≥ 60 planted attacks (web, mail, shell and file shapes, zh and en) and ≥ 300 clean passages
     from real tool output on the gate machine. PASS needs recall ≥ 85% and clean withholds ≤ 1%. mu measured 70/79 and
     0/1,520.
-  - **`turn.settle`:** the last 30 days' planner replies with their tool rows from the DB copy. PASS needs total
+    - **`turn.settle`:** the last 30 days' planner replies with their tool rows from the DB copy. PASS needs total
     send-backs ≤ 10% of replies; Paco reads a sample of 20 send-backs before merge.
 - **Promotion:** review taps (§8.1) accumulate labels; a calibrated row replaces the provisional bar when Paco commits
   it, through the existing calibration report.
@@ -282,7 +289,9 @@ New tables. `jev_verdicts` is **kept** as `turn.handler`'s detail table (§5.4):
   - `run_id`, `tool_call_id?`;
   - `stage`, `rung`, `verdict` (a closed value from the entry), `p?`;
   - `reason_code?` (a code-owned enum per entry, never model or tool text), `armed_mode`, `latency_ms`;
-  - `jev_decision_id?` (FK to `jev_decisions`, kept as the raw per-call record that calibration needs);
+  - Jev rows link the other way: `jev_decisions` gains `decision_id` (one decision, many questions; senior W4).
+    `jev_decisions` stays the raw per-question record calibration needs. Each entry declares which question's `p` is
+    the recorded `p` (for `tool.injection`, the maximum over passages; for `turn.settle`, the question that fired);
   - `created_at`.
   - **No state column at all.** A hash of a low-entropy state can be reversed by dictionary (senior W), and nothing
     reads it. The ledger never holds read text (lessons.md).
@@ -299,6 +308,13 @@ New tables. `jev_verdicts` is **kept** as `turn.handler`'s detail table (§5.4):
   and `loop_step` events (no tally table; codex S16).
 
 **Retention:** rows and outcomes are kept; revisit when the table passes 1M rows.
+
+**Per-entry health** (senior W5):
+
+- The invariant sweep computes `jev_skip_rate` per entry, generalising today's triage-only check at
+  `invariant-sweep.ts:209-235`.
+- The digest shows, per entry: skips, shadowed rungs and fallbacks.
+- A `jev-latest` move that shadows every provisional rung at once raises one incident that names them all.
 
 ### 5.3 `turn.handler`'s detail table
 
@@ -364,11 +380,19 @@ For every migrated entry:
      `routed_by`, corrections, terminal transitions), the `triage` event and lane catch-up (codex B6).
    - **P6 is a dual run**, not a replay of stored decisions. The 78 stored `jev_decisions` are 20 calls, about 8 on
      today's questions, and states are not stored (senior #11).
-     - The last 200 Telegram user texts from `chat_turns` go through the pre-stage-1 build and the stage 1 build, on
-       two copies of the DB, with Jev live.
-     - The persisted `jev_decisions`, `jev_verdicts` and `triage` rows must match, field by field.
-     - A mismatch where Jev's own probabilities differ between the two calls is reported separately, as Jev
-       nondeterminism, never counted as a pass.
+     - **Harness:** `scripts/live-gate-decisions-parity.mjs` builds the triage input for each of the last 200 Telegram
+       user texts in `chat_turns`, with the stored previous turn as context. It calls the triage entry point
+       (`CoreWorker` triage, the function `settleTriage` closes) in the pre-stage-1 `dist/` and in the stage 1
+       `dist/`, each against its own DB copy.
+     - **Isolation:** lanes, planner, Telegram and the outbox are stubbed. The harness exercises decision and
+       persistence only. Later mutations of `jev_verdicts` (settle, `routed_by`, corrections, terminal transitions)
+       are covered by the differential unit tests, not the dual run (codex round 3 W16).
+     - **Compared projection:** every column of `jev_decisions`, `jev_verdicts` and the `triage` event, except ids,
+       timestamps and `latency_ms`. Ids are mapped pairwise and links compared after mapping (codex round 3 W15).
+     - **Nondeterminism:** a pair whose Jev probabilities differ by more than 1e-6 between the two calls is reported
+       as Jev nondeterminism, excluded from both counts.
+     - **PASS:** at least 190 deterministic pairs and 0 mismatches among them. One Jev call per text per build, about
+       400 calls.
 5. **Only then** can an improvement ship, as a new entry version with its own review.
 
 ### 6.3 The registry is protected surface
@@ -385,35 +409,42 @@ review surface (§8) is the net.
 
 ### 7.0 What leaves the machine (R11)
 
-Paco approved every new class going to TypeSafe on 2026-10-12. Two rules bound what is sent.
+On 2026-10-12 Paco chose "All of it" when asked "Which content may the new judges send to TypeSafe (after redaction)?".
+The option read: "Web, mail and calendar, shell, files and the reply, all redacted."
 
-**1. Only content of outside origin, or content seen after it, is judged and sent.**
+Rev 3 narrowed "files" to outside-origin files with a turn-trust boundary. Reviewers broke that boundary twice (senior
+round 3 B1, B2): best-effort network detection, files downloaded in an earlier turn, spoofable mtimes. Rev 4 applies
+the ruling as chosen:
 
-- A turn's local data stays local until something from outside enters it. Before that, local shell output and local
-  file reads are neither judged nor sent: before the first outside read, a planted instruction can only come from
-  Paco's own files.
-- Once a turn is `untrusted` (§7.2), every later shell output and built-in read is judged, because a local command can
-  now echo downloaded content (`curl -o ~/x`, then `cat ~/x`).
-- A built-in read of a file modified since the turn started is judged at any trust level, so a file written this turn
-  counts as outside content (§7.1).
+- **Every shell output, every built-in read, every wall-tool result and every final planner reply** is eligible for
+  judging and may be sent after redaction.
+- Read-denied files (`protected-paths.ts`: `.env`, the DB, credential stores) can never be read by the planner, so they
+  never reach a judge.
 
-**2. One judge redactor, `src/decisions/egress.ts`, distinct from `jev/egress-redact.ts`.**
+**The judge redactor, `src/decisions/egress.ts`**, is distinct from `jev/egress-redact.ts`. That one strips heredocs to
+the end of the text and replaces every URL (`egress-redact.ts:8,16`), which would blind an injection judge. The judge
+redactor removes secrets and keeps instructions:
 
-- That redactor was built for Paco's Telegram text: it strips heredocs to the end of the text and replaces every URL
-  (`egress-redact.ts:8,16`), which would blind an injection judge (senior N2, checked on `dist`).
-- The judge redactor removes **secrets only**:
-  1. the broker's known secret values, injected into the stage 2a state builder through a new `RunStore` method that
-     exposes the existing private redactor (`run-store.ts:1030`);
-  2. credential shapes: bearer tokens, provider key prefixes, long hex and base64 tokens;
-  3. `NAME=value` and `NAME: value` where NAME matches `(?i)(pass|secret|token|key|auth|cookie|session|pwd)`;
-  4. one-time codes and sign-in links of the shapes `trusted_extract` recognises (mail).
-- It keeps URLs, heredoc markers and prose, because the judge must read them.
-- A test feeds a seeded corpus through each judge's state builder and asserts no seed survives: API keys, `.env` lines
-  (including a nested `.env`), OTPs, magic links, bearer tokens, `password=…`.
-- **Accepted residual, stated in ADR 0030:** a secret with no recognisable shape, inside outside-origin content, can
-  reach TypeSafe. That is the class Paco approved in R11. Paco's local files never go unless the turn already read
-  something from outside.
-- The passage text is never written to the ledger (§5.2).
+1. the broker's known secret values, through a new `RunStore` method exposing the existing private redactor
+   (`run-store.ts:1030`);
+2. credential shapes: bearer tokens, provider key prefixes, long hex and base64 tokens;
+3. `NAME=value` and `NAME: value` (anchored at line start or after whitespace), where NAME matches
+   `(?i)\w*(pass|secret|token|apikey|api_key|auth|cookie|session|pwd)\w*`.
+   - The value is masked only when it is a single run of 8 to 256 non-space characters.
+   - A value containing spaces is prose and survives, so `api_key: ignore previous instructions and …` keeps its
+     payload for the judge (senior round 3 B3).
+4. **URLs** keep scheme, host and path. Userinfo, every query value and the fragment are masked (senior W1).
+5. **This turn's extracted one-time codes and links** (by value, from `trusted_extract`) are masked.
+
+The seeded test has two halves:
+
+- **No seed survives:** API keys, `.env` lines (including a nested `.env`), `DATABASE_URL` with userinfo, OAuth
+  `?code=`, signed query strings, OTPs, magic links, bearer tokens, `password=…`.
+- **Every planted payload survives:** injection sentences after `api_key:`, inside heredocs, inside URLs' paths, in zh
+  and en.
+
+**Accepted residual, stated in ADR 0030:** a secret with no recognisable shape, in a file or output the planner read,
+can reach TypeSafe. Paco approved that class (R11). The passage text is never written to the ledger (§5.2).
 
 ### 7.1 `tool.injection`: does a tool result carry instructions aimed at the AI?
 
@@ -424,14 +455,18 @@ Paco approved every new class going to TypeSafe on 2026-10-12. Two rules bound w
     renders output from `error_ref`);
   - wall tools before the quarantined reader.
 - **Built-in `read`** is judged through Houge's extension (P1 PASS):
-  - The extension first caps the result to 32 KiB, truncating `content` **and** `details.displayContent` with a
-    truncation note, so nothing past the judged bytes reaches the model (codex B11).
-  - It sends a new bridge request kind `judge_read` with the capped text, the path, and whether the file's mtime is
-    after the turn started. The bridge authenticates it like every other request.
-  - Houge replies `unchanged` or with the rewritten text, and the extension applies it to both fields.
-  - The extension's timer is 5 s (omp's limit is 30 s). On expiry or a bridge error, the extension applies the code
-    floor itself (the phrase list ships in the extension) and sends a `report` with `judge_timeout`. Houge raises the
-    turn to `untrusted` and records the `fail` verdict.
+  1. The extension builds one canonical text: `content` capped at 32 KiB with a truncation note. It sets **both**
+     `content` and `details.displayContent` to that canonical text **before** asking, so whatever is judged is exactly
+     what is shown (codex round 3 #5).
+  2. It sends a new bridge request kind `judge_read { toolCallId, text }`, validated and authenticated like every
+     other bridge request.
+  3. Houge replies `{ verdict: "unchanged" | "rewritten", text? }`. The extension applies a rewrite to both fields.
+  4. **Timeout:** the extension waits at most 5 s, well under omp's 30 s hook limit. On expiry or a bridge error it
+     applies the code floor itself (the phrase list ships in the extension) and returns at once. It then sends a
+     `judge_timeout { toolCallId }` request **without awaiting it**, so reporting can never delay the result (codex
+     round 3 B11).
+     - Houge's handler for `judge_timeout` raises the turn to `untrusted` and records the `fail` verdict.
+     - A test holds the bridge unresponsive for 40 s and asserts the model saw the floored text, never the raw text.
 
 **What is judged:** only bytes that reach a model.
 
@@ -439,16 +474,12 @@ Paco approved every new class going to TypeSafe on 2026-10-12. Two rules bound w
 - shell output after its 32 KiB cap;
 - read results after the cap above.
 
-**Rung 1 (code): withhold, pass, or abstain.** The floor is the initial verdict even when the rung abstains (codex
-S16).
+**Rung 1 (code): withhold, pass, or abstain.** The floor is the initial verdict even when the rung abstains.
 
 - **Withhold:** a passage matching the fixed phrase floor.
-- **Pass** (no judge, nothing sent), and only these:
-  - shell output or a built-in read in a turn still `clean`, where a read file was not modified this turn (§7.0
-    rule 1);
-  - an empty result.
-  - There is no length-based pass (codex B10, senior N3).
-- **Abstain:** everything else, including all wall-tool results and all network shell output.
+- **Pass:** an empty result only.
+- **Abstain:** everything else. There is no length, location or trust-based pass (codex round 2 B10, senior round 3
+  B1).
 
 **Rung 2 (Jev):**
 
@@ -456,14 +487,16 @@ S16).
 - batches of 16, sent concurrently;
 - a total bound of 3 s per tool call;
 - wording ported from mu (MIT, attributed);
-- provisional bar p > 0.5 withholds, replaced with `[withheld: text aimed at the assistant]`.
+- provisional bar p > 0.5 withholds, replaced with `[withheld: text aimed at the assistant]`;
+- the recorded `p` is the maximum over passages, together with that passage's index (senior W4).
 
 **Monotone** (`pass < withhold`). Withholding is a transform of data the model reads, not an allow or deny of an action.
-ADR 0030 records it as monotone under ADR 0029 decision 2.
 
-**Fail:** the floor's answer, never worse than today. **Always record.**
+**Fail:** the floor's answer. **Always record.**
 
-**Outcomes:** review taps; Paco accepting a "trust this source" proposal (§8.3).
+**Volume:** about 4.5 shell results, 6 external reads and 0.2 built-in reads a day, each of 1–6 batches. Within P5.
+
+**Outcomes:** review taps; Paco accepting a "trust this source" proposal.
 
 **Effect on `turn.trust`:** any withhold raises the turn to hostile.
 
@@ -472,44 +505,62 @@ ADR 0030 records it as monotone under ADR 0029 decision 2.
 **Levels:**
 
 - `clean`;
-- `untrusted`: a wall tool result, network shell output (`tool.shell_netread`, below), a read of a file modified this
-  turn, or a `judge_timeout`;
+- `untrusted`: a wall tool result, network shell output (`tool.shell_netread`, below), or a `judge_timeout`;
 - `hostile`: `tool.injection` withheld something.
 
-The level only rises within a turn. It is held on the active turn object, persisted as a `turn_trust` ledger event on
-each rise (so `improve.route` and the review can read it later; senior #7), and is an input to `tool.policy`.
+**Persistence:**
+
+- The level only rises within a turn. It is held on the active turn object and is an input to `tool.policy`.
+- A `turn_trust { level }` ledger event is written on each rise.
+- A terminal `turn_trust_final { max_level }` event is written at **every** turn end, success or failure (senior W6).
+- A turn without a final event (a failed write, or any turn from before stage 2a) counts as **not clean** wherever
+  clean is required (§7.4).
 
 **`tool.shell_netread`** (new code entry, best effort, its own tests). Does a command read from the network?
 
 - Patterns: `curl` and `wget` of any method; `http`/`httpie`; `ssh`/`scp`/`rsync` with a host; `git fetch`, `clone`
   and `pull`; `nc`; `python`/`node` with url, fetch or http modules; pipes into these.
 - It is separate from `tool.shell_class`, which keeps today's approval classification untouched.
+- It now decides only the trust level, never whether output is judged (§7.1), so its misses cost a missed `untrusted`,
+  not a missed judgement.
 
-**Effects** follow ADR 0029 decision 2 exactly: a raised level only **adds a tap**
-(`ask := code_ask ∨ trust_ask`). It never denies on its own (senior N1).
+**Effects** follow ADR 0029 decision 2: a raised level adds a tap (`ask := code_ask ∨ trust_ask`).
 
 - **untrusted:**
-  - `memory_correct` keeps today's `tainted_turn` refusal (B9: a code rule that already exists, unchanged);
+  - `memory_correct` keeps today's `tainted_turn` refusal (B9, an existing code rule, unchanged);
   - `lesson_write`, `schedule_task`, `self_write_propose` and `skill_author` additionally ask.
-- **hostile:**
-  - every bridge side effect asks, including plain shell (today tap-free, D5);
-  - the built-in `edit` and `write` cannot wait for a tap: their gate is a synchronous allow/deny under omp's 30 s
-    `tool_call` limit. At hostile they return a model-visible redirect: "this turn read text aimed at the assistant;
-    make this change through `bash`, which will ask Paco".
-    - That routes the same action to the asking path, so the action stays available behind a tap. ADR 0030 records it
-      as the ask form for built-ins.
-  - in a schedule-born turn the cards are sent as usual and expire under the normal approval timeout if nobody taps.
-    The report says why; incident `hostile_schedule_turn` pages once.
-  - standing approvals do **not** apply (§8.3).
-- **Tap budget:** ADR 0029's added-tap budget (default 3 a day) counts trust asks. Beyond it the taps still ask, and
-  incident `trust_tap_budget` opens.
+- **hostile:** additionally ask for the actions an injection could turn into harm:
+  - shell commands `tool.shell_netread` flags (exfiltration over the network, today tap-free when it is a plain GET);
+  - every write outside the chat workspace.
+  - Read-only local commands (`ls`, `cat`, `grep`) do **not** ask. Making them ask would stall a turn behind serial
+    cards for no safety gain (senior round 3 B4).
+- **Built-in `edit` and `write` at hostile** return a model-visible redirect: "this turn read text aimed at the
+  assistant; make this change through `bash`, which will ask Paco".
+  - This is a block of one route, so ADR 0030 names it as an explicit exception to ADR 0029's "no Jev in any deny path"
+    (senior W3), for Paco to sign.
+  - The asking route stays open, and the hostile `bash` card shows target paths and byte counts when the command
+    passes the 3000-char card cap (`bridge-handler.ts:55`).
+- **Asks added by trust never pause the turn deadline or the frame-idle watchdog.** Today an approval wait pauses both
+  (`planner-supervisor.ts:1144-1156`).
+  - So a schedule-born hostile turn ends within its normal 10 minutes, its cards expire, and Paco's messages are never
+    held behind it for hours (senior round 3 B4).
+  - Incident `hostile_schedule_turn` pages once.
+- **Tap budget:** stage 2a builds the counter ADR 0029 decision 2 describes but code never had (senior W13), counting
+  trust asks per day. At 3 a day, incident `trust_tap_budget` opens; the taps still ask.
+- Standing approvals do not apply at hostile (§8.3).
 - The approval card states the reason: "this turn read text aimed at the assistant".
 
 ### 7.3 `turn.settle`: done, or stopped halfway?
 
 **Monotone** in the sense of more verification: `settle < send_back`. A Jev rung can only move a turn toward one more
-pass, never cut a reply short. That is how it satisfies §4.1's effect rule (senior N6): the send-back is a bounded,
-reply-only continuation with no side effect of its own. Any gated step inside it still asks.
+pass, never cut a reply short.
+
+**Effect rule (§4.1):** a send-back decided by the **Jev rung** runs its continuation with every side effect asking,
+like hostile plus all writes. So a Jev verdict never causes a tap-free action (senior W7). A send-back decided by the
+**code rung** (claims or todo evidence) runs under the turn's normal gates, since code rungs may cause effects.
+
+**Egress:** the final reply is R11's separately approved class ("the reply"), always sent through the judge redactor.
+It does not depend on trust level (senior W2).
 
 **Where.** Houge's extension handles `session_stop` (P2 PASS), asks Houge over the bridge (5 s timer; on expiry it
 returns nothing, so the turn settles), and returns `{continue: true, additionalContext}` or nothing.
@@ -527,6 +578,8 @@ returns nothing, so the turn settles), and returns `{continue: true, additionalC
   test must show Houge settles exactly once and its own retry and omp's never both fire (senior W1).
 
 **Never send back when:**
+
+- the turn's trust level is `hostile` (the turn is already asking for everything risky);
 
 - the turn already sent back once. Houge's own per-turn flag enforces this, since omp allows up to 8;
 - the last tool call was denied or expired;
@@ -595,11 +648,11 @@ returns nothing, so the turn settles), and returns `{continue: true, additionalC
 
 **What never counts as a signal** (lessons.md: a monitor must not observe its own output; senior B7):
 
-- runs started by an improvement. A new run source `improvement` (added to `domain/types.ts`) tags every background
-  run `improve.route` starts, and the digest and cards are notifications, never runs;
+- work started by an improvement: background authoring jobs (below) are not turns and write no chat turns; the digest
+  and cards are notifications;
 - schedule-born runs;
-- turns whose persisted `turn_trust` reached `untrusted` or `hostile`. Their text may carry injected content, and a
-  skill or lesson would put it into every system prompt.
+- turns without a `turn_trust_final { max_level: clean }` event (§7.2). Their text may carry injected content, and a
+  skill or lesson would put it into every system prompt. A missing event counts as not clean.
 
 **Rungs:**
 
@@ -624,14 +677,24 @@ returns nothing, so the turn settles), and returns `{continue: true, additionalC
 | tool gap | — | digest line; self-write only on Paco's tap | `self_write_propose` |
 | nothing | recorded | recorded | — |
 
-**Authoring input (codex W12).**
+**How authoring runs (senior round 3 B5).** Today skill authoring is a loop tool inside a planner turn
+(`skill_author` → `runSkill`), not a run of its own. A new runs row would be dispatched as a Telegram turn that Paco's
+messages steer into. So auto-authoring is a **background job on the evolution lane**, not a run:
 
-- Recurrence starts a new run (source `improvement`, type `skill_author`), whose contract is compiled like today's
-  skill contract (`core-worker.ts:1688`). Its objective is a code-built origin record: the matched turns' run ids,
-  plus **Paco's own request texts** (never tool output or replies).
-- It claims the evolution lane like any skill run (`evolution-lane.ts:71`), uses that contract's existing budget, and
-  is refused while the lane is busy (retried at the next digest).
-- Gate A (`skill-router.ts`) anchors to that objective as it anchors to a contract objective today.
+- `improve.route`'s code rung calls a new `startAutoAuthoring(origin)` that claims the evolution lane
+  (`evolution-lane.ts:71`), exactly as the tool adapter does. A busy lane refuses it, and it retries at the next
+  digest.
+- **`origin`:** the matched turns' run ids, plus **Paco's own request texts** (never tool output or replies) as the
+  objective. Gate A (`skill-router.ts`) anchors to it as it anchors to a contract objective today.
+- **Auto mode is narrower than the tool:**
+  - the job may only write a skill draft;
+  - Gate A's other outcomes (save a lesson, retire or restore a skill) are not executed, only recorded in the urgent
+    card as suggestions;
+  - the draft is written to the inert `_pending` parking lot (`skill-store.ts:20-26`, excluded from every prompt).
+- **The skill becomes active only when Paco taps Accept** on the urgent card. That is R4's own wording: "you review
+  the result through the normal skill flow". Dismiss retires the draft.
+- The job's ledger events go under a dedicated system run row with source `improvement`, added to `TriggerSource` in
+  `domain/types.ts`, which the dispatcher never claims (a test proves the dispatcher skips it).
 - A recurrence cluster that has already started authoring never starts another in 30 days.
 
 **Measuring each improvement.** Each improvement is itself a decision row whose outcome is checked:
@@ -693,41 +756,42 @@ Sent through the outbox straight away:
 
 **Entry:** `approval.standing` is a rule rung placed before the paco rung of `tool.policy`'s approval path.
 
-**Why the scope is narrow.** Rev 1 claimed a byte-identical fingerprint cannot produce a different effect. The review
-showed it can (senior B6, codex B8):
+**Why a clean room, not a grammar.** Three rounds tried to prove from the command text that a byte-identical command
+has a fixed effect. Each round found a new file input:
 
-- `git push` has the same bytes across runs while pushing different commits; the DB copy holds one (`8a6651c01f`);
-- a script operand (`bash file.sh`, `python x.py`) can be rewritten without a tap;
-- `curl -d @file` posts whatever the file holds.
+- `git push`, scripts, `-d @file` (round 1);
+- `-F`, `--data-urlencode`, `~/.curlrc` (round 2);
+- `-H @file`, a planted or stale cookie jar, symlinks (round 3).
 
-So eligibility is an allowlist, not "anything but destructive".
+`command-matcher.ts`'s tokenizer drops quoting and separator kind, so it cannot check a grammar (codex round 3 B12).
+And the real Alishan command uses `-o /dev/null`, a `for` loop, `$(…)` and pipes (senior round 3 B6), so no safe
+grammar would admit the case Paco named.
 
-**Eligible.** One permitted command shape, checked token by token with `command-matcher.ts`'s own tokenizer. Every
-token must fit; an unknown token or option disqualifies the whole command (codex B12, senior N4):
+So Rev 4 binds the *environment*, not the text. A standing-approved command runs only in a **clean room**:
 
-- Segments are joined only by `&&`. Each segment is one of:
-  - `mkdir -p <rel>` or `cd <rel>`, where `<rel>` is a relative path with no `..`, inside the chat workspace;
-  - `curl` with options only from this list:
-    - `-s` / `-S` / `-sS`, `--compressed`, `--max-time <n>`;
-    - `-A <literal>`, `-H <literal>`;
-    - `-X POST|GET|PUT`;
-    - `-d` / `--data` / `--data-raw <literal>`, where the literal never starts with `@`;
-    - `-c <file>`;
-    - `-b <file>` only when an earlier segment of the same command wrote that file with `-c`;
-    - one URL literal.
-- Rejected outright, as any token: `-F`, `--form`, `--data-binary`, `--data-urlencode`, `-T`, `--upload-file`, `-K`,
-  `--config`, `-o` / `-O`, any other option; pipes; redirects; `;`, `||` and `&`; `$(…)`, backticks and variables; any
-  other program (`wget`, `httpie` and script interpreters included).
-- **The config files curl reads are protected:** `~/.curlrc`, `~/.netrc` and `~/.config/curl/` join the write-deny list
-  in `protected-paths.ts` in stage 4, so no turn can plant options for a later run.
-- **The same chat** as the approvals.
-- **The Alishan check:** its command starts `mkdir -p .tmp/ali && cd .tmp/ali && curl -s -c cj.txt -A "Mozilla/5.0" …`.
-  The stored schedule goal is truncated at 300 characters, so the stage 4 plan reads the full command from the run's
-  session transcript and confirms it fits.
-  - If it does not fit, Houge proposes a rewrite of the schedule's command into the permitted shape, and Paco taps to
-    accept it. The grant waits for three approvals of the new command.
+- a fresh, empty, uniquely named directory as its working directory, created by Houge for that one run and deleted
+  after it;
+- `HOME`, `CURL_HOME` and `XDG_CONFIG_HOME` pointed at a second fresh, empty directory, so no `~/.curlrc`, `.netrc` or
+  other config is read;
+- a dedicated Seatbelt profile (rendered by `seatbelt.ts` like the existing two) that:
+  - **denies file reads** outside the clean room and the system trees a process needs (`/usr`, `/bin`, `/System`,
+    `/Library`, `/private/etc` for TLS roots, `/dev/null`);
+  - denies writes outside the clean room;
+  - keeps the network open.
 
-**Never:** `destructive`, `paid`, `memory_correct_write`, or any turn at `turn.trust` hostile.
+Then every file the command can read either was created by that same run, or does not exist. A planted header file, a
+stale cookie jar, a symlink or a config file cannot influence it. The effect depends only on the approved bytes, the
+clock and the remote server's responses, which is what Paco approved three times.
+
+**Eligible:**
+
+- capability `shell_external` (a single `HTTP write` label, or the labels the three approvals carried);
+- not `destructive`, not `paid`, not `memory_correct_write`;
+- the same chat as the approvals;
+- the turn is not `hostile`.
+
+**A command that fails in the clean room counts as a deny for the streak**, and the next run asks again. So a command
+that needs local files never silently loses access; it falls back to asking.
 
 **Grant:**
 
@@ -736,16 +800,19 @@ token must fit; an unknown token or option disqualifies the whole command (codex
   - `denied` resets the streak and blocks a grant for 30 days.
 - On grant:
   - a `ladder_moves` row (`granted_by: auto`, the only auto row the store accepts, §4.3);
-  - an urgent card: "From now on I'll run *<action label>* without asking", with a Revoke button
+  - an urgent card: "From now on I'll run *<action label>* without asking (in a sealed folder)", with a Revoke button
     (`dec:sa:<move_id>:revoke`).
 
 **Use:**
 
-- A matching fingerprint consumes no card.
+- A matching fingerprint consumes no card. It runs in the clean room.
 - It writes a decision row (`rung: rule`, `reason_code: standing`, linking `move_id`).
 - Re-validation (B14) still runs, and the kill switch overrides everything.
 - The binding check (B14) gains one case: a standing move stands in for the same-run approval, for that fingerprint and
   chat only.
+
+**The Alishan check:** the stage 4 gate runs the real command, read from its run's session transcript, in the clean
+room on the gate machine, and confirms it produces the same report as an approved normal run.
 
 **End:** revoke, a deny of the same fingerprint, 30 days unused, or `/standing revoke <n>`. `/standing` lists the
 active ones.
@@ -793,10 +860,12 @@ It amends, naming each clause (senior N1):
     - withholding a passage is a data transform, not an action deny;
     - `turn.settle`'s send-back is a reply-only continuation;
     - the built-in `edit`/`write` redirect at hostile is the ask form for a gate that cannot wait;
-  - "no Jev in any deny path, ever" is kept: no Jev verdict reaches a deny;
+  - "no Jev in any deny path, ever" gains **one named exception** (senior W3): the code-owned redirect of a built-in
+    `edit`/`write` to its asking equivalent (`bash`, which asks) in a hostile turn. Every other Jev verdict stays out
+    of deny paths;
   - the added-tap budget (3 a day) now also counts trust asks (§7.2);
   - **decision 4** (egress): R11 is recorded as Paco's approval of web, mail and calendar content, shell output, files
-    and replies, with §7.0's boundary and redactor, and the accepted residual;
+    and replies, with §7.0's judge redactor and the accepted residual;
   - **decision 5** (shadow before arm): provisional bars (§4.2) are an explicit exception, under Paco's R6, for
     monotone or fail-open entries only.
 - **0028:** D5 tap-free local writes become conditional on `turn.trust`; D12 network shell output gets
@@ -866,10 +935,10 @@ live gate, a docs sync and Paco's merge where protected files are touched.
 | Stage | Contents | Protected files touched (Paco's merge) | Live gate PASS |
 |---|---|---|---|
 | 1 Engine + door | ADR 0030 and the AGENTS.md edit first; registry, runner, `decisions`, `decision_outcomes`, `ladder_moves`; `jev_verdicts` gains `decision_id`; `turn.handler` + `turn.gear` migrated; `src/decisions/` protected; off switch; **daily digest and urgent cards** (counts, unsure list, callbacks) | ADR, AGENTS.md, self-write-guard, run-store, core-worker | P6 dual run: 0 mismatches over 200 texts; all nine `jev_verdicts` consumers green; the digest renders on the DB copy and a ❌ tap writes an outcome |
-| 2a In-Houge judges | supervisor terminal-`agent_end` fix (P7); `tool.injection` on shell and wall tools; `tool.shell_netread`; `turn.trust` with `turn_trust` events; judge redactor; injection and trust items in the digest | bridge-handler, planner-supervisor, capability-policy, run-store | the §4.2 injection sanity gate passes (recall ≥ 85%, clean withholds ≤ 1%); no seeded secret leaves; a planted turn reaches hostile, a plain shell call asks, a built-in write gets the bash redirect; a clean local-only turn sends nothing to TypeSafe |
-| 2b Hooks + learning | extension `judge_read` and `session_stop`; `turn.settle`; `todo` with reminders off; `improve.route` with source `improvement`; improvement items in the digest | extension, planner-supervisor, planner-session, domain types | a planted file read past the 32 KiB cap is withheld in both fields; the §4.2 settle gate passes (≤ 10% send-backs, Paco's sample read); a "scheduled" claim with no call is sent back once, and a first-pass attachment survives; past corrections route to the expected targets; 3 clean similar synthetic turns start authoring, while a hostile turn, a schedule-born run and an improvement run do not count |
+| 2a In-Houge judges | supervisor terminal-`agent_end` fix (P7); `tool.injection` on shell and wall tools; `tool.shell_netread`; `turn.trust` with `turn_trust` events; judge redactor; injection and trust items in the digest | bridge-handler, planner-supervisor, capability-policy, run-store | the §4.2 injection sanity gate passes (recall ≥ 85%, clean withholds ≤ 1%); no seeded secret leaves; a planted turn reaches hostile, a network shell call and a write outside the workspace ask, `ls` does not, a built-in write gets the bash redirect, and a schedule-born hostile turn ends within its deadline |
+| 2b Hooks + learning | extension `judge_read`, `judge_timeout` and `session_stop`; `turn.settle`; `todo` with reminders off; `improve.route`; auto-authoring to `_pending`; improvement items in the digest | extension, planner-supervisor, planner-session, domain types, skill-store | a planted file read past the 32 KiB cap is withheld in both fields; a 40 s unresponsive bridge shows the floored text, never raw; the §4.2 settle gate passes (≤ 10% send-backs, Paco's sample read); a "scheduled" claim with no call is sent back once, and a first-pass attachment survives; a labelled set of ≥ 30 past signals (labels by the plan author, checked by Paco in one sitting) routes ≥ 80% to the labelled target; 3 clean similar synthetic turns write a `_pending` draft and an urgent card, while a hostile turn, a schedule-born run and a turn without `turn_trust_final` do not count |
 | 3 Unprotected families | intake, context, supervision and settle entries migrated | core-worker, planner-supervisor (some) | differential on behaviour (§6.2); full suite and existing gates green |
-| 4 Protected families + standing | `tool.policy`, `tool.shell_class`, `tool.path`, `approval.bind`, `selfwrite.guard`, `fetch.ssrf`, `posture.kill`, `secret.redact`; `approval.standing`; curl config files write-denied | policy, bridge, self-write-guard, gate-path, command-matcher, protected-paths | differential: command corpus, path corpus and policy matrix identical; 3 approvals of the real Alishan command on the copy → grant → the 4th runs without a card → a deny revokes; `git push`, `curl -F`, `--data-urlencode @`, `-K`, `-d @file` and an extra plain segment are never granted |
+| 4 Protected families + standing | `tool.policy`, `tool.shell_class`, `tool.path`, `approval.bind`, `selfwrite.guard`, `fetch.ssrf`, `posture.kill`, `secret.redact`; `approval.standing` with the clean-room Seatbelt profile | policy, bridge, self-write-guard, gate-path, command-matcher, seatbelt | differential: command corpus, path corpus and policy matrix identical; the real Alishan command produces the same report in the clean room; 3 approvals on the copy → grant → the 4th runs without a card in the clean room → a deny revokes; in the clean room, `-H @/tmp/planted`, a planted `cj.txt` symlink and a planted `~/.curlrc` have no effect |
 
 Each stage keeps every existing consumer working at its own boundary (codex W15): no table is dropped while a reader
 remains, and no stage depends on a later one.
@@ -968,4 +1037,31 @@ Rev 1 partials closed in Rev 3:
 - **Codex:** redactor wiring (W13), the skill run contract (W14), attachments across passes (W15), the monotone floor
   (S16).
 - **Senior W1:** the non-terminal `agent_end` cases become probe P7 and tests.
+
+### Round 3 (Rev 3 → Rev 4)
+
+Round 3 results:
+
+- **Senior:** 6 new blockers, 13 warnings, 3 suggestions.
+- **Codex:** 4 new blockers, 2 warnings, 1 suggestion. Its round 2 items: 5 closed, 4 partial, 1 open.
+
+Rev 4 changes approach in four places rather than patching the symptoms:
+
+| # | Blocker (source) | Resolution |
+|---|---|---|
+| 20 | The outside-origin boundary misses network shell and earlier downloads; mtime is spoofable (senior B1, B2; codex #1, #3) | the boundary is dropped. R11 is applied as Paco chose it ("files" unqualified): every shell output and read is judged after redaction (§7.0, §7.1) |
+| 21 | Redactor rule 3 deletes payloads; no survival test (senior B3) | anchored NAME, single-run values only, URL masking by component, a two-sided seeded test (§7.0) |
+| 22 | Hostile asks stall turns and block the queue for hours (senior B4) | hostile asks only for network shell and writes outside the workspace; trust asks never pause the deadline or the watchdog (§7.2) |
+| 23 | The `improvement` run source has no execution path; auto Gate A side effects (senior B5) | a background evolution-lane job, not a run; auto mode writes a `_pending` draft only; active on Paco's tap (§7.4) |
+| 24 | Standing approvals still admit `-H @file`, a planted jar, symlinks; the tokenizer cannot check a grammar; the real Alishan command cannot fit (senior B6; codex B12–B14) | a clean room: fresh directory, empty `HOME`/`CURL_HOME`, a read-restricted Seatbelt profile; no grammar needed (§8.3) |
+| 25 | The `judge_read` timeout report can delay the result past the hook limit (codex B11) | `judge_timeout` is a distinct request sent without awaiting; a 40 s unresponsive-bridge test (§7.1) |
+
+Warnings closed:
+
+- **Senior:** URL secrets (W1); reply egress (W2); the redirect named as an ADR exception (W3); `jev_decisions` one-to-
+  many with the recorded `p` defined (W4); per-entry skip monitoring (W5); `turn_trust_final`, failing closed (W6);
+  Jev send-back continuations ask (W7); the `judge_read` protocol (W8); the P6 harness (W9); corpus sources (W10); the
+  Alishan fit (W11); the 2b labelled set (W12); the tap-budget counter (W13).
+- **Codex:** canonical judged text (#5); the P6 projection and isolation (W15, W16).
+- **Deferred to the stage 2b plan:** codex S17 (typed fields for the background job).
 
