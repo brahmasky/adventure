@@ -10,14 +10,21 @@
 // fixed clock for both builds — goes through CoreWorker.triageTurn in the pre-stage-1 dist (copy A) and in this build's
 // dist (copy B). Jev record/replay (controller ruling 2026-10-12, after the probe showed Jev drifts run to run on a
 // byte-identical request): the old build calls the real Jev through a recording `ompOptions.jevFetch`; the new build gets a
-// replaying `jevFetch` that serves the recorded response (or the recorded throw) for the identical request body, in call
-// order. The gate asks "does stage-1 code make the same decisions from the same Jev answers"; Jev's own drift is not its
+// replaying `jevFetch` that serves the recorded responses (or recorded throws) strictly in recorded call order, each only
+// for the identical request body. The gate asks "does stage-1 code make the same decisions from the same Jev answers"; Jev's own drift is not its
 // subject. A request the old build never sent (other body, extra call) or a recorded call the new build never made is a
-// MISMATCH. Replay halves the TypeSafe calls (≈ 200 for the full run, plus retries), under Paco's approval below. Lanes, planner, Telegram and the outbox are stubbed: the
+// MISMATCH. Replay halves the TypeSafe calls (≈ 200 for the full run, plus retries), under Paco's approval below.
+// Admission: a turn one build admits and the other refuses is a MISMATCH (each side's refusal is printed); only a turn both
+// builds refuse identically is skipped, and those are counted. Lanes, planner, Telegram and the outbox are stubbed: the
 // cascade stub picks the first candidate, every other seat fails, search and fetch fail. Later jev_verdicts mutations are
 // covered by the Task 2 pin and Task 8b tests, not here.
-// Compared projection: every jev_decisions and jev_verdicts column the OLD schema has and the triage event payload, except
-// ids, timestamps and latency_ms; the triage event's verdict_id is compared as a link.
+// Compared projection: the whole returned triage outcome (kind, route presence, role, effort, the inform note, a lane
+// reply's text and buttons, the quote line), every jev_decisions and jev_verdicts column the OLD schema has, and the
+// triage event payload, except ids, created/updated_at and latency_ms. The outcome's route.verdict_id and the triage
+// event's verdict_id are compared as links to the run's own persisted verdict row; uuids elsewhere in the outcome (a quote's
+// turn id, button data) are masked. state_built_at is compared as its offset from the shared clock (both builds read it
+// from ompOptions.jevNow). thread_cut_at is compared by presence only: both builds stamp it with the wall clock when
+// buildOmpTools claims the turn (core-worker.ts `new Date()`), not with the shared clock, so its value differs by design.
 // Classification (codex B2, re-review #2): structure first — the outcome kind, question order, statuses, skip reasons,
 // verdict presence and the triage link. With replay both sides see the same Jev answers, so any replay miss, structural
 // difference, differing Jev answer or differing projection is a MISMATCH. An old-side Jev failure is replayed as the same
@@ -45,7 +52,16 @@ const check = (name, ok, detail = "") => { console.log(`${ok ? "PASS" : "FAIL"} 
 /** A required check that could not run: never a PASS (exit 3 unless something failed). */
 const cannotRun = (name, why) => { console.log(`INCONCLUSIVE ${name} — ${why}`); inconclusive.push(`${name}: ${why}`); };
 const SILENT = new Set(["timeout", "transport", "parse", "error", "rate_limited", "overloaded", "auth", "no_key", "fused", "malformed_question"]);
-const ID_COLS = new Set(["decision_id", "run_id", "verdict_id", "ladder_decision_id", "created_at", "updated_at", "latency_ms", "thread_cut_at", "state_built_at"]);
+const ID_COLS = new Set(["decision_id", "run_id", "verdict_id", "ladder_decision_id", "created_at", "updated_at", "latency_ms"]);
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+/** The live-DB copies' temp root: removed on every exit path unless --keep (they hold Paco's messages). */
+const temp = { root: null, keep: false };
+function cleanup() {
+  if (!temp.root) return;
+  if (temp.keep) console.log(`temp dir kept (--keep; it holds copies of the live DB, delete it when done): ${temp.root}`);
+  else rmSync(temp.root, { recursive: true, force: true });
+  temp.root = null;
+}
 const MARGIN_MS = 10 * 60_000;
 const PACE_MS = 250;
 const OVERFETCH = 30;
@@ -58,7 +74,10 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--old-dist") a.oldDist = resolve(argv[++i]);
     else if (argv[i] === "--db") a.db = resolve(argv[++i]);
-    else if (argv[i] === "--limit") a.limit = Number(argv[++i]);
+    else if (argv[i] === "--limit") {
+      a.limit = Number(argv[++i]);
+      if (!Number.isInteger(a.limit) || a.limit <= 0) throw new Error(`--limit must be a positive integer (got ${argv[i]})`);
+    }
     else if (argv[i] === "--keep") a.keep = true;
     else throw new Error(`unknown argument ${argv[i]}`);
   }
@@ -141,8 +160,8 @@ function makeTape() {
     return replayed(entry);
   };
   tape.replay = async (url, init) => {
-    const entry = tape.entries.find((x) => !x.used && x.key === keyOf(url, init));
-    if (!entry) { tape.misses += 1; throw new Error("parity gate: no recorded Jev response for this request"); }
+    const entry = tape.entries.find((x) => !x.used); // strictly the next recorded call; its request must be identical
+    if (!entry || entry.key !== keyOf(url, init)) { tape.misses += 1; throw new Error("parity gate: no recorded Jev response for this request"); }
     entry.used = true;
     return replayed(entry);
   };
@@ -173,20 +192,33 @@ function admit(side, item, clock, attempt) {
   const r = new side.m.Gateway(side.store, undefined, undefined, undefined, undefined, { dataDir: side.dir }).intake(side.m.buildTypedTaskEvent({
     source: "telegram", type: "turn", program: "turn", goal: item.text, requested_by: { kind: "user", id: "p6" }, notify: { kind: "telegram", chat_id: chat },
     idempotency_key: `telegram:${upd}:${item.k}`, source_reference: `telegram:update:${upd}:message:${item.k}`, metadata: { telegram_update_id: upd, telegram_message_id: item.k } }));
-  if (!r.ok || r.status !== "created") return null;
+  if (!r.ok || r.status !== "created") return { refused: JSON.stringify({ ...r, run_id: undefined }) };
   const claim = side.store.claimRun(r.run_id, "p6", 120);
   side.worker.buildOmpTools(claim, chat);
   return { run_id: r.run_id, input: { claim, text: item.text, userText: item.text, modality: "text", posture: null, signal: new AbortController().signal } };
 }
 
-const pick = (cols) => (row) => Object.fromEntries(cols.filter((c) => !ID_COLS.has(c)).map((c) => [c, row[c]]));
+/** Clock columns: state_built_at as an offset from the shared clock, thread_cut_at by presence (see the header). */
+function clockCol(c, value, clockT) {
+  if (value === null || value === undefined) return null;
+  return c === "state_built_at" ? Date.parse(value) - clockT : "<set>";
+}
+const pick = (cols, clockT) => (row) => Object.fromEntries(cols.filter((c) => !ID_COLS.has(c))
+  .map((c) => [c, c === "state_built_at" || c === "thread_cut_at" ? clockCol(c, row[c], clockT) : row[c]]));
+const linkOf = (id, v) => (id === null || id === undefined ? null : v && id === v.verdict_id ? "<own verdict>" : "<other>");
+
+/** The whole returned outcome; route.verdict_id as a link to the run's own verdict, uuids elsewhere masked. */
+function outcomeOf(out, v) {
+  const linked = out.route ? { ...out, route: { ...out.route, verdict_id: linkOf(out.route.verdict_id, v) } } : out;
+  return JSON.parse(JSON.stringify(linked).replace(UUID, "<uuid>"));
+}
 
 /** One side's projection over the OLD schema's columns; the triage event's verdict_id becomes a link check. */
-function project(side, run_id, cols) {
+function project(side, run_id, cols, out, clockT) {
   const v = side.store.getJevVerdictForRun(run_id);
   const triage = side.store.getLedgerEvents(run_id).filter((e) => e.event_type === "triage")
-    .map((e) => ({ ...e.payload, verdict_id: v && e.payload.verdict_id === v.verdict_id ? "<own verdict>" : "<other>" }));
-  return { jd: side.store.listJevDecisions(run_id).map(pick(cols.jd)), v: v ? pick(cols.jv)(v) : null, triage };
+    .map((e) => ({ ...e.payload, verdict_id: linkOf(e.payload.verdict_id, v) }));
+  return { out: outcomeOf(out, v), jd: side.store.listJevDecisions(run_id).map(pick(cols.jd, clockT)), v: v ? pick(cols.jv, clockT)(v) : null, triage };
 }
 
 function columnsOf(dbPath) {
@@ -197,22 +229,14 @@ function columnsOf(dbPath) {
   } finally { db.close(); }
 }
 
-const shape = (p) => JSON.stringify({ out: p.out, jd: p.jd.map((r) => [r.question_id, r.status, r.skip_reason]), v: p.v !== null, triage: p.triage.map((t) => [t.status, t.verdict_id]) });
+const shape = (p) => JSON.stringify({ out: [p.out.kind, p.out.route !== undefined], jd: p.jd.map((r) => [r.question_id, r.status, r.skip_reason]), v: p.v !== null, triage: p.triage.map((t) => [t.status, t.verdict_id]) });
 const failedJev = (p) => p.jd.some((r) => r.status === "skipped" && SILENT.has(r.skip_reason));
-function jevDiffers(a, b) {
-  return a.jd.some((r, i) => {
-    const o = b.jd[i];
-    if (!o || r.model_reported !== o.model_reported) return true;
-    const x = r.answers_json ? JSON.parse(r.answers_json) : {}; const y = o.answers_json ? JSON.parse(o.answers_json) : {};
-    return Object.keys({ ...x, ...y }).some((k) => Math.abs((x[k] ?? -1) - (y[k] ?? -1)) > 1e-6);
-  });
-}
 
 /** match · mismatch · inconclusive — replay first, then structure (spec §6.2, codex B2). `replayOk`: no miss, no unused entry. */
 function classify(a, b, replayOk) {
   if (!replayOk || shape(a) !== shape(b)) return "mismatch";
   if (failedJev(a)) return "inconclusive"; // structures equal, so both sides failed the same (replayed) way
-  if (jevDiffers(a, b)) return "mismatch"; // the same recorded answers must land as the same rows
+  // exact: the same recorded answers (answers_json, model_reported) must land as the same rows and the same outcome
   return JSON.stringify(a) === JSON.stringify(b) ? "match" : "mismatch";
 }
 
@@ -225,17 +249,23 @@ function linkOk(side, run_id) {
   return v?.decision_id === d[0].decision_id && jd.length > 0 && jd.every((r) => r.ladder_decision_id === d[0].decision_id);
 }
 
-/** One attempt: old build on real Jev (recorded), then the new build on the replay. Null when either side would not admit the turn. */
+/**
+ * One attempt: old build on real Jev (recorded), then the new build on the replay, paced after both. `bothRefused` when the
+ * two builds refuse the turn identically; `oneRefused` (a mismatch) when they disagree about admitting it.
+ */
 async function triagePair(g, item, attempt) {
   g.clock.t = Date.now();
   g.tape = makeTape();
   const a = admit(g.oldSide, item, g.clock, attempt); const b = admit(g.newSide, item, g.clock, attempt);
-  if (!a || !b) return null;
+  if (a.refused !== undefined || b.refused !== undefined) {
+    const refusal = { old: a.refused ?? "admitted", new: b.refused ?? "admitted" };
+    return refusal.old === refusal.new ? { bothRefused: refusal } : { oneRefused: refusal };
+  }
   const outA = await g.oldSide.worker.triageTurn(a.input);
-  await sleep(PACE_MS);
   const outB = await g.newSide.worker.triageTurn(b.input);
+  await sleep(PACE_MS);
   const replay = { calls: g.tape.entries.length, misses: g.tape.misses, unused: g.tape.entries.filter((x) => !x.used).length };
-  return { a: { ...project(g.oldSide, a.run_id, g.cols), out: outA.kind }, b: { ...project(g.newSide, b.run_id, g.cols), out: outB.kind },
+  return { a: project(g.oldSide, a.run_id, g.cols, outA, g.clock.t), b: project(g.newSide, b.run_id, g.cols, outB, g.clock.t),
     runB: b.run_id, replay, replayOk: replay.misses === 0 && replay.unused === 0 };
 }
 
@@ -246,12 +276,13 @@ async function triagePair(g, item, attempt) {
 async function runPair(g, item) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const pair = await triagePair(g, item, attempt);
-    if (pair === null) return { c: "skipped" };
+    if (pair.bothRefused) return { c: "skipped" };
+    if (pair.oneRefused) return { c: "mismatch", a: { admission: pair.oneRefused.old }, b: { admission: pair.oneRefused.new }, replay: null };
     const c = classify(pair.a, pair.b, pair.replayOk);
     if (c === "inconclusive" && attempt === 0) { g.retries += 1; continue; }
     return { c, ...pair };
   }
-  return { c: "skipped" };
+  throw new Error("unreachable: the second attempt always returns");
 }
 
 async function dualRun(g, items, limit) {
@@ -263,6 +294,7 @@ async function dualRun(g, items, limit) {
     if (r.c === "skipped") { t.skipped += 1; continue; }
     t.completed += 1;
     if (r.c === "mismatch") t.mismatch.push({ k: item.k, old: r.a, new: r.b, replay: r.replay }); else t[r.c] += 1;
+    if (!r.runB) continue; // an admission mismatch: no triaged run to link or tally
     t.newRuns.push(r.runB);
     if (!linkOk(g.newSide, r.runB)) t.links += 1;
   }
@@ -271,11 +303,11 @@ async function dualRun(g, items, limit) {
 
 function reportDualRun(t, retries) {
   const det = t.match + t.mismatch.length;
-  console.log(`  pairs ${t.completed}: match ${t.match} · mismatch ${t.mismatch.length} · inconclusive ${t.inconclusive} · retried ${retries} · not admitted ${t.skipped}`);
-  for (const m of t.mismatch.slice(0, 5)) console.log(`  mismatch #${m.k} (Jev replay ${JSON.stringify(m.replay)}):\n    old ${JSON.stringify(m.old)}\n    new ${JSON.stringify(m.new)}`);
+  console.log(`  pairs ${t.completed}: match ${t.match} · mismatch ${t.mismatch.length} · inconclusive ${t.inconclusive} · retried ${retries} · refused identically by both builds (skipped) ${t.skipped}`);
+  for (const m of t.mismatch.slice(0, 5)) console.log(`  mismatch #${m.k} (${m.replay ? `Jev replay ${JSON.stringify(m.replay)}` : "admission"}):\n    old ${JSON.stringify(m.old)}\n    new ${JSON.stringify(m.new)}`);
   // senior re-review S3: a shortfall that the inconclusive (both-failed) pairs explain is infrastructure, not code
   if (det < MIN_DETERMINISTIC && MIN_DETERMINISTIC - det <= t.inconclusive) cannotRun(`P6: at least ${MIN_DETERMINISTIC} deterministic pairs`, `${det}; ${t.inconclusive} pair(s) lost to Jev failures`);
-  else check(`P6: at least ${MIN_DETERMINISTIC} deterministic pairs`, det >= MIN_DETERMINISTIC, `${det}`);
+  else check(`P6: at least ${MIN_DETERMINISTIC} deterministic pairs`, det >= MIN_DETERMINISTIC, `${det}; inconclusive (both sides failed Jev) ${t.inconclusive}`);
   check("P6: 0 mismatches among them", t.mismatch.length === 0, `${t.mismatch.length}`);
   check("links: every stage-1 verdict and Jev row links its turn.handler decision", t.links === 0, `${t.links} unlinked`);
 }
@@ -407,6 +439,7 @@ async function setup(args) {
   const live = resolve(args.db ?? join(repo, "houge.sqlite"));
   if (!existsSync(live)) throw new Error(`no DB at ${live} (pass --db)`);
   const root = mkdtempSync("/tmp/hg-p6-");
+  temp.root = root; // from here on every exit path removes it (cleanup)
   gateEnv(newMods, root);
   const base = join(root, "base.sqlite"); const pathA = join(root, "a.sqlite"); const pathB = join(root, "b.sqlite");
   for (const p of [base, pathA, pathB]) guardCopy(p, root, live); // before any write
@@ -422,16 +455,16 @@ async function setup(args) {
   return { g, items: pickTexts(newMods, base, args.limit + OVERFETCH) };
 }
 
-function verdict(args, g) {
+function verdict() {
   if (inconclusive.length > 0) console.log(`\nINCONCLUSIVE:\n  - ${inconclusive.join("\n  - ")}`);
   const status = failures.length > 0 ? "FAIL" : inconclusive.length > 0 ? "INCONCLUSIVE" : "PASS";
   console.log(status === "FAIL" ? `\nLIVE GATE: FAIL\n  - ${failures.join("\n  - ")}` : `\nLIVE GATE: ${status}`);
-  if (args.keep || status !== "PASS") console.log(`temp dir kept: ${g.root}`); else rmSync(g.root, { recursive: true, force: true });
   return status === "PASS" ? 0 : status === "FAIL" ? 1 : 3;
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  temp.keep = args.keep;
   const { g, items } = await setup(args);
   console.log(`decision ladder parity gate — ${items.length} candidate texts for ${args.limit} decided pairs, copies under ${g.root}\n`);
   try {
@@ -441,7 +474,9 @@ async function main() {
     ensureUnsure(g, t.newRuns);
     checkTap(g, await checkDigest(g));
   } finally { g.oldSide.store.close(); g.newSide.store.close(); }
-  return verdict(args, g);
+  return verdict();
 }
 
-main().then((c) => process.exit(c), (e) => { console.error(`live gate setup error: ${e instanceof Error ? e.stack ?? e.message : String(e)}`); process.exit(2); });
+process.on("SIGINT", () => { cleanup(); process.exit(130); });
+main().then((c) => { cleanup(); process.exit(c); },
+  (e) => { console.error(`live gate setup error: ${e instanceof Error ? e.stack ?? e.message : String(e)}`); cleanup(); process.exit(2); });
