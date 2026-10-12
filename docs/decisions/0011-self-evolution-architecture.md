@@ -1,6 +1,6 @@
 # ADR 0011: Self-evolution architecture — how Houge improves his code, skills, and lessons
 
-- **Status:** accepted (direction; built in phases) — **refined by [ADR 0012](0012-self-evolution-spine-closed-loop.md)** (the closed-loop spine: feedback signal, four memory types, auto-rollback). This ADR's machinery stands; 0012 reframes the three-layers model as one closed loop. · **amended 2026-07-27 by [ADR 0027](0027-idea-panel-claude-chair.md)** (contained panel chair seat — see end)
+- **Status:** accepted (direction; built in phases) — **refined by [ADR 0012](0012-self-evolution-spine-closed-loop.md)** (the closed-loop spine: feedback signal, four memory types, auto-rollback). This ADR's machinery stands; 0012 reframes the three-layers model as one closed loop. · **amended 2026-07-27 by [ADR 0027](0027-idea-panel-claude-chair.md)** (contained panel chair seat — see end) · **amended 2026-10-12 by [ADR 0030](0030-decision-ladder.md)** (src/decisions/ protected — see end)
 - **Date:** 2026-06-20
 - **Deciders:** Paco
 
@@ -260,3 +260,10 @@ seats are unchanged. What is granted is runtime *inference*, not runtime *engine
 contained, tool-less, single-turn claude-cli **chair seat** in the weekly idea panel whose
 output is data (a shortlist), never code, config, or a tool action. See ADR 0027 for the
 containment posture and the broker-held auth.
+
+---
+
+## Amendment (2026-10-12): decision ladder
+
+Amended by [ADR 0030](0030-decision-ladder.md). **0011.** `src/decisions/` joins `PROTECTED_DIRS`: if the registry decides the gates, editing it can open a gate, so
+  it is Paco's hand only.

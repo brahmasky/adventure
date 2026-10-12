@@ -1,6 +1,6 @@
 # ADR 0029: Jev as System One — a typed decision layer in front of the models
 
-- **Status:** accepted 2026-10-06 (design approved by Paco 2026-10-04; lane 1 armed and confirmed on the running daemon, boot 9)
+- **Status:** accepted 2026-10-06 (design approved by Paco 2026-10-04; lane 1 armed and confirmed on the running daemon, boot 9); amended 2026-10-12 by [ADR 0030](0030-decision-ladder.md) (front door as the turn.handler entry; one named exception to "no Jev in any deny path"; Jev effects by input source (R12); R11 egress; no shadow for new entries, provisional bars — see end)
 - **Date:** 2026-10-04
 - **Deciders:** Paco
 - **Amends:** [0028](0028-omp-runtime.md) (D10 reader-family resolver; per-turn planner chain), [0013](0013-llm-inner-composition.md) (composition gains a System One stage; monotone rule),
@@ -289,3 +289,22 @@ Approved by Paco 2026-10-09 with the stage A merge.
   cause that started the walk, so such a verdict reads `escalation`.
 - Spec: [2026-10-10-jev-tree-stage-b-design.md](../superpowers/specs/2026-10-10-jev-tree-stage-b-design.md) (Rev 5); the
   parent's Rev 10 amends the lookup row for the reader wall and the query rewrite.
+
+---
+
+## Amendment (2026-10-12): decision ladder
+
+Amended by [ADR 0030](0030-decision-ladder.md). **0029.** The front door becomes the entry `turn.handler` (ack rule → Jev tree → Tiny cascade, the planner its `fail`
+  value), with `turn.gear` a separate entry on the same Jev call. **Decision 2** stands word for word; this ADR records
+  three applications under it: withholding a passage is a data transform, not an action deny; `turn.settle`'s send-back
+  is one bounded continuation in which, after a Jev-rung send-back, every side effect asks, and after a code-rung
+  send-back the normal gates apply; the built-in `edit`/`write` redirect in a hostile turn is the ask form of a gate that
+  cannot wait. **"No Jev in any deny path, ever"** gains one named exception: the code-owned redirect of a built-in
+  `edit`/`write` to its asking equivalent (`bash`, which asks Paco) in a turn the injection judge marked hostile. Every
+  other Jev verdict stays out of deny paths. What a Jev verdict may cause follows decision 4 above (R12): the memory
+  shortcut's instant save stays, permanently. The added-tap budget (3 a day) also counts trust asks. **Decision 4:**
+  Paco's R11 approval (decision 12 above) is recorded as the approval of web, mail and calendar content, shell output,
+  files and replies, with the judge redactor and the residual above. **Decision 5** (shadow before arm): new entries
+  never shadow (R13); a stale bar or golden drift pages instead of disarming; provisional bars (decision 9 above) are an
+  explicit exception, under Paco's R6, for monotone or fail-open entries only. The front door's calibrated tree rows keep
+  decision 5's disarm on a model move, unchanged.
