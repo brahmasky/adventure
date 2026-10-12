@@ -1,6 +1,6 @@
 # Decision ladder — every Houge decision on one list, judged inside the loop, improved from outcomes
 
-- **Date:** 2026-10-12 · **Rev 6** · **Status:** draft for Paco's read; six review rounds (senior against the live
+- **Date:** 2026-10-12 · **Rev 7** · **Status:** draft for Paco's read; six review rounds (senior against the live
   system, with probes P1–P4 and the clean room run; codex). Zero open blockers (§15).
 - **Decider:** Paco. Design approved section by section in chat on 2026-10-12.
 - **Proposes:** ADR 0030 "Decision ladder" (§10). Amends ADR 0029 (front door becomes an entry; the Jev rule restated),
@@ -736,16 +736,24 @@ returns nothing, so the turn settles), and returns `{continue: true, additionalC
 - work started by an improvement: authoring jobs live in `improvement_jobs`, never in runs or `chat_turns`; the digest
   and cards are notifications;
 - schedule-born runs;
-- turns without a `turn_trust_final { max_level: clean }` event (§7.2). Their text may carry injected content, and a
-  skill or lesson would put it into every system prompt. A missing event counts as not clean.
+- **Trust level does not exclude a turn from recurrence.** Rev 2–6 counted only clean turns. But most turns worth a
+  skill read the web, mail or shell output, so the rule would rarely fire (side-agent note, 2026-10-12).
+  - The persistence risk is handled where the text enters, not by which turns count. Authoring input is Paco's own
+    request texts only (below), and the skill writer is a one-shot call over that text with no tools
+    (`core-worker.ts:1764`). Nothing a turn read can reach the draft.
+  - A test plants an injection in a recurring turn's tool output and asserts the draft and its writer prompt never
+    contain it.
+  - The trust level still matters for targets whose input *is* tool output: wiki pages go through ADR 0020's own walled
+    verifier (below).
 
 **Rungs:**
 
 1. **Code.** Exact mappings. These are the only rungs whose verdicts cause automatic effects (§4.1):
    - a stated rule → lesson (the existing save-first path, Undo);
    - an approval streak → standing approval (stage 4, §8.3);
-   - recurrence → **skill authoring starts** (R4). Recurrence means 3 Telegram turns from Paco at trust `clean` in
-     14 days, same `turn.handler` category, request cosine ≥ the relevance gate (A25).
+   - recurrence → **skill authoring starts** (R4). Recurrence means 3 Telegram turns from Paco in 14 days, same
+     `turn.handler` category, request cosine ≥ the relevance gate (A25), excluding schedule-born runs.
+   - recurrence of a `lookup` or `research` topic → **wiki page proposal** (below).
 2. **Jev.** Choice over the targets, with `nothing` as the escape. State: the signal, the turn's category and a
    code-built tool summary.
 3. **Tiny model.** Below the bar, a one-word choice between the top two.
@@ -759,6 +767,7 @@ returns nothing, so the turn settles), and returns `{continue: true, additionalC
 | skill | recurrence: authoring starts, urgent card | proposal card | `skill_author` via the evolution lane |
 | ladder | approval streak: standing approval | proposal (trust a source, retire a judge, lower a bar) | `ladder_moves` |
 | schedule | expiries at the same hour twice: proposal | proposal | `schedule_task` edit after a tap |
+| knowledge | recurring lookup or research topic: proposal card "keep a page on <topic>?" | correction of a researched fact: proposal to refine the page | `wiki_build` / `wiki_refine` (ADR 0020) |
 | tool gap | — | digest line; self-write only on Paco's tap | `self_write_propose` |
 | nothing | recorded | recorded | — |
 
@@ -801,12 +810,29 @@ messages steer into. So auto-authoring is a **background job on the evolution la
 - A recurrence cluster that has already started authoring never starts another in 30 days (enforced by
   `idempotency_key`).
 
+**The wiki as a target** (ADR 0020). Houge's LLM wiki keeps durable per-topic pages built from a turn's quarantined
+read digests and cross-source verified by a walled verifier. Its pages already carry outcome fields: `applied_count`,
+`corrected_count`, `reuse_value`, `rating_history`.
+
+- DB copy, 2026-10-12: 11 pages, 7 active, the newest built 2026-09-25, last used 2026-10-02. It looks dormant since
+  the omp cutover. Whether `HOUGE_WIKI_ENABLED` is on is not visible from here (it lives in `.env`).
+- `improve.route` makes it the home for **world knowledge**, beside facts about Paco (memory) and behaviour (lessons):
+  - a lookup or research topic recurring 3 times in 14 days → a proposal card;
+  - on Accept, the next turn on that topic runs `wiki_build` from its read digests, with ADR 0020's minimum sources and
+    verify passes unchanged;
+  - a correction of a researched fact → a `wiki_refine` proposal, and `corrected_count` rises.
+- Wiki effects are proposals only. A page's input is tool output, so it never builds on its own; ADR 0020's verifier
+  remains the trust boundary.
+- If the flag is off, the target records and proposes nothing, and the digest says the wiki is disarmed.
+- The stage 2b plan checks the wiki tools still work under omp before relying on them.
+
 **Measuring each improvement.** Each improvement is itself a decision row whose outcome is checked:
 
 - **A lesson** from correction X is flagged when a correction routed to the same lesson scope recurs within 30 days.
   The digest proposes a rewrite or retirement.
 - **A skill:** usage and re-verification (`skill-reverify.ts`).
 - **A standing approval:** revocations.
+- **A wiki page:** `applied_count` against `corrected_count`, as ADR 0020 already tracks.
 
 **Safety rules:**
 
@@ -1088,7 +1114,7 @@ live gate, a docs sync and Paco's merge where protected files are touched.
 |---|---|---|---|
 | 1 Engine + door | ADR 0030 and the AGENTS.md edit first; registry, runner, `decisions`, `decision_outcomes`, `ladder_moves`; `jev_verdicts` gains `decision_id`; `turn.handler` + `turn.gear` migrated; `src/decisions/` protected; off switch; **daily digest and urgent cards** (counts, unsure list, callbacks) | ADR, AGENTS.md, self-write-guard, run-store, core-worker | P6 dual run: 0 mismatches over 200 texts; all nine `jev_verdicts` consumers green; the digest renders on the DB copy and a ❌ tap writes an outcome |
 | 2a In-Houge judges | supervisor terminal-`agent_end` fix (P7); credential-store read-deny extension; `tool.injection` on shell and wall tools; `tool.shell_netread`; the hostile read-only list; `turn.trust` with `turn_trust` and `turn_trust_final` events; trust-card pause policy and TTL; tap-budget table; judge redactor; injection and trust items in the digest | bridge-handler, planner-supervisor, capability-policy, run-store, protected-paths | the §4.2 injection sanity gate passes (recall ≥ 85%, clean withholds ≤ 1%); no seeded secret leaves; a planted turn reaches hostile, `curl`, `touch`, `git log` and `file -C` ask while `ls` and `grep` do not, a built-in write gets the bash redirect, a trust card expires after its TTL without the watchdog firing, and a schedule-born hostile turn ends within its deadline; the newly read-denied credential paths refuse a planner read |
-| 2b Hooks + learning | extension `judge_read`, `judge_timeout` and `session_stop`; `turn.settle`; `todo` with reminders off; `improve.route`; `authorPendingSkill`, `improvement_jobs`, `promotePending`/`dismissPending`; improvement items in the digest | extension, planner-supervisor, planner-session, skill-store, run-store | a planted file read past the 32 KiB cap is withheld in both fields; a 40 s unresponsive bridge shows the floored text, never raw; the §4.2 settle gate passes (≤ 10% send-backs, Paco's sample read); a "scheduled" claim with no call is sent back once, and a first-pass attachment survives; a labelled set of ≥ 30 past signals (labels by the plan author, checked by Paco in one sitting) routes ≥ 80% to the labelled target; 3 clean similar synthetic turns write a `_pending` draft and an urgent card, while a hostile turn, a schedule-born run and a turn without `turn_trust_final` do not count |
+| 2b Hooks + learning | extension `judge_read`, `judge_timeout` and `session_stop`; `turn.settle`; `todo` with reminders off; `improve.route`; `authorPendingSkill`, `improvement_jobs`, `promotePending`/`dismissPending`; improvement items in the digest | extension, planner-supervisor, planner-session, skill-store, run-store | a planted file read past the 32 KiB cap is withheld in both fields; a 40 s unresponsive bridge shows the floored text, never raw; the §4.2 settle gate passes (≤ 10% send-backs, Paco's sample read); a "scheduled" claim with no call is sent back once, and a first-pass attachment survives; a labelled set of ≥ 30 past signals (labels by the plan author, checked by Paco in one sitting) routes ≥ 80% to the labelled target; 3 similar synthetic turns (one of them hostile, with a planted injection in its tool output) write a `_pending` draft that contains no planted text, and an urgent card; a schedule-born run does not count; 3 recurring lookups on one topic raise a wiki proposal |
 | 3 Unprotected families | intake, context, supervision and settle entries migrated | core-worker, planner-supervisor (some) | differential on behaviour (§6.2); full suite and existing gates green |
 | 4 Protected families + standing | `tool.policy`, `tool.shell_class`, `tool.path`, `approval.bind`, `selfwrite.guard`, `fetch.ssrf`, `posture.kill`, `secret.redact`; `approval.standing` with the clean-room Seatbelt profile | policy, bridge, self-write-guard, gate-path, command-matcher, seatbelt | differential: command corpus, path corpus and policy matrix identical; the real Alishan command produces the same report in the clean room; 3 approvals on the copy → candidate → the 4th asks and runs sealed → grant → the 5th runs without a card through the real bridge with `cleanroom.sb` selected → a deny revokes; with the sandbox disabled the 5th asks; in the clean room, `-H @/tmp/planted`, a planted `cj.txt` symlink and a planted `~/.curlrc` have no effect |
 
@@ -1282,4 +1308,12 @@ both one-line fixes, applied in this revision:
 `date` is narrowed to a `+format` operand (codex warning).
 
 Every review blocker from rounds 1–6 is closed or folded into a named probe (P8) that runs before stage 4 code.
+
+### Rev 7 (after Paco's read began)
+
+- **Recurrence no longer requires clean turns.** A side-agent note showed the clean-only rule would rarely fire, since
+  skill-worthy tasks usually read the web. Safety moves to the input boundary: Paco's words only, and a writer with no
+  tools, tested with a planted injection (§7.4).
+- **The wiki joins `improve.route`** as the `knowledge` target, on Paco's question. Proposals only, since its input is
+  tool output; ADR 0020's walled verifier stays the boundary (§7.4).
 
