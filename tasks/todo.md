@@ -1,4 +1,28 @@
-# 🧭 CURRENT SYSTEM STATE — 2026-10-10 (read this first)
+# 🧭 CURRENT SYSTEM STATE — 2026-10-12 (read this first)
+
+**Decision ladder: spec approved by Paco 2026-10-12, Rev 7** (`docs/superpowers/specs/2026-10-12-decision-ladder-design.md`;
+research `docs/superpowers/research/2026-10-12-in-loop-decisions/`). Every decision on one registry with a ladder of
+deciders (rule → Jev → model → Paco), judges inside the planner loop, improvement routed from outcomes. Five stages, each
+its own plan: 1 engine + door (ADR 0030 first) → 2a in-Houge judges → 2b hooks + learning → 3 unprotected families →
+4 protected families + standing approvals. Next: the stage 1 plan.
+
+Jev stage B: merged `1585105` and pushed 2026-10-12, `dist/` rebuilt; live only after Paco's kickstart (block below).
+
+**Backlog from the decision-ladder spec §11 (not lost):**
+- [ ] SP4: automatic recalibration of decision bars from outcomes; model-route changes from evidence; goal record and
+  verifier; outcome memory past spec §7.4; mu `goal.met` / `board.read`.
+- [ ] Plain-code fixes (research `00-synthesis.md` "Plain-code gaps"): the loop rule (same call ×3; a "wrap up now" note
+  when the budget turns red; not picked for this build, ruling R3); a typed stop word denying a waiting approval card;
+  refusing a re-request of an action Paco denied this turn; a cap on the supervisor queue.
+- [ ] mu points parked: `notify.routing` (lane 4), `tool.admission`, `turn.drift`, `task.frame`, `input.interjection`,
+  `tool.constraint` (stage A spec Appendix A; research `00-`).
+- [ ] ADR backfill: "Assumptions" and "Revisit when" fields for ADRs 0001–0029 (spec §10.3).
+- [ ] Probe P8 before stage 4 code: clean-room loopback and bridge-socket deny plus a `mach-lookup` allowlist, with the
+  real Alishan command (spec §8.3, §12).
+- [x] Paco moved `.env.bak-2026-10-07` out of the repo (2026-10-12); the planner could read it, since only `<repo>/.env`
+  is read-denied. Stage 2a widens the read-deny list (spec §7.0).
+
+# Earlier block — 2026-10-10: Jev decision tree, stage B
 
 **Jev decision tree, stage B: built on its branch; ARMED in code (18 `CALIBRATED_ROWS`, the answer and lookup lanes
 approved "Paco 2026-10-10"); not merged until Paco's hand.** Spec `docs/superpowers/specs/2026-10-10-jev-tree-stage-b-design.md`

@@ -233,6 +233,14 @@ dedicated macOS user for the planner — closes D11 and the dotfile denylist gap
 lane 2 v2 reads, optional egress allowlist) → **SP4 self-evolution v2, scope widened 2026-10-04** (see below) →
 Jev lane 5 (context relevance → credit, shadow) rides with memory stage C.
 
+**Decision ladder (spec approved 2026-10-12, before SP2).** Every Houge decision moves onto one registry with a ladder
+of deciders (code rule → Jev → model → Paco), judged inside the planner loop through omp's `tool_result` and
+`session_stop` hooks, with improvement routed from outcomes to facts, lessons, skills, the wiki, ladder moves and
+schedules. It absorbs Jev lane 3 (the injection judge) and part of SP4 (improvement measured by outcome, standing
+approvals as a first trust-ledger move). Spec `docs/superpowers/specs/2026-10-12-decision-ladder-design.md` (Rev 7);
+five stages, ADR 0030 first. Deferred to SP4: automatic bar recalibration, model-route changes, goal record and
+verifier.
+
 **SP4 scope change (2026-10-04).** The lifecycle-gap research
 (`docs/superpowers/research/2026-10-04-lifecycle-gap/00-synthesis.md`) found five lifecycle stages forbidden only
 because no safe version was designed (decide, spec, spec review, plan, live gate), most of the needed harness already
