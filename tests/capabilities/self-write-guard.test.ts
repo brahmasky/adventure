@@ -136,6 +136,7 @@ describe("checkSelfWriteDiff — every protected class is hard-denied", () => {
     ["package-lock.json", entry({ status: "M", path: "package-lock.json" })],
     ["tsconfig.json", entry({ status: "M", path: "tsconfig.json" })],
     [".gitignore", entry({ status: "M", path: ".gitignore" })],
+    ["decisions registry dir (spec §6.3: the registry decides the gates)", entry({ status: "M", path: "src/decisions/registry.ts" })],
     [".github dir", entry({ status: "M", path: ".github/workflows/ci.yml" })]
   ];
 
@@ -153,6 +154,15 @@ describe("checkSelfWriteDiff — every protected class is hard-denied", () => {
 
   it("even ADDING into a protected dir is denied (A under src/policy/)", () => {
     expect(check(entry({ status: "A", path: "src/policy/new-gate.ts", oldMode: "000000" })).allowed).toBe(false);
+  });
+
+  // Spec §6.3: if the registry decides the gates, editing it can open a gate, so a self-write may not add an entry,
+  // change a rung or move a bar — under any path spelling.
+  it("denies adding a new decision entry and a disguised path into src/decisions", () => {
+    expect(check(entry({ status: "A", path: "src/decisions/entries/tool-policy.ts", oldMode: "000000" })).allowed).toBe(false);
+    expect(check(entry({ status: "M", path: "./src/decisions/decide.ts" })).allowed).toBe(false);
+    expect(check(entry({ status: "M", path: "src/core/../decisions/record.ts" })).allowed).toBe(false);
+    expect(check(entry({ status: "M", path: "src/decisionsmore.ts" }))).toEqual({ allowed: true }); // segment-precise
   });
 });
 
