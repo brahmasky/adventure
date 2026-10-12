@@ -46,8 +46,8 @@ describe("entryProblems (R12 and R13 as data)", () => {
       .toContain("a jev/model rung can choose memory, an effect not reversible or not announced on a card");
     expect(entryProblems(base({ effects: { ...HANDLER.effects, planner: fx("effect", true, "none") } })))
       .toContain("a jev/model rung can choose planner, an effect not reversible or not announced on a card");
-    // Paco's Q1 ruling: a save announced only in the reply no longer passes
-    expect(entryProblems(base({ effects: { ...HANDLER.effects, answer: fx("effect", true, "reply") } })))
+    // Paco's Q1 ruling: a save announced only in the reply no longer passes (no longer a type, so a stale cast must still fail)
+    expect(entryProblems(base({ effects: { ...HANDLER.effects, answer: fx("effect", true, "reply" as unknown as VerdictEffect["announced"]) } })))
       .toContain("a jev/model rung can choose answer, an effect not reversible or not announced on a card");
   });
   it("checks announced against an allowlist: a missing or unknown value fails, never passes as not \"none\"", () => {

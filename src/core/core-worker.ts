@@ -234,6 +234,9 @@ interface LoopTurnContext {
   memory: MemoryTurnState;
 }
 
+/** A committed lesson save, as its Undo card names it (Paco 2026-10-12: every automatic save gets the card). */
+interface SavedLesson { id: number; theme: string; change_id: string; verb?: LessonSaveResult["verb"]; supersededId?: number }
+
 /** Per-run state of an omp turn's loop tools, held from buildOmpTools until the outcome sink finishes the run. */
 interface OmpTurnState {
   /** When `turnCtx.recentTurns` was read (the claim): triage records it so the replay cuts the same thread. */
@@ -245,7 +248,7 @@ interface OmpTurnState {
   /** The voice echo line that opens the reply. */
   echo?: string;
   /** Set only after a lesson save COMMITTED in this turn (ADR 0029 §5.5): a second lesson_write gets the digest. */
-  lessonSavedThisTurn?: { id: number; theme: string; change_id: string };
+  lessonSavedThisTurn?: SavedLesson;
   /** Set once this turn's one `triage` event (and its decision rows) committed (ADR 0029 §5.1): a second finalisation is a no-op. */
   triageFinalized?: boolean;
   /** The stored turn this message quotes (spec §2.2.1), resolved at claim; absent when not a reply or unresolved. */
@@ -1093,12 +1096,35 @@ export class CoreWorker {
    * cap prunes lowest reuse_value on overflow instead).
    */
   private async reconcileAndSaveLesson(
+    run_id: string,
     candidate: { scope: string; text: string; avoid?: string },
     source: LessonSource,
     llm: (input: { question: string; system: string }) => Promise<{ ok: true; answer: string } | { ok: false }>,
     now: string = new Date().toISOString()
   ): Promise<LessonSaveResult> {
-    return this.saveLessonVerdict(candidate, await this.reconcileLessonVerdict(candidate, llm), source, now);
+    const r = await this.reconcileLessonVerdict(candidate, llm);
+    let change_id: string | undefined;
+    // The save and its lesson_changes row commit together, so the Undo card always has a change to revert.
+    const saved = this.runStore.inTransaction(() => {
+      const s = this.saveLessonVerdict(candidate, r, source, now);
+      if (s.id !== undefined) change_id = this.recordLessonChange(run_id, this.chatOf(run_id), { ...s, id: s.id }, source, now);
+      return s;
+    });
+    // Paco 2026-10-12: an automatic save (here the skill_author down-routes and park) is announced on the Undo card.
+    if (saved.id !== undefined && change_id) {
+      const theme = this.runStore.getLesson(saved.id)?.theme ?? r.theme;
+      this.announceSave(run_id, { id: saved.id, theme, change_id, verb: saved.verb, ...(saved.supersededId !== undefined ? { supersededId: saved.supersededId } : {}) });
+    }
+    return saved;
+  }
+
+  /** What Undo reverts: the save's lesson_changes row and its lesson_saved ledger event, inside the caller's transaction. */
+  private recordLessonChange(run_id: string, chat_id: string, s: LessonSaveResult & { id: number }, source: LessonSource, now: string): string {
+    const change = this.runStore.insertLessonChange({
+      run_id, chat_id, new_id: s.id, superseded_id: s.supersededId ?? null, pruned_ids: s.prunedIds, created_at: now
+    });
+    this.runStore.appendRunLedgerEvent(run_id, "lesson_saved", "core", { lesson_id: s.id, change_id: change.change_id, source });
+    return change.change_id;
   }
 
   /** The async half: the reconcile compare (verdict + theme). No store write. */
@@ -1919,7 +1945,7 @@ export class CoreWorker {
     // Lightest-form lesson capture — nothing learned is wasted even when the skill is blocked.
     const scope = this.safeLessonScope(parsed.scope);
     const lesson = (verdict.lesson?.trim() || `when ${parsed.meta.when}, follow a verified procedure`).slice(0, 200);
-    const saved = await this.reconcileAndSaveLesson({ scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget));
+    const saved = await this.reconcileAndSaveLesson(claim.run_id, { scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget));
     const failing = gate.failing.length > 0 ? gate.failing.slice(0, 3).map((f) => `   • ${f}`).join("\n") : "   • (no specific criteria captured)";
     const parkLine = parked.ok
       ? `→ Parked at skills/_pending/${parsed.scope}/${parsed.name}.md (inert — not applied).`
@@ -1954,7 +1980,7 @@ export class CoreWorker {
   private async downRouteLesson(claim: ClaimedRun, verdict: GateAResult, now: string, budget: BudgetLedger): Promise<HelperResult> {
     const scope = this.safeLessonScope(verdict.scope);
     const lesson = verdict.lesson?.trim();
-    const saved = lesson ? await this.reconcileAndSaveLesson({ scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget), now) : undefined;
+    const saved = lesson ? await this.reconcileAndSaveLesson(claim.run_id, { scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget), now) : undefined;
     return this.skillReport("down-routed to a LESSON (a tweak, not a procedure)", [
       "Origin: you asked",
       `Gate A qualify: → LESSON (${verdict.reason})`,
@@ -1967,7 +1993,7 @@ export class CoreWorker {
   private async downRouteUnsure(claim: ClaimedRun, verdict: GateAResult, now: string, budget: BudgetLedger): Promise<HelperResult> {
     const scope = this.safeLessonScope(verdict.scope);
     const lesson = verdict.lesson?.trim();
-    const saved = lesson ? await this.reconcileAndSaveLesson({ scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget), now) : undefined;
+    const saved = lesson ? await this.reconcileAndSaveLesson(claim.run_id, { scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget), now) : undefined;
     return this.skillReport("unsure — saved a lesson and asking whether to promote", [
       "Origin: you asked",
       `Gate A qualify: ? unsure between a lesson and a skill (${verdict.reason})`,
@@ -2506,6 +2532,8 @@ export class CoreWorker {
   /** Terminal failure: one code-owned reply by failure type; a failed ingest also leaves a partial report (old media path). */
   private ompFail(i: Parameters<TurnOutcomeSink["fail"]>[0]): void {
     const saved = this.ompTurns.get(i.run_id)?.lessonSavedThisTurn;
+    // A saved lane reply that never reached Paco carried the save's only Undo: queue the card (one per change id).
+    this.announceSave(i.run_id, saved);
     this.ompTurns.delete(i.run_id);
     const failure = plannerFailureText(i.error_type, i.error_ref, i.partial);
     // A lesson the memory lane (or the loop tool) committed before the failure is durable: say so (spec §5.1).
@@ -2608,18 +2636,15 @@ export class CoreWorker {
     const saved = this.runStore.inTransaction(() => {
       const s = this.saveLessonVerdict(candidate, r, o.source, now);
       if (s.id === undefined) return s;
-      const change = this.runStore.insertLessonChange({
-        run_id: claim.run_id, chat_id: chatId, new_id: s.id, superseded_id: s.supersededId ?? null, pruned_ids: s.prunedIds, created_at: now
-      });
-      this.runStore.appendRunLedgerEvent(claim.run_id, "lesson_saved", "core", { lesson_id: s.id, change_id: change.change_id, source: o.source });
-      o.inTx?.(s, change.change_id);
-      change_id = change.change_id;
+      const id = this.recordLessonChange(claim.run_id, chatId, { ...s, id: s.id }, o.source, now);
+      o.inTx?.(s, id);
+      change_id = id;
       return s;
     });
     // `inTransaction` returned: only now is anything committed (a throwing `inTx` rolled back and threw past here).
     if (saved.id !== undefined && change_id) {
       const theme = this.runStore.getLesson(saved.id)?.theme ?? r.theme; // the row's theme (an UPDATE takes the target's), not the verdict's
-      state.lessonSavedThisTurn = { id: saved.id, theme, change_id };
+      state.lessonSavedThisTurn = { id: saved.id, theme, change_id, verb: saved.verb, ...(saved.supersededId !== undefined ? { supersededId: saved.supersededId } : {}) };
       Object.assign(outcome, { saved: { ...saved, id: saved.id }, change_id, theme, committed: true });
     }
     return saved;
@@ -3064,12 +3089,13 @@ export class CoreWorker {
    * own lesson_write tool) queues an Undo-only card here. Keyed by the change id, so two paths for one save send one card.
    * Never throws: the save stands. It uses the module's `memoryLaneCard`, not the test-faultable one, so a failed lane card is still announced.
    */
-  private announceSave(run_id: string, saved: { id: number; theme: string; change_id: string } | undefined): void {
+  private announceSave(run_id: string, saved: SavedLesson | undefined): void {
     if (!saved) return;
     try {
       const row = this.runStore.getLesson(saved.id);
+      const verb = saved.verb === "update" || saved.verb === "supersede" ? saved.verb : "add";
       const card = memoryLaneCard({ lesson_id: saved.id, theme: saved.theme, text: row?.text ?? "", ...(row?.avoid ? { avoid: row.avoid } : {}),
-        verb: "add", change_id: saved.change_id, run_id });
+        ...(saved.supersededId !== undefined ? { superseded_id: saved.supersededId } : {}), verb, change_id: saved.change_id, run_id });
       const q = this.runStore.enqueueNotification({ target: { kind: "telegram", chat_id: this.chatOf(run_id) }, intent_type: "progress",
         idempotency_key: `memcard:${saved.change_id}`, correlation_id: run_id, payload: { text: card.text, buttons: [memlaneUndoButton(saved.change_id)] } });
       if (q.status === "conflict") console.error(`memory card: announce refused for change ${saved.change_id}: ${q.error}`);
@@ -3381,7 +3407,10 @@ export class CoreWorker {
       return async (input) => {
         const w = await this.runLessonWrite(claim, this.chatOf(claim.run_id), input, { source: "loop" });
         // Paco 2026-10-12: a committed save is announced on the Undo card whatever route the turn took, the planner's own tool included
-        if (w.committed && w.saved && w.change_id && w.theme) this.announceSave(claim.run_id, { id: w.saved.id, theme: w.theme, change_id: w.change_id });
+        if (w.committed && w.saved && w.change_id && w.theme) {
+          this.announceSave(claim.run_id, { id: w.saved.id, theme: w.theme, change_id: w.change_id, verb: w.saved.verb,
+            ...(w.saved.supersededId !== undefined ? { supersededId: w.saved.supersededId } : {}) });
+        }
         return w.result;
       };
     }

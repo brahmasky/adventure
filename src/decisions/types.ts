@@ -27,8 +27,8 @@ export const RUNNER_REASON_CODES = ["no_executor", "floor_held"] as const;
 export type InputSource = "paco" | "tool" | "mixed";
 /** What a verdict causes: nothing, a reply, a tightening (withhold, add a tap, send back once), a proposal for Paco's tap, or an effect. */
 export type EffectKind = "none" | "reply" | "tighten" | "proposal" | "effect";
-/** How Paco learns of it: a code-built card (with its Undo / Dig deeper), the turn's reply, or not at all. */
-export type Announce = "card" | "reply" | "none";
+/** How Paco learns of it: a code-built card (with its Undo / Dig deeper), or not at all. The turn's reply is not an announcement (Paco 2026-10-12). */
+export type Announce = "card" | "none";
 /**
  * Spec §4.1 (R12): each verdict's effect, declared. registry.ts `entryProblems` fails a Jev or model rung that can cause an
  * effect that is not reversible or not announced, and anything but `none` / `tighten` / `proposal` over tool input.
