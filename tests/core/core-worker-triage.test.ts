@@ -822,7 +822,9 @@ describe("the outcome sink: buttons, the saved-lesson failure line, and routeEnd
     sinkOf(worker).fail({ run_id: t.run_id, worker_id: "w", error_type: "planner_exit", error_ref: "x" });
     const plain = turn("hello");
     sinkOf(worker).fail({ run_id: plain.run_id, worker_id: "w", error_type: "planner_exit", error_ref: "x" });
-    const texts = [...drainOutbox(store).values()].map((p) => String(p.text));
+    const sent = drainOutbox(store);
+    expect([...sent.keys()].filter((k) => k.startsWith("memcard:"))).toHaveLength(1); // Paco's Q1 ruling: the save's Undo card
+    const texts = [...sent.entries()].filter(([k]) => !k.startsWith("memcard:")).map(([, p]) => String(p.text));
     expect(texts).toHaveLength(2);
     expect(texts[0]!.endsWith(`\n\n📒 Lesson #${id} was saved before the failure.`)).toBe(true);
     expect(texts[1]).not.toContain("📒");

@@ -158,7 +158,7 @@ import { TURN_GEAR, type TurnGearState, type TurnGearVerdict } from "../decision
 import { storeRecorder } from "../decisions/record.js";
 import type { AnyDecideResult, AnyEntry, DecideResult, DecisionRecorder, FallbackReason, RungOutcome, RungResult } from "../decisions/types.js";
 import { fallbackOfSkip, jevSkipReason, planTree, treeDetailOf, type AnsweredDecision, type TreeDetail } from "./turn-handler-ladder.js";
-import { memoryInformNote, memoryLaneCard } from "./memory-lane-card.js";
+import { memlaneUndoButton, memoryInformNote, memoryLaneCard } from "./memory-lane-card.js";
 import { LANE_COMPOSE_MS, runAnswerLane } from "./lanes/answer-lane.js";
 import { digDeeperButton, laneCard, laneSavedNote } from "./lanes/lane-card.js";
 import { catchUpLine } from "./lanes/lane-compose.js";
@@ -2791,6 +2791,7 @@ export class CoreWorker {
       const route = fallbackRoute("jev_skipped", held.thinkHarder);
       const id = this.settleTriage(i, state, lang, held.answered ? { ...held.answered, route, decision: "fallback" } : { kind: "skipped", reason: "error", route });
       const saved = state?.lessonSavedThisTurn;
+      this.announceSave(i.claim.run_id, saved); // a no-op when nothing was saved; one card when an inform path already queued it
       const base = { route: turnRoute(route, id), ...quoteField(held.quote) };
       return saved ? { kind: "inform", note: memoryInformNote(saved.id, saved.theme), ...base } : { kind: "fallthrough", ...base };
     } finally {
@@ -2978,7 +2979,10 @@ export class CoreWorker {
       const id = this.settleTriage(i, state, lang, settleFor(route, s.save_outcome, memory ? `fallthrough:${s.save_outcome}` : undefined, memory ? "fallback" : undefined));
       return { kind: "fallthrough", route: turnRoute(route, id), ...q };
     }
-    if (route.lane !== "memory") return { kind: "inform", note: s.note, route: turnRoute(route, s.verdict_id), ...q };
+    if (route.lane !== "memory") {
+      this.announceSave(i.claim.run_id, state.lessonSavedThisTurn);
+      return { kind: "inform", note: s.note, route: turnRoute(route, s.verdict_id), ...q };
+    }
     return this.memoryLaneEnd(i, state, route, s, q);
   }
 
@@ -2990,6 +2994,7 @@ export class CoreWorker {
   private memoryLaneEnd(i: TriageInput, state: OmpTurnState, route: Route, s: Extract<SaveStep, { settled: true }>, q: { quote?: QuoteRef }): TriageOutcome {
     const w = s.w as Required<LessonWriteOutcome>;
     if (this.laneLost(i, state)) {
+      this.announceSave(i.claim.run_id, state.lessonSavedThisTurn);
       if (s.verdict_id) this.patchLaneVerdict(s.verdict_id, "fallthrough:aborted", undefined, "fallback");
       return { kind: "inform", note: s.note, route: turnRoute(route, s.verdict_id), ...q };
     }
@@ -3001,6 +3006,7 @@ export class CoreWorker {
     } catch (e) {
       // The save is committed and finalised as "act"; the planner answers and the note names the lesson (spec §5.1).
       console.error(`memory lane: card failed after save: ${safeReason(e)}`);
+      this.announceSave(i.claim.run_id, state.lessonSavedThisTurn);
       return { kind: "inform", note: s.note, route: turnRoute(route, s.verdict_id), ...q };
     }
   }
@@ -3051,6 +3057,27 @@ export class CoreWorker {
     return r.ok ? r.answer : null;
   }
 
+  /**
+   * Paco 2026-10-12 (Q1, "add the card"): every automatic lesson save is announced on the memory card with Undo, whatever
+   * route the turn took. The memory lane's reply IS that card and a lane reply carries Undo itself; every other path (the
+   * planner's inform note, a lane that fell through, a lost turn, a card that failed, a throw after the save, the planner's
+   * own lesson_write tool) queues an Undo-only card here. Keyed by the change id, so two paths for one save send one card.
+   * Never throws: the save stands. It uses the module's `memoryLaneCard`, not the test-faultable one, so a failed lane card is still announced.
+   */
+  private announceSave(run_id: string, saved: { id: number; theme: string; change_id: string } | undefined): void {
+    if (!saved) return;
+    try {
+      const row = this.runStore.getLesson(saved.id);
+      const card = memoryLaneCard({ lesson_id: saved.id, theme: saved.theme, text: row?.text ?? "", ...(row?.avoid ? { avoid: row.avoid } : {}),
+        verb: "add", change_id: saved.change_id, run_id });
+      const q = this.runStore.enqueueNotification({ target: { kind: "telegram", chat_id: this.chatOf(run_id) }, intent_type: "progress",
+        idempotency_key: `memcard:${saved.change_id}`, correlation_id: run_id, payload: { text: card.text, buttons: [memlaneUndoButton(saved.change_id)] } });
+      if (q.status === "conflict") console.error(`memory card: announce refused for change ${saved.change_id}: ${q.error}`);
+    } catch (e) {
+      console.error(`memory card: announce failed: ${safeReason(e)}`);
+    }
+  }
+
   private memoryLaneCardFor(run_id: string, w: Required<LessonWriteOutcome>): { text: string; buttons: NotificationButton[] } {
     const row = this.runStore.getLesson(w.saved.id);
     return this.memoryLaneCard({ lesson_id: w.saved.id, theme: w.theme, text: w.saved.lesson, ...(row?.avoid ? { avoid: row.avoid } : {}),
@@ -3078,6 +3105,7 @@ export class CoreWorker {
     if (card && result.kind === "reply" && id) this.recordLaneReplyRow(i.claim.run_id, route.lane, id, result.catch_up);
     if (card) return { kind: "lane_reply", ...card, ...quoteField(held.quote) };
     const fallback = { route: turnRoute(fallbackRoute("jev_skipped", held.thinkHarder), id), ...quoteField(held.quote) };
+    if (save?.settled) this.announceSave(i.claim.run_id, state.lessonSavedThisTurn);
     return save?.note ? { kind: "inform", note: save.note, ...fallback } : { kind: "fallthrough", ...fallback };
   }
 
@@ -3101,7 +3129,10 @@ export class CoreWorker {
     { card: { text: string; buttons: NotificationButton[] } } | { why: "empty_reply" | "render_failed" } {
     try {
       const card = this.laneCard({ text, run_id, ...(save?.settled ? { note: laneSavedNote(save.lesson_id, save.theme) } : {}) });
-      return card ? { card } : { why: "empty_reply" };
+      if (!card) return { why: "empty_reply" };
+      // Paco 2026-10-12: a saved lesson is announced with Undo on the card that names it
+      const undo = save?.settled ? [memlaneUndoButton((save.w as Required<LessonWriteOutcome>).change_id)] : [];
+      return { card: { ...card, buttons: [...undo, ...card.buttons] } };
     } catch (e) {
       console.error(`lane: card render failed: ${safeReason(e)}`);
       return { why: "render_failed" };
@@ -3347,7 +3378,12 @@ export class CoreWorker {
     }
     if (name === "lesson_write") {
       // One pipeline with the memory lane (ADR 0029 §5.5); the trust anchors live in runLessonWrite.
-      return async (input) => (await this.runLessonWrite(claim, this.chatOf(claim.run_id), input, { source: "loop" })).result;
+      return async (input) => {
+        const w = await this.runLessonWrite(claim, this.chatOf(claim.run_id), input, { source: "loop" });
+        // Paco 2026-10-12: a committed save is announced on the Undo card whatever route the turn took, the planner's own tool included
+        if (w.committed && w.saved && w.change_id && w.theme) this.announceSave(claim.run_id, { id: w.saved.id, theme: w.theme, change_id: w.change_id });
+        return w.result;
+      };
     }
     if (name === "houge_status") {
       // Read-only, Houge's own state (2026-10-02): code-rendered, no LLM call, never quarantined.

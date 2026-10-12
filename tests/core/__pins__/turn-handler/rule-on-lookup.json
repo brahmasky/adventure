@@ -6,6 +6,10 @@
       "text": "放在书房更好。\n\n来源 / Sources: https://weather.example/sydney\n\n📒 Saved lesson #1 · format",
       "buttons": [
         {
+          "text": "↩️ Undo",
+          "data": "memlane:undo:<lc#1>"
+        },
+        {
           "text": "🔍 Dig deeper",
           "data": "lane:ask:<run#1>"
         }

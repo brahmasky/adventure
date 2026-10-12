@@ -9,7 +9,7 @@ import type { Entry, RungAbstain, RungAnswer, VerdictEffect } from "../types.js"
  * `turn.handler` (spec §4.4): which handler takes a Telegram text turn. Ladder: today's code exits and the ack rule →
  * the Jev tree (six questions, one call) → the Tiny cascade below the choice bar; the planner is `fail`. Its judges read
  * Paco's own message, so under R12 a verdict may cause an effect that is reversible and announced: the effect table below
- * declares today's behaviour exactly (move, don't improve). Task 8c (Paco's Q1 ruling) moves every automatic save to the Undo card.
+ * declares it. Every automatic lesson save is announced on a card with ↩️ Undo, whatever route the turn took (Paco's Q1 ruling, 2026-10-12).
  */
 export const TURN_HANDLER_ID = "turn.handler";
 export type TurnHandlerVerdict = Lane;
@@ -23,16 +23,16 @@ const ROUTE_COMPLETE: [Exclude<RouteReason, (typeof ROUTE_REASONS)[number]>] ext
 const SKIP_COMPLETE: [Exclude<SkipReason, (typeof SKIP_REASONS)[number]>] extends [never] ? true : false = true;
 void ROUTE_COMPLETE; void SKIP_COMPLETE;
 
-/** Spec §4.1 (R12): what each verdict causes today. tests/decisions/registry.test.ts pins this table. */
+/** Spec §4.1 (R12): what each verdict causes. tests/decisions/registry.test.ts pins this table. */
 export const TURN_HANDLER_EFFECTS: Readonly<Record<TurnHandlerVerdict, VerdictEffect>> = {
-  answer: { kind: "effect", reversible: true, announced: "reply",
-    what: "answer-lane reply (Dig deeper); on a confident sets_rule the lesson saves first and the card's 📒 line names it, no Undo (until Task 8c)" },
-  lookup: { kind: "effect", reversible: true, announced: "reply",
-    what: "lookup-lane reply (Dig deeper); on a confident sets_rule the lesson saves first and the card's 📒 line names it, no Undo (until Task 8c)" },
+  answer: { kind: "effect", reversible: true, announced: "card",
+    what: "answer-lane reply (Dig deeper); on a confident sets_rule the lesson saves first and the lane card carries 📒 and ↩️ Undo" },
+  lookup: { kind: "effect", reversible: true, announced: "card",
+    what: "lookup-lane reply (Dig deeper); on a confident sets_rule the lesson saves first and the lane card carries 📒 and ↩️ Undo" },
   status: { kind: "reply", reversible: true, announced: "card", what: "status card rendered by code; Dig deeper" },
   memory: { kind: "effect", reversible: true, announced: "card", what: "instant lesson save on a confident sets_rule; memory-lane card with Undo (ADR 0029 §5.5, R12)" },
-  planner: { kind: "effect", reversible: true, announced: "reply",
-    what: "the planner answers; on a confident sets_rule the lesson saves first and the [memory] note names it in the planner's prompt (planner-supervisor.ts:479; until Task 8c)" }
+  planner: { kind: "effect", reversible: true, announced: "card",
+    what: "the planner answers; on a confident sets_rule the lesson saves first and an Undo-only memory card is queued (announceSave)" }
 };
 
 export function isSkipReason(x: unknown): x is SkipReason {

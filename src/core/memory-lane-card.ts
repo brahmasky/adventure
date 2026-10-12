@@ -12,6 +12,11 @@ function button(text: string, data: string): NotificationButton {
   return { text, data };
 }
 
+/** The ↩️ Undo button for a lesson change. Paco 2026-10-12: every automatic save carries it, whatever the turn's route. */
+export function memlaneUndoButton(change_id: string): NotificationButton {
+  return button("↩️ Undo", `${MEMLANE_UNDO_PREFIX}${change_id}`);
+}
+
 export function memoryLaneCard(i: {
   lesson_id: number; theme: string; text: string; avoid?: string; superseded_id?: number;
   verb: "add" | "update" | "supersede"; change_id: string; run_id: string;
@@ -19,7 +24,7 @@ export function memoryLaneCard(i: {
   const tail = i.superseded_id !== undefined ? ` (${i.verb === "update" ? "updated" : "replaced"} #${i.superseded_id})` : "";
   const lines = [`📒 Saved lesson #${i.lesson_id} · ${i.theme}${tail}`, inertCode(escapeForTelegram(i.text))];
   if (i.avoid) lines.push(`AVOID: ${inertCode(escapeForTelegram(i.avoid))}`);
-  return { text: lines.join("\n"), buttons: [button("↩️ Undo", `${MEMLANE_UNDO_PREFIX}${i.change_id}`), digDeeperButton(i.run_id)] };
+  return { text: lines.join("\n"), buttons: [memlaneUndoButton(i.change_id), digDeeperButton(i.run_id)] };
 }
 
 export function memoryInformNote(lesson_id: number, theme: string): string {

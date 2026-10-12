@@ -29,12 +29,12 @@ describe("the registry", () => {
     for (const e of REGISTRY) expect([e.id, Object.values(e.armed).every((m) => m === "on")]).toEqual([e.id, true]);
   });
   // R12: the front door's real effects, pinned, so relabelling one away is a visible, reviewed edit. A confident sets_rule
-  // saves a lesson first on the answer, lookup and planner routes too (tree-policy.ts:226-237, core-worker.ts:2931-2934),
-  // announced today only in the reply; Task 8c (Paco's Q1 ruling) moves them to the Undo card and updates this pin.
-  it("turn.handler reads Paco's message and its effect table is exactly today's behaviour", () => {
+  // saves a lesson first on the answer, lookup and planner routes too (tree-policy.ts:226-237); the end state follows Paco's
+  // Q1 ruling (2026-10-12): every automatic save is announced on a card with ↩️ Undo, whatever route the turn took.
+  it("turn.handler reads Paco's message and every effect it can cause is announced on a card", () => {
     expect(HANDLER.input).toBe("paco");
-    expect(shape(HANDLER)).toEqual({ answer: ["effect", true, "reply"], lookup: ["effect", true, "reply"], memory: ["effect", true, "card"],
-      status: ["reply", true, "card"], planner: ["effect", true, "reply"] });
+    expect(shape(HANDLER)).toEqual({ answer: ["effect", true, "card"], lookup: ["effect", true, "card"], memory: ["effect", true, "card"],
+      status: ["reply", true, "card"], planner: ["effect", true, "card"] });
     expect(entryById("turn.gear")?.input).toBe("paco");
     expect(Object.values(shape(entryById("turn.gear")!)).map((f) => f[0])).toEqual(["none", "none", "none"]);
   });
@@ -43,9 +43,23 @@ describe("the registry", () => {
 describe("entryProblems (R12 and R13 as data)", () => {
   it("fails a judged entry over Paco's message whose verdict causes an irreversible or unannounced effect", () => {
     expect(entryProblems(base({ effects: { ...HANDLER.effects, memory: fx("effect", false) } })))
-      .toContain("a jev/model rung can choose memory, an unannounced or irreversible effect");
+      .toContain("a jev/model rung can choose memory, an effect not reversible or not announced on a card");
     expect(entryProblems(base({ effects: { ...HANDLER.effects, planner: fx("effect", true, "none") } })))
-      .toContain("a jev/model rung can choose planner, an unannounced or irreversible effect");
+      .toContain("a jev/model rung can choose planner, an effect not reversible or not announced on a card");
+    // Paco's Q1 ruling: a save announced only in the reply no longer passes
+    expect(entryProblems(base({ effects: { ...HANDLER.effects, answer: fx("effect", true, "reply") } })))
+      .toContain("a jev/model rung can choose answer, an effect not reversible or not announced on a card");
+  });
+  it("checks announced against an allowlist: a missing or unknown value fails, never passes as not \"none\"", () => {
+    const missing = { kind: "effect", reversible: true } as unknown as VerdictEffect;
+    const unknown = { kind: "effect", reversible: true, announced: "toast" } as unknown as VerdictEffect;
+    expect(entryProblems(base({ effects: { ...HANDLER.effects, answer: missing } })))
+      .toContain("a jev/model rung can choose answer, an effect not reversible or not announced on a card");
+    expect(entryProblems(base({ effects: { ...HANDLER.effects, lookup: unknown } })))
+      .toContain("a jev/model rung can choose lookup, an effect not reversible or not announced on a card");
+  });
+  it("fails an effect declared for a verdict the entry does not have (a typo must not pass silently)", () => {
+    expect(entryProblems(base({ effects: { ...HANDLER.effects, anwser: fx("effect") } }))).toContain("effect declared for anwser, which is not a verdict");
   });
   it("over tool or mixed input anything but none / tighten / proposal fails, even a reversible announced reply", () => {
     expect(entryProblems(base({ input: "tool" }))).toContain("a jev/model rung over tool input can choose answer, which is not tightening");
@@ -63,6 +77,11 @@ describe("entryProblems (R12 and R13 as data)", () => {
     expect(entryProblems(base({ effects: noMemory }))).toContain("no effect declared for memory");
     expect(entryProblems(base({ armed: { rule: "on", system_one: "shadow", model: "on" } }))).toContain("entry armed other than on (R13: no designed shadow or off state)");
     expect(entryProblems(base({ locked: true }))).toContain("locked entry with a non-rule rung");
+    // the locked check runs both ways: an id spec §6.1 locks must carry locked: true, and locked: true must be a listed id
+    const rulesOnly = { ladder: [HANDLER.ladder[0]!], armed: { rule: "on" as const } };
+    expect(entryProblems(base({ ...rulesOnly, id: "fetch.ssrf" }))).toContain("id is in LOCKED_ENTRY_IDS but the entry is not locked");
+    expect(entryProblems(base({ ...rulesOnly, id: "fetch.ssrf", locked: true }))).toEqual([]);
+    expect(entryProblems(base({ ...rulesOnly, locked: true }))).toContain("locked entry whose id is not in LOCKED_ENTRY_IDS");
     expect(entryProblems(base({ fail: "nope" }))).toContain("fail not in verdicts");
     expect(entryProblems(base({ defaultVerdict: "nope" }))).toContain("defaultVerdict not in verdicts");
   });
