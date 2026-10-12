@@ -1,8 +1,8 @@
-# Decision ladder, stage 1 "Engine + door" — Implementation Plan (Rev 2)
+# Decision ladder, stage 1 "Engine + door" — Implementation Plan (Rev 3)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Every decision gets one shape (a registry entry with a ladder of deciders, recorded after it decides), proved on the front door: `turn.handler` and `turn.gear` run through the new runner with byte-identical behaviour, a daily digest surfaces unsure verdicts for Paco's ✅/❌, and ADR 0030 lands first.
+**Goal:** Every decision gets one shape (a registry entry with a ladder of deciders, recorded after it decides), proved on the front door: `turn.handler` and `turn.gear` run through the new runner with byte-identical behaviour, then every automatic lesson save is announced on the memory card with Undo (Paco's Q1 ruling), a daily digest surfaces unsure verdicts for Paco's ✅/❌, and ADR 0030 lands first.
 
 **Architecture:** A new protected `src/decisions/` holds the types, the runner (`decideSync` / `decide`), the recorder, the registry with its two entries and the digest. The store gains `decisions`, `decision_outcomes`, `ladder_moves` and a digest latch, plus two link columns. `CoreWorker.triageTurn` keeps every handler (lanes, save-first, settle) and only moves the *decision* (gate rule → Jev tree → Tiny cascade, planner as `fail`) behind the runner. The front door's ledger rows are queued at decide time and written inside `settleTriage`'s transaction, so a lost turn writes nothing and a rolled-back save takes its row with it. A pinned characterisation snapshot written on the pre-ladder code proves nothing persisted changed, and the P6 dual run proves it on Paco's last 200 texts. There is no off switch (ruling R13): a fundamentally wrong build is reverted, rebuilt and kickstarted, and the final task proves the previous build runs on the migrated DB.
 
@@ -11,6 +11,33 @@
 **Spec:** [docs/superpowers/specs/2026-10-12-decision-ladder-design.md](../specs/2026-10-12-decision-ladder-design.md) (Rev 8: approved by Paco 2026-10-12 at Rev 7, amended with rulings R12 and R13). This plan covers spec §13 row 1 only.
 
 ## Changelog
+
+### Rev 3 (2026-10-12): Paco's Q1 and egress rulings, and the two Rev 2 re-reviews
+
+Inputs: the codex re-review of Rev 2 (3 open blockers: Rev 1 B2 partial, B5 partial, new #8) and the senior re-review
+(1 BLOCKER · 3 WARNING · 6 SUGGESTION). Dispositions: appendix "Review dispositions (Rev 2 re-reviews)".
+
+- **New Task 8c** (Q1 → "Add the card"): every automatic lesson save is announced on the memory card with Undo. The lane
+  card gains the ↩️ Undo button when its turn saved; every inform path (planner route, a lane that fell through, a lost
+  turn, a throw after the save) queues an Undo-only memory card keyed by the change id. 8c moves the effect table to its end
+  state, makes `entryProblems` reject `announced: "reply"`, and regenerates exactly the snapshot it names
+  (`rule-on-lookup.json`). This closes the senior BLOCKER (lane saves hidden behind `reply`) and codex #5 / senior W5.
+- **Task 6 states today's truth until 8c**: `answer` and `lookup` are `effect` (they save first on a confident `sets_rule`),
+  announced in the reply's 📒 line (`"reply"`), as is the planner route's `[memory]` note; `entryProblems` accepts
+  `"reply"` only until 8c removes it (stage 1 merges as one, so the exception never ships).
+- **Gate classification** (codex #2): a structural difference that persists after its one retry is a **mismatch**, never
+  inconclusive; only a pair with identical structure whose sides failed Jev the same way may be inconclusive. `parse` is
+  retryable, and a structural difference with differing Jev answers gets its retry too (senior W2, partly).
+- **Gate keyboard** (codex #8): the render check asserts each rendered pair's exact `dec:rv:<offered id>:ok|bad`, and the
+  ❌ tap feeds the rendered ❌ button's `callback_data` into the gateway.
+- **Gate determinism probe** (senior W3): a `--limit 10` run first; more than one nondeterministic pair in ten stops the
+  run for Paco. A deterministic shortfall explained by inconclusive pairs is INCONCLUSIVE, not FAIL (S3).
+- **`decision_fallback` for the front door clears only on a cascade answer** (senior W1), since only cascade failures
+  count there.
+- Smaller: `npm ci` in the feature worktree (S1); `floor_held` names the rung that set the floor (S2); configuration.md
+  notes that health counts applied rungs only and what a reverted build does with digests and taps (S4, S6); the front
+  door's ladder queue is cleared after a committed non-`inTx` settle (S5).
+- Gate egress ruling recorded in Task 12.
 
 ### Rev 2 (2026-10-12): Paco's rulings R12 and R13, and the two Rev 1 reviews
 
@@ -66,22 +93,24 @@ dispositions". What changed, and why:
   recorded as the floor's rung with reason `floor_held`; pre-flight line drifts fixed; ADR 0030 notes that the `turn.handler`
   Jev policy glue lives in unprotected `src/core/turn-handler-ladder.ts`.
 
-### Open question for Paco (does not block coding; the plan keeps today's behaviour)
+### Paco's rulings recorded in Rev 3 (2026-10-12, binding)
 
-**Q1. The planner route's lesson save is announced in the reply, not on a card.** On a confident `sets_rule` that is not
-a memory-lane turn (`two_request`, `rule-on-lookup`, a cascade pick with a rule), today's code saves the lesson first and
-prepends the `[memory]` note to the planner's prompt (`planner-supervisor.ts:479`); Paco learns of it from the planner's
-reply, with no code-built Undo card. R12 says "announced (Undo on the card)". Stage 1 moves without improving, so the
-registry declares this effect `announced: "reply"`, which `entryProblems` accepts, and pins the whole effect table in a
-test so any change is a visible, reviewed edit. If Paco rules that only a card counts, a follow-up slice adds the memory
-card to the inform path and the registry test then drops `"reply"`.
+- **Q1 → "Add the card".** The memory card with Undo appears whenever a lesson is saved automatically, whatever route the
+  turn took: the planner inform path (`two_request`, a cascade pick with a rule) and the answer/lookup lane saves
+  (`laneBranch` save → `laneRoute` → `saveFirst`, `core-worker.ts:2931-2934`, announced today only by the card's 📒 line).
+  It lands in stage 1 as **Task 8c**, after the front-door migration (8b), so the pin proves move-don't-improve first; 8c
+  then updates the pin and effect-table tests deliberately. End state of stage 1: every automatic lesson save is a
+  reversible effect announced on a card with Undo; `entryProblems` no longer accepts `announced: "reply"`; `turn.handler`
+  declares `answer`, `lookup`, `memory` and `planner` as effects announced on a `"card"`.
+- **Gate egress → "Yes, 200 messages".** The P6 gate keeps shape-only redaction (no broker) for the last 200 Telegram texts
+  and their stored context (Task 12's egress note).
 
 ## Global Constraints
 
 - `dependencies: {}` stays empty (ADR 0001, 0016). Node stdlib plus devDeps only.
 - Functions under 50 lines (reviewers enforce it). Match surrounding style. Every changed line traces to this plan.
 - Tests live in `tests/<area>/` mirroring `src/`; each test says in a comment why the behaviour matters.
-- **Every task runs in one feature worktree**: `git worktree add .worktrees/decision-ladder-stage-1 -b feat/decision-ladder-stage-1 main`.
+- **Every task runs in one feature worktree**: `git worktree add .worktrees/decision-ladder-stage-1 -b feat/decision-ladder-stage-1 main && (cd .worktrees/decision-ladder-stage-1 && npm ci)`.
   Never run `npm run build` (or anything else that writes `dist/`) in the main checkout
   (`/Users/xiaochuan/Projects/adventure`): the daemon executes that `dist/`, so a KeepAlive relaunch or a kickstart would run
   unreviewed code and apply its migration to the live DB. The main checkout's `dist/` is rebuilt only after Paco's merge
@@ -109,7 +138,7 @@ card to the inform path and the registry test then drops `"reply"`.
 | 3, 5, 6, 10 | everything under `src/decisions/` (new) | joins `PROTECTED_DIRS` in Task 7 (spec §6.3) |
 | 4, 11 | `src/run/run-store.ts` | `PROTECTED_FILES` |
 | 7 | `src/capabilities/self-write-guard.ts` | `PROTECTED_FILES` (self-protection) |
-| 8b | `src/core/core-worker.ts` | not in `PROTECTED_FILES`, but listed for Paco's merge in spec §13 row 1 |
+| 8b, 8c | `src/core/core-worker.ts` | not in `PROTECTED_FILES`, but listed for Paco's merge in spec §13 row 1 |
 | 10 | `src/notifications/telegram-notification-adapter.ts` | `PROTECTED_FILES` (`self-write-guard.ts:120`, the attachment check, C2) |
 
 Not touched: `turn-context.ts`, `planner-supervisor.ts`, `run-ledger.ts`, `src/llm/registry.ts`, `src/policy/`, any `src/omp/*` file. If a task finds it needs one, stop and report.
@@ -142,7 +171,7 @@ Not touched: `turn-context.ts`, `planner-supervisor.ts`, `run-ledger.ts`, `src/l
 | `URL_IN_TEXT`, `urlRule` | `src/core/core-worker.ts:4055-4065` | 8a (moved verbatim) |
 | `TurnRoute`, `QuoteRef`, `TriageOutcome`, `TriageInput` | `src/omp/planner-supervisor.ts:63-72` | 8b (read only) |
 | `routeEnd?` input type | `src/omp/planner-supervisor.ts:57-60` | 2 |
-| inform note prepended to the planner prompt | `src/omp/planner-supervisor.ts:479` | 6 (R12 effect table, Q1) |
+| inform note prepended to the planner prompt | `src/omp/planner-supervisor.ts:479` | 6, 8c (R12 effect table; Q1 ruling) |
 | `routeTurn` (`turn.routedBy = route?.verdict_id`), `audit` (first compose attempt carries `routed_by`) | `src/omp/planner-supervisor.ts:494-499, 797-803` | 2 |
 | `TurnRole`, `Lane`, `LaneSwitch`, `TREE_THRESHOLD_VERSION` | `src/jev/tree-policy.ts:15-23` | 6, 8a |
 | `preJudge` | `src/jev/tree-policy.ts:35-39` | 8b |
@@ -229,11 +258,11 @@ Stage 1 migrates only rows A12–A18. Re-walked at 3bff437: A12 flag/mode (`core
 2. **`turn.handler` records every decision** (`alwaysRecord`), so every new `jev_verdicts` row links to a `decisions` row (spec §5.3). About 5 rows a day.
 3. **`turn.gear` is recorded, not driving.** Its verdict is the role on the route the tree produced (the same Jev call, spec §4.4); the planner keeps pinning `route.role`. A Task 8b test asserts the two are equal on every path.
 4. **No off switch (R13).** Today's configured triage shadow (`HOUGE_JEV_TRIAGE_ENABLED=shadow`) reaches the runner as `DecideCtx.armed = { jev: "shadow", model: "shadow" }`, and the gate rule skips the ack rule in shadow exactly as today. Registered entries declare `armed` all `on`; `entryProblems` fails anything else.
-5. **The effect table (R12).** `turn.handler` reads Paco's own message (`input: "paco"`). Its verdicts' effects: `answer`, `lookup`, `status` are `reply` (lane card with Dig deeper: reversible, announced on the card); `memory` is `effect` (the instant lesson save, memory-lane card with Undo); `planner` is `effect` (save-first on a confident `sets_rule`, announced through the `[memory]` note in the planner's reply, Q1). `turn.gear`'s verdicts cause nothing beyond which model answers (`none`). A registry test pins `turn.handler`'s whole effect table.
+5. **The effect table (R12).** `turn.handler` reads Paco's own message (`input: "paco"`). Task 6 declares today's behaviour: `status` is a `reply` (code-rendered card with Dig deeper); `memory` is an `effect` (the instant lesson save, memory-lane card with Undo); `answer`, `lookup` and `planner` are `effect`s too, because each saves a lesson first on a confident `sets_rule`, announced today only in the reply (the lane card's 📒 line; the planner's `[memory]` note) — `announced: "reply"`, accepted by `entryProblems` only until Task 8c. Task 8c (Paco's Q1 ruling) puts the Undo card on every automatic save, moves those three to `announced: "card"` and removes `"reply"` from what `entryProblems` accepts. `turn.gear`'s verdicts cause nothing beyond which model answers (`none`). A registry test pins `turn.handler`'s whole effect table at each step.
 6. **Foreign keys** are declared (`REFERENCES decisions(decision_id)`) but not enforced: the store never enables `PRAGMA foreign_keys` (no table does today), and turning it on is a behaviour change for every table.
 7. **`decision_outcomes` value sets.** Signals with a stage 1 producer or an obvious closed set validate now (`review_*` → a registered entry id, `correction` → a category, `dig_deeper` → a lane, `rating` 0–3, `recurrence` ≥ 1). The rest reject every value until the stage that adds their producer defines the set (a protected edit). `review_ok` is added to the signal enum: ✅ is a label calibration needs. The signal itself is validated in code, not by a CHECK (ruling 15).
 8. **Per-entry `jev_skip_rate`.** Computed from `decisions` rows whose `fallback_rung` is `jev` for every entry with a Jev rung (digest health line and sweep). `turn.handler` and `turn.gear` keep today's `jev_decisions`-based incident and subject for stage 1 (one call, one page); the per-entry incident (subject `decision:<entry>`) pages from stage 2 entries on.
-9. **`decision_fallback`** counts only `fail` rows with a named failure other than `budget` (an oversized state is not a failure). For `turn.handler` and `turn.gear`, a failure on the Jev rung does not count: `openJevIncident` and the triage `jev_skip_rate` already page it (one call, one page), so only a cascade (model rung) failure counts there. Only a Jev or model rung's answer clears it; a rule answer (a photo, an ack) proves nothing about the judge. A reopen within `ALERT_REOPEN_QUIET_MS` (10 minutes, E12) records the row but sends no card. A shadowed or abstained walk that ends on `fail` is not a fallback.
+9. **`decision_fallback`** counts only `fail` rows with a named failure other than `budget` (an oversized state is not a failure). For `turn.handler` and `turn.gear`, a failure on the Jev rung does not count: `openJevIncident` and the triage `jev_skip_rate` already page it (one call, one page), so only a cascade (model rung) failure counts there. Only an answer from a rung whose failures count clears it — a Jev or model answer for most entries, a cascade answer only for `turn.handler` / `turn.gear`; a rule answer (a photo, an ack) proves nothing about the judge. A reopen within `ALERT_REOPEN_QUIET_MS` (10 minutes, E12) records the row but sends no card. A shadowed or abstained walk that ends on `fail` is not a fallback.
 10. **Unsure line text.** For entries decided over Paco's own message (`intake`, `pre_model` stages) the line shows the first 40 code points of his text from `chat_turns`, markdown-stripped; later stages show no text (spec §8.1 "no tool text").
 11. **Digest buttons.** One message with up to 8 ✅/❌ pairs needs more than Telegram's 8 buttons per row, so the payload gains `button_rows` and the adapter renders rows.
 12. **Stale review taps.** A tap counts only for a decision offered in a digest in the last 7 days, once; anything else answers "Already handled." and writes nothing.
@@ -241,7 +270,7 @@ Stage 1 migrates only rows A12–A18. Re-walked at 3bff437: A12 flag/mode (`core
 14. **Front-door rows are written with the verdict.** The triage call site passes a deferred recorder: the runner's `record` call queues the row, and `settleTriage` writes it inside its transaction after the lost-turn check. A killed turn writes no row; a lane save that rolls back takes its row with it, and the fallback settle that follows writes it once. The digest still ignores a front-door row its verdict does not link (defence in depth for a future path).
 15. **Growing enums are validated in code.** `decisions.stage`, `decisions.fallback_reason` and `decision_outcomes.signal` have no CHECK; `insertDecision` throws `DecisionRejected` and `insertDecisionOutcome` throws `OutcomeRejected` on a value outside the TS constant. A later stage extends a set by editing the constant (a protected edit) with no table rebuild. Sets the spec fixes keep their CHECK.
 16. **Review taps and the command limit.** `decision_review` is exempt from `checkTelegramRateLimit` (like `kill`) and its audit rows do not count toward the 5-a-minute window: a digest offers up to 8 pairs, and a dropped tap would look labelled when it is not. A tap is allowlisted, one-shot and writes one closed-enum label.
-17. **A monotone judge held by the floor.** When a judge's verdict is less cautious than the floor, the floor stands and the row names `rung: "rule"`, `reason: "floor_held"`, without the judge's p, so stage 2a calibration never credits Jev with the rule's verdict.
+17. **A monotone judge held by the floor.** When a judge's verdict is less cautious than the floor, the floor stands and the row names the rung that set the floor (`rung: "rule"` for a rule's floor), `reason: "floor_held"`, without the judge's p, so stage 2a calibration never credits Jev with the rule's verdict.
 18. **Inventory re-walk** of A1–E12 is deferred to the stage 3 and 4 plans (see above).
 19. **A throw keeps today's settle.** A throw in `calibrationRows`, `treeArmed` or `routeTree` (before today's `held.answered`) settles skipped `error` with Jev's rows dropped, as today; only a throw in `urlRule` (after it) settles the answered fallback. A throw in the ack check settles skipped `error`, as today.
 20. **`decisions.fallback_rung`** (a rung kind, nullable) records which rung failed first, so a cascade failure is never counted as a Jev skip.
@@ -267,7 +296,9 @@ Stage 1 migrates only rows A12–A18. Re-walked at 3bff437: A12 flag/mode (`core
 | `src/core/turn-handler-ladder.ts` | new | pure glue: `planTree`, `treeDetailOf`, `jevSkipReason`, `fallbackOfSkip`, `urlRule` (moved), `UNARMED` (moved) |
 | `src/run/run-store.ts` | mod | migration, decision/outcome/move/digest methods, link columns (Task 4); review taps outside the command window (Task 11) |
 | `src/jev/decide.ts` | mod | `recordSkip` / `persistDecisionRows` carry `ladder_decision_id` |
-| `src/core/core-worker.ts` | mod | triage decision through the runner; deferred front-door rows |
+| `src/core/core-worker.ts` | mod | triage decision through the runner; deferred front-door rows (8b); the Undo card on every automatic lesson save (8c) |
+| `src/core/memory-lane-card.ts` | mod | `memlaneUndoButton` exported (8c) |
+| `tests/core/lesson-save-card.test.ts` | new | every automatic save announced once, on a card with Undo (8c) |
 | `src/capabilities/self-write-guard.ts` | mod | `src/decisions` protected |
 | `src/run/invariant-sweep.ts` | mod | per-entry skip rate |
 | `src/notifications/notification-types.ts`, `telegram-notification-adapter.ts` | mod | `button_rows` |
@@ -278,7 +309,7 @@ Stage 1 migrates only rows A12–A18. Re-walked at 3bff437: A12 flag/mode (`core
 | `scripts/check-decisions-rollback.mjs` | new | R13 rollback check: the previous build on a migrated DB copy (Task 13) |
 | `docs/reference/configuration.md`, `docs/reference/jev-decision-layer.md`, `CONTEXT.md` | mod | docs sync (Task 13) |
 
-**Task order (from the import graph):** 1 (docs only) · 2 (pin, before any `core-worker.ts` or `src/jev/` change) · 3 → 4 → 5 → 6 · 7 (independent) · 8a (needs 2, 3, 6) · 8b (needs 2, 4, 5, 8a) · 9 (needs 4, 6) · 10 (needs 4, 5, 6) · 11 (needs 4, 10) · 12 (needs all) · 13 (needs 12's worktrees). No task imports anything Task 1 writes.
+**Task order (from the import graph):** 1 (docs only) · 2 (pin, before any `core-worker.ts` or `src/jev/` change) · 3 → 4 → 5 → 6 · 7 (independent) · 8a (needs 2, 3, 6) · 8b (needs 2, 4, 5, 8a) · 8c (needs 8b) · 9 (needs 4, 6) · 10 (needs 4, 5, 6) · 11 (needs 4, 10) · 12 (needs all) · 13 (needs 12's worktrees). No task imports anything Task 1 writes.
 
 ---
 
@@ -346,7 +377,8 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
      or wiki page) is a proposal for Paco's tap.
    - Over **Paco's own message** a verdict may cause an effect directly, if the effect is reversible and announced.
      Examples: a `turn.handler` lane reply (Dig deeper), and the memory shortcut's instant lesson save (stage A,
-     unchanged and permanent; Undo on its card).
+     unchanged and permanent; Undo on its card). Every automatic lesson save, whatever route the turn took, is announced
+     on the memory card with Undo (Paco, 2026-10-12).
    - A registry test fails any entry whose Jev or model rung can cause an unannounced or irreversible effect, or any
      effect other than tightening or a proposal from tool input.
 5. **Ledger.** The runner decides, then records; recording never changes a decision. A failed write opens incident
@@ -402,8 +434,7 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
   entry; a gate entry's glue must live under `src/decisions/entries/`.
 - Accepted residuals: a secret with no recognisable name, shape or content, in output the planner read, can reach
   TypeSafe (Paco approved the class, R11); the planner itself can still send what it reads to its own model provider, as
-  today. On a planner route, the lesson save on a confident `sets_rule` is announced through the planner's reply (the
-  `[memory]` note), not a code card (open question Q1 of the stage 1 plan).
+  today.
 
 ## Alternatives considered
 
@@ -1308,10 +1339,11 @@ import type {
  * can never change a decision. A thrown rule, a timeout or a missing executor is an abstention that names why.
  */
 interface Walk<V, D> {
-  outcomes: RungOutcome<V, D>[]; floor: V | undefined; fallback: FallbackReason | null; fallbackCode: string | null; fallbackRung: RungKind | null; shadowed: boolean;
+  outcomes: RungOutcome<V, D>[]; floor: V | undefined; floorRung: RungKind | undefined; fallback: FallbackReason | null; fallbackCode: string | null;
+  fallbackRung: RungKind | null; shadowed: boolean;
 }
 type Decided<V, D> = { rung: RungKind; answer: RungAnswer<V, D> } | null;
-const newWalk = <V, D>(): Walk<V, D> => ({ outcomes: [], floor: undefined, fallback: null, fallbackCode: null, fallbackRung: null, shadowed: false });
+const newWalk = <V, D>(): Walk<V, D> => ({ outcomes: [], floor: undefined, floorRung: undefined, fallback: null, fallbackCode: null, fallbackRung: null, shadowed: false });
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 export function decideSync<S, V extends string, D = never>(entry: Entry<S, V, D>, s: S, ctx: DecideCtx<S, V, D>): DecideResult<V, D> {
@@ -1395,7 +1427,11 @@ function apply<S, V extends string, D>(entry: Entry<S, V, D>, w: Walk<V, D>, kin
     return null;
   }
   if ("abstain" in result) {
-    if (entry.monotone && result.floor !== undefined) w.floor = cautious(entry, w.floor, result.floor);
+    if (entry.monotone && result.floor !== undefined) {
+      const next = cautious(entry, w.floor, result.floor);
+      if (next !== w.floor) w.floorRung = kind; // the rung that set the floor (senior re-review S2)
+      w.floor = next;
+    }
     return null;
   }
   return result;
@@ -1422,8 +1458,8 @@ function finish<S, V extends string, D>(entry: Entry<S, V, D>, w: Walk<V, D>, d:
     return { ...base, verdict, rung: "fail", reason: w.fallbackCode };
   }
   const verdict = entry.monotone ? cautious(entry, w.floor, d.answer.verdict) : d.answer.verdict;
-  // ruling 17: the floor held against a looser judge — the verdict is the rule's, so the row names the rule, not the judge
-  if (verdict !== d.answer.verdict) return { ...base, verdict, rung: "rule", reason: "floor_held" };
+  // ruling 17: the floor held against a looser judge — the verdict is the floor's, so the row names the rung that set it
+  if (verdict !== d.answer.verdict) return { ...base, verdict, rung: w.floorRung ?? "rule", reason: "floor_held" };
   return { ...base, verdict, rung: d.rung, reason: d.answer.reason ?? null, ...(d.answer.p !== undefined ? { p: d.answer.p } : {}),
     ...(d.answer.detail !== undefined ? { detail: d.answer.detail } : {}) };
 }
@@ -2159,6 +2195,17 @@ describe("storeRecorder: decision_fallback (ruling 9)", () => {
     expect(open(store)).toEqual([["decision_fallback", "turn.handler"]]);
     store.close();
   });
+  it("turn.handler: a confident Jev answer does not clear a cascade incident; the next cascade pick does", async () => {
+    const store = RunStore.openInMemory();
+    const rec = storeRecorder(store, { env: ENV });
+    const modelPicks = vi.fn(async (): Promise<RungResult<V>> => ({ verdict: "pass", reason: "routed" }));
+    for (let k = 0; k < 3; k += 1) await decide(HANDLER, { v: "abstain" }, { run_id: null, recorder: rec, exec: { jev: jevAbstains, model: modelDown } });
+    await decide(HANDLER, { v: "abstain" }, { run_id: null, recorder: rec, exec: { jev: jevAnswers } }); // routed by Jev: proves nothing about the cascade
+    expect(open(store)).toEqual([["decision_fallback", "turn.handler"]]);
+    await decide(HANDLER, { v: "abstain" }, { run_id: null, recorder: rec, exec: { jev: jevAbstains, model: modelPicks } });
+    expect(store.listOpenIncidents()).toEqual([]);
+    store.close();
+  });
   it("budget (an oversized state) and a fail with no named failure (shadowed or abstained) are not fallbacks and never page", async () => {
     const store = RunStore.openInMemory();
     const rec = storeRecorder(store, { env: ENV });
@@ -2234,7 +2281,7 @@ export function storeRecorder(store: RunStore, o: RecorderOptions = {}): Decisio
   return {
     record: (entry, r, ctx) => {
       const now = (o.now ?? (() => new Date().toISOString()))();
-      if (r.rung === "jev" || r.rung === "model") clearFallback(store, entry.id, now); // only a judge's answer shows the judge is back
+      if (clears(entry.id, r)) clearFallback(store, entry.id, now); // only an answer from a rung that counts shows it is back
       if (!shouldRecord(entry, r)) return null;
       let id: string;
       try {
@@ -2267,6 +2314,14 @@ function recordFailed(store: RunStore, entry_id: string, e: unknown, o: Recorder
   } catch (e2) {
     console.error(`decisions: decision_record_failed could not open: ${message(e2)}`);
   }
+}
+
+/**
+ * Senior re-review W1: an answer clears decision_fallback only from a rung whose failures count toward it — any judge for
+ * most entries, but only the cascade (model) for an entry whose Jev failures page elsewhere.
+ */
+function clears(entry_id: string, r: AnyDecideResult): boolean {
+  return r.rung === "model" || (r.rung === "jev" && !JEV_PAGED_ELSEWHERE.has(entry_id));
 }
 
 /** A named failure that counts toward decision_fallback (ruling 9): not budget, and not a Jev failure another incident pages. */
@@ -2302,7 +2357,7 @@ function pageFallback(store: RunStore, entry_id: string, n: number, o: RecorderO
   if (chat && incident) enqueueUrgentCard(store, { chat_id: chat, key: `decision_fallback:${incident.incident_id}`, text: fallbackCardText(entry_id, n) });
 }
 
-/** Resolves an open decision_fallback when a Jev or model rung answered, recorded or not (spec §8.2 "the next answered call"). */
+/** Resolves an open decision_fallback on a counting rung's answer, recorded or not (spec §8.2 "the next answered call"). */
 function clearFallback(store: RunStore, entry_id: string, now: string): void {
   try {
     const open = store.findOpenIncident(store.incidentFingerprint("decision_fallback", entry_id));
@@ -2313,7 +2368,7 @@ function clearFallback(store: RunStore, entry_id: string, now: string): void {
 }
 
 export function fallbackCardText(entry_id: string, n: number): string {
-  return `⚠️ *${entry_id}* fell back to its fail answer ${n} times in the last hour (no rung answered). Houge keeps working on the fail path; the next judged answer clears this.`;
+  return `⚠️ *${entry_id}* fell back to its fail answer ${n} times in the last hour (no rung answered). Houge keeps working on the fail path; the next answer from the failing rung clears this.`;
 }
 ```
 
@@ -2380,10 +2435,12 @@ describe("the registry", () => {
   it("every registered entry is armed on (R13: no designed shadow or off state)", () => {
     for (const e of REGISTRY) expect([e.id, Object.values(e.armed).every((m) => m === "on")]).toEqual([e.id, true]);
   });
-  // R12 + plan Q1: the front door's real effects, pinned, so relabelling one away is a visible, reviewed edit.
+  // R12: the front door's real effects, pinned, so relabelling one away is a visible, reviewed edit. A confident sets_rule
+  // saves a lesson first on the answer, lookup and planner routes too (tree-policy.ts:226-237, core-worker.ts:2931-2934),
+  // announced today only in the reply; Task 8c (Paco's Q1 ruling) moves them to the Undo card and updates this pin.
   it("turn.handler reads Paco's message and its effect table is exactly today's behaviour", () => {
     expect(HANDLER.input).toBe("paco");
-    expect(shape(HANDLER)).toEqual({ answer: ["reply", true, "card"], lookup: ["reply", true, "card"], memory: ["effect", true, "card"],
+    expect(shape(HANDLER)).toEqual({ answer: ["effect", true, "reply"], lookup: ["effect", true, "reply"], memory: ["effect", true, "card"],
       status: ["reply", true, "card"], planner: ["effect", true, "reply"] });
     expect(entryById("turn.gear")?.input).toBe("paco");
     expect(Object.values(shape(entryById("turn.gear")!)).map((f) => f[0])).toEqual(["none", "none", "none"]);
@@ -2501,7 +2558,7 @@ import type { Entry, RungAbstain, RungAnswer, VerdictEffect } from "../types.js"
  * `turn.handler` (spec §4.4): which handler takes a Telegram text turn. Ladder: today's code exits and the ack rule →
  * the Jev tree (six questions, one call) → the Tiny cascade below the choice bar; the planner is `fail`. Its judges read
  * Paco's own message, so under R12 a verdict may cause an effect that is reversible and announced: the effect table below
- * declares today's behaviour exactly (move, don't improve; plan Q1 for the planner route's announcement).
+ * declares today's behaviour exactly (move, don't improve). Task 8c (Paco's Q1 ruling) moves every automatic save to the Undo card.
  */
 export const TURN_HANDLER_ID = "turn.handler";
 export type TurnHandlerVerdict = Lane;
@@ -2517,12 +2574,14 @@ void ROUTE_COMPLETE; void SKIP_COMPLETE;
 
 /** Spec §4.1 (R12): what each verdict causes today. tests/decisions/registry.test.ts pins this table. */
 export const TURN_HANDLER_EFFECTS: Readonly<Record<TurnHandlerVerdict, VerdictEffect>> = {
-  answer: { kind: "reply", reversible: true, announced: "card", what: "answer-lane reply; Dig deeper hands the turn to the planner" },
-  lookup: { kind: "reply", reversible: true, announced: "card", what: "lookup-lane reply; Dig deeper hands the turn to the planner" },
+  answer: { kind: "effect", reversible: true, announced: "reply",
+    what: "answer-lane reply (Dig deeper); on a confident sets_rule the lesson saves first and the card's 📒 line names it, no Undo (until Task 8c)" },
+  lookup: { kind: "effect", reversible: true, announced: "reply",
+    what: "lookup-lane reply (Dig deeper); on a confident sets_rule the lesson saves first and the card's 📒 line names it, no Undo (until Task 8c)" },
   status: { kind: "reply", reversible: true, announced: "card", what: "status card rendered by code; Dig deeper" },
   memory: { kind: "effect", reversible: true, announced: "card", what: "instant lesson save on a confident sets_rule; memory-lane card with Undo (ADR 0029 §5.5, R12)" },
   planner: { kind: "effect", reversible: true, announced: "reply",
-    what: "the planner answers; on a confident sets_rule the lesson saves first and the [memory] note names it in the planner's prompt (planner-supervisor.ts:479; plan Q1)" }
+    what: "the planner answers; on a confident sets_rule the lesson saves first and the [memory] note names it in the planner's prompt (planner-supervisor.ts:479; until Task 8c)" }
 };
 
 export function isSkipReason(x: unknown): x is SkipReason {
@@ -2651,6 +2710,7 @@ function shapeProblems(e: AnyEntry): string[] {
 /**
  * R12: a verdict a Jev or model rung can choose may, over tool (or mixed) input, only tighten or propose; over Paco's own
  * message it may cause a reply or an effect only when reversible and announced. Code-only entries are not bound.
+ * `announced: "reply"` is accepted only until Task 8c, which removes it (Paco's Q1 ruling: announced means a card with Undo).
  */
 function effectProblems(e: AnyEntry): string[] {
   const p: string[] = [];
@@ -3168,6 +3228,7 @@ After `private readonly ompTurns = new Map<string, OmpTurnState>();` (`:496`) ad
     if (o.inTx) { write(); return verdict_id; }
     this.runStore.inTransaction(write);
     if (state) state.triageFinalized = true;
+    this.pendingLadder.delete(run_id); // committed: no later settle may write the rows again (senior re-review S5)
     return verdict_id;
   }
 
@@ -3186,7 +3247,8 @@ After `private readonly ompTurns = new Map<string, OmpTurnState>();` (`:496`) ad
   /**
    * Writes the turn's queued ladder rows (turn.handler, then turn.gear) inside settleTriage's transaction. storeRecorder
    * never throws and opens no transaction; a failed insert leaves the link null and opens decision_record_failed, and the
-   * verdict stands. Rows stay queued until triageTurn returns, so a rolled-back write is redone by the next settle.
+   * verdict stands. Rows stay queued after an `inTx` write until its outer transaction is known (a rollback is redone by
+   * the next settle); a committed non-`inTx` settle clears them.
    * Returns turn.handler's decision id.
    */
   private flushLadder(run_id: string): string | null {
@@ -3421,6 +3483,257 @@ Expected: PASS with no skipped tests (`grep -c "skipped"` on the vitest summary 
 git add src/core/core-worker.ts tests/core/turn-handler-ladder.test.ts
 git commit -m "refactor(core): turn.handler and turn.gear decide through the ladder (behaviour pinned)"
 ```
+
+## Task 8c: Every automatic lesson save is announced on the memory card with Undo (Paco's Q1 ruling)
+
+Paco, 2026-10-12 ("Add the card"): the memory card with Undo appears whenever a lesson is saved automatically, whatever
+route the turn took. This is a deliberate behaviour change, so it comes after 8b: the pin has already proved the move
+changed nothing, and this task updates the pin and the effect table on purpose, naming every changed file. End state:
+every automatic save is a reversible effect announced on a card with Undo, and `entryProblems` no longer accepts
+`announced: "reply"`.
+
+Today's announcement per route (3bff437):
+
+| Route | Save path | Announced today | After 8c |
+|---|---|---|---|
+| memory lane | `saveThenRoute` → `memoryLaneEnd` | the memory card with ↩️ Undo is the reply | unchanged |
+| answer / lookup lane (`laneBranch` save) | `laneRoute` → `saveFirst` (`core-worker.ts:2931-2934`) | the lane card's 📒 line, no Undo | the lane card gains ↩️ Undo |
+| answer / lookup lane that falls through | `laneRoute` → inform (`:2947`) | `[memory]` note to the planner | Undo-only memory card queued |
+| planner (`two_request`, cascade pick with a rule, rule on a status/other route) | `saveThenRoute` → inform (`:2848`) | `[memory]` note to the planner (`planner-supervisor.ts:479`) | Undo-only memory card queued |
+| memory lane lost after the save (/kill) or its card throws | `memoryLaneEnd` (`:2858-2869`) | inform note only | Undo-only memory card queued |
+| a throw after a committed save | `triageTurn` catch (`:2743`) | inform note only | Undo-only memory card queued |
+
+The queued card is keyed `memcard:<change_id>`, so two paths reaching it for one save send one card. It carries Undo
+only (Dig deeper belongs to a lane reply, not to a planner turn). Undo works for every route: `saveFirst` writes the
+lesson change through `runLessonWrite` (`:2604`), and `handleMemLaneUndo` undoes any change id of this chat
+(`src/gateway/memlane-commands.ts:19-34`).
+
+**Files:**
+- Modify: `src/core/memory-lane-card.ts` — export `memlaneUndoButton(change_id)`; `memoryLaneCard` uses it
+- Modify: `src/core/core-worker.ts` — new `announceSave`; call sites in `saveThenRoute` (`:2841-2851`), `memoryLaneEnd` (`:2858-2869`), `laneRoute`'s fall-through return (`:2947`), `laneCardFor` (`:2965-2975`), `triageTurn`'s catch (8b's version)
+- Modify: `src/decisions/entries/turn-handler.ts` (`TURN_HANDLER_EFFECTS`), `src/decisions/registry.ts` (`effectProblems`), `tests/decisions/registry.test.ts`
+- Modify (deliberate, named): `tests/core/__pins__/turn-handler/rule-on-lookup.json` (regenerated), `tests/core/core-worker-triage.test.ts` ("ompFail after a committed save…")
+- Test: `tests/core/lesson-save-card.test.ts`
+
+**Interfaces:**
+- Consumes: `memoryLaneCard`, `MEMLANE_UNDO_PREFIX`; `OmpTurnState.lessonSavedThisTurn` (`{ id, theme, change_id }`, `core-worker.ts:241`); `RunStore.getLesson`, `enqueueNotification`; the Task 2 harness; `drainOutbox`.
+- Produces: `memlaneUndoButton(change_id: string): NotificationButton`; `CoreWorker` private `announceSave(run_id, saved)`.
+
+- [ ] **Step 1: Write the failing tests `tests/core/lesson-save-card.test.ts`**
+
+```ts
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { buildTypedTaskEvent } from "../../src/domain/types.js";
+import { Gateway } from "../../src/gateway/gateway.js";
+import type { RunStore } from "../../src/run/run-store.js";
+import { drainOutbox } from "../helpers/omp-worker.js";
+import { cat, HEAVY, LIGHT, picks, scriptedLlm, treeSays, triageHarness, webOk, type Says } from "../helpers/triage-harness.js";
+
+// Paco 2026-10-12 (Q1 → "Add the card"): every automatic lesson save is announced on a card with ↩️ Undo, whatever route
+// the turn took, exactly once, and the Undo really retires the lesson. R12: an effect over Paco's message must be
+// reversible and announced; a save the planner may or may not mention is not announced.
+const RULE: Says = { category: cat({ memory: 0.9 }), sets_rule: 0.95 };
+const UNDO = /^memlane:undo:(.+)$/;
+const memcards = (store: RunStore) => [...drainOutbox(store).entries()].filter(([k]) => k.startsWith("memcard:")).map(([, p]) => p);
+const undoOf = (buttons: unknown): string | undefined =>
+  (buttons as Array<{ data: string }> | undefined)?.map((b) => UNDO.exec(b.data)?.[1]).find((x) => x !== undefined);
+
+function tapUndo(store: RunStore, change_id: string) {
+  return new Gateway(store).intake(buildTypedTaskEvent({ source: "telegram", type: "memlane_undo", requested_by: { kind: "user", id: "paco" },
+    notify: { kind: "telegram", chat_id: "555" }, idempotency_key: `undo:${change_id}`, source_reference: `undo:${change_id}`,
+    metadata: { telegram_update_id: 1, telegram_callback_id: `cb_${change_id}`, change_id } }));
+}
+
+afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+
+describe("the planner path queues one Undo-only memory card", () => {
+  it("two_request: inform to the planner, one memcard with ↩️ Undo only, and the Undo retires the lesson", async () => {
+    const h = triageHarness(treeSays({ ...RULE, actions: HEAVY }));
+    const t = h.turn("以后用摄氏度。顺便帮我订明天的会议室");
+    expect((await h.worker.triageTurn(t.input)).kind).toBe("inform");
+    const cards = memcards(h.store);
+    expect(cards).toHaveLength(1);
+    expect(String(cards[0]?.text)).toMatch(/^📒 Saved lesson #\d+ · /);
+    expect((cards[0]?.buttons as Array<{ data: string }>).map((b) => b.data)).toEqual([expect.stringMatching(UNDO)]);
+    expect(tapUndo(h.store, undoOf(cards[0]?.buttons)!)).toMatchObject({ ok: true, status: "lesson_change_undone" });
+    expect(h.store.getActiveLessons("ask")).toHaveLength(0);
+    h.store.close();
+  });
+  it("a cascade pick with a rule: one memcard", async () => {
+    const h = triageHarness(treeSays({ category: cat({ answer: 0.45, lookup: 0.4 }), sets_rule: 0.95 }), { llm: scriptedLlm({ cascade: picks("answer") }) });
+    const t = h.turn("以后都用摄氏度，这周末去哪");
+    expect((await h.worker.triageTurn(t.input)).kind).toBe("inform");
+    expect(memcards(h.store)).toHaveLength(1);
+    h.store.close();
+  });
+});
+
+describe("the lanes", () => {
+  it("a lookup lane that saved: the lane card itself carries ↩️ Undo (and Dig deeper); no separate card", async () => {
+    const h = triageHarness(treeSays({ category: cat({ lookup: 0.9 }), sets_rule: 0.95, actions: LIGHT }), { web: webOk() });
+    const t = h.turn("以后温度都用摄氏度。明天悉尼天气怎么样？");
+    const out = await h.worker.triageTurn(t.input);
+    expect(out.kind).toBe("lane_reply");
+    const change_id = undoOf(out.kind === "lane_reply" ? out.buttons : undefined);
+    expect(change_id).toBeDefined();
+    expect(memcards(h.store)).toEqual([]);
+    expect(tapUndo(h.store, change_id!)).toMatchObject({ ok: true, status: "lesson_change_undone" });
+    h.store.close();
+  });
+  it("an answer lane that saved and then fell through: inform plus one memcard", async () => {
+    const h = triageHarness(treeSays({ category: cat({ answer: 0.9 }), sets_rule: 0.95 }),
+      { llm: scriptedLlm({ compose: async () => ({ ok: false, error: "all lane legs failed" }) }) });
+    const t = h.turn("以后回复短一点。你觉得呢？");
+    expect((await h.worker.triageTurn(t.input)).kind).toBe("inform");
+    expect(memcards(h.store)).toHaveLength(1);
+    h.store.close();
+  });
+  it("the memory lane: its reply is the card (Undo + Dig deeper); nothing extra is queued", async () => {
+    const h = triageHarness(treeSays(RULE));
+    const t = h.turn("从现在起，回复请控制在三句话以内。");
+    const out = await h.worker.triageTurn(t.input);
+    expect(out.kind).toBe("lane_reply");
+    expect(undoOf(out.kind === "lane_reply" ? out.buttons : undefined)).toBeDefined();
+    expect(memcards(h.store)).toEqual([]);
+    h.store.close();
+  });
+  it("the memory card fails to render after the save: the save is still announced, once", async () => {
+    const h = triageHarness(treeSays(RULE));
+    h.worker.breakMemoryLaneCardForTest();
+    const t = h.turn("从现在起，回复请控制在三句话以内。");
+    expect((await h.worker.triageTurn(t.input)).kind).toBe("inform");
+    expect(memcards(h.store)).toHaveLength(1);
+    h.store.close();
+  });
+});
+```
+
+- [ ] **Step 2: Run them to see them fail**
+
+Run: `npx vitest run tests/core/lesson-save-card.test.ts`
+Expected: FAIL (no `memcard:` rows; the lookup lane card has no Undo button).
+
+- [ ] **Step 3: `src/core/memory-lane-card.ts`**
+
+Add after `button`:
+
+```ts
+/** The ↩️ Undo button for a lesson change. Paco 2026-10-12: every automatic save carries it, whatever the turn's route. */
+export function memlaneUndoButton(change_id: string): NotificationButton {
+  return button("↩️ Undo", `${MEMLANE_UNDO_PREFIX}${change_id}`);
+}
+```
+
+and in `memoryLaneCard` replace `button("↩️ Undo", \`${MEMLANE_UNDO_PREFIX}${i.change_id}\`)` with `memlaneUndoButton(i.change_id)` (same output).
+
+- [ ] **Step 4: `src/core/core-worker.ts`**
+
+Import `memlaneUndoButton` beside `memoryInformNote, memoryLaneCard` (`:154`). Add next to `memoryLaneCardFor`:
+
+```ts
+  /**
+   * Paco 2026-10-12 (Q1, "add the card"): every automatic lesson save is announced on the memory card with Undo, whatever
+   * route the turn took. The memory lane's reply IS that card and a lane reply carries Undo itself; every other path (the
+   * planner's inform note, a lane that fell through, a lost turn, a card that failed, a throw after the save) queues an
+   * Undo-only card here. Keyed by the change id, so two paths for one save send one card. Never throws: the save stands.
+   */
+  private announceSave(run_id: string, saved: { id: number; theme: string; change_id: string } | undefined): void {
+    if (!saved) return;
+    try {
+      const row = this.runStore.getLesson(saved.id);
+      const card = memoryLaneCard({ lesson_id: saved.id, theme: saved.theme, text: row?.text ?? "", ...(row?.avoid ? { avoid: row.avoid } : {}),
+        verb: "add", change_id: saved.change_id, run_id });
+      this.runStore.enqueueNotification({ target: { kind: "telegram", chat_id: this.chatOf(run_id) }, intent_type: "progress",
+        idempotency_key: `memcard:${saved.change_id}`, correlation_id: run_id, payload: { text: card.text, buttons: [memlaneUndoButton(saved.change_id)] } });
+    } catch (e) {
+      console.error(`memory card: announce failed: ${safeReason(e)}`);
+    }
+  }
+```
+
+(It uses the module's `memoryLaneCard`, not the test-faultable `this.memoryLaneCard`, so a failed lane card is still announced.)
+
+Call sites (each passes `state.lessonSavedThisTurn`, which `runLessonWrite` set for this save):
+- `saveThenRoute`: replace `if (route.lane !== "memory") return { kind: "inform", note: s.note, route: turnRoute(route, s.verdict_id), ...q };` with
+  `if (route.lane !== "memory") { this.announceSave(i.claim.run_id, state.lessonSavedThisTurn); return { kind: "inform", note: s.note, route: turnRoute(route, s.verdict_id), ...q }; }`
+- `memoryLaneEnd`: first line of the `laneLost` branch and first line of the `catch` add `this.announceSave(i.claim.run_id, state.lessonSavedThisTurn);`.
+- `laneRoute`: before its last line (`return save?.note ? …`) add `if (save?.settled) this.announceSave(i.claim.run_id, state.lessonSavedThisTurn);`.
+- `triageTurn` catch (8b's version): after `const saved = state?.lessonSavedThisTurn;` add `this.announceSave(i.claim.run_id, saved);` (a no-op when nothing was saved; deduplicated when an inform path already queued it).
+- `laneCardFor`: give a saved lane reply the Undo button:
+
+```ts
+  private laneCardFor(run_id: string, text: string, save: SaveStep | null):
+    { card: { text: string; buttons: NotificationButton[] } } | { why: "empty_reply" | "render_failed" } {
+    try {
+      const card = this.laneCard({ text, run_id, ...(save?.settled ? { note: laneSavedNote(save.lesson_id, save.theme) } : {}) });
+      if (!card) return { why: "empty_reply" };
+      // Paco 2026-10-12: a saved lesson is announced with Undo on the card that names it
+      const undo = save?.settled ? [memlaneUndoButton((save.w as Required<LessonWriteOutcome>).change_id)] : [];
+      return { card: { ...card, buttons: [...undo, ...card.buttons] } };
+    } catch (e) {
+      console.error(`lane: card render failed: ${safeReason(e)}`);
+      return { why: "render_failed" };
+    }
+  }
+```
+
+- [ ] **Step 5: The effect table's end state and `entryProblems` (`src/decisions/`, protected)**
+
+In `src/decisions/entries/turn-handler.ts`, replace the `answer`, `lookup` and `planner` lines of `TURN_HANDLER_EFFECTS` with:
+
+```ts
+  answer: { kind: "effect", reversible: true, announced: "card",
+    what: "answer-lane reply (Dig deeper); on a confident sets_rule the lesson saves first and the lane card carries 📒 and ↩️ Undo" },
+  lookup: { kind: "effect", reversible: true, announced: "card",
+    what: "lookup-lane reply (Dig deeper); on a confident sets_rule the lesson saves first and the lane card carries 📒 and ↩️ Undo" },
+  planner: { kind: "effect", reversible: true, announced: "card",
+    what: "the planner answers; on a confident sets_rule the lesson saves first and an Undo-only memory card is queued (announceSave)" }
+```
+
+and drop "(until Task 8c)" from the file's doc comment. In `src/decisions/registry.ts` `effectProblems`, replace
+`else if (!fx.reversible || fx.announced === "none") p.push(...)` with:
+
+```ts
+    else if (!fx.reversible || fx.announced !== "card") p.push(`a jev/model rung can choose ${v}, an effect not reversible or not announced on a card`);
+```
+
+and replace the doc line about `"reply"` with: `Announced means a code-built card with Undo (Paco 2026-10-12): "reply" is not accepted.`
+
+In `tests/decisions/registry.test.ts`:
+- the pinned table becomes `{ answer: ["effect", true, "card"], lookup: ["effect", true, "card"], memory: ["effect", true, "card"], status: ["reply", true, "card"], planner: ["effect", true, "card"] }`, and its comment says the end state follows Paco's Q1 ruling;
+- the two expected messages in "fails a judged entry over Paco's message…" become `"a jev/model rung can choose memory, an effect not reversible or not announced on a card"` and the same for `planner`;
+- add to that test: `expect(entryProblems(base({ effects: { ...HANDLER.effects, answer: fx("effect", true, "reply") } }))).toContain("a jev/model rung can choose answer, an effect not reversible or not announced on a card");` (a save announced only in the reply no longer passes).
+
+- [ ] **Step 6: Run, and update exactly the named tests and snapshot**
+
+Run: `npx vitest run tests/core/lesson-save-card.test.ts tests/decisions/ && npm run typecheck`
+Expected: PASS.
+Run: `CI=1 npx vitest run tests/core/turn-handler-pin.test.ts tests/core/turn-handler-pin-throws.test.ts`
+Expected: exactly one FAIL, `rule-on-lookup` (its lane card's `buttons` gain ↩️ Undo). Any other failing case is a
+regression: stop and fix the code. Then regenerate only that case:
+`npx vitest run tests/core/turn-handler-pin.test.ts -t "rule-on-lookup" -u`, and check `git diff --stat tests/core/__pins__`
+shows only `rule-on-lookup.json`, with the only change the added `{ "text": "↩️ Undo", "data": "memlane:undo:<lc#1>" }` button.
+Update `tests/core/core-worker-triage.test.ts` "ompFail after a committed save…" (`:816-830`): the outbox now also holds
+the save's card, so replace its two `texts` lines with
+
+```ts
+    const sent = drainOutbox(store);
+    expect([...sent.keys()].filter((k) => k.startsWith("memcard:"))).toHaveLength(1); // Paco's Q1 ruling: the save's Undo card
+    const texts = [...sent.entries()].filter(([k]) => !k.startsWith("memcard:")).map(([, p]) => String(p.text));
+```
+
+Run: `npx vitest run tests/core/ tests/gateway/ tests/omp/ tests/run/ && npm run typecheck && npm test`
+Expected: PASS. Any other existing test that breaks must be one that counts outbox rows or a saved lane card's buttons;
+update it the same way, name it in the commit body, and change nothing else.
+
+- [ ] **Step 7: Commit (protected: `src/decisions/` and core-worker — Paco's merge)**
+
+```bash
+git add src/core/memory-lane-card.ts src/core/core-worker.ts src/decisions/entries/turn-handler.ts src/decisions/registry.ts tests/decisions/registry.test.ts tests/core/lesson-save-card.test.ts tests/core/core-worker-triage.test.ts tests/core/__pins__/turn-handler/rule-on-lookup.json
+git commit -m "feat(core): every automatic lesson save announced on the memory card with Undo"
+```
+
+Record this commit's sha in the task report as `<task-8c sha>`.
 
 ## Task 9: Per-entry health in the invariant sweep (`jev_skip_rate` from `decisions.fallback_reason`)
 
@@ -4210,16 +4523,18 @@ git worktree add .worktrees/p6-base 3bff437
 // covered by the Task 2 pin and Task 8b tests, not here.
 // Compared projection: every jev_decisions and jev_verdicts column the OLD schema has and the triage event payload, except
 // ids, timestamps and latency_ms; the triage event's verdict_id is compared as a link.
-// Classification (codex B2): structure first — the outcome kind, question order, statuses, skip reasons, verdict presence
-// and the triage link. A structural difference is a mismatch, unless a side shows a transient Jev failure (timeout,
-// transport, 429, overloaded, auth): then the pair is retried once with a fresh chat and clock. Only a structurally
-// identical pair whose Jev probabilities (or reported model) differ is "Jev nondeterminism"; a pair whose sides failed the
-// same way, or that is still transient after its retry, is inconclusive. Neither ever passes.
+// Classification (codex B2, re-review #2): structure first — the outcome kind, question order, statuses, skip reasons,
+// verdict presence and the triage link. A structural difference where a side shows a retryable Jev failure (timeout,
+// transport, 429, overloaded, auth, parse) or the two sides' Jev answers differ is retried once with a fresh chat and
+// clock; a structural difference that persists after that retry is a MISMATCH, never inconclusive (spec: any structural
+// difference is a mismatch). Only a structurally identical pair whose Jev probabilities (or reported model) differ is
+// "Jev nondeterminism", and only a structurally identical pair whose sides failed Jev the same way is inconclusive.
+// Neither ever passes.
 // PASS: ≥ 190 deterministic pairs before 200 decided (candidates over-fetched by 30), 0 mismatches; the coverage floor
 // (every answered row reports a calibrated model; ≥ 100 armed turn.handler verdicts; the cascade rung ran); every stage-1
 // verdict and Jev row links its turn.handler decision; the digest builds on copy B and renders through the Telegram adapter
-// with one ✅/❌ row per offered decision, the tick sends once, a ❌ tap writes one review_bad outcome, a second tap writes
-// nothing, a stranger's tap is refused. Exit: 0 PASS · 1 FAIL · 2 setup error · 3 INCONCLUSIVE. Never opens the live DB
+// with exactly `dec:rv:<offered id>:ok` / `:bad` per row, the tick sends once, the RENDERED ❌ button's callback writes one
+// review_bad outcome, the rendered ✅ then writes nothing, a stranger's tap is refused. Exit: 0 PASS · 1 FAIL · 2 setup error · 3 INCONCLUSIVE. Never opens the live DB
 // for writing.
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -4232,7 +4547,7 @@ const check = (name, ok, detail = "") => { console.log(`${ok ? "PASS" : "FAIL"} 
 /** A required check that could not run: never a PASS (exit 3 unless something failed). */
 const cannotRun = (name, why) => { console.log(`INCONCLUSIVE ${name} — ${why}`); inconclusive.push(`${name}: ${why}`); };
 const SILENT = new Set(["timeout", "transport", "parse", "error", "rate_limited", "overloaded", "auth", "no_key", "fused", "malformed_question"]);
-const TRANSIENT = new Set(["timeout", "transport", "rate_limited", "overloaded", "auth"]);
+const RETRYABLE = new Set(["timeout", "transport", "rate_limited", "overloaded", "auth", "parse"]);
 const ID_COLS = new Set(["decision_id", "run_id", "verdict_id", "ladder_decision_id", "created_at", "updated_at", "latency_ms", "thread_cut_at", "state_built_at"]);
 const MARGIN_MS = 10 * 60_000;
 const PACE_MS = 250;
@@ -4356,7 +4671,7 @@ function columnsOf(dbPath) {
 
 const shape = (p) => JSON.stringify({ out: p.out, jd: p.jd.map((r) => [r.question_id, r.status, r.skip_reason]), v: p.v !== null, triage: p.triage.map((t) => [t.status, t.verdict_id]) });
 const failedJev = (p) => p.jd.some((r) => r.status === "skipped" && SILENT.has(r.skip_reason));
-const transient = (p) => p.jd.some((r) => r.status === "skipped" && TRANSIENT.has(r.skip_reason));
+const retryable = (p) => p.jd.some((r) => r.status === "skipped" && RETRYABLE.has(r.skip_reason));
 function jevDiffers(a, b) {
   return a.jd.some((r, i) => {
     const o = b.jd[i];
@@ -4368,7 +4683,7 @@ function jevDiffers(a, b) {
 
 /** match · mismatch · nondeterministic · inconclusive · retry — structure first (spec §6.2, codex B2). */
 function classify(a, b) {
-  if (shape(a) !== shape(b)) return transient(a) || transient(b) ? "retry" : "mismatch";
+  if (shape(a) !== shape(b)) return retryable(a) || retryable(b) || jevDiffers(a, b) ? "retry" : "mismatch";
   if (failedJev(a)) return "inconclusive"; // structures equal, so both sides failed the same way
   if (jevDiffers(a, b)) return "nondeterministic";
   return JSON.stringify(a) === JSON.stringify(b) ? "match" : "mismatch";
@@ -4395,14 +4710,17 @@ async function triagePair(g, item, attempt) {
   return { a: { ...project(g.oldSide, a.run_id, g.cols), out: outA.kind }, b: { ...project(g.newSide, b.run_id, g.cols), out: outB.kind }, runB: b.run_id };
 }
 
-/** A transient or both-failed pair is retried once (senior W10); still transient after that, it is inconclusive, never a pass. */
+/**
+ * A retryable or both-failed pair is retried once (senior W10). After the retry a structural difference is a mismatch
+ * (codex re-review #2); only a structurally identical, both-failed pair stays inconclusive.
+ */
 async function runPair(g, item) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const pair = await triagePair(g, item, attempt);
     if (pair === null) return { c: "skipped" };
     const c = classify(pair.a, pair.b);
     if ((c === "retry" || c === "inconclusive") && attempt === 0) { g.retries += 1; continue; }
-    return { c: c === "retry" ? "inconclusive" : c, ...pair };
+    return { c: c === "retry" ? "mismatch" : c, ...pair };
   }
   return { c: "skipped" };
 }
@@ -4426,7 +4744,9 @@ function reportDualRun(t, retries) {
   const det = t.match + t.mismatch.length;
   console.log(`  pairs ${t.completed}: match ${t.match} · mismatch ${t.mismatch.length} · Jev nondeterminism ${t.nondeterministic} · inconclusive ${t.inconclusive} · retried ${retries} · not admitted ${t.skipped}`);
   for (const m of t.mismatch.slice(0, 5)) console.log(`  mismatch #${m.k}:\n    old ${JSON.stringify(m.old)}\n    new ${JSON.stringify(m.new)}`);
-  check(`P6: at least ${MIN_DETERMINISTIC} deterministic pairs`, det >= MIN_DETERMINISTIC, `${det}`);
+  // senior re-review S3: a shortfall that the inconclusive (both-failed) pairs explain is infrastructure, not code
+  if (det < MIN_DETERMINISTIC && MIN_DETERMINISTIC - det <= t.inconclusive) cannotRun(`P6: at least ${MIN_DETERMINISTIC} deterministic pairs`, `${det}; ${t.inconclusive} pair(s) lost to Jev failures`);
+  else check(`P6: at least ${MIN_DETERMINISTIC} deterministic pairs`, det >= MIN_DETERMINISTIC, `${det}`);
   check("P6: 0 mismatches among them", t.mismatch.length === 0, `${t.mismatch.length}`);
   check("links: every stage-1 verdict and Jev row links its turn.handler decision", t.links === 0, `${t.links} unlinked`);
 }
@@ -4486,16 +4806,23 @@ function claimDigest(store) {
   return note;
 }
 
-/** Spec §13 row 1 "the digest renders": the queued payload through TelegramNotificationAdapter with a stub transport (codex S7). */
+/**
+ * Spec §13 row 1 "the digest renders": the queued payload through TelegramNotificationAdapter with a stub transport (codex
+ * S7). Each rendered row must be exactly ✅ `dec:rv:<offered id>:ok`, ❌ `dec:rv:<offered id>:bad`, in offer order (codex
+ * re-review #8). Returns the rendered keyboard, which the tap check uses.
+ */
 async function checkRender(g, note, digest) {
-  if (!note || !digest) { cannotRun("digest render", "no digest message was queued"); return; }
+  if (!note || !digest) { cannotRun("digest render", "no digest message was queued"); return []; }
   const sent = [];
   const adapter = new g.newMods.TelegramNotificationAdapter({ sendMessage: async (input) => { sent.push(input); return { message_id: 1 }; } });
   await adapter.send(note);
   const rows = sent[0]?.reply_markup?.inline_keyboard ?? [];
   check("digest render: HTML through the rich renderer", sent.length === 1 && sent[0].parse_mode === "HTML" && sent[0].text.includes("Decisions"), sent[0]?.text.split("\n")[0] ?? "nothing sent");
-  check("digest render: one ✅/❌ row per offered decision", rows.length === digest.offered.length
-    && rows.every((r) => r.length === 2 && r.every((b) => b.callback_data.startsWith("dec:rv:"))), `${rows.length} row(s), ${digest.offered.length} offered`);
+  const want = digest.offered.map((id) => [`dec:rv:${id}:ok`, `dec:rv:${id}:bad`]);
+  const got = rows.map((r) => r.map((b) => b.callback_data));
+  check("digest render: each row is exactly ✅ dec:rv:<offered id>:ok and ❌ dec:rv:<offered id>:bad", JSON.stringify(got) === JSON.stringify(want),
+    `${rows.length} row(s), ${digest.offered.length} offered`);
+  return rows;
 }
 
 async function checkDigest(g) {
@@ -4508,8 +4835,7 @@ async function checkDigest(g) {
   check("digest tick: sends once per local date", first.ran === true && first.sent === true && again.ran === false, JSON.stringify({ first, again }));
   const note = claimDigest(g.newSide.store);
   check("digest tick: one outbox message to the operator chat", note !== null && note.payload.text === digest?.text, note ? note.idempotency_key : "none");
-  await checkRender(g, note, digest);
-  return digest;
+  return { digest, rows: await checkRender(g, note, digest) };
 }
 
 function tapUpdate(m, from, data, id) {
@@ -4517,18 +4843,21 @@ function tapUpdate(m, from, data, id) {
   return m.normalizeTelegramUpdate({ update_id: 7_000_000 + id, callback_query: { id: `p6cb${id}`, from: { id: from }, message: { message_id: 1, chat: { id: 222 } }, data } }, allowlist);
 }
 
-function checkTap(g, digest) {
+/** The RENDERED buttons go into the gateway (codex re-review #8): a keyboard whose ❌ submits :ok or another id fails here. */
+function checkTap(g, { digest, rows }) {
   const offered = digest?.offered ?? [];
   if (offered.length === 0) { cannotRun("❌ tap", "nothing was offered even after seeding (copy B has no applied jev-rung turn.handler row)"); return; }
+  const [ok, bad] = (rows[0] ?? []).map((b) => b.callback_data);
+  if (!ok || !bad) { cannotRun("❌ tap", "the digest rendered no keyboard to tap"); return; }
   const id = offered[0];
   const gw = new g.newMods.Gateway(g.newSide.store);
-  const first = tapUpdate(g.newMods, 111, `dec:rv:${id}:bad`, 1);
+  const first = tapUpdate(g.newMods, 111, bad, 1);
   if (first.ok) gw.intake(first.event);
-  const second = tapUpdate(g.newMods, 111, `dec:rv:${id}:ok`, 2);
+  const second = tapUpdate(g.newMods, 111, ok, 2);
   if (second.ok) gw.intake(second.event);
   const outcomes = g.newSide.store.listDecisionOutcomes(id).map((o) => `${o.signal}:${o.value}:${o.source}`);
   check("❌ tap: writes exactly one review_bad outcome; the second tap writes nothing", outcomes.length === 1 && outcomes[0] === "review_bad:turn.handler:paco", outcomes.join(",") || "none");
-  check("❌ tap: a stranger's tap is refused by the allowlist", tapUpdate(g.newMods, 999, `dec:rv:${id}:bad`, 3).ok === false);
+  check("❌ tap: a stranger's tap is refused by the allowlist", tapUpdate(g.newMods, 999, bad, 3).ok === false);
 }
 
 async function setup(args) {
@@ -4592,6 +4921,11 @@ cd /Users/xiaochuan/Projects/adventure/.worktrees/decision-ladder-stage-1
 HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-decisions-parity.mjs --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/p6-base/dist
 ```
 
+First the determinism probe (senior re-review W3): run the same command with `--limit 10 --keep`. Expected: at most one
+`Jev nondeterminism` pair in ten. If more, stop: Jev does not return identical probabilities for the same input, the
+190-pair floor cannot be met, and the comparison rule needs Paco (tolerance compare, or replaying side A's Jev answers
+into side B). Report the probe's counts either way. Then the full run:
+
 Expected: `LIVE GATE: PASS` (exit 0) with `P6: at least 190 deterministic pairs`, `P6: 0 mismatches`, the three coverage
 checks, the two render checks and both tap checks PASS. Paste the full output into the task report. A mismatch is a code
 fault: read the printed pair, fix the code, rebuild in the worktree, rerun. `LIVE GATE: INCONCLUSIVE` (exit 3) is never a
@@ -4599,9 +4933,9 @@ PASS: report which required check could not run and rerun (or ask Paco). Record
 `stat -f %m /Users/xiaochuan/Projects/adventure/dist/core/core-worker.js` before and after the run and show it unchanged
 (the main checkout's `dist/` was not rebuilt).
 
-Report for Paco (egress, senior S8): the gate builds `CoreWorker` without a broker, so the last 200 Telegram texts and
-their stored context reach TypeSafe redacted by shape only (`sanitizeJevText`), not by known secret values — the same
-class as the jev-tree gate and the replay, approved under R11, but more text than any earlier gate.
+Egress (senior S8): the gate builds `CoreWorker` without a broker, so the last 200 Telegram texts and their stored context
+reach TypeSafe redacted by shape only (`sanitizeJevText`), not by known secret values — the same class as the jev-tree gate
+and the replay. **Approved by Paco 2026-10-12 ("Yes, 200 messages"): keep shape-only redaction in this gate.**
 
 - [ ] **Step 5: Commit**
 
@@ -4644,12 +4978,15 @@ and `turn.gear` (the role on the route, recorded from the same Jev call). Refere
 **No off switch (ruling R13).** There is no variable that turns the decision system off or into shadow. The only shadow
 left is the front door's existing `HOUGE_JEV_TRIAGE_ENABLED=shadow`, unchanged. If a build is fundamentally wrong, revert
 its commit, rebuild `dist/`, kickstart: every stage's migrations are additive, and `scripts/check-decisions-rollback.mjs`
-proves the previous build runs on a migrated DB (run by each stage's final task).
+proves the previous build runs on a migrated DB (run by each stage's final task). After such a revert, a digest still in
+the outbox is sent without its buttons (the old adapter ignores `button_rows`), and a tap on an earlier digest is answered
+as unrecognised callback data; neither writes anything.
 
 **The digest** (one Telegram message, rich-rendered): up to 8 **unsure** verdicts (an applied Jev decision whose
 probability is within 0.15 of its entry's bar; `turn.handler`'s bar is the choice bar 0.6), each with ✅ / ❌ buttons
 (`dec:rv:<decision_id>:<ok|bad>`); **counts** per entry by deciding rung in the last 24 h; **health** per entry (Jev skips —
-failures on the Jev rung, budget excluded — fallbacks, and rows in the configured triage shadow when there are any). A
+failures on the Jev rung, budget excluded — fallbacks, and rows in the configured triage shadow when there are any;
+health counts applied rungs only, so in configured shadow a Jev failure shows in the triage `jev_skip_rate`, not here). A
 front-door row counts only when its turn's verdict links it. For front-door entries a line quotes the first 40
 characters of Paco's own message; no tool text ever. A tap passes the sender allowlist, writes one `decision_outcomes`
 row (`review_ok` / `review_bad`, value = the entry id) and replies; a second tap, an unknown id, or one no digest offered in
@@ -4671,8 +5008,8 @@ writes none.
 **Incidents:** `decision_record_failed` (subject = the entry; a decisions write failed, the verdict stood; the next good
 write resolves it), `decision_fallback` (subject = the entry; three named fallbacks to the entry's fail answer in one hour,
 `budget` excluded; for `turn.handler` and `turn.gear` only cascade failures count, because the Jev incidents already page a
-Jev outage; one urgent card per open incident, none for a reopen within 10 minutes of the last resolve; the next Jev or
-model answer resolves it, a rule answer does not), and `jev_skip_rate` with subject `decision:<entry>` (the sweep's
+Jev outage, and only a cascade answer resolves it; one urgent card per open incident, none for a reopen within 10 minutes
+of the last resolve; for other entries the next Jev or model answer resolves it; a rule answer never does), and `jev_skip_rate` with subject `decision:<entry>` (the sweep's
 per-entry rate from Jev-rung failures; `turn.handler` and `turn.gear` keep the triage-wide `jev_skip_rate` above in stage 1).
 
 **Live gate:** from the feature worktree, `HOUGE_ENV_FILE=/abs/.env node scripts/live-gate-decisions-parity.mjs --old-dist <pre-stage-1 dist>`
@@ -4706,9 +5043,10 @@ walked by the ladder runner (`src/decisions/decide.ts`):
 Every `turn.handler` decision is recorded (`decisions` row) in the same transaction as the turn's `jev_verdicts` row
 (`decision_id`) and its `jev_decisions` rows (`ladder_decision_id`), all linked; a turn lost before it settles writes none.
 `turn.gear` records the route's role from the same call (rung `jev` when the gear questions were armed and applied, else
-`rule`). The entry declares what each verdict causes (ADR 0030 decision 4, R12): the lane replies and the status card are
-reversible replies announced on their cards; `memory` is the instant lesson save with Undo; `planner` may save first on a
-confident `sets_rule`, announced through the `[memory]` note. `HOUGE_JEV_TRIAGE_ENABLED=shadow` runs the Jev and cascade
+`rule`). The entry declares what each verdict causes (ADR 0030 decision 4, R12): the status card is a reversible reply;
+`answer`, `lookup`, `memory` and `planner` may save a lesson first on a confident `sets_rule`, and every such automatic save
+is announced on the memory card with ↩️ Undo — on the lane card itself, as the memory lane's reply, or as a separate
+Undo-only card on the planner path (Paco, 2026-10-12). `HOUGE_JEV_TRIAGE_ENABLED=shadow` runs the Jev and cascade
 rungs in shadow: asked and recorded (`armed_mode shadow`), never applied. Stage 1 changed no routing: the pinned
 characterisation tests (`tests/core/turn-handler-pin.test.ts`) and the P6 dual run (`scripts/live-gate-decisions-parity.mjs`)
 compare every persisted column with the pre-ladder build.
@@ -4726,7 +5064,7 @@ compare every persisted column with the pre-ladder build.
 
 ```markdown
 - `decision_fallback` (subject `turn.handler`): three cascade failures in one hour (a Jev outage pages through the Jev
-  incidents instead); one urgent card, none for a reopen within 10 minutes; the next Jev or cascade answer clears it.
+  incidents instead); one urgent card, none for a reopen within 10 minutes; the next cascade answer clears it.
 - `decision_record_failed`: a `decisions` write failed; the routing stood (the verdict row then has `decision_id` null).
 ```
 
@@ -4874,8 +5212,9 @@ Run: `grep -rn "HOUGE_DECISIONS_OFF" src/ tests/ scripts/ docs/reference/ CONTEX
 Expected: no output (R13).
 Run: `grep -n "HOUGE_DECISION_DIGEST_AT" docs/reference/configuration.md && ! grep -rn "HOUGE_TRUST_ASK_TTL_MS" docs/reference/`
 Expected: the digest variable documented; no `HOUGE_TRUST_ASK_TTL_MS` (stage 2a).
-Run: `git diff --exit-code <task-2 sha> -- tests/helpers/triage-harness.ts tests/core/turn-handler-pin.test.ts tests/core/turn-handler-pin-throws.test.ts tests/core/turn-handler-routed-by.test.ts tests/core/__pins__`
-Expected: exit 0 (the frozen pin set is unchanged at the end of the stage).
+Run: `git diff --name-only <task-2 sha> -- tests/helpers/triage-harness.ts tests/core/turn-handler-pin.test.ts tests/core/turn-handler-pin-throws.test.ts tests/core/turn-handler-routed-by.test.ts tests/core/__pins__`
+Expected: exactly the snapshot(s) Task 8c named (`tests/core/__pins__/turn-handler/rule-on-lookup.json`); nothing else in
+the frozen set changed during the stage.
 Run (worktree): `npm run typecheck && npm test && npm run build`
 Expected: PASS, no skipped tests.
 
@@ -4921,12 +5260,14 @@ git commit -m "docs: decision ladder stage 1 — configuration, the Jev referenc
   links, structure before Jev failures, one retry, pacing, coverage floor, ≥ 190 deterministic and 0 mismatches), the
   digest rendered through the adapter, a ❌ tap that can fail (seeded offer), INCONCLUSIVE never PASS, worktree-only
   builds → Task 12.
+- Every automatic lesson save announced on a card with Undo (Paco's Q1 ruling), effect table at its end state,
+  `"reply"` rejected → Task 8c.
 - Docs sync and the R13 rollback check (the 3bff437 build boots on a DB the new build migrated) → Task 13.
 
 **Placeholder scan.** Every code step carries the code. Deliberate edges, named: outcome signals with no stage 1
 producer reject every value until their stage defines the set (ruling 7); a required gate check that cannot run is
-INCONCLUSIVE (exit 3), never PASS; `CLOCK_CASES` starts empty and may only ever hold a prior-turn case; Q1 is open for
-Paco and the plan keeps today's behaviour meanwhile.
+INCONCLUSIVE (exit 3), never PASS; `CLOCK_CASES` starts empty and may only ever hold a prior-turn case; Task 6 accepts
+`announced: "reply"` only until Task 8c removes it in the same stage.
 
 **Type consistency.** `RungResult` / `RungAnswer` / `RungAbstain` / `RungFailed`, `DecideResult` (with `fallbackRung`),
 `DecideCtx`, `DecisionRecorder`, `AnyEntry`, `VerdictEffect`, `InputSource`, `RUNNER_REASON_CODES` (Task 3) are used with
@@ -4965,7 +5306,7 @@ finding, then what Rev 2 did.
 - **Codex B5 — the registry certified a false "reply only" effect.** Fixed by Paco's R12: `memory` and `planner` are
   declared `effect` (reversible, announced), the grandfather ruling and ADR paragraph are gone, and `entryProblems` fails a
   misdeclared entry (tests for each failure mode); the effect table is pinned (Task 6). The planner route's in-reply
-  announcement is raised as Q1.
+  announcement is raised as Q1 (Rev 3: Paco ruled "Add the card"; Task 8c).
 
 ### WARNINGs (14: 14 applied, 0 rejected)
 
@@ -4998,3 +5339,40 @@ finding, then what Rev 2 did.
 - Senior S10 (inventory re-walk only A12–A18) — applied as ruling 18: the full re-walk is deferred to the stage 3/4 plans, for Paco to accept.
 - Senior S11 (plan hygiene) — applied: pre-flight header (code at 3bff437, docs-only to 1b65de4), adapter `:115`, `copyDb` `:148-151`, Task 4 placement fixed to after `VERDICT_PATCH_COLUMNS` (`:965`), `checkMeteredCeiling` `:506`, `CONTEXT.md` `:65`, sweep paragraph `:736`.
 - Codex S7 (render the digest in the gate) — applied: `checkRender` sends the queued notification through `TelegramNotificationAdapter` with a stub transport and checks HTML and one ✅/❌ row per offered decision.
+
+## Appendix: Review dispositions (Rev 2 re-reviews)
+
+Codex re-review: `scratchpad/review-ladder/plan2-codex-review.md`. Senior re-review: `…/plan2-senior-review.md`.
+
+### BLOCKERs (all fixed)
+
+- **Codex #2 (Rev 1 B2 partial) — a persistent structural difference could end inconclusive.** Fixed: after the one retry a
+  structural difference is a mismatch; only a structurally identical pair whose sides both failed Jev may be inconclusive
+  (`runPair`, Task 12).
+- **Codex #5 (Rev 1 B5 partial) / senior W5 — the registry certified `announced: "reply"` without an Undo card.** Fixed by
+  Paco's Q1 ruling: Task 8c adds the Undo card to every automatic save and `entryProblems` rejects `"reply"`.
+- **Codex #8 — a broken visible ❌ button could pass.** Fixed: `checkRender` asserts each row is exactly
+  `dec:rv:<offered id>:ok` / `:bad` in offer order, and `checkTap` feeds the rendered ❌ (then ✅) `callback_data` into the
+  gateway.
+- **Senior N-B1 — `answer` and `lookup` declared `reply` though they save lessons.** Fixed: Task 6 declares them `effect`
+  (`announced: "reply"`, today's truth) and Task 8c moves them to the Undo card; the pinned table changes in both, on purpose.
+
+### WARNINGs (3 senior: 3 applied, 0 rejected)
+
+- Senior W1 (a Jev answer cleared a cascade-only incident) — applied: for `JEV_PAGED_ELSEWHERE` entries only a cascade answer clears `decision_fallback`; new Task 5 test; docs updated.
+- Senior W2 (noise could FAIL the gate) — applied in part: `parse` is retryable and a structural difference with differing Jev answers gets the retry; a difference that persists after the retry is still a mismatch, as codex #2 and the spec require (the senior's "reproduced flip counts as nondeterministic" is not adopted).
+- Senior W3 (Jev determinism never probed) — applied: a `--limit 10` probe before the full run; more than one nondeterministic pair in ten stops the run for Paco.
+
+### SUGGESTIONs (6 senior: 6 applied, 0 rejected)
+
+- S1 (`npm ci` in the feature worktree) — applied in Global Constraints.
+- S2 (`floor_held` always names `rule`) — applied: `Walk.floorRung` names the rung that set the floor; carrying its `detail` is left out (no stage 1 consumer; revisit with stage 2a's first monotone entry).
+- S3 (a shortfall caused by inconclusive pairs prints FAIL) — applied: reported INCONCLUSIVE (exit 3) when the inconclusive count explains it.
+- S4 (configured shadow hides Jev failures from health) — applied as a configuration.md note (health counts applied rungs; the triage `jev_skip_rate` still pages).
+- S5 (queue not cleared after a committed settle) — applied: `settleTriage` clears the queue after a committed non-`inTx` write.
+- S6 (what a reverted build does with digests and taps) — applied as a configuration.md note in the R13 paragraph.
+
+### Paco's rulings applied
+
+- Q1 → "Add the card": Task 8c; the open question is removed and the ruling recorded at the top.
+- Gate egress → "Yes, 200 messages": recorded in Task 12's egress note; shape-only redaction kept.
