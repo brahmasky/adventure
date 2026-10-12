@@ -733,7 +733,7 @@ one-shots; the panel no longer spawns `codex`.
 ## Introspection — the invariant sweep (slice A, ADR 0024)
 
 A deterministic, zero-LLM sweep on the daemon signal path: reads Houge's own flight recorder
-(schedules, runs, outbox, heartbeat, LLM attempts), checks seven invariants (plus the Jev rate kinds `jev_skip_rate` and `lane_fallthrough_rate`, below), and records violations as
+(schedules, runs, outbox, heartbeat, LLM attempts), checks seven invariants (plus the Jev rate kinds `jev_skip_rate`, also per decision entry, and `lane_fallthrough_rate`, below), and records violations as
 **incidents** with an open→resolve lifecycle. Pure SQL reads plus incident bookkeeping — no LLM,
 no capability, no run creation, so it can never act on what it finds.
 
@@ -1037,6 +1037,60 @@ node scripts/live-gate-jev-tree.mjs --real-calibration   # the merge gate: arms 
 sends the six questions at each turn's live instant, rebuilds the quote, labels by the spec §7 tool proxy and prints, per
 arming combination, which turns would change model. A dry run on a live-DB copy at build time: 301 Telegram turns, estimated
 $0.051. The live-gate script replaces the lane 1 gate (`live-gate-jev-triage.mjs`, removed).
+
+## Decision ladder (ADR 0030)
+
+Every decision that changes a turn's path is an entry in the code-owned registry (`src/decisions/`, protected surface),
+decided by a ladder of deciders (code rule → Jev → model → Paco) and recorded after it decides. Stage 1 registers the
+front door: `turn.handler` (the gate rule and ack rule → the Jev tree → the Tiny cascade; the planner is its fail value)
+and `turn.gear` (the role on the route, recorded from the same Jev call). Reference: [jev-decision-layer.md](jev-decision-layer.md#the-decision-ladder).
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HOUGE_DECISION_DIGEST_AT` | `21:00` | Local time (`HH:MM`, in `HOUGE_DISPLAY_TZ`) of the daily decision digest to the operator chat. Malformed → the default. Sent once per local date on the first poll at or after the time; a day with no decisions sends nothing (the latch row still records the date). |
+
+**No off switch (ruling R13).** There is no variable that turns the decision system off or into shadow. The only shadow
+left is the front door's existing `HOUGE_JEV_TRIAGE_ENABLED=shadow`, unchanged. If a build is fundamentally wrong, revert
+its commit, rebuild `dist/`, kickstart: every stage's migrations are additive, and `scripts/check-decisions-rollback.mjs`
+proves the previous build runs on a migrated DB (run by each stage's final task). After such a revert, a digest still in
+the outbox is sent without its buttons (the old adapter ignores `button_rows`), and a tap on an earlier digest is answered
+as unrecognised callback data; neither writes anything.
+
+**The digest** (one Telegram message, rich-rendered): up to 8 **unsure** verdicts (an applied Jev decision whose
+probability is within 0.15 of its entry's bar; `turn.handler`'s bar is the choice bar 0.6), each with ✅ / ❌ buttons
+(`dec:rv:<decision_id>:<ok|bad>`); **counts** per entry by deciding rung in the last 24 h; **health** per entry (Jev skips —
+failures on the Jev rung, budget excluded — fallbacks, and rows in the configured triage shadow when there are any;
+health counts applied rungs only, so in configured shadow a Jev failure shows in the triage `jev_skip_rate`, not here). A
+front-door row counts only when its turn's verdict links it. For front-door entries a line quotes the first 40
+characters of Paco's own message; no tool text ever. A tap passes the sender allowlist, writes one `decision_outcomes`
+row (`review_ok` / `review_bad`, value = the entry id) and replies; a second tap, an unknown id, or one no digest offered in
+the last 7 days answers "Already handled." and writes nothing. Review taps are exempt from the 5-commands-a-minute limit
+and do not count toward it.
+
+**Tables** (migration `2026-10-12-decision-ladder`, additive): `decisions` (one row per decision that matters:
+`decision_id`, `entry_id`, `entry_version`, `run_id`, `tool_call_id`, `stage`, `rung` (`rule` \| `jev` \| `model` \|
+`paco` \| `fail`), `verdict`, `p`, `reason_code` (a code-owned enum per entry), `fallback_reason` (`timeout` \| `outage` \|
+`parse` \| `threw` \| `stale_bar` \| `budget`), `fallback_rung` (which rung failed first), `armed_mode`, `latency_ms`,
+`created_at`; no state column; `stage` and `fallback_reason` are validated in code so a later stage can extend them),
+`decision_outcomes` (closed signal and value per row, validated in code; one review label per decision), `ladder_moves`
+(who decides, moved; only `approval.standing` may write an automatic row, for `tool.policy`; every Paco row carries its
+callback id, used once; locked entries refuse every move), `decision_digests` (the daily latch and the ids each digest
+offered). `jev_decisions.ladder_decision_id` and `jev_verdicts.decision_id` link the Jev rows and the verdict to their
+`turn.handler` decision; the front door writes its decision row in the same transaction as the verdict, so a lost turn
+writes none.
+
+**Incidents:** `decision_record_failed` (subject = the entry; a decisions write failed, the verdict stood; the next good
+write resolves it), `decision_fallback` (subject = the entry; three named fallbacks to the entry's fail answer in one hour,
+`budget` excluded; for `turn.handler` and `turn.gear` only cascade failures count, because the Jev incidents already page a
+Jev outage, and only a cascade answer resolves it; one urgent card per open incident, none for a reopen within 10 minutes
+of the last resolve; for other entries the next Jev or model answer resolves it; a rule answer never does), and `jev_skip_rate` with subject `decision:<entry>` (the sweep's
+per-entry rate from Jev-rung failures; `turn.handler` and `turn.gear` keep the triage-wide `jev_skip_rate` above in stage 1).
+
+**Live gate:** from the feature worktree, `HOUGE_ENV_FILE=/abs/.env node scripts/live-gate-decisions-parity.mjs --old-dist <pre-stage-1 dist>`
+(P6: the last 200 Telegram texts through the old and new triage on two copies of the DB; coverage floor; the digest
+rendered through the Telegram adapter; a ❌ tap). Exit 3 = INCONCLUSIVE, never a pass. The rollback check,
+`HOUGE_ENV_FILE=/abs/.env node scripts/check-decisions-rollback.mjs --old-dist <pre-stage-1 dist>`, boots the previous
+build on a copy of the live DB that the new build migrated (it must settle a triage turn and run its sweep).
 
 ## Kill switch + disarm posture (ADR 0018)
 
