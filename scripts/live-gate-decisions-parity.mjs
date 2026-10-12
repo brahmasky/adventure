@@ -45,6 +45,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
 
+import { DEFAULT_OLD_BASE, verifyOldDist } from "./old-dist-provenance.mjs";
+
 const NEW_DIST = resolve(new URL("../dist", import.meta.url).pathname);
 const failures = [];
 const inconclusive = [];
@@ -70,9 +72,10 @@ const MIN_ARMED = 100;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function parseArgs(argv) {
-  const a = { oldDist: null, db: null, limit: 200, keep: false };
+  const a = { oldDist: null, oldBase: DEFAULT_OLD_BASE, db: null, limit: 200, keep: false };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--old-dist") a.oldDist = resolve(argv[++i]);
+    else if (argv[i] === "--old-base") a.oldBase = argv[++i];
     else if (argv[i] === "--db") a.db = resolve(argv[++i]);
     else if (argv[i] === "--limit") {
       a.limit = Number(argv[++i]);
@@ -83,6 +86,8 @@ function parseArgs(argv) {
   }
   if (!NEW_DIST.includes("/.worktrees/")) throw new Error(`run from the feature worktree (this dist is ${NEW_DIST}); never build in the main checkout`);
   if (!a.oldDist || !existsSync(join(a.oldDist, "core/core-worker.js"))) throw new Error("--old-dist <pre-stage-1 dist> is required (see the header)");
+  const prov = verifyOldDist(a.oldDist, NEW_DIST, a.oldBase);
+  console.log(`old build: worktree HEAD ${prov.head.slice(0, 12)}, core-worker.js ${prov.oldHash} (new ${prov.newHash})`);
   return a;
 }
 

@@ -9,26 +9,41 @@
 // copy of the live DB is migrated by the new build; then the previous build (3bff437) opens it — its migrations run, a
 // triage turn settles (Jev unreachable: a skipped row and a verdict, no network, no egress), its invariant sweep runs —
 // and the new build reopens it afterwards. Exit: 0 PASS · 1 FAIL · 2 setup error. Never opens the live DB for writing.
+// The temp copy is deleted on every exit path (pass, fail, setup error, SIGINT) unless --keep. --old-dist must be a worktree at
+// 3bff437 (or --old-base <sha>) whose core-worker.js differs from this build (scripts/old-dist-provenance.mjs); else exit 2.
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
+
+import { DEFAULT_OLD_BASE, verifyOldDist } from "./old-dist-provenance.mjs";
 
 const NEW_DIST = resolve(new URL("../dist", import.meta.url).pathname);
 const failures = [];
 const check = (name, ok, detail = "") => { console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? ` — ${detail}` : ""}`); if (!ok) failures.push(name); };
 const load = async (dist, paths) => Object.assign({}, ...(await Promise.all(paths.map((p) => import(join(dist, p))))));
+/** The live-DB copy's temp root: removed on every exit path unless --keep (it holds Paco's data). */
+const temp = { root: null, keep: false };
+function cleanup() {
+  if (!temp.root) return;
+  if (temp.keep) console.log(`temp dir kept (--keep; it holds a copy of the live DB, delete it when done): ${temp.root}`);
+  else rmSync(temp.root, { recursive: true, force: true });
+  temp.root = null;
+}
 const LADDER_TABLES = ["decisions", "decision_outcomes", "ladder_moves", "decision_digests"];
 
 function parseArgs(argv) {
-  const a = { oldDist: null, db: null, keep: false };
+  const a = { oldDist: null, oldBase: DEFAULT_OLD_BASE, db: null, keep: false };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--old-dist") a.oldDist = resolve(argv[++i]);
+    else if (argv[i] === "--old-base") a.oldBase = argv[++i];
     else if (argv[i] === "--db") a.db = resolve(argv[++i]);
     else if (argv[i] === "--keep") a.keep = true;
     else throw new Error(`unknown argument ${argv[i]}`);
   }
   if (!NEW_DIST.includes("/.worktrees/")) throw new Error(`run from the feature worktree (this dist is ${NEW_DIST}); never build in the main checkout`);
   if (!a.oldDist || !existsSync(join(a.oldDist, "core/core-worker.js"))) throw new Error("--old-dist <previous build's dist> is required");
+  const prov = verifyOldDist(a.oldDist, NEW_DIST, a.oldBase);
+  console.log(`old build: worktree HEAD ${prov.head.slice(0, 12)}, core-worker.js ${prov.oldHash} (new ${prov.newHash})`);
   return a;
 }
 
@@ -84,6 +99,8 @@ async function main() {
   const live = resolve(args.db ?? join(dirname(resolve(process.env.HOUGE_ENV_FILE ?? join(process.cwd(), ".env"))), "houge.sqlite"));
   if (!existsSync(live)) throw new Error(`no DB at ${live} (pass --db)`);
   const root = mkdtempSync("/tmp/hg-rb-");
+  temp.root = root; // from here on every exit path removes it (cleanup)
+  temp.keep = args.keep;
   isolate(root, newMods.DISARM_FLAGS);
   const path = join(root, "copy.sqlite");
   copyDb(live, path);
@@ -101,8 +118,9 @@ async function main() {
   try { newMods.RunStore.open(path).close(); check("the new build reopens the copy afterwards", true); }
   catch (e) { check("the new build reopens the copy afterwards", false, e instanceof Error ? e.message : String(e)); }
   console.log(failures.length === 0 ? "\nROLLBACK CHECK: PASS" : `\nROLLBACK CHECK: FAIL\n  - ${failures.join("\n  - ")}`);
-  if (args.keep || failures.length > 0) console.log(`temp dir kept: ${root}`); else rmSync(root, { recursive: true, force: true });
   return failures.length === 0 ? 0 : 1;
 }
 
-main().then((c) => process.exit(c), (e) => { console.error(`rollback check setup error: ${e instanceof Error ? e.stack ?? e.message : String(e)}`); process.exit(2); });
+process.on("SIGINT", () => { cleanup(); process.exit(130); });
+main().then((c) => { cleanup(); process.exit(c); },
+  (e) => { console.error(`rollback check setup error: ${e instanceof Error ? e.stack ?? e.message : String(e)}`); cleanup(); process.exit(2); });
