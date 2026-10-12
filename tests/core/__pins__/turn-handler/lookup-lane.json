@@ -177,15 +177,16 @@
         "verdict": "routed"
       }
     ],
-    "lessons_saved": 0
+    "lessons_saved": 0,
+    "lane_replies": [
+      {
+        "chat_id": "555",
+        "lane": "lookup",
+        "catch_up": "Houge answered from weather.example — facts: Sunny, max 22°C",
+        "verdict_id": "<jv#1>"
+      }
+    ],
+    "lesson_changes": []
   },
-  "catch_up": [
-    {
-      "run_id": "<run#1>",
-      "lane": "lookup",
-      "verdict_id": "<jv#1>",
-      "catch_up": "Houge answered from weather.example — facts: Sunny, max 22°C"
-    }
-  ],
   "planner_last_answered": null
 }

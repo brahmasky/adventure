@@ -177,15 +177,16 @@
         "verdict": "routed"
       }
     ],
-    "lessons_saved": 0
+    "lessons_saved": 0,
+    "lane_replies": [
+      {
+        "chat_id": "555",
+        "lane": "answer",
+        "catch_up": "Houge replied: 放在书房更好。",
+        "verdict_id": "<jv#1>"
+      }
+    ],
+    "lesson_changes": []
   },
-  "catch_up": [
-    {
-      "run_id": "<run#1>",
-      "lane": "answer",
-      "verdict_id": "<jv#1>",
-      "catch_up": "Houge replied: 放在书房更好。"
-    }
-  ],
   "planner_last_answered": null
 }

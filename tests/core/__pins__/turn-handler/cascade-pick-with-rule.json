@@ -180,8 +180,17 @@
         ]
       }
     ],
-    "lessons_saved": 1
+    "lessons_saved": 1,
+    "lane_replies": [],
+    "lesson_changes": [
+      {
+        "chat_id": "555",
+        "new_id": 1,
+        "superseded_id": null,
+        "pruned_ids": "[]",
+        "undone_at": null
+      }
+    ]
   },
-  "catch_up": [],
   "planner_last_answered": null
 }

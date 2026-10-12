@@ -181,15 +181,24 @@
         "verdict": "routed"
       }
     ],
-    "lessons_saved": 1
+    "lessons_saved": 1,
+    "lane_replies": [
+      {
+        "chat_id": "555",
+        "lane": "memory",
+        "catch_up": "Houge saved a rule: Keep replies short.",
+        "verdict_id": "<jv#1>"
+      }
+    ],
+    "lesson_changes": [
+      {
+        "chat_id": "555",
+        "new_id": 1,
+        "superseded_id": null,
+        "pruned_ids": "[]",
+        "undone_at": null
+      }
+    ]
   },
-  "catch_up": [
-    {
-      "run_id": "<run#1>",
-      "lane": "memory",
-      "verdict_id": "<jv#1>",
-      "catch_up": "Houge saved a rule: Keep replies short."
-    }
-  ],
   "planner_last_answered": null
 }

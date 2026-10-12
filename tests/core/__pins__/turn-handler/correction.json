@@ -175,8 +175,9 @@
         "verdict": "correction"
       }
     ],
-    "lessons_saved": 0
+    "lessons_saved": 0,
+    "lane_replies": [],
+    "lesson_changes": []
   },
-  "catch_up": [],
   "planner_last_answered": null
 }

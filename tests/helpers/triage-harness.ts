@@ -121,7 +121,7 @@ export class IdMap {
  * and no quote the tree state carries no clock, so its hash pins the Jev request content that Task 8b moves.
  */
 const DROP: ReadonlySet<string> = new Set(["decision_id", "ladder_decision_id", "run_id", "verdict_id", "created_at", "updated_at", "latency_ms",
-  "thread_cut_at", "state_built_at"]);
+  "thread_cut_at", "state_built_at", "change_id"]);
 function clean(row: object, ids: IdMap): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(row)) if (!DROP.has(k)) out[k] = typeof v === "string" ? ids.map(v) : v;
@@ -134,6 +134,13 @@ function attemptsOf(events: ReturnType<RunStore["getLedgerEvents"]>, ids: IdMap)
     const p = e.payload as { role?: unknown; routed_by?: string };
     return [p.role ?? null, p.routed_by === undefined ? null : ids.map(p.routed_by)];
   });
+}
+
+/** Raw rows (SELECT *) of one run's table, ids mapped, clocks dropped: nothing a consumer reads is filtered out by a store helper. */
+function rawRows(store: RunStore, table: "lane_replies" | "lesson_changes", run_id: string, ids: IdMap): Array<Record<string, unknown>> {
+  const db = (store as unknown as { db: { prepare(sql: string): { all(...p: unknown[]): Array<Record<string, unknown>> } } }).db;
+  return db.prepare(`SELECT * FROM ${table} WHERE run_id = ? ORDER BY rowid`).all(run_id)
+    .map((r) => ({ ...clean(r, ids), ...(typeof r.verdict_id === "string" ? { verdict_id: ids.map(r.verdict_id) } : {}) })); // verdict_id is a link, kept
 }
 
 /** Everything triage persists for one run, ids mapped: decision rows, the verdict (with its id, so links show), the route's link, model calls, the triage event(s), saves. */
@@ -149,6 +156,8 @@ export function projectRun(store: RunStore, run_id: string, outcome: unknown, id
     route_links_verdict: routeVerdict === undefined ? null : routeVerdict === (v?.verdict_id ?? null),
     llm_attempts: attemptsOf(events, ids),
     triage: events.filter((e) => e.event_type === "triage").map((e) => ids.deep(e.payload)),
-    lessons_saved: events.filter((e) => e.event_type === "lesson_saved").length
+    lessons_saved: events.filter((e) => e.event_type === "lesson_saved").length,
+    lane_replies: rawRows(store, "lane_replies", run_id, ids),
+    lesson_changes: rawRows(store, "lesson_changes", run_id, ids)
   };
 }

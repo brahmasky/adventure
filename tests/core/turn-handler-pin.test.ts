@@ -24,16 +24,8 @@ interface PinCase {
   after?: (h: Harness, run_id: string, outcome: unknown) => void;
 }
 
-/**
- * Cases whose Jev state carries a wall-clock age (a prior Houge turn's "minutes ago"): only their state_hash is masked.
- * Expected empty; Step 4 adds a case here only if its state_hash flips between runs, and only a prior-turn case may be added.
- */
+/** Cases whose state_hash would be masked as a clock. Must stay empty (asserted below): state_hash is pinned unmasked. */
 const CLOCK_CASES: ReadonlySet<string> = new Set<string>([]);
-const PRIOR_TURN_CASES: ReadonlySet<string> = new Set(["ack-rule", "think-harder-correction"]);
-
-function maskStateHash(projection: Record<string, unknown>): void {
-  for (const r of projection.jev_decisions as Array<Record<string, unknown>>) if (r.state_hash !== null) r.state_hash = "<clock>";
-}
 
 async function runCase(c: PinCase): Promise<Record<string, unknown>> {
   const h = triageHarness(c.fetch(), c.opts ?? {});
@@ -51,10 +43,8 @@ async function runCase(c: PinCase): Promise<Record<string, unknown>> {
   const result = {
     earlier: earlier.map((r) => projectRun(h.store, r, null, ids)),
     run: projectRun(h.store, t.run_id, shown, ids),
-    catch_up: h.store.laneTurnsSince("555", null).map((l) => ({ run_id: ids.map(l.run_id), lane: l.lane, verdict_id: l.verdict_id ? ids.map(l.verdict_id) : null, catch_up: l.catch_up })),
     planner_last_answered: h.store.plannerLastAnsweredAt("555") === null ? null : "set"
   };
-  if (CLOCK_CASES.has(c.name)) for (const p of [...result.earlier, result.run]) maskStateHash(p);
   h.store.close();
   return result;
 }
