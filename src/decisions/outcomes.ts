@@ -1,0 +1,38 @@
+import type { Lane } from "../jev/tree-policy.js";
+import { ENTRY_IDS } from "./entry-ids.js";
+import { DECISION_SIGNALS, type DecisionSignal } from "./types.js";
+
+/**
+ * Spec §5.2 / §7.4: each outcome signal's closed value set. The store calls `checkOutcomeValue` before every insert, so no
+ * free text reaches `decision_outcomes`. Lists duplicated from other modules are pinned equal by tests/decisions/outcomes.test.ts.
+ */
+export const CORRECTION_VALUES = ["answer", "lookup", "research", "memory", "self_change", "machine_task", "schedule", "wiki", "mail_calendar",
+  "status", "other"] as const;
+export const DIG_DEEPER_VALUES = ["answer", "lookup", "memory", "status", "planner"] as const satisfies readonly Lane[];
+/** Compile-time pin: a lane added to `Lane` without a dig-deeper value here fails typecheck (no runtime lane list exists to compare with). */
+type DigDeeperCoversEveryLane = Exclude<Lane, (typeof DIG_DEEPER_VALUES)[number]> extends never ? true : never;
+export const DIG_DEEPER_COVERS_EVERY_LANE: DigDeeperCoversEveryLane = true;
+
+export class OutcomeRejected extends Error {}
+
+type Check = (v: string | number) => boolean;
+const ids: ReadonlySet<string> = new Set(ENTRY_IDS);
+const oneOf = (xs: readonly string[]): Check => (v) => typeof v === "string" && xs.includes(v);
+const intIn = (lo: number, hi: number): Check => (v) => typeof v === "number" && Number.isInteger(v) && v >= lo && v <= hi;
+const entryId: Check = (v) => typeof v === "string" && ids.has(v);
+
+/** `null`: no producer yet. The stage that adds one defines the set here (a protected edit) and its tests. */
+const VALUE_CHECKS: Readonly<Record<DecisionSignal, Check | null>> = {
+  correction: oneOf(CORRECTION_VALUES), dig_deeper: oneOf(DIG_DEEPER_VALUES),
+  review_ok: entryId, review_bad: entryId, review_unsure: entryId,
+  rating: intIn(0, 3), recurrence: intIn(1, 10_000),
+  approval_denied: null, approval_expired: null, settle_sent_back: null, planner_failed: null, abandoned: null, lesson_unfollowed: null
+};
+
+/** The stored text of a valid value; throws OutcomeRejected otherwise (the message names the signal, never the value). */
+export function checkOutcomeValue(signal: string, value: string | number): string {
+  if (!(DECISION_SIGNALS as readonly string[]).includes(signal)) throw new OutcomeRejected("unknown outcome signal");
+  const check = VALUE_CHECKS[signal as DecisionSignal];
+  if (!check || !check(value)) throw new OutcomeRejected(`value not allowed for ${signal}`);
+  return String(value);
+}

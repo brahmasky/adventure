@@ -41,6 +41,10 @@ import type { OverrideKey } from "../omp/role-resolver.js";
 import { computeCostUsd, METERED_PROVIDERS } from "../llm/metered-pricing.js";
 import { blobToFloat32, cosineSimilarity, float32ToBlob } from "../llm/embeddings.js";
 import { resolveWikiDecayDays } from "../capabilities/wiki.js";
+import { DECISION_STAGES, FALLBACK_REASONS, RUNG_KINDS } from "../decisions/types.js";
+import type { DecidedBy, DecisionSignal, DecisionStage, FallbackReason, RecordedArmedMode, RungKind } from "../decisions/types.js";
+import { checkOutcomeValue } from "../decisions/outcomes.js";
+import { LOCKED_ENTRY_IDS } from "../decisions/entry-ids.js";
 import type { SkipReason } from "../jev/decide.js";
 import type { Category } from "../jev/questions/tree.js";
 import type { Effort, Lane, RouteReason, TurnRole } from "../jev/tree-policy.js";
@@ -938,13 +942,15 @@ export interface JevDecisionRow {
   input_tokens: number | null; status: JevDecisionStatus; skip_reason: string | null; created_at: string;
   /** Answered rows only: when live cut the thread (claim) and built the state; null on skipped and pre-2026-10-06 rows. */
   thread_cut_at: string | null; state_built_at: string | null;
+  /** The decision-ladder row this call answered (ADR 0030); null before the ladder or when none was written. */
+  ladder_decision_id: string | null;
 }
 
 /** One decision point call (spec §6): what the tree routed, what saved, what the handler did, and Paco's correction. Never text. */
 export interface JevVerdictInsert { run_id: string; category: Category | null; breadth: number | null; reasoning: number | null;
   actions: number | null; sets_rule: number | null; rule_scope: "ask" | "research" | null; lane: Lane; role: TurnRole;
   effort: Effort | null; cascade: VerdictCascade; save_outcome: "saved" | "not_durable" | "capped" | "none";
-  route_outcome: "act" | "fallback"; reason: RouteReason; skip_reason: SkipReason | null; quoted_turn_id: string | null; created_at?: string }
+  route_outcome: "act" | "fallback"; reason: RouteReason; skip_reason: SkipReason | null; quoted_turn_id: string | null; decision_id?: string | null; created_at?: string }
 /** "tiny": the cascade call ran (plan Decision 14; Tiny role), whatever it returned — `reason` says cascade / cascade_failed. */
 export type VerdictCascade = "tiny" | null;
 export type VerdictCorrection = "ask_anyway" | "think_harder" | "escalation" | "low_rating";
@@ -954,7 +960,7 @@ export interface JevVerdictRow {
   cascade: VerdictCascade; save_outcome: JevVerdictInsert["save_outcome"]; route_outcome: "act" | "fallback" | "pin_failed";
   /** 'pending' | 'lane_reply' | 'fallthrough:<reason>' | 'planner_done' | 'planner_failed' */
   handler_outcome: string; reason: RouteReason; skip_reason: string | null; fast_used_tool: number; paco_correction: VerdictCorrection | null;
-  quoted_turn_id: string | null; created_at: string; updated_at: string;
+  quoted_turn_id: string | null; decision_id: string | null; created_at: string; updated_at: string;
 }
 /** One lane reply joined to its user text (stage B §7): what the catch-up block shows the planner. Never ledger text. */
 export interface LaneTurnRow { run_id: string; lane: string; verdict_id: string | null; catch_up: string; created_at: string; user_text: string | null }
@@ -963,6 +969,90 @@ type JevVerdictPatch = Partial<{ handler_outcome: string; model: string | null; 
 
 /** The only columns an update may set: a fixed list, so the SET clause never takes a name from input. */
 const VERDICT_PATCH_COLUMNS = ["handler_outcome", "model", "route_outcome", "fast_used_tool", "paco_correction"] as const;
+
+/** One recorded decision (ADR 0030, spec §5.2): ids, closed enums and numbers. No state column, never text. */
+export interface DecisionInsert {
+  entry_id: string; entry_version: number; run_id: string | null; tool_call_id: string | null; stage: DecisionStage; rung: DecidedBy; verdict: string;
+  p: number | null; reason_code: string | null; fallback_reason: FallbackReason | null; fallback_rung: RungKind | null; armed_mode: RecordedArmedMode;
+  latency_ms: number; created_at?: string;
+}
+export type DecisionRow = Omit<DecisionInsert, "created_at"> & { decision_id: string; created_at: string };
+export interface DecisionOutcomeRow { outcome_id: string; decision_id: string; signal: DecisionSignal; value: string; source: "paco" | "code"; created_at: string }
+/** Spec §4.3. `granted_via`: the code that grants an automatic move (only "approval.standing"); `paco_callback_id`: the tap behind a Paco move. */
+export interface LadderMoveInsert {
+  entry_id: string; scope: string; from_rung: RungKind; to_rung: RungKind; evidence: string[]; granted_by: "paco" | "auto";
+  granted_via: string | null; paco_callback_id: string | null; revocable: boolean; created_at?: string;
+}
+export class LadderMoveRefused extends Error {
+  constructor(readonly code: "locked_entry" | "auto_not_standing" | "paco_needs_callback") { super(`ladder move refused: ${code}`); }
+}
+export interface DecisionDigestRow { local_date: string; sent: number; offered: string[]; created_at: string }
+/** A decision row value outside its code-owned set (ruling 15). The message names the column, never the value. */
+export class DecisionRejected extends Error {
+  constructor(readonly column: "stage" | "fallback_reason") { super(`decision rejected: ${column} not allowed`); }
+}
+
+const sqlList = (xs: readonly string[]): string => xs.map((x) => `'${x}'`).join(", ");
+/** The only automatic ladder move the store accepts (spec §4.3): standing approvals, on tool.policy, granted by approval.standing. */
+const AUTO_MOVE = { entry_id: "tool.policy", granted_via: "approval.standing" } as const;
+const LOCKED: ReadonlySet<string> = new Set(LOCKED_ENTRY_IDS);
+
+const DECISION_LADDER_DDL = `
+  CREATE TABLE IF NOT EXISTS decisions (
+    decision_id TEXT PRIMARY KEY,
+    entry_id TEXT NOT NULL,
+    entry_version INTEGER NOT NULL,
+    run_id TEXT,
+    tool_call_id TEXT,
+    stage TEXT NOT NULL,
+    rung TEXT NOT NULL CHECK (rung IN (${sqlList([...RUNG_KINDS, "fail"])})),
+    verdict TEXT NOT NULL,
+    p REAL,
+    reason_code TEXT,
+    fallback_reason TEXT,
+    fallback_rung TEXT CHECK (fallback_rung IS NULL OR fallback_rung IN (${sqlList(RUNG_KINDS)})),
+    armed_mode TEXT NOT NULL CHECK (armed_mode IN ('on', 'shadow', 'late')),
+    latency_ms INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS decisions_entry_idx ON decisions(entry_id, created_at);
+  CREATE INDEX IF NOT EXISTS decisions_run_idx ON decisions(run_id);
+  CREATE INDEX IF NOT EXISTS decisions_created_idx ON decisions(created_at);
+  CREATE TABLE IF NOT EXISTS decision_outcomes (
+    outcome_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL REFERENCES decisions(decision_id),
+    signal TEXT NOT NULL,
+    value TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('paco', 'code')),
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS decision_outcomes_decision_idx ON decision_outcomes(decision_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS decision_outcomes_review_once ON decision_outcomes(decision_id)
+    WHERE signal IN ('review_ok', 'review_bad', 'review_unsure') AND source = 'paco';
+  CREATE TABLE IF NOT EXISTS ladder_moves (
+    move_id TEXT PRIMARY KEY,
+    entry_id TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    from_rung TEXT NOT NULL CHECK (from_rung IN (${sqlList(RUNG_KINDS)})),
+    to_rung TEXT NOT NULL CHECK (to_rung IN (${sqlList(RUNG_KINDS)})),
+    evidence_json TEXT NOT NULL,
+    granted_by TEXT NOT NULL CHECK (granted_by IN ('paco', 'auto')),
+    granted_via TEXT,
+    paco_callback_id TEXT,
+    revocable INTEGER NOT NULL DEFAULT 1,
+    state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'ended')),
+    created_at TEXT NOT NULL,
+    ended_at TEXT,
+    CHECK (granted_by = 'auto' OR paco_callback_id IS NOT NULL)
+  );
+  CREATE INDEX IF NOT EXISTS ladder_moves_entry_idx ON ladder_moves(entry_id, state);
+  CREATE UNIQUE INDEX IF NOT EXISTS ladder_moves_callback_once ON ladder_moves(paco_callback_id) WHERE paco_callback_id IS NOT NULL;
+  CREATE TABLE IF NOT EXISTS decision_digests (
+    local_date TEXT PRIMARY KEY,
+    sent INTEGER NOT NULL,
+    offered_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );`;
 
 /** Stage B §9: `jev_verdicts` with the lane CHECK widened to the stage B lanes; every other column exactly as stage A built it. */
 const JEV_VERDICTS_LANES_DDL = `
@@ -4402,16 +4492,18 @@ export class RunStore {
 
   // ── Jev decisions (ADR 0029 §3.4) ─────────────────────────────────────────
 
-  insertJevDecision(row: Omit<JevDecisionRow, "decision_id" | "created_at" | "outcome_source" | "outcome_value" | "thread_cut_at" | "state_built_at">
-    & { created_at?: string; thread_cut_at?: string | null; state_built_at?: string | null }): string {
+  insertJevDecision(row: Omit<JevDecisionRow, "decision_id" | "created_at" | "outcome_source" | "outcome_value" | "thread_cut_at" | "state_built_at" | "ladder_decision_id">
+    & { created_at?: string; thread_cut_at?: string | null; state_built_at?: string | null; ladder_decision_id?: string | null }): string {
     const decision_id = `jd_${randomUUID()}`;
     this.db.prepare(`
       INSERT INTO jev_decisions (decision_id, run_id, point, question_id, criteria_hash, model_reported, state_hash, lang, answers_json, confidence,
-        top_prob, margin, threshold_version, threshold_used, decision, latency_ms, input_tokens, status, skip_reason, created_at, thread_cut_at, state_built_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        top_prob, margin, threshold_version, threshold_used, decision, latency_ms, input_tokens, status, skip_reason, created_at, thread_cut_at, state_built_at,
+        ladder_decision_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(decision_id, row.run_id, row.point, row.question_id, row.criteria_hash, row.model_reported, row.state_hash, row.lang, row.answers_json,
       row.confidence, row.top_prob, row.margin, row.threshold_version, row.threshold_used, row.decision, row.latency_ms, row.input_tokens,
-      row.status, row.skip_reason, row.created_at ?? new Date().toISOString(), row.thread_cut_at ?? null, row.state_built_at ?? null);
+      row.status, row.skip_reason, row.created_at ?? new Date().toISOString(), row.thread_cut_at ?? null, row.state_built_at ?? null,
+      row.ladder_decision_id ?? null);
     return decision_id;
   }
 
@@ -4434,10 +4526,10 @@ export class RunStore {
     const at = i.created_at ?? new Date().toISOString();
     this.db.prepare(`
       INSERT INTO jev_verdicts (verdict_id, run_id, category, breadth, reasoning, actions, sets_rule, rule_scope, lane, role, effort, cascade,
-        save_outcome, route_outcome, handler_outcome, reason, skip_reason, quoted_turn_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+        save_outcome, route_outcome, handler_outcome, reason, skip_reason, quoted_turn_id, decision_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
     `).run(verdict_id, i.run_id, i.category, i.breadth, i.reasoning, i.actions, i.sets_rule, i.rule_scope, i.lane, i.role, i.effort, i.cascade,
-      i.save_outcome, i.route_outcome, i.reason, i.skip_reason, i.quoted_turn_id, at, at);
+      i.save_outcome, i.route_outcome, i.reason, i.skip_reason, i.quoted_turn_id, i.decision_id ?? null, at, at);
     return verdict_id;
   }
 
@@ -4484,6 +4576,118 @@ export class RunStore {
       WHERE json_extract(r.notify_json, '$.chat_id') = ? AND v.created_at <= ?
       ORDER BY v.created_at DESC, v.rowid DESC LIMIT 1
     `).get<JevVerdictRow>(chat_id, beforeIso);
+  }
+
+  // ── Decision ladder (ADR 0030, spec §4.3, §5.2) ───────────────────────────
+
+  insertDecision(d: DecisionInsert): string {
+    if (!(DECISION_STAGES as readonly string[]).includes(d.stage)) throw new DecisionRejected("stage");
+    if (d.fallback_reason !== null && !(FALLBACK_REASONS as readonly string[]).includes(d.fallback_reason)) throw new DecisionRejected("fallback_reason");
+    const decision_id = `dec_${randomUUID()}`;
+    this.db.prepare(`
+      INSERT INTO decisions (decision_id, entry_id, entry_version, run_id, tool_call_id, stage, rung, verdict, p, reason_code, fallback_reason,
+        fallback_rung, armed_mode, latency_ms, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(decision_id, d.entry_id, d.entry_version, d.run_id, d.tool_call_id, d.stage, d.rung, d.verdict, d.p, d.reason_code, d.fallback_reason,
+      d.fallback_rung, d.armed_mode, d.latency_ms, d.created_at ?? new Date().toISOString());
+    return decision_id;
+  }
+
+  getDecision(decision_id: string): DecisionRow | undefined {
+    return this.db.prepare(`SELECT * FROM decisions WHERE decision_id = ?`).get<DecisionRow>(decision_id);
+  }
+
+  listDecisionsForRun(run_id: string): DecisionRow[] {
+    return this.db.prepare(`SELECT * FROM decisions WHERE run_id = ? ORDER BY created_at ASC, rowid ASC`).all<DecisionRow>(run_id);
+  }
+
+  /** Rows created in (since, until], oldest first: the digest's day. */
+  listDecisionsBetween(since: string, until: string): DecisionRow[] {
+    return this.db.prepare(`SELECT * FROM decisions WHERE created_at > ? AND created_at <= ? ORDER BY created_at ASC, rowid ASC`).all<DecisionRow>(since, until);
+  }
+
+  /**
+   * `decision_fallback` input (spec §8.2, plan ruling 9): `fail` rows of one entry with a named failure other than `budget`,
+   * after `since`. `excludeJevRung`: an entry whose Jev failures already page elsewhere counts only its other rungs' failures.
+   */
+  countDecisionFallbacks(entry_id: string, since: string, excludeJevRung = false): number {
+    return this.db.prepare(`
+      SELECT COUNT(*) AS n FROM decisions
+      WHERE entry_id = ? AND rung = 'fail' AND fallback_reason IS NOT NULL AND fallback_reason <> 'budget' AND created_at > ?
+        AND (? = 0 OR fallback_rung IS NULL OR fallback_rung <> 'system_one')
+    `).get<{ n: number }>(entry_id, since, excludeJevRung ? 1 : 0)?.n ?? 0;
+  }
+
+  /**
+   * Per-entry `jev_skip_rate` input (spec §5.2, from `fallback_reason`, not jev_decisions): attempts = rows past the rule
+   * rungs except a budget skip (an oversized state is not a Jev call); failed = timeout, outage, parse or threw ON THE JEV
+   * RUNG (`fallback_rung`, codex W6: a cascade failure is not a Jev skip).
+   */
+  countDecisionJevSkips(entry_id: string, since: string, until: string): { attempts: number; failed: number } {
+    const row = this.db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN rung <> 'rule' AND (fallback_reason IS NULL OR fallback_reason <> 'budget') THEN 1 ELSE 0 END), 0) AS attempts,
+        COALESCE(SUM(CASE WHEN fallback_rung = 'system_one' AND fallback_reason IN ('timeout', 'outage', 'parse', 'threw') THEN 1 ELSE 0 END), 0) AS failed
+      FROM decisions WHERE entry_id = ? AND created_at > ? AND created_at <= ?
+    `).get<{ attempts: number; failed: number }>(entry_id, since, until);
+    return row ?? { attempts: 0, failed: 0 };
+  }
+
+  /** Whether a Jev or model rung of the entry answered after `since` (what clears a sticky per-entry skip rate). */
+  hasJevAnsweredDecisionSince(entry_id: string, since: string): boolean {
+    return this.db.prepare(`SELECT 1 AS hit FROM decisions WHERE entry_id = ? AND rung IN ('system_one', 'model') AND created_at > ? LIMIT 1`)
+      .get<{ hit: number }>(entry_id, since) !== undefined;
+  }
+
+  /** A closed outcome value (checkOutcomeValue throws otherwise); a second review label on one decision is not inserted. */
+  insertDecisionOutcome(o: { decision_id: string; signal: DecisionSignal; value: string | number; source: "paco" | "code"; created_at?: string }): { inserted: boolean; outcome_id: string | null } {
+    const value = checkOutcomeValue(o.signal, o.value);
+    if (!this.getDecision(o.decision_id)) throw new Error("decision_not_found");
+    const outcome_id = `do_${randomUUID()}`;
+    try {
+      this.db.prepare(`INSERT INTO decision_outcomes (outcome_id, decision_id, signal, value, source, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(outcome_id, o.decision_id, o.signal, value, o.source, o.created_at ?? new Date().toISOString());
+      return { inserted: true, outcome_id };
+    } catch (e) {
+      if (e instanceof Error && /UNIQUE constraint failed/.test(e.message)) return { inserted: false, outcome_id: null };
+      throw e;
+    }
+  }
+
+  listDecisionOutcomes(decision_id: string): DecisionOutcomeRow[] {
+    return this.db.prepare(`SELECT * FROM decision_outcomes WHERE decision_id = ? ORDER BY created_at ASC, rowid ASC`).all<DecisionOutcomeRow>(decision_id);
+  }
+
+  /** Spec §4.3's store-level check, before any write: locked entries refuse; only approval.standing auto-moves tool.policy; Paco's rows carry a callback. */
+  insertLadderMove(m: LadderMoveInsert): string {
+    if (LOCKED.has(m.entry_id)) throw new LadderMoveRefused("locked_entry");
+    if (m.granted_by === "auto" && (m.entry_id !== AUTO_MOVE.entry_id || m.granted_via !== AUTO_MOVE.granted_via)) throw new LadderMoveRefused("auto_not_standing");
+    if (m.granted_by === "paco" && !m.paco_callback_id) throw new LadderMoveRefused("paco_needs_callback");
+    const move_id = `lm_${randomUUID()}`;
+    this.db.prepare(`
+      INSERT INTO ladder_moves (move_id, entry_id, scope, from_rung, to_rung, evidence_json, granted_by, granted_via, paco_callback_id, revocable, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(move_id, m.entry_id, m.scope, m.from_rung, m.to_rung, JSON.stringify(m.evidence), m.granted_by, m.granted_via, m.paco_callback_id,
+      m.revocable ? 1 : 0, m.created_at ?? new Date().toISOString());
+    return move_id;
+  }
+
+  /** The digest latch (spec §8.1): one row per local date, whether or not a message went out. False when the date already has one. */
+  recordDecisionDigest(d: { local_date: string; sent: boolean; offered: string[]; created_at?: string }): boolean {
+    const r = this.db.prepare(`INSERT OR IGNORE INTO decision_digests (local_date, sent, offered_json, created_at) VALUES (?, ?, ?, ?)`)
+      .run(d.local_date, d.sent ? 1 : 0, JSON.stringify(d.offered), d.created_at ?? new Date().toISOString());
+    return Number(r.changes) === 1;
+  }
+
+  getDecisionDigest(local_date: string): DecisionDigestRow | undefined {
+    const r = this.db.prepare(`SELECT * FROM decision_digests WHERE local_date = ?`).get<Omit<DecisionDigestRow, "offered"> & { offered_json: string }>(local_date);
+    return r ? { local_date: r.local_date, sent: r.sent, offered: JSON.parse(r.offered_json) as string[], created_at: r.created_at } : undefined;
+  }
+
+  /** A review tap counts only for a decision a digest offered after `sinceIso` (spec §8.1: unknown or stale ids write nothing). */
+  wasDecisionOffered(decision_id: string, sinceIso: string): boolean {
+    return this.db.prepare(`SELECT 1 AS hit FROM decision_digests d, json_each(d.offered_json) j WHERE j.value = ? AND d.created_at > ? LIMIT 1`)
+      .get<{ hit: number }>(decision_id, sinceIso) !== undefined;
   }
 
   // ── Lesson changes: the memory lane's undoable change set (ADR 0029 §5.6) ──
@@ -6996,6 +7200,7 @@ export class RunStore {
     this.applyJevVerdictsMigration();
     this.applyJevVerdictsLanesMigration();
     this.applyLaneRepliesMigration();
+    this.applyDecisionLadderMigration();
   }
 
   /** Memory A1 §6: the lesson-set fingerprint each chat's omp session started on, persisted so a restart still compares. */
@@ -7159,6 +7364,30 @@ export class RunStore {
           created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS lane_replies_chat_idx ON lane_replies(chat_id, created_at);
+      `);
+      if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
+  }
+
+  /**
+   * Decision ladder (ADR 0030): the ledger, outcomes, ladder moves and the digest latch, plus the two link columns. The
+   * columns are checked on every open, not only once: it runs after the jev_verdicts rebuild above, so a table rebuilt by an
+   * older migration gets its column back. FKs are declared for readers; the store never enables PRAGMA foreign_keys.
+   */
+  private applyDecisionLadderMigration(): void {
+    const version = "2026-10-12-decision-ladder";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      this.db.exec(DECISION_LADDER_DDL);
+      if (!this.tableColumns("jev_decisions").has("ladder_decision_id")) {
+        this.db.exec(`ALTER TABLE jev_decisions ADD COLUMN ladder_decision_id TEXT REFERENCES decisions(decision_id)`);
+      }
+      if (!this.tableColumns("jev_verdicts").has("decision_id")) {
+        this.db.exec(`ALTER TABLE jev_verdicts ADD COLUMN decision_id TEXT REFERENCES decisions(decision_id)`);
+      }
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS jev_decisions_ladder_idx ON jev_decisions(ladder_decision_id);
+        CREATE INDEX IF NOT EXISTS jev_verdicts_decision_idx ON jev_verdicts(decision_id);
       `);
       if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
     });
