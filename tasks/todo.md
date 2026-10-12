@@ -1,10 +1,17 @@
 # 🧭 CURRENT SYSTEM STATE — 2026-10-12 (read this first)
 
-**Decision ladder: spec approved by Paco 2026-10-12, Rev 7** (`docs/superpowers/specs/2026-10-12-decision-ladder-design.md`;
-research `docs/superpowers/research/2026-10-12-in-loop-decisions/`). Every decision on one registry with a ladder of
-deciders (rule → Jev → model → Paco), judges inside the planner loop, improvement routed from outcomes. Five stages, each
-its own plan: 1 engine + door (ADR 0030 first) → 2a in-Houge judges → 2b hooks + learning → 3 unprotected families →
-4 protected families + standing approvals. Next: the stage 1 plan.
+**Decision ladder stage 1 (engine + door): merged `710ef47` and pushed 2026-10-12, `dist/` rebuilt; live only after
+Paco's kickstart.** Spec `docs/superpowers/specs/2026-10-12-decision-ladder-design.md` Rev 8; plan
+`docs/superpowers/plans/2026-10-12-decision-ladder-stage-1.md` Rev 4; ADR 0030. The front door decides through
+`src/decisions/` (`turn.handler`); every automatic lesson save sends the Undo card; daily decision digest 21:00 with
+✅/❌ on close Jev calls; new page `decision_fallback:turn.handler`. Evidence: 298 files / 4221 tests, P6 parity gate
+PASS 192/0 (record/replay of Jev), rollback check PASS. Boot applies the `decisions` migrations.
+- [ ] Paco: kickstart; first front-door turn writes a `decisions` row linked from `jev_verdicts.decision_id`.
+- [ ] Paco: rule on codex #1 (front-door judge reads recent assistant text: strip it, or treat input as mixed).
+- [ ] Paco: Jev nondeterminism (p drift ≤ 0.09 on identical input, route flips near the bar): raise with TypeSafe;
+  maybe widen bars.
+Next stages: 2a in-Houge judges → 2b hooks + learning → 3 unprotected families → 4 protected families + standing
+approvals (P8 first).
 
 Jev stage B: merged `1585105` and pushed 2026-10-12, `dist/` rebuilt; live only after Paco's kickstart (block below).
 

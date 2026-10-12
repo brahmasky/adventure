@@ -1611,3 +1611,17 @@ rule, no `lane_failed` reason. The plan ran as 13 SDD tasks (policy, store, ledg
 core-worker wiring, the correction path, the catch-up block, the supervisor's refused-pin cause, the rows and the report,
 the gates, these docs). Evidence: typecheck clean, 280 test files, 4 024 tests (none skipped), build clean; the default
 live gate and the `--real-calibration` merge gate: every stage B case passed on both runs so far (B2: Tiny rewrite "Sydney weather forecast 11 October 2026", one search, the reader wall on Gemini Flash, the thin-result fetch, a source line, zero planner requests). live gate --real-calibration run 3: LIVE GATE: PASS, 144 checks, 0 FAIL, 0 INCONCLUSIVE (runs 1–2: every stage B case passed; the only FAILs were stage A cases with outside causes — the daemon's 24 h tick latch, fixed in 1fa1fcb, and one Kimi K3 timeout at 18 s in the cascade). Not merged: Paco's hand (protected files).
+
+## 2026-10-12 — Decision ladder: research, spec, stage 1 (MERGED + PUSHED)
+
+Paco asked where the mu research on in-loop decisions was, then for "an out-of-the-box review, not a band-aid on 'if not
+s1, then s2'". Research note mapped Houge's decision points; brainstorm produced the decision ladder (one registry, each
+decision a ladder rule → Jev → model → Paco, outcomes route improvement). Paco's rulings R1–R13 (full migration, all
+judges armed at ship, egress "all of it", R12 effects by input source, R13 no off switch and no shadow) plus Q1 (Undo
+card on every automatic save) and a 200-message parity gate. Spec Rev 1 → 8 over seven review rounds (blockers
+15 → 0); lesson recorded: an ADR is a reason, not a rule (ADR 0015 predated Jev). Plan Rev 4, 15 SDD tasks: ADR 0030,
+frozen front-door pin, types + runner, store, recorder, registry, guard, core-worker migration, Undo cards, digest,
+review taps, parity gate, rollback check, docs. The rung kind is `system_one` (security scan forbids the provider
+literal outside `src/llm`). Final reviews + codex fixed card redaction and old-build provenance. Evidence: 4221 tests,
+P6 gate PASS 192/0 twice, rollback PASS. Finding: Jev is nondeterministic on identical input. Merged `710ef47` on
+Paco's word, pushed, `dist/` rebuilt; Paco kickstarts.
