@@ -8,18 +8,21 @@
 // P6 dual run: for each of the last Telegram user texts in chat_turns, the same triage input — the text, its stored
 // previous turns (within the context window, minus a 10-minute margin) seeded into a fresh chat at the same offsets, one
 // fixed clock for both builds — goes through CoreWorker.triageTurn in the pre-stage-1 dist (copy A) and in this build's
-// dist (copy B). Real Jev, one call per text per build, paced. Lanes, planner, Telegram and the outbox are stubbed: the
+// dist (copy B). Jev record/replay (controller ruling 2026-10-12, after the probe showed Jev drifts run to run on a
+// byte-identical request): the old build calls the real Jev through a recording `ompOptions.jevFetch`; the new build gets a
+// replaying `jevFetch` that serves the recorded response (or the recorded throw) for the identical request body, in call
+// order. The gate asks "does stage-1 code make the same decisions from the same Jev answers"; Jev's own drift is not its
+// subject. A request the old build never sent (other body, extra call) or a recorded call the new build never made is a
+// MISMATCH. Replay halves the TypeSafe calls (≈ 200 for the full run, plus retries), under Paco's approval below. Lanes, planner, Telegram and the outbox are stubbed: the
 // cascade stub picks the first candidate, every other seat fails, search and fetch fail. Later jev_verdicts mutations are
 // covered by the Task 2 pin and Task 8b tests, not here.
 // Compared projection: every jev_decisions and jev_verdicts column the OLD schema has and the triage event payload, except
 // ids, timestamps and latency_ms; the triage event's verdict_id is compared as a link.
 // Classification (codex B2, re-review #2): structure first — the outcome kind, question order, statuses, skip reasons,
-// verdict presence and the triage link. A structural difference where a side shows a retryable Jev failure (timeout,
-// transport, 429, overloaded, auth, parse) or the two sides' Jev answers differ is retried once with a fresh chat and
-// clock; a structural difference that persists after that retry is a MISMATCH, never inconclusive (spec: any structural
-// difference is a mismatch). Only a structurally identical pair whose Jev probabilities (or reported model) differ is
-// "Jev nondeterminism", and only a structurally identical pair whose sides failed Jev the same way is inconclusive.
-// Neither ever passes.
+// verdict presence and the triage link. With replay both sides see the same Jev answers, so any replay miss, structural
+// difference, differing Jev answer or differing projection is a MISMATCH. An old-side Jev failure is replayed as the same
+// failure; such a pair is compared structurally (a difference is a mismatch) and, when identical, retried once with a
+// fresh chat and clock; still both-failed and identical, it is inconclusive — never a deterministic pair, never a pass.
 // PASS: ≥ 190 deterministic pairs before 200 decided (candidates over-fetched by 30), 0 mismatches; the coverage floor
 // (every answered row reports a calibrated model; ≥ 100 armed turn.handler verdicts; the cascade rung ran); every stage-1
 // verdict and Jev row links its turn.handler decision; the digest builds on copy B and renders through the Telegram adapter
@@ -30,6 +33,7 @@
 // Egress (senior S8): CoreWorker is built without a broker, so the replayed Telegram texts and their stored context reach
 // TypeSafe redacted by shape only (sanitizeJevText), not by known secret values — the jev-tree gate's class. Approved by
 // Paco 2026-10-12 ("Yes, 200 messages"): replay the last 200 Telegram messages through Jev with shape-only redaction.
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
@@ -41,7 +45,6 @@ const check = (name, ok, detail = "") => { console.log(`${ok ? "PASS" : "FAIL"} 
 /** A required check that could not run: never a PASS (exit 3 unless something failed). */
 const cannotRun = (name, why) => { console.log(`INCONCLUSIVE ${name} — ${why}`); inconclusive.push(`${name}: ${why}`); };
 const SILENT = new Set(["timeout", "transport", "parse", "error", "rate_limited", "overloaded", "auth", "no_key", "fused", "malformed_question"]);
-const RETRYABLE = new Set(["timeout", "transport", "rate_limited", "overloaded", "auth", "parse"]);
 const ID_COLS = new Set(["decision_id", "run_id", "verdict_id", "ladder_decision_id", "created_at", "updated_at", "latency_ms", "thread_cut_at", "state_built_at"]);
 const MARGIN_MS = 10 * 60_000;
 const PACE_MS = 250;
@@ -120,11 +123,42 @@ const stubLlm = async (input) => (/exactly one of these two words/.test(String(i
   ? { ok: true, output: { answer: firstCandidate(input.system) } } : { ok: false, error: "stubbed in the parity gate" });
 const stubTool = async () => ({ ok: false, error: "stubbed in the parity gate" });
 
-function makeSide(m, dbPath, dist, root, name, clock) {
+/**
+ * The per-attempt Jev tape: the old side records each real call (status, retry-after, raw body; or the throw's name), the
+ * new side replays the entry whose request body hash matches, first unused first. A miss throws as a transport error and
+ * is counted: the new build asked Jev something the old build did not.
+ */
+function makeTape() {
+  const tape = { entries: [], misses: 0 };
+  const keyOf = (url, init) => createHash("sha256").update(`${String(url)}\n${String(init?.body ?? "")}`).digest("hex");
+  tape.record = async (url, init) => {
+    const entry = { key: keyOf(url, init), used: false };
+    tape.entries.push(entry);
+    try {
+      const res = await fetch(url, init);
+      Object.assign(entry, { status: res.status, retryAfter: res.headers.get("retry-after"), body: await res.text() });
+    } catch (e) { entry.thrown = e instanceof Error ? e.name : "Error"; throw e; }
+    return replayed(entry);
+  };
+  tape.replay = async (url, init) => {
+    const entry = tape.entries.find((x) => !x.used && x.key === keyOf(url, init));
+    if (!entry) { tape.misses += 1; throw new Error("parity gate: no recorded Jev response for this request"); }
+    entry.used = true;
+    return replayed(entry);
+  };
+  return tape;
+}
+
+function replayed(entry) {
+  if (entry.thrown) { const e = new Error(`replayed ${entry.thrown}`); e.name = entry.thrown; throw e; }
+  return new Response(entry.body, { status: entry.status, headers: entry.retryAfter ? { "retry-after": entry.retryAfter } : {} });
+}
+
+function makeSide(m, dbPath, dist, root, name, clock, jevFetch) {
   const store = m.RunStore.open(dbPath);
   const dir = join(root, name); mkdirSync(join(dir, "project"), { recursive: true });
   const worker = new m.CoreWorker(store, join(dir, "project"), stubLlm, stubTool, undefined, undefined, stubTool, undefined, undefined, async () => null,
-    undefined, undefined, { dataDir: dir, distDir: dist, jevNow: () => new Date(clock.t) });
+    undefined, undefined, { dataDir: dir, distDir: dist, jevNow: () => new Date(clock.t), jevFetch });
   return { m, store, worker, name, dir };
 }
 
@@ -165,7 +199,6 @@ function columnsOf(dbPath) {
 
 const shape = (p) => JSON.stringify({ out: p.out, jd: p.jd.map((r) => [r.question_id, r.status, r.skip_reason]), v: p.v !== null, triage: p.triage.map((t) => [t.status, t.verdict_id]) });
 const failedJev = (p) => p.jd.some((r) => r.status === "skipped" && SILENT.has(r.skip_reason));
-const retryable = (p) => p.jd.some((r) => r.status === "skipped" && RETRYABLE.has(r.skip_reason));
 function jevDiffers(a, b) {
   return a.jd.some((r, i) => {
     const o = b.jd[i];
@@ -175,11 +208,11 @@ function jevDiffers(a, b) {
   });
 }
 
-/** match · mismatch · nondeterministic · inconclusive · retry — structure first (spec §6.2, codex B2). */
-function classify(a, b) {
-  if (shape(a) !== shape(b)) return retryable(a) || retryable(b) || jevDiffers(a, b) ? "retry" : "mismatch";
-  if (failedJev(a)) return "inconclusive"; // structures equal, so both sides failed the same way
-  if (jevDiffers(a, b)) return "nondeterministic";
+/** match · mismatch · inconclusive — replay first, then structure (spec §6.2, codex B2). `replayOk`: no miss, no unused entry. */
+function classify(a, b, replayOk) {
+  if (!replayOk || shape(a) !== shape(b)) return "mismatch";
+  if (failedJev(a)) return "inconclusive"; // structures equal, so both sides failed the same (replayed) way
+  if (jevDiffers(a, b)) return "mismatch"; // the same recorded answers must land as the same rows
   return JSON.stringify(a) === JSON.stringify(b) ? "match" : "mismatch";
 }
 
@@ -192,42 +225,44 @@ function linkOk(side, run_id) {
   return v?.decision_id === d[0].decision_id && jd.length > 0 && jd.every((r) => r.ladder_decision_id === d[0].decision_id);
 }
 
-/** One attempt: the same input through both builds, paced. Null when either side would not admit the turn. */
+/** One attempt: old build on real Jev (recorded), then the new build on the replay. Null when either side would not admit the turn. */
 async function triagePair(g, item, attempt) {
   g.clock.t = Date.now();
+  g.tape = makeTape();
   const a = admit(g.oldSide, item, g.clock, attempt); const b = admit(g.newSide, item, g.clock, attempt);
   if (!a || !b) return null;
   const outA = await g.oldSide.worker.triageTurn(a.input);
   await sleep(PACE_MS);
   const outB = await g.newSide.worker.triageTurn(b.input);
-  await sleep(PACE_MS);
-  return { a: { ...project(g.oldSide, a.run_id, g.cols), out: outA.kind }, b: { ...project(g.newSide, b.run_id, g.cols), out: outB.kind }, runB: b.run_id };
+  const replay = { calls: g.tape.entries.length, misses: g.tape.misses, unused: g.tape.entries.filter((x) => !x.used).length };
+  return { a: { ...project(g.oldSide, a.run_id, g.cols), out: outA.kind }, b: { ...project(g.newSide, b.run_id, g.cols), out: outB.kind },
+    runB: b.run_id, replay, replayOk: replay.misses === 0 && replay.unused === 0 };
 }
 
 /**
- * A retryable or both-failed pair is retried once (senior W10). After the retry a structural difference is a mismatch
- * (codex re-review #2); only a structurally identical, both-failed pair stays inconclusive.
+ * A structurally identical, both-failed (replayed failure) pair is retried once with a fresh Jev call (senior W10); still
+ * both-failed, it stays inconclusive. Every other difference is a mismatch at once: replay leaves Jev nothing to blame.
  */
 async function runPair(g, item) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const pair = await triagePair(g, item, attempt);
     if (pair === null) return { c: "skipped" };
-    const c = classify(pair.a, pair.b);
-    if ((c === "retry" || c === "inconclusive") && attempt === 0) { g.retries += 1; continue; }
-    return { c: c === "retry" ? "mismatch" : c, ...pair };
+    const c = classify(pair.a, pair.b, pair.replayOk);
+    if (c === "inconclusive" && attempt === 0) { g.retries += 1; continue; }
+    return { c, ...pair };
   }
   return { c: "skipped" };
 }
 
 async function dualRun(g, items, limit) {
-  const t = { match: 0, mismatch: [], nondeterministic: 0, inconclusive: 0, skipped: 0, links: 0, completed: 0, newRuns: [] };
-  const decided = () => t.match + t.mismatch.length + t.nondeterministic;
+  const t = { match: 0, mismatch: [], inconclusive: 0, skipped: 0, links: 0, completed: 0, newRuns: [] };
+  const decided = () => t.match + t.mismatch.length;
   for (const item of items) {
     if (decided() >= limit) break;
     const r = await runPair(g, item);
     if (r.c === "skipped") { t.skipped += 1; continue; }
     t.completed += 1;
-    if (r.c === "mismatch") t.mismatch.push({ k: item.k, old: r.a, new: r.b }); else t[r.c] += 1;
+    if (r.c === "mismatch") t.mismatch.push({ k: item.k, old: r.a, new: r.b, replay: r.replay }); else t[r.c] += 1;
     t.newRuns.push(r.runB);
     if (!linkOk(g.newSide, r.runB)) t.links += 1;
   }
@@ -236,8 +271,8 @@ async function dualRun(g, items, limit) {
 
 function reportDualRun(t, retries) {
   const det = t.match + t.mismatch.length;
-  console.log(`  pairs ${t.completed}: match ${t.match} · mismatch ${t.mismatch.length} · Jev nondeterminism ${t.nondeterministic} · inconclusive ${t.inconclusive} · retried ${retries} · not admitted ${t.skipped}`);
-  for (const m of t.mismatch.slice(0, 5)) console.log(`  mismatch #${m.k}:\n    old ${JSON.stringify(m.old)}\n    new ${JSON.stringify(m.new)}`);
+  console.log(`  pairs ${t.completed}: match ${t.match} · mismatch ${t.mismatch.length} · inconclusive ${t.inconclusive} · retried ${retries} · not admitted ${t.skipped}`);
+  for (const m of t.mismatch.slice(0, 5)) console.log(`  mismatch #${m.k} (Jev replay ${JSON.stringify(m.replay)}):\n    old ${JSON.stringify(m.old)}\n    new ${JSON.stringify(m.new)}`);
   // senior re-review S3: a shortfall that the inconclusive (both-failed) pairs explain is infrastructure, not code
   if (det < MIN_DETERMINISTIC && MIN_DETERMINISTIC - det <= t.inconclusive) cannotRun(`P6: at least ${MIN_DETERMINISTIC} deterministic pairs`, `${det}; ${t.inconclusive} pair(s) lost to Jev failures`);
   else check(`P6: at least ${MIN_DETERMINISTIC} deterministic pairs`, det >= MIN_DETERMINISTIC, `${det}`);
@@ -381,7 +416,9 @@ async function setup(args) {
   const clock = { t: Date.now() };
   const cols = columnsOf(pathA); // the OLD schema: stage 1's new columns are checked as links, not compared
   const g = { root, live, pathB, clock, cols, newMods, retries: 0,
-    oldSide: makeSide(oldMods, pathA, args.oldDist, root, "old", clock), newSide: makeSide(newMods, pathB, NEW_DIST, root, "new", clock) };
+    tape: makeTape() };
+  g.oldSide = makeSide(oldMods, pathA, args.oldDist, root, "old", clock, (url, init) => g.tape.record(url, init));
+  g.newSide = makeSide(newMods, pathB, NEW_DIST, root, "new", clock, (url, init) => g.tape.replay(url, init));
   return { g, items: pickTexts(newMods, base, args.limit + OVERFETCH) };
 }
 
