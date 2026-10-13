@@ -4,6 +4,8 @@ import { criteriaHash } from "../../src/jev/questions/types.js";
 import { TREE_BAR_DEFAULTS } from "../../src/jev/tree-policy.js";
 import { ARMING_COMBOS, formatTreeReport, replayRoute } from "../../src/jev/triage-report.js";
 import { TREE_CATEGORY_PERMUTED, type TreeLabel, type TreeReplayRow } from "../../src/jev/triage-replay.js";
+import { tapLabels } from "../../src/jev/tap-labels.js";
+import type { TapOutcomeRow } from "../../src/run/run-store.js";
 import { treeAnswers } from "../helpers/jev-tree-answers.js";
 
 /** The versioned id Jev reports (the request names the alias `jev-latest`; rows and calibration key on the reported id). */
@@ -92,6 +94,19 @@ describe("formatTreeReport", () => {
     const text = formatTreeReport(rows, new Map([["b", label("memory")]]), complete(rows), TREE_BAR_DEFAULTS, perm(rows));
     expect(text).toMatch(/COSTLY 1 — wrongly into memory\/status \(a swallowed turn\): 0/);
     expect(text).toMatch(/1 carry Paco's label/);
+  });
+
+  // Addition A: a ✅ tap label counts as a truth but is named apart from the sitting labels, and the tap evidence block sits
+  // before the bars, so Paco reads where a number came from before he commits a row by hand.
+  it("tap labels are counted apart and the TAP LABELS block precedes the bars", () => {
+    const rows = fixture();
+    const tap: TapOutcomeRow = { outcome_id: "o", signal: "review_ok", value: "turn.handler", source: "paco", created_at: "2026-10-13T00:00:00.000Z",
+      decision_id: "dx", entry_id: "turn.handler", run_id: "rb", verdict: "lookup", p: 0.7 };
+    const taps = tapLabels([tap], (run) => rows.find((r) => r.run_id === run)?.turn_id);
+    const text = formatTreeReport(rows, taps.positive, complete(rows), TREE_BAR_DEFAULTS, perm(rows), taps);
+    expect(text).toMatch(/1 carry Paco's label \(1 from a ✅ tap\)/);
+    expect(text.indexOf("TAP LABELS")).toBeGreaterThan(-1);
+    expect(text.indexOf("TAP LABELS")).toBeLessThan(text.indexOf("bars: choice"));
   });
 
   // F2: a correction Jev routes into the rule-saving memory lane would save the mistake as a rule: the swallowed-turn

@@ -351,7 +351,10 @@ if (command === "run") {
   try {
     if (sub === "label") {
       const { labelInteractively, selectForLabelling } = await import("./jev/triage-label.js");
-      const picked = selectForLabelling(T.readReplayFile(T.TREE_REPLAY_OUT), T.loadLabels(T.TREE_LABELS_PATH), flags.sample ?? 40);
+      const { mustLabel, tapLabels, TAP_ENTRIES, turnOfRows } = await import("./jev/tap-labels.js");
+      const replayed = T.readReplayFile(T.TREE_REPLAY_OUT);
+      const taps = tapLabels(store.listTapOutcomes(T.TREE_LABEL_SINCE, TAP_ENTRIES), turnOfRows(replayed));
+      const picked = selectForLabelling(replayed, T.loadLabels(T.TREE_LABELS_PATH), flags.sample ?? 40, Math.random, mustLabel(taps));
       const n = await labelInteractively({ rows: picked, store, labelsPath: T.TREE_LABELS_PATH, input: process.stdin, output: process.stdout });
       console.error(`labelled ${n} of ${picked.length}`);
     } else {
@@ -381,7 +384,9 @@ if (command === "run") {
         rows = T.readReplayFile(T.TREE_REPLAY_OUT);
       }
       const permuted = T.readReplayFile(T.TREE_PERMUTED_OUT); // no file = "NOT RUN", not "covers nothing"
-      console.log(formatTreeReport(rows, T.loadLabels(T.TREE_LABELS_PATH), outcome, TREE_BAR_DEFAULTS, permuted.length > 0 ? permuted : undefined));
+      const { mergeLabels, tapLabels, TAP_ENTRIES, turnOfRows } = await import("./jev/tap-labels.js");
+      const taps = tapLabels(store.listTapOutcomes(T.TREE_LABEL_SINCE, TAP_ENTRIES), turnOfRows(rows));
+      console.log(formatTreeReport(rows, mergeLabels(T.loadLabels(T.TREE_LABELS_PATH), taps), outcome, TREE_BAR_DEFAULTS, permuted.length > 0 ? permuted : undefined, taps));
     }
   } finally {
     store.close();

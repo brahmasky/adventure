@@ -36,7 +36,8 @@ const CJK_UNDERCOUNT = 1.8;
 export type ProxyRule = "houge_status" | "memory_correct_write" | "lesson_write" | "self_change" | "wiki" | "schedule_task"
   | "mail_calendar" | "machine_task" | "research" | "lookup" | "no_tool" | "ack_after_proposal" | "unmatched_tools";
 export interface ProxyLabel { category: Category | null; rule: ProxyRule }
-export interface TreeLabel { category: Category; by: "paco"; at: string }
+/** `by: "tap"` comes only from tap-labels.ts (a ✅ on a lane route); the sitting file loads `by: "paco"` lines alone. */
+export interface TreeLabel { category: Category; by: "paco" | "tap"; at: string }
 export interface TreeReplayRow {
   key: string; turn_id: string; run_id: string; lang: Lang; status: "ok" | "dry_run" | "skipped_state_too_large" | "jev_failed"; est_usd: number;
   attempt?: number; usd?: number; stop?: "auth" | "fused"; error?: string;

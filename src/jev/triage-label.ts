@@ -12,10 +12,11 @@ const jevChoice = (r: TreeReplayRow): string | null => { const a = r.answers?.ca
  * proxy cannot judge, and every turn the proxy or Jev puts in a no-planner lane (a wrong one swallows a turn); then a
  * random sample of the rest. Already-labelled turns are never asked again.
  */
-export function selectForLabelling(rows: TreeReplayRow[], existing: Map<string, TreeLabel>, sample: number, rng: () => number = Math.random): TreeReplayRow[] {
+export function selectForLabelling(rows: TreeReplayRow[], existing: Map<string, TreeLabel>, sample: number, rng: () => number = Math.random,
+  mustAlso: ReadonlySet<string> = new Set()): TreeReplayRow[] {
   const fresh = rows.filter((r) => r.status === "ok" && !existing.has(r.turn_id));
   const lane = (c: string | null) => c === "memory" || c === "status";
-  const must = fresh.filter((r) => r.proxy === null || lane(r.proxy) || lane(jevChoice(r)));
+  const must = fresh.filter((r) => r.proxy === null || lane(r.proxy) || lane(jevChoice(r)) || mustAlso.has(r.turn_id)); // mustAlso: tap-flagged turns (Addition A)
   const rest = fresh.filter((r) => !must.includes(r));
   for (let i = rest.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [rest[i], rest[j]] = [rest[j]!, rest[i]!]; }
   return [...must, ...rest.slice(0, sample)];
