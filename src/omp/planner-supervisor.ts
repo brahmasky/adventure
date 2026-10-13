@@ -3,6 +3,7 @@ import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
 import { BudgetLedger } from "../budget/budget-ledger.js";
 import type { InjectionJudge } from "../decisions/injection-judge.js";
+import { rankOf } from "../decisions/entries/turn-trust.js";
 import { TurnTrust } from "../decisions/trust.js";
 import { errorCode, safeReason } from "../domain/error-code.js";
 import type { Identity } from "../domain/types.js";
@@ -196,6 +197,8 @@ interface Turn {
   retriedOther: boolean; pinFailed: boolean;
   /** Settled on an async-work-only agent_end (P7, plan S2): the child may still continue, so settle() stops it. */
   asyncWait?: boolean;
+  /** Security final I-3: dispatched to a child whose own new_session gave it a fresh transcript; that reset was committed. */
+  freshTranscript?: boolean; committedFresh?: boolean;
   /** Selectors (effort-agnostic) that failed THIS turn with a kind other than `other`: a step-up never re-spends them. */
   failed: Set<string>;
   /** The lane owns this turn's terminal: a late start result may no longer fail or re-enter it. */
@@ -441,7 +444,7 @@ export class PlannerSupervisor {
     } finally {
       this.clearTimers(turn);
       clearInterval(turn.heartbeat);
-      turn.active.trust?.finalize(); // a turn that crashed past settle still ends with its level (idempotent after finish*)
+      this.endTrust(turn); // a turn that crashed past settle still ends with its level (idempotent after finish*)
       if (this.turn === turn) this.turn = undefined;
     }
   }
@@ -612,6 +615,7 @@ export class PlannerSupervisor {
     turn.chain = this.turnChain(turn.role, turn.effort);
     if ((await this.pinFirst(turn, s)) === ENDED || turn.failure) return;
     try {
+      this.carryTrust(turn);
       const sent = claimAtDispatch(this.d.store, this.d.chatId, prompt, this.d.turnContext.pid);
       turn.live = true;
       turn.dispatched = true;
@@ -701,6 +705,34 @@ export class PlannerSupervisor {
     if (this.resetGen === 0 || this.resetGen !== turn.childGen || this.session === undefined) return;
     this.d.store.promotePlannerSession(this.d.chatId);
     this.resetGen = 0;
+    turn.committedFresh = true;
+  }
+
+  /**
+   * Security final I-3: the transcript still holds what earlier turns read, so a dispatched turn starts at the level it
+   * carries; only a child whose own new_session gave it a fresh transcript starts clean.
+   */
+  private carryTrust(turn: Turn): void {
+    turn.freshTranscript = this.resetGen !== 0 && this.resetGen === turn.childGen;
+    if (!turn.freshTranscript) turn.active.trust?.carry(this.d.store.getTranscriptTrust(this.d.chatId));
+  }
+
+  /**
+   * Every turn end: turn_trust_final once, then (a dispatched turn only) the level the transcript now carries. A fresh
+   * transcript that was never committed is not the one a respawn resumes, so the old level is kept unless this one is higher.
+   */
+  private endTrust(t: Turn): void {
+    const trust = t.active.trust;
+    trust?.finalize();
+    if (!trust || !t.dispatched) return;
+    const { store, chatId } = this.d;
+    try {
+      const stored = store.getTranscriptTrust(chatId);
+      const keepOld = t.freshTranscript && !t.committedFresh && (stored === "untrusted" || stored === "hostile") && rankOf(stored) > rankOf(trust.level());
+      store.setTranscriptTrust(chatId, keepOld ? stored : trust.level(), new Date().toISOString());
+    } catch (e) {
+      console.error(`planner supervisor: transcript_trust_not_written (${message(e)})`);
+    }
   }
 
   private async settle(turn: Turn): Promise<void> {
@@ -1283,7 +1315,7 @@ export class PlannerSupervisor {
     const { store, outcome, chatId } = this.d;
     t.finished = true;
     flushUnreported(store, t.active);
-    t.active.trust?.finalize(); // spec §7.2: turn_trust_final at every turn end, success or failure
+    this.endTrust(t); // spec §7.2: turn_trust_final at every turn end, success or failure
     const { text, attachments } = parseAttachments(t.lastText, this.workspace());
     const base = { worker_id: t.worker, text, duration_ms: Date.now() - t.startedAt, tool_calls: t.active.budget.usage().tool_calls };
     outcome.complete({ ...base, run_id: t.req.run_id, attachments, ...(t.laneButtons ? { buttons: t.laneButtons } : {}) });
@@ -1296,7 +1328,7 @@ export class PlannerSupervisor {
     const { store, outcome } = this.d;
     t.finished = true;
     flushUnreported(store, t.active);
-    t.active.trust?.finalize(); // spec §7.2: turn_trust_final at every turn end, success or failure
+    this.endTrust(t); // spec §7.2: turn_trust_final at every turn end, success or failure
     if (t.n > t.recorded || (t.dispatched && t.n === 0)) this.recordAborted(t, f.ref === DAEMON_SHUTDOWN ? "shutdown" : "aborted");
     if (f.type === "turn_timeout" || f.type === "frame_idle") store.recordLoopHalted(t.req.run_id, { reason: f.type, steps: t.n });
     const base = { worker_id: t.worker, error_ref: f.ref, ...(t.lastText ? { partial: t.lastText } : {}) };

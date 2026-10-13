@@ -16,6 +16,7 @@ import { formatModelString, parseModelString, type ModelString } from "../../src
 import { selectorKey } from "../../src/omp/model-roles.js";
 import type { Effort, TurnRole } from "../../src/jev/tree-policy.js";
 import { openManifestClient } from "../helpers/bridge-manifest.js";
+import { drainOutbox } from "../helpers/omp-worker.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 import { maxLoopGap, slowVersionBin } from "../helpers/event-loop.js";
 import { setSharedOmpVersionCacheForTest } from "../../src/omp/omp-version-cache.js";
@@ -2052,6 +2053,52 @@ describe("PlannerSupervisor — settles only on a terminal agent_end (P7, spec �
     const text = readFileSync(writeHougeConfigFile({ data: dir }), "utf8");
     expect(text).toContain("retry:\n  maxRetries: 2\n  maxDelayMs: 60000\n");
     expect(60_000 + 30_000).toBeLessThan(Number(resolveOmpConfig({}).frameIdleMs));
+  });
+});
+
+// security final I-3: the omp transcript outlives the turn, so text a hostile turn read is still in the planner's context on
+// the next turn. Trust is therefore sticky per transcript: a dispatched turn starts at the level the transcript's last
+// dispatched turn ended at (its own cause, carried_*), persisted so a daemon restart keeps it, and it returns to clean only
+// when the planner starts a fresh transcript (the lesson-change new_session).
+describe("PlannerSupervisor — trust is sticky within a planner transcript", () => {
+  const trustEvents = (store: RunStore, run_id: string) => store.getLedgerEvents(run_id).filter((e) => e.event_type === "turn_trust").map((e) => e.payload);
+  const finalOf = (store: RunStore, run_id: string) => store.getLedgerEvents(run_id).find((e) => e.event_type === "turn_trust_final")?.payload;
+
+  it("turn N hostile → turn N+1 starts hostile (carried_hostile); after a fresh session the next turn is clean", async () => {
+    let cause: "injection_withheld" | "wall_read" | null = "injection_withheld";
+    let sup: PlannerSupervisor | undefined;
+    const session = fakeSession({ onPrompt: (_t, e) => {
+      e({ type: "turn_start" }); if (cause) sup?.activeTurnForTest()?.trust?.raise(cause); session.assistant("ok"); e({ type: "agent_end" });
+    } });
+    const h = harness(session); sup = h.sup; const { store } = h;
+    const run = async () => { const id = createQueuedTurnRun(store); h.sup.submit(req(id)); await h.sup.whenIdle(); return id; };
+    await run();
+    cause = null;
+    const second = await run();
+    expect(trustEvents(store, second)).toEqual([{ level: "hostile", cause: "carried_hostile" }]);
+    expect(finalOf(store, second)).toEqual({ max_level: "hostile" });
+    expect(store.getTranscriptTrust("42")).toBe("hostile"); // persisted: a restart resumes the same transcript and the same level
+    store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" }); // lesson change → new_session
+    const fresh = await run();
+    expect(session.resets).toBe(1);
+    expect(trustEvents(store, fresh)).toEqual([]);
+    expect(finalOf(store, fresh)).toEqual({ max_level: "clean" });
+    cause = "wall_read";
+    await run();
+    cause = null;
+    expect(trustEvents(store, await run())).toEqual([{ level: "untrusted", cause: "carried_untrusted" }]);
+  });
+
+  it("a carried hostile level queues no second 'this turn read text aimed at the assistant' card", async () => {
+    let raise = true; let sup: PlannerSupervisor | undefined;
+    const session = fakeSession({ onPrompt: (_t, e) => {
+      e({ type: "turn_start" }); if (raise) sup?.activeTurnForTest()?.trust?.raise("injection_withheld"); session.assistant("ok"); e({ type: "agent_end" });
+    } });
+    const h = harness(session); sup = h.sup;
+    h.sup.submit(req(createQueuedTurnRun(h.store))); await h.sup.whenIdle();
+    raise = false;
+    const second = createQueuedTurnRun(h.store); h.sup.submit(req(second)); await h.sup.whenIdle();
+    expect([...drainOutbox(h.store).keys()].filter((k) => k.includes("trust_hostile"))).toHaveLength(1);
   });
 });
 

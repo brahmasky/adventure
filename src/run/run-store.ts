@@ -2832,6 +2832,25 @@ export class RunStore {
     `).run(chat_id);
   }
 
+  /**
+   * Security final I-3: the trust level the chat's planner transcript carries (the last dispatched turn's final level), or
+   * null when none was recorded. Read at dispatch; a fresh transcript ignores it.
+   */
+  getTranscriptTrust(chat_id: string): string | null {
+    return this.db.prepare(`SELECT transcript_trust FROM planner_session_state WHERE chat_id = ?`).get<{ transcript_trust: string | null }>(chat_id)?.transcript_trust ?? null;
+  }
+
+  /**
+   * Records it at a dispatched turn's end. With no row yet, a clean level writes nothing (null reads clean); a raised one
+   * creates the row with no fingerprint, which a later reset compares as '' (as with no row).
+   */
+  setTranscriptTrust(chat_id: string, level: string, now: string): void {
+    if (this.db.prepare(`UPDATE planner_session_state SET transcript_trust = ? WHERE chat_id = ?`).run(level, chat_id).changes === 1 || level === "clean") return;
+    this.db.prepare(`
+      INSERT INTO planner_session_state (chat_id, lesson_fingerprint, seed_pending, updated_at, transcript_trust) VALUES (?, '', 0, ?, ?)
+    `).run(chat_id, now, level);
+  }
+
   /** The seed goes to one dispatch: true only for the first claim after a reset. */
   claimSessionSeed(chat_id: string): boolean {
     return this.db.prepare(`
@@ -7461,6 +7480,8 @@ export class RunStore {
       if (!cols.has("p_index")) this.db.exec(`ALTER TABLE decisions ADD COLUMN p_index INTEGER`);
       if (!cols.has("reask")) this.db.exec(`ALTER TABLE decisions ADD COLUMN reask TEXT`);
       if (!cols.has("p_first")) this.db.exec(`ALTER TABLE decisions ADD COLUMN p_first REAL`);
+      // security final I-3: the trust level the chat's planner transcript carries (null: clean / never set)
+      if (!this.tableColumns("planner_session_state").has("transcript_trust")) this.db.exec(`ALTER TABLE planner_session_state ADD COLUMN transcript_trust TEXT`);
       this.db.exec(DECISION_LADDER_2A_DDL);
       if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
     });

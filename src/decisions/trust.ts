@@ -37,8 +37,14 @@ export class TurnTrust {
       recorder: storeRecorder(this.d.store, this.d.env ? { env: this.d.env } : {}) });
     this.#current = r.verdict;
     this.ledger("turn_trust", { level: this.#current, cause });
-    if (this.#current === "hostile") this.onHostile();
+    if (this.#current === "hostile") this.onHostile(cause === "carried_hostile");
     return true;
+  }
+
+  /** Security final I-3: start at the level the planner transcript carries (a stored value; anything unknown carries nothing). */
+  carry(level: string | null): boolean {
+    if (level === "hostile") return this.raise("carried_hostile");
+    return level === "untrusted" ? this.raise("carried_untrusted") : false;
   }
 
   finalize(): void {
@@ -52,15 +58,19 @@ export class TurnTrust {
     catch (e) { console.error(`trust: ${type} not written for ${this.d.run_id}: ${message(e)}`); }
   }
 
-  /** Spec §8.2: one urgent card per hostile turn; a schedule-born one (nobody to tap) also pages hostile_schedule_turn once. */
-  private onHostile(): void {
+  /**
+   * Spec §8.2: one urgent card per hostile turn; a schedule-born one (nobody to tap) also pages hostile_schedule_turn once. A
+   * carried level sends no card (the turn that read the text already did) but still pages a schedule-born turn.
+   */
+  private onHostile(carried: boolean): void {
+    if (this.d.born === "schedule") this.page("hostile_schedule_turn");
+    if (carried) return;
     try { enqueueUrgentCard(this.d.store, { chat_id: this.d.chat_id, key: `trust_hostile:${this.d.run_id}`, text: HOSTILE_CARD_TEXT }); }
     catch (e) {
       // Paco must still learn the turn is hostile: the card's failure becomes an incident row (and its own page)
       console.error(`trust: hostile card not queued: ${message(e)}`);
       this.page("trust_card_failed");
     }
-    if (this.d.born === "schedule") this.page("hostile_schedule_turn");
   }
 
   private page(kind: "trust_card_failed" | "hostile_schedule_turn"): void {
