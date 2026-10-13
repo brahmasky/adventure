@@ -499,7 +499,11 @@ code (*"fix it so you stop asking which 猴哥"*) it calls `self_write_propose`,
 in the background and ends the turn: Houge frames the task,
 has **Codex write a diff in a fresh git worktree** under `<data>/selfwrite` (`codex exec --sandbox workspace-write`), then runs
 it **autonomously** through three checkers — (1) a deterministic **protected-path check** (HARD DENY on
-any gate/identity/dep/existing-test path; **not** overridable by `/approve`), (2) the **test gate**
+any gate/identity/dep/existing-test path; **not** overridable by `/approve`; the writer's task lists every
+locked path, rendered from the guard's own `PROTECTED_DIRS` / `PROTECTED_FILES`; a diff that touches a locked path gets
+**one guided retry** told which paths are locked, and only a second locked hit, or the writer leaving
+`HOUGE_NEEDS_LOCKED.md` with its reason, read and deleted before the guard so it never lands, ends in a
+"yours to make" notification to Paco), (2) the **test gate**
 (typecheck + test + build in the worktree), (3) an **independent reviewer** (model diversity:
 the writer is Codex, the checker is an omp seat on the `reviewer` model role or a separate Codex session) — with a **refine loop ≤3**. Only if all pass does Houge
 **publish the diff as a branch** (`houge/selfwrite/<run-id>`) and **notify Paco**. The daemon **never
