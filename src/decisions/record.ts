@@ -52,7 +52,7 @@ function rowOf(entry: AnyEntry, r: AnyDecideResult, ctx: { run_id: string | null
   const known = r.reason !== null && (entry.reasonCodes.includes(r.reason) || RUNNER_CODES.has(r.reason));
   return {
     entry_id: entry.id, entry_version: entry.version, run_id: ctx.run_id, tool_call_id: ctx.tool_call_id, stage: entry.stage, rung: r.rung, verdict: r.verdict,
-    p: r.p ?? null, reason_code: known ? r.reason : null, fallback_reason: r.fallbackReason, fallback_rung: r.fallbackRung,
+    p: r.p ?? null, p_index: r.pIndex ?? null, reask: r.reask?.kind ?? null, p_first: r.reask?.pFirst ?? null, reason_code: known ? r.reason : null, fallback_reason: r.fallbackReason, fallback_rung: r.fallbackRung,
     armed_mode: r.armedMode, latency_ms: r.latencyMs, created_at: now
   };
 }

@@ -18,7 +18,7 @@ export const FALLBACK_REASONS = ["timeout", "outage", "parse", "threw", "stale_b
 export type FallbackReason = (typeof FALLBACK_REASONS)[number];
 /** Spec §7.4's outcome signals, plus `review_ok` (✅ is a label calibration needs). Values are validated per signal in outcomes.ts. */
 export const DECISION_SIGNALS = ["correction", "dig_deeper", "review_ok", "review_bad", "review_unsure", "approval_denied", "approval_expired", "rating",
-  "settle_sent_back", "planner_failed", "recurrence", "abandoned", "lesson_unfollowed"] as const;
+  "settle_sent_back", "planner_failed", "recurrence", "abandoned", "lesson_unfollowed", "lesson_undone", "think_harder"] as const;
 export type DecisionSignal = (typeof DECISION_SIGNALS)[number];
 /** Reason codes the runner itself produces; recordable for every entry (record.ts). */
 export const RUNNER_REASON_CODES = ["no_executor", "floor_held"] as const;
@@ -42,9 +42,11 @@ export interface CalibratedBar { kind: "calibrated"; questionIds: readonly strin
 export type BarRef = ProvisionalBar | CalibratedBar;
 export interface PromptRef { id: string; version: number }
 
-export interface RungAnswer<V, D = never> { verdict: V; reason?: string; p?: number; detail?: D }
+/** The noise band's one re-ask (stage 2a, Addition B): the mean decided, or the second call failed and the first answer stood. */
+export interface Reask { kind: "mean" | "max" | "failed"; pFirst: number }
+export interface RungAnswer<V, D = never> { verdict: V; reason?: string; p?: number; detail?: D; pIndex?: number; reask?: Reask }
 /** "Not mine to decide": the walk goes on. `floor` is the initial monotone verdict (spec §4.1). */
-export interface RungAbstain<V, D = never> { abstain: true; floor?: V; reason?: string; detail?: D }
+export interface RungAbstain<V, D = never> { abstain: true; floor?: V; reason?: string; detail?: D; reask?: Reask }
 /** A thrown rung, a timeout, an outage: an abstention that names why (`decisions.fallback_reason`). */
 export interface RungFailed<D = never> { failed: FallbackReason; reason?: string; detail?: D }
 export type RungResult<V, D = never> = RungAnswer<V, D> | RungAbstain<V, D> | RungFailed<D>;
@@ -92,6 +94,9 @@ export interface DecideResult<V, D = never> {
   verdict: V;
   rung: DecidedBy;
   p?: number;
+  /** The passage or question index of the recorded p; the noise band's re-ask on the deciding (or an earlier abstaining) judge. */
+  pIndex?: number;
+  reask?: Reask;
   reason: string | null;
   /** The first failure in the walk (null when none failed), and the kind of rung that failed (codex W6). */
   fallbackReason: FallbackReason | null;

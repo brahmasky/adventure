@@ -1,4 +1,4 @@
-import type { Lane } from "../jev/tree-policy.js";
+import type { Lane, TurnRole } from "../jev/tree-policy.js";
 import { ENTRY_IDS } from "./entry-ids.js";
 import { DECISION_SIGNALS, type DecisionSignal } from "./types.js";
 
@@ -13,6 +13,9 @@ export const DIG_DEEPER_VALUES = ["answer", "lookup", "memory", "status", "plann
 type DigDeeperCoversEveryLane = Exclude<Lane, (typeof DIG_DEEPER_VALUES)[number]> extends never ? true : never;
 export const DIG_DEEPER_COVERS_EVERY_LANE: DigDeeperCoversEveryLane = true;
 
+/** The planner roles (tree-policy TurnRole); `think_harder` records the role the previous turn ran on. */
+export const TURN_ROLE_VALUES = ["fast", "default", "thinking"] as const satisfies readonly TurnRole[];
+
 export class OutcomeRejected extends Error {}
 
 type Check = (v: string | number) => boolean;
@@ -24,6 +27,7 @@ const entryId: Check = (v) => typeof v === "string" && ids.has(v);
 /** `null`: no producer yet. The stage that adds one defines the set here (a protected edit) and its tests. */
 const VALUE_CHECKS: Readonly<Record<DecisionSignal, Check | null>> = {
   correction: oneOf(CORRECTION_VALUES), dig_deeper: oneOf(DIG_DEEPER_VALUES),
+  lesson_undone: oneOf(DIG_DEEPER_VALUES), think_harder: oneOf(TURN_ROLE_VALUES),
   review_ok: entryId, review_bad: entryId, review_unsure: entryId,
   rating: intIn(0, 3), recurrence: intIn(1, 10_000),
   approval_denied: null, approval_expired: null, settle_sent_back: null, planner_failed: null, abandoned: null, lesson_unfollowed: null
