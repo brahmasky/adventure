@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
 import { lessonSetFingerprint } from "../../src/run/lesson-render.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
-import { PlannerSupervisor, RETRY_NOTE, isModelRefusal, parseAttachments, writeHougeConfigFile, type PlannerSessionLike, type SupervisorDeps, type SupervisorState, type TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
+import { PlannerSupervisor, RETRY_NOTE, isModelRefusal, parseAttachments, settlesTurn, writeHougeConfigFile, type PlannerSessionLike, type SupervisorDeps, type SupervisorState, type TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
 import type { OmpFrame } from "../../src/omp/omp-frames.js";
 import { PlannerRpcError, type ExitInfo, type PlannerSessionOptions } from "../../src/omp/planner-session.js";
 import { ToolRegistry } from "../../src/tools/tool-registry.js";
@@ -1911,5 +1911,93 @@ describe("probe seams shared with the planner", () => {
     expect(isModelRefusal(new PlannerRpcError("command_failed:set_model", "Model not found: x/y"))).toBe(true);
     expect(isModelRefusal(new PlannerRpcError("command_failed:set_model", "rate limit"))).toBe(false);
     expect(isModelRefusal(new PlannerRpcError("command_failed:prompt", "Model not found: x/y"))).toBe(false);
+  });
+});
+
+describe("PlannerSupervisor — settles only on a terminal agent_end (P7, spec §7.3)", () => {
+  // omp continues on its own after a NON-terminal agent_end (late steer, its own retry, compaction, empty-stop). Settling
+  // there completed the turn on a half answer, and a failed leg could be retried by Houge and by omp at once (double spend).
+  const FIXTURES = new URL("../fixtures/omp-frames/", import.meta.url);
+  const frames = (name: string): OmpFrame[] => readFileSync(new URL(name, FIXTURES), "utf8").split("\n").filter((l) => l.trim())
+    .map((l) => JSON.parse(l) as OmpFrame).filter((f) => typeof f.type === "string");
+  const playing = (fs: OmpFrame[]) => fakeSession({ onPrompt: (_t, e) => { for (const f of fs) e(f); } });
+  const settledOnce = (o: { done: unknown[]; failed: unknown[] }) => o.done.length + o.failed.length;
+
+  it("the rule: aborted, terminal or async-work-only ends settle; a plain non-terminal end does not", () => {
+    expect(settlesTurn({ type: "agent_end" })).toBe(true);
+    expect(settlesTurn({ type: "agent_end", isTerminal: true })).toBe(true);
+    expect(settlesTurn({ type: "agent_end", isTerminal: false })).toBe(false);
+    expect(settlesTurn({ type: "agent_end", isTerminal: false, aborted: true })).toBe(true);
+    expect(settlesTurn({ type: "agent_end", isTerminal: false, yielded: true, awaitingAsyncWork: true })).toBe(true);
+  });
+
+  for (const name of readdirSync(new URL("../fixtures/omp-frames/", import.meta.url)).filter((f) => f.startsWith("agent-end-"))) {
+    it(`replays ${name}: exactly one outcome, and no Houge retry prompt`, async () => {
+      const session = playing(frames(name));
+      const { store, sup, outcome } = harness(session);
+      sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+      expect(settledOnce(outcome)).toBe(1);
+      expect(session.prompts).toEqual(["hi"]);
+    });
+  }
+
+  it("a late steer: completes once, on the text after the continuation", async () => {
+    const session = playing(frames("agent-end-late-steer.jsonl"));
+    const { store, sup, outcome } = harness(session);
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(outcome.done).toHaveLength(1);
+    expect((outcome.done[0] as { text: string }).text).not.toBe("ONE");
+  });
+
+  it("omp's own retry succeeds: Houge does not retry too, and both model requests are audited", async () => {
+    const session = playing(frames("agent-end-omp-retry.jsonl"));
+    const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(outcome.done[0]).toMatchObject({ text: "recovered" });
+    expect(session.prompts).toEqual(["hi"]); // never RETRY_NOTE
+    const kinds = store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_attempt").map((e) => (e.payload as { error_kind?: string }).error_kind);
+    // the first request failed (its kind is whatever classifyOmpError says; never pin the string), the second answered
+    expect(kinds).toHaveLength(2);
+    expect(kinds[0]).toBeDefined();
+    expect(kinds[1]).toBeUndefined();
+  });
+
+  it("omp's retry also fails and its end is terminal: Houge's own retry runs exactly once", async () => {
+    let prompts = 0;
+    const session = fakeSession({ onPrompt: (_t, e) => {
+      e({ type: "turn_start" });
+      if (prompts++ === 0) {
+        session.assistant("", { stopReason: "error", errorMessage: "429 usage limit reached" }); e({ type: "agent_end", isTerminal: false });
+        e({ type: "turn_start" }); session.assistant("", { stopReason: "error", errorMessage: "429 usage limit reached" }); e({ type: "agent_end", isTerminal: true });
+      } else { session.assistant("from the next leg"); e({ type: "agent_end", isTerminal: true }); }
+    } });
+    const { store, sup, outcome } = harness(session);
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(session.prompts).toEqual(["hi", RETRY_NOTE]);
+    expect(outcome.done[0]).toMatchObject({ text: "from the next leg" });
+  });
+
+  it("an async-work-only end settles at once, stops the child, pages once, and its late frames never reach the next turn", async () => {
+    let n = 0;
+    const session = fakeSession({ onPrompt: (_t, e) => {
+      if (n++ === 0) { for (const f of frames("agent-end-async-work.jsonl")) e(f); return; }
+      e({ type: "turn_start" }); session.assistant("second turn"); e({ type: "agent_end" });
+    } });
+    const { store, sup, outcome } = harness(session, { HOUGE_OMP_FRAME_IDLE_MS: "60000" });
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(outcome.done[0]).toMatchObject({ text: "started the job" });
+    expect(outcome.incidents).toContainEqual(expect.objectContaining({ k: "planner_async_wait" }));
+    session.emitForTest({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "LATE" }], stopReason: "stop" } });
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(session.options.length).toBe(2); // a fresh child for the next turn
+    expect(outcome.done[1]).toMatchObject({ text: "second turn" });
+  });
+  it("Houge's omp config caps omp's own retries under the frame watchdog (S2b)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hcfg-"));
+    mkdirSync(join(dir, "omp"), { recursive: true }); // writeHougeConfigFile creates no directory
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const text = readFileSync(writeHougeConfigFile({ data: dir }), "utf8");
+    expect(text).toContain("retry:\n  maxRetries: 2\n  maxDelayMs: 60000\n");
+    expect(60_000 + 30_000).toBeLessThan(Number(resolveOmpConfig({}).frameIdleMs));
   });
 });

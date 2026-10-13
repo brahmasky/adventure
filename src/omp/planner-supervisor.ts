@@ -131,7 +131,8 @@ type StartResult = string | null | { missing: ModelString };
 type PinResult = "ok" | "refused" | typeof ENDED | { error: unknown };
 const exitRef = (i: ExitInfo) => (i.code !== null ? `exit ${i.code}` : `signal ${i.signal ?? "unknown"}`);
 /** omp profile config (spec §4): no xdev devices, no update checks, no telemetry. */
-const HOUGE_CONFIG_YML = "tools:\n  xdev: false\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: false\ntelemetry:\n  otlpExportEnabled: false\n";
+const HOUGE_CONFIG_YML = "tools:\n  xdev: false\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: false\ntelemetry:\n  otlpExportEnabled: false\n"
+  + "retry:\n  maxRetries: 2\n  maxDelayMs: 60000\n"; // S2b: omp's retry window stays under the 180 s frame watchdog
 /** The planner's omp config file, written atomically (0600); the contract probe writes the same file (spec §4.3). */
 export function writeHougeConfigFile(ctx: Pick<PathContext, "data">): string {
   const configFile = join(ctx.data, "omp", "houge-config.yml");
@@ -173,6 +174,8 @@ interface Turn {
   startMissing: number; legsTried: number;
   /** `other` was retried once (spec §4); the first pin failed in transport (pin_failed: no step-up on this child). */
   retriedOther: boolean; pinFailed: boolean;
+  /** Settled on an async-work-only agent_end (P7, plan S2): the child may still continue, so settle() stops it. */
+  asyncWait?: boolean;
   /** Selectors (effort-agnostic) that failed THIS turn with a kind other than `other`: a step-up never re-spends them. */
   failed: Set<string>;
   /** The lane owns this turn's terminal: a late start result may no longer fail or re-enter it. */
@@ -218,6 +221,17 @@ function newDeferred(): { done: (r: "end" | "abort") => void; ended: Promise<"en
   let done: (r: "end" | "abort") => void = () => undefined;
   const ended = new Promise<"end" | "abort">((r) => { done = r; });
   return { done, ended };
+}
+
+/**
+ * P7 (spec §7.3, plan S2): omp marks an agent_end non-terminal when it continues on its own — a late steer, its own retry,
+ * a compaction or empty-stop continuation (agent-session.ts:1449-1467, :4205-4417). Only a terminal end, an abort, or an
+ * end that waits on background work alone (`awaitingAsyncWork`: settled here, and the child is stopped so a later
+ * continuation can never reach the next turn — plan S2) settles the turn.
+ * Houge's own retry (retryNextLeg) therefore runs only after omp has finished retrying.
+ */
+export function settlesTurn(f: OmpFrame): boolean {
+  return f.aborted === true || f.isTerminal !== false || f.awaitingAsyncWork === true;
 }
 
 export class PlannerSupervisor {
@@ -668,6 +682,13 @@ export class PlannerSupervisor {
     this.clearTimers(turn);
     if (turn.failure) this.finishFailure(turn, turn.failure);
     else this.finishSuccess(turn);
+    if (turn.asyncWait) await this.dropAsyncChild(turn);
+  }
+
+  /** S2: an async-wait end settled the turn while the child could still continue; stop it so its frames carry a dead gen. */
+  private async dropAsyncChild(turn: Turn): Promise<void> {
+    this.incident("planner_async_wait", { run_id: turn.req.run_id });
+    await this.stopSession();
   }
 
   /**
@@ -1071,7 +1092,10 @@ export class PlannerSupervisor {
     else if (f.type === "message_end") this.onAssistant(t, summarizeAssistantMessage(f));
     else if (f.type === "error") this.onErrorFrame(t, frameErrorText(f));
     else if (f.type === "prompt_result" && f.agentInvoked === false && f.status === "error") this.onPromptRejected(t, frameErrorText(f));
-    else if (f.type === "agent_end") { t.live = false; t.done(f.aborted === true ? "abort" : "end"); }
+    else if (f.type === "agent_end" && settlesTurn(f)) {
+      if (f.isTerminal === false && f.awaitingAsyncWork === true) t.asyncWait = true; // S2: the child may still continue
+      t.live = false; t.done(f.aborted === true ? "abort" : "end");
+    }
   }
 
   /**
