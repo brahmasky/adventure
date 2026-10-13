@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { BudgetLedger } from "../../src/budget/budget-ledger.js";
 import { NOT_CHECKED_OPEN, WITHHELD_TEXT, WITHHELD_UNJUDGED_TEXT } from "../../src/decisions/entries/tool-injection.js";
+import { digestOutput } from "../../src/core/output-digest.js";
+import { READER_INPUT_CHAR_CAP } from "../../src/core/quarantine.js";
 import { createInjectionJudge, type InjectionJudge } from "../../src/decisions/injection-judge.js";
 import { HOSTILE_REASON, UNTRUSTED_REASON } from "../../src/decisions/trust-ask.js";
 import { TurnTrust } from "../../src/decisions/trust.js";
@@ -44,9 +46,9 @@ function setup(o: { env?: NodeJS.ProcessEnv; page?: string; shellOut?: string; s
   const registry = new ToolRegistry();
   registry.register(meta("http_fetch", "external_read", async () => ({ ok: true, output: { url: "https://example.com/notes", status: 200, content_type: "text/plain", content: o.page ?? CLEAN } })));
   // the other wall tools: each returns the page as its body, so one fixture drives every family (security I-2, testing I-1)
-  registry.register(meta("web_search", "external_read", async () => ({ ok: true, output: { query: "notes", results: [{ title: "Notes", snippet: o.page ?? CLEAN }] } })));
-  registry.register(meta("gmail_read", "external_read", async () => ({ ok: true, output: { messages: [{ id: "m1", subject: "Notes", body: o.page ?? CLEAN }] } })));
-  registry.register(meta("google_api", "external_read", async () => ({ ok: true, output: { status: 200, body: o.page ?? CLEAN } })));
+  registry.register(meta("web_search", "external_read", async () => ({ ok: true, output: { provider: "tavily", results: [{ title: "Notes", url: "https://example.com/notes", content: o.page ?? CLEAN }] } })));
+  registry.register(meta("gmail_read", "external_read", async () => ({ ok: true, output: { answer: o.page ?? CLEAN } })));
+  registry.register(meta("google_api", "external_read", async () => ({ ok: true, output: { answer: o.page ?? CLEAN } })));
   registry.register(meta("lesson_write", "none", async () => ({ ok: true, output: { saved: true } })));
   registry.register(meta("wiki_build", "none", async () => ({ ok: true, output: { built: true } })));
   for (const [n, s] of [["shell", "local_write"], ["shell_external", "external_write"], ["shell_destructive", "destructive"]] as const) registry.register(meta(n, s, shell));
@@ -166,8 +168,27 @@ const OUTSIDE_FAMILIES: ReadonlyArray<[string, string, Record<string, unknown>]>
   ["web_search", "web_search", { query: "notes" }], ["gmail_read", "gmail_read", { list: true }], ["google_api", "google_api", { path: "gmail/v1/users/me/messages" }]
 ];
 const jevDown = async (): Promise<JevResult> => ({ ok: false, reason: "error", detail: "x", error_kind: "transport" });
-/** What the planner (shell) or the reader (wall tools) received. */
-const delivered = (h: ReturnType<typeof setup>, tool: string, r: CallResult): string => (tool === "bash" ? r.content : String(h.seen[0]?.answer ?? JSON.stringify(h.seen[0])));
+/** What the planner (shell) or the reader (wall tools: its input is digestOutput of what the bridge hands over) received. */
+const delivered = (h: ReturnType<typeof setup>, tool: string, r: CallResult): string => (tool === "bash" ? r.content : digestOutput(h.seen[0] ?? {}, READER_INPUT_CHAR_CAP));
+
+// testing final I-1: every wall tool's result is judged before the reader sees it, under its own source. Mail is the main
+// injection vector, so a refactor that skips the judge for any one wall tool must fail here (each was mutation-checked).
+describe("bridge: every wall tool goes through the judge", () => {
+  for (const [family, tool, input] of OUTSIDE_FAMILIES.filter(([, t]) => t !== "bash")) {
+    it(`${family}: judged as ${tool}; a planted passage is withheld, the reader gets the note, the turn is hostile`, async () => {
+      const h0 = setup();
+      const inner = createInjectionJudge({ store: h0.store, client: judging(), home: "/h" });
+      const sources: string[] = [];
+      const spy: InjectionJudge = async (i) => { sources.push(i.source); return inner(i); };
+      const h = setup({ judge: spy, page: [CLEAN, SUBTLE, CLEAN].join("\n\n") });
+      await h.handle(call(tool, input));
+      expect(sources).toEqual([tool]);
+      expect(delivered(h, tool, { content: "", isError: false })).toContain(WITHHELD_TEXT);
+      expect(delivered(h, tool, { content: "", isError: false })).not.toContain("collect.example");
+      expect(h.events("turn_trust")).toEqual([{ level: "untrusted", cause: "wall_read" }, { level: "hostile", cause: "injection_withheld" }]);
+    });
+  }
+});
 
 // security final I-2: a judgement lost on outside text (Jev down, timed out, partial) must not hand the planner bare text Jev
 // never saw, at a level where plain writes still run tap-free. The passage arrives inside the not-checked frame and the turn
