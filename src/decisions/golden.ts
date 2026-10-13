@@ -25,30 +25,32 @@ export const INJECTION_GOLDEN: readonly GoldenItem[] = [
 const DRIFT: ReadonlySet<string> = new Set(["decision_golden_drift"]);
 const STALE: ReadonlySet<string> = new Set(["decision_bar_stale"]);
 
-export interface GoldenTickInput { store: RunStore; client: (r: JevRequest) => Promise<JevResult>; now: string; env?: NodeJS.ProcessEnv }
+/** `items`: the golden set (default INJECTION_GOLDEN); a test passes a variant to prove the tick masks what it sends. */
+export interface GoldenTickInput { store: RunStore; client: (r: JevRequest) => Promise<JevResult>; now: string; env?: NodeJS.ProcessEnv; items?: readonly GoldenItem[] }
 
 export async function runGoldenSetTick(i: GoldenTickInput): Promise<{ ran: false } | { ran: true; outcome: GoldenOutcome }> {
   const env = i.env ?? process.env;
   const date = formatInstantInZone(i.now, resolveDisplayZone(env)).slice(0, 10);
   if (i.store.getGoldenRun(date, TOOL_INJECTION_ID)) return { ran: false };
-  const questions = INJECTION_GOLDEN.map((_, j) => injectionQuestion(`p${j + 1}`, `i${j + 1}`));
-  const state: Record<string, string> = { source: "a fixed golden set", ...Object.fromEntries(INJECTION_GOLDEN.map((g, j) => [`p${j + 1}`, redactForJudge(g.text, { brokerRedact: (x) => i.store.redactSecretValues(x) })])) };
+  const items = i.items ?? INJECTION_GOLDEN;
+  const questions = items.map((_, j) => injectionQuestion(`p${j + 1}`, `i${j + 1}`));
+  const state: Record<string, string> = { source: "a fixed golden set", ...Object.fromEntries(items.map((g, j) => [`p${j + 1}`, redactForJudge(g.text, { brokerRedact: (x) => i.store.redactSecretValues(x) })])) };
   const r = await i.client({ state, questions: Object.fromEntries(questions.map((q) => [q.id, toJevQuestion(q)])) });
-  const answered = r.ok && INJECTION_GOLDEN.every((_, j) => r.answers[`i${j + 1}`]?.type === "noul");
-  const outcome: GoldenOutcome = r.ok && answered ? judgeGolden(i.store, r, i.now, env) : "skipped";
+  const answered = r.ok && items.every((_, j) => r.answers[`i${j + 1}`]?.type === "noul");
+  const outcome: GoldenOutcome = r.ok && answered ? judgeGolden(i.store, r, i.now, env, items) : "skipped";
   if (!r.ok) console.error(`decisions: golden set skipped (${r.reason})`);
   else if (!answered) console.error("decisions: golden set skipped (partial answers)");
   i.store.recordGoldenRun({ local_date: date, entry_id: TOOL_INJECTION_ID, outcome, created_at: i.now });
   return { ran: true, outcome };
 }
 
-function judgeGolden(store: RunStore, r: Extract<JevResult, { ok: true }>, now: string, env: NodeJS.ProcessEnv): GoldenOutcome {
+function judgeGolden(store: RunStore, r: Extract<JevResult, { ok: true }>, now: string, env: NodeJS.ProcessEnv, items: readonly GoldenItem[]): GoldenOutcome {
   const p = (j: number): number => { const a = r.answers[`i${j + 1}`]; return a?.type === "noul" ? a.noul : Number.NaN; };
   const stale = r.model !== INJECTION_BAR.model;
   if (stale) openAlertedIncident(store, { kind: "decision_bar_stale", subject: TOOL_INJECTION_ID, detail: { entry: TOOL_INJECTION_ID, model: r.model, bar_model: INJECTION_BAR.model }, env, now });
   else resolveOpenIncidents(store, STALE, TOOL_INJECTION_ID, now);
-  const missed = INJECTION_GOLDEN.flatMap((g, j) => (g.planted && !(p(j) > INJECTION_BAR_P) ? [g.id] : []));
-  const falseHeld = INJECTION_GOLDEN.flatMap((g, j) => (!g.planted && p(j) > INJECTION_BAR_P ? [g.id] : []));
+  const missed = items.flatMap((g, j) => (g.planted && !(p(j) > INJECTION_BAR_P) ? [g.id] : []));
+  const falseHeld = items.flatMap((g, j) => (!g.planted && p(j) > INJECTION_BAR_P ? [g.id] : []));
   if (missed.length + falseHeld.length > 0) {
     openAlertedIncident(store, { kind: "decision_golden_drift", subject: TOOL_INJECTION_ID, detail: { entry: TOOL_INJECTION_ID, missed, false_withheld: falseHeld }, env, now });
     return "drift";

@@ -66,3 +66,17 @@ describe("golden set", () => {
     for (const g of INJECTION_GOLDEN) expect(redactForJudge(g.text)).toBe(g.text);
   });
 });
+
+// testing final minor 2: the real golden texts hold no secret shape, so a tick that sent g.text raw passed the test above.
+// A synthetic secret-shaped variant proves the tick sends the masked text: its prose arrives, its key never does.
+describe("golden tick egress", () => {
+  it("a secret-shaped golden variant leaves masked: the prose reaches the request, no 8-char piece of the key does", async () => {
+    const key = "sk-proj-9Zq4Lm2Xv8Bn6Tr1Wc3Yk5Hj7Ds0Ae";
+    const items = INJECTION_GOLDEN.map((g, j) => (j === 0 ? { ...g, id: "g-variant", text: `Golden variant marker: the deploy key is ${key} for staging.` } : g));
+    const s = RunStore.openInMemory(); const client = answering((p) => (p ? 0.9 : 0.05));
+    await runGoldenSetTick({ store: s, client, now: NOW, env: {}, items });
+    const body = JSON.stringify(client.mock.calls[0]![0]);
+    expect(body).toContain("Golden variant marker");
+    for (let k = 0; k + 8 <= key.length; k++) expect(body.includes(key.slice(k, k + 8)), key.slice(k, k + 8)).toBe(false);
+  });
+});
