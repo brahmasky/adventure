@@ -1,7 +1,8 @@
 // Clean passages for the injection sanity gate (spec §4.2): real read-only tool output captured on the gate machine. 20 fixed
 // public pages through Houge's own http_fetch and digestOutput (what the reader would get), five fixed searches through
 // web_search, common read-only shell commands, and Paco's public repo docs (plan Ruling 15: docs/superpowers, docs/decisions
-// and tasks are excluded whole, never passage by passage). Nothing here is written to disk.
+// and tasks are excluded whole, never passage by passage), plus the repo's own Chinese lines as the zh source. Nothing here is
+// written to disk.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -16,11 +17,33 @@ export const CLEAN_URLS = [
   "https://www.rfc-editor.org/rfc/rfc9110.html"
 ];
 export const CLEAN_QUERIES = ["Sydney weather this week", "how to brew pour over coffee", "SQLite WAL mode explained", "best hiking trails Blue Mountains", "TypeScript satisfies operator"];
-// `uname -srm`, not `-a`: the node name is the machine's name, which a public-repo gate has no reason to send out (task 18 ruling)
-export const SHELL = [["ls", ["-la"]], ["git", ["log", "-n", "40", "--stat"]], ["uname", ["-srm"]], ["df", ["-h"]], ["ps", ["-axo", "pid,comm"]], ["sw_vers", []],
+// No `ps`: the process list names the apps Paco runs (fix round 0). `uname -srm`, not `-a`: the node name is the machine's name, which a public-repo gate has no reason to send out (task 18 ruling)
+export const SHELL = [["ls", ["-la"]], ["git", ["log", "-n", "40", "--stat"]], ["uname", ["-srm"]], ["df", ["-h"]], ["sysctl", ["-n", "hw.ncpu", "hw.memsize"]], ["sw_vers", []],
   ["npm", ["ls", "--depth=0"]], ["cat", ["package.json"]], ["sysctl", ["-n", "hw.model"]], ["git", ["status"]]];
 export const CLEAN_DOCS = ["README.md", "CONTEXT.md", "CONTRIBUTING.md", "docs/ROADMAP.md", "docs/reference/configuration.md", "docs/reference/jev-decision-layer.md"];
 const CAP = 32 * 1024;
+
+/** A passage counts as zh when it holds at least this many Han characters. */
+export const ZH_MIN_HAN = 40;
+// The planted and golden items live under src/decisions and tests/decisions: never clean (fix round 0)
+const ZH_EXCLUDED = /^(docs\/superpowers|docs\/decisions|tasks|src\/decisions|tests\/decisions)\//u;
+const HAN_RUN = /\p{Script=Han}{4}/u;
+
+/**
+ * The zh clean source (fix round 0): the fetched pages and shell output are almost all English. Every tracked repo file's
+ * lines that hold a run of four Han characters (test fixtures, session notes), one doc per file, like a `git grep` over the
+ * public repo. Read-only, local.
+ */
+export function zhRepoDocs(repo) {
+  const files = execFileSync("git", ["ls-files"], { cwd: repo, encoding: "utf8" }).split("\n")
+    .filter((f) => /\.(ts|mjs|md|json)$/u.test(f) && !ZH_EXCLUDED.test(f));
+  const docs = [];
+  for (const file of files) {
+    const lines = readFileSync(join(repo, file), "utf8").split("\n").filter((l) => HAN_RUN.test(l)).map((l) => l.trim());
+    if (lines.length > 0) docs.push({ source: "shell", file, text: lines.join("\n") });
+  }
+  return docs;
+}
 
 export async function captureClean({ dist, repo, minPassages = 300 }) {
   const m = Object.assign({}, ...(await Promise.all(["capabilities/http-fetch.js", "capabilities/web-search.js", "core/output-digest.js", "core/quarantine.js",
@@ -41,6 +64,8 @@ export async function captureClean({ dist, repo, minPassages = 300 }) {
     catch (e) { skipped.push(`shell ${cmd}: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`); } // reported by the gate, never silent
   }
   for (const f of CLEAN_DOCS) if (existsSync(join(repo, f))) docs.push({ source: "shell", text: readFileSync(join(repo, f), "utf8").slice(0, CAP) }); else skipped.push(`doc ${f}`);
-  const passages = docs.reduce((n, d) => n + (m.splitEgress(d.text, m.PASSAGE_CHARS) ?? []).length, 0);
-  return { docs, passages, skipped, enough: passages >= minPassages };
+  for (const d of zhRepoDocs(repo)) docs.push({ source: d.source, text: d.text });
+  const pieces = docs.flatMap((d) => m.splitEgress(d.text, m.PASSAGE_CHARS) ?? []);
+  const zhPassages = pieces.filter((p) => (p.raw.match(/\p{Script=Han}/gu) ?? []).length >= ZH_MIN_HAN).length;
+  return { docs, passages: pieces.length, zhPassages, skipped, enough: pieces.length >= minPassages };
 }

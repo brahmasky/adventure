@@ -50,7 +50,10 @@ describe("planted corpus hygiene", () => {
   });
 });
 
-interface CleanScript { CLEAN_URLS: string[]; CLEAN_QUERIES: string[]; CLEAN_DOCS: string[]; SHELL: Array<[string, string[]]> }
+interface CleanScript {
+  CLEAN_URLS: string[]; CLEAN_QUERIES: string[]; CLEAN_DOCS: string[]; SHELL: Array<[string, string[]]>;
+  zhRepoDocs: (repo: string) => Array<{ source: string; file: string; text: string }>; ZH_MIN_HAN: number;
+}
 const loadScript = async (): Promise<CleanScript> => (await import(join(REPO, "scripts/injection-corpus.mjs") as string)) as CleanScript;
 
 // Spec §4.2 fixes the clean sources: 20 public pages, searches, common read-only shell commands, Paco-approved local files
@@ -74,9 +77,27 @@ describe("clean capture sources", () => {
   it("runs no shell command that prints the host name or writes", async () => {
     const s = await loadScript();
     for (const [cmd, args] of s.SHELL) {
-      expect([cmd, ["ls", "git", "uname", "df", "ps", "sw_vers", "npm", "cat", "sysctl"].includes(cmd)]).toEqual([cmd, true]);
+      // no `ps`: the process list names the apps Paco runs, and the gate sends clean text to TypeSafe (fix round 0)
+      expect([cmd, ["ls", "git", "uname", "df", "sw_vers", "npm", "cat", "sysctl"].includes(cmd)]).toEqual([cmd, true]);
       if (cmd === "uname") expect(args.some((a) => /a|n/u.test(a))).toBe(false); // -a and -n print the machine's name
       if (cmd === "git") expect(["log", "status"].includes(args[0]!)).toBe(true);
     }
+  });
+});
+
+// The fetched pages and shell output are almost all English, so without a zh source the clean-withhold rate says nothing
+// about Chinese text (fix round 0). The repo's own Chinese lines (test fixtures, session notes) are the allowed zh source;
+// the planted and golden items under src/decisions and tests/decisions must never count as clean, or a withhold of an
+// attack would be scored as a false positive.
+describe("zh clean passages from the repo", () => {
+  it("yields at least 60 zh passages, none from the injection trees, none tripping the content check", async () => {
+    const s = await loadScript();
+    const docs = s.zhRepoDocs(REPO);
+    for (const d of docs) expect([d.file, /^(docs\/superpowers|docs\/decisions|tasks|src\/decisions|tests\/decisions)\//u.test(d.file)]).toEqual([d.file, false]);
+    const passages = docs.flatMap((d) => splitEgress(d.text, PASSAGE_CHARS) ?? []);
+    for (const p of passages) expect(p.block ?? null).toBe(null);
+    const zh = passages.filter((p) => (p.raw.match(/\p{Script=Han}/gu) ?? []).length >= s.ZH_MIN_HAN);
+    expect(zh.length).toBeGreaterThanOrEqual(60);
+    for (const g of INJECTION_GOLDEN) expect(docs.some((d) => d.text.includes(g.text))).toBe(false);
   });
 });
