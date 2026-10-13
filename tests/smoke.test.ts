@@ -26,7 +26,7 @@ describe("project scaffold", () => {
     expect(version.status).toBe(0);
     expect(version.stdout.trim()).toBe(getHougeVersion());
     expect(version.stderr).toBe("");
-  });
+  }, 30_000); // a full `npm run build`: ~9 s alone, and it flaked at 10,022 ms against the 10 s default under load
 
   it("reports unknown CLI commands with a failing exit code", () => {
     rmSync("dist", { recursive: true, force: true });

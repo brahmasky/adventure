@@ -7,6 +7,11 @@
       "focus": {
         "type": "string",
         "maxLength": 2000
+      },
+      "title": {
+        "type": "string",
+        "maxLength": 80,
+        "description": "A short title for the fix, shown to Paco."
       }
     },
     "additionalProperties": false
