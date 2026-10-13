@@ -64,7 +64,8 @@ function ackRule(s: TurnHandlerState): RungAnswer<TurnHandlerVerdict> | RungAbst
 }
 
 export const TURN_HANDLER: Entry<TurnHandlerState, TurnHandlerVerdict> = {
-  id: TURN_HANDLER_ID, version: 1, stage: "pre_model", input: "paco",
+  // 2: the Jev rung re-asks once inside a reviewed noise band (stage 2a, Addition B)
+  id: TURN_HANDLER_ID, version: 2, stage: "pre_model", input: "paco",
   question: "Which handler takes this Telegram text turn: a no-planner lane, or the planner?",
   verdicts: TURN_HANDLER_VERDICTS,
   ladder: [

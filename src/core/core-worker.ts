@@ -160,7 +160,7 @@ import { isSkipReason, TURN_HANDLER, type TurnHandlerState, type TurnHandlerVerd
 import { TURN_GEAR, type TurnGearState, type TurnGearVerdict } from "../decisions/entries/turn-gear.js";
 import { storeRecorder } from "../decisions/record.js";
 import type { AnyDecideResult, AnyEntry, DecideResult, DecisionRecorder, FallbackReason, RungOutcome, RungResult } from "../decisions/types.js";
-import { fallbackOfSkip, jevSkipReason, planTree, treeDetailOf, type AnsweredDecision, type TreeDetail } from "./turn-handler-ladder.js";
+import { fallbackOfSkip, jevSkipReason, planTree, treeDetailOf, treeNear, type AnsweredDecision, type TreeDetail } from "./turn-handler-ladder.js";
 import { memlaneUndoButton, memoryInformNote, memoryLaneCard } from "./memory-lane-card.js";
 import { LANE_COMPOSE_MS, runAnswerLane } from "./lanes/answer-lane.js";
 import { digDeeperButton, laneCard, laneSavedNote } from "./lanes/lane-card.js";
@@ -2896,7 +2896,7 @@ export class CoreWorker {
       lastHougeTurn: t.lastHougeTurn, quotedTurn: t.quotedTurn }, this.broker ? (s) => this.broker!.redact(s) : undefined);
     if (!built.ok) return { failed: fallbackOfSkip(built.skip), reason: built.skip };
     const d = await decide({ point: "triage", run_id, state: built.state, questions: TREE_QUESTIONS, lang, client: this.jevClient(run_id),
-      store: this.runStore, thresholdVersion: TREE_THRESHOLD_VERSION, now: t.now, instants: { thread_cut_at: state.threadCutAt, state_built_at: t.builtAt.toISOString() } });
+      store: this.runStore, thresholdVersion: TREE_THRESHOLD_VERSION, now: t.now, reask: { near: treeNear(TREE_QUESTIONS) }, instants: { thread_cut_at: state.threadCutAt, state_built_at: t.builtAt.toISOString() } });
     if (d.status === "skipped") return { failed: fallbackOfSkip(d.reason), reason: d.reason };
     return this.planAnswered(i, lang, mode, d, held);
   }

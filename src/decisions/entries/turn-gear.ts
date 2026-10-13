@@ -19,7 +19,8 @@ export function turnGearRule(s: TurnGearState): RungAnswer<TurnGearVerdict> | Ru
 }
 
 export const TURN_GEAR: Entry<TurnGearState, TurnGearVerdict> = {
-  id: TURN_GEAR_ID, version: 1, stage: "pre_model", input: "paco",
+  // 2: the Jev rung re-asks once inside a reviewed noise band (stage 2a, Addition B)
+  id: TURN_GEAR_ID, version: 2, stage: "pre_model", input: "paco",
   question: "Which planner role (Fast, Default, Thinking) does this turn run on?",
   verdicts: ["fast", "default", "thinking"],
   ladder: [
