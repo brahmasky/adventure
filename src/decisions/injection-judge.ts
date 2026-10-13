@@ -73,7 +73,10 @@ export function createInjectionJudge(d: JudgeDeps): InjectionJudge {
     const r = await decide(TOOL_INJECTION, state, { run_id: i.run_id, tool_call_id: i.tool_call_id, recorder: storeRecorder(d.store, d.env ? { env: d.env } : {}),
       exec: { system_one: () => askPassages(d, i, state, track) } });
     persistRows(d, track.batches, r.decisionId);
-    return outcomeOf(i.text, state, r, track);
+    const out = outcomeOf(i.text, state, r, track);
+    // Paco 2026-10-14: a lost judgement pages nothing (record.ts); it is logged here and counted in the digest
+    if (out.unanswered > 0) console.error(`decisions: ${TOOL_INJECTION_ID} judgement lost (${out.unanswered} of ${out.sent} passages); not paged`);
+    return out;
   };
 }
 

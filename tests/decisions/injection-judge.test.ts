@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FRAME_OPEN, INJECTION_TEMPLATE_HASH, NOT_CHECKED_CLOSE, NOT_CHECKED_OPEN, WITHHELD_TEXT, WITHHELD_UNJUDGED_TEXT } from "../../src/decisions/entries/tool-injection.js";
+import { trustLines } from "../../src/decisions/digest.js";
 import { createInjectionJudge, localOutcome, type JudgeInput } from "../../src/decisions/injection-judge.js";
 import type { NoiseBand } from "../../src/decisions/noise-band.js";
 import type { JevRequest, JevResult } from "../../src/jev/jev-client.js";
@@ -248,6 +249,23 @@ describe("tool.injection judge", () => {
       expect(localOutcome({ store, home: "/h" }, input(CLEAN)).notChecked).toBe(1);
       expect(localOutcome({ store, home: "/h" }, input(CLEAN, { source: "shell", outside: false })).text).toBe(CLEAN);
     });
+  });
+  // Paco 2026-10-14 ("no alert, just log"): a plain Jev timeout, transport error, 5xx or parse failure on tool.injection
+  // pages nothing. It is logged (a fixed code, the skipped rows) and counted in the digest's "judgement lost"; the turn's
+  // trust rise is the safety answer. 429/auth still page through the Jev incidents, outside this path.
+  it("three lost judgements in an hour page nothing (no decision_fallback, no card); logged and counted in the digest", async () => {
+    const store = RunStore.openInMemory();
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const judge = createInjectionJudge({ store, client: down(), home: "/h", env: { HOUGE_TELEGRAM_CHAT_ID: "555" } });
+      for (let k = 0; k < 4; k++) await judge(input(CLEAN, { tool_call_id: `tc_${k}` }));
+      expect(store.listOpenIncidents().map((i) => i.kind)).not.toContain("decision_fallback");
+      expect(store.listOpenIncidents().filter((i) => i.subject === "tool.injection")).toEqual([]);
+      expect(err.mock.calls.filter(([m]) => String(m).includes("tool.injection judgement lost")).length).toBe(4);
+      const now = new Date().toISOString();
+      const rows = store.listDecisionsBetween(new Date(Date.now() - 3_600_000).toISOString(), new Date(Date.now() + 1_000).toISOString());
+      expect(trustLines(store, rows, now, {}).join("\n")).toContain("judgement lost 4");
+    } finally { err.mockRestore(); }
   });
   describe("localOutcome: the thrown-judge fallback runs the same local checks (codex B2, Ruling 28)", () => {
     const store = RunStore.openInMemory();
