@@ -1,0 +1,7 @@
+{"_source":"omp 18.7.0 agent-session.ts:4298-4334 (retryable error: willContinue)"}
+{"type":"turn_start"}
+{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"429 rate limit exceeded"}}
+{"type":"agent_end","isTerminal":false,"yielded":false}
+{"type":"turn_start"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"recovered"}],"stopReason":"stop"}}
+{"type":"agent_end","isTerminal":true,"yielded":true}

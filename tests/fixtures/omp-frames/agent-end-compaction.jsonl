@@ -1,0 +1,7 @@
+{"_source":"omp 18.7.0 agent-session.ts:4250, :4386 (compaction continuationScheduled: willContinue)"}
+{"type":"turn_start"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"working"}],"stopReason":"length"}}
+{"type":"agent_end","isTerminal":false,"yielded":false}
+{"type":"turn_start"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done after compaction"}],"stopReason":"stop"}}
+{"type":"agent_end","isTerminal":true,"yielded":true}

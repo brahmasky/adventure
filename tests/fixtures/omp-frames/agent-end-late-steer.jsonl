@@ -1,0 +1,7 @@
+{"_source":"omp 18.7.0 agent-session.ts:1449-1467 (a steer after the loop's last poll: queuedContinuation)"}
+{"type":"turn_start"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"ONE"}],"stopReason":"stop"}}
+{"type":"agent_end","isTerminal":false}
+{"type":"turn_start"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"TWO"}],"stopReason":"stop"}}
+{"type":"agent_end","isTerminal":true,"yielded":true}
