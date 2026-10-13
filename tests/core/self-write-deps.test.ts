@@ -24,6 +24,11 @@ afterEach(() => {
   dirs = [];
 });
 
+/** The default reader's raw diff as `STATUS path` lines (the reader emits `-z` records, parsed by the guard's own parser). */
+async function rawEntries(deps: ReturnType<typeof defaultSelfWriteDeps>, wt: string): Promise<string[]> {
+  return parseDiffRaw(await deps.rawDiff(wt)).map((e) => `${e.status} ${e.path}`);
+}
+
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
 }
@@ -50,8 +55,7 @@ describe("defaultSelfWriteDeps diff readers — net-new files are visible to gua
     writeFileSync(join(wt, "src", "prompt", "user-time-zone.ts"), "export function resolveUserTimeZone(): string { return \"UTC\"; }\n");
     const deps = defaultSelfWriteDeps();
 
-    const raw = await deps.rawDiff(wt);
-    expect(raw).toMatch(/A\tsrc\/prompt\/user-time-zone\.ts/);
+    expect(await rawEntries(deps, wt)).toContain("A src/prompt/user-time-zone.ts");
 
     const unified = await deps.unifiedDiff(wt);
     expect(unified).toContain("src/prompt/user-time-zone.ts");
@@ -93,7 +97,7 @@ describe("defaultSelfWriteDeps diff readers — net-new files are visible to gua
 
     const raw = await deps.rawDiff(wt);
     expect(raw).not.toContain("node_modules");
-    expect(raw).toMatch(/A\tsrc\/prompt\/foo\.ts/); // the real new file still shows
+    expect(await rawEntries(deps, wt)).toContain("A src/prompt/foo.ts"); // the real new file still shows
     expect(await deps.unifiedDiff(wt)).not.toContain("node_modules");
   });
 
@@ -101,13 +105,13 @@ describe("defaultSelfWriteDeps diff readers — net-new files are visible to gua
     const wt = worktreeFixture();
     writeFileSync(join(wt, "src", "prompt", "first.ts"), "export const a = 1;\n");
     const deps = defaultSelfWriteDeps();
-    expect(await deps.rawDiff(wt)).toMatch(/A\tsrc\/prompt\/first\.ts/);
+    expect(await rawEntries(deps, wt)).toContain("A src/prompt/first.ts");
 
     // Attempt 2: the writer creates ANOTHER new file — the re-check must see both.
     writeFileSync(join(wt, "src", "prompt", "second.ts"), "export const b = 2;\n");
-    const raw2 = await deps.rawDiff(wt);
-    expect(raw2).toMatch(/A\tsrc\/prompt\/first\.ts/);
-    expect(raw2).toMatch(/A\tsrc\/prompt\/second\.ts/);
+    const raw2 = await rawEntries(deps, wt);
+    expect(raw2).toContain("A src/prompt/first.ts");
+    expect(raw2).toContain("A src/prompt/second.ts");
     expect(await deps.unifiedDiff(wt)).toContain("const b = 2");
   });
 });

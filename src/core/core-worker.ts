@@ -354,7 +354,7 @@ export interface SelfWriteDeps {
   mkNodeModulesLink: (projectRoot: string, worktree: string) => void;
   /** Factory for the write-mode Codex adapter bound to a worktree. */
   makeWriteAdapter: (worktree: string) => (input: { task: string }) => ToolAdapterResult | Promise<ToolAdapterResult>;
-  /** Read the worktree's raw diff against HEAD (`git diff --raw -M -C HEAD`). */
+  /** Read the worktree's raw diff against HEAD (`git diff -z --raw -M -C HEAD`: NUL-separated, paths never C-quoted). */
   rawDiff: (worktree: string) => string | Promise<string>;
   /** Read the worktree's full unified diff against HEAD (`git diff HEAD`) — fed to the reviewer. */
   unifiedDiff: (worktree: string) => string | Promise<string>;
@@ -375,7 +375,7 @@ export { NEEDS_LOCKED_FILE, renderLockedPaths };
 
 /**
  * Register the worktree's NET-NEW files with git as intent-to-add (`git add -N .`) so
- * BOTH checker diffs see them: `git diff --raw -M -C HEAD` then reports a new file as a
+ * BOTH checker diffs see them: `git diff -z --raw -M -C HEAD` then reports a new file as a
  * status-A entry (the guard's protected-path/deny logic applies to file CREATION — not
  * just edits), and `git diff HEAD` carries its full content (the reviewer actually sees
  * it instead of rejecting "file not shown"). Without this, an untracked file was
@@ -424,7 +424,7 @@ export function defaultSelfWriteDeps(): SelfWriteDeps {
     // net-new files or the guard/reviewer are blind to file creation (see helper above).
     rawDiff: async (worktree) => {
       await registerUntrackedFiles(worktree);
-      return (await hardenedGit(["-C", worktree, "diff", "--no-ext-diff", "--no-textconv", "--raw", "-M", "-C", "HEAD"])).stdout;
+      return (await hardenedGit(["-C", worktree, "diff", "--no-ext-diff", "--no-textconv", "-z", "--raw", "-M", "-C", "HEAD"])).stdout;
     },
     // `--no-ext-diff --no-textconv`: defense-in-depth so a .gitattributes/config diff driver
     // can never run a host command during diff (own trusted repo here; mirrors the extwork fix).

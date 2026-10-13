@@ -14,9 +14,9 @@
  * ── How the caller feeds this guard ───────────────────────────────────────────────────
  * The caller runs, inside the verified worktree (NOT the live tree):
  *
- *     git diff --raw -M -C HEAD
+ *     git diff -z --raw -M -C HEAD
  *
- * and passes the raw stdout to `parseDiffRaw`, then the parsed entries to
+ * and passes the raw stdout to `parseDiffRaw` (`-z`: NUL-separated, paths never C-quoted), then the parsed entries to
  * `checkSelfWriteDiff`. `--raw` is REQUIRED over `--name-status` because the raw format
  * carries the file MODE (old + new), which is the only way to detect symlinks (mode
  * `120000`) and mode flips — bypasses `--name-status` is blind to. `-M -C` surface
@@ -28,7 +28,7 @@
  * DENY. Matching is case-insensitive (defense-in-depth on macOS's case-insensitive FS).
  */
 
-/** A single parsed entry of `git diff --raw -M -C HEAD`. */
+/** A single parsed entry of `git diff -z --raw -M -C HEAD`. */
 export interface DiffEntry {
   /** Status letter: A/M/D/T/R/C (R/C may carry a similarity score in the raw line). */
   status: string;
@@ -131,19 +131,48 @@ export const PROTECTED_FILES: readonly string[] = [
 const TESTS_DIR = "tests";
 
 /**
- * Parse the output of `git diff --raw -M -C HEAD` into DiffEntry[]. Never throws — a line we
- * cannot understand becomes a `malformed` entry (denied downstream). Blank lines are skipped.
+ * Parse the output of `git diff -z --raw -M -C HEAD` into DiffEntry[]. Never throws — a record we cannot
+ * understand becomes a `malformed` entry (denied downstream).
  *
- * Raw line shape: `:<oldMode> <newMode> <oldSha> <newSha> <STATUS>\t<path>[\t<path2>]`
- * The leading metadata is space-separated up to the status; paths are tab-separated. R/C carry
- * a similarity score appended to the status (e.g. `R100`) and a second (destination) path.
+ * `-z` shape (what the caller produces): `:<oldMode> <newMode> <oldSha> <newSha> <STATUS>\0<path>\0[<path2>\0]`.
+ * Paths are verbatim: no C-quoting, so a non-ASCII, tab or quote name is matched as the name git stores (the
+ * line format quoted it as `"src/policy/\303\261.ts"`, which matched nothing — final review 2026-10-13).
+ * Input without a NUL is the legacy line format (`...<STATUS>\t<path>[\t<path2>]`, one record per line), kept
+ * for hand-written fixtures; a quoted path from it is denied by the guard (fail closed). R/C carry a similarity
+ * score appended to the status (e.g. `R100`) and a second (destination) path.
  */
 export function parseDiffRaw(raw: string): DiffEntry[] {
   if (typeof raw !== "string" || raw.length === 0) return [];
+  if (raw.includes("\0")) return parseDiffRawZ(raw);
   const entries: DiffEntry[] = [];
   for (const line of raw.split("\n")) {
     if (line.length === 0) continue;
     entries.push(parseRawLine(line));
+  }
+  return entries;
+}
+
+/** The NUL-separated (`-z`) format: a `:meta` token, then one path token (two for R/C). */
+function parseDiffRawZ(raw: string): DiffEntry[] {
+  const tokens = raw.split("\0");
+  if (tokens[tokens.length - 1] === "") tokens.pop(); // the trailing NUL
+  const entries: DiffEntry[] = [];
+  let i = 0;
+  while (i < tokens.length) {
+    const head = tokens[i]!;
+    i += 1;
+    if (!head.startsWith(":")) {
+      entries.push({ status: "?", path: "", malformed: true, raw: head });
+      continue;
+    }
+    const want = /^[RC]/i.test(head.split(" ")[4] ?? "") ? 2 : 1;
+    const paths = tokens.slice(i, i + want);
+    i += paths.length;
+    if (paths.length < want) {
+      entries.push({ status: "?", path: paths[0] ?? "", malformed: true, raw: [head, ...paths].join("\t") });
+      continue;
+    }
+    entries.push(buildEntry(head.slice(1), paths, [head, ...paths].join("\t")));
   }
   return entries;
 }
@@ -159,34 +188,46 @@ function parseRawLine(line: string): DiffEntry {
     return { status: "?", path: "", malformed: true, raw: line };
   }
   const head = line.slice(1, tabIdx); // drop leading ':'
-  const tail = line.slice(tabIdx + 1);
+  const paths = line.slice(tabIdx + 1).split("\t").filter((p) => p.length > 0);
+  return buildEntry(head, paths, line);
+}
+
+/** One entry from its metadata head (without the leading `:`) and its path list (both formats share this). */
+function buildEntry(head: string, paths: string[], raw: string): DiffEntry {
   const meta = head.split(" ");
   // meta = [oldMode, newMode, oldSha, newSha, STATUS]
   if (meta.length < 5) {
-    return { status: "?", path: "", malformed: true, raw: line };
+    return { status: "?", path: "", malformed: true, raw };
   }
   const oldMode = meta[0]!;
   const newMode = meta[1]!;
   const rawStatus = meta[4];
   if (!rawStatus || rawStatus.length === 0) {
-    return { status: "?", path: "", malformed: true, raw: line };
+    return { status: "?", path: "", malformed: true, raw };
   }
   const status = rawStatus[0]!.toUpperCase(); // strip the R100/C75 similarity score
-  const paths = tail.split("\t").filter((p) => p.length > 0);
 
   if (status === "R" || status === "C") {
     // Renames/copies carry both source and destination paths.
     if (paths.length < 2) {
-      return { status, path: paths[0] ?? "", malformed: true, raw: line };
+      return { status, path: paths[0] ?? "", malformed: true, raw };
     }
-    return { status, oldPath: paths[0]!, path: paths[1]!, oldMode, newMode, raw: line };
+    return { status, oldPath: paths[0]!, path: paths[1]!, oldMode, newMode, raw };
   }
 
-  if (paths.length < 1) {
-    return { status, path: "", malformed: true, raw: line };
+  if (paths.length < 1 || paths[0] === "") {
+    return { status, path: "", malformed: true, raw };
   }
-  return { status, path: paths[0]!, oldMode, newMode, raw: line };
+  return { status, path: paths[0]!, oldMode, newMode, raw };
 }
+
+/**
+ * A path git would have C-quoted, or one carrying a control character (tab, newline, DEL, ...). The `-z` reader
+ * never quotes, so a leading `"` means the line format leaked through or the name itself starts with a quote;
+ * either way the guard refuses to reason about it (fail closed, defense in depth).
+ */
+// eslint-disable-next-line no-control-regex
+const UNSAFE_PATH = /^"|[\u0000-\u001f\u007f]/;
 
 /**
  * Normalize a path for matching: POSIX separators, strip leading `./`, resolve `.`/`..`
@@ -273,6 +314,11 @@ function evaluateEntry(entry: DiffEntry): Array<{ path: string; status: string; 
   // not in the diff, so we cannot prove it is safe → deny conservatively (fail-closed).
   if (entry.newMode === SYMLINK_MODE && status !== "D") {
     return [{ path: display, status, reason: "symlink (mode 120000) added/changed: target is unverifiable from the diff, denied conservatively" }];
+  }
+
+  // ── A quoted or control-character path cannot be matched reliably → deny before normalizing.
+  if (UNSAFE_PATH.test(entry.path) || (entry.oldPath !== undefined && UNSAFE_PATH.test(entry.oldPath))) {
+    return [{ path: display, status, reason: "quoted or control-character path (fail-closed): it cannot be matched against the locked surface" }];
   }
 
   // ── Normalize every path the entry touches; an un-normalizable path (escapes root, empty)
