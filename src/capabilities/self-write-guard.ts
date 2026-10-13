@@ -94,6 +94,8 @@ export const PROTECTED_FILES: readonly string[] = [
   "src/run/branch-publish.ts", // new Phase-3 module (step 7 — branch publish)
   "src/capabilities/self-write-merge.ts", // merge→build→gate→restart executor — a self-write must not reorder its own landing sequence
   "src/telegram/self-write-action-handler.ts", // the authenticated merge-button path (M4) — same landing-sequence class
+  "src/jev/decide.ts", // decision ladder 2a (senior W13): the injection judge's Jev call and re-ask; a weakened answer removes hostile taps
+  "src/jev/jev-client.ts", // the response validation every Jev verdict passes through
   // ── Operator stop switches (ADR 0018) — a self-write must never remove Paco's stop ──
   "houge.kill", // the /kill tombstone (gitignored runtime state, but a diff could still delete/replace it)
   "houge.disarm", // the /disarm posture file — same class
