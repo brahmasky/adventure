@@ -192,9 +192,11 @@ This file is protected (ADR 0011): the draft is Paco's to merge by hand.
   **framed, not withheld**, and the turn stays below hostile until a judged passage says otherwise. The spec's §7.2 wording
   ("its misses cost a missed `untrusted`, not a missed judgement") understated this and is corrected by a Rev note there.
   What a hostile turn may run without a tap is decided by the positive read-only list, where anything unknown asks.
-- **turn.trust** is locked code: clean → untrusted (a wall read, a network shell read, a lost read report) → hostile (a
-  withheld passage, or a framed passage from outside). A lost judgement (Jev down, timed out, partial) raises it to
-  untrusted already in 2a (S10; the spec placed `judge_timeout` in 2b). It only adds taps (ADR 0029 decision 2): untrusted
+- **turn.trust** is locked code: clean → untrusted (a wall read, a network shell read, a lost judgement, a framed local
+  passage) → hostile (a withheld passage, an outside passage withheld unjudged, or an outside passage whose judgement was
+  lost, which reaches the planner inside a "not checked" frame). A lost judgement (Jev down, timed out, partial) raises it
+  already in 2a (S10; the spec placed `judge_timeout` in 2b). Trust is sticky per planner transcript: a turn starts at the
+  level the transcript's last dispatched turn ended at, until the planner starts a fresh transcript. It only adds taps (ADR 0029 decision 2): untrusted
   asks before lesson_write, schedule_task, self_write_propose and skill_author; hostile also asks for every shell command
   off a strict read-only list and every write, and redirects the built-in writers to bash (the named exception). The list
   admits exact flag sets per program; globs are admitted only after `--`; device paths ask; `wc` is **not** on the list

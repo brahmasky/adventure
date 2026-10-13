@@ -76,7 +76,7 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Trust level**: Clean, untrusted or hostile: what a turn has read so far (`turn.trust`, locked code). It only rises, and it only adds taps.
 
-**Hostile turn**: A turn in which `tool.injection` withheld a passage (or framed one from outside). Shell commands off the read-only list and all writes ask.
+**Hostile turn**: A turn in which `tool.injection` withheld a passage, withheld an outside passage unjudged, or lost its judgement on outside text (framed as not checked); or a turn whose planner transcript carries a hostile level. Shell commands off the read-only list and all writes ask.
 
 **Withhold**: Replacing a passage of tool output with `[withheld: text aimed at the assistant]` before any model reads it.
 
