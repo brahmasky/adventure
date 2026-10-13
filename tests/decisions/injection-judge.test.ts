@@ -120,6 +120,16 @@ describe("tool.injection judge", () => {
     await createInjectionJudge({ store, client, home: "/h" })(input(Array.from({ length: 40 }, () => CLEAN).join("\n\n")));
     expect(client.mock.calls.map((c) => Object.keys(c[0].questions).length)).toEqual([16, 16, 8]);
   });
+  it("a lost batch is a lost judgement: its passages count unanswered, never judged clean (Task 7 review)", async () => {
+    // 20 passages → batches of 16 and 4; the second request fails. Task 12 raises judge_timeout only on skipped || unanswered > 0,
+    // so a partial answer that reported unanswered: 0 would hand four unjudged passages to the planner as if they were clean.
+    const store = RunStore.openInMemory(); const ok = judging(screen); let n = 0;
+    const client = vi.fn<Client>(async (req) => (++n === 2 ? { ok: false, reason: "error", detail: "x", error_kind: "transport" } : ok(req)));
+    const out = await createInjectionJudge({ store, client, home: "/h" })(input(Array.from({ length: 20 }, () => CLEAN).join("\n\n")));
+    expect(client).toHaveBeenCalledTimes(2);
+    expect(out).toMatchObject({ verdict: "pass", skipped: false, sent: 20, unanswered: 4 });
+    expect(store.getDecision(out.decisionId!)).toMatchObject({ rung: "system_one", reason_code: "jev_partial" });
+  });
   it("never waits past the 3 s bound: a hung Jev gives the floor's answer and counts every sent passage unanswered", async () => {
     vi.useFakeTimers();
     const store = RunStore.openInMemory();
