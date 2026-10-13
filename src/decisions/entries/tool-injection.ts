@@ -13,6 +13,9 @@ import type { Entry, ProvisionalBar, RungAbstain, RungAnswer, VerdictEffect } fr
  * Wording, floor and splitter ported from mu (qybaihe/mu@faed8c3 packages/kyrn-judge/src/decisions/tool-injection.ts, MIT),
  * where the wording is credited to kerpopule/hermes-jev-skills (MIT, © 2026 Steve Darlow): 70 of 79 planted attacks over
  * 0.5, 0 of 1,520 clean chunks withheld. Houge adds one floor normalisation: `_` and `-` read as spaces (senior B2).
+ *
+ * mu — Copyright (c) 2025 Mario Zechner, MIT License. hermes-jev-skills — Copyright (c) 2026 Steve Darlow, MIT License.
+ * The MIT permission notice for both is reproduced in full in THIRD_PARTY_NOTICES.md at the repository root.
  */
 export const TOOL_INJECTION_ID = "tool.injection";
 export type InjectionVerdict = "pass" | "frame" | "withhold";

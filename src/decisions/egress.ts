@@ -470,6 +470,7 @@ function maskCutRun(left: EgressPassage, right: EgressPassage): void {
  * mu's splitter (qybaihe/mu@faed8c3 tool-injection.ts `passages`, MIT): split on blank lines, pack paragraphs into pieces of
  * at most `size` characters. Houge's change: a longer paragraph is cut at its last newline, else its last space, in the
  * second half of the piece, else hard at `size` — moved out of any mask (back to its start, or past its end).
+ * mu — Copyright (c) 2025 Mario Zechner, MIT License; the full notice is in THIRD_PARTY_NOTICES.md.
  */
 export function cutPoints(text: string, size: number, inside: ReadonlySet<number> = new Set()): number[] {
   const cuts: number[] = [];
