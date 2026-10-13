@@ -1339,7 +1339,8 @@ export class CoreWorker {
     focus: string,
     recentTurns: ChatTurnRow[],
     budget: BudgetLedger,
-    turnChars: number
+    turnChars: number,
+    title?: string
   ): Promise<HelperResult> {
     const deps = this.selfWriteDeps;
     const selfContract = compileCodeSelfWriteContract(claim.contract.objective);
@@ -1349,7 +1350,8 @@ export class CoreWorker {
     const reviewTask = buildSelfWriteReviewTask(message, focus, recentTurns, turnChars);
     // A focus runs up to 2000 chars: Paco's notifications quote a one-line label, and the ledger
     // keeps a 200-char summary plus the full length — never the whole brief.
-    const label = summarizeFocus(focus);
+    // An explicit title (when the model gave a non-blank one) names the fix; it is flattened like a focus.
+    const label = (title !== undefined && summarizeFocus(title) !== "") ? summarizeFocus(title) : summarizeFocus(focus);
     const ledgerFocus = { text: summarizeFocus(focus, LEDGER_FOCUS_CHARS - 1), chars: Array.from(focus).length };
 
     // Phase 3.1 (W3) soft-warn: writer ≠ checker (model diversity) is the whole point. If both roles
@@ -3328,7 +3330,7 @@ export class CoreWorker {
               name === "self_diagnose"
                 ? await this.runSelfDiagnose(claim, message, focus, turnCtx.recentTurns, subBudget, turnCtx.turnChars)
                 : name === "self_write_propose"
-                  ? await this.runSelfWrite(claim, message, focus, turnCtx.recentTurns, subBudget, turnCtx.turnChars)
+                  ? await this.runSelfWrite(claim, message, focus, turnCtx.recentTurns, subBudget, turnCtx.turnChars, typeof input.title === "string" ? input.title : undefined)
                   : await this.runSkill(claim, message, turnCtx.recentTurns, subBudget, turnCtx.turnChars);
             if (!helper.ok) {
               return { text: `${name} step failed: ${capabilityFailureDetail(helper.failure)}` };
