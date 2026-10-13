@@ -2001,3 +2001,183 @@ describe("PlannerSupervisor — settles only on a terminal agent_end (P7, spec �
     expect(60_000 + 30_000).toBeLessThan(Number(resolveOmpConfig({}).frameIdleMs));
   });
 });
+
+describe("PlannerSupervisor — trust-card pause policy and the turn's trust (spec §7.2)", () => {
+  // Today every approval wait pauses the deadline and the 180 s watchdog for the full 30-minute approval timeout. A trust
+  // card pauses them for its own TTL only, and a turn's trust pauses together never exceed one TTL, so a hostile turn's
+  // wall-clock is bounded by deadline + one TTL and Paco's next message is never held for hours (codex round 5 B29).
+  const bounded = (ttlMs: number) => ({ pause: "bounded" as const, ttlMs });
+
+  it("a bounded pause holds the deadline for one TTL, then the timers resume while the card still waits", async () => {
+    const session = fakeSession({ onPrompt: () => undefined });
+    const { store, sup, outcome } = harness(session, { HOUGE_OMP_TURN_TIMEOUT_MS: "1000" }); const run_id = createQueuedTurnRun(store);
+    vi.useFakeTimers(FAKE_CLOCK);
+    try {
+      sup.submit(req(run_id)); await untilState(sup, "RUNNING"); await vi.advanceTimersByTimeAsync(700); // 300 ms left
+      sup.setAwaitingApprovalForTest(true, bounded(3_000)); await vi.advanceTimersByTimeAsync(2_900);
+      expect(sup.state()).toBe("AWAITING_APPROVAL"); expect(outcome.failed).toEqual([]);
+      await vi.advanceTimersByTimeAsync(200); // the TTL is spent: timers resume although the card was never answered
+      expect(sup.state()).toBe("RUNNING");
+      await vi.advanceTimersByTimeAsync(150); expect(outcome.failed).toEqual([]); // resumed at +3 000 with the 300 ms left: 50 remain
+      await vi.advanceTimersByTimeAsync(100); expect(outcome.failed[0]).toMatchObject({ error_type: "turn_timeout" });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("the turn carries this spawn's bridge token for the judge to mask by value (Rev 4, senior S-R3-2)", async () => {
+    const session = fakeSession({ onPrompt: () => undefined });
+    const { store, sup } = harness(session); const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await untilState(sup, "RUNNING");
+    const o = session.options[0] as PlannerSessionOptions;
+    expect(sup.activeTurnForTest()?.secretValues).toEqual([o.bridgeToken]);
+  });
+
+  it("the total trust pause per turn is capped at one TTL across several cards", async () => {
+    const session = fakeSession({ onPrompt: () => undefined });
+    const { store, sup, outcome } = harness(session, { HOUGE_OMP_TURN_TIMEOUT_MS: "1000" }); const run_id = createQueuedTurnRun(store);
+    vi.useFakeTimers(FAKE_CLOCK);
+    try {
+      sup.submit(req(run_id)); await untilState(sup, "RUNNING"); await vi.advanceTimersByTimeAsync(500); // 500 ms left
+      sup.setAwaitingApprovalForTest(true, bounded(3_000)); await vi.advanceTimersByTimeAsync(2_000);
+      sup.setAwaitingApprovalForTest(false); // 2 000 ms of the TTL spent
+      await vi.advanceTimersByTimeAsync(100); // 400 ms left
+      sup.setAwaitingApprovalForTest(true, bounded(3_000)); await vi.advanceTimersByTimeAsync(1_100); // only 1 000 ms more may pause
+      expect(sup.state()).toBe("RUNNING");
+      sup.setAwaitingApprovalForTest(false); // the second card is answered late; 300 ms of the deadline left
+      sup.setAwaitingApprovalForTest(true, bounded(3_000)); // the budget is spent: a third card asks with the timers running
+      expect(sup.state()).toBe("RUNNING");
+      await vi.advanceTimersByTimeAsync(450); expect(outcome.failed[0]).toMatchObject({ error_type: "turn_timeout" });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("a full pause (a code ask) is unchanged: no TTL, the deadline waits for the release", async () => {
+    const session = fakeSession({ onPrompt: () => undefined });
+    const { store, sup, outcome } = harness(session, { HOUGE_OMP_TURN_TIMEOUT_MS: "1000" }); const run_id = createQueuedTurnRun(store);
+    vi.useFakeTimers(FAKE_CLOCK);
+    try {
+      sup.submit(req(run_id)); await untilState(sup, "RUNNING");
+      sup.setAwaitingApprovalForTest(true, { pause: "full" }); await vi.advanceTimersByTimeAsync(600_000);
+      expect(sup.state()).toBe("AWAITING_APPROVAL"); expect(outcome.failed).toEqual([]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("a trust card's wait: the TTL left while the pause budget lasts, then never past the watchdog or the deadline (senior W3)", async () => {
+    const h = heldSession();
+    const { store, sup } = harness(h.session);
+    sup.submit(req(createQueuedTurnRun(store))); await h.live();
+    const turn = (sup as unknown as { turn: { trustPausedMs: number; active: { trustWaitMs: (ttl: number) => number } } }).turn;
+    expect(turn.active.trustWaitMs(300_000)).toBe(300_000);
+    turn.trustPausedMs = 300_000; // the budget is spent
+    expect(turn.active.trustWaitMs(300_000)).toBe(180_000 - 15_000); // the default 180 s watchdog less the margin
+    h.end(); await sup.whenIdle();
+  });
+
+  it("every turn end writes turn_trust_final once, success and failure", async () => {
+    const ok = harness(); const a = createQueuedTurnRun(ok.store);
+    ok.sup.submit(req(a)); await ok.sup.whenIdle();
+    expect(ok.store.getLedgerEvents(a).filter((e) => e.event_type === "turn_trust_final").map((e) => e.payload)).toEqual([{ max_level: "clean" }]);
+    const bad = harness(fakeSession({ promptError: "exited:boom" })); const b = createQueuedTurnRun(bad.store);
+    bad.sup.submit(req(b)); await bad.sup.whenIdle();
+    expect(bad.outcome.failed).toHaveLength(1);
+    expect(bad.store.getLedgerEvents(b).filter((e) => e.event_type === "turn_trust_final")).toHaveLength(1);
+  });
+
+  it("the active turn carries a trust state and the judge buildTools returned", async () => {
+    const judge = vi.fn();
+    const h = heldSession();
+    const { store, sup } = harness(h.session, {}, { buildTools: () => ({ registry: new ToolRegistry(), quarantine: async () => ({ digest: "", contains_instructions: false, source_meta: { tool: "x", bytes: 0 } }), judge }) });
+    sup.submit(req(createQueuedTurnRun(store))); await h.live();
+    const active = (sup as unknown as { turn: { active: { trust?: { level(): string }; judge?: unknown } } }).turn.active;
+    expect(active.trust?.level()).toBe("clean");
+    expect(active.judge).toBe(judge);
+    h.end(); await sup.whenIdle();
+  });
+});
+
+describe("PlannerSupervisor — turn_trust_final at every turn end (spec §7.2)", () => {
+  // A turn with no turn_trust_final reads as "not clean" forever (turnTrustFinal → null), and the digest and the gate count
+  // hostile turns by it: each way a turn can end must write it exactly once, never zero and never twice.
+  const finals = (store: RunStore, run_id: string) => store.getLedgerEvents(run_id).filter((e) => e.event_type === "turn_trust_final").map((e) => e.payload);
+
+  it("is written before the run's terminal outcome, so a reader at completion or failure already sees it", async () => {
+    const seen: number[] = [];
+    for (const session of [fakeSession(), fakeSession({ promptError: "exited:boom" })]) {
+      const h = harness(session); const run_id = createQueuedTurnRun(h.store);
+      const { complete, fail } = h.outcome;
+      h.outcome.complete = (i) => { seen.push(finals(h.store, i.run_id).length); complete(i); };
+      h.outcome.fail = (i) => { seen.push(finals(h.store, i.run_id).length); fail(i); };
+      h.sup.submit(req(run_id)); await h.sup.whenIdle();
+    }
+    expect(seen).toEqual([1, 1]);
+  });
+
+  it("an aborted turn (/kill) writes it once", async () => {
+    const session = fakeSession({ onPrompt: () => undefined });
+    const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await until(() => session.prompts.length === 1);
+    await sup.abortAll("killed");
+    expect(outcome.failed[0]).toMatchObject({ error_type: "killed" });
+    expect(finals(store, run_id)).toEqual([{ max_level: "clean" }]);
+  });
+
+  it("a watchdog end (frame_idle) writes it once, at the level the turn reached", async () => {
+    const session = fakeSession({ onPrompt: (_t, e) => e({ type: "turn_start" }) });
+    const { store, sup, outcome } = harness(session, { HOUGE_OMP_FRAME_IDLE_MS: "1000" }); const run_id = createQueuedTurnRun(store);
+    vi.useFakeTimers(FAKE_CLOCK);
+    try {
+      sup.submit(req(run_id)); await untilState(sup, "RUNNING"); await vi.advanceTimersByTimeAsync(10);
+      sup.activeTurnForTest()?.trust?.raise("wall_read");
+      await vi.advanceTimersByTimeAsync(1_200);
+    } finally { vi.useRealTimers(); }
+    await sup.whenIdle();
+    expect(outcome.failed[0]).toMatchObject({ error_type: "frame_idle" });
+    expect(finals(store, run_id)).toEqual([{ max_level: "untrusted" }]);
+  });
+
+  it("an async-work-only settle (P7) writes it once", async () => {
+    const FIXTURES = new URL("../fixtures/omp-frames/", import.meta.url);
+    const fs = readFileSync(new URL("agent-end-async-work.jsonl", FIXTURES), "utf8").split("\n").filter((l) => l.trim())
+      .map((l) => JSON.parse(l) as OmpFrame).filter((f) => typeof f.type === "string");
+    const session = fakeSession({ onPrompt: (_t, e) => { for (const f of fs) e(f); } });
+    const { store, sup, outcome } = harness(session, { HOUGE_OMP_FRAME_IDLE_MS: "60000" }); const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(outcome.incidents).toContainEqual(expect.objectContaining({ k: "planner_async_wait" }));
+    expect(finals(store, run_id)).toEqual([{ max_level: "clean" }]);
+  });
+
+  it("a lane reply writes it once", async () => {
+    const session = fakeSession();
+    const { store, sup, outcome } = harness(session, {}, { triage: async () => ({ kind: "lane_reply", text: "📒 Saved", buttons: [] }) });
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(outcome.done).toHaveLength(1);
+    expect(finals(store, run_id)).toEqual([{ max_level: "clean" }]);
+  });
+
+  it("daemon shutdown mid-turn writes it once", async () => {
+    const session = fakeSession({ onPrompt: () => undefined });
+    const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await until(() => session.prompts.length === 1);
+    await sup.shutdown();
+    expect(outcome.failed[0]).toMatchObject({ error_type: "planner_exit" });
+    expect(finals(store, run_id)).toEqual([{ max_level: "clean" }]);
+  });
+
+  it("a schedule-born hostile turn whose trust card is never answered ends within deadline + one TTL, final hostile", async () => {
+    // Nobody taps a schedule-born card at night: the turn must still end on its own deadline plus at most one TTL of pause
+    // (live gate C5), never hold Paco's next message for the 30-minute approval timeout.
+    const session = fakeSession({ onPrompt: () => undefined });
+    const { store, sup, outcome } = harness(session, { HOUGE_OMP_TURN_TIMEOUT_MS: "1000" }); const run_id = createQueuedTurnRun(store);
+    vi.useFakeTimers(FAKE_CLOCK);
+    try {
+      sup.submit(req(run_id, "nightly", "schedule")); await untilState(sup, "RUNNING");
+      const t0 = Date.now();
+      sup.activeTurnForTest()?.trust?.raise("injection_withheld");
+      sup.setAwaitingApprovalForTest(true, { pause: "bounded", ttlMs: 3_000 }); // the card is never released
+      await vi.advanceTimersByTimeAsync(4_100);
+      expect(outcome.failed[0]).toMatchObject({ error_type: "turn_timeout" });
+      expect(Date.now() - t0).toBeLessThanOrEqual(4_100);
+    } finally { vi.useRealTimers(); }
+    await sup.whenIdle();
+    expect(finals(store, run_id)).toEqual([{ max_level: "hostile" }]);
+  });
+});

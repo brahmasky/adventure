@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { CapabilityRunner, type CapabilityExecutionInput, type CapabilityResult } from "../capabilities/capability-runner.js";
 import { decideCapability } from "../policy/capability-policy.js";
 import type { BudgetLedger } from "../budget/budget-ledger.js";
+import type { InjectionJudge } from "../decisions/injection-judge.js";
+import type { TurnTrust } from "../decisions/trust.js";
 import type { CompiledTaskContract, Identity } from "../domain/types.js";
 import type { RunStore } from "../run/run-store.js";
 import type { ToolRegistry } from "../tools/tool-registry.js";
@@ -18,12 +20,30 @@ import { validateInput, type ToolDeclaration } from "./tool-decls.js";
 
 type FsEntry = "fs_read" | "fs_write";
 
+/**
+ * How long an approval wait pauses the turn's deadline and frame watchdog (spec §7.2, senior round 4 B9): a code ask pauses
+ * for the whole approval timeout, as before; a trust-only ask for its own TTL, at most one TTL per turn in total.
+ */
+export type PausePolicy = { pause: "full" } | { pause: "bounded"; ttlMs: number };
+export const FULL_PAUSE: PausePolicy = { pause: "full" };
+
 export interface ActiveTurn {
   run_id: string; worker_id: string; chat_id: string; requester: Identity; contract: CompiledTaskContract;
   budget: BudgetLedger; registry: ToolRegistry; signal: AbortSignal; cwd: string; step: { n: number };
   cache: Map<string, Promise<unknown>>; unreported: Map<string, FsEntry>;
   quarantine: (tool: string, output: Record<string, unknown>) => Promise<ExternalReadResult>;
-  setAwaitingApproval: (on: boolean) => void; postureOk: () => string | null;
+  setAwaitingApproval: (on: boolean, pause?: PausePolicy) => void; postureOk: () => string | null;
+  /** What the turn has read (spec §7.2), created by the supervisor; absent only in tests that build a bare turn. */
+  readonly trust?: TurnTrust;
+  /** tool.injection for this turn's results (spec §7.1); absent only in tests that build a bare turn. */
+  judge?: InjectionJudge;
+  /** Values the judge masks by value that the broker does not hold: this spawn's bridge token (Rev 4, senior S-R3-2). */
+  secretValues?: readonly string[];
+  /**
+   * How long a trust-only card may wait now (senior W3): what is left of the turn's one TTL of pause; once that is spent,
+   * no longer than the timers it can no longer pause allow (frame watchdog and deadline, each less a margin).
+   */
+  trustWaitMs?: (ttlMs: number) => number;
   /** Who answers this turn's approvals when not the requester (the operator, for a schedule-born turn). */
   approver?: Identity;
   /** Per-turn call queue: at most one call (and so one approval) in flight per turn. */
