@@ -142,7 +142,7 @@ describe("self-write locked-path guidance", () => {
     } finally { store.close(); }
   });
 
-  it("a NEEDS_LOCKED sentinel is terminal, quoted, and never reaches the guard or a branch (why: honest 'yours to make')", async () => {
+  it("a NEEDS_LOCKED sentinel is terminal, quoted, and never appears in a guarded diff or a branch (why: honest 'yours to make')", async () => {
     const store = RunStore.openInMemory();
     const log: Log = { writeTasks: [], published: [], guardSaw: [] };
     try {
@@ -153,8 +153,8 @@ describe("self-write locked-path guidance", () => {
       expect(log.published).toEqual([]);
       expect(blocked(store, r.run_id).length).toBe(1);
       expect(text).toContain(reason);
-      // The guard ran on attempt 1 only: the sentinel attempt was read and deleted before it, so the guard never saw it.
-      expect(log.guardSaw.length).toBe(1);
+      // The sentinel is read and deleted BEFORE the guard runs on that pass, so no guarded diff ever carries it.
+      expect(log.guardSaw.length).toBe(2);
       expect(log.guardSaw.join("")).not.toContain(NEEDS_LOCKED_FILE);
     } finally { store.close(); }
   });
@@ -413,5 +413,67 @@ describe("self-write guard re-runs after the test gate and before publish", () =
       expect(log.published).toEqual([`houge/selfwrite/${r.run_id}`]);
       expect(log.guardSaw.length).toBe(3);
     } finally { store.close(); }
+  });
+});
+
+/**
+ * Final review 2026-10-13 (codex #2, #3): a sentinel was honoured before the guard saw that pass's diff, so Paco got
+ * no paths or an earlier attempt's stale ones; and a run that simply ran out of attempts was reported as a confirmed
+ * locked need. The sentinel is now taken first, the current diff guarded, and only the current paths are reported.
+ */
+describe("self-write sentinel and attempt-budget notifications say only what the loop established", () => {
+  const go = async (d: SelfWriteDeps) => {
+    const store = RunStore.openInMemory();
+    try {
+      const r = runWith(d, store);
+      const text = (await r.go()).join("\n");
+      return { text, blocked: blocked(store, r.run_id), published: store.getLedgerEvents(r.run_id).some((e) => e.event_type === "self_write_published") };
+    } finally { store.close(); }
+  };
+  const fresh = (): Log => ({ writeTasks: [], published: [], guardSaw: [] });
+
+  it("a first-pass sentinel with a clean diff says the writer declared it and that no locked path was touched (why: Paco must not hunt for a path)", async () => {
+    const out = await go(stack([[]], fresh(), ["the cap lives in a gate file"]));
+    expect(out.published).toBe(false);
+    expect(out.blocked.length).toBe(1);
+    expect(out.text).toMatch(/declared/);
+    expect(out.text).toContain("the cap lives in a gate file");
+    expect(out.text).toMatch(/touches no locked path/);
+    expect(out.blocked[0]!.payload.attempted_paths).toEqual([]);
+  });
+
+  it("a first-pass sentinel names the locked paths in THAT pass's diff (why: the guard checks the diff before escalating)", async () => {
+    const out = await go(stack([[TOOL_DECLS, SCHEDULE_SPEC]], fresh(), ["the cap lives in a gate file"]));
+    expect(out.text).toContain(TOOL_DECLS);
+    expect(out.text).not.toContain(SCHEDULE_SPEC); // only locked paths are named
+    expect(JSON.stringify(out.blocked[0]!.payload.attempted_paths)).toContain(TOOL_DECLS);
+  });
+
+  it("a sentinel after a locked retry never reports the earlier attempt's paths (why: those were reverted; stale paths mislead Paco)", async () => {
+    const out = await go(stack([[TOOL_DECLS], [SCHEDULE_SPEC]], fresh(), [undefined, "it really needs the gate"]));
+    expect(out.text).not.toContain(TOOL_DECLS);
+    expect(out.text).toMatch(/after being told/);
+    expect(out.text).toMatch(/touches no locked path/);
+    expect(out.blocked[0]!.payload.attempted_paths).toEqual([]);
+  });
+
+  it("test-only edits on all three passes report an exhausted attempt budget, not a locked need (why: no locked change was ever shown)", async () => {
+    const TEST = "tests/prompt/composer.test.ts";
+    const out = await go(stack([[TEST], [TEST], [TEST]], fresh()));
+    expect(out.blocked.length).toBe(1);
+    expect(out.text).toMatch(/ran out of attempts/);
+    expect(out.text).toContain(TEST);
+    expect(out.text).not.toMatch(/yours to make/);
+  });
+
+  it("a first locked hit on the last pass reports the exhausted budget, not a confirmed need (why: the writer was never told it was locked)", async () => {
+    let gates = 0;
+    const d = { ...stack([[SCHEDULE_SPEC], [SCHEDULE_SPEC], [TOOL_DECLS]], fresh()), runTestGate: (): TestGateResult => (gates++ < 2 ? { green: false, stage: "test", output: "red" } : { green: true }) };
+    const out = await go(d);
+    expect(out.blocked.length).toBe(1);
+    expect(out.text).toMatch(/ran out of attempts/);
+    expect(out.text).toContain(TOOL_DECLS);
+    expect(out.text).not.toMatch(/yours to make/);
+    expect(out.text).not.toMatch(/after being told/);
   });
 });

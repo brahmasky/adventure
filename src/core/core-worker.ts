@@ -1393,7 +1393,6 @@ export class CoreWorker {
       let task = baseTask;
       let lastFailure = ""; // for the failure event/report after the refine cap is hit.
       let lockedRetryUsed = false; // the guided locked-path retry happens at most once per run.
-      let lockedSeen: Array<{ path: string; status: string; reason: string }> = []; // the locked paths the writer touched before the retry.
 
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         // (c) the configured writer produces / refines the diff in the worktree.
@@ -1424,14 +1423,12 @@ export class CoreWorker {
         if (writerUsage) lastWriterUsage = writerUsage;
         lastWriterMeta = { provider: written.provider, model: written.model };
 
-        // (d) CHECKER 1 — protected-path guard. A deny NEVER lands. The writer's NEEDS_LOCKED sentinel
-        // is read + deleted FIRST, so it is never in a diff: it declares a locked change unavoidable → terminal.
+        // (d) CHECKER 1 — protected-path guard. A deny NEVER lands. The writer's NEEDS_LOCKED sentinel is read +
+        // deleted FIRST (so it is never in a diff), THEN this pass's diff is guarded: a sentinel is terminal, and Paco
+        // is told the locked paths of THIS diff only (never an earlier attempt's, which were reverted).
         const needs = deps.takeNeedsLocked ? await deps.takeNeedsLocked(worktree) : undefined;
-        if (needs !== undefined) {
-          const reason = quoteNeedsLockedReason(needs, this.broker ? (t) => this.broker!.redact(t) : undefined) || "(no reason given)";
-          this.recordBlocked(claim.run_id, lockedSeen, ledgerFocus);
-          return this.selfWriteReport(buildHardDenyNotification(label, lockedSeen.map((d) => d.path), { reason }));
-        }
+        const { result: guard, entries } = await this.guardWorktree(deps, worktree);
+        if (needs !== undefined) return this.sentinelStop(claim.run_id, needs, guard, lockedRetryUsed, label, ledgerFocus);
         //  - ALL denied paths are existing-test edits → a fixable WRITER mistake: refine (revert + stay
         //    backward-compatible), ≤3.
         //  - A locked path (gates/identity/deps/…) → refine ONCE, telling the writer it is locked; a second
@@ -1439,7 +1436,6 @@ export class CoreWorker {
         //  - Before EITHER retry, code restores every denied path to HEAD: the worktree persists across
         //    attempts, so a leftover denied edit would fail attempt 2 for attempt 1's change. A failed
         //    revert is terminal (never retry on a dirty tree).
-        const { result: guard, entries } = await this.guardWorktree(deps, worktree);
         if (!guard.allowed) {
           const plan = planDenial(guard.denied, attempt, maxAttempts, lockedRetryUsed);
           if (plan.kind !== "terminal") {
@@ -1458,13 +1454,12 @@ export class CoreWorker {
           }
           if (plan.kind === "refine_locked") {
             lockedRetryUsed = true;
-            lockedSeen = guard.denied.filter((d) => plan.locked.includes(d.path)).map((d) => ({ path: d.path, status: d.status, reason: d.reason }));
             lastFailure = `touched locked path(s): ${plan.locked.join(", ")}`;
             task = buildSelfWriteRefineTask(baseTask, buildLockedRetryText(plan.locked, plan.tests));
             continue;
           }
           this.recordBlocked(claim.run_id, guard.denied.map((d) => ({ path: d.path, status: d.status, reason: d.reason })), ledgerFocus);
-          return this.selfWriteReport(buildHardDenyNotification(label, guard.denied.map((d) => d.path), lockedRetryUsed && bucketDenials(guard.denied).locked.length > 0 ? { told: true } : undefined));
+          return this.selfWriteReport(buildGuardStopNotification(label, guard.denied, lockedRetryUsed, attempt >= maxAttempts));
         }
 
         // (e) CHECKER 2 — test gate. Red → refine (feed the failing stage+output back) ≤3 total.
@@ -1746,6 +1741,17 @@ export class CoreWorker {
     }
     const entries = parseDiffRaw(raw);
     return { result: checkSelfWriteDiff(entries), entries };
+  }
+
+  /**
+   * The writer left the NEEDS_LOCKED sentinel: terminal. The guard has already checked THIS pass's diff; its denials
+   * are recorded and its locked paths named (none → said so). `told` says a locked retry came first.
+   */
+  private sentinelStop(run_id: string, needs: string, guard: GuardResult, told: boolean, label: string, focus: { text: string; chars: number }): HelperResult {
+    const reason = quoteNeedsLockedReason(needs, this.broker ? (t) => this.broker!.redact(t) : undefined) || "(no reason given)";
+    const denied = guard.allowed ? [] : guard.denied.map((d) => ({ path: d.path, status: d.status, reason: d.reason }));
+    this.recordBlocked(run_id, denied, focus);
+    return this.selfWriteReport(buildSentinelNotification(label, reason, bucketDenials(denied).locked, told));
   }
 
   /**
@@ -4220,22 +4226,47 @@ function buildSelfWriteRefineTask(baseTask: string, guidance: string, failure?: 
 /** The ledger's cap, in code points, on a self-write focus summary (the full focus is never recorded). */
 const LEDGER_FOCUS_CHARS = 200;
 
+const YOURS_TO_MAKE = "If this genuinely needs a change there, it's **yours to make** — I can't edit my own safety surface.";
+const codeList = (paths: string[]): string => paths.map((p) => `\`${p || "(unknown)"}\``).join(", ");
+
 /**
- * The hard-deny notification (spec § surfacing): a fix that wants a protected file is Paco's to make.
- * `detail.reason` quotes the writer's own (already masked) NEEDS_LOCKED reason; `detail.told` says the
- * writer was told the path was locked and still needed it. Absent: today's plain text.
+ * The hard-deny notification (spec § surfacing): a fix that wants a protected file is Paco's to make. `told` says
+ * the writer was told the path was locked and still needed it. Absent: the plain first-hit text.
  */
-function buildHardDenyNotification(label: string, paths: string[], detail?: { reason?: string; told?: boolean }): string {
-  const files = paths.map((p) => `\`${p || "(unknown)"}\``).join(", ");
-  const yours = "If this genuinely needs a change there, it's **yours to make** — I can't edit my own safety surface.";
-  if (detail?.reason !== undefined) {
-    const where = files ? ` (it touched ${files})` : "";
-    return `I worked on \`${label}\` but the coding agent says the fix needs a locked file${where}. Its reason: "${detail.reason}" ${yours}`;
-  }
-  const lead = detail?.told
+function buildHardDenyNotification(label: string, paths: string[], told?: boolean): string {
+  const files = codeList(paths);
+  const lead = told
     ? `I worked out a fix for \`${label}\`, but it still needed ${files} after being told they are locked (the locked surface), so I stopped.`
     : `I worked out a fix for \`${label}\`, but it wanted to touch ${files} — the locked surface (gates / identity / deps / existing tests), so I stopped.`;
-  return `${lead} ${yours}`;
+  return `${lead} ${YOURS_TO_MAKE}`;
+}
+
+/**
+ * A terminal guard denial, worded by what the loop established (final review 2026-10-13, codex #3): a locked path
+ * touched again after the guided retry is a confirmed need; a denial on the last pass otherwise only means the
+ * attempt budget ran out (test-only edits, or a first locked hit with no retry left); an unreadable diff keeps the
+ * plain text.
+ */
+function buildGuardStopNotification(label: string, denied: Array<{ path: string; reason: string }>, lockedRetryUsed: boolean, lastPass: boolean): string {
+  const paths = [...new Set(denied.map((d) => d.path))];
+  if (lockedRetryUsed && bucketDenials(denied).locked.length > 0) return buildHardDenyNotification(label, paths, true);
+  if (!lastPass || paths.includes("")) return buildHardDenyNotification(label, paths);
+  return (
+    `Tried to fix \`${label}\`, but I ran out of attempts: on the last pass the guard still refused ${codeList(paths)}, ` +
+    "with no attempt left to retry. That does not show a locked change is needed. Not publishing."
+  );
+}
+
+/**
+ * The writer's NEEDS_LOCKED sentinel (spec § surfacing). `reason` is its own (already masked) text; `lockedNow` the
+ * locked paths in the diff of the pass that wrote it (never an earlier attempt's); `told` that a locked retry came first.
+ */
+function buildSentinelNotification(label: string, reason: string, lockedNow: string[], told: boolean): string {
+  const who = told
+    ? "after being told which paths are locked, the coding agent says the fix still needs a locked change"
+    : "the coding agent declared that the fix needs a locked change (no locked path had been refused yet)";
+  const now = lockedNow.length > 0 ? `Its final diff touches ${codeList(lockedNow)}.` : "Its final diff touches no locked path.";
+  return `I worked on \`${label}\`, but ${who}. Its reason: "${reason}" ${now} ${YOURS_TO_MAKE}`;
 }
 
 /** The success notification (spec § surfacing): branch ready, Paco merges + reloads at his leisure. */
