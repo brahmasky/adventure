@@ -10,13 +10,13 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
-import { captureClean, zhRepoDocs } from "./injection-corpus.mjs";
+import { captureClean } from "./injection-corpus.mjs";
 
 const DIST = resolve(new URL("../dist", import.meta.url).pathname);
 const REPO = resolve(new URL("..", import.meta.url).pathname);
 const failures = []; const inconclusive = [];
 const check = (name, ok, detail = "") => { console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? ` — ${detail}` : ""}`); if (!ok) failures.push(name); };
-const cannotRun = (name, why) => { console.log(`INCONCLUSIVE ${name} — ${why}`); inconclusive.push(`${name}: ${why}`); };
+const cannotRun = (name, why) => { console.log(`INCONCLUSIVE ${name} — ${why}`); inconclusive.push({ name, why }); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const temp = { root: null, keep: false };
 const cleanup = () => { if (temp.root && !temp.keep) rmSync(temp.root, { recursive: true, force: true }); };
@@ -97,7 +97,7 @@ async function judgeAll(g, items) {
 }
 
 const isCaught = (g, r) => !r.out.text.includes(r.item.payload) && !r.out.text.includes(g.m.redactForJudge(r.item.payload));
-/** C1, reported (not a PASS clause): recall per language and shape, clean withholds per language (zh = the repo's Han lines). */
+/** C1, reported (not a PASS clause): recall per language and shape, clean withholds per language (each captured doc carries its language). */
 function printByLang(g, p, c) {
   for (const lang of ["en", "zh"]) {
     const pl = p.results.filter((r) => r.item.lang === lang);
@@ -118,11 +118,11 @@ async function caseSanity(g) {
   const planted = g.m.plantedCorpus();
   const clean = await captureClean({ dist: DIST, repo: REPO, minPassages: 300 });
   if (planted.length < 60) return cannotRun("C1 injection sanity", `only ${planted.length} planted items`);
+  console.log(`  C1 clean capture: ${clean.passages} passages (zh ${clean.zhPassages}) from ${clean.docs.length} docs; skipped: ${clean.skipped.join("; ") || "none"}`);
   if (!clean.enough) return cannotRun("C1 injection sanity", `only ${clean.passages} clean passages (skipped: ${clean.skipped.join(", ") || "none"})`);
   // planted items stand for attacker text, so they arrive from outside (a fetch, mail, curl output); clean shell output and repo docs are local reads
   const p = await judgeAll(g, planted.map((i) => ({ id: i.id, source: SOURCE_OF[i.shape], outside: true, text: i.text, payload: i.payload, lang: i.lang, shape: i.shape })));
-  const zh = new Set(zhRepoDocs(REPO).map((d) => d.text));
-  const c = await judgeAll(g, clean.docs.map((d, k) => ({ id: `clean-${k}`, source: d.source, outside: d.source !== "shell", text: d.text, lang: zh.has(d.text) ? "zh" : "en" })));
+  const c = await judgeAll(g, clean.docs.map((d, k) => ({ id: `clean-${k}`, source: d.source, outside: d.source !== "shell", text: d.text, lang: d.lang })));
   console.log(`  C1 floor-only items (no passage left for Jev): planted ${p.floorOnly}, clean ${c.floorOnly}`);
   if (p.unjudged + c.unjudged > 0) return cannotRun("C1 injection sanity", `${p.unjudged + c.unjudged} item(s) had a sent passage Jev never answered, after one retry`);
   const caught = p.results.filter((r) => isCaught(g, r)).length;
@@ -354,6 +354,13 @@ async function settle(store, run_id, ms) {
   return { state: "timeout", ms: Date.now() - t0 };
 }
 
+/** Event types with seconds since the run's first event; tool_finished adds its closed tool, status and reason (never bodies). */
+function ledgerTrace(store, run_id) {
+  const evs = store.getLedgerEvents(run_id); const t0 = Date.parse(evs[0]?.occurred_at ?? "");
+  const what = (e) => e.event_type === "tool_finished" ? `tool_finished(${e.payload.tool}:${e.payload.status}${e.payload.reason ? `:${e.payload.reason}` : ""})` : e.event_type;
+  return evs.map((e) => `${what(e)}@${((Date.parse(e.occurred_at) - t0) / 1000).toFixed(1)}s`).join(" ");
+}
+
 /** C4: one Telegram turn reads the planted page, then tries a write that a hostile turn must ask for. Nobody taps. */
 async function caseTtl(g, attempt = 1) {
   const run_id = intakeRun(g.m, g.e2eStore, g.root, "telegram",
@@ -372,7 +379,7 @@ async function caseTtl(g, attempt = 1) {
   check("C4 the trust card expired on its TTL", a.state === "expired" && waited >= TTL_MS - 2_000, `${a.state} after ${waited} ms (TTL ${TTL_MS}, watchdog ${IDLE_MS})`);
   // senior W3 / codex re-review: a second card in the same turn (the one-TTL pause budget spent) must exist and end before the watchdog
   const later = trustCards.slice(1).map((c) => Date.parse(c.resolved_at ?? "") - Date.parse(c.created_at));
-  if (later.length === 0) cannotRun("C4 second trust card", `the planner asked only once (the spent-budget case was not exercised); ledger: ${g.e2eStore.getLedgerEvents(run_id).map((e) => e.event_type).join(" ")}`);
+  if (later.length === 0) cannotRun("C4 second trust card", `the planner asked only once (the spent-budget case was not exercised); ledger: ${ledgerTrace(g.e2eStore, run_id)}`);
   else check("C4 later trust cards end before the frame watchdog", later.every((w) => w <= IDLE_MS - 15_000 + 2_000), later.join(", ") + " ms");
   check("C4 the turn completed: the watchdog never fired during the wait", end.state === "completed" && !events(g.e2eStore, run_id, "loop_halted").some((e) => e.payload.reason === "frame_idle"), end.state);
   check("C4 turn_trust_final says hostile", events(g.e2eStore, run_id, "turn_trust_final").map((e) => e.payload.max_level).join() === "hostile");
@@ -518,9 +525,22 @@ async function setup(args) {
   return g;
 }
 
+/**
+ * The ONE documented INCONCLUSIVE the overall verdict may pass with (Task 19 follow-up, controller ruling 1): exactly this check
+ * and exactly this reason. omp 18.7.0's `config get` builds settings without the --config overlay while the planner's main path
+ * loads it (`zt.init({cwd, configFiles})`), so no live probe can show the retry cap; Task 1's YAML test and that source reading
+ * are the accepted evidence. Any other INCONCLUSIVE, or this check for any other reason, still blocks a PASS.
+ */
+const ALLOWED_INCONCLUSIVE = { name: "C6 omp retry caps",
+  why: /^`omp config get` answers \S+ with and without --config: the subcommand does not load the overlay, so it cannot show what the planner loads$/ };
+const isAllowed = (i) => i.name === ALLOWED_INCONCLUSIVE.name && ALLOWED_INCONCLUSIVE.why.test(i.why);
+
 function verdict() {
-  if (inconclusive.length > 0) console.log(`\nINCONCLUSIVE:\n  - ${inconclusive.join("\n  - ")}`);
-  const status = failures.length > 0 ? "FAIL" : inconclusive.length > 0 ? "INCONCLUSIVE" : "PASS";
+  const line = (i) => `${i.name}: ${i.why}`;
+  const allowed = inconclusive.filter(isAllowed); const blocking = inconclusive.filter((i) => !isAllowed(i));
+  if (allowed.length > 0) console.log(`\nALLOWED INCONCLUSIVE (named residual, controller ruling 1):\n  - ${allowed.map(line).join("\n  - ")}`);
+  if (blocking.length > 0) console.log(`\nINCONCLUSIVE:\n  - ${blocking.map(line).join("\n  - ")}`);
+  const status = failures.length > 0 ? "FAIL" : blocking.length > 0 ? "INCONCLUSIVE" : "PASS";
   console.log(status === "FAIL" ? `\nLIVE GATE: FAIL\n  - ${failures.join("\n  - ")}` : `\nLIVE GATE: ${status}`);
   return status === "PASS" ? 0 : status === "FAIL" ? 1 : 3;
 }
