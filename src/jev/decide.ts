@@ -97,16 +97,29 @@ const wireOf = (qs: readonly Question[]): WireQuestions => Object.fromEntries(qs
 const mismatched = (qs: readonly Question[], answers: Record<string, JevAnswer>): boolean => qs.some((q) => answers[q.id]?.type !== q.type);
 
 const BOUND_EXPIRED: JevResult = { ok: false, reason: "error", detail: "decide bound", error_kind: "timeout" };
-/** Races a call against a budget; with no budget, the call alone (the client's own timeout still applies). */
-function bounded(p: Promise<JevResult>, ms: number | undefined): Promise<JevResult> {
+/**
+ * Races a call against a budget; with no budget, the call alone (the client's own timeout still applies). A call that loses
+ * the race still reports an outage when it settles: `onLate` gets its failure, so a bound shorter than the client's own
+ * timeout (or retries) never hides a 429 / 529 / auth from Paco. Its answer, if any, is discarded.
+ */
+function bounded(p: Promise<JevResult>, ms: number | undefined, onLate: (r: Extract<JevResult, { ok: false }>) => void): Promise<JevResult> {
   if (ms === undefined) return p;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race([p, new Promise<JevResult>((r) => { timer = setTimeout(() => r(BOUND_EXPIRED), Math.max(0, ms)); })]).finally(() => clearTimeout(timer));
+  let expired = false;
+  // A rejection before expiry reaches the caller through the race; after it, it is classified like any other late failure
+  // (a thrown client is transport noise to jevIncidentKind) instead of escaping as an unhandled rejection.
+  void p.then((late) => { if (expired && !late.ok) onLate(late); },
+    (e: unknown) => { if (expired) onLate({ ok: false, reason: "error", detail: e instanceof Error ? e.message : String(e), error_kind: "transport" }); });
+  const budget = new Promise<JevResult>((r) => { timer = setTimeout(() => { expired = true; r(BOUND_EXPIRED); }, Math.max(0, ms)); });
+  return Promise.race([p, budget]).finally(() => clearTimeout(timer));
 }
+
+/** Opens the outage incident a failure implies (none for per-call noise such as a timeout). */
+const incidentFor = (i: DecideInput) => (r: Extract<JevResult, { ok: false }>): void => openJevIncident(i.store, r, { point: i.point, run_id: i.run_id });
 
 export async function decide(i: DecideInput): Promise<Decision> {
   const questions = wireOf(i.questions);
-  const r = await bounded(i.client({ state: i.state, questions }), i.boundMs);
+  const r = await bounded(i.client({ state: i.state, questions }), i.boundMs, incidentFor(i));
   if (!r.ok) {
     // No row here (the caller records the skip after its cancellation check). The incident is not a row and may open
     // regardless: an outage is an outage even if this turn ended.
@@ -140,7 +153,7 @@ function answeredOf(i: DecideInput, r: Extract<JevResult, { ok: true }>): Answer
 
 /** Exactly one more identical request. Answered on the same model with the same shapes → the mean; anything else → the first answer. */
 async function reaskOnce(i: DecideInput, questions: WireQuestions, first: Answered): Promise<Answered> {
-  const r = await bounded(i.client({ state: i.state, questions }), i.reask?.boundMs?.()); // an overrun keeps the first answer (Addition B)
+  const r = await bounded(i.client({ state: i.state, questions }), i.reask?.boundMs?.(), incidentFor(i)); // an overrun keeps the first answer (Addition B)
   if (!r.ok) { openJevIncident(i.store, r, { point: i.point, run_id: i.run_id }); return { ...first, reask: "failed" }; }
   const mean = r.model === first.model && !mismatched(i.questions, r.answers) ? meanAnswers(first.answers, r.answers) : null;
   if (!mean) return { ...first, reask: "failed" };

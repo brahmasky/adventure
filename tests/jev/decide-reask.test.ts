@@ -68,3 +68,46 @@ describe("decide: the one re-ask", () => {
     expect(d.reask).toBeUndefined();
   });
 });
+
+// 429 / 529 / auth must reach Paco (ADR 0029): a failed re-ask keeps the first answer for the turn, but the outage it
+// revealed still opens its incident, exactly as on a first call. Per-call noise (timeout, a plain 5xx = transport) opens none.
+describe("decide: a failed re-ask still reports an outage", () => {
+  const fail = (error_kind: "rate_limited" | "overloaded" | "transport" | "timeout"): JevResult => ({ ok: false, reason: "error", detail: "x", error_kind });
+  const AUTH: JevResult = { ok: false, reason: "auth", detail: "HTTP 401", error_kind: "auth" };
+  async function second(r: JevResult | (() => Promise<JevResult>), boundMs?: number): Promise<{ d: Decision; kinds: string[] }> {
+    const store = RunStore.openInMemory();
+    const client = vi.fn<(q: JevRequest) => Promise<JevResult>>().mockResolvedValueOnce(ok(0.55));
+    if (typeof r === "function") client.mockImplementationOnce(r); else client.mockResolvedValueOnce(r);
+    const d = await decide({ point: "injection", run_id: null, state: { p1: "x" }, questions: [Q], lang: "en", client, store, thresholdVersion: "t",
+      reask: { ...near, ...(boundMs === undefined ? {} : { boundMs: () => boundMs }) } as never });
+    await new Promise((res) => setTimeout(res, 40)); // a late result past the bound settles here
+    return { d, kinds: store.listOpenIncidents().map((i) => i.kind) };
+  }
+  it.each([["rate_limited", fail("rate_limited"), "jev_rate_limited"], ["overloaded (529)", fail("overloaded"), "jev_overloaded"], ["auth", AUTH, "jev_auth"]] as const)(
+    "second call %s: the incident opens and the first answer stands", async (_n, r, kind) => {
+      const { d, kinds } = await second(r);
+      expect(d).toMatchObject({ status: "answered", reask: "failed", answers: { i1: { noul: 0.55 } } });
+      expect(kinds).toContain(kind);
+    });
+  it.each([["timeout", fail("timeout")], ["a plain 5xx (transport)", fail("transport")]] as const)("second call %s: no incident, the first answer stands", async (_n, r) => {
+    const { d, kinds } = await second(r);
+    expect(d).toMatchObject({ status: "answered", reask: "failed", answers: { i1: { noul: 0.55 } } });
+    expect(kinds).toEqual([]);
+  });
+  it("a bound overrun is no incident; a 429 arriving after the bound still opens one (a short bound hides no outage)", async () => {
+    const quiet = await second(() => new Promise<JevResult>(() => undefined), 10);
+    expect(quiet.d).toMatchObject({ reask: "failed", answers: { i1: { noul: 0.55 } } });
+    expect(quiet.kinds).toEqual([]);
+    const late = await second(() => new Promise<JevResult>((res) => setTimeout(() => res(fail("rate_limited")), 25)), 5);
+    expect(late.d).toMatchObject({ reask: "failed", answers: { i1: { noul: 0.55 } } });
+    expect(late.kinds).toContain("jev_rate_limited");
+  });
+  it("a first call past its bound skips as timeout, and its late 429 still opens the incident", async () => {
+    const store = RunStore.openInMemory();
+    const client = vi.fn<(q: JevRequest) => Promise<JevResult>>(() => new Promise<JevResult>((res) => setTimeout(() => res(fail("rate_limited")), 25)));
+    expect(await decide({ point: "injection", run_id: null, state: {}, questions: [Q], lang: "en", client, store, thresholdVersion: "t", boundMs: 5 }))
+      .toEqual({ status: "skipped", reason: "timeout" });
+    await new Promise((res) => setTimeout(res, 40));
+    expect(store.listOpenIncidents().map((i) => i.kind)).toContain("jev_rate_limited");
+  });
+});
