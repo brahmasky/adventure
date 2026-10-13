@@ -23,7 +23,10 @@ check PASS (stage 1 build boots on a copy migrated by `2026-10-13-decision-ladde
   `urlRule` throwing loses its re-ask; the `system_one` check is untested on near-bar rows; a merged run with its own
   TurnTrust counts separately in the digest; a golden-set no-key/transient day latches as skipped; a few
   injection-shaped Chinese clean lines inflate false positives (stricter, not looser); golden disjointness is exact
-  substring only; open question for Paco: should a plain Jev 5xx page (today it does not, by design).
+  substring only. Paco 2026-10-14: plain Jev 5xx / network / timeout / parse failures stay logged (skipped rows +
+  digest health), no alert.
+- [ ] Paco: decide how to clear a sticky hostile level (trust now carries across turns within one planner transcript and
+  resets only on a fresh planner session after a lesson change); e.g. a command that starts a fresh planner session.
 
 # Earlier block — 2026-10-12: decision ladder stage 1
 
