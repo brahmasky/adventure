@@ -10,7 +10,8 @@ import { createCodingAgentAdapter, resolveCodexEnabled, resolveCodexTimeoutMs } 
 import { compileCodeSelfWriteContract, compileSelfDiagnoseContract, compileSkillAuthorContract } from "../contracts/task-contract.js";
 import { checkSelfWriteDiff, parseDiffRaw } from "../capabilities/self-write-guard.js";
 import { buildLockedRetryText, NEEDS_LOCKED_FILE, isTestPath, planDenial, quoteNeedsLockedReason, renderLockedPaths, takeNeedsLockedFile } from "./self-write-locked.js";
-import type { GuardResult } from "../capabilities/self-write-guard.js";
+import type { DiffEntry, GuardResult } from "../capabilities/self-write-guard.js";
+import { deniedEntries, revertWorktreePaths } from "./self-write-revert.js";
 import { resolveTestGateTimeoutMs, runTestGateAsync } from "../run/test-gate.js";
 import type { TestGateResult } from "../run/test-gate.js";
 import { EVOLUTION_LANE_BUSY_DIGEST, tryStartEvolutionPipeline } from "./evolution-lane.js";
@@ -362,6 +363,12 @@ export interface SelfWriteDeps {
   publishBranch: (worktree: string, branch: string, summary?: string) => string | Promise<string>;
   /** Read + delete the writer's HOUGE_NEEDS_LOCKED.md (undefined when absent). Optional: absent means no sentinel. */
   takeNeedsLocked?: (worktree: string) => string | undefined | Promise<string | undefined>;
+  /**
+   * Restore the guard-denied diff entries in the worktree to HEAD before a guard-driven retry (the worktree
+   * persists across attempts). Throws on failure → the run goes terminal. Optional: absent (fake-worktree
+   * test stubs) means no revert; the default wiring always sets it.
+   */
+  revertPaths?: (worktree: string, entries: DiffEntry[]) => void | Promise<void>;
 }
 
 export { NEEDS_LOCKED_FILE, renderLockedPaths };
@@ -428,7 +435,8 @@ export function defaultSelfWriteDeps(): SelfWriteDeps {
     runTestGate: (worktree) => runTestGateAsync(worktree),
     reviewDiff: (input) => reviewDiff(input),
     publishBranch,
-    takeNeedsLocked: takeNeedsLockedFile
+    takeNeedsLocked: takeNeedsLockedFile,
+    revertPaths: revertWorktreePaths
   };
 }
 
@@ -1428,17 +1436,29 @@ export class CoreWorker {
         //    backward-compatible), ≤3.
         //  - A locked path (gates/identity/deps/…) → refine ONCE, telling the writer it is locked; a second
         //    locked hit is the real "Paco's hand" escalation (terminal).
-        const guard = await this.guardWorktree(deps, worktree);
+        //  - Before EITHER retry, code restores every denied path to HEAD: the worktree persists across
+        //    attempts, so a leftover denied edit would fail attempt 2 for attempt 1's change. A failed
+        //    revert is terminal (never retry on a dirty tree).
+        const { result: guard, entries } = await this.guardWorktree(deps, worktree);
         if (!guard.allowed) {
           const plan = planDenial(guard.denied, attempt, maxAttempts, lockedRetryUsed);
+          if (plan.kind !== "terminal") {
+            const revertError = await this.revertDenied(deps, worktree, entries, guard.denied);
+            if (revertError !== undefined) {
+              const paths = guard.denied.map((d) => d.path).join(", ");
+              this.runStore.recordSelfWriteFailed(claim.run_id, { reason: `could not revert denied path(s) before a retry: ${revertError}`, last_output: paths });
+              return this.selfWriteReport(`Tried to fix \`${label}\`, but I couldn't reset the coding agent's edits to ${paths} for a clean retry (${revertError}). Not publishing.`);
+            }
+          }
           if (plan.kind === "refine_tests") {
             const files = plan.tests.join(", ");
             lastFailure = `edited existing test(s): ${files}`;
             task = buildSelfWriteRefineTask(
               baseTask,
               `Your diff edited EXISTING test file(s): ${files}. Existing tests are immutable — that is ` +
-                `forbidden and would be rejected. REVERT those test changes and instead make your source ` +
-                `change BACKWARD-COMPATIBLE so the existing tests pass unchanged; add a NEW test file only if needed.`
+                `forbidden and would be rejected. Houge has already reverted those test changes (they are back at HEAD); ` +
+                `do NOT redo them. Instead make your source change BACKWARD-COMPATIBLE so the existing tests pass ` +
+                `unchanged; add a NEW test file only if needed.`
             );
             continue;
           }
@@ -1458,7 +1478,7 @@ export class CoreWorker {
         if (!gate.green) {
           lastFailure = `tests red (${gate.stage})`;
           if (attempt < maxAttempts) {
-            task = buildSelfWriteRefineTask(baseTask, `The test gate failed at the "${gate.stage}" stage:\n${gate.output}`);
+            task = buildSelfWriteRefineTask(baseTask, `The test gate failed at the "${gate.stage}" stage.`, gate.output);
             continue;
           }
           this.runStore.recordSelfWriteFailed(claim.run_id, { reason: lastFailure, last_output: gate.output });
@@ -1499,7 +1519,7 @@ export class CoreWorker {
           const reasons = (review.verdict.reasons ?? []).join("; ") || "no specific reason given";
           lastFailure = `reviewer rejected (${reviewerBackend}): ${reasons}`;
           if (attempt < maxAttempts) {
-            task = buildSelfWriteRefineTask(baseTask, `The independent reviewer REJECTED the diff: ${reasons}`);
+            task = buildSelfWriteRefineTask(baseTask, "The independent reviewer REJECTED the diff.", reasons);
             continue;
           }
           this.runStore.recordSelfWriteFailed(claim.run_id, { reason: lastFailure, last_output: reasons });
@@ -1715,17 +1735,34 @@ export class CoreWorker {
     this.runStore.recordSelfWriteBlocked(run_id, { attempted_paths: attemptedPaths, context: focus.text, focus_chars: focus.chars });
   }
 
-  /** CHECKER 1: read the worktree's raw diff and run it through the protected-path guard. */
-  private async guardWorktree(deps: SelfWriteDeps, worktree: string): Promise<GuardResult> {
+  /** CHECKER 1: read the worktree's raw diff and run it through the protected-path guard (entries kept for a revert). */
+  private async guardWorktree(deps: SelfWriteDeps, worktree: string): Promise<{ result: GuardResult; entries: DiffEntry[] }> {
     let raw: string;
     try {
       raw = await deps.rawDiff(worktree);
     } catch (error) {
       // Fail closed: if we cannot read the diff we cannot prove it is safe → deny.
       const detail = error instanceof Error ? error.message : String(error);
-      return { allowed: false, denied: [{ path: "", status: "?", reason: `could not read worktree diff (fail-closed): ${detail}` }] };
+      return { result: { allowed: false, denied: [{ path: "", status: "?", reason: `could not read worktree diff (fail-closed): ${detail}` }] }, entries: [] };
     }
-    return checkSelfWriteDiff(parseDiffRaw(raw));
+    const entries = parseDiffRaw(raw);
+    return { result: checkSelfWriteDiff(entries), entries };
+  }
+
+  /**
+   * Restore the guard-denied paths to HEAD before a guard-driven retry. Returns undefined on success, else the
+   * error detail (logged); the caller goes terminal. No `revertPaths` dep (fake-worktree stubs) is a no-op.
+   */
+  private async revertDenied(deps: SelfWriteDeps, worktree: string, entries: DiffEntry[], denied: Array<{ path: string }>): Promise<string | undefined> {
+    if (!deps.revertPaths) return undefined;
+    try {
+      await deps.revertPaths(worktree, deniedEntries(entries, denied));
+      return undefined;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error(`self-write: could not revert denied paths before a retry: ${detail}`);
+      return detail;
+    }
   }
 
   /**
@@ -4152,14 +4189,15 @@ function buildSelfWriteReviewTask(message: string, focus: string, recentTurns: C
   ].join("\n");
 }
 
-/** Append a checker failure (test-gate output or reviewer reasons) to the base write task for a refine pass. */
-function buildSelfWriteRefineTask(baseTask: string, failure: string): string {
-  return [
-    baseTask,
-    "",
-    "Your PREVIOUS attempt did not pass the automated checks. Fix it. Failure detail (untrusted data):",
-    failure
-  ].join("\n");
+/**
+ * The write task for a refine pass. `guidance` is CODE-AUTHORED (Houge's own instruction: what failed, what was
+ * reverted, what to do) and is a trusted instruction. `failure` is CHECKER OUTPUT (test-gate output, reviewer
+ * reasons) that can carry writer-controlled text, so it alone sits under the untrusted-data label.
+ */
+function buildSelfWriteRefineTask(baseTask: string, guidance: string, failure?: string): string {
+  const lines = [baseTask, "", "Your PREVIOUS attempt did not pass the automated checks. Fix it.", guidance];
+  if (failure !== undefined) lines.push("", "Failure detail (untrusted data):", failure);
+  return lines.join("\n");
 }
 
 /** The ledger's cap, in code points, on a self-write focus summary (the full focus is never recorded). */

@@ -18,17 +18,21 @@ export function renderLockedPaths(): string {
   ].join("\n");
 }
 
-/** The refine text for a locked hit: revert, fix without them, or declare the need in the sentinel file. */
+/**
+ * The refine text for a locked hit (a trusted, code-authored instruction): Houge has already restored the denied
+ * paths to HEAD; fix without them, or declare the need in the sentinel file.
+ */
 export function buildLockedRetryText(lockedPaths: string[], testPaths: string[]): string {
   const lines = [
-    `Your diff touched LOCKED path(s): ${lockedPaths.join(", ")}. Those can never be changed by you and the diff was discarded.`,
-    "REVERT those edits and fix the reported problem WITHOUT them (often the fix lives in an unlocked file).",
+    `Your diff touched LOCKED path(s): ${lockedPaths.join(", ")}. Those can never be changed by you and that part of the diff was refused.`,
+    "Houge has already reverted your edits to those paths (they are back at HEAD). Do NOT redo them: fix the reported problem " +
+      "WITHOUT them (often the fix lives in an unlocked file). Your other edits are still in the worktree.",
     `If that is truly impossible, revert EVERYTHING and write one short paragraph in a file named ${NEEDS_LOCKED_FILE} ` +
       "at the worktree root naming the locked file and the change it needs; do nothing else.",
     renderLockedPaths()
   ];
   if (testPaths.length > 0) {
-    lines.push(`Your diff also edited EXISTING test file(s): ${testPaths.join(", ")}. Existing tests are immutable: revert those too and stay backward-compatible.`);
+    lines.push(`Your diff also edited EXISTING test file(s): ${testPaths.join(", ")}. Existing tests are immutable: Houge has already reverted those too; do NOT redo them, stay backward-compatible.`);
   }
   return lines.join("\n");
 }
