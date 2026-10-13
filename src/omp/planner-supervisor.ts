@@ -3,7 +3,7 @@ import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
 import { BudgetLedger } from "../budget/budget-ledger.js";
 import type { InjectionJudge } from "../decisions/injection-judge.js";
-import { rankOf } from "../decisions/entries/turn-trust.js";
+import { rankOf, type TrustLevel } from "../decisions/entries/turn-trust.js";
 import { TurnTrust } from "../decisions/trust.js";
 import { errorCode, safeReason } from "../domain/error-code.js";
 import type { Identity } from "../domain/types.js";
@@ -467,7 +467,8 @@ export class PlannerSupervisor {
       budget: new BudgetLedger(claim.contract.budget), registry: tools.registry, signal: abort.signal, cwd: this.workspace(),
       step: { n: 0 }, cache: new Map(), unreported: new Map(), quarantine: tools.quarantine,
       setAwaitingApproval: (on, pause) => this.setAwaitingApproval(turn, on, pause), postureOk: this.d.posture,
-      trust: new TurnTrust({ store: this.d.store, run_id: req.run_id, chat_id: chatId, born: req.source === "schedule" ? "schedule" : "telegram", env: this.d.env }),
+      trust: new TurnTrust({ store: this.d.store, run_id: req.run_id, chat_id: chatId, born: req.source === "schedule" ? "schedule" : "telegram", env: this.d.env,
+        onRise: (level) => this.persistRise(level) }),
       trustWaitMs: (ttlMs) => this.trustWaitMs(turn, ttlMs),
       ...(req.approver ? { approver: req.approver } : {}), ...(tools.preflight ? { preflight: tools.preflight } : {}),
       ...(tools.judge ? { judge: tools.judge } : {})
@@ -715,6 +716,17 @@ export class PlannerSupervisor {
   private carryTrust(turn: Turn): void {
     turn.freshTranscript = this.resetGen !== 0 && this.resetGen === turn.childGen;
     if (!turn.freshTranscript) turn.active.trust?.carry(this.d.store.getTranscriptTrust(this.d.chatId));
+  }
+
+  /**
+   * Security re-review 1: every rise is persisted at once, so a daemon that dies mid-turn (crash, OOM, SIGKILL) still leaves
+   * the transcript's level behind. Monotone here: it never lowers a stored level (only endTrust, at a turn end, may).
+   */
+  private persistRise(level: TrustLevel): void {
+    const { store, chatId } = this.d;
+    const stored = store.getTranscriptTrust(chatId);
+    if ((stored === "untrusted" || stored === "hostile") && rankOf(stored) >= rankOf(level)) return;
+    store.setTranscriptTrust(chatId, level, new Date().toISOString());
   }
 
   /**

@@ -155,9 +155,10 @@ function fakeRoles(over: Partial<Record<TurnRole, string[]>> = {}): Roles {
   return roles;
 }
 
-function harness(session = fakeSession(), env: Record<string, string> = {}, extra: Partial<SupervisorDeps> = {}, o: { sessionState?: "current" | "none" } = {}) {
-  const store = RunStore.openInMemory();
-  if ((o.sessionState ?? "current") === "current") {
+/** `o.store`: share a store across supervisors (a restart); the caller closes it. */
+function harness(session = fakeSession(), env: Record<string, string> = {}, extra: Partial<SupervisorDeps> = {}, o: { sessionState?: "current" | "none"; store?: RunStore } = {}) {
+  const store = o.store ?? RunStore.openInMemory();
+  if (!o.store && (o.sessionState ?? "current") === "current") {
     store.recordPlannerSessionReset("42", lessonSetFingerprint(store), new Date().toISOString());
     store.claimSessionSeed("42");
     store.promotePlannerSession("42");
@@ -172,7 +173,7 @@ function harness(session = fakeSession(), env: Record<string, string> = {}, extr
     posture: () => null, outcome, sessionFactory: (o) => session.bind(o), versionCheck: () => ({ ok: true, version: "18.4.4" }),
     skipPreflightForTest: true, manifestWaitMs: 5_000, roles: fakeRoles(), ...extra
   });
-  cleanups.push(async () => { await sup.shutdown(); store.close(); rmSync(data, { recursive: true, force: true }); });
+  cleanups.push(async () => { await sup.shutdown(); if (!o.store) store.close(); rmSync(data, { recursive: true, force: true }); });
   return { store, sup, outcome, session, data };
 }
 const req = (run_id: string, text = "hi", source: "telegram" | "schedule" = "telegram") => ({ run_id, text, source, requester: { kind: "user" as const, id: "paco" } });
@@ -2087,6 +2088,23 @@ describe("PlannerSupervisor — trust is sticky within a planner transcript", ()
     await run();
     cause = null;
     expect(trustEvents(store, await run())).toEqual([{ level: "untrusted", cause: "carried_untrusted" }]);
+  });
+
+  // security re-review 1: the turn-end write alone loses the level when the daemon dies mid-turn (crash, OOM, SIGKILL) —
+  // the transcript keeps the injected text, so every rise is persisted at once (monotone), and a restart starts hostile.
+  it("a hostile rise mid-turn survives a daemon death with no turn end: the restarted supervisor's next turn starts hostile", async () => {
+    const store = RunStore.openInMemory();
+    store.recordPlannerSessionReset("42", lessonSetFingerprint(store), new Date().toISOString());
+    store.claimSessionSeed("42"); store.promotePlannerSession("42");
+    const dying = fakeSession({ onPrompt: (_t, e) => { e({ type: "turn_start" }); } }); // never ends: the daemon dies mid-turn
+    const first = harness(dying, {}, {}, { store });
+    first.sup.submit(req(createQueuedTurnRun(store))); await until(() => dying.prompts.length === 1);
+    first.sup.activeTurnForTest()?.trust?.raise("injection_withheld");
+    // the crash: no finish, no finally, no finalize — a new supervisor opens the same DB and the same transcript
+    const second = harness(fakeSession(), {}, {}, { store });
+    const run_id = createQueuedTurnRun(store); second.sup.submit(req(run_id)); await second.sup.whenIdle();
+    expect(store.getLedgerEvents(run_id).filter((e) => e.event_type === "turn_trust").map((e) => e.payload)).toEqual([{ level: "hostile", cause: "carried_hostile" }]);
+    cleanups.push(() => store.close());
   });
 
   it("a carried hostile level queues no second 'this turn read text aimed at the assistant' card", async () => {

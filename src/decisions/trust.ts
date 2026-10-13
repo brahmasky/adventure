@@ -20,7 +20,8 @@ export function resolveTrustAskTtlMs(env: NodeJS.ProcessEnv): number {
   return Number.isInteger(n) && n > 0 && n <= TRUST_ASK_TTL_MAX_MS ? n : TRUST_ASK_TTL_DEFAULT_MS;
 }
 
-export interface TurnTrustDeps { store: RunStore; run_id: string; chat_id: string; born: "telegram" | "schedule"; env?: NodeJS.ProcessEnv }
+/** `onRise`: called with the new level after every rise (the supervisor persists the transcript's level at once, re-review 1). */
+export interface TurnTrustDeps { store: RunStore; run_id: string; chat_id: string; born: "telegram" | "schedule"; env?: NodeJS.ProcessEnv; onRise?: (level: TrustLevel) => void }
 
 export class TurnTrust {
   // ES private fields, not TS `private`: no cast or reflection can reach the level to lower it (monotone, spec §7.2)
@@ -37,6 +38,7 @@ export class TurnTrust {
       recorder: storeRecorder(this.d.store, this.d.env ? { env: this.d.env } : {}) });
     this.#current = r.verdict;
     this.ledger("turn_trust", { level: this.#current, cause });
+    try { this.d.onRise?.(this.#current); } catch (e) { console.error(`trust: transcript level not persisted for ${this.d.run_id}: ${message(e)}`); }
     if (this.#current === "hostile") this.onHostile(cause === "carried_hostile");
     return true;
   }
