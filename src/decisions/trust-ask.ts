@@ -15,8 +15,9 @@ const SHELL_ENTRIES: ReadonlySet<string> = new Set(["shell", "shell_external", "
 /**
  * Spec §7.2 "every write asks" at hostile, held as an allowlist: only these reads stay tap-free (OMP_LOOP_TOOL_META marks
  * them read or none; fs_read is the built-in reader). Any other entry, a future one included, asks (Ruling: fail closed).
+ * self_diagnose is not here: it runs codex with read access to every file and sends what it reads off the box (security I-1).
  */
-const HOSTILE_READS: ReadonlySet<string> = new Set(["web_search", "http_fetch", "to_local_time", "self_diagnose", "gmail_read", "google_api",
+const HOSTILE_READS: ReadonlySet<string> = new Set(["web_search", "http_fetch", "to_local_time", "gmail_read", "google_api",
   "houge_status", "memory_correct", "fs_read"]);
 export type TrustAsk = { ask: false } | { ask: true; reason: string };
 const NO: TrustAsk = { ask: false };

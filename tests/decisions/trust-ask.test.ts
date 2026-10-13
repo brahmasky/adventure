@@ -20,6 +20,12 @@ describe("trustAsk", () => {
     for (const e of ["wiki_build", "wiki_refine", "lesson_write"]) expect(trustAsk("hostile", e).ask).toBe(true);
     for (const e of ["web_search", "http_fetch", "gmail_read", "google_api", "houge_status", "to_local_time"]) expect(trustAsk("hostile", e)).toEqual({ ask: false });
   });
+  // security final I-1: self_diagnose starts codex under a read-only sandbox that can read any file (no Seatbelt credential
+  // denies) and sends what it reads off the box; a hostile turn steering its `focus` could leak .env tap-free.
+  it("hostile: self_diagnose asks (it is not a plain read); untrusted leaves it alone", () => {
+    expect(trustAsk("hostile", "self_diagnose")).toEqual({ ask: true, reason: HOSTILE_REASON });
+    expect(trustAsk("untrusted", "self_diagnose")).toEqual({ ask: false });
+  });
   it("a shell entry with no command string asks at hostile (fail closed)", () => {
     expect(trustAsk("hostile", "shell").ask).toBe(true);
   });
