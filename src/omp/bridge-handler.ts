@@ -1,9 +1,17 @@
 import { createHash } from "node:crypto";
-import { CapabilityRunner, type CapabilityExecutionInput, type CapabilityResult } from "../capabilities/capability-runner.js";
+import { CapabilityRunner, type ApprovalRequestSink, type CapabilityExecutionInput, type CapabilityResult } from "../capabilities/capability-runner.js";
 import { decideCapability } from "../policy/capability-policy.js";
 import type { BudgetLedger } from "../budget/budget-ledger.js";
-import type { InjectionJudge } from "../decisions/injection-judge.js";
-import type { TurnTrust } from "../decisions/trust.js";
+import { digestOutput } from "../core/output-digest.js";
+import { READER_INPUT_CHAR_CAP } from "../core/quarantine.js";
+import { decideSync } from "../decisions/decide.js";
+import { pathOperands } from "../decisions/egress.js";
+import { TOOL_SHELL_NETREAD } from "../decisions/entries/shell-netread.js";
+import { WITHHELD_UNJUDGED_TEXT } from "../decisions/entries/tool-injection.js";
+import { localOutcome, type InjectionJudge, type InjectionSource, type JudgeInput, type JudgeOutcome } from "../decisions/injection-judge.js";
+import { storeRecorder } from "../decisions/record.js";
+import { countTrustAsk, HOSTILE_REASON, targetsLine, trustAsk, type TrustAsk } from "../decisions/trust-ask.js";
+import { resolveTrustAskTtlMs, type TurnTrust } from "../decisions/trust.js";
 import type { CompiledTaskContract, Identity } from "../domain/types.js";
 import type { RunStore } from "../run/run-store.js";
 import type { ToolRegistry } from "../tools/tool-registry.js";
@@ -69,6 +77,16 @@ export const APPROVAL_EXPIRED_TEXT = "The approval request got no answer in time
 export const QUARANTINE_FAILED_TEXT = "The reader could not process this source, so none of it is shown. Try another source.";
 export const READ_TOOL_FAILED_TEXT = "The read tool failed; its error text is withheld (it may carry source bytes). Status:";
 export const TURN_ABORTED_TEXT = "The turn was aborted; this call did not run.";
+/** A trust card that ran out its own TTL (spec §7.2). */
+export const TRUST_ASK_EXPIRED_TEXT = "Paco did not approve in time. The action did not run.";
+/** A trust ask with no time left in the turn to reach Paco (senior W3): refused without a card. */
+export const TRUST_ASK_NO_TIME_TEXT = "There is no time left in this turn to ask Paco, so the action did not run. Tell him what you wanted to do.";
+/** ADR 0030's one named exception: at hostile the built-in writer is refused toward its asking equivalent (spec §7.2). */
+export const HOSTILE_WRITE_REDIRECT = "This turn read text aimed at the assistant; make this change through bash, which will ask Paco.";
+export const HOSTILE_REDIRECT_CODE = "hostile_redirect";
+const SHELL_ENTRIES: ReadonlySet<RegistryEntry> = new Set<RegistryEntry>(["shell", "shell_external", "shell_destructive"]);
+/** Statuses whose text is code-built (no tool bytes): never judged, never a netread. */
+const NO_TOOL_BYTES: ReadonlySet<string> = new Set(["denied", "denied_on_revalidation", "requires_approval"]);
 export const POLICY_VERSION = "omp-1";
 export const RESPONSE_CAP = 32 * 1024;
 /** The approval card shows the command whole up to this many characters (security I1: never a silent cut). */
@@ -198,10 +216,12 @@ async function handleCall(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallRe
   }
   const pre = turn.preflight?.(entry, req.input) ?? null;
   if (pre && "refused" in pre) return refuse(deps, turn, req, entry, pre.refused.reason, pre.refused.text, started);
-  const executed = await executeWithApproval(deps, turn, req, entry, pre?.card_detail);
+  const command = req.tool === "bash" && typeof req.input.command === "string" ? req.input.command : undefined;
+  const ask = trustAsk(turn.trust?.level() ?? "clean", entry, command);
+  const executed = await executeWithApproval(deps, turn, req, entry, pre?.card_detail, ask);
   if ("refusal" in executed) return refuse(deps, turn, req, entry, executed.refusal.reason, executed.refusal.text, started);
   const r = executed.result;
-  const rendered = await render(turn, entry, r);
+  const rendered = await render(deps, turn, req, entry, r);
   const status = rendered.failed ? "failed" : statusOf(r);
   const reason = rendered.failed ?? (status === "succeeded" ? undefined : reasonCode(r));
   finish(deps, turn, { toolCallId: req.toolCallId, tool: req.tool, capability: entry, status, content: rendered.content, started,
@@ -216,24 +236,49 @@ function statusOf(r: CapabilityResult): "succeeded" | "failed" | "denied" {
 
 type Executed = { result: CapabilityResult } | { refusal: { reason: string; text: string } };
 
-/** First execute; on requires_approval wait in-turn, then re-execute on the reserved budget unit. */
-async function executeWithApproval(
-  deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallReq, entry: RegistryEntry, preDetail?: string
-): Promise<Executed> {
+interface WaitPolicy { timeoutMs: number; pause: PausePolicy }
+/** Below this a trust card cannot reach Paco in time: the call is refused without a card (senior W3). */
+const TRUST_WAIT_MIN_MS = 5_000;
+
+/**
+ * A trust-only ask (no code gate on this capability) waits its own TTL with a bounded pause, cut to what the turn's timers
+ * allow (ActiveTurn.trustWaitMs, senior W3); any code ask keeps today's full wait.
+ */
+function waitPolicy(deps: BridgeHandlerDeps, turn: ActiveTurn, entry: RegistryEntry, ask: TrustAsk): WaitPolicy {
+  const meta = turn.registry.get(entry);
+  const codeAsk = meta !== undefined && turn.contract.approval_gates.includes(meta.side_effect_level);
+  if (!ask.ask || codeAsk) return { timeoutMs: deps.cfg.approvalTimeoutMs, pause: FULL_PAUSE };
+  const ttlMs = resolveTrustAskTtlMs(deps.env);
+  return { timeoutMs: turn.trustWaitMs ? turn.trustWaitMs(ttlMs) : ttlMs, pause: { pause: "bounded", ttlMs } };
+}
+
+/** The card: the command (cut at the cap; a hostile one past it also names its targets), and why trust asks. */
+function approvalSink(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallReq, command: string | undefined, preDetail: string | undefined, ask: TrustAsk,
+  policy: WaitPolicy): ApprovalRequestSink {
+  const targets = ask.ask && ask.reason === HOSTILE_REASON && command !== undefined && command.length > CARD_DETAIL_CAP ? `\n${targetsLine(command)}` : "";
+  const detail = command !== undefined ? `${cardDetail(command)}${targets}` : preDetail;
+  return createToolApprovalSink({ store: deps.store, worker_id: turn.worker_id, tool_call_id: req.toolCallId, approvalTimeoutMs: policy.timeoutMs,
+    ...(detail !== undefined ? { card_detail: detail } : {}), ...(ask.ask ? { reason: ask.reason } : {}), ...(turn.approver ? { approver: turn.approver } : {}) });
+}
+
+/** First execute; on requires_approval wait in-turn (policy by ask kind), then re-execute on the reserved budget unit. */
+async function executeWithApproval(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallReq, entry: RegistryEntry, preDetail: string | undefined, ask: TrustAsk): Promise<Executed> {
   const command = req.tool === "bash" && typeof req.input.command === "string" ? req.input.command : undefined;
-  const detail = command !== undefined ? cardDetail(command) : preDetail;
-  const sink = createToolApprovalSink({ store: deps.store, worker_id: turn.worker_id, tool_call_id: req.toolCallId,
-    approvalTimeoutMs: deps.cfg.approvalTimeoutMs, ...(detail !== undefined ? { card_detail: detail } : {}),
-    ...(turn.approver ? { approver: turn.approver } : {}) });
-  const runner = new CapabilityRunner(turn.registry, sink);
+  const policy = waitPolicy(deps, turn, entry, ask);
+  if (policy.pause.pause === "bounded" && policy.timeoutMs < Math.min(TRUST_WAIT_MIN_MS, policy.pause.ttlMs)) return { refusal: { reason: "trust_ask_no_time", text: TRUST_ASK_NO_TIME_TEXT } };
+  const runner = new CapabilityRunner(turn.registry, approvalSink(deps, turn, req, command, preDetail, ask, policy));
   const base: CapabilityExecutionInput = { run_id: turn.run_id, requester: turn.requester, contract: turn.contract, capability: entry,
-    input: req.input, budget: turn.budget, signal: turn.signal, tool_call_id: req.toolCallId, action_summary: summaryFor(req.tool, command) };
+    input: req.input, budget: turn.budget, signal: turn.signal, tool_call_id: req.toolCallId, action_summary: summaryFor(req.tool, command),
+    ...(ask.ask ? { trust_ask: true } : {}) };
   const first = await runner.execute(base);
   if (first.status !== "requires_approval") return { result: first };
-  const outcome = await awaitApproval(turn, first.approval_id, deps.cfg.approvalTimeoutMs);
+  if (ask.ask) countTrustAsk(deps.store, deps.env, new Date().toISOString());
+  const outcome = await awaitApproval(turn, first.approval_id, policy);
   if (outcome === "approved") return { result: await runner.execute({ ...base, approved_approval_id: first.approval_id, budget_reserved: true }) };
-  if (outcome !== "denied") deps.store.expireToolApproval(first.approval_id, new Date().toISOString());
-  return { refusal: outcome === "denied" ? { reason: "denied_by_paco", text: APPROVAL_DENIED_TEXT } : { reason: `approval_${outcome}`, text: APPROVAL_EXPIRED_TEXT } };
+  if (outcome === "denied") return { refusal: { reason: "denied_by_paco", text: APPROVAL_DENIED_TEXT } };
+  deps.store.expireToolApproval(first.approval_id, new Date().toISOString());
+  const trustExpired = outcome === "expired" && policy.pause.pause === "bounded";
+  return { refusal: { reason: `approval_${outcome}`, text: trustExpired ? TRUST_ASK_EXPIRED_TEXT : APPROVAL_EXPIRED_TEXT } };
 }
 
 /** The card's action line and the ledger's action_summary: the matcher label, never the command text. */
@@ -243,9 +288,9 @@ function summaryFor(tool: string, command: string | undefined): string {
   return c.kind === "plain" ? tool : c.label;
 }
 
-async function awaitApproval(turn: ActiveTurn, approval_id: string, timeoutMs: number) {
-  turn.setAwaitingApproval(true);
-  try { return await toolApprovalWaiters.wait(approval_id, timeoutMs, turn.signal); } finally { turn.setAwaitingApproval(false); }
+async function awaitApproval(turn: ActiveTurn, approval_id: string, policy: WaitPolicy) {
+  turn.setAwaitingApproval(true, policy.pause);
+  try { return await toolApprovalWaiters.wait(approval_id, policy.timeoutMs, turn.signal); } finally { turn.setAwaitingApproval(false); }
 }
 
 interface Rendered { content: string; digest: string; failed?: string }
@@ -253,16 +298,13 @@ interface Rendered { content: string; digest: string; failed?: string }
 /** Tools whose code-rendered `answer` reaches the planner as text, not a JSON envelope. */
 const PLAIN_TEXT_ENTRIES: ReadonlySet<RegistryEntry> = new Set<RegistryEntry>(["houge_status", "memory_correct", "memory_correct_write"]);
 
-/** Read tools cross the wall ALWAYS (D3); bash is raw (D12); a ledger digest carries counts and hashes only. */
-async function render(turn: ActiveTurn, entry: RegistryEntry, r: CapabilityResult): Promise<Rendered> {
-  const isRead = UNTRUSTED_READ_ENTRIES.has(entry);
-  if (r.status !== "succeeded") return { content: isRead ? `${READ_TOOL_FAILED_TEXT} ${r.status}` : cap(failureText(r)), digest: r.status };
-  if (isRead) return renderRead(turn, entry, r.output);
-  if (entry === "shell" || entry === "shell_external" || entry === "shell_destructive") {
-    const out = typeof r.output.output === "string" ? r.output.output : "";
-    const code = String(r.output.exit_code ?? "none");
-    return { content: `${cap(out)}\n[exit ${code}]`, digest: `exit ${code}, ${bytes(out)} bytes` };
+/** Read tools cross the wall ALWAYS (D3), judged first (spec §7.1); bash is judged raw (D12 + §7.1); a ledger digest carries counts and hashes only. */
+async function render(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallReq, entry: RegistryEntry, r: CapabilityResult): Promise<Rendered> {
+  if (UNTRUSTED_READ_ENTRIES.has(entry)) {
+    return r.status === "succeeded" ? renderRead(deps, turn, req.toolCallId, entry, r.output) : { content: `${READ_TOOL_FAILED_TEXT} ${r.status}`, digest: r.status };
   }
+  if (SHELL_ENTRIES.has(entry)) return renderShell(deps, turn, req, r);
+  if (r.status !== "succeeded") return { content: cap(failureText(r)), digest: r.status };
   if (PLAIN_TEXT_ENTRIES.has(entry) && typeof r.output.answer === "string") {
     const text = r.output.answer;
     return { content: cap(text), digest: `${bytes(text)} bytes` };
@@ -271,15 +313,110 @@ async function render(turn: ActiveTurn, entry: RegistryEntry, r: CapabilityResul
   return { content: cap(json), digest: `${bytes(json)} bytes` };
 }
 
+/** Shell output, success and failure (failureText renders output from error_ref), judged after its 32 KiB cap (spec §7.1). */
+async function renderShell(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallReq, r: CapabilityResult): Promise<Rendered> {
+  if (r.status !== "succeeded" && NO_TOOL_BYTES.has(r.status)) return { content: cap(failureText(r)), digest: r.status };
+  const command = typeof req.input.command === "string" ? req.input.command : "";
+  const network = raiseNetread(deps, turn, req.toolCallId, command);
+  const paths = pathOperands(command, turn.cwd, deps.ctx.home);
+  if (r.status !== "succeeded") return { content: await judged(deps, turn, req.toolCallId, "shell", cap(failureText(r)), { outside: network, paths }), digest: r.status };
+  const out = typeof r.output.output === "string" ? r.output.output : "";
+  const code = String(r.output.exit_code ?? "none");
+  return { content: `${await judged(deps, turn, req.toolCallId, "shell", cap(out), { outside: network, paths })}\n[exit ${code}]`, digest: `exit ${code}, ${bytes(out)} bytes` };
+}
+
+/** tool.shell_netread decides; a network read makes the turn untrusted (spec §7.2). Returns whether the output came from outside. */
+function raiseNetread(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: string, command: string): boolean {
+  const r = decideSync(TOOL_SHELL_NETREAD, { command }, { run_id: turn.run_id, tool_call_id: toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) });
+  if (r.verdict === "network") turn.trust?.raise("shell_netread", toolCallId);
+  return r.verdict === "network";
+}
+
+type Judged = Pick<JudgeOutcome, "text" | "withheld" | "withheldUnjudged" | "framed" | "unanswered" | "skipped">;
+
+type JudgeOpts = Pick<JudgeInput, "outside" | "paths" | "extracted" | "linkTokens">;
+
+/**
+ * tool.injection on bytes that reach a model (spec §7.1). `outside`: the text came from a wall tool or network shell output.
+ * A judge that throws: `localOutcome`, the same floor, content and path checks as the normal path (codex B2, Ruling 28), and
+ * the judgement counts as lost; if that throws too, the whole result is withheld unjudged (fail closed).
+ */
+async function judged(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: string, source: InjectionSource, text: string, o: JudgeOpts): Promise<string> {
+  if (!turn.judge) return text;
+  const input: JudgeInput = { run_id: turn.run_id, tool_call_id: toolCallId, source, text, ...o, extracted: o.extracted ?? [...extractedFor(turn)], known: turn.secretValues ?? [] };
+  let out: Judged;
+  try {
+    out = await turn.judge(input);
+  } catch (e) {
+    console.error(`bridge: injection judge threw (${e instanceof Error ? e.name : "unknown"}); the local checks decide`);
+    try { out = localOutcome({ store: deps.store, home: deps.ctx.home }, input); }
+    catch { out = { text: WITHHELD_UNJUDGED_TEXT, withheld: 1, withheldUnjudged: 1, framed: 0, unanswered: 1, skipped: true }; }
+  }
+  raiseFor(turn, toolCallId, out, o.outside);
+  return out.text;
+}
+
+/**
+ * What a judgement costs the turn (spec §7.1–7.2): a withhold → hostile; a framed passage (it may not leave, plan S8) →
+ * hostile from outside, untrusted from a local read (controller ruling 1); a lost judgement (Jev down, timed out, partial) →
+ * untrusted (controller ruling 7: an outage never leaves the turn clean).
+ */
+function raiseFor(turn: ActiveTurn, toolCallId: string, o: Judged, _outside: boolean): void {
+  if (o.withheld - o.withheldUnjudged > 0) turn.trust?.raise("injection_withheld", toolCallId);
+  if (o.withheldUnjudged > 0) turn.trust?.raise("unjudged_outside", toolCallId); // withheld, never shown (controller ruling 1)
+  if (o.framed > 0) turn.trust?.raise("unjudged_local", toolCallId);              // framed only on local reads
+  if (o.skipped || o.unanswered > 0) turn.trust?.raise("judge_timeout", toolCallId);
+}
+
+/**
+ * The reader's input is digestOutput(raw, 8000) (core-worker quarantineExtract): judge exactly that. The code-built side
+ * channel (`trusted_extract`, gmail's codes and links) reaches the planner AFTER the reader (core-worker ompQuarantine appends
+ * it), so it is judged too, as its own text (codex #2): everything the planner will read has been judged.
+ */
+async function judgedRead(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: string, entry: RegistryEntry, output: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (!turn.judge) return output;
+  const canonical = digestOutput(output, READER_INPUT_CHAR_CAP);
+  const body = await judged(deps, turn, toolCallId, entry as InjectionSource, canonical, { outside: true });
+  const extract = typeof output.trusted_extract === "string" && output.trusted_extract.length > 0 ? output.trusted_extract : undefined;
+  // senior re-review B3: judge the side channel with its structure visible — the codes masked by value, the links NOT, so Jev
+  // sees host and route words; their token-like path segments, query values and fragment are masked (Ruling 25, W-R3-2).
+  const side = extract === undefined ? undefined
+    : await judged(deps, turn, `${toolCallId}:extract`, entry as InjectionSource, extract, { outside: true, paths: [], extracted: extractedCodes(extract), linkTokens: true });
+  if (body === canonical && side === extract) return output;
+  return { answer: body, ...(side !== undefined ? { trusted_extract: side } : {}) };
+}
+
 /** A reader failure never forwards its message: reader stderr can echo the prompt, i.e. the raw source. */
-async function renderRead(turn: ActiveTurn, entry: RegistryEntry, output: Record<string, unknown>): Promise<Rendered> {
+async function renderRead(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: string, entry: RegistryEntry, output: Record<string, unknown>): Promise<Rendered> {
+  turn.trust?.raise("wall_read", toolCallId);
+  rememberExtracted(turn, output);
+  const judgedOutput = await judgedRead(deps, turn, toolCallId, entry, output);
   let read: ExternalReadResult;
-  try { read = await turn.quarantine(entry, output); } catch {
+  try { read = await turn.quarantine(entry, judgedOutput); } catch {
     return { content: QUARANTINE_FAILED_TEXT, digest: "quarantine_failed", failed: "quarantine_failed" };
   }
   const text = cap(renderExternalRead(read));
   // The ledger never holds read text: the rendered result may carry a code-extracted OTP or link.
   return { content: text, digest: `sha256:${sha(text)} bytes:${bytes(text)}` };
+}
+
+/** This turn's code-extracted codes and links (gmail-read's `codes=[…] links=[…]`): masked by value in every later judged text (spec §7.0 rule 5). */
+const extracted = new WeakMap<ActiveTurn, Set<string>>();
+function extractedFor(turn: ActiveTurn): Set<string> {
+  let s = extracted.get(turn);
+  if (!s) { s = new Set(); extracted.set(turn, s); }
+  return s;
+}
+/** The codes alone of an extract (never its links): what the side channel's own judgement masks by value. */
+function extractedCodes(extract: string): string[] {
+  return (/codes=\[([^\]]*)\]/.exec(extract)?.[1] ?? "").split(",").map((v) => v.trim()).filter((v) => v.length >= 4);
+}
+function rememberExtracted(turn: ActiveTurn, output: Record<string, unknown>): void {
+  const t = output.trusted_extract;
+  if (typeof t !== "string") return;
+  for (const key of ["codes", "links"]) {
+    for (const v of (new RegExp(`${key}=\\[([^\\]]*)\\]`).exec(t)?.[1] ?? "").split(",")) if (v.trim().length >= 4) extractedFor(turn).add(v.trim());
+  }
 }
 
 function failureText(r: Exclude<CapabilityResult, { status: "succeeded" }>): string {
@@ -314,6 +451,7 @@ function gateDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, req: GateReq, ent
   if (turn.signal.aborted) return "turn_aborted"; // as handleCall: nothing new runs once the turn is aborted
   const posture = turn.postureOk();
   if (posture) return posture;
+  if (entry === "fs_write" && turn.trust?.level() === "hostile") return HOSTILE_REDIRECT_CODE; // ADR 0030's named exception (spec §7.2)
   const raws = gatePaths(req.input ?? {});
   if (raws.length === 0) return "missing_path";
   for (const raw of raws) { const d = pathDenial(deps, turn, raw, entry); if (d) return d; }
@@ -337,7 +475,7 @@ function handleGate(deps: BridgeHandlerDeps, turn: ActiveTurn, req: GateReq): { 
   const tool = `builtin:${req.tool}`;
   if (reason) {
     finish(deps, turn, { toolCallId: req.toolCallId, tool, capability: entry, status: "denied", content: "", started, digest: reason, reason });
-    return { decision: "deny", reason };
+    return { decision: "deny", reason: reason === HOSTILE_REDIRECT_CODE ? HOSTILE_WRITE_REDIRECT : reason };
   }
   turn.unreported.set(req.toolCallId, entry);
   namesFor(turn).set(req.toolCallId, tool);
