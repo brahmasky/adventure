@@ -1475,6 +1475,9 @@ export class CoreWorker {
 
         // (e) CHECKER 2 — test gate. Red → refine (feed the failing stage+output back) ≤3 total.
         const gate = await deps.runTestGate(worktree);
+        // The gate ran writer-authored tests unsandboxed: re-guard the tree it left (a hit is terminal).
+        const afterGate = await this.lateGuardDenial(claim.run_id, deps, worktree, "the test gate ran", label, ledgerFocus);
+        if (afterGate) return afterGate;
         if (!gate.green) {
           lastFailure = `tests red (${gate.stage})`;
           if (attempt < maxAttempts) {
@@ -1531,6 +1534,8 @@ export class CoreWorker {
           this.runStore.recordSelfWriteFailed(claim.run_id, { reason: SELF_WRITE_DIFF_CHANGED, last_output: "" });
           return this.selfWriteReport(`I had a reviewed fix for \`${label}\`, but the workspace changed after review. Not publishing.`);
         }
+        const beforePublish = await this.lateGuardDenial(claim.run_id, deps, worktree, "review", label, ledgerFocus);
+        if (beforePublish) return beforePublish;
         // publish the branch + record + success notification.
         const branch = selfWriteBranchName(claim.run_id);
         let published: string;
@@ -1747,6 +1752,24 @@ export class CoreWorker {
     }
     const entries = parseDiffRaw(raw);
     return { result: checkSelfWriteDiff(entries), entries };
+  }
+
+  /**
+   * Re-run CHECKER 1 on the tree as it is now (after the test gate, and right before publish): the gate runs
+   * writer-authored tests unsandboxed, so they could have changed a locked file after the per-attempt guard passed.
+   * Any denial here is terminal (no retry): recorded as self_write_blocked, Paco told. Undefined when clean.
+   */
+  private async lateGuardDenial(
+    run_id: string, deps: SelfWriteDeps, worktree: string, after: string, label: string, focus: { text: string; chars: number }
+  ): Promise<HelperResult | undefined> {
+    const { result } = await this.guardWorktree(deps, worktree);
+    if (result.allowed) return undefined;
+    this.recordBlocked(run_id, result.denied.map((d) => ({ path: d.path, status: d.status, reason: d.reason })), focus);
+    const files = result.denied.map((d) => `\`${d.path || "(unreadable diff)"}\``).join(", ");
+    return this.selfWriteReport(
+      `I had a fix for \`${label}\` that passed the guard, but after ${after} the workspace touched ${files} — the locked ` +
+        "surface (gates / identity / deps / existing tests), so I stopped. Nothing was published."
+    );
   }
 
   /**

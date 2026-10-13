@@ -357,3 +357,54 @@ describe("self-write guard retries start from a reverted worktree", () => {
     } finally { store.close(); }
   });
 });
+
+/**
+ * Final review 2026-10-13: the guard ran once per attempt, BEFORE the test gate, and the gate runs writer-authored
+ * tests unsandboxed. A test that writes a locked file during the gate reached publish with only the LLM reviewer
+ * against it. The guard now re-runs after the gate and again right before publish; a hit there is terminal.
+ */
+describe("self-write guard re-runs after the test gate and before publish", () => {
+  /** The worktree's raw diff gains a locked path once `trigger` has happened (the gate ran, or the review passed). */
+  function lateLockStack(log: Log, trigger: "gate" | "review"): SelfWriteDeps {
+    let tripped = false;
+    const base = stack([[SCHEDULE_SPEC], [SCHEDULE_SPEC], [SCHEDULE_SPEC]], log);
+    return {
+      ...base,
+      rawDiff: () => {
+        const raw = `${OK}${SCHEDULE_SPEC}\n${tripped ? `:000000 100644 0 c A\tsrc/policy/x.ts\n` : ""}`;
+        log.guardSaw.push(raw);
+        return raw;
+      },
+      runTestGate: (): TestGateResult => { if (trigger === "gate") tripped = true; return { green: true }; },
+      reviewDiff: (input): ReviewResult => { if (trigger === "review") tripped = true; return base.reviewDiff(input) as ReviewResult; }
+    };
+  }
+
+  for (const trigger of ["gate", "review"] as const) {
+    it(`a locked path that appears after the ${trigger} is terminal: blocked, never published, no retry (why: writer tests run unsandboxed)`, async () => {
+      const store = RunStore.openInMemory();
+      const log: Log = { writeTasks: [], published: [], guardSaw: [] };
+      try {
+        const r = runWith(lateLockStack(log, trigger), store);
+        const text = (await r.go()).join("\n");
+        expect(log.writeTasks.length).toBe(1);
+        expect(log.published).toEqual([]);
+        const b = blocked(store, r.run_id);
+        expect(b.length).toBe(1);
+        expect(JSON.stringify(b[0]!.payload.attempted_paths)).toContain("src/policy/x.ts");
+        expect(text).toContain("src/policy/x.ts");
+      } finally { store.close(); }
+    });
+  }
+
+  it("a clean pass runs the guard three times: after the write, after the gate, before publish (why: each is a separate check)", async () => {
+    const store = RunStore.openInMemory();
+    const log: Log = { writeTasks: [], published: [], guardSaw: [] };
+    try {
+      const r = runWith(stack([[SCHEDULE_SPEC]], log), store);
+      await r.go();
+      expect(log.published).toEqual([`houge/selfwrite/${r.run_id}`]);
+      expect(log.guardSaw.length).toBe(3);
+    } finally { store.close(); }
+  });
+});
