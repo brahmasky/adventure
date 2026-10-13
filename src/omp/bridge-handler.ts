@@ -237,8 +237,11 @@ function statusOf(r: CapabilityResult): "succeeded" | "failed" | "denied" {
 type Executed = { result: CapabilityResult } | { refusal: { reason: string; text: string } };
 
 interface WaitPolicy { timeoutMs: number; pause: PausePolicy }
-/** Below this a trust card cannot reach Paco in time: the call is refused without a card (senior W3). */
-const TRUST_WAIT_MIN_MS = 5_000;
+/**
+ * Below this a trust card cannot reach Paco in time: the call is refused without a card (senior W3). The supervisor counts a
+ * pause leftover below it as spent, so such a card gets the watchdog/deadline cap instead (fix round 2, live gate C4).
+ */
+export const TRUST_WAIT_MIN_MS = 5_000;
 
 /**
  * A trust-only ask (no code gate on this capability) waits its own TTL with a bounded pause, cut to what the turn's timers

@@ -2048,18 +2048,20 @@ describe("PlannerSupervisor — trust-card pause policy and the turn's trust (sp
   });
 
   it("the total trust pause per turn is capped at one TTL across several cards", async () => {
+    // Fix round 2 (gate): rescaled so the second card's leftover (6 s) is a usable card time; a leftover under the bridge's
+    // minimum counts as spent (tested below), which the original 1 s leftover of a 3 s TTL now would.
     const session = fakeSession({ onPrompt: () => undefined });
     const { store, sup, outcome } = harness(session, { HOUGE_OMP_TURN_TIMEOUT_MS: "1000" }); const run_id = createQueuedTurnRun(store);
     vi.useFakeTimers(FAKE_CLOCK);
     try {
       sup.submit(req(run_id)); await untilState(sup, "RUNNING"); await vi.advanceTimersByTimeAsync(500); // 500 ms left
-      sup.setAwaitingApprovalForTest(true, bounded(3_000)); await vi.advanceTimersByTimeAsync(2_000);
-      sup.setAwaitingApprovalForTest(false); // 2 000 ms of the TTL spent
+      sup.setAwaitingApprovalForTest(true, bounded(10_000)); await vi.advanceTimersByTimeAsync(4_000);
+      sup.setAwaitingApprovalForTest(false); // 4 000 ms of the TTL spent
       await vi.advanceTimersByTimeAsync(100); // 400 ms left
-      sup.setAwaitingApprovalForTest(true, bounded(3_000)); await vi.advanceTimersByTimeAsync(1_100); // only 1 000 ms more may pause
+      sup.setAwaitingApprovalForTest(true, bounded(10_000)); await vi.advanceTimersByTimeAsync(6_100); // only 6 000 ms more may pause
       expect(sup.state()).toBe("RUNNING");
       sup.setAwaitingApprovalForTest(false); // the second card is answered late; 300 ms of the deadline left
-      sup.setAwaitingApprovalForTest(true, bounded(3_000)); // the budget is spent: a third card asks with the timers running
+      sup.setAwaitingApprovalForTest(true, bounded(10_000)); // the budget is spent: a third card asks with the timers running
       expect(sup.state()).toBe("RUNNING");
       await vi.advanceTimersByTimeAsync(450); expect(outcome.failed[0]).toMatchObject({ error_type: "turn_timeout" });
     } finally { vi.useRealTimers(); }
@@ -2254,5 +2256,65 @@ describe("PlannerSupervisor — turn_trust_final at every turn end (spec §7.2)"
     } finally { vi.useRealTimers(); }
     await sup.whenIdle();
     expect(finals(store, run_id)).toEqual([{ max_level: "hostile" }]);
+  });
+});
+
+describe("PlannerSupervisor — a pause leftover too short for a card counts as spent (fix round 2, live gate C4)", () => {
+  // Live gate runs 2, 4, 5, 6: Node timers fire ~1 ms early against Date.now(), so the turn's one 45 s pause was recorded as
+  // 44 999 ms and the next trust card got a 1 ms "leftover" — refused (trust_ask_no_time) although the watchdog left ~15 s.
+  // A leftover under the bridge's minimum card time must fall through to the post-budget (watchdog/deadline) cap.
+  type T = { trustPausedMs: number; active: { trustWaitMs: (ttl: number) => number } };
+  const turnOf = (sup: PlannerSupervisor) => (sup as unknown as { turn: T }).turn;
+  const TTL = 300_000; // larger than the default watchdog's cap (165 s), so the post-budget cap differs from the TTL
+
+  for (const leftover of [1, 4_999]) {
+    it(`a ${leftover} ms leftover gets the post-budget cap, and pauses nothing`, async () => {
+      const session = fakeSession({ onPrompt: () => undefined });
+      const { store, sup } = harness(session);
+      vi.useFakeTimers(FAKE_CLOCK);
+      try {
+        sup.submit(req(createQueuedTurnRun(store))); await untilState(sup, "RUNNING");
+        const turn = turnOf(sup); turn.trustPausedMs = TTL - leftover;
+        expect(turn.active.trustWaitMs(TTL)).toBe(180_000 - 15_000);
+        sup.setAwaitingApprovalForTest(true, { pause: "bounded", ttlMs: TTL });
+        expect(sup.state()).toBe("RUNNING"); // the card waits with the timers running, within the cap above
+      } finally { vi.useRealTimers(); }
+    });
+  }
+
+  it("a 5 000 ms leftover is still a card's time: it is used, and pauses for it", async () => {
+    const session = fakeSession({ onPrompt: () => undefined });
+    const { store, sup } = harness(session);
+    vi.useFakeTimers(FAKE_CLOCK);
+    try {
+      sup.submit(req(createQueuedTurnRun(store))); await untilState(sup, "RUNNING");
+      const turn = turnOf(sup); turn.trustPausedMs = TTL - 5_000;
+      expect(turn.active.trustWaitMs(TTL)).toBe(5_000);
+      sup.setAwaitingApprovalForTest(true, { pause: "bounded", ttlMs: TTL });
+      expect(sup.state()).toBe("AWAITING_APPROVAL");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("the gate's run-6 sequence: the first card expires on the TTL with the clock 1 ms behind, the second is granted a positive cap", async () => {
+    const session = fakeSession({ onPrompt: (_t, e) => e({ type: "turn_start" }) });
+    const { store, sup, outcome } = harness(session, { HOUGE_OMP_FRAME_IDLE_MS: "30000" }); const run_id = createQueuedTurnRun(store);
+    vi.useFakeTimers(FAKE_CLOCK);
+    try {
+      sup.submit(req(run_id)); await untilState(sup, "RUNNING"); await vi.advanceTimersByTimeAsync(10);
+      const turn = turnOf(sup);
+      expect(turn.active.trustWaitMs(45_000)).toBe(45_000); // the first card waits the whole TTL
+      sup.setAwaitingApprovalForTest(true, { pause: "bounded", ttlMs: 45_000 });
+      await vi.advanceTimersByTimeAsync(20_000);
+      vi.setSystemTime(Date.now() - 1); // Date.now() now trails the timers by 1 ms, as the live timers did
+      await vi.advanceTimersByTimeAsync(25_000); // the pause timer fires; the card expires with it
+      sup.setAwaitingApprovalForTest(false);
+      expect(turn.trustPausedMs).toBe(45_000); // the span is recorded as scheduled, not 44 999
+      session.emitForTest({ type: "turn_start" }); // the planner reads the expiry and goes on
+      const cap = turn.active.trustWaitMs(45_000);
+      expect(cap).toBe(30_000 - 15_000); // the watchdog less the margin: at least the bridge's 5 s, so the card is asked
+      sup.setAwaitingApprovalForTest(true, { pause: "bounded", ttlMs: 45_000 }); await vi.advanceTimersByTimeAsync(cap);
+      sup.setAwaitingApprovalForTest(false); // the second card expires before the watchdog
+      expect(outcome.failed).toEqual([]);
+    } finally { vi.useRealTimers(); }
   });
 });

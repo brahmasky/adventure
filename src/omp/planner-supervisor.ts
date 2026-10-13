@@ -15,7 +15,7 @@ import type { ToolRegistry } from "../tools/tool-registry.js";
 import { ACK_NUDGE_TEXT, isBareAck } from "./bare-ack.js";
 import type { BridgeRequest } from "./bridge-protocol.js";
 import { BridgeServer } from "./bridge-server.js";
-import { createBridgeHandler, flushUnreported, FULL_PAUSE, type ActiveTurn, type PausePolicy } from "./bridge-handler.js";
+import { createBridgeHandler, flushUnreported, FULL_PAUSE, TRUST_WAIT_MIN_MS, type ActiveTurn, type PausePolicy } from "./bridge-handler.js";
 import { selectorKey, STEP_UP } from "./model-roles.js";
 import { familyOf, type ModelFamily, type ModelString } from "./model-string.js";
 import { PLANNER_HEARTBEAT_MS, type OmpConfig } from "./omp-config.js";
@@ -110,6 +110,8 @@ export const START_WAIT_MS = 30_000;
 const ABORT_GRACE_MS = 5_000;
 /** A trust card never outlives a timer it cannot pause (senior W3): its wait stops this long before the watchdog or deadline. */
 export const TRUST_WAIT_MARGIN_MS = 15_000;
+/** Node timers fire up to a few ms off Date.now(): a bounded pause measured this close to its span counts as the whole span. */
+const PAUSE_SLACK_MS = 10;
 /** The failure ref of a turn the daemon's own stop cut short: its open request is audited error{shutdown}. */
 const DAEMON_SHUTDOWN = "daemon shutdown";
 const CRASH_WINDOW_MS = 10 * 60_000;
@@ -133,6 +135,14 @@ const UNRESOLVED_MODEL: ModelString = { provider: "unresolved", model: "unresolv
 type StartResult = string | null | { missing: ModelString };
 /** One pin: done, refused by omp (walk on), the turn ended, or any other failure (transport, timeout, set_thinking_level). */
 type PinResult = "ok" | "refused" | typeof ENDED | { error: unknown };
+/**
+ * What is left of a turn's one TTL of trust pause; a leftover too short to be a card's wait (under the bridge's minimum, or
+ * the whole TTL when that is shorter) counts as spent, so the card gets the watchdog/deadline cap (fix round 2, gate C4).
+ */
+const pauseLeft = (ttlMs: number, paused: number): number => {
+  const left = ttlMs - paused;
+  return left >= Math.min(TRUST_WAIT_MIN_MS, ttlMs) ? left : 0;
+};
 const exitRef = (i: ExitInfo) => (i.code !== null ? `exit ${i.code}` : `signal ${i.signal ?? "unknown"}`);
 /** omp profile config (spec §4): no xdev devices, no update checks, no telemetry. */
 const HOUGE_CONFIG_YML = "tools:\n  xdev: false\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: false\ntelemetry:\n  otlpExportEnabled: false\n"
@@ -165,6 +175,8 @@ interface Turn {
   approvals: number;
   /** Trust-only pause bookkeeping (spec §7.2): ms already paused this turn, when the current bounded pause began, its resume timer. */
   trustPausedMs: number; trustPauseAt: number | undefined; trustResume: ReturnType<typeof setTimeout> | undefined;
+  /** The span the current bounded pause was scheduled for (its resume timer's delay). */
+  trustPauseSpan: number;
   done: (r: "end" | "abort") => void; ended: Promise<"end" | "abort">;
   deadlineLeft: number; deadlineAt: number; deadline: ReturnType<typeof setTimeout> | undefined; idle: ReturnType<typeof setTimeout> | undefined;
   /** When the frame watchdog was last armed (the child's last frame): a trust card's wait is bounded from here (senior W3). */
@@ -462,7 +474,7 @@ export class PlannerSupervisor {
     const heartbeat = setInterval(() => this.renewLeases(), PLANNER_HEARTBEAT_MS);
     const turn: Turn = {
       req, claim, worker, startedAt: Date.now(), merged: [], active, abort, heartbeat, n: 0, recorded: 0, lastText: "", lastError: undefined, deadline: undefined, idle: undefined, idleAt: Date.now(),
-      usedTool: false, legIndex: 0, live: false, finished: false, laneEnded: false, aborting: false, dispatched: false, childGen: -1, approvals: 0, trustPausedMs: 0, trustPauseAt: undefined, trustResume: undefined, ...newDeferred(),
+      usedTool: false, legIndex: 0, live: false, finished: false, laneEnded: false, aborting: false, dispatched: false, childGen: -1, approvals: 0, trustPausedMs: 0, trustPauseAt: undefined, trustResume: undefined, trustPauseSpan: 0, ...newDeferred(),
       route: null, role: "default", effort: null, chain: [], routedBy: undefined, startMissing: 0, legsTried: 0, retriedOther: false, pinFailed: false, failed: new Set(),
       deadlineLeft: cfg.turnTimeoutMs, deadlineAt: Date.now()
     };
@@ -1196,18 +1208,25 @@ export class PlannerSupervisor {
 
   /** A trust-only ask pauses for what is left of the turn's one TTL; with none left it asks with the timers running. */
   private pauseFor(t: Turn, pause: PausePolicy): void {
-    const left = pause.pause === "full" ? Number.POSITIVE_INFINITY : pause.ttlMs - t.trustPausedMs;
+    const left = pause.pause === "full" ? Number.POSITIVE_INFINITY : pauseLeft(pause.ttlMs, t.trustPausedMs);
     if (left <= 0) return;
     this.st = "AWAITING_APPROVAL";
     if (t.deadline) t.deadlineLeft -= Date.now() - t.deadlineAt;
     this.clearTimers(t);
-    if (pause.pause === "bounded") { t.trustPauseAt = Date.now(); t.trustResume = setTimeout(() => this.resumeTimers(t), left); }
+    if (pause.pause === "bounded") {
+      t.trustPauseAt = Date.now(); t.trustPauseSpan = left;
+      t.trustResume = setTimeout(() => this.resumeTimers(t), left);
+    }
   }
 
   /** Ends a pause: on the last release, or when a bounded pause's TTL runs out while its card still waits. */
   private resumeTimers(t: Turn): void {
     clearTimeout(t.trustResume); t.trustResume = undefined;
-    if (t.trustPauseAt !== undefined) { t.trustPausedMs += Date.now() - t.trustPauseAt; t.trustPauseAt = undefined; }
+    if (t.trustPauseAt !== undefined) {
+      const measured = Date.now() - t.trustPauseAt;
+      t.trustPausedMs += measured >= t.trustPauseSpan - PAUSE_SLACK_MS ? t.trustPauseSpan : measured; // a timer ~1 ms early is the whole span
+      t.trustPauseAt = undefined;
+    }
     if (this.turn !== t || this.st !== "AWAITING_APPROVAL") return;
     this.st = "RUNNING";
     this.armDeadline(t);
@@ -1220,8 +1239,8 @@ export class PlannerSupervisor {
    */
   private trustWaitMs(t: Turn, ttlMs: number): number {
     const now = Date.now();
-    const paused = t.trustPausedMs + (t.trustPauseAt !== undefined ? now - t.trustPauseAt : 0);
-    if (ttlMs - paused > 0) return ttlMs - paused;
+    const left = pauseLeft(ttlMs, t.trustPausedMs + (t.trustPauseAt !== undefined ? now - t.trustPauseAt : 0));
+    if (left > 0) return left;
     const deadlineLeft = t.deadline ? t.deadlineLeft - (now - t.deadlineAt) : t.deadlineLeft;
     // the watchdog counts from the last frame, not from this ask (a queued call, judging): bound by what it has left
     const idleLeft = t.idle ? this.d.cfg.frameIdleMs - (now - t.idleAt) : this.d.cfg.frameIdleMs;
