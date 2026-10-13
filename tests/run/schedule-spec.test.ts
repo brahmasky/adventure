@@ -244,11 +244,13 @@ describe("formatScheduleListText (the /schedule list line — human-readable)", 
 });
 
 describe("sanitizeScheduleGoal (digest-sanitizer conventions — the goal replays as a future turn)", () => {
-  it("flattens CR/LF, replaces →, neutralizes time_claims:, and caps length (non-deleting)", () => {
+  it("flattens CR/LF, replaces →, neutralizes time_claims:, and never cuts length", () => {
     expect(sanitizeScheduleGoal("line one\r\nline two")).toBe("line one line two");
     expect(sanitizeScheduleGoal("a → b")).toBe("a - b");
     expect(sanitizeScheduleGoal("x time_claims: y")).toBe("x time_claims  y");
-    expect(sanitizeScheduleGoal(`${"g".repeat(SCHEDULE_GOAL_CHAR_CAP + 50)}`).length).toBe(SCHEDULE_GOAL_CHAR_CAP);
+    // Never cuts: a goal replays verbatim as a future turn, so a silent cut breaks it a day later.
+    expect(sanitizeScheduleGoal("g".repeat(SCHEDULE_GOAL_CHAR_CAP))).toHaveLength(SCHEDULE_GOAL_CHAR_CAP);
+    expect(sanitizeScheduleGoal("g".repeat(SCHEDULE_GOAL_CHAR_CAP + 1))).toHaveLength(SCHEDULE_GOAL_CHAR_CAP + 1);
     // A value ENDING in "time_claims" would reassemble the marker at a render seam.
     expect(sanitizeScheduleGoal("watch time_claims")).toBe("watch time_claims-");
     expect(sanitizeScheduleGoal("   ")).toBe("");

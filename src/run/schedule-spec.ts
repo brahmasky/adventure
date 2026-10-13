@@ -156,7 +156,7 @@ export function describeScheduleSpec(spec: ScheduleSpec): string {
 }
 
 /** Max chars of the model-supplied goal stored on a schedule (it becomes a future turn text). */
-export const SCHEDULE_GOAL_CHAR_CAP = 300;
+export const SCHEDULE_GOAL_CHAR_CAP = 2000; // = schedule_task.json goal maxLength; callers refuse past it, nothing cuts
 
 /**
  * Write-time neutralization of the model-supplied goal (the time-convert digest-sanitizer
@@ -164,8 +164,8 @@ export const SCHEDULE_GOAL_CHAR_CAP = 300;
  * verbatim as a future turn's message — so flatten CR/LF plus the Unicode line separators
  * U+2028/U+2029 and NEL U+0085 (forged-frame-line class — a goal must never fabricate a
  * second `/schedule` list row; same coverage the episodic fact-sanitizer got in Phase M),
- * replace `→` (converted-row forgery), neutralize `time_claims:` (guard-arming marker), and
- * cap. All substitutions are NON-DELETING; empty-after-sanitizing is the caller's refusal
+ * replace `→` (converted-row forgery) and neutralize `time_claims:` (guard-arming marker). It
+ * never cuts: callers refuse a goal past SCHEDULE_GOAL_CHAR_CAP. All substitutions are NON-DELETING; empty-after-sanitizing is the caller's refusal
  * signal.
  */
 export function sanitizeScheduleGoal(value: string): string {
@@ -174,8 +174,7 @@ export function sanitizeScheduleGoal(value: string): string {
     .replace(/→/g, "-")
     .replace(/time_claims:/gi, "time_claims ")
     .trim();
-  const capped = flat.length > SCHEDULE_GOAL_CHAR_CAP ? flat.slice(0, SCHEDULE_GOAL_CHAR_CAP) : flat;
-  return /time_claims$/i.test(capped) ? `${capped}-` : capped;
+  return /time_claims$/i.test(flat) ? `${flat}-` : flat;
 }
 
 /** Whether the scheduler is armed (`HOUGE_SCHEDULER_ENABLED`). DEFAULT OFF — the

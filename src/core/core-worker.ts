@@ -94,6 +94,7 @@ import {
   parseScheduleSpec,
   resolveSchedulerMaxPerChat,
   sanitizeScheduleGoal,
+  SCHEDULE_GOAL_CHAR_CAP,
   visibleSchedules,
   type ScheduleSpec
 } from "../run/schedule-spec.js";
@@ -3518,6 +3519,9 @@ export class CoreWorker {
       if (hasGoal && (goal === undefined || goal.length === 0)) {
         return { ok: false, error: SCHEDULE_TASK_GOAL_REQUIRED_ERROR };
       }
+      if (goal !== undefined && goal.length > SCHEDULE_GOAL_CHAR_CAP) {
+        return { ok: false, error: SCHEDULE_TASK_GOAL_TOO_LONG_ERROR };
+      }
       const spec = hasSpec ? parseScheduleSpec(input.spec) : parseScheduleSpec(row.spec_json);
       // A corrupt STORED spec surfaces here too: the model must supply a fresh spec.
       if (!spec) {
@@ -3570,6 +3574,9 @@ export class CoreWorker {
     const goal = sanitizeScheduleGoal(typeof input.goal === "string" ? input.goal : "");
     if (goal.length === 0) {
       return { ok: false, error: SCHEDULE_TASK_GOAL_REQUIRED_ERROR };
+    }
+    if (goal.length > SCHEDULE_GOAL_CHAR_CAP) {
+      return { ok: false, error: SCHEDULE_TASK_GOAL_TOO_LONG_ERROR };
     }
     // v2 dedup (the 2026-07-19 duplicate-AI周报 bug): an ENABLED row with identical
     // spec+tz+goal in this chat makes creation an idempotent no-op that names the
@@ -4357,6 +4364,8 @@ export const SCHEDULE_TASK_INVALID_TZ_ERROR =
   "invalid tz — use an IANA zone name like Australia/Sydney";
 export const SCHEDULE_TASK_GOAL_REQUIRED_ERROR =
   "goal is required — the message Houge should run at each scheduled fire";
+export const SCHEDULE_TASK_GOAL_TOO_LONG_ERROR =
+  `goal is longer than ${SCHEDULE_GOAL_CHAR_CAP} characters — shorten it; nothing was saved`;
 export const SCHEDULE_TASK_NEXT_UNCOMPUTABLE_ERROR =
   "could not compute the next fire time — a once schedule must lie in the future";
 export const SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR =
