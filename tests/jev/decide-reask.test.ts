@@ -110,4 +110,23 @@ describe("decide: a failed re-ask still reports an outage", () => {
     await new Promise((res) => setTimeout(res, 40));
     expect(store.listOpenIncidents().map((i) => i.kind)).toContain("jev_rate_limited");
   });
+  it("a late incident write that throws is logged with a fixed code, never an unhandled rejection (the daemon survives)", async () => {
+    const store = RunStore.openInMemory();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown): void => { unhandled.push(e); };
+    process.on("unhandledRejection", onUnhandled);
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const client = vi.fn<(q: JevRequest) => Promise<JevResult>>(() => new Promise<JevResult>((res) => setTimeout(() => res(fail("rate_limited")), 25)));
+      expect(await decide({ point: "injection", run_id: null, state: {}, questions: [Q], lang: "en", client, store, thresholdVersion: "t", boundMs: 5 }))
+        .toEqual({ status: "skipped", reason: "timeout" });
+      store.close(); // shutdown between the decision and the late 429: the incident write throws
+      await new Promise((res) => setTimeout(res, 60));
+      expect(unhandled).toEqual([]);
+      expect(log.mock.calls.map((c) => String(c[0]))).toContainEqual(expect.stringMatching(/late_incident_failed reason=error error_kind=rate_limited/));
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      log.mockRestore();
+    }
+  });
 });

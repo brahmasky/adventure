@@ -98,6 +98,19 @@ const mismatched = (qs: readonly Question[], answers: Record<string, JevAnswer>)
 
 const BOUND_EXPIRED: JevResult = { ok: false, reason: "error", detail: "decide bound", error_kind: "timeout" };
 /**
+ * The late path runs in a promise nothing awaits: a throw there (store closed at shutdown, SQLITE_BUSY, disk) would be an
+ * unhandled rejection that ends the daemon. It logs a fixed code with enums only and never rethrows: the turn already
+ * decided, and losing one late incident is cheaper than losing the process.
+ */
+function reportLate(onLate: (r: Extract<JevResult, { ok: false }>) => void, r: Extract<JevResult, { ok: false }>): void {
+  try {
+    onLate(r);
+  } catch (e) {
+    console.error(`jev: late_incident_failed reason=${r.reason} error_kind=${r.error_kind ?? "none"} cause=${e instanceof Error ? e.name : typeof e}`);
+  }
+}
+
+/**
  * Races a call against a budget; with no budget, the call alone (the client's own timeout still applies). A call that loses
  * the race still reports an outage when it settles: `onLate` gets its failure, so a bound shorter than the client's own
  * timeout (or retries) never hides a 429 / 529 / auth from Paco. Its answer, if any, is discarded.
@@ -108,8 +121,8 @@ function bounded(p: Promise<JevResult>, ms: number | undefined, onLate: (r: Extr
   let expired = false;
   // A rejection before expiry reaches the caller through the race; after it, it is classified like any other late failure
   // (a thrown client is transport noise to jevIncidentKind) instead of escaping as an unhandled rejection.
-  void p.then((late) => { if (expired && !late.ok) onLate(late); },
-    (e: unknown) => { if (expired) onLate({ ok: false, reason: "error", detail: e instanceof Error ? e.message : String(e), error_kind: "transport" }); });
+  void p.then((late) => { if (expired && !late.ok) reportLate(onLate, late); },
+    (e: unknown) => { if (expired) reportLate(onLate, { ok: false, reason: "error", detail: e instanceof Error ? e.message : String(e), error_kind: "transport" }); });
   const budget = new Promise<JevResult>((r) => { timer = setTimeout(() => { expired = true; r(BOUND_EXPIRED); }, Math.max(0, ms)); });
   return Promise.race([p, budget]).finally(() => clearTimeout(timer));
 }
