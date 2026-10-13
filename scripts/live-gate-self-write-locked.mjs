@@ -164,7 +164,8 @@ function checkRetry(m, log) {
   const g1 = first === undefined ? { allowed: true, denied: [] } : denied(m, first);
   check(`attempt 1: the real guard denies ${LOCKED}`, !g1.allowed && g1.denied.some((d) => d.path === LOCKED), g1.denied.map((d) => d.path).join(", "));
   const retryTask = log.writes[1]?.task ?? "";
-  check("the retry task (the loop's own) names the locked path and the sentinel", retryTask.includes(`LOCKED path(s): ${LOCKED}`)
+  check("the retry task (the loop's own) names the locked path and the sentinel", retryTask.includes("LOCKED path(s)")
+    && retryTask.includes(JSON.stringify(LOCKED))
     && retryTask.includes("HOUGE_NEEDS_LOCKED.md"));
   const second = diffAfter(log, 2);
   if (second === undefined) { cannotRun("retry diff only unlocked paths", "no guard diff recorded after writer call 2"); return true; }

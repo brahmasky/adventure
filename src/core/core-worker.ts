@@ -9,7 +9,7 @@ import { createLocalFileReadAdapter } from "../capabilities/local-file-read.js";
 import { createCodingAgentAdapter, resolveCodexEnabled, resolveCodexTimeoutMs } from "../capabilities/coding-agent.js";
 import { compileCodeSelfWriteContract, compileSelfDiagnoseContract, compileSkillAuthorContract } from "../contracts/task-contract.js";
 import { checkSelfWriteDiff, parseDiffRaw } from "../capabilities/self-write-guard.js";
-import { bucketDenials, buildLockedRetryText, NEEDS_LOCKED_FILE, planDenial, quoteNeedsLockedReason, renderLockedPaths, takeNeedsLockedFile } from "./self-write-locked.js";
+import { bucketDenials, buildLockedRetryText, buildTestRetryText, NEEDS_LOCKED_FILE, planDenial, quoteNeedsLockedReason, renderLockedPaths, takeNeedsLockedFile } from "./self-write-locked.js";
 import type { DiffEntry, GuardResult } from "../capabilities/self-write-guard.js";
 import { deniedEntries, revertWorktreePaths } from "./self-write-revert.js";
 import { resolveTestGateTimeoutMs, runTestGateAsync } from "../run/test-gate.js";
@@ -1453,13 +1453,7 @@ export class CoreWorker {
           if (plan.kind === "refine_tests") {
             const files = plan.tests.join(", ");
             lastFailure = `edited existing test(s): ${files}`;
-            task = buildSelfWriteRefineTask(
-              baseTask,
-              `Your diff edited EXISTING test file(s): ${files}. Existing tests are immutable — that is ` +
-                `forbidden and would be rejected. Houge has already reverted those test changes (they are back at HEAD); ` +
-                `do NOT redo them. Instead make your source change BACKWARD-COMPATIBLE so the existing tests pass ` +
-                `unchanged; add a NEW test file only if needed.`
-            );
+            task = buildSelfWriteRefineTask(baseTask, buildTestRetryText(plan.tests));
             continue;
           }
           if (plan.kind === "refine_locked") {
@@ -4214,7 +4208,7 @@ function buildSelfWriteReviewTask(message: string, focus: string, recentTurns: C
 
 /**
  * The write task for a refine pass. `guidance` is CODE-AUTHORED (Houge's own instruction: what failed, what was
- * reverted, what to do) and is a trusted instruction. `failure` is CHECKER OUTPUT (test-gate output, reviewer
+ * reverted, what to do) and is a trusted instruction; any writer-chosen path inside it is already nonce-fenced data. `failure` is CHECKER OUTPUT (test-gate output, reviewer
  * reasons) that can carry writer-controlled text, so it alone sits under the untrusted-data label.
  */
 function buildSelfWriteRefineTask(baseTask: string, guidance: string, failure?: string): string {
