@@ -154,6 +154,8 @@ import {
   type RouteReason
 } from "../jev/tree-policy.js";
 import { decide as decideLadder } from "../decisions/decide.js";
+import { INJECTION_TOTAL_MS } from "../decisions/entries/tool-injection.js";
+import { createInjectionJudge, type InjectionJudge } from "../decisions/injection-judge.js";
 import { isSkipReason, TURN_HANDLER, type TurnHandlerState, type TurnHandlerVerdict } from "../decisions/entries/turn-handler.js";
 import { TURN_GEAR, type TurnGearState, type TurnGearVerdict } from "../decisions/entries/turn-gear.js";
 import { storeRecorder } from "../decisions/record.js";
@@ -2355,7 +2357,7 @@ export class CoreWorker {
    * through `quarantine`, always (D3).
    */
   buildOmpTools(claim: ClaimedRun, chatId = this.chatOf(claim.run_id)): {
-    registry: ToolRegistry; quarantine: ActiveTurn["quarantine"]; preflight: NonNullable<ActiveTurn["preflight"]>;
+    registry: ToolRegistry; quarantine: ActiveTurn["quarantine"]; preflight: NonNullable<ActiveTurn["preflight"]>; judge: InjectionJudge;
   } {
     const state = this.ompTurnState(claim, chatId);
     const registry = new ToolRegistry();
@@ -2376,7 +2378,9 @@ export class CoreWorker {
     return {
       registry, quarantine: (tool, output) => this.ompQuarantine(claim, state, tool, output),
       // memory_correct writes: the trust limits refuse before any card, else the card shows exactly what changes
-      preflight: (entry, input) => (entry === "memory_correct_write" ? memoryWritePreflight(this.memoryDeps(claim, state.turnCtx), input) : null)
+      preflight: (entry, input) => (entry === "memory_correct_write" ? memoryWritePreflight(this.memoryDeps(claim, state.turnCtx), input) : null),
+      // tool.injection (spec §7.1): every shell and wall result of this turn is judged before a model reads it
+      judge: createInjectionJudge({ store: this.runStore, client: this.injectionClient(claim.run_id), home: this.ompPathContext().home })
     };
   }
 
@@ -2683,6 +2687,17 @@ export class CoreWorker {
       audit: this.runStore.llmAuditSink({ run_id, role: "triage" }),
       meteredBreached: () => this.runStore.meteredFuseLatched(),
       retries: 0, timeoutMs: 1_500,
+      ...(this.ompOptions.jevFetch ? { fetchImpl: this.ompOptions.jevFetch } : {})
+    });
+  }
+
+  /** tool.injection's Jev client: its own audit role, 3 s per request, no retry (the bound is per tool call, spec §7.1). */
+  private injectionClient(run_id: string): (req: JevRequest) => Promise<JevResult> {
+    return createJevClient({
+      apiKey: this.broker ? this.broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
+      audit: this.runStore.llmAuditSink({ run_id, role: "injection" }),
+      meteredBreached: () => this.runStore.meteredFuseLatched(),
+      retries: 0, timeoutMs: INJECTION_TOTAL_MS,
       ...(this.ompOptions.jevFetch ? { fetchImpl: this.ompOptions.jevFetch } : {})
     });
   }
