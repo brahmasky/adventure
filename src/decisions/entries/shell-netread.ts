@@ -68,11 +68,9 @@ function programReason(ws: string[], segment: string): NetreadReason | null {
   while (k < ws.length && /^\w+=/.test(ws[k]!)) k++;
   if (k >= ws.length) return null;
   if (!WRAPPERS.has(base(ws[k]!))) return directReason(ws, k, segment);
-  // the wrapped program: its first plain word (`sudo $CMD`); later words are only tried by name, so `sudo ls $DIR` stays local
-  const first = ws.slice(k + 1).find((w) => !w.startsWith("-") && !/^\w+=/.test(w) && !WRAPPERS.has(base(w)));
-  if (first !== undefined && EXPANDED.test(first)) return "indirection";
+  // which word a wrapper runs is unknown (`sudo -u x $CMD`), so any expanded word after it counts (conservative)
   for (let j = k + 1; j < ws.length; j++) {
-    if (/^\w+=/.test(ws[j]!) || WRAPPERS.has(base(ws[j]!)) || EXPANDED.test(ws[j]!)) continue;
+    if (/^\w+=/.test(ws[j]!) || WRAPPERS.has(base(ws[j]!))) continue;
     const r = directReason(ws, j, segment);
     if (r) return r;
   }

