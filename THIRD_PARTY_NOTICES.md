@@ -9,7 +9,9 @@ notice and the MIT permission notice are reproduced below, as the licence requir
   `packages/kyrn-judge/src/decisions/tool-injection.ts` (the package carries no licence of its own; the repository root
   `LICENSE` governs).
 - Ported into: `src/decisions/entries/tool-injection.ts` (the injection question's wording and the phrase floor) and
-  `src/decisions/egress.ts` (`splitPassages`, the passage splitter).
+  `src/decisions/egress.ts` (`splitPassages`, the passage splitter). Two published test passages from
+  `packages/kyrn-judge/test/injection.test.ts` at the same commit are planted attacks in
+  `src/decisions/injection-corpus.ts`.
 
 ```
 MIT License
