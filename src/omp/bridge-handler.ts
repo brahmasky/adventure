@@ -341,26 +341,30 @@ type JudgeOpts = Pick<JudgeInput, "outside" | "paths" | "extracted" | "linkToken
 
 /**
  * tool.injection on bytes that reach a model (spec §7.1). `outside`: the text came from a wall tool or network shell output.
- * A judge that throws: `localOutcome`, the same floor, content and path checks as the normal path (codex B2, Ruling 28), and
- * the judgement counts as lost; if that throws too, the whole result is withheld unjudged (fail closed).
+ * A judge that throws, or none wired (security final M-3: fail closed, never pass-through): `localOutcome`, the same floor,
+ * content and path checks as the normal path (codex B2, Ruling 28), and the judgement counts as lost (outside text framed as
+ * not checked); if that throws too, the whole result is withheld unjudged (fail closed).
  */
 async function judged(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: string, source: InjectionSource, text: string, o: JudgeOpts): Promise<string> {
-  if (!turn.judge) return text;
   const input: JudgeInput = { run_id: turn.run_id, tool_call_id: toolCallId, source, text, ...o, extracted: o.extracted ?? [...extractedFor(turn)], known: turn.secretValues ?? [] };
-  let out: Judged;
-  try {
-    out = await turn.judge(input);
-  } catch (e) {
-    console.error(`bridge: injection_judge_threw (${e instanceof Error ? e.name : "unknown"}); the local checks decide`);
-    try { out = localOutcome({ store: deps.store, home: deps.ctx.home }, input); }
-    catch (e2) {
-      // fail closed: the whole result is withheld unjudged; the code says the local checks did not decide either
-      console.error(`bridge: injection_local_failed (${e2 instanceof Error ? e2.name : "unknown"}); result withheld unjudged`);
-      out = { text: WITHHELD_UNJUDGED_TEXT, withheld: 1, withheldUnjudged: 1, framed: 0, notChecked: 0, unanswered: 1, skipped: true };
-    }
-  }
+  const out = await judgeOrLocal(deps, turn, input);
   raiseFor(turn, toolCallId, out);
   return out.text;
+}
+
+async function judgeOrLocal(deps: BridgeHandlerDeps, turn: ActiveTurn, input: JudgeInput): Promise<Judged> {
+  if (!turn.judge) console.error("bridge: injection_judge_missing; the local checks decide");
+  else {
+    try { return await turn.judge(input); } catch (e) {
+      console.error(`bridge: injection_judge_threw (${e instanceof Error ? e.name : "unknown"}); the local checks decide`);
+    }
+  }
+  try { return localOutcome({ store: deps.store, home: deps.ctx.home }, input); }
+  catch (e2) {
+    // fail closed: the whole result is withheld unjudged; the code says the local checks did not decide either
+    console.error(`bridge: injection_local_failed (${e2 instanceof Error ? e2.name : "unknown"}); result withheld unjudged`);
+    return { text: WITHHELD_UNJUDGED_TEXT, withheld: 1, withheldUnjudged: 1, framed: 0, notChecked: 0, unanswered: 1, skipped: true };
+  }
 }
 
 /**
@@ -383,7 +387,6 @@ function raiseFor(turn: ActiveTurn, toolCallId: string, o: Judged): void {
  * it), so it is judged too, as its own text (codex #2): everything the planner will read has been judged.
  */
 async function judgedRead(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: string, entry: RegistryEntry, output: Record<string, unknown>): Promise<Record<string, unknown>> {
-  if (!turn.judge) return output;
   const canonical = digestOutput(output, READER_INPUT_CHAR_CAP);
   const body = await judged(deps, turn, toolCallId, entry as InjectionSource, canonical, { outside: true });
   const extract = typeof output.trusted_extract === "string" && output.trusted_extract.length > 0 ? output.trusted_extract : undefined;

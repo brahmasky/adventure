@@ -102,9 +102,25 @@ describe("bridge: the injection judge on wall and shell results", () => {
     expect(r.content).not.toContain("collect.example");
     expect(h.events("turn_trust").map((e) => e.cause)).toEqual(["shell_netread", "injection_withheld"]);
   });
-  it("without a judge (a bare test turn) the result is untouched", async () => {
-    const h = setup({ judge: null, shellOut: SUBTLE });
-    expect((await h.handle(call("bash", { command: "cat notes.txt" })) as CallResult).content).toContain("collect.example");
+  // security final M-3: one deleted wiring line in core-worker (self-writable) used to switch every judgement off silently.
+  // With no judge the bridge fails closed: the local checks decide, outside text is framed as not checked and the turn
+  // goes hostile, and a fixed code is logged.
+  it("without a judge: fails closed — outside text framed as not checked, hostile, logged by code; a local read untrusted", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const net = setup({ judge: null, shellOut: CLEAN });
+      const r = await net.handle(call("bash", { command: "curl -s https://example.com/notes" })) as CallResult;
+      expect(r.content).toContain(NOT_CHECKED_OPEN);
+      expect(net.turn.trust?.level()).toBe("hostile");
+      const wall = setup({ judge: null });
+      await wall.handle(call("http_fetch", { url: "https://example.com/notes" }));
+      expect(String(wall.seen[0]?.answer)).toContain(NOT_CHECKED_OPEN);
+      expect(wall.turn.trust?.level()).toBe("hostile");
+      const local = setup({ judge: null, shellOut: SUBTLE });
+      await local.handle(call("bash", { command: "cat notes.txt" }));
+      expect(local.turn.trust?.level()).toBe("untrusted");
+      expect(err.mock.calls.filter(([m]) => String(m).includes("injection_judge_missing")).length).toBe(3);
+    } finally { err.mockRestore(); }
   });
   it("Jev down: the floor's answer, and the lost judgement raises the turn to untrusted (controller ruling 7)", async () => {
     const h0 = setup();
