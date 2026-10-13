@@ -9,7 +9,7 @@ import { createLocalFileReadAdapter } from "../capabilities/local-file-read.js";
 import { createCodingAgentAdapter, resolveCodexEnabled, resolveCodexTimeoutMs } from "../capabilities/coding-agent.js";
 import { compileCodeSelfWriteContract, compileSelfDiagnoseContract, compileSkillAuthorContract } from "../contracts/task-contract.js";
 import { checkSelfWriteDiff, parseDiffRaw } from "../capabilities/self-write-guard.js";
-import { buildLockedRetryText, NEEDS_LOCKED_FILE, isTestPath, planDenial, quoteNeedsLockedReason, renderLockedPaths, takeNeedsLockedFile } from "./self-write-locked.js";
+import { bucketDenials, buildLockedRetryText, NEEDS_LOCKED_FILE, planDenial, quoteNeedsLockedReason, renderLockedPaths, takeNeedsLockedFile } from "./self-write-locked.js";
 import type { DiffEntry, GuardResult } from "../capabilities/self-write-guard.js";
 import { deniedEntries, revertWorktreePaths } from "./self-write-revert.js";
 import { resolveTestGateTimeoutMs, runTestGateAsync } from "../run/test-gate.js";
@@ -1470,7 +1470,7 @@ export class CoreWorker {
             continue;
           }
           this.recordBlocked(claim.run_id, guard.denied.map((d) => ({ path: d.path, status: d.status, reason: d.reason })), ledgerFocus);
-          return this.selfWriteReport(buildHardDenyNotification(label, guard.denied.map((d) => d.path), lockedRetryUsed && guard.denied.some((d) => !isTestPath(d.path)) ? { told: true } : undefined));
+          return this.selfWriteReport(buildHardDenyNotification(label, guard.denied.map((d) => d.path), lockedRetryUsed && bucketDenials(guard.denied).locked.length > 0 ? { told: true } : undefined));
         }
 
         // (e) CHECKER 2 — test gate. Red → refine (feed the failing stage+output back) ≤3 total.

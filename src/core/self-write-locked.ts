@@ -85,16 +85,33 @@ export type DenialPlan =
   | { kind: "refine_locked"; locked: string[]; tests: string[] }
   | { kind: "terminal" };
 
-export const isTestPath = (p: string): boolean => p.replace(/^\.\//, "").toLowerCase().startsWith("tests/");
+/** A guard denial as the plan reads it: the display path and the guard's reason. */
+export interface Denial { path: string; reason: string }
+
+/** The guard's test-integrity reason (self-write-guard.ts `evaluateEntry`): the only denial a test edit produces. */
+const TEST_INTEGRITY = "test integrity:";
+
+/**
+ * Split the denials into locked and test-edit display paths (deduped). The guard checks BOTH real paths of a rename
+ * and gives each hit its own reason, so an entry is a test edit only when every reason it got is test integrity; any
+ * other reason (a protected old or new path, a symlink, a type change, an unreadable path) makes it locked. Bucketing
+ * on the display text put `tests/c.ts -> src/policy/x.ts` in the test bucket (final review 2026-10-13).
+ */
+export function bucketDenials(denied: Denial[]): { locked: string[]; tests: string[] } {
+  const locked = new Set<string>();
+  for (const d of denied) if (!d.reason.startsWith(TEST_INTEGRITY)) locked.add(d.path);
+  const tests = new Set<string>();
+  for (const d of denied) if (!locked.has(d.path)) tests.add(d.path);
+  return { locked: [...locked], tests: [...tests] };
+}
 
 /**
  * What to do with a guard denial. Test-only denials refine (as before). A locked denial refines ONCE per run
  * (`lockedRetryUsed`) while attempts remain. An unreadable diff (empty path, fail-closed) is always terminal.
  */
-export function planDenial(denied: Array<{ path: string }>, attempt: number, maxAttempts: number, lockedRetryUsed: boolean): DenialPlan {
+export function planDenial(denied: Denial[], attempt: number, maxAttempts: number, lockedRetryUsed: boolean): DenialPlan {
   if (denied.length === 0 || attempt >= maxAttempts || denied.some((d) => d.path === "")) return { kind: "terminal" };
-  const tests = denied.map((d) => d.path).filter(isTestPath);
-  const locked = denied.map((d) => d.path).filter((p) => !isTestPath(p));
+  const { locked, tests } = bucketDenials(denied);
   if (locked.length === 0) return { kind: "refine_tests", tests };
   return lockedRetryUsed ? { kind: "terminal" } : { kind: "refine_locked", locked, tests };
 }

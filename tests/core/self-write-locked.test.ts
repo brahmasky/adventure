@@ -3,7 +3,8 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { NEEDS_LOCKED_FILE, SENTINEL_UNREADABLE, takeNeedsLockedFile } from "../../src/core/self-write-locked.js";
+import { NEEDS_LOCKED_FILE, SENTINEL_UNREADABLE, planDenial, takeNeedsLockedFile } from "../../src/core/self-write-locked.js";
+import { checkSelfWriteDiff, parseDiffRaw } from "../../src/capabilities/self-write-guard.js";
 
 let wt = "";
 let outside = "";
@@ -51,5 +52,24 @@ describe("takeNeedsLockedFile", () => {
     execFileSync("mkfifo", [join(wt, NEEDS_LOCKED_FILE)]);
     expect(takeNeedsLockedFile(wt)).toBe(SENTINEL_UNREADABLE);
     expect(gone()).toBe(true);
+  });
+});
+
+// Final review 2026-10-13: the plan once bucketed on the display string (`old -> new`), so a rename landed in the
+// bucket of its SOURCE side. These feed the REAL guard's denials, so the bucket follows what the guard checked.
+describe("planDenial buckets a rename on both of its real paths", () => {
+  const plan = (raw: string) => {
+    const g = checkSelfWriteDiff(parseDiffRaw(raw));
+    if (g.allowed) throw new Error("expected a denial");
+    return planDenial(g.denied, 1, 3, false);
+  };
+  it("a rename out of tests/ into src/policy/ is a LOCKED denial, listed once (why: the writer must be told it is locked)", () => {
+    expect(plan(":100644 100644 a a R100\ttests/c.ts\tsrc/policy/x.ts\n")).toEqual({ kind: "refine_locked", locked: ["tests/c.ts -> src/policy/x.ts"], tests: [] });
+  });
+  it("a rename from a locked source into an unlocked path is a LOCKED denial (why: either side on the locked surface counts)", () => {
+    expect(plan(":100644 100644 a a R100\tsrc/omp/x.ts\tsrc/prompt/x.ts\n")).toEqual({ kind: "refine_locked", locked: ["src/omp/x.ts -> src/prompt/x.ts"], tests: [] });
+  });
+  it("moving a source file into tests/ is a TEST edit, not a locked one (why: it must not burn the single locked retry)", () => {
+    expect(plan(":100644 100644 a a R100\tsrc/a.ts\ttests/b.ts\n")).toEqual({ kind: "refine_tests", tests: ["src/a.ts -> tests/b.ts"] });
   });
 });
