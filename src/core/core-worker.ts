@@ -159,6 +159,7 @@ import { createInjectionJudge, type InjectionJudge } from "../decisions/injectio
 import { isSkipReason, TURN_HANDLER, type TurnHandlerState, type TurnHandlerVerdict } from "../decisions/entries/turn-handler.js";
 import { TURN_GEAR, type TurnGearState, type TurnGearVerdict } from "../decisions/entries/turn-gear.js";
 import { storeRecorder } from "../decisions/record.js";
+import { decisionOf, recordTapOutcome } from "../decisions/tap-outcomes.js";
 import type { AnyDecideResult, AnyEntry, DecideResult, DecisionRecorder, FallbackReason, RungOutcome, RungResult } from "../decisions/types.js";
 import { fallbackOfSkip, jevSkipReason, planTree, treeDetailOf, treeNear, type AnsweredDecision, type TreeDetail } from "./turn-handler-ladder.js";
 import { memlaneUndoButton, memoryInformNote, memoryLaneCard } from "./memory-lane-card.js";
@@ -2725,10 +2726,13 @@ export class CoreWorker {
     };
   }
 
-  /** Spec §6: `think harder` now labels the chat's previous turn as routed too light (first correction wins). */
+  /** Spec §6: `think harder` labels the chat's previous turn as routed too light (first correction wins); Addition A: an outcome row too. */
   private markThinkHarder(run_id: string): void {
     const prev = this.runStore.latestJevVerdictForChat(this.chatOf(run_id), new Date().toISOString());
-    if (prev && prev.run_id !== run_id && prev.paco_correction === null) this.runStore.updateJevVerdict(prev.verdict_id, { paco_correction: "think_harder" });
+    if (!prev || prev.run_id === run_id || prev.paco_correction !== null) return;
+    this.runStore.updateJevVerdict(prev.verdict_id, { paco_correction: "think_harder" });
+    const d = decisionOf(this.runStore, prev.run_id, "turn.gear") ?? decisionOf(this.runStore, prev.run_id, "turn.handler");
+    if (d) recordTapOutcome(this.runStore, d.decision_id, "think_harder", prev.role);
   }
 
   /**

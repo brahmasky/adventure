@@ -4,6 +4,7 @@ import { oncePerTrigger, replyTo } from "./memory-commands.js";
 import { TRIAGE_OVERRIDE_LIMIT, TRIAGE_OVERRIDE_WINDOW_DAYS, triageOverrideSince, triageOverrideSubject } from "../jev/jev-incidents.js";
 import { openAlertedIncident } from "../run/incident-alert.js";
 import type { RunStore } from "../run/run-store.js";
+import { decisionOf, recordTapOutcome } from "../decisions/tap-outcomes.js";
 
 /** Lane card taps (ADR 0029 §5.6, stage B §6). Undo is compare-and-set; "Dig deeper" is the override label. */
 export { TRIAGE_OVERRIDE_LIMIT, TRIAGE_OVERRIDE_WINDOW_DAYS };
@@ -25,6 +26,8 @@ export function handleMemLaneUndo(store: RunStore, event: TypedTaskEvent): Gatew
       return { ok: false, error: { code: LESSON_CHANGE_NOT_FOUND, message: "No such lesson change in this chat" } };
     }
     const r = store.undoLessonChange(change_id); // writes lesson_change_undone inside its own transaction
+    const undone = r.status === "undone" && change.run_id ? decisionOf(store, change.run_id, "turn.handler") : undefined;
+    if (undone) recordTapOutcome(store, undone.decision_id, "lesson_undone", undone.verdict); // Addition A (plan Ruling 8)
     const text = r.status === "undone"
       ? `↩️ Undone: lesson #${change.new_id} retired, restored #${r.restored.join(", #") || "—"}${r.skipped.length ? ` (left as is: #${r.skipped.join(", #")})` : ""}.`
       : r.status === "changed_since" ? LESSON_CHANGED_SINCE_TEXT : LESSON_ALREADY_UNDONE_TEXT;
@@ -57,9 +60,12 @@ export function recordTriageOverride(store: RunStore, original_run_id: string, n
   const verdict = store.getJevVerdictForRun(original_run_id);
   const lane = verdict?.lane ?? null;
   store.recordMemoryEvent("triage_override", { run_id: original_run_id, new_run_id, change_id, lane });
-  for (const d of store.listJevDecisions(original_run_id)) store.recordJevOutcome(d.decision_id, "paco_correction", "override");
+  for (const d of store.listJevDecisions(original_run_id)) {
+    if (d.point === "triage") store.recordJevOutcome(d.decision_id, "paco_correction", "override"); // a run's injection rows are not the front door's
+  }
   // Spec §6: the tap is Paco's explicit correction, so it outranks any earlier label on the original turn's verdict.
   if (verdict) store.updateJevVerdict(verdict.verdict_id, { paco_correction: "ask_anyway" });
+  if (verdict?.decision_id && lane !== null) recordTapOutcome(store, verdict.decision_id, "dig_deeper", lane, now); // Addition A
   if (lane === null || store.countRecentTriageOverrides(lane, triageOverrideSince(now)) < TRIAGE_OVERRIDE_LIMIT) return;
   openAlertedIncident(store, { kind: "triage_overrides", subject: triageOverrideSubject(lane), chat_id,
     detail: { lane, window_days: TRIAGE_OVERRIDE_WINDOW_DAYS, limit: TRIAGE_OVERRIDE_LIMIT } });

@@ -77,7 +77,7 @@ export const TURN_HANDLER: Entry<TurnHandlerState, TurnHandlerVerdict> = {
     { kind: "model", name: "cascade", role: "tiny", prompt: { id: "turn.handler.cascade", version: 1 }, timeoutMs: 25_000 }
   ],
   fail: "planner", defaultVerdict: "planner", alwaysRecord: true,
-  outcomes: ["dig_deeper", "correction", "rating", "review_ok", "review_bad", "review_unsure"],
+  outcomes: ["dig_deeper", "correction", "rating", "review_ok", "review_bad", "review_unsure", "lesson_undone", "think_harder"],
   armed: { rule: "on", system_one: "on", model: "on" },
   effects: TURN_HANDLER_EFFECTS,
   reasonCodes: [...ROUTE_REASONS, ...SKIP_REASONS]

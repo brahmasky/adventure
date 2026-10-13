@@ -29,7 +29,7 @@ export const TURN_GEAR: Entry<TurnGearState, TurnGearVerdict> = {
       timeoutMs: 1_000 }
   ],
   fail: "default", defaultVerdict: "default",
-  outcomes: ["correction", "rating", "review_ok", "review_bad", "review_unsure"],
+  outcomes: ["correction", "rating", "review_ok", "review_bad", "review_unsure", "think_harder"],
   armed: { rule: "on", system_one: "on" },
   effects: { fast: NONE, default: NONE, thinking: NONE },
   reasonCodes: [...ROUTE_REASONS, "gear_not_applied"]
