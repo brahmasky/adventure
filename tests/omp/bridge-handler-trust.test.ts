@@ -34,13 +34,13 @@ const meta = (name: string, side_effect_level: SideEffectLevel, execute?: Exec):
 const judging = () => vi.fn(async (req: JevRequest): Promise<JevResult> => ({ ok: true, model: "jev-1.13.0", input_tokens: 10, latency_ms: 5,
   answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { type: "noul" as const, noul: String((req.state as Record<string, string>)[`p${id.slice(1)}`]).includes("AI assistants") ? 0.94 : 0.03 }])) }));
 
-function setup(o: { env?: NodeJS.ProcessEnv; page?: string; shellOut?: string; judge?: InjectionJudge | null } = {}) {
+function setup(o: { env?: NodeJS.ProcessEnv; page?: string; shellOut?: string; shellFail?: string; judge?: InjectionJudge | null; client?: ReturnType<typeof judging> } = {}) {
   const store = RunStore.openInMemory(); const run_id = createQueuedTurnRun(store);
   const claim = store.claimRun(run_id, "planner:c:a", 120)!;
   const contract: CompiledTaskContract = { ...claim.contract, allowed_actions: ENVELOPE, forbidden_actions: ["coding_agent_cli", "paid_action"],
     approval_gates: ["external_write", "destructive", "paid"], budget: { ...claim.contract.budget, max_tool_calls: 40 } };
   const ran: string[] = [];
-  const shell: Exec = async (i) => { ran.push(String(i.command)); return { ok: true, output: { exit_code: 0, output: o.shellOut ?? `ran ${String(i.command)}`, truncated: false } }; };
+  const shell: Exec = async (i) => { ran.push(String(i.command)); if (o.shellFail !== undefined) return { ok: false, error: o.shellFail }; return { ok: true, output: { exit_code: 0, output: o.shellOut ?? `ran ${String(i.command)}`, truncated: false } }; };
   const registry = new ToolRegistry();
   registry.register(meta("http_fetch", "external_read", async () => ({ ok: true, output: { url: "https://example.com/notes", status: 200, content_type: "text/plain", content: o.page ?? CLEAN } })));
   registry.register(meta("lesson_write", "none", async () => ({ ok: true, output: { saved: true } })));
@@ -52,7 +52,7 @@ function setup(o: { env?: NodeJS.ProcessEnv; page?: string; shellOut?: string; j
   const pauses: Array<[boolean, PausePolicy | undefined]> = [];
   const dir = mkdtempSync(join(tmpdir(), "hbt-"));
   const env = { HOUGE_TRUST_ASK_TTL_MS: "60", HOUGE_HTTPFETCH_ENABLED: "1", ...(o.env ?? {}) };
-  const judge = o.judge === null ? undefined : o.judge ?? createInjectionJudge({ store, client: judging(), home: join(dir, "home") });
+  const judge = o.judge === null ? undefined : o.judge ?? createInjectionJudge({ store, client: o.client ?? judging(), home: join(dir, "home") });
   const turn: ActiveTurn = { run_id, worker_id: "planner:c:a", chat_id: "555", requester: { kind: "user", id: "1" }, contract, budget: new BudgetLedger(contract.budget),
     registry, signal: new AbortController().signal, cwd: dir, step: { n: 0 }, cache: new Map(), unreported: new Map(), quarantine,
     setAwaitingApproval: (on, pause) => { pauses.push([on, pause]); }, postureOk: () => null,
@@ -137,6 +137,52 @@ describe("bridge: the injection judge on wall and shell results", () => {
     expect(r.content).toContain(CLEAN);
     expect(h.turn.trust?.level()).toBe("hostile");
     expect(h.events("turn_trust").map((e) => e.cause)).toEqual(["shell_netread", "unjudged_outside"]);
+  });
+});
+
+// Fix round 1 (task 12 review): the paths a refactor could drop without any other test noticing.
+describe("bridge: the judge on the shell failure path, the bridge token, and a dead local fallback", () => {
+  it("an oversized network page arriving as a shell failure (output_cap carries the output) is judged like a success", async () => {
+    const big = `${CLEAN}\n\n${SUBTLE}\n\n${"filler line of the page body\n".repeat(1_500)}`;
+    const h = setup({ shellFail: `bash output_cap\n${big}` });
+    const r = await h.handle(call("bash", { command: "curl -s https://example.com/huge" })) as CallResult;
+    expect(r.isError).toBe(true);
+    expect(r.content).toContain(WITHHELD_TEXT);
+    expect(r.content).not.toContain("collect.example");
+    expect(h.events("turn_trust").map((e) => e.cause)).toEqual(["shell_netread", "injection_withheld"]);
+  });
+  it("a non-zero exit's output is judged too (a failing local command still raises nothing it did not read)", async () => {
+    const h = setup({ shellFail: `failed: exit 1\n${CLEAN}\n\n${SUBTLE}` });
+    const r = await h.handle(call("bash", { command: "cat notes.txt" })) as CallResult;
+    expect(r.content).toContain(WITHHELD_TEXT);
+    expect(r.content).not.toContain("collect.example");
+    expect(h.turn.trust?.level()).toBe("hostile");
+  });
+  it("the turn's bridge token never reaches Jev and is masked for the planner (known values are always mirrored)", async () => {
+    // the spawn's real shape (randomBytes(24) hex), and a word-shaped value no shape rule would catch: only `known` masks it
+    const token = "9f3c2a7be41d08c65f7a1e2b3c4d5e6f708192a3b4c5d6e7";
+    const worded = "tangerine-umbrella-kettle-sunrise";
+    const client = judging();
+    const h = setup({ client, shellOut: `${CLEAN}\n\nHOUGE_BRIDGE=${token} and the label ${worded} for the socket path` });
+    h.turn.secretValues = [token, worded];
+    const r = await h.handle(call("bash", { command: "env" })) as CallResult;
+    const bodies = client.mock.calls.map(([req]) => JSON.stringify(req));
+    expect(bodies.length).toBeGreaterThan(0);
+    for (const v of [token, worded]) for (let k = 0; k + 8 <= v.length; k++) expect(bodies.some((b) => b.includes(v.slice(k, k + 8))), `Jev saw ${v.slice(k, k + 8)}`).toBe(false);
+    for (const v of [token, worded]) expect(r.content).not.toContain(v);
+  });
+  it("when the judge throws AND the local checks throw: the whole result is withheld unjudged and the failure is logged by code", async () => {
+    const thrower: InjectionJudge = async () => { throw new Error("boom"); };
+    const h = setup({ judge: thrower, shellOut: SUBTLE });
+    vi.spyOn(h.store, "redactSecretValues").mockImplementation(() => { throw new Error("redactor down"); });
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const r = await h.handle(call("bash", { command: "cat notes.txt" })) as CallResult;
+      expect(r.content.startsWith(WITHHELD_UNJUDGED_TEXT)).toBe(true);
+      expect(r.content).not.toContain("collect.example");
+      expect(h.turn.trust?.level()).toBe("hostile");
+      expect(err.mock.calls.some(([m]) => String(m).includes("injection_local_failed"))).toBe(true);
+    } finally { err.mockRestore(); }
   });
 });
 

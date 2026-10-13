@@ -348,9 +348,13 @@ async function judged(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: str
   try {
     out = await turn.judge(input);
   } catch (e) {
-    console.error(`bridge: injection judge threw (${e instanceof Error ? e.name : "unknown"}); the local checks decide`);
+    console.error(`bridge: injection_judge_threw (${e instanceof Error ? e.name : "unknown"}); the local checks decide`);
     try { out = localOutcome({ store: deps.store, home: deps.ctx.home }, input); }
-    catch { out = { text: WITHHELD_UNJUDGED_TEXT, withheld: 1, withheldUnjudged: 1, framed: 0, unanswered: 1, skipped: true }; }
+    catch (e2) {
+      // fail closed: the whole result is withheld unjudged; the code says the local checks did not decide either
+      console.error(`bridge: injection_local_failed (${e2 instanceof Error ? e2.name : "unknown"}); result withheld unjudged`);
+      out = { text: WITHHELD_UNJUDGED_TEXT, withheld: 1, withheldUnjudged: 1, framed: 0, unanswered: 1, skipped: true };
+    }
   }
   raiseFor(turn, toolCallId, out, o.outside);
   return out.text;
