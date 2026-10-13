@@ -74,6 +74,16 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Ladder move**: A recorded change of who decides an entry (`ladder_moves`), such as a standing approval moving a fingerprint from Paco's tap to a code rule. Only code may make one on its own (standing approvals, skill authoring after recurrence, stated-rule lessons); every loosening is a proposal for Paco's tap; locked entries never move.
 
+**Trust level**: Clean, untrusted or hostile: what a turn has read so far (`turn.trust`, locked code). It only rises, and it only adds taps.
+
+**Hostile turn**: A turn in which `tool.injection` withheld a passage (or framed one from outside). Shell commands off the read-only list and all writes ask.
+
+**Withhold**: Replacing a passage of tool output with `[withheld: text aimed at the assistant]` before any model reads it.
+
+**Noise band**: A reviewed per-question margin around a bar inside which a decision asks Jev once more and uses the mean (or, over tool input, the more cautious call).
+
+**Tap label**: A calibration label taken from Paco's ✅ on a front-door lane route; other taps are evidence only.
+
 **Dig deeper**: The button that ends every lane card (callback `lane:ask:<run_id>`; formerly "Ask Houge anyway"). A tap re-runs the message on the planner, skipping triage, and labels the lane's verdict `ask_anyway`. It is a correction signal, not a lane fault: three on one lane in seven days page Paco, and nothing is disarmed.
 
 **Lane reply**: A turn a lane answered outside the planner's omp session. Its code-built one-line summary (`lane_replies.catch_up`) is what the next planner turn in that chat is told in the catch-up block; the lookup lane's prose is never carried.

@@ -71,7 +71,7 @@ reach a real omp. The defaults below are copied from `src/omp/omp-config.ts`.
 | `HOUGE_MODEL_ROLES` | `resolved` | `resolved` \| `static`. `resolved` resolves each role's code list against omp's live catalog, applies `/models` overrides and clamps effort. `static` is the **model-list rollback**: today's seven chains as written, with no catalog check, no override, no daily tick and no clamp. Read per call from `process.env`; `.env` is parsed once at boot, so a change needs a kickstart. Pinned in tests: yes. |
 | `HOUGE_OMP_ENV_PASSTHROUGH` | `KIMI_CODE_OAUTH_HOST,KIMI_CODE_BASE_URL` | Extra env var **names** passed to every omp child, on top of `PATH HOME TERM LANG USER`. The default is the Kimi pair, kept for token refresh against kimi.ai. Never list a secret here. | yes |
 | `HOUGE_OMP_TURN_TIMEOUT_MS` | `600000` | The turn deadline, paused while a card awaits `/approve`. Expiry writes `loop_halted{turn_timeout}` and sends the partial answer. | yes |
-| `HOUGE_OMP_FRAME_IDLE_MS` | `180000` | Watchdog: no omp frame and no bridge activity for this long while a turn runs → abort (`frame_idle`). | yes |
+| `HOUGE_OMP_FRAME_IDLE_MS` | `180000` | Watchdog: no omp frame and no bridge activity for this long while a turn runs → abort (`frame_idle`). Keep it above 90 s: Houge's omp config caps omp's own retry waits at 60 s (decision ladder 2a, S2b), and a lower watchdog would abort a turn during one. | yes |
 | `HOUGE_OMP_APPROVAL_TIMEOUT_MS` | `1800000` | How long an in-turn approval card waits. On expiry the call is refused (`approval_expired`); the planner is told and continues. | yes |
 | `HOUGE_OMP_ONESHOT_TIMEOUT_MS` | `120000` | Per-leg wall clock for one-shot seats, enforced with SIGKILL. A seat's runner cap is legs × this + 15 s. | yes |
 | `HOUGE_OMP_IDLE_EXIT_MS` | `3600000` | An idle planner child exits after this long. The next message restarts it and resumes the session. | yes |
@@ -1048,6 +1048,9 @@ and `turn.gear` (the role on the route, recorded from the same Jev call). Refere
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `HOUGE_DECISION_DIGEST_AT` | `21:00` | Local time (`HH:MM`, in `HOUGE_DISPLAY_TZ`) of the daily decision digest to the operator chat. Malformed → the default. Sent once per local date on the first poll at or after the time; a day with no decisions and no health failures sends nothing (the latch row still records the date); a day with only health failures sends a Health-only digest. |
+| `HOUGE_TRUST_ASK_TTL_MS` | `300000` (5 min) | How long a trust card (an approval asked only because the turn read outside content, spec §7.2) waits for Paco, and the most a turn's trust cards together may pause its deadline and frame watchdog. A positive integer up to 1 800 000; anything else uses the default. Read per call; no restart needed. |
+
+The injection judge, turn trust, the golden set and the noise band have no switch (R13). The noise band has no variable: its values are reviewed rows in `src/decisions/noise-band.ts`.
 
 **No off switch (ruling R13).** There is no variable that turns the decision system off or into shadow. The only shadow
 left is the front door's existing `HOUGE_JEV_TRIAGE_ENABLED=shadow`, unchanged. If a build is fundamentally wrong, revert
