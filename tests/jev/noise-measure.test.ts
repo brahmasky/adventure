@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { candidateBandRows, createTempRoot, formatNoiseReport, parseNoiseArgs, redactStrings, repeatCalls, spreadStats, withTempRoot } from "../../src/jev/noise-measure.js";
+import { candidateBandRows, createTempRoot, formatNoiseReport, installCleanupSignals, treeMeasureRequests, parseNoiseArgs, redactStrings, repeatCalls, spreadStats, withTempRoot } from "../../src/jev/noise-measure.js";
+import { RunStore } from "../../src/run/run-store.js";
+import { treeContextFor } from "../../src/jev/triage-replay.js";
 import type { JevAnswer, JevRequest, JevResult } from "../../src/jev/jev-client.js";
 
 // The band is a reviewed number: it must come from repeated identical requests, as the 95th percentile of each request's
@@ -94,5 +96,29 @@ describe("egress and temp root", () => {
     expect(existsSync(root.path)).toBe(true);
     root.remove(); root.remove();
     expect(existsSync(root.path)).toBe(false);
+  });
+});
+
+describe("tree mode sends the live state", () => {
+  // The bands guard the front-door request; measuring a differently redacted state would measure another request.
+  it("is the live builder's output for the same turn, unchanged", () => {
+    const store = RunStore.openInMemory();
+    const turn = { run_id: "r1", chat_id: "c", turn_id: "t1", text: "remember my key is api_key=Zx9Qw3Lm8Vt2Ry7Kp4Nd6Hs1 please", created_at: "2026-10-01T00:00:00.000Z", anchor: null, quoted_turn_id: null } as never;
+    const live = treeContextFor(store, {}, turn).built;
+    const [r] = treeMeasureRequests(store, {}, [turn]);
+    expect(live.ok).toBe(true);
+    expect(r!.req.state).toEqual(live.ok ? live.state : null);
+  });
+});
+
+describe("cleanup signals", () => {
+  it("SIGINT, SIGTERM and SIGHUP each remove the temp copy and then exit", () => {
+    const handlers = new Map<string, () => void>(); const exits: number[] = [];
+    let removed = 0;
+    installCleanupSignals(() => { removed++; }, { on: ((s: string, h: () => void) => { handlers.set(s, h); }) as never, exit: ((c: number) => { exits.push(c); }) as never });
+    expect([...handlers.keys()].sort()).toEqual(["SIGHUP", "SIGINT", "SIGTERM"]);
+    for (const h of handlers.values()) h();
+    expect(removed).toBe(3);
+    expect(exits.sort()).toEqual([129, 130, 143]);
   });
 });

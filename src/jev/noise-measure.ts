@@ -2,7 +2,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { redactForJudge } from "../decisions/egress.js";
 import { answerValue } from "../decisions/noise-band.js";
+import type { ReplayTurnRow, RunStore } from "../run/run-store.js";
 import type { JevAnswer, JevRequest, JevResult } from "./jev-client.js";
+import { TREE_QUESTIONS } from "./questions/tree.js";
+import { toJevQuestion, type Question } from "./questions/types.js";
+import { treeContextFor } from "./triage-replay.js";
 
 /**
  * Addition B's measurement: k byte-identical requests per state; per question, each request's spread (max − min of the
@@ -109,4 +113,19 @@ export function createTempRoot(prefix: string, base: string): TempRoot {
 export async function withTempRoot<T>(prefix: string, base: string, fn: (path: string) => Promise<T>): Promise<T> {
   const root = createTempRoot(prefix, base);
   try { return await fn(root.path); } finally { root.remove(); }
+}
+
+/** Tree mode sends exactly what the live front-door rung builds (shape-sanitized, no extra redaction): the bands must fit that request. */
+export function treeMeasureRequests(store: RunStore, env: NodeJS.ProcessEnv, turns: readonly ReplayTurnRow[]): Array<{ req: JevRequest; questions: readonly Question[] }> {
+  const questions = Object.fromEntries(TREE_QUESTIONS.map((q) => [q.id, toJevQuestion(q)]));
+  return turns.flatMap((t) => {
+    const { built } = treeContextFor(store, env, t);
+    return built.ok ? [{ req: { state: built.state, questions }, questions: TREE_QUESTIONS }] : [];
+  });
+}
+
+/** Removes the temp copy on every terminating signal, then exits with the conventional 128+n code. */
+export function installCleanupSignals(cleanup: () => void, proc: Pick<NodeJS.Process, "on" | "exit"> = process): void {
+  const codes = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const;
+  for (const [sig, code] of Object.entries(codes)) proc.on(sig as NodeJS.Signals, () => { cleanup(); proc.exit(code); });
 }

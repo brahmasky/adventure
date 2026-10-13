@@ -11,7 +11,8 @@
 // --injection re-sends the planted corpus (src/decisions/injection-corpus.ts, Task 18) masked then split, in batches of 16.
 // --tree re-sends Paco's last Telegram texts with their stored context (shape-only redaction, the P6 gate's states). The
 // standing approval named ONE replay, so this mode refuses to run without --approved (plan Q1: "yes, 40 × 5").
-// Every request state also passes through the egress redactor (redactStrings) before it leaves.
+// --injection states pass through the egress redactor (splitEgress, then redactStrings); --tree sends the live front-door state
+// exactly as built (shape-sanitized, like the live path and Paco's approved egress), so the bands fit the request they guard.
 // Exit: 0 complete · 3 INCOMPLETE (a call failed or the model moved) · 2 setup error.
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -46,9 +47,7 @@ async function treeRequests(m, limit) {
   const store = m.RunStore.open(copy);
   try {
     const turns = store.listReplayTurns({ sinceIso: m.TREE_LABEL_SINCE }).filter((t) => store.runSource(t.run_id) === "telegram").slice(-limit);
-    const wire = Object.fromEntries(m.TREE_QUESTIONS.map((q) => [q.id, m.toJevQuestion(q)]));
-    return turns.map((t) => m.treeContextFor(store, process.env, t).built).filter((b) => b.ok)
-      .map((b) => ({ req: { state: m.redactStrings(b.state), questions: wire }, questions: m.TREE_QUESTIONS }));
+    return m.treeMeasureRequests(store, process.env, turns); // the live front-door state as built; no extra redaction
   } finally { store.close(); }
 }
 
@@ -95,5 +94,6 @@ async function main() {
   return failed > 0 || models.size > 1 ? 3 : 0;
 }
 
-process.on("SIGINT", () => { cleanup(); process.exit(130); });
+const sig = await import(join(DIST, "jev/noise-measure.js"));
+sig.installCleanupSignals(cleanup);
 main().then((c) => { cleanup(); process.exit(c); }, (e) => { console.error(`noise measure setup error: ${e instanceof Error ? e.message : String(e)}`); cleanup(); process.exit(2); });
