@@ -1,4 +1,4 @@
-import { closeSync, constants, lstatSync, openSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { PROTECTED_DIRS, PROTECTED_FILES } from "../capabilities/self-write-guard.js";
 import { sanitizeJevText } from "../jev/egress-redact.js";
@@ -51,7 +51,11 @@ export function takeNeedsLockedFile(worktree: string): string | undefined {
     const st = lstatSync(file);
     if (st.isFile() && st.size <= SENTINEL_MAX_BYTES) {
       const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-      try { text = readFileSync(fd, "utf8"); } finally { closeSync(fd); }
+      try {
+        // Re-check on the open fd: the path may have been swapped between the lstat and the open.
+        const opened = fstatSync(fd);
+        if (opened.isFile() && opened.size <= SENTINEL_MAX_BYTES) text = readFileSync(fd, "utf8");
+      } finally { closeSync(fd); }
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
