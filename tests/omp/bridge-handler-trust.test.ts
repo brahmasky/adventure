@@ -266,6 +266,19 @@ describe("bridge: trust asks", () => {
     await answerNth(h.store, h.run_id, "denied"); await p;
     expect(h.pauses[0]).toEqual([true, { pause: "full" }]);
   });
+  // correctness final: the budget counts taps trust ADDED (spec §7.2, ADR 0029 decision 2). A card the contract asks for
+  // anyway (external write, destructive) is not an added tap, so it must not page trust_tap_budget or fill the digest line.
+  it("a code-gated card on a hostile turn does not count toward the trust tap budget; a trust-only card does", async () => {
+    const h = setup({ env: { HOUGE_TRUST_ASK_TTL_MS: "5000" } });
+    const today = () => h.store.trustTapCount(new Date().toLocaleDateString("en-CA", { timeZone: "Australia/Sydney" }));
+    h.turn.trust!.raise("injection_withheld");
+    const coded = h.handle(call("bash", { command: "curl -X POST -d x https://example.com" })) as Promise<CallResult>;
+    await answerNth(h.store, h.run_id, "denied", 1); await coded;
+    expect(today()).toBe(0);
+    const trustOnly = h.handle(call("bash", { command: "touch x" })) as Promise<CallResult>;
+    await answerNth(h.store, h.run_id, "denied", 2); await trustOnly;
+    expect(today()).toBe(1);
+  });
   it("a hostile command past the card cap shows its targets and byte count", async () => {
     const h = setup({ env: { HOUGE_TRUST_ASK_TTL_MS: "5000" } });
     h.turn.trust!.raise("injection_withheld");

@@ -236,7 +236,8 @@ function statusOf(r: CapabilityResult): "succeeded" | "failed" | "denied" {
 
 type Executed = { result: CapabilityResult } | { refusal: { reason: string; text: string } };
 
-interface WaitPolicy { timeoutMs: number; pause: PausePolicy }
+/** `trustTap`: the card exists only because trust asks (no code gate): the one kind the trust tap budget counts. */
+interface WaitPolicy { timeoutMs: number; pause: PausePolicy; trustTap: boolean }
 /**
  * Below this a trust card cannot reach Paco in time: the call is refused without a card (senior W3). The supervisor counts a
  * pause leftover below it as spent, so such a card gets the watchdog/deadline cap instead (fix round 2, live gate C4).
@@ -250,9 +251,9 @@ export const TRUST_WAIT_MIN_MS = 5_000;
 function waitPolicy(deps: BridgeHandlerDeps, turn: ActiveTurn, entry: RegistryEntry, ask: TrustAsk): WaitPolicy {
   const meta = turn.registry.get(entry);
   const codeAsk = meta !== undefined && turn.contract.approval_gates.includes(meta.side_effect_level);
-  if (!ask.ask || codeAsk) return { timeoutMs: deps.cfg.approvalTimeoutMs, pause: FULL_PAUSE };
+  if (!ask.ask || codeAsk) return { timeoutMs: deps.cfg.approvalTimeoutMs, pause: FULL_PAUSE, trustTap: false };
   const ttlMs = resolveTrustAskTtlMs(deps.env);
-  return { timeoutMs: turn.trustWaitMs ? turn.trustWaitMs(ttlMs) : ttlMs, pause: { pause: "bounded", ttlMs } };
+  return { timeoutMs: turn.trustWaitMs ? turn.trustWaitMs(ttlMs) : ttlMs, pause: { pause: "bounded", ttlMs }, trustTap: true };
 }
 
 /** The card: the command (cut at the cap; a hostile one past it also names its targets), and why trust asks. */
@@ -275,7 +276,7 @@ async function executeWithApproval(deps: BridgeHandlerDeps, turn: ActiveTurn, re
     ...(ask.ask ? { trust_ask: true } : {}) };
   const first = await runner.execute(base);
   if (first.status !== "requires_approval") return { result: first };
-  if (ask.ask) countTrustAsk(deps.store, deps.env, new Date().toISOString());
+  if (policy.trustTap) countTrustAsk(deps.store, deps.env, new Date().toISOString()); // added taps only (spec §7.2)
   const outcome = await awaitApproval(turn, first.approval_id, policy);
   if (outcome === "approved") return { result: await runner.execute({ ...base, approved_approval_id: first.approval_id, budget_reserved: true }) };
   if (outcome === "denied") return { refusal: { reason: "denied_by_paco", text: APPROVAL_DENIED_TEXT } };
