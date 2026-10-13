@@ -46,6 +46,11 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
      Examples: a `turn.handler` lane reply (Dig deeper), and the memory shortcut's instant lesson save (stage A,
      unchanged and permanent; Undo on its card). Every automatic lesson save, whatever route the turn took, is announced
      on the memory card with Undo (Paco, 2026-10-12).
+   - **Context does not change the source.** An entry whose verdict is about Paco's message stays `paco` when its
+     state also carries recent turns, Houge's replies included, as long as the effect only stores Paco's own words,
+     reversibly and announced (the memory shortcut; `turn.handler` reads the last turns for follow-ups). Injected text
+     in those replies can at worst steer a save of Paco's words, which the memory card shows with Undo. Any effect that
+     would store or act on text from the context is `mixed` (Paco, 2026-10-12, ruling on codex #1).
    - A registry test fails any entry whose Jev or model rung can cause an unannounced or irreversible effect, or any
      effect other than tightening or a proposal from tool input.
 5. **Ledger.** The runner decides, then records; recording never changes a decision. A failed write opens incident
