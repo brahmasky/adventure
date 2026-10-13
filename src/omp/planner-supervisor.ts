@@ -712,15 +712,21 @@ export class PlannerSupervisor {
       if (!(await this.retryNextLeg(turn, turn.lastError))) break;
     }
     this.clearTimers(turn);
+    if (turn.asyncWait) await this.dropAsyncChild(turn); // before the terminal write (codex final I1)
     if (turn.failure) this.finishFailure(turn, turn.failure);
     else this.finishSuccess(turn);
-    if (turn.asyncWait) await this.dropAsyncChild(turn);
   }
 
-  /** S2: an async-wait end settled the turn while the child could still continue; stop it so its frames carry a dead gen. */
+  /**
+   * S2: an async-wait end settled the turn while the child could still continue. Before the run completes and its trust
+   * finalizes (codex final I1): abort the turn's signal (the bridge refuses any new call), stop the child (its frames carry
+   * a dead gen, its socket closes), then drain the call in flight, bounded.
+   */
   private async dropAsyncChild(turn: Turn): Promise<void> {
     this.incident("planner_async_wait", { run_id: turn.req.run_id });
+    turn.abort.abort();
     await this.stopSession();
+    if (turn.active.serial) await bounded(turn.active.serial, ABORT_GRACE_MS);
   }
 
   /**

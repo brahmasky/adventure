@@ -2008,6 +2008,28 @@ describe("PlannerSupervisor â€” settles only on a terminal agent_end (P7, spec Â
     expect(session.options.length).toBe(2); // a fresh child for the next turn
     expect(outcome.done[1]).toMatchObject({ text: "second turn" });
   });
+  // codex final I1: a child awaiting background work may still send a tool call. It must be stopped (and the turn's
+  // signal aborted, so the bridge refuses anything new) BEFORE the run completes and its trust is finalized; otherwise a
+  // late call runs against a completed run whose trust can no longer rise, and a write could skip its tap.
+  it("an async-work-only end stops the child and aborts the turn's signal before the run completes or trust finalizes", async () => {
+    const order: string[] = [];
+    const session = fakeSession({ onPrompt: (_t, e) => { for (const f of frames("agent-end-async-work.jsonl")) e(f); } });
+    const { store, sup, outcome } = harness(session, { HOUGE_OMP_FRAME_IDLE_MS: "60000" });
+    const run_id = createQueuedTurnRun(store);
+    let signalAtStop: boolean | undefined;
+    const stop = session.stop.bind(session);
+    session.stop = async () => {
+      signalAtStop = sup.activeTurnForTest()?.signal.aborted;
+      order.push(`stop:done=${outcome.done.length}:final=${store.getLedgerEvents(run_id).filter((e) => e.event_type === "turn_trust_final").length}`);
+      await stop();
+    };
+    const complete = outcome.complete.bind(outcome);
+    outcome.complete = (i) => { order.push("complete"); complete(i); };
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(order).toEqual(["stop:done=0:final=0", "complete"]);
+    expect(signalAtStop).toBe(true);
+  });
+
   it("Houge's omp config caps omp's own retries under the frame watchdog (S2b)", () => {
     const dir = mkdtempSync(join(tmpdir(), "hcfg-"));
     mkdirSync(join(dir, "omp"), { recursive: true }); // writeHougeConfigFile creates no directory
