@@ -10,6 +10,12 @@ PASS 192/0 (record/replay of Jev), rollback check PASS. Boot applies the `decisi
 - [ ] Paco: rule on codex #1 (front-door judge reads recent assistant text: strip it, or treat input as mixed).
 - [ ] Paco: Jev nondeterminism (p drift ≤ 0.09 on identical input, route flips near the bar): raise with TypeSafe;
   maybe widen bars.
+**Stage 2a additions (Paco 2026-10-13):**
+- [ ] Taps → calibration labels: digest ✅/❌, Dig deeper, Undo and 认真想 outcomes (`decision_outcomes`) feed the
+  calibration report as labelled examples, beside the labelling sittings (spec §4.2 promotion; unbuilt in stage 1).
+- [ ] Noise band per Jev question: measure run-to-run spread with repeat calls on identical requests (probe
+  2026-10-13: category p 0.59–0.65 on one message, spread up to 0.10); a p within the band of the bar asks Jev once more
+  and decides on the mean.
 Next stages: 2a in-Houge judges → 2b hooks + learning → 3 unprotected families → 4 protected families + standing
 approvals (P8 first).
 
