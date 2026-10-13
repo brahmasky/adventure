@@ -381,3 +381,21 @@ describe("splitPassages (mu's splitter on plain text, cut at whitespace)", () =>
     expect(splitPassages("", 900)).toEqual([]);
   });
 });
+
+// security final M-1: the URL scan restarted at every word boundary and ran each `[a-z0-9+.-]` run to its end before failing
+// on `://`, so 32 KiB of attacker-chosen shell output stalled the daemon's event loop for seconds (Telegram polling, lease
+// heartbeats). Every pass over a tool result must stay linear: 32 KiB of each adversarial shape well under 100 ms.
+describe("egress scans stay linear on adversarial input", () => {
+  for (const unit of ["a.", "a-", "a+", "a1."]) {
+    it(`32 KiB of "${unit}" repeated: redactForJudge and splitEgress each finish in < 100 ms`, () => {
+      const text = unit.repeat(Math.ceil(32_768 / unit.length)).slice(0, 32_768);
+      redactForJudge("warm https://x.example/a"); // JIT warm-up outside the timed window
+      let t = performance.now();
+      redactForJudge(text, { linkTokens: true });
+      expect(performance.now() - t).toBeLessThan(100);
+      t = performance.now();
+      splitEgress(text, 900, { linkTokens: true });
+      expect(performance.now() - t).toBeLessThan(100);
+    });
+  }
+});

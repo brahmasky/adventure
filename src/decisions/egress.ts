@@ -59,7 +59,8 @@ const COOKIE_LINE = /^((?:[^\t\n]*\t){6})([^\t\n]+)$/gm;
 const AUTH_SCHEME = /\b(Bearer\s+|Basic\s+)([A-Za-z0-9._~+/=-]{8,})/gi;
 const SHAPES: readonly RegExp[] = [/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}/g, /\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}/g,
   /\bxox[abprs]-[A-Za-z0-9-]{10,}/g, /\bAKIA[0-9A-Z]{16}\b/g, /\bAIza[0-9A-Za-z_-]{35}\b/g, /\bwhsec_[A-Za-z0-9]{16,}/g];
-const URL_RE = /\b([a-z][a-z0-9+.-]*:\/\/)([^\s/?#@]+@)?([^\s/?#\]]+)([^\s?#\]]*)(\?[^\s#\]]*)?(#[^\s\]]*)?/gi;
+/** The scheme is bounded ({0,31}): unbounded, a long `[a-z0-9+.-]` run backtracked quadratically (security final M-1). */
+const URL_RE = /\b([a-z][a-z0-9+.-]{0,31}:\/\/)([^\s/?#@]+@)?([^\s/?#\]]+)([^\s?#\]]*)(\?[^\s#\]]*)?(#[^\s\]]*)?/gi;
 const PATH_RE = /(?<![\w+/=-])(?:~|\.\.?)?\/[\w.@%+:=-]+(?:\/[\w.@%+:=-]+)*/g;
 const HEX_RUN = /\b[A-Fa-f0-9]{32,}\b/g;
 const B64_RUN = /(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{32,}={0,2}(?![A-Za-z0-9+/_=-])/g;
