@@ -9,6 +9,7 @@ import { createLocalFileReadAdapter } from "../capabilities/local-file-read.js";
 import { createCodingAgentAdapter, resolveCodexEnabled, resolveCodexTimeoutMs } from "../capabilities/coding-agent.js";
 import { compileCodeSelfWriteContract, compileSelfDiagnoseContract, compileSkillAuthorContract } from "../contracts/task-contract.js";
 import { checkSelfWriteDiff, parseDiffRaw } from "../capabilities/self-write-guard.js";
+import { buildLockedRetryText, NEEDS_LOCKED_FILE, planDenial, quoteNeedsLockedReason, renderLockedPaths, takeNeedsLockedFile } from "./self-write-locked.js";
 import type { GuardResult } from "../capabilities/self-write-guard.js";
 import { resolveTestGateTimeoutMs, runTestGateAsync } from "../run/test-gate.js";
 import type { TestGateResult } from "../run/test-gate.js";
@@ -359,7 +360,11 @@ export interface SelfWriteDeps {
   runTestGate: (worktree: string) => TestGateResult | Promise<TestGateResult>;
   reviewDiff: (input: ReviewDiffInput) => ReviewResult | Promise<ReviewResult>;
   publishBranch: (worktree: string, branch: string, summary?: string) => string | Promise<string>;
+  /** Read + delete the writer's HOUGE_NEEDS_LOCKED.md (undefined when absent). Optional: absent means no sentinel. */
+  takeNeedsLocked?: (worktree: string) => string | undefined | Promise<string | undefined>;
 }
+
+export { NEEDS_LOCKED_FILE, renderLockedPaths };
 
 /**
  * Register the worktree's NET-NEW files with git as intent-to-add (`git add -N .`) so
@@ -422,7 +427,8 @@ export function defaultSelfWriteDeps(): SelfWriteDeps {
     },
     runTestGate: (worktree) => runTestGateAsync(worktree),
     reviewDiff: (input) => reviewDiff(input),
-    publishBranch
+    publishBranch,
+    takeNeedsLocked: takeNeedsLockedFile
   };
 }
 
@@ -1376,6 +1382,8 @@ export class CoreWorker {
       const maxAttempts = 3; // ADR §6 anti-overfit: ≤3 TOTAL write passes.
       let task = baseTask;
       let lastFailure = ""; // for the failure event/report after the refine cap is hit.
+      let lockedRetryUsed = false; // the guided locked-path retry happens at most once per run.
+      let lockedSeen: string[] = []; // the locked paths the writer touched before the retry.
 
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         // (c) the configured writer produces / refines the diff in the worktree.
@@ -1406,17 +1414,23 @@ export class CoreWorker {
         if (writerUsage) lastWriterUsage = writerUsage;
         lastWriterMeta = { provider: written.provider, model: written.model };
 
-        // (d) CHECKER 1 — protected-path guard. A deny NEVER lands. But distinguish two cases:
-        //  - ALL denied paths are existing-test edits → a fixable WRITER mistake (it broke a test and
-        //    edited it). Refine with guidance (revert + go backward-compatible), ≤3 — the bad diff is
-        //    discarded, nothing lands, security holds.
-        //  - ANY denied path is gate/identity/deps/etc. → a real "Paco's hand" escalation: terminal.
+        // (d) CHECKER 1 — protected-path guard. A deny NEVER lands. The writer's NEEDS_LOCKED sentinel
+        // is read + deleted FIRST, so it is never in a diff: it declares a locked change unavoidable → terminal.
+        const needs = deps.takeNeedsLocked ? await deps.takeNeedsLocked(worktree) : undefined;
+        if (needs !== undefined) {
+          const reason = quoteNeedsLockedReason(needs, this.broker ? (t) => this.broker!.redact(t) : undefined) || "(no reason given)";
+          this.recordBlocked(claim.run_id, lockedSeen.map((path) => ({ path, status: "M", reason: "writer declared a locked change unavoidable" })), ledgerFocus);
+          return this.selfWriteReport(buildHardDenyNotification(label, lockedSeen, { reason }));
+        }
+        //  - ALL denied paths are existing-test edits → a fixable WRITER mistake: refine (revert + stay
+        //    backward-compatible), ≤3.
+        //  - A locked path (gates/identity/deps/…) → refine ONCE, telling the writer it is locked; a second
+        //    locked hit is the real "Paco's hand" escalation (terminal).
         const guard = await this.guardWorktree(deps, worktree);
         if (!guard.allowed) {
-          const underTests = (p: string) => p.replace(/^\.\//, "").toLowerCase().startsWith("tests/");
-          const onlyTestEdits = guard.denied.length > 0 && guard.denied.every((d) => underTests(d.path));
-          if (onlyTestEdits && attempt < maxAttempts) {
-            const files = guard.denied.map((d) => d.path).join(", ");
+          const plan = planDenial(guard.denied, attempt, maxAttempts, lockedRetryUsed);
+          if (plan.kind === "refine_tests") {
+            const files = plan.tests.join(", ");
             lastFailure = `edited existing test(s): ${files}`;
             task = buildSelfWriteRefineTask(
               baseTask,
@@ -1426,9 +1440,15 @@ export class CoreWorker {
             );
             continue;
           }
-          const attemptedPaths = guard.denied.map((d) => ({ path: d.path, status: d.status, reason: d.reason }));
-          this.runStore.recordSelfWriteBlocked(claim.run_id, { attempted_paths: attemptedPaths, context: ledgerFocus.text, focus_chars: ledgerFocus.chars });
-          return this.selfWriteReport(buildHardDenyNotification(label, guard.denied));
+          if (plan.kind === "refine_locked") {
+            lockedRetryUsed = true;
+            lockedSeen = plan.locked;
+            lastFailure = `touched locked path(s): ${plan.locked.join(", ")}`;
+            task = buildSelfWriteRefineTask(baseTask, buildLockedRetryText(plan.locked, plan.tests));
+            continue;
+          }
+          this.recordBlocked(claim.run_id, guard.denied.map((d) => ({ path: d.path, status: d.status, reason: d.reason })), ledgerFocus);
+          return this.selfWriteReport(buildHardDenyNotification(label, guard.denied.map((d) => d.path), lockedRetryUsed ? { told: true } : undefined));
         }
 
         // (e) CHECKER 2 — test gate. Red → refine (feed the failing stage+output back) ≤3 total.
@@ -1686,6 +1706,11 @@ export class CoreWorker {
     }
     // Fail-safe: never inline raw bytes — that would be the exact leak the wall prevents.
     return { digest: unreadableDigest(bytes), contains_instructions: false, bytes };
+  }
+
+  /** Record the terminal `self_write_blocked` ledger event (paths + the capped focus summary, never the brief). */
+  private recordBlocked(run_id: string, attemptedPaths: Array<Record<string, unknown>>, focus: { text: string; chars: number }): void {
+    this.runStore.recordSelfWriteBlocked(run_id, { attempted_paths: attemptedPaths, context: focus.text, focus_chars: focus.chars });
   }
 
   /** CHECKER 1: read the worktree's raw diff and run it through the protected-path guard. */
@@ -4086,8 +4111,8 @@ function buildSelfWriteTask(
     "edit to existing test files. If your change would break an existing test, make your change",
     "BACKWARD-COMPATIBLE instead (additive / opt-in — e.g. a new optional parameter, preserve the",
     "old output shape) so the old test still passes. You MAY add a NEW test file, but editing or",
-    "deleting ANY existing test will cause your fix to be REJECTED outright. Likewise do NOT touch",
-    "gate/identity/dependency/config files. Edit the source files in place.",
+    "deleting ANY existing test will cause your fix to be REJECTED outright. Edit the source files in place.",
+    renderLockedPaths(),
     SELF_WRITE_COMMAND_RULE,
     "",
     fenceRule(nonce),
@@ -4138,14 +4163,22 @@ function buildSelfWriteRefineTask(baseTask: string, failure: string): string {
 /** The ledger's cap, in code points, on a self-write focus summary (the full focus is never recorded). */
 const LEDGER_FOCUS_CHARS = 200;
 
-/** The hard-deny notification (spec § surfacing): a fix that wants a protected file is Paco's to make. */
-function buildHardDenyNotification(label: string, denied: Array<{ path: string; status: string; reason: string }>): string {
-  const files = denied.map((d) => `\`${d.path || "(unknown)"}\``).join(", ");
-  return [
-    `I worked out a fix for \`${label}\`, but it wanted to touch ${files} — the locked surface`,
-    "(gates / identity / deps / existing tests), so I stopped. If this genuinely needs a change",
-    "there, it's **yours to make** — I can't edit my own safety surface."
-  ].join(" ");
+/**
+ * The hard-deny notification (spec § surfacing): a fix that wants a protected file is Paco's to make.
+ * `detail.reason` quotes the writer's own (already masked) NEEDS_LOCKED reason; `detail.told` says the
+ * writer was told the path was locked and still needed it. Absent: today's plain text.
+ */
+function buildHardDenyNotification(label: string, paths: string[], detail?: { reason?: string; told?: boolean }): string {
+  const files = paths.map((p) => `\`${p || "(unknown)"}\``).join(", ");
+  const yours = "If this genuinely needs a change there, it's **yours to make** — I can't edit my own safety surface.";
+  if (detail?.reason !== undefined) {
+    const where = files ? ` (it touched ${files})` : "";
+    return `I worked on \`${label}\` but the coding agent says the fix needs a locked file${where}. Its reason: "${detail.reason}" ${yours}`;
+  }
+  const lead = detail?.told
+    ? `I worked out a fix for \`${label}\`, but it still needed ${files} after being told they are locked (the locked surface), so I stopped.`
+    : `I worked out a fix for \`${label}\`, but it wanted to touch ${files} — the locked surface (gates / identity / deps / existing tests), so I stopped.`;
+  return `${lead} ${yours}`;
 }
 
 /** The success notification (spec § surfacing): branch ready, Paco merges + reloads at his leisure. */

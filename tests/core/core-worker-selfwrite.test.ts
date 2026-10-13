@@ -688,7 +688,7 @@ describe("self_write_propose (Phase 3 orchestration on the ⓪·3g background la
       const d = deps({ rawDiff: () => ":100644 100644 a b M\tpackage.json\n" }, log);
       const { status } = await executeAndSettle(makeWorker(store, d), store, run_id);
       expect(status).toBe("kicked_off");
-      expect(log.writeTasks.length).toBe(1); // terminal — no refine
+      expect(log.writeTasks.length).toBe(2); // one guided locked-path retry, then terminal when it re-touches the locked file
       expect(log.published).toEqual([]);
       expect(store.getLedgerEvents(run_id).some((e) => e.event_type === "self_write_blocked")).toBe(true);
     } finally {
