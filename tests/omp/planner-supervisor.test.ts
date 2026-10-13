@@ -1537,6 +1537,22 @@ describe("ADR 0029 lane 1 slots", () => {
     expect(store.getRunState(r2)).toBe("completed");
     sup.setAwaitingApprovalForTest(false); held.end(); await untilState(sup, "IDLE");
   });
+  // A trust card outlives its bounded pause (the TTL resumes the timers, state back to RUNNING) yet still waits on Paco:
+  // a bare ack then is still consent to nothing — it must be nudged, never steered into the planner as if it approved.
+  it("slot A: a bare ack while a trust card still waits past its bounded pause is nudged, not steered", async () => {
+    const held = heldSession();
+    const { sup, store, outcome } = harness(held.session);
+    const r1 = createQueuedTurnRun(store, "push it");
+    sup.submit(req(r1, "push it")); await held.live(1);
+    sup.setAwaitingApprovalForTest(true, { pause: "bounded", ttlMs: 30 });
+    await untilState(sup, "RUNNING"); // the pause ran out; the card is still open
+    const r2 = createQueuedTurnRun(store, "好");
+    sup.submit(req(r2, "好"));
+    await until(() => dones(outcome).some((d) => d.run_id === r2));
+    expect(held.session.steers).toHaveLength(0);
+    expect(store.getLedgerEvents().some((e) => e.event_type === "ack_nudged" && e.payload.approval_run_id === r1)).toBe(true);
+    sup.setAwaitingApprovalForTest(false); held.end(); await untilState(sup, "IDLE");
+  });
   it("slot A does not fire for a non-ack: it is steered as today", async () => {
     const held = heldSession();
     const { sup, store } = harness(held.session);

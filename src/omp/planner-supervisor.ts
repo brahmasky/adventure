@@ -310,7 +310,8 @@ export class PlannerSupervisor {
     // a message steers only into a Telegram turn: never into a schedule-born one (provenance, B2) — it queues behind it
     const live = t?.live && t.req.source === "telegram" && req.source === "telegram" && !req.needsIngest;
     // Slot A (ADR 0029 §5.1): a bare ack while an approval card waits is consent to nothing — nudge, never steer or queue.
-    if (live && this.st === "AWAITING_APPROVAL" && isBareAck(req.text)) { this.nudgeAck(t, req); return; }
+    // A trust card can still wait in RUNNING (its bounded pause ran out, or none was left): `approvals` counts open cards.
+    if (live && (this.st === "AWAITING_APPROVAL" || t.approvals > 0) && isBareAck(req.text)) { this.nudgeAck(t, req); return; }
     if (live && (this.st === "RUNNING" || this.st === "AWAITING_APPROVAL")) {
       void this.steer(t, req).catch((e) => this.incident("planner_steer_failed", { run_id: req.run_id, reason: rpcCode(e) }));
       return;
