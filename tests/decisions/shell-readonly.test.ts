@@ -4,9 +4,9 @@ import { isReadOnlyCommand, lexStrict } from "../../src/decisions/shell-readonly
 // Spec §7.2 (codex B28, senior B10): at hostile a shell command runs without a tap ONLY if every segment is on a positive
 // read-only list with its listed argument forms. Each counterexample here writes, runs a program, or hides a token; the
 // spec's gate asks for each. The lexer keeps prefixes and wrappers (command-matcher drops them) and fails closed.
-const READ_ONLY = ["ls", "ls -la src", "cat README.md", "head -n 5 a.txt", "tail -20 log.txt", "wc -l a b", "cut -d, -f1 data.csv", "stat package.json", "pwd",
+const READ_ONLY = ["ls", "ls -la src", "cat README.md", "head -n 5 a.txt", "tail -20 log.txt", "cut -d, -f1 data.csv", "stat package.json", "pwd",
   'echo "hello world"', "date", "date +%F", "grep -rn foo src", "grep -i TODO a.ts", "jq .name package.json", "find . -name '*.ts' -type f",
-  "find src -maxdepth 2 -type d -print", "ls | head", "pwd && ls", "cat a.txt | grep x | wc -l"];
+  "find src -maxdepth 2 -type d -print", "ls | head", "pwd && ls", "cat a.txt | grep -c x"];
 const ASKS = ["curl https://example.com", "touch x", "git log", "git diff --output=x", "git log --output=x", "file -C -m x", "sort -o out in", "sed 'w f' in",
   "awk '{print}' a", "rg --pre cat x", "diff a b", "X=1 ls", "env ls", "xargs cat", "nice ls", "timeout 5 ls", "command ls", "exec ls", "builtin echo hi",
   "sudo ls", "ls > out", "echo hi >> f", "ls $(whoami)", "ls `pwd`", "cat x | sh", "cat x | python3", "find . -delete", "find . -exec rm {} \;",
@@ -53,7 +53,7 @@ describe("hostile read-only list: adversarial table (fail closed)", () => {
   it("asks for every write flag, unlisted program and unlisted flag", () => { for (const c of WRITE_FLAGS) expect([c, isReadOnlyCommand(c)]).toEqual([c, false]); });
   it("asks for every quoting, expansion, redirect, keyword and syntax trick", () => { for (const c of LEXER_TRICKS) expect([c, isReadOnlyCommand(c)]).toEqual([c, false]); });
   it("still admits the everyday read-only forms (a list that asks for everything would train Paco to tap blind)", () => {
-    for (const c of ["ls -- *.txt", "wc -l -- src/*.ts", "cat -n -- *.md", "cut -d ' ' -f2 x", "tail -n +5 f", "head -2 f", "stat -f %z f", "pwd -P", "cat ~/notes.txt", "grep -rn --include='*.ts' foo src", "grep -e -x file", "grep -A3 x f", "grep -c x f || echo none",
+    for (const c of ["ls -- *.txt", "grep -c x -- src/*.ts", "cat -n -- *.md", "cut -d ' ' -f2 x", "tail -n +5 f", "head -2 f", "stat -f %z f", "pwd -P", "cat ~/notes.txt", "grep -rn --include='*.ts' foo src", "grep -e -x file", "grep -A3 x f", "grep -c x f || echo none",
       "jq -r --arg n v '.[$n]' f.json", "find . -name '*.ts' -newer package.json", "head -n 5 a | tail -1", "echo '$HOME'",
       "date '+%Y-%m-%d %H:%M'", "ls -la; pwd", "cat /dev/null"]) expect([c, isReadOnlyCommand(c)]).toEqual([c, true]);
   });
@@ -69,8 +69,8 @@ const FIX1_ASKS = ["wc --libxo=encoder=/tmp/x f", "wc --libxo json x", "wc --lib
   "tail --pid=1 f", "ls --dired", "cut -d ab -f1 x", "cut -f x a", "head -n x f", "head -n", "cut -d", "stat -f",
   "cat /dev/zero", "cat /dev/urandom", "head -c 9 /dev/random", "cat //dev/zero", "cat /./dev/zero", "cat /dev", "cat ../../dev/zero",
   "grep x /dev/zero", "jq . /dev/stdin", "find /dev -name x", "wc -l -- /dev/zero", "cat -- ../dev/zero"];
-const FIX1_ALLOWS = ["ls -- *", "wc -l -- *.ts", "grep -rn foo -- *.ts", "jq . -- *.json", "ls -1AF src", "cat -n a", "tail -F log",
-  "tail -n 20 log", "tail -c +3 f", "head -c 10 f", "wc -lw a", "cut -c1-5 f", "stat -L -f %N f", "echo -n hi", "grep -A3 -B 2 x f",
+const FIX1_ALLOWS = ["ls -- *", "grep -rn foo -- *.ts", "jq . -- *.json", "ls -1AF src", "cat -n a", "tail -F log",
+  "tail -n 20 log", "tail -c +3 f", "head -c 10 f", "cut -c1-5 f", "stat -L -f %N f", "echo -n hi", "grep -A3 -B 2 x f",
   "grep --color=never -C1 x f", "jq --indent 2 . f", "ls --color=auto", "cat ~/notes.txt", "cat /dev/null", "cat src/dev/a.ts", "grep -- -f x", "grep -ef x", "head -- *"];
 
 describe("hostile read-only list: fix round 1 (every reader has an exact flag list)", () => {
@@ -78,4 +78,17 @@ describe("hostile read-only list: fix round 1 (every reader has an exact flag li
     for (const c of FIX1_ASKS) expect([c, isReadOnlyCommand(c)]).toEqual([c, false]);
   });
   it("admits listed flags with well-shaped values, and globs after --", () => { for (const c of FIX1_ALLOWS) expect([c, isReadOnlyCommand(c)]).toEqual([c, true]); });
+});
+
+// Fix round 2 (re-review 1): macOS libxo parses `--libxo` anywhere, even after `--`, so `wc -- --libxo=encoder=/x` and
+// `wc -l -- *` over a planted name still load a dylib. wc leaves the list (it always asks at hostile; grep -c counts lines),
+// and any word naming libxo asks for every remaining reader.
+describe("hostile read-only list: fix round 2 (wc leaves the list; libxo always asks)", () => {
+  it("asks for wc in every form and for any libxo word", () => {
+    for (const c of ["wc -- --libxo=encoder=/x", "wc -l -- *", "wc -l f", "wc f", "cat a | wc -l", "ls -- --libxo=json", "cat -- x--libxo",
+      "grep -c x -- --libxo", "jq . -- libxo.json", "head -n 1 libxo"]) expect([c, isReadOnlyCommand(c)]).toEqual([c, false]);
+  });
+  it("grep -c still counts lines tap-free", () => {
+    for (const c of ["grep -c x -- f", "grep -c '' f", "cat a | grep -c x"]) expect([c, isReadOnlyCommand(c)]).toEqual([c, true]);
+  });
 });

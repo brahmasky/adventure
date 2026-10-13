@@ -73,8 +73,9 @@ export function lexStrict(command: string): Lexed {
 }
 
 /**
- * A listed reader's argument forms (Fix round 1: no reader takes "any options"; macOS `wc` links libxo, and
- * `--libxo=encoder=<path>` loads a dylib, so a flag can run code). Sets follow the macOS BSD binaries; nothing GNU-only.
+ * A listed reader's argument forms. Fix round 1: no reader takes "any options" (macOS `wc` links libxo, and
+ * `--libxo=encoder=<path>` loads a dylib, so a flag can run code). Fix round 2: libxo parses `--libxo` even after `--`, so
+ * `wc` is off the list (it asks; `grep -c` counts lines). Sets follow the macOS BSD binaries; nothing GNU-only.
  * `letters`: bundleable short flags without a value. `short`: short flags with a value (next word or attached) and its shape.
  * `long` / `longValued`: exact long flags (no getopt abbreviations). `legacy`: whole-word forms like `tail -20`.
  * `dashdash`: the program treats `--` as the end of options. `operands`: whether it takes any.
@@ -89,7 +90,6 @@ const READERS: Readonly<Record<string, ReaderSpec>> = {
   cat: { letters: "belnstuv", dashdash: true, operands: true },
   head: { letters: "", short: { n: NUM, c: NUM }, legacy: /^-\d+$/, dashdash: true, operands: true },
   tail: { letters: "Ffrqv", short: { n: SIGNED, c: SIGNED, b: SIGNED }, legacy: /^-\d+[bcl]?$/, dashdash: true, operands: true },
-  wc: { letters: "Lclmw", dashdash: true, operands: true },
   cut: { letters: "nsw", short: { b: LIST, c: LIST, f: LIST, d: /^[\s\S]$/ }, dashdash: true, operands: true },
   stat: { letters: "FLnqlrsx", short: { f: ANY, t: ANY }, dashdash: true, operands: true },
   pwd: { letters: "LP", dashdash: false, operands: false },
@@ -154,6 +154,7 @@ function isDevicePath(text: string): boolean {
  * operand, so a glob is only a list of names.
  */
 function readerOk(prog: string, spec: ReaderSpec, args: Word[]): boolean {
+  if (args.some((a) => a.text.includes("libxo"))) return false; // Fix round 2: libxo reads its flag anywhere, even after `--`
   let endOpts = false;
   for (let k = 0; k < args.length; k++) {
     const a = args[k]!;
