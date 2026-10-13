@@ -1,10 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultSelfWriteDeps } from "../../src/core/core-worker.js";
 import { checkSelfWriteDiff, parseDiffRaw } from "../../src/capabilities/self-write-guard.js";
+import { NEEDS_LOCKED_FILE, takeNeedsLockedFile } from "../../src/core/self-write-locked.js";
+import { revertWorktreePaths } from "../../src/core/self-write-revert.js";
 
 /**
  * The default SelfWriteDeps diff readers (live-gate fix, run_1280539d): a writer-created
@@ -113,5 +115,29 @@ describe("defaultSelfWriteDeps diff readers — net-new files are visible to gua
     expect(raw2).toContain("A src/prompt/first.ts");
     expect(raw2).toContain("A src/prompt/second.ts");
     expect(await deps.unifiedDiff(wt)).toContain("const b = 2");
+  });
+});
+
+/**
+ * Final testing review 2026-10-13: core-worker tests inject stubs, so deleting `takeNeedsLocked` / `revertPaths` from
+ * the default wiring kept every test green, and both are optional on the type (absent = no sentinel, no revert).
+ * Production would then silently skip the pre-retry revert and ignore the writer's sentinel.
+ */
+describe("defaultSelfWriteDeps wires the real sentinel reader and the real revert", () => {
+  it("they are the real implementations (why: an absent dep is a silent no-op in runSelfWrite)", () => {
+    const deps = defaultSelfWriteDeps();
+    expect(deps.takeNeedsLocked).toBe(takeNeedsLockedFile);
+    expect(deps.revertPaths).toBe(revertWorktreePaths);
+  });
+
+  it("through the defaults, the sentinel is read and deleted and a denied edit is reverted on a real repo (why: behaviour, not just identity)", async () => {
+    const wt = worktreeFixture();
+    const deps = defaultSelfWriteDeps();
+    writeFileSync(join(wt, NEEDS_LOCKED_FILE), "needs src/policy/x.ts");
+    expect(await deps.takeNeedsLocked!(wt)).toBe("needs src/policy/x.ts");
+    expect(existsSync(join(wt, NEEDS_LOCKED_FILE))).toBe(false);
+    writeFileSync(join(wt, "src", "prompt", "base.ts"), "export const base = 2;\n");
+    await deps.revertPaths!(wt, parseDiffRaw(await deps.rawDiff(wt)));
+    expect(readFileSync(join(wt, "src", "prompt", "base.ts"), "utf8")).toBe("export const base = 1;\n");
   });
 });
