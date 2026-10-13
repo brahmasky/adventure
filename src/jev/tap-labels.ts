@@ -44,6 +44,8 @@ export function tapLabels(rows: readonly TapOutcomeRow[], turnOf: (run_id: strin
     const category = LANE_CATEGORY[r.verdict];
     if (kind === "lane_right" && turn_id && category) positive.set(turn_id, { category, by: "tap", at: r.created_at });
   }
+  // Conservative: a ✅ beside a ❌, Dig deeper or Undo on the same turn is conflicting evidence, never a positive label.
+  for (const e of evidence) if (e.turn_id !== null && MUST_LABEL.has(e.kind)) positive.delete(e.turn_id);
   return { positive, evidence };
 }
 

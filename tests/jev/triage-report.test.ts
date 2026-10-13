@@ -109,6 +109,14 @@ describe("formatTreeReport", () => {
     expect(text.indexOf("TAP LABELS")).toBeLessThan(text.indexOf("bars: choice"));
   });
 
+  // A DB with no taps must print exactly the report it printed before Addition A: no empty TAP LABELS block, no suffix.
+  it("no tap evidence leaves the report byte-identical", () => {
+    const rows = fixture(); const labels = new Map([["b", label("memory")]]);
+    const taps = tapLabels([], () => undefined);
+    expect(formatTreeReport(rows, labels, complete(rows), TREE_BAR_DEFAULTS, perm(rows), taps))
+      .toBe(formatTreeReport(rows, labels, complete(rows), TREE_BAR_DEFAULTS, perm(rows)));
+  });
+
   // F2: a correction Jev routes into the rule-saving memory lane would save the mistake as a rule: the swallowed-turn
   // cell is the replay's safety check, so Paco labelling the turn `memory` must not hide it.
   it("a labelled memory correction routed to the memory lane is still a swallowed turn", () => {

@@ -34,6 +34,17 @@ describe("tapLabels", () => {
     expect([...t.positive.entries()]).toEqual([["t1", { category: "lookup", by: "tap", at: "2026-10-13T00:00:00.000Z" }]]);
     expect(t.evidence.map((e) => e.kind)).toEqual(["lane_right", "lane_wrong", "save_undone", "dig_deeper", "lane_right"]);
   });
+  // Conservative mapping: a ✅ beside a ❌, Dig deeper or Undo on the same turn says the route was both right and wrong, so
+  // the turn gets no positive label; both taps stay as evidence and the turn goes to the next sitting.
+  it("a ✅ with a conflicting tap on the same turn is evidence only, and must be labelled", () => {
+    for (const other of [T({ signal: "review_bad", created_at: "2026-10-13T01:00:00.000Z" }), T({ signal: "dig_deeper", value: "lookup" }),
+      T({ signal: "lesson_undone", value: "lookup" })]) {
+      const t = tapLabels([T({}), other], turnOf);
+      expect(t.positive.size).toBe(0);
+      expect(t.evidence).toHaveLength(2);
+      expect([...mustLabel(t)]).toEqual(["t1"]);
+    }
+  });
   it("Paco's sitting label wins on the same turn", () => {
     const merged = mergeLabels(new Map([["t1", { category: "research" as const, by: "paco" as const, at: "x" }]]), tapLabels(rows, turnOf));
     expect(merged.get("t1")?.category).toBe("research");

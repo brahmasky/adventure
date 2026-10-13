@@ -264,7 +264,7 @@ export function formatTreeReport(rows: TreeReplayRow[], labels: Map<string, Tree
   const blockers = blockersOf(rows, ok, outcome, permuted);
   const out = blockers.length > 0 ? [`INCOMPLETE — ${blockers.join("; ")}. The numbers below are NOT evidence for arming.`] : [];
   out.push(headLine(ok, labels), ...confusionLines(ok, labels), ...scoreLines(ok, labels, bars), ...routeLines(ok, bars), ...armingLines(ok, bars),
-    ...costlyLines(costlyCells(ok, labels, bars)), permutationLine(ok, permuted), ...(taps ? tapLines(taps) : []));
+    ...costlyLines(costlyCells(ok, labels, bars)), permutationLine(ok, permuted), ...(taps && taps.evidence.length > 0 ? tapLines(taps) : []));
   out.push(`bars: choice ≥ ${bars.choice}, memory ≥ ${bars.memory}, status ≥ ${bars.status}, conf ≥ ${bars.minConf}, gap ≥ ${bars.minGap}, ` +
     `rule yes ≥ ${bars.nounYes} / no ≤ ${bars.nounNo}, rule_scope ≥ ${bars.ruleScope}, gear light ≤ ${bars.gearLight} / heavy ≥ ${bars.gearHeavy}`);
   out.push(`spent $${outcome.spentUsd.toFixed(3)} of est. $${outcome.estimatedUsd.toFixed(3)}`);
