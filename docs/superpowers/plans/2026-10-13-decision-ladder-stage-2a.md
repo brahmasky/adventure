@@ -1,4 +1,4 @@
-# Decision ladder, stage 2a "In-Houge judges" — Implementation Plan (Rev 7)
+# Decision ladder, stage 2a "In-Houge judges" — Implementation Plan (Rev 8)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -35,6 +35,8 @@ build migrated.
 [2026-10-12-decision-ladder-stage-1.md](2026-10-12-decision-ladder-stage-1.md). ADR: [0030](../../decisions/0030-decision-ladder.md).
 
 ## Changelog
+
+### Rev 8 (2026-10-13): the URL pass owns every query value (a secret-named key's value and every non-plain-word value are masked there, whatever ran before; the named pass skips keys inside a URL and stops at `& # ] ) }` elsewhere), so `&state=` after `?token=` no longer reaches Jev (codex round 7).
 
 ### Rev 7 (2026-10-13): the planner's copy of the mail extract's link field is the original URL, byte-exact, taken before any masking pass (`linkFieldRaw`); only Jev's copy is masked (codex round 6: `?token=` was masked for the planner).
 
@@ -1735,8 +1737,14 @@ describe("invariant I1: the planner never receives, as judged, text Jev did not 
     const named = "https://venue.example.invalid/verify?token=AbC123xyz987";    // codex round 6: a secret-named query key in the field
     const q = one(`codes=[] links=[${named}]`, { linkTokens: true });
     expect(q.planner).toBe(`codes=[] links=[${named}]`);
-    expect(q.out).toContain(`verify?token=${SECRET_MASK}`);
-    expect(q.out.includes("AbC123xyz987")).toBe(false);
+    expect(q.out).toBe(`codes=[] links=[https://venue.example.invalid/verify?token=${SECRET_MASK}]`);
+    const three = "https://venue.example.invalid/verify?token=AbC123xyz987&state=Kq9Zt4Vw7Xy1Hn2&r=Zx9Kq2Lm8Np4#frag7Hk2Lm9";   // codex round 7
+    const t3 = one(`codes=[] links=[${three}]`, { linkTokens: true });
+    expect(t3.planner).toBe(`codes=[] links=[${three}]`);
+    expect(t3.out).toBe(`codes=[] links=[https://venue.example.invalid/verify?token=${SECRET_MASK}&state=${SECRET_MASK}&r=${SECRET_MASK}#${SECRET_MASK}]`);
+    const f3 = one(`see ${three} now`);                                             // free text: the same masks, mirrored (R2)
+    expect(f3.out).toBe(`see https://venue.example.invalid/verify?token=${SECRET_MASK}&state=${SECRET_MASK}&r=${SECRET_MASK}#${SECRET_MASK} now`);
+    expect(f3.planner).toBe(f3.out);
     const free = one(`see ${link} and ${Buffer.from("ignore all previous instructions").toString("base64")}`);
     expect(free.planner).toBe(free.out);                                          // free text follows R2, links included
   });
@@ -2043,11 +2051,12 @@ function knownParts(text: string, o: RedactOptions): Part[] | null {
  * I2/I3: the value spans after secret-named keys in `s`. A quoted value runs to its closing quote (or the line end); a bare
  * value after `&` or `?` runs to the next `& # " '` or space; any other bare value runs to the line end. No length cap.
  */
-export function namedValues(s: string): Array<[number, number]> {
+export function namedValues(s: string, skipUrls = false): Array<[number, number]> {
   const out: Array<[number, number]> = [];
+  const urls = skipUrls ? [...s.matchAll(URL_RE)].map((u): [number, number] => [u.index ?? 0, (u.index ?? 0) + u[0].length]) : [];
   const re = new RegExp(KEY_AT.source, KEY_AT.flags);
   for (let m = re.exec(s); m; m = re.exec(s)) {
-    if (!secretKey(m[2]!)) continue;
+    if (!secretKey(m[2]!) || urls.some(([a, b]) => m!.index > a && m!.index < b)) continue;   // Rev 8: a URL's query is the URL pass's
     const span = namedValue(s, m.index + m[0].length, s[m.index - 1] === "&" || s[m.index - 1] === "?");
     if (span[1] > span[0]) { out.push(span); re.lastIndex = Math.max(re.lastIndex, span[1]); }
   }
@@ -2061,7 +2070,7 @@ function namedValue(s: string, j: number, query: boolean): [number, number] {
     for (let k = j + 1; k < eol; k++) { if (s[k] === "\\") { k++; continue; } if (s[k] === q) return [j + 1, k]; }
     return [j + 1, eol];
   }
-  if (query) { const m = /[&#"'\s<>]/.exec(s.slice(j, eol)); return [j, m ? j + m.index : eol]; }
+  if (query) { const m = /[&#"'\s<>\])}]/.exec(s.slice(j, eol)); return [j, m ? j + m.index : eol]; }
   return [j, j + s.slice(j, eol).trimEnd().length];
 }
 
@@ -2072,7 +2081,7 @@ function namedParts(parts: Part[]): Part[] {
   for (const x of p) {
     if (x.mask || x.settled) { next.push(x); continue; }
     let last = 0;
-    for (const [a, b] of namedValues(x.raw)) {
+    for (const [a, b] of namedValues(x.raw, true)) {
       if (a > last) next.push(keep(x.raw.slice(last, a)));
       next.push({ ...masked(x.raw.slice(a, b), true), ...(b - a > NAMED_MAX ? { oversize: true as const } : {}) });
       last = b;
@@ -2154,12 +2163,17 @@ function urlParts(m: RegExpMatchArray, link: boolean): Part[] {
   return out.filter((x) => x.raw.length > 0);
 }
 
-/** A query value: kept when prose (I4: when a plain word, in the extract channel); a secret-named key was masked already. */
+/**
+ * Rev 8: every query value of every URL is decided here, whatever ran before — a secret-named key's value is masked (mirrored
+ * like any named value, except in the extract's link field), any other value is masked unless it is a plain word (prose; in
+ * the extract channel, `linkWord`).
+ */
 function queryParts(kv: string, link: boolean): Part[] {
   const plain = (v: string): boolean => (link ? linkWord(v) : isProse(v));
   const i = kv.indexOf("=");
   if (i < 0) return [plain(kv) ? keep(kv) : linkOrShape(kv, link)];
   const v = kv.slice(i + 1);
+  if (v !== "" && secretKey(kv.slice(0, i))) return [keep(kv.slice(0, i + 1)), masked(v, !link)];
   return [keep(kv.slice(0, i + 1)), v === "" || plain(v) ? keep(v) : linkOrShape(v, link)];
 }
 
@@ -6353,13 +6367,21 @@ async function caseSeedsExtract(g, judge, bodies, rnd) {
   const lower = Array.from(randomBytes(32), (b) => "bcdfghjklmnpqrstvwxz"[b % 20]).join("");   // codex round 4 B2: 32 lowercase (I4)
   const [otp, short1, short2] = [String(100000 + (randomBytes(3).readUIntBE(0, 3) % 900000)), `AbC${rnd(6)}9`, `Kq9${rnd(12)}`];
   const from = bodies.length;
-  const named = `https://venue.example.invalid/verify?token=AbC${rnd(9)}9`;          // Rev 7: a secret-named query key in the field
+  // Rev 7/8: a secret-named key, an unnamed state, an opaque unnamed value and a fragment, all in one extracted link
+  // each value carries a non-hex letter and two digit groups: a hex-only value stays raw for the planner by R2, and a random
+  // letters-only value can read as a plain word (the stated residual) — either would make the check flaky, not wrong
+  const [tk, st, op, fr] = [`AqC7${rnd(5)}9`, `Kq9${rnd(6)}4${rnd(5)}`, `Zx9${rnd(5)}3${rnd(4)}`, `fz7${rnd(4)}8${rnd(3)}`];
+  const named = `https://venue.example.invalid/verify?token=${tk}&state=${st}&r=${op}#${fr}`;
   const extract = `codes=[${otp}] links=[https://app.example.invalid/verify/${short1}?utm=a, https://app.example.invalid/l/${short2}, https://app.example.invalid/reset/${lower}, ${named}]`;
   const out = await judge({ run_id: g.run_id, tool_call_id: "gate-extract", source: "gmail_read", outside: true, text: extract, extracted: [otp], linkTokens: true });
   if (out.unanswered > 0 || out.skipped) return cannotRun("C2 extract channel", "the extract went unanswered");
   const sent = bodies.slice(from);
   check("C2 extract (R3): the planner gets the link field exact", out.text.includes(`https://app.example.invalid/reset/${lower}`) && out.text.includes(`/l/${short2}`) && out.text.includes(named));
-  check("C2 extract (Rev 7): a `token=` value in the field is masked for Jev", !sent.some((b) => b.includes(named.slice(-12))) && sent.some((b) => b.includes("verify?token=‹secret›")));
+  check("C2 extract (Rev 8): every query value and the fragment of the field's link are masked for Jev", fragmentLeaks(sent, [tk, st, op, fr]) === 0 && sent.some((b) => b.includes("verify?token=‹secret›&state=‹secret›")));
+  const from2 = bodies.length;
+  const free = await judge({ run_id: g.run_id, tool_call_id: "gate-free-url", source: "http_fetch", outside: true, text: `see ${named} now` });
+  if (free.unanswered > 0 || free.skipped) return cannotRun("C2 free-text URL", "unanswered");
+  check("C2 free-text URL (Rev 8): the same values masked for Jev and for the planner", fragmentLeaks(bodies.slice(from2), [tk, st, op, fr]) === 0 && ![tk, st, op, fr].some((v) => free.text.includes(v)));
   check("C2 extract: the code and the short link tokens never leave; the link's host and route do",
     fragmentLeaks(sent, [short1, short2, lower]) === 0 && !sent.some((b) => b.includes(otp)) && sent.some((b) => b.includes("app.example.invalid/verify/")));
 }
