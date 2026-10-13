@@ -25,7 +25,7 @@ describe("decisions", () => {
     expect(store.getDecision(id)).toMatchObject({ ...D, decision_id: id });
     const cols = raw(store).prepare("PRAGMA table_info(decisions)").all<{ name: string }>().map((c) => c.name);
     expect(cols).toEqual(["decision_id", "entry_id", "entry_version", "run_id", "tool_call_id", "stage", "rung", "verdict", "p", "reason_code",
-      "fallback_reason", "fallback_rung", "armed_mode", "latency_ms", "created_at"]);
+      "fallback_reason", "fallback_rung", "armed_mode", "latency_ms", "created_at", "p_index", "reask", "p_first"]);
     store.close();
   });
   // Plan ruling 15 (senior W7): sets a later stage extends are checked in code, so extending one is a constant edit, not

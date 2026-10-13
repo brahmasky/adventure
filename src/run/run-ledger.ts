@@ -14,6 +14,8 @@ export type LedgerEventType =
   | "lesson_saved"
   | "lesson_change_undone"
   | "triage_override"
+  | "turn_trust"
+  | "turn_trust_final"
   | "routed_escalation"
   | "model_roles_resolved"
   | "model_catalog_unavailable"
@@ -315,6 +317,11 @@ const requiredPayloadFields = {
   // "Dig deeper" (stage B; formerly "Ask Houge anyway"): the override label; new_run_id is the re-submitted planner turn,
   // `lane` the corrected verdict's lane (null when the run had no verdict row).
   triage_override: ["run_id", "new_run_id", "change_id", "lane"],
+  // Decision ladder stage 2a (spec §7.2): a rise of the turn's trust level (`level`: untrusted | hostile; `cause`:
+  // wall_read | shell_netread | judge_timeout | injection_withheld | unjudged_outside | unjudged_local), and the level a
+  // turn ended at, written at every end.
+  turn_trust: ["level", "cause"],
+  turn_trust_final: ["max_level"],
   // Jev decision tree, stage A (spec §4–§6). Ids, enums and numbers only — never message text, never omp's error text.
   // A routed turn stepped up a role at the retry boundary (written by the supervisor, Task 8).
   routed_escalation: ["from", "to", "kind"],
