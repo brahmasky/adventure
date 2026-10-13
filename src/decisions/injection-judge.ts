@@ -6,7 +6,7 @@ import type { RunStore } from "../run/run-store.js";
 import { decide, message } from "./decide.js";
 import { passageBlock, pathBlocked, SECRET_MASK, splitEgress, splitPassages, type EgressBlock, type EgressPassage } from "./egress.js";
 import {
-  BATCH_SIZE, FRAME_CLOSE, FRAME_OPEN, INJECTION_BAR_P, WITHHELD_UNJUDGED_TEXT, INJECTION_ROW_KEY, INJECTION_TEMPLATE_HASH, INJECTION_THRESHOLD_VERSION, INJECTION_TOTAL_MS,
+  BATCH_SIZE, FRAME_CLOSE, FRAME_OPEN, INJECTION_BAR_P, NOT_CHECKED_CLOSE, NOT_CHECKED_OPEN, WITHHELD_UNJUDGED_TEXT, INJECTION_ROW_KEY, INJECTION_TEMPLATE_HASH, INJECTION_THRESHOLD_VERSION, INJECTION_TOTAL_MS,
   injectionQuestion, looksInjected, PASSAGE_CHARS, TOOL_INJECTION, TOOL_INJECTION_ID, WITHHELD_TEXT, type InjectionDetail, type InjectionState, type InjectionVerdict
 } from "./entries/tool-injection.js";
 import { bandFor, nearBar, NOISE_BANDS, type NoiseBand } from "./noise-band.js";
@@ -38,6 +38,8 @@ export interface JudgeInput {
 export interface JudgeOutcome {
   /** `withheld` counts every withheld passage; `withheldUnjudged` those withheld only because, from outside, they held credential material. */
   text: string; verdict: InjectionVerdict; withheld: number; withheldUnjudged: number; framed: number;
+  /** Outside passages whose judgement was lost, delivered inside the not-checked frame (security final I-2: the turn goes hostile). */
+  notChecked: number;
   /** Passages that went to Jev, and how many of them got no answer (a lost judgement: Task 12 raises judge_timeout). */
   sent: number; unanswered: number; skipped: boolean; blocked: EgressBlock | null; decisionId: string | null;
 }
@@ -82,7 +84,7 @@ export function createInjectionJudge(d: JudgeDeps): InjectionJudge {
  */
 export function localOutcome(d: LocalDeps, i: JudgeInput): JudgeOutcome {
   const s = stateOf(d, i);
-  const v = deliver(i.text, s, new Set(s.floorHits));
+  const v = deliver(i.text, s, new Set(s.floorHits), new Set(unasked(s)));
   const verdict: InjectionVerdict = v.withheld > 0 ? "withhold" : v.framed > 0 ? "frame" : "pass";
   return { ...v, verdict, sent: 0, unanswered: s.passages.length, skipped: true, blocked: s.blockKind, decisionId: null };
 }
@@ -90,10 +92,13 @@ export function localOutcome(d: LocalDeps, i: JudgeInput): JudgeOutcome {
 const trailing = (p: string): string => /\s*$/.exec(p)?.[0] ?? "";
 const withheldNote = (p: string): string => `${WITHHELD_TEXT}${trailing(p)}`;
 const framedNote = (p: string): string => `${FRAME_OPEN}\n${p.trimEnd()}\n${FRAME_CLOSE}${trailing(p)}`;
+const notCheckedNote = (p: string): string => `${NOT_CHECKED_OPEN}\n${p.trimEnd()}\n${NOT_CHECKED_CLOSE}${trailing(p)}`;
+/** The passages that go to Jev: neither the floor nor the content check decided them locally. */
+const unasked = (s: InjectionState): number[] => s.passages.map((_, k) => k).filter((k) => !s.floorHits.includes(k) && !s.blocked.includes(k));
 const chunk = <T>(xs: readonly T[], n: number): T[][] => Array.from({ length: Math.ceil(xs.length / n) }, (_, k) => xs.slice(k * n, k * n + n));
 
 async function askPassages(d: JudgeDeps, i: JudgeInput, s: InjectionState, track: Track): Promise<RungResult<InjectionVerdict, InjectionDetail>> {
-  const todo = s.passages.map((_, k) => k).filter((k) => !s.floorHits.includes(k) && !s.blocked.includes(k));
+  const todo = unasked(s);
   track.attempted = todo.length; // before any await: a runner-level timeout must still count these as unanswered
   if (todo.length === 0) return { verdict: "pass", reason: "jev_passed", detail: { withheld: [], asked: false } };
   const clock = d.clock ?? Date.now;
@@ -172,19 +177,23 @@ function persistRows(d: JudgeDeps, batches: readonly BatchResult[], decisionId: 
  * passage (a note) or a framed local one (its masked form, framed). A result with no mask in any planner copy and nothing
  * withheld or framed comes back byte-identical.
  */
-function deliver(raw: string, s: InjectionState, judged: ReadonlySet<number>): Pick<JudgeOutcome, "text" | "withheld" | "withheldUnjudged" | "framed"> {
+function deliver(raw: string, s: InjectionState, judged: ReadonlySet<number>, lost: ReadonlySet<number>): Pick<JudgeOutcome, "text" | "withheld" | "withheldUnjudged" | "framed" | "notChecked"> {
   const unjudged = new Set(s.outside ? s.blocked.filter((k) => !judged.has(k)) : []);   // outside: withheld, never shown (ruling 1)
   const framed = new Set(s.outside ? [] : s.blocked.filter((k) => !judged.has(k)));     // local: framed, masked
-  const note = (p: string, k: number): string => (judged.has(k) ? withheldNote(p) : unjudged.has(k) ? `${WITHHELD_UNJUDGED_TEXT}${trailing(p)}` : framed.has(k) ? framedNote(s.redacted[k]!) : s.planner[k]!);
-  const touched = judged.size + unjudged.size + framed.size > 0 || s.planner.some((t, k) => t !== s.passages[k]);
-  return { text: touched ? s.passages.map(note).join("") : raw, withheld: judged.size + unjudged.size, withheldUnjudged: unjudged.size, framed: framed.size };
+  const unchecked = new Set(s.outside ? [...lost].filter((k) => !judged.has(k)) : []);  // outside, Jev never answered: framed (I-2)
+  const note = (p: string, k: number): string => (judged.has(k) ? withheldNote(p) : unjudged.has(k) ? `${WITHHELD_UNJUDGED_TEXT}${trailing(p)}`
+    : framed.has(k) ? framedNote(s.redacted[k]!) : unchecked.has(k) ? notCheckedNote(s.planner[k]!) : s.planner[k]!);
+  const touched = judged.size + unjudged.size + framed.size + unchecked.size > 0 || s.planner.some((t, k) => t !== s.passages[k]);
+  return { text: touched ? s.passages.map(note).join("") : raw, withheld: judged.size + unjudged.size, withheldUnjudged: unjudged.size, framed: framed.size,
+    notChecked: unchecked.size };
 }
 
 function outcomeOf(raw: string, s: InjectionState, r: DecideResult<InjectionVerdict, InjectionDetail>, track: Track): JudgeOutcome {
   const jev = r.walk.find((o) => o.kind === "system_one")?.result ?? null;
   const skipped = jev !== null && "failed" in jev;
   const fromJev = jev !== null && "verdict" in jev && r.verdict === "withhold" ? (jev.detail?.withheld ?? []) : [];
-  const lost = track.batches.filter((b) => b.ps === null).reduce((n, b) => n + b.indices.length, 0);
-  return { ...deliver(raw, s, new Set([...s.floorHits, ...fromJev])), verdict: r.verdict, sent: track.attempted,
-    unanswered: skipped ? track.attempted : lost, skipped, blocked: s.blockKind, decisionId: r.decisionId };
+  // the passages Jev never answered: every one sent when the rung failed (or never finished), else the lost batches'
+  const lost = skipped ? unasked(s).slice(0, track.attempted) : track.batches.flatMap((b) => (b.ps === null ? [...b.indices] : []));
+  return { ...deliver(raw, s, new Set([...s.floorHits, ...fromJev]), new Set(lost)), verdict: r.verdict, sent: track.attempted,
+    unanswered: lost.length, skipped, blocked: s.blockKind, decisionId: r.decisionId };
 }

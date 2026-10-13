@@ -335,7 +335,7 @@ function raiseNetread(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: str
   return r.verdict === "network";
 }
 
-type Judged = Pick<JudgeOutcome, "text" | "withheld" | "withheldUnjudged" | "framed" | "unanswered" | "skipped">;
+type Judged = Pick<JudgeOutcome, "text" | "withheld" | "withheldUnjudged" | "framed" | "notChecked" | "unanswered" | "skipped">;
 
 type JudgeOpts = Pick<JudgeInput, "outside" | "paths" | "extracted" | "linkTokens">;
 
@@ -356,22 +356,24 @@ async function judged(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: str
     catch (e2) {
       // fail closed: the whole result is withheld unjudged; the code says the local checks did not decide either
       console.error(`bridge: injection_local_failed (${e2 instanceof Error ? e2.name : "unknown"}); result withheld unjudged`);
-      out = { text: WITHHELD_UNJUDGED_TEXT, withheld: 1, withheldUnjudged: 1, framed: 0, unanswered: 1, skipped: true };
+      out = { text: WITHHELD_UNJUDGED_TEXT, withheld: 1, withheldUnjudged: 1, framed: 0, notChecked: 0, unanswered: 1, skipped: true };
     }
   }
-  raiseFor(turn, toolCallId, out, o.outside);
+  raiseFor(turn, toolCallId, out);
   return out.text;
 }
 
 /**
  * What a judgement costs the turn (spec §7.1–7.2): a withhold → hostile; a framed passage (it may not leave, plan S8) →
  * hostile from outside, untrusted from a local read (controller ruling 1); a lost judgement (Jev down, timed out, partial) →
- * untrusted (controller ruling 7: an outage never leaves the turn clean).
+ * untrusted (controller ruling 7: an outage never leaves the turn clean), and hostile when outside text reached the planner
+ * not checked (security final I-2).
  */
-function raiseFor(turn: ActiveTurn, toolCallId: string, o: Judged, _outside: boolean): void {
+function raiseFor(turn: ActiveTurn, toolCallId: string, o: Judged): void {
   if (o.withheld - o.withheldUnjudged > 0) turn.trust?.raise("injection_withheld", toolCallId);
   if (o.withheldUnjudged > 0) turn.trust?.raise("unjudged_outside", toolCallId); // withheld, never shown (controller ruling 1)
   if (o.framed > 0) turn.trust?.raise("unjudged_local", toolCallId);              // framed only on local reads
+  if (o.notChecked > 0) turn.trust?.raise("judge_lost_outside", toolCallId);      // outside, framed as not checked
   if (o.skipped || o.unanswered > 0) turn.trust?.raise("judge_timeout", toolCallId);
 }
 

@@ -318,7 +318,7 @@ const requiredPayloadFields = {
   // `lane` the corrected verdict's lane (null when the run had no verdict row).
   triage_override: ["run_id", "new_run_id", "change_id", "lane"],
   // Decision ladder stage 2a (spec §7.2): a rise of the turn's trust level (`level`: untrusted | hostile; `cause`:
-  // wall_read | shell_netread | judge_timeout | injection_withheld | unjudged_outside | unjudged_local), and the level a
+  // wall_read | shell_netread | judge_timeout | injection_withheld | unjudged_outside | unjudged_local | judge_lost_outside), and the level a
   // turn ended at, written at every end.
   turn_trust: ["level", "cause"],
   turn_trust_final: ["max_level"],

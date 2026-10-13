@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FRAME_OPEN, INJECTION_TEMPLATE_HASH, WITHHELD_TEXT, WITHHELD_UNJUDGED_TEXT } from "../../src/decisions/entries/tool-injection.js";
+import { FRAME_OPEN, INJECTION_TEMPLATE_HASH, NOT_CHECKED_CLOSE, NOT_CHECKED_OPEN, WITHHELD_TEXT, WITHHELD_UNJUDGED_TEXT } from "../../src/decisions/entries/tool-injection.js";
 import { createInjectionJudge, localOutcome, type JudgeInput } from "../../src/decisions/injection-judge.js";
 import type { NoiseBand } from "../../src/decisions/noise-band.js";
 import type { JevRequest, JevResult } from "../../src/jev/jev-client.js";
@@ -204,6 +204,50 @@ describe("tool.injection judge", () => {
     const store = RunStore.openInMemory(); const client = judging(screen);
     await createInjectionJudge({ store, client, home: "/h" })(input(`env shows bridgetokenlowercaseonly here\n\n${SUBTLE}`, { known: ["bridgetokenlowercaseonly"] }));
     expect(sentStates(client).join("\n")).not.toContain("bridgetokenlowercaseonly");
+  });
+  // security final I-2: a passage Jev never saw must not reach the planner as if it had been judged (invariant I1). From
+  // OUTSIDE it arrives inside a code-built "not checked" frame (masked, as the planner copy always is); a local read is
+  // unchanged (the turn's untrusted rise covers it). The bridge raises the turn to hostile on notChecked > 0.
+  describe("a lost judgement on outside text is framed as not checked", () => {
+    const framedOnce = (text: string, inner: string) => {
+      expect(text.split(NOT_CHECKED_OPEN)).toHaveLength(2);
+      expect(text).toContain(`${NOT_CHECKED_OPEN}\n${inner}\n${NOT_CHECKED_CLOSE}`);
+    };
+    it("Jev down: the unjudged outside passage is framed; the floor's withhold stands; nothing is delivered bare", async () => {
+      const store = RunStore.openInMemory();
+      const out = await createInjectionJudge({ store, client: down(), home: "/h" })(input([CLEAN, LOUD].join("\n\n")));
+      expect(out).toMatchObject({ withheld: 1, skipped: true, unanswered: 1, notChecked: 1 });
+      framedOnce(out.text, CLEAN);
+    });
+    it("Jev down on a LOCAL read: unchanged, byte-identical, nothing framed", async () => {
+      const store = RunStore.openInMemory(); const text = [CLEAN, CLEAN].join("\n\n");
+      const out = await createInjectionJudge({ store, client: down(), home: "/h" })(input(text, { source: "shell", outside: false }));
+      expect(out).toMatchObject({ skipped: true, unanswered: 2, notChecked: 0 });
+      expect(out.text).toBe(text);
+    });
+    it("a partial answer: only the lost batch's passages are framed; the answered ones arrive as judged", async () => {
+      const store = RunStore.openInMemory(); const ok = judging(screen); let n = 0;
+      const client = vi.fn<Client>(async (req) => (++n === 2 ? { ok: false, reason: "error", detail: "x", error_kind: "transport" } : ok(req)));
+      const out = await createInjectionJudge({ store, client, home: "/h" })(input(Array.from({ length: 20 }, () => CLEAN).join("\n\n")));
+      expect(out).toMatchObject({ skipped: false, unanswered: 4, notChecked: 4 });
+      expect(out.text.split(NOT_CHECKED_OPEN)).toHaveLength(5);
+      expect(out.text.startsWith(CLEAN)).toBe(true);
+    });
+    it("a hung Jev (the runner's 3 s bound) frames every outside passage it sent", async () => {
+      vi.useFakeTimers();
+      const store = RunStore.openInMemory();
+      const p = createInjectionJudge({ store, client: vi.fn<Client>(() => new Promise<JevResult>(() => undefined)), home: "/h" })(input([SUBTLE, CLEAN, LOUD].join("\n\n")));
+      await vi.advanceTimersByTimeAsync(3_600);
+      const out = await p;
+      expect(out).toMatchObject({ withheld: 1, unanswered: 2, notChecked: 2 });
+      expect(out.text.split(NOT_CHECKED_OPEN)).toHaveLength(3);
+    });
+    it("localOutcome from outside frames what it could not judge; from a local read it does not", () => {
+      const store = RunStore.openInMemory();
+      framedOnce(localOutcome({ store, home: "/h" }, input(CLEAN)).text, CLEAN);
+      expect(localOutcome({ store, home: "/h" }, input(CLEAN)).notChecked).toBe(1);
+      expect(localOutcome({ store, home: "/h" }, input(CLEAN, { source: "shell", outside: false })).text).toBe(CLEAN);
+    });
   });
   describe("localOutcome: the thrown-judge fallback runs the same local checks (codex B2, Ruling 28)", () => {
     const store = RunStore.openInMemory();
