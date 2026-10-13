@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -60,5 +60,15 @@ describe("credential stores by name (spec §7.0)", () => {
     expect(touch("Projects/adventure/src/decisions/.env.example")).toBe(false);
     expect(touch(".bun/x/.env.example")).toBe(false);
     expect(touch("Projects/other/.env.example")).toBe(true);
+  });
+  it("a template-named symlink to a real .env is refused; a real template file still reads (review fix round 1)", () => {
+    // A planner shell may write the workspace: `ln -s ~/Projects/x/.env <ws>/.env.example` must not turn the gate's template
+    // exemption into a read of another project's secrets. The exemption holds only when EVERY spelling is a template name.
+    const ws = join(ctx.data, "omp", "workspace"), target = join(home, "Projects/fx/.env"), real = join(ws, "real/.env.example");
+    mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, "dummy\n");
+    mkdirSync(dirname(real), { recursive: true }); writeFileSync(real, "dummy\n");
+    const link = join(ws, ".env.example"); symlinkSync(target, link);
+    expect([isCredentialPath(link, home), isDeniedRead(link, ctx), isDeniedWrite(link, ctx)]).toEqual([true, true, true]);
+    expect([isCredentialPath(real, home), isDeniedRead(real, ctx)]).toEqual([false, false]);
   });
 });

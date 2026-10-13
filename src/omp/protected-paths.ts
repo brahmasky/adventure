@@ -77,11 +77,14 @@ export function credentialRegexes(home: string): RegExp[] {
   return res;
 }
 
-/** True when either spelling of the path (as given, canonical) matches a credential pattern under either spelling of $HOME. */
+/**
+ * True when either spelling of the path (as given, canonical) matches a credential pattern under either spelling of $HOME.
+ * The .env template exemption needs EVERY spelling to be a template: a `.env.example` symlink to a `.env` stays denied.
+ */
 export function isCredentialPath(absPath: string, home: string): boolean {
   const forms = [...new Set([resolve(absPath), realpathOrSelf(absPath)])];
   const homes = [...new Set([resolve(home), realpathOrSelf(home)])];
-  if (forms.some((f) => ENV_TEMPLATE_NAME.test(f))) return false;
+  if (forms.every((f) => ENV_TEMPLATE_NAME.test(f))) return false;
   return homes.some((h) => credentialRegexes(h).some((re) => forms.some((f) => re.test(f))));
 }
 
