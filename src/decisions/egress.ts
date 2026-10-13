@@ -356,12 +356,32 @@ function segParts(s: string, min: number): Part[] {
   return pass([keep(s)], SEG_RUN, (m) => [opaqueRun(m[0], min) ? shaped(m[0]) : keep(m[0])]);
 }
 
+/** One escape sequence decoded, or null when it is not valid UTF-8 (only a URIError; anything else is a bug and is rethrown). */
+function tryDecode(esc: string): string | null {
+  try { return decodeURIComponent(esc); } catch (e) { if (e instanceof URIError) return null; throw e; }
+}
 /**
- * Percent-decode a link piece, once; an undecodable piece stays as it is (Rev 9, ruling 3a). Rev 12 (senior round 11): `+` is
- * never decoded as a space — that split a `+`-bearing secret (standard base64, a broker value) into pieces Jev saw in clear.
+ * A run of `%XX` escapes, decoded escape by escape (review round 1): each longest valid UTF-8 sequence (at most 4 bytes)
+ * decodes; an invalid byte stays escaped, so `maskDecoded`'s still-escaped rule masks just the word holding it.
+ */
+function decodeRun(run: string): string {
+  const esc = run.match(/%[0-9A-Fa-f]{2}/g) ?? [];
+  let out = "";
+  for (let i = 0; i < esc.length;) {
+    let n = Math.min(4, esc.length - i), d: string | null = null;
+    for (; n > 0; n--) if ((d = tryDecode(esc.slice(i, i + n).join(""))) !== null) break;
+    out += n > 0 ? d : esc[i];
+    i += Math.max(n, 1);
+  }
+  return out;
+}
+/**
+ * Percent-decode a link piece, once, run by run (Rev 9, ruling 3a): a malformed escape — a bare `%`, truncated UTF-8 — no
+ * longer leaves the whole piece encoded, which hid an encoded sentence from Jev while the planner read it (review round 1).
+ * Rev 12 (senior round 11): `+` is never decoded as a space — that split a `+`-bearing secret into pieces Jev saw in clear.
  */
 function decoded(v: string): string {
-  try { return decodeURIComponent(v); } catch { return v; }
+  return v.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => tryDecode(run) ?? decodeRun(run));
 }
 /**
  * I4 in the extract channel, decided on the DECODED piece (ruling 3a): text that reads as words (whitespace, prose, a plain
