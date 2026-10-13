@@ -2030,6 +2030,21 @@ describe("PlannerSupervisor â€” settles only on a terminal agent_end (P7, spec Â
     expect(signalAtStop).toBe(true);
   });
 
+  // codex final I2: an async-work-only end is not omp's last word (the child may still continue), so Houge never starts
+  // another leg on it, even with a recorded error frame: a retry would overlap the child's background work.
+  it("an async-work-only end with an error frame never enters Houge's retry: it fails once, no RETRY_NOTE", async () => {
+    const session = fakeSession({ onPrompt: (_t, e) => {
+      e({ type: "turn_start" });
+      session.assistant("", { stopReason: "error", errorMessage: "429 usage limit reached" });
+      e({ type: "agent_end", isTerminal: false, yielded: true, awaitingAsyncWork: true });
+    } });
+    const { store, sup, outcome } = harness(session, { HOUGE_OMP_FRAME_IDLE_MS: "60000" });
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(session.prompts).toEqual(["hi"]);
+    expect(outcome.done).toHaveLength(0);
+    expect(outcome.failed).toEqual([expect.objectContaining({ error_type: "model_error" })]);
+  });
+
   it("Houge's omp config caps omp's own retries under the frame watchdog (S2b)", () => {
     const dir = mkdtempSync(join(tmpdir(), "hcfg-"));
     mkdirSync(join(dir, "omp"), { recursive: true }); // writeHougeConfigFile creates no directory

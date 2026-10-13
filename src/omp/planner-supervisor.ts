@@ -709,6 +709,8 @@ export class PlannerSupervisor {
       // an abort omp reported itself (no supervisor failure set) is never a success (B6)
       if (how === "abort" && !turn.failure) turn.failure = { type: "planner_exit", ref: "agent_aborted" };
       if (turn.failure || turn.lastError === undefined) break;
+      // an async-wait end is never omp's last word: no Houge retry may overlap the child's own work (codex final I2)
+      if (turn.asyncWait) { turn.failure = { type: "model_error", ref: classifyOmpError(turn.lastError) }; break; }
       if (!(await this.retryNextLeg(turn, turn.lastError))) break;
     }
     this.clearTimers(turn);
