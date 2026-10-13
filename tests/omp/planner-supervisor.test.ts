@@ -2067,8 +2067,67 @@ describe("PlannerSupervisor — trust-card pause policy and the turn's trust (sp
     const turn = (sup as unknown as { turn: { trustPausedMs: number; active: { trustWaitMs: (ttl: number) => number } } }).turn;
     expect(turn.active.trustWaitMs(300_000)).toBe(300_000);
     turn.trustPausedMs = 300_000; // the budget is spent
-    expect(turn.active.trustWaitMs(300_000)).toBe(180_000 - 15_000); // the default 180 s watchdog less the margin
+    // the default 180 s watchdog less the margin, less the (real-clock) ms since the child's last frame (review fix 1)
+    expect(turn.active.trustWaitMs(300_000)).toBeLessThanOrEqual(180_000 - 15_000);
+    expect(turn.active.trustWaitMs(300_000)).toBeGreaterThan(180_000 - 15_000 - 1_000);
     h.end(); await sup.whenIdle();
+  });
+
+  type TrustTurn = { trustPausedMs: number; active: { trustWaitMs: (ttl: number) => number } };
+  const trustTurn = (sup: PlannerSupervisor) => (sup as unknown as { turn: TrustTurn }).turn;
+
+  it("a trust card's wait counts the watchdog from the child's last frame, not from the ask (review fix 1)", async () => {
+    // The watchdog was armed at the last frame, before the call queued and its input was judged: a cap measured from the ask
+    // would let the watchdog kill the turn while the card still waits. The card must expire first and the turn go on.
+    const h = heldSession();
+    const { store, sup, outcome } = harness(h.session); const run_id = createQueuedTurnRun(store);
+    vi.useFakeTimers(FAKE_CLOCK);
+    try {
+      sup.submit(req(run_id)); await untilState(sup, "RUNNING"); await vi.advanceTimersByTimeAsync(10); // last frame at +5
+      await vi.advanceTimersByTimeAsync(30_000); // 30 s of silence: queued behind another call, judging
+      const turn = trustTurn(sup); turn.trustPausedMs = 300_000; // the pause budget is spent
+      const cap = turn.active.trustWaitMs(300_000);
+      expect(cap).toBeLessThanOrEqual(180_000 - 30_000 - 15_000);
+      expect(cap).toBeGreaterThan(0);
+      sup.setAwaitingApprovalForTest(true, { pause: "bounded", ttlMs: 300_000 }); // asks with the timers running
+      await vi.advanceTimersByTimeAsync(cap);
+      sup.setAwaitingApprovalForTest(false); // the card expired on its cap
+      expect(outcome.failed).toEqual([]); // the watchdog has not fired
+      h.end("after the expiry");
+    } finally { vi.useRealTimers(); }
+    await sup.whenIdle();
+    expect(outcome.done[0]).toMatchObject({ run_id, text: "after the expiry" });
+    expect(store.getLedgerEvents(run_id).some((e) => e.event_type === "loop_halted")).toBe(false);
+  });
+
+  it("a trust card's wait never passes the deadline less the margin, and is 0 when the deadline is that near (review fix 2)", async () => {
+    // A card that outlives the deadline it cannot pause is killed mid-wait with the turn (a schedule-born turn's bound, C5).
+    const h = heldSession();
+    const { store, sup } = harness(h.session, { HOUGE_OMP_TURN_TIMEOUT_MS: "60000", HOUGE_OMP_FRAME_IDLE_MS: "600000" });
+    vi.useFakeTimers(FAKE_CLOCK);
+    try {
+      sup.submit(req(createQueuedTurnRun(store))); await untilState(sup, "RUNNING");
+      const startedAt = Date.now(); await vi.advanceTimersByTimeAsync(30_000);
+      const turn = trustTurn(sup); turn.trustPausedMs = 300_000;
+      const elapsed = Date.now() - startedAt; // the deadline also covered the start
+      expect(turn.active.trustWaitMs(300_000)).toBeLessThanOrEqual(60_000 - elapsed - 15_000);
+      expect(turn.active.trustWaitMs(300_000)).toBeGreaterThan(60_000 - elapsed - 15_000 - 1_000);
+      await vi.advanceTimersByTimeAsync(16_000); // under 15 s of deadline left
+      expect(turn.active.trustWaitMs(300_000)).toBe(0);
+      h.end();
+    } finally { vi.useRealTimers(); }
+    await sup.whenIdle();
+  });
+
+  it("a trust card asked during a bounded pause gets only what that pause has not yet used (ruling 2)", async () => {
+    const session = fakeSession({ onPrompt: () => undefined });
+    const { store, sup } = harness(session);
+    vi.useFakeTimers(FAKE_CLOCK);
+    try {
+      sup.submit(req(createQueuedTurnRun(store))); await untilState(sup, "RUNNING");
+      sup.setAwaitingApprovalForTest(true, { pause: "bounded", ttlMs: 10_000 }); await vi.advanceTimersByTimeAsync(4_000);
+      expect(trustTurn(sup).active.trustWaitMs(10_000)).toBe(6_000);
+    } finally { vi.useRealTimers(); }
   });
 
   it("every turn end writes turn_trust_final once, success and failure", async () => {

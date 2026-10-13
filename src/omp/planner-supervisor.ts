@@ -167,6 +167,8 @@ interface Turn {
   trustPausedMs: number; trustPauseAt: number | undefined; trustResume: ReturnType<typeof setTimeout> | undefined;
   done: (r: "end" | "abort") => void; ended: Promise<"end" | "abort">;
   deadlineLeft: number; deadlineAt: number; deadline: ReturnType<typeof setTimeout> | undefined; idle: ReturnType<typeof setTimeout> | undefined;
+  /** When the frame watchdog was last armed (the child's last frame): a trust card's wait is bounded from here (senior W3). */
+  idleAt: number;
   failure?: { type: PlannerFailure; ref: string };
   /** A lane reply's card buttons, handed to finishSuccess (ADR 0029 §5.1). */
   laneButtons?: NotificationButton[];
@@ -458,7 +460,7 @@ export class PlannerSupervisor {
     Object.defineProperty(active, "secretValues", { enumerable: true, get: () => (this.bridgeToken ? [this.bridgeToken] : undefined) });
     const heartbeat = setInterval(() => this.renewLeases(), PLANNER_HEARTBEAT_MS);
     const turn: Turn = {
-      req, claim, worker, startedAt: Date.now(), merged: [], active, abort, heartbeat, n: 0, recorded: 0, lastText: "", lastError: undefined, deadline: undefined, idle: undefined,
+      req, claim, worker, startedAt: Date.now(), merged: [], active, abort, heartbeat, n: 0, recorded: 0, lastText: "", lastError: undefined, deadline: undefined, idle: undefined, idleAt: Date.now(),
       usedTool: false, legIndex: 0, live: false, finished: false, laneEnded: false, aborting: false, dispatched: false, childGen: -1, approvals: 0, trustPausedMs: 0, trustPauseAt: undefined, trustResume: undefined, ...newDeferred(),
       route: null, role: "default", effort: null, chain: [], routedBy: undefined, startMissing: 0, legsTried: 0, retriedOther: false, pinFailed: false, failed: new Set(),
       deadlineLeft: cfg.turnTimeoutMs, deadlineAt: Date.now()
@@ -1174,6 +1176,7 @@ export class PlannerSupervisor {
 
   private armFrameIdle(t: Turn): void {
     clearTimeout(t.idle);
+    t.idleAt = Date.now();
     t.idle = setTimeout(() => void this.abortTurn("frame_idle", "no frame"), this.d.cfg.frameIdleMs);
   }
 
@@ -1219,7 +1222,10 @@ export class PlannerSupervisor {
     const paused = t.trustPausedMs + (t.trustPauseAt !== undefined ? now - t.trustPauseAt : 0);
     if (ttlMs - paused > 0) return ttlMs - paused;
     const deadlineLeft = t.deadline ? t.deadlineLeft - (now - t.deadlineAt) : t.deadlineLeft;
-    return Math.max(0, Math.min(ttlMs, this.d.cfg.frameIdleMs - TRUST_WAIT_MARGIN_MS, deadlineLeft - TRUST_WAIT_MARGIN_MS));
+    // the watchdog counts from the last frame, not from this ask (a queued call, judging): bound by what it has left
+    const idleLeft = t.idle ? this.d.cfg.frameIdleMs - (now - t.idleAt) : this.d.cfg.frameIdleMs;
+    // 0 (never negative) means no time to ask: the bridge refuses the call without a card (ruling 17), nothing waits
+    return Math.max(0, Math.min(ttlMs, idleLeft - TRUST_WAIT_MARGIN_MS, deadlineLeft - TRUST_WAIT_MARGIN_MS));
   }
 
   private async abortTurn(type: PlannerFailure, ref: string): Promise<void> {
