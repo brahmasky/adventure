@@ -8,7 +8,7 @@ import type { Entry, RungAnswer } from "../types.js";
  * a local passage withheld instead of framed). Kept apart from tool.shell_class, which keeps today's approvals untouched.
  */
 export type NetreadVerdict = "local" | "network";
-export type NetreadReason = "net_program" | "host_program" | "git_remote" | "package_fetch" | "indirection";
+export type NetreadReason = "net_program" | "host_program" | "git_remote" | "package_fetch" | "indirection" | "dev_socket";
 const NET_PROGRAMS: ReadonlySet<string> = new Set(["curl", "wget", "http", "https", "httpie", "xh", "nc", "ncat", "netcat", "socat", "telnet", "ftp",
   "sftp", "aria2c", "lynx", "w3m", "dig", "nslookup", "host", "whois", "ping", "gh", "npx", "bunx", "uvx", "pipx"]);
 const HOST_PROGRAMS: ReadonlySet<string> = new Set(["ssh", "scp", "rsync"]);
@@ -27,8 +27,12 @@ const HOST_ARG = /^(?:[\w.-]+@)?[\w.-]+:(?!\/\/)|^[\w.-]+@[\w.-]+$/;
 /** Shell operators and substitutions: each piece between them is classified on its own (any network piece decides). */
 const SEGMENT_SPLIT = /&&|\|\||[;&|(){}\n`]|\$\(|\bdo\b|\bthen\b|\belse\b/;
 
-/** One word as the shell runs it: quotes and a leading `\` stripped (`\curl` runs curl). */
-const clean = (w: string): string => w.replace(/^["']+|["']+$/g, "").replace(/^\\/, "");
+/** bash opens a socket for a redirection to /dev/tcp/host/port or /dev/udp/…, anywhere in the command. */
+const DEV_SOCKET = /\/dev\/(?:tcp|udp)\//;
+/** A program word the shell expands at run time ($VAR, ${…}, $IFS, a glob or brace): what runs cannot be read statically. */
+const EXPANDED = /[$*?[{]/;
+/** One word as the shell runs it: every quote and backslash removed (`c""url`, `'cu''rl'`, `cu\rl`, `\curl` all run curl). */
+const clean = (w: string): string => w.replace(/["'\\]/g, "");
 const words = (segment: string): string[] => segment.trim().split(/\s+/).map(clean).filter(Boolean);
 const base = (w: string): string => w.slice(w.lastIndexOf("/") + 1);
 
@@ -43,6 +47,7 @@ const opaqueSource = (args: string[]): boolean => args.length === 0 || /^(?:<|-$
 
 /** The verdict for the program at ws[k] (no wrappers here: programReason handles those). */
 function directReason(ws: string[], k: number, segment: string): NetreadReason | null {
+  if (EXPANDED.test(ws[k]!)) return "indirection";
   const w = base(ws[k]!);
   const args = ws.slice(k + 1);
   if (NET_PROGRAMS.has(w) || (w === "openssl" && args.includes("s_client"))) return "net_program";
@@ -63,8 +68,11 @@ function programReason(ws: string[], segment: string): NetreadReason | null {
   while (k < ws.length && /^\w+=/.test(ws[k]!)) k++;
   if (k >= ws.length) return null;
   if (!WRAPPERS.has(base(ws[k]!))) return directReason(ws, k, segment);
+  // the wrapped program: its first plain word (`sudo $CMD`); later words are only tried by name, so `sudo ls $DIR` stays local
+  const first = ws.slice(k + 1).find((w) => !w.startsWith("-") && !/^\w+=/.test(w) && !WRAPPERS.has(base(w)));
+  if (first !== undefined && EXPANDED.test(first)) return "indirection";
   for (let j = k + 1; j < ws.length; j++) {
-    if (/^\w+=/.test(ws[j]!) || WRAPPERS.has(base(ws[j]!))) continue;
+    if (/^\w+=/.test(ws[j]!) || WRAPPERS.has(base(ws[j]!)) || EXPANDED.test(ws[j]!)) continue;
     const r = directReason(ws, j, segment);
     if (r) return r;
   }
@@ -72,6 +80,7 @@ function programReason(ws: string[], segment: string): NetreadReason | null {
 }
 
 export function isNetworkCommand(command: string): { network: boolean; reason: NetreadReason | null } {
+  if (DEV_SOCKET.test(command)) return { network: true, reason: "dev_socket" };
   for (const seg of command.split(SEGMENT_SPLIT)) {
     const reason = programReason(words(seg), seg);
     if (reason) return { network: true, reason };
@@ -92,5 +101,5 @@ export const TOOL_SHELL_NETREAD: Entry<{ command: string }, NetreadVerdict> = {
   fail: "network", monotone: { order: ["local", "network"] }, defaultVerdict: "local",
   outcomes: [], armed: { rule: "on" },
   effects: { local: { kind: "none", reversible: true, announced: "none" }, network: { kind: "tighten", reversible: true, announced: "none", what: "the turn rises to untrusted" } },
-  reasonCodes: ["net_program", "host_program", "git_remote", "package_fetch", "indirection"]
+  reasonCodes: ["net_program", "host_program", "git_remote", "package_fetch", "indirection", "dev_socket"]
 };

