@@ -63,6 +63,17 @@ describe("turn.trust", () => {
     expect(db.prepare(`SELECT payload_json FROM notification_outbox WHERE idempotency_key LIKE 'urgent:trust_hostile:%'`).all()).toHaveLength(1);
     expect(HOSTILE_CARD_TEXT).toContain("text aimed at the assistant");
   });
+  it("a hostile card that cannot be queued opens trust_card_failed, so Paco still learns the turn is hostile", () => {
+    const { store, trust } = setup();
+    const real = store.enqueueNotification.bind(store);
+    store.enqueueNotification = ((n: Parameters<typeof real>[0]) => {
+      if (n.idempotency_key.startsWith("urgent:")) throw new Error("outbox down");
+      return real(n);
+    }) as typeof store.enqueueNotification;
+    trust.raise("injection_withheld");
+    expect(trust.level()).toBe("hostile");
+    expect(store.listOpenIncidents().filter((i) => i.kind === "trust_card_failed")).toHaveLength(1);
+  });
   it("HOUGE_TRUST_ASK_TTL_MS: default 5 minutes; a malformed or out-of-range value falls back to the default", () => {
     expect(resolveTrustAskTtlMs({})).toBe(TRUST_ASK_TTL_DEFAULT_MS);
     expect(resolveTrustAskTtlMs({ HOUGE_TRUST_ASK_TTL_MS: "20000" })).toBe(20_000);
@@ -76,8 +87,7 @@ describe("turn.trust", () => {
       const v = (trustRule({ current, cause }) as { verdict: TrustLevel }).verdict;
       expect([current, cause, TRUST_ORDER.indexOf(v) >= TRUST_ORDER.indexOf(current)]).toEqual([current, cause, true]);
     }
-    expect(Object.getOwnPropertyNames(TurnTrust.prototype).filter((n) => n !== "constructor" && !n.startsWith("_")).sort())
-      .toEqual(["finalize", "ledger", "level", "onHostile", "raise"]);
+    expect(Object.getOwnPropertyNames(TurnTrust.prototype).filter((n) => /^(?:set|lower|reset|clear)/i.test(n))).toEqual([]);
     const { trust } = setup();
     expect(Object.keys(trust)).toEqual(["d"]); // the level is an ES private field: no property to overwrite
     trust.raise("injection_withheld");

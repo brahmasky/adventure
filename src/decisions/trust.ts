@@ -55,10 +55,17 @@ export class TurnTrust {
   /** Spec §8.2: one urgent card per hostile turn; a schedule-born one (nobody to tap) also pages hostile_schedule_turn once. */
   private onHostile(): void {
     try { enqueueUrgentCard(this.d.store, { chat_id: this.d.chat_id, key: `trust_hostile:${this.d.run_id}`, text: HOSTILE_CARD_TEXT }); }
-    catch (e) { console.error(`trust: hostile card not queued: ${message(e)}`); }
-    if (this.d.born !== "schedule") return;
-    try { openAlertedIncident(this.d.store, { kind: "hostile_schedule_turn", subject: this.d.run_id, detail: { run_id: this.d.run_id }, ...(this.d.env ? { env: this.d.env } : {}) }); }
-    catch (e) { console.error(`trust: hostile_schedule_turn not opened: ${message(e)}`); }
+    catch (e) {
+      // Paco must still learn the turn is hostile: the card's failure becomes an incident row (and its own page)
+      console.error(`trust: hostile card not queued: ${message(e)}`);
+      this.page("trust_card_failed");
+    }
+    if (this.d.born === "schedule") this.page("hostile_schedule_turn");
+  }
+
+  private page(kind: "trust_card_failed" | "hostile_schedule_turn"): void {
+    try { openAlertedIncident(this.d.store, { kind, subject: this.d.run_id, detail: { run_id: this.d.run_id }, ...(this.d.env ? { env: this.d.env } : {}) }); }
+    catch (e) { console.error(`trust: ${kind} not opened: ${message(e)}`); }
   }
 }
 
