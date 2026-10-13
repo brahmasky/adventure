@@ -1,4 +1,4 @@
-import { readFileSync, rmSync } from "node:fs";
+import { closeSync, constants, lstatSync, openSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { PROTECTED_DIRS, PROTECTED_FILES } from "../capabilities/self-write-guard.js";
 import { sanitizeJevText } from "../jev/egress-redact.js";
@@ -33,22 +33,32 @@ export function buildLockedRetryText(lockedPaths: string[], testPaths: string[])
   return lines.join("\n");
 }
 
+/** Cap, in bytes, on a sentinel the daemon will read. */
+const SENTINEL_MAX_BYTES = 4096;
+/** What Paco is told when the sentinel exists but cannot be trusted or read. */
+export const SENTINEL_UNREADABLE = "(the writer left a note but it was unreadable or not a plain small file)";
+
 /**
  * Read and delete the sentinel BEFORE the guard runs, so it never appears in a diff and is never published.
- * A missing file is the normal case. Any other failure is logged and treated as "no sentinel" (a left-over
- * file would be an unlocked root file; the guard and reviewer still judge the diff).
+ * ENOENT (no file) returns undefined. Anything else that exists is removed (rm -f semantics) and the caller goes
+ * terminal: only a regular file of at most 4 KiB is ever read (lstat, never following a symlink; a FIFO or a
+ * huge file is never opened), and any failure returns SENTINEL_UNREADABLE after a logged warning (fail closed).
  */
 export function takeNeedsLockedFile(worktree: string): string | undefined {
   const file = join(worktree, NEEDS_LOCKED_FILE);
-  let text: string;
+  let text = SENTINEL_UNREADABLE;
   try {
-    text = readFileSync(file, "utf8");
+    const st = lstatSync(file);
+    if (st.isFile() && st.size <= SENTINEL_MAX_BYTES) {
+      const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try { text = readFileSync(fd, "utf8"); } finally { closeSync(fd); }
+    }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.warn(`self-write: could not read ${NEEDS_LOCKED_FILE}: ${String(error)}`);
-    return undefined;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    console.warn(`self-write: could not read ${NEEDS_LOCKED_FILE}: ${String(error)}`);
   }
   try {
-    rmSync(file, { force: true });
+    rmSync(file, { recursive: true, force: true });
   } catch (error) {
     console.warn(`self-write: could not delete ${NEEDS_LOCKED_FILE}: ${String(error)}`);
   }
@@ -67,7 +77,7 @@ export type DenialPlan =
   | { kind: "refine_locked"; locked: string[]; tests: string[] }
   | { kind: "terminal" };
 
-const isTestPath = (p: string): boolean => p.replace(/^\.\//, "").toLowerCase().startsWith("tests/");
+export const isTestPath = (p: string): boolean => p.replace(/^\.\//, "").toLowerCase().startsWith("tests/");
 
 /**
  * What to do with a guard denial. Test-only denials refine (as before). A locked denial refines ONCE per run

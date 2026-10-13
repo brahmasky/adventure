@@ -40,6 +40,7 @@ interface Log { writeTasks: string[]; published: string[]; guardSaw: string[]; }
 /** A stack where attempt N's raw diff is `diffs[N-1]` (paths, M status) and `sentinels[N-1]` is what the writer left in NEEDS_LOCKED_FILE. */
 function stack(diffs: string[][], log: Log, sentinels: Array<string | undefined> = []): SelfWriteDeps {
   let writes = 0;
+  const taken = new Set<number>();
   return {
     createWorktree: () => ({ path: "/fake/wt" }),
     removeWorktree: () => {},
@@ -50,7 +51,9 @@ function stack(diffs: string[][], log: Log, sentinels: Array<string | undefined>
       return { ok: true, output: { worktree: "/fake/wt", provider: "codex", model: "gpt-fake", usageRaw: "" } };
     },
     rawDiff: () => {
-      const raw = (diffs[writes - 1] ?? []).map((p) => `${OK}${p}\n`).join("");
+      // A real worktree diff would carry the sentinel if it were still on disk: emit it when the stub's sentinel is unread.
+      const paths = [...(diffs[writes - 1] ?? []), ...(sentinels[writes - 1] !== undefined && !taken.has(writes) ? [NEEDS_LOCKED_FILE] : [])];
+      const raw = paths.map((p) => `${OK}${p}\n`).join("");
       log.guardSaw.push(raw);
       return raw;
     },
@@ -61,7 +64,7 @@ function stack(diffs: string[][], log: Log, sentinels: Array<string | undefined>
       return { ok: true, verdict: { verdict: "pass", fixes_task: true, introduces_bugs: false, scope_creep: false, reasons: [] } };
     },
     publishBranch: (_wt, branch) => { log.published.push(branch); return branch; },
-    takeNeedsLocked: () => sentinels[writes - 1]
+    takeNeedsLocked: () => { taken.add(writes); return sentinels[writes - 1]; }
   };
 }
 
@@ -148,6 +151,8 @@ describe("self-write locked-path guidance", () => {
       expect(log.published).toEqual([]);
       expect(blocked(store, r.run_id).length).toBe(1);
       expect(text).toContain(reason);
+      // The guard ran on attempt 1 only: the sentinel attempt was read and deleted before it, so the guard never saw it.
+      expect(log.guardSaw.length).toBe(1);
       expect(log.guardSaw.join("")).not.toContain(NEEDS_LOCKED_FILE);
     } finally { store.close(); }
   });
@@ -162,6 +167,31 @@ describe("self-write locked-path guidance", () => {
       expect(text).not.toContain(secret);
       expect(text).toContain("src/omp/x.ts");
       expect(text).toContain("<token>"); // masked, not silently dropped
+    } finally { store.close(); }
+  });
+
+  it("a mixed tests+locked denial gets the locked retry and the text names both (why: neither mistake may be silently dropped)", async () => {
+    const store = RunStore.openInMemory();
+    const log: Log = { writeTasks: [], published: [], guardSaw: [] };
+    try {
+      const r = runWith(stack([[TOOL_DECLS, "tests/prompt/composer.test.ts"], [SCHEDULE_SPEC]], log), store);
+      await r.go();
+      expect(log.writeTasks[1]).toContain(TOOL_DECLS);
+      expect(log.writeTasks[1]).toMatch(/EXISTING test file/);
+      expect(log.published).toEqual([`houge/selfwrite/${r.run_id}`]);
+    } finally { store.close(); }
+  });
+
+  it("an unreadable diff (empty path) is terminal with NO retry (why: fail closed, a retry cannot fix a diff we cannot read)", async () => {
+    const store = RunStore.openInMemory();
+    const log: Log = { writeTasks: [], published: [], guardSaw: [] };
+    try {
+      const d = { ...stack([[SCHEDULE_SPEC]], log), rawDiff: () => { throw new Error("git exploded"); } };
+      const r = runWith(d, store);
+      await r.go();
+      expect(log.writeTasks.length).toBe(1);
+      expect(log.published).toEqual([]);
+      expect(blocked(store, r.run_id).length).toBe(1);
     } finally { store.close(); }
   });
 

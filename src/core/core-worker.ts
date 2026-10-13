@@ -9,7 +9,7 @@ import { createLocalFileReadAdapter } from "../capabilities/local-file-read.js";
 import { createCodingAgentAdapter, resolveCodexEnabled, resolveCodexTimeoutMs } from "../capabilities/coding-agent.js";
 import { compileCodeSelfWriteContract, compileSelfDiagnoseContract, compileSkillAuthorContract } from "../contracts/task-contract.js";
 import { checkSelfWriteDiff, parseDiffRaw } from "../capabilities/self-write-guard.js";
-import { buildLockedRetryText, NEEDS_LOCKED_FILE, planDenial, quoteNeedsLockedReason, renderLockedPaths, takeNeedsLockedFile } from "./self-write-locked.js";
+import { buildLockedRetryText, NEEDS_LOCKED_FILE, isTestPath, planDenial, quoteNeedsLockedReason, renderLockedPaths, takeNeedsLockedFile } from "./self-write-locked.js";
 import type { GuardResult } from "../capabilities/self-write-guard.js";
 import { resolveTestGateTimeoutMs, runTestGateAsync } from "../run/test-gate.js";
 import type { TestGateResult } from "../run/test-gate.js";
@@ -1383,7 +1383,7 @@ export class CoreWorker {
       let task = baseTask;
       let lastFailure = ""; // for the failure event/report after the refine cap is hit.
       let lockedRetryUsed = false; // the guided locked-path retry happens at most once per run.
-      let lockedSeen: string[] = []; // the locked paths the writer touched before the retry.
+      let lockedSeen: Array<{ path: string; status: string; reason: string }> = []; // the locked paths the writer touched before the retry.
 
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         // (c) the configured writer produces / refines the diff in the worktree.
@@ -1419,8 +1419,8 @@ export class CoreWorker {
         const needs = deps.takeNeedsLocked ? await deps.takeNeedsLocked(worktree) : undefined;
         if (needs !== undefined) {
           const reason = quoteNeedsLockedReason(needs, this.broker ? (t) => this.broker!.redact(t) : undefined) || "(no reason given)";
-          this.recordBlocked(claim.run_id, lockedSeen.map((path) => ({ path, status: "M", reason: "writer declared a locked change unavoidable" })), ledgerFocus);
-          return this.selfWriteReport(buildHardDenyNotification(label, lockedSeen, { reason }));
+          this.recordBlocked(claim.run_id, lockedSeen, ledgerFocus);
+          return this.selfWriteReport(buildHardDenyNotification(label, lockedSeen.map((d) => d.path), { reason }));
         }
         //  - ALL denied paths are existing-test edits → a fixable WRITER mistake: refine (revert + stay
         //    backward-compatible), ≤3.
@@ -1442,13 +1442,13 @@ export class CoreWorker {
           }
           if (plan.kind === "refine_locked") {
             lockedRetryUsed = true;
-            lockedSeen = plan.locked;
+            lockedSeen = guard.denied.filter((d) => plan.locked.includes(d.path)).map((d) => ({ path: d.path, status: d.status, reason: d.reason }));
             lastFailure = `touched locked path(s): ${plan.locked.join(", ")}`;
             task = buildSelfWriteRefineTask(baseTask, buildLockedRetryText(plan.locked, plan.tests));
             continue;
           }
           this.recordBlocked(claim.run_id, guard.denied.map((d) => ({ path: d.path, status: d.status, reason: d.reason })), ledgerFocus);
-          return this.selfWriteReport(buildHardDenyNotification(label, guard.denied.map((d) => d.path), lockedRetryUsed ? { told: true } : undefined));
+          return this.selfWriteReport(buildHardDenyNotification(label, guard.denied.map((d) => d.path), lockedRetryUsed && guard.denied.some((d) => !isTestPath(d.path)) ? { told: true } : undefined));
         }
 
         // (e) CHECKER 2 — test gate. Red → refine (feed the failing stage+output back) ≤3 total.
