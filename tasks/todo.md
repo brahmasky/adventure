@@ -1,4 +1,31 @@
-# 🧭 CURRENT SYSTEM STATE — 2026-10-12 (read this first)
+# 🧭 CURRENT SYSTEM STATE — 2026-10-14 (read this first)
+
+**Decision ladder stage 2a (in-Houge judges): BUILT on branch `feat/decision-ladder-stage-2a`, NOT merged; `dist/` of main
+unchanged, nothing live.** Spec Rev 8 + plan Rev 12 (20 tasks); tool.injection (shell, wall tools, mail side channel) with
+the egress redactor and a daily golden set; turn.trust with trust asks (own TTL, `HOUGE_TRUST_ASK_TTL_MS`); hostile
+read-only list; credential-store read-deny by name; P7 terminal-`agent_end` settle with omp retries capped; noise-band
+code (empty `NOISE_BANDS`); tap labels in the calibration report; digest additions. Evidence: live gate on real Jev run 8,
+56 PASS / 0 FAIL, one named INCONCLUSIVE (C6 omp retry cap: `omp config get` cannot show the `--config` overlay); rollback
+check PASS (stage 1 build boots on a copy migrated by `2026-10-13-decision-ladder-2a`); every task two-stage reviewed.
+- [ ] Paco: merge by hand the protected files this branch touches (`src/decisions/` all, `src/omp/` bridge-handler,
+  planner-supervisor, protected-paths, seatbelt, tool-approval-sink, `src/policy/capability-policy.ts`,
+  `src/capabilities/capability-runner.ts`, `src/capabilities/self-write-guard.ts`, `src/run/run-store.ts`,
+  `src/run/run-ledger.ts`, `src/cli.ts`, `src/jev/decide.ts`) and sign the ADR 0030 amendment draft
+  (`docs/decisions/0030-decision-ladder.md`, index row in `docs/decisions/README.md`).
+- [ ] Paco: approve the noise-band candidates, then commit `NOISE_BANDS` rows (measured p95 spread): injection 0.11;
+  tree category 0.13, confidence 0.14, gap 0.20. Until then no re-ask happens.
+- [ ] Paco: after merge, rebuild `dist/` and kickstart; first live check is the 21:00 digest "Injection & trust" block.
+- Backlog adds: alert on repeated quiet Jev errors (3 an hour, damped; Paco: not now, 2026-10-14); an unsandboxed
+  self-write test gate (from B's review); a calibration report for `tool.injection` (its bar is provisional).
+- Parked minors from the stage 2a ledger: a late-steer fixture lacks `yielded:true`; the async-wait test's late frame
+  asserts nothing, and a retry on a child still awaiting async work can double-run (rare); the migration idempotency test
+  runs on a fresh DB only; no test for max re-ask or an abstaining rung's re-ask surviving; the gear row lacks `reask` and
+  `urlRule` throwing loses its re-ask; the `system_one` check is untested on near-bar rows; a merged run with its own
+  TurnTrust counts separately in the digest; a golden-set no-key/transient day latches as skipped; a few
+  injection-shaped Chinese clean lines inflate false positives (stricter, not looser); golden disjointness is exact
+  substring only; open question for Paco: should a plain Jev 5xx page (today it does not, by design).
+
+# Earlier block — 2026-10-12: decision ladder stage 1
 
 **Decision ladder stage 1 (engine + door): merged `710ef47` and pushed 2026-10-12, `dist/` rebuilt; live only after
 Paco's kickstart.** Spec `docs/superpowers/specs/2026-10-12-decision-ladder-design.md` Rev 8; plan
