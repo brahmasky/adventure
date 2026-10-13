@@ -1,3 +1,5 @@
+import { posix } from "node:path";
+
 /**
  * The hostile read-only list (spec §7.2, codex B28, senior B10). At hostile a shell command runs without a tap only if every
  * segment is a listed program in its listed argument forms. It is an allowlist that fails closed: tool.shell_netread is
@@ -7,25 +9,25 @@
  * The command runs under `/bin/bash -c` (non-interactive: no history or alias expansion; `shell-wrapper.sh`).
  */
 export type Lexed = { ok: true; segments: string[][] } | { ok: false; why: string };
-/** One word: its text after quote removal, whether any quote touched it, and whether the shell expands it (glob, tilde). */
-interface Word { text: string; quoted: boolean; expands: boolean }
+/** One word: its text after quote removal, whether any quote touched it, and whether it holds an unquoted glob (`*`, `?`, `[`; braces never lex). */
+interface Word { text: string; quoted: boolean; glob: boolean }
 type LexedWords = { ok: true; segments: Word[][] } | { ok: false; why: string };
 
 const FORBIDDEN_UNQUOTED = new Set(["$", "`", "<", ">", "\\", "(", ")", "{", "}", "!", "#"]);
-const EXPANDS_UNQUOTED = new Set(["*", "?", "[", "~"]);
+const GLOB_UNQUOTED = new Set(["*", "?", "["]);
 const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f]/;
 
 function readQuoted(s: string, i: number, q: "'" | '"'): { body: string; next: number } | null {
   const end = s.indexOf(q, i + 1);
   if (end < 0) return null;
   const body = s.slice(i + 1, end);
-  // inside double quotes bash still expands `$`, backticks and escapes; refuse `!` too (history expansion where it is on)
+  // inside double quotes bash still glob `$`, backticks and escapes; refuse `!` too (history expansion where it is on)
   return q === '"' && /[$`\\!]/.test(body) ? null : { body, next: end + 1 };
 }
 
 class WordLexer {
-  segments: Word[][] = []; seg: Word[] = []; w: Word = { text: "", quoted: false, expands: false }; has = false;
-  endWord(): void { if (this.has) this.seg.push(this.w); this.w = { text: "", quoted: false, expands: false }; this.has = false; }
+  segments: Word[][] = []; seg: Word[] = []; w: Word = { text: "", quoted: false, glob: false }; has = false;
+  endWord(): void { if (this.has) this.seg.push(this.w); this.w = { text: "", quoted: false, glob: false }; this.has = false; }
   /** `strict`: an operator (`|`, `&&`, `||`) with nothing before it is a syntax error bash would refuse; refuse it too. */
   endSeg(strict: boolean): boolean {
     this.endWord();
@@ -33,8 +35,8 @@ class WordLexer {
     this.segments.push(this.seg); this.seg = [];
     return true;
   }
-  add(text: string, quoted: boolean, expands: boolean): void {
-    this.w.text += text; this.w.quoted ||= quoted; this.w.expands ||= expands; this.has = true;
+  add(text: string, quoted: boolean, glob: boolean): void {
+    this.w.text += text; this.w.quoted ||= quoted; this.w.glob ||= glob; this.has = true;
   }
 }
 
@@ -58,7 +60,7 @@ function lexWords(command: string): LexedWords {
       pendingOp = true; continue;
     }
     if (FORBIDDEN_UNQUOTED.has(c)) return { ok: false, why: c };
-    L.add(c, false, EXPANDS_UNQUOTED.has(c)); pendingOp = false;
+    L.add(c, false, GLOB_UNQUOTED.has(c)); pendingOp = false;
   }
   if (pendingOp) return { ok: false, why: "dangling" };
   L.endSeg(false);
@@ -70,60 +72,110 @@ export function lexStrict(command: string): Lexed {
   return lexed.ok ? { ok: true, segments: lexed.segments.map((s) => s.map((w) => w.text)) } : lexed;
 }
 
-/** Spec §7.2: any options, path operands. None of these has a flag that writes or runs a program (BSD or GNU). */
-const ANY_OPTIONS: ReadonlySet<string> = new Set(["ls", "cat", "head", "tail", "wc", "cut", "stat", "pwd", "echo"]);
-
-/** Flags: `bare` take no value (and may be bundled when single letters), `valued` consume the next word. */
-interface FlagSpec { bare: ReadonlySet<string>; letters: string; valued: ReadonlySet<string>; longValued: ReadonlySet<string> }
-
-const GREP: FlagSpec = {
-  letters: "EFGHILRUabchilnoqrsvwx",
-  bare: new Set(["--recursive", "--line-number", "--ignore-case", "--count", "--files-with-matches", "--files-without-match", "--invert-match",
-    "--word-regexp", "--line-regexp", "--fixed-strings", "--extended-regexp", "--basic-regexp", "--only-matching", "--no-filename",
-    "--with-filename", "--quiet", "--silent", "--no-messages", "--color", "--colour"]),
-  valued: new Set(["-e", "-m", "-A", "-B", "-C", "--regexp", "--max-count"]),
-  longValued: new Set(["--regexp", "--max-count", "--context", "--after-context", "--before-context", "--include", "--exclude", "--exclude-dir",
-    "--color", "--colour"])
-};
-const JQ: FlagSpec = {
-  letters: "rcSesnjaCM",
-  bare: new Set(["--raw-output", "--compact-output", "--sort-keys", "--exit-status", "--slurp", "--null-input", "--join-output",
-    "--ascii-output", "--color-output", "--monochrome-output", "--tab"]),
-  valued: new Set(["--indent"]),
-  longValued: new Set()
+/**
+ * A listed reader's argument forms (Fix round 1: no reader takes "any options"; macOS `wc` links libxo, and
+ * `--libxo=encoder=<path>` loads a dylib, so a flag can run code). Sets follow the macOS BSD binaries; nothing GNU-only.
+ * `letters`: bundleable short flags without a value. `short`: short flags with a value (next word or attached) and its shape.
+ * `long` / `longValued`: exact long flags (no getopt abbreviations). `legacy`: whole-word forms like `tail -20`.
+ * `dashdash`: the program treats `--` as the end of options. `operands`: whether it takes any.
+ */
+interface ReaderSpec {
+  letters: string; short?: Readonly<Record<string, RegExp>>; long?: ReadonlySet<string>; longValued?: Readonly<Record<string, RegExp>>;
+  legacy?: RegExp; dashdash: boolean; operands: boolean;
+}
+const ANY = /^[\s\S]+$/; const NUM = /^\d+$/; const SIGNED = /^[+-]?\d+$/; const LIST = /^[0-9,-]+$/; const WHEN = /^(never|always|auto)$/;
+const READERS: Readonly<Record<string, ReaderSpec>> = {
+  ls: { letters: "1ACFGHLRSTUWacdfghiklmnopqrstuwx", longValued: { "--color": WHEN }, dashdash: true, operands: true },
+  cat: { letters: "belnstuv", dashdash: true, operands: true },
+  head: { letters: "", short: { n: NUM, c: NUM }, legacy: /^-\d+$/, dashdash: true, operands: true },
+  tail: { letters: "Ffrqv", short: { n: SIGNED, c: SIGNED, b: SIGNED }, legacy: /^-\d+[bcl]?$/, dashdash: true, operands: true },
+  wc: { letters: "Lclmw", dashdash: true, operands: true },
+  cut: { letters: "nsw", short: { b: LIST, c: LIST, f: LIST, d: /^[\s\S]$/ }, dashdash: true, operands: true },
+  stat: { letters: "FLnqlrsx", short: { f: ANY, t: ANY }, dashdash: true, operands: true },
+  pwd: { letters: "LP", dashdash: false, operands: false },
+  echo: { letters: "neE", dashdash: false, operands: true },
+  grep: {
+    letters: "EFGHILRUabchilnoqrsvwx", short: { e: ANY, m: NUM, A: NUM, B: NUM, C: NUM },
+    long: new Set(["--recursive", "--line-number", "--ignore-case", "--count", "--files-with-matches", "--files-without-match", "--invert-match",
+      "--word-regexp", "--line-regexp", "--fixed-strings", "--extended-regexp", "--basic-regexp", "--only-matching", "--no-filename",
+      "--with-filename", "--quiet", "--silent", "--no-messages", "--color", "--colour"]),
+    longValued: { "--regexp": ANY, "--max-count": NUM, "--context": NUM, "--after-context": NUM, "--before-context": NUM, "--include": ANY,
+      "--exclude": ANY, "--exclude-dir": ANY, "--color": WHEN, "--colour": WHEN },
+    dashdash: true, operands: true
+  },
+  jq: {
+    letters: "rcSesnjaCM",
+    long: new Set(["--raw-output", "--compact-output", "--sort-keys", "--exit-status", "--slurp", "--null-input", "--join-output",
+      "--ascii-output", "--color-output", "--monochrome-output", "--tab"]),
+    longValued: { "--indent": NUM }, dashdash: true, operands: true
+  }
 };
 /** jq's `--arg NAME VALUE` / `--argjson NAME JSON`: two values. */
 const JQ_TWO_VALUES: ReadonlySet<string> = new Set(["--arg", "--argjson"]);
 
-/** How many following words a flag consumes, or null when the flag is not on the list. */
-function flagArity(spec: FlagSpec, a: string): number | null {
-  if (spec.valued.has(a)) return 1;
-  if (spec.bare.has(a)) return 0;
-  const eq = a.indexOf("=");
-  if (a.startsWith("--") && eq > 2) return spec.longValued.has(a.slice(0, eq)) ? 0 : null;
-  if (/^-[ABCm]\d+$/.test(a) && spec === GREP) return 0;
-  if (/^-[A-Za-z]+$/.test(a) && [...a.slice(1)].every((ch) => spec.letters.includes(ch))) return 0;
-  return null;
+/** How many following words one flag word consumes, or null when it is not a listed form (or its value has the wrong shape). */
+function shortArity(spec: ReaderSpec, a: string, next: Word | undefined): number | null {
+  for (let i = 1; i < a.length; i++) {
+    const ch = a[i]!;
+    if (spec.letters.includes(ch)) continue;
+    const shape = spec.short?.[ch];
+    if (!shape) return null;
+    const attached = a.slice(i + 1);
+    if (attached !== "") return shape.test(attached) ? 0 : null;
+    return next !== undefined && !next.glob && shape.test(next.text) ? 1 : null;
+  }
+  return 0;
 }
 
-/** grep and jq: every `-` word is a listed flag (its values consumed), every other word is a pattern, filter or path. */
-function flagsOk(spec: FlagSpec, args: Word[]): boolean {
-  if (args.some((a) => a.expands)) return false; // a glob or tilde could expand into a planted name that reads as a flag
+function flagArity(spec: ReaderSpec, prog: string, a: string, rest: Word[]): number | null {
+  if (spec.legacy?.test(a)) return 0;
+  if (!a.startsWith("--")) return shortArity(spec, a, rest[0]);
+  if (prog === "jq" && JQ_TWO_VALUES.has(a)) return rest.length >= 2 && !rest[0]!.glob && !rest[1]!.glob ? 2 : null;
+  if (spec.long?.has(a)) return 0;
+  const eq = a.indexOf("=");
+  if (eq > 2) { const shape = spec.longValued?.[a.slice(0, eq)]; return shape?.test(a.slice(eq + 1)) ? 0 : null; }
+  const shape = spec.longValued?.[a];
+  return shape && rest[0] !== undefined && !rest[0].glob && shape.test(rest[0].text) ? 1 : null;
+}
+
+/**
+ * Fix round 1 (minor): device files other than /dev/null ask (`cat /dev/zero` never ends; `/dev/tcp/…` is a socket in a
+ * redirect). An absolute path is normalized first; a relative one that climbs (`..`) and names a `dev` segment asks too.
+ */
+function isDevicePath(text: string): boolean {
+  if (/\/dev\/(tcp|udp)\//.test(text)) return true;
+  if (text.startsWith("/")) { const n = posix.normalize(text); return (n === "/dev" || n.startsWith("/dev/")) && n !== "/dev/null"; }
+  return text.includes("..") && /(^|\/)dev(\/|$)/.test(text);
+}
+
+/**
+ * Every `-` word must be a listed flag (its values consumed and shape-checked). A glob before `--` asks: it could expand to
+ * a planted name such as `--libxo=encoder=…` or `-delete` that the program reads as a flag. After `--` every word is an
+ * operand, so a glob is only a list of names.
+ */
+function readerOk(prog: string, spec: ReaderSpec, args: Word[]): boolean {
+  let endOpts = false;
   for (let k = 0; k < args.length; k++) {
-    const a = args[k]!.text;
-    if (!a.startsWith("-")) continue;
-    const n = spec === JQ && JQ_TWO_VALUES.has(a) ? 2 : flagArity(spec, a);
-    if (n === null || k + n >= args.length) return false; // an unlisted flag, or a flag missing its value
-    k += n;
+    const a = args[k]!;
+    if (isDevicePath(a.text)) return false;
+    if (endOpts) continue;
+    if (a.text === "--" && spec.dashdash) { endOpts = true; continue; }
+    if (a.glob) return false;
+    if (a.text.startsWith("-") && a.text !== "-") {
+      const n = flagArity(spec, prog, a.text, args.slice(k + 1));
+      if (n === null) return false;
+      k += n; continue;
+    }
+    if (!spec.operands) return false;
   }
   return true;
 }
 
 const FIND_WITH_ARG: ReadonlySet<string> = new Set(["-name", "-iname", "-path", "-type", "-maxdepth", "-mindepth", "-size", "-mtime", "-newer"]);
 
-/** find: starting points, then only the listed predicates with their one value each, and `-print`. */
+/** find: starting points, then only the listed predicates with their one value each, and `-print`. find honours no `--`. */
 function findOk(args: Word[]): boolean {
-  if (args.some((a) => a.expands)) return false; // `find ./sub*` could expand to a planted file named `-delete`
+  if (args.some((a) => a.glob || isDevicePath(a.text))) return false; // `find ./sub*` could expand to a planted `-delete`
   let k = 0;
   while (k < args.length && !args[k]!.text.startsWith("-")) k++;
   while (k < args.length) {
@@ -135,22 +187,19 @@ function findOk(args: Word[]): boolean {
   return true;
 }
 
-/** date: no operand, or one `+<format>` (no clock setting, no flags). */
+/** date: no operand, or one literal `+<format>` (no clock setting, no flags). */
 function dateOk(args: Word[]): boolean {
-  return args.length === 0 || (args.length === 1 && !args[0]!.expands && args[0]!.text.startsWith("+"));
+  return args.length === 0 || (args.length === 1 && !args[0]!.glob && args[0]!.text.startsWith("+"));
 }
 
 function segmentOk(words: Word[]): boolean {
   const [prog, ...args] = words;
-  // the program word must be a bare listed name: no path, no assignment, no quoting, no expansion
-  if (!prog || prog.quoted || prog.expands) return false;
-  if (args.some((a) => /\/dev\/(tcp|udp)\//.test(a.text))) return false;
-  if (ANY_OPTIONS.has(prog.text)) return true;
+  // the program word must be a bare listed name: no path, no assignment, no quoting, no glob
+  if (!prog || prog.quoted || prog.glob) return false;
   if (prog.text === "date") return dateOk(args);
-  if (prog.text === "grep") return flagsOk(GREP, args);
-  if (prog.text === "jq") return flagsOk(JQ, args);
   if (prog.text === "find") return findOk(args);
-  return false;
+  const spec = Object.hasOwn(READERS, prog.text) ? READERS[prog.text] : undefined;
+  return spec !== undefined && readerOk(prog.text, spec, args);
 }
 
 export function isReadOnlyCommand(command: string): boolean {

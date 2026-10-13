@@ -39,8 +39,8 @@ const WRITE_FLAGS = ["find . -delete", "find . -name x -delete", "find . -fprint
   "sed -n 'w out' f", "git log --output=x", "git status", "tee out", "ls | tee out", "less x", "less +!sh x", "more x", "man ls", "vi x",
   "xargs", "ls | xargs rm", "cat x | xargs", "awk 'BEGIN{system(\"id\")}'", "perl -e 1", "python3 x.py", "node x.js", "cp a b", "mv a b",
   "rm x", "mkdir d", "chmod +x f", "ln -s a b", "dd if=a of=b", "truncate -s0 f", "open x", "osascript -e x", "grep -f pats y",
-  "grep --file=pats y", "grep --file pats y", "grep -rnf pats y", "grep -e x -f pats y", "grep -- -f x", "grep -P x f", "grep -d skip x f",
-  "grep x *", "grep -ef x", "jq -f prog.jq", "jq --from-file p .", "jq -L dir .", "jq --args . a b", "jq --rawfile=a f .", "jq . *.json",
+  "grep --file=pats y", "grep --file pats y", "grep -rnf pats y", "grep -e x -f pats y", "grep -P x f", "grep -d skip x f",
+  "grep x *", "jq -f prog.jq", "jq --from-file p .", "jq -L dir .", "jq --args . a b", "jq --rawfile=a f .", "jq . *.json",
   "jq -n --unknown .", "date -s 0101", "date -u 0101", "date +%F extra", "date *", "date +*", "date -f %s 0 +%F", "date -r 0", "date -u"];
 const LEXER_TRICKS = ["\"ls\"", "'ls'", "l''s", "\"ls\" -la", "echo \"hi!\"", "echo hi\\!", "echo ${HOME}", "ls \"$(id)\"", "cat <(ls)",
   "echo $'\\x41'", "ls {a,b}", "(ls)", "{ ls; }", "if ls; then ls; fi", "time ls", "! ls", "coproc ls", "[[ -f x ]]", "[ -f x ]",
@@ -53,8 +53,29 @@ describe("hostile read-only list: adversarial table (fail closed)", () => {
   it("asks for every write flag, unlisted program and unlisted flag", () => { for (const c of WRITE_FLAGS) expect([c, isReadOnlyCommand(c)]).toEqual([c, false]); });
   it("asks for every quoting, expansion, redirect, keyword and syntax trick", () => { for (const c of LEXER_TRICKS) expect([c, isReadOnlyCommand(c)]).toEqual([c, false]); });
   it("still admits the everyday read-only forms (a list that asks for everything would train Paco to tap blind)", () => {
-    for (const c of ["ls *.txt", "cat ~/notes.txt", "grep -rn --include='*.ts' foo src", "grep -e -x file", "grep -A3 x f", "grep -c x f || echo none",
+    for (const c of ["ls -- *.txt", "wc -l -- src/*.ts", "cat -n -- *.md", "cut -d ' ' -f2 x", "tail -n +5 f", "head -2 f", "stat -f %z f", "pwd -P", "cat ~/notes.txt", "grep -rn --include='*.ts' foo src", "grep -e -x file", "grep -A3 x f", "grep -c x f || echo none",
       "jq -r --arg n v '.[$n]' f.json", "find . -name '*.ts' -newer package.json", "head -n 5 a | tail -1", "echo '$HOME'",
-      "date '+%Y-%m-%d %H:%M'", "ls -la; pwd", "wc -l src/*.ts"]) expect([c, isReadOnlyCommand(c)]).toEqual([c, true]);
+      "date '+%Y-%m-%d %H:%M'", "ls -la; pwd", "cat /dev/null"]) expect([c, isReadOnlyCommand(c)]).toEqual([c, true]);
   });
+});
+
+// Fix round 1 (review: macOS wc links libxo; `wc --libxo=encoder=<path>` loads a dylib, so a reader flag can run code). No
+// reader takes "any options": each has an exact flag list from its macOS binary, a glob operand needs `--` first (so a
+// planted name like `--libxo=…` can never be read as a flag), and device files other than /dev/null ask.
+const FIX1_ASKS = ["wc --libxo=encoder=/tmp/x f", "wc --libxo json x", "wc --libxo=json x", "ls --libxo=json", "wc *", "ls *", "ls *.txt",
+  "wc -l src/*.ts", "cat *.md", "echo *", "echo -- x", "pwd x", "pwd -- x",
+  "ls -Z", "cat -A x", "head -q x", "tail -z x", "wc --files0-from=f", "cut --output-delimiter=x -f1 a", "stat --printf=%s f", "stat -Z f",
+  "pwd -x", "echo -x hi", "grep --fil=pats x", "grep --colour=sometimes x f", "grep -m x pat f", "jq --indent x .", "jq --tab=1 .",
+  "tail --pid=1 f", "ls --dired", "cut -d ab -f1 x", "cut -f x a", "head -n x f", "head -n", "cut -d", "stat -f",
+  "cat /dev/zero", "cat /dev/urandom", "head -c 9 /dev/random", "cat //dev/zero", "cat /./dev/zero", "cat /dev", "cat ../../dev/zero",
+  "grep x /dev/zero", "jq . /dev/stdin", "find /dev -name x", "wc -l -- /dev/zero", "cat -- ../dev/zero"];
+const FIX1_ALLOWS = ["ls -- *", "wc -l -- *.ts", "grep -rn foo -- *.ts", "jq . -- *.json", "ls -1AF src", "cat -n a", "tail -F log",
+  "tail -n 20 log", "tail -c +3 f", "head -c 10 f", "wc -lw a", "cut -c1-5 f", "stat -L -f %N f", "echo -n hi", "grep -A3 -B 2 x f",
+  "grep --color=never -C1 x f", "jq --indent 2 . f", "ls --color=auto", "cat ~/notes.txt", "cat /dev/null", "cat src/dev/a.ts", "grep -- -f x", "grep -ef x", "head -- *"];
+
+describe("hostile read-only list: fix round 1 (every reader has an exact flag list)", () => {
+  it("asks for libxo, unknown flags, wrong value shapes, globs without --, and device files", () => {
+    for (const c of FIX1_ASKS) expect([c, isReadOnlyCommand(c)]).toEqual([c, false]);
+  });
+  it("admits listed flags with well-shaped values, and globs after --", () => { for (const c of FIX1_ALLOWS) expect([c, isReadOnlyCommand(c)]).toEqual([c, true]); });
 });
