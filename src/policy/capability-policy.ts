@@ -8,7 +8,14 @@ export interface CapabilityDecisionInput {
   allowed_actions: string[];
   forbidden_actions: string[];
   approval_gates: SideEffectLevel[];
+  /**
+   * turn.trust's added tap (decision ladder spec §7.2; ADR 0029 decision 2: ask := code_ask ∨ trust_ask). Turns an allow
+   * into an ask, nothing else: never a deny into an ask, never an ask into an allow, never a deny on its own.
+   */
+  trust_ask?: boolean;
 }
+
+export const TRUST_ASK_REASON = "Turn trust asks for a tap";
 
 export interface CapabilityDecision {
   decision: PolicyDecision;
@@ -37,6 +44,10 @@ export function decideCapability(input: CapabilityDecisionInput): CapabilityDeci
 
   if (input.approval_gates.includes(input.side_effect_level)) {
     return { decision: "requires_approval", reason: "Capability has gated side effects" };
+  }
+
+  if (input.trust_ask === true) {
+    return { decision: "requires_approval", reason: TRUST_ASK_REASON };
   }
 
   return { decision: "allow", reason: "Capability allowed by task contract" };

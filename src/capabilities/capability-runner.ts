@@ -56,6 +56,8 @@ export interface CapabilityExecutionInput {
   budget_reserved?: boolean;
   action_summary?: string;
   tool_call_id?: string;
+  /** turn.trust's added tap (spec §7.2), outside `input` so the action fingerprint is unchanged. */
+  trust_ask?: boolean;
 }
 
 export class CapabilityRunner {
@@ -90,7 +92,8 @@ export class CapabilityRunner {
       risk_level: metadata.risk_level,
       allowed_actions: input.contract.allowed_actions,
       forbidden_actions: input.contract.forbidden_actions,
-      approval_gates: input.contract.approval_gates
+      approval_gates: input.contract.approval_gates,
+      ...(input.trust_ask === true ? { trust_ask: true } : {})
     });
 
     if (decision.decision === "deny") {
