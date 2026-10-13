@@ -67,3 +67,13 @@ describe("digest — stage 2a additions never disturb stage 1", () => {
     expect(trustLines(s, [], NOW, {})).toEqual(["· turns: untrusted 0 · hostile 0 · trust taps today 1 of 3"]);
   });
 });
+
+describe("digest — stale bar (stage 2a, golden set)", () => {
+  it("flags an open decision_bar_stale incident even on a day with no decisions", () => {
+    const s = RunStore.openInMemory();
+    expect(buildDecisionDigest(s, NOW, {})).toBeNull();
+    s.openIncident({ kind: "decision_bar_stale", subject: "tool.injection", detail: { model: "jev-1.14.0", bar_model: "jev-1.13.0" }, now: AT });
+    const d = buildDecisionDigest(s, NOW, {});
+    expect(d?.text).toContain("tool.injection: the bar was measured on jev-1.13.0, Jev now reports jev-1.14.0");
+  });
+});

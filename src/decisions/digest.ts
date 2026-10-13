@@ -161,6 +161,14 @@ export function reaskLines(rows: readonly DecisionRow[]): string[] {
   return [...by].sort(([a], [b]) => a.localeCompare(b)).map(([id, c]) => `· ${id}: re-asked ${c.mean + c.max + c.failed} (mean ${c.mean} · max ${c.max} · failed ${c.failed})`);
 }
 
+/** The golden set's model-move page (spec 4.2): a provisional bar measured on one model, judged by another, until Paco looks. */
+function staleBarLines(store: RunStore): string[] {
+  return store.listOpenIncidents().filter((i) => i.kind === "decision_bar_stale").map((i) => {
+    const d = JSON.parse(i.detail_json) as { model?: unknown; bar_model?: unknown };
+    return `· ${i.subject}: the bar was measured on ${String(d.bar_model)}, Jev now reports ${String(d.model)}`;
+  });
+}
+
 /** The two stage 2a sections; each is left out when it has nothing to say, so a stage 1 day renders as before. */
 function stage2aSections(store: RunStore, rows: readonly DecisionRow[], now: string, env: NodeJS.ProcessEnv): string[] {
   const trust = trustLines(store, rows, now, env);
@@ -177,13 +185,15 @@ export function buildDecisionDigest(store: RunStore, now: string, env: NodeJS.Pr
   const rows = settledRows(store, all);
   // Health reads every row in the window, orphans included: a day of only unsettled rows still reports its failures.
   const health = healthLines(store, all, since, now);
-  if (rows.length === 0 && health.length === 0) return null;
+  const stale = staleBarLines(store);
+  if (rows.length === 0 && health.length === 0 && stale.length === 0) return null;
   const tz = resolveDisplayZone(env);
   const unsure = unsureOf(rows, registry);
   const sections = [`🪜 **Decisions — ${formatInstantInZone(now, tz).slice(0, 10)}**`];
   if (unsure.length > 0) sections.push(["**Unsure** (✅ right · ❌ wrong)", ...unsure.map((r, k) => unsureLine(store, r, k + 1, tz, registry))].join("\n"));
   if (rows.length > 0) sections.push(["**Counts (24 h)**", ...countLines(rows)].join("\n"));
   sections.push(...stage2aSections(store, rows, now, env));
+  if (stale.length > 0) sections.push(["**Bar stale**", ...stale].join("\n"));
   if (health.length > 0) sections.push(["**Health**", ...health].join("\n"));
   return { text: sections.join("\n\n"), button_rows: unsure.map((r, k) => reviewButtons(r.decision_id, k + 1)), offered: unsure.map((r) => r.decision_id) };
 }

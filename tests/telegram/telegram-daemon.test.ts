@@ -1036,7 +1036,8 @@ describe("runTelegramDaemon — the audit chokepoint (slice 2)", () => {
           sendMessage: async ({ text }) => { sent.push(text); return { message_id: 1 }; }
         }
       });
-      const attempts = store.getLedgerEvents().filter((e) => e.event_type === "llm_attempt");
+      // The daily golden-set tick audits its own attempt (role "injection", no run); this test is about the planner's run-scoped rows.
+      const attempts = store.getLedgerEvents().filter((e) => e.event_type === "llm_attempt" && e.payload.role !== "injection");
       expect(attempts.length).toBeGreaterThan(0);
       expect(attempts.every((e) => typeof e.run_id === "string")).toBe(true);
       expect(attempts.every((e) => e.payload.outcome === "ok" && String(e.payload.request_key).startsWith(`${e.run_id}:`))).toBe(true);

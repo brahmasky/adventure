@@ -20,7 +20,9 @@ import { createOmpProbeRunner, type OmpProbeRunner } from "../omp/omp-probe-runn
 import { sharedOmpVersionCache } from "../omp/omp-version-cache.js";
 import { stableHash } from "../domain/canonical.js";
 import type { RoleResolver } from "../omp/role-resolver.js";
+import { runGoldenSetTick } from "../decisions/golden.js";
 import { errorCode } from "../domain/error-code.js";
+import { createJevClient } from "../jev/jev-client.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
@@ -505,6 +507,7 @@ async function runSignalPathTick(
     // builder's cheap enforcement read) once per cycle; the 0→1 transition enqueues ONE
     // alert, delivered by the outbox flush right after this tick.
     checkMeteredCeiling({ store: options.store, ...(chatId ? { chatId } : {}), now });
+    await runGoldenTick(options, now);
     runDigestTick(options.store, chatId, now);
     // ADR 0024: the deterministic self-sensing sweep. Runs LAST among the state-changing
     // ticks so it observes this cycle's work, self-throttles to 5 min, and alerts at most
@@ -514,6 +517,18 @@ async function runSignalPathTick(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[telegram-daemon] signal-path tick failed: ${message}`);
+  }
+}
+
+/** Spec 4.2 (plan S4): tool.injection's golden set, once a local date. Its own catch: a failure never skips the digest or the sweep. */
+async function runGoldenTick(options: RunTelegramDaemonOptions, now: string): Promise<void> {
+  try {
+    const client = createJevClient({ apiKey: options.broker ? options.broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
+      audit: options.store.llmAuditSink({ correlation_id: "decision-golden", role: "injection" }), meteredBreached: () => options.store.meteredFuseLatched(),
+      retries: 0, timeoutMs: 5_000 });
+    await runGoldenSetTick({ store: options.store, client, now });
+  } catch (error) {
+    console.error(`[telegram-daemon] golden-set tick failed: ${errorCode(error)}`);
   }
 }
 
