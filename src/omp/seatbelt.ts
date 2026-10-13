@@ -1,6 +1,6 @@
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { operationalWriteDeny, protectedRepoPaths, realpathOrSelf, secretPaths, writableExceptions, writeRoots, type PathContext } from "./protected-paths.js";
+import { CREDENTIAL_PATTERNS, ENV_TEMPLATE_PATTERNS, operationalWriteDeny, protectedRepoPaths, realpathOrSelf, secretPaths, writableExceptions, writeRoots, type PathContext } from "./protected-paths.js";
 
 const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
@@ -38,6 +38,13 @@ function dotenvRules(home: string): string[] {
   return variants(home).map((h) => `(deny file-read* file-write* (regex #"^${regexPath(h)}/\\.([^/]+\\.)?[Ee][Nn][Vv]$"))`);
 }
 
+/** Credential files by name (protected-paths CREDENTIAL_PATTERNS), read and write denied, then .env templates re-allowed. */
+function credentialRules(home: string): string[] {
+  const deny = variants(home).flatMap((h) => CREDENTIAL_PATTERNS.map((b) => `(deny file-read* file-write* (regex #"^${regexPath(h)}${b}$"))`));
+  const allow = variants(home).flatMap((h) => ENV_TEMPLATE_PATTERNS.map((b) => `(allow file-read* file-write* (regex #"^${regexPath(h)}${b}$"))`));
+  return [...deny, ...allow];
+}
+
 /** The device nodes a normal process writes: the null sink, its controlling terminal, and its own fds. */
 const DEV_WRITES = ['(allow file-write* (literal "/dev/null"))', '(allow file-write* (literal "/dev/tty"))', '(allow file-write* (subpath "/dev/fd"))'];
 
@@ -59,6 +66,8 @@ function body(ctx: PathContext, kind: "planner" | "shell"): string[] {
     "(deny file-write*)",
     ...writeRoots(ctx, kind).flatMap(allowWrite),
     ...DEV_WRITES,
+    // before the write denies and the secrets: a later rule wins, so no .env-template allow re-opens a protected tree
+    ...credentialRules(ctx.home),
     ...writeDeny.flatMap((p) => rule("file-write*", p)),
     ...exceptions.flatMap(allowWrite),
     // the allow subpath also matches the root itself: pin the root so it cannot be moved or replaced by a symlink

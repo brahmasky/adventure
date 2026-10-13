@@ -290,8 +290,10 @@ describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () 
 
   it("renders the secret denies after every write allow: SBPL's last match wins, so no allow ($HOME included) can re-open one (testing M-4)", () => {
     for (const p of [renderSeatbelt(ctx).planner, renderSeatbelt(ctx).shell]) {
-      const lastAllow = p.lastIndexOf("(allow file-write*");
-      const firstSecret = p.indexOf("(deny file-read* file-write*");
+      // the secret PATHS (subpath rules): credential-name regex denies sit earlier on purpose (plan Task 2, W-R2-2), so the
+      // workspace may re-allow a write there but nothing re-allows a read; the .env-template allow must not reach a secret path
+      const lastAllow = Math.max(p.lastIndexOf("(allow file-write*"), p.lastIndexOf("(allow file-read* file-write*"));
+      const firstSecret = p.indexOf("(deny file-read* file-write* (subpath");
       expect(lastAllow).toBeGreaterThan(-1);
       expect(firstSecret).toBeGreaterThan(lastAllow);
     }
