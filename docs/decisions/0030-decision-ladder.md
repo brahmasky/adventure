@@ -168,9 +168,9 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
 - **0011.** `src/decisions/` joins `PROTECTED_DIRS`: if the registry decides the gates, editing it can open a gate, so
   it is Paco's hand only.
 
-## Amendment (2026-10-13): stage 2a, in-Houge judges (DRAFT for Paco's sign-off)
+## Amendment (2026-10-13): stage 2a, in-Houge judges (signed off by Paco 2026-10-14)
 
-This file is protected (ADR 0011): the draft is Paco's to merge by hand.
+This file is protected (ADR 0011); Paco approved this amendment on 2026-10-14.
 
 - **tool.injection** runs on shell output (success and failure), on the four wall tools' results before the reader, and on
   the code-built side channel that follows the reader (gmail's extracted codes and links), at the bridge; built-in reads
