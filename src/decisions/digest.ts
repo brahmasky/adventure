@@ -10,7 +10,7 @@ import type { AnyEntry, DecidedBy } from "./types.js";
  * The daily decision digest (spec §8.1), stage 1 content: unsure verdicts with ✅/❌ taps, counts per entry by rung, and
  * per-entry health. Improvements, proposals and the gaming watch join in stage 2b. One message per local date at
  * HOUGE_DECISION_DIGEST_AT, through the outbox and the rich renderer; skipped when the day has no decisions and no health failures (a day with only health failures sends a Health-only digest). No enable
- * flag (R13): the time is the only knob.
+ * flag (R13): the time is the only knob, and `off` (Paco 2026-10-14) switches the summary off; the ledger under it is unchanged.
  */
 export const DEFAULT_DIGEST_AT = "21:00";
 export const DIGEST_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -33,6 +33,11 @@ const JUDGEMENT_REASONS: ReadonlySet<string> = new Set(["routed", "bare_ack_guar
 const RUNG_LABEL: Readonly<Record<DecidedBy, string>> = { rule: "code", system_one: "Jev", model: "model", paco: "you", fail: "fallback" };
 /** A row's decider as Paco reads it; a rung outside the known set shows as its own tag, never hidden. */
 export const deciderLabel = (rung: string): string => (Object.hasOwn(RUNG_LABEL, rung) ? RUNG_LABEL[rung as DecidedBy] : rung);
+
+/** `HOUGE_DECISION_DIGEST_AT=off`, any case: no digest. Only the exact word: a typo keeps the 21:00 default, never silence. */
+export function digestOff(env: NodeJS.ProcessEnv): boolean {
+  return env.HOUGE_DECISION_DIGEST_AT?.trim().toLowerCase() === "off";
+}
 
 export function resolveDigestAt(env: NodeJS.ProcessEnv): string {
   const raw = env.HOUGE_DECISION_DIGEST_AT?.trim();
@@ -224,7 +229,7 @@ export type DigestTickResult = { ran: false } | { ran: true; sent: boolean };
 /** Due once per local date at or after HOUGE_DECISION_DIGEST_AT; the latch row and the message commit together. */
 export function runDecisionDigestTick(i: DigestTickInput): DigestTickResult {
   const env = i.env ?? process.env;
-  if (!i.chatId) return { ran: false };
+  if (!i.chatId || digestOff(env)) return { ran: false };
   const chatId = i.chatId;
   const [date, time] = formatInstantInZone(i.now, resolveDisplayZone(env)).split(" ") as [string, string];
   if (time < resolveDigestAt(env) || i.store.getDecisionDigest(date)) return { ran: false };

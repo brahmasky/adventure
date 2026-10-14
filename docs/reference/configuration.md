@@ -1051,7 +1051,7 @@ and `turn.gear` (the role on the route, recorded from the same Jev call). Refere
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `HOUGE_DECISION_DIGEST_AT` | `21:00` | Local time (`HH:MM`, in `HOUGE_DISPLAY_TZ`) of the daily decision digest to the operator chat. Malformed → the default. Sent once per local date on the first poll at or after the time; a day with no decisions and no health failures sends nothing (the latch row still records the date); a day with only health failures sends a Health-only digest. |
+| `HOUGE_DECISION_DIGEST_AT` | `21:00` | Local time (`HH:MM`, in `HOUGE_DISPLAY_TZ`) of the daily decision digest to the operator chat, or `off` (any case) for no digest: the tick sends nothing and writes no latch row, while decisions and outcomes are recorded as before and the `decision_fallback` page and incidents are unaffected (`/status` still shows the 24 h counts; `/status decisions` the last 10 rows). Any other malformed value → the default. Sent once per local date on the first poll at or after the time; a day with no decisions and no health failures sends nothing (the latch row still records the date); a day with only health failures sends a Health-only digest. |
 | `HOUGE_TRUST_ASK_TTL_MS` | `300000` (5 min) | How long a trust card (an approval asked only because the turn read outside content, spec §7.2) waits for Paco, and the most a turn's trust cards together may pause its deadline and frame watchdog. A positive integer up to 1 800 000; anything else uses the default. Read per call; no restart needed. |
 
 The injection judge, turn trust, the golden set and the noise band have no switch (R13). The noise band has no variable: its values are reviewed rows in `src/decisions/noise-band.ts`.
