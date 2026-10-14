@@ -77,6 +77,31 @@ The daily decision digest (`HOUGE_DECISION_DIGEST_AT`, default 21:00) arrives in
 on the unsure verdicts; a tap writes one `review_ok` / `review_bad` label and nothing else
 ([configuration.md](configuration.md#decision-ladder-adr-0030)).
 
+## Noise band and tap labels
+
+Jev answers byte-identical requests with different probabilities (one message gave a category p of 0.59 to 0.65). The
+**noise band** (`src/decisions/noise-band.ts`, protected) is a reviewed per-question margin: when a value the decision
+compares against a bar falls within the band, the decision asks Jev exactly once more. The front door decides on the mean
+of the two answers; a judge over tool input (`tool.injection`) takes the more cautious call, since a mean could loosen a
+withhold. A second call that fails or overruns its own bound keeps the first answer (and a failed re-ask still opens its
+outage incident). The decision row records the re-ask (`mean`, `max` or `failed`) and the first call's p; the raw Jev rows
+keep the first call, and the re-ask's input tokens are not counted separately.
+
+Rows are keyed like a calibration row (question, criteria hash, model) and are committed by Paco, never written
+automatically. `NOISE_BANDS` is empty until he commits rows: with no row there is no re-ask, which is today's behaviour.
+`scripts/measure-jev-noise.mjs` produces the candidates: `--injection` re-sends the planted corpus and may run freely;
+`--tree` re-sends Paco's real Telegram texts and refuses to run without `--approved "<his words and date>"` (the standing
+approval named one replay, not a repeated one). Candidate bands measured 2026-10-13, 95th-percentile spread: injection
+0.11; tree category 0.13, confidence 0.14, gap 0.20. The decision digest counts re-asks per entry under "Noise band (24 h)".
+
+**Tap labels.** Digest ✅/❌, 🔍 Dig deeper, ↩️ Undo and 认真想 write `decision_outcomes` rows (signals `review_ok`,
+`review_bad`, `dig_deeper`, `lesson_undone`, `think_harder`). `houge jev report triage` prints them in a TAP LABELS block
+(only when there are taps): a ✅ on a front-door lane route is a category label; every other tap is evidence, and
+conflicting taps on one turn give no label. `houge jev label triage` lists the turns with flagged taps first. Paco's sitting
+labels win on the same turn, and nothing is committed or recalibrated automatically (SP4). The mapping of each tap to its
+label or evidence is the table in the stage 2a plan
+([2026-10-13-decision-ladder-stage-2a.md](../superpowers/plans/2026-10-13-decision-ladder-stage-2a.md), Addition A).
+
 ## State and questions
 
 The state is code-observed facts only (nothing model-authored): the latest message, the recent thread, the modality, the

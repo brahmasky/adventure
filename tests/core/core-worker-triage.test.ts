@@ -228,6 +228,12 @@ describe("triageTurn — routed planner turns (the role the planner pins)", () =
     expect(await worker.triageTurn(second.input)).toMatchObject({ route: { role: "thinking" } });
     expect(verdictOf(store, first.run_id)?.paco_correction).toBe("think_harder");
     expect(verdictOf(store, second.run_id)?.paco_correction).toBeNull();
+    // Addition A: the same tap is an outcome row on the previous turn's gear (or handler) decision, valued by its role
+    const prev = store.listDecisionsForRun(first.run_id);
+    const anchor = prev.find((d) => d.entry_id === "turn.gear") ?? prev.find((d) => d.entry_id === "turn.handler");
+    expect(anchor).toBeDefined();
+    expect(store.listDecisionOutcomes(anchor!.decision_id).map((o) => `${o.signal}:${o.value}:${o.source}`))
+      .toEqual([`think_harder:${verdictOf(store, first.run_id)?.role}:paco`]);
     store.close();
   });
   it("memory with sets_rule no is a correction: the planner on Default, nothing saved, no seat call", async () => {

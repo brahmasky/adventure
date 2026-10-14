@@ -1,5 +1,5 @@
 import type {
-  AnyDecideResult, AnyEntry, ArmedMode, DecideCtx, DecideResult, Entry, FallbackReason, JevRung, ModelRung, PacoRung, RuleRung, RungAnswer,
+  AnyDecideResult, AnyEntry, ArmedMode, DecideCtx, DecideResult, Entry, FallbackReason, JevRung, ModelRung, PacoRung, Reask, RuleRung, RungAnswer,
   RungKind, RungOutcome, RungResult
 } from "./types.js";
 import { FALLBACK_REASONS } from "./types.js";
@@ -112,6 +112,11 @@ function apply<S, V extends string, D>(entry: Entry<S, V, D>, w: Walk<V, D>, kin
   return result;
 }
 
+const okReask = (x: unknown): boolean => x === undefined || (typeof x === "object" && x !== null
+  && ["mean", "max", "failed"].includes(String((x as { kind?: unknown }).kind))
+  && typeof (x as { pFirst?: unknown }).pFirst === "number" && (x as { pFirst: number }).pFirst >= 0 && (x as { pFirst: number }).pFirst <= 1);
+const okIndex = (x: unknown): boolean => x === undefined || (typeof x === "number" && Number.isInteger(x) && x >= 0);
+
 /**
  * A rung's result is untrusted input: anything that is not a well-formed answer, abstention or failure (a non-object, `{}`, a
  * verdict or floor outside the closed set, a `p` outside [0,1], an unknown failure reason) is a parse failure, never an answer.
@@ -120,6 +125,7 @@ function checked<S, V extends string, D>(entry: Entry<S, V, D>, r: unknown): Run
   const parse = { failed: "parse" } as const;
   if (typeof r !== "object" || r === null) return parse;
   const o = r as Record<string, unknown>;
+  if (!okReask(o.reask) || !okIndex(o.pIndex)) return parse;
   const inSet = (v: unknown): boolean => typeof v === "string" && (entry.verdicts as readonly string[]).includes(v);
   if ("verdict" in o) {
     const pOk = o.p === undefined || (typeof o.p === "number" && o.p >= 0 && o.p <= 1);
@@ -136,9 +142,15 @@ function cautious<S, V extends string, D>(entry: Entry<S, V, D>, a: V | undefine
   return order.indexOf(b) >= order.indexOf(a) ? b : a;
 }
 
+function walkReask<V, D>(w: Walk<V, D>): Reask | undefined {
+  for (const o of w.outcomes) if (o.result && !("failed" in o.result) && o.result.reask) return o.result.reask;
+  return undefined;
+}
+
 function finish<S, V extends string, D>(entry: Entry<S, V, D>, w: Walk<V, D>, d: Decided<V, D>, elapsed: number): DecideResult<V, D> {
+  const reask = d?.answer.reask ?? walkReask(w);
   const base = { fallbackReason: w.fallback, fallbackRung: w.fallbackRung, armedMode: w.shadowed ? ("shadow" as const) : ("on" as const), decisionId: null,
-    walk: w.outcomes, latencyMs: Math.max(0, Math.round(elapsed)) };
+    walk: w.outcomes, latencyMs: Math.max(0, Math.round(elapsed)), ...(reask ? { reask } : {}) };
   if (d === null) {
     const verdict = entry.monotone ? cautious(entry, w.floor, entry.fail) : entry.fail;
     // ruling 17: a floor that outranks `fail` decided this, so the row names the rung that set it
@@ -149,6 +161,7 @@ function finish<S, V extends string, D>(entry: Entry<S, V, D>, w: Walk<V, D>, d:
   // ruling 17: the floor held against a looser judge — the verdict is the floor's, so the row names the rung that set it
   if (verdict !== d.answer.verdict) return { ...base, verdict, rung: w.floorRung ?? "rule", reason: "floor_held" };
   return { ...base, verdict, rung: d.rung, reason: d.answer.reason ?? null, ...(d.answer.p !== undefined ? { p: d.answer.p } : {}),
+    ...(d.answer.pIndex !== undefined ? { pIndex: d.answer.pIndex } : {}),
     ...(d.answer.detail !== undefined ? { detail: d.answer.detail } : {}) };
 }
 

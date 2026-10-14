@@ -1,5 +1,6 @@
 import { ALERT_REOPEN_QUIET_MS, openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
 import type { DecisionInsert, RunStore } from "../run/run-store.js";
+import { TOOL_INJECTION_ID } from "./entries/tool-injection.js";
 import { FRONT_DOOR_ENTRIES } from "./entry-ids.js";
 import { message } from "./decide.js";
 import { RUNNER_REASON_CODES, type AnyDecideResult, type AnyEntry, type DecisionRecorder } from "./types.js";
@@ -10,9 +11,11 @@ export const DECISION_FALLBACK_LIMIT = 3;
 export const DECISION_FALLBACK_WINDOW_MS = 60 * 60 * 1000;
 /**
  * Plan ruling 9: entries whose Jev-rung failures already page through the Jev incidents (openJevIncident and the triage
- * jev_skip_rate). Their Jev failures do not count toward decision_fallback: one call, one page.
+ * jev_skip_rate). Their Jev failures do not count toward decision_fallback: one call, one page. tool.injection joins them
+ * (Paco 2026-10-14, "no alert, just log"): its plain timeouts and outages are logged and counted in the digest only; the
+ * turn's trust rise is the safety answer, and 429/auth still page through the Jev incidents.
  */
-const JEV_PAGED_ELSEWHERE: ReadonlySet<string> = FRONT_DOOR_ENTRIES;
+const JEV_PAGED_ELSEWHERE: ReadonlySet<string> = new Set([...FRONT_DOOR_ENTRIES, TOOL_INJECTION_ID]);
 const RECORD_FAILED: ReadonlySet<string> = new Set(["decision_record_failed"]);
 const RUNNER_CODES: ReadonlySet<string> = new Set(RUNNER_REASON_CODES);
 
@@ -52,7 +55,7 @@ function rowOf(entry: AnyEntry, r: AnyDecideResult, ctx: { run_id: string | null
   const known = r.reason !== null && (entry.reasonCodes.includes(r.reason) || RUNNER_CODES.has(r.reason));
   return {
     entry_id: entry.id, entry_version: entry.version, run_id: ctx.run_id, tool_call_id: ctx.tool_call_id, stage: entry.stage, rung: r.rung, verdict: r.verdict,
-    p: r.p ?? null, reason_code: known ? r.reason : null, fallback_reason: r.fallbackReason, fallback_rung: r.fallbackRung,
+    p: r.p ?? null, p_index: r.pIndex ?? null, reask: r.reask?.kind ?? null, p_first: r.reask?.pFirst ?? null, reason_code: known ? r.reason : null, fallback_reason: r.fallbackReason, fallback_rung: r.fallbackRung,
     armed_mode: r.armedMode, latency_ms: r.latencyMs, created_at: now
   };
 }

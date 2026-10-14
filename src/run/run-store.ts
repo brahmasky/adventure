@@ -77,6 +77,8 @@ export type LlmCallRole =
   | "media_transcribe"
   // Jev decision points (ADR 0029): one role per point so the per-point rate is readable in llm_attempt
   | "triage"
+  // the in-loop injection judge (decision ladder stage 2a): its own role, so its rate and egress are readable apart
+  | "injection"
   // the tree's cascade pick between two categories (plan 2026-10-07 Decision 14): a Tiny-role one-shot on the turn's run
   | "cascade"
   // stage B lanes (spec §4–§5): the compose (Fast candidates) and the lookup's query rewrite (Tiny candidates); the planner stays "compose"
@@ -163,6 +165,8 @@ export interface ToolApprovalInput {
   expires_at: string;
   /** Approval-card text only (e.g. the bash command, capped by the caller). Never stored, never in the ledger. */
   card_detail?: string;
+  /** Why a trust card asks (spec §7.2: "this turn read text aimed at the assistant"). Card only, like card_detail. */
+  reason?: string;
 }
 
 export interface ToolApprovalRow extends ToolApprovalInput {
@@ -970,13 +974,29 @@ type JevVerdictPatch = Partial<{ handler_outcome: string; model: string | null; 
 /** The only columns an update may set: a fixed list, so the SET clause never takes a name from input. */
 const VERDICT_PATCH_COLUMNS = ["handler_outcome", "model", "route_outcome", "fast_used_tool", "paco_correction"] as const;
 
+/** The noise band's one re-ask (stage 2a): the mean decided (front door), the more cautious call decided (tool input, never
+ *  loosened by a mean), or the second call failed and the first answer stood. */
+export const REASK_KINDS = ["mean", "max", "failed"] as const;
+export type ReaskKind = (typeof REASK_KINDS)[number];
 /** One recorded decision (ADR 0030, spec §5.2): ids, closed enums and numbers. No state column, never text. */
 export interface DecisionInsert {
   entry_id: string; entry_version: number; run_id: string | null; tool_call_id: string | null; stage: DecisionStage; rung: DecidedBy; verdict: string;
   p: number | null; reason_code: string | null; fallback_reason: FallbackReason | null; fallback_rung: RungKind | null; armed_mode: RecordedArmedMode;
   latency_ms: number; created_at?: string;
+  /** Which passage (tool.injection) the recorded p came from (spec §7.1: the max over passages, with its index). */
+  p_index?: number | null;
+  reask?: ReaskKind | null;
+  /** The first call's recorded p when a re-ask ran: the spread the band measures. */
+  p_first?: number | null;
 }
-export type DecisionRow = Omit<DecisionInsert, "created_at"> & { decision_id: string; created_at: string };
+export type DecisionRow = Omit<DecisionInsert, "created_at" | "p_index" | "reask" | "p_first"> & {
+  decision_id: string; created_at: string; p_index: number | null; reask: ReaskKind | null; p_first: number | null;
+};
+export interface TapOutcomeRow {
+  outcome_id: string; signal: DecisionSignal; value: string; source: "paco" | "code"; created_at: string;
+  decision_id: string; entry_id: string; run_id: string | null; verdict: string; p: number | null;
+}
+export type GoldenOutcome = "ok" | "drift" | "stale" | "skipped";
 export interface DecisionOutcomeRow { outcome_id: string; decision_id: string; signal: DecisionSignal; value: string; source: "paco" | "code"; created_at: string }
 /** Spec §4.3. `granted_via`: the code that grants an automatic move (only "approval.standing"); `paco_callback_id`: the tap behind a Paco move. */
 export interface LadderMoveInsert {
@@ -989,13 +1009,27 @@ export class LadderMoveRefused extends Error {
 export interface DecisionDigestRow { local_date: string; sent: number; offered: string[]; created_at: string }
 /** A decision row value outside its code-owned set (ruling 15). The message names the column, never the value. */
 export class DecisionRejected extends Error {
-  constructor(readonly column: "stage" | "fallback_reason") { super(`decision rejected: ${column} not allowed`); }
+  constructor(readonly column: "stage" | "fallback_reason" | "reask") { super(`decision rejected: ${column} not allowed`); }
 }
 
 const sqlList = (xs: readonly string[]): string => xs.map((x) => `'${x}'`).join(", ");
 /** The only automatic ladder move the store accepts (spec §4.3): standing approvals, on tool.policy, granted by approval.standing. */
 const AUTO_MOVE = { entry_id: "tool.policy", granted_via: "approval.standing" } as const;
 const LOCKED: ReadonlySet<string> = new Set(LOCKED_ENTRY_IDS);
+
+const DECISION_LADDER_2A_DDL = `
+  CREATE TABLE IF NOT EXISTS trust_tap_budget (
+    local_date TEXT PRIMARY KEY,
+    count INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS decision_golden_runs (
+    local_date TEXT NOT NULL,
+    entry_id TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('ok', 'drift', 'stale', 'skipped')),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (local_date, entry_id)
+  );`;
 
 const DECISION_LADDER_DDL = `
   CREATE TABLE IF NOT EXISTS decisions (
@@ -2798,6 +2832,25 @@ export class RunStore {
     `).run(chat_id);
   }
 
+  /**
+   * Security final I-3: the trust level the chat's planner transcript carries (the last dispatched turn's final level), or
+   * null when none was recorded. Read at dispatch; a fresh transcript ignores it.
+   */
+  getTranscriptTrust(chat_id: string): string | null {
+    return this.db.prepare(`SELECT transcript_trust FROM planner_session_state WHERE chat_id = ?`).get<{ transcript_trust: string | null }>(chat_id)?.transcript_trust ?? null;
+  }
+
+  /**
+   * Records it at a dispatched turn's end. With no row yet, a clean level writes nothing (null reads clean); a raised one
+   * creates the row with no fingerprint, which a later reset compares as '' (as with no row).
+   */
+  setTranscriptTrust(chat_id: string, level: string, now: string): void {
+    if (this.db.prepare(`UPDATE planner_session_state SET transcript_trust = ? WHERE chat_id = ?`).run(level, chat_id).changes === 1 || level === "clean") return;
+    this.db.prepare(`
+      INSERT INTO planner_session_state (chat_id, lesson_fingerprint, seed_pending, updated_at, transcript_trust) VALUES (?, '', 0, ?, ?)
+    `).run(chat_id, now, level);
+  }
+
   /** The seed goes to one dispatch: true only for the first claim after a reset. */
   claimSessionSeed(chat_id: string): boolean {
     return this.db.prepare(`
@@ -4584,13 +4637,14 @@ export class RunStore {
   insertDecision(d: DecisionInsert): string {
     if (!(DECISION_STAGES as readonly string[]).includes(d.stage)) throw new DecisionRejected("stage");
     if (d.fallback_reason !== null && !(FALLBACK_REASONS as readonly string[]).includes(d.fallback_reason)) throw new DecisionRejected("fallback_reason");
+    if (d.reask != null && !(REASK_KINDS as readonly string[]).includes(d.reask)) throw new DecisionRejected("reask");
     const decision_id = `dec_${randomUUID()}`;
     this.db.prepare(`
       INSERT INTO decisions (decision_id, entry_id, entry_version, run_id, tool_call_id, stage, rung, verdict, p, reason_code, fallback_reason,
-        fallback_rung, armed_mode, latency_ms, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        fallback_rung, armed_mode, latency_ms, created_at, p_index, reask, p_first)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(decision_id, d.entry_id, d.entry_version, d.run_id, d.tool_call_id, d.stage, d.rung, d.verdict, d.p, d.reason_code, d.fallback_reason,
-      d.fallback_rung, d.armed_mode, d.latency_ms, d.created_at ?? new Date().toISOString());
+      d.fallback_rung, d.armed_mode, d.latency_ms, d.created_at ?? new Date().toISOString(), d.p_index ?? null, d.reask ?? null, d.p_first ?? null);
     return decision_id;
   }
 
@@ -4689,6 +4743,47 @@ export class RunStore {
   wasDecisionOffered(decision_id: string, sinceIso: string): boolean {
     return this.db.prepare(`SELECT 1 AS hit FROM decision_digests d, json_each(d.offered_json) j WHERE j.value = ? AND d.created_at > ? LIMIT 1`)
       .get<{ hit: number }>(decision_id, sinceIso) !== undefined;
+  }
+
+  /** Spec §7.2's tap budget: one row per local date, +1 per trust ask; returns the date's count after this one. */
+  bumpTrustTapBudget(local_date: string, now: string): number {
+    return this.db.prepare(`
+      INSERT INTO trust_tap_budget (local_date, count, updated_at) VALUES (?, 1, ?)
+      ON CONFLICT(local_date) DO UPDATE SET count = count + 1, updated_at = excluded.updated_at
+      RETURNING count
+    `).get<{ count: number }>(local_date, now)?.count ?? 0;
+  }
+
+  trustTapCount(local_date: string): number {
+    return this.db.prepare(`SELECT count FROM trust_tap_budget WHERE local_date = ?`).get<{ count: number }>(local_date)?.count ?? 0;
+  }
+
+  /** The judge redactor's first step (spec §7.0 rule 1): the broker's known secret values, through the existing private seam. */
+  redactSecretValues(text: string): string {
+    return this.redact(text);
+  }
+
+  /** Outcomes on decisions of `entries` created after `sinceIso`, each joined to its decision: the calibration report's tap evidence. */
+  listTapOutcomes(sinceIso: string, entries: readonly string[]): TapOutcomeRow[] {
+    if (entries.length === 0) return [];
+    return this.db.prepare(`
+      SELECT o.outcome_id, o.signal, o.value, o.source, o.created_at, d.decision_id, d.entry_id, d.run_id, d.verdict, d.p
+      FROM decision_outcomes o JOIN decisions d ON d.decision_id = o.decision_id
+      WHERE o.created_at > ? AND d.entry_id IN (${entries.map(() => "?").join(", ")})
+      ORDER BY o.created_at ASC, o.rowid ASC
+    `).all<TapOutcomeRow>(sinceIso, ...entries);
+  }
+
+  /** The golden-set latch (plan S4): one run per local date and entry; false when the date already has one. */
+  recordGoldenRun(r: { local_date: string; entry_id: string; outcome: GoldenOutcome; created_at?: string }): boolean {
+    const res = this.db.prepare(`INSERT OR IGNORE INTO decision_golden_runs (local_date, entry_id, outcome, created_at) VALUES (?, ?, ?, ?)`)
+      .run(r.local_date, r.entry_id, r.outcome, r.created_at ?? new Date().toISOString());
+    return Number(res.changes) === 1;
+  }
+
+  getGoldenRun(local_date: string, entry_id: string): { outcome: GoldenOutcome; created_at: string } | undefined {
+    return this.db.prepare(`SELECT outcome, created_at FROM decision_golden_runs WHERE local_date = ? AND entry_id = ?`)
+      .get<{ outcome: GoldenOutcome; created_at: string }>(local_date, entry_id);
   }
 
   // ── Lesson changes: the memory lane's undoable change set (ADR 0029 §5.6) ──
@@ -7202,6 +7297,7 @@ export class RunStore {
     this.applyJevVerdictsLanesMigration();
     this.applyLaneRepliesMigration();
     this.applyDecisionLadderMigration();
+    this.applyDecisionLadder2aMigration();
   }
 
   /** Memory A1 §6: the lesson-set fingerprint each chat's omp session started on, persisted so a restart still compares. */
@@ -7375,6 +7471,22 @@ export class RunStore {
    * columns are checked on every open, not only once: it runs after the jev_verdicts rebuild above, so a table rebuilt by an
    * older migration gets its column back. FKs are declared for readers; the store never enables PRAGMA foreign_keys.
    */
+  /** Decision ladder stage 2a: three nullable decisions columns, the tap budget, the golden latch. Additive (R13). */
+  private applyDecisionLadder2aMigration(): void {
+    const version = "2026-10-13-decision-ladder-2a";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      const cols = this.tableColumns("decisions");
+      if (!cols.has("p_index")) this.db.exec(`ALTER TABLE decisions ADD COLUMN p_index INTEGER`);
+      if (!cols.has("reask")) this.db.exec(`ALTER TABLE decisions ADD COLUMN reask TEXT`);
+      if (!cols.has("p_first")) this.db.exec(`ALTER TABLE decisions ADD COLUMN p_first REAL`);
+      // security final I-3: the trust level the chat's planner transcript carries (null: clean / never set)
+      if (!this.tableColumns("planner_session_state").has("transcript_trust")) this.db.exec(`ALTER TABLE planner_session_state ADD COLUMN transcript_trust TEXT`);
+      this.db.exec(DECISION_LADDER_2A_DDL);
+      if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
+  }
+
   private applyDecisionLadderMigration(): void {
     const version = "2026-10-12-decision-ladder";
     this.inTransaction(() => {
@@ -9190,6 +9302,7 @@ export function buildToolApprovalPromptText(
     `Approval required: \`${approval_id}\``,
     `Action: ${input.summary}`,
     ...(input.card_detail !== undefined ? [`Command: ${input.card_detail}`] : []),
+    ...(input.reason !== undefined ? [`Why: ${input.reason}`] : []),
     `Side effect: ${input.side_effect_level}`,
     `Capability: ${input.capability}`,
     `Requester: ${input.requester.kind}:${input.requester.id}`,

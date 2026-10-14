@@ -21,7 +21,11 @@ export const HOME_SECRETS: readonly string[] = [
   ".docker", ".config/gh", ".config/gcloud", ".aws", ".azure", ".kube",
   // keys and tokens
   ".npmrc", ".cargo/credentials", ".cargo/credentials.toml", ".gnupg", ".netrc", ".git-credentials",
-  "Library/Keychains"
+  "Library/Keychains",
+  // credential stores found readable 2026-10-12 (decision ladder spec §7.0): browser profiles, session stores, Claude's app data
+  ".agent-browser", ".dev-browser", ".zsh_sessions", ".local/share/fish", ".local/share/opencode", "Library/Cookies", "Library/Safari",
+  "Library/Application Support/Claude", "Library/Application Support/Google/Chrome", "Library/Application Support/BraveSoftware",
+  "Library/Application Support/Firefox", "Library/Application Support/Arc", "Library/Application Support/Microsoft Edge"
 ];
 
 export function secretPaths(ctx: PathContext): string[] {
@@ -35,6 +39,54 @@ export function secretPaths(ctx: PathContext): string[] {
 
 /** A top-level `~/.<name>.env` (or `~/.env`) file: other tools' secrets, by naming convention. */
 export const HOME_DOTENV_NAME = /^\.(?:[^/]+\.)?env$/i;
+
+/**
+ * Credential files by NAME anywhere under $HOME (spec §7.0 item 1; plan S3 narrows `id_*` and the `*auth*` directory
+ * pattern). Each entry is a regex body that follows `^<home>` and precedes `$`. Only `. * ? [] ()` and `\.` are used,
+ * never `|`, so the Seatbelt renderer (seatbelt.ts credentialRules) and isCredentialPath read every body identically.
+ */
+export const CREDENTIAL_PATTERNS: readonly string[] = [
+  "(/.*)?/\\.[Ee][Nn][Vv]", "(/.*)?/\\.[Ee][Nn][Vv]\\.[^/]*", // templates re-allowed: ENV_TEMPLATE_PATTERNS
+  "/\\.local/share/(.*/)?auth\\.json", "/\\.config/(.*/)?auth\\.json", "/\\.local/share/(.*/)?credentials[^/]*", "/\\.config/(.*/)?credentials[^/]*",
+  "(/.*)?/id_rsa(\\.pub)?", "(/.*)?/id_dsa(\\.pub)?", "(/.*)?/id_ecdsa(\\.pub)?", "(/.*)?/id_ed25519(\\.pub)?", "(/.*)?/id_ecdsa_sk(\\.pub)?",
+  "(/.*)?/id_ed25519_sk(\\.pub)?",
+  "/\\.bash_history", "/\\.zsh_history", "/\\.sh_history", "/\\.python_history", "/\\.node_repl_history", "/\\.psql_history", "/\\.mysql_history",
+  "/\\.sqlite_history", "/\\.irb_history", "/\\.rediscli_history", "/\\.lesshst", "/\\.config/fish/fish_variables",
+  "(/.*)?/service_account[^/]*\\.json", "(/.*)?/client_secret[^/]*\\.json", "(/.*)?/[^/]*credentials[^/]*\\.json",
+  // token stores, not design tokens or tokenizers (senior W8): token.json, *_token*.json, *-token.json
+  "(/.*)?/token\\.json", "(/.*)?/[^/]*_token[^/]*\\.json", "(/.*)?/[^/]*-token\\.json",
+  // private keys by name, not public certificates or CA bundles (senior W8); key stores always
+  "(/.*)?/[^/]*private[^/]*\\.pem", "(/.*)?/[^/]*private[^/]*\\.key", "(/.*)?/[^/]*privkey[^/]*\\.pem", "(/.*)?/[^/]*privkey[^/]*\\.key",
+  "(/.*)?/key\\.pem", "(/.*)?/server\\.key", "(/.*)?/client\\.key", "(/.*)?/tls\\.key", "(/.*)?/ssl\\.key",
+  "(/.*)?/[^/]*\\.p12", "(/.*)?/[^/]*\\.pfx",
+  "/Projects/(.*/)?\\.[^/]*auth[^/]*(/.*)?", "/Projects/(.*/)?auth_info[^/]*(/.*)?"
+];
+/** .env templates carry no secrets and coding tasks write them: re-allowed after the patterns above (Seatbelt: a later allow). */
+export const ENV_TEMPLATE_PATTERNS: readonly string[] = ["(/.*)?/\\.[Ee][Nn][Vv]\\.example", "(/.*)?/\\.[Ee][Nn][Vv]\\.sample", "(/.*)?/\\.[Ee][Nn][Vv]\\.template"];
+
+const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const ENV_TEMPLATE_NAME = /\/\.env\.(?:example|sample|template)$/i;
+const credentialCache = new Map<string, RegExp[]>();
+
+/** The patterns anchored at one spelling of $HOME (cached: isDeniedRead runs on every built-in gate). */
+export function credentialRegexes(home: string): RegExp[] {
+  const hit = credentialCache.get(home);
+  if (hit) return hit;
+  const res = CREDENTIAL_PATTERNS.map((b) => new RegExp(`^${escapeRegex(home)}${b}$`, "i")); // case-insensitive, as APFS and Seatbelt are
+  credentialCache.set(home, res);
+  return res;
+}
+
+/**
+ * True when either spelling of the path (as given, canonical) matches a credential pattern under either spelling of $HOME.
+ * The .env template exemption needs EVERY spelling to be a template: a `.env.example` symlink to a `.env` stays denied.
+ */
+export function isCredentialPath(absPath: string, home: string): boolean {
+  const forms = [...new Set([resolve(absPath), realpathOrSelf(absPath)])];
+  const homes = [...new Set([resolve(home), realpathOrSelf(home)])];
+  if (forms.every((f) => ENV_TEMPLATE_NAME.test(f))) return false;
+  return homes.some((h) => credentialRegexes(h).some((re) => forms.some((f) => re.test(f))));
+}
 
 export function protectedRepoPaths(ctx: PathContext): string[] {
   return [...PROTECTED_DIRS, ...PROTECTED_FILES].map((p) => join(ctx.repo, p));
@@ -136,7 +188,7 @@ function isHomeDotenv(abs: string, ctx: PathContext): boolean {
 }
 
 export function isDeniedRead(absPath: string, ctx: PathContext): boolean {
-  return under(absPath, secretPaths(ctx)) || isHomeDotenv(absPath, ctx);
+  return under(absPath, secretPaths(ctx)) || isHomeDotenv(absPath, ctx) || isCredentialPath(absPath, ctx.home);
 }
 
 /** Mirrors the profiles: secrets, then the re-allowed workspace (never sessions: the model must not edit its transcript), then the denies, then default-deny. */

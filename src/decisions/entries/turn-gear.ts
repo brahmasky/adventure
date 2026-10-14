@@ -19,7 +19,8 @@ export function turnGearRule(s: TurnGearState): RungAnswer<TurnGearVerdict> | Ru
 }
 
 export const TURN_GEAR: Entry<TurnGearState, TurnGearVerdict> = {
-  id: TURN_GEAR_ID, version: 1, stage: "pre_model", input: "paco",
+  // 2: the Jev rung re-asks once inside a reviewed noise band (stage 2a, Addition B)
+  id: TURN_GEAR_ID, version: 2, stage: "pre_model", input: "paco",
   question: "Which planner role (Fast, Default, Thinking) does this turn run on?",
   verdicts: ["fast", "default", "thinking"],
   ladder: [
@@ -28,7 +29,7 @@ export const TURN_GEAR: Entry<TurnGearState, TurnGearVerdict> = {
       timeoutMs: 1_000 }
   ],
   fail: "default", defaultVerdict: "default",
-  outcomes: ["correction", "rating", "review_ok", "review_bad", "review_unsure"],
+  outcomes: ["correction", "rating", "review_ok", "review_bad", "review_unsure", "think_harder"],
   armed: { rule: "on", system_one: "on" },
   effects: { fast: NONE, default: NONE, thinking: NONE },
   reasonCodes: [...ROUTE_REASONS, "gear_not_applied"]

@@ -8,7 +8,7 @@ import { stateHash } from "./decide.js";
 import { langOf, type Lang } from "./intent-question.js";
 import { JEV_REQUEST_MODEL, type JevAnswer, type JevRequest, type JevResult } from "./jev-client.js";
 import { buildTreeState, CATEGORIES, lastHougeTurnOf, quotedTurnFromRow, TREE_CATEGORY, TREE_QUESTIONS, type Category,
-  type HougeTurnKind } from "./questions/tree.js";
+  type HougeTurnKind, type LastHougeTurn, type QuotedTurn } from "./questions/tree.js";
 import { criteriaHash, toJevQuestion, type ChoiceQuestion, type Question } from "./questions/types.js";
 import { readDone, runReplayCore, type ReplayCoreOutcome } from "./replay-core.js";
 import { preJudge } from "./tree-policy.js";
@@ -36,7 +36,8 @@ const CJK_UNDERCOUNT = 1.8;
 export type ProxyRule = "houge_status" | "memory_correct_write" | "lesson_write" | "self_change" | "wiki" | "schedule_task"
   | "mail_calendar" | "machine_task" | "research" | "lookup" | "no_tool" | "ack_after_proposal" | "unmatched_tools";
 export interface ProxyLabel { category: Category | null; rule: ProxyRule }
-export interface TreeLabel { category: Category; by: "paco"; at: string }
+/** `by: "tap"` comes only from tap-labels.ts (a ✅ on a lane route); the sitting file loads `by: "paco"` lines alone. */
+export interface TreeLabel { category: Category; by: "paco" | "tap"; at: string }
 export interface TreeReplayRow {
   key: string; turn_id: string; run_id: string; lang: Lang; status: "ok" | "dry_run" | "skipped_state_too_large" | "jev_failed"; est_usd: number;
   attempt?: number; usd?: number; stop?: "auth" | "fused"; error?: string;
@@ -157,16 +158,21 @@ function liveInstantsOf(store: RunStore, run_id: string): { cut: string; before:
   return at ? { cut: at, before: at, built: at } : undefined;
 }
 
-function prepareTurn(d: TreeReplayDeps, key: string, t: ReplayTurnRow): Prepared | { skip: TreeReplayRow } {
+/** The tree state the live path would have built for a stored turn (shape-only redaction: the CLI has no broker). */
+export function treeContextFor(store: RunStore, env: NodeJS.ProcessEnv, t: ReplayTurnRow): { built: ReturnType<typeof buildTreeState>; lastHougeTurn: LastHougeTurn; quotedTurn: QuotedTurn | null } {
   const anchor = t.anchor ?? t.created_at;
-  const { cut, before, built: builtAt } = liveInstantsOf(d.store, t.run_id) ?? { cut: anchor, before: anchor, built: anchor };
-  const recent = d.store.getChatTurnsBefore(t.chat_id, resolveChatContextTurns(d.env), chatContextSince(d.env, new Date(cut)), before, t.run_id);
+  const { cut, before, built: builtAt } = liveInstantsOf(store, t.run_id) ?? { cut: anchor, before: anchor, built: anchor };
+  const recent = store.getChatTurnsBefore(t.chat_id, resolveChatContextTurns(env), chatContextSince(env, new Date(cut)), before, t.run_id);
   const nowMs = Date.parse(builtAt);
   const lastHougeTurn = lastHougeTurnOf(recent, nowMs);
-  const quotedRow = t.quoted_turn_id ? d.store.getChatTurnById(t.quoted_turn_id) : undefined;
+  const quotedRow = t.quoted_turn_id ? store.getChatTurnById(t.quoted_turn_id) : undefined;
   const quotedTurn = quotedRow ? quotedTurnFromRow(quotedRow, nowMs) : null;
-  const built = buildTreeState({ userText: t.text, recentTurns: recent, turnChars: resolveChatContextTurnChars(d.env), modality: "text",
-    lastHougeTurn, quotedTurn });
+  const built = buildTreeState({ userText: t.text, recentTurns: recent, turnChars: resolveChatContextTurnChars(env), modality: "text", lastHougeTurn, quotedTurn });
+  return { built, lastHougeTurn, quotedTurn };
+}
+
+function prepareTurn(d: TreeReplayDeps, key: string, t: ReplayTurnRow): Prepared | { skip: TreeReplayRow } {
+  const { built, lastHougeTurn, quotedTurn } = treeContextFor(d.store, d.env, t);
   const tools = d.store.runLoopCapabilityCounts(t.run_id);
   const proxy = proxyLabel(tools, quotedTurn?.kind === "proposal" ? "proposal" : lastHougeTurn?.kind ?? null);
   const pre = preJudge({ text: t.text, lastHougeTurn, quoted: quotedTurn !== null });

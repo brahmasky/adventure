@@ -3,6 +3,7 @@ import { CATEGORIES, TREE_CATEGORY, TREE_QUESTIONS, type Category } from "./ques
 import { JEV_REQUEST_MODEL } from "./jev-client.js";
 import { criteriaHash } from "./questions/types.js";
 import { ACK_ROUTE, applyCascade, routeTree, TREE_ANSWER_ARM_ID, TREE_LOOKUP_ARM_ID, TREE_STATUS_ARM_ID, type Armed, type Route, type TreeBars } from "./tree-policy.js";
+import { tapLines, type TapLabels } from "./tap-labels.js";
 import { treeQuestions, type TreeLabel, type TreeReplayRow } from "./triage-replay.js";
 import { wilsonLower } from "./wilson.js";
 
@@ -248,12 +249,13 @@ function candidateRows(ok: TreeReplayRow[]): string[] {
 function headLine(ok: TreeReplayRow[], labels: Map<string, TreeLabel>): string {
   const en = ok.filter((r) => r.lang === "en").length;
   const human = ok.filter((r) => labels.has(r.turn_id)).length;
+  const tapped = ok.filter((r) => labels.get(r.turn_id)?.by === "tap").length;
   const none = ok.filter((r) => truthOf(r, labels) === null).length;
-  return `turns: ${ok.length} replayed (zh incl. mixed ${ok.length - en}, en ${en}); ${human} carry Paco's label; ${none} without a truth (ack after a proposal, unmatched tools)`;
+  return `turns: ${ok.length} replayed (zh incl. mixed ${ok.length - en}, en ${en}); ${human} carry Paco's label${tapped > 0 ? ` (${tapped} from a ✅ tap)` : ""}; ${none} without a truth (ack after a proposal, unmatched tools)`;
 }
 
 export function formatTreeReport(rows: TreeReplayRow[], labels: Map<string, TreeLabel>, outcome: TreeReportOutcome, bars: TreeBars,
-  permuted?: TreeReplayRow[]): string {
+  permuted?: TreeReplayRow[], taps?: TapLabels): string {
   if (rows.some((r) => r.status === "dry_run")) {
     return `DRY RUN — universe ${outcome.universe ?? "?"}, would dispatch ${outcome.wouldDispatch ?? "?"}, already done ${outcome.alreadyDone ?? "?"}, ` +
       `skipped ${outcome.skipped ?? "?"}; est. $${outcome.estimatedUsd.toFixed(3)}; nothing dispatched, no evidence.`;
@@ -262,7 +264,7 @@ export function formatTreeReport(rows: TreeReplayRow[], labels: Map<string, Tree
   const blockers = blockersOf(rows, ok, outcome, permuted);
   const out = blockers.length > 0 ? [`INCOMPLETE — ${blockers.join("; ")}. The numbers below are NOT evidence for arming.`] : [];
   out.push(headLine(ok, labels), ...confusionLines(ok, labels), ...scoreLines(ok, labels, bars), ...routeLines(ok, bars), ...armingLines(ok, bars),
-    ...costlyLines(costlyCells(ok, labels, bars)), permutationLine(ok, permuted));
+    ...costlyLines(costlyCells(ok, labels, bars)), permutationLine(ok, permuted), ...(taps && taps.evidence.length > 0 ? tapLines(taps) : []));
   out.push(`bars: choice ≥ ${bars.choice}, memory ≥ ${bars.memory}, status ≥ ${bars.status}, conf ≥ ${bars.minConf}, gap ≥ ${bars.minGap}, ` +
     `rule yes ≥ ${bars.nounYes} / no ≤ ${bars.nounNo}, rule_scope ≥ ${bars.ruleScope}, gear light ≤ ${bars.gearLight} / heavy ≥ ${bars.gearHeavy}`);
   out.push(`spent $${outcome.spentUsd.toFixed(3)} of est. $${outcome.estimatedUsd.toFixed(3)}`);

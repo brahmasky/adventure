@@ -156,11 +156,14 @@ import {
   type RouteReason
 } from "../jev/tree-policy.js";
 import { decide as decideLadder } from "../decisions/decide.js";
+import { INJECTION_TOTAL_MS } from "../decisions/entries/tool-injection.js";
+import { createInjectionJudge, type InjectionJudge } from "../decisions/injection-judge.js";
 import { isSkipReason, TURN_HANDLER, type TurnHandlerState, type TurnHandlerVerdict } from "../decisions/entries/turn-handler.js";
 import { TURN_GEAR, type TurnGearState, type TurnGearVerdict } from "../decisions/entries/turn-gear.js";
 import { storeRecorder } from "../decisions/record.js";
+import { decisionOf, recordTapOutcome } from "../decisions/tap-outcomes.js";
 import type { AnyDecideResult, AnyEntry, DecideResult, DecisionRecorder, FallbackReason, RungOutcome, RungResult } from "../decisions/types.js";
-import { fallbackOfSkip, jevSkipReason, planTree, treeDetailOf, type AnsweredDecision, type TreeDetail } from "./turn-handler-ladder.js";
+import { fallbackOfSkip, jevSkipReason, planTree, treeDetailOf, treeNear, type AnsweredDecision, type TreeDetail } from "./turn-handler-ladder.js";
 import { memlaneUndoButton, memoryInformNote, memoryLaneCard } from "./memory-lane-card.js";
 import { LANE_COMPOSE_MS, runAnswerLane } from "./lanes/answer-lane.js";
 import { digDeeperButton, laneCard, laneSavedNote } from "./lanes/lane-card.js";
@@ -2442,7 +2445,7 @@ export class CoreWorker {
    * through `quarantine`, always (D3).
    */
   buildOmpTools(claim: ClaimedRun, chatId = this.chatOf(claim.run_id)): {
-    registry: ToolRegistry; quarantine: ActiveTurn["quarantine"]; preflight: NonNullable<ActiveTurn["preflight"]>;
+    registry: ToolRegistry; quarantine: ActiveTurn["quarantine"]; preflight: NonNullable<ActiveTurn["preflight"]>; judge: InjectionJudge;
   } {
     const state = this.ompTurnState(claim, chatId);
     const registry = new ToolRegistry();
@@ -2463,7 +2466,9 @@ export class CoreWorker {
     return {
       registry, quarantine: (tool, output) => this.ompQuarantine(claim, state, tool, output),
       // memory_correct writes: the trust limits refuse before any card, else the card shows exactly what changes
-      preflight: (entry, input) => (entry === "memory_correct_write" ? memoryWritePreflight(this.memoryDeps(claim, state.turnCtx), input) : null)
+      preflight: (entry, input) => (entry === "memory_correct_write" ? memoryWritePreflight(this.memoryDeps(claim, state.turnCtx), input) : null),
+      // tool.injection (spec §7.1): every shell and wall result of this turn is judged before a model reads it
+      judge: createInjectionJudge({ store: this.runStore, client: this.injectionClient(claim.run_id), home: this.ompPathContext().home })
     };
   }
 
@@ -2774,6 +2779,17 @@ export class CoreWorker {
     });
   }
 
+  /** tool.injection's Jev client: its own audit role, 3 s per request, no retry (the bound is per tool call, spec §7.1). */
+  private injectionClient(run_id: string): (req: JevRequest) => Promise<JevResult> {
+    return createJevClient({
+      apiKey: this.broker ? this.broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
+      audit: this.runStore.llmAuditSink({ run_id, role: "injection" }),
+      meteredBreached: () => this.runStore.meteredFuseLatched(),
+      retries: 0, timeoutMs: INJECTION_TOTAL_MS,
+      ...(this.ompOptions.jevFetch ? { fetchImpl: this.ompOptions.jevFetch } : {})
+    });
+  }
+
   /** The denominator (spec §6): one `triage` event per eligible turn, naming its verdict row. */
   private triageEvent(run_id: string, lang: Lang, f: TriageSettle, verdict_id: string): void {
     const n: Partial<TriageNumbers> = f.kind === "answered" ? f.numbers : {};
@@ -2797,10 +2813,13 @@ export class CoreWorker {
     };
   }
 
-  /** Spec §6: `think harder` now labels the chat's previous turn as routed too light (first correction wins). */
+  /** Spec §6: `think harder` labels the chat's previous turn as routed too light (first correction wins); Addition A: an outcome row too. */
   private markThinkHarder(run_id: string): void {
     const prev = this.runStore.latestJevVerdictForChat(this.chatOf(run_id), new Date().toISOString());
-    if (prev && prev.run_id !== run_id && prev.paco_correction === null) this.runStore.updateJevVerdict(prev.verdict_id, { paco_correction: "think_harder" });
+    if (!prev || prev.run_id === run_id || prev.paco_correction !== null) return;
+    this.runStore.updateJevVerdict(prev.verdict_id, { paco_correction: "think_harder" });
+    const d = decisionOf(this.runStore, prev.run_id, "turn.gear") ?? decisionOf(this.runStore, prev.run_id, "turn.handler");
+    if (d) recordTapOutcome(this.runStore, d.decision_id, "think_harder", prev.role);
   }
 
   /**
@@ -2968,7 +2987,7 @@ export class CoreWorker {
       lastHougeTurn: t.lastHougeTurn, quotedTurn: t.quotedTurn }, this.broker ? (s) => this.broker!.redact(s) : undefined);
     if (!built.ok) return { failed: fallbackOfSkip(built.skip), reason: built.skip };
     const d = await decide({ point: "triage", run_id, state: built.state, questions: TREE_QUESTIONS, lang, client: this.jevClient(run_id),
-      store: this.runStore, thresholdVersion: TREE_THRESHOLD_VERSION, now: t.now, instants: { thread_cut_at: state.threadCutAt, state_built_at: t.builtAt.toISOString() } });
+      store: this.runStore, thresholdVersion: TREE_THRESHOLD_VERSION, now: t.now, reask: { near: treeNear(TREE_QUESTIONS) }, instants: { thread_cut_at: state.threadCutAt, state_built_at: t.builtAt.toISOString() } });
     if (d.status === "skipped") return { failed: fallbackOfSkip(d.reason), reason: d.reason };
     return this.planAnswered(i, lang, mode, d, held);
   }

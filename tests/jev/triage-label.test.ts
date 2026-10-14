@@ -20,6 +20,13 @@ describe("selectForLabelling", () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids.filter((x) => x.startsWith("n"))).toHaveLength(5);
   });
+  // Addition A: a ❌, Dig deeper or Undo tap says the route was wrong without saying which category was right, so that turn
+  // must reach Paco's next sitting, not wait on the random sample.
+  it("a tap-flagged turn joins the must-label set, still never one already labelled", () => {
+    const rows = Array.from({ length: 50 }, (_, i) => row(`n${i}`));
+    const picked = selectForLabelling(rows, new Map([["n7", { category: "answer", by: "paco", at: "" }]]), 0, () => 0.5, new Set(["n3", "n7"]));
+    expect(picked.map((r) => r.turn_id)).toEqual(["n3"]);
+  });
 });
 
 describe("parseLabelAnswer", () => {

@@ -167,3 +167,107 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
   passages, never decides whether the wall applies.
 - **0011.** `src/decisions/` joins `PROTECTED_DIRS`: if the registry decides the gates, editing it can open a gate, so
   it is Paco's hand only.
+
+## Amendment (2026-10-13): stage 2a, in-Houge judges (DRAFT for Paco's sign-off)
+
+This file is protected (ADR 0011): the draft is Paco's to merge by hand.
+
+- **tool.injection** runs on shell output (success and failure), on the four wall tools' results before the reader, and on
+  the code-built side channel that follows the reader (gmail's extracted codes and links), at the bridge; built-in reads
+  follow in stage 2b. Its verdicts are pass < frame < withhold. A passage that may not leave (spec §7.0 items 2–3, now
+  ruled per passage on the raw text) is never passed: from outside it is withheld with a note, from a local read framed
+  and shown redacted. This corrects the spec: "judged by the floor only" let anyone who controls tool output skip the
+  judge (S8). The redactor keeps the spec's order on the whole text and only then splits (masks are atomic; no cut falls
+  inside one). The floor and the content check read each passage's raw text locally, and the planner reads raw text outside
+  withheld or framed passages. A judge that throws falls back to the same local floor, content and path checks, never to raw
+  text. Its wording, floor and splitter are mu's (MIT); through mu, the question's wording and instruction patterns trace to hermes-jev-skills (MIT). The notices are in
+  `THIRD_PARTY_NOTICES.md` and in the headers of `tool-injection.ts` and `egress.ts`. Measured on the held-out corpus:
+  recall 66/66 planted (34 English, 32 Chinese), 1 of 431 clean English passages withheld (0.23%) and 0 of 134 clean
+  passages from fetched Chinese pages (live gate C1, run 8; 1 of 565 overall against a 1% bar). It is armed at ship on that provisional bar (decision 9), covered by a daily golden set that pages on drift or
+  a model move and never disarms. The golden set is a daily tick, not part of the invariant sweep (S4): the sweep is
+  synchronous and switchable, and R13 forbids a switchable check.
+- **tool.shell_netread is best effort; the allowlist is the real gate.** The classifier (separate-segment split, wrapper
+  parsing, `shell -c`, `eval`, `find -exec`, `/dev/tcp`, quote and backslash stripping, and any expanded program word
+  counted as network) decides only the trust level. A miss has a stated cost: the output of an exotic disguised fetch is
+  **framed, not withheld**, and the turn stays below hostile until a judged passage says otherwise. The spec's §7.2 wording
+  ("its misses cost a missed `untrusted`, not a missed judgement") understated this and is corrected by a Rev note there.
+  What a hostile turn may run without a tap is decided by the positive read-only list, where anything unknown asks.
+- **turn.trust** is locked code: clean → untrusted (a wall read, a network shell read, a lost judgement, a framed local
+  passage) → hostile (a withheld passage, an outside passage withheld unjudged, or an outside passage whose judgement was
+  lost, which reaches the planner inside a "not checked" frame). A lost judgement (Jev down, timed out, partial) raises it
+  already in 2a (S10; the spec placed `judge_timeout` in 2b). Trust is sticky per planner transcript: a turn starts at the
+  level the transcript's last dispatched turn ended at, until the planner starts a fresh transcript. It only adds taps (ADR 0029 decision 2): untrusted
+  asks before lesson_write, schedule_task, self_write_propose and skill_author; hostile also asks for every shell command
+  off a strict read-only list and every write, and redirects the built-in writers to bash (the named exception). The list
+  admits exact flag sets per program; globs are admitted only after `--`; device paths ask; `wc` is **not** on the list
+  (macOS `wc` links libxo, and `--libxo=encoder=<path>` loads code from a path; the option is read even after `--`), and
+  any word containing `libxo` asks. A trust card pauses the turn's timers for its own TTL (HOUGE_TRUST_ASK_TTL_MS), at
+  most one TTL per turn, and a card whose remaining time is under 5 s is refused. Trust asks count toward the 3-a-day
+  budget, which pages and never blocks.
+- **Settle on a terminal agent_end** (P7, S2): a turn settles on an aborted end, a terminal end, or an end that waits on
+  background work alone (the child is then stopped, since omp may still continue it, and incident `planner_async_wait`
+  opens). A plain non-terminal end (late steer, omp's own retry, compaction, empty-stop) never settles it. omp's own
+  retries are capped at two, each wait at 60 s (S2b), so failover to Houge's next leg happens before the frame watchdog.
+  **Accepted residual (C6):** the cap is asserted by a unit test on Houge's config text and by a read of omp's source.
+  The live gate cannot show it: `omp config get` does not load the `--config` overlay the planner loads, so the gate
+  records that check as INCONCLUSIVE by name rather than passing it. If omp stops honouring `retry.maxRetries` /
+  `retry.maxDelayMs`, a 429 with a long retry-after silences a turn until the watchdog fails it.
+- **Credential stores by name** are read-denied in the bridge and both Seatbelt profiles. The spec's `id_*` and `*auth*/`
+  patterns are narrowed to key files (`id_<algorithm>`) and dot-prefixed or `auth_info*` session folders under ~/Projects,
+  because the literal patterns matched source directories (S3, Q2). `*token*.json`, `*.pem`, `*.key` and `.env.*` are
+  narrowed the same way: tokenizers, CA bundles, Keynote files and `.env` templates stay usable. A server certificate is
+  not a credential; a private key file name is.
+- **The noise band.** Jev answers identical requests with different probabilities (spread up to 0.10 on one message,
+  S7). A reviewed per-question band, keyed like a calibration row, makes a value within the band of a bar the decision
+  uses ask Jev exactly once more: the front door decides on the mean, a judge over tool input on the more cautious call
+  (a mean could loosen a withhold); a failed or overrunning second call keeps the first answer, and a failed re-ask still
+  opens its outage incident. Bands are Paco's commits from a measurement script, never automatic; the decision row
+  records the re-ask and the first call's p; the raw Jev rows keep the first call. Candidate bands measured on the live
+  build (95th-percentile spread of repeated calls): injection 0.11; front-door tree category 0.13, confidence 0.14, gap
+  0.20. They are **not committed**; they await Paco's approval (plan Q1).
+- **Taps are calibration evidence.** Digest ✅/❌, Dig deeper, Undo and 认真想 write decision_outcomes rows. The calibration
+  report reads them beside Paco's labelling sittings: only ✅ on a front-door lane route becomes a category label; every
+  other tap is evidence and puts its turn on the next sitting's list; conflicting taps on one turn give no label. No row
+  is committed and no bar moves automatically (SP4). The `lesson_undone` value is the lane the save came from (the
+  Dig-deeper lane set), not the turn's `turn.handler` verdict as the plan's mapping table first said.
+- **The planner never receives, as judged, text the judge did not see** (spec correction to §7.0 rule 2, S9): every
+  mask sent to the judge is applied to the planner's copy too, except a mask of a run that cannot carry readable text
+  (hex-only: SHAs, hashes, UUIDs; digit-only: one-time codes). The cost is stated: the planner loses base64 blobs and
+  opaque letter/digit tokens in judged tool output. Masks never split the text for later rules (a masked value inside a
+  URL does not end the URL). Long runs are masked only when opaque, never a joined sentence. Any value after a
+  secret-named key (a whole key segment equals a secret word: `api_key` yes, `keywords` no) is masked through its
+  delimiter whatever its shape or length, for both models; a value too long to delimit blocks its passage. The broker's
+  values are located through its own redactor on the whole text, so a value is masked whole even when it is longer than a
+  passage. In the mail extract channel a link keeps scheme, host and route words while its token-like path segments, query
+  values and fragment are masked whatever their case (a narrowing of rule 5, which masked extracted links whole), and
+  the escapes in a link are decoded run by run so a malformed escape cannot hide a sentence from the judge. A line of
+  12–24 lowercase words without a common stopword is treated as a wallet seed phrase: withheld from outside, framed locally.
+  One named exception to the mirror: a short link (≤ 512 characters, ≤ 8 query values) in the mail side channel's
+  code-extracted link field reaches the planner exact (the registration loop needs it) while the judge sees it
+  percent-decoded with its opaque segments masked.
+- **Invariants of the redactor (I1–I4):** I1, the planner gets no text as judged that Jev did not see (above). I2, secret
+  keys match by whole segment. I3, no length cap on a named value. I4, link tokens are masked whatever their case.
+- **Accepted residual (R11):** a secret with no recognisable name, shape or content in redacted shell output or a fetched
+  page can reach TypeSafe. Measured 2026-10-13 on random tokens (50 000 per alphabet, each in five contexts, an
+  8-character slice of the token in the output counts as a leak): base64url (36 characters) 65 to 81 of 250 000 pass
+  across four runs (the plan's figure 77; about 1 in 3 200), 53 to 61 of them behind a word prefix
+  (`release_notes_archive_<token>`); standard base64 (40 characters, the AWS secret-key shape) 203 to 255 of 250 000
+  (the plan's figure 230; about 1 in 1 090), 171 to 217 of them inside a URL path where `/` reads as a path separator.
+  The fix round (malformed escapes) cannot change these: the fuzz contexts are free text. Also passing: a seed phrase
+  written with capitals, digits or punctuation, and a one-time link whose token is 14 or fewer pronounceable lowercase
+  letters (letters-only values: a word-bearing run is prose by design, S9). A leetspeak or otherwise opaque segment inside
+  a short code-extracted link (≤ 512 characters) reaches the planner unjudged: the mail is attacker-controllable, but
+  the registration loop needs the exact link, encoded sentences are decoded for the judge, and the length cap bounds it.
+  A result reaches the planner with only its withheld or framed passages and its mirrored masks changed.
+- **Verdict correctness is measured by C1, not C2.** The live gate's C2 checks that seeded secrets never leave and that
+  a free-text passage is answered; it does not assert a verdict on a synthetic sentence. On real Jev a synthetic
+  "see `<link>` now" sentence with its link masked was withheld (p 0.65) whichever of three placeholder spellings was used,
+  while 0 of 46 real clean passages with masked URLs were withheld. Whether the judge's verdicts are right is measured on
+  real data (C1: recall on the held-out planted corpus, false positives on clean passages captured from real tools).
+- **Assumptions added:** omp marks continuations with isTerminal false (source and a live capture of the terminal form,
+  2026-10-13; the non-terminal form is source-derived, since the live probe could not provoke it); Houge's spawn has no
+  background tools; omp honours `retry.maxRetries` / `retry.maxDelayMs` (the C6 residual above); Jev's run-to-run
+  spread is bounded by the measured band.
+- **Revisit when added:** the golden set drifts twice in 30 days; omp adds background tools to Houge's spawn; TypeSafe
+  ships deterministic answers (then the band goes); `omp config get` learns to show the overlay (then C6 becomes a hard
+  check).

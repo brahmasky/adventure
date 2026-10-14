@@ -1625,3 +1625,23 @@ review taps, parity gate, rollback check, docs. The rung kind is `system_one` (s
 literal outside `src/llm`). Final reviews + codex fixed card redaction and old-build provenance. Evidence: 4221 tests,
 P6 gate PASS 192/0 twice, rollback PASS. Finding: Jev is nondeterministic on identical input. Merged `710ef47` on
 Paco's word, pushed, `dist/` rebuilt; Paco kickstarts.
+
+## 2026-10-12 to 2026-10-14: decision ladder stage 2a, plus B (self-write locked paths) and a schedule-cap fix
+
+Built the in-Houge judges the stage 1 engine was waiting for. Plan Rev 1 to 12 over eight review rounds (codex plus a senior
+pass against the live system, blockers to zero), then 20 subagent-driven tasks, each with a two-stage review (spec, then
+quality) and fix rounds where the reviewer found something real: tool.injection with the egress redactor (mask the whole
+text in the spec's order, then split; invariants I1 to I4), turn.trust and the hostile read-only list, trust cards with their
+own TTL, credential-store read-deny, the P7 terminal `agent_end` settle, the noise band, tap labels in the calibration report.
+Reviews caught real defects: a macOS `wc --libxo` code-load path, malformed link escapes hiding a sentence from the judge,
+a late incident write that could kill the daemon, a tree-mode measurement that sent a different request than live. The live
+gate (Task 19) ran eight times on real Jev: the early runs found a corpus defect (repo text aimed at an assistant used as
+the clean Chinese set), a real false positive in a masked-URL passage (resolved by ruling: verdicts are measured by C1,
+not asserted on a synthetic sentence), and a timer race (a 1 ms trust-pause leftover), fixed in Task 11's code; run 8: 56
+PASS, 0 FAIL, one named INCONCLUSIVE (omp retry cap cannot be observed). Rollback check PASS. Measured noise bands
+(injection 0.11; category 0.13, confidence 0.14, gap 0.20) await Paco. On branch, not merged; ADR 0030 amendment is a draft.
+
+Same period on main: B, the self-write locked-path list with one guided retry (`HOUGE_NEEDS_LOCKED.md` sentinel, guard
+reads the raw diff with `-z`, guard re-run after the test gate; merged `e0f6778`), and a schedule fix that keeps the whole
+goal up to 2000 characters and refuses longer instead of cutting it (`7d3ce16`; the daily Alishan check goal had been cut mid-URL at the old 300 cap).
+

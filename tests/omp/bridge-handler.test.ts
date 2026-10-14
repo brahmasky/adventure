@@ -15,6 +15,7 @@ import { toolApprovalWaiters } from "../../src/omp/tool-approval-sink.js";
 import { loadToolDeclarations, TOOL_DECLS_DIR, type ToolDeclaration } from "../../src/omp/tool-decls.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { ToolRegistry, type ToolMetadata } from "../../src/tools/tool-registry.js";
+import { passThroughJudge } from "../helpers/omp-worker.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 
 const MARKER = "MARKER-7f3";
@@ -71,7 +72,7 @@ function setup(opts: Opts = {}) {
     ...(opts.approver ? { approver: opts.approver } : {}),
     budget: new BudgetLedger(contract.budget), registry, signal: ac.signal, cwd: dir, step: { n: 0 },
     cache: new Map(), unreported: new Map(), quarantine, setAwaitingApproval: (on) => { awaiting.push(on); },
-    postureOk: () => opts.posture ?? null
+    postureOk: () => opts.posture ?? null, judge: passThroughJudge
   };
   const deps: BridgeHandlerDeps = {
     store, cfg: resolveOmpConfig({}), ctx: { home: join(dir, "home"), repo: join(dir, "repo"), data: join(dir, "data") },

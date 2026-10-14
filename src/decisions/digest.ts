@@ -2,6 +2,8 @@ import type { NotificationButton } from "../notifications/notification-types.js"
 import type { DecisionRow, RunStore } from "../run/run-store.js";
 import { formatInstantInZone, resolveDisplayZone } from "../run/schedule-spec.js";
 import { REGISTRY } from "./registry.js";
+import { TRUST_ORDER, rankOf, type TrustLevel } from "./entries/turn-trust.js";
+import { TRUST_TAP_BUDGET } from "./trust-ask.js";
 import type { AnyEntry, DecidedBy } from "./types.js";
 
 /**
@@ -114,6 +116,67 @@ function healthLines(store: RunStore, rows: readonly DecisionRow[], since: strin
   });
 }
 
+/** tool.injection, counted (Ruling 19: never offered for a blind tap). "Near the bar": a Jev verdict within UNSURE_BAND of 0.5. */
+function injectionLine(rows: readonly DecisionRow[]): string | null {
+  const inj = rows.filter((r) => r.entry_id === "tool.injection");
+  if (inj.length === 0) return null;
+  const held = inj.filter((r) => r.verdict === "withhold");
+  const byJev = held.filter((r) => r.rung === "system_one").length;
+  const framed = inj.filter((r) => r.verdict === "frame").length;
+  const near = inj.filter((r) => r.rung === "system_one" && r.p !== null && Math.abs(r.p - 0.5) < UNSURE_BAND).length;
+  const lost = inj.filter((r) => r.fallback_rung === "system_one").length;
+  return `· tool.injection: ${inj.length} tool results · withheld ${held.length} (code ${held.length - byJev} · Jev ${byJev}) · framed ${framed} (kept local) · near the bar ${near} · judgement lost ${lost}`;
+}
+
+/**
+ * Spec 7.1-7.2 in one block: what tool.injection did, and how many turns asked for more taps. turn.trust rows carry the
+ * turn's own run id (merged and nudge runs share the parent's trust), and a turn counts once, at its highest level.
+ */
+export function trustLines(store: RunStore, rows: readonly DecisionRow[], now: string, env: NodeJS.ProcessEnv): string[] {
+  const trust = rows.filter((r) => r.entry_id === "turn.trust");
+  const top = new Map<string, TrustLevel>();
+  for (const r of trust) {
+    const level = r.verdict as TrustLevel;
+    if (!TRUST_ORDER.includes(level) || !r.run_id) continue;
+    if (rankOf(level) > rankOf(top.get(r.run_id) ?? "clean")) top.set(r.run_id, level);
+  }
+  const at = (level: TrustLevel): number => [...top.values()].filter((l) => l === level).length;
+  const taps = store.trustTapCount(formatInstantInZone(now, resolveDisplayZone(env)).slice(0, 10));
+  const inj = injectionLine(rows);
+  // senior S-R2-2: turns pushed to hostile because unjudged outside text was withheld (an attacker can do this at will)
+  const outside = new Set(trust.filter((r) => r.reason_code === "unjudged_outside" && r.run_id && top.get(r.run_id) === "hostile").map((r) => r.run_id)).size;
+  const turns = `· turns: untrusted ${at("untrusted")} · hostile ${at("hostile")}${outside > 0 ? ` (${outside} by unjudged outside text)` : ""} · trust taps today ${taps} of ${TRUST_TAP_BUDGET}`;
+  return [...(inj ? [inj] : []), ...(top.size > 0 || taps > 0 ? [turns] : [])];
+}
+
+/** Addition B: how often each entry re-asked inside its noise band. Gear shares the handler's call, so only the handler row carries it. */
+export function reaskLines(rows: readonly DecisionRow[]): string[] {
+  const by = new Map<string, { mean: number; max: number; failed: number }>();
+  for (const r of rows) {
+    if (r.reask === null) continue;
+    const c = by.get(r.entry_id) ?? { mean: 0, max: 0, failed: 0 };
+    c[r.reask] += 1;
+    by.set(r.entry_id, c);
+  }
+  return [...by].sort(([a], [b]) => a.localeCompare(b)).map(([id, c]) => `· ${id}: re-asked ${c.mean + c.max + c.failed} (mean ${c.mean} · max ${c.max} · failed ${c.failed})`);
+}
+
+/** The golden set's model-move page (spec 4.2): a provisional bar measured on one model, judged by another, until Paco looks. */
+function staleBarLines(store: RunStore): string[] {
+  return store.listOpenIncidents().filter((i) => i.kind === "decision_bar_stale").map((i) => {
+    const d = JSON.parse(i.detail_json) as { model?: unknown; bar_model?: unknown };
+    return `· ${i.subject}: the bar was measured on ${String(d.bar_model)}, Jev now reports ${String(d.model)}`;
+  });
+}
+
+/** The two stage 2a sections; each is left out when it has nothing to say, so a stage 1 day renders as before. */
+function stage2aSections(store: RunStore, rows: readonly DecisionRow[], now: string, env: NodeJS.ProcessEnv): string[] {
+  const trust = trustLines(store, rows, now, env);
+  const reasks = reaskLines(rows);
+  return [...(trust.length > 0 ? [["**Injection & trust (24 h)**", ...trust].join("\n")] : []),
+    ...(reasks.length > 0 ? [["**Noise band (24 h)**", ...reasks].join("\n")] : [])];
+}
+
 export interface Digest { text: string; button_rows: NotificationButton[][]; offered: string[] }
 
 export function buildDecisionDigest(store: RunStore, now: string, env: NodeJS.ProcessEnv = process.env, registry: readonly AnyEntry[] = REGISTRY): Digest | null {
@@ -122,12 +185,15 @@ export function buildDecisionDigest(store: RunStore, now: string, env: NodeJS.Pr
   const rows = settledRows(store, all);
   // Health reads every row in the window, orphans included: a day of only unsettled rows still reports its failures.
   const health = healthLines(store, all, since, now);
-  if (rows.length === 0 && health.length === 0) return null;
+  const stale = staleBarLines(store);
+  if (rows.length === 0 && health.length === 0 && stale.length === 0) return null;
   const tz = resolveDisplayZone(env);
   const unsure = unsureOf(rows, registry);
   const sections = [`🪜 **Decisions — ${formatInstantInZone(now, tz).slice(0, 10)}**`];
   if (unsure.length > 0) sections.push(["**Unsure** (✅ right · ❌ wrong)", ...unsure.map((r, k) => unsureLine(store, r, k + 1, tz, registry))].join("\n"));
   if (rows.length > 0) sections.push(["**Counts (24 h)**", ...countLines(rows)].join("\n"));
+  sections.push(...stage2aSections(store, rows, now, env));
+  if (stale.length > 0) sections.push(["**Bar stale**", ...stale].join("\n"));
   if (health.length > 0) sections.push(["**Health**", ...health].join("\n"));
   return { text: sections.join("\n\n"), button_rows: unsure.map((r, k) => reviewButtons(r.decision_id, k + 1)), offered: unsure.map((r) => r.decision_id) };
 }

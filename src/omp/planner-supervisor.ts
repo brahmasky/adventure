@@ -2,6 +2,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
 import { BudgetLedger } from "../budget/budget-ledger.js";
+import type { InjectionJudge } from "../decisions/injection-judge.js";
+import { rankOf, type TrustLevel } from "../decisions/entries/turn-trust.js";
+import { TurnTrust } from "../decisions/trust.js";
 import { errorCode, safeReason } from "../domain/error-code.js";
 import type { Identity } from "../domain/types.js";
 import type { Effort, TurnRole } from "../jev/tree-policy.js";
@@ -13,7 +16,7 @@ import type { ToolRegistry } from "../tools/tool-registry.js";
 import { ACK_NUDGE_TEXT, isBareAck } from "./bare-ack.js";
 import type { BridgeRequest } from "./bridge-protocol.js";
 import { BridgeServer } from "./bridge-server.js";
-import { createBridgeHandler, flushUnreported, type ActiveTurn } from "./bridge-handler.js";
+import { createBridgeHandler, flushUnreported, FULL_PAUSE, TRUST_WAIT_MIN_MS, type ActiveTurn, type PausePolicy } from "./bridge-handler.js";
 import { selectorKey, STEP_UP } from "./model-roles.js";
 import { familyOf, type ModelFamily, type ModelString } from "./model-string.js";
 import { PLANNER_HEARTBEAT_MS, type OmpConfig } from "./omp-config.js";
@@ -73,7 +76,7 @@ export interface TriageInput { claim: ClaimedRun; text: string; userText: string
 export interface SupervisorDeps {
   chatId: string; store: RunStore; cfg: OmpConfig; ctx: PathContext; distDir: string; decls: ToolDeclaration[];
   env: NodeJS.ProcessEnv; turnEnvelopeActions: string[]; turnContext: TurnContextDeps;
-  buildTools: (claim: ClaimedRun) => { registry: ToolRegistry; quarantine: ActiveTurn["quarantine"]; preflight?: ActiveTurn["preflight"] };
+  buildTools: (claim: ClaimedRun) => { registry: ToolRegistry; quarantine: ActiveTurn["quarantine"]; preflight?: ActiveTurn["preflight"]; judge?: InjectionJudge };
   posture: () => string | null; outcome: TurnOutcomeSink;
   /**
    * Model roles (Jev tree spec §4-5): the child spawns on "default"'s candidates; each turn pins its own routed role's.
@@ -106,6 +109,10 @@ export const PLANNER_EXIT_TEXT = "⚠ My runtime stopped unexpectedly. Nothing w
 export const MANIFEST_WAIT_MS = 15_000;
 export const START_WAIT_MS = 30_000;
 const ABORT_GRACE_MS = 5_000;
+/** A trust card never outlives a timer it cannot pause (senior W3): its wait stops this long before the watchdog or deadline. */
+export const TRUST_WAIT_MARGIN_MS = 15_000;
+/** Node timers fire up to a few ms off Date.now(): a bounded pause measured this close to its span counts as the whole span. */
+const PAUSE_SLACK_MS = 10;
 /** The failure ref of a turn the daemon's own stop cut short: its open request is audited error{shutdown}. */
 const DAEMON_SHUTDOWN = "daemon shutdown";
 const CRASH_WINDOW_MS = 10 * 60_000;
@@ -129,9 +136,18 @@ const UNRESOLVED_MODEL: ModelString = { provider: "unresolved", model: "unresolv
 type StartResult = string | null | { missing: ModelString };
 /** One pin: done, refused by omp (walk on), the turn ended, or any other failure (transport, timeout, set_thinking_level). */
 type PinResult = "ok" | "refused" | typeof ENDED | { error: unknown };
+/**
+ * What is left of a turn's one TTL of trust pause; a leftover too short to be a card's wait (under the bridge's minimum, or
+ * the whole TTL when that is shorter) counts as spent, so the card gets the watchdog/deadline cap (fix round 2, gate C4).
+ */
+const pauseLeft = (ttlMs: number, paused: number): number => {
+  const left = ttlMs - paused;
+  return left >= Math.min(TRUST_WAIT_MIN_MS, ttlMs) ? left : 0;
+};
 const exitRef = (i: ExitInfo) => (i.code !== null ? `exit ${i.code}` : `signal ${i.signal ?? "unknown"}`);
 /** omp profile config (spec §4): no xdev devices, no update checks, no telemetry. */
-const HOUGE_CONFIG_YML = "tools:\n  xdev: false\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: false\ntelemetry:\n  otlpExportEnabled: false\n";
+const HOUGE_CONFIG_YML = "tools:\n  xdev: false\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: false\ntelemetry:\n  otlpExportEnabled: false\n"
+  + "retry:\n  maxRetries: 2\n  maxDelayMs: 60000\n"; // S2b: omp's retry window stays under the 180 s frame watchdog
 /** The planner's omp config file, written atomically (0600); the contract probe writes the same file (spec §4.3). */
 export function writeHougeConfigFile(ctx: Pick<PathContext, "data">): string {
   const configFile = join(ctx.data, "omp", "houge-config.yml");
@@ -158,8 +174,14 @@ interface Turn {
   childGen: number;
   /** Concurrent approval waits: the deadline stays paused until every one resolved. */
   approvals: number;
+  /** Trust-only pause bookkeeping (spec §7.2): ms already paused this turn, when the current bounded pause began, its resume timer. */
+  trustPausedMs: number; trustPauseAt: number | undefined; trustResume: ReturnType<typeof setTimeout> | undefined;
+  /** The span the current bounded pause was scheduled for (its resume timer's delay). */
+  trustPauseSpan: number;
   done: (r: "end" | "abort") => void; ended: Promise<"end" | "abort">;
   deadlineLeft: number; deadlineAt: number; deadline: ReturnType<typeof setTimeout> | undefined; idle: ReturnType<typeof setTimeout> | undefined;
+  /** When the frame watchdog was last armed (the child's last frame): a trust card's wait is bounded from here (senior W3). */
+  idleAt: number;
   failure?: { type: PlannerFailure; ref: string };
   /** A lane reply's card buttons, handed to finishSuccess (ADR 0029 §5.1). */
   laneButtons?: NotificationButton[];
@@ -173,6 +195,10 @@ interface Turn {
   startMissing: number; legsTried: number;
   /** `other` was retried once (spec §4); the first pin failed in transport (pin_failed: no step-up on this child). */
   retriedOther: boolean; pinFailed: boolean;
+  /** Settled on an async-work-only agent_end (P7, plan S2): the child may still continue, so settle() stops it. */
+  asyncWait?: boolean;
+  /** Security final I-3: dispatched to a child whose own new_session gave it a fresh transcript; that reset was committed. */
+  freshTranscript?: boolean; committedFresh?: boolean;
   /** Selectors (effort-agnostic) that failed THIS turn with a kind other than `other`: a step-up never re-spends them. */
   failed: Set<string>;
   /** The lane owns this turn's terminal: a late start result may no longer fail or re-enter it. */
@@ -220,10 +246,23 @@ function newDeferred(): { done: (r: "end" | "abort") => void; ended: Promise<"en
   return { done, ended };
 }
 
+/**
+ * P7 (spec §7.3, plan S2): omp marks an agent_end non-terminal when it continues on its own — a late steer, its own retry,
+ * a compaction or empty-stop continuation (agent-session.ts:1449-1467, :4205-4417). Only a terminal end, an abort, or an
+ * end that waits on background work alone (`awaitingAsyncWork`: settled here, and the child is stopped so a later
+ * continuation can never reach the next turn — plan S2) settles the turn.
+ * Houge's own retry (retryNextLeg) therefore runs only after omp has finished retrying.
+ */
+export function settlesTurn(f: OmpFrame): boolean {
+  return f.aborted === true || f.isTerminal !== false || f.awaitingAsyncWork === true;
+}
+
 export class PlannerSupervisor {
   private st: SupervisorState = "STOPPED";
   private session: PlannerSessionLike | undefined;
   private bridge: BridgeServer | undefined;
+  /** The current spawn's bridge token: a value the turn's judge masks (Rev 4, senior S-R3-2); replaced on every spawn. */
+  private bridgeToken: string | undefined;
   /** Bumped whenever the child is replaced: frames, exits and disconnects of an older child are ignored. */
   private gen = 0;
   private fingerprint = "";
@@ -286,7 +325,8 @@ export class PlannerSupervisor {
     // a message steers only into a Telegram turn: never into a schedule-born one (provenance, B2) — it queues behind it
     const live = t?.live && t.req.source === "telegram" && req.source === "telegram" && !req.needsIngest;
     // Slot A (ADR 0029 §5.1): a bare ack while an approval card waits is consent to nothing — nudge, never steer or queue.
-    if (live && this.st === "AWAITING_APPROVAL" && isBareAck(req.text)) { this.nudgeAck(t, req); return; }
+    // A trust card can still wait in RUNNING (its bounded pause ran out, or none was left): `approvals` counts open cards.
+    if (live && (this.st === "AWAITING_APPROVAL" || t.approvals > 0) && isBareAck(req.text)) { this.nudgeAck(t, req); return; }
     if (live && (this.st === "RUNNING" || this.st === "AWAITING_APPROVAL")) {
       void this.steer(t, req).catch((e) => this.incident("planner_steer_failed", { run_id: req.run_id, reason: rpcCode(e) }));
       return;
@@ -307,7 +347,10 @@ export class PlannerSupervisor {
   }
 
   /** @internal Tests only: the same entry point the bridge receives through ActiveTurn.setAwaitingApproval. */
-  setAwaitingApprovalForTest(on: boolean): void { if (this.turn) this.setAwaitingApproval(this.turn, on); }
+  setAwaitingApprovalForTest(on: boolean, pause?: PausePolicy): void { if (this.turn) this.setAwaitingApproval(this.turn, on, pause); }
+
+  /** @internal Tests only: the live turn's ActiveTurn, as the bridge sees it. */
+  activeTurnForTest(): ActiveTurn | null { return this.turn?.active ?? null; }
 
   /** /kill and a guard pause: every queued run fails `killed`, the live turn aborts, the child stops (≈5 s bound). */
   async abortAll(reason: "killed" | "guard"): Promise<void> {
@@ -401,6 +444,7 @@ export class PlannerSupervisor {
     } finally {
       this.clearTimers(turn);
       clearInterval(turn.heartbeat);
+      this.endTrust(turn); // a turn that crashed past settle still ends with its level (idempotent after finish*)
       if (this.turn === turn) this.turn = undefined;
     }
   }
@@ -422,13 +466,19 @@ export class PlannerSupervisor {
       run_id: req.run_id, worker_id: worker, chat_id: chatId, requester: req.requester, contract: claim.contract,
       budget: new BudgetLedger(claim.contract.budget), registry: tools.registry, signal: abort.signal, cwd: this.workspace(),
       step: { n: 0 }, cache: new Map(), unreported: new Map(), quarantine: tools.quarantine,
-      setAwaitingApproval: (on) => this.setAwaitingApproval(turn, on), postureOk: this.d.posture,
-      ...(req.approver ? { approver: req.approver } : {}), ...(tools.preflight ? { preflight: tools.preflight } : {})
+      setAwaitingApproval: (on, pause) => this.setAwaitingApproval(turn, on, pause), postureOk: this.d.posture,
+      trust: new TurnTrust({ store: this.d.store, run_id: req.run_id, chat_id: chatId, born: req.source === "schedule" ? "schedule" : "telegram", env: this.d.env,
+        onRise: (level) => this.persistRise(level) }),
+      trustWaitMs: (ttlMs) => this.trustWaitMs(turn, ttlMs),
+      ...(req.approver ? { approver: req.approver } : {}), ...(tools.preflight ? { preflight: tools.preflight } : {}),
+      ...(tools.judge ? { judge: tools.judge } : {})
     };
+    // read at call time: the turn's child may spawn after this (first turn) or respawn mid-turn, each with a fresh token
+    Object.defineProperty(active, "secretValues", { enumerable: true, get: () => (this.bridgeToken ? [this.bridgeToken] : undefined) });
     const heartbeat = setInterval(() => this.renewLeases(), PLANNER_HEARTBEAT_MS);
     const turn: Turn = {
-      req, claim, worker, startedAt: Date.now(), merged: [], active, abort, heartbeat, n: 0, recorded: 0, lastText: "", lastError: undefined, deadline: undefined, idle: undefined,
-      usedTool: false, legIndex: 0, live: false, finished: false, laneEnded: false, aborting: false, dispatched: false, childGen: -1, approvals: 0, ...newDeferred(),
+      req, claim, worker, startedAt: Date.now(), merged: [], active, abort, heartbeat, n: 0, recorded: 0, lastText: "", lastError: undefined, deadline: undefined, idle: undefined, idleAt: Date.now(),
+      usedTool: false, legIndex: 0, live: false, finished: false, laneEnded: false, aborting: false, dispatched: false, childGen: -1, approvals: 0, trustPausedMs: 0, trustPauseAt: undefined, trustResume: undefined, trustPauseSpan: 0, ...newDeferred(),
       route: null, role: "default", effort: null, chain: [], routedBy: undefined, startMissing: 0, legsTried: 0, retriedOther: false, pinFailed: false, failed: new Set(),
       deadlineLeft: cfg.turnTimeoutMs, deadlineAt: Date.now()
     };
@@ -566,6 +616,7 @@ export class PlannerSupervisor {
     turn.chain = this.turnChain(turn.role, turn.effort);
     if ((await this.pinFirst(turn, s)) === ENDED || turn.failure) return;
     try {
+      this.carryTrust(turn);
       const sent = claimAtDispatch(this.d.store, this.d.chatId, prompt, this.d.turnContext.pid);
       turn.live = true;
       turn.dispatched = true;
@@ -655,6 +706,45 @@ export class PlannerSupervisor {
     if (this.resetGen === 0 || this.resetGen !== turn.childGen || this.session === undefined) return;
     this.d.store.promotePlannerSession(this.d.chatId);
     this.resetGen = 0;
+    turn.committedFresh = true;
+  }
+
+  /**
+   * Security final I-3: the transcript still holds what earlier turns read, so a dispatched turn starts at the level it
+   * carries; only a child whose own new_session gave it a fresh transcript starts clean.
+   */
+  private carryTrust(turn: Turn): void {
+    turn.freshTranscript = this.resetGen !== 0 && this.resetGen === turn.childGen;
+    if (!turn.freshTranscript) turn.active.trust?.carry(this.d.store.getTranscriptTrust(this.d.chatId));
+  }
+
+  /**
+   * Security re-review 1: every rise is persisted at once, so a daemon that dies mid-turn (crash, OOM, SIGKILL) still leaves
+   * the transcript's level behind. Monotone here: it never lowers a stored level (only endTrust, at a turn end, may).
+   */
+  private persistRise(level: TrustLevel): void {
+    const { store, chatId } = this.d;
+    const stored = store.getTranscriptTrust(chatId);
+    if ((stored === "untrusted" || stored === "hostile") && rankOf(stored) >= rankOf(level)) return;
+    store.setTranscriptTrust(chatId, level, new Date().toISOString());
+  }
+
+  /**
+   * Every turn end: turn_trust_final once, then (a dispatched turn only) the level the transcript now carries. A fresh
+   * transcript that was never committed is not the one a respawn resumes, so the old level is kept unless this one is higher.
+   */
+  private endTrust(t: Turn): void {
+    const trust = t.active.trust;
+    trust?.finalize();
+    if (!trust || !t.dispatched) return;
+    const { store, chatId } = this.d;
+    try {
+      const stored = store.getTranscriptTrust(chatId);
+      const keepOld = t.freshTranscript && !t.committedFresh && (stored === "untrusted" || stored === "hostile") && rankOf(stored) > rankOf(trust.level());
+      store.setTranscriptTrust(chatId, keepOld ? stored : trust.level(), new Date().toISOString());
+    } catch (e) {
+      console.error(`planner supervisor: transcript_trust_not_written (${message(e)})`);
+    }
   }
 
   private async settle(turn: Turn): Promise<void> {
@@ -663,11 +753,26 @@ export class PlannerSupervisor {
       // an abort omp reported itself (no supervisor failure set) is never a success (B6)
       if (how === "abort" && !turn.failure) turn.failure = { type: "planner_exit", ref: "agent_aborted" };
       if (turn.failure || turn.lastError === undefined) break;
+      // an async-wait end is never omp's last word: no Houge retry may overlap the child's own work (codex final I2)
+      if (turn.asyncWait) { turn.failure = { type: "model_error", ref: classifyOmpError(turn.lastError) }; break; }
       if (!(await this.retryNextLeg(turn, turn.lastError))) break;
     }
     this.clearTimers(turn);
+    if (turn.asyncWait) await this.dropAsyncChild(turn); // before the terminal write (codex final I1)
     if (turn.failure) this.finishFailure(turn, turn.failure);
     else this.finishSuccess(turn);
+  }
+
+  /**
+   * S2: an async-wait end settled the turn while the child could still continue. Before the run completes and its trust
+   * finalizes (codex final I1): abort the turn's signal (the bridge refuses any new call), stop the child (its frames carry
+   * a dead gen, its socket closes), then drain the call in flight, bounded.
+   */
+  private async dropAsyncChild(turn: Turn): Promise<void> {
+    this.incident("planner_async_wait", { run_id: turn.req.run_id });
+    turn.abort.abort();
+    await this.stopSession();
+    if (turn.active.serial) await bounded(turn.active.serial, ABORT_GRACE_MS);
   }
 
   /**
@@ -857,6 +962,7 @@ export class PlannerSupervisor {
     this.st = "STARTING";
     const p = this.preparePaths();
     const token = randomBytes(24).toString("hex");
+    this.bridgeToken = token; // the turn's judge masks it by value (Rev 4, senior S-R3-2)
     const sock = join(p.bridgeDir, `${chatId}-${randomUUID().slice(0, 8)}.sock`);
     if (Buffer.byteLength(sock) > MAX_SOCK_PATH) return this.startFailed(`bridge socket path over ${MAX_SOCK_PATH} bytes`);
     const gen = this.bumpGen();
@@ -1071,7 +1177,10 @@ export class PlannerSupervisor {
     else if (f.type === "message_end") this.onAssistant(t, summarizeAssistantMessage(f));
     else if (f.type === "error") this.onErrorFrame(t, frameErrorText(f));
     else if (f.type === "prompt_result" && f.agentInvoked === false && f.status === "error") this.onPromptRejected(t, frameErrorText(f));
-    else if (f.type === "agent_end") { t.live = false; t.done(f.aborted === true ? "abort" : "end"); }
+    else if (f.type === "agent_end" && settlesTurn(f)) {
+      if (f.isTerminal === false && f.awaitingAsyncWork === true) t.asyncWait = true; // S2: the child may still continue
+      t.live = false; t.done(f.aborted === true ? "abort" : "end");
+    }
   }
 
   /**
@@ -1132,27 +1241,63 @@ export class PlannerSupervisor {
 
   private armFrameIdle(t: Turn): void {
     clearTimeout(t.idle);
+    t.idleAt = Date.now();
     t.idle = setTimeout(() => void this.abortTurn("frame_idle", "no frame"), this.d.cfg.frameIdleMs);
   }
 
   private clearTimers(t: Turn): void {
-    clearTimeout(t.deadline); clearTimeout(t.idle);
-    t.deadline = undefined; t.idle = undefined;
+    clearTimeout(t.deadline); clearTimeout(t.idle); clearTimeout(t.trustResume);
+    t.deadline = undefined; t.idle = undefined; t.trustResume = undefined;
   }
 
-  /** The turn deadline and the frame watchdog pause while Paco is asked; the deadline resumes with what was left. */
-  private setAwaitingApproval(t: Turn, on: boolean): void {
+  /** The deadline and the watchdog pause while Paco is asked, for the policy's span (spec §7.2); the deadline resumes with what was left. */
+  private setAwaitingApproval(t: Turn, on: boolean, pause: PausePolicy = FULL_PAUSE): void {
     t.approvals = Math.max(0, t.approvals + (on ? 1 : -1));
     if (this.turn !== t) return; // a finished turn's late release never touches the next turn
-    if (on && t.approvals === 1 && this.st === "RUNNING") {
-      this.st = "AWAITING_APPROVAL";
-      if (t.deadline) t.deadlineLeft -= Date.now() - t.deadlineAt;
-      this.clearTimers(t);
-    } else if (!on && t.approvals === 0 && this.st === "AWAITING_APPROVAL") {
-      this.st = "RUNNING";
-      this.armDeadline(t);
-      this.armFrameIdle(t);
+    if (on && t.approvals === 1 && this.st === "RUNNING") this.pauseFor(t, pause);
+    else if (!on && t.approvals === 0) this.resumeTimers(t);
+  }
+
+  /** A trust-only ask pauses for what is left of the turn's one TTL; with none left it asks with the timers running. */
+  private pauseFor(t: Turn, pause: PausePolicy): void {
+    const left = pause.pause === "full" ? Number.POSITIVE_INFINITY : pauseLeft(pause.ttlMs, t.trustPausedMs);
+    if (left <= 0) return;
+    this.st = "AWAITING_APPROVAL";
+    if (t.deadline) t.deadlineLeft -= Date.now() - t.deadlineAt;
+    this.clearTimers(t);
+    if (pause.pause === "bounded") {
+      t.trustPauseAt = Date.now(); t.trustPauseSpan = left;
+      t.trustResume = setTimeout(() => this.resumeTimers(t), left);
     }
+  }
+
+  /** Ends a pause: on the last release, or when a bounded pause's TTL runs out while its card still waits. */
+  private resumeTimers(t: Turn): void {
+    clearTimeout(t.trustResume); t.trustResume = undefined;
+    if (t.trustPauseAt !== undefined) {
+      const measured = Date.now() - t.trustPauseAt;
+      t.trustPausedMs += measured >= t.trustPauseSpan - PAUSE_SLACK_MS ? t.trustPauseSpan : measured; // a timer ~1 ms early is the whole span
+      t.trustPauseAt = undefined;
+    }
+    if (this.turn !== t || this.st !== "AWAITING_APPROVAL") return;
+    this.st = "RUNNING";
+    this.armDeadline(t);
+    this.armFrameIdle(t);
+  }
+
+  /**
+   * How long a trust-only card may wait now (senior W3): what is left of the turn's one TTL of pause (a pause in progress
+   * counted); once spent, never past the frame watchdog or the deadline it can no longer pause, each less the margin.
+   */
+  private trustWaitMs(t: Turn, ttlMs: number): number {
+    const now = Date.now();
+    const left = pauseLeft(ttlMs, t.trustPausedMs + (t.trustPauseAt !== undefined ? now - t.trustPauseAt : 0));
+    if (left > 0) return left;
+    const deadlineLeft = t.deadline ? t.deadlineLeft - (now - t.deadlineAt) : t.deadlineLeft;
+    // the watchdog counts from the last frame, not from this ask (a queued call, judging): bound by what it has left
+    const idleLeft = t.idle ? this.d.cfg.frameIdleMs - (now - t.idleAt) : this.d.cfg.frameIdleMs;
+    // 0 (never negative) means no time to ask: the bridge refuses the call without a card (ruling 17), nothing waits
+    return Math.max(0, Math.min(ttlMs, idleLeft - TRUST_WAIT_MARGIN_MS, deadlineLeft - TRUST_WAIT_MARGIN_MS));
   }
 
   private async abortTurn(type: PlannerFailure, ref: string): Promise<void> {
@@ -1182,6 +1327,7 @@ export class PlannerSupervisor {
     const { store, outcome, chatId } = this.d;
     t.finished = true;
     flushUnreported(store, t.active);
+    this.endTrust(t); // spec §7.2: turn_trust_final at every turn end, success or failure
     const { text, attachments } = parseAttachments(t.lastText, this.workspace());
     const base = { worker_id: t.worker, text, duration_ms: Date.now() - t.startedAt, tool_calls: t.active.budget.usage().tool_calls };
     outcome.complete({ ...base, run_id: t.req.run_id, attachments, ...(t.laneButtons ? { buttons: t.laneButtons } : {}) });
@@ -1194,6 +1340,7 @@ export class PlannerSupervisor {
     const { store, outcome } = this.d;
     t.finished = true;
     flushUnreported(store, t.active);
+    this.endTrust(t); // spec §7.2: turn_trust_final at every turn end, success or failure
     if (t.n > t.recorded || (t.dispatched && t.n === 0)) this.recordAborted(t, f.ref === DAEMON_SHUTDOWN ? "shutdown" : "aborted");
     if (f.type === "turn_timeout" || f.type === "frame_idle") store.recordLoopHalted(t.req.run_id, { reason: f.type, steps: t.n });
     const base = { worker_id: t.worker, error_ref: f.ref, ...(t.lastText ? { partial: t.lastText } : {}) };

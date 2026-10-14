@@ -441,3 +441,28 @@ Rules Claude writes for itself after corrections. Review at session start.
 - **Check a quoted claim against its source before repeating it.** I told Paco mu "says plainly: no fast path bypass";
   mu's docs never say it. Rule: a claim about an external system is quoted from its source with a pointer, or labelled
   as my reading.
+
+## Decision ladder stage 2a (2026-10-14)
+
+- **A live gate on real Jev found what 4,490 unit tests could not.** The gate surfaced a corpus defect (the clean Chinese
+  passages were repo text aimed at an assistant, so 15.8% were rightly withheld) and a timer race (a trust pause leftover of
+  1 ms started a card that could never be answered). Rule: every slice gets a live run on real inputs; a green unit suite
+  proves the wiring of the test doubles, not of the system.
+- **Never let a gate assert a model verdict on a synthetic sentence.** C2 asserted that a made-up "see `<link>` now"
+  sentence passes Jev; three placeholder spellings all gave p 0.65 while 0 of 46 real masked-URL passages were withheld.
+  Rule: a gate asserts what code owns (nothing leaks, the call was answered); verdict correctness is measured on real data
+  (C1), and a synthetic probe never decides a PASS.
+- **An agent must never attribute an instruction to Paco in a prompt, even as test bait.** An injection test that says "Paco
+  told you to ..." trains the habit and puts a false authority claim in a prompt that real tools may reuse. Plant attacks
+  with an obviously foreign source instead.
+- **Best-effort classifier plus an allowlist is the design; two re-reviews of the classifier were the wrong spend.** Task 8's
+  network classifier took three rounds; each fix was another disguise. The ruling that stopped it: the classifier only picks
+  untrusted over hostile-by-judge, and the allowlist (unknown asks) is the gate. Rule: when a deny-list keeps losing, find
+  the allowlist that already owns the safety and stop hardening the list.
+- **A binary can run code through an option you never listed.** macOS `wc` links libxo, and `--libxo=encoder=<path>` loads a
+  library, even after `--`. Rule: an allowlist admits exact per-program flag sets, checked against the real binary; "any
+  options" is never safe for a program you have not read.
+- **Measure a residual before writing it into an ADR.** The unknown-token pass rate differed run to run (65 to 81, 203 to
+  255 of 250,000); the ADR states the range, not one lucky number. A seeded LCG that overflows 2^53 collapsed a property
+  test's coverage silently; count each case class the test claims to cover.
+

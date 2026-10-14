@@ -241,6 +241,15 @@ approvals as a first trust-ledger move). Spec `docs/superpowers/specs/2026-10-12
 five stages, ADR 0030 first. Deferred to SP4: automatic bar recalibration, model-route changes, goal record and
 verifier.
 
+**Decision ladder, stage 2a (built 2026-10-13, on branch `feat/decision-ladder-s2a`, not merged).** In-Houge judges:
+`tool.injection` on shell output, wall results and the mail side channel, with the egress redactor and a daily golden set;
+`turn.trust` with trust asks and a hostile read-only list; the noise band and tap labels. Live gate on real Jev: 56 PASS, 0
+FAIL, one named INCONCLUSIVE (omp retry cap, C6); rollback check in the stage 2a report. ADR 0030 amendment drafted for
+Paco's hand. **Next: 2b** (extension `judge_read` / `judge_timeout` / `session_stop`, `turn.settle`, `improve.route`).
+Backlog: commit NOISE_BANDS rows after the measurement (Q1); a calibration report for `tool.injection` (promotion of its
+provisional bar); alert on repeated quiet Jev errors (3 an hour, damped; Paco said not now, 2026-10-14); an unsandboxed
+self-write test gate.
+
 **SP4 scope change (2026-10-04).** The lifecycle-gap research
 (`docs/superpowers/research/2026-10-04-lifecycle-gap/00-synthesis.md`) found five lifecycle stages forbidden only
 because no safe version was designed (decide, spec, spec review, plan, live gate), most of the needed harness already

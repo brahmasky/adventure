@@ -14,6 +14,7 @@ import type { Identity } from "../../src/domain/types.js";
 import type { RunStore } from "../../src/run/run-store.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
 import { tmpOmpDist } from "./omp-env.js";
+import type { InjectionJudge } from "../../src/decisions/injection-judge.js";
 
 type Adapter = (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
 
@@ -62,6 +63,13 @@ export function fakeLog(file: string): Array<Record<string, unknown>> {
 }
 
 /**
+ * A judge that passes every result unchanged: for tests about the tool path, not the judge. Without any judge the bridge now
+ * fails closed (security final M-3), so a bare test turn would read outside text framed as not checked.
+ */
+export const passThroughJudge: InjectionJudge = async (i) => ({ text: i.text, verdict: "pass", withheld: 0, withheldUnjudged: 0, framed: 0, notChecked: 0,
+  sent: 0, unanswered: 0, skipped: false, blocked: null, decisionId: null });
+
+/**
  * Drive the omp tool path in-process: claim the run, build the turn's registry with
  * `worker.buildOmpTools(claim)`, and answer bridge `call` requests through the real bridge
  * handler (policy → budget → approval → `loopToolExecute`). No child, no socket. Tests only.
@@ -79,7 +87,7 @@ export function bridgeTurn(store: RunStore, worker: CoreWorker, run_id: string, 
     run_id, worker_id, chat_id, requester: store.getRunRequester(run_id), contract: claim.contract,
     budget: new BudgetLedger(claim.contract.budget), registry: tools.registry, signal: new AbortController().signal,
     cwd: chatWorkspace(dataDir, chat_id), step: { n: 0 }, cache: new Map(), unreported: new Map(),
-    quarantine: tools.quarantine, setAwaitingApproval: () => undefined, postureOk: () => null,
+    quarantine: tools.quarantine, setAwaitingApproval: () => undefined, postureOk: () => null, judge: passThroughJudge,
     ...(tools.preflight ? { preflight: tools.preflight } : {})
   };
   const decls = loadToolDeclarations(TOOL_DECLS_DIR);

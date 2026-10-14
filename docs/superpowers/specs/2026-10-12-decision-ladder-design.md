@@ -597,6 +597,13 @@ can reach TypeSafe. Paco approved that class (R11). The passage text is never wr
 - It is separate from `tool.shell_class`, which keeps today's approval classification untouched.
 - It now decides only the trust level, never whether output is judged (§7.1), so its misses cost a missed `untrusted`,
   not a missed judgement.
+- **Rev note (stage 2a build, 2026-10-13): the cost of a miss is understated above.** A missed network read does change
+  what the judge's verdict does. A passage that would have been withheld because the turn was already `untrusted` by a
+  network read is **framed** instead, and the turn stays below hostile until a judged passage says otherwise. The stage 2a
+  classifier is therefore conservative (command segments, wrappers, `shell -c`, `eval`, `find -exec`, `/dev/tcp`, quote
+  and backslash stripping, and any expanded program word count as network), but it stays best effort by nature: the real
+  gate is the hostile read-only allowlist (§7.2 below), where an unknown command asks. ADR 0030's 2026-10-13 amendment
+  records this. The original text is left as written.
 
 **Effects** follow ADR 0029 decision 2: a raised level adds a tap (`ask := code_ask ∨ trust_ask`).
 

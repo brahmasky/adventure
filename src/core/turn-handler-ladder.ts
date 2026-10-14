@@ -3,10 +3,14 @@ import type { CalibrationRow } from "../jev/calibration.js";
 import { topProbOf, type Decision, type SkipReason } from "../jev/decide.js";
 import type { JevTriageMode } from "../jev/jev-flags.js";
 import type { Lang } from "../jev/intent-question.js";
-import { routeTree, TREE_BAR_DEFAULTS, treeArmed, type Armed, type LaneSwitch, type Route, type RoutePlan } from "../jev/tree-policy.js";
+import type { JevAnswer, JevChoiceAnswer } from "../jev/jev-client.js";
+import { criteriaHash, type Question } from "../jev/questions/types.js";
+import { LANE_LIMITS, routeTree, TREE_BAR_DEFAULTS, treeArmed, TWO_REQUEST_ACTIONS, type Armed, type LaneSwitch, type Route, type RoutePlan,
+  type TreeBars } from "../jev/tree-policy.js";
 import { isBareAck } from "../omp/bare-ack.js";
 import { isSkipReason, type TurnHandlerVerdict } from "../decisions/entries/turn-handler.js";
-import type { DecideResult, FallbackReason, RungOutcome, RungResult } from "../decisions/types.js";
+import { answerValue, bandFor, nearBar, NOISE_BANDS, type NoiseBand } from "../decisions/noise-band.js";
+import type { DecideResult, FallbackReason, Reask, RungOutcome, RungResult } from "../decisions/types.js";
 
 /**
  * The pure half of `turn.handler`'s rungs (spec §4.4, §6.2 "wrap"): today's policy calls, unchanged, shaped as rung
@@ -38,6 +42,45 @@ export function fallbackOfSkip(reason: SkipReason): FallbackReason {
   return "outage";
 }
 
+/** The bars routeTree compares each tree answer against (tree-policy.ts:43-44, LANE_LIMITS, TWO_REQUEST_ACTIONS), in the answer's unit. */
+export function treeBarsFor(id: string, a: JevAnswer, bars: TreeBars = TREE_BAR_DEFAULTS): number[] {
+  if (id === "category" && a.type === "choice") return [bars.choice, ...(a.choice === "memory" ? [bars.memory] : []), ...(a.choice === "status" ? [bars.status] : [])];
+  if (id === "sets_rule") return [bars.nounYes, bars.nounNo];
+  if (id === "rule_scope") return [bars.ruleScope];
+  if (id === "breadth") return [bars.gearLight, bars.gearHeavy, LANE_LIMITS.answer.breadth];
+  if (id === "actions") return [bars.gearLight, bars.gearHeavy, LANE_LIMITS.answer.actions, LANE_LIMITS.lookup.actions, TWO_REQUEST_ACTIONS];
+  if (id === "reasoning") return [bars.gearLight, bars.gearHeavy];
+  return [];
+}
+
+/** Derived band keys of `category` (senior W7): the lane rules also compare its confidence (minConf) and top-two gap (minGap). */
+export const CATEGORY_CONFIDENCE = "category:confidence";
+export const CATEGORY_GAP = "category:gap";
+export const gapOf = (a: JevChoiceAnswer): number => { const s = Object.values(a.probabilities).sort((x, y) => y - x); return (s[0] ?? 0) - (s[1] ?? 0); };
+
+/**
+ * Addition B: any banded value within its band of a bar the decision uses asks Jev once more (src/jev/decide.ts reaskOnce).
+ * `bands` defaults per call, so the reviewed rows are read when the closure runs, not when the module loads.
+ */
+export function treeNear(questions: readonly Question[], bands: readonly NoiseBand[] = NOISE_BANDS): (answers: Record<string, JevAnswer>, model: string) => boolean {
+  return (answers, model) => questions.some((q) => {
+    const a = answers[q.id];
+    if (!a) return false;
+    const hash = criteriaHash(q);
+    const near = (id: string, x: number, bars: readonly number[]): boolean => { const b = bandFor(id, hash, model, bands); return b !== undefined && nearBar(x, bars, b); };
+    if (near(q.id, answerValue(a), treeBarsFor(q.id, a))) return true;
+    if (q.id !== "category" || a.type !== "choice") return false;
+    return near(CATEGORY_CONFIDENCE, a.confidence, [TREE_BAR_DEFAULTS.minConf]) || near(CATEGORY_GAP, gapOf(a), [TREE_BAR_DEFAULTS.minGap]);
+  });
+}
+
+/** The decision row's re-ask: the mean (with the first call's category p) or the failed second call. */
+export function reaskOf(d: AnsweredDecision): Reask | undefined {
+  if (!d.reask) return undefined;
+  const first = d.first?.category ?? d.answers.category;
+  return { kind: d.reask, pFirst: first ? topProbOf(first) : 0 };
+}
+
 export interface PlanInput { userText: string; mode: JevTriageMode; lang: Lang; thinkHarder: boolean; rows: readonly CalibrationRow[]; lanesOff: ReadonlySet<LaneSwitch> }
 
 /**
@@ -57,7 +100,7 @@ export function planTree(d: AnsweredDecision, i: PlanInput): RungResult<TurnHand
     console.error(`triage: threw: ${safeReason(e)}`); // today's line (the old triageTurn catch logged this throw); the ledger keeps only `threw`
     return { failed: "threw", reason: "error" };
   }
-  if (plan.kind === "cascade") return { abstain: true, detail: { d, armed, plan } };
+  if (plan.kind === "cascade") { const r = reaskOf(d); return { abstain: true, detail: { d, armed, plan }, ...(r ? { reask: r } : {}) }; }
   return routed(d, i.userText, armed, plan, opts);
 }
 
@@ -70,7 +113,8 @@ function routed(d: AnsweredDecision, text: string, armed: Armed, plan: Extract<R
     return { failed: "threw", reason: "error", detail: { d, armed, plan, error: e instanceof Error ? e.message : String(e) } };
   }
   const category = d.answers.category;
-  return { verdict: route.lane, reason: route.reason, ...(category ? { p: topProbOf(category) } : {}), detail: { d, armed, plan, route } };
+  const r = reaskOf(d);
+  return { verdict: route.lane, reason: route.reason, ...(category ? { p: topProbOf(category) } : {}), ...(r ? { reask: r } : {}), detail: { d, armed, plan, route } };
 }
 
 function detailOf(r: RungResult<TurnHandlerVerdict, TreeDetail> | null | undefined): TreeDetail | undefined {

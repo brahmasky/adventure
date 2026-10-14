@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // live sandbox-exec cases spawn many short processes (~4.5 s idle); the default 10 s timeout flakes under CPU load
 vi.setConfig({ testTimeout: 30_000 });
 import { renderSeatbelt, writeSeatbeltProfiles } from "../../src/omp/seatbelt.js";
-import { HOME_CODE_CONFIG, HOME_INSTALL_TREES, HOME_SECRETS } from "../../src/omp/protected-paths.js";
+import { ENV_TEMPLATE_PATTERNS, HOME_CODE_CONFIG, HOME_INSTALL_TREES, HOME_SECRETS, realpathOrSelf, writableExceptions, type PathContext } from "../../src/omp/protected-paths.js";
 
 describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () => {
   const ctx = { home: "/Users/p", repo: "/Users/p/Projects/adventure", data: "/Users/p/Projects/adventure" };
@@ -288,10 +288,29 @@ describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () 
     for (const p of [planner, shell]) expect(p).toContain('(deny process-exec (literal "/usr/bin/security"))');
   });
 
+  it("no allow after the first credential deny re-opens a read, and later write allows are workspace roots only (task 2 review)", () => {
+    const r = renderSeatbelt(ctx);
+    expect(allowsAfterCredentialDeny(r.planner, ctx, "planner")).toEqual([]);
+    expect(allowsAfterCredentialDeny(r.shell, ctx, "shell")).toEqual([]);
+  });
+
+  it("the credential-order check fails on an injected read allow, a stray template-like allow, or a non-workspace write allow", () => {
+    // proves the pin above is not vacuous: each line, placed after the first credential deny, would re-open a credential read
+    const shell = renderSeatbelt(ctx).shell.split("\n");
+    const at = shell.findIndex((l) => l.startsWith("(deny file-read* file-write* (regex")) + 1;
+    for (const bad of ['(allow file-read* file-write* (subpath "/Users/p/Projects"))', '(allow file-read* (subpath "/Users/p"))',
+      '(allow file-read* file-write* (regex #"^/Users/p(/.*)?/\\.[Ee][Nn][Vv]$"))', '(allow file-write* (subpath "/Users/p/Projects"))']) {
+      const injected = [...shell.slice(0, at), bad, ...shell.slice(at)].join("\n");
+      expect(allowsAfterCredentialDeny(injected, ctx, "shell")).toEqual([bad]);
+    }
+  });
+
   it("renders the secret denies after every write allow: SBPL's last match wins, so no allow ($HOME included) can re-open one (testing M-4)", () => {
     for (const p of [renderSeatbelt(ctx).planner, renderSeatbelt(ctx).shell]) {
-      const lastAllow = p.lastIndexOf("(allow file-write*");
-      const firstSecret = p.indexOf("(deny file-read* file-write*");
+      // the secret PATHS (subpath rules): credential-name regex denies sit earlier on purpose (plan Task 2, W-R2-2), so the
+      // workspace may re-allow a write there but nothing re-allows a read; the .env-template allow must not reach a secret path
+      const lastAllow = Math.max(p.lastIndexOf("(allow file-write*"), p.lastIndexOf("(allow file-read* file-write*"));
+      const firstSecret = p.indexOf("(deny file-read* file-write* (subpath");
       expect(lastAllow).toBeGreaterThan(-1);
       expect(firstSecret).toBeGreaterThan(lastAllow);
     }
@@ -322,3 +341,17 @@ describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () 
     }
   });
 });
+
+/**
+ * The lines after the first credential regex deny that could re-open a credential: any read allow other than the exact
+ * .env template allows, and any write allow that is not a workspace (or planner sessions) root. Empty means the order holds.
+ */
+function allowsAfterCredentialDeny(profile: string, ctx: PathContext, kind: "planner" | "shell"): string[] {
+  const lines = profile.split("\n");
+  const first = lines.findIndex((l) => l.startsWith("(deny file-read* file-write* (regex"));
+  if (first < 0) return ["no credential deny rendered"];
+  const roots = writableExceptions(ctx, kind).flatMap((r) => [...new Set([r, realpathOrSelf(r)])]);
+  const writeOk = new Set(roots.map((v) => `(allow file-write* (subpath "${v}"))`));
+  const isTemplate = (l: string) => l.startsWith("(allow file-read* file-write* (regex") && ENV_TEMPLATE_PATTERNS.some((b) => l.endsWith(`${b}$"))`));
+  return lines.slice(first + 1).filter((l) => (l.startsWith("(allow file-read*") && !isTemplate(l)) || (l.startsWith("(allow file-write*") && !writeOk.has(l)));
+}

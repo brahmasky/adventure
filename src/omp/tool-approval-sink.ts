@@ -47,9 +47,10 @@ export const toolApprovalWaiters = new ToolApprovalWaiters();
 /**
  * `card_detail` rides the factory closure to the approval card only (never the ledger); the runner stays unchanged.
  * `approver` (a schedule-born turn: the operator, B2) replaces the runner's requester on the row and at consume.
+ * `reason` is a trust ask's code-owned "Why:" line on the card (spec §7.2).
  */
 export function createToolApprovalSink(deps: {
-  store: RunStore; worker_id: string; tool_call_id: string; approvalTimeoutMs: number; card_detail?: string; approver?: Identity;
+  store: RunStore; worker_id: string; tool_call_id: string; approvalTimeoutMs: number; card_detail?: string; approver?: Identity; reason?: string;
 }): ApprovalRequestSink {
   const who = (requester: Identity): Identity => deps.approver ?? requester;
   return {
@@ -59,7 +60,8 @@ export function createToolApprovalSink(deps: {
         input_hash: input.adapter_input_hash, action_fingerprint: input.action_fingerprint, requester: who(input.requester),
         summary: input.action_summary, side_effect_level: input.side_effect_level,
         expires_at: new Date(Date.now() + deps.approvalTimeoutMs).toISOString(),
-        ...(deps.card_detail !== undefined ? { card_detail: deps.card_detail } : {})
+        ...(deps.card_detail !== undefined ? { card_detail: deps.card_detail } : {}),
+        ...(deps.reason !== undefined ? { reason: deps.reason } : {})
       });
       return { approval_id: row.approval_id };
     },

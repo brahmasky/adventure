@@ -1,10 +1,14 @@
+import { TOOL_SHELL_NETREAD } from "./entries/shell-netread.js";
+import { TOOL_INJECTION } from "./entries/tool-injection.js";
+import { TURN_TRUST } from "./entries/turn-trust.js";
 import { TURN_GEAR } from "./entries/turn-gear.js";
 import { TURN_HANDLER } from "./entries/turn-handler.js";
 import { LOCKED_ENTRY_IDS } from "./entry-ids.js";
 import type { Announce, AnyEntry, EffectKind } from "./types.js";
 
 /** Every decision on one list (spec §6). Stage 1 registers the front door; later stages add their families. Protected surface (spec §6.3). */
-export const REGISTRY: readonly AnyEntry[] = [TURN_HANDLER as unknown as AnyEntry, TURN_GEAR as unknown as AnyEntry];
+export const REGISTRY: readonly AnyEntry[] = [TURN_HANDLER as unknown as AnyEntry, TURN_GEAR as unknown as AnyEntry, TOOL_INJECTION as unknown as AnyEntry,
+  TOOL_SHELL_NETREAD as unknown as AnyEntry, TURN_TRUST as unknown as AnyEntry];
 /** Effects a judge may choose over any input (R12): nothing, a tightening, or a proposal for Paco's tap. */
 const PASSIVE: ReadonlySet<EffectKind> = new Set(["none", "tighten", "proposal"]);
 /** How a judge's effect over Paco's message must be announced (Paco 2026-10-12): an allowlist, so a missing or unknown value fails. */
