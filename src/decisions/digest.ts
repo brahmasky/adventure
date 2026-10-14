@@ -31,6 +31,8 @@ const FRONT_DOOR: ReadonlySet<string> = new Set(["turn.handler", "turn.gear"]);
 const JUDGEMENT_REASONS: ReadonlySet<string> = new Set(["routed", "bare_ack_guard", "lane_limits", "correction", "two_request"]);
 /** What Paco reads for each rung in the counts line: display words, never the ledger tags. */
 const RUNG_LABEL: Readonly<Record<DecidedBy, string>> = { rule: "code", system_one: "Jev", model: "model", paco: "you", fail: "fallback" };
+/** A row's decider as Paco reads it; a rung outside the known set shows as its own tag, never hidden. */
+export const deciderLabel = (rung: string): string => (Object.hasOwn(RUNG_LABEL, rung) ? RUNG_LABEL[rung as DecidedBy] : rung);
 
 export function resolveDigestAt(env: NodeJS.ProcessEnv): string {
   const raw = env.HOUGE_DECISION_DIGEST_AT?.trim();
@@ -82,7 +84,8 @@ function unsureLine(store: RunStore, r: DecisionRow, n: number, tz: string, regi
   return `${n}. ${r.entry_id} → ${r.verdict} · p ${(r.p ?? 0).toFixed(2)} · ${at}${words ? ` · «${snippetOf(words)}»` : ""}`;
 }
 
-function countLines(rows: readonly DecisionRow[]): string[] {
+/** Per entry, counts by decider under the display labels; the digest and `/status` both print these lines. */
+export function countLines(rows: readonly DecisionRow[]): string[] {
   const by = new Map<string, Map<string, number>>();
   for (const r of rows) {
     const m = by.get(r.entry_id) ?? new Map<string, number>();
@@ -116,16 +119,33 @@ function healthLines(store: RunStore, rows: readonly DecisionRow[], since: strin
   });
 }
 
+export interface InjectionCounts { results: number; withheld: number; withheldByJev: number; framed: number; near: number; lost: number }
+
 /** tool.injection, counted (Ruling 19: never offered for a blind tap). "Near the bar": a Jev verdict within UNSURE_BAND of 0.5. */
-function injectionLine(rows: readonly DecisionRow[]): string | null {
+export function injectionCounts(rows: readonly DecisionRow[]): InjectionCounts {
   const inj = rows.filter((r) => r.entry_id === "tool.injection");
-  if (inj.length === 0) return null;
   const held = inj.filter((r) => r.verdict === "withhold");
-  const byJev = held.filter((r) => r.rung === "system_one").length;
-  const framed = inj.filter((r) => r.verdict === "frame").length;
-  const near = inj.filter((r) => r.rung === "system_one" && r.p !== null && Math.abs(r.p - 0.5) < UNSURE_BAND).length;
-  const lost = inj.filter((r) => r.fallback_rung === "system_one").length;
-  return `· tool.injection: ${inj.length} tool results · withheld ${held.length} (code ${held.length - byJev} · Jev ${byJev}) · framed ${framed} (kept local) · near the bar ${near} · judgement lost ${lost}`;
+  return { results: inj.length, withheld: held.length, withheldByJev: held.filter((r) => r.rung === "system_one").length,
+    framed: inj.filter((r) => r.verdict === "frame").length,
+    near: inj.filter((r) => r.rung === "system_one" && r.p !== null && Math.abs(r.p - 0.5) < UNSURE_BAND).length,
+    lost: inj.filter((r) => r.fallback_rung === "system_one").length };
+}
+
+function injectionLine(rows: readonly DecisionRow[]): string | null {
+  const c = injectionCounts(rows);
+  if (c.results === 0) return null;
+  return `· tool.injection: ${c.results} tool results · withheld ${c.withheld} (code ${c.withheld - c.withheldByJev} · Jev ${c.withheldByJev}) · framed ${c.framed} (kept local) · near the bar ${c.near} · judgement lost ${c.lost}`;
+}
+
+/** Each turn's highest trust level over its turn.trust rows (merged and nudge runs share the parent's trust, so one turn counts once). */
+export function trustTops(rows: readonly DecisionRow[]): Map<string, TrustLevel> {
+  const top = new Map<string, TrustLevel>();
+  for (const r of rows) {
+    const level = r.verdict as TrustLevel;
+    if (r.entry_id !== "turn.trust" || !TRUST_ORDER.includes(level) || !r.run_id) continue;
+    if (rankOf(level) > rankOf(top.get(r.run_id) ?? "clean")) top.set(r.run_id, level);
+  }
+  return top;
 }
 
 /**
@@ -134,12 +154,7 @@ function injectionLine(rows: readonly DecisionRow[]): string | null {
  */
 export function trustLines(store: RunStore, rows: readonly DecisionRow[], now: string, env: NodeJS.ProcessEnv): string[] {
   const trust = rows.filter((r) => r.entry_id === "turn.trust");
-  const top = new Map<string, TrustLevel>();
-  for (const r of trust) {
-    const level = r.verdict as TrustLevel;
-    if (!TRUST_ORDER.includes(level) || !r.run_id) continue;
-    if (rankOf(level) > rankOf(top.get(r.run_id) ?? "clean")) top.set(r.run_id, level);
-  }
+  const top = trustTops(trust);
   const at = (level: TrustLevel): number => [...top.values()].filter((l) => l === level).length;
   const taps = store.trustTapCount(formatInstantInZone(now, resolveDisplayZone(env)).slice(0, 10));
   const inj = injectionLine(rows);
@@ -179,10 +194,15 @@ function stage2aSections(store: RunStore, rows: readonly DecisionRow[], now: str
 
 export interface Digest { text: string; button_rows: NotificationButton[][]; offered: string[] }
 
-export function buildDecisionDigest(store: RunStore, now: string, env: NodeJS.ProcessEnv = process.env, registry: readonly AnyEntry[] = REGISTRY): Digest | null {
+/** The 24 h before `now`: every row (health reads orphans too) and the settled rows the counts read. */
+export function decisionWindow(store: RunStore, now: string): { since: string; all: DecisionRow[]; rows: DecisionRow[] } {
   const since = new Date(Date.parse(now) - DIGEST_WINDOW_MS).toISOString();
   const all = store.listDecisionsBetween(since, now);
-  const rows = settledRows(store, all);
+  return { since, all, rows: settledRows(store, all) };
+}
+
+export function buildDecisionDigest(store: RunStore, now: string, env: NodeJS.ProcessEnv = process.env, registry: readonly AnyEntry[] = REGISTRY): Digest | null {
+  const { since, all, rows } = decisionWindow(store, now);
   // Health reads every row in the window, orphans included: a day of only unsettled rows still reports its failures.
   const health = healthLines(store, all, since, now);
   const stale = staleBarLines(store);
