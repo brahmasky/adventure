@@ -185,7 +185,7 @@ Slash commands keep it inspectable (idempotent, no run, no budget unless noted):
 - `/skills [scope]` view skills; `/skills retire|restore <name>`, `/skills retired`, `/skills pending`.
 - `/schedule` · `/schedule cancel <N>` list or cancel this chat's schedules. Schedules are created and
   updated conversationally through `schedule_task`.
-- `/status` health digest · `/usage` token use per model (omp rows show "sub", never dollars).
+- `/status` health digest (plus 24 h decision counts when there were any) · `/status decisions` the last 10 decisions · `/usage` token use per model (omp rows show "sub", never dollars).
 - `/radar [n]` · `/idea pick <n>` the Idea Radar board and the weekly panel's shortlist
   ([ADR 0026](docs/decisions/0026-idea-radar-read-surface.md), [0027](docs/decisions/0027-idea-panel-claude-chair.md)).
 - `/approve <id>` · `/deny <id>` · `/approvals` resolve or list pending approvals. Unforgeable:

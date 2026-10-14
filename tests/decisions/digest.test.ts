@@ -175,6 +175,24 @@ describe("runDecisionDigestTick", () => {
     expect(store.getDecisionDigest("2026-10-12")).toMatchObject({ sent: 0, offered: [] });
     store.close();
   });
+  it("HOUGE_DECISION_DIGEST_AT=off (any case) sends nothing and writes no latch; the decisions stay recorded", () => {
+    // Paco 2026-10-14: the digest is a summary he can switch off; the ledger under it must not change with it.
+    for (const off of ["off", " OFF ", "Off"]) {
+      const store = RunStore.openInMemory();
+      const { id } = settled(store, { p: 0.6 });
+      expect(runDecisionDigestTick({ store, chatId: "555", now: NOW, env: { ...ENV, HOUGE_DECISION_DIGEST_AT: off } })).toEqual({ ran: false });
+      expect(drainOutbox(store).size).toBe(0);
+      expect(store.getDecisionDigest("2026-10-12")).toBeUndefined();
+      expect(store.getDecision(id)).toBeDefined();
+      store.close();
+    }
+  });
+  it("a value that is neither a time nor off keeps the 21:00 digest (a typo never silences it)", () => {
+    const store = RunStore.openInMemory();
+    settled(store, { p: 0.6 });
+    expect(runDecisionDigestTick({ store, chatId: "555", now: NOW, env: { ...ENV, HOUGE_DECISION_DIGEST_AT: "offf" } })).toEqual({ ran: true, sent: true });
+    store.close();
+  });
   it("a malformed HOUGE_DECISION_DIGEST_AT falls back to 21:00", () => {
     expect([resolveDigestAt({}), resolveDigestAt({ HOUGE_DECISION_DIGEST_AT: "9pm" }), resolveDigestAt({ HOUGE_DECISION_DIGEST_AT: "07:05" })]).toEqual(["21:00", "21:00", "07:05"]);
   });

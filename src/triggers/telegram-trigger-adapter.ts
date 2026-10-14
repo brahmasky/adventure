@@ -402,7 +402,9 @@ function buildTelegramEvent(command: TelegramCommand, base: TelegramEventBase): 
     case "run":
       return buildTypedTaskEvent({ ...base, type: "run", program: command.program, goal: command.goal });
     case "status":
-      return buildTypedTaskEvent({ ...base, type: "status", metadata: { ...base.metadata, run_id: command.run_id } });
+      return command.view
+        ? buildTypedTaskEvent({ ...base, type: "status", metadata: { ...base.metadata, status_view: command.view } })
+        : buildTypedTaskEvent({ ...base, type: "status", metadata: { ...base.metadata, run_id: command.run_id } });
     case "usage":
       return buildTypedTaskEvent({ ...base, type: "usage" });
     case "radar":

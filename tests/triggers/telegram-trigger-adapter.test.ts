@@ -193,6 +193,16 @@ describe("normalizeTelegramUpdate", () => {
     });
   });
 
+  it("normalizes /status decisions into a status event carrying the view, not a run id", () => {
+    const event = taskEvent(normalizeTelegramUpdate(
+      { update_id: 1004, message: { message_id: 59, text: "/status decisions", from: { id: 111 }, chat: { id: 222 } } }, allowlist));
+    expect(event.type).toBe("status");
+    expect(event.metadata).toEqual({ telegram_update_id: 1004, telegram_message_id: 59, status_view: "decisions" });
+    // The decision rows are Paco's ledger: a stranger's /status decisions is refused like any other command.
+    expect(normalizeTelegramUpdate({ update_id: 1007, message: { message_id: 62, text: "/status decisions", from: { id: 999 }, chat: { id: 222 } } }, allowlist))
+      .toMatchObject({ ok: false, error: { code: "TELEGRAM_AUTH_DENIED" } });
+  });
+
   it("normalizes /schedule into schedule_admin: action on program, cancel id in metadata (B10b)", () => {
     const list = taskEvent(
       normalizeTelegramUpdate(
