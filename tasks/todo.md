@@ -11,6 +11,8 @@ check PASS (stage 1 build boots on a copy migrated by `2026-10-13-decision-ladde
   planner-supervisor, protected-paths, seatbelt, tool-approval-sink, `src/policy/capability-policy.ts`,
   `src/capabilities/capability-runner.ts`, `src/capabilities/self-write-guard.ts`, `src/run/run-store.ts`,
   `src/run/run-ledger.ts`, `src/cli.ts`, `src/jev/decide.ts`).
+- [x] 2026-10-14: daily decision digest turned off (`HOUGE_DECISION_DIGEST_AT=off` in `.env`, Paco); decisions stay recorded and
+  are read with `/status` (24 h counts) and `/status decisions` (last 10). Stale-bar warnings stay visible as incidents.
 - [ ] PARKED by Paco 2026-10-14 (review later): noise bands. Measured p95 spread: injection 0.11; tree category 0.13,
   confidence 0.14, gap 0.20. Approving = commit `NOISE_BANDS` rows; until then no re-ask happens (behaviour as before).
 - [ ] Paco: after merge, rebuild `dist/` and kickstart; first live check is the 21:00 digest "Injection & trust" block.
