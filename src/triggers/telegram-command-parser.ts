@@ -5,7 +5,7 @@ import { ROLE_NAMES, type RoleName } from "../omp/model-roles.js";
 export type TelegramCommand =
   | { type: "turn"; goal: string }
   | { type: "run"; program: string; goal: string }
-  | { type: "status"; run_id?: string }
+  | { type: "status"; run_id?: string; view?: "decisions" }
   | { type: "usage" }
   | { type: "radar"; radar_number?: number }
   | { type: "idea"; idea_action: "show" }
@@ -100,6 +100,8 @@ function parseRun(words: string[]): TelegramCommandParseResult {
 function parseStatus(words: string[]): TelegramCommandParseResult {
   if (words.length === 0) return { ok: true, command: { type: "status" } };
   if (words.length > 1) return invalid("/status requires at most one run id");
+  // `/status decisions`: the last decision rows (Paco 2026-10-14). Run ids are `run_<uuid>`, so the word never shadows one.
+  if (words[0]?.toLowerCase() === "decisions") return { ok: true, command: { type: "status", view: "decisions" } };
   const run_id = words[0];
   return run_id ? { ok: true, command: { type: "status", run_id } } : { ok: true, command: { type: "status" } };
 }

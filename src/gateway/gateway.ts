@@ -46,6 +46,8 @@ import { toolApprovalWaiters } from "../omp/tool-approval-sink.js";
 import { handleMemLaneUndo, memLaneAskTurnEvent, recordTriageOverride } from "./memlane-commands.js";
 import { resolveQuietTriageOverrides } from "../jev/jev-incidents.js";
 import { handleDecisionReview } from "./decision-commands.js";
+import { decisionListText, decisionStatusLines } from "../decisions/status-view.js";
+import type { NotificationPayload } from "../notifications/notification-types.js";
 import { handleForgetMemory, handleMemories, handleMemoryUndo } from "./memory-commands.js";
 import { handleModels, modelsUnavailable, type ModelsRoles } from "./models-commands.js";
 import type { IdeaRow, ShortlistRow } from "../run/run-store.js";
@@ -756,7 +758,6 @@ export class Gateway {
     }
 
     const run_id = typeof event.metadata?.run_id === "string" ? event.metadata.run_id : undefined;
-    const status = queryStatus(this.runStore, run_id);
     const result: GatewayIntakeResult = run_id
       ? { ok: true, status: "status_returned", run_id }
       : { ok: true, status: "status_returned", run_id: "" };
@@ -767,7 +768,7 @@ export class Gateway {
       idempotency_key: `${event.idempotency_key}:status`,
       ...(run_id ? { run_id } : {}),
       correlation_id: event.source_reference,
-      payload: { text: this.formatStatusText(status, now), status }
+      payload: this.statusPayload(event, run_id, now)
     });
 
     this.runStore.recordTriggerProcessed(event, result);
@@ -1200,6 +1201,13 @@ export class Gateway {
     return event.notify.kind === "telegram" ? event.notify.chat_id : "";
   }
 
+  /** `/status decisions` lists the newest decision rows; every other form is the overview or one run, as before. */
+  private statusPayload(event: TypedTaskEvent, run_id: string | undefined, now: string): NotificationPayload {
+    if (event.metadata?.status_view === "decisions") return { text: decisionListText(this.runStore) };
+    const status = queryStatus(this.runStore, run_id);
+    return { text: this.formatStatusText(status, now), status };
+  }
+
   private formatStatusText(status: ReturnType<typeof queryStatus>, now: string): string {
     if (!status.ok) {
       return status.error.message;
@@ -1305,7 +1313,8 @@ export class Gateway {
         // Metered-$ ceiling (ADR 0019): spend vs both ceilings at a glance (line self-labels "Metered:").
         formatMeteredStatusLine(this.runStore.meteredSpendUsd(now), resolveMeteredCeilings(process.env)),
         `Volume: ${budgetText}`,
-        "Tokens: run `houge usage` for per-model breakdown"
+        "Tokens: run `houge usage` for per-model breakdown",
+        ...decisionStatusLines(this.runStore, now)
       ].join("\n");
     }
     return `${status.status.run_id} ${status.status.state}`;

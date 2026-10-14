@@ -351,6 +351,16 @@ describe("parseTelegramCommand", () => {
   });
 });
 
+describe("/status decisions (Paco 2026-10-14)", () => {
+  it("is the decisions view, in any case; a run id still asks for that run", () => {
+    // Run ids are `run_<uuid>`, so the word can never shadow a real run; before this it answered "Run not found: decisions".
+    expect(parseTelegramCommand("/status decisions")).toEqual({ ok: true, command: { type: "status", view: "decisions" } });
+    expect(parseTelegramCommand("/status Decisions")).toEqual({ ok: true, command: { type: "status", view: "decisions" } });
+    expect(parseTelegramCommand("/status run_123")).toEqual({ ok: true, command: { type: "status", run_id: "run_123" } });
+    expect(parseTelegramCommand("/status decisions extra")).toMatchObject({ ok: false });
+  });
+});
+
 describe("parseMemLaneCallback (spec §5.6)", () => {
   const lc = "lc_12345678-1234-1234-1234-123456789abc"; const run = "run_12345678-1234-1234-1234-123456789abc";
   // Stage B §3: new cards send lane:ask:; cards already in chats send memlane:ask: and must keep working.

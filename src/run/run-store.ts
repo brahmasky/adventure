@@ -4661,6 +4661,21 @@ export class RunStore {
     return this.db.prepare(`SELECT * FROM decisions WHERE created_at > ? AND created_at <= ? ORDER BY created_at ASC, rowid ASC`).all<DecisionRow>(since, until);
   }
 
+  /** The newest `limit` rows, newest first: `/status decisions`. */
+  listRecentDecisions(limit: number): DecisionRow[] {
+    return this.db.prepare(`SELECT * FROM decisions ORDER BY created_at DESC, rowid DESC LIMIT ?`).all<DecisionRow>(limit);
+  }
+
+  /** Skipped Jev calls in (since, until] by reason, most first, leaving out the reasons in `exclude` (skips that were no call). */
+  countJevSkipsByReason(since: string, until: string, exclude: readonly string[]): Array<{ skip_reason: string; n: number }> {
+    const notIn = exclude.length ? `AND skip_reason NOT IN (${exclude.map(() => "?").join(", ")})` : "";
+    return this.db.prepare(`
+      SELECT COALESCE(skip_reason, 'unknown') AS skip_reason, COUNT(*) AS n FROM jev_decisions
+      WHERE status = 'skipped' AND created_at > ? AND created_at <= ? ${notIn}
+      GROUP BY 1 ORDER BY n DESC, skip_reason ASC
+    `).all<{ skip_reason: string; n: number }>(since, until, ...exclude);
+  }
+
   /**
    * `decision_fallback` input (spec §8.2, plan ruling 9): `fail` rows of one entry with a named failure other than `budget`,
    * after `since`. `excludeJevRung`: an entry whose Jev failures already page elsewhere counts only its other rungs' failures.
