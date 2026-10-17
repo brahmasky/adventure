@@ -4,7 +4,8 @@ Reference for the System One layer as of the stage B lanes and the decision ladd
 what it logged, how to arm it and how to roll it back. Design: [ADR 0029](../decisions/0029-jev-system-one.md) and [ADR 0030](../decisions/0030-decision-ladder.md) and
 [the decision-tree spec](../superpowers/specs/2026-10-06-jev-decision-tree-design.md) (Rev 9) and [the stage B spec](../superpowers/specs/2026-10-10-jev-tree-stage-b-design.md) (Rev 5). Flags, events, tables and
 the CLI: [configuration.md](configuration.md#jev-system-one-adr-0029); model roles:
-[configuration.md § Model roles](configuration.md#model-roles). Stages A and B are built; the `schedule` and `wiki` lanes (stage C) are specified, not built.
+[configuration.md § Model roles](configuration.md#model-roles). Whole-turn map of every decider and category:
+[decision-map.md](decision-map.md). Stages A and B are built; the `schedule` and `wiki` lanes (stage C) are specified, not built.
 
 Jev answers typed questions and cannot generate text. **Code** applies every bar and falls through to the Default role on
 any doubt; the **models** compose inside whichever lane or role code picked. Jev may add caution, never remove it, and
