@@ -279,8 +279,8 @@ This file is protected (ADR 0011); Paco asked for this amendment on 2026-10-17 (
 (Rev 2).
 
 - **New entry `memory.kind`** (`pre_model`, input `paco`): what Paco wants remembered, with verdicts `other`, `fix`,
-  `rule`, `fact`, `both` (escape first). Ladder: a Jev rung (`memory_kind`, asked in the same tree request as the other
-  six questions), then a model rung (the distill call, which also writes the text); `fail` is `other`, which hands the
+  `rule`, `fact`, `both` (escape first). Ladder: a Jev rung (`memory_kind`, asked in its own request only when a save is
+  about to run, so the front door's six-question request is unchanged), then a model rung (the distill call, which also writes the text); `fail` is `other`, which hands the
   turn to the planner. `rule`, `fact` and `both` save first with an Undo card per item; `fix` and `other` go to the
   planner. It runs on the memory lane, on any lane's `sets_rule` save-first (where a Jev `other` or `fix` counts as an
   abstention, so it never suppresses a save `sets_rule` called for), and inside the planner's `lesson_write` tool.

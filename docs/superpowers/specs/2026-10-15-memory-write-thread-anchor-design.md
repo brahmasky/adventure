@@ -1,8 +1,8 @@
 # Memory write — "remember this" is a ladder decision: a fact or a rule, saved from Paco's own thread
 
 Date: 2026-10-15 (Rev 2: 2026-10-17)
-Status: **Rev 2 — rebuilt on the decision ladder after Paco's rulings, the senior review against the live system and the
-codex design pass (§12). Awaiting Paco's read.**
+Status: **Rev 3 — Rev 2 plus the plan review: `memory_kind` in its own Jev request (§3). Rev 2 was rebuilt on the
+decision ladder after Paco's rulings, the senior review against the live system and the codex design pass (§17).**
 Author: Paco + Claude
 Stage: a prerequisite of decision-ladder stage 2b (its `improve.route` `fact` target needs a handler; spec
 `2026-10-12-decision-ladder-design.md` §7.4). Built before 2b.
@@ -73,9 +73,11 @@ A new registry entry in `src/decisions/entries/memory-kind.ts`.
 | `outcomes` | `save_undone`, `review_ok`, `review_bad`, `review_unsure`, `dig_deeper` |
 | `alwaysRecord` | true |
 
-**Jev question `memory_kind`** (choice, `src/jev/questions/tree.ts`): asked in the same tree request as the other six
-questions, so it adds no Jev call. Each question carries its own criteria hash (`questions/types.ts:56`), so adding a
-question leaves the six armed rows untouched. Its options:
+**Jev question `memory_kind`** (choice, `src/jev/questions/tree.ts`): asked in **its own Jev request**, only when a save
+is about to run (a memory route, or a `sets_rule` save-first), never in the six-question front-door request. Reason
+(Rev 3, plan review): the client fails a whole call on one missing or malformed answer (`jev-client.ts:196-202`) and
+`decide.ts:142-143` then skips it, so a seventh question in the shared request would put every front-door decision at
+risk. Cost: one extra Jev call (about 0.3 s) on save turns only. Its options:
 
 - `other`: no request to remember anything.
 - `fix`: correct or retire a rule or fact Houge already stored.
