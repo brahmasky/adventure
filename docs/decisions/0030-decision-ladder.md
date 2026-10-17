@@ -271,3 +271,29 @@ This file is protected (ADR 0011); Paco approved this amendment on 2026-10-14.
 - **Revisit when added:** the golden set drifts twice in 30 days; omp adds background tools to Houge's spawn; TypeSafe
   ships deterministic answers (then the band goes); `omp config get` learns to show the overlay (then C6 becomes a hard
   check).
+
+## Amendment (2026-10-17): `memory.kind`, and provisional bars on reversible effects over Paco's words
+
+This file is protected (ADR 0011); Paco asked for this amendment on 2026-10-17 ("amend adr 30"). Spec:
+[2026-10-15-memory-write-thread-anchor-design.md](../superpowers/specs/2026-10-15-memory-write-thread-anchor-design.md)
+(Rev 2).
+
+- **New entry `memory.kind`** (`pre_model`, input `paco`): what Paco wants remembered, with verdicts `other`, `fix`,
+  `rule`, `fact`, `both` (escape first). Ladder: a Jev rung (`memory_kind`, asked in the same tree request as the other
+  six questions), then a model rung (the distill call, which also writes the text); `fail` is `other`, which hands the
+  turn to the planner. `rule`, `fact` and `both` save first with an Undo card per item; `fix` and `other` go to the
+  planner. It runs on the memory lane, on any lane's `sets_rule` save-first (where a Jev `other` or `fix` counts as an
+  abstention, so it never suppresses a save `sets_rule` called for), and inside the planner's `lesson_write` tool.
+- **Decision 9 widened.** A provisional bar is also allowed on an entry whose input is `paco` and whose every effect is
+  reversible and announced (R12's condition for an effect over Paco's own message). Reason: a wrong verdict there costs
+  one Undo tap, the same exposure R12 already accepts for the memory shortcut; waiting for a calibration sitting would
+  keep the incident's failure (a fact request handed to the planner and dropped) live. Paco's ruling: "happy to proceed
+  with jev's high probability answer, no calibration is required". The registry test enforces the condition: a
+  provisional bar on any other non-monotone, non-fail-open entry fails it.
+- **`memory.kind`'s bar:** provisional, p ≥ 0.85 (the memory lane's bar), armed at ship. Golden-set items, one per verdict
+  in zh and en, join the invariant sweep; drift pages `decision_golden_drift:memory.kind` and does not disarm (R13).
+  Undo taps and digest marks are recorded as labels; a calibrated row may replace the bar when Paco commits one.
+- **ADR 0029 §5.5 consequence:** the memory lane no longer requires `sets_rule` = yes; it takes rules and facts. ADR
+  0029's own amendment line lands with the build.
+- **Revisit when added:** fact Undo taps exceed one in five fact saves over 30 days, or the golden set drifts twice in
+  30 days.
