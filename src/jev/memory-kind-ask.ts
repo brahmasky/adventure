@@ -11,6 +11,8 @@ import { buildTreeState, TREE_MEMORY_KIND, type TreeStateInput } from "./questio
  * the verdict, its p and any failure (Spec deviation D14). An outage opens the existing Jev incident inside `decide`.
  */
 export const MEMORY_KIND_THRESHOLD_VERSION = "2026-10-17.1";
+/** The call's own client bound (spec Rev 3 §3): 1.5 s, no retry; the distill covers a timeout. */
+export const MEMORY_KIND_TIMEOUT_MS = 1_500;
 export type MemoryKindAsk = { answer: JevAnswer } | { failed: FallbackReason };
 
 export async function askMemoryKind(i: {

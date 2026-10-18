@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TREE_ACTIONS, TREE_BREADTH, TREE_CATEGORY, TREE_REASONING } from "../../src/jev/questions/tree.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
-import { ARM, cat, kind, REPORTED, scriptedLlm, treeSays, triageHarness } from "../helpers/triage-harness.js";
+import { ARM, cat, HEAVY, kind, REPORTED, scriptedLlm, treeSays, triageHarness } from "../helpers/triage-harness.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 
 // Spec Rev 3 §3 test 1 and §13 test 2 through the real front door: category memory takes the lane whatever sets_rule
@@ -42,6 +42,26 @@ describe("memory lane: its own memory_kind call decides", () => {
     expect(h.store.getJevVerdictForRun(t.run_id)).toMatchObject({ lane: "planner", reason: "fix", save_outcome: "none", route_outcome: "act" });
     expect(kindRow(h, t.run_id)).toMatchObject({ rung: "system_one", verdict: "fix" });
     expect(seen).toEqual([]);
+    h.store.close();
+  });
+  // Escape "nothing to save" on the memory lane: Paco still gets an answer from the planner, and nothing is written.
+  it("other at the bar → handed to the planner (reason memory_other), nothing saved, no distill call; memory.kind records other", async () => {
+    const { h, t, seen } = run({ category: cat({ memory: 0.95 }), sets_rule: 0.05, memory_kind: kind({ other: 0.9 }) });
+    expect(await h.worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough" });
+    expect(h.store.getJevVerdictForRun(t.run_id)).toMatchObject({ lane: "planner", reason: "memory_other", save_outcome: "none", route_outcome: "act" });
+    expect(kindRow(h, t.run_id)).toMatchObject({ rung: "system_one", verdict: "other" });
+    expect(seen).toEqual([]);
+    expect(h.store.getLedgerEvents(t.run_id).filter((e) => e.event_type === "lesson_saved" || e.event_type === "fact_saved")).toEqual([]);
+    h.store.close();
+  });
+  // two_request is not the memory lane: escapes are off there, so a Jev fix abstains and the save still runs (the second
+  // request goes to the planner either way; a fix must never silently drop the remembered half).
+  it("two_request + Jev fix: escapes off, the distill decides, saved, then the planner", async () => {
+    const { h, t, seen } = run({ category: cat({ memory: 0.95 }), sets_rule: 0.05, actions: HEAVY, memory_kind: kind({ fix: 0.9 }) });
+    expect(await h.worker.triageTurn(t.input)).toMatchObject({ kind: "inform" });
+    expect(seen[0]).not.toContain("KIND:");
+    expect(kindRow(h, t.run_id)).toMatchObject({ rung: "model", verdict: "fact" });
+    expect(h.store.getJevVerdictForRun(t.run_id)).toMatchObject({ lane: "planner", reason: "two_request", save_outcome: "saved" });
     h.store.close();
   });
   it("Jev below its bar → the distill decides on the lane", async () => {

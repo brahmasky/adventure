@@ -49,7 +49,7 @@ import { resolveHttpFetchTimeoutMs } from "../web/http-fetch.js";
 import { chatContextSince, feedTurnText, resolveChatContextTurnChars, resolveChatContextTurns } from "../capabilities/intent.js";
 import { createMemoryWriteAdapter, createSrcPhraseChecker, LESSON_CAPPED_HINT, type MemoryPlan, type MemorySaveResult } from "../capabilities/lesson-write.js";
 import { memorySources, type MemorySources, type PacoMessage } from "../capabilities/memory-sources.js";
-import { askMemoryKind, type MemoryKindAsk } from "../jev/memory-kind-ask.js";
+import { askMemoryKind, MEMORY_KIND_TIMEOUT_MS, type MemoryKindAsk } from "../jev/memory-kind-ask.js";
 import { OMP_LESSON_SCOPES } from "../run/lesson-render.js";
 import { reconcileLesson, type LessonReconcileOutcome, type ReconcileVerdict } from "../capabilities/reconcile.js";
 import {
@@ -2892,7 +2892,7 @@ export class CoreWorker {
       apiKey: this.broker ? this.broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
       audit: this.runStore.llmAuditSink({ run_id, role: "memory_kind" }),
       meteredBreached: () => this.runStore.meteredFuseLatched(),
-      retries: 0, timeoutMs: 1_500,
+      retries: 0, timeoutMs: MEMORY_KIND_TIMEOUT_MS,
       ...(this.ompOptions.jevFetch ? { fetchImpl: this.ompOptions.jevFetch } : {})
     });
   }
@@ -2900,9 +2900,11 @@ export class CoreWorker {
   /**
    * The asker a save-first hands the memory service: the tree's state shape at this moment, one memory_kind question. A
    * throw (client or store) is logged and is the rung's `threw` failure: the distill decides, the save is never blocked.
+   * A killed turn sends nothing to Jev: `threw` (FALLBACK_REASONS has no abort name), and runMemoryWrite writes no row for it.
    */
   private memoryKindAsker(i: TriageInput, state: OmpTurnState, lang: Lang): () => Promise<MemoryKindAsk> {
     return async () => {
+      if (i.signal.aborted) return { failed: "threw" };
       try {
         const now = Date.now();
         return await askMemoryKind({ run_id: i.claim.run_id, lang, client: this.memoryKindClient(i.claim.run_id), store: this.runStore,
