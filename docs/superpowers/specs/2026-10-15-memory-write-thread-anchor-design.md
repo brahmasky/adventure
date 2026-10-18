@@ -197,7 +197,8 @@ assume a lesson today, each changed to read the union:
   (`memory-correct.ts:26`).
 - **Fact Undo semantics** (`run-store.ts:4518-4545`): extend the `changed_since` check to `add` (the new row must still
   be active, else no write). Undo prunes `new_id` and restores any `old_ids` it superseded (the existing restore path).
-  Facts pruned by the per-chat cap during the save are not restored; the card never claims they are. One-shot.
+  Facts pruned by the per-chat cap during the save are restored too (`memory_changes.pruned_ids`, plan-review ruling), so
+  an Undo can leave the chat one fact over its cap until the next prune. One-shot.
 - **Outcome:** a fact Undo records `save_undone` against the `memory.kind` and `turn.handler` decisions, through
   `memory_changes.run_id` (`handleMemoryUndo`, `memory-commands.ts:51-64`, records nothing today; `src/decisions` is
   protected). Dig deeper finds the fact change as well as a `lesson_changes` row (`memlane-commands.ts:58-62`).
