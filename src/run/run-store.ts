@@ -79,6 +79,8 @@ export type LlmCallRole =
   | "triage"
   // the in-loop injection judge (decision ladder stage 2a): its own role, so its rate and egress are readable apart
   | "injection"
+  // memory.kind's own Jev request (spec 2026-10-15 Rev 3 §3)
+  | "memory_kind"
   // the tree's cascade pick between two categories (plan 2026-10-07 Decision 14): a Tiny-role one-shot on the turn's run
   | "cascade"
   // stage B lanes (spec §4–§5): the compose (Fast candidates) and the lookup's query rewrite (Tiny candidates); the planner stays "compose"
@@ -918,9 +920,11 @@ export type MemoryKind = "fact" | "wiki";
 export interface MemoryChange {
   change_id: string;
   kind: MemoryKind;
-  action: "retire" | "correct";
+  action: "retire" | "correct" | "add";
   old_ids: number[];
-  /** The correction's new fact (correct only). */
+  /** Facts the per-chat cap pruned during an explicit save (add only), restored by its Undo. */
+  pruned_ids: number[];
+  /** The correction's new fact (correct), or the fact an explicit save wrote (add). */
   new_id: number | null;
   /** The turn that made it; null for Paco's own /forget_memory. */
   run_id: string | null;
@@ -933,6 +937,9 @@ export type MemoryUndoResult =
   | { status: "undone"; change: MemoryChange; restored: number[]; retired: number | null }
   | { status: "already_undone" | "changed_since"; change: MemoryChange }
   | { status: "not_found" };
+
+/** What an explicit memory save wrote (spec 2026-10-15 §7): a rule (lesson), a fact, or both. */
+export type MemorySaveKind = "rule" | "fact";
 
 export type JevDecisionStatus = "answered" | "skipped";
 export type JevDecisionOutcome = "act" | "ask" | "fallback" | "shadow";
@@ -1089,6 +1096,27 @@ const DECISION_LADDER_DDL = `
   );`;
 
 /** Stage B §9: `jev_verdicts` with the lane CHECK widened to the stage B lanes; every other column exactly as stage A built it. */
+/** Spec 2026-10-15 §11: memory_changes with `add` (an explicit fact save's Undo row): the 2026-10-02 columns plus `pruned_ids`. */
+const MEMORY_CHANGES_ADD_DDL = `
+  CREATE TABLE memory_changes (
+    change_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('fact', 'wiki')),
+    action TEXT NOT NULL CHECK (action IN ('retire', 'correct', 'add')),
+    old_ids TEXT NOT NULL,
+    new_id INTEGER,
+    run_id TEXT,
+    chat_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    undone_at TEXT,
+    pruned_ids TEXT NOT NULL DEFAULT '[]'
+  );`;
+/** Spec §10: runs whose turns the background episodic pass skips (an explicit save already covered them). */
+const MEMORY_SAVE_TRIGGERS_DDL = `
+  CREATE TABLE IF NOT EXISTS memory_save_triggers (
+    run_id TEXT PRIMARY KEY,
+    kinds TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );`;
 const JEV_VERDICTS_LANES_DDL = `
   CREATE TABLE jev_verdicts (
     verdict_id TEXT PRIMARY KEY,
@@ -4449,13 +4477,13 @@ export class RunStore {
     if (changed !== 1) throw RunStore.MEMORY_REFUSED;
   }
 
-  private insertMemoryChange(c: Omit<MemoryChange, "change_id" | "undone_at">): MemoryChange {
-    const change: MemoryChange = { change_id: `mc_${randomUUID()}`, ...c, undone_at: null };
+  private insertMemoryChange(c: Omit<MemoryChange, "change_id" | "undone_at" | "pruned_ids"> & { pruned_ids?: number[] }): MemoryChange {
+    const change: MemoryChange = { change_id: `mc_${randomUUID()}`, ...c, pruned_ids: c.pruned_ids ?? [], undone_at: null };
     this.db.prepare(`
-      INSERT INTO memory_changes (change_id, kind, action, old_ids, new_id, run_id, chat_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO memory_changes (change_id, kind, action, old_ids, new_id, run_id, chat_id, created_at, pruned_ids)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(change.change_id, change.kind, change.action, JSON.stringify(change.old_ids), change.new_id, change.run_id,
-      change.chat_id, change.created_at);
+      change.chat_id, change.created_at, JSON.stringify(change.pruned_ids));
     return change;
   }
 
@@ -4504,15 +4532,55 @@ export class RunStore {
 
   getMemoryChange(change_id: string): MemoryChange | undefined {
     const row = this.db.prepare(`
-      SELECT change_id, kind, action, old_ids, new_id, run_id, chat_id, created_at, undone_at FROM memory_changes WHERE change_id = ?
-    `).get<Omit<MemoryChange, "old_ids"> & { old_ids: string }>(change_id);
-    return row ? { ...row, old_ids: JSON.parse(row.old_ids) as number[] } : undefined;
+      SELECT change_id, kind, action, old_ids, new_id, run_id, chat_id, created_at, undone_at, pruned_ids FROM memory_changes WHERE change_id = ?
+    `).get<Omit<MemoryChange, "old_ids" | "pruned_ids"> & { old_ids: string; pruned_ids: string }>(change_id);
+    return row ? { ...row, old_ids: JSON.parse(row.old_ids) as number[], pruned_ids: JSON.parse(row.pruned_ids) as number[] } : undefined;
+  }
+
+  /**
+   * Spec 2026-10-15 §7: an explicit fact save's Undo row, inside the caller's transaction. `old_ids` holds the fact a
+   * SUPERSEDE/UPDATE replaced, so Undo restores it (restoreMemoryRows' existing path); `pruned_ids` lists the facts the
+   * per-chat cap pruned during the save, which Undo also brings back if still pruned (plan Rev 2 item 6).
+   */
+  insertFactAddChange(i: { new_id: number; superseded_id: number | null; pruned_ids: readonly number[]; run_id: string; chat_id: string; now: string }): MemoryChange {
+    return this.insertMemoryChange({ kind: "fact", action: "add", old_ids: i.superseded_id === null ? [] : [i.superseded_id], new_id: i.new_id,
+      pruned_ids: [...i.pruned_ids], run_id: i.run_id, chat_id: i.chat_id, created_at: i.now });
+  }
+
+  /**
+   * Paco's turns that may be a memory save's instruction (spec §4; plan Rev 2 item 4, Rev 2.1 item 2): user turns after
+   * `afterIso` of telegram runs that are `run_id` itself or leased to its worker (a steered run is claimed under the live
+   * turn's worker, planner-supervisor.ts:418) — filtered in SQL, newest first, THEN limited.
+   */
+  steeredUserTurns(chat_id: string, afterIso: string, run_id: string, worker_id: string, limit: number): ChatTurnRow[] {
+    return this.db.prepare(`
+      SELECT c.turn_id, c.chat_id, c.run_id, c.role, c.text, c.intent, c.created_at, c.quoted_turn_id
+      FROM chat_turns c JOIN runs r ON r.run_id = c.run_id
+      WHERE c.chat_id = ? AND c.role = 'user' AND c.created_at > ? AND r.source = 'telegram' AND (c.run_id = ? OR r.worker_id = ?)
+      ORDER BY c.created_at DESC, c.rowid DESC LIMIT ?
+    `).all<ChatTurnRow>(chat_id, afterIso, run_id, worker_id, limit);
+  }
+
+  /** Spec §10: the run's turns are skipped by the background episodic pass. One row per run (a repeat is ignored). */
+  insertMemorySaveTrigger(run_id: string, kinds: readonly MemorySaveKind[], created_at: string): void {
+    this.db.prepare(`INSERT OR IGNORE INTO memory_save_triggers (run_id, kinds, created_at) VALUES (?, ?, ?)`).run(run_id, JSON.stringify([...kinds]), created_at);
+  }
+
+  memorySaveTriggered(run_id: string): boolean {
+    return this.db.prepare(`SELECT 1 AS hit FROM memory_save_triggers WHERE run_id = ?`).get<{ hit: number }>(run_id) !== undefined;
+  }
+
+  /** The run's newest explicit fact save (Dig deeper's change id when the run saved a fact and no lesson). */
+  getMemoryChangeByRun(run_id: string): MemoryChange | undefined {
+    const row = this.db.prepare(`SELECT change_id FROM memory_changes WHERE run_id = ? AND action = 'add' ORDER BY created_at DESC, rowid DESC LIMIT 1`)
+      .get<{ change_id: string }>(run_id);
+    return row ? this.getMemoryChange(row.change_id) : undefined;
   }
 
   /**
    * Undo a change (the Undo button): the old rows it flipped go back to active with no successor, the correction's new
    * row is pruned. Only rows still in the state this change left are touched, and the result names exactly those. A
-   * correct whose new row is no longer active (consolidation moved on) is not undone at all: changed_since, no write.
+   * correct or add whose new row is no longer active (consolidation moved on) is not undone at all: changed_since, no write.
    * Idempotent: a second undo changes nothing.
    */
   undoMemoryChange(change_id: string, now: string = new Date().toISOString()): MemoryUndoResult {
@@ -4524,7 +4592,8 @@ export class RunStore {
     const change = this.getMemoryChange(change_id);
     if (!change) return { status: "not_found" };
     if (change.undone_at !== null) return { status: "already_undone", change };
-    if (change.action === "correct" && this.getEpisodicFact(change.new_id ?? -1)?.status !== "active") return { status: "changed_since", change };
+    // correct and add both wrote a new fact: if it is no longer active (consolidation, a retire, the cap moved on), nothing is undone
+    if (change.action !== "retire" && this.getEpisodicFact(change.new_id ?? -1)?.status !== "active") return { status: "changed_since", change };
     this.db.prepare(`UPDATE memory_changes SET undone_at = ? WHERE change_id = ?`).run(now, change_id);
     const { restored, retired } = this.restoreMemoryRows(change);
     return { status: "undone", change: { ...change, undone_at: now }, restored, retired };
@@ -4541,7 +4610,11 @@ export class RunStore {
         `).run(id, change.new_id)).changes === 1);
     if (change.action === "retire") return { restored, retired: null };
     const pruned = this.db.prepare(`UPDATE episodic_facts SET status = 'pruned' WHERE id = ? AND status = 'active'`).run(change.new_id).changes;
-    return { restored, retired: pruned === 1 ? change.new_id : null };
+    // plan Rev 2 item 6: an explicit save's Undo also brings back what the per-chat cap pruned during that save, if still pruned
+    const back = change.action === "add"
+      ? change.pruned_ids.filter((id) => this.db.prepare(`UPDATE episodic_facts SET status = 'active' WHERE id = ? AND status = 'pruned'`).run(id).changes === 1)
+      : [];
+    return { restored: [...restored, ...back], retired: pruned === 1 ? change.new_id : null };
   }
 
   // ── Jev decisions (ADR 0029 §3.4) ─────────────────────────────────────────
@@ -7313,6 +7386,7 @@ export class RunStore {
     this.applyLaneRepliesMigration();
     this.applyDecisionLadderMigration();
     this.applyDecisionLadder2aMigration();
+    this.applyMemoryWriteMigration();
   }
 
   /** Memory A1 §6: the lesson-set fingerprint each chat's omp session started on, persisted so a restart still compares. */
@@ -7571,6 +7645,26 @@ export class RunStore {
         );
       `);
       if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
+  }
+
+  /**
+   * Spec 2026-10-15 §11: `memory_changes.action` admits `add`. SQLite cannot alter a CHECK, so the table is rebuilt in one
+   * transaction (no index, trigger, view or FK names it): rename, create, copy the nine old columns (`pruned_ids` takes its
+   * default), assert the counts, drop the old table. The previous build's `CREATE TABLE IF NOT EXISTS` is a no-op on the
+   * rebuilt table, and its INSERT names its columns, so `pruned_ids` defaults there too (rollback, Task 16).
+   */
+  private applyMemoryWriteMigration(): void {
+    const version = "2026-10-15-memory-write";
+    const cols = "change_id, kind, action, old_ids, new_id, run_id, chat_id, created_at, undone_at";
+    this.inTransaction(() => {
+      if (this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version)) return;
+      const before = this.db.prepare(`SELECT COUNT(*) AS n FROM memory_changes`).get<{ n: number }>()?.n ?? 0;
+      this.db.exec(`ALTER TABLE memory_changes RENAME TO memory_changes_old;\n${MEMORY_CHANGES_ADD_DDL}\nINSERT INTO memory_changes (${cols}) SELECT ${cols} FROM memory_changes_old;`);
+      const after = this.db.prepare(`SELECT COUNT(*) AS n FROM memory_changes`).get<{ n: number }>()?.n ?? -1;
+      if (after !== before) throw new Error(`memory_changes add migration: ${before} rows before, ${after} after`);
+      this.db.exec(`DROP TABLE memory_changes_old;\n${MEMORY_SAVE_TRIGGERS_DDL}`);
+      this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
     });
   }
 

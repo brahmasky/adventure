@@ -104,7 +104,7 @@ describe("the gateway undoes the change", () => {
   });
 
   it("the reply states only what was actually restored", () => {
-    const change = { change_id: "mc_x", kind: "fact" as const, action: "correct" as const, old_ids: [1, 2], new_id: 9, run_id: null, chat_id: CHAT, created_at: "", undone_at: null };
+    const change = { change_id: "mc_x", kind: "fact" as const, action: "correct" as const, old_ids: [1, 2], pruned_ids: [] as number[], new_id: 9, run_id: null, chat_id: CHAT, created_at: "", undone_at: null };
     expect(undoneText(change, [1], 9)).toBe("↩️ Undone: #1 is active again; #9 is retired. #2 had changed since and was left as is.");
     expect(undoneText({ ...change, action: "retire", new_id: null }, [], null)).toBe(MEMORY_CHANGED_SINCE_TEXT);
   });

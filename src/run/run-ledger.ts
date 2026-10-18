@@ -12,6 +12,8 @@ export type LedgerEventType =
   | "triage"
   | "ack_nudged"
   | "lesson_saved"
+  | "fact_saved"
+  | "memory_not_saved"
   | "lesson_change_undone"
   | "triage_override"
   | "turn_trust"
@@ -313,6 +315,10 @@ const requiredPayloadFields = {
   triage: ["status", "category", "route_lane", "role", "verdict_id", "confidence", "top_prob", "margin", "lang", "decision", "verdict"],
   ack_nudged: ["approval_run_id"],
   lesson_saved: ["lesson_id", "change_id", "source"],
+  // Memory write (spec 2026-10-15 §7): an explicit fact save. Ids and the store verb only, never the fact.
+  fact_saved: ["fact_id", "verb", "change_id"],
+  // Memory write (plan Rev 2 item 9): why a memory save wrote nothing — a closed reason and the caller (loop | lane), never text.
+  memory_not_saved: ["reason", "source"],
   lesson_change_undone: ["change_id", "restored", "skipped"],
   // "Dig deeper" (stage B; formerly "Ask Houge anyway"): the override label; new_run_id is the re-submitted planner turn,
   // `lane` the corrected verdict's lane (null when the run had no verdict row).
