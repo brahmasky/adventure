@@ -274,6 +274,25 @@ describe("runMemoryWrite: a fact is a save like a rule (controller rulings 4-6)"
     expect(String(card?.text)).toContain("Paco prefers the south side noodle shop");
     h.store.close();
   });
+  // Final review (codex #2): the card is the save's only Undo on the planner path. When it cannot be queued the save still
+  // stands, so the tool result must say the card was not delivered — else the planner's reply implies Paco has an Undo.
+  it("the loop tool's result says the card was not delivered when the outbox refuses it; a queued card adds nothing", async () => {
+    const h = setup({ distill: FACT });
+    const run_id = createQueuedTurnRun(h.store, "记下来吧");
+    const claim = h.store.claimRun(run_id, "w", 120)!;
+    const tool = h.worker.buildOmpTools(claim, CHAT).registry.get("lesson_write")!;
+    const spy = vi.spyOn(h.store, "enqueueNotification").mockImplementation(() => { throw new Error("outbox down"); });
+    const r = out(await tool.execute!({ scope: "ask" }));
+    spy.mockRestore();
+    expect(r).toMatchObject({ saved: true, kinds: ["fact"], card: "not_delivered" });
+    expect(String(r.hint)).toMatch(/card was not sent/i);
+    const h2 = setup({ distill: FACT });
+    const run2 = createQueuedTurnRun(h2.store, "记下来吧");
+    const tool2 = h2.worker.buildOmpTools(h2.store.claimRun(run2, "w", 120)!, CHAT).registry.get("lesson_write")!;
+    const ok = out(await tool2.execute!({ scope: "ask" }));
+    expect(["card" in ok, "hint" in ok]).toEqual([false, false]);
+    h.store.close(); h2.store.close();
+  });
   // Final review (codex #1, downgraded): a reconcile UPDATE stores model-merged text, so the card must show what was
   // STORED, never the pre-merge candidate — Paco can only Undo what he can see. The tool result carries ids, no text.
   it("an UPDATE save's card shows the stored merged text, and the tool result carries no candidate text", async () => {

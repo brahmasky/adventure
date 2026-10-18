@@ -3331,18 +3331,21 @@ export class CoreWorker {
    * planner's inform note, a lane that fell through, a lost turn, a card that failed, a throw after the save, the planner's
    * own lesson_write tool) queues an Undo-only card here. Keyed by the change id, so two paths for one save send one card.
    * Never throws: the save stands. It uses the module's `memoryLaneCard`, not the test-faultable one, so a failed lane card is still announced.
+   * Returns false only when a card was due and could not be queued (the planner's tool tells Paco so; codex #2).
    */
-  private announceSave(run_id: string, saved: SavedMemory | undefined): void {
+  private announceSave(run_id: string, saved: SavedMemory | undefined): boolean {
     const first = saved?.lesson ?? saved?.fact;
-    if (!saved || !first) return;
+    if (!saved || !first) return true;
     try {
       const card = memoryLaneCard({ run_id, ...this.cardItems(saved) });
       const q = this.runStore.enqueueNotification({ target: { kind: "telegram", chat_id: this.chatOf(run_id) }, intent_type: "progress",
         idempotency_key: `memcard:${first.change_id}`, correlation_id: run_id, payload: { text: this.maskSecrets(card.text), buttons: memoryUndoButtons(saved) } });
-      if (q.status === "conflict") console.error(`memory card: announce refused for change ${first.change_id}: ${q.error}`);
+      if (q.status !== "conflict") return true;
+      console.error(`memory card: announce refused for change ${first.change_id}: ${q.error}`);
     } catch (e) {
       console.error(`memory card: announce failed: ${safeReason(e)}`);
     }
+    return false;
   }
 
   /** The card's items from a committed save: the lesson's stored row (its AVOID), the fact's stored text. */
@@ -3663,8 +3666,8 @@ export class CoreWorker {
       return async (input) => {
         const w = await this.runMemoryWrite(claim, this.chatOf(claim.run_id), input, { source: "loop" });
         // Paco 2026-10-12: a committed save is announced on the Undo card whatever route the turn took, the planner's own tool included
-        if (w.committed && w.saved) this.announceSave(claim.run_id, w.saved);
-        return w.result;
+        if (!w.committed || !w.saved || this.announceSave(claim.run_id, w.saved)) return w.result;
+        return cardNotDelivered(w.result);
       };
     }
     if (name === "houge_status") {
@@ -4513,6 +4516,14 @@ function scoresOf(a: Record<string, JevAnswer>): VerdictScores {
  */
 function saveOutcomeOf(w: MemoryWriteOutcome): "not_durable" | "capped" {
   return w.result.ok && w.result.output.reason === "too-large" ? "capped" : "not_durable";
+}
+
+/** Codex #2: the save stands but its Undo card was not queued; the planner must not imply Paco has an Undo button. */
+export const CARD_NOT_SENT_HINT = "the save stands but its Undo card was not sent: tell Paco what was saved and that it was not shown on a card";
+function cardNotDelivered(r: ToolAdapterResult): ToolAdapterResult {
+  if (!r.ok) return r;
+  const hint = typeof r.output.hint === "string" ? `${r.output.hint}; ${CARD_NOT_SENT_HINT}` : CARD_NOT_SENT_HINT;
+  return { ok: true, output: { ...r.output, card: "not_delivered", hint } };
 }
 
 /** The memory lane's memory_kind said fix or nothing (the adapter's reason): the turn goes to the planner with that reason. */
