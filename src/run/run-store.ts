@@ -1109,7 +1109,7 @@ const MEMORY_CHANGES_ADD_DDL = `
     undone_at TEXT,
     pruned_ids TEXT NOT NULL DEFAULT '[]'
   );`;
-/** Spec §10: runs whose turns the background episodic pass skips (an explicit save already covered them). */
+/** Spec §10: runs an explicit save covered; the background episodic pass skips those whose kinds include `fact`. */
 const MEMORY_SAVE_TRIGGERS_DDL = `
   CREATE TABLE IF NOT EXISTS memory_save_triggers (
     run_id TEXT PRIMARY KEY,
@@ -4568,6 +4568,12 @@ export class RunStore {
 
   memorySaveTriggered(run_id: string): boolean {
     return this.db.prepare(`SELECT 1 AS hit FROM memory_save_triggers WHERE run_id = ?`).get<{ hit: number }>(run_id) !== undefined;
+  }
+
+  /** Codex #4: the run's explicit save stored a fact (its kinds include `fact`); only such a run is skipped by the background pass. */
+  memoryFactSaveTriggered(run_id: string): boolean {
+    return this.db.prepare(`SELECT 1 AS hit FROM memory_save_triggers t, json_each(t.kinds) k WHERE t.run_id = ? AND k.value = 'fact' LIMIT 1`)
+      .get<{ hit: number }>(run_id) !== undefined;
   }
 
   /** The run's newest explicit fact save (Dig deeper's change id when the run saved a fact and no lesson). */

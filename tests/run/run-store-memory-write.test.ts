@@ -161,6 +161,15 @@ describe("save triggers, the run's change, fact_saved", () => {
     expect(s.memorySaveTriggered("run_b")).toBe(false);
     s.close();
   });
+  // Codex #4: the background pass skips only a run whose save stored a fact; a rule-only save left its facts unread.
+  it("memoryFactSaveTriggered is true only for a trigger whose kinds include fact", () => {
+    const s = RunStore.openInMemory();
+    s.insertMemorySaveTrigger("run_f", ["fact"], NOW);
+    s.insertMemorySaveTrigger("run_b", ["rule", "fact"], NOW);
+    s.insertMemorySaveTrigger("run_r", ["rule"], NOW);
+    expect(["run_f", "run_b", "run_r", "run_x"].map((r) => s.memoryFactSaveTriggered(r))).toEqual([true, true, false, false]);
+    s.close();
+  });
   it("getMemoryChangeByRun finds the run's add (Dig deeper names it), never a retire", () => {
     const s = RunStore.openInMemory();
     const a = s.addEpisodicFact({ chat_id: CHAT, fact: "fact a", created_at: NOW });

@@ -548,21 +548,22 @@ export function settledTurns(store: Pick<RunStore, "findRunState">, turns: ChatT
  * Drop every turn that is not Paco talking about his world, judged by the run's source and the
  * capabilities its loop used, never by text:
  * - both turns of a schedule-born run (2026-10-02): the stored schedule goal and its digest;
- * - both turns of a run that explicitly saved a memory (spec 2026-10-15 §10): its reply would mint
- *   the same fact again, or a meta-fact about the request;
+ * - both turns of a run whose explicit save stored a fact (spec 2026-10-15 §10): its reply would mint
+ *   the same fact again, or a meta-fact about the request; a rule-only save stored no fact, so its
+ *   run stays readable;
  * - both turns of a dev-session run ({@link DEV_SESSION_CAPABILITIES}), and any turn recorded while
  *   it was active ({@link RunStore.runActivitySpan}): a message steered into it has its own run, but
  *   the parent's planner made the calls.
  * Talk about Houge with no such call is left to the extract prompt.
  */
 export function withoutTurnsOffPacosWorld(
-  store: Pick<RunStore, "runSource" | "runLoopCapabilities" | "runActivitySpan" | "memorySaveTriggered">,
+  store: Pick<RunStore, "runSource" | "runLoopCapabilities" | "runActivitySpan" | "memoryFactSaveTriggered">,
   turns: ChatTurnRow[]
 ): ChatTurnRow[] {
   const dropped = new Set<string>();
   const spans: Array<{ from: string; to: string }> = [];
   for (const runId of new Set(turns.map((t) => t.run_id))) {
-    if (store.runSource(runId) === "schedule" || store.memorySaveTriggered(runId)) dropped.add(runId);
+    if (store.runSource(runId) === "schedule" || store.memoryFactSaveTriggered(runId)) dropped.add(runId);
     else if (store.runLoopCapabilities(runId).some((c) => DEV_SESSION_CAPABILITIES.has(c))) {
       dropped.add(runId);
       const span = store.runActivitySpan(runId);

@@ -1082,6 +1082,24 @@ describe("withoutTurnsOffPacosWorld — a memory-save run is not Paco speaking (
     }
   });
 
+  // Final review (codex #4): only a fact save covers the facts in its message. A rule-only save ("from now on, lead with the
+  // result — I'm in Sydney now") stored no fact, so skipping that run would hide its facts from the background pass forever.
+  it("skips a fact-kind trigger run and keeps a rule-only one readable", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const factRun = pacoRunUsing(store, "记下来：我住在悉尼", []);
+      const ruleRun = pacoRunUsing(store, "以后先说结论，我现在住在墨尔本", []);
+      store.insertMemorySaveTrigger(factRun, ["rule", "fact"], NOW);
+      store.insertMemorySaveTrigger(ruleRun, ["rule"], NOW);
+      await settle(store, factRun, [["user", "记下来：我住在悉尼"], ["assistant", "🧠 Saved"]]);
+      await settle(store, ruleRun, [["user", "以后先说结论，我现在住在墨尔本"], ["assistant", "🧠 Saved rule"]]);
+      const kept = withoutTurnsOffPacosWorld(store, store.getChatTurnsAfter(CHAT, undefined, 10));
+      expect(kept.map((t) => t.run_id)).toEqual([ruleRun, ruleRun]);
+    } finally {
+      store.close();
+    }
+  });
+
   it("the pass never sends a memory-save trigger run's turns to the extract call; the watermark still moves past them", async () => {
     const store = RunStore.openInMemory();
     try {
