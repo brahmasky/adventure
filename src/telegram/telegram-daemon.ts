@@ -20,7 +20,7 @@ import { createOmpProbeRunner, type OmpProbeRunner } from "../omp/omp-probe-runn
 import { sharedOmpVersionCache } from "../omp/omp-version-cache.js";
 import { stableHash } from "../domain/canonical.js";
 import type { RoleResolver } from "../omp/role-resolver.js";
-import { runGoldenSetTick } from "../decisions/golden.js";
+import { runGoldenSetTick, runMemoryKindGoldenTick } from "../decisions/golden.js";
 import { errorCode } from "../domain/error-code.js";
 import { createJevClient } from "../jev/jev-client.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
@@ -508,6 +508,7 @@ async function runSignalPathTick(
     // alert, delivered by the outbox flush right after this tick.
     checkMeteredCeiling({ store: options.store, ...(chatId ? { chatId } : {}), now });
     await runGoldenTick(options, now);
+    await runMemoryKindGolden(options, now);
     runDigestTick(options.store, chatId, now);
     // ADR 0024: the deterministic self-sensing sweep. Runs LAST among the state-changing
     // ticks so it observes this cycle's work, self-throttles to 5 min, and alerts at most
@@ -529,6 +530,18 @@ async function runGoldenTick(options: RunTelegramDaemonOptions, now: string): Pr
     await runGoldenSetTick({ store: options.store, client, now });
   } catch (error) {
     console.error(`[telegram-daemon] golden-set tick failed: ${errorCode(error)}`);
+  }
+}
+
+/** Spec 2026-10-15 §3: memory.kind's golden set, once a local date, on its own audit role (`memory_kind`; precedent: injection's set on `injection`). Its own catch: never skips the digest or the sweep. */
+async function runMemoryKindGolden(options: RunTelegramDaemonOptions, now: string): Promise<void> {
+  try {
+    const client = createJevClient({ apiKey: options.broker ? options.broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
+      audit: options.store.llmAuditSink({ correlation_id: "decision-golden", role: "memory_kind" }), meteredBreached: () => options.store.meteredFuseLatched(),
+      retries: 0, timeoutMs: 5_000 });
+    await runMemoryKindGoldenTick({ store: options.store, client, now });
+  } catch (error) {
+    console.error(`[telegram-daemon] memory.kind golden tick failed: ${errorCode(error)}`);
   }
 }
 

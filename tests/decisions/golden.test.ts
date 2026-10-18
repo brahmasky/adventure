@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { INJECTION_GOLDEN, runGoldenSetTick } from "../../src/decisions/golden.js";
+import { INJECTION_GOLDEN, MEMORY_KIND_GOLDEN, runGoldenSetTick, runMemoryKindGoldenTick } from "../../src/decisions/golden.js";
+import { MEMORY_KIND_OPTIONS } from "../../src/jev/questions/tree.js";
 import type { JevRequest, JevResult } from "../../src/jev/jev-client.js";
 import { redactForJudge } from "../../src/decisions/egress.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -78,5 +79,43 @@ describe("golden tick egress", () => {
     const body = JSON.stringify(client.mock.calls[0]![0]);
     expect(body).toContain("Golden variant marker");
     for (let k = 0; k + 8 <= key.length; k++) expect(body.includes(key.slice(k, k + 8)), key.slice(k, k + 8)).toBe(false);
+  });
+});
+
+// Spec §3: memory.kind is armed without a calibration sitting, so a fixed set of plain cases (one per verdict, zh and en)
+// is asked daily; a miss pages decision_golden_drift:memory.kind and never disarms (R13), and an alias move pages stale.
+const kindAnswering = (pick: (text: string) => string, model = "jev-1.13.0") => async (req: JevRequest): Promise<JevResult> => {
+  const top = pick(String((req.state as { latest_message: string }).latest_message));
+  const probabilities = Object.fromEntries(MEMORY_KIND_OPTIONS.map((o) => [o, o === top ? 0.92 : 0.02]));
+  return { ok: true, model, input_tokens: 1, latency_ms: 1, answers: { memory_kind: { type: "choice", choice: top, probabilities, confidence: 0.9 } } };
+};
+const truth = (text: string): string => MEMORY_KIND_GOLDEN.find((g) => g.text === text)?.expect ?? "other";
+
+describe("memory.kind golden set", () => {
+  it("holds one item per verdict in zh and in en", () => {
+    for (const v of MEMORY_KIND_OPTIONS) {
+      const items = MEMORY_KIND_GOLDEN.filter((g) => g.expect === v);
+      expect(items.map((g) => /[一-鿿]/.test(g.text)).sort()).toEqual([false, true]);
+    }
+  });
+  it("runs once a local date, one call at a time, and passes when every item clears the bar on its verdict", async () => {
+    const s = RunStore.openInMemory();
+    let inFlight = 0; let peak = 0;
+    const counted = async (req: JevRequest): Promise<JevResult> => { inFlight += 1; peak = Math.max(peak, inFlight); await new Promise((r) => setTimeout(r, 1));
+      try { return await kindAnswering(truth)(req); } finally { inFlight -= 1; } };
+    expect(await runMemoryKindGoldenTick({ store: s, client: counted, now: NOW, env: {} })).toEqual({ ran: true, outcome: "ok" });
+    expect(peak).toBe(1); // Rev 2 item 8: sequential, never ten concurrent requests
+    expect(await runMemoryKindGoldenTick({ store: s, client: kindAnswering(truth), now: NOW, env: {} })).toEqual({ ran: false });
+    s.close();
+  });
+  it("one wrong verdict pages drift on memory.kind; a failed call is skipped, never a drift claim", async () => {
+    const s = RunStore.openInMemory();
+    const wrong = (text: string) => (truth(text) === "fact" ? "rule" : truth(text));
+    expect(await runMemoryKindGoldenTick({ store: s, client: kindAnswering(wrong), now: NOW, env: {} })).toEqual({ ran: true, outcome: "drift" });
+    expect(s.listOpenIncidents().some((i) => i.kind === "decision_golden_drift" && i.subject === "memory.kind")).toBe(true);
+    const t = RunStore.openInMemory();
+    const down = async (): Promise<JevResult> => ({ ok: false, reason: "error", detail: "transport" });
+    expect(await runMemoryKindGoldenTick({ store: t, client: down, now: NOW, env: {} })).toEqual({ ran: true, outcome: "skipped" });
+    s.close(); t.close();
   });
 });
