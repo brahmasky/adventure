@@ -466,3 +466,20 @@ Rules Claude writes for itself after corrections. Review at session start.
   255 of 250,000); the ADR states the range, not one lucky number. A seeded LCG that overflows 2^53 collapsed a property
   test's coverage silently; count each case class the test claims to cover.
 
+## Memory write (2026-10-17)
+
+- **Never add a question to a shared Jev request another decision depends on.** One malformed answer fails the whole call
+  (`jev-client.ts:196-202`) and `decide` skips it; the new decision gets its own request (`memory_kind`).
+- **A save the tool refused must never be promised later in the reply** (2026-10-15 incident). The tool result's hint says
+  so, and the planner prompt now says to call `lesson_write` when asked to remember and to claim a save only on a saved result.
+- **Present numbered lists in the order a human counts them.** The thread was numbered newest-first, so "the first one"
+  meant the newest message (gate case 6). Select newest-within-caps, but show the cut thread oldest-first.
+- **A golden item the armed rung never clears pages every day.** Jev does not reach 0.85 on `fix` (first-option bias toward
+  `other`); the two `fix` items were dropped and the fix route is decided below the bar. Rule: golden items are ones the
+  armed rung decides on the current model; the rest are measured, not paged.
+- **A gate script exits non-zero on INCONCLUSIVE and never passes a case it did not run.** The first gate run counted
+  unrun cases toward PASS; run 5 reports cases 7 and 8 INCONCLUSIVE and exits 3. A rollback check proves each flip against
+  the old build, not only the new one.
+- **Measure the bar before arming on it.** The incident's own text sat at the 0.85 bar (Jev 0.87-0.89 in 2 runs, the model
+  in 3); report the margin to Paco instead of calling the rung "working".
+

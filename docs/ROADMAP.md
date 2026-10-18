@@ -209,6 +209,11 @@ disarm; a confident memory turn with a second request runs the planner (`two_req
 a catch-up block; `HOUGE_JEV_LANES_OFF` switches one lane off. **Next:** stage C (`schedule` and `wiki` lanes, the research
 lane question), then Jev judges inside the planner loop (the next spec).
 
+**Delta 2026-10-19: the memory write is built** (`feat/memory-write`, not merged; spec 2026-10-15 Rev 3). "Remember this" is
+the ladder decision `memory.kind` (Jev, provisional bar 0.85): the memory lane writes rules and facts from Paco's thread, and
+any lane's save-first may write a fact. It is the prerequisite of decision-ladder stage 2b, and `improve.route`'s `fact` target
+now has its handler. Open: an in-turn "remember" typed during a running planner turn is not acted on.
+
 **Delta 2026-10-07: two small builds queued (Paco).**
 - **Standing approval for a scheduled command.** The Alishan room check needs one Approve tap a day: the hotel's
   search only answers a POST, and the shell gate treats every `curl` POST as an HTTP write

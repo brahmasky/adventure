@@ -1645,3 +1645,17 @@ Same period on main: B, the self-write locked-path list with one guided retry (`
 reads the raw diff with `-z`, guard re-run after the test gate; merged `e0f6778`), and a schedule fix that keeps the whole
 goal up to 2000 characters and refuses longer instead of cutting it (`7d3ce16`; the daily Alishan check goal had been cut mid-URL at the old 300 cap).
 
+## 2026-10-15 to 2026-10-19: memory write (rules and facts from Paco's thread), on `feat/memory-write`
+
+Started from an incident (2026-10-15): Paco asked Houge to remember something said earlier in the thread, the one-message
+trust anchor could not point back, the planner's `lesson_write` was refused, and the reply still promised the save. Spec Rev 1
+to 3 (Rev 3 after the plan review moved `memory_kind` into its own Jev request, since one bad answer fails the whole tree
+call), then 18 subagent-driven tasks with two-stage reviews: the thread anchor and backstops (rule lifting rule, fact
+evidence), a kind-aware write adapter, one memory write service shared by the lane, the save-first routes and the planner
+tool, the `memory.kind` entry on a provisional 0.85 bar with a daily golden set, Undo per item with Dig deeper labelling the
+newest saving row, and the background pass skipping a run that saved. The live gate on real Jev ran five times: it found the
+newest-first numbering ("the first one" meant the newest), a planner that acknowledged without calling `lesson_write`, a
+golden set Jev cannot clear (`fix`), and gate logic that counted unrun cases as PASS; run 5 is all PASS except cases 7 and
+8 INCONCLUSIVE (a "记下来" inside a running turn is not acted on, 0 of 10, no false claim; same on main). The rollback check
+PASS 13/13. ADR 0010, 0029 and 0030 amended (Paco's hand to merge). On branch, not merged; kickstart owed after merge.
+
