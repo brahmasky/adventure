@@ -4538,8 +4538,9 @@ function handOffOf(w: MemoryWriteOutcome): { handOff?: "fix" | "memory_other" } 
 /** User turns read after the claim when looking for steered messages (a turn steers a handful at most). */
 const STEERED_READ_CAP = 20;
 /**
- * The instruction's cut (Task 3 carry): the newest of Paco's messages goes to the distill whole up to this many chars, so a
- * pasted wall of text never makes an unbounded prompt. Above a Telegram text (4,096) only for a long voice transcript.
+ * The instruction's cut (Task 3 carry): the newest of Paco's messages goes to the distill up to this many chars, so a
+ * pasted wall of text never makes an unbounded prompt. Below a Telegram text's 4,096, so a long typed message is cut too
+ * (as is a long voice transcript); the cut keeps the head, where a "remember …" request usually sits.
  */
 export const MEMORY_INSTRUCTION_CHARS = 2000;
 const instructionCut = (m: PacoMessage): PacoMessage => ({ ...m, text: m.text.slice(0, MEMORY_INSTRUCTION_CHARS) });
