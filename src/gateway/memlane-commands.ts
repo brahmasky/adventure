@@ -4,7 +4,7 @@ import { oncePerTrigger, replyTo } from "./memory-commands.js";
 import { TRIAGE_OVERRIDE_LIMIT, TRIAGE_OVERRIDE_WINDOW_DAYS, triageOverrideSince, triageOverrideSubject } from "../jev/jev-incidents.js";
 import { openAlertedIncident } from "../run/incident-alert.js";
 import type { RunStore } from "../run/run-store.js";
-import { decisionOf, recordSaveUndone, recordTapOutcome } from "../decisions/tap-outcomes.js";
+import { decisionOf, recordSaveUndone, savedMemoryKindOf, recordTapOutcome } from "../decisions/tap-outcomes.js";
 
 /** Lane card taps (ADR 0029 §5.6, stage B §6). Undo is compare-and-set; "Dig deeper" is the override label. */
 export { TRIAGE_OVERRIDE_LIMIT, TRIAGE_OVERRIDE_WINDOW_DAYS };
@@ -65,7 +65,7 @@ export function recordTriageOverride(store: RunStore, original_run_id: string, n
   // Spec §6: the tap is Paco's explicit correction, so it outranks any earlier label on the original turn's verdict.
   if (verdict) store.updateJevVerdict(verdict.verdict_id, { paco_correction: "ask_anyway" });
   if (verdict?.decision_id && lane !== null) recordTapOutcome(store, verdict.decision_id, "dig_deeper", lane, now); // Addition A
-  const kind = decisionOf(store, original_run_id, "memory.kind");
+  const kind = savedMemoryKindOf(store, original_run_id);
   if (kind && lane !== null) recordTapOutcome(store, kind.decision_id, "dig_deeper", lane, now); // spec 2026-10-15 §9
   if (lane === null || store.countRecentTriageOverrides(lane, triageOverrideSince(now)) < TRIAGE_OVERRIDE_LIMIT) return;
   openAlertedIncident(store, { kind: "triage_overrides", subject: triageOverrideSubject(lane), chat_id,

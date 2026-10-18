@@ -204,3 +204,31 @@ describe("memory.kind outcomes on the lane taps", () => {
     store.close();
   });
 });
+
+describe("Dig deeper labels the memory.kind row that saved", () => {
+  const withVerdict = (store: RunStore, text: string) => {
+    const run_id = createQueuedTurnRun(store, text);
+    store.insertJevVerdict({ run_id, category: "memory", breadth: 1, reasoning: 1, actions: 0, sets_rule: 0.9, rule_scope: null, lane: "memory", role: "default",
+      effort: null, cascade: null, save_outcome: "saved", route_outcome: "act", reason: "routed", skip_reason: null, quoted_turn_id: null });
+    store.recordChatTurn({ chat_id: "555", run_id, role: "user", text });
+    return run_id;
+  };
+  it("a fix row then a save row: the save row gets dig_deeper", () => {
+    const store = RunStore.openInMemory();
+    const run_id = withVerdict(store, "那条不对，记成：我住在悉尼");
+    const fix = store.insertDecision({ ...dec(run_id, "memory.kind", "fix"), created_at: "2026-10-17T00:00:00.000Z" });
+    const save = store.insertDecision({ ...dec(run_id, "memory.kind", "fact"), created_at: "2026-10-17T00:00:05.000Z" });
+    recordTriageOverride(store, run_id, "run_new", "555");
+    expect(store.listDecisionOutcomes(fix)).toEqual([]);
+    expect(store.listDecisionOutcomes(save).map((o) => [o.signal, o.value])).toEqual([["dig_deeper", "memory"]]);
+    store.close();
+  });
+  it("a run whose only memory.kind row is fix/other records no memory.kind outcome", () => {
+    const store = RunStore.openInMemory();
+    const run_id = withVerdict(store, "随便聊聊");
+    const other = store.insertDecision(dec(run_id, "memory.kind", "other"));
+    recordTriageOverride(store, run_id, "run_new", "555");
+    expect(store.listDecisionOutcomes(other)).toEqual([]);
+    store.close();
+  });
+});
