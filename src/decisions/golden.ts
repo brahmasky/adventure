@@ -81,24 +81,31 @@ export async function runMemoryKindGoldenTick(i: Omit<GoldenTickInput, "items">)
   const env = i.env ?? process.env;
   const date = formatInstantInZone(i.now, resolveDisplayZone(env)).slice(0, 10);
   if (i.store.getGoldenRun(date, MEMORY_KIND_ID)) return { ran: false };
-  const answers: Array<{ model: string; answer: JevAnswer | undefined } | null> = [];
-  for (const g of MEMORY_KIND_GOLDEN) answers.push(await askGolden(i, g.text)); // sequential (Rev 2 item 8): one call at a time, never a burst
-  const complete = answers.every((a) => a !== null);
-  if (!complete) console.error("decisions: memory.kind golden set skipped (a call failed)");
-  const outcome: GoldenOutcome = complete ? judgeMemoryKindGolden(i.store, answers as Array<{ model: string; answer: JevAnswer | undefined }>, i.now, env) : "skipped";
+  const answers: Array<{ model: string; answer: JevAnswer }> = [];
+  let failure: string | null = null;
+  for (const g of MEMORY_KIND_GOLDEN) { // sequential (Rev 2 item 8); the first failed or malformed call ends the run, no further quota spent
+    const r = await askGolden(i, g.text);
+    if ("fail" in r) { failure = r.fail; break; }
+    answers.push(r);
+  }
+  if (failure) console.error(`decisions: memory.kind golden set skipped (${failure})`);
+  const outcome: GoldenOutcome = failure ? "skipped" : judgeMemoryKindGolden(i.store, answers, i.now, env);
   i.store.recordGoldenRun({ local_date: date, entry_id: MEMORY_KIND_ID, outcome, created_at: i.now });
   return { ran: true, outcome };
 }
 
-async function askGolden(i: Omit<GoldenTickInput, "items">, text: string): Promise<{ model: string; answer: JevAnswer | undefined } | null> {
+/** A transport failure or a missing / non-choice answer is INCONCLUSIVE, never a miss. */
+async function askGolden(i: Omit<GoldenTickInput, "items">, text: string): Promise<{ model: string; answer: JevAnswer } | { fail: string }> {
   const built = buildTreeState({ userText: text, recentTurns: [], turnChars: 0, modality: "text", lastHougeTurn: null, quotedTurn: null },
     (x) => i.store.redactSecretValues(x), [TREE_MEMORY_KIND]);
-  if (!built.ok) return null;
+  if (!built.ok) return { fail: built.skip };
   const r = await i.client({ state: built.state, questions: { [TREE_MEMORY_KIND.id]: toJevQuestion(TREE_MEMORY_KIND) } });
-  return r.ok ? { model: r.model, answer: r.answers[TREE_MEMORY_KIND.id] } : null;
+  if (!r.ok) return { fail: r.reason };
+  const answer = r.answers[TREE_MEMORY_KIND.id];
+  return answer?.type === "choice" ? { model: r.model, answer } : { fail: "no_choice_answer" };
 }
 
-function judgeMemoryKindGolden(store: RunStore, answers: ReadonlyArray<{ model: string; answer: JevAnswer | undefined }>, now: string, env: NodeJS.ProcessEnv): GoldenOutcome {
+function judgeMemoryKindGolden(store: RunStore, answers: ReadonlyArray<{ model: string; answer: JevAnswer }>, now: string, env: NodeJS.ProcessEnv): GoldenOutcome {
   const moved = answers.find((a) => a.model !== MEMORY_KIND_BAR.model);
   if (moved) openAlertedIncident(store, { kind: "decision_bar_stale", subject: MEMORY_KIND_ID, detail: { entry: MEMORY_KIND_ID, model: moved.model, bar_model: MEMORY_KIND_BAR.model }, env, now });
   else resolveOpenIncidents(store, STALE, MEMORY_KIND_ID, now);

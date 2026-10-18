@@ -1019,6 +1019,7 @@ describe("runTelegramDaemon — the audit chokepoint (slice 2)", () => {
     const root = projectRoot();
     let calls = 0;
     const sent: string[] = [];
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined); // the no-key golden ticks log their skip; assert it, keep output pristine
     try {
       await runTelegramDaemon({
         store,
@@ -1040,8 +1041,10 @@ describe("runTelegramDaemon — the audit chokepoint (slice 2)", () => {
       const attempts = store.getLedgerEvents().filter((e) => e.event_type === "llm_attempt" && e.payload.role !== "injection" && e.payload.role !== "memory_kind");
       expect(attempts.length).toBeGreaterThan(0);
       expect(attempts.every((e) => typeof e.run_id === "string")).toBe(true);
+      expect(err.mock.calls.flat().some((l) => String(l).includes("memory.kind golden set skipped"))).toBe(true);
       expect(attempts.every((e) => e.payload.outcome === "ok" && String(e.payload.request_key).startsWith(`${e.run_id}:`))).toBe(true);
     } finally {
+      err.mockRestore();
       store.close();
     }
   });

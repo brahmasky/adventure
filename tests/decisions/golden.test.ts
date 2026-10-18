@@ -118,4 +118,37 @@ describe("memory.kind golden set", () => {
     expect(await runMemoryKindGoldenTick({ store: t, client: down, now: NOW, env: {} })).toEqual({ ran: true, outcome: "skipped" });
     s.close(); t.close();
   });
+  // A false drift page reaches Paco; an outage or a malformed reply must read as "unknown", and stop spending quota.
+  it("a call failing midway skips the day, opens no drift, and makes no further calls", async () => {
+    const s = RunStore.openInMemory(); let n = 0;
+    const flaky = async (req: JevRequest): Promise<JevResult> => { n += 1; return n === 4 ? { ok: false, reason: "error", detail: "x" } : kindAnswering(truth)(req); };
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect(await runMemoryKindGoldenTick({ store: s, client: flaky, now: NOW, env: {} })).toEqual({ ran: true, outcome: "skipped" });
+    expect(n).toBe(4);
+    expect(s.listOpenIncidents().filter((x) => x.kind === "decision_golden_drift")).toEqual([]);
+    expect(err.mock.calls.flat().join(" ")).toContain("skipped (error)");
+    err.mockRestore(); s.close();
+  });
+  it("an ok reply without a choice answer is skipped, not a drift claim", async () => {
+    const s = RunStore.openInMemory();
+    const bad = async (): Promise<JevResult> => ({ ok: true, model: "jev-1.13.0", input_tokens: 1, latency_ms: 1, answers: {} });
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect(await runMemoryKindGoldenTick({ store: s, client: bad, now: NOW, env: {} })).toEqual({ ran: true, outcome: "skipped" });
+    expect(s.listOpenIncidents().filter((x) => x.kind === "decision_golden_drift")).toEqual([]);
+    err.mockRestore(); s.close();
+  });
+  it("a well-formed answer under the 0.85 bar is a real miss and pages drift", async () => {
+    const s = RunStore.openInMemory();
+    const weak = async (): Promise<JevResult> => ({ ok: true, model: "jev-1.13.0", input_tokens: 1, latency_ms: 1,
+      answers: { memory_kind: { type: "choice", choice: "other", probabilities: { other: 0.6, fix: 0.1, rule: 0.1, fact: 0.1, both: 0.1 }, confidence: 0.6 } } });
+    expect(await runMemoryKindGoldenTick({ store: s, client: weak, now: NOW, env: {} })).toEqual({ ran: true, outcome: "drift" });
+    expect(s.listOpenIncidents().some((x) => x.kind === "decision_golden_drift" && x.subject === "memory.kind")).toBe(true);
+    s.close();
+  });
+  it("a moved model alias pages decision_bar_stale and the day is stale", async () => {
+    const s = RunStore.openInMemory();
+    expect(await runMemoryKindGoldenTick({ store: s, client: kindAnswering(truth, "jev-1.14.0"), now: NOW, env: {} })).toEqual({ ran: true, outcome: "stale" });
+    expect(s.listOpenIncidents().some((x) => x.kind === "decision_bar_stale" && x.subject === "memory.kind")).toBe(true);
+    s.close();
+  });
 });
