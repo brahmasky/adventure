@@ -24,8 +24,8 @@ export const MIN_QUOTE_CHARS_CJK = 3;
 const HAN_ONLY = /^\p{Script=Han}+$/u;
 
 function quoteTooShort(quote: string): boolean {
-  // Only letters and digits count: punctuation and spaces carry no words, so "。。。" or "!!!!!!" is never a quote.
-  const q = normalizeForEvidence(quote).replace(/[^\p{L}\p{N}]/gu, "");
+  // Only letters, combining marks and digits count: punctuation and spaces carry no words, so "。。。" or "!!!!!!" is never a quote.
+  const q = normalizeForEvidence(quote).replace(/[^\p{L}\p{M}\p{N}]/gu, "");
   if (q.length === 0) return true;
   return Array.from(q).length < (HAN_ONLY.test(q) ? MIN_QUOTE_CHARS_CJK : MIN_QUOTE_CHARS);
 }

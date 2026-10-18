@@ -55,10 +55,17 @@ describe("checkFactSide", () => {
     expect(f(1, "south")).toEqual({ ok: false, reason: "no_evidence" });
     expect(f(1, "noodle")).toMatchObject({ ok: true });
   });
-  it("punctuation-only quotes are refused however long", () => {
-    const f = (quote: string) => checkFactSide({ kind: "fact", fact: "Paco likes it", evidence: { line: 1, quote } }, lines, telegram, paco);
-    expect(f("。。。")).toEqual({ ok: false, reason: "no_evidence" });
-    expect(f("!!!!!!")).toEqual({ ok: false, reason: "no_evidence" });
+  // The quotes ARE on Paco's numbered line, so only the length rule can refuse them (checkEvidence alone would pass them).
+  const punct = memorySources({ own: { run_id: "run_2", turn_id: null, text: "记下来" }, steered: [], quoted: null,
+    recent: [{ run_id: "run_1", turn_id: "turn_1", text: "好吃。。。 wow!!!!!! ที่นี่" }], prior: "" });
+  const pf = (quote: string) => checkFactSide({ kind: "fact", fact: "Paco likes it", evidence: { line: 1, quote } }, evidenceLines(punct), telegram,
+    { text: pacoTextOf(punct), prior: "" });
+  it("punctuation-only quotes on Paco's own line are refused however long", () => {
+    expect(pf("。。。")).toEqual({ ok: false, reason: "no_evidence" });
+    expect(pf("!!!!!!")).toEqual({ ok: false, reason: "no_evidence" });
+  });
+  it("combining marks count toward the minimum (Thai vowel and tone marks are part of the word)", () => {
+    expect(pf("ที่นี่")).toMatchObject({ ok: true }); // 2 letters + 4 marks = 6
   });
   it("a fact lifted from the prior reply that Paco never wrote is refused, even with a valid quote", () => {
     const lifted = memorySources({ own: { run_id: "run_2", turn_id: null, text: "记下来，south side noodle shop" }, steered: [], quoted: null, recent: [],
