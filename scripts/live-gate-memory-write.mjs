@@ -362,10 +362,10 @@ async function gate(m, args, root, live, repo) {
 
 /** Ctrl-C / kill mid-run: the temp dir holds a copy of the live DB, so a signal removes it too (unless --keep). */
 function removeOnSignal(root, keep) {
-  for (const sig of ["SIGINT", "SIGTERM"]) process.once(sig, () => {
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(sig, () => {
     if (keep) console.error(`${sig}: temp dir kept (it holds a copy of the live DB; delete it when done): ${root}`);
     else { rmSync(root, { recursive: true, force: true }); console.error(`${sig}: temp dir removed`); }
-    process.exit(sig === "SIGINT" ? 130 : 143);
+    process.exit(sig === "SIGINT" ? 130 : sig === "SIGTERM" ? 143 : 129);
   });
 }
 

@@ -14,11 +14,14 @@ async function main() {
   for (let i = 2; i < process.argv.length; i += 1) {
     if (process.argv[i] === "--db") args.db = process.argv[++i]; else if (process.argv[i] === "--n") args.n = Number(process.argv[++i]); else throw new Error(`unknown argument ${process.argv[i]}`);
   }
-  const m = await load(["config/load-env.js", "run/run-store.js", "jev/jev-client.js", "jev/memory-kind-ask.js", "jev/questions/tree.js"]);
+  const m = await load(["config/load-env.js", "config/secret-broker.js", "run/run-store.js", "jev/jev-client.js", "jev/memory-kind-ask.js", "jev/questions/tree.js"]);
   m.loadHougeEnv();
+  // The daemon's memoryKindAsker passes the broker's value redactor (ADR 0015): the probe sends Paco's real texts the same way.
+  const redact = m.createSecretBroker(process.env).redact;
   const live = resolve(args.db ?? join(dirname(resolve(process.env.HOUGE_ENV_FILE ?? ".env")), "houge.sqlite"));
   if (!existsSync(live)) throw new Error(`no DB at ${live}`);
   const root = mkdtempSync("/tmp/hg-mkp-"); const copy = join(root, "copy.sqlite");
+  removeOnSignal(root);
   const src = new DatabaseSync(live, { readOnly: true }); src.exec(`VACUUM INTO '${copy.replace(/'/g, "''")}'`); src.close();
   const store = m.RunStore.open(copy);
   try {
@@ -33,7 +36,7 @@ async function main() {
     for (const t of turns) {
       const recent = store.getChatTurnsBefore(t.chat_id, 6, "1970-01-01T00:00:00.000Z", t.created_at, t.run_id);
       const t0 = Date.now();
-      const r = await m.askMemoryKind({ run_id: t.run_id, lang: /[一-鿿]/.test(t.text) ? "zh" : "en", client, store,
+      const r = await m.askMemoryKind({ run_id: t.run_id, lang: /[一-鿿]/.test(t.text) ? "zh" : "en", client, store, redact,
         state: { userText: t.text, recentTurns: recent, turnChars: 400, modality: "text", lastHougeTurn: m.lastHougeTurnOf(recent, Date.parse(t.created_at)), quotedTurn: null } });
       ms.push(Date.now() - t0);
       const a = r.answer;
@@ -48,6 +51,15 @@ async function main() {
     console.log(pass ? "PROBE: PASS" : "PROBE: FAIL");
     return pass ? 0 : 1;
   } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+}
+
+/** The copy holds the live DB: a kill or a closed terminal removes it too. */
+function removeOnSignal(root) {
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(sig, () => {
+    rmSync(root, { recursive: true, force: true });
+    console.error(`${sig}: temp dir removed`);
+    process.exit(sig === "SIGINT" ? 130 : sig === "SIGTERM" ? 143 : 129);
+  });
 }
 
 main().then((c) => process.exit(c), (e) => { console.error(`probe setup error: ${e instanceof Error ? e.message : String(e)}`); process.exit(2); });
