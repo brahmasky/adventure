@@ -79,7 +79,7 @@ Jev's `category` picks one of eleven paths. Any category with `sets_rule` = yes 
 | `answer` | answer lane (Sonnet composes from the thread); planner if any action is needed | — | built, stage B |
 | `lookup` | lookup lane (code query, search through the reader wall) | 2b: a topic recurring 3× in 14 days raises a wiki proposal | built, stage B |
 | `research` | planner, Thinking role | whether it becomes a lane: a stage C decision from the ledger | open |
-| `memory` | memory lane (its own `memory.kind` call): a rule, a fact or both saved; a fix (`memory_correct`) or nothing handed to the planner | — | live (2026-10-17) |
+| `memory` | memory lane (its own `memory.kind` call): a rule, a fact or both saved; a fix (`memory_correct`) or nothing handed to the planner | — | built on feat/memory-write (live after Paco's merge and kickstart) |
 | `self_change` | planner (`self_diagnose`, `self_write_propose`) | SP4; never a lane (approvals) | SP4 |
 | `machine_task` | planner (shell, files behind code gates) | stage 4 gates and standing approvals; never a lane | stage 4 |
 | `schedule` | planner (`schedule_task`) | schedule lane (one-shot extract, code validates); 2b schedule proposals | specified, stage C, not built |
@@ -108,7 +108,7 @@ The `memory.kind` golden set has no `fix` items: Jev does not clear 0.85 on `fix
 |---|---|---|---|---|
 | `turn.handler` | ack rule → Jev tree → Tiny → planner | Paco | lane choice; save-first rule with Undo | live, stage 1 |
 | `turn.gear` | rule → Jev scores → Default | Paco | planner role | live, stage 1 |
-| `memory.kind` | Jev `memory_kind`, its own request (provisional bar 0.85, armed at ship) → distill → other | Paco | write a lesson and/or fact, an Undo per item; hand a fix/nothing to the planner | live (2026-10-17) |
+| `memory.kind` | Jev `memory_kind`, its own request (provisional bar 0.85, armed at ship) → distill → other | Paco | write a lesson and/or fact, an Undo per item; hand a fix/nothing to the planner | built on feat/memory-write (live after Paco's merge and kickstart) |
 | `tool.injection` | floor → Jev → pass | tool | tighten only | live, 2a |
 | `turn.trust` | max rule (locked) | tool | adds taps | live, 2a |
 | `tool.shell_netread` | patterns | tool | trust level | live, 2a |

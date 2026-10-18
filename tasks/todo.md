@@ -9,12 +9,12 @@ the memory lane, with the trust anchor widened to Paco's thread (ADR 0010 amendm
 that saved. Evidence: full suite 4701 passing at the last full run (one unrelated smoke-test spawn timeout under load, passes
 alone); live gate run 5 on real Jev: every case PASS except cases 7 and 8 INCONCLUSIVE (a "记下来" sent inside a running planner
 turn is not acted on, 0 of 10 attempts, and no false save claim; the path never worked on main either, so no regression);
-rollback check PASS 13/13 (the previous build undoes every new-shape row on a migrated copy).
+rollback check PASS (17 checks + 1 INFO, 467b852) (the previous build undoes every new-shape row on a migrated copy).
 - [ ] Paco: merge `feat/memory-write` (ADR 0010, 0029 and 0030 amendments in `docs/decisions/` are his to sign off), rebuild
   `dist/`, kickstart `com.houge.daemon` (no run is in flight from this build; check `houge.parked` / `houge.kill` first).
 - Protected files touched: `src/decisions/` (digest, entries/memory-kind, entries/turn-handler, entry-ids, golden, registry,
   tap-outcomes), `src/omp/tools/lesson_write.json`, `src/run/run-ledger.ts`, `src/run/run-store.ts`,
-  `docs/decisions/` (0010, 0029, 0030, README).
+  `src/jev/decide.ts`, `docs/decisions/` (0010, 0029, 0030, README).
 - Open for Paco: (1) in-turn save, cases 7 and 8: a "记下来" typed while a planner turn runs is not acted on (the planner
   prompt now says to call `lesson_write`; still 0 of 10); decide whether a steered save request should reach the memory
   service directly. (2) The incident's `memory.kind` sits at the bar: Jev 0.87-0.89 in 2 runs, the model decided in 3; if

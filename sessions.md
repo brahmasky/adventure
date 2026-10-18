@@ -1657,5 +1657,5 @@ newest saving row, and the background pass skipping a run that saved. The live g
 newest-first numbering ("the first one" meant the newest), a planner that acknowledged without calling `lesson_write`, a
 golden set Jev cannot clear (`fix`), and gate logic that counted unrun cases as PASS; run 5 is all PASS except cases 7 and
 8 INCONCLUSIVE (a "记下来" inside a running turn is not acted on, 0 of 10, no false claim; same on main). The rollback check
-PASS 13/13. ADR 0010, 0029 and 0030 amended (Paco's hand to merge). On branch, not merged; kickstart owed after merge.
+PASS (17 checks + 1 INFO, 467b852). ADR 0010, 0029 and 0030 amended (Paco's hand to merge). On branch, not merged; kickstart owed after merge.
 
