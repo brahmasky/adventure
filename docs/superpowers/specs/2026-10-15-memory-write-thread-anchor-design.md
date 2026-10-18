@@ -46,7 +46,7 @@ Causes, none of them a Jev error:
 | R1 | Who decides lesson vs fact | A ladder entry, `memory.kind`, at the front door. One save service writes both stores. |
 | R2 | Which earlier messages are trusted content | Paco's turns in the thread window, capped 4 texts / 1,500 chars, his quoted message first. The newest message is the instruction; earlier ones are content only as far as it points at them. |
 | R3 | How a save takes effect | Save first, announced card with Undo per item (ADR 0030 R12: reversible, announced, over Paco's words). The turn-trust tap still applies on an untrusted turn. |
-| R4 | Background-pass overlap | The run that saved is skipped by the background pass. |
+| R4 | Background-pass overlap | A run that saved a fact is skipped by the background pass (a rule-only save is not). |
 | R5 | May lanes other than memory write facts | **Yes.** A `sets_rule` save-first on the answer and lookup lanes goes through the same entry and service. |
 | R6 | Arming `memory.kind`'s Jev rung | **Armed at ship on Paco's word, no calibration sitting**, on a provisional bar. Taps become labels. |
 | R7 | Steered messages | Plain code: Paco's newest message in the turn is the instruction. No keyword lists anywhere. |
@@ -213,7 +213,8 @@ assume a lesson today, each changed to read the union:
 
 ## 10. Background pass
 
-`runEpisodicDistillPass` drops **both** turns of any run in `memory_save_triggers`, beside `withoutTurnsOffPacosWorld`
+`runEpisodicDistillPass` drops **both** turns of any run in `memory_save_triggers` whose `kinds` include `fact` (a
+rule-only save stored no fact, so its run stays readable; final review, codex #4), beside `withoutTurnsOffPacosWorld`
 (`episodic-extract.ts:556-573`, the same shape as dev-session runs). The reply ("记下了…") would otherwise mint the same
 meta-fact or a duplicate. The watermark still advances. Content turns of earlier runs are kept; a duplicate they produce
 is dropped by `reconcileFact` or merged by the nightly duplicate merge (`HOUGE_EPISODIC_MERGE_SIM`). A duplicate on a
@@ -263,7 +264,7 @@ Fixtures use synthetic text, never the incident's.
 8. One save per turn across kinds (lane saved a fact ⇒ planner `lesson_write` gets `already_saved_this_turn`).
 9. Fact Undo: ADD ⇒ pruned; SUPERSEDE ⇒ new pruned and old restored; moved on ⇒ `changed_since`; second tap ⇒ already
    handled; records `save_undone`.
-10. Background pass drops both turns of a trigger run and keeps an earlier content run.
+10. Background pass drops both turns of a fact-saving trigger run, keeps a rule-only trigger run and an earlier content run.
 11. Migration: `add` accepted, rows identical, rollback build boots and undoes an `add`.
 12. `save_outcome` mapping for every result; the tool never reports `saved:true` without a committed id.
 13. Registry test: `memory.kind` declares `input: paco`, reversible announced effects, the provisional bar only under the
