@@ -274,6 +274,27 @@ describe("runMemoryWrite: a fact is a save like a rule (controller rulings 4-6)"
     expect(String(card?.text)).toContain("Paco prefers the south side noodle shop");
     h.store.close();
   });
+  // Final review (codex #1, downgraded): a reconcile UPDATE stores model-merged text, so the card must show what was
+  // STORED, never the pre-merge candidate — Paco can only Undo what he can see. The tool result carries ids, no text.
+  it("an UPDATE save's card shows the stored merged text, and the tool result carries no candidate text", async () => {
+    const MERGED = "Paco prefers the south side noodle shop to the north one";
+    const h = setup((store) => {
+      const old = store.addEpisodicFact({ chat_id: CHAT, fact: "Paco likes noodle shops", created_at: later(-90_000) });
+      return { distill: FACT, fact: JSON.stringify({ verdict: "UPDATE", id: old, text: MERGED }) };
+    });
+    const run_id = createQueuedTurnRun(h.store, "记下来吧");
+    const claim = h.store.claimRun(run_id, "w", 120)!;
+    const tool = h.worker.buildOmpTools(claim, CHAT).registry.get("lesson_write")!;
+    const r = await tool.execute!({ scope: "ask" });
+    expect(out(r)).toMatchObject({ saved: true, kinds: ["fact"], items: [{ kind: "fact", verb: "update" }] });
+    expect(JSON.stringify(out(r))).not.toContain("Paco prefers the south side noodle shop");
+    const change = h.store.getMemoryChangeByRun(run_id)!;
+    expect(h.store.getEpisodicFact(change.new_id!)!.fact).toBe(MERGED);
+    const card = String(drainOutbox(h.store).get(`memcard:${change.change_id}`)?.text);
+    expect(card).toContain(MERGED);
+    expect(card.replace(MERGED, "")).not.toContain("Paco prefers the south side noodle shop");
+    h.store.close();
+  });
   // Jev may fix the kind and the distill still find nothing: the memory.kind row is Jev's verdict, never a save.
   it("Jev fixed 'fact' but nothing was saved: the row is Jev's, no trigger, no fact, the refusal ledgered", async () => {
     const h = setup({ distill: '{"kind":"none"}' });
