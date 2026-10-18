@@ -118,6 +118,13 @@ truncated.
 | `rule_scope` | choice | `ask` or `research` (read only when `sets_rule` is yes) |
 | `breadth`, `reasoning`, `actions` | score | expected levels; the highest is the gear, `reasoning` sets the effort |
 
+`memory_kind` (`other`, `fix`, `rule`, `fact`, `both`; escape first) is asked in its **own** request (decision point
+`memory_kind`, audit role `memory_kind`), only by a save-first, and never in the tree request: one malformed answer would
+fail the whole call. It has no `jev_decisions` row; the `memory.kind` decision row carries it. It is armed on its
+provisional bar, never by a calibration row. The golden set has no `fix` items: Jev does not clear 0.85 on `fix` (first-option
+bias toward `other`; live gate 2026-10-18, 3 of 3 runs), so a fix request falls below the bar to the distill and the
+planner (`memory_correct`). A golden item the armed rung never clears would page every day.
+
 ## Bars
 
 All bars are code (`TREE_BAR_DEFAULTS`, `src/jev/tree-policy.ts`), stamped on every decision row as the threshold
@@ -133,6 +140,7 @@ version. There is no env override.
 | `lookup` lane | p at least 0.6, `rule` and `gear` armed, `breadth` at most 1.5 and `actions` at most 1.5; a message with a URL goes to the planner |
 | gear | the highest score: up to 1.2 Fast, below 2.5 Default, otherwise Thinking |
 | `rule_scope` | overrides its category's default scope (`research` for research, else `ask`) only at 0.6 or more |
+| `memory_kind` | 0.85, provisional (`memory.kind`) | on the memory lane a confident `fix` or `other` hands the turn to the planner; `rule`, `fact` or `both` save; below the bar the distill decides |
 
 Role floors per category: `answer` and `lookup` Fast, `research` Thinking, `self_change`, `machine_task`, `schedule`, `wiki`,
 `mail_calendar` and `other` Default. The route takes the higher of the gear and the floor. `think harder`, `认真想` or

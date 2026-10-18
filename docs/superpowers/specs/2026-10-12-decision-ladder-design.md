@@ -869,6 +869,10 @@ read digests and cross-source verified by a walled verifier. Its pages already c
    counts over 7 days, side by side. The clarify cap (A27) stays.
 4. **Rate limit:** at most 3 automatic improvements a day. The rest wait for the next day's digest.
 
+**Note (2026-10-17):** `improve.route`'s `fact` target has its handler: the memory write service's fact path
+(`CoreWorker.runMemoryWrite`, spec [2026-10-15-memory-write-thread-anchor-design.md](2026-10-15-memory-write-thread-anchor-design.md) §7),
+which writes the fact with its evidence, a `memory_changes` `add` Undo row and `fact_saved`.
+
 ## 8. Review surface and ladder moves
 
 ### 8.1 Daily digest
