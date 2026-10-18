@@ -16,17 +16,27 @@ describe("memorySources", () => {
     expect(s.thread.map((t) => t.text)).toEqual(["I think the south side noodle shop is better"]);
     expect(s.prior).toBe("Want me to remember that?");
   });
-  it("a steered message is the instruction; the parent objective and earlier steers become content, newest first", () => {
+  it("a steered message is the instruction; the parent objective and earlier steers become content, shown oldest first", () => {
     const s = memorySources({ own: m("run_p", "compare three NAS boxes"), steered: [m("run_s1", "skip the cheap one"), m("run_s2", "记下来")], quoted: null,
       recent: [m("run_0", "older message")], prior: "" });
     expect(s.instruction.run_id).toBe("run_s2");
-    expect(s.thread.map((t) => t.run_id)).toEqual(["run_s1", "run_p", "run_0"]);
+    expect(s.thread.map((t) => t.run_id)).toEqual(["run_0", "run_p", "run_s1"]);
   });
-  it("the quoted message leads the thread; the rest are the newest, at most four texts", () => {
+  it("the quoted message leads the thread; the rest are the newest four texts at most, shown oldest first", () => {
     const recent = ["r1", "r2", "r3", "r4", "r5"].map((t, k) => m(`run_${k}`, t));
     const s = memorySources({ own: m("run_x", "save that"), steered: [], quoted: m("run_q", "the quoted one"), recent, prior: "" });
-    expect(s.thread.map((t) => t.text)).toEqual(["the quoted one", "r1", "r2", "r3"]);
+    expect(s.thread.map((t) => t.text)).toEqual(["the quoted one", "r3", "r2", "r1"]);
     expect(s.thread).toHaveLength(MEMORY_THREAD_TEXT_CAP);
+  });
+  it("presents earlier messages chronologically so 'the first one' is the older; the instruction stays the last line", () => {
+    // recent arrives newest first; B is newer than A. Without the reorder, "save the first one" resolved to B.
+    const s = memorySources({ own: m("run_x", "把第一条记下来", null), steered: [], quoted: null, recent: [m("run_b", "B newer"), m("run_a", "A older")], prior: "" });
+    expect(evidenceLines(s).map((l) => [l.n, l.text])).toEqual([[1, "A older"], [2, "B newer"], [3, "把第一条记下来"]]);
+  });
+  it("keeps the four newest of five recent messages, shown oldest first", () => {
+    const recent = ["n1", "n2", "n3", "n4", "n5"].map((t, k) => m(`run_${k}`, t)); // n1 newest
+    const s = memorySources({ own: m("run_x", "save"), steered: [], quoted: null, recent, prior: "" });
+    expect(s.thread.map((t) => t.text)).toEqual(["n4", "n3", "n2", "n1"]);
   });
 });
 

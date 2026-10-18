@@ -3,8 +3,8 @@ import { flattenTurnText, type TranscriptLine } from "./episodic-evidence.js";
 /**
  * The memory save's trust anchor (spec 2026-10-15 §4, rulings R2 and R7). Fixed in code, never from the model or Jev:
  * Paco's newest message in the turn is the instruction (a steered one when there is one), his earlier turns are content
- * (the quoted one first, then the newest), and Houge's reply is reference only. The worker filters schedule-born turns out
- * before calling; this module picks, cuts and numbers. The lines the evidence check reads are the cut text the model saw.
+ * (the quoted one first, then the newest, shown oldest first), and Houge's reply is reference only. The worker filters schedule-born turns out
+ * before calling; this module picks, cuts and numbers. Selection keeps the newest within the caps; presentation is chronological, so "the first one" is the older message. The lines the evidence check reads are the cut text the model saw.
  */
 export const MEMORY_THREAD_TEXT_CAP = 4;
 export const MEMORY_THREAD_TEXT_CHARS = 600;
@@ -22,7 +22,7 @@ export interface MemorySourceInput {
   steered: readonly PacoMessage[];
   /** The user turn this message quotes, when it is Paco's. */
   quoted: PacoMessage | null;
-  /** Paco's earlier turns, newest first, the quoted one removed. */
+  /** Paco's earlier turns, newest first (as the worker reads them), the quoted one removed. */
   recent: readonly PacoMessage[];
   /** The quoted Houge reply, else the last Houge reply ("" if none). */
   prior: string;
@@ -32,7 +32,13 @@ export function memorySources(i: MemorySourceInput): MemorySources {
   const newest = i.steered.at(-1);
   const earlier = newest ? [...i.steered.slice(0, -1).reverse(), i.own] : [];
   const ordered = [...(i.quoted ? [i.quoted] : []), ...earlier, ...i.recent];
-  return { instruction: { ...(newest ?? i.own), text: flattenTurnText(newest?.text ?? i.own.text) }, thread: cutThread(ordered), prior: i.prior };
+  return { instruction: { ...(newest ?? i.own), text: flattenTurnText(newest?.text ?? i.own.text) }, thread: chronological(cutThread(ordered), i.quoted), prior: i.prior };
+}
+
+/** The cut thread newest-first in, presented oldest-first out; the quoted message (when it survived the cut) stays first. */
+function chronological(cut: PacoMessage[], quoted: PacoMessage | null): PacoMessage[] {
+  const lead = quoted && cut[0]?.run_id === quoted.run_id && cut[0]?.turn_id === quoted.turn_id ? cut.slice(0, 1) : [];
+  return [...lead, ...cut.slice(lead.length).reverse()];
 }
 
 /** At most four texts in the given order, each flattened and cut to 600 chars, 1,500 in all; an empty text is dropped. */

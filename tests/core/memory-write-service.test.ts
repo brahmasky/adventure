@@ -123,8 +123,8 @@ describe("runMemoryWrite: whose words", () => {
     const w = await h.worker.runMemoryWrite(claim, CHAT, {}, { source: "loop" });
     const q = h.seen.find((c) => /durable/i.test(c.system))!.question;
     expect(q).toContain("PACO'S INSTRUCTION:\n[3] remember: I fly to Melbourne next Wednesday");
-    expect(q).toContain("[1] compare three NAS boxes for home use");
-    expect(q).toContain(`[2] ${OPINION}`);
+    expect(q).toContain("[2] compare three NAS boxes for home use");
+    expect(q).toContain(`[1] ${OPINION}`);
     expect(out(w.result)).toMatchObject({ saved: true, kinds: ["fact"] });
     expect([h.store.memorySaveTriggered(parent), h.store.memorySaveTriggered(child)]).toEqual([true, true]);
     h.store.close();
