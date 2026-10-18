@@ -15,7 +15,7 @@ const OAUTH = "sk-ant-oat01-seeded-credential-token-0123456789";
 const broker = createSecretBroker({ TAVILY_API_KEY: TAVILY, CLAUDE_CODE_OAUTH_TOKEN: OAUTH, TYPESAFE_API_KEY: "test-key" });
 const LEAKY = `Use key ${TAVILY} and token ${OAUTH} for searches.`;
 const RULE: Says = { category: cat({ memory: 0.9 }), sets_rule: 0.95 };
-const distill = async () => ({ ok: true as const, output: { answer: JSON.stringify({ durable: true, lesson: LEAKY }) } });
+const distill = async () => ({ ok: true as const, output: { answer: JSON.stringify({ kind: "rule", lesson: LEAKY }) } });
 const memcards = (store: Parameters<typeof drainOutbox>[0]) => [...drainOutbox(store).entries()].filter(([k]) => k.startsWith("memcard:")).map(([, p]) => p);
 const expectMasked = (text: string) => { expect(text).not.toContain(TAVILY); expect(text).not.toContain(OAUTH); expect(text).toContain("«redacted»"); };
 

@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import type { EpisodicFactSaveResult, LessonSaveResult } from "../run/run-store.js";
-import { buildDistillQuestion, buildMemoryDistillQuestion, DISTILL_DISCIPLINE, LESSON_AVOID_MAX_CHARS, LESSON_MAX_CHARS, MEMORY_DISTILL_DISCIPLINE, parseDistillResult,
-  parseMemoryDistillResult, shouldRejectLesson, type MemoryDistill, type MemoryKindChoice } from "./distill.js";
+import { buildMemoryDistillQuestion, LESSON_AVOID_MAX_CHARS, LESSON_MAX_CHARS, MEMORY_DISTILL_DISCIPLINE, parseMemoryDistillResult, type MemoryDistill,
+  type MemoryKindChoice } from "./distill.js";
+import { safeReason } from "../domain/error-code.js";
 import { RATING_ACK_COMMENT_TEXT, RATING_ACK_TEXT, RATING_ASK_TEXT } from "./session-rating.js";
 import { decide } from "../decisions/decide.js";
 import { MEMORY_KIND, memoryKindJevRung, type MemoryKindDetail, type MemoryKindVerdict } from "../decisions/entries/memory-kind.js";
@@ -12,188 +13,16 @@ import { checkFactSide, checkLessonSide } from "./memory-backstops.js";
 import { evidenceLines, pacoTextOf, type MemorySources } from "./memory-sources.js";
 
 /**
- * The `lesson_write` capability adapter (ADR 0013, step ⓪·1): the legacy feedback
- * branch's distill flow as a loop tool — distill on the cheap chain → the deterministic
- * `shouldRejectLesson` backstop → reconcile-and-save (⓪·3 S1b: the injected `saveLesson`
- * reconciles the candidate against the scope's active lessons and applies the
- * ADD/SUPERSEDE/UPDATE/DROP verdict).
- *
- * TRUST ANCHORING: the distilled `feedback` and the `prior_answer` reference are fixed
- * at CONSTRUCTION time to trusted values (the turn's real user message and the real
- * prior assistant turn) — the model's per-step input is NEVER the source of either.
- * That keeps the provenance backstop meaningful: an injection-steered model cannot
- * launder poison text through the feedback channel, because the backstop always judges
- * the lesson against what the user actually said. The model's input may carry only a
- * `scope`, whitelisted against `allowedScopes` and CLAMPED (never errored) to
- * `defaultScope` otherwise — the clamp is noted in the result digest. Not durable /
- * rejected by the backstop ⇒ a successful no-op (`saved: false`), never an error: the
- * loop should keep composing either way.
- *
- * LAYER ROUTING (⓪·3 S1c): feedback that quotes a phrase existing VERBATIM in Houge's
- * own `src/*.ts` targets a CODE-OWNED surface (the evolution-notice header, report
- * scaffolding, buttons, notification wrappers) — a lesson can never change those. The
- * adapter refuses mechanically BEFORE distilling, with a digest (not an error) that
- * steers the model to `self_write_propose` in-turn.
+ * The `lesson_write` capability: `createMemoryWriteAdapter` (below) is the memory save as a loop tool and a lane service
+ * (spec 2026-10-15) — Paco's instruction, his cut thread and the prior reply are fixed by the worker (TRUST ANCHOR, never
+ * model input; the model may pick only a whitelisted, clamped `scope`), then memory.kind, the code backstops and the
+ * worker's one-transaction save. LAYER ROUTING (⓪·3 S1c): a phrase that exists VERBATIM in Houge's own `src/*.ts` targets
+ * a code-owned surface a memory can never change, so it is refused before any LLM call with a digest that steers the
+ * model to `self_write_propose`. The phrase helpers and the default checker live here too.
  */
-export interface LessonWriteAdapterConfig {
-  /** TRUST ANCHOR: the turn's real user message — the only text distilled as feedback. */
-  feedback: string;
-  /** TRUST ANCHOR: the real prior assistant answer from the thread ("" if none). */
-  priorAnswer: string;
-  /** Scopes the model may choose; anything else clamps to `defaultScope`. */
-  allowedScopes: readonly string[];
-  /** The turn's scope (e.g. the advisory hint via intentToScope) — the clamp target. */
-  defaultScope: string;
-  /** One cheap-chain call (the distill judgment) — the llm_answer-style adapter shape. */
-  llm: (input: { question: string; system: string }) => Promise<ToolAdapterResult> | ToolAdapterResult;
-  /**
-   * Reconcile-and-save (⓪·3 S1b): the worker binds getActiveLessons → reconcile →
-   * RunStore.saveReconciledLesson, so the verdict (add/supersede/update/drop) comes back
-   * for the result digest.
-   */
-  saveLesson: (candidate: { scope: string; text: string; avoid?: string }, now: string) => Promise<LessonSaveResult>;
-  /**
-   * Code-owned check (⓪·3 S1c): does this phrase exist verbatim in Houge's src/*.ts?
-   * Absent ⇒ the layer-routing refusal is skipped. Injectable for tests; the worker
-   * binds {@link createSrcPhraseChecker}.
-   */
-  srcContains?: (phrase: string) => boolean;
-  /**
-   * Thread-scoped code-owned check (⓪·3f F1): the recent USER turn texts, most recent
-   * first — a code-owned phrase quoted a couple of turns back ("把「…」换一下" → "换掉它")
-   * must still trip the refusal. Assistant turns are EXCLUDED by the caller on purpose:
-   * a prior Houge reply legitimately contains code-owned strings (the evolution-notice
-   * header rides replies; option lists quote candidate titles), and including them would
-   * poison every subsequent lesson_write with false refusals. The adapter bounds the
-   * scan (last {@link THREAD_USER_TURN_CAP} texts, ≤{@link THREAD_TEXT_CHAR_CAP} chars).
-   */
-  threadUserTexts?: readonly string[];
-  /**
-   * The run was born of a scheduled task (`runs.source = 'schedule'`): its objective is the
-   * schedule's stored goal, not Paco speaking, so the call is refused before any LLM call.
-   */
-  scheduledRun?: boolean;
-  /**
-   * Memory lane (ADR 0029 §5.5): the lane already saved from this turn's message. A planner `lesson_write` in the same
-   * turn gets this digest and spends nothing — no second row, no UPDATE superseding the card's lesson.
-   */
-  alreadySaved?: { id: number };
-  /** Injectable clock for deterministic tests. */
-  now?: () => Date;
-}
 
 /** The digest reason when this turn already saved a lesson (ADR 0029 §5.5). */
 export const ALREADY_SAVED_REASON = "already_saved_this_turn";
-
-export function createLessonWriteAdapter(
-  config: LessonWriteAdapterConfig
-): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
-  return async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
-    // A scheduled run's "user message" is the stored schedule goal: never a lesson source.
-    if (config.scheduledRun) {
-      return { ok: true, output: { saved: false, reason: "scheduled-run", hint: SCHEDULED_RUN_HINT } };
-    }
-    // One lesson per turn (ADR 0029 §5.5): checked before any LLM call.
-    if (config.alreadySaved) {
-      return { ok: true, output: { saved: false, reason: ALREADY_SAVED_REASON, lesson_id: config.alreadySaved.id } };
-    }
-    // Anchored, never model-supplied (any feedback/prior_answer in `input` is ignored).
-    const feedback = config.feedback;
-    if (typeof feedback !== "string" || feedback.trim().length === 0) {
-      return { ok: false, error: "anchored feedback must be a non-empty string" };
-    }
-    const priorAnswer = config.priorAnswer;
-
-    // Scope is the ONLY model-controlled field: whitelist + clamp, never error.
-    const requested = typeof input.scope === "string" ? input.scope.trim() : "";
-    const clamped = requested.length > 0 && !config.allowedScopes.includes(requested);
-    const scope = requested.length > 0 && !clamped ? requested : config.defaultScope;
-    const note = clamped ? `scope "${requested}" is not available; clamped to "${scope}"` : undefined;
-
-    // LAYER ROUTING (⓪·3 S1c): a quoted/verbatim phrase from the feedback that exists in
-    // src/ means the target text is code-owned — refuse (a digest, not an error) so the
-    // model pivots to self_write_propose in the same turn. Checked BEFORE distilling.
-    // ⓪·3f F1: the current message PLUS the recent user turns are scanned (the phrase is
-    // often quoted a turn or two back — "换掉它" alone carries nothing); current-message
-    // phrases keep precedence so single-turn behavior is unchanged.
-    // Phrases echoing Houge's CONVERSATIONAL strings are skipped first (S2 fix): a user
-    // naturally repeats what Houge just said ("这个问题反复出现…"), and that echo is
-    // feedback about behavior, not about a rendered code-owned surface.
-    if (config.srcContains) {
-      const codeOwned = extractThreadPhrases(feedback, config.threadUserTexts ?? [])
-        .filter((p) => !CONVERSATIONAL_SRC_STRINGS.some((s) => s.includes(p)))
-        .find((p) => config.srcContains!(p));
-      if (codeOwned) {
-        return {
-          ok: true,
-          output: {
-            saved: false,
-            reason: "code-owned",
-            phrase: codeOwned,
-            hint: CODE_OWNED_HINT,
-            ...(note ? { note } : {})
-          }
-        };
-      }
-    }
-
-    const distilled = await config.llm({
-      question: buildDistillQuestion(feedback, priorAnswer.slice(0, 1500), scope),
-      system: DISTILL_DISCIPLINE
-    });
-    if (!distilled.ok) {
-      return { ok: false, error: distilled.error };
-    }
-    const raw = typeof distilled.output.answer === "string" ? distilled.output.answer : "";
-    const verdict = parseDistillResult(raw);
-    if (!verdict.durable || !verdict.lesson) {
-      return {
-        ok: true,
-        output: { saved: false, scope, reason: "not a durable preference", ...(note ? { note } : {}) }
-      };
-    }
-    // Deterministic lesson-poisoning backstop (ADR 0010 §5): a lesson lifted from the
-    // untrusted prior answer (or over-long) is refused — reported, never saved.
-    if (shouldRejectLesson(verdict.lesson, feedback, priorAnswer)) {
-      return {
-        ok: true,
-        output: { saved: false, scope, reason: "rejected by the lesson backstop", ...(note ? { note } : {}) }
-      };
-    }
-    // The AVOID line rides the same backstop: a lifted or over-cap (> LESSON_AVOID_MAX_CHARS) avoid is dropped, not the lesson.
-    const avoid =
-      verdict.avoid && verdict.avoid.length <= LESSON_AVOID_MAX_CHARS && !shouldRejectLesson(verdict.avoid, feedback, priorAnswer)
-        ? verdict.avoid
-        : undefined;
-
-    const now = (config.now?.() ?? new Date()).toISOString();
-    const saved = await config.saveLesson({ scope, text: verdict.lesson, ...(avoid ? { avoid } : {}) }, now);
-    if (saved.verb === "drop") {
-      return {
-        ok: true,
-        output: { saved: false, scope, reason: "already covered by an existing lesson", ...(note ? { note } : {}) }
-      };
-    }
-    if (saved.verb === "capped") {
-      return { ok: true, output: { saved: false, scope, reason: "too-large", hint: LESSON_CAPPED_HINT, ...(note ? { note } : {}) } };
-    }
-    return {
-      ok: true,
-      output: {
-        saved: true,
-        verb: saved.verb,
-        scope,
-        lesson: saved.lesson,
-        ...(saved.supersededId !== undefined ? { supersededId: saved.supersededId } : {}),
-        ...(avoid ? { avoid } : {}),
-        // Layer routing (⓪·3 S2b iii): a repeat supersede of an ineffective lesson —
-        // the digest steers the model toward the code layer, in-turn.
-        ...(saved.escalate ? { escalate: true, hint: LESSON_ESCALATE_HINT } : {}),
-        ...(note ? { note } : {})
-      }
-    };
-  };
-}
 
 /** Memory A1 §2: the merge would exceed the size cap, so nothing was saved (the existing lesson is unchanged). */
 export const LESSON_CAPPED_HINT =
@@ -358,8 +187,9 @@ export function createMemoryWriteAdapter(c: MemoryWriteAdapterConfig): (input: R
     const now = (c.now?.() ?? new Date()).toISOString();
     try {
       return memoryResult(mergeSave(items, await c.save(plan, now)), scope, note);
-    } catch {
-      // A store error never crashes the turn and never claims a save (spec: no silent failure).
+    } catch (e) {
+      // A store error or a rolled-back inTx never crashes the turn and never claims a save; logged, never silent (spec §12).
+      console.error(`memory write: save failed: ${safeReason(e)}`);
       return memoryResult({ items, reason: "save_failed" }, scope, note);
     }
   };

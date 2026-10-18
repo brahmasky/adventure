@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createLessonWriteAdapter, createSrcPhraseChecker } from "../../src/capabilities/lesson-write.js";
+import { createMemoryWriteAdapter, createSrcPhraseChecker } from "../../src/capabilities/lesson-write.js";
+import { memorySources } from "../../src/capabilities/memory-sources.js";
 
 const roots: string[] = [];
 
@@ -22,21 +23,24 @@ describe("createSrcPhraseChecker", () => {
   it("saves a preference when an earlier user's regate quote only occurs inside aggregate", async () => {
     const srcContains = createSrcPhraseChecker(sourceRoot('const label = "aggregate";\n'));
     const saved: string[] = [];
-    const adapter = createLessonWriteAdapter({
-      feedback: "From now on, end every reply with 西瓜. Save that as a lesson.",
+    const feedback = "From now on, end every reply with 西瓜. Save that as a lesson.";
+    const adapter = createMemoryWriteAdapter({
+      sources: memorySources({ own: { run_id: "r", turn_id: null, text: feedback }, steered: [], quoted: null, recent: [], prior: "" }),
       threadUserTexts: ['Make an empty commit with message "regate".'],
-      priorAnswer: "",
       allowedScopes: ["ask"],
       defaultScope: "ask",
       srcContains,
-      llm: async () => ({ ok: true, output: { answer: '{"durable":true,"lesson":"End every reply with 西瓜"}' } }),
-      saveLesson: async (candidate) => {
-        saved.push(candidate.text);
-        return { verb: "add", id: 1, lesson: candidate.text, prunedIds: [] };
+      llm: async () => ({ ok: true, output: { answer: '{"kind":"rule","lesson":"End every reply with 西瓜"}' } }),
+      recorder: { record: () => null },
+      run_id: "r",
+      runSource: () => "telegram",
+      save: async (plan) => {
+        saved.push(plan.lesson!.text);
+        return { lesson: { verb: "add", id: 1, lesson: plan.lesson!.text, prunedIds: [] } };
       }
     });
 
-    expect(await adapter({ scope: "ask" })).toMatchObject({ ok: true, output: { saved: true, lesson: "End every reply with 西瓜" } });
+    expect(await adapter({ scope: "ask" })).toMatchObject({ ok: true, output: { saved: true, kinds: ["rule"], items: [{ kind: "rule", id: 1, verb: "add" }] } });
     expect(saved).toEqual(["End every reply with 西瓜"]);
   });
 

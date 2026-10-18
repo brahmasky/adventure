@@ -47,7 +47,7 @@ const laneLlm = (s: LlmScript = {}): Llm => async (input) => {
   if (q.startsWith(LANE_PREFACE)) return s.compose ? s.compose(input) : { ok: true, output: { answer: "放在书房更好。", model: "claude-sonnet-5-5" } };
   if (q.startsWith(REWRITE_INSTRUCTION)) return s.rewrite ? s.rewrite(input) : { ok: true, output: { answer: "SAME" } };
   if (q.includes("<<<UNTRUSTED>>>")) return s.reader ? s.reader(input) : { ok: true, output: { answer: READ_OK } };
-  if (/durable/i.test(String(input.system ?? ""))) return { ok: true, output: { answer: JSON.stringify({ durable: true, lesson: "Keep replies short." }) } };
+  if (/durable/i.test(String(input.system ?? ""))) return { ok: true, output: { answer: JSON.stringify({ kind: "rule", lesson: "Keep replies short." }) } };
   return { ok: true, output: { answer: JSON.stringify({ verdict: "ADD", theme: "format" }) } };
 };
 const web = () => vi.fn(async (_input: Record<string, unknown>): Promise<ToolAdapterResult> => ({ ok: true,
@@ -144,7 +144,7 @@ describe("a stated rule with a lane (stage B §4: save first, then settle-after 
   const RULE_ANSWER: Says = { ...ANSWER, sets_rule: 0.95 };
   it("a save the lesson service refuses (not durable): the lane still replies and settles ONCE after it, save_outcome not_durable", async () => {
     const notDurable: Llm = async (input) =>
-      (/durable/i.test(String(input.system ?? "")) ? { ok: true, output: { answer: JSON.stringify({ durable: false }) } } : laneLlm()(input));
+      (/durable/i.test(String(input.system ?? "")) ? { ok: true, output: { answer: JSON.stringify({ kind: "none" }) } } : laneLlm()(input));
     const s = setup(treeSays(RULE_ANSWER), { llm: notDurable });
     const t = s.turn("以后回复短一点，你觉得 NAS 放哪里好？");
     expect((await s.worker.triageTurn(t.input)).kind).toBe("lane_reply");

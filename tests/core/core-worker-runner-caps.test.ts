@@ -5,6 +5,7 @@ import { Gateway } from "../../src/gateway/gateway.js";
 import { RUNNER_TIMEOUT_BUFFER_MS, seatBudgetMs } from "../../src/llm/registry.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { RoleResolver } from "../../src/omp/role-resolver.js";
+import { resolveEmbedConfig } from "../../src/llm/embeddings.js";
 import { RunStore, type LlmCallRole } from "../../src/run/run-store.js";
 import { pinEnabledFlags, pinOmpEnv, shortTmp } from "../helpers/omp-env.js";
 import { bridgeTurn, ompWorker } from "../helpers/omp-worker.js";
@@ -45,7 +46,8 @@ describe("runner caps follow the called seat's chain (M3)", () => {
     expect(caps()("wiki_build")).toBe(seat("answer") + seat("reader") * 2 * 2);
   });
 
-  it("lesson_write = its distill seat + its reconcile seat", () => {
-    expect(caps()("lesson_write")).toBe(seat("distill") + seat("consolidate"));
+  // spec 2026-10-15 §9: the distill, the lesson and the fact reconcile, and the fact's one embedding
+  it("lesson_write = its distill seat + two reconcile seats + one embed", () => {
+    expect(caps()("lesson_write")).toBe(seat("distill") + 2 * seat("consolidate") + resolveEmbedConfig(process.env).timeoutMs);
   });
 });

@@ -14,7 +14,7 @@ import {
 // be a hole, so it keeps every column a consumer reads (see the consumer table in the plan).
 
 const RULE: Says = { category: cat({ memory: 0.9 }), sets_rule: 0.95 };
-const notDurable = scriptedLlm({ distill: async () => ({ ok: true, output: { answer: JSON.stringify({ durable: false }) } }) });
+const notDurable = scriptedLlm({ distill: async () => ({ ok: true, output: { answer: JSON.stringify({ kind: "none" }) } }) });
 
 interface PinCase {
   name: string; text: string; fetch: () => unknown; opts?: HarnessOptions; turn?: TurnOptions;

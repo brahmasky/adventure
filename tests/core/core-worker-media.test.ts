@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CoreWorker, type MediaWorkerDeps } from "../../src/core/core-worker.js";
 import { evolutionLaneSettled, resetEvolutionLaneForTests } from "../../src/core/evolution-lane.js";
-import { DISTILL_DISCIPLINE } from "../../src/capabilities/distill.js";
+import { MEMORY_DISTILL_DISCIPLINE } from "../../src/capabilities/distill.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { echoLine, mediaFailureReply, type TelegramMediaRef } from "../../src/media/media-config.js";
@@ -90,14 +90,14 @@ async function toolObjective(run: string, media: MediaWorkerDeps): Promise<strin
   const calls: Array<Record<string, unknown>> = [];
   const llm = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
     calls.push(input);
-    return { ok: true, output: { question: input.question, answer: '{"durable":false}', model: "f", provider: "f" } };
+    return { ok: true, output: { question: input.question, answer: '{"kind":"none"}', model: "f", provider: "f" } };
   };
   const w = ompWorker(store, tmp.dir, { llm, media });
   const t = bridgeTurn(store, w, run, tmp.dir);
   const claim: ClaimedRun = { run_id: run, contract: t.turn.contract };
   await (w as unknown as { resolveOmpMessage(c: ClaimedRun): Promise<unknown> }).resolveOmpMessage(claim);
   await t.call("lesson_write", {});
-  return String(calls.find((c) => c.system === DISTILL_DISCIPLINE)?.question);
+  return String(calls.find((c) => c.system === MEMORY_DISTILL_DISCIPLINE)?.question);
 }
 
 describe("the ingest step on the omp turn (spec 2026-09-29)", () => {
@@ -168,13 +168,13 @@ describe("the ingest step on the omp turn (spec 2026-09-29)", () => {
     const calls: Array<Record<string, unknown>> = [];
     const llm = async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
       calls.push(input);
-      return { ok: true, output: { question: input.question, answer: '{"durable":false}', model: "f", provider: "f" } };
+      return { ok: true, output: { question: input.question, answer: '{"kind":"none"}', model: "f", provider: "f" } };
     };
     const next = createQueuedTurnRun(store, "save that as a lesson: answer shorter");
     const w = ompWorker(store, tmp.dir, { llm });
     const r = await bridgeTurn(store, w, next, tmp.dir).call("lesson_write", {});
     expect(r.content).not.toContain("code-owned");
-    expect(calls.some((c) => c.system === DISTILL_DISCIPLINE)).toBe(true); // it reached the distill call
+    expect(calls.some((c) => c.system === MEMORY_DISTILL_DISCIPLINE)).toBe(true); // it reached the distill call
   });
 
   it.each([

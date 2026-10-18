@@ -18,7 +18,7 @@ let store: RunStore;
 beforeEach(() => {
   tmp = shortTmp("hsr-");
   store = RunStore.openInMemory();
-  writeFileSync(join(tmp.dir, "s.json"), JSON.stringify({ "*": { text: '{"durable":true,"lesson":"be brief"}' } }));
+  writeFileSync(join(tmp.dir, "s.json"), JSON.stringify({ "*": { text: '{"kind":"rule","lesson":"be brief"}' } }));
   Object.assign(process.env, {
     HOUGE_OMP_BIN: FAKE_OMP_BIN, HOUGE_OMP_SANDBOX: "0", HOUGE_OMP_ENV_PASSTHROUGH: "FAKE_OMP_SCENARIO,FAKE_OMP_ARGV_LOG",
     FAKE_OMP_SCENARIO: join(tmp.dir, "s.json"), FAKE_OMP_ARGV_LOG: join(tmp.dir, "argv.log")

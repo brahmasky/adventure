@@ -59,7 +59,7 @@ export const scriptedLlm = (s: LlmScript = {}): Llm => async (input) => {
   if (q.startsWith(LANE_PREFACE)) return s.compose ? s.compose(input) : { ok: true, output: { answer: "放在书房更好。", model: "claude-sonnet-5-5" } };
   if (q.startsWith(REWRITE_INSTRUCTION)) return { ok: true, output: { answer: "SAME" } };
   if (q.includes("<<<UNTRUSTED>>>")) return { ok: true, output: { answer: READ_OK } };
-  if (/durable/i.test(sys)) return s.distill ? s.distill(input) : { ok: true, output: { answer: JSON.stringify({ durable: true, lesson: "Keep replies short." }) } };
+  if (/durable/i.test(sys)) return s.distill ? s.distill(input) : { ok: true, output: { answer: JSON.stringify({ kind: "rule", lesson: "Keep replies short." }) } };
   return { ok: true, output: { answer: JSON.stringify({ verdict: "ADD", theme: "format" }) } };
 };
 export const picks = (answer: string): Llm => async () => ({ ok: true, output: { answer } });

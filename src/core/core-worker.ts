@@ -47,9 +47,11 @@ import type { GoogleAuthClient } from "../capabilities/google-auth.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import { resolveHttpFetchTimeoutMs } from "../web/http-fetch.js";
 import { chatContextSince, feedTurnText, resolveChatContextTurnChars, resolveChatContextTurns } from "../capabilities/intent.js";
-import { ALREADY_SAVED_REASON, createLessonWriteAdapter, createSrcPhraseChecker, LESSON_CAPPED_HINT } from "../capabilities/lesson-write.js";
+import { createMemoryWriteAdapter, createSrcPhraseChecker, LESSON_CAPPED_HINT, type MemoryPlan, type MemorySaveResult } from "../capabilities/lesson-write.js";
+import { memorySources, type MemorySources, type PacoMessage } from "../capabilities/memory-sources.js";
+import type { MemoryKindAsk } from "../jev/memory-kind-ask.js";
 import { OMP_LESSON_SCOPES } from "../run/lesson-render.js";
-import { reconcileLesson, type LessonReconcileOutcome } from "../capabilities/reconcile.js";
+import { reconcileLesson, type LessonReconcileOutcome, type ReconcileVerdict } from "../capabilities/reconcile.js";
 import {
   ATTRIBUTION_TURN_CAP,
   buildAttributionQuestion,
@@ -125,10 +127,10 @@ import {
   type WikiVerifyOutcome
 } from "../capabilities/wiki.js";
 import { resolveEpisodicCoreCap, resolveLessonCapPerScope, RunStore } from "../run/run-store.js";
-import type { ChatTurnRow, ClaimedRun, EpisodicFactRow, JevVerdictInsert, LessonRow, LessonSaveResult, LessonSource, WikiPageRow } from "../run/run-store.js";
+import type { ChatTurnRow, ClaimedRun, EpisodicFactRow, EpisodicFactSaveResult, JevVerdictInsert, LessonRow, LessonSaveResult, LessonSource, MemorySaveKind, WikiPageRow } from "../run/run-store.js";
 import { renderCoreFactsBlock, renderEpisodicFactsBlock, retrieveEpisodicFacts } from "../run/episodic-retrieval.js";
 import { renderWikiBlock, retrieveWikiPages } from "../run/wiki-retrieval.js";
-import { resolveEpisodicEnabled } from "../capabilities/episodic-extract.js";
+import { cleanMergedText, RECONCILE_NEIGHBOR_K, reconcileFact, resolveEpisodicEnabled } from "../capabilities/episodic-extract.js";
 import { embedText, resolveEmbedConfig } from "../llm/embeddings.js";
 import { ToolRegistry } from "../tools/tool-registry.js";
 import { TURN_ACTIONS } from "../contracts/task-contract.js";
@@ -291,8 +293,8 @@ type AnsweredSettle = Extract<TriageSettle, { kind: "answered" }>;
 type SettleFor = (route: Route, save: SaveOutcome, handler?: VerdictHandler, outcome?: "act" | "fallback") => AnsweredSettle;
 /** What `saveFirst` did (stage B §4): `settled` = the verdict was written inside the committed save transaction. */
 type SaveStep =
-  | { settled: true; save_outcome: "saved"; note: string; verdict_id: string | null; saved: SavedMemory; w: LessonWriteOutcome }
-  | { settled: false; save_outcome: SaveOutcome; note: null; verdict_id: null; w: LessonWriteOutcome };
+  | { settled: true; save_outcome: "saved"; note: string; verdict_id: string | null; saved: SavedMemory; w: MemoryWriteOutcome }
+  | { settled: false; save_outcome: SaveOutcome; note: null; verdict_id: null; w: MemoryWriteOutcome };
 /** What triageTurn's catch needs: the turn's think-harder reading, its quote, and the answered rows once Jev answered. */
 interface TriageHeld { thinkHarder: boolean; quote: QuoteRef | null; answered?: AnsweredSettle }
 /** Reasons whose route the tree took on Jev's (or the code's) word; every other reason is a fallback to Default. */
@@ -306,8 +308,8 @@ type HandlerResult = DecideResult<TurnHandlerVerdict, TreeDetail>;
 interface PendingLadderRow { entry: AnyEntry; r: AnyDecideResult; ctx: { run_id: string | null; tool_call_id: string | null } }
 const NO_SCORES: VerdictScores = { breadth: null, reasoning: null, actions: null, sets_rule: null };
 
-/** What one `runLessonWrite` did: the tool result, and — only when the save transaction committed — what landed. */
-export interface LessonWriteOutcome {
+/** What one `runMemoryWrite` did: the tool result, and — only when the save transaction committed — what landed. */
+export interface MemoryWriteOutcome {
   result: ToolAdapterResult;
   saved?: SavedMemory;
   /** True only after `inTransaction` returned with a saved row (a rolled-back `inTx` leaves it false). */
@@ -316,13 +318,17 @@ export interface LessonWriteOutcome {
   racedBy?: SavedMemory;
 }
 
-/** The caller of `runLessonWrite`: the planner's loop tool or the memory lane. */
-export interface LessonWriteOptions {
+/** The caller of `runMemoryWrite`: the planner's loop tool or a lane's save-first. */
+export interface MemoryWriteOptions {
   source: "loop" | "lane";
   /** The turn's abort signal: once aborted, nothing is saved. */
   signal?: AbortSignal;
-  /** Runs inside the save transaction after the lesson, lesson_changes row and lesson_saved event; must not touch in-memory state. */
-  inTx?: (saved: LessonSaveResult, change_id: string) => void;
+  /** memory_kind's own Jev call (spec Rev 3 §3), passed by a save-first (Task 11); never by the planner's tool. */
+  askJev?: () => Promise<MemoryKindAsk>;
+  /** The memory lane: a confident fix / other hands the turn to the planner (Task 11). */
+  escapes?: boolean;
+  /** Runs inside the save transaction after every row of the save; must not touch in-memory state. */
+  inTx?: (saved: SavedMemory) => void;
 }
 
 /** omp planner seams: tests point these at tmp dirs (the real preflight runs against `distDir`). */
@@ -2672,43 +2678,153 @@ export class CoreWorker {
   }
 
   /**
-   * ONE lesson-write pipeline for both callers (ADR 0029 §5.5): the `lesson_write` loop tool (source "loop") and the
-   * memory lane ("lane"). TRUST ANCHORS: feedback = the effective objective (a voice transcript when there is one, else
-   * the claim objective — the turn's real user message); prior_answer = the real prior assistant turn. The model's or
-   * Jev's input can carry ONLY a scope, whitelisted and clamped by the adapter. The save, its lesson_changes row, the
-   * lesson_saved event and the caller's `inTx` writes land in one transaction; the in-memory guard is set only after
-   * that transaction committed. A turn that ended (abort signal, or its state replaced) can no longer save.
+   * ONE memory-write pipeline for both callers (spec 2026-10-15): the `lesson_write` loop tool ("loop") and a lane's
+   * save-first ("lane"). TRUST ANCHORS (§4): Paco's newest message is the instruction, his earlier turns the content, the
+   * prior reply reference only — all from the store, never from the model or Jev. Model calls first, then ONE transaction;
+   * the in-memory guard is set only after it committed. A turn that ended (abort, state replaced) can no longer save.
    */
-  async runLessonWrite(claim: ClaimedRun, chatId: string, input: Record<string, unknown>, o: LessonWriteOptions): Promise<LessonWriteOutcome> {
+  async runMemoryWrite(claim: ClaimedRun, chatId: string, input: Record<string, unknown>, o: MemoryWriteOptions): Promise<MemoryWriteOutcome> {
     const state = this.ompTurns.get(claim.run_id);
     if (!state) return { result: { ok: false, error: "no turn state for this run" }, committed: false };
-    const outcome: LessonWriteOutcome = { result: { ok: false, error: "lesson write did not run" }, committed: false };
-    const adapter = createLessonWriteAdapter({
-      feedback: state.objective ?? claim.contract.objective,
-      // spec §2.2.1: a quoted Houge reply is the answer being corrected, not whatever Houge said last
-      priorAnswer: state.quote?.role === "houge" ? state.quote.turn.text : state.anchor.priorAnswer,
-      allowedScopes: ["ask", "research"],
-      defaultScope: state.anchor.defaultScope,
+    const outcome: MemoryWriteOutcome = { result: { ok: false, error: "memory write did not run" }, committed: false };
+    const held = heldRecorder(this.decisionRecorder);
+    const sources = this.memorySourcesFor(claim, chatId, state);
+    const adapter = createMemoryWriteAdapter({
+      sources, allowedScopes: ["ask", "research"], defaultScope: state.anchor.defaultScope,
       llm: (i) => this.llmAdapterFor(claim.run_id, LESSON_WRITE_ROLES.distill)(i),
+      ...(o.askJev ? { askJev: o.askJev } : {}), escapes: o.escapes ?? false, recorder: held.recorder, run_id: claim.run_id, runSource: (r) => this.runStore.runSource(r),
       // A scheduled run's objective is the stored schedule goal, not Paco: refused in code.
       scheduledRun: this.runStore.runSource(claim.run_id) === "schedule",
-      // Layer routing (⓪·3 S1c): feedback quoting a code-owned literal (verbatim in src/*.ts) is refused with a digest.
-      srcContains: createSrcPhraseChecker(this.projectRoot),
-      threadUserTexts: this.lessonThreadUserTexts(state),
-      ...(state.memorySavedThisTurn?.lesson ? { alreadySaved: { id: state.memorySavedThisTurn.lesson.id } } : {}),
-      saveLesson: (candidate, now) => this.saveLessonForTurn(claim, chatId, state, candidate, now, o, outcome)
+      // Layer routing (⓪·3 S1c): an instruction quoting a code-owned literal (verbatim in src/*.ts) is refused with a digest.
+      srcContains: createSrcPhraseChecker(this.projectRoot), threadUserTexts: this.lessonThreadUserTexts(state),
+      ...(state.memorySavedThisTurn ? { alreadySaved: savedIds(state.memorySavedThisTurn) } : {}),
+      save: (plan, now) => this.saveMemoryForTurn({ claim, chatId, state, plan, now, o, outcome, held, instructionRun: sources.instruction.run_id })
     });
     try {
       outcome.result = await adapter(input);
-      // A parallel call saved first: the same digest the adapter-level guard gives, never "already covered".
-      if (outcome.racedBy !== undefined) {
-        outcome.result = { ok: true, output: { saved: false, reason: ALREADY_SAVED_REASON, lesson_id: outcome.racedBy.lesson?.id } };
-      }
     } catch (error) {
-      // A thrown save (a rolled-back `inTx`, a store error) is a failed tool call, never a crash; nothing committed.
-      outcome.result = { ok: false, error: `lesson save failed: ${safeReason(error)}` };
+      // The adapter guards its save; anything else it throws is reported, never a crash; nothing committed (spec §12).
+      console.error(`memory write: adapter threw: ${safeReason(error)}`);
+      outcome.result = { ok: true, output: { saved: false, kinds: [], items: [], reason: "save_failed" } };
+    } finally {
+      // memory.kind's row, once, when the save transaction did not carry it; a lost turn writes no decisions row (ruling 14)
+      if (!o.signal?.aborted && this.ompTurns.get(claim.run_id) === state) held.write();
     }
+    this.recordNotSaved(claim.run_id, outcome, o.source);
     return outcome;
+  }
+
+  /** Plan Rev 2 item 9: why nothing was saved, as a closed reason the live gate and the evidence read (ids-only ledger). */
+  private recordNotSaved(run_id: string, w: MemoryWriteOutcome, source: "loop" | "lane"): void {
+    const out = w.result.ok ? w.result.output : undefined;
+    if (!out || out.saved !== false || typeof out.reason !== "string") return;
+    const reason = MEMORY_NOT_SAVED_REASONS.has(out.reason) ? out.reason : "other";
+    try {
+      this.runStore.appendRunLedgerEvent(run_id, "memory_not_saved", "core", { reason, source });
+    } catch (e) {
+      console.error(`memory write: memory_not_saved not written: ${safeReason(e)}`);
+    }
+  }
+
+  /**
+   * Spec §4 (R2, R7): the turn's own message, the steered ones merged into it, the quote and the thread — Paco's only:
+   * a user turn of a `telegram` run (Rev 2 item 3: never a schedule, cli or event run). memorySources does not dedupe, so
+   * the quoted turn and this run's own turns leave `recent` here; every instruction candidate is cut to MEMORY_INSTRUCTION_CHARS.
+   */
+  private memorySourcesFor(claim: ClaimedRun, chatId: string, state: OmpTurnState): MemorySources {
+    const fromPaco = (t: ChatTurnRow): boolean => t.role === "user" && this.runStore.runSource(t.run_id) === "telegram";
+    const msg = (t: ChatTurnRow): PacoMessage => ({ run_id: t.run_id, turn_id: t.turn_id, text: t.text });
+    // Read only here, inside the live turn: steeredUserTurns matches runs.worker_id, which a cleared lease nulls.
+    // This run's and its worker's telegram user turns, filtered in SQL before the LIMIT (Rev 2.1 item 2), newest first.
+    const after = this.runStore.steeredUserTurns(chatId, state.threadCutAt, claim.run_id, this.leaseWorker(claim.run_id), STEERED_READ_CAP);
+    const own = after.find((t) => t.run_id === claim.run_id);
+    const steered = after.filter((t) => t.run_id !== claim.run_id).reverse().map(msg).map(instructionCut); // oldest first
+    const q = state.quote?.role === "user" && fromPaco(state.quote.turn) ? state.quote.turn : null;
+    const recent = [...state.turnCtx.recentTurns].reverse().filter((t) => fromPaco(t) && t.turn_id !== q?.turn_id && t.run_id !== claim.run_id).map(msg);
+    return memorySources({ own: instructionCut({ run_id: claim.run_id, turn_id: own?.turn_id ?? null, text: state.objective ?? claim.contract.objective }), steered,
+      quoted: q ? msg(q) : null, recent, prior: state.quote?.role === "houge" ? state.quote.turn.text : state.anchor.priorAnswer });
+  }
+
+  /** This run's lease worker; a steered run is claimed under it (planner-supervisor.ts steer). "" (matches no run) when unreadable. */
+  private leaseWorker(run_id: string): string {
+    try {
+      return this.runStore.getRunLease(run_id).worker_id ?? "";
+    } catch (e) {
+      console.error(`memory write: lease read failed: ${safeReason(e)}`);
+      return "";
+    }
+  }
+
+  /** Spec §7: every model call (the lesson reconcile; the fact's embed, neighbours and reconcile), then one transaction; the guard after commit. */
+  private async saveMemoryForTurn(x: MemorySaveCtx): Promise<MemorySaveResult> {
+    // Rev 2 item 12: the two sides' model calls are independent: run them together, before the transaction opens
+    const [lessonV, factV] = await Promise.all([
+      x.plan.lesson ? this.reconcileLessonVerdict(lessonCandidate(x.plan), this.memoryReconcileLlm(x.claim.run_id)) : Promise.resolve(undefined),
+      x.plan.fact ? this.planFact(x.claim.run_id, x.chatId, x.plan.fact.text) : Promise.resolve(undefined)
+    ]);
+    // The turn ended while the model calls ran: nothing durable may land on a finished run (spec §5.1).
+    if (x.o.signal?.aborted || this.ompTurns.get(x.claim.run_id) !== x.state) return { lost: true };
+    // One save per turn: the adapter read the guard before its LLM calls, so a parallel call may have saved since.
+    if (x.state.memorySavedThisTurn) { x.outcome.racedBy = x.state.memorySavedThisTurn; return { racedBy: savedIds(x.state.memorySavedThisTurn) }; }
+    // ONE BEGIN IMMEDIATE (inTransaction is not re-entrant): nothing called inside opens its own.
+    const c = this.runStore.inTransaction(() => this.commitMemory(x, lessonV, factV));
+    if (c.saved.lesson || c.saved.fact) {
+      x.held.committed();
+      x.state.memorySavedThisTurn = c.saved;
+      Object.assign(x.outcome, { saved: c.saved, committed: true });
+    }
+    return c.result;
+  }
+
+  /** Inside the transaction: each side, then (when anything saved) the trigger rows, memory.kind's row and the caller's inTx. */
+  private commitMemory(x: MemorySaveCtx, lessonV: LessonReconcileOutcome | undefined, factV: FactPlan | undefined): { result: MemorySaveResult; saved: SavedMemory } {
+    const lesson = x.plan.lesson && lessonV ? this.commitLesson(x, lessonV) : undefined;
+    const fact = x.plan.fact && factV ? this.commitFact(x, factV) : undefined;
+    const saved: SavedMemory = { ...(lesson?.saved ? { lesson: lesson.saved } : {}), ...(fact?.saved ? { fact: fact.saved } : {}) };
+    if (saved.lesson || saved.fact) {
+      const kinds: MemorySaveKind[] = [...(saved.lesson ? ["rule" as const] : []), ...(saved.fact ? ["fact" as const] : [])];
+      for (const run of new Set([x.claim.run_id, x.instructionRun])) this.runStore.insertMemorySaveTrigger(run, kinds, x.now);
+      x.held.write();
+      x.o.inTx?.(saved);
+    }
+    return { result: { ...(lesson ? { lesson: lesson.result } : {}), ...(fact ? { fact: fact.result } : {}) }, saved };
+  }
+
+  private commitLesson(x: MemorySaveCtx, v: LessonReconcileOutcome): { result: LessonSaveResult; saved?: SavedLesson } {
+    const s = this.saveLessonVerdict(lessonCandidate(x.plan), v, x.o.source, x.now);
+    if (s.id === undefined) return { result: s };
+    const change_id = this.recordLessonChange(x.claim.run_id, x.chatId, { ...s, id: s.id }, x.o.source, x.now);
+    const theme = this.runStore.getLesson(s.id)?.theme ?? v.theme; // the row's theme (an UPDATE takes the target's), not the verdict's
+    return { result: s, saved: savedLessonOf({ ...s, id: s.id }, theme, change_id) };
+  }
+
+  /** Spec §7: the fact row (Paco's, not core, full salience), its `add` Undo row (old_ids = the fact it replaced) and fact_saved. */
+  private commitFact(x: MemorySaveCtx, p: FactPlan): { result: EpisodicFactSaveResult; saved?: SavedFact } {
+    const f = x.plan.fact!;
+    const s = this.runStore.saveReconciledFact({ chat_id: x.chatId, fact: f.text, participants: ["paco"], source_turn_ids: f.source_turn_ids, is_core: false,
+      salience: 1.0, embedding: p.embedding, ...(p.embedding ? { embedding_model: resolveEmbedConfig(process.env).model } : {}) }, p.verdict, x.now);
+    if (s.id === undefined || s.verb === "drop") return { result: s };
+    const change = this.runStore.insertFactAddChange({ new_id: s.id, superseded_id: s.supersededId ?? null, pruned_ids: s.prunedIds, run_id: x.claim.run_id, chat_id: x.chatId, now: x.now });
+    this.runStore.appendRunLedgerEvent(x.claim.run_id, "fact_saved", "core", { fact_id: s.id, verb: s.verb, change_id: change.change_id });
+    return { result: s, saved: { id: s.id, text: s.fact, change_id: change.change_id, verb: s.verb, ...(s.supersededId !== undefined ? { supersededId: s.supersededId } : {}) } };
+  }
+
+  /** Spec §6-§7: embed (best-effort), neighbours, the fact reconcile on the consolidate role; an UPDATE's merged text is re-checked. */
+  private async planFact(run_id: string, chatId: string, text: string): Promise<FactPlan> {
+    let embedding: Float32Array | null = null;
+    try { embedding = await this.embedAdapter(text); } catch (e) { console.error(`memory write: embed failed: ${safeReason(e)}`); }
+    const neighbours = this.runStore.getEpisodicFactsForReconcile(chatId, text, RECONCILE_NEIGHBOR_K, embedding);
+    const verdict = cleanMergedText(await reconcileFact(text, neighbours, this.memoryReconcileLlm(run_id)));
+    // a merged UPDATE stores other text than was embedded: store no vector (the daily backfill embeds it)
+    return { verdict, embedding: verdict.verdict === "UPDATE" && verdict.text ? null : embedding };
+  }
+
+  /** The reconcile compares ride the same UNRESERVED adapter as the distill (never the turn ledger, which may be drained here). */
+  private memoryReconcileLlm(run_id: string): (i: { question: string; system: string }) => Promise<{ ok: true; answer: string } | { ok: false }> {
+    return async (i) => {
+      const a = await this.llmAdapterFor(run_id, LESSON_WRITE_ROLES.reconcile)(i);
+      return a.ok && typeof a.output.answer === "string" ? { ok: true, answer: a.output.answer } : { ok: false };
+    };
   }
 
   /**
@@ -2721,39 +2837,6 @@ export class CoreWorker {
     const q = state.quote?.role === "user" && fromPaco(state.quote.turn) ? state.quote.turn : null;
     const recent = [...state.turnCtx.recentTurns].reverse().filter((t) => fromPaco(t) && t.turn_id !== q?.turn_id);
     return [...(q ? [q] : []), ...recent].map((t) => t.text);
-  }
-
-  /** runLessonWrite's save: reconcile (async, outside any transaction), then the atomic save; guard set after commit. */
-  private async saveLessonForTurn(
-    claim: ClaimedRun, chatId: string, state: OmpTurnState, candidate: { scope: string; text: string; avoid?: string }, now: string,
-    o: LessonWriteOptions, outcome: LessonWriteOutcome
-  ): Promise<LessonSaveResult> {
-    // The compare rides the same UNRESERVED adapter as the distill (never the turn ledger, which may be drained here).
-    const r = await this.reconcileLessonVerdict(candidate, async (i) => {
-      const a = await this.llmAdapterFor(claim.run_id, LESSON_WRITE_ROLES.reconcile)(i);
-      return a.ok && typeof a.output.answer === "string" ? { ok: true, answer: a.output.answer } : { ok: false };
-    });
-    // The turn ended while the reconcile ran: nothing durable may land on a finished run (spec §5.1).
-    if (o.signal?.aborted || this.ompTurns.get(claim.run_id) !== state) return { verb: "drop", lesson: candidate.text, prunedIds: [] };
-    // One lesson per turn: the adapter read the guard before its LLM calls, so a parallel call may have saved since.
-    if (state.memorySavedThisTurn) { outcome.racedBy = state.memorySavedThisTurn; return { verb: "drop", lesson: candidate.text, prunedIds: [] }; }
-    let change_id: string | undefined;
-    const saved = this.runStore.inTransaction(() => {
-      const s = this.saveLessonVerdict(candidate, r, o.source, now);
-      if (s.id === undefined) return s;
-      const id = this.recordLessonChange(claim.run_id, chatId, { ...s, id: s.id }, o.source, now);
-      o.inTx?.(s, id);
-      change_id = id;
-      return s;
-    });
-    // `inTransaction` returned: only now is anything committed (a throwing `inTx` rolled back and threw past here).
-    if (saved.id !== undefined && change_id) {
-      const theme = this.runStore.getLesson(saved.id)?.theme ?? r.theme; // the row's theme (an UPDATE takes the target's), not the verdict's
-      const lesson = savedLessonOf({ ...saved, id: saved.id }, theme, change_id);
-      state.memorySavedThisTurn = { lesson };
-      Object.assign(outcome, { saved: { lesson }, committed: true });
-    }
-    return saved;
   }
 
   // ── Jev System One, lane 1 (ADR 0029 §5): the decision before the planner ─────────────────
@@ -3104,7 +3187,7 @@ export class CoreWorker {
    */
   private async saveFirst(i: TriageInput, state: OmpTurnState, lang: Lang, route: Route, settleFor: SettleFor): Promise<SaveStep> {
     const v: { id: string | null } = { id: null };
-    const w = await this.runLessonWrite(i.claim, this.chatOf(i.claim.run_id), { scope: route.save?.scope ?? "ask" }, { source: "lane", signal: i.signal,
+    const w = await this.runMemoryWrite(i.claim, this.chatOf(i.claim.run_id), { scope: route.save?.scope ?? "ask" }, { source: "lane", signal: i.signal,
       inTx: () => { v.id = this.settleTriage(i, state, lang, settleFor(route, "saved"), { inTx: true }); } });
     if (w.committed) state.triageFinalized = true;
     if (!w.committed || !w.saved) return { settled: false, save_outcome: saveOutcomeOf(w), note: null, verdict_id: null, w };
@@ -3535,9 +3618,9 @@ export class CoreWorker {
       return async (input) => this.executeWikiUpsert(turnCtx, name, input, claim);
     }
     if (name === "lesson_write") {
-      // One pipeline with the memory lane (ADR 0029 §5.5); the trust anchors live in runLessonWrite.
+      // One pipeline with the memory lane (ADR 0029 §5.5); the trust anchors live in runMemoryWrite.
       return async (input) => {
-        const w = await this.runLessonWrite(claim, this.chatOf(claim.run_id), input, { source: "loop" });
+        const w = await this.runMemoryWrite(claim, this.chatOf(claim.run_id), input, { source: "loop" });
         // Paco 2026-10-12: a committed save is announced on the Undo card whatever route the turn took, the planner's own tool included
         if (w.committed && w.saved) this.announceSave(claim.run_id, w.saved);
         return w.result;
@@ -4383,10 +4466,53 @@ function scoresOf(a: Record<string, JevAnswer>): VerdictScores {
   return { breadth: score(a.breadth), reasoning: score(a.reasoning), actions: score(a.actions), sets_rule: a.sets_rule?.type === "noul" ? a.sets_rule.noul : null };
 }
 
-/** The lesson-write adapter's own reason for a cap refusal (lesson-write.ts:171); every other non-save is "not durable". */
-function saveOutcomeOf(w: LessonWriteOutcome): "not_durable" | "capped" {
+/**
+ * The memory write's cap refusal (`too-large`); every other non-save — nothing_to_save, no_evidence, distill_failed,
+ * save_failed, already covered — is `not_durable` (spec §8). A fact or both save is committed and never reaches here.
+ */
+function saveOutcomeOf(w: MemoryWriteOutcome): "not_durable" | "capped" {
   return w.result.ok && w.result.output.reason === "too-large" ? "capped" : "not_durable";
 }
+
+/** User turns read after the claim when looking for steered messages (a turn steers a handful at most). */
+const STEERED_READ_CAP = 20;
+/**
+ * The instruction's cut (Task 3 carry): the newest of Paco's messages goes to the distill whole up to this many chars, so a
+ * pasted wall of text never makes an unbounded prompt. Above a Telegram text (4,096) only for a long voice transcript.
+ */
+export const MEMORY_INSTRUCTION_CHARS = 2000;
+const instructionCut = (m: PacoMessage): PacoMessage => ({ ...m, text: m.text.slice(0, MEMORY_INSTRUCTION_CHARS) });
+/** The closed reasons `memory_not_saved` carries (the adapter's and the worker's); anything else is recorded as `other`. */
+const MEMORY_NOT_SAVED_REASONS: ReadonlySet<string> = new Set(["scheduled-run", "already_saved_this_turn", "code-owned", "distill_failed", "nothing_to_save",
+  "no_evidence", "rejected_by_backstop", "already_covered", "too-large", "turn_ended", "save_failed", "fix", "memory_other"]);
+interface FactPlan { verdict: ReconcileVerdict; embedding: Float32Array | null }
+interface MemorySaveCtx {
+  claim: ClaimedRun; chatId: string; state: OmpTurnState; plan: MemoryPlan; now: string; o: MemoryWriteOptions; outcome: MemoryWriteOutcome;
+  held: HeldRecorder; instructionRun: string;
+}
+interface HeldRecorder { recorder: DecisionRecorder; write(): void; committed(): void }
+
+/**
+ * memory.kind's row, held so it lands inside the save transaction (spec §7) — or, when nothing committed (no save, a
+ * rollback), once after the call. `write` inside a transaction that rolls back is undone with it and written again later.
+ * A row written without a save is Jev's (or the distill's) verdict only: nothing reads it as a save (the trigger rows,
+ * `committed` and `saveOutcomeOf` do).
+ */
+function heldRecorder(inner: DecisionRecorder): HeldRecorder {
+  let row: Parameters<DecisionRecorder["record"]> | null = null;
+  let done = false;
+  return {
+    recorder: { record: (entry, r, ctx) => { row = [entry, r, ctx]; return null; } },
+    write: () => { if (row && !done) inner.record(...row); },
+    committed: () => { done = true; }
+  };
+}
+
+/** The already-saved digest's ids, kind-neutral: a fact-only save names its fact_id, never `lesson_id: undefined`. */
+const savedIds = (s: SavedMemory): { lesson_id?: number; fact_id?: number } =>
+  ({ ...(s.lesson ? { lesson_id: s.lesson.id } : {}), ...(s.fact ? { fact_id: s.fact.id } : {}) });
+const lessonCandidate = (p: MemoryPlan): { scope: string; text: string; avoid?: string } =>
+  ({ scope: p.scope, text: p.lesson!.text, ...(p.lesson!.avoid ? { avoid: p.lesson!.avoid } : {}) });
 
 /** The cascade's bound on the user's path (Paco, 2026-10-07; plan Decision 14): the whole pick, every leg included. */
 export const CASCADE_TIMEOUT_MS = 20_000;
@@ -4450,8 +4576,8 @@ function loopToolTimeoutMs(name: string, seat: (role: LlmCallRole) => number): n
       // Pure in-process compute — no LLM call; the runner buffer is ample headroom.
       return RUNNER_TIMEOUT_BUFFER_MS;
     case "lesson_write":
-      // LESSON_WRITE_ROLES: distill + the reconcile compare (two seat calls, each on its own chain).
-      return seat(LESSON_WRITE_ROLES.distill) + seat(LESSON_WRITE_ROLES.reconcile);
+      // spec 2026-10-15 §9: the distill, the lesson and the fact reconcile (one seat call each), and one embedding
+      return seat(LESSON_WRITE_ROLES.distill) + 2 * seat(LESSON_WRITE_ROLES.reconcile) + resolveEmbedConfig(process.env).timeoutMs;
     case "wiki_build":
     case "wiki_refine":
       // One synthesis call (answer) + the verify ensemble on the reader (each pass may retry once).

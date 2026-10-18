@@ -55,7 +55,7 @@ const isCascade = (input: Record<string, unknown>) => /exactly one of these two 
  */
 const lessonLlm = (h: { distill?: () => void; reconcile?: () => void; cascade?: Llm } = {}): Llm => async (input) => {
   if (isCascade(input)) return h.cascade ? h.cascade(input) : { ok: false, error: "no cascade fake" };
-  if (isDistill(input)) { h.distill?.(); return { ok: true, output: { answer: JSON.stringify({ durable: true, lesson: "Keep replies short." }) } }; }
+  if (isDistill(input)) { h.distill?.(); return { ok: true, output: { answer: JSON.stringify({ kind: "rule", lesson: "Keep replies short." }) } }; }
   h.reconcile?.();
   return { ok: true, output: { answer: JSON.stringify({ verdict: "ADD", theme: "format" }) } };
 };
@@ -380,7 +380,7 @@ describe("triageTurn — the memory lane and save-then-route (spec §3)", () => 
   });
   it("the card names the saved row's theme: an UPDATE onto a themed lesson shows that theme, not the verdict's", async () => {
     const llm: Llm = async (input) => isDistill(input)
-      ? { ok: true, output: { answer: JSON.stringify({ durable: true, lesson: "Keep replies short and lead with the result." }) } }
+      ? { ok: true, output: { answer: JSON.stringify({ kind: "rule", lesson: "Keep replies short and lead with the result." }) } }
       : { ok: true, output: { answer: JSON.stringify({ verdict: "UPDATE", id: 1, text: "Be concise; lead with the result.", theme: "nonsense" }) } };
     const { store, worker, turn } = setup(treeSays(RULE), ARM, { llm });
     store.addLesson({ scope: "ask", text: "Be concise.", theme: "format", source: "loop", created_at: new Date().toISOString() });
@@ -399,7 +399,7 @@ describe("triageTurn — the memory lane and save-then-route (spec §3)", () => 
     store.close();
   });
   it("memory lane, nothing durable: no card, the planner on Default, decision fallback, verdict fallthrough:not_durable", async () => {
-    const notDurable: Llm = async () => ({ ok: true, output: { answer: JSON.stringify({ durable: false }) } });
+    const notDurable: Llm = async () => ({ ok: true, output: { answer: JSON.stringify({ kind: "none" }) } });
     const { store, worker, turn } = setup(treeSays(RULE), ARM, { llm: notDurable });
     const t = turn("谢谢你");
     expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough", route: { role: "default" } });
@@ -421,8 +421,11 @@ describe("triageTurn — the memory lane and save-then-route (spec §3)", () => 
   it("memory lane, turn aborted after the committed save: verdict fallthrough:aborted + fallback, no lane_replies row", async () => {
     const ac = new AbortController();
     const { store, worker, turn } = setup(treeSays(RULE));
-    const real = store.getLesson.bind(store); let once = true;
-    vi.spyOn(store, "getLesson").mockImplementation((id: number) => { if (once) { once = false; ac.abort(); } return real(id); }); // first read is post-commit
+    // abort right after the save transaction returns (the one that wrote the trigger row): committed, then killed
+    const real = store.inTransaction.bind(store); let saving = false; let once = true;
+    const trigger = store.insertMemorySaveTrigger.bind(store);
+    vi.spyOn(store, "insertMemorySaveTrigger").mockImplementation((...a) => { saving = true; trigger(...a); });
+    vi.spyOn(store, "inTransaction").mockImplementation(<T>(fn: () => T): T => { const r = real(fn); if (saving && once) { once = false; ac.abort(); } return r; });
     const t = turn("以后回复短一点");
     const out = await worker.triageTurn({ ...t.input, signal: ac.signal });
     expect(out.kind).not.toBe("lane_reply");
@@ -704,7 +707,7 @@ describe("triageTurn — one finalisation per turn, atomic with the lane's save"
     expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", decision: "fallback" }]);
     expect(decisions(store, t.run_id).filter((r) => r.decision === "fallback")).toHaveLength(6);
     expect(verdictOf(store, t.run_id)).toMatchObject({ save_outcome: "not_durable", handler_outcome: "fallthrough:not_durable", route_outcome: "fallback" });
-    const again = await worker.runLessonWrite(t.claim, "555", { scope: "ask" }, { source: "loop" });
+    const again = await worker.runMemoryWrite(t.claim, "555", { scope: "ask" }, { source: "loop" });
     expect(again.committed).toBe(true);
     store.close();
   });
@@ -893,7 +896,7 @@ describe("the outcome sink: buttons, the saved-lesson failure line, and routeEnd
     store.close();
   });
   it("routeEnd never overwrites a lane fall-through, and ignores a verdict id that is not the run's", async () => {
-    const notDurable: Llm = async () => ({ ok: true, output: { answer: JSON.stringify({ durable: false }) } });
+    const notDurable: Llm = async () => ({ ok: true, output: { answer: JSON.stringify({ kind: "none" }) } });
     const { store, worker, turn } = setup(treeSays(RULE), ARM, { llm: notDurable });
     const t = turn("以后回复短一点");
     const out = await worker.triageTurn(t.input);
