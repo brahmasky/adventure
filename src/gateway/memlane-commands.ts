@@ -4,7 +4,7 @@ import { oncePerTrigger, replyTo } from "./memory-commands.js";
 import { TRIAGE_OVERRIDE_LIMIT, TRIAGE_OVERRIDE_WINDOW_DAYS, triageOverrideSince, triageOverrideSubject } from "../jev/jev-incidents.js";
 import { openAlertedIncident } from "../run/incident-alert.js";
 import type { RunStore } from "../run/run-store.js";
-import { decisionOf, recordSaveUndone, savedMemoryKindOf, recordTapOutcome } from "../decisions/tap-outcomes.js";
+import { recordSaveUndone, savedMemoryKindOf, recordTapOutcome } from "../decisions/tap-outcomes.js";
 
 /** Lane card taps (ADR 0029 §5.6, stage B §6). Undo is compare-and-set; "Dig deeper" is the override label. */
 export { TRIAGE_OVERRIDE_LIMIT, TRIAGE_OVERRIDE_WINDOW_DAYS };
