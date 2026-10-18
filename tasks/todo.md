@@ -5,21 +5,24 @@ rebuilds `dist/` and kickstarts.** Spec `docs/superpowers/specs/2026-10-15-memor
 `docs/superpowers/plans/2026-10-17-memory-write.md` (18 tasks, each two-stage reviewed). "Remember this" is now a ladder
 decision: `memory.kind` (Jev `memory_kind` in its own request, provisional bar 0.85, armed at ship; distill below the bar) on
 the memory lane, with the trust anchor widened to Paco's thread (ADR 0010 amendment) and the lane writing rules and facts
-(ADR 0029 amendment); a fact carries evidence, every save gets an Undo per item, the background episodic pass skips the run
-that saved. Evidence: full suite 4701 passing at the last full run (one unrelated smoke-test spawn timeout under load, passes
-alone); live gate run 5 on real Jev: every case PASS except cases 7 and 8 INCONCLUSIVE (a "记下来" sent inside a running planner
-turn is not acted on, 0 of 10 attempts, and no false save claim; the path never worked on main either, so no regression);
-rollback check PASS (17 checks + 1 INFO, 467b852) (the previous build undoes every new-shape row on a migrated copy).
+(ADR 0029 amendment). A fact carries evidence and must share a real token with its cited Paco line; a correction or removal of
+stored memory goes to the planner; every save gets an Undo per item; the background episodic pass skips a run only when it saved
+a fact; the save path checks for abort. Final fix wave `37467bf..8d970b7`.
+Evidence at `8d970b7`: typecheck clean; 338 files / 4716 tests passed; build OK. Live gate run 6 (code `8d970b7`): exit 3
+INCONCLUSIVE, no FAILs. Cases 1, 2, 3, 4, 5, 6, G, silent and skips PASS; 7 and 8 INCONCLUSIVE because the planner never called
+`lesson_write` (0 of 12 attempts across 6 runs). `memory.kind` on the incident was decided by the model in 4 of 6 runs (Jev just
+under 0.85). Final reviews (correctness on Opus, security, testing, codex whole-diff): all findings fixed or ruled, see the build
+ledger. Rollback check PASS (17 checks + 1 INFO, 467b852) (the previous build undoes every new-shape row on a migrated copy).
 - [ ] Paco: merge `feat/memory-write` (ADR 0010, 0029 and 0030 amendments in `docs/decisions/` are his to sign off), rebuild
   `dist/`, kickstart `com.houge.daemon` (no run is in flight from this build; check `houge.parked` / `houge.kill` first).
 - Protected files touched: `src/decisions/` (digest, entries/memory-kind, entries/turn-handler, entry-ids, golden, registry,
   tap-outcomes), `src/omp/tools/lesson_write.json`, `src/run/run-ledger.ts`, `src/run/run-store.ts`,
   `src/jev/decide.ts`, `docs/decisions/` (0010, 0029, 0030, README).
-- Open for Paco: (1) in-turn save, cases 7 and 8: a "记下来" typed while a planner turn runs is not acted on (the planner
-  prompt now says to call `lesson_write`; still 0 of 10); decide whether a steered save request should reach the memory
-  service directly. (2) The incident's `memory.kind` sits at the bar: Jev 0.87-0.89 in 2 runs, the model decided in 3; if
-  misses recur, raise the question of a calibrated row. (3) The golden set has no `fix` items: Jev does not clear 0.85 on
-  `fix` (live gate 2026-10-18, 3 of 3 runs); a fix request falls to the distill and the planner's `memory_correct`.
+- Open for Paco: (1) in-turn save, cases 7 and 8: a save request typed while a planner turn runs is not acted on (the planner
+  prompt says to call `lesson_write`; still 0 of 12 attempts across 6 runs); decide whether a steered save request should reach
+  the memory service directly. (2) The incident's `memory.kind` is decided by the model in 4 of 6 runs, with Jev just under the
+  0.85 bar; if misses recur, raise the question of a calibrated row. (3) The golden set has no `fix` items: Jev does not clear 0.85
+  on `fix` (live gate 2026-10-18, 3 of 3 runs); a fix request falls to the distill and the planner's `memory_correct`.
   (4) Revisit when fact Undo taps exceed one in five fact saves over 30 days, or the golden set drifts twice in 30 days.
 - Next build: decision ladder stage 2b (`improve.route`; its `fact` target now has a handler).
 - Deferred minors from the ledger: gate case 4's 50-turn window can leave `triggerEnd` empty; the rollback script's

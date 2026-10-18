@@ -1653,9 +1653,13 @@ to 3 (Rev 3 after the plan review moved `memory_kind` into its own Jev request, 
 call), then 18 subagent-driven tasks with two-stage reviews: the thread anchor and backstops (rule lifting rule, fact
 evidence), a kind-aware write adapter, one memory write service shared by the lane, the save-first routes and the planner
 tool, the `memory.kind` entry on a provisional 0.85 bar with a daily golden set, Undo per item with Dig deeper labelling the
-newest saving row, and the background pass skipping a run that saved. The live gate on real Jev ran five times: it found the
+newest saving row, and the background pass skipping a run that saved. The live gate on real Jev ran six times: it found the
 newest-first numbering ("the first one" meant the newest), a planner that acknowledged without calling `lesson_write`, a
-golden set Jev cannot clear (`fix`), and gate logic that counted unrun cases as PASS; run 5 is all PASS except cases 7 and
-8 INCONCLUSIVE (a "记下来" inside a running turn is not acted on, 0 of 10, no false claim; same on main). The rollback check
-PASS (17 checks + 1 INFO, 467b852). ADR 0010, 0029 and 0030 amended (Paco's hand to merge). On branch, not merged; kickstart owed after merge.
-
+golden set Jev cannot clear (`fix`), and gate logic that counted unrun cases as PASS. The final fix wave (`37467bf..8d970b7`)
+added: a fact must share a real token with its cited Paco line; a correction or removal of stored memory goes to the planner;
+the background pass skips a run only when it saved a fact; and the save path checks for abort. Run 6 (code `8d970b7`) exited 3
+INCONCLUSIVE with no FAILs: every case PASS except 7 and 8 INCONCLUSIVE (the planner never called `lesson_write`, 0 of 12 attempts
+across 6 runs; a save request typed inside a running turn is not acted on; same on main, so no regression). Final gate: typecheck
+clean, 338 files / 4716 tests passed, build OK. Final reviews (correctness on Opus, security, testing, codex whole-diff): all
+findings fixed or ruled, see the build ledger. The rollback check PASS (17 checks + 1 INFO, 467b852). ADR 0010, 0029 and 0030
+amended (Paco's hand to merge). On branch, not merged; kickstart owed after merge.
