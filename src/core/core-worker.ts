@@ -49,7 +49,7 @@ import { resolveHttpFetchTimeoutMs } from "../web/http-fetch.js";
 import { chatContextSince, feedTurnText, resolveChatContextTurnChars, resolveChatContextTurns } from "../capabilities/intent.js";
 import { createMemoryWriteAdapter, createSrcPhraseChecker, LESSON_CAPPED_HINT, type MemoryPlan, type MemorySaveResult } from "../capabilities/lesson-write.js";
 import { memorySources, type MemorySources, type PacoMessage } from "../capabilities/memory-sources.js";
-import type { MemoryKindAsk } from "../jev/memory-kind-ask.js";
+import { askMemoryKind, type MemoryKindAsk } from "../jev/memory-kind-ask.js";
 import { OMP_LESSON_SCOPES } from "../run/lesson-render.js";
 import { reconcileLesson, type LessonReconcileOutcome, type ReconcileVerdict } from "../capabilities/reconcile.js";
 import {
@@ -154,7 +154,7 @@ import {
   buildTreeState, lastHougeTurnOf, quotedTurnFromRow, TREE_CATEGORY, TREE_QUESTIONS, type Category, type LastHougeTurn, type QuotedTurn
 } from "../jev/questions/tree.js";
 import {
-  ACK_ROUTE, applyCascade, fallbackRoute, preJudge, thinkHarderIn, TREE_THRESHOLD_VERSION, treeArmingRows, type Lane, type Route, type RoutePlan,
+  ACK_ROUTE, applyCascade, fallbackRoute, handOffRoute, preJudge, thinkHarderIn, TREE_THRESHOLD_VERSION, treeArmingRows, type Lane, type Route, type RoutePlan,
   type RouteReason
 } from "../jev/tree-policy.js";
 import { decide as decideLadder } from "../decisions/decide.js";
@@ -294,11 +294,11 @@ type SettleFor = (route: Route, save: SaveOutcome, handler?: VerdictHandler, out
 /** What `saveFirst` did (stage B §4): `settled` = the verdict was written inside the committed save transaction. */
 type SaveStep =
   | { settled: true; save_outcome: "saved"; note: string; verdict_id: string | null; saved: SavedMemory; w: MemoryWriteOutcome }
-  | { settled: false; save_outcome: SaveOutcome; note: null; verdict_id: null; w: MemoryWriteOutcome };
+  | { settled: false; save_outcome: SaveOutcome; note: null; verdict_id: null; w: MemoryWriteOutcome; handOff?: "fix" | "memory_other" };
 /** What triageTurn's catch needs: the turn's think-harder reading, its quote, and the answered rows once Jev answered. */
 interface TriageHeld { thinkHarder: boolean; quote: QuoteRef | null; answered?: AnsweredSettle }
 /** Reasons whose route the tree took on Jev's (or the code's) word; every other reason is a fallback to Default. */
-const ACTED: ReadonlySet<RouteReason> = new Set(["routed", "cascade", "correction", "ack_rule", "lane_limits", "two_request"]);
+const ACTED: ReadonlySet<RouteReason> = new Set(["routed", "cascade", "correction", "ack_rule", "lane_limits", "two_request", "fix", "memory_other"]);
 /** Configured triage shadow as the runner's arming (the one shadow R13 keeps): the Jev and cascade rungs are asked and recorded, never applied. */
 const TREE_SHADOWED = { system_one: "shadow", model: "shadow" } as const;
 /** The tree's instants (spec §2.2), read once per turn. */
@@ -2886,6 +2886,36 @@ export class CoreWorker {
     });
   }
 
+  /** memory.kind's own Jev call (spec Rev 3 §3): its own audit role, 1.5 s, no retry — the distill covers any failure. */
+  private memoryKindClient(run_id: string): (req: JevRequest) => Promise<JevResult> {
+    return createJevClient({
+      apiKey: this.broker ? this.broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
+      audit: this.runStore.llmAuditSink({ run_id, role: "memory_kind" }),
+      meteredBreached: () => this.runStore.meteredFuseLatched(),
+      retries: 0, timeoutMs: 1_500,
+      ...(this.ompOptions.jevFetch ? { fetchImpl: this.ompOptions.jevFetch } : {})
+    });
+  }
+
+  /**
+   * The asker a save-first hands the memory service: the tree's state shape at this moment, one memory_kind question. A
+   * throw (client or store) is logged and is the rung's `threw` failure: the distill decides, the save is never blocked.
+   */
+  private memoryKindAsker(i: TriageInput, state: OmpTurnState, lang: Lang): () => Promise<MemoryKindAsk> {
+    return async () => {
+      try {
+        const now = Date.now();
+        return await askMemoryKind({ run_id: i.claim.run_id, lang, client: this.memoryKindClient(i.claim.run_id), store: this.runStore,
+          ...(this.broker ? { redact: (s: string) => this.broker!.redact(s) } : {}),
+          state: { userText: i.userText, recentTurns: state.turnCtx.recentTurns, turnChars: state.turnCtx.turnChars, modality: i.modality,
+            lastHougeTurn: lastHougeTurnOf(state.turnCtx.recentTurns, now), quotedTurn: state.quote ? quotedTurnFromRow(state.quote.turn, now) : null } });
+      } catch (e) {
+        console.error(`memory kind: jev ask threw: ${safeReason(e)}`);
+        return { failed: "threw" };
+      }
+    };
+  }
+
   /** The denominator (spec §6): one `triage` event per eligible turn, naming its verdict row. */
   private triageEvent(run_id: string, lang: Lang, f: TriageSettle, verdict_id: string): void {
     const n: Partial<TriageNumbers> = f.kind === "answered" ? f.numbers : {};
@@ -3187,21 +3217,30 @@ export class CoreWorker {
    */
   private async saveFirst(i: TriageInput, state: OmpTurnState, lang: Lang, route: Route, settleFor: SettleFor): Promise<SaveStep> {
     const v: { id: string | null } = { id: null };
+    // spec Rev 3 §3: memory.kind asks Jev in its own call; only the memory lane lets a fix or nothing escape to the planner
     const w = await this.runMemoryWrite(i.claim, this.chatOf(i.claim.run_id), { scope: route.save?.scope ?? "ask" }, { source: "lane", signal: i.signal,
+      askJev: this.memoryKindAsker(i, state, lang), escapes: route.lane === "memory",
       inTx: () => { v.id = this.settleTriage(i, state, lang, settleFor(route, "saved"), { inTx: true }); } });
     if (w.committed) state.triageFinalized = true;
-    if (!w.committed || !w.saved) return { settled: false, save_outcome: saveOutcomeOf(w), note: null, verdict_id: null, w };
+    if (!w.committed || !w.saved) return { settled: false, save_outcome: saveOutcomeOf(w), note: null, verdict_id: null, w, ...handOffOf(w) };
     return { settled: true, save_outcome: "saved", note: memoryInformNote(w.saved), verdict_id: v.id, saved: w.saved, w };
   }
 
   /**
-   * A rule on a planner or memory route: save first, then the route's handler. Memory + rule ends at the card; any other
-   * category is the planner with the [memory] note. Not saved: the turn proceeds as if sets_rule were no (a memory turn
-   * falls through, `fallback`, with the attempted save's outcome).
+   * A save on a planner or memory route: save first, then the route's handler. A memory-lane save ends at the card; any
+   * other category is the planner with the [memory] note. memory.kind said fix or nothing on the memory lane: the planner,
+   * reason `fix` / `memory_other` (spec Rev 3 §3). Not saved otherwise: the turn proceeds as if sets_rule were no (a memory
+   * turn falls through, `fallback`, with the attempted save's outcome).
    */
   private async saveThenRoute(i: TriageInput, state: OmpTurnState, lang: Lang, route: Route, settleFor: SettleFor, held: TriageHeld): Promise<TriageOutcome> {
     const s = await this.saveFirst(i, state, lang, route, settleFor);
     const q = quoteField(held.quote);
+    if (!s.settled && s.handOff) {
+      // spec Rev 3 §3: memory.kind said fix / nothing; its row is already written (runMemoryWrite's held recorder)
+      const handed = handOffRoute(route, s.handOff);
+      const id = this.settleTriage(i, state, lang, settleFor(handed, "none"));
+      return { kind: "fallthrough", route: turnRoute(handed, id), ...q };
+    }
     if (!s.settled) {
       const memory = route.lane === "memory";
       const id = this.settleTriage(i, state, lang, settleFor(route, s.save_outcome, memory ? `fallthrough:${s.save_outcome}` : undefined, memory ? "fallback" : undefined));
@@ -4472,6 +4511,12 @@ function scoresOf(a: Record<string, JevAnswer>): VerdictScores {
  */
 function saveOutcomeOf(w: MemoryWriteOutcome): "not_durable" | "capped" {
   return w.result.ok && w.result.output.reason === "too-large" ? "capped" : "not_durable";
+}
+
+/** The memory lane's memory_kind said fix or nothing (the adapter's reason): the turn goes to the planner with that reason. */
+function handOffOf(w: MemoryWriteOutcome): { handOff?: "fix" | "memory_other" } {
+  const reason = w.result.ok ? w.result.output.reason : undefined;
+  return reason === "fix" || reason === "memory_other" ? { handOff: reason } : {};
 }
 
 /** User turns read after the claim when looking for steered messages (a turn steers a handful at most). */

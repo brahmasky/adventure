@@ -57,7 +57,7 @@ describe("unsureOf (R1)", () => {
     store.insertDecision(D({ p: 0.65, reason_code: "uncalibrated" }));
     store.insertDecision(D({ p: 0.65, reason_code: "some_future_reason" }));
     store.insertDecision(D({ p: 0.75, reason_code: "routed" }));
-    const ok = ["routed", "bare_ack_guard", "lane_limits", "correction", "two_request"].map((reason_code) => store.insertDecision(D({ p: 0.6, reason_code })));
+    const ok = ["routed", "bare_ack_guard", "lane_limits", "correction", "two_request", "fix", "memory_other"].map((reason_code) => store.insertDecision(D({ p: 0.6, reason_code })));
     const rows = unsureOf(store.listDecisionsBetween("2026-10-11T11:00:00.000Z", NOW));
     expect(rows.map((r) => r.decision_id).sort()).toEqual([...ok].sort());
     store.close();

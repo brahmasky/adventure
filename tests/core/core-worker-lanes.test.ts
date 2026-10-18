@@ -97,7 +97,7 @@ describe("the answer lane through the worker (stage B §4)", () => {
     expect(v).toMatchObject({ category: "answer", lane: "answer", role: "fast", effort: "low", reason: "routed", route_outcome: "act",
       handler_outcome: "lane_reply", model: "test/claude-sonnet-5-5", save_outcome: "none" }); // provider/model: the injected seat's provider is "test"
     expect(triageRows(store, t.run_id)).toMatchObject([{ route_lane: "answer", decision: "act", verdict: "routed", verdict_id: v.verdict_id }]);
-    expect(decisions(store, t.run_id).every((r) => r.decision === "act" && r.threshold_used === "2026-10-10.1:routed")).toBe(true);
+    expect(decisions(store, t.run_id).every((r) => r.decision === "act" && r.threshold_used === "2026-10-17.1:routed")).toBe(true);
     expect(store.laneTurnsSince("555", null)).toMatchObject([{ run_id: t.run_id, lane: "answer", verdict_id: v.verdict_id, catch_up: "Houge replied: 放在书房更好。" }]);
     store.close();
   });

@@ -20,7 +20,7 @@ export type LaneSwitch = "answer" | "lookup";
 export type PreJudge = { kind: "ack_answer" } | { kind: "judge"; thinkHarder: boolean };
 
 /** Bump when a bar or a routing rule changes; stamped on every decision row's threshold_used. */
-export const TREE_THRESHOLD_VERSION = "2026-10-10.1";
+export const TREE_THRESHOLD_VERSION = "2026-10-17.1";
 
 const GREETINGS: ReadonlySet<string> = new Set(["谢谢", "thanks", "thank you", "hi", "你好"]);
 const TRAILING = /[。！!.~～\s]+$/u;
@@ -54,7 +54,8 @@ const NO_LANES_OFF: ReadonlySet<LaneSwitch> = new Set();
 
 /**
  * Each decision arms on its own rows (lessons.md 2026-10-06): `rule` on sets_rule + rule_scope, gear on its three
- * scores; the memory lane needs category AND rule. The status lane also needs `rule` at route time (statusBranch). The
+ * scores; the memory lane arms on category alone (the rule rows only sharpen its lesson scope, Rev 2.1 item 1). The
+ * status lane also needs `rule` at route time (statusBranch). The
  * answer and lookup lanes arm on their pseudo-rows and are unarmed while listed in `lanesOff` (HOUGE_JEV_LANES_OFF).
  */
 export function treeArmed(lang: Lang, model: string, rows: readonly CalibrationRow[], lanesOff: ReadonlySet<LaneSwitch> = NO_LANES_OFF): Armed {
@@ -63,7 +64,7 @@ export function treeArmed(lang: Lang, model: string, rows: readonly CalibrationR
   const category = on([TREE_CATEGORY]);
   const rule = on([TREE_SETS_RULE, TREE_RULE_SCOPE]);
   return {
-    category, status: pseudo(TREE_STATUS_ARM_ID), memory: category && rule, gear: on([TREE_BREADTH, TREE_REASONING, TREE_ACTIONS]), rule,
+    category, status: pseudo(TREE_STATUS_ARM_ID), memory: category, gear: on([TREE_BREADTH, TREE_REASONING, TREE_ACTIONS]), rule,
     answer: pseudo(TREE_ANSWER_ARM_ID) && !lanesOff.has("answer"), lookup: pseudo(TREE_LOOKUP_ARM_ID) && !lanesOff.has("lookup")
   };
 }
@@ -79,9 +80,13 @@ export function treeArmingRows(rows: readonly CalibrationRow[]): CalibrationRow[
   return rows.filter((r) => live.has(`${r.question_id}\u0000${r.criteria_hash}`));
 }
 
-/** `lane_limits`: a lane-shaped turn over its limits (stage B); `two_request`: a rule with a second request (stage B). */
+/**
+ * `lane_limits`: a lane-shaped turn over its limits (stage B); `two_request`: a rule with a second request (stage B).
+ * `fix` / `memory_other`: the memory lane's own memory_kind call said fix or nothing: the planner takes the turn, spec
+ * 2026-10-15 Rev 3 §3. `correction` is no longer produced but stays: stored verdicts and decision rows carry it.
+ */
 export type RouteReason = "routed" | "uncalibrated" | "below_bar" | "bare_ack_guard" | "lane_limits" | "correction"
-  | "cascade" | "cascade_failed" | "ack_rule" | "jev_skipped" | "two_request";
+  | "cascade" | "cascade_failed" | "ack_rule" | "jev_skipped" | "two_request" | "fix" | "memory_other";
 export type RuleScope = "ask" | "research";
 export interface Route { category: Category | null; lane: Lane; role: TurnRole; effort: Effort | null;
   save: { scope: RuleScope } | null; reason: RouteReason; cascade: "tiny" | null; thinkHarder: boolean }
@@ -206,16 +211,24 @@ function statusBranch(t: Ctx): RoutePlan {
   return final(plannerRoute("status", DEFAULT_GEAR, saveFor(t, "status"), lane ? "below_bar" : "uncalibrated", o.thinkHarder));
 }
 
-/** Memory at p ≥ the choice bar: a new rule is the lane; a correction (sets_rule no/unsure) is the planner's gated path. */
+/**
+ * Memory at p >= the choice bar (spec 2026-10-15 Rev 3 §3): the memory lane, whatever sets_rule says. The lane asks
+ * memory_kind in its own call and hands a fix or "nothing" to the planner (handOffRoute). A second request rides on the save.
+ */
 function memoryBranch(t: Ctx): Route {
   const { o } = t;
-  if (!o.armed.memory || !o.armed.rule) return plannerRoute("memory", DEFAULT_GEAR, null, "uncalibrated", o.thinkHarder);
+  if (!o.armed.memory) return plannerRoute("memory", DEFAULT_GEAR, null, "uncalibrated", o.thinkHarder);
   if (!clearsLane(t, o.bars.memory)) return plannerRoute("memory", DEFAULT_GEAR, saveFor(t, "memory"), "below_bar", o.thinkHarder);
   if (o.bareAck) return plannerRoute("memory", DEFAULT_GEAR, null, "bare_ack_guard", o.thinkHarder);
-  if (t.zone !== "yes") return plannerRoute("memory", DEFAULT_GEAR, null, "correction", o.thinkHarder);
-  // stage B §2: a second request rides on the rule; save it, then the planner answers the rest with the [memory] note
-  if (t.scores !== null && atLeast(t.scores.actions, TWO_REQUEST_ACTIONS)) return plannerRoute("memory", t.gear, saveFor(t, "memory"), "two_request", o.thinkHarder);
-  return { category: "memory", lane: "memory", role: "default", effort: null, save: saveFor(t, "memory"), reason: "routed", cascade: null, thinkHarder: o.thinkHarder };
+  // Rev 2.1 item 1: a confident rule_scope counts only on armed rule rows; otherwise the lesson scope is ask
+  const save = { scope: scopeFor(o.armed.rule ? t.scope : null, "memory") };
+  if (t.scores !== null && atLeast(t.scores.actions, TWO_REQUEST_ACTIONS)) return plannerRoute("memory", t.gear, save, "two_request", o.thinkHarder);
+  return { category: "memory", lane: "memory", role: "default", effort: null, save, reason: "routed", cascade: null, thinkHarder: o.thinkHarder };
+}
+
+/** The memory lane's memory_kind said fix or nothing (spec Rev 3 §3): the planner on Default, nothing saved, the reason named. */
+export function handOffRoute(r: Route, reason: "fix" | "memory_other"): Route {
+  return { ...r, lane: "planner", role: r.thinkHarder ? "thinking" : "default", effort: null, save: null, reason, cascade: null };
 }
 
 /**

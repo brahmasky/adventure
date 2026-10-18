@@ -14,6 +14,10 @@
     [
       "triage",
       null
+    ],
+    [
+      "memory_kind",
+      null
     ]
   ],
   "triage": [],

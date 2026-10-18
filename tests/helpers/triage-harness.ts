@@ -5,7 +5,7 @@ import { vi } from "vitest";
 import type { SecretBroker } from "../../src/config/secret-broker.js";
 import type { CoreWorker } from "../../src/core/core-worker.js";
 import { LANE_PREFACE, REWRITE_INSTRUCTION } from "../../src/core/lanes/lane-compose.js";
-import { CATEGORIES, TREE_CATEGORY, TREE_QUESTIONS, type Category } from "../../src/jev/questions/tree.js";
+import { CATEGORIES, MEMORY_KIND_OPTIONS, TREE_CATEGORY, TREE_QUESTIONS, type Category, type MemoryKindOption } from "../../src/jev/questions/tree.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
 import { TREE_ANSWER_ARM_ID, TREE_LOOKUP_ARM_ID, TREE_STATUS_ARM_ID } from "../../src/jev/tree-policy.js";
 import type { TurnModality } from "../../src/media/media-config.js";
@@ -19,6 +19,7 @@ import { createQueuedTurnRun } from "./runs.js";
  * One triage harness for the pin (Task 2) and the ladder tests (Task 8b): a fake Jev answer, the test-injected seat told
  * apart by its prompt, and every arming row in a gate-only calibration file. Tests only. Frozen after Task 2: a change
  * here could hide a behaviour change from the pin.
+ * Memory write (2026-10-17): `memory_kind` is answered only when a case sets it; the pins were regenerated (Task 11 Step 7).
  */
 export const REPORTED = "jev-1.13.0";
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -31,6 +32,15 @@ export function cat(p: Partial<Record<Category, number>>) {
   const [choice, pMax] = Object.entries(probabilities).sort((a, b) => b[1] - a[1])[0]!;
   return { type: "choice", choice, probabilities, confidence: (pMax - 1 / n) / (1 - 1 / n) };
 }
+/** A memory_kind answer (its own Jev request, spec Rev 3 §3): the given probabilities, the rest split evenly. */
+export function kind(p: Partial<Record<MemoryKindOption, number>>) {
+  const used = Object.values(p).reduce((a, b) => a + (b ?? 0), 0);
+  const rest = MEMORY_KIND_OPTIONS.filter((k) => p[k] === undefined);
+  const probabilities = Object.fromEntries(MEMORY_KIND_OPTIONS.map((k) => [k, p[k] ?? (1 - used) / rest.length]));
+  const [choice, pMax] = Object.entries(probabilities).sort((a, b) => b[1] - a[1])[0]!;
+  const m = MEMORY_KIND_OPTIONS.length;
+  return { type: "choice", choice, probabilities, confidence: (pMax - 1 / m) / (1 - 1 / m) };
+}
 /** Only the named categories carry probability (every other option exactly 0). */
 export const only = (p: Partial<Record<Category, number>>) => cat(Object.fromEntries(CATEGORIES.map((c) => [c, p[c] ?? 0])));
 export const scope = (ask: number) => ({ type: "choice", choice: ask >= 0.5 ? "ask" : "research", probabilities: { ask, research: 1 - ask }, confidence: Math.abs(2 * ask - 1) });
@@ -39,11 +49,13 @@ export const level = (probs: number[]) => ({ type: "score", score: probs.reduce(
 export const LIGHT = [0.1, 0.9, 0, 0]; // expected 0.9 → Fast, effort low
 export const NONE = [1, 0, 0, 0];      // expected 0
 export const HEAVY = [0, 0, 0.2, 0.8]; // expected 2.8 → Thinking, effort high
-export interface Says { category?: ReturnType<typeof cat>; sets_rule?: number; ask?: number; breadth?: number[]; reasoning?: number[]; actions?: number[]; model?: string }
+export interface Says { category?: ReturnType<typeof cat>; sets_rule?: number; ask?: number; breadth?: number[]; reasoning?: number[]; actions?: number[]; model?: string;
+  memory_kind?: ReturnType<typeof kind> }
 export const treeSays = (o: Says = {}) => vi.fn(async (_url?: unknown, _init?: unknown) => json(200, {
   model: o.model ?? REPORTED, usage: { input_tokens: 900, output_tokens: 0 }, answers: {
     category: o.category ?? cat({ other: 0.9 }), sets_rule: { type: "noul", noul: o.sets_rule ?? 0.05 }, rule_scope: scope(o.ask ?? 0.9),
-    breadth: level(o.breadth ?? LIGHT), reasoning: level(o.reasoning ?? LIGHT), actions: level(o.actions ?? NONE) } }));
+    breadth: level(o.breadth ?? LIGHT), reasoning: level(o.reasoning ?? LIGHT), actions: level(o.actions ?? NONE),
+    ...(o.memory_kind ? { memory_kind: o.memory_kind } : {}) } }));
 export const jevDown = () => vi.fn(async () => { throw new TypeError("fetch failed"); });
 export const jevStatus = (status: number) => vi.fn(async () => new Response("{}", { status }));
 /** A 200 whose body is not JSON: the client's `parse` skip (jev-client.ts:173). */

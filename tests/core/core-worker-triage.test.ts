@@ -14,6 +14,7 @@ import type { TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
 import { RunStore } from "../../src/run/run-store.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
+import { kind } from "../helpers/triage-harness.js";
 import { drainOutbox, ompWorker } from "../helpers/omp-worker.js";
 
 // Spec §2 / §6: ONE decision point per Telegram text turn. Every eligible, still-active exit writes exactly one `triage`
@@ -39,11 +40,12 @@ const level = (probs: number[]) => ({ type: "score", score: probs.reduce((s, p, 
   probabilities: Object.fromEntries(probs.map((p, k) => [String(k), p])), confidence: 0.8 });
 const LIGHT = [0.1, 0.9, 0, 0];   // expected 0.9 → Fast, effort low
 const HEAVY = [0, 0, 0.2, 0.8];   // expected 2.8 → Thinking, effort high
-type Says = { category?: ReturnType<typeof cat>; sets_rule?: number; ask?: number; gear?: number[]; model?: string };
+type Says = { category?: ReturnType<typeof cat>; sets_rule?: number; ask?: number; gear?: number[]; model?: string; memory_kind?: ReturnType<typeof kind> };
 const treeSays = (o: Says = {}) => vi.fn(async (_url?: unknown, _init?: unknown) => json(200, {
   model: o.model ?? REPORTED, usage: { input_tokens: 900, output_tokens: 0 }, answers: {
     category: o.category ?? cat({ other: 0.9 }), sets_rule: { type: "noul", noul: o.sets_rule ?? 0.05 }, rule_scope: scope(o.ask ?? 0.9),
-    breadth: level(o.gear ?? LIGHT), reasoning: level(o.gear ?? LIGHT), actions: level(o.gear ?? LIGHT) } }));
+    breadth: level(o.gear ?? LIGHT), reasoning: level(o.gear ?? LIGHT), actions: level(o.gear ?? LIGHT),
+    ...(o.memory_kind ? { memory_kind: o.memory_kind } : {}) } })); // memory_kind: answered only when a case sets it (spec Rev 3 §3)
 const RULE: Says = { category: cat({ memory: 0.9 }), sets_rule: 0.95 };
 
 type Llm = (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
@@ -208,7 +210,7 @@ describe("triageTurn — routed planner turns (the role the planner pins)", () =
     expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough", route });
     expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "planner", ...route, reason: "routed", route_outcome: "act", handler_outcome: "pending" });
     expect(decisions(store, t.run_id)).toHaveLength(6);
-    expect(decisions(store, t.run_id).every((r) => r.decision === "act" && r.threshold_used === "2026-10-10.1:routed")).toBe(true);
+    expect(decisions(store, t.run_id).every((r) => r.decision === "act" && r.threshold_used === "2026-10-17.1:routed")).toBe(true);
     expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", route_lane: "planner", role: route.role, decision: "act" }]);
     store.close();
   });
@@ -236,12 +238,13 @@ describe("triageTurn — routed planner turns (the role the planner pins)", () =
       .toEqual([`think_harder:${verdictOf(store, first.run_id)?.role}:paco`]);
     store.close();
   });
-  it("memory with sets_rule no is a correction: the planner on Default, nothing saved, no seat call", async () => {
+  // Spec Rev 3 §3: sets_rule no longer gates the memory lane; the lane's own memory_kind call hands a correction (fix) on.
+  it("a correction on the memory lane: memory_kind says fix, the planner on Default, nothing saved, no seat call", async () => {
     const llm = vi.fn(lessonLlm());
-    const { store, worker, turn } = setup(treeSays({ category: cat({ memory: 0.9 }), sets_rule: 0.1 }), ARM, { llm });
+    const { store, worker, turn } = setup(treeSays({ category: cat({ memory: 0.9 }), sets_rule: 0.1, memory_kind: kind({ fix: 0.9 }) }), ARM, { llm });
     const t = turn("上次记错了，我不住在北京");
     expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough", route: { role: "default", effort: null } });
-    expect(verdictOf(store, t.run_id)).toMatchObject({ category: "memory", lane: "planner", reason: "correction", save_outcome: "none" });
+    expect(verdictOf(store, t.run_id)).toMatchObject({ category: "memory", lane: "planner", reason: "fix", save_outcome: "none" });
     expect(llm).not.toHaveBeenCalled();
     expect(store.getActiveLessons("ask")).toHaveLength(0);
     store.close();
@@ -497,12 +500,16 @@ describe("triageTurn — a partial row commit (F6: each decision arms on its own
     expect(llm).not.toHaveBeenCalled();
     store.close();
   });
-  it("category armed, rule rows not: a memory turn is uncalibrated and nothing saves", async () => {
-    const { store, worker, turn } = setup(treeSays(RULE), ARM, { omit: ["sets_rule", "rule_scope"] });
+  // Rev 2.1 item 1 (spec 2026-10-15): the memory lane arms on the category rows alone; its own memory_kind call (or the
+  // distill) decides what to save, so unarmed rule rows only drop the rule_scope reading to "ask".
+  it("category armed, rule rows not: a memory turn takes the memory lane, asks memory_kind, saves at scope ask", async () => {
+    const fetchImpl = treeSays({ ...RULE, ask: 0.1, memory_kind: kind({ rule: 0.95 }) });
+    const { store, worker, turn } = setup(fetchImpl, ARM, { omit: ["sets_rule", "rule_scope"] });
     const t = turn("以后回复短一点");
-    expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough", route: { role: "default" } });
-    expect(verdictOf(store, t.run_id)).toMatchObject({ category: "memory", lane: "planner", reason: "uncalibrated" });
-    expect(store.getActiveLessons("ask")).toHaveLength(0);
+    expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "lane_reply" });
+    expect(verdictOf(store, t.run_id)).toMatchObject({ category: "memory", lane: "memory", reason: "routed", rule_scope: "ask", save_outcome: "saved" });
+    expect(fetchImpl).toHaveBeenCalledTimes(2); // the tree request, then memory_kind's own
+    expect(store.getActiveLessons("ask")).toHaveLength(1);
     store.close();
   });
 });

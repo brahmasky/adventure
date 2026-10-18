@@ -4,7 +4,7 @@ import { JEV_REQUEST_MODEL, type JevAnswer, type JevChoiceAnswer } from "../../s
 import { CATEGORIES, TREE_CATEGORY, TREE_QUESTIONS, type Category, type LastHougeTurn } from "../../src/jev/questions/tree.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
 import {
-  ACK_ROUTE, applyCascade, fallbackRoute, preJudge, routeTree, thinkHarderIn, TREE_ANSWER_ARM_ID, TREE_BAR_DEFAULTS, TREE_LOOKUP_ARM_ID,
+  ACK_ROUTE, applyCascade, fallbackRoute, handOffRoute, preJudge, routeTree, thinkHarderIn, TREE_ANSWER_ARM_ID, TREE_BAR_DEFAULTS, TREE_LOOKUP_ARM_ID,
   TREE_STATUS_ARM_ID, TREE_THRESHOLD_VERSION, treeArmed, treeArmingRows, type Armed, type Route, type RoutePlan
 } from "../../src/jev/tree-policy.js";
 
@@ -107,10 +107,12 @@ describe("routeTree — memory (a wrong `memory` swallows the turn: the strictes
       { category: "memory", lane: "memory", save: { scope: "ask" }, reason: "routed" }],
     ["p 0.84 + a rule: planner below_bar, the rule still saves first", { category: cat({ memory: 0.84 }), sets_rule: 0.8 },
       { lane: "planner", role: "default", effort: null, save: { scope: "ask" }, reason: "below_bar" }],
-    ["sets_rule 0.79 is unsure = no: a correction for the planner, nothing saved", { category: cat({ memory: 0.9 }), sets_rule: 0.79 },
-      { lane: "planner", role: "default", effort: null, save: null, reason: "correction" }],
-    ["sets_rule 0.21 is unsure: a correction", { category: cat({ memory: 0.9 }), sets_rule: 0.21 }, { save: null, reason: "correction" }],
-    ["sets_rule 0.2 is no: a correction", { category: cat({ memory: 0.9 }), sets_rule: 0.2 }, { save: null, reason: "correction" }],
+    // Spec 2026-10-15 Rev 3 §3: sets_rule no longer gates the memory lane (the incident: a fact request with no rule was
+    // routed as a "correction" and dropped). The lane's own memory_kind call decides fix / other / save.
+    ["sets_rule 0.05 (a fact, no rule): the memory lane", { category: cat({ memory: 0.97 }), sets_rule: 0.05 },
+      { category: "memory", lane: "memory", save: { scope: "ask" }, reason: "routed" }],
+    ["sets_rule 0.5 (a correction): still the memory lane; its memory_kind call hands a fix to the planner", { category: cat({ memory: 0.9 }), sets_rule: 0.5 },
+      { lane: "memory", save: { scope: "ask" }, reason: "routed" }],
     ["confidence 0.69 is under the floor", { category: cat({ memory: 0.9 }, 0.69), sets_rule: 0.9 }, { lane: "planner", reason: "below_bar" }],
     ["confidence 0.7 clears", { category: cat({ memory: 0.9 }, 0.7), sets_rule: 0.9 }, { lane: "memory" }],
     // Jev's probabilities sum to 1, so at p ≥ 0.85 the gap floor cannot bind; it is defensive and still enforced
@@ -123,10 +125,25 @@ describe("routeTree — memory (a wrong `memory` swallows the turn: the strictes
     expect(route({ category: cat({ memory: 0.95 }), sets_rule: 0.95 }, { armed: { memory: false } }))
       .toMatchObject({ category: "memory", lane: "planner", role: "default", save: null, reason: "uncalibrated" });
   });
-  it("rule unarmed: the memory lane never acts, even on a hand-built Armed that says memory", () => {
-    // the lane exists to save a rule; without the rule rows it would save on an answer nobody calibrated
-    expect(route({ category: cat({ memory: 0.95 }), sets_rule: 0.95 }, { armed: { rule: false } }))
-      .toMatchObject({ category: "memory", lane: "planner", save: null, reason: "uncalibrated" });
+  it("handOffRoute: the planner, Default (Thinking on think-harder), nothing saved, the hand-off reason", () => {
+    const lane = route({ category: cat({ memory: 0.95 }), sets_rule: 0.05 });
+    expect(handOffRoute(lane, "fix")).toMatchObject({ category: "memory", lane: "planner", role: "default", effort: null, save: null, reason: "fix" });
+    expect(handOffRoute({ ...lane, thinkHarder: true }, "memory_other")).toMatchObject({ role: "thinking", reason: "memory_other" });
+  });
+  // Rev 2.1 item 1: the memory lane arms on category alone; the rule rows only sharpen the lesson scope.
+  it("rule rows unarmed: category memory over the bar still takes the memory lane, the scope falls back to ask", () => {
+    expect(route({ category: cat({ memory: 0.95 }), sets_rule: 0.05, ask: 0.1 }, { armed: { rule: false } }))
+      .toMatchObject({ category: "memory", lane: "memory", save: { scope: "ask" }, reason: "routed" });
+    expect(route({ category: cat({ memory: 0.95 }), sets_rule: 0.05, ask: 0.1 })).toMatchObject({ lane: "memory", save: { scope: "research" } });
+  });
+  it("treeArmed: memory arms from the category rows alone", () => {
+    // inline rows: the file's `row` helper is local to the arming describe
+    const catRows = (["zh", "en"] as const).map((lang): CalibrationRow => ({ question_id: "category", criteria_hash: criteriaHash(TREE_CATEGORY), model: REPORTED, lang,
+      approved: "test", evidence: "test" }) as CalibrationRow);
+    expect(treeArmed("zh", REPORTED, catRows)).toMatchObject({ category: true, rule: false, memory: true });
+  });
+  it("a second request with no rule: saved first, then the planner (two_request)", () => {
+    expect(route({ category: cat({ memory: 0.95 }), sets_rule: 0.05, actions: 1.5 })).toMatchObject({ lane: "planner", save: { scope: "ask" }, reason: "two_request" });
   });
 });
 
@@ -295,8 +312,8 @@ describe("treeArmed (each decision arms on its own evidence)", () => {
     expect(treeArmed("zh", REPORTED, ruleRows)).toEqual({ ...NONE, rule: true });
     expect(treeArmed("zh", REPORTED, all.filter((r) => r.question_id !== "rule_scope")).rule).toBe(false);
   });
-  it("memory needs category AND rule; gear needs all three scores", () => {
-    expect(treeArmed("zh", REPORTED, all.filter((r) => r.question_id !== "rule_scope")).memory).toBe(false);
+  it("memory needs the category row alone (Rev 2.1 item 1); gear needs all three scores", () => {
+    expect(treeArmed("zh", REPORTED, all.filter((r) => r.question_id !== "rule_scope")).memory).toBe(true);
     expect(treeArmed("zh", REPORTED, all.filter((r) => r.question_id !== "category")).memory).toBe(false);
     expect(treeArmed("zh", REPORTED, all.filter((r) => r.question_id !== "actions")).gear).toBe(false);
   });
@@ -330,7 +347,7 @@ describe("treeArmed (each decision arms on its own evidence)", () => {
 
 describe("TREE_THRESHOLD_VERSION (stage B)", () => {
   // Every decision row is stamped with it: rows before and after the stage B ship must stay distinguishable in the evidence.
-  it("is bumped for stage B", () => expect(TREE_THRESHOLD_VERSION).toBe("2026-10-10.1"));
+  it("is bumped for the memory write", () => expect(TREE_THRESHOLD_VERSION).toBe("2026-10-17.1"));
 });
 
 describe("routeTree — the answer and lookup lanes (stage B spec §2)", () => {

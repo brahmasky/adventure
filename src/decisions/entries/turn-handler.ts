@@ -15,7 +15,7 @@ export const TURN_HANDLER_ID = "turn.handler";
 export type TurnHandlerVerdict = Lane;
 export const TURN_HANDLER_VERDICTS: readonly TurnHandlerVerdict[] = ["answer", "lookup", "memory", "status", "planner"];
 export const ROUTE_REASONS = ["routed", "uncalibrated", "below_bar", "bare_ack_guard", "lane_limits", "correction", "cascade", "cascade_failed",
-  "ack_rule", "jev_skipped", "two_request"] as const satisfies readonly RouteReason[];
+  "ack_rule", "jev_skipped", "two_request", "fix", "memory_other"] as const satisfies readonly RouteReason[];
 export const SKIP_REASONS = ["no_key", "fused", "auth", "rate_limited", "overloaded", "malformed_question", "timeout", "parse", "transport",
   "state_too_large", "disabled", "posture", "modality", "override", "error", "ack_rule"] as const satisfies readonly SkipReason[];
 // Compile-time: the lists above cover their unions exactly (a new reason must be added here, or the build fails).
@@ -30,7 +30,7 @@ export const TURN_HANDLER_EFFECTS: Readonly<Record<TurnHandlerVerdict, VerdictEf
   lookup: { kind: "effect", reversible: true, announced: "card",
     what: "lookup-lane reply (Dig deeper); on a confident sets_rule the lesson saves first and the lane card carries 📒 and ↩️ Undo" },
   status: { kind: "reply", reversible: true, announced: "card", what: "status card rendered by code; Dig deeper" },
-  memory: { kind: "effect", reversible: true, announced: "card", what: "instant lesson save on a confident sets_rule; memory-lane card with Undo (ADR 0029 §5.5, R12)" },
+  memory: { kind: "effect", reversible: true, announced: "card", what: "instant save of a rule, a fact or both (memory.kind, its own Jev call); memory-lane card with an Undo per item; a fix or nothing hands off to the planner (ADR 0029 §5.5, R12)" },
   planner: { kind: "effect", reversible: true, announced: "card",
     what: "the planner answers; on a confident sets_rule the lesson saves first and an Undo-only memory card is queued (announceSave)" }
 };
@@ -65,7 +65,8 @@ function ackRule(s: TurnHandlerState): RungAnswer<TurnHandlerVerdict> | RungAbst
 
 export const TURN_HANDLER: Entry<TurnHandlerState, TurnHandlerVerdict> = {
   // 2: the Jev rung re-asks once inside a reviewed noise band (stage 2a, Addition B)
-  id: TURN_HANDLER_ID, version: 2, stage: "pre_model", input: "paco",
+  // 3: the memory lane no longer reads sets_rule; memory.kind writes rules and facts or hands off (spec 2026-10-15 Rev 3)
+  id: TURN_HANDLER_ID, version: 3, stage: "pre_model", input: "paco",
   question: "Which handler takes this Telegram text turn: a no-planner lane, or the planner?",
   verdicts: TURN_HANDLER_VERDICTS,
   ladder: [

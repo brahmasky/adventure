@@ -23,7 +23,7 @@ describe("turn.handler with a noise band", () => {
     const { run_id, input } = h.turn("帮我整理一下这周的待办");
     await h.worker.triageTurn(input);
     expect(f).toHaveBeenCalledTimes(2);
-    expect(handlerRow(h, run_id)).toMatchObject({ entry_version: 2, reask: "mean", p_first: 0.65 });
+    expect(handlerRow(h, run_id)).toMatchObject({ entry_version: 3, reask: "mean", p_first: 0.65 });
     expect(handlerRow(h, run_id)?.p).toBeCloseTo(0.6, 9); // the decision used the mean of 0.65 and 0.55, not either call
     expect(h.store.listJevDecisions(run_id).find((r) => r.question_id === "category")?.top_prob).toBe(0.65);
   });

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { recordTriageOverride } from "../../src/gateway/memlane-commands.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 import {
-  ARM, cat, HEAVY, IdMap, jevDown, jevNotJson, jevStatus, LIGHT, only, picks, projectRun, scriptedLlm, SHADOW, sinkOf, treeSays, triageHarness, webOk,
+  ARM, cat, HEAVY, IdMap, kind, jevDown, jevNotJson, jevStatus, LIGHT, only, picks, projectRun, scriptedLlm, SHADOW, sinkOf, treeSays, triageHarness, webOk,
   type Harness, type HarnessOptions, type Says, type TurnOptions
 } from "../helpers/triage-harness.js";
 
@@ -82,7 +82,7 @@ const CASES: PinCase[] = [
   { name: "routed-other-light", text: "帮我整理一下这周的待办", fetch: () => treeSays({ category: cat({ other: 0.9 }) }) },
   { name: "routed-research-heavy", text: "帮我比较三款 NAS", fetch: () => treeSays({ category: cat({ research: 0.9 }), breadth: HEAVY, reasoning: HEAVY, actions: HEAVY }) },
   { name: "think-harder-correction", text: "认真想：再比较一下", fetch: () => treeSays({ category: cat({ research: 0.9 }) }), before: priorRouted },
-  { name: "correction", text: "那条规则不对，删掉它", fetch: () => treeSays({ category: cat({ memory: 0.9 }), sets_rule: 0.5 }) },
+  { name: "correction", text: "那条规则不对，删掉它", fetch: () => treeSays({ category: cat({ memory: 0.9 }), sets_rule: 0.5, memory_kind: kind({ fix: 0.9 }) }) },
   { name: "bare-ack-guard-status", text: "好", fetch: () => treeSays({ category: only({ status: 0.95, other: 0.05 }) }) },
   { name: "cascade-pick", text: "这个周末去哪玩", fetch: () => treeSays({ category: cat({ answer: 0.45, lookup: 0.4 }) }), opts: { llm: scriptedLlm({ cascade: picks("lookup") }) } },
   { name: "cascade-failed", text: "这个周末去哪玩", fetch: () => treeSays({ category: cat({ answer: 0.45, lookup: 0.4 }) }) },
