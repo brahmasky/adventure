@@ -14,7 +14,8 @@ import {
   runEpisodicDistillPass,
   sanitizeFactText,
   shouldRejectFact,
-  type EpisodicLlm
+  type EpisodicLlm,
+  withoutTurnsOffPacosWorld
 } from "../../src/capabilities/episodic-extract.js";
 import { DEFAULT_SESSION_LULL_MINUTES } from "../../src/capabilities/session-rating.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
@@ -1057,6 +1058,40 @@ describe("maybeRunEpisodicDistill (idle-loop trigger gating)", () => {
       });
       expect(result.ran).toBe(true);
       expect(result.chat_id).toBe("b");
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("withoutTurnsOffPacosWorld — a memory-save run is not Paco speaking (spec 2026-10-15 §10, R4)", () => {
+  // The save request and its "记下了…" reply would mint the same fact again, or a meta-fact about the request.
+  // The run whose message held the content is an earlier run, and its turns stay readable.
+  it("drops both turns of a memory-save trigger run and keeps the earlier content run", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const content = pacoRunUsing(store, "我住在悉尼", []);
+      const trigger = pacoRunUsing(store, "记下来吧", []);
+      store.insertMemorySaveTrigger(trigger, ["fact"], NOW);
+      await settle(store, content, [["user", "我住在悉尼"], ["assistant", "记住了"]]);
+      await settle(store, trigger, [["user", "记下来吧"], ["assistant", "🧠 Saved fact (事实) #1"]]);
+      const kept = withoutTurnsOffPacosWorld(store, store.getChatTurnsAfter(CHAT, undefined, 10));
+      expect(kept.map((t) => t.run_id)).toEqual([content, content]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("the pass never sends a memory-save trigger run's turns to the extract call; the watermark still moves past them", async () => {
+    const store = RunStore.openInMemory();
+    try {
+      const trigger = pacoRunUsing(store, "记下来吧", []);
+      await settle(store, trigger, [["user", "记下来吧"], ["assistant", "🧠 Saved fact (事实) #1"]]);
+      store.insertMemorySaveTrigger(trigger, ["fact"], NOW);
+      const llm = fakeLlm({ extract: extractAnswer([{ fact: "Paco 住在悉尼" }]) });
+      await runEpisodicDistillPass({ store, llm, embed: noEmbed, chatId: CHAT, userName: "paco", now: NOW });
+      expect(llm.calls).toEqual([]);
+      expect(store.getEpisodicDistillWatermark(CHAT)?.last_turn_created_at).toBe(lastTurnAt(store));
     } finally {
       store.close();
     }
