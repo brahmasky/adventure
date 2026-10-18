@@ -1,3 +1,4 @@
+import { MEMORY_KIND } from "./entries/memory-kind.js";
 import { TOOL_SHELL_NETREAD } from "./entries/shell-netread.js";
 import { TOOL_INJECTION } from "./entries/tool-injection.js";
 import { TURN_TRUST } from "./entries/turn-trust.js";
@@ -8,7 +9,7 @@ import type { Announce, AnyEntry, EffectKind } from "./types.js";
 
 /** Every decision on one list (spec §6). Stage 1 registers the front door; later stages add their families. Protected surface (spec §6.3). */
 export const REGISTRY: readonly AnyEntry[] = [TURN_HANDLER as unknown as AnyEntry, TURN_GEAR as unknown as AnyEntry, TOOL_INJECTION as unknown as AnyEntry,
-  TOOL_SHELL_NETREAD as unknown as AnyEntry, TURN_TRUST as unknown as AnyEntry];
+  TOOL_SHELL_NETREAD as unknown as AnyEntry, TURN_TRUST as unknown as AnyEntry, MEMORY_KIND as unknown as AnyEntry];
 /** Effects a judge may choose over any input (R12): nothing, a tightening, or a proposal for Paco's tap. */
 const PASSIVE: ReadonlySet<EffectKind> = new Set(["none", "tighten", "proposal"]);
 /** How a judge's effect over Paco's message must be announced (Paco 2026-10-12): an allowlist, so a missing or unknown value fails. */
@@ -36,8 +37,24 @@ function shapeProblems(e: AnyEntry): string[] {
   if (LOCKED_IDS.has(e.id) && e.locked !== true) p.push("id is in LOCKED_ENTRY_IDS but the entry is not locked");
   if (e.locked && !LOCKED_IDS.has(e.id)) p.push("locked entry whose id is not in LOCKED_ENTRY_IDS");
   const provisional = e.ladder.some((r) => r.kind === "system_one" && r.bars.kind === "provisional");
-  if (provisional && !e.monotone && e.fail !== e.defaultVerdict) p.push("provisional bar on an entry that is neither monotone nor fail-open");
+  const failOpen = e.fail === e.defaultVerdict && noDirectEffect(e);
+  if (provisional && !e.monotone && !failOpen && !reversibleOverPaco(e)) {
+    p.push("provisional bar on an entry that is not monotone, not fail-open without direct effects, and not over Paco's words with every effect reversible and announced");
+  }
   return p;
+}
+
+/** Fail-open counts only when no verdict causes a direct effect: each is `none` or `tighten` (orchestrator resolution 1, 2026-10-17). */
+function noDirectEffect(e: AnyEntry): boolean {
+  return e.verdicts.every((v) => { const k = e.effects[v]?.kind; return k === "none" || k === "tighten"; });
+}
+
+/** ADR 0030 decision 9 as amended 2026-10-17: Paco's own message is the input and every verdict's effect is passive or reversible on a card. */
+function reversibleOverPaco(e: AnyEntry): boolean {
+  return e.input === "paco" && e.verdicts.every((v) => {
+    const fx = e.effects[v];
+    return fx !== undefined && (PASSIVE.has(fx.kind) || (fx.reversible && ANNOUNCED.has(fx.announced)));
+  });
 }
 
 /**

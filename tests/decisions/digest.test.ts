@@ -62,6 +62,16 @@ describe("unsureOf (R1)", () => {
     expect(rows.map((r) => r.decision_id).sort()).toEqual([...ok].sort());
     store.close();
   });
+  // Rev 2 item 11: memory.kind is armed without a calibration sitting, so its Jev answers inside [0.85, 1.0) are the
+  // review list Paco labels from; one below its own bar is not a judgement and is not offered.
+  it("offers a memory.kind Jev row (jev_kind) at p 0.85 and 0.99, not at 0.84", () => {
+    const store = RunStore.openInMemory();
+    const mk = (p: number) => store.insertDecision(D({ entry_id: "memory.kind", entry_version: 1, verdict: "fact", p, reason_code: "jev_kind" }));
+    const offered = [mk(0.85), mk(0.99)];
+    mk(0.84);
+    expect(unsureOf(store.listDecisionsBetween("2026-10-11T11:00:00.000Z", NOW)).map((r) => r.decision_id).sort()).toEqual([...offered].sort());
+    store.close();
+  });
 });
 
 describe("buildDecisionDigest", () => {

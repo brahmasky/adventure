@@ -5,8 +5,8 @@ import type { AnyEntry, EffectKind, VerdictEffect } from "../../src/decisions/ty
 
 // Spec §4.1 (R12, R13) / §6.3: the registry is a gate. Every entry must be internally sound; what a Jev or model rung may
 // cause depends on what it read (over Paco's message: reversible and announced; over tool input: only tighten or propose);
-// no entry ships in shadow or off; locked entries carry rule rungs only; a provisional bar sits only on a monotone or
-// fail-open entry. A misdeclared entry must FAIL here — that is the whole point of declaring effects as data.
+// no entry ships in shadow or off; locked entries carry rule rungs only; a provisional bar sits only on a monotone
+// entry, a fail-open entry with no direct effect, or a reversible-and-announced-over-Paco entry (ADR 0030 amendment 2026-10-17). A misdeclared entry must FAIL here — that is the whole point of declaring effects as data.
 const HANDLER = REGISTRY[0] as AnyEntry;
 const base = (o: Partial<AnyEntry>): AnyEntry => ({ ...HANDLER, ...o });
 const fx = (kind: EffectKind, reversible = true, announced: VerdictEffect["announced"] = "card"): VerdictEffect => ({ kind, reversible, announced });
@@ -85,9 +85,27 @@ describe("entryProblems (R12 and R13 as data)", () => {
     expect(entryProblems(base({ fail: "nope" }))).toContain("fail not in verdicts");
     expect(entryProblems(base({ defaultVerdict: "nope" }))).toContain("defaultVerdict not in verdicts");
   });
-  it("fails a provisional bar on an entry that is neither monotone nor fail-open", () => {
-    const ladder = HANDLER.ladder.map((r) => (r.kind === "system_one" ? { ...r, bars: { kind: "provisional" as const, question: "q", criteriaHash: "h", model: "m", p: 0.5, source: "mu" } } : r));
-    expect(entryProblems(base({ ladder, fail: "answer" }))).toContain("provisional bar on an entry that is neither monotone nor fail-open");
-    expect(entryProblems(base({ ladder }))).toEqual([]); // turn.handler is fail-open: fail = default = planner
+  // ADR 0030 decision 9 as amended 2026-10-17 (orchestrator resolution 1): a provisional bar sits on a monotone entry,
+  // on a fail-open entry that causes no direct effect (none or tighten only), or on an entry over Paco's own message whose
+  // every effect is reversible and announced. memory.kind is fail-open but saves, so only the amended clause admits it.
+  const ladder = HANDLER.ladder.map((r) => (r.kind === "system_one" ? { ...r, bars: { kind: "provisional" as const, question: "q", criteriaHash: "h", model: "m", p: 0.5, source: "mu" } } : r));
+  const msg = "provisional bar on an entry that is not monotone, not fail-open without direct effects, and not over Paco's words with every effect reversible and announced";
+  const passive = Object.fromEntries(HANDLER.verdicts.map((v) => [v, fx("none", true, "none")]));
+  it("admits paco input with every effect reversible and announced (turn.handler's shape), even when not fail-open", () => {
+    expect(entryProblems(base({ ladder, fail: "answer" }))).not.toContain(msg);
+  });
+  it("fails fail-open + a direct effect + non-paco input, and an unannounced effect over Paco's words", () => {
+    expect(entryProblems(base({ ladder, input: "tool" }))).toContain(msg); // fail === defaultVerdict, but effects are saves
+    expect(entryProblems(base({ ladder, fail: "answer", input: "tool" }))).toContain(msg);
+    expect(entryProblems(base({ ladder, fail: "answer", effects: { ...HANDLER.effects, memory: fx("effect", true, "none") } }))).toContain(msg);
+  });
+  it("still admits a fail-open entry with passive effects only (the tool.injection / turn.settle shape), over any input", () => {
+    expect(entryProblems(base({ ladder, input: "tool", effects: passive }))).not.toContain(msg);
+    expect(entryProblems(base({ ladder, input: "mixed", effects: { ...passive, planner: fx("tighten", true, "none") } }))).not.toContain(msg);
+  });
+  it("memory.kind passes only through the amended clause", () => {
+    const mk = entryById("memory.kind") as AnyEntry;
+    expect(entryProblems(mk)).toEqual([]);
+    expect(entryProblems({ ...mk, input: "tool" })).toContain(msg); // fail-open alone no longer admits it
   });
 });
