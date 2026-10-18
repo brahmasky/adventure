@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
+import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 
@@ -125,6 +126,21 @@ describe("cap-pruned facts, the steered read, memory_not_saved (plan Rev 2 items
     for (let k = 0; k < 25; k += 1) s.recordChatTurn({ chat_id: CHAT, run_id: other, role: "user", text: `other ${k}`, created_at: at(10 + k) });
     s.recordChatTurn({ chat_id: CHAT, run_id: "run_not_telegram", role: "user", text: "no run row", created_at: at(60) });
     expect(s.steeredUserTurns(CHAT, at(1), parent, "planner:555:p", 20).map((t) => t.text)).toEqual(["the steer"]);
+    s.close();
+  });
+  // Security: the telegram-source filter is what keeps a non-Paco run (cli) leased to the same worker out of the save's evidence.
+  it("excludes a non-telegram run leased to the same worker, even with a newer user turn", () => {
+    const s = RunStore.openInMemory();
+    const parent = createQueuedTurnRun(s); s.claimRun(parent, "planner:555:p", 120);
+    const cli = s.createOrGet(buildTypedTaskEvent({ source: "cli", type: "turn", program: "turn", goal: "cli run",
+      requested_by: { kind: "user", id: "paco" }, notify: { kind: "local" }, idempotency_key: "cli-1", source_reference: "cli:1", created_at: NOW }));
+    if (cli.status !== "created") throw new Error(`expected created, got ${cli.status}`);
+    // A cli run is born unqueued, so lease it to the telegram run's worker directly (the store's own column, as claimRun would).
+    (s as unknown as { db: DatabaseSync }).db.prepare("UPDATE runs SET worker_id = ? WHERE run_id = ?").run("planner:555:p", cli.run_id);
+    expect(s.runSource(cli.run_id)).toBe("cli");
+    s.recordChatTurn({ chat_id: CHAT, run_id: parent, role: "user", text: "own message", created_at: at(2) });
+    s.recordChatTurn({ chat_id: CHAT, run_id: cli.run_id, role: "user", text: "cli text", created_at: at(5) });
+    expect(s.steeredUserTurns(CHAT, at(1), parent, "planner:555:p", 10).map((t) => t.text)).toEqual(["own message"]);
     s.close();
   });
   it("memory_not_saved carries a reason and the caller, nothing else, and refuses a payload without its source", () => {

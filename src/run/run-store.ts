@@ -1095,7 +1095,6 @@ const DECISION_LADDER_DDL = `
     created_at TEXT NOT NULL
   );`;
 
-/** Stage B §9: `jev_verdicts` with the lane CHECK widened to the stage B lanes; every other column exactly as stage A built it. */
 /** Spec 2026-10-15 §11: memory_changes with `add` (an explicit fact save's Undo row): the 2026-10-02 columns plus `pruned_ids`. */
 const MEMORY_CHANGES_ADD_DDL = `
   CREATE TABLE memory_changes (
@@ -1117,6 +1116,7 @@ const MEMORY_SAVE_TRIGGERS_DDL = `
     kinds TEXT NOT NULL,
     created_at TEXT NOT NULL
   );`;
+/** Stage B §9: `jev_verdicts` with the lane CHECK widened to the stage B lanes; every other column exactly as stage A built it. */
 const JEV_VERDICTS_LANES_DDL = `
   CREATE TABLE jev_verdicts (
     verdict_id TEXT PRIMARY KEY,
