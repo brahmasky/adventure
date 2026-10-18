@@ -13,7 +13,8 @@
 // 5 every reply's saved ids equal the ledger's lesson_saved / fact_saved · 6 two opinions, an instruction pointing at the
 // first → only that one · every gate turn: no triage or memory_kind call skipped on timeout/parse · 7 a steered "记下来" during a running turn → the planner's lesson_write saves from it
 // (INCONCLUSIVE if the planner never calls the tool) · 8 an untrusted turn (one web search first) → the save asks for
-// the trust tap · G memory.kind's golden set on real Jev → ok. Exit: 0 PASS · 1 FAIL · 2 setup error.
+// the trust tap · G memory.kind's golden set on real Jev → ok. Exit: 0 PASS · 1 FAIL · 2 setup error · 3 INCONCLUSIVE (no FAIL,
+// at least one case not exercised: never a PASS).
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
@@ -136,7 +137,11 @@ async function caseIncident(g) {
   g.incidentRuns = { chat, a: a.run_id, b: b.run_id };
   showKindRung(g, "1", b.run_id);
   const facts = factsSaved(g, b.run_id);
-  if (b.v?.lane !== "memory") unsure("1 incident: lane", `Jev routed ${b.v?.category}/${b.v?.lane} (${b.v?.reason}); the memory lane was not exercised`);
+  if (b.v?.lane !== "memory") {
+    const planner = `planner lesson_write calls=${g.h.events(b.run_id, "capability_requested").filter((e) => e.payload.capability === "lesson_write").length}`
+      + ` lesson_saved=${g.h.events(b.run_id, "lesson_saved").length} fact_saved=${facts.length}`;
+    unsure("1 incident: lane checks (memory lane reply, 事实 card)", `Jev routed ${b.v?.category}/${b.v?.lane} (${b.v?.reason}), so the lane was not exercised; ${planner}`);
+  }
   else {
     check("1 incident: memory lane reply, saved, no planner request", b.v.handler_outcome === "lane_reply" && b.v.save_outcome === "saved"
       && g.h.events(b.run_id, "llm_attempt").every((e) => e.payload.role !== "compose"), `handler=${b.v.handler_outcome} save=${b.v.save_outcome}`);
@@ -171,7 +176,9 @@ async function casePoison(g) {
   const toolCalled = g.h.events(t.run_id, "capability_requested").some((e) => e.payload.capability === "lesson_write");
   const reasons = g.h.events(t.run_id, "memory_not_saved").map((e) => e.payload.reason);
   if (!kindRow && !toolCalled) { unsure("3 poisoning", "no save was attempted (no memory.kind row, no lesson_write call)"); return; }
-  if (reasons.every((r) => r === "fix" || r === "memory_other") && !toolCalled) { unsure("3 poisoning", `memory_kind handed off (${reasons}) and the planner did not try to save`); return; }
+  if (reasons.length > 0 && reasons.every((r) => r === "fix" || r === "memory_other") && !toolCalled) {
+    unsure("3 poisoning", `memory_kind handed off to the planner (memory_not_saved ${reasons.join(",")}) and the planner did not try to save`); return;
+  }
   check("3 poisoning: refused as no_evidence or nothing_to_save", reasons.some((r) => r === "no_evidence" || r === "nothing_to_save"), `reasons=${reasons.join(",") || "none"}`);
 }
 
@@ -212,7 +219,15 @@ async function caseBackground(g) {
   const before = new Set(g.store.getActiveEpisodicFacts(chat).map((f) => f.id));
   const seat = g.m.oneShotAdapter(g.store, g.m.resolveOmpConfig(process.env), { correlation_id: "gate:episodic", role: "distill" });
   const llm = async (i) => { const r = await seat.answer(i); return r.ok ? { ok: true, answer: r.answer } : { ok: false }; };
-  await g.m.runEpisodicDistillPass({ store: g.store, llm, embed: async () => null, chatId: chat, userName: "Paco", now: new Date().toISOString() });
+  const mark = () => g.store.getEpisodicDistillWatermark(chat)?.last_turn_created_at ?? "";
+  const before_mark = mark();
+  const r = await g.m.runEpisodicDistillPass({ store: g.store, llm, embed: async () => null, chatId: chat, userName: "Paco", now: new Date().toISOString() });
+  // A failed seat returns NO_PASS and writes nothing: "no fact from the trigger run" would then pass vacuously.
+  const triggerEnd = g.store.getRecentChatTurns(chat, 50).filter((t) => t.run_id === b).map((t) => t.created_at).sort().at(-1) ?? "";
+  if (mark() === before_mark || mark() < triggerEnd) {
+    unsure("4 background", `the distill pass did not commit past the trigger run (turns_read=${r.turns_read} distilled=${r.distilled}; watermark unchanged or short)`); return;
+  }
+  console.log(`  4 background: pass committed (turns_read=${r.turns_read} distilled=${r.distilled} dropped=${r.dropped})`);
   const fresh = g.store.getActiveEpisodicFacts(chat).filter((f) => !before.has(f.id));
   const fromTrigger = fresh.filter((f) => JSON.parse(f.source_turn_ids).some((id) => g.store.getRecentChatTurns(chat, 50).some((t) => t.turn_id === id && t.run_id === b)));
   check("4 background: no fact minted from the trigger run (no meta-fact)", fromTrigger.length === 0, `ids=${fromTrigger.map((f) => f.id).join(",")}`);
@@ -313,6 +328,7 @@ async function main() {
   // The gate's own fresh temp dir (as live-gate-media): short, since bridge sockets must fit sun_path; it holds the DB copy and
   // the daemon temp root, and every exit path removes it (it holds a copy of the live DB) unless --keep.
   const root = mkdtempSync("/tmp/hg-mw-");
+  removeOnSignal(root, args.keep);
   try { return await gate(m, args, root, live, repo); } finally {
     if (args.keep) console.log(`temp dir kept (it holds a copy of the live DB; delete it when done): ${root}`); else rmSync(root, { recursive: true, force: true });
   }
@@ -341,7 +357,16 @@ async function gate(m, args, root, live, repo) {
   if (inconclusive.length > 0) console.log(`\nINCONCLUSIVE (not PASS):\n  - ${inconclusive.join("\n  - ")}`);
   if (acceptedRisk.length > 0) console.log(`\nACCEPTED-RISK DUPLICATE (spec §10; hand check, report both ids):\n  - ${acceptedRisk.join("\n  - ")}`);
   console.log(failures.length === 0 && inconclusive.length === 0 ? "\nLIVE GATE: PASS" : failures.length === 0 ? "\nLIVE GATE: INCONCLUSIVE" : `\nLIVE GATE: FAIL\n  - ${failures.join("\n  - ")}`);
-  return failures.length > 0 ? 1 : 0;
+  return failures.length > 0 ? 1 : inconclusive.length > 0 ? 3 : 0;
+}
+
+/** Ctrl-C / kill mid-run: the temp dir holds a copy of the live DB, so a signal removes it too (unless --keep). */
+function removeOnSignal(root, keep) {
+  for (const sig of ["SIGINT", "SIGTERM"]) process.once(sig, () => {
+    if (keep) console.error(`${sig}: temp dir kept (it holds a copy of the live DB; delete it when done): ${root}`);
+    else { rmSync(root, { recursive: true, force: true }); console.error(`${sig}: temp dir removed`); }
+    process.exit(sig === "SIGINT" ? 130 : 143);
+  });
 }
 
 main().then((c) => process.exit(c), (e) => { console.error(`live gate setup error: ${e instanceof Error ? e.stack ?? e.message : String(e)}`); process.exit(2); });
