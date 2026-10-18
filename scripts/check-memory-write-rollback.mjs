@@ -11,7 +11,7 @@
 // CREATE TABLE IF NOT EXISTS is a no-op on the rebuilt table) and Paco's Undo taps go through ITS gateway handler: every
 // change undone as its own code reads it. Exit 0 PASS · 1 FAIL · 2 setup error. The temp copy is deleted unless --keep.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
@@ -34,7 +34,11 @@ function parseArgs(argv) {
   if (!NEW_DIST.includes("/.worktrees/")) throw new Error(`run from the feature worktree (this dist is ${NEW_DIST})`);
   if (!a.oldDist || !existsSync(join(a.oldDist, "gateway/memory-commands.js"))) throw new Error("--old-dist <previous build's dist> is required");
   a.oldBase ??= execFileSync("git", ["merge-base", "main", "HEAD"], { encoding: "utf8" }).trim();
+  if (!a.oldBase) throw new Error("--old-base must be a non-empty commit");
   const prov = verifyOldDist(a.oldDist, NEW_DIST, a.oldBase);
+  const oldGw = readFileSync(join(a.oldDist, "gateway/memory-commands.js"), "utf8");
+  const oldStore = readFileSync(join(a.oldDist, "run/run-store.js"), "utf8");
+  if (oldGw.includes("recordSaveUndone") || oldStore.includes("insertFactAddChange")) throw new Error("--old-dist contains the memory-write code: it is not the previous build");
   console.log(`old build: worktree HEAD ${prov.head.slice(0, 12)} (base ${a.oldBase.slice(0, 12)}), core-worker.js ${prov.oldHash} (new ${prov.newHash})`);
   return a;
 }
@@ -57,11 +61,13 @@ function seedNew(RunStore, path) {
     const saves = s.inTransaction(() => {
       const added = fact("an explicit add");
       const old = fact("the old value");
+      const capped = fact("pruned by the cap during the SUPERSEDE");
+      s.retireEpisodicFactById(capped);
       const sup = s.saveReconciledFact({ chat_id: CHAT, fact: "rollback check: the new value", source_turn_ids: [] }, { verdict: "SUPERSEDE", id: old }, now);
       const add = s.insertFactAddChange({ new_id: added, superseded_id: null, pruned_ids: [], run_id: "run_rollback_check", chat_id: CHAT, now });
-      const supc = s.insertFactAddChange({ new_id: sup.id, superseded_id: old, pruned_ids: sup.prunedIds, run_id: "run_rollback_check", chat_id: CHAT, now });
+      const supc = s.insertFactAddChange({ new_id: sup.id, superseded_id: old, pruned_ids: [...sup.prunedIds, capped], run_id: "run_rollback_check", chat_id: CHAT, now });
       s.insertMemorySaveTrigger("run_rollback_check", ["fact"], now);
-      return { add: add.change_id, sup: supc.change_id, ids: { added, old, sup: sup.id } };
+      return { add: add.change_id, sup: supc.change_id, ids: { added, old, sup: sup.id, capped } };
     });
     return { retire: { change_id: retire.change_id, id: retired }, correct: { change_id: correct.change_id, id: corrected, new_id: correct.new_id }, ...saves };
   } finally { s.close(); }
@@ -88,15 +94,26 @@ function undoOnOld(old, path, seed) {
   const s = old.RunStore.open(path);
   try {
     const st = (id) => s.getEpisodicFact(id)?.status;
-    for (const [k, c] of [["add", seed.add], ["sup", seed.sup], ["retire", seed.retire.change_id], ["correct", seed.correct.change_id]]) {
+    const changes = [["add", seed.add], ["sup", seed.sup], ["retire", seed.retire.change_id], ["correct", seed.correct.change_id]];
+    check("pre-state: retired, corrected and superseded-old facts are NOT active; correction and ADD/SUPERSEDE facts ARE active, cap-pruned fact is pruned",
+      st(seed.retire.id) !== "active" && st(seed.correct.id) !== "active" && st(seed.ids.old) !== "active"
+      && st(seed.correct.new_id) === "active" && st(seed.ids.added) === "active" && st(seed.ids.sup) === "active" && st(seed.ids.capped) === "pruned");
+    for (const [k, c] of changes) {
       const r = tapOld(old, s, c, `rollback:${k}`);
-      check(`old build's gateway Undo on ${k} returns ok`, r.ok === true, JSON.stringify(r));
+      check(`old build's gateway Undo on ${k} returns ok`, r.ok === true && r.status === "memory_undone", JSON.stringify(r));
     }
     check("ADD undone by the old build: the new fact pruned", st(seed.ids.added) === "pruned");
     check("SUPERSEDE undone by the old build: new pruned, old restored", st(seed.ids.sup) === "pruned" && st(seed.ids.old) === "active");
     check("retire undone by the old build: the fact active again", st(seed.retire.id) === "active");
     check("correct undone by the old build: old active, correction pruned", st(seed.correct.id) === "active" && st(seed.correct.new_id) === "pruned");
-    check("a second tap on the old build changes nothing", tapOld(old, s, seed.add, "rollback:again").ok === true && s.getMemoryChange(seed.add)?.undone_at !== null);
+    console.log(`INFO old build left the cap-pruned fact (pruned_ids, D13) as: ${st(seed.ids.capped)}`);
+    check("cap-pruned fact stays pruned under the old build's Undo (documented D13: it does not read pruned_ids)", st(seed.ids.capped) === "pruned");
+    const snap = () => JSON.stringify([...changes.map(([, c]) => { const m = s.getMemoryChange(c); return [c, m?.undone_at ?? null]; }),
+      ...[seed.ids.added, seed.ids.sup, seed.ids.old, seed.ids.capped, seed.retire.id, seed.correct.id, seed.correct.new_id].map((id) => [id, st(id)])]);
+    const before = snap();
+    const again = changes.map(([k, c]) => tapOld(old, s, c, `rollback:again:${k}`));
+    check("a second tap on every change changes nothing (statuses and undone_at identical)", snap() === before && again.every((r) => r.ok === true), `${again.map((r) => r.status).join(",")}`);
+    check("every change records undone_at", changes.every(([, c]) => s.getMemoryChange(c)?.undone_at));
   } finally { s.close(); }
 }
 
@@ -126,5 +143,5 @@ async function main() {
   return failures.length === 0 ? 0 : 1;
 }
 
-for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143]]) process.on(sig, () => { cleanup(); process.exit(code); });
+for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) process.on(sig, () => { cleanup(); process.exit(code); });
 main().then((c) => { cleanup(); process.exit(c); }, (e) => { console.error(`rollback check setup error: ${e instanceof Error ? e.stack ?? e.message : String(e)}`); cleanup(); process.exit(2); });
