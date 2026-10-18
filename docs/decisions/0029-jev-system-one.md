@@ -295,3 +295,18 @@ Approved by Paco 2026-10-09 with the stage A merge.
 ## Amendment (2026-10-12): decision ladder
 
 Amended by [ADR 0030](0030-decision-ladder.md). The front door becomes the entry `turn.handler` (ack rule → Jev tree → Tiny cascade, the planner its `fail` value), with `turn.gear` a separate entry on the same Jev call. **Decision 2** stands word for word; this ADR records three applications under it: withholding a passage is a data transform, not an action deny; `turn.settle`'s send-back is one bounded continuation in which, after a Jev-rung send-back, every side effect asks, and after a code-rung send-back the normal gates apply; the built-in `edit`/`write` redirect in a hostile turn is the ask form of a gate that cannot wait. **"No Jev in any deny path, ever"** gains one named exception: the code-owned redirect of a built-in `edit`/`write` to its asking equivalent (`bash`, which asks Paco) in a turn the injection judge marked hostile. Every other Jev verdict stays out of deny paths. What a Jev verdict may cause follows ADR 0030 decision 4 (R12): the memory shortcut's instant save stays, permanently. The added-tap budget (3 a day) also counts trust asks. **Decision 4:** Paco's R11 approval (ADR 0030 decision 12: egress approved for every new class after redaction) is recorded as the approval of web, mail and calendar content, shell output, files and replies, with the judge redactor and the residual in ADR 0030. **Decision 5** (shadow before arm): new entries never shadow (ADR 0030 R13: no shadow by design); a stale bar or golden drift pages instead of disarming; provisional bars (ADR 0030 decision 9) are an explicit exception, under Paco's R6 (all new judges armed at ship), for monotone or fail-open entries only. The front door's calibrated tree rows keep decision 5's disarm on a model move, unchanged.
+
+## Amendment (2026-10-17): the memory lane writes rules and facts
+
+Spec: [2026-10-15-memory-write-thread-anchor-design.md](../superpowers/specs/2026-10-15-memory-write-thread-anchor-design.md) (Rev 3);
+the decision is ADR 0030's `memory.kind` (amendment 2026-10-17).
+
+- **§5.5: `sets_rule` no longer gates the memory lane.** `category: memory` at the memory bar takes the lane; the lane asks
+  `memory_kind` in its own Jev request (never in the shared tree request: one bad answer would fail the whole call): a
+  confident `fix` or `other` hands the turn to the planner, `rule`/`fact`/`both` save, and Jev failing or below 0.85
+  leaves the kind to the distill. A Jev outage there opens the usual Jev incident and never blocks the save.
+- **Any lane may write a fact.** A save-first (`sets_rule` = yes) on the answer, lookup, status and planner routes runs
+  through the same service and asks the same `memory_kind` call; there an escape answer abstains, so it never suppresses
+  the save. The planner's own `lesson_write` does not ask Jev: the distill decides.
+- **Every save is announced** on the memory card with one ↩️ Undo per item (rule: `memlane:undo`, fact: `memory:undo`).
+  The run that saved is skipped by the background episodic pass.

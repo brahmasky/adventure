@@ -290,8 +290,12 @@ This file is protected (ADR 0011); Paco asked for this amendment on 2026-10-17 (
   keep the incident's failure (a fact request handed to the planner and dropped) live. Paco's ruling: "happy to proceed
   with jev's high probability answer, no calibration is required". The registry test enforces the condition: a
   provisional bar on any other non-monotone, non-fail-open entry fails it.
+- **Passive effects qualify under the same clause.** An effect of `none` or `proposal` over Paco's own message also
+  satisfies the paco-input condition: it causes nothing to reverse or announce (Task 6 ruling of the memory-write build;
+  spec Rev 3).
 - **`memory.kind`'s bar:** provisional, p ≥ 0.85 (the memory lane's bar), armed at ship. Golden-set items, one per verdict
-  in zh and en, join the invariant sweep; drift pages `decision_golden_drift:memory.kind` and does not disarm (R13).
+  in zh and en except `fix` (Jev does not clear 0.85 on it: first-option bias toward `other`, live gate 2026-10-18; a fix
+  request falls below the bar to the distill and the planner's `memory_correct`), join the invariant sweep; drift pages `decision_golden_drift:memory.kind` and does not disarm (R13).
   Undo taps and digest marks are recorded as labels; a calibrated row may replace the bar when Paco commits one.
 - **ADR 0029 §5.5 consequence:** the memory lane no longer requires `sets_rule` = yes; it takes rules and facts. ADR
   0029's own amendment line lands with the build.

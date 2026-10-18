@@ -141,3 +141,17 @@ telling the planner not to ask again.
 ADR 0028 D7 also narrows the 2026-07-27 amendment below: Claude (inside omp, on
 subscription OAuth) is now the default **conversational** engine. The contained, tool-less chair
 seat is an omp one-shot on the Chair role (ADR 0028 model-roles amendment, 2026-10-07).
+
+## Amendment (2026-10-17): the trust anchor is Paco's thread, the newest message the instruction
+
+Spec: [2026-10-15-memory-write-thread-anchor-design.md](../superpowers/specs/2026-10-15-memory-write-thread-anchor-design.md) (Rev 3).
+
+- **§5's anchor widens from one message to Paco's turns in the thread.** A memory save treats Paco's newest message in
+  the turn (a steered one when there is one) as the instruction and his earlier turns (the quoted one first, then the
+  newest; at most 4 texts, 600 characters each, 1,500 in all) as content the instruction may point at. Houge's reply stays
+  reference only. Schedule-born turns are neither. Reason: "记下来" and "save that" point back; the one-message anchor
+  broke every back-reference (incident 2026-10-15), while the anchor's reason — the model never supplies a lesson's text —
+  holds for every one of Paco's turns.
+- **A fact carries evidence.** The explicit save writes facts as well as rules; a fact must quote one of Paco's numbered
+  lines verbatim (the memory A1 evidence check, enforce mode on this path). A rule keeps the lifting rule against Paco's
+  cut text and the prior reply.
