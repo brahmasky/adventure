@@ -21,11 +21,13 @@ export function checkLessonSide(d: MemoryDistill, pacoText: string, prior: strin
 /** Plan Rev 2 item 5: a quote must carry words, not a character (checkEvidence alone accepts one). */
 export const MIN_QUOTE_CHARS = 6;
 export const MIN_QUOTE_CHARS_CJK = 3;
-const CJK_ONLY = /^[\p{Script=Han}\p{P}]+$/u;
+const HAN_ONLY = /^\p{Script=Han}+$/u;
 
 function quoteTooShort(quote: string): boolean {
-  const q = normalizeForEvidence(quote).replace(/\s+/g, "");
-  return Array.from(q).length < (CJK_ONLY.test(q) ? MIN_QUOTE_CHARS_CJK : MIN_QUOTE_CHARS);
+  // Only letters and digits count: punctuation and spaces carry no words, so "。。。" or "!!!!!!" is never a quote.
+  const q = normalizeForEvidence(quote).replace(/[^\p{L}\p{N}]/gu, "");
+  if (q.length === 0) return true;
+  return Array.from(q).length < (HAN_ONLY.test(q) ? MIN_QUOTE_CHARS_CJK : MIN_QUOTE_CHARS);
 }
 
 /**
