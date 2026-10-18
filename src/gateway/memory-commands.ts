@@ -1,5 +1,6 @@
 import { enqueueMemoryChangeCard, searchActiveMemory } from "../capabilities/memory-correct.js";
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
+import { recordSaveUndone } from "../decisions/tap-outcomes.js";
 import type { TypedTaskEvent } from "../domain/types.js";
 import type { EpisodicFactRow, MemoryChange, RunStore } from "../run/run-store.js";
 import { clipText } from "../status/houge-status.js";
@@ -58,6 +59,7 @@ export function handleMemoryUndo(store: RunStore, event: TypedTaskEvent): Gatewa
       return { ok: false, error: { code: MEMORY_CHANGE_NOT_FOUND, message: "No such memory change in this chat" } };
     }
     const r = store.undoMemoryChange(change_id);
+    if (r.status === "undone" && change.action === "add" && change.run_id) recordSaveUndone(store, change.run_id); // spec 2026-10-15 §9
     const text = r.status === "undone" ? undoneText(change, r.restored, r.retired)
       : r.status === "changed_since" ? MEMORY_CHANGED_SINCE_TEXT : MEMORY_ALREADY_UNDONE_TEXT;
     replyTo(store, event, "memory_undo", text);

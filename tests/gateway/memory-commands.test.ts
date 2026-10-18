@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { TypedTaskEvent } from "../../src/domain/types.js";
+import { buildTypedTaskEvent, type TypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway, HELP_TEXT } from "../../src/gateway/gateway.js";
-import { RunStore } from "../../src/run/run-store.js";
+import { handleMemoryUndo } from "../../src/gateway/memory-commands.js";
+import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
 import { isHandledIntakeDenial } from "../../src/telegram/telegram-poll-runner.js";
 import { parseTelegramCommand } from "../../src/triggers/telegram-command-parser.js";
 import { normalizeTelegramUpdate } from "../../src/triggers/telegram-trigger-adapter.js";
 import { drainOutbox } from "../helpers/omp-worker.js";
+import { createQueuedTurnRun } from "../helpers/runs.js";
 
 // Paco's own memory commands (2026-10-02): /memories shows what Houge remembers about this chat, /forget-memory <id>
 // retires one fact with the same Undo card the tool sends. His direct command: allowlist only, no turn or taint rules.
@@ -123,5 +125,45 @@ describe("/help", () => {
     expect(HELP_TEXT).toContain("/memories [query]");
     expect(HELP_TEXT).toContain("/forget_memory <id>");
     expect(HELP_TEXT).not.toContain("/forget-memory");
+  });
+});
+
+// Spec §9: Undo on a saved fact is Paco's label that memory.kind (and the route) chose wrong — it must reach the
+// calibration evidence like a lesson Undo does, or fact mistakes never show in the report.
+const undoTap = (change_id: string, key: string) => buildTypedTaskEvent({ source: "telegram", type: "memory_undo", requested_by: { kind: "user", id: "paco" },
+  notify: { kind: "telegram", chat_id: CHAT }, idempotency_key: key, source_reference: key, metadata: { telegram_update_id: 1, telegram_callback_id: key, change_id } });
+const row = (run_id: string, entry_id: string, verdict: string): DecisionInsert => ({ entry_id, entry_version: 1, run_id, tool_call_id: null, stage: "pre_model",
+  rung: "system_one", verdict, p: 0.95, reason_code: null, fallback_reason: null, fallback_rung: null, armed_mode: "on", latency_ms: 1 });
+
+describe("fact Undo outcomes", () => {
+  it("records lesson_undone on turn.handler (its lane) and on memory.kind, once; a retire Undo records nothing", () => {
+    const run_id = createQueuedTurnRun(store, "记下来吧");
+    const handler = store.insertDecision(row(run_id, "turn.handler", "memory"));
+    const kind = store.insertDecision(row(run_id, "memory.kind", "fact"));
+    const id = fact("Paco prefers the south side noodle shop");
+    const change = store.inTransaction(() => store.insertFactAddChange({ new_id: id, superseded_id: null, pruned_ids: [], run_id, chat_id: CHAT, now: new Date().toISOString() }));
+    handleMemoryUndo(store, undoTap(change.change_id, "u1"));
+    handleMemoryUndo(store, undoTap(change.change_id, "u2")); // already undone: no second outcome
+    expect(store.listDecisionOutcomes(handler).map((o) => [o.signal, o.value])).toEqual([["lesson_undone", "memory"]]);
+    expect(store.listDecisionOutcomes(kind).map((o) => [o.signal, o.value])).toEqual([["lesson_undone", "memory"]]);
+    const retire = store.retireMemoryRows({ kind: "fact", ids: [fact("an older fact")], chat_id: CHAT, run_id, now: new Date().toISOString() })!;
+    handleMemoryUndo(store, undoTap(retire.change_id, "u3"));
+    expect(store.listDecisionOutcomes(handler)).toHaveLength(1); // a memory_correct retire is not a memory.kind save
+  });
+  it("labels the memory.kind row that saved, not an earlier hand-off row of the same run (Rev 2 item 7)", () => {
+    const run_id = createQueuedTurnRun(store, "那条不对，记成：我住在悉尼");
+    const fixRow = store.insertDecision({ ...row(run_id, "memory.kind", "fix"), created_at: "2026-10-17T00:00:00.000Z" });
+    const saveRow = store.insertDecision({ ...row(run_id, "memory.kind", "fact"), created_at: "2026-10-17T00:00:05.000Z" });
+    const change = store.inTransaction(() => store.insertFactAddChange({ new_id: fact("Paco lives in Sydney"), superseded_id: null, pruned_ids: [], run_id, chat_id: CHAT, now: new Date().toISOString() }));
+    handleMemoryUndo(store, undoTap(change.change_id, "u5"));
+    expect(store.listDecisionOutcomes(fixRow)).toEqual([]);
+    expect(store.listDecisionOutcomes(saveRow).map((o) => o.signal)).toEqual(["lesson_undone"]);
+  });
+  it("the planner's own save (no turn.handler row) labels memory.kind with `planner`", () => {
+    const run_id = createQueuedTurnRun(store, "记下来吧");
+    const kind = store.insertDecision(row(run_id, "memory.kind", "fact"));
+    const change = store.inTransaction(() => store.insertFactAddChange({ new_id: fact("Paco is vegetarian"), superseded_id: null, pruned_ids: [], run_id, chat_id: CHAT, now: new Date().toISOString() }));
+    handleMemoryUndo(store, undoTap(change.change_id, "u4"));
+    expect(store.listDecisionOutcomes(kind).map((o) => [o.signal, o.value])).toEqual([["lesson_undone", "planner"]]);
   });
 });

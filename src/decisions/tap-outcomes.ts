@@ -19,3 +19,17 @@ export function recordTapOutcome(store: RunStore, decision_id: string, signal: D
 export function decisionOf(store: RunStore, run_id: string, entry_id: string): DecisionRow | undefined {
   return store.listDecisionsForRun(run_id).find((d) => d.entry_id === entry_id);
 }
+
+const SAVE_VERDICTS: ReadonlySet<string> = new Set(["rule", "fact", "both"]);
+
+/**
+ * Spec 2026-10-15 §9: Undo of a memory save (a lesson's or a fact's) is a label against the run's turn.handler (value: its
+ * lane) and memory.kind (value: the same lane, `planner` when the planner's own tool saved). Never throws, like recordTapOutcome.
+ */
+export function recordSaveUndone(store: RunStore, run_id: string, now: string = new Date().toISOString()): void {
+  const handler = decisionOf(store, run_id, "turn.handler");
+  if (handler) recordTapOutcome(store, handler.decision_id, "lesson_undone", handler.verdict, now);
+  // The row that SAVED: the newest rule/fact/both, never an earlier fix/other hand-off row of the same run.
+  const kind = store.listDecisionsForRun(run_id).filter((d) => d.entry_id === "memory.kind" && SAVE_VERDICTS.has(d.verdict)).at(-1);
+  if (kind) recordTapOutcome(store, kind.decision_id, "lesson_undone", handler?.verdict ?? "planner", now);
+}

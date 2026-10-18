@@ -4,11 +4,11 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
-import { handleMemLaneUndo, TRIAGE_OVERRIDE_LIMIT } from "../../src/gateway/memlane-commands.js";
+import { handleMemLaneUndo, recordTriageOverride, TRIAGE_OVERRIDE_LIMIT } from "../../src/gateway/memlane-commands.js";
 import { jevDisarmMarkerPath, readJevDisarmMarker } from "../../src/jev/jev-flags.js";
 import { JEV_INCIDENT_SUBJECT, resolveQuietTriageOverrides } from "../../src/jev/jev-incidents.js";
 import { isHandledIntakeDenial } from "../../src/telegram/telegram-poll-runner.js";
-import { RunStore } from "../../src/run/run-store.js";
+import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 
 const NOW = "2026-10-04T10:00:00.000Z";
@@ -174,6 +174,33 @@ describe("memlane callbacks", () => {
     expect(gateway.intake(tap("memlane_ask", { run_id: bare })).ok).toBe(true);
     const lanes = store.getLedgerEvents().filter((e) => e.event_type === "triage_override").map((e) => [e.payload.run_id, e.payload.lane]);
     expect(lanes).toEqual([[withVerdict, "answer"], [bare, null]]);
+    store.close();
+  });
+});
+
+// Spec §9: a lesson Undo now labels memory.kind too, and Dig deeper on a turn that saved only a fact names that change.
+const dec = (run_id: string, entry_id: string, verdict: string): DecisionInsert => ({ entry_id, entry_version: 1, run_id, tool_call_id: null, stage: "pre_model",
+  rung: "system_one", verdict, p: 0.95, reason_code: null, fallback_reason: null, fallback_rung: null, armed_mode: "on", latency_ms: 1 });
+describe("memory.kind outcomes on the lane taps", () => {
+  it("a lesson Undo records lesson_undone on memory.kind as well as turn.handler", () => {
+    const store = RunStore.openInMemory();
+    const run_id = seedRun(store, "以后先给结论");
+    const handler = store.insertDecision(dec(run_id, "turn.handler", "memory"));
+    const kind = store.insertDecision(dec(run_id, "memory.kind", "rule"));
+    const id = store.addLesson({ scope: "ask", text: "Lead with the result", theme: "format", source: "lane", created_at: NOW });
+    const change = store.insertLessonChange({ run_id, chat_id: "555", new_id: id, superseded_id: null, pruned_ids: [] });
+    expect(handleMemLaneUndo(store, tap("memlane_undo", { change_id: change.change_id })).ok).toBe(true);
+    expect(store.listDecisionOutcomes(handler).map((o) => [o.signal, o.value])).toEqual([["lesson_undone", "memory"]]);
+    expect(store.listDecisionOutcomes(kind).map((o) => [o.signal, o.value])).toEqual([["lesson_undone", "memory"]]);
+    store.close();
+  });
+  it("Dig deeper names the fact change when the run saved no lesson", () => {
+    const store = RunStore.openInMemory();
+    const run_id = createQueuedTurnRun(store, "记下来吧");
+    const id = store.addEpisodicFact({ chat_id: "555", fact: "Paco is vegetarian" });
+    const change = store.inTransaction(() => store.insertFactAddChange({ new_id: id, superseded_id: null, pruned_ids: [], run_id, chat_id: "555", now: new Date().toISOString() }));
+    recordTriageOverride(store, run_id, "run_new", "555");
+    expect(store.getLedgerEvents().find((e) => e.event_type === "triage_override")?.payload.change_id).toBe(change.change_id);
     store.close();
   });
 });
