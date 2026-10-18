@@ -2698,6 +2698,7 @@ export class CoreWorker {
       // Layer routing (⓪·3 S1c): an instruction quoting a code-owned literal (verbatim in src/*.ts) is refused with a digest.
       srcContains: createSrcPhraseChecker(this.projectRoot), threadUserTexts: this.lessonThreadUserTexts(state),
       ...(state.memorySavedThisTurn ? { alreadySaved: savedIds(state.memorySavedThisTurn) } : {}),
+      aborted: () => o.signal?.aborted === true || this.ompTurns.get(claim.run_id) !== state,
       save: (plan, now) => this.saveMemoryForTurn({ claim, chatId, state, plan, now, o, outcome, held, instructionRun: sources.instruction.run_id })
     });
     try {
@@ -2757,6 +2758,8 @@ export class CoreWorker {
 
   /** Spec §7: every model call (the lesson reconcile; the fact's embed, neighbours and reconcile), then one transaction; the guard after commit. */
   private async saveMemoryForTurn(x: MemorySaveCtx): Promise<MemorySaveResult> {
+    // Opus M1: killed while the distill ran: no reconcile and no embed is sent
+    if (x.o.signal?.aborted || this.ompTurns.get(x.claim.run_id) !== x.state) return { lost: true };
     // Rev 2 item 12: the two sides' model calls are independent: run them together, before the transaction opens
     const [lessonV, factV] = await Promise.all([
       x.plan.lesson ? this.reconcileLessonVerdict(lessonCandidate(x.plan), this.memoryReconcileLlm(x.claim.run_id)) : Promise.resolve(undefined),

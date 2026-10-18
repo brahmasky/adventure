@@ -19,20 +19,20 @@ import { createQueuedTurnRun } from "../helpers/runs.js";
 const CHAT = "555";
 const OPINION = "I think the south side noodle shop is better than the north one";
 type Seat = { distill: string; fact?: string; lesson?: string };
-function seat(s: Seat, seen: Array<{ system: string; question: string }> = []) {
+function seat(s: Seat, seen: Array<{ system: string; question: string }> = [], onCall?: (system: string) => void) {
   return async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
-    const system = String(input.system ?? ""); seen.push({ system, question: String(input.question ?? "") });
+    const system = String(input.system ?? ""); seen.push({ system, question: String(input.question ?? "") }); onCall?.(system);
     const answer = /durable/i.test(system) ? s.distill : system === FACT_RECONCILE_DISCIPLINE ? s.fact ?? '{"verdict":"ADD"}' : s.lesson ?? '{"verdict":"ADD","theme":"format"}';
     return { ok: true, output: { answer } };
   };
 }
 const later = (ms: number) => new Date(Date.now() + ms).toISOString();
 /** `s` may read the store first (a test that needs a stored fact's id in the reconcile answer). */
-function setup(s: Seat | ((store: RunStore) => Seat), o: { embed?: (t: string) => Promise<Float32Array | null> } = {}) {
+function setup(s: Seat | ((store: RunStore) => Seat), o: { embed?: (t: string) => Promise<Float32Array | null>; onCall?: (system: string) => void } = {}) {
   const store = RunStore.openInMemory();
   const seen: Array<{ system: string; question: string }> = [];
   const script = typeof s === "function" ? s(store) : s;
-  const worker = ompWorker(store, mkdtempSync(join(tmpdir(), "hmw-")), { llm: seat(script, seen), ...(o.embed ? { embed: o.embed } : {}) });
+  const worker = ompWorker(store, mkdtempSync(join(tmpdir(), "hmw-")), { llm: seat(script, seen, o.onCall), ...(o.embed ? { embed: o.embed } : {}) });
   const earlier = createQueuedTurnRun(store, OPINION);
   store.recordChatTurn({ chat_id: CHAT, run_id: earlier, role: "user", text: OPINION, created_at: later(-60_000) });
   store.recordChatTurn({ chat_id: CHAT, run_id: earlier, role: "assistant", text: "Want me to remember that?", created_at: later(-59_000) });
@@ -339,6 +339,45 @@ describe("runMemoryWrite: a fact is a save like a rule (controller rulings 4-6)"
     expect(out(w.result)).toMatchObject({ saved: false, reason: "turn_ended" });
     expect([h.store.listDecisionsForRun(run_id).length, h.store.getActiveEpisodicFacts(CHAT).length, h.store.memorySaveTriggered(run_id)]).toEqual([0, 0, false]);
     h.store.close();
+  });
+  // Final review (Opus M1): a killed turn must send nothing more — no Jev call, no distill, no reconcile, no embed — or a
+  // /kill still spends model calls and leaks Paco's text to providers after he stopped the turn.
+  it("a turn killed before the save sends no model or Jev call at all", async () => {
+    let embeds = 0; let jev = 0;
+    const h = setup({ distill: FACT }, { embed: async () => { embeds++; return null; } });
+    const run_id = createQueuedTurnRun(h.store, "记下来吧");
+    const claim = h.store.claimRun(run_id, "w", 120)!;
+    h.worker.buildOmpTools(claim, CHAT);
+    const ac = new AbortController(); ac.abort();
+    const askJev = async () => { jev++; return { answer: choiceAns(["other", "fix", "rule", "fact", "both"], "fact", 0.95) }; };
+    const w = await h.worker.runMemoryWrite(claim, CHAT, {}, { source: "lane", signal: ac.signal, askJev });
+    expect(out(w.result)).toMatchObject({ saved: false, reason: "turn_ended" });
+    expect([h.seen.length, embeds, jev]).toEqual([0, 0, 0]);
+    h.store.close();
+  });
+  it("a turn killed during the Jev call sends no distill; killed during the distill, no reconcile and no embed", async () => {
+    let embeds = 0;
+    const h = setup({ distill: FACT }, { embed: async () => { embeds++; return null; } });
+    const run_id = createQueuedTurnRun(h.store, "记下来吧");
+    const claim = h.store.claimRun(run_id, "w", 120)!;
+    h.worker.buildOmpTools(claim, CHAT);
+    const ac = new AbortController();
+    const askJev = async () => { ac.abort(); return { answer: choiceAns(["other", "fix", "rule", "fact", "both"], "fact", 0.95) }; };
+    const w = await h.worker.runMemoryWrite(claim, CHAT, {}, { source: "lane", signal: ac.signal, askJev });
+    expect(out(w.result)).toMatchObject({ saved: false, reason: "turn_ended" });
+    expect(h.seen).toHaveLength(0);
+    h.store.close();
+    // killed while the distill ran: the reconciles and the embed are never sent
+    const ac2 = new AbortController();
+    const h2 = setup({ distill: FACT }, { embed: async () => { embeds++; return null; }, onCall: (system) => { if (/durable/i.test(system)) ac2.abort(); } });
+    const run2 = createQueuedTurnRun(h2.store, "记下来吧");
+    const claim2 = h2.store.claimRun(run2, "w", 120)!;
+    h2.worker.buildOmpTools(claim2, CHAT);
+    const w2 = await h2.worker.runMemoryWrite(claim2, CHAT, {}, { source: "lane", signal: ac2.signal });
+    expect(out(w2.result)).toMatchObject({ saved: false, reason: "turn_ended" });
+    expect([h2.seen.filter((c) => !/durable/i.test(c.system)).length, embeds]).toEqual([0, 0]);
+    expect(h2.seen.filter((c) => /durable/i.test(c.system))).toHaveLength(1);
+    h2.store.close();
   });
   // No silent failure: a rolled-back save is logged with its reason before the typed save_failed goes back.
   it("a thrown save is logged before save_failed is returned", async () => {

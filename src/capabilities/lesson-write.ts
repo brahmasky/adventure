@@ -165,6 +165,8 @@ export interface MemoryWriteAdapterConfig {
   threadUserTexts?: readonly string[];
   scheduledRun?: boolean;
   alreadySaved?: { lesson_id?: number; fact_id?: number };
+  /** The turn was killed (Opus M1): checked before every model or Jev call, so nothing is sent after a kill. */
+  aborted?: () => boolean;
   now?: () => Date;
 }
 
@@ -180,7 +182,9 @@ export function createMemoryWriteAdapter(c: MemoryWriteAdapterConfig): (input: R
     const { scope, note } = clampScope(c, input);
     const owned = codeOwnedRefusal(c.sources.instruction.text, c, note);
     if (owned) return owned;
+    if (c.aborted?.()) return memoryResult({ items: [], reason: "turn_ended" }, scope, note);
     const kind = await decideMemoryKind(c, scope);
+    if (c.aborted?.()) return memoryResult({ items: [], reason: "turn_ended" }, scope, note);
     if ("refused" in kind) return memoryResult({ items: [], reason: kind.refused }, scope, note);
     const { plan, items } = planOf(c, kind.distill, scope);
     if (!plan.lesson && !plan.fact) return memoryResult({ items }, scope, note);
@@ -244,6 +248,7 @@ async function decideMemoryKind(c: MemoryWriteAdapterConfig, scope: string): Pro
 }
 
 async function askDistill(c: MemoryWriteAdapterConfig, scope: string, kind?: MemoryKindChoice): Promise<MemoryDistill | null> {
+  if (c.aborted?.()) return null; // killed during the Jev call: the distill is never sent (the adapter reports turn_ended)
   const s = c.sources;
   const r = await c.llm({ system: MEMORY_DISTILL_DISCIPLINE, question: buildMemoryDistillQuestion({ thread: s.thread.map((m) => m.text),
     prior: s.prior.slice(0, PRIOR_CHARS), instruction: s.instruction.text, scope, ...(kind ? { kind } : {}) }) });
