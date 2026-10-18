@@ -420,7 +420,7 @@ function overlayNeighbors(
  * An UPDATE's merged text is LLM output too — same write-time flatten/cap; a merge that fails the backstop
  * degrades to an ADD of the candidate's own (already-safe) text.
  */
-function cleanMergedText(verdict: ReconcileVerdict): ReconcileVerdict {
+export function cleanMergedText(verdict: ReconcileVerdict): ReconcileVerdict {
   if (verdict.verdict !== "UPDATE" || !verdict.text) return verdict;
   const merged = sanitizeFactText(verdict.text);
   // C2: a rejected merge is an ADD of the candidate — an UPDATE without text would replace the target with the candidate
