@@ -40,6 +40,18 @@ function harness(o: { answer?: string | ((q: string) => string); fail?: boolean;
 const out = (r: ToolAdapterResult) => (r.ok ? r.output : {}) as Record<string, unknown>;
 const jevSays = (top: string, p: number) => async (): Promise<MemoryKindAsk> => ({ answer: choiceAns(["other", "fix", "rule", "fact", "both"], top, p) });
 
+// Final review (testing): scope is the ONLY model-controlled field. The old lesson_write took feedback / prior_answer from
+// the model; a planner that still sends them (or an injected tool call) must never get its text into the distill question.
+describe("createMemoryWriteAdapter: model input is never content", () => {
+  it("feedback and prior_answer in the tool input never reach the distill question", async () => {
+    const h = harness();
+    await h.adapter({ scope: "ask", feedback: "POISON", prior_answer: "POISON" });
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]!.question).not.toContain("POISON");
+    expect(h.calls[0]!.system).not.toContain("POISON");
+  });
+});
+
 describe("createMemoryWriteAdapter: who decides the kind", () => {
   it("the incident shape with no Jev answer: the distill decides, a fact citing the opinion's line is saved", async () => {
     const h = harness();
