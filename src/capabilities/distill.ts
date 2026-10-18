@@ -25,6 +25,7 @@ export const MEMORY_DISTILL_DISCIPLINE =
   'rule says to stop doing something. For a fact set "fact" to ONE self-contained third-person sentence about Paco or ' +
   'his world (names allowed) and "evidence" to the number of the line it comes from and a verbatim quote of Paco\'s ' +
   'words on that line. Use "both" only when the words hold a rule and a fact. When KIND is given, write that kind. ' +
+  'A request to correct, change or remove something Houge already stored is "none" (another step edits stored memory). ' +
   'Use "none" when nothing the instruction points at is worth remembering; when unsure, choose "none".';
 
 export interface MemoryDistillInput { thread: readonly string[]; prior: string; instruction: string; scope: string; kind?: MemoryKindChoice }

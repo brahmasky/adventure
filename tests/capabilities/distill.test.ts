@@ -97,4 +97,10 @@ describe("buildMemoryDistillQuestion", () => {
     expect(MEMORY_DISTILL_DISCIPLINE).toContain('"kind":"rule"|"fact"|"both"|"none"');
     expect(MEMORY_DISTILL_DISCIPLINE).toContain("verbatim quote");
   });
+  // Final review (Opus I1): Jev never clears its bar on `fix` and the distill has no fix kind, so without this line a
+  // correction ("you remembered wrong, I am not vegetarian") was saved as a new fact beside the wrong one. Answering
+  // "none" hands it to the planner, whose memory_correct edits or removes the stored entry.
+  it("tells the distill that a correction of something already stored is none (the planner's memory_correct owns it)", () => {
+    expect(MEMORY_DISTILL_DISCIPLINE).toMatch(/correct, change or remove something Houge already stored[^.]*"none"/);
+  });
 });

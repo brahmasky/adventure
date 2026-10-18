@@ -64,8 +64,9 @@ function judgeGolden(store: RunStore, r: Extract<JevResult, { ok: true }>, now: 
 /**
  * memory.kind's golden set (spec 2026-10-15 §3): one plain case per verdict in zh and en. Synthetic text (the repo is public).
  * No `fix` items: Jev does not clear the 0.85 bar on `fix` (first-option bias toward `other`, live gate 2026-10-18, 3 of 3
- * runs), so a fix request falls below the bar to the distill and then the planner (memory_correct). Golden items are only
- * verdicts the armed rung decides.
+ * runs), so a fix request falls below the bar to the distill, which answers `none` for a correction of stored memory
+ * (MEMORY_DISTILL_DISCIPLINE), and the turn then goes to the planner, whose memory_correct edits or removes the entry.
+ * Golden items are only verdicts the armed rung decides.
  */
 export interface MemoryKindGoldenItem { id: string; text: string; expect: MemoryKindVerdict }
 export const MEMORY_KIND_GOLDEN: readonly MemoryKindGoldenItem[] = [
