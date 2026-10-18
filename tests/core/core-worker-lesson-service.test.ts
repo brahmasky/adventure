@@ -26,15 +26,15 @@ describe("CoreWorker.runLessonWrite", () => {
     const out = await worker.runLessonWrite(claim, "555", { scope: "ask" }, { source: "lane" });
     expect(out.result.ok).toBe(true);
     expect(out.committed).toBe(true);
-    expect(out.saved?.id).toBeDefined();
-    expect(out.theme).toBe("format");
-    expect(out.change_id).toMatch(/^lc_/);
-    expect(store.getLessonChange(out.change_id!)).toMatchObject({ new_id: out.saved!.id, chat_id: "555", run_id });
-    expect(store.getLedgerEvents().some((e) => e.event_type === "lesson_saved" && e.payload.change_id === out.change_id && e.payload.source === "lane")).toBe(true);
-    expect(store.getLesson(out.saved!.id)?.source).toBe("lane");
+    expect(out.saved?.lesson?.id).toBeDefined();
+    expect(out.saved?.lesson?.theme).toBe("format");
+    expect(out.saved?.lesson?.change_id).toMatch(/^lc_/);
+    expect(store.getLessonChange(out.saved!.lesson!.change_id)).toMatchObject({ new_id: out.saved!.lesson!.id, chat_id: "555", run_id });
+    expect(store.getLedgerEvents().some((e) => e.event_type === "lesson_saved" && e.payload.change_id === out.saved!.lesson!.change_id && e.payload.source === "lane")).toBe(true);
+    expect(store.getLesson(out.saved!.lesson!.id)?.source).toBe("lane");
     // second call in the same turn: the adapter-level guard, zero LLM calls
     const again = await worker.runLessonWrite(claim, "555", { scope: "ask" }, { source: "loop" });
-    expect(again.result).toEqual({ ok: true, output: { saved: false, reason: "already_saved_this_turn", lesson_id: out.saved!.id } });
+    expect(again.result).toEqual({ ok: true, output: { saved: false, reason: "already_saved_this_turn", lesson_id: out.saved!.lesson!.id } });
     expect(again.committed).toBe(false);
     store.close();
   });
@@ -54,7 +54,7 @@ describe("CoreWorker.runLessonWrite", () => {
     expect(store.getLedgerEvents().filter((e) => e.event_type === "lesson_saved")).toHaveLength(1);
     expect(store.getActiveLessons("ask")).toHaveLength(1);
     const lost = [a!, b!].find((o) => !o.committed)!;
-    expect(lost.result).toEqual({ ok: true, output: { saved: false, reason: "already_saved_this_turn", lesson_id: won[0]!.saved!.id } });
+    expect(lost.result).toEqual({ ok: true, output: { saved: false, reason: "already_saved_this_turn", lesson_id: won[0]!.saved!.lesson!.id } });
     store.close();
   });
 
@@ -66,7 +66,7 @@ describe("CoreWorker.runLessonWrite", () => {
     worker.buildOmpTools(claim, "555");
     const out = await worker.runLessonWrite(claim, "555", { scope: "ask" }, { source: "loop" });
     expect(out.result.ok && (out.result.output as { saved: boolean }).saved).toBe(false);
-    expect(out.change_id).toBeUndefined();
+    expect(out.saved).toBeUndefined();
     expect(out.committed).toBe(false);
     expect(store.getLedgerEvents().filter((e) => e.event_type === "lesson_saved")).toHaveLength(0);
     store.close();
@@ -103,7 +103,7 @@ describe("CoreWorker.runLessonWrite", () => {
     const hook: Array<{ id: number | undefined; change_id: string; row: boolean }> = [];
     const out = await worker.runLessonWrite(claim, "555", { scope: "ask" }, { source: "lane",
       inTx: (saved, change_id) => { hook.push({ id: saved.id, change_id, row: store.getLessonChange(change_id) !== undefined }); } });
-    expect(hook).toEqual([{ id: out.saved!.id, change_id: out.change_id!, row: true }]);
+    expect(hook).toEqual([{ id: out.saved!.lesson!.id, change_id: out.saved!.lesson!.change_id, row: true }]);
     store.close();
   });
 

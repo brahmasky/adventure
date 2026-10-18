@@ -164,7 +164,7 @@ import { storeRecorder } from "../decisions/record.js";
 import { decisionOf, recordTapOutcome } from "../decisions/tap-outcomes.js";
 import type { AnyDecideResult, AnyEntry, DecideResult, DecisionRecorder, FallbackReason, RungOutcome, RungResult } from "../decisions/types.js";
 import { fallbackOfSkip, jevSkipReason, planTree, treeDetailOf, treeNear, type AnsweredDecision, type TreeDetail } from "./turn-handler-ladder.js";
-import { memlaneUndoButton, memoryInformNote, memoryLaneCard } from "./memory-lane-card.js";
+import { memoryInformNote, memoryLaneCard, memoryUndoButtons, type CardItems } from "./memory-lane-card.js";
 import { LANE_COMPOSE_MS, runAnswerLane } from "./lanes/answer-lane.js";
 import { digDeeperButton, laneCard, laneSavedNote } from "./lanes/lane-card.js";
 import { catchUpLine } from "./lanes/lane-compose.js";
@@ -240,8 +240,22 @@ interface LoopTurnContext {
   memory: MemoryTurnState;
 }
 
-/** A committed lesson save, as its Undo card names it (Paco 2026-10-12: every automatic save gets the card). */
-interface SavedLesson { id: number; theme: string; change_id: string; verb?: LessonSaveResult["verb"]; supersededId?: number }
+/** A committed rule save, as its Undo card names it (Paco 2026-10-12: every automatic save gets the card). */
+interface SavedLesson { id: number; theme: string; text: string; change_id: string; verb?: LessonSaveResult["verb"]; supersededId?: number }
+/** A committed fact save (spec 2026-10-15 §8). */
+interface SavedFact { id: number; text: string; change_id: string; verb: "add" | "update" | "supersede"; supersededId?: number }
+/** What one turn's memory save committed: a rule, a fact, or both (spec §8). */
+export interface SavedMemory { lesson?: SavedLesson; fact?: SavedFact }
+
+/** The one place a committed lesson save becomes a `SavedLesson`. */
+function savedLessonOf(saved: LessonSaveResult & { id: number }, theme: string, change_id: string): SavedLesson {
+  return { id: saved.id, theme, text: saved.lesson, change_id, verb: saved.verb, ...(saved.supersededId !== undefined ? { supersededId: saved.supersededId } : {}) };
+}
+
+/** The failure reply's save line(s): the lesson line is the stage-1 text; a fact gets its own. */
+function savedBeforeFailure(s: SavedMemory): string {
+  return [...(s.lesson ? [`📒 Lesson #${s.lesson.id} was saved before the failure.`] : []), ...(s.fact ? [`🧠 Fact #${s.fact.id} was saved before the failure.`] : [])].join("\n");
+}
 
 /** Per-run state of an omp turn's loop tools, held from buildOmpTools until the outcome sink finishes the run. */
 interface OmpTurnState {
@@ -253,8 +267,8 @@ interface OmpTurnState {
   objective?: string;
   /** The voice echo line that opens the reply. */
   echo?: string;
-  /** Set only after a lesson save COMMITTED in this turn (ADR 0029 §5.5): a second lesson_write gets the digest. */
-  lessonSavedThisTurn?: SavedLesson;
+  /** Set only after a memory save COMMITTED in this turn (ADR 0029 §5.5): a second lesson_write gets the digest. */
+  memorySavedThisTurn?: SavedMemory;
   /** Set once this turn's one `triage` event (and its decision rows) committed (ADR 0029 §5.1): a second finalisation is a no-op. */
   triageFinalized?: boolean;
   /** The stored turn this message quotes (spec §2.2.1), resolved at claim; absent when not a reply or unresolved. */
@@ -277,7 +291,7 @@ type AnsweredSettle = Extract<TriageSettle, { kind: "answered" }>;
 type SettleFor = (route: Route, save: SaveOutcome, handler?: VerdictHandler, outcome?: "act" | "fallback") => AnsweredSettle;
 /** What `saveFirst` did (stage B §4): `settled` = the verdict was written inside the committed save transaction. */
 type SaveStep =
-  | { settled: true; save_outcome: "saved"; note: string; verdict_id: string | null; lesson_id: number; theme: string; w: LessonWriteOutcome }
+  | { settled: true; save_outcome: "saved"; note: string; verdict_id: string | null; saved: SavedMemory; w: LessonWriteOutcome }
   | { settled: false; save_outcome: SaveOutcome; note: null; verdict_id: null; w: LessonWriteOutcome };
 /** What triageTurn's catch needs: the turn's think-harder reading, its quote, and the answered rows once Jev answered. */
 interface TriageHeld { thinkHarder: boolean; quote: QuoteRef | null; answered?: AnsweredSettle }
@@ -295,13 +309,11 @@ const NO_SCORES: VerdictScores = { breadth: null, reasoning: null, actions: null
 /** What one `runLessonWrite` did: the tool result, and — only when the save transaction committed — what landed. */
 export interface LessonWriteOutcome {
   result: ToolAdapterResult;
-  saved?: LessonSaveResult & { id: number };
-  change_id?: string;
-  theme?: string;
+  saved?: SavedMemory;
   /** True only after `inTransaction` returned with a saved row (a rolled-back `inTx` leaves it false). */
   committed: boolean;
-  /** Set when a parallel call in the same turn saved first (the pre-transaction re-check): the lesson it saved. */
-  racedBy?: number;
+  /** Set when a parallel call in the same turn saved first (the pre-transaction re-check): what it saved. */
+  racedBy?: SavedMemory;
 }
 
 /** The caller of `runLessonWrite`: the planner's loop tool or the memory lane. */
@@ -1131,7 +1143,7 @@ export class CoreWorker {
     // Paco 2026-10-12: an automatic save (here the skill_author down-routes and park) is announced on the Undo card.
     if (saved.id !== undefined && change_id) {
       const theme = this.runStore.getLesson(saved.id)?.theme ?? r.theme;
-      this.announceSave(run_id, { id: saved.id, theme, change_id, verb: saved.verb, ...(saved.supersededId !== undefined ? { supersededId: saved.supersededId } : {}) });
+      this.announceSave(run_id, { lesson: savedLessonOf({ ...saved, id: saved.id }, theme, change_id) });
     }
     return saved;
   }
@@ -2624,13 +2636,13 @@ export class CoreWorker {
 
   /** Terminal failure: one code-owned reply by failure type; a failed ingest also leaves a partial report (old media path). */
   private ompFail(i: Parameters<TurnOutcomeSink["fail"]>[0]): void {
-    const saved = this.ompTurns.get(i.run_id)?.lessonSavedThisTurn;
+    const saved = this.ompTurns.get(i.run_id)?.memorySavedThisTurn;
     // A saved lane reply that never reached Paco carried the save's only Undo: queue the card (one per change id).
     this.announceSave(i.run_id, saved);
     this.ompTurns.delete(i.run_id);
     const failure = plannerFailureText(i.error_type, i.error_ref, i.partial);
-    // A lesson the memory lane (or the loop tool) committed before the failure is durable: say so (spec §5.1).
-    const text = failure !== null && saved ? `${failure}\n\n📒 Lesson #${saved.id} was saved before the failure.` : failure;
+    // A save the memory lane (or the loop tool) committed before the failure is durable: say so (spec §5.1).
+    const text = failure !== null && saved ? `${failure}\n\n${savedBeforeFailure(saved)}` : failure;
     const partial = i.error_type === "media_failed" ? this.stagePartialOmpReport(i.run_id, i.error_ref) : undefined;
     if (!this.runStore.finishRun({ run_id: i.run_id, expected_worker_id: i.worker_id, next: "failed", error_type: i.error_type, error_ref: i.error_ref })) {
       partial?.discard();
@@ -2683,14 +2695,14 @@ export class CoreWorker {
       // Layer routing (⓪·3 S1c): feedback quoting a code-owned literal (verbatim in src/*.ts) is refused with a digest.
       srcContains: createSrcPhraseChecker(this.projectRoot),
       threadUserTexts: this.lessonThreadUserTexts(state),
-      ...(state.lessonSavedThisTurn ? { alreadySaved: { id: state.lessonSavedThisTurn.id } } : {}),
+      ...(state.memorySavedThisTurn?.lesson ? { alreadySaved: { id: state.memorySavedThisTurn.lesson.id } } : {}),
       saveLesson: (candidate, now) => this.saveLessonForTurn(claim, chatId, state, candidate, now, o, outcome)
     });
     try {
       outcome.result = await adapter(input);
       // A parallel call saved first: the same digest the adapter-level guard gives, never "already covered".
       if (outcome.racedBy !== undefined) {
-        outcome.result = { ok: true, output: { saved: false, reason: ALREADY_SAVED_REASON, lesson_id: outcome.racedBy } };
+        outcome.result = { ok: true, output: { saved: false, reason: ALREADY_SAVED_REASON, lesson_id: outcome.racedBy.lesson?.id } };
       }
     } catch (error) {
       // A thrown save (a rolled-back `inTx`, a store error) is a failed tool call, never a crash; nothing committed.
@@ -2724,7 +2736,7 @@ export class CoreWorker {
     // The turn ended while the reconcile ran: nothing durable may land on a finished run (spec §5.1).
     if (o.signal?.aborted || this.ompTurns.get(claim.run_id) !== state) return { verb: "drop", lesson: candidate.text, prunedIds: [] };
     // One lesson per turn: the adapter read the guard before its LLM calls, so a parallel call may have saved since.
-    if (state.lessonSavedThisTurn) { outcome.racedBy = state.lessonSavedThisTurn.id; return { verb: "drop", lesson: candidate.text, prunedIds: [] }; }
+    if (state.memorySavedThisTurn) { outcome.racedBy = state.memorySavedThisTurn; return { verb: "drop", lesson: candidate.text, prunedIds: [] }; }
     let change_id: string | undefined;
     const saved = this.runStore.inTransaction(() => {
       const s = this.saveLessonVerdict(candidate, r, o.source, now);
@@ -2737,8 +2749,9 @@ export class CoreWorker {
     // `inTransaction` returned: only now is anything committed (a throwing `inTx` rolled back and threw past here).
     if (saved.id !== undefined && change_id) {
       const theme = this.runStore.getLesson(saved.id)?.theme ?? r.theme; // the row's theme (an UPDATE takes the target's), not the verdict's
-      state.lessonSavedThisTurn = { id: saved.id, theme, change_id, verb: saved.verb, ...(saved.supersededId !== undefined ? { supersededId: saved.supersededId } : {}) };
-      Object.assign(outcome, { saved: { ...saved, id: saved.id }, change_id, theme, committed: true });
+      const lesson = savedLessonOf({ ...saved, id: saved.id }, theme, change_id);
+      state.memorySavedThisTurn = { lesson };
+      Object.assign(outcome, { saved: { lesson }, committed: true });
     }
     return saved;
   }
@@ -2922,10 +2935,10 @@ export class CoreWorker {
       console.error(`triage: threw: ${safeReason(e)}`);
       const route = fallbackRoute("jev_skipped", held.thinkHarder);
       const id = this.settleTriage(i, state, lang, held.answered ? { ...held.answered, route, decision: "fallback" } : { kind: "skipped", reason: "error", route });
-      const saved = state?.lessonSavedThisTurn;
+      const saved = state?.memorySavedThisTurn;
       this.announceSave(i.claim.run_id, saved); // a no-op when nothing was saved; one card when an inform path already queued it
       const base = { route: turnRoute(route, id), ...quoteField(held.quote) };
-      return saved ? { kind: "inform", note: memoryInformNote(saved.id, saved.theme), ...base } : { kind: "fallthrough", ...base };
+      return saved ? { kind: "inform", note: memoryInformNote(saved), ...base } : { kind: "fallthrough", ...base };
     } finally {
       this.pendingLadder.delete(i.claim.run_id);
     }
@@ -3094,8 +3107,8 @@ export class CoreWorker {
     const w = await this.runLessonWrite(i.claim, this.chatOf(i.claim.run_id), { scope: route.save?.scope ?? "ask" }, { source: "lane", signal: i.signal,
       inTx: () => { v.id = this.settleTriage(i, state, lang, settleFor(route, "saved"), { inTx: true }); } });
     if (w.committed) state.triageFinalized = true;
-    if (!w.committed || !w.saved || !w.change_id || !w.theme) return { settled: false, save_outcome: saveOutcomeOf(w), note: null, verdict_id: null, w };
-    return { settled: true, save_outcome: "saved", note: memoryInformNote(w.saved.id, w.theme), verdict_id: v.id, lesson_id: w.saved.id, theme: w.theme, w };
+    if (!w.committed || !w.saved) return { settled: false, save_outcome: saveOutcomeOf(w), note: null, verdict_id: null, w };
+    return { settled: true, save_outcome: "saved", note: memoryInformNote(w.saved), verdict_id: v.id, saved: w.saved, w };
   }
 
   /**
@@ -3112,7 +3125,7 @@ export class CoreWorker {
       return { kind: "fallthrough", route: turnRoute(route, id), ...q };
     }
     if (route.lane !== "memory") {
-      this.announceSave(i.claim.run_id, state.lessonSavedThisTurn);
+      this.announceSave(i.claim.run_id, state.memorySavedThisTurn);
       return { kind: "inform", note: s.note, route: turnRoute(route, s.verdict_id), ...q };
     }
     return this.memoryLaneEnd(i, state, route, s, q);
@@ -3124,21 +3137,20 @@ export class CoreWorker {
    * fallthrough:aborted + fallback (as the answer/lookup lanes patch it), no lane_replies row is written, and the save's note stands.
    */
   private memoryLaneEnd(i: TriageInput, state: OmpTurnState, route: Route, s: Extract<SaveStep, { settled: true }>, q: { quote?: QuoteRef }): TriageOutcome {
-    const w = s.w as Required<LessonWriteOutcome>;
     if (this.laneLost(i, state)) {
-      this.announceSave(i.claim.run_id, state.lessonSavedThisTurn);
+      this.announceSave(i.claim.run_id, state.memorySavedThisTurn);
       if (s.verdict_id) this.patchLaneVerdict(s.verdict_id, "fallthrough:aborted", undefined, "fallback");
       return { kind: "inform", note: s.note, route: turnRoute(route, s.verdict_id), ...q };
     }
     try {
-      const card = this.memoryLaneCardFor(i.claim.run_id, w);
+      const card = this.memoryLaneCardFor(i.claim.run_id, s.saved);
       if (s.verdict_id) this.runStore.updateJevVerdict(s.verdict_id, { handler_outcome: "lane_reply" });
-      this.recordLaneReplyRow(i.claim.run_id, "memory", s.verdict_id, catchUpLine({ lane: "memory", lesson: w.saved.lesson }));
+      this.recordLaneReplyRow(i.claim.run_id, "memory", s.verdict_id, catchUpLine({ lane: "memory", ...(s.saved.lesson ? { lesson: s.saved.lesson.text } : {}), ...(s.saved.fact ? { fact: s.saved.fact.text } : {}) }));
       return { kind: "lane_reply", ...card, ...q };
     } catch (e) {
       // The save is committed and finalised as "act"; the planner answers and the note names the lesson (spec §5.1).
       console.error(`memory lane: card failed after save: ${safeReason(e)}`);
-      this.announceSave(i.claim.run_id, state.lessonSavedThisTurn);
+      this.announceSave(i.claim.run_id, state.memorySavedThisTurn);
       return { kind: "inform", note: s.note, route: turnRoute(route, s.verdict_id), ...q };
     }
   }
@@ -3196,19 +3208,29 @@ export class CoreWorker {
    * own lesson_write tool) queues an Undo-only card here. Keyed by the change id, so two paths for one save send one card.
    * Never throws: the save stands. It uses the module's `memoryLaneCard`, not the test-faultable one, so a failed lane card is still announced.
    */
-  private announceSave(run_id: string, saved: SavedLesson | undefined): void {
-    if (!saved) return;
+  private announceSave(run_id: string, saved: SavedMemory | undefined): void {
+    const first = saved?.lesson ?? saved?.fact;
+    if (!saved || !first) return;
     try {
-      const row = this.runStore.getLesson(saved.id);
-      const verb = saved.verb === "update" || saved.verb === "supersede" ? saved.verb : "add";
-      const card = memoryLaneCard({ lesson_id: saved.id, theme: saved.theme, text: row?.text ?? "", ...(row?.avoid ? { avoid: row.avoid } : {}),
-        ...(saved.supersededId !== undefined ? { superseded_id: saved.supersededId } : {}), verb, change_id: saved.change_id, run_id });
+      const card = memoryLaneCard({ run_id, ...this.cardItems(saved) });
       const q = this.runStore.enqueueNotification({ target: { kind: "telegram", chat_id: this.chatOf(run_id) }, intent_type: "progress",
-        idempotency_key: `memcard:${saved.change_id}`, correlation_id: run_id, payload: { text: this.maskSecrets(card.text), buttons: [memlaneUndoButton(saved.change_id)] } });
-      if (q.status === "conflict") console.error(`memory card: announce refused for change ${saved.change_id}: ${q.error}`);
+        idempotency_key: `memcard:${first.change_id}`, correlation_id: run_id, payload: { text: this.maskSecrets(card.text), buttons: memoryUndoButtons(saved) } });
+      if (q.status === "conflict") console.error(`memory card: announce refused for change ${first.change_id}: ${q.error}`);
     } catch (e) {
       console.error(`memory card: announce failed: ${safeReason(e)}`);
     }
+  }
+
+  /** The card's items from a committed save: the lesson's stored row (its AVOID), the fact's stored text. */
+  private cardItems(s: SavedMemory): CardItems {
+    const row = s.lesson ? this.runStore.getLesson(s.lesson.id) : undefined;
+    const verb = (v: string | undefined): "add" | "update" | "supersede" => (v === "update" || v === "supersede" ? v : "add");
+    return {
+      ...(s.lesson ? { lesson: { lesson_id: s.lesson.id, theme: s.lesson.theme, text: row?.text ?? s.lesson.text, ...(row?.avoid ? { avoid: row.avoid } : {}),
+        ...(s.lesson.supersededId !== undefined ? { superseded_id: s.lesson.supersededId } : {}), verb: verb(s.lesson.verb), change_id: s.lesson.change_id } } : {}),
+      ...(s.fact ? { fact: { fact_id: s.fact.id, text: s.fact.text, ...(s.fact.supersededId !== undefined ? { superseded_id: s.fact.supersededId } : {}),
+        verb: s.fact.verb, change_id: s.fact.change_id } } : {})
+    };
   }
 
   /** ADR 0015: the same value redactor the store applies to final reports (enqueueNotification stores text as given). Identity when the firewall is off. */
@@ -3216,11 +3238,8 @@ export class CoreWorker {
     return this.broker ? this.broker.redact(text) : text;
   }
 
-  private memoryLaneCardFor(run_id: string, w: Required<LessonWriteOutcome>): { text: string; buttons: NotificationButton[] } {
-    const row = this.runStore.getLesson(w.saved.id);
-    const card = this.memoryLaneCard({ lesson_id: w.saved.id, theme: w.theme, text: w.saved.lesson, ...(row?.avoid ? { avoid: row.avoid } : {}),
-      ...(w.saved.supersededId !== undefined ? { superseded_id: w.saved.supersededId } : {}),
-      verb: w.saved.verb as "add" | "update" | "supersede", change_id: w.change_id, run_id });
+  private memoryLaneCardFor(run_id: string, saved: SavedMemory): { text: string; buttons: NotificationButton[] } {
+    const card = this.memoryLaneCard({ run_id, ...this.cardItems(saved) });
     return { ...card, text: this.maskSecrets(card.text) };
   }
   /**
@@ -3244,7 +3263,7 @@ export class CoreWorker {
     if (card && result.kind === "reply" && id) this.recordLaneReplyRow(i.claim.run_id, route.lane, id, result.catch_up);
     if (card) return { kind: "lane_reply", ...card, ...quoteField(held.quote) };
     const fallback = { route: turnRoute(fallbackRoute("jev_skipped", held.thinkHarder), id), ...quoteField(held.quote) };
-    if (save?.settled) this.announceSave(i.claim.run_id, state.lessonSavedThisTurn);
+    if (save?.settled) this.announceSave(i.claim.run_id, state.memorySavedThisTurn);
     return save?.note ? { kind: "inform", note: save.note, ...fallback } : { kind: "fallthrough", ...fallback };
   }
 
@@ -3267,10 +3286,10 @@ export class CoreWorker {
   private laneCardFor(run_id: string, text: string, save: SaveStep | null):
     { card: { text: string; buttons: NotificationButton[] } } | { why: "empty_reply" | "render_failed" } {
     try {
-      const card = this.laneCard({ text, run_id, ...(save?.settled ? { note: laneSavedNote(save.lesson_id, save.theme) } : {}) });
+      const card = this.laneCard({ text, run_id, ...(save?.settled ? { note: laneSavedNote(save.saved) } : {}) });
       if (!card) return { why: "empty_reply" };
       // Paco 2026-10-12: a saved lesson is announced with Undo on the card that names it
-      const undo = save?.settled ? [memlaneUndoButton((save.w as Required<LessonWriteOutcome>).change_id)] : [];
+      const undo = save?.settled ? memoryUndoButtons(save.saved) : [];
       return { card: { text: this.maskSecrets(card.text), buttons: [...undo, ...card.buttons] } };
     } catch (e) {
       console.error(`lane: card render failed: ${safeReason(e)}`);
@@ -3520,10 +3539,7 @@ export class CoreWorker {
       return async (input) => {
         const w = await this.runLessonWrite(claim, this.chatOf(claim.run_id), input, { source: "loop" });
         // Paco 2026-10-12: a committed save is announced on the Undo card whatever route the turn took, the planner's own tool included
-        if (w.committed && w.saved && w.change_id && w.theme) {
-          this.announceSave(claim.run_id, { id: w.saved.id, theme: w.theme, change_id: w.change_id, verb: w.saved.verb,
-            ...(w.saved.supersededId !== undefined ? { supersededId: w.saved.supersededId } : {}) });
-        }
+        if (w.committed && w.saved) this.announceSave(claim.run_id, w.saved);
         return w.result;
       };
     }

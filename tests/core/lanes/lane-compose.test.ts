@@ -90,6 +90,10 @@ describe("needsRewrite / rewritePrompt / validateQuery / finalQuery", () => {
 // Stage B §7: the planner may see only code-built lines: Paco's own rule, a status fact, hostnames plus the reader's
 // schema-constrained facts, or the answer lane's clipped prose. The lookup lane's composed prose is never carried.
 describe("catchUpLine", () => {
+  it("a memory save names the fact as well as the rule, so a later planner turn knows both were saved (spec §8)", () => {
+    expect(catchUpLine({ lane: "memory", fact: "Paco is\nvegetarian" })).toBe("Houge saved a fact: Paco is vegetarian");
+    expect(catchUpLine({ lane: "memory", lesson: "Be brief", fact: "Paco is vegetarian" })).toBe("Houge saved a rule: Be brief; Houge saved a fact: Paco is vegetarian");
+  });
   it("one line per lane kind", () => {
     expect(catchUpLine({ lane: "memory", lesson: "Keep\nreplies short." })).toBe("Houge saved a rule: Keep replies short.");
     expect(catchUpLine({ lane: "status" })).toBe("Houge reported its status");

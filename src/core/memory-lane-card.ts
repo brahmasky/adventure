@@ -1,4 +1,4 @@
-import { inertCode } from "../capabilities/memory-correct.js";
+import { inertCode, memoryUndoButton } from "../capabilities/memory-correct.js";
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import { digDeeperButton } from "./lanes/lane-card.js";
@@ -17,16 +17,41 @@ export function memlaneUndoButton(change_id: string): NotificationButton {
   return button("↩️ Undo", `${MEMLANE_UNDO_PREFIX}${change_id}`);
 }
 
-export function memoryLaneCard(i: {
-  lesson_id: number; theme: string; text: string; avoid?: string; superseded_id?: number;
-  verb: "add" | "update" | "supersede"; change_id: string; run_id: string;
-}): { text: string; buttons: NotificationButton[] } {
-  const tail = i.superseded_id !== undefined ? ` (${i.verb === "update" ? "updated" : "replaced"} #${i.superseded_id})` : "";
-  const lines = [`📒 Saved lesson #${i.lesson_id} · ${i.theme}${tail}`, inertCode(escapeForTelegram(i.text))];
-  if (i.avoid) lines.push(`AVOID: ${inertCode(escapeForTelegram(i.avoid))}`);
-  return { text: lines.join("\n"), buttons: [memlaneUndoButton(i.change_id), digDeeperButton(i.run_id)] };
+type SaveVerb = "add" | "update" | "supersede";
+export interface CardLesson { lesson_id: number; theme: string; text: string; avoid?: string; superseded_id?: number; verb: SaveVerb; change_id: string }
+export interface CardFact { fact_id: number; text: string; superseded_id?: number; verb: SaveVerb; change_id: string }
+export interface CardItems { lesson?: CardLesson; fact?: CardFact }
+
+const tail = (verb: SaveVerb, superseded_id?: number): string =>
+  superseded_id !== undefined ? ` (${verb === "update" ? "updated" : "replaced"} #${superseded_id})` : "";
+
+function lessonLines(l: CardLesson): string[] {
+  const lines = [`📒 Saved lesson #${l.lesson_id} · ${l.theme}${tail(l.verb, l.superseded_id)}`, inertCode(escapeForTelegram(l.text))];
+  if (l.avoid) lines.push(`AVOID: ${inertCode(escapeForTelegram(l.avoid))}`);
+  return lines;
 }
 
-export function memoryInformNote(lesson_id: number, theme: string): string {
-  return `[memory] Lesson #${lesson_id} (${theme}) was just saved from this message; do not save it again.`;
+function factLines(f: CardFact): string[] {
+  return [`🧠 Saved fact (事实) #${f.fact_id}${tail(f.verb, f.superseded_id)}`, inertCode(escapeForTelegram(f.text))];
+}
+
+/** One Undo per saved item (spec §9): lesson → memlane:undo, fact → memory:undo. Labelled by kind only when both are on the card. */
+export function memoryUndoButtons(i: { lesson?: { change_id: string }; fact?: { change_id: string } }): NotificationButton[] {
+  const both = i.lesson !== undefined && i.fact !== undefined;
+  return [
+    ...(i.lesson ? [{ ...memlaneUndoButton(i.lesson.change_id), ...(both ? { text: "↩️ Undo 规则" } : {}) }] : []),
+    ...(i.fact ? [{ ...memoryUndoButton(i.fact.change_id), ...(both ? { text: "↩️ Undo 事实" } : {}) }] : [])
+  ];
+}
+
+/** The memory card: one block per saved item, each Undo, then Dig deeper. A lesson-only card is the stage-1 card byte for byte. */
+export function memoryLaneCard(i: CardItems & { run_id: string }): { text: string; buttons: NotificationButton[] } {
+  const lines = [...(i.lesson ? lessonLines(i.lesson) : []), ...(i.fact ? factLines(i.fact) : [])];
+  return { text: lines.join("\n"), buttons: [...memoryUndoButtons(i), digDeeperButton(i.run_id)] };
+}
+
+export function memoryInformNote(s: { lesson?: { id: number; theme: string }; fact?: { id: number } }): string {
+  const parts = [...(s.lesson ? [`Lesson #${s.lesson.id} (${s.lesson.theme})`] : []), ...(s.fact ? [`${s.lesson ? "fact" : "Fact"} #${s.fact.id}`] : [])];
+  const many = parts.length > 1;
+  return `[memory] ${parts.join(" and ")} ${many ? "were" : "was"} just saved from this message; do not save ${many ? "them" : "it"} again.`;
 }

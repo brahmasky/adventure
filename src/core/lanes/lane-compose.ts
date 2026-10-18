@@ -87,13 +87,14 @@ export function finalQuery(q: string): string {
 }
 
 export type CatchUp =
-  | { lane: "memory"; lesson: string } | { lane: "status" }
+  | { lane: "memory"; lesson?: string; fact?: string } | { lane: "status" }
   | { lane: "lookup"; urls: readonly string[]; facts: readonly string[]; flagged?: boolean } | { lane: "answer"; reply: string };
 
 /** Stage B §7: the code-built Houge line stored in `lane_replies` (hostnames, never URLs; never the lookup's prose). */
 export function catchUpLine(c: CatchUp): string {
   switch (c.lane) {
-    case "memory": return `Houge saved a rule: ${fold(c.lesson)}`;
+    case "memory": return [...(c.lesson !== undefined ? [`Houge saved a rule: ${fold(c.lesson)}`] : []),
+      ...(c.fact !== undefined ? [`Houge saved a fact: ${fold(c.fact)}`] : [])].join("; ");
     case "status": return "Houge reported its status";
     case "lookup": {
       const facts = feedTurnText(fold(c.facts.map(sanitizeLaneText).join("; ")), CATCH_UP_TEXT_CHARS);

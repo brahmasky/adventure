@@ -44,12 +44,13 @@ describe("laneCard", () => {
   });
   it("edge cases: whitespace-only and note-only leave no card; an empty-label link is its url", () => {
     expect(laneCard({ text: " \n ", run_id: RUN })).toBeNull();
-    expect(laneCard({ text: "", run_id: RUN, note: laneSavedNote(1, "t") })).toBeNull();
+    expect(laneCard({ text: "", run_id: RUN, note: laneSavedNote({ lesson: { id: 1, theme: "t" } }) })).toBeNull();
     expect(flattenLinks("[ ](https://a.example)")).toBe("https://a.example");
   });
   it("appends the note line after a blank line when a rule saved this turn", () => {
-    expect(laneCard({ text: "明天晴。", run_id: RUN, note: laneSavedNote(51, "format") })!.text).toBe("明天晴。\n\n📒 Saved lesson #51 · format");
+    expect(laneCard({ text: "明天晴。", run_id: RUN, note: laneSavedNote({ lesson: { id: 51, theme: "format" } }) })!.text).toBe("明天晴。\n\n📒 Saved lesson #51 · format");
   });
+  it("a saved fact adds its own line (spec §8)", () => expect(laneSavedNote({ lesson: { id: 51, theme: "format" }, fact: { id: 198 } })).toBe("📒 Saved lesson #51 · format\n🧠 Saved fact (事实) #198"));
   it("refuses callback data past 64 bytes", () => {
     expect(() => digDeeperButton(`run_${"x".repeat(60)}`)).toThrow(/64 bytes/);
   });

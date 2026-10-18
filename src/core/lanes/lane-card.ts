@@ -61,7 +61,7 @@ export function laneCard(i: { text: string; run_id: string; note?: string }): { 
   return { text: i.note ? `${body}\n\n${i.note}` : body, buttons: [digDeeperButton(i.run_id)] };
 }
 
-/** The card's line when a rule saved this turn (the memory card's header form). */
-export function laneSavedNote(lesson_id: number, theme: string): string {
-  return `📒 Saved lesson #${lesson_id} · ${theme}`;
+/** The card's line(s) when a save landed this turn (the memory card's header forms, spec §8). */
+export function laneSavedNote(s: { lesson?: { id: number; theme: string }; fact?: { id: number } }): string {
+  return [...(s.lesson ? [`📒 Saved lesson #${s.lesson.id} · ${s.lesson.theme}`] : []), ...(s.fact ? [`🧠 Saved fact (事实) #${s.fact.id}`] : [])].join("\n");
 }
