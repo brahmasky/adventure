@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MAX_LATEST_MESSAGE_CHARS, MAX_REQUEST_CHARS } from "../../src/jev/intent-question.js";
 import {
-  buildTreeState, CATEGORIES, isProposal, lastHougeTurnOf, quotedTurnFromRow, TREE_ACTIONS, TREE_BREADTH, TREE_CATEGORY, TREE_QUESTIONS, TREE_REASONING,
+  buildTreeState, CATEGORIES, isProposal, lastHougeTurnOf, MEMORY_KIND_OPTIONS, quotedTurnFromRow, TREE_MEMORY_KIND, TREE_ACTIONS, TREE_BREADTH, TREE_CATEGORY, TREE_QUESTIONS, TREE_REASONING,
   TREE_RULE_SCOPE, TREE_SETS_RULE, type QuotedTurn, type TreeStateInput
 } from "../../src/jev/questions/tree.js";
 import { optionsOf, toJevQuestion } from "../../src/jev/questions/types.js";
@@ -121,5 +121,18 @@ describe("buildTreeState", () => {
   });
   it("skips a latest message over its own cap, never truncating it", () => {
     expect(buildTreeState({ ...base, userText: "x".repeat(MAX_LATEST_MESSAGE_CHARS + 1) })).toEqual({ ok: false, skip: "state_too_large" });
+  });
+});
+
+// Spec Rev 3 §3: memory_kind rides its OWN request. In the shared tree request one malformed answer would fail the whole
+// call (jev-client.ts:196-202) and skip every front-door decision; so the six stay six.
+describe("memory_kind (its own request)", () => {
+  it("is not a tree question; its options are escape-first, and it reads the offered work", () => {
+    expect(TREE_QUESTIONS.map((q) => q.id)).not.toContain("memory_kind");
+    expect(TREE_QUESTIONS).toHaveLength(6);
+    expect(optionsOf(TREE_MEMORY_KIND)).toEqual(["other", "fix", "rule", "fact", "both"]);
+    expect([...MEMORY_KIND_OPTIONS]).toEqual(optionsOf(TREE_MEMORY_KIND));
+    expect(TREE_MEMORY_KIND.instructions).toContain("`latest_message`");
+    expect(TREE_MEMORY_KIND.instructions).toContain("`quoted_turn` or `recent_turns`"); // "记下来吧" after an offer reads the offer
   });
 });

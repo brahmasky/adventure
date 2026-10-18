@@ -83,6 +83,27 @@ export const TREE_ACTIONS: ScoreQuestion = {
   levels: ["none", "one or two reads", "several including changes", "many with checks"]
 };
 
+/** The memory question's options (spec 2026-10-15 §3): the escape `other` first, since jev-1.13 leans to the first option. */
+export const MEMORY_KIND_OPTIONS = ["other", "fix", "rule", "fact", "both"] as const;
+export type MemoryKindOption = (typeof MEMORY_KIND_OPTIONS)[number];
+
+/**
+ * `memory.kind`'s Jev rung (src/decisions/entries/memory-kind.ts). Asked in its OWN request (src/jev/memory-kind-ask.ts),
+ * never in the tree request: one bad answer fails a whole call. Armed on its provisional bar, never by a calibration row.
+ */
+export const TREE_MEMORY_KIND: ChoiceQuestion = {
+  id: "memory_kind",
+  type: "choice",
+  instructions: `${HOUGE}${THREAD}What does \`latest_message\` ask Houge to remember? ${OFFERED}`,
+  criteria: [
+    ["other", "`latest_message` asks Houge to remember nothing."],
+    ["fix", "Correct or retire a rule or a fact Houge already stored."],
+    ["rule", "How Houge should answer or research from now on."],
+    ["fact", "Something about the user, or the people, places or things in the user's life, to remember."],
+    ["both", "A rule for how Houge answers, together with a fact about the user's life, in one message."]
+  ]
+};
+
 export const TREE_QUESTIONS: readonly Question[] = [TREE_CATEGORY, TREE_SETS_RULE, TREE_RULE_SCOPE, TREE_BREADTH, TREE_REASONING, TREE_ACTIONS];
 
 export type HougeTurnKind = "answer" | "clarify" | "proposal";
@@ -142,7 +163,7 @@ export type TreeStateResult = { ok: true; state: Record<string, unknown>; chars:
  * Lane 1's egress envelope (2026-09-25 approval) plus `quoted_turn`: every text field through `feedTurnText` (thread and
  * quote only), `sanitizeJevText` and the broker's redactor; the quote counts toward the request cap. Skip, never truncate.
  */
-export function buildTreeState(i: TreeStateInput, brokerRedact?: (s: string) => string): TreeStateResult {
+export function buildTreeState(i: TreeStateInput, brokerRedact?: (s: string) => string, questions: readonly Question[] = TREE_QUESTIONS): TreeStateResult {
   if (i.userText.length > MAX_LATEST_MESSAGE_CHARS) return { ok: false, skip: "state_too_large" };
   const text = (t: string): string => sanitizeJevText(feedTurnText(t, i.turnChars), brokerRedact);
   const q = i.quotedTurn;
@@ -153,7 +174,7 @@ export function buildTreeState(i: TreeStateInput, brokerRedact?: (s: string) => 
     last_houge_turn: i.lastHougeTurn,
     quoted_turn: q ? { role: q.role, kind: q.kind, age_s: q.age_s, text: text(q.text) } : null
   };
-  const chars = JSON.stringify({ state, questions: TREE_QUESTIONS.map(toJevQuestion) }).length;
+  const chars = JSON.stringify({ state, questions: questions.map(toJevQuestion) }).length;
   if (chars > MAX_REQUEST_CHARS) return { ok: false, skip: "state_too_large" };
   return { ok: true, state, chars };
 }
