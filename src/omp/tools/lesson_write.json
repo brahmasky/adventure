@@ -1,6 +1,6 @@
 {
   "name": "lesson_write",
-  "description": "Distill the user's CURRENT message into a durable lesson and save it (ignored when it does not generalize).",
+  "description": "Save what Paco asks Houge to remember: a rule for how to answer, or a fact about him or his world. Houge picks the kind; you pass only the scope. Report exactly what the result says was saved.",
   "parameters": {
     "type": "object",
     "properties": {

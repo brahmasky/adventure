@@ -75,6 +75,18 @@ describe("tool declarations — data the daemon validates; nothing self-writable
     expect(validateInput(decl.parameters, { action: "retire", ids: [1.5] })).not.toEqual([]);
   });
 
+  it("lesson_write saves rules and facts, the planner passes only the scope and reports the result", () => {
+    // Spec 2026-10-15 §9: the planner must call lesson_write for a fact as well as a rule, pass only the scope, and report
+    // what the result says — the incident's reply promised a save the tool had refused.
+    const r = loadToolDeclarations(TOOL_DECLS_DIR);
+    if (!r.ok) throw new Error(r.error);
+    const decl = r.decls.find((d) => d.name === "lesson_write")!;
+    expect(decl.description).toContain("a fact about him or his world");
+    expect(decl.description).toContain("you pass only the scope");
+    expect(decl.description).toContain("Report exactly what the result says was saved");
+    expect(Object.keys(decl.parameters.properties!)).toEqual(["scope"]);
+  });
+
   it("self_write_propose asks for a VERIFIED cause before the call and leaves room for it (run_79faefea)", () => {
     // Live: a guessed diagnosis sent the writer after the wrong cause for 11 min (empty diff).
     const r = loadToolDeclarations(TOOL_DECLS_DIR);

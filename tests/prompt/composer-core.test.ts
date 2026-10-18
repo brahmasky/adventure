@@ -6,6 +6,7 @@ import {
   composeSystemPrompt,
   CORE_FACTS_SECTION_HEADER,
   EPISODIC_SECTION_HEADER,
+  OMP_LOOP_DISCIPLINE,
   WIKI_SECTION_HEADER
 } from "../../src/prompt/composer.js";
 
@@ -70,5 +71,14 @@ describe("composeSystemPrompt — the always-known core band (location grounding
   it("the header names the band as always-known durable facts", () => {
     expect(CORE_FACTS_SECTION_HEADER).toContain("always known");
     expect(CORE_FACTS_SECTION_HEADER.toLowerCase()).toContain("about the user");
+  });
+});
+
+describe("OMP_LOOP_DISCIPLINE — the planner's lesson_write line (spec 2026-10-15 §9)", () => {
+  it("sends 'remember this', rule or fact, to lesson_write and drops the rules-only trigger", () => {
+    // Why: a planner that only saves on "corrections or durable preferences" skips "remember this" facts, and the reply
+    // then promises a save no tool call made.
+    expect(OMP_LOOP_DISCIPLINE).toContain("lesson_write to save what Paco asks you to remember");
+    expect(OMP_LOOP_DISCIPLINE).not.toContain("lesson_write when Paco corrects you or states a durable preference");
   });
 });
