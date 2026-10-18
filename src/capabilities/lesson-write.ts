@@ -1,14 +1,13 @@
 import { spawnSync } from "node:child_process";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
-import type { LessonSaveResult } from "../run/run-store.js";
-import { buildDistillQuestion, DISTILL_DISCIPLINE, LESSON_AVOID_MAX_CHARS, LESSON_MAX_CHARS, parseDistillResult, shouldRejectLesson } from "./distill.js";
+import type { EpisodicFactSaveResult, LessonSaveResult } from "../run/run-store.js";
+import { buildDistillQuestion, buildMemoryDistillQuestion, DISTILL_DISCIPLINE, LESSON_AVOID_MAX_CHARS, LESSON_MAX_CHARS, MEMORY_DISTILL_DISCIPLINE, parseDistillResult,
+  parseMemoryDistillResult, shouldRejectLesson, type MemoryDistill, type MemoryKindChoice } from "./distill.js";
 import { RATING_ACK_COMMENT_TEXT, RATING_ACK_TEXT, RATING_ASK_TEXT } from "./session-rating.js";
 import { decide } from "../decisions/decide.js";
 import { MEMORY_KIND, memoryKindJevRung, type MemoryKindDetail, type MemoryKindVerdict } from "../decisions/entries/memory-kind.js";
 import type { DecisionRecorder, RungResult } from "../decisions/types.js";
 import type { MemoryKindAsk } from "../jev/memory-kind-ask.js";
-import type { EpisodicFactSaveResult } from "../run/run-store.js";
-import { buildMemoryDistillQuestion, MEMORY_DISTILL_DISCIPLINE, parseMemoryDistillResult, type MemoryDistill, type MemoryKindChoice } from "./distill.js";
 import { checkFactSide, checkLessonSide } from "./memory-backstops.js";
 import { evidenceLines, pacoTextOf, type MemorySources } from "./memory-sources.js";
 
@@ -357,7 +356,12 @@ export function createMemoryWriteAdapter(c: MemoryWriteAdapterConfig): (input: R
     const { plan, items } = planOf(c, kind.distill, scope);
     if (!plan.lesson && !plan.fact) return memoryResult({ items }, scope, note);
     const now = (c.now?.() ?? new Date()).toISOString();
-    return memoryResult(mergeSave(items, await c.save(plan, now)), scope, note);
+    try {
+      return memoryResult(mergeSave(items, await c.save(plan, now)), scope, note);
+    } catch {
+      // A store error never crashes the turn and never claims a save (spec: no silent failure).
+      return memoryResult({ items, reason: "save_failed" }, scope, note);
+    }
   };
 }
 
@@ -403,7 +407,7 @@ async function decideMemoryKind(c: MemoryWriteAdapterConfig, scope: string): Pro
   } });
   if (r.rung === "system_one" && (r.verdict === "fix" || r.verdict === "other")) return { refused: r.verdict === "fix" ? "fix" : "memory_other" };
   if (r.rung === "system_one") {
-    const d = await ask(r.verdict as MemoryKindChoice);
+    const d = await ask(r.verdict as MemoryKindChoice).catch(() => null);
     return d === null ? { refused: "distill_failed" } : usable(onlyKind(d, r.verdict as MemoryKindChoice));
   }
   return r.rung === "model" && r.detail?.distill ? usable(r.detail.distill) : { refused: "distill_failed" };
@@ -484,7 +488,7 @@ const factItem = (f: EpisodicFactSaveResult): MemoryItem =>
 function memoryResult(r: MemoryReport, scope: string, note?: string): ToolAdapterResult {
   const saved = r.items.filter((i) => i.id !== undefined);
   const reason = saved.length > 0 ? undefined : r.reason ?? r.items.find((i) => i.reason !== undefined)?.reason ?? "nothing_to_save";
-  const hint = r.hint ?? (reason === "nothing_to_save" ? NOTHING_TO_SAVE_HINT : reason === "distill_failed" ? DISTILL_FAILED_HINT : undefined);
+  const hint = r.hint ?? (reason === "nothing_to_save" ? NOTHING_TO_SAVE_HINT : reason === "distill_failed" || reason === "save_failed" ? DISTILL_FAILED_HINT : undefined);
   return { ok: true, output: { saved: saved.length > 0, kinds: saved.map((i) => i.kind), items: r.items, scope, ...(reason ? { reason } : {}),
     ...(hint ? { hint } : {}), ...(r.escalate ? { escalate: true } : {}), ...idsOf(r.ids ?? {}), ...(note ? { note } : {}) } };
 }
