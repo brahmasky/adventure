@@ -81,4 +81,9 @@ describe("OMP_LOOP_DISCIPLINE — the planner's lesson_write line (spec 2026-10-
     expect(OMP_LOOP_DISCIPLINE).toContain("lesson_write to save what Paco asks you to remember");
     expect(OMP_LOOP_DISCIPLINE).not.toContain("lesson_write when Paco corrects you or states a durable preference");
   });
+  it("makes the save mandatory in the turn and bars claiming a save without a saved result", () => {
+    // Why: the live gate (2026-10-18) saw the planner acknowledge "记下来" without calling lesson_write.
+    expect(OMP_LOOP_DISCIPLINE).toContain("call lesson_write in that turn — never only acknowledge it");
+    expect(OMP_LOOP_DISCIPLINE).toContain("never say something was saved or remembered unless a lesson_write result in this turn says saved");
+  });
 });
