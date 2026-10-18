@@ -61,13 +61,16 @@ function judgeGolden(store: RunStore, r: Extract<JevResult, { ok: true }>, now: 
   return stale ? "stale" : "ok";
 }
 
-/** memory.kind's golden set (spec 2026-10-15 §3): one plain case per verdict in zh and en. Synthetic text (the repo is public). */
+/**
+ * memory.kind's golden set (spec 2026-10-15 §3): one plain case per verdict in zh and en. Synthetic text (the repo is public).
+ * No `fix` items: Jev does not clear the 0.85 bar on `fix` (first-option bias toward `other`, live gate 2026-10-18, 3 of 3
+ * runs), so a fix request falls below the bar to the distill and then the planner (memory_correct). Golden items are only
+ * verdicts the armed rung decides.
+ */
 export interface MemoryKindGoldenItem { id: string; text: string; expect: MemoryKindVerdict }
 export const MEMORY_KIND_GOLDEN: readonly MemoryKindGoldenItem[] = [
   { id: "mk-other-zh", expect: "other", text: "明天悉尼会下雨吗？" },
   { id: "mk-other-en", expect: "other", text: "What time does the hardware store close on Sundays?" },
-  { id: "mk-fix-zh", expect: "fix", text: "你记的那条说我住在墨尔本是错的，删掉它。" },
-  { id: "mk-fix-en", expect: "fix", text: "The note you stored saying my sister lives in Perth is wrong, please remove it." },
   { id: "mk-rule-zh", expect: "rule", text: "以后回答我的时候先给结论，再讲理由。" },
   { id: "mk-rule-en", expect: "rule", text: "From now on, put the conclusion first when you answer me." },
   { id: "mk-fact-zh", expect: "fact", text: "记住：我女儿的生日是三月十二日。" },

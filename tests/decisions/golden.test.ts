@@ -92,8 +92,11 @@ const kindAnswering = (pick: (text: string) => string, model = "jev-1.13.0") => 
 const truth = (text: string): string => MEMORY_KIND_GOLDEN.find((g) => g.text === text)?.expect ?? "other";
 
 describe("memory.kind golden set", () => {
-  it("holds one item per verdict in zh and in en", () => {
-    for (const v of MEMORY_KIND_OPTIONS) {
+  it("holds one zh and one en item per verdict Jev decides, and none for fix", () => {
+    // Why: Jev scores below the 0.85 bar on fix (bias toward other, live gate 2026-10-18), so fix falls to the distill and the
+    // planner; a fix item would page drift daily for a verdict the armed rung never decides.
+    expect(MEMORY_KIND_GOLDEN.some((g) => g.expect === "fix")).toBe(false);
+    for (const v of MEMORY_KIND_OPTIONS.filter((o) => o !== "fix")) {
       const items = MEMORY_KIND_GOLDEN.filter((g) => g.expect === v);
       expect(items.map((g) => /[一-鿿]/.test(g.text)).sort()).toEqual([false, true]);
     }
