@@ -1,9 +1,10 @@
 # Decision ladder stage 2b-i: extension hooks and `turn.settle`
 
-Rev 2, 2026-10-20 (Rev 1 2026-10-19, `6d205b2`). Parent: [the decision-ladder spec](2026-10-12-decision-ladder-design.md)
-§7.1 (built-in reads), §7.3 (`turn.settle`), §13 (stage 2b row). ADR: [0030](../decisions/0030-decision-ladder.md).
-Code at `05168ba` (memory write merged). omp installed: 18.10.4; probes P1'–P4' (§6) ran on it on 2026-10-19 (the
-parent's P1–P4 ran on 18.7.0). Rev 2 closes the codex and senior design reviews of Rev 1 (§10).
+Rev 3, 2026-10-20 (Rev 1 2026-10-19 `6d205b2`; Rev 2 2026-10-20 `75c4145`). Parent: [the decision-ladder
+spec](2026-10-12-decision-ladder-design.md) §7.1 (built-in reads), §7.3 (`turn.settle`), §13 (stage 2b row). ADR:
+[0030](../decisions/0030-decision-ladder.md). Code at `05168ba` (memory write merged). omp installed: 18.10.4; probes
+P1'–P4' (§6) ran on it on 2026-10-19 (the parent's P1–P4 ran on 18.7.0). Rev 2 closed the codex and senior design
+reviews of Rev 1; Rev 3 closes codex round 2 (§10).
 
 ## 0. Scope and rulings
 
@@ -23,7 +24,7 @@ producers today (`src/decisions/outcomes.ts:28-34`: six have a `null` check and 
 | 2b-R5 | A judgement that completes while the turn is live raises trust by its own outcome even when its rewrite came too late to apply; after `finalize()` it is recorded (`armed_mode: late`) and mutates nothing | design, revised Rev 2 (codex B5, senior W1) |
 | 2b-R6 | The todo check fires only on a list that changed during this turn: `todoPhases` is session state and a stale list must not send back an unrelated reply | design |
 | 2b-R7 | **In a continuation after a Jev-rung send-back (`settleAsk`), a built-in `edit`/`write` takes the bash redirect (the ask form), as in a hostile turn.** ADR 0030's named exception is extended to say so; the card reason is "this reply was sent back for one more pass"; the taps count toward the 3-a-day budget | **Paco, 2026-10-20** |
-| 2b-R8 | **A judged local read keeps the 2a parity rule (every judge mask reaches the planner's copy). A path whose judged read masked any value this turn makes `edit`/`write` on that path take the bash redirect; the framed note says how many values were masked.** Same ADR amendment | **Paco, 2026-10-20** |
+| 2b-R8 | **A judged local read keeps the 2a parity rule (every mirrored judge mask reaches the planner's copy; hex-only and digit-only runs are judge-only masks and stay raw for the planner, ADR 0030 2a amendment). A path whose judged read mirrored any mask this turn makes `edit`/`write` on that path take the bash redirect; the framed note says how many values were masked.** Same ADR amendment | **Paco, 2026-10-20** (mirrored/judge-only distinction: codex r2 #7) |
 | 2b-R9 | No `judge_timeout` kind: `report { applied: false }` carries the fact (parent §7.1 wrote a separate request; one signal is enough) | design (senior S2) |
 | 2b-R10 | The final-pass audit after a send-back runs in the supervisor at the terminal `agent_end` (code claims check only), not through a second `settle` request | design (codex B3, senior B1) |
 | 2b-R11 | A settle is keyed by Houge's run id: omp's `turn_id` stayed 0 across fires and turns (P2') | probe |
@@ -31,6 +32,8 @@ producers today (`src/decisions/outcomes.ts:28-34`: six have a `null` check and 
 | 2b-R13 | The six never-send-back checks are the first rule of the `turn.settle` rung, so the runner's `alwaysRecord` is the only recording path | design (senior S1) |
 | 2b-R14 | omp's hidden continuation message (`role: custom`, `customType: session-stop-continuation`, `display: false`) is never stored as assistant text or rendered | probe (P2') |
 | 2b-R15 | A read under `HOUGE_DAEMON_TMP_DIR` (media, mail and codex files) is judged `outside: true`; other local reads stay `outside: false` | design (senior W2) |
+| 2b-R16 | A read still unjudged after the bounded drain at turn end raises the turn as a lost judgement does in 2a: `hostile` when `outside`, `untrusted` when local. Cost if wrong: a local file holding an injection, judged too late, leaves the transcript `untrusted` rather than `hostile` until the next judged passage says otherwise; the file was one the gate let the planner read | design (codex r2 #2) |
+| 2b-R17 | A `decisions` row is never rewritten (`record.ts:55` stores unlisted reasons as `null` and has no update path): what happens after a settle verdict is written as `decision_outcomes` rows | design (codex r2 #8) |
 
 What this spec does not change: lane turns (no planner, nothing to settle), the trust ladder's levels and causes
 (`src/decisions/trust.ts`), the five existing bridge kinds' shapes, the rich renderer path, `improve.route`.
@@ -144,8 +147,10 @@ extension's regex sources and note equal Houge's.
 ### 2.5 `todo` in the extension
 
 `UNGATED_BUILTINS = ["todo"]`: allowed by the `tool_call` hook with no `gate` request (no path, no body that leaves the
-machine) and no `report` (its state is read through `get_state`; it writes no ledger row). `isBuiltin` and the gate
-path are unchanged for `read`/`edit`/`write`; `find` and every other unregistered tool stay `tool_not_allowed` (test).
+machine), and on result a bare `report` (outcome, bytes, duration; never content). `handleReport` for a `todo` id that
+no gate registered writes a counts-only `tool_finished` with `tool: builtin:todo` and a `loop_step`, so the run's
+ledger shows every todo transition (codex r2 #10). `isBuiltin` and the gate path are unchanged for
+`read`/`edit`/`write`; `find` and every other unregistered tool stay `tool_not_allowed` (test).
 
 ## 3. `turn.settle`
 
@@ -160,12 +165,12 @@ path are unchanged for `read`/`edit`/`write`; `find` and every other unregistere
 | fail, defaultVerdict | `settle` |
 | alwaysRecord | true (the only recording path, 2b-R13) |
 | effects | `send_back` from the rule rung: `tighten` under normal gates; from the Jev rung: `tighten` with `settleAsk` (§3.3) |
-| outcomes | `settle_sent_back` (value: reason code), `settle_unverified` (value: claim kind), `review_*` |
-| reasonCodes | `hostile`, `already_sent_back`, `last_call_denied`, `steer_queued`, `deadline_short`, `aborting`, `empty`, `claim_scheduled`, `claim_saved`, `claim_attached`, `claim_sent`, `todo_pending`, `todo_unavailable`, `jev_claims_done`, `jev_unverified`, `jev_promise`, `jev_asks_permission`, `budget`, `discarded`, `settled` |
+| outcomes | `settle_sent_back` (value: reason code), `settle_unverified` (value: the reason that persisted), `settle_discarded` (value: `extension_timeout` \| `signal` \| `continuation_failed`), `review_*` |
+| reasonCodes | `hostile`, `already_sent_back`, `last_call_denied`, `steer_queued`, `deadline_short`, `aborting`, `empty`, `claim_scheduled`, `claim_saved`, `claim_attached`, `claim_sent`, `todo_pending`, `todo_unavailable`, `jev_claims_done`, `jev_unverified`, `jev_promise`, `jev_asks_permission`, `budget`, `settled` |
 
-`ENTRY_IDS` gains `turn.settle`; `DecisionPoint` gains `settle`; `DECISION_SIGNALS` gains `settle_unverified`;
-`outcomes.ts` gives both settle signals a value check. If `decision_outcomes` carries a SQL `CHECK` on `signal`, the
-plan adds an additive migration and the rollback check covers it.
+`ENTRY_IDS` gains `turn.settle`; `DecisionPoint` gains `settle`; `DECISION_SIGNALS` gains `settle_unverified` and
+`settle_discarded`; `outcomes.ts` gives the three settle signals a value check. `decision_outcomes.signal` has no SQL
+`CHECK` (`run-store.ts:1062-1068`), so no migration.
 
 **State** (`src/decisions/settle-state.ts`, protected, built by the supervisor): `{ run_id, text, pass, sentBack,
 trust, lastCallDenied, steerQueued, msLeft, aborting, evidence (the run's ledger events this turn), todoBefore,
@@ -204,8 +209,12 @@ The verb list is code-owned and tested per verb, with and without evidence, zh a
 
 **Todo check** (code): `todoNow` compared with `todoBefore` (§5). The list changed during this turn **and** holds a
 task `pending` or `in_progress` → `send_back`, reason `todo_pending`. `todoNow === null` (a failed or slow
-`get_state`) → the check records `todo_unavailable` as the row's reason **only if nothing else fires**, and counts
-toward `decision_fallback:turn.settle` paging (3 in an hour; senior W12).
+`get_state`) → the check records `todo_unavailable` as the row's reason **only if nothing else fires**.
+
+**Settle health** (senior W12, codex r2 #9): the existing `decision_fallback` counter excludes `budget` and counts
+only `fail` rungs (`record.ts:80`), so `settle-judge` keeps its own: after each settle row it counts rows with reason
+`budget` or `todo_unavailable` in the last hour and opens incident `decision_health:turn.settle` at 3 (pages once,
+resolves on the next settle row with neither reason). Tested for both reasons.
 
 A rule-rung send-back runs its continuation under the turn's normal gates (parent §4.1).
 
@@ -226,13 +235,14 @@ validation as `jev-client.ts:196-202`; a missing or malformed answer is `fail` o
 the recorded level and its ledger are unchanged: `trustAsk` with `HOSTILE_READS` and read-only shell tap-free, every
 other Houge tool asking with the reason line `SETTLE_REASON = "this reply was sent back for one more pass"`; a built-in
 `edit`/`write` takes the bash redirect. The taps count in `countTrustAsk`. Every effect path goes through the bridge,
-so this enumeration is complete (`call` → `tool.policy` ask; `gate` → redirect). ADR 0030's named exception gains the
-words "or in a continuation after a Jev-rung `turn.settle` send-back".
+so this enumeration is complete (`call` → `tool.policy` ask; `gate` → redirect). The ask is evaluated on the
+**resolved** capability (`bridge-handler.ts:220` passes `entry` after `capabilityFor`), so `memory_correct` with a
+write action resolves to `memory_correct_write`, which is not in `HOSTILE_READS`, and asks; a test names it (codex r2
+#3). ADR 0030's named exception gains the words "or in a continuation after a Jev-rung `turn.settle` send-back".
 
 **Budget.** Houge answers `settle` within 4 000 ms (`SETTLE_BUDGET_MS`): ledger read, `get_state` (1 s), Jev (1.5 s).
-On overrun the reply is `{ sendBack: false }`, the row `fail` with reason `budget`, counted toward
-`decision_fallback:turn.settle` paging. Added latency per planner turn: two `get_state` round trips (about 2 ms each,
-P3') plus Jev at settle.
+On overrun the reply is `{ sendBack: false }`, the row `fail` with reason `budget`, counted by the settle health
+counter above. Added latency per planner turn: two `get_state` round trips (about 2 ms each, P3') plus Jev at settle.
 
 ### 3.4 The note
 
@@ -249,12 +259,15 @@ Do not start a step that needs Paco's approval; say what is pending.` Reason lin
 
 Supervisor (`planner-supervisor.ts`):
 
-- `Turn.passes: { texts: string[]; final: string }[]`: pass 0 starts at dispatch; a send-back opens pass 1 at the moment
-  Houge replies `sendBack: true`. `onAssistant` appends to the current pass; a pass's **final text** is its last
-  `message_end` text. `lastText` is derived from the current pass. A `message_*` frame with `role: custom` or
-  `display: false` is never stored or rendered (2b-R14). An assistant message with `stopReason: aborted` arriving after
-  a send-back is not stored.
-- `Turn.sentBack`, `ActiveTurn.settleAsk`, `Turn.todoBefore`.
+- `Turn.passes: { texts: string[]; final: string }[]`: pass 0 starts at dispatch. **The pass boundary** (codex r2 #5):
+  the supervisor installs `ActiveTurn.onSendBack(kind: "rule" | "jev")` when it creates the turn; the bridge handler
+  calls it **before** writing the `sendBack: true` reply to the socket. The callback sets `Turn.sentBack`, sets
+  `ActiveTurn.settleAsk` when `kind === "jev"`, and opens pass 1. omp emits no further frame until the hook returns,
+  so every frame after the reply belongs to pass 1. A second `agent_start` then sets `Turn.continuationSeen`.
+  `onAssistant` appends to the current pass; a pass's **final text** is its last `message_end` text. `lastText` is
+  derived from the current pass. A `message_*` frame with `role: custom` or `display: false` is never stored or
+  rendered (2b-R14). An assistant message with `stopReason: aborted` arriving after a send-back is not stored.
+- `Turn.sentBack`, `Turn.continuationSeen`, `ActiveTurn.settleAsk`, `Turn.todoBefore`.
 - A second `agent_start` within a dispatched turn after a send-back is the continuation, not a new turn (P2'); the turn
   still settles on the one terminal `agent_end`, whose `messages` hold only the continuation leg (so the reply is built
   from `passes`, never from `agent_end.messages`).
@@ -262,23 +275,28 @@ Supervisor (`planner-supervisor.ts`):
   final text, a code-owned marker line (`— restated: —`), then pass 1's (senior W12: Paco can see it was joined).
 - Attachments: `parseAttachments` on each pass's final text, de-duplicated by path; with no send-back the behaviour is
   today's (one pass).
-- **Continuation observed**: the `settle_sent_back` outcome is written when a continuation's `agent_start` arrives
-  after the `sendBack: true` reply and before the terminal `agent_end`; if the turn ends without one (the extension's
-  timer or `signal` discarded the reply, senior W4), the row's reason is rewritten `discarded` and no outcome is
-  written.
+- **Continuation observed** (2b-R17: rows are never rewritten; outcomes say what followed): the `settle_sent_back`
+  outcome is written when `continuationSeen` is set before the terminal `agent_end`; if the turn ends with `sentBack`
+  and no continuation (the extension's timer or `signal` discarded the reply, senior W4), outcome `settle_discarded`
+  with value `extension_timeout` or `signal` (the extension says which in its next `report`-free `settle` reply; absent
+  that, `extension_timeout`).
 - **Abort in pass 1**: `finishFailure` as today, with `partial` = pass 0's final text (a failure line plus the first
   answer; not a success). **A model error in pass 1** (`lastError` set): the turn completes with pass 0's final text,
-  records reason `continuation_failed` on the settle row, and never enters `retryNextLeg` (senior W6).
-- **Final-pass audit** (2b-R10): at the terminal `agent_end` of a turn with `sentBack`, the claims check runs on pass
-  1's final text (code only, no Jev, no `get_state`). An unsupported claim writes outcome `settle_unverified` (value:
-  the claim kind) on the turn's settle row and queues the urgent card `⚠️ Settled unverified: <reason line>` through
-  the outbox (parent §8.2), rendered by the rich renderer. The turn settles regardless (once-only).
+  writes outcome `settle_discarded` with value `continuation_failed`, and never enters `retryNextLeg` (senior W6).
+- **Final-pass audit** (2b-R10; codex r2 #1 widened it to every send-back reason): at the terminal `agent_end` of a
+  turn with `sentBack`, the code checks re-run on pass 1's final text: the claims check, and the todo check with one
+  more `get_state`. A reason that persists writes outcome `settle_unverified` (value: that reason) and, for a claim
+  reason, queues the urgent card `⚠️ Settled unverified: <reason line>` through the outbox (parent §8.2), rendered by
+  the rich renderer. The Jev questions are re-asked **after** the reply is delivered (bounded 1 500 ms, never delaying
+  the reply); a persisting Jev reason writes `settle_unverified` with that reason and no card (its evidence is a
+  probability, reviewed through the digest and 2b-ii). The turn settles regardless (once-only).
 
 ### 3.6 Recording
 
 One `decisions` row per turn for `turn.settle` (the first fire; later fires return `sendBack: false` without a row),
-linked by `run_id` and the pass; outcomes `settle_sent_back` / `settle_unverified` hang off it. `/status decisions`
-shows the rows; the digest's unsure list includes Jev settle answers within 0.15 of 0.5 when the digest is on.
+linked by `run_id`, never rewritten (2b-R17); outcomes `settle_sent_back` / `settle_unverified` / `settle_discarded`
+hang off it, each inserted once (the supervisor holds the decision id from the first fire). `/status decisions` shows
+the rows; the digest's unsure list includes Jev settle answers within 0.15 of 0.5 when the digest is on.
 
 ## 4. `judge_read`
 
@@ -289,22 +307,35 @@ shows the rows; the digest's unsure list includes Jev settle answers within 0.15
   → `untrusted`; a lost judgement → `untrusted` (local) or `hostile` (outside). Houge re-caps `text` at 32 KiB.
 - Only a `toolCallId` the gate allowed for `fs_read` is accepted (`turn.unreported` holds it); any other is refused
   `unknown_call`, logged with ids and kinds only, never text. Memoised `judge:<toolCallId>`.
-- **Masked values** (2b-R8): when a judgement masks any value in a local read, the framed note says
-  `N values masked by Houge`; the path is added to `ActiveTurn.maskedPaths`. A `gate` for `edit`/`write` on a path in
-  `maskedPaths` takes the bash redirect (card reason `MASKED_READ_REASON = "this file was read with values masked"`),
-  counted in the tap budget. Live gate: read a file with a hex run, edit it through the redirect, byte-compare.
+- **Masked values** (2b-R8). Two kinds of mask exist (ADR 0030 2a amendment, `egress.ts:331`): **mirrored** masks
+  (base64 and base64url runs, named-secret values, PEM blocks, URL userinfo/query/fragment) reach the planner's copy;
+  **judge-only** masks (hex-only and digit-only runs) are applied to the Jev copy and left raw for the planner. When a
+  local read's judgement mirrored at least one mask, the framed note says `N values masked by Houge` and every
+  resolved target of that read is added to `ActiveTurn.maskedPaths`. **Path source** (codex r2 #4): `handleGate`
+  already resolves a built-in's targets in `gateDenial`; for `fs_read` it now retains them as
+  `ActiveTurn.readTargets: Map<toolCallId, string[]>` (resolved absolute paths, symlinks followed, as the gate
+  compares them), and an `edit`/`write` gate resolves its own targets (`path` and every `paths[]` entry) the same way
+  and takes the bash redirect when any is in `maskedPaths` (card reason `MASKED_READ_REASON = "this file was read with
+  values masked"`), counted in the tap budget. A judge-only mask never adds a path. Live gate: read a file holding a
+  named-secret line (`api_key: ` plus 24 characters), edit it through the redirect, byte-compare.
 - **Per-call state** (`ActiveTurn.judgePending: Map<toolCallId, { since, replied, applied }>`): set when
   `judge_read` **arrives** (not at `gate`; senior S3), `replied` when Houge's handler resolved, cleared by a
   `report { applied: true }` that follows Houge's own reply. The turn is raised with cause `judge_timeout`
   (→ `untrusted`) when: a `report` arrives with `applied: false`; a `report` says `applied: true` for a call Houge never
   replied to (an extension that lies cannot clear a read: cleared only when `replied` is set); any later bridge request
   from the turn finds a read pending past 5 000 ms since `since`; or a read is still pending at `flushUnreported`.
-- **Drain before finalisation** (2b-R5, codex B5, senior W1): `flushUnreported` first awaits the turn's in-flight
-  `judge_read` promises, bounded at 3 000 ms in total (the judge's own budget); only then `trust.finalize()`. A
-  judgement completing while the turn is live raises by its own outcome (its rewrite may be too late to apply: row
-  `armed_mode: late`). After `finalize()` a completing judgement writes its row `late` and mutates nothing; the turn
-  already ended at least `untrusted` because the read was pending at flush. Residual: a withhold found after
-  finalisation does not make that transcript `hostile`.
+- **Drain before finalisation** (2b-R5, codex B5 and r2 #6, senior W1): `flushUnreported` and both terminal methods
+  are synchronous today, so the drain lives in the supervisor's `settle()` (already `async`,
+  `planner-supervisor.ts:750`): after `clearTimers` and `dropAsyncChild`, `await drainJudges(turn.active, 3_000)`
+  (the turn's in-flight `judge_read` promises, bounded at 3 000 ms in total, the judge's own budget), and only then
+  `finishFailure` / `finishSuccess`, whose `flushUnreported` and `trust.finalize()` stay synchronous. A judgement
+  completing before the bound raises by its own outcome (its rewrite may be too late to apply: row `armed_mode:
+  late`). A read still pending after the bound is raised per 2b-R16 (`hostile` when `outside`, `untrusted` when
+  local) at flush. After `finalize()` a completing judgement writes its row `late` and mutates nothing.
+- **Timeout floor and trust** (codex r2 #11): when the extension withheld the whole text on its own timer, the model
+  saw the floored text and `report { applied: false }` raises `judge_timeout` (→ `untrusted`); if Houge's own
+  judgement then completes live with a withhold, `raiseFor` makes the turn `hostile`. Recorded trust is therefore
+  always at least as high as the delivered text implies; a test asserts the pairing for both orders.
 - A `gate` for `read` whose result arrived before the gate reply (a bridge disconnect mid-call) aborts the turn as
   today (`bridgeLost`); pending reads then raise `untrusted` at flush.
 - `edit` and `write` results stay unjudged; their `report` is unchanged.
@@ -322,7 +353,8 @@ shows the rows; the digest's unsure list includes Jev settle answers within 0.15
   check for this turn and records `todo_unavailable` as in §3.3) and once inside the settle decision.
 - A `todo_reminder` frame reaching the supervisor opens incident `todo_reminder_seen` (pages once, resolves on the next
   turn without one); no reminder text is ever rendered to Paco. The live gate asserts none appears.
-- `tasks.todoClearDelay` and `todo.remindersMax` stay at omp's defaults. `todo` calls write no ledger row.
+- `tasks.todoClearDelay` and `todo.remindersMax` stay at omp's defaults. `todo` calls write the counts-only row of
+  §2.5. With either snapshot unavailable the todo check is off for the turn (`todo_unavailable`, §3.3).
 
 ## 6. Probes (run on omp 18.10.4, 2026-10-19; evidence under the session scratchpad `probes-2b/runs/`)
 
@@ -339,9 +371,9 @@ Side finding: the `houge` profile's Anthropic login was found signed out during 
 
 ## 7. Gate, tests, rollback, docs
 
-**Schema.** No migration unless `decision_outcomes.signal` carries a SQL `CHECK` (then one additive migration for
-`settle_unverified`). New rows: `decisions` `turn.settle`, `tool.injection` source `read`, `decision_outcomes`
-`settle_sent_back` / `settle_unverified`. Rollback check (`scripts/check-ladder-2b-hooks-rollback.mjs`): the previous
+**Schema.** No migration (`decision_outcomes.signal` has no `CHECK`). New rows: `decisions` `turn.settle`,
+`tool.injection` source `read`, `decision_outcomes` `settle_sent_back` / `settle_unverified` / `settle_discarded`,
+`tool_finished` `builtin:todo`. Rollback check (`scripts/check-ladder-2b-hooks-rollback.mjs`): the previous
 build boots on a DB copy holding those rows and its digest and `/status decisions` render them; **and** the previous
 extension and supervisor resume a transcript that holds `todo` calls and a continuation leg (senior S7).
 
@@ -370,8 +402,9 @@ merge.
    no `todo_reminder` frame in either;
 7. a `hostile` turn, and separately a turn with a queued steer: no send-back, reason recorded;
 8. a settle past Houge's 4 s budget (injected delay): `{ sendBack: false }`, row `fail` `budget`;
-9. masked read: a file with a 40-hex run is read (note `1 values masked`), an `edit` on it takes the redirect, Paco's
-   tap runs it through bash, byte-compare shows the intended edit and no mask text;
+9. masked read: a file with a named-secret line is read (note `1 values masked`), an `edit` on it takes the redirect,
+   Paco's tap runs it through bash, byte-compare shows the intended edit and no mask text; a file with only a 40-hex
+   run is read and edited with no redirect (judge-only mask);
 10. `settleAsk`: a Jev-rung send-back (planted promise reply), then a `write` in pass 1 → the bash redirect card with
     `SETTLE_REASON`;
 11. golden set: 8 of 8.
@@ -395,8 +428,7 @@ todo tool; `docs/reference/decision-map.md` (`turn.settle` live; `improve.route`
 **Protected files (Paco's merge):** all of `src/omp/` touched (`extension/*`, `bridge-handler.ts`,
 `bridge-protocol.ts`, `planner-supervisor.ts`, `planner-session.ts`, `settle-judge.ts`), `src/decisions/`
 (`entries/turn-settle.ts`, `settle-state.ts`, `entry-ids.ts`, `registry.ts`, `types.ts`, `outcomes.ts`,
-`injection-judge.ts`, `trust-ask.ts`, `golden.ts`), `src/jev/decide.ts`, `src/run/run-store.ts` if the `CHECK`
-migration is needed, `docs/decisions/0030-decision-ladder.md`.
+`injection-judge.ts`, `trust-ask.ts`, `golden.ts`), `src/jev/decide.ts`, `docs/decisions/0030-decision-ladder.md`.
 
 ## 8. Risks
 
@@ -449,3 +481,16 @@ accepted, in these forms:
 - `judge_timeout` redundant → dropped (senior S2, 2b-R9); memo keys (S4); empty reply and accepted attachments (S5);
   latency lines (S6); sanity floor (S6); rollback on a transcript (S7); attachment evidence (codex W9); ledger
   wording (codex W12).
+
+**Rev 2 → Rev 3 (2026-10-20).** Codex round 2: round-1 blockers closed 4 of 6; 6 new blockers, 4 warnings, 1
+suggestion. Verified against the code; rulings:
+
+- #1 final audit covered claims only → every code reason re-checked at `agent_end`, Jev re-asked after delivery
+  (§3.5); #2 late withhold after the drain → 2b-R16, cost stated; #3 `memory_correct` write exemption → already
+  handled by the resolved-capability ask at `bridge-handler.ts:220`, now a stated test, not a change; #4 no path
+  source for `maskedPaths` → `readTargets` retained at `gate`, resolved on both sides (§4); #5 pass boundary →
+  `ActiveTurn.onSendBack` before the socket write, `continuationSeen` on the second `agent_start` (§3.5); #6
+  synchronous terminal path → the drain in `settle()` (§4); #7 hex runs are judge-only masks → mirrored/judge-only
+  distinction in 2b-R8 and the live case; #8 row rewrites → 2b-R17, outcomes `settle_discarded`; #9 `budget` never
+  pages → settle health counter (§3.3); #10 todo outside accounting → counts-only `report` and row (§2.5); #11 timeout
+  floor vs trust → stated pairing (§4). `decision_outcomes.signal` has no `CHECK`: no migration.
