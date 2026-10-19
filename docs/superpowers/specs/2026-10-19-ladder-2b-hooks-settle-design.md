@@ -285,11 +285,11 @@ Supervisor (`planner-supervisor.ts`):
   writes outcome `settle_discarded` with value `continuation_failed`, and never enters `retryNextLeg` (senior W6).
 - **Final-pass audit** (2b-R10; codex r2 #1 widened it to every send-back reason): at the terminal `agent_end` of a
   turn with `sentBack`, the code checks re-run on pass 1's final text: the claims check, and the todo check with one
-  more `get_state`. A reason that persists writes outcome `settle_unverified` (value: that reason) and, for a claim
-  reason, queues the urgent card `⚠️ Settled unverified: <reason line>` through the outbox (parent §8.2), rendered by
-  the rich renderer. The Jev questions are re-asked **after** the reply is delivered (bounded 1 500 ms, never delaying
-  the reply); a persisting Jev reason writes `settle_unverified` with that reason and no card (its evidence is a
-  probability, reviewed through the digest and 2b-ii). The turn settles regardless (once-only).
+  more `get_state`. A reason that persists writes outcome `settle_unverified` (value: that reason) and queues the
+  urgent card `⚠️ Settled unverified: <reason line>` through the outbox (parent §8.2: every send-back that still
+  settles unverified gets a card), rendered by the rich renderer. The Jev questions are re-asked **after** the reply
+  is delivered (bounded 1 500 ms, never delaying the reply); a persisting Jev reason writes `settle_unverified` with
+  that reason and queues the same card. One card per turn at most. The turn settles regardless (once-only).
 
 ### 3.6 Recording
 
@@ -312,12 +312,16 @@ the rows; the digest's unsure list includes Jev settle answers within 0.15 of 0.
   **judge-only** masks (hex-only and digit-only runs) are applied to the Jev copy and left raw for the planner. When a
   local read's judgement mirrored at least one mask, the framed note says `N values masked by Houge` and every
   resolved target of that read is added to `ActiveTurn.maskedPaths`. **Path source** (codex r2 #4): `handleGate`
-  already resolves a built-in's targets in `gateDenial`; for `fs_read` it now retains them as
-  `ActiveTurn.readTargets: Map<toolCallId, string[]>` (resolved absolute paths, symlinks followed, as the gate
-  compares them), and an `edit`/`write` gate resolves its own targets (`path` and every `paths[]` entry) the same way
-  and takes the bash redirect when any is in `maskedPaths` (card reason `MASKED_READ_REASON = "this file was read with
-  values masked"`), counted in the tap budget. A judge-only mask never adds a path. Live gate: read a file holding a
-  named-secret line (`api_key: ` plus 24 characters), edit it through the redirect, byte-compare.
+  already resolves a built-in's targets lexically (`gateTargets`, `gate-path.ts:54-60`: absolute, normalised, symlinks
+  **not** followed); for `fs_read` it now retains them as `ActiveTurn.readTargets: Map<toolCallId, string[]>`. The
+  masked-path check works on **real paths**: `maskedPaths` holds `fs.realpathSync` of each read target (a target that
+  does not exist resolves to its lexical path), and an `edit`/`write` gate takes `realpath` of its own targets
+  (`path` and every `paths[]` entry; a not-yet-existing file keeps its lexical path, and its parent directory's real
+  path is used for the comparison of that file name) and takes the bash redirect when any matches (card reason
+  `MASKED_READ_REASON = "this file was read with values masked"`), counted in the tap budget (codex r3: two names for
+  one file must not evade the match; a test edits through a symlink to a masked file). A judge-only mask never adds a
+  path. `outside` for a multi-target read is `true` when **any** target is under `HOUGE_DAEMON_TMP_DIR`. Live gate:
+  read a file holding a named-secret line (`api_key: ` plus 24 characters), edit it through the redirect, byte-compare.
 - **Per-call state** (`ActiveTurn.judgePending: Map<toolCallId, { since, replied, applied }>`): set when
   `judge_read` **arrives** (not at `gate`; senior S3), `replied` when Houge's handler resolved, cleared by a
   `report { applied: true }` that follows Houge's own reply. The turn is raised with cause `judge_timeout`
@@ -494,3 +498,8 @@ suggestion. Verified against the code; rulings:
   distinction in 2b-R8 and the live case; #8 row rewrites → 2b-R17, outcomes `settle_discarded`; #9 `budget` never
   pages → settle health counter (§3.3); #10 todo outside accounting → counts-only `report` and row (§2.5); #11 timeout
   floor vs trust → stated pairing (§4). `decision_outcomes.signal` has no `CHECK`: no migration.
+
+**Codex round 3 (2026-10-20):** round-2 blockers closed 5 of 6. The open one (`gateTargets` resolves lexically, so
+two names for one file could evade `maskedPaths`) → real paths on both sides (§4). Warnings: the unverified card now
+follows parent §8.2 for every persisting reason, one per turn (§3.5); a multi-target read is `outside` when any
+target is under the daemon temp dir (§4).
