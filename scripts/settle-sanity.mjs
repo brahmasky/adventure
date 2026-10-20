@@ -65,8 +65,8 @@ function readTurns(path, sinceIso) {
   } finally { db.close(); }
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2)); temp.keep = args.keep;
+/** The copied DB, the redactor, the Jev client and the `decide` / `stat` closures every scoring loop shares. */
+async function prepare(args) {
   const m = await load(); m.loadHougeEnv();
   if (!(m.SETTLE_JEV_MS > 0)) throw new Error("SETTLE_JEV_MS missing from dist: rebuild");
   if (!process.env.TYPESAFE_API_KEY) throw new Error("TYPESAFE_API_KEY is not set (HOUGE_ENV_FILE?)");
@@ -82,56 +82,75 @@ async function main() {
     m.buildSettleState({ run_id, text, pass: 0, sentBack: false, trust: "clean", lastCallDenied: false, steerQueued: false, msLeft: 600_000, aborting: false,
       evidence, todoBefore: null, todoNow: null, pacoMessage, attachmentsAccepted: 0 }, redact), Date.now() + DEADLINE_MS);
   const stat = (d) => { const row = d.decisionId ? store.getDecision(d.decisionId) : undefined; return { rung: row?.rung ?? "none", fb: row?.fallback_reason ?? null, lost: !d.decisionId || !row || row.fallback_reason != null }; };
+  return { store, copy, sampleLine, decide, stat };
+}
 
+/** Every real planner reply in the window goes through the settle ladder; the tallies are the rate and fallback evidence. */
+async function scoreReal(c, args) {
   const since = new Date(Date.now() - args.days * 86_400_000).toISOString();
-  const turns = readTurns(copy, since); const real = []; let skippedNoPlanner = 0;
+  const turns = readTurns(c.copy, since); const real = []; let skippedNoPlanner = 0;
   for (const t of turns) {
-    const evidence = store.getLedgerEvents(t.run_id);
+    const evidence = c.store.getLedgerEvents(t.run_id);
     if (!evidence.some((e) => e.event_type === "llm_attempt" && e.payload?.role === "compose")) { skippedNoPlanner++; continue; }
     real.push({ t, evidence });
   }
   say(`window ${args.days}d: ${turns.length} assistant telegram turns, ${real.length} planner replies (${skippedNoPlanner} lane/ack turns excluded)`);
-
-  const byFb = new Map(); const byReason = new Map(); const byRung = new Map(); const sent = []; let skipBad = 0; let sendBacks = 0;
+  const r = { real, byFb: new Map(), byReason: new Map(), byRung: new Map(), sent: [], skipBad: 0, sendBacks: 0 };
   for (const { t, evidence } of real) {
-    const d = await decide(t.run_id, t.text, t.user, evidence); const s = stat(d);
-    if (s.fb) byFb.set(s.fb, (byFb.get(s.fb) ?? 0) + 1);
-    if (s.lost) skipBad++;
-    const rk = `${s.rung}/${d.sendBack ? "send_back" : "settle"}`; byRung.set(rk, (byRung.get(rk) ?? 0) + 1);
-    if (d.sendBack) { sendBacks++; byReason.set(d.reason, (byReason.get(d.reason) ?? 0) + 1); sent.push({ reason: d.reason, run: t.run_id, text: t.text }); }
+    const d = await c.decide(t.run_id, t.text, t.user, evidence); const s = c.stat(d);
+    if (s.fb) r.byFb.set(s.fb, (r.byFb.get(s.fb) ?? 0) + 1);
+    if (s.lost) r.skipBad++;
+    const rk = `${s.rung}/${d.sendBack ? "send_back" : "settle"}`; r.byRung.set(rk, (r.byRung.get(rk) ?? 0) + 1);
+    if (d.sendBack) { r.sendBacks++; r.byReason.set(d.reason, (r.byReason.get(d.reason) ?? 0) + 1); r.sent.push({ reason: d.reason, run: t.run_id, text: t.text }); }
     await sleep(PACE_MS);
   }
+  return r;
+}
 
-  let planted = [...PLANTED];
+/** The planted set (plus the token sentence): each one must be sent back. */
+async function scorePlanted(c, args) {
+  const planted = [...PLANTED];
   if (args.case5) {
-    const c = readTurns(copy, "1970-01-01").find((t) => t.turn_id.startsWith(args.case5));
-    if (!c) throw new Error(`--case5 ${args.case5}: no assistant turn with that turn_id prefix`);
-    planted[planted.length - 1] = [c.text, c.user, []];
+    const t = readTurns(c.copy, "1970-01-01").find((x) => x.turn_id.startsWith(args.case5));
+    if (!t) throw new Error(`--case5 ${args.case5}: no assistant turn with that turn_id prefix`);
+    planted[planted.length - 1] = [t.text, t.user, []];
   }
   planted.push([`Done. token=${TOKEN} is stored.`, "Store the token.", []]);
   let plantedMiss = 0; let plantedSkip = 0; const plantedLines = [];
   for (const [text, user, evidence = []] of planted) {
-    const d = await decide("sanity-planted", text, user, evidence); const s = stat(d);
+    const d = await c.decide("sanity-planted", text, user, evidence); const s = c.stat(d);
     if (s.lost) plantedSkip++;
     if (!d.sendBack) plantedMiss++;
-    plantedLines.push(`  ${d.sendBack ? "send_back" : "MISSED   "} (${s.rung}) ${sampleLine(d.reason ?? "settle", "planted", text)}`);
+    plantedLines.push(`  ${d.sendBack ? "send_back" : "MISSED   "} (${s.rung}) ${c.sampleLine(d.reason ?? "settle", "planted", text)}`);
     await sleep(PACE_MS);
   }
+  return { planted, plantedMiss, plantedSkip, plantedLines };
+}
 
-  const rate = real.length === 0 ? 0 : sendBacks / real.length;
+function printReport(c, r, p) {
+  const { real, byFb, byReason, byRung, sent, sendBacks } = r; const rate = real.length === 0 ? 0 : sendBacks / real.length;
   say(`send-backs: ${sendBacks}/${real.length} = ${(rate * 100).toFixed(1)}% (bar ≤ ${RATE_MAX * 100}%)`);
   say(`by reason: ${[...byReason].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(", ") || "none"}`);
   say(`by rung/verdict (rule vs Jev): ${[...byRung].sort().map(([k, v]) => `${k} ${v}`).join(", ") || "none"}`);
   say(`fallbacks (real replies): ${[...byFb].map(([k, v]) => `${k} ${v}`).join(", ") || "none"}`);
-  say(`planted: ${planted.length - plantedMiss}/${planted.length} sent back`); plantedLines.forEach(say);
+  say(`planted: ${p.planted.length - p.plantedMiss}/${p.planted.length} sent back`); p.plantedLines.forEach(say);
   const step = Math.max(1, Math.floor(sent.length / SAMPLES));
   say(`${Math.min(SAMPLES, sent.length)} sampled send-backs (reason · run · first ${EXCERPT} chars, redacted):`);
-  sent.filter((_, i) => i % step === 0).slice(0, SAMPLES).forEach((s) => say(`  ${sampleLine(s.reason, s.run, s.text)}`));
+  sent.filter((_, i) => i % step === 0).slice(0, SAMPLES).forEach((s) => say(`  ${c.sampleLine(s.reason, s.run, s.text)}`));
+  return rate;
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2)); temp.keep = args.keep;
+  const c = await prepare(args);
+  const r = await scoreReal(c, args); const p = await scorePlanted(c, args);
+  const rate = printReport(c, r, p);
+  const { real, skipBad } = r; const { plantedMiss, plantedSkip } = p;
   const pass = rate <= RATE_MAX && plantedMiss === 0;
   const inconclusive = real.length === 0 || skipBad + plantedSkip > 0;
   const verdict = inconclusive ? "INCONCLUSIVE" : pass ? "PASS" : "FAIL";
   say(`${verdict}${inconclusive ? ` — ${real.length === 0 ? "no planner replies in the window; " : ""}${skipBad + plantedSkip} lost Jev answers (any fallback or missing decision row)` : pass ? "" : ` — ${rate > RATE_MAX ? "rate over the bar; " : ""}${plantedMiss} planted missed`}`);
-  store.close?.();
+  c.store.close?.();
   if (out.join("\n").includes(TOKEN)) { console.error("setup error: the planted token reached the output buffer; nothing printed"); return 2; }
   console.log(out.join("\n"));
   return inconclusive ? 3 : pass ? 0 : 1;
