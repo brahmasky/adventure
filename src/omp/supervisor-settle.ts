@@ -25,6 +25,8 @@ export interface SettleTurn {
   run_id: string; passes: Pass[]; sentBack: boolean; continuationSeen: boolean; continuationFailed?: boolean; aborting: boolean;
   deadline: ReturnType<typeof setTimeout> | undefined; deadlineLeft: number; deadlineAt: number; trustLevel: () => TrustLevel;
   userText: string; todoBefore: TodoSnapshot | null; settleDecisionId: string | null; settleReason?: SettleReason;
+  /** This turn's code-extracted codes and links (bridge-handler `turnExtracted`), read live: masked by value in every settle state. */
+  extracted: () => readonly string[];
 }
 export interface Snapshot { todo: TodoSnapshot; queued: number }
 
@@ -51,7 +53,10 @@ export function settleStateFor(ctx: SettleCtx, t: SettleTurn, text: string, now:
     todoNow: snap?.todo ?? null, pacoMessage: t.userText, attachmentsAccepted: parseAttachments(text, ctx.workspace).attachments.length
   };
   const token = ctx.bridgeToken();
-  return buildSettleState(raw, (s) => redactForJudge(s, { brokerRedact: (x) => ctx.store.redactSecretValues(x), known: token ? [token] : [] }));
+  // 2b-i final review A1: the turn's extracted codes and links are masked as on the injection path (injection-judge stateOf);
+  // finalAudit builds its state here too, so the re-ask after delivery carries the same masks
+  const opts = { brokerRedact: (x: string) => ctx.store.redactSecretValues(x), known: token ? [token] : [], extracted: t.extracted(), linkTokens: true };
+  return buildSettleState(raw, (s) => redactForJudge(s, opts));
 }
 
 export function writeOutcome(ctx: SettleCtx, t: SettleTurn, signal: DecisionSignal, value: string): void {

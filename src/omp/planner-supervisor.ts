@@ -17,7 +17,7 @@ import type { ToolRegistry } from "../tools/tool-registry.js";
 import { ACK_NUDGE_TEXT, isBareAck } from "./bare-ack.js";
 import type { BridgeRequest } from "./bridge-protocol.js";
 import { BridgeServer } from "./bridge-server.js";
-import { createBridgeHandler, flushUnreported, FULL_PAUSE, TRUST_WAIT_MIN_MS, type ActiveTurn, type GateHold, type PausePolicy, type SendBackKind, type SettleDecisionReply } from "./bridge-handler.js";
+import { createBridgeHandler, flushUnreported, FULL_PAUSE, TRUST_WAIT_MIN_MS, turnExtracted, type ActiveTurn, type GateHold, type PausePolicy, type SendBackKind, type SettleDecisionReply } from "./bridge-handler.js";
 import { drainJudges, JUDGE_DRAIN_MS } from "./bridge-read-judge.js";
 import type { SettleReason } from "../decisions/entries/turn-settle.js";
 import type { TodoSnapshot } from "../decisions/settle-state.js";
@@ -194,7 +194,7 @@ interface Turn {
   run_id: string; trustLevel: () => TrustLevel;
   /** Spec §3.5: pass 0 is the first answer, pass 1 opens at the continuation's agent_start; `lastText` is the current pass's final text. */
   passes: Pass[]; sentBack: boolean; sentBackKind?: SendBackKind; continuationSeen: boolean; continuationFailed?: boolean;
-  userText: string; settleText?: string;
+  userText: string; settleText?: string; extracted: () => readonly string[];
   /** Spec §5: the todo list before the prompt (null: get_state failed); the settle row's id and its send-back reason (§3.5 outcomes). */
   todoBefore: TodoSnapshot | null; settleDecisionId: string | null; settleReason?: SettleReason;
   /** The child generation this turn committed to (set as promptTop begins; -1 before): only its bridge loss aborts the turn. */
@@ -508,7 +508,8 @@ export class PlannerSupervisor {
       route: null, role: "default", effort: null, chain: [], routedBy: undefined, startMissing: 0, legsTried: 0, retriedOther: false, pinFailed: false, failed: new Set(),
       deadlineLeft: cfg.turnTimeoutMs, deadlineAt: Date.now(),
       run_id: req.run_id, trustLevel: () => active.trust?.level() ?? "clean",
-      passes: [{ texts: [], final: "" }], sentBack: false, continuationSeen: false, userText: req.text, todoBefore: null, settleDecisionId: null
+      passes: [{ texts: [], final: "" }], sentBack: false, continuationSeen: false, userText: req.text, todoBefore: null, settleDecisionId: null,
+      extracted: () => turnExtracted(active)
     };
     active.onSendBack = (kind, text) => this.onSendBack(turn, kind, text);
     this.armDeadline(turn); // the deadline covers child start and prompt build too

@@ -8,8 +8,10 @@ import { setSharedOmpVersionCacheForTest } from "../../src/omp/omp-version-cache
 import type { JevRequest, JevResult } from "../../src/jev/jev-client.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { settleStateFor, type SettleCtx, type SettleTurn } from "../../src/omp/supervisor-settle.js";
+import { SECRET_MASK } from "../../src/decisions/egress.js";
+import { loadToolDeclarations, TOOL_DECLS_DIR } from "../../src/omp/tool-decls.js";
 import { ToolRegistry } from "../../src/tools/tool-registry.js";
-import { drainOutbox } from "../helpers/omp-worker.js";
+import { drainOutbox, passThroughJudge } from "../helpers/omp-worker.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 import { cleanups, fakeSession, harness, req, until } from "../helpers/supervisor-harness.js";
 
@@ -102,6 +104,9 @@ describe("passes and the continuation (spec §3.5)", () => {
 const jev = (ps: number[]) => async (r: JevRequest): Promise<JevResult> => ({ ok: true, model: "jev-1.13.0", input_tokens: 1, latency_ms: 1,
   answers: Object.fromEntries(Object.keys(r.questions).map((id, k) => [id, { type: "noul" as const, noul: ps[k]! }])) });
 const settleReq = (text: string, stop_hook_active = false) => ({ kind: "settle", stop_hook_active, text });
+const OTP = "482913"; const MAGIC = "https://accounts.example.com/magic/abcd1234efgh5678";
+const OTP_REPLY = `Your Google verification code is ${OTP}. Link: ${MAGIC}`;
+const DECLS = (() => { const r = loadToolDeclarations(TOOL_DECLS_DIR); if (!r.ok) throw new Error(r.error); return r.decls; })();
 const rows = (store: RunStore, run_id: string) => store.listDecisionsForRun(run_id).filter((r) => r.entry_id === "turn.settle");
 const outcomes = (store: RunStore, run_id: string) => rows(store, run_id).flatMap((r) => store.listDecisionOutcomes(r.decision_id).map((o) => [o.signal, o.value]));
 
@@ -241,13 +246,40 @@ describe("the settle request end to end (spec §3)", () => {
   it("the bridge token is masked by value (the known leg), even a short low-entropy one the shape masks would pass", () => {
     const store = RunStore.openInMemory(); const run_id = createQueuedTurnRun(store);
     const t: SettleTurn = { run_id, passes: [{ texts: [], final: "" }], sentBack: false, continuationSeen: false, aborting: false, deadline: undefined,
-      deadlineLeft: 600_000, deadlineAt: Date.now(), trustLevel: () => "clean", userText: "hi", todoBefore: null, settleDecisionId: null };
+      deadlineLeft: 600_000, deadlineAt: Date.now(), trustLevel: () => "clean", userText: "hi", todoBefore: null, settleDecisionId: null, extracted: () => [] };
     const ctx = (token: string | undefined): SettleCtx => ({ store, chatId: "42", workspace: "/nonexistent", session: () => undefined, queueHasTelegram: () => false,
       bridgeToken: () => token, settleDeps: () => { throw new Error("unused"); } });
     const text = "The token plainword is fine.";
     expect(settleStateFor(ctx(undefined), t, text, Date.now(), null).redacted.text).toContain("plainword"); // the shape masks alone pass it
     expect(settleStateFor(ctx("plainword"), t, text, Date.now(), null).redacted.text).not.toContain("plainword");
     store.close();
+  });
+  it("A1: this turn's code-extracted code and magic link are masked by value in the settle state (a code in Paco's reply is the turn's own secret)", () => {
+    const store = RunStore.openInMemory(); const run_id = createQueuedTurnRun(store);
+    const t: SettleTurn = { run_id, passes: [{ texts: [], final: "" }], sentBack: false, continuationSeen: false, aborting: false, deadline: undefined,
+      deadlineLeft: 600_000, deadlineAt: Date.now(), trustLevel: () => "clean", userText: "hi", todoBefore: null, settleDecisionId: null,
+      extracted: () => [OTP, MAGIC] };
+    const ctx: SettleCtx = { store, chatId: "42", workspace: "/nonexistent", session: () => undefined, queueHasTelegram: () => false,
+      bridgeToken: () => undefined, settleDeps: () => { throw new Error("unused"); } };
+    const red = settleStateFor(ctx, t, OTP_REPLY, Date.now(), null).redacted.text;
+    expect(red).not.toContain(OTP); expect(red).not.toContain("abcd1234efgh5678"); expect(red).toContain(SECRET_MASK);
+    store.close();
+  });
+  it("A1 end to end: a web_search side channel's code and link never reach Jev, neither at settle nor in the final audit's re-ask", async () => {
+    const bodies: string[] = [];
+    const spy = () => async (r: JevRequest) => { bodies.push(JSON.stringify(r)); return jev([0.1, 0.1, 0.9, 0.1])(r); };
+    const registry = new ToolRegistry();
+    registry.register({ name: "web_search", category: "tool", side_effect_level: "none", risk_level: "low", timeout_ms: 5_000, output_limit_bytes: 64_000,
+      execute: async () => ({ ok: true, output: { raw: "mail", trusted_extract: `extracted (deterministic, data-only): codes=[${OTP}] links=[${MAGIC}]` } }) });
+    const { session, h } = held();
+    const { store, sup } = harness(session, {}, { settleClient: spy, decls: DECLS, turnEnvelopeActions: ["shell", "web_search"],
+      buildTools: () => ({ registry, quarantine: async () => ({ digest: "mail", contains_instructions: false, source_meta: { tool: "web_search", bytes: 4 } }), judge: passThroughJudge }) });
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    expect(await session.request({ kind: "call", tool: "web_search", input: { query: "code" }, toolCallId: "ws1" })).toMatchObject({ isError: false });
+    h.say(OTP_REPLY); expect(await session.request(settleReq(OTP_REPLY))).toMatchObject({ sendBack: true });
+    h.emit({ type: "agent_start" }); h.say(OTP_REPLY); h.emit({ type: "agent_end" }); await sup.whenIdle();
+    await until(() => bodies.length >= 2);
+    for (const b of bodies) { expect(b).not.toContain(OTP); expect(b).not.toContain("abcd1234efgh5678"); expect(b).toContain(SECRET_MASK); }
   });
   it("a retried leg (model error, RETRY_NOTE) gets its own settle decision, not the first leg's cached answer", async () => {
     const { session, h } = held(); const { store, sup } = harness(session);

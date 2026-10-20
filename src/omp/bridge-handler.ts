@@ -481,6 +481,10 @@ function extractedFor(turn: ActiveTurn): Set<string> {
   if (!s) { s = new Set(); extracted.set(turn, s); }
   return s;
 }
+/** This turn's extracted codes and links, for the settle egress (2b-i final review A1): masked by value there as in the judge. */
+export function turnExtracted(turn: ActiveTurn): readonly string[] {
+  return [...extractedFor(turn)];
+}
 /** The codes alone of an extract (never its links): what the side channel's own judgement masks by value. */
 function extractedCodes(extract: string): string[] {
   return (/codes=\[([^\]]*)\]/.exec(extract)?.[1] ?? "").split(",").map((v) => v.trim()).filter((v) => v.length >= 4);
