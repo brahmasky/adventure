@@ -25,6 +25,8 @@ export interface SettleTurn {
   run_id: string; passes: Pass[]; sentBack: boolean; lastError: string | undefined; continuationSeen: boolean; continuationFailed?: boolean; aborting: boolean;
   /** omp aborted the turn itself (agent_end aborted), or the daemon shut down (A11.5/M2: a child exit is no abort). */
   endedOnAbort?: boolean;
+  /** Round 3: the todo list the send-back was decided on, so a continuation-failed card names its real open count. */
+  settleTodoNow?: TodoSnapshot | null;
   /** The failure the turn ends with (absent on success, and after A9's rescue). */
   failure?: { type: string; ref: string };
   deadline: ReturnType<typeof setTimeout> | undefined; deadlineLeft: number; deadlineAt: number; trustLevel: () => TrustLevel;
@@ -116,6 +118,7 @@ function queueUnverifiedCard(ctx: SettleCtx, t: SettleTurn, reason: SettleReason
  */
 export function cardContinuationFailed(ctx: SettleCtx, t: SettleTurn, delivered: Delivered): void {
   if (!t.continuationFailed || t.settleReason === undefined) return;
-  try { queueUnverifiedCard(ctx, t, t.settleReason, settleStateFor(ctx, t, delivered.text, Date.now(), null, delivered.attachments.length)); }
+  const snap: Snapshot | null = t.settleTodoNow ? { todo: t.settleTodoNow, queued: 0 } : null; // the send-back's own list, never a fresh read
+  try { queueUnverifiedCard(ctx, t, t.settleReason, settleStateFor(ctx, t, delivered.text, Date.now(), snap, delivered.attachments.length)); }
   catch (e) { console.error(`settle: unverified card not queued for ${t.run_id}: ${safeReason(e)}`); }
 }

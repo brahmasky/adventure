@@ -201,7 +201,7 @@ interface Turn {
   endedOnAbort?: boolean;
   userText: string; settleText?: string; extracted: () => readonly string[];
   /** Spec §5: the todo list before the prompt (null: get_state failed); the settle row's id and its send-back reason (§3.5 outcomes). */
-  todoBefore: TodoSnapshot | null; settleDecisionId: string | null; settleReason?: SettleReason;
+  todoBefore: TodoSnapshot | null; settleDecisionId: string | null; settleReason?: SettleReason; settleTodoNow?: TodoSnapshot | null;
   /** The child generation this turn committed to (set as promptTop begins; -1 before): only its bridge loss aborts the turn. */
   childGen: number;
   /** Concurrent approval waits: the deadline stays paused until every one resolved. */
@@ -846,7 +846,7 @@ export class PlannerSupervisor {
       if (!decided.sendBack) return { sendBack: false };
       // the turn ended (abort, kill, exit) while Jev answered: settle() saw no send-back, so the row's outcome is written here
       if (t.finished || t.aborting) { writeOutcome(ctx, this.settleView(t), "settle_discarded", "signal"); return { sendBack: false }; }
-      t.settleReason = decided.reason;
+      t.settleReason = decided.reason; t.settleTodoNow = state.todoNow; // round 3: the card after a failed continuation counts from this list
       return { sendBack: true, note: decided.note, kind: decided.kind };
     } catch (e) {
       // senior plan W: a throw must not reject the memo and vanish; the reply fails open and the failure is logged with a fixed code

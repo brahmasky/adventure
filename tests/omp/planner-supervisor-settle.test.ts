@@ -483,6 +483,17 @@ describe("the settle request end to end (spec §3)", () => {
     expect(String((cards[0]![1] as { text: string }).text)).toBe(`⚠️ Settled unverified: ${REASON_LINES.claim_sent}`);
     expect(outcomes(store, run_id)).toEqual([["settle_discarded", "continuation_failed"]]); // no Jev re-ask, no settle_unverified row
   });
+  it("round 3: a todo_pending send-back then a pass-1 model error: the card carries the send-back's real open count, never 0", async () => {
+    let calls = 0;
+    const { session, h } = held(); const { store, sup, outcome } = harness(session);
+    session.scriptGetState(async () => ({ todoPhases: calls++ === 0 ? [] : [{ name: "p", tasks: [{ content: "x", status: "pending" }, { content: "y", status: "in_progress" }] }], queuedMessageCount: 0, queuedMessages: { steering: [], followUp: [] } }));
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    h.say("Working on it."); expect(await session.request(settleReq("Working on it."))).toMatchObject({ sendBack: true });
+    expect(rows(store, run_id)[0]).toMatchObject({ reason_code: "todo_pending" });
+    h.emit({ type: "agent_start" }); h.emit({ type: "error", error: "429 rate limit" }); h.emit({ type: "agent_end" }); await sup.whenIdle();
+    expect(outcome.done[0]).toMatchObject({ text: "Working on it." });
+    expect(cardsOf(store).map(([, v]) => String((v as { text: string }).text))).toEqual(["⚠️ Settled unverified: Your todo list still has 2 open items."]);
+  });
   it("R1: an A9-rescued turn (child exit in pass 1) queues the card too", async () => {
     const { session, h } = held(); const { store, sup, outcome } = harness(session);
     const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
