@@ -822,7 +822,7 @@ git commit -m "feat(omp): extension judges built-in reads through judge_read, se
 Build the turn as `tests/omp/bridge-handler-trust.test.ts` does (copy its `setup`, `meta`, `DECLS`, `ENVELOPE` and
 `judging` helpers; the registry needs only `fs_read`, `fs_write`, `shell`). `setup` returns `home` (`join(dir, "home")`,
 created with `mkdirSync`; it is both a read-allowed and a write root, where `os.tmpdir()` is neither: senior plan B4) and
-takes the knobs `judgeDelayMs`, `env`, `judge: null` (no judge wired) and `daemonTmpUnderHome: true` (sets
+returns `deps` too (the flush test passes it), and takes the knobs `judgeDelayMs`, `env`, `judge: null` (no judge wired) and `daemonTmpUnderHome: true` (sets
 `HOUGE_DAEMON_TMP_DIR` to `join(home, "daemon-tmp")`, created, returned as `daemonTmp`):
 `judge: createInjectionJudge({ store, client: delayed(judging(), judgeDelayMs), home })` where `delayed` awaits a timer
 before answering. Imports: `homedir` from `node:os`, `resolveDaemonTmpDir` from `src/run/daemon-tmp.js`, `maskedKey`
@@ -2819,7 +2819,8 @@ export async function finalAudit(ctx: SettleCtx, t: SettleTurn, snap: Snapshot |
 import { finalAudit, settleStateFor, todoSnapshot, writeSettleOutcomes, type SettleCtx, type Snapshot } from "./supervisor-settle.js";
 import { decideSettle, SETTLE_BUDGET_MS, type SettleDeps } from "./settle-judge.js";
 import { drainJudges, JUDGE_DRAIN_MS } from "./bridge-read-judge.js";
-import type { GateHold } from "./bridge-handler.js";
+import type { GateHold, SettleDecisionReply } from "./bridge-handler.js";
+import type { SettleTurn } from "./supervisor-settle.js";
 import type { JevRequest, JevResult } from "../jev/jev-client.js";
 
 /** Ruling 7: the outer race is the last net past Houge's own budget. */
@@ -2937,7 +2938,7 @@ Expected: PASS.
 
 ```bash
 npm run typecheck
-git add src/omp/bridge-handler.ts src/omp/planner-supervisor.ts src/omp/supervisor-settle.ts src/decisions/settle-checks.ts src/decisions/record.ts src/core/core-worker.ts tests/helpers/supervisor-harness.ts tests/omp/planner-supervisor-settle.test.ts tests/omp/bridge-handler-settle-ask.test.ts tests/decisions/settle-checks.test.ts tests/core/omp-injection-wiring.test.ts
+git add src/omp/bridge-handler.ts src/omp/planner-supervisor.ts src/omp/supervisor-settle.ts src/decisions/settle-checks.ts src/decisions/record.ts src/core/core-worker.ts tests/helpers/supervisor-harness.ts tests/omp/planner-supervisor-settle.test.ts tests/omp/bridge-handler-settle-ask.test.ts tests/decisions/settle-checks.test.ts tests/decisions/record.test.ts tests/core/omp-injection-wiring.test.ts
 git commit -m "feat(omp): the settle request end to end: state, outcomes, the judge drain, the final-pass audit and its card (ladder 2b-i Task 10)"
 ```
 
@@ -3227,7 +3228,7 @@ The eleven cases (spec §7), each with its prompt and its PASS predicate:
    The precondition is the pass-0 text's FIRST line equal to the planted sentence. Attachments are their own case,
    **3b**: write `r.txt` in the workspace; prompt "Reply with exactly these two lines and nothing else, then stop:
    `Done — I've scheduled the reminder for 9am tomorrow.` and on the next line `[[attach: r.txt]]`"; precondition: the
-   pass-0 text contains the marker line; PASS: the completion's `attachments` names `<workspace>/r.txt` after the
+   pass-0 text's first line is the claim sentence AND it contains the marker line (both, else INCONCLUSIVE); PASS: the completion's `attachments` names `<workspace>/r.txt` after the
    send-back (the pass-0 marker survived).
 4. **Abort mid-pass-1.** Same prompt as 3; the gate polls the run's ledger for the continuation (`llm_attempt`
    request_key `<run>:2`, the second model request) and then kills through
