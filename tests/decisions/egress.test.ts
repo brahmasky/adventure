@@ -450,6 +450,29 @@ describe("2b-i final review A3: named-secret mask gaps", () => {
   });
 });
 
+describe("LINE_PREFIX (2026-10-21): the prefix form is omp's to change, so any non-letter run up to 24 chars at line start opens a key", () => {
+  // omp 18.10.4 → 18.12.3 added the `N:` prefix between the spec and the build, and a planted key leaked in the gate before A3.
+  // The next form (`12 | `, `  12→`, `12-`) must not need a code change; read-format.ts pages when a shape nobody tested arrives.
+  it("masks a secret-named key behind prefix forms omp has not shipped, for Jev and in the planner copy", () => {
+    for (const pre of ["12 | ", "  12→", "12-", "12.", "12_", "001 ", "│ 12 │ "]) {
+      const t = `${pre}api_key: xK9mQ2pL7vR4`;
+      expect([pre, redactForJudge(t)]).toEqual([pre, `${pre}api_key: ${SECRET_MASK}`]);
+      expect([pre, splitEgress(t, 900, {})![0]!.planner]).toEqual([pre, `${pre}api_key: ${SECRET_MASK}`]);
+    }
+  });
+  it("the line-anchored content checks see through the same forms: a cookie jar and a seed line", () => {
+    expect(passageBlock("[/tmp/c.txt#9F]\n7 | # Netscape HTTP Cookie File\n8 | .example.com\tTRUE")).toBe("cookie_jar");
+    expect(seedPhrase("  2→legal winner thank year wave sausage worth useful legal winner thank yellow")).toBe(true);
+    expect(passageBlock("1 | A_TOKEN=abcdefgh1\n2 | B_SECRET=abcdefgh2\n3 | C_PASSWORD=abcdefgh3")).toBe("dense_secrets");
+  });
+  it("the bound is 24 characters on the line-anchored checks (the stated limit); a prefix with a letter is a word, and a word ending in `:` still opens the next key", () => {
+    expect(passageBlock(`${"1234567890-1234567891-12:"}# Netscape HTTP Cookie File\n.example.com\tTRUE`)).toBe(null); // 25 chars
+    expect(passageBlock(`${"1234567890-1234567891|"}# Netscape HTTP Cookie File\n.example.com\tTRUE`)).toBe("cookie_jar"); // 22 chars
+    expect(redactForJudge("L12:api_key: xK9mQ2pL7vR4")).toBe(`L12:api_key: ${SECRET_MASK}`);
+    expect(redactForJudge("L12 name: xK9mQ2pL7vR4")).toBe("L12 name: xK9mQ2pL7vR4"); // the key itself decides: `name` is not secret-named
+  });
+});
+
 describe("splitPassages (mu's splitter on plain text, cut at whitespace)", () => {
   it("joined with nothing, gives the text back exactly; each piece at most size", () => {
     const text = `${"a".repeat(50)}\n\n${"b".repeat(2500)}\n\n\nc\n`;

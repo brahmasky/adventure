@@ -18,7 +18,7 @@ export const CONTENT_SOURCES = Object.freeze({
   pem: String.raw`-----(?:BEGIN|END) [A-Z0-9 ]*PRIVATE KEY-----`,
   secretJson: String.raw`"(?:private_key|client_secret|refresh_token)"\s*:`,
   serviceAccount: String.raw`"type"\s*:\s*"service_account"`,
-  cookieJar: String.raw`^(?:\d{1,10}(?:-\d{1,10})?[:|])?#\s*(?:Netscape\s+)?HTTP Cookie File`
+  cookieJar: String.raw`^[^A-Za-z\n]{0,24}#\s*(?:Netscape\s+)?HTTP Cookie File` // byte-equal to egress's CONTENT_CHECK_SOURCES (parity test)
 });
 const INSTRUCTION = new RegExp(INSTRUCTION_SOURCES.join("|"), "i");
 const INVISIBLE = /[\u200B-\u200F\u2060-\u2064\uFEFF\u00AD]/g; // `\u` escapes, never literal invisibles (a copy-paste drops them silently)
@@ -26,13 +26,15 @@ const CONTENT = [new RegExp(CONTENT_SOURCES.pem), new RegExp(CONTENT_SOURCES.sec
 /** The same text as Houge's WITHHELD_TEXT, plus why the whole read is gone (code-owned, never tool bytes). */
 export const FLOORED_TEXT = "[withheld: text aimed at the assistant] (Houge could not judge this file in time; none of it is shown)";
 const STOP = new Set("the and for are but not you all can was one our out has his how its who did get may him she too use her that this with from they have were will your what when been than them then".split(" "));
-const SEED_LINE = /^(?:\d{1,10}(?:-\d{1,10})?[:|])?[ \t]*((?:[a-z]{3,8}[ \t]+){11,23}[a-z]{3,8})[ \t]*$/gm;
+/** As egress's LINE_PREFIX: omp's read prefix at line start (`12:`, `3-4|`) and any non-letter run up to 24 chars a later omp may use. */
+const LINE_PREFIX = String.raw`[^A-Za-z\n]{0,24}`;
+const SEED_LINE = new RegExp(String.raw`^${LINE_PREFIX}[ \t]*((?:[a-z]{3,8}[ \t]+){11,23}[a-z]{3,8})[ \t]*$`, "gm");
 /** Secret-named keys (a segment equals a secret word) followed by a credential-shaped value: the dense-secrets count. */
 const SECRET_WORDS = new Set(["pass", "passwd", "password", "passphrase", "pwd", "secret", "token", "key", "auth", "authorization", "cookie", "credential", "credentials",
   "signature", "apikey", "accesstoken", "authtoken", "secretkey", "privatekey", "clientsecret", "refreshtoken", "accesskey", "sessiontoken", "sid", "csrf", "xsrf", "jwt", "bearer"]);
-// The line-start alternatives accept omp's read prefix `N:` (live gate 2b-i case 9), as egress's KEY_AT and SEED_LINE do;
+// The line-start alternative accepts omp's read prefix as LINE_PREFIX (live gate 2b-i case 9), as egress's KEY_AT and SEED_LINE do;
 // elsewhere any non-word character, or a word-starting run of one to eight `.`/`-` (A3, M1), may precede a key.
-const KEY_VALUE = /(?:(?<=^(?:\d{1,10}(?:-\d{1,10})?[:|])?)|(?<![A-Za-z0-9_.-])|(?<=(?:^|[^A-Za-z0-9_.-])[.-]{1,8}))["']?([A-Za-z][A-Za-z0-9_.-]*)["']?\s*[:=][ \t]*["']?([^\s"',;&]{8,})/gm;
+const KEY_VALUE = new RegExp(String.raw`(?:(?<=^${LINE_PREFIX})|(?<![A-Za-z0-9_.-])|(?<=(?:^|[^A-Za-z0-9_.-])[.-]{1,8}))["']?([A-Za-z][A-Za-z0-9_.-]*)["']?\s*[:=][ \t]*["']?([^\s"',;&]{8,})`, "gm");
 /** A3: `<key>value</key>` on one line, as egress's XML_PAIR. */
 const XML_VALUE = /<([A-Za-z][A-Za-z0-9_.-]*)>([^<\n]{8,})<\/\1>/g;
 /** A3: an all-caps env name ending in a secret word (`PGPASSWORD`), as egress's CAPS_SECRET (`MONKEY=ban4na` counts too). */

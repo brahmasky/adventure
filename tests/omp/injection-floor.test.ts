@@ -36,7 +36,10 @@ const GAP_TRIPLES = [0, 3, 6, 9, 12].flatMap((k) => [dense(GAPS.slice(k, k + 3))
 /** A3 (d): a ten-digit omp prefix on the line-anchored checks. */
 const LONG_PREFIX = ["1234567890:# Netscape HTTP Cookie File\n.example\tTRUE", "12345678:legal winner thank year wave sausage worth useful legal winner thank yellow",
   "1234567890:A_TOKEN=abcdefgh1\n1234567891:B_SECRET=abcdefgh2\n1234567892:C_PASSWORD=abcdefgh3"];
-const BITES = [dense(CAMEL), dense(CAMEL, true), dense(SESSION), dense(SESSION, true), ...GAP_TRIPLES, ...LONG_PREFIX];
+/** LINE_PREFIX (2026-10-21): prefix forms omp has not shipped (`12 | `, `  12→`, `12-`) on the line-anchored checks and the named-secret count. */
+const NEXT_PREFIX = ["7 | # Netscape HTTP Cookie File\n8 | .example\tTRUE", "  2→legal winner thank year wave sausage worth useful legal winner thank yellow",
+  "1 | A_TOKEN=abcdefgh1\n2 | B_SECRET=abcdefgh2\n3 | C_PASSWORD=abcdefgh3", "1-api_key=xK9mQ2pL7vR4\n2-password=xK9mQ2pL7vR4\n3-token=xK9mQ2pL7vR4"];
+const BITES = [dense(CAMEL), dense(CAMEL, true), dense(SESSION), dense(SESSION, true), ...GAP_TRIPLES, ...LONG_PREFIX, ...NEXT_PREFIX];
 const PARITY = [...FIXTURES, ...GAPS, ...BITES];
 
 describe("injection-floor (the extension's copy)", () => {
