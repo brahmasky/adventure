@@ -116,7 +116,7 @@ export function fakeSession(script: Script = {}): Fake {
     },
     prompt: async (t: string) => { if (script.promptError) throw new PlannerRpcError(script.promptError); s.prompts.push(t); script.log?.push(`prompt:${s.options.length}`); setTimeout(() => (script.onPrompt ?? ((_t, e) => { e({ type: "turn_start" }); assistant("answer"); e({ type: "agent_end" }); }))(t, emit), 5); },
     steer: async (t: string) => { s.steers.push(t); },
-    getState: async () => getStateFn?.() ?? script.getState?.() ?? { todoPhases: [], queuedMessageCount: 0, queuedMessages: { steering: [] } },
+    getState: async () => getStateFn?.() ?? script.getState?.() ?? { todoPhases: [], queuedMessageCount: 0, queuedMessages: { steering: [], followUp: [] } },
     abort: async () => { setTimeout(() => emit({ type: "agent_end", aborted: true }), 5); },
     setModel: async (m: ModelString) => {
       s.models.push(`${m.provider}/${m.model}`); s.pins.push(formatModelString(m)); if (script.logSetModel) script.log?.push(`setModel:${m.provider}/${m.model}`);

@@ -295,10 +295,18 @@ describe("get_state (ladder 2b-i §5)", () => {
   it("returns todoPhases and the queue fields, validated", async () => {
     const { s } = make({ rpcGetState: { todoPhases: [{ name: "p", tasks: [{ content: "a", status: "pending" }] }], queuedMessageCount: 1, queuedMessages: { steering: ["x"], followUp: [], liveSteered: 0 } } });
     await s.start();
-    expect(await s.getState()).toEqual({ todoPhases: [{ name: "p", tasks: [{ content: "a", status: "pending" }] }], queuedMessageCount: 1, queuedMessages: { steering: ["x"] } });
+    expect(await s.getState()).toEqual({ todoPhases: [{ name: "p", tasks: [{ content: "a", status: "pending" }] }], queuedMessageCount: 1, queuedMessages: { steering: ["x"], followUp: [] } });
   });
-  it("a reply without todoPhases[] or a numeric queuedMessageCount rejects get_state_malformed", async () => {
-    for (const data of [{}, { todoPhases: "x", queuedMessageCount: 0 }, { todoPhases: [], queuedMessageCount: "0" }]) {
+  it("omp 18.12.3: the follow-up queue is read; liveSteered (a steer already in the stream) is not a queue entry", async () => {
+    const { s } = make({ rpcGetState: { todoPhases: [], queuedMessageCount: 2, queuedMessages: { steering: [], followUp: ["later"], liveSteered: 1 } } });
+    await s.start();
+    expect(await s.getState()).toEqual({ todoPhases: [], queuedMessageCount: 2, queuedMessages: { steering: [], followUp: ["later"] } });
+  });
+  it("a reply without todoPhases[], a numeric queuedMessageCount or string-array queues rejects get_state_malformed", async () => {
+    const q = { steering: [], followUp: [] };
+    for (const data of [{}, { todoPhases: "x", queuedMessageCount: 0, queuedMessages: q }, { todoPhases: [], queuedMessageCount: "0", queuedMessages: q },
+      { todoPhases: [], queuedMessageCount: 0 }, { todoPhases: [], queuedMessageCount: 0, queuedMessages: { steering: [] } },
+      { todoPhases: [], queuedMessageCount: 0, queuedMessages: { steering: [1], followUp: [] } }, { todoPhases: [], queuedMessageCount: 0, queuedMessages: { steering: [], followUp: "x" } }]) {
       const { s } = make({ rpcGetState: data }); await s.start();
       await expect(s.getState()).rejects.toMatchObject({ code: "get_state_malformed" });
     }

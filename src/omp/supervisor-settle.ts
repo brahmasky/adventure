@@ -34,7 +34,8 @@ export async function todoSnapshot(ctx: SettleCtx): Promise<Snapshot | null> {
   if (!s) return null;
   try {
     const st = await s.getState();
-    return { todo: { phases: st.todoPhases }, queued: st.queuedMessageCount };
+    // queuedMessageCount also counts liveSteered on omp 18.12.3 (a plain live turn reads 1): the queues are the reading.
+    return { todo: { phases: st.todoPhases }, queued: st.queuedMessages.steering.length + st.queuedMessages.followUp.length };
   } catch (e) {
     console.error(`settle: get_state failed (${safeReason(e)}): the todo check is off for this turn`);
     return null;

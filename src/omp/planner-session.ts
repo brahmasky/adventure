@@ -23,7 +23,8 @@ export function plannerArgs(o: PlannerSessionOptions): { file: string; args: str
 }
 
 export const GET_STATE_TIMEOUT_MS = 1_000;
-export interface PlannerState { todoPhases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>; queuedMessageCount: number; queuedMessages: { steering: string[] } }
+const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string");
+export interface PlannerState { todoPhases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>; queuedMessageCount: number; queuedMessages: { steering: string[]; followUp: string[] } }
 
 export interface ExitInfo { code: number | null; signal: NodeJS.Signals | null; stopped: boolean }
 type Waiter = { type: string; resolve: (d: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
@@ -116,13 +117,16 @@ export class PlannerSession {
     return { cancelled };
   }
 
-  /** omp's get_state (2b-i §5): the todo phases and the steer queue, bounded at 1 s; a malformed reply never reads as an empty list. */
+  /**
+   * omp's get_state (2b-i §5): the todo phases and the steer/follow-up queues, bounded at 1 s; a malformed reply never reads as
+   * an empty list. queuedMessageCount is kept but not a queue reading: on omp 18.12.3 it also counts liveSteered.
+   */
   async getState(): Promise<PlannerState> {
     const data = (await this.send({ type: "get_state" }, GET_STATE_TIMEOUT_MS)) as Record<string, unknown> | null | undefined;
-    const phases = data?.todoPhases; const n = data?.queuedMessageCount; const q = data?.queuedMessages as { steering?: unknown } | undefined;
-    if (!Array.isArray(phases) || typeof n !== "number") throw new PlannerRpcError("get_state_malformed");
+    const phases = data?.todoPhases; const n = data?.queuedMessageCount; const q = data?.queuedMessages as { steering?: unknown; followUp?: unknown } | undefined;
+    if (!Array.isArray(phases) || typeof n !== "number" || !isStringArray(q?.steering) || !isStringArray(q?.followUp)) throw new PlannerRpcError("get_state_malformed");
     const todoPhases = phases.map((p) => { const r = p as { name?: unknown; tasks?: unknown }; return { name: String(r.name ?? ""), tasks: (Array.isArray(r.tasks) ? r.tasks : []).map((t) => { const x = t as { content?: unknown; status?: unknown }; return { content: String(x.content ?? ""), status: String(x.status ?? "") }; }) }; });
-    return { todoPhases, queuedMessageCount: n, queuedMessages: { steering: Array.isArray(q?.steering) ? q.steering.filter((x): x is string => typeof x === "string") : [] } };
+    return { todoPhases, queuedMessageCount: n, queuedMessages: { steering: q.steering, followUp: q.followUp } };
   }
 
   private send(cmd: Record<string, unknown>, timeoutMs: number = this.o.sendTimeoutMs ?? 30_000): Promise<unknown> {

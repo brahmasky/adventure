@@ -167,7 +167,7 @@ describe("the settle request end to end (spec §3)", () => {
     expect(rows(store, run_id)[0]).toMatchObject({ rung: "rule", reason_code: "hostile" });
     h.emit({ type: "agent_end" }); await sup.whenIdle();
     const q = held(); const Q = harness(q.session, {}, { settleClient: () => jev([0.9, 0.9, 0.9, 0.9]) });
-    q.session.scriptGetState(async () => ({ todoPhases: [], queuedMessageCount: 1, queuedMessages: { steering: ["later"] } }));
+    q.session.scriptGetState(async () => ({ todoPhases: [], queuedMessageCount: 1, queuedMessages: { steering: ["later"], followUp: [] } }));
     const r2 = createQueuedTurnRun(Q.store); Q.sup.submit(req(r2)); await running(Q.sup, q.h);
     q.h.say("done"); expect(await q.session.request(settleReq("done"))).toEqual({ sendBack: false });
     expect(rows(Q.store, r2)[0]).toMatchObject({ reason_code: "steer_queued" });
@@ -183,10 +183,24 @@ describe("the settle request end to end (spec §3)", () => {
     expect(rows(E.store, r4)[0]).toMatchObject({ rung: "system_one", verdict: "send_back" });
     e.h.emit({ type: "agent_start" }); e.h.say("done, for real"); e.h.emit({ type: "agent_end" }); await E.sup.whenIdle();
   });
+  it("omp 18.12.3: queuedMessageCount counts a live-steered message, so the guard reads the queues: count 1 with empty queues sends back, a follow-up settles steer_queued", async () => {
+    const a = held(); const A = harness(a.session, {}, { settleClient: () => jev([0.9, 0.9, 0.9, 0.9]) });
+    a.session.scriptGetState(async () => ({ todoPhases: [], queuedMessageCount: 1, queuedMessages: { steering: [], followUp: [] } }));
+    const r1 = createQueuedTurnRun(A.store); A.sup.submit(req(r1)); await running(A.sup, a.h);
+    a.h.say("done"); expect(await a.session.request(settleReq("done"))).toMatchObject({ sendBack: true });
+    expect(rows(A.store, r1)[0]).toMatchObject({ rung: "system_one", verdict: "send_back" });
+    a.h.emit({ type: "agent_start" }); a.h.say("done, for real"); a.h.emit({ type: "agent_end" }); await A.sup.whenIdle();
+    const b = held(); const B = harness(b.session, {}, { settleClient: () => jev([0.9, 0.9, 0.9, 0.9]) });
+    b.session.scriptGetState(async () => ({ todoPhases: [], queuedMessageCount: 1, queuedMessages: { steering: [], followUp: ["later"] } }));
+    const r2 = createQueuedTurnRun(B.store); B.sup.submit(req(r2)); await running(B.sup, b.h);
+    b.h.say("done"); expect(await b.session.request(settleReq("done"))).toEqual({ sendBack: false });
+    expect(rows(B.store, r2)[0]).toMatchObject({ rung: "rule", verdict: "settle", reason_code: "steer_queued" });
+    b.h.emit({ type: "agent_end" }); await B.sup.whenIdle();
+  });
   it("todo: get_state before the prompt and at settle; a pending item added this turn sends back todo_pending; an unchanged list does not", async () => {
     let calls = 0;
     const { session, h } = held(); const { store, sup } = harness(session);
-    session.scriptGetState(async () => ({ todoPhases: calls++ === 0 ? [] : [{ name: "p", tasks: [{ content: "x", status: "pending" }] }], queuedMessageCount: 0, queuedMessages: { steering: [] } }));
+    session.scriptGetState(async () => ({ todoPhases: calls++ === 0 ? [] : [{ name: "p", tasks: [{ content: "x", status: "pending" }] }], queuedMessageCount: 0, queuedMessages: { steering: [], followUp: [] } }));
     const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
     expect(calls).toBe(1); // before the prompt
     h.say("Working on it."); const r = await session.request(settleReq("Working on it.")) as { note?: string };
@@ -194,7 +208,7 @@ describe("the settle request end to end (spec §3)", () => {
     expect(calls).toBe(2); // at settle
     h.emit({ type: "agent_start" }); h.say("Done."); h.emit({ type: "agent_end" }); await sup.whenIdle();
     const u = held(); const U = harness(u.session);
-    u.session.scriptGetState(async () => ({ todoPhases: [{ name: "p", tasks: [{ content: "old", status: "pending" }] }], queuedMessageCount: 0, queuedMessages: { steering: [] } }));
+    u.session.scriptGetState(async () => ({ todoPhases: [{ name: "p", tasks: [{ content: "old", status: "pending" }] }], queuedMessageCount: 0, queuedMessages: { steering: [], followUp: [] } }));
     const r2 = createQueuedTurnRun(U.store); U.sup.submit(req(r2)); await running(U.sup, u.h);
     u.h.say("ok"); expect(await u.session.request(settleReq("ok"))).toEqual({ sendBack: false });
     u.h.emit({ type: "agent_end" }); await U.sup.whenIdle();
