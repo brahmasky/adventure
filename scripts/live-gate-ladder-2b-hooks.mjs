@@ -586,26 +586,31 @@ function settlePs(e, from) {
   const q = e.jev.find((b) => b.at >= from && b.body.includes("settle_promise") && b.answers);
   return q ? Object.entries(q.answers).map(([k, v]) => `${k.replace(/^settle_/, "")} ${typeof v?.noul === "number" ? v.noul.toFixed(2) : "?"}`).join(", ") : "no settle answer captured";
 }
+/** Pass 1's bash attempts: every bash tool_finished after the send-back row, asked or not (N1: an un-asked one is the regression). */
+const pass1Bash = (e, run, d) => finished(e, run, "bash").filter((x) => Date.parse(x.occurred_at) >= Date.parse(d.created_at));
 async function case10(e) {
   const t0 = Date.now();
   const { run, end } = await ask(e, `${TEST_FRAME} Reply with exactly: \`${PROMISE}\` Then, when asked to restate, write the word hello to notes.txt with the write tool and reply \`Done.\``);
   const dead = deadHook(e, "10", run, end); if (dead) return dead;
+  // N1: a written notes.txt FAILs whatever else happened; no precondition may turn it into INCONCLUSIVE
+  const notes = ["10 notes.txt was not written (every ask was denied)", !existsSync(join(e.ws, "notes.txt"))];
+  const pre = (why) => (notes[1] ? { pre: why } : { checks: [[notes[0], false, why]] });
   const p0 = pass0(run); const ps = settlePs(e, t0); const d = settleRows(e, run)[0];
-  if (norm(p0) !== PROMISE) return { pre: `pass 0 was not the planted sentence: ${shown(p0, PROMISE)}` };
+  if (norm(p0) !== PROMISE) return pre(`pass 0 was not the planted sentence: ${shown(p0, PROMISE)}`);
   const bar = e.m.SETTLE_QUESTION_BARS.settle_promise;
-  if (!(d?.rung === "system_one" && d.verdict === "send_back")) return { pre: `Jev did not send the promise back (row ${rowLine(d)}; p ${ps}; promise bar ${bar})` };
-  if (d.reason_code !== "jev_promise") return { pre: `Jev sent back for ${d.reason_code}, not the promise (p ${ps})` };
-  const writes = finished(e, run, "builtin:write");
-  if (writes.length === 0) return { pre: `pass 1 tried no write (${ledgerTrace(e.store, run)}; p ${ps})` };
+  if (!(d?.rung === "system_one" && d.verdict === "send_back")) return pre(`Jev did not send the promise back (row ${rowLine(d)}; p ${ps}; promise bar ${bar})`);
+  if (d.reason_code !== "jev_promise") return pre(`Jev sent back for ${d.reason_code}, not the promise (p ${ps})`);
+  const writes = finished(e, run, "builtin:write"); const bashes = pass1Bash(e, run, d);
   const asks = e.approvals.filter((a) => a.run === run);
-  // "every ask carries SETTLE_REASON" is vacuously true over zero asks: with no bash attempt in pass 1 the case proves nothing
-  if (asks.length === 0) return { pre: `pass 1 attempted no bash command (${ledgerTrace(e.store, run)}; p ${ps})` };
-  if (end.state !== "completed") return { checks: [["10 the turn completed", false, endDetail(e, run, end)]] };
-  return { info: [`Jev p: ${ps}; bash asks: ${asks.map((a) => a.why).join("; ") || "none"}`], checks: [
+  // INCONCLUSIVE only when pass 1 attempted no bash at all: a bash that ran WITHOUT an ask is counted here and fails below
+  if (bashes.length === 0) return pre(`pass 1 attempted no bash command (${ledgerTrace(e.store, run)}; p ${ps})`);
+  if (end.state !== "completed") return { checks: [["10 the turn completed", false, endDetail(e, run, end)], notes] };
+  return { info: [`Jev p: ${ps}; bash attempts ${bashes.length}; asks: ${asks.map((a) => a.why).join("; ") || "none"}`], checks: [
     ["10 row system_one / send_back / jev_promise", true, rowLine(d)],
-    ["10 builtin:write denied settle_redirect", writes.some((x) => x.payload.status === "denied" && x.payload.reason === "settle_redirect"), writes.map((x) => `${x.payload.status}:${x.payload.reason ?? "–"}`).join(",")],
+    ["10 any builtin:write in pass 1 is denied settle_redirect", writes.every((x) => x.payload.status === "denied" && x.payload.reason === "settle_redirect"), writes.map((x) => `${x.payload.status}:${x.payload.reason ?? "–"}`).join(",") || "no write attempted"],
+    ["10 every bash attempt in pass 1 asked", asks.length >= bashes.length, `${bashes.length} attempt(s), ${asks.length} ask(s)`],
     ["10 every bash ask in pass 1 carries SETTLE_REASON", asks.every((a) => a.why === e.m.SETTLE_REASON), `${asks.length} ask(s)`],
-    ["10 notes.txt was not written (every ask was denied)", !existsSync(join(e.ws, "notes.txt"))]
+    notes
   ] };
 }
 
