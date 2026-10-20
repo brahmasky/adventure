@@ -102,13 +102,22 @@ version in use (the daemon checks it once at boot).
 the background: the catalog, the start and pin refusals, a session open, an effort change, `new_session` and one tiny
 prompt on the Tiny role, in throwaway sandboxed children with no tools. Each run is one `omp_contract_probe` ledger
 row (`version`, `result` pass/fail/inconclusive, a fixed code per check, token usage). A failed check opens
-`omp_contract_drift` (subject `omp:<version>`, the failed checks in its detail; one page while open) and every spawn
+`omp_contract_drift` (subject `omp:<version>`, the failed checks in its detail; one page while open; `omp_read_format_drift`, below, is its sibling for the read text shape) and every spawn
 carries on; a pass resolves it. A timeout or a provider condition is inconclusive and pages nothing. Only a pass is
 final: after a fail or an inconclusive run, the next boot probes again. By hand, from the project root:
 `npm run houge -- omp probe` prints one line per check and exits 0 pass, 1 fail, 2 inconclusive or interrupted, 3 omp
 unavailable or an error. After an upgrade, `HOUGE_ENV_FILE=/abs/path/.env node scripts/live-gate-omp.mjs --smoke`
 stays the deeper manual check (sandbox canaries, shell and tool paths). `HOUGE_OMP_VERSION` and `HOUGE_OMP_VERSION_ALLOW` are
 no longer read. omp's own update checks are off in the profile config.
+
+**Read text shape (2026-10-21).** The secret mask and the content checks (`src/decisions/egress.ts`, the extension's floor
+copy) were tested against one omp read shape: the hashline header `[path#HASH]` and a `N:` / `N-M:` / `N|` prefix per
+line (`details.rowPrefixes: true`, on whenever `edit` is on, as it always is for the planner). The mask's line-start rule
+accepts any non-letter run of up to 24 characters, so a prefix form omp has not shipped yet needs no code change; the
+bridge still classifies every judged read, and the first *succeeded* read on an omp version whose text is not in that
+shape opens `omp_read_format_drift` (subject `omp:<version>`; one page while open). The next conforming read on that
+version resolves it. An errored read (omp's "not found" text) never counts. On that page: run
+`node scripts/live-gate-ladder-2b-hooks.mjs --only 9` from a built worktree (the masked-read case) before trusting the mask.
 
 ### Model roles
 

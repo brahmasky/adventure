@@ -1,8 +1,12 @@
 # 🧭 CURRENT SYSTEM STATE — 2026-10-21 (read this first)
 
-**Decision ladder stage 2b-i (extension hooks and `turn.settle`): BUILT on `feat/ladder-2b-hooks`, NOT merged; merge +
-rebuild `dist/` + kickstart pending.** Live only after Paco merges. The `feat/memory-write` block below is a separate branch,
-also not merged (check `git branch --no-merged main` before assuming either is on main). Spec
+**Decision ladder stage 2b-i (extension hooks and `turn.settle`): MERGED to `main` fast-forward at `139b501` and pushed
+(2026-10-21), `dist/` rebuilt, daemon kickstarted by Paco the same day; LIVE.** Follow-up the same day (Paco's "do the regex
+slice and fetch probe"): `4ae3b7b` the mask's line-start rule accepts any non-letter prefix run (LINE_PREFIX, both copies);
+`add37d7` the bridge pages `omp_read_format_drift` once per omp version on a succeeded read in an untested text shape
+(`src/omp/read-format.ts`); the fetch probe on omp 18.12.3 showed `fetch.enabled: false` makes a URL `read` an error. The
+`dist/` on main was rebuilt with these, so **one more kickstart of `com.houge.daemon` is owed** (the running daemon
+predates it). The `feat/memory-write` block below is a separate branch, not merged (check `git branch --no-merged main`). Spec
 `docs/superpowers/specs/2026-10-19-ladder-2b-hooks-settle-design.md` Rev 3 (+ §3.3 calibration note, final-review amendments), plan
 `docs/superpowers/plans/2026-10-20-ladder-2b-hooks-settle.md` Rev 2.3 (Rulings 1-16). What it does: built-in `read` results are
 judged by `tool.injection` inside omp's `tool_result` hook (whole-text floor if the judge is late, `late` rows, a read of a
@@ -21,9 +25,8 @@ diagnosed in the ADR, not a code regression); `0768dc3` 12/14 with cases 5 and 1
 run on `f3cc4c9`: LIVE GATE PASS 14/14, exit 0**, case 10 evidenced, no `pass_errored` row. Rollback check PASS twice
 (earlier). Behaviour changes to know at merge: a pass-1 timeout, frame idle, child exit or omp abort after a send-back now
 delivers pass 0 (`settle_discarded continuation_failed`, plus a Settled-unverified card); a `/kill` records `signal`.
-- [ ] Paco: sign off the ADR 0030 amendment (2026-10-20), merge `feat/ladder-2b-hooks`, rebuild `dist/`, then kickstart
-  `com.houge.daemon`. The daemon is running (launchd, no `houge.parked` / `houge.kill` seen at build time); check for a run in
-  flight at merge time.
+- [ ] Paco: sign off the ADR 0030 amendment (2026-10-20) and the ADR 0028 read-shape line (2026-10-21); kickstart
+  `com.houge.daemon` once more for the `4ae3b7b`/`add37d7` dist (check for a run in flight first).
 - Protected files touched: `src/omp/` (bridge-handler, bridge-protocol, bridge-read-judge, response-cap, extension/*,
   planner-session, planner-supervisor, supervisor-settle, settle-judge, attachments, gate-path), `src/decisions/` (egress,
   injection-judge, trust, trust-ask, types, entry-ids, outcomes, registry, record, golden, digest, settle-state,

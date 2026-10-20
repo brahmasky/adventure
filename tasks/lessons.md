@@ -522,3 +522,8 @@ Rules Claude writes for itself after corrections. Review at session start.
 - **A gate that forbids one tool must tell the planner which tool to use.** Case 10 forbade a write to a masked file; the
   planner used `write`, never attempted bash, and the case went INCONCLUSIVE on model choice. Rule: a gate case that needs a
   specific tool call asks for it explicitly and counts the attempts.
+- **A planner upgrade can change the text shape the mask reads; nothing pins the planner's version.** omp 18.12.3 added
+  line prefixes to `read` results and a planted key leaked in the gate until the mask learned that form. Rule: a text
+  rule that depends on a tool's output shape accepts the shape by class (any non-letter prefix), not by the form seen
+  once, and code pages when a read arrives in a shape nobody tested; rerun the masked-read gate case after every omp
+  upgrade (`live-gate-ladder-2b-hooks.mjs --only 9` from a built worktree).

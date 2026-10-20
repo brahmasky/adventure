@@ -1689,3 +1689,9 @@ regression of the new errored-pass guard and was diagnosed as a planner-side out
 `9dc9f01` FAIL/INCONCLUSIVE, `0768dc3` 12/14 (cases 5 and 10 INCONCLUSIVE on planner choices), `f3cc4c9` PASS 14/14 with case
 10 evidenced. Sanity reruns 6/135 = 4.4 % (`7d13533`) and 8/135 = 5.9 % (`0768dc3`), both 9/9 planted. Final suite 350 files
 / 4924 tests, 0 skipped. Still pending, Paco's: merge, `dist/` rebuild, kickstart of `com.houge.daemon`.
+Same day, after the merge (`139b501`) and Paco's kickstart: a side note asked whether the mask's regex should change again
+for the next omp prefix form. Ruled: the line-start rule takes any non-letter run up to 24 characters (`4ae3b7b`, both
+copies, parity fixtures), and the bridge pages `omp_read_format_drift` once per omp version on the first succeeded read in a
+text shape the mask was not tested against (`add37d7`, `src/omp/read-format.ts`); the contract probe keeps its no-tools
+child. The fetch probe on omp 18.12.3 confirmed `fetch.enabled: false` (`URL reads are disabled by settings.`, an error
+result) and that `rowPrefixes` is on only when `edit` is among the tools. Suite 351 files / 4933 tests, 0 skipped.
