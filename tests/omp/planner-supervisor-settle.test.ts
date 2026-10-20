@@ -441,6 +441,7 @@ describe("the settle request end to end (spec §3)", () => {
     // todoBefore is on the supervisor turn (no accessor): the second get_state succeeds, so todo_unavailable below can only come from a null todoBefore
     expect(session.prompts).toHaveLength(1);
     h.say("Done."); expect(await session.request(settleReq("Done."))).toEqual({ sendBack: false });
+    expect(calls).toBe(2); // M4: the rejected pre-prompt get_state, then the settle's own (the premise of this test)
     h.emit({ type: "agent_end" }); await sup.whenIdle();
     expect(rows(store, run_id).map((r) => r.reason_code)).toEqual(["todo_unavailable"]);
     expect(outcome.done[0]).toMatchObject({ text: "Done." });
