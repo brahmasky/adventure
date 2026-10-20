@@ -36,6 +36,16 @@ describe("buildSettleState", () => {
     expect(toolSummary([ev("tool_finished", { tool: "schedule_task", status: "succeeded", output_hash: "h" }), ev("tool_finished", { tool: "builtin:read", status: "failed" }), ev("loop_step", { action: "x" })]))
       .toBe("schedule_task: succeeded; builtin:read: failed");
   });
+  it("A11.3: no cut leaves a lone surrogate (TypeSafe's JSON parser may reject it): an emoji straddling each cut is dropped whole", () => {
+    const id = (x: string) => x;
+    const lone = (t: string) => /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(t);
+    const msg = buildSettleState(raw({ pacoMessage: `${"m".repeat(PACO_MESSAGE_CAP - 1)}😀tail` }), id).redacted.pacoMessage;
+    expect(lone(msg)).toBe(false); expect(msg).toBe("m".repeat(PACO_MESSAGE_CAP - 1));
+    const text = `${"H".repeat(SETTLE_JEV_HEAD - 1)}😀${"x".repeat(500)}😀${"T".repeat(SETTLE_JEV_TAIL - 1)}`;
+    const reply = settleJevState(buildSettleState(raw({ text }), id)).reply;
+    expect(lone(reply)).toBe(false);
+    expect(reply).toBe(`${"H".repeat(SETTLE_JEV_HEAD - 1)}\n[…]\n${"T".repeat(SETTLE_JEV_TAIL - 1)}`);
+  });
   it("A5: todo rows are bookkeeping and never reach Jev's tool summary; only todo rows → 'none'", () => {
     const todo = ev("tool_finished", { tool: "builtin:todo", status: "succeeded" });
     expect(toolSummary([todo, ev("tool_finished", { tool: "schedule_task", status: "succeeded" }), todo])).toBe("schedule_task: succeeded");
