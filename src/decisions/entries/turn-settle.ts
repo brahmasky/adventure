@@ -2,6 +2,7 @@ import type { LedgerEvent } from "../../run/run-ledger.js";
 import { SETTLE_QUESTIONS } from "../../jev/questions/settle.js";
 import { criteriaHash } from "../../jev/questions/types.js";
 import type { TrustLevel } from "./turn-trust.js";
+import { settleChecks } from "../settle-checks.js";
 import type { Entry, ProvisionalBar, RungAbstain, RungAnswer, VerdictEffect } from "../types.js";
 
 /**
@@ -51,11 +52,11 @@ export function settleGuard(s: SettleState): SettleReason | null {
   return null;
 }
 
-/** The entry's rule rung: the guards (rule 1); Task 7 adds the claims and todo checks (rules 2–3) before the abstention. */
+/** The entry's rule rung: the guards (rule 1), then the claims and todo checks (rules 2–3, settle-checks.ts). */
 export function settleRule(s: SettleState): Rule {
   const guard = settleGuard(s);
   if (guard) return settle(guard);
-  return { abstain: true };
+  return settleChecks(s);
 }
 
 const NONE: VerdictEffect = { kind: "none", reversible: true, announced: "none", what: "the reply is delivered as it is" };

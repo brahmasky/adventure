@@ -4769,6 +4769,13 @@ export class RunStore {
     `).get<{ n: number }>(entry_id, since, excludeJevRung ? 1 : 0)?.n ?? 0;
   }
 
+  /** 2b-i §3.3 settle health: rows of an entry after `since` whose reason_code is one of `reasons` (budget and todo_unavailable are not decision_fallback rows). */
+  countDecisionsWithReasons(entry_id: string, reasons: readonly string[], since: string): number {
+    if (reasons.length === 0) return 0;
+    const marks = reasons.map(() => "?").join(", ");
+    return this.db.prepare(`SELECT COUNT(*) AS n FROM decisions WHERE entry_id = ? AND created_at > ? AND reason_code IN (${marks})`).get<{ n: number }>(entry_id, since, ...reasons)?.n ?? 0;
+  }
+
   /**
    * Per-entry `jev_skip_rate` input (spec §5.2, from `fallback_reason`, not jev_decisions): attempts = rows past the rule
    * rungs except a budget skip (an oversized state is not a Jev call); failed = timeout, outage, parse or threw ON THE JEV
