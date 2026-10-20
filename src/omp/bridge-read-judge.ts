@@ -3,10 +3,15 @@ import { resolveDaemonTmpDir } from "../run/daemon-tmp.js";
 import { realpathOrSelf } from "./protected-paths.js";
 import type { BridgeRequest, JudgeReadReply } from "./bridge-protocol.js";
 import type { ActiveTurn, BridgeHandlerDeps } from "./bridge-handler.js"; // types only: no runtime cycle
+import { readFormat, type ReadFormat } from "./read-format.js";
 import { capResponse } from "./response-cap.js";
 
 /** 2b-i §4: one built-in read's judgement, keyed from the judge_read ARRIVAL (senior S3), never from the gate. */
-export interface JudgePending { since: number; replied: boolean; outside: boolean; raised: boolean }
+export interface JudgePending {
+  since: number; replied: boolean; outside: boolean; raised: boolean;
+  /** The judged text's shape (read-format.ts); acted on at the report, which says whether the read succeeded. Absent: never judged. */
+  format?: ReadFormat;
+}
 export const JUDGE_DRAIN_MS = 3_000;
 export const PENDING_STALE_MS = 5_000;
 /** The trailing line of a local read whose judgement mirrored masks (2b-R8, ruling 4): the planner learns why an edit will ask. */
@@ -36,7 +41,7 @@ export async function handleJudgeRead(deps: BridgeHandlerDeps, turn: ActiveTurn,
   const targets = turn.readTargets?.get(req.toolCallId);
   if (!targets) { console.error(`bridge: judge_read refused unknown_call (${req.toolCallId})`); throw new Error("unknown_call"); }
   const outside = isOutside(deps, targets);
-  const pending: JudgePending = { since: Date.now(), replied: false, outside, raised: false };
+  const pending: JudgePending = { since: Date.now(), replied: false, outside, raised: false, format: readFormat(req.text) };
   pendingOf(turn).set(req.toolCallId, pending);
   const text = capResponse(req.text);
   // the hold is part of the in-flight promise (the live gate's `gateHold.judgeReadMs`), so drainJudges waits for a held read too

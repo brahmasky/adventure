@@ -22,6 +22,8 @@ import { BUILTIN_CAPABILITY, capabilityFor, type RegistryEntry } from "./capabil
 import { classifyCommand } from "./command-matcher.js";
 import { gateTargets } from "./gate-path.js";
 import { handleJudgeRead, maskedKey, noteReportApplied, raisePendingAtFlush, raiseStalePending, type JudgedOutcome, type JudgePending, type PathDeps } from "./bridge-read-judge.js";
+import { sharedOmpVersionCache } from "./omp-version-cache.js";
+import { syncReadFormatDrift } from "./read-format.js";
 import { capResponse, RESPONSE_CAP, TRUNCATION_NOTE } from "./response-cap.js";
 import { renderExternalRead, UNTRUSTED_READ_ENTRIES, type ExternalReadResult } from "./external-read.js";
 import type { OmpConfig } from "./omp-config.js";
@@ -625,6 +627,9 @@ const todoReported = new WeakMap<ActiveTurn, Set<string>>();
 
 /** The hook's tool_result for an allowed built-in: counts only, never content. A duplicate report is a no-op. */
 function handleReport(deps: BridgeHandlerDeps, turn: ActiveTurn, req: ReportReq): { ok: true } {
+  // read-format.ts: a succeeded read judged in an untested text shape pages once per omp version (an errored read's text is omp's message, not a file)
+  const format = turn.judgePending?.get(req.toolCallId)?.format;
+  if (format !== undefined && req.outcome === "succeeded") syncReadFormatDrift(deps.store, sharedOmpVersionCache(deps.cfg).lastVersion(), format, { env: deps.env });
   noteReportApplied(deps, turn, req.toolCallId, req.applied === true);
   const entry = turn.unreported.get(req.toolCallId);
   const counts = { ok: req.outcome === "succeeded", bytes_out: count(req.bytes_out), duration_ms: count(req.duration_ms) };

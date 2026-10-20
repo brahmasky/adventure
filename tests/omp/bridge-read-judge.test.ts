@@ -14,6 +14,7 @@ import { drainJudges, JUDGE_DRAIN_MS, MASKED_NOTE, maskedKey, raiseStalePending 
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { loadToolDeclarations, TOOL_DECLS_DIR } from "../../src/omp/tool-decls.js";
 import { resolveDaemonTmpDir } from "../../src/run/daemon-tmp.js";
+import { OMP_READ_FORMAT_DRIFT } from "../../src/omp/read-format.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { ToolRegistry, type ToolMetadata } from "../../src/tools/tool-registry.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
@@ -215,5 +216,30 @@ describe("judge_read (spec §4)", () => {
     const t0 = Date.now(); await drainJudges(turn, 3_000);
     expect(Date.now() - t0).toBeGreaterThanOrEqual(90);
     expect(turn.judgePending!.get("r1")!.replied).toBe(true);
+  });
+});
+
+describe("read-format drift (2026-10-21): the mask was tested against one omp read shape, and nothing pins omp's version", () => {
+  const failed = (id: string) => ({ ...report(id, true), outcome: "failed" as const });
+  const drift = (store: RunStore) => store.listOpenIncidents().filter((i) => i.kind === OMP_READ_FORMAT_DRIFT).map((i) => i.subject);
+  it("a succeeded read judged in an untested shape pages omp_read_format_drift once (the version unchecked here: `omp:unknown`); a conforming read resolves it", async () => {
+    const { handle, store } = setup();
+    await handle(gateRead("/tmp/a.txt", "r1"));
+    await handle(judgeRead("r1", "alpha one\nbeta two")); // omp's rowPrefixes:false shape: a read the mask never saw in a gate
+    expect(drift(store)).toEqual([]); // judged, not yet reported: the report says whether this was a file or omp's error text
+    await handle(report("r1", true));
+    await handle(report("r1", true)); // a duplicate report pages nothing more
+    expect(drift(store)).toEqual(["omp:unknown"]);
+    await handle(gateRead("/tmp/b.txt", "r2"));
+    await handle(judgeRead("r2", "[/tmp/b.txt#1A2B]\n1:name: old\n2:"));
+    await handle(report("r2", true));
+    expect(drift(store)).toEqual([]);
+  });
+  it("an errored read's text is omp's message, not a file shape: a failed report pages nothing", async () => {
+    const { handle, store } = setup();
+    await handle(gateRead("/tmp/missing.txt", "m1"));
+    await handle(judgeRead("m1", "Path 'missing.txt' not found"));
+    await handle(failed("m1"));
+    expect(drift(store)).toEqual([]);
   });
 });
