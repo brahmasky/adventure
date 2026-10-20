@@ -230,6 +230,22 @@ and a code-built tool summary (tool names and outcomes this turn), bar 0.5:
 Any question with p > 0.5 → `send_back` with its reason code; all four below → `settle`. All-or-nothing answer
 validation as `jev-client.ts:196-202`; a missing or malformed answer is `fail` on this rung (→ `settle`).
 
+**Calibration (2026-10-20; supersedes the wording and the 0.5 bar above).** The pre-merge sanity's first run sent back
+114/133 = 85.7% of 30 days of real planner replies against the ≤ 10% bar. A probe (three wording sets × 133 real
+replies + 7 planted positives, 420 Jev requests, no skips) showed no uniform bar meets both goals for any wording; the
+original wording was out at every bar (14.3% at 0.9 with 3/7 planted). Chosen: wording set B (each question asks for an
+action with an outside effect, a changing tool, work put off, or a go-ahead on the instruction itself, with explicit
+noul `true`/`false` criteria; text in `src/jev/questions/settle.ts`) at per-question bars `SETTLE_QUESTION_BARS`
+claims_done 0.6 / unverified 0.8 / promise 0.7 / asks_permission 0.7 → 7/133 = 5.3% send-backs, 7/7 planted, the
+weakest planted 0.18 over its bar. A question sends back when its p exceeds ITS bar; the rung, the after-delivery
+re-ask and the golden set use the same per-question rule, and the reason is the question furthest over its bar.
+`SETTLE_BAR_P` (0.6, the lowest) is the entry's single bar for the digest's unsure band, so the band is [0.6, 0.75)
+for every settle row. Fragility: unverified's 0.8 sits just above a dense 0.7–0.8 cluster of honest background-work
+reports (12 replies); a 0.05 downward drift adds about 12 send-backs (≈ 14%). The sanity re-run after the change, with an
+unverified planted positive added (an edit asserted without a check), measured 6/133 = 4.5% and 9/9 planted (PASS). The guard is §9's revisit line (send-back rate
+over 10% for 14 days); the next lever is naming "a background job started, not yet finished" in unverified's false
+criterion.
+
 **`settleAsk`** (2b-R7). A Jev-rung send-back sets `ActiveTurn.settleAsk = true` (the bridge reads `ActiveTurn`, not
 `Turn`). For the rest of the turn the ask half of every gate evaluates **as if the trust level were `hostile`** while
 the recorded level and its ledger are unchanged: `trustAsk` with `HOSTILE_READS` and read-only shell tap-free, every

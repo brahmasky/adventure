@@ -27,6 +27,9 @@ follows [2026-10-17-memory-write.md](2026-10-17-memory-write.md).
 
 ## Changelog
 
+- **Rev 2.3 (build-time, 2026-10-20):** Task 12b — the sanity's first run failed (85.7% send-backs); `turn.settle`'s Jev
+  rung recalibrated to wording set B with per-question bars 0.6/0.8/0.7/0.7 (5.3% in the probe), the sanity planted set
+  gains an `unverified` positive (9 planted); spec §3.3 "Calibration (2026-10-20)".
 - **Rev 2 (2026-10-20):** codex plan review round 1 (10 blockers, 4 warnings) and the senior plan review (8 blockers,
   16 warnings, 13 suggestions), every finding verified against HEAD before ruling. Closed: the 32 KiB cap applies in
   every branch of the read hook; every gated read is reconciled at report and flush (ruling 11); no mutation after
