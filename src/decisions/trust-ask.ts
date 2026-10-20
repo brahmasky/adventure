@@ -31,6 +31,18 @@ export function trustAsk(level: TrustLevel, entry: string, command?: string): Tr
   return HOSTILE_READS.has(entry) ? NO : HOSTILE_ASK;
 }
 
+/** 2b-i §3.3 (2b-R7): a continuation after a Jev-rung send-back asks as a hostile turn would, under its own reason line. */
+export const SETTLE_REASON = "this reply was sent back for one more pass";
+/** 2b-i §4 (2b-R8): a write to a file whose read masked values asks, so a masked value is never written back. */
+export const MASKED_READ_REASON = "this file was read with values masked";
+
+/** The ask half with settleAsk folded in: the level's own ask when it asks; else, under settleAsk, the hostile form with SETTLE_REASON. */
+export function effectiveAsk(level: TrustLevel, settleAsk: boolean, entry: string, command?: string): TrustAsk {
+  const own = trustAsk(level, entry, command);
+  if (own.ask || !settleAsk) return own;
+  return trustAsk("hostile", entry, command).ask ? { ask: true, reason: SETTLE_REASON } : NO;
+}
+
 /** Spec §7.2 / ADR 0029 decision 2: three added taps a local date. */
 export const TRUST_TAP_BUDGET = 3;
 const BUDGET_KIND: ReadonlySet<string> = new Set(["trust_tap_budget"]);

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { resolve as resolvePath } from "node:path";
 import { CapabilityRunner, type ApprovalRequestSink, type CapabilityExecutionInput, type CapabilityResult } from "../capabilities/capability-runner.js";
 import { decideCapability } from "../policy/capability-policy.js";
 import type { BudgetLedger } from "../budget/budget-ledger.js";
@@ -10,7 +11,7 @@ import { TOOL_SHELL_NETREAD } from "../decisions/entries/shell-netread.js";
 import { WITHHELD_UNJUDGED_TEXT } from "../decisions/entries/tool-injection.js";
 import { localOutcome, type InjectionJudge, type InjectionSource, type JudgeInput, type JudgeOutcome } from "../decisions/injection-judge.js";
 import { storeRecorder } from "../decisions/record.js";
-import { countTrustAsk, HOSTILE_REASON, targetsLine, trustAsk, type TrustAsk } from "../decisions/trust-ask.js";
+import { countTrustAsk, effectiveAsk, HOSTILE_REASON, MASKED_READ_REASON, targetsLine, type TrustAsk } from "../decisions/trust-ask.js";
 import { resolveTrustAskTtlMs, type TurnTrust } from "../decisions/trust.js";
 import type { CompiledTaskContract, Identity } from "../domain/types.js";
 import type { RunStore } from "../run/run-store.js";
@@ -19,7 +20,7 @@ import type { BridgeRequest } from "./bridge-protocol.js";
 import { BUILTIN_CAPABILITY, capabilityFor, type RegistryEntry } from "./capability-map.js";
 import { classifyCommand } from "./command-matcher.js";
 import { gateTargets } from "./gate-path.js";
-import { handleJudgeRead, noteReportApplied, raisePendingAtFlush, raiseStalePending, type JudgedOutcome, type JudgePending, type PathDeps } from "./bridge-read-judge.js";
+import { handleJudgeRead, maskedKey, noteReportApplied, raisePendingAtFlush, raiseStalePending, type JudgedOutcome, type JudgePending, type PathDeps } from "./bridge-read-judge.js";
 import { capResponse, RESPONSE_CAP, TRUNCATION_NOTE } from "./response-cap.js";
 import { renderExternalRead, UNTRUSTED_READ_ENTRIES, type ExternalReadResult } from "./external-read.js";
 import type { OmpConfig } from "./omp-config.js";
@@ -68,6 +69,8 @@ export interface ActiveTurn {
   judgePending?: Map<string, JudgePending>;
   /** Spec §4: the judgements still running, so the flush can wait for them (bounded). */
   judgeInFlight?: Map<string, Promise<void>>;
+  /** Spec §3.3: this turn continues a Jev-rung send-back, so every Houge effect asks as a hostile turn would. */
+  settleAsk?: boolean;
 }
 
 /** A preflight verdict: refuse with a code-owned reason, or go on with the card detail Paco approves. */
@@ -97,6 +100,12 @@ export const TRUST_ASK_NO_TIME_TEXT = "There is no time left in this turn to ask
 /** ADR 0030's one named exception: at hostile the built-in writer is refused toward its asking equivalent (spec §7.2). */
 export const HOSTILE_WRITE_REDIRECT = "This turn read text aimed at the assistant; make this change through bash, which will ask Paco.";
 export const HOSTILE_REDIRECT_CODE = "hostile_redirect";
+export const SETTLE_WRITE_REDIRECT = "This reply was sent back for one more pass; make this change through bash, which will ask Paco.";
+export const SETTLE_REDIRECT_CODE = "settle_redirect";
+export const MASKED_WRITE_REDIRECT = "This file was read with values masked; make this change through bash, which will ask Paco.";
+export const MASKED_REDIRECT_CODE = "masked_redirect";
+const REDIRECT_TEXT: Record<string, string> = { [HOSTILE_REDIRECT_CODE]: HOSTILE_WRITE_REDIRECT, [SETTLE_REDIRECT_CODE]: SETTLE_WRITE_REDIRECT,
+  [MASKED_REDIRECT_CODE]: MASKED_WRITE_REDIRECT };
 const SHELL_ENTRIES: ReadonlySet<RegistryEntry> = new Set<RegistryEntry>(["shell", "shell_external", "shell_destructive"]);
 /** Statuses whose text is code-built (no tool bytes): never judged, never a netread. */
 const NO_TOOL_BYTES: ReadonlySet<string> = new Set(["denied", "denied_on_revalidation", "requires_approval"]);
@@ -225,7 +234,7 @@ async function handleCall(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallRe
   const pre = turn.preflight?.(entry, req.input) ?? null;
   if (pre && "refused" in pre) return refuse(deps, turn, req, entry, pre.refused.reason, pre.refused.text, started);
   const command = req.tool === "bash" && typeof req.input.command === "string" ? req.input.command : undefined;
-  const ask = trustAsk(turn.trust?.level() ?? "clean", entry, command);
+  const ask = askFor(deps, turn, entry, command);
   const executed = await executeWithApproval(deps, turn, req, entry, pre?.card_detail, ask);
   if ("refusal" in executed) return refuse(deps, turn, req, entry, executed.refusal.reason, executed.refusal.text, started);
   const r = executed.result;
@@ -235,6 +244,20 @@ async function handleCall(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallRe
   finish(deps, turn, { toolCallId: req.toolCallId, tool: req.tool, capability: entry, status, content: rendered.content, started,
     digest: rendered.digest, bytesIn: bytes(JSON.stringify(req.input)), ...(reason !== undefined ? { reason } : {}) });
   return { content: rendered.content, isError: status !== "succeeded" };
+}
+
+/** The ask (spec §7.2 + 2b-i): the trust level's own, settleAsk's hostile form, or a masked file named by a shell command (ruling 5). */
+function askFor(deps: BridgeHandlerDeps, turn: ActiveTurn, entry: RegistryEntry, command: string | undefined): TrustAsk {
+  const ask = effectiveAsk(turn.trust?.level() ?? "clean", turn.settleAsk === true, entry, command);
+  if (ask.ask || command === undefined || !turn.maskedPaths?.size) return ask;
+  return namesMaskedFile(command, turn, deps.ctx.home) ? { ask: true, reason: MASKED_READ_REASON } : ask;
+}
+
+/** pathOperands keeps only slash/dot/tilde words; a bare `cfg.yml` in the cwd must ask too, so EVERY non-flag word is resolved against the cwd as well. */
+function namesMaskedFile(command: string, turn: ActiveTurn, home: string): boolean {
+  const words = command.split(/[\s;|&<>()]+/).map((w) => w.replace(/^["']|["']$/g, "")).filter((w) => w.length > 0 && !w.startsWith("-"));
+  const candidates = [...pathOperands(command, turn.cwd, home), ...words.map((w) => resolvePath(turn.cwd, w))];
+  return candidates.some((p) => turn.maskedPaths!.has(maskedKey(p)));
 }
 
 function statusOf(r: CapabilityResult): "succeeded" | "failed" | "denied" {
@@ -476,14 +499,22 @@ function pathDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, raw: string, entr
   return t.targets.some((abs) => denied(abs, deps.ctx)) ? "protected_path" : null;
 }
 
+/** Spec §4: does any form omp may resolve a write's path to name a file whose read masked values? Only the file itself, never its directory. */
+function maskedTarget(turn: ActiveTurn, raws: string[], deps: BridgeHandlerDeps): boolean {
+  if (!turn.maskedPaths?.size) return false;
+  return raws.some((raw) => { const t = gateTargets(raw, deps.ctx.home, turn.cwd); return t.ok && t.targets.some((p) => turn.maskedPaths!.has(maskedKey(p))); });
+}
+
 function gateDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, req: GateReq, entry: FsEntry): string | null {
   if (turn.signal.aborted) return "turn_aborted"; // as handleCall: nothing new runs once the turn is aborted
   const posture = turn.postureOk();
   if (posture) return posture;
   if (entry === "fs_write" && turn.trust?.level() === "hostile") return HOSTILE_REDIRECT_CODE; // ADR 0030's named exception (spec §7.2)
+  if (entry === "fs_write" && turn.settleAsk) return SETTLE_REDIRECT_CODE;
   const raws = gatePaths(req.input ?? {});
   if (raws.length === 0) return "missing_path";
   for (const raw of raws) { const d = pathDenial(deps, turn, raw, entry); if (d) return d; }
+  if (entry === "fs_write" && maskedTarget(turn, raws, deps)) return MASKED_REDIRECT_CODE;
   const c = turn.contract;
   const d = decideCapability({ capability: entry, category: "tool", side_effect_level: entry === "fs_read" ? "none" : "local_write",
     risk_level: "low", allowed_actions: c.allowed_actions, forbidden_actions: c.forbidden_actions, approval_gates: c.approval_gates });
@@ -504,7 +535,7 @@ function handleGate(deps: BridgeHandlerDeps, turn: ActiveTurn, req: GateReq): { 
   const tool = `builtin:${req.tool}`;
   if (reason) {
     finish(deps, turn, { toolCallId: req.toolCallId, tool, capability: entry, status: "denied", content: "", started, digest: reason, reason });
-    return { decision: "deny", reason: reason === HOSTILE_REDIRECT_CODE ? HOSTILE_WRITE_REDIRECT : reason };
+    return { decision: "deny", reason: REDIRECT_TEXT[reason] ?? reason };
   }
   turn.unreported.set(req.toolCallId, entry);
   if (entry === "fs_read") retainReadTargets(deps, turn, req);
@@ -526,8 +557,9 @@ function namesFor(turn: ActiveTurn): Map<string, string> {
 
 const count = (n: unknown) => (typeof n === "number" && Number.isFinite(n) && n >= 0 ? Math.round(n) : 0);
 
-function writeBuiltinOutcome(store: RunStore, turn: ActiveTurn, toolCallId: string, entry: FsEntry, o: { ok: boolean; bytes_out: number; duration_ms: number; reason?: string }): void {
-  const tool = namesFor(turn).get(toolCallId) ?? (entry === "fs_read" ? "builtin:read" : "builtin:write");
+function writeBuiltinOutcome(store: RunStore, turn: ActiveTurn, toolCallId: string, entry: FsEntry, o: { ok: boolean; bytes_out: number; duration_ms: number; reason?: string },
+  toolOverride?: string): void {
+  const tool = toolOverride ?? namesFor(turn).get(toolCallId) ?? (entry === "fs_read" ? "builtin:read" : "builtin:write");
   namesFor(turn).delete(toolCallId);
   turn.unreported.delete(toolCallId);
   store.appendRunLedgerEvent(turn.run_id, "tool_finished", "capability_runner", {
@@ -535,7 +567,7 @@ function writeBuiltinOutcome(store: RunStore, turn: ActiveTurn, toolCallId: stri
     bytes_out: o.bytes_out, tool, ...(o.reason !== undefined ? { reason: o.reason } : {})
   });
   store.appendRunLedgerEvent(turn.run_id, "loop_step", "core", {
-    step: ++turn.step.n, action: tool, capability: entry, ok: o.ok, result_digest: o.reason ?? `${o.bytes_out} bytes`
+    step: ++turn.step.n, action: tool, capability: toolOverride ? toolOverride.replace(/^builtin:/, "") : entry, ok: o.ok, result_digest: o.reason ?? `${o.bytes_out} bytes`
   });
 }
 
@@ -543,9 +575,12 @@ function writeBuiltinOutcome(store: RunStore, turn: ActiveTurn, toolCallId: stri
 function handleReport(deps: BridgeHandlerDeps, turn: ActiveTurn, req: ReportReq): { ok: true } {
   noteReportApplied(deps, turn, req.toolCallId, req.applied === true);
   const entry = turn.unreported.get(req.toolCallId);
-  if (!entry) return { ok: true };
-  writeBuiltinOutcome(deps.store, turn, req.toolCallId, entry,
-    { ok: req.outcome === "succeeded", bytes_out: count(req.bytes_out), duration_ms: count(req.duration_ms) });
+  const counts = { ok: req.outcome === "succeeded", bytes_out: count(req.bytes_out), duration_ms: count(req.duration_ms) };
+  if (!entry) {
+    if (req.tool === "todo") writeBuiltinOutcome(deps.store, turn, req.toolCallId, "fs_read", counts, "builtin:todo"); // ungated, counts only
+    return { ok: true };
+  }
+  writeBuiltinOutcome(deps.store, turn, req.toolCallId, entry, counts);
   return { ok: true };
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { countTrustAsk, HOSTILE_REASON, targetsLine, TRUST_TAP_BUDGET, trustAsk, UNTRUSTED_REASON } from "../../src/decisions/trust-ask.js";
+import { countTrustAsk, effectiveAsk, HOSTILE_REASON, SETTLE_REASON, targetsLine, TRUST_TAP_BUDGET, trustAsk, UNTRUSTED_REASON } from "../../src/decisions/trust-ask.js";
 import { RunStore } from "../../src/run/run-store.js";
 
 // Spec §7.2: a raised level only ADDS a tap (ask := code_ask ∨ trust_ask; ADR 0029 decision 2). Untrusted: the four tools
@@ -57,5 +57,19 @@ describe("trustAsk fails closed at hostile", () => {
   it("every shell entry runs only a read-only command tap-free; a write-capable entry asks even with a read-only command", () => {
     expect(trustAsk("hostile", "shell_external", "ls")).toEqual({ ask: false });
     for (const e of ["memory_correct_write", "fs_write", "skill_author", "schedule_task", "self_write_propose"]) expect(trustAsk("hostile", e, "ls").ask).toBe(true);
+  });
+});
+
+describe("effectiveAsk (2b-i §3.3 settleAsk)", () => {
+  it("under settleAsk a clean turn asks as if hostile, with SETTLE_REASON; HOSTILE_READS and read-only shell stay tap-free", () => {
+    expect(effectiveAsk("clean", true, "lesson_write")).toEqual({ ask: true, reason: SETTLE_REASON });
+    expect(effectiveAsk("clean", true, "memory_correct_write")).toEqual({ ask: true, reason: SETTLE_REASON });
+    expect(effectiveAsk("clean", true, "shell", "touch x")).toEqual({ ask: true, reason: SETTLE_REASON });
+    expect(effectiveAsk("clean", true, "shell", "ls -la")).toEqual({ ask: false });
+    for (const e of ["web_search", "http_fetch", "memory_correct", "fs_read", "houge_status"]) expect(effectiveAsk("clean", true, e)).toEqual({ ask: false });
+  });
+  it("a hostile turn keeps HOSTILE_REASON under settleAsk; without settleAsk effectiveAsk is trustAsk", () => {
+    expect(effectiveAsk("hostile", true, "lesson_write")).toEqual({ ask: true, reason: HOSTILE_REASON });
+    expect(effectiveAsk("untrusted", false, "lesson_write")).toEqual(trustAsk("untrusted", "lesson_write"));
   });
 });
