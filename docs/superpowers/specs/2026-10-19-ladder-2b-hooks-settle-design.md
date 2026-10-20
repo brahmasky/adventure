@@ -161,7 +161,7 @@ ledger shows every todo transition (codex r2 #10). `isBuiltin` and the gate path
 | id, version, stage | `turn.settle`, 1, `settle` |
 | input | `mixed` (the reply is model text; the evidence is code) |
 | verdicts | `settle` < `send_back` (monotone) |
-| ladder | rule (`settleRule`: the §3.2 guards, then the claims and todo checks) → `system_one` (`DecisionPoint` `settle`, provisional bar 0.5, 1 500 ms, no noise-band re-ask) → `settle` |
+| ladder | rule (`settleRule`: the §3.2 guards, then the claims and todo checks) → `system_one` (`DecisionPoint` `settle`, per-question bars 0.6/0.8/0.7/0.7 per the §3.3 calibration, 1 500 ms, no noise-band re-ask) → `settle` |
 | fail, defaultVerdict | `settle` |
 | alwaysRecord | true (the only recording path, 2b-R13) |
 | effects | `send_back` from the rule rung: `tighten` under normal gates; from the Jev rung: `tighten` with `settleAsk` (§3.3) |
@@ -220,14 +220,15 @@ A rule-rung send-back runs its continuation under the turn's normal gates (paren
 
 **Jev rung** (`src/jev/settle-ask.ts`, the client glue, like `memory-kind-ask.ts`; the state it reads is the redacted
 §3.1 state): four `noul` questions in one request over the redacted reply, Paco's redacted message (capped 600 chars)
-and a code-built tool summary (tool names and outcomes this turn), bar 0.5:
+and a code-built tool summary (tool names and outcomes this turn), each question at its own bar (the calibration
+below; the original design used a single 0.5):
 
 1. Does the reply claim the task is done?
 2. Did the assistant act or edit but verify nothing?
 3. Does the reply end on a promise of further work ("next I'll…")?
 4. Does the reply ask permission for work Paco's message already asked for?
 
-Any question with p > 0.5 → `send_back` with its reason code; all four below → `settle`. All-or-nothing answer
+Any question with p over its bar → `send_back` with its reason code; all four at or under → `settle`. All-or-nothing answer
 validation as `jev-client.ts:196-202`; a missing or malformed answer is `fail` on this rung (→ `settle`).
 
 **Calibration (2026-10-20; supersedes the wording and the 0.5 bar above).** The pre-merge sanity's first run sent back
@@ -313,7 +314,7 @@ Supervisor (`planner-supervisor.ts`):
 One `decisions` row per turn for `turn.settle` (the first fire; later fires return `sendBack: false` without a row),
 linked by `run_id`, never rewritten (2b-R17); outcomes `settle_sent_back` / `settle_unverified` / `settle_discarded`
 hang off it, each inserted once (the supervisor holds the decision id from the first fire). `/status decisions` shows
-the rows; the digest's unsure list includes Jev settle answers within 0.15 of 0.5 when the digest is on.
+the rows; the digest's unsure list includes Jev settle answers within 0.15 of `SETTLE_BAR_P` (0.6, the lowest per-question bar) when the digest is on.
 
 ## 4. `judge_read`
 
@@ -440,7 +441,7 @@ message ignored, attachments across passes, the one-third fallback with marker, 
 `continuation_failed`, `discarded`, the P2' fixture settling exactly once), `planner-session` `get_state`, golden
 items, outcomes value checks.
 
-**Docs on ship:** ADR 0030 amendment (Paco's hand): `turn.settle` armed at a provisional 0.5, `read` as a judged
+**Docs on ship:** ADR 0030 amendment (Paco's hand): `turn.settle` armed at the §3.3 per-question bars (0.6/0.8/0.7/0.7), `read` as a judged
 source, `armed_mode: late`, `settleAsk` and the extended named exception (2b-R7), masked-read redirect (2b-R8), the
 todo tool; `docs/reference/decision-map.md` (`turn.settle` live; `improve.route` → 2b-ii); `docs/reference/jev-decision-layer.md`
 (new point and bar); README row; `tasks/todo.md` state block; `tasks/lessons.md`; `sessions.md`; ROADMAP delta.
