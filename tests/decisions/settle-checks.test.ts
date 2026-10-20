@@ -87,7 +87,7 @@ describe("todoCheck", () => {
 });
 
 describe("settleChecks inside settleRule", () => {
-  const s = (over: Partial<SettleState>): SettleState => ({ run_id: "r", text: "ok", pass: 0, sentBack: false, trust: "clean", lastCallDenied: false, steerQueued: false, msLeft: 100_000, aborting: false,
+  const s = (over: Partial<SettleState>): SettleState => ({ run_id: "r", text: "ok", pass: 0, sentBack: false, trust: "clean", lastCallDenied: false, steerQueued: false, msLeft: 100_000, aborting: false, passErrored: false,
     evidence: [], todoBefore: todo(), todoNow: todo(), pacoMessage: "", attachmentsAccepted: 0, redacted: { text: "ok", pacoMessage: "" }, toolSummary: "none", ...over });
   it("a claim sends back with its reason; a changed todo with pending work sends back todo_pending; todo_unavailable alone abstains", () => {
     expect(settleRule(s({ text: "I've scheduled it." }))).toMatchObject({ verdict: "send_back", reason: "claim_scheduled", detail: { claims: ["claim_scheduled"] } });

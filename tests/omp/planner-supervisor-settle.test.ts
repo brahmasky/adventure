@@ -286,7 +286,7 @@ describe("the settle request end to end (spec §3)", () => {
   });
   it("the bridge token is masked by value (the known leg), even a short low-entropy one the shape masks would pass", () => {
     const store = RunStore.openInMemory(); const run_id = createQueuedTurnRun(store);
-    const t: SettleTurn = { run_id, passes: [{ texts: [], final: "" }], sentBack: false, continuationSeen: false, aborting: false, deadline: undefined,
+    const t: SettleTurn = { run_id, passes: [{ texts: [], final: "" }], sentBack: false, lastError: undefined, continuationSeen: false, aborting: false, deadline: undefined,
       deadlineLeft: 600_000, deadlineAt: Date.now(), trustLevel: () => "clean", userText: "hi", todoBefore: null, settleDecisionId: null, extracted: () => [] };
     const ctx = (token: string | undefined): SettleCtx => ({ store, chatId: "42", workspace: "/nonexistent", session: () => undefined, queueHasTelegram: () => false,
       bridgeToken: () => token, settleDeps: () => { throw new Error("unused"); } });
@@ -297,7 +297,7 @@ describe("the settle request end to end (spec §3)", () => {
   });
   it("A1: this turn's code-extracted code and magic link are masked by value in the settle state (a code in Paco's reply is the turn's own secret)", () => {
     const store = RunStore.openInMemory(); const run_id = createQueuedTurnRun(store);
-    const t: SettleTurn = { run_id, passes: [{ texts: [], final: "" }], sentBack: false, continuationSeen: false, aborting: false, deadline: undefined,
+    const t: SettleTurn = { run_id, passes: [{ texts: [], final: "" }], sentBack: false, lastError: undefined, continuationSeen: false, aborting: false, deadline: undefined,
       deadlineLeft: 600_000, deadlineAt: Date.now(), trustLevel: () => "clean", userText: "hi", todoBefore: null, settleDecisionId: null,
       extracted: () => [OTP, MAGIC] };
     const ctx: SettleCtx = { store, chatId: "42", workspace: "/nonexistent", session: () => undefined, queueHasTelegram: () => false,
@@ -340,6 +340,26 @@ describe("the settle request end to end (spec §3)", () => {
     h.emit({ type: "agent_start" }); h.emit({ type: "error", error: "429 rate limit" }); h.emit({ type: "agent_end" }); await sup.whenIdle();
     expect(outcome.done[0]).toMatchObject({ text: "I've saved it." });
     expect(outcomes(store, run_id)).toEqual([["settle_discarded", "continuation_failed"]]);
+  });
+  it("A8: a pass 0 that ended on a model error is never sent back (row pass_errored); the turn takes the retry path", async () => {
+    const { session, h } = held(); const { store, sup, outcome } = harness(session);
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    h.say("I've saved it.", { stopReason: "error", errorMessage: "429 rate limit" });
+    expect(await session.request(settleReq("I've saved it."))).toEqual({ sendBack: false });
+    expect(rows(store, run_id).map((x) => [x.rung, x.verdict, x.reason_code])).toEqual([["rule", "settle", "pass_errored"]]);
+    h.prompted = false; h.emit({ type: "agent_end" });
+    await until(() => session.prompts.length === 2); await running(sup, h); // retryNextLeg, never a send-back on the failing model
+    h.say("Saved for real."); h.emit({ type: "agent_end" }); await sup.whenIdle();
+    expect(outcome.done[0]).toMatchObject({ text: "Saved for real." });
+    expect(outcomes(store, run_id)).toEqual([]);
+  });
+  it("A8: a send-back whose continuation never started, then a model error: settle_discarded extension_timeout, not continuation_failed", async () => {
+    const { session, h } = held(); const { store, sup, outcome } = harness(session);
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    h.say("I've saved it."); expect(await session.request(settleReq("I've saved it."))).toMatchObject({ sendBack: true });
+    h.emit({ type: "error", error: "boom" }); h.emit({ type: "agent_end" }); await sup.whenIdle();
+    expect(outcomes(store, run_id)).toEqual([["settle_discarded", "extension_timeout"]]);
+    expect(outcome.done).toHaveLength(0); expect(outcome.failed[0]).toMatchObject({ error_type: "model_error", partial: "I've saved it." });
   });
   it("past the 4 s budget (the gate hold eats 3.8 s of it) Houge answers sendBack: false inside the extension's 5 s and the row is fail/budget", async () => {
     const { session, h } = held(); const { store, sup } = harness(session, {}, { settleClient: () => jev([0.9, 0.9, 0.9, 0.9]), gateHold: { settleMs: 3_800 } });

@@ -148,7 +148,7 @@ export async function runSettleGoldenTick(i: Omit<GoldenTickInput, "items">): Pr
   const answers: Array<{ model: string; answers: Record<string, number> }> = [];
   let failure: string | null = null;
   for (const g of SETTLE_GOLDEN) { // sequential: the first failure ends the run, no further quota spent
-    const state = buildSettleState({ run_id: "golden", text: g.reply, pass: 0, sentBack: false, trust: "clean", lastCallDenied: false, steerQueued: false, msLeft: 600_000, aborting: false,
+    const state = buildSettleState({ run_id: "golden", text: g.reply, pass: 0, sentBack: false, trust: "clean", lastCallDenied: false, steerQueued: false, msLeft: 600_000, aborting: false, passErrored: false,
       evidence: [], todoBefore: null, todoNow: null, pacoMessage: g.pacoMessage, attachmentsAccepted: 0 }, (x) => redactForJudge(x, { brokerRedact: (y) => i.store.redactSecretValues(y) }));
     const r = await askSettle({ run_id: "golden", state: settleJevState(state), client: i.client, store: i.store });
     if ("failed" in r) { failure = r.failed; break; }

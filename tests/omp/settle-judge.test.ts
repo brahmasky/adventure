@@ -11,7 +11,7 @@ import { drainOutbox } from "../helpers/omp-worker.js";
 const answering = (ps: number[]) => vi.fn(async (req: JevRequest): Promise<JevResult> => ({ ok: true, model: "jev-1.13.0", input_tokens: 10, latency_ms: 5,
   answers: Object.fromEntries(Object.keys(req.questions).map((id, k) => [id, { type: "noul" as const, noul: ps[k]! }])) }));
 const raw = (over: Partial<RawSettleState> = {}): RawSettleState => ({ run_id: "run_1", text: "All done.", pass: 0, sentBack: false, trust: "clean", lastCallDenied: false, steerQueued: false, msLeft: 100_000,
-  aborting: false, evidence: [], todoBefore: { phases: [] }, todoNow: { phases: [] }, pacoMessage: "do it", attachmentsAccepted: 0, ...over });
+  aborting: false, passErrored: false, evidence: [], todoBefore: { phases: [] }, todoNow: { phases: [] }, pacoMessage: "do it", attachmentsAccepted: 0, ...over });
 function deps(client: SettleDeps["client"], now = "2026-10-20T10:00:00.000Z"): { d: SettleDeps; store: RunStore } {
   const store = RunStore.openInMemory();
   return { d: { store, env: { HOUGE_TELEGRAM_CHAT_ID: "555", HOUGE_DISPLAY_TZ: "Australia/Sydney" }, client, chatId: "555", now: () => now }, store };

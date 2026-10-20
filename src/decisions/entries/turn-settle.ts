@@ -14,7 +14,7 @@ import type { Entry, ProvisionalBar, RungAbstain, RungAnswer, VerdictEffect } fr
  */
 export const TURN_SETTLE_ID = "turn.settle";
 export type SettleVerdict = "settle" | "send_back";
-export const SETTLE_REASONS = ["hostile", "already_sent_back", "last_call_denied", "steer_queued", "deadline_short", "aborting", "empty", "claim_scheduled", "claim_saved",
+export const SETTLE_REASONS = ["hostile", "already_sent_back", "last_call_denied", "steer_queued", "deadline_short", "aborting", "pass_errored", "empty", "claim_scheduled", "claim_saved",
   "claim_attached", "claim_sent", "todo_pending", "todo_unavailable", "jev_claims_done", "jev_unverified", "jev_promise", "jev_asks_permission", "budget", "settled"] as const;
 export type SettleReason = (typeof SETTLE_REASONS)[number];
 export const SETTLE_DISCARDED_VALUES = ["extension_timeout", "signal", "continuation_failed"] as const;
@@ -36,6 +36,8 @@ export interface TodoSnapshot { phases: Array<{ name: string; tasks: Array<{ con
 /** Built by the supervisor (src/decisions/settle-state.ts); `redacted` is what the Jev rung may read (senior B4). */
 export interface SettleState {
   run_id: string; text: string; pass: number; sentBack: boolean; trust: TrustLevel; lastCallDenied: boolean; steerQueued: boolean; msLeft: number; aborting: boolean;
+  /** 2b-i final review A8: the pass ended on a model error; a continuation would run on the same failing model. */
+  passErrored: boolean;
   evidence: readonly LedgerEvent[]; todoBefore: TodoSnapshot | null; todoNow: TodoSnapshot | null; pacoMessage: string;
   /** `[[attach:]]` lines parseAttachments accepted from this pass's final text (senior S5). */
   attachmentsAccepted: number;
@@ -53,6 +55,7 @@ export function settleGuard(s: SettleState): SettleReason | null {
   if (s.steerQueued) return "steer_queued";
   if (s.msLeft < DEADLINE_SHORT_MS) return "deadline_short";
   if (s.aborting) return "aborting";
+  if (s.passErrored) return "pass_errored";
   if (s.text.trim().length === 0) return "empty";
   return null;
 }

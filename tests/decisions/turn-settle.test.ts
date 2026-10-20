@@ -9,7 +9,7 @@ import type { AnyEntry } from "../../src/decisions/types.js";
 // Spec §3.1: a monotone settle < send_back entry over mixed input whose judged verdict may only tighten (one bounded
 // continuation); always recorded; per-question bars (calibration 2026-10-20) on the frozen question hashes. The rule rung is tested in Task 7
 // with its state builder; here only its guard order on a bare state.
-const base: SettleState = { run_id: "run_1", text: "done", pass: 0, sentBack: false, trust: "clean", lastCallDenied: false, steerQueued: false, msLeft: 120_000, aborting: false,
+const base: SettleState = { run_id: "run_1", text: "done", pass: 0, sentBack: false, trust: "clean", lastCallDenied: false, steerQueued: false, msLeft: 120_000, aborting: false, passErrored: false,
   evidence: [], todoBefore: { phases: [] }, todoNow: { phases: [] }, pacoMessage: "hi", attachmentsAccepted: 0, redacted: { text: "done", pacoMessage: "hi" }, toolSummary: "none" };
 
 describe("the turn.settle entry", () => {
@@ -38,17 +38,19 @@ describe("the turn.settle entry", () => {
     expect(settleQuestionsHash(SETTLE_QUESTIONS)).toBe(SETTLE_QUESTIONS_HASH);
   });
   it("carries exactly the spec's reason codes", () => {
-    expect([...SETTLE_REASONS]).toEqual(["hostile", "already_sent_back", "last_call_denied", "steer_queued", "deadline_short", "aborting", "empty", "claim_scheduled", "claim_saved",
+    expect([...SETTLE_REASONS]).toEqual(["hostile", "already_sent_back", "last_call_denied", "steer_queued", "deadline_short", "aborting", "pass_errored", "empty", "claim_scheduled", "claim_saved",
       "claim_attached", "claim_sent", "todo_pending", "todo_unavailable", "jev_claims_done", "jev_unverified", "jev_promise", "jev_asks_permission", "budget", "settled"]);
     expect([...TURN_SETTLE.reasonCodes]).toEqual([...SETTLE_REASONS]);
   });
-  it("guards in order: hostile, already_sent_back, last_call_denied, steer_queued, deadline_short, aborting, empty — each settles with its code", () => {
+  it("guards in order: hostile, already_sent_back, last_call_denied, steer_queued, deadline_short, aborting, pass_errored, empty — each settles with its code", () => {
     expect(settleRule({ ...base, trust: "hostile", sentBack: true })).toMatchObject({ verdict: "settle", reason: "hostile" });
     expect(settleRule({ ...base, sentBack: true, lastCallDenied: true })).toMatchObject({ verdict: "settle", reason: "already_sent_back" });
     expect(settleRule({ ...base, lastCallDenied: true, steerQueued: true })).toMatchObject({ verdict: "settle", reason: "last_call_denied" });
     expect(settleRule({ ...base, steerQueued: true, msLeft: 1 })).toMatchObject({ verdict: "settle", reason: "steer_queued" });
     expect(settleRule({ ...base, msLeft: 59_000, aborting: true })).toMatchObject({ verdict: "settle", reason: "deadline_short" });
-    expect(settleRule({ ...base, msLeft: 61_000, aborting: true })).toMatchObject({ verdict: "settle", reason: "aborting" });
+    expect(settleRule({ ...base, msLeft: 61_000, aborting: true, passErrored: true })).toMatchObject({ verdict: "settle", reason: "aborting" });
+    // A8: a pass that ended on a model error is never sent back (the continuation would run on the same failing model)
+    expect(settleRule({ ...base, passErrored: true, text: "I've saved it." })).toMatchObject({ verdict: "settle", reason: "pass_errored" });
     expect(settleRule({ ...base, text: "  ", redacted: { text: "", pacoMessage: "" } })).toMatchObject({ verdict: "settle", reason: "empty" });
     expect(settleRule(base)).toEqual({ abstain: true }); // nothing fires on a bare state: the claims and todo checks (Task 7) and then Jev decide
   });

@@ -22,7 +22,7 @@ export interface SettleCtx {
 }
 /** The Turn fields the glue reads and writes (the supervisor's Turn satisfies it structurally). */
 export interface SettleTurn {
-  run_id: string; passes: Pass[]; sentBack: boolean; continuationSeen: boolean; continuationFailed?: boolean; aborting: boolean;
+  run_id: string; passes: Pass[]; sentBack: boolean; lastError: string | undefined; continuationSeen: boolean; continuationFailed?: boolean; aborting: boolean;
   deadline: ReturnType<typeof setTimeout> | undefined; deadlineLeft: number; deadlineAt: number; trustLevel: () => TrustLevel;
   userText: string; todoBefore: TodoSnapshot | null; settleDecisionId: string | null; settleReason?: SettleReason;
   /** This turn's code-extracted codes and links (bridge-handler `turnExtracted`), read live: masked by value in every settle state. */
@@ -50,7 +50,7 @@ export function settleStateFor(ctx: SettleCtx, t: SettleTurn, text: string, now:
   const raw: RawSettleState = {
     run_id: t.run_id, text, pass: t.passes.length - 1, sentBack: t.sentBack, trust: t.trustLevel(), lastCallDenied: lastCallDenied(evidence),
     steerQueued: (snap?.queued ?? 0) > 0 || ctx.queueHasTelegram(),
-    msLeft: t.deadline ? t.deadlineLeft - (now - t.deadlineAt) : t.deadlineLeft, aborting: t.aborting, evidence, todoBefore: t.todoBefore,
+    msLeft: t.deadline ? t.deadlineLeft - (now - t.deadlineAt) : t.deadlineLeft, aborting: t.aborting, passErrored: t.lastError !== undefined, evidence, todoBefore: t.todoBefore,
     todoNow: snap?.todo ?? null, pacoMessage: t.userText, attachmentsAccepted: attachments ?? parseAttachments(text, ctx.workspace).attachments.length
   };
   const token = ctx.bridgeToken();

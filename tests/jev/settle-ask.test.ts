@@ -8,7 +8,7 @@ import { RunStore } from "../../src/run/run-store.js";
 // malformed answer fails the call, as jev-client.ts:196-202); a failure is a named fallback, never a partial answer.
 /** The Jev copy, as the protected builder makes it: askSettle never sees a SettleState (senior plan W). */
 const state = () => settleJevState(buildSettleState({ run_id: "run_1", text: "Done, I'll send it tomorrow.", pass: 0, sentBack: false, trust: "clean", lastCallDenied: false, steerQueued: false, msLeft: 100_000,
-  aborting: false, evidence: [], todoBefore: null, todoNow: null, pacoMessage: "send it", attachmentsAccepted: 0 }, (x) => x));
+  aborting: false, passErrored: false, evidence: [], todoBefore: null, todoNow: null, pacoMessage: "send it", attachmentsAccepted: 0 }, (x) => x));
 const answering = (ps: number[]) => vi.fn(async (req: JevRequest): Promise<JevResult> => ({ ok: true, model: "jev-1.13.0", input_tokens: 10, latency_ms: 5,
   answers: Object.fromEntries(Object.keys(req.questions).map((id, k) => [id, { type: "noul" as const, noul: ps[k]! }])) }));
 

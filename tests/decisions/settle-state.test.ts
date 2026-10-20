@@ -6,7 +6,7 @@ import { buildSettleState, PACO_MESSAGE_CAP, SETTLE_JEV_HEAD, SETTLE_JEV_TAIL, s
 // ledger rows (tool names and outcomes), never text.
 const ev = (event_type: string, payload: Record<string, unknown>) => ({ event_id: "e", correlation_id: "c", event_type, occurred_at: "2026-10-20T00:00:00.000Z", actor: "core", sequence: 1, payload }) as any;
 const raw = (over: Partial<Parameters<typeof buildSettleState>[0]> = {}) => ({ run_id: "run_1", text: "x", pass: 0, sentBack: false, trust: "clean" as const, lastCallDenied: false, steerQueued: false,
-  msLeft: 100_000, aborting: false, evidence: [], todoBefore: null, todoNow: null, pacoMessage: "hi", attachmentsAccepted: 0, ...over });
+  msLeft: 100_000, aborting: false, passErrored: false, evidence: [], todoBefore: null, todoNow: null, pacoMessage: "hi", attachmentsAccepted: 0, ...over });
 
 describe("buildSettleState", () => {
   it("redacts the reply and Paco's message with the given redactor and caps the message at 600 chars", () => {

@@ -17,7 +17,7 @@ export const DIG_DEEPER_COVERS_EVERY_LANE: DigDeeperCoversEveryLane = true;
 export const TURN_ROLE_VALUES = ["fast", "default", "thinking"] as const satisfies readonly TurnRole[];
 
 /** turn.settle's reason codes and discarded-judgment values, duplicated because the store imports this file and the entry pulls in src/jev/questions; pinned equal to the entry's lists by tests. */
-export const SETTLE_REASON_VALUES = ["hostile", "already_sent_back", "last_call_denied", "steer_queued", "deadline_short", "aborting", "empty", "claim_scheduled", "claim_saved",
+export const SETTLE_REASON_VALUES = ["hostile", "already_sent_back", "last_call_denied", "steer_queued", "deadline_short", "aborting", "pass_errored", "empty", "claim_scheduled", "claim_saved",
   "claim_attached", "claim_sent", "todo_pending", "todo_unavailable", "jev_claims_done", "jev_unverified", "jev_promise", "jev_asks_permission", "budget", "settled"] as const;
 export const SETTLE_DISCARDED_VALUE_LIST = ["extension_timeout", "signal", "continuation_failed"] as const;
 

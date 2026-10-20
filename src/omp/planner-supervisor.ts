@@ -195,6 +195,8 @@ interface Turn {
   run_id: string; trustLevel: () => TrustLevel;
   /** Spec §3.5: pass 0 is the first answer, pass 1 opens at the continuation's agent_start; `lastText` is the current pass's final text. */
   passes: Pass[]; sentBack: boolean; sentBackKind?: SendBackKind; continuationSeen: boolean; continuationFailed?: boolean;
+  /** A8: a model error arrived before the continuation (pass 0's), so a pass-1 failure never delivers pass 0 as a success. */
+  pass0Errored?: boolean;
   userText: string; settleText?: string; extracted: () => readonly string[];
   /** Spec §5: the todo list before the prompt (null: get_state failed); the settle row's id and its send-back reason (§3.5 outcomes). */
   todoBefore: TodoSnapshot | null; settleDecisionId: string | null; settleReason?: SettleReason;
@@ -789,7 +791,8 @@ export class PlannerSupervisor {
       // an abort omp reported itself (no supervisor failure set) is never a success (B6)
       if (how === "abort" && !turn.failure) turn.failure = { type: "planner_exit", ref: "agent_aborted" };
       // spec §3.5 (senior W6): a model error in pass 1 never enters retryNextLeg; the turn completes with pass 0's text
-      if (turn.sentBack && turn.lastError !== undefined && !turn.failure && (turn.passes[0]?.final ?? "").trim().length > 0) { turn.continuationFailed = true; turn.lastError = undefined; break; }
+      // A8: only an error IN pass 1 (the continuation seen, pass 0 itself clean); else the ordinary retry-or-fail path
+      if (turn.sentBack && turn.continuationSeen && !turn.pass0Errored && turn.lastError !== undefined && !turn.failure && (turn.passes[0]?.final ?? "").trim().length > 0) { turn.continuationFailed = true; turn.lastError = undefined; break; }
       if (turn.failure || turn.lastError === undefined) break;
       // an async-wait end is never omp's last word: no Houge retry may overlap the child's own work (codex final I2)
       if (turn.asyncWait) { turn.failure = { type: "model_error", ref: classifyOmpError(turn.lastError) }; break; }
@@ -866,7 +869,7 @@ export class PlannerSupervisor {
     if (!s) { turn.failure = { type: "planner_exit", ref: "planner not running" }; return false; }
     if (kind === "other") turn.retriedOther = true;
     turn.legIndex++;
-    turn.lastError = undefined;
+    turn.lastError = undefined; turn.pass0Errored = false; // the retried leg's pass 0 starts clean
     // senior plan W: the retried leg's session_stop is decided afresh, never answered from the failed leg's memo
     for (const k of [...turn.active.cache.keys()]) if (k.startsWith("settle:")) turn.active.cache.delete(k);
     Object.assign(turn, newDeferred());
@@ -1296,6 +1299,7 @@ export class PlannerSupervisor {
    */
   private onErrorFrame(t: Turn, text: string): void {
     t.lastError = text;
+    if (!t.continuationSeen) t.pass0Errored = true; // A8, as onAssistant
     if (t.n > 0 && t.recorded === t.n) return;
     const model = this.model.model;
     this.audit(t, {
@@ -1339,6 +1343,7 @@ export class PlannerSupervisor {
     if (t.sentBack && s.stopReason === "aborted") return; // spec §3.5: an aborted message after a send-back is not stored
     if (s.text.trim().length > 0) { const pass = t.passes[t.passes.length - 1]!; pass.texts.push(s.text); pass.final = s.text; t.lastText = s.text; }
     t.lastError = error;
+    if (error !== undefined && !t.continuationSeen) t.pass0Errored = true;
   }
 
   private armDeadline(t: Turn): void {
