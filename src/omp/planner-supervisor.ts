@@ -195,7 +195,7 @@ interface Turn {
   run_id: string; trustLevel: () => TrustLevel;
   /** Spec §3.5: pass 0 is the first answer, pass 1 opens at the continuation's agent_start; `lastText` is the current pass's final text. */
   passes: Pass[]; sentBack: boolean; sentBackKind?: SendBackKind; continuationSeen: boolean; continuationFailed?: boolean;
-  /** A8: a model error arrived before the continuation (pass 0's), so a pass-1 failure never delivers pass 0 as a success. */
+  /** A8/N2: pass 0 ended on a model error (read at the continuation), so a pass-1 failure never delivers pass 0 as a success. */
   pass0Errored?: boolean;
   /** A11.5: the turn ended on an abort (Houge's or omp's own); its settle outcome is a signal. */
   endedOnAbort?: boolean;
@@ -879,7 +879,7 @@ export class PlannerSupervisor {
     if (!s) { turn.failure = { type: "planner_exit", ref: "planner not running" }; return false; }
     if (kind === "other") turn.retriedOther = true;
     turn.legIndex++;
-    turn.lastError = undefined; turn.pass0Errored = false; // the retried leg's pass 0 starts clean
+    turn.lastError = undefined;
     // senior plan W: the retried leg's session_stop is decided afresh, never answered from the failed leg's memo
     for (const k of [...turn.active.cache.keys()]) if (k.startsWith("settle:")) turn.active.cache.delete(k);
     Object.assign(turn, newDeferred());
@@ -1291,6 +1291,8 @@ export class PlannerSupervisor {
   private onContinuation(t: Turn): void {
     if (!t.sentBack || t.continuationSeen) return;
     t.continuationSeen = true;
+    // N2: derived at the pass boundary, so omp's own auto-retry inside pass 0 (an error, then a good message) leaves it clean
+    t.pass0Errored = t.lastError !== undefined;
     const p0 = t.passes[0]!;
     if (p0.final.trim().length === 0 && t.settleText) { p0.final = t.settleText; t.lastText = t.settleText; }
     t.passes.push({ texts: [], final: "" });
@@ -1316,7 +1318,6 @@ export class PlannerSupervisor {
    */
   private onErrorFrame(t: Turn, text: string): void {
     t.lastError = text;
-    if (!t.continuationSeen) t.pass0Errored = true; // A8, as onAssistant
     if (t.n > 0 && t.recorded === t.n) return;
     const model = this.model.model;
     this.audit(t, {
@@ -1360,7 +1361,6 @@ export class PlannerSupervisor {
     if (t.sentBack && s.stopReason === "aborted") return; // spec §3.5: an aborted message after a send-back is not stored
     if (s.text.trim().length > 0) { const pass = t.passes[t.passes.length - 1]!; pass.texts.push(s.text); pass.final = s.text; t.lastText = s.text; }
     t.lastError = error;
-    if (error !== undefined && !t.continuationSeen) t.pass0Errored = true;
   }
 
   private armDeadline(t: Turn): void {

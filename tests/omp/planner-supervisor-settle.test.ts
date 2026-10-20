@@ -111,6 +111,14 @@ describe("passes and the continuation (spec §3.5)", () => {
     expect(outcome.done[0]).toMatchObject({ text: "first answer" });
     expect(session.prompts).toHaveLength(1);
   });
+  it("N2: omp's own auto-retry in pass 0 (an errored message_end, then a good one) leaves pass 0 clean: a pass-1 error still delivers pass 0, no retry", async () => {
+    const { session, h } = held(); const { store, sup, outcome } = harness(session);
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    h.say("", { stopReason: "error", errorMessage: "429 rate limit" }); h.say("first answer"); sendBack(sup);
+    h.emit({ type: "agent_start" }); h.say("half", { stopReason: "error", errorMessage: "429 rate limit" }); h.emit({ type: "agent_end" }); await sup.whenIdle();
+    expect(outcome.done[0]).toMatchObject({ text: "first answer" });
+    expect(session.prompts).toHaveLength(1);
+  });
   it("P2' fixture: two agent_start, one terminal agent_end → the turn settles exactly once", async () => {
     const { session, h } = held(); const { store, sup, outcome } = harness(session);
     const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
