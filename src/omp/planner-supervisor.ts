@@ -35,7 +35,7 @@ import type { RoleResolver } from "./role-resolver.js";
 import { writeSeatbeltProfiles } from "./seatbelt.js";
 import { resolveLessonSessionReset } from "./session-seed.js";
 import { decideSettle, SETTLE_BUDGET_MS } from "./settle-judge.js";
-import { finalAudit, settleStateFor, todoSnapshot, writeOutcome, writeSettleOutcomes, type SettleCtx, type SettleTurn, type Snapshot } from "./supervisor-settle.js";
+import { finalAudit, settleStateFor, todoSnapshot, writeOutcome, writeSettleOutcomes, type Delivered, type SettleCtx, type SettleTurn, type Snapshot } from "./supervisor-settle.js";
 import { verifyInstalledWrapper } from "./shell-wrapper.js";
 import { chatWorkspace } from "./workspace.js";
 import type { ToolDeclaration } from "./tool-decls.js";
@@ -803,8 +803,9 @@ export class PlannerSupervisor {
     // senior plan W: the audit's todo state is taken before delivery (one bounded RPC), so it is this turn's
     const snap: Snapshot | null | undefined = !turn.failure && turn.sentBack && turn.continuationSeen && !turn.continuationFailed ? await todoSnapshot(ctx) : undefined;
     if (turn.failure) { this.finishFailure(turn, turn.failure); return; }
-    this.finishSuccess(turn);
-    if (snap !== undefined) void finalAudit(ctx, this.settleView(turn), snap).catch((e) => console.error(`planner supervisor: final audit failed: ${message(e)}`));
+    const delivered = this.delivered(turn);
+    this.finishSuccess(turn, delivered);
+    if (snap !== undefined) void finalAudit(ctx, this.settleView(turn), snap, delivered).catch((e) => console.error(`planner supervisor: final audit failed: ${message(e)}`));
   }
 
   private settleCtx(): SettleCtx {
@@ -1430,16 +1431,21 @@ export class PlannerSupervisor {
 
   // ── terminal ────────────────────────────────────────────────────────────────
 
-  private finishSuccess(t: Turn): void {
+  /** The reply Paco receives and its attachments; the final audit reads exactly this (2b-i final review A6). */
+  private delivered(t: Turn): Delivered {
+    // spec §3.5: a model error in pass 1 completes with pass 0 alone (an errored fragment is never delivered)
+    const used = t.continuationFailed ? t.passes.slice(0, 1) : t.passes;
+    const attachments = [...new Set(used.flatMap((p) => parseAttachments(p.final, this.workspace()).attachments))];
+    return { text: parseAttachments(replyOfPasses(used), this.workspace()).text, attachments };
+  }
+
+  private finishSuccess(t: Turn, delivered: Delivered): void {
     const { store, outcome, chatId } = this.d;
     t.finished = true;
     flushUnreported(store, t.active, this.d);
     this.endTrust(t); // spec §7.2: turn_trust_final at every turn end, success or failure
-    // spec §3.5: a model error in pass 1 completes with pass 0 alone (an errored fragment is never delivered)
-    const used = t.continuationFailed ? t.passes.slice(0, 1) : t.passes;
-    const reply = replyOfPasses(used);
-    const attachments = [...new Set(used.flatMap((p) => parseAttachments(p.final, this.workspace()).attachments))];
-    const { text } = parseAttachments(reply, this.workspace());
+    const { text } = delivered;
+    const attachments = [...delivered.attachments];
     const base = { worker_id: t.worker, text, duration_ms: Date.now() - t.startedAt, tool_calls: t.active.budget.usage().tool_calls };
     outcome.complete({ ...base, run_id: t.req.run_id, attachments, ...(t.laneButtons ? { buttons: t.laneButtons } : {}) });
     for (const m of t.merged) outcome.complete({ ...base, run_id: m, merged_into: t.req.run_id, attachments: [] });

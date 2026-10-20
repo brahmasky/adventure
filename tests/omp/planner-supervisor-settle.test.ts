@@ -230,6 +230,38 @@ describe("the settle request end to end (spec §3)", () => {
     // drainOutbox maps each key to the notification's payload itself ({ text }), as the other card tests read it
     expect(String((cards[0]![1] as { text: string }).text)).toMatch(/^⚠️ Settled unverified: You said you saved it/);
   });
+  // A6: the audit reads the text Paco receives (replyOfPasses after attachment parsing), never pass 1 alone
+  const unverified = (store: RunStore, run_id: string) => outcomes(store, run_id).filter(([sig]) => sig === "settle_unverified");
+  const cardsOf = (store: RunStore) => [...drainOutbox(store).entries()].filter(([k]) => k.startsWith("urgent:settle_unverified:"));
+  it("A6: pass 1 empty delivers pass 0 verbatim, so the audit reads pass 0's unsupported claim: settle_unverified and the card", async () => {
+    const { session, h } = held(); const { store, sup, outcome } = harness(session);
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    h.say("I've saved it."); await session.request(settleReq("I've saved it."));
+    h.emit({ type: "agent_start" }); h.emit({ type: "agent_end" }); await sup.whenIdle();
+    expect((outcome.done[0] as { text: string }).text).toBe("I've saved it.");
+    await until(() => unverified(store, run_id).length >= 1);
+    expect(unverified(store, run_id)).toEqual([["settle_unverified", "claim_saved"]]);
+    expect(cardsOf(store)).toHaveLength(1);
+  });
+  it("A6: a short pass 1 (\"Done.\") delivers pass 0 + marker + pass 1, and the audit reads all of it", async () => {
+    const { session, h } = held(); const { store, sup, outcome } = harness(session);
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    const p0 = "I've saved it to your notes, along with the other preferences you listed earlier today.";
+    h.say(p0); await session.request(settleReq(p0));
+    h.emit({ type: "agent_start" }); h.say("Done."); h.emit({ type: "agent_end" }); await sup.whenIdle();
+    expect((outcome.done[0] as { text: string }).text).toBe(`${p0}\n${RESTATED_MARKER}\nDone.`);
+    await until(() => unverified(store, run_id).length >= 1);
+    expect(unverified(store, run_id)).toEqual([["settle_unverified", "claim_saved"]]);
+    expect(cardsOf(store)).toHaveLength(1);
+  });
+  it("A6: a full restatement in pass 1 that passes the checks queues no card", async () => {
+    const { session, h } = held(); const { store, sup } = harness(session);
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    h.say("I've saved it."); await session.request(settleReq("I've saved it."));
+    h.emit({ type: "agent_start" }); h.say("Nothing is stored yet; tell me what to keep and I will store it now."); h.emit({ type: "agent_end" }); await sup.whenIdle();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(unverified(store, run_id)).toEqual([]); expect(cardsOf(store)).toHaveLength(0);
+  });
   it("the production redactor strips a planted secret and the bridge token from the real Jev request (spec §3.1)", async () => {
     const bodies: string[] = [];
     const spy = (ps: number[]) => (_run_id: string) => async (r: JevRequest) => { bodies.push(JSON.stringify(r)); return jev(ps)(r); };

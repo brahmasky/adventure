@@ -44,13 +44,14 @@ export async function todoSnapshot(ctx: SettleCtx): Promise<Snapshot | null> {
   }
 }
 
-export function settleStateFor(ctx: SettleCtx, t: SettleTurn, text: string, now: number, snap: Snapshot | null): SettleState {
+/** `attachments`: the delivered count (the audit's text has its markers parsed out already); absent, parsed from `text`. */
+export function settleStateFor(ctx: SettleCtx, t: SettleTurn, text: string, now: number, snap: Snapshot | null, attachments?: number): SettleState {
   const evidence = ctx.store.getLedgerEvents(t.run_id);
   const raw: RawSettleState = {
     run_id: t.run_id, text, pass: t.passes.length - 1, sentBack: t.sentBack, trust: t.trustLevel(), lastCallDenied: lastCallDenied(evidence),
     steerQueued: (snap?.queued ?? 0) > 0 || ctx.queueHasTelegram(),
     msLeft: t.deadline ? t.deadlineLeft - (now - t.deadlineAt) : t.deadlineLeft, aborting: t.aborting, evidence, todoBefore: t.todoBefore,
-    todoNow: snap?.todo ?? null, pacoMessage: t.userText, attachmentsAccepted: parseAttachments(text, ctx.workspace).attachments.length
+    todoNow: snap?.todo ?? null, pacoMessage: t.userText, attachmentsAccepted: attachments ?? parseAttachments(text, ctx.workspace).attachments.length
   };
   const token = ctx.bridgeToken();
   // 2b-i final review A1: the turn's extracted codes and links are masked as on the injection path (injection-judge stateOf);
@@ -73,13 +74,16 @@ export function writeSettleOutcomes(ctx: SettleCtx, t: SettleTurn): void {
   writeOutcome(ctx, t, "settle_sent_back", t.settleReason ?? "settled");
 }
 
+/** What Paco received: the reply text after attachment parsing, and the attachments sent with it. */
+export interface Delivered { text: string; attachments: readonly string[] }
+
 /**
- * The final-pass audit (2b-R10): the code checks on pass 1's final text with the todo snapshot taken BEFORE the reply was
- * delivered (senior plan W: a later get_state could belong to the next turn), then Jev re-asked after delivery; one card per turn.
+ * The final-pass audit (2b-R10): the code checks on the DELIVERED reply (2b-i final review A6: an empty pass 1 delivers pass 0,
+ * a short one pass 0 + marker + pass 1) with the todo snapshot taken BEFORE the reply was delivered (senior plan W: a later
+ * get_state could belong to the next turn), then Jev re-asked after delivery; one card per turn.
  */
-export async function finalAudit(ctx: SettleCtx, t: SettleTurn, snap: Snapshot | null): Promise<void> {
-  const text = t.passes[t.passes.length - 1]?.final ?? "";
-  const state = settleStateFor(ctx, t, text, Date.now(), snap);
+export async function finalAudit(ctx: SettleCtx, t: SettleTurn, snap: Snapshot | null, delivered: Delivered): Promise<void> {
+  const state = settleStateFor(ctx, t, delivered.text, Date.now(), snap, delivered.attachments.length);
   let carded = false;
   const card = (reason: SettleReason) => {
     if (carded) return;
