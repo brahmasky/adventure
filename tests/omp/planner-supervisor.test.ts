@@ -1,26 +1,23 @@
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
 import { lessonSetFingerprint } from "../../src/run/lesson-render.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
-import { PlannerSupervisor, RETRY_NOTE, isModelRefusal, parseAttachments, settlesTurn, writeHougeConfigFile, type PlannerSessionLike, type SupervisorDeps, type SupervisorState, type TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
+import { PlannerSupervisor, RETRY_NOTE, isModelRefusal, parseAttachments, settlesTurn, writeHougeConfigFile, type SupervisorDeps } from "../../src/omp/planner-supervisor.js";
 import type { OmpFrame } from "../../src/omp/omp-frames.js";
-import { PlannerRpcError, type ExitInfo, type PlannerSessionOptions, type PlannerState } from "../../src/omp/planner-session.js";
+import { PlannerRpcError, type PlannerSessionOptions } from "../../src/omp/planner-session.js";
 import { ToolRegistry } from "../../src/tools/tool-registry.js";
 import { BridgeServer } from "../../src/omp/bridge-server.js";
 import { chatWorkspace } from "../../src/omp/workspace.js";
-import { formatModelString, parseModelString, type ModelString } from "../../src/omp/model-string.js";
-import { selectorKey } from "../../src/omp/model-roles.js";
+import { formatModelString } from "../../src/omp/model-string.js";
 import type { Effort, TurnRole } from "../../src/jev/tree-policy.js";
-import { openManifestClient } from "../helpers/bridge-manifest.js";
 import { drainOutbox } from "../helpers/omp-worker.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 import { maxLoopGap, slowVersionBin } from "../helpers/event-loop.js";
 import { setSharedOmpVersionCacheForTest } from "../../src/omp/omp-version-cache.js";
-import { cleanups, fakeRoles, fakeSession, FAKE_CLOCK, harness, heldSession, req, until, untilState, never, type Fake, type Outcome, type Script } from "../helpers/supervisor-harness.js";
+import { cleanups, fakeRoles, fakeSession, FAKE_CLOCK, harness, heldSession, req, until, untilState, never, type Fake, type Outcome } from "../helpers/supervisor-harness.js";
 
 afterEach(async () => { setSharedOmpVersionCacheForTest(null); for (const c of cleanups.splice(0)) await c(); });
 

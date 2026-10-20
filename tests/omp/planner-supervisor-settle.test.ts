@@ -70,21 +70,24 @@ describe("passes and the continuation (spec §3.5)", () => {
     const { session, h } = held(); const { store, sup, outcome } = harness(session);
     const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
     h.say("first answer"); sendBack(sup);
-    h.emit({ type: "agent_start" }); h.say("partial second", { stopReason: "aborted" }); h.emit({ type: "agent_end", aborted: true }); await sup.whenIdle();
+    h.emit({ type: "agent_start" }); h.say("partial second", { stopReason: "aborted" });
+    expect(sup.turnPassesForTest()[1]!.texts).toEqual([]); // the aborted message is not stored
+    h.emit({ type: "agent_end", aborted: true }); await sup.whenIdle();
     expect(outcome.failed[0]).toMatchObject({ error_type: "planner_exit", partial: "first answer" });
   });
   it("a model error in pass 1 completes with pass 0's text and never retries on another model", async () => {
     const { session, h } = held(); const { store, sup, outcome } = harness(session);
     const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
     h.say("first answer"); sendBack(sup);
-    h.emit({ type: "agent_start" }); h.emit({ type: "error", error: "429 rate limit" }); h.emit({ type: "agent_end" }); await sup.whenIdle();
+    h.emit({ type: "agent_start" }); h.say("half", { stopReason: "error", errorMessage: "429 rate limit" }); h.emit({ type: "error", error: "429 rate limit" }); h.emit({ type: "agent_end" }); await sup.whenIdle();
     expect(outcome.done[0]).toMatchObject({ text: "first answer" });
     expect(session.prompts).toHaveLength(1);
   });
   it("P2' fixture: two agent_start, one terminal agent_end → the turn settles exactly once", async () => {
     const { session, h } = held(); const { store, sup, outcome } = harness(session);
     const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
-    h.say("a"); sendBack(sup); h.emit({ type: "agent_start" }); h.say("b"); h.emit({ type: "agent_end" }); await sup.whenIdle();
+    h.say("a"); h.emit({ type: "agent_end", isTerminal: false }); sendBack(sup); h.emit({ type: "agent_start" }); h.say("b"); h.emit({ type: "agent_end" }); await sup.whenIdle();
+    expect((outcome.done[0] as { text: string }).text).toBe("b");
     session.emitForTest({ type: "agent_end" });
     await new Promise((r) => setTimeout(r, 20));
     expect(outcome.done).toHaveLength(1); expect(outcome.failed).toHaveLength(0);

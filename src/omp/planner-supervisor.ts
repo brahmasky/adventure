@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
+import { join } from "node:path";
 import { BudgetLedger } from "../budget/budget-ledger.js";
 import type { InjectionJudge } from "../decisions/injection-judge.js";
 import { rankOf, type TrustLevel } from "../decisions/entries/turn-trust.js";
@@ -25,7 +25,7 @@ import { classifyOmpError, frameErrorText, RETRYABLE_ERROR_KINDS, summarizeAssis
 import type { OmpCheckResult } from "./omp-version.js";
 import { sharedOmpVersionCache } from "./omp-version-cache.js";
 import { PlannerRpcError, PlannerSession, type ExitInfo, type PlannerSessionOptions } from "./planner-session.js";
-import { type PathContext } from "./protected-paths.js";
+import type { PathContext } from "./protected-paths.js";
 import { parseAttachments } from "./attachments.js";
 import type { RoleResolver } from "./role-resolver.js";
 import { writeSeatbeltProfiles } from "./seatbelt.js";
@@ -359,6 +359,7 @@ export class PlannerSupervisor {
 
   /** @internal Tests only: the live turn's ActiveTurn, as the bridge sees it. */
   activeTurnForTest(): ActiveTurn | null { return this.turn?.active ?? null; }
+  turnPassesForTest(): readonly Pass[] { return this.turn?.passes ?? []; }
 
   /** /kill and a guard pause: every queued run fails `killed`, the live turn aborts, the child stops (≈5 s bound). */
   async abortAll(reason: "killed" | "guard"): Promise<void> {
@@ -1370,8 +1371,10 @@ export class PlannerSupervisor {
     t.finished = true;
     flushUnreported(store, t.active);
     this.endTrust(t); // spec §7.2: turn_trust_final at every turn end, success or failure
-    const reply = replyOfPasses(t.passes);
-    const attachments = [...new Set(t.passes.flatMap((p) => parseAttachments(p.final, this.workspace()).attachments))];
+    // spec §3.5: a model error in pass 1 completes with pass 0 alone (an errored fragment is never delivered)
+    const used = t.continuationFailed ? t.passes.slice(0, 1) : t.passes;
+    const reply = replyOfPasses(used);
+    const attachments = [...new Set(used.flatMap((p) => parseAttachments(p.final, this.workspace()).attachments))];
     const { text } = parseAttachments(reply, this.workspace());
     const base = { worker_id: t.worker, text, duration_ms: Date.now() - t.startedAt, tool_calls: t.active.budget.usage().tool_calls };
     outcome.complete({ ...base, run_id: t.req.run_id, attachments, ...(t.laneButtons ? { buttons: t.laneButtons } : {}) });
