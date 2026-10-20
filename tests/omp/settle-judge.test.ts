@@ -102,6 +102,13 @@ describe("decideSettle", () => {
     expect(settleHealth(store, d.env, "2026-10-20T10:00:00.000Z")).toBe(2);
     expect(store.countDecisionsWithReasons("turn.settle", ["budget", "todo_unavailable"], "2026-10-20T09:00:00.000Z")).toBe(2);
   });
+  it("R0': pass_errored is a health reason: three rows in the hour count 3 and page once through decision_health", async () => {
+    const { d, store } = deps(answering([0, 0, 0, 0]));
+    for (let k = 0; k < 3; k++) await decideSettle(d, buildSettleState(raw({ passErrored: true }), (x) => x), Date.now() + SETTLE_BUDGET_MS);
+    expect(rows(store).map((x) => x.reason_code)).toEqual(["pass_errored", "pass_errored", "pass_errored"]);
+    expect(settleHealth(store, d.env, "2026-10-20T10:00:00.000Z")).toBe(3);
+    expect(store.listOpenIncidents().filter((i) => i.kind === "decision_health" && i.subject === "turn.settle")).toHaveLength(1);
+  });
   it("a row older than an hour is not counted", async () => {
     const { d, store } = deps(answering([0, 0, 0, 0]), "2026-10-20T08:00:00.000Z");
     await decideSettle(d, buildSettleState(raw(), (x) => x), Date.now() - 1);

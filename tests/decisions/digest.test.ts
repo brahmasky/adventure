@@ -207,3 +207,16 @@ describe("runDecisionDigestTick", () => {
     expect([resolveDigestAt({}), resolveDigestAt({ HOUGE_DECISION_DIGEST_AT: "9pm" }), resolveDigestAt({ HOUGE_DECISION_DIGEST_AT: "07:05" })]).toEqual(["21:00", "21:00", "07:05"]);
   });
 });
+
+describe("R0': turn.settle's health reasons in the digest", () => {
+  it("counts budget, todo_unavailable and pass_errored rows per reason under Health; a day without them adds no line", () => {
+    const store = RunStore.openInMemory();
+    const S = (reason_code: string) => D({ entry_id: "turn.settle", stage: "settle", rung: reason_code === "budget" ? "fail" : "rule", verdict: "settle", p: null, reason_code });
+    for (const r of ["pass_errored", "pass_errored", "todo_unavailable", "settled"]) store.insertDecision(S(r));
+    const text = buildDecisionDigest(store, NOW, ENV)!.text;
+    expect(text).toContain("**Health**");
+    expect(text).toContain("· turn.settle unfinished: budget 0 · todo_unavailable 1 · pass_errored 2");
+    const clean = RunStore.openInMemory(); clean.insertDecision(S("settled"));
+    expect(buildDecisionDigest(clean, NOW, ENV)?.text ?? "").not.toContain("turn.settle unfinished");
+  });
+});

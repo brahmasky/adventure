@@ -2,6 +2,7 @@ import type { NotificationButton } from "../notifications/notification-types.js"
 import type { DecisionRow, RunStore } from "../run/run-store.js";
 import { formatInstantInZone, resolveDisplayZone } from "../run/schedule-spec.js";
 import { REGISTRY } from "./registry.js";
+import { SETTLE_HEALTH_REASONS, TURN_SETTLE_ID } from "./entries/turn-settle.js";
 import { TRUST_ORDER, rankOf, type TrustLevel } from "./entries/turn-trust.js";
 import { TRUST_TAP_BUDGET } from "./trust-ask.js";
 import type { AnyEntry, DecidedBy } from "./types.js";
@@ -128,6 +129,13 @@ function healthLines(store: RunStore, rows: readonly DecisionRow[], since: strin
   });
 }
 
+/** R0': turn.settle's unfinished settles per health reason over the window; null when there are none. */
+export function settleHealthLine(rows: readonly DecisionRow[]): string | null {
+  const counts = SETTLE_HEALTH_REASONS.map((r) => [r, rows.filter((x) => x.entry_id === TURN_SETTLE_ID && x.reason_code === r).length] as const);
+  if (counts.every(([, n]) => n === 0)) return null;
+  return `· ${TURN_SETTLE_ID} unfinished: ${counts.map(([r, n]) => `${r} ${n}`).join(" · ")}`;
+}
+
 export interface InjectionCounts { results: number; withheld: number; withheldByJev: number; framed: number; near: number; lost: number }
 
 /** tool.injection, counted (Ruling 19: never offered for a blind tap). "Near the bar": a Jev verdict within UNSURE_BAND of 0.5. */
@@ -213,7 +221,8 @@ export function decisionWindow(store: RunStore, now: string): { since: string; a
 export function buildDecisionDigest(store: RunStore, now: string, env: NodeJS.ProcessEnv = process.env, registry: readonly AnyEntry[] = REGISTRY): Digest | null {
   const { since, all, rows } = decisionWindow(store, now);
   // Health reads every row in the window, orphans included: a day of only unsettled rows still reports its failures.
-  const health = healthLines(store, all, since, now);
+  const settleHealth = settleHealthLine(all);
+  const health = [...healthLines(store, all, since, now), ...(settleHealth ? [settleHealth] : [])];
   const stale = staleBarLines(store);
   if (rows.length === 0 && health.length === 0 && stale.length === 0) return null;
   const tz = resolveDisplayZone(env);

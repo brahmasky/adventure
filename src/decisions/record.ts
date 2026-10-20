@@ -15,8 +15,8 @@ export const DECISION_FALLBACK_WINDOW_MS = 60 * 60 * 1000;
  * jev_skip_rate). Their Jev failures do not count toward decision_fallback: one call, one page. tool.injection joins them
  * (Paco 2026-10-14, "no alert, just log"): its plain timeouts and outages are logged and counted in the digest only; the
  * turn's trust rise is the safety answer, and 429/auth still page through the Jev incidents. turn.settle joins them
- * (2b-i ruling 14): a Jev failure settles the turn as today and the Jev incident is the page; its own budget and
- * todo_unavailable rows page through decision_health (settle-judge.ts).
+ * (2b-i ruling 14): a Jev failure settles the turn as today and the Jev incident is the page; its own budget,
+ * todo_unavailable and pass_errored rows page through decision_health (settle-judge.ts).
  */
 const JEV_PAGED_ELSEWHERE: ReadonlySet<string> = new Set([...FRONT_DOOR_ENTRIES, TOOL_INJECTION_ID, TURN_SETTLE_ID]);
 const RECORD_FAILED: ReadonlySet<string> = new Set(["decision_record_failed"]);

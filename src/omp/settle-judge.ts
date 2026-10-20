@@ -1,5 +1,5 @@
 import { decide } from "../decisions/decide.js";
-import { SETTLE_JEV_MS, SETTLE_QUESTION_BARS, TURN_SETTLE, TURN_SETTLE_ID, type SettleDetail, type SettleReason, type SettleState, type SettleVerdict } from "../decisions/entries/turn-settle.js";
+import { SETTLE_HEALTH_REASONS, SETTLE_JEV_MS, SETTLE_QUESTION_BARS, TURN_SETTLE, TURN_SETTLE_ID, type SettleDetail, type SettleReason, type SettleState, type SettleVerdict } from "../decisions/entries/turn-settle.js";
 import { claimsCheck, pendingCount, todoCheck } from "../decisions/settle-checks.js";
 import { storeRecorder } from "../decisions/record.js";
 import type { RungResult } from "../decisions/types.js";
@@ -17,7 +17,7 @@ export const SETTLE_BUDGET_MS = 4_000;
 export const SETTLE_JEV_MIN_MS = 300;
 export const SETTLE_HEALTH_LIMIT = 3;
 export const SETTLE_HEALTH_WINDOW_MS = 60 * 60 * 1000;
-const HEALTH_REASONS: readonly string[] = ["budget", "todo_unavailable"];
+const HEALTH_REASONS: readonly string[] = SETTLE_HEALTH_REASONS;
 const HEALTH_KIND: ReadonlySet<string> = new Set(["decision_health"]);
 export const NOTE_TAIL = "Your reply will replace the previous one: restate your complete final answer. Do not start a step that needs Paco's approval; say what is pending.";
 export const REASON_LINES: Readonly<Record<"claim_scheduled" | "claim_saved" | "claim_attached" | "claim_sent", string>> = {
@@ -84,7 +84,7 @@ export async function decideSettle(d: SettleDeps, s: SettleState, deadline: numb
   return { sendBack: true, kind: r.rung === "system_one" ? JEV_PROVIDER : "rule", reason, note: settleNote(reason, s), decisionId: r.decisionId };
 }
 
-/** Rows with reason budget or todo_unavailable in the last hour (spec §3.3; decision_fallback excludes both). */
+/** Rows with a health reason (budget, todo_unavailable, pass_errored) in the last hour (spec §3.3; decision_fallback excludes them). */
 export function settleHealth(store: RunStore, _env: NodeJS.ProcessEnv, now: string): number {
   return store.countDecisionsWithReasons(TURN_SETTLE_ID, HEALTH_REASONS, new Date(Date.parse(now) - SETTLE_HEALTH_WINDOW_MS).toISOString());
 }
@@ -97,7 +97,7 @@ function settleHealthAfter(d: SettleDeps, now: string, reason: SettleReason | nu
     if (n < SETTLE_HEALTH_LIMIT) return;
     const opened = openAlertedIncident(d.store, { kind: "decision_health", subject: TURN_SETTLE_ID, detail: { entry: TURN_SETTLE_ID, count: n, limit: SETTLE_HEALTH_LIMIT, window_min: 60 }, env: {}, now });
     const incident = d.store.findOpenIncident(d.store.incidentFingerprint("decision_health", TURN_SETTLE_ID));
-    if (opened && incident) enqueueUrgentCard(d.store, { chat_id: d.chatId, key: `decision_health:${incident.incident_id}`, text: `⚠️ *turn.settle* could not finish ${n} settles in the last hour (budget or todo state unavailable). Replies are delivered unsettled; the next complete settle clears this.` });
+    if (opened && incident) enqueueUrgentCard(d.store, { chat_id: d.chatId, key: `decision_health:${incident.incident_id}`, text: `⚠️ *turn.settle* could not finish ${n} settles in the last hour (budget, todo state unavailable, or the planner's model erroring). Replies are delivered unsettled; the next complete settle clears this.` });
   } catch (e) { console.error(`settle: health bookkeeping failed: ${e instanceof Error ? e.message : String(e)}`); }
 }
 
