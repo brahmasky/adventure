@@ -114,4 +114,11 @@ describe("supervisorDeps wires turn.settle", () => {
     expect(jevFetch).toHaveBeenCalledTimes(1);
     vi.unstubAllEnvs();
   });
+
+  it("a gateHold option reaches the supervisor deps unchanged (the live gate's seam; absent by default)", () => {
+    const store = RunStore.openInMemory();
+    const read = (o: Parameters<typeof ompWorker>[2]) => (ompWorker(store, mkdtempSync(join(tmpdir(), "hhold-")), o) as unknown as { supervisorDeps: (c: string) => { gateHold?: unknown } }).supervisorDeps("42").gateHold;
+    expect(read({ gateHold: { settleMs: 3_800 } })).toEqual({ settleMs: 3_800 });
+    expect(read({})).toBeUndefined();
+  });
 });

@@ -4,7 +4,7 @@ import { BudgetLedger } from "../../src/budget/budget-ledger.js";
 import type { GoogleApiDeps } from "../../src/capabilities/google-api.js";
 import { TURN_ACTIONS } from "../../src/contracts/task-contract.js";
 import { CoreWorker, type MediaWorkerDeps } from "../../src/core/core-worker.js";
-import { createBridgeHandler, type ActiveTurn, type CallResult } from "../../src/omp/bridge-handler.js";
+import { createBridgeHandler, type ActiveTurn, type CallResult, type GateHold } from "../../src/omp/bridge-handler.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { loadToolDeclarations, TOOL_DECLS_DIR } from "../../src/omp/tool-decls.js";
 import { chatWorkspace } from "../../src/omp/workspace.js";
@@ -25,7 +25,7 @@ export function ompWorker(
     llm?: Adapter; web?: Adapter; http?: Adapter; media?: MediaWorkerDeps; project?: string; google?: GoogleApiDeps;
     codex?: (input: Record<string, unknown>) => ToolAdapterResult | Promise<ToolAdapterResult>; time?: Adapter;
     embed?: (text: string) => Promise<Float32Array | null>; operator?: Identity;
-    jevFetch?: typeof fetch; jevNow?: () => Date; broker?: SecretBroker; roles?: RoleResolver;
+    jevFetch?: typeof fetch; jevNow?: () => Date; broker?: SecretBroker; roles?: RoleResolver; gateHold?: GateHold;
   } = {}
 ): CoreWorker {
   const llm: Adapter = o.llm ?? (async () => ({ ok: true, output: { answer: "stub" } }));
@@ -33,7 +33,8 @@ export function ompWorker(
     store, o.project ?? join(root, "project"), llm, o.web, o.codex, undefined, o.http, o.broker, o.time, o.embed ?? (async () => null),
     o.google, o.media, {
       dataDir: root, distDir: tmpOmpDist(root), ...(o.operator ? { operator: o.operator } : {}),
-      ...(o.jevFetch ? { jevFetch: o.jevFetch } : {}), ...(o.jevNow ? { jevNow: o.jevNow } : {}), ...(o.roles ? { roles: o.roles } : {})
+      ...(o.jevFetch ? { jevFetch: o.jevFetch } : {}), ...(o.jevNow ? { jevNow: o.jevNow } : {}), ...(o.roles ? { roles: o.roles } : {}),
+      ...(o.gateHold ? { gateHold: o.gateHold } : {})
     }
   );
 }

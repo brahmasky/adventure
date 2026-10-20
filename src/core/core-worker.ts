@@ -138,7 +138,7 @@ import { collectHougeStatus, renderHougeStatus } from "../status/houge-status.js
 import {
   executeMemoryCorrect, memoryWritePreflight, newMemoryTurnState, type MemoryToolDeps, type MemoryTurnState
 } from "../capabilities/memory-correct.js";
-import type { ActiveTurn } from "../omp/bridge-handler.js";
+import type { ActiveTurn, GateHold } from "../omp/bridge-handler.js";
 import type { ExternalReadResult } from "../omp/external-read.js";
 import { ompConfigProblems, resolveOmpCatalogConfig, resolveOmpConfig, type OmpConfig } from "../omp/omp-config.js";
 import { readOmpCatalog } from "../omp/model-catalog.js";
@@ -346,6 +346,8 @@ export interface OmpWorkerOptions {
   jevNow?: () => Date;
   /** The model-role service; default one over `omp models --json`. Tests inject a resolver over a fixture catalog. */
   roles?: RoleResolver;
+  /** Live-gate seam only (scripts/live-gate-ladder-2b-hooks.mjs): holds inside judge_read and settle. */
+  gateHold?: GateHold;
 }
 
 const OMP_CONFIG_INCIDENT: ReadonlySet<string> = new Set(["omp_config_invalid"]);
@@ -2379,7 +2381,8 @@ export class CoreWorker {
       resolveMessage: (claim) => this.resolveOmpMessage(claim),
       triage: (i) => this.triageTurn(i),
       roles: this.roles,
-      settleClient: (run_id) => this.settleClient(run_id)
+      settleClient: (run_id) => this.settleClient(run_id),
+      ...(this.ompOptions.gateHold ? { gateHold: this.ompOptions.gateHold } : {})
     };
   }
 
