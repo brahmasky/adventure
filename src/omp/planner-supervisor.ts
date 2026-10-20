@@ -236,6 +236,12 @@ interface Turn {
 }
 
 export interface Pass { texts: string[]; final: string }
+/** 2b-i final review A9: the pass-1 failures after which a complete, clean pass 0 is delivered (as continuationFailed), never lost. */
+const PASS1_RESCUED: ReadonlySet<PlannerFailure> = new Set<PlannerFailure>(["turn_timeout", "frame_idle", "planner_exit"]);
+function pass1Lost(t: Turn): boolean {
+  return t.failure !== undefined && PASS1_RESCUED.has(t.failure.type) && t.sentBack && t.continuationSeen && !t.pass0Errored
+    && (t.passes[0]?.final ?? "").trim().length > 0;
+}
 /** 2b-i §3.5 (senior W12): the code fallback joins pass 0 and a too-short pass 1 under this line, so Paco can see it was joined. */
 export const RESTATED_MARKER = "— restated: —";
 
@@ -798,6 +804,7 @@ export class PlannerSupervisor {
       if (turn.asyncWait) { turn.failure = { type: "model_error", ref: classifyOmpError(turn.lastError) }; break; }
       if (!(await this.retryNextLeg(turn, turn.lastError))) break;
     }
+    if (pass1Lost(turn)) { this.recordFailureLedger(turn, turn.failure!); delete turn.failure; turn.continuationFailed = true; }
     this.clearTimers(turn);
     if (turn.asyncWait) await this.dropAsyncChild(turn); // before the terminal write (codex final I1)
     await drainJudges(turn.active, JUDGE_DRAIN_MS); // 2b-R5: in-flight read judgements complete (bounded) before flush and finalize
@@ -1463,12 +1470,17 @@ export class PlannerSupervisor {
     t.finished = true;
     flushUnreported(store, t.active, this.d);
     this.endTrust(t); // spec §7.2: turn_trust_final at every turn end, success or failure
-    if (t.n > t.recorded || (t.dispatched && t.n === 0)) this.recordAborted(t, f.ref === DAEMON_SHUTDOWN ? "shutdown" : "aborted");
-    if (f.type === "turn_timeout" || f.type === "frame_idle") store.recordLoopHalted(t.req.run_id, { reason: f.type, steps: t.n });
+    this.recordFailureLedger(t, f);
     const base = { worker_id: t.worker, error_ref: f.ref, ...((t.passes[0]?.final || t.lastText) ? { partial: t.passes[0]?.final || t.lastText } : {}) };
     outcome.fail({ ...base, run_id: t.req.run_id, error_type: f.type });
     for (const m of t.merged) outcome.fail({ ...base, run_id: m, error_type: "merged_parent_failed" });
     this.routeEnd(t, "planner_failed");
+  }
+
+  /** The failure's own ledger rows (the aborted request's llm_attempt, the halt): written whether the turn fails or A9 rescues pass 0. */
+  private recordFailureLedger(t: Turn, f: { type: PlannerFailure; ref: string }): void {
+    if (t.n > t.recorded || (t.dispatched && t.n === 0)) this.recordAborted(t, f.ref === DAEMON_SHUTDOWN ? "shutdown" : "aborted");
+    if (f.type === "turn_timeout" || f.type === "frame_idle") this.d.store.recordLoopHalted(t.req.run_id, { reason: f.type, steps: t.n });
   }
 
   /** The verdict row's handler outcome (spec §6) for a turn the tree routed with a verdict id; a lane turn has no route. */

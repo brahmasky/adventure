@@ -73,14 +73,35 @@ describe("passes and the continuation (spec §3.5)", () => {
     h.emit({ type: "agent_start" }); h.say("Here is the full report.\n[[attach: r.txt]]"); h.emit({ type: "agent_end" }); await sup.whenIdle();
     expect(outcome.done[0]).toMatchObject({ text: "Here is the full report.", attachments: [join(ws, "r.txt")] });
   });
-  it("an aborted assistant message after a send-back is not stored; an abort in pass 1 fails with pass 0 as partial", async () => {
+  it("an aborted assistant message after a send-back is not stored; an abort in pass 1 delivers pass 0 (A9: a complete pass 0 is never lost)", async () => {
     const { session, h } = held(); const { store, sup, outcome } = harness(session);
     const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
     h.say("first answer"); sendBack(sup);
     h.emit({ type: "agent_start" }); h.say("partial second", { stopReason: "aborted" });
     expect(sup.turnPassesForTest()[1]!.texts).toEqual([]); // the aborted message is not stored
     h.emit({ type: "agent_end", aborted: true }); await sup.whenIdle();
-    expect(outcome.failed[0]).toMatchObject({ error_type: "planner_exit", partial: "first answer" });
+    expect(outcome.failed).toHaveLength(0); expect(outcome.done[0]).toMatchObject({ text: "first answer" });
+  });
+  it("A9: a turn_timeout in pass 1 delivers the complete pass 0 (never TIMEOUT_TEXT) and still records the halt", async () => {
+    const { session, h } = held(); const { store, sup, outcome } = harness(session, { HOUGE_OMP_TURN_TIMEOUT_MS: "300" });
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    h.say("first answer"); sendBack(sup); h.emit({ type: "agent_start" }); h.say("half of the second");
+    await sup.whenIdle();
+    expect(outcome.failed).toHaveLength(0); expect(outcome.done[0]).toMatchObject({ text: "first answer" });
+    expect(store.getLedgerEvents(run_id).find((e) => e.event_type === "loop_halted")?.payload).toMatchObject({ reason: "turn_timeout" });
+  });
+  it("A9: the child exits in pass 1 (planner_exit): pass 0 is delivered, not lost", async () => {
+    const { session, h } = held(); const { store, sup, outcome } = harness(session);
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    h.say("first answer"); sendBack(sup); h.emit({ type: "agent_start" }); session.exit(1);
+    await sup.whenIdle();
+    expect(outcome.failed).toHaveLength(0); expect(outcome.done[0]).toMatchObject({ text: "first answer" });
+  });
+  it("A9: an EMPTY pass 0 is not rescued: a pass-1 timeout still fails the turn", async () => {
+    const { session, h } = held(); const { store, sup, outcome } = harness(session, { HOUGE_OMP_TURN_TIMEOUT_MS: "300" });
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    sendBack(sup); h.emit({ type: "agent_start" }); await sup.whenIdle();
+    expect(outcome.done).toHaveLength(0); expect(outcome.failed[0]).toMatchObject({ error_type: "turn_timeout" });
   });
   it("a model error in pass 1 completes with pass 0's text and never retries on another model", async () => {
     const { session, h } = held(); const { store, sup, outcome } = harness(session);
@@ -360,6 +381,14 @@ describe("the settle request end to end (spec §3)", () => {
     h.emit({ type: "error", error: "boom" }); h.emit({ type: "agent_end" }); await sup.whenIdle();
     expect(outcomes(store, run_id)).toEqual([["settle_discarded", "extension_timeout"]]);
     expect(outcome.done).toHaveLength(0); expect(outcome.failed[0]).toMatchObject({ error_type: "model_error", partial: "I've saved it." });
+  });
+  it("A9: a real send-back then a pass-1 child exit writes settle_discarded continuation_failed", async () => {
+    const { session, h } = held(); const { store, sup, outcome } = harness(session);
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    h.say("I've saved it."); expect(await session.request(settleReq("I've saved it."))).toMatchObject({ sendBack: true });
+    h.emit({ type: "agent_start" }); session.exit(1); await sup.whenIdle();
+    expect(outcome.done[0]).toMatchObject({ text: "I've saved it." });
+    expect(outcomes(store, run_id)).toEqual([["settle_discarded", "continuation_failed"]]);
   });
   it("past the 4 s budget (the gate hold eats 3.8 s of it) Houge answers sendBack: false inside the extension's 5 s and the row is fail/budget", async () => {
     const { session, h } = held(); const { store, sup } = harness(session, {}, { settleClient: () => jev([0.9, 0.9, 0.9, 0.9]), gateHold: { settleMs: 3_800 } });
