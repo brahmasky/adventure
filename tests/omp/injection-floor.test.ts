@@ -10,7 +10,12 @@ const PEM = "-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY----
 const FIXTURES = [
   "plain notes about the login flow", PEM, '{"type": "service_account", "x": 1}', '{"client_secret": "abc"}', "# Netscape HTTP Cookie File\n.example\tTRUE\t/\tFALSE\t0\tsid\tv",
   "api_key: AKIAIOSFODNN7EXAMPLE\npassword=hunter2hunter2\ntoken=ghp_abcdefghijklmnopqrstuvwxyz0123", "api_key: AKIAIOSFODNN7EXAMPLE",
-  "abandon ability able about above absent absorb abstract absurd abuse access accident"
+  "abandon ability able about above absent absorb abstract absurd abuse access accident",
+  // omp's read format (live gate 2b-i case 9): a hashline header and an `N:` prefix on every line
+  "[/tmp/c.txt#9F]\n7:# Netscape HTTP Cookie File\n8:.example\tTRUE\t/\tFALSE\t0\tsid\tv",
+  "[/tmp/s.txt#1C]\n1:abandon ability able about above absent absorb abstract absurd abuse access accident",
+  "[/tmp/e.env#2D]\n1:api_key: AKIAIOSFODNN7EXAMPLE\n2:password=hunter2hunter2\n3:token=ghp_abcdefghijklmnopqrstuvwxyz0123",
+  "[/tmp/n.txt#3E]\n1:notes: 12:30 meeting"
 ];
 
 describe("injection-floor (the extension's copy)", () => {
@@ -21,6 +26,12 @@ describe("injection-floor (the extension's copy)", () => {
   it("content-check patterns are byte-equal to egress's and agree on the fixtures", () => {
     expect(CONTENT_SOURCES).toEqual(CONTENT_CHECK_SOURCES);
     for (const f of FIXTURES) expect([f.slice(0, 20), applyFloor(f).withheld]).toEqual([f.slice(0, 20), passageBlock(f) !== null || looksInjected(f)]);
+  });
+  it("floors omp's line-number-prefixed read text: a cookie jar, a seed line and three named secrets behind `N:`", () => {
+    expect(applyFloor("[/tmp/c.txt#9F]\n7:# Netscape HTTP Cookie File\n8:.example\tTRUE").withheld).toBe(true);
+    expect(applyFloor("[/tmp/s.txt#1C]\n1:abandon ability able about above absent absorb abstract absurd abuse access accident").withheld).toBe(true);
+    expect(applyFloor("[/tmp/e.env#2D]\n1:A_TOKEN=abcdefgh1\n2:B_SECRET=abcdefgh2\n3:C_PASSWORD=abcdefgh3").withheld).toBe(true);
+    expect(applyFloor("[/tmp/n.txt#3E]\n1:notes: 12:30 meeting").withheld).toBe(false);
   });
   it("withholds the whole text on any hit, with Houge's withheld note, and returns clean text unchanged", () => {
     const hit = `line one\n${PEM}\nline three`;

@@ -372,6 +372,30 @@ describe("passageBlock — the content check, on the RAW passage, locally (spec 
   });
 });
 
+describe("omp's read format: a hashline header and an `N:` prefix on every line (live gate 2b-i case 9)", () => {
+  // omp 18.12.3 returns read text as `[path#HASH]` then `1:…`, `2:…`; before this, `2:api_key: <value>` masked nothing and
+  // the value left for TypeSafe. The prefix is accepted only at line start, so a mid-line `x:3:api_key` is not a new key.
+  const one = (text: string) => splitEgress(text, 900, {})![0]!;
+  it("a secret-named key behind a line-number prefix is masked for Jev and in the planner copy (I1)", () => {
+    const read = "[/tmp/cfg.yml#1A2B]\n1:name: old\n3:api_key: ABCDEFGHIJKLMNOPQRSTUVWX\n4:mode: test";
+    expect(redactForJudge(read)).toBe(`[/tmp/cfg.yml#1A2B]\n1:name: old\n3:api_key: ${SECRET_MASK}\n4:mode: test`);
+    const p = one(read);
+    expect(p.out).not.toContain("ABCDEFGHIJKLMNOPQRSTUVWX"); expect(p.planner).not.toContain("ABCDEFGHIJKLMNOPQRSTUVWX");
+    expect(p.planner).toContain(`3:api_key: ${SECRET_MASK}`); expect(p.masked).toBe(1);
+    expect(redactForJudge("12:password=hunter2hunter2")).toBe(`12:password=${SECRET_MASK}`);
+    expect(one("12:password=hunter2hunter2").planner).toBe(`12:password=${SECRET_MASK}`);
+  });
+  it("the prefix counts only at line start: a mid-line `notakey:3:api_key` opens no key", () => {
+    expect(redactForJudge("notakey:3:api_key: plain words here")).toBe("notakey:3:api_key: plain words here");
+  });
+  it("the line-anchored content checks see through the prefix: a cookie jar and a seed line", () => {
+    expect(passageBlock("[/tmp/c.txt#9F]\n7:# Netscape HTTP Cookie File\n8:.example.com\tTRUE")).toBe("cookie_jar");
+    const seed = "2:legal winner thank year wave sausage worth useful legal winner thank yellow";
+    expect(seedPhrase(seed)).toBe(true); expect(passageBlock(`[/tmp/s.txt#1C]\n1:recovery:\n${seed}\n`)).toBe("seed_phrase");
+    expect(passageBlock("A_TOKEN=abcdefgh1\n2:B_SECRET=abcdefgh2\n3:C_PASSWORD=abcdefgh3")).toBe("dense_secrets");
+  });
+});
+
 describe("splitPassages (mu's splitter on plain text, cut at whitespace)", () => {
   it("joined with nothing, gives the text back exactly; each piece at most size", () => {
     const text = `${"a".repeat(50)}\n\n${"b".repeat(2500)}\n\n\nc\n`;

@@ -92,6 +92,16 @@ describe("judge_read (spec §4)", () => {
     expect(await handle(judgeRead("r2", "sha ".padEnd(4) + "a".repeat(40)))).toEqual({ verdict: "unchanged" });
     expect(turn.maskedPaths!.size).toBe(1);
   });
+  it("omp's read format (hashline header, `N:` line prefixes) is masked too: the value never leaves, the path joins maskedPaths (live gate case 9)", async () => {
+    const { handle, turn, home } = setup();
+    const real = join(home, "cfg.yml"); writeFileSync(real, "name: old\napi_key: ABCDEFGHIJKLMNOPQRSTUVWX\n");
+    await handle(gateRead(real, "r1"));
+    const r = await handle(judgeRead("r1", "[/tmp/cfg.yml#1A2B]\n1:name: old\n2:api_key: ABCDEFGHIJKLMNOPQRSTUVWX\n")) as { verdict: string; text: string };
+    expect(r.verdict).toBe("rewritten");
+    expect(r.text).not.toContain("ABCDEFGHIJKLMNOPQRSTUVWX");
+    expect(r.text.endsWith(MASKED_NOTE(1))).toBe(true);
+    expect([...turn.maskedPaths!]).toEqual([maskedKey(real)]);
+  });
   it("a read under HOUGE_DAEMON_TMP_DIR is judged outside (defence in depth, ruling 13): a lost judgement makes the turn hostile, a local one untrusted", async () => {
     const a = setup({ judge: null, daemonTmpUnderHome: true }); // the temp dir inside HOME, so the gate lets the read through; no judge wired: localOutcome, every passage unanswered
     await a.handle(gateRead(join(a.daemonTmp, "mail.txt"), "o1"));
