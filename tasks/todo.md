@@ -3,25 +3,29 @@
 **Decision ladder stage 2b-i (extension hooks and `turn.settle`): BUILT on `feat/ladder-2b-hooks`, NOT merged; merge +
 rebuild `dist/` + kickstart pending.** Live only after Paco merges. The `feat/memory-write` block below is a separate branch,
 also not merged (check `git branch --no-merged main` before assuming either is on main). Spec
-`docs/superpowers/specs/2026-10-19-ladder-2b-hooks-settle-design.md` Rev 3 (+ §3.3 calibration note), plan
+`docs/superpowers/specs/2026-10-19-ladder-2b-hooks-settle-design.md` Rev 3 (+ §3.3 calibration note, final-review amendments), plan
 `docs/superpowers/plans/2026-10-20-ladder-2b-hooks-settle.md` Rev 2.3 (Rulings 1-16). What it does: built-in `read` results are
 judged by `tool.injection` inside omp's `tool_result` hook (whole-text floor if the judge is late, `late` rows, a read of a
 masked file redirects an edit/write to bash and asks); `turn.settle` (rule, then Jev) sends an unfinished reply back once
 through `session_stop`; omp's `todo` tool is on; the steer guard reads the queue arrays. The Jev rung's bars were set by
 measurement, not the spec's 0.5: wording set B, per-question bars 0.6/0.8/0.7/0.7, threshold version `2026-10-20.2`.
-Evidence (the last full run, Task 13b, `b6a5679`): typecheck clean; full suite 349 files / 4857 tests passed, none
-skipped; build OK. Pre-merge sanity on 30 days of real replies: first run 114/133 = 85.7 %
-sent back (FAIL), after recalibration 6/133 = 4.5 % (bar at most 10 %), planted 9/9, 0 fallbacks; the sampled send-backs are
-listed in `task-12b-report.md` (build ledger dir) for Paco's read. Live gate on real Jev and omp 18.12.3: PASS 14/14 (exit 0,
-`b6a5679`); the first run on that omp version found three production defects (queue-count semantics, `N:` read prefix, a
-golden item on its bar), all fixed. Rollback check PASS twice (a transcript with todo calls, one with a continuation leg).
-Not yet done at the time of writing: the final whole-branch reviews, a full live-gate re-run on the final HEAD (cases
-4, 5, 8-11 were not re-run after the last gate-script fix `56b59cb`), and the merge.
+Branch code head `f3cc4c9` (this docs commit sits on top of it). Final reviews (six seats) found one Critical (the settle
+egress did not mask a turn's extracted OTP codes and links) and a set of Importants; fix waves A (`97a3025..7d13533`), B
+(`1795dad..9dc9f01`), round 2 (`8445916..0768dc3`) and round 3 (`3924471`, `f3cc4c9`) closed them, each re-reviewed
+(see the ADR 0030 amendment, "Final-review fixes"). Evidence on `f3cc4c9`: typecheck clean; full suite 350 files / 4924
+tests passed, 0 skipped; build OK. Sanity (real Jev): probe 7/133 = 5.3 % (7/7 planted); first rerun 6/133 = 4.5 % (9/9);
+after the fixes 6/135 = 4.4 % on `7d13533` and 8/135 = 5.9 % on `0768dc3`, both 9/9 planted, no fallbacks (same replies; Jev
+run-to-run variance); `scripts/settle-sanity.mjs` needs `--db` from a worktree. Live gate on real Jev and omp 18.12.3:
+`b6a5679` PASS 14/14; `da22ef3` PASS 14/14 (case 10 vacuous); `9dc9f01` FAIL/INCONCLUSIVE (a planner-side outage window,
+diagnosed in the ADR, not a code regression); `0768dc3` 12/14 with cases 5 and 10 INCONCLUSIVE on planner choices; **final
+run on `f3cc4c9`: LIVE GATE PASS 14/14, exit 0**, case 10 evidenced, no `pass_errored` row. Rollback check PASS twice
+(earlier). Behaviour changes to know at merge: a pass-1 timeout, frame idle, child exit or omp abort after a send-back now
+delivers pass 0 (`settle_discarded continuation_failed`, plus a Settled-unverified card); a `/kill` records `signal`.
 - [ ] Paco: sign off the ADR 0030 amendment (2026-10-20), merge `feat/ladder-2b-hooks`, rebuild `dist/`, then kickstart
   `com.houge.daemon`. The daemon is running (launchd, no `houge.parked` / `houge.kill` seen at build time); check for a run in
   flight at merge time.
 - Protected files touched: `src/omp/` (bridge-handler, bridge-protocol, bridge-read-judge, response-cap, extension/*,
-  planner-session, planner-supervisor, supervisor-settle, settle-judge, attachments), `src/decisions/` (egress,
+  planner-session, planner-supervisor, supervisor-settle, settle-judge, attachments, gate-path), `src/decisions/` (egress,
   injection-judge, trust, trust-ask, types, entry-ids, outcomes, registry, record, golden, digest, settle-state,
   settle-checks, entries/turn-settle, entries/tool-injection), `src/jev/decide.ts`, `src/run/run-store.ts`,
   `docs/decisions/0030-decision-ladder.md` (amendment, README row).
@@ -32,6 +36,11 @@ Not yet done at the time of writing: the final whole-branch reviews, a full live
   2b-R15 is defence in depth only (the gate denies daemon-tmp reads); strict `get_state` validation turns the steer guard
   off on a malformed reply (pages `todo_unavailable`). An image-only read ends the turn `untrusted` (Ruling 11).
   The omp prefix form `N#HASH:` is not covered by the mask.
+  Added by the final reviews (ADR residuals 10-17): per-chat masked-path persistence; bash-ask bypasses (globs, quote
+  splicing, `$PWD`, variables, interpreters, `mysql -p…`); a run of 9+ `.`/`-` before a key is unmasked; claim-verb false
+  negatives and marker-as-adjective misses (Jev covers at its bar); a blocked read still sends a refused `judge_read`; the
+  all-caps suffix false positive (`MONKEY=`); a `/kill` in `abortTurn`'s grace after a pass-1 timeout is rescued as
+  `continuation_failed`; two Health lines for `turn.settle` on a Jev-skip day; testing minors; fake-omp `runRpc` over 50 lines.
 - Carried forward from the memory-write block (still open): in-turn "记下来" saves, gate cases 7 and 8 (a save request typed
   inside a running turn is not acted on); `memory.kind` at its 0.85 bar is decided by the model in 4 of 6 incident runs.
 - Next build: decision ladder stage 2b-ii (`improve.route`); open question: its proposal surface, since the daily decision

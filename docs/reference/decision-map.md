@@ -112,7 +112,7 @@ The `memory.kind` golden set has no `fix` items: Jev does not clear 0.85 on `fix
 | `tool.injection` | floor → Jev → pass | tool | tighten only; 2b-i adds built-in `read` as a source (judged inside omp's `tool_result` hook) | live, 2a; `read` source built on feat/ladder-2b-hooks |
 | `turn.trust` | max rule (locked) | tool | adds taps | live, 2a |
 | `tool.shell_netread` | patterns | tool | trust level | live, 2a |
-| `turn.settle` | rule (claims and todo checks) → Jev (four noul questions, per-question provisional bars 0.6/0.8/0.7/0.7) → settle | mixed | one bounded send-back through omp's `session_stop`; a Jev send-back also asks on writes for the rest of the turn (`settleAsk`) | built on feat/ladder-2b-hooks (live after Paco's merge and kickstart) |
+| `turn.settle` | rule (guards incl. `pass_errored`, then claims and todo checks; the delivered reply is audited) → Jev (four noul questions, per-question provisional bars 0.6/0.8/0.7/0.7) → settle | mixed | one bounded send-back through omp's `session_stop`; a Jev send-back also asks on writes for the rest of the turn (`settleAsk`) | built on feat/ladder-2b-hooks (live after Paco's merge and kickstart) |
 | `improve.route` | code → Jev → Tiny → nothing | mixed | code: lesson with Undo, pending skill; Jev/Tiny: proposals | 2b-ii (next; proposal surface open) |
 | intake, context, supervision, settle families | migrated as they are | — | unchanged | stage 3 |
 | `tool.policy`, `tool.shell_class`, `tool.path`, `approval.standing`, … | migrated; standing approvals | — | gates | stage 4 |

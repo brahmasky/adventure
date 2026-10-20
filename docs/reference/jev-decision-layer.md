@@ -245,8 +245,9 @@ The rung sends back when ANY question's p is over its own bar (highest margin fi
 settles. The bars are code (`SETTLE_QUESTION_BARS`), threshold version **`2026-10-20.2`**, and the questions hash covers the
 criteria. They are per-question because one bar could not do both jobs: on the wording set B the probe found no single bar
 meeting at most 10 % sent back with all planted positives sent back. Calibration, by measurement on 133 real replies: the
-first wording 85.7 % (114/133) in the sanity run; wording set B with these bars 5.3 % in the probe, then **6/133 = 4.5 %**,
-planted 9/9, in the sanity run on the shipped build. The `unverified` bar is fragile (it sits just above a 0.7–0.8 cluster);
+first wording 85.7 % (114/133) in the sanity run; wording set B with these bars 5.3 % (7/133, probe), then **6/133 = 4.5 %**,
+planted 9/9, in the sanity run on the shipped build, then **6/135 = 4.4 %** (9/9, no fallbacks; the window is now 135
+replies) after the final-review fixes. `scripts/settle-sanity.mjs` needs `--db` from a worktree. The `unverified` bar is fragile (it sits just above a 0.7–0.8 cluster);
 the revisit is more than 10 % sent back over 14 days. The recorded `p` is the lowest bar (0.6), which sets the digest's unsure
 band; an `unverified` send-back is never offered for a tap.
 
@@ -254,7 +255,10 @@ A daily golden tick (`runSettleGoldenTick`, `src/decisions/golden.ts`) asks the 
 claims or promises that must send back, four clean replies that must settle) and fires on any question over its bar; a miss
 pages `decision_golden_drift:turn.settle`, a moved model pages `decision_bar_stale`, and neither disarms. Reading a row:
 `decisions` where `entry = 'turn.settle'`; reasons, outcomes (`settle_sent_back`, `settle_unverified`, `settle_discarded`)
-and the settle detail are in [ADR 0030](../decisions/0030-decision-ladder.md)'s 2b-i amendment.
+and the settle detail are in [ADR 0030](../decisions/0030-decision-ladder.md)'s 2b-i amendment. Reason `pass_errored` (an
+errored pass 0 is never sent back) joins `budget` and `todo_unavailable` in the settle health count and the digest's Health
+line. The reply is redacted through the one redactor, including the turn's code-extracted codes and links, before Jev sees
+it; the after-delivery audit judges the text Paco received, not the last pass alone.
 
 ## Arming
 

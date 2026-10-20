@@ -248,6 +248,35 @@ over 10% for 14 days); the next lever is naming "a background job started, not y
 criterion. Jev audit rows of this calibration carry threshold version `2026-10-20.2` (`SETTLE_THRESHOLD_VERSION`; the
 first calibration's rows carry `2026-10-20.1`).
 
+**Final-review amendments (2026-10-20).** Appended after the final reviews and three fix waves; the text above is kept as
+written and these supersede it where they differ (ADR 0030 amendment, "Final-review fixes").
+
+- **§3.2, guard list.** A new guard sits between `aborting` and `empty`: an errored pass 0 is never sent back
+  (`pass_errored`, `SettleState.passErrored`, derived at the pass boundary so omp's own auto-retry does not leave it set).
+  The guards return `settle` and stop the ladder; they do not abstain to Jev. `pass_errored` joins the reason codes in §3.1
+  and the settle health counter (§3.3: `budget`, `todo_unavailable`, `pass_errored`). Todo rows (`builtin:todo`) are
+  bookkeeping: they are excluded from guard 3 (`lastCallDenied`) and from the Jev tool summary.
+- **§3.3, claims check.** Narrowed by measurement of false positives: earlier-time markers (not 已经), question sentences,
+  `nothing` only as a claim verb's object, 附上 needs a past marker unless sentence-initial, bare pronoun passives of
+  sent/recorded only as a whole sentence.
+- **§3.5, the final audit and failed passes.** The final audit runs on the text Paco receives (`replyOfPasses`, after
+  attachment parsing), not on the last pass's final text alone; the stated purpose (no unsupported claim reaches Paco
+  without a card) binds over the wording "pass 1's final text". "Abort in pass 1: `finishFailure` as today" is replaced: a
+  pass-1 `turn_timeout`, `frame_idle`, `planner_exit` or omp's own abort delivers the complete pass 0 with
+  `settle_discarded continuation_failed` (and, with a send-back reason, the `Settled unverified` card, no Jev re-ask); a
+  Houge abort (`/kill`) is not rescued and records `settle_discarded signal`, even after the continuation.
+  `continuationFailed` needs a seen continuation and a non-errored pass 0.
+- **§4 / 2b-R8, never write a mask back.** Besides the path rule, any write or edit content, and any bash command,
+  containing the mask token gets the masked-read ask (a built-in write or edit takes the redirect). Residual: a write
+  without the token to a file masked in an earlier turn is not asked.
+- **§7, egress.** The settle egress masks the turn's code-extracted codes and links (`extracted`, `linkTokens: true`), the
+  same redaction for the final audit's re-ask; the extension floor's `secretNamed` mirrors egress `secretKey`, pinned by a
+  shared-fixture parity test. Named-secret mask gaps are closed in both (key after any non-word boundary, XML pairs,
+  all-caps suffix keys, ten-digit line prefixes).
+- **§7, sanity script.** `scripts/settle-sanity.mjs` needs `--db <copy>` when run from a worktree: its default DB path
+  resolves against the checkout, and the first attempt failed with "unable to open database file". Post-fix sanity:
+  6/135 = 4.4 % on `7d13533` (9/9 planted, no fallbacks), 8/135 = 5.9 % on `0768dc3` (same replies; Jev run-to-run variance).
+
 **`settleAsk`** (2b-R7). A Jev-rung send-back sets `ActiveTurn.settleAsk = true` (the bridge reads `ActiveTurn`, not
 `Turn`). For the rest of the turn the ask half of every gate evaluates **as if the trust level were `hostile`** while
 the recorded level and its ledger are unchanged: `trustAsk` with `HOSTILE_READS` and read-only shell tap-free, every

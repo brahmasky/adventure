@@ -503,8 +503,22 @@ Rules Claude writes for itself after corrections. Review at session start.
   highest p); the plan's expectation disagreed with the plan's own sorted code. The build ruled one rule (highest p over its
   bar, as `jevRung`), then the per-question bars made it margin order. Rule: when a plan's test and code disagree, decide once,
   write the ruling in the ledger, and use one ordering everywhere.
-- **A regex-based claim check false-fires unless it is narrowed by measurement.** The first claim regexes matched passives and
-  bare forms (`Saved searches`); narrowing (pronoun subject for passives, short-sentence cap for bare `Saved`) made the live
-  `claim_saved` form untestable in the gate. Rule: write down what a narrowing gives up, and test the real wording class it
-  must still catch.
-
+- **One redactor, every egress path; a per-task review cannot see a gap between two tasks.** The settle path rebuilt its
+  own redactor and dropped `extracted` (the turn's OTP codes and link tokens), so a code in a reply reached TypeSafe in clear.
+  Each task's review passed; the parallel final reviewers (the security seat) found it. Rule: every path that sends text
+  out builds its state through one function, and the final review's security seat traces each egress path end to end.
+- **An "every X satisfies P" gate predicate needs "X is non-empty" as a precondition, or it passes vacuously.** Gate case 10
+  printed "every bash ask in pass 1 carries SETTLE_REASON, 0 ask(s)" as PASS. Rule: every universal check in a gate or test
+  states its count precondition and returns INCONCLUSIVE on zero; count attempts, not only the outcomes you hoped for.
+- **Copied regexes drift: pin the copies with a shared-fixture parity test, not with fixtures on each side.** The extension
+  floor's `secretNamed` and egress's `secretKey` had diverged on camelCase and session keys. Rule: when code is copied
+  across a process boundary, one list of fixtures drives both and asserts "A blocks implies B blocks".
+- **A sanity or gate script run from a worktree needs the live DB path passed explicitly.** `settle-sanity.mjs` failed with
+  "unable to open database file" until given `--db`; its default resolves against the checkout. Rule: pass `--db` (and
+  `HOUGE_ENV_FILE`) from a worktree and say so in the script's usage.
+- **A live-gate FAIL during a provider outage can look like a code regression.** The `9dc9f01` run showed `pass_errored` on
+  every turn from case 3 on; the guard was working and the planner's primary leg was erroring. Rule: before touching code,
+  bracket it: run the failing cases alone, then an instrumented full rerun; reopen only if a healthy run shows the failure.
+- **A gate that forbids one tool must tell the planner which tool to use.** Case 10 forbade a write to a masked file; the
+  planner used `write`, never attempted bash, and the case went INCONCLUSIVE on model choice. Rule: a gate case that needs a
+  specific tool call asks for it explicitly and counts the attempts.

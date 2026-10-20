@@ -258,9 +258,14 @@ self-write test gate.
 **Decision ladder, stage 2b-i (built 2026-10-20, on branch `feat/ladder-2b-hooks`, not merged).** Extension hooks and
 `turn.settle`: omp's `tool_result` hook judges every built-in `read` (whole-text floor if the judge is late, `late` rows,
 masked-read redirect), `session_stop` gives `turn.settle` one bounded send-back (code rung, then Jev at per-question
-provisional bars 0.6/0.8/0.7/0.7 after a measured recalibration: first sanity 85.7 % sent back, final 4.5 %, planted 9/9), and
-omp's todo tool is on. Live gate on real Jev and omp 18.12.3: PASS 14/14; rollback PASS twice. ADR 0030 amendment drafted for
-Paco's hand. **Next: 2b-ii** (`improve.route`, improvement routed from outcomes). Open question for its spec: its proposal
+provisional bars 0.6/0.8/0.7/0.7 after a measured recalibration: first sanity 85.7 % sent back, probe 5.3 %, rerun 4.5 %,
+post-fix rerun 6/135 = 4.4 %, planted 9/9), and omp's todo tool is on. Final reviews (six seats) found one Critical
+(OTP codes and links in a reply reached Jev in clear) and a set of Importants; three fix waves and three rounds closed them
+(`97a3025..f3cc4c9`): the settle egress masks extracted codes and links, the final audit judges the delivered reply, `www.`
+reads are URL reads, a pass-1 failure delivers pass 0, an errored pass 0 is never sent back (`pass_errored`, counted in
+settle health and the digest). Live gate on real Jev and omp 18.12.3: PASS 14/14 on `b6a5679`, `da22ef3` and the final head
+`f3cc4c9` (a `9dc9f01` run failed during a planner-side outage window, diagnosed in the ADR); rollback PASS twice. ADR 0030
+amendment drafted for Paco's hand. Merge, `dist/` rebuild and kickstart are Paco's and pending. **Next: 2b-ii** (`improve.route`, improvement routed from outcomes). Open question for its spec: its proposal
 surface, since the daily decision digest has been off since 2026-10-14 (`HOUGE_DECISION_DIGEST_AT=off`).
 
 **SP4 scope change (2026-10-04).** The lifecycle-gap research

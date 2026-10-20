@@ -78,7 +78,7 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Hostile turn**: A turn in which `tool.injection` withheld a passage, withheld an outside passage unjudged, or lost its judgement on outside text (framed as not checked); or a turn whose planner transcript carries a hostile level. Shell commands off the read-only list and all writes ask.
 
-**Settle**: The last decision of a planner turn (`turn.settle`, ADR 0030 2b-i): when omp's `session_stop` hook fires, Houge decides whether the reply stands or goes back once. A code rule checks claims against the run's ledger and open todo items; a Jev rung asks four typed questions at per-question provisional bars. The final pass is audited again at the terminal `agent_end`.
+**Settle**: The last decision of a planner turn (`turn.settle`, ADR 0030 2b-i): when omp's `session_stop` hook fires, Houge decides whether the reply stands or goes back once. A code rule checks claims against the run's ledger and open todo items; a Jev rung asks four typed questions at per-question provisional bars. The reply Paco receives (the delivered text, not the last pass alone) is audited again at the terminal `agent_end`. An errored pass 0 is never sent back (`pass_errored`).
 
 **Pass**: One agent leg of a turn between settle points. Pass 0 is the planner's first answer; pass 1 is the continuation a send-back starts (it opens at that leg's `agent_start`). A turn has at most two.
 

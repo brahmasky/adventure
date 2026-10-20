@@ -320,16 +320,18 @@ its §3.3 calibration note); plan: [2026-10-20-ladder-2b-hooks-settle.md](../sup
   criteria edit marks the bars stale. The recorded bar `p` is the lowest (0.6), which sets the digest's unsure band.
   Decision 9 already allows a provisional bar on this entry (mixed input, effect only a send-back); nothing else about the
   ladder changes.
-- **Code rung first, then the Jev rung.** The rule abstains (never on a hostile turn, one already sent back, after a
-  denied call, with a queued steer, under 60 s of deadline, while aborting, on an empty reply), then answers from the
-  claims check (scheduled, saved, attached, sent: code-owned verbs, zh and en, first person and past, against the run's
+- **Code rung first, then the Jev rung.** The rule's guards return `settle` and stop the ladder (they do not pass the turn
+  to Jev): a hostile turn, one already sent back, a denied call, a queued steer, under 60 s of deadline, aborting, an
+  errored pass 0 (`pass_errored`), an empty reply. Past the guards the rule answers from the claims check (scheduled, saved, attached, sent: code-owned verbs, zh and en, first person and past, against the run's
   ledger; passive and bare forms narrowed to avoid false positives) and the todo check (a list the planner changed this
-  turn and left open). A send-back is ONE bounded continuation through omp's `session_stop`; the reply is the
+  turn and left open); when neither fires, Jev is asked. A send-back is ONE bounded continuation through omp's `session_stop`; the reply is the
   continuation's text, with a code fallback that joins the two under `— restated: —`. A failed continuation delivers pass
-  0 alone. The pass boundary is the continuation's `agent_start` (plan ruling 12). The final pass is audited at the
-  terminal `agent_end` (code checks, Jev re-asked after delivery); a persisting reason writes `settle_unverified` and one
+  0 alone. The pass boundary is the continuation's `agent_start` (plan ruling 12). The reply Paco receives (the delivered
+  text, after attachment parsing, not the last pass alone) is audited at the terminal `agent_end` (code checks, Jev re-asked
+  after delivery); a persisting reason writes `settle_unverified` and one
   urgent card per turn. Outcomes `settle_sent_back`, `settle_unverified`, `settle_discarded`; rows are never rewritten.
-  Settle health pages `decision_health:turn.settle` at three `budget` or `todo_unavailable` rows an hour; a Jev outage
+  Settle health pages `decision_health:turn.settle` at three `budget`, `todo_unavailable` or `pass_errored` rows an hour (the digest's Health section adds a `turn.settle
+  unfinished` line with the three counts); a Jev outage
   pages once through the Jev incident (`turn.settle` joins `JEV_PAGED_ELSEWHERE`, ruling 14).
 - **The named exception is extended (2b-R7).** The code-owned redirect of a built-in `edit`/`write` to bash applies "in
   a turn the injection judge marked hostile, **or in a continuation after a Jev-rung `turn.settle` send-back**"
@@ -351,7 +353,8 @@ its §3.3 calibration note); plan: [2026-10-20-ladder-2b-hooks-settle.md](../sup
   **The mask is prefix-aware:** omp prefixes read lines with `N:`, `N|`, `N-M:` or `N-M|`; the named-secret key regex and
   the line-anchored content checks (cookie jar, seed line, and the extension floor's dense-secret key) accept that prefix
   at the start of a line, in Houge and in the extension's copy. The live gate found this: on omp 18.12.3 a prefixed
-  `3:api_key: …` was not masked and the value reached a Jev request. The prefix form `N#HASH:` is not covered.
+  `3:api_key: …` was not masked and the value reached a Jev request. The prefix form `N#HASH:` is not covered. The widening to `N|` / `N-M:` / `N-M|` (`7caa637`) is unit-tested; the first
+  full gate run after it is `da22ef3`.
 - **omp's todo tool** is enabled for the planner (reminders off, `eager: default`); its calls are ungated (no path, no
   body leaves the machine) and ledgered as counts-only `tool_finished builtin:todo`; a reminder reaching Houge pages
   `todo_reminder_seen` and is never rendered.
@@ -363,10 +366,70 @@ its §3.3 calibration note); plan: [2026-10-20-ladder-2b-hooks-settle.md](../sup
 - **No env var, no off switch (R13).** Rollback is revert plus rebuild; the rollback check passed twice (a case-6 transcript
   with todo calls, a case-3 transcript with a continuation leg).
 
-Evidence: full suite 349 files / 4857 tests, typecheck clean; sanity PASS as above; live gate on real Jev and omp 18.12.3
-**PASS 14/14** at `b6a5679`. The gate's first run on that omp version (probes had run on 18.10.4) failed three cases that
-the unit suite could not: the queue-count semantics, the `N:` prefix, and a golden item (`st-planted-zh-1`) sitting on its
-0.6 bar (replaced by a synthetic item that cleared it by 0.35 on two runs).
+**Final-review fixes (2026-10-20).** Six parallel reviewers (whole-branch, security, correctness, testing, adversarial and a
+codex whole-diff pass) found one Critical and a set of Important defects on `da22ef3`; three fix waves and three
+fix rounds closed them (A `97a3025..7d13533`, B `1795dad..9dc9f01`, round 2 `8445916..0768dc3`, round 3 `3924471` and
+`f3cc4c9`), each re-reviewed. What changed, by file and by spec section:
+
+- **Settle egress masks the turn's extracted codes and links (Critical; spec §7 egress).** `src/omp/supervisor-settle.ts`
+  `settleStateFor` passes the turn's `extracted` set (new `turnExtracted` in `src/omp/bridge-handler.ts`) and
+  `linkTokens: true` to the one redactor, and the final audit's re-ask builds its state through the same function. Before,
+  an OTP code or a magic-link token in a reply reached TypeSafe in clear.
+- **The extension floor mirrors egress `secretKey` (spec §7).** `secretNamed` in `src/omp/extension/injection-floor.ts` copies
+  the camelCase split order and SESSION_PAIR; a shared-fixture parity test (`tests/omp/injection-floor.test.ts`) pins
+  "passage blocks implies floor withholds".
+- **Named-secret mask gaps closed, in `src/decisions/egress.ts` and the floor (spec §7, 2b-R8).** A key may follow any
+  non-word boundary (a leading `.` or `-` counts as a run of up to eight, so scans stay linear; a run of nine or more is
+  not masked); one-line XML `<key>value</key>`; an all-caps suffix rule (`…PASSWORD|PASSWD|TOKEN|SECRET|KEY`, with the
+  accepted false positive on all-caps non-secret keys such as `MONKEY=`; a pure-alpha value after such a key is left
+  alone in egress); line prefixes up to ten digits. Two egress tests that had encoded the gap now expect the mask.
+- **A `www.` path is a URL read for the gate, and omp's own `fetch` is off (spec §4).** `src/omp/gate-path.ts` `WWW`;
+  `fetch: enabled: false` in the planner config of `src/omp/planner-supervisor.ts`. That omp honours `fetch.enabled` was
+  not probed separately; the final gate passed with it set.
+- **Todo rows are bookkeeping for `turn.settle` (spec §3.2 guard 3, §3.3 tool summary).** `isBookkeeping` in
+  `src/decisions/settle-checks.ts`: `builtin:todo` rows are excluded from `lastCallDenied` and from the Jev tool summary.
+- **The final audit runs on the text Paco receives (spec §3.5, wording amended).** `replyOfPasses`, after attachment parsing,
+  not the last pass alone; an unsupported pass-0 claim that survives in the delivered text now gets the card. A
+  continuation-failed or rescued turn also queues the `Settled unverified` card with the original send-back reason, with no
+  Jev re-ask.
+- **The claims check is narrowed (spec §3.3).** Earlier-time markers (English and Chinese, not 已经; bare `before` only as
+  `before this|that|now|the last|previous turn`), question sentences, `nothing` as negation only as a claim verb's object,
+  附上 needs a past marker unless sentence-initial, bare pronoun passives of sent/recorded only as a whole sentence.
+  Accepted miss: "It's been sent to the team." in context.
+- **An errored pass 0 is never sent back (spec §3.2, new guard, reason `pass_errored`).** `pass0Errored` is derived at the pass
+  boundary (so omp's own auto-retry does not leave it set); `continuationFailed` needs a seen continuation and a non-errored
+  pass 0. `pass_errored` counts in settle health and in the digest's Health line.
+- **A failed pass 1 after a send-back delivers the complete pass 0 (spec §3.5; behaviour change).** A pass-1
+  `turn_timeout`, `frame_idle` or `planner_exit`, or omp's own abort, records `settle_discarded continuation_failed` and
+  delivers pass 0; before, the turn failed with pass 0 as a partial. A Houge abort (`/kill`) is not rescued and records
+  `settle_discarded signal`, even after the continuation (behaviour change: a `/kill` during pass 1 was `settle_sent_back`). A
+  child exit before the continuation stays `extension_timeout`.
+- **Never write a mask back (spec §4, 2b-R8).** Any write or edit content, or bash command, containing the mask token gets the
+  masked-read ask (`src/omp/bridge-handler.ts` `carriesMask`), whether or not a path was masked. Residual: a write without
+  the token to a file masked in an earlier turn is not asked (per-chat persistence of masked paths is deferred).
+- **Hardening.** The settle text is capped on the daemon side; the settle memo replays only until the continuation is seen;
+  settle cuts never split a surrogate pair; a repeated todo report writes one row; the bash operand split includes
+  backtick, braces and comma; the live-gate case 10 now needs a writing bash attempt in pass 1 as a precondition and tells
+  the planner to use a shell command.
+
+Evidence: final suite on `f3cc4c9`: typecheck clean, 350 test files / 4924 tests passed, 0 skipped, build OK. Calibration,
+each with its label: the probe 7/133 = 5.3 % (7/7 planted); the first sanity rerun on the shipped build 6/133 = 4.5 %
+(9/9 planted); the sanity rerun after the fix waves, on `7d13533`, 6/135 = 4.4 % (9/9 planted, no fallbacks; the window is
+now 135 replies); and on `0768dc3` 8/135 = 5.9 % (9/9, no fallbacks), the same replies, so run-to-run Jev variance, not a
+change in the rule. Live gate on real Jev and omp 18.12.3, in order. `b6a5679` **PASS 14/14**, before the prefix widening.
+`da22ef3` **PASS 14/14**, after the widening and before the fix waves; its case 10 passed vacuously ("0 ask(s)"). `9dc9f01`
+**FAIL/INCONCLUSIVE**: from case 3 on every pass 0 showed 0 characters and a `pass_errored` row at 0 ms. Diagnosis, not
+proof: the planner's primary leg was erroring for the rest of that run (a provider-side outage window), the new guard
+refused to send an errored pass back as designed, and the retry leg completed the turns; cases 7a, 3, 2b+3 and 1+3 run
+alone passed with the expected reasons, an instrumented full rerun showed zero error frames and 12/14 PASS, and the `0768dc3`
+run has no `pass_errored` row on any turn. The evidence is circumstantial (the gate's DB copy is deleted after a run). `0768dc3`
+**12/14 PASS**, cases 5 and 10 INCONCLUSIVE on planner choices, not code (the planner refused the planted sentence; it used
+`write` instead of bash). `f3cc4c9`, the final head, **LIVE GATE PASS 14/14**, exit 0, with case 10 evidenced for the first
+time (one writing bash attempt in pass 1, one pass-1 ask carrying `SETTLE_REASON`, `notes.txt` not written) and no
+`pass_errored` row. The gate's first run on omp 18.12.3 (probes had run on 18.10.4) failed three cases that the unit suite
+could not: the queue-count semantics, the `N:` prefix, and a golden item (`st-planted-zh-1`) sitting on its 0.6 bar
+(replaced by a synthetic item that cleared it by 0.35 on two runs). A gate FAIL during a provider outage can look like a code
+regression; bracket it before touching code (`tasks/lessons.md`).
 
 **Accepted residuals** (each measured or reasoned in the build ledger; none reopens the design):
 
@@ -384,7 +447,22 @@ the unit suite could not: the queue-count semantics, the `N:` prefix, and a gold
    denies planner reads there, so the branch cannot fire through `gate` today.
 8. Strict `get_state` validation turns the steer guard off on a malformed reply and pages `todo_unavailable`.
 9. `claim_saved`'s bare `Saved` form fires only on a very short sentence ("Saved — I'll remember that." is too long), so
-   it is untested live (the live case uses the scheduled claim); a sent-back turn that fails after the continuation was seen still records `settle_sent_back`.
+   it is untested live (the live case uses the scheduled claim). The old second clause (a sent-back turn that fails after the
+   continuation was seen still records `settle_sent_back`) is closed by the fix waves: a pass-1 timeout, frame idle, child exit
+   or model error records `continuation_failed`, and an abort records `signal`.
+10. Per-chat persistence of masked paths: a write without the mask token to a file masked in an earlier turn is not asked.
+11. Bash-ask bypasses: globs, quote splicing, `$PWD` and shell variables, interpreters (`python3 -c`), the `mysql -p…` flag
+    form. A run of nine or more `.`/`-` before a key is not masked (the bound keeps scans linear).
+12. Claim-verb false negatives: "I've set a reminder…", "I've emailed it…", 已经发给她了, "It's been sent to the team." in
+    context, and markers used as adjectives or determiners ("30 minutes before that meeting", "I've sent the previous
+    draft"). Jev covers these at its bar.
+13. A blocked read still sends a refused `judge_read` (stderr noise only).
+14. The all-caps suffix rule masks non-secret all-caps keys such as `MONKEY=` (fail-closed).
+15. A `/kill` landing during `abortTurn`'s grace after a pass-1 timeout is rescued as `continuation_failed`, not `signal`.
+16. On a Jev-skip day `turn.settle` shows two Health lines in the digest.
+17. Testing minors left: the timer-clear observation, a framed local read through `judge_read`, real sleeps, flat extension
+    test files, and the fake omp's `runRpc` over 50 lines (pre-existing, grew five lines). Gate case 10 tallies
+    unknown-shape bash attempts only when the writing ones all asked.
 
 **Revisit when added:** the share of real replies sent back exceeds 10 % over 14 days. Golden drift on `turn.settle`
 pages `decision_golden_drift:turn.settle` and does not disarm (R13). A calibrated row may replace the provisional bars
