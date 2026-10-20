@@ -16,6 +16,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
+import { redactForJudge } from "../dist/decisions/egress.js"; // shown(): the 40-character head is redacted like any egress
 
 const DIST = resolve(new URL("../dist", import.meta.url).pathname);
 const REPO = resolve(new URL("..", import.meta.url).pathname);
@@ -53,8 +54,9 @@ function parseArgs(argv) {
   const a = { db: null, keep: false, only: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--db") a.db = resolve(argv[++i]); else if (argv[i] === "--keep") a.keep = true;
-    else if (argv[i] === "--only") a.only = new Set(String(argv[++i] ?? "").split(",").filter(Boolean)); else throw new Error(`unknown argument ${argv[i]}`);
+    else if (argv[i] === "--only") a.only = new Set(String(argv[++i] ?? "").split(",").map((x) => x.trim()).filter(Boolean)); else throw new Error(`unknown argument ${argv[i]}`);
   }
+  if (a.only && a.only.size === 0) throw new Error("--only needs at least one case id (e.g. --only 1,2a): an empty subset would run nothing");
   if (!DIST.includes("/.worktrees/")) throw new Error(`run from the worktree (this dist is ${DIST}); never build in the main checkout`);
   return a;
 }
@@ -70,10 +72,15 @@ async function load() {
   return m;
 }
 
+/** The live DB is in use by the daemon: a VACUUM INTO that meets its write lock is retried (5 × 1 s, partial file removed) before it is a setup error. */
 function copyDb(from, to) {
   if (resolve(to) === resolve(from) || !resolve(to).startsWith(`${temp.root}/`)) throw new Error(`refusing to write outside the gate's temp root: ${to}`);
-  const src = new DatabaseSync(from, { readOnly: true });
-  try { src.exec(`VACUUM INTO '${to.replace(/'/g, "''")}'`); } finally { src.close(); }
+  for (let attempt = 1; ; attempt++) {
+    const src = new DatabaseSync(from, { readOnly: true });
+    try { src.exec(`VACUUM INTO '${to.replace(/'/g, "''")}'`); return; }
+    catch (e) { rmSync(to, { force: true }); if (attempt >= 5 || !/locked|busy/i.test(e instanceof Error ? e.message : String(e))) throw e; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000); }
+    finally { src.close(); }
+  }
 }
 
 function gateEnv(root) {
@@ -115,7 +122,7 @@ const REFUSAL = /\b(?:can't|cannot|won't|will not|haven't|not able|unable|I'm no
 function shown(s, want = CLAIM) {
   if (s === undefined) return "no settle request reached Houge";
   const t = String(s);
-  return `${t.length} chars; first line is the planted sentence: ${norm(firstLine(t)) === want}; contains it: ${t.includes(want)}; refusal marker: ${REFUSAL.test(t)}; starts ${JSON.stringify(t.replace(/\s+/g, " ").slice(0, 40))}`;
+  return `${t.length} chars; first line is the planted sentence: ${norm(firstLine(t)) === want}; contains it: ${t.includes(want)}; refusal marker: ${REFUSAL.test(t)}; starts ${JSON.stringify(redactForJudge(t.replace(/\s+/g, " ").slice(0, 40)))}`;
 }
 /** Review I1: a completed planner turn whose session_stop never reached Houge is a dead hook — FAIL, never a precondition. */
 const deadHook = (e, tag, run, end) => (end.state === "completed" && fires(run).length === 0
@@ -640,13 +647,14 @@ async function setup(args) {
   return { m, root: temp.root, base, sessionDir: null };
 }
 
-function verdict(g) {
+function verdict(g, subset) {
   console.log(`\nCASES: ${summary.join(" · ")}`);
   if (g.sessionDir) console.log(`rollback --session-dir: ${g.sessionDir}`);
   if (inconclusive.length > 0) console.log(`\nINCONCLUSIVE:\n  - ${inconclusive.map((i) => `${i.name}: ${i.why}`).join("\n  - ")}`);
   const status = failures.length > 0 ? "FAIL" : inconclusive.length > 0 ? "INCONCLUSIVE" : "PASS";
-  console.log(status === "FAIL" ? `\nLIVE GATE: FAIL\n  - ${failures.join("\n  - ")}` : `\nLIVE GATE: ${status}`);
-  return status === "PASS" ? 0 : status === "FAIL" ? 1 : 3;
+  console.log(status === "FAIL" ? `\nLIVE GATE: FAIL\n  - ${failures.join("\n  - ")}` : `\nLIVE GATE: ${subset ? "SUBSET (not a gate verdict)" : status}`);
+  // a subset is never a PASS: a FAIL still exits 1, anything else exits 3
+  return status === "FAIL" ? 1 : subset || status !== "PASS" ? 3 : 0;
 }
 
 async function main() {
@@ -656,8 +664,9 @@ async function main() {
   const g = await setup(args);
   console.log(`decision ladder 2b-i gate — ${execFileSync("omp", ["--version"], { encoding: "utf8" }).trim()} — copies under ${g.root}\n`);
   for (const [tag, title, fn, opts] of ALL) if (!only || only.has(tag)) await runCase(g, tag, title, fn, opts);
-  if (only) console.log(`\n(subset run: ${[...only].join(",")}; not a gate verdict)`);
-  return verdict(g);
+  const subset = only !== null && ALL.some(([tag]) => !only.has(tag));
+  if (subset) console.log(`\n(subset run: ${[...only].join(",")}; not a gate verdict)`);
+  return verdict(g, subset);
 }
 
 for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) process.on(sig, () => { cleanup(); process.exit(code); });
