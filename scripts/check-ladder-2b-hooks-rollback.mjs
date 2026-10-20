@@ -51,9 +51,14 @@ function parseArgs(argv) {
   return a;
 }
 
+/** The live DB is in use by the daemon: a VACUUM INTO that meets its write lock is retried (5 × 1 s) before it is a setup error. */
 function copyDb(from, to) {
-  const src = new DatabaseSync(from, { readOnly: true });
-  try { src.exec(`VACUUM INTO '${to.replace(/'/g, "''")}'`); } finally { src.close(); }
+  for (let attempt = 1; ; attempt++) {
+    const src = new DatabaseSync(from, { readOnly: true });
+    try { src.exec(`VACUUM INTO '${to.replace(/'/g, "''")}'`); return; }
+    catch (e) { rmSync(to, { force: true }); if (attempt >= 5 || !/locked|busy/i.test(msg(e))) throw e; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000); }
+    finally { src.close(); }
+  }
 }
 
 function isolate(root) {
@@ -103,7 +108,12 @@ function seeded(path, seed) {
 }
 
 /** Step 2, the previous build: its migrations, its `/status decisions` and digest over the new rows, its invariant detection. */
-function oldReads(old, path, seed) {
+/** The previous build's invariant detection, as distinct violation kinds (names only; subjects can carry ids). */
+const violationKinds = (old, store) => [...new Set(old.detectViolations(store, new Date().toISOString()).map((v) => v.kind))].sort();
+/** Review I4: the same detection on an unseeded copy, so a kind the 2b-i rows cause is told from one the live data already has. */
+function baselineKinds(old, path) { const s = old.RunStore.open(path); try { return violationKinds(old, s); } finally { s.close(); } }
+
+function oldReads(old, path, seed, baseline) {
   const s = old.RunStore.open(path);
   try {
     check("the previous build opens the copy (its migrations ran)", true);
@@ -112,10 +122,14 @@ function oldReads(old, path, seed) {
     check("/status decisions names the turn.settle row by id", list.includes("turn.settle"), list.split("\n").filter((l) => l.includes("turn.settle")).length + " line(s)");
     try {
       const d = old.buildDecisionDigest(s, new Date().toISOString(), process.env);
-      check("the previous build's digest renders over the turn.settle and late tool.injection rows", true, d ? `${d.text.length} chars; names turn.settle: ${d.text.includes("turn.settle")}` : "no digest due");
-    } catch (e) { check("the previous build's digest renders over the turn.settle and late tool.injection rows", false, msg(e)); }
-    try { const v = old.detectViolations(s, new Date().toISOString()); check("the previous build's invariant detection runs", true, `${v.length} violation(s)`); }
-    catch (e) { check("the previous build's invariant detection runs", false, msg(e)); }
+      // review I4: a null digest proves nothing about rendering the new rows
+      if (!d) cannotRun("the previous build's digest names the turn.settle rows", "no digest was due on the copy");
+      else check("the previous build's digest renders and names the turn.settle rows", d.text.includes("turn.settle"), `${d.text.length} chars`);
+    } catch (e) { check("the previous build's digest renders and names the turn.settle rows", false, msg(e)); }
+    try {
+      const kinds = violationKinds(old, s); const added = kinds.filter((k) => !baseline.includes(k));
+      check("the previous build's invariant detection raises no violation kind the seeded rows caused", added.length === 0, `now [${kinds.join(", ") || "none"}] · baseline [${baseline.join(", ") || "none"}] · added [${added.join(", ") || "none"}]`);
+    } catch (e) { check("the previous build's invariant detection raises no violation kind the seeded rows caused", false, msg(e)); }
     check("the previous build reads the seeded completed run", s.getRunState(seed.run) === "completed", s.getRunState(seed.run));
   } finally { s.close(); }
 }
@@ -172,14 +186,16 @@ async function main() {
   if (!existsSync(live)) throw new Error(`no DB at ${live} (pass --db)`);
   temp.root = mkdtempSync("/tmp/hg-2b-rb-"); temp.keep = args.keep;
   isolate(temp.root); mkdirSync(join(temp.root, "daemon-tmp"), { recursive: true });
-  const path = join(temp.root, "copy.sqlite");
-  copyDb(live, path);
+  const path = join(temp.root, "copy.sqlite"); const basePath = join(temp.root, "baseline.sqlite");
+  copyDb(live, path); copyDb(live, basePath);
   const seed = seedNew(neu, path, temp.root);
   const s1 = seeded(path, seed);
   check("the new build seeded the rows (turn.settle + 3 outcomes, a late tool.injection, a builtin:todo on a completed run)",
     s1.settle === "turn.settle" && s1.outcomes === "settle_discarded,settle_sent_back,settle_unverified" && s1.late === "late" && s1.todo === 1 && s1.state === "completed", JSON.stringify(s1));
   const old = await load(args.oldDist, ["run/run-store.js", "core/core-worker.js", "gateway/gateway.js", "domain/types.js", "decisions/status-view.js", "decisions/digest.js", "run/invariant-sweep.js"]);
-  try { oldReads(old, path, seed); } catch (e) { check("the previous build boots on the copy", false, msg(e)); }
+  let baseline = [];
+  try { baseline = baselineKinds(old, basePath); } catch (e) { check("the previous build's invariant detection runs on the unseeded baseline copy", false, msg(e)); }
+  try { oldReads(old, path, seed, baseline); } catch (e) { check("the previous build boots on the copy", false, msg(e)); }
   try { await oldResume(old, path, args); } catch (e) { check("the previous build resumes a 2b-i transcript", false, msg(e)); }
   check("the previous build left the seeded rows in place", JSON.stringify(seeded(path, seed)) === JSON.stringify(s1));
   try { const s = neu.RunStore.open(path); try { check("the new build reopens the copy afterwards", neu.decisionListText(s, process.env).includes("turn.settle")); } finally { s.close(); } }
