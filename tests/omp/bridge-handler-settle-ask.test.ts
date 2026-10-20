@@ -7,7 +7,7 @@ import { KEY_MASK, SECRET_MASK } from "../../src/decisions/egress.js";
 import { MASKED_READ_REASON, SETTLE_REASON } from "../../src/decisions/trust-ask.js";
 import { TurnTrust } from "../../src/decisions/trust.js";
 import type { CompiledTaskContract, SideEffectLevel } from "../../src/domain/types.js";
-import { createBridgeHandler, MASKED_REDIRECT_CODE, MASKED_WRITE_REDIRECT, SETTLE_REDIRECT_CODE, SETTLE_WRITE_REDIRECT, type ActiveTurn, type BridgeHandlerDeps } from "../../src/omp/bridge-handler.js";
+import { createBridgeHandler, RESPONSE_CAP, TRUNCATION_NOTE, MASKED_REDIRECT_CODE, MASKED_WRITE_REDIRECT, SETTLE_REDIRECT_CODE, SETTLE_WRITE_REDIRECT, type ActiveTurn, type BridgeHandlerDeps } from "../../src/omp/bridge-handler.js";
 import { maskedKey } from "../../src/omp/bridge-read-judge.js";
 import type { BridgeRequest } from "../../src/omp/bridge-protocol.js";
 import type { ExternalReadResult } from "../../src/omp/external-read.js";
@@ -104,6 +104,17 @@ describe("masked paths at the bridge (spec §4, 2b-R8)", () => {
     expect(cardTexts(store).join("\n")).toContain(`Why: ${MASKED_READ_REASON}`);
     expect(((await handle(call("bash", { command: "cat other.yml" }))) as CallResult).isError).toBe(false);
   });
+  it("A11.8: a masked file named inside backticks or a brace list asks too", async () => {
+    const { handle, turn, home, store, run_id } = setup({ env: { HOUGE_TRUST_ASK_TTL_MS: "60000" }, cwd: "home" });
+    turn.maskedPaths = new Set([maskedKey(join(home, "cfg.yml"))]);
+    const tick = handle(call("bash", { command: "echo `cat cfg.yml`" })) as Promise<CallResult>;
+    await answerNth(store, run_id, "denied");
+    expect((await tick).isError).toBe(true);
+    const brace = handle(call("bash", { command: "cp {cfg.yml,x} /dev/null" })) as Promise<CallResult>;
+    await answerNth(store, run_id, "denied", 2);
+    expect((await brace).isError).toBe(true);
+    expect(cardTexts(store).filter((c) => c.includes(`Why: ${MASKED_READ_REASON}`))).toHaveLength(2);
+  });
   it("a new file whose parent directory holds a masked file is not masked (only the file itself)", async () => {
     const { handle, turn, home } = setup();
     turn.maskedPaths = new Set([maskedKey(join(home, "cfg.yml"))]);
@@ -144,6 +155,13 @@ describe("report applied and the todo row (spec §2.5)", () => {
     expect(events("tool_finished").at(-1)).toMatchObject({ tool_call_id: "t1", tool: "builtin:todo", status: "succeeded", bytes_out: 6 });
     expect(events("loop_step").at(-1)).toMatchObject({ action: "builtin:todo", capability: "todo", ok: true });
   });
+  it("A11.4: a repeated todo report (same toolCallId) writes one row, not two", async () => {
+    const { handle, events } = setup();
+    const r = { id: "p3", kind: "report" as const, toolCallId: "t9", tool: "todo", outcome: "succeeded" as const, bytes_out: 6, duration_ms: 3 };
+    await handle(r); await handle({ ...r, id: "p4" });
+    expect(events("tool_finished").filter((e) => e.tool_call_id === "t9")).toHaveLength(1);
+    expect(events("loop_step").filter((e) => e.action === "builtin:todo")).toHaveLength(1);
+  });
   it("a report with an unknown id and no tool is still a no-op", async () => {
     const { handle, events } = setup();
     await handle({ id: "p2", kind: "report", toolCallId: "zz", outcome: "succeeded", bytes_out: 1, duration_ms: 1 });
@@ -163,5 +181,22 @@ describe("settle dispatch", () => {
     expect(calls).toEqual(["settle:false", "onSendBack:jev:done", "settle:true"]);
     const bare = setup();
     expect(await bare.handle(first)).toEqual({ sendBack: false });
+  });
+  it("A11.2: once the continuation's own fire (stop_hook_active) arrived, a later first-form fire is decided afresh, never the replayed sendBack", async () => {
+    const calls: string[] = [];
+    const { handle } = setup({ settle: async (_t, r) => { calls.push(`settle:${r.stop_hook_active}`); return r.stop_hook_active || calls.length > 1 ? { sendBack: false } : { sendBack: true, note: "N", kind: "rule" }; } });
+    expect(await handle({ id: "s1", kind: "settle", stop_hook_active: false, text: "done" })).toEqual({ sendBack: true, note: "N" });
+    expect(await handle({ id: "s2", kind: "settle", stop_hook_active: true, text: "done again" })).toEqual({ sendBack: false });
+    // omp reset stop_hook_active; a queued steer's auto-continue stops again with the first form
+    expect(await handle({ id: "s3", kind: "settle", stop_hook_active: false, text: "after the steer" })).toEqual({ sendBack: false });
+    expect(calls).toEqual(["settle:false", "settle:true", "settle:false"]);
+  });
+  it("A11.1: the settle text is capped at RESPONSE_CAP before the supervisor or onSendBack sees it", async () => {
+    const seen: string[] = [];
+    const { handle, turn } = setup({ settle: async (_t, r) => { seen.push(r.text); return { sendBack: true, note: "N", kind: "rule" }; } });
+    turn.onSendBack = (_k, text) => { seen.push(text); };
+    await handle({ id: "s9", kind: "settle", stop_hook_active: false, text: "x".repeat(RESPONSE_CAP + 10) });
+    expect(seen).toHaveLength(2);
+    for (const t of seen) { expect(t.endsWith(TRUNCATION_NOTE)).toBe(true); expect(Buffer.byteLength(t, "utf8")).toBeLessThanOrEqual(RESPONSE_CAP + Buffer.byteLength(TRUNCATION_NOTE, "utf8")); }
   });
 });

@@ -164,18 +164,28 @@ export function createBridgeHandler(deps: BridgeHandlerDeps): (req: BridgeReques
     if (req.kind === "call") return memo(turn, `call:${req.toolCallId}`, () => serialise(turn, () => handleCall(deps, turn, req)));
     if (req.kind === "gate") return memo(turn, `gate:${req.toolCallId}`, async () => handleGate(deps, turn, req));
     if (req.kind === "report") return handleReport(deps, turn, req);
-    // ruling 1: keyed by run and fire, so a duplicate of either fire replays its answer and never decides twice
-    if (req.kind === "settle") return memo(turn, `settle:${turn.run_id}:${req.stop_hook_active}`, () => handleSettle(deps, turn, req));
+    if (req.kind === "settle") return settleMemo(deps, turn, req);
     throw new Error("unknown request kind");
   };
 }
 
+/**
+ * Ruling 1: keyed by run and fire, so a duplicate of either fire replays its answer and never decides twice. 2b-i final review
+ * A11.2: the continuation's own fire (stop_hook_active) retires the first fire's memo — omp then resets stop_hook_active, and
+ * a queued steer's auto-continue must be decided afresh, never answered with the replayed sendBack.
+ */
+function settleMemo(deps: BridgeHandlerDeps, turn: ActiveTurn, req: SettleReq): Promise<unknown> {
+  if (req.stop_hook_active) turn.cache.delete(`settle:${turn.run_id}:false`);
+  return memo(turn, `settle:${turn.run_id}:${req.stop_hook_active}`, () => handleSettle(deps, turn, req));
+}
+
 async function handleSettle(deps: BridgeHandlerDeps, turn: ActiveTurn, req: SettleReq): Promise<SettleReply> {
   if (!deps.settle) return { sendBack: false };
-  const r = await deps.settle(turn, req);
+  const capped = { ...req, text: capResponse(req.text) }; // A11.1: defence in depth (the extension already caps)
+  const r = await deps.settle(turn, capped);
   if (!r.sendBack) return { sendBack: false };
   // before the reply leaves (BridgeServer.answer writes after this resolves); pass 1 itself opens at the continuation's agent_start (ruling 12)
-  turn.onSendBack?.(r.kind, req.text);
+  turn.onSendBack?.(r.kind, capped.text);
   return { sendBack: true, note: r.note };
 }
 
@@ -284,9 +294,13 @@ function askFor(deps: BridgeHandlerDeps, turn: ActiveTurn, entry: RegistryEntry,
   return namesMaskedFile(command, turn, deps.ctx.home) ? { ask: true, reason: MASKED_READ_REASON } : ask;
 }
 
-/** pathOperands keeps only slash/dot/tilde words; a bare `cfg.yml` in the cwd must ask too, so EVERY non-flag word is resolved against the cwd as well. */
+/**
+ * pathOperands keeps only slash/dot/tilde words; a bare `cfg.yml` in the cwd must ask too, so EVERY non-flag word is resolved
+ * against the cwd as well. A11.8: backticks, braces and commas split too (`` `cat cfg.yml` ``, `{cfg.yml,x}`). Residual (not
+ * modelled): globs (`cf?.yml`), quote splicing (`c"f"g.yml`), `$PWD`/variables, and interpreters that open the file themselves.
+ */
 function namesMaskedFile(command: string, turn: ActiveTurn, home: string): boolean {
-  const words = command.split(/[\s;|&<>()]+/).map((w) => w.replace(/^["']|["']$/g, "")).filter((w) => w.length > 0 && !w.startsWith("-"));
+  const words = command.split(/[\s;|&<>()`{},]+/).map((w) => w.replace(/^["']|["']$/g, "")).filter((w) => w.length > 0 && !w.startsWith("-"));
   const candidates = [...pathOperands(command, turn.cwd, home), ...words.map((w) => resolvePath(turn.cwd, w))];
   return candidates.some((p) => turn.maskedPaths!.has(maskedKey(p)));
 }
@@ -606,13 +620,21 @@ function writeBuiltinOutcome(store: RunStore, turn: ActiveTurn, toolCallId: stri
   });
 }
 
+/** The todo reports already written per turn (A11.4): the todo tool is ungated, so `unreported` cannot dedupe it. */
+const todoReported = new WeakMap<ActiveTurn, Set<string>>();
+
 /** The hook's tool_result for an allowed built-in: counts only, never content. A duplicate report is a no-op. */
 function handleReport(deps: BridgeHandlerDeps, turn: ActiveTurn, req: ReportReq): { ok: true } {
   noteReportApplied(deps, turn, req.toolCallId, req.applied === true);
   const entry = turn.unreported.get(req.toolCallId);
   const counts = { ok: req.outcome === "succeeded", bytes_out: count(req.bytes_out), duration_ms: count(req.duration_ms) };
   if (!entry) {
-    if (req.tool === "todo") writeBuiltinOutcome(deps.store, turn, req.toolCallId, "fs_read", counts, "builtin:todo"); // ungated, counts only
+    const seen = todoReported.get(turn) ?? new Set<string>();
+    todoReported.set(turn, seen);
+    if (req.tool === "todo" && !seen.has(req.toolCallId)) { // ungated, counts only, once per toolCallId
+      seen.add(req.toolCallId);
+      writeBuiltinOutcome(deps.store, turn, req.toolCallId, "fs_read", counts, "builtin:todo");
+    }
     return { ok: true };
   }
   writeBuiltinOutcome(deps.store, turn, req.toolCallId, entry, counts);
