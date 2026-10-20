@@ -15,14 +15,14 @@ describe("buildSettleState", () => {
     expect(s.redacted.pacoMessage).toHaveLength(PACO_MESSAGE_CAP);
     expect(s.text).toContain("ABCDEFGHIJKLMNOPQRSTUVWX"); // the code checks still read the raw reply
   });
-  it("the Jev state carries the redacted head and tail of a long reply, never the middle, and never the raw text", () => {
-    const secret = "sk-" + "a".repeat(40);
-    const text = `${"h".repeat(5_000)} ${secret} ${"t".repeat(5_000)}`;
-    const s = buildSettleState(raw({ text }), (x) => x.replace(secret, "<redacted>"));
-    const js = settleJevState(s);
-    expect(js.reply.length).toBeLessThanOrEqual(SETTLE_JEV_HEAD + SETTLE_JEV_TAIL + 20);
-    expect(js.reply).not.toContain(secret);
-    expect(JSON.stringify(js)).not.toContain(secret);
+  it("the Jev reply is exactly head 4000 + marker + tail 2000: the middle is dropped; 6000 chars stay whole, 6001 are cut", () => {
+    const id = (x: string) => x;
+    const cut = settleJevState(buildSettleState(raw({ text: "H".repeat(4000) + "MIDDLE_SENTINEL" + "x".repeat(500) + "T".repeat(2000) }), id));
+    expect(cut.reply).not.toContain("MIDDLE_SENTINEL");
+    expect(cut.reply).toBe("H".repeat(4000) + "\n[…]\n" + "T".repeat(2000));
+    const whole = "a".repeat(SETTLE_JEV_HEAD + SETTLE_JEV_TAIL);
+    expect(settleJevState(buildSettleState(raw({ text: whole }), id)).reply).toBe(whole);
+    expect(settleJevState(buildSettleState(raw({ text: whole + "b" }), id)).reply).toContain("[…]");
   });
   it("the Jev state is cut from the redacted text: a secret inside head or tail is gone", () => {
     const secret = "sk-" + "b".repeat(40);
