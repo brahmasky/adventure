@@ -8,7 +8,7 @@ import { SETTLE_QUESTIONS } from "./questions/settle.js";
 export { SETTLE_QUESTIONS, SETTLE_QUESTION_REASON } from "./questions/settle.js";
 
 /** turn.settle's own Jev call (2b-i §3.3): one request, four noul questions, decision point `settle`, 1.5 s, no re-ask. */
-export const SETTLE_THRESHOLD_VERSION = "2026-10-20.1";
+export const SETTLE_THRESHOLD_VERSION = "2026-10-20.2";
 export type SettleAsk = { answers: Record<string, number>; model: string } | { failed: FallbackReason };
 export { settleJevState } from "../decisions/settle-state.js";
 

@@ -244,7 +244,8 @@ for every settle row. Fragility: unverified's 0.8 sits just above a dense 0.7–
 reports (12 replies); a 0.05 downward drift adds about 12 send-backs (≈ 14%). The sanity re-run after the change, with an
 unverified planted positive added (an edit asserted without a check), measured 6/133 = 4.5% and 9/9 planted (PASS). The guard is §9's revisit line (send-back rate
 over 10% for 14 days); the next lever is naming "a background job started, not yet finished" in unverified's false
-criterion.
+criterion. Jev audit rows of this calibration carry threshold version `2026-10-20.2` (`SETTLE_THRESHOLD_VERSION`; the
+first calibration's rows carry `2026-10-20.1`).
 
 **`settleAsk`** (2b-R7). A Jev-rung send-back sets `ActiveTurn.settleAsk = true` (the bridge reads `ActiveTurn`, not
 `Turn`). For the rest of the turn the ask half of every gate evaluates **as if the trust level were `hostile`** while

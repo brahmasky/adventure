@@ -29,5 +29,5 @@ describe("askSettle", () => {
     const partial = vi.fn(async (req: JevRequest): Promise<JevResult> => ({ ok: true, model: "jev-1.13.0", input_tokens: 1, latency_ms: 1, answers: { [Object.keys(req.questions)[0]!]: { type: "noul", noul: 0.9 } } }));
     expect(await askSettle({ run_id: "run_1", state: state(), client: partial, store })).toEqual({ failed: "parse" });
   });
-  it("the threshold version is pinned", () => { expect(SETTLE_THRESHOLD_VERSION).toBe("2026-10-20.1"); });
+  it("the threshold version is pinned", () => { expect(SETTLE_THRESHOLD_VERSION).toBe("2026-10-20.2"); });
 });
