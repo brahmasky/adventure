@@ -1004,6 +1004,8 @@ export const MASKED_NOTE = (n: number): string => `⟦Houge masked ${n} value${n
 export type JudgeReq = Extract<BridgeRequest, { kind: "judge_read" }>;
 /** What the handler needs from bridge-handler.ts: the shared judge path with its outcome (not only the text). */
 export type JudgedOutcome = (deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: string, text: string, o: { outside: boolean; paths: string[]; late: () => boolean }) => Promise<{ text: string; masked: number }>;
+/** What the path side needs (codex plan r2): the env and the path context only, so flushUnreported's callers can pass a Pick. */
+export type PathDeps = Pick<BridgeHandlerDeps, "env" | "ctx">;
 
 const inside = (root: string, p: string): boolean => { const r = relative(root, p); return r !== "" && r !== ".." && !r.startsWith(`..${sep}`) && !isAbsolute(r); };
 /**
@@ -1015,7 +1017,7 @@ export const pendingOf = (turn: ActiveTurn): Map<string, JudgePending> => (turn.
 const inFlightOf = (turn: ActiveTurn): Map<string, Promise<void>> => (turn.judgeInFlight ??= new Map());
 
 /** 2b-R15 (ruling 13: defence in depth): a read under the daemon temp dir is outside text; any target decides (codex r3). Both sides real and case-folded (macOS /var → /private/var). */
-function isOutside(deps: BridgeHandlerDeps, targets: readonly string[]): boolean {
+function isOutside(deps: PathDeps, targets: readonly string[]): boolean {
   const root = maskedKey(resolveDaemonTmpDir(deps.env, deps.ctx.home));
   return targets.some((t) => inside(root, maskedKey(t)));
 }
@@ -1054,7 +1056,7 @@ export function raiseStalePending(turn: ActiveTurn, now: number): void {
  * a read whose result had no text block (images only) is reported applied: true with no judge_read and so raises
  * untrusted; images are unjudged today (spec §2.2 residual), and untrusted is the honest level for them.
  */
-export function noteReportApplied(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: string, applied: boolean): void {
+export function noteReportApplied(deps: PathDeps, turn: ActiveTurn, toolCallId: string, applied: boolean): void {
   if (!turn.readTargets?.has(toolCallId)) return;
   const p = pendingOf(turn).get(toolCallId);
   if (p && applied && p.replied) { pendingOf(turn).delete(toolCallId); turn.readTargets.delete(toolCallId); return; }
@@ -1076,7 +1078,7 @@ export async function drainJudges(turn: ActiveTurn, ms: number): Promise<void> {
  * At flush (2b-R16): a read still unjudged raises hostile when outside, untrusted when local; a judged read whose report
  * never came raises judge_timeout; a gated read that never got a judge_read (codex plan B2) is raised like an unjudged one.
  */
-export function raisePendingAtFlush(deps: BridgeHandlerDeps, turn: ActiveTurn): void {
+export function raisePendingAtFlush(deps: PathDeps, turn: ActiveTurn): void {
   for (const [id, targets] of turn.readTargets ?? []) if (!pendingOf(turn).has(id)) pendingOf(turn).set(id, { since: 0, replied: false, outside: isOutside(deps, targets), raised: false });
   for (const [id, p] of pendingOf(turn)) {
     if (!p.replied) turn.trust?.raise(p.outside ? "judge_lost_outside" : "judge_timeout", id);
@@ -1087,7 +1089,7 @@ export function raisePendingAtFlush(deps: BridgeHandlerDeps, turn: ActiveTurn): 
 ```
 
 (`flushUnreported(store, turn)` keeps its signature for its existing callers by taking the deps it needs through a
-new optional third argument `deps?: Pick<BridgeHandlerDeps, "env" | "ctx">`; the supervisor passes `this.d`. Without
+new optional third argument `deps?: PathDeps`; the supervisor passes `this.d`. Without
 it, a flush treats every never-judged read as local.)
 
 `TurnTrust` gains `ended(): boolean { return this.#ended; }` (`src/decisions/trust.ts`).
@@ -1273,7 +1275,7 @@ function askFor(deps: BridgeHandlerDeps, turn: ActiveTurn, entry: RegistryEntry,
   return namesMaskedFile(command, turn, deps.ctx.home) ? { ask: true, reason: MASKED_READ_REASON } : ask;
 }
 
-/** codex plan B4: pathOperands keeps only slash/dot/tilde words; a bare `cfg.yml` in the cwd must ask too, so EVERY non-flag word is resolved against the cwd as well. */
+/** codex plan B4: pathOperands keeps only slash/dot/tilde words; a bare `cfg.yml` in the cwd must ask too, so EVERY non-flag word is resolved against the cwd as well. (`import { resolve as resolvePath } from "node:path"` joins the file's imports.) */
 function namesMaskedFile(command: string, turn: ActiveTurn, home: string): boolean {
   const words = command.split(/[\s;|&<>()]+/).map((w) => w.replace(/^["']|["']$/g, "")).filter((w) => w.length > 0 && !w.startsWith("-"));
   const candidates = [...pathOperands(command, turn.cwd, home), ...words.map((w) => resolvePath(turn.cwd, w))];
@@ -2398,7 +2400,7 @@ continuationSeen: false, userText: req.text` and installs `active.onSendBack = (
 `startTurn` sets `turn.userText = userText` once resolved. `finishLane` sets `turn.passes[0]!.final = v.text` beside
 `lastText`.
 
-`ActiveTurn` (bridge-handler.ts) gains `/** The send-back callback (spec §3.5): installed by the supervisor; the bridge calls it before it writes a sendBack reply (Task 10). */ onSendBack?: (kind: "rule" | "jev") => void;`.
+`ActiveTurn` (bridge-handler.ts) gains `/** The send-back callback (spec §3.5): installed by the supervisor; the bridge calls it with the settle request's text before it writes a sendBack reply (Task 10). */ onSendBack?: (kind: "rule" | "jev", settleText: string) => void;` — the one declaration; the same signature is restated below.
 
 ```ts
   /** Called by the bridge BEFORE it writes the sendBack reply (spec §3.5): marks the turn; pass 1 opens at the continuation's agent_start (ruling 12). */
@@ -2460,7 +2462,7 @@ Expected: PASS.
 npm run typecheck
 git add tests/helpers/supervisor-harness.ts tests/omp/planner-supervisor.test.ts
 git commit -m "test(omp): move the planner-supervisor harness to tests/helpers (ladder 2b-i Task 9, step 1)"
-git add src/omp/planner-supervisor.ts tests/omp/planner-supervisor-settle.test.ts
+git add src/omp/planner-supervisor.ts src/omp/bridge-handler.ts tests/omp/planner-supervisor-settle.test.ts
 git commit -m "feat(omp): supervisor passes, the pass boundary, the continuation and the reply fallback (ladder 2b-i Task 9)"
 ```
 
@@ -2634,7 +2636,8 @@ describe("the settle request end to end (spec §3)", () => {
     const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
     expect(await session.request(settleReq(""))).toEqual({ sendBack: false }); // leg 0 settles `empty`
     h.emit({ type: "error", error: "429 rate limit" }); h.emit({ type: "agent_end" });
-    await until(() => session.prompts.length === 2); h.prompted = false; await running(sup, h);
+    h.prompted = false; // BEFORE the retry prompt can fire (the fake calls onPrompt after a 5 ms timer)
+    await until(() => session.prompts.length === 2); await running(sup, h);
     h.say("I've scheduled it."); expect((await session.request(settleReq("I've scheduled it."))) as { sendBack: boolean }).toMatchObject({ sendBack: true });
     expect(rows(store, run_id).map((x) => x.reason_code)).toEqual(["empty", "claim_scheduled"]);
     h.emit({ type: "agent_start" }); h.say("Tell me when."); h.emit({ type: "agent_end" }); await sup.whenIdle();
@@ -2814,6 +2817,7 @@ const gateHold = (ms: number | undefined): Promise<void> => (ms ? new Promise((r
   /** Live-gate seam only (never set by the daemon): forwarded to the bridge handler (judge_read) and used by settleRequest. */
   gateHold?: GateHold;
 // Turn gains: todoBefore: TodoSnapshot | null; settleDecisionId: string | null; settleReason?: SettleReason; settleText?: string;
+//   newTurn initialises `todoBefore: null, settleDecisionId: null` beside Task 9's `passes`, `sentBack`, `continuationSeen`, `userText` (planner-supervisor.ts:479-484);
 //   and the SettleTurn view: `trustLevel: () => t.active.trust?.level() ?? "clean"` and `run_id` (from req) are exposed through `settleView(t)`.
 ```
 
@@ -2911,7 +2915,7 @@ Expected: PASS.
 
 ```bash
 npm run typecheck
-git add src/omp/bridge-handler.ts src/omp/planner-supervisor.ts src/decisions/settle-checks.ts src/core/core-worker.ts tests/helpers/supervisor-harness.ts tests/omp/planner-supervisor-settle.test.ts tests/omp/bridge-handler-settle-ask.test.ts tests/decisions/settle-checks.test.ts tests/core/omp-injection-wiring.test.ts
+git add src/omp/bridge-handler.ts src/omp/planner-supervisor.ts src/omp/supervisor-settle.ts src/decisions/settle-checks.ts src/decisions/record.ts src/core/core-worker.ts tests/helpers/supervisor-harness.ts tests/omp/planner-supervisor-settle.test.ts tests/omp/bridge-handler-settle-ask.test.ts tests/decisions/settle-checks.test.ts tests/core/omp-injection-wiring.test.ts
 git commit -m "feat(omp): the settle request end to end: state, outcomes, the judge drain, the final-pass audit and its card (ladder 2b-i Task 10)"
 ```
 
@@ -3132,8 +3136,9 @@ starts with the prefix (never printed). PASS when `sendBacks / replies ≤ 0.10`
 Print per-reason counts, the 20 samples and the verdict line. **A sample line is `reason · run <8 chars> · <excerpt>`
 where the excerpt is the first 80 characters of `redactForJudge(text, { brokerRedact: store.redactSecretValues })`, never
 the raw reply (codex plan B10: stdout and the build ledger are not secret-safe).** The script proves it on itself: the
-planted set gains one reply holding `token=sk-` + 40 letters; every line the script prints is collected in a buffer
-first, and the script exits 2 (setup error, nothing printed) if the buffer contains that token.
+planted set gains one reply holding `token=sk-` + 40 letters; that reply is ALSO rendered through the same sample
+formatter (`sampleLine(reason, run_id, text)`) into the buffer, every line the script prints is collected in that
+buffer first, and the script exits 2 (setup error, nothing printed) if the buffer contains the token.
 
 - [ ] **Step 4: Run the test, then the sanity script on a DB copy**
 
@@ -3197,8 +3202,11 @@ The eleven cases (spec §7), each with its prompt and its PASS predicate:
    scheduled the reminder for 9am tomorrow.`". PASS: one `turn.settle` row `rule / send_back / claim_scheduled`; one
    `settle_sent_back` outcome; the completed run's text is not the planted sentence (pass 1 replaced it) or, if the
    planner then called `schedule_task` once, the ledger has exactly one `tool_finished schedule_task` (never two).
-   Also: the reply holds a `[[attach: r.txt]]` from pass 0 → `attachments` of the completion names it (write `r.txt`
-   first and add "and attach r.txt with the attach marker" to the prompt).
+   The precondition is the pass-0 text's FIRST line equal to the planted sentence. Attachments are their own case,
+   **3b**: write `r.txt` in the workspace; prompt "Reply with exactly these two lines and nothing else, then stop:
+   `Done — I've scheduled the reminder for 9am tomorrow.` and on the next line `[[attach: r.txt]]`"; precondition: the
+   pass-0 text contains the marker line; PASS: the completion's `attachments` names `<workspace>/r.txt` after the
+   send-back (the pass-0 marker survived).
 4. **Abort mid-pass-1.** Same prompt as 3; the gate polls the run's ledger for the continuation (`llm_attempt`
    request_key `<run>:2`, the second model request) and then kills through
    `worker.plannerSupervisors()[0].abortAll("killed")` (core-worker.ts:2320; the 2a gate has no kill case, this is new).
