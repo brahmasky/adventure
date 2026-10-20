@@ -18,7 +18,7 @@ export const FALLBACK_REASONS = ["timeout", "outage", "parse", "threw", "stale_b
 export type FallbackReason = (typeof FALLBACK_REASONS)[number];
 /** Spec §7.4's outcome signals, plus `review_ok` (✅ is a label calibration needs). Values are validated per signal in outcomes.ts. */
 export const DECISION_SIGNALS = ["correction", "dig_deeper", "review_ok", "review_bad", "review_unsure", "approval_denied", "approval_expired", "rating",
-  "settle_sent_back", "planner_failed", "recurrence", "abandoned", "lesson_unfollowed", "lesson_undone", "think_harder"] as const;
+  "settle_sent_back", "planner_failed", "recurrence", "abandoned", "lesson_unfollowed", "lesson_undone", "think_harder", "settle_unverified", "settle_discarded"] as const;
 export type DecisionSignal = (typeof DECISION_SIGNALS)[number];
 /** Reason codes the runner itself produces; recordable for every entry (record.ts). */
 export const RUNNER_REASON_CODES = ["no_executor", "floor_held"] as const;

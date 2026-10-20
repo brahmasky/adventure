@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { checkOutcomeValue, CORRECTION_VALUES, DIG_DEEPER_VALUES, OutcomeRejected } from "../../src/decisions/outcomes.js";
+import { SETTLE_DISCARDED_VALUES, SETTLE_REASONS } from "../../src/decisions/entries/turn-settle.js";
+import { SETTLE_DISCARDED_VALUE_LIST, SETTLE_REASON_VALUES } from "../../src/decisions/outcomes.js";
 import { CATEGORIES } from "../../src/jev/questions/tree.js";
 
 // Spec §5.2: an outcome value is a closed enum or a number per signal; the insert rejects anything else, so free text
@@ -21,7 +23,7 @@ describe("checkOutcomeValue", () => {
     }
   });
   it("signals with no producer yet reject every value until their stage defines the set", () => {
-    for (const s of ["approval_denied", "approval_expired", "settle_sent_back", "planner_failed", "abandoned", "lesson_unfollowed"]) {
+    for (const s of ["approval_denied", "approval_expired", "planner_failed", "abandoned", "lesson_unfollowed"]) {
       expect(() => checkOutcomeValue(s, "shell_external")).toThrow(OutcomeRejected);
     }
   });
@@ -29,5 +31,8 @@ describe("checkOutcomeValue", () => {
     expect([...CORRECTION_VALUES]).toEqual([...CATEGORIES]);
     // The lane list is the `Lane` type (src/jev/tree-policy.ts); outcomes.ts pins it exhaustive at compile time (typecheck).
     expect([...DIG_DEEPER_VALUES]).toEqual(["answer", "lookup", "memory", "status", "planner"]);
+    // outcomes.ts cannot import the entry (the store imports outcomes.ts), so turn.settle's lists are duplicated and pinned here
+    expect([...SETTLE_REASON_VALUES]).toEqual([...SETTLE_REASONS]);
+    expect([...SETTLE_DISCARDED_VALUE_LIST]).toEqual([...SETTLE_DISCARDED_VALUES]);
   });
 });

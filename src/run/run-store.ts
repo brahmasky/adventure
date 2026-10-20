@@ -81,6 +81,8 @@ export type LlmCallRole =
   | "injection"
   // memory.kind's own Jev request (spec 2026-10-15 Rev 3 §3)
   | "memory_kind"
+  // turn.settle's own Jev request (ladder 2b-i §3.3)
+  | "settle"
   // the tree's cascade pick between two categories (plan 2026-10-07 Decision 14): a Tiny-role one-shot on the turn's run
   | "cascade"
   // stage B lanes (spec §4–§5): the compose (Fast candidates) and the lookup's query rewrite (Tiny candidates); the planner stays "compose"

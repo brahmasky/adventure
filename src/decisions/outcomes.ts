@@ -16,6 +16,11 @@ export const DIG_DEEPER_COVERS_EVERY_LANE: DigDeeperCoversEveryLane = true;
 /** The planner roles (tree-policy TurnRole); `think_harder` records the role the previous turn ran on. */
 export const TURN_ROLE_VALUES = ["fast", "default", "thinking"] as const satisfies readonly TurnRole[];
 
+/** turn.settle's reason codes and discarded-judgment values, duplicated because the store imports this file and the entry pulls in src/jev/questions; pinned equal to the entry's lists by tests. */
+export const SETTLE_REASON_VALUES = ["hostile", "already_sent_back", "last_call_denied", "steer_queued", "deadline_short", "aborting", "empty", "claim_scheduled", "claim_saved",
+  "claim_attached", "claim_sent", "todo_pending", "todo_unavailable", "jev_claims_done", "jev_unverified", "jev_promise", "jev_asks_permission", "budget", "settled"] as const;
+export const SETTLE_DISCARDED_VALUE_LIST = ["extension_timeout", "signal", "continuation_failed"] as const;
+
 export class OutcomeRejected extends Error {}
 
 type Check = (v: string | number) => boolean;
@@ -29,8 +34,9 @@ const VALUE_CHECKS: Readonly<Record<DecisionSignal, Check | null>> = {
   correction: oneOf(CORRECTION_VALUES), dig_deeper: oneOf(DIG_DEEPER_VALUES),
   lesson_undone: oneOf(DIG_DEEPER_VALUES), think_harder: oneOf(TURN_ROLE_VALUES),
   review_ok: entryId, review_bad: entryId, review_unsure: entryId,
+  settle_sent_back: oneOf(SETTLE_REASON_VALUES), settle_unverified: oneOf(SETTLE_REASON_VALUES), settle_discarded: oneOf(SETTLE_DISCARDED_VALUE_LIST),
   rating: intIn(0, 3), recurrence: intIn(1, 10_000),
-  approval_denied: null, approval_expired: null, settle_sent_back: null, planner_failed: null, abandoned: null, lesson_unfollowed: null
+  approval_denied: null, approval_expired: null, planner_failed: null, abandoned: null, lesson_unfollowed: null
 };
 
 /** The stored text of a valid value; throws OutcomeRejected otherwise (the message names the signal, never the value). */
