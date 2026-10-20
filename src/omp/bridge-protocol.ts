@@ -3,7 +3,14 @@ export type BridgeRequest =
   | { id: string; kind: "manifest" }
   | { id: string; kind: "call"; tool: string; input: Record<string, unknown>; toolCallId: string }
   | { id: string; kind: "gate"; tool: "read" | "edit" | "write"; input: Record<string, unknown>; toolCallId: string }
-  | { id: string; kind: "report"; toolCallId: string; outcome: "succeeded" | "failed"; bytes_out: number; duration_ms: number };
+  /** `applied` (2b-i §2.1): the judge_read reply arrived inside the extension's timer and was applied; absent counts as false. `tool`: only for an ungated built-in (`todo`), which has no gate row to name it. */
+  | { id: string; kind: "report"; toolCallId: string; outcome: "succeeded" | "failed"; bytes_out: number; duration_ms: number; applied?: boolean; tool?: string }
+  /** 2b-i §2.2: the canonical text of a built-in `read` result (<= 32 KiB), judged by tool.injection before the model reads it. */
+  | { id: string; kind: "judge_read"; toolCallId: string; text: string }
+  /** 2b-i §2.3: omp's session_stop; Houge decides turn.settle and answers whether the reply goes back for one more pass. */
+  | { id: string; kind: "settle"; stop_hook_active: boolean; text: string };
+export type JudgeReadReply = { verdict: "unchanged" } | { verdict: "rewritten"; text: string };
+export type SettleReply = { sendBack: false } | { sendBack: true; note: string };
 export type BridgeResponse = { id: string; ok: true; result: unknown } | { id: string; ok: false; error: string };
 
 export const encodeLine = (msg: object): string => `${JSON.stringify(msg)}\n`;

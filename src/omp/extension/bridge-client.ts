@@ -2,7 +2,11 @@
 import { connect, type Socket } from "node:net";
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void };
-export interface Bridge { request(msg: Record<string, unknown>): Promise<any> }
+export interface RequestOpts { timeoutMs?: number }
+export interface Bridge { request(msg: Record<string, unknown>, opts?: RequestOpts): Promise<any> }
+/** 2b-i §2.4: judge_read, settle and the read report are bounded here; omp's own 30 s hook bound would hand the model raw text. */
+export const HOOK_TIMEOUT_MS = 5_000;
+export const BRIDGE_TIMEOUT = "bridge_timeout";
 let client: Bridge | null = null;
 
 /** Names of stubs that actually registered with omp; shared by both extensions (same module instance). */
@@ -29,11 +33,15 @@ function open(sock: string, token: string): Bridge {
   s.on("error", failAll); s.on("close", () => failAll(new Error("bridge closed")));
   s.write(`${JSON.stringify({ id: "hello", kind: "hello", token })}\n`);
   const bridge: Bridge = {
-    request(msg) {
+    request(msg, opts) {
       const id = `r${++n}`;
       return new Promise((resolve, reject) => {
         if (s.destroyed) { reject(new Error("bridge closed")); return; }
-        pending.set(id, { resolve, reject }); s.write(`${JSON.stringify({ ...msg, id })}\n`);
+        // the timer removes the pending entry, so a reply after it is dropped by onLine (no entry to resolve)
+        const timer = opts?.timeoutMs === undefined ? undefined
+          : setTimeout(() => { pending.delete(id); reject(new Error(BRIDGE_TIMEOUT)); }, opts.timeoutMs);
+        pending.set(id, { resolve: (v) => { clearTimeout(timer); resolve(v); }, reject: (e) => { clearTimeout(timer); reject(e); } });
+        s.write(`${JSON.stringify({ ...msg, id })}\n`);
       });
     }
   };

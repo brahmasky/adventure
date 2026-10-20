@@ -48,8 +48,8 @@ export const INJECTION_ROW_KEY = (_q: Question): { question_id: string; criteria
 export const INJECTION_BAR: ProvisionalBar = { kind: "provisional", question: "injected", criteriaHash: INJECTION_TEMPLATE_HASH, model: "jev-1.13.0",
   p: INJECTION_BAR_P, source: "mu tool.injection (hermes-jev-skills measurement): 70/79 planted over 0.5, 0/1,520 clean withheld" };
 
-/** mu's INSTRUCTION_PATTERNS (from hermes-jev-skills, measured on 11,299 README passages): phrases only an injection uses. */
-const INSTRUCTION_PATTERNS = new RegExp([
+/** mu's INSTRUCTION_PATTERNS (from hermes-jev-skills, measured on 11,299 README passages): phrases only an injection uses. Exported as sources so the extension's copy (src/omp/extension/injection-floor.ts) is pinned byte-equal by a test. */
+export const INSTRUCTION_PATTERN_SOURCES: readonly string[] = [
   String.raw`ignore\s+(?:all\s+)?(?:the\s+)?(?:previous|prior|above|earlier)\s+(?:instructions?|prompts?|rules?)`,
   String.raw`disregard\s+(?:your\s+|all\s+|the\s+)?(?:previous|prior|instructions?|rules?|safety)`,
   String.raw`forget\s+(?:everything|anything|all|what)\s+(?:you|that)\s+(?:were|was|have\s+been)\s+told`,
@@ -59,7 +59,8 @@ const INSTRUCTION_PATTERNS = new RegExp([
   String.raw`(?:reveal|print|output|repeat|show)\s+(?:me\s+)?your\s+(?:system\s+)?(?:prompt|instructions)`,
   String.raw`(?:do\s+not|don'?t|never)\s+(?:tell|inform|alert|notify)\s+the\s+(?:user|operator|human|person)\s+(?:about|that\s+you)`,
   "忽略(?:之前|以上|上面|前面|先前)(?:的|所有的?)?(?:所有)?(?:指令|指示|提示|规则)"
-].join("|"), "i");
+];
+const INSTRUCTION_PATTERNS = new RegExp(INSTRUCTION_PATTERN_SOURCES.join("|"), "i");
 const INVISIBLE = /[\u200B-\u200F\u2060-\u2064\uFEFF\u00AD]/g;
 
 /** `_`, `-` and camelCase boundaries read as spaces (Houge's addition, senior B2): a joined sentence is still a sentence. */

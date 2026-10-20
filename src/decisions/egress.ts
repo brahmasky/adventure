@@ -519,11 +519,23 @@ export function seedPhrase(raw: string): boolean {
   return false;
 }
 
+/** The content checks the extension copies (2b-i §2.4); the sources are exported so tests/omp/injection-floor.test.ts pins the copy. */
+export const CONTENT_CHECK_SOURCES = Object.freeze({
+  pem: String.raw`-----(?:BEGIN|END) [A-Z0-9 ]*PRIVATE KEY-----`,
+  secretJson: String.raw`"(?:private_key|client_secret|refresh_token)"\s*:`,
+  serviceAccount: String.raw`"type"\s*:\s*"service_account"`,
+  cookieJar: String.raw`^#\s*(?:Netscape\s+)?HTTP Cookie File`
+});
+const PEM_CHECK = new RegExp(CONTENT_CHECK_SOURCES.pem);
+const SECRET_JSON_CHECK = new RegExp(CONTENT_CHECK_SOURCES.secretJson);
+const SERVICE_ACCOUNT_CHECK = new RegExp(CONTENT_CHECK_SOURCES.serviceAccount);
+const COOKIE_JAR_CHECK = new RegExp(CONTENT_CHECK_SOURCES.cookieJar, "im");
+
 /** Spec §7.0 item 3, ruled per passage on the RAW passage, locally (plan S8). Never a pass: Task 7 withholds (outside) or frames (local). */
 export function passageBlock(raw: string): EgressBlock | null {
-  if (/-----(?:BEGIN|END) [A-Z0-9 ]*PRIVATE KEY-----/.test(raw)) return "pem_block";
-  if (/"(?:private_key|client_secret|refresh_token)"\s*:/.test(raw) || /"type"\s*:\s*"service_account"/.test(raw)) return "secret_json";
-  if (/^#\s*(?:Netscape\s+)?HTTP Cookie File/im.test(raw)) return "cookie_jar";
+  if (PEM_CHECK.test(raw)) return "pem_block";
+  if (SECRET_JSON_CHECK.test(raw) || SERVICE_ACCOUNT_CHECK.test(raw)) return "secret_json";
+  if (COOKIE_JAR_CHECK.test(raw)) return "cookie_jar";
   if (seedPhrase(raw)) return "seed_phrase";
   return countNamedSecrets(raw) >= 3 ? "dense_secrets" : null;
 }
