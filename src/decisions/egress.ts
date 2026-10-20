@@ -54,9 +54,20 @@ export function secretKey(key: string): boolean {
 }
 /**
  * A key followed by `:` or `=`; the key may be quoted (JSON). The value's extent is found by `namedValue`. At line start the key
- * may sit behind omp's read prefix `N:` (live gate 2b-i case 9: `2:api_key: …` masked nothing before).
+ * may sit behind omp's read prefix `N:` (live gate 2b-i case 9: `2:api_key: …` masked nothing before); elsewhere any
+ * non-word character may precede it (2b-i final review A3: `$db_password`, `--token`, `#password`, `|password`, `/*password`).
+ * A `.`/`-` (key characters themselves) counts only as a run of one or two that starts a word (`.token`, `--token`): a bare
+ * `(?<![A-Za-z0-9_])` let a match start after every `.` of `a.a.a…` and rescanned the run each time, and an unbounded run in
+ * the lookbehind rescanned `-----…` (both quadratic: the 100 ms tests).
  */
-const KEY_AT = /(?<=^(?:\d{1,7}(?:-\d{1,7})?[:|])?|[\s;{,(&?[])(["']?)([A-Za-z][A-Za-z0-9_.-]*)\1\s*([:=])[ \t]*/gm;
+const KEY_AT = /(?:(?<=^(?:\d{1,10}(?:-\d{1,10})?[:|])?)|(?<![A-Za-z0-9_.-])|(?<=(?:^|[^A-Za-z0-9_.-])[.-]{1,2}))(["']?)([A-Za-z][A-Za-z0-9_.-]*)\1\s*([:=])[ \t]*/gm;
+/** A3: `<key>value</key>` on one line, for a secret-named key. */
+const XML_PAIR = /<([A-Za-z][A-Za-z0-9_.-]*)>([^<\n]+)<\/\1>/g;
+/**
+ * A3: an all-caps env name ending in a secret word (`PGPASSWORD`, `GHTOKEN`, `MYSECRET`) is secret-named too. A pure-alpha value
+ * after such a key is skipped, but `MONKEY=ban4na` does mask: an accepted over-mask, never a leak.
+ */
+const CAPS_SECRET = /^[A-Z0-9_]+(?:PASSWORD|PASSWD|TOKEN|SECRET|KEY)$/;
 const PEM_BLOCK = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g;
 const COOKIE_LINE = /^((?:[^\t\n]*\t){6})([^\t\n]+)$/gm;
 const AUTH_SCHEME = /\b(Bearer\s+|Basic\s+)([A-Za-z0-9._~+/=-]{8,})/gi;
@@ -246,11 +257,16 @@ export function namedValues(s: string, skipUrls = false): Array<[number, number]
   const urls = skipUrls ? [...s.matchAll(URL_RE)].map((u): [number, number] => [u.index ?? 0, (u.index ?? 0) + u[0].length]) : [];
   const re = new RegExp(KEY_AT.source, KEY_AT.flags);
   for (let m = re.exec(s); m; m = re.exec(s)) {
-    if (!secretKey(m[2]!) || urls.some(([a, b]) => m!.index > a && m!.index < b)) continue;   // Rev 8: a URL's query is the URL pass's
+    const caps = !secretKey(m[2]!) && CAPS_SECRET.test(m[2]!);
+    if ((!secretKey(m[2]!) && !caps) || urls.some(([a, b]) => m!.index > a && m!.index < b)) continue;   // Rev 8: a URL's query is the URL pass's
     const span = namedValue(s, m.index + m[0].length, s[m.index - 1] === "&" || s[m.index - 1] === "?");
+    if (caps && /^[A-Za-z]+$/.test(s.slice(span[0], span[1]))) continue;
     if (span[1] > span[0]) { out.push(span); re.lastIndex = Math.max(re.lastIndex, span[1]); }
   }
-  return out;
+  for (const m of s.matchAll(XML_PAIR)) {
+    if (secretKey(m[1]!) || CAPS_SECRET.test(m[1]!)) { const a = (m.index ?? 0) + m[1]!.length + 2; out.push([a, a + m[2]!.length]); }
+  }
+  return out.sort((x, y) => x[0] - y[0]);
 }
 
 function namedValue(s: string, j: number, query: boolean): [number, number] {
@@ -515,7 +531,7 @@ export type EgressBlock = "credential_path" | "pem_block" | "secret_json" | "den
 
 /** Words a BIP-39 seed line never holds (no wordlist ships: zero dependencies); prose almost always holds one. */
 const STOP = new Set("the and for are but not you all can was one our out has his how its who did get may him she too use her that this with from they have were will your what when been than them then".split(" "));
-const SEED_LINE = /^(?:\d{1,7}(?:-\d{1,7})?[:|])?[ \t]*((?:[a-z]{3,8}[ \t]+){11,23}[a-z]{3,8})[ \t]*$/gm;
+const SEED_LINE = /^(?:\d{1,10}(?:-\d{1,10})?[:|])?[ \t]*((?:[a-z]{3,8}[ \t]+){11,23}[a-z]{3,8})[ \t]*$/gm;
 /** A line (behind omp's `N:` read prefix or not) of 12, 15, 18, 21 or 24 lowercase words of 3–8 letters with no common stopword: wallet recovery material (W-R3-3). */
 export function seedPhrase(raw: string): boolean {
   for (const m of raw.matchAll(SEED_LINE)) { const w = m[1]!.split(/[ \t]+/); if (w.length % 3 === 0 && !w.some((x) => STOP.has(x))) return true; }
@@ -527,7 +543,7 @@ export const CONTENT_CHECK_SOURCES = Object.freeze({
   pem: String.raw`-----(?:BEGIN|END) [A-Z0-9 ]*PRIVATE KEY-----`,
   secretJson: String.raw`"(?:private_key|client_secret|refresh_token)"\s*:`,
   serviceAccount: String.raw`"type"\s*:\s*"service_account"`,
-  cookieJar: String.raw`^(?:\d{1,7}(?:-\d{1,7})?[:|])?#\s*(?:Netscape\s+)?HTTP Cookie File`
+  cookieJar: String.raw`^(?:\d{1,10}(?:-\d{1,10})?[:|])?#\s*(?:Netscape\s+)?HTTP Cookie File`
 });
 const PEM_CHECK = new RegExp(CONTENT_CHECK_SOURCES.pem);
 const SECRET_JSON_CHECK = new RegExp(CONTENT_CHECK_SOURCES.secretJson);

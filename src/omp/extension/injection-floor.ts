@@ -18,7 +18,7 @@ export const CONTENT_SOURCES = Object.freeze({
   pem: String.raw`-----(?:BEGIN|END) [A-Z0-9 ]*PRIVATE KEY-----`,
   secretJson: String.raw`"(?:private_key|client_secret|refresh_token)"\s*:`,
   serviceAccount: String.raw`"type"\s*:\s*"service_account"`,
-  cookieJar: String.raw`^(?:\d{1,7}(?:-\d{1,7})?[:|])?#\s*(?:Netscape\s+)?HTTP Cookie File`
+  cookieJar: String.raw`^(?:\d{1,10}(?:-\d{1,10})?[:|])?#\s*(?:Netscape\s+)?HTTP Cookie File`
 });
 const INSTRUCTION = new RegExp(INSTRUCTION_SOURCES.join("|"), "i");
 const INVISIBLE = /[\u200B-\u200F\u2060-\u2064\uFEFF\u00AD]/g; // `\u` escapes, never literal invisibles (a copy-paste drops them silently)
@@ -26,12 +26,17 @@ const CONTENT = [new RegExp(CONTENT_SOURCES.pem), new RegExp(CONTENT_SOURCES.sec
 /** The same text as Houge's WITHHELD_TEXT, plus why the whole read is gone (code-owned, never tool bytes). */
 export const FLOORED_TEXT = "[withheld: text aimed at the assistant] (Houge could not judge this file in time; none of it is shown)";
 const STOP = new Set("the and for are but not you all can was one our out has his how its who did get may him she too use her that this with from they have were will your what when been than them then".split(" "));
-const SEED_LINE = /^(?:\d{1,7}(?:-\d{1,7})?[:|])?[ \t]*((?:[a-z]{3,8}[ \t]+){11,23}[a-z]{3,8})[ \t]*$/gm;
+const SEED_LINE = /^(?:\d{1,10}(?:-\d{1,10})?[:|])?[ \t]*((?:[a-z]{3,8}[ \t]+){11,23}[a-z]{3,8})[ \t]*$/gm;
 /** Secret-named keys (a segment equals a secret word) followed by a credential-shaped value: the dense-secrets count. */
 const SECRET_WORDS = new Set(["pass", "passwd", "password", "passphrase", "pwd", "secret", "token", "key", "auth", "authorization", "cookie", "credential", "credentials",
   "signature", "apikey", "accesstoken", "authtoken", "secretkey", "privatekey", "clientsecret", "refreshtoken", "accesskey", "sessiontoken", "sid", "csrf", "xsrf", "jwt", "bearer"]);
-// The line-start alternatives accept omp's read prefix `N:` (live gate 2b-i case 9), as egress's KEY_AT and SEED_LINE do.
-const KEY_VALUE = /(?<=^(?:\d{1,7}(?:-\d{1,7})?[:|])?|[\s;{,(&?[])["']?([A-Za-z][A-Za-z0-9_.-]*)["']?\s*[:=][ \t]*["']?([^\s"',;&]{8,})/gm;
+// The line-start alternatives accept omp's read prefix `N:` (live gate 2b-i case 9), as egress's KEY_AT and SEED_LINE do;
+// elsewhere any non-word character, or a word-starting run of one or two `.`/`-`, may precede a key (2b-i final review A3).
+const KEY_VALUE = /(?:(?<=^(?:\d{1,10}(?:-\d{1,10})?[:|])?)|(?<![A-Za-z0-9_.-])|(?<=(?:^|[^A-Za-z0-9_.-])[.-]{1,2}))["']?([A-Za-z][A-Za-z0-9_.-]*)["']?\s*[:=][ \t]*["']?([^\s"',;&]{8,})/gm;
+/** A3: `<key>value</key>` on one line, as egress's XML_PAIR. */
+const XML_VALUE = /<([A-Za-z][A-Za-z0-9_.-]*)>([^<\n]{8,})<\/\1>/g;
+/** A3: an all-caps env name ending in a secret word (`PGPASSWORD`), as egress's CAPS_SECRET (`MONKEY=ban4na` counts too). */
+const CAPS_SECRET = /^[A-Z0-9_]+(?:PASSWORD|PASSWD|TOKEN|SECRET|KEY)$/;
 
 /** Houge's looksInjected: NFKC, invisibles out, `_`/`-` and camelCase as spaces. */
 export function looksInjectedLocal(text: string): boolean {
@@ -43,7 +48,7 @@ const SESSION_PAIR = new Set(["id", "key", "token"]);
 /** A copy of egress's secretKey (2b-i final review A2): split on non-alphanumerics, then camelCase, THEN lowercase. */
 function secretNamed(key: string): boolean {
   const segs = key.split(/[^A-Za-z0-9]+/).flatMap((s) => s.split(/(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/)).map((s) => s.toLowerCase()).filter(Boolean);
-  return segs.some((s, k) => SECRET_WORDS.has(s) || (s === "session" && SESSION_PAIR.has(segs[k + 1] ?? "")));
+  return CAPS_SECRET.test(key) || segs.some((s, k) => SECRET_WORDS.has(s) || (s === "session" && SESSION_PAIR.has(segs[k + 1] ?? "")));
 }
 
 function seedPhrase(raw: string): boolean {
@@ -53,7 +58,7 @@ function seedPhrase(raw: string): boolean {
 
 function denseSecrets(raw: string): boolean {
   let n = 0;
-  for (const m of raw.matchAll(KEY_VALUE)) if (secretNamed(m[1]!) && !/^[a-z]+$/i.test(m[2]!)) n++;
+  for (const m of [...raw.matchAll(KEY_VALUE), ...raw.matchAll(XML_VALUE)]) if (secretNamed(m[1]!) && !/^[a-z]+$/i.test(m[2]!)) n++;
   return n >= 3;
 }
 

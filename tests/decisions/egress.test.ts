@@ -393,18 +393,55 @@ describe("omp's read format: a hashline header and an `N:` prefix on every line 
     expect(passageBlock("[/tmp/c.txt#9F]\n7|# Netscape HTTP Cookie File\n8|.example.com\tTRUE")).toBe("cookie_jar");
     expect(seedPhrase("2-3|legal winner thank year wave sausage worth useful legal winner thank yellow")).toBe(true);
   });
-  it("a bare `3-4|api_key` with no value, or one mid-line, is no false positive", () => {
+  it("a bare `3-4|api_key` with no value is no false positive", () => {
     expect(redactForJudge("3-4|api_key")).toBe("3-4|api_key");
-    expect(redactForJudge("notakey:3-4|api_key: plain words here")).toBe("notakey:3-4|api_key: plain words here");
   });
-  it("the prefix counts only at line start: a mid-line `notakey:3:api_key` opens no key", () => {
-    expect(redactForJudge("notakey:3:api_key: plain words here")).toBe("notakey:3:api_key: plain words here");
+  it("A3: mid-line, any non-word character before a key opens it (`|` and `:` included), so `notakey:3:api_key` masks", () => {
+    // before A3 these stayed visible (the prefix counted only at line start): that gap is what leaked `|password=`
+    expect(redactForJudge("notakey:3-4|api_key: plain words here")).toBe(`notakey:3-4|api_key: ${SECRET_MASK}`);
+    expect(redactForJudge("notakey:3:api_key: plain words here")).toBe(`notakey:3:api_key: ${SECRET_MASK}`);
   });
   it("the line-anchored content checks see through the prefix: a cookie jar and a seed line", () => {
     expect(passageBlock("[/tmp/c.txt#9F]\n7:# Netscape HTTP Cookie File\n8:.example.com\tTRUE")).toBe("cookie_jar");
     const seed = "2:legal winner thank year wave sausage worth useful legal winner thank yellow";
     expect(seedPhrase(seed)).toBe(true); expect(passageBlock(`[/tmp/s.txt#1C]\n1:recovery:\n${seed}\n`)).toBe("seed_phrase");
     expect(passageBlock("A_TOKEN=abcdefgh1\n2:B_SECRET=abcdefgh2\n3:C_PASSWORD=abcdefgh3")).toBe("dense_secrets");
+  });
+});
+
+describe("2b-i final review A3: named-secret mask gaps", () => {
+  // Each leaked before: the key sat behind `$ - # @ | > / *` or in XML, or was an all-caps env name like PGPASSWORD.
+  const LEAKS: ReadonlyArray<[string, string]> = [
+    ["14:$db_password = 'Hunter2024!';", "Hunter2024!"], ["5:  - --token=Tr0ub4dor&3x", "Tr0ub4dor&3x"], ["6:    <password>xK9mQ2pL7vR4</password>", "xK9mQ2pL7vR4"],
+    ["8:PGPASSWORD=xK9mQ2pL7vR4 psql", "xK9mQ2pL7vR4"], ["9:#password=xK9mQ2pL7vR4", "xK9mQ2pL7vR4"], ["-api_key: xK9mQ2pL7vR4", "xK9mQ2pL7vR4"],
+    [".token=xK9mQ2pL7vR4", "xK9mQ2pL7vR4"], ["@password=xK9mQ2pL7vR4", "xK9mQ2pL7vR4"], ["|password=xK9mQ2pL7vR4", "xK9mQ2pL7vR4"],
+    [">password=xK9mQ2pL7vR4", "xK9mQ2pL7vR4"], ["//password=xK9mQ2pL7vR4", "xK9mQ2pL7vR4"], ["/*password=xK9mQ2pL7vR4", "xK9mQ2pL7vR4"]
+  ];
+  it("masks the value for Jev and in the planner copy (I1)", () => {
+    for (const [t, v] of LEAKS) {
+      expect([t, redactForJudge(t).includes(v)]).toEqual([t, false]);
+      expect([t, splitEgress(t, 900, {})![0]!.planner.includes(v)]).toEqual([t, false]);
+    }
+    expect(redactForJudge("6:    <password>xK9mQ2pL7vR4</password>")).toBe(`6:    <password>${SECRET_MASK}</password>`);
+  });
+  it("XML: only a secret-named element is masked; an empty one stays empty", () => {
+    expect(redactForJudge("<name>bob</name><apiKey>k9Zq81mVb6</apiKey>")).toBe(`<name>bob</name><apiKey>${SECRET_MASK}</apiKey>`);
+    expect(redactForJudge("<password></password>")).toBe("<password></password>");
+  });
+  it("all-caps env names ending in PASSWORD/PASSWD/TOKEN/SECRET/KEY count; a pure-alpha value is skipped (MONKEY=ban4na masks, by design)", () => {
+    expect(redactForJudge("GHTOKEN=abc123def")).toBe(`GHTOKEN=${SECRET_MASK}`);
+    expect(redactForJudge("MYSECRET=abc123def")).toBe(`MYSECRET=${SECRET_MASK}`);
+    expect(redactForJudge("MONKEY=ban4na")).toBe(`MONKEY=${SECRET_MASK}`);
+    expect(redactForJudge("MONKEY=banana")).toBe("MONKEY=banana");
+  });
+  it("omp's line prefix holds up to ten digits in every line-anchored check", () => {
+    expect(passageBlock("1234567890:# Netscape HTTP Cookie File\n.example.com\tTRUE")).toBe("cookie_jar");
+    expect(seedPhrase("12345678:legal winner thank year wave sausage worth useful legal winner thank yellow")).toBe(true);
+    expect(redactForJudge("1234567890-1234567891|api_key: xK9mQ2pL7vR4")).toBe(`1234567890-1234567891|api_key: ${SECRET_MASK}`);
+  });
+  it("a word-bounded key is still required: a substring like `mypassword` inside a word opens nothing new", () => {
+    expect(secretKey("compass")).toBe(false);
+    expect(redactForJudge("the compass=north arrow")).toBe("the compass=north arrow");
   });
 });
 
@@ -422,7 +459,7 @@ describe("splitPassages (mu's splitter on plain text, cut at whitespace)", () =>
 // on `://`, so 32 KiB of attacker-chosen shell output stalled the daemon's event loop for seconds (Telegram polling, lease
 // heartbeats). Every pass over a tool result must stay linear: 32 KiB of each adversarial shape well under 100 ms.
 describe("egress scans stay linear on adversarial input", () => {
-  for (const unit of ["a.", "a-", "a+", "a1."]) {
+  for (const unit of ["a.", "a-", "a+", "a1.", "-", ".", "<a>x"]) { // `-` `.`: the A3 key lookbehind (a run of them precedes a key)
     it(`32 KiB of "${unit}" repeated: redactForJudge and splitEgress each finish in < 100 ms`, () => {
       const text = unit.repeat(Math.ceil(32_768 / unit.length)).slice(0, 32_768);
       redactForJudge("warm https://x.example/a"); // JIT warm-up outside the timed window
